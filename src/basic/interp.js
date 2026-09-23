@@ -139,8 +139,9 @@ export class Interp {
     return a;
   }
   /** Reading an undefined variable: error, except in the assembler with OPT bit 1 clear (value P%) */
-  undefVar(t) {
+  undefVar(t, v) {
     if ((this.bytesm & 2) === 0 && t !== TS) return this.iv[16];
+    this.lastUndefined = v ? v.name : null; // diagnostic for hosts (BASIC does not name the variable)
     throw err('FACERR');
   }
   arrMissing(a) {

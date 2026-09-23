@@ -120,6 +120,7 @@ export class MenuManager {
     for (const it of menu.items) {
       let t = String(val(it.text, it) ?? '');
       let tw = textWidth(t, font);
+      if (it.spriteW) tw = Math.max(tw, it.spriteW + 6);   // sprite items: width hint (px)
       if (it.key) tw += textWidth(String(it.key), font) + 16;
       if (it.writable) tw = Math.max(tw, textWidth('W'.repeat(Math.min(it.writable.maxLen ?? 10, 20)), font) * 0.8);
       w = Math.max(w, tw);
@@ -236,6 +237,12 @@ export class MenuManager {
         if (lv.writeIndex == null) lv.writeIndex = (it.writable.value ?? '').length;
       } else {
         tb.textContent = text;
+        if (it.sprite) {   // sprite menu item (e.g. Draw's line patterns): sprite name or SpriteInfo, from it.spriteArea or the Wimp pool
+          const im = sprites.img(it.sprite, { area: it.spriteArea });
+          im.style.position = 'absolute'; im.style.left = '3px'; im.style.top = Math.round((ITEM_H - (im._sprite?.cssH ?? 0)) / 2) + 'px';
+          im.style.imageRendering = 'pixelated';
+          tb.appendChild(im);
+        }
       }
       if (it.key) {
         const k = el('div', 'mkey', tb);

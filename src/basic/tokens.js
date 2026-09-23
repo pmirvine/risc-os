@@ -586,3 +586,68 @@ export function listLine(num, body, listo = 0, indent = 0) {
 export function programToText(lines, listo = 0) {
   return listProgram(lines, listo).join('\n') + '\n';
 }
+
+// ---------------------------------------------------------------------------
+// CRUNCH (CRUNCHROUTINE in Expr): bit 0 spaces before statements, bit 1 spaces in statements,
+// bit 2 REMs (except on the first line), bit 3 empty statements, bit 4 empty lines.
+// ---------------------------------------------------------------------------
+const lvWord = (c) => (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A) || (c >= 0x5F && c <= 0x7A);
+
+export function crunch(lines, flags) {
+  const out = [];
+  let first = true;
+  for (const line of lines) {
+    const b = Array.from(line.body); b.push(13);
+    const d = [];
+    let i = 0;
+    let c;
+    const endStmt2 = () => { d.push(c); return c !== 13; };
+    const endStmt = () => { if ((flags & 8) && d[d.length - 1] === 0x3A) d.pop(); return endStmt2(); };
+    stmt: for (;;) {
+      // CRUNCHSTART
+      c = b[i++];
+      while (c === 32) { if (!(flags & 1)) d.push(c); c = b[i++]; }
+      if (c === 0x2A || c === T.DATA) { // copy the rest of the line
+        while (c !== 13) { d.push(c); c = b[i++]; }
+        endStmt2(); break;
+      }
+      for (;;) {
+        // CRUNCHITEMS
+        if (c === 32) {
+          if (!(flags & 2)) { d.push(c); c = b[i++]; continue; }
+          do c = b[i++]; while (c === 32);
+          const p = d[d.length - 1];
+          let panic = false;
+          if (p === 0x22 && c === 0x22) panic = true;
+          else if (p === 0x24 || p === 0x25 || p === T.RND) panic = c === 0x28 || c === 0x21 || c === 0x3F;
+          else if (p === T.EOR || p === T.AND) panic = lvWord(c);
+          else if ((c === 0x21 || c === 0x3F) && p === 0x29) panic = true;
+          else if (lvWord(p) || p === 0x2E) panic = lvWord(c) || c === 0x2E || c === 0x24 || c === 0x28 || c === 0x21 || c === 0x3F;
+          if (panic) d.push(32);
+        }
+        // CRUNCHNOTSPACE
+        if (c === T.REM) {
+          if (first || !(flags & 4)) { while (c !== 13) { d.push(c); c = b[i++]; } endStmt2(); break stmt; }
+          while (c !== 13) c = b[i++];
+          endStmt(); break stmt;
+        }
+        if (c === 0x22) {
+          d.push(c); c = b[i++];
+          while (c !== 0x22 && c !== 13) { d.push(c); c = b[i++]; }
+          if (c === 13) { endStmt2(); break stmt; }
+          d.push(c); c = b[i++]; continue;
+        }
+        if (c === 0x3A || c === T.ELSE || c === T.THEN || c === 13) {
+          if (endStmt()) continue stmt;
+          break stmt;
+        }
+        d.push(c); c = b[i++];
+      }
+    }
+    first = false;
+    d.pop(); // CR
+    if ((flags & 16) && d.length === 0) continue;
+    out.push({ num: line.num, body: Uint8Array.from(d) });
+  }
+  return out;
+}

@@ -43,7 +43,7 @@ await shot(base, 'tests/screens/basic-banner.png', async () => {
   await page.keyboard.type('LIST\n');
 });
 for (const p of progs) {
-  await shot(base + '?run=' + p, `tests/screens/basic-${p.replace(/\.bas$/, '')}.png`, async () => {
+  await shot(base + '?speed=0&run=' + p, `tests/screens/basic-${p.replace(/\.bas$/, '')}.png`, async () => {
     await page.waitForFunction(() => !window.basic.busy, null, { timeout: 60000 }).catch(() => {});
   });
 }

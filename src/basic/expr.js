@@ -908,10 +908,10 @@ export class Parser {
     const t = v.t;
     return {
       kind: 'var', t, v,
-      read: () => ({ t, f: () => { if (v.d) return v.v; return I.undefVar(t); } }),
+      read: () => ({ t, f: () => { if (v.d) return v.v; return I.undefVar(t, v); } }),
       // used when passing as an argument: value read at call time
-      readNoCheckNode: () => ({ t, f: () => { if (v.d) return v.v; return I.undefVar(t); } }),
-      get: () => { if (v.d) return v.v; return I.undefVar(t); },
+      readNoCheckNode: () => ({ t, f: () => { if (v.d) return v.v; return I.undefVar(t, v); } }),
+      get: () => { if (v.d) return v.v; return I.undefVar(t, v); },
       setter: (val) => () => { const x = val(); if (!v.d) { v.d = true; I.fsa += v.size; } v.v = x; },
       ref: () => ({ t, get: () => { if (!v.d) { v.v = t === TS ? '' : 0; v.d = true; } return v.v; }, set: (x) => { v.v = x; v.d = true; }, v }),
       exists: () => v.d,

@@ -379,7 +379,7 @@ export class Wimp extends Emitter {
     this._ptr = name;
     const s = sprites.get(name || 'ptr_default');
     if (s) {
-      const hot = { ptr_write: [Math.round(s.w / 2), Math.round(s.h / 2)], ptr_double: [1, 1], ptr_default: [1, 1] }[name || 'ptr_default'] ?? [1, 1];
+      const hot = s.hot ?? { ptr_write: [Math.round(s.w / 2), Math.round(s.h / 2)], ptr_double: [1, 1], ptr_default: [1, 1] }[name || 'ptr_default'] ?? [1, 1];
       this.screen.style.cursor = `url("${s.url}") ${hot[0]} ${hot[1]}, auto`;
     } else this.screen.style.cursor = '';
   }
@@ -683,6 +683,28 @@ export class Wimp extends Emitter {
     }
   }
 
+  /**
+   * Wimp_ProcessKey: deliver a key code (as if typed) to the input focus owner (writable icon
+   * editing first, then the window's 'key' handler, then hot-key windows). Returns true if used.
+   */
+  processKey(code, char = code >= 32 && code < 256 && code !== 127 ? String.fromCharCode(code) : '') {
+    const k = { code, char };
+    const c = this.caret;
+    let handled = false;
+    if (c?.window?.isOpen) {
+      if (c.icon && c.icon.writable) handled = this._editKey(c, k, null);
+      if (!handled) {
+        const ev = c.window.emit('key', { code, char, key: char, shift: false, ctrl: false, alt: false, icon: c.icon, window: c.window });
+        handled = ev.handled || ev.defaultPrevented;
+      }
+    }
+    for (let i = this.stack.length - 1; i >= 0 && !handled; i--) {
+      const w = this.stack[i];
+      if (w.hasFlag(1 << 12) && w !== c?.window) { const ev = w.emit('hotkey', { code, char, key: char }); handled = ev.handled || ev.defaultPrevented; }
+    }
+    return handled;
+  }
+
   _paste(e) {
     const c = this.caret;
     const text = e.clipboardData?.getData('text');
@@ -729,7 +751,7 @@ export class Wimp extends Emitter {
       default:
         if (k.char && k.code >= 32 && k.code !== 127 && !e?.ctrlKey && !e?.metaKey) {
           const A = ic.v.A?.[0];
-          if (A != null && !allowedChar(A, k.char)) return true;
+          if (A != null && !allowedChar(A, k.char)) return false;   // not allowed: passed on to the task (Key_Pressed), as the Wimp does
           if (t.length >= ic.maxLen) { this.beep(); return true; }
           set(t.slice(0, i) + k.char + t.slice(i), i + 1);
           return true;
@@ -739,11 +761,13 @@ export class Wimp extends Emitter {
   }
 
   beep() {
+    const gain = this.config.beepGain ?? 0.08;     // *Configure Volume / loud-quiet beep / speaker (config.js)
+    if (!gain) return;
     try {
       const ac = this._ac ??= new (window.AudioContext || window.webkitAudioContext)();
       const o = ac.createOscillator(), g = ac.createGain();
       o.type = 'square'; o.frequency.value = 880;
-      g.gain.setValueAtTime(0.08, ac.currentTime);
+      g.gain.setValueAtTime(gain, ac.currentTime);
       g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
       o.connect(g).connect(ac.destination);
       o.start(); o.stop(ac.currentTime + 0.25);

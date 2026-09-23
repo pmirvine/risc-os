@@ -6,8 +6,9 @@ export const fonts = {
   family: '"Homerton", Helvetica, Arial, sans-serif',
   size: 15,
   system: false,          // true => use the system font
+  weight: '', style: '',  // desktop font weight/style ('700', 'italic') when not Homerton.Medium
   get css() {
-    return this.system ? `16px "RISCOS System Fixed", "RISCOS System", monospace` : `${this.size}px ${this.family}`;
+    return this.system ? `16px "RISCOS System Fixed", "RISCOS System", monospace` : `${this.style ? this.style + ' ' : ''}${this.weight ? this.weight + ' ' : ''}${this.size}px ${this.family}`;
   },
   /** CSS font for a RISC OS font name + point size (e.g. 'Homerton.Medium', 24). */
   cssFor(name = 'Homerton.Medium', pt = 12) {

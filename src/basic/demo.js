@@ -19,6 +19,7 @@ function boot() {
     onExit: () => { status.textContent = 'BASIC exited (QUIT) — press Reset to restart'; },
   });
   window.basic = machine; // handy for debugging / Playwright
+  machine.opsPerSecond = +(params.get('speed') ?? document.getElementById('speed').value);
   const prog = params.get('run');
   (async () => {
     if (prog) {
@@ -117,6 +118,7 @@ async function typeInto(label, bytes) {
   for (const ch of `LOAD "${name}"\r`) machine.keyPress(ch.charCodeAt(0));
   for (const ch of 'RUN\r') machine.keyPress(ch.charCodeAt(0));
 }
+document.getElementById('speed').addEventListener('change', (e) => { machine.opsPerSecond = +e.target.value; canvas.focus(); });
 document.getElementById('esc').addEventListener('click', () => { machine.escape(); canvas.focus(); });
 document.getElementById('reset').addEventListener('click', () => { machine.escape(); machine.exited = true; setTimeout(() => { boot(); canvas.focus(); }, 50); });
 document.getElementById('file').addEventListener('change', async (e) => {

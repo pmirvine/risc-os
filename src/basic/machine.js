@@ -16,6 +16,7 @@ import { BasicError, err } from './errors.js';
 import {
   T, TC, tokenise, tokeniseProgramLine, parseProgram, buildProgram, textToLines, renumber as renumberLines,
   listProgram, programToText, listLine, computeIndent, insertLine, decodeLineNumber, encodeLineNumber,
+  crunch as crunchLines,
 } from './tokens.js';
 import { formatNumber } from './numfmt.js';
 import { TI, TF, TS } from './expr.js';
@@ -88,11 +89,16 @@ export class BasicMachine {
     this.interp.asm = this.asm;
     this.arm = null;
     this.sliceMs = o.sliceMs ?? 12;
+    // optional speed limit in BASIC micro-ops per second (0 = as fast as possible). Roughly:
+    // ARM2 A3000 ~ 150000, ARM3 ~ 400000, ARM710 RiscPC/A7000 ~ 1500000, StrongARM ~ 6000000
+    this.opsPerSecond = o.opsPerSecond ?? 0;
+    this.allowance = 0; this.allowT = 0;
     // keyboard
     this.keybuf = [];
     this.keyWaiters = [];
     this.keysDown = new Set();
     this.fx4 = 0;           // cursor key mode
+    this.keyDefs = new Map(); // *KEY definitions
     this.escapeEnabled = true;
     this.escapeChar = 27;
     // mouse (OS units)
@@ -187,6 +193,9 @@ export class BasicMachine {
   /** A character key was typed (RISC OS key code 0-255) */
   keyPress(code) {
     if (code === this.escapeChar && this.escapeEnabled) { this.escape(); return; }
+    // *KEY expansion for F0-F9 (&80-&89) and F10-F12 (&CA-&CC)
+    const fk = code >= 0x80 && code <= 0x89 ? code - 0x80 : code >= 0xCA && code <= 0xCC ? code - 0xC0 : -1;
+    if (fk >= 0 && this.keyDefs.has(fk)) { for (const ch of this.keyDefs.get(fk)) this.keyPress(ch.charCodeAt(0)); return; }
     if (this.fx4 === 0 && code >= 0x87 && code <= 0x8B) {
       // copy-key editing (cursor keys move the edit cursor, Copy copies a character)
       if (!this.vdu.cursorEdit) return;
@@ -209,6 +218,7 @@ export class BasicMachine {
     this.interp.escape = true;
     this.keybuf.length = 0;
     const ws = this.keyWaiters.splice(0);
+    if (ws.length) this.interp.escape = false; // consumed by the interrupted key wait
     for (const w of ws) w.reject(err('ESCAPE'));
   }
   ackEscape() { this.interp.escape = false; }
@@ -705,6 +715,7 @@ export class BasicMachine {
           continue;
         }
         if (r === 'yield') { await yieldHost(); continue; }
+        if (r === 'throttle') { await new Promise((res) => setTimeout(res, 4)); continue; }
         if (r && typeof r.then === 'function') {
           try { await r; } catch (e) { if (!I.handleError(e)) break; }
         }
@@ -724,8 +735,28 @@ export class BasicMachine {
   }
   slice() {
     const I = this.interp;
-    const end = nowMs() + this.sliceMs;
+    const start = nowMs();
+    const end = start + this.sliceMs;
     let n = 0;
+    if (this.opsPerSecond > 0) {
+      // token bucket: at most opsPerSecond micro-ops, bursts of up to 40ms worth
+      const lim = this.opsPerSecond;
+      if (!this.allowT) this.allowT = start;
+      this.allowance = Math.min(this.allowance + (start - this.allowT) * lim / 1000, lim / 25);
+      this.allowT = start;
+      if (this.allowance < 64) return 'throttle';
+      const budget = Math.floor(this.allowance);
+      try {
+        for (;;) {
+          const r = I.ops[I.pc++]();
+          n++;
+          if (r !== undefined && r !== null && typeof r.then === 'function') return r;
+          if (!I.running) return undefined;
+          if (n >= budget) return 'throttle';
+          if ((n & 2047) === 0 && nowMs() >= end) return 'yield';
+        }
+      } finally { this.allowance -= n; }
+    }
     for (;;) {
       const r = I.ops[I.pc++]();
       if (r !== undefined && r !== null && typeof r.then === 'function') return r;
@@ -797,7 +828,7 @@ export class BasicMachine {
         I.clearVars();
         return;
       }
-      case TC.CRUNCH: return;
+      case TC.CRUNCH: { const n = this.evalInt(text); I.setProgramLines(crunchLines(I.lines.map((l) => ({ num: l.num, body: l.body })), n)); I.clearVars(); return; }
       case TC.LVAR: return this.cmdLvar();
       case TC.HELP: return this.cmdHelp(text);
       case TC.EDIT: case TC.TWIN: case TC.TWINO: {
@@ -1086,13 +1117,38 @@ export class BasicMachine {
       case 'TIME': this.writeStr(this.timeString()); this.newLine(); return;
       case 'QUIT': this.interp.quit(0); return;
       case 'BASIC': return;
-      case 'KEY': return;
+      case 'KEY': {
+        const mk = /^(\d+)\s*(.*)$/s.exec(rest);
+        if (!mk) throw new BasicError(0xFE, 'Bad key');
+        const n = +mk[1]; let v = mk[2];
+        if (v.startsWith('"') && v.endsWith('"') && v.length > 1) v = v.slice(1, -1);
+        this.keyDefs.set(n, this.gstrans(v));
+        return;
+      }
+      case 'EXEC': {
+        if (!rest) return;
+        const f = await this.readFileBytes(args()[0]);
+        for (const c of f.data) this.keyPress(c === 10 ? 13 : c);
+        return;
+      }
       case 'WIMPSLOT': return;
       case 'POINTER': return;
       case 'TV': return;
       case 'CLOSE': return this.files.close(0);
-      case 'SPOOL': this.spool = null; return;
-      case 'SPOOLON': return;
+      case 'SPOOL': case 'SPOOLON': {
+        if (this.spool && this.spoolName && this.fs && this.fs.writeFile) {
+          const data = Uint8Array.from(this.spool);
+          const prev = un === 'SPOOLON' ? null : null; void prev;
+          await this.fs.writeFile(this.spoolName, data, 0xFFF);
+        }
+        this.spool = null; this.spoolName = null;
+        if (rest) {
+          this.spoolName = this.gstrans(args()[0]);
+          this.spool = [];
+          if (un === 'SPOOLON' && this.fs && this.fs.readFile) { const f = await this.fs.readFile(this.spoolName); if (f) this.spool = Array.from(f.data); }
+        }
+        return;
+      }
       case 'HELP': this.writeStr('==> Help on keyword ' + (rest || 'HELP')); this.newLine(); return;
       case 'WIMPMODE': case 'SCREENMODE': case 'MODE': {
         const n = parseInt(rest, 10);

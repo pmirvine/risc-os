@@ -100,7 +100,7 @@ function showNext() {
   const shield = document.createElement('div');
   shield.className = 'modal-shield';
   wimp.layers.modal.insertBefore(shield, w.el);
-  if (!(opts.noBeep)) wimp.beep();
+  if (!(opts.noBeep) && wimp.config.errorBeep !== false) wimp.beep();
   const prevModal = wimp.modal;
   const finish = (icon) => {
     icon?.setState({ selected: true });

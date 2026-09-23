@@ -4,4 +4,6 @@ import './tokens.test.mjs';
 import './lang.test.mjs';
 import './asm.test.mjs';
 import './graphics.test.mjs';
+import './files.test.mjs';
+import './machine.test.mjs';
 import './vdu.test.mjs';

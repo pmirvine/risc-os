@@ -46,6 +46,8 @@ export class IconBar {
     it.task = spec.task ?? this.wimp.systemTask;
     const f = IF.sprite | IF.hcentre | (it.text != null ? IF.text | IF.indirected : 0) | (7 << 24) | (1 << 28) | (3 << 12);
     it.icon = this.window.addIcon({ bbox: { x0: 0, y0: 0, x1: 10, y1: 10 }, flags: f >>> 0, text: it.text, sprite: it.sprite, validation: it.text != null ? 'S' + it.sprite : undefined, bufLen: 64, area: it.area });
+    // raw icon (Wimp_CreateIcon style, e.g. MemNow's bordered text icon): {flags, validation, w, h}
+    if (it.raw) { it.icon.flags = it.raw.flags >>> 0; it.icon.setValidation(it.raw.validation ?? ''); }
     it.icon.el.classList.add('ibicon');
     it.icon._ib = it;
     this.items.push(it);
@@ -70,6 +72,7 @@ export class IconBar {
   }
 
   _size(it) {
+    if (it.raw) return { w: it.raw.w, top: BASE + 4 - it.raw.h, bottom: BASE + 4 };
     const s = it.area?.get?.(String(it.sprite).toLowerCase()) ?? sprites.get(it.sprite);
     const sw = s ? s.cssW : 34, sh = s ? s.cssH : 34;
     if (it.text != null) {
