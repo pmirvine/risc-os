@@ -307,6 +307,11 @@ export class EditView {
         }
         x += w;
       }
+      // a selected newline shows as one highlighted space at the end of the line
+      if (sel && !row.wrap && row.e < t.length && row.e >= sel.start && row.e < sel.end && x <= rect.x1) {
+        g.fillStyle = fg;
+        g.fillRect(Math.floor(x), y, Math.ceil(this.cwidth(32)), lh);
+      }
     }
   }
 
@@ -359,12 +364,13 @@ export class EditView {
   }
 
   // ------------------------------------------------------------------ caret & scrolling
-  setCaret(i, { keepWant = false, scroll = true } = {}) {
+  /** Move the caret (txt_setdot). The input focus is only taken with {take: true}. */
+  setCaret(i, { keepWant = false, scroll = true, take = false } = {}) {
     this.caret = Math.max(0, Math.min(i, this.doc.length));
     this.vpad = 0;
     if (!keepWant) this.wantX = null;
     if (scroll) this.ensureVisible(this.caret);
-    this.showCaret();
+    this.showCaret(take);
   }
   ensureVisible(i) {
     const w = this.win;
@@ -440,10 +446,11 @@ export class EditView {
       this.selType = 'char';
       this.selectRecent = true;
       this.pivot = at;
-      if (ev.ctrl) { this.selectRecent = false; setSelection(this.doc, at, at + 1); if (!this.hasFocus) this.showCaret(); }
-      else this.setCaret(at, { scroll: false });
+      if (ev.ctrl) { this.selectRecent = false; setSelection(this.doc, at, at + 1); if (!this.hasFocus) this.showCaret(true); }
+      else this.setCaret(at, { scroll: false, take: true });
     } else if (ev.button === 'adjust') {
       this.adjustTo(at);
+      if (!this.hasFocus) this.showCaret(true);
     }
     return true;
   }
@@ -656,8 +663,7 @@ export class EditView {
     if (!scrap.doc || this.ro) return false;
     const s = scrap.doc.slice(scrap.start, scrap.end);
     const at = this.caret;
-    this.doc.insert(at, s);
-    setSelection(this.doc, at, at + s.length);
+    this.doc.insert(at, s);            // a copy leaves the selection where it was (txtmisc)
     this.setCaret(at + s.length);
     return true;
   }
@@ -666,7 +672,7 @@ export class EditView {
     const src = scrap.doc, a = scrap.start, b = scrap.end;
     const s = src.slice(a, b);
     let at = this.caret;
-    if (src === this.doc && at > a && at < b) return false;
+    if (src === this.doc && at >= a && at < b) { this.setCaret(b); return false; }
     src.delete(a, b - a);
     if (src === this.doc && at >= b) at -= (b - a);
     this.doc.insert(at, s);

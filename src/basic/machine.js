@@ -546,12 +546,23 @@ export class BasicMachine {
       case 4: r[1] = this.fx4; this.fx4 = x; return;
       case 15: case 21: this.keybuf.length = 0; return;
       case 19: return this.waitVsync();
+      case 9: case 10: {
+        // flash periods (mark / space) in 1/50s
+        const v = this.vdu;
+        if (v.setFlashPeriods) { const cur = [v.flashMark, v.flashSpace]; r[1] = a === 9 ? cur[1] : cur[0]; if (a === 9) v.setFlashPeriods(cur[0], x || 25); else v.setFlashPeriods(x || 25, cur[1]); }
+        return;
+      }
+      case 20: case 25: if (this.vdu.resetFont) this.vdu.resetFont(a === 20 ? 0 : x); return;
       case 106: this.mouseOn(x); return;
+      case 112: if (this.vdu.setDriverBank) this.vdu.setDriverBank(x); return;
+      case 113: if (this.vdu.setDisplayBank) this.vdu.setDisplayBank(x); return;
+      case 163: if (x === 242 && this.vdu.setDotPatternLength) this.vdu.setDotPatternLength(y); return;
+      case 251: r[1] = 0; return; // bank being displayed (approximation)
       case 117: r[1] = this.vdu.vduStatus ? this.vdu.vduStatus() : 0; return;
       case 124: this.interp.escape = false; return;
       case 125: this.escape(); return;
       case 126: { const e = this.interp.escape; this.interp.escape = false; r[1] = e ? 255 : 0; return; }
-      case 128: { const v = this.adval((x << 24) >> 24 === x - 256 && x > 127 ? x - 256 : x); r[1] = v & 255; r[2] = (v >> 8) & 255; return; }
+      case 128: { const v = this.adval(x > 127 ? x - 256 : x); r[1] = v & 255; r[2] = (v >> 8) & 255; return; }
       case 129: {
         const n = x | (y << 8);
         if (y === 0xFF) {
@@ -575,7 +586,8 @@ export class BasicMachine {
       case 161: r[2] = 0; return;
       case 162: return;
       case 165: r[1] = this.pos(); r[2] = this.vpos(); return;
-      case 200: case 220: case 221: case 222: case 223: case 224: case 225: case 226: case 227: case 228:
+      case 200: r[1] = this.fx200 | 0; this.fx200 = x; this.escapeEnabled = !(x & 1); return;
+      case 220: case 221: case 222: case 223: case 224: case 225: case 226: case 227: case 228:
         return;
       case 202: r[1] = 0x20; return;
       case 218: r[1] = this.vdu.queueLength ?? 0; return;

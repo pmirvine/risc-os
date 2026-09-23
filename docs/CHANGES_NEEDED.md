@@ -33,3 +33,11 @@ Both additive / backwards compatible:
 * `src/core/wimp.js` `setPointer`: a SpriteInfo may carry `hot: [x, y]` (CSS px) for its active point; used by
   Draw's crosshair pointer (active point 8,4 in the mode-12 sprite).
 Please document in CORE_API.md §5 / §11.
+
+## Menu owner / ctx survive opening — EDIT agent
+`src/core/menu.js` `MenuManager.close()`: the top-level teardown (owner reset, `ctx.onClose()`, `MenusDeleted`,
+caret restore) now only runs if a menu level was actually closed. Before, `open()` set `owner`/`ctx`/`_savedCaret`
+and then `_openLevel(0)` → `close(0)` immediately wiped them, so `wimp.menus.owner`/`ctx` were always null while a
+menu was open (MenusDeleted never sent, `onClose`/`onSelect` from `open()` opts fired at once or never, caret not
+restored after menu dialogue boxes). Bug fix, no API change. (!Help needs `wimp.menus.owner` to give help on the
+Filer / Task Manager / Pinboard / device menus.)

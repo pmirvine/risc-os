@@ -52,7 +52,7 @@ export default async (page) => {
   await page.waitForTimeout(2500);
   if (mode === 'overview') return;
   // click slide 6 (sa05) -> parameter box
-  await clickWork(page, 'Overview', 136 + 70, 136 + 70);
+  await clickWork(page, 'Overview', 3 * 136 + 70, 136 + 70);
   await page.waitForTimeout(600);
   if (mode === 'params') return;
   if (mode === 'orient') {

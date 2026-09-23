@@ -94,12 +94,15 @@ export class MenuManager {
 
   close(fromLevel = 0) {
     const caretInMenu = this.levels.some((l) => l.win === this.wimp.caret?.window);
+    // (EDIT agent) only tear the tree down if something was open: _openLevel(0) calls close(0)
+    // right after open() has set the new owner/ctx, which must survive.
+    const hadLevels = this.levels.length > fromLevel;
     while (this.levels.length > fromLevel) {
       const lv = this.levels.pop();
       if (lv.isDbox) { lv.win._menuDbox = false; lv.win.close(); lv.win.emit('menuclosed', {}); }
       else lv.win.delete();
     }
-    if (fromLevel === 0 && this.owner !== undefined) {
+    if (fromLevel === 0 && hadLevels) {
       const owner = this.owner;
       this.owner = null;
       if (this.ctx?.onClose) this.ctx.onClose();

@@ -454,7 +454,9 @@ export function loadSystemFont() {
 /** Font info for a RISC OS font name (case-insensitive), or null if the font is not available. */
 export function fontInfo(name) {
   if (!FONTINFO || !name) return null;
-  const l = name.toLowerCase();
+  // RISC OS 3.5+ font strings: "\FTrinity.Medium\ELatin1" (font, encoding, matrix ... identifiers)
+  const m = /\\F([^\\]*)/.exec(name);
+  const l = (m ? m[1] : name.split('\\')[0]).trim().toLowerCase();
   return FONTINFO.fonts[l] ?? null;
 }
 /** List of available RISC OS font names (for font menus). */
@@ -905,6 +907,17 @@ function renderTextArea(ctx, o, view) {
       lineItems = []; lineW = 0;
       return true;
     };
+    // split words too long for a line (DrawTextC breaks them mid-word)
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.br || it.space) continue;
+      const avail = col.x1 - col.x0 - (p.st.ml + p.st.mr) * PT;
+      const w = runsOf(it).reduce((s, r) => s + widthOf(r.text, r.st), 0);
+      if (w <= avail || it.chars.length < 2) continue;
+      let n = 1;
+      while (n < it.chars.length && runsOf({ chars: it.chars.slice(0, n + 1) }).reduce((s, r) => s + widthOf(r.text, r.st), 0) <= avail) n++;
+      items.splice(i, 1, { space: false, chars: it.chars.slice(0, n) }, { br: true }, { space: false, chars: it.chars.slice(n) });
+    }
     for (const it of items) {
       if (it.br) { if (!flush(true)) break outer; continue; }
       const runs = runsOf(it);

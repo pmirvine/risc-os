@@ -18,6 +18,22 @@ export default {
       run: async (argv) => { const { os } = await import('../../core/os.js'); await os.apps.start('Draw', (argv ?? []).join(' ')); },
     },
   },
-  open(task, path) { task.emit('dataopen', { path }); },
+  // Filer_Boot: let !Printers print Drawfiles even when Draw isn't running
+  boot(os) {
+    const render = async (bytes) => {
+      const DF = await import('./drawfile.js');
+      const doc = DF.parseDrawfile(bytes);
+      await DF.prepareDrawfile(doc);
+      const bb = DF.docBBox(doc), scale = 2, k = scale / 512;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.max(1, Math.ceil((bb.x1 - bb.x0) * k)); canvas.height = Math.max(1, Math.ceil((bb.y1 - bb.y0) * k));
+      const g = canvas.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, canvas.width, canvas.height);
+      DF.renderDrawfile(g, doc, { scale });
+      return { canvas };
+    };
+    (os.printerRenderers ??= []).push([0xAFF, render]);
+    os.printers?.registerRenderer?.(0xAFF, render);
+  },
   load: () => import('./main.js'),
 };

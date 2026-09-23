@@ -160,7 +160,7 @@ export default async function start(task, ctx) {
       const x = (i % cols) * XOFF, y = Math.floor(i / cols) * XOFF;
       s.frame.moveTo({ x0: x + XSTART, y0: y + XSTART, x1: x + XOFF, y1: y + XOFF });
       s.slot.moveTo(slotBox(s, x, y));
-      s.label.moveTo({ x0: x + LABEL.x0, y0: y + LABEL.y0, x1: x + LABEL.x1, y1: y + LABEL.y1 });
+      s.label.moveTo({ x0: x + LABEL.x0, y0: y + LABEL.y0, x1: x + XOFF - 4, y1: y + LABEL.y1 });   // (wider than the template's: leafnames, not numbers)
       if (s.canvas) placeThumb(s);
     });
   }

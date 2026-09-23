@@ -19,10 +19,21 @@ const PANE_DX = 24, PANE_DY = 2;      // RGB model pane origin in the Picker win
 // main window icons
 const I_PATCH = 0, I_RGB = 1, I_NONE = 2, I_CMYK = 5, I_HSV = 6, I_CANCEL = 8, I_OK = 9;
 
-export async function colourPicker({ task, title, colour, allowTransparent = true, onChoose }) {
-  const [main, rgb] = await Promise.all([loadTemplates('assets/templates/Picker.json'), loadTemplates('assets/templates/Picker-RGB.json')]);
+let T = null;
+/** Load the ColourPicker templates and sprites (call once before colourPicker). */
+export async function preloadPicker() {
+  if (T) return T;
+  const [main, rgb, spr] = await Promise.all([loadTemplates('assets/templates/Picker.json'), loadTemplates('assets/templates/Picker-RGB.json'), sprites.loadManifest('Picker', 'Sprites')]);
+  T = { main, rgb, spr };
+  return T;
+}
+
+/** Create the picker dialogue (synchronous: usable directly as a submenu). */
+export function colourPicker({ task, title, colour, allowTransparent = true, onChoose }) {
+  if (!T) throw new Error('ColourPicker not loaded');
+  const { main, rgb } = T;
   const w = wimp.createWindowFromTemplate(main, 'picker', { title }, task);
-  const crosshatch = (await sprites.loadManifest('Picker', 'Sprites')).get('crosshatch');
+  const crosshatch = T.spr.get('crosshatch');
   // add the RGB model's icons, translated into place
   const rw = rgb.windows.rgb;
   const map = {};
