@@ -7,15 +7,15 @@
 // the background under the frog and the snake and puts it back, and uses a second 320 x 256 sprite as a back
 // buffer for the title / attract screens, which the PsychoEffect module fades in and out row by row. This port
 // keeps that model: `screen` and `second` are 8-bit buffers in the default 256-colour palette, the graphics
-// come from the app's sprite file (<Hopper$Dir>.Sprites, the pre-shifted frames as sprites <name>_<1-4>) laid
-// out again as the data files were, and the drawing code works in the same word addresses. Text is painted in
+// are the original data files (<Hopper$Dir>.Graphics.*, loaded by main.js as data_load does), and the drawing code
+// works in the same word addresses. Text is painted in
 // Trinity.Bold.Italic (45 x 19 point, anti-aliased against black, like ColourTrans + Font_Paint) and matched to
 // the palette. The blocking loops of the C code are async loops that wait for the next frame ("VSync").
 //
 // Timing is the original's: the clock is OS_ReadMonotonicTime x 8 (800 ticks a second); objects move one
 // pixel every `speed` ticks, the frog's hop takes four 2.5 cs steps, the time bar counts 400 x 5 cs.
 
-import { VIDC256 } from './palette.js';
+import { VIDC256 } from '../../core/spritefile.js';
 
 export const W = 320, H = 256;
 const BLACK = 0, RED = 1, GREEN = 2, YELLOW = 3, BLUE = 4, MAGENTA = 5, CYAN = 6, WHITE = 7;   // eslint-disable-line no-unused-vars
@@ -79,9 +79,9 @@ export class Hopper {
     this.screen = new Uint8Array(W * H);
     this.second = new Uint8Array(W * H);
     this.out = this.screen;               // VDU / font output (gfx_to_sprite / gfx_to_screen)
-    this.ctx = env.canvas.getContext('2d');
-    this.img = this.ctx.createImageData(W, H);
-    this.seed = 0;
+    this.ctx = null;
+    this.img = null;
+    this.seed = 0;                        // sync.c: int seed (never seeded, so every run starts the same sequence)
     this.tickcount = 0;
     this.gcol = 0;                        // graphics foreground (pixel byte)
     this.textFg = gcolByte(7);            // text colours for VDU 4 characters
@@ -106,7 +106,10 @@ export class Hopper {
   async wait(t) { const timer = this.setTimer(); do { await this.frame(); this.readTimer(); } while (this.passed(timer) < t); }
 
   // ------------------------------------------------------------------ display
+  /** The screen the game draws on (a 320 x 256 canvas: MODE 13). */
+  attach(canvas) { this.ctx = canvas.getContext('2d'); this.img = this.ctx.createImageData(W, H); }
   present() {
+    if (!this.ctx) return;
     const d = this.img.data, s = this.screen;
     for (let i = 0, j = 0; i < s.length; i++, j += 4) { const c = RGB[s[i]]; d[j] = c[0]; d[j + 1] = c[1]; d[j + 2] = c[2]; d[j + 3] = 255; }
     this.ctx.putImageData(this.img, 0, 0);
@@ -413,18 +416,19 @@ export class Hopper {
       for (let k = 0; k < row.num; k++) row.sprites.push({ x: d[pos++], y: 44 + l * 20, spr: l === 0 || l === 2 ? 0 : 1 });
       this.water.push(row);
     }
+    // dir[] is a global that keeps its values between levels and games (int dir[3] = { -1, 1, 0 })
     const S = this.state;
-    S.dir = [-1, 1, 0];
+    S.dir ??= [-1, 1, 0];
     if (level === 1) S.dir = [0, 0, 0];
     else if (level === 2) { S.dir[0] = -1; this.water[1].sprites[0].spr = 4; }
     else if (level < 6) { S.dir[0] = -1; S.dir[1] = 1; this.water[1].sprites[0].spr = 4; }
-    else { S.dir = [-1, 1, 1]; this.water[1].sprites[0].spr = 4; }
+    else { S.dir[0] = -1; S.dir[1] = 1; S.dir[2] = 1; this.water[1].sprites[0].spr = 4; }
     S.turtleSpeed = level > 8 ? [300, 250, 200] : level > 5 ? [350, 400, 350] : [500, 400, 350];
     S.submerge = S.submerge ?? [0, 0, 0];
     S.flyOk = 0;
     S.subTimer = [0, 1, 2].map(() => ({ v: this.setTimer() }));
-    S.plus = [0, 0, 0, 0];
-    S.flyPos = S.flyPos ?? 0;
+    S.plus ??= [0, 0, 0, 0];
+    S.flyPos ??= 0;
   }
   waterResetTimers() { for (const r of this.water) r.timer.v = this.setTimer(); for (const t of this.state.subTimer) t.v = this.setTimer(); }
   waterPrint() { for (const r of this.water) for (const s of r.sprites) this.showWater(s); }
@@ -934,7 +938,6 @@ export class Hopper {
 
   /** hopper_go: the title / attract loop, games, back to the desktop on Escape. */
   async go() {
-    this.seed = Date.now() % 65537;
     this.cls();
     this.readTimer();
     let state = 0, screenNo = 0, first = true;

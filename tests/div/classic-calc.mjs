@@ -48,7 +48,7 @@ export default async (page) => {
   await seq([16, 0, 13, 4, 11], '-4', '0-4=');
   await page.screenshot({ path: `${SHOT}/classic-calc-neg.png`, clip: { x: (W.x - 40) * scale, y: (W.y - 40) * scale, width: 240 * scale, height: 240 * scale } });
   // keyboard: click on the display for the input focus, then type 12*12 Enter; Delete clears
-  const dsp = await page.evaluate(() => { const r = os.apps.tasksOf('Calculator')[0].calc.win.icons[17].el.getBoundingClientRect(); return { x: r.x + 20, y: r.y + r.height / 2 }; });
+  const dsp = await page.evaluate(() => { const r = os.apps.tasksOf('Calculator')[0].calc.displayCanvas.getBoundingClientRect(); return { x: r.x + 20, y: r.y + r.height / 2 }; });
   await page.mouse.click(dsp.x, dsp.y);
   await page.keyboard.press('Delete');
   await page.keyboard.type('12*12');

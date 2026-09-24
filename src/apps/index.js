@@ -24,6 +24,7 @@ export default [
   './Flasher/helpapp.js',
   './FontPrint/app.js',
   './Help/app.js',
+  './Hopper/app.js',
   './InetSetup/app.js',
   './InetSetup/internet.js',
   './Lander/app.js',

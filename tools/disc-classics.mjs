@@ -8,8 +8,10 @@
 // Original resources come from tools/classics/ (see the LICENSE files there): !Madness from RISC OS Open's
 // Apps/Diversions/Madness (Apache 2.0), !Hopper from Apps/Diversions/Hopper (BSD 3-clause). !Calc's sprites
 // are the RISC OS 3 ROM's !calc / sm!calc pixel for pixel (they are still in the 3.71 Wimp sprite pool).
-// Sprite files are written with Paint's sprite file writer (src/apps/Paint/spritefile.js); Hopper's game
-// graphics are converted from its pre-shifted screen-format data files into one sprite file, "Sprites".
+// Sprite files are written with Paint's sprite file writer (src/apps/Paint/spritefile.js). !Hopper is installed
+// as its Makefile installs it (Resources + DataFiles: Graphics, Levels, Music, Sounds), with the build's _Version
+// appended to Messages; its !RunImage (C) is recreated in JavaScript. QTMTracker and PsychoEffect, which !Run
+// RMEnsures, are third-party modules that are not part of the source release; src/apps/Hopper stands in for them.
 //
 // Idempotent: it rewrites only these three application directories and their manifest entries.
 // Usage: node tools/disc-classics.mjs   (run by tools/build.mjs after basicwimp-demo.mjs)
@@ -73,41 +75,6 @@ const SMCALC12 = [
   '62262262266CC66', '666666666666666', '62262262266CC66', '.6666666666666.',
 ];
 
-// ---------------------------------------------------------------- Hopper graphics
-// The game's data files hold each object pre-shifted by 0-3 pixels (MODE 13, one byte per pixel, 4 pixels a word),
-// some with a mask (&FF = transparent) after the image. They become sprites <name>_<shift 1-4>.
-function hopperSprites() {
-  const out = [];
-  const add = (name, w, h, bytes, off, maskOff = -1) => {
-    const s = newSprite({ name, w, h, mode: 13, mask: maskOff >= 0 });
-    for (let i = 0; i < w * h; i++) {
-      s.px[i] = bytes[off + i];
-      if (maskOff >= 0) s.mask[i] = bytes[maskOff + i] === 0 ? 1 : 0;
-    }
-    out.push(s);
-  };
-  const g = (f) => src('Hopper', 'Graphics', f + ',ffd');
-  // frog: 13 frames x 4 shifts x (24x20 image + mask)
-  const frog = g('Frog');
-  const frames = ['up1', 'up2', 'up3', 'down1', 'down2', 'down3', 'left1', 'left2', 'left3', 'right1', 'right2', 'right3', 'dead'];
-  frames.forEach((f, n) => { for (let k = 0; k < 4; k++) { const o = (n * 960 + k * 240) * 4; add(`${f}_${k + 1}`, 24, 20, frog, o, o + 480); } });
-  const fly = g('Fly');
-  for (let k = 0; k < 4; k++) { const o = k * 800; add(`fly_${k + 1}`, 20, 20, fly, o, o + 400); }
-  const snake = g('Snake');
-  for (let k = 0; k < 4; k++) { const o = k * 768; add(`snake_${k + 1}`, 32, 12, snake, o, o + 384); }
-  const veh = g('Vehicles');
-  ['tractor', 'lorry', 'car', 'racing', 'sports', 'bull', 'empty'].forEach((v, n) => { for (let k = 0; k < 4; k++) add(`${v}_${k + 1}`, 40, 20, veh, (n * 4 + k) * 800); });
-  const water = g('Water');
-  ['log', 'turtles', 'sinking', 'nearly', 'sunk'].forEach((v, n) => { for (let k = 0; k < 4; k++) add(`${v}_${k + 1}`, 88, 20, water, (n * 4 + k) * 1760); });
-  const scen = g('Scenery');
-  ['at_home', 'home', 'river_bank', 'verge', 'pavement', 'croc_1', 'croc_2', 'screen_1', 'screen_2', 'screen_3']
-    .forEach((v, n) => add(v, 40, 24, scen, n * 960));
-  const num = g('Numbers');
-  for (let n = 0; n < 10; n++) add(`number_${n}`, 16, 10, num, n * 160);
-  add('title', 244, 42, g('Title'), 0);
-  return writeSpriteFile({ sprites: out });
-}
-
 // ---------------------------------------------------------------- tokenised BASIC
 const tokenise = (text) => Buffer.from(buildProgram(textToLines(text).lines));
 
@@ -144,12 +111,14 @@ const apps = [
       ['!Run', 'feb', src('Hopper', '!Run,feb')],
       ['!RunImage', 'ff8', null],          // C program: recreated in JavaScript (src/apps/Hopper)
       ['!Sprites', 'ff9', src('Hopper', '!Sprites,ff9')],
+      ['!Sprites11', 'ff9', src('Hopper', '!Sprites11,ff9')],
       ['!Sprites22', 'ff9', src('Hopper', '!Sprites22,ff9')],
       ['Keys', 'fff', src('Hopper', 'Keys')],
       ['LICENSE', 'fff', src('Hopper', 'LICENSE')],
-      ['Messages', 'fff', src('Hopper', 'Messages')],
-      ['Sprites', 'ff9', Buffer.from(hopperSprites())],
+      ['Messages', 'fff', Buffer.concat([src('Hopper', 'Messages'), latin1('_Version:1.05 (23 Dec 2014)\n')])],
       ['Templates', 'fec', src('Hopper', 'Templates,fec')],
+      ...['Fly', 'Frog', 'Letters', 'Numbers', 'Scenery', 'Snake', 'Title', 'Vehicles', 'Water']
+        .map((g) => [`Graphics/${g}`, 'ffd', src('Hopper', 'Graphics', g + ',ffd')]),
       ['Levels/Cars', 'ffd', src('Hopper', 'Levels', 'Cars,ffd')],
       ['Levels/Water', 'ffd', src('Hopper', 'Levels', 'Water,ffd')],
       ...['HiScore', 'InGame', 'Intro'].map((m) => [`Music/${m}`, 'cb6', src('Hopper', 'Music', m + ',cb6')]),

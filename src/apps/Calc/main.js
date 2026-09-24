@@ -21,6 +21,9 @@ import { loadTemplates } from '../../core/templates.js';
 
 const TEMPLATES = new URL('./Templates.json', import.meta.url).href;
 
+let sysfont = null;
+const systemFont = () => (sysfont ??= fetch('assets/fonts/system8x8.json').then((r) => r.json()).then((j) => j.chars).catch(() => null));
+
 // BBC BASIC V reals are 5 bytes: a 32-bit mantissa. Round a JS double to that precision.
 export function basicReal(x) {
   if (!x || !Number.isFinite(x)) return x;
@@ -99,11 +102,28 @@ const KEYS = { '.': 10, '=': 11, 13: 11, '+': 12, '-': 13, '*': 14, x: 14, X: 14
 
 export default async function start(task, ctx) {
   const info = ctx.app.info;
-  const tpl = await loadTemplates(TEMPLATES);
+  const [tpl, font] = await Promise.all([loadTemplates(TEMPLATES), systemFont()]);
   const calc = new Calculator();
   const win = task.createWindowFromTemplate(tpl, 'Calculator');
-  const disp = win.icons[17];
-  const show = () => disp.setText(calc.dreg);
+  // PROCcalc: SYS Col%,0: RECTANGLE FILL bx%+12,by%-28,10*16,-32 : SYS Col%,7: MOVE bx%+12+16*(10-LENdreg$),by%-28: PRINT dreg$
+  const disp = document.createElement('canvas');
+  disp.width = 80; disp.height = 16;
+  disp.className = 'calc-display';
+  disp.style.cssText = 'position:absolute;left:6px;top:14px;width:80px;height:16px;pointer-events:none;image-rendering:pixelated';
+  win.work.appendChild(disp);
+  const g = disp.getContext('2d');
+  let shown = '';
+  const show = () => {
+    shown = calc.dreg;
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, 80, 16);
+    g.fillStyle = '#000000';
+    let x = 8 * (10 - shown.length);
+    for (const ch of shown) {
+      const rows = font?.[ch.charCodeAt(0) & 255] ?? [];
+      for (let r = 0; r < 8; r++) for (let b = 0; b < 8; b++) if (rows[r] & (0x80 >> b)) g.fillRect(x + b, r, 1, 1);
+      x += 8;
+    }
+  };
   show();
 
   const pressIcon = (i) => { calc.press(i); show(); };
@@ -111,7 +131,7 @@ export default async function start(task, ctx) {
     if (ev.button === 'menu') return true;                       // no window menu in the original
     const i = ev.iconIndex;
     if (i != null && i >= 0 && i <= 16) pressIcon(i);
-    else wimp.setCaret(win);                                     // click on the display: input focus
+    else wimp.setCaret(win);                                     // elsewhere (the display): input focus
     return true;
   });
   win.on('key', (ev) => {
@@ -147,5 +167,5 @@ export default async function start(task, ctx) {
   });
   win.helpText = 'This is the Calculator window.|MClick on the keys (or type on the numeric keypad after clicking on the display) to calculate.|MEnter is =, Delete is C.';
   task.onMessage('Quit', () => task.quit());
-  task.calc = { calc, win, press: pressIcon, open, get display() { return disp.text; } };
+  task.calc = { calc, win, press: pressIcon, open, get display() { return shown; }, displayCanvas: disp };
 }
