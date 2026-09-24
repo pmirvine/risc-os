@@ -386,12 +386,13 @@ export class Wimp extends Emitter {
    */
   setPointer(name) {
     const scale = this.scale ?? 1;
-    const key = (name ?? '') + '@' + scale;
+    const obj = name && typeof name === 'object';   // a SpriteInfo
+    const key = (obj ? name.url : (name ?? '')) + '@' + scale;
     if (key === this._ptrKey) return;
     this._ptrKey = key;
     this._ptr = name;
-    const [spr, hx, hy] = String(name || 'ptr_default').split(',');
-    const s = sprites.get(spr.trim() || 'ptr_default');
+    const [spr, hx, hy] = obj ? ['', 0, 0] : String(name || 'ptr_default').split(',');
+    const s = obj ? name : sprites.get(spr.trim() || 'ptr_default');
     if (!s) { this.screen.style.cursor = ''; return; }
     const hot = s.hot ?? [+hx || 0, +hy || 0];
     const set = (url, k) => { this.screen.style.cursor = `url("${url}") ${Math.round(hot[0] * k)} ${Math.round(hot[1] * k)}, auto`; };

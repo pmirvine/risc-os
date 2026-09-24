@@ -296,8 +296,9 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 (set `ctx.imageSmoothingEnabled = false`).
 
 ## 11. Other services
-* `wimp.setPointer(spriteName | SpriteInfo)` (e.g. `'ptr_double'`, `''` for the arrow; a SpriteInfo may carry `hot: [x, y]`,
-  its active point in CSS px), `os.config.set('Zoom', 2)` /
+* `wimp.setPointer(spriteName | SpriteInfo)` (e.g. `'ptr_double'`, `''` for the arrow; `'name,x,y'` gives the active point
+  like a `P` validation, default (0,0) as in the Wimp; a SpriteInfo may carry `hot: [x, y]`, its active point in CSS px;
+  the pointer is scaled with the desktop zoom), `os.config.set('Zoom', 2)` /
   `('Buttons', 'Adjust')` / `('WimpFont', 1)` / `('Textured', 'Off')` (also `*Configure …`, persisted).
 * `wimp.iconbar.add/update/remove` (`add({..., raw: {flags, validation, w, h}})` makes an icon with raw Wimp icon
   flags/validation and a fixed pixel size, e.g. MemNow's ridged text icon), `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
