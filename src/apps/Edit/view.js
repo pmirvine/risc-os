@@ -165,6 +165,9 @@ export class EditView {
     this._onModified = () => this.updateTitles();
     doc.on('change', this._onChange);
     doc.on('modified', this._onModified);
+    // Message_ModeChange: txtar__setmode re-reads the screen width, so the wrap width and the work-area
+    // extent (screen width - scroll bar, txtar__settextlimits / setextent) follow the new screen size.
+    this._offMode = wimp.on('modechange', () => { this.modeChanged(); });
     this.applyOptions(false);
     this.updateTitles();
   }
@@ -225,10 +228,20 @@ export class EditView {
     return rows;
   }
   relayout() { this.rows = null; this.layout(); this.invalidate(); }
+  /** The screen size changed: re-wrap and re-sync the extent (before the Wimp re-opens the window). */
+  modeChanged() {
+    this.relayout();
+    if (this.hasFocus) this.showCaret();
+  }
   _syncExtent() {
     const rows = this.rows;
     const h = Math.max(rows.length * this.lh + 4, wimp.height);
-    const w = this.options.wraptowindow ? Math.max(this.win.w, 64) : Math.max(this.wrapWidth + 20, 64);
+    // txtar__setextent: x1 = screen width - scroll bar width (the window outline minus its visible
+    // area), or the big-window width; wrap-to-window windows keep the extent at the window's width.
+    const o = this.options, f = this.win._frame ?? { left: 1, rightW: 20 };
+    const w = o.wraptowindow ? Math.max(this.win.w, 64)
+      : o.bigWindows && o.bigSize > 0 ? Math.max(this.wrapWidth, 64)
+      : Math.max(wimp.width - f.left - f.rightW, 64);
     const e = this.win.extent;
     if (e.x1 !== w || e.y1 !== h) this.win.setExtent({ w, h });
   }
@@ -342,6 +355,7 @@ export class EditView {
     wimp.setCaret(this.win, null, -1, { x: Math.round(x), y: r * this.lh, h: this.lh });   // 1 px Font_Caret-style caret at the character boundary
   }
   dispose() {
+    this._offMode?.();
     this.doc.views.delete(this);
     this.doc.off?.('change', this._onChange);
     this.doc.off?.('modified', this._onModified);

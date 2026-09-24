@@ -38,6 +38,12 @@ export class DesktopVDU extends VDU {
     this._dirtyAll();
     return true;
   }
+  /** The desktop "mode" changed size (Message_ModeChange): follow it, unless the program chose its own mode. */
+  resizeDesktop(width, height) {
+    if (!this.isDesktopMode || (this.W === width && this.H === height)) return false;
+    this.desktop = { width, height };
+    return this._setMode(this.desktop);
+  }
   get mode() { return typeof this.modeNo === 'object' ? 28 : this.modeNo; }
   get isDesktopMode() { return typeof this.modeNo === 'object'; }
   /** Pixel value in the current palette nearest to rgb (0xRRGGBB). */

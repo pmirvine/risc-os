@@ -191,7 +191,7 @@ export class OSCLI {
   acquireScreen(opts = {}) {
     const el = document.createElement('div');
     el.className = 'fullscreen-program';
-    el.style.cssText = `position:absolute;left:0;top:0;width:${wimp.width}px;height:${wimp.height}px;background:${opts.background ?? '#000'};z-index:400000;overflow:hidden`;
+    el.style.cssText = `position:absolute;left:0;top:0;width:100%;height:100%;background:${opts.background ?? '#000'};z-index:400000;overflow:hidden`;
     wimp.screen.appendChild(el);
     wimp.menus?.close();
     const prev = wimp.fullscreenHandler;
@@ -221,7 +221,7 @@ export class OSCLI {
     const con = this.console = new TextConsole({ cols, rows, charW: 8, charH: 8 });
     const holder = this.holder = document.createElement('div');
     holder.className = 'cmdline';
-    holder.style.cssText = `position:absolute;left:0;bottom:0;width:${W}px;height:0;overflow:hidden;z-index:300000;background:#000`;
+    holder.style.cssText = `position:absolute;left:0;bottom:0;width:100%;height:0;overflow:hidden;z-index:300000;background:#000`;
     con.canvas.style.cssText = 'position:absolute;left:0;bottom:0;image-rendering:pixelated';
     holder.appendChild(con.canvas);
     wimp.screen.appendChild(holder);

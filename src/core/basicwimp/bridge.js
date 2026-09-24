@@ -150,7 +150,7 @@ export class WimpBridge {
     // messages from the core / other tasks
     this.task.onMessage('Quit', () => { this.queueMessage(MSG.Quit, [], 17); return true; });
     this.task.onMessage('PreQuit', (msg) => { this.queueMessage(MSG.PreQuit, [msg.single ? 1 : 0], 18); });
-    this.task.onMessage('ModeChange', () => { this.queueMessage(MSG.ModeChange, [], 17); });
+    this.task.onMessage('ModeChange', () => { this._modePending = true; this.queueMessage(MSG.ModeChange, [], 17); });
     this.task.onMessage('MenusDeleted', () => { if (this._menusDeletedPending) { this._menusDeletedPending = false; this.queueMessage(MSG.MenusDeleted, [this.menuPtr ?? 0], 17); } });
     this.task.onMessage('DataLoad', (msg) => { if (msg.window && this.byWin.has(msg.window)) return; this.dataLoadMessage(msg, -2, msg.icon?._ib ? msg.icon.handle : -1); return true; });
     this.task.onMessage('DataOpen', (msg) => { this.dataLoadMessage(msg, 0, -1, MSG.DataOpen); return false; });
@@ -221,6 +221,10 @@ export class WimpBridge {
     const mask = r[0] >>> 0, block = u32(r[1]);
     const due = idle ? r[2] | 0 : null;
     if (this.redraw) this._endRedraw();
+    if (this._modePending) {             // the screen changed size: re-size the task's desktop-mode VDU
+      this._modePending = false;
+      if (this.vdu.resizeDesktop?.(wimp.width, wimp.height)) this.vduBytes([5]);
+    }
     return new Promise((resolve) => {
       this.pollWait = { r, mask, block, due, resolve, t0: performance.now() };
       if (!this.tryDeliver()) {

@@ -150,7 +150,13 @@ export class Wimp extends Emitter {
     if (old.w != null && (old.w !== w || old.h !== h)) {
       this.emit('modechange', { width: w, height: h });
       this.sendMessage('ModeChange', { width: w, height: h });
-      for (const win of this.stack) if (!win.isBackWindow) win.open({});
+      // Wimp03 (mode change): re-open every window back to front with an Open_Window_Request,
+      // except panes (their parents re-open them); constrainWindow keeps each one reachable.
+      for (const win of [...this.stack]) {
+        if (win.isBackWindow || win.isPane || win._paneParent || !win.isOpen) continue;
+        if (win.task && !win._menuWindow && !win._isIconbar) win.requestOpen({ behind: 'keep' });
+        else win.open({});
+      }
     }
   }
 
