@@ -282,27 +282,51 @@ export function installCoreSwis(t) {
   S('ColourTrans_SelectTable', (r) => { r[4] = 0; });
 
   // Sound -------------------------------------------------------------------------
-  S('Sound_Control', (r, m) => { m.sound(r[0], r[1], r[2], r[3], null); });
-  S('Sound_ControlPacked', (r, m) => {
-    const a = r[0] >>> 0, b = r[1] >>> 0;
-    m.sound(a & 0xFFFF, (a << 0) >> 16, b & 0xFFFF, b >>> 16, null);
-  });
-  S('Sound_Enable', (r, m) => { const old = m.soundOn ? 2 : 1; if (r[0] === 1) m.soundEnable(false); else if (r[0] === 2) m.soundEnable(true); r[0] = old; });
-  S('Sound_Volume', (r) => { if (r[0] === 0) r[0] = 127; });
-  S('Sound_Stereo', (r, m) => { m.stereo(r[0], r[1]); });
-  S('Sound_Speaker', (r) => { r[0] = 2; });
-  S('Sound_Configure', (r) => { r[0] = 8; r[1] = 208; r[2] = 48; r[3] = 0; r[4] = 0; });
-  S('Sound_AttachVoice', (r) => { r[1] = 1; });
-  S('Sound_InstallVoice', (r) => { r[1] = 0; });
-  S('Sound_Tuning', (r) => { r[0] = 0; });
-  S('Sound_QTempo', (r, m) => { const old = m.tempo(); if (r[0]) m.setTempo(r[0]); r[0] = old; });
-  // R0 = 0: read current beat; -1: read beats per bar; n > 0: set bar length (resets the counter), returns old
-  S('Sound_QBeat', (r, m) => {
-    if (r[0] === 0) r[0] = m.beat();
-    else if (r[0] === -1) r[0] = m.beats();
-    else { const old = m.beats(); m.setBeats(r[0]); r[0] = old; }
-  });
-  S('Sound_QSchedule', () => {});
+  // With a Sound (src/basic/sound.js) every Sound_* SWI goes to the emulated sound system;
+  // the fallbacks below keep programs running when the machine has no sound (sound: null).
+  const SOUND_FALLBACK = {
+    Sound_Control: (r, m) => { m.sound(r[0], r[1], r[2], r[3], null); },
+    Sound_ControlPacked: (r, m) => {
+      const a = r[0] >>> 0, b = r[1] >>> 0;
+      m.sound(a & 0xFFFF, (a << 0) >> 16, b & 0xFFFF, b >>> 16, null);
+    },
+    Sound_Enable: (r, m) => { const old = m.soundOn ? 2 : 1; if (r[0] === 1) m.soundEnable(false); else if (r[0] === 2) m.soundEnable(true); r[0] = old; },
+    Sound_Volume: (r) => { if (r[0] === 0) r[0] = 127; },
+    Sound_Stereo: (r, m) => { m.stereo(r[0], r[1]); },
+    Sound_Speaker: (r) => { r[0] = 2; },
+    Sound_Configure: (r) => { r[0] = 8; r[1] = 208; r[2] = 48; r[3] = 0; r[4] = 0; },
+    Sound_AttachVoice: (r) => { r[1] = 1; },
+    Sound_AttachNamedVoice: () => {},
+    Sound_InstallVoice: (r) => { r[1] = 0; },
+    Sound_Tuning: (r) => { r[0] = 0; },
+    Sound_QTempo: (r, m) => { r[0] = m.setTempo(r[0]); },
+    // R0 = 0: read current beat; -1: read beats per bar; n > 0: set bar length, returns old
+    Sound_QBeat: (r, m) => {
+      if (r[0] === 0) r[0] = m.beat();
+      else if (r[0] === -1) r[0] = m.beats();
+      else r[0] = m.setBeats(r[0]);
+    },
+    Sound_QSchedule: () => {},
+    Sound_QInit: () => {},
+    Sound_QFree: (r) => { r[0] = 111; },
+  };
+  for (const name of ['Sound_Configure', 'Sound_Enable', 'Sound_Stereo', 'Sound_Speaker', 'Sound_Mode', 'Sound_Volume',
+    'Sound_SoundLog', 'Sound_LogScale', 'Sound_InstallVoice', 'Sound_RemoveVoice', 'Sound_AttachVoice', 'Sound_ControlPacked',
+    'Sound_Tuning', 'Sound_Pitch', 'Sound_Control', 'Sound_AttachNamedVoice', 'Sound_ReadControlBlock', 'Sound_WriteControlBlock',
+    'Sound_QInit', 'Sound_QSchedule', 'Sound_QRemove', 'Sound_QFree', 'Sound_QSDispatch', 'Sound_QTempo', 'Sound_QBeat']) {
+    S(name, (r, m) => {
+      if (!m.snd?.swi) { SOUND_FALLBACK[name]?.(r, m); return; }
+      if (name === 'Sound_AttachNamedVoice') r.name = m.mem.rdStrCtrl(u32(r[1]));
+      const flavour = r[0];
+      r.names = null;
+      m.snd.swi(name, r);
+      if (r.names) {                            // voice names are returned as string pointers
+        if (name === 'Sound_RemoveVoice') r[0] = m.scratchStr(r.names.name);
+        else if (flavour === 0) r[0] = r.names.name ? m.scratchStr(r.names.name) : 0;
+        else { r[2] = r.names.name ? m.scratchStr(r.names.name) : 0; r[3] = r.names.name ? m.scratchStr(r.names.local) : 0; }
+      }
+    });
+  }
 
   // BASICTrans (so programs that call it directly get sensible answers) ------
   S('BASICTrans_Message', () => { throw new BasicError(0, 'Not supported'); });

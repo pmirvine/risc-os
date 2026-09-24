@@ -1,164 +1,85 @@
-// SOUND / ENVELOPE for BBC BASIC V using Web Audio (silent where Web Audio is unavailable).
+// BBC BASIC V sound statements on the emulated RISC OS 3.71 sound system (src/core/sound/),
+// with the semantics of the 3.71 ROM (BASIC's Stmt code -> OS_Word 7 / Sound_* SWIs):
 //
-// SOUND channel, amplitude, pitch, duration [, beat]
-//   channel   1..8 (0 = noise); high nibbles as on the BBC: &HSFC (F=flush, H=hold)
-//   amplitude -15..0 (loudest..silent), 1..16 = envelope number, &100..&17F logarithmic volume
-//   pitch     0..255 BBC quarter-semitones (53 = middle C, 89 = A440), or &xyyy
-//             RISC OS 15-bit pitch (octave in bits 12-14, &4000 = middle C)
-//   duration  in 1/20 second units (255 = until stopped/replaced)
-// Each channel has a queue; when more than 4 notes are pending SOUND waits (returns a Promise)
-// like the RISC OS sound scheduler does, so music timing loops work.
+// SOUND channel, amplitude, pitch, duration     OS_Word 7 (Sound_ControlPacked): immediate - the
+//                                               note replaces whatever the channel is playing;
+//                                               RISC OS has no per-channel queue
+// SOUND channel, amplitude, pitch, duration, b  Sound_QSchedule at beat b of the bar
+//   channel   1..8 (bottom 4 bits; the BBC H/S/flush bits are ignored); only the first
+//             VOICES channels sound
+//   amplitude -15..0 (0 = silent), &100-&17F logarithmic (gate on), &180-&1FF smooth update;
+//             1..16 (envelopes) are ignored, as OS_Word 8 (ENVELOPE) does nothing in 3.71
+//   pitch     0..255 BBC quarter semitones (53 = middle C), &100-&7FFF 15-bit (&4000 = middle C,
+//             &1000 per octave), >= &8000 a raw phase increment
+//   duration  1/20 s, 255 = forever
+// VOICES n (Sound_Configure), VOICE c,"name" (Sound_AttachNamedVoice), STEREO c,p (Sound_Stereo),
+// BEATS / TEMPO / BEAT (Sound_QBeat / Sound_QTempo), SOUND ON / OFF (Sound_Enable).
+//
+// new Sound() uses the shared sound system (src/core/sound/index.js); new Sound({system}) a
+// given SoundSystem. Works headless in node (the clock follows the wall clock).
 
-const wallNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+import { soundSystem, soundOutput, vdu7, SWI, SWI_NAMES, SoundError } from '../core/sound/index.js';
+import { registerSoundCommands } from '../core/sound/commands.js';
+import { BasicError } from './errors.js';
+
+const toBasic = (e) => (e instanceof SoundError ? new BasicError(e.errnum, e.errmess) : e);
 
 export class Sound {
   constructor(opts = {}) {
-    this.ctx = null;
-    this.enabled = true;
-    this.envelopes = new Map();
-    this.chanEnd = new Array(9).fill(0);   // wall-clock time (s) at which each channel's queue ends
-    this.chanNodes = new Array(9).fill(null).map(() => []);
-    this.stereoPos = new Array(9).fill(0);
-    this.master = null;
-    this.volume = opts.volume ?? 0.25;
-    this.waiters = [];
+    this.sys = opts.system ?? soundSystem();
+    this.out = opts.system ? (opts.output ?? null) : soundOutput();
   }
-  ensure() {
-    if (this.ctx) return this.ctx;
-    const AC = typeof window !== 'undefined' && (window.AudioContext || window.webkitAudioContext);
-    if (!AC) return null;
-    this.ctx = new AC();
-    this.master = this.ctx.createGain();
-    this.master.gain.value = this.volume;
-    this.master.connect(this.ctx.destination);
-    return this.ctx;
-  }
-  /** call from a user gesture to unlock audio in browsers */
-  resume() { const c = this.ensure(); if (c && c.state === 'suspended') c.resume(); }
-  enable(on) { this.enabled = on; }
-  stereo(c, p) { if (c >= 1 && c <= 8) this.stereoPos[c] = Math.max(-127, Math.min(127, p)) / 127; }
-  voices() {}
-  voice() {}
+  /** Call from a user gesture to let the browser start audio. */
+  resume() { this.out?.resume(); }
 
-  envelope(a) {
-    // BBC ENVELOPE N,T,PI1,PI2,PI3,PN1,PN2,PN3,AA,AD,AS,AR,ALA,ALD
-    this.envelopes.set(a[0] & 15, a.slice(1));
+  sound(ch, amp, pitch, dur, beat = null) {
+    const d0 = ((ch & 0xFFFF) | ((amp & 0xFFFF) << 16)) | 0;
+    const d1 = ((pitch & 0xFFFF) | ((dur & 0xFFFF) << 16)) | 0;
+    if (beat === null || beat === undefined) this.sys.controlPacked(d0, d1);
+    else this.sys.qSchedule(beat, 0, d0, d1);
   }
-
-  static bbcPitchToFreq(p) { return 440 * Math.pow(2, (p - 89) / 48); }
-  static freq(pitch) {
-    if (pitch >= 256) return 261.6256 * Math.pow(2, ((pitch & 0x7FFF) - 0x4000) / 4096);
-    return Sound.bbcPitchToFreq(pitch & 255);
-  }
-
-  /** notes on channel ch not yet finished */
-  queued(ch) {
-    const now = wallNow();
-    return (this.chanNodes[ch <= 8 ? ch : ch & 7] || []).filter((n) => n.end > now).length;
-  }
+  /** ENVELOPE: OS_Word 8 is unused in RISC OS 3.71. */
+  envelope() {}
+  enable(on) { this.sys.enable(on ? 2 : 1); }
+  stereo(c, p) { this.sys.stereo(c, p); }
+  voices(n) { this.sys.configure(n | 0, 0, 0); }
+  voice(c, name) { try { this.sys.attachNamedVoice(c, name); } catch (e) { throw toBasic(e); } }
+  beat() { return this.sys.qBeatSWI(0); }
+  beats() { return this.sys.qBeatSWI(-1); }
+  setBeats(n) { return this.sys.qBeatSWI(n); }
+  tempo() { return this.sys.qTempoSWI(0); }
+  setTempo(n) { return this.sys.qTempoSWI(n); }
+  /** VDU 7 with the kernel bell settings. */
+  bell() { vdu7(); }
+  /** Escape acknowledge (OS_Byte 126): Sound_QInit and silence every channel. */
+  escape() { this.sys.qInit(); this.sys.hush(); }
+  /** The program ended: RISC OS leaves its sounds alone. */
+  stop() {}
 
   /**
-   * Queue a note. The per-channel queues run on the wall clock (not the AudioContext clock) so SOUND
-   * timing - and programs that pace themselves on a full queue - behave the same whether or not the
-   * browser has let audio start yet. delay: seconds from now for beat-scheduled notes (SOUND ...,beat),
-   * which bypass the queue.
+   * A Sound_* SWI (number or name) with registers r (array, updated in place). Name strings
+   * for Sound_AttachNamedVoice go in r.name; interrogations return r.names.
    */
-  sound(channel, amp, pitch, dur, beat, delay = 0) {
-    if (!this.enabled) return;
-    const c = this.ensure();
-    const ch = channel & 15;
-    const flush = (channel >> 4) & 1;
-    const now = wallNow();
-    const q = ch <= 8 ? ch : ch & 7;
-    let list = this.chanNodes[q];
-    if (flush) {
-      for (const n of list) { try { n.osc && n.osc.stop(); } catch (e) { /* ignore */ } }
-      list.length = 0;
-      this.chanEnd[q] = now;
-    }
-    list = this.chanNodes[q] = list.filter((n) => n.end > now);
-    const start = delay > 0 ? now + delay : Math.max(now + 0.005, this.chanEnd[q] || 0);
-    const seconds = dur >= 255 || dur < 0 ? 5 : Math.max(dur, 0) / 20;
-    let level = 0; let env = null;
-    if (amp <= 0 && amp >= -15) level = -amp / 15;
-    else if (amp >= 1 && amp <= 16) { env = this.envelopes.get(amp); level = 1; }
-    else if (amp >= 0x100) level = Math.pow((amp & 0x7F) / 127, 2);
-    let osc = null;
-    if (c && c.state !== 'closed') {
-      // map wall-clock start to the audio clock (a suspended context just stays silent)
-      const at = c.currentTime + (start - now);
-      const node = this.playTone(ch, at, seconds, level, pitch, env);
-      osc = node && node.osc;
-    }
-    if (!(delay > 0)) this.chanEnd[q] = start + seconds;
-    list.push({ osc, start, end: start + seconds });
-    // queue full -> wait (4 pending notes per channel, like the RISC OS sound scheduler)
-    const pending = list.filter((n) => n.start > now);
-    if (pending.length > 4) {
-      const ms = Math.max(0, (pending[pending.length - 5].start - now) * 1000);
-      return new Promise((res) => setTimeout(res, ms));
-    }
+  swi(num, r) {
+    if (typeof num === 'string') num = SWI[num.replace(/^X/, '')];
+    if (num === undefined) return false;
+    try { this.sys.swi(num, r); } catch (e) { throw toBasic(e); }
+    return true;
   }
+  static swiName(num) { return SWI_NAMES[num & ~0x20000]; }
 
-  playTone(ch, start, seconds, level, pitch, env) {
-    const c = this.ctx;
-    if (seconds <= 0) return null;
-    const g = c.createGain();
-    g.gain.value = 0;
-    let src;
-    if (ch === 0) {
-      const len = Math.max(1, Math.floor(c.sampleRate * seconds));
-      const buf = c.createBuffer(1, len, c.sampleRate);
-      const d = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
-      src = c.createBufferSource(); src.buffer = buf;
-    } else {
-      src = c.createOscillator();
-      src.type = 'square';
-      src.frequency.setValueAtTime(Sound.freq(pitch), start);
+  /**
+   * The sound modules' * commands (*Voices, *ChannelVoice, *Volume, *Sound, *Tuning, *Stereo,
+   * *Speaker, *Audio, *Tempo, *QSound) for a machine without a host CLI. Returns true if handled.
+   */
+  async oscli(name, rest, writeln) {
+    if (!this.commands) {
+      this.commands = new Map();
+      registerSoundCommands((n, syntax, help, run) => this.commands.set(n.toUpperCase(), run), () => this.sys);
     }
-    let out = g;
-    if (c.createStereoPanner) {
-      const p = c.createStereoPanner(); p.pan.value = this.stereoPos[ch] || 0;
-      g.connect(p); out = p;
-    }
-    src.connect(g);
-    out.connect(this.master);
-    const peak = level * 0.6;
-    if (env && ch !== 0) {
-      // Pitch envelope sections and ADSR from the BBC ENVELOPE parameters
-      const [T, PI1, PI2, PI3, PN1, PN2, PN3, AA, AD, AS, AR, ALA, ALD] = env;
-      const step = Math.max(1, T & 127) / 100;
-      let t = start; let p = pitch & 255;
-      const secs = [[PI1, PN1], [PI2, PN2], [PI3, PN3]];
-      let guard = 0;
-      while (t < start + seconds && guard++ < 2000) {
-        for (const [pi, pn] of secs) {
-          for (let i = 0; i < (pn & 255) && t < start + seconds; i++) { p = (p + pi) & 255; src.frequency.setValueAtTime(Sound.bbcPitchToFreq(p), t); t += step; }
-        }
-        if (T & 128) break; // no auto-repeat
-        if (!PN1 && !PN2 && !PN3) break;
-      }
-      const a1 = Math.max(0, Math.min(126, ALA)) / 126, a2 = Math.max(0, Math.min(126, ALD)) / 126;
-      const ta = AA > 0 ? (ALA / AA) * step : 0.001;
-      const td = AD < 0 ? ((ALA - ALD) / -AD) * step : 0.001;
-      g.gain.setValueAtTime(0, start);
-      g.gain.linearRampToValueAtTime(peak * a1, start + ta);
-      g.gain.linearRampToValueAtTime(peak * a2, start + ta + td);
-      const rel = AR < 0 ? (ALD / -AR) * step : 0.05;
-      g.gain.setValueAtTime(peak * a2, start + seconds);
-      g.gain.linearRampToValueAtTime(0, start + seconds + Math.min(rel, 2));
-      src.start(start); src.stop(start + seconds + Math.min(rel, 2) + 0.01);
-    } else {
-      g.gain.setValueAtTime(0, start);
-      g.gain.linearRampToValueAtTime(peak, start + 0.004);
-      g.gain.setValueAtTime(peak, start + seconds - 0.004);
-      g.gain.linearRampToValueAtTime(0, start + seconds);
-      src.start(start); src.stop(start + seconds + 0.01);
-    }
-    return { osc: src, start, end: start + seconds };
+    const run = this.commands.get(String(name).toUpperCase());
+    if (!run) return false;
+    try { await run(String(rest).split(/\s+/).filter(Boolean), { out: { writeln, write: writeln } }); } catch (e) { throw new BasicError(e.errnum ?? 0, e.message); }
+    return true;
   }
-
-  /** VDU 7 */
-  bell() { this.sound(1, -15, 200, 2); }
 }
