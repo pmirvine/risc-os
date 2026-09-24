@@ -4,13 +4,13 @@
 //   2. the copy kept in IndexedDB from an earlier run;
 //   3. a local, git-ignored checkout served by the dev server: vendor/lander (Mark Moxon's
 //      lander-source-code-acorn-archimedes repository, whose 4-reference-binaries hold the game).
+//      Only probed when the page comes from this machine, and through the dev server's manifest
+//      (serve.mjs answers __dev/lander.json with the files that exist), so a public static deployment
+//      makes no requests for it and a missing checkout gives no 404s.
 import { identifyBinary } from './host.js';
 
 const DB = 'riscos-lander', STORE = 'binary', KEY = 'original';
-export const VENDOR_URLS = [
-  'vendor/lander/4-reference-binaries/!RunImage.bin',
-  'vendor/lander/4-reference-binaries/GameCode.bin',
-];
+export const DEV_MANIFEST = '__dev/lander.json';
 
 function db() {
   return new Promise((res, rej) => {
@@ -49,9 +49,20 @@ export async function forget() {
   try { await tx('readwrite', (s) => s.delete(KEY)); } catch { /* none */ }
 }
 
+/** True if the page is served from this machine (the dev server). */
+export function isLocalHost(host = globalThis.location?.hostname ?? '') {
+  return /^(localhost|127(\.\d+){3}|\[?::1\]?)$/i.test(host) || /\.localhost$/i.test(host);
+}
+
 /** The dev server's local copy (vendor/lander, git-ignored), or null. */
 export async function fetchVendor(base = '') {
-  for (const u of VENDOR_URLS) {
+  if (!isLocalHost()) return null;
+  let files = [];
+  try {
+    const r = await fetch(base + DEV_MANIFEST, { cache: 'no-cache' });
+    if (r.ok) files = (await r.json())?.files ?? [];
+  } catch { /* not the dev server */ }
+  for (const u of files) {
     try {
       const r = await fetch(base + u, { cache: 'no-cache' });
       if (!r.ok) continue;

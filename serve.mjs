@@ -8,6 +8,12 @@ const types = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javas
 http.createServer((req, res) => {
   let p = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   if (p.endsWith('/')) p += 'index.html';
+  if (p === '/__dev/lander.json') {   // !Lander: which of the git-ignored original binaries exist (src/apps/Lander/store.js)
+    const files = ['vendor/lander/4-reference-binaries/!RunImage.bin', 'vendor/lander/4-reference-binaries/GameCode.bin']
+      .filter((f) => fs.existsSync(path.join(root, f)));
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+    return res.end(JSON.stringify({ files }));
+  }
   const f = path.join(root, p);
   if (!f.startsWith(root)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (err, data) => {
