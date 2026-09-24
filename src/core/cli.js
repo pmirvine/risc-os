@@ -12,8 +12,11 @@ import { os } from './os.js';
 import { TextConsole, loadSystemFont } from './console.js';
 import { wimp } from './wimp.js';
 import { decodeLatin1 } from './charset.js';
+import { findNative, noNative, EXEC_TYPES } from './native.js';
 
 export class CLIError extends Error { constructor(m, n = 0) { super(m); this.errnum = n; this.riscos = true; } }
+/** Thrown by *Obey with no file name inside an Obey file: ends that Obey file (the "BootEnd" / "RMEnsure … Obey" idiom). */
+export class ObeyEnd extends Error { constructor() { super('Obey'); this.obeyEnd = true; } }
 
 const nullOut = { write() {}, writeln() {} };
 
@@ -135,6 +138,13 @@ export class OSCLI {
       throw new CLIError(`'${st.name}' is a directory`, 0);
     }
     if (st.filetype === FT_UNTYPED) throw new CLIError(`File '${st.name}' cannot be executed`, 0);
+    // ARM code (Absolute / Module / Utility): a JavaScript stand-in from the native registry (native.js)
+    const nat = EXEC_TYPES.has(st.filetype) ? findNative(st.path) : null;
+    if (nat) return nat.run?.(splitArgs(tail ?? ''), { ...ctx, cli: this, out: ctx?.out ?? this.desktopOut(), path: st.path, tail: tail ?? '' });
+    if (EXEC_TYPES.has(st.filetype) && (st.placeholder || !sysvars.get('Alias$@RunType_' + hex3(st.filetype)))) {
+      if (st.filetype === 0xFFA) return;   // a module is RMRun: loaded silently, like *RMLoad (a no-op here)
+      throw noNative(st.name);
+    }
     const alias = sysvars.get('Alias$@RunType_' + hex3(st.filetype));
     if (alias == null) throw new CLIError(`File type '${typeName(st.filetype)}' has no run action`, 0x118);
     return this.run(`@RunType_${hex3(st.filetype)} ${st.path}${tail ? ' ' + tail : ''}`, ctx);
@@ -155,8 +165,9 @@ export class OSCLI {
         // "safe" mode (Filer_Boot of applications): don't start programs, only set things up
         if (opts.safe && /^\s*[*%]*\s*(run|\/|basic|wimptask|desktop|filer_run|filer_opendir|taskwindow|shellcli|chain|go)\b/i.test(line)) continue;
         try {
-          await this.run(line, { out: opts.out ?? (opts.quiet ? nullOut : undefined), depth: opts.depth, safe: opts.safe });
+          await this.run(line, { out: opts.out ?? (opts.quiet ? nullOut : undefined), depth: opts.depth, safe: opts.safe, inObey: true });
         } catch (e) {
+          if (e?.obeyEnd) break;
           if (opts.quiet) continue;
           throw e;
         }

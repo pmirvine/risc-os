@@ -1,6 +1,6 @@
 // Built-in * commands.
 
-import { cli, CLIError } from './cli.js';
+import { cli, CLIError, splitArgs, ObeyEnd } from './cli.js';
 import { vfs, FT_UNTYPED, ATTR } from './vfs.js';
 import { sysvars } from './sysvars.js';
 import { typeName, parseType } from './filetypes.js';
@@ -9,6 +9,7 @@ import { wimp } from './wimp.js';
 import { sprites } from './sprites.js';
 import { decodeLatin1 } from './charset.js';
 import { registerResetCommands } from './reset.js';
+import { setModuleLookup } from './native.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 const lpad = (s, n) => String(s).padStart(n);
@@ -84,6 +85,8 @@ const MODULES = [
   ['Squash', '0.26'], ['SoundDMA', '1.52'], ['SoundChannels', '1.25'], ['SoundScheduler', '1.21'], ['WaveSynth', '1.13'],
   ['Obey', '0.35'], ['BufferManager', '0.20'], ['DeviceFS', '0.36'], ['Parallel', '0.53'], ['Serial', '0.28'], ['ScreenBlanker', '2.10'],
 ];
+
+setModuleLookup((name) => MODULES.find((m) => m[0].toLowerCase() === String(name).toLowerCase())?.[1] ?? null);
 
 const HELP = {};
 function def(name, syntax, help, run, extra = {}) {
@@ -218,10 +221,15 @@ export function installCommands() {
     const tail = ctx.raw.replace(/^\s*("[^"]*"|\S+)\s*/, '');
     return cli.runFile(path, tail, ctx);
   }, { min: 1 });
-  def('Obey', 'Syntax: *Obey [<filename> [<parameters>]]', '*Obey executes a file of * commands.', async (a, ctx) => {
-    if (!a[0]) return;
-    return cli.obey(a[0], { args: ctx.raw.replace(/^\s*\S+\s*/, ''), out: ctx.out, depth: ctx.depth, safe: ctx.safe, quiet: ctx.safe });
-  });
+  def('Obey', 'Syntax: *Obey [-v] [-c] [<filename> [<parameters>]]', '*Obey executes a file of * commands.', async (a, ctx) => {
+    let raw = ctx.raw;
+    while (/^\s*-[vc]\b/i.test(raw)) raw = raw.replace(/^\s*-[vc]\s*/i, '');   // -v verbose, -c cache: no difference here
+    const file = splitArgs(raw)[0];
+    if (!file) { if (ctx.inObey) throw new ObeyEnd(); return; }   // no file: end the Obey file being executed
+    return cli.obey(file, { args: raw.replace(/^\s*("[^"]*"|\S+)\s*/, ''), out: ctx.out, depth: ctx.depth, safe: ctx.safe, quiet: ctx.safe });
+  }, { noSplit: true });
+  // Do (Sources/SystemRes/Boot/Source/Do): GSTrans the tail, then OSCLI it.
+  def('Do', 'Syntax: *Do <*command>', '*Do GSTranses its argument and executes it as a * command.', async (a, ctx) => cli.run(sysvars.gstrans(ctx.raw), ctx), { noSplit: true });
   def('Exec', 'Syntax: *Exec [<filename>]', '*Exec takes keyboard input from a file.', async () => {});
   def('Spool', 'Syntax: *Spool [<filename>]', 'Sends output to a file.', async () => {});
   def('WimpTask', 'Syntax: *WimpTask <*command>', 'Start up a new task (from within a task).', async (a, ctx) => { setTimeout(() => cli.run(ctx.raw).catch((e) => wimp.reportError(e.message)), 0); }, { noSplit: true });
@@ -280,10 +288,10 @@ export function installCommands() {
     if (!mod || parseFloat(mod[1]) < parseFloat(a[1] ?? '0')) {
       // not present: only harmless for commands we can emulate
       const rest = ctx.raw.replace(/^\s*\S+\s+\S+\s*/, '');
-      if (rest && !/^rmload|^error/i.test(rest.trim())) await cli.run(rest, ctx).catch(() => {});
+      if (rest && !/^rmload|^error/i.test(rest.trim())) await cli.run(rest, ctx).catch((e) => { if (e?.obeyEnd) throw e; });
     }
   }, { noSplit: true });
-  for (const n of ['RMLoad', 'RMRun', 'RMKill', 'RMReInit', 'RMTidy', 'Unplug', 'RMFaster', 'WimpSlot', 'ChangeDynamicArea', 'Hourglass', 'Pointer', 'X', 'FontInstall', 'FontLibrary', 'LoadCMOS', 'SaveCMOS', 'SetMacro_', 'PreDesktop', 'Key', 'TV', 'Mode', 'ScreenLoad', 'ScreenSave', 'SetPalette', 'WimpPalette', 'Shadow', 'Opt', 'Close', 'Shut', 'Mount', 'Dismount', 'AddApp', 'AppSize', 'BootLog', 'SafeLogon', 'ToolSprites', 'WimpWriteDir', 'WimpMode', 'RTCAdjust', 'Ignore', 'Ecf', 'AddToRMA']) {
+  for (const n of ['RMLoad', 'RMRun', 'RMKill', 'RMReInit', 'RMTidy', 'Unplug', 'RMFaster', 'WimpSlot', 'ChangeDynamicArea', 'Hourglass', 'Pointer', 'X', 'FontInstall', 'FontLibrary', 'LoadCMOS', 'SaveCMOS', 'SetMacro_', 'PreDesktop', 'Key', 'TV', 'Mode', 'ScreenLoad', 'ScreenSave', 'SetPalette', 'WimpPalette', 'Shadow', 'Opt', 'Close', 'Shut', 'Mount', 'Dismount', 'AddApp', 'AppSize', 'BootLog', 'SafeLogon', 'ToolSprites', 'WimpWriteDir', 'WimpMode', 'RTCAdjust', 'Ignore', 'Ecf', 'AddToRMA', 'LoadModeFile', 'DosMap']) {
     const nm = n;
     if (!cli.commands.has(nm.toLowerCase())) def(nm, `Syntax: *${nm} ...`, `*${nm} (no effect in this emulation).`, async (a, ctx) => {
       if (nm === 'X') { try { await cli.run(ctx.raw, ctx); } catch { /* ignore */ } }

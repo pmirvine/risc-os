@@ -15,6 +15,7 @@ import { os } from './os.js';
 import { el } from './util.js';
 import { fileAction } from './fileraction.js';
 import { saveAs } from './dialogs.js';
+import { EXEC_TYPES } from './native.js';
 
 const LGI_W = 86, LGI_H = 54;      // template icon 2 (172 x 108 OS)
 const SMI_W = 108, SMI_H = 18;     // template icon 3 (216 x 36 OS)
@@ -130,6 +131,8 @@ export class Filer {
       const claimed = wimp.sendMessage('DataOpen', { path: st.path, filetype: st.filetype, files: [st] }, { from: this.task });
       if (claimed) return;
       if (st.filetype === FT_UNTYPED) return wimp.reportError(`File '${st.name}' has no file type (load &${(st.load >>> 0).toString(16).toUpperCase()})`, { appName: 'Filer' });
+      // Absolute / Module / Utility: FileSwitch runs these itself (*Run; native.js stand-ins for ARM code)
+      if (EXEC_TYPES.has(st.filetype)) return await os.cli.run(`Run ${st.path}`);
       const alias = sysvars.get('Alias$@RunType_' + hex3(st.filetype));
       if (alias == null) return wimp.reportError(this.m('UkRun') === 'UkRun' ? 'An application that loads a file of this type has not been found by the Filer. Open a directory display containing the required application and try again.' : this.m('UkRun'), { appName: 'Filer' });
       await os.cli.run(`@RunType_${hex3(st.filetype)} ${st.path}`);

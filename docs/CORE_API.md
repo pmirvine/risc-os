@@ -285,7 +285,23 @@ Built in: Cat/., Ex, Info, FileInfo, Dir, Back, URD, Lib, CDir, Type/List, Dump,
 Access, SetType, Stamp, Count, Free, Run, Obey, Echo, Set/SetMacro/SetEval/Unset/Show, Alias, Eval, If, IfThere,
 Repeat, Error, Help, Modules, ROMModules, Time, FX, Configure, Status, Basic, Desktop, WimpTask, Filer_OpenDir,
 Filer_CloseDir, Filer_Run, Filer_Boot, IconSprites, Pin, Pinboard, BackDrop, Shutdown, TaskWindow, RMEnsure (+ harmless
-no-ops such as WimpSlot, RMLoad). `*Run`/double-click resolve `Alias$@RunType_XXX`; `%` prefix skips aliases.
+no-ops such as WimpSlot, RMLoad, LoadModeFile, DosMap), Do. `*Run`/double-click resolve `Alias$@RunType_XXX`; `%` prefix skips aliases.
+`*Obey` with no file name inside an Obey file ends that file (the `BootEnd` / `RMEnsure … Obey` idiom); `-c`/`-v` are accepted.
+
+**Native executables** (`src/core/native.js`): ARM code on the seed disc exists only as empty placeholders (docs/ASSETS.md §5).
+Running an Absolute/Module/Utility file (`/path`, `*Run`, a Filer double-click, an Obey line) first looks it up here:
+```js
+import { registerNative } from '../../core/native.js';
+registerNative('$.!Boot.Utils.BootVars', { run: async (args, ctx) => { … } });  // path from $ on its disc, or
+registerNative('Utils.BootVars', impl);             // <parent>.<leaf>; case-insensitive; no run = a no-op
+```
+`ctx` is the OSCLI context plus `path` and `tail`. Registered: `Utils.BootVars` (Boot$OSVersion / State / Unique / Dir, as
+`Boot/Source/BootVars/c/main`), `!System.SysPaths` (Sys$Path, System$Path from the numbered module directories),
+`Configure.ClrMonitor` (Boot$MonitorNotConfigured) and no-ops for `Utils.FreePool`, `Utils.VProtect`, `Utils.PatchApp`,
+`Library.Repeat` (→ `*Repeat`), `FontMerge.FontMerge`, the PreDesk `BandLimit`, `ROMPatch.!RunImage`, `SoundDMA.NewSound`/`SoundDMA`,
+`Tasks.~CDReinit`, `!Maestro.EnsureRMA`, `utils.CheckMem` (!Internet). The `!RunImage` of a registered JS app starts the app
+(`os.apps.runPath`). A module with no stand-in loads silently (like `*RMLoad`); other ARM code reports
+"'<name>' is ARM code, which cannot be run on this computer".
 
 ## 10. Sprites
 `sprites.get(name)` → `SpriteInfo {name, w, h, osW, osH, cssW, cssH, url, variantUrl('selected'|'shaded')}` from the

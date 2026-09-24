@@ -33,7 +33,7 @@ function setDefaultVars() {
   const set = (k, v) => sysvars.set(k, v);
   set('Boot$Dir', `${HD}.!Boot`);
   set('Boot$Path', `${HD}.!Boot.`);
-  set('Boot$OSVersion', '371');
+  set('Boot$OSVersion', '370');   // as BootVars sets it: "%X0" of UtilityModule 3.71 / 16
   set('Boot$ToBeLoaded', '');
   set('BootResources$Dir', `${HD}.!Boot.Resources`);
   set('BootResources$Path', `${HD}.!Boot.Resources.`);
@@ -59,7 +59,6 @@ function setDefaultVars() {
   set('Alias$@RunType_FFB', 'BASIC -quit "%*0"');
   set('Alias$@LoadType_FFB', 'BASIC -load "%0" %*1');
   set('Alias$@RunType_FEA', 'Desktop -file %*0');
-  set('Alias$@RunType_FFC', 'Obey %*0');
   set('Alias$@RunType_FED', 'WimpPalette %0');   // FileSwitch default (Palette files); *WimpPalette is a no-op here
   set('Alias$.', 'Cat %*0');
 }

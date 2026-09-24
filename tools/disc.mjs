@@ -20,6 +20,10 @@ export const encodeName = (n) => n.replace(/[^A-Za-z0-9_-]/g, (c) => '=' + c.cha
 export const decodeName = (n) => n.replace(/=([0-9a-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
 
 const SKIP_TYPES = new Set(['ff8', 'ffa', 'ffc', 'fc3', 'd94']); // absolute, module, utility, patch, ARMovie codec binaries
+// ARM code types that stay on the disc as placeholders: listed in the manifest with their filetype, size 0,
+// "placeholder": true and "origSize", but no content file. They read as empty; running one uses the core's
+// native-executable registry (src/core/native.js) or reports that the code can't run.
+const PLACEHOLDER_TYPES = new Set(['ff8', 'ffa', 'ffc']);
 const MAX_FILE = 2 * 1024 * 1024;
 const skipped = [];
 
@@ -61,7 +65,15 @@ function walk(hostDir, rel, outDir) {
       const info = parseHostName(e.name);
       const size = fs.statSync(hp).size;
       const why = skipFile(r, info.type, size);
-      if (why) { skipped.push({ path: r, size, why }); continue; }
+      if (why) {
+        skipped.push({ path: r, size, why });
+        if (why.startsWith('binary type') && PLACEHOLDER_TYPES.has(info.type)) {
+          const node = { name: info.name, type: info.type, size: 0, placeholder: true, origSize: size };
+          if (info.load) { node.load = info.load; node.exec = info.exec; }
+          children.push(node);
+        }
+        continue;
+      }
       const enc = encodeName(info.name);
       fs.mkdirSync(outDir, { recursive: true });
       fs.copyFileSync(hp, path.join(outDir, enc));

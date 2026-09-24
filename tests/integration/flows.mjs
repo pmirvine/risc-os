@@ -452,7 +452,7 @@ if (on('basic')) {
   await page.waitForFunction(() => !!window.basic, null, { timeout: 10000 });
   await sleep(page, 500);
   const r = await page.evaluate(() => { try { return [window.basic.getSysVar('Missing$Var') ?? null, window.basic.getSysVar('boot$osversion'), window.basic.getSysVar('Wimp$Ver*')]; } catch (e) { return 'ERR ' + e.message; } });
-  check('full-screen BASIC reads missing / wildcard / case-insensitive system variables', JSON.stringify(r) === '[null,"371","369"]', r);
+  check('full-screen BASIC reads missing / wildcard / case-insensitive system variables', JSON.stringify(r) === '[null,"370","369"]', r);
   await page.keyboard.type('QUIT');
   await page.keyboard.press('Enter');
   check('basic: no page errors', !s.errors.length, s.errors);
