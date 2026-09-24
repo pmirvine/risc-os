@@ -146,6 +146,25 @@ export class AppManager {
     return true;
   }
 
+  /**
+   * Files dropped on a registered application's directory icon in a Filer viewer. Only apps whose descriptor
+   * sets `appIconDrop: true` take them (the 3.71 Filer copies the files into the directory instead): a running
+   * instance gets a DataLoad message (Message_DataLoad, window -1 = no window); otherwise the app is started
+   * with the first file, as *Run <app> <file>. Returns true if the drop was given to the app.
+   */
+  dropOnApp(appPath, files) {
+    const d = this._byDir(appPath);
+    if (!d?.appIconDrop || !files?.length) return false;
+    const [t] = this.tasksOf(d);
+    const f = files[0];
+    if (t) {
+      wimp.sendMessage('DataLoad', { files, path: f.path, filetype: f.filetype, window: null, icon: null }, { to: t });
+      return true;
+    }
+    this.start(d, `"${f.path}"`);
+    return true;
+  }
+
   /** Open a file with the app that handles a file type (used for Shift-double-click etc.). */
   openFile(path, type) {
     const d = this.apps.find((a) => {

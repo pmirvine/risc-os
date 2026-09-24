@@ -12,7 +12,11 @@ Lander is © D. J. Braben 1987. **The original program is never in this reposito
   then kept in IndexedDB `riscos-lander`), the IndexedDB copy, and a local git-ignored checkout of
   [markmoxon/lander-source-code-acorn-archimedes](https://github.com/markmoxon/lander-source-code-acorn-archimedes)
   in `vendor/lander` served by the dev server (`4-reference-binaries/!RunImage.bin`, or the Arthur
-  `GameCode.bin`, entered at &A614). The OS is BBC BASIC's machine (`src/basic/machine.js`): MODE 13 with two
+  `GameCode.bin`, entered at &A614). The checkout is only looked for when the page comes from this machine
+  (localhost), through the dev server's `__dev/lander.json` (serve.mjs lists the binaries that exist), so a public
+  static deployment makes no requests for it and a missing checkout logs no 404s. The binary can also be
+  dragged from a RISC OS Filer window onto the !Lander icon (the descriptor's `appIconDrop`: the app is started
+  with the file, or a running game gets Message_DataLoad and restarts with it). The OS is BBC BASIC's machine (`src/basic/machine.js`): MODE 13 with two
   banks in 160K ending at &2000000 (`*ScreenSize 160`, `linearScreen` VDU so ARM stores hit the frame buffer
   directly), OS_Byte 4/112/113/126/129/19, OS_Word 21, OS_Mouse, OS_ReadC, OS_WriteS, OS_BinaryToDecimal.
   Time is emulated: the CPU counts 8MHz ARM2 cycles and OS_Byte 19 moves the clock to the next 50Hz vsync, so
@@ -31,5 +35,5 @@ desktop). Lander has no sound calls, so neither mode makes any sound.
 
 Test hooks: `task.lander` = `{mode: 'original'|'port', machine, vdu, runner}`; `runner.pauseAt = n` holds at
 the vsync of frame n. Tests: `tests/basic/arm.test.mjs` (emulator and host SWIs, hand-assembled code),
-`tests/basic/lander.test.mjs`, `tests/div/lander-port.mjs`, `tests/div/lander-original.mjs` (skipped
+`tests/basic/lander.test.mjs`, `tests/div/lander-port.mjs`, `tests/div/lander-original.mjs`, `tests/div/lander-drop.mjs` (skipped
 without vendor/lander; screens `tests/screens/lander-*.png`).

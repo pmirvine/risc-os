@@ -6,7 +6,8 @@
 // documented reconstruction of the source) runs instead; it draws the same frames from the same input.
 //
 // Arguments (*Run <Lander$Dir> [-port | -original] [<file>]): -port always plays the port; <file> is a
-// Lander binary to run (and keep). A binary dropped onto the game from the host computer is kept too.
+// Lander binary to run (and keep). A binary dropped onto the game from the host computer, or dragged from a
+// Filer window onto the !Lander icon (DataLoad), is kept too.
 // Mouse: Select = full thrust, Menu = hover, Adjust = fire (browser left / middle / right button).
 // Clicking captures the pointer; Escape ends the game.
 import { os } from '../../core/os.js';
@@ -117,6 +118,24 @@ function run(task, binary, opts = {}) {
     await store(b, f.name);
     restart(b);
   });
+
+  // ---------------------------------------------------------------- a binary from a RISC OS Filer (DataLoad)
+  // Files dropped on the !Lander icon in a Filer viewer (appIconDrop in app.js) arrive as Message_DataLoad
+  // while the game runs, or as the argument when it starts; *Run <Lander$Dir> <file> while running gives 'run'.
+  const loadPath = async (path) => {
+    let b = null;
+    try { b = await vfs.readFile(path); } catch { /* unreadable */ }
+    if (!b || !identifyBinary(b)) { os.wimp?.beep?.(); return; }
+    await store(b, vfs.leaf(path));
+    restart(b);
+  };
+  task.onMessage?.('DataLoad', (msg) => {
+    const f = msg.files?.[0] ?? (msg.path ? { path: msg.path } : null);
+    if (!f?.path) return false;
+    loadPath(f.path);
+    return true;
+  });
+  task.on?.('run', ({ file }) => { if (file && vfs.exists(file)) loadPath(vfs.canonical(file)); });
 
   // ---------------------------------------------------------------- display
   let dims = '';

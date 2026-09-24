@@ -58,6 +58,9 @@ export default {
   open(task, path, msg) { … },           // optional: called for DataOpen of a declared type while running
   memory: 256,                           // K of application memory shown by the Task Manager
   multiInstance: false,                  // false: running again sends 'run' (+ DataOpen) to the running task
+  appIconDrop: false,                    // true: files dropped on the app's directory icon in a Filer viewer go to
+                                         // the app (started with the file, or DataLoad to the running task) instead
+                                         // of being copied into the directory as the 3.71 Filer does (os.apps.dropOnApp)
   help: 'assets/help/Draw.txt',          // becomes <appDir>.!Help (default assets/help/<name>.txt; false = none)
   files: { Templates: { filetype: 0xFEC, content: { src: 'assets/…' } } }, // extra ROM files in appDir
   commands: { Draw: { syntax, help, run: async (argv, ctx) => … } },     // * commands the app provides

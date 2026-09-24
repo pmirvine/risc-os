@@ -487,6 +487,8 @@ class DirViewer {
       let dest = target.path;
       const j = target.indexAt(drop.x, drop.y);
       if (j >= 0 && target.items[j].type === 'dir' && !target.items[j].isApp) dest = target.items[j].path;
+      if (j >= 0 && target.items[j].isApp && !files.some((f) => f.path === target.items[j].path)
+        && os.apps?.dropOnApp(target.items[j].path, files)) { this.clearSelection(); return; }
       if (target === this && dest === this.path) return;
       fileAction(move ? 'move' : 'copy', files.map((f) => f.path), dest, this.filer.options);
       if (move === false) this.clearSelection();
@@ -500,6 +502,8 @@ class DirViewer {
     // files dropped from elsewhere (not via Filer drag - e.g. from pinboard)
     const files = ev.files ?? [];
     if (!files.length) return true;
+    const j = this.indexAt(ev.x, ev.y);
+    if (j >= 0 && this.items[j].isApp && os.apps?.dropOnApp(this.items[j].path, files)) return true;
     const paths = files.map((f) => f.path).filter((p) => vfs.parent(p).toLowerCase() !== this.path.toLowerCase());
     if (paths.length) fileAction(ev.shift ? 'move' : 'copy', paths, this.path, this.filer.options);
     return true;
