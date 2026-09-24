@@ -7,6 +7,17 @@ window templates, Messages files, help text, sample files) extracted from the RI
 
 Plain modern JavaScript ES modules. There is no bundler, no framework and no runtime dependency.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Desktop welcome banner](docs/screenshots/fid-banner.png) Boot: the Desktop welcome banner | ![Filer with menu](docs/screenshots/fid-filer-menu.png) Filer window and menu |
+| ![Draw](docs/screenshots/fid-draw.png) !Draw with its toolbox, showing a tutorial Drawfile | ![Paint](docs/screenshots/fid-paint.png) !Paint: sprite file, colours and tools |
+| ![Task window running BASIC](docs/screenshots/tw-basic.png) Ctrl-F12 task window running BBC BASIC V | ![Original SciCalc](docs/screenshots/bw-scicalc.png) The original tokenised !SciCalc, running unmodified through the Wimp SWI bridge |
+| ![Maestro](docs/screenshots/acc-maestro-play.png) !Maestro playing one of the original tunes | ![Patience](docs/screenshots/div-patience.png) !Patience |
+| ![Meteors](docs/screenshots/div-meteors-play.png) !Meteors, ported from the original assembler | ![Task Manager](docs/screenshots/fid-taskmanager.png) Task Manager |
+| ![Configure](docs/screenshots/acc-configure-main.png) !Configure | ![BASIC Mandelbrot](docs/screenshots/basic-mandel.png) BBC BASIC V graphics (standalone `src/basic/demo.html`) |
+
 ## Running it
 
 ```sh
