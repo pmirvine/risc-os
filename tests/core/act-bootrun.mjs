@@ -27,17 +27,25 @@ export default async (page) => {
 
   // running a placeholder with no stand-in gives a RISC OS error, and reading one gives no data
   const r2 = await page.evaluate(async () => {
+    // (ARMovie's Join tool has no stand-in. An application's !RunImage, e.g. !T1ToFont's, starts its JS version.)
     let msg = null;
-    try { await os.cli.run('Run ADFS::HardDisc4.$.Utilities.!T1ToFont.!RunImage'); } catch (e) { msg = e.message; }
+    try { await os.cli.run('Run ADFS::HardDisc4.$.!Boot.Resources.!ARMovie.Tools.Join'); } catch (e) { msg = e.message; }
     const data = await os.vfs.readFile('ADFS::HardDisc4.$.Utilities.!T1ToFont.!RunImage');
+    let jsApp = null;
+    try {
+      await os.cli.run('Run ADFS::HardDisc4.$.Utilities.!T1ToFont.!RunImage');
+      for (let i = 0; i < 50 && !(jsApp = os.apps.tasksOf('T1ToFont').length > 0); i++) await new Promise((res) => setTimeout(res, 100));
+      os.apps.tasksOf('T1ToFont').forEach((t) => t.quit());
+    } catch (e) { jsApp = e.message; }
     let obeyEnd = null;
     await os.vfs.writeFile('RAM::RamDisc0.$.ObeyEnd', 'Set Test$ObeyEnd 1\nObey\nSet Test$ObeyEnd 2\n', { filetype: 0xFEB });
     await os.cli.run('Run RAM::RamDisc0.$.ObeyEnd');
     obeyEnd = os.sysvars.get('Test$ObeyEnd');
-    return { msg, len: data.length, obeyEnd };
+    return { msg, len: data.length, obeyEnd, jsApp };
   });
   check('placeholder without a stand-in reports an error', /ARM code/.test(r2.msg ?? ''), r2.msg);
   check('placeholder reads as empty', r2.len === 0);
+  check("a registered app's !RunImage starts the JS app", r2.jsApp === true, String(r2.jsApp));
   check('*Obey with no file ends the Obey file', r2.obeyEnd === '1', r2.obeyEnd);
   await page.screenshot({ path: 'tests/screens/boot-configure.png' });
 };
