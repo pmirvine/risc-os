@@ -358,8 +358,12 @@ export class Wimp extends Emitter {
     input.mouseX = p.x; input.mouseY = p.y;
     if (this.menus?.isOpen) this.menus.pointerMove(e, p);
     // pointer shape / enter-leave
+    // As in the Wimp, Pointer_Entering/Leaving_Window (and so an application's pointer shape)
+    // apply to a window's visible work area only: over the furniture (title bar, scroll bars,
+    // tools, border) the pointer is the default arrow.
     const winEl = e.target.closest?.('.win');
-    const win = winEl?._win ?? null;
+    const inWork = winEl && e.target.closest('[data-part]')?.dataset.part === 'work';
+    const win = inWork ? winEl._win ?? null : null;
     if (win !== this._ptrWin) {
       this._ptrWin?.emit('pointerleave', {});
       this._ptrWin = win;
