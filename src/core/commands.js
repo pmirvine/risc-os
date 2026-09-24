@@ -85,6 +85,7 @@ const MODULES = [
   ['ShellCLI', '0.28'], ['ColourTrans', '1.25'], ['DragASprite', '0.13'], ['SpriteExtend', '0.99'], ['DrawFile', '1.40'],
   ['Squash', '0.26'], ['SoundDMA', '1.52'], ['SoundChannels', '1.25'], ['SoundScheduler', '1.21'], ['WaveSynth', '1.13'],
   ['Obey', '0.35'], ['BufferManager', '0.20'], ['DeviceFS', '0.36'], ['Parallel', '0.53'], ['Serial', '0.28'], ['ScreenBlanker', '2.10'],
+  ['Joystick', '0.22'],
 ];
 
 setModuleLookup((name) => MODULES.find((m) => m[0].toLowerCase() === String(name).toLowerCase())?.[1] ?? null);

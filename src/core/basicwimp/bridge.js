@@ -1272,7 +1272,19 @@ export class WimpBridge {
     const opts = { appName: flags & 16 ? undefined : app || undefined, cancel: !!(flags & 2), category: flags & 256 ? ['info', 'info', 'error', 'program', 'question'][(flags >> 9) & 7] : 'error' };
     if (!(flags & 1) && !(flags & 2)) opts.cancel = false;
     if (flags & 16) opts.title = app || 'Error';
+    // RISC OS 3.5+ (new-style errors, bit 8): R3 = sprite name, R4 = sprite area, R5 = extra buttons
+    // ("Cancel,Help,RESTORE"), laid out right to left from the last and returned as 3, 4, 5, ... (Wimp07).
+    let extra = [];
+    if (flags & 256) {
+      if (u32(r[3]) > 1) { const sp = rdCtrl(this.m, r[3], 12).trim(); if (sp) opts.sprite = sp; }
+      if (u32(r[5]) > 1) extra = rdCtrl(this.m, r[5], 256).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 3);
+    }
+    if (extra.length) {
+      opts.buttons = [...extra].reverse();
+      if (!(flags & 3)) { opts.ok = false; opts.cancel = false; }
+    }
     const res = await wimp.reportError(msg, opts);
+    if (typeof res === 'string') { r[1] = 3 + extra.indexOf(res); return; }
     r[1] = res === 2 ? 2 : 1;
   }
 

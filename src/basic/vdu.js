@@ -88,6 +88,10 @@ export class VDU {
     this._glyphMap = null;
     this._canvas = opts.canvas || null;
     this.screenMemory = opts.screenMemory || DEFAULT_SCREEN_MEM;  // bytes; sets the number of screen banks
+    // linearScreen: in byte-per-pixel modes keep all banks in one array that is exactly the screen memory
+    // (screenIO.linear), so ARM code can write pixels directly (src/basic/arm.js)
+    this.linearScreen = !!opts.linearScreen;
+    this._linear = null; this._bankKey = ''; this._defBank = 0;
     this._ctx = null; this._img = null; this._img32 = null;
     // state that survives mode changes
     this.cursorFlags = 0;      // CursorFlags bits 0..7 (VDU 23,16)
@@ -137,12 +141,23 @@ export class VDU {
     this.rowMult = this.gapMode ? this.tCharSizeY + (this.tCharSizeY >> 2) : this.tCharSizeY;
     const ed = m.xEig - m.yEig; this.aspect = ed < 0 ? 2 : ed > 0 ? 1 : 0;
     this.cursorFill = this.bbcGap ? 1 : this.bpp === 4 ? 7 : this.pixMask;
-    // screen memory
+    // screen memory. As ModeChangeSub, a mode change clears only the bank it selects: the other banks keep
+    // their contents when the layout is unchanged. MODE n+128 (shadow) selects bank 2 (ConvertBankToAddress).
     const size = this.W * this.H;
+    const shadow = n >= 128 && n < 256;
     this.maxBanks = Math.max(MIN_BANKS, Math.floor(this.screenMemory / m.screenSize));
-    this.banks = [new Uint8Array(size), new Uint8Array(size)];   // further banks are allocated when selected
-    this.driverBank = 0; this.displayBank = 0;
-    this.fb = this.banks[0];
+    const key = `${size}/${m.screenSize}/${this.maxBanks}`;
+    const linear = this.linearScreen && !this.teletext && this.bpp === 8 && this.bpc === 8 && m.screenSize === size;
+    if (this.banks && !this.teletext && this._bankKey === key && this.banks[0]?.length === size && !!this._linear === linear) { /* keep the banks */ }
+    else if (linear) {
+      const all = this._linear = new Uint8Array(size * this.maxBanks);
+      this.banks = [];
+      for (let i = 0; i < this.maxBanks; i++) this.banks.push(all.subarray(i * size, (i + 1) * size));
+    } else { this._linear = null; this.banks = [new Uint8Array(size), new Uint8Array(size)]; }   // further banks are allocated when selected
+    this._bankKey = this.teletext ? '' : key;
+    const def = this._defBank = shadow && !this.teletext ? 1 : 0;
+    this.driverBank = def; this.displayBank = def;
+    this.fb = this._bank(def);
     if (this.teletext) {
       this.ttxBank0 = this.banks[0]; this.ttxBank1 = this.banks[1];
       this.ttxMap = new Uint8Array(25 * 40).fill(32);
@@ -1108,6 +1123,8 @@ export class VDU {
       get hi() { return SCREEN_END; },
       rd8(a) { return v._scrByte(a, -1); },
       wr8(a, b) { v._scrByte(a, b & 255); },
+      /** linearScreen mode: {lo, u8} = all of screen memory as bytes (null otherwise) */
+      get linear() { return v._linear ? { lo: SCREEN_END - v.totalScreenSize, u8: v._linear } : null; },
     };
     return this._screenIO;
   }
@@ -1307,13 +1324,13 @@ export class VDU {
 
   /** OS_Byte 112: select VDU driver screen bank (1..n, 0 = default) */
   setDriverBank(n) {
-    if (n === 0) n = 1;
+    if (n === 0) n = this._defBank + 1;
     if (n < 1 || n > this.maxBanks || this.teletext) return;
     this.driverBank = n - 1; this.fb = this._bank(n - 1);
   }
   /** OS_Byte 113: select displayed screen bank */
   setDisplayBank(n) {
-    if (n === 0) n = 1;
+    if (n === 0) n = this._defBank + 1;
     if (n < 1 || n > this.maxBanks || this.teletext) return;
     this._bank(n - 1);
     this.displayBank = n - 1; this._dirtyAll();
@@ -1474,6 +1491,7 @@ export class VDU {
     if (fs !== this._shown.flash) { this._shown.flash = fs; this._dirtyAll(); }
     const bank = this.teletext ? this._ttxPhase(now) : -1;
     if (bank !== this._shown.bank) { this._shown.bank = bank; this._dirtyAll(); }
+    if (this._linear) this._dirtyAll();   // written directly (ARM code): repaint every frame
     const rects = this._cursorRects(now);
     const key = rects.map((r) => r.join(',')).join(';');
     if (key !== this._shown.cursor) {

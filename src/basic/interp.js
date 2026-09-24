@@ -447,9 +447,10 @@ export class Interp {
 
   // WHILE / ENDWHILE -----------------------------------------------------------
   doWhile(cond, line, condPc, bodyPc, pos) {
+    // the ENDWHILE that jumped back here (not one of a WHILE loop inside a FN called by the condition)
     const pw = this.pendingWhile;
-    if (pw) {
-      this.pendingWhile = null;
+    if (pw && pw.frame.line === line && pw.frame.pc === condPc) {
+      this.pendingWhile = pw.prev ?? null;
       const f = pw.frame;
       if (cond !== 0) { this.jumpTo(f.bodyLine, f.bodyPc, f.ops); return; }
       this.popFrame();
@@ -467,7 +468,7 @@ export class Interp {
     for (;;) {
       const f = this.stack[this.stack.length - 1];
       if (f && f.k === F.WHILE) {
-        this.pendingWhile = { frame: f, line, pc: afterPc, ops: line === this.line ? this.ops : undefined };
+        this.pendingWhile = { frame: f, line, pc: afterPc, ops: line === this.line ? this.ops : undefined, prev: this.pendingWhile };
         this.jumpTo(f.line, f.pc, f.ops);
         return;
       }
@@ -477,13 +478,14 @@ export class Interp {
   skipWhile(line, pos) {
     let depth = 0;
     let li = line.idx; let b = line.b; let i = pos;
-    if (line.imm || line.lib) { this.endProgram(); return; }
+    if (line.imm) { this.endProgram(); return; }
+    const lines = this.linesOf(line);
     let q = false;
     for (;;) {
       if (i >= b.length || b[i] === 13) {
         li++; q = false;
-        if (li >= this.lines.length) { this.endProgram(); return; }
-        b = this.lines[li].b; i = 0; continue;
+        if (li >= lines.length) { this.endProgram(); return; }
+        b = lines[li].b; i = 0; continue;
       }
       const c = b[i];
       if (c === 0x22) { q = !q; i++; continue; }
@@ -495,7 +497,7 @@ export class Interp {
       if (c === T.ENDWHILE) {
         depth--;
         if (depth === -1) {
-          const tl = this.lines[li] || line;
+          const tl = lines[li] || line;
           const code = this.getCode(tl);
           const pc = code.tokPc.get(i);
           this.jumpTo(tl, pc !== undefined ? pc : code.eol.pc);
@@ -507,17 +509,24 @@ export class Interp {
   }
 
   // Block IF --------------------------------------------------------------------
+  /** The program text a line belongs to: the main program, or a LIBRARY / INSTALL / OVERLAY file. */
+  linesOf(line) {
+    if (!line?.lib) return this.lines;
+    for (const L of [...this.libraries, ...this.installed, ...(this.overlay ?? [])]) if (L?.lines?.[line.idx] === line) return L.lines;
+    return this.lines;
+  }
   lineEndsWith(l, tok) { const b = l.body; return b.length > 0 && b[b.length - 1] === tok; }
   firstTok(l) { const b = l.body; let i = 0; while (b[i] === 32) i++; return i < b.length ? b[i] : 13; }
   skipBlockIf(line) {
     if (line.imm) { this.endImmediate(); return; }
     let depth = 0;
     let li = line.idx;
+    const lines = this.linesOf(line);
     for (;;) {
-      const cur = this.lines[li];
+      const cur = lines[li];
       if (this.lineEndsWith(cur, T.THEN)) depth++;
       li++;
-      const nx = this.lines[li];
+      const nx = lines[li];
       if (!nx) throw err('NOENDI');
       const t = this.firstTok(nx);
       if (t === T.ENDIF) {
@@ -534,11 +543,12 @@ export class Interp {
     if (line.imm) { this.endImmediate(); return; }
     let depth = 0;
     let li = line.idx;
+    const lines = this.linesOf(line);
     for (;;) {
-      const cur = this.lines[li];
+      const cur = lines[li];
       if (this.lineEndsWith(cur, T.THEN)) depth++;
       li++;
-      const nx = this.lines[li];
+      const nx = lines[li];
       if (!nx) throw err('NOENDI');
       if (this.firstTok(nx) === T.ENDIF) {
         depth--;
@@ -552,11 +562,12 @@ export class Interp {
     if (line.imm) throw err('NOENDC');
     let depth = mode === 0 ? -1 : 0;
     let li = line.idx;
+    const lines = this.linesOf(line);
     for (;;) {
-      const cur = this.lines[li];
+      const cur = lines[li];
       if (this.lineEndsWith(cur, T.OF)) depth++;
       li++;
-      const nx = this.lines[li];
+      const nx = lines[li];
       if (!nx) throw err('NOENDC');
       const t = this.firstTok(nx);
       if (depth !== 0) { if (t === T.ENDCASE) depth--; continue; }
@@ -575,11 +586,12 @@ export class Interp {
     if (line.imm) throw err('NOENDC');
     let depth = 1;
     let li = line.idx;
+    const lines = this.linesOf(line);
     for (;;) {
-      const cur = this.lines[li];
+      const cur = lines[li];
       if (this.lineEndsWith(cur, T.OF)) depth++;
       li++;
-      const nx = this.lines[li];
+      const nx = lines[li];
       if (!nx) throw err('NOENDC');
       if (this.firstTok(nx) === T.ENDCASE) {
         depth--;

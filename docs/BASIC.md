@@ -230,6 +230,6 @@ assembler encodings, ARM execution, files, VDU and graphics pixels, demo program
 for the host contract above: run() results, kill(), registerSwi, host errors, banks, screen memory).
 `node tests/basic/screenshot.mjs mandel.bas circles.bas` (with `node serve.mjs` running) saves
 Playwright screenshots of the demo page to `tests/screens/`.
-Example programs live in `tests/basic/programs/` (listed in `index.json` for the demo page): mandel,
-circles, spiral, colours, teletext, ball, sieve, guess, cube (double buffering), tree (recursion),
-asmplot (assembler + CALL + screen memory), tune (SOUND …,beat, VOICE, STEREO), errors (ON ERROR LOCAL etc.).
+Example programs live in `src/basic/demos/` (listed in `index.json` for the demo page's Examples menu and
+`tools/disc-basicdemos.mjs`, which puts them on the seed disc as `$.Demos.BASIC`; see docs/BASIC_DEMOS.md).
+`tests/basic/demos.test.mjs` runs every one headless.

@@ -72,6 +72,9 @@ export class OSCLI {
     // strip trailing control chars
     s = s.replace(/[\r\n]+$/, '');
     if (s.startsWith('/')) s = 'Run ' + s.slice(1);
+    // "-fs-command": run with a temporary filing system (e.g. !HForm's "-ADFS-%DISMOUNT :4"); single FS model
+    const tmpFS = /^-([A-Za-z]+)-(\S.*)$/.exec(s);
+    if (tmpFS) s = tmpFS[2];
     let noAlias = false;
     if (s.startsWith('%')) { noAlias = true; s = s.slice(1); }
     // command name

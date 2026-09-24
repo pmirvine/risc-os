@@ -90,14 +90,14 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 // ---- toolbar --------------------------------------------------------------------
 async function fetchExample(name) {
   try {
-    const r = await fetch(new URL('../../tests/basic/programs/' + name, import.meta.url));
+    const r = await fetch(new URL('./demos/' + name, import.meta.url));
     if (!r.ok) return null;
     return new Uint8Array(await r.arrayBuffer());
   } catch (e) { return null; }
 }
 async function loadExamples() {
   try {
-    const r = await fetch(new URL('../../tests/basic/programs/index.json', import.meta.url));
+    const r = await fetch(new URL('./demos/index.json', import.meta.url));
     const list = await r.json();
     const sel = document.getElementById('examples');
     for (const it of list) { const o = document.createElement('option'); o.value = it.file; o.textContent = it.title; sel.append(o); }
