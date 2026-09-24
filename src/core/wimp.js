@@ -334,6 +334,7 @@ export class Wimp extends Emitter {
     const button = input.button(e);
     if (!button) return;
     e.preventDefault();
+    this._doublePtrOff();
     if (this.modal) { this.modal.onPointerDown?.(e, button); return; }
     const target = e.target;
     // menus
@@ -367,7 +368,9 @@ export class Wimp extends Emitter {
     // P validation pointer shapes
     const icEl = e.target.closest?.('.icon');
     const ptr = icEl?.dataset.ptr || win?.pointer || '';
-    this.setPointer(ptr);
+    this._ptrWant = ptr;
+    if (this._dblPtr && Math.abs(p.x - this._dblPtr.x) + Math.abs(p.y - this._dblPtr.y) > input.config.doubleClickMove) this._doublePtrOff();
+    if (!this._dblPtr) this.setPointer(ptr);
     if (win && win.hasListeners('pointermove')) {
       const wp = win.screenToWork(p.x, p.y);
       win.emit('pointermove', { x: wp.x, y: wp.y, sx: p.x, sy: p.y, buttons: e.buttons });
@@ -406,6 +409,22 @@ export class Wimp extends Emitter {
       cache.set(ck, c.toDataURL());
       if (this._ptrKey === key) set(cache.get(ck), scale);
     }).catch(() => {});
+  }
+
+  // Wimp03 doubleptr_on/off: after the first click on something that waits for a double click the
+  // pointer changes to ptr_double until the double-click time runs out, the pointer moves away, or
+  // the second click arrives.
+  _doublePtrOn(p) {
+    clearTimeout(this._dblT);
+    this._dblPtr = { x: p.x, y: p.y };
+    this.setPointer('ptr_double');
+    this._dblT = setTimeout(() => this._doublePtrOff(), input.config.doubleClickMs);
+  }
+  _doublePtrOff() {
+    if (!this._dblPtr) return;
+    this._dblPtr = null;
+    clearTimeout(this._dblT);
+    this.setPointer(this._ptrWant ?? '');
   }
 
   _furniturePointerDown(win, part, e, button, p, partEl) {
@@ -576,6 +595,7 @@ export class Wimp extends Emitter {
     const last = this._lastClick;
     const isDouble = last && last.win === win && last.icon === icon && last.button === button && now - last.t < input.config.doubleClickMs && Math.abs(last.x - p.x) + Math.abs(last.y - p.y) < input.config.doubleClickMove;
     this._lastClick = isDouble ? null : { win, icon, button, t: now, x: p.x, y: p.y };
+    if ([5, 8, 10].includes(btype) && !isDouble) this._doublePtrOn(p); else this._doublePtrOff();
 
     const selects = [4, 5, 7, 8, 11].includes(btype);
     const doSelect = () => { if (icon && selects) this._selectIcon(win, icon, button); };
