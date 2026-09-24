@@ -26,6 +26,6 @@
   260 ENDPROC
   270 DEF PROCinner
   280 LOCAL ERROR
-  290 ON ERROR LOCAL PRINT "  inner saw ";ERR;", passing it on":ERROR ERR,REPORT$
+  290 ON ERROR LOCAL RESTORE ERROR:PRINT "  inner saw ";ERR;", passing it on":ERROR ERR,REPORT$
   300 DIM a(3):a(7)=1
   310 ENDPROC

@@ -154,3 +154,31 @@ test('BBC MOS emulation via CALL &FFEE / USR &FFF4', async () => {
   const out = await runBasic(lines('A%=66:CALL &FFEE:A%=10:CALL &FFE3:PRINT', 'A%=0:X%=1:R%=USR &FFF4:PRINT (R% AND &FF00) DIV 256'));
   assert.equal(out, 'B\n\n         6\n');
 });
+
+test('CALL parameter block: array elements and whole arrays in memory, string information blocks', async () => {
+  const { runBasic } = await import('./helpers.mjs');
+  const src = [
+    '10 DIM code% 512, a%(9), r(2), s$(1)',
+    '20 FOR pass%=0 TO 2 STEP 2',
+    '30 P%=code%',
+    '40 [OPT pass%',
+    '50 .sort LDR R0,[R9]:LDR R1,[R0]:LDR R2,[R9,#8]',
+    '60 .outer SUBS R1,R1,#1:MOVLE PC,R14:MOV R3,#0',
+    '70 .inner LDR R4,[R2,R3,LSL #2]:ADD R5,R3,#1:LDR R6,[R2,R5,LSL #2]:CMP R4,R6',
+    '80 STRGT R6,[R2,R3,LSL #2]:STRGT R4,[R2,R5,LSL #2]:MOV R3,R5:CMP R3,R1:BLT inner:B outer',
+    '90 .upper LDR R0,[R9]:LDR R1,[R0]:LDRB R2,[R0,#4]',
+    '100 .uloop SUBS R2,R2,#1:MOVLT PC,R14:LDRB R3,[R1,R2]:CMP R3,#97:RSBGES R4,R3,#122',
+    '110 SUBGE R3,R3,#32:STRB R3,[R1,R2]:B uloop',
+    '120 .info LDR R5,[R9]:LDR R0,[R9,#8]:LDR R1,[R9,#12]:LDR R0,[R0]:LDR R2,[R0]:LDR R3,[R0,#4]:LDR R4,[R0,#8]',
+    '130 STR R1,[R5]:STR R2,[R5,#4]:STR R3,[R5,#8]:STR R4,[R5,#12]:STR R0,[R5,#16]:MOV PC,R14',
+    '140 .trunc LDR R0,[R9]:MOV R1,#2:STRB R1,[R0,#4]:MOV PC,R14',
+    '150 ]:NEXT',
+    '160 a%()=5,3,9,1,7,2,8,6,4,0:n%=10:CALL sort,a%(0),n%',
+    '170 FOR i%=0 TO 9:PRINT ;a%(i%);:NEXT:PRINT',
+    '180 s$="Hello, World":CALL upper,s$:PRINT s$',
+    '190 x$="abcdef":CALL trunc,x$:PRINT x$;LEN x$',
+    '200 DIM p% 20:r(1)=2.5:CALL info,r(),!p%:PRINT ;p%!0;" ";p%!4;" ";p%!8;" ";p%!12;" ";|(p%!16+12+5)',
+  ];
+  const out = await runBasic(src.join('\n'));
+  assert.equal(out, '0123456789\nHELLO, WORLD\nab2\n261 3 0 3 2.5\n');
+});

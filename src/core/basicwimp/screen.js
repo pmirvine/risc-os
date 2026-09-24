@@ -108,7 +108,7 @@ export class WindowCanvas {
   }
 
   /** Copy the backing store rectangle (work px) into the VDU framebuffer at screen pixel (sx, sy). */
-  toScreen(vdu, wx0, wy0, w, h, sx, sy) {
+  toScreen(vdu, wx0, wy0, w, h, sx, sy, key = 0) {
     const fb = vdu.fb, SW = vdu.W, SH = vdu.H, W = this.W;
     for (let y = 0; y < h; y++) {
       const py = sy + y, ry = wy0 - this.y0 + y;
@@ -117,7 +117,7 @@ export class WindowCanvas {
         const px = sx + x, rx = wx0 - this.x0 + x;
         if (px < 0 || px >= SW || rx < 0 || rx >= W) continue;
         const i = ry * W + rx;
-        fb[py * SW + px] = this.mask[i] ? this.pix[i] : vdu._bwKey;
+        fb[py * SW + px] = this.mask[i] ? this.pix[i] : (key < 0 ? 0 : key);
       }
     }
   }

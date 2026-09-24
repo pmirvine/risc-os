@@ -122,3 +122,24 @@ test('demo programs run and draw', async () => {
   const guess = await gfx(fs.readFileSync(path.join(dir, 'guess.bas'), 'latin1'), { input: guesses });
   assert.match(guess.out, /Correct! You took \d+ tries\./);
 });
+
+test('type-in programs: tree, asmplot (assembler + screen memory), tune, errors, cube', async () => {
+  const read = (f) => fs.readFileSync(path.join(dir, f), 'latin1');
+  const tree = await gfx(read('tree.bas'));
+  assert.equal(tree.vdu.mode, 28);
+  assert.notDeepEqual(tree.vdu.getPixelRGB(320, 380), tree.vdu.getPixelRGB(40, 300), 'trunk drawn');
+  const asm = await gfx(read('asmplot.bas'));
+  assert.match(asm.out, /Code: 168 bytes/);
+  // stripes block at byte 80 of row 20: pixel (80+c, 20+r) = (r + c>>3) AND 63
+  for (const [c, r] of [[0, 0], [16, 5], [159, 39]]) assert.equal(asm.vdu.getPixel(80 + c, 20 + r), (r + (c >> 3)) & 63, 'stripes via screen memory');
+  const tune = await gfx(read('tune.bas'));
+  assert.match(tune.out, /Done - 20 notes/);
+  const errs = await gfx(read('errors.bas'));
+  assert.match(errs.out, /10\/0 = undefined \(Division by zero\)/);
+  assert.match(errs.out, /SQR\(-4\) = {3}SQR\(-4\) failed: Negative root/);
+  assert.match(errs.out, /inner saw 15, passing it on\n {2}outer caught: Subscript out of range from line 290/);
+  assert.match(errs.out, /Top-level handler: Something went wrong \(99\) at line 100/);
+  const cube = await gfx(read('cube.bas').replace('frames%=300', 'frames%=3'));
+  assert.match(cube.out, /3 frames in/);
+  assert.equal(cube.vdu.displayBank, 0, 'back on bank 1');
+});

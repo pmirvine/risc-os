@@ -517,6 +517,18 @@ export function installServices(m, proc) {
   S('ColourTrans_ReturnFontColours', (r) => { r[3] = 14; });
   proc.setFontColoursRGB = (bg, fg) => { fontMgr.bg = bg; fontMgr.fg = fg; };
 
+  // ---------------------------------------------------------------- sound voices (the 3.71 defaults)
+  const VOICES = ['WaveSynth-Beep', 'StringLib-Soft', 'StringLib-Pluck', 'StringLib-Steel', 'StringLib-Hard', 'Percussion-Soft', 'Percussion-Medium', 'Percussion-Snare', 'Percussion-Noise'];
+  const voicePtr = (n) => symPtr(VOICES[n - 1] ?? '');
+  S('Sound_InstallVoice', (r) => {
+    if (r[0] === 0) { const slot = r[1]; r[0] = slot > 0 && slot <= VOICES.length ? voicePtr(slot) : 0; r[1] = slot === 0 ? VOICES.length + 1 : slot; return; }
+    if (r[0] === 2) { const v = r[1]; r[2] = v >= 1 && v <= VOICES.length ? voicePtr(v) : 0; r[3] = r[2]; return; }
+    if (r[0] === 1 || r[0] === 3) return;
+    r[1] = 0;
+  });
+  S('Sound_AttachNamedVoice', (r) => { const n = rdCtrl(m, r[1], 40); const i = VOICES.findIndex((v) => v.toLowerCase() === n.toLowerCase()); r[0] = i >= 0 ? 0 : r[0]; });
+  S('Sound_AttachVoice', (r) => { const old = proc._voices?.[r[0]] ?? 1; (proc._voices ??= [])[r[0]] = r[1]; r[1] = old; });
+
   // ---------------------------------------------------------------- misc
   for (const n of ['Hourglass_On', 'Hourglass_Off', 'Hourglass_Smash', 'Hourglass_Start', 'Hourglass_Percentage', 'Hourglass_LEDs', 'Hourglass_Colours']) S(n, () => {});
   S('OS_ReadMemMapInfo', (r) => { r[0] = 4096; r[1] = 1024; });

@@ -69,3 +69,19 @@ test('* commands: SET/ECHO/SHOW, OSCLI, system variables, file errors', async ()
     '*Unknowncommand').replace('10 *Set', '5 DIM buf% 64\n10 *Set'), { fs });
   assert.equal(out, 'hello world\nhello\n         0\nFile \'Unknowncommand\' not found D6\n');
 });
+
+test('OS_File 17/23 catalogue info, *SetType and OS_File 18', async () => {
+  const { MemFS } = await import('../../src/basic/memfs.js');
+  const { runBasic } = await import('./helpers.mjs');
+  const fs = new MemFS();
+  await fs.writeFile('$.Prog', new TextEncoder().encode('hello'), 0xFFD);
+  const out = await runBasic([
+    '10 SYS "OS_File",17,"$.Prog" TO t%,,l%,e%,len%,a%',
+    '20 PRINT t%;" ";~l%;" ";len%',
+    '30 *SetType $.Prog Text',
+    '40 SYS "OS_File",23,"$.Prog" TO t%,,,,len%,,ft%:PRINT ~ft%',
+    '50 SYS "OS_File",18,"$.Prog",&FFB:SYS "OS_File",23,"$.Prog" TO ,,,,,,ft%:PRINT ~ft%',
+    '60 SYS "OS_File",23,"$" TO t%,,,,,,ft%:PRINT t%;" ";~ft%',
+  ].join('\n'), { fs });
+  assert.equal(out, '         1 FFFFFD00 5\n       FFF\n       FFB\n         2 1000\n');
+});

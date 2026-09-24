@@ -1433,6 +1433,10 @@ export class VDU {
     return out;
   }
 
+  /** Render into this canvas from now on (HTMLCanvasElement / OffscreenCanvas; null = headless) */
+  attachCanvas(canvas) { this._canvas = canvas || null; this._ctx = null; if (canvas) this._setupCanvas(); this._dirtyAll(); }
+  /** The host changed pixels in vdu.fb directly: repaint rows y0..y1 (pixel rows, 0 = top; default all) */
+  invalidate(y0, y1) { if (y0 === undefined) this._dirtyAll(); else this._dirtyRows(Math.max(0, y0), Math.min(this.H - 1, y1 ?? y0)); }
   _setupCanvas() {
     const cv = this._canvas;
     if (!cv) return;

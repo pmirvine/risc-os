@@ -233,6 +233,16 @@ export class BasicMachine {
     for (const w of ws) w.reject(err('ESCAPE'));
   }
   ackEscape() { this.interp.escape = false; }
+  /**
+   * Stop the program unconditionally (task killed): unlike escape() it cannot be trapped by ON ERROR.
+   * Pending GET/INPUT/INKEY waits are cancelled; a SWI handler Promise the program is waiting on must
+   * be settled by the host (resolve or reject) for run() to return. run() then resolves {reason:'killed'}.
+   */
+  kill() {
+    this.killed = true;
+    this.interp.running = false;
+    for (const w of this.keyWaiters.splice(0)) w.reject(new BasicError(17, 'Escape'));
+  }
   setMouse(x, y, b) { this.mx = x | 0; this.my = y | 0; this.mb = b | 0; }
 
   keyNow() { return this.keybuf.length ? this.keybuf.shift() : -1; }
@@ -688,18 +698,30 @@ export class BasicMachine {
     const I = this.interp;
     const r = new Array(16).fill(0);
     for (let i = 0; i < 8; i++) r[i] = I.iv[1 + i];
-    // parameter block for CALL: list of (address, type) pairs
+    // parameter block for CALL (CALLARM): (address, type) pairs, last parameter first. Types:
+    // 0 ?x, 4 integer, 5 real (5 byte), 128 string variable (address of its string information block:
+    // word address + byte length), 129 $x, 256+4/5/128 whole array (address of the array pointer)
+    const copies = [];   // {lv, addr, t} scalars copied back after the call
+    const arrays = new Set();
     if (params && params.length) {
       const blk = this.scratchAlloc(params.length * 8);
       params.forEach((lv, i) => {
         let addr = 0, type = 4;
+        const tcode = lv.t === TI ? 4 : lv.t === TF ? 5 : 128;
         if (lv.kind === 'ind') { addr = lv.addr(); type = lv.ik === 'b' ? 0 : lv.ik === 'w' ? 4 : lv.ik === 'f' ? 5 : 129; }
-        else {
+        else if (lv.kind === 'elem' || lv.kind === 'array') {
+          const a = lv.arr;
+          if (a.dims === null) I.arrMissing(a);
+          this.arrToMem(a); arrays.add(a);
+          if (lv.kind === 'elem') { addr = this.arrDataAddr(a) + lv.index() * (a.t === TI ? 4 : 5); type = tcode; }
+          else { addr = this.scratchAlloc(4); this.mem.wr32(addr, a.addr); type = 256 + tcode; }
+        } else {
           // variables live in JS: give them a temporary slot in memory and copy back afterwards
-          addr = this.scratchAlloc(260);
           const v = I.readLV(lv);
-          if (lv.t === TI) { this.mem.wr32(addr, v); type = 4; } else if (lv.t === TF) { this.mem.wrFloat5(addr, v); type = 5; } else { this.mem.wrStrCR(addr, v); type = 129; }
-          lv._tmpAddr = addr;
+          if (lv.t === TS) { addr = this.scratchAlloc(8); this.wrSIB(addr, v); }
+          else { addr = this.scratchAlloc(8); if (lv.t === TI) this.mem.wr32(addr, v); else this.mem.wrFloat5(addr, v); }
+          type = tcode;
+          copies.push({ lv, addr });
         }
         this.mem.wr32(blk + (params.length - 1 - i) * 8, addr);
         this.mem.wr32(blk + (params.length - 1 - i) * 8 + 4, type);
@@ -709,18 +731,43 @@ export class BasicMachine {
     r[8] = 0x8700; r[11] = SCRATCH + 0x2000; r[12] = 0;
     r[13] = (I.himem - I.stackBytes - 256) & ~3;
     const done = (cpu) => {
-      if (params) for (const lv of params) {
-        if (lv._tmpAddr) {
-          const a = lv._tmpAddr; delete lv._tmpAddr;
-          const v = lv.t === TI ? this.mem.rd32(a) : lv.t === TF ? this.mem.rdFloat5(a) : this.mem.rdStrCR(a);
-          I.assignLV(lv, v);
-        }
+      for (const { lv, addr } of copies) {
+        I.assignLV(lv, lv.t === TI ? this.mem.rd32(addr) : lv.t === TF ? this.mem.rdFloat5(addr) : this.rdSIB(addr));
       }
+      for (const a of arrays) this.memToArr(a);
       return cpu.r[0] | 0;
     };
     const res = this.arm.call(addr, r);
     if (res && typeof res.then === 'function') return res.then(() => done(this.arm));
     return done(this.arm);
+  }
+  // BASIC data in memory for machine code --------------------------------------------
+  /** string information block: word address, byte length (string text in scratch space) */
+  wrSIB(sib, str, room = 256) {
+    const p = this.scratchAlloc(Math.max(room, str.length));
+    for (let i = 0; i < str.length; i++) this.mem.wr8(p + i, str.charCodeAt(i) & 255);
+    this.mem.wr32(sib, p); this.mem.wr8(sib + 4, str.length);
+  }
+  rdSIB(sib) {
+    const p = this.mem.rd32(sib) >>> 0, n = this.mem.rd8(sib + 4);
+    let s = ''; for (let i = 0; i < n; i++) s += String.fromCharCode(this.mem.rd8(p + i));
+    return s;
+  }
+  arrDataAddr(a) { return a.addr + 4 * a.dims.length + 8; }
+  /** write array a into its block at a.addr as BASIC lays it out: sizes, 0, count, elements */
+  arrToMem(a) {
+    const M = this.mem; let p = a.addr;
+    for (const d of a.dims) { M.wr32(p, d); p += 4; }
+    M.wr32(p, 0); M.wr32(p + 4, a.data.length); p += 8;
+    if (a.t === TI) for (let i = 0; i < a.data.length; i++, p += 4) M.wr32(p, a.data[i]);
+    else if (a.t === TF) for (let i = 0; i < a.data.length; i++, p += 5) M.wrFloat5(p, a.data[i]);
+    else for (let i = 0; i < a.data.length; i++, p += 5) this.wrSIB(p, a.data[i], (a.data[i].length + 4) & ~3);
+  }
+  memToArr(a) {
+    const M = this.mem; let p = this.arrDataAddr(a);
+    if (a.t === TI) for (let i = 0; i < a.data.length; i++, p += 4) a.data[i] = M.rd32(p);
+    else if (a.t === TF) for (let i = 0; i < a.data.length; i++, p += 5) a.data[i] = M.rdFloat5(p);
+    else for (let i = 0; i < a.data.length; i++, p += 5) a.data[i] = this.rdSIB(p);
   }
   armSwi(num, cpu) {
     // SWIs from ARM code share the SYS table; OS_WriteS needs the PC
@@ -746,6 +793,7 @@ export class BasicMachine {
     const I = this.interp;
     I.lastError = null;
     let result = { reason: 'end' };
+    if (this.killed) { this.killed = false; I.running = false; }
     this.busy = true;
     try {
       let t0 = nowMs();
@@ -754,7 +802,7 @@ export class BasicMachine {
         try {
           r = this.slice();
         } catch (e) {
-          if (!I.handleError(e)) break;
+          if (this.killed || !I.handleError(e)) break;
           // a program that errors continually (e.g. an error inside its own ON ERROR handler) must
           // still give the host time and let Escape in
           if (nowMs() - t0 >= this.sliceMs) { await yieldHost(); t0 = nowMs(); }
@@ -764,13 +812,19 @@ export class BasicMachine {
         if (r === 'yield') { await yieldHost(); continue; }
         if (r === 'throttle') { await new Promise((res) => setTimeout(res, 4)); continue; }
         if (r && typeof r.then === 'function') {
-          try { await r; } catch (e) { if (!I.handleError(e)) break; }
+          try { await r; } catch (e) { if (this.killed || !I.handleError(e)) break; }
+          if (this.killed) break;
         }
       }
     } finally {
       this.busy = false;
     }
     if (I.lastError) result = { reason: 'error', error: I.lastError };
+    if (this.killed) {
+      this.killed = false; I.running = false; I.stack.length = 0; I.stackBytes = 0;
+      this.lastResult = { reason: 'killed' };
+      return this.lastResult;
+    }
     if (I.quitRequested !== undefined) {
       const c = I.quitRequested; I.quitRequested = undefined;
       this.exited = true;
@@ -1223,7 +1277,15 @@ export class BasicMachine {
         return;
       case 'RENAME': if (this.fs && this.fs.rename) { const [a, b] = args(); await this.fs.rename(this.gstrans(a), this.gstrans(b)); } return;
       case 'COPY': if (this.fs && this.fs.readFile) { const [a, b] = args(); const f = await this.readFileBytes(a); await this.fs.writeFile(this.gstrans(b), f.data, f.type); } return;
-      case 'SETTYPE': return;
+      case 'SETTYPE': {
+        const [fn, t] = args();
+        if (!fn || !t) throw new BasicError(0xDC, 'Syntax: *SetType <filename> <file type>');
+        let ft = /^&?[0-9a-f]{1,3}$/i.test(t) ? parseInt(t.replace('&', ''), 16) : parseInt(this.getSysVar('File$Type_' + t) ?? 'NaN', 16);
+        if (Number.isNaN(ft)) { const T = { TEXT: 0xFFF, BASIC: 0xFFB, OBEY: 0xFEB, DATA: 0xFFD, SPRITE: 0xFF9, DRAWFILE: 0xAFF, ABSOLUTE: 0xFF8 }; ft = T[t.toUpperCase()]; }
+        if (ft === undefined) throw new BasicError(0xDC, 'Bad file type');
+        if (this.fs && this.fs.setType) await this.fs.setType(this.gstrans(fn), ft);
+        return;
+      }
       case 'ACCESS': return;
       case 'TYPE': case 'PRINT': case 'LIST': {
         const f = await this.readFileBytes(args()[0] || '');
@@ -1306,14 +1368,16 @@ export class BasicMachine {
       case 5: case 13: case 17: case 20: case 21: case 23: { // read catalogue info
         const f = fs.stat ? await fs.stat(name) : await fs.readFile(name).then((x) => x && { type: 'file', filetype: x.type, length: (x.data || x).length });
         if (!f) { r[0] = 0; return; }
-        if (f.type === 'dir') { r[0] = 2; r[4] = 0; return; }
+        if (f.type === 'dir') { r[0] = 2; r[4] = 0; r[6] = 0x1000; return; }
         const ft = f.filetype ?? 0xFFD;
-        r[0] = 1; r[2] = (0xFFF00000 | (ft << 8)) | 0; r[3] = 0; r[4] = f.length | 0; r[5] = 3; r[6] = ft;
+        r[0] = 1; r[4] = f.length | 0; r[5] = 3;
+        if (f.load !== undefined && (ft < 0 || ((f.load >>> 20) & 0xFFF) !== 0xFFF)) { r[2] = f.load | 0; r[3] = (f.exec ?? 0) | 0; r[6] = -1; } // untyped
+        else { r[2] = (0xFFF00000 | ((ft & 0xFFF) << 8) | ((f.load ?? 0) & 255)) | 0; r[3] = (f.exec ?? 0) | 0; r[6] = ft; }
         return;
       }
       case 6: if (fs.delete) await fs.delete(name); return;
       case 8: if (fs.mkdir) await fs.mkdir(name); return;
-      case 18: return; // set filetype
+      case 18: if (fs.setType) await fs.setType(name, r[2] & 0xFFF); return; // set filetype
       case 255: case 12: case 14: case 16: {
         const f = await this.readFileBytes(name);
         let addr = r[2] >>> 0;

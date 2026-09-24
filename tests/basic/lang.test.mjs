@@ -192,3 +192,19 @@ test('INPUT and INPUT LINE from the keyboard buffer', async () => {
 test('LOCAL ERROR / RESTORE ERROR and ERROR EXT', async () => {
   assert.equal(await run(lines('ON ERROR PRINT "outer":END', 'PROCp', 'X=1/0', 'DEF PROCp:LOCAL ERROR:ON ERROR LOCAL PRINT "inner":ENDPROC', 'ENDPROC')), 'outer\n');
 });
+
+test('FN side effects: left operands are evaluated before the FN (left to right)', async () => {
+  const { runBasic } = await import('./helpers.mjs');
+  const out = await runBasic([
+    '10 x=1:PRINT x+FNinc',
+    '20 p%=1:s$="abc":PRINT MID$(s$,p%,1)+FNnext+MID$(s$,p%,1)',
+    '30 A$="a":A$=A$+FNapp:PRINT A$',
+    '40 x=10:y=x*2+FNinc*100:PRINT y',
+    '50 x=1:PRINT x=FNinc,x',
+    '60 END',
+    '70 DEF FNinc:x+=1:=x',
+    '80 DEF FNnext:p%+=1:=""',
+    '90 DEF FNapp:A$="zzz":="b"',
+  ].join('\n'));
+  assert.equal(out, '         3\nab\nab\n      1120\n         0         2\n');
+});

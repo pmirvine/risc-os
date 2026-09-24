@@ -10,13 +10,13 @@
   100   STMFD R13!,{R4-R7,R14}
   110   MOV R4,R0:MOV R5,R1:MOV R6,#0
   120   .mloop
-  130   AND R0,R6,#63:ORR R0,R0,#0      ; colour = n AND 63
+  130   AND R0,R6,#63             ; colour = n AND 63
   140   MOV R7,R6
-  150   SWI "OS_WriteI"+18:SWI "OS_WriteI"+0:SWI "OS_WriteC"
+  150   SWI &100+18:SWI &100+0:SWI "OS_WriteC"
   160   MOV R0,#4:MOV R1,#640:MOV R2,#512:SWI "OS_Plot"
   170   MOV R0,#5:MOV R1,R7,LSL #1:MOV R2,#0:SWI "OS_Plot"
   180   MOV R0,#4:MOV R1,#640:MOV R2,#512:SWI "OS_Plot"
-  190   MOV R0,#5:MOV R1,R7,LSL #1:MOV R2,#1023:SWI "OS_Plot"
+  190   MOV R0,#5:MOV R1,R7,LSL #1:MOV R2,#1020:SWI "OS_Plot"
   200   ADD R6,R6,R4
   210   CMP R6,#640
   220   BLT mloop

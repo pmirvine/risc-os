@@ -59,3 +59,35 @@ now deletes the template icons after creating the window. Bug fix, no API change
 `src/apps/Printers/print.js` `renderFile`: the `&AFF` case now imports `printDrawfile` from `src/apps/Draw/drawfile.js`
 (true-size `<img>`) instead of printing a placeholder. Normally unused, because Draw's descriptor `boot` registers the
 same renderer through `os.printerRenderers`; the fallback covers Printers started without that hook. No API change.
+
+## BASIC: `"str" + FNx(...)` gave "Type mismatch" — TASKWINDOW/BASIC-WIMP agent
+`src/basic/expr.js` `addOp`: a string on the left of `+` with a dynamically typed right operand (an FN call
+whose name has no `$`, e.g. crunched programs' `">"+FNa("M1")`) was compiled to an unconditional
+"Type mismatch: string needed". One-line fix: that shortcut now only applies when the right operand is
+statically numeric (`r.t !== TA`), so the dynamic path (binDyn) handles it. Found running the original
+!SciCalc !RunImage. (BASIC agent: please keep / add a test.)
+
+## VDU: desktop-sized screen mode — TASKWINDOW/BASIC-WIMP agent
+No change to `src/basic/`: `src/core/basicwimp/screen.js` subclasses `VDU` (`DesktopVDU`) and resizes MODE 28
+after `_setMode(28)` (W, H, xWL/yWL, scrRCol/scrBRow, banks, windows). If the VDU grows real mode-selector
+support (OS_ScreenMode 0 with a selector block), DesktopVDU could use it instead. It relies on the VDU
+internals `_setMode`, `_defaultWindows`, `_ff`, `_setupCanvas`, `_dirtyAll`, `fb`, `pal1`, `gwl/gwb/gwr/gwt`,
+`orgX/orgY`, `nColour` — please keep those names.
+
+## core basichost sysvar map is not iterable — TASKWINDOW/BASIC-WIMP agent
+`src/core/basichost.js` `sysvarMap()` has no `[Symbol.iterator]`/`keys()`, but `BasicMachine.getSysVar` iterates
+the map for wildcard / case-insensitive lookups, so `SYS "XOS_ReadVarVal","Missing$Var",...` in full-screen BASIC
+fails with "Internal error: this.sysvars is not iterable". The desktop runner (`src/core/basicwimp/runner.js`)
+has an iterable version; the same two generator methods could be added to basichost.js (WIMP CORE owner).
+
+## main.js: installBasicWimp() — TASKWINDOW/BASIC-WIMP agent
+`src/main.js`: one import and one call after `installBasicHost()`: `installBasicWimp()` wraps `os.hooks.basic`
+(task windows → `ctx.tw.runBasic`; F12 / interactive → the core basichost; programs run from the desktop →
+single-tasking full screen or a Wimp task through the SWI bridge), registers `*BASIC64` (same interpreter) and
+makes `*WimpSlot` remember the slot size for the next program's HIMEM / Task Manager memory. See docs/BASIC_WIMP.md.
+
+## *If with string comparisons — TASKWINDOW/BASIC-WIMP agent
+`src/core/commands.js` *If: the expression was GSTrans'd with quote stripping, so `If "<Maestro$Running>"="Yes" Then …`
+(the first line of !Maestro's !Run) became `=Yes` and crashed evalExpr ("Cannot read properties of undefined (reading
+'toUpperCase')"). Now `sysvars.gstrans(expr, { noQuotes: true })`, so quoted strings reach the evaluator (as OS_EvaluateExpression
+does). One-line fix.

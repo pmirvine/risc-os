@@ -16,7 +16,7 @@
   160     sx%(i%)=640+X*900/(Z+4):sy%(i%)=512+Y*900/(Z+4)
   170   NEXT
   180   FOR i%=0 TO 11
-  190     GCOL 1+i% MOD 6+8*(i%>5)
+  190     GCOL 1+i% MOD 7
   200     LINE sx%(e%(i%,0)),sy%(e%(i%,0)),sx%(e%(i%,1)),sy%(e%(i%,1))
   210   NEXT
   220   GCOL 7:FOR i%=0 TO 7:CIRCLE FILL sx%(i%),sy%(i%),10:NEXT

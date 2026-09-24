@@ -163,3 +163,18 @@ test('BEATS / TEMPO / BEAT and Sound_QBeat', async () => {
   await m.run();
   assert.equal(out(), '      1000 4096\n      1000\n      1000 200\n        -1\n');
 });
+
+test('kill() stops a program even inside ON ERROR / GET, and run() says so', async () => {
+  const { m } = mk();
+  await m.load(lines('ON ERROR GOTO 20', 'REPEAT:K=GET:UNTIL FALSE'));
+  setTimeout(() => m.escape(), 5);          // trapped by ON ERROR, keeps going
+  setTimeout(() => m.kill(), 30);
+  assert.deepEqual(await m.run(), { reason: 'killed' });
+  // the machine is reusable afterwards
+  await m.load('PRINT "again"');
+  assert.deepEqual(await m.run(), { reason: 'end' });
+  const t = mk();
+  await t.m.load(lines('ON ERROR GOTO 20', 'I%+=1:GOTO 20'));
+  setTimeout(() => t.m.kill(), 20);
+  assert.deepEqual(await t.m.run(), { reason: 'killed' });
+});

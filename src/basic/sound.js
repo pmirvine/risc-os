@@ -9,12 +9,14 @@
 // Each channel has a queue; when more than 4 notes are pending SOUND waits (returns a Promise)
 // like the RISC OS sound scheduler does, so music timing loops work.
 
+const wallNow = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()) / 1000;
+
 export class Sound {
   constructor(opts = {}) {
     this.ctx = null;
     this.enabled = true;
     this.envelopes = new Map();
-    this.chanEnd = new Array(9).fill(0);   // audio-clock time at which each channel's queue ends
+    this.chanEnd = new Array(9).fill(0);   // wall-clock time (s) at which each channel's queue ends
     this.chanNodes = new Array(9).fill(null).map(() => []);
     this.stereoPos = new Array(9).fill(0);
     this.master = null;
@@ -49,40 +51,51 @@ export class Sound {
     return Sound.bbcPitchToFreq(pitch & 255);
   }
 
+  /** notes on channel ch not yet finished */
   queued(ch) {
-    const c = this.ctx; if (!c) return 0;
-    return this.chanNodes[ch].filter((n) => n.end > c.currentTime).length;
+    const now = wallNow();
+    return (this.chanNodes[ch <= 8 ? ch : ch & 7] || []).filter((n) => n.end > now).length;
   }
 
-  /** delay: seconds from now for beat-scheduled notes (SOUND ...,beat); these bypass the queue */
+  /**
+   * Queue a note. The per-channel queues run on the wall clock (not the AudioContext clock) so SOUND
+   * timing - and programs that pace themselves on a full queue - behave the same whether or not the
+   * browser has let audio start yet. delay: seconds from now for beat-scheduled notes (SOUND ...,beat),
+   * which bypass the queue.
+   */
   sound(channel, amp, pitch, dur, beat, delay = 0) {
     if (!this.enabled) return;
     const c = this.ensure();
-    if (!c) return;
     const ch = channel & 15;
     const flush = (channel >> 4) & 1;
-    const now = c.currentTime;
-    const list = this.chanNodes[ch & 7] || (this.chanNodes[ch & 7] = []);
+    const now = wallNow();
+    const q = ch <= 8 ? ch : ch & 7;
+    let list = this.chanNodes[q];
     if (flush) {
-      for (const n of list) { try { n.osc.stop(); } catch (e) { /* ignore */ } }
+      for (const n of list) { try { n.osc && n.osc.stop(); } catch (e) { /* ignore */ } }
       list.length = 0;
-      this.chanEnd[ch] = now;
+      this.chanEnd[q] = now;
     }
-    const pending = list.filter((n) => n.end > now);
-    this.chanNodes[ch & 7] = pending;
-    const start = delay > 0 ? now + delay : Math.max(now + 0.005, this.chanEnd[ch] || 0);
-    let seconds = dur >= 255 || dur < 0 ? 5 : Math.max(dur, 0) / 20;
+    list = this.chanNodes[q] = list.filter((n) => n.end > now);
+    const start = delay > 0 ? now + delay : Math.max(now + 0.005, this.chanEnd[q] || 0);
+    const seconds = dur >= 255 || dur < 0 ? 5 : Math.max(dur, 0) / 20;
     let level = 0; let env = null;
     if (amp <= 0 && amp >= -15) level = -amp / 15;
     else if (amp >= 1 && amp <= 16) { env = this.envelopes.get(amp); level = 1; }
     else if (amp >= 0x100) level = Math.pow((amp & 0x7F) / 127, 2);
-    const node = this.playTone(ch, start, seconds, level, pitch, env);
-    if (!(delay > 0)) this.chanEnd[ch] = start + seconds;
-    if (node) this.chanNodes[ch & 7].push(node);
-    // queue full -> wait (4 notes per channel like the BBC/RISC OS queue)
-    if (this.chanNodes[ch & 7].filter((n) => n.start > c.currentTime).length > 4) {
-      const waitUntil = this.chanNodes[ch & 7][this.chanNodes[ch & 7].length - 4].start;
-      const ms = Math.max(0, (waitUntil - c.currentTime) * 1000);
+    let osc = null;
+    if (c && c.state !== 'closed') {
+      // map wall-clock start to the audio clock (a suspended context just stays silent)
+      const at = c.currentTime + (start - now);
+      const node = this.playTone(ch, at, seconds, level, pitch, env);
+      osc = node && node.osc;
+    }
+    if (!(delay > 0)) this.chanEnd[q] = start + seconds;
+    list.push({ osc, start, end: start + seconds });
+    // queue full -> wait (4 pending notes per channel, like the RISC OS sound scheduler)
+    const pending = list.filter((n) => n.start > now);
+    if (pending.length > 4) {
+      const ms = Math.max(0, (pending[pending.length - 5].start - now) * 1000);
       return new Promise((res) => setTimeout(res, ms));
     }
   }

@@ -171,7 +171,7 @@ function addOp(I, l, r) {
     const a = l.f, b = r.f;
     return { t: TS, f: () => strCat(a(), b()) };
   }
-  if (l.t === TS) { const a = l.f, b = r.f; return { t: TS, f: () => { a(); b(); throw err('ERTYPESTR'); } }; }
+  if (l.t === TS && r.t !== TA) { const a = l.f, b = r.f; return { t: TS, f: () => { a(); b(); throw err('ERTYPESTR'); } }; }
   if (r.t === TS && l.t !== TA) { const a = l.f, b = r.f; return { t: TN, f: () => { a(); b(); throw err('ERTYPEINT'); } }; }
   if (l.t === TA || r.t === TA) {
     return {
@@ -342,12 +342,17 @@ export class Parser {
       const o = peekOp(this.b, this.p);
       if (!o || o.prec <= min) break;
       this.p += o.len;
+      const mark = this.ops.length;
       if (o.op === '^') {
         const right = this.factor();
+        if (this.ops.length > mark) left = this.spill(left, mark);
         left = binop(I, '^', left, right);
         continue;
       }
       const right = this.exprPrec(o.prec);
+      // the right operand hoisted an FN/GET/... call: evaluate the left operand before it, as BASIC
+      // does left to right (an FN may change variables the left side reads)
+      if (this.ops.length > mark) left = this.spill(left, mark);
       left = binop(I, o.op, left, right);
       if (o.prec === 3) {
         this.sp();
@@ -362,13 +367,26 @@ export class Parser {
   fltExpr() { return fltF(this.I, this.expr()); }
   strExpr() { return strF(this.I, this.expr()); }
 
+  /** Evaluate node into a temp by an op inserted at ops[at] (before later hoisted calls). */
+  spill(node, at) {
+    if (node.k !== undefined || node.tmp) return node;   // constants and temps cannot change
+    const slot = this.newTemp();
+    const I = this.I;
+    const f = node.f;
+    if (node.t === TA || node.t === TN) {
+      this.ops.splice(at, 0, () => { I.tmp[slot] = f(); I.tmpT[slot] = I.t; });
+      return { t: node.t, tmp: true, f: () => { I.t = I.tmpT[slot]; return I.tmp[slot]; } };
+    }
+    this.ops.splice(at, 0, () => { I.tmp[slot] = f(); });
+    return { t: node.t, tmp: true, f: () => I.tmp[slot] };
+  }
   /** Hoist a value-producing op; returns a node that reads the temp. op(tmp, slot) must store tmp[slot] (and tmpT). */
   hoist(t, makeOp) {
     const slot = this.newTemp();
     const I = this.I;
     this.emit(makeOp(slot));
-    if (t === TA || t === TN) return { t, f: () => { I.t = I.tmpT[slot]; return I.tmp[slot]; } };
-    return { t, f: () => I.tmp[slot] };
+    if (t === TA || t === TN) return { t, tmp: true, f: () => { I.t = I.tmpT[slot]; return I.tmp[slot]; } };
+    return { t, tmp: true, f: () => I.tmp[slot] };
   }
 
   // ---- factors -----------------------------------------------------------

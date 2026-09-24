@@ -267,7 +267,7 @@ export function installCommands() {
   def('If', 'Syntax: *If <expression> Then <command> [Else <command>]', 'Conditionally executes a command.', async (a, ctx) => {
     const m = /^\s*(.*?)\s+then\s+(.*?)(?:\s+else\s+(.*))?$/i.exec(ctx.raw);
     if (!m) throw new CLIError('Syntax: *If <expression> Then <command> [Else <command>]');
-    const c = evalExpr(sysvars.gstrans(m[1])) ? m[2] : m[3];
+    const c = evalExpr(sysvars.gstrans(m[1], { noQuotes: true })) ? m[2] : m[3];   // keep "quotes": string comparisons
     if (c) await cli.run(c, ctx);
   }, { noSplit: true });
   def('Error', 'Syntax: *Error [<number>] <text>', '*Error generates an error with the given number and text.', async (a, ctx) => {

@@ -31,6 +31,7 @@ export function installBasicWimp() {
     const { runDesktopBasic } = await import('./runner.js');
     return runDesktopBasic(a, ctx);
   };
+  import('./services.js').then(({ hookWimpSlot }) => hookWimpSlot(os.cli));
   // BASIC64 (the !Run files of 3.5+ apps use "BASIC64 -quit <file>"): same interpreter here
   const cmd = os.cli.find('basic');
   if (cmd && !os.cli.commands.has('basic64')) os.cli.register('BASIC64', { ...cmd, name: 'BASIC64', syntax: 'Syntax: *BASIC64 [-help] [-chain|-quit|-load] [<filename>]' });

@@ -34,6 +34,11 @@ export class MemFS {
     this.files.set(c.toLowerCase(), { name: c, data: Uint8Array.from(data), type });
     this.saveStore();
   }
+  async setType(path, type) {
+    const f = this.files.get(this.key(path));
+    if (!f) return false;
+    f.type = type & 0xFFF; this.saveStore(); return true;
+  }
   async stat(path) {
     const k = this.key(path);
     const f = this.files.get(k);

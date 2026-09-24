@@ -972,8 +972,11 @@ function ifStmt(P) {
   code.ifFix.push({ pos: ifPos, label });
   if (c === T.THEN) {
     P.p++;
+    // block IF only when THEN is immediately followed by CR (ELSEBLK; trailing spaces are normally
+    // stripped on entry, but a program saved with "THEN " is an ordinary single-line IF)
+    const blk = P.b[P.p] === 13;
     const d = P.sp();
-    if (d === 13) { // block IF
+    if (blk) { // block IF
       const line = P.line;
       P.emit(() => { if (cond() === 0) I.skipBlockIf(line); });
       return;

@@ -50,6 +50,9 @@ function sysvarMap() {
     set(k, v) { sysvars.set(k, String(v)); return this; },
     has: (k) => sysvars.has(k),
     delete: (k) => sysvars.unset(k) > 0,
+    // iteration (wildcard lookups in OS_ReadVarVal)
+    *[Symbol.iterator]() { for (const e of sysvars.list('*')) yield [e.name, sysvars.get(e.name) ?? '']; },
+    *keys() { for (const e of sysvars.list('*')) yield e.name; },
   };
 }
 
@@ -60,6 +63,7 @@ export class BasicProcess {
     this.ctx = ctx;
     this.file = args.file;
     this.slotK = Math.max(32, wimpSlotK);
+    this.himemK = Math.ceil(this.slotK / 32) * 32;          // whole 32K pages
     wimpSlotK = 640;
     this.scr = null;              // acquired full screen (single tasking)
     this.bridge = null;           // WimpBridge once Wimp_Initialise is called
@@ -75,11 +79,17 @@ export class BasicProcess {
     const vdu = this.vdu = new DesktopVDU({ width: wimp.width, height: wimp.height, onBell: () => this.sound?.bell?.() });
     const m = this.machine = new BasicMachine({
       vdu, fs: basicFS(), sound: this.sound, sysvars: sysvarMap(),
-      himem: 0x8000 + this.slotK * 1024,
+      himem: 0x8000 + this.himemK * 1024,
       oscli: (cmd) => this.oscli(cmd),
       onOutput: (c) => this.output(c),
-      onExit: () => {},
+      onExit: (e) => { if (e && typeof e === 'object' && e.message) this.exitError = e; },
     });
+    // errors seen (for diagnostics: console + docs/BASIC_WIMP.md "debugging")
+    this.errors = [];
+    m.errorHook = (e) => { this.errors.push({ message: e.message, line: m.interp.line?.num ?? 0, stack: (e.stack ?? '').split('\n').slice(1, 4).join(' | ') }); if (this.errors.length > 8) this.errors.shift(); };
+    // END=: on real machines the slot grows in whole pages (32K on an A5000 with 4MB)
+    const I = m.interp, endEq = I.endEquals.bind(I);
+    I.endEquals = (v) => endEq(Math.max(v, (((v + 0x7FFF) >> 15) << 15)));
     m.cmdLine = `BASIC -quit "${this.file}"${this.args.programArgs ? ' ' + this.args.programArgs : ''}`;
     m.process = this;
     // anything that waits for the keyboard makes a pre-Wimp program single tasking
@@ -161,8 +171,8 @@ export class BasicProcess {
     let dims = '';
     const fit = () => {
       const dw = vdu.displayWidth, dh = vdu.displayHeight;
-      const k = Math.min(scr.width / dw, scr.height / dh);
-      const s = k >= 1 ? Math.floor(k) : k;
+      // the program's screen mode fills the monitor (aspect kept), like a mode change on real hardware
+      const s = Math.min(scr.width / dw, scr.height / dh);
       canvas.style.width = dw * s + 'px'; canvas.style.height = dh * s + 'px';
       canvas.style.left = Math.floor((scr.width - dw * s) / 2) + 'px';
       canvas.style.top = Math.floor((scr.height - dh * s) / 2) + 'px';
@@ -214,6 +224,13 @@ export class BasicProcess {
     processes.delete(this);
     if (this.bridge) this.bridge.closeDown(true);
     if (this.scr) await this.releaseScreen();
+    if (this.exitError) {
+      const I = this.machine.interp;
+      console.warn(`BASIC program ${this.file} ended with error: ${this.exitError.message} (PAGE &${I.page?.toString(16)}, END &${(I.fsa ?? 0).toString(16)}, HIMEM &${I.himem?.toString(16)}); errors: ` + this.errors.map((x) => `${x.message} at line ${x.line} [${x.stack}]`).join(' ; '));
+      // ERROR EXT / an untrapped error leaving BASIC: the Wimp reports it
+      const e = this.exitError;
+      await wimp.reportError(e.message, { appName: this.bridge?.task?.name ?? this.taskName ?? 'BASIC' });
+    }
     const late = this.lateOutput.replace(/^\n+/, '');
     if (late.trim()) { const o = os.cli.desktopOut(); o.write(late.endsWith('\n') ? late : late + '\n'); }
     this.sound?.stop?.();

@@ -180,6 +180,9 @@ export class Interp {
     const bytes = ((count * esize + 3) & ~3) + 8 + 4 * sizes.length;
     const local = a.state === 1;
     if (this.fsa + bytes + 1024 > this.himem - this.stackBytes) throw err('DIMRAM');
+    // the block BASIC would have built (dims, 0, count, data): its address is where CALL finds the
+    // array; the data lives in JS and is copied to/from this block around CALL/USR (machine.callArm)
+    a.addr = local ? this.himem - this.stackBytes - bytes : this.fsa;
     a.dims = sizes;
     a.data = a.t === TI ? new Int32Array(count) : a.t === TF ? new Float64Array(count) : new Array(count).fill('');
     if (local) this.stackBytes += bytes; else this.fsa += bytes;
@@ -195,9 +198,9 @@ export class Interp {
     this.fsa = nf;
   }
   swapArrays(a, b) {
-    const x = [a.dims, a.data, a.state];
-    a.dims = b.dims; a.data = b.data; a.state = b.state;
-    [b.dims, b.data, b.state] = x;
+    const x = [a.dims, a.data, a.state, a.addr];
+    a.dims = b.dims; a.data = b.data; a.state = b.state; a.addr = b.addr;
+    [b.dims, b.data, b.state, b.addr] = x;
   }
   matMul(dst, l, r) {
     const D = this.arrCheck(dst), L = this.arrCheck(l), R = this.arrCheck(r);
@@ -350,6 +353,7 @@ export class Interp {
   }
 
   pushFrame(f) {
+    if (f.line && f.line === this.line && !f.ops) f.ops = this.ops;  // return into the same compiled code
     const sz = f.k === F.FOR ? 28 : f.k >= F.PROC && f.k <= F.FN ? 32 : 12;
     if (this.fsa + 1024 + this.stackBytes + sz > this.himem) {
       throw err(f.k === F.PROC || f.k === F.FN ? 'ERDEEPPROC' : 'ERDEEPNEST');
@@ -379,7 +383,7 @@ export class Interp {
     for (;;) {
       const f = this.stack[this.stack.length - 1];
       if (f && f.k === F.REPEAT) {
-        if (v === 0) { this.line = f.line; this.ops = this.getCode(f.line).ops; this.pc = f.pc; }
+        if (v === 0) this.jumpTo(f.line, f.pc, f.ops);
         else this.popFrame();
         return;
       }
@@ -413,17 +417,19 @@ export class Interp {
       v = cur + f.step;
       if (v > 2147483647 || v < -2147483648) { this.popFrame(); return; }
       if (f.isVar) f.ref.v = v; else f.ref.set(v);
-      if (f.step >= 0 ? v <= f.limit : v >= f.limit) { this.jumpTo(f.line, f.pc); return; }
+      if (f.step >= 0 ? v <= f.limit : v >= f.limit) { this.jumpTo(f.line, f.pc, f.ops); return; }
     } else {
       const cur = f.isVar ? f.ref.v : f.ref.get();
       v = cur + f.step;
       if (f.isVar) f.ref.v = v; else f.ref.set(f.ref.t === TI ? toInt(v) : v);
-      if (f.step >= 0 ? v <= f.limit : v >= f.limit) { this.jumpTo(f.line, f.pc); return; }
+      if (f.step >= 0 ? v <= f.limit : v >= f.limit) { this.jumpTo(f.line, f.pc, f.ops); return; }
     }
     this.popFrame();
   }
-  jumpTo(line, pc) {
-    if (line !== this.line) { this.line = line; this.ops = this.getCode(line).ops; }
+  /** ops: the exact compiled code saved in a frame (a line may be compiled as BASIC or as assembler) */
+  jumpTo(line, pc, ops) {
+    if (ops) { this.line = line; this.ops = ops; }
+    else if (line !== this.line) { this.line = line; this.ops = this.getCode(line).ops; }
     this.pc = pc;
   }
 
@@ -432,7 +438,7 @@ export class Interp {
       const f = this.stack[this.stack.length - 1];
       if (f && f.k === F.GOSUB) {
         this.popFrame();
-        this.jumpTo(f.line, f.pc);
+        this.jumpTo(f.line, f.pc, f.ops);
         return;
       }
       if (!this.popa()) throw err('ERGOSB');
@@ -445,9 +451,9 @@ export class Interp {
     if (pw) {
       this.pendingWhile = null;
       const f = pw.frame;
-      if (cond !== 0) { this.jumpTo(f.bodyLine, f.bodyPc); return; }
+      if (cond !== 0) { this.jumpTo(f.bodyLine, f.bodyPc, f.ops); return; }
       this.popFrame();
-      this.jumpTo(pw.line, pw.pc);
+      this.jumpTo(pw.line, pw.pc, pw.ops);
       return;
     }
     if (cond !== 0) {
@@ -461,8 +467,8 @@ export class Interp {
     for (;;) {
       const f = this.stack[this.stack.length - 1];
       if (f && f.k === F.WHILE) {
-        this.pendingWhile = { frame: f, line, pc: afterPc };
-        this.jumpTo(f.line, f.pc);
+        this.pendingWhile = { frame: f, line, pc: afterPc, ops: line === this.line ? this.ops : undefined };
+        this.jumpTo(f.line, f.pc, f.ops);
         return;
       }
       if (!this.popa()) throw err('ERWHIL');
@@ -658,7 +664,7 @@ export class Interp {
       const fo = formals[i]; const v = vals[i];
       if (fo.isArr) {
         const dst = fo.lv.arr; const src = v;
-        dst.dims = src.dims; dst.data = src.data; dst.state = src.state;
+        dst.dims = src.dims; dst.data = src.data; dst.state = src.state; dst.addr = src.addr;
       } else if (fo.isRet) {
         this.assignLV(fo.lv, convVal(fo.lv.t, v.v, v.t));
         if (!frame.rets) frame.rets = [];
@@ -676,7 +682,7 @@ export class Interp {
     switch (lv.kind) {
       case 'var': return { lv, v: lv.v.d ? lv.v.v : (lv.t === TS ? '' : 0) };
       case 'static': return { lv, v: this.iv[lv.idx] };
-      case 'array': return { lv, dims: lv.arr.dims, data: lv.arr.data, state: lv.arr.state };
+      case 'array': return { lv, dims: lv.arr.dims, data: lv.arr.data, state: lv.arr.state, addr: lv.arr.addr };
       default: { const r = lv.ref(); return { lv, ref: r, v: r.get() }; }
     }
   }
@@ -685,7 +691,7 @@ export class Interp {
     switch (lv.kind) {
       case 'var': lv.v.v = s.v; lv.v.d = true; return;
       case 'static': this.iv[lv.idx] = s.v; return;
-      case 'array': { const a = lv.arr; if (a.state === 2 && a.local) { this.stackBytes -= 0; } a.dims = s.dims; a.data = s.data; a.state = s.state; return; }
+      case 'array': { const a = lv.arr; if (a.state === 2 && a.local) { this.stackBytes -= 0; } a.dims = s.dims; a.data = s.data; a.state = s.state; a.addr = s.addr; return; }
       default: s.ref.set(s.v);
     }
   }
@@ -732,7 +738,7 @@ export class Interp {
       if (f && f.k === F.PROC) {
         this.popFrame();
         this.unwindCall(f);
-        this.jumpTo(f.line, f.pc);
+        this.jumpTo(f.line, f.pc, f.ops);
         return;
       }
       if (!this.popa()) throw err('ENDPRE');
@@ -745,7 +751,7 @@ export class Interp {
         this.popFrame();
         this.unwindCall(f);
         this.tmp[f.slot] = v; this.tmpT[f.slot] = t;
-        this.jumpTo(f.line, f.pc);
+        this.jumpTo(f.line, f.pc, f.ops);
         return;
       }
       if (f && f.k === F.EVAL) { // '=' inside EVAL is not in a function
@@ -784,7 +790,7 @@ export class Interp {
     if (!f || f.k !== F.EVAL) throw err('ERRQ1');
     this.tmp = f.tmp; this.tmpT = f.tmpT;
     this.tmp[f.slot] = v; this.tmpT[f.slot] = t;
-    this.jumpTo(f.line, f.pc);
+    this.jumpTo(f.line, f.pc, f.ops);
   }
   /** Evaluate an expression line synchronously (commands like LOAD "x", LISTO n). Returns {v, t}. */
   evalSync(line) {
