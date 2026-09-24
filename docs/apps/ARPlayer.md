@@ -51,3 +51,6 @@ text from `assets/messages/ARPlayer.json`, button sprites from `!ARMovie.Sprites
 `tests/div/arplayer-func.mjs` (functional, via `tests/core/shot.mjs`); screenshots `tests/div/arplayer.mjs`
 (`AR=movie|blank|menu|imenu|setup|info|global`), `arplayer2.mjs` (`AR2=blank|proginfo|saveframe|savedata|transport`),
 `arplayer3.mjs` (time bar drag, bar toggles, help) → `tests/screens/div-arplayer*.png`.
+`tests/div/monkey-div.mjs <App> [steps] [seed]` (random input with a sample file open, reports page errors) and `tests/div/filetypes-route.mjs` (double-clicks one file of each seed-disc type in Images/Sound/Tutorials/Manuals/Diversions and prints the task it opened) cover this app too.
+
+Verified 2026-09: `arplayer-func` 11/11 PASS; `Sound.1812`/`Enigma` and the AudioDemos movies open here by double-click.

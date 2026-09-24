@@ -41,3 +41,21 @@ and then `_openLevel(0)` → `close(0)` immediately wiped them, so `wimp.menus.o
 menu was open (MenusDeleted never sent, `onClose`/`onSelect` from `open()` opts fired at once or never, caret not
 restored after menu dialogue boxes). Bug fix, no API change. (!Help needs `wimp.menus.owner` to give help on the
 Filer / Task Manager / Pinboard / device menus.)
+
+## Default run action for Palette files — DIVERSIONS finisher
+`src/main.js`: added FileSwitch's default `Alias$@RunType_FED` = `WimpPalette %0` (from `FileSwBody`), so
+double-clicking `Diversions.Desktop` (a Palette file) no longer gives the Filer's "no application" error.
+`*WimpPalette` is still a no-op in `commands.js`. That is fine for the seed disc: its only palette file is the
+standard desktop palette at 4 bits per gun. A real implementation would need the Wimp to re-map colours 0-15 at run time.
+
+## Filer viewers: template icons removed — EDIT+PAINT finisher
+`src/core/filer.js` `DirViewer`: the `directory` template's prototype icons ("next dir", date, sprite
+examples) were left in `win.icons` (their DOM was cleared by `render()`), so `wimp` hit-testing found
+them over the first row of items: the click reported that icon, button type 6 (click/drag) instead of
+the window's type 10, so **double-clicking the first items in a viewer never opened them**. The viewer
+now deletes the template icons after creating the window. Bug fix, no API change.
+
+## Printers prints Drawfiles with Draw's renderer — DRAW agent
+`src/apps/Printers/print.js` `renderFile`: the `&AFF` case now imports `printDrawfile` from `src/apps/Draw/drawfile.js`
+(true-size `<img>`) instead of printing a placeholder. Normally unused, because Draw's descriptor `boot` registers the
+same renderer through `os.printerRenderers`; the fallback covers Printers started without that hook. No API change.

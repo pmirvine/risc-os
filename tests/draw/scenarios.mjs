@@ -443,3 +443,110 @@ export const a4 = (p) => openVendor(p, 'Sources/OS_Core/Video/Render/DrawFile/Te
 export const plaque = (p) => openVendor(p, 'Sources/Demos/Tutorials/Plaque,aff');
 export const window1 = (p) => openVendor(p, V + 'Pictures/Draw/Window,aff');
 export const underline = (p) => openVendor(p, V + 'Underline,aff');
+
+// End-to-end with real mouse: shapes, group/front/back/undo keys, Save-as drag to a Filer window,
+// double-click a Drawfile in the Filer, drag a Drawfile from the Filer onto a Draw window, Printers renderer.
+export async function e2e(page) {
+  const log = (k, v) => console.log(k, JSON.stringify(v));
+  await page.evaluate(() => window.os.filer.openDir('RAM::RamDisc0.$', { x: 900, y: 60, w: 330, h: 160 }));
+  await start(page);
+  await page.evaluate(() => { const w = globalThis.__draw.diagrams.at(-1).views[0].win; w.open({ x: 60, y: 40, w: 760, h: 560, scrollX: 0, scrollY: w.extent.y1 - 560 }); });
+  await sleep(page, 200);
+  await pane(page, 6);   // rectangle
+  await clickDraw(page, 1 * IN, 1 * IN); await moveDraw(page, 3 * IN, 2.5 * IN); await clickDraw(page, 3 * IN, 2.5 * IN);
+  await pane(page, 7);   // ellipse overlapping it
+  await clickDraw(page, 2.5 * IN, 2 * IN); await moveDraw(page, 4 * IN, 3 * IN); await clickDraw(page, 4 * IN, 3 * IN);
+  await pane(page, 8);
+  const st = () => page.evaluate(() => { const d = globalThis.__draw.diagrams.at(-1); return { types: d.objects.map((o) => o.type + (d.sel.has(o) ? "*" : "")), sel: d.sel.size, undo: d.canUndo(), redo: d.canRedo(), title: d.views[0].win.title }; });
+  // select the rectangle and bring it to the front (^F), then back (^B)
+  await clickDraw(page, 1.2 * IN, 1.5 * IN);
+  await page.keyboard.press('Control+f'); await sleep(page, 100);
+  log('front', await st());
+  await page.keyboard.press('Control+b'); await sleep(page, 100);
+  log('back', await st());
+  await page.keyboard.press('Control+a'); await page.keyboard.press('Control+g'); await sleep(page, 100);
+  log('grouped', await st());
+  await page.keyboard.press('F8'); await sleep(page, 100);
+  log('undo', await st());
+  await page.keyboard.press('F9'); await sleep(page, 100);
+  log('redo', await st());
+  // Menu > Save > File, drag the icon to the RAM disc viewer
+  const c = await toPage(page, 5 * IN, 5 * IN);
+  await page.mouse.click(c.x, c.y, { button: 'right' }); await sleep(page, 200);
+  const hover = async (level, idx) => { const b = await page.locator('.menu').nth(level).locator('.mitem').nth(idx).boundingBox(); await page.mouse.move(b.x + 20, b.y + 10, { steps: 2 }); await page.mouse.move(b.x + b.width - 6, b.y + 10, { steps: 3 }); await sleep(page, 300); };
+  await hover(0, 1); await hover(1, 0);
+  await page.screenshot({ path: 'tests/screens/draw-e2e-savebox.png' });
+  const icon = await page.evaluate(() => { const w = window.wimp.menus.levels.at(-1).win; const ic = w.icons.find((i) => i.sprite || /file_/.test(i.validation ?? '')) ?? w.icons[2]; return w.workToScreen((ic.bbox.x0 + ic.bbox.x1) / 2, (ic.bbox.y0 + ic.bbox.y1) / 2); });
+  await page.mouse.move(icon.x, icon.y); await page.mouse.down();
+  await page.mouse.move(icon.x + 20, icon.y + 20, { steps: 4 }); await page.mouse.move(1000, 150, { steps: 10 }); await page.mouse.up();
+  await sleep(page, 700);
+  const saved = await page.evaluate(async () => { const s = window.os.vfs.stat('RAM::RamDisc0.$.DrawFile'); if (!s) return null; const b = await window.os.vfs.readFile(s.path); const doc = globalThis.__draw.DF.parseDrawfile(b); return { type: s.filetype.toString(16), size: s.size, objs: doc.objects.map((o) => o.type), title: globalThis.__draw.diagrams[0].views[0].win.title }; });
+  log('saved', saved);
+  // double-click a Drawfile in a Filer window
+  await page.evaluate(() => window.os.filer.openDir('ADFS::HardDisc4.$.Tutorials.DrawTutor', { x: 880, y: 300, w: 360, h: 160 }));
+  await sleep(page, 500);
+  const at = (name) => page.evaluate((name) => { const v = [...window.os.filer.viewers.values()].find((q) => /drawtutor$/i.test(q.path ?? q.dir ?? '')) ?? [...window.os.filer.viewers.values()].at(-1); const i = v.items.findIndex((x) => x.name === name); const r = v.hotRect(i); return v.win.workToScreen((r.x0 + r.x1) / 2, r.y0 + 15); }, name);
+  const sign = await at('Sign');
+  await page.mouse.dblclick(sign.x, sign.y); await sleep(page, 1500);
+  log('dblclick', await page.evaluate(() => globalThis.__draw.diagrams.map((d) => [d.filename, d.objects.length])));
+  // drag Map from the Filer onto the first (saved) Draw window
+  const map = await at('Map');
+  await page.evaluate(() => globalThis.__draw.diagrams[0].views[0].win.bringToFront());
+  const tgt = await page.evaluate(() => { const w = globalThis.__draw.diagrams[0].views[0].win; return { x: w.x + 300, y: w.y + 300 }; });
+  await page.mouse.move(map.x, map.y); await page.mouse.down();
+  await page.mouse.move(map.x - 20, map.y + 10, { steps: 4 }); await page.mouse.move(tgt.x, tgt.y, { steps: 12 }); await page.mouse.up();
+  await sleep(page, 1500);
+  log('dropped', await page.evaluate(() => { const d = globalThis.__draw.diagrams[0]; return { n: d.objects.length, modified: d.modified, title: d.views[0].win.title }; }));
+  // Printers renderer registered by Draw's boot hook
+  log('printer', await page.evaluate(async () => {
+    const r = (window.os.printerRenderers ?? []).find(([t]) => t === 0xAFF);
+    if (!r) return 'no renderer';
+    const b = await window.os.vfs.readFile('ADFS::HardDisc4.$.Tutorials.DrawTutor.Sign');
+    const { html } = await r[1](b);
+    const P = await import('/src/apps/Printers/print.js');
+    const f = await P.renderFile('ADFS::HardDisc4.$.Tutorials.DrawTutor.Map', 0xAFF);   // no renderers: built-in fallback
+    const img = new Image(); img.src = /src="([^"]+)"/.exec(f.html)[1]; await img.decode();
+    const c = document.createElement('canvas'); c.width = img.width; c.height = img.height; const g2 = c.getContext('2d'); g2.drawImage(img, 0, 0);
+    const g = g2.getImageData(0, 0, c.width, c.height).data;
+    let ink = 0; for (let i = 0; i < g.length; i += 4) if (g[i] < 200 || g[i + 1] < 200 || g[i + 2] < 200) ink++;
+    return { signStyle: /style="([^"]+)"/.exec(html)[1], mapStyle: /style="([^"]+)"/.exec(f.html)[1], w: img.width, h: img.height, ink };
+  }));
+}
+
+// Random clicks / drags / keys / menu picks inside Draw windows; reports page errors (run.mjs prints logs).
+export async function monkey(page) {
+  let seed = Number(process.env.SEED ?? 7);
+  const rnd = (n) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % n; };
+  await page.evaluate(() => window.os.apps.start('Draw'));
+  await sleep(page, 500);
+  await page.evaluate(() => globalThis.__draw.loadFileNew('ADFS::HardDisc4.$.Tutorials.DrawTutor.Sign'));
+  await start(page); await bigWindow(page);
+  const keys = ['F1', 'Shift+F1', 'F4', 'Shift+F4', 'Control+F4', 'F5', 'Control+F5', 'F6', 'Shift+F6', 'Control+F6', 'F7', 'F8', 'F9', 'Control+F8', 'Control+F9', 'Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'Control+a', 'Control+c', 'Control+g', 'Control+u', 'Control+e', 'Control+f', 'Control+b', 'Control+q', 'Control+w', 'Control+r', 'Control+s', 'Control+x', 'Control+z', 'Control+j', 'a', 'b'];
+  for (let i = 0; i < Number(process.env.STEPS ?? 400); i++) {
+    const r = await page.evaluate(() => { const d = globalThis.__draw.diagrams.at(-1); const w = d?.views[0]?.win; return w && w.isOpen ? { x: w.x, y: w.y, w: w.w, h: w.h } : null; });
+    if (!r) { await start(page); await bigWindow(page); continue; }
+    const x = r.x + 10 + rnd(r.w - 20), y = r.y + 10 + rnd(r.h - 20);
+    const a = rnd(10);
+    if (a < 3) await page.mouse.click(x, y, { modifiers: rnd(4) === 0 ? ['Shift'] : [] });
+    else if (a < 4) await page.mouse.dblclick(x, y);
+    else if (a < 6) { await page.mouse.move(x, y); await page.mouse.down(); await page.mouse.move(x + rnd(200) - 100, y + rnd(200) - 100, { steps: 5 }); await page.mouse.up(); }
+    else if (a < 8) await page.keyboard.press(keys[rnd(keys.length)]);
+    else if (a < 9) await pane(page, rnd(9));
+    else {
+      // open the menu and pick a random leaf a couple of levels down
+      await page.mouse.click(x, y, { button: 'right' }); await sleep(page, 60);
+      for (let lv = 0; lv < 3; lv++) {
+        const n = await page.locator('.menu').nth(lv).locator('.mitem').count().catch(() => 0);
+        if (!n) break;
+        const b = await page.locator('.menu').nth(lv).locator('.mitem').nth(rnd(n)).boundingBox().catch(() => null);
+        if (!b) break;
+        if (rnd(3) === 0 || lv === 2) { await page.mouse.click(b.x + 20, b.y + 8); break; }
+        await page.mouse.move(b.x + 20, b.y + 8, { steps: 2 }); await page.mouse.move(b.x + b.width - 6, b.y + 8, { steps: 2 }); await sleep(page, 150);
+      }
+      await page.keyboard.press('Escape');
+    }
+    await sleep(page, 20);
+  }
+  // close any error box
+  console.log('monkey done', JSON.stringify(await page.evaluate(() => globalThis.__draw.diagrams.map((d) => d.objects.length))));
+}

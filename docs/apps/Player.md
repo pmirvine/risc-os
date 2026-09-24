@@ -21,3 +21,7 @@ Deviations: playback is WebAudio (no Sound DMA / channel handler); the rate list
 
 Tests: `tests/div/act-player.mjs` (`CONTROL=1` opens the Control box), `act-player-play.mjs`,
 `tests/div/player-all.mjs` (loads every file in `Diversions.AudioDemos`, all decode). Screens `tests/screens/div-player*.png`.
+`tests/div/monkey-div.mjs <App> [steps] [seed]` (random input with a sample file open, reports page errors) and `tests/div/filetypes-route.mjs` (double-clicks one file of each seed-disc type in Images/Sound/Tutorials/Manuals/Diversions and prints the task it opened) cover this app too.
+
+Verified 2026-09: all 14 AudioDemos files decode. As in the original (`!RunImage` handles DataLoad only, `!Boot` only
+sets `File$Type_*`), double-clicking a WaveForm (&FB1) file gives the Filer's "application not found" error; drop it on !Player instead.

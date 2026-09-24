@@ -12,7 +12,7 @@ import { Interp } from './interp.js';
 import { installOps, bytesToLines } from './ops.js';
 import { FileManager } from './files.js';
 import { SwiTable, installCoreSwis, XBIT, C_FLAG, V_FLAG } from './swis.js';
-import { BasicError, err } from './errors.js';
+import { BasicError, err, toBasicError } from './errors.js';
 import {
   T, TC, tokenise, tokeniseProgramLine, parseProgram, buildProgram, textToLines, renumber as renumberLines,
   listProgram, programToText, listLine, computeIndent, insertLine, decodeLineNumber, encodeLineNumber,
@@ -75,6 +75,7 @@ export class BasicMachine {
     this.vdu = o.vdu || null;
     this.textOnly = !this.vdu;
     if (!this.vdu) this.vdu = new NullVDU();
+    if (this.vdu.screenIO) this.mem.io = this.vdu.screenIO;   // screen memory at &2000000-TotalScreenSize
     this.fs = o.fs || null;
     this.snd = o.sound || null;
     this.swis = new SwiTable();
@@ -109,7 +110,7 @@ export class BasicMachine {
     this.clockOffset = 0;   // ms offset applied to the real time clock
     // misc
     this.soundOn = true;
-    this.beatsVal = 0; this.tempoVal = 0x1000;
+    this.beatsVal = 0; this.tempoVal = 0x1000; this.beatT0 = 0;
     this.listo = 0;
     this.oldProgram = null;
     this.autoMode = null;
@@ -131,10 +132,14 @@ export class BasicMachine {
   // =========================================================================
   // Public API
   // =========================================================================
-  registerSwi(key, fn) {
+  /**
+   * Add or replace a SWI. key: number, numeric string or name (from swis.h); name: optional name to
+   * give a number that is not in the built-in list (so SYS "MyModule_Op" works).
+   */
+  registerSwi(key, fn, name) {
     let num = typeof key === 'number' ? key : Number.isNaN(Number(key)) ? this.swis.lookup(key) : Number(key);
-    if (num === undefined) throw new Error('Unknown SWI name ' + key);
-    const name = typeof key === 'string' && Number.isNaN(Number(key)) ? key : undefined;
+    if (num === undefined) throw new Error('Unknown SWI name ' + key + ' (pass its number and the name)');
+    if (!name) name = typeof key === 'string' && Number.isNaN(Number(key)) ? key.replace(/^X/, '') : undefined;
     this.swis.register(num, name, fn);
   }
 
@@ -149,10 +154,16 @@ export class BasicMachine {
     I.clearVars();
   }
 
-  /** RUN the current program; resolves when it stops. */
+  /**
+   * RUN the current program; resolves when it stops, with how it stopped:
+   *   {reason: 'end'}                         END / STOP / ran off the end / Escape-less stop
+   *   {reason: 'error', error: {number, message, erl}}  unhandled error (already reported on screen)
+   *   {reason: 'quit', code}                  QUIT / OS_Exit (onExit is also called)
+   *   {reason: 'ext', error}                  ERROR EXT (onExit gets the error instead of a report)
+   */
   async run() {
     this.interp.runProgram();
-    await this.runLoop();
+    return this.runLoop();
   }
 
   /** Stop the running program (like pressing Escape) */
@@ -422,15 +433,26 @@ export class BasicMachine {
   }
 
   // Sound ------------------------------------------------------------------------------
-  sound(ch, amp, pitch, dur, beat) { if (this.soundOn && this.snd) return this.snd.sound(ch, amp, pitch, dur, beat); }
+  sound(ch, amp, pitch, dur, beat) {
+    if (!this.soundOn || !this.snd) return;
+    // SOUND ...,beat: schedule the note for when the bar counter next reaches `beat` (needs BEATS)
+    let delay = 0;
+    if (beat !== null && beat !== undefined && this.beatsVal > 0 && this.tempoVal > 0) {
+      const b = ((beat % this.beatsVal) + this.beatsVal) % this.beatsVal;
+      const pos = (this.monotonicTime() - this.beatT0) * this.tempoVal / 4096;  // beats since reset
+      let d = b - (pos % this.beatsVal); if (d < 0) d += this.beatsVal;
+      delay = d * 4096 / this.tempoVal / 100;  // seconds
+    }
+    return this.snd.sound(ch, amp, pitch, dur, beat, delay);
+  }
   envelope(a) { if (this.snd) this.snd.envelope(a); }
   soundEnable(on) { this.soundOn = on; if (this.snd && this.snd.enable) this.snd.enable(on); }
   voices(n) { if (this.snd && this.snd.voices) this.snd.voices(n); }
   voice(c, name) { if (this.snd && this.snd.voice) this.snd.voice(c, name); }
   stereo(c, p) { if (this.snd && this.snd.stereo) this.snd.stereo(c, p); }
-  beat() { return this.beatsVal ? Math.floor(this.monotonicTime() * this.tempoVal / 4096) % this.beatsVal : 0; }
+  beat() { return this.beatsVal ? Math.floor((this.monotonicTime() - this.beatT0) * this.tempoVal / 4096) % this.beatsVal : 0; }
   beats() { return this.beatsVal; }
-  setBeats(n) { this.beatsVal = n; }
+  setBeats(n) { this.beatsVal = n; this.beatT0 = this.monotonicTime(); }  // also resets the counter
   tempo() { return this.tempoVal; }
   setTempo(n) { this.tempoVal = n; }
 
@@ -524,6 +546,7 @@ export class BasicMachine {
     const base = num & ~XBIT & 0xFFFFFF;
     const ctx = { flags: 0, x };
     const fail = (e) => {
+      e = toBasicError(e) || e;
       if (!(e instanceof BasicError)) throw e;
       if (!x) throw e;
       r[0] = this.errorBlock(e); ctx.flags |= V_FLAG;
@@ -547,9 +570,13 @@ export class BasicMachine {
       case 15: case 21: this.keybuf.length = 0; return;
       case 19: return this.waitVsync();
       case 9: case 10: {
-        // flash periods (mark / space) in 1/50s
+        // Osbyte910: 9 = first (mark) flash period, 10 = second (space), in 1/50 s; 0 freezes
+        // flashing in that state. Returns the old value in R1.
         const v = this.vdu;
-        if (v.setFlashPeriods) { const cur = [v.flashMark, v.flashSpace]; r[1] = a === 9 ? cur[1] : cur[0]; if (a === 9) v.setFlashPeriods(cur[0], x || 25); else v.setFlashPeriods(x || 25, cur[1]); }
+        if (v.setFlashPeriods) {
+          if (a === 9) { r[1] = v.flashMark; v.setFlashPeriods(x, undefined); }
+          else { r[1] = v.flashSpace; v.setFlashPeriods(undefined, x); }
+        }
         return;
       }
       case 20: case 25: if (this.vdu.resetFont) this.vdu.resetFont(a === 20 ? 0 : x); return;
@@ -557,7 +584,8 @@ export class BasicMachine {
       case 112: if (this.vdu.setDriverBank) this.vdu.setDriverBank(x); return;
       case 113: if (this.vdu.setDisplayBank) this.vdu.setDisplayBank(x); return;
       case 163: if (x === 242 && this.vdu.setDotPatternLength) this.vdu.setDotPatternLength(y); return;
-      case 251: r[1] = 0; return; // bank being displayed (approximation)
+      case 250: r[1] = this.vdu.driverBank !== undefined ? this.vdu.driverBank + 1 : 0; return; // VDU driver bank
+      case 251: r[1] = this.vdu.displayBank !== undefined ? this.vdu.displayBank + 1 : 0; return; // displayed bank
       case 117: r[1] = this.vdu.vduStatus ? this.vdu.vduStatus() : 0; return;
       case 124: this.interp.escape = false; return;
       case 125: this.escape(); return;
@@ -716,6 +744,8 @@ export class BasicMachine {
   // =========================================================================
   async runLoop() {
     const I = this.interp;
+    I.lastError = null;
+    let result = { reason: 'end' };
     this.busy = true;
     try {
       while (I.running) {
@@ -735,15 +765,20 @@ export class BasicMachine {
     } finally {
       this.busy = false;
     }
+    if (I.lastError) result = { reason: 'error', error: I.lastError };
     if (I.quitRequested !== undefined) {
       const c = I.quitRequested; I.quitRequested = undefined;
       this.exited = true;
+      result = { reason: 'quit', code: c };
       if (this.o.onExit) this.o.onExit(c);
     }
     if (I.extError) {
       const e = I.extError; I.extError = null;
+      result = { reason: 'ext', error: { number: e.number, message: e.message, erl: I.erl } };
       if (this.o.onExit) { this.exited = true; this.o.onExit(e); } else this.reportError(e.message, I.erl);
     }
+    this.lastResult = result;
+    return result;
   }
   slice() {
     const I = this.interp;

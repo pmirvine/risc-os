@@ -24,3 +24,5 @@ Port of `!SlideShow` 1.10 (`vendor/ro371/Sources/Demos/SlideShow/bas/!RunImage`,
 * Test hook: `task.slideshow.state` `{file, index, effect, phase, step, steps, limit, comp, shown, hold}` (`hold`
   writable). Tests: `tests/div/slideshow.mjs` (start, mid-transition, slide, Escape), `slideshow2.mjs` (each table
   effect); screens `tests/screens/div-slideshow*.png`.
+
+Verified 2026-09: started by double-click from `Images`, all effects captured, Escape returns to the desktop.

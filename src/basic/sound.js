@@ -54,7 +54,8 @@ export class Sound {
     return this.chanNodes[ch].filter((n) => n.end > c.currentTime).length;
   }
 
-  sound(channel, amp, pitch, dur) {
+  /** delay: seconds from now for beat-scheduled notes (SOUND ...,beat); these bypass the queue */
+  sound(channel, amp, pitch, dur, beat, delay = 0) {
     if (!this.enabled) return;
     const c = this.ensure();
     if (!c) return;
@@ -69,14 +70,14 @@ export class Sound {
     }
     const pending = list.filter((n) => n.end > now);
     this.chanNodes[ch & 7] = pending;
-    const start = Math.max(now + 0.005, this.chanEnd[ch] || 0);
+    const start = delay > 0 ? now + delay : Math.max(now + 0.005, this.chanEnd[ch] || 0);
     let seconds = dur >= 255 || dur < 0 ? 5 : Math.max(dur, 0) / 20;
     let level = 0; let env = null;
     if (amp <= 0 && amp >= -15) level = -amp / 15;
     else if (amp >= 1 && amp <= 16) { env = this.envelopes.get(amp); level = 1; }
     else if (amp >= 0x100) level = Math.pow((amp & 0x7F) / 127, 2);
     const node = this.playTone(ch, start, seconds, level, pitch, env);
-    this.chanEnd[ch] = start + seconds;
+    if (!(delay > 0)) this.chanEnd[ch] = start + seconds;
     if (node) this.chanNodes[ch & 7].push(node);
     // queue full -> wait (4 notes per channel like the BBC/RISC OS queue)
     if (this.chanNodes[ch & 7].filter((n) => n.start > c.currentTime).length > 4) {

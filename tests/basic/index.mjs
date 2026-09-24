@@ -7,3 +7,4 @@ import './graphics.test.mjs';
 import './files.test.mjs';
 import './machine.test.mjs';
 import './vdu.test.mjs';
+import './host.test.mjs';

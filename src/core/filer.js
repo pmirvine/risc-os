@@ -147,6 +147,9 @@ class DirViewer {
     const t = filer.tpl.windows.directory;
     const win = this.win = wimp.createWindowFromTemplate(filer.tpl, 'directory', { title: path }, filer.task);
     win._filerDir = path;
+    // the template's icons are only prototypes (sizes): the real Filer's viewers have none, and
+    // left in place they would steal clicks (and double-clicks) from the first row of items
+    for (let i = win.icons.length - 1; i >= 0; i--) win.deleteIcon(i);
     win.el.classList.add('filer');
     win.on('click', (ev) => this.click(ev));
     win.on('doubleclick', (ev) => this.doubleClick(ev));

@@ -20,18 +20,8 @@ export default {
   },
   // Filer_Boot: let !Printers print Drawfiles even when Draw isn't running
   boot(os) {
-    const render = async (bytes) => {
-      const DF = await import('./drawfile.js');
-      const doc = DF.parseDrawfile(bytes);
-      await DF.prepareDrawfile(doc);
-      const bb = DF.docBBox(doc), scale = 2, k = scale / 512;
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(1, Math.ceil((bb.x1 - bb.x0) * k)); canvas.height = Math.max(1, Math.ceil((bb.y1 - bb.y0) * k));
-      const g = canvas.getContext('2d');
-      g.fillStyle = '#fff'; g.fillRect(0, 0, canvas.width, canvas.height);
-      DF.renderDrawfile(g, doc, { scale });
-      return { canvas };
-    };
+    // true-size rendering ({html}); drawfile.js is only loaded when something is printed
+    const render = async (bytes) => ({ html: (await (await import('./drawfile.js')).printDrawfile(bytes)).html });
     (os.printerRenderers ??= []).push([0xAFF, render]);
     os.printers?.registerRenderer?.(0xAFF, render);
   },

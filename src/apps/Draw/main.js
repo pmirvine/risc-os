@@ -311,8 +311,10 @@ export default async function start(task, ctx) {
   function printIt(d, copies = 1) {
     if (!os.printers?.current) { task.reportError(msg('Print1')); return; }
     if (!d.objects.length) { task.reportError(msg('Print2')); return; }
-    const canvas = renderPage(d, 2);
-    for (let i = 0; i < copies; i++) os.printers.print({ title: d.title, canvas });
+    const canvas = renderPage(d, 2), lim = d.viewLimit;
+    // the whole paper at its true size (46080 draw units per inch)
+    const html = `<img class="pic" src="${canvas.toDataURL()}" style="width:${(lim.x1 / DF.DU_PER_INCH).toFixed(3)}in;height:${(lim.y1 / DF.DU_PER_INCH).toFixed(3)}in;max-width:100%;image-rendering:auto">`;
+    for (let i = 0; i < copies; i++) os.printers.print({ title: d.filename || d.title, html });
   }
   /** Render the whole paper to a canvas at `scale` (1 = 90 dpi). */
   function renderPage(d, scale) {

@@ -10,6 +10,20 @@ export class Memory {
     this.u8 = new Uint8Array(this.buf);
     this.dv = new DataView(this.buf);
     this.i32 = new Int32Array(this.buf); // aligned fast path
+    // Memory-mapped I/O above the flat RAM (screen memory). An object {lo, hi, rd8(a), wr8(a,v)} or
+    // null; only consulted on the (otherwise aborting) out-of-range path so RAM stays fast.
+    this.io = null;
+  }
+
+  _io(a) { const io = this.io; return io && a >= io.lo && a < io.hi ? io : null; }
+  _ioRd(a, n) {
+    const io = this._io(a); if (!io || !this._io(a + n - 1)) throw this.abort(a);
+    let v = 0; for (let i = n - 1; i >= 0; i--) v = (v << 8) | io.rd8(a + i);
+    return v;
+  }
+  _ioWr(a, n, v) {
+    const io = this._io(a); if (!io || !this._io(a + n - 1)) throw this.abort(a);
+    for (let i = 0; i < n; i++) { io.wr8(a + i, v & 255); v >>>= 8; }
   }
 
   abort(addr) {
@@ -21,28 +35,27 @@ export class Memory {
     if (addr < 0 || addr + n > this.size) throw this.abort(addr);
   }
 
-  rd8(a) { a >>>= 0; if (a >= this.size) throw this.abort(a); return this.u8[a]; }
-  wr8(a, v) { a >>>= 0; if (a >= this.size) throw this.abort(a); this.u8[a] = v; }
+  rd8(a) { a >>>= 0; if (a >= this.size) return this._ioRd(a, 1); return this.u8[a]; }
+  wr8(a, v) { a >>>= 0; if (a >= this.size) return this._ioWr(a, 1, v); this.u8[a] = v; }
   rd32(a) {
     a >>>= 0;
-    if (a + 4 > this.size) throw this.abort(a);
+    if (a + 4 > this.size) return this._ioRd(a, 4) | 0;
     if ((a & 3) === 0) return this.i32[a >> 2];
     return this.dv.getInt32(a, true);
   }
   wr32(a, v) {
     a >>>= 0;
-    if (a + 4 > this.size) throw this.abort(a);
+    if (a + 4 > this.size) return this._ioWr(a, 4, v);
     if ((a & 3) === 0) this.i32[a >> 2] = v; else this.dv.setInt32(a, v | 0, true);
   }
-  rd16(a) { a >>>= 0; this.check(a, 2); return this.dv.getUint16(a, true); }
-  wr16(a, v) { a >>>= 0; this.check(a, 2); this.dv.setUint16(a, v & 0xFFFF, true); }
+  rd16(a) { a >>>= 0; if (a + 2 > this.size) return this._ioRd(a, 2); return this.dv.getUint16(a, true); }
+  wr16(a, v) { a >>>= 0; if (a + 2 > this.size) return this._ioWr(a, 2, v); this.dv.setUint16(a, v & 0xFFFF, true); }
 
   /** ARM-style word load: rotated for non-aligned addresses (used by the ARM emulator). */
   rd32rot(a) {
     a >>>= 0;
     const al = a & ~3;
-    if (al + 4 > this.size) throw this.abort(a);
-    const w = this.i32[al >> 2];
+    const w = al + 4 > this.size ? this._ioRd(al, 4) | 0 : this.i32[al >> 2];
     const r = (a & 3) * 8;
     return r ? ((w >>> r) | (w << (32 - r))) : w;
   }
@@ -96,8 +109,16 @@ export class Memory {
     for (let i = 0; i < s.length; i++) this.u8[a + i] = s.charCodeAt(i);
     this.u8[a + s.length] = 0;
   }
-  wrBytes(a, bytes) { a >>>= 0; this.check(a, bytes.length); this.u8.set(bytes, a); }
-  rdBytes(a, n) { a >>>= 0; this.check(a, n); return this.u8.slice(a, a + n); }
+  wrBytes(a, bytes) {
+    a >>>= 0;
+    if (a + bytes.length > this.size && this._io(a)) { for (let i = 0; i < bytes.length; i++) this._ioWr(a + i, 1, bytes[i]); return; }
+    this.check(a, bytes.length); this.u8.set(bytes, a);
+  }
+  rdBytes(a, n) {
+    a >>>= 0;
+    if (a + n > this.size && this._io(a)) { const b = new Uint8Array(n); for (let i = 0; i < n; i++) b[i] = this._ioRd(a + i, 1); return b; }
+    this.check(a, n); return this.u8.slice(a, a + n);
+  }
 
   /** |addr : BASIC V 5 byte real (4 byte mantissa, 1 byte exponent, excess-128) */
   rdFloat5(a) {

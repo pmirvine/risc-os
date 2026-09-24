@@ -126,6 +126,19 @@ export class BasicError extends Error {
   }
 }
 
+/**
+ * Accept errors thrown by host code (SWI handlers, oscli hooks) that are not BasicErrors but look like
+ * RISC OS errors: an Error with a numeric `errnum` or `number`, or `riscos: true`. Returns a BasicError,
+ * or null if e is some other (internal) exception.
+ */
+export function toBasicError(e) {
+  if (e instanceof BasicError) return e;
+  if (e && typeof e.message === 'string' && (typeof e.errnum === 'number' || typeof e.number === 'number' || e.riscos)) {
+    return new BasicError((e.errnum ?? e.number ?? 0) | 0, e.message);
+  }
+  return null;
+}
+
 /** Throw/construct a BASIC error by its source-code key, e.g. err('MISTAK'). */
 export function err(key) {
   const e = ERRORS[key];

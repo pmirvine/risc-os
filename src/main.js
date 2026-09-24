@@ -22,6 +22,7 @@ import { input } from './core/input.js';
 import { setHandlerErrorReporter } from './core/util.js';
 import { bootScreen } from './core/boot.js';
 import { installBasicHost } from './core/basichost.js';
+import { installBasicWimp } from './core/basicwimp/index.js';
 import { config } from './core/config.js';
 
 const params = new URLSearchParams(location.search);
@@ -58,6 +59,7 @@ function setDefaultVars() {
   set('Alias$@LoadType_FFB', 'BASIC -load "%0" %*1');
   set('Alias$@RunType_FEA', 'Desktop -file %*0');
   set('Alias$@RunType_FFC', 'Obey %*0');
+  set('Alias$@RunType_FED', 'WimpPalette %0');   // FileSwitch default (Palette files); *WimpPalette is a no-op here
   set('Alias$.', 'Cat %*0');
 }
 
@@ -88,6 +90,7 @@ async function boot() {
   await initDevices();
   await switcher.init();
   installBasicHost();
+  installBasicWimp();                 // BASIC programs from the desktop / Wimp SWI bridge (TASKWINDOW agent)
   await apps.loadRegistry();
   apps.ensureRomApps();
   await apps.bootAll();

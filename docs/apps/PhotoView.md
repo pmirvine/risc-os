@@ -39,3 +39,6 @@ Deviations (JPEG instead of PhotoCD):
 * Overview title "Overview: <path>" (original "PhotoCD: <path> (Ser# …)"); slide labels show leafnames (widened
   to the frame) instead of numbers; clicking the icon when the overview is open brings it to the front.
 * No progress window / scrolling partial views (decoding is quick); no desktop-save message.
+`tests/div/monkey-div.mjs <App> [steps] [seed]` (random input with a sample file open, reports page errors) and `tests/div/filetypes-route.mjs` (double-clicks one file of each seed-disc type in Images/Sound/Tutorials/Manuals/Diversions and prints the task it opened) cover this app too.
+
+Verified 2026-09: `photoview-check` 12/12 PASS, screens OK, no page errors under random input.

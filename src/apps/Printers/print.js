@@ -121,8 +121,13 @@ export async function renderFile(path, filetype, opts = {}, renderers = new Map(
       const m = /<body[^>]*>([\s\S]*?)(<\/body>|$)/i.exec(t);
       return { title: leaf, html: m ? m[1] : t };
     }
-    case 0xAFF:
-      return { title: leaf, html: `<div class="placeholder">Drawfile '${esc(leaf)}'<br><br>(No Draw renderer is registered: load the file into !Draw and print it from there.)</div>` };
+    case 0xAFF:   // Drawfile: Draw's reusable renderer (normally registered by Draw's boot hook)
+      try {
+        const { printDrawfile } = await import('../Draw/drawfile.js');
+        return { title: leaf, html: (await printDrawfile(data)).html };
+      } catch (e) {
+        return { title: leaf, html: `<div class="placeholder">Drawfile '${esc(leaf)}'<br><br>${esc(e.message ?? e)}</div>` };
+      }
     default:
       return null;
   }

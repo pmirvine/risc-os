@@ -58,7 +58,8 @@ const ZG = [
 ];
 
 const SCREEN_END = 0x2000000;          // fake logical address of the end of screen memory
-const MAX_BANKS = 2;                   // screen banks available for OS_Byte 112/113
+const MIN_BANKS = 2;                   // screen banks always available for OS_Byte 112/113 (more if they fit)
+const DEFAULT_SCREEN_MEM = 0x100000;   // configured screen memory (1MB of VRAM, as a Risc PC)
 
 const s16 = (lo, hi) => ((lo | (hi << 8)) << 16) >> 16;
 const ror32 = (x, s) => { s &= 31; return s ? ((x >>> s) | (x << (32 - s))) >>> 0 : x >>> 0; };
@@ -86,6 +87,7 @@ export class VDU {
     this.font = new Uint8Array(SYSTEM_FONT);   // soft font (VDU 23 redefinable), survives MODE
     this._glyphMap = null;
     this._canvas = opts.canvas || null;
+    this.screenMemory = opts.screenMemory || DEFAULT_SCREEN_MEM;  // bytes; sets the number of screen banks
     this._ctx = null; this._img = null; this._img32 = null;
     // state that survives mode changes
     this.cursorFlags = 0;      // CursorFlags bits 0..7 (VDU 23,16)
@@ -137,8 +139,8 @@ export class VDU {
     this.cursorFill = this.bbcGap ? 1 : this.bpp === 4 ? 7 : this.pixMask;
     // screen memory
     const size = this.W * this.H;
-    this.banks = [];
-    for (let i = 0; i < MAX_BANKS; i++) this.banks.push(new Uint8Array(size));
+    this.maxBanks = Math.max(MIN_BANKS, Math.floor(this.screenMemory / m.screenSize));
+    this.banks = [new Uint8Array(size), new Uint8Array(size)];   // further banks are allocated when selected
     this.driverBank = 0; this.displayBank = 0;
     this.fb = this.banks[0];
     if (this.teletext) {
@@ -1090,7 +1092,54 @@ export class VDU {
 
   get screenStart() { return SCREEN_END - this.totalScreenSize + this.driverBank * this.m.screenSize; }
   get displayStart() { return SCREEN_END - this.totalScreenSize + this.displayBank * this.m.screenSize; }
-  get totalScreenSize() { return this.m.screenSize * MAX_BANKS; }
+  get totalScreenSize() { return this.m.screenSize * this.maxBanks; }
+
+  /**
+   * Memory-mapped screen (for Memory.io): {lo, hi, rd8, wr8} over the logical screen addresses
+   * (ScreenEndAdr - TotalScreenSize .. ScreenEndAdr), so programs that poke the address returned
+   * by OS_ReadVduVariables 148/149 draw on screen. Bytes are packed from the logical pixel arrays
+   * with the mode's Log2BPC / Log2BPP (double pixels replicate their value). Teletext reads as 0.
+   */
+  get screenIO() {
+    if (this._screenIO) return this._screenIO;
+    const v = this;
+    this._screenIO = {
+      get lo() { return SCREEN_END - v.totalScreenSize; },
+      get hi() { return SCREEN_END; },
+      rd8(a) { return v._scrByte(a, -1); },
+      wr8(a, b) { v._scrByte(a, b & 255); },
+    };
+    return this._screenIO;
+  }
+  /** read (val < 0) or write one byte of screen memory at logical address a */
+  _scrByte(a, val) {
+    if (this.teletext) return 0;
+    const m = this.m, o = a - (SCREEN_END - this.totalScreenSize);
+    const bank = Math.floor(o / m.screenSize), bo = o - bank * m.screenSize;
+    const row = Math.floor(bo / m.lineLength), col = bo - row * m.lineLength;
+    if (row >= this.H || bank >= this.maxBanks) return 0;
+    const fb = bank < this.banks.length ? this.banks[bank] : (val < 0 ? null : this._bank(bank));
+    if (!fb) return 0;
+    const bpc = this.bpc, bpp = this.bpp, pm = this.pixMask, base = row * this.W;
+    if (bpc <= 8) {
+      const ppb = 8 / bpc, x0 = col * ppb;
+      if (x0 >= this.W) return 0;
+      if (val < 0) {
+        let b = 0;
+        for (let i = 0; i < ppb; i++) { const p0 = fb[base + x0 + i]; let p = p0; for (let k = bpp; k < bpc; k += bpp) p |= p0 << k; b |= (p & ((1 << bpc) - 1)) << (i * bpc); }
+        return b & 255;
+      }
+      for (let i = 0; i < ppb; i++) fb[base + x0 + i] = (val >> (i * bpc)) & pm;
+    } else {
+      // a logical pixel spans several bytes (e.g. MODE 10: 8bpp pixels doubled into 16 bits)
+      const bit = col * 8, x = Math.floor(bit / bpc), off = bit % bpc;
+      if (x >= this.W) return 0;
+      if (val < 0) { const p0 = fb[base + x]; let p = p0; for (let k = bpp; k < bpc; k += bpp) p |= p0 << k; return (p >>> off) & 255; }
+      if (off < bpp) fb[base + x] = ((fb[base + x] & ~(255 << off)) | (val << off)) & pm;
+    }
+    if (bank === this.displayBank) this._dirtyRows(row, row);
+    return 0;
+  }
 
   /** OS_ReadVduVariables */
   vduVar(v) {
@@ -1259,14 +1308,19 @@ export class VDU {
   /** OS_Byte 112: select VDU driver screen bank (1..n, 0 = default) */
   setDriverBank(n) {
     if (n === 0) n = 1;
-    if (n < 1 || n > MAX_BANKS || this.teletext) return;
-    this.driverBank = n - 1; this.fb = this.banks[n - 1];
+    if (n < 1 || n > this.maxBanks || this.teletext) return;
+    this.driverBank = n - 1; this.fb = this._bank(n - 1);
   }
   /** OS_Byte 113: select displayed screen bank */
   setDisplayBank(n) {
     if (n === 0) n = 1;
-    if (n < 1 || n > MAX_BANKS || this.teletext) return;
+    if (n < 1 || n > this.maxBanks || this.teletext) return;
+    this._bank(n - 1);
     this.displayBank = n - 1; this._dirtyAll();
+  }
+  _bank(i) {
+    while (this.banks.length <= i) this.banks.push(new Uint8Array(this.W * this.H));
+    return this.banks[i];
   }
 
   /**

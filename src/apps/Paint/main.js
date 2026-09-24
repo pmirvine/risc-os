@@ -37,6 +37,7 @@ export default async function start(task, ctx) {
   ]);
   const A = new PaintApp(task, ctx, msgs, tpl, paintSprites);
   A.pickerTpl = [pickerTpl, rgbTpl];
+  task.paint = A;                         // for tests / debugging
   await A.init();
   return A;
 }

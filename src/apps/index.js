@@ -33,4 +33,5 @@ export default [
   './SysRes/fonts.js',
   './SysRes/scrap.js',
   './SysRes/system.js',
+  './TaskWindow/app.js',
 ];

@@ -745,7 +745,7 @@ STMTS2[TST.RECTANGLE] = (P) => {
     P.emit(() => {
       const X = x(), Y = y(), W = w(); const H = h ? h() : W;
       const X3 = x3(), Y3 = y3();
-      I.plot(4, X, Y); I.plot(4, (X + W) | 0, (Y + H) | 0); I.plot(fill ? 0xBE : 0xBD, X3, Y3);
+      I.plot(4, X, Y); I.plot(4, (X + W) | 0, (Y + H) | 0); I.plot(fill ? 0xBD : 0xBE, X3, Y3);  // RECTANGLE..TO copies (190), RECTANGLE FILL..TO moves (189)
     });
     return;
   }
@@ -781,11 +781,11 @@ STMTS2[TST.TINT] = (P) => {
 STMTS2[TST.SWAP] = (P) => swapStmt(P);
 STMTS2[TST.WAIT] = (P) => { const I = P.I; P.emit(() => I.host.waitVsync()); };
 STMTS2[TST.MOUSE] = (P) => mouseStmt(P);
+// BASIC 1.16: QUIT takes no argument (DONES then SWI OS_Exit); QUIT <n> is a later extension
 STMTS2[TST.QUIT] = (P) => {
   const I = P.I;
-  let f = null;
-  if (!P.atEnd()) f = P.intExpr();
-  P.emit(() => I.quit(f ? f() : 0));
+  P.done();
+  P.emit(() => I.quit(0));
 };
 STMTS2[TST.SYS] = (P) => sysStmt(P);
 STMTS2[TST.INSTALL] = () => { throw cerr('INSTALLBAD'); };

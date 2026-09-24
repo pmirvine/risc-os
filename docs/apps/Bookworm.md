@@ -44,3 +44,7 @@ Tests: `node tests/div/bookworm-links.mjs` (parses all 87 pages, resolves 4307 l
 broken in the original data, e.g. `C_10.HTM`); screenshots `tests/div/bookworm.mjs` with
 `BW=home|toc|chapter|index|app|link|back|adjust|menu ITEM=n|ibmenu|info|hot|find|choices|open`,
 `bookworm-keys.mjs` (run an HTML file, keys, F3, Quit), `bookworm-resize.mjs` → `tests/screens/div-bookworm-*.png`.
+`tests/div/monkey-div.mjs <App> [steps] [seed]` (random input with a sample file open, reports page errors) and `tests/div/filetypes-route.mjs` (double-clicks one file of each seed-disc type in Images/Sound/Tutorials/Manuals/Diversions and prints the task it opened) cover this app too.
+
+Verified 2026-09: all screens OK; HTML files (&FAF) in `Manuals` open here by double-click. GIFs (&695) have no
+run action in 3.71 (Filer "application not found" error), as in the original.

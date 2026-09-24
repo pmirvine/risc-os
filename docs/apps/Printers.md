@@ -19,7 +19,8 @@ configuration windows), Messages and sprites (`!printers`, class sprites `dp`/`l
   configuration) and printed via a new browser window + `window.print()` (hidden iframe if pop-ups are blocked).
   Text-like types (Text, Obey…) as Corpus monospace honouring Print title / line numbers / text scale / columns;
   BASIC as its listing; Sprite files at true size (180 OS units/inch); JPEG/GIF/PNG; HTML. Unknown types get the
-  "Query from Printer Manager" box (Plain = print as text). Drawfiles need a registered renderer.
+  "Query from Printer Manager" box (Plain = print as text). Drawfiles are rendered at true size by Draw's `printDrawfile` (registered by Draw's boot hook; `print.js` also
+  imports it directly as a fallback).
   Connection "File" writes the text/HTML to the file name instead (Append supported).
 
 ## API for other applications (`os.printers`, null while !Printers isn't running)

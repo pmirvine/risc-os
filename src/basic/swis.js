@@ -296,7 +296,12 @@ export function installCoreSwis(t) {
   S('Sound_InstallVoice', (r) => { r[1] = 0; });
   S('Sound_Tuning', (r) => { r[0] = 0; });
   S('Sound_QTempo', (r, m) => { const old = m.tempo(); if (r[0]) m.setTempo(r[0]); r[0] = old; });
-  S('Sound_QBeat', (r, m) => { r[0] = m.beat(); });
+  // R0 = 0: read current beat; -1: read beats per bar; n > 0: set bar length (resets the counter), returns old
+  S('Sound_QBeat', (r, m) => {
+    if (r[0] === 0) r[0] = m.beat();
+    else if (r[0] === -1) r[0] = m.beats();
+    else { const old = m.beats(); m.setBeats(r[0]); r[0] = old; }
+  });
   S('Sound_QSchedule', () => {});
 
   // BASICTrans (so programs that call it directly get sensible answers) ------

@@ -1,7 +1,7 @@
 // BBC BASIC V runtime: program store, variables, stack frames, control flow, error handling.
 // The compiled micro-ops (stmt.js / expr.js) call back into this object.
 import { T, TS as TST, parseProgram, buildProgram, tokenise, insertLine as insertProgLine } from './tokens.js';
-import { err, BasicError } from './errors.js';
+import { err, BasicError, toBasicError } from './errors.js';
 import { compileLine, F } from './stmt.js';
 import { Parser, TI, TF, TS, TA, CompileError, convVal, intF, fltF, strF } from './expr.js';
 import { toInt, formatNumber, readNumber } from './numfmt.js';
@@ -904,6 +904,7 @@ export class Interp {
    * the program stopped (default handler printed the message).
    */
   handleError(e) {
+    if (!(e instanceof BasicError)) e = toBasicError(e) || e;
     if (!(e instanceof BasicError)) {
       if (e && e.name === 'RangeError' && /call stack/i.test(e.message)) e = err('ERDEEPPROC');
       else { console.error(e); e = new BasicError(0, 'Internal error: ' + (e && e.message)); }
@@ -943,6 +944,7 @@ export class Interp {
     this.dataPtr = null;
     this.running = false;
     this.stack.length = 0; this.stackBytes = 0;
+    this.lastError = { number: e.number, message: msg, erl: this.erl };
     if (this.quitMode) { this.extError = e; return false; }
     this.m.reportError(msg, this.erl);
     return false;

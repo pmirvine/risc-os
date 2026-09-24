@@ -198,6 +198,7 @@ function parseObject(b, v, o, size, tagWord, doc, depth) {
       const obj = { type: 'jpeg', tag: tagWord, bbox: readBox(v, o + 8), width: v.getInt32(o + 24, true), height: v.getInt32(o + 28, true), xdpi: v.getInt32(o + 32, true), ydpi: v.getInt32(o + 36, true), matrix: readMatrix(v, o + 40) };
       const len = v.getUint32(o + 64, true);
       obj.data = b.slice(o + 68, Math.min(end, o + 68 + len));
+      if (o + 68 + len < end && end - (o + 68 + len) < 4) obj.padBytes = b.slice(o + 68 + len, end);   // keep padding bytes (byte-identical re-save)
       return obj;
     }
     default:
@@ -268,7 +269,9 @@ function writeObject(w, obj) {
       break;
     case 'jpeg':
       hdr(); w.box(obj.bbox); w.i32(obj.width); w.i32(obj.height); w.i32(obj.xdpi); w.i32(obj.ydpi);
-      obj.matrix.forEach((m) => w.i32(m)); w.u32(obj.data.length); w.bytes(obj.data); w.pad();
+      obj.matrix.forEach((m) => w.i32(m)); w.u32(obj.data.length); w.bytes(obj.data);
+      if (obj.padBytes && ((w.n + obj.padBytes.length) & 3) === 0) w.bytes(obj.padBytes);
+      w.pad();
       break;
     case 'unknown':
       w.bytes(obj.raw); w.pad();
@@ -1011,4 +1014,23 @@ export function renderDrawfile(ctx, input, opts = {}) {
   if (ready && typeof fetch !== 'undefined') prepareDrawfile(doc).then(() => opts.onReady?.(doc));
   renderObjects(ctx, doc.objects, view);
   return doc;
+}
+
+/**
+ * Drawfile bytes -> {canvas, html} for printing (used by !Printers). The drawing is rendered at
+ * `dpi` (default 180) and the <img> sized to its true physical size (46080 draw units per inch).
+ */
+export async function printDrawfile(bytes, { dpi = 180 } = {}) {
+  await Promise.all([loadFontInfo(), loadSystemFont()]);
+  const doc = parseDrawfile(bytes);
+  await prepareDrawfile(doc);
+  const bb = docBBox(doc), scale = dpi / 90;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.ceil((bb.x1 - bb.x0) * scale / 512));
+  canvas.height = Math.max(1, Math.ceil((bb.y1 - bb.y0) * scale / 512));
+  const g = canvas.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, canvas.width, canvas.height);
+  renderDrawfile(g, doc, { scale });
+  const w = ((bb.x1 - bb.x0) / DU_PER_INCH).toFixed(3), h = ((bb.y1 - bb.y0) / DU_PER_INCH).toFixed(3);
+  return { canvas, html: `<img class="pic" src="${canvas.toDataURL()}" style="width:${w}in;height:${h}in;max-width:100%;image-rendering:auto">` };
 }

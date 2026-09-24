@@ -27,3 +27,7 @@ Deviations: "Fast" is always shaded; processing times are the browser's; formats
 Tests: `tests/div/act-changefsi.mjs` (menu / dialogues, `CFSI=menu|256|scale|proc|jpeg|info|source|zoom|save`),
 `tests/div/changefsi-formats.mjs` (GIF, PNG, JPEG, sprite inputs + sprite save round trip). Screens
 `tests/screens/div-changefsi*.png`.
+`tests/div/changefsi-picmenu.mjs` (`CFSIP=Image info|Source info|Range info|Zoom|Save image`) opens each
+picture-menu submenu → `div-changefsi-pic-*.png`. `tests/div/monkey-div.mjs <App> [steps] [seed]` (random input with a sample file open, reports page errors) and `tests/div/filetypes-route.mjs` (double-clicks one file of each seed-disc type in Images/Sound/Tutorials/Manuals/Diversions and prints the task it opened) cover this app too.
+
+Verified 2026-09: all tests pass, no page errors. The Image info Mode field shows the decimal mode word (`STR$m`), as in the original.
