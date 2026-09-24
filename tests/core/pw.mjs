@@ -5,6 +5,14 @@ import path from 'path';
 import os from 'os';
 async function loadPW() {
   const cands = [process.env.PLAYWRIGHT_MODULE, 'playwright'].filter(Boolean);
+  try {   // the npx cache (npx -y playwright@1.61 ...), newest 1.61.x first: it matches the cached Chromium
+    const npx = path.join(os.homedir(), '.npm/_npx');
+    const found = fs.readdirSync(npx).map((d) => path.join(npx, d, 'node_modules/playwright'))
+      .filter((d) => fs.existsSync(path.join(d, 'index.mjs')))
+      .map((d) => ({ f: path.join(d, 'index.mjs'), v: JSON.parse(fs.readFileSync(path.join(d, 'package.json'), 'utf8')).version }));
+    found.sort((a, b) => (b.v.startsWith('1.61') - a.v.startsWith('1.61')) || b.v.localeCompare(a.v, undefined, { numeric: true }));
+    cands.push(...found.map((x) => x.f));
+  } catch { /* no npx cache */ }
   for (const c of cands) { try { return await import(c); } catch { /* next */ } }
   throw new Error('playwright not found: npm i -D playwright or set PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs');
 }
@@ -24,4 +32,4 @@ export async function launch({ width = 1024, height = 768, zoom = 1 } = {}) {
   return { browser, page, logs };
 }
 export const BASE_URL = process.env.URL ?? 'http://localhost:8371/';
-export const SHOTS = path.join(path.dirname(new globalThis.URL(import.meta.url).pathname), '..', 'screens');
+export const SHOTS = process.env.SHOTS || path.join(path.dirname(new globalThis.URL(import.meta.url).pathname), '..', 'screens');
