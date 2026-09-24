@@ -55,6 +55,7 @@ save + reload), `act-tools2.mjs` (every tool and sprite-menu operation at 16, 25
 `act-snapshot.mjs`; screenshots `tests/screens/paint-*.png`. `tests/paint/roundtrip.mjs` runs in node.
 
 ## Known gaps
-* Printing reports "A printer driver must be loaded ..." (PntE9): no Paint ↔ !Printers protocol yet.
+* Printing goes through `os.printers` when !Printers is running: the Print dialogue's copies, scale, corner (inches/cm)
+  and orientation are honoured, the sprite printed at true size (180 OS units per inch). Without !Printers: PntE9.
 * JPEGs are imported as 16M-colour sprites (1.94 used a full palette in ≤256-colour modes).
 * Snapshots are made from the browser's rendering of the desktop (16M colours), not from screen memory.

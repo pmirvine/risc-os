@@ -519,8 +519,16 @@ export class TextState {
     v?.setCaret(d);
   }
   swapCRLF() { misc.exchangeCRLF(this.doc); for (const v of this.views) v.showCaret(false); }
-  print() {
-    const claimed = wimp.sendMessage('PrintSave', { filetype: this.filetype, filename: this.filename, getData: () => this.dataFor() }, { from: this.app.task });
+  /** Print the text (or the selection) through !Printers: Edit prints what it shows, so BASIC prints as its listing. */
+  print(selection = false) {
+    const sel = selection && scrap.doc === this.doc;
+    const text = sel ? this.doc.slice(scrap.start, scrap.end) : this.doc.text;
+    if (os.printers?.current) {
+      os.printers.print({ title: this.filename || '<untitled>', text, size: text.length });
+      return;
+    }
+    // no printer manager API: a PrintSave broadcast (a printer manager could claim it), else the Edit error
+    const claimed = wimp.sendMessage('PrintSave', { filetype: this.filetype, filename: this.filename, getData: () => this.dataFor(sel ? scrap.start : 0, sel ? scrap.end : this.doc.length) }, { from: this.app.task });
     if (!claimed) this.app.task.reportError(this.app.msg('txt64'));
   }
   setType(name) {
@@ -673,7 +681,7 @@ export class TextState {
     const se = P('txt15');
     const selMenu = new Menu(M.lookup('txt14'), [
       { text: se[0].text, submenu: () => s.saveSelectionBox(), shaded: () => scrap.doc !== d, help: H(2, 0) },
-      { text: se[1].text, key: se[1].key, shaded: noscrap, action: () => s.print(), help: H(2, 1) },
+      { text: se[1].text, key: se[1].key, shaded: noscrap, action: () => s.print(true), help: H(2, 1) },
       { text: se[2].text, key: se[2].key, shaded: noscrap, action: () => { d.separate(); v.copySelection(); d.separate(); }, help: H(2, 2) },
       { text: se[3].text, key: se[3].key, shaded: noscrap, action: () => { d.separate(); v.moveSelection(); d.separate(); }, help: H(2, 3) },
       { text: se[4].text, key: se[4].key, shaded: noscrap, action: () => { v.deleteSelection(); }, help: H(2, 4) },

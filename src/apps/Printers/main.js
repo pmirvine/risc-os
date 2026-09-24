@@ -573,7 +573,7 @@ export default async function start(task, ctx) {
       return { name: p.name || p.type, type: p.type, class: p.cls, connection: cnName(p), paper: { name: pp.pn, width: pp.pw / 72000 * 25.4, height: pp.ph / 72000 * 25.4 }, landscape: landscapeOf(p) };
     },
     get printers() { return printers.map((p) => ({ name: p.name, type: p.type, class: p.cls, active: p.active, current: p.id === current })); },
-    /** Print a document: {title, text | html | canvas | images:[canvas|url]}. Resolves true when sent. */
+    /** Print a document: {title, text | html (string or Promise) | canvas | images:[canvas|url]}. Resolves true when sent. */
     print(doc = {}) {
       const p = cur();
       if (!p) { task.reportError(msg('OKN')); return Promise.resolve(false); }
@@ -581,7 +581,7 @@ export default async function start(task, ctx) {
       const out = p.cnct.type === 5 ? null : openOutput(title);
       return enqueue(p, title, doc.size ?? (doc.text?.length ?? 0), async () => {
         if (doc.text != null) return { title, html: textToHtml(doc.text, title, optsOf(p)), text: doc.text };
-        let html = doc.html ?? '';
+        let html = (await doc.html) ?? '';   // html may be a Promise (rendered after the window opened)
         if (doc.canvas) html += `<img class="pic" style="width:100%" src="${doc.canvas.toDataURL()}">`;
         for (const im of doc.images ?? []) html += `<img class="pic" src="${typeof im === 'string' ? im : im.toDataURL()}">`;
         return { title, html: (doc.css ? `<style>${doc.css}</style>` : '') + html };

@@ -6,6 +6,8 @@
 import { wimp } from '../../core/wimp.js';
 import { saveAs } from '../../core/dialogs.js';
 import { input } from '../../core/input.js';
+import { os } from '../../core/os.js';
+import { spritesFromFile } from '../../core/sprites.js';
 import { newSprite } from './spritefile.js';
 import { stdPaletteWords, ENTRIES, spritePalette, nearest, deepPixel, translation } from './colours.js';
 import * as ops from './ops.js';
@@ -75,15 +77,46 @@ export class Dialogs {
     const A = this.A;
     const w = this.menuBox(this.win('Printing'));
     const I = w.icons;
-    I[1].setText('1');
-    I[3].setState({ selected: true });
-    I[4].setText(A.msg('PntW9'));
-    I[18].setState({ selected: true });
-    I[15].setText('0.00'); I[17].setText('0.00');
-    w.on('click', (ev) => { if (ev.icon === I[0] && ev.button !== 'menu') { wimp.menus.close(); A.error('PntE9'); } });
+    const P = this.printSettings;   // like the static print_copies / print_scale / menus_print_where in c.Menus
+    I[1].setText(String(P.copies));
+    I[P.landscape ? 3 : 2].setState({ selected: true });
+    I[4].setText(os.printers?.current?.name ?? A.msg('PntW9'));
+    [I[7], I[9], I[11], I[13]].forEach((ic, i) => ic.setText(String(P.scale[i])));
+    I[P.cm ? 19 : 18].setState({ selected: true });
+    const unit = () => (P.cm ? 2.54 : 1);
+    I[15].setText((P.x / unit()).toFixed(2)); I[17].setText((P.y / unit()).toFixed(2));
+    const read = () => {
+      P.copies = Math.max(1, parseInt(I[1].text, 10) || 1);
+      P.landscape = I[3].selected;
+      P.scale = [I[7], I[9], I[11], I[13]].map((ic) => Math.max(1, parseInt(ic.text, 10) || 1));
+      P.cm = I[19].selected;
+      P.x = (parseFloat(I[15].text) || 0) * unit(); P.y = (parseFloat(I[17].text) || 0) * unit();
+    };
+    w.on('click', (ev) => { if (ev.icon === I[0] && ev.button !== 'menu') { read(); wimp.menus.close(); this.print(s); } });
+    w.on('key', (ev) => { if (ev.code === 13) { read(); wimp.menus.close(); this.print(s); return true; } });
     w.helpText = A.msgs.PntHB;
-    void s;
     return w;
+  }
+
+  get printSettings() { return (this.A._print ??= { copies: 1, landscape: false, scale: [1, 1, 1, 1], cm: false, x: 0, y: 0 }); }
+
+  /** Print a sprite through !Printers (os.printers) at its true size (180 OS units per inch) times the scale. */
+  async print(s) {
+    const A = this.A, P = this.printSettings;
+    if (!os.printers?.current) { A.error('PntE9'); return false; }
+    if (!s) return false;
+    const out = os.printers.print({   // called synchronously from the click, so the output window may open
+      title: s.name,
+      html: (async () => {
+        const sp = spritesFromFile(A.spriteBytes(s)).values().next().value;
+        const c = await sp.canvas();
+        const wIn = (sp.osW / 180) * P.scale[0] / P.scale[1], hIn = (sp.osH / 180) * P.scale[2] / P.scale[3];
+        const img = `<img class="pic" src="${c.toDataURL()}" style="position:relative;left:${P.x}in;top:${P.y}in;width:${wIn.toFixed(3)}in;height:${hIn.toFixed(3)}in;image-rendering:pixelated">`;
+        return Array.from({ length: P.copies }, () => `<div style="break-after:page">${img}</div>`).join('');
+      })(),
+      css: P.landscape ? '@page { size: landscape }' : '',
+    });
+    return out;
   }
 
   // ------------------------------------------------------------------ save boxes

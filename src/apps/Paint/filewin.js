@@ -239,7 +239,7 @@ export class FileWindows {
       { text: 'Delete', dotted: true, action: () => this.deleteSprite(f, hit), help: H('FILER32') },
       { text: 'Save', submenu: () => A.dialogs.saveSpriteBox(hit), help: H('FILER33') },
       { text: 'Info', dotted: true, submenu: () => A.dialogs.spriteInfo(hit), help: H('FILER34') },
-      { text: 'Print', submenu: () => A.dialogs.printBox(hit), action: () => A.error('PntE9'), help: H('FILER35') },
+      { text: 'Print', submenu: () => A.dialogs.printBox(hit), action: () => A.dialogs.print(hit), help: H('FILER35') },
     ]);
     const displayMenu = new Menu(A.msg('PntM8'), [
       { text: 'Drawing and name', ticked: () => !f.fullInfo, action: () => this.setDisplay(f, false), help: H('FILER10') },

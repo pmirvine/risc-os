@@ -437,7 +437,7 @@ export class SpriteWindows {
     const misc = new Menu(A.msg('PntMK'), [
       { text: 'Info', submenu: () => A.dialogs.progInfo(), help: H('EDIT00') },
       { text: 'Sprite', dotted: true, submenu: () => A.dialogs.spriteInfo(s), help: H('EDIT01') },
-      { text: 'Print', submenu: () => A.dialogs.printBox(s), action: () => A.error('PntE9'), help: H('EDIT02') },
+      { text: 'Print', submenu: () => A.dialogs.printBox(s), action: () => A.dialogs.print(s), help: H('EDIT02') },
     ]);
     const save = new Menu(A.msg('PntMB'), [
       { text: 'Sprite', submenu: () => (s.st.file.sprites.length === 1 ? A.dialogs.saveFileBox(s.st.file) : A.dialogs.saveSpriteBox(s)), help: H('EDIT10') },

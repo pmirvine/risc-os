@@ -74,7 +74,8 @@ Keys the filter doesn't consume get normal Edit behaviour, so "Unlink" = stop fi
 
 ## Known gaps
 
-* Printing: Print sends a `PrintSave` message; with nothing to claim it Edit reports txt64 (no !Printers protocol yet).
+* Printing goes through `os.printers` (!Printers' API) when !Printers is running (Misc ▸ Print prints the text, Select ▸ Print
+  the selection; BASIC prints as its listing). Otherwise a `PrintSave` broadcast, then txt64 if nobody claims it.
 * The outline-font display uses the browser's text metrics (no kerning), font size width≠height is a horizontal scale.
 * No DataSaved (safe-after-RAM-transfer) tracking; untyped (load/exec) files are saved as Data.
 * "Move all windows" (Shift-Ctrl-←/→) only scrolls the current window.

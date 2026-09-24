@@ -950,15 +950,17 @@ export class Wimp extends Emitter {
   async dataSave(drop, { leafname, filetype, size = 0, getData }, from = null) {
     const win = drop.window;
     if (!win) return null;
-    let result = null;
+    let result = null, pending = null;
     const ev = {
       leafname, filetype, size, x: drop.x, y: drop.y, icon: drop.icon, window: win, from,
       accept: (path) => { result = { path }; },
-      receive: async () => { const data = await getData(); result = { data }; return data; },
+      receive: () => (pending ??= (async () => { const data = await getData(); result = { data }; return data; })()),
     };
     const r = win.emit('datasave', ev);
-    if (!result && !r.handled) this.sendMessage('DataSave', ev, { to: win.task, from });
-    return result;
+    const claimed = !result && !r.handled ? this.sendMessage('DataSave', ev, { to: win.task, from }) : null;
+    if (!result && pending) { try { await pending; } catch { return null; } }
+    // a receiver that claimed the save but fetches the data later (after opening a window) still counts
+    return result ?? (r.handled || claimed ? { handled: true } : null);
   }
 
   // ------------------------------------------------------------------ misc services
