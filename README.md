@@ -17,6 +17,8 @@ Plain modern JavaScript ES modules. There is no bundler, no framework and no run
 | ![Maestro](docs/screenshots/acc-maestro-play.png) !Maestro playing one of the original tunes | ![Patience](docs/screenshots/div-patience.png) !Patience |
 | ![Meteors](docs/screenshots/div-meteors-play.png) !Meteors, ported from the original assembler | ![Task Manager](docs/screenshots/fid-taskmanager.png) Task Manager |
 | ![Configure](docs/screenshots/acc-configure-main.png) !Configure | ![BASIC Mandelbrot](docs/screenshots/basic-mandel.png) BBC BASIC V graphics (standalone `src/basic/demo.html`) |
+| ![Lander](docs/screenshots/div-lander.png) !Lander: David Braben's 1987 demo (JavaScript port; the original runs on the ARM2 emulator if you supply it) | ![Hopper](docs/screenshots/div-hopper.png) !Hopper, from RISC OS Open's sources |
+| ![Plasma](docs/screenshots/basic-plasma.png) `$.Demos.BASIC.Plasma`, one of the BBC BASIC demo programs | ![T1ToFont and Chars](docs/screenshots/tierb-t1tofont-chars.png) !Chars showing a Type 1 font converted by !T1ToFont |
 
 ## Running it
 
@@ -81,23 +83,57 @@ and a VDU driver with screen modes, graphics, sprites and teletext. It runs full
 windows, and as desktop applications through a Wimp SWI bridge, so original tokenised BASIC Wimp programs run
 unchanged (for example the original !SciCalc).
 
-**Applications** (36 descriptors in `src/apps/index.js`):
+**Applications** (46 descriptors in `src/apps/index.js`):
 
 | ROM (`Resources:$.Apps`) | Hard disc applications | Diversions (games and demos) |
 |---|---|---|
 | !Alarm: alarms and clock | !SciCalc: scientific calculator | !Patience |
-| !Chars: character map | !Maestro: music editor and player | !MineHunt |
-| !Configure: all plug-ins | !Squash: file compression | !Meteors |
-| !Draw 1.11 | !CloseUp: screen magnifier | !Blocks |
-| !Edit 1.54 (with task windows) | !ChangeFSI: image conversion | !Puzzle |
-| !Help 2.29: interactive help | !PhotoView: JPEG viewer | !Clock |
-| !Paint 1.94 | !Bookworm: HTML manual browser | !MemNow |
-| !Printers 1.54: printer manager | !ARPlayer: ARMovie player | !Flasher |
-| | !Player: sample player | |
+| !Chars: character map | !Calc: the RISC OS 2 / 3.1 desk calculator, restored | !MineHunt |
+| !Configure: all plug-ins | !Maestro: music editor and player | !Meteors |
+| !Draw 1.11 | !Squash: file compression | !Blocks |
+| !Edit 1.54 (with task windows) | !CloseUp: screen magnifier | !Puzzle |
+| !Help 2.29: interactive help | !ChangeFSI: image conversion | !Clock |
+| !Paint 1.94 | !PhotoView: JPEG viewer | !MemNow |
+| !Printers 1.54: printer manager | !Bookworm: HTML manual browser | !Flasher |
+| !InetSetup: Internet configuration (and !Internet) | !ARPlayer: ARMovie player | !Madness: moves every other window |
+| | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
+| | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
 | | !SlideShow | |
+| | !CDPlayer: the Audio Panel (no CD drive) | |
+| | !FontPrint: PostScript printer font lists | |
+| | !Access+ and !AccessCD: ShareFS sharing | |
+| | !Patch: application patcher | |
+| | !T1ToFont: Type 1 to RISC OS outline font converter | |
+
+**Original BASIC utilities**, running unmodified through the BASIC Wimp bridge (see `docs/apps/TierA.md`):
+!Calibrate and !ShowScrap (`Diversions.Tools`), !SaveCMOS, !ResetBoot, !Verify and !HForm (`Utilities`), !PrintEdit
+(`Printing`) and !Warning (`Video`). The CMOS RAM, the IDE hard disc and the joystick they use are emulated.
+
+**BBC BASIC demos** in `$.Demos.BASIC` (double-click to run; Shift-double-click to read the listing in !Edit):
+Mandelbrot, Plasma, Fire, Stars, AsmBars and AsmPlot (inline ARM assembler), Cube, Sprites, Lissajous, Roses, Spiral,
+Circles, Colours, Tree, Life, Hanoi, Snake, Ball, Voices, Canon and Tune (the sound system), Teletext (MODE 7), Sieve,
+Guess, Errors, and WimpClock, a small Wimp task. The listings are in `src/basic/demos/`.
 
 The disc also includes !System, !Scrap and !Fonts (`!Boot.Resources`), the Examples directory (a BASIC Wimp demo),
-the user guide in HTML, tutorials, images, Maestro tunes, and the original BASIC programs and !Boot files.
+a sample Type 1 font to convert with !T1ToFont (`Utilities.Type1Fonts`), the user guide in HTML, tutorials, images,
+Maestro tunes, and the original BASIC programs and !Boot files. Fonts converted by !T1ToFont (any outline font in
+the `Font$Path` directories) appear in the font menus of !Chars, !Configure, !Draw and !Edit.
+
+### !Lander
+
+!Lander is David Braben's 1987 Archimedes demo, © D. J. Braben. It runs in one of two modes:
+
+* **The JavaScript port** (the default): a line-by-line reconstruction after Mark Moxon's documented disassembly.
+  With the same mouse input it draws the same frames as the original, at the speed of an 8 MHz ARM2.
+* **The original program** on an emulated ARM2 (the ARM emulator from the BASIC interpreter), when you supply it.
+  The binary is never part of this repository or its disc image. Drag it from the host computer onto the running
+  game, or copy it onto the RISC OS disc and drag it from a Filer window onto the !Lander icon, or
+  `*Run <Lander$Dir> <file>`; it is then kept in the browser (IndexedDB) for later runs. When developing locally you can instead clone
+  [markmoxon/lander-source-code-acorn-archimedes](https://github.com/markmoxon/lander-source-code-acorn-archimedes) into
+  `vendor/lander` (git-ignored); `serve.mjs` then offers its `4-reference-binaries/!RunImage.bin` to pages loaded from
+  localhost. `*Run <Lander$Dir> -port` (or `?lander=port`) always plays the port.
+
+Mouse: position steers, Select = full thrust, Menu = hover, Adjust = fire. Escape ends the game. See `docs/apps/Lander.md`.
 
 ## Architecture
 
@@ -111,6 +147,7 @@ src/core/              the operating system
   cli.js commands.js sysvars.js   OSCLI, * commands, system variables and GSTrans
   app.js               application registry: descriptors, lazy load(), Filer_Boot, file types, * commands
   sprites.js templates.js messages.js fonts.js dialogs.js   resources and standard dialogues
+  fontreg.js fontbuild.js riscosfont.js   font registry: built-in fonts + outline fonts on Font$Path, converted at run time
   basichost.js basicwimp/   full-screen BASIC, and BASIC programs as Wimp tasks (SWI bridge)
   reset.js             *ResetDisc / *ResetCMOS / Delete-power-on
 src/basic/             BBC BASIC V interpreter, tokeniser, ARM assembler/emulator, VDU driver (host-agnostic)
@@ -130,7 +167,8 @@ caret, drags and icon bar icons. See `docs/CORE_API.md`. The screen uses 1 pixel
 
 ```sh
 node --test tests/basic/          # BASIC interpreter, tokeniser, assembler, VDU (no browser)
-node --test tests/core            # and tests/draw tests/edit tests/paint tests/acc tests/div tests/tw tests/bw
+node --test tests/sound tests/basic   # no browser
+node --test tests/core            # and tests/draw tests/edit tests/paint tests/acc tests/div tests/tw tests/bw tests/tierb
 node --test tests/integration     # cross-application flows + a long random ("monkey") test
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds
@@ -143,7 +181,8 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 ## Known limitations
 
 * Not an emulator: the OS and applications are reimplemented in JavaScript. ARM machine code runs only inside BASIC
-  (CALL/USR and assembler); relocatable modules, absolutes (`,ff8`) and utilities can't run and are left off the disc.
+  (CALL/USR and assembler) and for !Lander's original program; relocatable modules, absolutes (`,ff8`) and utilities
+  can't run and are left off the disc (as empty placeholders).
 * One screen mode (the browser window size, or a fixed mode from !Configure scaled to fit); 16M colours internally.
   `*WimpPalette` / palette changes are ignored.
 * Printing uses the browser: !Printers renders the document to a page sized for the configured paper and opens the
@@ -151,7 +190,8 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * Sound: WaveSynth / Percussion voices, Maestro and the sample players are approximated with WebAudio.
 * Networking, CD-ROM, NFS/Econet, podules and the hardware-specific parts of !Configure are not provided.
 * Outline fonts are the original RISC OS fonts converted to OpenType and drawn by the browser: close, but not
-  pixel-identical to the RISC OS font manager (no kerning).
+  pixel-identical to the RISC OS font manager (no kerning). Fonts found on the disc (e.g. made by !T1ToFont) are
+  converted the same way when first used.
 * Per-application gaps are listed under "Known gaps" in `docs/apps/*.md`, `docs/BASIC.md` and `docs/BASIC_WIMP.md`.
 
 ## Credits
@@ -166,5 +206,16 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * The applications are ports of the original sources: Edit, Draw and Paint (C, RISC_OSLib), Alarm, Chars, Help,
   Configure, SciCalc, Maestro, Squash, CloseUp, ChangeFSI, PhotoView, Printers, Bookworm, ARPlayer, Player and the
   Diversions (BASIC and assembler originals). The original authors are credited in each application's Info box.
+* !Hopper is from RISC OS Open's `Apps/Diversions/Hopper` (© 1994 Simon Foster, BSD 3-clause licence) and
+  !Madness from RISC OS Open's `Apps/Diversions/Madness` (© 2016 Castle Technology, Apache License 2.0), at
+  [gitlab.riscosopen.org](https://gitlab.riscosopen.org/RiscOS/Sources/Apps/Diversions); their licences are in
+  `tools/classics/`. !Calc is reconstructed from the RISC OS 2 Applications 2 disc.
+* !Lander © D. J. Braben 1987. The JavaScript port follows Mark Moxon's fully documented source code at
+  [lander.bbcelite.com](https://lander.bbcelite.com) /
+  [github.com/markmoxon/lander-source-code-acorn-archimedes](https://github.com/markmoxon/lander-source-code-acorn-archimedes).
+  The original program is not included.
+* The sample Type 1 font is Computer Modern Roman 10 from the AMS Type 1 fonts, © 1997, 2009 American Mathematical
+  Society, under the SIL Open Font License 1.1 (`tools/type1/`). opentype.js (© Frederik De Bleser, MIT licence) is
+  bundled in `assets/lib/opentype/` to build web fonts.
 * This is a non-commercial preservation and educational project and is not affiliated with Acorn, RISC OS Open Ltd or
   RISC OS Developments.
