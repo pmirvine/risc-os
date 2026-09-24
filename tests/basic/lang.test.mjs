@@ -208,3 +208,8 @@ test('FN side effects: left operands are evaluated before the FN (left to right)
   ].join('\n'));
   assert.equal(out, '         3\nab\nab\n      1120\n         0         2\n');
 });
+
+test('"str" + FNx where FNx has no $ in its name (dynamically typed, as in crunched programs)', async () => {
+  assert.equal(await run(lines('PRINT ">"+FNa("M1")', 'PRINT ">"+FNb', 'END', 'DEF FNa(k$)="<"+k$+">"', 'DEF FNb=1')),
+    '><M1>\nType mismatch: string needed at line 20\n');
+});

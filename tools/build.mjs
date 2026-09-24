@@ -10,3 +10,4 @@ run(d + 'sysfont.mjs');
 run(d + 'fonts.mjs');
 run(d + 'misc.mjs');
 run(d + 'disc.mjs');
+run(d + 'basicwimp-demo.mjs');   // adds $.Examples (disc.mjs rebuilds assets/disc without it)

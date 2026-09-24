@@ -199,7 +199,8 @@ or `"untyped"` (with `load`/`exec` hex). `path` is relative to `assets/disc/`. C
 resources + BASIC `!RunImage,ffb` where applicable), `Diversions` (!Patience, !Blocks, !Clock, !Flasher, !MemNow,
 !MineHunt, !Meteors, !Puzzle, !Player, AudioDemos…), `Images` (JPEG ,c85 + !SlideShow), `Manuals` (HTML ,faf + GIFs, !Bookworm),
 `Printing`, `Sound` (Maestro ,af1 tunes), `Tutorials` (DrawTutor Map/Sign ,aff, PaintTutor Flower ,ff9, WelcomeGde, StarComms),
-`Utilities`, `Replay`, `Video` (ReadMe/!Warning only). Skipped (listed with reasons in `skipped.json`, 36.7 MB):
+`Utilities`, `Replay`, `Video` (ReadMe/!Warning only). `Examples` (BASIC Wimp bridge demos !Doodle / Spiral / ReadMe) is added afterwards by
+`node tools/basicwimp-demo.mjs` from `src/core/basicwimp/demo/` (`tools/build.mjs` runs it after `disc.mjs`). Skipped (listed with reasons in `skipped.json`, 36.7 MB):
 absolute ,ff8 / module ,ffa / utility ,ffc / ,fc3 / ,d94 binaries, ARMovie codec data, videos and files > 2 MB.
 
 ## 6. Palette and filetypes

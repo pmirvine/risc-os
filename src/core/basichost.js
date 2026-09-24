@@ -38,9 +38,12 @@ export function basicFS() {
 function sysvarMap() {
   return {
     get: (k) => sysvars.get(k) ?? undefined,
-    set: (k, v) => { sysvars.set(k, String(v)); return this; },
+    set(k, v) { sysvars.set(k, String(v)); return this; },
     has: (k) => sysvars.has(k),
     delete: (k) => sysvars.unset(k) > 0,
+    // iteration: BasicMachine.getSysVar walks the map for wildcard / case-insensitive lookups
+    *[Symbol.iterator]() { for (const e of sysvars.list('*')) yield [e.name, sysvars.get(e.name) ?? '']; },
+    *keys() { for (const e of sysvars.list('*')) yield e.name; },
   };
 }
 

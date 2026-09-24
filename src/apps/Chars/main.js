@@ -42,7 +42,7 @@ function families(list) {
 
 export default async function start(task, ctx) {
   const [msgs, tpl] = await Promise.all([loadMessages('Chars'), loadTemplates('assets/templates/Chars.json'), loadSysFont(), loadFontList()]);
-  const fm = await loadMessages('FontManager', { SystemFont: 'System Font', FontList: 'Font List' });
+  const fm = await loadMessages('Fonts', { SystemFont: 'System Font', FontList: 'Font List' });
   const SYSTEM = msgs.lookup('Font');     // "System Font"
   let font = SYSTEM;                      // current font identifier
   let cssFont = null;
