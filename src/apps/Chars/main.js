@@ -17,27 +17,20 @@ const LM = 16, TM = 16, MXSP = 24, MYSP = 44;
 const px = (o) => o / 2;
 
 let sysFont = null;           // {chars:[256][8]}
-let fontList = null;          // fonts.json
+let fontList = null;          // the font registry (core fontreg.js: fonts.json + outline fonts on the disc)
 
 async function loadSysFont() {
   if (!sysFont) sysFont = await (await fetch('assets/fonts/system8x8.json')).json();
   return sysFont;
 }
 async function loadFontList() {
-  if (!fontList) fontList = await (await fetch('assets/fonts/fonts.json')).json();
+  fontList = await os.fontreg.ready();
   return fontList;
 }
 
 /** Families -> styles from the outline fonts (as Font_ListFonts would build them). */
 function families(list) {
-  const fam = new Map();
-  for (const name of Object.keys(list.fonts)) {
-    if (/^System\./.test(name)) continue;          // bitmap system font substitutes, not in Font$Path
-    const [f, ...rest] = name.split('.');
-    if (!fam.has(f)) fam.set(f, []);
-    fam.get(f).push(rest.join('.'));
-  }
-  return [...fam.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+  return list.families((name) => !/^System\./.test(name));   // bitmap system font substitutes, not in Font$Path
 }
 
 export default async function start(task, ctx) {
@@ -145,9 +138,8 @@ export default async function start(task, ctx) {
     if (name === font) return;
     font = name;
     if (name !== SYSTEM) {
-      const f = fontList.fonts[name];
-      cssFont = f ? `${f.style === 'italic' ? 'italic ' : ''}${f.weight} ${15 * 90 / 72}px "${f.family}", ${f.fallback}` : os.fonts?.cssFor?.(name, 15);
-      try { await document.fonts.load(cssFont); } catch { /* */ }
+      await fontList.load(name);
+      cssFont = fontList.cssFor(name, 15 * 90 / 72) ?? os.fonts?.cssFor?.(name, 15);
     }
     win.invalidate();
   };
@@ -164,7 +156,7 @@ export default async function start(task, ctx) {
     }
     return new Menu(fm.lookup('FontList'), items);
   };
-  const openFontMenu = (ev) => wimp.menus.open(fontMenu(), ev.sx - px(102), ev.sy - px(64), { task });
+  const openFontMenu = async (ev) => { await fontList.ready(); wimp.menus.open(fontMenu(), ev.sx - px(102), ev.sy - px(64), { task }); };
 
   task.onMessage('Quit', () => task.quit());
   task.on('run', () => win.open({ behind: 'top' }));

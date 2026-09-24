@@ -68,7 +68,7 @@ export class EditApp {
 
   async init() {
     [this.M, this.tpl, this.fontsMsgs] = await Promise.all([
-      loadMessages('Edit'), loadTemplates('assets/templates/Edit.json'), loadMessages('Fonts'), loadSystemFont(),
+      loadMessages('Edit'), loadTemplates('assets/templates/Edit.json'), loadMessages('Fonts'), loadSystemFont(), os.fontreg?.ready(),
     ]);
     this.find = new FindController(this);
     return this;
@@ -205,14 +205,12 @@ export class EditApp {
   }
 
   /** Font menu as built by Font_MakeMenu (with "System font"). onPick(name|null), current() */
-  fontMenu(current, onPick) {
-    const names = ['Corpus.Medium', 'Corpus.Bold', 'Corpus.Medium.Oblique', 'Corpus.Bold.Oblique',
-      'Homerton.Medium', 'Homerton.Bold', 'Homerton.Medium.Oblique', 'Homerton.Bold.Oblique',
-      'NewHall.Medium', 'NewHall.Bold', 'NewHall.Medium.Italic', 'NewHall.Bold.Italic',
-      'Sassoon.Primary', 'Sassoon.Primary.Bold', 'Selwyn', 'Sidney',
-      'Trinity.Medium', 'Trinity.Bold', 'Trinity.Medium.Italic', 'Trinity.Bold.Italic'];
-    const fams = new Map();
-    for (const n of names) { const [f, ...r] = n.split('.'); if (!fams.has(f)) fams.set(f, []); fams.get(f).push(r.join('.')); }
+  fontMenu(current, pick) {
+    // the fonts the Font Manager knows: the ROM / !Fonts fonts and any outline fonts on Font$Path (core fontreg.js)
+    const reg = os.fontreg;
+    const fams = new Map(reg ? reg.families() : []);
+    // a font from the disc is converted to a web font first; the text is laid out again when it is ready
+    const onPick = (name) => { pick(name); if (name && reg?.info(name)?.disc) reg.load(name).then((f) => { if (f) pick(name); }); };
     const cur = () => current();
     const help = () => this.help('HELPX40');
     const items = [{ text: this.fontsMsgs.lookup('SystemFont'), ticked: () => cur() == null, action: () => onPick(null), dotted: true, help }];

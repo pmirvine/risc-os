@@ -322,6 +322,14 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * `wimp.iconbar.add/update/remove` (`add({..., raw: {flags, validation, w, h}})` makes an icon with raw Wimp icon
   flags/validation and a fixed pixel size, e.g. MemNow's ridged text icon), `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
   `wimp.setMode({width, height})` (fixed "screen mode", scaled to fit), `wimp.setScale(z)` (zoom; `?zoom=2`).
+* Font registry (`src/core/fontreg.js`, `os.fontreg`): the outline fonts Font_ListFonts would list = the built-in
+  fonts (`assets/fonts/fonts.json`, pre-converted OpenType) plus any Outlines/IntMetrics font found in the `Font$Path`
+  directories on the virtual disc (named by its path below that directory, e.g. `!Fonts.Sample.Medium` = `Sample.Medium`;
+  e.g. written by !T1ToFont). `await os.fontreg.ready()`, then `names()`, `families(filter)` (for font menus),
+  `info(name)` ({family, weight, style, fallback, ascender, descender, disc?}), `latin1ToUnicode`; `await load(name)`
+  converts a disc font to a web font (family `"RISCOS <name>"`, via `src/core/fontbuild.js` and opentype.js from
+  `assets/lib/opentype`); `cssFor(name, px)`. `fonts.cssFor` also knows the disc fonts. The disc is rescanned after
+  any VFS change. Font menus in Chars, Configure, Draw and Edit use it.
 * Sound (`src/core/sound/`, docs/SOUND.md): the one emulated RISC OS sound system with the ROM voices.
   `wimp.beep()` is VDU 7, which plays SOUND 1,-13 or -5 (Loud/Quiet),100,6 on WaveSynth-Beep; `beepGain` 0 (speaker
   off) silences it. `import { soundSystem, vdu7 } from '../../core/sound/index.js'`, then `soundSystem().control(ch, amp, pitch, dur)`
