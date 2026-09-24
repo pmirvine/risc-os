@@ -24,3 +24,7 @@ event (`ev.text = '\\Sdo something.|MMore.'`, using the same markup as the origi
 
 Known gaps: help for Wimp error boxes and generic core Save boxes (none in the original either, unless the
 app answers); the Filer menu help follows the Filer's token scheme approximately.
+
+Tests: `node tests/core/shot.mjs help-full tests/edit/act-helpfull.mjs` starts !Help from `Resources:$.Apps` by
+double-click and checks the text over icon bar icons, a Filer window and its menu, Edit's menu and Paint's tool
+pane, sprite window and sprite menu (screenshots `tests/screens/help-*.png`); `act-help.mjs` / `act-help2.mjs` too.

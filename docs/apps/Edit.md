@@ -78,3 +78,10 @@ Keys the filter doesn't consume get normal Edit behaviour, so "Unlink" = stop fi
 * The outline-font display uses the browser's text metrics (no kerning), font size width≠height is a horizontal scale.
 * No DataSaved (safe-after-RAM-transfer) tracking; untyped (load/exec) files are saved as Data.
 * "Move all windows" (Shift-Ctrl-←/→) only scrolls the current window.
+
+## Tests
+`node tests/core/shot.mjs edit-full tests/edit/act-full.mjs` (with `PLAYWRIGHT_MODULE` set, see CORE_API §13):
+Filer double-click, typing, F3 save, reload, Find & Replace (F4, Found box "E"), F8 undo, Create ▸ BASIC, tokenised
+save checked byte by byte, Shift-double-click reload, byte-identical re-save. The older `act-*.mjs` scripts cover
+menus, drags, the task-window API (`act-taskapi.mjs`), BASIC files from the disc and a monkey test. Shared helpers
+for real mouse/keyboard operation: `tests/edit/ui.mjs`. Screenshots: `tests/screens/edit-*.png`.

@@ -748,14 +748,19 @@ export class BasicMachine {
     let result = { reason: 'end' };
     this.busy = true;
     try {
+      let t0 = nowMs();
       while (I.running) {
         let r;
         try {
           r = this.slice();
         } catch (e) {
           if (!I.handleError(e)) break;
+          // a program that errors continually (e.g. an error inside its own ON ERROR handler) must
+          // still give the host time and let Escape in
+          if (nowMs() - t0 >= this.sliceMs) { await yieldHost(); t0 = nowMs(); }
           continue;
         }
+        if (r === 'yield' || r === 'throttle') t0 = nowMs();
         if (r === 'yield') { await yieldHost(); continue; }
         if (r === 'throttle') { await new Promise((res) => setTimeout(res, 4)); continue; }
         if (r && typeof r.then === 'function') {
