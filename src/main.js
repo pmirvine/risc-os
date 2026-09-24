@@ -24,6 +24,7 @@ import { bootScreen, desktopBanner } from './core/boot.js';
 import { installBasicHost } from './core/basichost.js';
 import { installBasicWimp } from './core/basicwimp/index.js';
 import { config } from './core/config.js';
+import { watchPowerOnKeys, resetAndRestart } from './core/reset.js';
 
 const params = new URLSearchParams(location.search);
 
@@ -62,6 +63,8 @@ function setDefaultVars() {
   set('Alias$@RunType_FED', 'WimpPalette %0');   // FileSwitch default (Palette files); *WimpPalette is a no-op here
   set('Alias$.', 'Cat %*0');
 }
+
+const powerOnKeys = watchPowerOnKeys();   // Delete / R held down while starting: reset (src/core/reset.js)
 
 async function boot() {
   const fast = params.has('fast') || sessionStorage.getItem('riscos.booted');
@@ -111,6 +114,8 @@ async function boot() {
     await cli.run('Repeat Filer_Boot <BootResources$Dir> -Applications -Tasks', { out: { write() {}, writeln() {} } });
   } catch (e) { console.warn(e); }
 
+  const reset = powerOnKeys();       // "Delete-power-on" (disc + CMOS) / "R-power-on" (CMOS), or ?reset=
+  if (reset) { await resetAndRestart(reset); return; }
   banner?.closeLater();
   try { sessionStorage.setItem('riscos.booted', '1'); } catch { /* */ }
   document.title = 'RISC OS 3.71';
