@@ -248,7 +248,9 @@ export class Icon {
     } else if (selected && f & IF.sprite && f & IF.text) {
       invertText = true;
     }
-    if (shaded) textColour = wimpColour(selected && !(f & IF.sprite) && !isAction ? 0 : (fg & 4));
+    // shaded text (Wimp04 setfancyfontcolours): desktop-font icons use fg AND 4 (black -> mid grey);
+    // icons in their own outline font use fg AND 2 (black -> light grey)
+    if (shaded) textColour = wimpColour(selected && !(f & IF.sprite) && !isAction ? 0 : (fg & (f & IF.font ? 2 : 4)));
     e.style.background = fill;
     // border
     if (f & IF.border) {

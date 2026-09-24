@@ -312,7 +312,8 @@ export class MenuManager {
     const row = lv.rows[i];
     // open a submenu when the pointer moves over the right-hand (arrow) part of the item
     const wx = p.x - lv.win.x;
-    if (row.sub && !row.shaded && wx >= lv.measure.w - ARROW_W - 16 && lv.subOpenFor !== i) this._openSub(lv, i, 'arrow');
+    // (Wimp05: only when the pointer is over the item's right-arrow icon, the last 24 OS units)
+    if (row.sub && !row.shaded && wx >= lv.measure.w - ARROW_W && lv.subOpenFor !== i) this._openSub(lv, i, 'arrow');
     else if (row.sub && !row.shaded && row.item.autoOpen && lv.subOpenFor !== i) this._openSub(lv, i, 'auto');
   }
 
