@@ -174,7 +174,8 @@ export function normaliseTemplates(json) {
   const fonts = (json.fonts ?? []).map((f) => ({ name: f.name, xsize: f.xsize ?? f.xPoint, ysize: f.ysize ?? f.yPoint }));
   for (const w of Object.values(out)) {
     for (const ic of [w.title, ...w.icons]) {
-      if (ic.flags & IF.font && !ic.font) { const f = fonts[(ic.fontHandle ?? (ic.flags >>> 24)) - 1]; if (f) ic.font = f; }
+      // (the assets JSON has a decoded 'font: true' flag, not the font itself)
+      if (ic.flags & IF.font && typeof ic.font !== 'object') { const f = fonts[(ic.fontHandle ?? (ic.flags >>> 24)) - 1]; if (f) ic.font = f; }
     }
   }
   return { fonts, windows: out };

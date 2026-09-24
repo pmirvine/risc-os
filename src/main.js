@@ -20,7 +20,7 @@ import { os } from './core/os.js';
 import { loadMessages } from './core/messages.js';
 import { input } from './core/input.js';
 import { setHandlerErrorReporter } from './core/util.js';
-import { bootScreen } from './core/boot.js';
+import { bootScreen, desktopBanner } from './core/boot.js';
 import { installBasicHost } from './core/basichost.js';
 import { installBasicWimp } from './core/basicwimp/index.js';
 import { config } from './core/config.js';
@@ -82,6 +82,9 @@ async function boot() {
   wimp.menus = new MenuManager(wimp);
   wimp.cli = cli;
   await initDialogs();
+  // *Desktop: the kernel's start-up text gives way to the grey screen and the Desktop welcome banner
+  let banner = null;
+  if (screen) { await screen.finish(); banner = await desktopBanner(wimp); }
   setHandlerErrorReporter((e) => reportError(e.message ?? String(e)));
   wimp.iconbar = new IconBar(wimp);
   os.iconbar = wimp.iconbar;
@@ -108,7 +111,7 @@ async function boot() {
     await cli.run('Repeat Filer_Boot <BootResources$Dir> -Applications -Tasks', { out: { write() {}, writeln() {} } });
   } catch (e) { console.warn(e); }
 
-  if (screen) await screen.finish();
+  banner?.closeLater();
   try { sessionStorage.setItem('riscos.booted', '1'); } catch { /* */ }
   document.title = 'RISC OS 3.71';
   os.ready = true;

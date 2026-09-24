@@ -20,11 +20,14 @@ const LGI_W = 86, LGI_H = 54;      // template icon 2 (172 x 108 OS)
 const SMI_W = 108, SMI_H = 18;     // template icon 3 (216 x 36 OS)
 const TOPGAP = 4;
 
-export function formatDate(d) {
+export function formatDate(d, sep = '-') {
   const p = (n) => String(n).padStart(2, '0');
   const M = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${p(d.getDate())}-${M[d.getMonth()]}-${d.getFullYear()}`;
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${p(d.getDate())}${sep}${M[d.getMonth()]}${sep}${d.getFullYear()}`;
 }
+// The Filer's own date format (full info display and the Info box) comes from its 'directory'
+// template icon 1: "%24:%mi:%se %dy %m3 %ce%yr", i.e. spaces rather than the territory's dashes.
+const filerDate = (d) => formatDate(d, ' ');
 export function accessString(attr) {
   let s = '';
   if (attr & ATTR.locked) s += 'L';
@@ -353,7 +356,7 @@ class DirViewer {
         cell(accessString(it.attr), c.access);
         if (it.type === 'dir') { cell('', c.size, true); cell(it.isApp ? 'Application' : 'Directory', c.type); }
         else { cell(sizeColumn(it.size), c.size - 8, true); cell('', 8); cell(it.filetype === FT_UNTYPED ? '' : typeName(it.filetype), c.type); }
-        cell(it.filetype === FT_UNTYPED && it.type !== 'dir' ? `${(it.load >>> 0).toString(16).toUpperCase().padStart(8, '0')} ${(it.exec >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : formatDate(it.date), c.date);
+        cell(it.filetype === FT_UNTYPED && it.type !== 'dir' ? `${(it.load >>> 0).toString(16).toUpperCase().padStart(8, '0')} ${(it.exec >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : filerDate(it.date), c.date);
       }
     });
   }
@@ -595,7 +598,7 @@ class DirViewer {
     I[4].setText(`${size.toLocaleString('en-GB')} bytes`);
     I[3].setText('');
     I[8].setText(accessString(it.attr));
-    I[7].setText(formatDate(it.date));
+    I[7].setText(filerDate(it.date));
     I[10].setState({ deleted: true });
     w.on('menuclosed', () => w.delete());
     return w;
