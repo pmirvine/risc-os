@@ -15,7 +15,7 @@ import { saveAs, infoBox, query } from '../../core/dialogs.js';
 import { os } from '../../core/os.js';
 import { parseMaestro, saveMaestro, emptyScore, perform, channelStaves, VOLUME_NAMES, TEMPO_NAMES, STEREO_KEYS, VOLUME_AMP, MaestroError } from './format.js';
 import { staveLayout, layoutColumns, drawScore, lowBit, GEOM } from './score.js';
-import { Player, VOICES, setMasterVolume, audio } from './synth.js';
+import { Player, VOICES, setMasterVolume, systemVolume, audio } from './synth.js';
 
 const PANE_H = 40;                // px (80 OS)
 const TOPY = 20;                  // px: score.js draws OS y=0 at 20px
@@ -58,7 +58,7 @@ export default async function start(task, ctx) {
   let sel = null;                   // {pane: 'note'|'rest'|'sharp', i}
   let timeSig = { beats: 4, denom: 2 };   // denom index into DENOMS
   let keySel = { minor: false, i: 7 };
-  let volume = 6;                   // overall volume (Sound_Volume) index
+  let volume = Math.max(0, Math.trunc(systemVolume() * 8 / 120 - 0.5));   // Volume% from the current Sound_Volume (127 -> 7, fff)
   const player = new Player();
   let playMarker = null;            // column index while playing
 
@@ -393,7 +393,7 @@ export default async function start(task, ctx) {
   function togglePlay() {
     if (player.playing) { player.stop(); playMarker = null; score?.invalidate(); return; }
     if (!audio()) { task.reportError(m('NoSound')); return; }
-    setMasterVolume(VOLUME_AMP[volume] + 16);
+    setMasterVolume(VOLUME_AMP[volume]);
     // start from the first column visible in the score window
     let fromItem = 0;
     if (score?.isOpen) {
@@ -427,7 +427,7 @@ export default async function start(task, ctx) {
     { text: '', writable: { value: String(doc.staves + 1), maxLen: 1, validation: 'A1-4' }, action: (ev) => { const n = parseInt(ev.value, 10); if (n >= 1 && n <= 4 && n - 1 !== doc.staves) { doc.staves = n - 1; setModified(true); relayout(); } }, help: m('StaveHelp0') },
     { text: m('Percussion'), ticked: () => !!doc.perc, action: () => { doc.perc = doc.perc ? 0 : 1; setModified(true); relayout(); }, help: m('StaveHelp1') },
   ]);
-  const volMenu = () => new Menu(m('Volume'), VOLUME_NAMES.map((n, i) => ({ text: m(n), ticked: () => volume === i, action: () => { volume = i; if (player.playing) setMasterVolume(VOLUME_AMP[i] + 16); }, help: m('VolumeHelp') })));
+  const volMenu = () => new Menu(m('Volume'), VOLUME_NAMES.map((n, i) => ({ text: m(n), ticked: () => volume === i, action: () => { volume = i; if (player.playing) setMasterVolume(VOLUME_AMP[i]); }, help: m('VolumeHelp') })));
   const tempoMenu = () => new Menu(m('Tempo'), TEMPO_NAMES.map((n, i) => ({ text: m(n), ticked: () => doc.tempo === i, action: () => { doc.tempo = i; setModified(true); if (player.playing) { togglePlay(); togglePlay(); } }, help: m('TempoHelp') })));
   const keyList = (minor) => new Menu(m(minor ? 'Minor' : 'Major'), (minor ? MINOR : MAJOR).map((n, i) => ({
     text: m(n), ticked: () => keySel.minor === minor && keySel.i === i, dotted: i === 6 || i === 7,

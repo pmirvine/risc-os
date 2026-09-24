@@ -16,6 +16,7 @@ import { infoBox } from '../../core/dialogs.js';
 import { loadTemplates } from '../../core/templates.js';
 import { loadManifest } from '../../core/sprites.js';
 import { vfs } from '../../core/vfs.js';
+import { soundSystem, soundOutput, afterFills } from '../../core/sound/index.js';
 
 const LEVELS = [
   { name: 'Beginner', w: 8, h: 8, mines: 10 },
@@ -69,29 +70,21 @@ export default async function start(task, ctx) {
 
   // ------------------------------------------------------------------ sound (the original uses
   // speech sample modules - Applause, YouDidIt, Spiffing, RealMine, Shame, TryAgain - which are
-  // not on the disc; simple synthesised effects stand in for them)
-  let actx = null;
+  // not on the disc; the ROM voices stand in for them, on sound channel 1)
   function sound(kind) {
     if (!opts.sound) return;
     try {
-      actx ??= new AudioContext();
-      const t0 = actx.currentTime, vol = opts.loud ? 0.35 : 0.08;
-      const g = actx.createGain(); g.connect(actx.destination);
+      const s = soundSystem();
+      soundOutput().resume();
+      const amp = opts.loud ? -15 : -9;
       if (kind === 'boom') {
-        const len = actx.sampleRate * 0.6, buf = actx.createBuffer(1, len, actx.sampleRate), d = buf.getChannelData(0);
-        for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / len, 3);
-        const s = actx.createBufferSource(); s.buffer = buf;
-        const f = actx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 600;
-        s.connect(f); f.connect(g); g.gain.value = vol * 2; s.start(t0);
-      } else {
-        const notes = kind === 'win' ? [523, 659, 784, 1047] : [880];
-        notes.forEach((fr, i) => {
-          const o = actx.createOscillator(); o.type = 'square'; o.frequency.value = fr;
-          const og = actx.createGain(); og.gain.setValueAtTime(vol * 0.5, t0 + i * 0.12); og.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.12 + 0.11);
-          o.connect(og); og.connect(g); o.start(t0 + i * 0.12); o.stop(t0 + i * 0.12 + 0.12);
-        });
-      }
-    } catch { /* no audio */ }
+        const old = s.attachVoice(1, 9);                           // Percussion-Noise
+        s.control(1, amp, 0, 20);
+        afterFills(110, (sys) => { if (sys.chan[0].voice === 9) sys.attachVoice(1, old || 1); });
+      } else if (kind === 'win') {
+        [101, 117, 129, 149].forEach((p, i) => afterFills(i * 12, (sys) => sys.control(1, amp, p, 2)));   // C E G C
+      } else s.control(1, amp, 137, 2);                             // A, 1/10 s
+    } catch { /* no sound */ }
   }
 
   // ------------------------------------------------------------------ game state

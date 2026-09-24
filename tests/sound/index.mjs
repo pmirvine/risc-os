@@ -4,4 +4,5 @@ import './tables.test.mjs';
 import './wavesynth.test.mjs';
 import './voices.test.mjs';
 import './system.test.mjs';
+import './clients.test.mjs';
 import './output.test.mjs';
