@@ -162,7 +162,10 @@ title moves a window without raising it; Select on the back icon sends it to the
 Wimp caret yourself at work-area x,y (Edit style); `wimp.setCaret(win)` — focus without visible caret;
 `wimp.setCaret(null)` — nobody. `wimp.caret` = `{window, icon, index, pos}`. Keys go to the focus window.
 Writable icons edit themselves (←/→, Home, Delete/Backspace, Copy(=End), Ctrl-U, ↑/↓/Tab between writables, `A`
-validation, `bufLen`); Return and unhandled keys reach your `key` handler.
+validation, `bufLen`); Return and unhandled keys reach your `key` handler. A character rejected by an icon's `A`
+validation also goes on to the `key` handler (Key_Pressed), as in the real Wimp.
+`wimp.processKey(code, char?)` = Wimp_ProcessKey: delivers a key code to the input-focus owner as if typed (writable
+icon editing, then the caret window's `key` event, then hot-key windows) — e.g. !Chars inserting characters.
 **Key codes** (Wimp `Key_Pressed`): characters = Latin-1 code; Return 13, Escape 27, Backspace 8, Delete 127,
 Home 30, F1–F9 &181–&189, F10–F12 &1CA–&1CC, Tab &18A, Copy(End) &18B, ←&18C →&18D ↓&18E ↑&18F, Insert &1CD,
 PageDown &19E, PageUp &19F; +&10 Shift, +&20 Ctrl. Ctrl+letter = 1–26. F12/Ctrl-F12/Shift-F12/Ctrl-Shift-F12
@@ -197,7 +200,8 @@ const m = new Menu('Draw', [
   { text: 'Find', key: '^F', … },                              // key text shown right-aligned ('^⇧F12' ok)
   { text: '', writable: { value: 'name', maxLen: 10, validation: 'A~ ' }, action: (ev) => use(ev.value) },
   { text: 'Quit', action: (ev) => task.quit() },               // ev: {item, index, path, button, value, menu}
-]);
+  { text: '', sprite: 'pat1', spriteW: 64 },                   // sprite item (name or SpriteInfo; looked up in the
+]);                                                            // menu's `spriteArea` Map, then the Wimp pool)
 wimp.menus.openAt(m, clickEvent, { task })     // at the pointer (x-32, y) — standard for window menus
 wimp.menus.openIconbar(m, ev.sx, { task })     // icon bar menus (just above the bar)
 wimp.menus.open(m, x, y, { task, onSelect, onClose })
@@ -292,9 +296,11 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 (set `ctx.imageSmoothingEnabled = false`).
 
 ## 11. Other services
-* `wimp.setPointer(spriteName)` (e.g. `'ptr_double'`, `''` for the arrow), `os.config.set('Zoom', 2)` /
+* `wimp.setPointer(spriteName | SpriteInfo)` (e.g. `'ptr_double'`, `''` for the arrow; a SpriteInfo may carry `hot: [x, y]`,
+  its active point in CSS px), `os.config.set('Zoom', 2)` /
   `('Buttons', 'Adjust')` / `('WimpFont', 1)` / `('Textured', 'Off')` (also `*Configure …`, persisted).
-* `wimp.iconbar.add/update/remove`, `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
+* `wimp.iconbar.add/update/remove` (`add({..., raw: {flags, validation, w, h}})` makes an icon with raw Wimp icon
+  flags/validation and a fixed pixel size, e.g. MemNow's ridged text icon), `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
   `wimp.setMode({width, height})` (fixed "screen mode", scaled to fit), `wimp.setScale(z)` (zoom; `?zoom=2`).
 * `os.filer.openDir(path, {mode:'large'|'small'|'full', sort, x, y, w, h})`, `os.filer.run(path)` (double-click semantics).
 * `os.pinboard.pin(path, x, y)`, `os.pinboard.setBackdrop(path, 'tile'|'scale'|'centre')`.
@@ -303,6 +309,12 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * Interactive help: `wimp.helpAt(sx, sy)` → help text for the thing under the pointer (menu item `help`, window
   `helprequest` event — set `ev.text` —, `icon.help`, icon bar `help`, or `win.helpText`), in !Help markup (`\S`, `\R`, `|M`).
 * Boot completion: `os.ready === true` and `wimp.on('desktopready')`.
+* Configuration (`os.config`, `src/core/config.js`, localStorage "CMOS"): `zoom`, `rightButton`, `textured`, `wimpFont`
+  (`'homerton'`, `'system'` or any font name e.g. `'Trinity.Medium'`), `wimpFlags`, `doubleClickDelay`, `doubleClickMove`,
+  `dragDelay`, `dragMove`, `beepLoud`, `speaker`, `volume` (0-7), `mode` ({width,height}, applied at boot); `apply()` pushes
+  them into `input.config` / `wimp.config` (`solidDrags`, `errorBeep`, `beepGain`). Other keys may be kept in `values` + `save()`.
+* Reset (`src/core/reset.js`): `*ResetDisc [-cmos]` (forget all changes to the hard disc / floppy), `*ResetCMOS`
+  (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all`.
 * URL parameters: `?fast=1` skip the boot screen, `?open=<path>`, `?run=<app>`, `?cmd=<*command>`, `?zoom=2`, `?buttons=adjust`.
 
 ## 12. BBC BASIC integration
@@ -315,6 +327,11 @@ VFS adapter (`readFile(path) → {data, type}|null`, `writeFile(path, data, type
 Filer_Boot of applications runs their `!Boot` in "safe" mode (no *Run/BASIC), so booting never starts programs.
 
 ## 13. Tests
+Every area runs with `node --test tests/<area>` (`basic`, `core`, `draw`, `edit`, `paint`, `acc`, `div`, `tw`, `bw`,
+`integration`): `tests/lib/suite.mjs` starts the server if needed and runs each Playwright script in a child process,
+failing on a non-zero exit, `FAIL` lines, page errors or 404s (screenshots go to a temporary directory; `KEEP_SHOTS=1`
+writes them to `tests/screens/`). `tests/integration/flows.mjs [group…]` checks cross-application flows;
+`tests/integration/monkey.mjs [steps] [seed…]` is the long random test over the whole desktop.
 `tests/core/`: `test-core.mjs` (functional checks in the browser), `test-persist.mjs` (IndexedDB overlay),
 `monkey.mjs [steps] [seed]` (random clicks/drags/keys, reports page errors), `shot.mjs <name> [actions.mjs]`
 (screenshots into `tests/screens/`; `act-*.mjs` are action scripts, e.g. `act-menu.mjs`, `act-save.mjs`). Needs Playwright (`PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs` if not installed in the project)
