@@ -158,3 +158,23 @@ docs/ASSETS.md §5).
   (+ `arm.test.mjs`, `lander.test.mjs`). The Lander binary (© D.J. Braben) is only ever read from the user's
   IndexedDB or a git-ignored `vendor/lander`; `tests/basic/lander.test.mjs` and `tests/div/lander-original.mjs`
   skip without it.
+
+## Tier-A utilities (original BASIC !Calibrate, !SaveCMOS, !ResetBoot, !Verify, !HForm, !PrintEdit, !Warning, !ShowScrap) — changes in shared code
+**Status:** done (TIER-A APPS agent). All additive / bug fixes; see docs/apps/TierA.md.
+* `src/core/cmos.js` (new): the CMOS RAM image (OS_Byte 161/162), views onto `os.config`; `*LoadCMOS` / `*SaveCMOS`
+  registered from `commands.js` (`registerCMOSCommands`), replacing their no-op stubs. `src/apps/Configure/main.js`:
+  double-clicking a 240-byte CMOS file (type &FF2) loads it with `*LoadCMOS`.
+* `src/core/basicwimp/hardware.js`, `adfs.js` (new), installed by `runner.js` for every desktop BASIC program.
+* `src/core/basicwimp/templates.js`: Wimp_LoadTemplate allocates each indirected item's full buffer size (Wimp06);
+  it used to copy the stored bytes, so writing a long string into an indirected buffer overwrote the next icon's text.
+  Size enquiries return the Wimp's sizes. The window's sprite area word is set to 1 as the Wimp does.
+* `src/core/basicwimp/bridge.js`: Wimp_ReportError new-style extra buttons / sprite; DataSave / DataLoad sent to a
+  Filer viewer are answered for the Filer (DataSaveAck with `<dir>.<leaf>`, DataLoadAck).
+* `src/core/dialogs.js` `reportError`: a box queued just after the previous one closed was shown twice.
+* `src/core/vfs.js` `parse()` and `basicwimp/runner.js parseBasicArgs`: hard spaces (&A0) are part of file names
+  (not trimmed / not argument separators) — `$.Video.HiRes.!Warning&A0`.
+* `src/core/basichost.js` `basicFS().setType` (OS_File 18); `src/basic/machine.js` OS_File 18 also sets the type of
+  a file open for output, which is written with that type when closed.
+* `src/core/cli.js`, `commands.js`: `-fs-command` prefix; Joystick 0.22 in the module list.
+* `src/apps/Printers` descriptor: `files` (the classes' PaperRO) and `boot` (Printers$Path, as its !Boot);
+  `src/apps/SysRes/scrap.js`: !Scrap's `!Boot` sets up `ScrapDirs.ScrapDir` (used by !ShowScrap).

@@ -42,7 +42,8 @@ export function reportError(message, opts = {}) {
 }
 function showNext() {
   const q = reportError._q;
-  if (!q.length) return;
+  if (!q.length || q[0].shown) return;   // (a box reported just after the previous one closed is already up)
+  q[0].shown = true;
   const { message, opts, resolve } = q[0];
   const done = (v) => { q.shift(); resolve(v); setTimeout(showNext, 0); };
   const title = opts.title ?? (opts.appName ? `Message from ${opts.appName}` : 'Error');

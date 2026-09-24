@@ -1234,6 +1234,23 @@ export class WimpBridge {
     const win = this.coreWindow(dest);
     const task = win?.task ?? wimp.tasks.find((t) => t.handle === dest);
     if (task) r[2] = task.handle;
+    // The Filer's side of the data transfer protocol (a file icon dragged from a save box to a Filer
+    // viewer): DataSave -> DataSaveAck with <directory>.<leafname>; DataLoad (file saved) -> DataLoadAck
+    const fdir = win?._filerDir;
+    if (fdir && action === MSG.DataSave && bytes.length >= 25) {
+      const leaf = String.fromCharCode(...bytes.subarray(24, bytes.indexOf(0, 24) < 0 ? bytes.length : bytes.indexOf(0, 24))).replace(/[\x00-\x1f].*$/s, '');
+      const full = `${fdir}.${leaf.split(/[.:]/).pop() || 'Untitled'}`;
+      const out = new Uint8Array(24 + full.length + 1);
+      out.set(bytes.subarray(0, 24));
+      for (let i = 0; i < full.length; i++) out[24 + i] = full.charCodeAt(i) & 255;
+      setTimeout(() => this.queueMessage(MSG.DataSaveAck, [], 17, false, { bytes: out, sender: task?.handle ?? 0, yourRef: myRef }), 0);
+    } else if (task && action === MSG.DataLoad && bytes.length >= 25 && wimp.tasks.includes(task)) {
+      const out = bytes.slice();
+      setTimeout(() => {
+        try { os.filer?.viewerFor?.(win)?.refresh(); } catch { /* the viewer follows the VFS anyway */ }
+        this.queueMessage(MSG.DataLoadAck, [], 17, false, { bytes: out, sender: task.handle, yourRef: myRef });
+      }, 0);
+    }
   }
 
   dataLoadMessage(ev, wh, ih, action = MSG.DataLoad) {

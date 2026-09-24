@@ -31,6 +31,7 @@ export function basicFS() {
       return vfs.list(dir || '@').map((s) => (s.type === 'dir' ? { name: s.name, type: 'dir' } : { name: s.name, type: 'file', filetype: s.filetype, length: s.size }));
     },
     canonical: (p) => safe(() => vfs.canonical(p)) ?? p,
+    async setType(path, type) { safe(() => vfs.setType(path, type)); },   // OS_File 18
   };
 }
 

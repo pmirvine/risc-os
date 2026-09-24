@@ -154,3 +154,23 @@ export const cmos = {
   },
   get mapped() { return Object.keys(VIEWS).map(Number); },
 };
+
+// ---------------------------------------------------------------------------------- * commands
+// *LoadCMOS (Boot:Library.LoadCMOS, Sources/SystemRes/Boot/Source/LoadCMOS): writes each byte of a
+// saved CMOS file (as !SaveCMOS saves it: 240 bytes, type &FF2 Configure) with OS_Byte 162, except the
+// year (&80, &81) and the DST bit (bit 7 of &DC). *SaveCMOS <file> is the reverse (OS_Byte 161 x 240).
+export function registerCMOSCommands(def, vfs) {
+  def('LoadCMOS', 'Syntax: *LoadCMOS <filename>', '*LoadCMOS loads the CMOS RAM from a file saved by !SaveCMOS or *SaveCMOS.', async (a) => {
+    const st = vfs.stat(a[0]);
+    if (!st) { const e = new Error(`File '${a[0]}' not found`); e.errnum = 0xD6; throw e; }
+    if (st.type === 'dir') { const e = new Error(`'${a[0]}' is a directory`); e.errnum = 0xB5; throw e; }
+    const bytes = new Uint8Array(await vfs.readFile(a[0]));
+    for (let i = 0; i < Math.min(CHECKSUM, bytes.length); i++) {
+      if (i === 0x80 || i === 0x81) continue;
+      cmos.write(i, i === 0xDC ? (bytes[i] & 0x7F) | (cmos.read(i) & 0x80) : bytes[i]);
+    }
+  }, { min: 1 });
+  def('SaveCMOS', 'Syntax: *SaveCMOS <filename>', '*SaveCMOS saves the CMOS RAM to a file (240 bytes, type Configure).', async (a) => {
+    vfs.writeFile(a[0], cmos.image(), { filetype: 0xFF2 });
+  }, { min: 1 });
+}

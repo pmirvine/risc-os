@@ -51,3 +51,25 @@ test('WHILE inside a FN called from a WHILE condition', async () => {
   assert.equal(res.reason, 'end');
   assert.equal(out.replace(/\n/g, '|'), 'outer 1|outer 2|done 3|');
 });
+
+// ADFS on the emulated IDE drive 4 (src/core/basicwimp/adfs.js): what !Verify and !HForm see
+import { installADFS, bootBlock, blockChecksum, HD4 } from '../../src/core/basicwimp/adfs.js';
+
+test('ADFS: boot block, DescribeDisc, verify, and writes to the hard disc refused', async () => {
+  const b = bootBlock();
+  assert.equal(b[511], blockChecksum(b), 'boot block checksum');
+  assert.equal(b[0x1C0 + 1], HD4.spt);
+  let out = '';
+  const m = new BasicMachine({ onOutput: (c) => { if (c !== 13) out += String.fromCharCode(c); } });
+  installADFS(m);
+  await m.load(`10DIM R% 64,B% 512
+20SYS "ADFS_Drives" TO ,,H%:PRINT "hd ";H%
+30SYS "ADFS_DescribeDisc",":4",R%:S%=(R%!16>>>9) OR (R%!36<<23):PRINT "sectors ";S%;" heads ";R%?2
+40SYS "ADFS_SectorDiscOp",,&41,6 OR (4<<29),B%,512:PRINT "boot ";B%?(&1C0+1)
+50SYS "XADFS_SectorDiscOp",,&40,1000 OR (4<<29),B%,512 TO E%;F%:PRINT "verify ";F% AND 1
+60SYS "XADFS_SectorDiscOp",,&42,1000 OR (4<<29),B%,512 TO E%;F%:PRINT "write ";F% AND 1;" ";$(E%+4)
+`);
+  const res = await m.run();
+  assert.equal(res.reason, 'end', JSON.stringify(res));
+  assert.equal(out.replace(/\0/g, '').replace(/\n/g, '|'), `hd 1|sectors ${HD4.sectors} heads 16|boot 63|verify 0|write 1 Protected disc|`);
+});

@@ -156,6 +156,12 @@ export default async function start(task, ctx) {
 
   async function loadFile(path) {
     try {
+      // a CMOS RAM image saved by !SaveCMOS / *SaveCMOS (240 bytes): load it as *LoadCMOS does
+      if (os.vfs.stat(path)?.size === 240) {
+        await os.cli.run(`LoadCMOS ${path}`);
+        for (const w of windows.values()) w._refresh?.();
+        return;
+      }
       const txt = await os.vfs.readText(path);
       const j = JSON.parse(txt);
       if (!j?.values) throw new Error();

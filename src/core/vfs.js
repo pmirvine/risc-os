@@ -203,7 +203,7 @@ export class VFS extends Emitter {
    * opts.write: for path variables with several entries, use the first.
    */
   parse(path, opts = {}) {
-    let p = String(path ?? '').trim();
+    let p = String(path ?? '').replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '');   // not .trim(): hard spaces (&A0) are part of names (Video.HiRes.!Warning&A0)
     if (p.includes('<')) p = sysvars.gstrans(p);
     // path variable prefix  Name:rest  (not FS::)
     const pv = /^([A-Za-z0-9_$!]+):(?!:)(.*)$/.exec(p);

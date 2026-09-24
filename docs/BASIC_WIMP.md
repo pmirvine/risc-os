@@ -43,7 +43,8 @@ user BASIC Wimp application works the same way. Status of the originals on the s
 | !Clock, !Puzzle, !Blocks, !Patience, !MemNow, !Flasher | start, windows / icon bar work (windows open at the pointer, like the originals) |
 | !CloseUp | runs, but magnifies its own blank screen (the bridge has no access to desktop pixels) |
 | !Player, !AWViewer | need modules that aren't there (Audio_*, AWRender_*) |
-| !SlideShow, !HForm, !Verify, !SaveCMOS | single-tasking programs (take the screen); they need hardware/ChangeFSI and don't get far |
+| !SlideShow | single tasking (takes the screen); needs ChangeFSI and doesn't get far |
+| !Calibrate, !SaveCMOS, !ResetBoot, !Verify, !HForm, !PrintEdit, Video.!Warning, !ShowScrap | work from their disc directories (Tier-A utilities: CMOS, ADFS, Joystick, Squash, DragASprite in `hardware.js` / `adfs.js`; see docs/apps/TierA.md, `tests/bw/bw-tiera.mjs`). HForm is refused at its first write: HardDisc4 is never formatted |
 | Examples.!Doodle | the demo below: works |
 
 ## Seed disc examples (`$.Examples`, built by `node tools/basicwimp-demo.mjs`)
@@ -63,6 +64,8 @@ redraw loop with VDU graphics, Wimp_SetColour, menu with Adjust-keeps-open, Repo
 | `screen.js` | `DesktopVDU`, `WindowCanvas` (per-window backing store + canvas), rectangle lists |
 | `templates.js` | Templates files from the VFS: Wimp_OpenTemplate / LoadTemplate (wildcards, size enquiry, fonts) |
 | `services.js` | MessageTrans_*, Territory_*, OS_SpriteOp (sprite areas in program memory, plotting), Font_*, ColourTrans font colours, Sound voices, OS_ReadDynamicArea |
+| `hardware.js` | OS_Byte 161/162 (CMOS, `src/core/cmos.js`), OS_Module 18, OS_Memory 8, OS_Reset, Joystick_*, Squash_*, DragASprite_*, `-fs-`/`%` command prefixes |
+| `adfs.js` | ADFS_* on an emulated IDE drive 4 (boot block, IDENTIFY, verify; writes to the hard disc refused) |
 
 ## The bridge
 
@@ -105,7 +108,8 @@ redraw loop with VDU graphics, Wimp_SetColour, menu with Adjust-keeps-open, Repo
 * The bridge VDU is per task, not the real screen: programs that read the screen (CloseUp, OS_SpriteOp 14/16 of the
   desktop) see only their own drawing. Output-to-sprite (SpriteOp 60) stays on the screen.
 * 256 colours: Wimp colours map to the nearest of the default 256-colour palette (as on a real 256-colour desktop).
-* Messages to JavaScript tasks aren't translated (no RAM transfer / DataSave protocol with native apps yet); a Wimp
+* Messages to JavaScript tasks aren't translated (no RAM transfer / DataSave protocol with native apps yet, except that
+  the bridge answers for the Filer: a file icon dragged from a save box to a Filer viewer gets DataSaveAck / DataLoadAck); a Wimp
   program started inside a task window has no Wimp SWIs (it runs in the task window's text-only BASIC).
 * No ARM-code Wimp calls beyond what BASIC's ARM emulator passes through the SWI table (they do go through it).
 

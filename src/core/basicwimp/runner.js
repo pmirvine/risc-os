@@ -28,7 +28,8 @@ export function parseBasicArgs(argv = []) {
     if (/^-help$/i.test(a)) { mode = 'help'; continue; }
     if (!file) { file = a; mode = 'chain'; programArgs = argv.slice(i + 1).join(' '); break; }
   }
-  if (file && /\s/.test(file.trim())) { const parts = file.trim().split(/\s+/); file = parts.shift(); programArgs = [parts.join(' '), programArgs].filter(Boolean).join(' '); }
+  // (only spaces separate arguments: a hard space &A0 is part of a name, as in Video.HiRes.!Warning&A0)
+  if (file && /[ \t]/.test(file.replace(/^[ \t]+|[ \t]+$/g, ''))) { const parts = file.replace(/^[ \t]+|[ \t]+$/g, '').split(/[ \t]+/); file = parts.shift(); programArgs = [parts.join(' '), programArgs].filter(Boolean).join(' '); }
   return { mode, file, programArgs };
 }
 

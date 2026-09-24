@@ -103,18 +103,35 @@ export function installHardware(m, proc = {}) {
 
   // ---------------------------------------------------------------- Joystick module (0.22)
   const pads = () => { try { return [...(navigator.getGamepads?.() ?? [])].filter(Boolean); } catch { return []; } };
+  // Calibration (Joystick_CalibrateBottomLeft / TopRight, as !Calibrate does it): the raw analogue
+  // positions at the two extremes are recorded and later reads are scaled so they map to -127 / +127.
+  const raw = (n) => {
+    const p = pads()[n];
+    const ax = (i) => Math.max(-1, Math.min(1, p?.axes?.[i] ?? 0));
+    return { p, x: ax(0), y: -ax(1) };
+  };
+  const scale = (v, lo, hi) => (hi - lo > 1e-3 ? Math.max(-1, Math.min(1, ((v - lo) / (hi - lo)) * 2 - 1)) : v);
+  const calibrated = (n) => {
+    const { p, x, y } = raw(n);
+    const c = hardware.joystickCalibration?.[n];
+    if (!c?.bottomLeft || !c?.topRight) return { p, x, y };
+    return { p, x: scale(x, c.bottomLeft.x, c.topRight.x), y: scale(y, c.bottomLeft.y, c.topRight.y) };
+  };
   S('Joystick_Read', (r) => {
     const n = r[0] & 255, wide = !!(r[0] & 0x100);
     if (n > 1) throw new BasicError(0x43F41, 'Joystick number out of range');
-    const p = pads()[n];
-    const ax = (i) => { const v = p?.axes?.[i] ?? 0; return Math.max(-1, Math.min(1, v)); };
-    const x = ax(0), y = -ax(1);
+    const { p, x, y } = calibrated(n);
     const btn = p ? p.buttons.reduce((s, b, i) => s | ((b.pressed ? 1 : 0) << i), 0) & 0xFF : 0;
     if (wide) { r[0] = Math.round((x + 1) * 32767.5) & 0xFFFF; r[1] = Math.round((y + 1) * 32767.5) & 0xFFFF; r[2] = btn; return; }
     r[0] = ((Math.round(y * 127) & 255) | ((Math.round(x * 127) & 255) << 8) | (btn << 16)) >>> 0;
   });
-  S('Joystick_CalibrateTopRight', () => { hardware.joystickCalibration = { ...(hardware.joystickCalibration ?? {}), topRight: Date.now() }; });
-  S('Joystick_CalibrateBottomLeft', () => { hardware.joystickCalibration = { ...(hardware.joystickCalibration ?? {}), bottomLeft: Date.now() }; });
+  const calibrate = (which) => {
+    const cal = hardware.joystickCalibration ?? (hardware.joystickCalibration = {});
+    for (const n of [0, 1]) { const { x, y } = raw(n); cal[n] = { ...(cal[n] ?? {}), [which]: { x, y, time: Date.now() } }; }
+    cal.last = which;
+  };
+  S('Joystick_CalibrateTopRight', () => calibrate('topRight'));
+  S('Joystick_CalibrateBottomLeft', () => calibrate('bottomLeft'));
 
   // ---------------------------------------------------------------- Squash module (0.26)
   // Squash_Compress / _Decompress on whole buffers (the programs here - !PrintEdit's printer definitions -

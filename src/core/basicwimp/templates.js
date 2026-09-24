@@ -1,6 +1,6 @@
 // Wimp_OpenTemplate / Wimp_LoadTemplate / Wimp_CloseTemplate over a Templates file read from the
-// VFS: the window block is copied into the program's buffer exactly as stored, indirected data
-// into its workspace (pointers relocated), and font references resolved through Font_FindFont.
+// VFS: the window block is copied into the program's buffer, each indirected item into its workspace
+// with its full buffer size (as the Wimp does), and font references resolved through Font_FindFont.
 
 import { vfs } from '../vfs.js';
 import { BasicError } from '../../basic/errors.js';
@@ -64,15 +64,33 @@ export function loadTemplate(tf, r, m, fontFind) {
   const b = tf.b, v = tf.v, base = e.off;
   const nIcons = v.getInt32(base + 84, true);
   const blockLen = 88 + 32 * nIcons;
-  // indirected data: everything after the icon blocks
-  const indLen = Math.max(0, e.size - blockLen);
+  // Indirected data, as the Wimp does it (Wimp06 templateicon / relocateitem): every indirected item
+  // gets its full buffer size (icon data word 2) in the workspace, copied from the entry, and its
+  // validation string (a pointer past the window block) is copied up to its terminator. The file only
+  // stores the text, so buffers can't simply be copied as stored (they would overlap).
+  const items = [];
+  const scan = (flagsOff, dataOff) => {
+    const flags = v.getUint32(base + flagsOff, true);
+    if (!(flags & IND)) return;
+    const size = v.getInt32(base + dataOff + 8, true);
+    if (size > 0) items.push({ at: dataOff, size });
+    const vo = v.getInt32(base + dataOff + 4, true);
+    if (vo > 87 && vo < e.size) {
+      let n = 0;
+      while (vo + n < e.size && b[base + vo + n] >= 32) n++;
+      items.push({ at: dataOff + 4, size: n + 1 });
+    }
+  };
+  scan(56, 72);                                  // title
+  for (let i = 0; i < nIcons; i++) scan(88 + 32 * i + 16, 88 + 32 * i + 20);
+  const indLen = items.reduce((t, it) => t + it.size, 0);
   const writeName = () => {
     const nm = e.name.slice(0, 11);
     for (let i = 0; i < nm.length; i++) M.wr8(namePtr + i, nm.charCodeAt(i));
     M.wr8(namePtr + nm.length, 13);
   };
   if ((r[1] | 0) <= 0) {           // size enquiry (RISC OS 3): sizes, and the name found
-    r[1] = blockLen; r[2] = indLen; r[6] = idx + 1;
+    r[1] = Math.max(blockLen, e.size); r[2] = indLen; r[6] = idx + 1;
     writeName();
     return;
   }
@@ -81,14 +99,12 @@ export function loadTemplate(tf, r, m, fontFind) {
   const wsEnd = r[3] >>> 0;
   if (ws + indLen > wsEnd) throw new BasicError(0x2C7, 'Not enough room for indirected icon data');
   for (let i = 0; i < blockLen; i++) M.wr8(buf + i, b[base + i]);
-  for (let i = 0; i < indLen; i++) M.wr8(ws + i, b[base + blockLen + i]);
-  const reloc = (p) => { const o = M.rd32(p); if (o > 0 && o < e.size) M.wr32(p, ws + o - blockLen); };
-  const fixIcon = (flags, dp) => {
-    if (flags & IND) {
-      if (flags & TEXT) { reloc(dp); const vp = M.rd32(dp + 4); if (vp > 0 && vp < e.size) reloc(dp + 4); }
-      else if (flags & SPRITE) { reloc(dp); }
-    }
-  };
+  for (const it of items) {
+    const o = v.getInt32(base + it.at, true);
+    for (let i = 0; i < it.size; i++) M.wr8(ws + i, o >= 0 && o + i < e.size ? b[base + o + i] : 0);
+    M.wr32(buf + it.at, ws);
+    ws += it.size;
+  }
   const fontRef = r[4] | 0;
   const fixFont = (flagsPtr) => {
     let f = M.rd32(flagsPtr) >>> 0;
@@ -101,14 +117,13 @@ export function loadTemplate(tf, r, m, fontFind) {
     f = ((f & 0x00FFFFFF) | ((h & 255) << 24)) >>> 0;
     M.wr32(flagsPtr, f);
   };
-  fixIcon(M.rd32(buf + 56), buf + 72);          // title
   fixFont(buf + 56);
   for (let i = 0; i < nIcons; i++) {
     const ip = buf + 88 + 32 * i;
-    fixIcon(M.rd32(ip + 16), ip + 20);
     fixFont(ip + 16);
   }
+  M.wr32(buf + 64, 1);             // "make sure window's sprite area is sensible" (the Wimp pool)
   writeName();
-  r[2] = ws + indLen;
+  r[2] = ws;
   r[6] = idx + 1;
 }

@@ -11,6 +11,7 @@ import { decodeLatin1 } from './charset.js';
 import { registerResetCommands } from './reset.js';
 import { registerSoundCommands } from './sound/commands.js';
 import { setModuleLookup } from './native.js';
+import { registerCMOSCommands } from './cmos.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 const lpad = (s, n) => String(s).padStart(n);
@@ -319,6 +320,7 @@ export function installCommands() {
   });
   def('AddTinyDir', 'Syntax: *AddTinyDir [<pathname>]', '*AddTinyDir adds an object to the icon bar.', async (a) => { os.pinboard?.addTinyDir?.(a[0]); });
   registerResetCommands(def);    // *ResetDisc, *ResetCMOS (src/core/reset.js)
+  registerCMOSCommands(def, vfs); // *LoadCMOS, *SaveCMOS (src/core/cmos.js)
   registerSoundCommands(def);    // *Voices, *ChannelVoice, *Volume, *Sound, *Tuning, *Stereo, *Speaker, *Audio, *Tempo, *QSound
   def('Shutdown', 'Syntax: *Shutdown', '*Shutdown closes files, logs off file servers and makes the machine ready to switch off.', async () => { os.switcher?.shutdown(); });
   def('TaskWindow', 'Syntax: *TaskWindow [<command>] [[-wimpslot] <n>K] [[-name] <taskname>] [-ctrl] [-display] [-quit]', 'Starts a task window.', async (a, ctx) => { os.hooks?.taskWindow?.(ctx.raw); }, { noSplit: true });

@@ -1383,7 +1383,13 @@ export class BasicMachine {
       }
       case 6: if (fs.delete) await fs.delete(name); return;
       case 8: if (fs.mkdir) await fs.mkdir(name); return;
-      case 18: if (fs.setType) await fs.setType(name, r[2] & 0xFFF); return; // set filetype
+      case 18: {  // set filetype (also of a file that is open for output: it is written with that type when closed)
+        if (fs.setType) await fs.setType(name, r[2] & 0xFFF);
+        const canon = (p) => { try { return String(fs.canonical ? fs.canonical(p) : p).toLowerCase(); } catch { return String(p).toLowerCase(); } };
+        const key = canon(name);
+        for (const f of this.files?.handles?.values() ?? []) if (f.write && canon(f.name) === key) f.type = r[2] & 0xFFF;
+        return;
+      }
       case 255: case 12: case 14: case 16: {
         const f = await this.readFileBytes(name);
         let addr = r[2] >>> 0;
