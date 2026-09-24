@@ -58,6 +58,9 @@ export default {
   open(task, path, msg) { … },           // optional: called for DataOpen of a declared type while running
   memory: 256,                           // K of application memory shown by the Task Manager
   multiInstance: false,                  // false: running again sends 'run' (+ DataOpen) to the running task
+  appIconDrop: false,                    // true: files dropped on the app's directory icon in a Filer viewer go to
+                                         // the app (started with the file, or DataLoad to the running task) instead
+                                         // of being copied into the directory as the 3.71 Filer does (os.apps.dropOnApp)
   help: 'assets/help/Draw.txt',          // becomes <appDir>.!Help (default assets/help/<name>.txt; false = none)
   files: { Templates: { filetype: 0xFEC, content: { src: 'assets/…' } } }, // extra ROM files in appDir
   commands: { Draw: { syntax, help, run: async (argv, ctx) => … } },     // * commands the app provides
@@ -132,7 +135,7 @@ action, return `true` to mark it handled.
 
 | event | when / fields | default action |
 |---|---|---|
-| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window}` | Menu button: opens `w.menu` if set |
+| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window, shiftAdjust}` (`shiftAdjust`: Adjust given as Shift+left, so `shift` is part of the button) | Menu button: opens `w.menu` if set |
 | `doubleclick` | same fields | |
 | `drag` | a drag started (button types with drag): same fields + `pointerEvent`, `startSX/SY` | — (start one with `wimp.drag`) |
 | `key` | key press while the window has the input focus: `{code (Wimp key code), char, key (DOM), shift, ctrl, alt, icon}`; return `true` if used | unhandled keys go on to `hotkey` windows |
@@ -319,6 +322,14 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * `wimp.iconbar.add/update/remove` (`add({..., raw: {flags, validation, w, h}})` makes an icon with raw Wimp icon
   flags/validation and a fixed pixel size, e.g. MemNow's ridged text icon), `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
   `wimp.setMode({width, height})` (fixed "screen mode", scaled to fit), `wimp.setScale(z)` (zoom; `?zoom=2`).
+* Font registry (`src/core/fontreg.js`, `os.fontreg`): the outline fonts Font_ListFonts would list = the built-in
+  fonts (`assets/fonts/fonts.json`, pre-converted OpenType) plus any Outlines/IntMetrics font found in the `Font$Path`
+  directories on the virtual disc (named by its path below that directory, e.g. `!Fonts.Sample.Medium` = `Sample.Medium`;
+  e.g. written by !T1ToFont). `await os.fontreg.ready()`, then `names()`, `families(filter)` (for font menus),
+  `info(name)` ({family, weight, style, fallback, ascender, descender, disc?}), `latin1ToUnicode`; `await load(name)`
+  converts a disc font to a web font (family `"RISCOS <name>"`, via `src/core/fontbuild.js` and opentype.js from
+  `assets/lib/opentype`); `cssFor(name, px)`. `fonts.cssFor` also knows the disc fonts. The disc is rescanned after
+  any VFS change. Font menus in Chars, Configure, Draw and Edit use it.
 * Sound (`src/core/sound/`, docs/SOUND.md): the one emulated RISC OS sound system with the ROM voices.
   `wimp.beep()` is VDU 7, which plays SOUND 1,-13 or -5 (Loud/Quiet),100,6 on WaveSynth-Beep; `beepGain` 0 (speaker
   off) silences it. `import { soundSystem, vdu7 } from '../../core/sound/index.js'`, then `soundSystem().control(ch, amp, pitch, dur)`
@@ -358,3 +369,12 @@ writes them to `tests/screens/`). `tests/integration/flows.mjs [group…]` check
 `monkey.mjs [steps] [seed]` (random clicks/drags/keys, reports page errors), `shot.mjs <name> [actions.mjs]`
 (screenshots into `tests/screens/`; `act-*.mjs` are action scripts, e.g. `act-menu.mjs`, `act-save.mjs`). Needs Playwright (`PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs` if not installed in the project)
 and a server (`node serve.mjs`, port 8371; override with `URL=http://localhost:PORT/`).
+Playwright helpers: `tests/core/pw.mjs` (`launch`), `tests/edit/ui.mjs` (Filer items, double-clicks, menus, icon bar,
+Save boxes, `check`).
+
+## 14. Seed disc additions
+Don't hand-edit `assets/disc`: `tools/disc.mjs` rebuilds it from `vendor/`. Anything added on top comes from a small,
+idempotent `tools/disc-<topic>.mjs` script (model: `tools/disc-patch.mjs`) that writes its files and patches only its
+own entries in `assets/disc/manifest.json` (read, patch and write the manifest in one go), registered in
+`tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
+`disc-lander`, `disc-type1`.

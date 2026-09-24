@@ -3,6 +3,7 @@
 // The alternative is the 8x8 system font (Wimp icons then use 16x32 OS unit characters = 8x16 px).
 
 export const fonts = {
+  registry: null,         // the font registry (fontreg.js) once loaded: fonts found on the disc
   family: '"Homerton", Helvetica, Arial, sans-serif',
   size: 15,
   system: false,          // true => use the system font
@@ -12,6 +13,8 @@ export const fonts = {
   },
   /** CSS font for a RISC OS font name + point size (e.g. 'Homerton.Medium', 24). */
   cssFor(name = 'Homerton.Medium', pt = 12) {
+    const disc = this.registry?.info(name);     // an outline font found on the disc (fontreg.js)
+    if (disc?.disc) return this.registry.cssFor(name, (pt * 180 / 72) / 2);
     const [fam, ...rest] = String(name).split('.');
     const style = rest.join('.').toLowerCase();
     const weight = /bold/.test(style) ? 700 : 400;

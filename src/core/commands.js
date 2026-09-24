@@ -11,6 +11,7 @@ import { decodeLatin1 } from './charset.js';
 import { registerResetCommands } from './reset.js';
 import { registerSoundCommands } from './sound/commands.js';
 import { setModuleLookup } from './native.js';
+import { registerCMOSCommands } from './cmos.js';
 
 const pad = (s, n) => String(s).padEnd(n);
 const lpad = (s, n) => String(s).padStart(n);
@@ -85,6 +86,7 @@ const MODULES = [
   ['ShellCLI', '0.28'], ['ColourTrans', '1.25'], ['DragASprite', '0.13'], ['SpriteExtend', '0.99'], ['DrawFile', '1.40'],
   ['Squash', '0.26'], ['SoundDMA', '1.52'], ['SoundChannels', '1.25'], ['SoundScheduler', '1.21'], ['WaveSynth', '1.13'],
   ['Obey', '0.35'], ['BufferManager', '0.20'], ['DeviceFS', '0.36'], ['Parallel', '0.53'], ['Serial', '0.28'], ['ScreenBlanker', '2.10'],
+  ['Joystick', '0.22'],
 ];
 
 setModuleLookup((name) => MODULES.find((m) => m[0].toLowerCase() === String(name).toLowerCase())?.[1] ?? null);
@@ -318,6 +320,7 @@ export function installCommands() {
   });
   def('AddTinyDir', 'Syntax: *AddTinyDir [<pathname>]', '*AddTinyDir adds an object to the icon bar.', async (a) => { os.pinboard?.addTinyDir?.(a[0]); });
   registerResetCommands(def);    // *ResetDisc, *ResetCMOS (src/core/reset.js)
+  registerCMOSCommands(def, vfs); // *LoadCMOS, *SaveCMOS (src/core/cmos.js)
   registerSoundCommands(def);    // *Voices, *ChannelVoice, *Volume, *Sound, *Tuning, *Stereo, *Speaker, *Audio, *Tempo, *QSound
   def('Shutdown', 'Syntax: *Shutdown', '*Shutdown closes files, logs off file servers and makes the machine ready to switch off.', async () => { os.switcher?.shutdown(); });
   def('TaskWindow', 'Syntax: *TaskWindow [<command>] [[-wimpslot] <n>K] [[-name] <taskname>] [-ctrl] [-display] [-quit]', 'Starts a task window.', async (a, ctx) => { os.hooks?.taskWindow?.(ctx.raw); }, { noSplit: true });

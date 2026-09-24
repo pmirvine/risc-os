@@ -17,6 +17,7 @@ import { basicFS } from '../basichost.js';
 import { DesktopVDU } from './screen.js';
 import { installServices } from './services.js';
 import { WimpBridge, installWimpSwis } from './bridge.js';
+import { installHardware } from './hardware.js';
 
 /** Parse *BASIC arguments: -quit/-chain/-load <file> [args] | <file> | -help */
 export function parseBasicArgs(argv = []) {
@@ -27,7 +28,8 @@ export function parseBasicArgs(argv = []) {
     if (/^-help$/i.test(a)) { mode = 'help'; continue; }
     if (!file) { file = a; mode = 'chain'; programArgs = argv.slice(i + 1).join(' '); break; }
   }
-  if (file && /\s/.test(file.trim())) { const parts = file.trim().split(/\s+/); file = parts.shift(); programArgs = [parts.join(' '), programArgs].filter(Boolean).join(' '); }
+  // (only spaces separate arguments: a hard space &A0 is part of a name, as in Video.HiRes.!Warning&A0)
+  if (file && /[ \t]/.test(file.replace(/^[ \t]+|[ \t]+$/g, ''))) { const parts = file.replace(/^[ \t]+|[ \t]+$/g, '').split(/[ \t]+/); file = parts.shift(); programArgs = [parts.join(' '), programArgs].filter(Boolean).join(' '); }
   return { mode, file, programArgs };
 }
 
@@ -103,6 +105,7 @@ export class BasicProcess {
     m.waitKey = (t) => { if (!this.bridge) this.takeScreen(); return waitKey(t); };
     installServices(m, this);
     installWimpSwis(m, this);
+    installHardware(m, this);
     processes.add(this);
     window.bwProcesses = processes;
     this.started = new Promise((res) => { this._startedRes = res; });
@@ -138,7 +141,7 @@ export class BasicProcess {
   }
 
   async oscli(cmd) {
-    const name = cmd.replace(/^[\s*]+/, '').split(/[\s]/)[0].toLowerCase();
+    const name = cmd.replace(/^[\s*]+/, '').replace(/^-[a-z]+-/i, '').replace(/^%/, '').split(/[\s]/)[0].toLowerCase();
     if (/^(fx\d*|key\d*|tv|opt|spool|spoolon|exec|quit|basic|load|save|screensave|screenload)$/.test(name)) return false;   // BASIC's own (these touch its memory)
     if (!os.cli.find(name) && sysvars.get('Alias$' + name) == null && !os.cli.findRunnable(name)) return false;
     const m = this.machine;

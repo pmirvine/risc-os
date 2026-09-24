@@ -17,7 +17,7 @@ dev dep, in `tools/package.json`, deliberately separate from any root package.js
 | Seed disc | `node tools/disc.mjs` | `assets/disc/HardDisc4/…`, `assets/disc/manifest.json`, `skipped.json` |
 
 Shared helpers: `tools/lib/png.mjs` (PNG encoder), `lib/spritefile.mjs`, `lib/palette.mjs`,
-`lib/riscosfont.mjs` (Outlines/IntMetrics/encoding parsers), `lib/sources.mjs` (pool naming, excludes).
+`lib/riscosfont.mjs` (Outlines/IntMetrics/encoding parsers, re-exported from `src/core/riscosfont.js`; the OpenType builder is `src/core/fontbuild.js`, shared with the desktop's font registry), `lib/sources.mjs` (pool naming, excludes).
 Pool = one app/module, same naming across sprites/templates/messages (e.g. `Filer`, `Draw`, `SciCalc`).
 
 ## 1. Sprites
@@ -200,7 +200,10 @@ resources + BASIC `!RunImage,ffb` where applicable), `Diversions` (!Patience, !B
 !MineHunt, !Meteors, !Puzzle, !Player, AudioDemos…), `Images` (JPEG ,c85 + !SlideShow), `Manuals` (HTML ,faf + GIFs, !Bookworm),
 `Printing`, `Sound` (Maestro ,af1 tunes), `Tutorials` (DrawTutor Map/Sign ,aff, PaintTutor Flower ,ff9, WelcomeGde, StarComms),
 `Utilities`, `Replay`, `Video` (ReadMe/!Warning only). `Examples` (BASIC Wimp bridge demos !Doodle / Spiral / ReadMe) is added afterwards by
-`node tools/basicwimp-demo.mjs` from `src/core/basicwimp/demo/` (`tools/build.mjs` runs it after `disc.mjs`). Skipped (listed with reasons in `skipped.json`, 36.7 MB):
+`node tools/basicwimp-demo.mjs` from `src/core/basicwimp/demo/` (`tools/build.mjs` runs it after `disc.mjs`), and then by the
+`tools/disc-*.mjs` scripts: `disc-classics` (!Calc, !Madness, !Hopper), `disc-patch` (!Patch data), `disc-basicdemos`
+(`$.Demos.BASIC`), `disc-lander` (!Lander, without the original program) and `disc-type1` (`$.Utilities.Type1Fonts`: a sample
+Type 1 font, Computer Modern Roman 10, under the SIL Open Font License, from `tools/type1/`). Skipped (listed with reasons in `skipped.json`, 36.7 MB):
 absolute ,ff8 / module ,ffa / utility ,ffc / ,fc3 / ,d94 binaries, ARMovie codec data, videos and files > 2 MB.
 
 **Placeholders for ARM code.** The skipped Absolute (&FF8), Module (&FFA) and Utility (&FFC) files still appear on the
@@ -211,8 +214,8 @@ disc, as on the real HardDisc4: `disc.mjs` lists each one in the manifest with i
 core's native-executable registry (`src/core/native.js`, CORE_API §9): a registered JavaScript stand-in runs instead
 (BootVars, SysPaths, FreePool …); a module with no stand-in is "loaded" silently like `*RMLoad`; any other
 placeholder reports "'<name>' is ARM code, which cannot be run on this computer". A seed-disc rebuild is
-`node tools/disc.mjs && node tools/basicwimp-demo.mjs` (as `tools/build.mjs` does; `disc.mjs` wipes `assets/disc`,
-including `$.Examples`, which the second script adds back).
+`node tools/disc.mjs && node tools/basicwimp-demo.mjs` followed by the `tools/disc-*.mjs` scripts (as `tools/build.mjs`
+does; `disc.mjs` wipes `assets/disc`, including what the later scripts add back).
 
 ## 6. Palette and filetypes
 

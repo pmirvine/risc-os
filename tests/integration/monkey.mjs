@@ -10,7 +10,14 @@ if (!seeds.length) seeds.push(1);
 const W = 1280, H = 1024;
 const APPS = ['Alarm', 'Blocks', 'Chars', 'Clock', 'CloseUp', 'Configure', 'Draw', 'Edit', 'Help', 'Maestro', 'MemNow',
   'MineHunt', 'Paint', 'Patience', 'Printers', 'Puzzle', 'SciCalc', 'Squash', 'TaskWindow', 'Flasher', 'Meteors', 'Bookworm',
-  'PhotoView', 'ChangeFSI', 'ARPlayer', '!Player'];
+  'PhotoView', 'ChangeFSI', 'ARPlayer', '!Player',
+  // apps-and-demos: Calc, Madness, Hopper, Lander (full screen; Escape ends it), tier-B apps
+  'Calculator', 'Madness', 'Hopper', 'Lander', 'CDPlayer', 'FontPrint', 'Access+', 'Patch', 'AREncode', 'T1ToFont', 'InetSetup',
+  // started like a Filer double-click: tier-A BASIC utilities (not !Verify / !HForm, which run single-tasking for
+  // a long time, nor !ResetBoot, whose RESET restarts the machine) and BASIC demos (Plasma is full screen)
+  'ADFS::HardDisc4.$.Diversions.Tools.!Calibrate', 'ADFS::HardDisc4.$.Diversions.Tools.!ShowScrap', 'ADFS::HardDisc4.$.Printing.!PrintEdit',
+  'ADFS::HardDisc4.$.Utilities.!SaveCMOS', 'ADFS::HardDisc4.$.Video.!Warning', 'ADFS::HardDisc4.$.Demos.BASIC.WimpClock',
+  'ADFS::HardDisc4.$.Demos.BASIC.Plasma'];
 const FILES = ['ADFS::HardDisc4.$.Tutorials.DrawTutor.Map', 'ADFS::HardDisc4.$.Tutorials.PaintTutor.Flower', 'ADFS::HardDisc4.$.Tutorials.ReadMe',
   'ADFS::HardDisc4.$.Sound.Fanfare', 'ADFS::HardDisc4.$.Images.00-49.sa07'];
 const KEYS = ['Escape', 'Enter', 'ArrowDown', 'ArrowUp', 'ArrowLeft', 'ArrowRight', 'a', 'Z', '1', ' ', 'Tab', 'Backspace', 'Delete',
@@ -41,7 +48,7 @@ for (const seed0 of seeds) {
     for (let i = 0; i < n; i++) {
       const a = APPS[rnd(APPS.length)];
       action = 'start ' + a;
-      await page.evaluate((a) => os.apps.start(a).catch(() => {}), a).catch(() => {});
+      await page.evaluate((a) => (/^ADFS::/.test(a) ? os.filer.run(a) : os.apps.start(a)).catch?.(() => {}), a).catch(() => {});
       await page.waitForTimeout(200);
     }
     const f = FILES[rnd(FILES.length)];

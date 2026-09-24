@@ -1234,6 +1234,23 @@ export class WimpBridge {
     const win = this.coreWindow(dest);
     const task = win?.task ?? wimp.tasks.find((t) => t.handle === dest);
     if (task) r[2] = task.handle;
+    // The Filer's side of the data transfer protocol (a file icon dragged from a save box to a Filer
+    // viewer): DataSave -> DataSaveAck with <directory>.<leafname>; DataLoad (file saved) -> DataLoadAck
+    const fdir = win?._filerDir;
+    if (fdir && action === MSG.DataSave && bytes.length >= 25) {
+      const leaf = String.fromCharCode(...bytes.subarray(24, bytes.indexOf(0, 24) < 0 ? bytes.length : bytes.indexOf(0, 24))).replace(/[\x00-\x1f].*$/s, '');
+      const full = `${fdir}.${leaf.split(/[.:]/).pop() || 'Untitled'}`;
+      const out = new Uint8Array(24 + full.length + 1);
+      out.set(bytes.subarray(0, 24));
+      for (let i = 0; i < full.length; i++) out[24 + i] = full.charCodeAt(i) & 255;
+      setTimeout(() => this.queueMessage(MSG.DataSaveAck, [], 17, false, { bytes: out, sender: task?.handle ?? 0, yourRef: myRef }), 0);
+    } else if (task && action === MSG.DataLoad && bytes.length >= 25 && wimp.tasks.includes(task)) {
+      const out = bytes.slice();
+      setTimeout(() => {
+        try { os.filer?.viewerFor?.(win)?.refresh(); } catch { /* the viewer follows the VFS anyway */ }
+        this.queueMessage(MSG.DataLoadAck, [], 17, false, { bytes: out, sender: task.handle, yourRef: myRef });
+      }, 0);
+    }
   }
 
   dataLoadMessage(ev, wh, ih, action = MSG.DataLoad) {
@@ -1272,7 +1289,19 @@ export class WimpBridge {
     const opts = { appName: flags & 16 ? undefined : app || undefined, cancel: !!(flags & 2), category: flags & 256 ? ['info', 'info', 'error', 'program', 'question'][(flags >> 9) & 7] : 'error' };
     if (!(flags & 1) && !(flags & 2)) opts.cancel = false;
     if (flags & 16) opts.title = app || 'Error';
+    // RISC OS 3.5+ (new-style errors, bit 8): R3 = sprite name, R4 = sprite area, R5 = extra buttons
+    // ("Cancel,Help,RESTORE"), laid out right to left from the last and returned as 3, 4, 5, ... (Wimp07).
+    let extra = [];
+    if (flags & 256) {
+      if (u32(r[3]) > 1) { const sp = rdCtrl(this.m, r[3], 12).trim(); if (sp) opts.sprite = sp; }
+      if (u32(r[5]) > 1) extra = rdCtrl(this.m, r[5], 256).split(',').map((t) => t.trim()).filter(Boolean).slice(0, 3);
+    }
+    if (extra.length) {
+      opts.buttons = [...extra].reverse();
+      if (!(flags & 3)) { opts.ok = false; opts.cancel = false; }
+    }
     const res = await wimp.reportError(msg, opts);
+    if (typeof res === 'string') { r[1] = 3 + extra.indexOf(res); return; }
     r[1] = res === 2 ? 2 : 1;
   }
 

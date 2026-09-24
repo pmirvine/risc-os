@@ -2,6 +2,7 @@
 import { wimp } from './core/wimp.js';
 import { sprites } from './core/sprites.js';
 import { fonts, loadDesktopFonts } from './core/fonts.js';
+import { fontRegistry } from './core/fontreg.js';
 import { vfs } from './core/vfs.js';
 import { sysvars } from './core/sysvars.js';
 import { initFiletypes } from './core/filetypes.js';
@@ -69,7 +70,7 @@ async function boot() {
   const fast = params.has('fast') || sessionStorage.getItem('riscos.booted');
   const screen = fast ? null : bootScreen();
   os.wimp = wimp; os.vfs = vfs; os.sysvars = sysvars; os.cli = cli; os.filer = filer; os.apps = apps;
-  os.pinboard = pinboard; os.switcher = switcher; os.sprites = sprites; os.dialogs = dialogs; os.fonts = fonts;
+  os.pinboard = pinboard; os.switcher = switcher; os.sprites = sprites; os.dialogs = dialogs; os.fonts = fonts; os.fontreg = fontRegistry;
   os.loadMessages = loadMessages; os.input = input; os.hooks = os.hooks ?? {};
   os.config = config;
   config.load();
@@ -120,6 +121,9 @@ async function boot() {
   document.title = 'RISC OS 3.71';
   os.ready = true;
   wimp.emit('desktopready', {});
+  // a desktop font from the disc (e.g. converted by !T1ToFont) is only usable once the registry has built it
+  const wf = config.values.wimpFont;
+  if (wf && !/^(system|homerton)$/i.test(wf)) fontRegistry.load(wf).then((f) => { if (f?.disc) config.apply(); }).catch(() => {});
   // developer conveniences: ?open=<path>  ?run=<app>  ?cmd=<*command>
   if (params.get('open')) filer.openDir(params.get('open'));
   if (params.get('run')) apps.start(params.get('run'));

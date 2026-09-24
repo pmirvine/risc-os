@@ -31,7 +31,11 @@ const results = await page.evaluate(async () => {
     ok('delete non-empty dir fails', threw);
     vfs.delete('RAM::RamDisc0.$.Dir', { recursive: true });
     ok('delete recursive', !vfs.exists('RAM::RamDisc0.$.Dir'));
-    ok('wildcards', vfs.expandWild('$.D*').length === 1, vfs.expandWild('$.D*').join());
+    { // wildcards: '*' matches any run of characters, '#' one character (case-insensitive)
+      const leaves = (w) => vfs.expandWild(w).map((p) => vfs.leaf(p)).sort().join();
+      ok('wildcards', leaves('$.D*') === 'Demos,Diversions', leaves('$.D*'));
+      ok('wildcards #', leaves('$.d#mos') === 'Demos', leaves('$.d#mos'));
+    }
     // CLI
     const lines = [];
     const o = { write: (s) => lines.push(s), writeln: (s = '') => lines.push(s + '\n') };

@@ -156,6 +156,12 @@ export default async function start(task, ctx) {
 
   async function loadFile(path) {
     try {
+      // a CMOS RAM image saved by !SaveCMOS / *SaveCMOS (240 bytes): load it as *LoadCMOS does
+      if (os.vfs.stat(path)?.size === 240) {
+        await os.cli.run(`LoadCMOS ${path}`);
+        for (const w of windows.values()) w._refresh?.();
+        return;
+      }
       const txt = await os.vfs.readText(path);
       const j = JSON.parse(txt);
       if (!j?.values) throw new Error();
@@ -520,10 +526,9 @@ export default async function start(task, ctx) {
     };
     w._refresh = () => { st = { font: curFont() }; for (const f of fields) st[f.key] = get(f.key); show(); };
     w._refresh();
-    let fontList = null;
     const fontMenu = async (ev) => {
-      if (!fontList) { try { fontList = await (await fetch('assets/fonts/fonts.json')).json(); } catch { fontList = {}; } }
-      const names = Object.keys(fontList.fonts ?? fontList).filter((n) => /^[A-Z][A-Za-z]+\.[A-Za-z.]+$/.test(n) && !/^System\./.test(n)).sort();
+      const reg = await os.fontreg.ready();     // fonts.json + outline fonts on Font$Path (core fontreg.js)
+      const names = reg.names().filter((n) => /^[A-Za-z][\w-]*\.[\w.-]+$/.test(n) && !/^System\./.test(n));
       const fams = new Map();
       for (const n of names) { const [fam, ...rest] = n.split('.'); if (!fams.has(fam)) fams.set(fam, []); fams.get(fam).push(rest.join('.')); }
       const items = [{ text: m('FOSYS'), help: m('MHDESKF'), ticked: () => !st.font, dotted: true, action: () => { st.font = null; show(); } }];
@@ -546,8 +551,8 @@ export default async function start(task, ctx) {
           const val = want === 'Homerton.Medium' ? 'homerton' : want;
           const apply = () => { cfg.values.wimpFont = val; cfg.save(); cfg.apply(); };
           apply();
-          // re-layout once the outline font file has arrived
-          if (val !== 'system') document.fonts?.load(os.fonts.css).then(apply).catch(() => {});
+          // re-layout once the outline font file has arrived (a font from the disc is converted first)
+          if (val !== 'system') os.fontreg.load(want).then(() => document.fonts?.load(os.fonts.css)).then(apply).catch(() => {});
         }
         if (ev.button !== 'adjust') w.close();
       }

@@ -28,8 +28,9 @@ export default async function start(task, ctx) {
     loadTemplates('assets/templates/Draw.json'),
     fetch('assets/messages/Draw.json').then((r) => r.json()).catch(() => ({})),
     sprites.loadManifest('Draw', 'Sprites'),
-    DF.loadFontInfo(), DF.loadSystemFont(), preloadPicker(),
+    DF.loadFontInfo(), DF.loadSystemFont(), preloadPicker(), os.fontreg?.ready(),
   ]);
+  if (os.fontreg) DF.useFontRegistry(os.fontreg);   // font menus and text also use the fonts found on the disc
   const msg = (t, ...a) => { let s = msgs[t] ?? t; a.forEach((v, i) => { s = s.replace(/%[sd0-9]/, String(v)); }); return s.replace(/^####/, ''); };
   // the crosshair pointer (square-pixel version of the mode 12 sprite, active point 8,4 -> 8,8)
   const ch = drawSprites.get('crosshairs');

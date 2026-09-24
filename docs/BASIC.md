@@ -47,6 +47,8 @@ const vdu = new VDU({
   onError: (e) => {},  // {errnum, errmess} for VDU-level errors (e.g. Bad MODE from VDU 22)
   screenMemory,        // bytes of "VRAM" (default 1MB): number of screen banks = max(2, mem / mode size)
   autoRender,          // true: render itself on requestAnimationFrame
+  linearScreen,        // true: in 8bpp modes all banks are one Uint8Array (`screenIO.linear` = {lo, u8}) that ARM
+                       // code reads and writes directly (full speed; used for the original !Lander)
 });
 const m = new BasicMachine({
   vdu,                 // VDU instance; omit for text-only (use onOutput)
@@ -191,7 +193,9 @@ Territory_Number. OS_Byte covers 0, 4, 9/10 (flash periods), 15/21, 19, 20/25 (r
 * **Assembler**: all BASIC V mnemonics/conditions/shifts, ADR, EQUB/W/D/S, DCB/W/D, `=`, `&`, ALIGN,
   OPT 0-15 (listing format as the original, errors, O% offset assembly, L% limit), labels, FN macros,
   forward references in pass 1. **ARM emulator**: ARM2/ARM3 user mode (26-bit PC/PSR, all data
-  processing, MUL/MLA, LDR/STR, LDM/STM, SWP, B/BL, SWI through the SWI table, OS_WriteS).
+  processing, MUL/MLA, LDR/STR, LDM/STM, SWP, B/BL, SWI through the SWI table, OS_WriteS). Each instruction word is compiled once to a JS function (a decoded-instruction
+  cache re-checked on every fetch, so self-modifying code works); `cpu.cycles` counts 8MHz ARM2 cycles and
+  `runFor(n, cycleLimit)` runs to a cycle budget (about 90 MIPS in node/Chrome, 20-30x an ARM2).
 * **VDU**: see the header of `vdu.js` (modes 0-49, all VDU codes and PLOT groups, ECFs, palettes,
   flashing colours and OS_Byte 9/10, VDU 5 text, copy-key editing, MODE 7 teletext, screen banks
   (OS_Byte 112/113, as many as fit in `screenMemory`), memory-mapped screen, OS_Byte 20/25 font reset).
@@ -230,6 +234,6 @@ assembler encodings, ARM execution, files, VDU and graphics pixels, demo program
 for the host contract above: run() results, kill(), registerSwi, host errors, banks, screen memory).
 `node tests/basic/screenshot.mjs mandel.bas circles.bas` (with `node serve.mjs` running) saves
 Playwright screenshots of the demo page to `tests/screens/`.
-Example programs live in `tests/basic/programs/` (listed in `index.json` for the demo page): mandel,
-circles, spiral, colours, teletext, ball, sieve, guess, cube (double buffering), tree (recursion),
-asmplot (assembler + CALL + screen memory), tune (SOUND …,beat, VOICE, STEREO), errors (ON ERROR LOCAL etc.).
+Example programs live in `src/basic/demos/` (listed in `index.json` for the demo page's Examples menu and
+`tools/disc-basicdemos.mjs`, which puts them on the seed disc as `$.Demos.BASIC`: double-click runs one full screen, Shift-double-click opens it in Edit).
+`tests/basic/demos.test.mjs` runs every one headless.

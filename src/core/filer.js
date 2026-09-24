@@ -420,13 +420,18 @@ class DirViewer {
     if (i < 0) return true;
     const it = this.items[i];
     this.setSelected(i, false);
+    // The Filer (s.Clicks click_select) closes this viewer only for an ADJUST double-click; SHIFT (held at the
+    // click) opens applications as directories and files as text. In the browser Shift+left is itself the
+    // emulated Adjust button, so that double-click is taken as Shift-Select: it doesn't close the viewer.
+    // A real Adjust button (right button with *Configure Buttons Adjust) does.
+    const adjust = ev.button === 'adjust' && !ev.shiftAdjust;
     if (it.type === 'dir' && (!it.isApp || ev.shift)) {
-      this.filer.openDir(it.path, { from: this, replacing: ev.button === 'adjust' });
-      if (ev.button === 'adjust') this.close();
+      this.filer.openDir(it.path, { from: this, replacing: adjust });
+      if (adjust) this.close();
       return true;
     }
     this.filer.run(it.path, { shift: ev.shift });
-    if (ev.button === 'adjust') this.close();
+    if (adjust) this.close();
     return true;
   }
 
@@ -482,6 +487,8 @@ class DirViewer {
       let dest = target.path;
       const j = target.indexAt(drop.x, drop.y);
       if (j >= 0 && target.items[j].type === 'dir' && !target.items[j].isApp) dest = target.items[j].path;
+      if (j >= 0 && target.items[j].isApp && !files.some((f) => f.path === target.items[j].path)
+        && os.apps?.dropOnApp(target.items[j].path, files)) { this.clearSelection(); return; }
       if (target === this && dest === this.path) return;
       fileAction(move ? 'move' : 'copy', files.map((f) => f.path), dest, this.filer.options);
       if (move === false) this.clearSelection();
@@ -495,6 +502,8 @@ class DirViewer {
     // files dropped from elsewhere (not via Filer drag - e.g. from pinboard)
     const files = ev.files ?? [];
     if (!files.length) return true;
+    const j = this.indexAt(ev.x, ev.y);
+    if (j >= 0 && this.items[j].isApp && os.apps?.dropOnApp(this.items[j].path, files)) return true;
     const paths = files.map((f) => f.path).filter((p) => vfs.parent(p).toLowerCase() !== this.path.toLowerCase());
     if (paths.length) fileAction(ev.shift ? 'move' : 'copy', paths, this.path, this.filer.options);
     return true;

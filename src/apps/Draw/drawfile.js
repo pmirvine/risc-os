@@ -454,16 +454,24 @@ export function loadSystemFont() {
   SYSFONT_P ??= fetch(assetUrl('assets/fonts/system8x8.json')).then((r) => r.json()).then((j) => (SYSFONT = j.chars)).catch(() => null);
   return SYSFONT_P;
 }
+// The desktop's font registry (core fontreg.js), set by the app: adds the outline fonts found on the disc
+// (e.g. converted by !T1ToFont). Without it (node) only fonts.json is known.
+let REG = null, DISC_PENDING = false;
+export function useFontRegistry(reg) { REG = reg; }
 /** Font info for a RISC OS font name (case-insensitive), or null if the font is not available. */
 export function fontInfo(name) {
   if (!FONTINFO || !name) return null;
   // RISC OS 3.5+ font strings: "\FTrinity.Medium\ELatin1" (font, encoding, matrix ... identifiers)
   const m = /\\F([^\\]*)/.exec(name);
   const l = (m ? m[1] : name.split('\\')[0]).trim().toLowerCase();
-  return FONTINFO.fonts[l] ?? null;
+  const fi = FONTINFO.fonts[l] ?? null;
+  if (fi || !REG) return fi;
+  const d = REG.info(l);
+  if (d?.disc && !d.face && !d.failed) DISC_PENDING = true;   // drawn with the fallback until converted
+  return d;
 }
 /** List of available RISC OS font names (for font menus). */
-export function availableFonts() { return FONTINFO ? Object.values(FONTINFO.fonts).map((f) => f.name) : []; }
+export function availableFonts() { return REG ? REG.names() : FONTINFO ? Object.values(FONTINFO.fonts).map((f) => f.name) : []; }
 
 /** RISC OS Latin-1 string -> string for canvas in a given font. */
 export function textForFont(text, fi) {
@@ -973,7 +981,11 @@ export async function prepareDrawfile(doc) {
   };
   walk(doc.objects);
   const loads = [];
-  for (const n of wanted) { const fi = fontInfo(n); if (fi) loads.push(document.fonts.load(cssFont(fi, 20)).catch(() => {})); }
+  for (const n of wanted) {
+    const fi = fontInfo(n);
+    if (fi?.disc) loads.push(REG.load(fi.name).catch(() => {}));
+    else if (fi) loads.push(document.fonts.load(cssFont(fi, 20)).catch(() => {}));
+  }
   const jp = [];
   const walkJ = (objs) => { for (const o of objs) { if (o.type === 'jpeg' && o._imgP) jp.push(o._imgP); else if (o.type === 'group') walkJ(o.objects); } };
   walkJ(doc.objects);
@@ -1012,7 +1024,9 @@ export function renderDrawfile(ctx, input, opts = {}) {
   const ready = !FONTINFO || !SYSFONT;
   const view = { k, ox, oy, fonts: doc.fonts, onReady: opts.onReady };
   if (ready && typeof fetch !== 'undefined') prepareDrawfile(doc).then(() => opts.onReady?.(doc));
+  DISC_PENDING = false;
   renderObjects(ctx, doc.objects, view);
+  if (!ready && DISC_PENDING && typeof fetch !== 'undefined') prepareDrawfile(doc).then(() => opts.onReady?.(doc));
   return doc;
 }
 

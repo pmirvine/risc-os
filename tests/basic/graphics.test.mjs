@@ -6,7 +6,7 @@ import path from 'node:path';
 import { BasicMachine } from '../../src/basic/machine.js';
 import { VDU } from '../../src/basic/vdu.js';
 
-const dir = path.join(path.dirname(new URL(import.meta.url).pathname), 'programs');
+const dir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', '..', 'src', 'basic', 'demos');
 const lines = (...a) => a.map((s, i) => `${(i + 1) * 10} ${s}`).join('\n');
 
 async function gfx(src, opts = {}) {
@@ -132,14 +132,14 @@ test('type-in programs: tree, asmplot (assembler + screen memory), tune, errors,
   assert.match(asm.out, /Code: 168 bytes/);
   // stripes block at byte 80 of row 20: pixel (80+c, 20+r) = (r + c>>3) AND 63
   for (const [c, r] of [[0, 0], [16, 5], [159, 39]]) assert.equal(asm.vdu.getPixel(80 + c, 20 + r), (r + (c >> 3)) & 63, 'stripes via screen memory');
-  const tune = await gfx(read('tune.bas'));
+  const tune = await gfx(read('tune.bas'), { input: ' ' });
   assert.match(tune.out, /Done - 20 notes/);
   const errs = await gfx(read('errors.bas'));
   assert.match(errs.out, /10\/0 = undefined \(Division by zero\)/);
   assert.match(errs.out, /SQR\(-4\) = {3}SQR\(-4\) failed: Negative root/);
-  assert.match(errs.out, /inner saw 15, passing it on\n {2}outer caught: Subscript out of range from line 290/);
-  assert.match(errs.out, /Top-level handler: Something went wrong \(99\) at line 100/);
-  const cube = await gfx(read('cube.bas').replace('frames%=300', 'frames%=3'));
-  assert.match(cube.out, /3 frames in/);
+  assert.match(errs.out, /inner saw 15, passing it on\n {2}outer caught: Subscript out of range from line 360/);
+  assert.match(errs.out, /Top-level handler: Something went wrong \(99\) at line 130/);
+  const cube = await gfx(read('cube.bas'), { input: ' ' });
+  assert.match(cube.out, /1 frames in/);
   assert.equal(cube.vdu.displayBank, 0, 'back on bank 1');
 });
