@@ -19,6 +19,9 @@ import { saveAs } from './dialogs.js';
 const LGI_W = 86, LGI_H = 54;      // template icon 2 (172 x 108 OS)
 const SMI_W = 108, SMI_H = 18;     // template icon 3 (216 x 36 OS)
 const TOPGAP = 4;
+const RHSGAP = 8;                  // dvr_rhsgap (16 OS): viewer width = columns x item width + RHSGAP
+const RHSSLACK = 16;               // dvr_rhsslack (32 OS): narrowing a viewer this little doesn't reflow it
+const colsFor = (w, cw) => Math.max(1, Math.floor((w - RHSGAP + RHSSLACK) / cw));
 
 export function formatDate(d, sep = '-') {
   const p = (n) => String(n).padStart(2, '0');
@@ -197,9 +200,11 @@ class DirViewer {
     const cw = this.cellW, ch = this.cellH;
     const maxW = Math.floor((t.visible.x1 - t.visible.x0) / 2);
     const maxH = Math.floor((t.visible.y1 - t.visible.y0) / 2);
-    let cols = this.mode === 'full' ? 1 : Math.max(1, Math.min(n || 1, Math.floor(maxW / cw)));
-    let w = this.mode === 'full' ? Math.min(cw, wimp.width - 40) : Math.max(cols * cw, 200);
-    if (this.mode !== 'full') w = Math.min(w, Math.max(maxW, cw));
+    let cols = this.mode === 'full' ? 1 : Math.max(1, Math.min(n || 1, Math.floor((maxW - RHSGAP) / cw)));
+    // at least as wide as the title plus 6 system font characters (back + close icons)
+    const titleW = Math.ceil(textWidth(this.path, fonts.css)) + 48;
+    let w = this.mode === 'full' ? Math.min(cw + RHSGAP, wimp.width - 40) : Math.max(cols * cw + RHSGAP, titleW);
+    if (this.mode !== 'full') w = Math.min(w, Math.max(maxW, cw + RHSGAP));
     const rows = Math.ceil(n / cols) || 1;
     const h = Math.max(60, Math.min(maxH, rows * ch + 2 * TOPGAP));
     return { w, h };
@@ -220,14 +225,18 @@ class DirViewer {
     for (const it of this.items) s = Math.max(s, this._textW(it.name) + 22);
     s = Math.ceil(s);
     if (this.mode === 'small') return s + 8;
-    return s + this.infoWidth() + 8 + 8 + 16;
+    return s + this.infoWidth() + 24;   // + fui_lhsgap, midgap1, midgap2 (system font characters), rhsgap
   }
-  get cellH() { return this.mode === 'large' ? LGI_H + 8 : SMI_H + 4 + 4; }
+  // GetItemBoxSize: large icons 8 OS units gap all round, small icons / full info 4 OS units above and below
+  get cellH() { return this.mode === 'large' ? LGI_H + 8 : SMI_H + 4; }
+  get cellGapY() { return this.mode === 'large' ? 4 : 2; }
   infoWidth() {
     const f = fonts.css;
     const cw = textWidth('0', f);
-    this._col = { access: Math.ceil(textWidth('LWR/wr', f)) + 8, size: Math.ceil(cw * 6) + 8, type: Math.ceil(Math.max(textWidth('Application', f), textWidth('Directory', f))) + 12, date: Math.ceil(textWidth('00:00:00 00-Mmm-0000', f)) + 8 };
-    return this._col.access + this._col.size + this._col.type + this._col.date;
+    // Filer cache_lengths: the columns are as wide as these strings in the desktop font
+    const W = (t) => Math.ceil(textWidth(t, f));
+    this._col = { access: W('LWR/wr '), size: W('8888'), unit: W('M '), type: Math.max(W('XXXXXXXX '), W('Directory'), W('Application')), date: W('88:88:88 30 Mar 1999') };
+    return this._col.access + this._col.size + this._col.unit + this._col.type + this._col.date;
   }
 
   refresh(noLayout) {
@@ -254,19 +263,19 @@ class DirViewer {
   /** Compute columns for a visible width and render. */
   layout(w) {
     const cw = this.cellW;
-    const cols = this.mode === 'full' ? 1 : Math.max(1, Math.floor(w / cw));
+    const cols = this.mode === 'full' ? 1 : colsFor(w, cw);
     this.cols = cols;
     const rows = Math.ceil(this.items.length / cols);
     const extH = rows * this.cellH + 2 * TOPGAP;
     // the extent is at least the window size, so viewers can be made bigger than their contents
     const minW = Math.max(w, this.win.isOpen ? this.win.w : 0), minH = Math.max(this._wantH ?? 0, this.win.isOpen ? this.win.h : 0);
-    this.win.extent = { x0: 0, y0: 0, x1: Math.max(this.mode === 'full' ? cw : cols * cw, minW, 100), y1: Math.max(extH, minH, 60) };
+    this.win.extent = { x0: 0, y0: 0, x1: Math.max((this.mode === 'full' ? cw : cols * cw) + RHSGAP, minW, 100), y1: Math.max(extH, minH, 60) };
     // keep the extent at least the visible size in the reflow direction
     this.render();
   }
 
   reformat(force) {
-    const cols = this.mode === 'full' ? 1 : Math.max(1, Math.floor(this.win.w / this.cellW));
+    const cols = this.mode === 'full' ? 1 : colsFor(this.win.w, this.cellW);
     if (cols !== this.cols || force) { this.layout(this.win.w); if (this.win.isOpen) this.win.open({}); }
   }
 
@@ -274,15 +283,15 @@ class DirViewer {
     // reflow the icons when the window width changes
     ev.preventDefault();
     const cw = this.cellW;
-    let cols = this.mode === 'full' ? 1 : Math.max(1, Math.floor(ev.w / cw));
+    let cols = this.mode === 'full' ? 1 : colsFor(ev.w, cw);
     if (cols !== this.cols) {
       this.cols = cols;
       const rows = Math.ceil(this.items.length / cols);
-      this.win.extent = { x0: 0, y0: 0, x1: Math.max(this.mode === 'full' ? cw : cols * cw, ev.w, 100), y1: Math.max(rows * this.cellH + 2 * TOPGAP, ev.h, 60) };
+      this.win.extent = { x0: 0, y0: 0, x1: Math.max((this.mode === 'full' ? cw : cols * cw) + RHSGAP, ev.w, 100), y1: Math.max(rows * this.cellH + 2 * TOPGAP, ev.h, 60) };
       this.render();
     } else {
       // allow the window to be made bigger than its contents
-      const needW = Math.max(ev.w, this.mode === 'full' ? cw : cols * cw);
+      const needW = Math.max(ev.w, (this.mode === 'full' ? cw : cols * cw) + RHSGAP);
       const needH = Math.max(ev.h, Math.ceil(this.items.length / cols) * this.cellH + 2 * TOPGAP);
       if (needW > this.win.extent.x1 || needH > this.win.extent.y1) this.win.extent = { ...this.win.extent, x1: Math.max(needW, this.win.extent.x1), y1: Math.max(needH, this.win.extent.y1) };
     }
@@ -314,7 +323,7 @@ class DirViewer {
       return { x0: cx - w / 2, y0: r.y0 + 4, x1: cx + w / 2, y1: r.y1 - 4 };
     }
     const tw = this._textW(it.name);
-    return { x0: r.x0 + 4, y0: r.y0 + 4, x1: r.x0 + 4 + 18 + 4 + tw + 4, y1: r.y1 - 4 };
+    return { x0: r.x0 + 4, y0: r.y0 + 2, x1: r.x0 + 4 + 18 + 4 + tw + 4, y1: r.y1 - 2 };
   }
 
   indexAt(wx, wy) {
@@ -340,7 +349,7 @@ class DirViewer {
       if (this.mode === 'large') {
         spec = { bbox: { x0: r.x0 + 4, y0: r.y0 + 4, x1: r.x1 - 4, y1: r.y1 - 4 }, flags: (common | IF.hcentre) >>> 0 };
       } else {
-        spec = { bbox: { x0: r.x0 + 4, y0: r.y0 + 4, x1: r.x0 + 4 + Math.ceil(this._textW(it.name)) + 24, y1: r.y1 - 4 }, flags: (common | IF.vcentre) >>> 0 };
+        spec = { bbox: { x0: r.x0 + 4, y0: r.y0 + 2, x1: r.x0 + 4 + Math.ceil(this._textW(it.name)) + 24, y1: r.y1 - 2 }, flags: (common | IF.vcentre) >>> 0 };
       }
       spec.text = it.name; spec.validation = 'S' + spr.name; spec.bufLen = 256;
       const ic = new Icon(this.win, spec, i);
@@ -350,12 +359,17 @@ class DirViewer {
       if (this.mode === 'full') {
         const c = this._col ?? (this.infoWidth(), this._col);
         const row = el('div', 'fullinfo', layer);
-        row.style.cssText = `position:absolute;left:${r.x0 + 4 + nameW + 12}px;top:${r.y0 + 4}px;height:${SMI_H}px;font:${font};line-height:${SMI_H}px;white-space:pre;color:#000`;
+        row.style.cssText = `position:absolute;left:${r.x0 + 4 + nameW + 8}px;top:${r.y0 + 2}px;height:${SMI_H}px;font:${font};line-height:${SMI_H}px;white-space:pre;color:#000`;
         let x = 0;
         const cell = (t, w, right) => { const s = el('span', '', row); s.textContent = t; s.style.cssText = `position:absolute;left:${x}px;width:${w}px;${right ? 'text-align:right;' : ''}`; x += w; };
         cell(accessString(it.attr), c.access);
-        if (it.type === 'dir') { cell('', c.size, true); cell(it.isApp ? 'Application' : 'Directory', c.type); }
-        else { cell(sizeColumn(it.size), c.size - 8, true); cell('', 8); cell(it.filetype === FT_UNTYPED ? '' : typeName(it.filetype), c.type); }
+        if (it.type === 'dir') { cell('', c.size + c.unit); cell(it.isApp ? 'Application' : 'Directory', c.type); }
+        else {
+          const sz = sizeColumn(it.size);
+          const unit = /[KM]$/.test(sz) ? sz.slice(-1) : '';
+          cell(unit ? sz.slice(0, -1) : sz, c.size, true); cell(unit, c.unit);
+          cell(it.filetype === FT_UNTYPED ? '' : typeName(it.filetype), c.type);
+        }
         cell(it.filetype === FT_UNTYPED && it.type !== 'dir' ? `${(it.load >>> 0).toString(16).toUpperCase().padStart(8, '0')} ${(it.exec >>> 0).toString(16).toUpperCase().padStart(8, '0')}` : filerDate(it.date), c.date);
       }
     });

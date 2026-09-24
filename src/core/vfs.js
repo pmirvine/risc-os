@@ -631,7 +631,8 @@ export class VFS extends Emitter {
       if (!c) {
         c = new Node(p, last ? dir : true, n);
         c.date = SEED_DATE;
-        c.attr = ATTR.ownerRead | ATTR.publicRead | ATTR.locked;
+        // ROM files are LR/r; the Filer shows ResourceFS directories as WR/ (3.7 screenshots)
+        c.attr = c.isDir ? ATTR.ownerRead | ATTR.ownerWrite : ATTR.ownerRead | ATTR.publicRead | ATTR.locked;
         n.children.set(p.toLowerCase(), c);
       }
       if (last && !dir) {
