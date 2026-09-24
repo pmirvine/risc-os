@@ -9,7 +9,7 @@ import { IF } from './templates.js';
 import { sprites } from './sprites.js';
 import { textWidth, fonts } from './fonts.js';
 
-const HEIGHT = 66;        // 132 OS units (Wimp template "iconbar")
+const HEIGHT = 65;        // extent 132 OS (Wimp template "iconbar"), opened from scry0 + dy: 130 OS visible
 const GAP = 8;            // iconbargap = 16 OS
 const BASE = 54;          // work-area y of the icon baseline (108 OS below the top)
 

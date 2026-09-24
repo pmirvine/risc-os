@@ -339,7 +339,7 @@ export class EditView {
     if (!take && !this.hasFocus) return;
     const r = this.rowOf(this.caret);
     let x = this.xOf(this.caret, r) + this.vpad * (this.fixed ? 8 : this.cwidth(32));
-    wimp.setCaret(this.win, null, -1, { x: Math.round(x) - 1, y: r * this.lh, h: this.lh });
+    wimp.setCaret(this.win, null, -1, { x: Math.round(x), y: r * this.lh, h: this.lh });   // 1 px Font_Caret-style caret at the character boundary
   }
   dispose() {
     this.doc.views.delete(this);

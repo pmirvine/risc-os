@@ -146,6 +146,7 @@ export class Wimp extends Emitter {
     const st = this.screen.style;
     st.width = w + 'px'; st.height = h + 'px';
     st.transform = s !== 1 ? `scale(${s})` : '';
+    if (this._ptrKey != null) this.setPointer(this._ptr);   // re-scale the pointer
     if (old.w != null && (old.w !== w || old.h !== h)) {
       this.emit('modechange', { width: w, height: h });
       this.sendMessage('ModeChange', { width: w, height: h });
@@ -374,14 +375,37 @@ export class Wimp extends Emitter {
   }
 
   /** Set the pointer shape to a sprite from the Wimp pool ('' = the default RISC OS arrow). */
+  /**
+   * name may carry an active point like a P validation command: 'ptr_write,4,9'. As in the Wimp
+   * (setptr_shape / Wimp03 P validation), the active point defaults to the top-left pixel (0,0);
+   * a SpriteInfo may give its own `hot: [x, y]` (CSS px). When the desktop is zoomed the pointer is
+   * scaled with it (CSS cursors are not affected by the screen's transform).
+   */
   setPointer(name) {
-    if (name === this._ptr) return;
+    const scale = this.scale ?? 1;
+    const key = (name ?? '') + '@' + scale;
+    if (key === this._ptrKey) return;
+    this._ptrKey = key;
     this._ptr = name;
-    const s = sprites.get(name || 'ptr_default');
-    if (s) {
-      const hot = s.hot ?? { ptr_write: [Math.round(s.w / 2), Math.round(s.h / 2)], ptr_double: [1, 1], ptr_default: [1, 1] }[name || 'ptr_default'] ?? [1, 1];
-      this.screen.style.cursor = `url("${s.url}") ${hot[0]} ${hot[1]}, auto`;
-    } else this.screen.style.cursor = '';
+    const [spr, hx, hy] = String(name || 'ptr_default').split(',');
+    const s = sprites.get(spr.trim() || 'ptr_default');
+    if (!s) { this.screen.style.cursor = ''; return; }
+    const hot = s.hot ?? [+hx || 0, +hy || 0];
+    const set = (url, k) => { this.screen.style.cursor = `url("${url}") ${Math.round(hot[0] * k)} ${Math.round(hot[1] * k)}, auto`; };
+    if (scale === 1 || !s.canvas) { set(s.url, 1); return; }
+    const cache = (this._ptrCache ??= new Map());
+    const ck = s.url + '@' + scale;
+    if (cache.has(ck)) { set(cache.get(ck), scale); return; }
+    set(s.url, 1);
+    Promise.resolve(s.canvas()).then((src) => {
+      const c = document.createElement('canvas');
+      c.width = Math.round(s.cssW * scale); c.height = Math.round(s.cssH * scale);
+      const g = c.getContext('2d');
+      g.imageSmoothingEnabled = false;
+      g.drawImage(src, 0, 0, c.width, c.height);
+      cache.set(ck, c.toDataURL());
+      if (this._ptrKey === key) set(cache.get(ck), scale);
+    }).catch(() => {});
   }
 
   _furniturePointerDown(win, part, e, button, p, partEl) {
@@ -800,12 +824,16 @@ export class Wimp extends Emitter {
       if (opts.sprite || opts.sprites) {
         node = el('div', 'drag-sprite', L);
         const list = opts.sprites ?? [{ sprite: opts.sprite, dx: 0, dy: 0 }];
+        let nw = 0, nh = 0;
         for (const s of list) {
           const im = sprites.img(s.sprite, { area: opts.area });
           im.style.position = 'absolute';
           im.style.left = (s.dx ?? 0) + 'px'; im.style.top = (s.dy ?? 0) + 'px';
           node.appendChild(im);
+          nw = Math.max(nw, (s.dx ?? 0) + (im._sprite?.cssW ?? 34)); nh = Math.max(nh, (s.dy ?? 0) + (im._sprite?.cssH ?? 34));
         }
+        // size the node (its hatching mask covers only its box), plus the drop shadow
+        node.style.width = nw + 4 + 'px'; node.style.height = nh + 4 + 'px';
       } else if (opts.type !== 'point') {
         node = el('div', 'drag-box', L);
       }

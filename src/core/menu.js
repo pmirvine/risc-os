@@ -129,7 +129,8 @@ export class MenuManager {
       w = Math.max(w, tw);
     }
     const titleW = textWidth(String(val(menu.title) ?? ''), font) + 16;
-    const textW = Math.ceil(Math.max(w + 12, titleW - TICK_W - ARROW_W, 40));
+    // fixupmenuwidth: widest item text + 16 OS units (the item text starts 3 px into its icon)
+    const textW = Math.ceil(Math.max(w + 8, titleW - TICK_W - ARROW_W, 40));
     let h = 0;
     for (const it of menu.items) h += ITEM_H + (val(it.dotted, it) ? SEP_H : 0);
     return { w: TICK_W + textW + ARROW_W, textW, h };

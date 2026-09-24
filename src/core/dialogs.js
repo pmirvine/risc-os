@@ -55,8 +55,16 @@ function showNext() {
   // message text
   I[0].setText(message);
   // sprites
-  I[2].setSprite(opts.sprite && sprites.has(opts.sprite) ? opts.sprite : 'switcher');
+  // Wimp07: the application sprite is "!<appname>" (first 10 characters), or 'switcher' when no
+  // application name is given. If that sprite doesn't exist there is no application sprite and
+  // the category sprite's icon is extended up to the top of the application sprite's icon.
+  const appSprite = opts.sprite ?? (opts.appName && String(opts.appName).trim() ? '!' + String(opts.appName).replace(/^\\/, '').slice(0, 10).toLowerCase() : 'switcher');
   I[3].setSprite(CATEGORY_SPRITE[opts.category ?? 'error'] ?? 'error');
+  if (sprites.has(appSprite)) I[2].setSprite(appSprite);
+  else {
+    I[2].setState({ deleted: true });
+    I[3].moveTo({ ...I[3].bbox, y0: I[2].bbox.y0 });
+  }
   I[1].setText(opts.okText ?? (extra.length || opts.category === 'program' ? 'Continue' : 'OK'));
   if (!hasOK) I[1].setState({ deleted: true });
   if (!hasCancel) I[4].setState({ deleted: true });
@@ -79,9 +87,9 @@ function showNext() {
   }
   // layout: grow height for long messages
   const msgIcon = I[0];
-  const width = msgIcon.bbox.x1 - msgIcon.bbox.x0 - 12;
+  const width = msgIcon.bbox.x1 - msgIcon.bbox.x0;
   const lines = wrapCount(message, width);
-  const lineH = Math.round(fonts.size * 1.25);
+  const lineH = 20;             // L validation: 40 OS units per line
   const need = lines * lineH + 8;
   const avail = msgIcon.bbox.y1 - msgIcon.bbox.y0;
   let grow = Math.max(0, need - avail);

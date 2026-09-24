@@ -300,11 +300,16 @@ export class Icon {
       span.style.font = font;
       span.style.color = textColour;
       if (multi) {
+        // L validation (Wimp04 iconformatted): the text is split at spaces to fit the icon width,
+        // every line is centred, lines are 40 OS units apart and the block is centred vertically,
+        // whatever the icon's alignment flags. (System font: 1 character margin each side.)
         span.classList.add('multi');
-        span.style.left = '6px'; span.style.right = '6px';
+        const mg = fonts.system && !(f & IF.font) ? '8px' : '0px';
+        span.style.left = mg; span.style.right = mg;
+        span.style.lineHeight = '20px';
         span.textContent = txt;
-        span.style.textAlign = H ? 'center' : 'left';
-        if (V) { span.style.top = '50%'; span.style.transform = 'translateY(-50%)'; } else span.style.top = '4px';
+        span.style.textAlign = 'center';
+        span.style.top = '50%'; span.style.transform = 'translateY(-50%)';
       } else {
         span.textContent = txt;
         const tw = textWidth(txt, font);
@@ -345,7 +350,7 @@ export class Icon {
     }
     // pointer shape from P validation
     const P = this.v.P?.[0];
-    e.dataset.ptr = P ? P.split(',')[0].toLowerCase() : '';
+    e.dataset.ptr = P ? P.toLowerCase() : '';   // 'name[,x,y]' (active point)
   }
 
   // keep the caret visible inside a writable icon (Wimp caretscrollx logic, simplified)
@@ -367,9 +372,10 @@ export class Icon {
   caretPos(i) {
     const font = this.cssFont();
     const x = this.bbox.x0 + (this._textX ?? 3) + textWidth(this.displayText().slice(0, i), font);
+    // the caret spans the font's bounding box (Homerton 12pt: 0.944 + 0.310 em = 19 px), i.e. the text line
     const lh = this._lineH ?? 19;
     const y = this.bbox.y0 + (this._textY ?? 0);
-    return { x, y: y - 1, h: lh + 2 };
+    return { x: Math.round(x), y, h: lh };
   }
 
   /** Character index nearest to work-area x. */

@@ -9,7 +9,7 @@ import { os } from './os.js';
 import { el } from './util.js';
 
 const TOTAL_K = 8192;         // an 8MB RiscPC
-const ROW = 22;               // 44 OS units
+const ROW = 20;               // 40 OS units (Switcher allocateblock)
 
 export class Switcher {
   async init() {
@@ -53,8 +53,8 @@ export class Switcher {
       w.on('close', (ev) => { ev.preventDefault(); w.close(); });
     }
     this.refresh();
-    const w = this.win;
-    w.open({ x: Math.round((wimp.width - w.w) / 2), y: 60, behind: 'top' });
+    // front_window: opened on top at its template position (then kept where the user leaves it)
+    this.win.open({ behind: 'top' });
   }
 
   refresh() {
@@ -73,43 +73,46 @@ export class Switcher {
     const barMax = 380;
     const kToW = (k) => Math.max(0, Math.min(barMax, Math.round(k / (TOTAL_K / barMax))));
     let y = px(P[0]).y0;
+    // Switcher allocateblock: section headings take 56 OS units, every other row 40 OS units
     const hdr = (i) => {
       const b = px(P[i]);
+      y += 2;
       w.addIcon({ bbox: { x0: hdrX0, y0: y, x1: b.x1, y1: y + (b.y1 - b.y0) }, flags: P[i].flags, text: P[i].text, bufLen: 40 });
-      y += (b.y1 - b.y0) + 8;
+      y += (b.y1 - b.y0) + 2;
     };
-    const row = (label, k, { rightLabel = false, barColour = 13, task = null, noSize = false, noBar = false } = {}) => {
-      const f = P[4].flags & ~0xF000 | (6 << 12);
-      if (rightLabel) w.addIcon({ bbox: { x0: labelX0, y0: y, x1: labelX1, y1: y + 16 }, flags: (P[7].flags >>> 0), text: label, bufLen: 40 });
-      else w.addIcon({ bbox: { x0: nameX, y0: y, x1: nameX1, y1: y + 16 }, flags: f >>> 0, text: label, bufLen: 40 });
-      if (!noSize) w.addIcon({ bbox: { x0: sizeX0, y0: y, x1: sizeX1, y1: y + 16 }, flags: P[5].flags >>> 0, text: `${k}K`, bufLen: 20 });
+    // proto: template icon giving the label's flags and x extent (left-aligned names, right-aligned
+    // "Next", "Free", "Total" ...)
+    const row = (label, k, { proto = P[4], barColour = 13, task = null, noSize = false, noBar = false } = {}) => {
+      const lb = px(proto);
+      const x1 = proto === P[4] ? nameX1 : lb.x1;
+      const f = proto === P[4] ? (P[4].flags & ~0xF000 | (6 << 12)) : proto.flags;
+      w.addIcon({ bbox: { x0: lb.x0, y0: y + 2, x1, y1: y + 18 }, flags: f >>> 0, text: label, bufLen: 40 });
+      if (!noSize) w.addIcon({ bbox: { x0: sizeX0, y0: y + 2, x1: sizeX1, y1: y + 18 }, flags: P[5].flags >>> 0, text: `${k}K`, bufLen: 20 });
       if (!noBar) {
         const bf = (P[6].flags & ~(15 << 28)) | ((barColour & 15) << 28);
         const bw = kToW(k);
-        if (bw > 0) w.addIcon({ bbox: { x0: barX, y0: y + 2, x1: barX + bw, y1: y + 12 }, flags: bf >>> 0 });
+        if (bw > 0) w.addIcon({ bbox: { x0: barX, y0: y + 5, x1: barX + bw, y1: y + 15 }, flags: bf >>> 0 });
       }
-      this.rows.push({ y0: y - 3, y1: y + ROW - 3, task, label, draggable: barColour === 11 && !noBar });
+      this.rows.push({ y0: y, y1: y + ROW, task, label, draggable: barColour === 11 && !noBar });
       y += ROW;
     };
     this._barX = barX; this._kPerPx = TOTAL_K / barMax;
+    y -= 2;
     hdr(0);
     for (const t of mem.apps) row(t.name, t.memory ?? 64, { task: t });
-    row(this.m('Next') === 'Next' ? 'Next' : 'Next', mem.next, { rightLabel: true, barColour: 11 });
-    row('Free', mem.free, { rightLabel: true, barColour: 11 });
-    y += 10;
+    row('Next', mem.next, { proto: P[7], barColour: 11 });
+    row('Free', mem.free, { proto: P[9], barColour: 11 });
     hdr(1);
     const s = mem.sys;
     const sysRows = [['Screen memory', s.screen, 11], ['Cursor/System/Sound', s.cursor, 13], ['System heap/stack', s.heap, 13], ['Module area', s.module, 13], ['Font cache', s.fontcache, 11], ['System sprites', s.sprites, 11], ['RAM disc', s.ramdisc, 11], ['Applications (free)', mem.free + mem.next, 13], ['Applications (used)', mem.used, 13], ['System workspace', s.workspace, 13]];
-    for (const [l, k, c] of sysRows) row(l, k, { rightLabel: true, barColour: c });
-    row('Total', mem.total, { rightLabel: true, noBar: true });
-    y += 10;
+    for (const [l, k, c] of sysRows) row(l, k, { proto: P[11], barColour: c });
+    row('Total', mem.total, { proto: P[21], barColour: 13 });
     hdr(2);
     for (const t of wimp.tasks.filter((t) => t.kind === 'module' && t !== wimp.systemTask && t.name)) row(t.name, 0, { task: t, noSize: true, noBar: true });
-    row('Free in Module area', 212, { rightLabel: true, noBar: true });
-    row('Largest block', 96, { rightLabel: true, noBar: true });
-    y += 10;
+    row('Free in Module area', 212, { proto: P[22], noBar: true });
+    row('Largest block', 96, { proto: P[23], noBar: true });
     hdr(3);
-    for (const [l, k] of [['Kernel buffers', 16], ['Sprite area', 0], ['Draw module workspace', 4]]) row(l, k, { noBar: true });
+    for (const [l, k] of [['Kernel buffers', 16], ['Sprite area', 0], ['Draw module workspace', 4]]) row(l, k, {});
     const ext = { x0: w.extent.x0, y0: px(P[0]).y0 - 4, x1: w.extent.x1, y1: y + 8 };
     w.extent = ext;
     if (w.isOpen) w.open({});

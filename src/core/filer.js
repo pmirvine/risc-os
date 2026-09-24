@@ -536,7 +536,7 @@ class DirViewer {
     const newDir = new Menu(f.m('MT5T'), [{ text: '', writable: { value: '', maxLen: 255, validation: f.m('MTDirname_Validation') }, action: (e) => this.newDir(e.value) }]);
     const m = new Menu(f.m('MTT'), [
       { text: f.m('MT0'), submenu: disp },
-      { text: fileItemText, submenu: kind ? fileMenu : null, shaded: !kind, showArrowWhenShaded: true },
+      { text: fileItemText, submenu: fileMenu, shaded: !kind, showArrowWhenShaded: true },
       { text: f.m('MT2'), shaded: !this.items.length, action: () => this.selectAll() },
       { text: f.m('MT3'), shaded: !sel.length, action: () => this.clearSelection() },
       { text: f.m('MT4'), submenu: optMenu },
