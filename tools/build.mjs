@@ -16,3 +16,4 @@ run(d + 'disc-classics.mjs');     // $.Apps.!Calc, $.Diversions.!Madness, !Hoppe
 run(d + 'disc-patch.mjs');        // !Patch's ,fc3 patch files (disc.mjs skips them)
 run(d + 'disc-basicdemos.mjs');   // $.Demos.BASIC (BBC BASIC demo programs from src/basic/demos)
 run(d + 'disc-lander.mjs');       // $.Diversions.!Lander (the JS app; the original binary is never on the disc)
+run(d + 'disc-type1.mjs');        // $.Utilities.Type1Fonts (a sample SIL OFL Type 1 font for !T1ToFont, from tools/type1)

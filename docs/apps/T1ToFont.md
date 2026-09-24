@@ -47,15 +47,17 @@ ARM `!RunImage` placeholder is never executed).
 * **No scaffold (hinting) data**: stems, blue zones and the scaffold table are parsed but not converted; the
   Outlines have an empty scaffold index (valid for the Font Manager; hints only matter for low-resolution rendering).
 * The metrics' composite accent offsets are 0, as in the original (character widths are never known there).
-* **Converted fonts do not appear in font menus.** Chars, Configure and Draw read the fixed list in
-  `assets/fonts/fonts.json` and render with the pre-converted OpenType files; the desktop has no Font Manager that
-  scans `Font$Path`. Supporting new fonts would need a core font registry that parses Outlines/IntMetrics at run time
-  and builds a browser font (or path renderer) for them - a larger core change, not done. The files written are valid
-  RISC OS fonts (checked by parsing them back with `tools/lib/riscosfont.mjs`, and by drawing glyphs from them in the
-  test: `tests/screens/tierB-t1tofont-glyphs.png`).
+* Converted fonts reach the font menus through the core font registry (`src/core/fontreg.js`, `os.fontreg`): it
+  scans the `Font$Path` directories for Outlines/IntMetrics pairs, and converts a font found there to a web font
+  when it is first used (the same OpenType builder as `tools/fonts.mjs`, `src/core/fontbuild.js`, with opentype.js
+  loaded on demand). Chars, Configure, Draw and Edit list and render them. The files written are valid RISC OS
+  fonts (checked by parsing them back with `src/core/riscosfont.js`, and by drawing glyphs from them in the test:
+  `tests/screens/tierB-t1tofont-glyphs.png`).
 * The hourglass isn't shown; errors in the middle of a conversion don't stop to wait for OK.
-* There are no Type 1 fonts on the seed disc. `tests/tierb/t1-make.mjs` builds one (PFA + PFB) from
-  `assets/fonts/Trinity-Medium.otf`, with flex, hint replacement and a seac accent.
+* The seed disc has one Type 1 font to convert: `$.Utilities.Type1Fonts.cmr10/pfb` and `cmr10/afm`, Computer Modern
+  Roman 10 from the AMS Type 1 fonts (SIL Open Font License 1.1, with its `OFL` and a `ReadMe`; written by
+  `tools/disc-type1.mjs` from `tools/type1/`, see the README there). `tests/tierb/t1-make.mjs` also builds a font
+  (PFA + PFB) from `assets/fonts/Trinity-Medium.otf`, with flex, hint replacement and a seac accent.
 
 ## Tests
 
@@ -64,3 +66,6 @@ ARM `!RunImage` placeholder is never executed).
 * `tests/tierb/act-t1tofont.mjs`: launches from the Filer, error box, real Filer drag of a PFB typed Data into the box,
   pop-up menus, conversion into `!Fonts.Sample.Medium`, a second conversion (PFA, font-specific, Keep PostScript), Info,
   Quit. Screenshots `tests/screens/tierB-t1tofont-*.png`.
+* `tests/tierb/act-t1-fontmenus.mjs`: converts the seed disc's cmr10 into `!Fonts.CompModern.Medium`, then checks the
+  registry builds a web font from it and that the Chars, Configure, Draw and Edit font lists have it
+  (`tests/screens/tierB-t1-fontmenu.png`).
