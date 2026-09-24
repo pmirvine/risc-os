@@ -137,7 +137,7 @@ mf.root.children = mf.root.children.filter((c) => c.name !== 'Examples');
 mf.root.children.push({ name: 'Examples', type: 'dir', children: nodes });
 mf.root.children.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }));
 let files = 0, bytes = 0;
-const count = (n) => { for (const c of n.children ?? []) { if (c.children) count(c); else { files++; bytes += c.size ?? 0; } } };
+const count = (n) => { for (const c of n.children ?? []) { if (c.children) count(c); else if (!c.placeholder) { files++; bytes += c.size ?? 0; } } };
 count(mf.root);
 mf.files = files; mf.totalBytes = bytes;
 fs.writeFileSync(mfPath, JSON.stringify(mf));

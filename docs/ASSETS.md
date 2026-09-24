@@ -203,6 +203,17 @@ resources + BASIC `!RunImage,ffb` where applicable), `Diversions` (!Patience, !B
 `node tools/basicwimp-demo.mjs` from `src/core/basicwimp/demo/` (`tools/build.mjs` runs it after `disc.mjs`). Skipped (listed with reasons in `skipped.json`, 36.7 MB):
 absolute ,ff8 / module ,ffa / utility ,ffc / ,fc3 / ,d94 binaries, ARMovie codec data, videos and files > 2 MB.
 
+**Placeholders for ARM code.** The skipped Absolute (&FF8), Module (&FFA) and Utility (&FFC) files still appear on the
+disc, as on the real HardDisc4: `disc.mjs` lists each one in the manifest with its filetype and
+`{"size": 0, "placeholder": true, "origSize": <bytes>}` but no `path`, and no content file is written (108 files, e.g.
+`!Boot.Utils.BootVars`, `!Boot.Utils.FreePool`, apps' `!RunImage`s). They read as empty (0 bytes), `vfs.stat` reports
+`placeholder: true` until the file is overwritten, and copying them copies an empty file. Running one goes through the
+core's native-executable registry (`src/core/native.js`, CORE_API §9): a registered JavaScript stand-in runs instead
+(BootVars, SysPaths, FreePool …); a module with no stand-in is "loaded" silently like `*RMLoad`; any other
+placeholder reports "'<name>' is ARM code, which cannot be run on this computer". A seed-disc rebuild is
+`node tools/disc.mjs && node tools/basicwimp-demo.mjs` (as `tools/build.mjs` does; `disc.mjs` wipes `assets/disc`,
+including `$.Examples`, which the second script adds back).
+
 ## 6. Palette and filetypes
 
 * `assets/palette.json`: `wimp` [16 × {index, hex, rgb, name}] (the 3.71 desktop palette from `Wimp/s/!Palette`:

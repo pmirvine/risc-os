@@ -26,7 +26,7 @@ export const TEMPO_BPM = [40, 50, 60, 65, 70, 80, 90, 100, 115, 130, 145, 160, 1
 export const TEMPO_NAMES = ['Largissimo', 'Largo', 'Larghetto', 'Grave', 'Adagio', 'Adagietto', 'Andante', 'Andantino', 'Moderato', 'Allegretto', 'Allegro', 'Vivace', 'Veloce', 'Presto', 'Prestissimo'];
 export const VOLUME_NAMES = ['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff'];
 export const STEREO_KEYS = ['FullL', 'Left', 'CentreL', 'Centre', 'CentreR', 'Right', 'FullR'];
-export const STEREO_POS = [0, 1, 2, 3, 4, 5, 6].map((r) => Math.round((2 * r / 6 - 1) * 127));
+export const STEREO_POS = [0, 1, 2, 3, 4, 5, 6].map((r) => Math.trunc((2 * r / 6 - 1) * 127));   // Stereo%() (integer assignment truncates)
 // Amplitude for each volume level (B%() in the original): logarithmic 0..127
 export const VOLUME_AMP = [0, 1, 2, 3, 4, 5, 6, 7].map((r) => Math.floor((r + 1) * 120 / 8 - 1));
 // Clef pitch offsets F%(): treble, alto, tenor, bass
@@ -186,12 +186,15 @@ export function saveMaestro(doc) {
 
 /**
  * Work out the performance (PROCka / PROCCb / PROCDb): returns
- * { events: [{time, dur (seconds), ch, midi, amp (0..127 log), item}], bars: [{time, item}], length }.
+ * { events: [{time, dur (seconds), ch, midi, amp (0..127 log), item, voice, pan, pitch (15-bit
+ * SOUND pitch, Line()+Aoff()), d20 (SOUND duration in 1/20 s, D%)}], bars: [{time, item}], length }.
  * Bars start one bar-length apart (the Sound scheduler's beat counter), each stave keeps its own
  * time cursor inside a bar, ties join notes, accidentals last to the end of the bar.
  */
 export function perform(doc, { fromItem = 0 } = {}) {
   const unit = 60 / (TEMPO_BPM[doc.tempo] * 128);
+  // Duration%(): each note/dot type's length in 1/20 s at this tempo, rounded, at most 254
+  const durTicks = (i) => Math.min(254, Math.floor(75 / TEMPO_BPM[doc.tempo] * durUnits(i) / 8 + 0.5));
   const stv = channelStaves(doc.staves, doc.perc);
   const z = doc.staves;
   let barLen = 4 * 128;
@@ -242,17 +245,20 @@ export function perform(doc, { fromItem = 0 } = {}) {
       const my = chPtr[C]++;
       if (tieFree & (1 << C)) {
         let units = durUnits(I);
+        let d20 = durTicks(I);
         if (T & 4) {
           tieFree &= ~(1 << C);
           for (let k = my + 1; k < chNotes[C].length; k++) {
             const nn = chNotes[C][k].n;
             units += durUnits(nn.b >> 3);
+            d20 += durTicks(nn.b >> 3);
             if (!(nn.a & 4)) break;
           }
         }
         if (L && started) {
           const amp = Math.min(127, Math.floor((first ? 1.01 : 1) * VOLUME_AMP[doc.volume[C]]));
-          events.push({ time: (barStart + Q) * unit, dur: Math.min(units * unit, 12.7), ch: C, midi: pitchToMidi(pitchOfLine(L) + ACC_OFFSET[A]), amp, item: idx, voice: doc.voices[C], pan: STEREO_POS[doc.stereo[C]] / 127, perc: S > z });
+          const pitch = pitchOfLine(L) + ACC_OFFSET[A];
+          events.push({ time: (barStart + Q) * unit, dur: Math.min(units * unit, 12.7), ch: C, midi: pitchToMidi(pitch), amp, item: idx, voice: doc.voices[C], pan: STEREO_POS[doc.stereo[C]] / 127, perc: S > z, pitch, d20: Math.min(d20, 254) });
         }
       } else if (!(T & 4)) tieFree |= 1 << C;
       const g = durUnits(I);

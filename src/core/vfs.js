@@ -155,6 +155,7 @@ export class VFS extends Emitter {
             n.date = SEED_DATE;
           } else n.setType(parseInt(c.type, 16), SEED_DATE);
           if (c.locked) n.attr |= ATTR.locked;
+          if (c.placeholder) n.placeholder = true;   // ARM code left out of the seed disc (tools/disc.mjs)
         } else {
           n.date = SEED_DATE;
           walk(c, n);
@@ -338,6 +339,7 @@ export class VFS extends Emitter {
       name: n.name, path, type: n.isDir ? 'dir' : 'file', isApp: n.isDir && n.name.startsWith('!'),
       filetype: n.filetype, size: n.isDir ? 0 : n.size, load: n.load >>> 0, exec: n.exec >>> 0,
       attr: n.attr, locked: !!(n.attr & ATTR.locked), date: new Date(n.date), readonly: this._discOf(n).readonly,
+      ...(n.placeholder && n.seed ? { placeholder: true } : {}),
     };
   }
   _discOf(n) { let x = n; while (x.parent) x = x.parent; return x.disc; }

@@ -8,6 +8,7 @@ import { input, keyCode, startPointerDrag, autoRepeat, BUT } from './input.js';
 import { sprites } from './sprites.js';
 import { fonts } from './fonts.js';
 import { IF } from './templates.js';
+import { vdu7 } from './sound/index.js';
 
 // ---------------------------------------------------------------------------- Task
 
@@ -150,7 +151,13 @@ export class Wimp extends Emitter {
     if (old.w != null && (old.w !== w || old.h !== h)) {
       this.emit('modechange', { width: w, height: h });
       this.sendMessage('ModeChange', { width: w, height: h });
-      for (const win of this.stack) if (!win.isBackWindow) win.open({});
+      // Wimp03 (mode change): re-open every window back to front with an Open_Window_Request,
+      // except panes (their parents re-open them); constrainWindow keeps each one reachable.
+      for (const win of [...this.stack]) {
+        if (win.isBackWindow || win.isPane || win._paneParent || !win.isOpen) continue;
+        if (win.task && !win._menuWindow && !win._isIconbar) win.requestOpen({ behind: 'keep' });
+        else win.open({});
+      }
     }
   }
 
@@ -358,8 +365,12 @@ export class Wimp extends Emitter {
     input.mouseX = p.x; input.mouseY = p.y;
     if (this.menus?.isOpen) this.menus.pointerMove(e, p);
     // pointer shape / enter-leave
+    // As in the Wimp, Pointer_Entering/Leaving_Window (and so an application's pointer shape)
+    // apply to a window's visible work area only: over the furniture (title bar, scroll bars,
+    // tools, border) the pointer is the default arrow.
     const winEl = e.target.closest?.('.win');
-    const win = winEl?._win ?? null;
+    const inWork = winEl && e.target.closest('[data-part]')?.dataset.part === 'work';
+    const win = inWork ? winEl._win ?? null : null;
     if (win !== this._ptrWin) {
       this._ptrWin?.emit('pointerleave', {});
       this._ptrWin = win;
@@ -805,18 +816,14 @@ export class Wimp extends Emitter {
     return false;
   }
 
+  /**
+   * The Wimp's beep is VDU 7: SOUND 1,-13 (Loud) or -5 (Quiet),100,6 on WaveSynth-Beep through the
+   * emulated sound system (src/core/sound). Volume, speaker and loud/quiet come from the CMOS
+   * settings (config.js -> configureSound); beepGain 0 (speaker off) keeps it silent.
+   */
   beep() {
-    const gain = this.config.beepGain ?? 0.08;     // *Configure Volume / loud-quiet beep / speaker (config.js)
-    if (!gain) return;
-    try {
-      const ac = this._ac ??= new (window.AudioContext || window.webkitAudioContext)();
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.type = 'square'; o.frequency.value = 880;
-      g.gain.setValueAtTime(gain, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
-      o.connect(g).connect(ac.destination);
-      o.start(); o.stop(ac.currentTime + 0.25);
-    } catch { /* no audio */ }
+    if (!(this.config.beepGain ?? 1)) return;
+    try { vdu7(); } catch { /* no audio */ }
   }
 
   toggleIconbarFront() {

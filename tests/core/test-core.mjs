@@ -36,9 +36,9 @@ const results = await page.evaluate(async () => {
     const lines = [];
     const o = { write: (s) => lines.push(s), writeln: (s = '') => lines.push(s + '\n') };
     await cli.run('Set Test$Var Hello <Boot$OSVersion>', { out: o });
-    ok('*Set gstrans', sysvars.get('Test$Var') === 'Hello 371', sysvars.get('Test$Var'));
+    ok('*Set gstrans', sysvars.get('Test$Var') === 'Hello 370', sysvars.get('Test$Var'));
     await cli.run('Echo <Test$Var>|M', { out: o });
-    ok('*Echo', lines.join('').startsWith('Hello 371'));
+    ok('*Echo', lines.join('').startsWith('Hello 370'));
     await cli.run('SetEval N 3*4+1', { out: o });
     ok('*SetEval', sysvars.get('N') === '13');
     await cli.run('CDir RAM::RamDisc0.$.X', { out: o });

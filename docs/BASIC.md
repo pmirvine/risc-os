@@ -26,7 +26,7 @@ Standalone page: `src/basic/demo.html` (serve with `node serve.mjs`, open
 | `assembler.js` / `arm.js` | inline assembler `[ … ]`; ARMv2a (26-bit) CPU for CALL/USR |
 | `vdu.js` (+ `vdu-*.js`) | VDU driver (modes 0–49, all PLOT codes, text/graphics windows, teletext) |
 | `font8x8.js` / `help.js` | system font (VduFontL1) / HELP texts |
-| `sound.js` | SOUND/ENVELOPE via Web Audio |
+| `sound.js` | `Sound`: the sound statements and Sound_* SWIs on the emulated RISC OS sound system (`src/core/sound/`, docs/SOUND.md) |
 | `keymap.js` / `memfs.js` | browser key mapping / small in-memory filing system (demo & tests) |
 
 ## Host interface
@@ -195,10 +195,17 @@ Territory_Number. OS_Byte covers 0, 4, 9/10 (flash periods), 15/21, 19, 20/25 (r
 * **VDU**: see the header of `vdu.js` (modes 0-49, all VDU codes and PLOT groups, ECFs, palettes,
   flashing colours and OS_Byte 9/10, VDU 5 text, copy-key editing, MODE 7 teletext, screen banks
   (OS_Byte 112/113, as many as fit in `screenMemory`), memory-mapped screen, OS_Byte 20/25 font reset).
-* **Sound**: SOUND (channels 0-8, flush/hold bits, envelopes, `&100+` log volumes, `SOUND …,beat`
-  scheduled on the BEATS/TEMPO bar counter), ENVELOPE, STEREO, BEATS/TEMPO/BEAT, Sound_QBeat/QTempo.
-  Queues (4 notes per channel, SOUND waits when full) run on the wall clock, so timing is right even
-  before the browser allows audio. Voices are a square wave / noise, not the WaveSynth samples.
+* **Sound** (with a `Sound`, see docs/SOUND.md): the 3.71 sound system with the ROM voices
+  (WaveSynth-Beep, StringLib, Percussion), as the ARM code behaves. SOUND is OS_Word 7, which is
+  immediate: a SOUND replaces what its channel is playing, with no queue and no waiting.
+  `SOUND …,beat` is Sound_QSchedule on the BEATS/TEMPO bar counter. Channel low nibble 1-8 (H/S
+  ignored), `-15..0` and `&100+` log amplitudes, and BBC / 15-bit pitches are supported. ENVELOPE
+  and envelope amplitudes do nothing, as OS_Word 8 is unused in 3.71. VOICES (Sound_Configure),
+  VOICE (Sound_AttachNamedVoice), STEREO, BEATS/TEMPO/BEAT, SOUND ON/OFF (Sound_Enable), the bell
+  (VDU 7) and every Sound_* SWI go to the sound system. *Voices, *ChannelVoice, *Volume, *Sound,
+  *Tuning, *Stereo, *Tempo and *QSound work too. Escape silences the sound (OS_Byte 126). The
+  scheduler follows the wall clock headless and before the browser allows audio. With
+  `sound: null`, SOUND is ignored and BEATS/TEMPO/BEAT are simulated on the clock.
 
 ## Known gaps
 
@@ -209,7 +216,7 @@ Territory_Number. OS_Byte covers 0, 4, 9/10 (flash periods), 15/21, 19, 20/25 (r
 * The program runs from JS line objects (edited via the prompt); a program that modifies its own
   tokenised text in memory at PAGE is not re-read (OLD is supported).
 * TWIN/EDIT need a host editor (`onEdit`). Module * commands (RMLoad, Obey, IF…) are no-ops unless
-  the host's `oscli` handles them. The WaveSynth/StringLib/Percussion voices are approximated.
+  the host's `oscli` handles them.
 * Hoisting of FN calls: FN/GET/INKEY/EVAL/USR/OPENxx run as separate micro-ops before the rest of
   their expression. Left operands of binary operators are captured before them (so `x+FNinc` and
   `A$=A$+FNread` are evaluated left to right as in BASIC), but earlier *arguments* of a function or
@@ -225,4 +232,4 @@ for the host contract above: run() results, kill(), registerSwi, host errors, ba
 Playwright screenshots of the demo page to `tests/screens/`.
 Example programs live in `tests/basic/programs/` (listed in `index.json` for the demo page): mandel,
 circles, spiral, colours, teletext, ball, sieve, guess, cube (double buffering), tree (recursion),
-asmplot (assembler + CALL + screen memory), tune (SOUND/ENVELOPE), errors (ON ERROR LOCAL etc.).
+asmplot (assembler + CALL + screen memory), tune (SOUND …,beat, VOICE, STEREO), errors (ON ERROR LOCAL etc.).

@@ -1,6 +1,8 @@
 // A simple VDU-like text console drawn with the RISC OS system font (assets/fonts/system8x8.json)
 // on a canvas. Used by the F12 command line and the "*Command" output window.
 
+import { vdu7 } from './sound/index.js';
+
 let FONT = null;
 export async function loadSystemFont() {
   if (FONT) return FONT;
@@ -87,7 +89,7 @@ export class TextConsole {
       if (c === 13) { this.x = 0; continue; }
       if (c === 8 || c === 127) { if (this.x > 0) { this.x--; this._glyph(32, this.x, this.y); } continue; }
       if (c === 12) { this.clear(); continue; }
-      if (c === 7) continue;
+      if (c === 7) { try { vdu7(); } catch { /* no sound */ } continue; }   // VDU 7: the bell
       if (c < 32) continue;
       this._glyph(c > 255 ? 63 : c, this.x, this.y);
       this.x++;

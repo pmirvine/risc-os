@@ -232,7 +232,7 @@ export class BasicMachine {
     if (ws.length) this.interp.escape = false; // consumed by the interrupted key wait
     for (const w of ws) w.reject(err('ESCAPE'));
   }
-  ackEscape() { this.interp.escape = false; }
+  ackEscape() { this.interp.escape = false; this.snd?.escape?.(); }   // OS_Byte 126 also QInits and silences the sound
   /**
    * Stop the program unconditionally (task killed): unlike escape() it cannot be trapped by ON ERROR.
    * Pending GET/INPUT/INKEY waits are cancelled; a SWI handler Promise the program is waiting on must
@@ -443,28 +443,33 @@ export class BasicMachine {
   }
 
   // Sound ------------------------------------------------------------------------------
+  // With a Sound (src/basic/sound.js, the emulated RISC OS sound system) everything goes to it:
+  // SOUND is OS_Word 7 or Sound_QSchedule, BEATS/TEMPO/BEAT the scheduler's counters. Without
+  // one (sound: null) SOUND is ignored and the beat counter is simulated on the clock.
   sound(ch, amp, pitch, dur, beat) {
-    if (!this.soundOn || !this.snd) return;
-    // SOUND ...,beat: schedule the note for when the bar counter next reaches `beat` (needs BEATS)
-    let delay = 0;
-    if (beat !== null && beat !== undefined && this.beatsVal > 0 && this.tempoVal > 0) {
-      const b = ((beat % this.beatsVal) + this.beatsVal) % this.beatsVal;
-      const pos = (this.monotonicTime() - this.beatT0) * this.tempoVal / 4096;  // beats since reset
-      let d = b - (pos % this.beatsVal); if (d < 0) d += this.beatsVal;
-      delay = d * 4096 / this.tempoVal / 100;  // seconds
-    }
-    return this.snd.sound(ch, amp, pitch, dur, beat, delay);
+    if (!this.snd) return;
+    if (this.snd.beat) return this.snd.sound(ch, amp, pitch, dur, beat ?? null);
+    if (this.soundOn) return this.snd.sound(ch, amp, pitch, dur, beat, 0);
   }
   envelope(a) { if (this.snd) this.snd.envelope(a); }
   soundEnable(on) { this.soundOn = on; if (this.snd && this.snd.enable) this.snd.enable(on); }
   voices(n) { if (this.snd && this.snd.voices) this.snd.voices(n); }
   voice(c, name) { if (this.snd && this.snd.voice) this.snd.voice(c, name); }
   stereo(c, p) { if (this.snd && this.snd.stereo) this.snd.stereo(c, p); }
-  beat() { return this.beatsVal ? Math.floor((this.monotonicTime() - this.beatT0) * this.tempoVal / 4096) % this.beatsVal : 0; }
-  beats() { return this.beatsVal; }
-  setBeats(n) { this.beatsVal = n; this.beatT0 = this.monotonicTime(); }  // also resets the counter
-  tempo() { return this.tempoVal; }
-  setTempo(n) { this.tempoVal = n; }
+  beat() {
+    if (this.snd?.beat) return this.snd.beat();
+    return this.beatsVal ? Math.floor((this.monotonicTime() - this.beatT0) * this.tempoVal / 4096) % this.beatsVal : 0;
+  }
+  beats() { return this.snd?.beats ? this.snd.beats() : this.beatsVal; }
+  setBeats(n) {
+    if (this.snd?.setBeats) return this.snd.setBeats(n);
+    const old = this.beatsVal; this.beatsVal = n; this.beatT0 = this.monotonicTime(); return old;  // also resets the counter
+  }
+  tempo() { return this.snd?.tempo ? this.snd.tempo() : this.tempoVal; }
+  setTempo(n) {
+    if (this.snd?.setTempo) return this.snd.setTempo(n);
+    const old = this.tempoVal; if (n) this.tempoVal = n; return old;
+  }
 
   // System variables -------------------------------------------------------------
   getSysVar(name) {
@@ -599,7 +604,7 @@ export class BasicMachine {
       case 117: r[1] = this.vdu.vduStatus ? this.vdu.vduStatus() : 0; return;
       case 124: this.interp.escape = false; return;
       case 125: this.escape(); return;
-      case 126: { const e = this.interp.escape; this.interp.escape = false; r[1] = e ? 255 : 0; return; }
+      case 126: { const e = this.interp.escape; this.interp.escape = false; r[1] = e ? 255 : 0; if (e) this.snd?.escape?.(); return; }
       case 128: { const v = this.adval(x > 127 ? x - 256 : x); r[1] = v & 255; r[2] = (v >> 8) & 255; return; }
       case 129: {
         const n = x | (y << 8);
@@ -1327,6 +1332,7 @@ export class BasicMachine {
       case 'IGNORE': return;
       case 'CACHE': return;
     }
+    if (this.snd?.oscli && await this.snd.oscli(un, rest, (t) => { this.writeStr(t); this.newLine(); })) return;
     if (un === 'VOLUME' || un === 'SPEAKER' || un === 'STEREO' || un === 'TUNING' || un === 'VOICES' || un === 'CHANNELVOICE' || un === 'QSOUND' || un === 'AUDIO') return;
     // try to run as a file (e.g. *MyProg)
     if (this.fs && this.fs.readFile) {
