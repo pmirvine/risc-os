@@ -11,3 +11,4 @@ run(d + 'fonts.mjs');
 run(d + 'misc.mjs');
 run(d + 'disc.mjs');
 run(d + 'basicwimp-demo.mjs');   // adds $.Examples (disc.mjs rebuilds assets/disc without it)
+run(d + 'disc-patch.mjs');        // !Patch's ,fc3 patch files (disc.mjs skips them)
