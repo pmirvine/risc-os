@@ -369,3 +369,12 @@ writes them to `tests/screens/`). `tests/integration/flows.mjs [group…]` check
 `monkey.mjs [steps] [seed]` (random clicks/drags/keys, reports page errors), `shot.mjs <name> [actions.mjs]`
 (screenshots into `tests/screens/`; `act-*.mjs` are action scripts, e.g. `act-menu.mjs`, `act-save.mjs`). Needs Playwright (`PLAYWRIGHT_MODULE=/path/to/playwright/index.mjs` if not installed in the project)
 and a server (`node serve.mjs`, port 8371; override with `URL=http://localhost:PORT/`).
+Playwright helpers: `tests/core/pw.mjs` (`launch`), `tests/edit/ui.mjs` (Filer items, double-clicks, menus, icon bar,
+Save boxes, `check`).
+
+## 14. Seed disc additions
+Don't hand-edit `assets/disc`: `tools/disc.mjs` rebuilds it from `vendor/`. Anything added on top comes from a small,
+idempotent `tools/disc-<topic>.mjs` script (model: `tools/disc-patch.mjs`) that writes its files and patches only its
+own entries in `assets/disc/manifest.json` (read, patch and write the manifest in one go), registered in
+`tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
+`disc-lander`, `disc-type1`.
