@@ -15,3 +15,4 @@ run(d + 'basicwimp-demo.mjs');   // adds $.Examples (disc.mjs rebuilds assets/di
 run(d + 'disc-classics.mjs');     // $.Apps.!Calc, $.Diversions.!Madness, !Hopper (from tools/classics)
 run(d + 'disc-patch.mjs');        // !Patch's ,fc3 patch files (disc.mjs skips them)
 run(d + 'disc-basicdemos.mjs');   // $.Demos.BASIC (BBC BASIC demo programs from src/basic/demos)
+run(d + 'disc-lander.mjs');       // $.Diversions.!Lander (the JS app; the original binary is never on the disc)

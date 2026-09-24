@@ -1,5 +1,5 @@
 // ARM2/ARM3 (ARMv2a, 26-bit PC+PSR) interpreter used for CALL / USR on assembled code, and for
-// running original ARM programs (e.g. !Lander, src/apps/Lander/original.js).
+// running original ARM programs (e.g. !Lander, src/apps/Lander/host.js).
 // R15 holds PC in bits 2-25 and N Z C V I F / mode in bits 31-26 and 1-0 (USR mode here).
 // SWIs are passed to a callback that may return a Promise (execution then suspends).
 //

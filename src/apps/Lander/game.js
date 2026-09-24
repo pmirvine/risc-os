@@ -16,7 +16,10 @@
 //   os.readC() -> Promise   OS_ReadC
 //   os.vsync() -> Promise   OS_Byte 19
 //   os.screen() -> Uint8Array   the screen memory of both MODE 13 banks (bank 1 then bank 2)
-// run() resolves when the player presses Escape (after EndGame's MODE 0).
+// run() resolves when the player presses Escape (after EndGame's MODE 0). The host is src/apps/Lander/host.js
+// (portOs); `stats` counts the work done since the last vsync, from which the host works out how long the
+// original would have taken over the frame on an 8MHz ARM2 (host.js portFrameCycles), so the port runs at
+// the original's frame rate.
 //
 // Lander makes no sound: the original has no Sound calls, so neither has this port.
 
@@ -98,12 +101,13 @@ const screenBank1Addr = BANK_SIZE + 320 * 16;   // (&01FEC000 + 320 * 16)
 // ---------------------------------------------------------------------------- lookup tables
 // The original tables were made by BBC BASIC's 5-byte floating point: (2^31 - 1) * SIN(2 * PI * n / 1024),
 // ((2^31 - 1) / PI) * ATN(n / 128), (2^31 - 1) * SQR(n / 1024) and 65536 * n / d. Rounding each step to a
-// 32-bit mantissa gives the same values, except for the few last-bit differences listed here (BASIC's SIN
-// and ATN algorithms round differently from the JavaScript ones).
+// 32-bit mantissa gives the same values, except for the last-bit differences listed here (BASIC's SIN and
+// ATN algorithms round differently from the JavaScript ones): with them every entry equals the original's
+// (checked against the binary by tests/basic/lander.test.mjs).
 const M31 = 2147483647;
 const f5 = (v) => { if (v === 0) return 0; const e = Math.floor(Math.log2(Math.abs(v))) + 1, s = 2 ** (32 - e); return Math.round(v * s) / s; };
-const SIN_FIX = 'o4-4t-4x-50-51-5l-5o-5p-5t-5w-6r-6s-6t-6y-72-7c-7e-7f-7j-7m-7w-83-86-8b-8c-8f-8q-8s-8v-8x-98-9b-9f-9k-9l-9m-9n-9o-9r-a7-a8-ae-ah-ai-ak-am-aq-at-av-ay-az-b0-b4-b6-b7-b8-bf-bn-bs-bx-c0-c2-c5-c9-cc-cd-cf-cg-ci-cj-cl-cn-co-cs-ct-cu-cx-cy-d3-d9-db-dd-dl-dm-dq-dt-dx-e6-ed-ef-eh-el-en-ep-eq-es-eu-f1-f5-f9-fb-fc-fe-fh-fo-fq-fr-fu-fw-g6-g9-ga-gc-gd-gg-gi-gl-gm-gq-gv-h2-h5-h7-hc-hd-hk-hm-hp-hq-hs-hu-i2-i4-i5-i8-ia-ie-ii-ik-in-io-iq-ir-iv-iw-iy-j2-j3-j5-j9-jf-jg-jh-jm-jp-jt-jw-jz-k1-k4-k7-k8-ka-kb-ke-kg-kj-kk-ko-ks-kt-kv';
-const ATN_FIX = '';
+const SIN_FIX = 'z-12-1l-1p-1u-2g-2m-2v-2z-35-36-39-3a-3d-3e-3g-3h-3j-3n-3u-3v-3w-42-4b-4j-4v+51+54+59-5b-5c-61-62-6b+6m+6p-6r+73+74-75+7j-7v-7x+7z-86-87-8j-8m-8n-8x-8z-9b-9e-9n-9v+a0-a1-ao+as-b1-bv+bx+by+c3-cc-ci-ck-db-dd-dg-dw-el+ep+eq+et+ev+ew+ez+f2+ff+fg+fh+fi+fr+fz+g0+g2+g9+gb+gk+gm+gn+go+gq+gu+gv+gy+gz+h1+h4+h5+h6+h7+hd+hs+hu+hv+hx+hy+hz+i0+i1+i2+i5+i9+ic+id+im+it-j6-j7-jc-kl+km+kp+kz-l7-lj-lp+lr+m1-m3+m4+n1-n3-n9-nd-ne-nf-nk-nl-no-nr-nt-nu-nw-o0+o3+o8+oe+ok+ol+oo+os+oy+pc+pd+pf+pk+pn+po+pu+pw+px+q4-q9+qb+qh+qr+qy+r1+rn+';
+const ATN_FIX = 'h-1t-21-2m-32+';
 function makeTables() {
   const sin = new Int32Array(1024), atn = new Int32Array(128), sqr = new Int32Array(1024), div = new Int32Array(4096);
   const twoPi = f5(2 * f5(Math.PI));
@@ -319,6 +323,8 @@ export function createLander(os) {
   const rdB = (o) => B[o];
   const wrB = (o, v) => { B[o] = v; };
 
+  // work done since the last vsync (the host uses it to take as long over a frame as the original would)
+  const stats = { tris: 0, lines: 0, pixels: 0, particles: 0, objects: 0, altitudes: 0, dots: 0, verts: 0, divs: 0, rows: 0 };
   // variables kept in the code in the original
   let randomSeed1 = 0x4F9C3490, randomSeed2 = 0xDA0383CF | 0;
   let screenAddr = screenBank2Addr;
@@ -354,6 +360,7 @@ export function createLander(os) {
   const sinIdx = (a) => sinT[(a & ~0x00300000) >>> 22];
 
   function getLandscapeAltitude(R8, R9) {
+    stats.altitudes++;
     wr(prevAltitude, rd(altitude));
     let R0 = (R8 - (R9 << 1)) | 0;
     R0 = sinIdx(R0) >> 7;
@@ -577,6 +584,7 @@ export function createLander(os) {
       let p = R10 >> 2;
       let R0 = W[p], R1 = W[p + 1], R2 = W[p + 2], R3 = W[p + 3], R4 = W[p + 4], R5 = W[p + 5], R6 = W[p + 6], R7 = W[p + 7];
       if (R7 === 0) return;
+      stats.particles++;
       // dpar2
       R6 = (R6 - 1) | 0;
       let del = false;
@@ -711,6 +719,7 @@ export function createLander(os) {
         continue;
       }
       const shape = PARTICLE_SHAPES[t];
+      stats.dots++;
       if (!shape) return;           // (the original would jump into the unknown)
       const R1 = W[R9 >> 2]; R9 += 4;
       const a = R12 + (R1 >>> 20) + (R1 & 0xFF) * 320;
@@ -722,6 +731,7 @@ export function createLander(os) {
   // ---------------------------------------------------------------- 3D objects
   let curObject = null;              // objectData (the blueprint being drawn)
   function drawObject(R0, R1, R2, R3) {
+    stats.objects++;
     wr(xObject, R0); wr(xObject + 4, R1); wr(xObject + 8, R2);
     let R4 = R0 < 0 ? ~R0 : R0;
     const R5a = R1 < 0 ? ~R1 : R1;
@@ -736,6 +746,7 @@ export function createLander(os) {
     const obj = curObject;
     wrB(objectFlags, obj.flags);
     let R10 = vertexProjected;
+    stats.verts += obj.nv;
     for (let v = 0; v < obj.nv; v++) {
       wr(xVertex, obj.verts[v * 3]); wr(xVertex + 4, obj.verts[v * 3 + 1]); wr(xVertex + 8, obj.verts[v * 3 + 2]);
       multiplyVectorByMatrix(xVertex, xVertexRotated);
@@ -751,8 +762,14 @@ export function createLander(os) {
     // part 3-5: the faces
     for (let f = 0; f < obj.nf; f++) {
       const fo = f * 7;
-      wr(xVertex, obj.faces[fo]); wr(xVertex + 4, obj.faces[fo + 1]); wr(xVertex + 8, obj.faces[fo + 2]);
-      if (obj.flags & 1) multiplyVectorByMatrix(xVertex, xVertex);
+      // MultiplyVectorByMatrix from the blueprint's normal into xVertex (the source is not xVertex itself)
+      if (obj.flags & 1) {
+        const nx = obj.faces[fo], ny = obj.faces[fo + 1], nz = obj.faces[fo + 2];
+        for (let row = 0; row < 3; row++) {
+          const m = rotationMatrix + row * 12;
+          wr(xVertex + row * 4, (mul(rd(m), nx) + mul(rd(m + 4), ny) + mul(rd(m + 8), nz)) | 0);
+        }
+      } else { wr(xVertex, obj.faces[fo]); wr(xVertex + 4, obj.faces[fo + 1]); wr(xVertex + 8, obj.faces[fo + 2]); }
       let R1n = rd(yVertex), vis;
       if (!(obj.flags & 1)) { vis = -1; R1n = -1; }
       else vis = getDotProduct(xVertex, xObjectScaled);
@@ -871,6 +888,7 @@ export function createLander(os) {
 
   // ---------------------------------------------------------------- drawing
   function drawHorizontalLine(a, len, colour) {
+    stats.lines++; stats.pixels += len;
     const c = colour & 0xFF;
     if (u(len) < 18) { for (let i = len - 1; i >= 0; i--) scr[a + i] = c; return; }
     // aligned words (the first unconditionally), then the odd bytes
@@ -881,11 +899,13 @@ export function createLander(os) {
   /** the slope of an edge: 65536 * dx / dy, from the division table for small values */
   function slope(dx, dy) {
     if (u(dx) < 64 && u(dy) < 64) return divT[dx * 64 + dy];
+    stats.divs++;
     return divLoop(dx, u(dy << 16), 0x80000000);
   }
 
   function drawTriangle(R0, R1, R2, R3, R4, R5, R8) {
     let t;
+    stats.tris++;
     if (!(u(R0) < 320 && u(R1) < 239 && u(R2) < 320 && u(R3) < 239 && u(R4) < 320 && u(R5) < 239)) { drawClippedTriangle(R0, R1, R2, R3, R4, R5, R8); return; }
     let R12 = screenAddr;
     if (u(R1) < u(R3)) { t = R0; R0 = R2; R2 = t; t = R1; R1 = R3; R3 = t; }
@@ -1014,6 +1034,7 @@ export function createLander(os) {
     if (u(R9) >= 256) return;
     const R12 = screenAddr;
     do {
+      stats.rows++;
       st.R4 = (st.R4 + st.R6) | 0; st.R5 = (st.R5 + st.R7) | 0;
       if (st.R11 < 0) return;
       if (u(st.R11) < 239) {
@@ -1267,5 +1288,5 @@ export function createLander(os) {
     }
   }
 
-  return { run, workspace: W, get screenAddr() { return screenAddr; } };
+  return { run, stats, workspace: W, get screenAddr() { return screenAddr; } };
 }

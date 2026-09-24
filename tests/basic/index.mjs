@@ -10,3 +10,5 @@ import './vdu.test.mjs';
 import './host.test.mjs';
 import './tiera.test.mjs';
 import './demos.test.mjs';
+import './arm.test.mjs';
+import './lander.test.mjs';

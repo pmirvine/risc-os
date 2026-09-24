@@ -26,6 +26,7 @@ export default [
   './Help/app.js',
   './InetSetup/app.js',
   './InetSetup/internet.js',
+  './Lander/app.js',
   './Madness/app.js',
   './Maestro/app.js',
   './MemNow/app.js',

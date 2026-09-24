@@ -147,3 +147,14 @@ docs/ASSETS.md §5).
 * `src/apps/Chars/main.js`: font menu messages come from `Fonts` (there is no `FontManager` messages file: it was a 404).
 * Tests: `node --test tests/<area>` works for every area (`tests/lib/suite.mjs` runs the Playwright scripts as child
   processes); new `tests/integration/` (cross-app flows, long monkey test).
+
+## !Lander — changes in shared code
+**Status:** done (LANDER agent). All additive.
+* `src/basic/vdu.js` (in the WIP snapshot): `new VDU({linearScreen: true})` keeps all 8bpp banks in one array
+  (`screenIO.linear`), so ARM code writes pixels at full speed; `MODE n+128` selects bank 2 and a mode change keeps
+  the other banks when the layout is unchanged (as ModeChangeSub). `src/basic/arm.js`: decoded-instruction cache,
+  ARM2 cycle counting and `runFor(n, cycleLimit)`. Documented in docs/BASIC.md.
+* `src/apps/index.js` (+ `./Lander/app.js`), `tools/build.mjs` (+ `disc-lander.mjs`), `tests/basic/index.mjs`
+  (+ `arm.test.mjs`, `lander.test.mjs`). The Lander binary (© D.J. Braben) is only ever read from the user's
+  IndexedDB or a git-ignored `vendor/lander`; `tests/basic/lander.test.mjs` and `tests/div/lander-original.mjs`
+  skip without it.
