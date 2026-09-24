@@ -8,6 +8,7 @@ import { input, keyCode, startPointerDrag, autoRepeat, BUT } from './input.js';
 import { sprites } from './sprites.js';
 import { fonts } from './fonts.js';
 import { IF } from './templates.js';
+import { vdu7 } from './sound/index.js';
 
 // ---------------------------------------------------------------------------- Task
 
@@ -815,18 +816,14 @@ export class Wimp extends Emitter {
     return false;
   }
 
+  /**
+   * The Wimp's beep is VDU 7: SOUND 1,-13 (Loud) or -5 (Quiet),100,6 on WaveSynth-Beep through the
+   * emulated sound system (src/core/sound). Volume, speaker and loud/quiet come from the CMOS
+   * settings (config.js -> configureSound); beepGain 0 (speaker off) keeps it silent.
+   */
   beep() {
-    const gain = this.config.beepGain ?? 0.08;     // *Configure Volume / loud-quiet beep / speaker (config.js)
-    if (!gain) return;
-    try {
-      const ac = this._ac ??= new (window.AudioContext || window.webkitAudioContext)();
-      const o = ac.createOscillator(), g = ac.createGain();
-      o.type = 'square'; o.frequency.value = 880;
-      g.gain.setValueAtTime(gain, ac.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.25);
-      o.connect(g).connect(ac.destination);
-      o.start(); o.stop(ac.currentTime + 0.25);
-    } catch { /* no audio */ }
+    if (!(this.config.beepGain ?? 1)) return;
+    try { vdu7(); } catch { /* no audio */ }
   }
 
   toggleIconbarFront() {

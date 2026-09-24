@@ -10,6 +10,7 @@
 import { wimp } from './wimp.js';
 import { input } from './input.js';
 import { fonts } from './fonts.js';
+import { configureSound } from './sound/index.js';
 
 const KEY = 'riscos371.config';
 const DEFAULTS = { zoom: 1, rightButton: 'menu', textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
@@ -43,6 +44,7 @@ export const config = {
     wimp.config.solidDrags = !!(v.wimpFlags & 1);
     wimp.config.errorBeep = !(v.wimpFlags & (1 << 4));
     wimp.config.beepGain = v.speaker === false ? 0 : (v.beepLoud === false ? 0.03 : 0.08) * ((v.volume ?? 7) + 1) / 8;
+    configureSound({ volume: v.volume ?? 7, speaker: v.speaker !== false, loud: v.beepLoud !== false, voice: v.voice ?? 1 });   // SoundCMOS, BELLinfo
     if (v.mode && !this._modeApplied && wimp.setMode) wimp.setMode(v.mode, { greys: !!v.modeGreys });
     this._modeApplied = true;
     if ((wimp.zoom ?? 1) !== v.zoom) wimp.setScale(v.zoom);

@@ -319,6 +319,11 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * `wimp.iconbar.add/update/remove` (`add({..., raw: {flags, validation, w, h}})` makes an icon with raw Wimp icon
   flags/validation and a fixed pixel size, e.g. MemNow's ridged text icon), `wimp.hitTest(sx, sy)`, `wimp.screenRect(excludeIconBar)`, `wimp.beep()`,
   `wimp.setMode({width, height})` (fixed "screen mode", scaled to fit), `wimp.setScale(z)` (zoom; `?zoom=2`).
+* Sound (`src/core/sound/`, docs/SOUND.md): the one emulated RISC OS sound system with the ROM voices.
+  `wimp.beep()` is VDU 7, which plays SOUND 1,-13 or -5 (Loud/Quiet),100,6 on WaveSynth-Beep; `beepGain` 0 (speaker
+  off) silences it. `import { soundSystem, vdu7 } from '../../core/sound/index.js'`, then `soundSystem().control(ch, amp, pitch, dur)`
+  (SOUND), `.qSchedule(...)`, `.attachNamedVoice(ch, name)`, `.stereo(ch, pos)`, `.configure(n)`. config.js applies
+  the volume, speaker, loud/quiet and channel 1 voice settings.
 * `os.filer.openDir(path, {mode:'large'|'small'|'full', sort, x, y, w, h})`, `os.filer.run(path)` (double-click semantics).
 * `os.pinboard.pin(path, x, y)`, `os.pinboard.setBackdrop(path, 'tile'|'scale'|'centre')`.
 * Hooks for other agents: `os.hooks.basic = async (argv, ctx) => …` (*BASIC), `os.hooks.taskWindow = (cmd) => …` (Ctrl-F12 /
