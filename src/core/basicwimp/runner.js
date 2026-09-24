@@ -34,6 +34,9 @@ export function parseBasicArgs(argv = []) {
 let wimpSlotK = 640;            // last *WimpSlot -min/-max (K), used for the next program's HIMEM
 export function noteWimpSlot(k) { if (k > 0) wimpSlotK = k; }
 
+// number of parameter bytes after each VDU control code
+const VDU_PARAMS = [0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 5, 0, 0, 1, 9, 8, 5, 0, 0, 4, 4, 0, 2];
+
 export const processes = new Set();
 let fullScreenBusy = false;
 
@@ -86,7 +89,10 @@ export class BasicProcess {
     });
     // errors seen (for diagnostics: console + docs/BASIC_WIMP.md "debugging")
     this.errors = [];
-    m.errorHook = (e) => { this.errors.push({ message: e.message, line: m.interp.line?.num ?? 0, stack: (e.stack ?? '').split('\n').slice(1, 4).join(' | ') }); if (this.errors.length > 8) this.errors.shift(); };
+    m.errorHook = (e) => {
+      this.errors.push({ message: e.message, line: m.interp.line?.num ?? 0, trapped: !!m.interp.errH || !!e.ext, stack: (e.stack ?? '').split('\n').slice(1, 4).join(' | ') });
+      if (this.errors.length > 8) this.errors.shift();
+    };
     // END=: on real machines the slot grows in whole pages (32K on an A5000 with 4MB)
     const I = m.interp, endEq = I.endEquals.bind(I);
     I.endEquals = (v) => endEq(Math.max(v, (((v + 0x7FFF) >> 15) << 15)));
@@ -120,9 +126,12 @@ export class BasicProcess {
   output(c) {
     if (this.ended) return;
     if (this.bridge) {
-      if (this.bridge.inRedraw) return;
-      if (c === 10) this.lateOutput += '\n';
-      else if (c >= 32 && c !== 127) this.lateOutput += String.fromCharCode(c);
+      // text written to the screen by a desktop task (outside redraws): collected for the command window
+      if (this._vq > 0) { this._vq--; return; }
+      const shown = !this.bridge.inRedraw && !this.bridge.vdu.vdu5;
+      if (c < 32) { this._vq = VDU_PARAMS[c]; if (c === 10 && shown) this.lateOutput += '\n'; return; }
+      if (!shown) return;
+      if (c !== 127) this.lateOutput += String.fromCharCode(c);
       return;
     }
     if (!this.scr) this.takeScreen();
@@ -130,7 +139,7 @@ export class BasicProcess {
 
   async oscli(cmd) {
     const name = cmd.replace(/^[\s*]+/, '').split(/[\s]/)[0].toLowerCase();
-    if (/^(fx\d*|key\d*|tv|opt|spool|spoolon|exec|quit|basic)$/.test(name)) return false;   // BASIC's own
+    if (/^(fx\d*|key\d*|tv|opt|spool|spoolon|exec|quit|basic|load|save|screensave|screenload)$/.test(name)) return false;   // BASIC's own (these touch its memory)
     if (!os.cli.find(name) && sysvars.get('Alias$' + name) == null && !os.cli.findRunnable(name)) return false;
     const m = this.machine;
     const out = this.bridge || !this.scr
@@ -224,6 +233,11 @@ export class BasicProcess {
     processes.delete(this);
     if (this.bridge) this.bridge.closeDown(true);
     if (this.scr) await this.releaseScreen();
+    const last = this.errors[this.errors.length - 1];
+    if (!this.exitError && this.bridge && last && !last.trapped && !this.killed) {
+      // an untrapped error stopped a desktop task: BASIC printed "<error> at line <n>" to the screen
+      this.exitError = { message: `${last.message} at line ${last.line}` };
+    }
     if (this.exitError) {
       const I = this.machine.interp;
       console.warn(`BASIC program ${this.file} ended with error: ${this.exitError.message} (PAGE &${I.page?.toString(16)}, END &${(I.fsa ?? 0).toString(16)}, HIMEM &${I.himem?.toString(16)}); errors: ` + this.errors.map((x) => `${x.message} at line ${x.line} [${x.stack}]`).join(' ; '));
@@ -241,6 +255,7 @@ export class BasicProcess {
   kill() {
     const I = this.machine?.interp;
     if (!I || this.ended) return;
+    this.killed = true;
     I.quit(0);
     for (const w of this.machine.keyWaiters.splice(0)) w.reject(new Error('killed'));
     this.bridge?.abortPoll();

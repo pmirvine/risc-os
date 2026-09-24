@@ -50,6 +50,15 @@ const clickIcon = async (n) => {
   if (r) { await page.mouse.click(r.x, r.y); await page.waitForTimeout(120); }
   return !!r;
 };
+// interactive help: Message_HelpRequest to the program, its HelpReply feeds !Help
+const help = async () => page.evaluate(() => {
+  const w = [...window.wimp.windows].find((w) => w.task?.basicProcess && w.isOpen && w.icons.length > 20);
+  const b = w.icons[7].el.getBoundingClientRect(), s = window.wimp.screen.getBoundingClientRect();
+  return window.wimp.helpAt(b.x - s.x + 5, b.y - s.y + 5);
+});
+await help(); await page.waitForTimeout(500);
+const ht = await help();
+check(/7/.test(ht ?? ''), 'help text from the program: ' + JSON.stringify(ht));
 check(await clickIcon(18), 'button C');
 check(await clickIcon(7), 'button 7');
 await clickIcon(15); await clickIcon(8); await clickIcon(16);
@@ -60,6 +69,23 @@ await page.mouse.click(box.x, box.y, { button: 'middle' });
 await page.waitForTimeout(600);
 await shot('bw-scicalc-menu');
 check(await page.evaluate(() => window.wimp.menus.isOpen), 'menu opened by the program');
+// Info > : the program's "Info" template window as a dialogue-box submenu
+const info = await page.evaluate(() => { const lv = window.wimp.menus.levels[0]; const r = lv.win.view.getBoundingClientRect(); return { x: r.x + r.width - 8, y: r.y + 11 }; });
+await page.mouse.move(info.x - 30, info.y); await page.mouse.move(info.x, info.y, { steps: 4 });
+await page.waitForTimeout(600);
+check(await page.evaluate(() => window.wimp.menus.levels.length === 2 && window.wimp.menus.levels[1].isDbox), 'Info dialogue box opened as a submenu');
+await shot('bw-scicalc-info');
+// Task Manager lists the task
+const mem = await page.evaluate(() => window.wimp.tasks.find((t) => t.name === 'SciCalc')?.memory);
+check(mem === 140, 'Task Manager entry: SciCalc ' + mem + 'K (its !Run: WimpSlot 140K)');
+// Quit from the menu: the program ends
+await page.keyboard.press('Escape');
+await page.mouse.click(box.x, box.y, { button: 'middle' });
+await page.waitForTimeout(500);
+const quit = await page.evaluate(() => { const lv = window.wimp.menus.levels[0]; const r = lv.win.view.getBoundingClientRect(); return { x: r.x + 30, y: r.y + 33 }; });
+await page.mouse.click(quit.x, quit.y);
+await page.waitForTimeout(1000);
+check(await page.evaluate(() => !window.wimp.tasks.some((t) => t.name === 'SciCalc')), 'Quit ends the task');
 console.log(logs.filter((l) => /error|PAGEERROR|warn/i.test(l)).join('\n'));
 console.log('late output:', await page.evaluate(() => [...window.bwProcesses ?? []].map((p) => p.lateOutput).join('|')));
 await browser.close();

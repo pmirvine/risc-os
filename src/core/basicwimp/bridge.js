@@ -155,7 +155,7 @@ export class WimpBridge {
     this.task.onMessage('DataLoad', (msg) => { if (msg.window && this.byWin.has(msg.window)) return; this.dataLoadMessage(msg, -2, msg.icon?._ib ? msg.icon.handle : -1); return true; });
     this.task.onMessage('DataOpen', (msg) => { this.dataLoadMessage(msg, 0, -1, MSG.DataOpen); return false; });
     this._installGlobalListeners();
-    this.vdu.writeC(5);                 // the desktop plots text at the graphics cursor
+    this.vduBytes([5]);                 // the desktop plots text at the graphics cursor
     r[0] = 310;
     r[1] = this.task.handle;
     // messages list (R3) ignored: every message is delivered
@@ -757,8 +757,10 @@ export class WimpBridge {
   // ------------------------------------------------------------------ caret
   setCaretPosition(r) {
     const wh = r[0];
-    if (wh === -1) { if (wimp.caret && this.byWin.has(wimp.caret.window)) wimp.setCaret(null); return; }
-    const rec = this.rec(wh);
+    if (wh === -1) { wimp.setCaret(null); return; }
+    const win = this.coreWindow(wh);
+    if (!win) throw new BasicError(0x288, 'Illegal window handle');
+    const rec = { win };
     const ih = r[1], x = r[2], y = r[3], hgt = r[4], idx = r[5];
     if (ih >= 0) {
       const core = rec.win.icons[ih];
@@ -873,6 +875,9 @@ export class WimpBridge {
     v.gwt = Math.min(v.yWL, v.H - 1 - sy0); v.gwb = Math.max(0, v.H - (sy0 + sh));
     v._dirtyAll();
     this.inRedraw = true;
+    // like the Wimp: graphics colours = the window's work area foreground / background
+    const cols = w.colours;
+    if (!this.redraw._coloured) { this.redraw._coloured = true; this.setColour(cols.workFg & 15, false); if (cols.workBg !== 255) this.setColour(128 | (cols.workBg & 15), false); }
     const H = this.H;
     [sx0 * 2, (H - sy0 - sh) * 2, (sx0 + sw) * 2 - 1, (H - sy0) * 2 - 1].forEach((val, i) => M.wr32(p + 28 + i * 4, val));
     r[0] = 1;
@@ -927,13 +932,16 @@ export class WimpBridge {
   }
 
   // ------------------------------------------------------------------ colours
+  /** VDU bytes straight to the program's VDU (not program output) */
+  vduBytes(bytes) { const v = this.vdu; for (const b of bytes) v.writeC(b & 255); }
+
   setColour(c, text) {
-    const v = this.vdu, m = this.m;
+    const v = this.vdu;
     const bg = !!(c & 128), action = (c >> 4) & 7;
     const px = v.nearest(wimpRGB(c & 15));
     const g = pixelToGcol(px);
-    if (text) { m.vduBytes([17, (g.colour & 63) | (bg ? 128 : 0)]); m.vduBytes([23, 17, bg ? 1 : 0, g.tint & 255, 0, 0, 0, 0, 0, 0]); }
-    else { m.vduBytes([18, action, (g.colour & 63) | (bg ? 128 : 0)]); m.vduBytes([23, 17, bg ? 3 : 2, g.tint & 255, 0, 0, 0, 0, 0, 0]); }
+    if (text) { this.vduBytes([17, (g.colour & 63) | (bg ? 128 : 0)]); this.vduBytes([23, 17, bg ? 1 : 0, g.tint & 255, 0, 0, 0, 0, 0, 0]); }
+    else { this.vduBytes([18, action, (g.colour & 63) | (bg ? 128 : 0)]); this.vduBytes([23, 17, bg ? 3 : 2, g.tint & 255, 0, 0, 0, 0, 0, 0]); }
   }
 
   readPalette(r) {
@@ -1271,8 +1279,14 @@ export class WimpBridge {
   }
 
   slotSize(r) {
-    const cur = this.m.interp.himem - 0x8000;
-    r[0] = cur; r[1] = 640 * 1024; r[2] = 12 * 1024 * 1024;
+    // the program's memory is a flat 4MB: any slot up to the RMA fits (BASIC's HIMEM doesn't move)
+    this.slot ??= this.m.interp.himem - 0x8000;
+    const MAX = 0x300000 - 0x8000;
+    if (r[0] >= 0) this.slot = Math.min(MAX, Math.max(this.m.interp.himem - 0x8000, r[0]));
+    if (r[1] >= 0) this.nextSlot = r[1];
+    r[0] = this.slot; r[1] = this.nextSlot ?? 640 * 1024; r[2] = Math.max(0, 12 * 1024 * 1024 - this.slot);
+    if (this.task) this.task.memory = Math.round(this.slot / 1024);
+    wimp.emit('taskschanged', {});
   }
 
   readSysInfo(r) {

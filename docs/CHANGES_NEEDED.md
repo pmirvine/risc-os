@@ -91,3 +91,9 @@ makes `*WimpSlot` remember the slot size for the next program's HIMEM / Task Man
 (the first line of !Maestro's !Run) became `=Yes` and crashed evalExpr ("Cannot read properties of undefined (reading
 'toUpperCase')"). Now `sysvars.gstrans(expr, { noQuotes: true })`, so quoted strings reach the evaluator (as OS_EvaluateExpression
 does). One-line fix.
+
+## Seed disc: $.Examples — TASKWINDOW/BASIC-WIMP agent
+`assets/disc/HardDisc4/Examples/` (`!Doodle` BASIC Wimp app, `Spiral` single-tasking program, `ReadMe`) and its entry in
+`assets/disc/manifest.json` are written by `node tools/basicwimp-demo.mjs` from `src/core/basicwimp/demo/`. `tools/disc.mjs`
+wipes `assets/disc`, so re-run the tool after it (assets agent: please call it from `tools/build.mjs`, and list `Examples` in
+docs/ASSETS.md §5).

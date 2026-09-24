@@ -388,6 +388,25 @@ export function installServices(m, proc) {
         plotSprite(v, sp, x, y, act, scale);
         return;
       }
+      case 14: case 16: {                             // get sprite from the screen (this program's VDU)
+        if (isPool) throw noArea();
+        const v = vdu();
+        let x0, y0, x1, y1;
+        if (op === 16) { x0 = r[4]; y0 = r[5]; x1 = r[6]; y1 = r[7]; } else { x0 = v.oldX; y0 = v.oldY; x1 = v.gcsX; y1 = v.gcsY; }
+        const px0 = Math.max(0, (Math.min(x0, x1) + v.orgX) >> v.xEig), px1 = Math.min(v.W - 1, (Math.max(x0, x1) + v.orgX) >> v.xEig);
+        const py0 = Math.max(0, (Math.min(y0, y1) + v.orgY) >> v.yEig), py1 = Math.min(v.H - 1, (Math.max(y0, y1) + v.orgY) >> v.yEig);
+        const w = Math.max(1, px1 - px0 + 1), h = Math.max(1, py1 - py0 + 1);
+        const nm = rdCtrl(m, r[2], 12);
+        createSprite(a, nm, 0, w, h, 28);
+        const s = areas.find(a, nm);
+        const img = s.ptr + M.rd32(s.ptr + 32), rowBytes = (M.rd32(s.ptr + 16) + 1) * 4;
+        for (let j = 0; j < h; j++) {
+          const row = (v.H - 1 - (py1 - j)) * v.W;
+          for (let i = 0; i < w; i++) M.wr8(img + j * rowBytes + i, v.fb[row + px0 + i]);
+        }
+        areas.touch();
+        return;
+      }
       case 41: case 42: return;                       // read/write pixel: not supported (no sprite output)
       case 60: case 61: r[0] = 0; r[1] = 0; r[2] = 0; r[3] = 0; return; // switch output: stays on screen
       case 62: r[3] = 0; return;
@@ -532,7 +551,12 @@ export function installServices(m, proc) {
   // ---------------------------------------------------------------- misc
   for (const n of ['Hourglass_On', 'Hourglass_Off', 'Hourglass_Smash', 'Hourglass_Start', 'Hourglass_Percentage', 'Hourglass_LEDs', 'Hourglass_Colours']) S(n, () => {});
   S('OS_ReadMemMapInfo', (r) => { r[0] = 4096; r[1] = 1024; });
-  S('OS_ReadDynamicArea', (r) => { r[0] = 0x1800000; r[1] = 0; });
+  S('OS_ReadDynamicArea', (r) => {
+    // a RiscPC with 16MB: system heap, RMA, screen, system sprites, font cache, RAM disc, free pool
+    const sizes = { 0: 32 << 10, 1: 1 << 20, 2: 2 << 20, 3: 64 << 10, 4: 256 << 10, 5: 0, 6: 8 << 20 };
+    const n = r[0] & 0x7F;
+    r[0] = 0x1800000 + n * 0x100000; r[1] = sizes[n] ?? 0; r[2] = 16 << 20;
+  });
 }
 
 /** &BBGGRRxx palette entry -> 0xRRGGBB */
