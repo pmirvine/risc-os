@@ -62,6 +62,8 @@ await dbl('Snake', true);
 await page.waitForTimeout(1500);
 const edit = await page.evaluate(() => [...window.wimp.windows].some((w) => w.isOpen && /Snake/.test(w.title ?? '') && !/Filer/.test(w.task?.name ?? '')));
 check(edit, 'Shift-double-click opens Snake in Edit');
+const viewerOpen = await page.evaluate(() => [...window.os.filer.viewers.values()].some((v) => /Demos\.BASIC$/i.test(v.path) && v.win?.isOpen));
+check(viewerOpen, 'Shift-double-click leaves the Filer viewer open (only Adjust closes it)');
 await shot('demo-edit');
 
 // quit WimpClock (Message_Quit, as the Task Manager does)

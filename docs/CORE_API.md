@@ -132,7 +132,7 @@ action, return `true` to mark it handled.
 
 | event | when / fields | default action |
 |---|---|---|
-| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window}` | Menu button: opens `w.menu` if set |
+| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window, shiftAdjust}` (`shiftAdjust`: Adjust given as Shift+left, so `shift` is part of the button) | Menu button: opens `w.menu` if set |
 | `doubleclick` | same fields | |
 | `drag` | a drag started (button types with drag): same fields + `pointerEvent`, `startSX/SY` | — (start one with `wimp.drag`) |
 | `key` | key press while the window has the input focus: `{code (Wimp key code), char, key (DOM), shift, ctrl, alt, icon}`; return `true` if used | unhandled keys go on to `hotkey` windows |

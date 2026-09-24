@@ -420,13 +420,18 @@ class DirViewer {
     if (i < 0) return true;
     const it = this.items[i];
     this.setSelected(i, false);
+    // The Filer (s.Clicks click_select) closes this viewer only for an ADJUST double-click; SHIFT (held at the
+    // click) opens applications as directories and files as text. In the browser Shift+left is itself the
+    // emulated Adjust button, so that double-click is taken as Shift-Select: it doesn't close the viewer.
+    // A real Adjust button (right button with *Configure Buttons Adjust) does.
+    const adjust = ev.button === 'adjust' && !ev.shiftAdjust;
     if (it.type === 'dir' && (!it.isApp || ev.shift)) {
-      this.filer.openDir(it.path, { from: this, replacing: ev.button === 'adjust' });
-      if (ev.button === 'adjust') this.close();
+      this.filer.openDir(it.path, { from: this, replacing: adjust });
+      if (adjust) this.close();
       return true;
     }
     this.filer.run(it.path, { shift: ev.shift });
-    if (ev.button === 'adjust') this.close();
+    if (adjust) this.close();
     return true;
   }
 
