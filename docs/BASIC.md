@@ -231,5 +231,5 @@ for the host contract above: run() results, kill(), registerSwi, host errors, ba
 `node tests/basic/screenshot.mjs mandel.bas circles.bas` (with `node serve.mjs` running) saves
 Playwright screenshots of the demo page to `tests/screens/`.
 Example programs live in `src/basic/demos/` (listed in `index.json` for the demo page's Examples menu and
-`tools/disc-basicdemos.mjs`, which puts them on the seed disc as `$.Demos.BASIC`; see docs/BASIC_DEMOS.md).
+`tools/disc-basicdemos.mjs`, which puts them on the seed disc as `$.Demos.BASIC`: double-click runs one full screen, Shift-double-click opens it in Edit).
 `tests/basic/demos.test.mjs` runs every one headless.

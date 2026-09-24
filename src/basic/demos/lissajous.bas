@@ -21,7 +21,7 @@
   210   GCOL 0,200,200,255:VDU 5
   220   MOVE 24,940:PRINT "LISSAJOUS FIGURES"
   230   MOVE 24,40:PRINT "x = SIN(";A%;"*t + p)   y = SIN(";B%;"*t)   p = ";FNf(ph)
-  240   VDU 4
+  240   VDU 4:OFF
   250   WAIT:SYS "OS_Byte",113,bank%
   260   ph+=0.02:f%+=1
   270   IF f% MOD 400=0 THEN n%=(n%+1) MOD 8

@@ -108,7 +108,7 @@
  1080 FOR i%=0 TO 59
  1090   a=i%*PI/30:IF i% MOD 5=0 THEN r%=124 ELSE r%=140
  1100   LINE x%+r%*SIN(a),y%+r%*COS(a),x%+146*SIN(a),y%+146*COS(a)
- 1110   IF i% MOD 15=0 THEN PROChand(x%,y%,a,146,6,-124)
+ 1110   IF i% MOD 15=0 THEN PROChand(x%,y%,a,146,6,124)
  1120 NEXT
  1130 SYS "Wimp_SetColour",8
  1140 PROChand(x%,y%,(h MOD 12+m/60)*PI/6,86,10,-16)

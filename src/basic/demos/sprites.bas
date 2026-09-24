@@ -31,7 +31,7 @@
   310   NEXT
   320   GCOL 0,255,255,255:VDU 5:MOVE 24,940
   330   IF sprites% THEN PRINT "OS_SpriteOp 34: ";N%;" sprites with masks" ELSE PRINT "No OS_SpriteOp: drawn with CIRCLE FILL"
-  340   VDU 4
+  340   VDU 4:OFF
   350   WAIT:SYS "OS_Byte",113,bank%
   360   frames%+=1
   370 UNTIL INKEY(0)<>-1

@@ -27,7 +27,7 @@
   270       ox%(i%)=sx%:oy%(i%)=sy%
   280     ENDIF
   290   NEXT
-  300   GCOL 63:VDU 5:MOVE 16,944:PRINT "STARFIELD   speed ";INT(speed*100+0.5):VDU 4
+  300   GCOL 63:VDU 5:MOVE 16,944:PRINT "STARFIELD   speed ";INT(speed*100+0.5):VDU 4:OFF
   310   WAIT:SYS "OS_Byte",113,bank%
   320   frames%+=1
   330   k%=INKEY(0)

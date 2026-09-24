@@ -88,7 +88,7 @@
   880   GCOL 0,7:MOVE 24,780-c%*90:PRINT name$(c%);
   890   GCOL 0,6:MOVE 24,750-c%*90:PRINT v$(c%);
   900 NEXT
-  910 VDU 4
+  910 VDU 4:OFF
   920 ENDPROC
   930 :
   940 DEF PROCgrid(k%,b%)
@@ -102,7 +102,7 @@
  1020 NEXT
  1030 GCOL 0,4:RECTANGLE FILL 0,40,1279,50
  1040 GCOL 0,7:MOVE 320,80:PRINT "Bar ";k%+1;"   chords ";FNchord(k%*2);" ";FNchord(k%*2+1);
- 1050 VDU 4
+ 1050 VDU 4:OFF
  1060 ENDPROC
  1070 :
  1080 DEF FNchord(n%)

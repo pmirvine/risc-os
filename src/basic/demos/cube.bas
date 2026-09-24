@@ -12,7 +12,7 @@
   120 bank%=1:a=0:b=0:frames%=0:T%=TIME
   130 REPEAT
   140   bank%=3-bank%:SYS "OS_Byte",112,bank%
-  150   CLG:GCOL 3:VDU 5:MOVE 16,1008:PRINT "Double-buffered cube  frame ";frames%:VDU 4
+  150   CLG:GCOL 3:VDU 5:MOVE 16,1008:PRINT "Double-buffered cube  frame ";frames%:VDU 4:OFF
   160   ca=COS(a):sa=SIN(a):cb=COS(b):sb=SIN(b)
   170   FOR i%=0 TO 7
   180     X=x(i%)*ca-z(i%)*sa:Z=x(i%)*sa+z(i%)*ca

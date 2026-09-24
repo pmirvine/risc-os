@@ -76,7 +76,7 @@
   760   x%=i%*32-(frames% MOD 4)*8
   770   MOVE x%,880+40*SIN(ph*3+i%*0.3):PRINT MID$(m$+m$,o%+i%+1,1);
   780 NEXT
-  790 VDU 4
+  790 VDU 4:OFF
   800 ENDPROC
   810 :
   820 DEF PROCtidy

@@ -35,7 +35,7 @@
   350 PROCcentre(470,"Eat the apples, avoid the walls",16)
   360 PROCcentre(340,"SPACE to play, Q to quit",16)
   370 IF hi% THEN GCOL 0,255,255,0:PROCcentre(240,"High score "+STR$hi%,16)
-  380 VDU 4
+  380 VDU 4:OFF
   390 ENDPROC
   400 :
   410 DEF PROCcentre(y%,t$,w%)
@@ -92,7 +92,7 @@
   920   PROCsq(x%-dx%,y%-dy%,2):WAIT:WAIT:WAIT
   930 NEXT
   940 IF score%>hi% THEN hi%=score%
-  950 GCOL 0,255,255,0:VDU 5:PROCcentre(520,"GAME OVER",16):VDU 4
+  950 GCOL 0,255,255,0:VDU 5:PROCcentre(520,"GAME OVER",16):VDU 4:OFF
   960 SOUND 1,-12,53,8:t%=TIME+80:REPEAT UNTIL TIME>t%
   970 *FX 15,1
   980 ENDPROC
@@ -126,7 +126,7 @@
  1260 GCOL 0,90,90,160:RECTANGLE FILL 0,H%*C%,1279,959-H%*C%
  1270 GCOL 0,255,255,255:VDU 5
  1280 MOVE 16,944:PRINT "SNAKE    Score ";s%;"    High ";hi%
- 1290 VDU 4
+ 1290 VDU 4:OFF
  1300 ENDPROC
  1310 :
  1320 DEF PROCtidy
