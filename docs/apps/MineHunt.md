@@ -13,7 +13,7 @@ The original `!RunImage` is a squeezed C binary (Paul LeBeau, 1.10, 1994), so be
   sized to the board. Man position (right, next to the timer) follows from the `tprgt` sprite's holes - a guess.
 * SELECT uncovers (cascade on blanks; timer starts at first uncover), ADJUST cycles clear → flag → ? (if
   "Question marks" ticked) → clear; flagged squares are protected. SHIFT-SELECT clears around a numbered
-  square (with the default mouse mapping Shift+left arrives as Adjust; on an uncovered square it clears around).
+  square (on an uncovered square it clears around).
 * Win = every mine flagged and every other square uncovered. Score = seconds.
 * Levels Beginner 8×8/10, Better 16×8/20, Intermediate 16×16/40, Good 24×16/60, Expert 30×16/99; levels not
   fitting the screen are shaded; Custom dialogue (template `Custom`: width ≥8, height ≥2, ≤64 and screen-limited;

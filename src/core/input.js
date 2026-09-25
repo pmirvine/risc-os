@@ -1,16 +1,18 @@
 // Mouse-button and keyboard mapping.
 //
 // RISC OS has three buttons: Select (left, value 4), Menu (middle, 2), Adjust (right, 1).
-// Browser mapping (configurable via input.config):
-//   left            -> Select      Shift+left -> Adjust     Ctrl+left -> Menu (when rightIsAdjust)
-//   middle          -> Menu
-//   right           -> Menu (default) or Adjust (config.rightIsAdjust = true)
+// Browser mapping (configurable via input.config / *Configure Buttons):
+//   Acorn mapping (default, rightIsAdjust = true), as on an Acorn mouse and in RPCEmu/Arculator:
+//     left -> Select   middle -> Menu   right -> Adjust   Ctrl+left (or Ctrl+right) -> Menu
+//     Shift is left alone, so it keeps its RISC OS meaning (Shift-double-click, Shift-drag, ...).
+//   Alternative (rightIsAdjust = false), for two-button mice:
+//     left -> Select   middle/right -> Menu   Shift+left -> Adjust
 
 export const BUT = { select: 4, menu: 2, adjust: 1 };
 
 export const input = {
   config: {
-    rightIsAdjust: false,
+    rightIsAdjust: true,
     doubleClickMs: 400,         // WimpDoubleClickDelay (default 10 = 1s, but browsers feel better at ~0.4s)
     doubleClickMove: 16,        // px
     dragMove: 8,                // WimpDragMove (px)
@@ -33,11 +35,10 @@ export const input = {
   /** Map a pointer event to a RISC OS button name ('select'|'menu'|'adjust'). */
   button(e) {
     if (e.button === 1) return 'menu';
-    if (e.button === 2) return this.config.rightIsAdjust ? 'adjust' : 'menu';
+    if (e.button === 2) return this.config.rightIsAdjust && !e.ctrlKey ? 'adjust' : 'menu';
     if (e.button === 0) {
-      if (e.ctrlKey && this.config.rightIsAdjust) return 'menu';
-      if (e.shiftKey) return 'adjust';
-      return 'select';
+      if (this.config.rightIsAdjust) return e.ctrlKey ? 'menu' : 'select';
+      return e.shiftKey ? 'adjust' : 'select';
     }
     return null;
   },

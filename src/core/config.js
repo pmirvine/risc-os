@@ -13,13 +13,19 @@ import { fonts } from './fonts.js';
 import { configureSound } from './sound/index.js';
 
 const KEY = 'riscos371.config';
-const DEFAULTS = { zoom: 1, rightButton: 'menu', textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
+// buttonsVersion 2: the Acorn mapping (right = Adjust) became the default; older saved settings are migrated.
+const DEFAULTS = { zoom: 1, rightButton: 'adjust', buttonsVersion: 2, textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
   doubleClickMove: 32, beepLoud: true, speaker: true, volume: 7, mode: null };
 
 export const config = {
   values: { ...DEFAULTS },
   load() {
-    try { Object.assign(this.values, JSON.parse(localStorage.getItem(KEY) ?? '{}')); } catch { /* */ }
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(KEY) ?? '{}') ?? {}; } catch { /* */ }
+    // Settings saved before the Acorn mouse mapping became the default recorded the old default
+    // (right = Menu), not a choice, so they move to the new default.
+    if (saved.rightButton && !(saved.buttonsVersion >= 2)) { delete saved.rightButton; saved.buttonsVersion = 2; }
+    Object.assign(this.values, saved);
     if (localStorage.getItem('riscos.zoom')) this.values.zoom = +localStorage.getItem('riscos.zoom');
     if (localStorage.getItem('riscos.rightIsAdjust') === '1') this.values.rightButton = 'adjust';
   },

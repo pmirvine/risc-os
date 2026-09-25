@@ -6,7 +6,7 @@ import { launch, BASE_URL, SHOTS } from '../core/pw.mjs';
 import { filerItem } from '../edit/ui.mjs';
 
 const DIR = 'ADFS::HardDisc4.$.Demos.BASIC';
-const { browser, page, logs } = await launch({ width: 1024, height: 768 });
+const { browser, page, logs } = await launch({ width: 1024, height: 768, buttons: 'acorn' });   // Shift-double-click is Shift-Select only with the Acorn mapping
 const shot = (n) => page.screenshot({ path: path.join(SHOTS, n + '.png') });
 let fail = 0;
 const check = (ok, msg) => { console.log((ok ? 'ok   ' : 'FAIL ') + msg); if (!ok) fail++; };

@@ -80,7 +80,14 @@ export class Filer {
     if (v) { v.win.open({ behind: 'top' }); return v; }
     v = new DirViewer(this, canon, opts);
     this.viewers.set(key, v);
+    this._openStateChanged(canon);
     return v;
+  }
+  /** Redraw the parent viewer of dir, which shows dir as an open or closed directory (s.Redraw dfs_opened). */
+  _openStateChanged(dir) {
+    if (vfs.isRoot(dir)) return;
+    const pv = this.viewers.get(vfs.parent(dir).toLowerCase());
+    if (pv && pv.icons) pv.render();
   }
   closeDir(path) {
     const v = this.viewers.get(vfs.canonical(path).toLowerCase());
@@ -167,7 +174,7 @@ class DirViewer {
     win.on('open', (ev) => this.onOpenRequest(ev));
     win.on('dataload', (ev) => this.dataLoad(ev));
     win.on('datasave', (ev) => { ev.accept(`${this.path}.${ev.leafname}`); return true; });
-    win.on('deleted', () => filer.viewers.delete(path.toLowerCase()));
+    win.on('deleted', () => { if (filer.viewers.get(path.toLowerCase()) === this) { filer.viewers.delete(path.toLowerCase()); filer._openStateChanged(path); } });
     win.helpText = filer.m('Viewer_Help');
     this.refresh(true);
     // initial geometry
@@ -346,7 +353,8 @@ class DirViewer {
     this.items.forEach((it, i) => {
       const r = this.itemRect(i);
       const sel = this.selected.has(it.name.toLowerCase());
-      const spr = fileSprite(it, { small: this.mode !== 'large' });
+      const open = it.type === 'dir' && !it.isApp && this.filer.viewers.has(it.path.toLowerCase());
+      const spr = fileSprite(it, { small: this.mode !== 'large', open });
       let spec;
       const common = IF.text | IF.sprite | IF.indirected | (7 << 24) | (1 << 28) | (sel ? IF.selected : 0) | (spr.half ? IF.halfSize : 0);
       if (this.mode === 'large') {
@@ -389,7 +397,7 @@ class DirViewer {
   selectAll() { this.items.forEach((_, i) => this.setSelected(i, true)); }
   selection() { return this.items.filter((it) => this.selected.has(it.name.toLowerCase())); }
 
-  close() { this.win.delete(); this.filer.viewers.delete(this.path.toLowerCase()); }
+  close() { this.win.delete(); if (this.filer.viewers.get(this.path.toLowerCase()) === this) { this.filer.viewers.delete(this.path.toLowerCase()); this.filer._openStateChanged(this.path); } }
 
   onClose(ev) {
     ev.preventDefault();
@@ -420,11 +428,9 @@ class DirViewer {
     if (i < 0) return true;
     const it = this.items[i];
     this.setSelected(i, false);
-    // The Filer (s.Clicks click_select) closes this viewer only for an ADJUST double-click; SHIFT (held at the
-    // click) opens applications as directories and files as text. In the browser Shift+left is itself the
-    // emulated Adjust button, so that double-click is taken as Shift-Select: it doesn't close the viewer.
-    // A real Adjust button (right button with *Configure Buttons Adjust) does.
-    const adjust = ev.button === 'adjust' && !ev.shiftAdjust;
+    // The Filer (s.Clicks click_select) closes this viewer for an ADJUST double-click; SHIFT (held at the
+    // click) opens applications as directories and files as text.
+    const adjust = ev.button === 'adjust';
     if (it.type === 'dir' && (!it.isApp || ev.shift)) {
       this.filer.openDir(it.path, { from: this, replacing: adjust });
       if (adjust) this.close();

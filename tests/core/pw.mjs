@@ -16,7 +16,9 @@ async function loadPW() {
   for (const c of cands) { try { return await import(c); } catch { /* next */ } }
   throw new Error('playwright not found: npm i -D playwright or set PLAYWRIGHT_MODULE=/path/to/node_modules/playwright/index.mjs');
 }
-export async function launch({ width = 1024, height = 768, zoom = 1 } = {}) {
+// Most scripts were written for the two-button mapping (right = Menu, Shift+left = Adjust), so pages start
+// with it unless buttons: 'acorn' (the default desktop mapping: right = Adjust, Ctrl+left = Menu) is asked for.
+export async function launch({ width = 1024, height = 768, zoom = 1, buttons = process.env.BUTTONS || 'menu' } = {}) {
   const { chromium } = await loadPW();
   const cache = path.join(os.homedir(), 'Library/Caches/ms-playwright');
   let executablePath;
@@ -26,6 +28,14 @@ export async function launch({ width = 1024, height = 768, zoom = 1 } = {}) {
   } catch { /* default */ }
   const browser = await chromium.launch(executablePath ? { executablePath } : {});
   const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: zoom });
+  if (buttons !== 'acorn') {
+    await page.addInitScript(() => {
+      try {
+        const k = 'riscos371.config', v = JSON.parse(localStorage.getItem(k) ?? '{}') ?? {};
+        if (!v.rightButton) localStorage.setItem(k, JSON.stringify({ ...v, rightButton: 'menu', buttonsVersion: 2 }));
+      } catch { /* no storage */ }
+    });
+  }
   const logs = [];
   page.on('console', (m) => logs.push(m.type() + ': ' + m.text()));
   page.on('pageerror', (e) => logs.push('PAGEERROR: ' + e.message + '\n' + e.stack));
