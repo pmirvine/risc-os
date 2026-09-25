@@ -1,0 +1,352 @@
+In this last chapter you will put together everything the book has covered in one complete program: the
+game of Snake. It has a window that is redrawn many times a second, keyboard control, sound, an icon on the
+icon bar with a menu, a file that remembers the best score, and it is split into modules. Finally you'll
+package it as a proper RISC OS application, with its own icon in the Filer.<P>
+<!--#pic SnakeGame-->
+
+<H2>Playing the game</H2>
+Before looking at how it works, play it:<P>
+<DL>
+<DT><DD>1  Open <CODE>HardDisc4.$.Examples.JS</CODE> and double-click <B>!Snake</B>. A snake icon appears on
+the icon bar and the game's window opens.<P>
+<DT><DD>2  Steer the snake with the arrow keys. Each piece of red food you eat makes the snake one cell
+longer and scores a point.<P>
+<DT><DD>3  If the snake runs into the edge of the board, or into itself, the game is over. Press Space to
+play again.<P>
+<DT><DD>4  Click Menu on the window or on the icon bar icon for <I>Info</I>, <I>New game</I> and
+<I>Quit</I>.<P>
+</DL>
+The window's title shows your score and the best score so far. Close the window and the game pauses; click
+the icon bar icon to carry on.<P>
+
+<H2>Planning the program</H2>
+With a program of any size it pays to think before typing. Two questions help: <I>what does the program
+need to remember?</I> and <I>what happens, and when?</I><P>
+<H3>What the program remembers</H3>
+The board is a grid of cells, 24 across and 18 down. A cell is identified by its column and row, which you
+can keep in an object such as <CODE>{ x: 6, y: 9 }</CODE>, with <CODE>x</CODE> counting from 0 at the left
+and <CODE>y</CODE> from 0 at the top.<P>
+The snake is a list of cells, so it is an array of these objects. The first element is the head:<P>
+<PRE>
+   x:  3  4  5  6  7
+y: 9   .  T  #  H  .      snake = [ { x: 6, y: 9 },   the head (H)
+                                    { x: 5, y: 9 },
+                                    { x: 4, y: 9 } ]  the tail (T)
+</PRE>
+The direction the snake is travelling is also an object: how far one step moves it in x and in y. Right is
+<CODE>{ x: 1, y: 0 }</CODE>, up is <CODE>{ x: 0, y: -1 }</CODE> (y gets smaller going up), and so on.<P>
+Add the food (another cell), the score, and whether the game is over, and that is everything. It all goes in
+one object, <CODE>game</CODE>.<P>
+<H3>What happens at each step</H3>
+The game moves in steps, a few times a second. At each step:<P>
+<DL>
+<DT><DD>1  Work out the cell in front of the head, in the current direction.<P>
+<DT><DD>2  If that cell is off the board, or part of the snake, the snake has crashed: the game is over.<P>
+<DT><DD>3  Otherwise it becomes the new head, at the front of the array.<P>
+<DT><DD>4  If the food is there, the score goes up and new food appears somewhere else. The tail stays where it
+is, so the snake is now one cell longer.<P>
+<DT><DD>5  If not, the last cell is removed from the tail, so the snake stays the same length: it has
+moved.<P>
+</DL>
+Between steps the player may press arrow keys, which change the direction for the next step.<P>
+<H3>Dividing it up</H3>
+The program has three modules, each with one job:<P>
+<PRE>
+Game       the rules: the game object, turning and stepping.
+           Knows nothing about windows, drawing or keys.
+Board      drawing a game in a window's canvas.
+!RunImage  the desktop program: the window, the keys, the
+           clock, the menu, the icon bar and the score file.
+</PRE>
+Keeping the rules apart from the desktop makes each part simpler to read and to change. You could replace
+Board with a completely different look without touching the rules at all.<P>
+
+<H2>The rules</H2>
+Here is the Game module, <CODE>!Snake.Game</CODE>:<P>
+<!--#listing !Snake/Game-->
+It exports the size of the board, the four directions and three functions. The functions
+<CODE>isSnake</CODE> and <CODE>placeFood</CODE> aren't exported: they are only used inside the module, so
+nothing else needs to know about them.<P>
+<H3>newGame</H3>
+<CODE>newGame</CODE> builds and returns a fresh <CODE>game</CODE> object, as planned. It keeps two
+directions: <CODE>dir</CODE>, the way the snake is going now, and <CODE>next</CODE>, the way it will go at the
+next step. You'll see why in a moment.<P>
+<H3>turn</H3>
+<CODE>turn</CODE> is called when an arrow key is pressed. It mustn't let the snake turn straight back on
+itself, because it would immediately crash into its own neck. Going back means going in exactly the opposite
+direction, where both <CODE>x</CODE> and <CODE>y</CODE> are the negatives of the current ones: the opposite
+of <CODE>{ x: 1, y: 0 }</CODE> is <CODE>{ x: -1, y: 0 }</CODE>. If that's what was asked for, the function
+returns straight away and nothing changes.<P>
+The new direction is kept in <CODE>next</CODE>, and only becomes <CODE>dir</CODE> at the next step. If
+<CODE>turn</CODE> changed <CODE>dir</CODE> directly, a quick player could press Up and then Left between two
+steps while going right - and Left would be allowed, because the snake is then "going up", although it
+hasn't yet moved. Checking against <CODE>dir</CODE> and setting <CODE>next</CODE> avoids that.<P>
+<H3>step</H3>
+<CODE>step</CODE> follows the plan exactly. It uses two array methods, one new and one you met in
+chapter 10's exercises:<P>
+<PRE>
+array.unshift(item)    adds item at the start of the array
+array.pop()            removes the last item from the array
+</PRE>
+Together they move the snake: a new head goes on the front and the old tail comes off the back. When the
+snake eats, the <CODE>pop</CODE> is skipped, so it grows.<P>
+<CODE>step</CODE> returns a string saying what happened - <CODE>'moved'</CODE>, <CODE>'ate'</CODE> or
+<CODE>'crashed'</CODE> - so that the desktop part of the program can make the right noise.<P>
+The test for being outside the board is long enough to split over two lines. JavaScript doesn't mind where
+a statement is broken, as long as the line obviously isn't finished - here it ends with <CODE>||</CODE>.<P>
+<H3>placeFood</H3>
+The food must go in a random cell, but not one the snake is in. The easiest way is to keep choosing random
+cells until one is free. That is a job for a loop you haven't met before, <CODE>do ... while</CODE>:<P>
+<PRE>
+do {
+  ... choose a cell ...
+} while (isSnake(game, cell));
+</PRE>
+It is like a <CODE>while</CODE> loop with the test at the end instead of the beginning, so the body always
+runs at least once. That's exactly right here: there's no cell to test until one has been chosen.<P>
+
+<H2>Drawing the board</H2>
+The Board module, <CODE>!Snake.Board</CODE>, draws everything:<P>
+<!--#listing !Snake/Board-->
+It imports <CODE>COLS</CODE> and <CODE>ROWS</CODE> from Game, and from them works out the size of the board
+in pixels, which it exports for the main program to size the window with. A module can import from another
+module that itself imports: the chain is followed automatically.<P>
+<CODE>drawBoard</CODE> draws the whole board from scratch each time, in the same order you would paint it:
+the grass, then the food, then the snake, then any message on top. Redrawing everything is simple, and with
+a board this size it is easily fast enough.<P>
+Each cell is drawn two pixels smaller than the grid, starting a pixel in, which leaves a thin line of grass
+between the cells so you can see how long the snake is. The head is drawn a second time, in yellow, after
+the body.<P>
+The message uses <CODE>textAlign = 'center'</CODE>, which makes <CODE>fillText</CODE> centre the text on the
+x position it is given, so the text sits in the middle of the board whatever its length.<P>
+<!--#pic SnakeOver-->
+
+<H2>The main program</H2>
+<CODE>!Snake.!RunImage</CODE> brings everything together. It is the longest file, so here it is a piece at a
+time. First the imports and two constants:<P>
+<!--#listing !Snake/!RunImage 1-9-->
+<CODE>KEYS</CODE> is an object used as a lookup table: its property names are the Wimp key codes of the four
+arrow keys (see appendix B) and its values the directions they point. Property names are really strings,
+but a number works as a property name too. Given a key code, <CODE>KEYS[code]</CODE> is the direction - or
+<CODE>undefined</CODE> for any other key.<P>
+The square brackets are new with objects. <CODE>game.score</CODE> looks up the property called
+<CODE>score</CODE>; <CODE>KEYS[code]</CODE> looks up the property whose name is <I>held in the variable</I>
+<CODE>code</CODE>, whatever that is at the time. It is how you use an object when you don't know which
+property you want until the program runs - just as <CODE>list[i]</CODE> picks an array element by a number
+held in <CODE>i</CODE>.<P>
+<H3>Starting up</H3>
+<!--#listing !Snake/!RunImage 11-24-->
+<CODE>start</CODE> is an <CODE>async</CODE> function, because it uses <CODE>await</CODE> to read the best score
+from its file before anything else happens (the function <CODE>loadBest</CODE> is at the end of the file).
+<CODE>game</CODE> is declared with <CODE>let</CODE> because a new game replaces it with a new object.<P>
+The window is exactly the size of the board. Notice the drawing function: <CODE>(g) =&gt; drawBoard(g,
+game)</CODE>. Each time the window is redrawn it uses whatever <CODE>game</CODE> holds <I>at that moment</I>,
+so after <CODE>game = newGame()</CODE> the next redraw shows the new game without any more work.<P>
+<H3>Clicks and keys</H3>
+<!--#listing !Snake/!RunImage 26-45-->
+A Menu click opens the program's menu. Any click gives the window the <I>input focus</I> with
+<CODE>wimp.setCaret(w)</CODE>, so that key presses come to it: its title bar turns cream to show it has
+the focus.<P>
+The key handler looks the key code up in <CODE>KEYS</CODE>. <CODE>if (dir)</CODE> uses the rule from chapter 8:
+a direction is a non-empty string, which counts as true, and <CODE>undefined</CODE> counts as false. If it
+finds a direction, it turns the snake. If the game is over, Space starts a new one. For any other key the
+handler returns nothing, which tells the Wimp the key wasn't used, so it can go on to other programs that
+want it (chapter 8). (F12 and the other keys the desktop keeps for itself never reach the program at
+all.)<P>
+<H3>The clock</H3>
+<!--#listing !Snake/!RunImage 47-55-->
+The game moves every 150 milliseconds. <CODE>w.isOpen</CODE> is <CODE>true</CODE> while the window is open
+on the screen and <CODE>false</CODE> once it has been closed. So when the window has been closed, or the game
+is over, the timer function returns at once and nothing moves: the game is paused. Otherwise it takes one step, plays a note if
+the snake ate or calls <CODE>crashed</CODE> if it crashed, updates the title and asks for the window to be
+redrawn.<P>
+<CODE>sound(1, -15, 180, 1)</CODE> plays a short note: channel 1, loudness -15 (the loudest), pitch 180 and
+length 1 (a twentieth of a second) - the same numbers BBC BASIC's <CODE>SOUND</CODE> statement takes.
+<CODE>beep()</CODE> sounds the computer's usual warning beep.<P>
+<H3>Functions inside start</H3>
+<!--#listing !Snake/!RunImage 57-79-->
+These functions are declared inside <CODE>start</CODE>, so they can use its variables -
+<CODE>game</CODE>, <CODE>best</CODE>, <CODE>w</CODE> and the rest - just as the event handlers can. A function
+declaration can be used anywhere in the function that contains it, even above where it is written, which is
+why the timer can call <CODE>crashed</CODE> although it comes later.<P>
+<CODE>crashed</CODE> saves a new best score to the score file. <CODE>newGameNow</CODE> replaces the game and
+makes sure the window is open and has the focus.<P>
+<H3>The menu and the icon bar</H3>
+<!--#listing !Snake/!RunImage 81-106-->
+<!--#pic SnakeMenu-->
+The Info box is made once, when the program starts, and used as the Info item's submenu, as in chapter 10.
+<CODE>makeMenu</CODE> builds the menu; it is used both by the window and by the icon bar icon, so Menu gives
+the same menu on either.<P>
+The icon bar icon uses the sprite <CODE>!snake</CODE>, which is the program's own - you'll see where it comes
+from in the next section. Clicking the icon opens the window again if it has been closed.<P>
+As with Doodle2 in chapter 10, closing Snake's window doesn't end the program: the icon stays on the icon
+bar, and <I>Quit</I> on the menu ends it. That's how most RISC OS applications behave. The last line of
+setting up answers the <CODE>Quit</CODE> message, so that the Task Manager can quit Snake too - when you shut
+the computer down, for example.<P>
+
+<H2>Keeping the best score</H2>
+<!--#listing !Snake/!RunImage 108-112-->
+The best score is kept in a Text file called <CODE>HighScore</CODE>. It goes in the same directory as the
+program: <CODE>ctx.dir</CODE> is the directory the program was run from, so <CODE>ctx.dir + '.HighScore'</CODE>
+is its full name, wherever the game has been copied to.<P>
+The file just holds the number as text, so it is written with <CODE>String(best)</CODE> and read back with
+<CODE>Number(...)</CODE>. If the file doesn't exist yet - the first time the game is played - or doesn't
+hold a number, <CODE>loadBest</CODE> gives 0. <CODE>Number('rubbish')</CODE> is <CODE>NaN</CODE> ("not a
+number"), and <CODE>NaN || 0</CODE> is 0, because <CODE>||</CODE> gives its right-hand side when the
+left-hand side counts as false.<P>
+<B>Note</B>: real RISC OS applications keep settings like this in <CODE>Choices:</CODE>, the directory
+<CODE>!Boot.Choices</CODE>, so that the application itself can be on a read-only disc or shared over a
+network. Keeping it inside the application is simpler, and fine for a game of your own.<P>
+
+<H2>Making it an application</H2>
+You have been running JavaScript programs by double-clicking a single JSScript file. Snake is different: it
+is an <I>application</I>. In RISC OS an application is a directory whose name starts with <CODE>!</CODE>. The
+Filer shows it with the application's own icon rather than as a directory, and double-clicking it runs the
+application instead of opening the directory:<P>
+<!--#pic SnakeIcon-->
+To see inside, hold down Shift and double-click it:<P>
+<!--#pic SnakeDir-->
+Each of the files starting with <CODE>!</CODE> has a special job:<P>
+<PRE>
+!Run       What happens when you double-click the application.
+!Boot      What happens when the Filer first sees it.
+!Sprites   The application's icons.
+!Help      Text shown by Help on the Filer's menu.
+!RunImage  The program itself: here, a JavaScript module.
+</PRE>
+Board and Game are the program's other modules, and <CODE>HighScore</CODE> appears once a game has been
+played.<P>
+<H3>!Run</H3>
+<CODE>!Run</CODE> is an Obey file: a list of <CODE>*</CODE> commands, run one after another, as if you had
+typed them at the command line (F12).<P>
+<!--#listing !Snake/!Run-->
+The first line, starting with <CODE>|</CODE>, is a comment. The rest does three things:<P>
+<DL>
+<DT><DD>1  <CODE>Set Snake$Dir &lt;Obey$Dir&gt;</CODE> sets a <I>system variable</I>. While an Obey file
+runs, <CODE>Obey$Dir</CODE> holds the name of the directory it is in, so <CODE>Snake$Dir</CODE> ends up
+holding the application's full name, for example <CODE>ADFS::HardDisc4.$.Examples.JS.!Snake</CODE>.
+Anything can then find the application's files through <CODE>&lt;Snake$Dir&gt;</CODE>, wherever it has been
+put.<P>
+<DT><DD>2  <CODE>IconSprites</CODE> loads the application's sprites into the Wimp's sprite pool, where
+windows and the icon bar can find them by name. That's how <CODE>addIconbarIcon</CODE> finds
+<CODE>!snake</CODE>.<P>
+<DT><DD>3  <CODE>Run &lt;Snake$Dir&gt;.!RunImage %*0</CODE> runs the program. <CODE>%*0</CODE> passes on
+anything that followed the application's name when it was run - for example a file dropped on it. Because
+<CODE>!RunImage</CODE> is a JSScript file, <CODE>Run</CODE> starts it with <CODE>JSRun</CODE>, and the task is
+named after the application, Snake. The program's <CODE>ctx.dir</CODE> is the application directory.<P>
+</DL>
+<H3>!Boot and !Sprites</H3>
+<!--#listing !Snake/!Boot-->
+The Filer runs an application's <CODE>!Boot</CODE> file the first time it displays the application, even
+before it has been run. Snake's loads the sprites, so that the Filer can show the snake icon straight
+away.<P>
+The Filer shows an application with the sprite that has the application's name in lower case,
+<CODE>!snake</CODE>, and uses <CODE>sm!snake</CODE> for its small-icon display. Both are in the sprite file
+<CODE>!Sprites</CODE>. You can look at them, and change them, in Paint: double-click <CODE>!Sprites</CODE>
+in the application directory.<P>
+<H3>!Help</H3>
+<CODE>!Help</CODE> is an ordinary Text file. Click Menu over the application in a directory display and
+choose <I>App. '!Snake' &gt; Help</I> to read it.<P>
+<H3>Your own copy</H3>
+Because everything is found through <CODE>ctx.dir</CODE> and <CODE>&lt;Snake$Dir&gt;</CODE>, the application
+works from anywhere. Drag !Snake into your MyProgs directory to make your own copy, and change that one: the
+original stays in <CODE>Examples.JS</CODE> to go back to.<P>
+<H3>Making an application of your own</H3>
+To turn any program of yours into an application:<P>
+<DL>
+<DT><DD>1  Make a directory whose name starts with <CODE>!</CODE>, for example <CODE>!Doodle</CODE>. (To
+open it, Shift-double-click it.)<P>
+<DT><DD>2  Put the program in it, as a JSScript file called <CODE>!RunImage</CODE>. It can be a script or,
+as here, a module with other modules beside it.<P>
+<DT><DD>3  Make a <CODE>!Run</CODE> file: in Edit, <I>Menu &gt; Create &gt; Obey</I>. Copy Snake's, changing
+<CODE>Snake$Dir</CODE> to your application's name.<P>
+<DT><DD>4  If you'd like your own icons, copy Snake's <CODE>!Sprites</CODE> and <CODE>!Boot</CODE> and
+change the sprites in Paint, renaming them after your application. Otherwise leave out the
+<CODE>IconSprites</CODE> line and use one of the Wimp's sprites for your icon bar icon, such as
+<CODE>'application'</CODE>.<P>
+</DL>
+
+<H2>Where to go from here</H2>
+You have come a long way from <CODE>print('Hello, world!')</CODE>: values and variables, decisions and
+loops, functions, arrays and objects; windows, drawing, the mouse and keyboard, timers, menus, the icon bar,
+modules and files. That is the whole toolkit of most desktop programs.<P>
+The best way to carry on is to write programs of your own. Start small, get something working, and add to
+it a piece at a time, running it at every stage - that's how Snake was built. Some ideas:<P>
+<UL>
+<LI>A calculator, a clock with an alarm, or a timer for boiling eggs.<P>
+<LI>A game: noughts and crosses, a memory game with cards to turn over, or Breakout.<P>
+<LI>A drawing program with a choice of shapes, building on Doodle.<P>
+<LI>A program that reads a Text file and draws a bar chart of the numbers in it.<P>
+</UL>
+When you want to know more about JavaScript itself, appendix A lists what the book didn't cover, and
+MDN Web Docs (from Mozilla) is a complete reference to the language on the web. Appendix B lists the parts
+of this desktop's programming interface the book has used.<P>
+
+<H2>Summary</H2>
+<UL>
+<LI>Plan a program by deciding what it must remember and what happens when.<P>
+<LI>Split a larger program into modules with one job each; keep the rules apart from the display.<P>
+<LI><CODE>unshift</CODE> adds to the start of an array and <CODE>pop</CODE> removes from the end. A
+<CODE>do ... while</CODE> loop always runs at least once.<P>
+<LI>An object can be a lookup table, from key codes to directions for example.<P>
+<LI>A timer made with <CODE>task.every</CODE> drives a game; <CODE>sound</CODE> and <CODE>beep</CODE> make
+noises.<P>
+<LI>An application is a directory whose name starts with <CODE>!</CODE>, with <CODE>!Run</CODE>,
+<CODE>!Boot</CODE>, <CODE>!Sprites</CODE>, <CODE>!Help</CODE> and the program itself, usually called
+<CODE>!RunImage</CODE>.<P>
+<LI><CODE>&lt;Obey$Dir&gt;</CODE> (in <CODE>!Run</CODE>), a variable such as <CODE>&lt;Snake$Dir&gt;</CODE> and
+<CODE>ctx.dir</CODE> (in the program) let an application find its own files wherever it is.<P>
+</UL>
+
+<H2>Exercises</H2>
+Make your own copy of !Snake first (see <I>Your own copy</I> above), and change that.<P>
+<DL>
+<DT><DD>1  Make the board bigger, or the cells smaller. Which module do you need to change?<P>
+<DT><DD>2  Add a key, P, that pauses and restarts the game.<P>
+<DT><DD>3  Make the game speed up as the score goes up.<P>
+<DT><DD>4  Change the rules so that the snake goes off one side of the board and comes back on the
+other, instead of crashing into the edge.<P>
+<DT><DD>5  Draw the score in the corner of the board instead of (or as well as) in the title bar.<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Change <CODE>COLS</CODE> and <CODE>ROWS</CODE> in Game, or <CODE>CELL</CODE> in Board. Everything
+else - the size of the window included - is worked out from them. (Check that the starting snake is still
+on the board.)<P>
+<DT><DD>2  Keep a variable, <CODE>let paused = false;</CODE>, in <CODE>start</CODE>. In the key handler add
+<PRE>
+if (ev.char === 'p' || ev.char === 'P') {
+  paused = !paused;
+  return true;
+}
+</PRE>
+and in the timer function return early if <CODE>paused</CODE> is true.<P>
+<DT><DD>3  <CODE>task.every</CODE> always uses the same interval, so use <CODE>task.after</CODE> instead,
+which runs a function once, after a delay. Put the step in a function that sets up the next step itself,
+with a delay that depends on the score:
+<PRE>
+function tick() {
+  task.after(Math.max(60, SPEED - game.score * 5), tick);
+  ... the body of the old timer function ...
+}
+tick();
+</PRE>
+The next step is set up first, at the top of <CODE>tick</CODE>, so that the early <CODE>return</CODE> when
+the game is paused or over doesn't stop the clock for good.<P>
+<DT><DD>4  In <CODE>step</CODE>, instead of testing <CODE>outside</CODE>, wrap the new cell's position
+round:
+<PRE>
+cell.x = (cell.x + COLS) % COLS;
+cell.y = (cell.y + ROWS) % ROWS;
+</PRE>
+Adding <CODE>COLS</CODE> first keeps the value positive when <CODE>cell.x</CODE> is -1.<P>
+<DT><DD>5  <CODE>drawBoard</CODE> is already given the whole game, so the score is there, in
+<CODE>game.score</CODE>. Add this at the end of <CODE>drawBoard</CODE>, before the message:
+<PRE>
+g.fillStyle = 'white';
+g.textAlign = 'left';
+g.font = '14px sans-serif';
+g.fillText(`Score ${game.score}`, 6, 18);
+</PRE>
+</DL>

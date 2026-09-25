@@ -199,3 +199,13 @@ docs/ASSETS.md §5).
   gives files by extension.
 * `*Dismount` dismounts HostFS discs (still no effect for others). New commands `*HostFS`, `*HostMount`,
   `*HostDismount`, `*HostMounts`.
+
+## JavaScript programs on the disc (*JSRun) and the JavaScript tutorial — changes in shared code
+**Status:** done. Additive; new code in `src/core/jsrun.js`, `tools/disc-jstutor.mjs`, `tools/jstutor/`.
+* `src/main.js`: `Alias$@RunType_F81` = `JSRun %*0`; `installJSRun()` after `installBasicWimp()`; the handler
+  error reporter asks `os.hooks.programError(e)` first, so errors from a program's event handlers give its name
+  and line number.
+* `file_f81` / `small_f81` Filer icons are drawn at start-up (the BASIC file's frame with "JS").
+* `tools/lib/spritewrite.mjs`: writes small sprite files from character maps (as `tools/basicwimp-demo.mjs`).
+* `tools/build.mjs` runs `disc-jstutor.mjs`; it adds `$.Manuals.JSTutor`, `$.Examples.JS` and a line in
+  `!Bookworm`'s hot list.

@@ -506,7 +506,12 @@ export class Window extends Emitter {
       ctx.clearRect(0, 0, this.w, this.h);
       if (bg !== 255 && this._canvasOpts?.fill !== false) { ctx.fillStyle = wimpColour(bg); ctx.fillRect(0, 0, this.w, this.h); }
       ctx.translate(-this.scrollX, -this.scrollY);
-      try { this._onRedraw?.(ctx, this.visibleWork()); } catch (e) { console.error(e); }
+      try { this._onRedraw?.(ctx, this.visibleWork()); } catch (e) {
+        console.error(e);
+        // a JavaScript program's redraw error (src/core/jsrun.js) is reported once, not on every redraw
+        const k = String(e);
+        if (this._redrawError !== k) { this._redrawError = k; globalThis.os?.hooks?.programError?.(e); }
+      }
     });
   }
 }
