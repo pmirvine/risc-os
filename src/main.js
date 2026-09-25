@@ -17,6 +17,7 @@ import { cli } from './core/cli.js';
 import { installCommands, timeString } from './core/commands.js';
 import { initDevices } from './core/devices.js';
 import { initHostFS } from './core/hostfs/ui.js';
+import { installJSRun } from './core/jsrun.js';
 import { apps } from './core/app.js';
 import { os } from './core/os.js';
 import { loadMessages } from './core/messages.js';
@@ -62,6 +63,7 @@ function setDefaultVars() {
   set('Alias$@LoadType_FFB', 'BASIC -load "%0" %*1');
   set('Alias$@RunType_FEA', 'Desktop -file %*0');
   set('Alias$@RunType_FED', 'WimpPalette %0');   // FileSwitch default (Palette files); *WimpPalette is a no-op here
+  set('Alias$@RunType_F81', 'JSRun %*0');         // JavaScript programs (src/core/jsrun.js)
   set('Alias$.', 'Cat %*0');
 }
 
@@ -90,7 +92,7 @@ async function boot() {
   // *Desktop: the kernel's start-up text gives way to the grey screen and the Desktop welcome banner
   let banner = null;
   if (screen) { await screen.finish(); banner = await desktopBanner(wimp); }
-  setHandlerErrorReporter((e) => reportError(e.message ?? String(e)));
+  setHandlerErrorReporter((e) => { if (!os.hooks.programError?.(e)) reportError(e.message ?? String(e)); });
   wimp.iconbar = new IconBar(wimp);
   os.iconbar = wimp.iconbar;
   await filer.init();
@@ -100,6 +102,7 @@ async function boot() {
   await switcher.init();
   installBasicHost();
   installBasicWimp();                 // BASIC programs from the desktop / Wimp SWI bridge (TASKWINDOW agent)
+  installJSRun();                     // JavaScript programs on the disc (JSScript, &F81)
   await apps.loadRegistry();
   apps.ensureRomApps();
   await apps.bootAll();

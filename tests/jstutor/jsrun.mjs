@@ -1,0 +1,77 @@
+// *JSRun (src/core/jsrun.js): JavaScript programs on the disc, as scripts and modules, with errors that give
+// the line number.
+import { launch, BASE_URL } from '../core/pw.mjs';
+
+const { browser, page, logs } = await launch();
+await page.goto(BASE_URL + '?fast=1');
+await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+const r = await page.evaluate(async () => {
+  const msgs = [];
+  os.wimp.reportError = (m, o) => { msgs.push(`${m} [${o?.appName}]`); return Promise.resolve(1); };
+  let out = '';
+  os.hooks.jsOutput = (t, s) => { out += s; };
+  const v = os.vfs, J = 0xF81, D = 'RAM::RamDisc0.$.';
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+  const res = {};
+  const run = async (name, text, tail = '') => { v.writeFile(D + name, text, { filetype: J }); msgs.length = 0; out = ''; await os.cli.run(`Run ${D}${name}${tail ? ' ' + tail : ''}`); await sleep(150); return [...msgs]; };
+
+  res.alias = os.sysvars.get('Alias$@RunType_F81');
+  res.hello = [await run('Hello', 'let n = 6 * 7;\nprint("Hello", n, [1, "a"], { b: true });\n'), out];
+  res.helloTask = os.wimp.tasks.some((t) => t.name === 'Hello');   // still there: its output window is open
+  res.syntax = await run('Syn', 'let a = 1;\nlet b = ;\n');
+  res.runtime = await run('Rt', 'let a = 1;\n\nprint(nope);\n');
+  res.silent = [await run('Quiet', 'let x = 1;\n'), os.wimp.tasks.some((t) => t.name === 'Quiet')];
+  await run('Win', 'const w = task.createWindow({ title: "Win", x: 100, y: 100, w: 200, h: 100,\n  extent: { w: 200, h: 100 }, flags: { title: true, close: true }, workButton: "click" });\nw.on("click", () => {\n  undefinedThing();\n});\nw.open();\n');
+  const win = os.wimp.tasks.find((t) => t.name === 'Win');
+  res.winAlive = !!win;
+  for (const w of win.windows) w.emit('click', { button: 'select', x: 5, y: 5 });
+  res.handler = [...msgs];
+  win.quit();
+  msgs.length = 0;
+  await run('Tick', 'let n = 0;\ntask.every(20, () => {\n  n++;\n  if (n === 2) alsoUndefined();\n});\n');
+  await sleep(200);
+  res.timer = [...msgs];
+  os.wimp.tasks.find((t) => t.name === 'Tick')?.quit();
+  res.input = [await run('Ask', 'os.hooks.jsInput = ["Ann"];\nconst name = await input("Name? ");\nprint("Hi " + name);\n'), out];
+
+  v.mkdir(D + 'Mod');
+  v.writeFile(D + 'Mod.Helper', 'export function twice(x) { return x * 2; }\n', { filetype: J });
+  v.writeFile(D + 'Mod.Main', "import { print } from 'riscos';\nimport { twice } from './Helper';\nexport default function start(task, ctx) {\n  print('twice', twice(21), ctx.argv.join(','));\n}\n", { filetype: J });
+  msgs.length = 0; out = '';
+  await os.cli.run(`Run ${D}Mod.Main foo bar`); await sleep(150);
+  res.module = [[...msgs], out];
+  v.writeFile(D + 'Mod.Bad', "import { print } from 'riscos';\nexport default function start() {\n  print(;\n}\n", { filetype: J });
+  msgs.length = 0;
+  await os.cli.run(`Run ${D}Mod.Bad`); await sleep(300);
+  res.moduleSyntax = [...msgs];
+  v.writeFile(D + 'Mod.Oops', "import { twice } from './Helper';\nexport default function start() {\n  twice(1);\n  nothing();\n}\n", { filetype: J });
+  msgs.length = 0;
+  await os.cli.run(`Run ${D}Mod.Oops`); await sleep(150);
+  res.moduleRuntime = [...msgs];
+
+  v.mkdir(D + '!App');
+  v.writeFile(D + '!App.!Run', 'Set App$Dir <Obey$Dir>\nRun <App$Dir>.!RunImage %*0\n', { filetype: 0xFEB });
+  v.writeFile(D + '!App.!RunImage', 'print(task.name, ctx.dir);\n', { filetype: J });
+  out = '';
+  await os.filer.run(D + '!App'); await sleep(300);
+  res.app = out;
+  return res;
+});
+const ok = (name, v, detail) => console.log(`${v ? 'PASS' : 'FAIL'} ${name}${v ? '' : ' ' + JSON.stringify(detail)}`);
+ok('JSScript run action', r.alias === 'JSRun %*0', r.alias);
+ok('script prints', !r.hello[0].length && r.hello[1] === 'Hello 42 [1, "a"] {b: true}\n', r.hello);
+ok('output window keeps the task until closed', r.helloTask);
+ok('syntax error line', r.syntax.length === 1 && /\(line 2\) \[Syn\]$/.test(r.syntax[0]), r.syntax);
+ok('runtime error line', r.runtime.length === 1 && /nope is not defined \(line 3\)/.test(r.runtime[0]), r.runtime);
+ok('a program with nothing left running ends', !r.silent[0].length && !r.silent[1], r.silent);
+ok('window program keeps running', r.winAlive);
+ok('error in a click handler', r.handler.length === 1 && /undefinedThing is not defined \(line 4\) \[Win\]/.test(r.handler[0]), r.handler);
+ok('error in a timer', r.timer.length === 1 && /alsoUndefined is not defined \(line 4\)/.test(r.timer[0]), r.timer);
+ok('input()', !r.input[0].length && r.input[1].includes('Hi Ann'), r.input);
+ok('module with imports', !r.module[0].length && r.module[1] === 'twice 42 foo,bar\n', r.module);
+ok('module syntax error line', r.moduleSyntax.length === 1 && /\(line 3\)/.test(r.moduleSyntax[0]), r.moduleSyntax);
+ok('module runtime error line', r.moduleRuntime.length === 1 && /nothing is not defined \(line 4\)/.test(r.moduleRuntime[0]), r.moduleRuntime);
+ok('application directory', /^App RAM::RamDisc0\.\$\.!App\n$/.test(r.app), r.app);
+const errs = logs.filter((l) => /PAGEERROR/.test(l));
+if (errs.length) console.log(errs.join('\n'));
+await browser.close();
