@@ -77,6 +77,7 @@ export class Filer {
     if (!st || st.type !== 'dir') { wimp.reportError(st ? `'${st.name}' is a file` : `Directory '${vfs.leaf(canon) || canon}' not found`, { appName: 'Filer' }); return null; }
     const key = canon.toLowerCase();
     let v = this.viewers.get(key);
+    vfs.revalidate(canon);                  // HostFS: look for changes made on the host
     if (v) { v.win.open({ behind: 'top' }); return v; }
     v = new DirViewer(this, canon, opts);
     this.viewers.set(key, v);

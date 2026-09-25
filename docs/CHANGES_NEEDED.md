@@ -178,3 +178,24 @@ docs/ASSETS.md §5).
 * `src/core/cli.js`, `commands.js`: `-fs-command` prefix; Joystick 0.22 in the module list.
 * `src/apps/Printers` descriptor: `files` (the classes' PaperRO) and `boot` (Printers$Path, as its !Boot);
   `src/apps/SysRes/scrap.js`: !Scrap's `!Boot` sets up `ScrapDirs.ScrapDir` (used by !ShowScrap).
+
+## HostFS (host folders as discs) — changes in shared code
+**Status:** done. All additive; new code in `src/core/hostfs/` and `tools/hostfs-server.mjs`.
+* `src/core/vfs.js`: `Node` is exported; `Disc` takes a `host` driver, called by `_persist` / `_unpersist` instead of
+  the IndexedDB overlay (`writeFile` and `copy` pass `{data: true}` when contents change; `rename` on a host disc
+  hands the node to the driver as a whole). `addDisc({dynamic})` emits `discs`; new `removeDisc(disc)` (the CSD, URD,
+  library and previous directory fall back to the hard disc), `registerFS(name, ...aliases)` (the FS name table
+  `fsNames` replaces the fixed list in `_fsName`), `revalidate(path)`, and `usage()` uses `disc.host.space` when the
+  host reports its free space. `_parseCanonical` falls back to the hard disc for a disc that has gone (it returned
+  `disc: null`); `FS:path` for a filing system with no disc now gives "No <FS> disc is mounted" instead of silently
+  using the current disc.
+* `src/core/cli.js`: `hostfs:` command prefix. `src/core/filer.js` `openDir` calls `vfs.revalidate`.
+* `src/core/devices.js`: `os.free.showDisc(disc)`. `src/main.js`: `initHostFS()` after `initDevices()`.
+* `src/core/pinboard.js`: pins on a HostFS disc that isn't mounted are kept (`parked`) and come back when it is,
+  instead of being dropped.
+* `serve.mjs`: `--host Name=/path`, `--host-ro Name=/path` and `/__hostfs/` (tools/hostfs-server.mjs); every static
+  response carries `X-HostFS: 1`, so the page only asks for `/__hostfs/` from this server.
+* `assets/filetypes.json` (+ `tools/misc.mjs`): names for later file types (JSON, WebP, MP4, Zip, SVG, …) that HostFS
+  gives files by extension.
+* `*Dismount` dismounts HostFS discs (still no effect for others). New commands `*HostFS`, `*HostMount`,
+  `*HostDismount`, `*HostMounts`.

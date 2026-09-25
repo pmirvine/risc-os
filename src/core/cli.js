@@ -87,7 +87,7 @@ export class OSCLI {
     }
     if (c.safe && /^(run|basic|wimptask|desktop|filer_run|filer_opendir|taskwindow|shellcli|chain|go|@runtype_\w+)$/i.test(name)) return;
     // FS prefix "adfs:cat" -> just run the command (single FS model)
-    const fsm = /^(adfs|ram|resources):(.+)$/i.exec(name);
+    const fsm = /^(adfs|ram|resources|hostfs):(.+)$/i.exec(name);
     if (fsm && this.find(fsm[2])) name = fsm[2];
     // aliases
     if (!noAlias) {

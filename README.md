@@ -24,6 +24,7 @@ Plain modern JavaScript ES modules. There is no bundler, no framework and no run
 
 ```sh
 node serve.mjs            # static server on http://localhost:8371/ (node serve.mjs 9000 for another port)
+node serve.mjs --host Work=~/riscos-files   # ... with a host folder as HostFS::Work (see HostFS below)
 ```
 
 Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static web server works. The first visit in a
@@ -75,6 +76,40 @@ reset:
 * Hold **Delete** while the page loads ("Delete-power-on") to reset both. Hold **R** ("R-power-on") to reset the
   configuration only.
 * Or load `?reset=all`, `?reset=disc` or `?reset=cmos`.
+
+### HostFS: folders from this computer
+
+As with RPCEmu's or VirtualRPC's HostFS, folders on the host machine can be mounted as RISC OS discs,
+`HostFS::<name>.$`. Each mounted folder gets an icon on the icon bar (Select opens it; Menu has Rescan, Free and
+Dismount) and can be used like any other disc: open and save files in applications, copy, rename and delete in the
+Filer, run BASIC and Obey applications from it, `*Cat HostFS::Work.$`.
+
+* **Click the HostFS icon** (Chrome, Edge and other Chromium browsers) to pick a folder. Changes are written back to
+  the folder. The browser remembers the folder: after a reload it comes back, or shows a "no disc" icon to click to
+  give permission again.
+* **Or name folders when starting the server**, which works in every browser and also keeps RISC OS datestamps:
+  ```sh
+  node serve.mjs --host Work=~/riscos-files --host-ro Photos=~/Pictures
+  ```
+  These mount at start-up (HostFS icon menu > Server folders, or `*HostMount Work`). The server only answers
+  requests from this machine, and only for the folders named.
+* **Firefox and Safari** can't write to a picked folder: *Mount read-only...* on the HostFS icon's menu, or dropping a
+  folder onto the page, mounts a read-only snapshot. (In Chromium a dropped folder mounts read-only at first, as the
+  browser only asks for write access after a click: choose *Allow changes* from its icon's menu.)
+
+File types follow RPCEmu's convention: a `,xxx` suffix gives the type (`Sprites,ff9`), `,llllllll-eeeeeeee` the
+load and exec addresses of an untyped file, otherwise the extension is looked up (`photo.png` is a PNG, &B60;
+see `src/core/hostfs/mimemap.js`) and anything else is Text. Files saved from RISC OS get a suffix only when their
+type can't be told from the name, so a PNG is saved as `photo.png` but a sprite file as `Sprites,ff9`. The host's
+`.` and RISC OS's `/` swap places (`photo.png` is `photo/png`), as do space and hard space, `#` and `?`, `$` and
+`<`, `^` and `>`; characters RISC OS can't have in names are shown as `_`, and the file keeps its host name. Files
+the host has as read-only show as locked. Mounting a folder holding more than 20,000 objects asks first. Commands: `*HostFS`,
+`*HostMount [<server folder>]`, `*HostDismount <name>` (or `*Dismount HostFS::<name>`), `*HostMounts`.
+
+Limits: a folder picked in the browser gets "now" as the date of anything saved to it (the API can't set file
+dates), and renaming a directory there copies it. Changes made on the host show up when a Filer window opens the
+directory, when the browser window gets the focus again, or at once where the browser or server can watch the
+folder.
 
 ## What's included
 
@@ -151,6 +186,7 @@ src/core/              the operating system
   wimp.js window.js icons.js menu.js input.js     window manager, icons, menus, pointer / keyboard
   iconbar.js filer.js fileraction.js pinboard.js switcher.js devices.js
   vfs.js               filing system: ADFS / RAM / Resources discs, seed disc + IndexedDB overlay
+  hostfs/             HostFS: host folders as discs (File System Access API, serve.mjs --host, read-only snapshots)
   cli.js commands.js sysvars.js   OSCLI, * commands, system variables and GSTrans
   app.js               application registry: descriptors, lazy load(), Filer_Boot, file types, * commands
   sprites.js templates.js messages.js fonts.js dialogs.js   resources and standard dialogues

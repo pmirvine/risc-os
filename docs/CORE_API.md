@@ -278,6 +278,16 @@ File types: numbers `0x000–0xFFF`; `-1` untyped (load/exec), `0x1000` director
 RISC OS messages (e.g. "File 'x' not found"). Hard disc = seed disc (`assets/disc`) + IndexedDB overlay (persistent),
 floppy persistent, RAM disc not; Resources: is read-only.
 
+**HostFS** (`src/core/hostfs/`): host folders mounted as `HostFS::<name>.$` discs, added and removed at run time
+(`vfs.addDisc({…, host, dynamic: true})`, `vfs.removeDisc(disc)`, `vfs.registerFS('HostFS')`, `vfs.on('discs')`).
+They behave like the hard disc: the whole tree is scanned on mounting so metadata calls stay synchronous, contents
+are read from the host on first use, and changes go to the tree at once and to the host behind the scenes through
+the disc's `host` driver (`persist(node, {data})`, `removed(node)`, `revalidate(node)`) instead of IndexedDB.
+`vfs.revalidate(dir)` (the Filer calls it when it opens a directory) looks for changes made on the host.
+`os.hostfs`: `{hostfs, slots, pickFolder(), pickReadOnly(), mountBackend(backend, opts), dismount(name)}`;
+`os.hostfs.hostfs.mounts[i].flush()` resolves when every change has reached the host. Name and type mapping:
+`src/core/hostfs/names.js` (README, "HostFS").
+
 ## 9. Commands (`cli`)
 ```js
 await os.cli.run('Copy RAM::RamDisc0.$.a $.b ~CF', { out })   // out: {write(s), writeln(s)}; default: desktop *Command window
