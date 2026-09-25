@@ -1,1 +1,196 @@
-<P>(This chapter is being written.)<P>
+This appendix lists the parts of the desktop's programming interface that this book uses on top of those in
+appendix B of the first book. They are all among the names a module imports from <CODE>'riscos'</CODE>. The
+chapter that explains each part is given in brackets.<P>
+
+<H2>Applications and their files</H2>
+<H3>A file type of your own (7)</H3>
+An application that saves documents gives them a file type: a number from &amp;000 to &amp;FFF that no
+other program uses (!Contacts uses &amp;1C4, !Organiser &amp;1C5). Its <CODE>!Boot</CODE> file, which the
+Filer runs when it first shows the application, names the type and says what double-clicking one does:<P>
+<PRE>
+Set Contacts$Dir &lt;Obey$Dir&gt;
+IconSprites &lt;Obey$Dir&gt;.!Sprites
+Set File$Type_1C4 Contacts
+Set Alias$@RunType_1C4 Run &lt;Contacts$Dir&gt;.!Run %%*0
+</PRE>
+In an Obey file, <CODE>%0</CODE>, <CODE>%*0</CODE> and so on are replaced by the file's own parameters, so
+<CODE>%%</CODE> is written for a <CODE>%</CODE> that has to stay: the run action then passes the
+double-clicked file's name on to <CODE>!Run</CODE>. The <CODE>!Sprites</CODE> file holds the file icons,
+<CODE>file_1c4</CODE> and <CODE>small_1c4</CODE>, as well as the application's.<P>
+<H3>The file it was started with (7)</H3>
+A file passed to a program when it starts is in <CODE>ctx.argv[0]</CODE>. (<CODE>ctx.file</CODE> is the
+program itself, and <CODE>ctx.dir</CODE> the directory it's in.)<P>
+<PRE>
+const file = ctx.argv[0];
+if (file) await app.open(file);
+</PRE>
+<H3>Messages (7, 9)</H3>
+<DL>
+<DT>task.onMessage('DataOpen', (msg) =&gt; ...)
+<DD>A file of some type was double-clicked while the program is running: <CODE>msg.path</CODE>,
+<CODE>msg.filetype</CODE>. Return <CODE>true</CODE> to take it; the running copy then loads it rather than a
+second copy starting.<P>
+<DT>task.onMessage('PreQuit', (msg) =&gt; ...)
+<DD>The desktop is shutting down. With unsaved changes, call <CODE>msg.object()</CODE> to stop it, ask, and
+if the user discards them quit, and start the shutdown again unless only this program was being quit
+(<CODE>msg.single</CODE>):
+<PRE>
+if (!msg.single) wimp.emit('hotkey:CtrlShiftF12', {});
+</PRE>
+<DT>task.onMessage('Quit', () =&gt; task.quit())
+<DD>Quit now.<P>
+</DL>
+
+<H2>Windows, panes and sprites</H2>
+<H3>Panes (5)</H3>
+A pane is a window that the Wimp keeps in front of another and moves with it, such as a toolbar. Make it with
+<CODE>flags: { pane: true }</CODE> and attach it:<P>
+<PRE>
+w.attachPane(pane, { dx: 0, dy: 0, h: 44, fitWidth: true });
+w.attachPane(box, { dx: 0, dy: 0, w: 64, fitHeight: true });
+</PRE>
+<CODE>dx</CODE>, <CODE>dy</CODE> place it relative to the window's work area on screen;
+<CODE>fitWidth</CODE> / <CODE>fitHeight</CODE> make it as wide or as tall as the window. It opens, closes
+and goes away with the window.<P>
+<H3>A sprite area of your own (5)</H3>
+<PRE>
+const area = sprites.spritesFromFile(
+  await vfs.readFile(ctx.dir + '.Sprites'));
+task.createWindow({ ..., spriteArea: area });
+</PRE>
+Icons in a window with a <CODE>spriteArea</CODE> find their sprites there first. Keeping a program's pictures
+out of the Wimp's pool (where <CODE>IconSprites</CODE> puts them) means they can't clash with another
+program's sprites of the same names.<P>
+
+<H2>Icons and fields</H2>
+<H3>Icon descriptions (3)</H3>
+<PRE>
+{ x, y, w, h, text: 'Save', border: true, filled: true,
+  hcentre: true, vcentre: true, button: 'click',
+  validation: 'R6,3', name: 'save', help: 'Click SELECT to save.' }
+</PRE>
+<DL>
+<DT>button
+<DD><CODE>'click'</CODE> (reports clicks), <CODE>'writable'</CODE> (a field you type into),
+<CODE>'radio'</CODE> (selected by a click: an option icon with <CODE>sprite: 'optoff'</CODE>,
+<CODE>validation: 'Soptoff,opton'</CODE>), <CODE>0</CODE> (nothing: a label or display field).<P>
+<DT>validation
+<DD><CODE>R5,3</CODE> an action button; <CODE>R6,3</CODE> the default button (a thicker border);
+<CODE>A0-9</CODE> the characters that may be typed; <CODE>S</CODE> the sprites.<P>
+<DT>name, help
+<DD>Find it with <CODE>w.iconByName('save')</CODE>; <CODE>help</CODE> is its interactive help.<P>
+<DT>Changing one
+<DD><CODE>icon.setText(t)</CODE>, <CODE>icon.setSprite(s)</CODE>, <CODE>icon.setState({ shaded,
+selected, deleted })</CODE>; <CODE>icon.text</CODE>, <CODE>icon.selected</CODE>,
+<CODE>icon.shaded</CODE>.<P>
+</DL>
+<H3>Moving between fields (3)</H3>
+In a window made with <CODE>returnNext: true</CODE>, Return in a writable field moves to the next one; the
+last field's Return is reported as a key, so it can press the default button. Tab, Shift-Tab, Up and Down move
+through the writable fields and text areas in reading order (top to bottom, left to right). When the caret
+moves from one icon to another the window gets a <CODE>'caretmove'</CODE> event, <CODE>{ from, to }</CODE>.
+<CODE>wimp.setCaret(w, icon)</CODE> puts the caret in a field.<P>
+<H3>TextArea (3)</H3>
+Several lines of editable text in a window, for addresses and notes:<P>
+<PRE>
+const notes = new TextArea(w, { x: 8, y: 40, w: 300, h: 120,
+  text: 'Hello' });
+notes.text                   // the text; setting it redraws
+notes.on('change', () =&gt; ...)    // after every edit
+notes.focus()                // give it the caret
+notes.readOnly = true
+</PRE>
+It draws itself, takes clicks inside it and keys while it has the caret (before the window's own handlers),
+wraps words and scrolls. Chapter 17 builds a text area of your own.<P>
+
+<H2>Dialogue boxes and messages</H2>
+<DL>
+<DT>reportError(message, { category, cancel, title }) (2)
+<DD>An error box, or with <CODE>category: 'info'</CODE> an information box. With <CODE>cancel: true</CODE>
+it has OK and Cancel; it resolves 1 for OK and 2 for Cancel.<P>
+<DT>query({ task, title, message, buttons }) (4)
+<DD>A box with your buttons (<CODE>['Delete', 'Cancel']</CODE>); resolves the button's text, or null if it
+was closed. The first button is Return's, the last Escape's.<P>
+<DT>discardChanges(task, message) (7)
+<DD>The Discard/Cancel question; resolves <CODE>true</CODE> to discard.<P>
+<DT>infoBox(task, { name, purpose, author, version }) (9)
+<DD>An Info box, for an <I>Info</I> submenu.<P>
+</DL>
+
+<H2>Choices (9)</H2>
+<PRE>
+const prefs = await choices.read('Contacts', { sort: 'last' });
+choices.write('Contacts', prefs);
+</PRE>
+Choices are kept as JSON in <CODE>Choices:Contacts</CODE> (written to <CODE>&lt;Choices$Write&gt;</CODE>),
+not beside the program, as the Style Guide asks: a program may be on a disc that can't be written to.
+<CODE>read</CODE> gives the saved choices over the defaults, or a copy of the defaults if there are
+none.<P>
+
+<H2>Drag and drop</H2>
+<DL>
+<DT>'dataload' (8)
+<DD>Files dropped on a window: <CODE>ev.files</CODE>, each <CODE>{ path, filetype, name }</CODE>. On the
+icon bar icon: its <CODE>onDataLoad(ev)</CODE>.<P>
+<DT>'datasave' (8)
+<DD>Another program's Save box dropped on a window: <CODE>ev.leafname</CODE>, <CODE>ev.filetype</CODE>, and
+<CODE>await ev.receive()</CODE> gives the data. On the icon bar icon: <CODE>onDataSave(ev)</CODE>.<P>
+<DT>dragSave(ev, { task, leafname, filetype, getData, sprite }) (8)
+<DD>Call from a <CODE>'drag'</CODE> event to drag a file icon out of a window. Dropped on a directory
+display the file is written there; dropped on another program's window the data goes to it. Resolves the
+file's full name, <CODE>''</CODE> if the data went straight into a program, or null.<P>
+<DT>wimp.drag({ event, box, sprite, type }) (Part Two)
+<DD>Drag a box or sprite with the pointer (<CODE>event</CODE> is the drag event's
+<CODE>pointerEvent</CODE>, <CODE>box</CODE> on the screen); resolves where it was dropped:
+<CODE>{ window, icon, x, y, sx, sy, shift }</CODE> (<CODE>x</CODE>, <CODE>y</CODE> in that window's work
+area). The organiser drags entries to other days and into the wastebasket this way.<P>
+</DL>
+
+<H2>Dates and text (Part Two)</H2>
+<PRE>
+formatTime('%W3 %ZDY%ST %MO %CE%YR', date)
+                           // 'Fri 25th September 2026'
+DAYS[0] 'Sunday'   MONTHS[0] 'January'   ordinal(22) 'nd'
+textWidth('Hello', '12px Homerton')   // pixels
+</PRE>
+Some of <CODE>formatTime</CODE>'s codes, as RISC OS's Territory module has them:<P>
+<PRE>
+%24 %12 hours (0-23, 1-12)    %MI minutes   %SE seconds
+%AM am or pm                  %WE Friday    %W3 Fri
+%DY 25 (%ZDY without a 0)     %ST th        %MO September
+%M3 Sep   %MN 09              %CE%YR 2026   %YR 26
+</PRE>
+
+<H2>Printing (16)</H2>
+<PRE>
+if (!os.printers) reportError('Load !Printers first');
+else os.printers.print({ title: 'Week', canvas });
+</PRE>
+<CODE>os.printers</CODE> is there only while !Printers is running. <CODE>print</CODE> takes
+<CODE>{ title, text }</CODE>, <CODE>{ title, html, css }</CODE>, <CODE>{ title, canvas }</CODE> or
+<CODE>{ title, images }</CODE>. Call it from a click or menu choice.<P>
+
+<H2>Interactive help (9)</H2>
+While !Help is running it shows the help for whatever the pointer is over:<P>
+<DL>
+<DT>An icon
+<DD>its <CODE>help</CODE>.<P>
+<DT>A menu item
+<DD><CODE>help</CODE> in its description (text, or a function giving text).<P>
+<DT>A window
+<DD><CODE>help</CODE> in its description, or a <CODE>'helprequest'</CODE> handler that sets
+<CODE>ev.text</CODE> (for help that depends on where the pointer is).<P>
+<DT>The icon bar icon
+<DD><CODE>help</CODE> given to <CODE>task.addIconbarIcon</CODE>.<P>
+</DL>
+<CODE>|M</CODE> in help text starts a new line.<P>
+
+<H2>Templates from the disc</H2>
+The book builds its windows in code, but a program can also use a Templates file made with a template
+editor on another RISC OS computer:<P>
+<PRE>
+const w = await task.createWindowFromTemplate(
+  ctx.dir + '.Templates', 'main');
+const t = await loadTemplates(ctx.dir + '.Templates');
+</PRE>
+Icons keep their template numbers: <CODE>w.icons[3]</CODE>.<P>
