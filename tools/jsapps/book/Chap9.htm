@@ -1,1 +1,208 @@
-<P>(This chapter is being written.)<P>
+Contacts now does everything an address book must. This chapter adds what makes an application pleasant to
+use and a good citizen of the desktop: undo, choices that are remembered, interactive help, information
+about a file, and taking care of your work when the desktop shuts down. At the end is the finished
+<CODE>!Contacts</CODE>, and a checklist of what a well-behaved RISC OS application does.<P>
+<!--#pic Contacts-->
+
+<H2>Undo</H2>
+Everybody deletes the wrong thing sometimes. An application that can undo it makes people confident enough
+to try things. The Style Guide gives undo and redo the keys F8 and F9.<P>
+The idea is to describe each change as an object that knows how to make the change and how to take it back:
+a <I>command</I>. An object with <CODE>do</CODE> and <CODE>undo</CODE> methods, and a name to show in the
+menu:<P>
+<PRE>
+{ name: 'Delete',
+  do: () =&gt; book.remove(bob.id),
+  undo: () =&gt; book.put(bob) }
+</PRE>
+Instead of changing the book directly, the program gives the command to an <CODE>Undo</CODE> object, which
+carries it out and remembers it. The last toolkit module for Part One keeps two stacks - the changes that can
+be undone, and the ones that have been undone and could be redone:<P>
+<!--#listing toolkit/Undo-->
+<CODE>do</CODE> carries out a command and pushes it onto <CODE>done</CODE>. <CODE>undo</CODE> pops the last
+one, takes it back, and pushes it onto <CODE>undone</CODE>; <CODE>redo</CODE> does the reverse. Making a new
+change empties <CODE>undone</CODE>: once you've done something new, redoing the old change would make no
+sense. Only the last 50 changes are kept, so memory isn't filled up. <CODE>at(-1)</CODE> is an array's last
+item, and each change of state emits <CODE>'change'</CODE>, so the menus and toolbar can follow.<P>
+Each document has its own <CODE>Undo</CODE> (<CODE>this.undo = new Undo()</CODE> in the
+<CODE>Document</CODE> constructor), so undoing in one address book never touches another.<P>
+
+<H3>Changes as commands</H3>
+The three changes in <CODE>MainWindow</CODE> become commands:<P>
+<!--#listing !Contacts/MainWindow 112-157-->
+Undoing needs the book to put back a contact exactly as it was, with the same <CODE>id</CODE>. The
+<CODE>Book</CODE> gets one more method for that:<P>
+<!--#listing !Contacts/Model 43-47-->
+Look at the <I>New</I> command. The first time it runs, <CODE>c</CODE> is <CODE>null</CODE>, so
+<CODE>c?.id</CODE> is <CODE>undefined</CODE> and the book gives the contact a new id. If it is undone and
+then redone, <CODE>c</CODE> is the contact it made before, so the redone contact gets the same id again -
+important, because a later command may refer to it by that id.<P>
+The <I>Change</I> command keeps a copy of the contact as it was (<CODE>before</CODE>), and <I>Delete</I>
+keeps the contacts it removes (<CODE>gone</CODE>). Importing a file from chapter 8 is one command too, so a
+whole import can be undone in one go.<P>
+
+<H3>Showing what can be undone</H3>
+The Undo and Redo buttons in the toolbar are shaded when there's nothing to undo or redo, and the menu says
+what would be undone:<P>
+<!--#listing !Contacts/MainWindow 96-102-->
+<!--#listing !Contacts/MainWindow 236-239-->
+A menu item's <CODE>text</CODE> can be a function, called each time the menu opens - so it reads
+<I>Undo Delete</I> after a delete. <CODE>trim()</CODE> takes the space off the end when there's no name.<P>
+<!--#pic C9Undo-->
+
+<H2>Choices</H2>
+Most applications let you change how they behave, and remember your choices. The Style Guide says how:<P>
+<UL>
+<LI>A <I>Choices...</I> item on the icon bar menu opens a dialogue box.<P>
+<LI>The box has four buttons: <I>Default</I> puts the standard settings in the box, <I>Cancel</I> closes
+it, <I>Set</I> uses the settings now, and <I>Save</I> uses them and keeps them for next time.<P>
+<LI>Choices are saved in the Choices directory, not beside the application: the application may be on a
+disc you can't write to, or shared by several people.<P>
+</UL>
+The desktop provides <CODE>choices.read(name, defaults)</CODE> and <CODE>choices.write(name, value)</CODE>,
+which keep a JSON file called <CODE>name</CODE> in the Choices directory (<CODE>Choices:Contacts</CODE>).
+<CODE>read</CODE> returns the defaults for anything not saved yet. Contacts' module <CODE>Choices</CODE>
+uses them:<P>
+<!--#listing !Contacts/Choices-->
+The box is a <CODE>Form</CODE> with a pop-up menu for the sort order and an option icon for confirming
+deletions. <I>Default</I> is named in <CODE>stay</CODE>: pressing it doesn't close the box, but emits
+<CODE>'button'</CODE>, and the program puts the default settings in the fields. The box shows the sort
+order's name (<I>Surname</I>), while the program stores its key (<CODE>last</CODE>); <CODE>shown</CODE>
+turns one into the other.<P>
+<!--#pic ContactsChoices-->
+<CODE>!RunImage</CODE> reads the choices when Contacts starts (<CODE>prefs: await loadChoices()</CODE>)
+and puts <I>Choices...</I> on the icon bar menu:<P>
+<!--#listing !Contacts/!RunImage 61-67-->
+When the choices are set, every open book is listed again in the new order. The confirm choice is used in
+<CODE>remove</CODE>, above: with it off, Delete deletes straight away - which is safe, now that it can be
+undone.<P>
+
+<H2>Interactive help</H2>
+RISC OS's <I>!Help</I> application (in the Apps icon's directory) shows a line or two about whatever is
+under the pointer. For it to work in your application, every window, icon and menu item should have help
+text. It is easy to add, and makes an application much easier to learn.<P>
+<DL>
+<DT>A window
+<DD><CODE>help</CODE> in its description: the text shown anywhere in the window without help of its
+own.<P>
+<!--#listing !Contacts/MainWindow 12-14-->
+<DT>An icon
+<DD><CODE>help</CODE> in the icon's description. The toolbar passes each button's help on to its icon:<P>
+<!--#listing !Contacts/MainWindow 30-55-->
+<DT>A menu item
+<DD><CODE>help</CODE> in the item: <CODE>{ text: 'Save', ..., help: 'Save the book.' }</CODE>.<P>
+<DT>The icon bar icon
+<DD><CODE>help</CODE> in <CODE>addIconbarIcon</CODE>.<P>
+</DL>
+Help text is short, and says what clicking does, in the Style Guide's words: <I>Click SELECT to...</I>.
+<CODE>|M</CODE> in help text starts a new line.<P>
+The <CODE>Form</CODE> module passes each field's <CODE>help</CODE> on to its icons the same way, so dialogue
+boxes can have help too - the Choices box does.<P>
+
+<H2>Information</H2>
+<I>Info</I> on the icon bar menu shows the desktop's standard box about the program, made with
+<CODE>infoBox</CODE> as in book 1. The Style Guide also asks for <I>File &gt; Info</I>, about the document:
+its full name, and anything else useful. Contacts shows the file's name, how many contacts it holds, and
+whether it has changed:<P>
+<!--#listing !Contacts/MainWindow 252-268-->
+The window is made each time the submenu opens, so it is always up to date. <CODE>flatMap</CODE> is like
+<CODE>map</CODE>, but each item may give several results - here, two icons for each row - and they are all
+put into one array.<P>
+
+<H2>When the desktop shuts down</H2>
+When you choose <I>Shutdown</I> from the Task Manager, the desktop sends every task a
+<CODE>PreQuit</CODE> message first, asking whether it minds. An application with unsaved work should object,
+and ask:<P>
+<!--#listing !Contacts/!RunImage 88-97-->
+<CODE>msg.object()</CODE> stops the shutdown. If you then choose to discard the changes, Contacts quits, and
+starts the shutdown again (with the key Ctrl-Shift-F12, as RISC OS applications do) - unless the message
+was only for Contacts (<CODE>msg.single</CODE>: the Task Manager's <I>Quit</I> on this one task).<P>
+
+<H2>The !Help file</H2>
+The last piece is the <CODE>!Help</CODE> file in the application directory, which the Filer shows when you
+choose <I>Help</I> from its menu over <CODE>!Contacts</CODE>. It explains the program for someone who has
+just found it:<P>
+<!--#listing !Contacts/!Help-->
+
+<H2>A Style Guide checklist</H2>
+Contacts now does what Acorn's RISC OS Style Guide asks of an application that edits documents:<P>
+<UL>
+<LI>An icon on the icon bar: Select opens a new document; Menu gives Info, Choices... and Quit; files
+dropped on it are loaded.<P>
+<LI>Documents of its own file type, with an icon, opened by double-clicking - in the copy already running.
+<P>
+<LI>The file's name in the title, with <CODE>*</CODE> while it has unsaved changes.<P>
+<LI>Save with F3 and a Save box; other formats exported with Save boxes of their own.<P>
+<LI>Discard/Cancel/Save before closing a changed document, and at shutdown.<P>
+<LI>A toolbar of 3D buttons, shaded when they can't be used, repeating what's in the menus.<P>
+<LI>Menus built from the current state: items shaded or ticked, shortcut keys shown.<P>
+<LI>The standard keys: F3, F4, F6, F8, F9, Ctrl-A, Insert, Delete.<P>
+<LI>Dialogue boxes with the default action on the right, Return for it and Escape for Cancel.<P>
+<LI>Drag and drop both ways: files in, data from other programs in, contacts out.<P>
+<LI>Choices with Default, Cancel, Set and Save, kept in Choices.<P>
+<LI>Interactive help everywhere, and a <CODE>!Help</CODE> file.<P>
+</UL>
+Appendix D has the full checklist, for your own applications.<P>
+
+<H2>What's next</H2>
+That is Part One finished: !Contacts is a real application, in about 1,500 lines of your own code, and a
+toolkit of six modules you can use in other programs. Part Two builds a much bigger one - an organiser in
+the spirit of Lotus Organizer, with a diary, a to-do list, a notepad, a planner and anniversaries in a
+ring binder - and its address section will be !Contacts' modules, used unchanged.<P>
+
+<H2>Summary</H2>
+<UL>
+<LI>Undo: describe each change as a command with <CODE>do</CODE> and <CODE>undo</CODE>; an
+<CODE>Undo</CODE> object carries them out and keeps stacks of done and undone commands. Give each document
+its own.<P>
+<LI>A menu item's text can be a function, worked out each time the menu opens.<P>
+<LI>Choices: a Choices... box with Default, Cancel, Set and Save, saved with <CODE>choices.write</CODE>
+in the Choices directory and read with <CODE>choices.read</CODE>.<P>
+<LI>Interactive help: <CODE>help</CODE> on windows, icons, menu items and the icon bar icon; <CODE>|M</CODE>
+for a new line.<P>
+<LI>File &gt; Info shows the document's details; <CODE>PreQuit</CODE> lets you protect unsaved work at
+shutdown.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Make the number of changes kept for undo a choice, from 10 to 200.<P>
+<DT><DD>2  Add a choice for whether the email column is shown.<P>
+<DT><DD>3  Give the list's column headings interactive help: <I>Click SELECT to sort by this column</I> -
+and make clicking a heading sort by it. (The list's <CODE>ListView</CODE> draws the headings in the top
+<CODE>20</CODE> pixels below the toolbar.)<P>
+<DT><DD>4  Undo remembers changes after saving. Some programs clear it when the document is saved; others
+mark the point, so undoing past it puts the <CODE>*</CODE> back. Which do you prefer? Make Contacts put the
+<CODE>*</CODE> back correctly.<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Add <CODE>undoLimit: 50</CODE> to <CODE>DEFAULTS</CODE>, a field for it in the Choices box (with
+<CODE>allowed: '0-9'</CODE>), and in <CODE>Document</CODE>: <CODE>this.undo = new
+Undo(app.prefs.undoLimit)</CODE>. Check the number in the form's <CODE>check</CODE> function:
+<PRE>
+check: (v) =&gt; (+v.undoLimit &lt; 10 || +v.undoLimit &gt; 200
+  ? { field: 'undoLimit', message: 'From 10 to 200, please' }
+  : null),
+</PRE>
+<DT><DD>2  Add <CODE>email: true</CODE> to <CODE>DEFAULTS</CODE> and an option field, and build the
+columns from the choices, then call <CODE>setItems</CODE> again when they change (or make a new
+<CODE>ListView</CODE>).<P>
+<DT><DD>3  In the window's <CODE>'click'</CODE> handler (before the list's), check whether
+<CODE>ev.y</CODE> is between <CODE>this.bar.height</CODE> and <CODE>this.bar.height + 20</CODE>, find which
+column's <CODE>x</CODE> range holds <CODE>ev.x</CODE>, and call <CODE>setSort</CODE>. The help goes in a
+<CODE>'helprequest'</CODE> handler on the window, setting <CODE>ev.text</CODE> when the pointer is over the
+headings.<P>
+<DT><DD>4  Remember which command was last done when the document was saved, and compare after each undo
+or redo:
+<PRE>
+// in save:
+this.savedAt = this.undo.done.at(-1);
+// in the Document constructor:
+this.undo.on('change', () =&gt;
+  this.setModified(this.undo.done.at(-1) !== this.savedAt));
+</PRE>
+(The book's <CODE>'change'</CODE> handler still sets modified when a change is made; this corrects it after
+undo and redo.)<P>
+</DL>

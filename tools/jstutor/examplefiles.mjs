@@ -12,7 +12,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
  * [{parts: RISC OS names below $.Examples.<book>, dir: true} | {parts, type: 'f81'|'feb'|'fff'|'ff9', data: Buffer}]
  * for the book in bookSrc (default tools/jstutor). An application whose directory holds a file Toolkit.list (module
  * names, one per line) gets a Toolkit directory with copies of those modules from <bookSrc>/toolkit/, so each
- * example stays complete in itself while the book keeps one copy of each module.
+ * example stays complete in itself while the book keeps one copy of each module. Likewise a file Reuse.list names
+ * files of other examples ('!Contacts/Model') to copy into the directory under the same names.
  */
 export function exampleFiles(problems = [], bookSrc = HERE) {
   const DIR = path.join(bookSrc, 'examples');
@@ -31,6 +32,17 @@ export function exampleFiles(problems = [], bookSrc = HERE) {
           const text = fs.readFileSync(src, 'utf8');
           text.split('\n').forEach((l, i) => { if (l.length > 70) problems.push(`toolkit/${m}:${i + 1} is over 70 characters`); });
           out.push({ parts: [...parts, 'Toolkit', m], type: 'f81', data: Buffer.from(text, 'latin1') });
+        }
+        continue;
+      }
+      if (name === 'Reuse.list') {
+        // files from another example, e.g. '!Contacts/Model': copied in under
+        // the same name, so the book keeps one copy of a module two programs use
+        const files = fs.readFileSync(full, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+        for (const f of files) {
+          const src = path.join(DIR, ...f.split('/'));
+          if (!fs.existsSync(src)) { problems.push(`${where}: no example file '${f}'`); continue; }
+          out.push({ parts: [...parts, f.split('/').at(-1)], type: 'f81', data: Buffer.from(fs.readFileSync(src, 'utf8'), 'latin1') });
         }
         continue;
       }

@@ -1,1 +1,226 @@
-<P>(This chapter is being written.)<P>
+So far Contacts has had one address book, made up by the program each time it starts. In this chapter it
+becomes a proper RISC OS application: its address books are files with a file type and an icon of their
+own, you can save them, double-click them to open them, have several open at once, and it asks before
+throwing away changes you haven't saved. The program for this chapter is <CODE>!Contacts7</CODE>.<P>
+
+<H2>A file type of its own</H2>
+On RISC OS a file's type decides what happens when you double-click it: Text files open in Edit, Sprite files
+in Paint, JSScript files run. An address book should open in Contacts, so Contacts' files need a type of
+their own.<P>
+A file type is a number from 0 to &amp;FFF. Most are taken - Text is &amp;FFF, Draw files &amp;AFF - and
+real applications ask RISC OS Open to allocate them one, so that two programs never use the same number.
+For this book we use &amp;1C4, a number no other program on this desktop uses, and call it
+<I>Contacts</I>.<P>
+Two system variables tell RISC OS about a file type:<P>
+<DL>
+<DT><CODE>File$Type_1C4</CODE>
+<DD>its name, which the Filer shows (in <I>Info</I> and full info displays) and which <I>Set type</I>
+understands.<P>
+<DT><CODE>Alias$@RunType_1C4</CODE>
+<DD>the command that runs when a file of that type is double-clicked, with the file's name added to the end.
+<P>
+</DL>
+They are set in the application's <CODE>!Boot</CODE> file, an Obey file which the Filer runs the first time
+it shows the application in a directory display - so as soon as you have seen !Contacts7, its files know
+where to go:<P>
+<!--#listing !Contacts7/!Boot-->
+<CODE>IconSprites</CODE> loads the application's sprites, which now include <CODE>file_1c4</CODE> and
+<CODE>small_1c4</CODE>: the Filer shows files of type &amp;1C4 with the sprite called <CODE>file_</CODE>
+and the type's number. The last line makes double-clicking a Contacts file run
+<CODE>!Contacts7.!Run</CODE> with the file's name after it.<P>
+The <CODE>%%</CODE> needs explaining. In an Obey file, <CODE>%0</CODE> to <CODE>%9</CODE> and
+<CODE>%*0</CODE> stand for the <I>parameters</I> the Obey file itself was run with, and are replaced before
+each line is carried out. We don't want that here: the alias should contain the characters
+<CODE>%*0</CODE>, to be replaced later by the name of the file being double-clicked. <CODE>%%</CODE> in an
+Obey file stands for one <CODE>%</CODE>, so <CODE>%%*0</CODE> becomes <CODE>%*0</CODE> when the line runs.
+<CODE>!Run</CODE> uses a plain <CODE>%*0</CODE>, because there it does mean its own parameters - the file
+being opened - which it passes on to <CODE>!RunImage</CODE>:<P>
+<!--#listing !Contacts7/!Run-->
+<!--#pic Contacts-->
+Here the finished !Contacts has been seen by the Filer: the address book <CODE>Friends</CODE> in
+<CODE>Examples.JSApps</CODE> has Contacts' file icon, and double-clicking it opens it.<P>
+<B>Note</B>: the directory <CODE>Examples.JSApps</CODE> holds several versions of Contacts - one for each
+chapter - and each of the later ones claims &amp;1C4 in its <CODE>!Boot</CODE>. Whichever the Filer showed
+last is the one a double-click starts. To be sure which one opens a file, start it first and drag the file
+onto its icon on the icon bar.<P>
+
+<H2>An address book as text</H2>
+A file holds text (or bytes). As Doodle did in book 1, Contacts turns its data into text with JSON. The
+<CODE>Book</CODE> class gains two methods:<P>
+<!--#listing !Contacts7/Model 56-66-->
+<CODE>toJSON</CODE> is a name <CODE>JSON.stringify</CODE> knows: when it meets an object with a
+<CODE>toJSON</CODE> method, it turns into text whatever that method returns instead of the object itself. A
+<CODE>Book</CODE> holds its contacts in a <CODE>Map</CODE>, which JSON can't show, so <CODE>toJSON</CODE>
+gives back a plain object holding an array of them.<P>
+<CODE>fromJSON</CODE> goes the other way. The word <CODE>static</CODE> in front of it makes it belong to the
+class itself rather than to each book: you call it as <CODE>Book.fromJSON(data)</CODE>, before there is a
+book, and it makes one.<P>
+The object saved has two fields besides the contacts:<P>
+<UL>
+<LI><CODE>format: 'Contacts'</CODE> says what the file is, so <CODE>fromJSON</CODE> can refuse a file that
+isn't an address book (someone could set any file's type to Contacts) with a clear message rather than
+something baffling later.<P>
+<LI><CODE>version: 1</CODE> says which version of the format it is. If a later Contacts saves more - a
+photograph, say - it can write version 2, and still read version 1 files by looking at this number first.
+It costs nothing to put in now, and it's very hard to add later, when there are files without it.<P>
+</UL>
+Here is the start of a saved address book (<CODE>JSON.stringify(book, null, 1)</CODE> puts each value on a
+line of its own, so the file is easy to read):<P>
+<PRE>
+{
+ "format": "Contacts",
+ "version": 1,
+ "contacts": [
+  {
+   "first": "Ann",
+   "last": "Smith",
+</PRE>
+
+<H2>Documents</H2>
+With several address books open, each needs its own <CODE>Book</CODE>, its own window, the name of its
+file, and a note of whether it has changed since it was saved. A class called <CODE>Document</CODE> keeps
+those together - one <CODE>Document</CODE> for each open file:<P>
+<!--#listing !Contacts7/Document 13-28-->
+The constructor makes the document's window (<CODE>MainWindow</CODE> now takes the document rather than the
+book, and reaches the book as <CODE>doc.book</CODE>), and listens to the book: any change at all marks the
+document as modified. <CODE>app.docs</CODE> is a <CODE>Set</CODE> of the open documents. A
+<CODE>Set</CODE> is like an array that holds each thing once, with <CODE>add</CODE>, <CODE>delete</CODE> and
+<CODE>has</CODE>; appendix A has more.<P>
+<CODE>load</CODE> is another <CODE>static</CODE> method: it reads a file, turns it back into a
+<CODE>Book</CODE> and makes a <CODE>Document</CODE> for it. It is <CODE>async</CODE>, because reading a
+file is.<P>
+
+<H3>The title bar</H3>
+<!--#listing !Contacts7/Document 30-46-->
+The RISC OS Style Guide asks for a document's window to show its file's full name, and a <CODE>*</CODE> after
+it from the moment it is changed until it is saved - so you can always see what would be lost.
+<CODE>get title()</CODE> is a <I>getter</I>: <CODE>doc.title</CODE> looks like a property, but reading it
+runs this function, so it is always up to date. <CODE>setModified</CODE> asks the window to show the new
+title (<CODE>updateTitle</CODE> in <CODE>MainWindow</CODE> is one line: <CODE>this.win.setTitle(this.doc.title)</CODE>).<P>
+<CODE>save</CODE> writes the file with type &amp;1C4, remembers its full name, and clears the
+<CODE>*</CODE>. <CODE>JSON.stringify(this.book, null, 1)</CODE> calls the book's <CODE>toJSON</CODE> as
+described above.<P>
+
+<H2>Saving</H2>
+<!--#listing !Contacts7/Document 47-62-->
+<CODE>saveBox</CODE> makes the desktop's standard Save box, which you used in book 1: drag its icon to a
+directory display, or type a full name and click OK. The window's menu has <I>File &gt; Save</I>, with the
+Save box as its submenu, as in every RISC OS application.<P>
+<CODE>quickSave</CODE> is what F3 and the Save button do: a document that already has a file is saved to it
+straight away; a new one opens the Save box. Both take an optional function, <CODE>then</CODE>, to call once
+the document has been saved - you'll see why in the next section.<P>
+<!--#pic C7Save-->
+Here Friends is open, and a new, empty address book beside it; F3 in the new one has opened the Save box.<P>
+
+<H2>Closing</H2>
+When you close a window whose document has changes that haven't been saved, the Style Guide's rule is to ask,
+with three buttons: <I>Discard</I> (close it anyway), <I>Cancel</I> (don't close it) and <I>Save</I>.
+<CODE>MainWindow</CODE> stops the window closing by itself, and asks the document instead:<P>
+<!--#listing !Contacts7/MainWindow 53-53-->
+<CODE>ev.preventDefault()</CODE> stops the Wimp's usual action - closing the window - so the document can
+decide:<P>
+<!--#listing !Contacts7/Document 64-94-->
+The box is a <CODE>Form</CODE> from chapter 3 with no fields, a message and three buttons. The last button,
+Save, is the default, so Return saves; Escape (or Cancel) gives <CODE>null</CODE>. If you choose Save, the
+document is saved with <CODE>quickSave</CODE> and closed afterwards, by the function passed as
+<CODE>then</CODE> - after the Save box, if it hasn't a file yet. If that Save box is abandoned, the document
+stays open, which is just what you'd want.<P>
+<!--#pic C7Close-->
+<CODE>dispose</CODE> tidies up: it deletes the window (and stops it listening to the book) and takes the
+document out of <CODE>app.docs</CODE>.<P>
+
+<H2>One Contacts, several books</H2>
+Because there can now be several address books, there should be only one Contacts: double-clicking a second
+file should open it in the Contacts already running, not start another copy. The start of
+<CODE>!RunImage</CODE> sees to that:<P>
+<!--#listing !Contacts7/!RunImage 11-23-->
+A program started with a file - by a double-click, or by dragging it to the application - finds the file's
+name in <CODE>ctx.argv[0]</CODE>, the first word of what <CODE>!Run</CODE> passed on. (Don't confuse it with
+<CODE>ctx.file</CODE>, which is the full name of the program itself.)<P>
+<CODE>wimp.tasks</CODE> is the list of every task running on the desktop. If one of them is another
+Contacts, this copy sends it the file in a <CODE>DataOpen</CODE> message - the message the Filer itself
+sends when a file is double-clicked - and quits at once.<P>
+The rest of <CODE>start</CODE> sets up the application: an object <CODE>app</CODE> holding what every
+document shares, including <CODE>open</CODE>, which brings a file's window to the front if it is open
+already, and loads it otherwise:<P>
+<!--#listing !Contacts7/!RunImage 25-48-->
+Contacts now has an icon on the icon bar, as applications that edit documents do. Select on it makes a new,
+empty address book; dropping a Contacts file on it opens the file:<P>
+<!--#listing !Contacts7/!RunImage 59-67-->
+Finally, <CODE>DataOpen</CODE>. When you double-click a file, the Filer first sends a <CODE>DataOpen</CODE>
+message to every task, in case one of them is already running and would like to open it. Only if no task
+claims it does it run the file type's <CODE>Alias$@RunType</CODE> command. Contacts claims Contacts files, by
+returning <CODE>true</CODE>:<P>
+<!--#listing !Contacts7/!RunImage 69-78-->
+The last line opens the file the program was started with, if there was one.<P>
+
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Open <CODE>HardDisc4.$.Examples.JSApps</CODE> and double-click <B>!Contacts7</B>. Its icon
+appears on the icon bar; nothing else happens, as it wasn't given a file.<P>
+<DT><DD>2  Drag <CODE>Friends</CODE> onto the Contacts icon. The address book opens.<P>
+<DT><DD>3  Click Select on the Contacts icon: a new, empty book opens. Add a contact; a <CODE>*</CODE>
+appears in its title.<P>
+<DT><DD>4  Press F3, and drag the Save box's icon to a directory of your own. The file appears with the
+Contacts icon, and the <CODE>*</CODE> goes.<P>
+<DT><DD>5  Change something again and close the window: the Discard/Cancel/Save box appears.<P>
+<DT><DD>6  Double-click the file you saved. It opens in the Contacts that's running - check the Task
+Manager: there is still only one Contacts7.<P>
+</DL>
+
+<H2>Summary</H2>
+<UL>
+<LI>A file type is a number; <CODE>File$Type_xxx</CODE> names it, <CODE>Alias$@RunType_xxx</CODE> says what
+double-clicking runs, and the <CODE>file_xxx</CODE> sprite is its icon. <CODE>!Boot</CODE> sets them.<P>
+<LI>In an Obey file <CODE>%0</CODE>-<CODE>%9</CODE> and <CODE>%*0</CODE> are its parameters; <CODE>%%</CODE>
+is a <CODE>%</CODE>.<P>
+<LI>A <CODE>toJSON</CODE> method decides what <CODE>JSON.stringify</CODE> saves; a <CODE>static</CODE> method
+belongs to the class. Put a format name and a version number in every file you design.<P>
+<LI>A <CODE>Document</CODE> class keeps one open file's data, name, modified flag and window together.<P>
+<LI>Show the file's name and a <CODE>*</CODE> while it is changed; save with F3 and the Save box; ask
+Discard/Cancel/Save before closing a changed document.<P>
+<LI>A file passed to a program arrives in <CODE>ctx.argv[0]</CODE>. The Filer offers a double-clicked file
+to running tasks with <CODE>DataOpen</CODE> first; claim it to open it in the running copy.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Put the number of contacts in the title, after the file's name: <CODE>Friends (10)</CODE>.<P>
+<DT><DD>2  Add an item <I>New book</I> to the icon bar menu, doing what Select on the icon does.<P>
+<DT><DD>3  <CODE>fromJSON</CODE> accepts any version. Make it refuse files whose version is greater than 1,
+with the message <I>This file was made by a newer Contacts</I>.<P>
+<DT><DD>4  Quitting from the icon bar menu asks once about all the changed books. Change it so that it goes
+through them, closing each one with its own Discard/Cancel/Save box, and quits only if they all close.<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  The title is made in one place, the getter:
+<PRE>
+get title() {
+  const name = this.filename || '&lt;untitled&gt;';
+  const full = `${name} (${this.book.size})`;
+  return this.modified ? full + ' *' : full;
+}
+</PRE>
+It changes whenever a contact is added or removed, because every change calls <CODE>setModified</CODE>.<P>
+<DT><DD>2  Add <CODE>{ text: 'New book', action: () =&gt; new Document(app) }</CODE> before Quit in
+<CODE>menu</CODE>.<P>
+<DT><DD>3  In <CODE>fromJSON</CODE>, after the format check:
+<PRE>
+if (data.version &gt; 1) {
+  throw new Error('This file was made by a newer Contacts');
+}
+</PRE>
+<DT><DD>4  <CODE>close</CODE> resolves <CODE>true</CODE> if the document closed:
+<PRE>
+const quit = async () =&gt; {
+  for (const d of [...app.docs]) {
+    if (!(await d.close())) return;
+  }
+  task.quit();
+};
+</PRE>
+(<CODE>[...app.docs]</CODE> makes a copy, because closing a document takes it out of the set.) A document
+whose Save box is still open counts as not closed, so Contacts doesn't quit under it.<P>
+</DL>

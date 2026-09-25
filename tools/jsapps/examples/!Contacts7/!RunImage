@@ -1,0 +1,79 @@
+// Contacts - an address book for RISC OS.
+// !RunImage is where it starts: the icon on the icon bar and its
+// menu, opening address book files, and quitting. Each open book is a
+// Document (./Document) with a window (./MainWindow).
+import { wimp, vfs, sprites, Menu, discardChanges,
+  reportError } from 'riscos';
+import { Document } from './Document';
+
+const TYPE = 0x1C4;          // Contacts files (!Boot names the type)
+
+export default async function start(task, ctx) {
+  const file = ctx.argv[0];
+  // only one Contacts at a time: pass the file to the one running
+  const other = wimp.tasks.find((t) => t !== task && t.alive &&
+    t.name === task.name);
+  if (other) {
+    if (file) {
+      wimp.sendMessage('DataOpen', { path: file, filetype: TYPE },
+        { to: other });
+    }
+    task.quit();
+    return;
+  }
+
+  const app = {
+    task, TYPE,
+    docs: new Set(),                 // the open address books
+    prefs: { sort: 'last' },         // the order of the lists
+    area: sprites.spritesFromFile(await vfs.readFile(ctx.dir +
+      '.Sprites')),                  // the toolbar's pictures
+    /** Open a file (or bring its window to the front). */
+    async open(path) {
+      const name = vfs.canonical(path);
+      const open = [...app.docs].find((d) => d.filename === name);
+      if (open) {
+        open.view.win.open({ behind: 'top' });
+        return open;
+      }
+      try {
+        return await Document.load(app, name);
+      } catch (e) {
+        reportError(`Can't load ${vfs.leaf(name)}: ${e.message}`);
+        return null;
+      }
+    },
+    refreshAll() { for (const d of app.docs) d.view.refresh(); },
+    get modified() { return [...app.docs].some((d) => d.modified); },
+  };
+
+  // ------------------------------------------------ the icon bar
+  const quit = async () => {
+    if (app.modified && !(await discardChanges(task,
+      'Some address books have changes. Quit anyway?'))) return;
+    task.quit();
+  };
+  const menu = () => new Menu('Contacts', [
+    { text: 'Quit', action: quit },
+  ]);
+  task.addIconbarIcon({
+    sprite: '!contacts7', menu,
+    onClick: () => new Document(app),
+    onDataLoad: async (ev) => {
+      for (const f of ev.files) {
+        if (f.filetype === TYPE) await app.open(f.path);
+      }
+    },
+  });
+
+  // ------------------------------------------------ messages
+  // a Contacts file double-clicked while we're running
+  task.onMessage('DataOpen', (msg) => {
+    if (msg.filetype !== TYPE) return false;
+    app.open(msg.path);
+    return true;
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  if (file) await app.open(file);
+}
