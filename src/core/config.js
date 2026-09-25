@@ -50,6 +50,9 @@ export const config = {
     input.config.dragMove = (v.dragMove ?? 16) / 2;
     input.config.dragDelayMs = (v.dragDelay ?? 5) * 100;
     wimp.config.solidDrags = !!(v.wimpFlags & 1);
+    // WimpFlags bits 0-3: continuous (instant) window move, resize, horizontal and vertical scroll;
+    // when clear the Wimp drags a dashed outline and acts when the button is released.
+    wimp.config.instant = { move: !!(v.wimpFlags & 1), resize: !!(v.wimpFlags & 2), hscroll: !!(v.wimpFlags & 4), vscroll: !!(v.wimpFlags & 8) };
     wimp.config.errorBeep = !(v.wimpFlags & (1 << 4));
     wimp.config.beepGain = v.speaker === false ? 0 : (v.beepLoud === false ? 0.03 : 0.08) * ((v.volume ?? 7) + 1) / 8;
     configureSound({ volume: v.volume ?? 7, speaker: v.speaker !== false, loud: v.beepLoud !== false, voice: v.voice ?? 1 });   // SoundCMOS, BELLinfo

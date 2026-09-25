@@ -476,6 +476,20 @@ export class Wimp extends Emitter {
         if (!win.hasFlag(1 << 1)) { this._reportTitleClick(win, e, button, p); break; }
         const sx = win.x, sy = win.y, ox = p.x, oy = p.y;
         let moved = false;
+        if (!this._instant('move')) {
+          // WimpFlags bit 0 clear: drag a dashed outline of the window; move it on release
+          startPointerDrag(e, {
+            onMove: (q) => {
+              if (moved || Math.abs(q.x - ox) + Math.abs(q.y - oy) < 2) return;
+              moved = true;
+              this.drag({ type: 'fixed', box: this._outline(win), event: e }).then((d) => {
+                win.requestOpen({ x: sx + d.sx - ox, y: sy + d.sy - oy, behind: 'keep' });
+              });
+            },
+            onEnd: () => { if (!moved) this._reportTitleClick(win, e, button, p); },
+          });
+          break;
+        }
         startPointerDrag(e, {
           onMove: (q) => {
             if (!moved && Math.abs(q.x - ox) + Math.abs(q.y - oy) < 2) return;
@@ -490,6 +504,15 @@ export class Wimp extends Emitter {
         if (front) win.requestOpen({ behind: 'top' });
         win._pressed = 'size'; win._layout();
         const sw = win.w, sh = win.h, ox = p.x, oy = p.y;
+        if (!this._instant('resize')) {
+          // WimpFlags bit 1 clear: stretch a dashed outline from the top-left corner; resize on release
+          this.drag({ type: 'rubber', box: this._outline(win), event: e }).then((d) => {
+            win._pressed = null;
+            win.requestOpen({ w: sw + d.sx - ox, h: sh + d.sy - oy, behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY });
+            win._layout();
+          });
+          break;
+        }
         startPointerDrag(e, {
           onMove: (q) => win.requestOpen({ w: sw + q.x - ox, h: sh + q.y - oy, behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY }),
           onEnd: () => { win._pressed = null; win._layout(); },
@@ -524,6 +547,18 @@ export class Wimp extends Emitter {
         const gv = win.v.geom, gh = win.hb.geom;
         const ratio = (g) => (g && g.inner - g.blen > 0 ? (g.ext - g.vis) / (g.inner - g.blen) : 0);
         const rv = ratio(gv), rh = ratio(gh);
+        if (!this._instant(vert ? 'vscroll' : 'hscroll')) {
+          // WimpFlags bit 2/3 clear: drag a dashed outline of the slider within its well; scroll on release
+          const o = vert ? win.v : win.hb;
+          const bar = this._outline(o.bar), well = this._outline(o.well);
+          const bounds = vert ? { x0: bar.x0, x1: bar.x1, y0: well.y0, y1: well.y1 } : { x0: well.x0, x1: well.x1, y0: bar.y0, y1: bar.y1 };
+          this.drag({ type: 'fixed', box: bar, bounds, event: e }).then((d) => {
+            win._pressed = null; win._layout();
+            const dy = d.box.y0 - bar.y0, dx = d.box.x0 - bar.x0;
+            this._scrollTo(win, vert ? s0x : s0x + dx * rh, vert ? s0y + dy * rv : s0y);
+          });
+          break;
+        }
         startPointerDrag(e, {
           onMove: (q) => {
             let nx = s0x, ny = s0y;
@@ -948,9 +983,24 @@ export class Wimp extends Emitter {
     return typeof w.helpText === 'function' ? w.helpText(hit) : (w.helpText ?? null);
   }
 
+  /** Whether a window drag of kind 'move' | 'resize' | 'hscroll' | 'vscroll' is instant (WimpFlags bits 0-3). */
+  _instant(kind) { return this.config.instant?.[kind] ?? true; }
+  /** Screen box (desktop coords) of a window (whole window, furniture included) or of an element. */
+  _outline(target) {
+    const r = (target.el ?? target).getBoundingClientRect();
+    const a = input.pos({ clientX: r.left, clientY: r.top }), b = input.pos({ clientX: r.right, clientY: r.bottom });
+    return { x0: a.x, y0: a.y, x1: b.x, y1: b.y };
+  }
+
   /** Wimp_DragBox type 1/2: move (or resize) a window from a work-area drag. ev = the 'drag' event. */
   dragWindow(win, ev, { resize = false } = {}) {
     const sx = win.x, sy = win.y, sw = win.w, sh = win.h, ox = ev.sx, oy = ev.sy;
+    if (!this._instant(resize ? 'resize' : 'move')) {
+      this.drag({ type: resize ? 'rubber' : 'fixed', box: this._outline(win), event: ev.pointerEvent ?? {} }).then((d) => {
+        win.requestOpen(resize ? { w: sw + d.sx - ox, h: sh + d.sy - oy, behind: 'keep' } : { x: sx + d.sx - ox, y: sy + d.sy - oy, behind: 'keep' });
+      });
+      return;
+    }
     startPointerDrag(ev.pointerEvent ?? {}, {
       onMove: (q) => win.requestOpen(resize ? { w: sw + q.x - ox, h: sh + q.y - oy, behind: 'keep' } : { x: sx + q.x - ox, y: sy + q.y - oy, behind: 'keep' }),
     });
