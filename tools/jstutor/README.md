@@ -77,7 +77,7 @@ dashes, `...` for an ellipsis. Upper-case tag names, as in the User Guide.
 A note or warning:
 
 ```html
-<P><B>Note</B>: the Tab key in Edit doesn't indent: use spaces.<P>
+<P><B>Note</B>: in Edit, Tab lines up with the next word on the line above.<P>
 ```
 
 **Code**:

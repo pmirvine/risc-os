@@ -1,0 +1,112 @@
+// Snake - a game for RISC OS, written in JavaScript
+import { Menu, infoBox, beep, sound, vfs, wimp } from 'riscos';
+import { newGame, step, turn, UP, DOWN, LEFT, RIGHT } from './Game';
+import { drawBoard, WIDTH, HEIGHT } from './Board';
+
+const SPEED = 150;                    // ms between steps
+
+// The arrow keys' Wimp key codes, and where they point
+const KEYS = { 0x18f: UP, 0x18e: DOWN, 0x18c: LEFT, 0x18d: RIGHT };
+
+export default async function start(task, ctx) {
+  const scoreFile = ctx.dir + '.HighScore';
+  let best = await loadBest(scoreFile);
+  let game = newGame();
+
+  // ---- the window
+  const w = task.createWindow({
+    title: 'Snake',
+    x: 200, y: 120, w: WIDTH, h: HEIGHT,
+    extent: { w: WIDTH, h: HEIGHT },
+    flags: { title: true, close: true, back: true, moveable: true },
+    workButton: 'click',
+  });
+  w.useCanvas((g) => drawBoard(g, game));
+
+  w.on('click', (ev) => {
+    if (ev.button === 'menu') {
+      wimp.menus.openAt(makeMenu(), ev, { task });
+    }
+    wimp.setCaret(w);                 // so the keys come to us
+    return true;
+  });
+
+  w.on('key', (ev) => {
+    const dir = KEYS[ev.code];
+    if (dir) {
+      turn(game, dir);
+      return true;
+    }
+    if (ev.char === ' ' && game.over) {
+      newGameNow();
+      return true;
+    }
+    // any other key: return nothing, so the Wimp passes it on
+  });
+
+  // ---- the clock: one step of the game at a time
+  task.every(SPEED, () => {
+    if (!w.isOpen || game.over) return;   // paused when closed
+    const what = step(game);
+    if (what === 'ate') sound(1, -15, 180, 1);
+    if (what === 'crashed') crashed();
+    showScore();
+    w.invalidate();
+  });
+
+  function crashed() {
+    beep();
+    if (game.score > best) {
+      best = game.score;
+      vfs.writeFile(scoreFile, String(best), { filetype: 0xfff });
+    }
+  }
+
+  function newGameNow() {
+    game = newGame();
+    showScore();
+    openWindow();
+    w.invalidate();
+  }
+
+  function showScore() {
+    w.setTitle(`Snake - score ${game.score}, best ${best}`);
+  }
+
+  function openWindow() {
+    w.open({ behind: 'top' });
+    wimp.setCaret(w);
+  }
+
+  // ---- the menu and the icon bar
+  const info = infoBox(task, {
+    name: 'Snake',
+    purpose: 'Snake game',
+    author: 'Programming in JavaScript',
+    version: '1.00',
+  });
+
+  function makeMenu() {
+    return new Menu('Snake', [
+      { text: 'Info', submenu: info },
+      { text: 'New game', action: newGameNow },
+      { text: 'Quit', action: () => task.quit() },
+    ]);
+  }
+
+  task.addIconbarIcon({
+    sprite: '!snake',
+    onClick: openWindow,
+    menu: makeMenu,
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  showScore();
+  openWindow();
+}
+
+// The best score so far, from the file next to the program
+async function loadBest(file) {
+  if (!vfs.exists(file)) return 0;
+  return Number(await vfs.readText(file)) || 0;
+}

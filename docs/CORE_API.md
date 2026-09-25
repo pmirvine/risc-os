@@ -362,6 +362,17 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
   (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all`.
 * URL parameters: `?fast=1` skip the boot screen, `?open=<path>`, `?run=<app>`, `?cmd=<*command>`, `?zoom=2`, `?buttons=adjust`.
 
+## 11a. JavaScript programs on the disc (`*JSRun`)
+Files of type &F81 (JSScript) run with `*JSRun <file> [args]` (`Alias$@RunType_F81`, `src/core/jsrun.js`), so a
+program written in !Edit can be double-clicked. A *script* (no `import`/`export`) runs with `task`, `ctx`
+(`{args, argv, file, dir, os}`), `os`, `wimp`, `vfs`, `print`, `await input(prompt)`, `await sleep(ms)`, `Menu`,
+`colourMenu`, `wimpColour`, `beep`, `sound(ch, amp, pitch, dur)`, `saveAs`, `query` and `infoBox` in scope. A
+*module* exports `default function start(task, ctx)` and imports the same names from `'riscos'` and other files
+relative to itself (`'./Grid'` finds `Grid` or `grid/js`). Each run is a task named after the file (or the
+application, for `<App>.!RunImage`); `print`/`input` use the task window it was run from or an output window of
+its own. Errors, including ones thrown later by its event handlers and timers, are reported with the line number.
+The tutorial `$.Manuals.JSTutor` teaches with it (`tools/jstutor/README.md`).
+
 ## 12. BBC BASIC integration
 `src/core/basichost.js` runs `*BASIC` / BASIC files (`Alias$@RunType_FFB` = `BASIC -quit "%*0"`) full-screen with the
 BASIC agent's `BasicMachine` (`src/basic/machine.js`) and `VDU` (mode 28, scaled to the screen), passing: `fs` = a
@@ -389,4 +400,5 @@ Don't hand-edit `assets/disc`: `tools/disc.mjs` rebuilds it from `vendor/`. Anyt
 idempotent `tools/disc-<topic>.mjs` script (model: `tools/disc-patch.mjs`) that writes its files and patches only its
 own entries in `assets/disc/manifest.json` (read, patch and write the manifest in one go), registered in
 `tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
-`disc-lander`, `disc-type1`, `disc-docs` ($.Docs, from `tools/docs/`).
+`disc-lander`, `disc-type1`, `disc-docs` ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript
+tutorial book and its examples, from `tools/jstutor/`).

@@ -93,7 +93,8 @@ function windowIO(task, title) {
     finished() {
       if (done) return;
       done = true;
-      if (w) w.setTitle(`${title} (finished)`);
+      // (the window may still be opening: the system font loads the first time)
+      Promise.resolve(opening).then(() => w?.setTitle(`${title} (finished)`));
     },
     get used() { return used; },
   };
@@ -126,7 +127,8 @@ function locate(e) {
   return null;
 }
 function describe(e, where) {
-  const msg = e?.message ?? String(e);
+  let msg = e?.message ?? String(e);
+  for (const [url, r] of runs) if (msg.includes(url)) msg = msg.split(url).join(vfs.leaf(r.path));   // "module 'blob:...'" -> its file
   if (!where) return msg;
   const file = vfs.leaf(where.path);
   return `${msg} (line ${where.line}${where.main ? '' : ` of ${file}`})`;
@@ -163,7 +165,8 @@ function loadScript(src, names, info) {
       delete globalThis.__jsrun[id];
       if (failed || !fn) {
         const e = new SyntaxError(String(failed?.message ?? 'Syntax error').replace(/^Uncaught SyntaxError: /, ''));
-        e.where = { ...info, line: Math.max(1, (failed?.lineno ?? 1) - 1) };
+        const last = src.replace(/\n$/, '').split('\n').length;       // "Unexpected end of input" is past the end
+        e.where = { ...info, line: Math.min(last, Math.max(1, (failed?.lineno ?? 1) - 1)) };
         reject(e);
       } else resolve(fn);
     };
@@ -193,7 +196,8 @@ function resolveImport(dir, spec) {
     base = p === '..' ? vfs.parent(base) : `${base}.${p}`;
   }
   const leaf = parts[parts.length - 1];
-  for (const cand of [leaf.replace(/\./g, '/'), leaf.replace(/\.m?js$/i, '')]) {
+  // 'Board.js' is the file Board/js (as HostFS shows a host file Board.js) or Board; 'Board' is Board or Board/js
+  for (const cand of [leaf.replace(/\./g, '/'), leaf.replace(/\.m?js$/i, ''), `${leaf}/js`]) {
     const p = `${base}.${cand}`;
     if (vfs.exists(p)) return vfs.canonical(p);
   }
@@ -248,7 +252,8 @@ export async function jsRun(path, tail = '', cliCtx = {}) {
   const st = vfs.stat(path);
   if (!st || st.type !== 'file') throw new CLIError(`File '${path}' not found`, 0x214);
   const dir = vfs.parent(st.path);
-  const name = /^!runimage$/i.test(st.name) ? vfs.leaf(dir).replace(/^!/, '') : st.name.replace(/\/m?js$/i, '');
+  // named after the file, or after its directory for an application's !RunImage or a program's Main module
+  const name = /^(!runimage|main)$/i.test(st.name) ? vfs.leaf(dir).replace(/^!/, '') : st.name.replace(/\/m?js$/i, '');
   const src = await vfs.readText(st.path);
 
   const task = wimp.createTask(name, { memory: 32 });

@@ -57,7 +57,7 @@ export async function runExample(page, e) {
       const tasks = os.wimp.tasks.filter((x) => !__jt.before.has(x));
       const t = tasks[tasks.length - 1];
       const W = tasks.flatMap((x) => [...x.windows]);
-      const w = W.find((x) => !x._jsOutput) ?? W[0];
+      const w = W.find((x) => !x._jsOutput && x.isOpen) ?? W.find((x) => !x._jsOutput) ?? W[0];
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       const click = (x, y, button = 'select', win = w) => win.emit('click', { button, x, y, sx: x, sy: y, window: win, icon: null });
       const key = (k, win = w) => win.emit('key', typeof k === 'number' ? { code: k, char: String.fromCharCode(k) } : { code: k.charCodeAt(0), char: k });
@@ -80,6 +80,7 @@ export async function runExample(page, e) {
 export async function finish(page) {
   await page.evaluate(() => {
     for (const t of os.wimp.tasks.filter((x) => !__jt.before.has(x))) t.quit();
+    for (const v of [...os.filer.viewers.values()]) if (!__jt.beforeWins.has(v.win)) v.close();   // (Filer windows it opened)
     for (const w of os.wimp.stack.filter((x) => !__jt.beforeWins.has(x) && x.isOpen && !x._isIconbar)) { try { w.close(); } catch { /* */ } }
     os.wimp.menus?.close?.();
     __jt.real = false;

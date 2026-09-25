@@ -75,7 +75,12 @@ const pages = book.pages.map((p) => {
   if (p.kind === 'contents') return { ...p, sections: [] };
   const f = path.join(SRC, 'book', p.file + '.htm');
   if (!fs.existsSync(f)) { problems.push(`no page book/${p.file}.htm`); return { ...p, body: '', sections: [] }; }
-  const { body, sections } = expand(latin1(fs.readFileSync(f, 'utf8'), `book/${p.file}.htm`), `book/${p.file}.htm`);
+  const src = latin1(fs.readFileSync(f, 'utf8'), `book/${p.file}.htm`);
+  // < > & in text must be written &lt; &gt; &amp; (e.g. an arrow function's =>)
+  src.replace(/<!--[\s\S]*?-->/g, '').replace(/<\/?[A-Za-z][^<>]*>/g, '').split('\n').forEach((l, i) => {
+    if (/[<>]|&(?![a-z]+;|#\d+;)/i.test(l)) problems.push(`book/${p.file}.htm:${i + 1}: write < > & as &lt; &gt; &amp;: ${l.trim().slice(0, 60)}`);
+  });
+  const { body, sections } = expand(src, `book/${p.file}.htm`);
   return { ...p, body, sections };
 });
 

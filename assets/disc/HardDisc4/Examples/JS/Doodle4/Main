@@ -1,0 +1,115 @@
+// Doodle4 - Doodle3 that saves and loads its drawings
+import {
+  Menu, colourMenu, infoBox, saveAs, wimpColour, wimp, vfs,
+} from 'riscos';
+import {
+  startLine, addPoint, endLine, clear, isEmpty, drawPicture,
+  pictureToText, pictureFromText,
+} from './Picture';
+
+export default async function start(task, ctx) {
+  // the colour used last time is kept in a file next to the program
+  const choices = ctx.dir + '.Choices';
+  let colour = 7;
+  if (vfs.exists(choices)) {
+    colour = Number(await vfs.readText(choices));
+  }
+  let filename = 'Drawing';   // where the drawing was saved or loaded
+
+  const w = task.createWindow({
+    title: filename,
+    x: 160, y: 100, w: 480, h: 360,
+    extent: { w: 480, h: 360 },
+    flags: { title: true, close: true, back: true, moveable: true },
+    colours: { workBg: 0 },
+    workButton: 'click',
+  });
+  w.useCanvas((g) => drawPicture(g));
+
+  function setColour(n) {
+    colour = n;
+    vfs.writeFile(choices, String(n), { filetype: 0xfff });
+  }
+
+  function saveBox() {
+    return saveAs({
+      task, filename, filetype: 0xfff,
+      getData: () => pictureToText(),
+      onSaved: (path) => {
+        if (!path) return;       // saved into another application
+        filename = path;
+        w.setTitle(filename);
+      },
+    });
+  }
+
+  // load a drawing from a file dropped on the window or the icon
+  async function load(file) {
+    if (file.filetype !== 0xfff) {
+      task.reportError(`'${file.name}' is not a text file`);
+      return;
+    }
+    try {
+      pictureFromText(await vfs.readText(file.path));
+    } catch (e) {
+      task.reportError(`'${file.name}' is not a Doodle drawing`);
+      return;
+    }
+    filename = file.path;
+    w.setTitle(filename);
+    w.open({ behind: 'top' });
+    w.invalidate();
+  }
+
+  const info = infoBox(task, {
+    name: 'Doodle4', purpose: 'Draws doodles',
+    author: 'A. Programmer', version: '1.00',
+  });
+  function doodleMenu() {
+    return new Menu('Doodle4', [
+      { text: 'Info', submenu: info },
+      { text: 'Save', submenu: saveBox },
+      { text: 'Colour',
+        submenu: colourMenu('Colour', colour, (n) => setColour(n)) },
+      { text: 'Clear', shaded: isEmpty(), dotted: true,
+        action: () => {
+          clear();
+          w.invalidate();
+        } },
+      { text: 'Quit', action: () => task.quit() },
+    ]);
+  }
+
+  w.on('click', (ev) => {
+    if (ev.button === 'select') {
+      startLine(wimpColour(colour), ev.x, ev.y);
+      w.invalidate();
+    } else if (ev.button === 'menu') {
+      wimp.menus.openAt(doodleMenu(), ev, { task });
+    }
+    return true;
+  });
+
+  w.on('pointermove', (ev) => {
+    if (ev.buttons === 1) {
+      if (addPoint(ev.x, ev.y)) w.invalidate();
+    } else {
+      endLine();
+    }
+  });
+
+  w.on('dataload', (ev) => {
+    load(ev.files[0]);
+    return true;
+  });
+
+  task.addIconbarIcon({
+    sprite: 'file_aff',
+    onClick: () => w.open({ behind: 'top' }),
+    menu: () => doodleMenu(),
+    onDataLoad: (ev) => load(ev.files[0]),
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  w.open();
+}

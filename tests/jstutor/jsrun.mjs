@@ -32,6 +32,14 @@ const r = await page.evaluate(async () => {
   await sleep(200);
   res.timer = [...msgs];
   os.wimp.tasks.find((t) => t.name === 'Tick')?.quit();
+  msgs.length = 0;
+  await run('Redraw', 'const w = task.createWindow({ title: "R", x: 100, y: 100, w: 200, h: 100,\n  extent: { w: 200, h: 100 } });\nw.useCanvas((g) => {\n  g.fillRect(0, 0, 10, 10);\n  notHere();\n});\nw.open();\n');
+  await sleep(200);
+  const rw = os.wimp.tasks.find((t) => t.name === 'Redraw');
+  for (const w of rw?.windows ?? []) w.invalidate();
+  await sleep(200);
+  res.redraw = [...msgs];
+  rw?.quit();
   res.input = [await run('Ask', 'os.hooks.jsInput = ["Ann"];\nconst name = await input("Name? ");\nprint("Hi " + name);\n'), out];
 
   v.mkdir(D + 'Mod');
@@ -49,6 +57,22 @@ const r = await page.evaluate(async () => {
   await os.cli.run(`Run ${D}Mod.Oops`); await sleep(150);
   res.moduleRuntime = [...msgs];
 
+  v.writeFile(D + 'Mod.NoSuch', "import { thrice } from './Helper';\nexport default function start() {}\n", { filetype: J });
+  msgs.length = 0;
+  await os.cli.run(`Run ${D}Mod.NoSuch`); await sleep(150);
+  res.importName = [...msgs];
+  v.writeFile(D + 'Mod.Lib/js', 'export const k = 7;\n', { filetype: J });
+  v.writeFile(D + 'Mod.UseLib', "import { k } from './Lib';\nimport { k as k2 } from './Lib.js';\nexport default function start() {\n  globalThis.__lib = k + k2;\n}\n", { filetype: J });
+  msgs.length = 0;
+  await os.cli.run(`Run ${D}Mod.UseLib`); await sleep(150);
+  res.libJs = [[...msgs], globalThis.__lib];
+  msgs.length = 0;
+  await run('Unclosed', 'if (true) {\n  print(1);\n');
+  res.eoi = [...msgs];
+  v.mkdir(D + 'Prog');
+  v.writeFile(D + 'Prog.Main', "export default function start(task) {\n  globalThis.__mainName = task.name;\n}\n", { filetype: J });
+  await os.cli.run(`Run ${D}Prog.Main`); await sleep(150);
+  res.mainName = globalThis.__mainName;
   v.mkdir(D + '!App');
   v.writeFile(D + '!App.!Run', 'Set App$Dir <Obey$Dir>\nRun <App$Dir>.!RunImage %*0\n', { filetype: 0xFEB });
   v.writeFile(D + '!App.!RunImage', 'print(task.name, ctx.dir);\n', { filetype: J });
@@ -67,10 +91,15 @@ ok('a program with nothing left running ends', !r.silent[0].length && !r.silent[
 ok('window program keeps running', r.winAlive);
 ok('error in a click handler', r.handler.length === 1 && /undefinedThing is not defined \(line 4\) \[Win\]/.test(r.handler[0]), r.handler);
 ok('error in a timer', r.timer.length === 1 && /alsoUndefined is not defined \(line 4\)/.test(r.timer[0]), r.timer);
+ok('error in a redraw function, once', r.redraw.length === 1 && /notHere is not defined \(line 5\) \[Redraw\]/.test(r.redraw[0]), r.redraw);
 ok('input()', !r.input[0].length && r.input[1].includes('Hi Ann'), r.input);
 ok('module with imports', !r.module[0].length && r.module[1] === 'twice 42 foo,bar\n', r.module);
 ok('module syntax error line', r.moduleSyntax.length === 1 && /\(line 3\)/.test(r.moduleSyntax[0]), r.moduleSyntax);
 ok('module runtime error line', r.moduleRuntime.length === 1 && /nothing is not defined \(line 4\)/.test(r.moduleRuntime[0]), r.moduleRuntime);
+ok('import error names the file', r.importName.length === 1 && /module 'Helper' does not provide an export named 'thrice'/.test(r.importName[0]), r.importName);
+ok("'./Lib' and './Lib.js' find Lib/js", !r.libJs[0].length && r.libJs[1] === 14, r.libJs);
+ok('end of input: the last line', r.eoi.length === 1 && /Unexpected end of input \(line 2\)/.test(r.eoi[0]), r.eoi);
+ok('Main module named after its directory', r.mainName === 'Prog', r.mainName);
 ok('application directory', /^App RAM::RamDisc0\.\$\.!App\n$/.test(r.app), r.app);
 const errs = logs.filter((l) => /PAGEERROR/.test(l));
 if (errs.length) console.log(errs.join('\n'));

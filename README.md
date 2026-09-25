@@ -126,6 +126,12 @@ and a VDU driver with screen modes, graphics, sprites and teletext. It runs full
 windows, and as desktop applications through a Wimp SWI bridge, so original tokenised BASIC Wimp programs run
 unchanged (for example the original !SciCalc).
 
+**JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
+write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
+applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
+this way, for people who have done a little programming before; its example programs, including a Snake game, are
+in `$.Examples.JS`.
+
 **Applications** (46 descriptors in `src/apps/index.js`):
 
 | ROM (`Resources:$.Apps`) | Hard disc applications | Diversions (games and demos) |
@@ -193,6 +199,7 @@ src/core/              the operating system
   sprites.js templates.js messages.js fonts.js dialogs.js   resources and standard dialogues
   fontreg.js fontbuild.js riscosfont.js   font registry: built-in fonts + outline fonts on Font$Path, converted at run time
   basichost.js basicwimp/   full-screen BASIC, and BASIC programs as Wimp tasks (SWI bridge)
+  jsrun.js             *JSRun: JavaScript programs on the disc (JSScript files), as scripts or modules
   reset.js             *ResetDisc / *ResetCMOS / Delete-power-on
 src/basic/             BBC BASIC V interpreter, tokeniser, ARM assembler/emulator, VDU driver (host-agnostic)
 src/apps/<Name>/       one directory per application: app.js (small descriptor) + main.js (loaded on first use)
@@ -214,6 +221,7 @@ node --test tests/basic/          # BASIC interpreter, tokeniser, assembler, VDU
 node --test tests/sound tests/basic   # no browser
 node --test tests/core            # and tests/draw tests/edit tests/paint tests/acc tests/div tests/tw tests/bw tests/tierb
 node --test tests/integration     # cross-application flows + a long random ("monkey") test
+node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example programs
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds
 ```
