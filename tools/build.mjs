@@ -9,6 +9,7 @@ run(d + 'toolbox.mjs', '--build');   // Toolbox Res files (templates.mjs empties
 run(d + 'messages.mjs', '--build');
 run(d + 'sysfont.mjs');
 run(d + 'fonts.mjs');
+run(d + 'nerdfonts.mjs');        // the Nerd Fonts (JetBrains Mono, Hack, Fira Code) added to fonts.json / fonts.css
 run(d + 'misc.mjs');
 run(d + 'disc.mjs');
 run(d + 'basicwimp-demo.mjs');   // adds $.Examples (disc.mjs rebuilds assets/disc without it)
@@ -19,3 +20,4 @@ run(d + 'disc-lander.mjs');       // $.Diversions.!Lander (the JS app; the origi
 run(d + 'disc-type1.mjs');        // $.Utilities.Type1Fonts (a sample SIL OFL Type 1 font for !T1ToFont, from tools/type1)
 run(d + 'disc-docs.mjs');        // $.Docs (help files for this desktop's own features, e.g. HostFS, from tools/docs)
 run(d + 'disc-jstutor.mjs');     // $.Manuals.JSTutor (the JavaScript tutorial) and $.Examples.JS, from tools/jstutor
+run(d + 'disc-jsedit.mjs');      // $.Apps.!JsEdit (the programmer's editor's application directory and modes)

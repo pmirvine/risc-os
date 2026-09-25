@@ -19,6 +19,7 @@ Plain modern JavaScript ES modules. There is no bundler, no framework and no run
 | ![Configure](docs/screenshots/acc-configure-main.png) !Configure | ![BASIC Mandelbrot](docs/screenshots/basic-mandel.png) BBC BASIC V graphics (standalone `src/basic/demo.html`) |
 | ![Lander](docs/screenshots/div-lander.png) !Lander: David Braben's 1987 demo (JavaScript port; the original runs on the ARM2 emulator if you supply it) | ![Hopper](docs/screenshots/div-hopper.png) !Hopper, from RISC OS Open's sources |
 | ![Plasma](docs/screenshots/basic-plasma.png) `$.Demos.BASIC.Plasma`, one of the BBC BASIC demo programs | ![T1ToFont and Chars](docs/screenshots/tierb-t1tofont-chars.png) !Chars showing a Type 1 font converted by !T1ToFont |
+| ![JsEdit](docs/screenshots/jsedit.png) !JsEdit, the programmer's editor, completing a name in the Snake game's source | ![Programming in JavaScript](docs/screenshots/jstutor.png) *Programming in JavaScript*, the tutorial book, in !Bookworm |
 
 ## Running it
 
@@ -130,7 +131,11 @@ unchanged (for example the original !SciCalc).
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
 applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
 this way, for people who have done a little programming before; its example programs, including a Snake game, are
-in `$.Examples.JS`.
+in `$.Examples.JS`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
+colouring for JavaScript, BBC BASIC, Obey and JSON, line numbers, smart indentation, completion of the desktop's
+programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list and
+a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
+font menu.
 
 **Applications** (46 descriptors in `src/apps/index.js`):
 
@@ -146,6 +151,7 @@ in `$.Examples.JS`.
 | !Printers 1.54: printer manager | !Bookworm: HTML manual browser | !Flasher |
 | !InetSetup: Internet configuration (and !Internet) | !ARPlayer: ARMovie player | !Madness: moves every other window |
 | | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
+| | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
 | | !SlideShow | |
 | | !CDPlayer: the Audio Panel (no CD drive) | |
@@ -269,5 +275,9 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * The sample Type 1 font is Computer Modern Roman 10 from the AMS Type 1 fonts, © 1997, 2009 American Mathematical
   Society, under the SIL Open Font License 1.1 (`tools/type1/`). opentype.js (© Frederik De Bleser, MIT licence) is
   bundled in `assets/lib/opentype/` to build web fonts.
+* The programming fonts in `assets/fonts/nerd/` are [Nerd Fonts](https://www.nerdfonts.com) v3.5.1 (MIT licence,
+  © Ryan L McIntyre; icon sets under their own free licences) patched from JetBrains Mono (© JetBrains, SIL Open
+  Font License 1.1), Hack (© Source Foundry, MIT / Bitstream Vera licence) and Fira Code (© The Fira Code
+  Project Authors, SIL Open Font License 1.1); their licences are beside them (`tools/nerdfonts.mjs`).
 * This is a non-commercial preservation and educational project and is not affiliated with Acorn, RISC OS Open Ltd or
   RISC OS Developments.

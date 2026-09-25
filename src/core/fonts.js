@@ -21,6 +21,8 @@ export const fonts = {
     const italic = /italic|oblique/.test(style) ? 'italic ' : '';
     const px = (pt * 180 / 72) / 2;
     const map = { homerton: 'Homerton', trinity: 'Trinity', corpus: 'Corpus', newhall: 'NewHall', sassoon: 'Sassoon', selwyn: 'Selwyn', sidney: 'Sidney', system: 'RISCOS System' };
+    // other built-in fonts (e.g. the Nerd Fonts, tools/nerdfonts.mjs): their CSS family from fonts.json
+    if (!map[fam.toLowerCase()] && disc?.family) return `${disc.style === 'italic' ? 'italic ' : ''}${disc.weight ?? weight} ${px}px "${disc.family}", ${disc.fallback ?? 'monospace'}`;
     const f = map[fam.toLowerCase()] ?? fam;
     const fb = /trinity|newhall/i.test(f) ? 'Times, serif' : /corpus/i.test(f) ? 'Courier, monospace' : 'Helvetica, Arial, sans-serif';
     return `${italic}${weight} ${px}px "${f}", ${fb}`;

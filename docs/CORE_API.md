@@ -58,6 +58,8 @@ export default {
   open(task, path, msg) { … },           // optional: called for DataOpen of a declared type while running
   memory: 256,                           // K of application memory shown by the Task Manager
   multiInstance: false,                  // false: running again sends 'run' (+ DataOpen) to the running task
+  edits: [0xF81],                        // file types Shift-double-click opens in this app (os.apps.editFile;
+                                         // double-clicking them still runs them) - e.g. !JsEdit for JSScript
   appIconDrop: false,                    // true: files dropped on the app's directory icon in a Filer viewer go to
                                          // the app (started with the file, or DataLoad to the running task) instead
                                          // of being copied into the directory as the 3.71 Filer does (os.apps.dropOnApp)
@@ -372,6 +374,9 @@ relative to itself (`'./Grid'` finds `Grid` or `grid/js`). Each run is a task na
 application, for `<App>.!RunImage`); `print`/`input` use the task window it was run from or an output window of
 its own. Errors, including ones thrown later by its event handlers and timers, are reported with the line number.
 The tutorial `$.Manuals.JSTutor` teaches with it (`tools/jstutor/README.md`).
+`checkSyntax(src)` (exported) parses a program without running it → `null` or `{line, message}`. Every program
+error is offered to `os.hooks.throwback({path, line, message, program})` first; an editor that returns true
+(!JsEdit, for files it has open) has shown it, and no error box appears.
 
 ## 12. BBC BASIC integration
 `src/core/basichost.js` runs `*BASIC` / BASIC files (`Alias$@RunType_FFB` = `BASIC -quit "%*0"`) full-screen with the

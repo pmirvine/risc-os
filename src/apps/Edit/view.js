@@ -723,3 +723,5 @@ export class EditView {
 }
 
 export { EditDocument };
+/** The system font glyph strip for a CSS colour (used by !JsEdit's colouring). */
+export { atlas as systemFontAtlas };
