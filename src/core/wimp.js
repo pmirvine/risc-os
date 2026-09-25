@@ -594,8 +594,7 @@ export class Wimp extends Emitter {
     let btype = icon && icon.buttonType !== 0 ? icon.buttonType : win.workButton;
     if (icon && icon.buttonType === 0) icon = icon; // reported with icon but work-area button type
     if (icon?.shaded) return;
-    const base = { button, buttons: BUT[button], x: wp.x, y: wp.y, sx: p.x, sy: p.y, icon, iconIndex: icon?.handle ?? -1, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, window: win,
-      shiftAdjust: button === 'adjust' && e.button === 0 };   // Adjust given as Shift+left (input.js)
+    const base = { button, buttons: BUT[button], x: wp.x, y: wp.y, sx: p.x, sy: p.y, icon, iconIndex: icon?.handle ?? -1, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, window: win };
     if (button === 'menu') {
       if (btype === 0 && !win.menu && !win.hasListeners('click')) return;
       this._reportMenuClick(win, e, p, icon);

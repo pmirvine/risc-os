@@ -1,16 +1,18 @@
 // Mouse-button and keyboard mapping.
 //
 // RISC OS has three buttons: Select (left, value 4), Menu (middle, 2), Adjust (right, 1).
-// Browser mapping (configurable via input.config):
-//   left            -> Select      Shift+left -> Adjust     Ctrl+left -> Menu (when rightIsAdjust)
-//   middle          -> Menu
-//   right           -> Menu (default) or Adjust (config.rightIsAdjust = true)
+// Browser mapping (configurable via input.config / *Configure Buttons):
+//   Acorn mapping (default, rightIsAdjust = true), as on an Acorn mouse and in RPCEmu/Arculator:
+//     left -> Select   middle -> Menu   right -> Adjust   Ctrl+right (or Ctrl+left) -> Menu
+//     Shift is left alone, so it keeps its RISC OS meaning (Shift-double-click, Shift-drag, ...).
+//   Alternative (rightIsAdjust = false), for two-button mice:
+//     left -> Select   middle/right -> Menu   Shift+left -> Adjust
 
 export const BUT = { select: 4, menu: 2, adjust: 1 };
 
 export const input = {
   config: {
-    rightIsAdjust: false,
+    rightIsAdjust: true,
     doubleClickMs: 400,         // WimpDoubleClickDelay (default 10 = 1s, but browsers feel better at ~0.4s)
     doubleClickMove: 16,        // px
     dragMove: 8,                // WimpDragMove (px)
@@ -32,16 +34,37 @@ export const input = {
 
   /** Map a pointer event to a RISC OS button name ('select'|'menu'|'adjust'). */
   button(e) {
+    // macOS turns Ctrl+click into a secondary (right) click, and some browsers then clear ctrlKey,
+    // so the Control key's own state is checked as well.
+    const ctrl = e.ctrlKey || this.keysDown.has('ControlLeft') || this.keysDown.has('ControlRight');
     if (e.button === 1) return 'menu';
-    if (e.button === 2) return this.config.rightIsAdjust ? 'adjust' : 'menu';
+    if (e.button === 2) return this.config.rightIsAdjust && !ctrl ? 'adjust' : 'menu';
     if (e.button === 0) {
-      if (e.ctrlKey && this.config.rightIsAdjust) return 'menu';
-      if (e.shiftKey) return 'adjust';
-      return 'select';
+      if (this.config.rightIsAdjust) return ctrl ? 'menu' : 'select';
+      return e.shiftKey ? 'adjust' : 'select';
     }
     return null;
   },
+
+  /**
+   * RISC OS button state (Select 4, Menu 2, Adjust 1) for a pointer event, through the same mapping as
+   * button(): e.g. with the Acorn mapping Ctrl+click reads as Menu. For programs polling the mouse
+   * (MOUSE, OS_Mouse, Wimp_GetPointerInfo) rather than receiving Wimp clicks.
+   */
+  buttonBits(e) {
+    const b = e.buttons ?? 0;
+    let bits = 0;
+    if (b & 1) bits |= BUT[this.button({ ...pick(e), button: 0 })] ?? 0;
+    if (b & 4) bits |= BUT.menu;
+    if (b & 2) bits |= BUT[this.button({ ...pick(e), button: 2 })] ?? 0;
+    return bits;
+  },
+  /** Hold down exactly the mouse-button keys (INKEY -10/-11/-12 = key numbers 9/10/11) in bits on a machine. */
+  syncButtonKeys(m, bits) {
+    for (const [bit, key] of [[BUT.select, 9], [BUT.menu, 10], [BUT.adjust, 11]]) (bits & bit ? m.keyDown(key) : m.keyUp(key));
+  },
 };
+const pick = (e) => ({ ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
 
 // ---------------------------------------------------------------------------
 // Keyboard: DOM KeyboardEvent -> Wimp key code (as delivered by Key_Pressed)
@@ -117,5 +140,6 @@ export function autoRepeat(fn, first = 400, rate = 60) {
 if (typeof window !== 'undefined') {
   window.addEventListener('keydown', (e) => input.keysDown.add(e.code), true);
   window.addEventListener('keyup', (e) => input.keysDown.delete(e.code), true);
+  window.addEventListener('blur', () => input.keysDown.clear());   // a key released elsewhere never sends keyup
   window.addEventListener('blur', () => input.keysDown.clear());
 }

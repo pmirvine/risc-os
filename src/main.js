@@ -82,6 +82,7 @@ async function boot() {
   config.apply();
   if (params.get('zoom')) wimp.setScale(+params.get('zoom'));
   if (params.get('buttons') === 'adjust') input.config.rightIsAdjust = true;
+  if (params.get('buttons') === 'menu') input.config.rightIsAdjust = false;
   wimp.menus = new MenuManager(wimp);
   wimp.cli = cli;
   await initDialogs();

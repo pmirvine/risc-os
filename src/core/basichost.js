@@ -4,6 +4,7 @@
 // Installed as os.hooks.basic unless another agent has already provided one.
 
 import { os } from './os.js';
+import { input } from './input.js';
 import { vfs } from './vfs.js';
 import { sysvars } from './sysvars.js';
 import { wimp } from './wimp.js';
@@ -107,10 +108,9 @@ export async function runBasic(argv = [], ctx = {}) {
     return [Math.floor((e.clientX - r.left) / r.width * ox), Math.floor((1 - (e.clientY - r.top) / r.height) * oy)];
   };
   let buttons = 0;
-  const bits = (b) => ((b & 1) ? 4 : 0) | ((b & 4) ? 2 : 0) | ((b & 2) ? 1 : 0);
   scr.el.addEventListener('pointermove', (e) => { if (machine) { const [x, y] = mouseXY(e); machine.setMouse(x, y, buttons); } });
-  scr.el.addEventListener('pointerdown', (e) => { buttons = bits(e.buttons); if (machine) { const [x, y] = mouseXY(e); machine.setMouse(x, y, buttons); machine.keyDown([9, 10, 11][e.button] ?? 9); } });
-  scr.el.addEventListener('pointerup', (e) => { buttons = bits(e.buttons); if (machine) { const [x, y] = mouseXY(e); machine.setMouse(x, y, buttons); machine.keyUp([9, 10, 11][e.button] ?? 9); } });
+  scr.el.addEventListener('pointerdown', (e) => { buttons = input.buttonBits(e); if (machine) { const [x, y] = mouseXY(e); machine.setMouse(x, y, buttons); input.syncButtonKeys(machine, buttons); } });
+  scr.el.addEventListener('pointerup', (e) => { buttons = input.buttonBits(e); if (machine) { const [x, y] = mouseXY(e); machine.setMouse(x, y, buttons); input.syncButtonKeys(machine, buttons); } });
   scr.el.addEventListener('contextmenu', (e) => e.preventDefault());
 
   const done = new Promise((resolve) => {

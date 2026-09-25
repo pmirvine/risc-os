@@ -29,8 +29,8 @@ node serve.mjs            # static server on http://localhost:8371/ (node serve.
 Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static web server works. The first visit in a
 session shows the boot sequence; later reloads go straight to the desktop.
 
-URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=adjust` (right button =
-Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>`, `?reset=disc|cmos|all` (see below).
+URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
+right = Menu, Shift + left = Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>`, `?reset=disc|cmos|all` (see below).
 
 A cold load fetches about 0.9 MB (uncompressed) in about 130 requests. On localhost the desktop is ready in about
 1.4 s, most of which is the boot screen (under 0.1 s with `?fast=1` and a warm cache). Only small application
@@ -42,8 +42,12 @@ first time they are used, and sprites are fetched one PNG at a time as they are 
 | RISC OS | Browser |
 |---|---|
 | Select | left button |
-| Menu | middle button or **right button** (default) |
-| Adjust | Shift + left. With *Configure Buttons Adjust (or `?buttons=adjust`), the right button is Adjust and Ctrl + left is Menu |
+| Menu | middle button, or Ctrl + right click for mice and trackpads without one (Ctrl + left click works too; macOS turns it into a right click) |
+| Adjust | right button |
+
+This is the Acorn mouse layout (as in RPCEmu and Arculator), and Shift keeps its RISC OS meaning, e.g.
+Shift-double-click opens an application as a directory or a file as text. For a two-button mapping (right = Menu,
+Shift + left = Adjust) use `*Configure Buttons Menu` or `?buttons=menu`.
 | F12 | the `*` command line (Return on an empty line goes back to the desktop) |
 | Ctrl-F12 | a new task window |
 | Shift-F12 | bring the icon bar to the front / send it back |

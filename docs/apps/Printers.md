@@ -6,8 +6,8 @@ configuration windows), Messages and sprites (`!printers`, class sprites `dp`/`l
 
 * Icon bar: "Printers" (grey `s!printers`) while no printer is active; otherwise one icon per active printer,
   text = its name, or the connection ("Parallel", "To file"…) / status ("Printing", "Paused"). The current printer
-  is the highlighted (cream) one. Select = make current, Adjust = Queue control; Shift (or Ctrl, since
-  Shift+click is Adjust with the default mouse mapping) + Select = Configuration, + Adjust = Connections.
+  is the highlighted (cream) one. Select = make current, Adjust = Queue control; Shift (or Ctrl, since with the two-button mapping
+  Shift+click is Adjust) + Select = Configuration, + Adjust = Connections.
   Drop files on a printer icon (or the Queue window) to print; drop / double-click printer definition files
   (`&FC6`, `HardDisc4.Printing.Printers.*`, Squash-compressed — `unsquash.js`) to install a printer.
 * Menu (ME1): Info, Printer control… (Name/Type/Connection/Status list; Select/Adjust select rows,
