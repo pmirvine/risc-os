@@ -11,6 +11,7 @@
 //     when it ends, like the Wimp's command window.
 
 import { os } from '../os.js';
+import { input } from '../input.js';
 import { wimp } from '../wimp.js';
 import { sysvars } from '../sysvars.js';
 import { basicFS } from '../basichost.js';
@@ -203,13 +204,12 @@ export class BasicProcess {
       return [Math.floor((e.clientX - r.left) / r.width * ox), Math.floor((1 - (e.clientY - r.top) / r.height) * oy)];
     };
     let buttons = 0;
-    const bits = (b) => ((b & 1) ? 4 : 0) | ((b & 4) ? 2 : 0) | ((b & 2) ? 1 : 0);
     scr.el.addEventListener('pointermove', (e) => { const [x, y] = mouseXY(e); m.setMouse(x, y, buttons); });
     scr.el.addEventListener('pointerdown', (e) => {
       if (this.keyHandler) { this.keyHandler(null, { code: -1 }); return; }
-      buttons = bits(e.buttons); const [x, y] = mouseXY(e); m.setMouse(x, y, buttons); m.keyDown([9, 10, 11][e.button] ?? 9);
+      buttons = input.buttonBits(e); const [x, y] = mouseXY(e); m.setMouse(x, y, buttons); input.syncButtonKeys(m, buttons);
     });
-    scr.el.addEventListener('pointerup', (e) => { buttons = bits(e.buttons); const [x, y] = mouseXY(e); m.setMouse(x, y, buttons); m.keyUp([9, 10, 11][e.button] ?? 9); });
+    scr.el.addEventListener('pointerup', (e) => { buttons = input.buttonBits(e); const [x, y] = mouseXY(e); m.setMouse(x, y, buttons); input.syncButtonKeys(m, buttons); });
     scr.el.addEventListener('contextmenu', (e) => e.preventDefault());
   }
 

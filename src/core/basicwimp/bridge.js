@@ -162,12 +162,11 @@ export class WimpBridge {
   }
 
   _installGlobalListeners() {
-    const bits = (b) => ((b & 1) ? 4 : 0) | ((b & 4) ? 2 : 0) | ((b & 2) ? 1 : 0);
     const m = this.m;
     this._listeners = [
-      ['pointerdown', (e) => { this.buttons = bits(e.buttons); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); m.keyDown([9, 10, 11][e.button] ?? 9); }],
-      ['pointerup', (e) => { this.buttons = bits(e.buttons); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); m.keyUp([9, 10, 11][e.button] ?? 9); }],
-      ['pointermove', (e) => { this.buttons = bits(e.buttons); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); }],
+      ['pointerdown', (e) => { this.buttons = input.buttonBits(e); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); input.syncButtonKeys(m, this.buttons); }],
+      ['pointerup', (e) => { this.buttons = input.buttonBits(e); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); input.syncButtonKeys(m, this.buttons); }],
+      ['pointermove', (e) => { this.buttons = input.buttonBits(e); const p = this.pointerOS(); m.setMouse(p.x, p.y, this.buttons); }],
       ['keydown', (e) => { const k = this.keymap?.internalKey(e); if (k !== undefined) m.keyDown(k); }],
       ['keyup', (e) => { const k = this.keymap?.internalKey(e); if (k !== undefined) m.keyUp(k); }],
     ];

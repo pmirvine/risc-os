@@ -45,7 +45,26 @@ export const input = {
     }
     return null;
   },
+
+  /**
+   * RISC OS button state (Select 4, Menu 2, Adjust 1) for a pointer event, through the same mapping as
+   * button(): e.g. with the Acorn mapping Ctrl+left reads as Menu. For programs polling the mouse
+   * (MOUSE, OS_Mouse, Wimp_GetPointerInfo) rather than receiving Wimp clicks.
+   */
+  buttonBits(e) {
+    const b = e.buttons ?? 0;
+    let bits = 0;
+    if (b & 1) bits |= BUT[this.button({ ...pick(e), button: 0 })] ?? 0;
+    if (b & 4) bits |= BUT.menu;
+    if (b & 2) bits |= BUT[this.button({ ...pick(e), button: 2 })] ?? 0;
+    return bits;
+  },
+  /** Hold down exactly the mouse-button keys (INKEY -10/-11/-12 = key numbers 9/10/11) in bits on a machine. */
+  syncButtonKeys(m, bits) {
+    for (const [bit, key] of [[BUT.select, 9], [BUT.menu, 10], [BUT.adjust, 11]]) (bits & bit ? m.keyDown(key) : m.keyUp(key));
+  },
 };
+const pick = (e) => ({ ctrlKey: e.ctrlKey, shiftKey: e.shiftKey });
 
 // ---------------------------------------------------------------------------
 // Keyboard: DOM KeyboardEvent -> Wimp key code (as delivered by Key_Pressed)

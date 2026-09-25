@@ -43,6 +43,7 @@ const PLAN = {
   'guess.bas': { ms: 4000, keys: [...Array(100)].map((_, i) => [50 + i * 20, `${i + 1}\r`]), out: /Correct! You took \d+ tries\./ },
   'errors.bas': { ms: 3000, out: /Top-level handler: Something went wrong \(99\) at line 130/, allowErl: true },
   'wimpclock.bas': { ms: 3000, wimp: true },
+  'mouse.bas': { ms: 1500, stopKey: 'q' },
 };
 
 /** Screen summary: distinct pixel values on the displayed bank (sampled) and the text on it. */
