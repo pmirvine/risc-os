@@ -40,7 +40,13 @@ export function exampleFiles(problems = [], bookSrc = HERE) {
         continue;
       }
       const text = fs.readFileSync(full, 'utf8');
-      if (/[^\n\x20-\x7e\xa0-\xff]/.test(text)) problems.push(`${where}: only Latin-1 text (and no tabs) please`);
+      if (/[^\n\r\x20-\x7e\xa0-\xff]/.test(text)) problems.push(`${where}: only Latin-1 text (and no tabs) please`);
+      // a ,xxx suffix gives the file type (as HostFS names files): 'Friends,1c4' is Friends, type &1C4
+      const suffix = /^(.+),([0-9a-f]{3})$/i.exec(name);
+      if (suffix) {
+        out.push({ parts: [...parts, suffix[1]], type: suffix[2].toLowerCase(), data: Buffer.from(text, 'latin1') });
+        continue;
+      }
       const type = /^!(Run|Boot)$/.test(name) ? 'feb' : /^(!Help|ReadMe)$/.test(name) ? 'fff' : 'f81';
       if (type === 'f81') text.split('\n').forEach((l, i) => { if (l.length > 70) problems.push(`${where}:${i + 1} is over 70 characters`); });
       out.push({ parts: [...parts, name], type, data: Buffer.from(text, 'latin1') });

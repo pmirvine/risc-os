@@ -9,7 +9,9 @@
 //   notes.focus()                   give it the caret
 //   notes.readOnly = true
 // Keys: arrows, Home / Copy (start / end of the line), Ctrl-Up / Ctrl-Down (start / end of the text),
-// Backspace / Delete, Copy (delete right), Return, Tab (two spaces), Ctrl-U (delete the line); pasted text.
+// Backspace / Delete, Copy (delete right), Return, Ctrl-U (delete the line); pasted text. Tab / Shift-Tab move to the
+// next / previous field (writable icon or text area) in the window, as in a dialogue box (Tab types two spaces
+// if there is nothing else to move to).
 
 import { wimp } from './wimp.js';
 import { Emitter } from './util.js';
@@ -180,7 +182,8 @@ export class TextArea extends Emitter {
       case 0x1AE: this._moveTo(t.length); return true;                        // Ctrl-down
       case 8: case 127: if (i > 0) this.replace(i - 1, i, ''); return true;  // Backspace / Delete
       case 13: this.insert('\n'); return true;
-      case 0x18A: this.insert('  '); return true;                             // Tab
+      case 0x18A: if (!wimp.focusNext(this.win, this, 1)) this.insert('  '); return true;   // Tab: the next field (else 2 spaces)
+      case 0x19A: wimp.focusNext(this.win, this, -1); return true;           // Shift-Tab: the previous field
       case 21: { const a = t.lastIndexOf('\n', i - 1) + 1; let b = t.indexOf('\n', i); b = b < 0 ? t.length : b + 1; this.replace(a, b, ''); return true; }   // Ctrl-U
       case 27: return undefined;
       default:

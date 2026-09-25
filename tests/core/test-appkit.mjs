@@ -95,6 +95,17 @@ try {
     os.wimp.processKey(65);                      // typed into the icon, not the text area
     return { blurred, icon: w.icons[0].text, text: __area.text.slice(-2) };
   });
+  const tc = await page.evaluate(() => {
+    const w = __notesWin;
+    os.wimp.setCaret(w, w.icons[0]);
+    os.wimp.processKey(0x18A);                   // Tab from the icon: into the first text area
+    const first = __area.focused;
+    __area.key({ code: 0x18A });                 // Tab in the text area: the next one
+    const second = __area2.focused && !__area.focused;
+    __area2.key({ code: 0x18A });                // and round to the icon
+    return { first, second, back: os.wimp.caret.icon === w.icons[0] };
+  });
+  ok('Tab moves through fields and text areas in reading order', tc.first && tc.second && tc.back, tc);
   ok('the caret leaving the text area takes its keys away', tb.blurred && tb.icon === 'A' && tb.text === 'tw', tb);
 
   // ---------------------------------------------------------------- the names reach a JSScript program

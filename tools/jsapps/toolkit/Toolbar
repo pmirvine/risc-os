@@ -1,0 +1,74 @@
+// Toolbar - a row of buttons across the top of a window, like the
+// toolbars of RISC OS programs. It is a pane: a window of its own
+// that the Wimp keeps in front of the main window, and moves with it.
+//
+//   const bar = new Toolbar(w, {
+//     area,                           // the program's own sprites
+//     buttons: [{ name: 'new', sprite: 'tb_new', help: 'New card',
+//                 action: () => ... }, { gap: true }, ...],
+//     search: { help: '...', change: (text) => ... },   optional
+//     menu: (ev) => ...,              Menu clicked on the toolbar
+//   });
+//   bar.height                        how much of the window it hides
+//   bar.shade('delete', true)         grey a button out (or back)
+//   bar.search                        the search field's icon
+import { wimp } from 'riscos';
+
+const SIZE = 36, GAP = 4;
+
+export class Toolbar {
+  constructor(win, { area = null, buttons, search = null, menu }) {
+    this.height = SIZE + 2 * GAP;
+    this.actions = new Map();          // button name -> function
+    const icons = [];
+    let x = GAP;
+    for (const b of buttons) {
+      if (b.gap) { x += 2 * GAP; continue; }
+      icons.push({ x, y: GAP, w: SIZE, h: SIZE, sprite: b.sprite,
+        border: true, filled: true, hcentre: true, button: 'click',
+        validation: 'R5,3', name: b.name, help: b.help });
+      this.actions.set(b.name, b.action);
+      x += SIZE + GAP;
+    }
+    if (search) {
+      x += 3 * GAP;
+      icons.push({ x, y: GAP + 4, w: 40, h: 28, text: 'Find',
+        rjustify: true });
+      icons.push({ x: x + 44, y: GAP + 4, w: search.width ?? 160,
+        h: 28, text: '', border: true, filled: true, bg: 0,
+        button: 'writable', maxLen: 40, name: 'search',
+        help: search.help });
+    }
+    this.pane = win.task.createWindow({
+      flags: { pane: true }, colours: { workBg: 1 }, spriteArea: area,
+      extent: { w: 2000, h: this.height }, w: win.w, h: this.height,
+      icons,
+    });
+    this.search = this.pane.iconByName('search');
+    this.pane.on('click', (ev) => {
+      const f = this.actions.get(ev.icon?.name);
+      if (f && !ev.icon.shaded && ev.button !== 'menu') f(ev);
+      if (ev.button === 'menu') menu?.(ev);
+      return true;
+    });
+    this.pane.on('iconchanged', (ev) => {
+      if (ev.icon === this.search) search.change(this.search.text);
+    });
+    this.pane.on('key', (ev) => {
+      if (ev.code === 27 && this.search) {      // Escape: clear it
+        this.search.setText('');
+        search.change('');
+        return true;
+      }
+      if (ev.code === 13) { wimp.setCaret(win); return true; }
+      return undefined;
+    });
+    win.attachPane(this.pane, { dx: 0, dy: 0, h: this.height,
+      fitWidth: true });
+  }
+
+  shade(name, on) {
+    const icon = this.pane.iconByName(name);
+    if (icon && icon.shaded !== !!on) icon.setState({ shaded: !!on });
+  }
+}

@@ -236,3 +236,8 @@ docs/ASSETS.md §5).
   `src/core/timefmt.js` (moved from `src/apps/Alarm/timefmt.js`, which re-exports it).
 * `src/core/jsrun.js`: programs also get reportError, discardChanges, dragSave, loadTemplates, parseTemplateFile,
   textWidth, choices, formatTime, DAYS, MONTHS, ordinal, TextArea, sprites.
+* `src/core/cli.js` `obey`: `%%` in an Obey file is a literal `%` (as on RISC OS), so `!Boot` files can write run
+  actions such as `Set Alias$@RunType_1C4 Run <Contacts$Dir>.!Run %%*0`. (23 Obey files on the seed disc use it -
+  `!Maestro.!Boot`, `!Squash.!Boot` … - and were mangled before.)
+* `src/core/wimp.js` `focusNext(win, from, d)`: Tab / Shift-Tab / Up / Down move through a window's writable icons
+  and TextAreas together, in reading order; a TextArea's Tab moves to the next field.

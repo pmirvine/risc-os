@@ -828,6 +828,24 @@ export class Wimp extends Emitter {
     }
   }
 
+  /**
+   * Move the input focus d steps (+1 / -1, wrapping) through a window's writable icons and its text areas
+   * (src/core/textarea.js), in reading order (top to bottom, left to right). from: the icon or text area it's in.
+   * Returns true if it moved.
+   */
+  focusNext(win, from, d) {
+    const writables = win.icons.filter((x) => x && x.writable && !x.deleted && !x.shaded).map((ic) => ({ ic, x: ic.bbox.x0, y: ic.bbox.y0 }));
+    const areas = [...(win._textAreas ?? [])].filter((a) => !a.readOnly).map((a) => ({ area: a, x: a.x, y: a.y }));
+    const all = [...writables, ...areas].sort((p, q) => p.y - q.y || p.x - q.x);
+    if (all.length < 2) return false;
+    const j = all.findIndex((t) => t.ic === from || t.area === from);
+    const n = all[(j + d + all.length) % all.length];
+    if (!n || n.ic === from || n.area === from) return false;
+    if (n.area) n.area.focus();
+    else this.setCaret(win, n.ic, n.ic.text.length);
+    return true;
+  }
+
   /** Writable icon editing (Wimp's built-in behaviour). Returns true if handled. */
   _editKey(c, k, e) {
     const ic = c.icon, win = c.window;
@@ -836,11 +854,7 @@ export class Wimp extends Emitter {
     const set = (text, idx) => { ic._text = text; c.index = idx; ic.render(); this._drawCaret(); win.emit('iconchanged', { icon: ic }); };
     const moveTo = (idx) => { c.index = clamp(idx, 0, ic.text.length); ic.render(); this._drawCaret(); };
     const writables = win.icons.filter((x) => x && x.writable && !x.deleted && !x.shaded);
-    const next = (d) => {
-      const j = writables.indexOf(ic);
-      const n = writables[(j + d + writables.length) % writables.length];
-      if (n && n !== ic) this.setCaret(win, n, n.text.length);
-    };
+    const next = (d) => this.focusNext(win, ic, d);
     switch (k.code) {
       case 0x18C: moveTo(i - 1); return true;                        // left
       case 0x18D: moveTo(i + 1); return true;                        // right
@@ -855,12 +869,16 @@ export class Wimp extends Emitter {
         return true;
       case 0x19B: set(t.slice(0, i), i); return true;               // shift-copy: delete to end
       case 21: set('', 0); return true;                              // Ctrl-U: clear
-      case 0x18E: case 0x18A: if (writables.length > 1) { next(1); return true; } return false;  // down / tab
-      case 0x18F: case 0x19A: if (writables.length > 1) { next(-1); return true; } return false; // up / shift-tab
+      case 0x18E: case 0x18A: return next(1);                        // down / tab: the next field (or text area)
+      case 0x18F: case 0x19A: return next(-1);                       // up / shift-tab
       case 13:
         // Return: reported to the task; in a window with returnNext it moves to the next writable icon first
         // (the last one's Return is reported, e.g. to press the default button)
-        if (win.returnNext) { const j = writables.indexOf(ic); if (j >= 0 && j < writables.length - 1) { next(1); return true; } }
+        if (win.returnNext) {
+          // (the last field in reading order reports it)
+          const order = [...writables.map((x) => ({ x: x.bbox.x0, y: x.bbox.y0, ic: x })), ...[...(win._textAreas ?? [])].map((a) => ({ x: a.x, y: a.y }))].sort((p, q) => p.y - q.y || p.x - q.x);
+          if (order[order.length - 1]?.ic !== ic) { next(1); return true; }
+        }
         return false;
       default:
         if (k.char && k.code >= 32 && k.code !== 127 && !e?.ctrlKey && !e?.metaKey) {
