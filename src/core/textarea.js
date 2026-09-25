@@ -42,11 +42,13 @@ export class TextArea extends Emitter {
     this._measure();
     // the window's events: clicks inside the box, and keys / pastes while it has the caret. Its handlers go first,
     // so the program's own click and key handlers only see what the text area doesn't use.
-    win.on('click', (ev) => this.click(ev), { first: true });
-    win.on('key', (ev) => this.key(ev), { first: true });
-    win.on('paste', (ev) => (this.focused ? (this.insert(ev.text.replace(/\r\n?/g, '\n')), true) : undefined), { first: true });
-    win.on('losecaret', () => this._blur());
-    win.on('caretmove', () => this._blur());
+    this._offs = [
+      win.on('click', (ev) => this.click(ev), { first: true }),
+      win.on('key', (ev) => this.key(ev), { first: true }),
+      win.on('paste', (ev) => (this.focused ? (this.insert(ev.text.replace(/\r\n?/g, '\n')), true) : undefined), { first: true }),
+      win.on('losecaret', () => this._blur()),
+      win.on('caretmove', () => this._blur()),
+    ];
     this.draw();
   }
 
@@ -193,5 +195,8 @@ export class TextArea extends Emitter {
     }
   }
   /** Remove it from the window. */
-  remove() { this.canvas.remove(); this.focused = false; this.win._textAreas?.delete(this); }
+  remove() {
+    for (const off of this._offs) off();       // (so it no longer takes the window's clicks and keys)
+    this.canvas.remove(); this.focused = false; this.win._textAreas?.delete(this);
+  }
 }

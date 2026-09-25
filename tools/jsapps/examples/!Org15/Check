@@ -1,0 +1,93 @@
+// Check - tests the parts of the Organiser that don't need windows:
+// the dates and each section's entries.
+// Double-click it: it prints ok or FAIL for each test, and 'all ok'
+// if they all pass.
+import { print } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { Diary, ToDo, Notes, Planner, Anniversaries, Links, nth }
+  from './Store';
+
+let failed = 0;
+// the same, whatever order their fields are in
+const sorted = (k, v) => (v && typeof v === 'object' &&
+  !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort())
+  : v);
+function check(what, got, want) {
+  const ok = JSON.stringify(got, sorted) ===
+    JSON.stringify(want, sorted);
+  if (!ok) failed++;
+  print(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+  if (!ok) print(`     got ${JSON.stringify(got)}`);
+}
+
+export default function start() {
+  // ------------------------------------------------ dates
+  check('add days over a month', D.addDays('2026-09-29', 3),
+    '2026-10-02');
+  check('add a month to 31 January', D.addMonths('2026-01-31', 1),
+    '2026-02-28');
+  check('leap years', D.addYears('2024-02-29', 1), '2025-02-28');
+  check('a Friday', D.weekday('2026-09-25'), 4);
+  check('its Monday', D.startOfWeek('2026-09-25'), '2026-09-21');
+  check('days between', D.daysBetween('2026-12-25', '2027-01-01'), 7);
+  check('a month grid starts on a Monday',
+    D.monthGrid(2026, 9)[0][0], '2026-08-31');
+  check('reading dates', [D.parseDay('25/9/2026'),
+    D.parseDay('2026-09-25'), D.parseDay('31/02/2026')],
+  ['2026-09-25', '2026-09-25', null]);
+  check('reading times', [D.parseTime('9:30'), D.parseTime('0930'),
+    D.parseTime('25:00')], ['09:30', '09:30', null]);
+
+  // ------------------------------------------------ the diary
+  const diary = new Diary();
+  diary.add({ date: '2026-09-21', time: '09:30', text: 'Meeting',
+    repeat: { every: 'week', count: 3 } });
+  diary.add({ date: '2026-09-23', time: '08:00', text: 'Dentist' });
+  check('repeats, within a count',
+    diary.occurrences('2026-09-01', '2026-12-31')
+      .map((o) => o.date).filter((d) => d !== '2026-09-23'),
+    ['2026-09-21', '2026-09-28', '2026-10-05']);
+  check('in date and time order', diary.occurrences('2026-09-21',
+    '2026-09-27').map((o) => o.appt.text), ['Meeting', 'Dentist']);
+  const monthly = new Diary([{ id: 1, date: '2026-01-31', text: 'Pay',
+    repeat: { every: 'month' } }]);
+  check('monthly on the 31st', monthly.occurrences('2026-02-01',
+    '2026-04-30').map((o) => o.date),
+  ['2026-02-28', '2026-03-31', '2026-04-30']);
+
+  // -------------------------------------------- the other sections
+  const todo = new ToDo([
+    { id: 1, text: 'b', priority: 2, done: false },
+    { id: 2, text: 'a', priority: 1, done: true },
+    { id: 3, text: 'c', priority: 3, done: false,
+      due: '2026-09-25' }]);
+  check('to do: not done first, by priority',
+    todo.list().map((t) => t.text), ['b', 'c', 'a']);
+  check('to do: due on a day', todo.dueOn('2026-09-25').length, 1);
+  const notes = new Notes([{ id: 1, title: 'A', order: 0 },
+    { id: 2, title: 'B', order: 1 },
+    { id: 3, title: 'C', order: 2 }]);
+  notes.moveTo(3, 0);
+  check('notepad: moving a page', notes.list().map((p) => p.title),
+    ['C', 'A', 'B']);
+  const planner = new Planner([{ id: 1, key: 0, from: '2026-08-01',
+    to: '2026-08-14' }]);
+  check('planner: a bar covers its days',
+    [planner.onDay('2026-08-07').length, planner.onDay('2026-08-15')
+      .length], [1, 0]);
+  const ann = new Anniversaries([{ id: 1, date: '1968-03-14',
+    text: 'Ann' }]);
+  check('anniversaries: in March', ann.inMonth(3).length, 1);
+  check('anniversaries: 58th', nth(ann.get(1), 2026), '58th');
+  const links = new Links();
+  const a = { section: 'diary', id: 1 };
+  const b = { section: 'todo', id: 2 };
+  links.link(a, b);
+  links.link(b, a);                       // (the same link again)
+  check('links both ways, once',
+    [links.of(a), links.of(b), links.size], [[b], [a], 1]);
+  links.forget(b);
+  check('links forgotten', links.has(a), false);
+
+  print(failed ? `${failed} FAILED` : 'all ok');
+}

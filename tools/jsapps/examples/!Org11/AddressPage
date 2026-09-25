@@ -1,0 +1,133 @@
+// AddressPage - the address book: the names under one letter on the
+// left page, the chosen person's card on the right, and a tab for
+// each letter down the right-hand page. It is !Contacts' address
+// book: the same Book (./Model) and card dialogue box (./Card), used
+// unchanged - Reuse.list copies them from !Contacts.
+// Click a letter (or type one) to turn to it; click a name to see
+// the card; double-click it to change it.
+import { Section, heading, text, inside, INK, FAINT, ruled }
+  from './Paper';
+import { nameOf, phoneOf } from './Model';
+import { editCard } from './Card';
+import { FIELDS } from './Toolkit/Formats';
+
+const ROW = 22, TOP = 50;
+const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const initial = (c) => (nameOf(c)[0] ?? '?').toUpperCase();
+
+export class AddressPage extends Section {
+  constructor(org) {
+    super(org, { id: 'address', name: 'Address', colour: '#93c47d',
+      newHelp: 'add a person to the address book' });
+    this.letter = 'A';
+    this.chosen = null;                   // the id of the card shown
+    this.tabs = [];
+  }
+  names() {
+    return this.doc.book.list({ sort: 'last' })
+      .filter((c) => initial(c) === this.letter);
+  }
+
+  draw(g, L, R) {
+    heading(g, L, 'Address', this.colour, this.letter);
+    ruled(g, L, L.y + TOP + ROW, ROW);
+    const names = this.names();
+    names.forEach((c, i) => {
+      const y = L.y + TOP + i * ROW;
+      if (y + ROW > L.y + L.h - 10) return;
+      if (c.id === this.chosen) {
+        g.fillStyle = '#e4f0de';
+        g.fillRect(L.x + 10, y, L.w - 20, ROW);
+      }
+      text(g, nameOf(c), L.x + 14, y + ROW / 2, L.w - 140,
+        'bold 13px Homerton');
+      text(g, phoneOf(c), L.x + L.w - 124, y + ROW / 2, 112);
+      this.box(L.x + 10, y, L.w - 20, ROW, { id: c.id });
+    });
+    if (!names.length) {
+      text(g, `No names under ${this.letter}.`, L.x + 14,
+        L.y + TOP + 12, L.w - 28, 'italic 12px Homerton', FAINT);
+    }
+    this.card(g, R);
+    this.letterTabs(g, R);
+  }
+  /** The chosen person's details, one field a line. */
+  card(g, R) {
+    const c = this.doc.book.get(this.chosen);
+    heading(g, R, c ? nameOf(c) : 'Address', this.colour);
+    if (!c) return;
+    let y = R.y + TOP + 6;
+    for (const [k, label] of FIELDS) {
+      if (!c[k] || k === 'first' || k === 'last') continue;
+      for (const [i, line] of String(c[k]).split('\n').entries()) {
+        if (y > R.y + R.h - 16) return;
+        if (!i) text(g, label, R.x + 14, y, 90, '11px Homerton',
+          FAINT);
+        text(g, line, R.x + 108, y, R.w - 148, '13px Homerton', INK);
+        y += 18;
+      }
+    }
+  }
+  /** A narrow tab for each letter down the right-hand page's edge. */
+  letterTabs(g, R) {
+    const h = (R.h - 20) / LETTERS.length, x = R.x + R.w - 22;
+    const used = new Set(this.doc.book.all().map(initial));
+    this.tabs = [...LETTERS].map((l, i) => {
+      const y = R.y + 10 + i * h, on = l === this.letter;
+      g.fillStyle = on ? this.colour : '#eeeadb';
+      g.fillRect(x, y, 18, h - 1);
+      text(g, l, x + 5, y + h / 2, 12, `${on || used.has(l) ? 'bold '
+        : ''}10px Homerton`, used.has(l) ? INK : FAINT);
+      return { l, x, y, w: 18, h };
+    });
+  }
+
+  click(ev) {
+    const t = this.tabs.find((b) => inside(b, ev.x, ev.y));
+    if (t) { this.turnTo(t.l); return true; }
+    const box = this.at(ev.x, ev.y);
+    if (box) { this.chosen = box.ref.id; this.org.redraw(); }
+    return true;
+  }
+  turnTo(l) {
+    this.letter = l;
+    this.chosen = this.names()[0]?.id ?? null;
+    this.org.redraw();
+  }
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) await this.edit(box.ref.id);
+  }
+  key(ev) {                          // type a letter to turn to it
+    const l = ev.char?.toUpperCase();
+    if (!l || !LETTERS.includes(l) || ev.ctrl) return false;
+    this.turnTo(l);
+    return true;
+  }
+  turn(dir) {
+    const i = LETTERS.indexOf(this.letter) + dir;
+    this.turnTo(LETTERS[(i + 26) % 26]);
+  }
+  today() {}
+
+  async edit(id) {
+    const c = this.doc.book.get(id);
+    const v = await editCard(this.org.app.task, c, nameOf(c));
+    this.org.focus();
+    if (v) this.doc.book.put({ ...c, ...v });
+  }
+  async newEntry() {
+    const v = await editCard(this.org.app.task, {}, 'New contact');
+    this.org.focus();
+    if (!v) return;
+    const c = this.doc.book.add(v);
+    this.go({ id: c.id });
+    this.org.redraw();
+  }
+  go(ref) {
+    const c = this.doc.book.get(ref.id);
+    if (!c) return;
+    this.letter = initial(c);
+    this.chosen = c.id;
+  }
+}

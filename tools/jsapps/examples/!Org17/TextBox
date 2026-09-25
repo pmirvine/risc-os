@@ -1,0 +1,162 @@
+// TextBox - several lines of text you can type into, drawn by the
+// program itself: a small version of the desktop's TextArea. It has
+// its own canvas in the window's work area, wraps words to its width,
+// scrolls to keep the caret in view, and uses the Wimp's caret.
+//
+//   const box = new TextBox(w, { x, y, w, h, text, font })
+//   box.text                 the text ('\n' between lines)
+//   box.on('change', ({ text }) => ...)   after each edit
+//   box.focus(), box.focused, box.insert(s), box.remove()
+import { wimp } from 'riscos';
+import { Emitter } from './Toolkit/Emitter';
+
+const PAD = 4, LINE = 18;
+
+export class TextBox extends Emitter {
+  constructor(win, { x, y, w, h, text = '',
+    font = '14px Homerton' }) {
+    super();
+    Object.assign(this, { win, x, y, w, h, font });
+    this.text = text;
+    this.caret = text.length;          // where typing goes
+    this.scroll = 0;                   // how far it has scrolled
+    this.focused = false;
+    const c = this.canvas = document.createElement('canvas');
+    c.width = w; c.height = h;
+    Object.assign(c.style, { position: 'absolute', left: `${x}px`,
+      top: `${y}px`, pointerEvents: 'none' });
+    win.work.appendChild(c);
+    this.g = c.getContext('2d');
+    // our handlers go first: the window only sees what we don't use
+    this.offs = [
+      win.on('click', (ev) => this.click(ev), { first: true }),
+      win.on('key', (ev) => this.key(ev), { first: true }),
+      win.on('losecaret', () => { this.focused = false; }),
+    ];
+    this.draw();
+  }
+
+  /** The lines as drawn: [{ start, end }] indexes into the text. */
+  lines() {
+    const g = this.g, t = this.text, max = this.w - 2 * PAD;
+    g.font = this.font;
+    const out = [];
+    let start = 0;
+    while (start <= t.length) {
+      let end = t.indexOf('\n', start);
+      if (end < 0) end = t.length;
+      // too wide? break at the last space that fits
+      while (g.measureText(t.slice(start, end)).width > max) {
+        const sp = t.lastIndexOf(' ', end - 1);
+        end = sp > start ? sp : end - 1;
+      }
+      out.push({ start, end });
+      start = t[end] === '\n' || t[end] === ' ' ? end + 1 : end;
+      if (end >= t.length) break;
+    }
+    return out.length ? out : [{ start: 0, end: 0 }];
+  }
+  /** The line the caret is on, and how far along it is. */
+  where(lines = this.lines()) {
+    let n = lines.findLastIndex((l) => l.start <= this.caret);
+    if (n < 0) n = 0;
+    const l = lines[n];
+    this.g.font = this.font;
+    const x = this.g.measureText(this.text.slice(l.start,
+      this.caret)).width;
+    return { n, x };
+  }
+
+  draw() {
+    const g = this.g, lines = this.lines();
+    const { n, x } = this.where(lines);
+    // scroll so the caret's line can be seen
+    if (n * LINE < this.scroll) this.scroll = n * LINE;
+    if ((n + 1) * LINE > this.scroll + this.h - 2 * PAD) {
+      this.scroll = (n + 1) * LINE - this.h + 2 * PAD;
+    }
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, this.w, this.h);
+    g.strokeStyle = '#999999';
+    g.strokeRect(0.5, 0.5, this.w - 1, this.h - 1);
+    g.fillStyle = '#000000';
+    g.font = this.font;
+    g.textBaseline = 'middle';
+    lines.forEach((l, i) => {
+      const y = PAD + i * LINE - this.scroll + LINE / 2;
+      g.fillText(this.text.slice(l.start, l.end), PAD, y);
+    });
+    if (this.focused) {
+      wimp.setCaret(this.win, null, -1, { x: this.x + PAD + x,
+        y: this.y + PAD + n * LINE - this.scroll, h: LINE });
+    }
+  }
+
+  focus() { this.focused = true; this.draw(); }
+  remove() {
+    for (const off of this.offs) off();
+    this.canvas.remove();
+    this.focused = false;
+  }
+
+  /** A click inside the box puts the caret there. */
+  click(ev) {
+    const inside = ev.x >= this.x && ev.x < this.x + this.w &&
+      ev.y >= this.y && ev.y < this.y + this.h;
+    if (!inside) { this.focused = false; return undefined; }
+    const lines = this.lines();
+    const n = Math.min(lines.length - 1, Math.max(0,
+      Math.floor((ev.y - this.y - PAD + this.scroll) / LINE)));
+    this.caret = this.nearest(lines[n], ev.x - this.x - PAD);
+    this.focus();
+    return true;
+  }
+  /** The place in a line nearest to x. */
+  nearest(l, x) {
+    this.g.font = this.font;
+    for (let i = l.start; i < l.end; i++) {
+      const w = this.g.measureText(this.text.slice(l.start, i + 1))
+        .width;
+      if (w > x) return i;
+    }
+    return l.end;
+  }
+
+  /** Put s in at the caret (or take n characters away before it). */
+  insert(s, n = 0) {
+    const at = this.caret - n;
+    this.text = this.text.slice(0, at) + s +
+      this.text.slice(this.caret);
+    this.caret = at + s.length;
+    this.draw();
+    this.emit('change', { text: this.text });
+  }
+
+  key(ev) {
+    if (!this.focused) return undefined;
+    const lines = this.lines(), { n, x } = this.where(lines);
+    const upDown = (d) => {
+      const l = lines[n + d];
+      if (l) this.caret = this.nearest(l, x);
+    };
+    switch (ev.code) {
+      case 0x18C: this.caret = Math.max(0, this.caret - 1); break;
+      case 0x18D:
+        this.caret = Math.min(this.text.length, this.caret + 1);
+        break;
+      case 0x18F: upDown(-1); break;                        // up
+      case 0x18E: upDown(1); break;                         // down
+      case 8: case 127: if (this.caret) this.insert('', 1);
+        return true;
+      case 13: this.insert('\n'); return true;             // Return
+      default:
+        if (ev.code >= 32 && ev.code < 256 && !ev.ctrl) {
+          this.insert(String.fromCharCode(ev.code));
+          return true;
+        }
+        return undefined;                  // not ours: F3 and so on
+    }
+    this.draw();
+    return true;
+  }
+}

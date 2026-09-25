@@ -1,0 +1,200 @@
+// PlannerPage - the year planner: a chart of the year, January to
+// June on the left page and July to December on the right, a row for
+// each month and a column for each day. Choose a colour in the key at
+// the bottom, then drag across days to paint a bar; drag a bar into
+// the wastebasket to delete it. Each colour has a pattern too, so the
+// bars can be told apart without colour (as the Style Guide asks).
+import { Section, heading, text, inside, INK, FAINT } from './Paper';
+import { PLANNER_KEY } from './Store';
+import { Form } from './Toolkit/Form';
+import { showDay } from './Entries';
+import { wimp } from 'riscos';
+import * as D from './Toolkit/Dates';
+
+export const KEY_COLOURS = ['#e06666', '#6fa8dc', '#93c47d',
+  '#f6b26b', '#b4a7d6', '#999999'];
+
+/** Fill a rectangle in a planner colour, with its pattern. */
+export function barStyle(g, k, x, y, w, h) {
+  g.fillStyle = KEY_COLOURS[k];
+  g.fillRect(x, y, w, h);
+  g.save();
+  g.beginPath(); g.rect(x, y, w, h); g.clip();
+  g.strokeStyle = 'rgba(0,0,0,0.45)';
+  g.fillStyle = 'rgba(0,0,0,0.45)';
+  g.lineWidth = 1;
+  for (let i = -h; i < w + h; i += 5) {
+    g.beginPath();
+    if (k === 1) { g.moveTo(x + i, y + h); g.lineTo(x + i + h, y); }
+    if (k === 2) g.fillRect(x + i, y + h / 2 - 1, 2, 2);
+    if (k === 3) { g.moveTo(x + i, y); g.lineTo(x + i, y + h); }
+    if (k === 4) { g.moveTo(x + i, y); g.lineTo(x + i + h, y + h); }
+    if (k === 5) { g.moveTo(x, y + h / 2 + 0.5); g.lineTo(x + w,
+      y + h / 2 + 0.5); }
+    g.stroke();
+  }
+  g.restore();
+}
+
+const TOP = 58, LABEL = 34, KEYH = 44;
+
+export class PlannerPage extends Section {
+  constructor(org) {
+    super(org, { id: 'planner', name: 'Planner', colour: '#b4a7d6',
+      newHelp: 'add a planner bar' });
+    this.year = +D.today().slice(0, 4);
+    this.pen = 0;                         // the colour to paint with
+  }
+  state() { return { year: this.year }; }
+
+  /** Where each month's row is, and the day at x, y. */
+  grid(p, first) {
+    const rowH = Math.floor((p.h - TOP - KEYH - 10) / 6);
+    const cellW = (p.w - LABEL - 16) / 31;
+    return { rowH, cellW, x0: p.x + LABEL + 8, y0: p.y + TOP, first };
+  }
+  dayAt(x, y) {
+    for (const [p, first] of [[this.org.pages[0], 1],
+      [this.org.pages[1], 7]]) {
+      const G = this.grid(p, first);
+      const row = Math.floor((y - G.y0) / G.rowH);
+      const col = Math.floor((x - G.x0) / G.cellW);
+      if (row < 0 || row > 5 || col < 0 || col > 30) continue;
+      if (x < p.x || x > p.x + p.w) continue;
+      const m = first + row;
+      if (col + 1 > D.daysInMonth(this.year, m)) return null;
+      const two = (n) => String(n).padStart(2, '0');
+      return `${this.year}-${two(m)}-${two(col + 1)}`;
+    }
+    return null;
+  }
+
+  draw(g, L, R) {
+    heading(g, L, 'Planner', this.colour, String(this.year));
+    heading(g, R, String(this.year), this.colour);
+    this.keys = [];
+    this.half(g, L, 1);
+    this.half(g, R, 7);
+  }
+  half(g, p, first) {
+    const G = this.grid(p, first);
+    g.font = '9px Homerton';
+    for (let d = 1; d <= 31; d += 1) {
+      if (d % 5 && d !== 1) continue;
+      text(g, String(d), G.x0 + (d - 1) * G.cellW, G.y0 - 8, 16,
+        '9px Homerton', FAINT);
+    }
+    for (let r = 0; r < 6; r++) {
+      const m = first + r, y = G.y0 + r * G.rowH;
+      const day1 = `${this.year}-${String(m).padStart(2, '0')}-01`;
+      text(g, D.format(day1, '%M3'), p.x + 8, y + G.rowH / 2, LABEL,
+        'bold 11px Homerton');
+      const days = D.daysInMonth(this.year, m);
+      for (let d = 1; d <= days; d++) {
+        const key = `${this.year}-${String(m).padStart(2, '0')}-` +
+          String(d).padStart(2, '0');
+        const x = G.x0 + (d - 1) * G.cellW;
+        g.fillStyle = D.weekday(key) >= 5 ? '#ece6d2' : '#ffffff';
+        g.fillRect(x, y, G.cellW - 1, G.rowH - 2);
+        if (key === D.today()) {
+          g.strokeStyle = INK;
+          g.strokeRect(x + 0.5, y + 0.5, G.cellW - 2, G.rowH - 3);
+        }
+      }
+      this.bars(g, G, m, y);
+    }
+    // the key: three colours on each page
+    for (let i = 0; i < 3; i++) {
+      const k = (first === 1 ? 0 : 3) + i;
+      const x = p.x + 12 + i * ((p.w - 24) / 3), y = p.y + p.h - KEYH;
+      barStyle(g, k, x, y + 6, 22, 16);
+      if (k === this.pen) {
+        g.strokeStyle = INK; g.lineWidth = 2;
+        g.strokeRect(x - 3, y + 3, (p.w - 24) / 3 - 6, 22);
+      }
+      text(g, PLANNER_KEY[k], x + 28, y + 14, 70, '12px Homerton');
+      this.keys.push({ k, x: x - 3, y: y + 3, w: (p.w - 24) / 3 - 6,
+        h: 22 });
+    }
+  }
+  /** The bars in one month's row: a lane each for the six colours. */
+  bars(g, G, m, y) {
+    const lane = (G.rowH - 6) / 6;
+    const first = `${this.year}-${String(m).padStart(2, '0')}-01`;
+    const last = `${first.slice(0, 8)}${D.daysInMonth(this.year, m)}`;
+    for (const b of this.doc.planner.all()) {
+      if (b.to < first || b.from > last) continue;
+      const a = b.from < first ? first : b.from;
+      const z = b.to > last ? last : b.to;
+      const x = G.x0 + (+a.slice(8) - 1) * G.cellW;
+      const w = (+z.slice(8) - +a.slice(8) + 1) * G.cellW - 1;
+      const by = y + 3 + b.key * lane;
+      barStyle(g, b.key, x, by, w, lane - 1);
+      this.box(x, by, w, lane - 1, { id: b.id });
+    }
+  }
+
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    const k = this.keys?.find((r) => inside(r, ev.x, ev.y));
+    if (k) { this.pen = k.k; this.org.redraw(); }
+    return true;
+  }
+  /** Drag across days to paint a bar in the chosen colour. */
+  async drag(ev) {
+    const from = this.dayAt(ev.x, ev.y);
+    if (!from) return false;
+    const drop = await wimp.drag({ event: ev.pointerEvent,
+      type: 'point' });
+    const to = drop.window === this.org.win
+      ? this.dayAt(drop.x, drop.y) : null;
+    if (!to) return true;
+    const [a, z] = from <= to ? [from, to] : [to, from];
+    this.doc.planner.add({ key: this.pen, from: a, to: z });
+    return true;
+  }
+  double(ev) {
+    const day = this.dayAt(ev.x, ev.y);
+    if (day) this.org.go({ section: 'diary', date: day });
+    return true;
+  }
+
+  // ------------------------------------------------ entries
+  turn(dir) { this.year += dir; }
+  today() { this.year = +D.today().slice(0, 4); }
+  describe(ref) {
+    const b = this.doc.planner.get(ref.id);
+    return b ? `${PLANNER_KEY[b.key]}, ${showDay(b.from)} to ` +
+      showDay(b.to) : 'Planner bar';
+  }
+  remove(ref) { this.doc.planner.remove(ref.id); }
+  find(s) {
+    const t = s.toLowerCase();
+    return this.doc.planner.all()
+      .filter((b) => PLANNER_KEY[b.key].toLowerCase().includes(t))
+      .map((b) => ({ text: this.describe({ id: b.id }),
+        ref: { section: 'planner', id: b.id } }));
+  }
+  go(ref) {
+    const b = this.doc.planner.get(ref.id);
+    if (b) this.year = +b.from.slice(0, 4);
+  }
+  async newEntry() {
+    this.form ??= new Form(this.org.app.task, { title: 'Planner bar',
+      buttons: ['Cancel', 'OK'], fields: [
+        { name: 'key', label: 'Kind', width: 140,
+          choices: PLANNER_KEY },
+        { name: 'from', label: 'From', width: 120 },
+        { name: 'to', label: 'To', width: 120 }],
+      check: (v) => (!D.parseDay(v.from) ? { field: 'from',
+        message: 'Give the date as 25/09/2026' }
+        : !D.parseDay(v.to) ? { field: 'to',
+          message: 'Give the date as 25/09/2026' } : null) });
+    const v = await this.form.ask({ key: PLANNER_KEY[this.pen] });
+    this.org.focus();
+    if (!v) return;
+    const [a, z] = [D.parseDay(v.from), D.parseDay(v.to)].sort();
+    this.doc.planner.add({ key: PLANNER_KEY.indexOf(v.key), from: a,
+      to: z });
+  }
+}

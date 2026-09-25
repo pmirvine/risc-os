@@ -1,0 +1,63 @@
+// Reminders - the alarms: every few seconds, look for appointments
+// whose alarm time has come, and show a box for each, like !Alarm's:
+// OK, or Snooze to be reminded again in five minutes. An alarm more
+// than an hour old (the computer was off) is missed, not shown.
+//
+//   const r = new Reminders(app); r.check(now)   (now: a Date)
+import { beep } from 'riscos';
+import { Form } from './Toolkit/Form';
+import * as D from './Toolkit/Dates';
+
+const SNOOZE = 5;                    // minutes
+const LATE = 60;                     // older alarms have been missed
+
+export class Reminders {
+  constructor(app) {
+    this.app = app;
+    this.done = new Set();           // alarms already shown
+    this.snoozed = new Map();        // alarm -> when to show again
+    app.task.every(10000, () => this.check(new Date()));
+  }
+
+  /** Show the alarms that are due at the time now. */
+  check(now) {
+    const today = D.keyOf(now), tomorrow = D.addDays(today, 1);
+    for (const doc of this.app.docs) {
+      for (const { appt, date } of doc.diary.occurrences(today,
+        tomorrow)) {
+        if (appt.alarm == null || !appt.time) continue;
+        const name = `${doc.filename}:${appt.id}:${date}`;
+        const at = this.snoozed.get(name) ?? alarmTime(appt, date);
+        const due = now >= at && now - at < LATE * 60000;
+        if (due && !this.done.has(name)) {
+          this.done.add(name);
+          this.show(name, appt, date);
+        }
+      }
+    }
+  }
+
+  async show(name, appt, date) {
+    beep();
+    const box = new Form(this.app.task, {
+      title: 'Organiser alarm', fields: [],
+      message: `${D.format(date, '%W3 %ZDY %M3')}, ${appt.time}: ` +
+        appt.text,
+      buttons: ['Snooze', 'OK'],
+    });
+    const r = await box.run();
+    box.win.delete();
+    if (r?.button === 'Snooze') {    // again in five minutes
+      this.snoozed.set(name, new Date(Date.now() + SNOOZE * 60000));
+      this.done.delete(name);
+    }
+  }
+}
+
+/** When an appointment's alarm goes off on a day. */
+export function alarmTime(appt, date) {
+  const [h, m] = appt.time.split(':').map(Number);
+  const d = D.dateOf(date);
+  d.setHours(h, m - appt.alarm, 0, 0);
+  return d;
+}

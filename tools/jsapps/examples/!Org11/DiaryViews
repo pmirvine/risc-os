@@ -1,0 +1,150 @@
+// DiaryViews - drawing the diary's four views on the binder's pages.
+// Each is a function (diary, g, left, right) that draws, and records
+// where the days (diary.dayBox) and the entries (diary.box) are.
+//   week   Monday to Wednesday on the left, Thursday to Sunday right
+//   day    the day on the left, the next day on the right, by hour
+//   month  this month on the left, the next one on the right
+//   year   January to June on the left, July to December right
+import { heading, text, INK, FAINT, RULE } from './Paper';
+import * as D from './Toolkit/Dates';
+
+const LINE = 16;                    // an entry's line in a day's box
+
+/** One day's box in the week view: its date, then its entries. */
+function dayCell(diary, g, key, x, y, w, h) {
+  const today = key === D.today(), chosen = key === diary.day;
+  g.fillStyle = chosen ? '#eef4fb' : '#ffffff';
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = RULE;
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  text(g, D.format(key, '%WE %ZDY %MO'), x + 6, y + 11, w - 12,
+    `bold 12px Homerton`, today ? '#c00000' : INK);
+  diary.dayBox(key, x, y, w, h);
+  let ly = y + 22;
+  for (const it of diary.itemsOn(key)) {
+    if (ly + LINE > y + h) {                    // no more room
+      text(g, '...', x + w - 20, y + h - 8, 16);
+      break;
+    }
+    item(diary, g, it, x + 4, ly, w - 8);
+    ly += LINE;
+  }
+}
+/** One entry: its time and what it is. */
+function item(diary, g, it, x, y, w) {
+  const mid = y + LINE / 2;
+  text(g, it.time || '', x, mid, 40, 'bold 12px Homerton');
+  text(g, it.text, x + 42, mid, w - 42, '12px Homerton');
+  diary.box(x, y, w, LINE, it.ref);
+}
+
+export function week(diary, g, L, R) {
+  const mon = D.startOfWeek(diary.day);
+  const sun = D.addDays(mon, 6);
+  heading(g, L, 'Diary', diary.colour, D.format(mon, '%MO %CE%YR'));
+  heading(g, R, `Week of ${D.format(mon, '%ZDY %M3')}`, diary.colour,
+    `to ${D.format(sun, '%ZDY %M3')}`);
+  const top = L.y + 44, x0 = 10;
+  const hL = Math.floor((L.h - 54) / 3);    // 3 days on the left
+  const hR = Math.floor((R.h - 54) / 4);    // 4 on the right
+  for (let i = 0; i < 3; i++) {
+    dayCell(diary, g, D.addDays(mon, i), L.x + x0, top + i * hL,
+      L.w - 2 * x0, hL - 4);
+  }
+  for (let i = 0; i < 4; i++) {
+    dayCell(diary, g, D.addDays(mon, 3 + i), R.x + x0, top + i * hR,
+      R.w - 2 * x0 - 16, hR - 4);
+  }
+}
+
+export function day(diary, g, L, R) {
+  const days = [[L, diary.day], [R, D.addDays(diary.day, 1)]];
+  days.forEach(([p, key]) => {
+    heading(g, p, D.format(key, '%WE %ZDY%ST %MO'), diary.colour,
+      D.format(key, '%CE%YR'));
+    const top = p.y + 70, hour = (p.h - 90) / 13;   // 8:00 to 20:00
+    diary.dayBox(key, p.x, p.y + 40, p.w, p.h - 40);
+    for (let h = 8; h <= 20; h++) {
+      const y = top + (h - 8) * hour;
+      g.fillStyle = RULE;
+      g.fillRect(p.x + 50, y, p.w - 70, 1);
+      text(g, `${h}:00`, p.x + 10, y, 38, '11px Homerton', FAINT);
+    }
+    // entries without a time go at the top; others by their hour
+    let untimed = 0;
+    for (const it of diary.itemsOn(key)) {
+      const hh = it.time
+        ? +it.time.slice(0, 2) + it.time.slice(3) / 60 : null;
+      const y = hh != null && hh >= 8 && hh <= 20
+        ? top + (hh - 8) * hour - LINE / 2
+        : p.y + 44 + LINE * untimed++;
+      item(diary, g, it, p.x + 54, y, p.w - 80);
+    }
+  });
+}
+
+/** A month's calendar in a page: 6 weeks of 7 days. */
+function monthPage(diary, g, p, first) {
+  const [y, m] = first.split('-').map(Number);
+  heading(g, p, D.format(first, '%MO'), diary.colour, String(y));
+  const top = p.y + 64, cw = (p.w - 20) / 7, ch = (p.h - 80) / 6;
+  ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((n, i) =>
+    text(g, n, p.x + 12 + i * cw, top - 12, cw,
+      'bold 11px Homerton'));
+  D.monthGrid(y, m).forEach((wk, r) => wk.forEach((key, c) => {
+    const x = p.x + 10 + c * cw, yy = top + r * ch;
+    const inMonth = +key.slice(5, 7) === m;
+    g.strokeStyle = RULE;
+    g.strokeRect(x + 0.5, yy + 0.5, cw - 1, ch - 1);
+    text(g, String(+key.slice(8)), x + 4, yy + 9, cw - 6,
+      key === D.today() ? 'bold 12px Homerton' : '11px Homerton',
+      inMonth ? (key === D.today() ? '#c00000' : INK) : FAINT);
+    if (!inMonth) return;
+    diary.dayBox(key, x, yy, cw, ch);
+    // as many entries as there's room for, each cut short to fit
+    const items = diary.itemsOn(key);
+    const room = Math.floor((ch - 20) / 11);          // lines of 11
+    items.slice(0, room).forEach((it, k) => {
+      const ty = yy + 24 + k * 11;
+      text(g, it.text, x + 8, ty, cw - 11, '9px Homerton',
+        it.kind === 'appt' ? INK : FAINT);
+    });
+    if (items.length > room) {
+      text(g, `+${items.length - room}`, x + cw - 16, yy + 9, 14,
+        '9px Homerton', FAINT);
+    }
+  }));
+}
+export function month(diary, g, L, R) {
+  const first = `${diary.day.slice(0, 7)}-01`;
+  monthPage(diary, g, L, first);
+  monthPage(diary, g, R, D.addMonths(first, 1));
+}
+
+/** Six little months on a page. */
+export function year(diary, g, L, R) {
+  const y = +diary.day.slice(0, 4);
+  heading(g, L, 'Diary', diary.colour, String(y));
+  heading(g, R, String(y), diary.colour);
+  [[L, 1], [R, 7]].forEach(([p, m0]) => {
+    const bw = (p.w - 30) / 2, bh = (p.h - 60) / 3;
+    for (let i = 0; i < 6; i++) {
+      const m = m0 + i, bx = p.x + 10 + (i % 2) * (bw + 10);
+      const by = p.y + 50 + Math.floor(i / 2) * bh;
+      const first = `${y}-${String(m).padStart(2, '0')}-01`;
+      text(g, D.format(first, '%MO'), bx, by + 8, bw,
+        'bold 12px Homerton');
+      const cw = bw / 7, ch = (bh - 24) / 6;
+      D.monthGrid(y, m).forEach((wk, r) => wk.forEach((key, c) => {
+        if (+key.slice(5, 7) !== m) return;
+        const x = bx + c * cw, yy = by + 18 + r * ch;
+        const busy = diary.itemsOn(key).length > 0;
+        text(g, String(+key.slice(8)), x + 2, yy + ch / 2, cw,
+          busy || key === D.today() ? 'bold 10px Homerton'
+            : '10px Homerton', key === D.today() ? '#c00000'
+            : busy ? '#1c4f8a' : INK);
+        diary.dayBox(key, x, yy, cw, ch);
+      }));
+    }
+  });
+}
