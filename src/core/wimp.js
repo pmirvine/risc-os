@@ -317,6 +317,7 @@ export class Wimp extends Emitter {
     if (win) {
       win._layout();
       if (oldWin !== win) win.emit('gaincaret', {});
+      else if ((old?.icon ?? null) !== icon) win.emit('caretmove', { from: old?.icon ?? null, to: icon });   // between icons in one window
     }
     if (old?.icon && old.icon !== icon) old.icon.render();
     this._drawCaret();
@@ -857,7 +858,9 @@ export class Wimp extends Emitter {
       case 0x18E: case 0x18A: if (writables.length > 1) { next(1); return true; } return false;  // down / tab
       case 0x18F: case 0x19A: if (writables.length > 1) { next(-1); return true; } return false; // up / shift-tab
       case 13:
-        // Return: move to next writable icon unless it's the last one; always report to app
+        // Return: reported to the task; in a window with returnNext it moves to the next writable icon first
+        // (the last one's Return is reported, e.g. to press the default button)
+        if (win.returnNext) { const j = writables.indexOf(ic); if (j >= 0 && j < writables.length - 1) { next(1); return true; } }
         return false;
       default:
         if (k.char && k.code >= 32 && k.code !== 127 && !e?.ctrlKey && !e?.metaKey) {

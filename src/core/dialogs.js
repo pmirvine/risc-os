@@ -262,6 +262,41 @@ export function saveAs(opts) {
   return w;
 }
 
+// ---------------------------------------------------------------- dragging data out of a window
+/**
+ * Drag a file icon out of a window (the Save box's drag, for any window): call from a 'drag' event.
+ * Dropped on a directory display, the file is written there; dropped on another application's window, the
+ * data goes to it (DataSave: a file, or straight into it). Dropped back on the same window, nothing happens.
+ *   dragSave(ev, { task, leafname, filetype, getData: async () => bytes|string, sprite })
+ * Resolves the full name of the file written, '' if the data went straight to an application, or null.
+ */
+export function dragSave(ev, opts) {
+  const task = opts.task ?? wimp.systemTask;
+  const sprite = opts.sprite ?? fileSprite({ type: 'file', filetype: opts.filetype ?? 0xFFD }).name;
+  const s = sprites.get(sprite);
+  const w = s?.cssW ?? 34, h = s?.cssH ?? 34;
+  const x = (ev.sx ?? 0) - w / 2, y = (ev.sy ?? 0) - h / 2;
+  return wimp.drag({ sprite, box: { x0: x, y0: y, x1: x + w, y1: y + h }, event: ev.pointerEvent }).then(async (drop) => {
+    if (!drop?.window || drop.window === ev.window) return null;
+    const leaf = opts.leafname ?? 'Untitled', type = opts.filetype ?? 0xFFD;
+    try {
+      const dir = drop.window._filerDir;
+      if (dir) {
+        const path = `${dir}.${leaf}`;
+        os.vfs.writeFile(path, await opts.getData(), { filetype: type });
+        return path;
+      }
+      const res = await wimp.dataSave(drop, { leafname: leaf, filetype: type, getData: opts.getData }, task);
+      if (!res) return null;
+      if (res.path) { os.vfs.writeFile(res.path, await opts.getData(), { filetype: type }); return res.path; }
+      return '';
+    } catch (e) {
+      wimp.reportError(e.message ?? String(e), { appName: task.name });
+      return null;
+    }
+  });
+}
+
 // ---------------------------------------------------------------- query box
 /**
  * Simple query box (e.g. "Discard changes?") built from the FilerAct 'query' template.

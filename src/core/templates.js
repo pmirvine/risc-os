@@ -182,19 +182,32 @@ export function normaliseTemplates(json) {
 }
 
 const cache = new Map();
-/** Load a template file (binary ,fec or JSON). Returns {fonts, windows}. */
+/** A RISC OS pathname (a file on the virtual disc) rather than a web address: 'ADFS::HardDisc4.$.x', '<App$Dir>.x', '$.x', 'Choices:x'. */
+const isRiscosPath = (s) => /::|^[<$@&%]/.test(s) || (/^[A-Za-z_][\w$]*:[^/]/.test(s) && !/^(blob|data|https?|file):/i.test(s));
+/**
+ * Load a template file (binary &FEC or JSON): a web address (the desktop's own assets) or a RISC OS
+ * pathname (a Templates file on the disc, e.g. <MyApp$Dir>.Templates). Returns {fonts, windows}.
+ */
 export async function loadTemplates(url) {
-  if (cache.has(url)) return cache.get(url);
+  const disc = isRiscosPath(String(url));
+  if (!disc && cache.has(url)) return cache.get(url);
   const p = (async () => {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`Template file not found: ${url}`);
-    const buf = new Uint8Array(await res.arrayBuffer());
+    let buf;
+    if (disc) {
+      const vfs = globalThis.os?.vfs;
+      if (!vfs) throw new Error(`Template file not found: ${url}`);
+      buf = await vfs.readFile(url);
+    } else {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Template file not found: ${url}`);
+      buf = new Uint8Array(await res.arrayBuffer());
+    }
     // JSON starts with '{' or '['
     let i = 0;
     while (i < buf.length && buf[i] <= 32) i++;
     if (buf[i] === 0x7B || buf[i] === 0x5B) return normaliseTemplates(JSON.parse(new TextDecoder().decode(buf)));
     return parseTemplateFile(buf);
   })();
-  cache.set(url, p);
+  if (!disc) cache.set(url, p);          // (a file on the disc may change: read it each time)
   return p;
 }

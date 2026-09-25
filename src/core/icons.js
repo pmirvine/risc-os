@@ -127,6 +127,8 @@ export class Icon {
     this.font = s.font;
     this.area = s.area ?? win?.spriteArea ?? null;
     this.data = spec.data;      // free for app use
+    this.name = spec.name;      // a name to find it by (win.iconByName)
+    this.help = spec.help;      // interactive help text (!Help)
     this.scrollX = 0;           // writable text scroll
     this.el = el('div', 'icon');
     this.el._icon = this;
