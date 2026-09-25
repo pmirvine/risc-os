@@ -3,7 +3,7 @@
 // RISC OS has three buttons: Select (left, value 4), Menu (middle, 2), Adjust (right, 1).
 // Browser mapping (configurable via input.config / *Configure Buttons):
 //   Acorn mapping (default, rightIsAdjust = true), as on an Acorn mouse and in RPCEmu/Arculator:
-//     left -> Select   middle -> Menu   right -> Adjust   Ctrl+left (or Ctrl+right) -> Menu
+//     left -> Select   middle -> Menu   right -> Adjust   Ctrl+right (or Ctrl+left) -> Menu
 //     Shift is left alone, so it keeps its RISC OS meaning (Shift-double-click, Shift-drag, ...).
 //   Alternative (rightIsAdjust = false), for two-button mice:
 //     left -> Select   middle/right -> Menu   Shift+left -> Adjust
@@ -48,7 +48,7 @@ export const input = {
 
   /**
    * RISC OS button state (Select 4, Menu 2, Adjust 1) for a pointer event, through the same mapping as
-   * button(): e.g. with the Acorn mapping Ctrl+left reads as Menu. For programs polling the mouse
+   * button(): e.g. with the Acorn mapping Ctrl+click reads as Menu. For programs polling the mouse
    * (MOUSE, OS_Mouse, Wimp_GetPointerInfo) rather than receiving Wimp clicks.
    */
   buttonBits(e) {

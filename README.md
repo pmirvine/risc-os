@@ -42,7 +42,7 @@ first time they are used, and sprites are fetched one PNG at a time as they are 
 | RISC OS | Browser |
 |---|---|
 | Select | left button |
-| Menu | middle button, or Ctrl + left for mice and trackpads without one |
+| Menu | middle button, or Ctrl + right click for mice and trackpads without one (Ctrl + left click works too; macOS turns it into a right click) |
 | Adjust | right button |
 
 This is the Acorn mouse layout (as in RPCEmu and Arculator), and Shift keeps its RISC OS meaning, e.g.

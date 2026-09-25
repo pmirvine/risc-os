@@ -153,8 +153,9 @@ action, return `true` to mark it handled.
 | `paste` | clipboard text pasted while focused (non-writable) `{text}` | |
 | `menuopen`, `menuclosed` | window shown/hidden as a menu dialogue box | |
 
-Mouse buttons (default, the Acorn layout): Select = left, Menu = middle or Ctrl+left, Adjust = right; Shift is
-passed through as a modifier (`ev.shift`). With `*Configure Buttons Menu` (or `os.input.config.rightIsAdjust =
+Mouse buttons (default, the Acorn layout): Select = left, Menu = middle or Ctrl+right, Adjust = right
+(Ctrl+left also gives Menu; macOS reports it as a right click). Shift is passed through as a modifier
+(`ev.shift`). With `*Configure Buttons Menu` (or `os.input.config.rightIsAdjust =
 false`, URL `?buttons=menu`) right = Menu and Shift+left = Adjust. Test scripts get the two-button mapping unless
 they launch with `buttons: 'acorn'` / `BUTTONS=acorn` (tests/core/pw.mjs). Click semantics follow the Wimp button types (e.g. type 10 reports click,
 then drag or double; types 4/5/7/8/11 auto-select icons with ESG rules; 14/15 give the caret to writable icons).
