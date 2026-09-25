@@ -165,6 +165,17 @@ export class AppManager {
     return true;
   }
 
+  /**
+   * Shift-double-click: an app whose descriptor lists the file type in `edits` (e.g. !JsEdit for JSScript)
+   * opens the file; double-clicking it still does what it did (runs it). Returns true if one did.
+   */
+  editFile(path, type) {
+    const d = this.apps.find((a) => a.edits?.includes(type));
+    if (!d) return false;
+    this.start(d, `"${path}"`);
+    return true;
+  }
+
   /** Open a file with the app that handles a file type (used for Shift-double-click etc.). */
   openFile(path, type) {
     const d = this.apps.find((a) => {

@@ -136,6 +136,8 @@ function describe(e, where) {
 /** Report an error from a program (used for errors in its event handlers and timers too). */
 function reportFor(task, e, where = locate(e)) {
   console.error(e);
+  // throwback: an editor showing the program (!JsEdit) may take the error instead of an error box
+  if (where && os.hooks.throwback?.({ path: where.path, line: where.line, message: describe(e, null), program: task?.name })) return;
   wimp.reportError(describe(e, where), { appName: task?.name ?? 'JSRun' });
 }
 /** Errors from event handlers (util.js) and uncaught ones: claim those that come from a program. */
@@ -245,6 +247,36 @@ function moduleSyntaxLine(urls) {
 }
 
 const isModule = (src) => /^\s*(import|export)\b(?!\s*\()/m.test(src);
+
+/**
+ * Check a program's syntax without running it: resolves null, or {line, message} for the first mistake.
+ * (A module's import / export lines are blanked first, so only its own code is checked.)
+ */
+export function checkSyntax(src) {
+  let code = String(src);
+  if (isModule(code)) {
+    code = code.split('\n').map((l) => (/^\s*import\b(?!\s*\()/.test(l) ? '' : l.replace(/^(\s*)export\s+(default\s+)?/, '$1'))).join('\n');
+  }
+  const id = ++seq;
+  const text = `globalThis.__jsrun[${id}] = async function () {\n${code}\n};\n`;
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/javascript' }));
+  return new Promise((resolve) => {
+    let failed = null;
+    const onErr = (ev) => { if (ev.filename === url) { failed = ev; ev.preventDefault(); } };
+    window.addEventListener('error', onErr);
+    const s = document.createElement('script');
+    const end = () => {
+      window.removeEventListener('error', onErr); s.remove(); URL.revokeObjectURL(url);
+      delete globalThis.__jsrun[id];
+      if (!failed) return resolve(null);
+      const last = String(src).replace(/\n$/, '').split('\n').length;
+      resolve({ line: Math.min(last, Math.max(1, (failed.lineno ?? 2) - 1)), message: String(failed.message ?? 'Syntax error').replace(/^Uncaught SyntaxError: /, '') });
+    };
+    s.onload = end; s.onerror = end;
+    s.src = url;
+    document.head.appendChild(s);
+  });
+}
 
 // ---------------------------------------------------------------- *JSRun
 /** Run the program in `path`. cliCtx: the *command's context (a task window's is ctx.tw). */

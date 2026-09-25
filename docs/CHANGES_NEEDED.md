@@ -209,3 +209,15 @@ docs/ASSETS.md §5).
 * `tools/lib/spritewrite.mjs`: writes small sprite files from character maps (as `tools/basicwimp-demo.mjs`).
 * `tools/build.mjs` runs `disc-jstutor.mjs`; it adds `$.Manuals.JSTutor`, `$.Examples.JS` and a line in
   `!Bookworm`'s hot list.
+
+## !JsEdit (programmer's editor) — changes in shared code
+**Status:** done. Additive; the app is `src/apps/JsEdit/` (docs/apps/JsEdit.md), its disc directory
+`tools/disc-jsedit.mjs`.
+* `src/apps/Edit/editor.js`: `EditApp.createText(opts)` and `TextState.createView(opts)` factories (used where
+  `new TextState` / `new EditView` were), so !JsEdit can subclass them. `src/apps/Edit/view.js` exports the
+  system-font glyph strips as `systemFontAtlas`. Edit's behaviour is unchanged.
+* `src/core/app.js`: `apps.editFile(path, type)` — an app whose descriptor lists the type in `edits` opens it;
+  `src/core/filer.js` Shift-double-click tries it before opening the file in Edit (so JSScript files open in
+  !JsEdit; everything else as before).
+* `src/core/jsrun.js`: `checkSyntax(src)`; `os.hooks.throwback` is offered each program error before the error box.
+* `tools/build.mjs` runs `disc-jsedit.mjs`.

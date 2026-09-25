@@ -87,6 +87,9 @@ export class EditApp {
   options() { return parseOptions(os.sysvars?.get('Edit$Options') ?? '', defaultOptions()); }
   saveOptions(o) { os.sysvars?.set('Edit$Options', formatOptions(o)); }
 
+  /** A new text (subclasses, e.g. !JsEdit, make their own kind of TextState). */
+  createText(opts) { return new TextState(this, opts); }
+
   // ------------------------------------------------------------------ texts
   findNamed(path) {
     const l = String(path).toLowerCase();
@@ -113,7 +116,7 @@ export class EditApp {
       }
     }
     const filetype = st ? st.filetype : desiredType;
-    const s = new TextState(this, { filename: '', filetype, date: st?.date ?? new Date() });
+    const s = this.createText({ filename: '', filetype, date: st?.date ?? new Date() });
     const v = s.newView({ options });
     if (filetype !== 0xFFF) v.options.wordwrap = false;
     if (filename) {
@@ -135,7 +138,7 @@ export class EditApp {
    * opts: {title, text, filetype, readOnly, options, noQuitCheck}
    */
   install(opts = {}) {
-    const s = new TextState(this, { filename: '', filetype: opts.filetype ?? 0xFFF, date: new Date() });
+    const s = this.createText({ filename: '', filetype: opts.filetype ?? 0xFFF, date: new Date() });
     s.noQuitCheck = !!opts.noQuitCheck;
     const v = s.newView({ options: opts.options });
     if (opts.text) s.doc.setText(opts.text);
@@ -256,7 +259,7 @@ export class TextState {
   // ------------------------------------------------------------------ views
   newView({ options = null, x, y, w, h } = {}) {
     const o = { ...this.app.options(), ...(options ?? {}) };
-    const v = new EditView(this.app.task, this.doc, { options: o, x, y, w, h, handlers: this._handlers() });
+    const v = this.createView({ options: o, x, y, w, h, handlers: this._handlers() });
     v.state = this;
     v.keyFilter = (ev) => !!this.keyFilter?.(v, ev);
     v.titleOverride = () => this._titleFor(v);
@@ -264,6 +267,8 @@ export class TextState {
     this._lastView = v;
     return v;
   }
+  /** A new window on the text (subclasses make their own kind of EditView). */
+  createView(opts) { return new EditView(this.app.task, this.doc, opts); }
   /** Misc ▸ New view (txtedit_splitwindow). */
   splitWindow(from = this.activeView) {
     const v = this.newView({ options: from?.options });

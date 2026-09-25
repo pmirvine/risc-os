@@ -132,7 +132,8 @@ export class Filer {
     try {
       if (st.isApp) { await this.bootApp(st.path); return await os.cli.run(`Run ${st.path}`); }
       if (opts.shift && st.filetype !== FT_UNTYPED) {
-        // Shift-double-click: load the file as text
+        // Shift-double-click: load the file as text (in the editor for its type, if an app edits it)
+        if (os.apps?.editFile(st.path, st.filetype)) return;
         if (os.apps?.openFile(st.path, 0xFFF)) return;
       }
       // DataOpen broadcast: a running application that handles this type may claim it

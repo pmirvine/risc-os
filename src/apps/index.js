@@ -12,6 +12,7 @@ export default [
   './Blocks/app.js',
   './Bookworm/app.js',
   './Calc/app.js',
+  './JsEdit/app.js',
   './CDPlayer/app.js',
   './ChangeFSI/app.js',
   './Chars/app.js',
