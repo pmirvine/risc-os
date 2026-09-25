@@ -58,6 +58,12 @@ How to check:
 
 ## Remaining known differences
 
+* **Pressed-in action buttons (deliberate, optional).** While Select or Adjust is held on an action button
+  (R5/R6 validation, e.g. !Configure's adjuster arrows with their `pup`/`pdown` sprites), it is drawn pressed
+  in, as in RISC OS 4. The 3.71 Wimp was built with this switched off (`slabinout SETL false` in
+  Wimp/s/Options). It is on by default; *Configure WimpPress Off, or the "Pressed-in action buttons" option
+  added to !Configure's Window manager pane, gives strict 3.71 behaviour.
+
 * **Fonts.** Homerton is converted to OpenType and rendered by the browser. Glyph shapes and
   anti-aliasing are close to the Font Manager's, but the Font Manager's hinting is not reproduced,
   so text widths can differ by 1–3 %. Menus and Filer windows can come out a few pixels wider.
