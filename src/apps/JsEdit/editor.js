@@ -33,13 +33,13 @@ export class JsEditApp extends EditApp {
     const o = parseOptions(os.sysvars?.get('JsEdit$Options') ?? 'f7 b0 l0 m2 h12 w12 T', defaultOptions());
     const d = String(os.sysvars?.get('JsEdit$Display') ?? 'numbers bold line complete');
     o.lineNumbers = /\bnumbers\b/.test(d); o.boldKeywords = /\bbold\b/.test(d);
-    o.currentLine = /\bline\b/.test(d); o.autoComplete = /\bcomplete\b/.test(d);
+    o.currentLine = /\bline\b/.test(d); o.autoComplete = /\bcomplete\b/.test(d); o.dark = /\bdark\b/.test(d);
     o.wordwrap = false;
     return o;
   }
   saveOptions(o) {
     os.sysvars?.set('JsEdit$Options', formatOptions(o));
-    os.sysvars?.set('JsEdit$Display', [o.lineNumbers && 'numbers', o.boldKeywords && 'bold', o.currentLine && 'line', o.autoComplete && 'complete'].filter(Boolean).join(' '));
+    os.sysvars?.set('JsEdit$Display', [o.lineNumbers && 'numbers', o.boldKeywords && 'bold', o.currentLine && 'line', o.autoComplete && 'complete', o.dark && 'dark'].filter(Boolean).join(' '));
   }
 
   createText(opts) { return new CodeText(this, opts); }
@@ -294,6 +294,7 @@ export class CodeText extends TextState {
       { text: 'Bold keywords', ticked: () => v.options.boldKeywords, action: toggle('boldKeywords') },
       { text: 'Caret line', ticked: () => v.options.currentLine, action: toggle('currentLine') },
       { text: 'Completion', ticked: () => v.options.autoComplete, action: toggle('autoComplete') },
+      { text: 'Dark theme', ticked: () => v.options.dark, action: toggle('dark') },
     ];
     const disp = display.submenu;
     disp.items[disp.items.length - 1].dotted = true;

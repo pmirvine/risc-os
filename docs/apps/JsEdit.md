@@ -37,6 +37,11 @@ The tutorial `$.Manuals.JSTutor` uses it.
 * Throwback: `os.hooks.throwback({path, line, message})` is called by jsrun for every program error; !JsEdit takes
   those for files it has open (Throwback window, gutter mark, caret to the line) and jsrun then shows no error box.
 * Functions: the mode's `Functions` patterns over the text; click an entry to go to it.
+* Dark theme (`Display ▸ Dark theme`, `JsEdit$Display` `dark`): the window's own colours from `THEMES` in
+  view.js (background, selection band, caret line, gutter), the text colours from the mode's `Dark` lines
+  (defaults after VS Code's Dark+). Colours in mode files are Wimp numbers or `#rrggbb`.
+* Fonts: the system font by default; any font in `Display ▸ Font list`, including the Nerd Fonts
+  (`tools/nerdfonts.mjs`). Bold keywords use weight 700 with outline fonts, an overstrike with the system font.
 * Modes: read from `<JsEdit$Dir>.Modes` (else the copies in `src/apps/JsEdit/Modes`); format in `Help.txt`.
 
 Tests: `node --test tests/jsedit` (lexers without a browser; the editor in the desktop).

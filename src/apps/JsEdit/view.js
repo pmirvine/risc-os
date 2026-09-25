@@ -15,6 +15,13 @@ import { EditView, scrap, setSelection, systemFontAtlas as atlas } from '../Edit
 import { C } from './modes.js';
 
 const OPEN = '([{', CLOSE = ')]}';
+const CLASS_NAMES = ['text', 'comment', 'string', 'number', 'keyword', 'constant', 'api', 'regex', 'punct', 'lineno', 'command', 'variable'];
+const css = (c) => (typeof c === 'string' ? c : wimpColour(c));
+// the window's own colours in each theme (the text colours come from the mode)
+const THEMES = {
+  light: { selBg: null, caretLine: '#f2f2e6', errorLine: '#ffdddd', bracket: '#bbddbb', gutterBg: 1, gutterEdge: 3, lineNo: 5, lineNoCaret: 7, errorMark: 11, errorNo: 0 },
+  dark: { bg: '#1e1e1e', selBg: '#264f78', caretLine: '#2a2d2e', errorLine: '#4b1818', bracket: '#3f5f3f', gutterBg: '#252526', gutterEdge: '#3c3c3c', lineNo: '#858585', lineNoCaret: '#c6c6c6', errorMark: '#c72e2e', errorNo: '#ffffff' },
+};
 const MATCH_LIMIT = 20000;
 
 export class CodeView extends EditView {
@@ -28,7 +35,9 @@ export class CodeView extends EditView {
   // ------------------------------------------------------------------ mode & colours
   get mode() { return this.state?.mode; }
   get showNumbers() { return this.options.lineNumbers !== false; }
-  _colour(cls) { const c = this.mode?.colours[['text', 'comment', 'string', 'number', 'keyword', 'constant', 'api', 'regex', 'punct', 'lineno', 'command', 'variable'][cls]]; return c ?? { colour: this.options.fore, bold: false }; }
+  get dark() { return !!this.options.dark; }
+  get theme() { return this.dark ? THEMES.dark : THEMES.light; }
+  _colour(cls) { const c = (this.dark ? this.mode?.dark : this.mode?.colours)?.[CLASS_NAMES[cls]]; return c ?? { colour: this.dark ? '#d4d4d4' : this.options.fore, bold: false }; }
   modeChanged() { this.lines = []; this.invalidate(); }
 
   /** Tokens for source line L (0-based): {cls: Uint8Array, state}, tokenising from the last cached line. */
@@ -118,7 +127,8 @@ export class CodeView extends EditView {
   render(g, rect) {
     const rows = this.layout();
     const o = this.options, lh = this.lh, top = this.inset;
-    const bg = wimpColour(o.back);
+    const th = this.theme;
+    const bg = th.bg ?? wimpColour(o.back);
     g.fillStyle = bg;
     g.fillRect(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
     const r0 = Math.max(0, Math.floor((rect.y0 - top) / lh)), r1 = Math.min(rows.length - 1, Math.floor((rect.y1 - top) / lh));
@@ -128,11 +138,12 @@ export class CodeView extends EditView {
     const caretLine = this.lineOf(this.caret);
     const brackets = this._brackets ?? [];
     if (!o.fixfont) { g.font = this.fontCss; g.textBaseline = 'alphabetic'; }
-    const selFg = wimpColour(o.fore);
+    const selFg = th.selBg ?? wimpColour(o.fore);         // light: Edit's inverse selection; dark: a blue band
     // each token class's colour (and its glyph strip), worked out once per redraw
     const table = [];
-    for (let k = 0; k < 12; k++) { const c = this._colour(k); const css = wimpColour(c.colour); table.push({ css, bold: c.bold, atlas: o.fixfont ? atlas(css) : null }); }
+    for (let k = 0; k < 12; k++) { const c = this._colour(k); const col = css(c.colour); table.push({ css: col, bold: c.bold, atlas: o.fixfont ? atlas(col) : null }); }
     const atlBg = o.fixfont ? atlas(bg) : null;
+    const boldCss = o.fixfont ? null : this.fontCss.replace(/^(italic )?(\d+ |bold )?/, '$1700 ');
     for (let r = r0; r <= r1; r++) {
       const row = rows[r];
       const y = top + r * lh;
@@ -141,8 +152,8 @@ export class CodeView extends EditView {
       const tok = this.tokens(L);
       const mark = this.marks.get(L + 1);
       // the caret's line and error lines are shaded
-      if (mark) { g.fillStyle = '#ffdddd'; g.fillRect(this.gutter, y, rect.x1 - this.gutter, lh); }
-      else if (L === caretLine && this.options.currentLine !== false && this.hasFocus) { g.fillStyle = '#f2f2e6'; g.fillRect(this.gutter, y, rect.x1 - this.gutter, lh); }
+      if (mark) { g.fillStyle = th.errorLine; g.fillRect(this.gutter, y, rect.x1 - this.gutter, lh); }
+      else if (L === caretLine && this.options.currentLine !== false && this.hasFocus) { g.fillStyle = th.caretLine; g.fillRect(this.gutter, y, rect.x1 - this.gutter, lh); }
       let x = o.margin;
       for (let k = row.s; k < row.e; k++) {
         const c = t.charCodeAt(k);
@@ -151,12 +162,12 @@ export class CodeView extends EditView {
         if (x + w >= rect.x0) {
           const hl = sel && k >= sel.start && k < sel.end;
           const col = table[tok ? tok.cls[k - lineStart] : C.text];
-          const fg = hl ? bg : col.css;
+          const fg = hl && !th.selBg ? bg : col.css;
           if (hl) { g.fillStyle = selFg; g.fillRect(Math.floor(x), y, Math.ceil(w), lh); }
-          else if (brackets.includes(k)) { g.fillStyle = '#bbddbb'; g.fillRect(Math.floor(x), y, Math.ceil(w), lh); }
+          else if (brackets.includes(k)) { g.fillStyle = th.bracket; g.fillRect(Math.floor(x), y, Math.ceil(w), lh); }
           if (c !== 32) {
             if (o.fixfont) {
-              const A = hl ? atlBg : col.atlas;
+              const A = hl && !th.selBg ? atlBg : col.atlas;
               const s = c < 32 || c === 127 ? EditView.glyph(c) : null;
               if (s) { for (let q = 0; q < 4; q++) g.drawImage(A, s.charCodeAt(q) * 8, 0, 8, 16, x + q * 8, y + yoff, 8, 16); }
               else {
@@ -165,7 +176,7 @@ export class CodeView extends EditView {
               }
             } else {
               g.fillStyle = fg;
-              g.font = col.bold && this.options.boldKeywords !== false ? `bold ${this.fontCss}` : this.fontCss;
+              g.font = col.bold && this.options.boldKeywords !== false ? boldCss : this.fontCss;
               const s = EditView.glyph(c);
               if (this.xscale !== 1) { g.save(); g.translate(x, y + yoff + this.base); g.scale(this.xscale, 1); g.fillText(s, 0, 0); g.restore(); }
               else g.fillText(s, x, y + yoff + this.base);
@@ -183,10 +194,10 @@ export class CodeView extends EditView {
 
   _drawGutter(g, rect, rows, r0, r1, caretLine) {
     if (!this.gutter || rect.x0 > this.gutter) return;
-    const top = this.inset, lh = this.lh;
-    g.fillStyle = wimpColour(1);
+    const top = this.inset, lh = this.lh, th = this.theme;
+    g.fillStyle = css(th.gutterBg);
     g.fillRect(0, rect.y0, this.gutter, rect.y1 - rect.y0);
-    g.fillStyle = wimpColour(3);
+    g.fillStyle = css(th.gutterEdge);
     g.fillRect(this.gutter - 1, rect.y0, 1, rect.y1 - rect.y0);
     const cw = this.options.fixfont ? 8 : Math.ceil(this.cwidth(48));
     for (let r = r0; r <= r1; r++) {
@@ -195,8 +206,8 @@ export class CodeView extends EditView {
       const y = top + r * lh;
       const n = String(row.line + 1);
       const mark = this.marks.has(row.line + 1);
-      if (mark) { g.fillStyle = wimpColour(11); g.fillRect(0, y, this.gutter - 1, lh); }
-      const colour = mark ? wimpColour(0) : wimpColour(row.line === caretLine ? 7 : 5);
+      if (mark) { g.fillStyle = css(th.errorMark); g.fillRect(0, y, this.gutter - 1, lh); }
+      const colour = css(mark ? th.errorNo : row.line === caretLine ? th.lineNoCaret : th.lineNo);
       const x = this.gutter - 6 - n.length * cw;
       if (this.options.fixfont) {
         const A = atlas(colour);

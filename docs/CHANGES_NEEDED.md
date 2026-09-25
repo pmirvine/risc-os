@@ -221,3 +221,7 @@ docs/ASSETS.md §5).
   !JsEdit; everything else as before).
 * `src/core/jsrun.js`: `checkSyntax(src)`; `os.hooks.throwback` is offered each program error before the error box.
 * `tools/build.mjs` runs `disc-jsedit.mjs`.
+* Nerd Fonts: `assets/fonts/nerd/` (WOFF2 + licences), added to `assets/fonts/fonts.json` / `fonts.css` by
+  `tools/nerdfonts.mjs` (run by `tools/build.mjs` after `fonts.mjs`). `src/core/fonts.js` `cssFor`: a built-in font
+  that isn't one of the RISC OS families it maps takes its CSS family and fallback from fonts.json (the RISC OS
+  fonts' CSS is unchanged).

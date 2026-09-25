@@ -13,7 +13,9 @@
 //   Constants  true false ...
 //   Api        task print ...                         the desktop's programming interface
 //   Functions  <regular expression>                   finds definitions for the Functions list (group 1)
-//   Colour     keyword 8 bold                         a token class's Wimp colour (0-15), optionally bold
+//   Colour     keyword 8 bold                         a token class's colour: a Wimp colour (0-15) or #rrggbb,
+//                                                     optionally bold
+//   Dark       keyword #569cd6 bold                   the same for the dark theme (Display > Dark theme)
 //   Complete   task.every(ms, fn) Call fn every ms ms  completions: name, (arguments), description
 //
 // Token classes: text, comment, string, number, keyword, constant, api, regex, punct, lineno, command, variable.
@@ -27,6 +29,14 @@ const DEFAULT_COLOURS = {
   text: [7], comment: [4], string: [13], number: [11], keyword: [8, true], constant: [11], api: [14],
   regex: [14], punct: [7], lineno: [5], command: [8, true], variable: [7],
 };
+// the dark theme's colours (after Visual Studio Code's "Dark+")
+const DEFAULT_DARK = {
+  text: ['#d4d4d4'], comment: ['#6a9955'], string: ['#ce9178'], number: ['#b5cea8'], keyword: ['#569cd6', true],
+  constant: ['#569cd6'], api: ['#dcdcaa'], regex: ['#d16969'], punct: ['#d4d4d4'], lineno: ['#858585'],
+  command: ['#c586c0', true], variable: ['#9cdcfe'],
+};
+/** A colour from a mode file: a Wimp colour number (0-15) or #rrggbb. */
+const colourValue = (s, dflt) => (/^#[0-9a-f]{6}$/i.test(s ?? '') ? s.toLowerCase() : /^\d+$/.test(s ?? '') ? Math.max(0, Math.min(15, +s)) : dflt);
 
 /** Parse a mode file. */
 export function parseMode(text) {
@@ -34,6 +44,7 @@ export function parseMode(text) {
     name: 'Text', lexer: 'text', types: [], indent: 2, comment: null, block: null, quotes: [],
     keywords: new Set(), constants: new Set(), api: new Set(), functions: [], complete: [],
     colours: Object.fromEntries(Object.entries(DEFAULT_COLOURS).map(([k, v]) => [k, { colour: v[0], bold: !!v[1] }])),
+    dark: Object.fromEntries(Object.entries(DEFAULT_DARK).map(([k, v]) => [k, { colour: v[0], bold: !!v[1] }])),
   };
   for (const raw of String(text).split('\n')) {
     const line = raw.replace(/\r$/, '');
@@ -52,9 +63,10 @@ export function parseMode(text) {
       case 'constants': for (const w of words) m.constants.add(w); break;
       case 'api': for (const w of words) m.api.add(w); break;
       case 'functions': try { m.functions.push(new RegExp(rest)); } catch { /* bad pattern: ignored */ } break;
-      case 'colour': case 'color': {
+      case 'colour': case 'color': case 'dark': {
         const [cls, n, style] = words;
-        if (cls in m.colours) m.colours[cls] = { colour: Math.max(0, Math.min(15, parseInt(n, 10) || 0)), bold: /^bold$/i.test(style ?? '') };
+        const set = key === 'dark' ? m.dark : m.colours;
+        if (cls in set) set[cls] = { colour: colourValue(n, set[cls].colour), bold: /^bold$/i.test(style ?? '') };
         break;
       }
       case 'complete': {

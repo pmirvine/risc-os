@@ -154,6 +154,30 @@ try {
   ok('Shift-double-click edits a JSScript file in JsEdit', filer.edited, filer);
   ok('double-click still runs it', filer.ran, filer);
 
+  // ---------------------------------------------------------------- dark theme, Nerd Fonts
+  const look = await page.evaluate(async () => {
+    const s = __texts()[0], v = s.views[0];
+    const pixel = () => { const c = v.win.el.querySelector('canvas'); const d = c.getContext('2d').getImageData(Math.floor(c.width * 0.8), Math.floor(c.height * 0.8), 1, 1).data; return d[0] + d[1] + d[2]; };
+    s.front(); v.invalidate();
+    await new Promise((r) => setTimeout(r, 100));
+    const light = pixel();
+    const item = s.menu(v).items[4].submenu.items.find((i) => i.text === 'Dark theme');
+    item.action();
+    v.invalidate();
+    await new Promise((r) => setTimeout(r, 100));
+    const dark = pixel();
+    const saved = os.sysvars.get('JsEdit$Display');
+    item.action();
+    const fams = os.fontreg.families().map((f) => f[0]);
+    const css = os.fonts.cssFor('JetBrainsMono.Bold', 12);
+    await document.fonts.load(css);
+    return { light, dark, saved, fams, css, loaded: document.fonts.check(css) };
+  });
+  ok('Dark theme darkens the text window', look.light > 600 && look.dark < 150, look);
+  ok('Dark theme is remembered', /\bdark\b/.test(look.saved), look.saved);
+  ok('Nerd Fonts in the font list', ['JetBrainsMono', 'Hack', 'FiraCode'].every((f) => look.fams.includes(f)), look.fams);
+  ok('Nerd Font CSS and loading', /^700 15px "JetBrainsMono Nerd"/.test(look.css) && look.loaded, look);
+
   // ---------------------------------------------------------------- quitting with changes asks first
   const q = await page.evaluate(async () => { const s = __texts()[0]; s.doc.insert(0, 'x'); return __texts()[0].app.modifiedCount; });
   ok('changed texts are counted for the quit query', q >= 1, q);

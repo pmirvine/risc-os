@@ -9,6 +9,7 @@ run(d + 'toolbox.mjs', '--build');   // Toolbox Res files (templates.mjs empties
 run(d + 'messages.mjs', '--build');
 run(d + 'sysfont.mjs');
 run(d + 'fonts.mjs');
+run(d + 'nerdfonts.mjs');        // the Nerd Fonts (JetBrains Mono, Hack, Fira Code) added to fonts.json / fonts.css
 run(d + 'misc.mjs');
 run(d + 'disc.mjs');
 run(d + 'basicwimp-demo.mjs');   // adds $.Examples (disc.mjs rebuilds assets/disc without it)

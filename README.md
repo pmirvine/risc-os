@@ -133,7 +133,9 @@ applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read wi
 this way, for people who have done a little programming before; its example programs, including a Snake game, are
 in `$.Examples.JS`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
 colouring for JavaScript, BBC BASIC, Obey and JSON, line numbers, smart indentation, completion of the desktop's
-programming interface, a syntax check as you type, Run, throwback of errors to their lines, and a Functions list.
+programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list and
+a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
+font menu.
 
 **Applications** (46 descriptors in `src/apps/index.js`):
 
@@ -273,5 +275,9 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * The sample Type 1 font is Computer Modern Roman 10 from the AMS Type 1 fonts, © 1997, 2009 American Mathematical
   Society, under the SIL Open Font License 1.1 (`tools/type1/`). opentype.js (© Frederik De Bleser, MIT licence) is
   bundled in `assets/lib/opentype/` to build web fonts.
+* The programming fonts in `assets/fonts/nerd/` are [Nerd Fonts](https://www.nerdfonts.com) v3.5.1 (MIT licence,
+  © Ryan L McIntyre; icon sets under their own free licences) patched from JetBrains Mono (© JetBrains, SIL Open
+  Font License 1.1), Hack (© Source Foundry, MIT / Bitstream Vera licence) and Fira Code (© The Fira Code
+  Project Authors, SIL Open Font License 1.1); their licences are beside them (`tools/nerdfonts.mjs`).
 * This is a non-commercial preservation and educational project and is not affiliated with Acorn, RISC OS Open Ltd or
   RISC OS Developments.
