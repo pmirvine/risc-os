@@ -3,9 +3,10 @@
 /** Minimal event emitter with cancellable events. */
 export class Emitter {
   constructor() { this._h = new Map(); }
-  on(type, fn) {
+  /** Add a handler; opts.first puts it before the handlers already there (e.g. a gadget inside a window). */
+  on(type, fn, opts = {}) {
     if (!this._h.has(type)) this._h.set(type, []);
-    this._h.get(type).push(fn);
+    if (opts.first) this._h.get(type).unshift(fn); else this._h.get(type).push(fn);
     return () => this.off(type, fn);
   }
   off(type, fn) {

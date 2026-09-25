@@ -40,10 +40,11 @@ export class TextArea extends Emitter {
     win.work.appendChild(this.canvas);
     (win._textAreas ??= new Set()).add(this);
     this._measure();
-    // the window's events: clicks inside the box, and keys / pastes while it has the caret
-    win.on('click', (ev) => this.click(ev));
-    win.on('key', (ev) => this.key(ev));
-    win.on('paste', (ev) => (this.focused ? (this.insert(ev.text.replace(/\r\n?/g, '\n')), true) : undefined));
+    // the window's events: clicks inside the box, and keys / pastes while it has the caret. Its handlers go first,
+    // so the program's own click and key handlers only see what the text area doesn't use.
+    win.on('click', (ev) => this.click(ev), { first: true });
+    win.on('key', (ev) => this.key(ev), { first: true });
+    win.on('paste', (ev) => (this.focused ? (this.insert(ev.text.replace(/\r\n?/g, '\n')), true) : undefined), { first: true });
     win.on('losecaret', () => this._blur());
     win.on('caretmove', () => this._blur());
     this.draw();

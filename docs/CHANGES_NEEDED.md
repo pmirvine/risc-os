@@ -241,3 +241,5 @@ docs/ASSETS.md §5).
   `!Maestro.!Boot`, `!Squash.!Boot` … - and were mangled before.)
 * `src/core/wimp.js` `focusNext(win, from, d)`: Tab / Shift-Tab / Up / Down move through a window's writable icons
   and TextAreas together, in reading order; a TextArea's Tab moves to the next field.
+* `src/core/util.js` `Emitter.on(type, fn, {first: true})` puts a handler before the others; TextArea's click, key
+  and paste handlers use it, so a program's own window handlers only see what the text area doesn't use.

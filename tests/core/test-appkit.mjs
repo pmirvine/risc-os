@@ -73,7 +73,8 @@ try {
       icons: [{ x: 10, y: 10, w: 120, h: 28, text: '', button: 'writable', border: true, name: 'title' }] });
     w.open();
     const { TextArea } = globalThis.__riscos;
-    window.__area = new TextArea(w, { x: 10, y: 50, w: 200, h: 100, text: '' });
+    w.on('click', () => true);                   // the program's own handler, added first, takes every click...
+    window.__area = new TextArea(w, { x: 10, y: 50, w: 200, h: 100, text: '' });   // ...but the text area still gets its own
     window.__area2 = new TextArea(w, { x: 10, y: 160, w: 200, h: 50, text: 'other' });
     window.__changes = 0;
     window.__area.on('change', () => window.__changes++);
