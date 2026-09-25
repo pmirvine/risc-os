@@ -1,6 +1,7 @@
-// Adds the JavaScript tutorial to the seed hard disc:
-//   $.Manuals.JSTutor   the book "Programming in JavaScript", read with !Bookworm (double-click Start)
-//   $.Examples.JS       its example programs (JSScript files, &F81, run with *JSRun: src/core/jsrun.js)
+// Adds a JavaScript tutorial book to the seed hard disc (tools/jstutor/books.mjs: --book jstutor, the default,
+// or --book jsapps):
+//   $.Manuals.<manual>   the book, read with !Bookworm (double-click Start)       - JSTutor, JSApps
+//   $.Examples.<examples> its example programs (JSScript files, &F81, run with *JSRun: src/core/jsrun.js) - JS, JSApps
 // and a line for the book in !Bookworm's hot list.
 //
 // Sources are in tools/jstutor/ (see its README): book.json lists the pages, book/<Page>.htm holds each page's
@@ -20,9 +21,11 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { exampleFiles } from './jstutor/examplefiles.mjs';
+import { currentBook } from './jstutor/books.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const SRC = path.join(ROOT, 'tools/jstutor');
+const BOOKINFO = currentBook();
+const SRC = BOOKINFO.src, MANUAL = BOOKINFO.manual, EXAMPLES = BOOKINFO.examples;
 const DISC = path.join(ROOT, 'assets/disc');
 const encodeName = (n) => n.replace(/[^A-Za-z0-9_-]/g, (c) => '=' + c.charCodeAt(0).toString(16).padStart(2, '0'));
 const CHECK = process.argv.includes('--check');
@@ -36,7 +39,8 @@ const latin1 = (s, where) => { if (/[^\n\x20-\x7e\xa0-\xff]/.test(s)) problems.p
 // ---------------------------------------------------------------- pages
 const pngSize = (file) => { const b = fs.readFileSync(file); return { w: b.readUInt32BE(16), h: b.readUInt32BE(20) }; };
 const exampleText = (name) => {
-  const f = path.join(SRC, 'examples', ...name.split('/'));
+  // toolkit/<Module> is one of the book's shared modules (copied into the examples that list it)
+  const f = /^toolkit\//.test(name) ? path.join(SRC, ...name.split('/')) : path.join(SRC, 'examples', ...name.split('/'));
   if (!fs.existsSync(f)) { problems.push(`listing: no example '${name}'`); return ''; }
   return fs.readFileSync(f, 'utf8');
 };
@@ -120,15 +124,15 @@ for (const h of html) {
 }
 
 // ---------------------------------------------------------------- examples
-const ex = exampleFiles(problems);
+const ex = exampleFiles(problems, SRC);
 
 if (problems.length) {
   console.error(problems.map((p) => '  ' + p).join('\n'));
-  console.error(`disc-jstutor: ${problems.length} problem(s)`);
+  console.error(`disc-jstutor (${BOOKINFO.id}): ${problems.length} problem(s)`);
   process.exit(1);
 }
 if (warnings.length) console.warn(warnings.map((p) => '  warning: ' + p).join('\n'));
-if (CHECK) { console.log(`JSTutor sources OK: ${html.length} pages, ${ex.filter((e) => !e.dir).length} example files`); process.exit(0); }
+if (CHECK) { console.log(`${MANUAL} sources OK: ${html.length} pages, ${ex.filter((e) => !e.dir).length} example files`); process.exit(0); }
 
 // ---------------------------------------------------------------- write
 const mfPath = path.join(DISC, 'manifest.json');
@@ -147,10 +151,10 @@ const sortTree = (n) => { if (!n.children) return; n.children.sort((a, b) => a.n
 
 // the book
 const manuals = dirNode(mf.root, 'Manuals');
-manuals.children = manuals.children.filter((c) => c.name !== 'JSTutor');
-const bookNode = { name: 'JSTutor', type: 'dir', children: [] };
+manuals.children = manuals.children.filter((c) => c.name !== MANUAL);
+const bookNode = { name: MANUAL, type: 'dir', children: [] };
 manuals.children.push(bookNode);
-const BOOK = path.join(DISC, 'HardDisc4', 'Manuals', 'JSTutor');
+const BOOK = path.join(DISC, 'HardDisc4', 'Manuals', MANUAL);
 fs.rmSync(BOOK, { recursive: true, force: true });
 fs.mkdirSync(path.join(BOOK, 'PICS'), { recursive: true });
 for (const h of html) put(BOOK, bookNode, `${h.name}/htm`, 'faf', Buffer.from(h.text, 'latin1'));
@@ -164,10 +168,10 @@ for (const f of fs.readdirSync(path.join(SRC, 'pics')).filter((f) => f.endsWith(
 
 // the examples
 const examplesNode = dirNode(mf.root, 'Examples');
-examplesNode.children = examplesNode.children.filter((c) => c.name !== 'JS');
-const exNode = { name: 'JS', type: 'dir', children: [] };
+examplesNode.children = examplesNode.children.filter((c) => c.name !== EXAMPLES);
+const exNode = { name: EXAMPLES, type: 'dir', children: [] };
 examplesNode.children.push(exNode);
-const EX = path.join(DISC, 'HardDisc4', 'Examples', 'JS');
+const EX = path.join(DISC, 'HardDisc4', 'Examples', EXAMPLES);
 fs.rmSync(EX, { recursive: true, force: true });
 fs.mkdirSync(EX, { recursive: true });
 for (const e of ex) {
@@ -183,8 +187,8 @@ manuals.children.sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity
 // !Bookworm's hot list
 const hot = path.join(DISC, 'HardDisc4', 'Manuals', encodeName('!Bookworm'), 'User', 'HotList');
 if (fs.existsSync(hot)) {
-  let t = fs.readFileSync(hot, 'latin1').replace(/\s*<li><a href="file:\/\/ADFS::HardDisc4\/\$\/Manuals\/JSTutor\/[^\n]*/g, '');
-  t = t.replace(/<\/ul>/i, `    <li><a href="file://ADFS::HardDisc4/$/Manuals/JSTutor/Start.htm">${TITLE}</a>\n</ul>`);
+  let t = fs.readFileSync(hot, 'latin1').replace(new RegExp(`\\s*<li><a href="file://ADFS::HardDisc4/\\$/Manuals/${MANUAL}/[^\\n]*`, 'g'), '');
+  t = t.replace(/<\/ul>/i, `    <li><a href="file://ADFS::HardDisc4/$/Manuals/${MANUAL}/Start.htm">${TITLE}</a>\n</ul>`);
   fs.writeFileSync(hot, t, 'latin1');
   const walk = (n) => { for (const c of n.children ?? []) { if (c.path === path.relative(DISC, hot).split(path.sep).join('/')) c.size = Buffer.byteLength(t, 'latin1'); walk(c); } };
   walk(mf.root);
@@ -195,4 +199,4 @@ const count = (n) => { for (const c of n.children ?? []) { if (c.children) count
 count(mf.root);
 mf.files = files; mf.totalBytes = bytes;
 fs.writeFileSync(mfPath, JSON.stringify(mf));
-console.log(`$.Manuals.JSTutor (${html.length} pages) and $.Examples.JS (${ex.filter((e) => !e.dir).length} files) written; manifest now ${files} files`);
+console.log(`$.Manuals.${MANUAL} (${html.length} pages) and $.Examples.${EXAMPLES} (${ex.filter((e) => !e.dir).length} files) written; manifest now ${files} files`);

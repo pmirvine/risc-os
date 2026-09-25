@@ -17,23 +17,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { exampleFiles } from './examplefiles.mjs';
+import { currentBook } from './books.mjs';
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const RUNS = path.join(ROOT, 'tools/jstutor/runs');
+// the book (tools/jstutor/books.mjs: JSBOOK=jsapps or --book jsapps for the second one)
+export const BOOK = currentBook();
+const RUNS = path.join(BOOK.src, 'runs');
 export const list = () => fs.readdirSync(RUNS).filter((f) => f.endsWith('.json')).sort()
   .flatMap((f) => JSON.parse(fs.readFileSync(path.join(RUNS, f), 'utf8')).map((e) => ({ ...e, from: f })));
 
 export async function prepare(page) {
-  const files = exampleFiles().map((f) => ({ parts: f.parts, dir: !!f.dir, type: f.type ? parseInt(f.type, 16) : 0, b64: f.data?.toString('base64') }));
-  await page.evaluate((files) => {
-    const base = 'ADFS::HardDisc4.$.Examples.JS';
+  const files = exampleFiles([], BOOK.src).map((f) => ({ parts: f.parts, dir: !!f.dir, type: f.type ? parseInt(f.type, 16) : 0, b64: f.data?.toString('base64') }));
+  await page.evaluate(([files, base]) => {
     os.vfs.mkdir(base, { parents: true });
     for (const f of files) {
       const p = `${base}.${f.parts.join('.')}`;
       if (f.dir) { os.vfs.mkdir(p); continue; }
       os.vfs.writeFile(p, Uint8Array.from(atob(f.b64), (c) => c.charCodeAt(0)), { filetype: f.type });
     }
-  }, files);
+  }, [files, BOOK.examplesPath]);
   await page.evaluate(() => {
     window.__jt = { msgs: [], out: '', real: false };
     const W = os.wimp, orig = W.reportError.bind(W);
@@ -44,13 +46,13 @@ export async function prepare(page) {
 
 /** Run one example; resolves {msgs, out, rect (of its windows)}; leaves it running (call finish()). */
 export async function runExample(page, e) {
-  await page.evaluate(async (e) => {
+  await page.evaluate(async ([e, base]) => {
     __jt.msgs = []; __jt.out = ''; __jt.real = !!e.realErrors;
     __jt.before = new Set(os.wimp.tasks);
     __jt.beforeWins = new Set(os.wimp.stack);
     os.hooks.jsInput = [...(e.input ?? [])];
-    if (e.run) await os.cli.run(`Run ADFS::HardDisc4.$.Examples.JS.${e.run}${e.args ? ' ' + e.args : ''}`).catch((err) => __jt.msgs.push('CLI: ' + err.message));
-  }, e);
+    if (e.run) await os.cli.run(`Run ${base}.${e.run}${e.args ? ' ' + e.args : ''}`).catch((err) => __jt.msgs.push('CLI: ' + err.message));
+  }, [e, BOOK.examplesPath]);
   await page.waitForTimeout(e.wait ?? 600);
   if (e.act) {
     await page.evaluate(async (e) => {
