@@ -136,6 +136,10 @@ export class Icon {
   get buttonType() { return iconButtonType(this.flags); }
   get esg() { return iconESG(this.flags); }
   get selected() { return !!(this.flags & IF.selected); }
+  /** Selected as drawn: selected, or held down with the press effect (wimp._pressIcon). */
+  get shownSelected() { return this.selected || !!this._pressed; }
+  /** Draw pressed in (or not) without changing the icon's state as the application sees it. */
+  setPressed(on) { on = !!on; if (on !== !!this._pressed) { this._pressed = on; this.render(); } }
   get shaded() { return !!(this.flags & IF.shaded); }
   get deleted() { return !!(this.flags & IF.deleted); }
   get writable() { const b = this.buttonType; return (b === 14 || b === 15) && !!(this.flags & IF.text); }
@@ -200,8 +204,8 @@ export class Icon {
     const s = this.v.S?.[0];
     if (this.flags & IF.text && s) {
       const parts = s.split(',');
-      name = this.selected && parts[1] ? parts[1] : parts[0];
-      return { name, alt: this.selected && !!parts[1] };
+      name = this.shownSelected && parts[1] ? parts[1] : parts[0];
+      return { name, alt: this.shownSelected && !!parts[1] };
     }
     return { name, alt: false };
   }
@@ -225,6 +229,7 @@ export class Icon {
     // an 'S' validation with two sprite names shows the second when selected, and then the
     // icon is not inverted at all (Wimp04 seticonptrs)
     const spr = this.currentSprite();
+    const pressed = !!this._pressed && !this.selected;
     const selected = this.selected && !(spr && spr.alt);
     let fg = this.fg, bg = this.bg;
     let fontFg = fg, fontBg = bg;
@@ -254,7 +259,7 @@ export class Icon {
     e.style.background = fill;
     // border
     if (f & IF.border) {
-      const st = borderStyle(bt, { selected, shaded, fg });
+      const st = borderStyle(bt, { selected: selected || pressed, shaded, fg });
       e.style.boxShadow = st.shadow;
       this._inset = st.inset;
     } else { e.style.boxShadow = ''; this._inset = 0; }

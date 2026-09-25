@@ -1,7 +1,8 @@
 // Desktop configuration (the CMOS settings a !Configure app would change). Persisted in localStorage.
 //
 //   os.config.get(key) / os.config.set(key, value)
-//   keys: zoom (1|2|..), rightButton ('menu'|'adjust'), textured (bool), wimpFont ('homerton'|'system'),
+//   keys: zoom (1|2|..), rightButton ('menu'|'adjust'), textured (bool), pressEffect (bool, *Configure WimpPress:
+//         RISC OS 4 style pressed-in action buttons), wimpFont ('homerton'|'system'),
 //         wimpFlags (number, *Configure WimpFlags), doubleClickDelay (cs), dragDelay (cs), dragMove (OS units)
 //   Added for !Configure (see docs/CHANGES_NEEDED.md): wimpFont may also be any RISC OS font name
 //   ('Trinity.Medium'); doubleClickMove (OS units); beepLoud, speaker (bool) and volume (0-7) scale wimp.beep();
@@ -14,7 +15,7 @@ import { configureSound } from './sound/index.js';
 
 const KEY = 'riscos371.config';
 // buttonsVersion 2: the Acorn mapping (right = Adjust) became the default; older saved settings are migrated.
-const DEFAULTS = { zoom: 1, rightButton: 'adjust', buttonsVersion: 2, textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
+const DEFAULTS = { zoom: 1, rightButton: 'adjust', buttonsVersion: 2, pressEffect: true, textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
   doubleClickMove: 32, beepLoud: true, speaker: true, volume: 7, mode: null };
 
 export const config = {
@@ -36,6 +37,7 @@ export const config = {
     const v = this.values;
     input.config.rightIsAdjust = v.rightButton === 'adjust';
     wimp.config.textured = !!v.textured;
+    wimp.config.pressEffect = v.pressEffect !== false;
     wimp.config.offScreen = v.wimpFlags & (1 << 6) ? 'all' : v.wimpFlags & (1 << 5) ? 'all' : 'none';
     fonts.system = v.wimpFont === 'system';
     // any other outline font as the desktop font (Wimp$Font)
@@ -65,6 +67,7 @@ export const config = {
       buttons: () => { this.values.rightButton = /adjust/i.test(s) ? 'adjust' : 'menu'; },
       rightbutton: () => map.buttons(),
       textured: () => { this.values.textured = !/^(0|off|no|false)$/i.test(s); },
+      wimppress: () => { this.values.pressEffect = !/^(0|off|no|false)$/i.test(s); },
       wimpfont: () => { this.values.wimpFont = s === '1' || /system/i.test(s) ? 'system' : /^[a-z]+\.[a-z.]+$/i.test(s) ? s : 'homerton'; },
       wimpdoubleclickmove: () => { this.values.doubleClickMove = parseInt(s, 10) || 32; },
       wimpflags: () => { this.values.wimpFlags = parseInt(s, 10) & 255; },

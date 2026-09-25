@@ -569,6 +569,16 @@ export default async function start(task, ctx) {
   // ================================================================== Window manager
   function buildWimpFlags() {
     const w = create('WimpFlags', 'WI');
+    // Not in the 3.71 template: an option for the RISC OS 4 style press effect (*Configure WimpPress),
+    // one row below "2D window tools", with the window's extent grown to fit.
+    {
+      const a = w.icons[15].bbox, b = w.icons[16].bbox, dy = b.y0 - a.y0;
+      const ic = w.addIcon({ flags: w.icons[16].flags, bbox: { x0: b.x0, y0: b.y0 + dy, x1: b.x1, y1: b.y1 + dy }, text: 'Pressed-in action buttons', validation: w.icons[16].validation, bufLen: 32 });
+      const full = w.h >= w.extent.y1 - w.extent.y0;
+      w.setExtent({ ...w.extent, y1: w.extent.y1 + dy });
+      if (full) w.h += dy;
+      w.on('helprequest', (ev) => { if (ev.icon === ic) ev.text = 'Click to choose whether action buttons are drawn pressed in while you hold a mouse button on them, as in RISC OS 4 (RISC OS 3.71 did not do this).'; });
+    }
     const bits = { 3: 0, 4: 1, 5: 2, 6: 3, 11: 5, 12: 6, 14: 7 };
     const flags = () => cfg.get('wimpFlags');
     const setFlags = (f) => cfg.set('WimpFlags', f & 255);
@@ -579,6 +589,7 @@ export default async function start(task, ctx) {
       sel(w, 13, !(f & 16));
       sel(w, 15, cfg.get('textured'));
       sel(w, 16, get('tools2D'));
+      sel(w, 17, cfg.get('pressEffect') !== false);
     };
     w._refresh = upd;
     upd();
@@ -592,6 +603,7 @@ export default async function start(task, ctx) {
       if (i === 13) setFlags(flags() ^ 16);
       if (i === 15) cfg.set('Textured', cfg.get('textured') ? 'Off' : 'On');
       if (i === 16) store('tools2D', !get('tools2D'));
+      if (i === 17) cfg.set('WimpPress', cfg.get('pressEffect') !== false ? 'Off' : 'On');
       upd();
       return true;
     });

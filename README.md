@@ -48,6 +48,9 @@ first time they are used, and sprites are fetched one PNG at a time as they are 
 This is the Acorn mouse layout (as in RPCEmu and Arculator), and Shift keeps its RISC OS meaning, e.g.
 Shift-double-click opens an application as a directory or a file as text. For a two-button mapping (right = Menu,
 Shift + left = Adjust) use `*Configure Buttons Menu` or `?buttons=menu`.
+
+Action buttons are drawn pressed in while you hold a mouse button on them, as in RISC OS 4 (3.71 itself didn't);
+`*Configure WimpPress Off`, or !Configure's Window manager pane, turns this off.
 | F12 | the `*` command line (Return on an empty line goes back to the desktop) |
 | Ctrl-F12 | a new task window |
 | Shift-F12 | bring the icon bar to the front / send it back |

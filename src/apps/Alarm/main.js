@@ -163,9 +163,16 @@ export default async function start(task, ctx) {
       ibText = formatTime(fmt, d);
       const font = fonts.css;
       g.font = font;
-      cssW = Math.max(34, Math.ceil(g.measureText(ibText).width) + 4);
+      cssW = Math.max(34, Math.ceil(g.measureText(ibText).width) + 16);
       c.width = cssW * S; c.height = cssH * S;
       g.scale(S, S);
+      // PROCprepare_icon (digital formats): a 2-pixel frame in Wimp colour 8 (dark blue), inside it a
+      // 2-pixel frame in colour 15 (light blue), then white; red (11) and orange (14) while a user
+      // alarm is set.
+      const userAlarmSet = alarms.length > 0;
+      g.fillStyle = userAlarmSet ? '#dd0000' : '#004499'; g.fillRect(0, 0, cssW, cssH);
+      g.fillStyle = userAlarmSet ? '#ffbb00' : '#00bbff'; g.fillRect(2, 2, cssW - 4, cssH - 4);
+      g.fillStyle = '#ffffff'; g.fillRect(4, 4, cssW - 8, cssH - 8);
       g.font = font; g.fillStyle = '#000'; g.textBaseline = 'middle'; g.textAlign = 'center';
       g.fillText(ibText, cssW / 2, cssH / 2 + 1);
     }
@@ -178,7 +185,7 @@ export default async function start(task, ctx) {
   function tickClock(force = false) {
     const d = now();
     const withSecs = setup.display === 'anasec' || setup.display === 'hhmmss' || (setup.display === 'user' && /%z?(se|cs)/i.test(setup.userFormat));
-    const key = setup.display + setup.userFormat + (withSecs ? d.getSeconds() : '') + d.getMinutes() + d.getHours();
+    const key = setup.display + setup.userFormat + (withSecs ? d.getSeconds() : '') + d.getMinutes() + d.getHours() + (alarms.length > 0);
     if (!force && key === lastKey) return;
     lastKey = key;
     const name = renderClock();

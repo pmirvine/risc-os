@@ -588,6 +588,25 @@ export class Wimp extends Emitter {
     }
   }
 
+  /**
+   * RISC OS 4 style press effect (not in 3.71, whose Wimp was built with slabinout false; see
+   * *Configure WimpPress): an action button (R5/R6 validation) that only reports clicks is drawn
+   * pressed in while Select or Adjust is held on it, with the second S-validation sprite if it has one
+   * (e.g. Configure's adjuster arrows, "R5;Sup,pup").
+   */
+  _pressIcon(icon, e) {
+    if (this.config.pressEffect === false || ![1, 2, 3, 6, 9, 10].includes(icon.buttonType)) return;
+    const r = parseInt(icon.v?.R?.[0], 10);
+    if (!(r === 5 || r === 6)) return;
+    icon.setPressed(true);
+    const inside = (ev) => { const r = icon.el.getBoundingClientRect(); return ev.clientX >= r.left && ev.clientX < r.right && ev.clientY >= r.top && ev.clientY < r.bottom; };
+    const move = (ev) => icon.setPressed(inside(ev));
+    const end = () => { icon.setPressed(false); window.removeEventListener('pointermove', move, true); window.removeEventListener('pointerup', end, true); window.removeEventListener('pointercancel', end, true); };
+    window.addEventListener('pointermove', move, true);
+    window.addEventListener('pointerup', end, true);
+    window.addEventListener('pointercancel', end, true);
+  }
+
   _workPointerDown(win, e, button, p) {
     const wp = win.screenToWork(p.x, p.y);
     let icon = win.iconAt(wp.x, wp.y);
@@ -602,6 +621,7 @@ export class Wimp extends Emitter {
     }
     if (btype === 0) return;
     const emit = (kind, extra = {}) => win.emit(kind === 'double' ? 'doubleclick' : kind === 'drag' ? 'drag' : 'click', { ...base, kind, ...extra });
+    if (icon) this._pressIcon(icon, e);
     // double-click tracking
     const now = performance.now();
     const last = this._lastClick;
