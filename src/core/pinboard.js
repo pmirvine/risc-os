@@ -23,6 +23,7 @@ export class Pinboard {
     this.tpl = await loadTemplates('assets/templates/Pinboard.json');
     this.msgs = await loadMessages('Pinboard');
     this.pins = [];         // {path, x, y (screen, icon top-left), icon}
+    this.parked = [];       // {path, x, y} pins on HostFS folders that aren't mounted just now (kept, not shown)
     this.gridLock = false;
     const w = this.win = wimp.createWindowFromTemplate(this.tpl, 'back', {}, this.task);
     w.flags = (w.flags | (1 << 11) | (1 << 6)) >>> 0;   // back window, may be off-screen
@@ -117,7 +118,10 @@ export class Pinboard {
   /** Pin an object at screen position (x, y) = top-left of its icon cell. */
   pin(path, x, y, opts = {}) {
     const st = vfs.stat(path);
-    if (!st) return null;
+    if (!st) {
+      if (x != null && this._offline(path)) this.parked.push({ path, x, y });
+      return null;
+    }
     if (x == null) { const p = this._freeSpot(); x = p.x; y = p.y; }
     if (this.gridLock) { x = Math.round(x / GRID) * GRID; y = Math.round(y / GRID) * GRID; }
     const p = { path: st.path, x, y };
@@ -148,8 +152,20 @@ export class Pinboard {
   refreshIcons() {
     for (const p of [...this.pins]) {
       if (!p.path) continue;
-      if (!vfs.exists(p.path)) { this.unpin(p, true); continue; }
+      if (!vfs.exists(p.path)) {
+        this.unpin(p, true);
+        if (this._offline(p.path)) this.parked.push({ path: p.path, x: p.x, y: p.y });
+      }
     }
+    for (const q of [...this.parked]) {
+      if (!vfs.exists(q.path)) continue;
+      this.parked = this.parked.filter((r) => r !== q);
+      this.pin(q.path, q.x, q.y, { noSave: true });
+    }
+  }
+  /** On a HostFS disc that isn't mounted at the moment (it may come back, e.g. after permission is given). */
+  _offline(path) {
+    return /^HostFS::/i.test(path) && !vfs.discs.some((d) => path.toLowerCase().startsWith(d.key));
   }
 
   unpin(p, noSave) {
@@ -157,7 +173,7 @@ export class Pinboard {
     this.pins = this.pins.filter((q) => q !== p);
     if (!noSave) this._save();
   }
-  clear() { for (const p of [...this.pins]) this.unpin(p, true); this._save(); }
+  clear() { for (const p of [...this.pins]) this.unpin(p, true); this.parked = []; this._save(); }
 
   _freeSpot() {
     for (let col = 0; col < 40; col++) {
@@ -310,7 +326,7 @@ export class Pinboard {
   _save() {
     try {
       localStorage.setItem(STORE, JSON.stringify({
-        pins: this.pins.filter((p) => p.path).map((p) => ({ path: p.path, x: p.x, y: p.y })),
+        pins: [...this.pins.filter((p) => p.path), ...this.parked].map((p) => ({ path: p.path, x: p.x, y: p.y })),
         backdrop: this.backdrop && !this.backdrop.isDefault ? { path: this.backdrop.path, mode: this.backdrop.mode } : null,
       }));
     } catch { /* ignore */ }

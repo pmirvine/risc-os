@@ -42,7 +42,7 @@ export async function initDevices() {
     w.open({ x: Math.round(wimp.width / 2 - w.w / 2), y: Math.round(wimp.height / 3), behind: 'top' });
     return w;
   };
-  os.free = { show: (spec) => { const d = vfs.discs.find((x) => spec.toLowerCase().includes(x.name.toLowerCase())) ?? vfs.hd; showFree(d); } };
+  os.free = { showDisc: showFree, show: (spec) => { const d = vfs.discs.find((x) => spec.toLowerCase().includes(x.name.toLowerCase())) ?? vfs.hd; showFree(d); } };
 
   // ------------------------------------------------------------------ ADFS
   const openRoot = (disc, ev) => {

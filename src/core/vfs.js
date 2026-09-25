@@ -10,6 +10,8 @@
 //   ADFS::0          floppy, persisted in IndexedDB, starts empty
 //   RAM::RamDisc0    RAM disc, not persisted
 //   Resources:$      read-only ROM filing system (Resources:$.Apps holds the ROM applications)
+//   HostFS::<name>   folders mounted from the host machine (src/core/hostfs/): discs added and removed at
+//                    run time, each with a `host` driver that mirrors changes back to the host folder
 //
 // File info objects: {name, path, type:'file'|'dir', isApp, filetype (0-0xFFF, -1 untyped,
 //   0x1000 dir, 0x2000 app), size, load, exec, attr, date (JS Date), locked}
@@ -32,7 +34,7 @@ const err = (m, n) => new FSError(m, n);
 export const msToCs = (ms) => Math.floor((ms + 2208988800000) / 10);
 export const csToMs = (cs) => cs * 10 - 2208988800000;
 
-class Node {
+export class Node {
   constructor(name, isDir, parent = null) {
     this.name = name;
     this.isDir = isDir;
@@ -100,10 +102,13 @@ class Store {
 
 // ---------------------------------------------------------------- discs
 class Disc {
-  constructor({ fs, name, drive, persist = false, readonly = false, size, aliases = [] }) {
+  constructor({ fs, name, drive, persist = false, readonly = false, size, aliases = [], host = null }) {
     this.fs = fs; this.name = name; this.drive = drive;
     this.persist = persist; this.readonly = readonly; this.size = size;
     this.aliases = aliases;
+    // host driver (HostFS): {persist(node, {data, fresh}), removed(node), revalidate?(node)}; called instead of
+    // the IndexedDB overlay whenever the tree changes, so the host can be updated behind the scenes
+    this.host = host;
     this.root = new Node('$', true);
     this.root.disc = this;
   }
@@ -122,6 +127,7 @@ export class VFS extends Emitter {
     this.prevDir = this.csd;
     this.currentFS = 'ADFS';
     this._pendingNotify = new Set();
+    this.fsNames = { adfs: 'ADFS', ram: 'RAM', ramfs: 'RAM', resources: 'Resources', resourcefs: 'Resources' };
   }
 
   // ------------------------------------------------------------ init
@@ -138,7 +144,21 @@ export class VFS extends Emitter {
     await this._applyOverlay();
   }
 
-  addDisc(o) { const d = new Disc(o); this.discs.push(d); return d; }
+  addDisc(o) { const d = new Disc(o); this.discs.push(d); if (o.dynamic) this.emit('discs', {}); return d; }
+
+  /** Remove a disc added at run time (HostFS dismount). Directories on it fall back to the hard disc. */
+  removeDisc(disc) {
+    const i = this.discs.indexOf(disc);
+    if (i < 0) return;
+    this.discs.splice(i, 1);
+    const hd = this._pathOf(this.hd, []);
+    for (const k of ['csd', 'urd', 'lib', 'prevDir']) if (this[k].toLowerCase().startsWith(disc.key)) this[k] = hd;
+    this.emit('discs', {});
+    this._changed(disc.root);
+  }
+
+  /** Make a filing system name known to path parsing (e.g. registerFS('HostFS')). */
+  registerFS(name, ...aliases) { for (const a of [name, ...aliases]) this.fsNames[a.toLowerCase()] = name; }
 
   _loadSeed(disc, tree, base) {
     const walk = (json, node) => {
@@ -236,6 +256,7 @@ export class VFS extends Emitter {
       else {
         const csd = this._parseCanonical(this.csd);
         disc = csd.disc.fs === fs ? csd.disc : this.discs.find((d) => d.fs === fs);
+        if (!disc) throw err(`No ${fs} disc is mounted`, 0x108D5);
       }
       if (rest.startsWith(':')) return this.parse(fs + ':' + rest, opts);
       if (!rest.startsWith('$') && disc !== this._parseCanonical(this.csd).disc) rest = '$.' + rest;
@@ -270,19 +291,14 @@ export class VFS extends Emitter {
 
   _parseCanonical(p) {
     const m = /^([A-Za-z]+)::([^.]+)\.\$(?:\.(.*))?$/.exec(p);
-    if (m) return { disc: this._findDisc(m[1], m[2]), parts: m[3] ? m[3].split('.') : [] };
+    const d = m && this._findDisc(m[1], m[2]);
+    if (d) return { disc: d, parts: m[3] ? m[3].split('.') : [] };
     const r = /^Resources:\$(?:\.(.*))?$/i.exec(p);
     if (r) return { disc: this.rom, parts: r[1] ? r[1].split('.') : [] };
     return { disc: this.hd, parts: [] };
   }
 
-  _fsName(n) {
-    const l = n.toLowerCase();
-    if (l === 'adfs') return 'ADFS';
-    if (l === 'ram' || l === 'ramfs') return 'RAM';
-    if (l === 'resources' || l === 'resourcefs') return 'Resources';
-    return null;
-  }
+  _fsName(n) { return this.fsNames[n.toLowerCase()] ?? null; }
   _findDisc(fs, name) {
     const f = this._fsName(fs);
     const l = String(name).toLowerCase();
@@ -448,7 +464,7 @@ export class VFS extends Emitter {
     if (opts.load != null) { n.load = opts.load >>> 0; n.exec = (opts.exec ?? 0) >>> 0; n.date = now; }
     else n.setType(opts.filetype ?? (n.load ? n.filetype : 0xFFD), now);
     if (opts.filetype === FT_UNTYPED) { n.load = 0; n.exec = 0; }
-    this._persist(n);
+    this._persist(n, { data: true });
     this._changed(dir);
     return this._nodePath(n);
   }
@@ -509,11 +525,12 @@ export class VFS extends Emitter {
     const existing = b.dir.children.get(b.leaf.toLowerCase());
     if (existing && existing !== n) throw err(`Item cannot be renamed - '${b.leaf}' already exists`, 0x108C2);
     for (let x = b.dir; x; x = x.parent) if (x === n) throw err('A directory can not be copied or moved into itself', 0);
-    this._unpersist(n, a.loc);
+    if (!a.loc.disc.host) this._unpersist(n, a.loc);
     a.dir.children.delete(a.leaf.toLowerCase());
     n.name = b.leaf; n.parent = b.dir;
     b.dir.children.set(b.leaf.toLowerCase(), n);
-    this._persistTree(n, true);
+    if (a.loc.disc.host) a.loc.disc.host.persist(n, {});   // the host driver moves it (and its contents) as a whole
+    else this._persistTree(n, true);
     this._changed(a.dir); this._changed(b.dir);
     return this._nodePath(n);
   }
@@ -547,7 +564,7 @@ export class VFS extends Emitter {
         else if (s.src) { n.src = s.src; n.data = null; }
         else n.data = await this._data(s);
         n.size = s.size;
-        this._persist(n);
+        this._persist(n, { data: true });
       }
       return n;
     };
@@ -604,6 +621,7 @@ export class VFS extends Emitter {
 
   /** Bytes used on a disc. */
   usage(disc) {
+    if (disc.host?.space) return disc.host.space;   // HostFS: the host disc's own figures, when known
     let used = 0;
     const walk = (n) => { if (n.isDir) { used += 2048; for (const c of n.children.values()) walk(c); } else used += Math.ceil((n.size || 0) / 1024) * 1024; };
     walk(disc.root);
@@ -656,6 +674,7 @@ export class VFS extends Emitter {
   _partsOf(n) { const p = []; let x = n; while (x.parent) { p.unshift(x.name); x = x.parent; } return p; }
   _persist(n, extra = {}) {
     const disc = this._discOf(n);
+    if (disc.host) { disc.host.persist(n, extra); return; }
     if (!disc.persist) return;
     const parts = this._partsOf(n);
     const rec = {
@@ -674,6 +693,7 @@ export class VFS extends Emitter {
   }
   _unpersist(n, loc) {
     const disc = loc.disc;
+    if (disc.host) { disc.host.removed(n); return; }
     if (!disc.persist) return;
     // tombstone this path (hides seed object) and delete records of the subtree
     const parts = this._partsOf(n).length ? this._partsOf(n) : loc.parts;
@@ -697,6 +717,14 @@ export class VFS extends Emitter {
       this._pendingNotify.clear();
       for (const d of dirs) this.emit('change', { dir: d });
     }, 0);
+  }
+
+  /** A viewer is showing this directory: let a HostFS disc check the host for changes. */
+  revalidate(path) {
+    try {
+      const loc = this.parse(path);
+      if (loc.disc.host?.revalidate) { const n = this._node(loc); if (n) loc.disc.host.revalidate(n); }
+    } catch { /* */ }
   }
 
   /** Set the currently selected directory (*Dir). */

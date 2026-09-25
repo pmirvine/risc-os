@@ -16,6 +16,7 @@ import { switcher } from './core/switcher.js';
 import { cli } from './core/cli.js';
 import { installCommands, timeString } from './core/commands.js';
 import { initDevices } from './core/devices.js';
+import { initHostFS } from './core/hostfs/ui.js';
 import { apps } from './core/app.js';
 import { os } from './core/os.js';
 import { loadMessages } from './core/messages.js';
@@ -95,6 +96,7 @@ async function boot() {
   await filer.init();
   await pinboard.init();
   await initDevices();
+  await initHostFS();
   await switcher.init();
   installBasicHost();
   installBasicWimp();                 // BASIC programs from the desktop / Wimp SWI bridge (TASKWINDOW agent)

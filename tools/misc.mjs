@@ -27,6 +27,13 @@ for (const [k, n] of Object.entries(nums)) {
 }
 // A few common types not in Hdr:FileTypes of this era.
 for (const [h, n] of Object.entries({ c85: 'JPEG', '695': 'GIF', b60: 'PNG', ff0: 'TIFF', fb1: 'WAVE', ff7: 'BBC font', ff5: 'PoScript', fea: 'Desktop', fe4: 'DOS', fc8: 'DOSDisc', fd6: 'TaskExec', fd7: 'TaskObey' })) ft[h] ||= n;
+// Later types, so HostFS files with these extensions (src/core/hostfs/mimemap.js) show their names.
+for (const [h, n] of Object.entries({
+  f75: 'JSON', a66: 'WebP', a64: 'MP4', f79: 'CSS', f81: 'JSScript', f80: 'XML', f74: 'YAML', c32: 'RTF', '69c': 'BMP',
+  aad: 'SVG', '132': 'ICO', a91: 'Zip', f89: 'GZip', c46: 'Tar', '16e': 'BZip2', ddc: 'Archive', df6: 'ISOImage',
+  '1ad': 'AMPEG', '1a8': 'Vorbis', '1cf': 'FLAC', cb6: 'MOD', bf8: 'MPEG', a63: 'MKV', ae6: 'MSWord', a7e: 'MSWordX',
+  ba6: 'Excel', a7f: 'ExcelX', a80: 'PowerPtX', a81: 'ODT', a82: 'ODS', '102': 'Perl', ce5: 'TeX',
+})) ft[h] ||= n;
 const sorted = Object.fromEntries(Object.entries(ft).sort(([a], [b]) => b.localeCompare(a)));
 fs.writeFileSync(path.join(ROOT, 'assets/filetypes.json'), JSON.stringify(sorted, null, 1));
 console.log('palette.json, filetypes.json:', Object.keys(sorted).length, 'types');
