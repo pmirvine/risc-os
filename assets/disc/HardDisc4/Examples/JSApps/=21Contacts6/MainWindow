@@ -1,0 +1,148 @@
+// MainWindow - the window showing an address book: its toolbar, a
+// list of its contacts to choose from (a ListView), a menu, the
+// dialogue box for a contact's details (./Card), and keys. The list
+// follows the book by itself: the book says when it changes. Closing
+// the window ends the program.
+import { wimp, Menu, query } from 'riscos';
+import { ListView } from './Toolkit/ListView';
+import { Toolbar } from './Toolkit/Toolbar';
+import { nameOf, phoneOf, SORTS } from './Model';
+import { editCard } from './Card';
+
+export class MainWindow {
+  constructor(app, book) {
+    this.app = app;
+    this.task = app.task;
+    this.book = book;
+    this.search = '';
+    const w = this.win = this.task.createWindow({
+      title: 'Contacts', x: 120, y: 70,
+      w: 600, h: 380, extent: { w: 600, h: 380 },
+      colours: { workBg: 0 }, workButton: 'clickdragdouble',
+      flags: { back: true, close: true, title: true, toggle: true,
+        vscroll: true, size: true, moveable: true },
+    });
+    this.bar = new Toolbar(w, {
+      area: app.area,
+      buttons: [
+        { name: 'new', sprite: 'tb_new', action: () => this.add() },
+        { name: 'edit', sprite: 'tb_edit',
+          action: () => this.edit() },
+        { name: 'delete', sprite: 'tb_delete',
+          action: () => this.remove() },
+      ],
+      search: {
+        change: (text) => { this.search = text; this.refresh(); },
+      },
+      menu: (ev) => this.openMenu(ev),
+    });
+    this.list = new ListView(w, {
+      top: this.bar.height, key: (c) => c.id,
+      columns: [
+        { title: 'Name', width: 190, text: nameOf },
+        { title: 'Phone', width: 130, text: phoneOf },
+        { title: 'Email', width: 190, text: (c) => c.email },
+        { title: 'Category', width: 90, text: (c) => c.category },
+      ],
+    });
+    this.list.on('open', (c) => this.edit(c));
+    this.list.on('menu', ({ ev }) => this.openMenu(ev));
+    this.list.on('select', () => this.shade());
+    book.on('change', () => this.refresh());
+    w.on('key', (ev) => this.key(ev));
+    w.on('close', () => this.task.quit());
+    w.open({ behind: 'top' });
+    this.refresh();
+  }
+
+  // ------------------------------------------------ showing the book
+  refresh() {
+    const sort = this.app.prefs.sort;
+    const search = this.search;
+    this.list.setItems(this.book.list({ search, sort }));
+    this.shade();
+  }
+  /** Grey out the tools that can't be used just now. */
+  shade() {
+    const n = this.list.selected().length;
+    this.bar.shade('edit', n !== 1);
+    this.bar.shade('delete', n === 0);
+  }
+
+  // ------------------------------------------------ changes
+  /** Give the window the keyboard again (after a dialogue box). */
+  focus() { if (this.win.isOpen) wimp.setCaret(this.win); }
+
+  async add() {
+    const v = await editCard(this.task, {}, 'New contact');
+    this.focus();
+    if (!v) return;
+    const c = this.book.add(v);
+    this.list.select(c);
+    this.list.ensureVisible(c);
+  }
+  async edit(c = this.list.selected()[0]) {
+    if (!c) return;
+    const v = await editCard(this.task, c, nameOf(c));
+    this.focus();
+    if (!v) return;
+    this.book.update(c.id, v);
+  }
+  async remove() {
+    const gone = this.list.selected();
+    if (!gone.length) return;
+    const what = gone.length === 1 ? nameOf(gone[0])
+      : `these ${gone.length} contacts`;
+    const r = await query({ task: this.task, title: 'Contacts',
+      message: `Delete ${what}?`, buttons: ['Delete', 'Cancel'] });
+    this.focus();
+    if (r !== 'Delete') return;
+    for (const c of gone) this.book.remove(c.id);
+  }
+
+  // ------------------------------------------------ keys and menus
+  key(ev) {
+    switch (ev.code) {
+      case 0x184:                                             // F4
+        wimp.setCaret(this.bar.pane, this.bar.search);
+        return true;
+      case 0x186: this.nextSort(); return true;               // F6
+      case 1: this.list.selectAll(); return true;         // Ctrl-A
+      case 26: this.list.clear(); return true;            // Ctrl-Z
+      case 127: case 8: this.remove(); return true;       // Delete
+      case 0x1CD: this.add(); return true;                // Insert
+      default: return undefined;
+    }
+  }
+  setSort(s) { this.app.prefs.sort = s; this.refresh(); }
+  nextSort() {
+    const keys = Object.keys(SORTS);
+    const i = keys.indexOf(this.app.prefs.sort);
+    this.setSort(keys[(i + 1) % keys.length]);
+  }
+  openMenu(ev) {
+    wimp.menus.openAt(this.menu(), ev, { task: this.task,
+      onClose: () => this.list.endTemporary() });
+  }
+  menu() {
+    const none = () => !this.list.selected().length;
+    return new Menu('Contacts', [
+      { text: 'New contact', key: 'Insert',
+        action: () => this.add() },
+      { text: 'Change', shaded: () => this.list.selected()
+        .length !== 1, action: () => this.edit() },
+      { text: 'Delete', key: 'Delete', shaded: none,
+        action: () => this.remove(), dotted: true },
+      { text: 'Select all', key: '^A',
+        action: () => this.list.selectAll() },
+      { text: 'Clear selection', key: '^Z', shaded: none,
+        action: () => this.list.clear(), dotted: true },
+      { text: 'Sort', submenu: new Menu('Sort', Object.entries(SORTS)
+        .map(([k, name]) => ({ text: name,
+          ticked: () => this.app.prefs.sort === k,
+          action: () => this.setSort(k) }))) },
+      { text: 'Find', key: 'F4',
+        action: () => this.key({ code: 0x184 }) },
+    ]);
+  }
+}

@@ -19,8 +19,10 @@ ADR;TYPE=HOME:;;1 Acorn Road\nCambridge;;;CB1 2AB;
 END:VCARD
 </PRE>
 Some properties have several parts separated by semicolons: <CODE>N</CODE> is surname; first name; other
-names; title; suffix, and <CODE>ADR</CODE> has seven parts, of which Contacts uses the street and the
-postcode. Things after a semicolon in the name (<CODE>TYPE=CELL</CODE>) are <I>parameters</I>, saying what
+names; title; suffix, and <CODE>ADR</CODE> has seven parts (post office box; extended address; street;
+town; county or region; postcode; country). Contacts writes its address into the street part and the
+postcode into the postcode part; reading, it puts the street, town, region and country together, a line
+each, as the address. Things after a semicolon in the name (<CODE>TYPE=CELL</CODE>) are <I>parameters</I>, saying what
 kind of telephone number or address it is. A newline in a value is written <CODE>\n</CODE>, and a
 semicolon or comma that is part of a value has a <CODE>\</CODE> in front. Contacts writes version 3.0 and
 reads 3.0 and the older 2.1, which many programs still write.<P>
@@ -46,7 +48,10 @@ shows &eacute; as two strange characters, and a Latin-1 file read as UTF-8 goes 
 <!--#listing toolkit/Formats 22-33-->
 <CODE>decode</CODE> turns the bytes of a file into text. It tries UTF-8 first - <CODE>TextDecoder</CODE>
 with <CODE>fatal: true</CODE> gives up with an error if the bytes aren't valid UTF-8 - and if that fails,
-takes each byte as a Latin-1 character. Any character outside Latin-1 becomes a <CODE>?</CODE>, because
+takes each byte as a Latin-1 character. (<CODE>catch {</CODE> with no name in brackets is allowed when the
+error itself isn't needed. <CODE>Array.from(bytes, fn)</CODE> makes an array from something list-like - here
+the bytes - passing each through <CODE>fn</CODE> on the way; <CODE>String.fromCharCode(b)</CODE> is the
+character with code <CODE>b</CODE>.) Any character outside Latin-1 becomes a <CODE>?</CODE>, because
 RISC OS couldn't show it. <CODE>encode</CODE> turns text into UTF-8 bytes for the files Contacts writes for
 other programs, which will expect UTF-8.<P>
 
@@ -56,30 +61,33 @@ other programs, which will expect UTF-8.<P>
 <CODE>\n</CODE>. <CODE>vcardWrite</CODE> builds each card as an array of lines. The little function
 <CODE>add</CODE> only adds a property if the contact has a value for it, so there are no empty lines.<P>
 Lines are joined with <CODE>\r\n</CODE> (carriage return and newline), as the vCard standard asks, and a line
-longer than 75 characters is <I>folded</I>: broken, with a space at the start of the next line.
-<CODE>fold</CODE> does that with a regular expression: <CODE>(.{75})(?=.)</CODE> matches 75 characters that
-have something after them, and the replacement puts a line break and a space after each match.<P>
+longer than the standard allows is <I>folded</I>: broken, with a space at the start of the next line. The
+limit is 75 <I>octets</I> - bytes - as the file is written, and Contacts writes UTF-8, where a character above
+127 (such as &eacute;) takes two bytes. So <CODE>fold</CODE>, which is exported because the organiser's
+calendar files use the same rule (chapter 16), goes through the line a character at a time with
+<CODE>for...of</CODE>, counting one or two for each, and starts a new line (with its space) before the count
+would pass 75.<P>
 
 <H2>Reading vCards</H2>
 Reading is the harder half, because other programs write vCards in many small variations.<P>
 <!--#listing toolkit/Formats 85-115-->
-First the folded lines are joined up again, and vCard 2.1's <I>quoted-printable</I> line breaks (a line
-ending in <CODE>=</CODE>) are removed. Then each line is split by a regular expression into the property's
+First the folded lines are joined up again. vCard 2.1's <I>quoted-printable</I> values have line breaks of
+their own - a line ending in <CODE>=</CODE> goes on on the next - so a line ending in <CODE>=</CODE> is joined
+to the next, but only if its parameters say <CODE>QUOTED-PRINTABLE</CODE>: other values, such as a picture
+coded as text, may end in <CODE>=</CODE> quite properly, and joining those would swallow the card's
+<CODE>END</CODE>. Then each line is split by a regular expression into the property's
 name (<CODE>m[1]</CODE>), its parameters (<CODE>m[2]</CODE>) and its value (<CODE>m[3]</CODE>). Some
 programs put a group name before the property (<CODE>item1.EMAIL</CODE>); <CODE>replace(/^.*\./, '')</CODE>
-removes it. Quoted-printable values have characters written as <CODE>=</CODE> and two hex digits
-(<CODE>=E9</CODE> is &eacute;), which are turned back into characters.<P>
+removes it. Quoted-printable values have bytes written as <CODE>=</CODE> and two hex digits
+(<CODE>=E9</CODE> is &eacute; in Latin-1). Those are turned back into bytes, and if the parameters say
+<CODE>CHARSET=UTF-8</CODE>, the bytes are decoded as UTF-8 with <CODE>decode</CODE>
+(<CODE>Uint8Array.from</CODE> makes the array of bytes it needs), because in UTF-8 &eacute; is two bytes,
+<CODE>=C3=A9</CODE>.<P>
 <!--#listing toolkit/Formats 116-157-->
-A <CODE>switch</CODE> then puts each property's value into the contact being read. Two new pieces of
-JavaScript help:<P>
-<DL>
-<DT><CODE>c.mobile ??= v</CODE>
-<DD>sets <CODE>c.mobile</CODE> only if it isn't set already (is <CODE>null</CODE> or
-<CODE>undefined</CODE>). A card may have several mobile numbers; Contacts keeps the first.<P>
-<DT><CODE>const [last, first, , title] = ...</CODE>
-<DD><I>destructuring</I>: the parts of the array are put into the variables in order. The empty place
-between the commas skips the third part.<P>
-</DL>
+A <CODE>switch</CODE> then puts each property's value into the contact being read. <CODE>c.mobile ??= v</CODE>
+(chapter 3) sets it only if it isn't set already: a card may have several mobile numbers, and Contacts keeps
+the first. <CODE>const [last, first, , title] = ...</CODE> is array destructuring, as in chapter 3's
+<CODE>dateKey</CODE>; the empty place between the commas skips the third part.<P>
 <CODE>parts</CODE> splits a value at its semicolons - but not at <CODE>\;</CODE>, a semicolon that is part
 of the value. That's what <CODE>(?&lt;!\\)</CODE> in its regular expression means: "not after a
 backslash".<P>
@@ -92,8 +100,10 @@ name, and the contact is added to the list.<P>
 values that need it. <CODE>csvRows</CODE> reads a CSV file a character at a time, because a quoted value can
 contain commas and even newlines, so splitting at every comma or line break would go wrong. It remembers
 whether it is inside quotes: there, a doubled quote is one quote and a single quote ends the value; outside,
-a comma ends a value and a newline ends a row. <CODE>rows.at(-1)</CODE> is the last row.<P>
-<CODE>csvRead</CODE> matches each column to a field by its title, ignoring case, spaces and punctuation, so
+a comma ends a value and a newline ends a row. <CODE>rows.at(-1)</CODE> is the last row (chapter 3).<P>
+<CODE>csvRead</CODE> starts with <CODE>const [header, ...rows] = csvRows(text)</CODE>: destructuring with a
+<I>rest</I> - <CODE>...rows</CODE> takes everything after the first item as an array of its own, so
+<CODE>header</CODE> is the first row and <CODE>rows</CODE> the others. It matches each column to a field by its title, ignoring case, spaces and punctuation, so
 <CODE>Surname</CODE>, <CODE>surname</CODE> and <CODE>SURNAME</CODE> all find the surname. Columns it doesn't
 know are left out.<P>
 All of these are ordinary functions of text, with nothing to do with windows, so Contacts' Check program
@@ -108,7 +118,7 @@ address book:<P>
 <CODE>BEGIN:VCARD</CODE>, otherwise as CSV. <CODE>importFiles</CODE> deals with a list of dropped files: a
 Contacts file is opened as an address book of its own, and anything else is imported.<P>
 When files are dropped on a window, the window gets a <CODE>'dataload'</CODE> event listing them, as Doodle
-did in book 1. Contacts' window also listens for <CODE>'datasave'</CODE>, which is what happens when another
+did in the first book. Contacts' window also listens for <CODE>'datasave'</CODE>, which is what happens when another
 program's Save box icon is dropped on it - Edit's, say:<P>
 <!--#listing !Contacts8/MainWindow 57-64-->
 Then there is no file: the data comes straight from the other program. <CODE>await ev.receive()</CODE> asks
@@ -123,7 +133,8 @@ in the list, and the title has a <CODE>*</CODE>: the book has changed.<P>
 <I>File &gt; Export</I> has two submenus, <I>vCard</I> and <I>CSV</I>, each a Save box. The Style Guide's
 rule is that Save saves in the application's own format, and other formats are <I>exported</I>:<P>
 <!--#listing !Contacts8/MainWindow 119-133-->
-It exports the chosen contacts, or all of them if none is chosen. The vCard file is given type Text, as
+It exports the chosen contacts, or, if none is chosen, all the contacts the list is showing - so with
+something typed in the Find field, only the ones that match. The vCard file is given type Text, as
 vCard has no RISC OS type of its own, and the CSV file type &amp;DFE, which is CSV's. The names end
 <CODE>/vcf</CODE> and <CODE>/csv</CODE>: RISC OS writes a <CODE>.</CODE> in a file name as <CODE>/</CODE>,
 so on a computer that uses extensions (or through HostFS) they become <CODE>Cards.vcf</CODE> and
@@ -184,9 +195,11 @@ semicolons than commas.<P>
 <PRE>
 const n = importData(doc, await vfs.readFile(f.path));
 if (n) {
-  reportError(`${n} contacts added`, { category: 'info' });
+  reportError(`${n} contacts added`,
+    { appName: 'Contacts', category: 'info' });
 }
 </PRE>
+(Without <CODE>appName</CODE> the box would be titled <I>Error</I>, which it isn't.)
 <DT><DD>2  A third kind in <CODE>exportBox</CODE>:
 <PRE>
 const lines = this.chosen().map((c) =&gt;

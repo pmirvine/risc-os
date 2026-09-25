@@ -1,0 +1,94 @@
+// Document - one address book being edited: its Book, the file it
+// came from, whether it has changed since it was saved, and its
+// window.
+//
+//   const doc = new Document(app);                  a new, empty one
+//   const doc = await Document.load(app, path);     from a file
+//   doc.save(path), doc.saveBox(), doc.quickSave(), await doc.close()
+import { vfs, saveAs, wimp } from 'riscos';
+import { Book } from './Model';
+import { Form } from './Toolkit/Form';
+import { MainWindow } from './MainWindow';
+
+export class Document {
+  constructor(app, book = new Book(), filename = '') {
+    this.app = app;
+    this.book = book;
+    this.filename = filename;          // '' until it's saved
+    this.modified = false;
+    this.view = new MainWindow(this);
+    book.on('change', () => this.setModified(true));
+    app.docs.add(this);
+  }
+
+  static async load(app, path) {
+    const text = await vfs.readText(path);
+    const book = Book.fromJSON(JSON.parse(text));
+    return new Document(app, book, path);
+  }
+
+  /** The window's title: the file's name, and * if it's changed. */
+  get title() {
+    const name = this.filename || '<untitled>';
+    return this.modified ? name + ' *' : name;
+  }
+  setModified(m) {
+    this.modified = m;
+    this.view.updateTitle();
+  }
+
+  // ------------------------------------------------ saving
+  get data() { return JSON.stringify(this.book, null, 1) + '\n'; }
+  save(path) {
+    vfs.writeFile(path, this.data, { filetype: this.app.TYPE });
+    this.filename = vfs.canonical(path);
+    this.setModified(false);
+  }
+  /** The Save box (as a menu's submenu, or opened by F3). */
+  saveBox(then) {
+    return saveAs({
+      task: this.app.task, filetype: this.app.TYPE,
+      filename: this.filename || 'Contacts',
+      getData: async () => this.data,
+      save: async (path) => this.save(path),
+      onSaved: (path) => { if (path) then?.(); },
+    });
+  }
+  /** Save straight away if it has a file, else show the Save box. */
+  quickSave(then) {
+    if (this.filename) { this.save(this.filename); then?.(); return; }
+    const box = this.saveBox(then);
+    wimp.menus.open(box, 200, 200, { task: this.app.task });
+  }
+
+  // ------------------------------------------------ closing
+  /** Close, asking about unsaved changes. Resolves true if closed. */
+  async close() {
+    if (this.modified) {
+      const answer = await askClose(this.app.task);
+      if (!answer) return false;                        // Cancel
+      if (answer === 'Save') {
+        this.quickSave(() => this.dispose());
+        return false;
+      }
+    }
+    this.dispose();
+    return true;
+  }
+  dispose() {
+    this.view.dispose();
+    this.app.docs.delete(this);
+  }
+}
+
+// the Style Guide's box: Discard, Cancel, Save
+let closeForm = null;
+async function askClose(task) {
+  closeForm ??= new Form(task, {
+    title: 'Contacts', fields: [],
+    message: 'This file has been modified.',
+    buttons: ['Discard', 'Cancel', 'Save'],
+  });
+  const r = await closeForm.run();
+  return r?.button ?? null;
+}

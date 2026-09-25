@@ -15,13 +15,14 @@ buttons - <I>OK</I>, and <I>Snooze</I> to be reminded again in five minutes.<P>
 A desktop program can't sit in a loop waiting for the time to come round (book 1, chapter 9). Instead it asks
 to be called now and then with <CODE>task.every</CODE>, and each time looks at the clock:<P>
 <DL>
-<DT><DD>1  Every ten seconds, go through the appointments on today's date in every open organiser.<P>
+<DT><DD>1  Every ten seconds, go through the appointments today and tomorrow in every open organiser.<P>
 <DT><DD>2  Work out when each one's alarm goes off: its time, less the alarm's minutes.<P>
 <DT><DD>3  If that time has come, and the alarm hasn't been shown yet, show it.<P>
 </DL>
 Two things need remembering: which alarms have been shown (so each appears once), and which have been
-snoozed (so they come back later). An alarm is named by its file, its appointment and its date together - a
-repeating appointment has an alarm on every day it happens.<P>
+snoozed (so they come back later). An alarm is named by its document, its appointment and its date together - a
+repeating appointment has an alarm on every day it happens. The document is given a number of its own for
+this rather than using its filename, which changes when an untitled document is saved.<P>
 One more rule, from !Alarm: an alarm more than an hour old has been <I>missed</I> (the computer was off, say)
 and isn't shown. Without it, opening an organiser in the evening would bring up every alarm of the day at
 once.<P>
@@ -32,7 +33,10 @@ once.<P>
 <CODE>Map</CODE> from an alarm's name to the time it should come back. <CODE>check</CODE> asks each open
 document's diary for the <CODE>occurrences</CODE> of appointments from today to tomorrow - the same method
 the Diary pages use to draw repeating appointments (chapter 12) - so repeats get their alarms too.<P>
-<CODE>alarmTime</CODE> builds a <CODE>Date</CODE> for the day and sets its hours and minutes. For an
+<CODE>idOf</CODE> hands out those numbers, keeping them in a <CODE>WeakMap</CODE> (a <CODE>Map</CODE> that
+lets go of a document once it's closed). <CODE>alarmTime</CODE> builds a <CODE>Date</CODE> for the day and
+sets its hours and minutes with <CODE>setHours(h, m, s, ms)</CODE>, which takes the hours and, optionally,
+the minutes, seconds and milliseconds. For an
 appointment at 09:10 with a 15-minute alarm, the minutes are <CODE>10 - 15</CODE>, which is -5.
 <CODE>setHours</CODE> doesn't mind: it carries the minutes over, and the time becomes 08:55. Letting
 <CODE>Date</CODE> do the carrying is much simpler (and safer) than doing it yourself.<P>
@@ -82,10 +86,13 @@ The toolbox's printer button (and the Print key, and <I>Menu &gt; File &gt; Prin
 pages showing. The pages are drawn by one method, <CODE>org.draw(g)</CODE>, whatever <CODE>g</CODE> is - so
 printing them only needs a canvas of their own to draw on:<P>
 <!--#listing !Organiser/Tools 183-201-->
+<CODE>document</CODE> is the desktop's object for making things like canvases, and
 <CODE>document.createElement('canvas')</CODE> makes a canvas that isn't in any window: a sheet of paper the
 program can draw on without anything appearing on the screen. It's made the size of the binder, and
 <CODE>translate</CODE> moves the drawing so the binder's corner is at its top left. Then the canvas goes to
-!Printers, which prints it on the printer chosen there (see appendix C).<P>
+!Printers, which prints it on the printer chosen there (see appendix C). A Notepad page's text is on the
+text area's own canvas (chapter 14), not drawn by <CODE>org.draw</CODE>, so <CODE>drawImage</CODE> copies it
+onto the sheet in its place.<P>
 Printing needs !Printers to be running, as it does for every RISC OS program. If it isn't,
 <CODE>os.printers</CODE> is missing, and the Organiser says what to do rather than failing.<P>
 <B>Note</B>: this is the first time drawing code has been used for two things - the screen and the printer.
@@ -100,7 +107,9 @@ how an appointment goes out:<P>
 <PRE>
 BEGIN:VEVENT
 UID:1790371712345-1@organiser
+DTSTAMP:20260925T093000Z
 DTSTART:20260926T123000
+DTEND:20260926T133000
 SUMMARY:Lunch with Bob
 BEGIN:VALARM
 ACTION:DISPLAY
@@ -114,16 +123,25 @@ same idea as vCard (chapter 8), and <CODE>icalWrite</CODE> is written the same w
 array:<P>
 <!--#listing toolkit/ICal 29-70-->
 Times are written as <CODE>20260926T123000</CODE> - the date, a <CODE>T</CODE>, and the time - by the small
-functions <CODE>day</CODE> and <CODE>at</CODE> at the top of the module. A repeat becomes an
-<CODE>RRULE</CODE> such as <CODE>FREQ=WEEKLY;COUNT=10</CODE>, and an alarm a <CODE>VALARM</CODE> with a
-<CODE>TRIGGER</CODE> of so many minutes before. iCalendar's priorities go from 1 to 9, so the Organiser's 1,
-2 and 3 go out as 1, 5 and 9. Every line is folded at 75 characters, as vCard's are.<P>
-Reading, in <CODE>icalRead</CODE>, uses two pieces of JavaScript you haven't seen before. A destructuring
-<I>assignment</I> sets two properties at once:<P>
+functions <CODE>day</CODE> and <CODE>at</CODE> at the top of the module; <CODE>DTEND</CODE>, the end time,
+goes out only if the appointment has one. <CODE>DTSTAMP</CODE>, which iCalendar asks for in every entry,
+says when the file was made, in UTC (the <CODE>Z</CODE>): <CODE>toISOString</CODE> gives
+<CODE>2026-09-25T09:30:00.000Z</CODE>, and <CODE>stamp</CODE> takes out the dashes, colons and
+milliseconds. A repeat becomes an <CODE>RRULE</CODE> such as <CODE>FREQ=WEEKLY;COUNT=10</CODE> - or, if it
+has an end date, <CODE>UNTIL</CODE> written the same way as <CODE>DTSTART</CODE>, but never both. An
+alarm becomes a <CODE>VALARM</CODE> whose <CODE>TRIGGER</CODE> is the alarm's minutes before. iCalendar's priorities go from 1 to 9, so the Organiser's 1,
+2 and 3 go out as 1, 5 and 9. Every line is folded at 75 characters, as vCard's are, by importing <CODE>fold</CODE> from chapter 8's
+<CODE>Formats</CODE> rather than writing it again.<P>
+<CODE>!Organiser</CODE>'s <CODE>Toolkit.list</CODE> gains two lines: <CODE>ListView</CODE>, for Find's
+results, and <CODE>ICal</CODE>.<P>
+Reading, in <CODE>icalRead</CODE>, uses destructuring in two new ways. Destructuring can <I>assign</I> as
+well as declare: with no <CODE>const</CODE> or <CODE>let</CODE> in front, it puts the array's items into
+variables or properties that already exist - here setting two properties at once:<P>
 <PRE>
 [item.date, item.time] = when(value);
 </PRE>
-and <I>rest</I> in destructuring collects everything not named into a new object:<P>
+and, as in chapter 12's answer 3, <I>rest</I> in destructuring collects everything not named into a new
+object:<P>
 <PRE>
 const { kind, date, time, end, ...rest } = item;
 </PRE>
@@ -211,7 +229,7 @@ millimetres), with the days laid out as the paper is ruled.<P>
 
 <H2>The end of Part Two</H2>
 Over these seven chapters the Organiser has used everything from Part One - the model and its events, the
-list, forms, the toolbar, documents, formats, undo and choices - and added what a bigger application needs:
+list, forms, the toolbar, documents, formats and choices - and added what a bigger application needs:
 a common interface for its sections, so one window can hold six different kinds of page; dates; drawing a
 whole interface on a canvas; and working with the rest of the desktop and other programs.<P>
 Chapter 17 is a last look under the bonnet: how a text area like the Notepad's works, by building one.<P>
@@ -269,8 +287,14 @@ return this.doc.diary.all()
 <DT><DD>4  <CODE>check</CODE> knows the document (<CODE>doc</CODE>); pass it to <CODE>show</CODE> and add
 <CODE>vfs.leaf(doc.filename)</CODE> to the message when <CODE>this.app.docs.size &gt; 1</CODE> (import
 <CODE>vfs</CODE> from <CODE>'riscos'</CODE>).<P>
-<DT><DD>5  Give <CODE>startOfWeek</CODE> a second parameter, the first day (0 for Sunday, 1 for Monday), and
-use it where it counts back to the start of the week. Add <CODE>week: 'Monday'</CODE> to the choices, and
-pass <CODE>prefs.week === 'Sunday' ? 0 : 1</CODE> wherever the Diary calls <CODE>startOfWeek</CODE>. Don't
+<DT><DD>5  Give <CODE>startOfWeek</CODE> a second parameter, the first day, counted as <CODE>weekday</CODE>
+counts (0 for Monday up to 6 for Sunday), defaulting to Monday:
+<PRE>
+export const startOfWeek = (key, first = 0) =&gt;
+  addDays(key, -((weekday(key) - first + 7) % 7));
+</PRE>
+Add <CODE>week: 'Monday'</CODE> to the choices, and pass <CODE>prefs.week === 'Sunday' ? 6 : 0</CODE>
+wherever the Diary calls <CODE>startOfWeek</CODE>, and change the days' names along the top of the week and
+month views to match. Don't
 forget the month grid, which starts its rows on the same day.<P>
 </DL>

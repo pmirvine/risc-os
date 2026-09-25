@@ -1,0 +1,593 @@
+<HTML><HEAD><TITLE>14  The notepad and links</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap15.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap13.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>14  The notepad and links</H1>
+<HR>
+This chapter adds the Notepad - pages of notes you type straight onto, with a contents page to find them by -
+and two things that tie the organiser together. The Link tool joins any two entries (a lunch in the Diary and
+the person you're having it with, say), so that one leads to the other; and a Back button takes you back to
+where you were before you followed a link or turned to another section. The result is <CODE>!Org14</CODE>.<P>
+<P><CENTER><IMG SRC="PICS/O14Notes" WIDTH=910 HEIGHT=569></CENTER>
+
+<A NAME=S1></A>
+<H2>Pages of notes</H2>
+A page of the notepad is a title, its text, and its place in the notepad:<P>
+<PRE>
+{ id: 2, title: 'Holiday ideas', order: 1,
+  text: 'Cornwall: St Ives in June?\nThe Lake District ...' }
+</PRE>
+The text is a string with <CODE>\n</CODE> between its lines. The pages are kept in a collection like every
+other section's, with two additions:<P>
+<PRE>
+// A page of the notepad: { title, text, order }
+export class Notes extends Collection {
+  list() { return this.all().sort((a, b) =&gt; a.order - b.order); }
+  /** Move a page to position i (0 = first). */
+  moveTo(id, i) {
+    const pages = this.list().filter((p) =&gt; p.id !== id);
+    pages.splice(i, 0, this.get(id));
+    pages.forEach((p, k) =&gt; {
+      if (p.order !== k) this.update(p.id, { order: k });
+    });
+  }
+}
+</PRE>
+<CODE>list</CODE> gives the pages in order. <CODE>moveTo</CODE> moves a page to another place: it takes the
+page out of the list, puts it back at position <CODE>i</CODE>, and then renumbers every page whose
+<CODE>order</CODE> has changed.<P>
+<H3>splice</H3>
+Putting the page back uses an array method you haven't needed before. <CODE>splice(i, n, ...items)</CODE>
+changes an array in place: at position <CODE>i</CODE> it takes out <CODE>n</CODE> items and puts in whatever
+follows. With <CODE>n</CODE> 0 it only puts things in:<P>
+<PRE>
+const a = ['A', 'B'];
+a.splice(0, 0, 'C');       // a is now ['C', 'A', 'B']
+a.splice(1, 1);            // takes out 'A': ['C', 'B']
+</PRE>
+Only the pages whose number really changes are updated, so moving a page near the end of a long notepad
+doesn't mark every page as changed. Check tests it:<P>
+<PRE>
+  const notes = new Notes([{ id: 1, title: 'A', order: 0 },
+    { id: 2, title: 'B', order: 1 },
+    { id: 3, title: 'C', order: 2 }]);
+  notes.moveTo(3, 0);
+  check('notepad: moving a page', notes.list().map((p) =&gt; p.title),
+    ['C', 'A', 'B']);
+</PRE>
+and the Document makes a <CODE>Notes</CODE> collection from the file's <CODE>notes</CODE> (and, for the links
+later in this chapter, a <CODE>Links</CODE> collection from its <CODE>links</CODE>):<P>
+<PRE>
+    this.notes = new Notes(data.notes);
+    this.planner = new Collection(data.planner);    // (kept)
+    this.anniversaries = new Anniversaries(data.anniversaries);
+    this.links = new Links(data.links);
+</PRE>
+
+<A NAME=S2></A>
+<H2>The contents page</H2>
+The left-hand page lists the pages' titles, numbered, with the one you're reading highlighted; the right-hand
+page shows that page:<P>
+<PRE>
+export class NotesPage extends Section {
+  constructor(org) {
+    super(org, { id: 'notes', name: 'Notepad', colour: '#f6b26b',
+      newHelp: 'add a page to the notepad' });
+    this.page = null;                 // the id of the page shown
+    this.area = null;                 // its TextArea, while shown
+  }
+  state() { return { page: this.page }; }
+  restore(s) { this.hide(); Object.assign(this, s); this.show(); }
+
+  draw(g, L, R) {
+    heading(g, L, 'Notepad', this.colour, 'Contents');
+    ruled(g, L, L.y + TOP + ROW, ROW);
+    const pages = this.doc.notes.list();
+    pages.forEach((p, i) =&gt; {
+      const y = L.y + TOP + i * ROW;
+      if (p.id === this.page) {
+        g.fillStyle = '#fdebd3';
+        g.fillRect(L.x + 10, y, L.w - 20, ROW);
+      }
+      text(g, `${i + 1}  ${p.title}`, L.x + 14, y + ROW / 2, L.w - 28,
+        '13px Homerton');
+      this.box(L.x + 10, y, L.w - 20, ROW, { id: p.id });
+    });
+    if (!pages.length) {
+      text(g, 'No pages yet. Click the New button to add one.',
+        L.x + 14, L.y + TOP + 12, L.w - 28, 'italic 12px Homerton',
+        FAINT);
+    }
+    const p = this.doc.notes.get(this.page);
+    heading(g, R, p ? p.title : 'Notepad', this.colour);
+    if (!p) {
+      text(g, 'Click a title on the contents page to turn to it.',
+        R.x + 14, R.y + TOP + 12, R.w - 28, 'italic 12px Homerton',
+        FAINT);
+    }
+  }
+</PRE>
+Each title is recorded with <CODE>this.box</CODE>, as the To do page does with its rows, so a click can find
+it - and so choosing, linking and the wastebasket work on notepad pages too. <CODE>this.page</CODE> is the id
+of the page shown on the right, or <CODE>null</CODE> for none.<P>
+The right-hand page draws only its heading. The text itself isn't drawn by <CODE>draw</CODE> at all: it is in a
+<CODE>TextArea</CODE>.<P>
+
+<A NAME=S3></A>
+<H2>Typing on the page</H2>
+Writing a multi-line text editor is a job in itself (chapter 17 shows how to make a small one), so the notepad
+uses the one the desktop provides: the <CODE>TextArea</CODE> you met in !Contacts' card in chapter 3, where it
+held the address and the notes (appendix C has the details). As there, it draws itself on a canvas of its own
+in the window's work area, wraps words, scrolls, and takes clicks inside it and keys while it has the caret.
+This time it isn't in a Form, so the Notepad makes it itself: it gives it a position and a size, and listens
+for its <CODE>'change'</CODE> event:<P>
+<PRE>
+  // ------------------------------------------------ the text area
+  /** Where the page's text goes on the right-hand page. */
+  get rect() {
+    const R = this.org.pages[1];
+    return { x: R.x + 12, y: R.y + TOP - 4, w: R.w - 24,
+      h: R.h - TOP - 36 };
+  }
+  show() {
+    const p = this.doc.notes.get(this.page);
+    if (!p || this.area) return;
+    this.area = new TextArea(this.org.win, { ...this.rect,
+      text: p.text, font: '14px Homerton' });
+    this.area.on('change', ({ text }) =&gt; {
+      this.doc.notes.update(p.id, { text });
+    });
+  }
+  hide() { this.area?.remove(); this.area = null; }
+  open(id) {
+    this.hide();
+    this.page = id;
+    this.show();
+    this.area?.focus();
+    this.org.redraw();
+  }
+</PRE>
+<CODE>rect</CODE> is the space on the right-hand page below the heading - a getter, because the page's
+position comes from the binder (<CODE>this.org.pages</CODE>). <CODE>show</CODE> makes the TextArea with the
+page's text, and every change puts the new text straight into the collection, which marks the document as
+changed (the <CODE>*</CODE> in the title) as any other change does. <CODE>hide</CODE> takes the TextArea away.
+<CODE>open</CODE> turns to a page: it hides the old one, shows the new one and gives it the caret, so you can
+type at once.<P>
+The window calls a section's <CODE>show</CODE> and <CODE>hide</CODE> (chapter 10) when you open it and when
+you go to another tab, so the TextArea is only there while the Notepad is.<P>
+
+<H3>Who gets the keys first</H3>
+The notepad page lives in the organiser's window, and that window already has click and key handlers of its
+own: a click chooses an entry, and keys do things - Delete deletes the chosen entry, Page Up turns the page,
+Insert adds an entry:<P>
+<PRE>
+  key(ev) {
+    if (this.section.key(ev)) return true;
+    switch (ev.code) {
+      case 0x183: this.doc.quickSave(); return true;         // F3
+      case 0x19F: this.section.turn(-1); break;          // Page Up
+      case 0x19E: this.section.turn(1); break;           // Page Down
+      case 30: this.section.today(); break;                  // Home
+      case 0x1CD: this.section.newEntry(); return true;      // Insert
+      case 127: case 8: tools.remove(this); return true;     // Delete
+</PRE>
+Now imagine typing a note and pressing Backspace. The key goes to the window, and if the window's handler saw
+it first, it would delete the chosen <I>entry</I> instead of a letter. The TextArea must see the key first,
+and only let it go on to the window if it doesn't want it.<P>
+It does, because of how it adds its handlers. In chapter 1 the <CODE>Emitter</CODE> called handlers in the
+order they were added. The desktop's windows use the same idea, with one extra: a handler added with
+<CODE>{ first: true }</CODE> goes in front of the others. The TextArea adds its handlers like that:<P>
+<PRE>
+win.on('click', (ev) =&gt; this.click(ev), { first: true });
+win.on('key', (ev) =&gt; this.key(ev), { first: true });
+</PRE>
+Handlers stop as soon as one returns <CODE>true</CODE>. The TextArea returns <CODE>true</CODE> for a click
+inside itself and for a key it uses while it has the caret, so the window never sees those; everything else -
+a click on a title, a key like F3 while the note has the caret - goes on to the window as usual. That's why
+the Notepad's own <CODE>click</CODE> and <CODE>key</CODE> are so short:<P>
+<PRE>
+  // ------------------------------------------------ mouse and keys
+  // (the TextArea sees clicks in it and keys while it has the caret
+  // before the window does, so only the rest come here)
+  click(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) { this.open(box.ref.id); return true; }
+    return false;
+  }
+  key(ev) {
+    if (!this.area?.focused || ev.code !== 4) return false;  // Ctrl-D
+    this.area.insert(D.format(D.today(), '%ZDY %MO %CE%YR'));
+    return true;
+  }
+</PRE>
+The opposite matters as much. When the page is put away, the TextArea's handlers must go too, or a
+TextArea no longer on the screen would go on taking the window's clicks and keys. So <CODE>remove</CODE> -
+called by the Notepad's <CODE>hide</CODE> - takes its handlers away before its canvas. The desktop's
+<CODE>on</CODE> returns a function that removes the handler again (like the Emitter's <CODE>off</CODE>), and
+the TextArea keeps those functions and calls them all (shortened a little here):<P>
+<PRE>
+remove() {
+  for (const off of this._offs) off();
+  this.canvas.remove();
+}
+</PRE>
+Anything that adds handlers to someone else's window should be as tidy.<P>
+
+<H3>Ctrl-D: today's date</H3>
+The Style Guide gives Ctrl-D the job of typing the date. The TextArea doesn't know that key, so it goes on to
+the window, which asks the section first (<CODE>this.section.key(ev)</CODE> above). The Notepad's
+<CODE>key</CODE> checks that its TextArea has the caret and the key is code 4 - Ctrl with a letter gives the
+letter's place in the alphabet, and D is the fourth - and puts the date in at the caret with
+<CODE>insert</CODE>. <CODE>D.format</CODE> is chapter 11's, which uses the desktop's <CODE>formatTime</CODE>
+codes: <CODE>%ZDY %MO %CE%YR</CODE> is the day without a leading zero, the month's name and the year, as in
+<I>25 September 2026</I>.<P>
+
+<A NAME=S4></A>
+<H2>Adding, renaming and moving pages</H2>
+New (the toolbox button, or Insert) asks for a title and opens the new page, and double-clicking a title
+changes it:<P>
+<PRE>
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (!box) return;
+    const p = this.doc.notes.get(box.ref.id);
+    const title = await askTitle(this.org.app.task, p.title);
+    this.org.focus();
+    if (title) this.doc.notes.update(p.id, { title });
+  }
+
+  // ------------------------------------------------ entries
+  async newEntry() {
+    const title = await askTitle(this.org.app.task);
+    this.org.focus();
+    if (!title) return;
+    const p = this.doc.notes.add({ title, text: '',
+      order: this.doc.notes.size });
+    this.open(p.id);
+  }
+</PRE>
+<CODE>askTitle</CODE> is a one-field form in <CODE>Entries</CODE>, beside the others:<P>
+<PRE>
+export async function askTitle(task, title = '') {
+  const f = form(task, 'title', {
+    title: 'Notepad page', buttons: ['Cancel', 'OK'],
+    fields: [{ name: 'title', label: 'Title' }],
+    check: (v) =&gt; (!v.title.trim() ? { field: 'title',
+      message: 'Please give the page a title' } : null),
+  });
+  const v = await f.ask({ title });
+  return v &amp;&amp; v.title.trim();
+}
+</PRE>
+Pages are moved by dragging their titles. Chapter 12's <CODE>Tools.drag</CODE> handles every drag of an entry:
+into the wastebasket it deletes, and anywhere else on the pages it calls the section's
+<CODE>dropped</CODE>. The Notepad works out which row the title was dropped on and moves the page there:<P>
+<PRE>
+  /** A title dropped further up or down the contents: move it. */
+  dropped(ref, x, y) {
+    const L = this.org.pages[0];
+    const i = Math.max(0, Math.floor((y - L.y - TOP) / ROW));
+    this.doc.notes.moveTo(ref.id, Math.min(i,
+      this.doc.notes.size - 1));
+  }
+</PRE>
+<CODE>Math.max</CODE> and <CODE>Math.min</CODE> keep the row between the first page and the last, wherever the
+title is dropped.<P>
+
+<A NAME=S5></A>
+<H2>Linking entries</H2>
+Some entries belong together: a lunch in the Diary and the person it's with, a to-do and the notepad page with
+its details. A <I>link</I> joins two of them. It is kept as the two entries' refs - the
+<CODE>{ section, id }</CODE> objects chapter 10 introduced (the ones <CODE>box</CODE> records), which chapter 12
+used to reach another section's entries - in a collection of its own:<P>
+<PRE>
+// A link between two entries: { a: ref, b: ref }, where a ref is
+// { section: 'diary', id }
+export const sameRef = (p, q) =&gt;
+  p.section === q.section &amp;&amp; p.id === q.id;
+export class Links extends Collection {
+  /** The entries linked to ref. */
+  of(ref) {
+    return this.all().flatMap((l) =&gt; (sameRef(l.a, ref) ? [l.b]
+      : sameRef(l.b, ref) ? [l.a] : []));
+  }
+  has(ref) { return this.of(ref).length &gt; 0; }
+  link(a, b) {
+    if (sameRef(a, b)) return;
+    if (this.of(a).some((r) =&gt; sameRef(r, b))) return;
+    this.add({ a, b });
+  }
+  /** Forget the links of an entry that has gone. */
+  forget(ref) {
+    for (const l of this.all()) {
+      if (sameRef(l.a, ref) || sameRef(l.b, ref)) this.remove(l.id);
+    }
+  }
+}
+</PRE>
+<CODE>sameRef</CODE> says whether two refs are the same entry. A link has no direction, so <CODE>of</CODE> looks
+at both ends: for each link, if one end is the entry, the other end is linked to it. <CODE>flatMap</CODE>
+(chapter 9) makes that easy - each link gives an array of one ref, or of none, and <CODE>flatMap</CODE> joins
+them into one array.<P>
+<CODE>link</CODE> won't join an entry to itself, or join two entries twice (either way round);
+<CODE>forget</CODE> removes the links of an entry that's been deleted, so no link is left pointing at nothing.
+Deleting calls it, in <CODE>Tools.remove</CODE>:<P>
+<PRE>
+  s.remove(ref);
+  org.doc.links.forget(ref);
+  org.selected = null;
+  org.refresh();
+</PRE>
+Check makes sure of the rules:<P>
+<PRE>
+  const links = new Links();
+  const a = { section: 'diary', id: 1 };
+  const b = { section: 'todo', id: 2 };
+  links.link(a, b);
+  links.link(b, a);                       // (the same link again)
+  check('links both ways, once',
+    [links.of(a), links.of(b), links.size], [[b], [a], 1]);
+  links.forget(b);
+  check('links forgotten', links.has(a), false);
+</PRE>
+
+<H3>The Link tool</H3>
+The toolbox gets a Link button (and the window's menu a <I>Link</I> item). Choose an entry and click Link, or
+click Link and then an entry; then click the entry to link it to:<P>
+<PRE>
+// ------------------------------------------------ links
+export function startLink(org) {
+  org.linking = org.selected ? { first: org.selected } : {};
+  org.refresh();
+}
+function pickForLink(org, ref) {
+  if (!org.linking.first) org.linking.first = ref;
+  else {
+    org.doc.links.link(org.linking.first, ref);
+    org.linking = null;
+  }
+  org.refresh();
+}
+</PRE>
+<CODE>org.linking</CODE> is <CODE>null</CODE> normally. While the tool is in use it is an object holding the
+first entry once it's been chosen. Every click on an entry now goes through <CODE>clickEntry</CODE>, which
+hands it to the Link tool while it's on:<P>
+<PRE>
+/** A click on an entry: the Link tool, a chain, or choosing it. */
+export function clickEntry(org, ev) {
+  const box = org.section.at(ev.x, ev.y);
+  if (!box) {
+    if (org.linking) { org.linking = null; org.refresh(); }
+    org.selected = null;
+    return false;
+  }
+  if (org.linking) { pickForLink(org, box.ref); return true; }
+  if (org.doc.links.has(box.ref) &amp;&amp; ev.x &gt; box.x + box.w - 16) {
+    linkMenu(org, box.ref, ev);           // the chain mark
+    return true;
+  }
+  org.selected = box.ref;
+  org.redraw();
+  return false;                           // the section sees it too
+}
+</PRE>
+Clicking somewhere that isn't an entry puts the tool away. The Link button is drawn pressed in while it's on
+(<CODE>setState({ selected: !!org.linking })</CODE> when the toolbox is updated), and the first entry is
+outlined in red.<P>
+
+<H3>Chains</H3>
+An entry with links shows a small chain at its right-hand end. The window draws the chains after the section
+has drawn its page, for every entry the section recorded with <CODE>box</CODE> - so every section gets them
+without any code of its own:<P>
+<PRE>
+/** After the section has drawn: chain marks and the chosen entry. */
+export function decorate(org, g) {
+  const same = (a, b) =&gt; a &amp;&amp; b &amp;&amp; a.section === b.section &amp;&amp;
+    a.id === b.id &amp;&amp; (a.date ?? '') === (b.date ?? '');
+  for (const b of org.section.boxes) {
+    if (org.doc.links.has(b.ref)) chain(g, b.x + b.w - 12, b.y + 8);
+    const chosen = same(b.ref, org.selected) ||
+      same(b.ref, org.linking?.first);
+    if (chosen) {
+      g.strokeStyle = org.linking ? '#c00000' : '#000000';
+      g.lineWidth = 2;
+      g.strokeRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+    }
+  }
+}
+</PRE>
+The chain is two ellipses, drawn in <CODE>Paper</CODE> with the canvas's <CODE>ellipse(x, y, rx, ry,
+rotation, start, end)</CODE>, which is <CODE>arc</CODE> with different widths across and down:<P>
+<PRE>
+/** A little chain: the mark of an entry that is linked to others. */
+export function chain(g, x, y) {
+  g.strokeStyle = '#444444';
+  g.lineWidth = 1.5;
+  for (const dx of [0, 5]) {
+    g.beginPath();
+    g.ellipse(x + dx, y, 4, 2.5, -0.5, 0, Math.PI * 2);
+    g.stroke();
+  }
+}
+</PRE>
+<P><CENTER><IMG SRC="PICS/O14Link" WIDTH=910 HEIGHT=569></CENTER>
+Clicking a chain opens a menu of the entries at the other ends of its links. Each item's text comes from the
+section the entry belongs to - its <CODE>describe</CODE>, from chapter 12 - and choosing one goes to it:<P>
+<PRE>
+function linkMenu(org, ref, ev) {
+  const items = org.doc.links.of(ref).map((r) =&gt; {
+    const s = org.sections.find((x) =&gt; x.id === r.section);
+    return { text: `${s.name}: ${s.describe(r)}`.slice(0, 40),
+      action: () =&gt; org.go(r) };
+  });
+  wimp.menus.openAt(new Menu('Linked to', items), ev,
+    { task: org.app.task });
+}
+</PRE>
+<CODE>org.go</CODE> opens the right section and asks it to show the entry (its <CODE>go</CODE>): the Diary
+turns to the appointment's week, the Address section to the contact, the Notepad to the page.<P>
+
+<A NAME=S6></A>
+<H2>Going back</H2>
+Following a link can take you anywhere in the organiser, so the toolbox gets a Back button. The window keeps a
+<I>history</I>: each time you go somewhere else, it remembers where you were.<P>
+<PRE>
+  /** Open section i (remembering where we were, for Back). */
+  open(i, remember = true) {
+    if (i === this.current) return;
+    if (remember) this.remember();
+    this.section.hide();
+    this.current = i;
+    this.selected = null;
+    this.section.show();
+    this.refresh();
+  }
+  remember() {
+    this.history.push({ i: this.current, s: this.section.state() });
+    if (this.history.length &gt; 30) this.history.shift();
+  }
+  back() {
+    const h = this.history.pop();
+    if (!h) { wimp.beep(); return; }
+    this.open(h.i, false);
+    this.section.restore(h.s);
+    this.refresh();
+  }
+  /** Show an entry, in whichever section it is. */
+  go(ref) {
+    const i = this.sections.findIndex((s) =&gt; s.id === ref.section);
+    this.remember();
+    this.open(i, false);
+    this.section.go(ref);
+    this.selected = ref;
+    this.refresh();
+  }
+</PRE>
+Where you are is two things: which section is open (<CODE>this.current</CODE>) and where that section is - the
+Diary's view and day, the Notepad's page. Each section says where it is with <CODE>state</CODE> and goes
+back there with <CODE>restore</CODE>. The <CODE>Section</CODE> class gives every section a plain version,
+which just remembers the view:<P>
+<PRE>
+  /** Where the section is (its view ...), for the Back button. */
+  state() { return { view: this.view }; }
+  restore(s) { Object.assign(this, s); }
+</PRE>
+and sections with more to remember give their own. The Diary adds its day:<P>
+<PRE>
+  state() { return { view: this.view, day: this.day }; }
+</PRE>
+The Notepad remembers its page, and its <CODE>restore</CODE> hides the TextArea before changing page and shows
+it again after, so the text on the screen is the page's:<P>
+<PRE>
+  state() { return { page: this.page }; }
+  restore(s) { this.hide(); Object.assign(this, s); this.show(); }
+</PRE>
+The Address section remembers its letter and the chosen person, and the Anniversary section its year, each
+with a one-line <CODE>state</CODE> of the same kind (<CODE>restore</CODE> is the <CODE>Section</CODE> class's,
+which copies the fields back):<P>
+<PRE>
+  state() { return { letter: this.letter, chosen: this.chosen }; }
+</PRE>
+<PRE>
+  state() { return { year: this.year }; }
+</PRE>
+<CODE>remember</CODE> pushes <CODE>{ i, s }</CODE> onto the history - <CODE>shift</CODE> takes the oldest off
+the front once there are 30, so it can't grow for ever - and <CODE>back</CODE> pops the latest one off,
+opens that section and restores its state. With nothing to go back to, it beeps.<P>
+<H3>Opening without remembering</H3>
+<CODE>open(i, remember = true)</CODE> gives its second parameter a default value, as chapter 3's
+<CODE>editCard</CODE> did: called as <CODE>open(2)</CODE>, <CODE>remember</CODE> is <CODE>true</CODE>.
+<CODE>back</CODE> calls <CODE>open(h.i, false)</CODE>, because going
+back mustn't itself be remembered, or Back would go to and fro between the same two places.<P>
+<CODE>go</CODE> also calls <CODE>open(i, false)</CODE>, after calling <CODE>remember</CODE> itself. That
+isn't the same: <CODE>open</CODE> does nothing at all if the section is already open, so a link from one
+diary entry to another wouldn't have been remembered. Calling <CODE>remember</CODE> first means every
+<CODE>go</CODE> can be undone with Back. The Diary does the same when a click in the month or year view
+turns to a week (<CODE>this.org.remember()</CODE> in its <CODE>click</CODE>).<P>
+
+<A NAME=S7></A>
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Run <CODE>!Org14</CODE> and open the sample <CODE>Diary</CODE>. In the Diary, <I>Lunch with
+Bob</I> on Saturday 26 September has a chain: it's linked to Bob's card.<P>
+<DT><DD>2  Click the chain and choose <I>Address: Jones, Bob</I> from the menu. The Address section opens at
+the letter J with Bob chosen. Click the Back button: you're back at the week.<P>
+<DT><DD>3  Click the <I>Notepad</I> tab and click <I>Holiday ideas</I>. Type a line, and press Ctrl-D to add
+today's date. Press Backspace: it deletes a letter, not the page.<P>
+<DT><DD>4  Drag <I>Gift ideas</I> to the top of the contents: it becomes page 1.<P>
+<DT><DD>5  Click <I>Gift ideas</I>, click the Link button, then click the <I>To do</I> tab and click <I>Buy a
+birthday card for Bob</I>. Both now have chains.<P>
+</DL>
+
+<A NAME=S8></A>
+<H2>Summary</H2>
+<UL>
+<LI>The desktop's <CODE>TextArea</CODE> gives a window several lines of editable text; show it while its page
+is shown and remove it when it isn't.<P>
+<LI>A handler added with <CODE>{ first: true }</CODE> runs before the others, and returning
+<CODE>true</CODE> stops the rest: that's how a TextArea takes its keys before the window does.<P>
+<LI>Whatever adds handlers to a window must take them away again when it's finished.<P>
+<LI>Ctrl with a letter gives the letter's place in the alphabet: Ctrl-D is 4.<P>
+<LI><CODE>splice(i, n, ...items)</CODE> takes items out of an array and puts others in, in place.<P>
+<LI>A link is two refs; <CODE>sameRef</CODE> compares them, and a deleted entry's links are forgotten.<P>
+<LI>A history of <CODE>{ i, s }</CODE> - which section, and where it was - makes a Back button; each section
+says where it is with <CODE>state</CODE> and goes back with <CODE>restore</CODE>.<P>
+</UL>
+
+<A NAME=S9></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Make Ctrl-T type the time (hours and minutes) in the Notepad, as the Style Guide asks.<P>
+<DT><DD>2  Show each page's first line under its title on the contents page, in the faint colour, when the
+title is short enough to leave room.<P>
+<DT><DD>3  Add a <I>Forward</I> button that undoes Back.<P>
+<DT><DD>4  A link has no direction. Add a way to remove one: an extra item at the foot of the chain's menu,
+<I>Unlink from ...</I> for each linked entry.<P>
+</DL>
+
+<A NAME=S10></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  In the Notepad's <CODE>key</CODE>:
+<PRE>
+if (!this.area?.focused) return false;
+if (ev.code === 4) {
+  this.area.insert(D.format(D.today(), '%ZDY %MO %CE%YR'));
+} else if (ev.code === 20) {                         // Ctrl-T
+  this.area.insert(formatTime('%24:%MI', new Date()));
+} else return false;
+return true;
+</PRE>
+(importing <CODE>formatTime</CODE> from <CODE>'riscos'</CODE>).<P>
+<DT><DD>2  In <CODE>draw</CODE>, for each page, after its title: measure the title in its font, and if
+there are at least 60 pixels left, put the first line after it:
+<PRE>
+g.font = '13px Homerton';
+const w = g.measureText(`${i + 1}  ${p.title}`).width;
+const room = L.w - 28 - w - 16;
+if (room &gt;= 60) {
+  const first = (p.text ?? '').split('\n')[0];
+  text(g, first, L.x + 14 + w + 16, y + ROW / 2, room,
+    'italic 11px Homerton', FAINT);
+}
+</PRE>
+<DT><DD>3  Keep a second list, <CODE>this.ahead</CODE>. <CODE>back</CODE> pushes where you are onto it before
+going back; a new <CODE>forward</CODE> pops from it, pushes onto <CODE>history</CODE> and opens that place
+(the same three lines as <CODE>back</CODE>); and <CODE>remember</CODE> empties <CODE>ahead</CODE>, since
+going somewhere new starts a new path.<P>
+<DT><DD>4  Give <CODE>Links</CODE> an <CODE>unlink(a, b)</CODE> that removes the link whose ends are
+<CODE>a</CODE> and <CODE>b</CODE> either way round, and in <CODE>linkMenu</CODE> add, after the entries:
+<PRE>
+...org.doc.links.of(ref).map((r) =&gt; ({
+  text: `Unlink from ${describe(r)}`.slice(0, 40),
+  action: () =&gt; org.doc.links.unlink(ref, r) }))
+</PRE>
+where <CODE>describe(r)</CODE> is the text the entries' items use. To separate the two groups, give the
+<I>last</I> of the entries' items <CODE>dotted: true</CODE>: a menu item's dotted line is drawn below it.<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap15.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap13.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

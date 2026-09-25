@@ -33,7 +33,8 @@ else is carried forward unchanged, so a reader can compare one stage with the ne
 
 ## The toolkit (the reader builds it; each module is final once introduced)
 
-Kept small (each under ~150 lines, lines ≤ 70 characters), with a test in each app's `Check` program.
+Kept small (under ~100 lines where possible; the biggest, `ListView`, `Form` and `Formats`, are about 190-210), lines ≤ 70
+characters, with a test in each app's `Check` program.
 
 | module | chapter | what |
 |---|---|---|
@@ -45,6 +46,7 @@ Kept small (each under ~150 lines, lines ≤ 70 characters), with a test in each
 | `Formats` | 8 | vCard 3.0 (reads 2.1) and CSV (RFC 4180) read/write (iCalendar added in 16 as `ICal`) |
 | `Dates` | 11 | day keys `YYYY-MM-DD`, adding days, weeks starting Monday, month grids, formatting |
 | `Binder` | 10 | the ring-binder spread: pages, coloured section tabs, turned-up corners |
+| `ICal` | 16 | iCalendar (RFC 5545) VEVENT / VTODO read/write, with DTSTAMP, UNTIL or COUNT, VALARM; folds as `Formats` |
 
 The desktop provides the rest (windows, icons, menus, panes, `saveAs`, `dragSave`, `choices`, `TextArea`,
 `formatTime`, …: see `src/core/jsrun.js` and `docs/CORE_API.md` §11a).

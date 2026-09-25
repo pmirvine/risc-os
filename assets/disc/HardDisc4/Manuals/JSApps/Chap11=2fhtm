@@ -1,0 +1,629 @@
+<HTML><HEAD><TITLE>11  Dates and a calendar</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap12.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap10.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>11  Dates and a calendar</H1>
+<HR>
+An organiser is mostly about days, so this chapter is about dates: why JavaScript's own dates are awkward,
+a small module that makes them easy, and the diary's four ways of looking at time - a week, a day, a month
+and a year. It also gives the binder a toolbox down its left-hand side, as Lotus Organizer had. The program is
+<CODE>!Org11</CODE>.<P>
+
+<A NAME=S1></A>
+<H2>JavaScript's dates</H2>
+JavaScript has a <CODE>Date</CODE> object, and you met it in the first book's Clock. A Date is a moment in
+time - a particular millisecond - and it can tell you the year, month, day and hour of that moment:<P>
+<PRE>
+const d = new Date(2026, 8, 25, 12);   // 25 September 2026, noon
+d.getFullYear()    // 2026
+d.getMonth()       // 8 - September!
+d.getDate()        // 25
+d.getDay()         // 5 - Friday (Sunday is 0)
+</PRE>
+Three things about it catch everyone out.<P>
+<DL>
+<DT>Months count from 0
+<DD><CODE>new Date(2026, 8, 25)</CODE> is in September, not August: January is month 0. Days of the month
+count from 1 as usual, and <CODE>getDay</CODE> counts the days of the week from Sunday, 0.<P>
+<DT>It's a moment, not a day
+<DD>An appointment is on a <I>day</I>, but a Date is an exact moment, which falls on different days in
+different places. Store "25 September" as a Date and it can come back as the 24th on a computer set to
+another time zone.<P>
+<DT>Summer time
+<DD>Twice a year the clocks change, and a day is 23 or 25 hours long. Add 24 hours to midnight on the day the
+clocks go back and you land at 11 at night on the same day, not the next day.<P>
+</DL>
+The organiser avoids all three by hardly using Date at all. A day is written as a <I>key</I>, a string like
+<CODE>'2026-09-25'</CODE>: year, month (from 1!) and day, always with two digits for the month and day. Keys
+have two lovely properties: comparing them as text compares them as dates (<CODE>'2026-09-25' &lt;
+'2026-10-01'</CODE> is true), and they go into files, and into Maps, exactly as they are. Only one module,
+<CODE>Dates</CODE>, turns keys into Dates, and it always makes them at midday - far enough from midnight that
+no clock change can move them to another day.<P>
+
+<A NAME=S2></A>
+<H2>The Dates module, tests first</H2>
+Date arithmetic is easy to get nearly right, and the mistakes show up months later ("why is my appointment on
+the wrong day in March?"). So this module was written <I>tests first</I>: before writing
+<CODE>addMonths</CODE>, write down what it should do, including the awkward cases, in <CODE>Check</CODE>:<P>
+<PRE>
+export default function start() {
+  // ------------------------------------------------ dates
+  check('add days over a month', D.addDays('2026-09-29', 3),
+    '2026-10-02');
+  check('add a month to 31 January', D.addMonths('2026-01-31', 1),
+    '2026-02-28');
+  check('leap years', D.addYears('2024-02-29', 1), '2025-02-28');
+  check('a Friday', D.weekday('2026-09-25'), 4);
+  check('its Monday', D.startOfWeek('2026-09-25'), '2026-09-21');
+  check('days between', D.daysBetween('2026-12-25', '2027-01-01'), 7);
+  check('a month grid starts on a Monday',
+    D.monthGrid(2026, 9)[0][0], '2026-08-31');
+  check('reading dates', [D.parseDay('25/9/2026'),
+    D.parseDay('2026-09-25'), D.parseDay('31/02/2026')],
+  ['2026-09-25', '2026-09-25', null]);
+  check('reading times', [D.parseTime('9:30'), D.parseTime('0930'),
+    D.parseTime('25:00')], ['09:30', '09:30', null]);
+</PRE>
+Each line is a question with its answer worked out by hand: three days after 29 September is 2 October; a
+month after 31 January is 28 February, because there is no 31 February; a year after 29 February 2024 is 28
+February 2025; 25 September 2026 is a Friday (4, because the module counts the week from Monday, 0); its week
+starts on Monday the 21st; the Christmas to New Year gap is 7 days; the calendar for September 2026 starts on
+Monday 31 August. Run <CODE>Check</CODE> before the module exists and every test fails; write the module
+until they all pass; and whenever you change it later, run it again to see that nothing broke.<P>
+This <CODE>Check</CODE> is a new one: chapter 10's tests of <CODE>Collection</CODE> aren't in it, because it
+tests what this chapter adds - the dates and the diary. <CODE>Collection</CODE> hasn't changed, and the diary
+test below uses it, so nothing is lost this time; but in your own programs, keep the old tests when you add
+new ones. They are what notices when a change breaks something that used to work.<P>
+<P><CENTER><IMG SRC="PICS/O11Check" WIDTH=586 HEIGHT=349></CENTER>
+<CODE>Check</CODE> itself has one new trick. Two objects with the same fields in a different order are the
+same entry, but <CODE>JSON.stringify</CODE> writes them differently. So <CODE>check</CODE> gives
+<CODE>stringify</CODE> a second argument, a <I>replacer</I> function it calls for every value it writes:<P>
+<PRE>
+// the same, whatever order their fields are in
+const sorted = (k, v) =&gt; (v &amp;&amp; typeof v === 'object' &amp;&amp;
+  !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort())
+  : v);
+function check(what, got, want) {
+  const ok = JSON.stringify(got, sorted) ===
+    JSON.stringify(want, sorted);
+  if (!ok) failed++;
+  print(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+  if (!ok) print(`     got ${JSON.stringify(got)}`);
+}
+</PRE>
+For an object (not an array), the replacer returns a copy with its fields in alphabetical order:
+<CODE>Object.entries</CODE> makes it a list of <CODE>[name, value]</CODE> pairs, <CODE>sort</CODE> sorts
+them by name, and <CODE>Object.fromEntries</CODE> turns the pairs back into an object.<P>
+Here is the module. Its header lists what it offers:<P>
+<PRE>
+// Dates - days written as keys: '2026-09-25'. Keys sort and compare
+// as text ('2026-09-25' &lt; '2026-10-01'), make good names for things
+// in a Map, and go into files as they are. JavaScript's Date is used
+// only inside this module, and always at midday, so that changes to
+// and from summer time never move a day.
+//
+//   today()                       '2026-09-25'
+//   keyOf(date) / dateOf(key)     a Date to a key and back
+//   addDays(key, n), addMonths(key, n), addYears(key, n)
+//   daysBetween(a, b)             whole days from a to b
+//   weekday(key)                  0 Monday ... 6 Sunday
+//   startOfWeek(key)              the Monday of its week
+//   monthGrid(year, month)        6 weeks x 7 keys (Mondays first)
+//   daysInMonth(year, month)      (months are 1-12 here)
+//   parseDay('25/12/2026')        a key, or null ('2026-12-25' too)
+//   parseTime('9:30')             '09:30', or null
+//   format(key, '%W3 %ZDY %M3')   the desktop's formatTime codes
+</PRE>
+Converting between keys and Dates is where the month is adjusted by one (and <CODE>addMonths</CODE>, below,
+which does its sums with Date's months):<P>
+<PRE>
+const two = (n) =&gt; String(n).padStart(2, '0');
+
+export function keyOf(d) {
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-` +
+    two(d.getDate());
+}
+export function dateOf(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d, 12);            // midday
+}
+export const today = () =&gt; keyOf(new Date());
+</PRE>
+<CODE>two</CODE> writes a number with two digits: <CODE>padStart</CODE> (the first book's chapter 5) pads
+text at the start with spaces, or with its second argument if there is one - <CODE>String(9).padStart(2, '0')</CODE> is
+<CODE>'09'</CODE>. <CODE>dateOf</CODE> uses array destructuring (chapter 3) on <CODE>key.split('-').map(Number)</CODE>, which
+turns <CODE>'2026-09-25'</CODE> into <CODE>[2026, 9, 25]</CODE>, and makes the Date at 12 o'clock.<P>
+Adding days lets Date do the hard part:<P>
+<PRE>
+export function addDays(key, n) {
+  const d = dateOf(key);
+  d.setDate(d.getDate() + n);
+  return keyOf(d);
+}
+export function addMonths(key, n) {
+  const [y, m, d] = key.split('-').map(Number);
+  const first = new Date(y, m - 1 + n, 1, 12);
+  // 31 January + 1 month is 28 (or 29) February, not 3 March
+  const day = Math.min(d, daysInMonth(first.getFullYear(),
+    first.getMonth() + 1));
+  first.setDate(day);
+  return keyOf(first);
+}
+export const addYears = (key, n) =&gt; addMonths(key, 12 * n);
+
+export function daysBetween(a, b) {
+  return Math.round((dateOf(b) - dateOf(a)) / 86400000);
+}
+export const weekday = (key) =&gt; (dateOf(key).getDay() + 6) % 7;
+export const startOfWeek = (key) =&gt; addDays(key, -weekday(key));
+export function daysInMonth(year, month) {
+  return new Date(year, month, 0).getDate();   // day 0 of the next
+}
+</PRE>
+<CODE>setDate</CODE> accepts days beyond the end of the month and carries them over: setting 29 September's
+day to 32 gives 2 October. <CODE>addMonths</CODE> can't simply do the same with months, because 31 January plus
+one month would carry over to 3 March; so it finds the first of the new month, then chooses the day, no later
+than the month's last. <CODE>daysInMonth</CODE> uses the same carrying the other way: day 0 of a month is the
+last day of the month before, so <CODE>new Date(year, month, 0)</CODE> - with <CODE>month</CODE> counted from
+1, which Date takes as the <I>next</I> month - is the last day of the month we want.<P>
+Subtracting two Dates gives the milliseconds between them, and a day is 86,400,000 milliseconds;
+<CODE>Math.round</CODE> absorbs the extra or missing hour of a clock change. <CODE>weekday</CODE> turns Date's
+Sunday-first count into a Monday-first one - <CODE>(day + 6) % 7</CODE> - because in Britain, as in the
+organiser, the week starts on Monday.<P>
+A calendar page needs every day it shows, in weeks, including the ends of the months before and after:<P>
+<PRE>
+/** The weeks of a month for a calendar: 6 rows of 7 keys. */
+export function monthGrid(year, month) {
+  let day = startOfWeek(`${year}-${two(month)}-01`);
+  const weeks = [];
+  for (let w = 0; w &lt; 6; w++) {
+    const week = [];
+    for (let i = 0; i &lt; 7; i++) {
+      week.push(day);
+      day = addDays(day, 1);
+    }
+    weeks.push(week);
+  }
+  return weeks;
+}
+</PRE>
+Six weeks is always enough: a month of 31 days that starts on a Sunday spans six rows.<P>
+Reading dates and times typed into the dialogue boxes is done here too, so every part of the organiser
+accepts the same forms:<P>
+<PRE>
+/** '25/12/2026' or '2026-12-25' as a key; null if it isn't a date. */
+export function parseDay(text) {
+  const s = String(text).trim();
+  let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s);
+  const [y, mo, d] = m ? [+m[3], +m[2], +m[1]]
+    : (m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s))
+      ? [+m[1], +m[2], +m[3]] : [];
+  if (!y || mo &lt; 1 || mo &gt; 12 || d &lt; 1) return null;
+  if (d &gt; daysInMonth(y, mo)) return null;     // 31/02/2026 ...
+  return `${y}-${two(mo)}-${two(d)}`;
+}
+/** '9:30', '09.30' or '0930' as '09:30'; null if it isn't a time. */
+export function parseTime(text) {
+  const m = /^(\d{1,2})[:.]?(\d\d)$/.exec(String(text).trim());
+  if (!m || +m[1] &gt; 23 || +m[2] &gt; 59) return null;
+  return `${two(+m[1])}:${m[2]}`;
+}
+
+export const format = (key, fmt) =&gt; formatTime(fmt, dateOf(key));
+</PRE>
+<CODE>parseDay</CODE> tries <CODE>25/12/2026</CODE> first and, if that fails, <CODE>2026-12-25</CODE>. The
+second try is inside the condition, as <CODE>(m = /.../.exec(s))</CODE>: as in chapter 3, an assignment is
+also an expression, whose value is what was assigned, so the condition is true if the second pattern
+matched. Either way it ends
+with the year, month and day, checks them - there is no 31 February - and returns a key, or
+<CODE>null</CODE>.<P>
+<CODE>format</CODE> hands the desktop's <CODE>formatTime</CODE> (appendix C) a Date made from the key, so
+<CODE>D.format(key, '%WE %ZDY %MO')</CODE> is <I>Friday 25 September</I>.<P>
+
+<A NAME=S3></A>
+<H2>The diary</H2>
+An appointment is an entry with a date (a key), a time (<CODE>'09:30'</CODE>, or <CODE>''</CODE> for all
+day), an end time and what it is. The diary gets a class of its own, <CODE>Diary</CODE>, which extends
+<CODE>Collection</CODE> with one method, to find the appointments in a range of days, and the
+<CODE>Document</CODE> now makes its <CODE>diary</CODE> a <CODE>Diary</CODE> instead of a plain
+<CODE>Collection</CODE>:<P>
+<PRE>
+// ------------------------------------------------ the diary
+// An appointment: { date, time ('09:30' or ''), end, text }.
+
+export class Diary extends Collection {
+  /** [{ appt, date }] for the days from..to, in time order. */
+  occurrences(from, to) {
+    const out = [];
+    for (const a of this.all()) {
+      for (const date of datesOf(a, from, to)) {
+        out.push({ appt: a, date });
+      }
+    }
+    return out.sort((x, y) =&gt; (x.date + (x.appt.time || ''))
+      .localeCompare(y.date + (y.appt.time || '')));
+  }
+}
+/** The days an appointment falls on between from and to. */
+function datesOf(a, from, to) {
+  return a.date &gt;= from &amp;&amp; a.date &lt;= to ? [a.date] : [];
+}
+</PRE>
+It asks <CODE>datesOf</CODE> which days in the range each appointment falls on, and sorts the lot by date and
+time together - both are strings that sort correctly, so joining them sorts by date first, then time. For
+now an appointment falls on just its own date; in the next chapter appointments can repeat, and only
+<CODE>datesOf</CODE> will change.<P>
+The Diary section replaces the first blank in the list of sections:<P>
+<PRE>
+// DiaryPage - the diary: appointments, shown a week across the two
+// pages (or a day, a month or the year: the view buttons).
+import { Section } from './Paper';
+import * as V from './DiaryViews';
+import * as D from './Toolkit/Dates';
+
+export class DiaryPage extends Section {
+  constructor(org) {
+    super(org, { id: 'diary', name: 'Diary', colour: '#6fa8dc',
+      views: ['Week', 'Day', 'Month', 'Year'],
+      newHelp: 'add an appointment' });
+    this.day = D.today();                  // the day we're looking at
+    this.days = [];                        // where each day is drawn
+  }
+
+  draw(g, L, R) {
+    this.days = [];
+    V[this.view.toLowerCase()](this, g, L, R);
+  }
+  /** Remember where a day is drawn (for clicks and drops). */
+  dayBox(key, x, y, w, h) { this.days.push({ key, x, y, w, h }); }
+  dayAt(x, y) {
+    return this.days.find((d) =&gt; x &gt;= d.x &amp;&amp; x &lt; d.x + d.w &amp;&amp;
+      y &gt;= d.y &amp;&amp; y &lt; d.y + d.h)?.key ?? null;
+  }
+
+  /** Everything to show on a day: its appointments, as
+   * { kind, text, ref, time }. */
+  itemsOn(key) {
+    const doc = this.doc;
+    return [
+      ...doc.diary.occurrences(key, key).map(({ appt }) =&gt; ({
+        kind: 'appt', time: appt.time, text: appt.text,
+        ref: { id: appt.id, date: key } })),
+    ];
+  }
+</PRE>
+Its <CODE>views</CODE> are <CODE>Week</CODE>, <CODE>Day</CODE>, <CODE>Month</CODE> and <CODE>Year</CODE>;
+<CODE>this.day</CODE> is the day being looked at, and every view shows the page that contains it. While
+drawing, a view records each day's rectangle with <CODE>dayBox</CODE>, as it records entries with
+<CODE>box</CODE>, so <CODE>dayAt</CODE> can say which day is at a point. <CODE>itemsOn</CODE> collects what
+to show on a day - for now its appointments; later, to-dos, anniversaries and planner bars will join them -
+as small objects with a <CODE>kind</CODE>, a time, a text and a ref.<P>
+<CODE>draw</CODE> is one line: <CODE>V[this.view.toLowerCase()](this, g, L, R)</CODE>. At the top of the
+file, <CODE>import * as V from './DiaryViews'</CODE> imports <I>everything</I> the module
+<CODE>DiaryViews</CODE> exports, as the properties of one object, <CODE>V</CODE>. Its four drawing functions
+are <CODE>V.week</CODE>, <CODE>V.day</CODE>, <CODE>V.month</CODE> and <CODE>V.year</CODE>, so
+<CODE>V['week']</CODE> is the week function: the view's name chooses the function.
+(<CODE>import * as D from './Toolkit/Dates'</CODE>, at the top of every module that uses dates, works the same
+way, and makes calls such as <CODE>D.addDays</CODE> easy to spot.)<P>
+
+<A NAME=S4></A>
+<H2>Four ways to see the time</H2>
+All four views are in <CODE>DiaryViews</CODE>:<P>
+<PRE>
+// DiaryViews - drawing the diary's four views on the binder's pages.
+// Each is a function (diary, g, left, right) that draws, and records
+// where the days (diary.dayBox) and the entries (diary.box) are.
+//   week   Monday to Wednesday on the left, Thursday to Sunday right
+//   day    the day on the left, the next day on the right, by hour
+//   month  this month on the left, the next one on the right
+//   year   January to June on the left, July to December right
+import { heading, text, INK, FAINT, RULE } from './Paper';
+import * as D from './Toolkit/Dates';
+
+// an entry's line in a day's box; room left for the page corners
+const LINE = 16, FOOT = 24;
+
+</PRE>
+The week view is the diary's everyday view, as it was in Lotus Organizer: Monday to Wednesday on the left
+page, Thursday to Sunday on the right, each day a box with its appointments in time order.<P>
+<PRE>
+/** One day's box in the week view: its date, then its entries. */
+function dayCell(diary, g, key, x, y, w, h) {
+  const today = key === D.today(), chosen = key === diary.day;
+  g.fillStyle = chosen ? '#eef4fb' : '#ffffff';
+  g.fillRect(x, y, w, h);
+  g.strokeStyle = RULE;
+  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+  text(g, D.format(key, '%WE %ZDY %MO'), x + 6, y + 11, w - 12,
+    `bold 12px Homerton`, today ? '#c00000' : INK);
+  diary.dayBox(key, x, y, w, h);
+  let ly = y + 22;
+  for (const it of diary.itemsOn(key)) {
+    if (ly + LINE &gt; y + h) {                    // no more room
+      text(g, '...', x + w - 20, y + h - 8, 16);
+      break;
+    }
+    item(diary, g, it, x + 4, ly, w - 8);
+    ly += LINE;
+  }
+}
+/** One entry: its time and what it is. */
+function item(diary, g, it, x, y, w) {
+  const mid = y + LINE / 2;
+  text(g, it.time || '', x, mid, 40, 'bold 12px Homerton');
+  text(g, it.text, x + 42, mid, w - 42, '12px Homerton');
+  diary.box(x, y, w, LINE, it.ref);
+}
+
+export function week(diary, g, L, R) {
+  const mon = D.startOfWeek(diary.day);
+  const sun = D.addDays(mon, 6);
+  heading(g, L, 'Diary', diary.colour, D.format(mon, '%MO %CE%YR'));
+  heading(g, R, `Week of ${D.format(mon, '%ZDY %M3')}`, diary.colour,
+    `to ${D.format(sun, '%ZDY %M3')}`);
+  const top = L.y + 44, x0 = 10;
+  const hL = Math.floor((L.h - 54 - FOOT) / 3);    // 3 days left
+  const hR = Math.floor((R.h - 54 - FOOT) / 4);    // 4 on the right
+  for (let i = 0; i &lt; 3; i++) {
+    dayCell(diary, g, D.addDays(mon, i), L.x + x0, top + i * hL,
+      L.w - 2 * x0, hL - 4);
+  }
+  for (let i = 0; i &lt; 4; i++) {
+    dayCell(diary, g, D.addDays(mon, 3 + i), R.x + x0, top + i * hR,
+      R.w - 2 * x0 - 16, hR - 4);
+  }
+}
+</PRE>
+<CODE>dayCell</CODE> draws one day: its date, red if it's today, shaded if it's the chosen day, then as many
+entries as fit, with <CODE>...</CODE> if some don't. <CODE>week</CODE> finds the Monday of the chosen day's
+week and draws seven days from it. The days share the page's height less <CODE>FOOT</CODE>, a strip left
+empty at the bottom so that no day's box covers the turned-up page corners.<P>
+<P><CENTER><IMG SRC="PICS/O11Week" WIDTH=910 HEIGHT=569></CENTER>
+The month view shows this month on the left and the next on the right, as calendars:<P>
+<PRE>
+/** A month's calendar in a page: 6 weeks of 7 days. */
+function monthPage(diary, g, p, first) {
+  const [y, m] = first.split('-').map(Number);
+  heading(g, p, D.format(first, '%MO'), diary.colour, String(y));
+  const top = p.y + 64, cw = (p.w - 20) / 7;
+  const ch = (p.h - 80 - FOOT) / 6;
+  ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].forEach((n, i) =&gt;
+    text(g, n, p.x + 12 + i * cw, top - 12, cw,
+      'bold 11px Homerton'));
+  D.monthGrid(y, m).forEach((wk, r) =&gt; wk.forEach((key, c) =&gt; {
+    const x = p.x + 10 + c * cw, yy = top + r * ch;
+    const inMonth = +key.slice(5, 7) === m;
+    g.strokeStyle = RULE;
+    g.strokeRect(x + 0.5, yy + 0.5, cw - 1, ch - 1);
+    text(g, String(+key.slice(8)), x + 4, yy + 9, cw - 6,
+      key === D.today() ? 'bold 12px Homerton' : '11px Homerton',
+      inMonth ? (key === D.today() ? '#c00000' : INK) : FAINT);
+    if (!inMonth) return;
+    diary.dayBox(key, x, yy, cw, ch);
+    // as many entries as there's room for, each cut short to fit
+    const items = diary.itemsOn(key);
+    const room = Math.floor((ch - 20) / 11);          // lines of 11
+    items.slice(0, room).forEach((it, k) =&gt; {
+      const ty = yy + 24 + k * 11;
+      text(g, it.text, x + 8, ty, cw - 11, '9px Homerton',
+        it.kind === 'appt' ? INK : FAINT);
+    });
+    if (items.length &gt; room) {
+      text(g, `+${items.length - room}`, x + cw - 16, yy + 9, 14,
+        '9px Homerton', FAINT);
+    }
+  }));
+}
+export function month(diary, g, L, R) {
+  const first = `${diary.day.slice(0, 7)}-01`;
+  monthPage(diary, g, L, first);
+  monthPage(diary, g, R, D.addMonths(first, 1));
+}
+</PRE>
+The height of a row, <CODE>ch</CODE>, leaves room for the corners with <CODE>FOOT</CODE> in the same way.
+<CODE>monthGrid</CODE> gives the days; days that belong to the months before and after are shown faintly,
+aren't recorded with <CODE>dayBox</CODE>, and show no entries. Each day shows as many of its entries as its
+box has room for, in a small size, and <CODE>+2</CODE> if two more didn't fit.<P>
+<P><CENTER><IMG SRC="PICS/O11Month" WIDTH=910 HEIGHT=569></CENTER>
+The year view is six small months on each page, with days that have entries in bold blue, so you can see at a
+glance where the busy weeks are. Clicking a day in the month or year view goes to that day's week. The day view
+shows two days, by the hour from 8:00 to 20:00, with anything without a time at the top.<P>
+<P><CENTER><IMG SRC="PICS/O11Year" WIDTH=910 HEIGHT=569></CENTER>
+
+<A NAME=S5></A>
+<H2>Getting about</H2>
+The page corners, and Page Up and Page Down, turn the diary's pages. How far depends on the view:<P>
+<PRE>
+  // ------------------------------------------------ turning pages
+  turn(dir) {
+    const d = this.day;
+    this.day = this.view === 'Week' ? D.addDays(d, 7 * dir)
+      : this.view === 'Day' ? D.addDays(d, 2 * dir)
+      : this.view === 'Month' ? D.addMonths(d, 2 * dir)
+      : D.addYears(d, dir);
+  }
+  today() { this.day = D.today(); }
+  key(ev) {                         // the arrow keys move a day/week
+    const step = { 0x18C: -1, 0x18D: 1,             // left, right
+      0x18F: -7, 0x18E: 7 }[ev.code];               // up, down
+    if (!step || this.view !== 'Week') return false;
+    this.day = D.addDays(this.day, step);
+    this.org.refresh();
+    return true;
+  }
+</PRE>
+<CODE>turn</CODE> is a chain of conditional operators, one view per line: a week at a time in the week view,
+two days in the day view (the two pages), two months in the month view and a year in the year view.<P>
+In the week view the arrow keys move the chosen day: left and right a day, up and down a week. The step comes
+from an object used as a table: <CODE>{ 0x18C: -1, 0x18D: 1, 0x18F: -7, 0x18E: 7 }[ev.code]</CODE> looks up
+the key's code in it, giving the number of days, or <CODE>undefined</CODE> for any other key. Home goes back to
+today: the window's <CODE>key</CODE> method calls <CODE>section.today()</CODE> for it (the Address section's
+<CODE>today</CODE> does nothing), and the window's menu gains <I>View</I>, listing the section's views, and
+<I>Today</I>.<P>
+
+<A NAME=S6></A>
+<H2>A toolbox</H2>
+The toolbox down the left of the window is chapter 5's <CODE>Toolbar</CODE>, with the option we didn't use
+then: <CODE>side: 'left'</CODE> makes a column of buttons, like Draw's toolbox, instead of a row. The binder
+moves right to make room: <CODE>SIDE</CODE>, which was 0, is now the toolbox's width:<P>
+<PRE>
+const W = 900, H = 540, SIDE = 64;         // the toolbox's width
+</PRE>
+<PRE>
+    this.binder = new Binder({ x: SIDE, y: 0, w: W - SIDE, h: H,
+      colour: this.app.prefs.colour,
+      tabs: this.sections.map((s) =&gt; ({ name: s.name,
+        colour: s.colour })) });
+    this.bar = new Toolbar(w, {
+      side: 'left', width: SIDE - 8,
+      menu: (ev) =&gt; this.openMenu(ev), buttons: tools.buttons(this),
+    });
+</PRE>
+The toolbox and the dates are the first toolkit modules the organiser adds since chapter 10, so
+<CODE>!Org11</CODE>'s <CODE>Toolkit.list</CODE> gains two lines, <CODE>Toolbar</CODE> and
+<CODE>Dates</CODE>. What the buttons are and do is in a module of its own, <CODE>Tools</CODE>, which will grow
+in the next few chapters:<P>
+<PRE>
+// Tools - the toolbox down the left of the binder: Today (it shows
+// today's date: click it to go to today) and the view buttons, which
+// change with the section (the Diary's Week, Day, Month and Year).
+import * as D from './Toolkit/Dates';
+
+/** Today's date for the toolbox: '25 Sep'. */
+export const TODAY = () =&gt; D.format(D.today(), '%ZDY %M3');
+
+const VIEWS = 4;                          // room for 4 view buttons
+export function buttons(org) {
+  const view = (i) =&gt; ({ name: 'view' + i, text: '', h: 26,
+    action: () =&gt; { const s = org.section;
+      s.setView(s.views[i]); org.refresh(); } });
+  return [
+    { name: 'today', text: TODAY(), h: 30,
+      action: () =&gt; { org.section.today(); org.refresh(); },
+      help: 'Today\'s date. Click SELECT to go to today.' },
+    { gap: true },
+    ...Array.from({ length: VIEWS }, (_, i) =&gt; view(i)),
+  ];
+}
+/** The toolbox follows the section: its view buttons. */
+export function updateToolbox(org) {
+  const s = org.section, bar = org.bar;
+  for (let i = 0; i &lt; VIEWS; i++) {
+    bar.hide('view' + i, i &gt;= s.views.length);
+    if (i &lt; s.views.length) {
+      bar.setText('view' + i, s.views[i]);
+      const on = s.views[i] === s.view;
+      bar.icon('view' + i).setState({ selected: on });
+    }
+  }
+  bar.setText('today', TODAY());
+}
+</PRE>
+The first button shows today's date and goes to it. The rest are for the views - but each section has
+different views (the Diary has four, the Address section none), so there are four spare buttons, which
+<CODE>updateToolbox</CODE> relabels, hides and selects to match the section. <CODE>Array.from({ length: VIEWS },
+(_, i) =&gt; view(i))</CODE> makes an array of four buttons: <CODE>Array.from</CODE> (chapter 8), given an
+object with a <CODE>length</CODE>, makes an array of that length, calling the function for each item with its
+index (the first argument, the item, is
+<CODE>undefined</CODE> here, so it's called <CODE>_</CODE>, a name that says "not used"). The spread
+<CODE>...</CODE> puts the four into the list of buttons.<P>
+The window calls <CODE>updateToolbox</CODE> from <CODE>refresh</CODE>, which it calls whenever the section
+or its view changes:<P>
+<PRE>
+  /** The toolbox follows the section; then redraw. */
+  refresh() {
+    tools.updateToolbox(this);
+    this.redraw();
+  }
+</PRE>
+<CODE>import * as tools from './Tools'</CODE> brings in the module as one object, so the calls read
+<CODE>tools.updateToolbox(this)</CODE>.<P>
+
+<A NAME=S7></A>
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Run <CODE>Check</CODE> in <CODE>!Org11</CODE>: all the dates tests pass.<P>
+<DT><DD>2  Open <CODE>Diary</CODE> in <CODE>!Org11</CODE>. The diary opens at this week.<P>
+<DT><DD>3  Click in the diary first, so its window has the input focus (the keys go to the window with the
+caret), then press the arrow keys to move the chosen day, and Page Up and Page Down to go a week at a time.
+Press Home to come back.<P>
+<DT><DD>4  Click <I>Month</I> and <I>Year</I> in the toolbox, and click a day to go to its week.<P>
+<DT><DD>5  Open the Address section: the view buttons go.<P>
+</DL>
+
+<A NAME=S8></A>
+<H2>Summary</H2>
+<UL>
+<LI><CODE>Date</CODE> counts months from 0 and is a moment, not a day; clock changes and time zones can move
+it to another day.<P>
+<LI>Keep days as keys, <CODE>'2026-09-25'</CODE>: they sort and compare as text and save as they are. Keep
+Date inside one module, at midday.<P>
+<LI>Write tests first for fiddly code: the awkward cases (month ends, leap years) become part of the
+program.<P>
+<LI><CODE>JSON.stringify(value, replacer)</CODE> lets a function change what is written;
+<CODE>Object.fromEntries</CODE> makes an object from <CODE>[name, value]</CODE> pairs.<P>
+<LI><CODE>import * as X from './Module'</CODE> imports all a module's exports as one object;
+<CODE>X[name]</CODE> chooses one by name.<P>
+<LI>An object can be a lookup table: <CODE>{ a: 1, b: 2 }[key]</CODE>.<P>
+<LI><CODE>Array.from({ length: n }, (_, i) =&gt; ...)</CODE> makes an array of n items.<P>
+<LI>The Toolbar makes a Draw-style toolbox with <CODE>side: 'left'</CODE>; buttons can be relabelled,
+hidden and selected as the program's state changes.<P>
+</UL>
+
+<A NAME=S9></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Add tests to <CODE>Check</CODE> for <CODE>daysInMonth</CODE>: February 2024 (a leap year) has 29
+days, February 2026 has 28.<P>
+<DT><DD>2  Shade Saturdays and Sundays in the month view, a little darker than the other days.<P>
+<DT><DD>3  In the month view, make the left and right arrow keys move a month at a time.<P>
+<DT><DD>4  Show the week's number in the week view's heading. (A common rule: week 1 is the week with the
+year's first Thursday in it, so a week's number is that of its Thursday.)<P>
+</DL>
+
+<A NAME=S10></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Before the diary tests:
+<PRE>
+check('February in leap years',
+  [D.daysInMonth(2024, 2), D.daysInMonth(2026, 2)], [29, 28]);
+</PRE>
+<DT><DD>2  In <CODE>monthPage</CODE>, just after the day's box is drawn with <CODE>strokeRect</CODE> (so the
+shading goes under the day's number):
+<PRE>
+if (inMonth &amp;&amp; D.weekday(key) &gt;= 5) {
+  g.fillStyle = 'rgba(0,0,0,0.05)';
+  g.fillRect(x + 1, yy + 1, cw - 2, ch - 2);
+}
+</PRE>
+<CODE>rgba</CODE> gives a colour with <I>transparency</I>: the fourth number, from 0 to 1, is how much it
+covers what's underneath, so this darkens the paper slightly.<P>
+<DT><DD>3  In <CODE>DiaryPage</CODE>'s <CODE>key</CODE>, before the week view's test:
+<PRE>
+if (this.view === 'Month' &amp;&amp;
+  (ev.code === 0x18C || ev.code === 0x18D)) {
+  this.day = D.addMonths(this.day,
+    ev.code === 0x18C ? -1 : 1);
+  this.org.refresh();
+  return true;
+}
+</PRE>
+<DT><DD>4  Add to <CODE>Dates</CODE>:
+<PRE>
+/** The week's number: that of its Thursday. */
+export function weekNumber(key) {
+  const thu = addDays(startOfWeek(key), 3);
+  const jan1 = `${thu.slice(0, 4)}-01-01`;
+  return Math.floor(daysBetween(jan1, thu) / 7) + 1;
+}
+</PRE>
+and in <CODE>week</CODE> give the left page's heading <CODE>`Week ${D.weekNumber(mon)}`</CODE> as its last
+argument, in place of the month and year.<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap12.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap10.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

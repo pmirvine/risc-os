@@ -131,7 +131,11 @@ unchanged (for example the original !SciCalc).
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
 applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
 this way, for people who have done a little programming before; its example programs, including a Snake game, are
-in `$.Examples.JS`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
+in `$.Examples.JS`. A second book, *Writing Desktop Applications in JavaScript* (`$.Manuals.JSApps`), follows on:
+readers build !Contacts, an address book with a Draw-style toolbar, vCard/CSV import and export, undo and Choices,
+and then !Organiser, a personal organiser in the spirit of Lotus Organizer (a ring binder with Diary, To do,
+Address, Notepad, Planner and Anniversary sections, links, alarms, printing and iCalendar), with a small toolkit
+of their own; every chapter's stage is in `$.Examples.JSApps`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
 colouring for JavaScript, BBC BASIC, Obey and JSON, line numbers, smart indentation, completion of the desktop's
 programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list and
 a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
@@ -228,6 +232,7 @@ node --test tests/sound tests/basic   # no browser
 node --test tests/core            # and tests/draw tests/edit tests/paint tests/acc tests/div tests/tw tests/bw tests/tierb
 node --test tests/integration     # cross-application flows + a long random ("monkey") test
 node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example programs
+node --test tests/jsapps          # the second tutorial's applications (!Contacts, !Organiser and their stages)
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds
 ```

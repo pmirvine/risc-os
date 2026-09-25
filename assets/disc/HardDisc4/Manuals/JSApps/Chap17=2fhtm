@@ -1,0 +1,476 @@
+<HTML><HEAD><TITLE>17  Do it yourself: a text area</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="AppA.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap16.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>17  Do it yourself: a text area</H1>
+<HR>
+The Organiser's notepad pages are typed into with the desktop's <CODE>TextArea</CODE>: several lines of text in
+a window, with a caret, word wrap and scrolling. The Wimp itself only has writable icons, which hold one line.
+This last chapter builds a text area of your own, <CODE>TextBox</CODE>, and puts it in the Notepad in place
+of the desktop's. You won't need to use it - the desktop's is better - but by the end you'll know how such a
+thing works, which is the best way to use one well, and the way to build other things the desktop doesn't
+have.<P>
+<P><CENTER><IMG SRC="PICS/O17TextBox" WIDTH=910 HEIGHT=569></CENTER>
+The example is <CODE>!Org17</CODE>: the finished organiser with one module added, <CODE>TextBox</CODE>, and two
+lines changed in <CODE>NotesPage</CODE>.<P>
+
+<A NAME=S1></A>
+<H2>What a text area has to do</H2>
+Plan it as the Organiser was planned, by what it remembers and what happens:<P>
+<DL>
+<DT>It remembers
+<DD>the text (one string, with <CODE>'\n'</CODE> between lines), where the caret is (an index into the
+text), and how far it has scrolled.<P>
+<DT>It draws
+<DD>the text, broken into lines that fit its width, on a canvas of its own in the window; and it shows the
+Wimp's caret at the right place.<P>
+<DT>It responds to
+<DD>a click inside it (the caret goes there), and keys while it has the caret: characters are typed in,
+Backspace takes one away, Return starts a new line, the arrow keys move about.<P>
+</DL>
+Everything else - the window, its other clicks and keys - belongs to the program, so the text area must take
+only what's meant for it.<P>
+
+<A NAME=S2></A>
+<H2>The text box and its canvas</H2>
+<PRE>
+// TextBox - several lines of text you can type into, drawn by the
+// program itself: a small version of the desktop's TextArea. It has
+// its own canvas in the window's work area, wraps words to its width,
+// scrolls to keep the caret in view, and uses the Wimp's caret.
+//
+//   const box = new TextBox(w, { x, y, w, h, text, font })
+//   box.text                 the text ('\n' between lines)
+//   box.on('change', ({ text }) =&gt; ...)   after each edit
+//   box.focus(), box.focused, box.insert(s), box.remove()
+import { wimp } from 'riscos';
+import { Emitter } from './Toolkit/Emitter';
+
+const PAD = 4, LINE = 18;
+
+export class TextBox extends Emitter {
+  constructor(win, { x, y, w, h, text = '',
+    font = '14px Homerton' }) {
+    super();
+    Object.assign(this, { win, x, y, w, h, font });
+    this.text = text;
+    this.caret = text.length;          // where typing goes
+    this.scroll = 0;                   // how far it has scrolled
+    this.focused = false;
+    const c = this.canvas = document.createElement('canvas');
+    c.width = w; c.height = h;
+    Object.assign(c.style, { position: 'absolute', left: `${x}px`,
+      top: `${y}px`, pointerEvents: 'none' });
+    win.work.appendChild(c);
+    this.g = c.getContext('2d');
+    // our handlers go first: the window only sees what we don't use
+    this.offs = [
+      win.on('click', (ev) =&gt; this.click(ev), { first: true }),
+      win.on('key', (ev) =&gt; this.key(ev), { first: true }),
+      win.on('losecaret', () =&gt; { this.focused = false; }),
+    ];
+    this.draw();
+  }
+</PRE>
+The constructor keeps the box's position and size, and the text. <CODE>Object.assign(this, { win, x, y,
+... })</CODE> (chapter 2) sets several properties in one go.<P>
+The box draws on a canvas of its own. <CODE>document.createElement('canvas')</CODE> makes one, as it did for
+printing in chapter 16, but this time the canvas goes <I>into</I> the window: its <CODE>style</CODE> says
+where it's shown, at <CODE>x</CODE>, <CODE>y</CODE>, and <CODE>appendChild</CODE> puts it in
+<CODE>win.work</CODE>, the window's work area - the desktop's way of putting a canvas of your own in a
+window, where it scrolls with the work area. Its
+<CODE>pointerEvents: 'none'</CODE> lets clicks go through it to the window, which gives them to the program as
+usual.<P>
+
+<H3>First in the queue</H3>
+The window's events are the next problem. <CODE>win.on('click', ...)</CODE> adds a handler to the end of the
+window's list, and the handlers are called in turn until one returns <CODE>true</CODE>. The organiser's own
+click handler was added long before any text box was made, and it takes every click - so a text box added
+after it would never see one.<P>
+<CODE>{ first: true }</CODE>, which chapter 14 showed the desktop's TextArea using, puts a handler at the
+<I>front</I> of the list instead. The text box's handlers
+run first; they return <CODE>true</CODE> for a click inside the box, or a key while it has the caret, and
+<CODE>undefined</CODE> for anything else, which then goes on to the organiser's handlers as before.<P>
+<CODE>win.on</CODE> returns a function that takes the handler away again, and the box keeps them all in
+<CODE>offs</CODE>. That matters: a notepad page's box is thrown away when you turn to another page, and a
+box that left its handlers behind would go on taking clicks and keys for a text that isn't there any more.<P>
+<PRE>
+  focus() { this.focused = true; this.draw(); }
+  remove() {
+    for (const off of this.offs) off();
+    this.canvas.remove();
+    this.focused = false;
+  }
+</PRE>
+
+<A NAME=S3></A>
+<H2>Lines that fit</H2>
+The text is one string; the box shows it as lines. <CODE>lines()</CODE> works them out, as a list of where
+each line starts and ends in the text:<P>
+<PRE>
+  /** The lines as drawn: [{ start, end }] indexes into the text. */
+  lines() {
+    const g = this.g, t = this.text, max = this.w - 2 * PAD;
+    g.font = this.font;
+    const out = [];
+    let start = 0;
+    while (start &lt;= t.length) {
+      let end = t.indexOf('\n', start);
+      if (end &lt; 0) end = t.length;
+      // too wide? break at the last space that fits
+      while (g.measureText(t.slice(start, end)).width &gt; max) {
+        const sp = t.lastIndexOf(' ', end - 1);
+        end = sp &gt; start ? sp : end - 1;
+      }
+      out.push({ start, end });
+      start = t[end] === '\n' || t[end] === ' ' ? end + 1 : end;
+      if (end &gt;= t.length) break;
+    }
+    return out.length ? out : [{ start: 0, end: 0 }];
+  }
+</PRE>
+It takes the text up to the next <CODE>'\n'</CODE>. If that's too wide - <CODE>measureText</CODE> says how
+wide text is in the canvas's font - it looks for the last space before the end and tries again, and so on
+until the line fits. (A single word too long for the box is cut wherever it fits.) The next line starts after
+the newline or space it broke at.<P>
+This is called whenever the box is drawn or a key is pressed. Measuring the text each time is slow in
+principle, but a notepad page is small, and it keeps the program simple: the lines are never out of date.<P>
+<CODE>where()</CODE> finds the caret's line and how far across it the caret is, in pixels:<P>
+<PRE>
+  /** The line the caret is on, and how far along it is. */
+  where(lines = this.lines()) {
+    let n = lines.findLastIndex((l) =&gt; l.start &lt;= this.caret);
+    if (n &lt; 0) n = 0;
+    const l = lines[n];
+    this.g.font = this.font;
+    const x = this.g.measureText(this.text.slice(l.start,
+      this.caret)).width;
+    return { n, x };
+  }
+</PRE>
+<CODE>findLastIndex</CODE> is to <CODE>findIndex</CODE> what <CODE>findLast</CODE> (chapter 10) is to
+<CODE>find</CODE>: it looks from the end of the array, and gives the index of the first item it comes to that
+passes the test - here the last line starting at or before the caret, or -1 if there isn't one.
+(Appendix A.)<P>
+
+<A NAME=S4></A>
+<H2>Drawing, and the caret</H2>
+<PRE>
+  draw() {
+    const g = this.g, lines = this.lines();
+    const { n, x } = this.where(lines);
+    // scroll so the caret's line can be seen
+    if (n * LINE &lt; this.scroll) this.scroll = n * LINE;
+    if ((n + 1) * LINE &gt; this.scroll + this.h - 2 * PAD) {
+      this.scroll = (n + 1) * LINE - this.h + 2 * PAD;
+    }
+    g.fillStyle = '#ffffff';
+    g.fillRect(0, 0, this.w, this.h);
+    g.strokeStyle = '#999999';
+    g.strokeRect(0.5, 0.5, this.w - 1, this.h - 1);
+    g.fillStyle = '#000000';
+    g.font = this.font;
+    g.textBaseline = 'middle';
+    lines.forEach((l, i) =&gt; {
+      const y = PAD + i * LINE - this.scroll + LINE / 2;
+      g.fillText(this.text.slice(l.start, l.end), PAD, y);
+    });
+    if (this.focused) {
+      wimp.setCaret(this.win, null, -1, { x: this.x + PAD + x,
+        y: this.y + PAD + n * LINE - this.scroll, h: LINE });
+    }
+  }
+</PRE>
+First the box makes sure the caret can be seen: if its line is above the top, or below the bottom, of what's
+showing, <CODE>scroll</CODE> changes so it isn't. Every line is then drawn <CODE>scroll</CODE> pixels higher
+than it would be; the ones outside the box simply don't show on the canvas.<P>
+The caret is the Wimp's own. <CODE>wimp.setCaret(win, null, -1, { x, y, h })</CODE> gives the window the input
+focus with no writable icon, and draws the red caret at <CODE>x</CODE>, <CODE>y</CODE> in the work area,
+<CODE>h</CODE> pixels high. It's the same call !JsEdit and !Edit use. Because the window then has the input
+focus, the keys come to it - and so to the box's key handler, first.<P>
+<CODE>focus()</CODE> marks the box as having the caret and draws it. When the caret goes to another window,
+the window gets a <CODE>'losecaret'</CODE> event, and the box notes that it no longer has it.<P>
+
+<A NAME=S5></A>
+<H2>Clicks</H2>
+<PRE>
+  /** A click inside the box puts the caret there. */
+  click(ev) {
+    const inside = ev.x &gt;= this.x &amp;&amp; ev.x &lt; this.x + this.w &amp;&amp;
+      ev.y &gt;= this.y &amp;&amp; ev.y &lt; this.y + this.h;
+    if (!inside) { this.focused = false; return undefined; }
+    const lines = this.lines();
+    const n = Math.min(lines.length - 1, Math.max(0,
+      Math.floor((ev.y - this.y - PAD + this.scroll) / LINE)));
+    this.caret = this.nearest(lines[n], ev.x - this.x - PAD);
+    this.focus();
+    return true;
+  }
+  /** The place in a line nearest to x. */
+  nearest(l, x) {
+    this.g.font = this.font;
+    for (let i = l.start; i &lt; l.end; i++) {
+      const w = this.g.measureText(this.text.slice(l.start, i + 1))
+        .width;
+      if (w &gt; x) return i;
+    }
+    return l.end;
+  }
+</PRE>
+A click outside the box isn't ours: <CODE>focused</CODE> becomes false and the handler returns
+<CODE>undefined</CODE>, so the organiser gets the click. A click inside works out which line was clicked, from
+the height of a line and how far it has scrolled, then <CODE>nearest</CODE> measures the line's text a character at a
+time to find the character the pointer is over, and puts the caret before it. (So it always rounds to the
+left: clicking on the right half of a letter puts the caret before it, not after. Comparing with the middle
+of each character instead would put it on the nearer side.)<P>
+
+<A NAME=S6></A>
+<H2>Keys</H2>
+<PRE>
+  /** Put s in at the caret (or take n characters away before it). */
+  insert(s, n = 0) {
+    const at = this.caret - n;
+    this.text = this.text.slice(0, at) + s +
+      this.text.slice(this.caret);
+    this.caret = at + s.length;
+    this.draw();
+    this.emit('change', { text: this.text });
+  }
+
+  key(ev) {
+    if (!this.focused) return undefined;
+    const lines = this.lines(), { n, x } = this.where(lines);
+    const upDown = (d) =&gt; {
+      const l = lines[n + d];
+      if (l) this.caret = this.nearest(l, x);
+    };
+    switch (ev.code) {
+      case 0x18C: this.caret = Math.max(0, this.caret - 1); break;
+      case 0x18D:
+        this.caret = Math.min(this.text.length, this.caret + 1);
+        break;
+      case 0x18F: upDown(-1); break;                        // up
+      case 0x18E: upDown(1); break;                         // down
+      case 8: case 127: if (this.caret) this.insert('', 1);
+        return true;
+      case 13: this.insert('\n'); return true;             // Return
+      default:
+        if (ev.code &gt;= 32 &amp;&amp; ev.code &lt; 256 &amp;&amp; !ev.ctrl) {
+          this.insert(String.fromCharCode(ev.code));
+          return true;
+        }
+        return undefined;                  // not ours: F3 and so on
+    }
+    this.draw();
+    return true;
+  }
+</PRE>
+All editing goes through <CODE>insert(s, n)</CODE>: take <CODE>n</CODE> characters away before the caret,
+put <CODE>s</CODE> in, move the caret after it, redraw, and emit <CODE>'change'</CODE>. Typing is
+<CODE>insert('a')</CODE>, Backspace is <CODE>insert('', 1)</CODE> and Return is <CODE>insert('\n')</CODE>.
+Having only one way to change the text keeps it easy to get right.<P>
+Left and Right move the caret one character. Up and Down move to the line above or below, as near as possible
+to the same distance across - that's why <CODE>where()</CODE> works out <CODE>x</CODE>.<P>
+Most important is the last line of <CODE>key</CODE>'s <CODE>default</CODE>: any key the box doesn't use
+returns <CODE>undefined</CODE>. F3, Page Up, Ctrl-D and the rest then go on to the organiser, so saving,
+turning pages and inserting the date still work while you're typing a note. (A text area that took every key
+would be a trap.)<P>
+
+<A NAME=S7></A>
+<H2>Swapping it in</H2>
+The Notepad changes in just two places: it imports <CODE>TextBox</CODE> from the application's directory
+instead of <CODE>TextArea</CODE> from the desktop -<P>
+<PRE>
+import { TextBox } from './TextBox';
+</PRE>
+- and makes one where it used to make a <CODE>TextArea</CODE>:<P>
+<PRE>
+  // ------------------------------------------------ the text box
+  /** Where the page's text goes on the right-hand page. */
+  get rect() {
+    const R = this.org.pages[1];
+    return { x: R.x + 12, y: R.y + TOP - 4, w: R.w - 24,
+      h: R.h - TOP - 36 };
+  }
+  show() {
+    const p = this.doc.notes.get(this.page);
+    if (!p || this.area) return;
+    this.area = new TextBox(this.org.win, { ...this.rect,
+      text: p.text, font: '14px Homerton' });
+    this.area.on('change', ({ text }) =&gt; {
+      this.doc.notes.update(p.id, { text });
+    });
+  }
+  hide() { this.area?.remove(); this.area = null; }
+  open(id) {
+    this.hide();
+    this.page = id;
+    this.show();
+    this.area?.focus();
+    this.org.redraw();
+  }
+</PRE>
+Everything else is the same, because <CODE>TextBox</CODE> has the same shape as <CODE>TextArea</CODE>:
+<CODE>new TextBox(win, { x, y, w, h, text })</CODE>, <CODE>.text</CODE>, <CODE>focus()</CODE>,
+<CODE>insert()</CODE>, <CODE>remove()</CODE> and the <CODE>'change'</CODE> event. Programming to a shape
+rather than to one particular module is what makes a swap like this possible - the Organiser's sections
+(chapter 10) work the same way.<P>
+Ctrl-D still works because of the box's <CODE>undefined</CODE>: Ctrl-D isn't a key the box types in, so it
+reaches the Notepad's own key handler, which inserts the date through the box:<P>
+<PRE>
+  // ------------------------------------------------ mouse and keys
+  // (the TextBox sees clicks in it and keys while it has the caret
+  // before the window does, so only the rest come here)
+  click(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) { this.open(box.ref.id); return true; }
+    return false;
+  }
+  key(ev) {
+    if (!this.area?.focused || ev.code !== 4) return false;  // Ctrl-D
+    this.area.insert(D.format(D.today(), '%ZDY %MO %CE%YR'));
+    return true;
+  }
+</PRE>
+
+<H3>Trying it</H3>
+<DL>
+<DT><DD>1  Double-click <CODE>!Org17</CODE> in <CODE>$.Examples.JSApps</CODE>, then open the sample file
+<CODE>Diary</CODE> with it.<P>
+<DT><DD>2  Click the Notepad tab, then a title on the contents page, and type. Type a long line to see it
+wrap, and enough lines to see it scroll.<P>
+<DT><DD>3  Press Ctrl-D, then F3: the date goes in, and the file is saved.<P>
+</DL>
+
+<A NAME=S8></A>
+<H2>What the desktop's TextArea does more</H2>
+<CODE>TextBox</CODE> is about 160 lines. The desktop's <CODE>TextArea</CODE>, part of the desktop's own
+source code (about 200 lines, and not on the disc), is built the same way, and adds:<P>
+<UL>
+<LI>More keys: Home and Ctrl-Left (start of the line), Ctrl-Right and Shift-Copy (end of the line),
+Ctrl-Up and Ctrl-Down (start and end of the text), Copy (delete to the right), and Ctrl-U (delete the
+line).<P>
+<LI>Pasted text: it listens for the window's <CODE>'paste'</CODE> event.<P>
+<LI>Moving between fields: Tab and Shift-Tab go to the next writable icon or text area in the window, as in
+any dialogue box, and the Wimp's Tab from a writable icon comes to it. For that, the text areas in a window
+are kept together (<CODE>win._textAreas</CODE>), and only one of them has the caret at a time.<P>
+<LI>Losing the caret properly: it also watches <CODE>'caretmove'</CODE>, when the caret moves to an icon in
+the same window.<P>
+<LI>A <CODE>readOnly</CODE> setting, drawn in grey.<P>
+<LI>Sharp text on high-resolution screens: its canvas has more pixels than its size on the screen.<P>
+</UL>
+None of these is hard; each is a few lines in the same pattern. That's the point of building one: nothing the
+desktop gives you is magic, and when it doesn't give you something - a list, a form, a toolbar, a binder,
+a text box - you now know how to make it.<P>
+
+<A NAME=S9></A>
+<H2>Where to go next</H2>
+You've finished both books. Some places to go from here:<P>
+<UL>
+<LI><B>Make something of your own.</B> The best next step. Start small, plan it the way chapter 1 did, and
+borrow freely from !Contacts and !Organiser - the toolkit modules were written to be reused.<P>
+<LI><B>The RISC OS Style Guide</B> (Acorn, 1993; RISC OS Open publish a revised edition) is the reference for
+how a RISC OS application should look and behave. Appendix D is a checklist drawn from it.<P>
+<LI><B>The RISC OS Programmer's Reference Manuals</B> describe everything the real Wimp does, in the terms of
+the original machine. This desktop's interface (appendix C, and book 1's appendix B) is modelled on it, so
+much of what they say applies.<P>
+<LI><B>JavaScript</B> goes much further than these books have taken it. A reference such as MDN Web Docs
+(developer.mozilla.org) describes every part of the language; the language features appendix A lists are a
+good place to start reading.<P>
+<LI><B>The desktop's own applications</B> are JavaScript too, in the desktop's source code rather than on
+the disc. Once you can read !Contacts, you can read them: !Edit, !Draw, !Paint and the rest show how bigger
+programs are put together.<P>
+</UL>
+Happy programming.<P>
+
+<A NAME=S10></A>
+<H2>Summary</H2>
+<UL>
+<LI>A text area remembers its text, a caret index and a scroll position, and works out everything else -
+the lines, the caret's position - when it needs it.<P>
+<LI>It draws on its own canvas inside the window's work area, and shows the Wimp's caret with
+<CODE>wimp.setCaret(win, null, -1, { x, y, h })</CODE>.<P>
+<LI>Its handlers are added with <CODE>{ first: true }</CODE> so they run before the program's, and return
+<CODE>undefined</CODE> for anything not meant for it. <CODE>remove()</CODE> takes them away again.<P>
+<LI>All changes go through one method, <CODE>insert</CODE>, which emits <CODE>'change'</CODE>.<P>
+<LI>Modules with the same shape can be swapped for one another.<P>
+</UL>
+
+<A NAME=S11></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Make Home move to the start of the caret's line, and Copy delete the character to the right of
+the caret.<P>
+<DT><DD>2  Add Ctrl-U, which deletes the whole of the caret's line.<P>
+<DT><DD>3  Let text be pasted into the box.<P>
+<DT><DD>4  Scroll the box with the mouse wheel. (Windows have a <CODE>'wheel'</CODE> event with
+<CODE>dy</CODE>, the amount to scroll; a handler returning <CODE>true</CODE> stops the window scrolling
+itself.)<P>
+<DT><DD>5  Harder: a selection. Shift with Left or Right extends a selection from the caret; typing replaces
+it; it's drawn with a coloured background.<P>
+</DL>
+
+<A NAME=S12></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Two more cases in <CODE>key</CODE>, before <CODE>default</CODE>:
+<PRE>
+case 30: this.caret = lines[n].start; break;            // Home
+case 0x18B:                                             // Copy
+  if (this.caret &lt; this.text.length) {
+    this.caret++;
+    this.insert('', 1);
+  }
+  return true;
+</PRE>
+Copy moves the caret past the character and deletes it as Backspace would.<P>
+<DT><DD>2  Find the line's ends in the text itself (not the wrapped lines), and cut it out:
+<PRE>
+case 21: {                                              // Ctrl-U
+  const t = this.text;
+  const a = t.lastIndexOf('\n', this.caret - 1) + 1;
+  let b = t.indexOf('\n', this.caret);
+  b = b &lt; 0 ? t.length : b + 1;
+  this.caret = b;
+  this.insert('', b - a);
+  return true;
+}
+</PRE>
+<DT><DD>3  Listen for the window's <CODE>'paste'</CODE> event, first, while the box has the caret, and keep
+its <CODE>off</CODE> with the others:
+<PRE>
+win.on('paste', (ev) =&gt; {
+  if (!this.focused) return undefined;
+  this.insert(ev.text.replace(/\r\n?/g, '\n'));
+  return true;
+}, { first: true }),
+</PRE>
+<DT><DD>4  The <CODE>'wheel'</CODE> event doesn't say where the pointer is, so take it while the box has the
+caret: in the constructor,
+<PRE>
+win.on('wheel', (ev) =&gt; {
+  if (!this.focused) return undefined;
+  const most = this.lines().length * LINE - this.h + 2 * PAD;
+  this.scroll = Math.max(0, Math.min(most,
+    this.scroll + ev.dy));
+  this.drawOnly();
+  return true;
+}, { first: true }),
+</PRE>
+- but <CODE>draw</CODE> scrolls back to the caret, so split it: a <CODE>drawOnly()</CODE> that draws at the
+current <CODE>scroll</CODE>, called by <CODE>draw</CODE> after it has made the caret visible. While the box
+doesn't have the caret, the wheel scrolls the window as usual.<P>
+<DT><DD>5  Keep a second index, <CODE>anchor</CODE>, where the selection started (or
+<CODE>null</CODE>). Shift-Left and Shift-Right (<CODE>0x19C</CODE> and <CODE>0x19D</CODE>) set
+<CODE>anchor</CODE> if it's <CODE>null</CODE> and move the caret; other movement clears it. In
+<CODE>draw</CODE>, fill the background from <CODE>Math.min(anchor, caret)</CODE> to
+<CODE>Math.max(anchor, caret)</CODE> on each line it covers, before drawing the text. In
+<CODE>insert</CODE>, if there's a selection, remove it first. It's the biggest of these exercises - the
+desktop's own !Edit has a whole module for selections.<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="AppA.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap16.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

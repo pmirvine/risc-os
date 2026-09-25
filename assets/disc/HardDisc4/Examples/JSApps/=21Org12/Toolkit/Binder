@@ -1,0 +1,129 @@
+// Binder - a ring binder drawn on a window's canvas: a leather cover,
+// two pages open side by side with the rings between them, coloured
+// section tabs down the right-hand edge, and turned-up corners at
+// the bottom of the pages to turn them.
+//
+//   const binder = new Binder({ x, y, w, h, colour: '#6b3f22',
+//     tabs: [{ name: 'Diary', colour: '#4f81bd' }, ...] });
+//   binder.left, binder.right   the pages: { x, y, w, h }
+//   binder.draw(g, current)     current: the open section's tab
+//   binder.hit(x, y)            what's there: { tab: 2 },
+//     { corner: -1 } (back) or { corner: 1 } (on), { page: 'left' },
+//     { page: 'right' } or null
+// It only draws and measures: what a click does is up to the program.
+
+const EDGE = 16, TAB = 84, RINGS = 34, CORNER = 30;
+const PAPER = '#fffdf2', LINE = '#d8d2bc';
+
+export class Binder {
+  constructor({ x = 0, y = 0, w, h, tabs, colour = '#6b3f22' }) {
+    Object.assign(this, { x, y, w, h, tabs, colour });
+    const pw = Math.floor((w - 2 * EDGE - TAB - RINGS) / 2);
+    const ph = h - 2 * EDGE;
+    this.left = { x: x + EDGE, y: y + EDGE, w: pw, h: ph };
+    this.right = { x: x + EDGE + pw + RINGS, y: y + EDGE, w: pw,
+      h: ph };
+    const th = Math.min(52, Math.floor((ph - 20) / tabs.length) - 4);
+    this.tabRects = tabs.map((t, i) => ({
+      x: this.right.x + pw - 2, y: this.right.y + 12 + i * (th + 4),
+      w: TAB - 8, h: th }));
+  }
+
+  draw(g, current) {
+    const { x, y, w, h, left, right } = this;
+    // the cover
+    g.fillStyle = this.colour;
+    g.fillRect(x, y, w, h);
+    g.strokeStyle = 'rgba(0,0,0,0.35)';
+    g.lineWidth = 2;
+    g.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    // the tabs, behind the pages except the current one
+    this.tabs.forEach((t, i) => {
+      if (i !== current) this.tab(g, i);
+    });
+    for (const p of [left, right]) this.page(g, p);
+    if (current != null) this.tab(g, current, true);
+    this.rings(g);
+    this.corner(g, left.x, left.y + left.h, -1);
+    this.corner(g, right.x + right.w, right.y + right.h, 1);
+  }
+  page(g, p) {
+    g.fillStyle = 'rgba(0,0,0,0.3)';          // a little shadow
+    g.fillRect(p.x + 3, p.y + 3, p.w, p.h);
+    g.fillStyle = PAPER;
+    g.fillRect(p.x, p.y, p.w, p.h);
+    g.strokeStyle = LINE;
+    g.lineWidth = 1;
+    g.strokeRect(p.x + 0.5, p.y + 0.5, p.w - 1, p.h - 1);
+  }
+  rings(g) {
+    const x = this.left.x + this.left.w, mid = x + RINGS / 2;
+    g.fillStyle = '#e8e4d8';                   // the binder's spine
+    g.fillRect(x, this.left.y + 6, RINGS, this.left.h - 12);
+    const n = 6, step = (this.left.h - 60) / (n - 1);
+    for (let i = 0; i < n; i++) {
+      const cy = this.left.y + 30 + i * step;
+      g.fillStyle = '#9a9a9a';
+      g.beginPath();
+      g.ellipse(mid, cy, RINGS / 2 + 4, 6, 0, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = '#dedede';                  // the shine on it
+      g.beginPath();
+      g.ellipse(mid, cy - 2, RINGS / 2, 2, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  tab(g, i, on = false) {
+    const r = this.tabRects[i], t = this.tabs[i];
+    g.fillStyle = t.colour;
+    g.fillRect(on ? r.x - 6 : r.x, r.y, on ? r.w + 6 : r.w, r.h);
+    g.strokeStyle = on ? '#000000' : 'rgba(0,0,0,0.4)';
+    g.lineWidth = 1;
+    g.strokeRect(r.x + 0.5, r.y + 0.5, r.w - 1, r.h - 1);
+    g.fillStyle = on ? '#000000' : '#202020';
+    g.font = `${on ? 'bold ' : ''}12px Homerton`;
+    g.textBaseline = 'middle';
+    g.fillText(t.name, r.x + 8, r.y + r.h / 2 + 1, r.w - 12);
+  }
+  /** A turned-up corner: dir -1 bottom left, 1 bottom right. */
+  corner(g, cx, cy, dir) {
+    const c = CORNER;
+    g.fillStyle = '#e4dcc0';
+    g.beginPath();
+    g.moveTo(cx - dir * c, cy);
+    g.lineTo(cx, cy - c);
+    g.lineTo(cx - dir * c, cy - c);
+    g.closePath();
+    g.fill();
+    g.strokeStyle = '#9d9477';
+    g.stroke();
+    g.fillStyle = this.colour;                 // the cover shows
+    g.beginPath();
+    g.moveTo(cx - dir * c, cy);
+    g.lineTo(cx, cy - c);
+    g.lineTo(cx, cy);
+    g.closePath();
+    g.fill();
+  }
+
+  hit(x, y) {
+    const inside = (r) => x >= r.x && x < r.x + r.w &&
+      y >= r.y && y < r.y + r.h;
+    const tab = this.tabRects.findIndex(inside);
+    if (tab >= 0) return { tab };
+    const { left, right } = this;
+    if (inside(left)) {
+      if (x - left.x + (left.y + left.h - y) < CORNER) {
+        return { corner: -1 };
+      }
+      return { page: 'left' };
+    }
+    if (inside(right)) {
+      if (right.x + right.w - x + (right.y + right.h - y) < CORNER) {
+        return { corner: 1 };
+      }
+      return { page: 'right' };
+    }
+    return null;
+  }
+}

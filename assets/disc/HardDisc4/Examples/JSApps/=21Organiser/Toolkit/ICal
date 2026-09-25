@@ -1,0 +1,151 @@
+// ICal - swapping appointments and things to do with calendar
+// programs, in iCalendar (RFC 5545) files: a small part of it.
+//
+//   icalWrite({ events, todos }) -> text
+//   icalRead(text) -> { events, todos }
+// An event: { date: '2026-09-25', time: '09:30', end: '10:30',
+//   text, alarm (minutes before, or null), repeat:
+//   { every: 'day'|'week'|'month'|'year', count, until } or null }.
+// A to-do: { text, due, start, priority (1-3), done, category }.
+// Times have no time zone (they are the diary's own, local times).
+// A repeat is written with UNTIL if it has an end date, else COUNT
+// (never both). Lines are folded as vCard's are (Formats' fold).
+
+import { fold } from './Formats';
+
+// ---------------------------------------------------- writing
+const esc = (s) => String(s).replace(/\\/g, '\\\\')
+  .replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+const day = (key) => key.replace(/-/g, '');         // 20260925
+const at = (key, time) => `${day(key)}T${time.replace(':', '')}00`;
+const FREQ = { day: 'DAILY', week: 'WEEKLY', month: 'MONTHLY',
+  year: 'YEARLY' };
+// iCalendar's priorities are 1 (highest) to 9; ours are 1 to 3
+const PRIORITY = { 1: 1, 2: 5, 3: 9 };
+// when the file was made, in UTC, for DTSTAMP: 20260925T093000Z
+const stamp = () => new Date().toISOString()
+  .replace(/[-:]/g, '').replace(/\.\d+/, '');
+
+export function icalWrite({ events = [], todos = [] }) {
+  const out = ['BEGIN:VCALENDAR', 'VERSION:2.0',
+    'PRODID:-//RISC OS//Organiser//EN'];
+  let n = 0;
+  const uid = () => `${Date.now()}-${++n}@organiser`;
+  const now = stamp();
+  for (const e of events) {
+    out.push('BEGIN:VEVENT', `UID:${uid()}`, `DTSTAMP:${now}`);
+    if (e.time) {
+      out.push(`DTSTART:${at(e.date, e.time)}`);
+      if (e.end) out.push(`DTEND:${at(e.date, e.end)}`);
+    } else out.push(`DTSTART;VALUE=DATE:${day(e.date)}`);
+    out.push(`SUMMARY:${esc(e.text ?? '')}`);
+    if (e.repeat) {
+      const { every, count, until } = e.repeat;
+      let rule = `RRULE:FREQ=${FREQ[every]}`;
+      // UNTIL is a date, or a (local) date and time if DTSTART is
+      if (until) {
+        rule += `;UNTIL=${e.time ? at(until, '23:59') : day(until)}`;
+      } else if (count) rule += `;COUNT=${count}`;
+      out.push(rule);
+    }
+    if (e.alarm != null) {
+      out.push('BEGIN:VALARM', 'ACTION:DISPLAY',
+        `DESCRIPTION:${esc(e.text ?? '')}`,
+        `TRIGGER:-PT${e.alarm}M`, 'END:VALARM');
+    }
+    out.push('END:VEVENT');
+  }
+  for (const t of todos) {
+    out.push('BEGIN:VTODO', `UID:${uid()}`, `DTSTAMP:${now}`,
+      `SUMMARY:${esc(t.text ?? '')}`,
+      `PRIORITY:${PRIORITY[t.priority] ?? 0}`,
+      `STATUS:${t.done ? 'COMPLETED' : 'NEEDS-ACTION'}`);
+    if (t.start) out.push(`DTSTART;VALUE=DATE:${day(t.start)}`);
+    if (t.due) out.push(`DUE;VALUE=DATE:${day(t.due)}`);
+    if (t.category) out.push(`CATEGORIES:${esc(t.category)}`);
+    out.push('END:VTODO');
+  }
+  out.push('END:VCALENDAR');
+  return out.map(fold).join('\r\n') + '\r\n';
+}
+
+// ---------------------------------------------------- reading
+const unesc = (s) => s.replace(/\\(.)/g,
+  (_, c) => (c === 'n' || c === 'N' ? '\n' : c));
+/** '20260925' or '20260925T093000' as ['2026-09-25', '09:30']. */
+function when(v) {
+  const m = /^(\d{4})(\d\d)(\d\d)(?:T(\d\d)(\d\d))?/.exec(v);
+  if (!m) return [null, null];
+  return [`${m[1]}-${m[2]}-${m[3]}`, m[4] ? `${m[4]}:${m[5]}` : null];
+}
+const EVERY = Object.fromEntries(Object.entries(FREQ)
+  .map(([k, v]) => [v, k]));
+
+export function icalRead(text) {
+  // unfold the lines, then split each into name, parameters, value
+  const lines = text.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+  const events = [], todos = [];
+  let item = null, inAlarm = false;
+  for (const line of lines) {
+    const m = /^([A-Z-]+)((?:;[^:]*)?):(.*)$/i.exec(line);
+    if (!m) continue;
+    const [, name, , value] = m, N = name.toUpperCase();
+    if (N === 'BEGIN' && /^VALARM$/i.test(value)) inAlarm = true;
+    else if (N === 'END' && /^VALARM$/i.test(value)) inAlarm = false;
+    else if (N === 'BEGIN' && /^V(EVENT|TODO)$/i.test(value)) {
+      item = { kind: value.toUpperCase(), text: '' };
+    } else if (N === 'END' && item &&
+      /^V(EVENT|TODO)$/i.test(value)) {
+      const { kind, date, time, end, ...rest } = item;
+      if (kind === 'VEVENT') {
+        events.push({ date, time, end, ...rest });
+      }
+      else todos.push(rest);
+      item = null;
+    } else if (item && inAlarm && N === 'TRIGGER') {
+      item.alarm = minutesBefore(value);
+    } else if (item && !inAlarm) readField(item, N, value);
+  }
+  return { events: events.filter((e) => e.date), todos };
+}
+
+/**
+ * An alarm's TRIGGER as minutes before the start: -PT15M is 15,
+ * -P1DT2H is 1560, -P1W is 10080. At or after the start (PT0M, or a
+ * trigger at a fixed time) counts as 0: the diary can't say more.
+ */
+const DURATION = new RegExp('^([+-])?P(?:(\\d+)W)?(?:(\\d+)D)?' +
+  '(?:T(?:(\\d+)H)?(?:(\\d+)M)?(?:(\\d+)S)?)?$');
+function minutesBefore(v) {
+  const m = DURATION.exec(v);
+  if (!m || m[1] !== '-') return 0;
+  const [, , w = 0, d = 0, h = 0, mi = 0, s = 0] = m;
+  return Math.round(((+w * 7 + +d) * 24 + +h) * 60 + +mi + s / 60);
+}
+
+function readField(item, name, value) {
+  switch (name) {
+    case 'SUMMARY': item.text = unesc(value); break;
+    case 'DTSTART': [item.date, item.time] = when(value);
+      if (item.kind === 'VTODO') item.start = item.date;
+      break;
+    case 'DTEND': item.end = when(value)[1]; break;
+    case 'DUE': item.due = when(value)[0]; break;
+    case 'CATEGORIES': item.category = unesc(value); break;
+    case 'PRIORITY': {
+      const p = +value;
+      item.priority = !p ? 2 : p <= 3 ? 1 : p <= 6 ? 2 : 3;
+      break;
+    }
+    case 'STATUS': item.done = /COMPLETED/i.test(value); break;
+    case 'RRULE': {
+      const r = Object.fromEntries(value.split(';')
+        .map((p) => p.split('=')));
+      item.repeat = { every: EVERY[r.FREQ] ?? 'week' };
+      if (r.COUNT) item.repeat.count = +r.COUNT;
+      if (r.UNTIL) item.repeat.until = when(r.UNTIL)[0];
+      break;
+    }
+    default: break;
+  }
+}

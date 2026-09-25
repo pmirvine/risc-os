@@ -1,0 +1,738 @@
+<HTML><HEAD><TITLE>12  Appointments and anniversaries</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap13.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap11.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>12  Appointments and anniversaries</H1>
+<HR>
+The diary can show the time four ways, but so far there is nothing in it you didn't put there with a text
+editor. This chapter makes it a real diary. You'll add appointments with a dialogue box, change them, make them
+repeat every week or every month, choose them, drag them to another day and throw them into the wastebasket.
+The Anniversary section gets its pages too, and each birthday also appears in the diary on its day, so it
+needn't be written twice. The program is <CODE>!Org12</CODE>.<P>
+It's the biggest step of Part Two, because choosing, deleting and dragging are written once, for every
+section: the To do list, the notepad and the planner will get them for nothing in the chapters that follow.<P>
+
+<A NAME=S1></A>
+<H2>Appointments</H2>
+An appointment is a plain object, like a contact. The comment at the start of the diary's part of
+<CODE>Store</CODE> says what's in one:<P>
+<PRE>
+// ------------------------------------------------ the diary
+// An appointment: { date, time ('09:30' or ''), end, text, alarm
+// (minutes before, or null), repeat: { every: 'day'|'week'|'month'|
+// 'year', count, until } or null }.
+const STEP = { day: D.addDays, week: (k, n) =&gt; D.addDays(k, 7 * n),
+  month: D.addMonths, year: D.addYears };
+</PRE>
+<CODE>date</CODE> is a key, as in chapter 11, and <CODE>time</CODE> and <CODE>end</CODE> are kept the same
+way: <CODE>'09:30'</CODE>, always with two digits for the hour, so that times sort as text too. An
+appointment with no time (a day out, say) has an empty one. <CODE>alarm</CODE> is how many minutes before the
+appointment to be reminded; nothing looks at it yet (that's chapter 16). <CODE>repeat</CODE> is
+<CODE>null</CODE> for an appointment that happens once. <CODE>STEP</CODE> comes into it later in the
+chapter.<P>
+
+<A NAME=S2></A>
+<H2>The Appointment box</H2>
+Appointments are made and changed in a dialogue box built with chapter 3's <CODE>Form</CODE>. The boxes for
+all the organiser's entries live in one module, <CODE>Entries</CODE>, which knows nothing about windows or
+binders: each function takes an entry, shows the box, and resolves to the new fields, or <CODE>null</CODE> if
+you chose Cancel.<P>
+<PRE>
+// Entries - the dialogue boxes for the organiser's entries, made with
+// the toolkit's Form. Each resolves to the entry's new fields, or
+// null if Cancel was chosen.
+//
+//   await editAppointment(task, appt)   { date, time, end, text,
+//                                          alarm, repeat }
+//   await editAnniversary(task, a)      { date, text }
+import { Form } from './Toolkit/Form';
+import * as D from './Toolkit/Dates';
+
+// dates are shown as 25/09/2026, and kept as 2026-09-25
+export const showDay = (key) =&gt; (key ? D.format(key, '%DY/%MN/%CE%YR')
+  : '');
+const forms = new Map();                 // each box is made once
+function form(task, name, spec) {
+  if (!forms.has(name)) forms.set(name, new Form(task, spec));
+  return forms.get(name);
+}
+
+// ------------------------------------------------ appointments
+const ALARMS = [['None', null], ['At the time', 0], ['5 minutes', 5],
+  ['15 minutes', 15], ['1 hour', 60], ['1 day', 1440]];
+const REPEATS = [['Never', null], ['Every day', 'day'],
+  ['Every week', 'week'], ['Every month', 'month'],
+  ['Every year', 'year']];
+const nameOf = (list, v) =&gt; list.find(([, x]) =&gt; x === v)?.[0];
+const valueOf = (list, s) =&gt; list.find(([n]) =&gt; n === s)?.[1] ?? null;
+
+</PRE>
+The diary keeps <CODE>'2026-09-25'</CODE>, but people type 25/09/2026, so <CODE>showDay</CODE> turns a key
+into what the box shows, and <CODE>D.parseDay</CODE> (chapter 11) turns what was typed back into a key.<P>
+Chapter 3's address book made its one box when it was first needed, with <CODE>form ??=
+makeForm(task)</CODE>. The organiser will have several boxes, so <CODE>form</CODE> keeps them in a
+<CODE>Map</CODE> by name and makes each the first time it is asked for. After that the same box is used again,
+already built.<P>
+The Alarm and Repeat fields are pop-up menus, and each choice on them stands for a value in the entry:
+"15 minutes" is 15, "Every week" is <CODE>'week'</CODE>. <CODE>ALARMS</CODE> and <CODE>REPEATS</CODE> are
+lists of <CODE>[name, value]</CODE> pairs, and two little functions look things up in them either way round.
+<CODE>valueOf</CODE> finds the pair whose first item is the name chosen, and gives its second. In
+<CODE>nameOf</CODE>, the function's argument is <CODE>[, x]</CODE>: a pair, with its first item skipped (the
+comma with nothing before it, as in chapter 8's <CODE>[last, first, , title]</CODE>), and its second called
+<CODE>x</CODE>. <CODE>?.[0]</CODE> then takes the name from the pair found - or gives <CODE>undefined</CODE>,
+rather than an error, if there wasn't one. (<CODE>?.</CODE> works before square brackets just as it does
+before a property name.)<P>
+<PRE>
+export async function editAppointment(task, a) {
+  const f = form(task, 'appt', {
+    title: 'Appointment', buttons: ['Cancel', 'OK'],
+    help: 'Type the appointment\'s details and click OK.',
+    fields: [
+      { name: 'date', label: 'Date', width: 120,
+        help: 'The day, as 25/09/2026.' },
+      { name: 'time', label: 'Time', width: 70,
+        help: 'When it starts, as 9:30 (or leave it empty).' },
+      { name: 'end', label: 'Until', width: 70 },
+      { name: 'text', label: 'What', lines: 2 },
+      { name: 'alarm', label: 'Alarm', width: 130,
+        choices: ALARMS.map(([n]) =&gt; n),
+        help: 'How long before it the alarm goes off.' },
+      { name: 'repeat', label: 'Repeat', width: 130,
+        choices: REPEATS.map(([n]) =&gt; n) },
+      { name: 'count', label: 'Times', width: 60, allowed: '0-9',
+        help: 'How many times it happens (empty: for ever).' },
+    ],
+    check: (v) =&gt; {
+      if (!D.parseDay(v.date)) return { field: 'date',
+        message: 'Give the date as 25/09/2026' };
+      for (const f of ['time', 'end']) {
+        if (v[f] &amp;&amp; !D.parseTime(v[f])) return { field: f,
+          message: 'Give the time as 9:30' };
+      }
+      if (!v.text.trim()) return { field: 'text',
+        message: 'What is the appointment?' };
+      return null;
+    },
+  });
+  const v = await f.ask({ ...a, date: showDay(a.date),
+    alarm: nameOf(ALARMS, a.alarm ?? null),
+    repeat: nameOf(REPEATS, a.repeat?.every ?? null),
+    count: a.repeat?.count ?? '' });
+  if (!v) return null;
+  const every = valueOf(REPEATS, v.repeat);
+  return {
+    date: D.parseDay(v.date), text: v.text.trim(),
+    time: D.parseTime(v.time) ?? '', end: D.parseTime(v.end) ?? '',
+    alarm: valueOf(ALARMS, v.alarm),
+    repeat: every ? { every, count: +v.count || null } : null,
+  };
+}
+</PRE>
+The fields are chapter 3's; <CODE>width</CODE> makes the date and time fields narrower than usual. <CODE>check</CODE> is called when you click OK; returning an object keeps the box open,
+with the message given and the caret in the field that's wrong. It uses <CODE>parseDay</CODE> and
+<CODE>parseTime</CODE> only to see whether they work: <CODE>31/02/2026</CODE> is refused, and so is
+<CODE>25:00</CODE>.<P>
+<CODE>ask</CODE> is given a copy of the appointment with each value turned into what the box shows: the
+date as 23/09/2026, the alarm and repeat as the names on their menus, and the count of repeats (or nothing).
+When the box closes, the same happens the other way. <CODE>+v.count || null</CODE> turns the Times field into a
+number, and an empty field (which <CODE>+</CODE> makes 0) into <CODE>null</CODE>, meaning "for ever".<P>
+<P><CENTER><IMG SRC="PICS/O12Appointment" WIDTH=910 HEIGHT=569></CENTER>
+
+<A NAME=S3></A>
+<H2>Adding and changing</H2>
+The diary page decides what a double-click means:<P>
+<PRE>
+  async double(ev) {
+    if (this.view === 'Year') return;        // (its week opens)
+    this.opening?.();                        // not a click: stay here
+    const box = this.at(ev.x, ev.y);
+    if (box?.ref.section === 'diary') return this.edit(box.ref);
+    if (box) return this.org.go(box.ref);        // someone else's
+    const day = this.dayAt(ev.x, ev.y);
+    if (day) await this.add(day);
+  }
+</PRE>
+On an appointment, it changes that appointment. On something that belongs to another section - an
+anniversary, later in this chapter - it goes to that section, with the window's <CODE>go</CODE>:<P>
+<PRE>
+  /** Show an entry, in whichever section it is. */
+  go(ref) {
+    const i = this.sections.findIndex((s) =&gt; s.id === ref.section);
+    this.open(i);
+    this.section.go(ref);
+    this.selected = ref;
+    this.refresh();
+  }
+</PRE>
+which opens the entry's section, asks the section to show the entry (each section's own <CODE>go</CODE>)
+and chooses it. On an empty part of a day it adds an appointment on that day. (Not in the Year view, whose days are too
+small to aim at; clicking one there goes to its week, as in chapter 11.)<P>
+There's a catch in the Month view. In chapter 11 a click on a day there went straight to its week - but a
+double-click starts with a click, so by the time the double-click arrived the page would already be showing
+the week, and the appointment would be added on the wrong day. So a click in the Month or Year view now waits
+before going to the week:<P>
+<PRE>
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    const day = this.dayAt(ev.x, ev.y);
+    if (!day) return false;
+    this.day = day;
+    if (this.view === 'Month' || this.view === 'Year') {
+      // a date: see its week - in a moment, as this may be the first
+      // click of a double-click (to add an appointment on this page)
+      this.opening?.();
+      this.opening = this.org.app.task.after(
+        os.input.config.doubleClickMs, () =&gt; this.openWeek());
+    }
+    return true;
+  }
+  openWeek() {
+    this.setView('Week');
+    this.org.refresh();
+  }
+</PRE>
+<CODE>task.after</CODE> (the first book's chapter 9) calls <CODE>openWeek</CODE> once the double-click time
+has passed - <CODE>os.input.config.doubleClickMs</CODE>, the time the desktop allows between the two clicks of
+a double-click - and returns a function that cancels it. <CODE>double</CODE> calls that function,
+<CODE>this.opening?.()</CODE>, before anything else, so a double-click stays on the page it was made on. (In the
+Year view <CODE>double</CODE> returns straight away, and the week still opens.)<P>
+<PRE>
+  // ------------------------------------------------ entries
+  async add(day = this.day) {
+    const v = await editAppointment(this.org.app.task, { date: day });
+    this.org.focus();
+    if (v) this.doc.diary.add(v);
+  }
+  async edit(ref) {
+    const a = this.doc.diary.get(ref.id);
+    const v = await editAppointment(this.org.app.task, a);
+    this.org.focus();
+    if (v) this.doc.diary.update(a.id, v);
+  }
+  newEntry() { this.add(this.day); }
+  describe(ref) {
+    const a = this.doc.diary.get(ref.id);
+    return a ? `${showDay(ref.date ?? a.date)} ${a.time} ${a.text}`
+      .replace(/ +/g, ' ') : 'Appointment';
+  }
+  remove(ref) { this.doc.diary.remove(ref.id); }
+</PRE>
+<CODE>add</CODE> and <CODE>edit</CODE> are nearly the same: show the box with an appointment - a new one with
+just a date, or the one being changed - and if you clicked OK, add or update it. There's no need to redraw
+anything: the diary is a <CODE>Collection</CODE>, which emits <CODE>'change'</CODE>, and the window listens
+for that and redraws (chapter 10). After the box closes, <CODE>this.org.focus()</CODE> gives the input focus
+back to the binder, so the keys work straight away.<P>
+<CODE>newEntry</CODE> is what the window calls for the Insert key, the New entry menu item and the new button at
+the top of the toolbox: add an appointment on the day you're looking at. The Address section already had a
+<CODE>newEntry</CODE>, which adds a person (chapter 10), so the same key, menu item and button work there
+too. <CODE>describe</CODE> and <CODE>remove</CODE> are for deleting, which comes shortly; the Address
+section gets the same two methods in this chapter, so from now on contacts can be deleted too:<P>
+<PRE>
+  describe(ref) {
+    const c = this.doc.book.get(ref.id);
+    return c ? nameOf(c) : 'Contact';
+  }
+  remove(ref) {
+    this.doc.book.remove(ref.id);
+    if (this.chosen === ref.id) this.chosen = null;
+  }
+</PRE>
+
+<A NAME=S4></A>
+<H2>Repeats</H2>
+A weekly meeting could be written into the diary 52 times, but then moving it would mean changing 52
+appointments. Instead, a repeating appointment is kept once, with a <CODE>repeat</CODE> saying how often,
+and the diary works out which days it falls on whenever it's drawn:<P>
+<PRE>
+export class Diary extends Collection {
+  /** [{ appt, date }] for the days from..to, in time order. */
+  occurrences(from, to) {
+    const out = [];
+    for (const a of this.all()) {
+      for (const date of datesOf(a, from, to)) {
+        out.push({ appt: a, date });
+      }
+    }
+    return out.sort((x, y) =&gt; (x.date + (x.appt.time || ''))
+      .localeCompare(y.date + (y.appt.time || '')));
+  }
+}
+/** The days an appointment falls on between from and to. */
+function datesOf(a, from, to) {
+  if (!a.repeat) {
+    return a.date &gt;= from &amp;&amp; a.date &lt;= to ? [a.date] : [];
+  }
+  const step = STEP[a.repeat.every] ?? STEP.week;
+  const out = [];
+  for (let n = 0, d = a.date; d &lt;= to; d = step(a.date, ++n)) {
+    if (a.repeat.count &amp;&amp; n &gt;= a.repeat.count) break;
+    if (a.repeat.until &amp;&amp; d &gt; a.repeat.until) break;
+    if (d &gt;= from) out.push(d);
+    if (n &gt; 5000) break;               // (a guard, just in case)
+  }
+  return out;
+}
+</PRE>
+<CODE>occurrences(from, to)</CODE> is what the views ask for: every appointment on the days from
+<CODE>from</CODE> to <CODE>to</CODE>, each with the day it falls on (so one weekly meeting can appear four
+times in a month), sorted by date and then time. Because keys and times both sort as text, gluing them
+together (<CODE>'2026-09-21' + '09:30'</CODE>) gives something that sorts by both at once.<P>
+<CODE>datesOf</CODE> does the work for one appointment. One that doesn't repeat is on one day or none. For a
+repeating one, <CODE>STEP</CODE> gives the function that goes on by <CODE>n</CODE> steps:
+<CODE>D.addDays</CODE> for daily, <CODE>D.addMonths</CODE> for monthly and so on - chapter 11's
+functions, with weekly made from <CODE>addDays</CODE>. The loop counts <CODE>n</CODE> up from 0, and stops
+when the date passes <CODE>to</CODE>, when it has happened <CODE>count</CODE> times or when it passes the date
+<CODE>until</CODE>; dates before <CODE>from</CODE> are counted but not kept. The last line is a guard: a
+daily appointment started years ago would still finish, but if a mistake ever made the dates stop moving,
+the loop couldn't run for ever.<P>
+Notice that each date is worked out from the <I>first</I> date, <CODE>step(a.date, ++n)</CODE>, not from the
+one before. It matters for months. Something on the 31st of each month falls on 28 February, because there
+is no 31st; if March's date were worked out from February's, it would be the 28th too, and so would every
+month after. Worked out from the start, March is back on the 31st. That's the kind of thing to write down as a
+test before trusting it, and <CODE>Check</CODE> has grown some:<P>
+<PRE>
+  // ------------------------------------------------ the diary
+  const diary = new Diary();
+  diary.add({ date: '2026-09-21', time: '09:30', text: 'Meeting',
+    repeat: { every: 'week', count: 3 } });
+  diary.add({ date: '2026-09-23', time: '08:00', text: 'Dentist' });
+  check('repeats, within a count',
+    diary.occurrences('2026-09-01', '2026-12-31')
+      .map((o) =&gt; o.date).filter((d) =&gt; d !== '2026-09-23'),
+    ['2026-09-21', '2026-09-28', '2026-10-05']);
+  check('in date and time order', diary.occurrences('2026-09-21',
+    '2026-09-27').map((o) =&gt; o.appt.text), ['Meeting', 'Dentist']);
+  const monthly = new Diary([{ id: 1, date: '2026-01-31', text: 'Pay',
+    repeat: { every: 'month' } }]);
+  check('monthly on the 31st', monthly.occurrences('2026-02-01',
+    '2026-04-30').map((o) =&gt; o.date),
+  ['2026-02-28', '2026-03-31', '2026-04-30']);
+</PRE>
+<P><CENTER><IMG SRC="PICS/O12Month" WIDTH=910 HEIGHT=569></CENTER>
+Look at the month view: the Monday team meeting and the Wednesday choir practice appear every week, from one
+entry each.<P>
+
+<A NAME=S5></A>
+<H2>Choosing and deleting</H2>
+To delete an entry you first say which: click it, and it's outlined. Choosing works the same in every
+section, so it's in <CODE>Tools</CODE>, not in the diary:<P>
+<PRE>
+// ------------------------------------------------ choosing entries
+/** A click on an entry: choose it. */
+export function clickEntry(org, ev) {
+  const box = org.section.at(ev.x, ev.y);
+  if (!box) {
+    org.selected = null;
+    return false;
+  }
+  org.selected = box.ref;
+  org.redraw();
+  return false;                           // the section sees it too
+}
+/** After the section has drawn: the chosen entry. */
+export function decorate(org, g) {
+  const same = (a, b) =&gt; a &amp;&amp; b &amp;&amp; a.section === b.section &amp;&amp;
+    a.id === b.id &amp;&amp; (a.date ?? '') === (b.date ?? '');
+  for (const b of org.section.boxes) {
+    if (same(b.ref, org.selected)) {
+      g.strokeStyle = '#000000';
+      g.lineWidth = 2;
+      g.strokeRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+    }
+  }
+}
+</PRE>
+<CODE>org.selected</CODE> is the chosen entry's ref: <CODE>{ section: 'diary', id: 4, date: '2026-09-21' }</CODE>
+say. Every section records a box for each entry it draws (chapter 10), so <CODE>clickEntry</CODE> only has to
+ask the section what's at the point clicked. It returns <CODE>false</CODE>, so the window goes on to give the
+click to the section as well (the diary also makes that day the chosen day):<P>
+<PRE>
+    if (tools.clickEntry(this, ev)) return true;
+    this.section.click(ev);
+</PRE>
+When the window has drawn a section, it calls <CODE>decorate</CODE> to outline the chosen entry. A repeating
+appointment has one box for each day it's shown on, but the ref of each box includes its date, so only the
+one you clicked is outlined: two refs are the <CODE>same</CODE> if they have the same section, id and date (an
+entry with no date gives <CODE>''</CODE> for both).<P>
+Deleting is the Delete key (or Backspace), the Delete menu item or a click on the wastebasket:<P>
+<PRE>
+      case 0x1CD: this.section.newEntry(); return true;      // Insert
+      case 127: case 8: tools.remove(this); return true;     // Delete
+</PRE>
+<PRE>
+// ------------------------------------------------ deleting
+export async function remove(org, ref = org.selected) {
+  if (!ref) { beep(); return; }
+  const s = org.sections.find((x) =&gt; x.id === ref.section);
+  if (org.app.prefs.confirm) {
+    const r = await query({ task: org.app.task, title: 'Organiser',
+      message: `Delete '${s.describe(ref)}'?`,
+      buttons: ['Delete', 'Cancel'] });
+    org.focus();
+    if (r !== 'Delete') return;
+  }
+  s.remove(ref);
+  org.selected = null;
+  org.refresh();
+}
+</PRE>
+If nothing is chosen, <CODE>beep</CODE> says so. Otherwise <CODE>remove</CODE> finds the section the entry
+belongs to - which needn't be the one on show: the diary shows anniversaries too, as you'll see - and,
+unless <CODE>prefs.confirm</CODE> says not to (chapter 16's choices can turn it off), asks first. <CODE>query</CODE> is the desktop's question box:
+it shows the message and buttons and resolves to the name of the button clicked. The question needs a line
+about the entry, and only its section knows how to write one; that's <CODE>describe</CODE>. Then the
+section's <CODE>remove</CODE> deletes it.<P>
+<P><CENTER><IMG SRC="PICS/O12Delete" WIDTH=910 HEIGHT=569></CENTER>
+Deleting a repeating appointment deletes all of it, every week: the question shows the date you clicked, but
+there's only one entry to delete. (A diary program with more time could ask "just this one, or all of them?"
+and keep a list of the dates left out.)<P>
+
+<A NAME=S6></A>
+<H2>Dragging</H2>
+The window's work area has been reporting drags since chapter 10 (<CODE>workButton:
+'clickdragdouble'</CODE>), and now something listens:<P>
+<PRE>
+    w.on('drag', (ev) =&gt; tools.drag(this, ev));
+</PRE>
+<PRE>
+// ------------------------------------------------ dragging entries
+/** A drag on an entry: into the wastebasket, or somewhere else. */
+export async function drag(org, ev) {
+  const box = org.section.at(ev.x, ev.y);
+  if (!box) { org.section.drag(ev); return true; }
+  const p = org.win.workToScreen(box.x, box.y);
+  const drop = await wimp.drag({ event: ev.pointerEvent,
+    box: { x0: p.x, y0: p.y, x1: p.x + box.w, y1: p.y + box.h } });
+  if (drop.window === org.bar.pane &amp;&amp; drop.icon?.name === 'bin') {
+    await remove(org, box.ref);
+  } else if (drop.window === org.win) {
+    org.section.dropped(box.ref, drop.x, drop.y);
+    org.refresh();
+  }
+  return true;
+}
+</PRE>
+If the drag didn't start on an entry, the section is given it, in case it wants to do something else (none
+does yet). Otherwise <CODE>wimp.drag</CODE> drags a dotted box the size of the entry, following the pointer,
+the way the Filer drags a file's box. It needs the box in <I>screen</I> coordinates, so the entry's
+position in the work area is turned into one with <CODE>workToScreen</CODE>. It's an <CODE>async</CODE>
+function: it resolves when the button is let go, with where that was - the <CODE>window</CODE> and
+<CODE>icon</CODE> under the pointer, and <CODE>x</CODE> and <CODE>y</CODE> in that window's work area -
+plus whether Shift or Ctrl was held down.<P>
+Dropped on the wastebasket - the icon called <CODE>bin</CODE> in the toolbox, which is a pane of its own -
+the entry is deleted, just as if it had been chosen and the wastebasket clicked. Dropped anywhere on the
+binder, the section is asked to put the entry there:<P>
+<PRE>
+  /** An entry dropped on a day: move it there. */
+  dropped(ref, x, y) {
+    const day = this.dayAt(x, y);
+    if (!day) return;
+    const doc = this.doc;
+    if (ref.section === 'diary') {
+      const a = doc.diary.get(ref.id);
+      // a repeating appointment moves as a whole: by the same days
+      const shift = D.daysBetween(ref.date ?? a.date, day);
+      doc.diary.update(a.id, { date: D.addDays(a.date, shift) });
+    }
+  }
+</PRE>
+<CODE>dayAt</CODE> (chapter 11) says which day is under the point. A repeating appointment moves as a whole,
+by the same number of days as the one you dragged: drag Monday's meeting to Tuesday and it's on Tuesdays from
+then on, from its first week. The <CODE>shift</CODE> is worked out from <CODE>ref.date</CODE>, the day you
+dragged it from, and then applied to <CODE>a.date</CODE>, the day it started.<P>
+Dropping anything else - an anniversary, from its flag in the diary - does nothing: an anniversary's day is its
+date, and it belongs to its own section.<P>
+<H3>Pictures in the toolbox</H3>
+The new button and the wastebasket are pictures, not words, done exactly as !Contacts' toolbar did it in
+chapter 5: the pictures are in the program's own <CODE>Sprites</CODE> file, which <CODE>!RunImage</CODE>
+loads into a sprite area when it starts,<P>
+<PRE>
+  const app = {
+    task, TYPE,
+    docs: new Set(),                 // the open organiser files
+    prefs: { colour: '#6b3f22', confirm: true },  // binder; ask
+    area: sprites.spritesFromFile(await vfs.readFile(ctx.dir +
+      '.Sprites')),                  // the toolbox's pictures
+</PRE>
+and a button with <CODE>sprite: 'tb_bin'</CODE> shows that sprite from it:<P>
+<PRE>
+// ------------------------------------------------ the toolbox
+const VIEWS = 4;                          // room for 4 view buttons
+export function buttons(org) {
+  const view = (i) =&gt; ({ name: 'view' + i, text: '', h: 26,
+    action: () =&gt; { const s = org.section;
+      s.setView(s.views[i]); org.refresh(); } });
+  return [
+    { name: 'new', sprite: 'tb_new', action: () =&gt; org.section
+      .newEntry(), help: 'Click SELECT to add an entry here.' },
+    { name: 'today', text: TODAY(), h: 30,
+      action: () =&gt; { org.section.today(); org.refresh(); },
+      help: 'Today\'s date. Click SELECT to go to today.' },
+    { gap: true },
+    ...Array.from({ length: VIEWS }, (_, i) =&gt; view(i)),
+    { gap: true },
+    { name: 'bin', sprite: 'tb_bin', action: () =&gt; remove(org),
+      help: 'The wastebasket: drag an entry here to delete it, ' +
+        'or click SELECT to delete the chosen entry.' },
+  ];
+}
+</PRE>
+<CODE>updateToolbox</CODE> now also changes the new button's help to suit the section: "add an
+appointment" in the Diary, "add a person to the address book" in Address.<P>
+
+<A NAME=S7></A>
+<H2>Anniversaries</H2>
+Anniversaries are the simplest entries: a date and some text. The date is the one it all began - a
+birthday's is the day someone was born - so the organiser can work out how many years it has been.<P>
+<PRE>
+// ------------------------------------------------ the other sections
+// An anniversary: { date ('1968-03-14': the year it began), text }
+export class Anniversaries extends Collection {
+  /** Those in a month (1-12), in day order. */
+  inMonth(month) {
+    return this.all().filter((a) =&gt; +a.date.slice(5, 7) === month)
+      .sort((a, b) =&gt; a.date.slice(8).localeCompare(b.date.slice(8)));
+  }
+  onDay(date) {
+    const md = date.slice(5);                   // the month and day
+    return this.all().filter((a) =&gt; a.date.slice(5) === md);
+  }
+}
+/** '58th' - how many years it has been, in a given year. */
+export function nth(a, year) {
+  const n = year - +a.date.slice(0, 4);
+  if (n &lt;= 0) return '';
+  const t = n % 100;
+  const s = t &gt;= 11 &amp;&amp; t &lt;= 13 ? 'th'
+    : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return n + s;
+}
+</PRE>
+<CODE>inMonth</CODE> and <CODE>onDay</CODE> ignore the year: <CODE>a.date.slice(5, 7)</CODE> is the month
+(<CODE>'03'</CODE>, which <CODE>+</CODE> turns into 3), and <CODE>slice(5)</CODE> is the month and day,
+<CODE>'03-14'</CODE>, the same every year.<P>
+<CODE>nth</CODE> gives the English for how many years: 1st, 2nd, 3rd, then 4th to 20th, then 21st, 22nd,
+23rd, and so on. <CODE>['th', 'st', 'nd', 'rd'][n % 10]</CODE> looks up the last digit; for 4 to 9 there is
+nothing in the list, and <CODE>??</CODE> gives <CODE>'th'</CODE>. 11, 12 and 13 are the exceptions (11th,
+not 11st), and so are 111, 112 and so on, which is why the test is on <CODE>n % 100</CODE>.<P>
+The Anniversary section is a real section now, in place of chapter 10's blank one. Its pages have a box for
+each month, January to June on the left, July to December on the right:<P>
+<PRE>
+  draw(g, L, R) {
+    heading(g, L, 'Anniversary', this.colour, String(this.year));
+    heading(g, R, 'Anniversary', this.colour, String(this.year));
+    this.dayLinks = [];
+    [[L, 1], [R, 7]].forEach(([p, m0]) =&gt; {
+      const bw = (p.w - 30) / 2, bh = (p.h - 56) / 3;
+      for (let i = 0; i &lt; 6; i++) {
+        const x = p.x + 10 + (i % 2) * (bw + 10);
+        const y = p.y + 46 + Math.floor(i / 2) * bh;
+        this.month(g, m0 + i, x, y, bw, bh - 8);
+      }
+    });
+  }
+  month(g, m, x, y, w, h) {
+    g.strokeStyle = RULE;
+    g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+    g.fillStyle = this.colour;
+    g.fillRect(x, y, w, 18);
+    const first = `${this.year}-${String(m).padStart(2, '0')}-01`;
+    text(g, D.format(first, '%MO'), x + 6, y + 9, w - 12,
+      'bold 12px Homerton', '#ffffff');
+    let ly = y + 22;
+    for (const a of this.doc.anniversaries.inMonth(m)) {
+      if (ly + LINE &gt; y + h) {                   // no more room
+        text(g, '...', x + w - 18, ly, 14);
+        break;
+      }
+      const day = +a.date.slice(8), n = nth(a, this.year);
+      text(g, String(day), x + 6, ly + LINE / 2, 20,
+        'bold 12px Homerton', '#1c4f8a');
+      this.dayLinks.push({ x: x + 4, y: ly, w: 20, h: LINE,
+        date: `${this.year}-${a.date.slice(5)}` });
+      text(g, a.text + (n ? ` (${n})` : ''), x + 28, ly + LINE / 2,
+        w - 34, '12px Homerton', INK);
+      this.box(x + 26, ly, w - 30, LINE, { id: a.id });
+      ly += LINE;
+    }
+    if (ly === y + 22) {
+      text(g, '-', x + 8, ly + LINE / 2, 20, '12px Homerton', FAINT);
+    }
+  }
+</PRE>
+<P><CENTER><IMG SRC="PICS/O12Anniversary" WIDTH=910 HEIGHT=569></CENTER>
+Each anniversary records its box as it's drawn, so that it can be chosen, deleted and dragged into the
+wastebasket like any entry. The day numbers are recorded too, in <CODE>dayLinks</CODE>: click one and the
+diary opens at that day. Page Up and Page Down go a year back and on, and change the (58th)s. The rest of the
+class is short, because it's the diary's methods over again:<P>
+<PRE>
+  click(ev) {
+    const d = this.dayLinks.find((b) =&gt; inside(b, ev.x, ev.y));
+    if (d) { this.org.go({ section: 'diary', date: d.date }); }
+    return true;
+  }
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (!box) return;
+    const a = this.doc.anniversaries.get(box.ref.id);
+    const v = await editAnniversary(this.org.app.task, a);
+    this.org.focus();
+    if (v) this.doc.anniversaries.update(a.id, v);
+  }
+  async newEntry() {
+    const v = await editAnniversary(this.org.app.task, {});
+    this.org.focus();
+    if (v) this.doc.anniversaries.add(v);
+  }
+  turn(dir) { this.year += dir; }
+  today() { this.year = +D.today().slice(0, 4); }
+  describe(ref) {
+    const a = this.doc.anniversaries.get(ref.id);
+    return a ? `${showDay(a.date)} ${a.text}` : 'Anniversary';
+  }
+  remove(ref) { this.doc.anniversaries.remove(ref.id); }
+  go() { this.year = +D.today().slice(0, 4); }
+</PRE>
+<H3>Anniversaries in the diary</H3>
+Birthdays are no use in a section you don't look at, so the diary shows them too. Each view draws a day's
+entries with the diary's <CODE>itemsOn</CODE>, which now gives the day's anniversaries first, then its
+appointments:<P>
+<PRE>
+  /** Everything to show on a day: anniversaries, then
+   * appointments, as { kind, text, ref, time? }. */
+  itemsOn(key) {
+    const doc = this.doc, year = +key.slice(0, 4);
+    return [
+      ...doc.anniversaries.onDay(key).map((a) =&gt; ({
+        kind: 'anniversary',
+        text: a.text + (nth(a, year) ? ` (${nth(a, year)})` : ''),
+        ref: { section: 'anniversary', id: a.id } })),
+      ...doc.diary.occurrences(key, key).map(({ appt }) =&gt; ({
+        kind: 'appt', time: appt.time, text: appt.text,
+        ref: { id: appt.id, date: key } })),
+    ];
+  }
+</PRE>
+Each item carries a ref for its box. An appointment's is <CODE>{ id, date }</CODE>, and <CODE>box</CODE>
+adds <CODE>section: 'diary'</CODE>. An anniversary's says <CODE>section: 'anniversary'</CODE> itself; since
+<CODE>box</CODE> writes <CODE>{ section: this.id, ...ref }</CODE>, the ref's own section comes second and
+wins. So the diary can show another section's entry, and everything else does the right thing with it: a
+double-click goes to the Anniversary section (the <CODE>org.go</CODE> in <CODE>double</CODE>), and Delete
+asks the Anniversary section to describe and remove it. The views draw an anniversary with a little flag in
+its colour instead of a time:<P>
+<PRE>
+/** One entry: an anniversary, or a time. */
+function item(diary, g, it, x, y, w) {
+  const mid = y + LINE / 2;
+  if (it.kind === 'anniversary') {
+    g.fillStyle = '#e377c2';                     // a little flag
+    g.fillRect(x + 1, y + 3, 8, 6);
+    g.fillRect(x + 1, y + 3, 2, LINE - 5);
+    text(g, it.text, x + 14, mid, w - 14, '12px Homerton');
+  } else {
+    text(g, it.time || '', x, mid, 40, 'bold 12px Homerton');
+    text(g, it.text, x + 42, mid, w - 42, '12px Homerton');
+  }
+  diary.box(x, y, w, LINE, it.ref);
+}
+</PRE>
+
+<A NAME=S8></A>
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Run <CODE>Check</CODE> in <CODE>!Org12</CODE>: the repeat tests pass as well as the dates.<P>
+<DT><DD>2  Open <CODE>Diary</CODE> in <CODE>!Org12</CODE>. Double-click an empty part of a day, type a time and
+what it is, and click OK. Try a date of 31/02/2026: the box won't close.<P>
+<DT><DD>3  Double-click the new appointment, set Repeat to Every week and Times to 3, and click OK. Look in the
+Month view.<P>
+<DT><DD>4  Drag an appointment to another day in the Week view. Drag it onto the wastebasket, and click
+Cancel.<P>
+<DT><DD>5  Click an appointment, and press Delete.<P>
+<DT><DD>6  Click the Anniversary tab (or press Ctrl-6), click the new button and add a birthday for this
+week. Go back to the Diary: it's there, with its flag. Double-click it.<P>
+</DL>
+
+<A NAME=S9></A>
+<H2>Summary</H2>
+<UL>
+<LI>The dialogue boxes for entries are in one module, <CODE>Entries</CODE>, made with <CODE>Form</CODE>,
+each made once and kept in a <CODE>Map</CODE>.<P>
+<LI>A list of <CODE>[name, value]</CODE> pairs turns menu choices into values and back.
+<CODE>([, x]) =&gt;</CODE> skips the first item of the argument; <CODE>list?.[0]</CODE> is <CODE>list[0]</CODE>,
+or <CODE>undefined</CODE> if there is no list.<P>
+<LI>A repeating appointment is kept once; its dates are worked out when they're needed, each from the first
+date, so the 31st of the month comes back after February.<P>
+<LI>Choosing, deleting and dragging are written once, in <CODE>Tools</CODE>, for every section. Each section
+records boxes for what it draws, and answers <CODE>describe</CODE>, <CODE>remove</CODE> and
+<CODE>dropped</CODE>.<P>
+<LI><CODE>wimp.drag</CODE> drags a box and resolves with the window, icon and point where it was dropped.
+<CODE>query</CODE> asks a question and resolves with the button clicked.<P>
+<LI>A program's own sprites are loaded from a file with <CODE>sprites.spritesFromFile</CODE> and given to the
+Toolbar as its <CODE>area</CODE>.<P>
+<LI>A ref names its section, so one section can show another's entries.<P>
+</UL>
+
+<A NAME=S10></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Add "Every fortnight" to the Repeat menu.<P>
+<DT><DD>2  Show an appointment's end time in the diary, as <CODE>Choir practice (to 21:00)</CODE>.<P>
+<DT><DD>3  Make a drag with Shift held down copy an appointment to the day it's dropped on, rather than move
+it. (A copy is a new entry, so it mustn't keep the old one's <CODE>id</CODE>.)<P>
+<DT><DD>4  The Store already understands <CODE>repeat.until</CODE>, a last date. Add a field for it to the
+Appointment box.<P>
+</DL>
+
+<A NAME=S11></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Add the pair to <CODE>REPEATS</CODE> in <CODE>Entries</CODE>:
+<PRE>
+['Every week', 'week'], ['Every fortnight', 'fortnight'],
+</PRE>
+and a step to <CODE>STEP</CODE> in <CODE>Store</CODE>:
+<PRE>
+fortnight: (k, n) =&gt; D.addDays(k, 14 * n),
+</PRE>
+Without the step, <CODE>datesOf</CODE>'s <CODE>?? STEP.week</CODE> would show it every week.<P>
+<DT><DD>2  In <CODE>itemsOn</CODE>, give the appointment's text as
+<PRE>
+text: appt.text + (appt.end ? ` (to ${appt.end})` : ''),
+</PRE>
+<DT><DD>3  In <CODE>Tools</CODE>'s <CODE>drag</CODE>, pass Shift on:
+<PRE>
+org.section.dropped(box.ref, drop.x, drop.y, drop.shift);
+</PRE>
+and in <CODE>DiaryPage</CODE>'s <CODE>dropped(ref, x, y, copy)</CODE>, in place of the
+<CODE>update</CODE>:
+<PRE>
+const date = D.addDays(a.date, shift);
+if (copy) {
+  const { id, ...fields } = a;       // all but the id
+  doc.diary.add({ ...fields, date });
+} else doc.diary.update(a.id, { date });
+</PRE>
+<CODE>{ id, ...fields } = a</CODE> takes <CODE>id</CODE> out and puts everything else in
+<CODE>fields</CODE> (the <I>rest</I>, as in appendix A). <CODE>add</CODE> then gives the copy a new id.<P>
+<DT><DD>4  In <CODE>editAppointment</CODE>, add a field after Times:
+<PRE>
+{ name: 'until', label: 'Last day', width: 120 },
+</PRE>
+check it in <CODE>check</CODE>:
+<PRE>
+if (v.until &amp;&amp; !D.parseDay(v.until)) return { field: 'until',
+  message: 'Give the date as 25/09/2026' };
+</PRE>
+show it in <CODE>ask</CODE> with <CODE>until: showDay(a.repeat?.until)</CODE>, and keep it:
+<PRE>
+repeat: every ? { every, count: +v.count || null,
+  until: D.parseDay(v.until) } : null,
+</PRE>
+<CODE>parseDay</CODE> gives <CODE>null</CODE> for an empty field, so there's no last day.<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap13.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap11.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

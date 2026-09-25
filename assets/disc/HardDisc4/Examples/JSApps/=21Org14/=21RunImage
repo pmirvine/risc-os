@@ -1,0 +1,94 @@
+// Organiser - a personal organiser for RISC OS, in the spirit of the
+// ring-binder organisers of the 1990s: a diary, things to do, an
+// address book, a notepad, a year planner and anniversaries.
+// !RunImage is where it starts: the icon on the icon bar and its
+// menu, opening organiser files, and quitting. Each open file
+// is a Document (./Document) with a binder window
+// (./OrganiserWindow).
+import { wimp, vfs, sprites, Menu, infoBox, discardChanges,
+  reportError } from 'riscos';
+import { Document } from './Document';
+
+const TYPE = 0x1C5;          // Organiser files (!Boot names the type)
+
+export default async function start(task, ctx) {
+  const file = ctx.argv[0];
+  // only one Organiser at a time: pass the file to the one running
+  const other = wimp.tasks.find((t) => t !== task && t.alive &&
+    t.name === task.name);
+  if (other) {
+    if (file) {
+      wimp.sendMessage('DataOpen', { path: file, filetype: TYPE },
+        { to: other });
+    }
+    task.quit();
+    return;
+  }
+
+  const app = {
+    task, TYPE,
+    docs: new Set(),                 // the open organiser files
+    prefs: { colour: '#6b3f22', confirm: true },  // binder; ask
+    area: sprites.spritesFromFile(await vfs.readFile(ctx.dir +
+      '.Sprites')),                  // the toolbox's pictures
+    async open(path) {
+      const name = vfs.canonical(path);
+      const open = [...app.docs].find((d) => d.filename === name);
+      if (open) {
+        open.view.win.open({ behind: 'top' });
+        return open;
+      }
+      try {
+        return await Document.load(app, name);
+      } catch (e) {
+        reportError(`Can't load ${vfs.leaf(name)}: ${e.message}`);
+        return null;
+      }
+    },
+    get modified() { return [...app.docs].some((d) => d.modified); },
+  };
+
+  // ------------------------------------------------ the icon bar
+  const info = infoBox(task, { name: 'Organiser',
+    purpose: 'Personal organiser', author: 'You',
+    version: '1.00 (25-Sep-26)' });
+  const quit = async () => {
+    if (app.modified && !(await discardChanges(task,
+      'Some organisers have changes. Quit anyway?'))) return;
+    task.quit();
+  };
+  const menu = () => new Menu('Organiser', [
+    { text: 'Info', submenu: info },
+    { text: 'Quit', action: quit, help: 'Stop the Organiser.' },
+  ]);
+  task.addIconbarIcon({
+    sprite: '!org14', menu,
+    help: 'This is the Organiser.|MClick SELECT for a new ' +
+      'organiser; drag an Organiser file here to open it.',
+    onClick: () => new Document(app),
+    onDataLoad: async (ev) => {
+      for (const f of ev.files) {
+        if (f.filetype === TYPE) await app.open(f.path);
+      }
+    },
+  });
+
+  // ------------------------------------------------ messages
+  task.onMessage('DataOpen', (msg) => {
+    if (msg.filetype !== TYPE) return false;
+    app.open(msg.path);
+    return true;
+  });
+  task.onMessage('PreQuit', async (msg) => {
+    if (!app.modified) return;
+    msg.object?.();                  // "wait": stop the shutdown
+    if (await discardChanges(task,
+      'Some organisers have changes. Discard them?')) {
+      task.quit();
+      if (!msg.single) wimp.emit('hotkey:CtrlShiftF12', {});
+    }
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  if (file) await app.open(file);
+}
