@@ -6,6 +6,7 @@
 //   csvRead(text)        -> contacts matched to the header's names
 //   decode(bytes) -> text  UTF-8 (or Latin-1) bytes to RISC OS text
 //   encode(text)  -> bytes RISC OS text to UTF-8 bytes
+//   fold(line)    -> text  a long line folded (vCard, iCalendar)
 // A contact is an object with the fields in FIELDS.
 
 export const FIELDS = [
@@ -68,13 +69,30 @@ export function vcardWrite(contacts) {
   }
   return out.join('\r\n') + '\r\n';
 }
-// long lines are folded: a line break then a space
-const fold = (l) => l.replace(/(.{75})(?=.)/g, '$1\r\n ');
+// A long line is folded: a line break, then a space starts more. No
+// line may be over 75 octets as the file is written - in UTF-8
+// (encode), where characters above 127 take two.
+export function fold(line) {
+  let out = '', n = 0;
+  for (const ch of line) {
+    const w = ch.charCodeAt(0) > 127 ? 2 : 1;
+    if (n + w > 75) { out += '\r\n '; n = 1; }
+    out += ch; n += w;
+  }
+  return out;
+}
 
 export function vcardRead(text) {
-  // unfold, and join quoted-printable soft line breaks (vCard 2.1)
-  const lines = text.replace(/=\r?\n/g, '').replace(/\r?\n[ \t]/g, '')
-    .split(/\r?\n/);
+  // unfold, and join vCard 2.1's quoted-printable values, which end a
+  // line with = to go on (only those: other values may end with =)
+  const lines = [];
+  for (const l of text.replace(/\r?\n[ \t]/g, '').split(/\r?\n/)) {
+    const last = lines.at(-1);
+    if (last?.endsWith('=') && /QUOTED-PRINTABLE/i
+      .test(last.slice(0, last.indexOf(':')))) {
+      lines[lines.length - 1] = last.slice(0, -1) + l;
+    } else lines.push(l);
+  }
   const cards = [];
   let c = null;
   for (const line of lines) {
@@ -84,8 +102,12 @@ export function vcardRead(text) {
     const params = m[2].toUpperCase();
     let value = m[3];
     if (/QUOTED-PRINTABLE/.test(params)) {
-      value = value.replace(/=([0-9A-F]{2})/gi,
+      // =XX is a byte; in UTF-8 if the value says so
+      const bytes = value.replace(/=([0-9A-F]{2})/gi,
         (_, h) => String.fromCharCode(parseInt(h, 16)));
+      value = /CHARSET=UTF-8/.test(params)
+        ? decode(Uint8Array.from(bytes, (ch) => ch.charCodeAt(0)))
+        : bytes;
     }
     if (name === 'BEGIN') { c = {}; continue; }
     if (!c) continue;
