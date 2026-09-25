@@ -1,1 +1,282 @@
-<P>(This chapter is being written.)<P>
+The diary can show the time four ways, but so far there is nothing in it you didn't put there with a text
+editor. This chapter makes it a real diary. You'll add appointments with a dialogue box, change them, make them
+repeat every week or every month, choose them, drag them to another day and throw them into the wastebasket.
+The Anniversary section gets its pages too, and each birthday also appears in the diary on its day, so it
+needn't be written twice. The program is <CODE>!Org12</CODE>.<P>
+It's the biggest step of Part Two, because choosing, deleting and dragging are written once, for every
+section: the To do list, the notepad and the planner will get them for nothing in the chapters that follow.<P>
+
+<H2>Appointments</H2>
+An appointment is a plain object, like a contact. The comment at the start of the diary's part of
+<CODE>Store</CODE> says what's in one:<P>
+<!--#listing !Org12/Store 50-55-->
+<CODE>date</CODE> is a key, as in chapter 11, and <CODE>time</CODE> and <CODE>end</CODE> are kept the same
+way: <CODE>'09:30'</CODE>, always with two digits for the hour, so that times sort as text too. An
+appointment with no time (a day out, say) has an empty one. <CODE>alarm</CODE> is how many minutes before the
+appointment to be reminded; nothing looks at it yet (that's chapter 16). <CODE>repeat</CODE> is
+<CODE>null</CODE> for an appointment that happens once. <CODE>STEP</CODE> comes into it later in the
+chapter.<P>
+
+<H2>The Appointment box</H2>
+Appointments are made and changed in a dialogue box built with chapter 3's <CODE>Form</CODE>. The boxes for
+all the organiser's entries live in one module, <CODE>Entries</CODE>, which knows nothing about windows or
+binders: each function takes an entry, shows the box, and resolves to the new fields, or <CODE>null</CODE> if
+you chose Cancel.<P>
+<!--#listing !Org12/Entries 1-28-->
+The diary keeps <CODE>'2026-09-25'</CODE>, but people type 25/09/2026, so <CODE>showDay</CODE> turns a key
+into what the box shows, and <CODE>D.parseDay</CODE> (chapter 11) turns what was typed back into a key.<P>
+Chapter 3's address book made its one box when it was first needed, with <CODE>form ??=
+makeForm(task)</CODE>. The organiser will have several boxes, so <CODE>form</CODE> keeps them in a
+<CODE>Map</CODE> by name and makes each the first time it is asked for. After that the same box is used again,
+already built.<P>
+The Alarm and Repeat fields are pop-up menus, and each choice on them stands for a value in the entry:
+"15 minutes" is 15, "Every week" is <CODE>'week'</CODE>. <CODE>ALARMS</CODE> and <CODE>REPEATS</CODE> are
+lists of <CODE>[name, value]</CODE> pairs, and two little functions look things up in them either way round.
+<CODE>valueOf</CODE> finds the pair whose first item is the name chosen, and gives its second. In
+<CODE>nameOf</CODE>, the function's argument is <CODE>[, x]</CODE>: a pair, with its first item skipped (the
+comma with nothing before it, as in chapter 8's <CODE>[last, first, , title]</CODE>), and its second called
+<CODE>x</CODE>. <CODE>?.[0]</CODE> then takes the name from the pair found - or gives <CODE>undefined</CODE>,
+rather than an error, if there wasn't one. (<CODE>?.</CODE> works before square brackets just as it does
+before a property name.)<P>
+<!--#listing !Org12/Entries 29-72-->
+The fields are chapter 3's; <CODE>width</CODE> makes the date and time fields narrower than usual. <CODE>check</CODE> is called when you click OK; returning an object keeps the box open,
+with the message given and the caret in the field that's wrong. It uses <CODE>parseDay</CODE> and
+<CODE>parseTime</CODE> only to see whether they work: <CODE>31/02/2026</CODE> is refused, and so is
+<CODE>25:00</CODE>.<P>
+<CODE>ask</CODE> is given a copy of the appointment with each value turned into what the box shows: the
+date as 23/09/2026, the alarm and repeat as the names on their menus, and the count of repeats (or nothing).
+When the box closes, the same happens the other way. <CODE>+v.count || null</CODE> turns the Times field into a
+number, and an empty field (which <CODE>+</CODE> makes 0) into <CODE>null</CODE>, meaning "for ever".<P>
+<!--#pic O12Appointment-->
+
+<H2>Adding and changing</H2>
+The diary page decides what a double-click means:<P>
+<!--#listing !Org12/DiaryPage 59-65-->
+On an appointment, it changes that appointment. On something that belongs to another section - an
+anniversary, later in this chapter - it goes to that section, with the window's <CODE>go</CODE>:<P>
+<!--#listing !Org12/OrganiserWindow 80-87-->
+which opens the entry's section, asks the section to show the entry (each section's own <CODE>go</CODE>)
+and chooses it. On an empty part of a day it adds an appointment on that day. (Not in the Year view, whose days are too
+small to aim at; clicking one there goes to its week, as in chapter 11.)<P>
+<!--#listing !Org12/DiaryPage 79-97-->
+<CODE>add</CODE> and <CODE>edit</CODE> are nearly the same: show the box with an appointment - a new one with
+just a date, or the one being changed - and if you clicked OK, add or update it. There's no need to redraw
+anything: the diary is a <CODE>Collection</CODE>, which emits <CODE>'change'</CODE>, and the window listens
+for that and redraws (chapter 10). After the box closes, <CODE>this.org.focus()</CODE> gives the input focus
+back to the binder, so the keys work straight away.<P>
+<CODE>newEntry</CODE> is what the window calls for the Insert key, the New entry menu item and the new button at
+the top of the toolbox: add an appointment on the day you're looking at. The Address section already had a
+<CODE>newEntry</CODE>, which adds a person (chapter 10), so the same key, menu item and button work there
+too. <CODE>describe</CODE> and <CODE>remove</CODE> are for deleting, which comes shortly.<P>
+
+<H2>Repeats</H2>
+A weekly meeting could be written into the diary 52 times, but then moving it would mean changing 52
+appointments. Instead, a repeating appointment is kept once, with a <CODE>repeat</CODE> saying how often,
+and the diary works out which days it falls on whenever it's drawn:<P>
+<!--#listing !Org12/Store 57-84-->
+<CODE>occurrences(from, to)</CODE> is what the views ask for: every appointment on the days from
+<CODE>from</CODE> to <CODE>to</CODE>, each with the day it falls on (so one weekly meeting can appear four
+times in a month), sorted by date and then time. Because keys and times both sort as text, gluing them
+together (<CODE>'2026-09-21' + '09:30'</CODE>) gives something that sorts by both at once.<P>
+<CODE>datesOf</CODE> does the work for one appointment. One that doesn't repeat is on one day or none. For a
+repeating one, <CODE>STEP</CODE> gives the function that goes on by <CODE>n</CODE> steps:
+<CODE>D.addDays</CODE> for daily, <CODE>D.addMonths</CODE> for monthly and so on - chapter 11's
+functions, with weekly made from <CODE>addDays</CODE>. The loop counts <CODE>n</CODE> up from 0, and stops
+when the date passes <CODE>to</CODE>, when it has happened <CODE>count</CODE> times or when it passes the date
+<CODE>until</CODE>; dates before <CODE>from</CODE> are counted but not kept. The last line is a guard: a
+daily appointment started years ago would still finish, but if a mistake ever made the dates stop moving,
+the loop couldn't run for ever.<P>
+Notice that each date is worked out from the <I>first</I> date, <CODE>step(a.date, ++n)</CODE>, not from the
+one before. It matters for months. Something on the 31st of each month falls on 28 February, because there
+is no 31st; if March's date were worked out from February's, it would be the 28th too, and so would every
+month after. Worked out from the start, March is back on the 31st. That's the kind of thing to write down as a
+test before trusting it, and <CODE>Check</CODE> has grown some:<P>
+<!--#listing !Org12/Check 40-55-->
+<!--#pic O12Month-->
+Look at the month view: the Monday team meeting and the Wednesday choir practice appear every week, from one
+entry each.<P>
+
+<H2>Choosing and deleting</H2>
+To delete an entry you first say which: click it, and it's outlined. Choosing works the same in every
+section, so it's in <CODE>Tools</CODE>, not in the diary:<P>
+<!--#listing !Org12/Tools 45-68-->
+<CODE>org.selected</CODE> is the chosen entry's ref: <CODE>{ section: 'diary', id: 4, date: '2026-09-21' }</CODE>
+say. Every section records a box for each entry it draws (chapter 10), so <CODE>clickEntry</CODE> only has to
+ask the section what's at the point clicked. It returns <CODE>false</CODE>, so the window goes on to give the
+click to the section as well (the diary also makes that day the chosen day):<P>
+<!--#listing !Org12/OrganiserWindow 117-118-->
+When the window has drawn a section, it calls <CODE>decorate</CODE> to outline the chosen entry. A repeating
+appointment has one box for each day it's shown on, but the ref of each box includes its date, so only the
+one you clicked is outlined: two refs are the <CODE>same</CODE> if they have the same section, id and date (an
+entry with no date gives <CODE>''</CODE> for both).<P>
+Deleting is the Delete key (or Backspace), the Delete menu item or a click on the wastebasket:<P>
+<!--#listing !Org12/OrganiserWindow 130-131-->
+<!--#listing !Org12/Tools 70-84-->
+If nothing is chosen, <CODE>beep</CODE> says so. Otherwise <CODE>remove</CODE> finds the section the entry
+belongs to - which needn't be the one on show: the diary shows anniversaries too, as you'll see - and,
+unless <CODE>prefs.confirm</CODE> says not to (chapter 16's choices can turn it off), asks first. <CODE>query</CODE> is the desktop's question box:
+it shows the message and buttons and resolves to the name of the button clicked. The question needs a line
+about the entry, and only its section knows how to write one; that's <CODE>describe</CODE>. Then the
+section's <CODE>remove</CODE> deletes it.<P>
+<!--#pic O12Delete-->
+Deleting a repeating appointment deletes all of it, every week: the question shows the date you clicked, but
+there's only one entry to delete. (A diary program with more time could ask "just this one, or all of them?"
+and keep a list of the dates left out.)<P>
+
+<H2>Dragging</H2>
+The window's work area has been reporting drags since chapter 10 (<CODE>workButton:
+'clickdragdouble'</CODE>), and now something listens:<P>
+<!--#listing !Org12/OrganiserWindow 55-55-->
+<!--#listing !Org12/Tools 86-101-->
+If the drag didn't start on an entry, the section is given it, in case it wants to do something else (none
+does yet). Otherwise <CODE>wimp.drag</CODE> drags a dotted box the size of the entry, following the pointer,
+the way the Filer drags a file's box. It needs the box in <I>screen</I> coordinates, so the entry's
+position in the work area is turned into one with <CODE>workToScreen</CODE>. It's an <CODE>async</CODE>
+function: it resolves when the button is let go, with where that was - the <CODE>window</CODE> and
+<CODE>icon</CODE> under the pointer, and <CODE>x</CODE> and <CODE>y</CODE> in that window's work area -
+plus whether Shift or Ctrl was held down.<P>
+Dropped on the wastebasket - the icon called <CODE>bin</CODE> in the toolbox, which is a pane of its own -
+the entry is deleted, just as if it had been chosen and the wastebasket clicked. Dropped anywhere on the
+binder, the section is asked to put the entry there:<P>
+<!--#listing !Org12/DiaryPage 66-77-->
+<CODE>dayAt</CODE> (chapter 11) says which day is under the point. A repeating appointment moves as a whole,
+by the same number of days as the one you dragged: drag Monday's meeting to Tuesday and it's on Tuesdays from
+then on, from its first week. The <CODE>shift</CODE> is worked out from <CODE>ref.date</CODE>, the day you
+dragged it from, and then applied to <CODE>a.date</CODE>, the day it started.<P>
+Dropping anything else - an anniversary, from its flag in the diary - does nothing: an anniversary's day is its
+date, and it belongs to its own section.<P>
+<H3>Pictures in the toolbox</H3>
+The new button and the wastebasket are pictures, not words. A program's own sprites are kept in a file of
+their own, <CODE>Sprites</CODE>, beside the application's <CODE>!Sprites</CODE> (which is only for its icon
+in the Filer). <CODE>!RunImage</CODE> loads it when the program starts:<P>
+<!--#listing !Org12/!RunImage 28-33-->
+and the toolbar is given it as <CODE>area</CODE>, a <I>sprite area</I>; a button with
+<CODE>sprite: 'tb_bin'</CODE> shows that sprite from it:<P>
+<!--#listing !Org12/Tools 10-29-->
+Chapter 5's Toolbar could always do this; the address book just had no need.
+<CODE>updateToolbox</CODE> now also changes the new button's help to suit the section: "add an
+appointment" in the Diary, "add a person to the address book" in Address.<P>
+
+<H2>Anniversaries</H2>
+Anniversaries are the simplest entries: a date and some text. The date is the one it all began - a
+birthday's is the day someone was born - so the organiser can work out how many years it has been.<P>
+<!--#listing !Org12/Store 86-107-->
+<CODE>inMonth</CODE> and <CODE>onDay</CODE> ignore the year: <CODE>a.date.slice(5, 7)</CODE> is the month
+(<CODE>'03'</CODE>, which <CODE>+</CODE> turns into 3), and <CODE>slice(5)</CODE> is the month and day,
+<CODE>'03-14'</CODE>, the same every year.<P>
+<CODE>nth</CODE> gives the English for how many years: 1st, 2nd, 3rd, then 4th to 20th, then 21st, 22nd,
+23rd, and so on. <CODE>['th', 'st', 'nd', 'rd'][n % 10]</CODE> looks up the last digit; for 4 to 9 there is
+nothing in the list, and <CODE>??</CODE> gives <CODE>'th'</CODE>. 11, 12 and 13 are the exceptions (11th,
+not 11st), and so are 111, 112 and so on, which is why the test is on <CODE>n % 100</CODE>.<P>
+The Anniversary section is a real section now, in place of chapter 10's blank one. Its pages have a box for
+each month, January to June on the left, July to December on the right:<P>
+<!--#listing !Org12/AnniversaryPage 22-62-->
+<!--#pic O12Anniversary-->
+Each anniversary records its box as it's drawn, so that it can be chosen, deleted and dragged into the
+wastebasket like any entry. The day numbers are recorded too, in <CODE>dayLinks</CODE>: click one and the
+diary opens at that day. Page Up and Page Down go a year back and on, and change the (58th)s. The rest of the
+class is short, because it's the diary's methods over again:<P>
+<!--#listing !Org12/AnniversaryPage 64-89-->
+<H3>Anniversaries in the diary</H3>
+Birthdays are no use in a section you don't look at, so the diary shows them too. Each view draws a day's
+entries with the diary's <CODE>itemsOn</CODE>, which now gives the day's anniversaries first, then its
+appointments:<P>
+<!--#listing !Org12/DiaryPage 33-46-->
+Each item carries a ref for its box. An appointment's is <CODE>{ id, date }</CODE>, and <CODE>box</CODE>
+adds <CODE>section: 'diary'</CODE>. An anniversary's says <CODE>section: 'anniversary'</CODE> itself; since
+<CODE>box</CODE> writes <CODE>{ section: this.id, ...ref }</CODE>, the ref's own section comes second and
+wins. So the diary can show another section's entry, and everything else does the right thing with it: a
+double-click goes to the Anniversary section (the <CODE>org.go</CODE> in <CODE>double</CODE>), and Delete
+asks the Anniversary section to describe and remove it. The views draw an anniversary with a little flag in
+its colour instead of a time:<P>
+<!--#listing !Org12/DiaryViews 33-46-->
+
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Run <CODE>Check</CODE> in <CODE>!Org12</CODE>: the repeat tests pass as well as the dates.<P>
+<DT><DD>2  Open <CODE>Diary</CODE> in <CODE>!Org12</CODE>. Double-click an empty part of a day, type a time and
+what it is, and click OK. Try a date of 31/02/2026: the box won't close.<P>
+<DT><DD>3  Double-click the new appointment, set Repeat to Every week and Times to 3, and click OK. Look in the
+Month view.<P>
+<DT><DD>4  Drag an appointment to another day in the Week view. Drag it onto the wastebasket, and click
+Cancel.<P>
+<DT><DD>5  Click an appointment, and press Delete.<P>
+<DT><DD>6  Click the Anniversary tab (or press Ctrl-6), click the new button and add a birthday for this
+week. Go back to the Diary: it's there, with its flag. Double-click it.<P>
+</DL>
+
+<H2>Summary</H2>
+<UL>
+<LI>The dialogue boxes for entries are in one module, <CODE>Entries</CODE>, made with <CODE>Form</CODE>,
+each made once and kept in a <CODE>Map</CODE>.<P>
+<LI>A list of <CODE>[name, value]</CODE> pairs turns menu choices into values and back.
+<CODE>([, x]) =&gt;</CODE> skips the first item of the argument; <CODE>list?.[0]</CODE> is <CODE>list[0]</CODE>,
+or <CODE>undefined</CODE> if there is no list.<P>
+<LI>A repeating appointment is kept once; its dates are worked out when they're needed, each from the first
+date, so the 31st of the month comes back after February.<P>
+<LI>Choosing, deleting and dragging are written once, in <CODE>Tools</CODE>, for every section. Each section
+records boxes for what it draws, and answers <CODE>describe</CODE>, <CODE>remove</CODE> and
+<CODE>dropped</CODE>.<P>
+<LI><CODE>wimp.drag</CODE> drags a box and resolves with the window, icon and point where it was dropped.
+<CODE>query</CODE> asks a question and resolves with the button clicked.<P>
+<LI>A program's own sprites are loaded from a file with <CODE>sprites.spritesFromFile</CODE> and given to the
+Toolbar as its <CODE>area</CODE>.<P>
+<LI>A ref names its section, so one section can show another's entries.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Add "Every fortnight" to the Repeat menu.<P>
+<DT><DD>2  Show an appointment's end time in the diary, as <CODE>Choir practice (to 21:00)</CODE>.<P>
+<DT><DD>3  Make a drag with Shift held down copy an appointment to the day it's dropped on, rather than move
+it. (A copy is a new entry, so it mustn't keep the old one's <CODE>id</CODE>.)<P>
+<DT><DD>4  The Store already understands <CODE>repeat.until</CODE>, a last date. Add a field for it to the
+Appointment box.<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Add the pair to <CODE>REPEATS</CODE> in <CODE>Entries</CODE>:
+<PRE>
+['Every week', 'week'], ['Every fortnight', 'fortnight'],
+</PRE>
+and a step to <CODE>STEP</CODE> in <CODE>Store</CODE>:
+<PRE>
+fortnight: (k, n) =&gt; D.addDays(k, 14 * n),
+</PRE>
+Without the step, <CODE>datesOf</CODE>'s <CODE>?? STEP.week</CODE> would show it every week.<P>
+<DT><DD>2  In <CODE>itemsOn</CODE>, give the appointment's text as
+<PRE>
+text: appt.text + (appt.end ? ` (to ${appt.end})` : ''),
+</PRE>
+<DT><DD>3  In <CODE>Tools</CODE>'s <CODE>drag</CODE>, pass Shift on:
+<PRE>
+org.section.dropped(box.ref, drop.x, drop.y, drop.shift);
+</PRE>
+and in <CODE>DiaryPage</CODE>'s <CODE>dropped(ref, x, y, copy)</CODE>, in place of the
+<CODE>update</CODE>:
+<PRE>
+const date = D.addDays(a.date, shift);
+if (copy) {
+  const { id, ...fields } = a;       // all but the id
+  doc.diary.add({ ...fields, date });
+} else doc.diary.update(a.id, { date });
+</PRE>
+<CODE>{ id, ...fields } = a</CODE> takes <CODE>id</CODE> out and puts everything else in
+<CODE>fields</CODE> (the <I>rest</I>, as in appendix A). <CODE>add</CODE> then gives the copy a new id.<P>
+<DT><DD>4  In <CODE>editAppointment</CODE>, add a field after Times:
+<PRE>
+{ name: 'until', label: 'Last day', width: 120 },
+</PRE>
+check it in <CODE>check</CODE>:
+<PRE>
+if (v.until &amp;&amp; !D.parseDay(v.until)) return { field: 'until',
+  message: 'Give the date as 25/09/2026' };
+</PRE>
+show it in <CODE>ask</CODE> with <CODE>until: showDay(a.repeat?.until)</CODE>, and keep it:
+<PRE>
+repeat: every ? { every, count: +v.count || null,
+  until: D.parseDay(v.until) } : null,
+</PRE>
+<CODE>parseDay</CODE> gives <CODE>null</CODE> for an empty field, so there's no last day.<P>
+</DL>
