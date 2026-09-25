@@ -34,10 +34,13 @@ export const input = {
 
   /** Map a pointer event to a RISC OS button name ('select'|'menu'|'adjust'). */
   button(e) {
+    // macOS turns Ctrl+click into a secondary (right) click, and some browsers then clear ctrlKey,
+    // so the Control key's own state is checked as well.
+    const ctrl = e.ctrlKey || this.keysDown.has('ControlLeft') || this.keysDown.has('ControlRight');
     if (e.button === 1) return 'menu';
-    if (e.button === 2) return this.config.rightIsAdjust && !e.ctrlKey ? 'adjust' : 'menu';
+    if (e.button === 2) return this.config.rightIsAdjust && !ctrl ? 'adjust' : 'menu';
     if (e.button === 0) {
-      if (this.config.rightIsAdjust) return e.ctrlKey ? 'menu' : 'select';
+      if (this.config.rightIsAdjust) return ctrl ? 'menu' : 'select';
       return e.shiftKey ? 'adjust' : 'select';
     }
     return null;
@@ -118,5 +121,6 @@ export function autoRepeat(fn, first = 400, rate = 60) {
 if (typeof window !== 'undefined') {
   window.addEventListener('keydown', (e) => input.keysDown.add(e.code), true);
   window.addEventListener('keyup', (e) => input.keysDown.delete(e.code), true);
+  window.addEventListener('blur', () => input.keysDown.clear());   // a key released elsewhere never sends keyup
   window.addEventListener('blur', () => input.keysDown.clear());
 }
