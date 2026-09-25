@@ -82,7 +82,8 @@ reset:
 As with RPCEmu's or VirtualRPC's HostFS, folders on the host machine can be mounted as RISC OS discs,
 `HostFS::<name>.$`. Each mounted folder gets an icon on the icon bar (Select opens it; Menu has Rescan, Free and
 Dismount) and can be used like any other disc: open and save files in applications, copy, rename and delete in the
-Filer, run BASIC and Obey applications from it, `*Cat HostFS::Work.$`.
+Filer, run BASIC and Obey applications from it, `*Cat HostFS::Work.$`. A guide is on the hard disc itself, in
+`$.Docs.HostFS` (source `tools/docs/HostFS`).
 
 * **Click the HostFS icon** (Chrome, Edge and other Chromium browsers) to pick a folder. Changes are written back to
   the folder. The browser remembers the folder: after a reload it comes back, or shows a "no disc" icon to click to

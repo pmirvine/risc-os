@@ -33,7 +33,7 @@ const results = await page.evaluate(async () => {
     ok('delete recursive', !vfs.exists('RAM::RamDisc0.$.Dir'));
     { // wildcards: '*' matches any run of characters, '#' one character (case-insensitive)
       const leaves = (w) => vfs.expandWild(w).map((p) => vfs.leaf(p)).sort().join();
-      ok('wildcards', leaves('$.D*') === 'Demos,Diversions', leaves('$.D*'));
+      ok('wildcards', leaves('$.D*') === 'Demos,Diversions,Docs', leaves('$.D*'));
       ok('wildcards #', leaves('$.d#mos') === 'Demos', leaves('$.d#mos'));
     }
     // CLI

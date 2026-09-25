@@ -24,7 +24,7 @@ export async function initHostFS() {
   task = wimp.createTask(APP, { kind: 'module', memory: 0 });
   const main = wimp.iconbar.add({
     task, side: 'left', priority: 0x4C000000, sprite: 'network', text: 'HostFS',
-    help: 'This is the HostFS icon.|MClick SELECT to mount a folder from this computer.|MClick MENU for other mounting options.',
+    help: 'This is the HostFS icon.|MClick SELECT to mount a folder from this computer.|MClick MENU for other mounting options.|MThe file Docs.HostFS on the hard disc explains HostFS.',
     onClick: () => pickFolder(),
   });
   main.menu = () => mainMenu();

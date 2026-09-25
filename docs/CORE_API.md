@@ -389,4 +389,4 @@ Don't hand-edit `assets/disc`: `tools/disc.mjs` rebuilds it from `vendor/`. Anyt
 idempotent `tools/disc-<topic>.mjs` script (model: `tools/disc-patch.mjs`) that writes its files and patches only its
 own entries in `assets/disc/manifest.json` (read, patch and write the manifest in one go), registered in
 `tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
-`disc-lander`, `disc-type1`.
+`disc-lander`, `disc-type1`, `disc-docs` ($.Docs, from `tools/docs/`).

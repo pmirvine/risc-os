@@ -64,6 +64,7 @@ try {
   ok('file contents', r.text === 'Hello from the host\n');
   ok('application directory', r.app === true);
   ok('*Cat works', /Test/.test(r.cat));
+  ok('guide on the hard disc', await page.evaluate(() => os.vfs.stat('ADFS::HardDisc4.$.Docs.HostFS')?.filetype === 0xfff));
 
   // ---------------------------------------------------------------- server backend: writing
   await page.evaluate(async () => {
