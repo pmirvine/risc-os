@@ -20,13 +20,19 @@ Plain modern JavaScript ES modules. There is no bundler, no framework and no run
 | ![Lander](docs/screenshots/div-lander.png) !Lander: David Braben's 1987 demo (JavaScript port; the original runs on the ARM2 emulator if you supply it) | ![Hopper](docs/screenshots/div-hopper.png) !Hopper, from RISC OS Open's sources |
 | ![Plasma](docs/screenshots/basic-plasma.png) `$.Demos.BASIC.Plasma`, one of the BBC BASIC demo programs | ![T1ToFont and Chars](docs/screenshots/tierb-t1tofont-chars.png) !Chars showing a Type 1 font converted by !T1ToFont |
 | ![JsEdit](docs/screenshots/jsedit.png) !JsEdit, the programmer's editor, completing a name in the Snake game's source | ![Programming in JavaScript](docs/screenshots/jstutor.png) *Programming in JavaScript*, the tutorial book, in !Bookworm |
+| ![Browse](docs/screenshots/browse.png) !Browse showing today's web, in tabs (`node serve.mjs --browser`) | ![Browse select menu](docs/screenshots/browse-select.png) A web page's drop-down list as a RISC OS menu |
 
 ## Running it
 
 ```sh
 node serve.mjs            # static server on http://localhost:8371/ (node serve.mjs 9000 for another port)
 node serve.mjs --host Work=~/riscos-files   # ... with a host folder as HostFS::Work (see HostFS below)
+node serve.mjs --browser  # ... with a real web browser engine for !Browse (see !Browse below)
+node serve.mjs --lan      # ... answering other computers on the network too
 ```
+
+`serve.mjs` only answers this computer unless `--lan` (every network interface) or `--listen=<address>` is given;
+HostFS and !Browse's engine only ever answer this computer.
 
 Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static web server works. The first visit in a
 session shows the boot sequence; later reloads go straight to the desktop.
@@ -76,7 +82,7 @@ reset:
 * `*ResetCMOS` resets the configuration only (!Configure settings, zoom, mouse buttons, Pinboard, alarms, printers).
 * Hold **Delete** while the page loads ("Delete-power-on") to reset both. Hold **R** ("R-power-on") to reset the
   configuration only.
-* Or load `?reset=all`, `?reset=disc` or `?reset=cmos`.
+* Or load `?reset=all`, `?reset=disc` or `?reset=cmos` (it asks first, as any web site could link to that address).
 
 ### HostFS: folders from this computer
 
@@ -113,6 +119,24 @@ dates), and renaming a directory there copies it. Changes made on the host show 
 directory, when the browser window gets the focus again, or at once where the browser or server can watch the
 folder.
 
+### !Browse: the web
+
+`$.Apps.!Browse` is a web browser in the style of Acorn's Browse (its button bar, URL bar and status bar with the
+spinning globe), for today's web. Started with `node serve.mjs --browser`, the server runs Chrome out of sight
+(Chrome for Testing, Chromium, Chrome or Edge, whichever it finds; `--browser=/path/to/chrome` picks one) and
+!Browse shows its pages: scripts, logins (kept in `~/.riscos-browse`, or `--browser-profile <dir>`), video, pages'
+sound (with Chrome for Testing or Chromium: `npx @puppeteer/browsers install chrome@stable`), tabs and pop-ups.
+The RISC OS way: a page's drop-down lists are RISC OS menus, its messages are error boxes, downloads come with a
+Save box to drag to a Filer window, a page asking for a file gets one dragged from the Filer, the window's scroll
+bars follow the page, and Adjust on a link opens it in a tab behind. File > Save keeps the HTML, Save location a
+URI file, Print to PDF a PDF; the hotlist and history are kept in Choices. URI (&F91) and URL (&B28) files open
+in !Browse, and other programs (and !Bookworm's links) use `*URLOpen_http <address>`.
+
+Chrome runs headless over a private pipe (no debugging port is opened); pages reach the desktop as a stream of
+JPEG frames, and the mouse and keys go back. Without `--browser` (any other server, or from another computer)
+!Browse shows pages in a frame instead: many sites refuse that, and it offers to open them in your own browser.
+A guide is on the hard disc, in `$.Docs.Browse` (source `tools/docs/Browse`); the design is in `docs/apps/Browse.md`.
+
 ## What's included
 
 **Desktop:** Wimp (3D window furniture from the Tools sprites, textured backgrounds, menus with dialogue-box
@@ -141,7 +165,7 @@ programming interface, a syntax check as you type, Run, throwback of errors to t
 a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
 font menu.
 
-**Applications** (46 descriptors in `src/apps/index.js`):
+**Applications** (48 descriptors in `src/apps/index.js`):
 
 | ROM (`Resources:$.Apps`) | Hard disc applications | Diversions (games and demos) |
 |---|---|---|
@@ -156,6 +180,7 @@ font menu.
 | !InetSetup: Internet configuration (and !Internet) | !ARPlayer: ARMovie player | !Madness: moves every other window |
 | | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
 | | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
+| | !Browse: web browser (see above) | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
 | | !SlideShow | |
 | | !CDPlayer: the Audio Panel (no CD drive) | |
@@ -233,6 +258,7 @@ node --test tests/core            # and tests/draw tests/edit tests/paint tests/
 node --test tests/integration     # cross-application flows + a long random ("monkey") test
 node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example programs
 node --test tests/jsapps          # the second tutorial's applications (!Contacts, !Organiser and their stages)
+node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds
 ```
@@ -251,7 +277,8 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * Printing uses the browser: !Printers renders the document to a page sized for the configured paper and opens the
   browser's print dialogue. Printer drivers and printer definition files are emulated, not run.
 * Sound: WaveSynth / Percussion voices, Maestro and the sample players are approximated with WebAudio.
-* Networking, CD-ROM, NFS/Econet, podules and the hardware-specific parts of !Configure are not provided.
+* Networking (other than !Browse's pages, which come from the host's own browser engine), CD-ROM, NFS/Econet, podules
+  and the hardware-specific parts of !Configure are not provided.
 * Outline fonts are the original RISC OS fonts converted to OpenType and drawn by the browser: close, but not
   pixel-identical to the RISC OS font manager (no kerning). Fonts found on the disc (e.g. made by !T1ToFont) are
   converted the same way when first used.

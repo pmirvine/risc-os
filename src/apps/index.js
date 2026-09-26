@@ -11,6 +11,7 @@ export default [
   './ARPlayer/app.js',
   './Blocks/app.js',
   './Bookworm/app.js',
+  './Browse/app.js',
   './Calc/app.js',
   './JsEdit/app.js',
   './CDPlayer/app.js',

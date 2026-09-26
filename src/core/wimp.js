@@ -767,12 +767,15 @@ export class Wimp extends Emitter {
     if (this.modal) { if (this.modal.onKey?.(e, k)) e.preventDefault(); return; }
     if (this.menus?.isOpen && this.menus.key(e, k)) { e.preventDefault(); return; }
     const c = this.caret;
-    let handled = false;
+    let handled = false, allowDefault = false;
     if (c?.window?.isOpen) {
       if (c.icon && c.icon.writable) handled = this._editKey(c, k, e);
       if (!handled) {
+        // a handler may set ev.allowDefault to let the host browser act on the key too (e.g. !Browse lets
+        // Ctrl-V become a paste event)
         const ev = c.window.emit('key', { code: k.code, char: k.char, key: e.key, shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, icon: c.icon, window: c.window, domEvent: e });
         handled = ev.handled || ev.defaultPrevented;
+        allowDefault = !!ev.allowDefault;
       }
     }
     if (!handled) {
@@ -790,7 +793,7 @@ export class Wimp extends Emitter {
       handled = ev.handled;
     }
     // stop browser defaults for keys the desktop owns
-    if (handled || c || /^F\d+$/.test(e.key) || ['Tab', 'Backspace', ' '].includes(e.key)) {
+    if (!allowDefault && (handled || c || /^F\d+$/.test(e.key) || ['Tab', 'Backspace', ' '].includes(e.key))) {
       if (!(e.metaKey && ['c', 'v', 'x', 'r', 'l'].includes(e.key.toLowerCase()))) e.preventDefault();
     }
   }

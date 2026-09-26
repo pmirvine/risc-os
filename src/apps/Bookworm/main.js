@@ -17,6 +17,7 @@ import { wimp } from '../../core/wimp.js';
 import { Menu } from '../../core/menu.js';
 import { vfs } from '../../core/vfs.js';
 import { sysvars } from '../../core/sysvars.js';
+import { os } from '../../core/os.js';
 import { loadTemplates } from '../../core/templates.js';
 import { loadManifest } from '../../core/sprites.js';
 import { parseMessagesText } from '../../core/messages.js';
@@ -107,6 +108,17 @@ function defineTypeface(desc) {
   return { name, names, alt };
 }
 const typefaceDesc = (f) => `${f.name}=${f.names.join(':')};${f.alt ?? ''}`;
+
+/**
+ * A web address: to the program that opens them (*URLOpen_<scheme>, which !Browse provides, as the URI
+ * handler's Alias$URLOpen_ variables did). False if there's none.
+ */
+function openElsewhere(url) {
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(url ?? '')?.[1]?.toLowerCase();
+  if (!scheme || scheme === 'file' || sysvars.get(`Alias$URLOpen_${scheme}`) == null) return false;
+  os.cli.run(`URLOpen_${scheme} ${url}`).catch(() => {});
+  return true;
+}
 
 const urlToPath = (url) => urlToPathWith(url, (q) => { try { return vfs.exists(q) ? vfs.canonical(q) : null; } catch { return null; } });
 
@@ -384,7 +396,7 @@ export default async function start(task, ctx) {
     // --- page loading (Fetch.c / browser_show_url_f)
     async go(url, opts = {}) {
       if (!url) return;
-      if (!/^file:/i.test(url)) { task.reportError(msg('FALON')); return; }
+      if (!/^file:/i.test(url)) { if (!openElsewhere(url)) task.reportError(msg('FALON')); return; }
       const { base, frag } = splitURL(url);
       if (this.url && this.doc && !opts.reload && splitURL(this.url).base.toLowerCase() === base.toLowerCase() && frag !== '' && !opts.fresh) {
         // a reference within the displayed page
@@ -699,7 +711,7 @@ export default async function start(task, ctx) {
       if (tn < 0) return true;
       const t = this.doc.tokens[tn];
       const url = resolveURL(this.url, t.href);
-      if (!url) { task.reportError(msg('FALON')); return true; }
+      if (!url) { if (!openElsewhere(String(t.href).trim())) task.reportError(msg('FALON')); return true; }
       if (ev.button === 'adjust') { newView(url); return true; }
       if (t.kind !== 'img') {           // browser_flash_token
         this.highlight = tn; this.win.invalidate();
