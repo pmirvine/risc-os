@@ -1,6 +1,9 @@
-// HostFS on the desktop: the permanent HostFS icon on the icon bar (Select: mount a folder), an icon for
-// each mounted folder (Select: open it, Menu: Rescan / Free / Dismount), folders dropped onto the page,
-// mounts remembered across reloads, and the *HostFS, *HostMount, *HostDismount, *HostMounts commands.
+// HostFS on the desktop: an icon on the left of the icon bar for each mounted folder (Select: open it, Menu:
+// Rescan / Free / Mount at start-up / Dismount / Forget), folders dropped onto the page, mounts remembered across
+// reloads (each mounted again at start-up unless that's turned off), and the *HostFS, *HostMount, *HostDismount,
+// *HostMounts commands. Mounting and the list of mounts are the application $.Utilities.!HostFS
+// (src/apps/HostFS), through os.hostfs; the mounts don't need it to be running, as ShareFS's discs don't need
+// !Access+.
 
 import { wimp } from '../wimp.js';
 import { vfs } from '../vfs.js';
@@ -17,21 +20,25 @@ const APP = 'HostFS Filer';
 let task = null;
 let server = null;            // {token, mounts} from serve.mjs, or null
 const slots = [];             // {id, name, state: 'scanning'|'mounted'|'offline', mount, handle, icon}
+const listeners = new Set();  // told when mounts change (the !HostFS Mounts window)
+let records = [];             // remembered mounts (the IndexedDB store): {id, kind: 'fsa'|'server', name, handle, server, readonly, startup}
+const notify = () => { for (const f of listeners) { try { f(); } catch (e) { console.warn(e); } } };
 
 const report = (msg) => wimp.reportError(msg, { appName: APP });
 
 export async function initHostFS() {
   task = wimp.createTask(APP, { kind: 'module', memory: 0 });
-  const main = wimp.iconbar.add({
-    task, side: 'left', priority: 0x4C000000, sprite: 'network', text: 'HostFS',
-    help: 'This is the HostFS icon.|MClick SELECT to mount a folder from this computer.|MClick MENU for other mounting options.|MThe file Docs.HostFS on the hard disc explains HostFS.',
-    onClick: () => pickFolder(),
-  });
-  main.menu = () => mainMenu();
   installCommands();
   installDrop();
   window.addEventListener('focus', () => { for (const v of os.filer.viewers.values()) vfs.revalidate(v.path); });
-  os.hostfs = { hostfs, pickFolder, pickReadOnly, mountBackend, dismount: (name) => dismountSlot(slotByName(name)), slots };
+  os.hostfs = {
+    hostfs, pickFolder, pickReadOnly, mountBackend, slots,
+    dismount: (name) => dismountSlot(slotByName(name)),
+    // for !HostFS
+    list: mountList, setStartup, mountRemembered, forget, serverFolders, mountServerFolder: (name) => mountServerByName(name),
+    supportsPicking: () => FSABackend.supported,
+    onChange: (f) => { listeners.add(f); return () => listeners.delete(f); },
+  };
   restore().catch((e) => console.warn('HostFS restore', e));
 }
 
@@ -54,7 +61,7 @@ function layout() {
       : `This is the HostFS folder '${s.name}'${s.mount?.readonly ? ' (read-only)' : ''}.|MClick SELECT to open it.|MClick MENU to rescan or dismount it.`;
   });
 }
-function addSlot(s) { slots.push(s); layout(); return s; }
+function addSlot(s) { slots.push(s); layout(); notify(); return s; }
 function removeSlot(s) {
   const i = slots.indexOf(s);
   if (i < 0) return;
@@ -62,6 +69,7 @@ function removeSlot(s) {
   if (s.icon) wimp.iconbar.remove(s.icon);
   s.icon = null;
   layout();
+  notify();
 }
 const slotByName = (name) => slots.find((s) => s.name.toLowerCase() === String(name ?? '').replace(/^hostfs::/i, '').replace(/\.\$.*$/, '').toLowerCase());
 
@@ -76,7 +84,9 @@ function slotMenu(s) {
     { text: 'Open $', shaded: !mounted, action: () => clickSlot(s) },
     { text: 'Rescan', shaded: !mounted, action: () => s.mount.rescan(s.mount.root, { deep: true }).catch((e) => report(e.message)) },
     { text: 'Free', shaded: !mounted, action: () => os.free?.showDisc?.(s.mount.disc) },
-    { text: s.state === 'offline' ? 'Forget' : 'Dismount', shaded: s.state === 'scanning', action: () => dismountSlot(s) },
+    ...(recordFor(s.id) ? [{ text: 'Mount at start-up', ticked: () => recordFor(s.id)?.startup !== false, action: () => setStartup(s.id, recordFor(s.id)?.startup === false) }] : []),
+    { text: 'Dismount', shaded: s.state === 'scanning', action: () => dismountSlot(s) },
+    ...(s.id.startsWith('server:') || !recordFor(s.id) ? [] : [{ text: 'Forget', action: () => forget(s.id) }]),
     ...(mounted && s.mount.backend.kind === 'fsa' && s.mount.readonly ? [{ text: 'Allow changes', action: () => allowChanges(s) }] : []),
   ]);
 }
@@ -92,16 +102,74 @@ async function allowChanges(s) {
   await mountBackend(backend, { slot: s });
 }
 
-function mainMenu() {
-  const serverItems = (server?.mounts ?? []).map((m) => {
-    const s = slots.find((x) => x.id === `server:${m.name}`);
-    return { text: m.name + (m.readonly ? ' (read-only)' : ''), ticked: !!s, action: () => (s ? dismountSlot(s) : mountServer(m)) };
+// ---------------------------------------------------------------- remembered mounts (for !HostFS)
+const recordFor = (id) => records.find((r) => r.id === id) ?? null;
+async function putRecord(rec) {
+  records = [...records.filter((r) => r.id !== rec.id), rec];
+  await hostfs.store.put(rec);
+  notify();
+}
+
+/** Every mount, mounted or remembered: {id, name, kind, state, readonly, startup, remembered}. */
+function mountList() {
+  const out = slots.map((s) => {
+    const r = recordFor(s.id);
+    return { id: s.id, name: s.name, kind: s.id.startsWith('server:') ? 'server' : s.mount?.backend.kind ?? r?.kind ?? 'fsa', state: s.state, readonly: !!(s.mount?.readonly ?? s.readonly), startup: r ? r.startup !== false : null, remembered: !!r };
   });
-  return new Menu('HostFS', [
-    { text: 'Mount folder...', shaded: !FSABackend.supported, action: () => pickFolder() },
-    { text: 'Mount read-only...', action: () => pickReadOnly() },
-    { text: 'Server folders', shaded: !serverItems.length, showArrowWhenShaded: true, submenu: serverItems.length ? new Menu('Server', serverItems) : null },
-  ]);
+  for (const r of records) {
+    if (out.some((o) => o.id === r.id)) continue;
+    if (r.kind === 'server' && !(server?.mounts ?? []).some((m) => `server:${m.name}` === r.id)) continue;   // not on this server
+    out.push({ id: r.id, name: r.name ?? r.server ?? r.id, kind: r.kind, state: 'dismounted', readonly: !!r.readonly, startup: r.startup !== false, remembered: true });
+  }
+  for (const m of server?.mounts ?? []) {
+    const id = `server:${m.name}`;
+    if (!out.some((o) => o.id === id)) out.push({ id, name: m.name, kind: 'server', state: 'dismounted', readonly: !!m.readonly, startup: true, remembered: false });
+  }
+  return out.sort((x, y) => x.name.localeCompare(y.name, 'en', { sensitivity: 'base' }));
+}
+
+/** Mount this one when the desktop starts? */
+async function setStartup(id, on) {
+  const r = recordFor(id) ?? (id.startsWith('server:') ? { id, kind: 'server', server: id.slice(7) } : null);
+  if (!r) return;
+  await putRecord({ ...r, startup: !!on, dismounted: undefined });
+}
+
+/** Mount a remembered (or server) folder again. A picked folder may need the browser's permission: call from a click. */
+async function mountRemembered(id) {
+  if (slots.some((s) => s.id === id && s.state === 'mounted')) return slots.find((s) => s.id === id);
+  if (id.startsWith('server:')) return mountServerByName(id.slice(7));
+  const off = slots.find((s) => s.id === id && s.state === 'offline');
+  if (off) return reconnect(off);
+  const r = recordFor(id);
+  if (!r?.handle) return null;
+  const backend = new FSABackend(r.handle, { readonly: !!r.readonly });
+  if (await backend.permission(true) !== 'granted') { report(`Permission to use '${r.name}' was refused`); return null; }
+  const s = await mountBackend(backend, { id, name: hostfs.uniqueName(r.name) });
+  if (s) s.handle = r.handle;
+  return s;
+}
+
+/** Dismount it (if it's mounted) and don't remember it. */
+async function forget(id) {
+  const s = slots.find((x) => x.id === id);
+  if (s) await dismountSlot(s, { forget: true });
+  records = records.filter((r) => r.id !== id);
+  await hostfs.store.del(id);
+  notify();
+}
+
+async function serverFolders() {
+  server ??= await serverInfo();
+  return server?.mounts ?? [];
+}
+async function mountServerByName(name) {
+  server ??= await serverInfo();
+  const m = server?.mounts.find((x) => x.name.toLowerCase() === String(name).toLowerCase());
+  if (!m) throw new CLIError(`The server has no HostFS folder called '${name}'`, 0x108D5);
+  const s = slots.find((x) => x.id === `server:${m.name}`);
+  if (s) return s;
+  return mountServer(m, { open: false });
 }
 
 // ---------------------------------------------------------------- mounting
@@ -123,7 +191,8 @@ export async function mountBackend(backend, { id, name, record, open = true, slo
   if (!m) { removeSlot(s); return null; }
   Object.assign(s, { state: 'mounted', mount: m });
   layout();
-  if (record) await hostfs.store.put({ ...record, id: s.id, name: s.name });
+  notify();
+  if (record) await putRecord({ startup: true, ...recordFor(s.id), ...record, id: s.id, name: s.name });
   if (open) os.filer.openDir(m.disc.prefix + '$');
   return s;
 }
@@ -174,7 +243,7 @@ export function pickReadOnly() {
 
 async function mountServer(m, { open = true } = {}) {
   const id = `server:${m.name}`;
-  const s = await mountBackend(new ServerBackend(m, server.token), { id, name: hostfs.uniqueName(m.name), open, record: { kind: 'server', server: m.name, dismounted: false } });
+  const s = await mountBackend(new ServerBackend(m, server.token), { id, name: hostfs.uniqueName(m.name), open, record: { kind: 'server', server: m.name } });
   return s;
 }
 
@@ -184,7 +253,8 @@ async function reconnect(s) {
   await mountBackend(backend, { slot: s });
 }
 
-async function dismountSlot(s) {
+/** Dismount: it stays in !HostFS's list (unless forgotten), no longer mounted at start-up. */
+async function dismountSlot(s, { forget: forgetting = false } = {}) {
   if (!s) throw new CLIError('No HostFS folder of that name is mounted');
   if (s.state === 'scanning') return;
   if (s.mount) {
@@ -193,20 +263,23 @@ async function dismountSlot(s) {
     await hostfs.dismount(s.mount);
   }
   removeSlot(s);
-  if (s.id.startsWith('server:')) await hostfs.store.put({ id: s.id, kind: 'server', server: s.id.slice(7), dismounted: true });
-  else await hostfs.store.del(s.id);
+  if (forgetting) return;
+  const r = recordFor(s.id) ?? (s.id.startsWith('server:') ? { id: s.id, kind: 'server', server: s.id.slice(7) } : null);
+  if (r) await putRecord({ ...r, startup: false, dismounted: undefined });
 }
 
 /** Start-up: server folders (unless dismounted last time) and remembered picked folders. */
 async function restore() {
-  const recs = await hostfs.store.all();
+  // (records from before the start-up choice: dismounted server folders stay so)
+  records = (await hostfs.store.all()).map((r) => (r.startup == null && r.dismounted != null ? { ...r, startup: !r.dismounted } : r));
   server = await serverInfo();
+  notify();
   for (const m of server?.mounts ?? []) {
-    const r = recs.find((x) => x.id === `server:${m.name}`);
-    if (!r?.dismounted) await mountServer(m, { open: false });
+    const r = recordFor(`server:${m.name}`);
+    if (r?.startup !== false) await mountServer(m, { open: false });
   }
   if (!FSABackend.supported) return;
-  for (const r of recs.filter((x) => x.kind === 'fsa' && x.handle)) {
+  for (const r of records.filter((x) => x.kind === 'fsa' && x.handle && x.startup !== false)) {
     const backend = new FSABackend(r.handle, { readonly: !!r.readonly });
     const p = await backend.permission(false);
     if (p === 'granted') {
@@ -262,12 +335,7 @@ function installCommands() {
     max: 1,
     run: async (a) => {
       if (!a[0]) { await pickFolder(); return; }
-      server ??= await serverInfo();
-      const m = server?.mounts.find((x) => x.name.toLowerCase() === a[0].toLowerCase());
-      if (!m) throw new CLIError(`The server has no HostFS folder called '${a[0]}'`, 0x108D5);
-      const s = slots.find((x) => x.id === `server:${m.name}`);
-      if (s) return;
-      await mountServer(m, { open: false });
+      await mountServerByName(a[0]);
     },
   });
   const dismountCmd = async (a) => { await dismountSlot(slotByName(a[0])); };
