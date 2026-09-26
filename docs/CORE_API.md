@@ -123,6 +123,14 @@ w.addIcon(spec) → Icon; w.icons[i]; w.iconAt(x, y); w.setIconText(i, t); w.get
 w.attachPane(pane, { dx, dy, w, h, fitWidth, fitHeight })   // pane kept at (x+dx, y+dy), directly in front, opened/closed with w
 w.pointer = 'ptr_write'                                      // pointer sprite while over the window ('' = default arrow)
 ```
+**On screen** (as the 3.71 Wimp, `wimp.constrainWindow`): a window is never bigger than the screen. Its top left
+is kept on screen unless WimpFlags bit 6 is set, its bottom right unless bit 5 is set (by moving the window up and
+left, then shrinking it if the top left went off). Both apply whatever the flags to a window that was closed, one
+with flag bit 13, menus, and once after a size drag, toggle-size, a mode (screen size) change or an extent that
+makes an on-screen window smaller (`win._onScreenOnce`, the Wimp's `ws_onscreenonce`). So dragging the size icon
+past the bottom or right keeps the window growing, pushed up / left until it fills the screen; with bits 5 and 6
+clear the drag stops at the edge instead. Window flag bit 6 (`noBounds`) turns every check off. Moving a window
+by its title bar is never pushed back.
 Shift-Select (or Alt-click) on a close icon iconises a window onto the Pinboard (`iconise` event, cancellable);
 double-clicking the icon re-opens it. The mouse wheel scrolls the window under the pointer (`wheel` event
 `{dx, dy}` first — return true to handle it yourself; windows with scroll-request flags get `scrollrequest`).

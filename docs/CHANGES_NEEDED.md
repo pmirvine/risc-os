@@ -259,3 +259,15 @@ docs/ASSETS.md §5).
 * `src/apps/Bookworm/main.js`: links to `http:` / `https:` pages go to `*URLOpen_<scheme>` when one is set (!Browse),
   instead of the "only file:" error.
 * `assets/filetypes.json`: `&F91` URI, `&B28` URL. `tools/build.mjs` runs `disc-browse.mjs`.
+
+## Windows kept on screen as the 3.71 Wimp does — changes in shared code
+**Status:** done.
+* `src/core/wimp.js` `constrainWindow(win, p, {force})` follows Wimp02 `int_open_window`: size capped at the screen,
+  top left on screen unless WimpFlags bit 6, bottom right unless bit 5 (moving the window), then shrink; forced for
+  windows that were closed, flag bit 13, menus and `win._onScreenOnce` (size drags, toggle-size, mode changes,
+  an extent making an on-screen window smaller). `_sizeDrag`: with bits 5 and 6 clear a size drag stops at the
+  screen edge (it used to move the window up). `wimp.config.offScreenBR` / `noBounds` from WimpFlags bits 5 / 6
+  (`src/core/config.js`). `src/core/window.js`: `open()` passes `force`, `setExtent` / `toggleSize` set the flag.
+* Behaviour change: resizing past the bottom / right of the screen pushes the window up / left (it used to run
+  off screen); windows reopened from closed, and windows asked to be bigger than the screen, are kept on it.
+  Test: `tests/core/act-resizeedge.mjs`.

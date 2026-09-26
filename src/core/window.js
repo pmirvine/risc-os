@@ -309,7 +309,9 @@ export class Window extends Emitter {
     h = Math.round(this.hasFlag(WF.ignoreBottom) ? Math.max(h, Math.min(this._minH(), extH)) : clamp(h, Math.min(this._minH(), extH), extH));
     scrollX = Math.round(clamp(scrollX, ext.x0, Math.max(ext.x0, ext.x1 - w)));
     scrollY = Math.round(clamp(scrollY, ext.y0, Math.max(ext.y0, ext.y1 - h)));
-    const pos = this.wimp.constrainWindow(this, { x: Math.round(x), y: Math.round(y), w, h });
+    // a window that was closed, or asked for by a size drag, toggle, mode change or smaller extent, goes on screen
+    const pos = this.wimp.constrainWindow(this, { x: Math.round(x), y: Math.round(y), w, h }, { force: !wasOpen || !!this._onScreenOnce });
+    this._onScreenOnce = false;
     const moved = pos.x !== this.x || pos.y !== this.y || pos.w !== this.w || pos.h !== this.h;
     const scrolled = scrollX !== this.scrollX || scrollY !== this.scrollY;
     Object.assign(this, pos, { scrollX, scrollY });
@@ -397,7 +399,12 @@ export class Window extends Emitter {
   get titleString() { return this.title; }
 
   setExtent(e) {
+    const old = this.extent;
     this.extent = normExtent(e);
+    // Wimp02: a window wholly on screen that the new extent makes smaller stays on screen
+    const n = this.extent, f = this._frame;
+    if (this.isOpen && f && (n.x1 - n.x0 < this.w || n.y1 - n.y0 < this.h) && (old.x1 - old.x0 >= this.w && old.y1 - old.y0 >= this.h)
+      && this.x >= f.left && this.y >= f.topH && this.x + this.w + f.rightW <= this.wimp.width && this.y + this.h + f.botH <= this.wimp.height) this._onScreenOnce = true;
     if (this.isOpen) this.open({});
     else this._layout();
   }
@@ -409,6 +416,7 @@ export class Window extends Emitter {
 
   /** Toggle between full size and the previous size (toggle-size icon). */
   toggleSize(front = true) {
+    this._onScreenOnce = true;              // (Wimp03)
     if (this.fullSize && this._prevState) {
       const p = this._prevState;
       this.fullSize = false;
