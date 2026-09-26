@@ -12,8 +12,9 @@ const NEW_JS = '// \n';
 
 export default async function start(task, ctx) {
   const app = await new JsEditApp(task, ctx.app?.info ?? {}).init();
-  const quit = async () => { if (await app.mayQuit()) { app.disposeAll(); task.quit(); } };
-  task.on('quit', () => { app.disposeAll(); if (os.hooks.throwback === takeError) os.hooks.throwback = null; });
+  const finish = () => { app.dirs.quit(); app.disposeAll(); };
+  const quit = async () => { if (await app.mayQuit()) { finish(); task.quit(); } };
+  task.on('quit', () => { finish(); if (os.hooks.throwback === takeError) os.hooks.throwback = null; });
 
   const create = async (type, text = '') => {
     const s = await app.open('', type);
@@ -29,6 +30,8 @@ export default async function start(task, ctx) {
       { text: 'JSON', action: () => create(0xF75) },
       { text: 'Text', action: () => create(0xFFF) },
     ]) },
+    { text: 'Open directory', submenu: () => new Menu('Directory', [{ text: '', writable: { value: app.dirs.last ?? 'ADFS::HardDisc4.$', maxLen: 255 }, action: (e) => { if (e.value.trim()) app.dirs.open(e.value.trim()); } }]),
+      help: 'Move the pointer right, type the name of a directory and press Return, to see its files in a directory view.|MOr drag a directory to the JsEdit icon.' },
     { text: 'Throwback', action: () => app.throwback.open(), dotted: true },
     { text: 'Quit', action: quit },
   ]);
@@ -38,8 +41,9 @@ export default async function start(task, ctx) {
     side: 'right',
     onClick: () => create(0xF81, NEW_JS),
     menu: iconMenu,
-    help: () => 'This is the JsEdit icon.|MClick SELECT to start a new JavaScript program.|MClick MENU for other options.|MDrag a file here to edit it.',
-    onDataLoad: (ev) => { for (const f of ev.files ?? []) if (f.filetype !== 0x1000 && f.filetype !== 0x2000) app.open(f.path, f.filetype); },
+    help: () => 'This is the JsEdit icon.|MClick SELECT to start a new JavaScript program.|MClick MENU for other options.|MDrag a file here to edit it, or a directory to see its files.',
+    // files are edited; directories (and applications) open in a directory view
+    onDataLoad: (ev) => { for (const f of ev.files ?? []) { if (f.filetype === 0x1000 || f.filetype === 0x2000) app.dirs.open(f.path); else app.open(f.path, f.filetype); } },
     onDataSave: async (ev) => {
       const s = await app.open('', ev.filetype >= 0 ? ev.filetype : 0xFFF);
       if (!s) return;
@@ -56,14 +60,17 @@ export default async function start(task, ctx) {
     if (!app.modifiedCount) return;
     msg.object?.();
     if (await app.mayQuit()) {
-      app.disposeAll();
+      finish();
       if (msg.single) task.quit();
       else wimp.emit('hotkey:CtrlShiftF12', {});
     }
   });
-  task.onMessage('Quit', () => { app.disposeAll(); task.quit(); });
-  task.on('run', ({ file }) => { if (file) app.open(file, 0); });
+  task.onMessage('Quit', () => { finish(); task.quit(); });
+  const openPath = (p) => (os.vfs.isDir(p) ? app.dirs.open(p) : app.open(p, 0));
+  task.on('run', ({ file }) => { if (file) openPath(file); });
 
-  if (ctx.file) await app.open(ctx.file, 0);
+  task.jsedit = app;                               // (for tests)
+  await app.dirs.restore();                        // the directory views open when it last quit
+  if (ctx.file) await openPath(ctx.file);
   return app;
 }

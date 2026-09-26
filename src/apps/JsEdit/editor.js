@@ -15,6 +15,7 @@ import { CodeView } from './view.js';
 import { loadModes, allModes, modeForType, modeNamed } from './modes.js';
 import { Completion } from './complete.js';
 import { Throwback, FunctionsList } from './lists.js';
+import { DirViews } from './dirs.js';
 
 const TOOLBAR_H = 32;
 const CHECK_DELAY = 900;            // ms after typing stops before the syntax check runs
@@ -25,6 +26,7 @@ export class JsEditApp extends EditApp {
     await super.init();                         // Edit's messages and templates (Find, Goto, Save, queries ...)
     await loadModes(os);
     this.throwback = new Throwback(this);
+    this.dirs = new DirViews(this);             // directory views (./dirs.js)
     return this;
   }
 
@@ -268,6 +270,13 @@ export class CodeText extends TextState {
     clearTimeout(this._checkT); clearTimeout(this._fnT);
     this.functions?.win.delete();
     super.dispose();
+    this.app.dirs?.marks();
+  }
+
+  /** (and the directory views' marks: bold for files being edited, * for changes) */
+  updateTitles() {
+    super.updateTitles();
+    this.app.dirs?.marks();
   }
 
   // ------------------------------------------------------------------ menus

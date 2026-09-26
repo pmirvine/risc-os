@@ -3,4 +3,5 @@ import { suite } from '../lib/suite.mjs';
 suite('jsedit', [
   { name: 'lexers', args: ['tests/jsedit/lexers.mjs'], browser: false },
   { name: 'editor', args: ['tests/jsedit/editor.mjs'] },
+  { name: 'dirs', args: ['tests/jsedit/dirs.mjs'] },
 ]);
