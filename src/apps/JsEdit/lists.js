@@ -8,7 +8,7 @@ import { wimpColour } from '../../core/palette.js';
 const ROW_H = 20;
 
 /** A window listing lines of text, each with an action on click. */
-class ListWindow {
+export class ListWindow {
   constructor(task, title, { x = 120, y = 120, w = 460, h = 220 } = {}) {
     this.task = task;
     this.items = [];                          // {text, strong, go()}

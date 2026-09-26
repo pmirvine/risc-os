@@ -16,7 +16,8 @@ The tutorial `$.Manuals.JSTutor` uses it.
 | `view.js` | `CodeView extends EditView`: token cache per line, gutter with line numbers and error marks, colouring (system font strips per colour, bold by overstrike), caret-line shading, bracket matching, smart indent (Return, closers, Tab/Shift-Tab on lines), the toolbar inset |
 | `modes.js` | mode files (parser), lexers `c-like` (comments, strings, template strings with `${…}`, numbers, regex literals), `basic` (line numbers, keywords from BBC BASIC's tables, REM, `&`/`%` numbers, PROC/FN, `*` commands), `obey`, `text`; line state carried between lines |
 | `complete.js` | the completion list (mode `Complete` entries, keywords, words in the text; member completion by object or by member name) |
-| `lists.js` | Throwback and Functions windows |
+| `lists.js` | Throwback and Functions windows (`ListWindow`) |
+| `dirs.js` | directory views: `DirViews` (all of them: opening, remembering them in `Choices:JsEditDirs`, Find in files into a `Found` list) and `DirView` (one: the tree, its menu, keys, drags) |
 | `Modes/*` | JavaScript, JSON, BASIC, Obey, Text — copied to `!JsEdit.Modes` on the disc, where users can change them |
 | `Help.txt`, `sprites.json` | `!Help`, `!Sprites` (character maps, `tools/lib/spritewrite.mjs`) |
 
@@ -43,5 +44,22 @@ The tutorial `$.Manuals.JSTutor` uses it.
 * Fonts: the system font by default; any font in `Display ▸ Font list`, including the Nerd Fonts
   (`tools/nerdfonts.mjs`). Bold keywords use weight 700 with outline fonts, an overstrike with the system font.
 * Modes: read from `<JsEdit$Dir>.Modes` (else the copies in `src/apps/JsEdit/Modes`); format in `Help.txt`.
+
+* Directory views (`dirs.js`): a directory or application dropped on the icon bar icon (or `Open directory ▸`
+  on its menu, or `*Run <JsEdit$Dir> <directory>`) opens a tree in the Filer's small-icon style (`fileSprite`,
+  directories first, then names), drawn on a canvas, 22 px rows. Sub-directories fold open by their arrow,
+  double-click or Right/Left; applications run on double-click but open by their arrow. Double-click / Return
+  edits text files (a type one of the modes colours, Text or untyped: `isTextType`) and runs anything else with
+  `os.filer.run` (Shift: edit as text). Texts being edited are bold, `*` when modified (`CodeText.updateTitles` /
+  `dispose` call `dirs.marks()`). It follows `vfs.on('change')` for the directories shown. Menu: the selection
+  (Open, Edit as text, Rename ▸, Delete — asks, then Filer_Action —, Open in Filer), New file ▸ (type from a
+  `/js`, `/bas`, `/json`… suffix, else the commonest text type beside it, else JSScript; it opens at once), New
+  directory ▸, Select all, Clear selection, Expand all, Collapse all, Find in files ▸ (case-insensitive, text
+  files up to 1 MB, into a `Found` list: click a line to go there), Open in Filer, Refresh. Renaming moves open
+  texts with their files. Drags: out to a Filer window (or a directory in it, or another view) copies (Shift
+  moves), elsewhere a DataLoad (e.g. into a text: the path); files dropped in are copied (Shift: moved) into the
+  directory under the pointer. Keys: Up/Down, Page Up/Down, Right/Left, Return, Delete, Escape, F5, letters.
+  Views (with their open sub-directories and places) are saved when they change and when !JsEdit quits, and
+  reopened when it starts.
 
 Tests: `node --test tests/jsedit` (lexers without a browser; the editor in the desktop).

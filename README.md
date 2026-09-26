@@ -161,8 +161,9 @@ and then !Organiser, a personal organiser in the spirit of Lotus Organizer (a ri
 Address, Notepad, Planner and Anniversary sections, links, alarms, printing and iCalendar), with a small toolkit
 of their own; every chapter's stage is in `$.Examples.JSApps`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
 colouring for JavaScript, BBC BASIC, Obey and JSON, line numbers, smart indentation, completion of the desktop's
-programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list and
-a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
+programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list,
+directory views (a tree of a directory's files, with New file, Rename, Delete, Find in files and drags to and
+from the Filer) and a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
 font menu.
 
 **Applications** (48 descriptors in `src/apps/index.js`):
