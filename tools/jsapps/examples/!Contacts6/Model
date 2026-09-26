@@ -1,0 +1,80 @@
+// Model - the contacts in an address book, and nothing about windows.
+//
+//   const book = new Book();
+//   const c = book.add({ first: 'Ann', last: 'Smith' });  (an id too)
+//   book.update(c.id, { phone: '...' });  book.remove(c.id);
+//   book.get(id), book.all(), book.size
+//   book.list({ search: 'smi', sort: 'last' })   (sorted, filtered)
+// Every change emits 'change'.
+import { Emitter } from './Toolkit/Emitter';
+
+export const SORTS = {
+  last: 'Surname', first: 'First name', company: 'Company',
+};
+export const CATEGORIES = ['Family', 'Friends', 'Work', 'Other'];
+
+export class Book extends Emitter {
+  constructor() {
+    super();
+    this.contacts = new Map();         // id -> contact
+    this.nextId = 1;
+  }
+
+  get size() { return this.contacts.size; }
+  get(id) { return this.contacts.get(id); }
+  all() { return [...this.contacts.values()]; }
+
+  add(fields) {
+    const id = fields.id ?? this.nextId;
+    this.nextId = Math.max(this.nextId, id + 1);
+    const c = { ...fields, id };
+    this.contacts.set(id, c);
+    this.emit('change', { added: c });
+    return c;
+  }
+  update(id, fields) {
+    const c = { ...this.contacts.get(id), ...fields, id };
+    this.contacts.set(id, c);
+    this.emit('change', { updated: c });
+    return c;
+  }
+  remove(id) {
+    const c = this.contacts.get(id);
+    this.contacts.delete(id);
+    this.emit('change', { removed: c });
+    return c;
+  }
+
+  /** The contacts to show: those matching search, in order. */
+  list({ search = '', sort = 'last' } = {}) {
+    const s = search.toLowerCase();
+    const found = this.all().filter((c) => !s || matches(c, s));
+    return found.sort((a, b) => compare(a, b, sort));
+  }
+}
+
+/** The name to show for a contact: 'Smith, Ann', or its company. */
+export function nameOf(c) {
+  if (c.last && c.first) return `${c.last}, ${c.first}`;
+  return c.last || c.first || c.company || '(no name)';
+}
+/** The first telephone number a contact has. */
+export const phoneOf = (c) => c.mobile || c.work || c.home || '';
+
+// a contact matches if any of its fields contains the search text
+const matches = (c, s) => Object.entries(c).some(([k, v]) =>
+  k !== 'id' && String(v).toLowerCase().includes(s));
+
+// sort by the chosen field, then by name
+function compare(a, b, sort) {
+  const key = (c) => (sort === 'first' ? [c.first, c.last]
+    : sort === 'company' ? [c.company, c.last, c.first]
+    : [c.last || c.company, c.first]);
+  const ka = key(a), kb = key(b);
+  for (let i = 0; i < ka.length; i++) {
+    const d = (ka[i] ?? '').localeCompare(kb[i] ?? '', 'en',
+      { sensitivity: 'base' });
+    if (d) return d;
+  }
+  return a.id - b.id;
+}

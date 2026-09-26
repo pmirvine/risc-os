@@ -1,0 +1,229 @@
+An address book shouldn't be an island. Other programs - the address books in phones, email programs,
+spreadsheets - can swap contacts using two common formats, vCard and CSV. In this chapter Contacts learns to
+read and write both: you'll be able to drop other programs' files on it, save contacts for other programs,
+and drag contacts straight out of the list. The program is <CODE>!Contacts8</CODE>, and the new code is in the
+toolkit module <CODE>Formats</CODE> and a module of Contacts' own, <CODE>Import</CODE>.<P>
+
+<H2>Two formats</H2>
+A <I>vCard</I> is the standard way to pass on one person's details; a <CODE>.vcf</CODE> file holds one or
+more of them. Each card is lines of text between <CODE>BEGIN:VCARD</CODE> and <CODE>END:VCARD</CODE>, each
+line a property's name, a colon and its value:<P>
+<PRE>
+BEGIN:VCARD
+VERSION:3.0
+N:Smith;Ann;;Dr;
+FN:Ann Smith
+TEL;TYPE=CELL:07700 900123
+EMAIL;TYPE=INTERNET:ann.smith@example.com
+ADR;TYPE=HOME:;;1 Acorn Road\nCambridge;;;CB1 2AB;
+END:VCARD
+</PRE>
+Some properties have several parts separated by semicolons: <CODE>N</CODE> is surname; first name; other
+names; title; suffix, and <CODE>ADR</CODE> has seven parts (post office box; extended address; street;
+town; county or region; postcode; country). Contacts writes its address into the street part and the
+postcode into the postcode part; reading, it puts the street, town, region and country together, a line
+each, as the address. Things after a semicolon in the name (<CODE>TYPE=CELL</CODE>) are <I>parameters</I>, saying what
+kind of telephone number or address it is. A newline in a value is written <CODE>\n</CODE>, and a
+semicolon or comma that is part of a value has a <CODE>\</CODE> in front. Contacts writes version 3.0 and
+reads 3.0 and the older 2.1, which many programs still write.<P>
+<I>CSV</I> (comma-separated values) is simpler: a table as text, a line for each row with the values
+separated by commas. The first row usually holds the columns' titles:<P>
+<PRE>
+First name,Surname,Mobile,Email
+Ann,Smith,07700 900123,ann.smith@example.com
+"Bob, Jr",Jones,,bob@acornpies.example
+</PRE>
+A value containing a comma, a quote or a newline is put in double quotes, and a quote inside it is written
+twice. Every spreadsheet reads and writes CSV, which makes it the easy way to get a list of names into and
+out of other programs.<P>
+
+<H2>Characters</H2>
+There is a snag. Text is stored as numbers, one for each character, and different systems number characters
+differently. RISC OS 3.71 uses <I>Latin-1</I>: 256 characters, one byte each, enough for English and western
+European languages (&pound;, &eacute;, &szlig;...). Today's programs use <I>Unicode</I>, which has room for
+every alphabet (and emoji), usually stored as <I>UTF-8</I>: the first 128 characters are one byte each, the
+same as Latin-1, but everything else takes two to four bytes. So a UTF-8 file read as if it were Latin-1
+shows &eacute; as two strange characters, and a Latin-1 file read as UTF-8 goes wrong the other way.<P>
+<CODE>Formats</CODE> has two functions to deal with this:<P>
+<!--#listing toolkit/Formats 22-33-->
+<CODE>decode</CODE> turns the bytes of a file into text. It tries UTF-8 first - <CODE>TextDecoder</CODE>
+with <CODE>fatal: true</CODE> gives up with an error if the bytes aren't valid UTF-8 - and if that fails,
+takes each byte as a Latin-1 character. (<CODE>catch {</CODE> with no name in brackets is allowed when the
+error itself isn't needed. <CODE>Array.from(bytes, fn)</CODE> makes an array from something list-like - here
+the bytes - passing each through <CODE>fn</CODE> on the way; <CODE>String.fromCharCode(b)</CODE> is the
+character with code <CODE>b</CODE>.) Any character outside Latin-1 becomes a <CODE>?</CODE>, because
+RISC OS couldn't show it. <CODE>encode</CODE> turns text into UTF-8 bytes for the files Contacts writes for
+other programs, which will expect UTF-8.<P>
+
+<H2>Writing vCards</H2>
+<!--#listing toolkit/Formats 35-83-->
+<CODE>esc</CODE> puts a <CODE>\</CODE> before backslashes, commas and semicolons and writes newlines as
+<CODE>\n</CODE>. <CODE>vcardWrite</CODE> builds each card as an array of lines. The little function
+<CODE>add</CODE> only adds a property if the contact has a value for it, so there are no empty lines.<P>
+Lines are joined with <CODE>\r\n</CODE> (carriage return and newline), as the vCard standard asks, and a line
+longer than the standard allows is <I>folded</I>: broken, with a space at the start of the next line. The
+limit is 75 <I>octets</I> - bytes - as the file is written, and Contacts writes UTF-8, where a character above
+127 (such as &eacute;) takes two bytes. So <CODE>fold</CODE>, which is exported because the organiser's
+calendar files use the same rule (chapter 16), goes through the line a character at a time with
+<CODE>for...of</CODE>, counting one or two for each, and starts a new line (with its space) before the count
+would pass 75.<P>
+
+<H2>Reading vCards</H2>
+Reading is the harder half, because other programs write vCards in many small variations.<P>
+<!--#listing toolkit/Formats 85-115-->
+First the folded lines are joined up again. vCard 2.1's <I>quoted-printable</I> values have line breaks of
+their own - a line ending in <CODE>=</CODE> goes on on the next - so a line ending in <CODE>=</CODE> is joined
+to the next, but only if its parameters say <CODE>QUOTED-PRINTABLE</CODE>: other values, such as a picture
+coded as text, may end in <CODE>=</CODE> quite properly, and joining those would swallow the card's
+<CODE>END</CODE>. Then each line is split by a regular expression into the property's
+name (<CODE>m[1]</CODE>), its parameters (<CODE>m[2]</CODE>) and its value (<CODE>m[3]</CODE>). Some
+programs put a group name before the property (<CODE>item1.EMAIL</CODE>); <CODE>replace(/^.*\./, '')</CODE>
+removes it. Quoted-printable values have bytes written as <CODE>=</CODE> and two hex digits
+(<CODE>=E9</CODE> is &eacute; in Latin-1). Those are turned back into bytes, and if the parameters say
+<CODE>CHARSET=UTF-8</CODE>, the bytes are decoded as UTF-8 with <CODE>decode</CODE>
+(<CODE>Uint8Array.from</CODE> makes the array of bytes it needs), because in UTF-8 &eacute; is two bytes,
+<CODE>=C3=A9</CODE>.<P>
+<!--#listing toolkit/Formats 116-157-->
+A <CODE>switch</CODE> then puts each property's value into the contact being read. <CODE>c.mobile ??= v</CODE>
+(chapter 3) sets it only if it isn't set already: a card may have several mobile numbers, and Contacts keeps
+the first. <CODE>const [last, first, , title] = ...</CODE> is array destructuring, as in chapter 3's
+<CODE>dateKey</CODE>; the empty place between the commas skips the third part.<P>
+<CODE>parts</CODE> splits a value at its semicolons - but not at <CODE>\;</CODE>, a semicolon that is part
+of the value. That's what <CODE>(?&lt;!\\)</CODE> in its regular expression means: "not after a
+backslash".<P>
+At <CODE>END</CODE>, a card with no name parts but a full name (<CODE>FN</CODE>) uses that as the first
+name, and the contact is added to the list.<P>
+
+<H2>CSV</H2>
+<!--#listing toolkit/Formats 162-208-->
+<CODE>csvWrite</CODE> makes the header row from the fields' titles, then a row per contact, quoting the
+values that need it. <CODE>csvRows</CODE> reads a CSV file a character at a time, because a quoted value can
+contain commas and even newlines, so splitting at every comma or line break would go wrong. It remembers
+whether it is inside quotes: there, a doubled quote is one quote and a single quote ends the value; outside,
+a comma ends a value and a newline ends a row. <CODE>rows.at(-1)</CODE> is the last row (chapter 3).<P>
+<CODE>csvRead</CODE> starts with <CODE>const [header, ...rows] = csvRows(text)</CODE>: destructuring with a
+<I>rest</I> - <CODE>...rows</CODE> takes everything after the first item as an array of its own, so
+<CODE>header</CODE> is the first row and <CODE>rows</CODE> the others. It matches each column to a field by its title, ignoring case, spaces and punctuation, so
+<CODE>Surname</CODE>, <CODE>surname</CODE> and <CODE>SURNAME</CODE> all find the surname. Columns it doesn't
+know are left out.<P>
+All of these are ordinary functions of text, with nothing to do with windows, so Contacts' Check program
+tests them: it writes a card and a CSV file and reads them back, reads a vCard 2.1 card and a CSV value with
+quotes and a comma in it, and decodes UTF-8 text containing a character RISC OS doesn't have.<P>
+
+<H2>Files dropped on Contacts</H2>
+Contacts' own module <CODE>Import</CODE> uses <CODE>Formats</CODE> to add other programs' contacts to an
+address book:<P>
+<!--#listing !Contacts8/Import-->
+<CODE>importData</CODE> decodes the bytes, and reads them as vCards if they contain
+<CODE>BEGIN:VCARD</CODE>, otherwise as CSV. <CODE>importFiles</CODE> deals with a list of dropped files: a
+Contacts file is opened as an address book of its own, and anything else is imported.<P>
+When files are dropped on a window, the window gets a <CODE>'dataload'</CODE> event listing them, as Doodle
+did in the first book. Contacts' window also listens for <CODE>'datasave'</CODE>, which is what happens when another
+program's Save box icon is dropped on it - Edit's, say:<P>
+<!--#listing !Contacts8/MainWindow 57-64-->
+Then there is no file: the data comes straight from the other program. <CODE>await ev.receive()</CODE> asks
+for it and gives back its bytes.<P>
+Files dropped on the icon bar icon make a new address book to hold what they bring:<P>
+<!--#listing !Contacts8/!RunImage 63-68-->
+<!--#pic C8Import-->
+Here the file <CODE>Colleagues</CODE>, holding three vCards, has been dropped on Friends. Its contacts are
+in the list, and the title has a <CODE>*</CODE>: the book has changed.<P>
+
+<H2>Saving for other programs</H2>
+<I>File &gt; Export</I> has two submenus, <I>vCard</I> and <I>CSV</I>, each a Save box. The Style Guide's
+rule is that Save saves in the application's own format, and other formats are <I>exported</I>:<P>
+<!--#listing !Contacts8/MainWindow 119-133-->
+It exports the chosen contacts, or, if none is chosen, all the contacts the list is showing - so with
+something typed in the Find field, only the ones that match. The vCard file is given type Text, as
+vCard has no RISC OS type of its own, and the CSV file type &amp;DFE, which is CSV's. The names end
+<CODE>/vcf</CODE> and <CODE>/csv</CODE>: RISC OS writes a <CODE>.</CODE> in a file name as <CODE>/</CODE>,
+so on a computer that uses extensions (or through HostFS) they become <CODE>Cards.vcf</CODE> and
+<CODE>Contacts.csv</CODE>, which other programs recognise.<P>
+<!--#pic C8Export-->
+
+<H2>Dragging contacts out</H2>
+The most RISC OS way to pass contacts on is to drag them: choose some, and drag them from the list to a
+directory display - or into another program's window. <CODE>ListView</CODE> emits a <CODE>'drag'</CODE>
+event when a drag starts on the chosen rows, and the window passes it on:<P>
+<!--#listing !Contacts8/MainWindow 134-141-->
+<CODE>dragSave</CODE>, which the desktop provides, does the rest: it drags a file icon, and when you let go
+it writes the data into the directory display it's dropped on, or offers it to the program whose window it
+is. The file is named after the contact (with anything that isn't a letter or digit turned into
+<CODE>_</CODE>, which a file name can hold), or <CODE>Cards</CODE> for several.<P>
+
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Start !Contacts8 and drag <CODE>Friends</CODE> onto its icon. Then drag <CODE>Colleagues</CODE>
+from the same directory onto the Friends window: three contacts are added.<P>
+<DT><DD>2  Choose a contact and drag it to a directory display. A file named after them appears. Shift-
+double-click it to read the vCard in JsEdit.<P>
+<DT><DD>3  Choose a few contacts, and use <I>Menu &gt; File &gt; Export &gt; CSV</I> to save them. Open the
+file in JsEdit, change a name, save it and drop it on a new, empty book from the icon bar.<P>
+</DL>
+
+<H2>Summary</H2>
+<UL>
+<LI>vCard (a card per person, <CODE>NAME;PARAMETERS:value</CODE> lines) and CSV (rows of comma-separated
+values, with a header row) are how contacts pass between programs.<P>
+<LI>RISC OS 3.71 uses Latin-1; other programs use UTF-8. Decode files with <CODE>TextDecoder</CODE>, turning
+characters RISC OS can't show into <CODE>?</CODE>; encode exported files as UTF-8.<P>
+<LI>Keep file formats in functions of text only, and test them.<P>
+<LI><CODE>'dataload'</CODE> brings dropped files; <CODE>'datasave'</CODE> and <CODE>ev.receive()</CODE>
+bring data straight from another program.<P>
+<LI>Save in your own format; export others with Save boxes of their own; <CODE>dragSave</CODE> lets the user
+drag data out of a window.<P>
+<LI><CODE>x ??= y</CODE> sets <CODE>x</CODE> only if it has no value; <CODE>const [a, b] = array</CODE>
+takes an array apart.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  After importing, tell the user how many contacts were added (<CODE>importData</CODE> returns the
+number), in an information box.<P>
+<DT><DD>2  Add <I>Export &gt; Phone list</I>: a Text file with a line for each contact, their name and
+telephone number.<P>
+<DT><DD>3  Some programs write CSV with semicolons instead of commas. Make <CODE>csvRows</CODE> take the
+separator as a second argument, and <CODE>csvRead</CODE> use a semicolon if the header line has more
+semicolons than commas.<P>
+<DT><DD>4  Holding Shift while dragging contacts out could save them as CSV instead. The drag event has a
+<CODE>shift</CODE> property: use it.<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  In <CODE>importFiles</CODE> (and the <CODE>'datasave'</CODE> handler):
+<PRE>
+const n = importData(doc, await vfs.readFile(f.path));
+if (n) {
+  reportError(`${n} contacts added`,
+    { appName: 'Contacts', category: 'info' });
+}
+</PRE>
+(Without <CODE>appName</CODE> the box would be titled <I>Error</I>, which it isn't.)
+<DT><DD>2  A third kind in <CODE>exportBox</CODE>:
+<PRE>
+const lines = this.chosen().map((c) =&gt;
+  `${nameOf(c)}  ${phoneOf(c)}`);
+return saveAs({ task: this.app.task, filetype: 0xFFF,
+  filename: 'Phones', getData: async () =&gt;
+    lines.join('\n') + '\n' });
+</PRE>
+and <CODE>{ text: 'Phone list', submenu: () =&gt; this.exportBox('phones') }</CODE> in the Export menu.<P>
+<DT><DD>3  Use <CODE>sep</CODE> in place of <CODE>','</CODE> in <CODE>csvRows</CODE>, and in
+<CODE>csvRead</CODE>:
+<PRE>
+const first = text.split('\n')[0];
+const count = (ch) =&gt; first.split(ch).length;
+const sep = count(';') &gt; count(',') ? ';' : ',';
+const [header, ...rows] = csvRows(text, sep);
+</PRE>
+<DT><DD>4  In <CODE>dragOut</CODE>:
+<PRE>
+const csv = ev.shift;
+dragSave(ev, { task: this.app.task,
+  leafname: leaf + (csv ? '/csv' : '/vcf'),
+  filetype: csv ? 0xDFE : 0xFFF,
+  getData: async () =&gt;
+    encode(csv ? csvWrite(sel) : vcardWrite(sel)) });
+</PRE>
+</DL>

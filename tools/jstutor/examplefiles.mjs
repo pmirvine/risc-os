@@ -6,23 +6,59 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sprite, spriteFile } from '../lib/spritewrite.mjs';
 
-const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'examples');
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
-/** [{parts: RISC OS names below $.Examples.JS, dir: true} | {parts, type: 'f81'|'feb'|'fff'|'ff9', data: Buffer}] */
-export function exampleFiles(problems = []) {
+/**
+ * [{parts: RISC OS names below $.Examples.<book>, dir: true} | {parts, type: 'f81'|'feb'|'fff'|'ff9', data: Buffer}]
+ * for the book in bookSrc (default tools/jstutor). An application whose directory holds a file Toolkit.list (module
+ * names, one per line) gets a Toolkit directory with copies of those modules from <bookSrc>/toolkit/, so each
+ * example stays complete in itself while the book keeps one copy of each module. Likewise a file Reuse.list names
+ * files of other examples ('!Contacts/Model') to copy into the directory under the same names.
+ */
+export function exampleFiles(problems = [], bookSrc = HERE) {
+  const DIR = path.join(bookSrc, 'examples');
   const out = [];
   const walk = (dir, parts) => {
     for (const name of fs.readdirSync(dir).filter((f) => !f.startsWith('.')).sort()) {
       const full = path.join(dir, name);
       const where = `examples/${[...parts, name].join('/')}`;
       if (fs.statSync(full).isDirectory()) { out.push({ parts: [...parts, name], dir: true }); walk(full, [...parts, name]); continue; }
+      if (name === 'Toolkit.list') {
+        const mods = fs.readFileSync(full, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+        out.push({ parts: [...parts, 'Toolkit'], dir: true });
+        for (const m of mods) {
+          const src = path.join(bookSrc, 'toolkit', m);
+          if (!fs.existsSync(src)) { problems.push(`${where}: no toolkit module '${m}'`); continue; }
+          const text = fs.readFileSync(src, 'utf8');
+          text.split('\n').forEach((l, i) => { if (l.length > 70) problems.push(`toolkit/${m}:${i + 1} is over 70 characters`); });
+          out.push({ parts: [...parts, 'Toolkit', m], type: 'f81', data: Buffer.from(text, 'latin1') });
+        }
+        continue;
+      }
+      if (name === 'Reuse.list') {
+        // files from another example, e.g. '!Contacts/Model': copied in under
+        // the same name, so the book keeps one copy of a module two programs use
+        const files = fs.readFileSync(full, 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+        for (const f of files) {
+          const src = path.join(DIR, ...f.split('/'));
+          if (!fs.existsSync(src)) { problems.push(`${where}: no example file '${f}'`); continue; }
+          out.push({ parts: [...parts, f.split('/').at(-1)], type: 'f81', data: Buffer.from(fs.readFileSync(src, 'utf8'), 'latin1') });
+        }
+        continue;
+      }
       if (name.endsWith('.sprites.json')) {
         const def = JSON.parse(fs.readFileSync(full, 'utf8'));
         out.push({ parts: [...parts, name.slice(0, -13)], type: 'ff9', data: spriteFile(Object.entries(def).map(([n, rows]) => sprite(n, rows))) });
         continue;
       }
       const text = fs.readFileSync(full, 'utf8');
-      if (/[^\n\x20-\x7e\xa0-\xff]/.test(text)) problems.push(`${where}: only Latin-1 text (and no tabs) please`);
+      if (/[^\n\r\x20-\x7e\xa0-\xff]/.test(text)) problems.push(`${where}: only Latin-1 text (and no tabs) please`);
+      // a ,xxx suffix gives the file type (as HostFS names files): 'Friends,1c4' is Friends, type &1C4
+      const suffix = /^(.+),([0-9a-f]{3})$/i.exec(name);
+      if (suffix) {
+        out.push({ parts: [...parts, suffix[1]], type: suffix[2].toLowerCase(), data: Buffer.from(text, 'latin1') });
+        continue;
+      }
       const type = /^!(Run|Boot)$/.test(name) ? 'feb' : /^(!Help|ReadMe)$/.test(name) ? 'fff' : 'f81';
       if (type === 'f81') text.split('\n').forEach((l, i) => { if (l.length > 70) problems.push(`${where}:${i + 1} is over 70 characters`); });
       out.push({ parts: [...parts, name], type, data: Buffer.from(text, 'latin1') });

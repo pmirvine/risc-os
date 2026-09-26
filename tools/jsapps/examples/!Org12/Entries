@@ -1,0 +1,90 @@
+// Entries - the dialogue boxes for the organiser's entries, made with
+// the toolkit's Form. Each resolves to the entry's new fields, or
+// null if Cancel was chosen.
+//
+//   await editAppointment(task, appt)   { date, time, end, text,
+//                                          alarm, repeat }
+//   await editAnniversary(task, a)      { date, text }
+import { Form } from './Toolkit/Form';
+import * as D from './Toolkit/Dates';
+
+// dates are shown as 25/09/2026, and kept as 2026-09-25
+export const showDay = (key) => (key ? D.format(key, '%DY/%MN/%CE%YR')
+  : '');
+const forms = new Map();                 // each box is made once
+function form(task, name, spec) {
+  if (!forms.has(name)) forms.set(name, new Form(task, spec));
+  return forms.get(name);
+}
+
+// ------------------------------------------------ appointments
+const ALARMS = [['None', null], ['At the time', 0], ['5 minutes', 5],
+  ['15 minutes', 15], ['1 hour', 60], ['1 day', 1440]];
+const REPEATS = [['Never', null], ['Every day', 'day'],
+  ['Every week', 'week'], ['Every month', 'month'],
+  ['Every year', 'year']];
+const nameOf = (list, v) => list.find(([, x]) => x === v)?.[0];
+const valueOf = (list, s) => list.find(([n]) => n === s)?.[1] ?? null;
+
+export async function editAppointment(task, a) {
+  const f = form(task, 'appt', {
+    title: 'Appointment', buttons: ['Cancel', 'OK'],
+    help: 'Type the appointment\'s details and click OK.',
+    fields: [
+      { name: 'date', label: 'Date', width: 120,
+        help: 'The day, as 25/09/2026.' },
+      { name: 'time', label: 'Time', width: 70,
+        help: 'When it starts, as 9:30 (or leave it empty).' },
+      { name: 'end', label: 'Until', width: 70 },
+      { name: 'text', label: 'What', lines: 2 },
+      { name: 'alarm', label: 'Alarm', width: 130,
+        choices: ALARMS.map(([n]) => n),
+        help: 'How long before it the alarm goes off.' },
+      { name: 'repeat', label: 'Repeat', width: 130,
+        choices: REPEATS.map(([n]) => n) },
+      { name: 'count', label: 'Times', width: 60, allowed: '0-9',
+        help: 'How many times it happens (empty: for ever).' },
+    ],
+    check: (v) => {
+      if (!D.parseDay(v.date)) return { field: 'date',
+        message: 'Give the date as 25/09/2026' };
+      for (const f of ['time', 'end']) {
+        if (v[f] && !D.parseTime(v[f])) return { field: f,
+          message: 'Give the time as 9:30' };
+      }
+      if (!v.text.trim()) return { field: 'text',
+        message: 'What is the appointment?' };
+      return null;
+    },
+  });
+  const v = await f.ask({ ...a, date: showDay(a.date),
+    alarm: nameOf(ALARMS, a.alarm ?? null),
+    repeat: nameOf(REPEATS, a.repeat?.every ?? null),
+    count: a.repeat?.count ?? '' });
+  if (!v) return null;
+  const every = valueOf(REPEATS, v.repeat);
+  return {
+    date: D.parseDay(v.date), text: v.text.trim(),
+    time: D.parseTime(v.time) ?? '', end: D.parseTime(v.end) ?? '',
+    alarm: valueOf(ALARMS, v.alarm),
+    repeat: every ? { every, count: +v.count || null } : null,
+  };
+}
+
+// ------------------------------------------------ anniversaries
+export async function editAnniversary(task, a) {
+  const f = form(task, 'anniversary', {
+    title: 'Anniversary', buttons: ['Cancel', 'OK'],
+    fields: [
+      { name: 'date', label: 'Date', width: 120,
+        help: 'The day it began, as 14/03/1968.' },
+      { name: 'text', label: 'What' },
+    ],
+    check: (v) => (!D.parseDay(v.date) ? { field: 'date',
+      message: 'Give the date as 14/03/1968' }
+      : !v.text.trim() ? { field: 'text',
+        message: 'Whose anniversary is it?' } : null),
+  });
+  const v = await f.ask({ ...a, date: showDay(a.date) });
+  return v && { date: D.parseDay(v.date), text: v.text.trim() };
+}

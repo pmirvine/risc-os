@@ -1,0 +1,477 @@
+<HTML><HEAD><TITLE>15  The planner</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap16.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap14.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>15  The planner</H1>
+<HR>
+The Planner was the page of Lotus Organizer people remember: a whole year on one spread, a row for each month
+and a column for each day, with coloured bars across it for holidays, training courses and projects. You
+chose a colour from the key, dragged across the days, and the bar was painted. This chapter builds it, and
+puts its bars in the Diary too. It's mostly drawing - a grid, bars, patterns - with one new kind of drag and
+one new drawing technique, clipping. The result is <CODE>!Org15</CODE>.<P>
+<P><CENTER><IMG SRC="PICS/O15Planner" WIDTH=910 HEIGHT=569></CENTER>
+
+<A NAME=S1></A>
+<H2>Planning the planner</H2>
+<DL>
+<DT>What it remembers
+<DD>Bars. A bar is a kind (one of six, each with its own colour) and the first and last days it covers.<P>
+<DT>What can happen
+<DD>A bar is painted by choosing a kind in the key and dragging across days, or added with the New button;
+it is deleted with the wastebasket or the Delete key; the year is turned with the page corners. Bars show in
+the Diary on the days they cover, and double-clicking a day on the chart turns the Diary to it.<P>
+</DL>
+So a bar is as small as an entry can be:<P>
+<PRE>
+{ id: 4, key: 3, from: '2026-10-05', to: '2026-10-23' }
+</PRE>
+<CODE>key</CODE> is the kind, a number from 0 to 5; the kinds' names are kept in one place, in
+<CODE>Store</CODE>, with the collection:<P>
+<PRE>
+// A planner bar: { key (0-5), from, to } - the days it covers
+export const PLANNER_KEY = ['Holiday', 'Training', 'Meeting',
+  'Project A', 'Project B', 'Away'];
+export class Planner extends Collection {
+  onDay(date) {
+    return this.all().filter((b) =&gt; b.from &lt;= date &amp;&amp; date &lt;= b.to);
+  }
+}
+</PRE>
+<CODE>onDay</CODE> gives the bars covering a day. Since day keys sort as strings in date order (chapter 11),
+"the day is between <CODE>from</CODE> and <CODE>to</CODE>" is two string comparisons. Check tests a day inside a
+bar and the day after it:<P>
+<PRE>
+  const planner = new Planner([{ id: 1, key: 0, from: '2026-08-01',
+    to: '2026-08-14' }]);
+  check('planner: a bar covers its days',
+    [planner.onDay('2026-08-07').length, planner.onDay('2026-08-15')
+      .length], [1, 0]);
+</PRE>
+and the Document makes the collection from the file (until now it was a plain <CODE>Collection</CODE>, kept and saved but never shown):<P>
+<PRE>
+    this.planner = new Planner(data.planner);
+</PRE>
+
+<A NAME=S2></A>
+<H2>A chart of the year</H2>
+January to June go on the left-hand page and July to December on the right, a row for each month and 31
+columns for the days, with the month's short name down the left. The size of a row and a column comes from the
+size of the page, so the same code draws both halves; <CODE>grid</CODE> works it out:<P>
+<PRE>
+const TOP = 58, LABEL = 34, KEYH = 44;
+
+export class PlannerPage extends Section {
+  constructor(org) {
+    super(org, { id: 'planner', name: 'Planner', colour: '#b4a7d6',
+      newHelp: 'add a planner bar' });
+    this.year = +D.today().slice(0, 4);
+    this.pen = 0;                         // the colour to paint with
+  }
+  state() { return { year: this.year }; }
+
+  /** The chart's layout on page p: row height, cell width, origin. */
+  grid(p, first) {
+    const rowH = Math.floor((p.h - TOP - KEYH - 10) / 6);
+    const cellW = (p.w - LABEL - 16) / 31;
+    return { rowH, cellW, x0: p.x + LABEL + 8, y0: p.y + TOP, first };
+  }
+</PRE>
+<CODE>TOP</CODE> leaves room for the heading and the day numbers, <CODE>LABEL</CODE> for the month names and
+<CODE>KEYH</CODE> for the key at the bottom. What's left is shared between six rows and 31 columns.
+<CODE>first</CODE> is the first month on the page: 1 on the left, 7 on the right.<P>
+<CODE>draw</CODE> draws the two halves with the same function:<P>
+<PRE>
+  draw(g, L, R) {
+    heading(g, L, 'Planner', this.colour, String(this.year));
+    heading(g, R, String(this.year), this.colour);
+    this.keys = [];
+    this.half(g, L, 1);
+    this.half(g, R, 7);
+  }
+  half(g, p, first) {
+    const G = this.grid(p, first);
+    g.font = '9px Homerton';
+    for (let d = 1; d &lt;= 31; d += 1) {
+      if (d % 5 &amp;&amp; d !== 1) continue;
+      text(g, String(d), G.x0 + (d - 1) * G.cellW, G.y0 - 8, 16,
+        '9px Homerton', FAINT);
+    }
+    for (let r = 0; r &lt; 6; r++) {
+      const m = first + r, y = G.y0 + r * G.rowH;
+      const day1 = `${this.year}-${String(m).padStart(2, '0')}-01`;
+      text(g, D.format(day1, '%M3'), p.x + 8, y + G.rowH / 2, LABEL,
+        'bold 11px Homerton');
+      const days = D.daysInMonth(this.year, m);
+      for (let d = 1; d &lt;= days; d++) {
+        const key = `${this.year}-${String(m).padStart(2, '0')}-` +
+          String(d).padStart(2, '0');
+        const x = G.x0 + (d - 1) * G.cellW;
+        g.fillStyle = D.weekday(key) &gt;= 5 ? '#ece6d2' : '#ffffff';
+        g.fillRect(x, y, G.cellW - 1, G.rowH - 2);
+        if (key === D.today()) {
+          g.strokeStyle = INK;
+          g.strokeRect(x + 0.5, y + 0.5, G.cellW - 2, G.rowH - 3);
+        }
+      }
+      this.bars(g, G, m, y);
+    }
+    // the key: three colours on each page
+    for (let i = 0; i &lt; 3; i++) {
+      const k = (first === 1 ? 0 : 3) + i;
+      const x = p.x + 12 + i * ((p.w - 24) / 3), y = p.y + p.h - KEYH;
+      barStyle(g, k, x, y + 6, 22, 16);
+      if (k === this.pen) {
+        g.strokeStyle = INK; g.lineWidth = 2;
+        g.strokeRect(x - 3, y + 3, (p.w - 24) / 3 - 6, 22);
+      }
+      text(g, PLANNER_KEY[k], x + 28, y + 14, 70, '12px Homerton');
+      this.keys.push({ k, x: x - 3, y: y + 3, w: (p.w - 24) / 3 - 6,
+        h: 22 });
+    }
+  }
+</PRE>
+Each day is a white cell - or a pale shaded one on Saturdays and Sundays, from <CODE>D.weekday</CODE>, which
+counts from 0 for Monday so the weekend is 5 and 6. Today has a box round it. Months shorter than 31 days stop
+early (<CODE>D.daysInMonth</CODE>), leaving a gap at the end of their row. The day keys are built from the year,
+the month and the day with <CODE>padStart</CODE> - <CODE>'2026-09-05'</CODE>, not <CODE>'2026-9-5'</CODE>,
+or they wouldn't sort as dates.<P>
+The key at the bottom has three kinds on each page, each a small sample of its bar and its name. The one
+you'll paint with (<CODE>this.pen</CODE>) has a box round it. As with entries, the page records where each
+sample is, in <CODE>this.keys</CODE>, for clicks.<P>
+
+<A NAME=S3></A>
+<H2>Drawing the bars</H2>
+Each month's row is divided into six <I>lanes</I>, one for each kind, so bars of different kinds that overlap
+can both be seen:<P>
+<PRE>
+  /** The bars in one month's row: a lane each for the six colours. */
+  bars(g, G, m, y) {
+    const lane = (G.rowH - 6) / 6;
+    const first = `${this.year}-${String(m).padStart(2, '0')}-01`;
+    const last = `${first.slice(0, 8)}${D.daysInMonth(this.year, m)}`;
+    for (const b of this.doc.planner.all()) {
+      if (b.to &lt; first || b.from &gt; last) continue;
+      const a = b.from &lt; first ? first : b.from;
+      const z = b.to &gt; last ? last : b.to;
+      const x = G.x0 + (+a.slice(8) - 1) * G.cellW;
+      const w = (+z.slice(8) - +a.slice(8) + 1) * G.cellW - 1;
+      const by = y + 3 + b.key * lane;
+      barStyle(g, b.key, x, by, w, lane - 1);
+      this.box(x, by, w, lane - 1, { id: b.id });
+    }
+  }
+</PRE>
+A bar can run on from one month into the next (a holiday from 28 July to 7 August), so for each month's row
+the bar is cut down to the part inside that month: from whichever is later of its first day and the 1st, to
+whichever is earlier of its last day and the month's last day - comparing day keys again. Bars that don't touch
+the month at all are skipped with <CODE>continue</CODE>. Each bar drawn is recorded with <CODE>this.box</CODE>,
+so it can be chosen, dragged to the wastebasket or linked, like any other entry. (A bar across two months is
+recorded twice, once for each part; both have the same ref.)<P>
+
+<A NAME=S4></A>
+<H2>Colour and pattern</H2>
+The Style Guide's rule from chapter 13 matters most here: six colours side by side are exactly what people
+with colour-blindness can't tell apart, and a grey printout loses them altogether. So every kind has a
+pattern as well as a colour - Holiday plain, Training diagonal stripes, Meeting dots, Project A upright
+stripes, Project B stripes the other way, Away a line along the middle. One function fills a rectangle in a
+kind's colour and pattern, and the key, the chart and the Diary all use it:<P>
+<PRE>
+export const KEY_COLOURS = ['#e06666', '#6fa8dc', '#93c47d',
+  '#f6b26b', '#b4a7d6', '#999999'];
+
+/** Fill a rectangle in a planner colour, with its pattern. */
+export function barStyle(g, k, x, y, w, h) {
+  g.fillStyle = KEY_COLOURS[k];
+  g.fillRect(x, y, w, h);
+  g.save();
+  g.beginPath(); g.rect(x, y, w, h); g.clip();
+  g.strokeStyle = 'rgba(0,0,0,0.45)';
+  g.fillStyle = 'rgba(0,0,0,0.45)';
+  g.lineWidth = 1;
+  for (let i = -h; i &lt; w + h; i += 5) {
+    g.beginPath();
+    if (k === 1) { g.moveTo(x + i, y + h); g.lineTo(x + i + h, y); }
+    if (k === 2) g.fillRect(x + i, y + h / 2 - 1, 2, 2);
+    if (k === 3) { g.moveTo(x + i, y); g.lineTo(x + i, y + h); }
+    if (k === 4) { g.moveTo(x + i, y); g.lineTo(x + i + h, y + h); }
+    if (k === 5) { g.moveTo(x, y + h / 2 + 0.5); g.lineTo(x + w,
+      y + h / 2 + 0.5); }
+    g.stroke();
+  }
+  g.restore();
+}
+</PRE>
+The pattern's lines are drawn right across the rectangle and beyond, and then cut off at its edges. That's
+<I>clipping</I>, which chapter 2's ListView used to keep each column's text inside its column. Here it is again,
+with the two calls that go round it:<P>
+<UL>
+<LI><CODE>g.save()</CODE> remembers everything about how the canvas is drawing - colours, line width, and the
+clipping area.<P>
+<LI><CODE>g.beginPath(); g.rect(x, y, w, h); g.clip();</CODE> makes the rectangle the clipping area: nothing
+drawn from now on appears outside it.<P>
+<LI><CODE>g.restore()</CODE> puts everything back as it was at <CODE>save</CODE>, so the rest of the page isn't
+clipped.<P>
+</UL>
+Without clipping, the stripes would have to be worked out to stop exactly at the edges, which is much harder.
+The patterns are drawn in black at 45% strength, <CODE>'rgba(0,0,0,0.45)'</CODE> - a colour you can see
+through, as in chapter 11's answer 2 - so they darken whatever colour is underneath.<P>
+
+<A NAME=S5></A>
+<H2>Painting a bar</H2>
+A click on a sample in the key chooses the kind to paint with:<P>
+<PRE>
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    const k = this.keys?.find((r) =&gt; inside(r, ev.x, ev.y));
+    if (k) { this.pen = k.k; this.org.redraw(); }
+    return true;
+  }
+  /** Drag across days to paint a bar in the chosen colour. */
+  async drag(ev) {
+    const from = this.dayAt(ev.x, ev.y);
+    if (!from) return false;
+    const drop = await wimp.drag({ event: ev.pointerEvent,
+      type: 'point' });
+    const to = drop.window === this.org.win
+      ? this.dayAt(drop.x, drop.y) : null;
+    if (!to) return true;
+    const [a, z] = from &lt;= to ? [from, to] : [to, from];
+    this.doc.planner.add({ key: this.pen, from: a, to: z });
+    return true;
+  }
+</PRE>
+Dragging across days is a different kind of drag from chapter 12's. There, you dragged an <I>entry</I>, and
+<CODE>Tools.drag</CODE> handled it: if the drag starts on an entry's box, it moves it or bins it. Here the drag
+starts on an empty day, so <CODE>Tools.drag</CODE> finds no entry and hands the drag to the section's own
+<CODE>drag</CODE>. (So a drag that starts on a bar drags the bar - to the wastebasket, say - and one that
+starts on an empty day paints.) The Planner's asks the Wimp for a
+<CODE>'point'</CODE> drag - the pointer on its own, with nothing carried - and waits for where it ends:<P>
+<PRE>
+const drop = await wimp.drag({ event: ev.pointerEvent,
+  type: 'point' });
+</PRE>
+If it ends on the organiser's window, <CODE>dayAt</CODE> gives the day there. The drag might have gone left
+instead of right, so the two days are put in order with array destructuring (chapter 3), taking the two
+days in the right order from one of two arrays:<P>
+<PRE>
+const [a, z] = from &lt;= to ? [from, to] : [to, from];
+</PRE>
+and a bar of the chosen kind is added. As always, the page doesn't draw it: the collection changes, and the
+window redraws.<P>
+<H3>Which day?</H3>
+<CODE>dayAt</CODE> turns a point back into a day, trying each half in turn:<P>
+<PRE>
+  dayAt(x, y) {
+    for (const [p, first] of [[this.org.pages[0], 1],
+      [this.org.pages[1], 7]]) {
+      const G = this.grid(p, first);
+      const row = Math.floor((y - G.y0) / G.rowH);
+      const col = Math.floor((x - G.x0) / G.cellW);
+      if (row &lt; 0 || row &gt; 5 || col &lt; 0 || col &gt; 30) continue;
+      if (x &lt; p.x || x &gt; p.x + p.w) continue;
+      const m = first + row;
+      if (col + 1 &gt; D.daysInMonth(this.year, m)) return null;
+      const two = (n) =&gt; String(n).padStart(2, '0');
+      return `${this.year}-${two(m)}-${two(col + 1)}`;
+    }
+    return null;
+  }
+</PRE>
+It's the grid sums the other way round: dividing by the row height and column width gives the row and column,
+and the row and the half's first month give the month. A point beyond the end of a short month (the 31st of
+June) is no day at all.<P>
+<H3>Without the mouse</H3>
+Dragging isn't for everyone, so New (the button, or Insert) asks for a bar in a form: the kind from a pop-up
+menu, and the first and last days:<P>
+<PRE>
+  async newEntry() {
+    this.form ??= new Form(this.org.app.task, { title: 'Planner bar',
+      buttons: ['Cancel', 'OK'], fields: [
+        { name: 'key', label: 'Kind', width: 140,
+          choices: PLANNER_KEY },
+        { name: 'from', label: 'From', width: 120 },
+        { name: 'to', label: 'To', width: 120 }],
+      check: (v) =&gt; (!D.parseDay(v.from) ? { field: 'from',
+        message: 'Give the date as 25/09/2026' }
+        : !D.parseDay(v.to) ? { field: 'to',
+          message: 'Give the date as 25/09/2026' } : null) });
+    const v = await this.form.ask({ key: PLANNER_KEY[this.pen] });
+    this.org.focus();
+    if (!v) return;
+    const [a, z] = [D.parseDay(v.from), D.parseDay(v.to)].sort();
+    this.doc.planner.add({ key: PLANNER_KEY.indexOf(v.key), from: a,
+      to: z });
+  }
+</PRE>
+The form is made once and kept (<CODE>??=</CODE> makes it the first time only). The two dates are sorted
+with <CODE>sort()</CODE> - day keys again - so it doesn't matter which way round they're typed.<P>
+
+<A NAME=S6></A>
+<H2>Bars in the Diary</H2>
+The planner feeds the Diary, as the To do section and the anniversaries do. The Diary's
+<CODE>itemsOn</CODE> gets a fourth source, the bars covering the day, first in the list:<P>
+<PRE>
+  /** Everything to show on a day: bars, anniversaries, to-dos, then
+   * appointments, as { kind, text, ref, time?, key? }. */
+  itemsOn(key) {
+    const doc = this.doc, year = +key.slice(0, 4);
+    return [
+      ...doc.planner.onDay(key).map((b) =&gt; ({ kind: 'bar',
+        key: b.key, text: PLANNER_KEY[b.key],
+        ref: { section: 'planner', id: b.id } })),
+      ...doc.anniversaries.onDay(key).map((a) =&gt; ({
+        kind: 'anniversary',
+        text: a.text + (nth(a, year) ? ` (${nth(a, year)})` : ''),
+        ref: { section: 'anniversary', id: a.id } })),
+      ...doc.todo.dueOn(key).map((t) =&gt; ({ kind: 'todo', text: t.text,
+        ref: { section: 'todo', id: t.id } })),
+      ...doc.diary.occurrences(key, key).map(({ appt }) =&gt; ({
+        kind: 'appt', time: appt.time, text: appt.text,
+        ref: { id: appt.id, date: key } })),
+    ];
+  }
+</PRE>
+The week and day views draw a bar as a little sample of its colour and pattern and its kind's name, in faint
+italic; the month view, where there's less room, as a thin stripe:<P>
+<PRE>
+function item(diary, g, it, x, y, w) {
+  const mid = y + LINE / 2;
+  if (it.kind === 'bar') {
+    barStyle(g, it.key, x, y + 2, 10, LINE - 4);
+    text(g, it.text, x + 14, mid, w - 14, 'italic 11px Homerton',
+      FAINT);
+</PRE>
+<P><CENTER><IMG SRC="PICS/O15Diary" WIDTH=910 HEIGHT=569></CENTER>
+The ref is <CODE>{ section: 'planner', id }</CODE>, so the rest follows from chapters 12 and 13: double-click a
+bar in the Diary to go to it in the Planner (its <CODE>go</CODE> turns to the bar's year), choose it and press
+Delete, drag it into the wastebasket, or link it to something.<P>
+The other way, double-clicking a day on the chart goes to that day in the Diary:<P>
+<PRE>
+  double(ev) {
+    const day = this.dayAt(ev.x, ev.y);
+    if (day) this.org.go({ section: 'diary', date: day });
+    return true;
+  }
+</PRE>
+<CODE>org.go</CODE> gives the Diary a ref with a date and no id; the Diary's <CODE>go</CODE> (chapter 12)
+turns to the week of <CODE>ref.date</CODE>.<P>
+Finally the Planner takes its place in the binder, and with it every tab has a section of its own - the last
+<CODE>blank</CODE> is gone:<P>
+<PRE>
+    this.sections = [DiaryPage, ToDoPage, AddressPage, NotesPage,
+      PlannerPage, AnniversaryPage].map((S) =&gt; new S(this));
+</PRE>
+
+<A NAME=S7></A>
+<H2>Turning the year</H2>
+The Planner shows one year. Its page corners turn to the year before or after, Today (the toolbox, or Home)
+goes back to this year. Turning isn't remembered for Back, but leaving the section is, and
+<CODE>state</CODE> gives the year to remember, so Back from the Diary returns to the year you were looking at:<P>
+<PRE>
+  // ------------------------------------------------ entries
+  turn(dir) { this.year += dir; }
+  today() { this.year = +D.today().slice(0, 4); }
+  describe(ref) {
+    const b = this.doc.planner.get(ref.id);
+    return b ? `${PLANNER_KEY[b.key]}, ${showDay(b.from)} to ` +
+      showDay(b.to) : 'Planner bar';
+  }
+  remove(ref) { this.doc.planner.remove(ref.id); }
+  go(ref) {
+    const b = this.doc.planner.get(ref.id);
+    if (b) this.year = +b.from.slice(0, 4);
+  }
+</PRE>
+<CODE>describe</CODE> - used by the "Delete ...?" question and the links menu - says what a bar is:
+<I>Project A, 05/10/2026 to 23/10/2026</I>.<P>
+
+<A NAME=S8></A>
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Run <CODE>!Org15</CODE>, open the sample <CODE>Diary</CODE> and click the <I>Planner</I> tab.<P>
+<DT><DD>2  Click <I>Meeting</I> in the key, then drag across a few days in June: a dotted green bar appears.
+Choose <I>Away</I> and drag across the same days again, starting clear of the green bar (a drag that starts
+on a bar drags the bar): the two bars sit in different lanes.<P>
+<DT><DD>3  Drag the new Away bar into the wastebasket.<P>
+<DT><DD>4  Double-click a day inside the October Project A bar. The Diary turns to that week, with
+<I>Project A</I> on every day the bar covers - in its last week, Monday to Friday only, since the bar ends on
+Friday 23 October.<P>
+<DT><DD>5  Click Back: the Planner comes back, at the year you left it. Click the right-hand page corner
+to see next year's (empty) planner, and the left-hand one to come back.<P>
+</DL>
+
+<A NAME=S9></A>
+<H2>Summary</H2>
+<UL>
+<LI>A planner bar is a kind and two day keys; <CODE>onDay</CODE> is two string comparisons.<P>
+<LI>Work out a chart's sizes in one place (<CODE>grid</CODE>) and use them both to draw it and to find what's
+under the pointer.<P>
+<LI>Give colours patterns as well, so they can be told apart without colour.<P>
+<LI><CODE>save</CODE>, <CODE>clip</CODE> and <CODE>restore</CODE> confine drawing to a shape;
+<CODE>rgba(r, g, b, a)</CODE> is a colour you can see through.<P>
+<LI>A drag that doesn't carry an entry goes to the section's own <CODE>drag</CODE>;
+<CODE>wimp.drag({ type: 'point' })</CODE> waits for where the pointer is let go.<P>
+<LI>Always give the mouse's jobs a keyboard way too: here, New and a form.<P>
+</UL>
+
+<A NAME=S10></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Show how many days each bar covers in the Diary's week view, after its name (<I>Project A (15
+days)</I>). <CODE>D.daysBetween</CODE> counts the days between two keys.<P>
+<DT><DD>2  Let the user rename the six kinds. Keep the names in the document (so each organiser can have its
+own) instead of <CODE>PLANNER_KEY</CODE>, and change one by double-clicking its sample in the key.<P>
+<DT><DD>3  Let a bar be moved: dragging a bar to another day on the chart should move it there, keeping its
+length.<P>
+<DT><DD>4  Lotus Organizer's planner folded open. Add a view button, <I>Half</I>, that shows only the six
+months around today, three on each page, with wider columns.<P>
+</DL>
+
+<A NAME=S11></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  In <CODE>DiaryPage.itemsOn</CODE>, give the bar its length in its text:
+<PRE>
+text: `${PLANNER_KEY[b.key]} (${D.daysBetween(b.from, b.to) + 1}` +
+  ' days)',
+</PRE>
+(+ 1 because a bar from Monday to Monday covers the first day too).<P>
+<DT><DD>2  Keep <CODE>doc.plannerNames</CODE> (saved with the rest of the file, defaulting to a copy of
+<CODE>PLANNER_KEY</CODE>), use it wherever <CODE>PLANNER_KEY[k]</CODE> is used, and make
+<CODE>PlannerPage.double</CODE> <CODE>async</CODE> (it now waits for a form), adding before it looks for a
+day:
+<PRE>
+const k = this.keys.find((r) =&gt; inside(r, ev.x, ev.y));
+if (k) {
+  const v = await this.nameForm().ask({
+    name: this.doc.plannerNames[k.k] });
+  if (v) this.doc.renameKind(k.k, v.name);
+  return true;
+}
+</PRE>
+where <CODE>nameForm</CODE> makes (once, with <CODE>??=</CODE>) a one-field Form like New's, and
+<CODE>renameKind</CODE> changes the name and marks the document changed.<P>
+<DT><DD>3  A bar dragged onto the pages already goes to the section's <CODE>dropped</CODE> (chapter 12),
+which the Planner hasn't got. Give it one:
+<PRE>
+dropped(ref, x, y) {
+  const day = this.dayAt(x, y), b = this.doc.planner.get(ref.id);
+  if (!day || !b) return;
+  const len = D.daysBetween(b.from, b.to);
+  this.doc.planner.update(b.id, { from: day,
+    to: D.addDays(day, len) });
+}
+</PRE>
+The bar's first day goes where it's dropped, wherever on the bar the drag began; a better version would
+remember which day was under the pointer when the drag started.<P>
+<DT><DD>4  Give the section <CODE>views: ['Year', 'Half']</CODE> in its constructor, and make <CODE>grid</CODE> and
+<CODE>draw</CODE> use the months to show instead of 1 and 7: for <I>Half</I>, the month three before this one
+and the one after it, three rows each, so <CODE>rowH</CODE> is worked out for three rows. <CODE>dayAt</CODE>
+uses the same two first months, so clicks still find the right days.<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap16.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap14.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

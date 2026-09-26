@@ -1,0 +1,106 @@
+// ToDoPage - things to do, in priority order down the left page and
+// on to the right: a numbered square for the priority (1 is the most
+// urgent), a box to tick when it's done (it is then crossed through),
+// and the date it's due - in red, with a !, once it is overdue.
+// Click the box to tick it; double-click a thing to change it.
+import { Section, heading, text, inside, INK, FAINT, ruled }
+  from './Paper';
+import { editToDo, showDay } from './Entries';
+import * as D from './Toolkit/Dates';
+
+const ROW = 24, TOP = 50;
+
+export class ToDoPage extends Section {
+  constructor(org) {
+    super(org, { id: 'todo', name: 'To do', colour: '#e06666',
+      views: ['All', 'Undone'], newHelp: 'add a thing to do' });
+    this.ticks = [];                  // where the tick boxes are
+  }
+
+  draw(g, L, R) {
+    const list = this.doc.todo.list(this.view === 'All');
+    heading(g, L, 'To do', this.colour,
+      `${list.filter((t) => !t.done).length} to do`);
+    heading(g, R, 'To do', this.colour, showDay(D.today()));
+    this.ticks = [];
+    const per = Math.floor((L.h - TOP - 16) / ROW);
+    [L, R].forEach((p) => ruled(g, p, p.y + TOP + ROW, ROW));
+    list.slice(0, 2 * per).forEach((t, i) => {
+      const p = i < per ? L : R;
+      this.row(g, t, p.x + 12, p.y + TOP + (i % per) * ROW, p.w - 24);
+    });
+    if (!list.length) {
+      text(g, 'Nothing to do. Click the New button to add something.',
+        L.x + 14, L.y + TOP + 14, L.w - 28, 'italic 12px Homerton',
+        FAINT);
+    }
+  }
+  row(g, t, x, y, w) {
+    const mid = y + ROW / 2, late = !t.done && t.due &&
+      t.due < D.today();
+    // the priority: a numbered square
+    g.fillStyle = ['#c00000', '#e69138', '#6aa84f'][t.priority - 1] ??
+      '#999999';
+    g.fillRect(x, y + 5, 14, 14);
+    text(g, String(t.priority), x + 4, mid, 10, 'bold 11px Homerton',
+      '#ffffff');
+    // the box to tick
+    g.strokeStyle = INK;
+    g.lineWidth = 1;
+    g.strokeRect(x + 22.5, y + 6.5, 11, 11);
+    if (t.done) {
+      g.beginPath();
+      g.moveTo(x + 24, y + 12); g.lineTo(x + 28, y + 16);
+      g.lineTo(x + 33, y + 7);
+      g.stroke();
+    }
+    this.ticks.push({ id: t.id, x: x + 20, y, w: 16, h: ROW });
+    const colour = t.done ? FAINT : late ? '#c00000' : INK;
+    text(g, t.text, x + 42, mid, w - 140, '13px Homerton', colour);
+    if (t.done) {                               // crossed through
+      g.fillStyle = FAINT;
+      g.fillRect(x + 42, mid, Math.min(w - 140,
+        g.measureText(t.text).width), 1);
+    }
+    if (t.due) {
+      const due = (late ? '! ' : '') + showDay(t.due);
+      text(g, due, x + w - 92, mid, 92,
+        late ? 'bold 12px Homerton' : '12px Homerton', colour);
+    }
+    this.box(x + 40, y, w - 40, ROW, { id: t.id });
+  }
+
+  click(ev) {
+    const t = this.ticks.find((b) => inside(b, ev.x, ev.y));
+    if (!t) return false;
+    const todo = this.doc.todo.get(t.id);
+    this.doc.todo.update(t.id, { done: !todo.done });
+    return true;
+  }
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) await this.edit(box.ref.id);
+    else await this.newEntry();
+  }
+  async edit(id) {
+    const t = this.doc.todo.get(id);
+    const v = await editToDo(this.org.app.task, t);
+    this.org.focus();
+    if (v) this.doc.todo.update(id, v);
+  }
+  async newEntry() {
+    const v = await editToDo(this.org.app.task, { priority: 2 });
+    this.org.focus();
+    if (v) this.doc.todo.add(v);
+  }
+  describe(ref) { return this.doc.todo.get(ref.id)?.text ?? 'To do'; }
+  remove(ref) { this.doc.todo.remove(ref.id); }
+  find(s) {
+    const t = s.toLowerCase();
+    return this.doc.todo.all()
+      .filter((x) => x.text.toLowerCase().includes(t))
+      .map((x) => ({ text: x.text,
+        ref: { section: 'todo', id: x.id } }));
+  }
+  go() { this.view = 'All'; }
+}

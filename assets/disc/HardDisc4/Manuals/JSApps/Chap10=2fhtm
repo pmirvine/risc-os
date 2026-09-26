@@ -1,0 +1,711 @@
+<HTML><HEAD><TITLE>10  An organiser with sections</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap11.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap9.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>10  An organiser with sections</H1>
+<HR>
+Part Two builds a much bigger application: a personal organiser, with a diary, a list of things to do, an
+address book, a notepad, a year planner and anniversaries, all kept in one file. In this chapter you'll plan
+it, draw its ring binder, work out how its six sections share the binder, and bring the address book across
+from !Contacts without changing a line of it. The program is <CODE>!Org10</CODE>.<P>
+
+<A NAME=S1></A>
+<H2>A binder on the screen</H2>
+In the early 1990s, many people carried their lives in a ring binder: a Filofax, with a diary section, an
+address section and pages for notes, each behind a coloured tab. In 1992 a small British company, Threadz,
+turned that binder into a program. Lotus bought it and sold it as <I>Lotus Organizer</I>, and for most of the
+1990s it was the best-selling organiser there was.<P>
+Its window looked like a binder open on the desk: two pages side by side with the rings between them,
+coloured section tabs down the right-hand edge, and turned-up corners at the bottom of the pages that you
+clicked to turn over. Down the left was a toolbox, with a button for a new entry, today's date, and a
+wastebasket you dragged entries into to throw them away. People liked it because it looked and behaved like
+the paper binder they already knew: everything was always in the same place.<P>
+!Organiser borrows those ideas, but it is a RISC OS application. The window's frame, its menus and its
+dialogue boxes are the Wimp's, as the Style Guide asks; the binder is drawn inside the work area, where an
+application may draw what it likes, just as Draw draws a drawing.<P>
+
+<A NAME=S2></A>
+<H2>Planning the organiser</H2>
+As in chapter 1, start with what it remembers and what happens.<P>
+<B>What it remembers.</B> Six kinds of entry, one for each section:<P>
+<PRE>
+Diary        appointments: a date, a time, what it is,
+             perhaps an alarm, perhaps repeating
+To do        things to do: a priority, dates, done or not
+Address      contacts, exactly as !Contacts keeps them
+Notepad      pages of notes, each with a title
+Planner      coloured bars across days: holidays, projects
+Anniversary  birthdays and other yearly days
+</PRE>
+and one more list, of <I>links</I> between entries (a meeting and the person you're meeting), which comes
+in chapter 14. It all goes in one file: open your organiser and everything is there.<P>
+<B>What happens.</B><P>
+<PRE>
+open a section by its tab; turn its pages
+see the diary a week, a day, a month or a year at a time
+add, change, move and delete entries
+drag entries into the wastebasket
+link entries together, and follow the links
+be reminded of appointments; print pages
+swap appointments with other programs
+</PRE>
+The chapters take those in turn. This one draws the binder, makes the sections, and does the whole of the
+Address section, because we already have an address book.<P>
+
+<A NAME=S3></A>
+<H2>The binder</H2>
+The binder is a toolkit module, <CODE>Binder</CODE>, because it only draws and measures: it doesn't know
+what the sections are for. Its header comment says how it's used:<P>
+<PRE>
+// Binder - a ring binder drawn on a window's canvas: a leather cover,
+// two pages open side by side with the rings between them, coloured
+// section tabs down the right-hand edge, and turned-up corners at
+// the bottom of the pages to turn them.
+//
+//   const binder = new Binder({ x, y, w, h, colour: '#6b3f22',
+//     tabs: [{ name: 'Diary', colour: '#4f81bd' }, ...] });
+//   binder.left, binder.right   the pages: { x, y, w, h }
+//   binder.draw(g, current)     current: the open section's tab
+//   binder.hit(x, y)            what's there: { tab: 2 },
+//     { corner: -1 } (back) or { corner: 1 } (on), { page: 'left' },
+//     { page: 'right' } or null
+// It only draws and measures: what a click does is up to the program.
+</PRE>
+The constructor works out where everything goes, once, from the size it's given:<P>
+<PRE>
+const EDGE = 16, TAB = 84, RINGS = 34, CORNER = 30;
+const PAPER = '#fffdf2', LINE = '#d8d2bc';
+
+export class Binder {
+  constructor({ x = 0, y = 0, w, h, tabs, colour = '#6b3f22' }) {
+    Object.assign(this, { x, y, w, h, tabs, colour });
+    const pw = Math.floor((w - 2 * EDGE - TAB - RINGS) / 2);
+    const ph = h - 2 * EDGE;
+    this.left = { x: x + EDGE, y: y + EDGE, w: pw, h: ph };
+    this.right = { x: x + EDGE + pw + RINGS, y: y + EDGE, w: pw,
+      h: ph };
+    const th = Math.min(52, Math.floor((ph - 20) / tabs.length) - 4);
+    this.tabRects = tabs.map((t, i) =&gt; ({
+      x: this.right.x + pw - 2, y: this.right.y + 12 + i * (th + 4),
+      w: TAB - 8, h: th }));
+  }
+</PRE>
+From the outside in: a leather edge (<CODE>EDGE</CODE>) all round, a strip down the right for the tabs
+(<CODE>TAB</CODE>), and the rings (<CODE>RINGS</CODE>) between the pages. What's left is shared equally by
+the two pages, which are kept as rectangles, <CODE>left</CODE> and <CODE>right</CODE>. Every section draws
+into those rectangles, so no section needs to know how big the window is. The tabs share the height of the
+page between them (but aren't more than 52 pixels tall), so six fit - and so would seven.<P>
+<CODE>draw</CODE> paints it in the order you would build it: the cover, the tabs that are behind the pages,
+the pages, then the open section's tab in front of them (a little wider, so it seems to come out of the
+binder), the rings and the corners:<P>
+<PRE>
+  draw(g, current) {
+    const { x, y, w, h, left, right } = this;
+    // the cover
+    g.fillStyle = this.colour;
+    g.fillRect(x, y, w, h);
+    g.strokeStyle = 'rgba(0,0,0,0.35)';
+    g.lineWidth = 2;
+    g.strokeRect(x + 1, y + 1, w - 2, h - 2);
+    // the tabs, behind the pages except the current one
+    this.tabs.forEach((t, i) =&gt; {
+      if (i !== current) this.tab(g, i);
+    });
+    for (const p of [left, right]) this.page(g, p);
+    if (current != null) this.tab(g, current, true);
+    this.rings(g);
+    this.corner(g, left.x, left.y + left.h, -1);
+    this.corner(g, right.x + right.w, right.y + right.h, 1);
+  }
+</PRE>
+The rings are ellipses: <CODE>g.ellipse(x, y, rx, ry, rotation, start, end)</CODE> is the canvas's
+oval-drawing cousin of <CODE>arc</CODE>, with two radii instead of one. Each ring is a grey oval with a
+thinner, lighter one just above it for the shine.<P>
+<P><CENTER><IMG SRC="PICS/O10Binder" WIDTH=910 HEIGHT=569></CENTER>
+The other half of the module says what is at a point, so the program can tell a click on a tab from a click
+on a page:<P>
+<PRE>
+  hit(x, y) {
+    const inside = (r) =&gt; x &gt;= r.x &amp;&amp; x &lt; r.x + r.w &amp;&amp;
+      y &gt;= r.y &amp;&amp; y &lt; r.y + r.h;
+    const tab = this.tabRects.findIndex(inside);
+    if (tab &gt;= 0) return { tab };
+    const { left, right } = this;
+    if (inside(left)) {
+      if (x - left.x + (left.y + left.h - y) &lt; CORNER) {
+        return { corner: -1 };
+      }
+      return { page: 'left' };
+    }
+    if (inside(right)) {
+      if (right.x + right.w - x + (right.y + right.h - y) &lt; CORNER) {
+        return { corner: 1 };
+      }
+      return { page: 'right' };
+    }
+    return null;
+  }
+</PRE>
+<CODE>findIndex</CODE> tries each tab's rectangle. A page corner is a triangle, not a rectangle: a point is
+inside the bottom-left triangle when its distance in from the left edge plus its distance up from the
+bottom is less than the corner's size. <CODE>hit</CODE> returns a small object describing what's there -
+<CODE>{ tab: 2 }</CODE>, <CODE>{ corner: -1 }</CODE> - and deciding what that means is left to the
+program.<P>
+
+<A NAME=S4></A>
+<H2>Sections</H2>
+The six sections are different, but the window does the same things with each of them: it asks the open
+one to draw its pages, and passes it the clicks and keys the binder doesn't use. That is the
+<I>section interface</I>, and <CODE>Paper</CODE> writes it down, as a base class every section extends:<P>
+<PRE>
+// Paper - what every section of the organiser has in common: the
+// Section class it is made from, and help for drawing on the pages.
+//
+// A section is shown on the binder's two pages. The window (./Organi-
+// serWindow) asks it to (the ones marked with a chapter come later:
+// this stage's sections don't need them yet):
+//   draw(g, left, right)      draw both pages (rectangles {x,y,w,h})
+//   click(ev), double(ev)     the mouse, in the work area
+//   drag(ev)                  a drag started (12: moving an entry)
+//   key(ev)                   a key (true if it used it)
+//   turn(dir)                 the page corners: -1 back, 1 on
+//   today()                   the Today button (11)
+//   newEntry()                a new entry (the Insert key)
+//   views, view, setView(v)   the view buttons (11: Week, Month ...)
+//   go(ref)                   show that entry
+//   describe(ref)             a line about an entry (12)
+//   remove(ref)               delete an entry (12)
+//   dropped(ref, x, y)        an entry dragged to x, y (12)
+//   show() / hide()           it is being shown or put away
+// While drawing, a section records where its entries are with
+// box(x, y, w, h, ref), so the window can tell what is clicked.
+export class Section {
+  constructor(org, { id, name, colour, views = [], newHelp }) {
+    Object.assign(this, { org, id, name, colour, views, newHelp });
+    this.view = views[0] ?? '';
+    this.boxes = [];
+  }
+  get doc() { return this.org.doc; }
+
+  /** Remember an entry drawn at x, y, w, h, so clicks can find it. */
+  box(x, y, w, h, ref) {
+    ref = { section: this.id, ...ref };
+    this.boxes.push({ x, y, w, h, ref });
+  }
+  /** The entry drawn at x, y (the last one drawn wins). */
+  at(x, y) {
+    return this.boxes.findLast((b) =&gt; inside(b, x, y)) ?? null;
+  }
+  setView(v) { this.view = v; this.org.redraw(); }
+
+  // what a section doesn't do, it needn't write
+  draw() {}
+  click() { return false; }
+  double() { return false; }
+  drag() { return false; }
+  key() { return false; }
+  turn() {}
+  today() {}
+  newEntry() {}
+  go() {}
+  describe(ref) { return `${this.name} entry`; }
+  remove() {}
+  dropped() {}
+  show() {}
+  hide() {}
+}
+</PRE>
+The list in the comment is every question the window may ask a section; the ones marked with a chapter
+number are asked from that chapter on, and this stage's sections don't need them yet. The class answers all
+of them by doing nothing: <CODE>draw() {}</CODE>, <CODE>click() { return false; }</CODE> and so on. So a section only
+writes the methods it needs, and the window can call any of them on any section without checking first.
+You'll see the list fill up over the next few chapters, as sections learn to add, move and delete entries.<P>
+The one thing every section does do is remember where it drew its entries. While drawing, it calls
+<CODE>box(x, y, w, h, ref)</CODE> for each one, where <CODE>ref</CODE> is a small object saying which entry
+it is; afterwards, <CODE>at(x, y)</CODE> finds the entry at a point. <CODE>findLast</CODE> is
+<CODE>find</CODE> starting from the end: the entry drawn last is on top, so it's the one you clicked.
+The ref gets the section's <CODE>id</CODE> added to it, so it says where the entry lives as well as which one
+it is: <CODE>{ section: 'address', id: 7 }</CODE>. That will matter when entries are dragged between
+sections and linked.<P>
+<CODE>Paper</CODE> also has some drawing helpers every section uses: <CODE>heading</CODE> for a page's
+title with a line in the section's colour, <CODE>text</CODE> for text cut off at a width, and
+<CODE>ruled</CODE> for lines across a page.<P>
+
+<H3>Sections still to be written</H3>
+In this chapter only the Address section is real, but all six tabs should be there. The others are made by
+a function that makes a class:<P>
+<PRE>
+/** A section still to be written: just its name on the page. */
+const blank = (id, name, colour) =&gt; class extends Section {
+  constructor(org) { super(org, { id, name, colour }); }
+  draw(g, L) { heading(g, L, name, colour); }
+};
+</PRE>
+<CODE>blank</CODE> is an arrow function that returns a <I>class expression</I>: <CODE>class extends Section
+{ ... }</CODE> without a name, written where a value is expected, just as a function can be. Classes are
+values in JavaScript - you can pass them around, keep them in arrays and return them. Each call of
+<CODE>blank</CODE> makes a new class; its constructor and <CODE>draw</CODE> can use <CODE>id</CODE>,
+<CODE>name</CODE> and <CODE>colour</CODE> because they are inside <CODE>blank</CODE>, whose parameters they
+are. The window makes its sections from a list of classes:<P>
+<PRE>
+    this.sections = [blank('diary', 'Diary', '#6fa8dc'),
+      blank('todo', 'To do', '#e06666'),
+      AddressPage,
+      blank('notes', 'Notepad', '#f6b26b'),
+      blank('planner', 'Planner', '#b4a7d6'),
+      blank('anniversary', 'Anniversary', '#e377c2'),
+    ].map((S) =&gt; new S(this));
+</PRE>
+<CODE>map((S) =&gt; new S(this))</CODE> makes one object of each class, passing the window. In each later
+chapter a line of that list changes: <CODE>blank('diary', 'Diary', '#6fa8dc')</CODE> becomes
+<CODE>DiaryPage</CODE>, and so on, until there are no blanks left.<P>
+
+<A NAME=S5></A>
+<H2>The window</H2>
+The window is 900 by 540 pixels, with the binder filling its work area:<P>
+<PRE>
+export class OrganiserWindow {
+  constructor(doc) {
+    this.doc = doc;
+    this.app = doc.app;
+    const n = this.app.docs.size % 5;
+    const w = this.win = this.app.task.createWindow({
+      title: doc.title, x: 40 + 24 * n, y: 40 + 24 * n, w: W, h: H,
+      extent: { w: W, h: H }, colours: { workBg: 1 },
+      workButton: 'clickdragdouble',
+      flags: { back: true, close: true, title: true, moveable: true },
+      help: 'This is your organiser.|MClick a tab to open a ' +
+        'section; click a page corner to turn the page.',
+    });
+    this.sections = [blank('diary', 'Diary', '#6fa8dc'),
+      blank('todo', 'To do', '#e06666'),
+      AddressPage,
+      blank('notes', 'Notepad', '#f6b26b'),
+      blank('planner', 'Planner', '#b4a7d6'),
+      blank('anniversary', 'Anniversary', '#e377c2'),
+    ].map((S) =&gt; new S(this));
+    this.current = 0;
+    this.binder = new Binder({ x: SIDE, y: 0, w: W - SIDE, h: H,
+      colour: this.app.prefs.colour,
+      tabs: this.sections.map((s) =&gt; ({ name: s.name,
+        colour: s.colour })) });
+    w.useCanvas((g) =&gt; this.draw(g));
+    w.on('click', (ev) =&gt; this.click(ev));
+    w.on('doubleclick', (ev) =&gt; this.section.double(ev));
+    w.on('key', (ev) =&gt; this.key(ev));
+    w.on('close', (ev) =&gt; { ev.preventDefault(); this.doc.close(); });
+    this.offs = doc.parts.map((p) =&gt;
+      p.on('change', () =&gt; this.redraw()));
+    w.open({ behind: 'top' });
+    this.section.show();
+    this.refresh();
+  }
+</PRE>
+<CODE>workButton: 'clickdragdouble'</CODE> reports clicks, drags and double-clicks - the diary will need all
+three. The window listens to every part of the document (<CODE>doc.parts</CODE>), so whatever changes,
+the binder is redrawn: the same one-source-of-truth idea as chapter 4, with seven models instead of one.<P>
+Drawing is the binder, then the open section on its two pages:<P>
+<PRE>
+  // ------------------------------------------------ drawing
+  draw(g) {
+    this.binder.colour = this.app.prefs.colour;
+    this.binder.draw(g, this.current);
+    const s = this.section;
+    s.boxes = [];
+    s.draw(g, ...this.pages);
+  }
+</PRE>
+<CODE>...this.pages</CODE> spreads the array of two pages into two arguments, so
+<CODE>s.draw(g, ...this.pages)</CODE> is <CODE>s.draw(g, left, right)</CODE>. Emptying
+<CODE>s.boxes</CODE> first means the entries recorded are the ones on the screen now.<P>
+A click goes to the binder first, then to the section:<P>
+<PRE>
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    if (ev.button === 'menu') { this.openMenu(ev); return true; }
+    this.focus();
+    const hit = this.binder.hit(ev.x, ev.y);
+    if (hit?.tab != null) { this.open(hit.tab); return true; }
+    if (hit?.corner) { this.section.turn(hit.corner); this.refresh();
+      return true; }
+    this.section.click(ev);
+    return true;
+  }
+</PRE>
+and keys go to the section first - so the Address section can take typed letters - then to the window,
+which turns pages with Page Up and Page Down, saves with F3, and opens sections with Ctrl-1 to Ctrl-6:<P>
+<PRE>
+  // ------------------------------------------------ the keyboard
+  key(ev) {
+    if (this.section.key(ev)) return true;
+    switch (ev.code) {
+      case 0x183: this.doc.quickSave(); return true;         // F3
+      case 0x19F: this.section.turn(-1); break;          // Page Up
+      case 0x19E: this.section.turn(1); break;           // Page Down
+      case 0x1CD: this.section.newEntry(); return true;      // Insert
+      default:                             // Ctrl-1 ... Ctrl-6: tabs
+        if (ev.ctrl &amp;&amp; ev.code &gt;= 49 &amp;&amp; ev.code &lt;= 54) {
+          this.open(ev.code - 49);
+          return true;
+        }
+        return undefined;
+    }
+    this.refresh();
+    return true;
+  }
+</PRE>
+A key event says whether Ctrl was held down (<CODE>ev.ctrl</CODE>); the digits 1 to 6 are character codes
+49 to 54, so <CODE>ev.code - 49</CODE> is the section's number. The menu lists the sections too, ticked
+and with those keys beside them.<P>
+
+<A NAME=S6></A>
+<H2>The address section: !Contacts again</H2>
+The Address section is a whole address book, and we have one: !Contacts' <CODE>Book</CODE> class (chapters
+1 to 9) keeps contacts, sorts and searches them, and turns them into JSON; its <CODE>editCard</CODE>
+function (chapter 3) is a dialogue box for one contact. The organiser uses both exactly as they are.<P>
+They are copied into <CODE>!Org10</CODE> as the files <CODE>Model</CODE> and <CODE>Card</CODE>. The book's
+examples keep one copy of each, in !Contacts: <CODE>!Org10</CODE> has a file <CODE>Reuse.list</CODE> naming
+the files it borrows, and when the examples are put on the disc each one is copied in, just as
+<CODE>Toolkit.list</CODE> copies the toolkit:<P>
+<PRE>
+# !Contacts' address book, used unchanged for the Address section
+!Contacts/Model
+!Contacts/Card
+</PRE>
+In your own programs, copy the files yourself, and copy them again if you improve the original. This works
+because <CODE>Book</CODE> and <CODE>editCard</CODE> were written to know nothing of Contacts' windows: the
+model/view split of chapter 1 pays off. !Contacts' <CODE>MainWindow</CODE> couldn't be reused - it is a
+window, and the organiser shows contacts differently - but the part that remembers contacts, and the card
+that edits one, move across untouched.<P>
+The section itself, <CODE>AddressPage</CODE>, is the organiser's view of the address book, on binder
+paper: the names under one letter on the left page, the chosen person's details on the right, and a tab
+for each letter down the right-hand edge - starting below the page's heading and stopping above the
+turned-up corner, so neither covers the other.<P>
+<PRE>
+export class AddressPage extends Section {
+  constructor(org) {
+    super(org, { id: 'address', name: 'Address', colour: '#93c47d',
+      newHelp: 'add a person to the address book' });
+    this.letter = 'A';
+    this.chosen = null;                   // the id of the card shown
+    this.tabs = [];
+  }
+  names() {
+    return this.doc.book.list({ sort: 'last' })
+      .filter((c) =&gt; initial(c) === this.letter);
+  }
+
+  draw(g, L, R) {
+    heading(g, L, 'Address', this.colour, this.letter);
+    ruled(g, L, L.y + TOP + ROW, ROW);
+    const names = this.names();
+    names.forEach((c, i) =&gt; {
+      const y = L.y + TOP + i * ROW;
+      if (y + ROW &gt; L.y + L.h - 10) return;
+      if (c.id === this.chosen) {
+        g.fillStyle = '#e4f0de';
+        g.fillRect(L.x + 10, y, L.w - 20, ROW);
+      }
+      text(g, nameOf(c), L.x + 14, y + ROW / 2, L.w - 140,
+        'bold 13px Homerton');
+      text(g, phoneOf(c), L.x + L.w - 124, y + ROW / 2, 112);
+      this.box(L.x + 10, y, L.w - 20, ROW, { id: c.id });
+    });
+    if (!names.length) {
+      text(g, `No names under ${this.letter}.`, L.x + 14,
+        L.y + TOP + 12, L.w - 28, 'italic 12px Homerton', FAINT);
+    }
+    this.card(g, R);
+    this.letterTabs(g, R);
+  }
+</PRE>
+<CODE>names</CODE> asks the book for its contacts sorted by surname - <CODE>list({ sort: 'last' })</CODE>,
+from chapter 6 - and keeps those whose name starts with the chosen letter. Each name is recorded with
+<CODE>box</CODE>, so clicking it chooses it:<P>
+<PRE>
+  click(ev) {
+    const t = this.tabs.find((b) =&gt; inside(b, ev.x, ev.y));
+    if (t) { this.turnTo(t.l); return true; }
+    const box = this.at(ev.x, ev.y);
+    if (box) { this.chosen = box.ref.id; this.org.redraw(); }
+    return true;
+  }
+  turnTo(l) {
+    this.letter = l;
+    this.chosen = this.names()[0]?.id ?? null;
+    this.org.redraw();
+  }
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) await this.edit(box.ref.id);
+  }
+  key(ev) {                          // type a letter to turn to it
+    const l = ev.char?.toUpperCase();
+    if (!l || !LETTERS.includes(l) || ev.ctrl) return false;
+    this.turnTo(l);
+    return true;
+  }
+  turn(dir) {
+    const i = LETTERS.indexOf(this.letter) + dir;
+    this.turnTo(LETTERS[(i + 26) % 26]);
+  }
+  today() {}
+
+  async edit(id) {
+    const c = this.doc.book.get(id);
+    const v = await editCard(this.org.app.task, c, nameOf(c));
+    this.org.focus();
+    if (v) this.doc.book.put({ ...c, ...v });
+  }
+  async newEntry() {
+    const v = await editCard(this.org.app.task, {}, 'New contact');
+    this.org.focus();
+    if (!v) return;
+    const c = this.doc.book.add(v);
+    this.go({ id: c.id });
+    this.org.redraw();
+  }
+  go(ref) {
+    const c = this.doc.book.get(ref.id);
+    if (!c) return;
+    this.letter = initial(c);
+    this.chosen = c.id;
+  }
+</PRE>
+Typing a letter turns to it, the page corners go to the letter before or after, and a double-click opens
+!Contacts' card to change the contact. When the card closes, <CODE>book.put</CODE> keeps the changed
+contact, the book emits <CODE>change</CODE>, and the window redraws.<P>
+<P><CENTER><IMG SRC="PICS/O10Address" WIDTH=910 HEIGHT=569></CENTER>
+
+<A NAME=S7></A>
+<H2>One file for everything</H2>
+The organiser keeps everything in one file of its own type, &amp;1C5, named <I>Organisr</I> (a file type's
+name can only be eight letters long). Its <CODE>!Boot</CODE> is !Contacts' with a different name and number:<P>
+<PRE>
+| !Boot file for !Org10: the Filer runs it when it first shows the
+| application, so the icons and the file type are known.
+Set Org10$Dir &lt;Obey$Dir&gt;
+IconSprites &lt;Obey$Dir&gt;.!Sprites
+Set File$Type_1C5 Organisr
+| double-clicking an Organiser file runs the Organiser with it (%% is
+| a %: Obey would put its own parameters in place of a plain %*0)
+Set Alias$@RunType_1C5 Run &lt;Org10$Dir&gt;.!Run %%*0
+</PRE>
+The other sections will each keep a list of entries, and they all need the same things: add, change, remove,
+look up by id, save as JSON, and tell listeners when something changes. So there is one class for all of
+them, <CODE>Collection</CODE>, in the module <CODE>Store</CODE>:<P>
+<PRE>
+// Store - what the organiser remembers, section by section, with no
+// windows in it. Each kind of entry is kept in a Collection: a Map
+// from id to entry, which emits 'change' whenever it changes.
+//
+//   const diary = new Collection(data.diary);
+//   diary.add({ date, text })
+//   diary.update(id, fields); diary.put(entry); diary.remove(id)
+//   diary.get(id), diary.all(), diary.toJSON()
+import { Emitter } from './Toolkit/Emitter';
+
+export class Collection extends Emitter {
+  constructor(items = []) {
+    super();
+    this.items = new Map();            // id -&gt; entry
+    this.nextId = 1;
+    for (const x of items) this.put(x, false);
+  }
+  get size() { return this.items.size; }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+  add(fields) {
+    const x = { ...fields, id: fields.id ?? this.nextId };
+    this.put(x);
+    return x;
+  }
+  update(id, fields) {
+    const x = { ...this.items.get(id), ...fields, id };
+    this.put(x);
+    return x;
+  }
+  /** Keep exactly this entry (tell listeners unless quiet). */
+  put(x, tell = true) {
+    this.items.set(x.id, x);
+    this.nextId = Math.max(this.nextId, x.id + 1);
+    if (tell) this.emit('change', x);
+  }
+  remove(id) {
+    const x = this.items.get(id);
+    this.items.delete(id);
+    this.emit('change', x);
+    return x;
+  }
+  toJSON() { return this.all(); }
+}
+</PRE>
+It is !Contacts' <CODE>Book</CODE> without anything about contacts: a <CODE>Map</CODE> from id to entry,
+<CODE>nextId</CODE> for new ones, and a <CODE>change</CODE> event. <CODE>toJSON</CODE> gives an array of
+the entries, so a Collection can be handed straight to <CODE>JSON.stringify</CODE>.<P>
+The <CODE>Document</CODE> is the one from chapter 7, grown: instead of one Book, it has a Collection for each
+section and !Contacts' Book for the addresses:<P>
+<PRE>
+export class Document {
+  constructor(app, data = {}, filename = '') {
+    this.app = app;
+    this.filename = filename;          // '' until it's saved
+    this.modified = false;
+    // every section's entries (kept even while its page is blank)
+    this.diary = new Collection(data.diary);
+    this.todo = new Collection(data.todo);
+    this.book = Book.fromJSON({ format: 'Contacts',
+      contacts: data.contacts ?? [] });
+    this.notes = new Collection(data.notes);
+    this.planner = new Collection(data.planner);
+    this.anniversaries = new Collection(data.anniversaries);
+    this.links = new Collection(data.links);
+    for (const part of this.parts) {
+      part.on('change', () =&gt; this.setModified(true));
+    }
+    this.view = new OrganiserWindow(this);
+    app.docs.add(this);
+  }
+  get parts() {
+    return [this.diary, this.todo, this.book, this.notes,
+      this.planner, this.anniversaries, this.links];
+  }
+
+  static async load(app, path) {
+    const data = JSON.parse(await vfs.readText(path));
+    if (data?.format !== 'Organiser') {
+      throw new Error('This is not an Organiser file');
+    }
+    return new Document(app, data, path);
+  }
+</PRE>
+<CODE>parts</CODE> lists them all, so the document can listen to every one (any change sets the
+<CODE>*</CODE> in the title) and so can the window. Saving writes them all into one object:<P>
+<PRE>
+  // ------------------------------------------------ saving
+  get data() {
+    return JSON.stringify({
+      format: 'Organiser', version: 1,
+      diary: this.diary, todo: this.todo,
+      contacts: this.book.all(), notes: this.notes,
+      planner: this.planner, anniversaries: this.anniversaries,
+      links: this.links,
+    }, null, 1) + '\n';
+  }
+  save(path) {
+    vfs.writeFile(path, this.data, { filetype: this.app.TYPE });
+    this.filename = vfs.canonical(path);
+    this.setModified(false);
+  }
+</PRE>
+The contacts are saved as a plain list, just as !Contacts would save them, with <CODE>format</CODE> and
+<CODE>version</CODE> at the top as in chapter 7. As the comment in the constructor says, the document keeps
+every section's entries even while this stage shows their pages blank. It still reads and writes them, so if
+you open an organiser file made by a later stage, change an address and save it, the diary and to-do list in
+it aren't lost.<P>
+Closing, the Save box and the Discard/Cancel/Save question are chapter 7's, and <CODE>!RunImage</CODE> is
+!Contacts': one icon on the icon bar, one running copy, and a <CODE>Document</CODE> for each open file.<P>
+As always, the part without windows is tested by <CODE>Check</CODE>:<P>
+<PRE>
+export default function start() {
+  const c = new Collection([{ id: 4, text: 'kept' }]);
+  let told = 0;
+  c.on('change', () =&gt; told++);
+  const x = c.add({ text: 'new' });
+  check('a new entry gets the next id', x.id, 5);
+  c.update(4, { done: true });
+  check('update keeps the other fields', c.get(4),
+    { id: 4, text: 'kept', done: true });
+  c.remove(5);
+  check('removed', [c.size, c.get(5)], [1, undefined]);
+  check('listeners told of each change', told, 3);
+  check('saved as a list', JSON.stringify(c), '[{&quot;id&quot;:4,' +
+    '&quot;text&quot;:&quot;kept&quot;,&quot;done&quot;:true}]');
+  print(failed ? `${failed} FAILED` : 'all ok');
+}
+</PRE>
+<P><CENTER><IMG SRC="PICS/O10Check" WIDTH=586 HEIGHT=349></CENTER>
+
+<A NAME=S8></A>
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Open <CODE>Examples.JSApps</CODE> and double-click <CODE>!Org10</CODE>, then double-click the
+organiser file <CODE>Diary</CODE>. (If another stage opens it, see the note in chapter 7: start !Org10 first,
+then drag <CODE>Diary</CODE> to its icon.)<P>
+<DT><DD>2  Click the tabs, or press Ctrl-1 to Ctrl-6. Five of the sections are empty pages with a title.<P>
+<DT><DD>3  Click the Address tab and type <CODE>B</CODE>. Click a name to see the card; double-click it
+to change it - it's !Contacts' dialogue box.<P>
+<DT><DD>4  Click the turned-up corners, or press Page Up and Page Down, to go through the letters.<P>
+<DT><DD>5  Press Insert to add a contact, then F3 to save the file.<P>
+</DL>
+
+<A NAME=S9></A>
+<H2>Summary</H2>
+<UL>
+<LI>Plan a big application the same way as a small one: what it remembers, what happens.<P>
+<LI>The <CODE>Binder</CODE> module draws the binder and says what is at a point; the program decides what
+a click means.<P>
+<LI>A base class can describe an <I>interface</I>: every method the window may call, each doing nothing, so
+subclasses write only what they need.<P>
+<LI>Sections record where they drew their entries (<CODE>box</CODE>), and <CODE>at</CODE> finds the entry
+at a point; <CODE>findLast</CODE> searches from the end.<P>
+<LI>Classes are values: a function can return a class expression, and a list of classes can be turned into
+objects with <CODE>map</CODE>.<P>
+<LI><CODE>...array</CODE> in a call spreads an array into separate arguments.<P>
+<LI>A model written without windows can be reused unchanged by another program: the organiser's Address
+section is !Contacts' <CODE>Book</CODE> and <CODE>editCard</CODE>.<P>
+<LI>One file can hold several collections; a generic <CODE>Collection</CODE> class serves them all.<P>
+</UL>
+
+<A NAME=S10></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Add a seventh tab, <I>Calls</I> (a log of telephone calls, as Lotus Organizer 2 had), as a blank
+section for now. What else has to change for Ctrl-7 to open it?<P>
+<DT><DD>2  Give the binder a navy cover instead of brown.<P>
+<DT><DD>3  The Style Guide says that clicking Adjust on something that moves one way should move the other
+way. Make Adjust on a page corner turn back instead of on.<P>
+<DT><DD>4  Show how many people are under the chosen letter at the bottom of the Address section's left
+page: <I>3 people</I>.<P>
+</DL>
+
+<A NAME=S11></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Add a line to the list of sections, before <CODE>].map</CODE>:
+<PRE>
+blank('calls', 'Calls', '#76a5af'),
+</PRE>
+The binder makes a tab for it by itself - it shares the height between however many tabs it's given - and
+the Section menu lists it. For Ctrl-7, change <CODE>54</CODE> to <CODE>55</CODE> in <CODE>key</CODE>. (To
+keep calls in the file you would also add a Collection to <CODE>Document</CODE> and to its
+<CODE>data</CODE>.)<P>
+<DT><DD>2  In <CODE>!RunImage</CODE>, change the colour in <CODE>prefs</CODE>:
+<PRE>
+prefs: { colour: '#1f3864', confirm: true },
+</PRE>
+The window copies it into the binder each time it draws. (Chapter 16 makes it a choice.)<P>
+<DT><DD>3  In the window's <CODE>click</CODE>:
+<PRE>
+if (hit?.corner) {
+  const dir = ev.button === 'adjust' ? -hit.corner
+    : hit.corner;
+  this.section.turn(dir);
+  this.refresh();
+  return true;
+}
+</PRE>
+<DT><DD>4  At the end of <CODE>AddressPage</CODE>'s <CODE>draw</CODE>, before the card:
+<PRE>
+const n = names.length;
+text(g, `${n} ${n === 1 ? 'person' : 'people'}`,
+  L.x + 14, L.y + L.h - 16, L.w - 28,
+  '11px Homerton', FAINT);
+</PRE>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap11.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap9.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>

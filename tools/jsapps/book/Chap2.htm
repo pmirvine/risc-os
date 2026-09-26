@@ -1,0 +1,193 @@
+A list you can only look at isn't much use: an application needs a list you can <I>choose from</I>, the way you
+choose files in a directory display. In this chapter you'll build the second toolkit module, <B>ListView</B>,
+and use it to show the contacts in columns, with headings, that you can select with the mouse and move
+through with the keyboard.<P>
+
+<H2>What a list needs</H2>
+Think about how a directory display behaves, and you have the list's plan. RISC OS applications all choose
+things the same way, and the Style Guide spells it out:<P>
+<UL>
+<LI>Clicking Select on an item selects it, and deselects everything else.<P>
+<LI>Clicking Adjust on an item selects it, or deselects it, leaving the others as they are. That's how you
+choose several.<P>
+<LI>Clicking Select in an empty part of the window deselects everything.<P>
+<LI>Double-clicking an item opens it.<P>
+<LI>Clicking Menu over an item that isn't selected selects it just while the menu is open (a
+<I>temporary selection</I>), so the menu can act on it. Chapter 3 uses that.<P>
+<LI>Selected items are shown in reverse: white on black.<P>
+</UL>
+And, like any window with a lot in it, the list should scroll, and the keyboard should work: the arrow keys
+to move up and down, Page Up and Page Down, Home and Copy (End) for the first and last, Return to open.<P>
+None of that is about contacts: it's how every list behaves. So it goes in the toolkit, where !Organiser can
+use it too - for its to-do list, its search results, and more.<P>
+
+<H2>Using ListView</H2>
+Here is !Contacts2's MainWindow. The window is made as before; the list takes over drawing it:<P>
+<!--#listing !Contacts2/MainWindow 8-45-->
+You give a ListView the window to fill and a description of the list:<P>
+<DL>
+<DT>columns
+<DD>an array of columns, each with a heading (<CODE>title</CODE>), a width in pixels, and a function that
+gives the text to show in it for an item. <CODE>nameOf</CODE> and <CODE>phoneOf</CODE> from the Model are
+just such functions; the other two are arrow functions that pick out a field.<P>
+<DT>key
+<DD>a function that gives what tells one item from another - here each contact's id. More on this below.<P>
+</DL>
+Then <CODE>list.setItems(array)</CODE> tells it what to show (MainWindow's <CODE>refresh</CODE> gives it the
+Book's sorted list), and <CODE>list.on('open', fn)</CODE> asks to be told when an item is opened. For now,
+opening a contact just shows a little of it in a message box: chapter 3 opens a proper dialogue box instead.
+The message box is the desktop's <CODE>reportError(message, options)</CODE>, the box your programs' mistakes
+appeared in, in the first book. Its options change how it looks: <CODE>appName</CODE> puts <I>Message from
+Contacts</I> in the title (without it the title is just <I>Error</I>), and <CODE>category: 'info'</CODE> shows
+the "information" picture rather than the warning one. <CODE>lines.filter(Boolean)</CODE> keeps only the parts
+that count as true - the ones that aren't empty or missing - because <CODE>Boolean(x)</CODE> is true or false as
+<CODE>x</CODE> counts, so a contact without a company doesn't get an empty gap between two commas.<P>
+Notice the window's <CODE>workButton: 'clickdragdouble'</CODE>: it asks the Wimp to report clicks, drags and
+double-clicks in the work area, which a list needs.<P>
+Run !Contacts2 and try the mouse and keyboard. Here Braben, Green and Ives have been chosen with Select and
+Adjust:<P>
+<!--#pic C2Select-->
+
+<H2>How ListView works</H2>
+ListView is about 180 lines, in <CODE>Toolkit.ListView</CODE>. It's an Emitter, so it can tell the program when
+something happens. Here is how it starts:<P>
+<!--#listing toolkit/ListView 21-59-->
+<CODE>constructor(win, { columns, key = (x) =&gt; x, top = 0 })</CODE> takes the object you give it apart
+straight away: <CODE>{ columns, key, top }</CODE> in the brackets makes three variables from the properties
+of the same names. This is called <I>destructuring</I>. <CODE>key = (x) =&gt; x</CODE> gives a
+<I>default</I>: if you don't give a key, each item is its own key. (<CODE>top</CODE>, the room to leave above
+the list, is for a toolbar in chapter 5.)<P>
+<CODE>Object.assign(this, { win, columns, key, top })</CODE> copies all four onto the ListView in one go -
+the same as four lines of <CODE>this.win = win;</CODE> and so on.<P>
+Then the ListView gives the window its redraw function and listens for its events. From here on, the window
+is the ListView's to manage.<P>
+<H3>Rows and positions</H3>
+Every row is <CODE>ROW</CODE> (20) pixels high, and the headings take the first row. Two small methods convert
+between rows and positions:<P>
+<UL>
+<LI><CODE>rowY(i)</CODE> gives the top of row <CODE>i</CODE> in the work area.<P>
+<LI><CODE>indexAt(y)</CODE> goes the other way: which row is at height <CODE>y</CODE>? Dividing by the row
+height and rounding down (<CODE>Math.floor</CODE>) does it. Finding out what was clicked from where is
+called <I>hit-testing</I>.<P>
+</UL>
+<CODE>width</CODE> is a getter, as in chapter 1. It adds up the columns' widths with <CODE>reduce</CODE>, an
+array method that goes through the array carrying a running total: <CODE>(a, c) =&gt; a + c.width</CODE> is
+called with the total so far and each column in turn, starting from 0.<P>
+<H3>The work area's size</H3>
+<CODE>setItems</CODE> keeps the items, and then <CODE>resize</CODE> sets the window's <I>extent</I> - the size
+of its work area - to fit them all, with <CODE>setExtent</CODE>. That's what makes the scroll bar work: with
+ten contacts the extent is no taller than the window, but with a hundred it's much taller, and you can scroll
+through them. (The window's <CODE>open</CODE> event calls <CODE>resize</CODE> too, so that making the window
+wider makes the work area wider.)<P>
+
+<H2>Drawing only what shows</H2>
+<!--#listing toolkit/ListView 151-184-->
+A list may have thousands of rows, but only a screenful can be seen. The redraw function is given the
+visible part of the work area as <CODE>r</CODE> (as in the first book), so <CODE>draw</CODE> works out the
+first and last rows in it with <CODE>indexAt</CODE> and draws only those. That keeps the list quick however
+long it grows.<P>
+Each row is a background rectangle, then the columns' texts. For a selected row the colours are swapped, black
+background and white text, as the Style Guide asks. <CODE>row</CODE> draws each text <I>clipped</I> to its
+column (<CODE>g.clip()</CODE> after a rectangle limits drawing to that rectangle, until
+<CODE>g.restore()</CODE>), so a long email address can't spill into the next column.<P>
+The headings are drawn last, at the top of the <I>visible</I> area (<CODE>r.y0</CODE>) rather than the top of
+the work area, so they stay put when you scroll and cover the rows beneath them.<P>
+
+<H2>The selection</H2>
+<!--#listing toolkit/ListView 61-84-->
+The selection is a Set (chapter 1) of the selected items' <I>keys</I>. This is why a ListView needs a
+<CODE>key</CODE> function. The items it's given are replaced each time the list is refreshed - from chapter 3
+on, the Book makes a new object for a contact whenever it's changed - so remembering the objects themselves
+wouldn't work.
+Their ids stay the same, so remembering the ids does. That's also why <CODE>setItems</CODE> removes the keys of
+any items that have gone, and keeps the rest: the selection survives a refresh.<P>
+<CODE>selected()</CODE> gives the selected items, in list order, by filtering the items for the ones whose
+key is in the Set. Every change to the selection goes through <CODE>changed()</CODE>, which redraws the list and
+emits <CODE>select</CODE> so the program can, for example, shade menu items that need a selection (chapter 4).<P>
+
+<H2>The mouse</H2>
+<!--#listing toolkit/ListView 86-118-->
+<CODE>click</CODE> follows the Style Guide's rules. First it ignores clicks on the headings. Then it finds the
+row with <CODE>indexAt</CODE>, and the item there (<CODE>undefined</CODE> if the click was below the last
+row):<P>
+<UL>
+<LI>Menu: if the item isn't selected, it's selected for now and <CODE>temporary</CODE> remembers that. Either
+way, the program is told with a <CODE>menu</CODE> event, so it can open its menu. (<CODE>!!x</CODE> is two
+"not"s: it turns any value into <CODE>true</CODE> or <CODE>false</CODE> as it counts, so
+<CODE>temporary</CODE> is <CODE>false</CODE> rather than <CODE>undefined</CODE> when there's no item.)<P>
+<LI>Otherwise the list takes the input focus with <CODE>wimp.setCaret(this.win)</CODE> (an invisible caret),
+so that the keys come to it.<P>
+<LI>Select below the last row clears the selection.<P>
+<LI>Adjust adds the item to the selection, or takes it out if it was already there.<P>
+<LI>Select selects just this item.<P>
+</UL>
+Returning <CODE>true</CODE> tells the Wimp the click has been dealt with. <CODE>double</CODE> emits
+<CODE>open</CODE> for a double-click with Select, and <CODE>drag</CODE> tells the program a drag has started
+on the selection (chapter 8 uses it to drag contacts out of the window).<P>
+
+<H2>The keyboard</H2>
+<!--#listing toolkit/ListView 120-149-->
+The keys are handled with <CODE>switch</CODE>, a neater way of writing a row of <CODE>if</CODE>s that all
+compare one value: JavaScript compares <CODE>ev.code</CODE> with each <CODE>case</CODE> in turn and runs the code
+after the first that matches, up to a <CODE>break</CODE> (which jumps out of the <CODE>switch</CODE>) or a
+<CODE>return</CODE>; <CODE>default</CODE> catches everything else. A <CODE>case</CODE> without a
+<CODE>break</CODE> would run on into the next one, so each ends with one.<P>
+The keys move the <I>current</I> row: the one last clicked or moved to. <CODE>findIndex</CODE> finds its
+position in the list (or -1 if there isn't one). Each key works out a new position - one up, one down, a page
+up or down, the first, the last - clamped with <CODE>Math.max</CODE> and <CODE>Math.min</CODE> so it can't go
+off either end. Then the new row is selected and <CODE>ensureVisible</CODE> scrolls, if it has to, so it can be
+seen. Return opens the current row.<P>
+For any other key, <CODE>key</CODE> returns <CODE>undefined</CODE>: nothing. As in the first book, that lets the
+key go on to the rest of the desktop, so F12 and the other keys still work.<P>
+<CODE>ensureVisible</CODE> compares the row's position with the part of the work area showing
+(<CODE>scrollY</CODE> to <CODE>scrollY + h</CODE>, less the headings) and scrolls just far enough, with
+<CODE>scrollTo</CODE>.<P>
+
+<H2>Summary</H2>
+<UL>
+<LI>Every RISC OS list chooses the same way: Select selects one, Adjust adds or removes one, Select on
+nothing clears, double-click opens, Menu can select temporarily, the selection is shown in reverse.<P>
+<LI>ListView (the toolkit) draws a list of items in columns on a window, handles the mouse and keyboard, and
+emits <CODE>select</CODE>, <CODE>open</CODE>, <CODE>menu</CODE> and <CODE>drag</CODE>.<P>
+<LI>Hit-testing: work out what's under the pointer from where it is (<CODE>indexAt</CODE>).<P>
+<LI>Draw only the rows in the visible area; set the extent to fit all of them so the window scrolls.<P>
+<LI>Remember a selection by the items' keys, not the items, so it survives a refresh.<P>
+<LI>Destructuring (<CODE>{ columns, key }</CODE> in a parameter list) picks properties out of an object;
+<CODE>= value</CODE> gives a default; <CODE>Object.assign</CODE> copies properties; <CODE>reduce</CODE> works
+through an array keeping a total; <CODE>findIndex</CODE> finds a position.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Show how many contacts are selected in the window's title (<I>Contacts: 3 selected</I>), using the
+list's <CODE>select</CODE> event.<P>
+<DT><DD>2  Add a Company column between Name and Phone.<P>
+<DT><DD>3  Make Ctrl-A select every contact. (Its key code is 1. Listen for the window's <CODE>key</CODE>
+event in MainWindow, after the ListView has been made.)<P>
+<DT><DD>4  Why does ListView's <CODE>key</CODE> method return <CODE>undefined</CODE> for keys it doesn't use,
+rather than <CODE>false</CODE>?<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  In MainWindow's constructor:
+<PRE>
+this.list.on('select', (items) =&gt; {
+  if (items.length) w.setTitle(`Contacts: ${items.length} selected`);
+  else w.setTitle('Contacts');
+});
+</PRE>
+<DT><DD>2  Add a column to the array, and make the window a little wider:
+<PRE>
+{ title: 'Company', width: 140, text: (c) =&gt; c.company },
+</PRE>
+<DT><DD>3  In MainWindow's constructor, after the ListView:
+<PRE>
+w.on('key', (ev) =&gt; {
+  if (ev.code === 1) { this.list.selectAll(); return true; }
+});
+</PRE>
+<DT><DD>4  Returning <CODE>false</CODE> would tell the Wimp the key had been dealt with, so it would stop
+there. Returning nothing lets it go on to the rest of the desktop (as chapter 8 of the first book explained),
+so keys such as F12 keep working.<P>
+</DL>

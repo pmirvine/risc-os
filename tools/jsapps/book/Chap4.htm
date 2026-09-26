@@ -1,0 +1,166 @@
+In chapter 3 every change to the address book was followed by a call to <CODE>refresh</CODE>, so that the
+list showed it. That works while there are two changes, but an application soon has many ways to change its
+data - menus, keys, buttons, files dropped on it - and sooner or later one of them forgets. In this chapter the
+book tells the window when it changes, so the window can never be out of date. You'll also add the rest of the
+things a user expects of a list: a Delete key that asks first, Select all, and a menu whose entries are greyed
+out when they can't be used. The result is <CODE>!Contacts4</CODE>.<P>
+
+<H2>One source of truth</H2>
+There are now two copies of the contacts in the program: the <CODE>Book</CODE>, which holds them, and the list
+in the window, which shows them. The Book is the one that matters - it's what will be saved in chapter 7 -
+so it is called the <I>source of truth</I>. The list is only a picture of it.<P>
+A picture can be out of date. Look at chapter 3's <CODE>add</CODE> and <CODE>edit</CODE>: each changed the
+Book and then called <CODE>this.refresh()</CODE>. If some later piece of code changed the Book and didn't call
+<CODE>refresh</CODE>, the window would go on showing the old contacts until something else happened to redraw
+it - the kind of mistake that is easy to make and hard to find.<P>
+The answer is to turn it round. Instead of every piece of code that changes the Book remembering to tell the
+window, the Book tells anyone who is interested, every time it changes. That's what the <CODE>Emitter</CODE>
+it is built on (chapter 1) is for: the Book already emits a <CODE>'change'</CODE> event from
+<CODE>add</CODE> and <CODE>update</CODE>. All the window has to do is listen.<P>
+
+<H2>Listening to the book</H2>
+Here is how <CODE>!Contacts4</CODE>'s MainWindow is wired up at the end of its constructor:<P>
+<!--#listing !Contacts4/MainWindow 31-37-->
+The new line is <CODE>book.on('change', ...)</CODE>. Whenever the Book changes, whoever changed it, the
+window calls <CODE>refresh</CODE>, which gives the ListView the Book's contacts again:<P>
+<!--#listing !Contacts4/MainWindow 40-43-->
+So <CODE>add</CODE> and <CODE>edit</CODE> lose their calls to <CODE>refresh</CODE>. They just change the
+Book:<P>
+<!--#listing !Contacts4/MainWindow 49-63-->
+<CODE>add</CODE> still selects the new contact and scrolls to it. By the time <CODE>this.book.add(v)</CODE>
+returns, the Book has emitted its change, the window has refreshed, and the new contact is in the list,
+ready to be selected.<P>
+The selection survives a refresh, even though <CODE>update</CODE> makes a new object for the changed contact
+(with the spread <CODE>{ ...old, ...fields }</CODE>). That's why chapter 2 gave the ListView a
+<CODE>key</CODE> function: it remembers <I>which contacts</I> are selected by their <CODE>id</CODE>s, not
+the objects themselves, so a new object with the same id is still selected.<P>
+
+<H3>Removing a contact</H3>
+The Book gets a third kind of change, <CODE>remove</CODE>, which emits <CODE>'change'</CODE> like the
+others:<P>
+<!--#listing !Contacts4/Model 38-43-->
+Check tests it straight away (after renaming Anne in the test before):<P>
+<!--#listing !Contacts4/Check 37-39-->
+Double-click <CODE>!Contacts4.Check</CODE> to see <CODE>all ok</CODE>. The window never needs telling that a
+contact has gone: the Book's change event does it.<P>
+
+<H2>Asking before deleting</H2>
+Deleting is the one thing the user can't take back (until chapter 9 adds Undo), so the Style Guide asks
+programs to check first. <CODE>remove</CODE> in MainWindow does that:<P>
+<!--#listing !Contacts4/MainWindow 64-74-->
+<CODE>query</CODE> is the desktop's query box, the one Edit uses to ask "Discard changes?". You give it a
+message and the names of its buttons; it gives back a Promise that resolves to the text of the button that
+was clicked (or <CODE>null</CODE> if the box was closed), so <CODE>await</CODE> waits for the answer, just as
+<CODE>await editCard(...)</CODE> waits for the card.<P>
+The message is made with the conditional operator (chapter 1):<P>
+<PRE>
+const what = gone.length === 1 ? nameOf(gone[0])
+  : `these ${gone.length} contacts`;
+</PRE>
+So one contact is named ("Delete Evans, Carol?") and several are
+counted ("Delete these 3 contacts?"). The button is labelled <I>Delete</I> rather than <I>Yes</I>: the Style
+Guide asks for buttons named after what they do.<P>
+Notice <CODE>this.focus()</CODE> after the question, whatever the answer. The query box took the input focus;
+giving it back to the list means the arrow keys work again straight away.<P>
+
+<H2>Keys</H2>
+A list should work from the keyboard as well as the mouse. The ListView already moves the selection with the
+arrow keys, Home, Copy and Page Up/Down, and opens the current contact on Return. MainWindow adds the keys that
+change things, following the Style Guide:<P>
+<!--#listing !Contacts4/MainWindow 76-85-->
+<DL>
+<DT>Insert
+<DD>a new contact (the Style Guide says named keys should do what they say).<P>
+<DT>Delete (or Backspace)
+<DD>delete the selected contacts, after asking.<P>
+<DT>Ctrl-A
+<DD>select all.<P>
+<DT>Ctrl-Z
+<DD>clear the selection. Ctrl and a letter give the codes 1 (A) to 26 (Z).<P>
+</DL>
+This is a <CODE>switch</CODE>, like the ListView's in chapter 2. <CODE>case 127: case 8:</CODE> lets two values
+share the same code, and each case ends with <CODE>return</CODE>, so it goes no further. <CODE>default</CODE>
+returns nothing, so, as in the first book, the key goes on to other programs (F12 still works, for
+instance).<P>
+<H3>The input focus</H3>
+Keys only go to the window that has the <I>input focus</I>: the one whose title bar is cream. Clicking a row
+gives the list the focus (the ListView calls <CODE>wimp.setCaret(this.win)</CODE> when you click), and
+MainWindow's <CODE>focus</CODE> gives it back after a dialogue box. If the keys seem to do nothing, click in
+the list first.<P>
+
+<H2>Menus that follow the selection</H2>
+The window's menu now has everything the keys do, with the keys written beside the entries, and the entries
+that can't be used just now greyed out:<P>
+<!--#listing !Contacts4/MainWindow 90-104-->
+<!--#pic C4Shaded-->
+As in the first book, the menu is made each time it opens, so it always shows how things are. The difference is that
+<CODE>shaded</CODE> is given a <I>function</I> rather than true or false. The menu calls it when it's drawn,
+so <I>Change</I> is greyed out unless exactly one contact is selected, and <I>Delete</I> and <I>Clear
+selection</I> unless at least one is. <CODE>none</CODE> is a small function kept in a variable because two
+entries use it.<P>
+<CODE>key: '^A'</CODE> writes the key at the right of the entry. It only <I>shows</I> the key: the key itself
+is handled by <CODE>key(ev)</CODE>. The Style Guide writes Ctrl as <CODE>^</CODE> and Shift as an arrow.<P>
+Clicking Menu over a contact that isn't selected selects it just for the menu (chapter 2), so <I>Change</I>
+and <I>Delete</I> work on the contact under the pointer:<P>
+<!--#pic C4Menu-->
+
+<H2>Trying it</H2>
+<DL>
+<DT><DD>1  Double-click <CODE>!Contacts4</CODE> in <CODE>HardDisc4.$.Examples.JSApps</CODE>.<P>
+<DT><DD>2  Click a contact and press Delete. Click <I>Cancel</I>, then do it again and click
+<I>Delete</I>: the contact goes from the list.<P>
+<DT><DD>3  Press Ctrl-A: every contact is selected. Click Menu: <I>Change</I> is greyed out (there's more
+than one), <I>Delete</I> isn't.<P>
+<DT><DD>4  Press Insert, fill in a new contact and click <I>Save</I>: it appears in its place in the list,
+selected.<P>
+</DL>
+
+<H2>Summary</H2>
+<UL>
+<LI>Keep the data in one place, the model, and let it tell the views when it changes
+(<CODE>book.on('change', ...)</CODE>). Code that changes the data never has to update the windows.<P>
+<LI>The ListView keeps its selection by key, so it survives the list being refreshed.<P>
+<LI><CODE>query</CODE> asks a question with buttons and resolves to the button clicked. Ask before deleting,
+and name the button after the action.<P>
+<LI><CODE>switch</CODE> picks code by comparing one value
+with several <CODE>case</CODE>s.<P>
+<LI>The Style Guide's keys: Insert, Delete, Ctrl-A select all, Ctrl-Z clear selection. Keys go to the window
+with the input focus.<P>
+<LI>Menu entries can be <CODE>shaded</CODE> by a function, worked out as the menu is drawn;
+<CODE>key</CODE> shows the entry's key.<P>
+</UL>
+
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Show how many contacts there are in the window's title, for example <I>Contacts (10)</I>, and keep
+it right as contacts are added and deleted. (Where is the one place to do it?)<P>
+<DT><DD>2  Grey out <I>Select all</I> when every contact is already selected.<P>
+<DT><DD>3  Make Delete ask only when more than one contact is selected.<P>
+<DT><DD>4  Add a menu entry <I>New view</I> that opens a second window on the same Book. Change a contact in
+one window: what happens in the other? Why?<P>
+</DL>
+
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  In <CODE>refresh</CODE>, which runs after every change:
+<PRE>
+refresh() {
+  this.list.setItems(this.book.list());
+  this.win.setTitle(`Contacts (${this.book.size})`);
+}
+</PRE>
+<DT><DD>2  <CODE>{ text: 'Select all', key: '^A', shaded: () =&gt;
+this.list.selected().length === this.book.size, ... }</CODE><P>
+<DT><DD>3  Skip the question for one contact:
+<PRE>
+if (gone.length &gt; 1) {
+  const r = await query({ ... });
+  this.focus();
+  if (r !== 'Delete') return;
+}
+</PRE>
+<DT><DD>4  <CODE>{ text: 'New view', action: () =&gt; new MainWindow(this.task, this.book) }</CODE>. The
+other window changes too: both windows listen to the same Book, so a change made through either reaches both.
+(Closing either window ends the program, because MainWindow's close handler quits the task - a proper
+program would only quit when the last window closed.)<P>
+</DL>

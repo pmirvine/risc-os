@@ -225,3 +225,21 @@ docs/ASSETS.md §5).
   `tools/nerdfonts.mjs` (run by `tools/build.mjs` after `fonts.mjs`). `src/core/fonts.js` `cssFor`: a built-in font
   that isn't one of the RISC OS families it maps takes its CSS family and fallback from fonts.json (the RISC OS
   fonts' CSS is unchanged).
+
+## Helpers for applications (for the second tutorial) — changes in shared code
+**Status:** done. Additive.
+* `src/core/templates.js` `loadTemplates`: a RISC OS pathname is read from the virtual disc (not cached); web
+  addresses as before. `src/core/icons.js`: `Icon.name` / `Icon.help` from the spec. `src/core/window.js`:
+  `def.returnNext`; `src/core/wimp.js`: `caretmove` event between icons of one window, Return moves to the next
+  writable icon in a `returnNext` window.
+* `src/core/dialogs.js` `dragSave`; `src/core/choices.js`; `src/core/textarea.js` (TextArea gadget);
+  `src/core/timefmt.js` (moved from `src/apps/Alarm/timefmt.js`, which re-exports it).
+* `src/core/jsrun.js`: programs also get reportError, discardChanges, dragSave, loadTemplates, parseTemplateFile,
+  textWidth, choices, formatTime, DAYS, MONTHS, ordinal, TextArea, sprites.
+* `src/core/cli.js` `obey`: `%%` in an Obey file is a literal `%` (as on RISC OS), so `!Boot` files can write run
+  actions such as `Set Alias$@RunType_1C4 Run <Contacts$Dir>.!Run %%*0`. (23 Obey files on the seed disc use it -
+  `!Maestro.!Boot`, `!Squash.!Boot` … - and were mangled before.)
+* `src/core/wimp.js` `focusNext(win, from, d)`: Tab / Shift-Tab / Up / Down move through a window's writable icons
+  and TextAreas together, in reading order; a TextArea's Tab moves to the next field.
+* `src/core/util.js` `Emitter.on(type, fn, {first: true})` puts a handler before the others; TextArea's click, key
+  and paste handlers use it, so a program's own window handlers only see what the text area doesn't use.

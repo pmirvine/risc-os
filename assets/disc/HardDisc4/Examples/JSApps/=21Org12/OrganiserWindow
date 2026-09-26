@@ -1,0 +1,170 @@
+// OrganiserWindow - the binder window: the ring binder drawn in the
+// work area, the toolbox down the left, and the sections. Clicks on
+// the section tabs and page corners are the binder's; everything on
+// the pages goes to the open section (./Paper says what a section
+// does). The toolbox, deleting and dragging are in ./Tools.
+import { wimp, Menu } from 'riscos';
+import { Binder } from './Toolkit/Binder';
+import { Toolbar } from './Toolkit/Toolbar';
+import { DiaryPage } from './DiaryPage';
+import { AddressPage } from './AddressPage';
+import { AnniversaryPage } from './AnniversaryPage';
+import * as tools from './Tools';
+import { Section, heading } from './Paper';
+
+/** A section still to be written: just its name on the page. */
+const blank = (id, name, colour) => class extends Section {
+  constructor(org) { super(org, { id, name, colour }); }
+  draw(g, L) { heading(g, L, name, colour); }
+};
+
+const W = 900, H = 540, SIDE = 64;         // the toolbox's width
+
+export class OrganiserWindow {
+  constructor(doc) {
+    this.doc = doc;
+    this.app = doc.app;
+    this.selected = null;                  // the chosen entry's ref
+    const n = this.app.docs.size % 5;
+    const w = this.win = this.app.task.createWindow({
+      title: doc.title, x: 40 + 24 * n, y: 40 + 24 * n, w: W, h: H,
+      extent: { w: W, h: H }, colours: { workBg: 1 },
+      workButton: 'clickdragdouble',
+      flags: { back: true, close: true, title: true, moveable: true },
+      help: 'This is your organiser.|MClick a tab to open a ' +
+        'section; click a page corner to turn the page.',
+    });
+    this.sections = [DiaryPage, blank('todo', 'To do', '#e06666'),
+      AddressPage,
+      blank('notes', 'Notepad', '#f6b26b'),
+      blank('planner', 'Planner', '#b4a7d6'),
+      AnniversaryPage,
+    ].map((S) => new S(this));
+    this.current = 0;
+    this.binder = new Binder({ x: SIDE, y: 0, w: W - SIDE, h: H,
+      colour: this.app.prefs.colour,
+      tabs: this.sections.map((s) => ({ name: s.name,
+        colour: s.colour })) });
+    this.bar = new Toolbar(w, {
+      side: 'left', width: SIDE - 8, area: this.app.area,
+      menu: (ev) => this.openMenu(ev), buttons: tools.buttons(this),
+    });
+    w.useCanvas((g) => this.draw(g));
+    w.on('click', (ev) => this.click(ev));
+    w.on('doubleclick', (ev) => this.section.double(ev));
+    w.on('drag', (ev) => tools.drag(this, ev));
+    w.on('key', (ev) => this.key(ev));
+    w.on('close', (ev) => { ev.preventDefault(); this.doc.close(); });
+    this.offs = doc.parts.map((p) =>
+      p.on('change', () => this.redraw()));
+    w.open({ behind: 'top' });
+    this.section.show();
+    this.refresh();
+  }
+
+  get section() { return this.sections[this.current]; }
+  get pages() { return [this.binder.left, this.binder.right]; }
+  redraw() { this.win.invalidate(); }
+  updateTitle() { this.win.setTitle(this.doc.title); }
+  focus() { if (this.win.isOpen) wimp.setCaret(this.win); }
+
+  /** Open section i. */
+  open(i) {
+    if (i === this.current) return;
+    this.section.hide();
+    this.current = i;
+    this.selected = null;
+    this.section.show();
+    this.refresh();
+  }
+  /** Show an entry, in whichever section it is. */
+  go(ref) {
+    const i = this.sections.findIndex((s) => s.id === ref.section);
+    this.open(i);
+    this.section.go(ref);
+    this.selected = ref;
+    this.refresh();
+  }
+  /** The toolbox follows the section; then redraw. */
+  refresh() {
+    tools.updateToolbox(this);
+    this.redraw();
+  }
+  dispose() {
+    for (const off of this.offs) off();
+    this.section.hide();
+    this.win.delete();
+  }
+
+  // ------------------------------------------------ drawing
+  draw(g) {
+    this.binder.colour = this.app.prefs.colour;
+    this.binder.draw(g, this.current);
+    const s = this.section;
+    s.boxes = [];
+    s.draw(g, ...this.pages);
+    tools.decorate(this, g);           // the chosen entry
+  }
+
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    if (ev.button === 'menu') { this.openMenu(ev); return true; }
+    this.focus();
+    const hit = this.binder.hit(ev.x, ev.y);
+    if (hit?.tab != null) { this.open(hit.tab); return true; }
+    if (hit?.corner) { this.section.turn(hit.corner); this.refresh();
+      return true; }
+    if (tools.clickEntry(this, ev)) return true;
+    this.section.click(ev);
+    return true;
+  }
+
+  // ------------------------------------------------ the keyboard
+  key(ev) {
+    if (this.section.key(ev)) return true;
+    switch (ev.code) {
+      case 0x183: this.doc.quickSave(); return true;         // F3
+      case 0x19F: this.section.turn(-1); break;          // Page Up
+      case 0x19E: this.section.turn(1); break;           // Page Down
+      case 30: this.section.today(); break;                  // Home
+      case 0x1CD: this.section.newEntry(); return true;      // Insert
+      case 127: case 8: tools.remove(this); return true;     // Delete
+      default:                             // Ctrl-1 ... Ctrl-6: tabs
+        if (ev.ctrl && ev.code >= 49 && ev.code <= 54) {
+          this.open(ev.code - 49);
+          return true;
+        }
+        return undefined;
+    }
+    this.refresh();
+    return true;
+  }
+
+  // ------------------------------------------------ the menu
+  openMenu(ev) {
+    wimp.menus.openAt(this.menu(), ev, { task: this.app.task });
+  }
+  menu() {
+    const doc = this.doc, s = this.section;
+    return new Menu('Organiser', [
+      { text: 'File', submenu: new Menu('File', [
+        { text: 'Save', key: 'F3', submenu: () => doc.saveBox(),
+          action: () => doc.quickSave() },
+      ]) },
+      { text: 'Section', submenu: new Menu('Section',
+        this.sections.map((x, i) => ({ text: x.name, key: `^${i + 1}`,
+          ticked: () => i === this.current,
+          action: () => this.open(i) }))) },
+      { text: 'View', shaded: !s.views.length,
+        submenu: new Menu('View', s.views.map((v) => ({ text: v,
+          ticked: () => s.view === v,
+          action: () => { s.setView(v); this.refresh(); } }))) },
+      { text: 'New entry', key: 'Insert', action: () => s.newEntry(),
+        help: s.newHelp },
+      { text: 'Delete', key: 'Delete', shaded: !this.selected,
+        action: () => tools.remove(this), dotted: true },
+      { text: 'Today', key: 'Home',
+        action: () => { s.today(); this.refresh(); } },
+    ]);
+  }
+}

@@ -1,0 +1,73 @@
+// Check - tests the parts of Contacts that don't need windows:
+// the Book and the file formats. Double-click it: it prints ok
+// or FAIL for each test, and 'all ok' if they all pass.
+import { print } from 'riscos';
+import { Book, nameOf } from './Model';
+import { vcardWrite, vcardRead, csvWrite, csvRead, decode }
+  from './Toolkit/Formats';
+
+let failed = 0;
+// the same, whatever order their fields are in
+const sorted = (k, v) => (v && typeof v === 'object' &&
+  !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort())
+  : v);
+const same = (a, b) =>
+  JSON.stringify(a, sorted) === JSON.stringify(b, sorted);
+
+function check(what, got, want) {
+  const ok = same(got, want);
+  if (!ok) failed++;
+  print(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+  if (!ok) print(`     got ${JSON.stringify(got)}`);
+}
+
+export default function start() {
+  // ------------------------------------------------ the Book
+  const book = new Book();
+  let changes = 0;
+  book.on('change', () => changes++);
+  const ann = book.add({ first: 'Ann', last: 'Smith' });
+  const bob = book.add({ first: 'Bob', last: 'Jones',
+    company: 'Acorn' });
+  book.add({ company: 'Zebra Ltd' });
+  check('add gives ids', [ann.id, bob.id], [1, 2]);
+  check('changes are told', changes, 3);
+  check('sorted by surname', book.list().map(nameOf),
+    ['Jones, Bob', 'Smith, Ann', 'Zebra Ltd']);
+  check('sorted by company', book.list({ sort: 'company' })
+    .map((c) => c.id), [ann.id, bob.id, 3]);
+  check('search', book.list({ search: 'acorn' }).map(nameOf),
+    ['Jones, Bob']);
+  book.update(ann.id, { first: 'Anne' });
+  check('update', book.get(ann.id).first, 'Anne');
+  book.remove(bob.id);
+  check('remove', book.list().map(nameOf), ['Smith, Anne',
+    'Zebra Ltd']);
+  const copy = Book.fromJSON(JSON.parse(JSON.stringify(book)));
+  check('saved and loaded', copy.list().map(nameOf),
+    book.list().map(nameOf));
+
+  // ------------------------------------------------ vCard and CSV
+  const cards = [{ first: 'Jo', last: 'Bloggs', mobile: '0777',
+    address: '1 High St\nCambridge', postcode: 'CB1 1AA',
+    notes: 'Likes; commas, too', birthday: '1990-12-25' }];
+  const back = vcardRead(vcardWrite(cards));
+  check('vCard there and back', back, cards);
+  check('vCard 2.1', vcardRead('BEGIN:VCARD\r\nVERSION:2.1\r\n' +
+    'N:Doe;Jane\r\nTEL;CELL:123\r\nEND:VCARD\r\n'),
+  [{ last: 'Doe', first: 'Jane', mobile: '123' }]);
+  check('vCard: a PHOTO, a quoted-printable UTF-8 note',
+    vcardRead('BEGIN:VCARD\r\nVERSION:2.1\r\nN:Roe;Ann\r\n' +
+      'PHOTO;ENCODING=BASE64:QUJDRA==\r\nNOTE;ENCODING=' +
+      'QUOTED-PRINTABLE;CHARSET=UTF-8:Caf=C3=A9 =\r\nok\r\n' +
+      'END:VCARD\r\n'),
+  [{ last: 'Roe', first: 'Ann', notes: 'Caf\xe9 ok' }]);
+  check('CSV there and back', csvRead(csvWrite(cards)), cards);
+  check('CSV with quotes', csvRead('First name,Notes\r\n' +
+    'Al,"said ""hi"", twice"\r\n'), [{ first: 'Al',
+    notes: 'said "hi", twice' }]);
+  const utf8 = new TextEncoder().encode('Caf\xe9 \u2615');
+  check('UTF-8 text', decode(utf8), 'Caf\xe9 ?');
+
+  print(failed ? `${failed} FAILED` : 'all ok');
+}

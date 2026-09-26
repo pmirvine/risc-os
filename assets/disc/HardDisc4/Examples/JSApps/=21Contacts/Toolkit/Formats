@@ -1,0 +1,208 @@
+// Formats - swapping contacts with other programs.
+//
+//   vcardWrite(contacts) -> text     vCard 3.0, a card after another
+//   vcardRead(text)      -> contacts vCard 2.1 or 3.0
+//   csvWrite(contacts)   -> text     a header row, then a row each
+//   csvRead(text)        -> contacts matched to the header's names
+//   decode(bytes) -> text  UTF-8 (or Latin-1) bytes to RISC OS text
+//   encode(text)  -> bytes RISC OS text to UTF-8 bytes
+//   fold(line)    -> text  a long line folded (vCard, iCalendar)
+// A contact is an object with the fields in FIELDS.
+
+export const FIELDS = [
+  ['title', 'Title'], ['first', 'First name'], ['last', 'Surname'],
+  ['company', 'Company'], ['job', 'Job title'],
+  ['address', 'Address'], ['postcode', 'Postcode'],
+  ['work', 'Work phone'], ['home', 'Home phone'],
+  ['mobile', 'Mobile'], ['email', 'Email'], ['web', 'Web'],
+  ['birthday', 'Birthday'], ['category', 'Category'],
+  ['notes', 'Notes'],
+];
+
+// ---------------------------------------------------- text and bytes
+export function decode(bytes) {
+  let text;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {                           // not UTF-8: take it as Latin-1
+    return Array.from(bytes, (b) => String.fromCharCode(b)).join('');
+  }
+  // RISC OS text is Latin-1: other characters become '?'
+  return text.replace(/[^\x00-\xff]/g, '?');
+}
+export const encode = (text) => new TextEncoder().encode(text);
+
+// ---------------------------------------------------- vCard
+const esc = (s) => String(s).replace(/\\/g, '\\\\')
+  .replace(/\n/g, '\\n').replace(/([,;])/g, '\\$1');
+const unesc = (s) => s.replace(/\\(.)/g,
+  (_, c) => (c === 'n' || c === 'N' ? '\n' : c));
+// split on ; (or ,) but not on \; (or \,)
+const parts = (s, sep) => s.split(new RegExp(`(?<!\\\\)${sep}`));
+
+export function vcardWrite(contacts) {
+  const out = [];
+  for (const c of contacts) {
+    const lines = ['BEGIN:VCARD', 'VERSION:3.0',
+      `N:${esc(c.last ?? '')};${esc(c.first ?? '')};;` +
+        `${esc(c.title ?? '')};`,
+      `FN:${esc(fullName(c))}`];
+    const add = (name, value) => {
+      if (value) lines.push(name + value);
+    };
+    add('ORG:', c.company && esc(c.company));
+    add('TITLE:', c.job && esc(c.job));
+    add('TEL;TYPE=WORK,VOICE:', c.work);
+    add('TEL;TYPE=HOME,VOICE:', c.home);
+    add('TEL;TYPE=CELL:', c.mobile);
+    add('EMAIL;TYPE=INTERNET:', c.email);
+    if (c.address || c.postcode) {
+      lines.push(`ADR;TYPE=HOME:;;${esc(c.address ?? '')};;;` +
+        `${esc(c.postcode ?? '')};`);
+    }
+    add('URL:', c.web);
+    add('BDAY:', c.birthday);
+    add('NOTE:', c.notes && esc(c.notes));
+    add('CATEGORIES:', c.category && esc(c.category));
+    lines.push('END:VCARD');
+    out.push(...lines.map(fold));
+  }
+  return out.join('\r\n') + '\r\n';
+}
+// A long line is folded: a line break, then a space starts more. No
+// line may be over 75 octets as the file is written - in UTF-8
+// (encode), where characters above 127 take two.
+export function fold(line) {
+  let out = '', n = 0;
+  for (const ch of line) {
+    const w = ch.charCodeAt(0) > 127 ? 2 : 1;
+    if (n + w > 75) { out += '\r\n '; n = 1; }
+    out += ch; n += w;
+  }
+  return out;
+}
+
+export function vcardRead(text) {
+  // unfold, and join vCard 2.1's quoted-printable values, which end a
+  // line with = to go on (only those: other values may end with =)
+  const lines = [];
+  for (const l of text.replace(/\r?\n[ \t]/g, '').split(/\r?\n/)) {
+    const last = lines.at(-1);
+    if (last?.endsWith('=') && /QUOTED-PRINTABLE/i
+      .test(last.slice(0, last.indexOf(':')))) {
+      lines[lines.length - 1] = last.slice(0, -1) + l;
+    } else lines.push(l);
+  }
+  const cards = [];
+  let c = null;
+  for (const line of lines) {
+    const m = /^([^:;]+)([^:]*):(.*)$/.exec(line);
+    if (!m) continue;
+    const name = m[1].toUpperCase().replace(/^.*\./, '');
+    const params = m[2].toUpperCase();
+    let value = m[3];
+    if (/QUOTED-PRINTABLE/.test(params)) {
+      // =XX is a byte; in UTF-8 if the value says so
+      const bytes = value.replace(/=([0-9A-F]{2})/gi,
+        (_, h) => String.fromCharCode(parseInt(h, 16)));
+      value = /CHARSET=UTF-8/.test(params)
+        ? decode(Uint8Array.from(bytes, (ch) => ch.charCodeAt(0)))
+        : bytes;
+    }
+    if (name === 'BEGIN') { c = {}; continue; }
+    if (!c) continue;
+    const type = (t) => new RegExp(`\\b${t}\\b`).test(params);
+    const v = unesc(value);
+    switch (name) {
+      case 'N': {
+        const [last, first, , title] = parts(value, ';').map(unesc);
+        if (last) c.last = last;
+        if (first) c.first = first;
+        if (title) c.title = title;
+        break;
+      }
+      case 'FN': c.fn = v; break;
+      case 'ORG': c.company = unesc(parts(value, ';')[0]); break;
+      case 'TITLE': c.job = v; break;
+      case 'TEL':
+        if (type('CELL')) c.mobile ??= v;
+        else if (type('HOME')) c.home ??= v;
+        else if (!type('FAX')) c.work ??= v;
+        break;
+      case 'EMAIL': c.email ??= v; break;
+      case 'ADR': {
+        const a = parts(value, ';').map(unesc);
+        c.address ??= [a[2], a[3], a[4], a[6]].filter(Boolean)
+          .join('\n');
+        c.postcode ??= a[5];
+        break;
+      }
+      case 'URL': c.web = v; break;
+      case 'BDAY': c.birthday = v.replace(/^(\d{4})(\d\d)(\d\d)$/,
+        '$1-$2-$3').slice(0, 10); break;
+      case 'NOTE': c.notes = v; break;
+      case 'CATEGORIES':
+        c.category = unesc(parts(value, ',')[0]);
+        break;
+      case 'END':
+        if (!c.first && !c.last && c.fn) c.first = c.fn;
+        delete c.fn;
+        cards.push(c);
+        c = null;
+        break;
+      default: break;
+    }
+  }
+  return cards;
+}
+
+export const fullName = (c) =>
+  [c.first, c.last].filter(Boolean).join(' ') || c.company || '';
+
+// ---------------------------------------------------- CSV
+const quote = (s) => (/[",\r\n]/.test(s)
+  ? `"${s.replace(/"/g, '""')}"` : s);
+
+export function csvWrite(contacts) {
+  const rows = [FIELDS.map(([, title]) => title)];
+  for (const c of contacts) {
+    rows.push(FIELDS.map(([k]) => c[k] ?? ''));
+  }
+  return rows.map((r) => r.map((s) => quote(String(s))).join(','))
+    .join('\r\n') + '\r\n';
+}
+
+/** The rows of a CSV file: an array of arrays of strings. */
+export function csvRows(text) {
+  const rows = [[]];
+  let field = '', inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuotes) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') inQuotes = false;
+      else field += ch;
+    } else if (ch === '"') inQuotes = true;
+    else if (ch === ',') { rows.at(-1).push(field); field = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      rows.at(-1).push(field); field = ''; rows.push([]);
+    } else field += ch;
+  }
+  if (field || rows.at(-1).length) rows.at(-1).push(field);
+  return rows.filter((r) => r.some((s) => s !== ''));
+}
+
+export function csvRead(text) {
+  const [header, ...rows] = csvRows(text);
+  if (!header) return [];
+  // match each column to a field by its title (or the field's name)
+  const key = (t) => t.toLowerCase().replace(/[^a-z]/g, '');
+  const cols = header.map((t) => FIELDS.find(([k, title]) =>
+    key(title) === key(t) || k === key(t))?.[0]);
+  return rows.map((r) => {
+    const c = {};
+    r.forEach((s, i) => { if (cols[i] && s) c[cols[i]] = s; });
+    return c;
+  });
+}

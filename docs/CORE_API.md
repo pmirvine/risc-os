@@ -374,6 +374,16 @@ relative to itself (`'./Grid'` finds `Grid` or `grid/js`). Each run is a task na
 application, for `<App>.!RunImage`); `print`/`input` use the task window it was run from or an output window of
 its own. Errors, including ones thrown later by its event handlers and timers, are reported with the line number.
 The tutorial `$.Manuals.JSTutor` teaches with it (`tools/jstutor/README.md`).
+For applications, programs also get: `reportError`, `discardChanges`, `dragSave(ev, {task, leafname, filetype,
+getData, sprite})` (drag a file icon out of a window: written into a directory display, or DataSave to an
+application), `loadTemplates(path)` / `parseTemplateFile(bytes)` (`loadTemplates` and `createWindowFromTemplate`
+accept a RISC OS pathname, e.g. `<App$Dir>.Templates`), `textWidth(text, css)`, `choices.read(name, defaults)` /
+`choices.write(name, obj)` (JSON in `Choices:<name>` / `<Choices$Write>.<name>`), `formatTime(fmt, date)`,
+`DAYS`, `MONTHS`, `ordinal` (`src/core/timefmt.js`, Territory-style), `sprites`, and `TextArea`
+(`src/core/textarea.js`: several lines of editable text in a window - `new TextArea(w, {x, y, w, h, text})`,
+`.text`, `'change'`, `.focus()`). Window definitions take `returnNext: true` (Return in a writable icon moves to
+the next one; the last one's Return is reported); windows emit `caretmove {from, to}` when the caret moves between
+their icons; icon specs keep `name` (for `w.iconByName`) and `help` (interactive help).
 `checkSyntax(src)` (exported) parses a program without running it → `null` or `{line, message}`. Every program
 error is offered to `os.hooks.throwback({path, line, message, program})` first; an editor that returns true
 (!JsEdit, for files it has open) has shown it, and no error box appears.

@@ -1,0 +1,140 @@
+// DiaryPage - the diary: appointments, shown a week across the two
+// pages (or a day, a month or the year: the view buttons). Each day
+// also shows the planner's bars, anniversaries and things due to be
+// done that day, so they needn't be written twice. Double-click a day
+// to add an appointment there, double-click an appointment to change
+// it, drag one to another day to move it.
+import { Section } from './Paper';
+import { editAppointment, showDay } from './Entries';
+import { nth, PLANNER_KEY } from './Store';
+import * as V from './DiaryViews';
+import * as D from './Toolkit/Dates';
+import { os } from 'riscos';
+
+export class DiaryPage extends Section {
+  constructor(org) {
+    super(org, { id: 'diary', name: 'Diary', colour: '#6fa8dc',
+      views: ['Week', 'Day', 'Month', 'Year'],
+      newHelp: 'add an appointment' });
+    this.day = D.today();                  // the day we're looking at
+    this.days = [];                        // where each day is drawn
+  }
+  state() { return { view: this.view, day: this.day }; }
+
+  draw(g, L, R) {
+    this.days = [];
+    V[this.view.toLowerCase()](this, g, L, R);
+  }
+  /** Remember where a day is drawn (for clicks and drops). */
+  dayBox(key, x, y, w, h) { this.days.push({ key, x, y, w, h }); }
+  dayAt(x, y) {
+    return this.days.find((d) => x >= d.x && x < d.x + d.w &&
+      y >= d.y && y < d.y + d.h)?.key ?? null;
+  }
+
+  /** Everything to show on a day: bars, anniversaries, to-dos, then
+   * appointments, as { kind, text, ref, time?, key? }. */
+  itemsOn(key) {
+    const doc = this.doc, year = +key.slice(0, 4);
+    return [
+      ...doc.planner.onDay(key).map((b) => ({ kind: 'bar',
+        key: b.key, text: PLANNER_KEY[b.key],
+        ref: { section: 'planner', id: b.id } })),
+      ...doc.anniversaries.onDay(key).map((a) => ({
+        kind: 'anniversary',
+        text: a.text + (nth(a, year) ? ` (${nth(a, year)})` : ''),
+        ref: { section: 'anniversary', id: a.id } })),
+      ...doc.todo.dueOn(key).map((t) => ({ kind: 'todo', text: t.text,
+        ref: { section: 'todo', id: t.id } })),
+      ...doc.diary.occurrences(key, key).map(({ appt }) => ({
+        kind: 'appt', time: appt.time, text: appt.text,
+        ref: { id: appt.id, date: key } })),
+    ];
+  }
+
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    const day = this.dayAt(ev.x, ev.y);
+    if (!day) return false;
+    this.day = day;
+    if (this.view === 'Month' || this.view === 'Year') {
+      // a date: see its week - in a moment, as this may be the first
+      // click of a double-click (to add an appointment on this page)
+      this.opening?.();
+      this.opening = this.org.app.task.after(
+        os.input.config.doubleClickMs, () => this.openWeek());
+    }
+    return true;
+  }
+  openWeek() {
+    this.org.remember();
+    this.setView('Week');
+    this.org.refresh();
+  }
+  async double(ev) {
+    if (this.view === 'Year') return;        // (its week opens)
+    this.opening?.();                        // not a click: stay here
+    const box = this.at(ev.x, ev.y);
+    if (box?.ref.section === 'diary') return this.edit(box.ref);
+    if (box) return this.org.go(box.ref);        // someone else's
+    const day = this.dayAt(ev.x, ev.y);
+    if (day) await this.add(day);
+  }
+  /** An entry dropped on a day: move it there. */
+  dropped(ref, x, y) {
+    const day = this.dayAt(x, y);
+    if (!day) return;
+    const doc = this.doc;
+    if (ref.section === 'diary') {
+      const a = doc.diary.get(ref.id);
+      // a repeating appointment moves as a whole: by the same days
+      const shift = D.daysBetween(ref.date ?? a.date, day);
+      doc.diary.update(a.id, { date: D.addDays(a.date, shift) });
+    } else if (ref.section === 'todo') {
+      doc.todo.update(ref.id, { due: day });
+    }
+  }
+
+  // ------------------------------------------------ entries
+  async add(day = this.day) {
+    const v = await editAppointment(this.org.app.task, { date: day });
+    this.org.focus();
+    if (v) this.doc.diary.add(v);
+  }
+  async edit(ref) {
+    const a = this.doc.diary.get(ref.id);
+    const v = await editAppointment(this.org.app.task, a);
+    this.org.focus();
+    if (v) this.doc.diary.update(a.id, v);
+  }
+  newEntry() { this.add(this.day); }
+  describe(ref) {
+    const a = this.doc.diary.get(ref.id);
+    return a ? `${showDay(ref.date ?? a.date)} ${a.time} ${a.text}`
+      .replace(/ +/g, ' ') : 'Appointment';
+  }
+  remove(ref) { this.doc.diary.remove(ref.id); }
+  go(ref) {
+    const a = this.doc.diary.get(ref.id);
+    this.day = ref.date ?? a?.date ?? this.day;
+    if (this.view !== 'Day') this.view = 'Week';
+  }
+
+  // ------------------------------------------------ turning pages
+  turn(dir) {
+    const d = this.day;
+    this.day = this.view === 'Week' ? D.addDays(d, 7 * dir)
+      : this.view === 'Day' ? D.addDays(d, 2 * dir)
+      : this.view === 'Month' ? D.addMonths(d, 2 * dir)
+      : D.addYears(d, dir);
+  }
+  today() { this.day = D.today(); }
+  key(ev) {                         // the arrow keys move a day/week
+    const step = { 0x18C: -1, 0x18D: 1,             // left, right
+      0x18F: -7, 0x18E: 7 }[ev.code];               // up, down
+    if (!step || this.view !== 'Week') return false;
+    this.day = D.addDays(this.day, step);
+    this.org.refresh();
+    return true;
+  }
+}

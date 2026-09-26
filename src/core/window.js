@@ -77,6 +77,7 @@ export class Window extends Emitter {
     this.icons = [];
     this.menu = def.menu ?? null;      // convenience: Menu (or fn) opened on Menu click
     this.helpText = def.help;
+    this.returnNext = !!def.returnNext;   // Return in a writable icon moves to the next one (the last reports it)
     this.userData = def.data;
 
     this._build();

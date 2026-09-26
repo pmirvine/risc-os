@@ -163,7 +163,8 @@ export class OSCLI {
     sysvars.set('Obey$Dir', vfs.parent(st.path));
     try {
       for (let line of text.split(/\r?\n|\r/)) {
-        line = line.replace(/%\*(\d)/g, (_, n) => args.slice(+n).join(' ')).replace(/%(\d)/g, (_, n) => args[+n] ?? '');
+        // parameters %0-%9 and %*0-%*9; %% is a % (so an Obey file can write "%*0" for later, e.g. a run action)
+        line = line.replace(/%%|%\*(\d)|%(\d)/g, (m, all, one) => (m === '%%' ? '%' : all != null ? args.slice(+all).join(' ') : args[+one] ?? ''));
         if (!line.trim() || /^\s*\|/.test(line)) continue;
         // "safe" mode (Filer_Boot of applications): don't start programs, only set things up
         if (opts.safe && /^\s*[*%]*\s*(run|\/|basic|wimptask|desktop|filer_run|filer_opendir|taskwindow|shellcli|chain|go)\b/i.test(line)) continue;

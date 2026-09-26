@@ -1,0 +1,122 @@
+// NotesPage - the notepad: a contents page on the left listing the
+// pages' titles, and the chosen page on the right, which you type
+// into straight away (the desktop's TextArea: several lines of text
+// in a window). Click a title to turn to its page; drag a title up or
+// down the contents to move the page; Ctrl-D types today's date.
+import { TextArea } from 'riscos';
+import { Section, heading, text, FAINT, ruled } from './Paper';
+import { askTitle } from './Entries';
+import * as D from './Toolkit/Dates';
+
+const ROW = 22, TOP = 50;
+
+export class NotesPage extends Section {
+  constructor(org) {
+    super(org, { id: 'notes', name: 'Notepad', colour: '#f6b26b',
+      newHelp: 'add a page to the notepad' });
+    this.page = null;                 // the id of the page shown
+    this.area = null;                 // its TextArea, while shown
+  }
+  state() { return { page: this.page }; }
+  restore(s) { this.hide(); Object.assign(this, s); this.show(); }
+
+  draw(g, L, R) {
+    heading(g, L, 'Notepad', this.colour, 'Contents');
+    ruled(g, L, L.y + TOP + ROW, ROW);
+    const pages = this.doc.notes.list();
+    pages.forEach((p, i) => {
+      const y = L.y + TOP + i * ROW;
+      if (p.id === this.page) {
+        g.fillStyle = '#fdebd3';
+        g.fillRect(L.x + 10, y, L.w - 20, ROW);
+      }
+      text(g, `${i + 1}  ${p.title}`, L.x + 14, y + ROW / 2, L.w - 28,
+        '13px Homerton');
+      this.box(L.x + 10, y, L.w - 20, ROW, { id: p.id });
+    });
+    if (!pages.length) {
+      text(g, 'No pages yet. Click the New button to add one.',
+        L.x + 14, L.y + TOP + 12, L.w - 28, 'italic 12px Homerton',
+        FAINT);
+    }
+    const p = this.doc.notes.get(this.page);
+    heading(g, R, p ? p.title : 'Notepad', this.colour);
+    if (!p) {
+      text(g, 'Click a title on the contents page to turn to it.',
+        R.x + 14, R.y + TOP + 12, R.w - 28, 'italic 12px Homerton',
+        FAINT);
+    }
+  }
+
+  // ------------------------------------------------ the text area
+  /** Where the page's text goes on the right-hand page. */
+  get rect() {
+    const R = this.org.pages[1];
+    return { x: R.x + 12, y: R.y + TOP - 4, w: R.w - 24,
+      h: R.h - TOP - 36 };
+  }
+  show() {
+    const p = this.doc.notes.get(this.page);
+    if (!p || this.area) return;
+    this.area = new TextArea(this.org.win, { ...this.rect,
+      text: p.text, font: '14px Homerton' });
+    this.area.on('change', ({ text }) => {
+      this.doc.notes.update(p.id, { text });
+    });
+  }
+  hide() { this.area?.remove(); this.area = null; }
+  open(id) {
+    this.hide();
+    this.page = id;
+    this.show();
+    this.area?.focus();
+    this.org.redraw();
+  }
+
+  // ------------------------------------------------ mouse and keys
+  // (the TextArea sees clicks in it and keys while it has the caret
+  // before the window does, so only the rest come here)
+  click(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (box) { this.open(box.ref.id); return true; }
+    return false;
+  }
+  key(ev) {
+    if (!this.area?.focused || ev.code !== 4) return false;  // Ctrl-D
+    this.area.insert(D.format(D.today(), '%ZDY %MO %CE%YR'));
+    return true;
+  }
+  /** A title dropped further up or down the contents: move it. */
+  dropped(ref, x, y) {
+    const L = this.org.pages[0];
+    const i = Math.max(0, Math.floor((y - L.y - TOP) / ROW));
+    this.doc.notes.moveTo(ref.id, Math.min(i,
+      this.doc.notes.size - 1));
+  }
+  async double(ev) {
+    const box = this.at(ev.x, ev.y);
+    if (!box) return;
+    const p = this.doc.notes.get(box.ref.id);
+    const title = await askTitle(this.org.app.task, p.title);
+    this.org.focus();
+    if (title) this.doc.notes.update(p.id, { title });
+  }
+
+  // ------------------------------------------------ entries
+  async newEntry() {
+    const title = await askTitle(this.org.app.task);
+    this.org.focus();
+    if (!title) return;
+    const p = this.doc.notes.add({ title, text: '',
+      order: this.doc.notes.size });
+    this.open(p.id);
+  }
+  describe(ref) {
+    return this.doc.notes.get(ref.id)?.title ?? 'Page';
+  }
+  remove(ref) {
+    if (this.page === ref.id) { this.hide(); this.page = null; }
+    this.doc.notes.remove(ref.id);
+  }
+  go(ref) { this.hide(); this.page = ref.id; this.show(); }
+}

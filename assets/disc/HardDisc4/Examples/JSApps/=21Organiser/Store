@@ -1,0 +1,167 @@
+// Store - what the organiser remembers, section by section, with no
+// windows in it. Each kind of entry is kept in a Collection: a Map
+// from id to entry, which emits 'change' whenever it changes.
+//
+//   const diary = new Diary();      (and ToDo, Notes, Planner,
+//   diary.add({ date, text })        Anniversaries, Links)
+//   diary.update(id, fields); diary.put(entry); diary.remove(id)
+//   diary.get(id), diary.all(), diary.toJSON()
+//   diary.occurrences(from, to)   appointments on those days,
+//                                 repeats included
+//   anniversaries.inMonth(month), links.of(ref) ...
+import { Emitter } from './Toolkit/Emitter';
+import * as D from './Toolkit/Dates';
+
+export class Collection extends Emitter {
+  constructor(items = []) {
+    super();
+    this.items = new Map();            // id -> entry
+    this.nextId = 1;
+    for (const x of items) this.put(x, false);
+  }
+  get size() { return this.items.size; }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+  add(fields) {
+    const x = { ...fields, id: fields.id ?? this.nextId };
+    this.put(x);
+    return x;
+  }
+  update(id, fields) {
+    const x = { ...this.items.get(id), ...fields, id };
+    this.put(x);
+    return x;
+  }
+  /** Keep exactly this entry (tell listeners unless quiet). */
+  put(x, tell = true) {
+    this.items.set(x.id, x);
+    this.nextId = Math.max(this.nextId, x.id + 1);
+    if (tell) this.emit('change', x);
+  }
+  remove(id) {
+    const x = this.items.get(id);
+    this.items.delete(id);
+    this.emit('change', x);
+    return x;
+  }
+  toJSON() { return this.all(); }
+}
+
+// ------------------------------------------------ the diary
+// An appointment: { date, time ('09:30' or ''), end, text, alarm
+// (minutes before, or null), repeat: { every: 'day'|'week'|'month'|
+// 'year', count, until } or null }.
+const STEP = { day: D.addDays, week: (k, n) => D.addDays(k, 7 * n),
+  month: D.addMonths, year: D.addYears };
+
+export class Diary extends Collection {
+  /** [{ appt, date }] for the days from..to, in time order. */
+  occurrences(from, to) {
+    const out = [];
+    for (const a of this.all()) {
+      for (const date of datesOf(a, from, to)) {
+        out.push({ appt: a, date });
+      }
+    }
+    return out.sort((x, y) => (x.date + (x.appt.time || ''))
+      .localeCompare(y.date + (y.appt.time || '')));
+  }
+}
+/** The days an appointment falls on between from and to. */
+function datesOf(a, from, to) {
+  if (!a.repeat) {
+    return a.date >= from && a.date <= to ? [a.date] : [];
+  }
+  const step = STEP[a.repeat.every] ?? STEP.week;
+  const out = [];
+  for (let n = 0, d = a.date; d <= to; d = step(a.date, ++n)) {
+    if (a.repeat.count && n >= a.repeat.count) break;
+    if (a.repeat.until && d > a.repeat.until) break;
+    if (d >= from) out.push(d);
+    if (n > 5000) break;               // (a guard, just in case)
+  }
+  return out;
+}
+
+// ------------------------------------------------ the other sections
+// A thing to do: { text, priority (1-3), start, due, category, done }
+export class ToDo extends Collection {
+  /** Due on a day and not done yet. */
+  dueOn(date) {
+    return this.all().filter((t) => t.due === date && !t.done);
+  }
+  /** In order: not done first, then by priority and date. */
+  list(showDone = true) {
+    return this.all().filter((t) => showDone || !t.done)
+      .sort((a, b) => a.done - b.done || a.priority - b.priority ||
+        (a.due || '9').localeCompare(b.due || '9'));
+  }
+}
+
+// A page of the notepad: { title, text, order }
+export class Notes extends Collection {
+  list() { return this.all().sort((a, b) => a.order - b.order); }
+  /** Move a page to position i (0 = first). */
+  moveTo(id, i) {
+    const pages = this.list().filter((p) => p.id !== id);
+    pages.splice(i, 0, this.get(id));
+    pages.forEach((p, k) => {
+      if (p.order !== k) this.update(p.id, { order: k });
+    });
+  }
+}
+
+// A planner bar: { key (0-5), from, to } - the days it covers
+export const PLANNER_KEY = ['Holiday', 'Training', 'Meeting',
+  'Project A', 'Project B', 'Away'];
+export class Planner extends Collection {
+  onDay(date) {
+    return this.all().filter((b) => b.from <= date && date <= b.to);
+  }
+}
+
+// An anniversary: { date ('1968-03-14': the year it began), text }
+export class Anniversaries extends Collection {
+  /** Those in a month (1-12), in day order. */
+  inMonth(month) {
+    return this.all().filter((a) => +a.date.slice(5, 7) === month)
+      .sort((a, b) => a.date.slice(8).localeCompare(b.date.slice(8)));
+  }
+  onDay(date) {
+    const md = date.slice(5);                   // the month and day
+    return this.all().filter((a) => a.date.slice(5) === md);
+  }
+}
+/** '58th' - how many years it has been, in a given year. */
+export function nth(a, year) {
+  const n = year - +a.date.slice(0, 4);
+  if (n <= 0) return '';
+  const t = n % 100;
+  const s = t >= 11 && t <= 13 ? 'th'
+    : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return n + s;
+}
+
+// A link between two entries: { a: ref, b: ref }, where a ref is
+// { section: 'diary', id }
+export const sameRef = (p, q) =>
+  p.section === q.section && p.id === q.id;
+export class Links extends Collection {
+  /** The entries linked to ref. */
+  of(ref) {
+    return this.all().flatMap((l) => (sameRef(l.a, ref) ? [l.b]
+      : sameRef(l.b, ref) ? [l.a] : []));
+  }
+  has(ref) { return this.of(ref).length > 0; }
+  link(a, b) {
+    if (sameRef(a, b)) return;
+    if (this.of(a).some((r) => sameRef(r, b))) return;
+    this.add({ a, b });
+  }
+  /** Forget the links of an entry that has gone. */
+  forget(ref) {
+    for (const l of this.all()) {
+      if (sameRef(l.a, ref) || sameRef(l.b, ref)) this.remove(l.id);
+    }
+  }
+}

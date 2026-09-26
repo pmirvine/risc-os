@@ -5,7 +5,8 @@
 // Two forms:
 //   * a script (no import / export): its code runs with these names ready to use:
 //       task, ctx, os, wimp, vfs, print, input, sleep, Menu, colourMenu, wimpColour, beep, sound, saveAs,
-//       query, infoBox
+//       query, infoBox, reportError, discardChanges, dragSave, loadTemplates, parseTemplateFile, textWidth,
+//       choices, formatTime, DAYS, MONTHS, ordinal, TextArea, sprites
 //   * a module (uses import / export), like the desktop's own applications:
 //       import { print, Menu } from 'riscos';           // the same names as above (except task / ctx)
 //       import { drawGrid } from './Grid';              // another file in the same directory (Grid or Grid/js)
@@ -26,7 +27,12 @@ import { os } from './os.js';
 import { cli, CLIError, splitArgs } from './cli.js';
 import { Menu, colourMenu } from './menu.js';
 import { wimpColour } from './palette.js';
-import { saveAs, query, infoBox } from './dialogs.js';
+import { saveAs, query, infoBox, reportError, discardChanges, dragSave } from './dialogs.js';
+import { loadTemplates, parseTemplateFile } from './templates.js';
+import { textWidth } from './fonts.js';
+import { choices } from './choices.js';
+import { formatTime, DAYS, MONTHS, ordinal } from './timefmt.js';
+import { TextArea } from './textarea.js';
 import { TextConsole, loadSystemFont } from './console.js';
 import { sprites, SpriteInfo } from './sprites.js';
 
@@ -371,6 +377,9 @@ async function makeSprites() {
 export function installJSRun() {
   globalThis.__riscos = {
     Menu, colourMenu, wimpColour, saveAs, query, infoBox,
+    reportError, discardChanges, dragSave, loadTemplates, parseTemplateFile, textWidth, choices,
+    formatTime, DAYS, MONTHS, ordinal, TextArea,
+    sprites: os.sprites,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     beep: () => wimp.beep?.(),
     sound: (channel, amplitude, pitch, duration) => import('./sound/index.js').then((s) => s.soundSystem().control(channel, amplitude, pitch, duration)),

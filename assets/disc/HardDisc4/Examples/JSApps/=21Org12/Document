@@ -1,0 +1,116 @@
+// Document - one organiser file being used: every section's entries
+// (the address book is !Contacts' Book, used just as it is), the
+// file it came from, whether it has changed since it was saved, and
+// its window.
+//
+//   const doc = new Document(app);                  a new, empty one
+//   const doc = await Document.load(app, path);     from a file
+//   doc.diary, doc.todo, doc.book, doc.notes, doc.planner,
+//   doc.anniversaries, doc.links
+//   doc.save(path), doc.quickSave(), doc.saveBox(), await doc.close()
+import { vfs, saveAs, wimp } from 'riscos';
+import { Collection, Diary, Anniversaries } from './Store';
+import { Book } from './Model';
+import { Form } from './Toolkit/Form';
+import { OrganiserWindow } from './OrganiserWindow';
+
+export class Document {
+  constructor(app, data = {}, filename = '') {
+    this.app = app;
+    this.filename = filename;          // '' until it's saved
+    this.modified = false;
+    this.diary = new Diary(data.diary);
+    this.todo = new Collection(data.todo);          // (kept)
+    this.book = Book.fromJSON({ format: 'Contacts',
+      contacts: data.contacts ?? [] });
+    this.notes = new Collection(data.notes);        // (kept)
+    this.planner = new Collection(data.planner);    // (kept)
+    this.anniversaries = new Anniversaries(data.anniversaries);
+    this.links = new Collection(data.links);        // (kept)
+    for (const part of this.parts) {
+      part.on('change', () => this.setModified(true));
+    }
+    this.view = new OrganiserWindow(this);
+    app.docs.add(this);
+  }
+  get parts() {
+    return [this.diary, this.todo, this.book, this.notes,
+      this.planner, this.anniversaries, this.links];
+  }
+
+  static async load(app, path) {
+    const data = JSON.parse(await vfs.readText(path));
+    if (data?.format !== 'Organiser') {
+      throw new Error('This is not an Organiser file');
+    }
+    return new Document(app, data, path);
+  }
+
+  get title() {
+    const name = this.filename || '<untitled>';
+    return this.modified ? name + ' *' : name;
+  }
+  setModified(m) {
+    this.modified = m;
+    this.view?.updateTitle();
+  }
+
+  // ------------------------------------------------ saving
+  get data() {
+    return JSON.stringify({
+      format: 'Organiser', version: 1,
+      diary: this.diary, todo: this.todo,
+      contacts: this.book.all(), notes: this.notes,
+      planner: this.planner, anniversaries: this.anniversaries,
+      links: this.links,
+    }, null, 1) + '\n';
+  }
+  save(path) {
+    vfs.writeFile(path, this.data, { filetype: this.app.TYPE });
+    this.filename = vfs.canonical(path);
+    this.setModified(false);
+  }
+  saveBox(then) {
+    return saveAs({
+      task: this.app.task, filetype: this.app.TYPE,
+      filename: this.filename || 'Organiser',
+      getData: async () => this.data,
+      save: async (path) => this.save(path),
+      onSaved: (path) => { if (path) then?.(); },
+    });
+  }
+  quickSave(then) {
+    if (this.filename) { this.save(this.filename); then?.(); return; }
+    wimp.menus.open(this.saveBox(then), 200, 200,
+      { task: this.app.task });
+  }
+
+  // ------------------------------------------------ closing
+  async close() {
+    if (this.modified) {
+      const answer = await askClose(this.app.task);
+      if (!answer) return false;                        // Cancel
+      if (answer === 'Save') {
+        this.quickSave(() => this.dispose());
+        return false;
+      }
+    }
+    this.dispose();
+    return true;
+  }
+  dispose() {
+    this.view.dispose();
+    this.app.docs.delete(this);
+  }
+}
+
+let closeForm = null;
+async function askClose(task) {
+  closeForm ??= new Form(task, {
+    title: 'Organiser', fields: [],
+    message: 'This file has been modified.',
+    buttons: ['Discard', 'Cancel', 'Save'],
+  });
+  const r = await closeForm.run();
+  return r?.button ?? null;
+}

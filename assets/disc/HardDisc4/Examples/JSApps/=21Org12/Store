@@ -1,0 +1,107 @@
+// Store - what the organiser remembers, section by section, with no
+// windows in it. Each kind of entry is kept in a Collection: a Map
+// from id to entry, which emits 'change' whenever it changes.
+//
+//   const diary = new Diary();      (and Anniversaries)
+//   diary.add({ date, text })
+//   diary.update(id, fields); diary.put(entry); diary.remove(id)
+//   diary.get(id), diary.all(), diary.toJSON()
+//   diary.occurrences(from, to)   appointments on those days,
+//                                 repeats included
+//   anniversaries.inMonth(month) ...
+import { Emitter } from './Toolkit/Emitter';
+import * as D from './Toolkit/Dates';
+
+export class Collection extends Emitter {
+  constructor(items = []) {
+    super();
+    this.items = new Map();            // id -> entry
+    this.nextId = 1;
+    for (const x of items) this.put(x, false);
+  }
+  get size() { return this.items.size; }
+  get(id) { return this.items.get(id); }
+  all() { return [...this.items.values()]; }
+  add(fields) {
+    const x = { ...fields, id: fields.id ?? this.nextId };
+    this.put(x);
+    return x;
+  }
+  update(id, fields) {
+    const x = { ...this.items.get(id), ...fields, id };
+    this.put(x);
+    return x;
+  }
+  /** Keep exactly this entry (tell listeners unless quiet). */
+  put(x, tell = true) {
+    this.items.set(x.id, x);
+    this.nextId = Math.max(this.nextId, x.id + 1);
+    if (tell) this.emit('change', x);
+  }
+  remove(id) {
+    const x = this.items.get(id);
+    this.items.delete(id);
+    this.emit('change', x);
+    return x;
+  }
+  toJSON() { return this.all(); }
+}
+
+// ------------------------------------------------ the diary
+// An appointment: { date, time ('09:30' or ''), end, text, alarm
+// (minutes before, or null), repeat: { every: 'day'|'week'|'month'|
+// 'year', count, until } or null }.
+const STEP = { day: D.addDays, week: (k, n) => D.addDays(k, 7 * n),
+  month: D.addMonths, year: D.addYears };
+
+export class Diary extends Collection {
+  /** [{ appt, date }] for the days from..to, in time order. */
+  occurrences(from, to) {
+    const out = [];
+    for (const a of this.all()) {
+      for (const date of datesOf(a, from, to)) {
+        out.push({ appt: a, date });
+      }
+    }
+    return out.sort((x, y) => (x.date + (x.appt.time || ''))
+      .localeCompare(y.date + (y.appt.time || '')));
+  }
+}
+/** The days an appointment falls on between from and to. */
+function datesOf(a, from, to) {
+  if (!a.repeat) {
+    return a.date >= from && a.date <= to ? [a.date] : [];
+  }
+  const step = STEP[a.repeat.every] ?? STEP.week;
+  const out = [];
+  for (let n = 0, d = a.date; d <= to; d = step(a.date, ++n)) {
+    if (a.repeat.count && n >= a.repeat.count) break;
+    if (a.repeat.until && d > a.repeat.until) break;
+    if (d >= from) out.push(d);
+    if (n > 5000) break;               // (a guard, just in case)
+  }
+  return out;
+}
+
+// ------------------------------------------------ the other sections
+// An anniversary: { date ('1968-03-14': the year it began), text }
+export class Anniversaries extends Collection {
+  /** Those in a month (1-12), in day order. */
+  inMonth(month) {
+    return this.all().filter((a) => +a.date.slice(5, 7) === month)
+      .sort((a, b) => a.date.slice(8).localeCompare(b.date.slice(8)));
+  }
+  onDay(date) {
+    const md = date.slice(5);                   // the month and day
+    return this.all().filter((a) => a.date.slice(5) === md);
+  }
+}
+/** '58th' - how many years it has been, in a given year. */
+export function nth(a, year) {
+  const n = year - +a.date.slice(0, 4);
+  if (n <= 0) return '';
+  const t = n % 100;
+  const s = t >= 11 && t <= 13 ? 'th'
+    : ['th', 'st', 'nd', 'rd'][n % 10] ?? 'th';
+  return n + s;
+}

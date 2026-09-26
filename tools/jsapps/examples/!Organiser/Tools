@@ -1,0 +1,233 @@
+// Tools - what the toolbox does, for every section: the buttons,
+// choosing and deleting entries (the Delete key, or dragging one into
+// the wastebasket), dragging entries about, the Link tool, Find,
+// Print, and swapping entries with other programs.
+import { wimp, vfs, os, Menu, query, reportError, saveAs, beep }
+  from 'riscos';
+import { ListView } from './Toolkit/ListView';
+import { Form } from './Toolkit/Form';
+import { icalRead, icalWrite } from './Toolkit/ICal';
+import { vcardRead, vcardWrite, csvRead, decode, encode }
+  from './Toolkit/Formats';
+import * as D from './Toolkit/Dates';
+import { chain } from './Paper';
+
+/** Today's date for the toolbox: '25 Sep'. */
+export const TODAY = () => D.format(D.today(), '%ZDY %M3');
+
+// ------------------------------------------------ the toolbox
+const VIEWS = 4;                          // room for 4 view buttons
+export function buttons(org) {
+  const view = (i) => ({ name: 'view' + i, text: '', h: 26,
+    action: () => { const s = org.section;
+      s.setView(s.views[i]); org.refresh(); } });
+  return [
+    { name: 'new', sprite: 'tb_new', action: () => org.section
+      .newEntry(), help: 'Click SELECT to add an entry here.' },
+    { name: 'link', sprite: 'tb_link', action: () => startLink(org),
+      help: 'Click SELECT, then on two entries, to link them.' },
+    { name: 'back', sprite: 'tb_back', action: () => org.back(),
+      help: 'Click SELECT to go back to where you were.' },
+    { name: 'today', text: TODAY(), h: 30,
+      action: () => { org.section.today(); org.refresh(); },
+      help: 'Today\'s date. Click SELECT to go to today.' },
+    { gap: true },
+    ...Array.from({ length: VIEWS }, (_, i) => view(i)),
+    { gap: true },
+    { name: 'find', sprite: 'tb_find', action: () => find(org),
+      help: 'Click SELECT to find entries in every section (F4).' },
+    { name: 'print', sprite: 'tb_print', action: () => print(org),
+      help: 'Click SELECT to print the pages showing.' },
+    { gap: true },
+    { name: 'bin', sprite: 'tb_bin', action: () => remove(org),
+      help: 'The wastebasket: drag an entry here to delete it, ' +
+        'or click SELECT to delete the chosen entry.' },
+  ];
+}
+/** The toolbox follows the section: its views and New's help. */
+export function updateToolbox(org) {
+  const s = org.section, bar = org.bar;
+  for (let i = 0; i < VIEWS; i++) {
+    bar.hide('view' + i, i >= s.views.length);
+    if (i < s.views.length) {
+      bar.setText('view' + i, s.views[i]);
+      const on = s.views[i] === s.view;
+      bar.icon('view' + i).setState({ selected: on });
+    }
+  }
+  bar.icon('new').help = `Click SELECT: ${s.newHelp}.`;
+  bar.setText('today', TODAY());
+  bar.icon('link').setState({ selected: !!org.linking });
+}
+
+// ------------------------------------------------ choosing entries
+/** A click on an entry: the Link tool, a chain, or choosing it. */
+export function clickEntry(org, ev) {
+  const box = org.section.at(ev.x, ev.y);
+  if (!box) {
+    if (org.linking) { org.linking = null; org.refresh(); }
+    org.selected = null;
+    return false;
+  }
+  if (org.linking) { pickForLink(org, box.ref); return true; }
+  if (org.doc.links.has(box.ref) && ev.x > box.x + box.w - 16) {
+    linkMenu(org, box.ref, ev);           // the chain mark
+    return true;
+  }
+  org.selected = box.ref;
+  org.redraw();
+  return false;                           // the section sees it too
+}
+/** After the section has drawn: chain marks and the chosen entry. */
+export function decorate(org, g) {
+  const same = (a, b) => a && b && a.section === b.section &&
+    a.id === b.id && (a.date ?? '') === (b.date ?? '');
+  for (const b of org.section.boxes) {
+    if (org.doc.links.has(b.ref)) chain(g, b.x + b.w - 12, b.y + 8);
+    const chosen = same(b.ref, org.selected) ||
+      same(b.ref, org.linking?.first);
+    if (chosen) {
+      g.strokeStyle = org.linking ? '#c00000' : '#000000';
+      g.lineWidth = 2;
+      g.strokeRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+    }
+  }
+}
+
+// ------------------------------------------------ deleting
+export async function remove(org, ref = org.selected) {
+  if (!ref) { beep(); return; }
+  const s = org.sections.find((x) => x.id === ref.section);
+  if (org.app.prefs.confirm) {
+    const r = await query({ task: org.app.task, title: 'Organiser',
+      message: `Delete '${s.describe(ref)}'?`,
+      buttons: ['Delete', 'Cancel'] });
+    org.focus();
+    if (r !== 'Delete') return;
+  }
+  s.remove(ref);
+  org.doc.links.forget(ref);
+  org.selected = null;
+  org.refresh();
+}
+
+// ------------------------------------------------ dragging entries
+/** A drag on an entry: into the wastebasket, or somewhere else. */
+export async function drag(org, ev) {
+  const box = org.section.at(ev.x, ev.y);
+  if (!box) { org.section.drag(ev); return true; }
+  const p = org.win.workToScreen(box.x, box.y);
+  const drop = await wimp.drag({ event: ev.pointerEvent,
+    box: { x0: p.x, y0: p.y, x1: p.x + box.w, y1: p.y + box.h } });
+  if (drop.window === org.bar.pane && drop.icon?.name === 'bin') {
+    await remove(org, box.ref);
+  } else if (drop.window === org.win) {
+    org.section.dropped(box.ref, drop.x, drop.y);
+    org.refresh();
+  }
+  return true;
+}
+
+// ------------------------------------------------ links
+export function startLink(org) {
+  org.linking = org.selected ? { first: org.selected } : {};
+  org.refresh();
+}
+function pickForLink(org, ref) {
+  if (!org.linking.first) org.linking.first = ref;
+  else {
+    org.doc.links.link(org.linking.first, ref);
+    org.linking = null;
+  }
+  org.refresh();
+}
+function linkMenu(org, ref, ev) {
+  const items = org.doc.links.of(ref).map((r) => {
+    const s = org.sections.find((x) => x.id === r.section);
+    return { text: `${s.name}: ${s.describe(r)}`.slice(0, 40),
+      action: () => org.go(r) };
+  });
+  wimp.menus.openAt(new Menu('Linked to', items), ev,
+    { task: org.app.task });
+}
+
+// ------------------------------------------------ finding
+let findForm = null;
+export async function find(org) {
+  findForm ??= new Form(org.app.task, { title: 'Find',
+    fields: [{ name: 'text', label: 'Find' }],
+    buttons: ['Cancel', 'Find'] });
+  const v = await findForm.ask({});
+  if (!v?.text) return;
+  const found = org.sections.flatMap((s) => s.find(v.text)
+    .map((f) => ({ ...f, where: s.name })));
+  if (!found.length) {
+    reportError(`'${v.text}' wasn't found`);
+    return;
+  }
+  const w = org.app.task.createWindow({ title: `Found '${v.text}'`,
+    w: 420, h: 240, extent: { w: 420, h: 240 },
+    colours: { workBg: 0 },
+    workButton: 'clickdragdouble',
+    flags: { back: true, close: true, title: true, vscroll: true,
+      size: true, moveable: true },
+    help: 'Double-click an entry to go to it.' });
+  const list = new ListView(w, { key: (f) => found.indexOf(f),
+    columns: [{ title: 'Section', width: 100, text: (f) => f.where },
+      { title: 'Entry', width: 300, text: (f) => f.text }] });
+  list.setItems(found);
+  list.on('open', (f) => org.go(f.ref));
+  w.open({ behind: 'top' });
+}
+
+// ------------------------------------------------ printing
+export function print(org) {
+  if (!os.printers) {
+    reportError('To print, load !Printers first (it is in Apps)');
+    return;
+  }
+  // draw the pages again, on a canvas of their own
+  const b = org.binder;
+  const c = document.createElement('canvas');
+  c.width = b.w; c.height = b.h;
+  const g = c.getContext('2d');
+  g.translate(-b.x, -b.y);
+  org.draw(g);
+  // a notepad page's text is on a canvas of its own: copy it in too
+  const a = org.section.area;
+  if (a) g.drawImage(a.canvas, a.x, a.y, a.w, a.h);
+  os.printers.print({ title: `Organiser: ${org.section.name}`,
+    canvas: c });
+}
+
+// ------------------------------------------------ other programs
+export async function importFiles(org, files) {
+  const doc = org.doc;
+  for (const f of files) {
+    if (f.filetype === org.app.TYPE) { await org.app.open(f.path);
+      continue; }
+    const text = decode(await vfs.readFile(f.path));
+    if (/BEGIN:VCALENDAR/i.test(text)) {
+      const { events, todos } = icalRead(text);
+      for (const e of events) doc.diary.add(e);
+      for (const t of todos) doc.todo.add(t);
+    } else if (/BEGIN:VCARD/i.test(text)) {
+      for (const c of vcardRead(text)) doc.book.add(c);
+    } else {
+      for (const c of csvRead(text)) doc.book.add(c);
+    }
+  }
+}
+export function exportMenu(org) {
+  const doc = org.doc;
+  const box = (name, type, data) => () => saveAs({
+    task: org.app.task, filename: name, filetype: type,
+    getData: async () => encode(data()) });
+  return new Menu('Export', [
+    { text: 'Diary and to do (iCalendar)', submenu: box('Diary/ics',
+      0xFFF, () => icalWrite({ events: doc.diary.all(),
+        todos: doc.todo.all() })) },
+    { text: 'Addresses (vCard)', submenu: box('Cards/vcf', 0xFFF,
+      () => vcardWrite(doc.book.all())) },
+  ]);
+}

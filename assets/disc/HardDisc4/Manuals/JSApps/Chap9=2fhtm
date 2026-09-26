@@ -1,0 +1,522 @@
+<HTML><HEAD><TITLE>9  A finished application</TITLE></HEAD>
+<BODY BGCOLOR="#ffffff">
+<A HREF="Chap10.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap8.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A><P>
+Writing Desktop Applications in JavaScript<P>
+<HR>
+<H1>9  A finished application</H1>
+<HR>
+Contacts now does everything an address book must. This chapter adds what makes an application pleasant to
+use and a good citizen of the desktop: undo, choices that are remembered, interactive help, information
+about a file, and taking care of your work when the desktop shuts down. At the end is the finished
+<CODE>!Contacts</CODE>, and a checklist of what a well-behaved RISC OS application does.<P>
+<P><CENTER><IMG SRC="PICS/Contacts" WIDTH=989 HEIGHT=569></CENTER>
+
+<A NAME=S1></A>
+<H2>Undo</H2>
+Everybody deletes the wrong thing sometimes. An application that can undo it makes people confident enough
+to try things. The Style Guide gives undo and redo the keys F8 and F9.<P>
+The idea is to describe each change as an object that knows how to make the change and how to take it back:
+a <I>command</I>. An object with <CODE>do</CODE> and <CODE>undo</CODE> methods, and a name to show in the
+menu:<P>
+<PRE>
+{ name: 'Delete',
+  do: () =&gt; book.remove(bob.id),
+  undo: () =&gt; book.put(bob) }
+</PRE>
+Instead of changing the book directly, the program gives the command to an <CODE>Undo</CODE> object, which
+carries it out and remembers it. The last toolkit module for Part One keeps two stacks - the changes that can
+be undone, and the ones that have been undone and could be redone:<P>
+<PRE>
+// Undo - remembers what has been done so it can be undone and
+// redone. Each change is a command object:
+//
+//   undo.do({ name: 'Delete', do() { ... }, undo() { ... } })
+//   undo.undo(); undo.redo();
+//   undo.canUndo, undo.canRedo, undo.undoName   ('Delete' ...)
+//   undo.clear();  undo.on('change', ...)       (for shading menus)
+import { Emitter } from './Emitter';
+
+export class Undo extends Emitter {
+  constructor(limit = 50) {
+    super();
+    this.limit = limit;              // how many changes to remember
+    this.done = [];                  // changes that can be undone
+    this.undone = [];                // changes that can be redone
+  }
+
+  /** Make a change (cmd.do()) and remember it. */
+  do(cmd) {
+    cmd.do();
+    this.done.push(cmd);
+    if (this.done.length &gt; this.limit) this.done.shift();
+    this.undone = [];                // a new change: no redoing
+    this.emit('change');
+  }
+
+  undo() {
+    const cmd = this.done.pop();
+    if (!cmd) return false;
+    cmd.undo();
+    this.undone.push(cmd);
+    this.emit('change');
+    return true;
+  }
+
+  redo() {
+    const cmd = this.undone.pop();
+    if (!cmd) return false;
+    cmd.do();
+    this.done.push(cmd);
+    this.emit('change');
+    return true;
+  }
+
+  clear() {
+    this.done = [];
+    this.undone = [];
+    this.emit('change');
+  }
+
+  get canUndo() { return this.done.length &gt; 0; }
+  get canRedo() { return this.undone.length &gt; 0; }
+  get undoName() { return this.done.at(-1)?.name ?? ''; }
+  get redoName() { return this.undone.at(-1)?.name ?? ''; }
+}
+</PRE>
+<CODE>do</CODE> carries out a command and pushes it onto <CODE>done</CODE>. <CODE>undo</CODE> pops the last
+one, takes it back, and pushes it onto <CODE>undone</CODE>; <CODE>redo</CODE> does the reverse. Making a new
+change empties <CODE>undone</CODE>: once you've done something new, redoing the old change would make no
+sense. Only the last 50 changes are kept, so memory isn't filled up. <CODE>at(-1)</CODE> is the last item
+(chapter 3), and each change of state emits <CODE>'change'</CODE>, so the menus and toolbar can follow.<P>
+Each document has its own <CODE>Undo</CODE> (<CODE>this.undo = new Undo()</CODE> in the
+<CODE>Document</CODE> constructor), so undoing in one address book never touches another.<P>
+
+<H3>Changes as commands</H3>
+The three changes in <CODE>MainWindow</CODE> become commands:<P>
+<PRE>
+  async add() {
+    const v = await editCard(this.app.task, {}, 'New contact');
+    this.focus();
+    if (!v) return;
+    const book = this.doc.book;
+    let c = null;
+    this.doc.undo.do({
+      name: 'New',
+      do: () =&gt; { c = book.add({ ...v, id: c?.id }); },
+      undo: () =&gt; book.remove(c.id),
+    });
+    this.list.select(c);
+    this.list.ensureVisible(c);
+  }
+  async edit(c = this.list.selected()[0]) {
+    if (!c) return;
+    const v = await editCard(this.app.task, c, nameOf(c));
+    this.focus();
+    if (!v) return;
+    const book = this.doc.book, before = book.get(c.id);
+    this.doc.undo.do({
+      name: 'Change',
+      do: () =&gt; book.put({ ...before, ...v }),
+      undo: () =&gt; book.put(before),
+    });
+  }
+  async remove() {
+    const gone = this.list.selected();
+    if (!gone.length) return;
+    if (this.app.prefs.confirm) {
+      const what = gone.length === 1 ? nameOf(gone[0])
+        : `these ${gone.length} contacts`;
+      const r = await query({ task: this.app.task, title: 'Contacts',
+        message: `Delete ${what}?`, buttons: ['Delete', 'Cancel'] });
+      this.focus();
+      if (r !== 'Delete') return;
+    }
+    const book = this.doc.book;
+    this.doc.undo.do({
+      name: 'Delete',
+      do: () =&gt; { for (const c of gone) book.remove(c.id); },
+      undo: () =&gt; { for (const c of gone) book.put(c); },
+    });
+  }
+  undo() { this.doc.undo.undo(); }
+  redo() { this.doc.undo.redo(); }
+</PRE>
+Undoing needs the book to put back a contact exactly as it was, with the same <CODE>id</CODE>. The
+<CODE>Book</CODE> gets one more method for that:<P>
+<PRE>
+  put(c) {
+    this.contacts.set(c.id, c);
+    this.nextId = Math.max(this.nextId, c.id + 1);
+    this.emit('change', { updated: c });
+  }
+</PRE>
+Look at the <I>New</I> command. The first time it runs, <CODE>c</CODE> is <CODE>null</CODE>, so
+<CODE>c?.id</CODE> is <CODE>undefined</CODE> and the book gives the contact a new id. If it is undone and
+then redone, <CODE>c</CODE> is the contact it made before, so the redone contact gets the same id again -
+important, because a later command may refer to it by that id.<P>
+The <I>Change</I> command keeps a copy of the contact as it was (<CODE>before</CODE>), and <I>Delete</I>
+keeps the contacts it removes (<CODE>gone</CODE>). Importing a file from chapter 8 is one command too, so a
+whole import can be undone in one go.<P>
+
+<H3>Showing what can be undone</H3>
+The Undo and Redo buttons in the toolbar are shaded when there's nothing to undo or redo, and the menu says
+what would be undone:<P>
+<PRE>
+  shade() {
+    const n = this.list.selected().length;
+    this.bar.shade('edit', n !== 1);
+    this.bar.shade('delete', n === 0);
+    this.bar.shade('undo', !this.doc.undo.canUndo);
+    this.bar.shade('redo', !this.doc.undo.canRedo);
+  }
+</PRE>
+<PRE>
+        { text: () =&gt; `Undo ${u.undoName}`.trim(), key: 'F8',
+          shaded: () =&gt; !u.canUndo, action: () =&gt; this.undo() },
+        { text: () =&gt; `Redo ${u.redoName}`.trim(), key: 'F9',
+          shaded: () =&gt; !u.canRedo, action: () =&gt; this.redo() },
+</PRE>
+A menu item's <CODE>text</CODE> can be a function, called each time the menu opens - so it reads
+<I>Undo Delete</I> after a delete. <CODE>trim()</CODE> takes the space off the end when there's no name.<P>
+<P><CENTER><IMG SRC="PICS/C9Undo" WIDTH=1024 HEIGHT=768></CENTER>
+
+<A NAME=S2></A>
+<H2>Choices</H2>
+Most applications let you change how they behave, and remember your choices. The Style Guide says how:<P>
+<UL>
+<LI>A <I>Choices...</I> item on the icon bar menu opens a dialogue box.<P>
+<LI>The box has four buttons: <I>Default</I> puts the standard settings in the box, <I>Cancel</I> closes
+it, <I>Set</I> uses the settings now, and <I>Save</I> uses them and keeps them for next time.<P>
+<LI>Choices are saved in the Choices directory, not beside the application: the application may be on a
+disc you can't write to, or shared by several people.<P>
+</UL>
+The desktop provides <CODE>choices.read(name, defaults)</CODE> and <CODE>choices.write(name, value)</CODE>,
+which keep a JSON file called <CODE>name</CODE> in the Choices directory (<CODE>Choices:Contacts</CODE>).
+<CODE>read</CODE> returns the defaults for anything not saved yet. Contacts' module <CODE>Choices</CODE>
+uses them:<P>
+<PRE>
+// Choices - the settings a user can change, kept in Choices:Contacts
+// so they stay the same next time (the RISC OS Style Guide's way).
+//
+//   const prefs = await loadChoices();     { sort, confirm }
+//   openChoices(task, prefs, changed)    the Choices... dialogue box
+import { choices } from 'riscos';
+import { Form } from './Toolkit/Form';
+import { SORTS } from './Model';
+
+export const DEFAULTS = { sort: 'last', confirm: true };
+
+export const loadChoices = () =&gt; choices.read('Contacts', DEFAULTS);
+
+let form = null;
+
+/** Open the Choices box; changed(prefs) when they're Set or Saved. */
+export async function openChoices(task, prefs, changed) {
+  const names = Object.values(SORTS);
+  form ??= new Form(task, {
+    title: 'Contacts choices',
+    help: 'Choose how Contacts behaves.',
+    fields: [
+      { name: 'sort', label: 'Sort by', width: 160, choices: names,
+        help: 'The order contacts are listed in.' },
+      { name: 'confirm', label: 'Ask before deleting', option: true,
+        help: 'Ask before deleting contacts.' },
+    ],
+    buttons: ['Default', 'Cancel', 'Set', 'Save'],
+    stay: ['Default'],
+  });
+  // Default: put the default settings in the box (not used yet)
+  form.off?.();
+  form.off = form.on('button', () =&gt; form.set(shown(DEFAULTS)));
+  const r = await form.run(shown(prefs));
+  if (!r) return;
+  const sort = Object.keys(SORTS)
+    .find((k) =&gt; SORTS[k] === r.values.sort);
+  Object.assign(prefs, { sort, confirm: r.values.confirm });
+  if (r.button === 'Save') choices.write('Contacts', prefs);
+  changed(prefs);
+}
+
+// the box shows the sort order's name
+const shown = (p) =&gt; ({ ...p, sort: SORTS[p.sort] });
+</PRE>
+The box is a <CODE>Form</CODE> with a pop-up menu for the sort order and an option icon for confirming
+deletions. <I>Default</I> is named in <CODE>stay</CODE>: pressing it doesn't close the box, but emits
+<CODE>'button'</CODE>, and the program puts the default settings in the fields. The box shows the sort
+order's name (<I>Surname</I>), while the program stores its key (<CODE>last</CODE>); <CODE>shown</CODE>
+turns one into the other.<P>
+<P><CENTER><IMG SRC="PICS/ContactsChoices" WIDTH=409 HEIGHT=173></CENTER>
+<CODE>!RunImage</CODE> reads the choices when Contacts starts (<CODE>prefs: await loadChoices()</CODE>)
+and puts <I>Choices...</I> on the icon bar menu:<P>
+<PRE>
+  const menu = () =&gt; new Menu('Contacts', [
+    { text: 'Info', submenu: info },
+    { text: 'Choices...', help: 'Change how Contacts behaves.',
+      action: () =&gt; openChoices(task, app.prefs,
+        () =&gt; app.refreshAll()) },
+    { text: 'Quit', action: quit, help: 'Stop Contacts.' },
+  ]);
+</PRE>
+When the choices are set, every open book is listed again in the new order. The confirm choice is used in
+<CODE>remove</CODE>, above: with it off, Delete deletes straight away - which is safe, now that it can be
+undone.<P>
+
+<A NAME=S3></A>
+<H2>Interactive help</H2>
+RISC OS's <I>!Help</I> application (in the Apps icon's directory) shows a line or two about whatever is
+under the pointer. For it to work in your application, every window, icon and menu item should have help
+text. It is easy to add, and makes an application much easier to learn.<P>
+<DL>
+<DT>A window
+<DD><CODE>help</CODE> in its description: the text shown anywhere in the window without help of its
+own.<P>
+<PRE>
+const HELP = 'This window lists the contacts in an address book.|M' +
+  'Double-click a contact to change it; drag contacts out to save ' +
+  'them as a vCard file; drag vCard or CSV files in to add theirs.';
+</PRE>
+<DT>An icon
+<DD><CODE>help</CODE> in the icon's description. The toolbar passes each button's help on to its icon:<P>
+<PRE>
+    this.bar = new Toolbar(w, {
+      area: this.app.area,
+      buttons: [
+        { name: 'new', sprite: 'tb_new', action: () =&gt; this.add(),
+          help: 'Click SELECT to add a contact.' },
+        { name: 'edit', sprite: 'tb_edit', action: () =&gt; this.edit(),
+          help: 'Click SELECT to change the chosen contact.' },
+        { name: 'delete', sprite: 'tb_delete',
+          action: () =&gt; this.remove(),
+          help: 'Click SELECT to delete the chosen contacts.' },
+        { gap: true },
+        { name: 'undo', sprite: 'tb_undo', action: () =&gt; this.undo(),
+          help: 'Click SELECT to undo the last change (F8).' },
+        { name: 'redo', sprite: 'tb_redo', action: () =&gt; this.redo(),
+          help: 'Click SELECT to redo the change (F9).' },
+        { gap: true },
+        { name: 'save', sprite: 'tb_save',
+          action: () =&gt; this.doc.quickSave(),
+          help: 'Click SELECT to save the address book (F3).' },
+      ],
+      search: {
+        help: 'Type here to show only the contacts containing it.',
+        change: (text) =&gt; { this.search = text; this.refresh(); },
+      },
+      menu: (ev) =&gt; this.openMenu(ev),
+    });
+</PRE>
+<DT>A menu item
+<DD><CODE>help</CODE> in the item: <CODE>{ text: 'Save', ..., help: 'Save the book.' }</CODE>.<P>
+<DT>The icon bar icon
+<DD><CODE>help</CODE> in <CODE>addIconbarIcon</CODE>.<P>
+</DL>
+Help text is short, and says what clicking does, in the Style Guide's words: <I>Click SELECT to...</I>.
+<CODE>|M</CODE> in help text starts a new line.<P>
+The <CODE>Form</CODE> module passes each field's <CODE>help</CODE> on to its icons the same way, so dialogue
+boxes can have help too - the Choices box does.<P>
+
+<A NAME=S4></A>
+<H2>Information</H2>
+<I>Info</I> on the icon bar menu shows the desktop's standard box about the program, made with
+<CODE>infoBox</CODE> as in the first book. The Style Guide also asks for <I>File &gt; Info</I>, about the document:
+its full name, and anything else useful. Contacts shows the file's name, how many contacts it holds, and
+whether it has changed:<P>
+<PRE>
+  /** File &gt; Info: about this address book. */
+  infoBox() {
+    const d = this.doc, rows = [
+      ['File', d.filename || '&lt;untitled&gt;'],
+      ['Contacts', String(d.book.size)],
+      ['Modified', d.modified ? 'Yes' : 'No'],
+    ];
+    const icons = rows.flatMap(([label, text], i) =&gt; [
+      { x: 8, y: 8 + i * 32, w: 80, h: 28, text: label,
+        rjustify: true },
+      { x: 96, y: 8 + i * 32, w: 300, h: 28, text, border: true,
+        filled: true, bg: 1 },
+    ]);
+    return this.app.task.createWindow({ title: 'About this file',
+      w: 408, h: 112, extent: { w: 408, h: 112 }, icons,
+      flags: { title: true } });
+  }
+</PRE>
+The window is made each time the submenu opens, so it is always up to date. <CODE>flatMap</CODE> is like
+<CODE>map</CODE>, but each item may give several results - here, two icons for each row - and they are all
+put into one array.<P>
+
+<A NAME=S5></A>
+<H2>When the desktop shuts down</H2>
+When you choose <I>Shutdown</I> from the Task Manager, the desktop sends every task a
+<CODE>PreQuit</CODE> message first, asking whether it minds. An application with unsaved work should object,
+and ask:<P>
+<PRE>
+  // the desktop is shutting down: ask about unsaved changes
+  task.onMessage('PreQuit', async (msg) =&gt; {
+    if (!app.modified) return;
+    msg.object?.();                  // &quot;wait&quot;: stop the shutdown
+    if (await discardChanges(task,
+      'Some address books have changes. Discard them?')) {
+      task.quit();
+      if (!msg.single) wimp.emit('hotkey:CtrlShiftF12', {});
+    }
+  });
+</PRE>
+<CODE>msg.object()</CODE> stops the shutdown. If you then choose to discard the changes, Contacts quits, and
+starts the shutdown again (with the key Ctrl-Shift-F12, as RISC OS applications do) - unless the message
+was only for Contacts (<CODE>msg.single</CODE>: the Task Manager's <I>Quit</I> on this one task).<P>
+
+<A NAME=S6></A>
+<H2>The !Help file</H2>
+The last piece is the <CODE>!Help</CODE> file in the application directory, which the Filer shows when you
+choose <I>Help</I> from its menu over <CODE>!Contacts</CODE>. It explains the program for someone who has
+just found it:<P>
+<PRE>
+Contacts - an address book
+==========================
+
+Contacts keeps names, addresses, telephone numbers and email
+addresses. It is the address book made in the book &quot;Writing Desktop
+Applications in JavaScript&quot; (Manuals.JSApps).
+
+Double-click !Contacts, then click SELECT on its icon on the icon bar
+to start a new address book. Double-click a Contacts file to open it.
+
+The toolbar
+-----------
+  New       add a contact (or press Insert)
+  Change    change the chosen contact (or double-click it)
+  Delete    delete the chosen contacts (or press Delete)
+  Undo      undo the last change (F8)
+  Redo      redo it (F9)
+  Save      save the address book (F3)
+  Find      type here to show only the contacts containing the text;
+            Escape clears it (F4 puts the caret here)
+
+The list
+--------
+Click SELECT on a contact to choose it, ADJUST to choose more than
+one. The arrow keys, Home, Copy, Page Up and Page Down move through
+the list; Return changes the chosen contact; Ctrl-A chooses them all.
+F6 changes the order (surname, first name, company).
+
+Other programs
+--------------
+Drag vCard (.vcf) or CSV files onto the window or the icon to add
+their contacts. Drag chosen contacts out of the window to a directory
+display to save them as a vCard file. Menu &gt; File &gt; Export saves the
+chosen contacts (or all of them) as vCard or CSV.
+
+Choices
+-------
+Choices... on the icon bar menu sets the order of the list and whether
+Contacts asks before deleting. Save keeps them for next time; Set uses
+them now only.
+
+Contacts files have the file type &amp;1C4.
+</PRE>
+
+<A NAME=S7></A>
+<H2>A Style Guide checklist</H2>
+Contacts now does what Acorn's RISC OS Style Guide asks of an application that edits documents:<P>
+<UL>
+<LI>An icon on the icon bar: Select opens a new document; Menu gives Info, Choices... and Quit; files
+dropped on it are loaded.<P>
+<LI>Documents of its own file type, with an icon, opened by double-clicking - in the copy already running.
+<P>
+<LI>The file's name in the title, with <CODE>*</CODE> while it has unsaved changes.<P>
+<LI>Save with F3 and a Save box; other formats exported with Save boxes of their own.<P>
+<LI>Discard/Cancel/Save before closing a changed document, and at shutdown.<P>
+<LI>A toolbar of 3D buttons, shaded when they can't be used, repeating what's in the menus.<P>
+<LI>Menus built from the current state: items shaded or ticked, shortcut keys shown.<P>
+<LI>The standard keys: F3, F4, F6, F8, F9, Ctrl-A, Insert, Delete.<P>
+<LI>Dialogue boxes with the default action on the right, Return for it and Escape for Cancel.<P>
+<LI>Drag and drop both ways: files in, data from other programs in, contacts out.<P>
+<LI>Choices with Default, Cancel, Set and Save, kept in Choices.<P>
+<LI>Interactive help everywhere, and a <CODE>!Help</CODE> file.<P>
+</UL>
+Appendix D has the full checklist, for your own applications.<P>
+
+<A NAME=S8></A>
+<H2>What's next</H2>
+That is Part One finished: !Contacts is a real application, in about 1,500 lines of your own code, and a
+toolkit of six modules you can use in other programs. Part Two builds a much bigger one - an organiser in
+the spirit of Lotus Organizer, with a diary, a to-do list, a notepad, a planner and anniversaries in a
+ring binder - and its address section will be !Contacts' modules, used unchanged.<P>
+
+<A NAME=S9></A>
+<H2>Summary</H2>
+<UL>
+<LI>Undo: describe each change as a command with <CODE>do</CODE> and <CODE>undo</CODE>; an
+<CODE>Undo</CODE> object carries them out and keeps stacks of done and undone commands. Give each document
+its own.<P>
+<LI>A menu item's text can be a function, worked out each time the menu opens.<P>
+<LI>Choices: a Choices... box with Default, Cancel, Set and Save, saved with <CODE>choices.write</CODE>
+in the Choices directory and read with <CODE>choices.read</CODE>.<P>
+<LI>Interactive help: <CODE>help</CODE> on windows, icons, menu items and the icon bar icon; <CODE>|M</CODE>
+for a new line.<P>
+<LI>File &gt; Info shows the document's details; <CODE>PreQuit</CODE> lets you protect unsaved work at
+shutdown.<P>
+</UL>
+
+<A NAME=S10></A>
+<H2>Exercises</H2>
+<DL>
+<DT><DD>1  Make the number of changes kept for undo a choice, from 10 to 200.<P>
+<DT><DD>2  Add a choice for whether the email column is shown.<P>
+<DT><DD>3  Give the list's column headings interactive help: <I>Click SELECT to sort by this column</I> -
+and make clicking a heading sort by it. (The list's <CODE>ListView</CODE> draws the headings in the top
+<CODE>20</CODE> pixels below the toolbar.)<P>
+<DT><DD>4  Undo remembers changes after saving. Some programs clear it when the document is saved; others
+mark the point, so undoing past it puts the <CODE>*</CODE> back. Which do you prefer? Make Contacts put the
+<CODE>*</CODE> back correctly.<P>
+</DL>
+
+<A NAME=S11></A>
+<H2>Answers</H2>
+<DL>
+<DT><DD>1  Add <CODE>undoLimit: 50</CODE> to <CODE>DEFAULTS</CODE>, a field for it in the Choices box (with
+<CODE>allowed: '0-9'</CODE>), and in <CODE>Document</CODE>: <CODE>this.undo = new
+Undo(app.prefs.undoLimit)</CODE>. Check the number in the form's <CODE>check</CODE> function:
+<PRE>
+check: (v) =&gt; (+v.undoLimit &lt; 10 || +v.undoLimit &gt; 200
+  ? { field: 'undoLimit', message: 'From 10 to 200, please' }
+  : null),
+</PRE>
+Two more things are needed. <CODE>openChoices</CODE> copies only <CODE>sort</CODE> and
+<CODE>confirm</CODE> from the box into <CODE>prefs</CODE>, so it must copy the new one too; and a writable
+field's value is a string, so turn it into a number as it's copied:
+<PRE>
+Object.assign(prefs, { sort, confirm: r.values.confirm,
+  undoLimit: +r.values.undoLimit });
+</PRE>
+(A document already open keeps the limit it was made with.)<P>
+<DT><DD>2  Add <CODE>email: true</CODE> to <CODE>DEFAULTS</CODE> and an option field, and build the
+columns from the choices, then call <CODE>setItems</CODE> again when they change (or make a new
+<CODE>ListView</CODE>).<P>
+<DT><DD>3  The list takes every click on its window - including a click on the headings, which it
+ignores - and a handler that returns <CODE>true</CODE> stops the ones added after it. So add a
+<CODE>'click'</CODE> handler to the window in <CODE>MainWindow</CODE>'s constructor <I>before</I> the
+<CODE>ListView</CODE> is made. The headings stay at the top of the visible area as the list scrolls, so a
+click is on them when <CODE>ev.y</CODE> is between <CODE>w.scrollY + this.bar.height</CODE> and
+20 more. Add up the columns' widths to find which one holds <CODE>ev.x</CODE>; only Name has an order to
+sort by (<CODE>setSort('last')</CODE>), unless you add more to <CODE>SORTS</CODE>. Return
+<CODE>true</CODE> when the click was on the headings, and nothing otherwise so the list gets it. The help goes
+in a <CODE>'helprequest'</CODE> handler on the window, setting <CODE>ev.text</CODE> when the pointer is over
+the headings, tested the same way.<P>
+<DT><DD>4  Remember which command was last done when the document was saved, and compare after each undo
+or redo:
+<PRE>
+// in save:
+this.savedAt = this.undo.done.at(-1);
+// in the Document constructor:
+this.undo.on('change', () =&gt;
+  this.setModified(this.undo.done.at(-1) !== this.savedAt));
+</PRE>
+(The book's <CODE>'change'</CODE> handler still sets modified when a change is made; this corrects it after
+undo and redo.)<P>
+</DL>
+
+<HR>
+<ADDRESS>Writing Desktop Applications in JavaScript - RISC OS 3.71 in the browser</ADDRESS>
+<A HREF="Chap10.htm"><IMG ALIGN=BOTTOM SRC="next" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Chap8.htm"><IMG ALIGN=BOTTOM SRC="prev" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Start.htm"><IMG ALIGN=BOTTOM SRC="top" WIDTH=69 HEIGHT=24 BORDER=0></A> <A HREF="Contents.htm"><IMG ALIGN=BOTTOM SRC="content" WIDTH=69 HEIGHT=24 BORDER=0></A>
+</BODY></HTML>
