@@ -82,11 +82,37 @@ try {
   await page.keyboard.press('Enter');
   ok('and deletes', await until((D) => !os.vfs.exists(D + '.assets') && !DV().rows.some((r) => r.name === 'assets'), D));
 
+  // names with a . (a RISC OS path separator) are refused rather than moving things
+  await page.evaluate(() => { const v = DV(); const i = v.rows.findIndex((r) => r.name === 'app'); v.rename(v.rows[i], 'lib.moved'); });
+  await sleep(200);
+  ok('a name with a . is refused', await page.evaluate((D) => os.vfs.exists(D + '.app') && !os.vfs.exists(D + '.lib.moved') && os.wimp.stack.some((w) => w._errorBox && w.isOpen), D));
+  await page.keyboard.press('Enter');
+  // Open on a selection of a directory and files opens them all
+  await page.evaluate(async (D) => {
+    os.vfs.writeFile(D + '.two', '2', { filetype: 0xF81 });
+    await new Promise((r) => setTimeout(r, 100));
+    const v = DV();
+    v.selected = new Set([D + '.assets2', D + '.two'].map((p) => p.toLowerCase()));
+    os.vfs.mkdir(D + '.assets2');
+    await new Promise((r) => setTimeout(r, 100));
+    v.selected = new Set([(D + '.assets2').toLowerCase(), (D + '.two').toLowerCase()]);
+    const m = v.menu(); const sub = m.items[0].submenu(); sub.items[0].action();
+  }, D);
+  ok('Open on a directory and a file opens both', await until((D) => __texts().some((s) => s.filename === D + '.two') && DV().rows.some((r) => r.name === 'assets2' && r.open), D));
+  // a Save box dropped on the view saves into the directory there
+  const saved = await page.evaluate((D) => { let to = null; DV().win.emit('datasave', { leafname: 'Saved', y: 1000, accept: (p) => { to = p; } }); return to; }, D);
+  ok('a Save box dropped on the view saves into its directory', saved === D + '.Saved', saved);
+  // typing a letter with nothing selected finds the first match
+  const first = await page.evaluate(() => { const v = DV(); v.select(-1); v.cursor = -1; v.typed = { s: '', t: 0 }; v.key({ code: 97, char: 'a' }); return v.rows[v.cursor]?.name; });
+  ok('typing a letter with nothing selected goes to the first match', first === 'assets2', first);
+
   // changes made elsewhere show at once
   await page.evaluate((D) => os.vfs.writeFile(D + '.fromelsewhere', 'x', { filetype: 0xFFF }), D);
   ok('a file made elsewhere appears', await until(() => DV().rows.some((r) => r.name === 'fromelsewhere')));
 
   // Find in files
+  const spaced = await page.evaluate((D) => __je().jsedit.dirs.findInFiles(D, 'todo: tidy'), D);
+  ok('Find in files takes spaces and colons', spaced === 1, spaced);
   const hits = await page.evaluate((D) => __je().jsedit.dirs.findInFiles(D, 'todo'), D);
   const found = await page.evaluate(() => { const f = __je().jsedit.dirs.found; return { open: f.win.isOpen, items: f.items.map((i) => i.text) }; });
   ok('Find in files lists every line, file by file', hits === 2 && found.open && found.items.some((t) => /line {4}2: \/\/ TODO: tidy/.test(t)) && found.items.some((t) => /util$/.test(t)), found);
@@ -119,7 +145,7 @@ try {
   await page.evaluate(async () => { for (const s of __texts()) s.doc.setModified(false); __je().jsedit.dirs.quit(); __je().quit(); await new Promise((r) => setTimeout(r, 300)); await os.cli.run('Run ADFS::HardDisc4.$.Apps.!JsEdit'); await new Promise((r) => setTimeout(r, 800)); });
   const back = await until(() => { const d = __je()?.jsedit?.dirs.views; return d?.length === 2 && d[0].rows.some((r) => r.depth === 1) && d.map((v) => v.path).join(); });
   ok('directory views come back when !JsEdit starts again, as they were', !!back, back);
-  const help = await page.evaluate(() => DV().help(0));
+  const help = await page.evaluate(() => DV().help(DV().rows.findIndex((r) => r.name === 'lib')));
   ok('interactive help', /directory 'lib'/.test(help), help);
 } catch (e) {
   res.push(`FAIL exception ${e.stack ?? e}`);

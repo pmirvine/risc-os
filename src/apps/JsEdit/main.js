@@ -60,7 +60,9 @@ export default async function start(task, ctx) {
     if (!app.modifiedCount) return;
     msg.object?.();
     if (await app.mayQuit()) {
-      finish();
+      // (the shutdown may still be cancelled by another task: the directory views stay, written down)
+      app.dirs.remember();
+      app.disposeAll();
       if (msg.single) task.quit();
       else wimp.emit('hotkey:CtrlShiftF12', {});
     }

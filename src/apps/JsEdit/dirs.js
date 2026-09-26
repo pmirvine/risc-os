@@ -19,7 +19,9 @@ const ROW_H = 22, INDENT = 16, TOGGLE_W = 14;
 const MAX_ROWS = 5000, MAX_FIND_FILES = 3000, MAX_FIND_SIZE = 1024 * 1024, MAX_FOUND = 2000;
 // a new file's type from the end of its name (RISC OS keeps the host's extension as /js)
 const SUFFIX_TYPES = { js: 0xF81, mjs: 0xF81, bas: 0xFFB, json: 0xF75, txt: 0xFFF, html: 0xFAF, htm: 0xFAF, css: 0xF79, csv: 0xDFE, xml: 0xF80 };
-const NAME_VALIDATION = 'A~ :*#$&@^%\\|"';
+// (as the Filer's: no spaces, and none of . : * # $ & @ ^ % \ | " in a name)
+const NAME_VALIDATION = 'A~ .:*#$&@^%\\\\|"';
+const badName = (n) => /[.:*#$&@^%\\|"\s]/.test(n);
 
 const lc = (s) => String(s).toLowerCase();
 const within = (path, dir) => lc(path) === lc(dir) || lc(path).startsWith(lc(dir) + '.');
@@ -47,6 +49,7 @@ export class DirViews {
     this.last = st.path;
     const v = this.views.find((x) => lc(x.path) === lc(st.path));
     if (v) { v.win.open({ behind: 'top' }); v.focus(); return v; }
+    this.missing = (this.missing ?? []).filter((m) => lc(m.path) !== lc(st.path));
     const nv = new DirView(this, st.path, state);
     this.views.push(nv);
     this.save();
@@ -64,22 +67,30 @@ export class DirViews {
   // ------------------------------------------------------------------ remembered between sessions
   async restore() {
     const c = await choices.read('JsEditDirs', { dirs: [] });
-    for (const d of c.dirs ?? []) if (d?.path && os.vfs.isDir(d.path)) this.open(d.path, d);
+    // a directory not there now (a HostFS disc not mounted yet, say) is remembered for next time
+    this.missing = [];
+    for (const d of c.dirs ?? []) {
+      if (!d?.path) continue;
+      if (os.vfs.isDir(d.path)) this.open(d.path, d); else this.missing.push(d);
+    }
+  }
+  state() {
+    const open = this.views.map((v) => ({ path: v.path, expanded: [...v.expanded].filter((p) => p !== lc(v.path)), x: v.win.x, y: v.win.y, w: v.win.w, h: v.win.h }));
+    return [...open, ...(this.missing ?? []).filter((m) => !open.some((o) => lc(o.path) === lc(m.path)))];
+  }
+  /** Write the views down now (also before a shutdown, which may yet be cancelled). */
+  remember() {
+    clearTimeout(this._saveT);
+    try { choices.write('JsEditDirs', { dirs: this.state() }); } catch { /* read-only disc */ }
   }
   save() {
     clearTimeout(this._saveT);
-    this._saveT = setTimeout(() => {
-      if (this.quitting) return;
-      const dirs = this.views.map((v) => ({ path: v.path, expanded: [...v.expanded].filter((p) => p !== lc(v.path)), x: v.win.x, y: v.win.y, w: v.win.w, h: v.win.h }));
-      try { choices.write('JsEditDirs', { dirs }); } catch { /* read-only disc */ }
-    }, 300);
+    this._saveT = setTimeout(() => { if (!this.quitting) this.remember(); }, 300);
   }
   /** Quitting: the views close, but are remembered. */
   quit() {
     if (this.quitting) return;
-    clearTimeout(this._saveT);
-    const dirs = this.views.map((v) => ({ path: v.path, expanded: [...v.expanded].filter((p) => p !== lc(v.path)), x: v.win.x, y: v.win.y, w: v.win.w, h: v.win.h }));
-    try { choices.write('JsEditDirs', { dirs }); } catch { /* read-only disc */ }
+    this.remember();
     this.quitting = true;
     for (const v of [...this.views]) v.dispose();
     this.found?.win.delete();
@@ -153,14 +164,16 @@ export class DirView {
     win.on('doubleclick', (ev) => this.doubleClick(ev));
     win.on('drag', (ev) => this.drag(ev));
     win.on('dataload', (ev) => this.dataLoad(ev));
+    // a Save box's icon dropped here: saved into the directory under the pointer
+    win.on('datasave', (ev) => { ev.accept(os.vfs.join(this.destAt(ev.y), ev.leafname)); return true; });
     win.on('key', (ev) => this.key(ev));
     win.on('close', (ev) => {
       ev.preventDefault();
       if (ev.button === 'adjust') os.filer.openDir(os.vfs.parent(this.path) || this.path);
       this.dispose();
     });
-    win.on('moved', () => this.set.save());
-    this.rebuild();
+    win.on('moved', (e) => { if (e.moved) this.set.save(); });
+    this.rebuild({ revalidate: true });
     win.open({ behind: 'top' });
     this.focus();
   }
@@ -168,7 +181,9 @@ export class DirView {
   focus() { wimp.setCaret(this.win); }
 
   // ------------------------------------------------------------------ the rows
-  rebuild() {
+  rebuild({ revalidate = false } = {}) {
+    // HostFS: ask the host again (as a Filer window does when it opens)
+    if (revalidate) for (const d of this.expanded) try { os.vfs.revalidate?.(d); } catch { /* */ }
     const rows = [];
     const add = (dir, depth) => {
       let list;
@@ -184,7 +199,8 @@ export class DirView {
     add(this.path, 0);
     const cur = this.rows[this.cursor]?.path;
     this.rows = rows;
-    for (const k of [...this.selected]) if (!rows.some((r) => lc(r.path) === k)) this.selected.delete(k);
+    const keys = new Set(rows.map((r) => lc(r.path)));
+    for (const k of [...this.selected]) if (!keys.has(k)) this.selected.delete(k);
     this.cursor = cur ? rows.findIndex((r) => lc(r.path) === lc(cur)) : -1;
     const width = Math.max(360, ...rows.slice(0, 500).map((r) => 60 + r.depth * INDENT + r.name.length * 9));
     this.win.setExtent({ x0: 0, y0: 0, x1: width, y1: Math.max(rows.length * ROW_H + 8, this.win.h) });
@@ -194,7 +210,11 @@ export class DirView {
   /** A directory changed on the disc (the Filer, a program, HostFS...): show it if it's here. */
   changed(dir) {
     if (!dir) return;
-    if (!os.vfs.isDir(this.path)) { this.dispose(); return; }        // the directory itself went
+    if (!os.vfs.isDir(this.path)) {                                  // the directory itself went (or its disc)
+      (this.set.missing ??= []).push({ path: this.path, expanded: [...this.expanded], x: this.win.x, y: this.win.y, w: this.win.w, h: this.win.h });
+      this.dispose();
+      return;
+    }
     if (!within(dir, this.path) || ![...this.expanded].some((e) => lc(dir) === e)) return;
     clearTimeout(this._ct);
     this._ct = setTimeout(() => this.rebuild(), 30);
@@ -232,7 +252,7 @@ export class DirView {
   setOpen(i, open) {
     const r = this.rows[i];
     if (!r || r.type !== 'dir') return;
-    if (open) this.expanded.add(lc(r.path)); else this.expanded.delete(lc(r.path));
+    if (open) { this.expanded.add(lc(r.path)); try { os.vfs.revalidate?.(r.path); } catch { /* */ } } else this.expanded.delete(lc(r.path));
     for (const e of [...this.expanded]) if (!open && e !== lc(r.path) && within(e, r.path)) this.expanded.delete(e);
     this.rebuild();
     this.set.save();
@@ -333,12 +353,13 @@ export class DirView {
   }
 
   /** Double-click / Return: a directory folds open or shut, a text file is edited, anything else is run. */
-  async openRow(i, { shift = false } = {}) {
-    const r = this.rows[i];
+  async openRow(which, { shift = false } = {}) {
+    // (a row, or its index: rows are made again whenever the tree changes)
+    const r = typeof which === 'number' ? this.rows[which] : this.rows.find((x) => lc(x.path) === lc(which.path));
     if (!r) return;
     if (r.type === 'dir') {
       if (r.isApp && !shift) { os.filer.run(r.path); return; }
-      this.setOpen(i, !r.open);
+      this.setOpen(this.rows.indexOf(r), !r.open);
       return;
     }
     if (shift || isTextType(r.filetype)) {
@@ -392,12 +413,17 @@ export class DirView {
     wimp.dataLoad(drop, sel.map((r) => ({ path: r.path, filetype: r.filetype, size: r.size, name: r.name, type: r.type })), this.task);
   }
 
+  /** The directory something dropped at y goes into: the directory there, the directory of the file there, or the top one. */
+  destAt(y) {
+    const d = this.rows[this.rowAt(y)];
+    return !d ? this.path : d.type === 'dir' && !d.isApp ? d.path : os.vfs.parent(d.path);
+  }
+
   /** Files dropped in from the Filer (or elsewhere): copied (moved with Shift) into the directory they land on. */
   dataLoad(ev) {
     const files = ev.files ?? [];
     if (!files.length) return true;
-    const d = this.rows[this.rowAt(ev.y)];
-    const dest = !d ? this.path : d.type === 'dir' && !d.isApp ? d.path : os.vfs.parent(d.path);
+    const dest = this.destAt(ev.y);
     const paths = files.map((f) => f.path).filter((p) => lc(os.vfs.parent(p)) !== lc(dest) && !within(dest, p));
     if (paths.length) fileAction(ev.shift ? 'move' : 'copy', paths, dest, os.filer.options);
     return true;
@@ -427,7 +453,7 @@ export class DirView {
       case 13: if (c >= 0) this.openRow(c, { shift: ev.shift }); return true;   // Return
       case 127: case 8: if (this.selected.size) this.deleteSelection(); return true;   // Delete
       case 27: this.select(-1); return true;                                 // Escape
-      case 0x185: this.rebuild(); return true;                               // F5
+      case 0x185: this.rebuild({ revalidate: true }); return true;           // F5
     }
     // typing letters: the next name starting with them
     if (ev.char && ev.code >= 32 && ev.code < 256 && !ev.ctrl) {
@@ -435,7 +461,7 @@ export class DirView {
       this.typed = { s: (now - this.typed.t < 900 ? this.typed.s : '') + ev.char.toLowerCase(), t: now };
       const s = this.typed.s;
       for (let k = 0; k < n; k++) {
-        const i = (Math.max(c, 0) + (s.length === 1 ? 1 : 0) + k) % n;
+        const i = ((c < 0 ? 0 : c + (s.length === 1 ? 1 : 0)) + k) % n;
         if (this.rows[i].name.toLowerCase().startsWith(s)) { this.select(i); break; }
       }
       return true;
@@ -449,6 +475,7 @@ export class DirView {
   newFile(name) {
     name = String(name ?? '').trim();
     if (!name) return;
+    if (badName(name)) { this.report(`'${name}' can't be a name: no spaces, or any of . : * # $ & @ ^ % \\ | "`); return; }
     const dir = this.targetDir();
     const path = os.vfs.join(dir, name);
     if (os.vfs.exists(path)) { this.report(`'${name}' already exists`); return; }
@@ -471,6 +498,7 @@ export class DirView {
   newDir(name) {
     name = String(name ?? '').trim();
     if (!name) return;
+    if (badName(name)) { this.report(`'${name}' can't be a name: no spaces, or any of . : * # $ & @ ^ % \\ | "`); return; }
     const dir = this.targetDir();
     const path = os.vfs.join(dir, name);
     if (os.vfs.exists(path)) { this.report(`'${name}' already exists`); return; }
@@ -484,6 +512,7 @@ export class DirView {
   rename(row, name) {
     name = String(name ?? '').trim();
     if (!row || !name || name === row.name) return;
+    if (badName(name)) { this.report(`'${name}' can't be a name: no spaces, or any of . : * # $ & @ ^ % \\ | "`); return; }
     const to = os.vfs.join(os.vfs.parent(row.path), name);
     if (os.vfs.exists(to) && lc(to) !== lc(row.path)) { this.report(`'${name}' already exists`); return; }
     try { os.vfs.rename(row.path, to); } catch (e) { this.report(e); return; }
@@ -491,9 +520,13 @@ export class DirView {
     for (const s of this.app.states) {
       if (s.filename && within(s.filename, row.path)) s.filename = os.vfs.canonical(to) + s.filename.slice(row.path.length);
     }
-    for (const e of [...this.expanded]) if (within(e, row.path)) { this.expanded.delete(e); this.expanded.add(lc(to) + e.slice(row.path.length)); }
+    for (const v of this.set.views) {
+      if (v !== this && within(v.path, row.path)) { v.path = os.vfs.canonical(to) + v.path.slice(row.path.length); v.win.setTitle(v.path); }
+      for (const e of [...v.expanded]) if (within(e, row.path)) { v.expanded.delete(e); v.expanded.add(lc(to) + e.slice(row.path.length)); }
+    }
     this.selected = new Set([lc(os.vfs.canonical(to))]);
     this.rebuild();
+    this.cursor = this.rows.findIndex((r) => lc(r.path) === lc(os.vfs.canonical(to)));
     this.set.save();
   }
 
@@ -510,11 +543,11 @@ export class DirView {
   menu() {
     const sel = this.sel(), one = sel.length === 1 ? sel[0] : null;
     const leafLabel = one ? `${one.type === 'dir' ? 'Dir.' : 'File'} '${one.name}'` : sel.length ? 'Selection' : 'File \'\'';
-    const writable = (value, action) => new Menu('Name', [{ text: '', writable: { value, maxLen: 255, validation: NAME_VALIDATION }, action: (e) => action(e.value) }]);
+    const writable = (value, action, validation = NAME_VALIDATION) => new Menu('Name', [{ text: '', writable: { value, maxLen: 255, ...(validation ? { validation } : {}) }, action: (e) => action(e.value) }]);
     const m = new Menu('JsEdit dir', [
       { text: leafLabel, shaded: !sel.length, submenu: () => new Menu(leafLabel.slice(0, 28), [
-        { text: 'Open', action: () => sel.forEach((r) => this.openRow(this.rows.indexOf(r))), help: 'Click SELECT to edit the file (or open the directory).' },
-        { text: 'Edit as text', shaded: !sel.some((r) => r.type === 'file'), action: () => sel.filter((r) => r.type === 'file').forEach((r) => this.openRow(this.rows.indexOf(r), { shift: true })), help: 'Click SELECT to edit the file here whatever its type.' },
+        { text: 'Open', action: () => sel.forEach((r) => this.openRow(r)), help: 'Click SELECT to edit the file (or open the directory).' },
+        { text: 'Edit as text', shaded: !sel.some((r) => r.type === 'file'), action: () => sel.filter((r) => r.type === 'file').forEach((r) => this.openRow(r, { shift: true })), help: 'Click SELECT to edit the file here whatever its type.' },
         { text: 'Rename', shaded: !one, submenu: () => writable(one.name, (v) => this.rename(one, v)), help: 'Move the pointer right, type a new name and press Return.' },
         { text: 'Delete', action: () => this.deleteSelection(), help: 'Click SELECT to delete it (you\'ll be asked first).' },
         { text: 'Open in Filer', action: () => os.filer.openDir(one?.type === 'dir' ? one.path : os.vfs.parent(sel[0].path)), help: 'Click SELECT to show it in a Filer window.' },
@@ -525,9 +558,9 @@ export class DirView {
       { text: 'Clear selection', shaded: !sel.length, action: () => this.select(-1), dotted: true },
       { text: 'Expand all', action: () => this.expandAll(true) },
       { text: 'Collapse all', action: () => this.expandAll(false), dotted: true },
-      { text: 'Find in files', submenu: () => writable(this.set.lastFind ?? '', (v) => { this.set.lastFind = v; this.set.findInFiles(this.targetDir(), v); }), help: 'Move the pointer right, type the text to look for and press Return.|MEvery line containing it, in every text file in the directory, is listed.' },
+      { text: 'Find in files', submenu: () => writable(this.set.lastFind ?? '', (v) => { this.set.lastFind = v; this.set.findInFiles(this.targetDir(), v); }, null), help: 'Move the pointer right, type the text to look for and press Return.|MEvery line containing it, in every text file in the directory, is listed.' },
       { text: 'Open in Filer', action: () => os.filer.openDir(this.path), help: 'Click SELECT to open this directory in a Filer window.' },
-      { text: 'Refresh', key: 'F5', action: () => this.rebuild(), help: 'Click SELECT to read the directory again.' },
+      { text: 'Refresh', key: 'F5', action: () => this.rebuild({ revalidate: true }), help: 'Click SELECT to read the directory again.' },
     ]);
     return m;
   }
