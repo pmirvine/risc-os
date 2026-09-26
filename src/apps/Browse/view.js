@@ -53,6 +53,7 @@ export class BrowserWindow {
     w.on('open', (ev) => {
       const s = this.current?.scroll;
       if (this._syncing || !s || !s.vw || !s.vh) return;
+      if ((ev.w != null && ev.w !== w.w) || (ev.h != null && ev.h !== w.h)) return;   // resized: the page keeps its place
       if (ev.scrollX !== w.scrollX || ev.scrollY !== w.scrollY) {
         const x = Math.max(0, Math.round((ev.scrollX ?? 0) * s.vw / w.w)), y = Math.max(0, Math.round((ev.scrollY ?? 0) * s.vh / w.h));
         Object.assign(s, { x, y });
@@ -148,6 +149,7 @@ export class BrowserWindow {
       this.current?.paint?.();
     }
     for (const t of this.tabs) t.resize?.(r);
+    if (this._tabsW !== this.win.w) { this._tabsW = this.win.w; this.drawTabs(); }
     this.syncScroll();
   }
 
@@ -243,7 +245,7 @@ export class BrowserWindow {
   drawTabs() {
     const p = this.tabbar;
     const W = this.win.w - 40;
-    const tw = Math.max(60, Math.min(200, Math.floor(W / Math.max(1, this.tabs.length))));
+    const tw = Math.max(24, Math.min(200, Math.floor(W / Math.max(1, this.tabs.length))));
     const fit = (s) => { const max = Math.floor((tw - 12) / 7); return s.length > max ? s.slice(0, Math.max(1, max - 1)) + '\u2026' : s; };
     // rebuild: there are few enough icons that this is simplest
     for (let i = p.icons.length - 1; i >= 0; i--) p.deleteIcon(i);
@@ -439,7 +441,7 @@ export class BrowserWindow {
   hotKey(ev) {
     const d = ev.domEvent;
     switch (ev.code) {
-      case 0x183: this.app.saveMenu(this).openCentred?.(); return true;                    // F3
+      case 0x183: if (this.current instanceof PageTab && this.current.url) this.app.saveMenu(this).openCentred?.(); return true;   // F3
       case 0x184: this.app.findWindow(this).openAt({ sx: input.mouseX, sy: input.mouseY }); return true;   // F4
       case 0x185: this.current?.reload(false); return true;                                // F5
     }
@@ -579,6 +581,7 @@ export class PageTab {
     } else {
       await this.engine.connect();
       const rep = await this.engine.request({ op: 'open', url: 'about:blank', w: r.w, h: r.h, zoom: this.zoom });
+      if (this.closed) { this.engine.send({ op: 'close', tab: rep.tab }); return; }   // closed while it was made
       this.id = rep.tab;
       this.bw.app.tabs.set(this.id, this);
       this.engine.frames.set(this.id, (m, b) => this.frame(m, b));
@@ -590,7 +593,16 @@ export class PageTab {
   send(o) { if (this.id != null) this.engine.send({ ...o, tab: this.id }); }
   request(o) { return this.engine.request({ ...o, tab: this.id }); }
 
+  /** No engine page (the connection was lost, or the engine stopped): make one again. */
+  restart(url) {
+    this.error = '';
+    this.loading = true;
+    this.bw.tabChanged(this);
+    this.start(url).catch((e) => { this.loading = false; this.error = e.message; this.bw.tabChanged(this); });
+  }
+
   go(url) {
+    if (this.id == null && !this.closed) { this.url = url; this.restart(url); return; }
     this.url = url;
     this.error = '';
     this.loading = true;
@@ -599,7 +611,7 @@ export class PageTab {
   }
   back() { this.send({ op: 'back' }); }
   forward() { this.send({ op: 'forward' }); }
-  reload(hard) { this.send({ op: 'reload', hard }); }
+  reload(hard) { if (this.id == null) { if (this.url) this.restart(this.url); } else this.send({ op: 'reload', hard }); }
   stop() { this.send({ op: 'stop' }); }
   setZoom(z) { this.zoom = z; this.send({ op: 'zoom', zoom: z }); this.bw.tabChanged(this); }
   copy() { return this.request({ op: 'copy' }).then((r) => r.text).catch(() => ''); }
@@ -627,7 +639,7 @@ export class PageTab {
   frame(meta, bytes) {
     const seq = ++this.seq;
     createImageBitmap(new Blob([bytes], { type: 'image/jpeg' })).then((bmp) => {
-      if (seq < this.drawn) { bmp.close(); return; }
+      if (seq < this.drawn || this.id == null) { bmp.close(); return; }
       this.drawn = seq;
       this.bmp?.close();
       this.bmp = bmp;
@@ -664,6 +676,7 @@ export class PageTab {
   }
 
   close() {
+    this.closed = true;
     if (this.id == null) return;
     this.send({ op: 'close' });
     this.engine.frames.delete(this.id);
@@ -700,6 +713,8 @@ export class FrameTab {
   send() {}
 
   go(url, push = true) {
+    // only web pages: a javascript: (or other) address in a frame of the desktop's own would run as the desktop
+    if (!/^https?:\/\//i.test(url) && url !== 'about:blank') { this.bw.task.reportError(`!Browse can't show ${url.split(':')[0]}: addresses here`); return; }
     if (push) { this.hist.splice(this.pos + 1); this.hist.push(url); this.pos = this.hist.length - 1; }
     this.url = url;
     this.title = '';
@@ -729,12 +744,20 @@ export class FrameTab {
       f._browse = this.bw;
       f.className = 'browse-embed';
       f.setAttribute('sandbox', FRAME_SANDBOX);
+      f._sameOrigin = null;
       f.setAttribute('allow', 'autoplay; fullscreen; clipboard-write; encrypted-media; picture-in-picture');
       f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
       Object.assign(f.style, { position: 'absolute', border: '0', background: '#fff', display: this.shown ? '' : 'none' });
       f.addEventListener('load', () => { if (this.iframe === f) { this.loading = false; this.bw.tabChanged(this); } });
       this.bw.win.view.appendChild(f);
       this.resize(this.bw.pageRect());
+    }
+    // a page from the desktop's own server mustn't be same-origin with it (it could lift its own sandbox)
+    let own = false;
+    try { own = new URL(url).origin === location.origin; } catch { /* not a URL */ }
+    if (this.iframe._sameOrigin !== own) {
+      this.iframe._sameOrigin = own;
+      this.iframe.setAttribute('sandbox', own ? FRAME_SANDBOX.replace('allow-same-origin ', '') : FRAME_SANDBOX);
     }
     this.iframe.src = url;
     if (this.shown) this.bw.note.style.display = 'none';

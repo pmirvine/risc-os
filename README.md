@@ -135,7 +135,7 @@ in !Browse, and other programs (and !Bookworm's links) use `*URLOpen_http <addre
 Chrome runs headless over a private pipe (no debugging port is opened); pages reach the desktop as a stream of
 JPEG frames, and the mouse and keys go back. Without `--browser` (any other server, or from another computer)
 !Browse shows pages in a frame instead: many sites refuse that, and it offers to open them in your own browser.
-See `docs/apps/Browse.md`.
+A guide is on the hard disc, in `$.Docs.Browse` (source `tools/docs/Browse`); the design is in `docs/apps/Browse.md`.
 
 ## What's included
 

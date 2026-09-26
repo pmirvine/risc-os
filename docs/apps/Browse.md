@@ -13,7 +13,9 @@ Two ways of showing pages:
 * **Embedded**, when there's no engine (another web server, another computer, or no `--browser`): the page in an
   `<iframe>`. Many sites refuse to be framed (X-Frame-Options, CSP `frame-ancestors`); when served by serve.mjs,
   !Browse asks it first (`/__browse/check`) and shows a note with an *Open in your own browser* button instead.
-  Pages are sandboxed without `allow-top-navigation`, so they can't navigate the desktop away.
+  Pages are sandboxed without `allow-top-navigation`, so they can't navigate the desktop away; only `http:` /
+  `https:` addresses are framed (a `javascript:` one would run as the desktop), and a page from the desktop's own
+  server loses `allow-same-origin` (it could otherwise lift its own sandbox).
 
 Why an engine rather than a proxy: a rewriting proxy would put every site on the desktop's own origin (its
 IndexedDB disc, the HostFS token), breaks many sites, and is an open proxy; streaming a real browser keeps sites
@@ -89,7 +91,11 @@ scroll, error, crashed}`, `dialog`, `select {options, index, x, y}`, `files {mul
 As HostFS: only requests from this machine (the socket's address), for this server's own host names (no DNS
 rebinding), not cross-site (`Sec-Fetch-Site`), the WebSocket only from the desktop's origin and with the per-run
 token from `GET /__browse/` (which other sites can't read); `nosniff` / `Cross-Origin-Resource-Policy`. The engine
-only opens `http:`, `https:`, `data:`, `blob:` and `about:blank` addresses (no `file:`). Chrome uses its own profile,
+only opens `http:`, `https:`, `data:`, `blob:` and `about:blank` addresses (no `file:`). Tabs, downloads and
+uploads belong to the connection that made them (`c=` on `/__browse/file/` and `/upload`); the helper script
+ignores events a page makes up (`isTrusted`), so a page can't open menus by itself. serve.mjs answers malformed
+requests with 400 rather than stopping, and its pages carry `frame-ancestors 'self'`, so other sites (or pages in
+!Browse) can't show the desktop in a frame and click in it. Chrome uses its own profile,
 so the host's own browser's cookies are never involved. With `--lan` the desktop is served to the network but the
 engine still only answers this machine (other computers get the embedded mode).
 
@@ -122,6 +128,8 @@ engine still only answers this machine (other computers get the embedded mode).
 * No bookmarks folders, password manager UI, extensions or developer tools; Chrome's permission prompts
   (location, camera, notifications) are refused.
 * The first frame after a resize may be the old size (it's stretched until the next one).
+* Keys reach the page as a press and release together (a key held down repeats, but isn't "held"), and characters
+  outside Latin-1 typed on the keyboard (emoji) don't arrive; pasting them works.
 
 Tests: `node --test tests/browse` (the engine over its WebSocket; the app in the desktop; the embedded mode). They
 start their own servers on ports 8396-8400 with a throw-away profile and use only local pages.

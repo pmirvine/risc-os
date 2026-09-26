@@ -249,7 +249,7 @@ docs/ASSETS.md §5).
 * `serve.mjs`: answers only this machine unless `--lan` (every interface) or `--listen=<address>` is given (it used
   to listen on every interface); `--browser[=chrome]` / `--browser-profile <dir>` start !Browse's engine
   (`tools/browser-server.mjs`, `/__browse/`, a WebSocket at `/__browse/ws`), which like HostFS only answers this
-  machine. `tools/browse-ext/` is the engine's sound-capture extension.
+  machine. `tools/browse-ext/` is the engine's sound-capture extension. Its pages now carry `Content-Security-Policy: frame-ancestors 'self'` (no framing of the desktop by other sites), and a malformed request (e.g. `GET /%`) gets 400 instead of stopping the server.
 * `src/core/window.js`: the `ignoreRight` / `ignoreBottom` window flags (bits 14, 15) let a window be sized beyond its
   extent (the real Wimp's "ignore right/lower extent"); toggle-size then fills the screen. Windows without them are
   unchanged.

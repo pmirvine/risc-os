@@ -36,7 +36,12 @@ try {
   const noTok = await fetch(BASE + '__browse/check?url=' + encodeURIComponent(FIX + 'page.html'));
   ok('the frame check needs the token', noTok.status === 403, noTok.status);
   const chk = await (await fetch(BASE + '__browse/check?url=' + encodeURIComponent(FIX + 'page.html'), { headers: { 'X-Browse-Token': info.token } })).json();
-  ok('a page without X-Frame-Options can be framed', chk.frameable === true, chk);
+  ok('the frame check reads frame-ancestors (serve.mjs\'s own pages only allow their own site)', chk.frameable === false && chk.reason === 'frame-ancestors', chk);
+
+  // bad requests don't stop the server; the desktop can't be framed by other sites
+  const badReq = await fetch(BASE + '%');
+  ok('a malformed address gets 400, and the server carries on', badReq.status === 400 && (await fetch(BASE)).ok, badReq.status);
+  ok('the desktop can\'t be framed by other sites', /frame-ancestors 'self'/.test((await fetch(BASE)).headers.get('content-security-policy') ?? ''));
 
   // a WebSocket without the right origin or token is refused
   const refused = await new Promise((resolve) => {
@@ -171,6 +176,15 @@ try {
   cmd({ op: 'files', tab, files: [up.id] });
   await sleep(500);
   ok('the file reaches the page', await res1() === 'hello.txt:Uploaded text', await res1());
+
+  // an upload called '..' is just a file; files need their own connection's id
+  const dots = await fetch(`${BASE}__browse/upload?c=${hello.id}&name=..`, { method: 'POST', body: 'x', headers: { 'X-Browse-Token': info.token } });
+  ok('an upload named .. is harmless', dots.ok && (await fetch(BASE)).ok, dots.status);
+  const pdf0 = await call({ op: 'pdf', tab });
+  const noC = await fetch(`${BASE}__browse/file/${pdf0.file}`, { headers: { 'X-Browse-Token': info.token } });
+  ok('a file needs the connection it belongs to', noC.status === 404, noC.status);
+  const refusedOpen = await call({ op: 'open', url: 'file:///etc/passwd', w: 100, h: 100 });
+  ok('a tab isn\'t opened on a file: address', /doesn't open file/.test(refusedOpen.error ?? ''), refusedOpen);
 
   // printing to PDF
   const pdf = await call({ op: 'pdf', tab });

@@ -56,6 +56,14 @@ try {
   // a drag over the frame: the frame lets the pointer through
   const pe = await page.evaluate(() => { document.body.classList.add('dragging'); const v = getComputedStyle(W().win.view.querySelector('iframe')).pointerEvents; document.body.classList.remove('dragging'); return v; });
   ok('frames let drags through', pe === 'none', pe);
+  // only web addresses: a javascript: one would run as the desktop
+  await page.evaluate(() => W().go('javascript:void(parent.__pwned = 1)'));
+  await sleep(500);
+  ok('a javascript: address is refused', await page.evaluate(() => !window.__pwned && os.wimp.stack.some((w) => w._errorBox && w.isOpen)));
+  await page.keyboard.press('Enter');
+  // a page from the desktop's own server isn't same-origin with it
+  await page.evaluate((u) => W().go(u), BASE + 'tests/browse/fixtures/second.html');
+  ok('the desktop\'s own pages are never same-origin frames', await until(() => { const f = W().win.view.querySelector('iframe'); return !T().loading && (!f || !f.getAttribute('sandbox').includes('allow-same-origin')); }));
 } catch (e) {
   res.push(`FAIL exception ${e.stack ?? e}`);
 } finally {

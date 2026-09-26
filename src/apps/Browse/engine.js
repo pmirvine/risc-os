@@ -72,7 +72,7 @@ export class Engine extends Emitter {
         try { e = JSON.parse(m.data); } catch { return; }
         if (e.ev === 'hello') { this.id = e.id; return; }
         if (e.ev === 'ready') { opened = true; this.engineName = e.engine; this.hasAudio = e.audio; this.send({ op: 'audio', on: this.soundOn }); resolve(this); return; }
-        if (e.ev === 'error' && e.fatal) { reject(new Error(e.message)); return; }
+        if (e.ev === 'error' && e.fatal) { reject(new Error(e.message)); opened = true; ws.close(); this.ready = null; return; }
         if (e.ev === 'reply') {
           const r = this.replies.get(e.req);
           this.replies.delete(e.req);
@@ -87,10 +87,18 @@ export class Engine extends Emitter {
         this.ws = null;
         this.ready = null;
         if (!opened) reject(new Error('!Browse couldn\'t reach its engine'));
-        else this.emit('lost', {});
+        else if (!this.closing) this.emit('lost', {});
       };
     });
     return this.ready;
+  }
+
+  /** Finished with (the program quits). */
+  close() {
+    this.closing = true;
+    this.ws?.close();
+    this.audio?.ctx.close();
+    this.audio = null;
   }
 
   get connected() { return this.ws?.readyState === 1; }

@@ -20,6 +20,9 @@ const browserOpts = parseBrowserArgs(args);
 const browse = browserHandler(browserOpts, port);
 const types = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.css':'text/css', '.json':'application/json', '.png':'image/png', '.gif':'image/gif', '.svg':'image/svg+xml', '.woff2':'font/woff2', '.ttf':'font/ttf', '.otf':'font/otf', '.wav':'audio/wav', '.txt':'text/plain' };
 const handler = (req, res) => {
+  try { serveRequest(req, res); } catch { if (!res.headersSent) res.writeHead(400); res.end(); }   // e.g. a bad %-escape
+};
+const serveRequest = (req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname.startsWith('/__hostfs/')) return hostfs(req, res, url);
   if (url.pathname.startsWith('/__browse/')) return browse.handle(req, res, url);
@@ -37,22 +40,23 @@ const handler = (req, res) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     // X-HostFS: tells the page this server has /__hostfs/ and /__browse/ (other static servers don't; see
     // src/core/hostfs/server.js)
-    res.writeHead(200, { 'Content-Type': types[path.extname(f).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-HostFS': '1' });
+    // frame-ancestors: other sites can't show the desktop in a frame (and so click in it for you)
+    res.writeHead(200, { 'Content-Type': types[path.extname(f).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-cache', 'X-HostFS': '1', 'Content-Security-Policy': "frame-ancestors 'self'" });
     res.end(data);
   });
 };
 // loopback: 127.0.0.1 and ::1 (a browser may try either for "localhost"); --lan: every interface
-const addresses = listen === 'loopback' ? ['127.0.0.1', '::1'] : [listen ?? '::'];
+const addresses = listen === 'loopback' ? ['127.0.0.1', '::1'] : [listen];      // null: every interface
 let first = true;
 for (const addr of addresses) {
   const server = http.createServer(handler);
   server.on('upgrade', (req, socket, head) => browse.upgrade(req, socket, head));
   server.on('error', (e) => {
-    if (addr === '::1' && !first) return;          // no IPv6 here: 127.0.0.1 is enough
+    if (addr === '::1' && ['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes(e.code)) return;   // no IPv6 here: 127.0.0.1 is enough
     console.error(`serve.mjs: ${e.message}`);
     process.exit(1);
   });
-  server.listen(port, addr, () => {
+  server.listen(port, ...(addr ? [addr] : []), () => {
     if (!first) return;
     first = false;
     console.log(`RISC OS on http://localhost:${port}/`);

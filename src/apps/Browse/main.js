@@ -46,7 +46,14 @@ export default async function start(task, ctx) {
     history: hist.pages,             // [{url, title, time}], most recent first
   };
   if (app.engine) app.engine.soundOn = prefs.sound;
-  const savePrefs = () => { try { choices.write('Browse', { ...prefs, hotlist: app.hotlist }); } catch (e) { task.reportError(e.message); } };
+  // what Save kept (Set only changes prefs until quitting); the hotlist is always kept
+  let saved = { ...prefs };
+  const savePrefs = (all = false) => {
+    if (all) saved = { ...prefs };
+    try { choices.write('Browse', { ...saved, hotlist: app.hotlist }); } catch (e) { task.reportError(e.message); }
+  };
+  // open hotlist / history lists follow changes
+  const refreshLists = () => { for (const w of app.windows) for (const l of Object.values(w._lists ?? {})) l.refresh(); };
   let histTimer = null;
   const saveHistory = () => { clearTimeout(histTimer); histTimer = null; try { choices.write('BrowseHist', { pages: app.history }); } catch { /* read-only disc */ } };
 
@@ -66,6 +73,7 @@ export default async function start(task, ctx) {
     app.history.unshift(e);
     app.history.length = Math.min(app.history.length, MAX_HISTORY);
     histTimer ??= setTimeout(saveHistory, 3000);
+    refreshLists();
   };
   app.addHot = (t) => {
     if (!t?.url) return;
@@ -73,10 +81,11 @@ export default async function start(task, ctx) {
     if (i >= 0) app.hotlist.splice(i, 1);
     app.hotlist.unshift({ url: t.url, title: t.title || t.url });
     savePrefs();
+    refreshLists();
     for (const w of app.windows) { w.setButtons(); w.note_('Added to your hotlist'); }
   };
   app.readURLFile = readURLFile;
-  app.setSound = (on) => { prefs.sound = on; app.engine?.setSound(on); savePrefs(); };
+  app.setSound = (on) => { prefs.sound = on; app.engine?.setSound(on); };
 
   app.newWindow = (url, opts = {}) => {
     const w = new BrowserWindow(app, opts);
@@ -109,6 +118,7 @@ export default async function start(task, ctx) {
     E.on('state', (e) => tabOf(e)?.state(e));
     E.on('error', (e) => { const t = tabOf(e); if (t) { t.error = e.message; t.bw.tabChanged(t); } });
     E.on('opened', (e) => {
+      if (!task.alive) return;
       const opener = app.tabs.get(e.opener);
       const bw = opener?.bw ?? [...app.windows].at(-1) ?? new BrowserWindow(app);
       // Adjust on a link (a middle click to the page): a tab behind; otherwise, as a pop-up, in front
@@ -121,6 +131,7 @@ export default async function start(task, ctx) {
       E.frames.delete(e.tab);
       app.tabs.delete(e.tab);
       t.id = null;
+      if (e.crashed) { t.loading = false; t.error = 'The browser engine stopped: reload the page to try again'; t.bw.tabChanged(t); return; }
       t.bw.tabGone(t);
     });
     E.on('lost', () => {
@@ -222,7 +233,10 @@ export default async function start(task, ctx) {
       task, title: 'Save download', filename: conv.name, filetype: conv.type ?? 0xFFD,
       getData: async () => { saving = true; await done; return app.engine.fetchFile(e.id); },
     });
-    box.on('closed', () => setTimeout(() => { if (!saving) { app.engine.send({ op: 'download', id: e.id, action: 'cancel' }); downloads.delete(e.id); } }, 0));
+    box.on('closed', () => setTimeout(() => {
+      if (!saving) { app.engine.send({ op: 'download', id: e.id, action: 'cancel' }); downloads.delete(e.id); }
+      box.delete();
+    }, 0));
     const d = {
       progress(p) {
         state = p.state;
@@ -260,13 +274,16 @@ export default async function start(task, ctx) {
 
   // ---------------------------------------------------------------- hotlist and history lists ('hotlist' template)
   app.listWindow = (kind, bw) => {
+    bw._lists ??= {};
+    if (bw._lists[kind]) { bw._lists[kind].refresh(); return bw._lists[kind]; }
     const entries = () => (kind === 'history' ? app.history : app.hotlist);
-    const w = task.createWindowFromTemplate(tpl, 'hotlist', { workButton: 'doubleclick', spriteArea: spr });
+    const w = bw._lists[kind] = task.createWindowFromTemplate(tpl, 'hotlist', { workButton: 'doubleclick', spriteArea: spr });
     (bw._extra ??= new Set()).add(w);
     w.setTitle(kind === 'history' ? 'History' : kind === 'del' ? 'Remove from hotlist' : 'Hotlist');
     const LH = 22;
     const size = () => w.setExtent({ x0: 0, y0: 0, x1: 750, y1: Math.max(LH * entries().length, 390) });
     size();
+    w.refresh = () => { size(); w.invalidate(); };
     const css = fonts.cssFor('Homerton.Medium', 12);
     w.useCanvas((g, r) => {
       g.font = css;
@@ -285,7 +302,7 @@ export default async function start(task, ctx) {
       const i = Math.floor(ev.y / LH), list = entries();
       if (i < 0 || i >= list.length) return;
       if (kind === 'del') {
-        app.hotlist.splice(i, 1); savePrefs(); size(); w.invalidate();
+        app.hotlist.splice(i, 1); savePrefs(); refreshLists();
         for (const x of app.windows) x.setButtons();
         if (!app.hotlist.length) { wimp.menus.close(); w.close(); }
         return;
@@ -305,7 +322,8 @@ export default async function start(task, ctx) {
 
   // ---------------------------------------------------------------- Find ('find' template)
   app.findWindow = (bw) => {
-    const w = task.createWindowFromTemplate(tpl, 'find', { spriteArea: spr });
+    if (bw._find) return bw._find;
+    const w = bw._find = task.createWindowFromTemplate(tpl, 'find', { spriteArea: spr });
     (bw._extra ??= new Set()).add(w);
     const I = w.icons;
     I[2].bufLen = 256;
@@ -380,11 +398,11 @@ export default async function start(task, ctx) {
       if (ev.button === 'menu' || !n) return;
       if (n === 'default') fill(DEFAULTS);
       else if (n === 'cancel') { fill(prefs); if (ev.button === 'select') w.close(); }
-      else if (n === 'set' || n === 'save') { use(); if (n === 'save') savePrefs(); if (ev.button === 'select') w.close(); }
+      else if (n === 'set' || n === 'save') { use(); if (n === 'save') savePrefs(true); if (ev.button === 'select') w.close(); }
       return true;
     });
     w.on('key', (ev) => {
-      if (ev.code === 13) { use(); savePrefs(); w.close(); return true; }
+      if (ev.code === 13) { use(); savePrefs(true); w.close(); return true; }
       if (ev.code === 27) { fill(prefs); w.close(); return true; }
     });
     w.fill = () => fill(prefs);
@@ -392,7 +410,7 @@ export default async function start(task, ctx) {
   };
 
   // ---------------------------------------------------------------- icon bar
-  const quit = () => { saveHistory(); for (const w of [...app.windows]) w.destroy(); task.quit(); };
+  const quit = () => { saveHistory(); for (const w of [...app.windows]) w.destroy(); app.engine?.close(); task.quit(); };
   const engineLine = () => app.engine ? `Engine: ${app.engine.engineName ?? probe.info.engine}${app.engine.hasAudio === false ? ' (no sound)' : ''}` : 'Embedded pages (no engine)';
   task.addIconbarIcon({
     sprite: '!browse', side: 'right',
@@ -419,7 +437,7 @@ export default async function start(task, ctx) {
   });
   task.onMessage('Quit', () => { quit(); return true; });
   task.onMessage('PreQuit', () => { saveHistory(); return false; });
-  task.on('quit', () => saveHistory());
+  task.on('quit', () => { saveHistory(); app.engine?.close(); });
 
   // *Run <Browse$Dir>.!Run -url <address> (Alias$URLOpen_http), or a URI / URL file
   const runArgs = (args, file) => {

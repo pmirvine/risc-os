@@ -99,14 +99,18 @@ class Chrome extends EventEmitter {
     this.out.on('error', () => {});
     this.id = 0;
     this.waiting = new Map();
-    let buf = Buffer.alloc(0);
+    // messages end with a NUL: keep the pieces of an unfinished one and only look for the end in new data
+    // (a page's source or a PDF can be many megabytes)
+    let parts = [];
     this.proc.stdio[4].on('data', (d) => {
-      buf = buf.length ? Buffer.concat([buf, d]) : d;
-      let i;
-      while ((i = buf.indexOf(0)) >= 0) {
+      let from = 0, i;
+      while ((i = d.indexOf(0, from)) >= 0) {
+        parts.push(d.subarray(from, i));
+        const whole = parts.length === 1 ? parts[0] : Buffer.concat(parts);
+        parts = [];
+        from = i + 1;
         let msg;
-        try { msg = JSON.parse(buf.subarray(0, i).toString('utf8')); } catch { msg = null; }
-        buf = buf.subarray(i + 1);
+        try { msg = JSON.parse(whole.toString('utf8')); } catch { msg = null; }
         if (!msg) continue;
         if (msg.id != null) {
           const w = this.waiting.get(msg.id);
@@ -114,6 +118,7 @@ class Chrome extends EventEmitter {
           if (w) msg.error ? w.reject(Object.assign(new Error(msg.error.message), { cdp: msg.error })) : w.resolve(msg.result);
         } else this.emit('event', msg);
       }
+      if (from < d.length) parts.push(d.subarray(from));
     });
     this.proc.on('exit', (code) => {
       for (const w of this.waiting.values()) w.reject(new Error('The browser engine stopped'));
@@ -207,6 +212,7 @@ const HELPER = `(() => {
     return { x, y };
   };
   addEventListener('mousedown', (e) => {
+    if (!e.isTrusted) return;                  // (the page can't make menus appear by itself)
     const s = e.target?.closest?.('select');
     if (!s || s.multiple || s.size > 1 || s.disabled || e.button !== 0) return;
     e.preventDefault();
@@ -243,6 +249,7 @@ const HELPER = `(() => {
   }
   let cursor = '', link = '', pending = null;
   addEventListener('mousemove', (e) => {
+    if (!e.isTrusted) return;
     pending = e.target;
     if (pending.__riscosQueued) return;
     queueMicrotask(() => {
@@ -310,8 +317,10 @@ class Service {
     const bin = this.bin ?? (this.bin = findChrome(this.opts.chrome));
     if (!bin) throw new Error(this.status().error);
     await fsp.mkdir(this.opts.profile, { recursive: true });
-    this.tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'riscos-browse-'));
-    await fsp.mkdir(path.join(this.tmp, 'downloads'));
+    if (!this.tmp) {
+      this.tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'riscos-browse-'));
+      await fsp.mkdir(path.join(this.tmp, 'downloads'));
+    }
     const id = this.extId = extensionId();
     const args = ['--headless', '--remote-debugging-pipe', `--user-data-dir=${this.opts.profile}`, '--no-first-run',
       '--no-default-browser-check', '--disable-search-engine-choice-screen', '--password-store=basic', '--use-mock-keychain',
@@ -321,8 +330,9 @@ class Service {
     const ready = new Promise((resolve, reject) => {
       c.once('exit', () => reject(new Error(`The browser engine (${path.basename(bin)}) stopped: ${c.log.trim().split('\n').slice(-3).join(' ') || 'no reason given'}`)));
       c.send('Browser.getVersion').then(resolve, reject);
+      setTimeout(() => reject(new Error(`The browser engine (${path.basename(bin)}) didn't start`)), 30000);
     });
-    const version = await ready;
+    const version = await ready.catch((e) => { c.kill(); throw e; });
     this.chrome = c;
     this.userAgent = version.userAgent.replace('HeadlessChrome', 'Chrome');
     c.on('exit', () => this.stopped());
@@ -365,16 +375,23 @@ class Service {
     if (this.tmp) fs.rmSync(this.tmp, { recursive: true, force: true });
   }
 
-  send(tab, method, params = {}) { return this.chrome.send(method, params, tab.sessionId); }
+  send(tab, method, params = {}) { return this.chrome ? this.chrome.send(method, params, tab.sessionId) : Promise.reject(new Error('The browser engine stopped')); }
 
   // ---------------------------------------------------------------- tabs
   async openTab(client, { url = 'about:blank', w = 800, h = 600, zoom = 1, targetId = null, opener = null }) {
+    if (!ALLOWED_URL.test(url)) throw new Error(`!Browse doesn't open ${url.split(':')[0]}: addresses`);
     await this.ensure();
     const c = this.chrome;
+    w = Math.max(16, Math.min(Math.round(+w) || 800, 4096)); h = Math.max(16, Math.min(Math.round(+h) || 600, 4096));
+    zoom = Math.max(0.25, Math.min(+zoom || 1, 5));
     // each tab in a window of its own, so that every tab being shown is drawn
     if (!targetId) ({ targetId } = await c.send('Target.createTarget', { url: 'about:blank', newWindow: true, background: true }));
     const { sessionId } = await c.send('Target.attachToTarget', { targetId, flatten: true });
     const { windowId } = await c.send('Browser.getWindowForTarget', { targetId });
+    if (!this.clients.has(client)) {        // its page went while this was being made
+      c.send('Target.closeTarget', { targetId }).catch(() => {});
+      throw new Error('Closed');
+    }
     const tab = { id: this.nextTab++, targetId, sessionId, windowId, client, w, h, zoom, shown: false, casting: false,
       waitingAck: null, chooser: null, url: '', title: '', loading: false };
     this.tabs.set(tab.id, tab);
@@ -589,7 +606,8 @@ class Service {
 
   downloadEvent(method, p) {
     if (method === 'Browser.downloadWillBegin') {
-      const tab = this.frames.get(p.frameId) ?? [...this.tabs.values()].at(-1);
+      // (a frame not seen - one in another process - is taken to be the latest tab's, if only one page uses the engine)
+      const tab = this.frames.get(p.frameId) ?? (this.clients.size === 1 ? [...this.tabs.values()].at(-1) : null);
       if (!tab) { this.chrome.send('Browser.cancelDownload', { guid: p.guid }).catch(() => {}); return; }
       const d = { guid: p.guid, tab, client: tab.client, name: p.suggestedFilename || 'download', url: p.url, state: 'inProgress', received: 0, total: 0, path: path.join(this.tmp, 'downloads', p.guid) };
       this.downloads.set(p.guid, d);
@@ -609,16 +627,16 @@ class Service {
     const ws = client.ws;
     const reply = (x) => { if (o.req != null) ws.send({ ev: 'reply', req: o.req, ...x }); };
     if (o.op === 'open') {
-      const tab = await this.openTab(client, o);
+      // (only these: a page mustn't choose an existing target to attach to)
+      const tab = await this.openTab(client, { url: String(o.url ?? 'about:blank'), w: o.w, h: o.h, zoom: o.zoom });
       return reply({ tab: tab.id });
     }
     if (o.op === 'audio') { client.audio = !!o.on; return reply({}); }
     if (o.op === 'download') {
       if (o.action === 'cancel') {
-        if (this.downloads.has(o.id)) await this.chrome?.send('Browser.cancelDownload', { guid: o.id }).catch(() => {});
-        const f = this.files.get(o.id);
-        this.files.delete(o.id);
-        if (f) fsp.rm(f.path, { force: true }).catch(() => {});
+        const d = this.downloads.get(o.id), f = this.files.get(o.id);
+        if (d?.client === client) await this.chrome?.send('Browser.cancelDownload', { guid: o.id }).catch(() => {});
+        if (f?.client === client) { this.files.delete(o.id); fsp.rm(f.path, { force: true }).catch(() => {}); }
       }
       return reply({});
     }
@@ -786,27 +804,38 @@ export function browserHandler(opts, port) {
       if (rest.startsWith('file/') && req.method === 'GET') {
         const id = rest.slice(5);
         const f = service.files.get(id);
-        if (!f || (cl && f.client !== cl)) throw new HttpError(404, 'No such file');
+        if (!f || !cl || f.client !== cl) throw new HttpError(404, 'No such file');
+        service.files.delete(id);
         const st = await fsp.stat(f.path);
         res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': st.size, ...SAFE });
         const stream = fs.createReadStream(f.path);
+        stream.on('error', () => res.destroy());
         stream.pipe(res);
-        stream.on('close', () => { service.files.delete(id); fsp.rm(f.path, { force: true }).catch(() => {}); });
+        stream.on('close', () => { fsp.rm(f.path, { force: true }).catch(() => {}); });
         return;
       }
       if (rest === 'upload' && req.method === 'POST') {
         if (!cl) throw new HttpError(400, 'No connection');
-        const name = path.basename(String(url.searchParams.get('name') ?? 'file')).replace(/[\0/\\]/g, '_') || 'file';
+        let name = path.basename(String(url.searchParams.get('name') ?? 'file')).replace(/[\0/\\]/g, '_');
+        if (!name || /^\.+$/.test(name)) name = 'file';
         const dir = await fsp.mkdtemp(path.join(service.tmp, 'up-'));
         const file = path.join(dir, name);
         let n = 0;
         const out = fs.createWriteStream(file);
-        await new Promise((resolve, reject) => {
-          req.on('data', (c) => { n += c.length; if (n > MAX_UPLOAD) { req.destroy(); reject(new HttpError(413, 'File too large')); } });
-          req.pipe(out);
-          out.on('finish', resolve);
-          req.on('error', reject);
-        });
+        try {
+          await new Promise((resolve, reject) => {
+            req.on('data', (c) => { n += c.length; if (n > MAX_UPLOAD) { req.unpipe(out); req.destroy(); reject(new HttpError(413, 'File too large')); } });
+            req.pipe(out);
+            out.on('finish', resolve);
+            out.on('error', reject);
+            req.on('error', reject);
+            req.on('aborted', () => reject(new HttpError(400, 'Cancelled')));
+          });
+        } catch (e) {
+          out.destroy();
+          fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
+          throw e;
+        }
         const id = crypto.randomBytes(8).toString('hex');
         cl.uploads.set(id, file);
         return send(res, 200, { id });
@@ -819,8 +848,9 @@ export function browserHandler(opts, port) {
   };
 
   const upgrade = (req, socket, head) => {
-    const url = new URL(req.url, 'http://x');
+    socket.on('error', () => {});
     try {
+      const url = new URL(req.url, 'http://x');
       if (url.pathname !== '/__browse/ws' || !service) throw new HttpError(404, 'Not found');
       guard(req);
       if (!origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
