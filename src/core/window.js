@@ -16,7 +16,7 @@ import { fonts, textWidth } from './fonts.js';
 
 const T = 20;            // tool sprite size (px), including its 1px black border
 const TOOLS = ['back', 'close', 'title', 'toggle', 'vscroll', 'hscroll', 'size'];
-const FLAG_BITS = { back: WF.back, close: WF.close, title: WF.title, toggle: WF.toggle, vscroll: WF.vscroll, hscroll: WF.hscroll, size: WF.size, moveable: WF.moveable, pane: WF.pane, noBounds: WF.noBounds, backWindow: WF.backWindow, hotKeys: WF.hotKeys, scrollRepeat: WF.scrollRepeat, scrollDebounce: WF.scrollDebounce, forceOnScreen: WF.forceOnScreen, autoRedraw: WF.autoRedraw };
+const FLAG_BITS = { back: WF.back, close: WF.close, title: WF.title, toggle: WF.toggle, vscroll: WF.vscroll, hscroll: WF.hscroll, size: WF.size, moveable: WF.moveable, pane: WF.pane, noBounds: WF.noBounds, backWindow: WF.backWindow, hotKeys: WF.hotKeys, scrollRepeat: WF.scrollRepeat, scrollDebounce: WF.scrollDebounce, forceOnScreen: WF.forceOnScreen, autoRedraw: WF.autoRedraw, ignoreRight: WF.ignoreRight, ignoreBottom: WF.ignoreBottom };
 
 let nextHandle = 0x1000;
 
@@ -303,10 +303,12 @@ export class Window extends Emitter {
     const behind = state.behind ?? (wasOpen ? 'keep' : 'top');
     const ext = this.extent;
     const extW = ext.x1 - ext.x0, extH = ext.y1 - ext.y0;
-    w = Math.round(clamp(w, Math.min(this._minW(), extW), extW));
-    h = Math.round(clamp(h, Math.min(this._minH(), extH), extH));
-    scrollX = Math.round(clamp(scrollX, ext.x0, ext.x1 - w));
-    scrollY = Math.round(clamp(scrollY, ext.y0, ext.y1 - h));
+    // "ignore right / lower extent" (flags bits 14, 15): the window may be made bigger than its work area,
+    // whose program then extends it (e.g. !Browse, whose page fits the window)
+    w = Math.round(this.hasFlag(WF.ignoreRight) ? Math.max(w, Math.min(this._minW(), extW)) : clamp(w, Math.min(this._minW(), extW), extW));
+    h = Math.round(this.hasFlag(WF.ignoreBottom) ? Math.max(h, Math.min(this._minH(), extH)) : clamp(h, Math.min(this._minH(), extH), extH));
+    scrollX = Math.round(clamp(scrollX, ext.x0, Math.max(ext.x0, ext.x1 - w)));
+    scrollY = Math.round(clamp(scrollY, ext.y0, Math.max(ext.y0, ext.y1 - h)));
     const pos = this.wimp.constrainWindow(this, { x: Math.round(x), y: Math.round(y), w, h });
     const moved = pos.x !== this.x || pos.y !== this.y || pos.w !== this.w || pos.h !== this.h;
     const scrolled = scrollX !== this.scrollX || scrollY !== this.scrollY;
@@ -416,8 +418,9 @@ export class Window extends Emitter {
       const scr = this.wimp.screenRect(true);
       const f = this._frame;
       const ext = this.extent;
-      const w = Math.min(ext.x1 - ext.x0, scr.w - f.left - f.rightW);
-      const h = Math.min(ext.y1 - ext.y0, scr.h - f.topH - f.botH);
+      // (a window allowed beyond its extent has the whole screen)
+      const w = Math.min(this.hasFlag(WF.ignoreRight) ? Infinity : ext.x1 - ext.x0, scr.w - f.left - f.rightW);
+      const h = Math.min(this.hasFlag(WF.ignoreBottom) ? Infinity : ext.y1 - ext.y0, scr.h - f.topH - f.botH);
       let x = this.x, y = this.y;
       if (x + w + f.rightW > scr.w) x = scr.w - w - f.rightW;
       if (y + h + f.botH > scr.h) y = scr.h - h - f.botH;

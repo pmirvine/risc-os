@@ -243,3 +243,19 @@ docs/ASSETS.md §5).
   and TextAreas together, in reading order; a TextArea's Tab moves to the next field.
 * `src/core/util.js` `Emitter.on(type, fn, {first: true})` puts a handler before the others; TextArea's click, key
   and paste handlers use it, so a program's own window handlers only see what the text area doesn't use.
+
+## !Browse (the web browser) — changes in shared code
+**Status:** done. Additive.
+* `serve.mjs`: answers only this machine unless `--lan` (every interface) or `--listen=<address>` is given (it used
+  to listen on every interface); `--browser[=chrome]` / `--browser-profile <dir>` start !Browse's engine
+  (`tools/browser-server.mjs`, `/__browse/`, a WebSocket at `/__browse/ws`), which like HostFS only answers this
+  machine. `tools/browse-ext/` is the engine's sound-capture extension.
+* `src/core/window.js`: the `ignoreRight` / `ignoreBottom` window flags (bits 14, 15) let a window be sized beyond its
+  extent (the real Wimp's "ignore right/lower extent"); toggle-size then fills the screen. Windows without them are
+  unchanged.
+* `src/core/wimp.js` `_keyDown`: a window's `key` handler may set `ev.allowDefault` so the host browser's default
+  still happens (!Browse lets Ctrl-V turn into a paste event).
+* `src/core/desktop.css`: `body.dragging iframe { pointer-events: none }`.
+* `src/apps/Bookworm/main.js`: links to `http:` / `https:` pages go to `*URLOpen_<scheme>` when one is set (!Browse),
+  instead of the "only file:" error.
+* `assets/filetypes.json`: `&F91` URI, `&B28` URL. `tools/build.mjs` runs `disc-browse.mjs`.

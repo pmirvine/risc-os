@@ -18,6 +18,8 @@ const ok = (name, v, detail) => res.push(`${v ? 'PASS' : 'FAIL'} ${name}${v ? ''
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 if (!findChrome()) { console.log('SKIP no Chrome to test with'); process.exit(0); }
+// (a server already on the port would be tested instead: stop)
+try { await fetch(BASE); console.log(`FAIL something is already running on port ${PORT}`); process.exit(1); } catch { /* free */ }
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browse-test-'));
 const server = spawn(process.execPath, ['serve.mjs', String(PORT), '--browser', '--browser-profile', profile], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });
 let serverOut = '';
@@ -211,10 +213,10 @@ try {
   // zoom
   cmd({ op: 'zoom', tab, zoom: 1.5 });
   await sleep(300);
-  ok('zoom', /<html[^>]*style="zoom: 1.5;?"/.test(await text()), (await text()).slice(0, 120));
+  ok('zoom', /<html[^>]*zoom: 1.5/.test(await text()), (await text()).slice(0, 120));
   cmd({ op: 'navigate', tab, url: FIX + 'second.html' });
   await until(() => state(tab).title === 'Second fixture');
-  ok('zoom stays for the next page', /<html[^>]*style="zoom: 1.5;?"/.test(await text()), (await text()).slice(0, 120));
+  ok('zoom stays for the next page', /<html[^>]*zoom: 1.5/.test(await text()), (await text()).slice(0, 120));
 
   // forbidden schemes
   const bad = await call({ op: 'navigate', tab, url: 'file:///etc/passwd' });

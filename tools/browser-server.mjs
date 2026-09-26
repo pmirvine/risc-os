@@ -220,6 +220,27 @@ const HELPER = `(() => {
     }));
     send({ k: 'select', options, index: s.selectedIndex, x: r.left + o.x, y: r.bottom + o.y, w: r.width });
   }, true);
+  // the top page's scroll position and size, for the window's scroll bars; its own scroll bars are hidden
+  if (window === top) {
+    let last = '', queued = false;
+    const hide = () => { document.documentElement?.style.setProperty('scrollbar-width', 'none', 'important'); };
+    const report = () => {
+      queued = false;
+      hide();
+      const e = document.scrollingElement || document.documentElement;
+      if (!e) return;
+      const s = { k: 'scroll', x: Math.round(e.scrollLeft), y: Math.round(e.scrollTop), w: e.scrollWidth, h: e.scrollHeight, vw: e.clientWidth, vh: e.clientHeight };
+      const j = JSON.stringify(s);
+      if (j !== last) { last = j; send(s); }
+    };
+    const q = () => { if (!queued) { queued = true; requestAnimationFrame(report); } };
+    addEventListener('scroll', q, { passive: true, capture: true });
+    addEventListener('resize', q);
+    addEventListener('load', q);
+    document.addEventListener('DOMContentLoaded', q);
+    setInterval(report, 600);
+    q();
+  }
   let cursor = '', link = '', pending = null;
   addEventListener('mousemove', (e) => {
     pending = e.target;
@@ -393,8 +414,17 @@ class Service {
   // says how much of it is page (see frame()).
   async metrics(tab) {
     const w = Math.round(tab.w), h = Math.round(tab.h);
+    const bounds = (width, height) => this.chrome.send('Browser.setWindowBounds', { windowId: tab.windowId, bounds: { width, height } }).catch(() => {});
     await this.chrome.send('Browser.setWindowBounds', { windowId: tab.windowId, bounds: { windowState: 'normal' } }).catch(() => {});
-    await this.chrome.send('Browser.setWindowBounds', { windowId: tab.windowId, bounds: { width: Math.max(w, 500), height: Math.max(h, 240) } }).catch(() => {});
+    if (!this.border) {
+      // an unseen window still has room for a browser's tabs and toolbar: measure it once, on a plain page
+      await this.send(tab, 'Emulation.clearDeviceMetricsOverride').catch(() => {});
+      await bounds(1000, 800);
+      const r = await this.send(tab, 'Runtime.evaluate', { expression: '[innerWidth, innerHeight]', returnByValue: true }).catch(() => null);
+      const [iw, ih] = r?.result?.value ?? [1000, 800];
+      this.border = { w: Math.max(0, 1000 - iw), h: Math.max(0, 800 - ih) };
+    }
+    await bounds(Math.max(w, 500 - this.border.w) + this.border.w, Math.max(h, 240) + this.border.h);
     await this.send(tab, 'Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false }).catch(() => {});
     if (tab.casting) await this.cast(tab, true, true);
   }
@@ -539,6 +569,7 @@ class Service {
           ws.send({ ev: 'select', tab: tab.id, options: o.options.slice(0, 500), index: o.index, x: +o.x || 0, y: +o.y || 0, w: +o.w || 0 });
         } else if (o.k === 'cursor') ws.send({ ev: 'state', tab: tab.id, cursor: String(o.cursor).slice(0, 40) });
         else if (o.k === 'link') ws.send({ ev: 'state', tab: tab.id, link: String(o.url).slice(0, 2048) });
+        else if (o.k === 'scroll') ws.send({ ev: 'state', tab: tab.id, scroll: { x: +o.x || 0, y: +o.y || 0, w: +o.w || 0, h: +o.h || 0, vw: +o.vw || 0, vh: +o.vh || 0 } });
       }
     }
   }
@@ -620,13 +651,18 @@ class Service {
         await s('Input.dispatchMouseEvent', { type: 'mouseWheel', x: +o.x, y: +o.y, deltaX: +o.dx || 0, deltaY: +o.dy || 0, modifiers: o.modifiers | 0 });
         break;
       case 'key': {
-        const k = { type: o.type, modifiers: o.modifiers | 0, key: o.key, code: o.code, windowsVirtualKeyCode: o.keyCode | 0, nativeVirtualKeyCode: o.keyCode | 0 };
+        // shortcut: the desktop's "Ctrl" (Cmd on a Mac) for editing keys, given as this computer's own; a Mac's
+        // Chrome only acts on them when told the editing command too (elsewhere the key itself does it)
+        const mac = process.platform === 'darwin';
+        const modifiers = o.shortcut ? ((o.modifiers | 0) & 8) | (mac ? 4 : 2) : o.modifiers | 0;
+        const k = { type: o.type, modifiers, key: o.key, code: o.code, windowsVirtualKeyCode: o.keyCode | 0, nativeVirtualKeyCode: o.keyCode | 0, autoRepeat: !!o.repeat };
         if (o.text) { k.text = o.text; k.unmodifiedText = o.text; }
-        if (Array.isArray(o.commands)) k.commands = o.commands.filter((c) => /^[a-zA-Z]+$/.test(c));
+        if (Array.isArray(o.commands) && mac) k.commands = o.commands.filter((c) => /^[a-zA-Z]+$/.test(c));
         await s('Input.dispatchKeyEvent', k);
         break;
       }
       case 'text': await s('Input.insertText', { text: String(o.text) }); break;
+      case 'scrollTo': await s('Runtime.evaluate', { expression: `scrollTo(${+o.x || 0}, ${+o.y || 0})` }); break;
       case 'dialog': await s('Page.handleJavaScriptDialog', { accept: !!o.accept, promptText: o.text ?? '' }).catch(() => {}); break;
       case 'select':
         if (tab.selectContext != null && Number.isInteger(o.index)) await s('Runtime.evaluate', { expression: PICK_SELECT(o.index), contextId: tab.selectContext }).catch(() => {});

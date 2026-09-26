@@ -105,7 +105,9 @@ const w = task.createWindow({
   title: 'Untitled', x: 200, y: 100, w: 400, h: 300,       // visible area on screen
   extent: { w: 1000, h: 2000 },                            // or {x0,y0,x1,y1}
   flags: { back, close, title, toggle, vscroll, hscroll, size, moveable, pane, hotKeys, noBounds, backWindow,
-           scrollRepeat, scrollDebounce },                 // or a raw Wimp flags number
+           scrollRepeat, scrollDebounce, ignoreRight, ignoreBottom },   // or a raw Wimp flags number
+           // ignoreRight / ignoreBottom (bits 14, 15): the window may be sized beyond its extent (the program
+           // then extends it, e.g. !Browse); toggle-size then fills the screen
   colours: { titleFg: 7, titleBg: 2, workFg: 7, workBg: 0, titleFocus: 12 },  // or workBg: 0|1|'none'
   workButton: 'click' | 'clickdrag' | 'clickdragdouble' | 'doubleclick' | 'release' | 'writable' | 0-15,
   icons: [ …icon specs (§4)… ], spriteArea: Map|null, menu: Menu | (ev) => Menu, minW, minH,
@@ -140,7 +142,7 @@ action, return `true` to mark it handled.
 | `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window, shiftAdjust}` (`shiftAdjust`: Adjust given as Shift+left, so `shift` is part of the button) | Menu button: opens `w.menu` if set |
 | `doubleclick` | same fields | |
 | `drag` | a drag started (button types with drag): same fields + `pointerEvent`, `startSX/SY` | — (start one with `wimp.drag`) |
-| `key` | key press while the window has the input focus: `{code (Wimp key code), char, key (DOM), shift, ctrl, alt, icon}`; return `true` if used | unhandled keys go on to `hotkey` windows |
+| `key` | key press while the window has the input focus: `{code (Wimp key code), char, key (DOM), shift, ctrl, alt, icon, domEvent}`; return `true` if used; set `ev.allowDefault = true` to let the host browser act on the key too (e.g. Ctrl-V then becomes a `paste` event) | unhandled keys go on to `hotkey` windows |
 | `hotkey` | unhandled keys, for windows with `flags.hotKeys` | |
 | `open` | Open_Window_Request (user moved/resized/scrolled/toggled/back): `{x,y,w,h,scrollX,scrollY,behind}` — modify & call `w.open(ev)` yourself after `preventDefault()` (e.g. panes) | `w.open(ev)` |
 | `close` | Close_Window_Request `{button, shift}` (Adjust = Filer "open parent" convention) | `w.close()` |
@@ -362,6 +364,11 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
   them into `input.config` / `wimp.config` (`solidDrags`, `errorBeep`, `beepGain`). Other keys may be kept in `values` + `save()`.
 * Reset (`src/core/reset.js`): `*ResetDisc [-cmos]` (forget all changes to the hard disc / floppy), `*ResetCMOS`
   (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all`.
+* Web addresses: `*URLOpen_http <address>` (and `_https`) opens one in the program that handles them, as with Acorn's
+  URI handler (`Alias$URLOpen_<scheme>`; !Browse sets these at boot unless something else has). `sysvars.get('Alias$URLOpen_http')`
+  says whether there is one (!Bookworm hands its web links over this way).
+* Frames (`<iframe>`) in a window: `body.dragging iframe { pointer-events: none }` (desktop.css) keeps window and file
+  drags going over them.
 * URL parameters: `?fast=1` skip the boot screen, `?open=<path>`, `?run=<app>`, `?cmd=<*command>`, `?zoom=2`, `?buttons=adjust`.
 
 ## 11a. JavaScript programs on the disc (`*JSRun`)
