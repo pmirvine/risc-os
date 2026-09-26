@@ -271,3 +271,14 @@ docs/ASSETS.md §5).
 * Behaviour change: resizing past the bottom / right of the screen pushes the window up / left (it used to run
   off screen); windows reopened from closed, and windows asked to be bigger than the screen, are kept on it.
   Test: `tests/core/act-resizeedge.mjs`.
+
+## HostFS: !HostFS in Utilities instead of a permanent icon — changes in shared code
+**Status:** done.
+* `src/core/hostfs/ui.js`: no permanent "HostFS" icon on the left; mounted folders keep their left icons (menu adds
+  Mount at start-up and Forget). Each remembered mount has a start-up choice (`startup` in its IndexedDB record;
+  old `dismounted` records are read as `startup: !dismounted`); Dismount keeps it remembered with start-up off.
+  New `os.hostfs` calls for the application: `list`, `setStartup`, `mountRemembered`, `forget`, `serverFolders`,
+  `mountServerFolder`, `supportsPicking`, `onChange`.
+* `src/apps/HostFS` (registered in `src/apps/index.js`), `tools/disc-hostfs.mjs` (run by `tools/build.mjs`) writes
+  `$.Utilities.!HostFS`.
+* `$.Docs` gains `Contents`, `JsEdit` and `Programming` guides (`tools/docs/`); the HostFS guide describes !HostFS.

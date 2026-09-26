@@ -296,7 +296,11 @@ They behave like the hard disc: the whole tree is scanned on mounting so metadat
 are read from the host on first use, and changes go to the tree at once and to the host behind the scenes through
 the disc's `host` driver (`persist(node, {data})`, `removed(node)`, `revalidate(node)`) instead of IndexedDB.
 `vfs.revalidate(dir)` (the Filer calls it when it opens a directory) looks for changes made on the host.
-`os.hostfs`: `{hostfs, slots, pickFolder(), pickReadOnly(), mountBackend(backend, opts), dismount(name)}`;
+`os.hostfs`: `{hostfs, slots, pickFolder(), pickReadOnly(), mountBackend(backend, opts), dismount(name)}`, and for
+!HostFS (`src/apps/HostFS`, `$.Utilities.!HostFS`: the mounts don't need it running) `list()` (every mount, mounted
+or remembered: `{id, name, kind, state, readonly, startup, remembered}`), `setStartup(id, on)` (mounted when the
+desktop starts), `mountRemembered(id)`, `forget(id)`, `serverFolders()`, `mountServerFolder(name)`,
+`supportsPicking()`, `onChange(fn)` → unsubscribe. Dismounting keeps a mount remembered, not mounted at start-up;
 `os.hostfs.hostfs.mounts[i].flush()` resolves when every change has reached the host. Name and type mapping:
 `src/core/hostfs/names.js` (README, "HostFS").
 

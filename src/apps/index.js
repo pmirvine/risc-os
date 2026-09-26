@@ -27,6 +27,7 @@ export default [
   './FontPrint/app.js',
   './Help/app.js',
   './Hopper/app.js',
+  './HostFS/app.js',
   './InetSetup/app.js',
   './InetSetup/internet.js',
   './Lander/app.js',

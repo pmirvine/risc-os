@@ -37,6 +37,10 @@ HostFS and !Browse's engine only ever answer this computer.
 Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static web server works. The first visit in a
 session shows the boot sequence; later reloads go straight to the desktop.
 
+**Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
+desktop adds to RISC OS 3.71 — !Browse, HostFS, !JsEdit and programming in JavaScript — with `Contents` listing
+them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
+
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
 right = Menu, Shift + left = Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>`, `?reset=disc|cmos|all` (see below).
 
@@ -87,21 +91,24 @@ reset:
 ### HostFS: folders from this computer
 
 As with RPCEmu's or VirtualRPC's HostFS, folders on the host machine can be mounted as RISC OS discs,
-`HostFS::<name>.$`. Each mounted folder gets an icon on the icon bar (Select opens it; Menu has Rescan, Free and
-Dismount) and can be used like any other disc: open and save files in applications, copy, rename and delete in the
+`HostFS::<name>.$`. Folders are mounted with the application `$.Utilities.!HostFS`, which sits on the right of the
+icon bar while it runs (like !Access+ for ShareFS): Select mounts a folder, and its Mounts window lists the folders
+mounted and remembered, each with a choice of being mounted when the desktop starts. The mounts stay when it quits.
+Each mounted folder gets an icon on the left of the icon bar (Select opens it; Menu has Rescan, Free, Mount at
+start-up, Dismount and Forget) and can be used like any other disc: open and save files in applications, copy, rename and delete in the
 Filer, run BASIC and Obey applications from it, `*Cat HostFS::Work.$`. A guide is on the hard disc itself, in
 `$.Docs.HostFS` (source `tools/docs/HostFS`).
 
-* **Click the HostFS icon** (Chrome, Edge and other Chromium browsers) to pick a folder. Changes are written back to
+* **Click !HostFS's icon** (Chrome, Edge and other Chromium browsers) to pick a folder. Changes are written back to
   the folder. The browser remembers the folder: after a reload it comes back, or shows a "no disc" icon to click to
   give permission again.
 * **Or name folders when starting the server**, which works in every browser and also keeps RISC OS datestamps:
   ```sh
   node serve.mjs --host Work=~/riscos-files --host-ro Photos=~/Pictures
   ```
-  These mount at start-up (HostFS icon menu > Server folders, or `*HostMount Work`). The server only answers
+  These mount at start-up (!HostFS menu > Server folders, or `*HostMount Work`). The server only answers
   requests from this machine, and only for the folders named.
-* **Firefox and Safari** can't write to a picked folder: *Mount read-only...* on the HostFS icon's menu, or dropping a
+* **Firefox and Safari** can't write to a picked folder: *Mount read-only...* on !HostFS's menu, or dropping a
   folder onto the page, mounts a read-only snapshot. (In Chromium a dropped folder mounts read-only at first, as the
   browser only asks for write access after a click: choose *Allow changes* from its icon's menu.)
 
@@ -166,7 +173,7 @@ directory views (a tree of a directory's files, with New file, Rename, Delete, F
 from the Filer) and a dark theme. Three programming fonts with icons ("Nerd Fonts": JetBrains Mono, Hack, Fira Code) are in every
 font menu.
 
-**Applications** (48 descriptors in `src/apps/index.js`):
+**Applications** (49 descriptors in `src/apps/index.js`):
 
 | ROM (`Resources:$.Apps`) | Hard disc applications | Diversions (games and demos) |
 |---|---|---|
@@ -182,6 +189,7 @@ font menu.
 | | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
 | | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
 | | !Browse: web browser (see above) | |
+| | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
 | | !SlideShow | |
 | | !CDPlayer: the Audio Panel (no CD drive) | |

@@ -23,3 +23,4 @@ run(d + 'disc-jstutor.mjs');     // $.Manuals.JSTutor (the JavaScript tutorial) 
 run(d + 'disc-jstutor.mjs', '--book', 'jsapps');   // $.Manuals.JSApps (the second tutorial: desktop applications) and $.Examples.JSApps
 run(d + 'disc-jsedit.mjs');      // $.Apps.!JsEdit (the programmer's editor's application directory and modes)
 run(d + 'disc-browse.mjs');      // $.Apps.!Browse (the web browser's application directory)
+run(d + 'disc-hostfs.mjs');      // $.Utilities.!HostFS (mounting folders from this computer)
