@@ -39,6 +39,8 @@ export const config = {
     wimp.config.textured = !!v.textured;
     wimp.config.pressEffect = v.pressEffect !== false;
     wimp.config.offScreen = v.wimpFlags & (1 << 6) ? 'all' : v.wimpFlags & (1 << 5) ? 'all' : 'none';
+    wimp.config.offScreenBR = !!(v.wimpFlags & (1 << 5));      // windows may go off the bottom and right
+    wimp.config.noBounds = !!(v.wimpFlags & (1 << 6));         // ... and anywhere
     fonts.system = v.wimpFont === 'system';
     // any other outline font as the desktop font (Wimp$Font)
     const fn = /^(system|homerton)$/i.test(v.wimpFont ?? '') ? 'Homerton.Medium' : String(v.wimpFont);

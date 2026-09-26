@@ -83,7 +83,8 @@ export class Task extends Emitter {
 export class Wimp extends Emitter {
   constructor() {
     super();
-    this.config = { textured: true, offScreen: 'all', solidDrags: true };
+    // offScreenBR: WimpFlags bit 5 (windows may go off the bottom and right), noBounds: bit 6 (anywhere)
+    this.config = { textured: true, offScreen: 'all', offScreenBR: true, noBounds: true, solidDrags: true };
     this.tasks = [];
     this.windows = new Set();
     this.stack = [];          // open windows bottom -> top
@@ -155,6 +156,7 @@ export class Wimp extends Emitter {
       // except panes (their parents re-open them); constrainWindow keeps each one reachable.
       for (const win of [...this.stack]) {
         if (win.isBackWindow || win.isPane || win._paneParent || !win.isOpen) continue;
+        win._onScreenOnce = true;          // (Wimp03: ws_onscreenonce) back on the new screen
         if (win.task && !win._menuWindow && !win._isIconbar) win.requestOpen({ behind: 'keep' });
         else win.open({});
       }
@@ -230,23 +232,51 @@ export class Wimp extends Emitter {
     if (this.caret?.window === w) this.setCaret(null);
   }
 
-  /** Constrain a window's visible area position according to the off-screen rules. */
-  constrainWindow(win, p) {
+  /**
+   * Wimp_OpenWindow's screen checks (Wimp02 int_open_window). A window is never bigger than the screen; its
+   * top left is kept on screen unless WimpFlags bit 6 allows otherwise, and its bottom right unless bit 5 does
+   * (by moving the window up and left); then, if the top left went off, the window shrinks instead. force (the
+   * window was closed, or a size drag / toggle / mode change / smaller extent asked for it: ws_onscreenonce),
+   * window flag bit 13 and menus apply both whatever the flags. Window flag bit 6 ("no checks"), back windows
+   * and the icon bar aren't checked at all. When a window may be off screen, its title bar is kept reachable.
+   */
+  constrainWindow(win, p, { force = false } = {}) {
     if (win.isBackWindow || win.hasFlag(1 << 6) || win._isIconbar) return p;
     const f = win._frame ?? { left: 1, topH: 20, rightW: 20, botH: 20 };
     const W = this.width, H = this.height;
     let { x, y, w, h } = p;
-    if (this.config.offScreen === 'none' || win.hasFlag(1 << 13) || win._menuWindow) {
-      w = Math.min(w, W - f.left - f.rightW);
-      h = Math.min(h, H - f.topH - f.botH);
-      x = clamp(x, f.left, W - w - f.rightW);
-      y = clamp(y, f.topH, H - h - f.botH);
-    } else {
-      // partly off screen allowed; keep the title bar reachable
-      x = clamp(x, -w - f.rightW + 48, W - 48);
-      y = clamp(y, f.topH, H - 24);
+    w = Math.min(w, W - f.left - f.rightW);
+    h = Math.min(h, H - f.topH - f.botH);
+    const forced = force || win.hasFlag(1 << 13) || !!win._menuWindow;
+    const topLeft = forced || !this.config.noBounds, bottomRight = forced || !this.config.offScreenBR;
+    if (topLeft) { x = Math.max(x, f.left); y = Math.max(y, f.topH); }
+    if (bottomRight) {
+      x -= Math.max(0, x + w + f.rightW - W);
+      y -= Math.max(0, y + h + f.botH - H);
     }
+    if (topLeft) {
+      if (x < f.left) { w -= f.left - x; x = f.left; }
+      if (y < f.topH) { h -= f.topH - y; y = f.topH; }
+    }
+    // partly off screen: keep the title bar reachable
+    x = clamp(x, -w - f.rightW + 48, W - 48);
+    y = clamp(y, f.topH, H - 24);
     return { x, y, w, h };
+  }
+
+  /**
+   * A size drag's limits (Wimp04): with WimpFlags bits 5 and 6 clear the pointer stops at the screen's edge,
+   * so the window stops growing there; otherwise it may go on, and the window is shoved back on screen (up
+   * and left) as it grows.
+   */
+  _sizeDrag(win, w, h) {
+    if (!this.config.offScreenBR && !this.config.noBounds && !win.hasFlag(1 << 6)) {
+      const f = win._frame ?? { rightW: 20, botH: 20 };
+      w = Math.min(w, this.width - f.rightW - win.x);
+      h = Math.min(h, this.height - f.botH - win.y);
+    }
+    win._onScreenOnce = true;
+    return { w, h };
   }
 
   _stackPlace(win, behind) {
@@ -509,13 +539,13 @@ export class Wimp extends Emitter {
           // WimpFlags bit 1 clear: stretch a dashed outline from the top-left corner; resize on release
           this.drag({ type: 'rubber', box: this._outline(win), event: e }).then((d) => {
             win._pressed = null;
-            win.requestOpen({ w: sw + d.sx - ox, h: sh + d.sy - oy, behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY });
+            win.requestOpen({ ...this._sizeDrag(win, sw + d.sx - ox, sh + d.sy - oy), behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY });
             win._layout();
           });
           break;
         }
         startPointerDrag(e, {
-          onMove: (q) => win.requestOpen({ w: sw + q.x - ox, h: sh + q.y - oy, behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY }),
+          onMove: (q) => win.requestOpen({ ...this._sizeDrag(win, sw + q.x - ox, sh + q.y - oy), behind: 'keep', scrollX: win.scrollX, scrollY: win.scrollY }),
           onEnd: () => { win._pressed = null; win._layout(); },
         });
         break;
@@ -1021,12 +1051,12 @@ export class Wimp extends Emitter {
     const sx = win.x, sy = win.y, sw = win.w, sh = win.h, ox = ev.sx, oy = ev.sy;
     if (!this._instant(resize ? 'resize' : 'move')) {
       this.drag({ type: resize ? 'rubber' : 'fixed', box: this._outline(win), event: ev.pointerEvent ?? {} }).then((d) => {
-        win.requestOpen(resize ? { w: sw + d.sx - ox, h: sh + d.sy - oy, behind: 'keep' } : { x: sx + d.sx - ox, y: sy + d.sy - oy, behind: 'keep' });
+        win.requestOpen(resize ? { ...this._sizeDrag(win, sw + d.sx - ox, sh + d.sy - oy), behind: 'keep' } : { x: sx + d.sx - ox, y: sy + d.sy - oy, behind: 'keep' });
       });
       return;
     }
     startPointerDrag(ev.pointerEvent ?? {}, {
-      onMove: (q) => win.requestOpen(resize ? { w: sw + q.x - ox, h: sh + q.y - oy, behind: 'keep' } : { x: sx + q.x - ox, y: sy + q.y - oy, behind: 'keep' }),
+      onMove: (q) => win.requestOpen(resize ? { ...this._sizeDrag(win, sw + q.x - ox, sh + q.y - oy), behind: 'keep' } : { x: sx + q.x - ox, y: sy + q.y - oy, behind: 'keep' }),
     });
   }
 
