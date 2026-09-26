@@ -363,7 +363,7 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
   `dragDelay`, `dragMove`, `beepLoud`, `speaker`, `volume` (0-7), `mode` ({width,height}, applied at boot); `apply()` pushes
   them into `input.config` / `wimp.config` (`solidDrags`, `errorBeep`, `beepGain`). Other keys may be kept in `values` + `save()`.
 * Reset (`src/core/reset.js`): `*ResetDisc [-cmos]` (forget all changes to the hard disc / floppy), `*ResetCMOS`
-  (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all`.
+  (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all` (asks first: `confirmReset`).
 * Web addresses: `*URLOpen_http <address>` (and `_https`) opens one in the program that handles them, as with Acorn's
   URI handler (`Alias$URLOpen_<scheme>`; !Browse sets these at boot unless something else has). `sysvars.get('Alias$URLOpen_http')`
   says whether there is one (!Bookworm hands its web links over this way).

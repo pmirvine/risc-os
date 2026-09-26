@@ -82,7 +82,7 @@ reset:
 * `*ResetCMOS` resets the configuration only (!Configure settings, zoom, mouse buttons, Pinboard, alarms, printers).
 * Hold **Delete** while the page loads ("Delete-power-on") to reset both. Hold **R** ("R-power-on") to reset the
   configuration only.
-* Or load `?reset=all`, `?reset=disc` or `?reset=cmos`.
+* Or load `?reset=all`, `?reset=disc` or `?reset=cmos` (it asks first, as any web site could link to that address).
 
 ### HostFS: folders from this computer
 

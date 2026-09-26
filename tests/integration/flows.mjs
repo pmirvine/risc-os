@@ -437,6 +437,22 @@ if (on('reset')) {
   await page.addInitScript(() => { if (!sessionStorage.getItem('qaDel')) { sessionStorage.setItem('qaDel', '1'); document.addEventListener('DOMContentLoaded', () => dispatchEvent(new KeyboardEvent('keydown', { code: 'Delete', key: 'Delete' }))); } });
   await reboot(() => page.reload());
   check('Delete held at start-up resets disc and CMOS', JSON.stringify(await state()) === '{"file":false,"cmos":false}', await state());
+  // ?reset= in the address asks first: Cancel keeps everything, Reset resets
+  await write(); await sleep(page, 300);
+  const box = () => page.waitForFunction(() => os.wimp.stack.some((w) => w.isOpen && w.title === 'Reset'), null, { timeout: 20000 }).then(() => true, () => false);
+  await page.goto(page.url().replace(/\?.*$/, '') + '?fast=1&reset=all');
+  check('?reset= asks before resetting', await box());
+  await page.evaluate(() => { const w = os.wimp.stack.find((x) => x.isOpen && x.title === 'Reset'); w.emit('key', { code: 27 }); });
+  await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  check('Cancel keeps the disc and CMOS, and takes ?reset= off the address', JSON.stringify(await state()) === '{"file":true,"cmos":true}' && !page.url().includes('reset='), [await state(), page.url()]);
+  const nav = page.waitForNavigation({ timeout: 10000 }).catch(() => null);
+  await page.goto(page.url().replace(/\?.*$/, '') + '?fast=1&reset=cmos');
+  await box();
+  await page.evaluate(() => { const w = os.wimp.stack.find((x) => x.isOpen && x.title === 'Reset'); w.emit('key', { code: 13 }); });
+  await nav;
+  await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 }); await sleep(page, 800);
+  await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  check('Reset resets', JSON.stringify(await state()) === '{"file":true,"cmos":false}', await state());
   check('reset: no page errors', !s.errors.length, s.errors);
   await s.browser.close();
 }

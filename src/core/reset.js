@@ -7,7 +7,8 @@
 //                        pinboard, alarms, printers) and restart; files are kept.
 //   Delete held down while the desktop starts ("Delete-power-on"): both of the above.
 //   R held down while the desktop starts ("R-power-on"): the configuration only.
-//   URL ?reset=disc | ?reset=cmos | ?reset=all does the same without the keyboard.
+//   URL ?reset=disc | ?reset=cmos | ?reset=all does the same without the keyboard, after asking (any web site
+//   could link to that address, so it mustn't wipe the disc by itself).
 
 import { vfs } from './vfs.js';
 
@@ -36,21 +37,39 @@ export async function resetAndRestart(what) {
 
 /**
  * Watch for Delete / R being held while the desktop starts. Call as early as possible; the returned
- * function (call it once the desktop is up) resolves to the pending reset kind, or null.
+ * function (call it once the desktop is up) gives the pending reset, {kind, fromURL}, or null. fromURL: only
+ * the address asked for it (no key held), so ask first (confirmReset).
  */
 export function watchPowerOnKeys() {
-  let kind = null;
+  let kind = null, fromURL = false;
   let done = false;
   try { done = !!sessionStorage.getItem(FLAG); sessionStorage.removeItem(FLAG); } catch { /* */ }
   const q = new URLSearchParams(location.search).get('reset');
-  if (!done && /^(disc|cmos|all)$/.test(q ?? '')) kind = q;
+  if (!done && /^(disc|cmos|all)$/.test(q ?? '')) { kind = q; fromURL = true; }
   const onKey = (e) => {
     if (done) return;
-    if (e.code === 'Delete') kind = 'all';
-    else if (e.code === 'KeyR' && kind !== 'all') kind = 'cmos';
+    if (e.code === 'Delete') { kind = 'all'; fromURL = false; }
+    else if (e.code === 'KeyR' && kind !== 'all') { kind = 'cmos'; fromURL = false; }
   };
   addEventListener('keydown', onKey, true);
-  return () => { removeEventListener('keydown', onKey, true); return done ? null : kind; };
+  return () => { removeEventListener('keydown', onKey, true); return done || !kind ? null : { kind, fromURL }; };
+}
+
+const WHAT = {
+  disc: 'forget every change made to the hard disc and floppy disc since the computer was new',
+  cmos: 'put the configuration (!Configure settings, the Pinboard, alarms, printers) back to how it was supplied',
+  all: 'forget every change made to the hard disc and floppy disc, and put the configuration back to how it was supplied',
+};
+
+/**
+ * A reset asked for by the page's address: ask first, with a query box. True to go ahead; otherwise the ?reset=
+ * is taken off the address, so a reload doesn't ask again.
+ */
+export async function confirmReset(kind, query) {
+  const r = await query({ title: 'Reset', message: `This page's address asks to reset the computer: to ${WHAT[kind]}. Reset it?`, buttons: ['Reset', 'Cancel'] });
+  if (r === 'Reset') return true;
+  try { const u = new URL(location.href); u.searchParams.delete('reset'); history.replaceState(history.state, '', u.href); } catch { /* */ }
+  return false;
 }
 
 export function registerResetCommands(def) {
