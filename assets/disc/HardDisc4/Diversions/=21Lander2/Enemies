@@ -1,0 +1,705 @@
+// Lander II - Enemies: the aliens, their missiles and bombs, and pickups.
+//
+// Braben described Zarch's objects as "a position, a velocity and a
+// driving routine": each alien here is a plain object with a type and a
+// state, and each type has a routine that steers it one tick at a time.
+// The cast (from the Virus manual, Zarch's port to the Atari ST/Amiga):
+//
+//   seeder    blue saucer: wanders over the land dropping virus spores,
+//             then lands (legs out) and sprays everything round it,
+//             then takes off again. 100 points in the air, 50 landed.
+//   drone     patrols, shoots at you when you come near; if it finds a
+//             tree mutated by the virus it shoots it and turns into...
+//   mutant    hunts you down, circling and firing accurately. 500.
+//   bomber    flies straight and level, high and fast, dropping
+//             parachute bombs that burst into virus above the land. 800.
+//   pest      small, always homes in on you, trailing smoke. 400.
+//   fighter   like a mutant but fires bursts; two hits to kill (200 for
+//             the first, 700 for the second).
+//   attractor rare: hovers high, strikes the land with virus lightning
+//             and pulls you in with a tractor beam that drains fuel. 1000.
+//   monster   the sea monster: swims about, harmless.
+//   rock      Lander+ only: the original's rocks falling from the sky.
+//
+// Every alien stays clear of the hills (it looks at the ground under it
+// and a little ahead), and all distances are measured the short way round
+// the wrapping world with terrain.delta(). Aliens aim at where you will
+// be (lead), with a per-type error so they don't always hit.
+//
+// Speeds are in tiles per 50 Hz tick.
+
+import { orientation, wrapDelta, clamp, len3, TAU } from './Maths';
+import { PF } from './Particles';
+import { isTree } from './Virus';
+
+/** Per-type constants: hit points, radius (tiles), score, top speed. */
+export const ENEMY = {
+  seeder: { hp: 1, radius: 0.8, score: 100, speed: 0.05, cruise: 2.5, colour: 0x48F },
+  drone: { hp: 1, radius: 0.7, score: 300, speed: 0.1, cruise: 3, colour: 0xA52 },
+  mutant: { hp: 1, radius: 0.7, score: 500, speed: 0.15, cruise: 2, colour: 0xB2B },
+  bomber: { hp: 2, radius: 1.2, score: 800, speed: 0.16, cruise: 7, colour: 0x4CF },
+  pest: { hp: 1, radius: 0.5, score: 400, speed: 0.175, cruise: 1.5, colour: 0xF4F },
+  fighter: { hp: 2, radius: 0.7, score: 700, speed: 0.175, cruise: 2, colour: 0xF80 },
+  attractor: { hp: 6, radius: 1.5, score: 1000, speed: 0.06, cruise: 6, colour: 0xF44 },
+  monster: { hp: Infinity, radius: 1, score: 0, speed: 0.025, cruise: 0, colour: 0x284 },
+  rock: { hp: Infinity, radius: 1, score: 0, speed: 0, cruise: 0, colour: 0x444 },
+};
+
+/** Types that count towards clearing a wave. */
+export const isHostile = (e) => e.type !== 'monster' && e.type !== 'rock';
+
+const ENEMY_BULLET = PF.ENEMY | PF.SPLASH | PF.BOUNCE | PF.EXPLODE | PF.BIG | PF.KEEP;
+const SPORE = PF.VIRUS | PF.GRAVITY | PF.KEEP;
+const BULLET_SPEED = 0.25;              // enemy bullets, tiles/tick
+const BULLET_LIFE = 80;                 // ticks (16 tiles)
+
+// ---------------------------------------------------------------- spawning
+/** Make a new alien of `type` (at x, z, or somewhere away from the player). */
+export function spawnEnemy(world, type, x, z) {
+  const t = world.terrain, rng = world.rng, p = world.player, def = ENEMY[type];
+  if (x === undefined) {
+    // somewhere at least 20 tiles away (seeders: over land; monster: in the sea)
+    for (let k = 0; k < 40; k++) {
+      x = rng.float() * t.period; z = rng.float() * t.period;
+      const dist = Math.hypot(t.delta(p.x, x), t.delta(p.z, z));
+      const far = dist >= Math.min(20, t.period / 3);
+      const ti = t.index(x, z), land = world.virus.land[ti];
+      if (type === 'monster' ? land === 0 : far && (type !== 'seeder' || land === 1)) {
+        break;
+      }
+    }
+  }
+  const ground = t.altitude(x, z);
+  const e = {
+    id: ++world.nextId, type, x, y: Math.max(-30, ground - def.cruise - 6), z,
+    vx: 0, vy: 0, vz: 0, nose: null, roof: null, side: null,
+    hp: def.hp, state: 'fly', flash: 0, landed: false, hurt: false, hidden: false,
+    beam: false, dead: false, dir: rng.float() * TAU, pitch: 0,
+    timer: 200 + rng.int(300), fireTimer: 60 + rng.int(120),
+    missileTimer: 300 + rng.int(300),
+    burst: 0, tx: x, tz: z, target: -1, age: 0,
+  };
+  if (type === 'seeder') e.state = 'wander';
+  if (type === 'drone') e.state = 'patrol';
+  if (type === 'bomber') { e.y = Math.min(-6, ground - def.cruise); e.timer = 600; }
+  if (type === 'monster') { e.y = t.seaLevel + 0.8; e.state = 'swim'; e.hidden = true; }
+  orient(e, 0);
+  world.enemies.push(e);
+  return e;
+}
+
+// ---------------------------------------------------------------- moving
+/** Short-way-round offset from e to (x, y, z). */
+function rel(world, e, x, y, z) {
+  const t = world.terrain;
+  return [t.delta(e.x, x), y - e.y, t.delta(e.z, z)];
+}
+
+/**
+ * Steer e towards (tx, ty, tz) at up to `speed`, changing velocity by at
+ * most `accel` a tick, then keep it `clear` tiles above the ground under
+ * it and ahead of it, and move it.
+ */
+function fly(world, e, tx, ty, tz, speed, accel, clear = 1.2) {
+  const [dx, dy, dz] = rel(world, e, tx, ty, tz);
+  const d = len3(dx, dy, dz);
+  const s = Math.min(speed, d * 0.06);
+  let wx = 0, wy = 0, wz = 0;
+  if (d > 1e-6) { wx = dx / d * s; wy = dy / d * s; wz = dz / d * s; }
+  let ax = wx - e.vx, ay = wy - e.vy, az = wz - e.vz;
+  const a = len3(ax, ay, az);
+  if (a > accel) { ax *= accel / a; ay *= accel / a; az *= accel / a; }
+  e.vx += ax; e.vy += ay; e.vz += az;
+  avoidGround(world, e, clear);
+  move(world, e);
+}
+
+/** Keep e above the land: climb for a hill ahead, never go into one. */
+function avoidGround(world, e, clear) {
+  const t = world.terrain;
+  const here = t.altitude(e.x, e.z);
+  const ahead = t.altitude(e.x + e.vx * 16, e.z + e.vz * 16);
+  const floor = Math.min(here, ahead) - clear;
+  if (e.y + e.vy * 8 > floor) e.vy = Math.min(e.vy, -0.01 - (e.y - floor) * 0.05);
+  if (e.y < -40) e.vy = Math.max(e.vy, 0.01);
+}
+
+function move(world, e) {
+  const t = world.terrain, p = t.period;
+  e.x = ((e.x + e.vx) % p + p) % p;
+  e.z = ((e.z + e.vz) % p + p) % p;
+  e.y += e.vy;
+  const ground = t.altitude(e.x, e.z) - 0.4;
+  if (e.y > ground && e.type !== 'monster') { e.y = ground; if (e.vy > 0) e.vy = 0; }
+}
+
+/** Point e along its velocity, the nose dipping a little with speed. */
+function orient(e, spin) {
+  const h = Math.hypot(e.vx, e.vz);
+  if (spin) e.dir = wrapDelta(e.dir + spin, TAU);
+  else if (h > 0.002) e.dir += wrapDelta(Math.atan2(-e.vz, e.vx) - e.dir, TAU) * 0.15;
+  e.pitch = spin ? 0 : clamp(h * 2.5, 0, 0.45);
+  const o = orientation(e.pitch, e.dir);
+  e.nose = o.nose; e.roof = o.roof; e.side = o.side;
+}
+
+/** A random waypoint within r tiles of (x, z). */
+function waypoint(world, e, r) {
+  const t = world.terrain;
+  e.tx = t.wrap(e.x + world.rng.signed() * r);
+  e.tz = t.wrap(e.z + world.rng.signed() * r);
+}
+
+const nearTarget = (world, e, r) =>
+  Math.hypot(world.terrain.delta(e.x, e.tx), world.terrain.delta(e.z, e.tz)) < r;
+
+/**
+ * Can the player be attacked? Not when dead, nor sitting on the launch
+ * pad: the pad is a refuge (in Zarch you cannot die on it), so aliens
+ * wander off and wait for the player to take off again.
+ */
+const hunted = (world) => world.player.alive && !world.player.landed;
+
+/** Distance from e to the player. */
+function playerDistance(world, e) {
+  const p = world.player, t = world.terrain;
+  return len3(t.delta(e.x, p.x), p.y - e.y, t.delta(e.z, p.z));
+}
+
+// ---------------------------------------------------------------- shooting
+/**
+ * Fire a bullet from e at the point (x, y, z) moving at (ux, uy, uz):
+ * aim where it will be when the bullet gets there (two rounds of "how
+ * long will the bullet take?"), then add an error of up to errDeg.
+ */
+export function shoot(world, e, x, y, z, ux, uy, uz, errDeg) {
+  const [rx, ry, rz] = rel(world, e, x, y, z);
+  const vx = ux - e.vx, vy = uy - e.vy, vz = uz - e.vz;
+  let tt = len3(rx, ry, rz) / BULLET_SPEED, ax = rx, ay = ry, az = rz;
+  for (let k = 0; k < 2; k++) {
+    ax = rx + vx * tt; ay = ry + vy * tt; az = rz + vz * tt;
+    tt = len3(ax, ay, az) / BULLET_SPEED;
+  }
+  let l = len3(ax, ay, az) || 1;
+  const err = (errDeg * Math.PI / 180) * world.diff.aim, rng = world.rng;
+  ax = ax / l + rng.signed() * err;
+  ay = ay / l + rng.signed() * err;
+  az = az / l + rng.signed() * err;
+  l = len3(ax, ay, az) || 1;
+  ax /= l; ay /= l; az /= l;
+  const r = ENEMY[e.type].radius + 0.2;
+  world.particles.add(e.x + ax * r, e.y + ay * r, e.z + az * r,
+    e.vx + ax * BULLET_SPEED, e.vy + ay * BULLET_SPEED, e.vz + az * BULLET_SPEED,
+    BULLET_LIFE, ENEMY_BULLET, 0xF44);
+  world.emit('enemyFire', e.x, e.y, e.z, { enemy: e.type });
+}
+
+function shootPlayer(world, e, errDeg) {
+  const p = world.player;
+  if (!hunted(world) || playerDistance(world, e) > 15) return false;
+  shoot(world, e, p.x, p.y, p.z, p.vx, p.vy, p.vz, errDeg);
+  return true;
+}
+
+/** Fire timers count down faster at higher difficulties and waves. */
+function readyToFire(world, e, interval) {
+  if (--e.fireTimer > 0) return false;
+  e.fireTimer = Math.max(4, Math.round(interval / world.info.fireScale));
+  return true;
+}
+
+/** A virus spore dropped (or sprayed) from (x, y, z). */
+function spore(world, x, y, z, vx, vy, vz, mutate) {
+  world.particles.add(x, y, z, vx, vy, vz, 200, SPORE | (mutate ? PF.MUTATE : 0), 0xF24);
+}
+
+// ---------------------------------------------------------------- the driving routines
+const DRIVE = {
+  seeder(world, e) {
+    const t = world.terrain, rng = world.rng, def = ENEMY.seeder;
+    const sp = def.speed * world.diff.speed;
+    e.landed = e.state === 'landed' || e.state === 'launch';
+    switch (e.state) {
+      case 'wander': {
+        if (nearTarget(world, e, 1.5) || e.age % 400 === 0) waypoint(world, e, 12);
+        fly(world, e, e.tx, t.altitude(e.x, e.z) - def.cruise, e.tz, sp, 0.004, 1.5);
+        // a spore every 16 ticks while over the land (more at higher difficulty)
+        if (e.age % Math.round(16 / world.diff.infect) === 0 &&
+          world.virus.land[t.index(e.x, e.z)] === 1) {
+          spore(world, e.x, e.y + 0.4, e.z, e.vx, 0.01, e.vz, true);
+          world.emit('seederSpray', e.x, e.y, e.z);
+        }
+        if (--e.timer <= 0) {
+          // pick a landing site on land within 10 tiles, away from the pad
+          for (let k = 0; k < 12; k++) {
+            const x = t.wrap(e.x + rng.signed() * 10);
+            const z = t.wrap(e.z + rng.signed() * 10);
+            const padDist = Math.hypot(t.delta(4, x), t.delta(4, z));
+            if (world.virus.land[t.index(x, z)] === 1 && padDist > 9 &&
+              world.virus.land[t.index(x + 1, z + 1)] === 1) {
+              e.tx = Math.floor(x) + 0.5; e.tz = Math.floor(z) + 0.5; e.state = 'descend';
+              break;
+            }
+          }
+          e.timer = 300 + rng.int(300);
+        }
+        break;
+      }
+      case 'descend': {
+        const ground = t.altitude(e.tx, e.tz);
+        if (nearTarget(world, e, 0.4)) {
+          e.vx *= 0.8; e.vz *= 0.8; e.vy = 0.02;
+          move(world, e);
+          // (the ground right under it: move() never lets it below that,
+          // and on a slope the target point's ground may be lower)
+          if (e.y >= t.altitude(e.x, e.z) - 0.45) {
+            e.state = 'landed'; e.timer = 300; e.vy = 0;
+          }
+        } else fly(world, e, e.tx, ground - def.cruise, e.tz, sp, 0.004, 1.5);
+        break;
+      }
+      case 'landed': {
+        e.vx = e.vy = e.vz = 0;
+        // spray the vicinity: spores thrown out to about 3 tiles
+        if (e.age % Math.round(8 / world.diff.infect) === 0) {
+          const a = rng.float() * TAU, s = 0.02 + rng.float() * 0.03;
+          spore(world, e.x, e.y - 0.4, e.z,
+            Math.cos(a) * s, -0.06, Math.sin(a) * s, true);
+          world.emit('seederSpray', e.x, e.y, e.z);
+        }
+        if (--e.timer <= 0) e.state = 'launch';
+        break;
+      }
+      case 'launch': {
+        e.vy = -0.03;
+        move(world, e);
+        if (e.y < t.altitude(e.x, e.z) - def.cruise) {
+          e.state = 'wander'; e.timer = 400 + rng.int(400); waypoint(world, e, 12);
+        }
+        break;
+      }
+    }
+    orient(e, 0.05);
+  },
+
+  drone(world, e) {
+    const t = world.terrain, p = world.player, def = ENEMY.drone;
+    const sp = def.speed * world.diff.speed;
+    const pd = playerDistance(world, e);
+    // look for a mutated tree to shoot every half second
+    if (e.state === 'patrol' && e.age % 25 === 0) {
+      const k = findMutatedTree(world, e.x, e.z, 10);
+      if (k >= 0) { e.state = 'hunt'; e.target = k; e.timer = 0; }
+      else if (hunted(world) && pd < 11) { e.state = 'attack'; e.timer = 250; }
+    }
+    if (e.state === 'hunt') {
+      const P = t.period, tx = (e.target % P) + 0.5, tz = Math.floor(e.target / P) + 0.5;
+      if (!world.virus.mutated[e.target] || !isTree(world.objects[e.target])) {
+        e.state = 'patrol'; e.target = -1;
+      } else {
+        const ground = t.altitude(tx, tz);
+        fly(world, e, tx + 2, ground - 2, tz, sp, 0.004, 1.2);
+        if (Math.hypot(t.delta(e.x, tx), t.delta(e.z, tz)) < 3) {
+          // hover and shoot the tree for two seconds, then mutate
+          if (e.timer % 12 === 0) shoot(world, e, tx, ground - 0.3, tz, 0, 0, 0, 2);
+          if (++e.timer >= 100) {
+            world.objectDestroyed(e.target, tx, ground, tz, false);
+            e.type = 'mutant'; e.state = 'hunt'; e.hp = ENEMY.mutant.hp; e.fireTimer = 40;
+            world.emit('enemyMutated', e.x, e.y, e.z, { id: e.id });
+            world.message = { text: 'A DRONE HAS MUTATED', ticks: 100 };
+          }
+        }
+      }
+    } else if (e.state === 'attack') {
+      // attack runs: a point 5 tiles from the player, a little below it
+      // (the player's guns can only point below the horizon: an alien
+      // that stayed above would be unfair) and never more than 9 tiles
+      // above the land, so it doesn't chase the player into space
+      const hx = t.delta(p.x, e.x), hz = t.delta(p.z, e.z), hl = Math.hypot(hx, hz) || 1;
+      const ty = Math.max(p.y + 1, t.altitude(e.x, e.z) - 9);
+      fly(world, e, p.x + hx / hl * 5, ty, p.z + hz / hl * 5, sp, 0.004);
+      if (readyToFire(world, e, 60 / world.diff.fire)) shootPlayer(world, e, 10);
+      if (--e.timer <= 0 || !hunted(world)) {
+        e.state = 'patrol';
+        waypoint(world, e, 16);
+      }
+    } else {
+      if (nearTarget(world, e, 1.5) || e.age % 500 === 0) waypoint(world, e, 16);
+      fly(world, e, e.tx, t.altitude(e.x, e.z) - def.cruise, e.tz, sp, 0.003);
+    }
+    orient(e, 0);
+  },
+
+  mutant(world, e) { hunter(world, e, 4.5, 40, 6); },
+
+  fighter(world, e) { hunter(world, e, 6, 0, 8); },
+
+  pest(world, e) {
+    const p = world.player, t = world.terrain;
+    const sp = ENEMY.pest.speed * world.diff.speed;
+    if (hunted(world)) {
+      // home in on the player with a sideways wobble
+      const w = Math.sin(e.age * 0.08) * 2;
+      fly(world, e, p.x + w * p.side[0], p.y, p.z + w * p.side[2], sp, 0.006, 0.8);
+      if (readyToFire(world, e, 40 / world.diff.fire)) shootPlayer(world, e, 7);
+    } else {
+      if (nearTarget(world, e, 1.5) || e.age % 300 === 0) waypoint(world, e, 12);
+      fly(world, e, e.tx, t.altitude(e.x, e.z) - 2, e.tz, sp * 0.5, 0.004);
+    }
+    if (e.age % 4 === 0) world.particles.puff(e.x, e.y, e.z, 5);
+    orient(e, 0.25);
+  },
+
+  bomber(world, e) {
+    const t = world.terrain, sp = ENEMY.bomber.speed * world.diff.speed;
+    // straight and level, high above the land; a new course now and then
+    if (--e.timer <= 0) {
+      e.dir += world.rng.signed() * 0.6;
+      e.timer = 500 + world.rng.int(400);
+    }
+    const ahead = Math.min(t.altitude(e.x, e.z),
+      t.altitude(e.x + Math.cos(e.dir) * 6, e.z - Math.sin(e.dir) * 6));
+    const ty = Math.min(-6, ahead - ENEMY.bomber.cruise);
+    e.vx = Math.cos(e.dir) * sp; e.vz = -Math.sin(e.dir) * sp;
+    e.vy = clamp((ty - e.y) * 0.05, -0.05, 0.05);
+    move(world, e);
+    // a parachute bomb every 60 ticks over land
+    const overLand = world.virus.land[t.index(e.x, e.z)] === 1;
+    if (e.age % 60 === 30 && overLand && world.player.alive) {
+      addProjectile(world, 'bomb', e.x, e.y + 1, e.z, e.vx * 0.3, 0, e.vz * 0.3);
+    }
+    const o = orientation(0, e.dir);
+    e.nose = o.nose; e.roof = o.roof; e.side = o.side;
+  },
+
+  attractor(world, e) {
+    const t = world.terrain, p = world.player, rng = world.rng;
+    const sp = ENEMY.attractor.speed * world.diff.speed;
+    const pd = playerDistance(world, e);
+    if (hunted(world) && pd < 30) { e.tx = p.x; e.tz = p.z; }
+    else if (nearTarget(world, e, 2) || e.age % 600 === 0) waypoint(world, e, 16);
+    const ty = t.altitude(e.x, e.z) - ENEMY.attractor.cruise;
+    fly(world, e, e.tx, ty, e.tz, sp, 0.002, 4);
+    // the tractor beam pulls the player in and drains the fuel
+    e.beam = p.alive && pd < 8 && !p.landed;
+    if (e.beam) {
+      const [dx, dy, dz] = rel(world, e, p.x, p.y, p.z), l = len3(dx, dy, dz) || 1;
+      p.vx -= dx / l * 0.0075; p.vy -= dy / l * 0.0075; p.vz -= dz / l * 0.0075;
+      p.fuel = Math.max(0, p.fuel - 2);
+    }
+    // virus lightning at the land
+    if (e.age % 150 === 75) {
+      const a = rng.float() * TAU, len = 3 + rng.int(3);
+      for (let k = 0; k <= len; k++) {
+        const x = e.x + Math.cos(a) * k, z = e.z + Math.sin(a) * k;
+        world.virus.add(Math.floor(x), Math.floor(z), 160 * world.diff.infect);
+        for (let s = 0; s < 3; s++) world.particles.spark(x, t.altitude(x, z) - 0.2, z);
+      }
+      const gx = e.x + Math.cos(a) * len, gz = e.z + Math.sin(a) * len;
+      world.emit('enemyFire', gx, t.altitude(gx, gz), gz,
+        { enemy: 'attractor', bolt: true });
+    }
+    orient(e, 0.03);
+  },
+
+  monster(world, e) {
+    const t = world.terrain, rng = world.rng, sp = ENEMY.monster.speed;
+    // swim on through the sea, turning away from the shore
+    const cx = Math.cos(e.dir), cz = -Math.sin(e.dir);
+    if (!t.isSea(e.x + cx * 2, e.z + cz * 2)) {
+      e.dir += (rng.chance(0.5) ? 1 : -1) * (0.5 + rng.float());
+    }
+    e.vx = Math.cos(e.dir) * sp; e.vz = -Math.sin(e.dir) * sp; e.vy = 0;
+    move(world, e);
+    // surface for three seconds every so often, with a splash
+    if (--e.timer <= 0) {
+      e.hidden = !e.hidden;
+      e.state = e.hidden ? 'swim' : 'surface';
+      e.timer = e.hidden ? 400 + rng.int(600) : 150;
+      world.particles.splash(e.x, t.seaLevel - 0.1, e.z, 20);
+    }
+    e.y = t.seaLevel + (e.hidden ? 0.8 : -0.25);
+    const o = orientation(0, e.dir);
+    e.nose = o.nose; e.roof = o.roof; e.side = o.side;
+  },
+
+  rock(world, e) { updateRock(world, e); },
+};
+
+/**
+ * Mutants and fighters: circle the player at `radius` tiles, a little
+ * below it, and fire. Mutants shoot every `interval` ticks; fighters fire
+ * bursts of six as fast as the player (every 4 ticks), and after the
+ * first hit they fire half as often.
+ */
+function hunter(world, e, radius, interval, errDeg) {
+  const t = world.terrain, p = world.player, def = ENEMY[e.type];
+  const sp = def.speed * world.diff.speed;
+  if (!hunted(world)) {
+    if (nearTarget(world, e, 1.5) || e.age % 400 === 0) waypoint(world, e, 16);
+    fly(world, e, e.tx, t.altitude(e.x, e.z) - def.cruise, e.tz, sp * 0.6, 0.004);
+    orient(e, 0);
+    return;
+  }
+  const a = e.age * 0.01 + e.id;
+  const ty = Math.max(p.y + 0.8, t.altitude(e.x, e.z) - 10);   // a little below
+  fly(world, e, p.x + Math.cos(a) * radius, ty, p.z + Math.sin(a) * radius, sp, 0.005);
+  if (e.type === 'mutant') {
+    if (readyToFire(world, e, interval / world.diff.fire)) shootPlayer(world, e, errDeg);
+  } else if (e.burst > 0) {
+    if (readyToFire(world, e, (e.hurt ? 8 : 4) / world.diff.fire)) {
+      shootPlayer(world, e, errDeg);
+      if (--e.burst === 0) {
+        e.fireTimer = Math.round((e.hurt ? 200 : 100) / world.diff.fire);
+      }
+    }
+  } else if (--e.fireTimer <= 0) { e.burst = 6; e.fireTimer = 1; }
+  // homing missiles from wave 6
+  if (world.info.enemyMissiles && --e.missileTimer <= 0 &&
+    playerDistance(world, e) < 15) {
+    e.missileTimer = Math.round(500 / world.info.fireScale);
+    addProjectile(world, 'enemyMissile', e.x, e.y, e.z, e.vx, e.vy - 0.05, e.vz);
+    world.emit('enemyMissileLaunch', e.x, e.y, e.z);
+  }
+  orient(e, 0);
+}
+
+/** The nearest intact mutated tree within r tiles, as a tile index, or -1. */
+function findMutatedTree(world, x, z, r) {
+  const t = world.terrain, P = t.period, m = world.virus.mutated;
+  let best = -1, bd = 1e9;
+  for (let dz = -r; dz <= r; dz++) {
+    for (let dx = -r; dx <= r; dx++) {
+      const k = t.index(x + dx, z + dz);
+      if (!m[k] || !isTree(world.objects[k])) continue;
+      const d = dx * dx + dz * dz;
+      if (d < bd) { bd = d; best = k; }
+    }
+  }
+  return best;
+}
+
+/** One tick for every alien (the dead ones are removed by World). */
+export function updateEnemies(world) {
+  for (const e of world.enemies) {
+    if (e.dead) continue;
+    e.age++;
+    if (e.flash > 0) e.flash--;
+    DRIVE[e.type](world, e);
+  }
+}
+
+// ---------------------------------------------------------------- Lander+ rocks
+/**
+ * The original's rocks (DropRocksFromTheSky): dropped 32 tiles up just in
+ * front of the ship, they fall, bounce, destroy objects and splash into
+ * the sea. They tumble together, like the original's shared matrix.
+ */
+export function dropRock(world) {
+  const c = world.camera, rng = world.rng, j = () => rng.signed() / 16;
+  const e = spawnEnemyAt(world, 'rock', c.x, -32, world.terrain.wrap(c.z - 6));
+  e.vx = j(); e.vy = j(); e.vz = j();
+  e.timer = 340 + 2 * rng.int(32);            // 170 frames + 0..31
+  return e;
+}
+
+function spawnEnemyAt(world, type, x, y, z) {
+  const e = { id: ++world.nextId, type, x, y, z, vx: 0, vy: 0, vz: 0,
+    nose: null, roof: null, side: null, hp: ENEMY[type].hp, state: 'fall', flash: 0,
+    landed: false, hurt: false, hidden: false, beam: false, dead: false, dir: 0, pitch: 0,
+    timer: 0, age: 0 };
+  world.enemies.push(e);
+  return e;
+}
+
+function updateRock(world, e) {
+  const t = world.terrain, p = t.period;
+  if (--e.timer <= 0) { e.dead = true; return; }
+  e.x = ((e.x + e.vx) % p + p) % p; e.y += e.vy; e.z = ((e.z + e.vz) % p + p) % p;
+  e.vy += world.gravity;
+  const ground = t.altitude(e.x, e.z), h = ground - e.y;
+  if (h >= 0 && h < 1.5) {
+    const k = t.index(e.x, e.z);
+    const o = world.objects[k];
+    if (o !== 0xFF) {
+      if (o >= 12) world.particles.explosion(e.x, e.y, e.z, 3);
+      else world.objectDestroyed(k, e.x, e.y, e.z, true);
+      e.dead = true;
+      return;
+    }
+  }
+  if (e.y > ground) {
+    e.y = ground;
+    if (ground >= t.seaLevel) {
+      world.particles.splash(e.x, t.seaLevel - 1 / 16, e.z, 65);
+      e.dead = true;
+      return;
+    }
+    e.vx *= 0.5; e.vy *= -0.5; e.vz *= 0.5;
+  }
+  const a = world.tickCount * TAU / 512;       // the tumble: 1/256 turn a frame
+  const o = orientation(a, 2 * a);
+  e.nose = o.nose; e.roof = o.roof; e.side = o.side;
+}
+
+// ---------------------------------------------------------------- missiles and bombs
+/** type: 'missile' (the player's), 'enemyMissile' or 'bomb'. */
+export function addProjectile(world, type, x, y, z, vx, vy, vz, target = null) {
+  const m = { type, x, y, z, vx, vy, vz, nose: null, roof: null, side: null,
+    target, life: type === 'missile' ? 150 : type === 'bomb' ? 900 : 400,
+    age: 0, dead: false };
+  pointAlong(m);
+  world.projectiles.push(m);
+  return m;
+}
+
+function pointAlong(m) {
+  const h = Math.hypot(m.vx, m.vz);
+  const o = orientation(Math.atan2(m.vy, h || 1e-9), Math.atan2(-m.vz, m.vx));
+  m.nose = o.nose; m.roof = o.roof; m.side = o.side;
+}
+
+/** Turn m's velocity towards (dx, dy, dz) by at most `turn` radians, at `speed`. */
+function homeOn(m, dx, dy, dz, speed, turn) {
+  let l = len3(dx, dy, dz) || 1;
+  const wx = dx / l, wy = dy / l, wz = dz / l;
+  l = len3(m.vx, m.vy, m.vz) || 1;
+  let cx = m.vx / l, cy = m.vy / l, cz = m.vz / l;
+  const ang = Math.acos(clamp(cx * wx + cy * wy + cz * wz, -1, 1));
+  const k = ang > turn ? turn / ang : 1;
+  cx += (wx - cx) * k; cy += (wy - cy) * k; cz += (wz - cz) * k;
+  l = len3(cx, cy, cz) || 1;
+  m.vx = cx / l * speed; m.vy = cy / l * speed; m.vz = cz / l * speed;
+}
+
+/** One tick for missiles and bombs. */
+export function updateProjectiles(world) {
+  const t = world.terrain, p = world.player, P = t.period;
+  for (const m of world.projectiles) {
+    if (m.dead) continue;
+    m.age++;
+    if (--m.life <= 0) {
+      m.dead = true;
+      world.particles.explosion(m.x, m.y, m.z, 2);
+      continue;
+    }
+    if (m.type === 'missile') {
+      // the player's homing missile: short burn, may lose its target
+      const e = m.target;
+      const speed = Math.min(0.4, 0.15 + m.age * 0.01);
+      if (e && !e.dead && !e.hidden) {
+        const lead = len3(t.delta(m.x, e.x), e.y - m.y, t.delta(m.z, e.z)) / speed;
+        homeOn(m, t.delta(m.x, e.x + e.vx * lead), e.y + e.vy * lead - m.y,
+          t.delta(m.z, e.z + e.vz * lead), speed, 0.1);
+      } else homeOn(m, m.vx, m.vy, m.vz, speed, 0);
+      if (m.age % 2 === 0) world.particles.puff(m.x, m.y, m.z, 9);
+    } else if (m.type === 'enemyMissile') {
+      if (hunted(world)) {
+        homeOn(m, t.delta(m.x, p.x), p.y - m.y, t.delta(m.z, p.z), 0.16, 0.04);
+      }
+      if (m.age % 3 === 0) world.particles.puff(m.x, m.y, m.z, 4);
+    } else {
+      // a parachute bomb: drifts down, swinging under its canopy
+      m.vy = 0.03;
+      const s = Math.sin(m.age * 0.12) * 0.02;
+      m.vx = m.vx * 0.98 + s * 0.05; m.vz = m.vz * 0.98 - s * 0.05;
+    }
+    m.x = ((m.x + m.vx) % P + P) % P; m.y += m.vy; m.z = ((m.z + m.vz) % P + P) % P;
+    pointAlong(m);
+    const ground = t.altitude(m.x, m.z);
+    if (m.type === 'bomb') {
+      if (p.alive && len3(t.delta(m.x, p.x), p.y - m.y, t.delta(m.z, p.z)) < 1.5) {
+        m.dead = true;
+        world.particles.explosion(m.x, m.y, m.z, 10);
+        world.emit('explodeSmall', m.x, m.y, m.z, { bomb: true });
+        world.hitPlayer(2, m.x, m.y, m.z);
+      } else if (m.y > ground - 2) {
+        // airburst: concentrated virus over the land below
+        m.dead = true;
+        world.particles.explosion(m.x, m.y, m.z, 4);
+        world.emit('explodeSmall', m.x, m.y, m.z, { bomb: true, airburst: true });
+        const rng = world.rng;
+        for (let k = 0; k < 12; k++) {
+          const a = rng.float() * TAU, s = rng.float() * 0.05;
+          spore(world, m.x, m.y, m.z, Math.cos(a) * s, -0.02, Math.sin(a) * s, true);
+        }
+      }
+      continue;
+    }
+    if (m.y > ground) {
+      m.dead = true;
+      world.particles.explosion(m.x, ground, m.z, 5);
+      world.emit('hitSmall', m.x, ground, m.z);
+      continue;
+    }
+    if (m.type === 'missile') {
+      for (const e of world.enemies) {
+        if (e.dead || !isHostile(e) || e.hidden) continue;
+        const r = ENEMY[e.type].radius + 0.4;
+        if (len3(t.delta(m.x, e.x), e.y - m.y, t.delta(m.z, e.z)) < r) {
+          m.dead = true;
+          damageEnemy(world, e, 3, 'missile');
+          break;
+        }
+      }
+    } else if (p.alive && len3(t.delta(m.x, p.x), p.y - m.y, t.delta(m.z, p.z)) < 0.9) {
+      m.dead = true;
+      world.particles.explosion(m.x, m.y, m.z, 8);
+      world.emit('explodeSmall', m.x, m.y, m.z, { missile: true });
+      world.hitPlayer(3, m.x, m.y, m.z);
+    }
+  }
+}
+
+// ---------------------------------------------------------------- damage
+/** Hurt e by dmg hit points; true if that destroyed it. */
+export function damageEnemy(world, e, dmg, cause) {
+  if (e.dead || !isHostile(e)) return false;
+  e.hp -= dmg;
+  e.flash = 8;
+  if (e.hp <= 0) { killEnemy(world, e, cause); return true; }
+  if (e.type === 'fighter' && !e.hurt) { e.hurt = true; world.addScore(200); }
+  world.emit('hitSmall', e.x, e.y, e.z, { enemy: e.type });
+  return false;
+}
+
+/** Destroy e: score, explosion, events, perhaps a pickup. */
+export function killEnemy(world, e, cause) {
+  if (e.dead) return;
+  e.dead = true;
+  const def = ENEMY[e.type];
+  const score = e.type === 'seeder' && e.landed ? 50 : def.score;
+  world.addScore(score);
+  world.enemyKilled(e, cause);
+  const large = e.type === 'bomber' || e.type === 'attractor' || e.type === 'fighter' ||
+    cause === 'smartBomb';
+  world.particles.burst(e.x, e.y, e.z, large ? 30 : 15, def.colour);
+  world.emit(large ? 'explodeLarge' : 'explodeSmall', e.x, e.y, e.z,
+    { enemy: e.type, score });
+  const drops = e.type === 'mutant' || e.type === 'fighter';
+  if (drops && world.rng.chance(world.diff.pickups)) {
+    const kinds = ['fuel', 'fuel', 'missile', 'shield', 'cleanse'];
+    const kind = kinds[world.rng.int(kinds.length)];
+    world.pickups.push({ kind, x: e.x, y: e.y, z: e.z, spin: 0, life: 750 });
+  }
+}
+
+// ---------------------------------------------------------------- pickups
+/** Pickups float a tile above the ground, spin, and vanish after 15 s. */
+export function updatePickups(world) {
+  const t = world.terrain, p = world.player;
+  for (const k of world.pickups) {
+    if (k.dead) continue;
+    k.spin = (k.spin + 0.06) % TAU;
+    const ground = t.altitude(k.x, k.z);
+    k.y += clamp(ground - 1 - k.y, -0.05, 0.05);
+    if (--k.life <= 0 || (ground >= t.seaLevel && k.y >= ground - 1.05)) {
+      k.dead = true;
+      continue;
+    }
+    if (p.alive && len3(t.delta(k.x, p.x), p.y - k.y, t.delta(k.z, p.z)) < 1.3) {
+      k.dead = true;
+      world.collectPickup(k);
+    }
+  }
+}

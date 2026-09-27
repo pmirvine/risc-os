@@ -282,3 +282,9 @@ docs/ASSETS.md §5).
 * `src/apps/HostFS` (registered in `src/apps/index.js`), `tools/disc-hostfs.mjs` (run by `tools/build.mjs`) writes
   `$.Utilities.!HostFS`.
 * `$.Docs` gains `Contents`, `JsEdit` and `Programming` guides (`tools/docs/`); the HostFS guide describes !HostFS.
+
+## jsrun: a program's own 'quit' handlers were skipped — fixed during the Lander II review
+**Status:** done.
+* `src/core/jsrun.js`: the handler that tidies `globalThis.__jsrun` was `() => delete ...`, which returns true;
+  `Emitter.emit` stops at a handler returning true, so a module program's `task.on('quit', ...)` never ran (Lander II
+  kept drawing, its listeners and AudioContext stayed alive after Quit). Now it has braces and returns nothing.

@@ -1,0 +1,113 @@
+// Lander II - Waves: difficulty settings and what each attack wave holds.
+//
+// The rules follow Braben's Virus manual (the Atari ST / Amiga port of
+// Zarch) where it says something: a new landscape on waves 5 and 10,
+// stronger gravity on waves 3, 5 and 7, a bonus for clean land at the end
+// of each wave, an extra life and missile every 5000 points. The numbers
+// of aliens are ours, chosen so the first wave can be learnt by someone
+// still wrestling with Lander's mouse control, and the later ones are a
+// proper fight.
+//
+// Gravity is given in the original's units (0x30000 = 3/256 tile per
+// frame per frame, Lander's gravity); World converts it to 50 Hz ticks.
+
+export const DIFFICULTY = {
+  // lives, spare missiles and smart bombs at the start
+  // count: aliens per wave x; fire: how often they shoot x; aim: aiming
+  // error x; speed: alien speed x; infect: virus strength x; shieldCost:
+  // fuel an enemy bullet costs; residual: infection kept between waves;
+  // infectionOver: lose when 90% of the land is infected for 10 s;
+  // pickups: chance a mutant or fighter drops a pickup; gravity: by wave
+  easy: {
+    lives: 5, missiles: 4, smartBombs: 2, hover: true, floorScore: true, rearm: true,
+    count: 0.7, fire: 0.5, aim: 2, speed: 0.8, infect: 0.6, shieldCost: 60,
+    residual: 0, infectionOver: false, pickups: 0.3, invulnerable: 200, spawnGap: 400,
+    gravity: [0x30000, 0x30000, 0x40000, 0x40000, 0x48000, 0x48000, 0x50000],
+  },
+  normal: {
+    lives: 3, missiles: 3, smartBombs: 1, hover: true, floorScore: true, rearm: true,
+    count: 1, fire: 1, aim: 1, speed: 1, infect: 1, shieldCost: 120,
+    residual: 0, infectionOver: true, pickups: 0.2, invulnerable: 150, spawnGap: 280,
+    gravity: [0x30000, 0x30000, 0x50000, 0x50000, 0x60000, 0x60000, 0x70000],
+  },
+  hard: {
+    lives: 2, missiles: 3, smartBombs: 1, hover: true, floorScore: true, rearm: true,
+    count: 1.25, fire: 1.3, aim: 0.6, speed: 1.1, infect: 1.3, shieldCost: 200,
+    residual: 0.25, infectionOver: true, pickups: 0.15, invulnerable: 120, spawnGap: 200,
+    gravity: [0x30000, 0x30000, 0x50000, 0x50000, 0x60000, 0x60000, 0x70000],
+  },
+  // "authentic Zarch": no hover, the score may go negative, no pickups,
+  // no free missiles on the pad
+  zarch: {
+    lives: 3, missiles: 3, smartBombs: 1, hover: false, floorScore: false, rearm: false,
+    count: 1.1, fire: 1.15, aim: 0.8, speed: 1.05, infect: 1.1, shieldCost: 150,
+    residual: 0, infectionOver: false, pickups: 0, invulnerable: 100, spawnGap: 240,
+    gravity: [0x30000, 0x30000, 0x50000, 0x50000, 0x60000, 0x60000, 0x70000],
+  },
+};
+
+// Aliens per wave at Normal: [seeders, drones, mutants, pests, fighters,
+// bombers, attractors]
+const BASE = [
+  null,
+  [3, 1, 0, 0, 0, 0, 0],       // 1: learn to fly and shoot the seeders
+  [4, 2, 0, 0, 0, 1, 0],       // 2: a bomber appears
+  [5, 3, 0, 1, 0, 1, 0],       // 3: a pest; gravity up
+  [6, 3, 0, 2, 1, 1, 0],       // 4: a fighter
+  [6, 4, 1, 2, 1, 2, 0],       // 5: new landscape; gravity up
+  [7, 4, 1, 3, 2, 2, 0],       // 6: aliens fire homing missiles
+  [7, 5, 2, 3, 2, 2, 0],       // 7: gravity up again
+  [8, 5, 2, 3, 2, 2, 1],       // 8: the attractor
+];
+const CAP = [12, 8, 4, 5, 4, 3, 1];
+const TYPES = ['seeder', 'drone', 'mutant', 'pest', 'fighter', 'bomber', 'attractor'];
+
+/** Settings for wave n (1, 2, ...) at the given difficulty. */
+export function waveInfo(n, difficulty = 'normal') {
+  const d = DIFFICULTY[difficulty] || DIFFICULTY.normal;
+  let counts;
+  if (n < BASE.length) counts = BASE[n].slice();
+  else {
+    // after wave 8: a tenth more each wave, an attractor every other wave
+    const k = Math.pow(1.1, n - 8);
+    counts = BASE[8].map((c, i) => Math.min(CAP[i], Math.round(c * k)));
+    counts[6] = n % 2 === 0 ? 1 : 0;
+  }
+  counts = counts.map((c, i) => (i === 6 ? c : Math.round(c * d.count)));
+  counts[0] = Math.max(1, counts[0]);
+  if (n > 1 || d.count >= 1) counts[1] = Math.max(1, counts[1]);
+  const g = d.gravity[Math.min(n, d.gravity.length) - 1];
+  return {
+    wave: n,
+    counts: Object.fromEntries(TYPES.map((t, i) => [t, counts[i]])),
+    order: spawnOrder(counts),
+    gravity: g,
+    landscape: Math.floor(n / 5),          // 0 for waves 1-4, 1 for 5-9 ...
+    enemyMissiles: n >= 6,
+    maxAlive: Math.min(14, 7 + Math.floor(n / 2)),
+    // aliens fire a little more often in later waves (capped)
+    fireScale: d.fire * Math.min(1.5, 1 + Math.max(0, n - 8) * 0.05),
+  };
+}
+
+// Seeders arrive first (they give the wave its purpose), then the rest
+// mixed in, the heavier craft towards the end.
+function spawnOrder(counts) {
+  const left = counts.slice(), out = [];
+  const take = (i) => {
+    if (left[i] <= 0) return false;
+    left[i]--;
+    out.push(TYPES[i]);
+    return true;
+  };
+  take(0); take(0); take(1); take(0);
+  let more = true;
+  while (more) {
+    more = false;
+    for (const i of [0, 1, 3, 0, 2, 5, 4, 6]) more = take(i) || more;
+  }
+  return out;
+}
+
+/** The gravity of the original's units as tiles per 50 Hz tick squared. */
+export const gravityPerTick = (g) => g / 16777216 / 4;

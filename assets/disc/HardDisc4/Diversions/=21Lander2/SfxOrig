@@ -1,0 +1,522 @@
+// Lander II - SfxOrig: the "Original" sound set, in the spirit of Zarch on
+// the Archimedes (1987).
+//
+// Lander itself was silent; Zarch, the full game it grew into, played
+// 8-bit samples through the Archimedes' eight sound channels: a roaring
+// hiss for the thrust, crunchy sampled explosions, the bombers' "whoosh"
+// and the pests' "twittering" (the Zarch manual's words). To get that
+// feel, every sound here is made at the Archimedes' usual sample rate of
+// 20833 per second (one sample every 48 microseconds), then quantised to
+// the VIDC chip's 8-bit logarithmic samples (SfxKit.vidc8), which gives
+// the grainy, slightly dusty edge of sampled sound. Sound also places each
+// sound at one of the Archimedes' seven stereo positions.
+//
+// A recipe's make(k) gets a synthesiser k (SfxKit's Synth) and returns the
+// samples. level is its loudness in dB relative to the others (every sound
+// is balanced to set.target first). The other fields tell Sound how to
+// play it:
+//   pos    true: it happens somewhere in the world (fades with distance,
+//          panned left/right)
+//   gap    at most one every `gap` seconds (repeats closer are dropped)
+//   max    at most this many playing at once (the oldest is cut off)
+//   vary   random pitch change, +- this fraction, each time it plays
+// Loops (thrust, refuelling, bombers, pests) also give the Web Audio filter
+// they play through and params(s), which turns the game's state into
+// { gain, rate, freq } (volume, playback speed, filter frequency).
+
+import { perc, line, sweep, glide, steps, wobble, times, note, echo, filter,
+  fadeOut, vidc8 } from './SfxKit';
+
+const RATE = 20833;
+
+// ---------------------------------------------------------------- helpers
+
+// An explosion: a burst of noise whose lowpass filter closes down (so it
+// "rolls away" from a bright crack to a dull rumble), a sine "thump" for
+// the chest, and a few short crackles scattered through the start.
+function boom(k, a, o) {
+  const { start = 0, dur, bright = 3000, dark = 150, thump = 90 } = o;
+  k.noise(a, {
+    start, dur, gain: perc(0.003, dur),
+    filter: { type: 'lp', freq: sweep(bright, dark, dur * 0.8), q: 0.9 },
+  });
+  // a coarser, lower "sample" of noise underneath, held for 4 samples at a
+  // time: the crunch of a cheap 8-bit sample of an explosion
+  k.noise(a, {
+    start, dur: dur * 0.6, hold: RATE / 4, gain: perc(0.001, dur * 0.5, 0.5),
+    filter: { type: 'lp', freq: sweep(bright * 0.7, dark, dur * 0.5) },
+  });
+  k.tone(a, {
+    start, dur: dur * 0.6, freq: sweep(thump, thump * 0.4, dur * 0.5),
+    gain: perc(0.004, dur * 0.5, 0.9),
+  });
+  for (let i = 0; i < (o.crackles ?? 3); i++) {
+    k.noise(a, {
+      start: start + 0.03 + (k.random() + 1) * dur * 0.2, dur: 0.02,
+      gain: perc(0.001, 0.02, 0.6), filter: { type: 'hp', freq: 1500 },
+    });
+  }
+  return a;
+}
+
+// A short sine blip with soft edges (menu sounds): no clicks at the ends.
+function blip(k, a, freq, start, dur, gain = 1) {
+  k.tone(a, {
+    freq, start, dur,
+    gain: line([[0, 0], [0.002, gain], [dur * 0.6, gain * 0.6], [dur, 0]]),
+  });
+  k.tone(a, {                               // a touch of second harmonic
+    freq: freq * 2, start, dur,
+    gain: line([[0, 0], [0.002, gain * 0.15], [dur, 0]]),
+  });
+  return a;
+}
+
+// Play plucked notes: list of [note name, start, decay seconds].
+function plucks(k, a, list, bright = 0.6) {
+  for (const [n, start, decay] of list) {
+    k.pluck(a, { freq: note(n), start, decay, bright, gain: 0.8 });
+  }
+  return a;
+}
+
+// ---------------------------------------------------------------- the set
+
+export const SET = {
+  name: 'original',
+  title: 'Original (Archimedes)',
+  rate: RATE,
+  target: -19,                    // dB loudness every sound is balanced to
+  finish: vidc8,                  // 8-bit log samples, like the VIDC chip
+  // the Archimedes had seven fixed stereo positions per channel
+  pan: (p) => Math.round(p * 3) / 3 * 0.85,
+
+  sounds: {
+    // The player's laser: a hiss of high noise for the "crack" and a square
+    // wave diving from 1200 to 300 Hz for the "pchoo". It can fire 25 times
+    // a second, so it is kept short and quiet, and each shot is pitched a
+    // little differently so a long burst doesn't drill into the head.
+    fire: {
+      level: -7, pos: true, gap: 0.035, max: 3, vary: 0.05,
+      make(k) {
+        const a = k.buffer(0.1);
+        k.noise(a, { dur: 0.03, gain: perc(0.001, 0.03),
+          filter: { type: 'hp', freq: 2000 } });
+        k.tone(a, { wave: 'square', freq: sweep(1200, 300, 0.06), dur: 0.1,
+          gain: perc(0.002, 0.085, 0.5), filter: { type: 'lp', freq: 4000 } });
+        return a;
+      },
+    },
+    // Alien fire: a triangle wave falling 700 to 250 Hz, duller and lower
+    // than the player's, over a knock of band-passed noise.
+    enemyFire: {
+      level: -7, pos: true, gap: 0.05, max: 3, vary: 0.04,
+      make(k) {
+        const a = k.buffer(0.12);
+        k.tone(a, { wave: 'tri', freq: sweep(700, 250, 0.08), dur: 0.1,
+          gain: perc(0.002, 0.1) });
+        k.noise(a, { dur: 0.04, gain: perc(0.001, 0.04, 0.6),
+          filter: { type: 'bp', freq: 1000, q: 1.5 } });
+        return a;
+      },
+    },
+    // A shot hitting the ground: a small dull puff.
+    hitSmall: {
+      level: -11, pos: true, gap: 0.04, max: 3, vary: 0.1,
+      make(k) {
+        const a = k.buffer(0.1);
+        k.noise(a, { gain: perc(0.001, 0.08),
+          filter: { type: 'lp', freq: sweep(1800, 400, 0.06) } });
+        return a;
+      },
+    },
+    // An alien blown up: the explosion recipe above, half a second long.
+    explodeSmall: {
+      level: 0, pos: true, gap: 0.05, max: 5, vary: 0.08,
+      make(k) { return boom(k, k.buffer(0.7), { dur: 0.6, thump: 110 }); },
+    },
+    // A bomber, attractor or fighter: two explosions, the second deeper
+    // and a little later, over a long sub-bass drop from 50 to 30 Hz.
+    explodeLarge: {
+      level: 3, pos: true, gap: 0.08, max: 3, vary: 0.06,
+      make(k) {
+        const a = k.buffer(1.8);
+        boom(k, a, { dur: 1.2, bright: 2500, crackles: 4, thump: 70 });
+        boom(k, a, { start: 0.12, dur: 1.6, bright: 900, dark: 80, thump: 50,
+          crackles: 2 });
+        k.tone(a, { freq: sweep(50, 30, 0.8), dur: 1.2, gain: perc(0.01, 1.1, 0.8) });
+        return a;
+      },
+    },
+    // The player's ship hitting the ground: a large explosion, and the
+    // clang of three detuned square waves (the hull) ringing out.
+    crash: {
+      level: 4, gap: 0.5, max: 1,
+      make(k) {
+        const a = k.buffer(2.4);
+        boom(k, a, { dur: 1.4, bright: 3500, crackles: 5, thump: 80 });
+        boom(k, a, { start: 0.15, dur: 2.0, bright: 800, dark: 60, thump: 45 });
+        for (const f of [310, 347, 412]) {
+          k.tone(a, { wave: 'square', freq: f, dur: 1.6, gain: perc(0.002, 1.5, 0.35),
+            filter: { type: 'bp', freq: 1200, q: 2 } });
+        }
+        return fadeOut(a, RATE, 0.3);
+      },
+    },
+    // A soft touchdown: a low thud and two little clicks as the legs take
+    // the weight.
+    land: {
+      level: -6, gap: 0.3,
+      make(k) {
+        const a = k.buffer(0.2);
+        k.noise(a, { dur: 0.1, gain: perc(0.002, 0.08),
+          filter: { type: 'lp', freq: 300 } });
+        k.tone(a, { freq: sweep(90, 50, 0.06), dur: 0.1, gain: perc(0.002, 0.08, 0.7) });
+        for (const s of [0.02, 0.05]) {
+          k.tone(a, { freq: 3000, start: s, dur: 0.012, gain: perc(0.0005, 0.01, 0.25) });
+        }
+        return a;
+      },
+    },
+    // The tanks are full: two bright bell pings.
+    refuelFull: {
+      level: -7, gap: 0.5,
+      make(k) {
+        const a = k.buffer(0.7);
+        k.bell(a, { freq: 1760, decay: 0.4 });
+        k.bell(a, { freq: 2637, start: 0.08, decay: 0.5 });
+        return a;
+      },
+    },
+    // A pickup: a sine gliding up a fifth, then a second sine a fifth
+    // higher again.
+    pickup: {
+      level: -4, gap: 0.1,
+      make(k) {
+        const a = k.buffer(0.45);
+        k.tone(a, { freq: glide(880, 1320, 0.12), dur: 0.3, gain: perc(0.005, 0.28) });
+        k.tone(a, { freq: 1980, start: 0.08, dur: 0.35, gain: perc(0.005, 0.32, 0.7) });
+        return a;
+      },
+    },
+    // Wave start: A minor on a plucked string, with an echo.
+    waveStart: {
+      level: -4, gap: 1,
+      make(k) {
+        const a = k.buffer(1.6);
+        plucks(k, a, [['A2', 0, 1.4], ['A3', 0, 0.8], ['E4', 0.15, 0.8],
+          ['A4', 0.3, 0.8], ['C5', 0.45, 1.2]]);
+        return fadeOut(echo(a, RATE, 0.18, 0.3, 0.5), RATE, 0.2);
+      },
+    },
+    // Wave cleared: a rising major arpeggio ending on a bell, with a
+    // shimmer of very high noise.
+    waveCleared: {
+      level: -4, gap: 1,
+      make(k) {
+        const a = k.buffer(1.8);
+        plucks(k, a, [['C3', 0, 1.5], ['C5', 0, 0.8], ['E5', 0.12, 0.8],
+          ['G5', 0.24, 0.8], ['C6', 0.36, 1.4]], 0.7);
+        k.bell(a, { freq: note('C6'), start: 0.36, decay: 1.0, gain: 0.5 });
+        k.noise(a, { start: 0.3, dur: 1.2, gain: line([[0, 0], [0.3, 0.12], [1.2, 0]]),
+          filter: { type: 'hp', freq: 6000 } });
+        return fadeOut(echo(a, RATE, 0.15, 0.25, 0.4), RATE, 0.2);
+      },
+    },
+    // Extra life: four rising bells.
+    extraLife: {
+      level: -4, gap: 1,
+      make(k) {
+        const a = k.buffer(1.2);
+        [1047, 1319, 1568, 2093].forEach((f, i) => {
+          k.bell(a, { freq: f, start: i * 0.12, decay: 0.5 });
+        });
+        return a;
+      },
+    },
+    // Low fuel: a two-tone "dee-dah", repeated every second.
+    lowFuel: {
+      level: -7, gap: 0.8, repeat: 1.0,
+      make(k) {
+        const a = k.buffer(0.26);
+        blip(k, a, 880, 0, 0.12);
+        blip(k, a, 660, 0.13, 0.12);
+        return a;
+      },
+    },
+    // Game over: a slow falling pluck, the last note left to ring while a
+    // filter closes over it.
+    gameOver: {
+      level: -3, gap: 2,
+      make(k) {
+        const a = k.buffer(3.0);
+        plucks(k, a, [['E4', 0, 1.0], ['C4', 0.3, 1.0], ['A3', 0.6, 1.2]], 0.5);
+        const last = k.buffer(2.1);
+        plucks(k, last, [['E3', 0, 2.5], ['E2', 0, 2.5], ['B3', 0.02, 2.0]], 0.8);
+        filter(last, RATE, 'lp', sweep(3000, 300, 1.5));
+        for (let i = 0; i < last.length; i++) a[i + Math.round(0.9 * RATE)] += last[i];
+        return fadeOut(a, RATE, 0.4);
+      },
+    },
+    // A homing missile leaving: a narrow band of noise sweeping up, like
+    // a rocket's hiss rushing away, over a low "whump".
+    missileLaunch: {
+      level: -4, pos: true, gap: 0.15,
+      make(k) {
+        const a = k.buffer(0.42);
+        k.noise(a, { gain: line([[0, 0], [0.03, 1], [0.4, 0]]),
+          filter: { type: 'bp', freq: sweep(1500, 4000, 0.3), q: 3 } });
+        k.noise(a, { dur: 0.1, gain: perc(0.002, 0.1, 0.8),
+          filter: { type: 'lp', freq: 400 } });
+        return a;
+      },
+    },
+    // An alien missile: the same, but sweeping down (it is coming for you).
+    enemyMissileLaunch: {
+      level: -5, pos: true, gap: 0.15,
+      make(k) {
+        const a = k.buffer(0.45);
+        k.noise(a, { gain: line([[0, 0], [0.04, 1], [0.42, 0]]),
+          filter: { type: 'bp', freq: sweep(3000, 900, 0.35), q: 3 } });
+        k.tone(a, { wave: 'tri', freq: sweep(300, 150, 0.3), dur: 0.35,
+          gain: perc(0.01, 0.33, 0.4) });
+        return a;
+      },
+    },
+    // Smart bomb: noise swelling up, as if played backwards, then the
+    // blast: a crack of noise, a sub-bass drop from 200 to 30 Hz and a
+    // long rumble.
+    smartBomb: {
+      level: 4, gap: 0.5,
+      make(k) {
+        const a = k.buffer(1.8);
+        k.noise(a, { dur: 0.26, gain: line([[0, 0], [0.25, 0.6], [0.26, 0]]),
+          filter: { type: 'hp', freq: 1000 } });
+        k.noise(a, { start: 0.25, dur: 0.08, gain: perc(0.001, 0.08),
+          filter: { type: 'hp', freq: 500 } });
+        k.tone(a, { start: 0.25, dur: 1.2, freq: sweep(200, 30, 1.0),
+          gain: perc(0.005, 1.1) });
+        k.noise(a, { start: 0.25, dur: 1.5, gain: perc(0.005, 1.4, 0.8),
+          filter: { type: 'lp', freq: sweep(3000, 100, 1.2) } });
+        return a;
+      },
+    },
+    // The virus is spreading: two low sines 3 Hz apart swell up and
+    // "beat" against each other, then three short hisses.
+    virusAlert: {
+      level: -3, gap: 2,
+      make(k) {
+        const a = k.buffer(1.6);
+        const swell = line([[0, 0], [0.3, 1], [0.9, 1], [1.3, 0]]);
+        k.tone(a, { freq: 110, dur: 1.3, gain: swell });
+        k.tone(a, { freq: 113, dur: 1.3, gain: swell });
+        k.tone(a, { wave: 'tri', freq: 220, dur: 1.3, gain: times(swell, 0.2) });
+        for (const s of [1.0, 1.15, 1.3]) {
+          k.noise(a, { start: s, dur: 0.07, gain: perc(0.005, 0.06, 0.6),
+            filter: { type: 'hp', freq: 4000 } });
+        }
+        return a;
+      },
+    },
+    // The shield takes a hit: a metallic clang (three detuned squares
+    // through a ringing bandpass filter) and a spark of noise.
+    shieldHit: {
+      level: -4, gap: 0.1,
+      make(k) {
+        const a = k.buffer(0.35);
+        for (const f of [1500, 1683, 2110]) {
+          k.tone(a, { wave: 'square', freq: f, gain: perc(0.001, 0.3, 0.4),
+            filter: { type: 'bp', freq: 2500, q: 3 } });
+        }
+        k.noise(a, { dur: 0.02, gain: perc(0.001, 0.02) });
+        return a;
+      },
+    },
+    // A tree turns bad: an eerie falling warble.
+    treeMutated: {
+      level: -11, pos: true, gap: 0.2, max: 2,
+      make(k) {
+        const a = k.buffer(0.35);
+        k.tone(a, { freq: wobble(sweep(700, 250, 0.3), 28, 0.15),
+          gain: perc(0.01, 0.3) });
+        k.tone(a, { wave: 'tri', freq: sweep(350, 125, 0.3),
+          gain: perc(0.01, 0.3, 0.3) });
+        return a;
+      },
+    },
+    // A seeder turning into a mutant: a rising, snarling growl (a sawtooth
+    // with a nervous vibrato through a lowpass filter that opens up).
+    enemyMutated: {
+      level: -5, pos: true, gap: 0.2, max: 2,
+      make(k) {
+        const a = k.buffer(0.55);
+        k.tone(a, { wave: 'saw', freq: wobble(sweep(90, 180, 0.4), 16, 0.08),
+          gain: line([[0, 0], [0.05, 1], [0.4, 0.8], [0.55, 0]]),
+          filter: { type: 'lp', freq: sweep(400, 2500, 0.4), q: 3 } });
+        k.noise(a, { hold: 4000, gain: line([[0, 0], [0.05, 0.3], [0.5, 0]]),
+          filter: { type: 'lp', freq: 1500 } });
+        return a;
+      },
+    },
+    // A tree or building destroyed: a "whumph" with crackles in it.
+    objectDestroyed: {
+      level: -4, pos: true, gap: 0.08, max: 3, vary: 0.08,
+      make(k) {
+        const a = k.buffer(0.5);
+        k.noise(a, { gain: perc(0.002, 0.35),
+          filter: { type: 'lp', freq: sweep(1500, 200, 0.3) } });
+        k.tone(a, { freq: sweep(80, 45, 0.15), dur: 0.2, gain: perc(0.003, 0.18, 0.7) });
+        for (let i = 0; i < 6; i++) {
+          k.noise(a, { start: 0.02 + (k.random() + 1) * 0.18, dur: 0.01,
+            gain: perc(0.0005, 0.01, 0.5), filter: { type: 'hp', freq: 2000 } });
+        }
+        return a;
+      },
+    },
+    // A seeder dropping virus: a faint puff of high noise.
+    seederSpray: {
+      level: -16, pos: true, gap: 0.12, max: 2, vary: 0.2,
+      make(k) {
+        const a = k.buffer(0.04);
+        k.noise(a, { dur: 0.03, gain: perc(0.001, 0.025),
+          filter: { type: 'hp', freq: 3000 } });
+        return a;
+      },
+    },
+    // A new ship materialising: a rising sine with a fast tremolo and a
+    // sweep of ringing noise.
+    respawn: {
+      level: -5, gap: 0.5,
+      make(k) {
+        const a = k.buffer(0.75);
+        const env = line([[0, 0], [0.3, 1], [0.6, 0.8], [0.7, 0]]);
+        k.tone(a, { freq: sweep(200, 900, 0.6), gain: times(env, wobble(0.7, 20, 0.4)) });
+        k.noise(a, { gain: times(env, 0.3),
+          filter: { type: 'bp', freq: sweep(300, 3000, 0.6), q: 4 } });
+        return a;
+      },
+    },
+    // Menus and the high-score table: small soft sine blips.
+    uiMove: {
+      level: -9, gap: 0.03,
+      make(k) { return blip(k, k.buffer(0.03), 1200, 0, 0.025); },
+    },
+    uiSelect: {
+      level: -7, gap: 0.05,
+      make(k) {
+        const a = k.buffer(0.05);
+        blip(k, a, 1200, 0, 0.045, 0.7);
+        return blip(k, a, 1800, 0, 0.045, 0.5);
+      },
+    },
+    uiBack: {
+      level: -8, gap: 0.05,
+      make(k) {
+        const a = k.buffer(0.06);
+        blip(k, a, 1800, 0, 0.025);
+        return blip(k, a, 1200, 0.028, 0.03);
+      },
+    },
+    hsLetter: {
+      level: -10, gap: 0.03,
+      make(k) { return blip(k, k.buffer(0.02), 2000, 0, 0.016); },
+    },
+    hsConfirm: {
+      level: -7, gap: 0.1,
+      make(k) {
+        return plucks(k, k.buffer(0.6), [['C5', 0, 0.5], ['G5', 0, 0.5]], 0.7);
+      },
+    },
+    // Title tune: an A minor phrase on plucked strings over a slow bass,
+    // with a long echo.
+    titleJingle: {
+      level: -4, gap: 1,
+      make(k) {
+        const a = k.buffer(3.4);
+        plucks(k, a, [
+          ['A2', 0, 2.0], ['F2', 0.9, 1.6], ['G2', 1.35, 1.2], ['A2', 1.8, 2.5],
+          ['A4', 0, 0.9], ['C5', 0.15, 0.9], ['E5', 0.3, 0.9], ['A5', 0.45, 1.0],
+          ['G5', 0.9, 0.8], ['E5', 1.05, 0.8], ['C5', 1.2, 0.8], ['D5', 1.35, 0.9],
+          ['E5', 1.8, 1.8], ['A4', 1.8, 1.8],
+        ], 0.65);
+        return fadeOut(echo(a, RATE, 0.22, 0.35, 0.45), RATE, 0.5);
+      },
+    },
+    // New high score: a quick rising fanfare on strings and bells.
+    highScore: {
+      level: -4, gap: 1,
+      make(k) {
+        const a = k.buffer(2.0);
+        plucks(k, a, [['C4', 0, 1.2], ['C5', 0, 0.7], ['E5', 0.1, 0.7],
+          ['G5', 0.2, 0.7], ['C6', 0.3, 1.2], ['G4', 0.3, 1.2]], 0.7);
+        k.bell(a, { freq: note('C6'), start: 0.3, decay: 1.0, gain: 0.5 });
+        k.bell(a, { freq: note('E6'), start: 0.45, decay: 1.0, gain: 0.4 });
+        return fadeOut(echo(a, RATE, 0.16, 0.3, 0.4), RATE, 0.3);
+      },
+    },
+  },
+
+  loops: {
+    // Engine thrust: a second of white noise plus a 55 Hz rumble wobbling
+    // 7 times a second, looped. It plays through a lowpass filter: full
+    // thrust opens the filter to a roaring hiss, hovering is a lower,
+    // quieter rush.
+    thrust: {
+      level: -3, loop: 0.1, filter: 'lowpass', q: 1.2, attack: 0.04, release: 0.12,
+      make(k) {
+        const a = k.buffer(1.1);
+        k.noise(a, { gain: 0.8 });
+        k.tone(a, { freq: 55, gain: wobble(0.9, 7, 0.2) });
+        k.tone(a, { freq: 110, gain: 0.2 });
+        return a;
+      },
+      params: (s) => (s.thrust
+        ? { gain: 1, rate: 1, freq: 2200 }
+        : { gain: 0.5, rate: 0.85, freq: 800 }),
+    },
+    // Refuelling on the pad: a soft tremolo tone (220 Hz), rising a
+    // semitone for every tenth of the tank filled.
+    refuel: {
+      level: -10, filter: 'lowpass', q: 0.7, attack: 0.05, release: 0.1,
+      make(k) {
+        const a = k.buffer(1.0);       // exactly 220 and 8 cycles: loops cleanly
+        const trem = wobble(1, 8, 0.35);
+        k.tone(a, { freq: 220, gain: trem });
+        k.tone(a, { freq: 440, gain: times(trem, 0.25) });
+        k.tone(a, { freq: 660, gain: times(trem, 0.1) });
+        return a;
+      },
+      params: (s) => ({ gain: 1, rate: Math.pow(2, s.fuel * 10 / 12), freq: 6000 }),
+    },
+    // Bombers "whooshing" overhead: noise through a bandpass filter that
+    // opens up as a bomber comes close; Sound fades and pans it with the
+    // nearest bomber and bends its pitch as it approaches or leaves.
+    bomber: {
+      level: 1, loop: 0.2, filter: 'bandpass', q: 1.5, attack: 0.1, release: 0.3,
+      make(k) {
+        const a = k.buffer(2.2);
+        k.noise(a, { gain: wobble(0.8, 0.5, 0.3) });
+        return a;
+      },
+      params: (s) => ({ gain: s.near, rate: s.doppler, freq: 400 + 1600 * s.near }),
+    },
+    // Pests "twittering": a sine jumping to a new random pitch every 40 ms,
+    // each note a little falling chirp, and the level pulsing 25 times a
+    // second (silent at each jump, so there are no clicks).
+    pest: {
+      level: -9, filter: 'lowpass', q: 0.7, attack: 0.05, release: 0.2,
+      make(k) {
+        const a = k.buffer(0.96);
+        const pitches = [];
+        for (let i = 0; i < 24; i++) pitches.push(3250 + 750 * k.random());
+        const base = steps(0.04, pitches);
+        k.tone(a, {
+          freq: (t) => base(t) * (1.15 - 7 * (t % 0.04)),
+          gain: (t) => Math.pow(Math.sin(Math.PI * 25 * t), 2),
+        });
+        return a;
+      },
+      params: (s) => ({ gain: s.near, rate: s.doppler, freq: 9000 }),
+    },
+  },
+};

@@ -1,0 +1,250 @@
+// Lander II - Input: the mouse, the keyboard and a gamepad, turned into
+// what the game needs each 1/50 second.
+//
+// Lander is flown with the mouse in an unusual way (see "Flying by mouse"
+// at lander.bbcelite.com). The game keeps a *virtual* mouse position,
+// moved by the real mouse; its offset from the centre of the screen sets
+// the ship's attitude in polar form:
+//
+//   distance from the centre  -> how far the ship tilts (its pitch)
+//   angle round the centre    -> which way it faces (its direction)
+//
+// So with the mouse in the middle the ship sits level and the engine
+// pushes straight up; move the mouse a little away and it tilts that way
+// and flies off. The pointer is hidden (and captured with the browser's
+// pointer lock), so nothing stops you moving it: the offset is clamped.
+// C puts the virtual mouse back in the middle.
+//
+// Every tick, sample() gives the World this structure:
+//
+//   { stickX, stickY,       the virtual mouse offset in the original's
+//                           units (about +-512 across the range), +y up
+//     thrust, hover, fire,  held (Select, Menu, Adjust on the mouse)
+//     missile, smartBomb }  true only on the tick the key went down
+//
+// The keyboard does the same thing with the Virus manual's keys: dip and
+// raise the nose (tilt more or less), rotate left and right. A gamepad's
+// left stick sets the offset directly.
+
+import { clamp } from './Maths';
+
+/** DOM key codes for each action (KeyboardEvent.code). */
+export const KEYS = {
+  thrust: ['Space', 'KeyZ'],
+  hover: ['KeyX', 'ShiftLeft', 'ShiftRight'],
+  fire: ['Enter', 'NumpadEnter', 'ControlLeft', 'ControlRight'],
+  dip: ['ArrowUp', 'KeyW'],
+  raise: ['ArrowDown', 'KeyS'],
+  left: ['ArrowLeft', 'KeyA'],
+  right: ['ArrowRight', 'KeyD'],
+  missile: ['KeyM'],
+  smartBomb: ['KeyB'],
+  recentre: ['KeyC'],
+};
+
+// How the keys are described on the How to play page.
+export const KEY_HELP = [
+  ['Thrust', 'Space or Z', 'Select'],
+  ['Hover', 'X or Shift', 'Menu'],
+  ['Fire', 'Return or Ctrl', 'Adjust'],
+  ['Dip / raise', 'Up / Down (W/S)', 'move'],
+  ['Rotate', 'Left / Right (A/D)', 'move'],
+  ['Missile', 'M', ''],
+  ['Smart bomb', 'B', ''],
+  ['Re-centre', 'C', ''],
+  ['Pause', 'P', ''],
+  ['Menu / back', 'Escape', ''],
+];
+
+export const STICK_LIMIT = 512;     // the virtual mouse stays this close
+const KEY_TILT_RATE = 2.4;          // keyboard dip / raise, units per tick
+const KEY_TILT_MAX = 200;           // the keyboard tilts up to 70 degrees
+const KEY_TURN_RATE = 0.055;        // keyboard rotate, radians per tick
+const PAD_RANGE = 200;              // gamepad stick full over = 70 degrees
+const PAD_DEAD = 0.18;
+
+// Standard gamepad buttons (the "standard" mapping, e.g. an Xbox pad)
+const PAD = { a: 0, b: 1, x: 2, y: 3, lb: 4, rb: 5, lt: 6, rt: 7, back: 8, start: 9,
+  up: 12, down: 13, left: 14, right: 15 };
+
+const has = (list, code) => list.includes(code);
+
+export class Input {
+  constructor(settings) {
+    this.settings = settings;
+    this.held = new Set();          // DOM codes of the keys held down
+    this.buttons = 0;               // mouse buttons (4 Select, 2 Menu, 1 Adjust)
+    this.stickX = 0;                // the virtual mouse offset
+    this.stickY = 0;
+    this.keyAngle = Math.PI / 2;    // the keyboard's direction when level
+    this.presses = [];              // key presses for the menus
+    this.edges = { missile: false, smartBomb: false };
+    this.padButtons = [];           // last gamepad button states
+    this.padActive = false;
+  }
+
+  // ---------------------------------------------------------- raw events
+  // The shell (!RunImage) passes on the browser's events.
+
+  /** A key went down. Returns true if the game has a use for it. */
+  keyDown(e) {
+    const code = e.code;
+    if (!e.repeat) {
+      if (has(KEYS.missile, code)) this.edges.missile = true;
+      if (has(KEYS.smartBomb, code)) this.edges.smartBomb = true;
+      if (has(KEYS.recentre, code)) this.recentre();
+    }
+    this.held.add(code);
+    this.presses.push({ code, key: e.key, repeat: !!e.repeat,
+      shift: !!e.shiftKey, ctrl: !!e.ctrlKey });
+    return true;
+  }
+
+  keyUp(e) { this.held.delete(e.code); }
+
+  /** The mouse moved by (dx, dy) screen pixels (y down). */
+  mouseMove(dx, dy) {
+    if (this.settings.controls === 'keyboard') return;
+    const k = this.settings.sensitivity ?? 1;
+    this.stickX += dx * k;
+    this.stickY -= dy * k;          // screen y is down, the mouse's y is up
+    this.limit();
+  }
+
+  /** The mouse buttons, as the browser's e.buttons (1 left, 2 right, 4 middle). */
+  mouseButtons(b) {
+    this.buttons = (b & 1 ? 4 : 0) | (b & 4 ? 2 : 0) | (b & 2 ? 1 : 0);
+  }
+
+  /** Forget held keys and buttons (the window lost the focus). */
+  release() {
+    this.held.clear();
+    this.buttons = 0;
+  }
+
+  /** Put the virtual mouse back in the middle: the ship levels out. */
+  recentre() {
+    this.stickX = 0;
+    this.stickY = 0;
+  }
+
+  /** The menus' key presses since last time (and the gamepad's, as keys). */
+  takePresses() {
+    this.pollPad(true);
+    const p = this.presses;
+    this.presses = [];
+    return p;
+  }
+
+  // Keep the virtual mouse within its circle.
+  limit() {
+    const d = Math.hypot(this.stickX, this.stickY);
+    if (d > STICK_LIMIT) {
+      this.stickX *= STICK_LIMIT / d;
+      this.stickY *= STICK_LIMIT / d;
+    }
+  }
+
+  isHeld(action) { return KEYS[action].some((c) => this.held.has(c)); }
+
+  // ---------------------------------------------------------- the gamepad
+  // Reads the first connected gamepad. In the menus its buttons become
+  // key presses (the D-pad as arrows, A as Return, B as Escape).
+  pollPad(forMenus = false) {
+    let pad = null;
+    try {
+      for (const p of navigator.getGamepads?.() ?? []) {
+        if (p && p.connected) { pad = p; break; }
+      }
+    } catch { /* not allowed */ }
+    if (!pad) { this.pad = null; return null; }
+    const now = pad.buttons.map((b) => b.pressed || b.value > 0.5);
+    const went = (i) => now[i] && !this.padButtons[i];
+    if (forMenus) {
+      const keyFor = [[PAD.up, 'ArrowUp'], [PAD.down, 'ArrowDown'],
+        [PAD.left, 'ArrowLeft'], [PAD.right, 'ArrowRight'], [PAD.a, 'Enter'],
+        [PAD.b, 'Escape'], [PAD.start, 'KeyP']];
+      for (const [i, code] of keyFor) {
+        if (went(i)) this.presses.push({ code, key: code, repeat: false, pad: true });
+      }
+    } else {
+      if (went(PAD.y)) this.edges.missile = true;
+      if (went(PAD.lb)) this.edges.smartBomb = true;
+      if (went(PAD.back)) this.recentre();
+      if (went(PAD.start)) {
+        this.presses.push({ code: 'KeyP', key: 'p', repeat: false, pad: true });
+      }
+    }
+    this.padButtons = now;
+    this.pad = pad;
+    return pad;
+  }
+
+  // ---------------------------------------------------------- each tick
+  /** The input structure for one tick of the World. */
+  sample() {
+    // the keyboard: dip / raise and rotate, in polar form
+    const dip = this.isHeld('dip'), raise = this.isHeld('raise');
+    const left = this.isHeld('left'), right = this.isHeld('right');
+    if (dip || raise || left || right) {
+      let d = Math.hypot(this.stickX, this.stickY);
+      const most = Math.max(KEY_TILT_MAX, d);   // (the mouse may have gone further)
+      let a = d > 0.5 ? Math.atan2(this.stickY, this.stickX) : this.keyAngle;
+      if (dip) d += KEY_TILT_RATE;
+      if (raise) d -= KEY_TILT_RATE;
+      if (left) a += KEY_TURN_RATE;
+      if (right) a -= KEY_TURN_RATE;
+      d = clamp(d, 0, most);
+      this.keyAngle = a;
+      this.stickX = d * Math.cos(a);
+      this.stickY = d * Math.sin(a);
+    }
+
+    // the gamepad: the left stick sets the offset while it is pushed
+    const pad = this.pollPad(false);
+    let padThrust = false, padHover = false, padFire = false;
+    if (pad) {
+      const ax = pad.axes[0] ?? 0, ay = pad.axes[1] ?? 0;
+      const m = Math.hypot(ax, ay);
+      if (m > PAD_DEAD) {
+        const k = (Math.min(1, (m - PAD_DEAD) / (1 - PAD_DEAD)) * PAD_RANGE) / m;
+        this.stickX = ax * k * (this.settings.sensitivity ?? 1);
+        this.stickY = -ay * k * (this.settings.sensitivity ?? 1);
+        this.padActive = true;
+      } else if (this.padActive) {
+        this.recentre();                 // let go of the stick: level out
+        this.padActive = false;
+      }
+      const b = this.padButtons;
+      padThrust = b[PAD.a] || b[PAD.rt];
+      padHover = b[PAD.b] || b[PAD.lt];
+      padFire = b[PAD.x] || b[PAD.rb];
+    }
+
+    const input = {
+      stickX: this.stickX,
+      stickY: this.stickY,
+      thrust: !!(this.buttons & 4) || this.isHeld('thrust') || padThrust,
+      hover: !!(this.buttons & 2) || this.isHeld('hover') || padHover,
+      fire: !!(this.buttons & 1) || this.isHeld('fire') || padFire,
+      missile: this.edges.missile,
+      smartBomb: this.edges.smartBomb,
+    };
+    this.edges.missile = false;
+    this.edges.smartBomb = false;
+    return input;
+  }
+
+  /** Throw away pending one-shot presses (e.g. when a game starts). */
+  clearEdges() {
+    this.edges.missile = false;
+    this.edges.smartBomb = false;
+    this.presses = [];
+  }
+}
+
+/** An input structure with nothing pressed (for pauses and the demo). */
+export function idleInput() {
+  return { stickX: 0, stickY: 0, thrust: false, hover: false, fire: false,
+    missile: false, smartBomb: false };
+}

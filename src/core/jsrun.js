@@ -314,7 +314,8 @@ export async function jsRun(path, tail = '', cliCtx = {}) {
       const cache = new Map();
       const url = await moduleURL(st.path, info, cache, env);
       for (const p of cache.values()) mine.push(await p);
-      if (env.url) { mine.push(env.url); task.on('quit', () => delete globalThis.__jsrun[env.id]); }
+      // (braces: a 'quit' handler that returns true stops the program's own 'quit' handlers running)
+      if (env.url) { mine.push(env.url); task.on('quit', () => { delete globalThis.__jsrun[env.id]; }); }
       let m;
       try { m = await import(url); } catch (e) {
         if (e instanceof SyntaxError) e.where = await moduleSyntaxLine(url);

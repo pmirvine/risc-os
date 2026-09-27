@@ -1,0 +1,818 @@
+// Lander II - Render: draws the 3D world into a Surface, in software.
+//
+// This is David Braben's Lander engine (1987), as documented by Mark
+// Moxon at lander.bbcelite.com, grown a little:
+//
+// * The eye never turns. It always looks the same way (along +z, which
+//   is "into the screen"), from 20 tiles behind world.camera, and simply
+//   follows the ship around. So a point that is dx tiles to the right,
+//   dy tiles down and D tiles in front of the eye appears at
+//
+//       screen x = cx + f * dx / D      screen y = cy + f * dy / D
+//
+//   where f is the focal length (256 pixels on the original 320 x 256
+//   screen) and (cx, cy) the middle of the view (160, 64 below the top).
+//
+// * The landscape is a grid of tile corners. It is drawn in rows from
+//   the back to the front and left to right, each tile as two flat
+//   triangles, so nearer land is painted over further land (the
+//   "painter's algorithm") and no depth buffer is needed.
+//
+// * Objects, ships, shadows and particles are not drawn straight away:
+//   each triangle or dot is put into one of a set of "bins", one per row
+//   of tiles, by its depth. After each row of landscape is painted, the
+//   bin two rows further back is emptied onto the screen, so a hill in
+//   front of a tree hides it. Braben called this bin sorting "virtually
+//   free" - it is.
+//
+// * Faces are lit by the original's rule (see Models: faceLevel) and
+//   shadows are the object's faces dropped straight down onto the land,
+//   in black.
+//
+// Two looks:
+//   classic  - the original: 12 x 10 tiles, rows brighter towards the
+//              front, the Archimedes' 256-colour palette, square dots.
+//   enhanced - more rows into the distance (the "view" option), wider
+//              rows further back so the land fills the screen, fog
+//              towards a horizon colour, a sky with stars, 24-bit
+//              colour, and the virus infection shown on the land.
+//
+// Usage:
+//   const r = new Renderer(surface, { look: 'enhanced', view: 'far' });
+//   r.render(world, top, height);  // draw into rows [top, top + height)
+
+import { rgb } from './Surface';
+import { MODELS, OBJECT_MODELS, ENEMY_MODELS, PROJECTILE_MODELS,
+  PICKUP_MODELS } from './Models';
+import { fillTriangle, fillBox } from './Raster';
+import { wrap, wrapDelta, orientation, Rng } from './Maths';
+import { TILE, PAD_ALTITUDE } from './Terrain';
+
+// ------------------------------------------------------------------------
+// Constants
+
+const EYE = 20;       // world.camera is this many tiles in front of the eye
+const BACK = 20;      // classic: the back row of corners is 20 tiles away
+const ROWS = 10;      // classic: rows of tiles (13 x 11 corners)
+const HALF = 6;       // classic: corners either side of the middle
+// enhanced: rows of tiles into the distance for each view option, and
+// the extra rows added in front, so the land reaches the bottom of the
+// screen
+const VIEW_ROWS = { near: 10, medium: 19, far: 33, huge: 65 };
+const FRONT_ROWS = 6;
+
+// Particle dots in the classic look, by distance (the original's
+// bufferJump table): [first x, last x, rows], then the same for shadows.
+const DOTS = [
+  [-1, 1, 2], [-1, 1, 2], [-1, 1, 2], [-1, 1, 2], [-1, 1, 2], [-1, 1, 2],
+  [0, 1, 2], [0, 1, 1], [0, 0, 1],
+];
+const SHADOW_DOTS = [
+  [-1, 1, 1], [-1, 1, 1], [-1, 1, 1], [-1, 1, 1], [-1, 1, 1], [-1, 1, 1],
+  [0, 1, 1], [0, 1, 1], [0, 0, 1],
+];
+
+// Enhanced colours: the sky from the top of the screen to the horizon,
+// the fog (the same as the horizon, so distant land fades into the sky)
+// and the colour below the land.
+const SKY_TOP = [0, 0, 6];
+const HORIZON = [58, 64, 104];
+const BELOW = [8, 8, 20];
+const BLACK = rgb(0, 0, 0);
+
+// ------------------------------------------------------------------------
+// The Archimedes' 256-colour palette (the classic look)
+//
+// Lander works out colours as 4-bit red, green and blue levels, but the
+// screen mode it uses (MODE 13) can only show 256 colours. The colour
+// byte for a level is made by colourByte (as the original) and the
+// screen shows the default VIDC palette's colour for that byte (as
+// RISC OS sets it up: PV_SetDefaultPalette), so every one of the 4096
+// possible &RGB colours is rounded to one of 256.
+
+function colourByte(r, g, b) {
+  let c = (((g | b) & 3) | r) & 7;
+  if (r & 8) c |= 0x10;
+  c |= (g & 12) << 3;
+  if (b & 4) c |= 0x08;
+  if (b & 8) c |= 0x80;
+  return c;
+}
+
+function paletteColour(i) {
+  const t = (i & 3) * 0x11;
+  let r = t, g = t, b = t;
+  if (i & 0x04) r |= 0x44;
+  if (i & 0x08) b |= 0x44;
+  if (i & 0x10) r |= 0x88;
+  if (i & 0x20) g |= 0x44;
+  if (i & 0x40) g |= 0x88;
+  if (i & 0x80) b |= 0x88;
+  return rgb(r, g, b);
+}
+
+/** CLASSIC[0xRGB]: the pixel the Archimedes would show for &RGB. */
+export const CLASSIC = new Uint32Array(4096);
+for (let c = 0; c < 4096; c++) {
+  CLASSIC[c] = paletteColour(colourByte(c >> 8, (c >> 4) & 15, c & 15));
+}
+
+/** A mutated tree's colour: green leaves turn red and magenta. */
+function mutate(c) {
+  const r = c >> 8, g = (c >> 4) & 15, b = c & 15;
+  return g > r ? (g << 8) | (g >> 1) : (r << 8) | (g << 4) | b;
+}
+
+const WHITE_FACE = () => 0xFFF;
+const IDENTITY = { nose: [1, 0, 0], roof: [0, 1, 0], side: [0, 0, 1] };
+
+// ------------------------------------------------------------------------
+
+export class Renderer {
+  /**
+   * surface: the Surface to draw into. opts: look ('classic' or
+   * 'enhanced'), view ('near', 'medium', 'far', 'huge': enhanced only),
+   * shadows, stars, fog (true or false).
+   */
+  constructor(surface, opts = {}) {
+    this.surface = surface;
+    this.opts = { look: 'classic', view: 'far', shadows: true, stars: true, fog: true };
+    this.setOptions(opts);
+    // the bins: a list of drawing commands, each a triangle or a box,
+    // chained into one list per bin in the order they were added
+    this.grow(4096);
+    this.head = new Int32Array(0);
+    this.tail = new Int32Array(0);
+    // corner rows: the previous and current rows of projected corners
+    this.rowA = this.makeRow(64);
+    this.rowB = this.makeRow(64);
+    // scratch space for one object's projected vertices
+    this.vs = { x: new Float64Array(64), y: new Float64Array(64), z: new Float64Array(64),
+      sx: new Float64Array(64), sy: new Float64Array(64), hy: new Float64Array(64) };
+    this.order = [];
+    this.keys = new Float64Array(64);
+    this.terrain = null;
+    this.stars = [];
+    const rng = new Rng(0x57A45);
+    for (let i = 0; i < 260; i++) {
+      this.stars.push({ u: rng.float(), v: rng.float() ** 1.4, b: rng.range(0.3, 1) });
+    }
+    this.cam = { x: 0, y: 0, z: 0 };
+  }
+
+  /** Change any of the options. */
+  setOptions(opts) {
+    Object.assign(this.opts, opts);
+    this.classic = this.opts.look !== 'enhanced';
+  }
+
+  // ----------------------------------------------------------------------
+  // The whole view
+
+  /**
+   * Draw the world into rows [top, top + height) of the surface. world
+   * needs terrain and camera ({x, y, z}) or player; everything else
+   * (objects, mutated, infection, enemies, projectiles, pickups,
+   * particles, player) is drawn if it is there.
+   */
+  render(world, top = 0, height = this.surface.height - top) {
+    const s = this.surface, classic = this.classic;
+    this.setTerrain(world.terrain);
+    this.setCamera(world);
+    this.setView(top, height);
+    this.clearBins();
+
+    // the background: black, or the sky
+    if (classic) {
+      fillBox(s.pixels, s.width, top, top + height, 0, top, s.width, height, BLACK);
+    } else {
+      this.drawSky(top, height);
+    }
+
+    // fill the bins, then draw the land row by row, emptying the bins
+    this.addObjects(world);
+    this.addEnemies(world);
+    this.addParticles(world);
+    this.addPlayer(world);
+    this.drawLandscape(world);
+  }
+
+  /** Remember the terrain and work out the height of every corner. */
+  setTerrain(terrain) {
+    if (this.terrain === terrain) return;
+    this.terrain = terrain;
+    const P = terrain.period;
+    this.P = P;
+    // corners are at (xi + 0.5, zi), as in the original, whose landscape
+    // starts half a tile to the left of a tile edge
+    const alt = new Int32Array(P * P);
+    for (let z = 0; z < P; z++) {
+      for (let x = 0; x < P; x++) alt[z * P + x] = terrain.raw(x + 0.5, z);
+    }
+    this.alt = alt;
+    this.seaRaw = Math.round(terrain.seaLevel * TILE) | 0;
+    this.padRaw = Math.round(PAD_ALTITUDE * TILE) | 0;
+  }
+
+  /** The camera: world.camera, or worked out from the player. */
+  setCamera(world) {
+    const c = world.camera, p = world.player;
+    if (c) {
+      this.cam.x = c.x; this.cam.y = c.y; this.cam.z = c.z;
+    } else if (p) {
+      this.cam.x = p.x; this.cam.y = Math.min(p.y, 0); this.cam.z = wrap(p.z + 5, this.P);
+    }
+  }
+
+  /** Work out the projection and how many rows to draw. */
+  setView(top, height) {
+    const s = this.surface;
+    this.top = top;
+    this.bottom = Math.min(s.height, top + height);
+    // the focal length grows with the surface: 256 on a 320-wide screen
+    this.f = 256 * Math.min(s.width / 320, height / 239);
+    this.cx = s.width / 2;
+    this.cy = top + Math.round(height * 64 / 239);
+    this.halfW = s.width / 2 / this.f;      // half the view's width at D = 1
+    if (this.classic) {
+      this.backD = BACK;
+      this.rows = ROWS;
+      this.cx = Math.floor(this.cx);
+    } else {
+      const n = VIEW_ROWS[this.opts.view] || VIEW_ROWS.far;
+      this.backD = 10 + n;
+      this.rows = n + FRONT_ROWS;
+    }
+    this.frontD = this.backD - this.rows;
+    // fog: from fogStart to the back edge, where the land meets the sky
+    this.fogStart = this.backD - Math.max(5, 0.7 * (this.backD - 10));
+    this.fogOn = !this.classic && this.opts.fog;
+    this.brightEnd = 10 + Math.max(11, 0.6 * (this.backD - 10));
+  }
+
+  /** The screen position of a point in the world: {x, y, z} or null. */
+  project(x, y, z) {
+    if (!this.terrain) return null;
+    const P = this.P;
+    const dx = wrapDelta(x - this.cam.x, P), D = wrapDelta(z - this.cam.z, P) + EYE;
+    if (D < 0.1) return null;
+    const k = this.f / D;
+    return { x: this.cx + k * dx, y: this.cy + k * (y - this.cam.y), z: D };
+  }
+
+  // ----------------------------------------------------------------------
+  // Colours
+
+  /**
+   * Enhanced: the levels of white added to land at distance D. The
+   * original adds 10 at the front row down to 1 at the back; with more
+   * rows the same fall is spread further back.
+   */
+  brightAt(D) {
+    const b = 10 * (this.brightEnd - D) / (this.brightEnd - 10);
+    return b < 0 ? 0 : b > 10 ? 10 : b;
+  }
+
+  /** How much fog there is at distance D (0 none .. 1 all fog). */
+  fogAt(D) {
+    if (!this.fogOn || D <= this.fogStart) return 0;
+    const t = (D - this.fogStart) / (this.backD - this.fogStart);
+    return t >= 1 ? 1 : t * t * (1.6 - 0.6 * t);
+  }
+
+  /**
+   * A pixel from red, green and blue levels 0-15 (fractions allowed in
+   * the enhanced look), with fog t.
+   */
+  colour(r, g, b, t) {
+    if (this.classic) {
+      r = r > 15 ? 15 : r | 0; g = g > 15 ? 15 : g | 0; b = b > 15 ? 15 : b | 0;
+      return CLASSIC[(r << 8) | (g << 4) | b];
+    }
+    r = r > 15 ? 255 : r * 17; g = g > 15 ? 255 : g * 17; b = b > 15 ? 255 : b * 17;
+    if (t > 0) {
+      r += (HORIZON[0] - r) * t; g += (HORIZON[1] - g) * t; b += (HORIZON[2] - b) * t;
+    }
+    return rgb(r | 0, g | 0, b | 0);
+  }
+
+  /** The sky: dark at the top, lighter at the horizon, with stars. */
+  drawSky(top, height) {
+    const s = this.surface, px = s.pixels, W = s.width;
+    const bottom = this.bottom, hy = Math.max(top + 1, this.cy);
+    for (let y = top; y < bottom; y++) {
+      let c;
+      if (y < hy) {
+        const t = ((y - top) / (hy - top)) ** 2.2;
+        c = rgb(SKY_TOP[0] + (HORIZON[0] - SKY_TOP[0]) * t | 0,
+          SKY_TOP[1] + (HORIZON[1] - SKY_TOP[1]) * t | 0,
+          SKY_TOP[2] + (HORIZON[2] - SKY_TOP[2]) * t | 0);
+      } else {
+        const t = Math.min(1, (y - hy) / (0.15 * height));
+        c = rgb(HORIZON[0] + (BELOW[0] - HORIZON[0]) * t | 0,
+          HORIZON[1] + (BELOW[1] - HORIZON[1]) * t | 0,
+          HORIZON[2] + (BELOW[2] - HORIZON[2]) * t | 0);
+      }
+      px.fill(c, y * W, y * W + W);
+    }
+    if (!this.opts.stars) return;
+    // stars: faint when low, bright when the camera climbs above the
+    // hills (the camera only rises once the ship is above height 0)
+    const high = Math.min(1, Math.max(0, -this.cam.y / 8));
+    const k = 0.25 + 0.75 * high;
+    const size = W >= 960 ? 2 : 1;
+    for (const st of this.stars) {
+      const y = top + Math.floor(st.v * (hy - top) * 0.85);
+      const x = Math.floor(st.u * W);
+      const a = st.b * k * (1 - st.v * 0.8);
+      const p = px[y * W + x];
+      const r = p & 255, g = (p >>> 8) & 255, b = (p >>> 16) & 255;
+      const c = rgb(r + (255 - r) * a | 0, g + (255 - g) * a | 0, b + (230 - b) * a | 0);
+      fillBox(px, W, top, bottom, x, y, size, size, c);
+    }
+  }
+
+  // ----------------------------------------------------------------------
+  // The bins
+
+  grow(n) {
+    const kind = new Uint8Array(n), data = new Float64Array(n * 6);
+    const col = new Uint32Array(n), next = new Int32Array(n);
+    if (this.kind) {
+      kind.set(this.kind); data.set(this.data); col.set(this.col); next.set(this.next);
+    }
+    this.kind = kind; this.data = data; this.col = col; this.next = next;
+  }
+
+  clearBins() {
+    const n = this.rows + 1;
+    if (this.head.length !== n) {
+      this.head = new Int32Array(n);
+      this.tail = new Int32Array(n);
+    }
+    this.head.fill(-1);
+    this.count = 0;
+  }
+
+  /** The bin for something at distance D (further = lower number). */
+  binFor(D) {
+    const k = Math.floor(this.backD - D);
+    return k < 0 ? 0 : k > this.rows ? this.rows : k;
+  }
+
+  /** Add a command (0 triangle a-f = 3 corners, 1 box a-d = x, y, w, h). */
+  push(bin, kind, a, b, c, d, e, f, colour) {
+    if (this.count >= this.kind.length) this.grow(this.kind.length * 2);
+    const i = this.count++, o = i * 6, data = this.data;
+    this.kind[i] = kind;
+    data[o] = a; data[o + 1] = b; data[o + 2] = c;
+    data[o + 3] = d; data[o + 4] = e; data[o + 5] = f;
+    this.col[i] = colour;
+    this.next[i] = -1;
+    if (this.head[bin] < 0) this.head[bin] = i;
+    else this.next[this.tail[bin]] = i;
+    this.tail[bin] = i;
+  }
+
+  /** Draw everything in one bin. */
+  flush(bin) {
+    if (bin < 0 || bin > this.rows) return;
+    const s = this.surface, px = s.pixels, W = s.width, top = this.top, bot = this.bottom;
+    const data = this.data;
+    for (let i = this.head[bin]; i >= 0; i = this.next[i]) {
+      const o = i * 6;
+      if (this.kind[i] === 0) {
+        fillTriangle(px, W, top, bot, data[o], data[o + 1], data[o + 2], data[o + 3],
+          data[o + 4], data[o + 5], this.col[i]);
+      } else {
+        fillBox(px, W, top, bot, data[o], data[o + 1], data[o + 2], data[o + 3],
+          this.col[i]);
+      }
+    }
+    this.head[bin] = -1;
+  }
+
+  // ----------------------------------------------------------------------
+  // The landscape
+
+  makeRow(n) {
+    return { n, start: 0, sx: new Float64Array(n), sy: new Float64Array(n),
+      a: new Int32Array(n) };
+  }
+
+  /**
+   * The corners in row r (0 at the back): [first, last] corner numbers.
+   * A corner number xi is at world x = xi + 0.5.
+   */
+  rowRange(r, zBack) {
+    const cam = this.cam;
+    if (this.classic) {
+      const x = Math.floor(cam.x);
+      return [x - HALF, x + HALF];
+    }
+    // wide enough to cover the screen at the further of this row and
+    // the one behind it (the tiles between them reach back there)
+    const D = (r > 0 ? zBack - r + 1 : zBack) - cam.z + EYE;
+    const hw = D * this.halfW + 1.5;
+    return [Math.floor(cam.x - 0.5 - hw), Math.ceil(cam.x - 0.5 + hw)];
+  }
+
+  drawLandscape(world) {
+    const s = this.surface, px = s.pixels, W = s.width, top = this.top, bot = this.bottom;
+    const cam = this.cam, P = this.P, alt = this.alt;
+    const f = this.f, cx = this.cx, cy = this.cy;
+    const classic = this.classic, seaRaw = this.seaRaw, padRaw = this.padRaw;
+    const infection = classic ? null : world.infection;
+    const zBack = Math.floor(cam.z) + (this.backD - EYE);
+    // the back row is the widest
+    const [x0, x1] = this.rowRange(0, zBack);
+    if (x1 - x0 + 1 > this.rowA.n) {
+      this.rowA = this.makeRow(2 * (x1 - x0 + 1));
+      this.rowB = this.makeRow(2 * (x1 - x0 + 1));
+    }
+    let prev = this.rowA, cur = this.rowB;
+
+    for (let r = 0; r <= this.rows; r++) {
+      const z = zBack - r, D = z - cam.z + EYE;
+      const [xs, xe] = this.rowRange(r, zBack);
+      cur.start = xs;
+      const zi = wrap(z, P) * P, k = f / D, ky = k / TILE;
+      const yc = cy - k * cam.y;
+      // project this row's corners
+      for (let xi = xs, i = 0; xi <= xe; xi++, i++) {
+        const a = alt[zi + wrap(xi, P)];
+        cur.a[i] = a;
+        if (classic) {
+          cur.sx[i] = cx + Math.trunc(k * (xi + 0.5 - cam.x));
+          cur.sy[i] = cy + Math.trunc(k * (a / TILE - cam.y));
+        } else {
+          cur.sx[i] = cx + k * (xi + 0.5 - cam.x);
+          cur.sy[i] = yc + ky * a;
+        }
+      }
+      if (r > 0) {
+        // the tiles between the row behind (prev) and this row (cur)
+        const fog = this.fogAt(D + 0.5);
+        // brightness by distance: the original adds the row number
+        // (1 at the back .. 10 at the front)
+        const bright = classic ? r : this.brightAt(D);
+        const off = xs - prev.start;
+        const zRow = wrap(z, P) * P;
+        for (let xi = xs + 1, i = 1; xi <= xe; xi++, i++) {
+          const j = i + off;
+          const a = cur.a[i], aLeft = cur.a[i - 1];
+          let c;
+          if (classic) {
+            c = this.classicTile(a, aLeft, bright);
+          } else {
+            const inf = infection ? infection[zRow + wrap(xi, P)] : 0;
+            c = this.enhancedTile(a, aLeft, bright, fog, inf);
+          }
+          // two triangles: the diagonal runs from back-right to
+          // front-left, as in the original
+          fillTriangle(px, W, top, bot, cur.sx[i], cur.sy[i], prev.sx[j], prev.sy[j],
+            cur.sx[i - 1], cur.sy[i - 1], c);
+          fillTriangle(px, W, top, bot, prev.sx[j], prev.sy[j],
+            cur.sx[i - 1], cur.sy[i - 1], prev.sx[j - 1], prev.sy[j - 1], c);
+        }
+      }
+      // objects two rows behind this one can now be drawn over the land
+      this.flush(r - 2);
+      const t = prev; prev = cur; cur = t;
+    }
+    this.flush(this.rows - 1);
+    this.flush(this.rows);
+  }
+
+  /**
+   * The original's tile colour (GetLandscapeTileColour): a is the raw
+   * height of the tile's front-right corner, aLeft of its front-left.
+   * Two low bits of the height speckle the land green and brown; the
+   * pad is grey and the sea blue; rows nearer the front, and slopes
+   * facing the light, get more white.
+   */
+  classicTile(a, aLeft, bright) {
+    let r = a & 4, g = ((a & 8) >> 1) + 4, b = 0;
+    if (a === this.padRaw) { r = 4; g = 4; b = 4; }
+    if (a === this.seaRaw && aLeft === this.seaRaw) { r = 0; g = 0; b = 4; }
+    const slope = aLeft - a;
+    const t = bright + (slope > 0 ? slope >>> 22 : 0);
+    r += t; g += t; b += t;
+    if (r > 15) r = 15;
+    if (g > 15) g = 15;
+    if (b > 15) b = 15;
+    return CLASSIC[(r << 8) | (g << 4) | b];
+  }
+
+  /** The same in the enhanced look, plus infection (0-255) and fog. */
+  enhancedTile(a, aLeft, bright, fog, inf) {
+    let r = a & 4, g = ((a & 8) >> 1) + 4, b = 0;
+    if (a === this.padRaw) {
+      r = 4; g = 4; b = 4.5;
+    } else if (a === this.seaRaw && aLeft === this.seaRaw) {
+      r = 0; g = 0.5; b = 4.5;
+    } else if (inf > 0) {
+      // the virus: blend the land towards speckled red and dark red
+      const t = inf / 255;
+      r += (8 + (a & 4) - r) * t;
+      g += ((a & 8) >> 2) * 0.5 * t - g * t;
+      b += (a & 4 ? 1 : 0) * t;
+    }
+    const slope = aLeft - a;
+    let lift = bright + (slope > 0 ? slope / 4194304 : 0);
+    if (inf > 0) lift *= 1 - 0.55 * inf / 255;     // keep the virus red, not pink
+    if (lift > 16) lift = 16;
+    // The original adds pure white, which bleaches the near rows to cream
+    // in full colour. Here most of the lift brightens the colour itself,
+    // and only a little is white, so near land stays green.
+    const k = 0.55 + 0.06 * lift, w = 0.3 * lift;
+    return this.colour(r * k + w, g * k + w, b * k + w, fog);
+  }
+
+  // ----------------------------------------------------------------------
+  // Objects
+
+  /** The trees, buildings and rockets on the land in view. */
+  addObjects(world) {
+    const objects = world.objects;
+    if (!objects) return;
+    const cam = this.cam, P = this.P, alt = this.alt, mutated = world.mutated;
+    const zBack = Math.floor(cam.z) + (this.backD - EYE);
+    for (let r = 0; r <= this.rows; r++) {
+      const z = zBack - r, D = z - cam.z + EYE, zi = wrap(z, P) * P;
+      const [xs, xe] = this.rowRange(r, zBack);
+      for (let xi = xs; xi <= xe; xi++) {
+        const i = zi + wrap(xi, P), t = objects[i];
+        if (t === 0xFF || t >= OBJECT_MODELS.length) continue;
+        const a = alt[i];
+        if (a === this.seaRaw) continue;          // the map repeats, the land doesn't
+        const model = MODELS[OBJECT_MODELS[t]];
+        this.addModel(model, null, xi + 0.5 - cam.x, a / TILE - cam.y, D,
+          mutated && mutated[i] ? mutate : null);
+      }
+    }
+  }
+
+  /** Enemies, missiles and bombs, and pickups. */
+  addEnemies(world) {
+    const tumble = orientation((world.tickCount || 0) * Math.PI / 256,
+      (world.tickCount || 0) * Math.PI / 128);
+    if (world.enemies) {
+      for (const e of world.enemies) {
+        // (a sea monster under the water is hidden; the dead go next tick)
+        if (e.hidden || e.dead) continue;
+        let name = ENEMY_MODELS[e.type];
+        if (!name) continue;
+        if (name === 'seeder' && e.landed) name = 'seederLanded';
+        if (name === 'fighter' && e.hurt) name = 'fighterHurt';
+        const o = e.nose ? e : e.type === 'rock' ? tumble : IDENTITY;
+        this.addThing(MODELS[name], o, e.x, e.y, e.z, e.flash > 0 ? WHITE_FACE : null);
+      }
+    }
+    if (world.projectiles) {
+      for (const p of world.projectiles) {
+        if (p.dead) continue;
+        const name = PROJECTILE_MODELS[p.type];
+        if (name) this.addThing(MODELS[name], p.nose ? p : IDENTITY, p.x, p.y, p.z, null);
+      }
+    }
+    if (world.pickups) {
+      for (const p of world.pickups) {
+        const name = PICKUP_MODELS[p.kind];
+        if (!name) continue;
+        this.addThing(MODELS[name], orientation(0, p.spin || 0), p.x, p.y, p.z, null);
+      }
+    }
+  }
+
+  /** The player's ship (not while exploding; flashing when just born). */
+  addPlayer(world) {
+    const p = world.player;
+    if (!p || p.alive === false) return;
+    if (world.state === 'dying' || world.state === 'gameOver') return;
+    if (p.invulnerable > 0 && ((world.tickCount || 0) >> 2) & 1) return;
+    this.addThing(MODELS.ship, p.nose ? p : IDENTITY, p.x, p.y, p.z, null);
+  }
+
+  /**
+   * Something that moves freely at world position (x, y, z): draw it at
+   * every place it appears in the view (a small world can wrap round
+   * and appear more than once in a big view).
+   */
+  addThing(model, o, x, y, z, recolour) {
+    const cam = this.cam, P = this.P, m = model.radius + 1;
+    const lo = this.classic ? this.frontD : this.frontD - m;
+    const hi = this.classic ? this.backD : this.backD + m;
+    const dy = y - cam.y;
+    for (let D = wrap(z - cam.z + EYE - lo, P) + lo; D < hi; D += P) {
+      const hw = this.classic ? HALF : D * this.halfW + m;
+      for (let dx = wrap(x - cam.x + hw, P) - hw; dx < hw; dx += P) {
+        this.addModel(model, o, dx, dy, D, recolour);
+      }
+    }
+  }
+
+  /**
+   * Rotate, light and project a model whose centre is at (dx, dy, D)
+   * from the eye, and put its faces and shadow into the bins.
+   * recolour(0xRGB) -> 0xRGB changes its face colours (or is null).
+   */
+  addModel(model, o, dx, dy, D, recolour) {
+    const vs = this.vs, verts = model.vertices, nv = verts.length;
+    const rotates = model.rotates && o;
+    const f = this.f, cx = this.cx, cy = this.cy, classic = this.classic;
+    const cam = this.cam, terrain = this.terrain;
+    const shadows = model.shadow && this.opts.shadows;
+    if (nv > vs.x.length) {
+      for (const k in vs) vs[k] = new Float64Array(nv * 2);
+    }
+    // part 1: the vertices, turned and moved into place, and projected;
+    // and where each would be dropped straight down onto the land
+    for (let i = 0; i < nv; i++) {
+      const [a, b, c] = verts[i];
+      let x, y, z;
+      if (rotates) {
+        x = dx + o.nose[0] * a + o.roof[0] * b + o.side[0] * c;
+        y = dy + o.nose[1] * a + o.roof[1] * b + o.side[1] * c;
+        z = D + o.nose[2] * a + o.roof[2] * b + o.side[2] * c;
+      } else {
+        x = dx + a; y = dy + b; z = D + c;
+      }
+      if (z < 0.25) return;                   // too close to the eye
+      vs.x[i] = x; vs.y[i] = y; vs.z[i] = z;
+      const k = f / z;
+      if (classic) {
+        vs.sx[i] = cx + Math.trunc(k * x);
+        vs.sy[i] = cy + Math.trunc(k * y);
+      } else {
+        vs.sx[i] = cx + k * x;
+        vs.sy[i] = cy + k * y;
+      }
+      if (shadows) {
+        const g = terrain.altitude(cam.x + x, cam.z + z - EYE) - cam.y;
+        vs.hy[i] = classic ? cy + Math.trunc(k * g) : cy + k * g;
+      }
+    }
+
+    // part 2: the faces, far ones first if the model asks for it
+    const faces = model.faces, nf = faces.length;
+    const order = this.order;
+    order.length = 0;
+    for (let i = 0; i < nf; i++) order.push(i);
+    if (model.sort) {
+      if (this.keys.length < nf) this.keys = new Float64Array(nf * 2);
+      const keys = this.keys;
+      for (let i = 0; i < nf; i++) {
+        const v = faces[i].v;
+        keys[i] = vs.z[v[0]] + vs.z[v[1]] + vs.z[v[2]];
+      }
+      order.sort((p, q) => keys[q] - keys[p]);
+    }
+    const binFace = Math.min(this.rows, this.binFor(D) + 1), binShadow = this.binFor(D);
+    const fog = this.fogAt(D);
+    for (let n = 0; n < nf; n++) {
+      const face = faces[order[n]], v = face.v, nm = face.normal;
+      const a = v[0], b = v[1], c = v[2];
+      let nx = nm[0], ny = nm[1], nz = nm[2];
+      if (rotates) {
+        const x = o.nose[0] * nx + o.roof[0] * ny + o.side[0] * nz;
+        const y = o.nose[1] * nx + o.roof[1] * ny + o.side[1] * nz;
+        const z = o.nose[2] * nx + o.roof[2] * ny + o.side[2] * nz;
+        nx = x; ny = y; nz = z;
+      }
+      // a turning object only shows the faces pointing towards the eye
+      let visible = true;
+      if (rotates) {
+        const dot = nx * vs.x[a] + ny * vs.y[a] + nz * vs.z[a];
+        if (dot >= 0) {
+          if (face.twoSided) { nx = -nx; ny = -ny; nz = -nz; } else visible = false;
+        }
+      }
+      // its shadow: every face of a still object, the upward-facing
+      // faces of a turning one
+      if (shadows && (!rotates || ny < 0 || face.twoSided)) {
+        this.push(binShadow, 0, vs.sx[a], vs.hy[a], vs.sx[b], vs.hy[b],
+          vs.sx[c], vs.hy[c], BLACK);
+      }
+      if (!visible) continue;
+      const colour = recolour ? recolour(face.colour) : face.colour;
+      this.push(binFace, 0, vs.sx[a], vs.sy[a], vs.sx[b], vs.sy[b], vs.sx[c], vs.sy[c],
+        this.litPixel(colour, nx, ny, fog));
+    }
+  }
+
+  /** The pixel for a face of colour &RGB with normal (nx, ny) and fog. */
+  litPixel(colour, nx, ny, fog) {
+    let level;
+    if (this.classic) {
+      level = Math.floor(8 * (1 - ny)) + (nx < 0 ? 1 : 0) - 5;
+      if (level < 0) level = 0;
+    } else {
+      // the same rule without the steps, so turning ships shade smoothly
+      const left = nx < -0.25 ? 1 : nx < 0.25 ? 0.5 - 2 * nx : 0;
+      level = 8 * (1 - ny) + left - 5.5;
+      if (level < 0) level = 0;
+    }
+    return this.colour(((colour >> 8) & 15) + level, ((colour >> 4) & 15) + level,
+      (colour & 15) + level, fog);
+  }
+
+  // ----------------------------------------------------------------------
+  // Particles
+
+  /** Exhaust, bullets, smoke, sparks and debris: dots, with shadows. */
+  addParticles(world) {
+    const ps = world.particles;
+    if (!ps || !ps.count) return;
+    const cam = this.cam, P = this.P, f = this.f, cx = this.cx, cy = this.cy;
+    const classic = this.classic, terrain = this.terrain, shadows = this.opts.shadows;
+    const lo = this.frontD, hi = this.backD;
+    const scale = f / 256;
+    ps.forEach((p) => {
+      const dy = p.y - cam.y;
+      for (let D = wrap(p.z - cam.z + EYE - lo, P) + lo; D < hi; D += P) {
+        const hw = classic ? HALF : D * this.halfW + 1;
+        for (let dx = wrap(p.x - cam.x + hw, P) - hw; dx < hw; dx += P) {
+          const k = f / D;
+          let x, y, w, h;
+          if (classic) {
+            // the original: dot size by distance (z >> 25)
+            const n = Math.min(8, Math.floor(D / 2));
+            const [d0, d1, rows] = DOTS[n], [e0, e1, rows2] = SHADOW_DOTS[n];
+            x = cx + Math.trunc(k * dx);
+            y = cy + Math.trunc(k * dy);
+            if (shadows && !p.noShadow) {
+              const g = cy + Math.trunc(k * (terrain.altitude(p.x, p.z) - cam.y));
+              this.push(this.binFor(D), 1, x + e0, g, e1 - e0 + 1, rows2, 0, 0, BLACK);
+            }
+            this.push(this.binFor(D - 1), 1, x + d0, y, d1 - d0 + 1, rows, 0, 0,
+              CLASSIC[p.colour & 0xFFF]);
+            continue;
+          }
+          // enhanced: dots shrink smoothly with distance
+          const big = p.big ? 1.5 : 1;
+          w = Math.max(1, Math.round(scale * big * 30 / D));
+          h = Math.max(1, Math.round(scale * big * 21 / D));
+          x = Math.round(cx + k * dx - w / 2);
+          y = Math.round(cy + k * dy - h / 2);
+          if (shadows && !p.noShadow) {
+            const h2 = Math.max(1, h >> 1);
+            const g = Math.round(cy + k * (terrain.altitude(p.x, p.z) - cam.y) - h2 / 2);
+            this.push(this.binFor(D), 1, x, g, w, h2, 0, 0, BLACK);
+          }
+          const c = p.colour;
+          this.push(this.binFor(D - 1), 1, x, y, w, h, 0, 0,
+            this.colour((c >> 8) & 15, (c >> 4) & 15, c & 15, this.fogAt(D)));
+        }
+      }
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // A single model, for the title screen
+
+  /**
+   * Draw a model on its own, centred on (sx, sy) and about size pixels
+   * across, turned by o = { nose, roof, side } (see Maths.orientation).
+   * opts: look ('classic' / 'enhanced', default this renderer's),
+   * top and bottom (rows to clip to), recolour (0xRGB -> 0xRGB).
+   */
+  drawModelAt(name, o, sx, sy, size, opts = {}) {
+    const model = typeof name === 'string' ? MODELS[name] : name;
+    if (!model) return;
+    const s = this.surface, px = s.pixels, W = s.width;
+    const top = opts.top ?? 0, bottom = opts.bottom ?? s.height;
+    const saved = this.classic;
+    if (opts.look) this.classic = opts.look !== 'enhanced';
+    o = o || IDENTITY;
+    const R = model.radius || 1, D0 = 4 * R, k = (size / 2) / R * D0;
+    const pts = model.vertices.map(([a, b, c]) => {
+      const x = o.nose[0] * a + o.roof[0] * b + o.side[0] * c;
+      const y = o.nose[1] * a + o.roof[1] * b + o.side[1] * c;
+      const z = o.nose[2] * a + o.roof[2] * b + o.side[2] * c + D0;
+      return [x, y, z, sx + k * x / z, sy + k * y / z];
+    });
+    const list = [];
+    for (const face of model.faces) {
+      const [a, b, c] = face.v, nm = face.normal;
+      let nx = o.nose[0] * nm[0] + o.roof[0] * nm[1] + o.side[0] * nm[2];
+      let ny = o.nose[1] * nm[0] + o.roof[1] * nm[1] + o.side[1] * nm[2];
+      let nz = o.nose[2] * nm[0] + o.roof[2] * nm[1] + o.side[2] * nm[2];
+      // (a still object's faces are all drawn, as in the game)
+      const P = pts[a];
+      if (model.rotates && nx * P[0] + ny * P[1] + nz * P[2] >= 0) {
+        if (!face.twoSided) continue;
+        nx = -nx; ny = -ny; nz = -nz;
+      }
+      const colour = opts.recolour ? opts.recolour(face.colour) : face.colour;
+      list.push({ z: pts[a][2] + pts[b][2] + pts[c][2], a, b, c,
+        pixel: this.litPixel(colour, nx, ny, 0) });
+    }
+    list.sort((p, q) => q.z - p.z);
+    for (const t of list) {
+      const A = pts[t.a], B = pts[t.b], C = pts[t.c];
+      fillTriangle(px, W, top, bottom, A[3], A[4], B[3], B[4], C[3], C[4], t.pixel);
+    }
+    this.classic = saved;
+  }
+}

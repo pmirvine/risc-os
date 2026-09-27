@@ -1,0 +1,92 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lander II render test</title>
+<style>body { margin: 0; background: #222; } canvas { display: block; image-rendering: pixelated; }</style>
+<canvas id="c"></canvas>
+<script type="module">
+// Loads the extensionless disc modules as blobs (rewriting their relative
+// imports, as src/core/jsrun.js does), then renders a fake world.
+// Development page for Render/Models (not on the disc). Serve the repo with
+// node serve.mjs, open http://localhost:8371/tools/lander2/dev/render.html?...
+// Query: look=classic|enhanced view=near|medium|far|huge w h scale top
+//        mode=lander|invasion  x y z (player position)  enemies=0 fog=0 stars=0 shadows=0
+//        real=N (the real World, N autopilot ticks)  gallery=angle (every model)
+//        model=name (one model with drawModelAt)
+// In the console: lander.bench(100) -> ms per render (camera moving).
+const cache = new Map();
+async function load(url) {
+  url = new URL(url, location.href).href;
+  if (cache.has(url)) return cache.get(url);
+  const p = (async () => {
+    const src = await (await fetch(url)).text();
+    const re = /(\b(?:import|export)\b[^'";]*?\bfrom\s*)(['"])(\.\.?\/[^'"\n]+)\2/g;
+    const specs = [...src.matchAll(re)].map((m) => m[3]);
+    const map = new Map();
+    for (const s of specs) map.set(s, await load(new URL(s, url).href));
+    const code = src.replace(re, (all, pre, q, s) => `${pre}${q}${map.get(s)}${q}`);
+    return URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
+  })();
+  cache.set(url, p);
+  return p;
+}
+const q = new URLSearchParams(location.search);
+const R = await import(await load('../!Lander2/Render'));
+const S = await import(await load('../!Lander2/Surface'));
+const F = await import(await load('./fakeworld.js'));
+const M = await import(await load('../!Lander2/Maths'));
+const MODELS = await import(await load('../!Lander2/Models'));
+const look = q.get('look') || 'classic';
+const W = +(q.get('w') || (look === 'classic' ? 320 : 640));
+const H = +(q.get('h') || (look === 'classic' ? 256 : 512));
+const scale = +(q.get('scale') || (look === 'classic' ? 2 : 1));
+const surface = new S.Surface(W, H);
+const canvas = document.getElementById('c');
+canvas.width = W * scale; canvas.height = H * scale;
+const ctx = canvas.getContext('2d');
+let world;
+if (q.has('real')) {
+  // the real simulation, flown by its autopilot for 'real' ticks
+  const Wd = await import(await load('../!Lander2/World'));
+  world = new Wd.World({ mode: q.get('mode') || 'invasion', seed: 7, demo: true });
+  for (let i = 0; i < +q.get('real'); i++) world.tick(Wd.autopilotInput(world));
+} else {
+  world = F.fakeWorld({ mode: q.get('mode') || 'lander', enemies: q.get('enemies') !== '0' });
+  if (q.has('x')) F.placePlayer(world, +q.get('x'), +q.get('y'), +q.get('z'));
+}
+const r = new R.Renderer(surface, { look, view: q.get('view') || 'far',
+  fog: q.get('fog') !== '0', stars: q.get('stars') !== '0', shadows: q.get('shadows') !== '0' });
+const top = +(q.get('top') ?? (look === 'classic' ? 16 : 0));
+function frame() {
+  surface.clear(S.rgb(0, 0, 0));
+  r.render(world, top, H - top);
+  if (q.has('gallery')) {
+    surface.clear(S.rgb(20, 20, 40));
+    const names = Object.keys(MODELS.MODELS), n = Math.ceil(Math.sqrt(names.length));
+    const cw = W / n, ch = H / n, t = +q.get('gallery');
+    names.forEach((name, i) => r.drawModelAt(name, M.orientation(0.35, t + i * 0.1),
+      (i % n + 0.5) * cw, (Math.floor(i / n) + 0.5) * ch, Math.min(cw, ch) * 0.8));
+  }
+  if (q.has('model')) {
+    const t = world.tickCount / 50;
+    r.drawModelAt(q.get('model'), M.orientation(0.3 * Math.sin(t), t), W * 0.8, H * 0.2, W * 0.25);
+  }
+  surface.present(ctx, 0, 0, W * scale, H * scale);
+}
+frame();
+window.lander = { world, r, surface, F, M, frame,
+  bench(n = 100, dz = 0.1) {
+    const p = world.player, x0 = p.x, z0 = p.z, y0 = p.y;
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) {
+      F.placePlayer(world, x0 + i * dz * 0.3, y0, z0 - i * dz);
+      world.tickCount++;
+      r.render(world, top, H - top);
+    }
+    const t1 = performance.now();
+    F.placePlayer(world, x0, y0, z0);
+    frame();
+    return (t1 - t0) / n;
+  },
+};
+window.ready = true;
+</script>

@@ -1,0 +1,740 @@
+// Lander II - World: the whole game, one tick at a time.
+//
+//   const world = new World({ mode: 'invasion', difficulty: 'normal',
+//                             seed: 12345, demo: false, particles: 1000 });
+//   world.tick(input);        // 1/50 s: move everything, play the rules
+//
+// The World knows nothing about screens, sound or the mouse: the front
+// end turns the mouse or keys into `input` each tick, and reads what it
+// needs to draw (the player, aliens, particles, the infection map, ...)
+// and `world.events`, the things that happened in the last tick (a shot,
+// an explosion...) that want a sound or a message. Given the same seed
+// and the same inputs it plays out exactly the same, so a demo can be
+// replayed and tests can fly the ship with a script.
+//
+// Two games:
+//  - 'lander': Lander+, the original's rules on the original's 256-tile
+//    landscape (David Braben, 1987; formulas from Mark Moxon's
+//    commentary at lander.bbcelite.com): 500 points to start, -1 a shot,
+//    +20 for each object destroyed, rocks from 800 points, gravity up at
+//    1024 and 1488, refuel on the pad, three lives.
+//  - 'invasion': Zarch-like waves of aliens spreading a virus over a
+//    64 x 64-tile landscape (see Enemies, Virus and Waves).
+//
+// The flight model is in Player, the aliens in Enemies, the infection in
+// Virus, wave contents and difficulty in Waves, particles in Particles.
+//
+// Fields beyond the shared contract (for anyone who wants them):
+//   world.gravity is in tiles per tick^2; world.gravityLevel the same in
+//     the original's units (0x30000 = Lander's normal gravity)
+//   world.gameOverReason  'lives' | 'infection' (at 'gameOver')
+//   world.hitFlash        ticks of red screen flash after a hit (Hud)
+//   world.kills           aliens destroyed this game
+//   world.info            this wave's settings (Waves.waveInfo)
+//   world.virus           the Virus object behind world.infection
+//   player.fireTimer      ticks to the next shot
+//   enemy.hidden (sea monster under water: don't draw), enemy.beam
+//     (attractor's tractor beam is on), enemy.dead, enemy.dir/pitch
+//   pickups[i].life       ticks before it vanishes
+//   extra events: 'enemyMutated' {id}, 'newLandscape' {name},
+//     'landingBonus' {score}; extra event fields: crash {cause}, gameOver
+//     {reason}, objectDestroyed {object, score}, explodeSmall/Large {enemy,
+//     score} (or {bomb}/{projectile}), enemyFire {enemy, bolt}, shieldHit
+//     {strength}, virusAlert {base} when it is the pad under attack
+//   Right after construction world.events holds wave 1's 'waveStart'.
+//   world.aliensLeft      aliens still to destroy this wave (Hud)
+//   world.debugKillAll()  destroys every alien (tests and cheats)
+//   world.setParticleMax(n)  change the detail setting while playing
+//   autopilotInput(world) (from Player) a crude autopilot input
+
+import { Rng, len3 } from './Maths';
+import { Terrain, PAD_SIZE, UNDERCARRIAGE } from './Terrain';
+import { Particles, PF } from './Particles';
+import {
+  makePlayer, placeOnPad, steerShip, moveShip, shipTouchesGround, autopilotInput,
+  HIGHEST_ALTITUDE, LANDING_SPEED, SAFE_HEIGHT, PAD_Y, START_FUEL, REFUEL, CAMERA_Z,
+} from './Player';
+import { DIFFICULTY, waveInfo, gravityPerTick } from './Waves';
+import { Virus, isTree } from './Virus';
+import {
+  ENEMY, isHostile, spawnEnemy, updateEnemies, updateProjectiles, updatePickups,
+  damageEnemy, killEnemy, dropRock, addProjectile,
+} from './Enemies';
+
+export { autopilotInput };
+export const TICK = 1 / 50;              // seconds per tick
+
+const NEUTRAL = { stickX: 0, stickY: 0, thrust: false, hover: false, fire: false,
+  missile: false, smartBomb: false };
+
+// the player's bullet (the original's flags &01BC00FF): splashes, bounces
+// into a small explosion, falls, destroys objects
+const BULLET = PF.PLAYER | PF.SPLASH | PF.BOUNCE | PF.GRAVITY | PF.DESTROY |
+  PF.BIG_SPLASH | PF.EXPLODE | PF.BIG | PF.KEEP;
+const SPORE = PF.VIRUS | PF.GRAVITY | PF.KEEP;
+
+export class World {
+  constructor(opts = {}) {
+    this.mode = opts.mode === 'lander' ? 'lander' : 'invasion';
+    this.difficulty = DIFFICULTY[opts.difficulty] ? opts.difficulty : 'normal';
+    this.diff = DIFFICULTY[this.difficulty];
+    this.seed = opts.seed ?? 1;
+    this.demo = !!opts.demo;
+    this.rng = new Rng(this.seed);                 // everything that matters
+    this.particles = new Particles(opts.particles ?? 1000, (this.seed ^ 0x5BD1E995) | 0);
+    this.tickCount = 0;
+    this.events = [];
+    this.nextId = 0;
+    this.enemies = [];
+    this.projectiles = [];
+    this.pickups = [];
+    this.player = makePlayer();
+    this.message = null;
+    this.tally = null;
+    this.hitFlash = 0;
+    this.kills = 0;
+    this.gameOverReason = null;
+    this.camera = { x: 0, y: 0, z: 0 };
+    this.lander = this.mode === 'lander';
+
+    if (this.lander) {
+      this.setTerrain(new Terrain('lander'));
+      this.score = 500;
+      this.lives = 3;
+      this.missiles = 0;
+      this.smartBombs = 0;
+      this.wave = 0;
+      this.landscape = 0;
+      this.setGravity(0x30000);
+      this.state = 'playing';
+      this.stateTimer = 0;
+      this.info = { fireScale: 1, enemyMissiles: false };
+    } else {
+      this.score = 0;
+      this.lives = this.diff.lives;
+      this.missiles = this.diff.missiles;
+      this.smartBombs = this.diff.smartBombs;
+      this.player.fuel = this.player.maxFuel;
+      this.nextBonus = 5000;
+      this.landscape = -1;
+      this.startWave(1);
+    }
+    this.highScore = Math.max(opts.highScore ?? 0, this.lander ? 500 : 0);
+    this.updateCamera();
+  }
+
+  get period() { return this.terrain.period; }
+
+  /** Aliens still to destroy in this wave (flying now or yet to come). */
+  get aliensLeft() { return this.lander ? 0 : this.queue.length + this.hostileCount(); }
+
+  // ---------------------------------------------------------------- setting up
+  setTerrain(terrain) {
+    this.terrain = terrain;
+    const n = terrain.period * terrain.period;
+    if (!this.objects || this.objects.length !== n) {
+      this.objects = new Uint8Array(n);
+      this.virus = new Virus(terrain.period);
+      this.infection = this.virus.map;
+      this.mutated = this.virus.mutated;
+    }
+    if (!this.lander) this.virus.reset(terrain);
+    this.infectedPercent = 0;
+    this.placeObjects();
+  }
+
+  /**
+   * PlaceObjectsOnMap: random trees, gazebos and buildings on the land,
+   * and the three rockets beside the launch pad. The original makes 2049
+   * attempts on its 256 x 256 map; Invasion's smaller map gets 400.
+   */
+  placeObjects() {
+    const t = this.terrain, P = t.period, o = this.objects;
+    o.fill(0xFF);
+    const tries = this.lander ? 2049 : 400;
+    for (let k = 0; k < tries; k++) {
+      const r = this.rng.next();
+      // the tile from the top bits of the number, as the original
+      const x = P === 256 ? r >>> 24 : r >>> 26;
+      const z = P === 256 ? (r >>> 16) & 255 : (r >>> 20) & 63;
+      if (t.isSea(x, z) || t.isPad(x, z)) continue;
+      o[z * P + x] = (r & 7) + 1;
+    }
+    o[P + 7] = 9; o[3 * P + 7] = 9; o[5 * P + 7] = 9;
+  }
+
+  setGravity(level) {
+    this.gravityLevel = level;
+    this.gravity = gravityPerTick(level);
+  }
+
+  /** Change the particle detail limit (484 / 1000 / 2000). */
+  setParticleMax(n) { this.particles.setMax(n); }
+
+  emit(type, x, y, z, extra) {
+    const e = { type, x, y, z };
+    if (extra) Object.assign(e, extra);
+    this.events.push(e);
+    return e;
+  }
+
+  // ---------------------------------------------------------------- the tick
+  /** Advance the game by one 1/50 s tick. */
+  tick(input) {
+    input = input || NEUTRAL;
+    this.events = [];
+    this.tickCount++;
+    const p = this.player;
+    if (p.alive && this.state !== 'gameOver') this.updatePlayer(input);
+    else { p.thrusting = p.hovering = p.firing = p.refuelling = false; }
+    if (this.lander) this.dropRocks();
+    else {
+      updateEnemies(this);
+      updateProjectiles(this);
+      updatePickups(this);
+    }
+    this.particles.move(this);
+    this.checkBullets();
+    this.checkCollisions();
+    if (!this.lander) this.updateVirus();
+    this.updateState();
+    // tidy away the dead
+    const alive = (l) => (l.some((o) => o.dead) ? l.filter((o) => !o.dead) : l);
+    this.enemies = alive(this.enemies);
+    this.projectiles = alive(this.projectiles);
+    this.pickups = alive(this.pickups);
+    if (this.message && --this.message.ticks <= 0) this.message = null;
+    if (this.hitFlash > 0) this.hitFlash--;
+    if (!this.demo && this.score > this.highScore) this.highScore = this.score;
+  }
+
+  // ---------------------------------------------------------------- the player
+  updatePlayer(input) {
+    const p = this.player, t = this.terrain, inv = !this.lander;
+    steerShip(p, input);
+    let thrust = !!input.thrust, hover = !!input.hover && this.diff.hover !== false;
+    let fire = !!input.fire;
+    if (this.lander) hover = !!input.hover;
+    if (p.fuel <= 0) { thrust = hover = false; if (!inv) fire = false; }
+    if (p.y < HIGHEST_ALTITUDE) thrust = hover = false;     // engines cut out
+    // fuel: the original burns 4 a frame thrusting, 2 hovering and 1
+    // firing; Invasion's bullets are free
+    const burn = (thrust ? 2 : 0) + (hover ? 1 : 0) + (fire && !inv ? 0.5 : 0);
+    p.fuel = Math.max(0, p.fuel - burn);
+    moveShip(p, thrust, hover, this.gravity, t.period);
+    p.thrusting = thrust; p.hovering = hover; p.firing = fire;
+    if (p.invulnerable > 0) p.invulnerable--;
+    this.updateCamera();
+
+    // collisions with objects: in the band 1.5 tiles above the ground
+    const feet = t.altitude(p.x, p.z) - UNDERCARRIAGE;
+    const h = feet - p.y;
+    const wasLanded = p.landed;
+    p.landed = false; p.refuelling = false;
+    if (h >= 0 && h < SAFE_HEIGHT) {
+      const o = this.objects[t.index(p.x, p.z)];
+      if (o !== 0 && o < 12) return this.killPlayer('object');
+    }
+    // LandOnLaunchpad: feet below the ground is a crash, unless on the pad
+    if (p.y > feet) {
+      if (!t.isPad(p.x, p.z)) return this.killPlayer('ground');
+      const speed = Math.abs(p.vx) + Math.abs(p.vy) + Math.abs(p.vz);
+      if (speed < LANDING_SPEED) this.onPad(wasLanded);
+      else if (inv) {
+        // Invasion: you cannot crash on the pad; a hard landing bounces
+        p.y = PAD_Y; p.vy = -Math.abs(p.vy) * 0.3; p.vx *= 0.5; p.vz *= 0.5;
+      }
+      // (Lander+: the ship sinks into the pad and the test below catches it)
+    } else if (wasLanded && p.y >= feet - 1e-9 && t.isPad(p.x, p.z)) {
+      // Resting exactly at pad height: as in the original, the ship only
+      // "lands" (and refuels) every other frame, as gravity pulls it back
+      // down; in between it is still sitting on the pad.
+      p.landed = true;
+      p.refuelling = p.fuel < p.maxFuel;
+    }
+    this.updateCamera();
+    // the crash test: any corner of the ship below the ground
+    if (shipTouchesGround(p, t, inv ? (x, z) => t.isPad(x, z) : null)) {
+      return this.killPlayer('ground');
+    }
+
+    // exhaust: 4 particles a tick thrusting, 1 hovering (8 and 2 a frame)
+    if (thrust || hover) {
+      const r = p.roof, n = thrust ? 4 : 1;
+      const vx = p.vx / 2 + r[0] / 4, vy = p.vy / 2 + r[1] / 4, vz = p.vz / 2 + r[2] / 4;
+      const x = p.x - p.vx + r[0] / 2, y = p.y - p.vy + r[1] / 2;
+      const z = p.z - p.vz + r[2] / 2;
+      for (let k = 0; k < n; k++) this.particles.exhaust(x, y, z, vx, vy, vz);
+    }
+    // firing: autofire, one bullet every 2 ticks (every frame in the original)
+    if (p.fireTimer > 0) p.fireTimer--;
+    if (fire && p.fireTimer <= 0) {
+      p.fireTimer = 2;
+      const nz = p.nose;
+      const bx = p.vx + nz[0] / 4, by = p.vy + nz[1] / 4, bz = p.vz + nz[2] / 4;
+      this.particles.add(p.x - 2 * bx + nz[0], p.y - 2 * by + nz[1], p.z - 2 * bz + nz[2],
+        bx, by, bz, 40, BULLET, 0xFFF);
+      this.addScore(-1);
+      this.shots = (this.shots || 0) + 1;
+      this.emit('fire', p.x, p.y, p.z);
+    }
+    if (inv && input.missile) this.launchMissile();
+    if (inv && input.smartBomb) this.smartBomb();
+    if (p.alive && p.fuel < p.maxFuel * 0.15 && this.tickCount % 50 === 0) {
+      this.emit('lowFuel', p.x, p.y, p.z);
+      if (!this.message) this.message = { text: 'LOW FUEL', ticks: 40 };
+    }
+  }
+
+  /** Resting on the pad: stop, refuel, re-arm, landing bonus. */
+  onPad(wasLanded) {
+    const p = this.player;
+    p.vx = p.vy = p.vz = 0;
+    p.y = PAD_Y;
+    p.landed = true;
+    if (!wasLanded) {
+      this.emit('land', p.x, p.y, p.z);
+      if (!this.lander && this.killsSinceLanding > 0) {
+        const bonus = 50 * this.wave;
+        this.killsSinceLanding = 0;
+        this.addScore(bonus);
+        this.emit('landingBonus', p.x, p.y, p.z, { score: bonus });
+        this.message = { text: 'LANDING BONUS ' + bonus, ticks: 100 };
+      }
+      this.padTicks = 0;
+    }
+    if (p.fuel < p.maxFuel) {
+      p.refuelling = true;
+      p.fuel = Math.min(p.maxFuel, p.fuel + REFUEL);
+      if (p.fuel >= p.maxFuel) this.emit('refuelFull', p.x, p.y, p.z);
+    }
+    // Invasion (not Zarch rules): a missile back every 3 s on the pad
+    // (this runs every other tick, see above)
+    this.padTicks = (this.padTicks || 0) + 1;
+    if (!this.lander && this.diff.rearm && this.padTicks % 75 === 0 &&
+      this.missiles < this.diff.missiles) this.missiles++;
+  }
+
+  /** The original's camera: above the ship, 5 tiles behind it. */
+  updateCamera() {
+    const p = this.player, c = this.camera;
+    c.x = p.x;
+    c.y = Math.min(p.y, 0);
+    c.z = this.terrain.wrap(p.z + CAMERA_Z);
+  }
+
+  launchMissile() {
+    const p = this.player, t = this.terrain;
+    if (this.missiles <= 0) return;
+    // the nearest alien within 60 degrees of the nose, else the nearest
+    let best = null, bestCone = null, bd = 1e9, bc = 1e9;
+    for (const e of this.enemies) {
+      if (e.dead || !isHostile(e) || e.hidden) continue;
+      const dx = t.delta(p.x, e.x), dy = e.y - p.y, dz = t.delta(p.z, e.z);
+      const d = len3(dx, dy, dz);
+      if (d < bd) { bd = d; best = e; }
+      const c = (dx * p.nose[0] + dy * p.nose[1] + dz * p.nose[2]) / (d || 1);
+      if (c > 0.5 && d < bc && d < 40) { bc = d; bestCone = e; }
+    }
+    const n = p.nose;
+    addProjectile(this, 'missile', p.x + n[0], p.y + n[1], p.z + n[2],
+      p.vx + n[0] * 0.15, p.vy + n[1] * 0.15, p.vz + n[2] * 0.15, bestCone || best);
+    this.missiles--;
+    this.emit('missileLaunch', p.x, p.y, p.z);
+  }
+
+  /**
+   * A smart bomb destroys every alien in and around the view (attractors
+   * only lose half their strength), and every bullet, spore and bomb.
+   */
+  smartBomb() {
+    const p = this.player, t = this.terrain;
+    if (this.smartBombs <= 0) return;
+    this.smartBombs--;
+    this.emit('smartBomb', p.x, p.y, p.z);
+    this.hitFlash = 12;
+    const inView = (x, z) => {
+      const dx = t.delta(p.x, x), dz = t.delta(p.z, z);
+      return Math.abs(dx) <= 16 && dz >= -26 && dz <= 6;
+    };
+    for (const e of this.enemies) {
+      if (e.dead || !isHostile(e) || !inView(e.x, e.z)) continue;
+      if (e.type === 'attractor') damageEnemy(this, e, 3, 'smartBomb');
+      else killEnemy(this, e, 'smartBomb');
+    }
+    for (const m of this.projectiles) {
+      if (m.type !== 'missile' && inView(m.x, m.z)) {
+        m.dead = true; this.particles.explosion(m.x, m.y, m.z, 3);
+      }
+    }
+    const q = this.particles.keep;
+    for (let i = 0; i < q.count; i++) {
+      if ((q.flags[i] & (PF.ENEMY | PF.VIRUS)) && inView(q.x[i], q.z[i])) q.kill(i);
+    }
+  }
+
+  /**
+   * An enemy bullet, bomb or missile hit the ship: the shield (a pickup)
+   * takes it, else it costs fuel; with an empty tank the ship is lost.
+   */
+  hitPlayer(strength, x, y, z) {
+    const p = this.player;
+    if (!p.alive || p.invulnerable > 0 || p.landed) return;   // safe on the pad
+    this.emit('shieldHit', x, y, z, { strength });
+    this.hitFlash = 6;
+    if (p.shield > 0) { p.shield--; return; }
+    if (p.fuel <= 0) { this.killPlayer('shot'); return; }
+    p.fuel = Math.max(0, p.fuel - this.diff.shieldCost * strength);
+    if (p.fuel === 0) this.message = { text: 'SHIELDS GONE', ticks: 80 };
+  }
+
+  /**
+   * LoseLife: the ship explodes; the dying state counts down. cause:
+   * 'ground', 'object', 'shot', 'collision' or 'rock' (in the crash event).
+   */
+  killPlayer(cause) {
+    const p = this.player;
+    if (!p.alive) return;
+    p.alive = false; p.landed = false;
+    p.thrusting = p.hovering = p.firing = p.refuelling = false;
+    this.state = 'dying';
+    this.stateTimer = this.lander ? 60 : 100;        // 30 frames in the original
+    this.particles.explosion(p.x, p.y - 5 / 16, p.z, 81);
+    this.emit('crash', p.x, p.y, p.z, { cause });
+  }
+
+  respawn() {
+    const p = this.player;
+    placeOnPad(p);
+    if (!this.lander) {
+      p.invulnerable = this.diff.invulnerable;
+      p.fuel = Math.max(p.fuel, START_FUEL);
+      this.state = this.phase;
+      this.stateTimer = this.phaseTimer;
+    } else {
+      this.state = 'playing';
+      this.stateTimer = 0;
+    }
+    this.updateCamera();
+    this.emit('respawn', p.x, p.y, p.z);
+  }
+
+  endGame(reason) {
+    this.state = 'gameOver';
+    this.stateTimer = 0;
+    this.gameOverReason = reason;
+    this.player.alive = false;
+    const text = reason === 'infection' ? 'THE LAND IS LOST' : 'GAME OVER';
+    this.message = { text, ticks: 250 };
+    this.emit('gameOver', this.player.x, this.player.y, this.player.z, { reason });
+  }
+
+  addScore(n) {
+    this.score += n;
+    if (!this.lander && this.diff.floorScore && this.score < 0) this.score = 0;
+    if (!this.lander && this.score >= this.nextBonus) {
+      // every 5000: an extra life, a missile and a smart bomb
+      this.nextBonus += 5000;
+      this.lives++;
+      this.missiles = Math.min(9, this.missiles + 1);
+      this.smartBombs = Math.min(3, this.smartBombs + 1);
+      const p = this.player;
+      this.emit('extraLife', p.x, p.y, p.z);
+      this.message = { text: 'EXTRA LIFE', ticks: 100 };
+    }
+  }
+
+  // ---------------------------------------------------------------- hooks
+  /** A bullet or rock reached an object's tile; true if the particle is used up. */
+  particleHitsObject(q, i, k, x, y, z) {
+    const o = this.objects[k];
+    if (o >= 12) { this.particles.explosion(x, y, z, 3); return true; }
+    this.objectDestroyed(k, x, y, z, false);
+    return true;
+  }
+
+  /**
+   * Object k is destroyed (by a bullet, a rock or a drone): it becomes
+   * smoking remains (type + 12). Lander+ scores 20 unless a rock did it;
+   * Invasion scores 40 for a mutated tree, nothing for your own scenery.
+   */
+  objectDestroyed(k, x, y, z, byRock) {
+    const o = this.objects[k];
+    if (o === 0xFF || o >= 12) return;
+    this.objects[k] = o + 12;
+    let score = 0;
+    if (this.lander) score = byRock ? 0 : 20;
+    else if (this.mutated[k]) { score = byRock ? 0 : 40; this.mutated[k] = 0; }
+    if (score) this.addScore(score);
+    this.particles.explosion(x, y, z, 20);
+    this.emit('objectDestroyed', x, y, z, { object: o, score });
+  }
+
+  /** A bullet, enemy bullet or virus spore reached the ground. */
+  particleLands(q, i, x, y, z, sea) {
+    const f = q.flags[i];
+    if (f & PF.PLAYER) this.emit('hitSmall', x, y, z);
+    if (!(f & PF.VIRUS) || sea || this.lander) return;
+    this.virus.spore(x, z, this.diff.infect);
+    const k = this.terrain.index(x, z);
+    if ((f & PF.MUTATE) && isTree(this.objects[k]) && !this.mutated[k] &&
+      this.rng.chance(0.35)) {
+      this.mutated[k] = 1;
+      this.emit('treeMutated', x, y, z);
+    }
+    // virus landing within 5 tiles of the pad: "base under attack"
+    const t = this.terrain;
+    const dx = Math.max(0, Math.abs(t.delta(PAD_SIZE / 2, x)) - PAD_SIZE / 2);
+    const dz = Math.max(0, Math.abs(t.delta(PAD_SIZE / 2, z)) - PAD_SIZE / 2);
+    if (Math.hypot(dx, dz) < 5 && this.tickCount - (this.baseAlert ?? -1e9) > 500) {
+      this.baseAlert = this.tickCount;
+      const percent = Math.round(this.infectedPercent);
+      this.emit('virusAlert', x, y, z, { percent, base: true });
+      this.message = { text: 'BASE UNDER ATTACK', ticks: 100 };
+    }
+  }
+
+  /** Called by Enemies when an alien is destroyed. */
+  enemyKilled(e, cause) {
+    this.kills++;
+    this.waveKills++;
+    this.killsSinceLanding++;
+  }
+
+  collectPickup(k) {
+    const p = this.player;
+    if (k.kind === 'fuel') p.fuel = Math.min(p.maxFuel, p.fuel + 1000);
+    else if (k.kind === 'missile') this.missiles = Math.min(9, this.missiles + 1);
+    else if (k.kind === 'shield') p.shield += 3;
+    else if (k.kind === 'cleanse') this.virus.clean(k.x, k.z, 8);
+    this.emit('pickup', k.x, k.y, k.z, { kind: k.kind });
+    this.message = { text: k.kind.toUpperCase(), ticks: 60 };
+  }
+
+  // ---------------------------------------------------------------- hit tests
+  /** Player bullets against aliens and bombs; enemy bullets against the ship. */
+  checkBullets() {
+    const q = this.particles.keep, t = this.terrain, p = this.player;
+    for (let i = 0; i < q.count; i++) {
+      const f = q.flags[i];
+      if (f & PF.DEAD) continue;
+      if (f & PF.PLAYER) {
+        for (const e of this.enemies) {
+          if (e.dead || e.hidden || !isHostile(e)) continue;
+          if (segmentHits(t, q, i, e.x, e.y, e.z, ENEMY[e.type].radius + 0.15)) {
+            q.kill(i);
+            this.hits = (this.hits || 0) + 1;
+            damageEnemy(this, e, 1, 'bullet');
+            break;
+          }
+        }
+        if (q.flags[i] & PF.DEAD) continue;
+        for (const m of this.projectiles) {
+          if (m.dead || m.type === 'missile') continue;
+          if (segmentHits(t, q, i, m.x, m.y, m.z, 0.5)) {
+            q.kill(i);
+            m.dead = true;
+            this.addScore(50);
+            this.particles.explosion(m.x, m.y, m.z, 6);
+            this.emit('explodeSmall', m.x, m.y, m.z, { projectile: m.type, score: 50 });
+            break;
+          }
+        }
+      } else if ((f & PF.ENEMY) && p.alive && segmentHits(t, q, i, p.x, p.y, p.z, 0.6)) {
+        q.kill(i);
+        this.hitPlayer(1, q.x[i], q.y[i], q.z[i]);
+      }
+    }
+  }
+
+  /** Aliens and rocks running into the ship: both are destroyed. */
+  checkCollisions() {
+    const p = this.player, t = this.terrain;
+    if (!p.alive) return;
+    for (const e of this.enemies) {
+      if (e.dead || e.hidden) continue;
+      const dx = t.delta(p.x, e.x), dy = e.y - p.y, dz = t.delta(p.z, e.z);
+      if (e.type === 'rock') {
+        // the original: within a tile on every axis
+        if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(dz) < 1) {
+          this.killPlayer('rock');
+          return;
+        }
+        continue;
+      }
+      if (!isHostile(e)) continue;
+      if (len3(dx, dy, dz) < 0.8 + ENEMY[e.type].radius) {
+        killEnemy(this, e, 'collision');
+        if (p.invulnerable <= 0) { this.killPlayer('collision'); return; }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- Lander+ rocks
+  /** DropRocksFromTheSky: from 800 points, chance (score - 800) / 16384 a frame. */
+  dropRocks() {
+    const r = this.score - 800;
+    if (this.player.alive && r > 0 && this.rng.float() * 32768 < r) {
+      dropRock(this);                  // half a frame's chance each tick
+    }
+    updateEnemies(this);               // the rocks fall and bounce
+  }
+
+  // ---------------------------------------------------------------- the virus
+  updateVirus() {
+    const v = this.virus, t = this.terrain, P = t.period;
+    if (this.phase !== 'waveEnd') {
+      if (this.tickCount % 100 === 0) v.creep(this.rng, 4 * this.diff.infect);
+      // each mutated tree sheds a spore every 2 s (a slice of the map a tick)
+      for (let k = this.tickCount % 100; k < v.mutated.length; k += 100) {
+        if (!v.mutated[k] || !isTree(this.objects[k])) continue;
+        const x = (k % P) + 0.5, z = Math.floor(k / P) + 0.5, rng = this.rng;
+        const a = rng.float() * Math.PI * 2, s = 0.01 + rng.float() * 0.03;
+        this.particles.add(x, t.altitude(x, z) - 1, z,
+          Math.cos(a) * s, -0.05, Math.sin(a) * s, 200, SPORE, 0xF24);
+      }
+    }
+    this.infectedPercent = v.percent;
+    for (const th of [50, 75, 90]) {
+      if (this.infectedPercent >= th && !this.alerted[th]) {
+        this.alerted[th] = true;
+        const p = this.player;
+        this.emit('virusAlert', p.x, p.y, p.z, { percent: th });
+        this.message = { text: 'INFECTION ' + th + '%', ticks: 100 };
+      }
+    }
+    if (this.diff.infectionOver && this.infectedPercent >= 90) {
+      this.infectionTimer++;
+      if (this.infectionTimer >= 500 && this.state !== 'gameOver') {
+        this.endGame('infection');
+      }
+    } else this.infectionTimer = 0;
+  }
+
+  // ---------------------------------------------------------------- waves
+  startWave(n) {
+    this.wave = n;
+    this.info = waveInfo(n, this.difficulty);
+    this.setGravity(this.info.gravity);
+    const p = this.player;
+    if (this.info.landscape !== this.landscape) {
+      // a new, clean landscape: everyone back to the pad
+      this.landscape = this.info.landscape;
+      this.setTerrain(new Terrain('invasion', this.landscape));
+      this.enemies = [];
+      this.projectiles = [];
+      this.pickups = [];
+      this.particles.clear();
+      if (p.alive) placeOnPad(p);
+      this.updateCamera();
+      if (n > 1) this.emit('newLandscape', p.x, p.y, p.z, { name: this.terrain.name });
+      let sea = 0;
+      for (const l of this.virus.land) if (l === 0) sea++;
+      if (sea > 150) spawnEnemy(this, 'monster');
+    }
+    this.queue = this.info.order.slice();
+    this.waveKills = 0;
+    this.killsSinceLanding = this.killsSinceLanding || 0;
+    this.shots = 0;
+    this.hits = 0;
+    this.alerted = {};
+    this.infectionTimer = 0;
+    this.tally = null;
+    this.phase = 'waveStart';
+    this.phaseTimer = 150;
+    this.spawnTimer = 0;
+    if (p.alive) { this.state = this.phase; this.stateTimer = this.phaseTimer; }
+    const name = n % 5 === 0 || n === 1 ? ' - ' + this.terrain.name.toUpperCase() : '';
+    this.message = { text: 'WAVE ' + n + name, ticks: 150 };
+    this.emit('waveStart', p.x, p.y, p.z, { wave: n });
+  }
+
+  /** The wave is cleared: the tally and the bonus for clean land. */
+  endWave() {
+    const clean = Math.max(0, Math.round(100 - this.infectedPercent));
+    const landBonus = clean * 10 * this.wave;
+    const perfectBonus = this.virus.sum === 0 ? 2000 : 0;
+    this.tally = { wave: this.wave, kills: this.waveKills, shots: this.shots,
+      hits: this.hits, cleanPercent: clean, landBonus, perfectBonus };
+    this.addScore(landBonus + perfectBonus);
+    this.projectiles = [];
+    this.particles.clear(PF.ENEMY | PF.VIRUS);
+    this.phase = 'waveEnd';
+    this.phaseTimer = 250;
+    const p = this.player;
+    this.message = { text: 'WAVE ' + this.wave + ' CLEARED', ticks: 150 };
+    this.emit('waveCleared', p.x, p.y, p.z, { wave: this.wave });
+  }
+
+  hostileCount() {
+    let n = 0;
+    for (const e of this.enemies) if (!e.dead && isHostile(e)) n++;
+    return n;
+  }
+
+  updateState() {
+    if (this.state === 'gameOver') return;
+    if (this.state === 'dying') {
+      if (--this.stateTimer <= 0) {
+        this.lives--;
+        if (this.lives <= 0) this.endGame('lives');
+        else this.respawn();
+      }
+      if (this.lander) return;
+    } else if (this.lander) {
+      // PrintCurrentScore raises gravity with the score (an unsigned
+      // comparison in the original, so a negative score counts as huge)
+      const s = this.score >>> 0;
+      if (s >= 1488) this.setGravity(0x70000);
+      else if (s >= 1024 && this.gravityLevel < 0x50000) this.setGravity(0x50000);
+      return;
+    }
+    // Invasion: waves roll on while the player is alive
+    if (!this.player.alive) return;
+    if (this.phase === 'waveStart') {
+      if (--this.phaseTimer <= 0) { this.phase = 'playing'; this.spawnTimer = 0; }
+    } else if (this.phase === 'playing') {
+      const alive = this.hostileCount();
+      if (this.queue.length && alive < this.info.maxAlive &&
+        (--this.spawnTimer <= 0 || alive === 0)) {
+        // the first three arrive together, then one every few seconds
+        const first = this.queue.length === this.info.order.length;
+        const n = first ? Math.min(3, this.queue.length) : 1;
+        for (let k = 0; k < n; k++) spawnEnemy(this, this.queue.shift());
+        this.spawnTimer = this.diff.spawnGap;
+      } else if (!this.queue.length && alive === 0) this.endWave();
+    } else if (this.phase === 'waveEnd') {
+      if (--this.phaseTimer <= 0) {
+        this.virus.cleanse(this.diff.residual);
+        this.startWave(this.wave + 1);
+      }
+    }
+    if (this.state !== 'gameOver') {
+      this.state = this.phase;
+      this.stateTimer = this.phaseTimer;
+    }
+  }
+
+  // ---------------------------------------------------------------- debugging
+  /** Destroy every alien at once (for tests; scores as a smart bomb would). */
+  debugKillAll() {
+    for (const e of this.enemies) {
+      if (!e.dead && isHostile(e)) killEnemy(this, e, 'debug');
+    }
+    this.queue = [];
+  }
+}
+
+/**
+ * Did particle i of pool q pass within r of (x, y, z) during its last
+ * move (the segment from where it was to where it is)?
+ */
+function segmentHits(t, q, i, x, y, z, r) {
+  const ex = t.delta(q.x[i], x), ey = y - q.y[i], ez = t.delta(q.z[i], z);
+  const sx = -q.vx[i], sy = -q.vy[i], sz = -q.vz[i];
+  const ss = sx * sx + sy * sy + sz * sz;
+  let k = ss > 0 ? (ex * sx + ey * sy + ez * sz) / ss : 0;
+  k = k < 0 ? 0 : k > 1 ? 1 : k;
+  const dx = ex - sx * k, dy = ey - sy * k, dz = ez - sz * k;
+  return dx * dx + dy * dy + dz * dz < r * r;
+}

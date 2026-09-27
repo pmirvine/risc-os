@@ -1,0 +1,527 @@
+// Lander II - !RunImage: the application itself.
+//
+// Lander II is an enhanced, Zarch-like game grown from David Braben's 1987
+// Archimedes demo Lander. This file is the "shell" round the game: it
+// puts the icon on the icon bar, takes over the screen (or opens a
+// window), passes the mouse and keys on, and runs the main loop. The rest
+// is in the other files in this directory (Shift-double-click one to read
+// it in !JsEdit):
+//
+//   Maths, Terrain, Surface   small building blocks
+//   World, Player, Enemies,   the simulation: the ship, the aliens, the
+//   Waves, Virus, Particles   virus, waves, sparks and smoke
+//   Models, Render, Raster    the 3D shapes and the software renderer
+//   Sound, Sfx...             sound effects made with Web Audio
+//   Input, Autopilot          the mouse / keys / gamepad, and the demo pilot
+//   Font, Hud, Menu,          text, the score bar and scanner, and the
+//   Screens, Play             title, menus, settings and game screens
+//   Settings, Scores          the choices and high scores (in Choices:)
+//
+// The main loop. The game world moves in fixed steps of 1/50 second
+// (a "tick"), however fast the screen is redrawn: each displayed frame
+// works out how many ticks are due since the last one (times the Game
+// speed setting), runs them, collects the sound events they made, and
+// then draws the picture once. After a pause (a hidden tab, a slow
+// moment) it doesn't try to catch up more than a few ticks.
+
+import { Menu as WimpMenu, infoBox, os, wimp } from 'riscos';
+import { Surface } from './Surface';
+import { Renderer } from './Render';
+import { Sound } from './Sound';
+import { Input } from './Input';
+import { Hud } from './Hud';
+import { loadSettings, saveSettings, SPEEDS } from './Settings';
+import { loadScores, saveScores } from './Scores';
+import {
+  TitleScreen, ScoresScreen, HelpScreen, SettingsScreen, Backdrop,
+} from './Screens';
+import { PlayScreen } from './Play';
+
+const TICK = 1 / 50;               // seconds per world tick
+const MAX_TICKS = 6;               // most ticks run for one frame (no big catch-up)
+const JSEDIT = 'ADFS::HardDisc4.$.Apps.!JsEdit';
+const LANDER = 'ADFS::HardDisc4.$.Diversions.!Lander';
+
+export default async function start(task, ctx) {
+  const settings = await loadSettings();
+  const scores = await loadScores();
+
+  // ---------------------------------------------------------------- the parts
+  const desktopGain = () => (os.config?.get?.('speaker') === false ? 0
+    : ((os.config?.get?.('volume') ?? 7) + 1) / 8);
+  const sound = new Sound({ set: settings.soundSet, volume: settings.volume,
+    desktopGain: desktopGain() });
+  const input = new Input(settings);
+  const hud = new Hud();
+  let surface = new Surface(320, 256);
+  let renderer = makeRenderer();
+  let screen = null;
+  // display: { kind: 'full' or 'window', el, canvas, ctx, scr (full), win (window) }
+  let display = null;
+  let raf = 0, last = 0, acc = 0, frames = 0;
+  let locked = false;              // do we have the pointer captured?
+  let wentFull = false;            // did we ask for browser full screen?
+  let lastWorld = null;            // the world whose first events were played
+  const events = [];               // the sound events of this frame's ticks
+
+  function makeRenderer() {
+    return new Renderer(surface, {
+      look: settings.look, view: settings.view, shadows: settings.shadows,
+      stars: settings.stars, fog: settings.stars,
+    });
+  }
+
+  // ---------------------------------------------------------------- the app
+  // What the screens (Screens, Play) use to get things done.
+  const app = {
+    task, settings, scores, sound, input, hud,
+    get surface() { return surface; },
+    get renderer() { return renderer; },
+    get frames() { return frames; },
+    backdrop: null,
+    titleChoice: 0,
+
+    setScreen(next) {
+      if (screen === next) return;
+      screen?.leave?.();
+      screen = next;
+      screen.enter?.();
+      if (screen.playing) app.lockPointer(); else app.unlockPointer();
+      // forget keys held on the old screen (Return chose "Play": it would fire)
+      input.release();
+      input.clearEdges();
+    },
+    titleScreen() { return new TitleScreen(app); },
+    title() { app.setScreen(new TitleScreen(app)); },
+    play(mode) { app.setScreen(new PlayScreen(app, mode)); },
+    showScores(mode, highlight) {
+      app.setScreen(new ScoresScreen(app, mode, { highlight }));
+    },
+    help(page = 0) { app.setScreen(new HelpScreen(app, page)); },
+    openSettings(returnTo) { app.setScreen(new SettingsScreen(app, returnTo)); },
+
+    /** The attract mode, one stage after another. */
+    attract(stage) {
+      if (stage === 'demo') {
+        const mode = Math.random() < 0.75 ? 'invasion' : 'lander';
+        app.setScreen(new PlayScreen(app, mode, { demo: true }));
+      } else if (stage === 'scores') {
+        app.setScreen(new ScoresScreen(app, 'invasion', { attract: true }));
+      } else if (stage === 'help') {
+        app.setScreen(new HelpScreen(app, 0, { attract: true }));
+      } else app.title();
+    },
+
+    /** A setting was changed on the settings screen: put it into effect. */
+    changeSetting(key) {
+      if (key === 'soundSet') sound.setSet(settings.soundSet);
+      if (key === 'volume') sound.setVolume(settings.volume);
+      if (key === 'display' && display && display.kind !== settings.display) {
+        openDisplay(settings.display);
+      }
+      if (key === 'browserFull') browserFullScreen(settings.browserFull);
+      if (['look', 'resolution'].includes(key)) layout(true);
+      if (['view', 'shadows', 'stars'].includes(key)) {
+        renderer.setOptions({ view: settings.view, shadows: settings.shadows,
+          stars: settings.stars, fog: settings.stars });
+      }
+      // the particle limit of a game in progress (behind the settings)
+      if (key === 'particles') {
+        screen?.returnTo?.world?.setParticleMax(settings.particles);
+      }
+      if (key === 'controls' && settings.controls === 'keyboard') app.unlockPointer();
+    },
+    saveSettings() { return saveSettings(settings); },
+    saveScores() { return saveScores(scores); },
+
+    lockPointer() {
+      const c = display?.canvas;
+      if (!c || settings.controls === 'keyboard') return;
+      if (document.pointerLockElement === c) return;
+      try { c.requestPointerLock?.()?.catch?.(() => {}); } catch { /* not allowed now */ }
+    },
+    unlockPointer() {
+      if (display && document.pointerLockElement === display.canvas) {
+        document.exitPointerLock?.();
+      }
+    },
+
+    toDesktop,
+    viewSource() {
+      toDesktop();
+      os.cli.run(`Run ${JSEDIT} ${ctx.dir}`).catch?.((e) => task.reportError(e.message));
+    },
+    openDirectory() {
+      os.cli.run(`Filer_OpenDir ${ctx.dir}`).catch?.((e) => task.reportError(e.message));
+    },
+    runOriginal() {
+      toDesktop();
+      os.cli.run(`Run ${LANDER}`).catch?.((e) => task.reportError(e.message));
+    },
+  };
+
+  // ---------------------------------------------------------------- the display
+  // Full screen: os.cli.acquireScreen gives us a layer over the whole
+  // desktop. Window: a desktop window with the game's canvas in it. Either
+  // way the game draws into `surface` (in software) and the surface is
+  // copied onto the canvas, scaled up.
+
+  function openDisplay(kind) {
+    const keepScreen = screen;
+    closeDisplay();
+    const canvas = document.createElement('canvas');
+    canvas.style.cssText = 'position:absolute;left:0;top:0;image-rendering:pixelated;' +
+      'touch-action:none;outline:none';
+    const d = { kind, canvas, ctx: canvas.getContext('2d') };
+    if (kind === 'full') {
+      d.scr = os.cli.acquireScreen({ background: '#000', onKey: () => {} });
+      d.el = d.scr.el;
+      d.el.appendChild(canvas);
+    } else {
+      const w = Math.min(640, wimp.width - 80), h = Math.round(w * 0.8);
+      d.win = task.createWindow({
+        title: 'Lander II', x: Math.max(20, (wimp.width - w) >> 1),
+        y: Math.max(60, (wimp.height - h) >> 1), w, h,
+        extent: { w: 4096, h: 4096 }, minW: 160, minH: 128,
+        flags: { title: true, close: true, back: true, moveable: true, size: true,
+          toggle: true },
+      });
+      d.el = d.win.view;
+      d.el.style.background = '#000';
+      d.el.appendChild(canvas);
+      d.win.on('moved', () => layout());
+      d.win.on('close', (ev) => { ev.preventDefault(); toDesktop(); });
+      d.win.on('key', () => true);           // the game has all the keys
+      // the keys went to another window: let go of them, and pause
+      d.win.on('losecaret', () => { input.release(); screen?.blur?.(); });
+      d.win.open({ behind: 'top' });
+      wimp.setCaret(d.win);
+    }
+    display = d;
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('auxclick', (e) => e.preventDefault());
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();       // (no scrolling with Menu)
+    });
+    sound.setDesktopGain(desktopGain());
+    app.backdrop ??= new Backdrop();
+    layout(true);
+    if (!keepScreen) {
+      app.title();
+      sound.play('titleJingle');
+    } else if (screen.playing) {
+      app.lockPointer();
+    }
+    last = performance.now();
+    acc = 0;
+    cancelAnimationFrame(raf);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function closeDisplay() {
+    if (!display) return;
+    const d = display;
+    display = null;
+    cancelAnimationFrame(raf);
+    if (document.pointerLockElement === d.canvas) document.exitPointerLock?.();
+    d.canvas.remove();
+    d.scr?.release();
+    d.win?.delete();
+  }
+
+  /** Back to the desktop: the game stops, its icon stays on the icon bar. */
+  function toDesktop() {
+    if (screen) { screen.leave?.(); screen = null; }
+    sound.silence();
+    input.release();
+    closeDisplay();
+  }
+
+  // The size of the surface and where the canvas goes. Classic is always
+  // 320 x 256; Enhanced is drawn at the Resolution setting's height, with
+  // a width that gives the display's shape.
+  function layout(force = false) {
+    const d = display;
+    if (!d) return;
+    const full = d.kind === 'full';
+    const aw = Math.max(64, full ? (d.el.clientWidth || wimp.width) : d.win.w);
+    const ah = Math.max(64, full ? (d.el.clientHeight || wimp.height) : d.win.h);
+    const dev = (wimp.scale || 1) * (window.devicePixelRatio || 1);
+    let sw = 320, sh = 256;
+    if (settings.look !== 'classic') {
+      const devH = Math.round(ah * dev);
+      sh = settings.resolution === 'native' ? devH : Math.min(+settings.resolution, devH);
+      sh = Math.max(256, Math.min(2160, sh));
+      // never narrower than 5:4 (the screens are laid out on a 320 x 256
+      // grid): a tall display shows the game with bars above and below
+      const wide = Math.min(4096, Math.round((sh * aw) / ah));
+      sw = Math.max(Math.round(sh * 1.25), wide) & ~1;
+    }
+    if (force || sw !== surface.width || sh !== surface.height) {
+      surface.resize(sw, sh);
+      renderer = makeRenderer();
+      d.canvas.width = sw;
+      d.canvas.height = sh;
+    }
+    // scale to fit, keeping the shape; Classic in whole screen pixels if it can
+    let k = Math.min(aw / sw, ah / sh);
+    if (settings.look === 'classic' && k * dev >= 2) k = Math.floor(k * dev) / dev;
+    const cw = Math.round(sw * k), ch = Math.round(sh * k);
+    Object.assign(d.canvas.style, {
+      width: cw + 'px', height: ch + 'px',
+      left: Math.round((aw - cw) / 2) + 'px', top: Math.round((ah - ch) / 2) + 'px',
+    });
+  }
+
+  function browserFullScreen(on) {
+    try {
+      if (on && !document.fullscreenElement) {
+        wentFull = true;
+        document.documentElement.requestFullscreen?.()?.catch?.(() => {});
+      } else if (!on && document.fullscreenElement) {
+        document.exitFullscreen?.()?.catch?.(() => {});
+      }
+    } catch { /* not allowed without a click or key press */ }
+  }
+
+  // ---------------------------------------------------------------- the main loop
+  function frame(now) {
+    if (!display) return;
+    raf = requestAnimationFrame(frame);
+    const dt = Math.min(0.25, Math.max(0, (now - last) / 1000));
+    last = now;
+    try {
+      step(dt);
+    } catch (e) {
+      // report the first error (with its line) and go back to the desktop
+      toDesktop();
+      throw e;
+    }
+  }
+
+  function step(dt) {
+    // the display changed size (the browser window, or browser full screen)?
+    const w = display.el.clientWidth, h = display.el.clientHeight;
+    if (w !== display.lastW || h !== display.lastH) {
+      display.lastW = w; display.lastH = h;
+      layout();
+    }
+    // keys (and gamepad buttons) for the screen
+    const presses = input.takePresses();
+    const active = keysActive();
+    const mine = [];
+    for (const k of presses) {
+      if (!active && !k.pad) continue;
+      if (k.code === 'KeyF' && screen.hotkeys !== false && !k.repeat) {
+        settings.browserFull = !document.fullscreenElement;
+        browserFullScreen(settings.browserFull);
+        continue;
+      }
+      mine.push(k);
+    }
+    screen.frame?.(mine);
+    if (!display || !screen) return;          // (Escape went back to the desktop)
+
+    // game time: run the ticks that are due
+    const sc = screen;
+    events.length = 0;
+    // a new game: the World's first events (wave 1's waveStart) were made
+    // when it was built, before any tick, so they are played now
+    if (sc.world && sc.world !== lastWorld) {
+      lastWorld = sc.world;
+      if (!sc.world.tickCount) events.push(...(sc.world.events ?? []));
+    }
+    if (sc.ticks) {
+      acc += dt * (SPEEDS[settings.speed] ?? 1);
+      let n = Math.floor(acc / TICK);
+      acc -= n * TICK;
+      if (n > MAX_TICKS) { n = MAX_TICKS; acc = 0; }
+      for (let i = 0; i < n && screen === sc; i++) {
+        if (sc.tick() && sc.world) for (const e of sc.world.events ?? []) events.push(e);
+      }
+      if (sc.world && sc.sounds && screen === sc) {
+        // (paused or over: the engine and other loops stay quiet)
+        const still = sc.paused || sc.finished;
+        sc.world.frameEvents = events;
+        sound.frame(still ? null : sc.world, events);
+        // a new ship on the pad (or a new landscape): the virtual mouse goes
+        // back to the middle, or the ship would tilt straight over as before
+        const fresh = (e) => e.type === 'respawn' || e.type === 'newLandscape';
+        if (!sc.demo && events.some(fresh)) {
+          input.recentre();
+        }
+      }
+    }
+
+    // draw
+    if (!display) return;
+    screen.draw(surface);
+    surface.present(display.ctx, 0, 0, display.canvas.width, display.canvas.height);
+    const cursor = screen.playing ? 'none' : '';
+    if (display.canvas.style.cursor !== cursor) display.canvas.style.cursor = cursor;
+    frames++;
+  }
+
+  // Keys count when we have the whole screen, or our window has the caret.
+  const keysActive = () => !!display &&
+    (display.kind === 'full' || wimp.caret?.window === display.win);
+
+  // ---------------------------------------------------------------- events
+  const toSurface = (e) => {
+    const r = display.canvas.getBoundingClientRect();
+    return {
+      x: ((e.clientX - r.left) * surface.width) / Math.max(1, r.width),
+      y: ((e.clientY - r.top) * surface.height) / Math.max(1, r.height),
+    };
+  };
+  const buttonName = (e) => ['select', 'menu', 'adjust'][e.button] ?? 'select';
+
+  function onPointerDown(e) {
+    if (!display) return;
+    sound.resume();
+    if (display.kind === 'window') {
+      // we look after the window ourselves: bring it to the front, take the caret
+      e.stopPropagation();
+      display.win.open({ behind: 'top' });
+      wimp.setCaret(display.win);
+      if (!screen.playing && e.button === 1) {
+        wimp.menus.openAt(iconMenu(), {}, { task });
+        return;
+      }
+    }
+    e.preventDefault();
+    if (screen.playing) {
+      input.mouseButtons(e.buttons);
+      app.lockPointer();
+    } else {
+      screen.pointer?.({ type: 'down', ...toSurface(e), button: buttonName(e) });
+      if (screen?.playing) app.lockPointer();     // a game started from a click
+    }
+  }
+
+  function onPointerMove(e) {
+    if (!display || !screen) return;
+    if (screen.playing) {
+      const lim = 200;               // (browsers sometimes jump after locking)
+      const dx = Math.max(-lim, Math.min(lim, e.movementX || 0));
+      const dy = Math.max(-lim, Math.min(lim, e.movementY || 0));
+      input.mouseMove(dx, dy);
+      input.mouseButtons(e.buttons);
+    } else {
+      screen.pointer?.({ type: 'move', ...toSurface(e) });
+    }
+  }
+
+  function onPointerUp(e) { input.mouseButtons(e.buttons); }
+
+  const onKeyDown = (e) => {
+    if (!keysActive()) return;
+    sound.resume();
+    input.keyDown(e);
+    if (display.kind === 'window' && !e.metaKey) e.preventDefault();
+  };
+  const onKeyUp = (e) => input.keyUp(e);
+  const onBlur = () => {
+    input.release();
+    screen?.blur?.();
+  };
+  const onVisibility = () => { if (document.hidden) onBlur(); };
+  const onLockChange = () => {
+    const now = !!display && document.pointerLockElement === display.canvas;
+    if (locked && !now && screen?.playing) screen.blur?.();   // Escape let the pointer go
+    locked = now;
+  };
+  const onFullChange = () => { settings.browserFull = !!document.fullscreenElement; };
+  const onResize = () => layout();
+
+  window.addEventListener('keydown', onKeyDown, true);
+  window.addEventListener('keyup', onKeyUp, true);
+  window.addEventListener('blur', onBlur);
+  window.addEventListener('resize', onResize);
+  document.addEventListener('visibilitychange', onVisibility);
+  document.addEventListener('pointerlockchange', onLockChange);
+  document.addEventListener('fullscreenchange', onFullChange);
+
+  // ---------------------------------------------------------------- the icon bar
+  const info = infoBox(task, {
+    name: 'Lander II',
+    purpose: 'Zarch-like game',
+    author: 'After D.J.Braben, 1987',
+    version: '1.00 (27 Sep 2026)',
+  });
+  const show = (kind) => {
+    settings.display = kind;
+    saveSettings(settings);
+    openDisplay(kind);
+  };
+  function iconMenu() {
+    return new WimpMenu('Lander II', [
+      { text: 'Info', submenu: info },
+      { text: 'Full screen', ticked: () => settings.display === 'full',
+        action: () => show('full') },
+      { text: 'Window', ticked: () => settings.display === 'window',
+        action: () => show('window') },
+      { text: 'Browser full screen', ticked: () => !!document.fullscreenElement,
+        dotted: true,
+        action: () => { settings.browserFull = !document.fullscreenElement;
+          browserFullScreen(settings.browserFull); } },
+      { text: 'View source', action: () => app.viewSource() },
+      { text: 'Open directory', action: () => app.openDirectory(), dotted: true },
+      { text: 'Quit', action: () => task.quit() },
+    ]);
+  }
+  task.addIconbarIcon({
+    sprite: '!lander2',
+    side: 'right',
+    onClick: (ev) => {
+      if (ev.button === 'menu') return;
+      sound.resume();                  // (a click: the browser lets sound start now)
+      if (display?.win) {
+        display.win.open({ behind: 'top' });
+        wimp.setCaret(display.win);
+      }
+      else if (!display) openDisplay(settings.display);
+    },
+    menu: iconMenu,
+    help: 'This is the Lander II icon.|MClick SELECT to play Lander II.',
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  task.on('quit', () => {
+    toDesktop();
+    sound.close();
+    if (wentFull) browserFullScreen(false);
+    window.removeEventListener('keydown', onKeyDown, true);
+    window.removeEventListener('keyup', onKeyUp, true);
+    window.removeEventListener('blur', onBlur);
+    window.removeEventListener('resize', onResize);
+    document.removeEventListener('visibilitychange', onVisibility);
+    document.removeEventListener('pointerlockchange', onLockChange);
+    document.removeEventListener('fullscreenchange', onFullChange);
+  });
+
+  // ---------------------------------------------------------------- for tests
+  task.game = {
+    app, settings, scores, input, sound,
+    get world() { return screen?.world ?? null; },
+    get screen() { return screen?.name ?? null; },
+    get screenObject() { return screen; },
+    get frames() { return frames; },
+    get display() { return display?.kind ?? null; },
+    get surface() { return surface; },
+    open: (kind = settings.display) => openDisplay(kind),
+    play: (mode = 'invasion') => {
+      if (!display) openDisplay(settings.display);
+      app.play(mode);
+    },
+    demo: () => { if (!display) openDisplay(settings.display); app.attract('demo'); },
+    title: () => app.title(),
+    toDesktop,
+  };
+
+  // start straight away, full screen or in a window as last time
+  openDisplay(settings.display);
+}

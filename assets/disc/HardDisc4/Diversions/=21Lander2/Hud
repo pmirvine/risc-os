@@ -1,0 +1,388 @@
+// Lander II - Hud: the score bar, fuel and altitude gauges, the scanner
+// and the banner messages, drawn over the 3D view.
+//
+// Two looks:
+//
+//  Classic   Lander's own score bar: the 320 x 256 screen has two rows of
+//            text at the top (score at the left; lives and high score at
+//            columns 30 and 35, as the original prints them) and the fuel
+//            bar is three rows of orange pixels, fuel / 16 long, just
+//            below. Invasion adds wave, virus and missiles on row two.
+//
+//  Enhanced  A console after Zarch's: a band across the top with score,
+//            spare ships, missiles, smart bombs, wave, infection and the
+//            best score; an orange fuel bar and a green altitude bar; and
+//            the long-range scanner at the top left, one pixel per tile:
+//            land green, sea blue, the virus reddish brown, the launch pad
+//            grey, you a flashing white dot and the aliens coloured blips
+//            (colours from the Virus manual).
+//
+// Everything is laid out on a grid of "units": one unit is one pixel on a
+// 320 x 256 screen, and u pixels on a bigger one (u = height / 256).
+
+import { rgb, unrgb } from './Surface';
+import { drawText, textWidth } from './Font';
+import { PAD_ALTITUDE } from './Terrain';
+
+// ------------------------------------------------------------------ colours
+const WHITE = rgb(255, 255, 255);
+const BLACK = rgb(0, 0, 0);
+const GREY = rgb(150, 150, 160);
+const DIM = rgb(90, 96, 120);
+const YELLOW = rgb(255, 221, 51);
+const CYAN = rgb(102, 238, 255);
+const ORANGE = rgb(255, 119, 51);         // Lander's fuel bar is &F73
+const GREEN = rgb(68, 221, 68);
+const RED = rgb(255, 51, 34);
+const PANEL = rgb(10, 14, 34);
+const EDGE = rgb(70, 90, 150);
+
+/** Colours of the aliens' scanner blips: [colour, flash colour or null]. */
+export const BLIPS = {
+  seeder: [CYAN, null],
+  drone: [rgb(255, 153, 0), null],
+  mutant: [rgb(255, 153, 0), RED],
+  bomber: [CYAN, rgb(0, 51, 170)],
+  pest: [rgb(255, 68, 255), null],
+  fighter: [YELLOW, BLACK],
+  attractor: [RED, BLACK],
+  rock: [GREY, null],
+};
+
+/** Rows at the top of a Classic screen used by the score bar. */
+export const CLASSIC_BAR = 16;
+
+const unitOf = (s) => Math.max(1, Math.floor(s.height / 256));
+
+// Blend two pixel values: t = 0 gives a, 1 gives b.
+export function mix(a, b, t) {
+  const [ar, ag, ab] = unrgb(a), [br, bg, bb] = unrgb(b);
+  const m = (p, q) => (p + (q - p) * t) | 0;
+  return rgb(m(ar, br), m(ag, bg), m(ab, bb));
+}
+
+// Small pictures for the console, as rows of characters ('#' ink).
+const ICONS = {
+  ship: [
+    '...#...',
+    '..###..',
+    '.#####.',
+    '##.#.##',
+    '#.....#'],
+  missile: [
+    '.#.',
+    '###',
+    '###',
+    '###',
+    '#.#'],
+  bomb: [
+    '.##.',
+    '####',
+    '####',
+    '.##.',
+    '....'],
+};
+
+function icon(s, name, x, y, u, c) {
+  const rows = ICONS[name];
+  for (let r = 0; r < rows.length; r++) {
+    for (let k = 0; k < rows[r].length; k++) {
+      if (rows[r][k] === '#') s.fillRect(x + k * u, y + r * u, u, u, c);
+    }
+  }
+  return rows[0].length * u;
+}
+
+// A row of up to `max` icons, then "xN" if there are more.
+function iconRow(s, name, n, x, y, u, c, max = 5) {
+  const w = (ICONS[name][0].length + 1) * u;
+  for (let i = 0; i < Math.min(n, max); i++) icon(s, name, x + i * w, y, u, c);
+  let used = Math.min(n, max) * w;
+  if (n > max) {
+    used += drawText(s, '+' + (n - max), x + used, y - u, { scale: u, colour: c });
+  }
+  return used;
+}
+
+// A bevelled translucent panel.
+function panel(s, x, y, w, h, u) {
+  s.shade(x, y, w, h, PANEL, 0.72);
+  s.fillRect(x, y + h - u, w, u, EDGE);
+}
+
+// A horizontal gauge: a frame, and a bar filled to the fraction f.
+function gauge(s, x, y, w, h, f, c, u) {
+  s.fillRect(x, y, w, h, rgb(0, 0, 0));
+  s.fillRect(x, y, w, u, DIM);
+  s.fillRect(x, y + h - u, w, u, DIM);
+  s.fillRect(x, y, u, h, DIM);
+  s.fillRect(x + w - u, y, u, h, DIM);
+  const fill = Math.round((w - 2 * u) * Math.max(0, Math.min(1, f)));
+  if (fill > 0) {
+    s.fillRect(x + u, y + u, fill, h - 2 * u, c);
+    s.fillRect(x + u, y + u, fill, u, mix(c, WHITE, 0.45));   // a highlight
+  }
+}
+
+const pad = (n, w) => {
+  const neg = n < 0;
+  const t = String(Math.abs(Math.round(n))).padStart(w, '0');
+  return neg ? '-' + t.slice(1) : t;
+};
+
+export class Hud {
+  constructor() {
+    this.flash = 0;                 // counts frames, for flashing things
+    this.scanTerrain = null;        // the terrain the scanner's map was made for
+    this.scanBase = null;           // its colours (land, sea, pad) per tile
+    this.scanOrigin = -1;
+  }
+
+  /** Where the 3D view goes: { top, height } for Renderer.render. */
+  viewArea(surface, look) {
+    if (look === 'classic') {
+      return { top: CLASSIC_BAR, height: surface.height - CLASSIC_BAR };
+    }
+    return { top: 0, height: surface.height };
+  }
+
+  /**
+   * Draw the HUD for the world. options: { look, view, renderer, stick,
+   * banner }: stick is the virtual mouse offset {x, y}, shown as a little
+   * gauge; renderer (Render's) says what is in view, for the scanner;
+   * banner: false hides world.message.
+   */
+  draw(s, world, options = {}) {
+    this.flash++;
+    // hit by a bullet: the screen flashes red (world.hitFlash counts down)
+    if (world.hitFlash > 0) {
+      s.shade(0, 0, s.width, s.height, RED, Math.min(0.45, world.hitFlash * 0.05));
+    }
+    if (options.look === 'classic') this.drawClassic(s, world, options);
+    else this.drawEnhanced(s, world, options);
+  }
+
+  // ---------------------------------------------------------------- Classic
+  drawClassic(s, world, options) {
+    const p = world.player;
+    s.fillRect(0, 0, s.width, CLASSIC_BAR, BLACK);
+    const t = (text, col, row, c = WHITE) =>
+      drawText(s, text, col * 8, row * 8, { colour: c });
+    t(String(world.score), 0, 0);
+    t('Lander II', 40 - 9, 0, GREY);
+    t(String(world.lives), 30, 1);
+    // the high score from column 35, as the original, moved left if it is
+    // too long to fit
+    const hi = String(world.highScore ?? 0);
+    t(hi, Math.min(35, s.width / 8 - hi.length), 1);
+    if (world.mode === 'invasion') {
+      t(`W${world.wave} V${Math.round(world.infectedPercent ?? 0)}%`, 0, 1, CYAN);
+      t(`M${world.missiles} B${world.smartBombs}`, 13, 1, YELLOW);
+    }
+    // the fuel bar: rows 1-3 of the play area, fuel / 16 pixels long
+    const low = p.fuel < p.maxFuel * 0.15 && (this.flash >> 3) & 1;
+    const bar = Math.min(s.width, Math.max(0, p.fuel) / 16);
+    s.fillRect(0, CLASSIC_BAR + 1, bar, 3, low ? RED : ORANGE);
+    if (options.banner !== false) this.banner(s, world, 1, CLASSIC_BAR + 88);
+  }
+
+  // ---------------------------------------------------------------- Enhanced
+  drawEnhanced(s, world, options) {
+    const u = unitOf(s);
+    const p = world.player;
+    const W = s.width;
+    const bandH = 40 * u;
+    panel(s, 0, 0, W, bandH, u);
+
+    // the scanner at the top left
+    const scan = 64 * u;
+    const sx = 4 * u, sy = 4 * u;
+    this.drawScanner(s, world, sx, sy, u, options);
+
+    // three lines of readouts to the right of it
+    const x0 = sx + scan + 8 * u, x1 = W - 6 * u;
+    const T = (text, x, y, c, align) => drawText(s, text, x, y,
+      { scale: u, colour: c, shadow: BLACK, shadowOffset: u, align });
+    const y1 = 5 * u, y2 = 17 * u, y3 = 28 * u;
+
+    // line 1: score and best
+    const w1 = T('SCORE', x0, y1, GREY);
+    T(pad(world.score, 6), x0 + w1 + 4 * u, y1, YELLOW);
+    const hs = pad(Math.max(world.highScore ?? 0, world.score), 6);
+    T(hs, x1, y1, CYAN, 'right');
+    T('HI', x1 - textWidth(hs, u) - 4 * u, y1, GREY, 'right');
+
+    // line 2: spare ships, missiles, smart bombs; wave and infection
+    let x = x0;
+    x += iconRow(s, 'ship', Math.max(0, world.lives - 1), x, y2, u, WHITE, 4) + 6 * u;
+    if (world.mode === 'invasion') {
+      x += iconRow(s, 'missile', world.missiles, x, y2, u, YELLOW, 6) + 6 * u;
+      iconRow(s, 'bomb', world.smartBombs, x, y2, u, RED, 3);
+      const v = Math.round(world.infectedPercent ?? 0);
+      let vc = v >= 50 ? ORANGE : GREEN;
+      if (v >= 75) vc = (this.flash >> 3) & 1 ? RED : YELLOW;
+      const vt = `${v}%`;
+      let rx = x1 - T(vt, x1, y2, vc, 'right') - 4 * u;
+      rx -= T('VIRUS', rx, y2, GREY, 'right') + 8 * u;
+      T(`W${world.wave}`, rx, y2, WHITE, 'right');
+    } else {
+      T(landerStatus(p), x1, y2, GREEN, 'right');
+    }
+
+    // line 3: the fuel and altitude gauges
+    const gw = Math.floor((x1 - x0 - 12 * u) / 2) - 36 * u;
+    const lowFuel = p.fuel < p.maxFuel * 0.15;
+    const fuelC = lowFuel && (this.flash >> 3) & 1 ? RED : ORANGE;
+    let gx = x0;
+    gx += T('FUEL', gx, y3, lowFuel ? fuelC : GREY) + 4 * u;
+    gauge(s, gx, y3 - u, gw, 9 * u, p.fuel / Math.max(1, p.maxFuel), fuelC, u);
+    gx += gw + 12 * u;
+    gx += T('ALT', gx, y3, GREY) + 4 * u;
+    // height above the launch pad: 0 on the pad, full at 40 tiles up
+    const alt = (PAD_ALTITUDE - p.y) / 40;
+    gauge(s, gx, y3 - u, x1 - gx, 9 * u, alt, GREEN, u);
+
+    if (options.stick) this.drawStick(s, options.stick, u);
+    if (options.banner !== false) {
+      this.banner(s, world, u * 2, Math.round(s.height * 0.3));
+    }
+  }
+
+  // The scanner. Invasion: the whole 64 x 64 world with the launch pad in
+  // the middle. Lander+ (256 tiles): the 64 x 64 tiles around the ship.
+  drawScanner(s, world, x, y, u, options) {
+    const t = world.terrain, P = world.period, N = 64;
+    const p = world.player;
+    const whole = P <= N;
+    // tile (ox, oz) is at the scanner's bottom-left corner
+    const ox = whole ? 4 - N / 2 : Math.floor(p.x) - N / 2;
+    const oz = whole ? 4 - N / 2 : Math.floor(p.z) - N / 2;
+    this.baseColours(t, ox, oz, whole);
+
+    // a frame
+    s.fillRect(x - 2 * u, y - 2 * u, (N + 4) * u, (N + 4) * u, EDGE);
+    s.fillRect(x - u, y - u, (N + 2) * u, (N + 2) * u, BLACK);
+
+    const inf = world.infection, base = this.scanBase;
+    for (let j = 0; j < N; j++) {
+      const tz = ((oz + j) % P + P) % P;
+      const sy = y + (N - 1 - j) * u;        // north (+z) is up
+      for (let i = 0; i < N; i++) {
+        const tx = ((ox + i) % P + P) % P;
+        let c = base[j * N + i];
+        const v = inf ? inf[tz * P + tx] : 0;
+        if (v) c = mix(c, v > 170 ? rgb(170, 34, 17) : rgb(153, 85, 34), 0.45 + v / 470);
+        s.fillRect(x + i * u, sy, u, u, c);
+      }
+    }
+
+    // where a thing at (wx, wz) goes, or null if off the scanner
+    const at = (wx, wz) => {
+      const i = Math.floor(((wx - ox) % P + P) % P);
+      const j = Math.floor(((wz - oz) % P + P) % P);
+      if (i >= N || j >= N) return null;
+      return [x + i * u, y + (N - 1 - j) * u];
+    };
+
+    // the part of the world in view, outlined: Render looks along +z from
+    // an eye 20 tiles behind the camera, and sees halfW * D either side at
+    // distance D, from frontD to backD (a wedge, wider at the back)
+    const r = options.renderer, cam = world.camera;
+    if (r && cam && r.backD && r.halfW) {
+      const lineC = rgb(150, 160, 200);
+      const edge = (x0, z0, x1, z1) => {
+        const n = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)));
+        for (let k = 0; k <= n; k++) {
+          const q = at(x0 + ((x1 - x0) * k) / n, z0 + ((z1 - z0) * k) / n);
+          if (q) s.shade(q[0], q[1], u, u, lineC, 0.6);
+        }
+      };
+      const zf = cam.z - 20 + r.frontD, zb = cam.z - 20 + r.backD;
+      const wf = r.halfW * r.frontD, wb = Math.min(N / 2, r.halfW * r.backD);
+      edge(cam.x - wf, zf, cam.x + wf, zf);
+      edge(cam.x - wb, zb, cam.x + wb, zb);
+      edge(cam.x - wf, zf, cam.x - wb, zb);
+      edge(cam.x + wf, zf, cam.x + wb, zb);
+    }
+
+    // the aliens
+    const fl = (this.flash >> 2) & 1;
+    for (const e of world.enemies ?? []) {
+      const b = BLIPS[e.type];
+      if (!b) continue;                     // (the sea monster isn't on it)
+      const q = at(e.x, e.z);
+      if (!q) continue;
+      const c = b[1] && fl ? b[1] : b[0];
+      s.fillRect(q[0] - (u >> 1), q[1] - (u >> 1), 2 * u, 2 * u, c);
+    }
+    for (const k of world.pickups ?? []) {
+      const q = at(k.x, k.z);
+      if (q && fl) s.fillRect(q[0], q[1], u, u, WHITE);
+    }
+    // the player: a flashing white dot
+    const q = at(p.x, p.z);
+    if (q && ((this.flash >> 3) & 1 || !p.alive)) {
+      s.fillRect(q[0] - (u >> 1), q[1] - (u >> 1), 2 * u, 2 * u, WHITE);
+    }
+  }
+
+  // The colour of each tile without the virus (cached: land doesn't move).
+  baseColours(t, ox, oz, whole) {
+    const key = whole ? 0 : oz * 65536 + ox;
+    if (this.scanTerrain === t && this.scanOrigin === key) return;
+    this.scanTerrain = t;
+    this.scanOrigin = key;
+    const N = 64;
+    this.scanBase = new Uint32Array(N * N);
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const wx = ox + i + 0.5, wz = oz + j + 0.5;
+        let c;
+        if (t.isPad(wx, wz)) c = rgb(170, 170, 180);
+        else if (t.isSea(wx, wz)) c = rgb(17, 51, 187);
+        else {
+          // higher land is lighter (y is down, 0 is high)
+          const h = Math.max(0, Math.min(1, (t.seaLevel - t.altitude(wx, wz)) / 5));
+          c = rgb(20 + h * 60, 110 + h * 110, 20 + h * 30);
+        }
+        this.scanBase[j * N + i] = c;
+      }
+    }
+  }
+
+  // A little gauge in the corner showing where the virtual mouse is.
+  drawStick(s, stick, u) {
+    const r = 12 * u, cx = s.width - r - 6 * u, cy = s.height - r - 6 * u;
+    s.shade(cx - r, cy - r, 2 * r + u, 2 * r + u, PANEL, 0.5);
+    s.fillRect(cx - r, cy, 2 * r, u, DIM);
+    s.fillRect(cx, cy - r, u, 2 * r, DIM);
+    // the edge of the gauge is 256 units from the centre: 90 degrees of
+    // tilt (full tilt, upside down, is 512: Player.STICK_RANGE)
+    const k = r / 256;
+    const px = cx + Math.max(-r, Math.min(r, stick.x * k));
+    const py = cy - Math.max(-r, Math.min(r, stick.y * k));
+    s.fillRect(px - u, py - u, 3 * u, 3 * u, YELLOW);
+  }
+
+  // world.message: a banner in the middle of the screen.
+  banner(s, world, scale, y) {
+    const m = world.message;
+    if (!m || !m.text) return;
+    const c = (this.flash >> 3) & 1 ? YELLOW : WHITE;
+    // smaller if it would not fit across the screen
+    while (scale > 1 && textWidth(m.text, scale) > s.width - 8) scale--;
+    drawText(s, m.text, s.width >> 1, y, {
+      scale, colour: c, shadow: BLACK, shadowOffset: Math.max(1, scale >> 1),
+      align: 'centre',
+      smooth: true,
+    });
+  }
+}
+
+// Lander+: what the ship is doing (as the scanner shows no aliens)
+function landerStatus(p) {
+  if (!p.alive) return 'CRASHED';
+  if (p.refuelling) return 'REFUELLING';
+  if (p.landed) return 'LANDED';
+  return 'FLYING';
+}
