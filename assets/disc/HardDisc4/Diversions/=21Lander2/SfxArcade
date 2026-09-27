@@ -1,47 +1,61 @@
-// Lander II - SfxArcade: the "Arcade" sound set, in the style of the
-// Williams arcade machines of the early 1980s (Defender, Stargate,
-// Robotron: 2084).
+// Lander II - SfxArcade: the "Arcade" sound set - the sound board of the
+// Williams arcade machines Defender (1980) and Robotron: 2084 (1982).
 //
-// Those machines had a little sound computer of their own (a 6800 chip
-// feeding an 8-bit converter) that made every sound in software: square
-// and sawtooth waves swooping up and down in pitch, and "sample and hold"
-// noise - a random level held for a while, then another - whose rate
-// sweeps down so an explosion seems to fall in pitch as it dies away.
-// That is how these recipes work too, made clean and bright at 32000
-// samples a second, with no 8-bit grain.
+// Credit: Williams Electronics Defender (1980) / Robotron: 2084 (1982)
+// sound ROM, by Sam Dicker; routines and tables transcribed from the
+// original source.
 //
-// The fields of each recipe are explained at the top of SfxOrig.
+// Every sound here is played on Williams (the file next to this one), a
+// recreation of that board which runs Sam Dicker's sound routines cycle
+// for cycle with the original tables. Where Lander II has an event that
+// Defender had too, it gets Defender's own sound, sent the way Defender's
+// game sent it (its "sound table": which commands, how many times, how
+// many 60ths of a second apart). Where Defender has nothing to match,
+// Robotron often does; failing that, the sound is a Williams routine with
+// parameters of our own, chosen in the same style. Each recipe below
+// says where its sound comes from.
+//
+// The board could only play one sound at a time. The game decided which
+// sound got through by priority: a new sound was sent only if it
+// mattered at least as much as the one playing, and it cut that one off.
+// Each recipe carries Defender's priority byte (its main program's sound
+// tables: $FF for an extra ship, $F0 for the player's death, $E8 a smart
+// bomb, $E0 rescuing a humanoid, $D0 an explosion, $C0 a shot) as
+// `priority`; Sound's one-voice channel (see Channel) uses it. `protect`
+// (seconds) records how long the game held that priority: the time of
+// Defender's (or Robotron's) table where there is one. On the board the
+// sound then played on, but anything could cut in. (The tunes have none:
+// nothing else played with them.) Menu blips have oneVoice: false and
+// play alongside whatever else is sounding.
+//
+// The fields of each recipe are explained at the top of SfxOrig. The
+// options to render() and renderLoop() are explained at the top of
+// Williams: `seconds` cuts a sound short (the arcade's sounds often ran on
+// for seconds until the next one cut them off), `fade` smooths the cut.
 
-import { perc, line, sweep, glide, steps, wobble, times, note, echo,
-  fadeOut } from './SfxKit';
+import { render, renderLoop, SOUNDS } from './Williams';
 
-const RATE = 32000;
+const RATE = 48000;
 
-// ---------------------------------------------------------------- helpers
-
-// Soft-edged gate for a note `dur` long: 2 ms in, 5 ms out, no clicks.
-const gate = (dur, g = 1) => line([[0, 0], [0.002, g], [dur - 0.005, g], [dur, 0]]);
-
-// A run of square-wave notes (Hz), each `each` seconds apart and `len`
-// long: arpeggios, fanfares and the "1-up" jingle.
-function arp(k, a, freqs, each, o = {}) {
-  const { start = 0, len = each, wave = 'square', duty = 0.5, gain = 1 } = o;
-  freqs.forEach((f, i) => {
-    k.tone(a, { wave, duty, freq: f, start: start + i * each, dur: len,
-      gain: gate(len, gain) });
-  });
-  return a;
+// Play a Williams sound (a name from Williams' SOUNDS, a command number or
+// a list of timed commands) with render()'s options. The seed comes from
+// the synthesiser's own seeded random numbers, so each sound's noise is
+// its own but the same every time it is made.
+// (make.williams keeps what was asked for, for the developer's page.)
+function board(sound, o = {}) {
+  const make = (k) => render(sound, { rate: RATE, seed: (k.random() + 1) / 2, ...o });
+  make.williams = { sound, o };
+  return make;
+}
+function loop(sound, o = {}) {
+  const make = (k) => renderLoop(sound, { rate: RATE, seed: (k.random() + 1) / 2, ...o });
+  make.williams = { sound, o, loop: true };
+  return make;
 }
 
-// A Williams explosion: sample-and-hold noise whose rate falls from `hi`
-// to `lo` (the falling "kksshhh"), and a square wave diving underneath.
-function boom(k, a, o) {
-  const { start = 0, dur, hi = 8000, lo = 400, sq = 400 } = o;
-  k.noise(a, { start, dur, hold: sweep(hi, lo, dur), gain: perc(0.002, dur) });
-  k.tone(a, { wave: 'square', start, dur: dur * 0.85, freq: sweep(sq, 35, dur * 0.8),
-    gain: perc(0.002, dur * 0.8, 0.45) });
-  return a;
-}
+// How long a game table held its priority, in seconds; and n frames.
+const held = (name) => +SOUNDS[name].protect.toFixed(3);
+const ticks = (n) => +(n / 60).toFixed(3);
 
 // ---------------------------------------------------------------- the set
 
@@ -51,391 +65,279 @@ export const SET = {
   rate: RATE,
   target: -19,
   finish: null,
-  pan: (p) => p * 0.7,        // the originals were mono: keep the stereo narrow
+  pan: (p) => p * 0.4,        // the originals were mono: keep the stereo narrow
 
   sounds: {
-    // The player's laser: the classic "pew", a square wave diving from
-    // 1800 to 200 Hz in 90 ms. Quiet, short and varied a little each shot,
-    // because it autofires at up to 25 a second.
+    // The player's laser: Defender's own (command $14, TURBO). White noise
+    // whose bits slow down while its level falls: a bright "pssshew".
+    // Defender restarted it with every shot, as autofire does here. It
+    // runs on for seconds on the board; here it is cut at 0.35 s.
     fire: {
-      level: -8, pos: true, gap: 0.035, max: 3, vary: 0.04,
-      make(k) {
-        const a = k.buffer(0.1);
-        k.tone(a, { wave: 'square', freq: sweep(1800, 200, 0.09), dur: 0.1,
-          gain: line([[0, 0], [0.001, 1], [0.05, 0.5], [0.1, 0]]),
-          duty: glide(0.5, 0.2, 0.09) });
-        return a;
-      },
+      level: -8, pos: true, gap: 0.035, max: 3, vary: 0.03,
+      priority: 0xC0, protect: held('laser'),
+      make: board('laser', { seconds: 0.35, fade: 0.12 }),
     },
-    // Alien fire: the "pew" turned round, a thin pulse wave rising 600 to
-    // 1200 Hz, so it reads as hostile.
+    // Alien fire: Defender's lander and baiter shot (command $03, DP1V):
+    // one cycle of a low sine each pass, stepping down: a short "bloop".
     enemyFire: {
-      level: -8, pos: true, gap: 0.05, max: 3, vary: 0.03,
-      make(k) {
-        const a = k.buffer(0.08);
-        k.tone(a, { wave: 'pulse', duty: 0.25, freq: sweep(600, 1200, 0.07),
-          gain: line([[0, 0], [0.001, 1], [0.06, 0.6], [0.075, 0]]) });
-        return a;
-      },
+      level: -7, pos: true, gap: 0.05, max: 3, vary: 0.03,
+      priority: 0xC0, protect: held('landerShoot'),
+      make: board('landerShoot'),
     },
-    // A shot hitting the ground: a tick of coarse noise.
+    // A shot hits the ground, or an enemy that survives it: Defender's
+    // explosion routine (FNOISE, as CANNON: full-range noise whose slope
+    // limit shrinks by 1/8 at a time) closing down seven times faster -
+    // 150 steps per shrink instead of 1000 - for a short "tsshk".
     hitSmall: {
       level: -11, pos: true, gap: 0.04, max: 3, vary: 0.1,
-      make(k) {
-        const a = k.buffer(0.06);
-        k.noise(a, { hold: 3000, gain: perc(0.001, 0.05) });
-        k.tone(a, { wave: 'square', freq: sweep(300, 100, 0.04),
-          gain: perc(0.001, 0.04, 0.3) });
-        return a;
-      },
+      priority: 0xC8, protect: ticks(8),
+      make: board([[0, 'fnoise', { fmax: 0xFF, sampc: 150, fdflg: 1, dsflg: 1 }]],
+        { seconds: 0.25, fade: 0.05 }),
     },
-    // An alien blown up: noise falling from 8000 to 600 holds a second,
-    // over a square wave diving 400 to 40 Hz.
+    // An alien blown up: Defender's lander explosion (command $06, HBEV):
+    // a 72-step sine sliding down from 392 to 30 Hz, four echoes each a
+    // quarter quieter, wrapping round gritty: "bwoww-bwoww-bwoww".
     explodeSmall: {
-      level: 0, pos: true, gap: 0.05, max: 5, vary: 0.08,
-      make(k) { return boom(k, k.buffer(0.65), { dur: 0.6, hi: 8000, lo: 600 }); },
+      level: 0, pos: true, gap: 0.05, max: 5, vary: 0.06,
+      priority: 0xD0, protect: held('landerHit'),
+      make: board('landerHit'),
     },
-    // A big kill: the Robotron boom, long and deep, with an extra blast of
-    // white noise at the start.
+    // A big kill (a bomber, a monster): Defender's mutant explosion
+    // (command $17, CANNON), the classic Williams boom - white noise
+    // closing down to a rumble. Its priority is a step above Defender's
+    // $D0 so that a small explosion doesn't cut the big one short.
     explodeLarge: {
-      level: 3, pos: true, gap: 0.08, max: 3, vary: 0.05,
-      make(k) {
-        const a = k.buffer(1.6);
-        boom(k, a, { dur: 1.5, hi: 6000, lo: 150, sq: 200 });
-        k.noise(a, { dur: 0.6, gain: perc(0.002, 0.6, 0.6),
-          filter: { type: 'lp', freq: sweep(4000, 200, 0.6) } });
-        return a;
-      },
+      level: 1, pos: true, gap: 0.08, max: 3, vary: 0.04,
+      priority: 0xD4, protect: held('schitzHit'),
+      make: board('schitzHit', { seconds: 1.8, fade: 0.5 }),
     },
-    // The player dies: Defender's long falling wail (a square wave from
-    // 1000 down to 50 Hz with a 12 Hz vibrato) over a two-second boom.
+    // The player dies: exactly Defender's player death - two crackles of
+    // lightning (LITE) 8 frames apart, each cutting the one before, then
+    // the explosion (CANNON).
     crash: {
-      level: 4, gap: 0.5, max: 1,
-      make(k) {
-        const a = k.buffer(2.2);
-        k.tone(a, { wave: 'square', freq: wobble(sweep(1000, 50, 1.5), 12, 0.3),
-          dur: 1.7, gain: line([[0, 0], [0.01, 0.6], [1.4, 0.45], [1.7, 0]]) });
-        k.noise(a, { hold: sweep(5000, 200, 2.0), gain: perc(0.005, 2.0) });
-        return fadeOut(a, RATE, 0.2);
-      },
+      level: 2, gap: 0.5, max: 1,
+      priority: 0xF0, protect: held('playerDeath'),
+      make: board('playerDeath', { seconds: 2.6, fade: 0.5 }),
     },
-    // A soft touchdown: a two-note "bloop" up a fifth.
+    // A soft touchdown: the first "whoop" of Defender's humanoid set down
+    // safely (command $1F, QUASAR): a square wave rising 376 to 1504 Hz.
     land: {
-      level: -7, gap: 0.3,
-      make(k) {
-        const a = k.buffer(0.17);
-        k.tone(a, { wave: 'square', freq: 523, dur: 0.06, gain: gate(0.06) });
-        k.tone(a, { wave: 'square', freq: 784, start: 0.07, dur: 0.09,
-          gain: gate(0.09) });
-        return a;
-      },
+      level: -6, gap: 0.3,
+      priority: 0xE0, protect: held('astroLand'),
+      make: board('astroLand', { until: ['vari', 1], fade: 0.01 }),
     },
-    // Tanks full: a fast C major arpeggio, C E G C.
+    // Tanks full: the first four passes of Robotron's "family saved"
+    // chime (command $0D, ED17), a rising four-note arpeggio.
     refuelFull: {
-      level: -8, gap: 0.5,
-      make(k) {
-        return arp(k, k.buffer(0.17), ['C6', 'E6', 'G6', 'C7'].map(note), 0.04,
-          { duty: 0.25 });
-      },
+      level: -7, gap: 0.5,
+      priority: 0xE0, protect: held('saveHuman'),
+      make: board('saveHuman', { until: ['gwave', 4], fade: 0.02 }),
     },
-    // Pickup: four quick rising notes.
+    // A pickup: Defender's humanoid caught in mid-air (command $08 sent
+    // three times, 10 frames apart, SPNRV): three rising "bloip"s. Sound
+    // plays each kind of pickup at its own pitch.
     pickup: {
-      level: -6, gap: 0.1,
-      make(k) { return arp(k, k.buffer(0.15), [660, 880, 1100, 1320], 0.035); },
+      level: -4, gap: 0.1,
+      priority: 0xE0, protect: held('astroCatch'),
+      make: board('astroCatch'),
     },
-    // Wave start: a Defender-style fanfare, G C E G on a square lead over
-    // a sawtooth bass.
+    // A wave starts: Defender's game start (command $0A, SV3), a low sine
+    // with 256 echoes whose tone keeps changing, held for the 64 frames
+    // Defender's table gave it.
     waveStart: {
-      level: -4, gap: 1,
-      make(k) {
-        const a = k.buffer(1.2);
-        arp(k, a, ['G4', 'C5', 'E5'].map(note), 0.1);
-        k.tone(a, { wave: 'square', freq: wobble(note('G5'), 7, 0.012), start: 0.3,
-          dur: 0.45, gain: gate(0.45) });
-        k.tone(a, { wave: 'saw', freq: note('C3'), dur: 1.1, gain: gate(1.1, 0.6),
-          filter: { type: 'lp', freq: 1500 } });
-        return fadeOut(a, RATE, 0.3);
-      },
-    },
-    // Wave cleared: a rising sweep, then chords: C, G, C.
-    waveCleared: {
-      level: -4, gap: 1,
-      make(k) {
-        const a = k.buffer(1.35);
-        k.tone(a, { wave: 'square', freq: sweep(200, 2000, 0.4), dur: 0.4,
-          gain: gate(0.4, 0.6) });
-        const chord = (names, start, dur) => {
-          for (const n of names) {
-            k.tone(a, { wave: 'saw', freq: note(n), start, dur, gain: gate(dur, 0.5),
-              filter: { type: 'lp', freq: 3500 } });
-          }
-        };
-        chord(['C4', 'E5', 'G5', 'C6'], 0.45, 0.18);
-        chord(['G3', 'D5', 'G5', 'B5'], 0.65, 0.18);
-        chord(['C4', 'E5', 'G5', 'C6'], 0.85, 0.45);
-        return a;
-      },
-    },
-    // Extra life: the "1-up", six staccato square pulses stepping up a
-    // semitone each.
-    extraLife: {
       level: -5, gap: 1,
-      make(k) {
-        const f = [0, 1, 2, 3, 4, 5].map((i) => 1047 * Math.pow(2, i / 12));
-        return arp(k, k.buffer(0.5), f, 0.08, { len: 0.05 });
-      },
+      priority: 0xF0, protect: held('start1'),
+      make: board('start1', { seconds: held('start1') + 0.1, fade: 0.25 }),
     },
-    // Low fuel: a pair of square beeps at 1000 Hz, every second.
+    // Wave cleared: Robotron's wave end - the spinner (command $0E, SP1)
+    // sent 29 times 4 frames apart, each time whirring a step higher.
+    waveCleared: {
+      level: -5, gap: 1,
+      priority: 0xE0, protect: held('waveEnd'),
+      make: board('waveEnd', { seconds: held('waveEnd') + 0.12, fade: 0.12 }),
+    },
+    // Extra life: Defender's extra ship (command $1E, FOSHIT): falling
+    // chirps, each starting higher, "dee-oo dee-oo dee-oo". The board
+    // plays forty; here, the first second's worth.
+    extraLife: {
+      level: -4, gap: 1,
+      priority: 0xFF, protect: held('freeShip'),
+      make: board('freeShip', { seconds: 1.0, fade: 0.1 }),
+    },
+    // Low fuel, every second: the first "ding-dong" of Defender's Big Ben
+    // (command $05, BBSV, heard when a pod is hit): 735 and 136 Hz.
     lowFuel: {
-      level: -8, gap: 0.8, repeat: 1.0,
-      make(k) {
-        return arp(k, k.buffer(0.23), [1000, 1000], 0.14, { len: 0.08 });
-      },
+      level: -7, gap: 0.8, repeat: 1.0,
+      priority: 0xC8, protect: held('probeHit'),
+      make: board('probeHit', { seconds: 0.35, fade: 0.05 }),
     },
-    // Game over: G F E D C on a square lead, then a wash of noise.
+    // Game over: Defender's falling humanoid (command $1A, SCREAM): four
+    // falling whistles, each starting half a second after the last.
     gameOver: {
       level: -3, gap: 2,
-      make(k) {
-        const a = k.buffer(2.2);
-        arp(k, a, ['G4', 'F4', 'E4', 'D4'].map(note), 0.2, { len: 0.18 });
-        k.tone(a, { wave: 'square', freq: wobble(note('C4'), 6, 0.015), start: 0.8,
-          dur: 0.6, gain: gate(0.6) });
-        k.tone(a, { wave: 'saw', freq: note('C2'), start: 0.8, dur: 0.6,
-          gain: gate(0.6, 0.5), filter: { type: 'lp', freq: 800 } });
-        k.noise(a, { start: 1.0, dur: 1.2, gain: line([[0, 0], [0.2, 0.35], [1.2, 0]]),
-          filter: { type: 'lp', freq: sweep(3000, 300, 1.2) } });
-        return a;
-      },
+      priority: 0xF0, protect: held('astroScream'),
+      make: board('astroScream', { seconds: 2.5, fade: 0.6 }),
     },
-    // Homing missile: a sawtooth rising 300 to 1200 Hz with a hiss.
+    // Our homing missile: Robotron's LAUNCH (command $39), the lightning
+    // routine with its delay shrinking slowly: a rocket's crackle.
     missileLaunch: {
-      level: -5, pos: true, gap: 0.15,
-      make(k) {
-        const a = k.buffer(0.32);
-        k.tone(a, { wave: 'saw', freq: sweep(300, 1200, 0.25), gain: perc(0.005, 0.3) });
-        k.noise(a, { gain: perc(0.002, 0.25, 0.3), filter: { type: 'hp', freq: 2000 } });
-        return a;
-      },
+      level: -4, pos: true, gap: 0.15,
+      priority: 0xC8, protect: ticks(8),
+      make: board('LAUNCH', { seconds: 0.45, fade: 0.12 }),
     },
-    // Alien missile: the same falling instead of rising.
+    // An alien missile: Defender's mutant shot (command $09, CLDWNV), a
+    // spiky wave falling "zeeoooww".
     enemyMissileLaunch: {
-      level: -6, pos: true, gap: 0.15,
-      make(k) {
-        const a = k.buffer(0.32);
-        k.tone(a, { wave: 'saw', freq: sweep(1200, 300, 0.25), gain: perc(0.005, 0.3) });
-        k.noise(a, { gain: perc(0.002, 0.25, 0.3), filter: { type: 'hp', freq: 2000 } });
-        return a;
-      },
+      level: -5, pos: true, gap: 0.15,
+      priority: 0xC0, protect: held('schitzoShoot'),
+      make: board('schitzoShoot', { seconds: 0.35, fade: 0.08 }),
     },
-    // Smart bomb: Defender's - a roar of full-level noise with a lowpass
-    // filter closing from 8 kHz to 100 Hz, and a square wave diving from
-    // 3000 to 50 Hz.
+    // Smart bomb: exactly Defender's - six crackles of lightning 4 frames
+    // apart, then the explosion.
     smartBomb: {
-      level: 4, gap: 0.5,
-      make(k) {
-        const a = k.buffer(1.6);
-        k.noise(a, { gain: line([[0, 0], [0.005, 1], [0.4, 0.8], [1.55, 0]]),
-          filter: { type: 'lp', freq: sweep(8000, 100, 1.5) } });
-        k.tone(a, { wave: 'square', freq: sweep(3000, 50, 0.7), dur: 0.8,
-          gain: perc(0.002, 0.8, 0.5) });
-        return a;
-      },
+      level: 2, gap: 0.5,
+      priority: 0xE8, protect: held('smartBomb'),
+      make: board('smartBomb', { seconds: 2.6, fade: 0.5 }),
     },
-    // Virus alert: a two-tone siren, 440 / 660 Hz, 150 ms each.
+    // Virus alert: Robotron's siren (command $31, SIREN): a square wave
+    // swooping down and up, "wee-woo wee-woo".
     virusAlert: {
-      level: -4, gap: 2,
-      make(k) {
-        const a = k.buffer(1.25);
-        k.tone(a, { wave: 'square', freq: steps(0.15, [440, 660], true), dur: 1.2,
-          gain: gate(1.2), filter: { type: 'lp', freq: 3000 } });
-        return a;
-      },
+      level: -3, gap: 2,
+      priority: 0xE0, protect: ticks(30),
+      make: board('siren', { seconds: 1.2, fade: 0.1 }),
     },
-    // Shield hit: a fast warble and a crackle.
+    // The shield takes a hit: the start of Defender's lightning (command
+    // $11, LITE), a "zzt" crackle.
     shieldHit: {
-      level: -5, gap: 0.1,
-      make(k) {
-        const a = k.buffer(0.18);
-        k.tone(a, { wave: 'square', freq: steps(0.025, [2000, 1500], true), dur: 0.16,
-          gain: perc(0.002, 0.16) });
-        k.noise(a, { hold: 4000, dur: 0.03, gain: perc(0.001, 0.03, 0.7) });
-        return a;
-      },
+      level: -4, gap: 0.1,
+      priority: 0xD8, protect: held('astroHit'),
+      make: board('astroHit', { seconds: 0.2, fade: 0.05 }),
     },
-    // A tree turns bad: a thin trilling square falling an octave.
+    // A tree turns bad: one pass of Defender's bonus warble (command $12,
+    // BON2), the sound of a humanoid being pulled up by a lander.
     treeMutated: {
-      level: -12, pos: true, gap: 0.2, max: 2,
-      make(k) {
-        const a = k.buffer(0.3);
-        k.tone(a, { wave: 'pulse', duty: 0.3,
-          freq: wobble(sweep(300, 150, 0.25), 30, 0.2),
-          gain: perc(0.005, 0.25) });
-        return a;
-      },
+      level: -11, pos: true, gap: 0.2, max: 2,
+      priority: 0xB8, protect: ticks(6),
+      make: board([[0, 0x12]]),
     },
-    // A seeder turning into a mutant: a pulse wave trilling 40 times a
-    // second as it climbs two octaves.
+    // A seeder becomes a mutant: Defender's lander reaching the top of
+    // the screen (the spinner, command $0E, sent 10 frames running, so it
+    // whirrs up ten steps).
     enemyMutated: {
-      level: -6, pos: true, gap: 0.2, max: 2,
-      make(k) {
-        const a = k.buffer(0.42);
-        const up = sweep(150, 600, 0.4);
-        k.tone(a, { wave: 'pulse', duty: 0.3,
-          freq: (t) => up(t) * (Math.floor(t * 80) % 2 ? 1.5 : 1),
-          gain: line([[0, 0], [0.005, 1], [0.35, 0.8], [0.42, 0]]) });
-        return a;
-      },
+      level: -5, pos: true, gap: 0.2, max: 2,
+      priority: 0xC8, protect: held('landerSuck'),
+      make: board('landerSuck', { seconds: 0.5, fade: 0.1 }),
     },
-    // A tree or building destroyed: a short falling crunch.
+    // A tree or building destroyed: the Williams explosion (FNOISE as
+    // CANNON) closing down 2.5 times faster: a shorter crunch.
     objectDestroyed: {
-      level: -4, pos: true, gap: 0.08, max: 3, vary: 0.08,
-      make(k) {
-        return boom(k, k.buffer(0.4), { dur: 0.35, hi: 3000, lo: 500, sq: 150 });
-      },
+      level: -4, pos: true, gap: 0.08, max: 3, vary: 0.06,
+      priority: 0xD0, protect: held('schitzHit'),
+      make: board([[0, 'fnoise', { fmax: 0xFF, sampc: 400, fdflg: 1, dsflg: 1 }]],
+        { seconds: 1.0, fade: 0.2 }),
     },
-    // A seeder dropping virus: a soft low bloop.
+    // A seeder dropping virus: a few ticks of the lightning routine (LITEN)
+    // with a delay falling fast: a soft crackle, short enough to repeat.
+    // The lowest priority of all: it never cuts another sound off.
     seederSpray: {
-      level: -16, pos: true, gap: 0.12, max: 2, vary: 0.2,
-      make(k) {
-        const a = k.buffer(0.03);
-        k.tone(a, { wave: 'square', freq: sweep(300, 220, 0.02), dur: 0.025,
-          gain: gate(0.025) });
-        return a;
-      },
+      level: -18, pos: true, gap: 0.12, max: 2, vary: 0.2,
+      priority: 0xB8, protect: ticks(3),
+      make: board([[0, 'liten', { lfreq: 0x20, dfreq: 0xFC, cycnt: 8 }]],
+        { seconds: 0.05, fade: 0.015 }),
     },
-    // A new ship materialising: a sweep up through a flickering arpeggio,
-    // Robotron style.
+    // A new ship: Defender's APPEAR (command $15), what it plays as a ship
+    // materialises - a crackle that speeds up into a hiss. Priority $F0
+    // (Defender's is $D0) so it cuts off the tail of the death explosion.
     respawn: {
-      level: -6, gap: 0.5,
-      make(k) {
-        const a = k.buffer(0.6);
-        const up = sweep(200, 1600, 0.5), chord = [1, 1.25, 1.5];
-        k.tone(a, { wave: 'square', freq: (t) => up(t) * chord[Math.floor(t / 0.02) % 3],
-          dur: 0.56, gain: line([[0, 0], [0.01, 1], [0.5, 0.8], [0.56, 0]]) });
-        return a;
-      },
+      level: -5, gap: 0.5,
+      priority: 0xF0, protect: held('appear'),
+      make: board('appear'),
     },
-    // Menus and the high-score table: short square blips.
+    // Menus and the high-score table: short Williams blips. They play
+    // alongside whatever else is sounding (oneVoice: false).
+    // uiMove: the first pitch of the spinner "drip" (command $08, SPNRV).
     uiMove: {
-      level: -10, gap: 0.03,
-      make(k) {
-        const a = k.buffer(0.025);
-        k.tone(a, { wave: 'square', freq: 900, gain: gate(0.025) });
-        return a;
-      },
+      level: -9, gap: 0.03, oneVoice: false,
+      make: board('SPNRV', { until: ['gwave', 1], fade: 0.004 }),
     },
+    // uiSelect: the whole "drip", a rising "bloip".
     uiSelect: {
-      level: -8, gap: 0.05,
-      make(k) {
-        const a = k.buffer(0.05);
-        k.tone(a, { wave: 'square', freq: sweep(900, 1800, 0.05), gain: gate(0.05) });
-        return a;
-      },
+      level: -7, gap: 0.05, oneVoice: false,
+      make: board('SPNRV'),
     },
+    // uiBack: the start of the "cool downer" (command $09, CLDWNV).
     uiBack: {
-      level: -9, gap: 0.05,
-      make(k) {
-        const a = k.buffer(0.05);
-        k.tone(a, { wave: 'square', freq: sweep(1800, 900, 0.05), gain: gate(0.05) });
-        return a;
-      },
+      level: -8, gap: 0.05, oneVoice: false,
+      make: board('CLDWNV', { seconds: 0.045, fade: 0.01 }),
     },
+    // hsLetter: one pass of XBV (command $04), a tiny zip.
     hsLetter: {
-      level: -11, gap: 0.03,
-      make(k) {
-        const a = k.buffer(0.02);
-        k.tone(a, { wave: 'square', freq: 1500, gain: gate(0.02) });
-        return a;
-      },
+      level: -10, gap: 0.03, oneVoice: false,
+      make: board('XBV', { until: ['gwave', 1], fade: 0.003 }),
     },
+    // hsConfirm: one pass of ED17, four notes up.
     hsConfirm: {
-      level: -8, gap: 0.1,
-      make(k) {
-        return arp(k, k.buffer(0.2), ['C5', 'E5', 'G5', 'C6', 'E6'].map(note), 0.04);
-      },
+      level: -7, gap: 0.1, oneVoice: false,
+      make: board('ED17', { until: ['gwave', 1], fade: 0.01 }),
     },
-    // Title tune: a zooming C major arpeggio, a rising lead and a
-    // sawtooth bass line.
+    // Title tune: the first phrase (seven notes) of Defender's high-score
+    // tune, Bach's Toccata in D minor on the board's "organ".
     titleJingle: {
       level: -4, gap: 1,
-      make(k) {
-        const a = k.buffer(1.8);
-        arp(k, a, ['C5', 'E5', 'G5', 'C6', 'E6', 'G6'].map(note), 0.06, { duty: 0.25 });
-        arp(k, a, ['G5', 'A5', 'B5'].map(note), 0.15, { start: 0.4, len: 0.14 });
-        k.tone(a, { wave: 'square', freq: wobble(note('C6'), 6, 0.012), start: 0.85,
-          dur: 0.7, gain: gate(0.7) });
-        const bass = [['C3', 0, 0.4], ['G2', 0.4, 0.45], ['C3', 0.85, 0.7]];
-        for (const [n, start, dur] of bass) {
-          k.tone(a, { wave: 'saw', freq: note(n), start, dur, gain: gate(dur, 0.6),
-            filter: { type: 'lp', freq: 1200 } });
-        }
-        return fadeOut(echo(a, RATE, 0.12, 0.2, 0.3), RATE, 0.25);
-      },
+      priority: 0xFF,
+      make: board('toccata', { until: ['note', 7], fade: 0.15 }),
     },
-    // New high score: an arpeggio up to a shimmering major chord.
+    // New high score: Defender's "Phantom" tune (three organ notes).
     highScore: {
       level: -4, gap: 1,
-      make(k) {
-        const a = k.buffer(1.1);
-        arp(k, a, ['C5', 'E5', 'G5'].map(note), 0.07);
-        for (const n of ['C6', 'E6', 'G6']) {
-          k.tone(a, { wave: 'square', freq: wobble(note(n), 7, 0.01), start: 0.21,
-            dur: 0.8, gain: times(gate(0.8, 0.5), perc(0.01, 1.4)) });
-        }
-        return a;
-      },
+      priority: 0xFF,
+      make: board('phantom'),
     },
   },
 
   loops: {
-    // Engine: a rattly 70 Hz sawtooth (an 18 Hz wobble of +- 6 Hz) with
-    // some rumbling noise. Full thrust raises it to 90 Hz and opens the
-    // filter.
+    // Engine: Defender's thrust (command $16, THRUST) - noise whose level
+    // may change by only 3 steps every 30 CPU cycles: a roar. Hovering
+    // plays it at a third of the speed, which is just what Defender's
+    // background rumble (BG1, the same routine with a slope of 1) is.
+    // Defender rumbles all the time in play, so `idle` (flying, engines
+    // off) plays the rumble quietly too.
     thrust: {
-      level: -5, loop: 0.1, filter: 'lowpass', q: 0.9, attack: 0.04, release: 0.12,
-      glide: 0.1,
-      make(k) {
-        const a = k.buffer(1.1);
-        k.tone(a, { wave: 'saw', freq: (t) => 70 + 6 * Math.sin(2 * Math.PI * 18 * t),
-          gain: 0.7 });
-        k.noise(a, { gain: 0.5, filter: { type: 'lp', freq: 900 } });
-        return a;
-      },
+      idle: true,
+      level: -5, filter: 'lowpass', q: 0.7, attack: 0.03, release: 0.12,
+      glide: 0.08,
+      make: loop('THRUST', { seconds: 1.5, crossfade: 0.1 }),
       params: (s) => (s.thrust
-        ? { gain: 1, rate: 90 / 70, freq: 3000 }
-        : { gain: 0.55, rate: 0.95, freq: 1200 }),
+        ? { gain: 1, rate: 1, freq: 16000 }
+        : s.idle ? { gain: 0.35, rate: 1 / 3, freq: 16000 }
+          : { gain: 0.8, rate: 1 / 3, freq: 16000 }),
     },
-    // Refuelling: square blips every 80 ms, getting higher and quicker as
-    // the tank fills.
+    // Refuelling: Defender's BG2 turbine (command $10): a low sine whose
+    // pitch steps round a short pattern. BG2 rose a step each time the
+    // command was sent again; here the pitch rises as the tank fills.
+    // One pass of the pattern repeats exactly, so it loops cleanly.
     refuel: {
-      level: -10, filter: 'lowpass', q: 0.7, attack: 0.02, release: 0.05,
-      make(k) {
-        const a = k.buffer(0.32);
-        arp(k, a, [400, 400, 400, 400], 0.08, { len: 0.03 });
-        return a;
-      },
-      params: (s) => ({ gain: 1, rate: 1 + 1.5 * s.fuel, freq: 8000 }),
+      level: -10, filter: 'lowpass', q: 0.7, attack: 0.02, release: 0.08,
+      make: loop([[0, 0x10]], { mark: 'gwave', from: 1, to: 3 }),
+      params: (s) => ({ gain: 1, rate: 1 + 1.5 * s.fuel, freq: 12000 }),
     },
-    // Bomber whoosh, with a 90 Hz sawtooth drone underneath.
+    // Bomber: Williams filtered noise (FNOISE) whose slope is picked at
+    // random for each stretch, from 1 to 7 (6 AND a random byte, plus
+    // Robotron's minimum of 1, as its HBOMB does): a rough, crackly roar.
+    // Its sound lies low, so it is muffled with distance by a low-pass
+    // rather than the band-pass of the Original set (whose band-pass takes
+    // about 9 dB off; hence the lower level here).
     bomber: {
-      level: 1, loop: 0.2, filter: 'bandpass', q: 1.2, attack: 0.1, release: 0.3,
-      make(k) {
-        const a = k.buffer(2.2);
-        k.noise(a, { gain: wobble(0.8, 0.5, 0.3) });
-        k.tone(a, { wave: 'saw', freq: 90, gain: 0.4 });
-        return a;
-      },
-      params: (s) => ({ gain: s.near, rate: s.doppler, freq: 400 + 1600 * s.near }),
+      level: -8, filter: 'lowpass', q: 0.9, attack: 0.1, release: 0.3,
+      make: loop([[0, 'fnoise', { fmax: 6, sampc: 0, dsflg: 1, lofrq: 1 }]],
+        { rom: 'robotron', seconds: 2.0, crossfade: 0.2 }),
+      params: (s) => ({ gain: s.near, rate: s.doppler, freq: 700 + 5000 * s.near }),
     },
-    // Pests: square-wave trills, a new random note (2-3 kHz) every 30 ms.
+    // Pests: Robotron's mosquito (command $3F, MOSQTO): the first two of
+    // its rising whoops, looped.
     pest: {
-      level: -11, filter: 'lowpass', q: 0.7, attack: 0.05, release: 0.2,
-      make(k) {
-        const a = k.buffer(0.96);
-        const f = [];
-        for (let i = 0; i < 32; i++) f.push(2500 + 500 * k.random());
-        return arp(k, a, f, 0.03, { len: 0.022 });
-      },
+      level: -9, filter: 'lowpass', q: 0.7, attack: 0.05, release: 0.2,
+      make: loop('MOSQTO', { mark: 'vari', from: 0, to: 2 }),
       params: (s) => ({ gain: s.near, rate: s.doppler, freq: 9000 }),
     },
   },

@@ -241,8 +241,9 @@ disc, so its whole source can be read and changed in !JsEdit (View source on its
 * **Lander+**: the original game's rules and landscape, with high scores.
 * The **Enhanced** look (any resolution, up to 64 rows of landscape in view, fog, stars, a Zarch-style console
   with a scanner) or the **Classic** look (320×256 in the Archimedes' 256 colours, as Lander drew it).
-* Two synthesised sound sets, **Original** (Archimedes/Zarch-style 8-bit samples) and **Arcade** (Williams
-  Defender/Robotron style), a demo flown by an autopilot, full screen or in a window, mouse, keyboard or gamepad.
+* Two synthesised sound sets, **Original** (Archimedes/Zarch-style 8-bit samples) and **Arcade** (the Williams
+  Defender/Robotron sound board recreated, one sound at a time like the arcade machine unless Arcade voices is
+  set to Many), a demo flown by an autopilot, full screen or in a window, mouse, keyboard or gamepad.
 
 Settings and high scores are kept in `Choices:Lander2`. The user guide is `$.Docs.Lander2` (source
 `tools/docs/Lander2`); the design is in `docs/apps/Lander2.md`; `node tools/disc-lander2.mjs` puts the sources

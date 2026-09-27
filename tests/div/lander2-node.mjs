@@ -3,7 +3,8 @@
 // inputs and by the crude autopilot in Player, checking the rules (fuel, score, landing,
 // crashing, rocks, gravity, waves, infection, missiles, smart bombs, extra lives) and
 // invariants (no NaN, wrapped positions, aliens never inside hills), determinism for a
-// seed and independence from the particle detail setting.
+// seed and independence from the particle detail setting; and the sound's one-voice
+// channel (the Arcade set as the Williams board: one sound at a time, by priority).
 import fs from 'fs';
 
 const DIR = new URL('../../tools/lander2/!Lander2/', import.meta.url);
@@ -22,10 +23,84 @@ const IN = (o = {}) => ({ stickX: 0, stickY: 0, thrust: false, hover: false, fir
   missile: false, smartBomb: false, ...o });
 
 // ---------------------------------------------------------------- source rules
-for (const f of ['World', 'Player', 'Enemies', 'Particles', 'Waves', 'Virus']) {
+for (const f of ['World', 'Player', 'Enemies', 'Particles', 'Waves', 'Virus', 'Channel', 'Sound',
+  'Settings', 'Williams', 'SfxArcade']) {
   const text = fs.readFileSync(new URL(f, DIR), 'latin1');
   ok(!/[^\n\x20-\x7e]/.test(text), `${f}: ASCII only, no tabs or CR`);
   text.split('\n').forEach((l, i) => ok(l.length <= 90, `${f}:${i + 1} is ${l.length} characters`));
+}
+
+// ---------------------------------------------------------------- sound: the one-voice channel
+{
+  const { Channel, priorityOf, bypasses } = await import(new URL('Channel', DIR));
+  ok(priorityOf({}) === 0 && priorityOf({ priority: 5 }) === 5 && priorityOf(null) === 0,
+    'channel: a sound without a priority has priority 0');
+  ok(bypasses({ oneVoice: false }) && !bypasses({}) && !bypasses({ oneVoice: true }),
+    'channel: only oneVoice === false bypasses');
+  const ch = new Channel(), lo = { priority: 1 }, hi = { priority: 9 }, none = {};
+  ok(ch.decide(lo, 0) === 'play' && !ch.busy(0), 'channel: free at first');
+  ok(ch.start('a', hi, 0, 1, 'A') === null, 'channel: nothing to cut at first');
+  ok(ch.decide(lo, 0.5) === 'refuse' && ch.decide(none, 0.5) === 'refuse',
+    'channel: a lower priority is refused while a higher one plays');
+  ok(ch.decide({ priority: 9 }, 0.5) === 'play', 'channel: an equal priority may cut in');
+  ok(ch.decide({ priority: 0, oneVoice: false }, 0.5) === 'bypass', 'channel: bypass');
+  ok(ch.decide(lo, 1) === 'play' && !ch.busy(1), 'channel: free once the sound has finished');
+  ch.start('a', lo, 2, 1, 'A');
+  const cut = ch.start('b', hi, 2.2, 0.5, 'B');
+  ok(cut?.voice === 'A' && ch.playing(2.3)?.name === 'b', 'channel: the new sound cuts the old');
+  ch.stopped('A');
+  ok(ch.playing(2.3)?.name === 'b', 'channel: stopping another voice leaves it');
+  ch.stopped('B');
+  ok(!ch.busy(2.3), 'channel: stopping its voice frees it');
+  ch.start('c', hi, 3, 1, 'C'); ch.clear();
+  ok(ch.decide(lo, 3.1) === 'play', 'channel: clear frees it');
+  // protect: the priority holds for def.protect seconds, then anything may cut in
+  ch.start('d', { priority: 9, protect: 0.2 }, 4, 2, 'D');
+  ok(ch.decide(lo, 4.1) === 'refuse', 'channel: protected at first');
+  ok(ch.decide(none, 4.3) === 'play' && ch.busy(4.3), 'channel: after protect, anything cuts in');
+
+  // Sound itself with a stand-in AudioContext and made-up recipes: which voices play
+  const { Sound, SETS } = await import(new URL('Sound', DIR));
+  const param = () => ({ value: 1, setTargetAtTime() {}, cancelScheduledValues() {},
+    setValueAtTime() {} });
+  const node = () => ({ connect() {}, disconnect() {}, gain: param(), threshold: param(),
+    knee: param(), ratio: param(), attack: param(), release: param(), pan: param(),
+    frequency: param(), Q: param(), playbackRate: param() });
+  const ctx = { currentTime: 10, destination: node(), createGain: node,
+    createDynamicsCompressor: node, createWaveShaper: node, createStereoPanner: node,
+    createBiquadFilter: node,
+    createBufferSource: () => ({ ...node(), stopped: null, start() {},
+      stop(t) { this.stopped = t; } }) };
+  const defs = { shot: { priority: 2 }, boom: { priority: 8 }, plain: {},
+    blip: { oneVoice: false } };
+  const was = SETS.arcade;
+  SETS.arcade = { ...was, sounds: { ...was.sounds, ...defs } };
+  const snd = new Sound({ set: 'arcade', context: ctx });
+  for (const n of Object.keys(defs)) snd.buffers.arcade = { ...snd.buffers.arcade,
+    ['sound:' + n]: { duration: 1 } };
+  ok(snd.voiceMode === 'one' && snd.oneVoice, 'sound: one voice by default for Arcade');
+  ok(snd.play('boom') && snd.voices.length === 1 && snd.ducked, 'sound: boom plays, loops duck');
+  ok(!snd.play('shot') && !snd.play('plain'), 'sound: lower priorities are refused');
+  ok(snd.play('blip') && snd.voices.length === 2, 'sound: a bypassing sound plays alongside');
+  const boom = snd.voices[0];
+  ok(snd.play('boom') && boom.src.stopped !== null && snd.voices.length === 2,
+    'sound: an equal priority cuts the one playing');
+  ctx.currentTime = 11.5;
+  ok(snd.play('plain'), 'sound: anything plays once the channel is free');
+  snd.setVoices('many');
+  ok(!snd.oneVoice && snd.play('shot') && snd.play('plain')
+    && snd.voices.filter((v) => v.end > ctx.currentTime).length === 3,
+  'sound: Many overlaps');
+  snd.setVoices('one'); snd.setSet('original');
+  ok(!snd.oneVoice, 'sound: the Original set is never one voice');
+  snd.setSet('arcade'); snd.play('boom'); snd.silence();
+  ok(!snd.channel.busy(ctx.currentTime) && !snd.ducked, 'sound: silence frees the channel');
+  ok(new Sound({ voices: 'many' }).voiceMode === 'many' && new Sound({ voices: 'x' }).voiceMode
+    === 'one', 'sound: the voices option');
+  new Sound().setVoices('many');
+  ok(!snd.lastError, 'sound: no errors ' + snd.lastError);
+  snd.close();
+  SETS.arcade = was;
 }
 
 // ---------------------------------------------------------------- invariants

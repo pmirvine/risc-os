@@ -2,11 +2,12 @@
 //
 // There are two sound sets, each a module of recipes: SfxOrig (the
 // "Original" set, an Archimedes / Zarch feel: 8-bit samples at 20.8 kHz)
-// and SfxArcade (the "Arcade" set, Williams Defender / Robotron style).
-// Both have a sound for every event the game reports, the loops that
-// follow the game's state (engine, refuelling, bombers, pests) and the
-// jingles and menu blips. The recipes are synthesised by SfxKit into
-// sample arrays when a set is first needed - there are no sample files.
+// and SfxArcade (the "Arcade" set, the Williams Defender / Robotron
+// sound board recreated). Both have a sound for every event the game
+// reports, the loops that follow the game's state (engine, refuelling,
+// bombers, pests) and the jingles and menu blips. The recipes are
+// synthesised into sample arrays (by SfxKit, and for the Arcade set the
+// Williams engine) when a set is first needed - there are no sample files.
 //
 // How the front end uses it:
 //
@@ -19,6 +20,7 @@
 //   sound.play('uiSelect');   // any sound by name (menus, jingles)
 //   sound.silence();          // pausing: loops and sounds stop
 //   sound.setSet('arcade'); sound.setVolume(0.5); sound.setDesktopGain(g);
+//   sound.setVoices('one');   // Arcade set: one sound at a time, or 'many'
 //   sound.close();            // quitting: the audio system is freed
 //
 // Where a sound is heard: the listener sits where the ship is (the middle
@@ -26,6 +28,17 @@
 // is (1 / (1 + (d / 8)^2), so half as loud 8 tiles away) and panned left
 // or right by how far it is across the view. The world wraps round, so
 // differences are measured the short way round (world.terrain.delta).
+//
+// One voice (the Arcade set with the "Arcade voices" setting at One, the
+// default): the Williams sound board in Defender and Robotron plays one
+// sound at a time, so the Arcade set does too. Its one-shots go through a
+// single Channel: a new sound plays only if its priority (def.priority,
+// 0 if missing) is at least that of the sound still playing, and then
+// cuts that sound off at once. Sounds marked def.oneVoice === false
+// bypass the channel. The loops carry on, as the board's background
+// rumble is really one of its own sounds that the effects interrupt:
+// while an effect plays the loops drop by 18 dB, which comes close.
+// With "Many", and for the Original set, the rules below apply.
 //
 // Keeping it pleasant: at most 16 sounds play at once (a new one replaces
 // the one nearest its end); each sound has a limit on how often it can
@@ -41,6 +54,7 @@
 import { SET as ORIGINAL } from './SfxOrig';
 import { SET as ARCADE } from './SfxArcade';
 import { renderDef } from './SfxKit';
+import { Channel, DUCK } from './Channel';
 
 /** The sound sets, by the name used in the settings. */
 export const SETS = { original: ORIGINAL, arcade: ARCADE };
@@ -56,6 +70,7 @@ const QUIET = 0.02;        // sounds fainter than this are not played
 const SOUND_SPEED = 30;    // tiles per second, for the Doppler pitch bend
 const TICKS = 50;          // simulation ticks per second
 const OUT_TRIM = 0.9;      // master level after the compressor
+const CUT = 0.0012;        // time constant of a one-voice cut (gone in ~6 ms)
 // events that share another event's sound: [sound, pitch]
 const ALIASES = { landingBonus: ['pickup', 0.84], newLandscape: ['waveStart', 1] };
 // pickups each have their own pitch
@@ -71,11 +86,16 @@ export class Sound {
   /**
    * set: 'original' | 'arcade' | 'off'; volume 0..1 (the game's own
    * setting); desktopGain 0..1 (the desktop's speaker and volume
-   * settings). context: an AudioContext to use instead of making one
-   * (tests pass an OfflineAudioContext).
+   * settings). voices: 'one' (the Arcade set plays one sound at a time,
+   * as the arcade board) or 'many'. context: an AudioContext to use
+   * instead of making one (tests pass an OfflineAudioContext).
    */
-  constructor({ set = 'original', volume = 0.8, desktopGain = 1, context = null } = {}) {
+  constructor({ set = 'original', volume = 0.8, desktopGain = 1, voices = 'one',
+    context = null } = {}) {
     this.setName = SETS[set] ? set : 'off';
+    this.voiceMode = voices === 'many' ? 'many' : 'one';
+    this.channel = new Channel();  // the one voice (see the top of this file)
+    this.ducked = false;     // loops turned down under a one-voice effect
     this.volume = volume;
     this.desktopGain = desktopGain;
     this.ctx = null;
@@ -117,6 +137,23 @@ export class Sound {
     this.setName = name;
     this._prepare();
   }
+
+  /**
+   * 'one': the Arcade set plays one sound at a time, as the arcade board
+   * did; 'many': sounds overlap. The Original set always overlaps.
+   */
+  setVoices(mode) {
+    try {
+      mode = mode === 'many' ? 'many' : 'one';
+      if (mode === this.voiceMode) return;
+      this.voiceMode = mode;
+      this.channel.clear();
+      this._unduck();
+    } catch (e) { this.lastError = e; }
+  }
+
+  /** True if one-shots go through the one-voice channel just now. */
+  get oneVoice() { return this.setName === 'arcade' && this.voiceMode === 'one'; }
 
   /** The game's volume setting, 0..1. */
   setVolume(v) { this.volume = clamp(+v || 0, 0, 1); this._level(); }
@@ -164,10 +201,20 @@ export class Sound {
       if (def.vary) rate *= 1 + def.vary * (Math.random() * 2 - 1);
       // quick repeats (autofire) sit a little further back in the mix
       if (def.gap && def.gap < 0.05 && now - last < 0.15) gain *= 0.75;
+      // one voice: a sound less important than the one playing is dropped
+      const verdict = this.oneVoice ? this.channel.decide(def, now) : 'bypass';
+      if (verdict === 'refuse') return false;
+      const one = verdict === 'play';
       const buffer = this._buffer('sound', name);
       if (!buffer) return false;
       this.last[name] = now;
-      this._voice(name, def, buffer, gain, rate, set.pan(pan), opts.delay ?? 0);
+      const v = this._voice(name, def, buffer, gain, rate, set.pan(pan), opts.delay ?? 0);
+      if (one) {
+        // it owns the channel: cut off the sound it replaces, duck the loops
+        const cut = this.channel.start(name, def, now, v.end - now, v);
+        if (cut && cut.voice && cut.voice !== v) this._cutVoice(cut.voice);
+        this._duckUntil(v.end);
+      }
       return true;
     } catch (e) { this.lastError = e; return false; }
   }
@@ -177,6 +224,8 @@ export class Sound {
     try {
       for (const name of Object.keys(this.loops)) this._stopLoop(name, 0.01);
       for (const v of [...this.voices]) this._stopVoice(v);
+      this.channel.clear();
+      this._unduck();
     } catch (e) { this.lastError = e; }
   }
 
@@ -196,6 +245,10 @@ export class Sound {
   _build(ctx) {
     this.ctx = ctx;
     this.bus = ctx.createGain();
+    // the loops meet here first, so one-voice effects can duck them together
+    this.loopBus = ctx.createGain();
+    this.loopBus.connect(this.bus);
+    this.ducked = false;
     const c = this.comp = ctx.createDynamicsCompressor();
     // set high enough that a single sound passes through untouched: it only
     // steps in when many loud sounds pile up
@@ -289,7 +342,9 @@ export class Sound {
     const t = now + delay;
     src.start(t);
     src.onended = () => { g.disconnect(); if (panner) panner.disconnect(); };
-    this.voices.push({ name, src, g, end: t + buffer.duration / rate });
+    const v = { name, src, g, end: t + buffer.duration / rate };
+    this.voices.push(v);
+    return v;
   }
 
   // Fade a one-shot out over a few milliseconds (a hard stop would click).
@@ -299,6 +354,40 @@ export class Sound {
     try { v.src.stop(now + 0.05); } catch { /* not started yet */ }
     v.end = 0;
     this.voices = this.voices.filter((x) => x !== v);
+    if (this.channel.current?.voice === v) { this.channel.clear(); this._unduck(); }
+  }
+
+  // Cut a one-shot off almost at once, as the arcade board does when a new
+  // sound arrives (a few milliseconds' fade, only so that it doesn't click).
+  _cutVoice(v) {
+    const now = this.ctx.currentTime;
+    v.g.gain.cancelScheduledValues(now);
+    v.g.gain.setTargetAtTime(0, now, CUT);
+    try { v.src.stop(now + CUT * 6); } catch { /* not started yet */ }
+    v.end = 0;
+    this.voices = this.voices.filter((x) => x !== v);
+  }
+
+  // One voice: turn the loops down now and back up when the effect ends at
+  // time `end` (seconds). A later effect moves the end.
+  _duckUntil(end) {
+    const g = this.loopBus?.gain;
+    if (!g) return;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setTargetAtTime(DUCK, now, 0.003);
+    g.setTargetAtTime(1, Math.max(now, end), 0.03);
+    this.ducked = true;
+  }
+
+  // Loops back to full level (the channel was freed early).
+  _unduck() {
+    const g = this.loopBus?.gain;
+    if (!g || !this.ducked) return;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setTargetAtTime(1, now, 0.03);
+    this.ducked = false;
   }
 
   // Where the listener is: at the ship (the middle of the view).
@@ -349,8 +438,12 @@ export class Sound {
   _updateLoops(world) {
     const p = world.player, over = world.state === 'gameOver';
     const flying = !over && p && p.alive;
+    // (a set whose thrust loop is marked `idle` - the Arcade one, after
+    // Defender's constant background rumble - keeps it going, quietly,
+    // whenever the ship is in the air)
+    const idle = SETS[this.setName]?.loops?.thrust?.idle && flying && !p.landed;
     this._loop('thrust', flying && (p.thrusting || p.hovering)
-      ? { thrust: !!p.thrusting } : null);
+      ? { thrust: !!p.thrusting } : idle ? { idle: true } : null);
     this._loop('refuel', flying && p.refuelling
       ? { fuel: clamp(p.fuel / (p.maxFuel || 1), 0, 1) } : null);
     this._loop('bomber', over ? null : this._nearest(world, 'bomber'));
@@ -432,9 +525,9 @@ export class Sound {
     if (ctx.createStereoPanner) {
       pan = ctx.createStereoPanner();
       g.connect(pan);
-      pan.connect(this.bus);
+      pan.connect(this.loopBus);
     } else {
-      g.connect(this.bus);
+      g.connect(this.loopBus);
     }
     // start each loop at a random point, so it never sounds the same twice
     src.start(ctx.currentTime, Math.random() * buffer.duration);

@@ -1,0 +1,95 @@
+// Lander II - Channel: the arcade sound board's single voice.
+//
+// The Williams sound board in Defender and Robotron plays one sound at a
+// time. When the game asks for a new sound the board drops whatever it
+// was playing, there and then, and starts the new one. Which requests get
+// through is decided by the game itself: every sound has a priority, and
+// a sound is only sent to the board if it matters at least as much as the
+// one still playing.
+//
+// Sound uses a Channel for the Arcade set when the "Arcade voices"
+// setting is One. The Channel only makes the decisions - it knows nothing
+// about Web Audio - so it can be tested on its own:
+//
+//   const ch = new Channel();
+//   ch.decide(def, now)    'play', 'refuse' or 'bypass'
+//   ch.start(name, def, now, seconds, voice)
+//                          the new sound now owns the channel; returns the
+//                          entry it cut off ({ name, priority, end, voice })
+//                          or null
+//   ch.playing(now)        the entry playing now, or null
+//   ch.stopped(voice)      that voice was stopped some other way
+//   ch.clear()             nothing is playing (silence, a new set)
+//
+// A sound's recipe (its def) says how it takes part:
+//   def.priority   a number; higher wins. Missing means 0.
+//   def.oneVoice   false: the sound bypasses the channel altogether and
+//                  plays alongside (menu blips, for instance).
+//   def.protect    seconds the priority holds for (Defender's table time:
+//                  e.g. 8 frames for the mutant explosion). After that
+//                  the sound plays on at priority 0, so anything - even
+//                  the laser - can cut it off. Missing: its whole length.
+// A sound of equal priority cuts off the one playing, as on the board
+// (so the autofire's shots cut each other off).
+
+/** Loops (the engine's roar, refuelling...) are this loud while an effect plays. */
+export const DUCK = 0.126;          // -18 dB
+
+/** A sound's priority: def.priority, or 0 if it has none. */
+export const priorityOf = (def) => (Number.isFinite(def?.priority) ? def.priority : 0);
+
+/** True if a sound plays outside the channel (def.oneVoice === false). */
+export const bypasses = (def) => def?.oneVoice === false;
+
+export class Channel {
+  constructor() {
+    this.current = null;            // { name, priority, end, protectEnd, voice } or null
+  }
+
+  /** The entry playing at time `now` (seconds), or null if it has finished. */
+  playing(now) {
+    if (this.current && this.current.end <= now) this.current = null;
+    return this.current;
+  }
+
+  /** The priority the playing sound holds at time `now` (0 once protect is over). */
+  holding(now) {
+    const c = this.playing(now);
+    if (!c) return -Infinity;
+    return now < c.protectEnd ? c.priority : 0;
+  }
+
+  /** True if a sound owns the channel at time `now`. */
+  busy(now) { return !!this.playing(now); }
+
+  /**
+   * May the sound with recipe `def` start now? 'bypass' if it plays outside
+   * the channel, 'play' if the channel is free or the sound's priority is at
+   * least that of the one playing, otherwise 'refuse'.
+   */
+  decide(def, now) {
+    if (bypasses(def)) return 'bypass';
+    return priorityOf(def) >= this.holding(now) ? 'play' : 'refuse';
+  }
+
+  /**
+   * The sound `name` starts now and lasts `seconds`. Returns the entry it
+   * cuts off (its voice should be stopped at once), or null.
+   */
+  start(name, def, now, seconds, voice = null) {
+    const cut = this.playing(now);
+    const end = now + Math.max(0, +seconds || 0);
+    const protect = Number.isFinite(def?.protect)
+      ? Math.min(end, now + def.protect) : end;
+    this.current = { name, priority: priorityOf(def), end, protectEnd: protect, voice };
+    return cut;
+  }
+
+  /** The voice was stopped by something else: if it owned the channel, free it. */
+  stopped(voice) {
+    if (this.current && voice && this.current.voice === voice) this.current = null;
+  }
+
+  /** Free the channel. */
+  clear() { this.current = null; }
+}
