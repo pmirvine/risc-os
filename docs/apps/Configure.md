@@ -23,7 +23,9 @@ help tokens `<plugin><icon>[S][D]`).
   applied at once; the Task Manager follows). The other memory sizes (screen, system heap, module area, font cache,
   system sprites, RAM disc) are the CMOS start-up sizes: `src/core/memory.js` uses them when the desktop starts
   (RAM disc 0 = no RAM disc); `DEF` shows what it starts with (screen 0, RAM disc 1024K).
-* **Stored only** (persisted in `os.config.values`, shown again): disc counts & spindown (with the real "reset"
+  Floppies: the count (`floppies`, also `*Configure Floppies`) is read by `src/core/devices.js` at the next
+  start; 0 leaves the floppy icon off the icon bar (there is only ever one floppy, `ADFS::0`, so 1-4 show one).
+* **Stored only** (persisted in `os.config.values`, shown again): hard disc counts & spindown (with the real "reset"
   warning), printer port / ignore char, mouse speed & type, keyboard delay/repeat/caps, font cache limit, voice, 16-bit,
   monitor, blank delay, font cache sizes, ROM app auto-start, lock password (hashed; locking shades the main icons).
 * Display manager (core, `src/core/devices.js`) already uses the real `Display` template; left unchanged.
