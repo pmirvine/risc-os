@@ -38,6 +38,12 @@ for (const [leaf, data] of Object.entries(iconFiles())) files.push({ name: leaf,
 if (problems.length) { console.error(problems.join('\n')); process.exit(1); }
 
 // ---------------------------------------------------------------- write files, then patch the manifest
+// several people (or agents) may run this at once while developing: take a simple lock for the manifest
+const LOCK = path.join(DISC, '.lander2-lock');
+for (let i = 0; ; i++) {
+  try { fs.mkdirSync(LOCK); break; } catch { if (i > 200) { fs.rmSync(LOCK, { recursive: true, force: true }); } Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
+}
+process.on('exit', () => fs.rmSync(LOCK, { recursive: true, force: true }));
 const base = path.join(DISC, 'HardDisc4', PARENT, encodeName(NAME));
 fs.rmSync(base, { recursive: true, force: true });
 const write = (dir, list) => {
@@ -53,12 +59,6 @@ const write = (dir, list) => {
 };
 const node = { name: NAME, type: 'app', children: write(base, files) };
 
-// several people (or agents) may run this at once while developing: take a simple lock for the manifest
-const LOCK = path.join(DISC, '.lander2-lock');
-for (let i = 0; ; i++) {
-  try { fs.mkdirSync(LOCK); break; } catch { if (i > 200) { fs.rmSync(LOCK, { recursive: true, force: true }); } Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
-}
-process.on('exit', () => fs.rmSync(LOCK, { recursive: true, force: true }));
 const mfPath = path.join(DISC, 'manifest.json');
 const mf = JSON.parse(fs.readFileSync(mfPath, 'utf8'));
 let parent = mf.root.children.find((c) => c.name === PARENT);
