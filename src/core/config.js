@@ -10,6 +10,7 @@
 //   Memory (src/core/memory.js, os.memory): ramSize (MB: 4-256, *Configure RAMSize, applied now); memFontCache,
 //   memFontMax, memRAMDisc, memRMA, memScreen, memSprites, memHeap (K: *Configure FontSize, FontMax, RAMFSSize,
 //   RMASize, ScreenSize, SpriteSize, SystemSize; the areas' sizes from the next start).
+//   floppies (0-4, *Configure Floppies, from the next start: 0 = no floppy drive icon on the icon bar).
 
 import { wimp } from './wimp.js';
 import { input } from './input.js';
@@ -98,6 +99,8 @@ export const config = {
       screensize: () => { this.values.memScreen = sizeK(s); },
       spritesize: () => { this.values.memSprites = sizeK(s); },
       systemsize: () => { this.values.memHeap = sizeK(s); },
+      // floppy drives (0-4, from the next start; 0 = no floppy icon on the icon bar)
+      floppies: () => { this.values.floppies = Math.max(0, Math.min(4, parseInt(s, 10) || 0)); },
       // this desktop's addition: the machine's RAM (MB), applied now (src/core/memory.js)
       ramsize: () => { memory.setRAMSize(/^\d+\s*K$/i.test(s) ? parseInt(s, 10) / 1024 : parseInt(s, 10)); },
     };

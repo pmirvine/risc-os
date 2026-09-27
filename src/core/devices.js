@@ -80,9 +80,12 @@ export async function initDevices() {
   };
   const verify = (disc) => wimp.reportError(adfsM.lookup('VOK'), { appName: 'ADFS Filer', category: 'info' });
 
-  const floppy = wimp.iconbar.add({ task: adfsTask, side: 'left', priority: 0x70000000, sprite: 'floppydisc', text: ':0', onClick: (ev) => openRoot(vfs.floppy, ev) });
-  floppy.menu = adfsMenu(vfs.floppy, floppy, true);
-  floppy.onDataLoad = (ev) => { import('./fileraction.js').then(({ fileAction }) => fileAction(ev.shift ? 'move' : 'copy', ev.files.map((f) => f.path), vfs.floppy.prefix + '$', os.filer.options)); };
+  // *Configure Floppies (!Configure's Floppies window, from the next start): 0 = no floppy drive icon
+  if ((os.config.values.floppies ?? 1) > 0) {
+    const floppy = wimp.iconbar.add({ task: adfsTask, side: 'left', priority: 0x70000000, sprite: 'floppydisc', text: ':0', onClick: (ev) => openRoot(vfs.floppy, ev) });
+    floppy.menu = adfsMenu(vfs.floppy, floppy, true);
+    floppy.onDataLoad = (ev) => { import('./fileraction.js').then(({ fileAction }) => fileAction(ev.shift ? 'move' : 'copy', ev.files.map((f) => f.path), vfs.floppy.prefix + '$', os.filer.options)); };
+  }
   const hd = wimp.iconbar.add({ task: adfsTask, side: 'left', priority: 0x60000000, sprite: 'harddisc', text: vfs.hd.name, onClick: (ev) => openRoot(vfs.hd, ev) });
   hd.menu = adfsMenu(vfs.hd, hd, false);
   hd.onDataLoad = (ev) => { import('./fileraction.js').then(({ fileAction }) => fileAction(ev.shift ? 'move' : 'copy', ev.files.map((f) => f.path), vfs.hd.prefix + '$', os.filer.options)); };
