@@ -34,7 +34,8 @@
 //              front, the Archimedes' 256-colour palette, square dots.
 //   enhanced - more rows into the distance (the "view" option), wider
 //              rows further back so the land fills the screen, fog
-//              towards a horizon colour, a sky with stars, 24-bit
+//              towards a horizon colour, a sky that turns black
+//              when you fly high, where the stars are (Zarch), 24-bit
 //              colour, and the virus infection shown on the land.
 //
 // Usage:
@@ -76,6 +77,11 @@ const SHADOW_DOTS = [
 // the fog (the same as the horizon, so distant land fades into the sky)
 // and the colour below the land.
 const SKY_TOP = [0, 0, 6];
+// the stars (see the constructor): how many in each STAR_CELL x STAR_CELL
+// block, how high they hang (y is down: between 14 and 70 tiles up), and
+// their colours (&RGB): mostly white and pale yellow, some dim
+const STAR_CELL = 32, STAR_COUNT = 56, STAR_LOW = -14, STAR_HIGH = -70, STAR_FAR = 50;
+const STAR_COLOURS = [0xFFF, 0xFFF, 0xFF9, 0xFE6, 0xDDB, 0x999, 0x777];
 const HORIZON = [58, 64, 104];
 const BELOW = [8, 8, 20];
 const BLACK = rgb(0, 0, 0);
@@ -152,10 +158,15 @@ export class Renderer {
     this.order = [];
     this.keys = new Float64Array(64);
     this.terrain = null;
+    // The stars, as in Zarch: points hanging in the air high above the
+    // land, which come into view as you climb. They are laid out in a
+    // block STAR_CELL tiles square that repeats across the world.
     this.stars = [];
     const rng = new Rng(0x57A45);
-    for (let i = 0; i < 260; i++) {
-      this.stars.push({ u: rng.float(), v: rng.float() ** 1.4, b: rng.range(0.3, 1) });
+    for (let i = 0; i < STAR_COUNT; i++) {
+      const c = STAR_COLOURS[rng.int(STAR_COLOURS.length)];
+      this.stars.push({ x: rng.float() * STAR_CELL, z: rng.float() * STAR_CELL,
+        y: rng.range(STAR_HIGH, STAR_LOW), colour: c });
     }
     this.cam = { x: 0, y: 0, z: 0 };
   }
@@ -193,6 +204,7 @@ export class Renderer {
     this.addObjects(world);
     this.addEnemies(world);
     this.addParticles(world);
+    this.addStars(world);
     this.addPlayer(world);
     this.drawLandscape(world);
   }
@@ -296,39 +308,73 @@ export class Renderer {
     return rgb(r | 0, g | 0, b | 0);
   }
 
-  /** The sky: dark at the top, lighter at the horizon, with stars. */
+  /**
+   * The sky: dark at the top, lighter at the horizon. As the camera
+   * climbs it fades to black - space, as in Zarch, where the stars are.
+   */
   drawSky(top, height) {
     const s = this.surface, px = s.pixels, W = s.width;
     const bottom = this.bottom, hy = Math.max(top + 1, this.cy);
+    const k = 1 - this.space();
     for (let y = top; y < bottom; y++) {
-      let c;
+      let r, g, b;
       if (y < hy) {
         const t = ((y - top) / (hy - top)) ** 2.2;
-        c = rgb(SKY_TOP[0] + (HORIZON[0] - SKY_TOP[0]) * t | 0,
-          SKY_TOP[1] + (HORIZON[1] - SKY_TOP[1]) * t | 0,
-          SKY_TOP[2] + (HORIZON[2] - SKY_TOP[2]) * t | 0);
+        r = SKY_TOP[0] + (HORIZON[0] - SKY_TOP[0]) * t;
+        g = SKY_TOP[1] + (HORIZON[1] - SKY_TOP[1]) * t;
+        b = SKY_TOP[2] + (HORIZON[2] - SKY_TOP[2]) * t;
       } else {
         const t = Math.min(1, (y - hy) / (0.15 * height));
-        c = rgb(HORIZON[0] + (BELOW[0] - HORIZON[0]) * t | 0,
-          HORIZON[1] + (BELOW[1] - HORIZON[1]) * t | 0,
-          HORIZON[2] + (BELOW[2] - HORIZON[2]) * t | 0);
+        r = HORIZON[0] + (BELOW[0] - HORIZON[0]) * t;
+        g = HORIZON[1] + (BELOW[1] - HORIZON[1]) * t;
+        b = HORIZON[2] + (BELOW[2] - HORIZON[2]) * t;
       }
-      px.fill(c, y * W, y * W + W);
+      px.fill(rgb(r * k | 0, g * k | 0, b * k | 0), y * W, y * W + W);
     }
-    if (!this.opts.stars) return;
-    // stars: faint when low, bright when the camera climbs above the
-    // hills (the camera only rises once the ship is above height 0)
-    const high = Math.min(1, Math.max(0, -this.cam.y / 8));
-    const k = 0.25 + 0.75 * high;
-    const size = W >= 960 ? 2 : 1;
+  }
+
+  /**
+   * How far into space the camera is: 0 near the land, 1 high up. (The
+   * camera only rises once the ship is above height 0, the hill tops.)
+   */
+  space() {
+    const h = -this.cam.y;
+    return h <= 2 ? 0 : h >= 14 ? 1 : (h - 2) / 12;
+  }
+
+  /**
+   * The stars: points in the air, drawn as short dashes that don't
+   * shrink with distance, put in the bins like particles so the ships
+   * and hills in front hide them. They fade in as the camera climbs.
+   * Enhanced: when Stars is on; Classic: in Invasion only (Zarch had
+   * them, the 1987 Lander didn't).
+   */
+  addStars(world) {
+    if (this.classic ? world.mode !== 'invasion' : !this.opts.stars) return;
+    const fade = this.space();
+    if (fade <= 0) return;
+    const cam = this.cam, f = this.f, cx = this.cx, cy = this.cy;
+    // (stars are seen further than the land: out to STAR_FAR tiles, and
+    // put in the back bin beyond the land's back row)
+    const lo = 2, hi = Math.max(this.backD, STAR_FAR);
+    const scale = f / 256;
+    const w = Math.max(1, Math.round(2 * scale)), h = Math.max(1, Math.round(scale));
+    const top = this.top - h, bottom = this.bottom;
     for (const st of this.stars) {
-      const y = top + Math.floor(st.v * (hy - top) * 0.85);
-      const x = Math.floor(st.u * W);
-      const a = st.b * k * (1 - st.v * 0.8);
-      const p = px[y * W + x];
-      const r = p & 255, g = (p >>> 8) & 255, b = (p >>> 16) & 255;
-      const c = rgb(r + (255 - r) * a | 0, g + (255 - g) * a | 0, b + (230 - b) * a | 0);
-      fillBox(px, W, top, bottom, x, y, size, size, c);
+      const dy = st.y - cam.y;
+      const D0 = wrap(st.z - cam.z + EYE - lo, STAR_CELL) + lo;
+      for (let D = D0; D < hi; D += STAR_CELL) {
+        const k = f / D, y = Math.round(cy + k * dy);
+        if (y < top || y >= bottom) continue;
+        const hw = D * this.halfW + 1;
+        const c = st.colour;
+        const pixel = this.colour(((c >> 8) & 15) * fade, ((c >> 4) & 15) * fade,
+          (c & 15) * fade, 0);
+        for (let dx = wrap(st.x - cam.x + hw, STAR_CELL) - hw; dx < hw; dx += STAR_CELL) {
+          this.push(this.binFor(D), 1, Math.round(cx + k * dx - w / 2), y, w, h, 0, 0,
+            pixel);
+        }
+      }
     }
   }
 
