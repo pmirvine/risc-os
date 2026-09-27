@@ -18,8 +18,9 @@ changed to add it.
 * Looks (independent of the mode): **Classic** (320×256, 12×10 tiles, the VIDC 256-colour palette, Lander's text
   score bar) and **Enhanced** (any resolution, view distance up to 64 rows, fog, stars, infection tint, Zarch-style
   console with scanner).
-* Sound sets: **Original** (Archimedes/Zarch feel, 8-bit VIDC-log samples at 20.8 kHz), **Arcade** (Williams
-  Defender/Robotron synth), **Off**. All synthesised; no sample files.
+* Sound sets: **Original** (Archimedes/Zarch feel, 8-bit VIDC-log samples at 20.8 kHz), **Arcade** (the Williams
+  Defender/Robotron sound board recreated by the `Williams` engine; one sound at a time by priority unless the
+  **Arcade voices** setting is Many), **Off**. All synthesised; no sample files.
 
 ## Source rules
 
@@ -32,7 +33,7 @@ The files are read by users in !Edit / !JsEdit, and `disc-lander2.mjs` refuses a
 * jsrun finds imports with a regex over the raw text, **comments included**: never write `import … from './X'`
   in a comment unless X exists.
 * Engine modules (Maths, Terrain, Models, World, Player, Enemies, Waves, Virus, Particles, Autopilot, SfxKit,
-  SfxOrig, SfxArcade) import neither `riscos` nor the DOM, so they run under node (`tools/package.json` is
+  SfxOrig, SfxArcade, Williams, Channel, Sound) import neither `riscos` nor the DOM, so they run under node (`tools/package.json` is
   `type: module`). Only `!RunImage`, Settings and Scores import `riscos`.
 * Each module starts with a header for readers (what it does, how it fits), with credits to Braben / Mark Moxon's
   [lander.bbcelite.com](https://lander.bbcelite.com) where formulas come from.
@@ -55,9 +56,11 @@ The files are read by users in !Edit / !JsEdit, and `disc-lander2.mjs` refuses a
 | `Models` | `MODELS.name = {vertices, faces:[{normal, v, colour 0xRGB}], rotates, shadow, sort, radius}` in tiles, y down. First half: the original blueprints number for number (÷2^24, normals ÷2^31); second half: aliens, missiles, bombs, pickups (the unused spinning pyramid), sea monster. `faceLevel`, `litColour` (the original's lighting rule), `worldVertices`; `OBJECT_MODELS`, `ENEMY_MODELS`, `PROJECTILE_MODELS`, `PICKUP_MODELS` |
 | `Render` | `new Renderer(surface, {look, view, shadows, stars, fog})`, `setOptions`, `render(world, top, height)`, `project(x,y,z)` → `{x,y,z}` or null, `drawModelAt(name, o, sx, sy, size, opts)` (title/help pages), `backD`/`frontD`/`halfW` (the scanner draws the view wedge); `CLASSIC` (4096 &RGB → VIDC palette pixel) |
 | `Raster` | `fillTriangle`, `fillBox`: flat triangles a row at a time, pixel centres, top-left rule (no seams or double fills between tiles) |
-| `Sound` | `new Sound({set, volume, desktopGain})`, `resume()` (from a gesture), `setSet`, `setVolume`, `setDesktopGain`, `frame(world, events)`, `play(name, opts)`, `silence()`, `close()`; `SETS`, `SOUND_NAMES`, `LOOP_NAMES` |
+| `Sound` | `new Sound({set, volume, desktopGain, voices})`, `resume()` (from a gesture), `setSet`, `setVoices('one'\|'many')`, `oneVoice` (true for Arcade + One), `setVolume`, `setDesktopGain`, `frame(world, events)`, `play(name, opts)`, `silence()`, `close()`; `SETS`, `SOUND_NAMES`, `LOOP_NAMES` |
 | `SfxKit` | a synthesiser on Float32Arrays: envelopes (`perc`, `line`, `sweep`, `glide`, `steps`), `Synth` (tone, noise incl. sample-and-hold, pluck, bell), `Svf` filter, `echo`, `fadeOut`, `normalise`, `vidc8` (8-bit log quantising), `loopify`, `levels`, `renderDef` |
-| `SfxOrig`, `SfxArcade` | the two sets: `SET = {rate, target, pan(), sounds:{name: {make(k), level, pos, gap, max, vary}}, loops:{thrust, refuel, bomber, pest}}` |
+| `SfxOrig`, `SfxArcade` | the two sets: `SET = {rate, target, pan(), sounds:{name: {make(k), level, pos, gap, max, vary, priority, oneVoice}}, loops:{thrust, refuel, bomber, pest}}` (`priority`/`oneVoice` only matter to the Arcade set's one-voice channel) |
+| `Williams` | the Williams sound board engine for the Arcade set: Sam Dicker's sound routines re-implemented, cycle-timed, rendering the DAC output as samples |
+| `Channel` | the one-voice decision, no Web Audio: `new Channel()`, `decide(def, now)` → `'play'`/`'refuse'`/`'bypass'`, `start(name, def, now, seconds, voice)` → the entry it cuts or null, `playing(now)`, `busy(now)`, `stopped(voice)`, `clear()`; `priorityOf(def)` (missing → 0), `bypasses(def)` (`oneVoice === false`), `DUCK` (0.126, −18 dB) |
 | `Input` | `KEYS`, `KEY_HELP`, `new Input(settings)`: `keyDown/keyUp`, `mouseMove(dx,dy)`, `mouseButtons`, `recentre`, `takePresses()` (menu keys, gamepad as keys), `sample()` → the per-tick input; `idleInput()` |
 | `Autopilot` | `new Autopilot().input(world)`: flies the demo through the same input structure (target choice, desired velocity, tilt via `stickFor`, pulsed thrust, fire when aligned, refuel on the pad) |
 | `Font` | RISC OS system font 8×8 (from `assets/fonts/system8x8.json`'s glyphs), `drawText(surface, text, x, y, {scale, colour (or per-row function), shadow, outline, smooth (Scale2x), align})`, `textWidth`, `drawLines` |
@@ -65,7 +68,7 @@ The files are read by users in !Edit / !JsEdit, and `disc-lander2.mjs` refuses a
 | `Menu` | `Menu` (keyboard/pointer list with values changed by Left/Right or Select/Adjust), `COLOURS`, `layout(s)` (a 320×256 unit grid, `u = floor(height/256)`), `say`, `panel` |
 | `Screens` | `Backdrop` (a cut-down Invasion world under a gliding camera, behind the menus), `TitleScreen` (idle 25 s → attract), `ScoresScreen`, `HelpScreen` (4 pages), `SettingsScreen`, `drawLogo`, `tipTowardsViewer` |
 | `Play` | `PlayScreen` (a game or the demo: ticks the World with Input or Autopilot, pause menu, tally, game over), `NameEntryScreen` |
-| `Settings` | `OPTIONS` (key, label, values, names, `enhanced`, help: drives the settings screen), `DEFAULTS`, `SPEEDS` (original 0.67, normal 1, fast 1.33), `loadSettings`, `saveSettings`, `sanitise`, `stepSetting`, `settingName`, `choicesDir` |
+| `Settings` | `OPTIONS` (key, label, values, names, `enhanced` / `arcade` (shaded unless that look / sound set), help: drives the settings screen), `DEFAULTS`, `SPEEDS` (original 0.67, normal 1, fast 1.33), `loadSettings`, `saveSettings`, `sanitise`, `stepSetting`, `settingName`, `choicesDir` |
 | `Scores` | `MODES`, `MODE_NAMES`, top 10 per mode `{name, score, wave, date}` seeded with Archimedes names, `loadScores`, `saveScores`, `qualifies`, `insertScore`, `today` |
 
 A screen is an object with `frame(presses)`, `pointer(ev)`, `tick()` (game time, if `ticks`), `draw(surface)`,
@@ -130,6 +133,23 @@ distances the short way round the wrap. Loops (thrust, refuel, bomber whoosh, pe
 each frame through a filter (`params(s)` → gain, rate, freq). Aliases: `landingBonus` → `pickup`,
 `newLandscape` → `waveStart`. Without Web Audio every method is a no-op, so the engine and tests run under node.
 
+**One voice (Arcade set, `arcadeVoices: 'one'`, the default).** The Williams board (a 6808 driving an 8-bit DAC)
+plays one sound at a time: a new command's IRQ resets the stack and abandons the current routine, and the main
+CPU's per-sound priority tables decide which requests are sent (`SNDLD` ignores a table whose priority is below
+the one running). Sound models this with a `Channel`: a one-shot plays only if `def.priority` (missing → 0) is
+≥ the priority of the sound still playing (or nothing is playing / it has ended), and then cuts the old voice
+off with a ~6 ms fade (`_cutVoice`, time constant 1.2 ms) so it does not click. Equal priority cuts in (the
+autofire's shots cut each other off). `def.oneVoice === false` bypasses the channel and mixes as usual. The
+loops are not in the channel, but on the board the background rumble (BG1) and thrust are themselves board
+sounds that effects interrupt; to approximate that the loops go through `loopBus`, which ducks to `DUCK`
+(−18 dB) when a channel sound starts and comes back at its end (rescheduled by each new sound; `silence()`,
+a set change or `setVoices` restore it). `Many` (and the Original set, always) keeps the 16-voice mixing above.
+The setting is applied live from `!RunImage`'s `changeSetting`. A sound holds its priority only for
+`def.protect` seconds (Defender's table time, e.g. 8 frames for the mutant explosion; `SfxArcade` takes it from
+`Williams.SOUNDS`), then plays on at priority 0 so anything, even the laser, can cut it (`Channel.holding`).
+The Arcade thrust loop is marked `idle`: while the ship is airborne with the engines off, Sound keeps it going
+quietly at a third of the speed, as Defender's constant background rumble (BG1).
+
 ## Persistence
 
 `choices` from `riscos`: `Choices:Lander2.Settings` and `Choices:Lander2.Scores` (JSON), i.e.
@@ -166,7 +186,9 @@ as jsrun does.
 * `node tests/div/lander2-node.mjs`: the engine under node, no browser: source rules, invariants every tick (no
   NaN, wrapped positions, fuel in range, aliens never inside hills), the flight model, Lander+ rules (fuel, score,
   landing, crashing, rocks, gravity), Invasion (waves, infection, missiles, smart bombs, extra lives, each
-  difficulty flown by the autopilot), determinism for a seed and independence from the particle setting.
+  difficulty flown by the autopilot), determinism for a seed and independence from the particle setting; the
+  one-voice `Channel` (priorities, cut-off, bypass, finished sounds) and `Sound` in one/many mode with a stand-in
+  AudioContext and made-up recipes.
 * `node tests/core/shot.mjs div-lander2 tests/div/lander2.mjs`: in the desktop: starts it from the Filer, checks
   full screen and title frames, Return → Play Invasion, flies and fires with the mouse, P pause/resume, Escape
   pause, Quit to title, Escape to the desktop (icon stays), the windowed display, Quit. Screens

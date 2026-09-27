@@ -1,0 +1,1431 @@
+// Lander II - Williams: the sound board of the Williams arcade machines,
+// recreated for the Arcade sound set.
+//
+// Credit: Williams Electronics Defender (1980) / Robotron: 2084 (1982)
+// sound ROM, by Sam Dicker; routines and tables transcribed from the
+// original source.
+//
+// Defender, Stargate and Robotron share one sound board. On it a little
+// 6808 processor, clocked at 894,886 cycles a second, writes numbers from
+// 0 to 255 to an 8-bit converter (a "DAC") that drives the loudspeaker.
+// There is no sample rate and no sound chip: every sound is a loop of
+// machine code whose instructions take a known number of cycles, so the
+// length of a loop sets a pitch and the numbers it writes set the shape
+// of the wave. The main game sends the board a command number (1 to 31 on
+// Defender, 1 to 63 on Robotron); the board drops whatever it was playing
+// on the spot and starts the new sound.
+//
+// This file does what the board did, cycle for cycle. Each routine below
+// follows Sam Dicker's program instruction by instruction, counting the
+// cycles each instruction takes (the numbers in the c(...) calls), and
+// notes the value and the cycle of every write to the DAC. render() then
+// turns that list of writes into samples: it averages the DAC level over
+// each output sample (a "box filter"), removes the DC offset (the DAC
+// only makes positive levels) and rounds off the top a little, as the
+// amplifier and speaker in the cabinet did. The parameter tables are
+// copied from the original source, so the sounds come out the same: the
+// same pitches, the same noise (a 16-bit shift register, just as on the
+// board) and the same odd little glitches that make them recognisable.
+//
+// The routines, in brief:
+//   GWAVE   a wavetable player: a short wave (a sine, a square, ...)
+//           played at a pattern of pitches, with "echoes" that decay the
+//           wave by subtracting a fraction of it each time (with 8-bit
+//           wrap-around, which gives the gritty edge), and a pitch offset
+//           that can step up or down on every pass
+//   VARI    a square wave whose two halves are timed separately, both
+//           sweeping as it plays (the rising "whoop", the falling chirps)
+//   LITEN   random toggles of the DAC with a sweeping delay (lightning,
+//           and "appear" as a ship or alien materialises)
+//   NOISE   random bits at a falling rate and level (Defender's laser)
+//   FNOISE  "filtered" noise: the level slews towards random targets,
+//           never faster than a set slope; the slope can shrink as it
+//           plays (the explosion) or stay put (the thrust and the
+//           background rumble)
+//   RADIO, HYPER, SCREAM, ORGAN (tunes), SP1 (spinner), BON2 (a warble
+//           rising a step each time it is sent), BG2 (the turbine)
+//   Robotron adds SING (a square wave stepping in pitch: the siren),
+//   ZIREN (the air-raid siren), WHIST (the falling bomb) and PLANE.
+//
+// How the game uses it (SfxArcade does this):
+//
+//   render('laser')              a named sound (see SOUNDS), as samples
+//   render(0x17)                 a command number (Defender's board)
+//   render(0x31, { rom: 'robotron', seconds: 1.2 })
+//   render([[0, 0x11], [0.133, 0x11], [0.267, 0x17]])  a sequence: each
+//                                command cuts off the one before
+//   render([[0, 'fnoise', { fmax: 0xff, sampc: 150, fdflg: 1, dsflg: 1 }]])
+//                                a routine with parameters of our own
+//   renderLoop('THRUST', { seconds: 1.5 })   a buffer that loops cleanly
+//
+// render's options: rom ('defender' or 'robotron'), seconds (cut the
+// sound off there, with a short fade), until (['note', 7]: cut where the
+// 8th note starts; also 'gwave' passes, 'vari' sweeps, 'siren' cycles),
+// fade (seconds), rate (samples a second, 48000), seed (varies the
+// noise; the board's own noise never repeats), filter (false: the raw
+// DAC levels, -1..1).
+//
+// Nothing here uses the DOM or Web Audio, so it runs under node too.
+
+/** The board's CPU clock: a 3.579545 MHz crystal divided by 4. */
+export const CLOCK = 3579545 / 4;
+/** The main game's frame (it sends commands at most once a frame). */
+export const TICK = 1 / 60;
+
+const n256 = (x) => ((x & 0xff) || 256);       // a count of 0 means 256
+const STOP = { stop: true };                   // thrown when time is up
+
+// ================================================================ tables
+
+// ---- GWAVE's waves (GWVTAB). The first seven are Defender's; Robotron
+// added four.
+export const WAVES = [
+  // 0 GS2: an 8-step sine
+  [127, 217, 255, 217, 127, 36, 0, 36],
+  // 1 GSSQ2: spiky and bright
+  [0, 64, 128, 0, 255, 0, 128, 64],
+  // 2 GS1: a 16-step sine
+  [127, 176, 217, 245, 255, 245, 217, 176, 127, 78, 36, 9, 0, 9, 36, 78],
+  // 3 GS12: a sine plus its second harmonic
+  [127, 197, 236, 231, 191, 141, 109, 106, 127, 148, 146, 113, 64, 23, 18, 57],
+  // 4 GSQ22: two cycles of a square (so it sounds an octave up)
+  [255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0],
+  // 5 GS72: a 72-step sine
+  [138, 149, 160, 171, 181, 191, 200, 209,
+    218, 225, 232, 238, 243, 247, 251, 253, 254, 255,
+    254, 253, 251, 247, 243, 238, 232, 225, 218,
+    209, 200, 191, 181, 171, 160, 149, 138, 127,
+    117, 106, 95, 84, 74, 64, 55, 46, 37, 30, 23, 17, 12,
+    8, 4, 2, 1, 0,
+    1, 2, 4, 8, 12, 17, 23, 30, 37, 46, 55, 64, 74, 84,
+    95, 106, 117, 127],
+  // 6 GS1.7: a 16-step sine at 0.7 of full size
+  [89, 123, 152, 172, 179, 172, 152, 123, 89, 55, 25, 6, 0, 6, 25, 55],
+  // 7 GSQ2 (Robotron): an 8-step square
+  [255, 255, 255, 255, 0, 0, 0, 0],
+  // 8 GS1234 (Robotron)
+  [118, 255, 184, 208, 157, 230, 106, 130, 118, 234, 129, 134, 78, 156, 50, 99],
+  // 9 MW1 (Robotron): alternating spikes, a buzz
+  [0, 0xF4, 0, 0xE8, 0, 0xDC, 0, 0xE2, 0, 0xDC, 0, 0xE8, 0, 0xF4, 0, 0],
+  // 10 HBPAT2 (Robotron): a 72-step sine at half size
+  [69, 75, 80, 86, 91, 96, 100, 105,
+    109, 113, 116, 119, 122, 124, 126, 127, 127, 128,
+    127, 127, 126, 124, 122, 119, 116, 113, 109,
+    105, 100, 96, 91, 86, 80, 75, 69, 64,
+    59, 53, 48, 42, 37, 32, 28, 23, 19, 15, 12, 9, 6,
+    4, 2, 1, 1, 0,
+    1, 1, 2, 4, 6, 9, 12, 15, 19, 23, 28, 32, 37, 42,
+    48, 53, 59, 64],
+];
+
+// ---- GWAVE's pitch patterns (GFRTAB), one table; each sound plays a
+// stretch of it. The numbers are periods: bigger is lower.
+const PATTERNS = [
+  ['BONSND', 0xA0, 0x98, 0x90, 0x88, 0x80, 0x78, 0x70, 0x68,
+    0x60, 0x58, 0x50, 0x44, 0x40],                   // bonus
+  ['HBTSND', 1, 1, 2, 2, 4, 4, 8, 8, 0x10, 0x10, 0x30, 0x60, 0xC0, 0xE0],
+  ['SPNSND', 1, 1, 2, 2, 3, 4, 5, 6, 7, 8, 9, 0xA, 0xC],  // spinner
+  ['TRBPAT', 0x80, 0x7C, 0x78, 0x74, 0x70, 0x74, 0x78, 0x7C, 0x80], // turbine
+  ['HBDSND', 1, 1, 2, 2, 4, 4, 8, 8, 0x10, 0x20, 0x28,  // heartbeat distorto
+    0x30, 0x38, 0x40, 0x48, 0x50, 0x60, 0x70, 0x80, 0xA0, 0xB0, 0xC0],
+  ['BBSND', 8, 64, 8, 64, 8, 64, 8, 64, 8, 64,          // Big Ben (and SWPAT)
+    8, 64, 8, 64, 8, 64, 8, 64, 8, 64],
+  ['HBESND', 1, 2, 4, 8, 9, 0xA, 0xB, 0xC, 0xE, 0xF, 0x10, // heartbeat echo
+    0x12, 0x14, 0x16],
+  ['SPNR', 0x40],                                      // spinner "drip"
+  ['COOLDN', 0x10, 8, 1],                              // cool downer
+  ['STDSND', 1, 1, 1, 1, 2, 2, 3, 3, 4, 4, 5, 6, 8, 0xA, 0xC, 0x10, // start
+    0x14, 0x18, 0x20, 0x30, 0x40, 0x50, 0x40, 0x30,
+    0x20, 0x10, 0xC, 0xA, 8, 7, 6, 5, 4, 3, 2, 2, 1, 1, 1],
+  ['ED10FP', 7, 8, 9, 0xA, 0xC, 8],                    // Ed's sound 10
+  ['ED13FP', 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,       // Ed's sound 13
+    0, 0, 0, 0],
+  // Robotron's
+  ['YUKSND', 8, 0x80, 0x10, 0x78, 0x18, 0x70, 0x20, 0x60, 0x28, 0x58, 0x30,
+    0x50, 0x40, 0x48, 0],
+  ['SP2SND', 1, 8, 0x10, 1, 8, 0x10, 1, 8, 0x10,
+    1, 8, 0x10, 1, 8, 0x10, 1, 8, 0x10, 0],
+  ['SSPSND', 0x10, 0x20, 0x40, 0x10, 0x20, 0x40, 0x10, 0x20, 0x40, 0x10, 0x20, 0x40,
+    0x10, 0x20, 0x40, 0x10, 0x20, 0x40, 0x10, 0x20, 0x40, 0x10, 0x20, 0x40, 0],
+  ['BWSSND', 1, 0x40, 2, 0x42, 3, 0x43, 4, 0x44, 5, 0x45, 6, 0x46, 7, 0x47,
+    8, 0x48, 9, 0x49, 0xA, 0x4A, 0xB, 0x4B, 0],
+];
+/** GFRTAB as one array of bytes; PAT[name] is where each stretch starts. */
+export const GFRTAB = [];
+const PAT = {};
+for (const [name, ...bytes] of PATTERNS) {
+  PAT[name] = GFRTAB.length;
+  GFRTAB.push(...bytes);
+}
+PAT.SWPAT = PAT.BBSND;
+
+// ---- GWAVE's sound vectors (SVTAB), 7 bytes each:
+//   0  echoes << 4 | cycles of the wave at each pitch
+//   1  decay per echo << 4 | wave number
+//   2  decay applied before playing ("pre-decay")
+//   3  pitch step after each pass (signed; 0 = play once)
+//   4  number of passes (0 = 256)
+//   5  pattern length   6  pattern start (in GFRTAB)
+// Defender's commands 1-13 play the first 13; Robotron's 32-43 play
+// HUNV to BIL30.
+export const SVTAB = {
+  HBDV: [0x81, 0x24, 0, 0, 0, 22, PAT.HBDSND],       //  1 heartbeat distorto
+  STDV: [0x12, 0x05, 0x1A, 0xFF, 0, 39, PAT.STDSND], //  2 start distorto
+  DP1V: [0x11, 0x05, 0x11, 1, 15, 1, PAT.SWPAT],     //  3
+  XBV: [0x11, 0x31, 0, 1, 0, 13, PAT.SPNSND],        //  4
+  BBSV: [0xF4, 0x12, 0, 0, 0, 20, PAT.BBSND],        //  5 Big Ben
+  HBEV: [0x41, 0x45, 0, 0, 0, 15, PAT.HBESND],       //  6 heartbeat echo
+  PROTV: [0x21, 0x35, 0x11, 0xFF, 0, 13, PAT.SPNSND], //  7
+  SPNRV: [0x15, 0x00, 0, 0xFD, 0, 1, PAT.SPNR],      //  8 spinner drip
+  CLDWNV: [0x31, 0x11, 0, 1, 0, 3, PAT.COOLDN],      //  9 cool downer
+  SV3: [0x01, 0x15, 1, 1, 1, 1, PAT.BBSND],          // 10
+  ED10: [0xF6, 0x53, 3, 0, 2, 6, PAT.ED10FP],        // 11
+  ED12: [0x6A, 0x10, 2, 0, 2, 6, PAT.ED13FP],        // 12
+  ED17: [0x1F, 0x12, 0, 0xFF, 0x10, 4, PAT.SPNR],    // 13
+  BONV: [0x31, 0x11, 0, 0xFF, 0, 13, PAT.BONSND],    // bonus (command 18)
+  TRBV: [0x12, 0x06, 0, 0xFF, 1, 9, PAT.TRBPAT],     // turbine (BG2)
+  HUNV: [0x14, 0x17, 0, 0, 0, 14, PAT.HBTSND],       // Robotron 32
+  SPD: [0xF4, 0x11, 0, 0, 0, 14, PAT.HBTSND],        // 33
+  SPNV: [0x21, 0x30, 0, 1, 0, 13, PAT.SPNSND],       // 34
+  STRT: [0x13, 0x10, 0, 0xFF, 0, 9, PAT.YUKSND],     // 35
+  SP1V: [0xF4, 0x18, 0, 0, 0, 18, PAT.SP2SND],       // 36
+  SSPV: [0x82, 0x22, 0, 0, 0, 24, PAT.SSPSND],       // 37
+  BMPV: [0xF2, 0x19, 0, 0, 0, 22, PAT.BWSSND],       // 38
+  WIRDV: [0x21, 0x30, 0, 0xFF, 0, 27, 0x0D],         // 39
+  GDYUKV: [0xF1, 0x19, 0, 0, 0, 14, PAT.YUKSND],     // 40
+  BK8: [0x31, 0x19, 0, 1, 0, 3, PAT.COOLDN],         // 41
+  SF10: [0x41, 0x02, 0xD0, 0, 0, 39, PAT.STDSND],    // 42
+  BIL30: [0x03, 0x15, 0x11, 0xFF, 0, 13, PAT.SPNSND], // 43
+};
+const SV_NAMES = Object.keys(SVTAB);
+
+// ---- VARI's vectors (VVECT), 9 bytes each: low half-period, high
+// half-period, their steps, the high period that ends a sweep, the sweep
+// step length (16-bit, in 14-cycle loops), the step for the low period
+// between sweeps (0 = one sweep only), and the level.
+export const VVECT = {
+  SAW: [0x40, 0x01, 0x00, 0x10, 0xE1, 0x00, 0x80, 0xFF, 0xFF],     // 29
+  FOSHIT: [0x28, 0x01, 0x00, 0x08, 0x81, 0x02, 0x00, 0xFF, 0xFF],  // 30
+  QUASAR: [0x28, 0x81, 0x00, 0xFC, 0x01, 0x02, 0x00, 0xFC, 0xFF],  // 31
+  CABSHK: [0xFF, 0x01, 0x00, 0x18, 0x41, 0x04, 0x80, 0x00, 0xFF],  // spinner
+  CSCALE: [0x00, 0xFF, 0x08, 0xFF, 0x68, 0x04, 0x80, 0x00, 0xFF],  // Robotron
+  MOSQTO: [0x28, 0x81, 0x00, 0xFC, 0x01, 0x02, 0x00, 0xFC, 0xFF],  // Robotron 63
+  VARBG1: [0x60, 0x01, 0x57, 0x08, 0xE1, 0x02, 0x00, 0xFE, 0x80],  // Robotron
+};
+const VV_NAMES = Object.keys(VVECT);
+
+// ---- RADIO's wave
+const RADSND = [0x8C, 0x5B, 0xB6, 0x40, 0xBF, 0x49, 0xA4, 0x73,
+  0x73, 0xA4, 0x49, 0xBF, 0x40, 0xB6, 0x5B, 0x8C];
+
+// ---- WHIST's sine table (Robotron's falling bomb)
+const SINTBL = [0x80, 0x8C, 0x98, 0xA5, 0xB0, 0xBC, 0xC6, 0xD0,
+  0xDA, 0xE2, 0xEA, 0xF0, 0xF5, 0xFA, 0xFD, 0xFE,
+  0xFF, 0xFE, 0xFD, 0xFA, 0xF5, 0xF0, 0xEA, 0xE2,
+  0xDA, 0xD0, 0xC6, 0xBC, 0xB0, 0xA5, 0x98, 0x8C,
+  0x80, 0x73, 0x67, 0x5A, 0x4F, 0x43, 0x39, 0x2F,
+  0x25, 0x1D, 0x15, 0x0F, 0x0A, 0x05, 0x02, 0x01,
+  0x00, 0x01, 0x02, 0x05, 0x0A, 0x0F, 0x15, 0x1D,
+  0x25, 0x2F, 0x39, 0x43, 0x4F, 0x5A, 0x67, 0x73];
+
+// ---- SING's vectors (Robotron): start period, cycles at each period,
+// period step, end period, cycles at each level, level step.
+const SINGV = {
+  VEC01X: [0xFF, 0x01, 0x02, 0xC3, 0xFF, 0x00],
+  VEC02X: [0x01, 0x03, 0xFF, 0x80, 0xFF, 0x00],
+  VEC03X: [0x20, 0x03, 0xFF, 0x50, 0xFF, 0x00],   // siren, falling
+  VEC04X: [0x50, 0x03, 0x01, 0x20, 0xFF, 0x00],   // siren, rising
+  VEC05X: [0xFE, 0x04, 0x02, 0x04, 0xFF, 0x00],
+  VEC06X: [0x48, 0x03, 0x01, 0x0C, 0xFF, 0x00],
+  VEC07X: [0x48, 0x02, 0x01, 0x0C, 0xFF, 0x00],
+  VEC08X: [0xE0, 0x01, 0x02, 0x10, 0xFF, 0x00],
+};
+
+// ---- ORGAN tunes. Each note: oscillator mask (which octaves of the
+// organ sound), delay (cycles added to each loop: the pitch) and length
+// (loops). Lengths are worked out as in the source: a note's time
+// constant divided by the tempo, then by the note's fraction.
+const T = {                                 // the source's note times
+  AF: 34715 >> 1, A: 36780 >> 1, BF: 38967 >> 1, B: 41284 >> 1,
+  C: 43739 >> 1, CS: 46340 >> 1, D: 49096 >> 1, EF: 52015 >> 1,
+  E: 55108 >> 1, F: 58385 >> 1, FS: 61857 >> 1, G: 65535 >> 1,
+};
+const len = (t, tempo, div, mul = 1) => Math.trunc(Math.trunc(t / tempo) / div) * mul;
+const PHANC = 3, TACC = 4, NIN = 5, FIF = 6;
+const note = (word, dur) => [word >> 8, word & 0xff, dur];
+/** The tunes, by name: Defender's 1 and 2, Robotron's 1 and 2. */
+export const TUNES = {
+  phantom: [                                  // Defender "Phantom"
+    note(0x7F1D, len(T.D, PHANC, 2)),           // D2 1/4
+    note(0x7F23, len(T.CS, PHANC, 2)),          // CS2 1/4
+    // FS1 1: the ROM holds one more than the source works out
+    note(0xFE08, len(T.FS, PHANC, 1) * 2 + 1),
+  ],
+  toccata: [                                  // Bach, Toccata in D minor
+    note(0x3E3F, len(T.A, TACC, 8)), note(0x7C04, len(T.G, TACC, 8)),
+    note(0x3E3F, len(T.A, TACC, 2, 5)), note(0x7C12, len(T.E, TACC, 2)),
+    note(0x7C0D, len(T.F, TACC, 2)), note(0x7C23, len(T.CS, TACC, 2)),
+    note(0x7C1D, len(T.D, TACC, 4, 7)), note(0x7C3F, len(T.A, TACC, 8)),
+    note(0xF804, len(T.G, TACC, 8)), note(0x7C3F, len(T.A, TACC, 2, 5)),
+    note(0xF812, len(T.E, TACC, 2)), note(0xF80D, len(T.F, TACC, 2)),
+    note(0xF823, len(T.CS, TACC, 2)), note(0xF81D, len(T.D, TACC, 1) * 2),
+    note(0xF823, len(T.CS, TACC, 4)), note(0xF812, len(T.E, TACC, 4)),
+    note(0xF804, len(T.G, TACC, 4)), note(0x7C37, len(T.BF, TACC, 4)),
+    note(0x7C23, len(T.CS, TACC, 4)), note(0x7C12, len(T.E, TACC, 4)),
+    note(0x3E04, len(T.G, TACC, 4)), note(0x3E37, len(T.BF, TACC, 4)),
+    note(0x3E23, len(T.CS, TACC, 4)), note(0x1F12, len(T.E, TACC, 4)),
+    note(0x1F04, len(T.G, TACC, 4)), note(0x1F37, len(T.BF, TACC, 4)),
+    note(0x1F23, len(T.CS, TACC, 1)), note(0xFE1D, len(T.D, TACC, 1)),
+    note(0x7F37, len(T.BF, TACC, 1)), note(0x7F3F, len(T.A, TACC, 2)),
+    note(0xFE04, len(T.G, TACC, 2)), note(0xFE0D, len(T.F, TACC, 2)),
+    note(0xFE23, len(T.CS, TACC, 2)), note(0xFE1D, len(T.D, TACC, 1, 2) * 2),
+  ],
+  fifth: [                                    // Robotron: Beethoven's 5th
+    note(0xF804, len(T.G, FIF, 4)), note(0x0004, len(T.G, FIF, 4)),
+    note(0xF804, len(T.G, FIF, 4)), note(0x0004, len(T.G, FIF, 4)),
+    note(0xF804, len(T.G, FIF, 4)), note(0x0004, len(T.G, FIF, 4)),
+    note(0xF817, len(T.EF, FIF, 2, 7)),
+  ],
+  ninth: [                                    // Robotron: Beethoven's 9th
+    [0x1F, 0x1D, len(T.D, NIN, 4)], [0, 4, len(T.G, NIN, 4)],
+    [0x3E, 0x1D, len(T.D, NIN, 4)], [0, 4, len(T.G, NIN, 4, 5)],
+    [0x3E, 0x3F, len(T.A, NIN, 4)], [0, 4, len(T.G, NIN, 4)],
+    [0x7C, 0x3F, len(T.A, NIN, 4)], [0, 4, len(T.G, NIN, 4, 5)],
+    [0x7C, 0x1D, len(T.D, NIN, 4)], [0, 4, len(T.G, NIN, 4)],
+    [0xF8, 0x1D, len(T.D, NIN, 4)], [0, 4, len(T.G, NIN, 4)],
+    [0x7C, 0x3F, len(T.A, NIN, 4)], [0, 4, len(T.G, NIN, 4)],
+    [0xF8, 0x3F, len(T.A, NIN, 4)], [0, 4, len(T.G, NIN, 4, 7)],
+    [0x7C, 0x3F, len(T.A, NIN, 4)], [0x7C, 0x1D, len(T.D, NIN, 4)],
+    [0x7C, 0x12, len(T.E, NIN, 4)], [0x7C, 0x0D, len(T.F, NIN, 4)],
+    [0x7C, 0x12, len(T.E, NIN, 4)], [0x7C, 0x0D, len(T.F, NIN, 4)],
+    [0x7C, 0x04, len(T.G, NIN, 4)], [0x7C, 0x0D, len(T.F, NIN, 4)],
+    [0x7C, 0x12, len(T.E, NIN, 4)], [0x7C, 0x1D, len(T.D, NIN, 4)],
+    [0x3E, 0x37, len(T.BF, NIN, 4)], [0x3E, 0x3F, len(T.A, NIN, 4)],
+    [0x7C, 0x04, len(T.G, NIN, 4)], [0x7C, 0x0D, len(T.F, NIN, 4)],
+    [0x7C, 0x12, len(T.E, NIN, 4)], [0x7C, 0x1D, len(T.D, NIN, 4)],
+    [0x7C, 0x23, len(T.CS, NIN, 4)], [0x7C, 0x1D, len(T.D, NIN, 4)],
+    [0x7C, 0x12, len(T.E, NIN, 4)], [0x3E, 0x1D, len(T.D, NIN, 4)],
+    [0, 4, len(T.G, NIN, 4)], [0x7C, 0x1D, len(T.D, NIN, 4)],
+    [0, 4, len(T.G, NIN, 4)], [0x3E, 0x3F, len(T.A, NIN, 4)],
+    [0, 4, len(T.G, NIN, 4)], [0x7C, 0x3F, len(T.A, NIN, 4)],
+    [0, 4, len(T.G, NIN, 4, 5)], [0xF8, 0x1D, len(T.D, NIN, 2, 5)],
+  ],
+};
+
+// ---- The two boards. The addresses are where the tables sat in each
+// ROM: they are only used to time the table look-ups exactly (adding to
+// an address takes longer when it carries into the high byte).
+const ROMS = {
+  defender: {
+    mask: 0x1f, shift: 4, tunes: ['phantom', 'toccata'],
+    svtab: 0xFEEC, gwvtab: 0xFE4D, gfrtab: 0xFF55, vvect: 0xFD76,
+    jmptbl: 0xFD58, orgtab: 0xFDAA,
+  },
+  robotron: {
+    mask: 0x3f, shift: 5, tunes: ['fifth', 'ninth'],
+    svtab: 0xFE45, gwvtab: 0xFD32, gfrtab: 0xFF02, vvect: 0xFC08,
+    jmptbl: 0xFBC4, orgtab: 0xFC57,
+  },
+};
+
+// The special routines' jump table (JMPTBL: commands 14-28), then
+// Robotron's second table (JMPTB1: commands 44-62).
+const JMPTBL = ['SP1', 'BG1', 'BG2INC', 'LITE', 'BON2', 'BGEND', 'TURBO',
+  'APPEAR', 'THRUST', 'CANNON', 'RADIO', 'HYPER', 'SCREAM', 'ORGANT', 'ORGANN'];
+const JMPTB1 = ['SND2', 'SND5', 'THNDR', 'HSTD', 'ATARI', 'SIREN', 'ORRRR',
+  'PERKQQ', 'SQRT', 'START', 'PLANE', 'SND16', 'SND17', 'LAUNCH', 'CDR',
+  'KNOCK', 'ZIREN', 'WHIST', 'HBOMB'];
+
+/**
+ * The command names of each board, by number: COMMANDS.defender[0x17] is
+ * 'CANNON'. Robotron's commands 1-31 are Defender's.
+ */
+export const COMMANDS = { defender: [null], robotron: [null] };
+{
+  const base = [...SV_NAMES.slice(0, 13), ...JMPTBL, 'SAW', 'FOSHIT', 'QUASAR'];
+  COMMANDS.defender.push(...base);
+  COMMANDS.robotron.push(...base, ...SV_NAMES.slice(15), ...JMPTB1, 'MOSQTO');
+}
+// Routines on the Robotron board this file does not recreate: these
+// commands are silent here.
+const MISSING = new Set(['SND2', 'SND5', 'THNDR', 'SQRT', 'START', 'SND16',
+  'SND17', 'CDR', 'KNOCK', 'ORGANN']);
+
+// ================================================================ the board
+
+/**
+ * One sound board: its CPU's time (in cycles), the DAC, the random
+ * number generator and the little bits of memory that carry from one
+ * command to the next. Most users want render(); Board is for playing
+ * with commands directly:
+ *   const b = new Board({ rom: 'defender' });
+ *   b.play([[0, 0x11], [0.133, 0x11], [0.267, 0x17]], 3);
+ *   b.log   the writes: [cycle, value, cycle, value, ...]
+ */
+export class Board {
+  constructor({ rom = 'defender', seed, dac = 0x80 } = {}) {
+    this.rom = ROMS[rom] ? rom : 'defender';
+    this.R = ROMS[this.rom];
+    this.t = 0;            // CPU cycles since the start
+    this.v = dac & 0xff;   // the DAC's level
+    this.log = [];         // writes: cycle, value, cycle, value ...
+    this.marks = [];       // [what, cycle]: where passes and sweeps start
+    this.limit = Infinity; // the cycle at which the next command arrives
+    // the random number generator's two bytes (after reset: $3C, 0)
+    this.hi = 0x3C; this.lo = 0;
+    if (seed !== undefined) {
+      const s = Math.floor(Math.abs(+seed || 0) * 65521) >>> 0;
+      this.hi = (s >> 8) & 0xff; this.lo = s & 0xff;
+      if (!this.hi && !this.lo) this.hi = 0x3C;
+    }
+    // the flags and counters that live between commands
+    this.sp1flg = 0; this.b2flg = 0; this.bg1flg = 0; this.bg2flg = 0;
+    this.orgflg = 0; this.tempa = 0; this.tempb = 0; this.amp0 = 0xAF;
+    this.gw = null;        // GWAVE's state (BON2 carries on from it)
+    this.ram = { top1: 0, time: 0 };
+  }
+
+  // ---- time and the DAC
+  // Spend n cycles. When the next command is due, the routine stops
+  // there and then (the board resets its stack and moves on).
+  c(n) { if ((this.t += n) > this.limit) { this.t = this.limit; throw STOP; } }
+  // Write v to the DAC with an instruction n cycles long (STAA 5, COM
+  // or CLR 6); the write lands as the instruction ends. An instruction
+  // that has started is finished before the next command is taken.
+  w(n, v) {
+    if (this.t >= this.limit) { this.t = this.limit; throw STOP; }
+    this.t += n;
+    this.v = v & 0xff;
+    this.log.push(this.t, this.v);
+    if (this.t > this.limit) throw STOP;
+  }
+  out(v) { this.w(0, v); }
+  mark(what) { this.marks.push([what, this.t]); }
+
+  // ---- the random number generator: a 16-bit shift register. step()
+  // is the usual "LDAA LO; LSRA x3; EORA LO; LSRA; ROR HI; ROR LO": it
+  // returns the bit that falls out of LO (the carry).
+  shift(bit) {
+    const out = this.lo & 1;
+    this.lo = ((this.hi & 1) << 7) | (this.lo >> 1);
+    this.hi = (bit << 7) | (this.hi >> 1);
+    return out;
+  }
+  step() { return this.shift(((this.lo >> 3) ^ this.lo) & 1); }
+
+  // ADDX: add A to the index register (the cost of a table look-up)
+  addx(x, a) { this.c(25 + ((x & 0xff) + a > 0xff ? 6 : 0)); return (x + a) & 0xffff; }
+
+  /**
+   * Play a sequence: steps [[seconds, command, params?], ...] in time
+   * order, each cutting off the one before, until `seconds` (or until the
+   * last one finishes, if sooner; at most 30 s). Returns the end cycle.
+   */
+  play(steps, seconds = 30) {
+    const end = Math.round(seconds * CLOCK);
+    let done = 0;
+    for (let i = 0; i < steps.length; i++) {
+      const [at, cmd, params] = steps[i];
+      const next = i + 1 < steps.length ? Math.round(steps[i + 1][0] * CLOCK) : end;
+      this.t = Math.max(this.t, Math.round(at * CLOCK));
+      if (this.t >= end) break;
+      this.limit = Math.min(next, end);
+      try {
+        this.send(cmd, params);
+      } catch (e) {                         // cut off by the next command
+        if (e !== STOP) throw e;
+      }
+      done = this.t;
+    }
+    this.limit = Infinity;
+    return Math.min(done, end);
+  }
+
+  /** Send one command (a number or a name), or run one routine. */
+  send(cmd, params) {
+    if (typeof cmd === 'number') return this.command(cmd);
+    if (typeof cmd === 'function') return cmd(this);
+    const own = CUSTOM[cmd];
+    if (own) { this.c(12 + 40); own(this, params ?? {}); return this.irq3(); }
+    const n = COMMANDS[this.rom].indexOf(cmd);
+    if (n > 0) return this.command(n);
+    throw new Error('Williams: no command ' + cmd);
+  }
+
+  // ---- IRQ: a command arrives. The stack is reset, so whatever was
+  // playing is simply abandoned; then the command number picks a routine.
+  command(n) {
+    const rb = this.rom === 'robotron';
+    this.c(12 + (rb ? 38 : 16));             // interrupt, then IRQ's set-up
+    if (rb) this.amp0 = 0xAF;
+    let a = (n & 0xff) & this.R.mask;
+    if (this.orgflg) {                        // the tune number, after ORGANT
+      this.c(4);
+      if (!rb && !(this.orgflg & 0x80)) { this.orgflg = 0; return this.irq3(); }
+      this.c(rb ? 9 + 8 : 4 + 9);
+      this.organTune(a);
+      this.c(rb ? 5 + 3 : 3);
+      return this.irq3();
+    }
+    this.c(4 + 8);                            // BEQ IRQ00; CLRB; CMPA; BEQ
+    if (a !== 0x0E) { this.c(4); this.sp1flg = 0; }
+    this.c(6);
+    if (a !== 0x12) { this.c(4); this.b2flg = 0; }
+    if (!rb) this.c(10);                      // no speech ROM fitted
+    this.c(6);                                // TSTA; BEQ
+    if (!a) return this.irq3();
+    a--;
+    this.c(2);
+    // which routine: a GWAVE vector, a special routine or a VARI vector
+    // (the compares and subtracts cost `pre` cycles)
+    let gw = -1, jump = -1, vari = -1, pre = 0;
+    if (!rb || a < 0x1F) {
+      pre = rb ? 12 : 6;                      // (CMPA #$1F; BLT) CMPA #$C; BHI
+      if (a <= 0x0C) gw = a;
+      else {
+        pre += 8;                             // CMPA #$1B; BHI; SUBA
+        if (a <= 0x1B) jump = a - 0x0D; else vari = a - 0x1C;
+      }
+    } else {
+      pre = 12;                               // CMPA #$1F; BLT; CMPA #$3D; BGT
+      if (a > 0x3D) { vari = a - 0x39; pre += 6; } else {
+        pre += 12;                            // CMPA #$2A; BHI; SUBA; BRA
+        if (a > 0x2A) jump = a - 0x1C; else gw = a - 0x10;
+      }
+    }
+    this.c(pre);
+    if (gw >= 0) {
+      this.c(9); this.gwld(gw); this.c(9); this.gwave(); this.c(4);
+    } else if (jump >= 0) {
+      this.c(2 + 3 + 8);                      // ASLA; LDX #JMPTBL; BSR ADDX
+      this.addx(this.R.jmptbl, 2 * jump);
+      this.c(6 + 8);                          // LDX 0,X; JSR 0,X
+      const name = jump < 15 ? JMPTBL[jump] : JMPTB1[jump - 15];
+      this.special(name);
+      this.c(4);                              // BRA IRQ3
+    } else {
+      this.c(9); this.varild(vari); this.c(9); this.vari();
+    }
+    return this.irq3();
+  }
+
+  // IRQ3: the sound has finished. If a background sound is on (BG1, the
+  // rumble, or BG2, the turbine) it starts again; otherwise the board
+  // waits, the DAC holding its last level.
+  irq3() {
+    this.c(10);
+    if (!this.bg1flg && !this.bg2flg) return;
+    this.c(13 + 3); this.b2flg = 0;
+    if (this.bg1flg) this.BG1(); else this.bg2();
+  }
+
+  special(name) {
+    if (MISSING.has(name)) { this.c(5); return; }
+    this[name]();
+  }
+
+  // ============================================================ GWAVE
+
+  // GWLD: load sound vector i (a number, or a vector of 7 bytes): copy
+  // its wave to RAM, pre-decay it and find its stretch of GFRTAB.
+  gwld(i) {
+    const R = this.R;
+    const v = typeof i === 'number' ? SVTAB[SV_NAMES[i]] : i;
+    const k = typeof i === 'number' ? i : 0;
+    this.c(10 + 3 + 9); let x = this.addx(R.svtab, 7 * k);
+    this.c(25 + 33);
+    const w = v[1] & 15;
+    let wx = R.gwvtab;
+    for (let j = 0; j < w; j++) {            // GWLD2: step through the waves
+      this.c(10 + 5 + 2 + 9); wx = this.addx(wx, WAVES[j].length + 1); this.c(4);
+    }
+    this.c(10);
+    const wave = WAVES[w];
+    const g = this.gw = {
+      echo: v[0] >> 4, ccnt: v[0] & 15, ecdec: v[1] >> 4, wave,
+      ram: wave.slice(), predec: v[2], dfinc: v[3], dcnt: v[4],
+      start: v[6], end: v[6] + v[5], fofs: 0,
+    };
+    this.c(5 + 9); this.wvtran();
+    this.c(4 + 5 + 4 + 9); this.wvdeca(g.predec);
+    this.c(4 + 5 + 4 + 5 + 4 + 5 + 2 + 5 + 3 + 9);
+    x = this.addx(R.gfrtab, v[6]);
+    this.c(2 + 5 + 6 + 9); this.addx(x, v[5]);
+    this.c(5 + 5);
+  }
+
+  // WVTRAN: copy the wave from ROM to RAM (43 cycles a byte)
+  wvtran() {
+    const g = this.gw;
+    g.ram = g.wave.slice();
+    this.c(57 + 43 * g.ram.length);
+  }
+
+  // WVDECA: take k/16 of the ROM wave off every byte in RAM, wrapping
+  // round at 0 (no clamping: that is where the grit comes from)
+  wvdeca(k) {
+    const g = this.gw;
+    if (!k) { this.c(11); return; }
+    for (let i = 0; i < g.ram.length; i++) {
+      g.ram[i] = (g.ram[i] - k * (g.wave[i] >> 4)) & 0xff;
+    }
+    this.tempb = k;
+    this.c(27 + g.ram.length * (65 + 12 * k));
+  }
+
+  // GWAVE: play every pitch of the stretch, `ccnt` cycles of the wave at
+  // each; decay the wave after each pass; repeat for each echo; then step
+  // the pitch offset (GEND50) and go round again while it still fits.
+  gwave() {
+    const g = this.gw;
+    for (;;) {
+      this.mark('gwave');
+      this.c(7);                                 // LDAA GECHO; STAA GECNT
+      for (let e = 0; e < n256(g.echo); e++) {
+        this.c(9);                               // GWT4
+        for (let p = g.start; p < g.end; p++) {
+          const per = n256(GFRTAB[p] + g.fofs);
+          this.c(36);                            // GPLAY: the next period
+          const cc = n256(g.ccnt), L = g.ram.length;
+          for (let cyc = 0; cyc < cc; cyc++) {
+            this.c(3);                           // GOUT: LDX #GWTAB
+            for (let i = 0; i < L; i++) {
+              this.c(3 + 6 * per + 5);           // wait for the period
+              this.w(5, g.ram[i]);
+              this.c(12);
+            }
+            this.c(6);                           // DECB; BEQ GPLAY
+            if (cyc < cc - 1) this.c(40);        // (padding to 36 + 4)
+          }
+        }
+        this.c(24 + 3 + 8);                      // GPLAY at the end; GEND
+        this.wvdeca(g.ecdec);
+        this.c(10);                              // GEND40: DEC GECNT; BNE
+      }
+      this.c(7);                                 // LDAA B2FLG; BNE GEND1
+      if (this.b2flg) { this.c(5); return; }     // BON2 plays one pass
+      if (!this.gend50()) return;
+    }
+  }
+
+  // GEND50: step the pitch offset; false when the sound is over
+  gend50() {
+    const g = this.gw;
+    this.c(7);                                   // LDAA GDFINC; BEQ
+    if (!g.dfinc) { this.c(5); return false; }
+    this.c(10);                                  // DEC GDCNT; BEQ
+    g.dcnt = (g.dcnt - 1) & 0xff;
+    if (!g.dcnt) { this.c(5); return false; }
+    this.c(3);                                   // ADDA FOFSET
+    return this.gend60((g.fofs + g.dfinc) & 0xff);
+  }
+
+  // GEND60 / GEND61: keep the first unbroken run of pattern entries whose
+  // period + offset doesn't overflow; if there are none, the sound ends.
+  gend60(fofs) {
+    this.gw.fofs = fofs;
+    this.c(4);
+    return this.gend61();
+  }
+
+  gend61() {
+    const g = this.gw, dec = !!(g.dfinc & 0x80);
+    let found = false;
+    this.c(6);                                   // LDX GWFRQ; CLRB
+    for (let p = g.start; p < g.end; p++) {
+      const sum = GFRTAB[p] + g.fofs;
+      let ok;
+      if (!dec) { ok = sum <= 0xff; this.c(ok ? 26 : 22); } else if (!(sum & 0xff)) {
+        ok = false; this.c(22);
+      } else { ok = sum > 0xff; this.c(26); }
+      if (ok) {
+        this.c(6);
+        if (!found) { this.c(7); found = true; g.start = p; }
+      } else {
+        this.c(6);
+        if (found) { this.c(4); g.end = p; return this.gw3(); }
+      }
+      this.c(12);                                // INX; CPX FRQEND; BNE GW0
+    }
+    this.c(6);                                   // TSTB; BNE GW3
+    if (!found) { this.c(5); return false; }
+    return this.gw3();
+  }
+
+  // GW3: the new stretch is set; reload the wave if echoes decayed it
+  gw3() {
+    const g = this.gw;
+    this.c(5 + 3 + 4);
+    if (g.ecdec) {
+      this.c(8); this.wvtran();
+      this.c(3 + 8); this.wvdeca(g.predec);
+    }
+    this.c(3);                                   // JMP GWAVE
+    return true;
+  }
+
+  // ============================================================ VARI
+
+  // VARILD: copy vector i (a number, or 9 bytes) into VARI's parameters
+  varild(i) {
+    const v = typeof i === 'number' ? VVECT[VV_NAMES[i]] : i;
+    const k = typeof i === 'number' ? i : 0;
+    this.c(2 + 6 + 2 + 3 + 5 + 3 + 9);
+    this.addx(this.R.vvect, 9 * k);
+    this.c(2 + 3 + 4 + 43 * 9 + 4 + 5);        // LDAB #9; JMP TRANS
+    this.vv = v.slice();
+  }
+
+  // VARI: a square wave. Each half is timed by its own count (14 cycles a
+  // step); every SWPDT steps the counts change by LODT and HIDT (the
+  // sweep), until the high count reaches HIEN. Then, if LOMOD isn't 0,
+  // the low count moves on by LOMOD and it all starts again.
+  vari() {
+    const v = this.vv;
+    const hiper = v[1], lodt = v[2], hidt = v[3], hien = v[4];
+    const swpdt = (v[5] << 8) | v[6], lomod = v[7];
+    let s = v[8];
+    this.c(3); this.w(5, s);                   // LDAA VAMP; STAA SOUND
+    for (;;) {                                 // VAR0
+      this.mark('vari');
+      let lo = v[0], hi = hiper;
+      this.c(14);
+      for (;;) {                               // V0: one sweep step
+        let x = swpdt || 65536;
+        // one half of the square: count n down, 14 cycles a count, while
+        // the sweep's own count X runs down too; true if X ran out first
+        const half = (n) => {
+          for (let a = n256(n); ;) {
+            this.c(8);                         // DEX; BEQ VSWEEP
+            if (--x === 0) return true;
+            this.c(6);                         // DECA; BNE
+            if (--a === 0) return false;
+          }
+        };
+        this.c(4);
+        for (;;) {                             // V0LP
+          this.c(3); s ^= 0xff; this.w(6, s);
+          if (half(lo)) break;
+          s ^= 0xff; this.w(6, s); this.c(3);
+          if (half(hi)) break;
+          this.c(4);
+        }
+        // VSWEEP: leave the output at its high level, step the counts
+        this.c(8); if (!(s & 0x80)) { s ^= 0xff; this.c(2); }
+        this.c(2); this.w(5, s);
+        lo = (lo + lodt) & 0xff; hi = (hi + hidt) & 0xff;
+        this.c(27);
+        if (hi === hien) break;
+      }
+      this.c(7);
+      if (!lomod) { this.c(5); return; }
+      v[0] = (v[0] + lomod) & 0xff;
+      this.c(11);
+      if (!v[0]) { this.c(5); return; }
+    }
+  }
+
+  // SP1, the spinner: every time it is sent again (with nothing else in
+  // between) its count goes up, the low half gets shorter and the whirr
+  // higher. It spins until the next command.
+  SP1() {
+    this.c(2 + 9); this.varild(3);
+    this.c(3 + 2 + 4);
+    let b = this.sp1flg;
+    if (b === 31) { b = 0; this.c(2); }
+    this.sp1flg = ++b;
+    this.c(2 + 4 + 2 + 2 + 2);
+    let a = 32 - b, lo = 0;
+    for (;;) { this.c(6); if (a <= 20) break; lo += 14; a--; this.c(8); }
+    do { lo += 5; a--; this.c(8); } while (a);
+    this.vv[0] = lo & 0xff;
+    this.c(4);
+    for (;;) { this.c(9); this.vari(); this.vv[0] = lo & 0xff; this.c(4); }
+  }
+
+  // ============================================================ LITEN
+
+  // LITEN: flip the DAC between two levels whenever the random generator
+  // throws out a 1, waiting a delay between tries; after every `cycnt`
+  // tries the delay changes by `dfreq`, until it wraps round to 0.
+  liten(lfreq, dfreq, cycnt) {
+    let s = 0xff;
+    this.c(4 + 2); this.w(5, s);             // STAA LFREQ; LDAA #$FF; STAA
+    this.c(4);
+    do {
+      this.c(3);                              // LITE0: LDAB CYCNT
+      for (let b = 0; b < n256(cycnt); b++) {
+        this.c(30);
+        if (this.step()) { s ^= 0xff; this.w(6, s); }
+        this.c(3 + 6 * n256(lfreq) + 6);
+      }
+      lfreq = (lfreq + dfreq) & 0xff;
+      this.c(14);
+    } while (lfreq);
+    this.c(5);
+  }
+
+  LITE() { this.c(12); this.liten(1, 1, 3); }           // lightning
+  APPEAR() { this.c(14); this.liten(0xC0, 0xFE, 16); }  // appear
+  LAUNCH() { this.c(14); this.liten(0x60, 0xFF, 0xFF); } // Robotron
+
+  // ============================================================ NOISE
+
+  // NOISE: random bits at level `amp`, `cycnt` bits at a time; after
+  // each batch the level falls by `decay` and (if nfflg) the time per bit
+  // grows by 8 cycles. TURBO is Defender's laser.
+  noise(decay, period, amp, cycnt, nfflg) {
+    this.c(4 + 5 + 4 + 3);
+    for (;;) {
+      for (let b = 0; b < n256(cycnt); b++) {
+        this.c(32);
+        const v = this.step() ? amp : 0;
+        if (v) this.c(3);
+        this.w(5, v);
+        this.c(4 + 8 * (period || 65536) + 6);
+      }
+      amp = (amp - decay) & 0xff;
+      this.c(10);
+      if (!amp) { this.c(5); return; }
+      this.c(15);
+      if (nfflg) { period = (period + 1) & 0xffff; this.c(16); } else this.c(7);
+    }
+  }
+
+  TURBO() { this.c(21); this.noise(1, 1, 0xff, 0x20, 0x20); }
+
+  // ============================================================ FNOISE
+
+  // FNOISE: the level slews towards a random target, `fmax` (plus
+  // flo/256) per 30-cycle step, and a new target is picked when it gets
+  // there. With dsflg the slope is also randomised (fmax AND a random
+  // byte, plus lofrq). With fdflg the slope shrinks by 1/8 every `sampc`
+  // steps, and the sound ends when it has all but gone.
+  fnoise({ fmax, sampc, fdflg = 0, dsflg = 0, lofrq = 0 }) {
+    const rb = this.rom === 'robotron';
+    let flo = 0;
+    this.c(19);
+    let x = sampc & 0xffff, a = this.v;      // FNOIS0: LDX SAMPC; LDAA SOUND
+    this.c(8);
+    for (;;) {
+      // FNOIS1: the next random target
+      this.shift(((a >> 3) ^ this.lo) & 1);
+      let fhi = fmax;
+      this.c(38);
+      if (dsflg) {                            // ANDB HI (Robotron: ADDB LOFRQ)
+        fhi = ((fhi & this.hi) + (rb ? lofrq : 0)) & 0xff;
+        this.c(rb ? 6 : 3);
+      }
+      let b = flo;
+      const target = this.lo;
+      this.c(14);
+      let ended = false;
+      if (a > target) {
+        for (;;) {                            // FNOIS4: slope down
+          x = (x - 1) & 0xffff; this.c(8); if (!x) { ended = true; break; }
+          this.w(5, a);
+          const nb = b - flo, borrow = nb < 0 ? 1 : 0; b = nb & 0xff;
+          const na = a - fhi - borrow; a = na & 0xff;
+          this.c(10);
+          if (na < 0) break;
+          this.c(7); if (!(a > target)) break;
+        }
+      } else {
+        for (;;) {                            // FNOIS3: slope up
+          x = (x - 1) & 0xffff; this.c(8); if (!x) { ended = true; break; }
+          this.w(5, a);
+          const nb = b + flo, carry = nb > 0xff ? 1 : 0; b = nb & 0xff;
+          const na = a + fhi + carry; a = na & 0xff;
+          this.c(10);
+          if (na > 0xff) break;
+          this.c(7); if (a > target) { this.c(4); break; }
+        }
+      }
+      if (!ended) {                           // FNOIS5: land on the target
+        a = target; this.c(3); this.w(5, a); this.c(4);
+        continue;
+      }
+      this.c(7);                              // FNOIS6
+      if (!fdflg) continue;
+      let v = (fmax << 8) | flo;
+      v = (v - (v >> 3)) & 0xffff;
+      fmax = v >> 8; flo = v & 0xff;
+      this.c(42);
+      if (!fmax) { this.c(6); if (flo === 7) { this.c(5); return; } }
+      x = sampc & 0xffff; a = this.v;
+      this.c(8);
+    }
+  }
+
+  // Defender's: BG1 (the background rumble, which sets the flag that
+  // brings it back after every sound), THRUST and CANNON (the explosion).
+  // On Defender the sample count of the first two is whatever the index
+  // register held (the routine's own address): it only matters for when
+  // the slope would decay, which it doesn't.
+  BG1() {
+    this.bg1flg = 1;
+    if (this.rom === 'robotron') this.c(13 + 34); else this.c(16);
+    return this.fnoise({ fmax: 1, sampc: this.rom === 'robotron' ? 0 : 0xF913 });
+  }
+  THRUST() {
+    if (this.rom === 'robotron') this.c(7 + 34); else this.c(12);
+    return this.fnoise({ fmax: 3, sampc: this.rom === 'robotron' ? 0 : 0xF91C });
+  }
+  CANNON() {
+    const rb = this.rom === 'robotron';
+    this.c(rb ? 7 + 34 : 17);
+    this.fnoise({ fmax: 0xff, sampc: 1000, fdflg: 1, dsflg: 1 });
+  }
+  HBOMB() {                                   // Robotron: the aftershock
+    this.c(3 + 34);
+    this.fnoise({ fmax: 0x40, sampc: 0x1000, fdflg: 1, dsflg: 1, lofrq: 1 });
+  }
+
+  // ============================================================ background
+
+  BGEND() { this.c(2 + 4 + 4 + 5); this.bg1flg = 0; this.bg2flg = 0; }
+  BG2INC() {
+    this.bg1flg = 0;
+    this.c(6 + 3 + 2 + 2 + 4);
+    let a = this.bg2flg & 0x7f;
+    if (a === 29) { a = 0; this.c(2); }
+    this.bg2flg = a + 1;
+    this.c(2 + 4 + 5);
+  }
+  // BG2, the turbine: TRBV with its pitch offset set from the BG2INC
+  // count, played over and over.
+  bg2() {
+    this.c(2 + 9); this.gwld(14);
+    this.c(3 + 2 + 2 + 2 + 9);
+    if (this.gend60((~(this.bg2flg * 4)) & 0xff)) this.gwave();
+    this.bg2loop();
+  }
+  bg2loop() {
+    for (;;) {
+      this.gw.dcnt = (this.gw.dcnt + 1) & 0xff;
+      this.c(6 + 9);
+      if (this.gend61()) this.gwave();
+      this.c(4);
+    }
+  }
+
+  // BON2: the first time, play BONV once; each time it is sent again,
+  // step its pitch up one and play it once more (a rising warble).
+  BON2() {
+    this.c(7);
+    if (!this.b2flg) {
+      this.b2flg = 1;
+      this.c(6 + 2 + 8); this.gwld(13);
+      this.c(4); this.gwave();
+      return;
+    }
+    this.c(3);
+    if (this.gw && this.gend50()) this.gwave();
+  }
+
+  // ============================================================ others
+
+  // RADIO: a 16-step wave through a phase accumulator whose step grows
+  // by one every time the accumulator wraps: a sweep that rises faster
+  // and faster (about an octave every 3 seconds at first).
+  RADIO() {
+    let freq = 100, acc = (this.tempa << 8) | 0;
+    this.c(14);
+    for (;;) {
+      const s = acc + freq;
+      acc = s & 0xffff;
+      this.c(51);
+      if (s > 0xffff) { freq = (freq + 1) & 0xffff; if (!freq) { this.c(5); return; } }
+      this.tempa = acc >> 8;
+      this.w(5, RADSND[(acc >> 8) & 15]);
+      this.c(4);
+    }
+  }
+
+  // HYPER: a 57 Hz pulse whose width sweeps from nothing to all.
+  HYPER() {
+    let s = 0;
+    this.c(2); this.w(5, s); this.c(4 + 2);
+    for (let phase = 0; phase < 128; phase++) {
+      for (let a = 0; a < 128; a++) {
+        this.c(7);
+        if (a === phase) { s ^= 0xff; this.w(6, s); }
+        this.c(2 + 6 * 18 + 6);
+      }
+      s ^= 0xff; this.w(6, s);
+      this.c(10);
+      if (phase < 127) this.c(2);
+    }
+    this.c(5);
+  }
+
+  // SCREAM: four square-wave voices at levels 128, 64, 32 and 16, added
+  // together; every 256 samples each voice's pitch falls a step, and each
+  // starts when the one before has fallen to $37: a falling whistle with
+  // echoes.
+  SCREAM() {
+    const f = [0x40, 0, 0, 0], tm = [0, 0, 0, 0];
+    this.c(3 + 8 * 18 + 6);
+    for (;;) {
+      do {
+        this.c(11);
+        let amp = 0x80, b = 0;
+        for (let v = 0; v < 4; v++) {
+          tm[v] = (tm[v] + f[v]) & 0xff;
+          this.c(20);
+          if (tm[v] & 0x80) { b = (b + amp) & 0xff; this.c(3); }
+          amp >>= 1;
+          this.c(21);
+        }
+        this.w(5, b);
+        this.tempb = (this.tempb + 1) & 0xff;
+        this.c(10);
+      } while (this.tempb);
+      let any = false;
+      this.c(5);
+      for (let v = 0; v < 4; v++) {
+        this.c(9);
+        if (f[v]) {
+          this.c(6);
+          if (f[v] === 0x37 && v < 3) { f[v + 1] = 0x41; this.c(8); }
+          f[v]--; any = true;
+          this.c(9);
+        }
+        this.c(15);
+      }
+      this.c(6);
+      if (!any) { this.c(5); return; }
+    }
+  }
+
+  // ORGANT: the next command is a tune number
+  ORGANT() { this.c(6 + 5); this.orgflg = 0xff; }
+  ORGANN() { this.c(5); }
+
+  // A tune: each note is a loop that counts up a byte and writes how many
+  // of its bits (picked by the note's mask) are set, times 16 (32 on
+  // Robotron): square waves an octave apart, added up like organ stops.
+  // A few NOPs copied into RAM stretch the loop, which sets the pitch.
+  organTune(n) {
+    const R = this.R, rb = this.rom === 'robotron';
+    this.orgflg = 0;
+    this.c(6 + 4 + 3);
+    const names = R.tunes;
+    let x = R.orgtab;
+    for (let i = 1; i < n; i++) {             // ORGNT2: skip earlier tunes
+      if (i > names.length) { this.c(9); return; }
+      this.c(5 + 4 + 6 + 4 + 2 + 9);
+      x = this.addx(x, TUNES[names[i - 1]].length * 4 + 1);
+      this.c(4);
+    }
+    if (!n || n > names.length) { this.c(9); return; }
+    this.c(19 + 4 + 5 + 9);
+    this.addx(x + 1, TUNES[names[n - 1]].length * 4);
+    this.c(5 + 4);
+    for (const [mask, delay, dur] of TUNES[names[n - 1]]) {
+      this.c(33);                             // ORGNT4 .. BSR ORGANL
+      this.mark('note');
+      // ORGANL: build the delay (NOPs, maybe a 3-cycle CMPA) in RAM
+      let nops = 0, cmpa = false, a = delay;
+      if (!rb) {
+        this.c(3);
+        for (;;) {
+          if (a === 0) { this.c(6); break; }
+          if (a === 3) { this.c(12 + 23); cmpa = true; break; }
+          nops++; a = (a - 2) & 0xff; this.c(30);
+        }
+      } else {
+        this.c(3 + 2);
+        let borrow = a < 2;
+        a = (a - 2) & 0xff;
+        for (;;) {
+          if (borrow || a === 0) { this.c(4); break; }
+          if (a === 3) { this.c(10 + 23); cmpa = true; break; }
+          nops++; borrow = a < 2; a = (a - 2) & 0xff; this.c(28);
+        }
+      }
+      this.c(24 + 4);                          // LD1: JMP ORGAN1; LDX DUR
+      const wait = 2 * nops + (cmpa ? 3 : 0);
+      const body = rb ? 60 : 58, sh = R.shift;
+      let loops = dur || 65536;
+      for (;;) {                               // ORGAN1
+        this.tempb = (this.tempb + 1) & 0xff;
+        let bits = this.tempb & mask, sum = 0;
+        while (bits) { sum += bits & 1; bits >>= 1; }
+        this.c(body - 5); this.w(5, sum << sh);
+        this.c(8);                             // DEX; BEQ ORGAN2
+        if (--loops === 0) { this.c(5); break; }
+        this.c(3 + wait + 3);                  // JMP RDELAY ... JMP ORGAN1
+      }
+      this.c(33);                              // next note
+    }
+  }
+
+  // ============================================================ Robotron
+
+  // SING: a square wave whose half-period (6 cycles a count) steps by
+  // DQFRQ every CQFRQ cycles until it reaches EQFRQ; its level can step
+  // too (every CQAMP cycles, by DQAMP) until it goes negative.
+  sing(vec) {
+    let [freqq, cqfrq, dqfrq, eqfrq, cqamp, dqamp] = vec;
+    this.c(9 + 54 + 5 + 9);                    // JSR MOVE ... JSR SING
+    let a = this.amp0, cqampq = cqamp, cqfrqq = cqfrq;
+    this.c(21);
+    a ^= 0xff; this.c(5); this.w(5, a);         // SING1
+    let b = freqq;
+    for (;;) {
+      this.c(6 * n256(b));                     // SING2
+      a ^= 0xff; b = freqq; this.c(25); this.w(5, a);
+      this.c(6 * n256(b));                     // SING3
+      cqfrqq = (cqfrqq - 1) & 0xff; this.c(10);
+      if (!cqfrqq) {                           // SING4: next period
+        a ^= 0xff; this.c(15); this.w(5, a);
+        cqfrqq = cqfrq; b = (freqq - dqfrq) & 0xff;
+        this.c(20);
+        if (b === eqfrq) { this.c(9); return; }
+        freqq = b; b = (b - 5) & 0xff; this.c(10);
+        continue;
+      }
+      cqampq = (cqampq - 1) & 0xff; this.c(10);
+      if (cqampq) { a ^= 0xff; b = freqq; this.c(5); this.w(5, a); continue; }
+      a ^= 0xff; this.c(5); this.w(5, a);       // next level
+      cqampq = cqamp; b = freqq; a = (a + dqamp) & 0xff;
+      this.c(14);
+      if (a & 0x80) { this.c(9); return; }
+      this.c(6);
+      freqq = b; b = (b - 5) & 0xff; this.c(10);
+    }
+  }
+  perk1(name) { this.sing(SINGV[name]); this.c(5); }
+  // the "echo" callers: play it again 8 levels quieter until the level
+  // byte turns positive
+  perkq(name) {
+    for (;;) {
+      this.c(8); this.perk1(name);
+      this.c(8 + 3 + 2 + 4);
+      const a = (this.amp0 - 8) & 0xff;
+      if (!(a & 0x80)) { this.c(4 + 4 + 5); return; }
+      this.amp0 = a; this.c(4 + 5 + 4);
+    }
+  }
+  ATARI() { this.c(3 + 4); this.perk1('VEC02X'); }
+  ORRRR() { this.c(3 + 4); this.perk1('VEC05X'); }
+  HSTD() { this.amp0 = 0xff; this.c(2 + 4 + 3 + 4); this.perkq('VEC08X'); }
+  PERKQQ() { this.amp0 = 0xff; this.c(2 + 4 + 3 + 4); this.perkq('VEC06X'); }
+  // SIREN: SING falling then rising, 255 times over ("wee-woo")
+  SIREN() {
+    this.amp0 = 0xff; this.c(2 + 4);
+    for (let b = 255; b > 0; b--) {
+      this.mark('siren');
+      this.c(3 + 8); this.perk1('VEC03X');
+      this.c(3 + 8); this.perk1('VEC04X');
+      this.c(2 + 4);
+    }
+    this.c(5);
+  }
+
+  // ZIREN, the air-raid siren: a flat-topped triangle (8 steps up, a
+  // wait, 8 steps down, a wait) whose wait shrinks, then slowly grows.
+  ZIREN() {
+    let top = 0xff00 | this.ram.top1, sweep = 0xFEC0;
+    this.c(2 + 4 + 3 + 5 + 2 + 3 + 8);
+    const zirt = () => {
+      const b = n256(top >> 8);
+      this.c(3 + b * 20 + 5);
+    };
+    const part = (slope, end2) => {
+      this.c(4 + 5);
+      do {
+        this.c(3);
+        for (let x = 16; x > 0; x--) {
+          this.c(8 + 2);                      // BSR ZIRLOP; CLRA
+          for (let a = 0; a < 0x100; a += 0x20) { this.w(5, a); this.c(6); }
+          this.c(8); zirt();
+          this.c(2);
+          for (let a = 0xE0; a >= 0; a -= 0x20) { this.w(5, a); this.c(6); }
+          zirt();
+          top = (top + sweep) & 0xffff;
+          this.ram.top1 = top & 0xff;
+          this.c(28);
+        }
+        const lo = (sweep & 0xff) + slope;
+        this.c(14);
+        if (lo > 0xff) { sweep = (sweep + 0x100) & 0xffff; this.c(6); }
+        sweep = (sweep & 0xff00) | (lo & 0xff);
+        this.c(12);
+      } while (sweep !== end2);
+      this.c(5);
+    };
+    part(0x20, 0xFFE0);
+    this.c(2 + 3);
+    part(0x01, 0x0044);
+  }
+
+  // WHIST, the falling bomb: steps through the top half of a sine table
+  // at a rate that falls every 128 samples.
+  WHIST() {
+    let freqz = 0x80;
+    this.c(2 + 4 + 2 + 4);
+    do {
+      this.c(2 + 4);
+      for (let n = 0; n < 128; n++) {
+        this.c(2 + 18 * 6);
+        this.ram.time = (this.ram.time + freqz) & 0xff;
+        this.c(31); this.w(5, SINTBL[this.ram.time >> 3]);
+        this.c(10);
+      }
+      freqz = (freqz - 1) & 0xff;
+      this.c(15);
+    } while (freqz !== 0x20);
+    this.c(5);
+  }
+
+  // PLANE, the diving plane: a pulse whose low half grows for ever.
+  PLANE() {
+    let x1 = 1;
+    this.c(3 + 5 + 3 + 5);
+    for (;;) {
+      this.w(6, 0);
+      x1 = (x1 + 1) & 0xffff;
+      this.c(4 + 4 + 5 + 8 * (x1 || 65536));
+      this.w(6, 0xff);
+      this.c(4 + 8 * 0x380 + 4);
+    }
+  }
+}
+
+// Routines with parameters of our own (for sounds the arcade didn't
+// have): [seconds, name, params] in a sequence.
+const CUSTOM = {
+  fnoise: (b, p) => b.fnoise(p),
+  liten: (b, p) => b.liten(p.lfreq, p.dfreq, p.cycnt),
+  noise: (b, p) => b.noise(p.decay ?? 1, p.period ?? 1, p.amp ?? 0xff,
+    p.cycnt ?? 0x20, p.nfflg ?? 1),
+  gwave: (b, p) => {
+    b.gwld(SVTAB[p.vector] ?? p.vector);
+    if (p.fofs) b.gw.fofs = p.fofs & 0xff;
+    b.gwave();
+  },
+  vari: (b, p) => {
+    b.varild(VVECT[p.vector] ?? p.vector);
+    if (p.loper) b.vv[0] = p.loper;
+    b.vari();
+  },
+  sing: (b, p) => { b.amp0 = p.amp ?? 0xAF; b.sing(SINGV[p.vector] ?? p.vector); },
+};
+
+// ================================================================ sequences
+
+/**
+ * A main-CPU sound table, as Defender and Robotron list them: entries
+ * [repeats, ticks, command] - send the command `repeats` times, `ticks`
+ * frames (60ths of a second) apart. Returns { steps, protect }: the
+ * steps for render() and how long the table lasts (the time for which
+ * the game let nothing of lower priority cut in).
+ */
+export function fromTable(entries) {
+  const steps = [];
+  let t = 0;
+  for (const [rep, ticks, cmd] of entries) {
+    for (let r = 0; r < rep; r++) { steps.push([t, cmd]); t += ticks * TICK; }
+  }
+  return { steps, protect: t };
+}
+
+// The named sounds: the games' own sound tables (priority, entries) and
+// a few single commands. pri is the priority byte the main CPU gave it.
+const TABLES = {
+  // Defender (defa7.src)
+  coin: ['defender', 0xFF, [[1, 0x18, 0x19]]],
+  freeShip: ['defender', 0xFF, [[1, 0x20, 0x1E]]],
+  playerDeath: ['defender', 0xF0, [[2, 8, 0x11], [1, 0x20, 0x17]]],
+  start1: ['defender', 0xF0, [[1, 0x40, 0x0A]]],
+  start2: ['defender', 0xF0, [[1, 0x10, 0x0B]]],
+  terrainBlow: ['defender', 0xE8, [[1, 4, 0x14], [2, 6, 0x11], [2, 0x0A, 0x17]]],
+  smartBomb: ['defender', 0xE8, [[6, 4, 0x11], [1, 0x10, 0x17]]],
+  astroCatch: ['defender', 0xE0, [[3, 0x0A, 0x08]]],
+  astroLand: ['defender', 0xE0, [[1, 0x18, 0x1F]]],
+  astroHit: ['defender', 0xE0, [[1, 0x18, 0x11]]],
+  astroScream: ['defender', 0xD8, [[1, 0x10, 0x1A]]],
+  appear: ['defender', 0xD0, [[1, 0x30, 0x15]]],
+  probeHit: ['defender', 0xD0, [[1, 0x10, 0x05]]],
+  schitzHit: ['defender', 0xD0, [[1, 8, 0x17]]],
+  ufoHit: ['defender', 0xD0, [[1, 8, 0x07]]],
+  tieHit: ['defender', 0xD0, [[1, 0x0A, 0x01]]],
+  landerHit: ['defender', 0xD0, [[1, 0x0A, 0x06]]],
+  landerPickUp: ['defender', 0xD0, [[1, 0x10, 0x0B]]],
+  landerSuck: ['defender', 0xC8, [[0x0A, 1, 0x0E]]],
+  swarmHit: ['defender', 0xC0, [[1, 8, 0x07]]],
+  laser: ['defender', 0xC0, [[1, 0x30, 0x14]]],
+  landerShoot: ['defender', 0xC0, [[1, 8, 0x03]]],
+  schitzoShoot: ['defender', 0xC0, [[1, 0x30, 0x09]]],
+  swarmShoot: ['defender', 0xC0, [[1, 0x18, 0x0C]]],
+  // Robotron (RRS22.ASM and friends)
+  rbLaser: ['robotron', 0xD0, [[1, 8, 0x01]]],
+  rbPlayerDeath: ['robotron', 0xEE, [[2, 8, 0x11], [1, 0x20, 0x17]]],
+  waveEnd: ['robotron', 0xE0, [[0x1D, 4, 0x0E]]],
+  saveHuman: ['robotron', 0xE0, [[1, 0x20, 0x0D]]],
+  killHuman: ['robotron', 0xE0, [[1, 0x18, 0x1A]]],
+  robotHit: ['robotron', 0xD0, [[1, 0x0C, 0x14], [1, 8, 0x17]]],
+  hulkHit: ['robotron', 0xD0, [[1, 0x10, 0x06]]],
+  enforcerShoot: ['robotron', 0xD0, [[1, 8, 0x1D]]],
+  brainShoot: ['robotron', 0xC8, [[1, 8, 0x15], [1, 8, 0x14]]],
+  rbStart1: ['robotron', 0xF0, [[1, 0x10, 0x28]]],
+  rbStart2: ['robotron', 0xF0, [[1, 0x10, 0x25]]],
+  replay: ['robotron', 0xEF, [[1, 0x20, 0x1E]]],
+};
+
+/**
+ * Every named sound: { rom, steps, pri, protect } (pri and protect only
+ * for the games' own tables). Also: the tunes (phantom, toccata, fifth,
+ * ninth), siren (Robotron's SIREN) and every command by name (e.g.
+ * CANNON; Robotron-only ones such as ZIREN play on Robotron's board).
+ */
+export const SOUNDS = {};
+for (const [name, [rom, pri, entries]] of Object.entries(TABLES)) {
+  const { steps, protect } = fromTable(entries);
+  SOUNDS[name] = { rom, steps, pri, protect };
+}
+for (const [i, tune] of [[1, 'phantom'], [2, 'toccata']]) {
+  SOUNDS[tune] = { rom: 'defender', steps: [[0, 0x1B], [0.001, i]] };
+}
+for (const [i, tune] of [[1, 'fifth'], [2, 'ninth']]) {
+  SOUNDS[tune] = { rom: 'robotron', steps: [[0, 0x1B], [0.001, i]] };
+}
+COMMANDS.robotron.forEach((name, n) => {
+  if (!name || SOUNDS[name] || MISSING.has(name)) return;
+  SOUNDS[name] = { rom: n <= 31 ? 'defender' : 'robotron', steps: [[0, n]] };
+});
+SOUNDS.siren = SOUNDS.SIREN;
+
+// ================================================================ render
+
+/**
+ * Turn the DAC's writes into samples at `rate`: each sample is the
+ * average DAC level over its time (the board's output is a staircase),
+ * centred so that 128 is silence, -1..1.
+ */
+export function toSamples(log, rate, endCycle, start = 0x80) {
+  const cps = CLOCK / rate;
+  const n = Math.max(1, Math.ceil(endCycle / cps));
+  const out = new Float32Array(n);
+  let level = start, li = 0, t = 0;
+  for (let i = 0; i < n; i++) {
+    const tEnd = (i + 1) * cps;
+    let acc = 0;
+    while (li < log.length && log[li] < tEnd) {
+      acc += (log[li] - t) * level;
+      t = log[li]; level = log[li + 1]; li += 2;
+    }
+    acc += (tEnd - t) * level;
+    t = tEnd;
+    out[i] = (acc / cps - 128) / 128;
+  }
+  return out;
+}
+
+// The cabinet's amplifier and speaker, roughly: a high-pass at 25 Hz to
+// take away the DC (the DAC's level sits around 128, not 0) and a gentle
+// one-pole low-pass at 6 kHz. (render() does this unless filter: false.)
+export function cabinet(a, rate) {
+  const r = Math.exp(-2 * Math.PI * 25 / rate);
+  const k = 1 - Math.exp(-2 * Math.PI * 6000 / rate);
+  let px = a[0], hp = 0, lp = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    hp = x - px + r * hp;
+    px = x;
+    lp += k * (hp - lp);
+    a[i] = lp;
+  }
+  return a;
+}
+
+function fade(a, rate, seconds) {
+  const n = Math.min(a.length, Math.round(seconds * rate));
+  for (let i = 0; i < n; i++) a[a.length - 1 - i] *= i / n;
+  return a;
+}
+
+// Work out what to play: a name, a command number, steps or an object.
+function resolve(sound, o) {
+  if (typeof sound === 'string') {
+    const s = SOUNDS[sound];
+    if (!s) throw new Error('Williams: no sound ' + sound);
+    return { ...s, rom: o.rom ?? s.rom };
+  }
+  if (typeof sound === 'number') return { rom: o.rom ?? 'defender', steps: [[0, sound]] };
+  if (Array.isArray(sound)) return { rom: o.rom ?? 'defender', steps: sound };
+  return { rom: o.rom ?? sound.rom ?? 'defender', steps: sound.steps };
+}
+
+/**
+ * Play a sound on a fresh board and return it as samples (Float32Array,
+ * -1..1). o: { rom, seconds, until, fade, rate, seed, filter, board } - see the
+ * top of this file. board: a Board to play on (its noise and counters
+ * carry on from what it played before).
+ */
+export function render(sound, o = {}) {
+  const s = resolve(sound, o);
+  const rate = o.rate ?? 48000;
+  const b = o.board ?? new Board({ rom: s.rom, seed: o.seed });
+  const t0 = b.t;
+  const start = b.v;
+  const limit = o.seconds ?? 30;
+  const steps = s.steps.map(([t, ...rest]) => [t + t0 / CLOCK, ...rest]);
+  let done = b.play(steps, t0 / CLOCK + limit) - t0;
+  let cut = done >= Math.round(limit * CLOCK) - 1;
+  if (o.until) {                        // cut where a pass, sweep or note starts
+    const [what, index] = o.until;
+    const at = b.marks.filter(([m, t]) => m === what && t >= t0);
+    if (at[index]) { done = at[index][1] - t0; cut = true; }
+  }
+  // a little silence after a sound that ended by itself, so the filter
+  // can settle
+  const end = cut ? done : done + Math.round(0.03 * CLOCK);
+  const log = b.log.map((v, i) => (i & 1 ? v : v - t0));
+  const a = toSamples(log, rate, end, start);
+  if (o.filter !== false) cabinet(a, rate);
+  return fade(a, rate, cut ? (o.fade ?? 0.02) : 0.01);
+}
+
+/**
+ * A buffer that loops without a click. With { mark: 'vari', from, to }
+ * (or 'gwave') it is cut exactly from the start of one pass or sweep to
+ * the start of another, for sounds that repeat themselves; otherwise it
+ * is `seconds` long (after skipping `skip` seconds), its end faded into
+ * its start over `crossfade` seconds (for noise).
+ */
+export function renderLoop(sound, o = {}) {
+  const rate = o.rate ?? 48000;
+  const s = resolve(sound, o);
+  const b = new Board({ rom: s.rom, seed: o.seed });
+  if (o.mark) {
+    const need = o.to ?? 2;
+    const secs = o.seconds ?? 8;
+    b.play(s.steps, secs);
+    const at = b.marks.filter(([m]) => m === o.mark).map(([, t]) => t);
+    if (at.length <= need) throw new Error('Williams: loop marks not found');
+    const a = toSamples(b.log, rate, at[need] + 1, 0x80);
+    const from = Math.round(at[o.from ?? 0] / CLOCK * rate);
+    const one = a.slice(from, Math.round(at[need] / CLOCK * rate));
+    if (o.filter === false) return one;
+    // filter two copies end to end and keep the second, so the filter
+    // is already where it will be when the loop comes round
+    const two = new Float32Array(one.length * 2);
+    two.set(one); two.set(one, one.length);
+    return cabinet(two, rate).slice(one.length);
+  }
+  const skip = o.skip ?? 0.1, secs = o.seconds ?? 1.5, xf = o.crossfade ?? 0.1;
+  b.play(s.steps, skip + secs + xf);
+  const all = toSamples(b.log, rate, Math.round((skip + secs + xf) * CLOCK), 0x80);
+  if (o.filter !== false) cabinet(all, rate);
+  const a = all.slice(Math.round(skip * rate));
+  const f = Math.round(xf * rate), n = a.length - f;
+  const out = a.slice(0, n);
+  for (let i = 0; i < f; i++) {
+    const x = i / f;
+    out[i] = a[n + i] * Math.cos(x * Math.PI / 2) + a[i] * Math.sin(x * Math.PI / 2);
+  }
+  return out;
+}
