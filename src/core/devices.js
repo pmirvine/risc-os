@@ -103,7 +103,7 @@ export async function initDevices() {
     ]);
     ram.onDataLoad = (ev) => { import('./fileraction.js').then(({ fileAction }) => fileAction(ev.shift ? 'move' : 'copy', ev.files.map((f) => f.path), vfs.ram.prefix + '$', os.filer.options)); };
   };
-  addRam();
+  if (vfs.ram.size > 0) addRam();     // *Configure RAMFSSize 0 (!Configure's Memory window): no RAM disc
   os.ramdisc = { add: () => { if (!ram) addRam(); }, remove: () => { if (ram) { dismount(vfs.ram); wimp.iconbar.remove(ram); ram = null; } }, get present() { return !!ram; } };
 
   // ------------------------------------------------------------------ Apps (ResourceFiler)

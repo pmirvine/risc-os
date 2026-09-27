@@ -27,6 +27,7 @@ import { bootScreen, desktopBanner } from './core/boot.js';
 import { installBasicHost } from './core/basichost.js';
 import { installBasicWimp } from './core/basicwimp/index.js';
 import { config } from './core/config.js';
+import { memory } from './core/memory.js';
 import { watchPowerOnKeys, resetAndRestart, confirmReset } from './core/reset.js';
 
 const params = new URLSearchParams(location.search);
@@ -77,12 +78,26 @@ async function boot() {
   os.loadMessages = loadMessages; os.input = input; os.hooks = os.hooks ?? {};
   os.config = config;
   config.load();
+  os.memory = memory.bind({
+    values: config.values, save: () => config.save(), changed: () => wimp.emit('memorychanged', {}),
+    tasks: () => wimp.tasks, screen: () => ({ width: wimp.width, height: wimp.height, bpp: 8 }),
+    // the RAM disc: RAMFS's dynamic area (its size is the disc's size); 0 = no RAM disc (no icon)
+    ramdisc: {
+      sizeK: () => (os.ramdisc && !os.ramdisc.present ? 0 : Math.round(vfs.ram.size / 1024)),
+      usedK: () => (vfs.ram.root.children.size ? vfs.usage(vfs.ram).used / 1024 : 0),
+      setK: (k) => {
+        vfs.ram.size = k * 1024;
+        if (k > 0) os.ramdisc?.add(); else os.ramdisc?.remove();
+      },
+    },
+  });
 
   setDefaultVars();
   installCommands();
   await Promise.all([sprites.init(), loadDesktopFonts(), vfs.init(), initFiletypes()]);
   wimp.init(document.body);
   config.apply();
+  memory.init();                      // the areas' sizes as configured (CMOS), fitted to the RAM size
   if (params.get('zoom')) wimp.setScale(+params.get('zoom'));
   if (params.get('buttons') === 'adjust') input.config.rightIsAdjust = true;
   if (params.get('buttons') === 'menu') input.config.rightIsAdjust = false;

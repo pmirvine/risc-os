@@ -13,9 +13,10 @@ export default async function start(task, ctx) {
   const M = await loadMessages('MemNow');
   const [title, ...items] = M.lookup('Menu').split(',');      // "MemNow,Info,Quit"
 
-  // free pool in bytes (Wimp_SlotSize -1,-1 TO ,,free): from the Task Manager's memory model
+  // free pool in bytes (Wimp_SlotSize -1,-1 TO ,,free): the machine's memory model (os.memory), as
+  // the Task Manager's "Free"
   const freeBytes = () => {
-    try { return (os.switcher?.memory?.().free ?? 0) * 1024; } catch { return 0; }
+    try { return (os.memory?.freeK ?? 0) * 1024; } catch { return 0; }
   };
   let FreeMem = freeBytes();
   const fmt = (t) => String(Math.round((t / 1024) * 1e6) / 1e6);   // STR$(t%/1024)

@@ -329,3 +329,39 @@ docs/ASSETS.md §5).
 * Demos: `src/basic/demos/ceefax.bas`, `ballpit.bas` (index.json, `tests/basic/demos.test.mjs` plans; the Filer count
   in `tests/bw/bw-basicdemos.mjs` is now 30). Disc: `tools/disc-graphtask.mjs` (in `tools/build.mjs`).
 * Tests: `tests/bw/bw-graphtask.mjs` (in `node --test tests/bw`).
+
+## One memory model: a 256MB Risc PC, RAM size in !Configure — changes in shared code
+**Status:** done. Guide: `$.Docs.Memory` (`tools/docs/Memory`).
+* `src/core/memory.js` (new, `os.memory`, docs/CORE_API.md section 11): the machine's memory in one place. A StrongARM
+  Risc PC with 256MB of DRAM (was: the Task Manager's 8MB, OS_ReadDynamicArea's / OS_Memory's 16MB with 1MB VRAM,
+  Wimp_SlotSize's flat 12MB), 2MB VRAM, 4MB ROM; RAM size 4-256MB (config `ramSize`; 4MB = an A7000, no VRAM).
+  The screen is the VRAM when it fits, else (partly) DRAM. DRAM = system areas + slots + Next + Free exactly.
+  Limits: 28MB slot (`APP_SPACE_K` 28640), RAM disc 128MB, font cache / system sprites 16MB. No imports (node tests).
+* `src/main.js`: binds `os.memory` (config values, tasks, screen size, RAM disc = `vfs.ram.size`) and calls `init()`
+  after `config.apply()`: the CMOS memory sizes (`memFontCache`, `memSprites`, `memHeap`, `memRMA`, `memScreen`,
+  `memRAMDisc`) now apply at start-up. `src/core/devices.js`: no RAM disc icon if its size is 0 (RAMFSSize 0).
+* `src/core/switcher.js`: `memory()` is now `os.memory.snapshot()` (plus the old `used/next/free/total` names;
+  `TOTAL_K`, `nextK` and `custom` are gone). Bars use 3.7's stepped scale (`barOS`), at least a pixel when not
+  empty; the window's extent (and the section headings) end 16 OS units after the Total bar, the window opens as wide
+  as that and follows it when the RAM size changes. Red (draggable) bars: Next, Free (sets Next), Font cache, System
+  sprites, RAM disc, and Screen memory only on a machine without VRAM (it used to be red and did nothing); dragging
+  goes through `os.memory.setArea` (limited by the free pool) and ends when the button is released (before, a quick
+  click could leave the drag running). System workspace is 32K (was 368K), as a 3.7 Risc PC shows. Refreshes on
+  `wimp` `memorychanged`.
+* `src/apps/MemNow/main.js`: reads `os.memory.freeK`.
+* `src/core/basicwimp/bridge.js` `Wimp_SlotSize`: slot limited by the free pool and 28MB (and the BASIC machine's
+  flat memory as before); r1 sets/reads the global Next (`setArea('next')`), r2 = free pool.
+  `services.js`: OS_ReadMemMapInfo (pages of DRAM + VRAM), OS_ReadDynamicArea 0-6 / -1 (+128: max in r2),
+  Font_CacheAddr's size. `hardware.js`: `hardware.dramK/vramK/romK` are the model's (setting `vramK` overrides the
+  model's VRAM, for tests); OS_ReadSysInfo 0 = screen size.
+* `*WimpSlot -min` (`basicwimp/index.js`, `services.hookWimpSlot`) and `os.apps.start` (`src/core/app.js`) refuse a
+  slot the free pool can't give, with the Wimp's `ErrMem` ("…K free memory is needed before the application will
+  start…"); `apps.start` reports it and resolves to null. Only happens with little RAM (or huge slots).
+* `src/core/config.js`: `*Configure RAMSize <n>M` (this desktop's), `FontSize`, `FontMax`, `RAMFSSize`, `RMASize`,
+  `ScreenSize`, `SpriteSize`, `SystemSize` (`<n>` pages, `<n>K`, `<n>M`; start-up sizes). `src/core/commands.js`:
+  `*Status` memory rows from the model (`statusRows()`), incl. `RAMSize`; `*Configure` lists the new keywords.
+* `src/apps/Configure/main.js`: Memory window has a RAM size row (docs/apps/Configure.md); `DEF.memScreen` 0 (was
+  1200) and `DEF.memRAMDisc` 1024 (was 0), what the desktop starts with.
+* Tests: `tests/core/test-memory.mjs` (node: sizes, limits, accounting, settings, bar scale against the 3.7
+  screenshots) and `tests/core/test-taskmanager.mjs` (Playwright: the Task display at 256MB, 4MB and 64MB, bar drag,
+  !MemNow, `*WimpSlot` refusal, !Configure's RAM size), both in `node --test tests/core`.

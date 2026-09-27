@@ -24,7 +24,7 @@ const DEF = {
   printerPort: 1, printerIgnore: true, printerIgnoreChar: 10,
   mouseStep: 2, mouseType: 0,
   keyDelay: 32, keyRepeat: 8, capsLock: 1,
-  memScreen: 1200, memHeap: 32, memRMA: 0, memFontCache: 64, memFontMax: 256, memSprites: 0, memRAMDisc: 0,
+  memScreen: 0, memHeap: 32, memRMA: 0, memFontCache: 64, memFontMax: 256, memSprites: 0, memRAMDisc: 1024,   // as src/core/memory.js starts
   voice: 1, sound16: true,
   monitor: 'Acorn AKF60', screenColours: 5, blankDelay: 0, textureLighter: false,
   fontAA: 12, fontCache: 24, fontSubH: 0, fontSubV: 0,
@@ -57,9 +57,28 @@ export default async function start(task, ctx) {
   };
   const R = (ic, v) => { ic.validation = v; ic.flags = (ic.flags | IF.border) >>> 0; };
   const templates = {
+    memory: withRAMSize(),
     printer: upgraded('Printer', (I) => { R(I[0], 'R4'); }),
     apps: upgraded('Apps', (I) => { R(I[16], 'R5,3'); R(I[17], 'R5,3'); I[16].flags = (I[16].flags | IF.filled | IF.hcentre) >>> 0; I[17].flags = (I[17].flags | IF.filled | IF.hcentre) >>> 0; }),
   };
+
+  // The Memory window with a "RAM size" row below RAM disc (this desktop's addition, src/core/memory.js):
+  // a display field and pop-up menu button as in the Screen window, then "MBytes". Icons 36-39.
+  function withRAMSize() {
+    const t = structuredClone(tpl.windows.memory);
+    const scr = tpl.windows.screen.icons;
+    const at = (ic, box, extra = {}) => ({ ...structuredClone(ic), bbox: box, ...extra });
+    const lbl = t.icons[6], unit = t.icons[34];
+    t.icons.length = 36;
+    t.icons.push(
+      at(lbl, { x0: 100, y0: -516, x1: 298, y1: -464 }, { text: 'RAM size', bufLen: 12 }),
+      at(scr[1], { x0: 312, y0: -516, x1: 408, y1: -464 }, { text: '256', bufLen: 8, flags: (scr[1].flags | IF.hcentre) >>> 0 }),
+      at(scr[2], { x0: 426, y0: -512, x1: 472, y1: -468 }),
+      at(unit, { x0: unit.bbox.x0, y0: -522, x1: unit.bbox.x1, y1: -458 }, { text: 'MBytes', bufLen: 8 }),
+    );
+    t.visible = { ...t.visible, y0: t.visible.y0 - 64 };
+    return t;
+  }
 
   const windows = new Map();      // name -> Window
   let main = null;
@@ -346,6 +365,7 @@ export default async function start(task, ctx) {
     w._refresh();
     w.on('click', (ev) => {
       if (ev.button === 'menu') return;
+      if (ramClick(ev)) return true;
       const i = ev.icon?.handle;
       let r = -1, d = 0;
       if (i >= 7 && i <= 13) { r = i - 7; d = -1; }
@@ -356,6 +376,28 @@ export default async function start(task, ctx) {
       }
       return true;
     });
+    // RAM size (icons 36-39): the machine's RAM, applied at once (os.memory; the Task Manager follows)
+    const RAM = { label: 36, value: 37, pop: 38, unit: 39 };
+    const showRAM = () => text(w, RAM.value, os.memory?.ramMB ?? 256);
+    const refreshRows = w._refresh;
+    w._refresh = () => { refreshRows(); showRAM(); };
+    showRAM();
+    const ramHelp = 'This is the amount of RAM in the computer: from 4MB (an A7000, which has no video RAM, so the screen uses some of it) to 256MB (the most a Risc PC takes). Unlike the other sizes here, a change takes effect at once: the Task Manager shows the result.';
+    w.on('helprequest', (ev) => {
+      const i = ev.icon?.handle;
+      if (i === RAM.pop) ev.text = 'Click SELECT to choose the amount of RAM in the computer.';
+      else if (i >= RAM.label && i <= RAM.unit) ev.text = ramHelp;
+    });
+    const ramClick = (ev) => {
+      const i = ev.icon?.handle;
+      if (i !== RAM.pop && i !== RAM.value) return false;
+      const sizes = os.memory?.sizes ?? [4, 8, 16, 32, 64, 128, 256];
+      popup(w, RAM.pop, new Menu('RAM size', sizes.map((mb) => ({
+        text: `${mb}MB${mb === 4 ? ' (A7000)' : ''}`, help: ramHelp, ticked: () => os.memory?.ramMB === mb,
+        action: () => { try { os.memory.setRAMSize(mb); } catch (e) { reportError(e.message, { appName: 'Configure' }); } showRAM(); },
+      }))), ev);
+      return true;
+    };
     const commit = () => rows.forEach((k, r) => { const v = parseInt(w.icons[14 + r].text, 10); if (v >= 0) store(k, v); });
     w.on('key', (ev) => { if (ev.code === 13) { commit(); w._refresh(); return true; } });
     w.on('losecaret', () => { commit(); w._refresh(); });

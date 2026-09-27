@@ -15,6 +15,7 @@ Everything is plain ES modules; import from `src/core/…` with relative paths, 
 | `dialogs` | `reportError`, `infoBox`, `saveAs`, `query`, `discardChanges` | `dialogs.js` |
 | `sprites`, `fonts` | Wimp sprite pool, desktop fonts | `sprites.js`, `fonts.js` |
 | `pinboard`, `switcher`, `iconbar` | desktop components | |
+| `memory` | the machine's memory model: RAM size, system areas, slots, Next, Free (section 11) | `memory.js` |
 | `hooks` | extension points: `hooks.basic(argv, ctx)`, `hooks.taskWindow(cmd)` | |
 
 ## 1. Coordinates and units
@@ -56,7 +57,8 @@ export default {
                                          // Alias$@RunType_AFF so double-clicking such a file runs the app with it
                                          // ({run:false} to only claim DataOpen, {override:true} to replace an existing alias).
   open(task, path, msg) { … },           // optional: called for DataOpen of a declared type while running
-  memory: 256,                           // K of application memory shown by the Task Manager
+  memory: 256,                           // K of application memory (the slot: Task Manager, os.memory; the app
+                                         // does not start if the free pool cannot give it)
   multiInstance: false,                  // false: running again sends 'run' (+ DataOpen) to the running task
   edits: [0xF81],                        // file types Shift-double-click opens in this app (os.apps.editFile;
                                          // double-clicking them still runs them) - e.g. !JsEdit for JSScript
@@ -372,8 +374,24 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * Boot completion: `os.ready === true` and `wimp.on('desktopready')`.
 * Configuration (`os.config`, `src/core/config.js`, localStorage "CMOS"): `zoom`, `rightButton`, `textured`, `wimpFont`
   (`'homerton'`, `'system'` or any font name e.g. `'Trinity.Medium'`), `wimpFlags`, `doubleClickDelay`, `doubleClickMove`,
-  `dragDelay`, `dragMove`, `beepLoud`, `speaker`, `volume` (0-7), `mode` ({width,height}, applied at boot); `apply()` pushes
+  `dragDelay`, `dragMove`, `beepLoud`, `speaker`, `volume` (0-7), `mode` ({width,height}, applied at boot), `ramSize` (MB)
+  and the `mem*` memory sizes (`*Configure RAMSize|FontSize|RAMFSSize|RMASize|ScreenSize|SpriteSize|SystemSize`); `apply()` pushes
   them into `input.config` / `wimp.config` (`solidDrags`, `errorBeep`, `beepGain`). Other keys may be kept in `values` + `save()`.
+* Memory (`os.memory`, `src/core/memory.js`): the one model of the machine's memory, which the Task Manager, !MemNow,
+  `Wimp_SlotSize`, `*WimpSlot`, `OS_Memory 8`, `OS_ReadMemMapInfo`, `OS_ReadDynamicArea`, `OS_ReadSysInfo 0`,
+  `Font_CacheAddr`, `*Status` / `*Configure` and !Configure all read. A StrongARM Risc PC: `dramK` (config `ramSize`,
+  MB, one of `sizes` = 4, 8 … 256, default 256; 4 = an A7000 with no VRAM), `vramK` (2048), `romK`, `totalK`
+  (DRAM + VRAM), `ramMB`. `snapshot()` → `{ dramK, vramK, totalK, screen: {k, needK, vramK, dramK, inVRAM}, sys:
+  {screen, cursor, heap, module, fontcache, sprites, ramdisc, workspace}, apps, usedK, nextK, freeK, poolK, over }`
+  (K; DRAM = system areas in DRAM + slots + Next + Free exactly). `freeK` is the free pool (Task Manager "Free",
+  Wimp_SlotSize r2); `slotK(task)` is a task's slot (`task.memory`). `setArea('next'|'free'|'fontcache'|'sprites'|
+  'ramdisc'|'screen', k)` resizes as a Task Manager bar drag does (whole 4K pages, limited by the free pool and the
+  area's maximum; returns the size set). `setRAMSize(mb)` (saved, applied at once, `fit()` shrinks areas if needed),
+  `checkSlot(k)` (throws the Wimp's "…K free memory is needed before the application will start" error; `*WimpSlot
+  -min` and `os.apps.start` use it), `growSlot(task, k)` (Wimp_SlotSize), `dynamicArea(n)` → `{base, size, max}`,
+  `statusRows()`. Limits: `APP_SPACE_K` 28640 (RISC OS 3.7's 28MB slot), `RAMDISC_MAX_K` 128MB, font cache and system
+  sprites 16MB. `barOS(k)` / `barK(os)`: the Switcher's stepped bar scale. Changes emit `wimp` `memorychanged`.
+  Boot-time sizes come from the CMOS keys `memFontCache`, `memSprites`, `memHeap`, `memRMA`, `memScreen`, `memRAMDisc`.
 * Reset (`src/core/reset.js`): `*ResetDisc [-cmos]` (forget all changes to the hard disc / floppy), `*ResetCMOS`
   (configuration only), Delete held at start-up = both ("Delete-power-on"), R held = CMOS ("R-power-on"), `?reset=disc|cmos|all` (asks first: `confirmReset`).
 * Web addresses: `*URLOpen_http <address>` (and `_https`) opens one in the program that handles them, as with Acorn's

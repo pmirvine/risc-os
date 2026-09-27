@@ -49,6 +49,9 @@ export function installBasicWimp() {
         const a = argv[i].toLowerCase();
         if (a === '-min' || (!a.startsWith('-') && min == null)) { const v = a === '-min' ? argv[++i] : argv[i]; min = parseInt(v, 10) * (/k$/i.test(v) ? 1 : /m$/i.test(v) ? 1024 : 1 / 1024); }
       }
+      // not enough free memory (or more than the 28MB application space): the Wimp's error, which stops the
+      // !Run file before the application starts (src/core/memory.js)
+      if (min) os.memory?.checkSlot(min);
       if (min) (await import('./runner.js')).noteWimpSlot(Math.round(min));
     },
   });

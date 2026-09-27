@@ -13,6 +13,7 @@ import { decodeLatin1 } from '../charset.js';
 import { BasicError } from '../../basic/errors.js';
 import { pixelToGcol } from '../../basic/vdu.js';
 import { noteWimpSlot } from './runner.js';
+import { memory, PAGE_K } from '../memory.js';
 
 const u32 = (x) => x >>> 0;
 export const WIMP_POOL_ROM = 0x2F0000;   // fake sprite area pointers for Wimp_BaseOfSprites
@@ -434,7 +435,7 @@ export function installServices(m, proc) {
   S('Font_ReadThresholds', () => {});
   S('Font_SetThresholds', () => {});
   S('Font_SetPalette', (r) => { if (r[0]) fontMgr.current = r[0]; fontMgr.bg = (r[5] >>> 8) & 0xFFFFFF; fontMgr.fg = (r[6] >>> 8) & 0xFFFFFF; fontMgr.bg = bgrToRgb(r[5]); fontMgr.fg = bgrToRgb(r[6]); });
-  S('Font_CacheAddr', (r) => { r[0] = 337; r[2] = 0; r[3] = 64 * 1024; });
+  S('Font_CacheAddr', (r) => { r[0] = 337; r[2] = 0; r[3] = memory.sys().fontcache * 1024; });
   S('Font_ListFonts', (r) => { r[2] = -1; });
   S('ColourTrans_SetFontColours', (r) => { if (r[0]) fontMgr.current = r[0]; fontMgr.bg = bgrToRgb(r[1]); fontMgr.fg = bgrToRgb(r[2]); r[1] = 0; r[2] = 7; r[3] = 14; });
   S('ColourTrans_ReturnFontColours', (r) => { r[3] = 14; });
@@ -445,12 +446,14 @@ export function installServices(m, proc) {
 
   // ---------------------------------------------------------------- misc
   for (const n of ['Hourglass_On', 'Hourglass_Off', 'Hourglass_Smash', 'Hourglass_Start', 'Hourglass_Percentage', 'Hourglass_LEDs', 'Hourglass_Colours']) S(n, () => {});
-  S('OS_ReadMemMapInfo', (r) => { r[0] = 4096; r[1] = 1024; });
+  // the machine's memory model (src/core/memory.js): pages of RAM (DRAM + VRAM), dynamic area sizes
+  S('OS_ReadMemMapInfo', (r) => { r[0] = PAGE_K * 1024; r[1] = Math.floor(memory.totalK / PAGE_K); });
   S('OS_ReadDynamicArea', (r) => {
-    // a RiscPC with 16MB: system heap, RMA, screen, system sprites, font cache, RAM disc, free pool
-    const sizes = { 0: 32 << 10, 1: 1 << 20, 2: 2 << 20, 3: 64 << 10, 4: 256 << 10, 5: 0, 6: 8 << 20 };
-    const n = r[0] & 0x7F;
-    r[0] = 0x1800000 + n * 0x100000; r[1] = sizes[n] ?? 0; r[2] = 16 << 20;
+    // 0 system heap, 1 RMA, 2 screen, 3 system sprites, 4 font cache, 5 RAM disc, 6 free pool, -1 application
+    // space; +128: r2 = the area's maximum size
+    const n = (r[0] | 0) === -1 ? -1 : r[0] & 0x7F;
+    const a = memory.dynamicArea(n) ?? { base: 0, size: 0, max: 0 };
+    r[0] = a.base; r[1] = a.size; r[2] = a.max;
   });
 }
 
@@ -471,6 +474,7 @@ export function hookWimpSlot(cli) {
         const a = argv[i].toLowerCase();
         if (a === '-min' || (!a.startsWith('-') && min == null)) { const v = a === '-min' ? argv[++i] : argv[i]; min = parseInt(v, 10) * (/k$/i.test(v) ? 1 : /m$/i.test(v) ? 1024 : 1 / 1024); }
       }
+      if (min) memory.checkSlot(min);
       if (min) noteWimpSlot(Math.round(min));
     },
   });

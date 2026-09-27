@@ -407,13 +407,16 @@ export function installCommands() {
   def('Configure', 'Syntax: *Configure [<keyword> [<value>]]', '*Configure sets the values held in the non-volatile memory.', async (a, { out }) => {
     if (!a.length) {
       out.writeln('Syntax: *Configure <option> <parameters>');
-      for (const k of ['Buttons      Menu|Adjust  (right mouse button)', 'Textured     On|Off', 'WimpDoubleClickDelay <n>', 'WimpDragMove <n>', 'WimpFlags    <n>', 'WimpFont     0|1  (0 = Homerton, 1 = system font)', 'Zoom         1|2']) out.writeln('  ' + k);
+      for (const k of ['Buttons      Menu|Adjust  (right mouse button)', 'FontSize     <n>[K]  (font cache, from the next start)', 'RAMFSSize    <n>[K]  (RAM disc, from the next start)', 'RAMSize      4M|8M|16M|32M|64M|128M|256M  (this desktop: the machine\'s RAM, now)', 'RMASize      <n>[K]', 'ScreenSize   <n>[K]', 'SpriteSize   <n>[K]', 'SystemSize   <n>[K]', 'Textured     On|Off', 'WimpDoubleClickDelay <n>', 'WimpDragMove <n>', 'WimpFlags    <n>', 'WimpFont     0|1  (0 = Homerton, 1 = system font)', 'Zoom         1|2']) out.writeln('  ' + k);
       return;
     }
     if (!os.config?.set?.(a[0], a.slice(1).join(' '))) throw new CLIError('Bad configure option', 0);
   });
   def('Status', 'Syntax: *Status [<option>]', '*Status shows the configured values held in non-volatile memory.', async (a, { out }) => {
-    const rows = [['Baud', '4'], ['Boot', ''], ['Caps', ''], ['Delay', '32'], ['DumpFormat', '4'], ['FileSystem', 'ADFS'], ['FontSize', '64K'], ['Language', '4'], ['Mode', 'Auto'], ['MouseStep', '2'], ['RAMFSSize', '1024K'], ['Repeat', '8'], ['ScreenSize', '160K'], ['SpriteSize', '0K'], ['WimpDragDelay', '5'], ['WimpDoubleClickDelay', '10'], ['WimpFlags', '111'], ['WimpMode', 'X1024 Y768 C256']];
+    // the memory settings (FontSize, RAMFSSize, RMASize, ScreenSize, SpriteSize, SystemSize ... and this
+    // desktop's RAMSize) come from the memory model (src/core/memory.js)
+    const rows = [['Baud', '4'], ['Boot', ''], ['Caps', ''], ['Delay', '32'], ['DumpFormat', '4'], ['FileSystem', 'ADFS'], ['Language', '4'], ['Mode', 'Auto'], ['MouseStep', '2'], ['Repeat', '8'], ['WimpDragDelay', '5'], ['WimpDoubleClickDelay', '10'], ['WimpFlags', '111'], ['WimpMode', 'X1024 Y768 C256'], ...(os.memory?.statusRows() ?? [])]
+      .sort((x, y) => x[0].localeCompare(y[0]));
     for (const [k, v] of rows) if (!a[0] || k.toLowerCase().startsWith(a[0].toLowerCase())) out.writeln(`${k.padEnd(18)}${v}`);
   });
   def('Basic', 'Syntax: *BASIC [-help] [-window] [-chain|-quit|-load] [<filename>]', '*BASIC starts the BBC BASIC V interpreter. -window runs it in a desktop window of its own.', async (a, ctx) => {

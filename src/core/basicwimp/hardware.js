@@ -5,7 +5,8 @@
 //                     sound, keyboard, mouse, memory and desktop-font locations are views of os.config)
 //   OS_Module 18      module lookup for ROM modules (a header with title and help string in the RMA, so
 //                     programs can read the version, e.g. !HForm's ADFS check)
-//   OS_Memory 8       amount of VRAM / DRAM / ROM (a RiscPC with 1MB of VRAM; `hardware.vramK` changes it)
+//   OS_Memory 8       amount of VRAM / DRAM / ROM, from the machine's memory model (src/core/memory.js: a Risc PC
+//                     with 2MB of VRAM and the configured RAM size; `hardware.vramK = 0` makes it one without VRAM)
 //   OS_Reset          restart the machine (reloads the page, keeping the disc and CMOS)
 //   Joystick_*        the Joystick module (0.22 in the 3.71 ROM) on the browser Gamepad API
 //   ADFS_*            disc operations on the emulated IDE drive 4 (adfs.js; writes to HardDisc4 are refused)
@@ -15,6 +16,7 @@
 
 import { cmos } from '../cmos.js';
 import { vfs } from '../vfs.js';
+import { memory } from '../memory.js';
 import { BasicError } from '../../basic/errors.js';
 import { installADFS } from './adfs.js';
 
@@ -22,9 +24,11 @@ const u32 = (x) => x >>> 0;
 
 /** Emulated machine details the programs can see (tests may change them). */
 export const hardware = {
-  vramK: 1024,             // Risc PC with 1MB VRAM (0 = an A7000, or a Risc PC without VRAM)
-  dramK: 16 * 1024,
-  romK: 4 * 1024,
+  // the memory model's figures (os.memory); setting vramK (tests) overrides the VRAM there too
+  get vramK() { return memory.vramK; },
+  set vramK(k) { memory.vramOverrideK = k == null ? null : +k; },
+  get dramK() { return memory.dramK; },
+  get romK() { return memory.romK; },
   pageSize: 4096,
   joystickCalibration: null,
 };
@@ -92,6 +96,13 @@ export function installHardware(m, proc = {}) {
     if (reason === 6) { r[1] = 0; r[2] = 0; return; }       // physical memory table: none
     if (reason === 7) { r[1] = 0; r[2] = 0; return; }
     r[1] = 0; r[2] = hardware.pageSize;
+  });
+
+  // ---------------------------------------------------------------- OS_ReadSysInfo 0 (configured screen size)
+  const osReadSysInfo = prev(0x58);
+  S('OS_ReadSysInfo', (r, mm, ctx) => {
+    if (r[0] === 0) { r[0] = memory.screen().k * 1024; return undefined; }
+    return osReadSysInfo?.(r, mm, ctx);
   });
 
   // ---------------------------------------------------------------- OS_Reset
