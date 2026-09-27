@@ -330,7 +330,8 @@ export class WindowDisplay {
   // ------------------------------------------------------------------ input
   _click(ev) {
     const proc = this.proc, win = this.window;
-    if (ev.button === 'menu' && !proc.menuButton) { proc.menuClick(ev); return true; }
+    // (in Menu button mode Shift-Menu still opens the window menu, so the mode can be turned off again)
+    if (ev.button === 'menu' && (!proc.menuButton || ev.shift)) { proc.menuClick(ev); return true; }
     // a click in a window without the input focus gives it the focus (and is not passed to the program)
     if (!win.hasFocus) wimp.setCaret(win);
     return true;

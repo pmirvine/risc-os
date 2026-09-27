@@ -290,7 +290,7 @@ docs/ASSETS.md §5).
   kept drawing, its listeners and AudioContext stayed alive after Quit). Now it has braces and returns nothing.
 
 ## BASIC programs in windows (!GraphTask phase 1: runner core) — changes in shared code
-**Status:** done (the !GraphTask application, its commands and the `$.Docs` guide follow in phase 2/3).
+**Status:** done (the !GraphTask application, its commands and the `$.Docs` guide: next section).
 * `src/core/basicwimp/runner.js`: `BasicProcess` is now the controller for a program in either display: new
   `startBasicWindow(opts)` (docs/CORE_API.md section 12) and `*BASIC -window [<file>]` (`parseBasicArgs` returns
   `window`; `index.js` dispatches it from anywhere, task windows too). `takeScreen` / `releaseScreen` / `scr` are gone
@@ -314,3 +314,18 @@ docs/ASSETS.md §5).
   window and becomes an ordinary task, its VDU back to the desktop mode).
 * `src/core/basichost.js`: `machine.waitVsync` = the 50Hz clock. `src/core/commands.js`: `*BASIC` syntax lists `-window`.
 * Tests: `tests/basic/scheduler.test.mjs` (node), `tests/bw/bw-window.mjs` (Playwright, in `node --test tests/bw`).
+
+## !GraphTask, the application (phases 2 and 3) — changes in shared code
+**Status:** done. The application is `src/apps/GraphTask` (docs/apps/GraphTask.md); shared code touched:
+* `src/core/basicwimp/runner.js`: `*BASIC -window` goes through `os.hooks.basicWindow(o)` when set (!GraphTask's
+  `boot()` sets it), so its windows have !GraphTask's menu; otherwise `startBasicWindow` as before.
+* `src/core/basicwimp/display.js`: in Menu button mode, Shift-Menu still calls the window menu hook (the mode could not
+  be turned off from the window before).
+* `src/core/switcher.js`: the Task Manager's icon bar menu has "Graphics task window" after "Task window"
+  (`*GraphTask`; shaded if nothing registers that command). Scripts that pick Task Manager items by index after
+  "Task window" (Desktop boot, Exit, Shutdown) move down one.
+* `src/apps/JsEdit/editor.js`: Run on a BASIC listing (`isBasic`) saves it and runs `*GraphTask <file>` (it used to
+  say only JavaScript could be run); the Run menu item is no longer shaded for BASIC.
+* Demos: `src/basic/demos/ceefax.bas`, `ballpit.bas` (index.json, `tests/basic/demos.test.mjs` plans; the Filer count
+  in `tests/bw/bw-basicdemos.mjs` is now 30). Disc: `tools/disc-graphtask.mjs` (in `tools/build.mjs`).
+* Tests: `tests/bw/bw-graphtask.mjs` (in `node --test tests/bw`).

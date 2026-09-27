@@ -25,6 +25,7 @@ export default [
   './Flasher/app.js',
   './Flasher/helpapp.js',
   './FontPrint/app.js',
+  './GraphTask/app.js',
   './Help/app.js',
   './Hopper/app.js',
   './HostFS/app.js',

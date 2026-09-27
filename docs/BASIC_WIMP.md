@@ -37,7 +37,9 @@ focus (click in it; that first click is not passed on); `MOUSE` is in its own OS
 hook unless Menu button mode is on. Escape stops it as full screen; errors and `*command` output appear in the window;
 at the end the window keeps its last picture, titled "(finished)". Alt-Return (or `fullScreen(true)`) runs it full
 screen and back; a program from a window that ends full screen goes back to its window. A windowed program that calls
-`Wimp_Initialise` loses its window and becomes an ordinary desktop task.
+`Wimp_Initialise` loses its window and becomes an ordinary desktop task. The application for these windows is
+!GraphTask (`$.Apps.!GraphTask`, docs/apps/GraphTask.md): its icon bar icon, window menu, Choices and `*GraphTask`;
+`*BASIC -window` hands its windows to it (`os.hooks.basicWindow`).
 
 **Time sharing** (`scheduler.js`): every `BasicProcess` machine runs under one cooperative scheduler: turns in order,
 all BASIC together at most 11 ms of each 16 ms (15 ms while a program is full screen), a speed limit per program

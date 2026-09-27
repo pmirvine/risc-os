@@ -61,7 +61,10 @@ async function readProgram(file) {
 export async function runDesktopBasic(a, ctx = {}) {
   if (a.window) {
     const load = a.mode === 'load';
-    await startBasicWindow({ file: a.file, args: a.programArgs, prompt: !a.file || load || a.mode === 'chain', run: !load, ctx });
+    const o = { file: a.file, args: a.programArgs, prompt: !a.file || load || a.mode === 'chain', run: !load, ctx };
+    // !GraphTask, when registered, owns graphics task windows (its window menu, Choices, Quit): src/apps/GraphTask
+    if (os.hooks?.basicWindow) await os.hooks.basicWindow(o);
+    else await startBasicWindow(o);
     return;
   }
   const f = await readProgram(a.file);

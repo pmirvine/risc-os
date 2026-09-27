@@ -25,3 +25,4 @@ run(d + 'disc-jstutor.mjs', '--book', 'jsapps');   // $.Manuals.JSApps (the seco
 run(d + 'disc-jsedit.mjs');      // $.Apps.!JsEdit (the programmer's editor's application directory and modes)
 run(d + 'disc-browse.mjs');      // $.Apps.!Browse (the web browser's application directory)
 run(d + 'disc-hostfs.mjs');      // $.Utilities.!HostFS (mounting folders from this computer)
+run(d + 'disc-graphtask.mjs');   // $.Apps.!GraphTask (BASIC programs in desktop windows)

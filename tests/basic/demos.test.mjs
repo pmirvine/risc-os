@@ -44,6 +44,8 @@ const PLAN = {
   'errors.bas': { ms: 3000, out: /Top-level handler: Something went wrong \(99\) at line 130/, allowErl: true },
   'wimpclock.bas': { ms: 3000, wimp: true },
   'mouse.bas': { ms: 1500, stopKey: 'q' },
+  'ceefax.bas': { ms: 2500, stopKey: 'q', text: /CEEFAX 1 100/ },
+  'ballpit.bas': { ms: 2000, stopKey: 'q' },
 };
 
 /** Screen summary: distinct pixel values on the displayed bank (sampled) and the text on it. */

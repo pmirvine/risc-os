@@ -366,7 +366,7 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * `os.filer.openDir(path, {mode:'large'|'small'|'full', sort, x, y, w, h})`, `os.filer.run(path)` (double-click semantics).
 * `os.pinboard.pin(path, x, y)`, `os.pinboard.setBackdrop(path, 'tile'|'scale'|'centre')`.
 * Hooks for other agents: `os.hooks.basic = async (argv, ctx) => …` (*BASIC), `os.hooks.taskWindow = (cmd) => …` (Ctrl-F12 /
-  *TaskWindow). If an app named `TaskWindow` is registered, Ctrl-F12 starts it.
+  *TaskWindow), `os.hooks.basicWindow = async (o) => …` (*BASIC -window: !GraphTask). If an app named `TaskWindow` is registered, Ctrl-F12 starts it.
 * Interactive help: `wimp.helpAt(sx, sy)` → help text for the thing under the pointer (menu item `help`, window
   `helprequest` event — set `ev.text` —, `icon.help`, icon bar `help`, or `win.helpText`), in !Help markup (`\S`, `\R`, `|M`).
 * Boot completion: `os.ready === true` and `wimp.on('desktopready')`.
@@ -458,7 +458,10 @@ Resolves once started (it does not wait for the program) to the process, which i
 | `p.result`, `p.errors` | how it ended; the last errors seen (`{message, line, trapped}`) |
 
 `processes` is the Set of live `BasicProcess`es (also `window.bwProcesses`). `*BASIC -window [<file>] [args]` does
-`startBasicWindow` from the command line (a file runs, then the window stays; no file = the prompt).
+`startBasicWindow` from the command line (a file runs, then the window stays; no file = the prompt), or
+`os.hooks.basicWindow({file, args, prompt, run, ctx})` when that is set: !GraphTask (`src/apps/GraphTask`,
+docs/apps/GraphTask.md) sets it at boot, so those windows get its menu; `*GraphTask [<file> [<args>]]` is the
+application's own command. In Menu button mode Shift-Menu still goes to `onMenu` (so the mode can be turned off).
 In the window: the work area is the program's screen at the mode's natural desktop size (MODE 12 640×512, MODE 7
 640×500, MODE 28 640×480) × the scale; MODE changes resize the window unless the user made it smaller. MODE, POS,
 VPOS, POINT, OS_ReadModeVariable / VduVariables are the program's own screen. Keys and INKEY(-n) reach it only while
