@@ -248,15 +248,19 @@ export class Hud {
     }
   }
 
-  // The scanner. Invasion: the whole 64 x 64 world with the launch pad in
-  // the middle. Lander+ (256 tiles): the 64 x 64 tiles around the ship.
+  // The scanner: the 64 x 64 tiles round the ship, which stays in the
+  // middle across and 20 tiles up from the bottom, so the part of the
+  // world in view (ahead of it, up the scanner) fits above it - as
+  // Defender's scanner keeps its ship in the middle. In Invasion the
+  // world is 64 tiles across, so that is the whole of it, scrolling
+  // round as you fly; in Lander+ it is a part of the 256-tile world.
   drawScanner(s, world, x, y, u, options) {
     const t = world.terrain, P = world.period, N = 64;
     const p = world.player;
     const whole = P <= N;
     // tile (ox, oz) is at the scanner's bottom-left corner
-    const ox = whole ? 4 - N / 2 : Math.floor(p.x) - N / 2;
-    const oz = whole ? 4 - N / 2 : Math.floor(p.z) - N / 2;
+    const ox = Math.floor(p.x) - N / 2;
+    const oz = Math.floor(p.z) - 20;
     this.baseColours(t, ox, oz, whole);
 
     // a frame
@@ -269,40 +273,49 @@ export class Hud {
       const sy = y + (N - 1 - j) * u;        // north (+z) is up
       for (let i = 0; i < N; i++) {
         const tx = ((ox + i) % P + P) % P;
-        let c = base[j * N + i];
+        // the whole world's colours are kept from (0, 0); a part's from
+        // the scanner's corner
+        let c = whole ? base[tz * N + tx] : base[j * N + i];
         const v = inf ? inf[tz * P + tx] : 0;
         if (v) c = mix(c, v > 170 ? rgb(170, 34, 17) : rgb(153, 85, 34), 0.45 + v / 470);
         s.fillRect(x + i * u, sy, u, u, c);
       }
     }
 
-    // where a thing at (wx, wz) goes, or null if off the scanner
-    const at = (wx, wz) => {
-      const i = Math.floor(((wx - ox) % P + P) % P);
-      const j = Math.floor(((wz - oz) % P + P) % P);
-      if (i >= N || j >= N) return null;
+    // where a thing (dx, dz) tiles from the ship goes, or null if off the
+    // scanner; and where a thing at (wx, wz) goes. The scanner shows from
+    // 20 tiles behind the ship to 44 ahead, so distances are wrapped into
+    // that range (in Invasion's 64-tile world, 40 ahead is 24 behind).
+    const atRel = (dx, dz) => {
+      const i = Math.floor(p.x + dx) - ox, j = Math.floor(p.z + dz) - oz;
+      if (i < 0 || j < 0 || i >= N || j >= N) return null;
       return [x + i * u, y + (N - 1 - j) * u];
     };
+    const at = (wx, wz) => atRel(t.delta(p.x, wx),
+      ((t.delta(p.z, wz) + 20) % P + P) % P - 20);
 
     // the part of the world in view, outlined: Render looks along +z from
     // an eye 20 tiles behind the camera, and sees halfW * D either side at
-    // distance D, from frontD to backD (a wedge, wider at the back)
+    // distance D, from frontD to backD (a wedge, wider at the back). It is
+    // clipped at the scanner's edges rather than wrapped round.
     const r = options.renderer, cam = world.camera;
     if (r && cam && r.backD && r.halfW) {
       const lineC = rgb(150, 160, 200);
       const edge = (x0, z0, x1, z1) => {
         const n = Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(z1 - z0)));
         for (let k = 0; k <= n; k++) {
-          const q = at(x0 + ((x1 - x0) * k) / n, z0 + ((z1 - z0) * k) / n);
+          const q = atRel(x0 + ((x1 - x0) * k) / n, z0 + ((z1 - z0) * k) / n);
           if (q) s.shade(q[0], q[1], u, u, lineC, 0.6);
         }
       };
-      const zf = cam.z - 20 + r.frontD, zb = cam.z - 20 + r.backD;
-      const wf = r.halfW * r.frontD, wb = Math.min(N / 2, r.halfW * r.backD);
-      edge(cam.x - wf, zf, cam.x + wf, zf);
-      edge(cam.x - wb, zb, cam.x + wb, zb);
-      edge(cam.x - wf, zf, cam.x - wb, zb);
-      edge(cam.x + wf, zf, cam.x + wb, zb);
+      // the eye, relative to the ship (so nothing wraps round)
+      const ez = t.delta(p.z, cam.z) - 20, ex = t.delta(p.x, cam.x);
+      const zf = ez + r.frontD, zb = ez + r.backD;
+      const wf = r.halfW * r.frontD, wb = r.halfW * r.backD;
+      edge(ex - wf, zf, ex + wf, zf);
+      edge(ex - wb, zb, ex + wb, zb);
+      edge(ex - wf, zf, ex - wb, zb);
+      edge(ex + wf, zf, ex + wb, zb);
     }
 
     // the aliens
@@ -328,6 +341,7 @@ export class Hud {
 
   // The colour of each tile without the virus (cached: land doesn't move).
   baseColours(t, ox, oz, whole) {
+    if (whole) ox = oz = 0;
     const key = whole ? 0 : oz * 65536 + ox;
     if (this.scanTerrain === t && this.scanOrigin === key) return;
     this.scanTerrain = t;
