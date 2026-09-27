@@ -112,8 +112,9 @@ flat triangles per tile (diagonal back-right to front-left, as the original), no
   distance, black shadows.
 * **Enhanced**: `VIEW_ROWS` near 10 / medium 19 / far 33 / huge 65 plus 6 front rows; each row is exactly as wide
   as the frustum at its depth (`rowRange`), so there are no ragged edges; brightness spread over more rows;
-  24-bit colour with fractional levels; fog towards the horizon colour; a sky gradient that fades to black as
-  the camera climbs (`space()`); infection blends tiles towards red; mutated trees recoloured (`mutate`).
+  24-bit colour with fractional levels; fog towards the horizon colour; a sky gradient, its haze brightest where
+  the land's far edge meets the sky (sea level at `backD`, below the eye line), fading to black as the camera
+  climbs (`space()`); infection blends tiles towards red; mutated trees recoloured (`mutate`).
 * Stars (`addStars`), as in Zarch: 3D points 14-70 tiles up, `STAR_COUNT` in a `STAR_CELL`-square block repeated
   across the world, seen out to `STAR_FAR` tiles whatever the land's view distance, drawn in three sizes (a 2u x 1u dash near,
   a 1u dot further, a half-unit speck far, nudged by each star's own `mag`) and dimmer with distance, through the
