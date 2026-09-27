@@ -19,7 +19,7 @@
 
 import { SYSTEM_FONT } from './font8x8.js';
 import {
-  modeInfo, modeVariable, selectableMode, MAX_MODE,
+  modeInfo, modeVariable, selectableMode, selectorModeInfo, MAX_MODE,
   Flag_NonGraphic, Flag_Teletext, Flag_GapMode, Flag_BBCGapMode, Flag_DoubleVertical,
 } from './vdu-modes.js';
 import { defaultPalette } from './vdu-palette.js';
@@ -100,7 +100,11 @@ export class VDU {
     this.vdu2 = false;         // printer enabled
     this.pageMode = false;
     this.flashMark = 25; this.flashSpace = 25; // OS_Byte 9/10, in 1/50 s
-    this._flashT0 = nowMs(); this._ttxT0 = nowMs(); this._cursorT0 = nowMs();
+    // the clock for flashing colours, teletext flashing and the cursor (ms); a host can supply its own
+    // (e.g. one that stops while the program's window is suspended)
+    this.clock = opts.clock || nowMs;
+    this._flashT0 = this.clock(); this._ttxT0 = this.clock(); this._cursorT0 = this.clock();
+    this.spriteHost = null;    // PLOT &E8-&EF and VDU 23,27 (set by BasicMachine: the system sprite area)
     this.q = new Uint8Array(9); this.qCode = 0; this.qNeed = 0; this.qPos = 0;
     this.pal1 = new Uint32Array(256); this.pal2 = new Uint32Array(256);
     this.border = [0, 0]; this.pointerPal = [[0, 0], [0, 0], [0, 0], [0, 0]];
@@ -116,14 +120,22 @@ export class VDU {
   // =============================================================================================
   // Mode change (ModeChangeSub in vdudriver, SwitchOutputToSprite in vdugrafl)
 
+  /** n = mode number (0..255, +128 = shadow) or a mode selector {x, y, log2bpp, xEig?, yEig?} */
   _setMode(n) {
-    const sel = selectableMode(n);
-    if (sel < 0) {
-      this.lastError = { errnum: 25, errmess: 'Bad MODE' };
-      if (this.onError) this.onError(this.lastError);
-      return false;
+    let m, sel;
+    if (n && typeof n === 'object') {   // mode selector: a numbered mode if one is the same screen
+      m = selectorModeInfo(n);
+      if (m.num >= 0) return this._setMode(m.num);
+      sel = m.selector;
+    } else {
+      sel = selectableMode(n);
+      if (sel < 0) {
+        this.lastError = { errnum: 25, errmess: 'Bad MODE' };
+        if (this.onError) this.onError(this.lastError);
+        return false;
+      }
+      m = modeInfo(sel);
     }
-    const m = modeInfo(sel);
     this.m = m; this.modeNo = sel;
     this.W = m.xWindLimit + 1; this.H = m.yWindLimit + 1;
     this.xWL = m.xWindLimit; this.yWL = m.yWindLimit;
@@ -144,7 +156,7 @@ export class VDU {
     // screen memory. As ModeChangeSub, a mode change clears only the bank it selects: the other banks keep
     // their contents when the layout is unchanged. MODE n+128 (shadow) selects bank 2 (ConvertBankToAddress).
     const size = this.W * this.H;
-    const shadow = n >= 128 && n < 256;
+    const shadow = typeof n === 'number' && n >= 128 && n < 256;
     this.maxBanks = Math.max(MIN_BANKS, Math.floor(this.screenMemory / m.screenSize));
     const key = `${size}/${m.screenSize}/${this.maxBanks}`;
     const linear = this.linearScreen && !this.teletext && this.bpp === 8 && this.bpc === 8 && m.screenSize === size;
@@ -163,7 +175,7 @@ export class VDU {
       this.ttxMap = new Uint8Array(25 * 40).fill(32);
       this.ttxBottom = new Uint8Array(25); this.ttxDoubles = new Uint8Array(25);
       this.ttxState = new Int32Array(25 * 41).fill(7);
-      this._ttxT0 = nowMs();
+      this._ttxT0 = this.clock();
     }
     // constant plot tables for this mode
     const nt = 8 << this.ppwShift;
@@ -331,9 +343,14 @@ export class VDU {
   _palInit() {
     if (this.teletext) { defaultPalette(4, this.pal1, this.pal2, false); }
     else defaultPalette(this.m.palIndex, this.pal1, this.pal2, this.bbcGap);
+    if (this.m.selector?.grey) {       // G16, G256 ... modes: a grey ramp
+      const n = 1 << this.bpp;
+      for (let i = 0; i < 256; i++) { const g = Math.round((i % n) * 255 / (n - 1)); this.pal1[i] = this.pal2[i] = (g << 16) | (g << 8) | g; }
+    }
     this.border = [0, 0];
-    this._palDirty = true; this._dirtyAll();
+    this._palChanged();
   }
+  _palChanged() { this._palDirty = true; this._near = null; this._dirtyAll(); }
 
   _setNormalColour(l, rgb, states) {
     const set = (i, c) => { if (states & 1) this.pal1[i] = c; if (states & 2) this.pal2[i] = c; };
@@ -349,7 +366,7 @@ export class VDU {
         set(i, (r << 16) | (g << 8) | b);
       }
     } else set(l & this.nColour & 255, rgb);
-    this._palDirty = true; this._dirtyAll();
+    this._palChanged();
   }
 
   _setBorder(rgb) {
@@ -357,7 +374,7 @@ export class VDU {
     if (this.bbcGap) { // colour 2 = border, colour 3 = inverse (BorderColour)
       this.pal1[2] = this.pal2[2] = rgb;
       this.pal1[3] = this.pal2[3] = rgb ^ 0xFFFFFF;
-      this._palDirty = true; this._dirtyAll();
+      this._palChanged();
     }
   }
 
@@ -807,7 +824,7 @@ export class VDU {
   /** OS_WriteC: send one byte to the VDU drivers */
   writeC(b) {
     b &= 255;
-    this._cursorT0 = nowMs(); // cursor forced to its "mark" state after output
+    this._cursorT0 = this.clock(); // cursor forced to its "mark" state after output
     if (this.qNeed > 0) {
       this.q[this.qPos++] = b;
       if (--this.qNeed > 0) return;
@@ -943,7 +960,8 @@ export class VDU {
       case 23: this.blockCopyMove(k); break;                         // 184
       case 24: this.ellipseOutline(); break;                         // 192
       case 25: this.ellipseFill(); break;                            // 200
-      default: break;                                                // 208-255: fonts/sprites/reserved
+      case 29: if (this.spriteHost) this.spriteHost.spritePlot(k, this); break; // 232 SpritePlot
+      default: break;                                                // 208-231, 240-255: unassigned
     }
     // CTidy: NewPt -> ICursor -> OldCs -> OlderCs
     this.olderX = this.oldX; this.olderY = this.oldY;
@@ -988,8 +1006,8 @@ export class VDU {
       case 6: for (let i = 0; i < 8; i++) this.dotStyle[i] = q[8 - i]; break;
       case 7: this._scroll012(q[1], q[2], q[3]); break;
       case 8: this._vdu23_8(); break;
-      case 9: this.flashMark = q[1]; this._flashT0 = nowMs(); break;
-      case 10: this.flashSpace = q[1]; this._flashT0 = nowMs(); break;
+      case 9: this.flashMark = q[1]; this._flashT0 = this.clock(); break;
+      case 10: this.flashSpace = q[1]; this._flashT0 = this.clock(); break;
       case 11: this._defaultEcfPattern(); break;
       case 12: case 13: case 14: case 15: this._simpleEcf(c - 12); break;
       case 16:
@@ -997,6 +1015,7 @@ export class VDU {
         if (!(this.cursorFlags & 1)) this._rcrlf();
         break;
       case 17: this._vdu23_17(); break;
+      case 27: if (this.spriteHost) this.spriteHost.vdu23_27(q[1], q[2], this); break; // SChoose/SGet sprite STR$(n)
       default: break; // 18..31: UKVDU23V - ignored
     }
   }
@@ -1096,11 +1115,14 @@ export class VDU {
   // =============================================================================================
   // Queries
 
+  /** the current mode: its number, or its selector {x, y, log2bpp, xEig, yEig} if no numbered mode matches */
   get mode() { return this.modeNo; }
+  /** select a mode by number or selector (as VDU 22 / OS_ScreenMode 0); false (and onError) if bad */
+  selectMode(n) { this.qNeed = 0; return this._setMode(n); }
 
-  /** OS_ReadModeVariable (mode defaults to current); undefined for invalid mode/variable */
+  /** OS_ReadModeVariable (mode defaults to current, or a number or selector); undefined for invalid mode/variable */
   modeVar(varNo, mode) {
-    const m = (mode === undefined || mode === -1) ? this.m : modeInfo(mode);
+    const m = (mode === undefined || mode === -1) ? this.m : (mode && typeof mode === 'object') ? selectorModeInfo(mode) : modeInfo(mode);
     if (!m) return undefined;
     return modeVariable(m, varNo);
   }
@@ -1228,7 +1250,7 @@ export class VDU {
     let ch = 0;
     if (this.teletext) ch = ttxSwapOut(this.ttxMap[row * 40 + col]);
     else ch = this._glyphs().get(this._glyphKey(this._cellBits(col, row, this.textBg, CELL8), 0)) ?? 0;
-    return { char: ch, mode: this.modeNo };
+    return { char: ch, mode: this.mode };
   }
 
   /** screen scrape: one string per text row, recognising glyphs (unrecognised cells -> '?') */
@@ -1319,7 +1341,7 @@ export class VDU {
   setFlashPeriods(mark, space) {
     if (mark !== undefined) this.flashMark = mark & 255;
     if (space !== undefined) this.flashSpace = space & 255;
-    this._flashT0 = nowMs();
+    this._flashT0 = this.clock();
   }
 
   /** OS_Byte 112: select VDU driver screen bank (1..n, 0 = default) */
@@ -1483,9 +1505,32 @@ export class VDU {
     this._palDirty = false;
   }
 
-  /** Push the framebuffer to the canvas (cheap when nothing changed). Draws the text cursor. */
-  render() {
-    const now = nowMs();
+  /** Pixel value in the current palette nearest to rgb (0xRRGGBB) (colour translation for sprites, fonts) */
+  nearest(rgb) {
+    const r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255;
+    this._near ??= new Map();
+    const hit = this._near.get(rgb);
+    if (hit !== undefined) return hit;
+    let best = 0, bd = Infinity;
+    const n = this.nColour >= 63 ? 256 : this.nColour + 1;
+    for (let i = 0; i < n; i++) {
+      const c = this.pal1[i];
+      const dr = ((c >> 16) & 255) - r, dg = ((c >> 8) & 255) - g, db = (c & 255) - b;
+      const d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
+      if (d < bd) { bd = d; best = i; if (!d) break; }
+    }
+    this._near.set(rgb, best);
+    return best;
+  }
+
+  /**
+   * Push the framebuffer to the canvas (cheap when nothing changed). Draws the text cursor.
+   * now: the time in ms (default this.clock()) for flashing colours, teletext flashing and the cursor;
+   * a host that wants those to follow its own timer can pass it. The canvas may be anywhere
+   * (full screen, in a window): a mode change sets its pixel size and CSS size (displayWidth x
+   * displayHeight); a host showing it at another size sets the CSS size again afterwards.
+   */
+  render(now = this.clock()) {
     if (this._palDirty) this._buildLuts();
     const fs = this._palFlashes ? this._flashState(now) : 1;
     if (fs !== this._shown.flash) { this._shown.flash = fs; this._dirtyAll(); }

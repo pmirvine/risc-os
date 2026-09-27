@@ -17,11 +17,11 @@ import { VDU } from '../../basic/vdu.js';
 export class DesktopVDU extends VDU {
   constructor(opts = {}) {
     super({ ...opts, mode: 28 });
-    this.desktop = { width: opts.width, height: opts.height };
+    this.desktop = { width: opts.width, height: opts.height, desktop: true };
     this._setMode(this.desktop);
   }
   _setMode(n) {
-    if (!(n && typeof n === 'object')) return super._setMode(n);
+    if (!(n && typeof n === 'object' && n.desktop)) return super._setMode(n);   // a number, or the program's own mode selector
     // start from MODE 28 (640x480, 256 colours, eig 1,1) and resize it
     super._setMode(28);
     const W = Math.max(8, n.width | 0), H = Math.max(8, n.height | 0);
@@ -41,28 +41,11 @@ export class DesktopVDU extends VDU {
   /** The desktop "mode" changed size (Message_ModeChange): follow it, unless the program chose its own mode. */
   resizeDesktop(width, height) {
     if (!this.isDesktopMode || (this.W === width && this.H === height)) return false;
-    this.desktop = { width, height };
+    this.desktop = { width, height, desktop: true };
     return this._setMode(this.desktop);
   }
-  get mode() { return typeof this.modeNo === 'object' ? 28 : this.modeNo; }
-  get isDesktopMode() { return typeof this.modeNo === 'object'; }
-  /** Pixel value in the current palette nearest to rgb (0xRRGGBB). */
-  nearest(rgb) {
-    const r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, b = rgb & 255;
-    this._near ??= new Map();
-    const hit = this._near.get(rgb);
-    if (hit !== undefined && !this._palDirtyNear) return hit;
-    let best = 0, bd = Infinity;
-    const n = this.nColour >= 63 ? 256 : this.nColour + 1;
-    for (let i = 0; i < n; i++) {
-      const c = this.pal1[i];
-      const dr = ((c >> 16) & 255) - r, dg = ((c >> 8) & 255) - g, db = (c & 255) - b;
-      const d = dr * dr * 3 + dg * dg * 4 + db * db * 2;
-      if (d < bd) { bd = d; best = i; if (!d) break; }
-    }
-    this._near.set(rgb, best);
-    return best;
-  }
+  get mode() { return this.isDesktopMode ? 28 : this.modeNo; }
+  get isDesktopMode() { return !!this.modeNo?.desktop; }
 }
 
 const WIMP_RGB = [0xFFFFFF, 0xDDDDDD, 0xBBBBBB, 0x999999, 0x777777, 0x555555, 0x333333, 0x000000,

@@ -159,7 +159,7 @@ export function installCoreSwis(t) {
     r[2] = p.colour; r[3] = p.tint; r[4] = p.offScreen ? -1 : 0;
   });
   S('OS_ReadModeVariable', (r, m, ctx) => {
-    const mode = r[0] === -1 ? undefined : r[0];
+    const mode = r[0] === -1 ? undefined : m.modeArg(r[0]);
     const v = m.vdu ? m.vdu.modeVar(r[1], mode) : undefined;
     if (v === undefined) { ctx.flags |= C_FLAG; r[2] = 0; } else { ctx.flags &= ~C_FLAG; r[2] = v | 0; }
   });
@@ -178,12 +178,13 @@ export function installCoreSwis(t) {
   });
   S('OS_ReadMonotonicTime', (r, m) => { r[0] = m.monotonicTime() | 0; });
   S('OS_Plot', (r, m) => { m.plot(r[0], r[1], r[2]); });
+  S('OS_SpriteOp', (r, m) => m.sprites.swi(r));       // src/basic/sprites.js
   S('OS_ScreenMode', (r, m) => {
     if (r[0] === 0) { const mode = r[1]; if ((mode >>> 0) < 256) m.vduBytes([22, mode]); else m.setModeFromSelector(u32(mode)); }
-    else if (r[0] === 1) r[1] = m.vdu ? m.vdu.mode : 12;
+    else if (r[0] === 1) r[1] = m.modeNumber();
   });
   S('OS_CheckModeValid', (r, m, ctx) => {
-    const ok = m.vdu && m.vdu.modeVar(0, r[0]) !== undefined;
+    const ok = m.vdu && m.vdu.modeVar(0, m.modeArg(r[0])) !== undefined;
     if (!ok) { ctx.flags |= C_FLAG; r[0] = -1; } else ctx.flags &= ~C_FLAG;
   });
   S('OS_ReadSysInfo', (r, m) => {

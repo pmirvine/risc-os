@@ -123,3 +123,77 @@ export function selectableMode(n) {
   if (n === 23) return [0, 8, 12, 15][m.log2bpp] ?? 0;
   return n;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Mode selectors (RISC OS 3.5+): a screen described by its size and depth rather than a number,
+// from OS_ScreenMode 0 with a selector block, MODE "X640 Y480 C256" or *WimpMode. A selector is
+// {x, y, log2bpp, xEig?, yEig?, grey?, exact?}. Sizes are clamped to 8..4096 pixels (1.. if exact; at most 16M pixels);
+// deeper colour depths (C32K, C16M) are substituted by 256 colours, as the VDU stores one byte
+// per pixel. Eigen factors default to what RISC OS gives such modes: 1 (2 OS units per pixel),
+// 2 for low resolutions (a width of 400 pixels or less, a height of 300 or less), 3 below 200.
+
+const SEL_TEMPLATE = [25, 26, 27, 28];     // numbered mode supplying palette/ECF data by log2bpp
+
+/** Default eigen factor for a width or height in pixels. */
+export function defaultEig(n) { return n <= 200 ? 3 : n <= 400 ? 2 : 1; }
+const defaultYEig = (n) => (n <= 300 ? 2 : 1);
+
+/** Normalise a selector: clamp, substitute depths, fill in eigen factors. */
+export function normaliseSelector(sel) {
+  const min = sel.exact ? 1 : 8;       // exact: a sprite's size (output switched to a sprite)
+  let x = Math.max(min, Math.min(4096, Math.round(+sel.x || 640)));
+  let y = Math.max(min, Math.min(4096, Math.round(+sel.y || 480)));
+  if (x * y > 16 << 20) y = Math.max(min, Math.floor((16 << 20) / x));
+  const log2bpp = Math.max(0, Math.min(3, (sel.log2bpp ?? 3) | 0));
+  const xEig = sel.xEig ?? defaultEig(x), yEig = sel.yEig ?? defaultYEig(y);
+  return { x, y, log2bpp, xEig: Math.max(0, Math.min(3, xEig | 0)), yEig: Math.max(0, Math.min(3, yEig | 0)), grey: !!sel.grey };
+}
+
+/**
+ * Mode descriptor (as modeInfo) for a selector. If a numbered mode is the same screen (size,
+ * depth and eigen factors; not a gap or teletext mode) its number is in `num`, else num = -1.
+ */
+export function selectorModeInfo(sel) {
+  const s = normaliseSelector(sel);
+  if (!s.grey) {
+    for (let n = 0; n < NUM_MODES; n++) {
+      const m = modeInfo(n);
+      if (m.flags || n === 23) continue;
+      if (m.xWindLimit + 1 === s.x && m.yWindLimit + 1 === s.y && m.log2bpp === s.log2bpp && m.xEig === s.xEig && m.yEig === s.yEig) return m;
+    }
+  }
+  const t = modeInfo(SEL_TEMPLATE[s.log2bpp]);
+  const lineLength = Math.ceil((s.x << s.log2bpp) / 32) * 4;
+  return {
+    ...t, num: -1, selector: s,
+    screenSize: lineLength * s.y, lineLength, xWindLimit: s.x - 1, yWindLimit: s.y - 1, yShftFactor: 0,
+    xEig: s.xEig, yEig: s.yEig, scrRCol: Math.max(1, s.x >> 3) - 1, scrBRow: Math.max(1, s.y >> 3) - 1, flags: 0,
+  };
+}
+
+/**
+ * Parse a mode string (MODE "X640 Y480 C256", *WimpMode, *ScreenMode): X<width> Y<height>
+ * C<colours> (2, 4, 16, 64, 256, 4K, 32K, 64K, 16M) or G<greys> (2, 4, 16, 256), EX<n> EY<n>,
+ * F<frame rate> (ignored). Also a plain mode number. Returns a selector, a number, or null.
+ */
+export function parseModeString(str) {
+  const s = String(str).trim();
+  if (/^\d+$/.test(s)) return +s;
+  const sel = { x: 640, y: 480, log2bpp: 3 };
+  let any = false;
+  for (const tok of s.toUpperCase().split(/[\s,]+/).filter(Boolean)) {
+    let mm;
+    if ((mm = /^X(\d+)$/.exec(tok))) sel.x = +mm[1];
+    else if ((mm = /^Y(\d+)$/.exec(tok))) sel.y = +mm[1];
+    else if ((mm = /^([CG])(\d+)([KMT]?)$/.exec(tok))) {
+      const n = +mm[2] * (mm[3] === 'K' || mm[3] === 'T' ? 1024 : mm[3] === 'M' ? 1 << 20 : 1);
+      sel.log2bpp = n <= 2 ? 0 : n <= 4 ? 1 : n <= 16 ? 2 : 3;
+      if (mm[1] === 'G') sel.grey = true;
+    } else if ((mm = /^EX(\d)$/.exec(tok))) sel.xEig = +mm[1];
+    else if ((mm = /^EY(\d)$/.exec(tok))) sel.yEig = +mm[1];
+    else if (/^F\d+$/.test(tok)) { /* frame rate */ }
+    else return null;
+    any = true;
+  }
+  return any ? sel : null;
+}

@@ -8,6 +8,8 @@
 //     BASIC Wimp applications run unmodified.
 //   * *BASIC typed at the F12 command line keeps the core's interactive full-screen BASIC.
 //   * Inside a task window (ctx.tw set by the TaskWindow shell) BASIC runs in the task window.
+//   * *BASIC -window [<file>] runs the program (or the > prompt) in a desktop window of its own,
+//     multitasking (runner.js startBasicWindow).
 //
 // installBasicWimp() replaces os.hooks.basic with the dispatcher below. See docs/BASIC_WIMP.md.
 
@@ -21,6 +23,11 @@ export function installBasicWimp() {
   os.hooks = os.hooks ?? {};
   const previous = os.hooks.basic;            // core basichost (interactive full screen BASIC)
   os.hooks.basic = async (argv, ctx = {}) => {
+    // 0. *BASIC -window [<file>]: in a desktop window of its own (from anywhere, task windows too)
+    if (argv.some((x) => /^-window$/i.test(x))) {
+      const { parseBasicArgs, runDesktopBasic } = await import('./runner.js');
+      return runDesktopBasic(parseBasicArgs(argv), ctx);
+    }
     // 1. inside a task window: the task window's shell runs BASIC in text mode
     if (ctx.tw?.runBasic) return ctx.tw.runBasic(argv, ctx);
     // 2. from the F12 command line, or interactive BASIC: the core full-screen BASIC
@@ -47,5 +54,5 @@ export function installBasicWimp() {
   });
   // BASIC64 (the !Run files of 3.5+ apps use "BASIC64 -quit <file>"): same interpreter here
   const cmd = os.cli.find('basic');
-  if (cmd && !os.cli.commands.has('basic64')) os.cli.register('BASIC64', { ...cmd, name: 'BASIC64', syntax: 'Syntax: *BASIC64 [-help] [-chain|-quit|-load] [<filename>]' });
+  if (cmd && !os.cli.commands.has('basic64')) os.cli.register('BASIC64', { ...cmd, name: 'BASIC64', syntax: 'Syntax: *BASIC64 [-help] [-window] [-chain|-quit|-load] [<filename>]' });
 }
