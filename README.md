@@ -7,7 +7,7 @@ window templates, Messages files, help text, sample files) extracted from the RI
 
 Plain modern JavaScript ES modules. There is no bundler, no framework and no runtime dependency.
 
-This is an unashamedly retro experience from when I owned a RiscPC with a StrongARM CPU. For a modern twist on the Acorn experience see [ACORN-20206](https://github.com/zolbatar/Acorn-2026)
+This is an unashamedly retro experience from when I owned a RiscPC with a StrongARM CPU. For a modern twist on the Acorn experience see [ACORN-2026](https://github.com/zolbatar/Acorn-2026)
 
 ## Screenshots
 
