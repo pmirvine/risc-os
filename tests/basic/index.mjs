@@ -12,3 +12,5 @@ import './tiera.test.mjs';
 import './demos.test.mjs';
 import './arm.test.mjs';
 import './lander.test.mjs';
+import './scheduler.test.mjs';
+import './sprites.test.mjs';

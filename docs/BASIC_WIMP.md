@@ -13,6 +13,7 @@ RISC OS 3.71: plain programs single-tasking and full screen, Wimp programs as mu
 | a task window (`ctx.tw` set by the TaskWindow shell) | text mode in the task window (`src/apps/TaskWindow/shell.js`) |
 | the F12 command line, interactive `*BASIC`, `-load` | the core's full-screen BASIC (`src/core/basichost.js`) |
 | the desktop (Filer double-click, `*Run`, an app's `!Run`) | `runner.js`: a `BasicProcess` |
+| `*BASIC -window [<file>]` (from anywhere), `startBasicWindow()` | `runner.js`: a `BasicProcess` in a desktop window of its own |
 
 A `BasicProcess` starts the program in the background on its own `BasicMachine` + `DesktopVDU` (a VDU in a 256-colour
 mode exactly the desktop's size, 1 px = 2 OS units, so screen coordinates are the real ones). Then:
@@ -20,9 +21,33 @@ mode exactly the desktop's size, 1 px = 2 OS units, so screen coordinates are th
 * **it writes to the screen or waits for a key before calling `Wimp_Initialise`** → single tasking: the screen is taken
   (`os.cli.acquireScreen`), the VDU is shown scaled to fill it (its own `MODE`s included), keys/mouse go to the program.
   When it ends: VDU 4, "Press SPACE or click mouse to continue", then back to the desktop.
+  Several programs may want the screen at once (one `*Run`s another, or one is started while another has it): the
+  newest is shown and gets the keys; the others get the screen back in turn when it lets go (`display.js`; before,
+  the second program ran invisibly). **Alt-Return** moves the running program into a window and back.
 * **it calls `Wimp_Initialise`** → a desktop task (`bridge.js`), listed in the Task Manager with its `*WimpSlot` size.
   Anything it prints outside redraws (e.g. an untrapped error) is collected and shown in the *Command window when it
   ends; `ERROR EXT` / untrapped errors are reported with "Message from <task>".
+
+**In a window** (`startBasicWindow`, docs/CORE_API.md section 12): the same `BasicProcess` with a `WindowDisplay`
+(`display.js`): its own task (Task Manager) and window, whose work area is the program's screen at the mode's natural
+desktop size (pixels × eigen / 2: MODE 12 640×512, MODE 7 640×500, MODE 28 640×480) × the scale (1, 2 or fit). The
+program starts in MODE 12 (or `mode`), and its `MODE`, palette, windows and banks are its own; the window follows MODE
+changes unless the user has made it smaller. Keys (and `INKEY(-n)`) reach it only while its window has the input
+focus (click in it; that first click is not passed on); `MOUSE` is in its own OS units; Menu goes to the window menu
+hook unless Menu button mode is on. Escape stops it as full screen; errors and `*command` output appear in the window;
+at the end the window keeps its last picture, titled "(finished)". Alt-Return (or `fullScreen(true)`) runs it full
+screen and back; a program from a window that ends full screen goes back to its window. A windowed program that calls
+`Wimp_Initialise` loses its window and becomes an ordinary desktop task. The application for these windows is
+!GraphTask (`$.Apps.!GraphTask`, docs/apps/GraphTask.md): its icon bar icon, window menu, Choices and `*GraphTask`;
+`*BASIC -window` hands its windows to it (`os.hooks.basicWindow`).
+
+**Time sharing** (`scheduler.js`): every `BasicProcess` machine runs under one cooperative scheduler: turns in order,
+all BASIC together at most 11 ms of each 16 ms (15 ms while a program is full screen), a speed limit per program
+(ARM2 30,000, ARM3 130,000, ARM610 190,000, StrongARM 2,150,000 micro-ops/s, or Unlimited; figures from CLOCKSP,
+see the comment in `scheduler.js`), Suspend / Resume. Windowed programs default to StrongARM, double-clicked (full
+screen) ones to Unlimited as before. `WAIT` and `*FX 19` wait for a steady 50Hz clock (`vsync`) in every desktop
+BASIC program, full screen too (and `*BASIC` from F12): they used to follow the display's refresh rate, so programs
+ran 20% fast on a 60Hz display and 2.4× on a 120Hz one, and stopped in a background tab.
 
 `*WimpSlot -min nK` (in `!Run`) sets the next program's slot: HIMEM = &8000 + slot rounded up to 32K pages; `END=` also
 grows in 32K pages (as on a 4MB A5000, which is what makes e.g. !Patience's `END=END+10000` work). `Wimp_SlotSize` can grow
@@ -59,7 +84,9 @@ redraw loop with VDU graphics, Wimp_SetColour, menu with Adjust-keeps-open, Repo
 | file | contents |
 |---|---|
 | `index.js` | `installBasicWimp()`: the `os.hooks.basic` dispatcher, `*BASIC64`, the `*WimpSlot` hook |
-| `runner.js` | `parseBasicArgs`, `runDesktopBasic`, `BasicProcess` (single tasking screen, Press SPACE, errors, END= pages) |
+| `runner.js` | `parseBasicArgs`, `runDesktopBasic`, `startBasicWindow`, `BasicProcess` (the program and its controls: displays, Press SPACE, errors, END= pages, suspend/kill/restart/speed/scale) |
+| `display.js` | `FullScreenDisplay` (the screen stack), `WindowDisplay` (window, canvas, scale, focus-routed keys, mouse mapping) |
+| `scheduler.js` | `Scheduler` / `Job` (fair turns, speed limits, suspend), `SPEEDS`, `Vsync` (50Hz WAIT); no DOM, node tests in `tests/basic/scheduler.test.mjs` |
 | `bridge.js` | `WimpBridge` (one per task) and `installWimpSwis` — the Wimp_* SWIs |
 | `screen.js` | `DesktopVDU`, `WindowCanvas` (per-window backing store + canvas), rectangle lists |
 | `templates.js` | Templates files from the VFS: Wimp_OpenTemplate / LoadTemplate (wildcards, size enquiry, fonts) |

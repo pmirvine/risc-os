@@ -53,8 +53,9 @@ let running = false;
 
 export async function runBasic(argv = [], ctx = {}) {
   if (running) throw Object.assign(new Error('BASIC is already running'), { riscos: true });
-  const [{ BasicMachine }, { VDU }, keymap, soundMod] = await Promise.all([
+  const [{ BasicMachine }, { VDU }, keymap, soundMod, { vsync }] = await Promise.all([
     import('../basic/machine.js'), import('../basic/vdu.js'), import('../basic/keymap.js'), import('../basic/sound.js').catch(() => ({})),
+    import('./basicwimp/scheduler.js'),
   ]);
   // options: -quit <file>, -chain <file>, -load <file>, <file>
   let mode = 'interactive', file = null;
@@ -119,7 +120,7 @@ export async function runBasic(argv = [], ctx = {}) {
       vdu, fs: basicFS(), sound, sysvars: sysvarMap(),
       oscli: async (cmd) => {
         const name = cmd.replace(/^[\s*]+/, '').split(/[\s]/)[0].toLowerCase();
-        if (/^(fx\d*|key\d*|tv|opt|spool|spoolon|exec|quit|basic)$/.test(name)) return false;   // BASIC's own
+        if (/^(fx\d*|key\d*|tv|opt|spool|spoolon|exec|quit|basic|screensave|screenload|s(choose|get|flipx|flipy|delete|list|load|merge|new|save|info|rename|copy))$/.test(name)) return false;   // BASIC's own (its screen, its sprites)
         if (!os.cli.find(name) && sysvars.get('Alias$' + name) == null && !os.cli.findRunnable(name)) return false;
         const out = { write: (s) => machine.writeStr(String(s).replace(/\n/g, '\r\n')), writeln: (s = '') => { machine.writeStr(String(s)); machine.newLine(); }, cols: 80 };
         try { await os.cli.run(cmd, { out }); } catch (e) { throw Object.assign(new Error(e.message), { errnum: e.errnum ?? 0 }); }
@@ -127,6 +128,7 @@ export async function runBasic(argv = [], ctx = {}) {
       },
       onExit: () => resolve(),
     });
+    machine.waitVsync = () => vsync.wait();      // WAIT / *FX 19 at a steady 50Hz, as desktop programs
     window.basic = machine;
     raf = requestAnimationFrame(frame);
     (async () => {

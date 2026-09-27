@@ -180,6 +180,8 @@ export class CodeText extends TextState {
 
   // ------------------------------------------------------------------ errors, checking, running
   get isJS() { return this.mode?.name === 'JavaScript'; }
+  /** A BBC BASIC listing (file type &FFB, or the BASIC mode): Run runs it in a graphics task window (!GraphTask). */
+  get isBasic() { return this.mode?.name === 'BASIC' || this.filetype === 0xFFB; }
   markError(line, message, { runtime = false } = {}) {
     this.errors.set(line, message);
     if (runtime) this.runtimeLines.add(line); else this.runtimeLines.delete(line);
@@ -212,9 +214,12 @@ export class CodeText extends TextState {
     }
     return err;
   }
-  /** Run (Ctrl-R, toolbar): save if needed, check, then *JSRun it (an application's !RunImage: run the application). */
+  /**
+   * Run (Ctrl-R, toolbar): save if needed, check, then *JSRun it (an application's !RunImage: run the application).
+   * A BASIC listing is saved if needed and run in a graphics task window (*GraphTask, which starts !GraphTask).
+   */
   async run(v) {
-    if (!this.isJS) { this.app.task.reportError('Only JavaScript programs can be run from !JsEdit'); return; }
+    if (!this.isJS && !this.isBasic) { this.app.task.reportError('Only JavaScript and BASIC programs can be run from !JsEdit'); return; }
     clearTimeout(this._checkT);                 // (Run checks now: no check pending afterwards)
     if (!this.filename || !/[.:]/.test(this.filename)) {
       // not saved yet: the Save box first, then run
@@ -224,6 +229,10 @@ export class CodeText extends TextState {
     }
     if (this.doc.modified) {
       try { await this.saveTo(this.filename, true); } catch (e) { this.app.task.reportError(e.message); return; }
+    }
+    if (!this.isJS) {
+      os.cli.run(`GraphTask ${this.filename}`).catch((e) => this.app.task.reportError(e.message));
+      return;
     }
     this.clearErrors({ all: true });
     const err = await this.check(v, false);
@@ -309,7 +318,7 @@ export class CodeText extends TextState {
     disp.items[disp.items.length - 1].dotted = true;
     disp.items.push(...extra);
     const run = new Menu('Run', [
-      { text: 'Run', key: '^R', shaded: () => !this.isJS, action: () => this.run(v) },
+      { text: 'Run', key: '^R', shaded: () => !this.isJS && !this.isBasic, action: () => this.run(v) },
       { text: 'Check syntax', shaded: () => !this.isJS, action: () => this.check(v, true), dotted: true },
       { text: 'Functions', action: () => this.showFunctions() },
       { text: 'Throwback', action: () => this.app.throwback.open() },

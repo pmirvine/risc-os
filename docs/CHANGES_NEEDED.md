@@ -288,3 +288,44 @@ docs/ASSETS.md §5).
 * `src/core/jsrun.js`: the handler that tidies `globalThis.__jsrun` was `() => delete ...`, which returns true;
   `Emitter.emit` stops at a handler returning true, so a module program's `task.on('quit', ...)` never ran (Lander II
   kept drawing, its listeners and AudioContext stayed alive after Quit). Now it has braces and returns nothing.
+
+## BASIC programs in windows (!GraphTask phase 1: runner core) — changes in shared code
+**Status:** done (the !GraphTask application, its commands and the `$.Docs` guide: next section).
+* `src/core/basicwimp/runner.js`: `BasicProcess` is now the controller for a program in either display: new
+  `startBasicWindow(opts)` (docs/CORE_API.md section 12) and `*BASIC -window [<file>]` (`parseBasicArgs` returns
+  `window`; `index.js` dispatches it from anywhere, task windows too). `takeScreen` / `releaseScreen` / `scr` are gone
+  (now `display.js`); `processes`, `errors`, `machine`, `bridge`, `lateOutput`, `ended` are unchanged for the tests.
+  `*command` output goes to the program's screen whichever display it has (before: only once it had the screen).
+  `*WimpMode`, `*ScreenMode` and the sprite commands (`*SLoad`, `*SSave`, ...) are BASIC's own in desktop programs
+  (they change the program's screen / sprites, not the desktop's). Each process's VDU clock stands still while it is
+  suspended (flashing colours, teletext flash, cursor).
+* `src/core/basicwimp/display.js` (new): `FullScreenDisplay`, with a stack of programs wanting the screen. **Bug fixed:**
+  a second full-screen program started while one had the screen ran invisibly (`fullScreenBusy`); now it is shown
+  over the first, which gets the screen back when it ends. `WindowDisplay`. Alt-Return switches a running program
+  between the whole screen and a window (both ways, full-screen programs too). Escape in a full-screen program now
+  goes through `keyPress(27)`, so `*FX 229` can disable it as on RISC OS.
+* `src/core/basicwimp/scheduler.js` (new): one cooperative scheduler for every desktop BASIC machine (wraps
+  `machine.slice`; no change to `src/basic/`): fair turns, BASIC capped at 11 ms of each 16 ms (15 ms while one is
+  full screen), per-program speed limits (`SPEEDS`), suspend. **Behaviour change:** `WAIT` / `*FX 19` in desktop BASIC
+  (`BasicProcess` and `basichost.js`'s `*BASIC`) wait for a steady 50Hz clock instead of the display's animation frame
+  (programs ran 20% fast at 60Hz, 2.4x at 120Hz, and stopped in background tabs). Double-clicked programs stay
+  Unlimited speed; windowed ones default to StrongARM.
+* `src/core/basicwimp/bridge.js`: `Wimp_Initialise` calls `proc.beforeWimpTask()` (a windowed program gives up its
+  window and becomes an ordinary task, its VDU back to the desktop mode).
+* `src/core/basichost.js`: `machine.waitVsync` = the 50Hz clock. `src/core/commands.js`: `*BASIC` syntax lists `-window`.
+* Tests: `tests/basic/scheduler.test.mjs` (node), `tests/bw/bw-window.mjs` (Playwright, in `node --test tests/bw`).
+
+## !GraphTask, the application (phases 2 and 3) — changes in shared code
+**Status:** done. The application is `src/apps/GraphTask` (docs/apps/GraphTask.md); shared code touched:
+* `src/core/basicwimp/runner.js`: `*BASIC -window` goes through `os.hooks.basicWindow(o)` when set (!GraphTask's
+  `boot()` sets it), so its windows have !GraphTask's menu; otherwise `startBasicWindow` as before.
+* `src/core/basicwimp/display.js`: in Menu button mode, Shift-Menu still calls the window menu hook (the mode could not
+  be turned off from the window before).
+* `src/core/switcher.js`: the Task Manager's icon bar menu has "Graphics task window" after "Task window"
+  (`*GraphTask`; shaded if nothing registers that command). Scripts that pick Task Manager items by index after
+  "Task window" (Desktop boot, Exit, Shutdown) move down one.
+* `src/apps/JsEdit/editor.js`: Run on a BASIC listing (`isBasic`) saves it and runs `*GraphTask <file>` (it used to
+  say only JavaScript could be run); the Run menu item is no longer shaded for BASIC.
+* Demos: `src/basic/demos/ceefax.bas`, `ballpit.bas` (index.json, `tests/basic/demos.test.mjs` plans; the Filer count
+  in `tests/bw/bw-basicdemos.mjs` is now 30). Disc: `tools/disc-graphtask.mjs` (in `tools/build.mjs`).
+* Tests: `tests/bw/bw-graphtask.mjs` (in `node --test tests/bw`).

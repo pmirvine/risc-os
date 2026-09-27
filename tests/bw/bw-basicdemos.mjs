@@ -38,7 +38,7 @@ await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
 await page.evaluate((d) => window.os.filer.openDir(d, { x: 60, y: 60, w: 620, h: 300 }), DIR);
 await page.waitForTimeout(800);
 const names = await page.evaluate((d) => [...window.os.filer.viewers.values()].find((v) => /Demos\.BASIC$/i.test(v.path))?.items.map((i) => i.name) ?? [], DIR);
-check(names.length === 28 && names.includes('ReadMe') && names.includes('WimpClock'), `Filer lists $.Demos.BASIC (${names.length} items)`);
+check(names.length === 30 && names.includes('ReadMe') && names.includes('Ceefax') && names.includes('WimpClock'), `Filer lists $.Demos.BASIC (${names.length} items)`);
 await shot('demo-filer');
 
 await fullScreenDemo('Plasma', 2500, 'demo-plasma');

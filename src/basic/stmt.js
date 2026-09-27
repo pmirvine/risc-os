@@ -559,7 +559,7 @@ STMTS[T.MODE] = (P) => {
   P.emit(() => {
     const v = f(); const vt = t <= TS ? t : I.t;
     I.count = 0;
-    if (vt === TS) { I.oscli('WimpMode ' + v); return; }
+    if (vt === TS) { I.host.selectModeString(v); return; }   // MODE "X640 Y480 C256" (a mode string)
     const m = vt === TI ? v : toInt(v);
     if ((m >>> 0) >= 256) I.swi('OS_ScreenMode', [0, m]);
     else I.vdu([22, m & 255]);

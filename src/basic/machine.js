@@ -24,6 +24,8 @@ import { Assembler } from './assembler.js';
 import { HELP } from './help.js';
 import { LEX_TABLE, tokenName } from './tokens.js';
 import { ARM } from './arm.js';
+import { SpriteSystem, SPRITE_COMMANDS } from './sprites.js';
+import { parseModeString, normaliseSelector, selectorModeInfo } from './vdu-modes.js';
 
 installOps(Interp);
 
@@ -76,6 +78,8 @@ export class BasicMachine {
     this.textOnly = !this.vdu;
     if (!this.vdu) this.vdu = new NullVDU();
     if (this.vdu.screenIO) this.mem.io = this.vdu.screenIO;   // screen memory at &2000000-TotalScreenSize
+    if ('spriteHost' in this.vdu) this.vdu.spriteHost = this;   // PLOT &E8-&EF, VDU 23,27 (system sprites)
+    this._sprites = null;
     this.fs = o.fs || null;
     this.snd = o.sound || null;
     this.swis = new SwiTable();
@@ -304,7 +308,9 @@ export class BasicMachine {
   vpos() { return this.vdu.vpos | 0; }
   point(x, y) { return this.vdu.readPoint(x, y).colour | 0; }
   tint(x, y) { return this.vdu.readPoint(x, y).tint | 0; }
-  modeNumber() { return this.vdu.mode | 0; }
+  /** MODE / OS_ScreenMode 1 / OS_Byte 135: the mode number, or a pointer to a selector block for other modes */
+  modeNumber() { return this.modeValue(this.vdu.mode); }
+  modeValue(md) { return md && typeof md === 'object' ? this.selectorPtr(md) : md | 0; }
   vduVar(n) {
     if (n < 128 && n <= 12) return this.vdu.modeVar(n) ?? 0;
     return this.vdu.vduVar ? (this.vdu.vduVar(n) ?? 0) : 0;
@@ -367,13 +373,58 @@ export class BasicMachine {
       this.vduBytes([23, 17, bg ? 1 : 0, c.tint & 255, 0, 0, 0, 0, 0, 0]);
     } else this.vduBytes([17, (c.gcol & 255) | (bg ? 128 : 0)]);
   }
-  setModeFromSelector(ptr) {
-    // mode selector block: flags, xres, yres, log2bpp, framerate, ...
-    const x = this.mem.rd32(ptr + 4), y = this.mem.rd32(ptr + 8), l2 = this.mem.rd32(ptr + 12);
-    const table = { '640x480x3': 28, '640x480x2': 27, '640x480x1': 26, '640x480x0': 25, '800x600x3': 32, '800x600x2': 31, '800x600x1': 30, '800x600x0': 29, '640x256x2': 12, '640x256x3': 15, '640x512x2': 20, '640x512x3': 21 };
-    const m = table[`${x}x${y}x${l2}`] ?? 28;
-    this.vduBytes([22, m]);
+  // Screen modes by selector (RISC OS 3.5+) -------------------------------------------
+  /** OS_ScreenMode 0 with a pointer to a mode selector block */
+  setModeFromSelector(ptr) { this.selectMode(this.readSelector(ptr)); }
+  /** Read a mode selector block: flags, x, y, log2bpp, frame rate, (variable, value) pairs, -1 */
+  readSelector(ptr) {
+    const M = this.mem, sel = { x: M.rd32(ptr + 4), y: M.rd32(ptr + 8), log2bpp: M.rd32(ptr + 12) };
+    for (let p = ptr + 20, n = 0; n < 32; n++, p += 8) {
+      const k = M.rd32(p);
+      if (k === -1) break;
+      const val = M.rd32(p + 4);
+      if (k === 4) sel.xEig = val; else if (k === 5) sel.yEig = val;
+      else if (k === 3 && sel.log2bpp === 3 && val === 255) { /* full palette: 256 colours as ever */ }
+    }
+    return sel;
   }
+  /** A selector block in the system heap for a selector (one per selector object) */
+  selectorPtr(sel) {
+    this._selPtrs ??= new WeakMap();
+    let p = this._selPtrs.get(sel);
+    if (p) return p;
+    const s = normaliseSelector(sel), M = this.mem;
+    p = this.sysAlloc(40);
+    [1, s.x, s.y, s.log2bpp, -1, 4, s.xEig, 5, s.yEig, -1].forEach((w, i) => M.wr32(p + i * 4, w));
+    this._selPtrs.set(sel, p);
+    return p;
+  }
+  /** Select a mode: a number (VDU 22), or a selector {x, y, log2bpp, xEig?, yEig?} */
+  selectMode(n) {
+    if (this._sprites?.dest) this.callSwiByName('OS_SpriteOp', [0x200 + 60, 0, 0, 0]);  // back to the screen first
+    if (typeof n === 'number') { this.vduBytes([22, n & 255]); return; }
+    if (this.vdu.selectMode) {
+      if (!this.vdu.selectMode(n) && this.vdu.lastError) throw new BasicError(this.vdu.lastError.errnum, this.vdu.lastError.errmess);
+      return;
+    }
+    const m = selectorModeInfo(n);      // text-only VDU: the nearest numbered mode
+    this.vduBytes([22, m.num >= 0 ? m.num : [25, 26, 27, 28][m.log2bpp]]);
+  }
+  /** MODE "X640 Y480 C256" / *WimpMode / *ScreenMode: a mode string or number */
+  selectModeString(str) {
+    const sel = parseModeString(str);
+    if (sel === null) throw new BasicError(25, 'Bad MODE');
+    this.selectMode(sel);
+  }
+  /** OS_ReadModeVariable etc.: a mode number or a pointer to a selector block -> number or selector */
+  modeArg(v) { return (v >>> 0) >= 256 ? this.readSelector(v >>> 0) : v; }
+
+  // Sprites (src/basic/sprites.js) ------------------------------------------------------
+  /** the sprite system: OS_SpriteOp, system sprite area, *SLoad etc. */
+  get sprites() { return (this._sprites ??= new SpriteSystem(this)); }
+  /** VDU hooks: PLOT &E8-&EF and VDU 23,27 */
+  spritePlot(k, v) { this.sprites.spritePlot(k, v); }
+  vdu23_27(a, n, v) { this.sprites.vdu23_27(a, n, v); }
 
   // Time ------------------------------------------------------------------------------
   monotonicTime() { return Math.floor((nowMs() - this.t0) / 10); }
@@ -623,7 +674,7 @@ export class BasicMachine {
       case 131: r[1] = this.interp.page & 255; r[2] = (this.interp.page >> 8) & 255; return;
       case 132: r[1] = this.interp.himem & 255; r[2] = (this.interp.himem >> 8) & 255; return;
       case 134: r[1] = this.pos(); r[2] = this.vpos(); return;
-      case 135: { const c = this.vdu.readCharAtCursor ? this.vdu.readCharAtCursor() : { char: 0, mode: 0 }; r[1] = c.char; r[2] = c.mode; return; }
+      case 135: { const c = this.vdu.readCharAtCursor ? this.vdu.readCharAtCursor() : { char: 0, mode: 0 }; r[1] = c.char; r[2] = this.modeValue(c.mode); return; }
       case 138: this.keyPress(y); return;
       case 160: { const v = this.vduVar(x); r[1] = v & 255; r[2] = (v >> 8) & 255; return; }
       case 161: r[2] = 0; return;
@@ -1262,14 +1313,10 @@ export class BasicMachine {
       }
       case 'HELP': this.writeStr('==> Help on keyword ' + (rest || 'HELP')); this.newLine(); return;
       case 'WIMPMODE': case 'SCREENMODE': case 'MODE': {
+        if (!rest) return;
         const n = parseInt(rest, 10);
-        if (!Number.isNaN(n)) { this.vduBytes([22, n & 255]); return; }
-        const mx = /X(\d+)/i.exec(rest), my = /Y(\d+)/i.exec(rest), mc = /C(\d+)/i.exec(rest);
-        const x = mx ? +mx[1] : 640, y = my ? +my[1] : 480, c = mc ? +mc[1] : 256;
-        const l2 = c <= 2 ? 0 : c <= 4 ? 1 : c <= 16 ? 2 : 3;
-        const blk = this.scratchAlloc(32);
-        this.mem.wr32(blk, 1); this.mem.wr32(blk + 4, x); this.mem.wr32(blk + 8, y); this.mem.wr32(blk + 12, l2);
-        this.setModeFromSelector(blk);
+        if (/^\d+$/.test(rest)) { this.vduBytes([22, n & 255]); return; }
+        this.selectModeString(rest);
         return;
       }
       case 'CAT': case '.': case 'EX': case 'INFO': case 'FILEINFO': return this.cmdCat(rest);
@@ -1321,7 +1368,6 @@ export class BasicMachine {
         this.mem.wrBytes(a0, f.data); return;
       }
       case 'RUN': case 'CHAIN': return this.runFile(args()[0], rest);
-      case 'SCREENSAVE': case 'SCREENLOAD': return;
       case 'CONFIGURE': case 'STATUS': return;
       case 'MODULES': case 'RMENSURE': case 'RMLOAD': case 'RMRUN': case 'RMKILL': case 'RMREINIT': return;
       case 'ERROR': { const mm = /^(\S+)\s+(.*)$/.exec(rest); throw new BasicError(mm ? parseInt(mm[1], 10) : 0, mm ? mm[2] : rest); }
@@ -1332,6 +1378,7 @@ export class BasicMachine {
       case 'IGNORE': return;
       case 'CACHE': return;
     }
+    if (SPRITE_COMMANDS.has(un)) { await this.sprites.command(un, rest); return; }
     if (this.snd?.oscli && await this.snd.oscli(un, rest, (t) => { this.writeStr(t); this.newLine(); })) return;
     if (un === 'VOLUME' || un === 'SPEAKER' || un === 'STEREO' || un === 'TUNING' || un === 'VOICES' || un === 'CHANNELVOICE' || un === 'QSOUND' || un === 'AUDIO') return;
     // try to run as a file (e.g. *MyProg)

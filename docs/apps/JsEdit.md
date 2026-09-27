@@ -34,7 +34,9 @@ The tutorial `$.Manuals.JSTutor` uses it.
 * Syntax check: 0.9 s after typing stops (`checkSyntax` in jsrun.js: the program is parsed, not run; a module's
   import/export lines are blanked first); the first mistake is marked in the gutter and shaded.
 * Run: saves (a new text gets the Save box first), checks, then `*Run`s the file (an application's `!RunImage`:
-  the application directory, so its `!Run` sets things up).
+  the application directory, so its `!Run` sets things up). A BBC BASIC listing (`isBasic`: type &FFB or the BASIC
+  mode) is saved the same way and run with `*GraphTask <file>` in a graphics task window (`src/apps/GraphTask`), not
+  checked.
 * Throwback: `os.hooks.throwback({path, line, message})` is called by jsrun for every program error; !JsEdit takes
   those for files it has open (Throwback window, gutter mark, caret to the line) and jsrun then shows no error box.
 * Functions: the mode's `Functions` patterns over the text; click an entry to go to it.

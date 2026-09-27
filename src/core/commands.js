@@ -416,7 +416,7 @@ export function installCommands() {
     const rows = [['Baud', '4'], ['Boot', ''], ['Caps', ''], ['Delay', '32'], ['DumpFormat', '4'], ['FileSystem', 'ADFS'], ['FontSize', '64K'], ['Language', '4'], ['Mode', 'Auto'], ['MouseStep', '2'], ['RAMFSSize', '1024K'], ['Repeat', '8'], ['ScreenSize', '160K'], ['SpriteSize', '0K'], ['WimpDragDelay', '5'], ['WimpDoubleClickDelay', '10'], ['WimpFlags', '111'], ['WimpMode', 'X1024 Y768 C256']];
     for (const [k, v] of rows) if (!a[0] || k.toLowerCase().startsWith(a[0].toLowerCase())) out.writeln(`${k.padEnd(18)}${v}`);
   });
-  def('Basic', 'Syntax: *BASIC [-help] [-chain|-quit|-load] [<filename>]', '*BASIC starts the BBC BASIC V interpreter.', async (a, ctx) => {
+  def('Basic', 'Syntax: *BASIC [-help] [-window] [-chain|-quit|-load] [<filename>]', '*BASIC starts the BBC BASIC V interpreter. -window runs it in a desktop window of its own.', async (a, ctx) => {
     if (!os.hooks?.basic) throw new CLIError('BASIC is not available', 0);
     return os.hooks.basic(a, ctx);
   });

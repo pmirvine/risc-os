@@ -43,7 +43,7 @@ export function installWimpSwis(m, proc) {
     throw new BasicError(0x283, 'Wimp_Initialise has not been called');
   };
   const W = (name, fn, anytime = false) => m.registerSwi(name, (r, mm, ctx) => fn(anytime ? (proc.bridge ?? pre()) : need(), r, ctx));
-  W('Wimp_Initialise', (b, r) => { proc.bridge = b; return b.initialise(r); }, true);
+  W('Wimp_Initialise', (b, r) => { if (!proc.bridge) proc.beforeWimpTask?.(); proc.bridge = b; return b.initialise(r); }, true);
   W('Wimp_CloseDown', (b, r) => b.closeDown(false), true);
   W('Wimp_CreateWindow', (b, r) => b.createWindow(r));
   W('Wimp_CreateIcon', (b, r) => b.createIcon(r));

@@ -323,54 +323,26 @@ export function installServices(m, proc) {
   S('Territory_NumberToName', (r) => { wrStr0(m, r[1], 'UK'); });
 
   // ---------------------------------------------------------------- OS_SpriteOp
-  const noArea = () => new BasicError(0x80, 'No sprite area');
-  S('OS_SpriteOp', (r) => spriteOp(r));
-  async function spriteOp(r) {
-    const reason = r[0] & 0x3FF, op = reason & 0xFF, type = reason & 0x300;
-    const a = u32(r[1]);
-    const isPool = type === 0 || a === WIMP_POOL_ROM || a === WIMP_POOL_RAM;
-    const M = m.mem;
-    const name = () => (type === 0x200 ? areas.nameAt(u32(r[2])) : rdCtrl(m, r[2], 12)).toLowerCase();
-    const need = () => {
-      if (isPool) return null;
-      const s = type === 0x200 ? { ptr: u32(r[2]), name: areas.nameAt(u32(r[2])) } : areas.find(a, name());
-      if (!s) throw new BasicError(0x86, `Sprite '${name()}' doesn't exist`);
-      return s;
-    };
+  // BASIC's own sprite system (src/basic/sprites.js: system area, user areas in memory, plotting
+  // onto the program's VDU), plus the Wimp's pool (Wimp_SpriteOp, the pool pointers, and names
+  // not in the system area) for plotting and reading sizes.
+  const noArea = () => new BasicError(0x80, 'No sprite memory');
+  m.sprites.onChange = () => areas.touch();
+  S('OS_SpriteOp', (r) => {
+    const type = r[0] & 0x300, op = r[0] & 0xFF, a = u32(r[1]);
+    if (type !== 0 && (a === WIMP_POOL_ROM || a === WIMP_POOL_RAM || a === 1)) return poolSpriteOp(r);
+    if (type === 0 && [24, 28, 34, 40, 52].includes(op)) {
+      const name = rdCtrl(m, r[2], 12).toLowerCase();
+      if (!m.sprites.systemSprite(name) && wimpSprites.get(name)) return poolSpriteOp(r);
+    }
+    return m.sprites.swi(r);
+  });
+  async function poolSpriteOp(r) {
+    const reason = r[0] & 0x3FF, op = reason & 0xFF, a = u32(r[1]);
+    const name = () => rdCtrl(m, r[2], 12).toLowerCase();
     switch (op) {
-      case 8: { if (isPool) { r[2] = 0; r[3] = 0; r[4] = 16; r[5] = 16; return; } const i = areas.info(a); r[2] = i.size; r[3] = i.count; r[4] = i.first; r[5] = i.free; return; }
-      case 9: if (isPool) return; M.wr32(a + 4, 0); M.wr32(a + 8, 16); M.wr32(a + 12, 16); areas.touch(); return;
-      case 10: case 11: {
-        if (isPool) return;
-        const path = rdCtrl(m, r[2], 256);
-        const st = vfs.stat(path);
-        if (!st || st.type !== 'file') throw new BasicError(0x108D6, `File '${path}' not found`);
-        const data = await vfs.readFile(st.path);
-        if (op === 10) {
-          const size = M.rd32(a);
-          if (data.length + 4 > size) throw new BasicError(0x82, 'No room to get sprite');
-          wrBytes(m, a + 4, data);
-        } else mergeSprites(a, data);
-        areas.touch();
-        return;
-      }
-      case 12: {
-        if (isPool) return;
-        const i = areas.info(a);
-        vfs.writeFile(rdCtrl(m, r[2], 256), rdBytes(m, a + 4, i.free - 4), { filetype: 0xFF9 });
-        return;
-      }
-      case 13: {
-        if (isPool) throw noArea();
-        const list = areas.list(a); const s = list[r[4] - 1];
-        if (!s) throw new BasicError(0x86, 'Sprite doesn\'t exist');
-        const n = s.name.slice(0, Math.max(0, r[3] - 1)); wrStr0(m, r[2], n); r[3] = n.length; return;
-      }
-      case 24: { const s = need(); if (s) r[2] = s.ptr; return; }
-      case 25: { const s = need(); if (!s) return; deleteSprite(a, s.ptr); areas.touch(); return; }
-      case 26: { const s = need(); if (!s) return; const nn = rdCtrl(m, r[3], 12).padEnd(12, '\0'); wrBytes(m, s.ptr + 4, enc(nn.toLowerCase())); areas.touch(); return; }
-      case 27: { const s = need(); if (!s) return; copySprite(a, s.ptr, rdCtrl(m, r[3], 12)); areas.touch(); return; }
-      case 15: { if (isPool) throw noArea(); createSprite(a, rdCtrl(m, r[2], 12), r[3], r[4], r[5], r[6]); areas.touch(); return; }
+      case 8: r[2] = 0; r[3] = 0; r[4] = 16; r[5] = 16; return;
+      case 13: case 14: case 15: case 16: throw noArea();
       case 40: {
         const sp = await resolveSprite(m, areas, reason, a, u32(r[2]));
         if (!sp) throw new BasicError(0x86, `Sprite '${name()}' doesn't exist`);
@@ -382,83 +354,15 @@ export function installServices(m, proc) {
         if (!sp) throw new BasicError(0x86, `Sprite '${name()}' doesn't exist`);
         const v = vdu();
         let x = r[3], y = r[4], act = r[5];
-        if (op === 28) { x = v.gcsX; y = v.gcsY; act = r[3]; }
+        if (op === 28) { x = v.gcsX; y = v.gcsY; }
         let scale = null;
-        if (op === 52 && u32(r[6])) { const p = u32(r[6]); scale = { xm: M.rd32(p), ym: M.rd32(p + 4), xd: M.rd32(p + 8), yd: M.rd32(p + 12) }; }
+        if (op === 52 && u32(r[6])) { const p = u32(r[6]), M = m.mem; scale = { xm: M.rd32(p), ym: M.rd32(p + 4), xd: M.rd32(p + 8), yd: M.rd32(p + 12) }; }
         plotSprite(v, sp, x, y, act, scale);
         return;
       }
-      case 14: case 16: {                             // get sprite from the screen (this program's VDU)
-        if (isPool) throw noArea();
-        const v = vdu();
-        let x0, y0, x1, y1;
-        if (op === 16) { x0 = r[4]; y0 = r[5]; x1 = r[6]; y1 = r[7]; } else { x0 = v.oldX; y0 = v.oldY; x1 = v.gcsX; y1 = v.gcsY; }
-        const px0 = Math.max(0, (Math.min(x0, x1) + v.orgX) >> v.xEig), px1 = Math.min(v.W - 1, (Math.max(x0, x1) + v.orgX) >> v.xEig);
-        const py0 = Math.max(0, (Math.min(y0, y1) + v.orgY) >> v.yEig), py1 = Math.min(v.H - 1, (Math.max(y0, y1) + v.orgY) >> v.yEig);
-        const w = Math.max(1, px1 - px0 + 1), h = Math.max(1, py1 - py0 + 1);
-        const nm = rdCtrl(m, r[2], 12);
-        createSprite(a, nm, 0, w, h, 28);
-        const s = areas.find(a, nm);
-        const img = s.ptr + M.rd32(s.ptr + 32), rowBytes = (M.rd32(s.ptr + 16) + 1) * 4;
-        for (let j = 0; j < h; j++) {
-          const row = (v.H - 1 - (py1 - j)) * v.W;
-          for (let i = 0; i < w; i++) M.wr8(img + j * rowBytes + i, v.fb[row + px0 + i]);
-        }
-        areas.touch();
-        return;
-      }
-      case 41: case 42: return;                       // read/write pixel: not supported (no sprite output)
-      case 60: case 61: r[0] = 0; r[1] = 0; r[2] = 0; r[3] = 0; return; // switch output: stays on screen
-      case 62: r[3] = 0; return;
-      case 29: case 30: case 31: case 32: case 33: case 35: case 36: case 37: case 38: case 39: case 44: case 45: case 46: case 47: case 48: case 49: case 50: case 51: case 53: case 54: case 55: case 56: case 57: case 58: case 59: return;
+      case 60: case 61: r[0] = 0; r[1] = 0; r[2] = 0; r[3] = 0; return;   // output to a Wimp sprite: stays on screen
       default: return;
     }
-  }
-  function spriteBlocks(a) { return areas.list(a).map((s) => rdBytes(m, s.ptr, s.next)); }
-  function rebuild(a, blocks) {
-    const size = m.mem.rd32(a);
-    let p = 16;
-    for (const b of blocks) {
-      if (a + p + b.length > a + size) throw new BasicError(0x82, 'No room to get sprite');
-      wrBytes(m, a + p, b); p += b.length;
-    }
-    m.mem.wr32(a + 4, blocks.length); m.mem.wr32(a + 8, 16); m.mem.wr32(a + 12, p);
-  }
-  function mergeSprites(a, fileBytes) {
-    const v = new DataView(fileBytes.buffer, fileBytes.byteOffset, fileBytes.byteLength);
-    const n = v.getUint32(0, true); let off = v.getUint32(4, true) - 4;
-    const cur = spriteBlocks(a);
-    for (let i = 0; i < n; i++) {
-      const next = v.getUint32(off, true);
-      const b = fileBytes.slice(off, off + next);
-      const nm = decodeLatin1(b.slice(4, 16)).replace(/\0.*$/, '').toLowerCase();
-      const j = cur.findIndex((c) => decodeLatin1(c.slice(4, 16)).replace(/\0.*$/, '').toLowerCase() === nm);
-      if (j >= 0) cur[j] = b; else cur.push(b);
-      off += next;
-    }
-    rebuild(a, cur);
-  }
-  function deleteSprite(a, ptr) { rebuild(a, areas.list(a).filter((s) => s.ptr !== ptr).map((s) => rdBytes(m, s.ptr, s.next))); }
-  function copySprite(a, ptr, newName) {
-    const blocks = spriteBlocks(a);
-    const src = areas.list(a).find((s) => s.ptr === ptr);
-    const b = rdBytes(m, ptr, src.next);
-    b.set(enc(newName.toLowerCase().padEnd(12, '\0').slice(0, 12)), 4);
-    blocks.push(b); rebuild(a, blocks);
-  }
-  function createSprite(a, nm, pal, w, h, mode) {
-    const l2 = { 12: 2, 15: 3, 20: 2, 21: 3, 27: 2, 28: 3, 25: 0, 26: 1, 18: 0, 19: 1 }[mode] ?? 3;
-    const bpp = 1 << l2;
-    const words = Math.ceil(w * bpp / 32);
-    const img = words * 4 * h;
-    const size = 44 + img;
-    const b = new Uint8Array(size);
-    const dv = new DataView(b.buffer);
-    dv.setUint32(0, size, true); b.set(enc(nm.toLowerCase().padEnd(12, '\0').slice(0, 12)), 4);
-    dv.setUint32(16, words - 1, true); dv.setUint32(20, h - 1, true); dv.setUint32(24, 0, true);
-    dv.setUint32(28, (w * bpp - 1) % 32, true); dv.setUint32(32, 44, true); dv.setUint32(36, 44, true); dv.setUint32(40, mode, true);
-    const blocks = spriteBlocks(a).filter((x) => decodeLatin1(x.slice(4, 16)).replace(/\0.*$/, '').toLowerCase() !== nm.toLowerCase());
-    blocks.push(b); rebuild(a, blocks);
   }
 
   // ---------------------------------------------------------------- Font manager

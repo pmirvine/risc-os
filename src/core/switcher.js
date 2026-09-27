@@ -162,6 +162,12 @@ export class Switcher {
       { text: task ? this.m('M02b', task.name) : this.m('M02a'), submenu: task ? quitMenu : null, shaded: !task || task.kind !== 'app', showArrowWhenShaded: true },
       { text: cmTxt, key: cmKey, action: () => os.cli.open() },
       { text: twTxt, key: twKey, action: () => wimp.emit('hotkey:CtrlF12', {}) },
+      // !GraphTask's window at BASIC's > prompt (*GraphTask starts it if need be): src/apps/GraphTask
+      {
+        text: 'Graphics task window', shaded: () => !os.cli.find('graphtask'),
+        action: () => os.cli.run('GraphTask').catch((err) => wimp.reportError(err.message, { appName: 'Task Manager' })),
+        help: 'Click SELECT to open a graphics task window at BASIC\'s > prompt (GraphTask).',
+      },
       { text: this.m('M05'), submenu: () => this.bootBox() },
       { text: this.m('M06'), action: () => this.exitDesktop() },
       { text: shTxt, key: shKey, action: () => this.shutdown() },

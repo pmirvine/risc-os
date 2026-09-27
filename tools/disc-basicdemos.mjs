@@ -41,6 +41,8 @@ export function readMe(list) {
     'own screen mode; press Escape (or any key) to stop, then SPACE to get back',
     'to the desktop. WimpClock is a desktop task: it puts an icon on the icon bar.',
     'Shift-double-click a program to load it into Edit and read the listing.',
+    'To run one in a window on the desktop instead, drag it to the icon of',
+    '$.Apps.!GraphTask on the icon bar (Ceefax and BallPit are made for it).',
     '',
   ];
   const body = list.map((d) => wrap(d.name, d.about, 76, 12));

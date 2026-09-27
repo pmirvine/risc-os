@@ -7,6 +7,8 @@ window templates, Messages files, help text, sample files) extracted from the RI
 
 Plain modern JavaScript ES modules. There is no bundler, no framework and no runtime dependency.
 
+This is an unashamedly retro experience from when I owned a RiscPC with a StrongARM CPU. For a modern twist on the Acorn experience see [ACORN-20206](https://github.com/zolbatar/Acorn-2026)
+
 ## Screenshots
 
 | | |
@@ -39,7 +41,7 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, HostFS, !JsEdit, programming in JavaScript and the game Lander II — with `Contents` listing
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, programming in JavaScript and the game Lander II — with `Contents` listing
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -159,6 +161,14 @@ and a VDU driver with screen modes, graphics, sprites and teletext. It runs full
 windows, and as desktop applications through a Wimp SWI bridge, so original tokenised BASIC Wimp programs run
 unchanged (for example the original !SciCalc).
 
+**BASIC programs in windows:** `$.Apps.!GraphTask` (after David Ruck's !GraphTask) runs non-desktop BASIC programs
+in desktop windows, each with its own screen mode, palette and teletext, multitasking. Drag a BASIC file to its icon
+bar icon, or click the icon for a `>` prompt; `*GraphTask <file>` (or `*BASIC -window <file>`) does it from Obey and
+`!Run` files. The window menu has Suspend, Kill, Restart, Speed (ARM2 … StrongARM, Unlimited), Scale, Full screen
+(Alt-Return) and Save screen (a sprite). The Task Manager's menu has "Graphics task window", and !JsEdit's Run runs
+BASIC listings this way. Double-clicking a BASIC file still runs it full screen, unless !GraphTask's Choices say
+otherwise. Guide: `$.Docs.GraphTask`; developers: `docs/apps/GraphTask.md`.
+
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
 applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
@@ -190,6 +200,7 @@ font menu.
 | !InetSetup: Internet configuration (and !Internet) | !ARPlayer: ARMovie player | !Madness: moves every other window |
 | | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
 | | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
+| | !GraphTask: BASIC programs in desktop windows (see above) | |
 | | !Browse: web browser (see above) | |
 | | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
@@ -208,7 +219,8 @@ font menu.
 **BBC BASIC demos** in `$.Demos.BASIC` (double-click to run; Shift-double-click to read the listing in !Edit):
 Mandelbrot, Plasma, Fire, Stars, AsmBars and AsmPlot (inline ARM assembler), Cube, Sprites, Lissajous, Roses, Spiral,
 Circles, Colours, Tree, Life, Hanoi, Snake, Ball, Voices, Canon and Tune (the sound system), Teletext (MODE 7), Sieve,
-Guess, Errors, and WimpClock, a small Wimp task. The listings are in `src/basic/demos/`.
+Guess, Errors, WimpClock (a small Wimp task), and Ceefax (a teletext page) and BallPit (a mouse toy), made for
+running in !GraphTask's windows (drag any of them to its icon). The listings are in `src/basic/demos/`.
 
 The disc also includes !System, !Scrap and !Fonts (`!Boot.Resources`), the Examples directory (a BASIC Wimp demo),
 a sample Type 1 font to convert with !T1ToFont (`Utilities.Type1Fonts`), the user guide in HTML, tutorials, images,

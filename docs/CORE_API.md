@@ -366,7 +366,7 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
 * `os.filer.openDir(path, {mode:'large'|'small'|'full', sort, x, y, w, h})`, `os.filer.run(path)` (double-click semantics).
 * `os.pinboard.pin(path, x, y)`, `os.pinboard.setBackdrop(path, 'tile'|'scale'|'centre')`.
 * Hooks for other agents: `os.hooks.basic = async (argv, ctx) => …` (*BASIC), `os.hooks.taskWindow = (cmd) => …` (Ctrl-F12 /
-  *TaskWindow). If an app named `TaskWindow` is registered, Ctrl-F12 starts it.
+  *TaskWindow), `os.hooks.basicWindow = async (o) => …` (*BASIC -window: !GraphTask). If an app named `TaskWindow` is registered, Ctrl-F12 starts it.
 * Interactive help: `wimp.helpAt(sx, sy)` → help text for the thing under the pointer (menu item `help`, window
   `helprequest` event — set `ev.text` —, `icon.help`, icon bar `help`, or `win.helpText`), in !Help markup (`\S`, `\R`, `|M`).
 * Boot completion: `os.ready === true` and `wimp.on('desktopready')`.
@@ -415,6 +415,81 @@ VFS adapter (`readFile(path) → {data, type}|null`, `writeFile(path, data, type
 `oscli(cmd)` (core * commands first; returns false for BASIC's own), `onExit` (QUIT). Keys come from
 `os.cli.acquireScreen`; the mouse is mapped to OS units. `os.hooks.basic` may be replaced by a later agent.
 Filer_Boot of applications runs their `!Boot` in "safe" mode (no *Run/BASIC), so booting never starts programs.
+Desktop programs (double-click, `*Run`, `!Run`) go to `src/core/basicwimp/runner.js` (docs/BASIC_WIMP.md): full screen
+single-tasking, or a Wimp task through the bridge.
+
+**BASIC programs in a window** (`src/core/basicwimp/runner.js`, `display.js`, `scheduler.js`):
+```js
+const { startBasicWindow, processes } = await import('../../core/basicwimp/runner.js');
+const p = await startBasicWindow({
+  file: 'ADFS::HardDisc4.$.Demos.BASIC.Plasma',   // or program: bytes | text (+ name); neither = the > prompt
+  args: '',                  // command line arguments after the file name
+  prompt: false,             // true: BASIC's > prompt (after the program, if any); run: false = only load it
+  speed: 'strongarm',        // 'arm2' | 'arm3' | 'arm610' | 'strongarm' (default) | 'unlimited' | ops per second
+  scale: 1,                  // 1 | 2 | 'fit' (the screen scaled to fit the window, aspect kept)
+  mode: 12,                  // screen mode it starts in
+  name: 'Plasma',            // title and Task Manager name (default: the leafname, or 'BASIC')
+  open: 'output',            // open the window when it first writes / reads the keyboard (task window style) | 'now'
+  menuButton: false,         // Menu clicks go to the program (MOUSE b=2) instead of onMenu
+  onMenu: (ev, p) => p.openMenu(myMenu, ev),      // Menu click over the window (ev = the Wimp click event)
+  onClose: (p, ev) => { if (p.running) { askFirst(); return true; } },  // close icon; true = handled; default kills + closes
+  onEnd: (p, result) => {},  // program ended (result = BasicMachine.run() {reason, error} or null)
+  onState: (p) => {},        // title, state, speed, scale, display or menu-button mode changed (refresh your menu)
+  formatTitle: ({ name, scale, state, finished }) => '…',   // optional: your own window title
+});
+```
+Resolves once started (it does not wait for the program) to the process, which is the controller:
+
+| member | |
+|---|---|
+| `p.task`, `p.window` | its core `Task` (one per program, Task Manager Quit = close) and `Window` (null until shown / after close) |
+| `p.machine`, `p.vdu` | its `BasicMachine` and `VDU` (replaced by `restart()`) |
+| `p.state` | `'running'` \| `'suspended'` \| `'finished'` \| `'killed'` \| `'task'` (it called Wimp_Initialise: the window is gone); `p.running`, `p.ended` |
+| `p.title`, `p.name`, `p.setName(n)` | window title = name, `" (x2)"` / `" (fit)"` when scaled, `" (finished)"` at the end |
+| `p.suspend()`, `p.resume()`, `p.suspended` | pause / continue (invisibly to the program; its screen's flashing stops too) |
+| `p.kill()` | stop it; the window stays with its last picture. `p.close()` = kill + close the window + quit the task |
+| `p.restart()` | run it again from the start (or a new prompt) on a fresh screen in the same window |
+| `p.setSpeed(s)`, `p.speed`, `p.opsPerSecond` | speed limit (`SPEEDS` in scheduler.js) |
+| `p.setScale(s)`, `p.scale` | 1, 2, 'fit' |
+| `p.fullScreen(on)`, `p.isFullScreen` | switch between the whole screen and the window while it runs (the user: Alt-Return) |
+| `p.setMenuButton(on)`, `p.menuButton` | "Menu button" mode |
+| `p.openMenu(menu, ev)` | open a `Menu` (or `(p, ev) => Menu`) at a click on the window, owned by its task |
+| `p.closeRequest()` | as the close icon (goes through `onClose`) |
+| `p.result`, `p.errors` | how it ended; the last errors seen (`{message, line, trapped}`) |
+
+`processes` is the Set of live `BasicProcess`es (also `window.bwProcesses`). `*BASIC -window [<file>] [args]` does
+`startBasicWindow` from the command line (a file runs, then the window stays; no file = the prompt), or
+`os.hooks.basicWindow({file, args, prompt, run, ctx})` when that is set: !GraphTask (`src/apps/GraphTask`,
+docs/apps/GraphTask.md) sets it at boot, so those windows get its menu; `*GraphTask [<file> [<args>]]` is the
+application's own command. In Menu button mode Shift-Menu still goes to `onMenu` (so the mode can be turned off).
+In the window: the work area is the program's screen at the mode's natural desktop size (MODE 12 640×512, MODE 7
+640×500, MODE 28 640×480) × the scale; MODE changes resize the window unless the user made it smaller. MODE, POS,
+VPOS, POINT, OS_ReadModeVariable / VduVariables are the program's own screen. Keys and INKEY(-n) reach it only while
+the window has the input focus (a click in the window gives it; that click is not passed on); `*WimpMode` / `*ScreenMode`
+change the program's own screen; F12 and the other
+desktop hot keys still work; Escape stops it (as `*FX 229` allows); MOUSE is in its own OS units allowing for the
+window's position, scroll and scale. `*command` output and error messages appear in the window.
+**Scheduling** (`scheduler.js`, every desktop BASIC program, full screen too): fair turns, BASIC uses at most 11 ms of
+each 16 ms frame (15 ms while a program has the whole screen), a per-program speed limit; `WAIT` / `*FX 19` tick at a
+steady 50Hz (`vsync.wait()`), in windows, full screen and `*BASIC` from F12.
+
+**A program's screen as a sprite file** (`src/basic/sprites.js`, for "Save screen" and the like):
+```js
+import { screenToSpriteFile, screenSprite } from '../../basic/sprites.js';
+const bytes = screenToSpriteFile(p.vdu, {   // Uint8Array: a sprite file, save it with filetype &FF9
+  name: 'screen',        // sprite name (default 'screen', at most 12 characters)
+  palette: true,         // include the palette (both flash states); false = none
+  bank: 'display',       // 'display' = the bank shown (default), 'driver' = the bank being drawn on
+  rect,                  // {x0, y0, x1, y1} internal pixels (y up, inclusive); default the whole screen
+});
+await vfs.writeFile(path, bytes, { filetype: 0xFF9 });
+```
+One sprite, in the screen's mode: its mode number (e.g. 12, 28), or a new-format mode word (depth + dpi from
+the eigen factors) for selector modes and the desktop-sized screen; MODE 7 gives the teletext page as shown,
+a 320×250 16-colour sprite (mode 9) with the teletext colours. `screenSprite(vdu, opts)` returns the sprite as
+Paint's sprite object (`{name, w, h, px, pal, mode, ...}`, `src/apps/Paint/spritefile.js`). Pass the process's
+own `p.vdu`: while a program has output switched to a sprite, `machine.vdu` is that sprite's VDU. BASIC's sprite
+system (`machine.sprites`: OS_SpriteOp, system sprites, *SLoad/*SGet/*ScreenSave …) is described in docs/BASIC.md.
 
 ## 13. Tests
 Every area runs with `node --test tests/<area>` (`basic`, `core`, `draw`, `edit`, `paint`, `acc`, `div`, `tw`, `bw`,
