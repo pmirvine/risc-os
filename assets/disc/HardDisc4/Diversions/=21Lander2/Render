@@ -80,7 +80,7 @@ const SKY_TOP = [0, 0, 6];
 // the stars (see the constructor): how many in each STAR_CELL x STAR_CELL
 // block, how high they hang (y is down: between 14 and 70 tiles up), and
 // their colours (&RGB): mostly white and pale yellow, some dim
-const STAR_CELL = 32, STAR_COUNT = 56, STAR_LOW = -14, STAR_HIGH = -70, STAR_FAR = 50;
+const STAR_CELL = 32, STAR_COUNT = 64, STAR_LOW = -14, STAR_HIGH = -70, STAR_FAR = 64;
 const STAR_COLOURS = [0xFFF, 0xFFF, 0xFF9, 0xFE6, 0xDDB, 0x999, 0x777];
 const HORIZON = [58, 64, 104];
 const BELOW = [8, 8, 20];
@@ -165,8 +165,11 @@ export class Renderer {
     const rng = new Rng(0x57A45);
     for (let i = 0; i < STAR_COUNT; i++) {
       const c = STAR_COLOURS[rng.int(STAR_COLOURS.length)];
+      // mag: how bright the star is itself (-1 faint, 0, +1 bright), so
+      // they don't all change size at the same distance
+      const mag = [-1, 0, 0, 0, 1, 1][rng.int(6)];
       this.stars.push({ x: rng.float() * STAR_CELL, z: rng.float() * STAR_CELL,
-        y: rng.range(STAR_HIGH, STAR_LOW), colour: c });
+        y: rng.range(STAR_HIGH, STAR_LOW), colour: c, mag });
     }
     this.cam = { x: 0, y: 0, z: 0 };
   }
@@ -357,19 +360,35 @@ export class Renderer {
     // (stars are seen further than the land: out to STAR_FAR tiles, and
     // put in the back bin beyond the land's back row)
     const lo = 2, hi = Math.max(this.backD, STAR_FAR);
-    const scale = f / 256;
-    const w = Math.max(1, Math.round(2 * scale)), h = Math.max(1, Math.round(scale));
-    const top = this.top - h, bottom = this.bottom;
+    // three sizes, in units of a 320 x 256 screen's pixel (u): a dash
+    // 2u x u when near, a dot u x u further off, and a speck (half a unit,
+    // at least one pixel) far away - and dimmer with distance - which is
+    // what gives the sense of depth
+    const u = f / 256;
+    const SIZES = [
+      [Math.max(1, Math.round(u / 2)), Math.max(1, Math.round(u / 2))],
+      [Math.max(1, Math.round(u)), Math.max(1, Math.round(u))],
+      [Math.max(1, Math.round(2 * u)), Math.max(1, Math.round(u))],
+    ];
+    const top = this.top - 2 * u, bottom = this.bottom;
     for (const st of this.stars) {
       const dy = st.y - cam.y;
       const D0 = wrap(st.z - cam.z + EYE - lo, STAR_CELL) + lo;
       for (let D = D0; D < hi; D += STAR_CELL) {
         const k = f / D, y = Math.round(cy + k * dy);
         if (y < top || y >= bottom) continue;
+        // size: 2 near, 1 in the middle distance, 0 far; nudged by mag
+        const near = D < 26 ? 2 : D < 46 ? 1 : 0;
+        const size = Math.max(0, Math.min(2, near + st.mag));
+        const [w, h] = SIZES[size];
+        let b = fade * (1 - 0.35 * (D - lo) / (hi - lo)) * (size === 0 ? 0.8 : 1);
+        let c = st.colour;
+        // (the Classic look's 256 colours turn dimmed yellows olive, so
+        // there far stars are grey instead, and the rest keep their colour)
+        if (this.classic) { if (size === 0) c = 0x888; b = fade; }
+        const pixel = this.colour(((c >> 8) & 15) * b, ((c >> 4) & 15) * b,
+          (c & 15) * b, 0);
         const hw = D * this.halfW + 1;
-        const c = st.colour;
-        const pixel = this.colour(((c >> 8) & 15) * fade, ((c >> 4) & 15) * fade,
-          (c & 15) * fade, 0);
         for (let dx = wrap(st.x - cam.x + hw, STAR_CELL) - hw; dx < hw; dx += STAR_CELL) {
           this.push(this.binFor(D), 1, Math.round(cx + k * dx - w / 2), y, w, h, 0, 0,
             pixel);
