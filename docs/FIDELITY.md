@@ -82,7 +82,12 @@ How to check:
   Other pointers without explicit coordinates use (0,0), exactly like the Wimp.
 * **Icon bar menus** are placed from their measured height, so separators count. Applications
   that follow the Style Guide formula (96 + 44 × items) ignore separators.
-* **Task Manager** memory figures are simulated. Pinboard is listed as a module task; one 3.7
-  screenshot shows it as a 64K application task.
+* **Task Manager** memory figures are simulated (`src/core/memory.js`: a 256MB Risc PC with 2MB
+  of VRAM by default; RAM size 4MB-256MB is this desktop's addition to !Configure's Memory
+  window and `*Configure RAMSize`). The bars use 3.7's stepped scale and extent (Switcher
+  calcbarcoords), checked against the widths in `ro37-taskmanager*.png`. The rows add up to
+  Total exactly (DRAM + VRAM); on 3.7 dynamic areas made them differ slightly. The Dynamic
+  areas section and "Free in Module area" are fixed figures. Pinboard is listed as a module
+  task; one 3.7 screenshot shows it as a 64K application task.
 * **Menus** open a dialogue-box submenu when an item without an action is clicked. The Wimp
   reports the selection to the application instead.

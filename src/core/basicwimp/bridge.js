@@ -11,6 +11,7 @@
 import { os } from '../os.js';
 import { wimp } from '../wimp.js';
 import { vfs } from '../vfs.js';
+import { memory } from '../memory.js';
 import { sysvars } from '../sysvars.js';
 import { input } from '../input.js';
 import { Menu } from '../menu.js';
@@ -1311,13 +1312,20 @@ export class WimpBridge {
   }
 
   slotSize(r) {
-    // the program's memory is a flat 4MB: any slot up to the RMA fits (BASIC's HIMEM doesn't move)
-    this.slot ??= this.m.interp.himem - 0x8000;
+    // the program's memory is a flat 4MB: any slot up to the RMA fits (BASIC's HIMEM doesn't move). Within
+    // that, the machine's memory model (src/core/memory.js) decides: the free pool, the 28MB application space.
+    const floor = this.m.interp.himem - 0x8000;
+    this.slot ??= floor;
     const MAX = 0x300000 - 0x8000;
-    if (r[0] >= 0) this.slot = Math.min(MAX, Math.max(this.m.interp.himem - 0x8000, r[0]));
-    if (r[1] >= 0) this.nextSlot = r[1];
-    r[0] = this.slot; r[1] = this.nextSlot ?? 640 * 1024; r[2] = Math.max(0, 12 * 1024 * 1024 - this.slot);
+    if (r[0] >= 0) {
+      const want = Math.min(MAX, Math.max(floor, r[0]));
+      const k = memory.growSlot(this.task, Math.ceil(want / 1024));
+      this.slot = Math.max(floor, Math.min(want, k * 1024));
+    }
+    if (r[1] >= 0) memory.setArea('next', Math.round(r[1] / 1024));
     if (this.task) this.task.memory = Math.round(this.slot / 1024);
+    const s = memory.snapshot();
+    r[0] = this.slot; r[1] = s.nextSettingK * 1024; r[2] = s.freeK * 1024;
     wimp.emit('taskschanged', {});
   }
 

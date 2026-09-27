@@ -7,16 +7,27 @@
 //   Added for !Configure (see docs/CHANGES_NEEDED.md): wimpFont may also be any RISC OS font name
 //   ('Trinity.Medium'); doubleClickMove (OS units); beepLoud, speaker (bool) and volume (0-7) scale wimp.beep();
 //   mode ({width,height} | null) is applied once at boot. Unknown keys may be stored in values + save().
+//   Memory (src/core/memory.js, os.memory): ramSize (MB: 4-256, *Configure RAMSize, applied now); memFontCache,
+//   memFontMax, memRAMDisc, memRMA, memScreen, memSprites, memHeap (K: *Configure FontSize, FontMax, RAMFSSize,
+//   RMASize, ScreenSize, SpriteSize, SystemSize; the areas' sizes from the next start).
 
 import { wimp } from './wimp.js';
 import { input } from './input.js';
 import { fonts } from './fonts.js';
 import { configureSound } from './sound/index.js';
+import { memory } from './memory.js';
 
 const KEY = 'riscos371.config';
 // buttonsVersion 2: the Acorn mapping (right = Adjust) became the default; older saved settings are migrated.
 const DEFAULTS = { zoom: 1, rightButton: 'adjust', buttonsVersion: 2, pressEffect: true, textured: true, wimpFont: 'homerton', wimpFlags: 0b01101111, doubleClickDelay: 10, dragDelay: 5, dragMove: 16,
   doubleClickMove: 32, beepLoud: true, speaker: true, volume: 7, mode: null };
+
+/** *Configure memory sizes: "<n>" pages (4K), "<n>K", "<n>M" -> K */
+function sizeK(s) {
+  const m = /^(\d+)\s*([KM])?$/i.exec(String(s).trim());
+  if (!m) { const e = new Error('Bad number'); e.errnum = 0x16A; throw e; }
+  return +m[1] * (!m[2] ? 4 : /k/i.test(m[2]) ? 1 : 1024);
+}
 
 export const config = {
   values: { ...DEFAULTS },
@@ -79,6 +90,16 @@ export const config = {
       wimpdoubleclickdelay: () => { this.values.doubleClickDelay = parseInt(s, 10) || 10; input.config.doubleClickMs = this.values.doubleClickDelay * 100 * 0.4; },
       wimpdragdelay: () => { this.values.dragDelay = parseInt(s, 10) || 5; },
       wimpdragmove: () => { this.values.dragMove = parseInt(s, 10) || 16; input.config.dragMove = this.values.dragMove / 2; },
+      // memory areas' sizes at the next start (the CMOS, as !Configure's Memory window): <n> pages, <n>K or <n>M
+      fontsize: () => { this.values.memFontCache = sizeK(s); },
+      fontmax: () => { this.values.memFontMax = sizeK(s); },
+      ramfssize: () => { this.values.memRAMDisc = Math.min(128 * 1024, sizeK(s)); },
+      rmasize: () => { this.values.memRMA = sizeK(s); },
+      screensize: () => { this.values.memScreen = sizeK(s); },
+      spritesize: () => { this.values.memSprites = sizeK(s); },
+      systemsize: () => { this.values.memHeap = sizeK(s); },
+      // this desktop's addition: the machine's RAM (MB), applied now (src/core/memory.js)
+      ramsize: () => { memory.setRAMSize(/^\d+\s*K$/i.test(s) ? parseInt(s, 10) / 1024 : parseInt(s, 10)); },
     };
     if (!map[key]) return false;
     map[key]();

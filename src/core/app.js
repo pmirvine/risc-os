@@ -208,6 +208,8 @@ export class AppManager {
       }
       return t;
     }
+    // the slot comes from the free pool (src/core/memory.js): not enough, and it doesn't start (the Wimp's error)
+    try { os.memory?.checkSlot(d.memory ?? 64); } catch (e) { reportError(e.message, { appName: d.name }); return null; }
     const task = wimp.createTask(d.name, { app: d, memory: d.memory });
     this.running.set(d, [...existing, task]);
     task.on('quit', () => this.running.set(d, (this.running.get(d) ?? []).filter((t) => t !== task)));

@@ -41,7 +41,7 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, programming in JavaScript and the game Lander II — with `Contents` listing
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, the machine's memory, programming in JavaScript and the game Lander II — with `Contents` listing
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -155,6 +155,14 @@ icons; Filer (large/small/full info, sorting, copy/move/delete/rename/access/cou
 windows); Pinboard (backdrop textures and pictures, pinned files, iconised windows, persistent); Task Manager
 (task display, memory bars, New task, Quit task, Exit, Shutdown); F12 command line with about 100 `*` commands
 (Cat, Ex, Copy, Wipe, Set, Alias, If, Obey, Configure …); system variables with GSTrans; `!Boot`.
+
+**The machine:** a StrongARM Risc PC with 256MB of RAM (the most a Risc PC takes), 2MB of VRAM and 4MB of ROM. Its
+memory is simulated by one model (`src/core/memory.js`) that the Task Manager (with RISC OS 3.7's stepped memory bars,
+so 256MB fits on the screen), !MemNow, `Wimp_SlotSize`, `*WimpSlot`, `OS_Memory`, `OS_ReadDynamicArea` and `*Status`
+all read, so their figures agree: the screen in VRAM, the system areas, the tasks' slots, Next and Free. !Configure's
+Memory window has a RAM size (this desktop's addition, also `*Configure RAMSize`): 4MB (an A7000, no VRAM, where
+memory really is short and programs can fail to start) up to 256MB, applied at once. RISC OS 3.7's limits hold: a
+28MB application slot, a 128MB RAM disc. Guide: `$.Docs.Memory`.
 
 **BBC BASIC V 1.16:** an interpreter with the full language, an inline ARM assembler and ARM2 emulation for CALL/USR,
 and a VDU driver with screen modes, graphics, sprites and teletext. It runs full screen (F12 `*BASIC`), in task

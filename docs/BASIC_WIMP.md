@@ -51,7 +51,10 @@ ran 20% fast on a 60Hz display and 2.4× on a 120Hz one, and stopped in a backgr
 
 `*WimpSlot -min nK` (in `!Run`) sets the next program's slot: HIMEM = &8000 + slot rounded up to 32K pages; `END=` also
 grows in 32K pages (as on a 4MB A5000, which is what makes e.g. !Patience's `END=END+10000` work). `Wimp_SlotSize` can grow
-the slot up to the RMA (the program's memory is a flat 4MB; HIMEM doesn't move).
+the slot up to the RMA (the program's memory is a flat 4MB; HIMEM doesn't move), as far as the machine's memory model
+(`src/core/memory.js`) allows: the free pool and RISC OS 3.7's 28MB application space. Its r1/r2 are the model's Next
+and Free, the task's slot is what the Task Manager shows, and `*WimpSlot -min` more than the free pool can give fails
+with the Wimp's "…K free memory is needed" error, stopping the `!Run` file.
 
 ## Running the original applications
 
@@ -90,8 +93,8 @@ redraw loop with VDU graphics, Wimp_SetColour, menu with Adjust-keeps-open, Repo
 | `bridge.js` | `WimpBridge` (one per task) and `installWimpSwis` — the Wimp_* SWIs |
 | `screen.js` | `DesktopVDU`, `WindowCanvas` (per-window backing store + canvas), rectangle lists |
 | `templates.js` | Templates files from the VFS: Wimp_OpenTemplate / LoadTemplate (wildcards, size enquiry, fonts) |
-| `services.js` | MessageTrans_*, Territory_*, OS_SpriteOp (sprite areas in program memory, plotting), Font_*, ColourTrans font colours, Sound voices, OS_ReadDynamicArea |
-| `hardware.js` | OS_Byte 161/162 (CMOS, `src/core/cmos.js`), OS_Module 18, OS_Memory 8, OS_Reset, Joystick_*, Squash_*, DragASprite_*, `-fs-`/`%` command prefixes |
+| `services.js` | MessageTrans_*, Territory_*, OS_SpriteOp (sprite areas in program memory, plotting), Font_*, ColourTrans font colours, Sound voices, OS_ReadDynamicArea / OS_ReadMemMapInfo (memory model) |
+| `hardware.js` | OS_Byte 161/162 (CMOS, `src/core/cmos.js`), OS_Module 18, OS_Memory 8 and OS_ReadSysInfo 0 (memory model), OS_Reset, Joystick_*, Squash_*, DragASprite_*, `-fs-`/`%` command prefixes |
 | `adfs.js` | ADFS_* on an emulated IDE drive 4 (boot block, IDENTIFY, verify; writes to the hard disc refused) |
 
 ## The bridge
