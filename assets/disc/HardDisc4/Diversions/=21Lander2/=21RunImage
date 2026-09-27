@@ -60,6 +60,8 @@ export default async function start(task, ctx) {
   let display = null;
   let raf = 0, last = 0, acc = 0, frames = 0;
   let locked = false;              // do we have the pointer captured?
+  let wentFull = false;            // did we ask for browser full screen?
+  let lastWorld = null;            // the world whose first events were played
   const events = [];               // the sound events of this frame's ticks
 
   function makeRenderer() {
@@ -85,6 +87,8 @@ export default async function start(task, ctx) {
       screen = next;
       screen.enter?.();
       if (screen.playing) app.lockPointer(); else app.unlockPointer();
+      // forget keys held on the old screen (Return chose "Play": it would fire)
+      input.release();
       input.clearEdges();
     },
     titleScreen() { return new TitleScreen(app); },
@@ -120,6 +124,10 @@ export default async function start(task, ctx) {
       if (['view', 'shadows', 'stars'].includes(key)) {
         renderer.setOptions({ view: settings.view, shadows: settings.shadows,
           stars: settings.stars, fog: settings.stars });
+      }
+      // the particle limit of a game in progress (behind the settings)
+      if (key === 'particles') {
+        screen?.returnTo?.world?.setParticleMax(settings.particles);
       }
       if (key === 'controls' && settings.controls === 'keyboard') app.unlockPointer();
     },
@@ -184,6 +192,8 @@ export default async function start(task, ctx) {
       d.win.on('moved', () => layout());
       d.win.on('close', (ev) => { ev.preventDefault(); toDesktop(); });
       d.win.on('key', () => true);           // the game has all the keys
+      // the keys went to another window: let go of them, and pause
+      d.win.on('losecaret', () => { input.release(); screen?.blur?.(); });
       d.win.open({ behind: 'top' });
       wimp.setCaret(d.win);
     }
@@ -245,7 +255,10 @@ export default async function start(task, ctx) {
       const devH = Math.round(ah * dev);
       sh = settings.resolution === 'native' ? devH : Math.min(+settings.resolution, devH);
       sh = Math.max(256, Math.min(2160, sh));
-      sw = Math.max(320, Math.min(4096, Math.round((sh * aw) / ah))) & ~1;
+      // never narrower than 5:4 (the screens are laid out on a 320 x 256
+      // grid): a tall display shows the game with bars above and below
+      const wide = Math.min(4096, Math.round((sh * aw) / ah));
+      sw = Math.max(Math.round(sh * 1.25), wide) & ~1;
     }
     if (force || sw !== surface.width || sh !== surface.height) {
       surface.resize(sw, sh);
@@ -266,6 +279,7 @@ export default async function start(task, ctx) {
   function browserFullScreen(on) {
     try {
       if (on && !document.fullscreenElement) {
+        wentFull = true;
         document.documentElement.requestFullscreen?.()?.catch?.(() => {});
       } else if (!on && document.fullscreenElement) {
         document.exitFullscreen?.()?.catch?.(() => {});
@@ -314,6 +328,12 @@ export default async function start(task, ctx) {
     // game time: run the ticks that are due
     const sc = screen;
     events.length = 0;
+    // a new game: the World's first events (wave 1's waveStart) were made
+    // when it was built, before any tick, so they are played now
+    if (sc.world && sc.world !== lastWorld) {
+      lastWorld = sc.world;
+      if (!sc.world.tickCount) events.push(...(sc.world.events ?? []));
+    }
     if (sc.ticks) {
       acc += dt * (SPEEDS[settings.speed] ?? 1);
       let n = Math.floor(acc / TICK);
@@ -323,8 +343,16 @@ export default async function start(task, ctx) {
         if (sc.tick() && sc.world) for (const e of sc.world.events ?? []) events.push(e);
       }
       if (sc.world && sc.sounds && screen === sc) {
+        // (paused or over: the engine and other loops stay quiet)
+        const still = sc.paused || sc.finished;
         sc.world.frameEvents = events;
-        sound.frame(sc.world, events);
+        sound.frame(still ? null : sc.world, events);
+        // a new ship on the pad (or a new landscape): the virtual mouse goes
+        // back to the middle, or the ship would tilt straight over as before
+        const fresh = (e) => e.type === 'respawn' || e.type === 'newLandscape';
+        if (!sc.demo && events.some(fresh)) {
+          input.recentre();
+        }
       }
     }
 
@@ -465,6 +493,7 @@ export default async function start(task, ctx) {
   task.on('quit', () => {
     toDesktop();
     sound.close();
+    if (wentFull) browserFullScreen(false);
     window.removeEventListener('keydown', onKeyDown, true);
     window.removeEventListener('keyup', onKeyUp, true);
     window.removeEventListener('blur', onBlur);

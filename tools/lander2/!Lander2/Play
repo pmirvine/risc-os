@@ -47,6 +47,7 @@ export class PlayScreen {
     this.overTicks = 0;
     this.age = 0;
     this.app.input.clearEdges();
+    if (!this.demo) this.app.input.recentre();     // a level ship to start with
   }
 
   /** True while the mouse is flying the ship (the pointer is captured). */
@@ -93,7 +94,8 @@ export class PlayScreen {
       if (k.code === 'Escape' || k.code === 'KeyP') {
         this.pause();
       } else if (this.world.state === 'gameOver' && this.overTicks > TICKS &&
-          /^(Enter|Space|NumpadEnter)$/.test(k.code)) {
+          !k.repeat && /^(Enter|Space|NumpadEnter)$/.test(k.code)) {
+        // (not a held key's repeats: Return and Space fire and thrust)
         this.gameOver();
       }
     }
@@ -119,6 +121,7 @@ export class PlayScreen {
     this.app.sound.silence();
     this.app.sound.play('uiBack');
     this.app.input.release();
+    this.app.input.clearEdges();
     this.app.unlockPointer();
     this.pauseMenu = new Menu(this.app, [
       { label: 'Resume', action: () => this.resume(), help: 'P or Escape also resume' },
@@ -134,6 +137,7 @@ export class PlayScreen {
     this.paused = false;
     this.pauseMenu = null;
     this.app.input.release();
+    this.app.input.clearEdges();       // (no missile for an M pressed while paused)
     this.app.lockPointer();
   }
 
@@ -179,8 +183,12 @@ export class PlayScreen {
       say(s, 'GAME OVER', 0, 100, { size: big, colour: C.red, smooth: true,
         outline: C.black });
       say(s, `SCORE ${w.score}`, 0, 132, { colour: C.white });
+      // (the banner is hidden now, so say why if it wasn't the ships)
+      const lost = w.gameOverReason === 'infection';
+      if (lost) say(s, 'THE LAND IS LOST', 0, 146, { colour: C.orange });
       if (this.overTicks > TICKS && !this.demo) {
-        say(s, 'Press Return', 0, 150, { colour: flash ? C.yellow : C.grey });
+        const colour = flash ? C.yellow : C.grey;
+        say(s, 'Press Return', 0, lost ? 162 : 150, { colour });
       }
     }
 
@@ -243,6 +251,7 @@ export class NameEntryScreen {
     this.ticks = true;
     this.hotkeys = false;           // letters are for typing, not shortcuts
     this.text = (app.scores.lastName || '').slice(0, NAME_LENGTH);
+    this.offered = !!this.text;     // last time's name: typing replaces it
     this.t = 0;
     app.sound.play('titleJingle');
   }
@@ -252,13 +261,20 @@ export class NameEntryScreen {
   frame(presses) {
     this.t++;
     for (const k of presses) {
-      if (k.code === 'Enter' || k.code === 'NumpadEnter') { this.done(); return; }
-      if (k.code === 'Escape') { this.text = ''; this.done(); return; }
+      // (Return is also the fire key: ignore one still held from the game)
+      if ((k.code === 'Enter' || k.code === 'NumpadEnter') && !k.repeat && this.t > 10) {
+        this.done();
+        return;
+      }
+      // Escape: no more typing (the name shown, or PILOT, goes in the table)
+      if (k.code === 'Escape') { this.done(); return; }
       if (k.code === 'Backspace' || k.code === 'Delete') {
         this.text = this.text.slice(0, -1);
+        this.offered = false;
         this.app.sound.play('uiBack');
-      } else if (k.key && k.key.length === 1 && k.key >= ' ' && k.key <= '~' &&
-          this.text.length < NAME_LENGTH && !k.ctrl) {
+      } else if (k.key && k.key.length === 1 && k.key >= ' ' && k.key <= '~' && !k.ctrl) {
+        if (this.offered) { this.text = ''; this.offered = false; }
+        if (this.text.length >= NAME_LENGTH) continue;
         this.text += k.key;
         this.app.sound.play('hsLetter');
       }

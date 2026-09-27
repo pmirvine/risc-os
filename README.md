@@ -21,6 +21,7 @@ Plain modern JavaScript ES modules. There is no bundler, no framework and no run
 | ![Plasma](docs/screenshots/basic-plasma.png) `$.Demos.BASIC.Plasma`, one of the BBC BASIC demo programs | ![T1ToFont and Chars](docs/screenshots/tierb-t1tofont-chars.png) !Chars showing a Type 1 font converted by !T1ToFont |
 | ![JsEdit](docs/screenshots/jsedit.png) !JsEdit, the programmer's editor, completing a name in the Snake game's source | ![Programming in JavaScript](docs/screenshots/jstutor.png) *Programming in JavaScript*, the tutorial book, in !Bookworm |
 | ![Browse](docs/screenshots/browse.png) !Browse showing today's web, in tabs (`node serve.mjs --browser`) | ![Browse select menu](docs/screenshots/browse-select.png) A web page's drop-down list as a RISC OS menu |
+| ![Lander II](docs/screenshots/div-lander2.png) !Lander2: Lander II, a Zarch-like game grown from Lander, written in JavaScript on the disc | ![Lander II title](docs/screenshots/div-lander2-title.png) Lander II's title page |
 
 ## Running it
 
@@ -38,7 +39,7 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, HostFS, !JsEdit and programming in JavaScript — with `Contents` listing
+desktop adds to RISC OS 3.71 — !Browse, HostFS, !JsEdit, programming in JavaScript and the game Lander II — with `Contents` listing
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -166,7 +167,8 @@ in `$.Examples.JS`. A second book, *Writing Desktop Applications in JavaScript* 
 readers build !Contacts, an address book with a Draw-style toolbar, vCard/CSV import and export, undo and Choices,
 and then !Organiser, a personal organiser in the spirit of Lotus Organizer (a ring binder with Diary, To do,
 Address, Notepad, Planner and Anniversary sections, links, alarms, printing and iCalendar), with a small toolkit
-of their own; every chapter's stage is in `$.Examples.JSApps`. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
+of their own; every chapter's stage is in `$.Examples.JSApps`. For a complete program to read, the game
+`$.Diversions.!Lander2` (Lander II, see below) is written the same way. `$.Apps.!JsEdit` is a programmer's editor for them (in the style of StrongED and Zap): syntax
 colouring for JavaScript, BBC BASIC, Obey and JSON, line numbers, smart indentation, completion of the desktop's
 programming interface, a syntax check as you type, Run, throwback of errors to their lines, a Functions list,
 directory views (a tree of a directory's files, with New file, Rename, Delete, Find in files and drags to and
@@ -191,6 +193,7 @@ font menu.
 | | !Browse: web browser (see above) | |
 | | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
+| | | !Lander2: Lander II, a Zarch-like game grown from Lander, in JavaScript (see below) |
 | | !SlideShow | |
 | | !CDPlayer: the Audio Panel (no CD drive) | |
 | | !FontPrint: PostScript printer font lists | |
@@ -227,6 +230,23 @@ the `Font$Path` directories) appear in the font menus of !Chars, !Configure, !Dr
   localhost. `*Run <Lander$Dir> -port` (or `?lander=port`) always plays the port.
 
 Mouse: position steers, Select = full thrust, Menu = hover, Adjust = fire. Escape ends the game. See `docs/apps/Lander.md`.
+
+### !Lander2: Lander II
+
+`$.Diversions.!Lander2` is an enhanced, Zarch-like game grown from Lander, written in JavaScript as modules on the
+disc, so its whole source can be read and changed in !JsEdit (View source on its title page or icon bar menu).
+
+* **Invasion**: waves of aliens (seeders, drones, mutants, bombers, pests, fighters, attractors) spray a red virus
+  over a wrapping 64×64-tile landscape; homing missiles, smart bombs, pickups, a bonus for clean land.
+* **Lander+**: the original game's rules and landscape, with high scores.
+* The **Enhanced** look (any resolution, up to 64 rows of landscape in view, fog, stars, a Zarch-style console
+  with a scanner) or the **Classic** look (320×256 in the Archimedes' 256 colours, as Lander drew it).
+* Two synthesised sound sets, **Original** (Archimedes/Zarch-style 8-bit samples) and **Arcade** (Williams
+  Defender/Robotron style), a demo flown by an autopilot, full screen or in a window, mouse, keyboard or gamepad.
+
+Settings and high scores are kept in `Choices:Lander2`. The user guide is `$.Docs.Lander2` (source
+`tools/docs/Lander2`); the design is in `docs/apps/Lander2.md`; `node tools/disc-lander2.mjs` puts the sources
+(`tools/lander2/!Lander2`) on the disc.
 
 ## Architecture
 
@@ -312,7 +332,8 @@ The browser tests need Playwright's Chromium (`npx -y playwright@1.61 install ch
 * !Lander © D. J. Braben 1987. The JavaScript port follows Mark Moxon's fully documented source code at
   [lander.bbcelite.com](https://lander.bbcelite.com) /
   [github.com/markmoxon/lander-source-code-acorn-archimedes](https://github.com/markmoxon/lander-source-code-acorn-archimedes).
-  The original program is not included.
+  The original program is not included. !Lander2 (Lander II) is new code after the same commentary (including its
+  "Hacking the landscape" deep dive) and Braben's Zarch.
 * The sample Type 1 font is Computer Modern Roman 10 from the AMS Type 1 fonts, © 1997, 2009 American Mathematical
   Society, under the SIL Open Font License 1.1 (`tools/type1/`). opentype.js (© Frederik De Bleser, MIT licence) is
   bundled in `assets/lib/opentype/` to build web fonts.

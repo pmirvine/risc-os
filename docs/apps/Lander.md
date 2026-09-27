@@ -4,6 +4,9 @@ Code: `src/apps/Lander/` (`app.js` descriptor, `main.js` full-screen runner, `ho
 the original-binary host, `game.js` the JavaScript port, `store.js` where the binary comes from).
 App dir: `ADFS::HardDisc4.$.Diversions.!Lander`, written by `node tools/disc-lander.mjs` (run by `tools/build.mjs`).
 
+Lander II (`$.Diversions.!Lander2`), an enhanced, Zarch-like game grown from Lander and written as JavaScript on
+the disc, is separate and leaves this app alone: see [Lander2.md](Lander2.md).
+
 Lander is © D. J. Braben 1987. **The original program is never in this repository or on the seed disc**
 (`!RunImage` is an empty placeholder; the icon is drawn by the disc tool). Two ways to play:
 
