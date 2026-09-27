@@ -1,0 +1,103 @@
+// Lander II - Scores: the high score tables.
+//
+// There is a table of the ten best games for each mode, Invasion and
+// Lander+. Each entry is { name, score, wave, date }. They are kept as
+// JSON text in Choices:Lander2.Scores (normally the file
+// $.!Boot.Choices.Lander2.Scores on the hard disc); delete that file to
+// get the starting tables back. A damaged file is ignored. lastName is
+// the name last typed in, offered again next time.
+
+import { choices } from 'riscos';
+import { choicesDir } from './Settings';
+
+export const MODES = ['invasion', 'lander'];
+export const MODE_NAMES = { invasion: 'Invasion', lander: 'Lander+' };
+export const TABLE_SIZE = 10;
+export const NAME_LENGTH = 10;
+
+const NAME = 'Lander2.Scores';
+
+// The starting tables: names from the Archimedes and its games.
+const SEED_NAMES = ['ZARCH', 'VIRUS', 'ARTHUR', 'ACORN', 'ARM2', 'A310', 'MEMC',
+  'VIDC', 'IOC', 'HOVER'];
+
+function seedTable(mode) {
+  const top = mode === 'invasion' ? 20000 : 3000;
+  return SEED_NAMES.map((name, i) => ({
+    name,
+    score: Math.round((top * (TABLE_SIZE - i)) / TABLE_SIZE / 50) * 50,
+    wave: mode === 'invasion' ? Math.max(1, 10 - i) : 0,
+    date: '1987-06-01',
+  }));
+}
+
+/** Fresh starting tables for both modes. */
+export function seedScores() {
+  return { invasion: seedTable('invasion'), lander: seedTable('lander') };
+}
+
+// A table from the file, or null if it doesn't look right.
+function cleanTable(t) {
+  if (!Array.isArray(t)) return null;
+  const out = [];
+  for (const e of t) {
+    if (!e || typeof e !== 'object' || !Number.isFinite(e.score)) continue;
+    out.push({
+      name: String(e.name ?? '').replace(/[^\x20-\x7e]/g, '')
+        .slice(0, NAME_LENGTH) || '???',
+      score: Math.round(e.score),
+      wave: Number.isFinite(e.wave) ? e.wave : 0,
+      date: typeof e.date === 'string' ? e.date.slice(0, 10) : '',
+    });
+  }
+  out.sort((a, b) => b.score - a.score);
+  return out.length ? out.slice(0, TABLE_SIZE) : null;
+}
+
+/** The saved tables (or the starting ones). */
+export async function loadScores() {
+  const seed = seedScores();
+  try {
+    const s = await choices.read(NAME, {});
+    return {
+      invasion: cleanTable(s.invasion) ?? seed.invasion,
+      lander: cleanTable(s.lander) ?? seed.lander,
+      // the name typed last time, offered again
+      lastName: typeof s.lastName === 'string' ? s.lastName.slice(0, NAME_LENGTH) : '',
+    };
+  } catch {
+    return seed;
+  }
+}
+
+/** Save the tables. */
+export async function saveScores(tables) {
+  try {
+    choicesDir();
+    await choices.write(NAME, tables);
+  } catch (e) {
+    console.warn('Lander II: cannot save the high scores', e);
+  }
+}
+
+/** Would this score get into the table? */
+export function qualifies(table, score) {
+  if (score <= 0) return false;
+  return table.length < TABLE_SIZE || score > table[table.length - 1].score;
+}
+
+/** Put an entry into its place in the table; returns its position (0 = top). */
+export function insertScore(table, entry) {
+  let i = table.findIndex((e) => entry.score > e.score);
+  if (i < 0) i = table.length;
+  table.splice(i, 0, entry);
+  table.length = Math.min(table.length, TABLE_SIZE);
+  return i < TABLE_SIZE ? i : -1;
+}
+
+/** Today's date as YYYY-MM-DD. */
+export function today() {
+  const d = new Date();
+  const two = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}

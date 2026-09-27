@@ -1,0 +1,194 @@
+// Lander II - Menu: the lists of choices on the title, settings and pause
+// screens, and the things every screen shares (colours, layout, the
+// moving landscape behind the menus).
+//
+// A Menu is a list of items drawn in a column in the middle of the screen.
+// You move up and down with the arrow keys (or by pointing with the mouse)
+// and choose with Return (or a click). An item with a value - a setting -
+// changes with Left and Right (or Select and Adjust clicks).
+//
+//   const m = new Menu(app, [
+//     { label: 'Play', action: () => app.play('invasion') },
+//     { label: 'Sound', value: () => 'On', change: (step) => ... },
+//   ], { back: () => app.title() });
+//
+// Screens are drawn on a grid of "units": 320 x 256 of them fill a
+// Classic screen, and on a bigger surface each unit is u x u pixels.
+
+import { rgb } from './Surface';
+import { drawText, textWidth } from './Font';
+
+export const COLOURS = {
+  white: rgb(255, 255, 255),
+  black: rgb(0, 0, 0),
+  grey: rgb(160, 164, 180),
+  dim: rgb(100, 106, 130),
+  yellow: rgb(255, 221, 51),
+  orange: rgb(255, 136, 34),
+  red: rgb(238, 51, 34),
+  green: rgb(85, 221, 85),
+  cyan: rgb(102, 238, 255),
+  blue: rgb(40, 60, 140),
+  panel: rgb(8, 12, 30),
+  bar: rgb(30, 60, 150),
+  shaded: rgb(80, 84, 100),
+};
+
+/** The size of a unit in pixels on this surface. */
+export const unitOf = (s) => Math.max(1, Math.floor(s.height / 256));
+
+/**
+ * The layout of a screen: u (unit size), and x0, the left edge of the
+ * middle 320 units, so things can be placed as on a 320 x 256 screen.
+ */
+export function layout(s) {
+  const u = unitOf(s);
+  return { u, x0: Math.round((s.width - 320 * u) / 2), cx: s.width >> 1, W: s.width / u };
+}
+
+/** Text at unit position (x, y) - x measured from the screen's middle. */
+export function say(s, text, x, y, opts = {}) {
+  const { u, cx } = layout(s);
+  return drawText(s, text, cx + x * u, y * u, {
+    scale: (opts.size ?? 1) * u, colour: opts.colour ?? COLOURS.white,
+    shadow: opts.shadow === false ? null : COLOURS.black,
+    shadowOffset: Math.max(1, ((opts.size ?? 1) * u) >> 1),
+    align: opts.align ?? 'centre', smooth: opts.smooth, outline: opts.outline,
+  });
+}
+
+/** A translucent panel (unit coordinates, x from the middle). */
+export function panel(s, x, y, w, h, alpha = 0.7) {
+  const { u, cx } = layout(s);
+  s.shade(cx + x * u, y * u, w * u, h * u, COLOURS.panel, alpha);
+  s.fillRect(cx + x * u, y * u, w * u, u, COLOURS.bar);
+  s.fillRect(cx + x * u, (y + h) * u - u, w * u, u, COLOURS.bar);
+}
+
+export class Menu {
+  /**
+   * items: [{ label, action?, value?, change?, shaded?, help? }]
+   * options: { y (top, in units), spacing (units), back (Escape), width }
+   */
+  constructor(app, items, options = {}) {
+    this.app = app;
+    this.items = items;
+    this.y = options.y ?? 120;
+    this.spacing = options.spacing ?? 12;
+    this.back = options.back ?? null;
+    this.width = options.width ?? 200;
+    this.selected = options.selected ?? 0;
+    this.flash = 0;
+    this.skipShaded(1);
+  }
+
+  get current() { return this.items[this.selected]; }
+
+  isShaded(item) {
+    return typeof item.shaded === 'function' ? item.shaded() : !!item.shaded;
+  }
+
+  skipShaded(step) {
+    for (let n = 0; n < this.items.length && this.isShaded(this.current); n++) {
+      this.selected = (this.selected + step + this.items.length) % this.items.length;
+    }
+  }
+
+  move(step) {
+    this.selected = (this.selected + step + this.items.length) % this.items.length;
+    this.skipShaded(step);
+    this.app.sound.play('uiMove');
+  }
+
+  activate(step = 1) {
+    const it = this.current;
+    if (!it || this.isShaded(it)) return;
+    if (it.change) { it.change(step); this.app.sound.play('uiMove'); return; }
+    if (it.action) { this.app.sound.play('uiSelect'); it.action(); }
+  }
+
+  // Left / Right on a setting: the previous / next value.
+  change(step) {
+    const it = this.current;
+    if (!it?.change || this.isShaded(it)) return;
+    it.change(step);
+    this.app.sound.play('uiMove');
+  }
+
+  /** Handle a key press ({ code, key }); true if it was used. */
+  key(k) {
+    switch (k.code) {
+      case 'ArrowUp': case 'KeyW': this.move(-1); return true;
+      case 'ArrowDown': case 'KeyS': case 'Tab': this.move(1); return true;
+      case 'ArrowLeft': case 'KeyA':
+        this.change(-1);
+        return true;
+      case 'ArrowRight': case 'KeyD':
+        this.change(1);
+        return true;
+      case 'Enter': case 'NumpadEnter': case 'Space': this.activate(1); return true;
+      case 'Escape': case 'Backspace':
+        if (this.back) { this.app.sound.play('uiBack'); this.back(); }
+        return true;
+      default: return false;
+    }
+  }
+
+  // The item under the pointer (surface pixel coordinates), or -1.
+  hit(s, x, y) {
+    const { u, cx } = layout(s);
+    const w = this.width * u;
+    if (x < cx - w / 2 || x > cx + w / 2) return -1;
+    const i = Math.floor((y / u - this.y + 2) / this.spacing);
+    return i >= 0 && i < this.items.length ? i : -1;
+  }
+
+  /** The pointer moved or clicked: { x, y, type: 'move'|'down', button }. */
+  pointer(s, ev) {
+    const i = this.hit(s, ev.x, ev.y);
+    if (i < 0 || this.isShaded(this.items[i])) return false;
+    if (i !== this.selected) { this.selected = i; this.app.sound.play('uiMove'); }
+    if (ev.type === 'down') this.activate(ev.button === 'adjust' ? -1 : 1);
+    return true;
+  }
+
+  draw(s) {
+    this.flash++;
+    const { u, cx } = layout(s);
+    const hasValues = this.items.some((it) => it.value);
+    this.items.forEach((it, i) => {
+      const y = this.y + i * this.spacing;
+      const on = i === this.selected;
+      const shaded = this.isShaded(it);
+      if (on) {
+        // a glowing bar behind the chosen item
+        const glow = 0.55 + 0.25 * Math.sin(this.flash / 8);
+        const left = cx - (this.width / 2) * u, top = (y - 2) * u, h = 11 * u;
+        s.shade(left, top, this.width * u, h, COLOURS.bar, glow);
+        s.fillRect(left, top, 2 * u, h, COLOURS.yellow);
+        s.fillRect(left + (this.width - 2) * u, top, 2 * u, h, COLOURS.yellow);
+      }
+      const c = shaded ? COLOURS.shaded : on ? COLOURS.yellow : COLOURS.white;
+      if (hasValues && it.value) {
+        say(s, it.label, -this.width / 2 + 8, y, { colour: c, align: 'left' });
+        const v = String(it.value());
+        const vc = shaded ? COLOURS.shaded : on ? COLOURS.white : COLOURS.cyan;
+        const right = this.width / 2 - 16;
+        say(s, v, right, y, { colour: vc, align: 'right' });
+        if (on && it.change && !shaded) {
+          // arrows either side: Left and Right change it
+          const vw = textWidth(v, 1);
+          say(s, '<', right - vw - 12, y, { colour: COLOURS.yellow, align: 'left' });
+          say(s, '>', right + 4, y, { colour: COLOURS.yellow, align: 'left' });
+        }
+      } else {
+        say(s, it.label, 0, y, { colour: c });
+      }
+    });
+    const help = this.current?.help;
+    if (help) {
+      const text = typeof help === 'function' ? help() : help;
+      say(s, text, 0, 244, { colour: COLOURS.grey });
+    }
+  }
+}

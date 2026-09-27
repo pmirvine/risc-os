@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lander II sounds</title>
+<!--
+  Developer page for Lander II's sound effects (tools/lander2/!Lander2/Sound, SfxOrig, SfxArcade,
+  SfxKit). Serve the repo with `node serve.mjs` and open
+  http://localhost:8371/tools/lander2/dev/sounds.html
+
+  - every one-shot, in both sets, one button each (Shift-click: panned hard left, Alt: right)
+  - the loops, driven by a pretend world (thrust / hover, refuel level, a bomber and a pest you can
+    move about, low fuel)
+  - stress tests: autofire at 25 shots a second, a pile of explosions (voice limiting)
+  - a levels table: every sound rendered offline through the whole Sound chain (compressor and all)
+    with its peak and loudness, and the difference between the two sets
+  The modules have no file extension (they are RISC OS JSScript files), so they are fetched as text
+  and imported from blob URLs with their './Name' imports rewritten, as src/core/jsrun.js does.
+-->
+<style>
+  :root { --bg: #15171c; --panel: #1f232b; --ink: #e6e8ec; --dim: #9aa3b2; --line: #333a46;
+    --orig: #e0a040; --arc: #4fc3f7; --bad: #ff6b6b; --ok: #7bd88f; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--ink);
+    font: 14px/1.4 system-ui, sans-serif; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; color: var(--dim); font-weight: 600; }
+  p { margin: 0 0 12px; color: var(--dim); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; margin: 0 0 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; }
+  .row { display: flex; align-items: center; gap: 6px; }
+  .row span { flex: 1; font-family: ui-monospace, monospace; font-size: 13px; overflow: hidden;
+    text-overflow: ellipsis; }
+  button { background: #2a303b; color: var(--ink); border: 1px solid var(--line); border-radius: 5px;
+    padding: 4px 10px; font: inherit; cursor: pointer; }
+  button:hover { background: #343b48; }
+  button.o { border-color: var(--orig); color: var(--orig); }
+  button.a { border-color: var(--arc); color: var(--arc); }
+  label { display: inline-flex; align-items: center; gap: 6px; margin: 0 14px 8px 0; }
+  input[type=range] { width: 140px; }
+  table { border-collapse: collapse; width: 100%; font: 12px ui-monospace, monospace; }
+  th, td { padding: 3px 8px; border-bottom: 1px solid var(--line); text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  .bad { color: var(--bad); } .ok { color: var(--ok); }
+  #status { font-family: ui-monospace, monospace; color: var(--dim); }
+  .wrap { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>Lander II sounds</h1>
+<p>Click anything to start audio. <span id="status">loading...</span></p>
+
+<section>
+  <h2>Output</h2>
+  <label>Volume <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8"></label>
+  <label>Pan for one-shots <input id="pan" type="range" min="-1" max="1" step="0.05" value="0"></label>
+  <button id="autofire">Autofire 2 s</button>
+  <button id="pile">20 explosions</button>
+  <button id="stop">Silence</button>
+  <button id="demo">Demo game 30 s</button>
+</section>
+
+<section>
+  <h2>One-shots: <span style="color:var(--orig)">Original</span> /
+    <span style="color:var(--arc)">Arcade</span></h2>
+  <div class="grid" id="shots"></div>
+</section>
+
+<section>
+  <h2>Loops (a pretend world)</h2>
+  <label>Set <select id="loopset"><option>original</option><option>arcade</option></select></label>
+  <label>Engine <select id="engine"><option>off</option><option>hover</option>
+    <option>thrust</option></select></label>
+  <label><input id="refuel" type="checkbox"> Refuelling</label>
+  <label>Fuel <input id="fuel" type="range" min="0" max="1" step="0.01" value="0.3"></label>
+  <label><input id="lowfuel" type="checkbox"> Low fuel</label><br>
+  <label><input id="bomber" type="checkbox"> Bomber</label>
+  <label>bomber x <input id="bx" type="range" min="-30" max="30" step="0.5" value="-20"></label>
+  <label><input id="fly" type="checkbox" checked> flies past</label>
+  <label><input id="pest" type="checkbox"> Pest</label>
+  <label>pest distance <input id="pd" type="range" min="0" max="30" step="0.5" value="4"></label>
+</section>
+
+<section>
+  <h2>Levels (rendered offline through the whole chain)</h2>
+  <button id="measure">Measure</button>
+  <div class="wrap"><table id="levels"></table></div>
+</section>
+
+<script type="module">
+const BASE = '../!Lander2/';
+const RE = /(\b(?:import|export)\b[^'";]*?\bfrom\s*|\bimport\s*\(?\s*)(['"])([^'"\n]+)\2/g;
+const cache = {};
+function load(name) {
+  return (cache[name] ??= (async () => {
+    let src = await (await fetch(BASE + name, { cache: 'no-cache' })).text();
+    const urls = {};
+    for (const m of src.matchAll(RE)) {
+      if (m[3].startsWith('./')) urls[m[3]] = await load(m[3].slice(2));
+    }
+    src = src.replace(RE, (all, pre, q, s) => (urls[s] ? pre + q + urls[s] + q : all));
+    return URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  })());
+}
+const { Sound, SETS, SOUND_NAMES, LOOP_NAMES } = await import(await load('Sound'));
+const { levels } = await import(await load('SfxKit'));
+const $ = (id) => document.getElementById(id);
+const status = (t) => { $('status').textContent = t; };
+
+// one Sound per set, so both can be compared side by side
+const snd = {
+  original: new Sound({ set: 'original', volume: 0.8 }),
+  arcade: new Sound({ set: 'arcade', volume: 0.8 }),
+};
+const wake = () => { for (const s of Object.values(snd)) s.resume(); };
+addEventListener('pointerdown', wake, true);
+addEventListener('keydown', wake, true);
+$('vol').oninput = () => { for (const s of Object.values(snd)) s.setVolume(+$('vol').value); };
+$('stop').onclick = () => { for (const s of Object.values(snd)) s.silence(); };
+const errors = () => Object.values(snd).map((s) => s.lastError).filter(Boolean);
+
+for (const name of SOUND_NAMES) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<span>${name}</span><button class="o">Orig</button><button class="a">Arc</button>`;
+  const [o, a] = row.querySelectorAll('button');
+  const go = (set, ev) => {
+    wake();
+    const pan = ev.shiftKey ? -1 : ev.altKey ? 1 : +$('pan').value;
+    snd[set].last[name] = -1e9;              // the page ignores the repeat limits
+    snd[set].play(name, { pan });
+  };
+  o.onclick = (ev) => go('original', ev);
+  a.onclick = (ev) => go('arcade', ev);
+  $('shots').append(row);
+}
+
+// Stress tests: which set is chosen by the loop panel's selector.
+const cur = () => snd[$('loopset').value];
+$('autofire').onclick = () => {
+  wake();
+  let n = 0;
+  const t = setInterval(() => { cur().play('fire'); if (++n >= 50) clearInterval(t); }, 40);
+};
+$('pile').onclick = () => {
+  wake();
+  for (let i = 0; i < 20; i++) {
+    setTimeout(() => {
+      const s = cur(), name = i % 4 ? 'explodeSmall' : 'explodeLarge';
+      s.last[name] = -1e9;
+      s.play(name, { pan: Math.random() * 2 - 1, gain: 0.4 + Math.random() * 0.6 });
+    }, i * 30);
+  }
+};
+
+// The pretend world for the loops: the player at (32, 2, 32) on a 64-tile world.
+const terrain = { period: 64, delta: (a, b) => ((b - a + 96) % 64 + 64) % 64 - 32 };
+const world = {
+  terrain, state: 'playing', camera: { x: 32, y: 0, z: 32 },
+  player: { x: 32, y: 2, z: 32, vx: 0, vy: 0, vz: 0, alive: true, fuel: 1000, maxFuel: 5120 },
+  enemies: [],
+};
+let bx = -20;
+function tick() {
+  const p = world.player, e = $('engine').value;
+  p.thrusting = e === 'thrust';
+  p.hovering = e === 'hover';
+  p.refuelling = p.landed = $('refuel').checked;
+  p.fuel = ($('lowfuel').checked ? 0.1 : +$('fuel').value) * p.maxFuel;
+  world.enemies = [];
+  if ($('bomber').checked) {
+    if ($('fly').checked) {
+      bx += 12 / 60;
+      if (bx > 30) bx = -30;
+      $('bx').value = bx;
+    } else bx = +$('bx').value;
+    world.enemies.push({ type: 'bomber', x: terrain.delta(0, 32 + bx) + 32, y: -2, z: 36,
+      vx: $('fly').checked ? 12 / 50 : 0, vy: 0, vz: 0 });
+  }
+  if ($('pest').checked) {
+    const a = performance.now() / 1500, d = +$('pd').value;
+    world.enemies.push({ type: 'pest', x: 32 + d * Math.cos(a), y: 1, z: 32 + d * Math.sin(a),
+      vx: 0, vy: 0, vz: 0 });
+  }
+  for (const [name, s] of Object.entries(snd)) {
+    if (!demo) s.frame(name === $('loopset').value ? world : null, []);
+  }
+  const err = errors();
+  status(err.length ? 'ERROR: ' + err[0] : 'running');
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+$('loopset').onchange = () => { for (const s of Object.values(snd)) s.silence(); };
+
+// ---- Levels: every sound through a whole Sound (compressor, master) in an OfflineAudioContext
+const SR = 44100;
+async function renderOffline(set, name, loop) {
+  // (sounds start 0.3 s in: a brand new compressor holds back its first moments)
+  const dur = loop ? 1.5 : 0.5 + lengthOf(set, name);
+  const ctx = new OfflineAudioContext(2, Math.ceil(dur * SR), SR);
+  const s = new Sound({ set, volume: 1, desktopGain: 1, context: ctx });
+  if (loop) {
+    const w = structuredClone({ ...world, terrain: undefined });
+    w.terrain = terrain;
+    Object.assign(w.player, { thrusting: loop === 'thrust', hovering: false,
+      refuelling: loop === 'refuel', landed: loop === 'refuel', fuel: 0.5 * 5120 });
+    w.enemies = loop === 'bomber' || loop === 'pest'
+      ? [{ type: loop, x: 32, y: 2, z: 32.5, vx: 0, vy: 0, vz: 0 }] : [];
+    s.frame(w, []);
+  } else if (!s.play(name, { delay: 0.3 })) throw new Error(`${set} ${name} did not play`);
+  if (s.lastError) throw s.lastError;
+  const buf = await ctx.startRendering();
+  const L = buf.getChannelData(0), R = buf.getChannelData(1);
+  const m = new Float32Array(L.length);
+  for (let i = 0; i < m.length; i++) m[i] = (L[i] + R[i]) / 2;
+  const from = Math.round((loop ? 0.5 : 0.3) * SR);
+  let peak = 0;
+  for (let i = 0; i < L.length; i++) peak = Math.max(peak, Math.abs(L[i]), Math.abs(R[i]));
+  const lv = levels(m.subarray(from), SR);
+  return { peak: 20 * Math.log10(Math.max(peak, 1e-9)), loud: lv.loud,
+    seconds: loop ? 1 : dur };
+}
+const lengths = {};
+function lengthOf(set, name) {   // seconds, from the buffer Sound makes for it
+  const key = set + name;
+  if (!(key in lengths)) {
+    const tmp = new OfflineAudioContext(1, 1, SR);
+    const s = new Sound({ set, context: tmp });
+    lengths[key] = s._buffer('sound', name).duration;
+  }
+  return lengths[key];
+}
+async function measure() {
+  const rows = [];
+  for (const [kind, names] of [['sound', SOUND_NAMES], ['loop', LOOP_NAMES]]) {
+    for (const name of names) {
+      const r = { name: kind === 'loop' ? name + ' (loop)' : name };
+      for (const set of ['original', 'arcade']) {
+        r[set] = await renderOffline(set, name, kind === 'loop' ? name : null);
+      }
+      rows.push(r);
+    }
+  }
+  return rows;
+}
+function show(rows) {
+  const f = (x) => x.toFixed(1);
+  const cls = (r) => (r.peak > -0.5 ? 'bad' : '');
+  let h = '<tr><th>sound</th><th>orig peak</th><th>orig loud</th><th>arc peak</th>'
+    + '<th>arc loud</th><th>arc - orig</th></tr>';
+  for (const r of rows) {
+    const d = r.arcade.loud - r.original.loud;
+    h += `<tr><td>${r.name}</td><td class="${cls(r.original)}">${f(r.original.peak)}</td>`
+      + `<td>${f(r.original.loud)}</td><td class="${cls(r.arcade)}">${f(r.arcade.peak)}</td>`
+      + `<td>${f(r.arcade.loud)}</td>`
+      + `<td class="${Math.abs(d) > 3 ? 'bad' : 'ok'}">${d > 0 ? '+' : ''}${f(d)}</td></tr>`;
+  }
+  $('levels').innerHTML = h;
+}
+$('measure').onclick = async () => {
+  status('measuring...');
+  try { show(await measure()); status('measured'); } catch (e) { status('ERROR: ' + e); }
+};
+// ---- A real World flown by its autopilot, heard through the loop panel's set
+let demo = null;
+async function runDemo(seconds = 30, speed = 1) {
+  const { World, autopilotInput } = await import(await load('World'));
+  const w = new World({ mode: 'invasion', difficulty: 'normal', seed: 4321, demo: true });
+  const counts = {};
+  let ticks = 0, t0 = performance.now();
+  demo = { w, counts };
+  return new Promise((resolve) => {
+    const step = () => {
+      const due = Math.floor((performance.now() - t0) / 20 * speed);
+      const frameEvents = [];
+      while (ticks < due) {
+        w.tick(autopilotInput(w));
+        ticks++;
+        for (const e of w.events) { frameEvents.push(e); counts[e.type] = (counts[e.type] ?? 0) + 1; }
+      }
+      cur().frame(w, frameEvents);
+      if (ticks < seconds * 50 && demo) requestAnimationFrame(step);
+      else { demo = null; cur().frame(null); resolve({ ticks, counts, errors: errors().map(String) }); }
+    };
+    requestAnimationFrame(step);
+  });
+}
+$('demo').onclick = () => { wake(); runDemo().then((r) => status(JSON.stringify(r.counts))); };
+
+window.lander2Sounds = { snd, measure, runDemo, SOUND_NAMES, LOOP_NAMES, world, errors };
+status('ready');
+</script>
+</body>
+</html>

@@ -1,0 +1,514 @@
+// Lander II - Models: the 3D shapes of everything in the game.
+//
+// Every object is a "blueprint", as in David Braben's Lander (1987): a
+// list of corners (vertices) and a list of flat, single-coloured
+// triangles (faces). Units are tiles, and y points DOWN, so a tree's
+// vertices have negative y (they stand up from the ground).
+//
+//   MODELS.name = {
+//     vertices: [[x, y, z], ...],
+//     faces: [{ normal: [x, y, z], v: [a, b, c], colour: 0xRGB }, ...],
+//     rotates,   // true: the object turns (the renderer rotates it and
+//                // skips the faces that point away from the eye)
+//     shadow,    // true: it casts a shadow on the ground
+//     sort,      // true: sort its faces far to near (shapes with parts)
+//     radius,    // the furthest vertex from the centre (for culling)
+//   }
+//
+// For a rotating object, x is along the nose, y along the roof (out of
+// the floor, so down when level) and z out of the right-hand side, the
+// three vectors of Maths.orientation().
+//
+// Colours are Lander's &RGB: four bits each of red, green and blue.
+// Each face is lit by the rule in the original's DrawObject: the more a
+// face points up (and a little to the left), the more white is added:
+//
+//   level = 8 * (1 - normal.y) + (normal.x < 0 ? 1 : 0) - 5  (at least 0)
+//   each of r, g, b = min(15, colour + level)
+//
+// The first half of this file is the original's blueprints, number for
+// number: vertex coordinates are 32-bit values where a tile is &01000000
+// (2^24), and normals are unit vectors scaled by 2^31. They come from
+// Mark Moxon's documented source of Lander (lander.bbcelite.com). The
+// second half adds the craft of a Zarch-like game in the same style.
+
+// ------------------------------------------------------------------------
+// Helpers
+
+const V = 16777216;            // 2^24: one tile in the original's units
+const N = 2147483648;          // 2^31: 1.0 for a normal vector
+
+/**
+ * A blueprint in the original's format: flags (bit 0 rotates, bit 1
+ * casts a shadow), vertices as 32-bit x, y, z and faces as normal x, y,
+ * z, vertex 1, 2, 3 and colour.
+ */
+function original(flags, verts, faces) {
+  const vertices = [];
+  for (let i = 0; i < verts.length; i += 3) {
+    vertices.push([(verts[i] | 0) / V, (verts[i + 1] | 0) / V, (verts[i + 2] | 0) / V]);
+  }
+  const list = [];
+  for (let i = 0; i < faces.length; i += 7) {
+    list.push({
+      normal: [(faces[i] | 0) / N, (faces[i + 1] | 0) / N, (faces[i + 2] | 0) / N],
+      v: [faces[i + 3], faces[i + 4], faces[i + 5]],
+      colour: faces[i + 6],
+    });
+  }
+  return finish({ vertices, faces: list, rotates: !!(flags & 1), shadow: !!(flags & 2) });
+}
+
+/** Work out the bounding radius. */
+function finish(m) {
+  let r = 0;
+  for (const [x, y, z] of m.vertices) r = Math.max(r, Math.hypot(x, y, z));
+  m.radius = r;
+  m.sort = !!m.sort;
+  return m;
+}
+
+/**
+ * A new solid shape. parts is a list of { vertices, faces: [[a, b, c,
+ * colour], ...] } convex pieces; each face normal is worked out from its
+ * corners and made to point away from the middle of its piece, so the
+ * corners can be listed in any order. A face written [a, b, c, colour,
+ * true] is a thin fin that is seen from both sides.
+ */
+function solid(parts, opts = {}) {
+  const vertices = [], faces = [];
+  for (const p of parts) {
+    const base = vertices.length;
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of p.vertices) { cx += v[0]; cy += v[1]; cz += v[2]; }
+    const n = p.vertices.length;
+    const mid = p.centre || [cx / n, cy / n, cz / n];
+    for (const v of p.vertices) vertices.push(v);
+    for (const [a, b, c, colour, twoSided] of p.faces) {
+      const A = p.vertices[a], B = p.vertices[b], C = p.vertices[c];
+      const ux = B[0] - A[0], uy = B[1] - A[1], uz = B[2] - A[2];
+      const wx = C[0] - A[0], wy = C[1] - A[1], wz = C[2] - A[2];
+      let nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+      const len = Math.hypot(nx, ny, nz) || 1;
+      nx /= len; ny /= len; nz /= len;
+      // point outwards: away from the middle of the piece
+      const ox = A[0] - mid[0], oy = A[1] - mid[1], oz = A[2] - mid[2];
+      if (nx * ox + ny * oy + nz * oz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      faces.push({ normal: [nx, ny, nz], v: [a + base, b + base, c + base], colour,
+        twoSided: !!twoSided });
+    }
+  }
+  return finish({ vertices, faces, rotates: opts.rotates !== false,
+    shadow: opts.shadow !== false, sort: !!opts.sort });
+}
+
+/** A ring of n points of radius r at height y (starting on the nose). */
+function ring(n, r, y, turn = 0) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i + turn) * Math.PI * 2 / n;
+    pts.push([r * Math.cos(a), y, r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+/**
+ * A double cone: a ring of points with an apex above (top) and below
+ * (bottom), coloured by the lists (used round the ring in turn).
+ */
+function bicone(equator, top, bottom, topColours, bottomColours) {
+  const n = equator.length;
+  const vertices = [...equator, top, bottom];
+  const faces = [];
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    faces.push([i, j, n, topColours[i % topColours.length]]);
+    faces.push([i, j, n + 1, bottomColours[i % bottomColours.length]]);
+  }
+  return { vertices, faces };
+}
+
+/** A copy of a model with every vertex multiplied by k. */
+function scaled(m, k) {
+  return finish({ ...m, vertices: m.vertices.map(([x, y, z]) => [x * k, y * k, z * k]),
+    faces: m.faces.map((f) => ({ ...f })) });
+}
+
+/** A copy of a model with new face colours (a list, one per face). */
+function recoloured(m, colours) {
+  return finish({ ...m, faces: m.faces.map((f, i) => ({ ...f, colour: colours[i] })) });
+}
+
+// ------------------------------------------------------------------------
+// The original blueprints (Lander.arm: objectRock, objectPyramid ...)
+
+// A falling rock: a tumbling grey octahedron.
+const rock = original(3, [
+  0x00000000, 0x00000000, 0x00A00000, 0x00A00000, 0x00A00000, 0x00000000,
+  0xFF600000, 0x00A00000, 0x00000000, 0x00A00000, 0xFF600000, 0x00000000,
+  0xFF600000, 0xFF600000, 0x00000000, 0x00000000, 0x00000000, 0xFF600000,
+], [
+  0x00000000, 0x54DA5200, 0x54DA5200, 0, 1, 2, 0x444,
+  0x54DA5200, 0x00000000, 0x54DA5200, 0, 3, 1, 0x444,
+  0x00000000, 0xAB25AE00, 0x54DA5200, 0, 4, 3, 0x444,
+  0xAB25AE00, 0x00000000, 0x54DA5200, 0, 2, 4, 0x444,
+  0x00000000, 0x54DA5200, 0xAB25AE00, 5, 1, 2, 0x444,
+  0x54DA5200, 0x00000000, 0xAB25AE00, 5, 3, 1, 0x444,
+  0x00000000, 0xAB25AE00, 0xAB25AE00, 5, 4, 3, 0x444,
+  0xAB25AE00, 0x00000000, 0xAB25AE00, 5, 2, 4, 0x444,
+]);
+
+// A spinning pyramid, point down: in the original but never used.
+const pyramid = original(1, [
+  0x00000000, 0x01000000, 0x00000000, 0x00C00000, 0xFF800000, 0x00C00000,
+  0xFF400000, 0xFF800000, 0x00C00000, 0x00C00000, 0xFF800000, 0xFF400000,
+  0xFF400000, 0xFF800000, 0xFF400000,
+], [
+  0x00000000, 0x35AA66D2, 0x6B54CDA5, 0, 1, 2, 0x800,
+  0x6B54CDA5, 0x35AA66D2, 0x00000000, 0, 3, 1, 0x088,
+  0x00000000, 0x35AA66D2, 0x94AB325B, 0, 4, 3, 0x880,
+  0x94AB325B, 0x35AA66D2, 0x00000000, 0, 2, 4, 0x808,
+  0x00000000, 0x88000000, 0x00000000, 1, 2, 3, 0x444,
+  0x00000000, 0x88000000, 0x00000000, 2, 3, 4, 0x008,
+]);
+
+// The player's ship (the "hoverplane"), with its orange exhaust plate.
+const ship = original(3, [
+  0x01000000, 0x00500000, 0x00800000, 0x01000000, 0x00500000, 0xFF800000,
+  0x00000000, 0x000A0000, 0xFECCCCCD, 0xFF19999A, 0x00500000, 0x00000000,
+  0x00000000, 0x000A0000, 0x01333333, 0xFFE66667, 0xFF880000, 0x00000000,
+  0x00555555, 0x00500000, 0x00400000, 0x00555555, 0x00500000, 0xFFC00000,
+  0xFFCCCCCD, 0x00500000, 0x00000000,
+], [
+  0x457C441A, 0x9E2A1F4C, 0x00000000, 0, 1, 5, 0x080,
+  0x35F5D83B, 0x9BC03EC1, 0xDA12D71D, 1, 2, 5, 0x040,
+  0x35F5D83B, 0x9BC03EC1, 0x25ED28E3, 0, 5, 4, 0x040,
+  0xB123D51C, 0xAF3F50EE, 0xD7417278, 2, 3, 5, 0x040,
+  0xB123D51D, 0xAF3F50EE, 0x28BE8D88, 3, 4, 5, 0x040,
+  0xF765D8CD, 0x73242236, 0xDF4FD176, 1, 2, 3, 0x088,
+  0xF765D8CD, 0x73242236, 0x20B02E8A, 0, 3, 4, 0x088,
+  0x00000000, 0x78000000, 0x00000000, 0, 1, 3, 0x044,
+  0x00000000, 0x78000000, 0x00000000, 6, 7, 8, 0xC80,
+]);
+
+const smallTree = original(2, [
+  0x00300000, 0xFE800000, 0x00300000, 0xFFD9999A, 0x00000000, 0x00000000,
+  0x00266666, 0x00000000, 0x00000000, 0x00000000, 0xFEF33334, 0xFF400000,
+  0x00800000, 0xFF400000, 0xFF800000, 0xFF400000, 0xFECCCCCD, 0xFFD55556,
+  0xFF800000, 0xFEA66667, 0x00400000, 0x00800000, 0xFE59999A, 0x002AAAAA,
+  0x00C00000, 0xFEA66667, 0xFFC00000, 0xFFA00000, 0xFECCCCCD, 0x00999999,
+  0x00C00000, 0xFF400000, 0x00C00000,
+], [
+  0x14A01873, 0xAF8F9F93, 0x56A0681E, 0, 9, 10, 0x040,
+  0x00000000, 0x00000000, 0x00000000, 0, 1, 2, 0x400,
+  0x499A254E, 0xB123FC2C, 0xCB6D5299, 0, 3, 4, 0x080,
+  0xE4D2EEBE, 0x8DC82837, 0xE72FE5E9, 0, 5, 6, 0x080,
+  0xD5710585, 0xB29EF364, 0xAEC07EB3, 0, 7, 8, 0x080,
+]);
+
+const tallTree = original(2, [
+  0x0036DB6D, 0xFD733334, 0x00300000, 0xFFD00000, 0x00000000, 0x00000000,
+  0x00300000, 0x00000000, 0x00000000, 0x00000000, 0xFE0CCCCD, 0xFF400000,
+  0x00800000, 0xFE59999A, 0xFF800000, 0xFF533334, 0xFE333334, 0xFFC92493,
+  0xFF400000, 0xFEA66667, 0x00600000, 0x00000000, 0xFF19999A, 0xFF666667,
+  0xFF800000, 0xFF400000, 0xFFA00000, 0xFFA00000, 0xFE800000, 0x00999999,
+  0x00C00000, 0xFECCCCCD, 0x00C00000, 0xFFB33334, 0xFF19999A, 0x00E66666,
+  0x00800000, 0xFF400000, 0x00C00000, 0x00300000, 0xFE59999A, 0x00300000,
+], [
+  0xFD3D01DD, 0xD2CB371E, 0x6F20024E, 0, 9, 10, 0x040,
+  0x1E6F981A, 0xBB105ECE, 0x5D638B16, 13, 11, 12, 0x080,
+  0x00000000, 0x00000000, 0x00000000, 0, 1, 2, 0x400,
+  0x49D96509, 0xB8E72762, 0xC19E3A19, 0, 3, 4, 0x080,
+  0xAD213B74, 0xB641CA5D, 0x2DC40650, 0, 5, 6, 0x040,
+  0xC9102051, 0xAC846CAD, 0xBD92A8C1, 13, 7, 8, 0x040,
+]);
+
+// What is left of a tree after it has been shot (two versions).
+const remainsLeft = original(0, [
+  0xFFD9999A, 0x00000000, 0x00000000, 0x00266666, 0x00000000, 0x00000000,
+  0x002B3333, 0xFFC00000, 0x00000000, 0x00300000, 0xFF800000, 0x00000000,
+  0xFFD55556, 0xFECCCCCD, 0x00000000,
+], [0, 0, 0, 0, 1, 3, 0x000, 0, 0, 0, 2, 3, 4, 0x000]);
+
+const remainsRight = original(0, [
+  0x002AAAAA, 0x00000000, 0x00000000, 0xFFD55556, 0x00000000, 0x00000000,
+  0xFFD4CCCD, 0xFFD00000, 0x00000000, 0xFFD00000, 0xFFA00000, 0x00000000,
+  0x002AAAAA, 0xFEA66667, 0x00000000,
+], [0, 0, 0, 0, 1, 3, 0x000, 0, 0, 0, 2, 3, 4, 0x000]);
+
+const firTree = original(2, [
+  0xFFA00000, 0xFFC92493, 0xFFC92493, 0x00600000, 0xFFC92493, 0xFFC92493,
+  0x00000000, 0xFE333334, 0x0036DB6D, 0x00266666, 0x00000000, 0x00000000,
+  0xFFD9999A, 0x00000000, 0x00000000,
+], [
+  0, 0, 0, 2, 3, 4, 0x400,
+  0x00000000, 0xE0B0E050, 0x8C280943, 0, 1, 2, 0x040,
+]);
+
+const gazebo = original(2, [
+  0x00000000, 0xFF000000, 0x00000000, 0xFF800000, 0xFF400000, 0x00800000,
+  0xFF800000, 0xFF400000, 0xFF800000, 0x00800000, 0xFF400000, 0xFF800000,
+  0x00800000, 0xFF400000, 0x00800000, 0xFF800000, 0x00000000, 0x00800000,
+  0xFF800000, 0x00000000, 0xFF800000, 0x00800000, 0x00000000, 0xFF800000,
+  0x00800000, 0x00000000, 0x00800000, 0xFF99999A, 0xFF400000, 0x00800000,
+  0xFF99999A, 0xFF400000, 0xFF800000, 0x00666666, 0xFF400000, 0xFF800000,
+  0x00666666, 0xFF400000, 0x00800000,
+], [
+  0x00000000, 0x00000000, 0x78000000, 1, 5, 9, 0x444,
+  0x00000000, 0x00000000, 0x88000000, 2, 6, 10, 0x444,
+  0x00000000, 0x94AB325B, 0x35AA66D2, 0, 1, 4, 0x400,
+  0x00000000, 0x00000000, 0x88000000, 3, 7, 11, 0x444,
+  0x00000000, 0x00000000, 0x78000000, 4, 8, 12, 0x444,
+  0xCA55992E, 0x94AB325B, 0x00000000, 0, 1, 2, 0x840,
+  0x35AA66D2, 0x94AB325B, 0x00000000, 0, 3, 4, 0x840,
+  0x00000000, 0x94AB325B, 0xCA55992E, 0, 2, 3, 0x400,
+]);
+
+const building = original(0, [
+  0xFF19999A, 0xFF266667, 0x00000000, 0xFF400000, 0xFF266667, 0x00000000,
+  0x00C00000, 0xFF266667, 0x00000000, 0x00E66666, 0xFF266667, 0x00000000,
+  0xFF19999A, 0xFF8CCCCD, 0x00A66666, 0xFF19999A, 0xFF8CCCCD, 0xFF59999A,
+  0x00E66666, 0xFF8CCCCD, 0x00A66666, 0x00E66666, 0xFF8CCCCD, 0xFF59999A,
+  0xFF400000, 0xFF666667, 0x00800000, 0xFF400000, 0xFF666667, 0xFF800000,
+  0x00C00000, 0xFF666667, 0x00800000, 0x00C00000, 0xFF666667, 0xFF800000,
+  0xFF400000, 0x00000000, 0x00800000, 0xFF400000, 0x00000000, 0xFF800000,
+  0x00C00000, 0x00000000, 0x00800000, 0x00C00000, 0x00000000, 0xFF800000,
+], [
+  0x00000000, 0x99CD0E6D, 0x3EE445CC, 0, 4, 6, 0x400,
+  0x00000000, 0x99CD0E6D, 0x3EE445CC, 0, 3, 6, 0x400,
+  0x88000000, 0x00000000, 0x00000000, 1, 8, 9, 0xDDD,
+  0x78000000, 0x00000000, 0x00000000, 2, 10, 11, 0x555,
+  0x88000000, 0x00000000, 0x00000000, 8, 12, 13, 0xFFF,
+  0x88000000, 0x00000000, 0x00000000, 8, 9, 13, 0xFFF,
+  0x78000000, 0x00000000, 0x00000000, 10, 14, 15, 0x777,
+  0x78000000, 0x00000000, 0x00000000, 10, 11, 15, 0x777,
+  0x00000000, 0x00000000, 0x88000000, 9, 13, 15, 0xBBB,
+  0x00000000, 0x00000000, 0x88000000, 9, 11, 15, 0xBBB,
+  0x00000000, 0x99CD0E6D, 0xC11BBA34, 0, 5, 7, 0x800,
+  0x00000000, 0x99CD0E6D, 0xC11BBA34, 0, 3, 7, 0x800,
+]);
+
+const smokingBuilding = original(0, [
+  0xFF400000, 0x00000001, 0x00800000, 0xFF400000, 0x00000001, 0xFF800000,
+  0x00C00000, 0x00000001, 0x00800000, 0x00C00000, 0x00000001, 0xFF800000,
+  0xFF400000, 0xFF99999A, 0x00800000, 0x00C00000, 0xFFB33334, 0xFF800000,
+], [
+  0x00000000, 0x78000000, 0x00000000, 0, 1, 2, 0x000,
+  0x00000000, 0x78000000, 0x00000000, 1, 2, 3, 0x000,
+  0x00000000, 0x00000000, 0x78000000, 0, 2, 4, 0x333,
+  0x88000000, 0x00000000, 0x00000000, 0, 1, 4, 0x666,
+  0x78000000, 0x00000000, 0x00000000, 2, 3, 5, 0x555,
+  0x00000000, 0x00000000, 0x88000001, 1, 3, 5, 0x777,
+]);
+
+const smokingGazebo = original(2, [
+  0x00000000, 0xFF8CCCCD, 0xFFF00000, 0x00199999, 0xFF8CCCCD, 0xFFF00000,
+  0x00800000, 0x00000000, 0x00800000, 0xFF800000, 0x00000000, 0x00800000,
+  0x00800000, 0x00000000, 0xFF800000, 0xFF800000, 0x00000000, 0xFF800000,
+], [
+  0x00000000, 0xA24BB5BE, 0x4AF6A1AD, 0, 1, 2, 0x000,
+  0x00000000, 0xA24BB5BE, 0x4AF6A1AD, 0, 1, 3, 0x333,
+  0x00000000, 0xAC59C060, 0xA9F5EA98, 0, 1, 4, 0x444,
+  0x00000000, 0xAC59C060, 0xA9F5EA98, 0, 1, 5, 0x000,
+]);
+
+// The three rockets on the launch pad.
+const rocket = original(2, [
+  0x00000000, 0xFE400000, 0x00000000, 0xFFC80000, 0xFFD745D2, 0x00380000,
+  0xFFC80000, 0xFFD745D2, 0xFFC80000, 0x00380000, 0xFFD745D2, 0x00380000,
+  0x00380000, 0xFFD745D2, 0xFFC80000, 0xFF900000, 0x00000000, 0x00700000,
+  0xFF900000, 0x00000000, 0xFF900000, 0x00700000, 0x00000000, 0x00700000,
+  0x00700000, 0x00000000, 0xFF900000, 0xFFE40000, 0xFF071C72, 0x001C0000,
+  0xFFE40000, 0xFF071C72, 0xFFE40000, 0x001C0000, 0xFF071C72, 0x001C0000,
+  0x001C0000, 0xFF071C72, 0xFFE40000,
+], [
+  0, 0, 0, 9, 1, 5, 0xCC0,
+  0, 0, 0, 11, 3, 7, 0xCC0,
+  0x00000000, 0xEFA75F67, 0x76E1A76B, 0, 1, 3, 0xC00,
+  0x891E5895, 0xEFA75F67, 0x00000000, 0, 1, 2, 0x800,
+  0x76E1A76B, 0xEFA75F67, 0x00000000, 3, 0, 4, 0x800,
+  0x00000000, 0xEFA75F67, 0x891E5895, 0, 2, 4, 0xC00,
+  0, 0, 0, 10, 2, 6, 0xCC0,
+  0, 0, 0, 12, 4, 8, 0xCC0,
+]);
+
+// ------------------------------------------------------------------------
+// New craft for Lander II, in the same low-polygon style. Base colours
+// are dark: the lighting rule adds up to ten levels of white on top.
+
+// Seeder: a blue flying saucer that sprays the virus.
+const saucerTop = [0x00A, 0x008];
+const seeder = solid([bicone(ring(8, 0.55, 0), [0, -0.28, 0], [0, 0.14, 0],
+  saucerTop, [0x004])]);
+
+// A landed seeder: yellow underside and four legs (thin fins) with its
+// feet 0.45 tiles below its centre.
+const legs = { vertices: [], faces: [] };
+for (let i = 0; i < 4; i++) {
+  const a = (i + 0.5) * Math.PI / 2, c = Math.cos(a), s = Math.sin(a);
+  const k = legs.vertices.length;
+  legs.vertices.push([0.42 * c, 0.02, 0.42 * s], [0.25 * c, 0.1, 0.25 * s],
+    [0.55 * c, 0.45, 0.55 * s]);
+  legs.faces.push([k, k + 1, k + 2, 0xCC0, true]);
+}
+const seederLanded = solid([
+  bicone(ring(8, 0.55, 0), [0, -0.28, 0], [0, 0.14, 0], saucerTop, [0x660]),
+  legs,
+], { sort: true });
+
+// Drone: red and brown on top, yellow underneath.
+const droneShape = (top, under) => solid([bicone(
+  [[0.6, 0, 0], [-0.45, 0, 0.45], [-0.45, 0, -0.45]],
+  [-0.3, -0.3, 0], [-0.3, 0.15, 0], top, under)]);
+const drone = droneShape([0x820, 0x410, 0x610], [0x880, 0x440, 0x660]);
+
+// Mutant: a drone gone bad - spikier, red and purple.
+const mutant = solid([bicone(
+  [[0.7, 0, 0], [0, 0, 0.5], [-0.45, 0, 0], [0, 0, -0.5]],
+  [-0.05, -0.42, 0], [0, 0.3, 0], [0x900, 0x606, 0x700, 0x505], [0x404, 0x303])]);
+
+// Bomber: big, flat and fast; cyan and blue.
+const bomber = solid([bicone(
+  [[1.2, 0, 0], [0.3, 0, 1.0], [-0.9, 0, 0.7], [-0.9, 0, -0.7], [0.3, 0, -1.0]],
+  [-0.1, -0.25, 0], [-0.1, 0.15, 0], [0x077, 0x055, 0x066, 0x055, 0x066],
+  [0x025, 0x014])]);
+
+// Pest: a small magenta and yellow octahedron.
+const pest = solid([bicone(ring(4, 0.35, 0), [0, -0.35, 0], [0, 0.35, 0],
+  [0x808, 0x880], [0x880, 0x808])]);
+
+// Fighter: a red, orange and yellow chevron. After its first hit it
+// turns green (fighterHurt).
+const fighterShape = (c) => solid([bicone(
+  [[0.75, 0, 0], [-0.55, 0, 0.75], [-0.55, 0, -0.75]],
+  [-0.25, -0.22, 0], [-0.25, 0.1, 0], [c[0], c[1], c[2]], [c[3], c[4], c[5]])]);
+const fighter = fighterShape([0xA00, 0xAA0, 0xC50, 0x620, 0x660, 0x520]);
+const fighterHurt = fighterShape([0x260, 0x6A0, 0x480, 0x130, 0x350, 0x240]);
+
+// Attractor: a red and white square base with a point underneath.
+const attractor = (() => {
+  const b = 0.6, t = 0.3;
+  const vertices = [[b, 0, b], [-b, 0, b], [-b, 0, -b], [b, 0, -b],
+    [t, -0.45, t], [-t, -0.45, t], [-t, -0.45, -t], [t, -0.45, -t], [0, 0.45, 0]];
+  const faces = [[4, 5, 6, 0x999], [4, 6, 7, 0x999]];
+  for (let i = 0; i < 4; i++) {
+    const j = (i + 1) % 4, c = i % 2 ? 0x888 : 0xA00;
+    faces.push([i, j, j + 4, c], [i, j + 4, i + 4, c], [i, j, 8, 0x600]);
+  }
+  return solid([{ vertices, faces }]);
+})();
+
+// Homing missiles: small darts, the player's white, the enemy's red.
+const dart = (front, back) => solid([bicone(
+  [[-0.15, -0.08, 0], [-0.15, 0, 0.08], [-0.15, 0.08, 0], [-0.15, 0, -0.08]],
+  [0.45, 0, 0], [-0.3, 0, 0], front, back)], { shadow: true });
+const missile = dart([0xBBB, 0x999], [0xA00]);
+const enemyMissile = dart([0xC20, 0xA10], [0x880]);
+
+// A parachute bomb: a dark bomb hanging under a red and white canopy.
+const bomb = solid([
+  bicone(ring(4, 0.15, 0), [0, -0.15, 0], [0, 0.15, 0], [0x333, 0x222], [0x222]),
+  bicone(ring(6, 0.4, -0.55), [0, -0.8, 0], [0, -0.62, 0],
+    [0xA00, 0xAAA], [0x500, 0x555]),
+  { vertices: [[-0.02, -0.55, 0.38], [0.02, -0.55, 0.38], [0, -0.1, 0.1],
+    [-0.02, -0.55, -0.38], [0.02, -0.55, -0.38], [0, -0.1, -0.1]],
+    faces: [[0, 1, 2, 0x888, true], [3, 4, 5, 0x888, true]] },
+], { sort: true });
+
+// The sea monster: a head and three humps showing above the water.
+const hump = (x, s, c) => ({
+  vertices: [[x + 0.3 * s, 0, 0], [x - 0.3 * s, 0, -0.18 * s],
+    [x - 0.3 * s, 0, 0.18 * s], [x, -0.35 * s, 0]],
+  faces: [[0, 1, 3, c[0]], [0, 2, 3, c[1]], [1, 2, 3, c[2]], [0, 1, 2, 0x020]],
+});
+const monster = solid([
+  { vertices: [[1.25, 0, 0], [0.7, 0, -0.22], [0.7, 0, 0.22], [0.85, -0.5, 0]],
+    faces: [[0, 1, 3, 0x073], [0, 2, 3, 0x052], [1, 2, 3, 0x041], [0, 1, 2, 0x020]] },
+  hump(0.2, 1, [0x062, 0x041, 0x031]),
+  hump(-0.45, 0.8, [0x062, 0x041, 0x031]),
+  hump(-1.0, 0.6, [0x062, 0x041, 0x031]),
+], { sort: true, shadow: false });
+
+// Pickups: the original's unused spinning pyramid, half size, in the
+// colours of what it gives you. Faces: four sides, then the flat top.
+const pickup = (a, b, top) => {
+  const m = recoloured(scaled(pyramid, 0.5), [a, b, a, b, top, top]);
+  m.shadow = true;
+  return m;
+};
+
+// ------------------------------------------------------------------------
+// The catalogue
+
+export const MODELS = {
+  // the original's
+  ship, rock, pyramid, smallTree, tallTree, firTree, gazebo, building, rocket,
+  remainsLeft, remainsRight, smokingGazebo, smokingBuilding,
+  // Lander II's
+  seeder, seederLanded, drone, mutant, bomber, pest, fighter, fighterHurt,
+  attractor, missile, enemyMissile, bomb, monster,
+  pickupFuel: pickup(0xC60, 0x840, 0xA40),
+  pickupMissile: pickup(0xBBB, 0x777, 0xDDD),
+  pickupShield: pickup(0x0BB, 0x077, 0x0DD),
+  pickupCleanse: pickup(0x0B0, 0x070, 0x0D0),
+};
+
+/**
+ * The model for each value in the object map (world.objects), as the
+ * original's objectTypes table: 1, 3, 4 small tree; 2, 6 tall tree;
+ * 5 gazebo; 7 fir tree; 8 building; 9-12 rocket; 0 the unused pyramid;
+ * and 12 more for the destroyed version of each (type + 12).
+ */
+export const OBJECT_MODELS = [
+  'pyramid', 'smallTree', 'tallTree', 'smallTree', 'smallTree', 'gazebo',
+  'tallTree', 'firTree', 'building', 'rocket', 'rocket', 'rocket', 'rocket',
+  'remainsRight', 'remainsLeft', 'remainsLeft', 'remainsLeft',
+  'smokingGazebo', 'remainsRight', 'remainsRight', 'smokingBuilding',
+  'remainsRight', 'remainsLeft', 'remainsLeft', 'remainsLeft',
+];
+
+/** The model for each kind of enemy (world.enemies[i].type). */
+export const ENEMY_MODELS = {
+  seeder: 'seeder', drone: 'drone', mutant: 'mutant', bomber: 'bomber',
+  pest: 'pest', fighter: 'fighter', attractor: 'attractor', rock: 'rock',
+  monster: 'monster',
+};
+
+/** The model for each projectile type and pickup kind. */
+export const PROJECTILE_MODELS = { missile: 'missile', enemyMissile: 'enemyMissile',
+  bomb: 'bomb' };
+export const PICKUP_MODELS = { fuel: 'pickupFuel', missile: 'pickupMissile',
+  shield: 'pickupShield', cleanse: 'pickupCleanse' };
+
+/**
+ * The original's lighting rule: how many levels of white to add to a
+ * face whose (rotated) normal is (nx, ny, nz). Faces pointing up (y is
+ * down, so ny < 0) are brightest; faces to the left get one level more.
+ */
+export function faceLevel(nx, ny) {
+  let level = Math.floor(8 * (1 - ny)) + (nx < 0 ? 1 : 0) - 5;
+  return level < 0 ? 0 : level;
+}
+
+/** A face colour &RGB after adding level to each channel (max 15). */
+export function litColour(colour, level) {
+  const r = Math.min(15, ((colour >> 8) & 15) + level);
+  const g = Math.min(15, ((colour >> 4) & 15) + level);
+  const b = Math.min(15, (colour & 15) + level);
+  return (r << 8) | (g << 4) | b;
+}
+
+/**
+ * The world position of every vertex of a model at (x, y, z) turned by
+ * the orientation o = { nose, roof, side } (or not turned if o is null):
+ * for collision tests, such as the original's "is any corner of the ship
+ * below its shadow?" crash test.
+ */
+export function worldVertices(model, o, x, y, z) {
+  const m = typeof model === 'string' ? MODELS[model] : model;
+  return m.vertices.map(([a, b, c]) => (o && m.rotates
+    ? [x + o.nose[0] * a + o.roof[0] * b + o.side[0] * c,
+      y + o.nose[1] * a + o.roof[1] * b + o.side[1] * c,
+      z + o.nose[2] * a + o.roof[2] * b + o.side[2] * c]
+    : [x + a, y + b, z + c]));
+}

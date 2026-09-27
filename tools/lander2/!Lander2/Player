@@ -1,0 +1,239 @@
+// Lander II - Player: the hoverplane's flight model.
+//
+// This is Braben's flight model from Lander (MoveAndDrawPlayer, see Mark
+// Moxon's "Flying by mouse" and "Placing the player's ship" articles on
+// lander.bbcelite.com), in floating point and at a steady 50 ticks a
+// second. The original has no fixed frame rate; we count one of its
+// frames as 1/25 s, so per 50 Hz tick:
+//   speeds are halved, accelerations quartered,
+//   drag (v -= v/64 per frame) becomes v *= sqrt(1 - 1/64),
+//   lifetimes and timers are doubled.
+//
+// The mouse: its offset from the centre of the screen is turned into
+// polar coordinates. The distance from the centre is how far the ship
+// tilts (the pitch: half a screen = upside down) and the angle round the
+// centre is the direction it tilts in. The ship does not snap to that
+// attitude: each frame it turns halfway there (at most 67.5 degrees of
+// difference counted), which gives Lander its smooth, slightly floaty,
+// very tricky handling.
+//
+// The engine pushes along -roof (out of the top of the ship), so tilting
+// the ship makes it accelerate sideways as well as up. Per tick:
+//   v = v * drag;  if thrust: v -= roof * THRUST;  p += v;
+//   if hover: v -= roof * HOVER;  (after moving, as the original)
+//   vy += gravity
+// Above 52 tiles up the engines cut out.
+
+import { orientation, wrapDelta, clamp, len3 } from './Maths';
+import { PAD_ALTITUDE, PAD_SIZE, UNDERCARRIAGE } from './Terrain';
+
+export const DRAG = Math.sqrt(1 - 1 / 64);
+export const THRUST = 1 / 64;          // R >> 11 per frame = 1/16 tile/frame^2
+export const HOVER = 1 / 256;          // R >> 13 per frame = 1/64 tile/frame^2
+export const HIGHEST_ALTITUDE = -52;   // engines cut above this (y is down)
+export const LANDING_SPEED = 1 / 16;   // |vx|+|vy|+|vz| to land (1/8 per frame)
+export const SAFE_HEIGHT = 1.5;        // object collision band above the ground
+export const PAD_Y = PAD_ALTITUDE - UNDERCARRIAGE;   // the ship resting on the pad
+export const START_FUEL = 3413;        // the original's initial fuel
+export const MAX_FUEL = 0x1400;        // the pad fills the tank this far
+export const REFUEL = 16;              // +0x20 per frame
+export const CAMERA_Z = 5;             // CAMERA_PLAYER_Z: camera z = player z + 5
+export const STICK_RANGE = 512;        // mouse units for full tilt (upside down)
+
+// Damping of pitch and direction: the original moves halfway per frame,
+// i.e. by the square root of a half per tick.
+const DAMP = 1 - Math.SQRT1_2;
+const MAX_TURN = Math.PI * 3 / 8;      // 0x30000000: 67.5 degrees
+
+/**
+ * The ship's corners, from the original's objectPlayer blueprint (the
+ * values are &01000000 = one tile), as [along nose, along roof, along
+ * side]. The crash test checks each of them against the ground.
+ */
+export const SHIP_VERTICES = [
+  [1, 0.3125, 0.5], [1, 0.3125, -0.5], [0, 0.0390625, -1.2],
+  [-0.9, 0.3125, 0], [0, 0.0390625, 1.2], [-0.1, -0.46875, 0],
+  [1 / 3, 0.3125, 0.25], [1 / 3, 0.3125, -0.25], [-0.2, 0.3125, 0],
+];
+
+/** A new ship sitting in the middle of the launch pad. */
+export function makePlayer() {
+  const p = {
+    x: PAD_SIZE / 2, y: PAD_Y, z: PAD_SIZE / 2, vx: 0, vy: 0, vz: 0,
+    pitch: 0, dir: 0, nose: null, roof: null, side: null,
+    fuel: START_FUEL, maxFuel: MAX_FUEL,
+    alive: true, landed: true, refuelling: false, thrusting: false,
+    hovering: false, firing: false, invulnerable: 0, shield: 0,
+    fireTimer: 0,
+  };
+  setOrientation(p);
+  return p;
+}
+
+/** Put the ship back on the pad (PlacePlayerOnLaunchpad). */
+export function placeOnPad(p) {
+  Object.assign(p, { x: PAD_SIZE / 2, y: PAD_Y, z: PAD_SIZE / 2, vx: 0, vy: 0, vz: 0,
+    pitch: Math.PI * 2 / 4294967296, dir: 0, alive: true, landed: true,
+    thrusting: false, hovering: false, firing: false, fireTimer: 0 });
+  setOrientation(p);
+}
+
+export function setOrientation(p) {
+  const o = orientation(p.pitch, p.dir);
+  p.nose = o.nose; p.roof = o.roof; p.side = o.side;
+}
+
+/**
+ * The attitude the stick asks for (GetMouseInPolarCoordinates). The
+ * original's mouse y grows downwards, ours (like the OS's) upwards.
+ */
+export function stickTarget(stickX, stickY) {
+  const x = clamp(stickX, -512, 511), y = -stickY;
+  const r = Math.min(Math.sqrt(x * x + y * y), STICK_RANGE);
+  return { pitch: (r / STICK_RANGE) * Math.PI, dir: Math.atan2(y, x) };
+}
+
+/** The stick offset that asks for pitch and direction (for autopilots). */
+export function stickFor(pitch, dir) {
+  const r = (clamp(pitch, 0, Math.PI) / Math.PI) * STICK_RANGE;
+  return { stickX: r * Math.cos(dir), stickY: -r * Math.sin(dir) };
+}
+
+/** Turn the ship towards the stick's attitude, halfway per frame. */
+export function steerShip(p, input) {
+  const t = stickTarget(input.stickX || 0, input.stickY || 0);
+  const dd = clamp(wrapDelta(p.dir - t.dir, Math.PI * 2), -MAX_TURN, MAX_TURN);
+  const dp = clamp(p.pitch - t.pitch, -MAX_TURN, MAX_TURN);
+  p.dir = wrapDelta(p.dir - dd * DAMP, Math.PI * 2);
+  p.pitch -= dp * DAMP;
+  setOrientation(p);
+}
+
+/**
+ * One tick of thrust, drag, movement, hover and gravity. thrust and hover
+ * say whether the engine runs this tick (the caller checks the fuel and
+ * the altitude). Positions are wrapped into the world.
+ */
+export function moveShip(p, thrust, hover, gravity, period) {
+  const r = p.roof;
+  p.vx *= DRAG; p.vy *= DRAG; p.vz *= DRAG;
+  if (thrust) { p.vx -= r[0] * THRUST; p.vy -= r[1] * THRUST; p.vz -= r[2] * THRUST; }
+  p.x += p.vx; p.y += p.vy; p.z += p.vz;
+  if (hover) { p.vx -= r[0] * HOVER; p.vy -= r[1] * HOVER; p.vz -= r[2] * HOVER; }
+  p.vy += gravity;
+  p.x %= period; if (p.x < 0) p.x += period;
+  p.z %= period; if (p.z < 0) p.z += period;
+}
+
+/**
+ * The original's crash test: a corner of the ship that is below the
+ * ground under it (Braben got this for free while drawing the ship's
+ * shadow: a vertex projected below its own shadow). skip(x, z) may
+ * exempt a point (Invasion: you cannot crash on the pad).
+ */
+export function shipTouchesGround(p, terrain, skip) {
+  const n = p.nose, r = p.roof, s = p.side;
+  for (const [a, b, c] of SHIP_VERTICES) {
+    const x = p.x + n[0] * a + r[0] * b + s[0] * c;
+    const y = p.y + n[1] * a + r[1] * b + s[1] * c;
+    const z = p.z + n[2] * a + r[2] * b + s[2] * c;
+    if (skip && skip(x, z)) continue;
+    if (y > terrain.altitude(x, z)) return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------- a crude autopilot
+/**
+ * autopilotInput(world, memory): an input for one tick that flies the ship
+ * about, shoots at the nearest alien and lands on the pad to refuel. It
+ * is simple (the front end's Autopilot module flies the real demo), but
+ * shows how to fly Lander by numbers: work out the acceleration wanted,
+ * tilt the thrust (-roof) that way, and pulse the engine.
+ * memory: an object kept between calls (goal, duty accumulator).
+ */
+export function autopilotInput(world, memory = world.autopilotMemory ||= {}) {
+  const input = { stickX: 0, stickY: 0, thrust: false, hover: false, fire: false,
+    missile: false, smartBomb: false };
+  const p = world.player, t = world.terrain;
+  if (!p.alive) return input;
+  const d = (a, b) => t.delta(a, b);
+  // choose a goal: refuel, attack or wander
+  const fuelLow = p.fuel < p.maxFuel * 0.3;
+  if (memory.want) memory.goal = memory.want;         // a goal forced by the caller
+  else if (p.landed && p.fuel < p.maxFuel * 0.9) memory.goal = 'refuel';
+  else if (memory.goal === 'refuel' && !p.landed) memory.goal = 'land';
+  else if (fuelLow) memory.goal = 'land';
+  else if (memory.goal !== 'land' || p.fuel >= p.maxFuel * 0.9) memory.goal = 'hunt';
+  // sit still on the pad (refuelling, or told to land and done so)
+  if (memory.goal === 'refuel' || (memory.goal === 'land' && p.landed)) return input;
+  let target = null;
+  let tx, ty, tz, speed = 0.12;
+  if (memory.goal === 'hunt') target = nearestEnemy(world, p);
+  if (memory.goal === 'land') {
+    tx = PAD_SIZE / 2; tz = PAD_SIZE / 2;
+    const h = Math.hypot(d(p.x, tx), d(p.z, tz));
+    ty = h < 0.6 ? PAD_Y + 0.2 : PAD_Y - 3;
+    speed = h < 3 ? 0.04 : 0.12;
+  } else if (target) {
+    // attack runs: fly at a point above and short of it (tilting towards
+    // it dips the nose at it; the guns fire when they line up), and
+    // sheer off when close, as collisions destroy both craft
+    const hx = d(target.x, p.x), hz = d(target.z, p.z), hl = Math.hypot(hx, hz) || 1;
+    const close = hl < 3.5 && Math.abs(target.y - p.y) < 3;
+    const k = close ? 8 : 3;
+    tx = target.x + hx / hl * k + (close ? -hz / hl * 4 : 0);
+    tz = target.z + hz / hl * k + (close ? hx / hl * 4 : 0);
+    ty = target.y - (close ? 4 : 2);
+  } else {
+    // wander: a slow circle round the middle of the world
+    const a = world.tickCount / 900;
+    tx = t.period / 2 + Math.cos(a) * 12; tz = t.period / 2 + Math.sin(a) * 12;
+    ty = -1;
+  }
+  ty = Math.max(ty, -8);                 // don't chase anything into space
+  // stay clear of the hills ahead
+  const ahead = Math.min(t.altitude(p.x + p.vx * 20, p.z + p.vz * 20),
+    t.altitude(p.x, p.z));
+  const padDist = Math.hypot(d(p.x, PAD_SIZE / 2), d(p.z, PAD_SIZE / 2));
+  if (memory.goal !== 'land' || padDist > 2) {
+    ty = Math.min(ty, ahead - 2.5);
+  }
+  // wanted velocity, then wanted acceleration (including beating gravity)
+  let wx = d(p.x, tx) * 0.03, wy = (ty - p.y) * 0.03, wz = d(p.z, tz) * 0.03;
+  const wl = len3(wx, wy, wz);
+  if (wl > speed) { wx *= speed / wl; wy *= speed / wl; wz *= speed / wl; }
+  const ax = (wx - p.vx) * 0.08, az = (wz - p.vz) * 0.08;
+  const ay = (wy - p.vy) * 0.08 - world.gravity;
+  const al = len3(ax, ay, az);
+  // the engine pushes along -roof: tilt the roof against the acceleration
+  let pitch = Math.acos(clamp(-ay / (al || 1), -1, 1));
+  // near the pad keep level: a tilted ship digs a corner into it
+  const onPad = t.isPad(p.x, p.z) && p.y > PAD_Y - 1.5;
+  pitch = Math.min(pitch, onPad ? 0.03 : 0.7);
+  const dir = Math.atan2(-az, ax);
+  Object.assign(input, stickFor(pitch, dir));
+  // pulse the engine to give the right average push
+  memory.duty = (memory.duty || 0) + Math.min(1, al / THRUST);
+  if (memory.duty >= 1 && ay < 0) { memory.duty -= 1; input.thrust = true; }
+  else if (memory.duty > 2) memory.duty = 1;
+  // fire when the nose points close to the target
+  if (target) {
+    const rx = d(p.x, target.x), ry = target.y - p.y, rz = d(p.z, target.z);
+    const rl = len3(rx, ry, rz);
+    const c = (rx * p.nose[0] + ry * p.nose[1] + rz * p.nose[2]) / (rl || 1);
+    input.fire = rl < 14 && c > 0.97;
+    input.missile = rl < 20 && rl > 8 && c > 0.9 && world.tickCount % 250 === 0;
+  }
+  return input;
+}
+
+function nearestEnemy(world, p) {
+  let best = null, bd = 1e9;
+  for (const e of world.enemies) {
+    if (e.type === 'monster' || e.type === 'rock' || e.dead) continue;
+    const dd = Math.hypot(world.terrain.delta(p.x, e.x), world.terrain.delta(p.z, e.z));
+    if (dd < bd) { bd = dd; best = e; }
+  }
+  return best;
+}

@@ -1,0 +1,298 @@
+// Lander II - Particles: exhaust, bullets, smoke, sparks, spray and virus.
+//
+// Everything small that flies about is a particle: a point with a
+// position, a velocity, a lifetime and some flags saying how it behaves.
+// This is how the original Lander did it (see "Particles" on Mark
+// Moxon's lander.bbcelite.com); the flags, lifetimes and colours below
+// are Braben's, converted from his per-frame values to our 50 Hz ticks
+// (a Lander frame counts as 1/25 s, so lifetimes are doubled and speeds
+// halved).
+//
+// The pool is "structure of arrays": one typed array per field, so
+// thousands of particles cost no garbage. Particles are removed the way
+// the original removes them: the last particle is moved into the hole.
+//
+// There are two kinds of particle:
+//  - cosmetic ones (exhaust, smoke, debris, sparks, spray) are dropped
+//    when the pool is full (the detail setting chooses its size), and
+//    use their own random numbers, so they never change the game;
+//  - important ones (bullets, enemy bullets, virus spores; flag KEEP)
+//    live in a pool of their own, so the game plays exactly the same
+//    whatever the detail setting - which keeps demo replays exact.
+//
+// Particles know nothing about the rest of the game: when one hits the
+// ground or an object, move() calls back into the world (the `hooks`).
+
+import { Rng } from './Maths';
+
+/** Behaviour flags (bit numbers are ours; the original's are noted). */
+export const PF = {
+  FADE: 1,          // colour fades white -> yellow -> red (orig. bit 16)
+  SPLASH: 2,        // makes spray when it lands in the sea (bit 18)
+  BOUNCE: 4,        // bounces on land, else it dies there (bit 19)
+  GRAVITY: 8,       // falls (bit 20)
+  DESTROY: 16,      // destroys objects it hits (bit 21)
+  BIG_SPLASH: 32,   // 65 spray particles instead of 4 (bit 23)
+  EXPLODE: 64,      // small explosion when it hits land (bit 24)
+  PLAYER: 128,      // a bullet from the player's ship
+  ENEMY: 256,       // a bullet from an alien
+  VIRUS: 512,       // a virus spore: infects the land it falls on
+  MUTATE: 1024,     // a seeder's spore: can also mutate trees
+  BIG: 2048,        // drawn a little bigger (bullets)
+  NO_SHADOW: 4096,  // casts no shadow
+  DEAD: 8192,       // killed this tick, removed on the next move()
+  KEEP: 16384,      // important: not subject to the detail limit
+};
+
+/** How many important particles there may be, whatever the detail. */
+export const KEEP_LIMIT = 1500;
+
+// The original's colours are 4-bit red, green and blue; we keep them as
+// 12-bit 0xRGB numbers.
+const rgb = (r, g, b) => (r << 8) | (g << 4) | b;
+
+/** The fading colour of a spark or exhaust particle (SetParticleColourToFade). */
+function fadeColour(life) {
+  const f = (life + 1) >> 1;            // lifetime left in original frames
+  const g = f >= 8 ? 15 : f * 2;
+  const b = f >= 8 ? Math.min(15, (f - 8) * 2) : 0;
+  return rgb(15, g, b);
+}
+
+/**
+ * One pool of particles, as typed arrays. Particles keeps two: one for
+ * the important particles and one for the cosmetic ones, so the order in
+ * which bullets and spores are handled never depends on the smoke.
+ */
+export class Pool {
+  constructor(cap) {
+    const F = () => new Float64Array(cap);
+    this.cap = cap; this.count = 0;
+    this.x = F(); this.y = F(); this.z = F(); this.vx = F(); this.vy = F(); this.vz = F();
+    this.life = new Int32Array(cap); this.flags = new Uint16Array(cap);
+    this.colour = new Uint16Array(cap);
+  }
+
+  /** A pool of a new size holding as many of this one's particles as fit. */
+  resized(cap) {
+    const q = new Pool(cap), n = Math.min(this.count, cap);
+    for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'life', 'flags', 'colour']) {
+      q[k].set(this[k].subarray(0, n));
+    }
+    q.count = n;
+    return q;
+  }
+
+  add(x, y, z, vx, vy, vz, life, flags, colour) {
+    if (this.count >= this.cap) return -1;
+    const i = this.count++;
+    this.x[i] = x; this.y[i] = y; this.z[i] = z;
+    this.vx[i] = vx; this.vy[i] = vy; this.vz[i] = vz;
+    this.life[i] = life; this.flags[i] = flags; this.colour[i] = colour;
+    return i;
+  }
+
+  /** Mark particle i dead: it is no longer drawn or hit-tested. */
+  kill(i) { this.flags[i] |= PF.DEAD; }
+
+  /** DeleteParticleData: move the last particle into slot i. */
+  remove(i) {
+    const e = --this.count;
+    if (i === e) return;
+    this.x[i] = this.x[e]; this.y[i] = this.y[e]; this.z[i] = this.z[e];
+    this.vx[i] = this.vx[e]; this.vy[i] = this.vy[e]; this.vz[i] = this.vz[e];
+    this.life[i] = this.life[e]; this.flags[i] = this.flags[e];
+    this.colour[i] = this.colour[e];
+  }
+}
+
+export class Particles {
+  /** max: how many cosmetic particles at most (484 / 1000 / 2000). */
+  constructor(max = 1000, seed = 1) {
+    this.fx = new Rng(seed);            // random numbers for cosmetics only
+    this.keep = new Pool(KEEP_LIMIT);   // bullets, enemy bullets, spores
+    this.cosmetic = new Pool(max);      // everything else
+    this.max = max;
+    // forEach() hands this one object to its callback, filled in afresh
+    // for each particle (so drawing makes no garbage: don't keep it)
+    this.view = { x: 0, y: 0, z: 0, colour: 0, big: false, noShadow: false };
+  }
+
+  /** How many particles are flying. */
+  get count() { return this.keep.count + this.cosmetic.count; }
+
+  /** Change the detail limit (keeps the particles already flying). */
+  setMax(max) {
+    if (max === this.max) return;
+    this.max = max;
+    this.cosmetic = this.cosmetic.resized(max);
+  }
+
+  /** Remove every particle (flags given: only those with one of them). */
+  clear(flags = 0) {
+    for (const q of [this.keep, this.cosmetic]) {
+      if (!flags) q.count = 0;
+      else for (let i = 0; i < q.count; i++) if (q.flags[i] & flags) q.kill(i);
+    }
+  }
+
+  /**
+   * Add a particle; life is in ticks, colour 0xRGB. Returns its index in
+   * its pool, or -1 if there was no room (the original drops it too).
+   */
+  add(x, y, z, vx, vy, vz, life, flags, colour) {
+    const q = (flags & PF.KEEP) ? this.keep : this.cosmetic;
+    return q.add(x, y, z, vx, vy, vz, life, flags, colour);
+  }
+
+  /** Call fn({x, y, z, colour, big, noShadow}) for every live particle. */
+  forEach(fn) {
+    const v = this.view;
+    for (const q of [this.cosmetic, this.keep]) {
+      for (let i = 0; i < q.count; i++) {
+        const f = q.flags[i];
+        if (f & PF.DEAD) continue;
+        v.x = q.x[i]; v.y = q.y[i]; v.z = q.z[i];
+        v.colour = q.colour[i];
+        v.big = (f & PF.BIG) !== 0;
+        v.noShadow = (f & PF.NO_SHADOW) !== 0;
+        fn(v);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------- moving
+  /**
+   * Move every particle one tick (MoveAndDrawParticles, less the drawing).
+   * world supplies terrain, gravity (tiles/tick^2), objects and the hooks:
+   *   world.particleHitsObject(q, i, tileIndex, x, y, z) -> true if used up
+   *   world.particleLands(q, i, x, y, z, sea) -> for PLAYER/ENEMY/VIRUS
+   *                                              particles reaching the ground
+   * (q is the pool, i the particle's index in it).
+   */
+  move(world) {
+    this.movePool(this.keep, world);
+    this.movePool(this.cosmetic, world);
+  }
+
+  movePool(q, world) {
+    const t = world.terrain, g = world.gravity, p = t.period, sea = t.seaLevel;
+    let i = 0;
+    while (i < q.count) {
+      const f = q.flags[i];
+      let del = (f & PF.DEAD) !== 0 || --q.life[i] <= 0;
+      if (!del) {
+        let x = q.x[i] + q.vx[i], y = q.y[i] + q.vy[i], z = q.z[i] + q.vz[i];
+        x %= p; if (x < 0) x += p;
+        z %= p; if (z < 0) z += p;
+        if (f & PF.GRAVITY) q.vy[i] += g;
+        if (f & PF.FADE) q.colour[i] = fadeColour(q.life[i]);
+        const ground = t.altitude(x, z);
+        // bullets destroy an object when they pass through the 1.5 tiles
+        // above the ground of its tile (ProcessObjectDestruction)
+        if (f & PF.DESTROY) {
+          const h = ground - y;
+          if (h >= 0 && h < 1.5) {
+            const k = t.index(x, z);
+            if (world.objects[k] !== 0xFF && world.particleHitsObject(q, i, k, x, y, z)) {
+              del = true;
+            }
+          }
+        }
+        if (!del && y > ground) {
+          // BounceParticle: it has reached the ground
+          y = ground;
+          const inSea = ground >= sea;
+          if (f & (PF.PLAYER | PF.ENEMY | PF.VIRUS)) {
+            world.particleLands(q, i, x, y, z, inSea);
+          }
+          if (inSea) {
+            const n = (f & PF.BIG_SPLASH) ? 65 : 4;
+            if (f & PF.SPLASH) this.splash(x, sea - 1 / 16, z, n);
+            del = true;
+          } else if (!(f & PF.BOUNCE)) del = true;
+          else if (f & PF.EXPLODE) { this.explosion(x, y, z, 3); del = true; }
+          else {
+            q.vx[i] *= 0.5; q.vy[i] *= -0.5; q.vz[i] *= 0.5;
+          }
+        }
+        q.x[i] = x; q.y[i] = y; q.z[i] = z;
+      }
+      if (del) q.remove(i);              // then look at the moved one
+      else i++;
+    }
+  }
+
+  // ---------------------------------------------------------------- makers
+  // Random jitter as the original's AddMovingParticleToBuffer: each
+  // velocity axis gets +- 2^(6-r8) tiles/tick (asr(rand, r8) per frame,
+  // halved), and the lifetime gets 0 .. 2^(32-r9)-1 frames, doubled.
+  jit(r8) { return this.fx.signed() * Math.pow(2, 6 - r8); }
+  lifeJit(r9) { return 2 * (this.fx.next() >>> r9); }
+
+  /** A cosmetic particle with the original's randomisation. */
+  moving(x, y, z, vx, vy, vz, lifeFrames, flags, colour, r8, r9) {
+    return this.add(x, y, z, vx + this.jit(r8), vy + this.jit(r8), vz + this.jit(r8),
+      lifeFrames * 2 + this.lifeJit(r9), flags, colour);
+  }
+
+  /** Engine exhaust (life 8 frames, fades, splashes, bounces, falls). */
+  exhaust(x, y, z, vx, vy, vz) {
+    const F = PF.FADE | PF.SPLASH | PF.BOUNCE | PF.GRAVITY;
+    return this.moving(x, y, z, vx, vy, vz, 8, F, fadeColour(16), 10, 29);
+  }
+
+  /** Grey smoke rising from wreckage (AddSmokeParticleToBuffer). */
+  smoke(x, y, z) {
+    const c = (this.fx.next() & 7) + 3;
+    return this.moving(x, y, z, 0, -0.015625, 0, 15, PF.BOUNCE, rgb(c, c, c), 13, 25);
+  }
+
+  /** A short puff for trails (pests, missiles): smoke that dies sooner. */
+  puff(x, y, z, grey = 6) {
+    return this.add(x, y, z, this.jit(14), -0.004, this.jit(14),
+      20 + (this.fx.next() >>> 28),
+      PF.NO_SHADOW, rgb(grey, grey, grey));
+  }
+
+  /** Coloured debris (AddDebrisParticleToBuffer). */
+  debris(x, y, z) {
+    const a = this.fx.next(), b = this.fx.next();
+    const c = rgb((a & 7) + 4, (b >>> 29) + 2, (a >>> 30) + 4);
+    const F = PF.SPLASH | PF.BOUNCE | PF.GRAVITY;
+    return this.moving(x, y, z, 0, 0, 0, 15, F, c, 10, 26);
+  }
+
+  /** A fast fading spark (AddSparkParticleToBuffer). */
+  spark(x, y, z) {
+    const F = PF.FADE | PF.SPLASH | PF.BOUNCE | PF.GRAVITY;
+    return this.moving(x, y, z, 0, 0, 0, 8, F, fadeColour(16), 8, 29);
+  }
+
+  /** Sea spray (AddSprayParticleToBuffer). */
+  spray(x, y, z) {
+    const a = this.fx.next();
+    const r = (a & 4) + 8;
+    return this.moving(x, y, z, 0, 0, 0, 20, PF.GRAVITY, rgb(r, r, (a & 3) + 12), 10, 26);
+  }
+
+  splash(x, y, z, n) { for (let k = 0; k < n; k++) this.spray(x, y, z); }
+
+  /**
+   * AddExplosionToBuffer: n + 1 clusters of spark, debris, smoke, spark.
+   * The original uses n = 81 for the ship, 20 for an object, 3 for a hit.
+   */
+  explosion(x, y, z, n) {
+    for (let k = 0; k <= n; k++) {
+      this.spark(x, y, z); this.debris(x, y, z); this.smoke(x, y, z); this.spark(x, y, z);
+    }
+  }
+
+  /** A coloured burst (alien explosions): sparks plus debris in colour c. */
+  burst(x, y, z, n, c) {
+    this.explosion(x, y, z, n);
+    for (let k = 0; k < n * 2; k++) {
+      this.moving(x, y, z, 0, -0.03, 0, 12, PF.SPLASH | PF.BOUNCE | PF.GRAVITY, c, 8, 27);
+    }
+  }
+}

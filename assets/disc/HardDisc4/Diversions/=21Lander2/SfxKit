@@ -1,0 +1,389 @@
+// Lander II - SfxKit: a tiny sound synthesiser that works on plain arrays
+// of samples (Float32Array, -1..1).
+//
+// Every sound effect in the game is made here, from nothing: there are no
+// sample files. The sound sets (SfxOrig and SfxArcade) describe each effect
+// as a short recipe - "a square wave sweeping down from 1800 Hz to 200 Hz
+// in 90 ms" - and the recipe is played into an array once, when the set is
+// first needed. Sound then hands the arrays to Web Audio as AudioBuffers,
+// so playing an explosion in the middle of a game costs almost nothing.
+//
+// Working on arrays in plain JavaScript (rather than wiring up Web Audio
+// nodes) keeps the recipes short, makes every sound come out the same each
+// time, lets us synthesise at any sample rate we like (the Archimedes set
+// uses the machine's own 20.8 kHz) and lets the sounds be made and measured
+// under node, without a browser.
+//
+// The building blocks:
+//   parameters  - a number, or a function of time t (seconds from the start
+//                 of that layer), so pitches and levels can move
+//   envelopes   - perc, line, sweep, glide, steps: functions of t
+//   generators  - tone (sine, square, pulse, saw, triangle), noise (white,
+//                 or "sample and hold" noise that sounds pitched and
+//                 crunchy), pluck (a plucked string), bell
+//   filters     - a state-variable filter (lowpass, highpass, bandpass)
+//                 whose cut-off can move while it plays
+//   finishing   - echo, fades, normalise, 8-bit quantising, loop making,
+//                 and levels() to measure a finished sound
+
+const LN1000 = Math.log(1000);
+
+/** Value of a parameter p (a number or a function of t) at time t. */
+export const val = (p, t) => (typeof p === 'function' ? p(t) : p);
+
+// ------------------------------------------------------------- envelopes
+
+/**
+ * Percussive envelope: rises in `attack` seconds, then dies away
+ * exponentially, reaching -60 dB `decay` seconds later.
+ */
+export function perc(attack, decay, peak = 1) {
+  return (t) => {
+    if (t < attack) return peak * t / attack;
+    return peak * Math.exp(-(t - attack) / decay * LN1000);
+  };
+}
+
+/** Straight lines through points [[t, v], ...] (held flat at the ends). */
+export function line(points) {
+  return (t) => {
+    if (t <= points[0][0]) return points[0][1];
+    for (let i = 1; i < points.length; i++) {
+      const [t1, v1] = points[i];
+      if (t <= t1) {
+        const [t0, v0] = points[i - 1];
+        return v0 + (v1 - v0) * (t - t0) / (t1 - t0 || 1);
+      }
+    }
+    return points[points.length - 1][1];
+  };
+}
+
+/** Exponential slide from f0 to f1 over `dur` seconds (musical pitch sweep). */
+export function sweep(f0, f1, dur) {
+  return (t) => f0 * Math.pow(f1 / f0, Math.min(1, t / dur));
+}
+
+/** Straight-line slide from a to b over `dur` seconds. */
+export function glide(a, b, dur) {
+  return (t) => a + (b - a) * Math.min(1, t / dur);
+}
+
+/** Step through `values`, `each` seconds per step (arpeggios, sirens). */
+export function steps(each, values, loop = false) {
+  return (t) => {
+    let i = Math.floor(t / each);
+    i = loop ? i % values.length : Math.min(i, values.length - 1);
+    return values[i];
+  };
+}
+
+/** A parameter wobbled by a sine: vibrato or tremolo. */
+export function wobble(p, rate, depth) {
+  return (t) => val(p, t) * (1 + depth * Math.sin(2 * Math.PI * rate * t));
+}
+
+/** Multiply parameters together (e.g. an envelope and a tremolo). */
+export function times(...ps) {
+  return (t) => ps.reduce((m, p) => m * val(p, t), 1);
+}
+
+const NOTES = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
+
+/** Frequency of a note name such as 'A4' (440 Hz), 'C#5' or 'Bb3'. */
+export function note(name) {
+  const m = /^([A-G])([#b]?)(-?\d)$/.exec(name);
+  const semis = NOTES[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0)
+    + (Number(m[3]) - 4) * 12;
+  return 440 * Math.pow(2, semis / 12);
+}
+
+// ------------------------------------------------------------- the filter
+
+/**
+ * A state-variable filter (the "TPT" form from Vadim Zavalishin's book on
+ * virtual analogue filters). It stays stable however fast its cut-off
+ * moves, which suits explosions whose rumble closes down over a second.
+ * type: 'lp' lowpass, 'hp' highpass, 'bp' bandpass; freq and q are
+ * parameters (q 0.7 = gentle, 5 = sharp and ringing).
+ */
+export class Svf {
+  constructor(rate, type, freq, q = 0.707) {
+    this.rate = rate; this.type = type; this.freq = freq; this.q = q;
+    this.s1 = 0; this.s2 = 0; this.n = 0;
+  }
+  run(x, t) {
+    if ((this.n++ & 7) === 0) {           // recalculate every 8 samples
+      const f = Math.min(val(this.freq, t), this.rate * 0.45);
+      const g = Math.tan(Math.PI * Math.max(f, 10) / this.rate);
+      this.k = 1 / val(this.q, t);
+      this.a1 = 1 / (1 + g * (g + this.k));
+      this.a2 = g * this.a1;
+      this.a3 = g * this.a2;
+    }
+    const v3 = x - this.s2;
+    const v1 = this.a1 * this.s1 + this.a2 * v3;
+    const v2 = this.s2 + this.a2 * this.s1 + this.a3 * v3;
+    this.s1 = 2 * v1 - this.s1;
+    this.s2 = 2 * v2 - this.s2;
+    if (this.type === 'lp') return v2;
+    if (this.type === 'bp') return v1;
+    return x - this.k * v1 - v2;           // 'hp'
+  }
+}
+
+// PolyBLEP: rounds off the jumps in square and saw waves just enough to
+// stop high notes making whistling "alias" tones.
+function blep(ph, dt) {
+  if (ph < dt) { ph /= dt; return ph + ph - ph * ph - 1; }
+  if (ph > 1 - dt) { ph = (ph - 1) / dt; return ph * ph + ph + ph + 1; }
+  return 0;
+}
+
+// ------------------------------------------------------------- the synth
+
+/**
+ * A synthesiser working at `rate` samples per second. Its random numbers
+ * are seeded, so a recipe makes exactly the same sound every time.
+ */
+export class Synth {
+  constructor(rate, seed = 0x2545F491) {
+    this.rate = rate;
+    this.seed = seed >>> 0 || 1;
+  }
+
+  /** A random number in [-1, 1) (xorshift32). */
+  random() {
+    let s = this.seed;
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    this.seed = s >>> 0;
+    return this.seed / 2147483648 - 1;
+  }
+
+  /** An empty (silent) sound `seconds` long. */
+  buffer(seconds) {
+    return new Float32Array(Math.max(1, Math.round(seconds * this.rate)));
+  }
+
+  // Shared by the generators: works out where a layer starts and how many
+  // samples it runs for, makes the optional filter, then calls
+  // sample(t) for each sample and adds it (times the gain) into `out`.
+  _layer(out, o, sample) {
+    const r = this.rate;
+    const i0 = Math.round((o.start ?? 0) * r);
+    const len = o.dur === undefined ? out.length : Math.round(o.dur * r);
+    const n = Math.min(len, out.length - i0);
+    const f = o.filter;
+    const flt = f ? new Svf(r, f.type, f.freq, f.q ?? 0.707) : null;
+    const gain = o.gain ?? 1;
+    for (let i = 0; i < n; i++) {
+      const t = i / r;
+      let x = sample(t);
+      if (flt) x = flt.run(x, t);
+      out[i0 + i] += x * val(gain, t);
+    }
+    return out;
+  }
+
+  /**
+   * An oscillator. o = { wave: 'sine' | 'square' | 'pulse' | 'saw' | 'tri',
+   * freq, gain, start, dur, duty (pulse width, 0.5 = square), filter }.
+   */
+  tone(out, o) {
+    const r = this.rate, wave = o.wave ?? 'sine';
+    let ph = o.phase ?? 0;
+    return this._layer(out, o, (t) => {
+      const f = val(o.freq, t), dt = Math.min(f / r, 0.5);
+      const duty = val(o.duty ?? 0.5, t);
+      let x;
+      if (wave === 'sine') x = Math.sin(2 * Math.PI * ph);
+      else if (wave === 'tri') x = ph < 0.5 ? 4 * ph - 1 : 3 - 4 * ph;
+      else if (wave === 'saw') x = 2 * ph - 1 - blep(ph, dt);
+      else {                                  // square / pulse
+        x = ph < duty ? 1 : -1;
+        x += blep(ph, dt) - blep((ph + 1 - duty) % 1, dt);
+      }
+      ph += dt;
+      ph -= Math.floor(ph);
+      return x;
+    });
+  }
+
+  /**
+   * Noise. o = { hold, gain, start, dur, filter }. With no `hold` it is
+   * white noise (a new random value every sample). With hold = h, a new
+   * random value is picked h times a second and held in between ("sample
+   * and hold"): the lower h, the lower and grittier the noise sounds.
+   * Sweeping h down is how the old arcade machines made an explosion's
+   * noise seem to fall in pitch.
+   */
+  noise(out, o) {
+    const r = this.rate;
+    let acc = 1, v = 0;
+    return this._layer(out, o, (t) => {
+      acc += (o.hold === undefined ? r : val(o.hold, t)) / r;
+      if (acc >= 1) { acc -= Math.floor(acc); v = this.random(); }
+      return v;
+    });
+  }
+
+  /**
+   * A plucked string (the Karplus-Strong algorithm): a short burst of
+   * noise goes round a delay line one period long, softened a little each
+   * time round, so it starts bright and mellows as it dies away - very
+   * like a sampled guitar or harp. o = { freq, start, dur, gain, decay
+   * (seconds to die away), bright (0..1) }.
+   */
+  pluck(out, o) {
+    const r = this.rate, freq = o.freq;
+    // The loop is the delay line (L samples) plus half a sample for the
+    // averaging, plus a fraction from an all-pass filter that tunes it.
+    const n = r / freq - 0.5;
+    let L = Math.floor(n), frac = n - L;
+    if (frac < 0.1) { L -= 1; frac += 1; }
+    const C = (1 - frac) / (1 + frac);
+    const loss = Math.pow(0.001, 1 / (freq * (o.decay ?? 1)));
+    const ring = new Float32Array(L);
+    const soft = new Svf(r, 'lp', 400 + 8000 * (o.bright ?? 0.6));
+    for (let i = 0; i < L; i++) ring[i] = soft.run(this.random(), 0);
+    let p = 0, prev = 0, apx = 0, apy = 0;
+    return this._layer(out, { ...o, filter: undefined }, () => {
+      const cur = ring[p];
+      const avg = 0.5 * (cur + prev) * loss;
+      prev = cur;
+      const ap = C * avg + apx - C * apy;
+      apx = avg; apy = ap;
+      ring[p] = ap;
+      p = p + 1 === L ? 0 : p + 1;
+      return cur * 1.6;
+    });
+  }
+
+  /**
+   * A struck bell: a few sine partials at a bell's inharmonic ratios, the
+   * higher ones dying away faster. o = { freq, start, dur, gain, decay }.
+   */
+  bell(out, o) {
+    const parts = [[1, 1, 1], [2, 0.45, 0.6], [2.76, 0.3, 0.4], [5.4, 0.12, 0.25]];
+    const decay = o.decay ?? 0.6;
+    for (const [mul, amp, len] of parts) {
+      this.tone(out, {
+        wave: 'sine', freq: o.freq * mul, start: o.start, dur: o.dur,
+        gain: times(o.gain ?? 1, perc(0.002, decay * len, amp)),
+      });
+    }
+    return out;
+  }
+}
+
+// ------------------------------------------------------------- finishing
+
+/** Filter a whole sound in place. */
+export function filter(a, rate, type, freq, q = 0.707) {
+  const f = new Svf(rate, type, freq, q);
+  for (let i = 0; i < a.length; i++) a[i] = f.run(a[i], i / rate);
+  return a;
+}
+
+/** A simple echo: each repeat `delay` seconds later, `feedback` as loud. */
+export function echo(a, rate, delay, feedback, wet = 1) {
+  const d = Math.round(delay * rate);
+  const line = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    const back = i >= d ? line[i - d] : 0;
+    line[i] = a[i] + back * feedback;
+    a[i] += back * wet;
+  }
+  return a;
+}
+
+/** Fade the last `seconds` of a sound smoothly to silence. */
+export function fadeOut(a, rate, seconds) {
+  const n = Math.min(a.length, Math.round(seconds * rate));
+  for (let i = 0; i < n; i++) a[a.length - 1 - i] *= i / n;
+  return a;
+}
+
+/**
+ * Measure a sound: peak (the loudest single sample) and loudness (the
+ * loudest 50 ms stretch, as an RMS level), both in dB below full scale.
+ * Loudness is weighted roughly as ears hear (like the "K-weighting" of
+ * broadcast loudness meters): deep bass counts for less, and the 2-5 kHz
+ * region, where hearing is keenest, for a little more.
+ */
+export function levels(a, rate) {
+  let peak = 0;
+  for (let i = 0; i < a.length; i++) peak = Math.max(peak, Math.abs(a[i]));
+  const bass = new Svf(rate, 'hp', 60), treble = new Svf(rate, 'hp', 1500);
+  const k = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    const x = bass.run(a[i], 0);
+    k[i] = x + 0.58 * treble.run(x, 0);       // +4 dB above 1.5 kHz
+  }
+  const w = Math.max(1, Math.round(rate * 0.05)), hop = Math.max(1, w >> 2);
+  let loud = 0;
+  for (let s = 0; s < a.length; s += hop) {
+    let sum = 0;
+    const e = Math.min(a.length, s + w);
+    for (let i = s; i < e; i++) sum += k[i] * k[i];
+    loud = Math.max(loud, sum / w);
+  }
+  const db = (x) => 20 * Math.log10(Math.max(x, 1e-9));
+  return { peak: db(peak), loud: db(Math.sqrt(loud)), seconds: a.length / rate };
+}
+
+/**
+ * Scale a sound so its loudness (see levels) is `loudDb`, but never let a
+ * sample go past `ceiling`. Balancing every sound this way keeps a click
+ * and an explosion at sensible levels whatever their recipes add up to.
+ */
+export function normalise(a, rate, loudDb, ceiling = 0.89) {
+  const m = levels(a, rate);
+  let g = Math.pow(10, (loudDb - m.loud) / 20);
+  g = Math.min(g, ceiling / Math.pow(10, m.peak / 20));
+  for (let i = 0; i < a.length; i++) a[i] *= g;
+  return a;
+}
+
+/**
+ * Quantise to 8-bit logarithmic samples, as the Archimedes' VIDC chip
+ * played them (much like telephone "mu-law"): quiet sounds keep their
+ * detail but everything gains a faint grainy edge.
+ */
+export function vidc8(a) {
+  const K = Math.log(256);
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], s = x < 0 ? -1 : 1;
+    const q = Math.round(Math.log(1 + 255 * Math.min(1, Math.abs(x))) / K * 127) / 127;
+    a[i] = s * (Math.exp(q * K) - 1) / 255;
+  }
+  return a;
+}
+
+/**
+ * Make a sound loop seamlessly: the last `seconds` are faded into the
+ * start, and the result is that much shorter.
+ */
+export function loopify(a, rate, seconds) {
+  const f = Math.round(seconds * rate), n = a.length - f;
+  const out = a.slice(0, n);
+  for (let i = 0; i < f; i++) {
+    const x = i / f;
+    out[i] = a[n + i] * Math.cos(x * Math.PI / 2) + a[i] * Math.sin(x * Math.PI / 2);
+  }
+  return out;
+}
+
+/**
+ * Render one recipe from a sound set (see SfxOrig) into finished samples:
+ * make it, balance its level, and give it the set's finish (e.g. 8-bit).
+ * The seed makes each sound's noise different but repeatable.
+ */
+export function renderDef(set, def, seed = 1) {
+  const k = new Synth(set.rate, 0x9E3779B9 ^ (seed * 7919));
+  let a = def.make(k);
+  if (def.loop) a = loopify(a, set.rate, def.loop);
+  normalise(a, set.rate, set.target + (def.level ?? 0));
+  if (set.finish) set.finish(a);
+  return a;
+}

@@ -1,0 +1,469 @@
+// Lander II - Screens: the title page and the pages you reach from it -
+// high scores, how to play and the settings - and the landscape that
+// drifts past behind them.
+//
+// Each screen is an object the main loop (!RunImage) calls:
+//   frame(presses)  once per displayed frame, with the keys pressed
+//   pointer(ev)     the mouse moved or clicked: { type, x, y, button } in
+//                   surface pixels
+//   tick()          50 times a second (game time) if screen.ticks is set
+//   draw(surface)   draw it
+// and a few flags: ticks (runs game time), playing (the mouse flies the
+// ship, so the pointer is hidden and captured), world (for the sound).
+// The games themselves - Play, the demo, the wave tally, entering your
+// name - are in Play.
+
+import { rgb } from './Surface';
+import { orientation } from './Maths';
+import { drawText } from './Font';
+import { World } from './World';
+import { Menu, COLOURS, layout, say, panel } from './Menu';
+import { OPTIONS, settingName, stepSetting } from './Settings';
+import { MODES, MODE_NAMES } from './Scores';
+import { KEY_HELP } from './Input';
+import { BLIPS, mix } from './Hud';
+import { stickTarget } from './Player';
+
+const C = COLOURS;
+const SECOND = 60;                 // (about) frames per second, for timings
+
+// ------------------------------------------------------------------ backdrop
+/**
+ * The landscape behind the menus: an Invasion world with no ship in it,
+ * seen from a camera gliding slowly across it. Renderer only needs the
+ * terrain, the objects and a camera, so this hands it a cut-down world.
+ */
+export class Backdrop {
+  constructor(seed = 1987) {
+    const w = new World({ mode: 'invasion', difficulty: 'easy', seed, demo: true,
+      particles: 100 });
+    this.source = w;
+    this.view = {
+      mode: 'invasion', terrain: w.terrain, period: w.period,
+      objects: w.objects, mutated: w.mutated, infection: null,
+      enemies: [], projectiles: [], pickups: [],
+      particles: { count: 0, forEach() {} },
+      player: { alive: false, x: 0, y: 0, z: 0 },
+      camera: { x: 20.5, y: -3.5, z: 30 }, tickCount: 0, state: 'playing',
+    };
+  }
+
+  tick() {
+    const v = this.view, P = v.period;
+    v.tickCount++;
+    // a slow curve across the land, rising and falling gently
+    const t = v.tickCount / 50;
+    v.camera.x = (v.camera.x + 0.018 * Math.cos(t / 40) + P) % P;
+    v.camera.z = (v.camera.z + 0.05) % P;
+    v.camera.y = -3.5 - 2 * (0.5 + 0.5 * Math.sin(t / 23));
+  }
+
+  draw(app, s, dim = 0.35) {
+    try {
+      app.renderer.render(this.view, 0, s.height);
+    } catch (e) {
+      s.clear(C.black);
+    }
+    if (dim) s.shade(0, 0, s.width, s.height, C.black, dim);
+  }
+}
+
+// ------------------------------------------------------------------ title
+/**
+ * Tip an orientation towards the viewer by angle k (a turn about the
+ * screen's x axis), so a model drawn by drawModelAt is seen from above.
+ */
+export function tipTowardsViewer(o, k) {
+  const c = Math.cos(k), s = Math.sin(k);
+  const turn = ([x, y, z]) => [x, y * c - z * s, y * s + z * c];
+  return { nose: turn(o.nose), roof: turn(o.roof), side: turn(o.side) };
+}
+
+const LOGO_TOP = rgb(255, 238, 102);
+const LOGO_MID = rgb(255, 136, 34);
+const LOGO_LOW = rgb(204, 34, 17);
+
+/** A colour down the letters of the logo: yellow, orange, red. */
+function logoColour(t) {
+  if (t < 0.5) return mix(LOGO_TOP, LOGO_MID, t * 2);
+  return mix(LOGO_MID, LOGO_LOW, (t - 0.5) * 2);
+}
+const IICOL = (t) => rgb(120 + 100 * (1 - t), 220 + 30 * (1 - t), 255);
+
+/** The Lander II logo, centred at unit row y. */
+export function drawLogo(s, y) {
+  const { u, cx } = layout(s);
+  const scale = 4 * u;
+  const opts = { scale, smooth: true, outline: rgb(40, 8, 8), outlineWidth: u,
+    shadow: rgb(0, 0, 0), shadowOffset: 2 * u };
+  const w = 9 * 8 * scale, x = cx - (w >> 1);
+  s.shade(x - 8 * u, (y - 5) * u, w + 16 * u, 42 * u, C.black, 0.35);
+  drawText(s, 'LANDER', x, y * u, { ...opts, colour: logoColour });
+  drawText(s, 'II', x + 7 * 8 * scale, y * u, { ...opts, colour: IICOL });
+}
+
+export class TitleScreen {
+  constructor(app) {
+    this.app = app;
+    this.name = 'title';
+    this.ticks = true;             // the backdrop moves in game time
+    this.idle = 0;
+    this.t = 0;
+    const play = (mode) => () => app.play(mode);
+    this.menu = new Menu(app, [
+      { label: 'Play Invasion', action: play('invasion'),
+        help: 'Defend the land from the virus' },
+      { label: 'Play Lander+', action: play('lander'),
+        help: "The 1987 game: fly, shoot, don't crash" },
+      { label: 'Settings', action: () => app.openSettings(this),
+        help: 'Look, sound, controls' },
+      { label: 'High scores', action: () => app.showScores('invasion'),
+        help: 'The best pilots so far' },
+      { label: 'How to play', action: () => app.help(0),
+        help: 'Flying by mouse, and the keys' },
+      { label: 'View source', action: () => app.viewSource(),
+        help: 'Read the program in !JsEdit' },
+      { label: 'Original Lander', action: () => app.runOriginal(),
+        help: 'The faithful !Lander in Diversions' },
+      { label: 'Back to desktop', action: () => app.toDesktop(),
+        help: 'Lander II stays on the icon bar' },
+    ], { y: 124, spacing: 12, back: () => app.toDesktop(), width: 176,
+      selected: app.titleChoice ?? 0 });
+  }
+
+  enter() { this.idle = 0; }
+
+  tick() { this.app.backdrop.tick(); return false; }
+
+  frame(presses) {
+    this.t++;
+    if (presses.length) this.idle = 0;
+    for (const k of presses) {
+      if (this.menu.key(k)) this.app.titleChoice = this.menu.selected;
+    }
+    // left alone for a while: the attract mode starts (the demo game)
+    if (++this.idle > 25 * SECOND) this.app.attract('demo');
+  }
+
+  pointer(ev) {
+    this.idle = 0;
+    this.menu.pointer(this.app.surface, ev);
+    this.app.titleChoice = this.menu.selected;
+  }
+
+  draw(s) {
+    const app = this.app;
+    app.backdrop.draw(app, s, 0.3);
+    const { u, cx } = layout(s);
+    drawLogo(s, 16);
+    say(s, "grown from Braben's Lander, 1987", 0, 56, { colour: C.grey });
+    // the ship, turning slowly
+    if (app.renderer.drawModelAt) {
+      const a = this.t / 90;
+      const o = tipTowardsViewer(orientation(0.15 + 0.1 * Math.sin(a * 0.7), a), 0.9);
+      try {
+        app.renderer.drawModelAt('ship', o, cx, 88 * u, 60 * u, { look: 'enhanced' });
+      } catch { /* no ship: never mind */ }
+    }
+    panel(s, -96, 118, 192, 104, 0.55);
+    this.menu.draw(s);
+    const hi = app.scores.invasion[0];
+    if (hi) say(s, `HI ${hi.score} ${hi.name}`, 0, 4, { colour: C.cyan });
+  }
+}
+
+// ------------------------------------------------------------------ high scores
+export class ScoresScreen {
+  /** mode: which table first; highlight: { mode, index } of a new entry. */
+  constructor(app, mode = 'invasion', options = {}) {
+    this.app = app;
+    this.name = 'scores';
+    this.ticks = true;
+    this.mode = mode;
+    this.highlight = options.highlight ?? null;
+    this.attract = !!options.attract;
+    this.t = 0;
+  }
+
+  tick() { this.app.backdrop.tick(); return false; }
+
+  frame(presses) {
+    this.t++;
+    for (const k of presses) {
+      if (this.attract) { this.app.title(); return; }
+      if (k.code === 'ArrowLeft' || k.code === 'ArrowRight' || k.code === 'Tab') {
+        this.mode = this.mode === 'invasion' ? 'lander' : 'invasion';
+        this.app.sound.play('uiMove');
+      } else if (/^(Escape|Enter|Space|Backspace|NumpadEnter)$/.test(k.code)) {
+        this.app.sound.play('uiBack');
+        this.app.title();
+        return;
+      }
+    }
+    if (this.attract) {
+      if (this.t === 7 * SECOND) this.mode = 'lander';
+      if (this.t > 14 * SECOND) this.app.attract('help');
+    }
+  }
+
+  pointer(ev) {
+    if (ev.type !== 'down') return;
+    if (this.attract) { this.app.title(); return; }
+    const { u, cx } = layout(this.app.surface);
+    // the two tabs switch tables; anywhere else goes back
+    if (ev.y < 44 * u && ev.y > 24 * u) this.mode = ev.x < cx ? 'invasion' : 'lander';
+    else this.app.title();
+  }
+
+  draw(s) {
+    this.app.backdrop.draw(this.app, s, 0.5);
+    say(s, 'HIGH SCORES', 0, 8, { size: 2, colour: C.yellow, smooth: true });
+    // tabs
+    MODES.forEach((m, i) => {
+      const on = m === this.mode;
+      const x = i ? 44 : -44;
+      if (on) panel(s, x - 40, 26, 80, 13, 0.8);
+      say(s, MODE_NAMES[m].toUpperCase(), x, 29, { colour: on ? C.white : C.dim });
+    });
+    panel(s, -156, 44, 312, 150, 0.65);
+    const table = this.app.scores[this.mode];
+    const inv = this.mode === 'invasion';
+    const scoreX = inv ? 24 : 48;
+    say(s, 'NAME', -124, 50, { colour: C.dim, align: 'left' });
+    say(s, 'SCORE', scoreX, 50, { colour: C.dim, align: 'right' });
+    if (inv) say(s, 'WAVE', 60, 50, { colour: C.dim, align: 'right' });
+    say(s, 'DATE', 148, 50, { colour: C.dim, align: 'right' });
+    table.forEach((e, i) => {
+      const y = 64 + i * 12;
+      const hl = this.highlight && this.highlight.mode === this.mode &&
+        this.highlight.index === i;
+      const col = hl ? ((this.t >> 3) & 1 ? C.yellow : C.white)
+        : i === 0 ? C.yellow : i < 3 ? C.white : C.grey;
+      say(s, `${String(i + 1).padStart(2)}.`, -152, y, { colour: C.dim, align: 'left' });
+      say(s, e.name, -124, y, { colour: col, align: 'left' });
+      say(s, String(e.score), scoreX, y, { colour: col, align: 'right' });
+      if (inv) say(s, String(e.wave || '-'), 52, y, { colour: col, align: 'right' });
+      say(s, e.date || '', 148, y, { colour: C.dim, align: 'right' });
+    });
+    say(s, this.attract ? 'Press a key to play'
+      : 'Left/Right: other table   Escape: back', 0, 238, { colour: C.grey });
+  }
+}
+
+// ------------------------------------------------------------------ how to play
+const ALIENS = [
+  ['seeder', 'Seeder', '100', 'sprays the virus, lands'],
+  ['drone', 'Drone', '300', 'shoots; can turn mutant'],
+  ['mutant', 'Mutant', '500', 'hunts you down'],
+  ['bomber', 'Bomber', '800', 'high, fast, drops bombs'],
+  ['pest', 'Pest', '400', 'homes in on you'],
+  ['fighter', 'Fighter', '900', 'two hits to kill'],
+  ['attractor', 'Attractor', '1000', 'tractor beam, rare'],
+];
+
+const PAGES = ['HOW TO FLY', 'CONTROLS', 'INVASION', 'LANDER+ AND TIPS'];
+
+export class HelpScreen {
+  constructor(app, page = 0, options = {}) {
+    this.app = app;
+    this.name = 'help';
+    this.ticks = true;
+    this.page = page;
+    this.attract = !!options.attract;
+    this.t = 0;
+  }
+
+  tick() { this.app.backdrop.tick(); return false; }
+
+  turn(step) {
+    this.page = (this.page + step + PAGES.length) % PAGES.length;
+    this.app.sound.play('uiMove');
+  }
+
+  frame(presses) {
+    this.t++;
+    for (const k of presses) {
+      if (this.attract) { this.app.title(); return; }
+      if (/^(ArrowRight|KeyD|Enter|Space|NumpadEnter|Tab)$/.test(k.code)) this.turn(1);
+      else if (/^(ArrowLeft|KeyA)$/.test(k.code)) this.turn(-1);
+      else if (/^(Escape|Backspace)$/.test(k.code)) {
+        this.app.sound.play('uiBack');
+        this.app.title();
+        return;
+      }
+    }
+    if (this.attract && this.t > 16 * SECOND) this.app.attract('title');
+  }
+
+  pointer(ev) {
+    if (ev.type !== 'down') return;
+    if (this.attract) { this.app.title(); return; }
+    if (ev.button === 'adjust') this.turn(-1);
+    else if (ev.button === 'menu') this.app.title();
+    else this.turn(1);
+  }
+
+  draw(s) {
+    const app = this.app;
+    app.backdrop.draw(app, s, 0.55);
+    say(s, PAGES[this.page], 0, 8, { size: 2, colour: C.yellow, smooth: true });
+    panel(s, -156, 28, 312, 200, 0.7);
+    const pages = [this.flyPage, this.keysPage, this.aliensPage, this.tipsPage];
+    pages[this.page].call(this, s);
+    say(s, this.attract ? 'Press a key to play'
+      : `Page ${this.page + 1} of ${PAGES.length}   Left/Right: turn   Esc: back`,
+    0, 238, { colour: C.grey });
+  }
+
+  lines(s, list, y, x = -148, step = 10) {
+    list.forEach((l, i) => {
+      const [text, colour] = Array.isArray(l) ? l : [l, C.white];
+      say(s, text, x, y + i * step, { colour, align: 'left' });
+    });
+  }
+
+  // The key lesson of Lander: where the (invisible) mouse is.
+  flyPage(s) {
+    const { u, cx } = layout(s);
+    // the "mouse area": a box with its centre marked
+    const bx = cx - 140 * u, by = 36 * u, bw = 96 * u, bh = 80 * u;
+    s.shade(bx, by, bw, bh, C.blue, 0.5);
+    s.fillRect(bx + bw / 2 - 6 * u, by + bh / 2, 13 * u, u, C.dim);
+    s.fillRect(bx + bw / 2, by + bh / 2 - 6 * u, u, 13 * u, C.dim);
+    // the virtual mouse, wandering round the centre
+    const a = this.t / 70, r = 20 + 14 * Math.sin(this.t / 53);
+    const mx = r * Math.cos(a), my = r * Math.sin(a);
+    const px = bx + bw / 2 + mx * u, py = by + bh / 2 - my * u;
+    s.fillRect(px - 2 * u, py - 2 * u, 5 * u, 5 * u, C.yellow);
+    say(s, 'the mouse', -92, 120, { colour: C.grey });
+    // the ship as that mouse position tilts it (1 unit of the box = 2.5
+    // mouse units, so the picture shows about 30 to 90 degrees of tilt)
+    const t = stickTarget(mx * 2.5, my * 2.5);
+    if (hasModels(this.app)) {
+      try {
+        const o = tipTowardsViewer(orientation(t.pitch, t.dir), 0.3);
+        this.app.renderer.drawModelAt('ship', o,
+          cx + 40 * u, 78 * u, 70 * u, { look: 'enhanced' });
+      } catch { /* never mind */ }
+    }
+    say(s, 'the ship', 40, 120, { colour: C.grey });
+    this.lines(s, [
+      'The mouse is the ship. In the middle',
+      'the ship sits level; move away from',
+      'the middle and it tilts that way.',
+      ['Select: thrust    Menu: hover', C.yellow],
+      ['Adjust: fire', C.yellow],
+      'Tilt a little, thrust in bursts, and',
+      'keep off the ground. Land gently on',
+      'the grey pad to refuel.',
+      ['Lost? C puts the mouse back.', C.cyan],
+    ], 132);
+  }
+
+  keysPage(s) {
+    say(s, 'ACTION', -148, 34, { colour: C.dim, align: 'left' });
+    say(s, 'KEYS', -52, 34, { colour: C.dim, align: 'left' });
+    say(s, 'MOUSE', 148, 34, { colour: C.dim, align: 'right' });
+    KEY_HELP.forEach(([what, keys, mouse], i) => {
+      const y = 48 + i * 12;
+      say(s, what, -148, y, { colour: C.white, align: 'left' });
+      say(s, keys, -52, y, { colour: C.yellow, align: 'left' });
+      say(s, mouse, 148, y, { colour: C.cyan, align: 'right' });
+    });
+    this.lines(s, [
+      ['Up dips the nose, Down raises it.', C.grey],
+      ['Pad: stick tilts, A thrust, X fire,', C.grey],
+      ['B hover, Y missile, LB smart bomb.', C.grey],
+    ], 176);
+  }
+
+  aliensPage(s) {
+    const { u, cx } = layout(s);
+    ALIENS.forEach(([type, name, points, what], i) => {
+      const y = 34 + i * 22;
+      if (hasModels(this.app)) {
+        const o = tipTowardsViewer(orientation(0.2, this.t / 60 + i), 0.45);
+        try {
+          this.app.renderer.drawModelAt(type, o, cx - 134 * u, (y + 8) * u, 18 * u,
+            { look: 'enhanced' });
+        } catch { /* never mind */ }
+      }
+      const blip = BLIPS[type]?.[0] ?? C.white;
+      s.fillRect(cx - 116 * u, (y + 3) * u, 3 * u, 3 * u, blip);
+      say(s, name, -108, y, { colour: C.white, align: 'left' });
+      say(s, points, 148, y, { colour: C.yellow, align: 'right' });
+      say(s, what, -108, y + 10, { colour: C.grey, align: 'left' });
+    });
+  }
+
+  tipsPage(s) {
+    this.lines(s, [
+      ['INVASION', C.yellow],
+      'Aliens spray a red virus on the land.',
+      'Shoot them before it spreads: clean',
+      'land at the end of a wave scores a',
+      'bonus. Every shot costs a point.',
+      'M: homing missile.  B: smart bomb.',
+      'More ships, missiles and bombs every',
+      '5000 points.',
+      ['LANDER+', C.yellow],
+      'The 1987 rules: 20 points for each',
+      'tree or building, -1 a shot. Rocks',
+      'fall once you pass 800 points.',
+      ['Try the Classic look in Settings.', C.cyan],
+    ], 36, -148, 14);
+  }
+}
+
+// (Render's drawModelAt, if the renderer has one)
+const hasModels = (app) => !!app.renderer?.drawModelAt;
+
+// ------------------------------------------------------------------ settings
+export class SettingsScreen {
+  /** returnTo: the screen to go back to (the title, or a paused game). */
+  constructor(app, returnTo) {
+    this.app = app;
+    this.name = 'settings';
+    this.returnTo = returnTo;
+    this.ticks = true;
+    const s = app.settings;
+    const items = OPTIONS.map((o) => ({
+      label: o.label,
+      value: () => settingName(s, o.key),
+      change: (step) => { stepSetting(s, o.key, step); app.changeSetting(o.key); },
+      shaded: () => !!o.enhanced && s.look === 'classic',
+      help: o.help,
+    }));
+    items.push({ label: 'Back', action: () => this.back(), help: 'Settings are saved' });
+    this.menu = new Menu(app, items, { y: 34, spacing: 13, width: 272,
+      back: () => this.back() });
+  }
+
+  back() {
+    this.app.saveSettings();
+    this.app.setScreen(this.returnTo ?? this.app.titleScreen());
+  }
+
+  tick() {
+    if (!this.returnTo?.world) this.app.backdrop.tick();
+    return false;
+  }
+
+  frame(presses) { for (const k of presses) this.menu.key(k); }
+
+  pointer(ev) { this.menu.pointer(this.app.surface, ev); }
+
+  draw(s) {
+    // behind: the paused game, or the drifting landscape
+    if (this.returnTo?.drawScene) {
+      this.returnTo.drawScene(s);
+      s.shade(0, 0, s.width, s.height, C.black, 0.6);
+    } else {
+      this.app.backdrop.draw(this.app, s, 0.5);
+    }
+    say(s, 'SETTINGS', 0, 8, { size: 2, colour: C.yellow, smooth: true });
+    panel(s, -140, 28, 280, OPTIONS.length * 13 + 22, 0.7);
+    this.menu.draw(s);
+  }
+}
+

@@ -1,0 +1,177 @@
+// Lander II - Autopilot: flies the ship in the demo game.
+//
+// It plays by the same rules as you: every tick it looks at the world and
+// makes the same input structure the mouse and keys make (see Input), so
+// the World can't tell the difference. It only moves the virtual mouse
+// and presses thrust and fire.
+//
+// How it flies. The engine pushes out of the top of the ship (along
+// -roof), so tilting the ship tilts the push. The autopilot
+//
+//   1. picks somewhere to go: the nearest alien (seeders first, as they
+//      spread the virus), or the launch pad when the fuel is low;
+//   2. works out the velocity it wants: towards a point a little back
+//      from the target and above it (so the dipped nose points at it),
+//      never lower than a safe height over the highest ground ahead;
+//   3. turns the difference between that and its velocity into the
+//      acceleration it wants, adds enough upward push to beat gravity,
+//      and tilts the ship so the engine points that way: the tilt is the
+//      angle between the push and straight up, the direction is the
+//      push's compass bearing (Player.stickFor turns those into a virtual
+//      mouse offset);
+//   4. pulses the engine - it is either on or off - often enough to give
+//      the right average push;
+//   5. fires when the nose points close to the target;
+//   6. over the pad, slows down, sinks gently and waits to refuel.
+
+import { clamp, len3 } from './Maths';
+import { PAD_ALTITUDE, UNDERCARRIAGE, PAD_SIZE } from './Terrain';
+import { stickFor, THRUST } from './Player';
+
+const PAD_Y = PAD_ALTITUDE - UNDERCARRIAGE;   // the ship resting on the pad
+const CRUISE = 0.12;           // tiles per tick when travelling
+const CLEARANCE = 2.8;         // tiles above the highest ground ahead
+const MAX_TILT = 0.75;         // radians (43 degrees)
+const STAND_OFF = 5;           // tiles back from the target when attacking
+const GAIN = 0.06;             // how hard it corrects its velocity
+
+export class Autopilot {
+  constructor() {
+    this.goal = 'hunt';
+    this.duty = 0;             // the engine's on/off accumulator
+    this.target = null;
+    this.ticks = 0;
+  }
+
+  /** The input for one tick of the world. */
+  input(world) {
+    const out = { stickX: 0, stickY: 0, thrust: false, hover: false, fire: false,
+      missile: false, smartBomb: false };
+    const p = world.player, t = world.terrain;
+    if (!p || !p.alive || world.state === 'gameOver') return out;
+    this.ticks++;
+    const d = (a, b) => t.delta(a, b);
+
+    // ---------------------------------------------------- the goal
+    const fuel = p.fuel / Math.max(1, p.maxFuel);
+    if (p.landed && t.isPad(p.x, p.z) && fuel < 0.95) this.goal = 'refuel';
+    else if (this.goal === 'refuel') this.goal = 'hunt';     // full: off again
+    else if (fuel < 0.3 && this.goal !== 'refuel') this.goal = 'land';
+    else if (this.goal === 'land' && fuel > 0.95) this.goal = 'hunt';
+    if (this.goal === 'refuel') return out;       // sit still and fill up
+
+    // taking off: straight up, level, until well clear of the pad
+    if (this.goal !== 'land' && t.isPad(p.x, p.z) && p.y > PAD_Y - 2) {
+      out.thrust = p.vy > -0.08;
+      return out;
+    }
+
+    // ---------------------------------------------------- where to go
+    let tx, ty, tz, speed = CRUISE, target = null;
+    const onPad = Math.hypot(d(p.x, PAD_SIZE / 2), d(p.z, PAD_SIZE / 2));
+    if (this.goal === 'land') {
+      tx = PAD_SIZE / 2; tz = PAD_SIZE / 2;
+      ty = onPad < 0.8 ? PAD_Y + 0.3 : PAD_Y - 3;
+      speed = onPad < 4 ? 0.035 : CRUISE;
+    } else {
+      // aliens first; in Lander+ (no aliens) trees and buildings score
+      target = nearestEnemy(world, p) ?? nearestObject(world, p);
+      if (target?.still) {
+        // a tree or building: make runs over it, firing on the way in
+        tx = target.x; tz = target.z;
+        ty = target.y - 3;
+      } else if (target) {
+        // hover above and back from it, so the dipped nose points at it
+        const hx = d(target.x, p.x), hz = d(target.z, p.z), hl = Math.hypot(hx, hz) || 1;
+        tx = target.x + (hx / hl) * STAND_OFF;
+        tz = target.z + (hz / hl) * STAND_OFF;
+        ty = Math.min(target.y, t.altitude(target.x, target.z)) - 2.5;
+      } else {
+        // nothing to shoot: cruise round in a big slow circle
+        const a = world.tickCount / 700;
+        tx = t.wrap(PAD_SIZE / 2 + Math.cos(a) * 18);
+        tz = t.wrap(PAD_SIZE / 2 + Math.sin(a) * 18);
+        ty = -1;
+      }
+    }
+    this.target = target;
+
+    // stay clear of the hills (and trees) under and ahead of the ship
+    let ground = t.altitude(p.x, p.z);
+    for (let k = 6; k <= 30; k += 6) {
+      ground = Math.min(ground, t.altitude(p.x + p.vx * k, p.z + p.vz * k));
+    }
+    const nearPad = this.goal === 'land' && onPad < 2.5;
+    if (!nearPad) ty = Math.min(ty, ground - CLEARANCE);
+    ty = Math.max(ty, -30);                       // not too high (engines cut at 52)
+
+    // ---------------------------------------------------- the push wanted
+    let wx = d(p.x, tx) * 0.04, wy = (ty - p.y) * 0.05, wz = d(p.z, tz) * 0.04;
+    const wl = len3(wx, wy, wz);
+    if (wl > speed) { wx *= speed / wl; wy *= speed / wl; wz *= speed / wl; }
+    if (nearPad) wy = clamp(wy, -0.05, 0.025);   // gently down
+    const ax = (wx - p.vx) * GAIN, az = (wz - p.vz) * GAIN;
+    const ay = (wy - p.vy) * GAIN - world.gravity;
+    const al = len3(ax, ay, az);
+
+    // tilt the engine (-roof) along the push: y is down, so "up" is -y
+    let pitch = Math.acos(clamp(-ay / (al || 1), -1, 1));
+    const low = nearPad && p.y > PAD_Y - 1.5;
+    pitch = Math.min(pitch, low ? 0.04 : MAX_TILT);
+    const dir = Math.atan2(-az, ax);
+    Object.assign(out, stickFor(pitch, dir));
+
+    // pulse the engine to give that push on average
+    this.duty += Math.min(1, al / THRUST);
+    if (this.duty >= 1 && ay < 0) { this.duty -= 1; out.thrust = true; }
+    else if (this.duty > 2) this.duty = 1;
+    // falling fast towards the ground? full power
+    if (p.vy > 0.06 && p.y > ground - 4) out.thrust = true;
+
+    // ---------------------------------------------------- fire
+    if (target) {
+      const rx = d(p.x, target.x), ry = target.y - p.y, rz = d(p.z, target.z);
+      const rl = len3(rx, ry, rz) || 1;
+      const c = (rx * p.nose[0] + ry * p.nose[1] + rz * p.nose[2]) / rl;
+      out.fire = target.still ? rl < 9 && c > 0.93 : rl < 14 && c > 0.95;
+      out.missile = world.missiles > 1 && rl > 8 && rl < 20 && c > 0.9 &&
+        this.ticks % 300 === 0;
+    }
+    return out;
+  }
+}
+
+// The nearest tree or building worth shooting (Lander+: 20 points each;
+// Invasion: only mutated trees score), as a target { x, y, z }.
+function nearestObject(world, p) {
+  const t = world.terrain, P = world.period, objects = world.objects;
+  if (!objects) return null;
+  const invasion = world.mode === 'invasion';
+  let best = null, bestD = Infinity;
+  const px = Math.floor(p.x), pz = Math.floor(p.z);
+  for (let dz = -12; dz <= 12; dz++) {
+    for (let dx = -12; dx <= 12; dx++) {
+      const x = ((px + dx) % P + P) % P, z = ((pz + dz) % P + P) % P;
+      const i = z * P + x, type = objects[i];
+      if (type === 0xFF || type < 1 || type > 8) continue;   // empty, rocket or wreck
+      if (invasion && !world.mutated?.[i]) continue;
+      const d = dx * dx + dz * dz;
+      if (d < bestD && d > 4) {
+        bestD = d;
+        best = { x: x + 0.5, z, y: t.altitude(x + 0.5, z) - 0.6, still: true };
+      }
+    }
+  }
+  return best;
+}
+
+function nearestEnemy(world, p) {
+  let best = null, bestD = Infinity;
+  for (const e of world.enemies ?? []) {
+    if (e.type === 'monster' || e.type === 'rock' || e.dead) continue;
+    const dd = Math.hypot(world.terrain.delta(p.x, e.x), world.terrain.delta(p.z, e.z)) *
+      (e.type === 'seeder' ? 0.7 : 1);
+    if (dd < bestD) { bestD = dd; best = e; }
+  }
+  return best;
+}

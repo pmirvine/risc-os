@@ -1,0 +1,293 @@
+// Lander II - Play: a game in progress, the demo game, the pause menu,
+// the wave tally, game over and entering your name for the high scores.
+//
+// PlayScreen owns a World (the simulation) and, 50 times a second, gives
+// it one tick of input - from the mouse and keys (Input), or in the demo
+// from the Autopilot. Each displayed frame it draws the world with the
+// Renderer, then the Hud on top, then whatever is showing over the game
+// (the pause menu, the tally at the end of a wave, GAME OVER).
+
+import { World } from './World';
+import { Autopilot } from './Autopilot';
+import { Menu, COLOURS, say, panel } from './Menu';
+import { qualifies, insertScore, today, NAME_LENGTH, MODE_NAMES } from './Scores';
+
+const C = COLOURS;
+const TICKS = 50;                  // world ticks per second
+
+export class PlayScreen {
+  /** mode: 'invasion' or 'lander'; options: { demo } */
+  constructor(app, mode, options = {}) {
+    this.app = app;
+    this.mode = mode;
+    this.demo = !!options.demo;
+    this.name = this.demo ? 'demo' : 'play';
+    this.ticks = true;
+    this.sounds = true;
+    this.paused = false;
+    this.pauseMenu = null;
+    this.overTicks = 0;             // ticks since GAME OVER
+    this.age = 0;                   // ticks since the start
+    this.finished = false;
+    this.newWorld();
+  }
+
+  newWorld() {
+    const s = this.app.settings;
+    this.world = new World({
+      mode: this.mode,
+      difficulty: this.demo ? 'normal' : s.difficulty,
+      seed: (Math.random() * 0x7FFFFFFF) | 0,
+      demo: this.demo,
+      particles: s.particles,
+    });
+    this.best = this.app.scores[this.mode][0]?.score ?? 0;
+    this.world.highScore = this.best;
+    this.pilot = this.demo ? new Autopilot() : null;
+    this.overTicks = 0;
+    this.age = 0;
+    this.app.input.clearEdges();
+  }
+
+  /** True while the mouse is flying the ship (the pointer is captured). */
+  get playing() { return !this.demo && !this.paused && !this.finished; }
+
+  enter() {
+    if (this.demo) this.app.sound.setVolume(this.app.settings.volume * 0.5);
+  }
+
+  leave() {
+    this.app.sound.silence();
+    this.app.sound.setVolume(this.app.settings.volume);
+  }
+
+  // ---------------------------------------------------------------- game time
+  /** One tick of the world; false if it didn't move (paused). */
+  tick() {
+    if (this.paused || this.finished) return false;
+    const w = this.world;
+    const input = this.demo ? this.pilot.input(w) : this.app.input.sample();
+    w.tick(input);
+    this.age++;
+    if (w.score > this.best) w.highScore = w.score;
+    if (w.state === 'gameOver') {
+      this.overTicks++;
+      if (this.overTicks > 4 * TICKS) this.gameOver();
+    }
+    if (this.demo && this.age > 70 * TICKS) this.app.attract('scores');
+    return true;
+  }
+
+  // ---------------------------------------------------------------- keys
+  frame(presses) {
+    for (const k of presses) {
+      if (this.demo) {                         // any key leaves the demo
+        this.app.title();
+        return;
+      }
+      if (this.pauseMenu) {
+        if (k.code === 'KeyP') this.resume();
+        else this.pauseMenu.key(k);
+        continue;
+      }
+      if (k.code === 'Escape' || k.code === 'KeyP') {
+        this.pause();
+      } else if (this.world.state === 'gameOver' && this.overTicks > TICKS &&
+          /^(Enter|Space|NumpadEnter)$/.test(k.code)) {
+        this.gameOver();
+      }
+    }
+  }
+
+  pointer(ev) {
+    if (this.demo) {
+      if (ev.type === 'down') this.app.title();
+      return;
+    }
+    if (this.pauseMenu) this.pauseMenu.pointer(this.app.surface, ev);
+  }
+
+  /** The window lost the focus, or the pointer was let go: pause. */
+  blur() {
+    if (!this.demo && !this.paused && !this.finished) this.pause();
+  }
+
+  // ---------------------------------------------------------------- pausing
+  pause() {
+    if (this.paused) return;
+    this.paused = true;
+    this.app.sound.silence();
+    this.app.sound.play('uiBack');
+    this.app.input.release();
+    this.app.unlockPointer();
+    this.pauseMenu = new Menu(this.app, [
+      { label: 'Resume', action: () => this.resume(), help: 'P or Escape also resume' },
+      { label: 'Settings', action: () => this.app.openSettings(this) },
+      { label: 'Restart', action: () => { this.resume(); this.newWorld(); },
+        help: 'Start this game again' },
+      { label: 'Quit to title', action: () => this.app.title(),
+        help: 'Leave this game' },
+    ], { y: 104, spacing: 13, width: 150, back: () => this.resume() });
+  }
+
+  resume() {
+    this.paused = false;
+    this.pauseMenu = null;
+    this.app.input.release();
+    this.app.lockPointer();
+  }
+
+  // ---------------------------------------------------------------- game over
+  gameOver() {
+    if (this.finished) return;
+    this.finished = true;
+    const app = this.app, w = this.world;
+    if (this.demo) { app.attract('scores'); return; }
+    const table = app.scores[this.mode];
+    if (qualifies(table, w.score)) {
+      app.setScreen(new NameEntryScreen(app, this.mode, w.score, w.wave));
+    } else {
+      app.showScores(this.mode);
+    }
+  }
+
+  // ---------------------------------------------------------------- drawing
+  /** The world and the HUD (also drawn behind the settings when paused). */
+  drawScene(s) {
+    const app = this.app, look = app.settings.look;
+    const area = app.hud.viewArea(s, look);
+    app.renderer.render(this.world, area.top, area.height);
+    const w = this.world;
+    app.hud.draw(s, w, {
+      look, view: app.settings.view, renderer: app.renderer,
+      // (no banner when this screen shows the same news bigger)
+      banner: !(w.state === 'gameOver' || (w.state === 'waveEnd' && w.tally)),
+      stick: this.demo || app.settings.controls === 'gamepad' ? null
+        : { x: app.input.stickX, y: app.input.stickY },
+    });
+  }
+
+  draw(s) {
+    this.drawScene(s);
+    const w = this.world;
+    const flash = (this.app.frames >> 4) & 1;
+
+    if (w.state === 'waveEnd' && w.tally) this.drawTally(s, w.tally);
+
+    if (w.state === 'gameOver') {
+      const big = this.app.settings.look === 'classic' ? 2 : 3;
+      say(s, 'GAME OVER', 0, 100, { size: big, colour: C.red, smooth: true,
+        outline: C.black });
+      say(s, `SCORE ${w.score}`, 0, 132, { colour: C.white });
+      if (this.overTicks > TICKS && !this.demo) {
+        say(s, 'Press Return', 0, 150, { colour: flash ? C.yellow : C.grey });
+      }
+    }
+
+    if (this.demo) {
+      panel(s, -120, 208, 240, 40, 0.6);
+      const c = flash ? C.yellow : C.orange;
+      say(s, 'DEMO', 0, 212, { size: 2, colour: c, smooth: true });
+      say(s, 'Press a key or click to play', 0, 236, { colour: C.white });
+    }
+
+    if (this.pauseMenu) {
+      s.shade(0, 0, s.width, s.height, C.black, 0.45);
+      say(s, 'PAUSED', 0, 72, { size: 2, colour: C.yellow, smooth: true });
+      panel(s, -85, 96, 170, 64, 0.8);
+      this.pauseMenu.draw(s);
+    }
+  }
+
+  // The end of a wave: how it went, counting up as the tally screen shows.
+  drawTally(s, t) {
+    const w = this.world;
+    const total = Math.max(1, w.stateTimer + this.tallyStart(w));
+    const k = Math.min(1, (total - w.stateTimer) / (total * 0.6));   // 0 -> 1
+    const n = (v) => Math.round((v || 0) * k);
+    panel(s, -120, 60, 240, 128, 0.8);
+    say(s, `WAVE ${t.wave} CLEARED`, 0, 68, { size: 2, colour: C.yellow, smooth: true });
+    const rows = [
+      ['Aliens destroyed', n(t.kills)],
+      ['Shots fired', n(t.shots)],
+      ['Accuracy', t.shots ? `${Math.round((100 * n(t.hits)) / t.shots)}%` : '-'],
+      ['Land clean', `${n(t.cleanPercent)}%`],
+      ['Land bonus', n(t.landBonus)],
+    ];
+    if (t.perfectBonus) rows.push(['Perfect!', n(t.perfectBonus)]);
+    rows.forEach(([what, v], i) => {
+      const y = 92 + i * 13;
+      say(s, what, -104, y, { colour: C.white, align: 'left' });
+      say(s, String(v), 104, y, { colour: i >= 4 ? C.green : C.cyan, align: 'right' });
+    });
+  }
+
+  // How long the tally is shown (remembered from when it started).
+  tallyStart(w) {
+    if (this.tallyWave !== w.tally.wave) {
+      this.tallyWave = w.tally.wave;
+      this.tallyLength = w.stateTimer;
+    }
+    return this.tallyLength - w.stateTimer;
+  }
+}
+
+// ------------------------------------------------------------------ your name
+export class NameEntryScreen {
+  constructor(app, mode, score, wave) {
+    this.app = app;
+    this.name = 'name';
+    this.mode = mode;
+    this.score = score;
+    this.wave = wave;
+    this.ticks = true;
+    this.hotkeys = false;           // letters are for typing, not shortcuts
+    this.text = (app.scores.lastName || '').slice(0, NAME_LENGTH);
+    this.t = 0;
+    app.sound.play('titleJingle');
+  }
+
+  tick() { this.app.backdrop.tick(); return false; }
+
+  frame(presses) {
+    this.t++;
+    for (const k of presses) {
+      if (k.code === 'Enter' || k.code === 'NumpadEnter') { this.done(); return; }
+      if (k.code === 'Escape') { this.text = ''; this.done(); return; }
+      if (k.code === 'Backspace' || k.code === 'Delete') {
+        this.text = this.text.slice(0, -1);
+        this.app.sound.play('uiBack');
+      } else if (k.key && k.key.length === 1 && k.key >= ' ' && k.key <= '~' &&
+          this.text.length < NAME_LENGTH && !k.ctrl) {
+        this.text += k.key;
+        this.app.sound.play('hsLetter');
+      }
+    }
+  }
+
+  pointer(ev) { if (ev.type === 'down' && this.t > 30) this.done(); }
+
+  done() {
+    const app = this.app;
+    const name = this.text.trim() || 'PILOT';
+    const table = app.scores[this.mode];
+    const entry = { name, score: this.score, wave: this.wave, date: today() };
+    const index = insertScore(table, entry);
+    app.scores.lastName = name;
+    app.saveScores();
+    app.sound.play('hsConfirm');
+    app.showScores(this.mode, { mode: this.mode, index });
+  }
+
+  draw(s) {
+    this.app.backdrop.draw(this.app, s, 0.5);
+    say(s, 'A NEW HIGH SCORE', 0, 40, { size: 2, colour: C.yellow, smooth: true });
+    say(s, `${MODE_NAMES[this.mode]}: ${this.score}`, 0, 66, { colour: C.cyan });
+    say(s, 'Type your name and press Return', 0, 90, { colour: C.white });
+    panel(s, -96, 108, 192, 30, 0.8);
+    // the name, with a flashing cursor
+    const shown = this.text + ((this.t >> 4) & 1 ? '_' : ' ');
+    say(s, shown.padEnd(NAME_LENGTH + 1), 0, 116, { size: 2, colour: C.white });
+    say(s, `(up to ${NAME_LENGTH} letters)`, 0, 150, { colour: C.grey });
+  }
+}

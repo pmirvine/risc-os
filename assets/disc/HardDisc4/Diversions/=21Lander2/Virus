@@ -1,0 +1,109 @@
+// Lander II - Virus: the infection that the aliens spread over the land.
+//
+// In Zarch the aliens' purpose is to spray a red virus over the green
+// land. Here each tile has an infection level from 0 (clean) to 255
+// (fully infected), kept in a byte map the renderer uses to tint the
+// tiles and the scanner draws in reddish brown:
+//  - a virus spore landing on land adds 64 to its tile and 16 to the
+//    eight tiles round it;
+//  - a seeder's spore that lands on a healthy tree may mutate it (the
+//    renderer draws mutated trees in red; shooting one scores 40);
+//  - mutated trees shed spores of their own now and then;
+//  - badly infected land (192 or more) slowly creeps into a neighbour.
+// Sea and the launch pad never infect. The land is cleansed between
+// waves. infectedPercent is the share of all the infection there could
+// be on the land (so 50% might be half the land fully infected, or all
+// of it half infected).
+
+export const TREES = [false, true, true, true, true, false, true, true, false, false];
+
+/** Is object type t a living tree (not a gazebo, building or rocket)? */
+export const isTree = (t) => t < 10 && TREES[t];
+
+export class Virus {
+  constructor(period) {
+    this.period = period;
+    const n = period * period;
+    this.map = new Uint8Array(n);          // world.infection
+    this.mutated = new Uint8Array(n);      // world.mutated
+    this.land = new Uint8Array(n);         // 1 land, 0 sea, 2 pad
+    this.landCount = 1;
+    this.sum = 0;                          // total infection on the map
+  }
+
+  /** Work out which tiles are land for a new landscape; clear everything. */
+  reset(terrain) {
+    const p = this.period;
+    let count = 0;
+    for (let z = 0; z < p; z++) {
+      for (let x = 0; x < p; x++) {
+        const i = z * p + x;
+        this.land[i] = terrain.isPad(x, z) ? 2 : terrain.tileIsSea(x, z) ? 0 : 1;
+        if (this.land[i] === 1) count++;
+      }
+    }
+    this.landCount = Math.max(1, count);
+    this.map.fill(0); this.mutated.fill(0); this.sum = 0;
+  }
+
+  get percent() { return (100 * this.sum) / (255 * this.landCount); }
+
+  /** Add infection to tile (tx, tz) if it is land; returns the new level. */
+  add(tx, tz, amount) {
+    const p = this.period;
+    tx = ((tx % p) + p) % p; tz = ((tz % p) + p) % p;
+    const i = tz * p + tx;
+    if (this.land[i] !== 1) return 0;
+    const old = this.map[i], v = Math.max(0, Math.min(255, old + Math.round(amount)));
+    this.map[i] = v; this.sum += v - old;
+    return v;
+  }
+
+  /** A spore lands at (x, z): its tile and the eight round it. */
+  spore(x, z, strength = 1) {
+    const tx = Math.floor(x), tz = Math.floor(z);
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        this.add(tx + dx, tz + dz, (dx || dz ? 16 : 64) * strength);
+      }
+    }
+  }
+
+  /**
+   * Creep: every tile at 192 or more pushes `amount` into one random
+   * neighbour. Called every couple of seconds, so it is slow: the land is
+   * lost to the aliens, not to the creep.
+   */
+  creep(rng, amount) {
+    const p = this.period, m = this.map;
+    const hot = [];
+    for (let i = 0; i < m.length; i++) if (m[i] >= 192) hot.push(i);
+    for (const i of hot) {
+      const k = rng.int(8);
+      const dx = [-1, 0, 1, -1, 1, -1, 0, 1][k], dz = [-1, -1, -1, 0, 0, 1, 1, 1][k];
+      this.add((i % p) + dx, Math.floor(i / p) + dz, amount);
+    }
+  }
+
+  /** Between waves: keep only `residual` of the infection; trees heal. */
+  cleanse(residual = 0) {
+    this.sum = 0;
+    for (let i = 0; i < this.map.length; i++) {
+      this.map[i] = Math.floor(this.map[i] * residual);
+      this.sum += this.map[i];
+    }
+    if (residual === 0) this.mutated.fill(0);
+  }
+
+  /** Clean every tile within r tiles of (x, z) (the cleanse pickup). */
+  clean(x, z, r) {
+    const p = this.period, tx = Math.floor(x), tz = Math.floor(z);
+    for (let dz = -r; dz <= r; dz++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (dx * dx + dz * dz > r * r) continue;
+        const i = (((tz + dz) % p + p) % p) * p + ((tx + dx) % p + p) % p;
+        this.sum -= this.map[i]; this.map[i] = 0; this.mutated[i] = 0;
+      }
+    }
+  }
+}

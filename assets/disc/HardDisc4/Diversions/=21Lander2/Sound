@@ -1,0 +1,457 @@
+// Lander II - Sound: plays the game's sound effects through Web Audio.
+//
+// There are two sound sets, each a module of recipes: SfxOrig (the
+// "Original" set, an Archimedes / Zarch feel: 8-bit samples at 20.8 kHz)
+// and SfxArcade (the "Arcade" set, Williams Defender / Robotron style).
+// Both have a sound for every event the game reports, the loops that
+// follow the game's state (engine, refuelling, bombers, pests) and the
+// jingles and menu blips. The recipes are synthesised by SfxKit into
+// sample arrays when a set is first needed - there are no sample files.
+//
+// How the front end uses it:
+//
+//   const sound = new Sound({ set: 'original', volume: 0.8, desktopGain });
+//   sound.resume();           // from a click or key press (browsers only
+//                             // let pages start sound after a gesture)
+//   sound.frame(world, events); // once per drawn frame: plays the events
+//                             // of the ticks since the last frame and
+//                             // updates the loops from the world's state
+//   sound.play('uiSelect');   // any sound by name (menus, jingles)
+//   sound.silence();          // pausing: loops and sounds stop
+//   sound.setSet('arcade'); sound.setVolume(0.5); sound.setDesktopGain(g);
+//   sound.close();            // quitting: the audio system is freed
+//
+// Where a sound is heard: the listener sits where the ship is (the middle
+// of the view). A sound out in the world is quieter the further away it
+// is (1 / (1 + (d / 8)^2), so half as loud 8 tiles away) and panned left
+// or right by how far it is across the view. The world wraps round, so
+// differences are measured the short way round (world.terrain.delta).
+//
+// Keeping it pleasant: at most 16 sounds play at once (a new one replaces
+// the one nearest its end); each sound has a limit on how often it can
+// repeat and how many copies can overlap; rapid repeats such as the
+// player's autofire (25 shots a second) are varied in pitch and played a
+// little quieter. Everything goes through a compressor, which holds big
+// moments (a smart bomb among explosions) together without distorting,
+// then the volume control.
+//
+// Without Web Audio (under node, or a very old browser) every method
+// quietly does nothing, so the game never fails because of sound.
+
+import { SET as ORIGINAL } from './SfxOrig';
+import { SET as ARCADE } from './SfxArcade';
+import { renderDef } from './SfxKit';
+
+/** The sound sets, by the name used in the settings. */
+export const SETS = { original: ORIGINAL, arcade: ARCADE };
+/** Every one-shot sound's name (the same in both sets). */
+export const SOUND_NAMES = Object.keys(ORIGINAL.sounds);
+/** The loops' names. */
+export const LOOP_NAMES = Object.keys(ORIGINAL.loops);
+
+const MAX_VOICES = 16;     // one-shot sounds playing at once
+const HEAR = 8;            // tiles away at which a sound is half as loud
+const PAN_WIDTH = 9;       // tiles to the side for fully left / right
+const QUIET = 0.02;        // sounds fainter than this are not played
+const SOUND_SPEED = 30;    // tiles per second, for the Doppler pitch bend
+const TICKS = 50;          // simulation ticks per second
+const OUT_TRIM = 0.9;      // master level after the compressor
+// events that share another event's sound: [sound, pitch]
+const ALIASES = { landingBonus: ['pickup', 0.84], newLandscape: ['waveStart', 1] };
+// pickups each have their own pitch
+const PICKUP_RATE = { fuel: 1, missile: 1.12, shield: 0.89, cleanse: 1.26 };
+
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// A small hash of a name, so each sound's noise is different but the same
+// every time it is made.
+const seedOf = (name) => [...name].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+export class Sound {
+  /**
+   * set: 'original' | 'arcade' | 'off'; volume 0..1 (the game's own
+   * setting); desktopGain 0..1 (the desktop's speaker and volume
+   * settings). context: an AudioContext to use instead of making one
+   * (tests pass an OfflineAudioContext).
+   */
+  constructor({ set = 'original', volume = 0.8, desktopGain = 1, context = null } = {}) {
+    this.setName = SETS[set] ? set : 'off';
+    this.volume = volume;
+    this.desktopGain = desktopGain;
+    this.ctx = null;
+    this.own = !context;
+    this.voices = [];        // one-shots playing: { name, src, g, end }
+    this.loops = {};         // loops running, by name
+    this.last = {};          // when each sound last started
+    this.buffers = {};       // rendered AudioBuffers: buffers[set]['sound:fire']
+    this.lastError = null;   // anything that went wrong (sound never throws)
+    if (context) this._build(context);
+  }
+
+  /** True if sound can be heard (Web Audio is working and a set is on). */
+  get live() { return !!this.ctx && this.setName !== 'off'; }
+
+  /**
+   * Start (or restart) sound. Call it from a user gesture - a pointerdown
+   * or keydown handler - as browsers keep audio suspended until then.
+   * Cheap and safe to call as often as you like.
+   */
+  resume() {
+    try {
+      if (!this.ctx) {
+        const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+        if (!AC) return;
+        this.own = true;
+        this._build(new AC({ latencyHint: 'interactive' }));
+      }
+      if (this.own && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+      this._prepare();
+    } catch (e) { this.lastError = e; }
+  }
+
+  /** Change sound set: 'original', 'arcade' or 'off'. */
+  setSet(name) {
+    name = SETS[name] ? name : 'off';
+    if (name === this.setName) return;
+    this.silence();
+    this.setName = name;
+    this._prepare();
+  }
+
+  /** The game's volume setting, 0..1. */
+  setVolume(v) { this.volume = clamp(+v || 0, 0, 1); this._level(); }
+
+  /** The desktop's volume (0 when its speaker is off), 0..1. */
+  setDesktopGain(g) { this.desktopGain = clamp(+g || 0, 0, 1); this._level(); }
+
+  /**
+   * Once per drawn frame: play `events` (the events of every tick since
+   * the last frame; world.events if not given) and update the loops from
+   * the world's state. frame(null) fades the loops out.
+   */
+  frame(world, events) {
+    if (!this.live) return;
+    try {
+      if (!world) { this._loopsOff(); return; }
+      const list = events ?? world.frameEvents ?? world.events ?? [];
+      for (const e of list) this._event(world, e);
+      this._updateLoops(world);
+    } catch (e) { this.lastError = e; }
+  }
+
+  /**
+   * Play a sound by name. opts (all optional):
+   *   x, y, z + world  where it happens (distance and stereo position)
+   *   gain  extra level (1 = normal)   pan  -1 left .. 1 right
+   *   rate  pitch / speed (1 = normal) delay  seconds from now
+   * Returns true if it started.
+   */
+  play(name, opts = {}) {
+    if (!this.live) return false;
+    try {
+      const set = SETS[this.setName], def = set.sounds[name];
+      if (!def) return false;
+      const now = this.ctx.currentTime, last = this.last[name] ?? -1e9;
+      if (def.gap && now - last < def.gap) return false;
+      let gain = opts.gain ?? 1, pan = opts.pan ?? 0;
+      if (opts.world && opts.x !== undefined) {
+        const at = this._place(opts.world, opts);
+        gain *= at.gain;
+        pan = at.pan;
+      }
+      if (gain < QUIET) return false;
+      let rate = opts.rate ?? 1;
+      if (def.vary) rate *= 1 + def.vary * (Math.random() * 2 - 1);
+      // quick repeats (autofire) sit a little further back in the mix
+      if (def.gap && def.gap < 0.05 && now - last < 0.15) gain *= 0.75;
+      const buffer = this._buffer('sound', name);
+      if (!buffer) return false;
+      this.last[name] = now;
+      this._voice(name, def, buffer, gain, rate, set.pan(pan), opts.delay ?? 0);
+      return true;
+    } catch (e) { this.lastError = e; return false; }
+  }
+
+  /** Stop every loop and sound at once (pausing, leaving the game). */
+  silence() {
+    try {
+      for (const name of Object.keys(this.loops)) this._stopLoop(name, 0.01);
+      for (const v of [...this.voices]) this._stopVoice(v);
+    } catch (e) { this.lastError = e; }
+  }
+
+  /** Free the audio system (the task is quitting). */
+  close() {
+    this.silence();
+    clearTimeout(this.timer);
+    try { if (this.own && this.ctx) this.ctx.close(); } catch { /* already closed */ }
+    this.ctx = null;
+    this.buffers = {};
+  }
+
+  // ------------------------------------------------------------ the mixer
+
+  // Build the output chain: all sounds -> compressor -> volume -> clipper
+  // -> speakers.
+  _build(ctx) {
+    this.ctx = ctx;
+    this.bus = ctx.createGain();
+    const c = this.comp = ctx.createDynamicsCompressor();
+    // set high enough that a single sound passes through untouched: it only
+    // steps in when many loud sounds pile up
+    c.threshold.value = -12;
+    c.knee.value = 6;
+    c.ratio.value = 5;
+    c.attack.value = 0.004;
+    c.release.value = 0.2;
+    this.out = ctx.createGain();
+    this.out.gain.value = this.volume * this.desktopGain * OUT_TRIM;
+    // last of all a safety net: a soft clipper that leaves everything below
+    // 0.8 alone and rounds off anything louder instead of letting it crack
+    const clip = ctx.createWaveShaper(), curve = new Float32Array(1025);
+    for (let i = 0; i < curve.length; i++) {
+      const x = i / 512 - 1, m = Math.abs(x);
+      curve[i] = m < 0.8 ? x : Math.sign(x) * (0.8 + 0.2 * Math.tanh((m - 0.8) / 0.2));
+    }
+    clip.curve = curve;
+    clip.oversample = '2x';
+    this.bus.connect(c);
+    c.connect(this.out);
+    this.out.connect(clip);
+    clip.connect(ctx.destination);
+  }
+
+  _level() {
+    if (!this.ctx) return;
+    const g = this.volume * this.desktopGain * OUT_TRIM;
+    this.out.gain.setTargetAtTime(g, this.ctx.currentTime, 0.02);
+  }
+
+  // Make the current set's sounds. The first time a set is used they are
+  // made in the background, one per timer tick, so the game doesn't
+  // stutter; a sound needed before its turn is simply made there and then.
+  _prepare() {
+    if (!this.live || this.buffers[this.setName]) return;
+    const setName = this.setName, set = SETS[setName];
+    this.buffers[setName] = {};
+    const todo = [
+      ...Object.keys(set.loops).map((n) => ['loop', n]),
+      ...Object.keys(set.sounds).map((n) => ['sound', n]),
+    ];
+    const next = () => {
+      if (this.setName !== setName || !this.ctx || !todo.length) return;
+      const [kind, name] = todo.shift();
+      this._buffer(kind, name);
+      this.timer = setTimeout(next, 0);
+    };
+    if (typeof setTimeout === 'function') this.timer = setTimeout(next, 0);
+  }
+
+  // The AudioBuffer for a sound or loop of the current set (made if need be).
+  _buffer(kind, name) {
+    const set = SETS[this.setName];
+    const store = this.buffers[this.setName] ??= {};
+    const key = kind + ':' + name;
+    if (store[key]) return store[key];
+    const def = kind === 'loop' ? set.loops[name] : set.sounds[name];
+    if (!def) return null;
+    const a = renderDef(set, def, seedOf(name));
+    const b = this.ctx.createBuffer(1, a.length, set.rate);
+    b.getChannelData(0).set(a);
+    return (store[key] = b);
+  }
+
+  // Start a one-shot: buffer -> gain -> stereo panner -> the mix.
+  _voice(name, def, buffer, gain, rate, pan, delay) {
+    const ctx = this.ctx, now = ctx.currentTime;
+    this.voices = this.voices.filter((v) => v.end > now);
+    const same = this.voices.filter((v) => v.name === name);
+    if (def.max && same.length >= def.max) this._stopVoice(same[0]);
+    if (this.voices.length >= MAX_VOICES) {
+      // make room: cut off the sound that was going to end soonest
+      this._stopVoice(this.voices.reduce((a, b) => (b.end < a.end ? b : a)));
+    }
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    const g = ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g);
+    let panner = null;
+    if (pan && ctx.createStereoPanner) {
+      panner = ctx.createStereoPanner();
+      panner.pan.value = clamp(pan, -1, 1);
+      g.connect(panner);
+      panner.connect(this.bus);
+    } else {
+      g.connect(this.bus);
+    }
+    const t = now + delay;
+    src.start(t);
+    src.onended = () => { g.disconnect(); if (panner) panner.disconnect(); };
+    this.voices.push({ name, src, g, end: t + buffer.duration / rate });
+  }
+
+  // Fade a one-shot out over a few milliseconds (a hard stop would click).
+  _stopVoice(v) {
+    const now = this.ctx.currentTime;
+    v.g.gain.setTargetAtTime(0, now, 0.008);
+    try { v.src.stop(now + 0.05); } catch { /* not started yet */ }
+    v.end = 0;
+    this.voices = this.voices.filter((x) => x !== v);
+  }
+
+  // Where the listener is: at the ship (the middle of the view).
+  _listener(world) {
+    const p = world.player, c = world.camera;
+    return {
+      x: c ? c.x : p ? p.x : 0,
+      y: p ? p.y : c ? c.y : 0,
+      z: p ? p.z : c ? c.z : 0,
+      p,
+    };
+  }
+
+  // Loudness and stereo position of something at (at.x, at.y, at.z).
+  _place(world, at) {
+    const L = this._listener(world), T = world.terrain;
+    const dx = T ? T.delta(L.x, at.x) : at.x - L.x;
+    const dz = T ? T.delta(L.z, at.z) : at.z - L.z;
+    const dy = (at.y ?? L.y) - L.y;
+    const dist = Math.hypot(dx, dy, dz);
+    return {
+      gain: 1 / (1 + (dist / HEAR) * (dist / HEAR)),
+      pan: clamp(dx / PAN_WIDTH, -1, 1),
+      dist, dx, dy, dz, L,
+    };
+  }
+
+  // One game event: play the sound of the same name (or its ALIASES entry).
+  _event(world, e) {
+    const [name, rate] = ALIASES[e.type] ?? [e.type, 1];
+    const def = SETS[this.setName].sounds[name];
+    if (!def) return;
+    const p = world.player;
+    // low fuel beeps come from the fuel gauge itself (see _updateLoops)
+    if (e.type === 'lowFuel' && p && p.maxFuel) return;
+    const opts = { rate };
+    if (def.pos && e.x !== undefined) {
+      opts.world = world; opts.x = e.x; opts.y = e.y; opts.z = e.z;
+    }
+    if (e.type === 'pickup') opts.rate = PICKUP_RATE[e.kind] ?? 1;
+    if (e.type === 'crash') this._stopLoop('thrust', 0.02);
+    this.play(name, opts);
+  }
+
+  // ------------------------------------------------------------ the loops
+
+  // Each frame: work out what each loop should be doing from the world.
+  _updateLoops(world) {
+    const p = world.player, over = world.state === 'gameOver';
+    const flying = !over && p && p.alive;
+    this._loop('thrust', flying && (p.thrusting || p.hovering)
+      ? { thrust: !!p.thrusting } : null);
+    this._loop('refuel', flying && p.refuelling
+      ? { fuel: clamp(p.fuel / (p.maxFuel || 1), 0, 1) } : null);
+    this._loop('bomber', over ? null : this._nearest(world, 'bomber'));
+    this._loop('pest', over ? null : this._nearest(world, 'pest'));
+    // low fuel: beep while under 15% and flying
+    const low = SETS[this.setName].sounds.lowFuel;
+    if (flying && !p.landed && world.state === 'playing' && p.maxFuel
+        && p.fuel < 0.15 * p.maxFuel
+        && this.ctx.currentTime - (this.last.lowFuel ?? -1e9) >= low.repeat) {
+      this.play('lowFuel');
+    }
+  }
+
+  // The nearest enemy of a type, as loop state: how near (0..1, the
+  // loudness), where across the view (pan) and its Doppler pitch bend
+  // (higher coming towards you, lower going away).
+  _nearest(world, type) {
+    let best = null;
+    for (const e of world.enemies ?? []) {
+      if (e.type !== type || e.dead) continue;
+      const at = this._place(world, e);
+      if (!best || at.gain > best.at.gain) best = { e, at };
+    }
+    if (!best || best.at.gain < QUIET) return null;
+    const { e, at } = best, p = at.L.p;
+    const rv = (a, b) => ((e[a] ?? 0) - (p ? p[a] ?? 0 : 0)) * b;
+    const away = at.dist > 0.01
+      ? (rv('vx', at.dx) + rv('vy', at.dy) + rv('vz', at.dz)) / at.dist * TICKS : 0;
+    return {
+      near: at.gain,
+      pan: at.pan,
+      doppler: clamp(1 / (1 + away / SOUND_SPEED), 0.75, 1.33),
+    };
+  }
+
+  // Set one loop going (state s) or fading out (s null). A loop is a
+  // looping buffer -> filter -> gain -> panner; its params(s) recipe says
+  // what gain, playback rate and filter frequency the state calls for.
+  _loop(name, s) {
+    const L = this.loops[name], now = this.ctx.currentTime;
+    if (!s) {
+      if (L && L.on) {
+        L.on = false;
+        L.offAt = now;
+        L.g.gain.setTargetAtTime(0, now, L.def.release / 3);
+      } else if (L && now - L.offAt > 2) {
+        this._stopLoop(name, 0.01);      // quiet for a while: free it
+      }
+      return;
+    }
+    const l = L ?? this._startLoop(name);
+    if (!l) return;
+    const q = l.def.params(s);
+    const tc = (l.on ? (q.gain > l.target ? l.def.attack : l.def.release)
+      : l.def.attack) / 3;
+    l.on = true;
+    l.target = q.gain;
+    l.g.gain.setTargetAtTime(q.gain, now, tc);
+    l.src.playbackRate.setTargetAtTime(q.rate, now, l.def.glide ?? 0.05);
+    l.f.frequency.setTargetAtTime(q.freq, now, 0.05);
+    if (l.pan) l.pan.pan.setTargetAtTime(SETS[this.setName].pan(s.pan ?? 0), now, 0.05);
+  }
+
+  _startLoop(name) {
+    const ctx = this.ctx, def = SETS[this.setName].loops[name];
+    const buffer = this._buffer('loop', name);
+    if (!buffer) return null;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.loop = true;
+    const f = ctx.createBiquadFilter();
+    f.type = def.filter;
+    f.Q.value = def.q;
+    const g = ctx.createGain();
+    g.gain.value = 0;
+    src.connect(f);
+    f.connect(g);
+    let pan = null;
+    if (ctx.createStereoPanner) {
+      pan = ctx.createStereoPanner();
+      g.connect(pan);
+      pan.connect(this.bus);
+    } else {
+      g.connect(this.bus);
+    }
+    // start each loop at a random point, so it never sounds the same twice
+    src.start(ctx.currentTime, Math.random() * buffer.duration);
+    return (this.loops[name] = { def, src, f, g, pan, on: false, target: 0, offAt: 0 });
+  }
+
+  _stopLoop(name, fade) {
+    const L = this.loops[name];
+    if (!L) return;
+    const now = this.ctx.currentTime;
+    L.g.gain.cancelScheduledValues(now);
+    L.g.gain.setTargetAtTime(0, now, fade);
+    try { L.src.stop(now + fade * 6); } catch { /* stopped */ }
+    delete this.loops[name];
+  }
+
+  _loopsOff() {
+    for (const name of Object.keys(this.loops)) this._loop(name, null);
+  }
+}
