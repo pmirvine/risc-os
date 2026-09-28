@@ -41,7 +41,7 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, the machine's memory, programming in JavaScript and the game Lander II — with `Contents` listing
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, the machine's memory, programming in JavaScript and the game Lander II — with `Contents` listing
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -177,6 +177,15 @@ bar icon, or click the icon for a `>` prompt; `*GraphTask <file>` (or `*BASIC -w
 BASIC listings this way. Double-clicking a BASIC file still runs it full screen, unless !GraphTask's Choices say
 otherwise. Guide: `$.Docs.GraphTask`; developers: `docs/apps/GraphTask.md`.
 
+**A journal:** `$.Apps.!Journal` is a diary with a page for every day. Select on its icon bar icon opens today's
+page to type into (Ctrl-T starts an entry with the time); Adjust opens a month calendar that marks the days written
+on with their mood and weather. Pages save as you type, as Text files in `$.Journal.<year>.<month>.<day>` that
+!Edit can read (the Journal notices changes made there). Find (F4) searches every day, On this day looks back at
+the same date in other years, prompts help when there is nothing to say, and a month or the whole journal exports
+as text, a web page or a Draw calendar page; pages print through !Printers. Password > Lock journal scrambles every
+page with AES (through the browser's Web Crypto) until the password is given. It is written in JavaScript on the
+disc, like Lander II. Guide: `$.Docs.Journal`; developers: `docs/apps/Journal.md`.
+
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
 applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
@@ -209,6 +218,7 @@ font menu.
 | | !AREncode (and !ARWork): Replay movie compressor | !Hopper: Frogger-style game |
 | | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
 | | !GraphTask: BASIC programs in desktop windows (see above) | |
+| | !Journal: a diary with a page a day, in JavaScript (see above) | |
 | | !Browse: web browser (see above) | |
 | | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |

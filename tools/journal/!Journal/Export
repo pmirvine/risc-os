@@ -1,0 +1,180 @@
+// Export - the journal in other forms: a text file (for !Edit or to
+// send to someone), a web page (for !Browse), a Draw file of a month
+// (a calendar page with the start of each day written in it, to print
+// or put into another document), and printing.
+//
+//   exportMenu(app, calendar)   the calendar's Export submenu
+//   dayExportMenu(app, day)     a page's
+//   textOf(items), htmlOf(items, title), drawMonth(app, year, month)
+//   printDay(app, key, entry), printMonth(app, calendar)
+// items: [{ key, entry }] in date order, as Journal.readAll gives.
+import { os, saveAs, Menu } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { DrawFile } from './DrawFile';
+import { say } from './Settings';
+
+export const longDate = (key) =>
+  D.format(key, '%WE %ZDY%ST %MO %CE%YR');
+const details = (e) => [e.mood && `Mood: ${e.mood}`,
+  e.weather && `Weather: ${e.weather}`].filter(Boolean).join('   ');
+
+// ------------------------------------------------ text
+export function textOf(items) {
+  return items.map(({ key, entry }) => {
+    const head = longDate(key);
+    const d = details(entry);
+    return `${head}\n${'-'.repeat(head.length)}\n` +
+      (d ? `${d}\n` : '') + `\n${entry.body.replace(/\s+$/, '')}\n`;
+  }).join('\n\n');
+}
+
+// ------------------------------------------------ web page
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+export function htmlOf(items, title) {
+  const days = items.map(({ key, entry }) => {
+    const d = details(entry);
+    const paras = entry.body.split(/\n\s*\n/).filter((p) => p.trim())
+      .map((p) => (/^\d\d:\d\d$/.test(p.trim())
+        ? `<p class="time">${esc(p.trim())}</p>`
+        : `<p>${p.trim().split('\n').map((l) => {
+          const m = /^(\d\d:\d\d)$/.exec(l);
+          return m ? `<b class="time">${m[1]}</b>` : esc(l);
+        }).join('<br>\n')}</p>`));
+    return `<h2>${esc(longDate(key))}</h2>\n` +
+      (d ? `<p class="details">${esc(d)}</p>\n` : '') +
+      paras.join('\n');
+  });
+  return '<!DOCTYPE html>\n<html>\n<head>\n' +
+    '<meta charset="iso-8859-1">\n' +
+    `<title>${esc(title)}</title>\n<style>\n` +
+    'body { font-family: Homerton, Helvetica, sans-serif;\n' +
+    '  max-width: 40em; margin: 2em auto; line-height: 1.5; }\n' +
+    'h2 { border-bottom: 1px solid #999; margin-top: 2em; }\n' +
+    '.details { color: #555; font-style: italic; }\n' +
+    '.time { font-weight: bold; }\n</style>\n</head>\n<body>\n' +
+    `<h1>${esc(title)}</h1>\n${days.join('\n\n')}\n</body>\n</html>\n`;
+}
+
+// ------------------------------------------------ Draw
+/** Lines of at most n characters, broken at spaces. */
+function wrap(text, n) {
+  const out = [];
+  for (const para of String(text).split('\n')) {
+    let line = '';
+    for (const word of para.split(/\s+/).filter(Boolean)) {
+      if (line && line.length + 1 + word.length > n) {
+        out.push(line); line = '';
+      }
+      line = line ? `${line} ${word}` : word.slice(0, n);
+    }
+    if (line) out.push(line);
+  }
+  return out;
+}
+/** A month as a calendar page on A4 paper, in a Draw file. */
+export async function drawMonth(app, year, month) {
+  const d = new DrawFile();
+  const PW = 595, PH = 842, M = 36;
+  const first = `${year}-${String(month).padStart(2, '0')}-01`;
+  const weeks = D.monthGrid(year, month);
+  const j = app.journal;
+  const entries = new Map((await j.readAll(weeks.flat()
+    .filter((k) => j.days.has(k)))).map((x) => [x.key, x.entry]));
+  d.rect(0, 0, PW, PH, { fill: '#ffffff', outline: null });
+  d.text(M, PH - M - 20, D.format(first, '%MO %CE%YR'),
+    { font: 'Homerton.Bold', size: 24 });
+  const top = PH - M - 44, cw = (PW - 2 * M) / 7;
+  const ch = (top - 16 - M) / 6;
+  ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday',
+    'Saturday', 'Sunday'].forEach((n, i) => {
+    d.text(M + i * cw + 3, top - 11, n, { size: 9 });
+  });
+  weeks.forEach((week, r) => week.forEach((key, c) => {
+    const x = M + c * cw, y = top - 16 - (r + 1) * ch;
+    const inMonth = +key.slice(5, 7) === month;
+    d.rect(x, y, x + cw, y + ch, { fill: inMonth ? '#ffffff'
+      : '#e4e4e4', outline: '#808080', width: 0.5 });
+    if (!inMonth) return;
+    d.text(x + 4, y + ch - 13, String(+key.slice(8)),
+      { font: 'Homerton.Bold', size: 11 });
+    const e = entries.get(key);
+    if (!e) return;
+    let ly = y + ch - 24;
+    const det = [e.mood, e.weather].filter(Boolean).join(', ');
+    if (det) {
+      d.text(x + 4, ly, det, { font: 'Homerton.Medium.Oblique',
+        size: 7, colour: '#404080' });
+      ly -= 9;
+    }
+    for (const l of wrap(e.body, Math.floor((cw - 8) / 3.6))) {
+      if (ly < y + 4) break;
+      d.text(x + 4, ly, l, { size: 6.5 });
+      ly -= 8;
+    }
+  }));
+  return d.bytes();
+}
+
+// ------------------------------------------------ saving
+const box = (app, filename, filetype, data) => () => saveAs({
+  task: app.task, filename, filetype, getData: data,
+});
+const monthItems = async (app, cal) => {
+  const prefix = cal.dayKey(1).slice(0, 8);
+  return app.journal.readAll([...app.journal.days]
+    .filter((k) => k.startsWith(prefix)).sort());
+};
+export function exportMenu(app, cal) {
+  const name = () => D.format(cal.dayKey(1), '%MO%CE%YR');
+  const title = () => `Journal: ${D.format(cal.dayKey(1),
+    '%MO %CE%YR')}`;
+  const need = () => !app.journal;
+  return new Menu('Export', [
+    { text: 'Month as text', shaded: need,
+      submenu: () => box(app, name(), 0xFFF,
+        async () => textOf(await monthItems(app, cal)))() },
+    { text: 'Month as web page', shaded: need,
+      submenu: () => box(app, name(), 0xFAF,
+        async () => htmlOf(await monthItems(app, cal), title()))() },
+    { text: 'Month as Draw file', shaded: need, dotted: true,
+      submenu: () => box(app, name(), 0xAFF,
+        () => drawMonth(app, cal.year, cal.month))() },
+    { text: 'Journal as text', shaded: need,
+      submenu: () => box(app, 'Journal', 0xFFF,
+        async () => textOf(await app.journal.readAll()))() },
+    { text: 'Journal as web page', shaded: need,
+      submenu: () => box(app, 'Journal', 0xFAF,
+        async () => htmlOf(await app.journal.readAll(), 'Journal'))() },
+  ]);
+}
+export function dayExportMenu(app, day) {
+  const items = () => [{ key: day.key, entry: day.entry }];
+  return new Menu('Export', [
+    { text: 'As text', submenu: () => box(app, day.key, 0xFFF,
+      async () => textOf(items()))() },
+    { text: 'As web page', submenu: () => box(app, day.key, 0xFAF,
+      async () => htmlOf(items(), longDate(day.key)))() },
+  ]);
+}
+
+// ------------------------------------------------ printing
+function printer() {
+  if (os.printers) return os.printers;
+  say('To print, load !Printers first (it is in Apps)');
+  return null;
+}
+export function printDay(app, key, entry) {
+  printer()?.print({ title: longDate(key),
+    text: textOf([{ key, entry }]) });
+}
+export function printMonth(app, cal) {
+  const p = printer();
+  if (!p) return;
+  const c = document.createElement('canvas');
+  c.width = cal.size.w * 2; c.height = cal.size.h * 2;
+  const g = c.getContext('2d');
+  g.scale(2, 2);
+  cal.paint(g);
+  p.print({ title: `Journal: ${cal.title}`, canvas: c });
+}

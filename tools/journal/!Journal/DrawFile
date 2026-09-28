@@ -1,0 +1,126 @@
+// DrawFile - makes a Draw file (&AFF): the pictures !Draw edits, made
+// of objects - here boxes, lines and text - one after another. Sizes
+// are in points (72 to an inch), measured from the bottom left of
+// the page, as Draw measures them.
+//
+//   const d = new DrawFile();
+//   d.rect(x0, y0, x1, y1, { fill: '#ffffff', outline: '#000000' })
+//   d.line(x0, y0, x1, y1, { outline, width })
+//   d.text(x, y, 'Hello', { font: 'Homerton.Bold', size: 12,
+//     colour: '#000000' })
+//   d.bytes()                         the file, as a Uint8Array
+//
+// In the file (the RISC OS 3 Programmer's Reference Manual has the
+// whole story) a point is 640 "Draw units", colours are words with
+// blue, green and red in the top three bytes, and every object starts
+// with its type, its size in bytes and the box it fits in.
+
+const DU = 640;                        // Draw units in a point
+const NONE = 0xFFFFFFFF;               // "transparent"
+
+function colour(css) {
+  if (!css) return NONE;
+  const n = parseInt(css.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return ((b << 24) | (g << 16) | (r << 8)) >>> 0;
+}
+
+export class DrawFile {
+  constructor() {
+    this.objects = [];                 // [{ words, box }]
+    this.fonts = [];                   // font names; number = i + 1
+  }
+  fontNumber(name) {
+    let i = this.fonts.indexOf(name);
+    if (i < 0) { this.fonts.push(name); i = this.fonts.length - 1; }
+    return i + 1;
+  }
+
+  /** A path: moves and lines, closed if it's a box. */
+  path(points, { fill = null, outline = '#000000', width = 0,
+    closed = false } = {}) {
+    const els = [];
+    points.forEach(([x, y], i) => {
+      els.push(i ? 8 : 2, Math.round(x * DU), Math.round(y * DU));
+    });
+    if (closed) els.push(5);
+    els.push(0);
+    const xs = points.map((p) => p[0]), ys = points.map((p) => p[1]);
+    const pad = width / 2;
+    const box = [Math.min(...xs) - pad, Math.min(...ys) - pad,
+      Math.max(...xs) + pad, Math.max(...ys) + pad];
+    this.objects.push({ type: 2, box, words: [colour(fill),
+      colour(outline), Math.round(width * DU), 0, ...els] });
+  }
+  rect(x0, y0, x1, y1, opts = {}) {
+    this.path([[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+      { ...opts, closed: true });
+  }
+  line(x0, y0, x1, y1, opts = {}) {
+    this.path([[x0, y0], [x1, y1]], opts);
+  }
+
+  text(x, y, str, { font = 'Homerton.Medium', size = 12,
+    colour: c = '#000000' } = {}) {
+    const s = String(str).replace(/[^\x20-\x7e\xa0-\xff]/g, '?');
+    if (!s) return;
+    const n = this.fontNumber(font);
+    const pt = Math.round(size * DU);
+    // (roughly how big it is: Draw works it out again when it loads)
+    const box = [x, y - size * 0.25, x + s.length * size * 0.55,
+      y + size * 0.9];
+    this.objects.push({ type: 1, box, words: [colour(c),
+      colour('#ffffff'), n, pt,
+      pt, Math.round(x * DU), Math.round(y * DU)], string: s });
+  }
+
+  bytes() {
+    const parts = [];
+    const all = this.objects.map((o) => o.box);
+    const bbox = all.length ? [Math.min(...all.map((b) => b[0])),
+      Math.min(...all.map((b) => b[1])), Math.max(...all.map((b) =>
+        b[2])), Math.max(...all.map((b) => b[3]))] : [0, 0, 0, 0];
+    const du = (b) => b.map((v) => Math.round(v * DU));
+    // the file's header: "Draw", the version (201.0), the program
+    // that made it, and the box everything fits in
+    const head = new Uint8Array(40);
+    const hv = new DataView(head.buffer);
+    head.set([68, 114, 97, 119]);     // "Draw"
+    hv.setUint32(4, 201, true); hv.setUint32(8, 0, true);
+    head.set([...'Journal     '].map((c) => c.charCodeAt(0)), 12);
+    du(bbox).forEach((v, i) => hv.setInt32(24 + i * 4, v, true));
+    parts.push(head);
+    if (this.fonts.length) {
+      // the font table: each font's number and name
+      const names = [];
+      this.fonts.forEach((f, i) => names.push(i + 1,
+        ...[...f].map((c) => c.charCodeAt(0)), 0));
+      while ((names.length + 8) % 4) names.push(0);
+      const o = new Uint8Array(8 + names.length);
+      const v = new DataView(o.buffer);
+      v.setUint32(0, 0, true); v.setUint32(4, o.length, true);
+      o.set(names, 8);
+      parts.push(o);
+    }
+    for (const ob of this.objects) {
+      const str = ob.string != null ? [...ob.string].map((c) =>
+        c.charCodeAt(0)).concat(0) : [];
+      while (str.length % 4) str.push(0);
+      const size = 24 + ob.words.length * 4 + str.length;
+      const o = new Uint8Array(size);
+      const v = new DataView(o.buffer);
+      v.setUint32(0, ob.type, true); v.setUint32(4, size, true);
+      du(ob.box).forEach((x, i) => v.setInt32(8 + i * 4, x, true));
+      ob.words.forEach((x, i) => {
+        if (x < 0) v.setInt32(24 + i * 4, x, true);
+        else v.setUint32(24 + i * 4, x >>> 0, true);
+      });
+      o.set(str, 24 + ob.words.length * 4);
+      parts.push(o);
+    }
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.length; }
+    return out;
+  }
+}

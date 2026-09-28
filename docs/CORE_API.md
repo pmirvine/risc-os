@@ -417,8 +417,12 @@ application), `loadTemplates(path)` / `parseTemplateFile(bytes)` (`loadTemplates
 accept a RISC OS pathname, e.g. `<App$Dir>.Templates`), `textWidth(text, css)`, `choices.read(name, defaults)` /
 `choices.write(name, obj)` (JSON in `Choices:<name>` / `<Choices$Write>.<name>`), `formatTime(fmt, date)`,
 `DAYS`, `MONTHS`, `ordinal` (`src/core/timefmt.js`, Territory-style), `sprites`, and `TextArea`
-(`src/core/textarea.js`: several lines of editable text in a window - `new TextArea(w, {x, y, w, h, text})`,
-`.text`, `'change'`, `.focus()`). Window definitions take `returnNext: true` (Return in a writable icon moves to
+(`src/core/textarea.js`: several lines of editable text in a window - `new TextArea(w, {x, y, w, h, text, font,
+readOnly, grow, border})`, `.text`, `'change'`, `.focus()`; a selection: `.selection` `{start, end}`,
+`.select(a, b)`, `.selectedText`, `.insert(s)` replaces it; `.undo()` / `.redo()` (F8 / F9), `.copy()` (Ctrl-C;
+Ctrl-X cuts, Ctrl-V pastes, through the host clipboard); `.resize(w, h)`, `.setFont(css)`, `.scrollBy(rows)`;
+`grow: true` makes the box as tall as its text (`'resize' {h}`: set the window's extent) and scrolls the window to
+keep the caret in view, for a text that fills a window with scroll bars; `border: false`). Window definitions take `returnNext: true` (Return in a writable icon moves to
 the next one; the last one's Return is reported); windows emit `caretmove {from, to}` when the caret moves between
 their icons; icon specs keep `name` (for `w.iconByName`) and `help` (interactive help).
 `checkSyntax(src)` (exported) parses a program without running it → `null` or `{line, message}`. Every program

@@ -1,0 +1,149 @@
+// Finder - looking back through the journal:
+//
+//   find(app)          the Find window (F4): type some words, press
+//                      Return, and every day they're on is listed
+//   onThisDay(app, key)  the same date in other years
+//   goTo(app)          the Go to box (F5): type a date, open its page
+//
+// Double-click a day in a list to open its page, with the words that
+// were found selected.
+import { wimp } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { ListView } from './Toolkit/ListView';
+import { Form } from './Toolkit/Form';
+import { longDate } from './Export';
+import { say } from './Settings';
+
+const TOP = 44;
+
+/** A window listing days: [{ key, at, len, text }]. */
+class Results {
+  constructor(app, { title, search = false, help }) {
+    this.app = app;
+    const w = this.win = app.task.createWindow({
+      title, x: 200, y: 140, w: 560, h: 320,
+      extent: { w: 560, h: 320 }, colours: { workBg: 0 },
+      workButton: 'clickdragdouble',
+      flags: { back: true, close: true, title: true, vscroll: true,
+        size: true, moveable: true },
+      help,
+      icons: search ? [
+        { x: 8, y: 8, w: 60, h: 28, text: 'Find', rjustify: true },
+        { x: 72, y: 8, w: 360, h: 28, text: '', button: 'writable',
+          border: true, filled: true, maxLen: 80, name: 'words',
+          help: 'Type the words to look for, then press Return.' },
+        { x: 440, y: 6, w: 100, h: 32, text: 'Find', border: true,
+          filled: true, hcentre: true, button: 'click',
+          validation: 'R5,3', name: 'go',
+          help: 'Click SELECT to look for the words.' },
+      ] : [],
+    });
+    // (the window's own handlers go before the list's)
+    w.on('click', (ev) => (ev.icon?.name === 'go'
+      ? (this.search(), true) : undefined));
+    w.on('key', (ev) => (ev.code === 13 && ev.icon?.name === 'words'
+      ? (this.search(), true) : undefined));
+    w.on('close', (ev) => { ev.preventDefault(); w.close(); });
+    this.list = new ListView(w, {
+      top: search ? TOP : 0, key: (r) => r.id,
+      columns: [
+        { title: 'Day', width: 220, text: (r) => longDate(r.key) },
+        { title: 'Words', width: 330, text: (r) => r.text },
+      ],
+    });
+    this.list.on('open', (r) => app.openDay(r.key,
+      r.len ? { start: r.at, end: r.at + r.len } : null));
+  }
+  show(items, title) {
+    this.list.setItems(items);
+    if (title) this.win.setTitle(title);
+    if (!this.win.isOpen) this.win.open({ behind: 'top' });
+    else this.win.bringToFront();
+  }
+  async search() {
+    const words = this.win.iconByName('words').text.trim();
+    if (!words) return;
+    const found = await findWords(this.app, words);
+    const n = new Set(found.map((f) => f.key)).size;
+    this.show(found, `Find '${words}': ${n} day${n === 1 ? '' : 's'}`);
+  }
+}
+
+/** Every place the words are, as rows for a list. */
+export async function findWords(app, words) {
+  const want = words.toLowerCase();
+  const rows = [];
+  let id = 0;
+  for (const { key, entry } of await app.journal.readAll()) {
+    const hay = entry.body.toLowerCase();
+    let at = hay.indexOf(want);
+    const extra = `${entry.mood} ${entry.weather}`.toLowerCase();
+    if (at < 0 && extra.includes(want)) {
+      rows.push({ id: id++, key, at: 0, len: 0,
+        text: [entry.mood, entry.weather].filter(Boolean).join(', ') });
+    }
+    while (at >= 0) {
+      rows.push({ id: id++, key, at, len: want.length,
+        text: snippet(entry.body, at, want.length) });
+      at = hay.indexOf(want, at + want.length);
+    }
+  }
+  return rows;
+}
+/** The words around a place in some text, on one line. */
+export function snippet(text, at, len) {
+  const a = Math.max(0, at - 20), b = Math.min(text.length, at + len +
+    30);
+  return (a ? '...' : '') + text.slice(a, b).replace(/\s+/g, ' ') +
+    (b < text.length ? '...' : '');
+}
+
+let finder = null;
+export function find(app) {
+  finder ??= new Results(app, { title: 'Find', search: true,
+    help: 'This is the Journal\'s Find window.|MType some words and ' +
+      'press Return; double-click a day to open it.' });
+  finder.show(finder.list.items);
+  wimp.setCaret(finder.win, finder.win.iconByName('words'));
+}
+
+let past = null;
+/** The days on this date (month and day) in other years. */
+export async function onThisDay(app, key = D.today()) {
+  const md = key.slice(4);
+  const rows = (await app.journal.readAll([...app.journal.days]
+    .filter((k) => k.endsWith(md) && k !== key).sort().reverse()))
+    .map(({ key: k, entry }, id) => ({ id, key: k, at: 0, len: 0,
+      text: `${yearsAgo(k, key)}: ${snippet(entry.body, 0, 0)}` }));
+  if (!rows.length) {
+    say('You haven\'t written on ' +
+      `${D.format(key, '%ZDY%ST %MO')} in any other year yet.`);
+    return false;
+  }
+  past ??= new Results(app, { title: 'On this day',
+    help: 'These are the days on this date in other years.|M' +
+      'Double-click one to open it.' });
+  past.show(rows, `On this day: ${D.format(key, '%ZDY%ST %MO')}`);
+  return true;
+}
+function yearsAgo(k, key) {
+  const n = +key.slice(0, 4) - +k.slice(0, 4);
+  if (n < 0) return `${-n} year${n === -1 ? '' : 's'} on`;
+  return `${n} year${n === 1 ? '' : 's'} ago`;
+}
+
+let goForm = null;
+export async function goTo(app) {
+  goForm ??= new Form(app.task, {
+    title: 'Go to',
+    help: 'Type a date to open its page.',
+    fields: [{ name: 'date', label: 'Date', width: 140, maxLen: 12,
+      help: 'A date such as 25/12/2026.' }],
+    buttons: ['Cancel', 'Go'],
+    check: (v) => (D.parseDay(v.date) ? null : { field: 'date',
+      message: 'Please type a date such as 25/12/2026' }),
+  });
+  const v = await goForm.ask({ date: D.format(D.today(),
+    '%ZDY/%MN/%CE%YR') });
+  if (v) app.openDay(D.parseDay(v.date));
+}

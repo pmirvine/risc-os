@@ -26,3 +26,4 @@ run(d + 'disc-jsedit.mjs');      // $.Apps.!JsEdit (the programmer's editor's ap
 run(d + 'disc-browse.mjs');      // $.Apps.!Browse (the web browser's application directory)
 run(d + 'disc-hostfs.mjs');      // $.Utilities.!HostFS (mounting folders from this computer)
 run(d + 'disc-graphtask.mjs');   // $.Apps.!GraphTask (BASIC programs in desktop windows)
+run(d + 'disc-journal.mjs');     // $.Apps.!Journal (a diary with a page a day, JavaScript on the disc, from tools/journal)

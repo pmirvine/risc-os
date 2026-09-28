@@ -1,0 +1,239 @@
+// Days - the journal on the disc: a folder with a file for each day
+// that has something written in it, inside a folder for its year and
+// one for its month:
+//
+//   $.Journal.2026.09.28          Monday 28th September 2026
+//
+// Each day is a Text file that you can read and change in !Edit. It
+// may start with the mood and the weather, then a blank line:
+//
+//   Mood: Happy
+//   Weather: Sunny
+//
+//   09:14
+//   What happened ...
+//
+// In a locked journal (./Lock) the names are the same, but each day
+// is scrambled with the password and has the Journal's own file type.
+//
+//   const j = new Journal(root, lock)    lock: a Lock, or null
+//   j.scan()                             find the days on the disc
+//   j.days                               Set of the days' keys
+//   await j.read(key) -> { mood, weather, body }  (empty: none yet)
+//   await j.write(key, entry)            nothing in it: deleted
+//   j.pathOf(key), Journal.keyOf(path)
+//   j.on('days', ...)                    days were added or removed
+//   j.on('changed', ({ key }) => ...)    another program changed one
+//   j.dispose()
+import { vfs } from 'riscos';
+import { Emitter } from './Toolkit/Emitter';
+import { isSealed } from './Lock';
+
+export const TEXT = 0xFFF;
+export const LOCKED = 0x1C6;           // a locked day (!Boot names it)
+
+// ------------------------------------------------ a day's text
+/** A day's file as { mood, weather, body }. */
+export function parse(text) {
+  const entry = { mood: '', weather: '', body: '' };
+  const lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const m = /^(Mood|Weather):\s*(.*?)\s*$/i.exec(lines[i]);
+    if (!m) break;
+    entry[m[1].toLowerCase()] = m[2];
+  }
+  if (i > 0 && lines[i] === '') i++;   // the blank line after them
+  entry.body = lines.slice(i).join('\n').replace(/\n$/, '');
+  return entry;
+}
+/** The file's text for an entry. */
+export function format(entry) {
+  let head = '';
+  if (entry.mood) head += `Mood: ${entry.mood}\n`;
+  if (entry.weather) head += `Weather: ${entry.weather}\n`;
+  const body = entry.body ?? '';
+  return (head ? head + '\n' : '') + body + (body ? '\n' : '');
+}
+export const isEmpty = (e) => !e.body.trim() && !e.mood && !e.weather;
+export const blank = () => ({ mood: '', weather: '', body: '' });
+
+/** How many words there are in some text. */
+export const countWords = (text) =>
+  (String(text).match(/[^\s]+/g) ?? []).length;
+
+// ------------------------------------------------ the journal
+export class Journal extends Emitter {
+  constructor(root, lock = null) {
+    super();
+    this.root = vfs.canonical(root);
+    this.lock = lock;
+    this.days = new Set();
+    this.stamps = new Map();           // key -> date stamp we know
+    this.cache = new Map();            // key -> entry (read before)
+    this.off = vfs.on('change', ({ dir }) => this.dirChanged(dir));
+  }
+  dispose() { this.off?.(); }
+
+  pathOf(key) {
+    const [y, m, d] = key.split('-');
+    return `${this.root}.${y}.${m}.${d}`;
+  }
+  /** The key of a day's file ('2026-09-28'), or null. */
+  static keyOf(path) {
+    const parts = vfs.canonical(path).split('.');
+    const [y, m, d] = parts.slice(-3);
+    if (!/^\d{4}$/.test(y) || !/^\d\d$/.test(m) || !/^\d\d$/.test(d)) {
+      return null;
+    }
+    return `${y}-${m}-${d}`;
+  }
+  /** The journal a day's file belongs to (three folders up). */
+  static rootOf(path) {
+    let p = vfs.canonical(path);
+    for (let i = 0; i < 3; i++) p = vfs.parent(p);
+    return p;
+  }
+
+  /** Find every day with a file (years, then months, then days). */
+  scan() {
+    this.days.clear();
+    this.stamps.clear();
+    if (!vfs.isDir(this.root)) return;
+    for (const y of vfs.list(this.root)) {
+      if (y.type !== 'dir' || !/^\d{4}$/.test(y.name)) continue;
+      for (const m of vfs.list(y.path)) {
+        if (m.type !== 'dir' || !/^\d\d$/.test(m.name)) continue;
+        this.scanMonth(m.path);
+      }
+    }
+  }
+  scanMonth(dir, record = true) {
+    const found = [];
+    if (!vfs.isDir(dir)) return found;
+    for (const f of vfs.list(dir)) {
+      if (f.type !== 'file' || !/^\d\d$/.test(f.name)) continue;
+      const key = Journal.keyOf(f.path);
+      if (!key) continue;
+      found.push({ key, stamp: f.date.getTime() });
+    }
+    return found.map(({ key, stamp }) => {
+      this.days.add(key);
+      if (record) this.stamps.set(key, stamp);
+      return { key, stamp };
+    });
+  }
+
+  /** A folder changed: was it one of ours, and not by us? */
+  dirChanged(dir) {
+    const d = vfs.canonical(dir);
+    if (!d.toLowerCase().startsWith(this.root.toLowerCase() + '.')) {
+      if (d.toLowerCase() === this.root.toLowerCase() ||
+        this.root.toLowerCase().startsWith(d.toLowerCase() + '.')) {
+        this.rescan();
+      }
+      return;
+    }
+    const rel = d.slice(this.root.length + 1).split('.');
+    if (rel.length !== 2) { this.rescan(); return; }
+    const prefix = `${rel[0]}-${rel[1]}-`;
+    const before = new Set([...this.days]
+      .filter((k) => k.startsWith(prefix)));
+    for (const k of before) this.days.delete(k);
+    const now = this.scanMonth(d, false);
+    let listChanged = now.length !== before.size;
+    for (const { key, stamp } of now) {
+      if (!before.has(key)) listChanged = true;
+      if (this.stamps.get(key) !== stamp) {
+        this.stamps.set(key, stamp);
+        this.cache.delete(key);
+        this.emit('changed', { key });
+      }
+    }
+    for (const k of before) {
+      if (!this.days.has(k)) {
+        this.stamps.delete(k);
+        this.cache.delete(k);
+        this.emit('changed', { key: k });
+      }
+    }
+    if (listChanged) this.emit('days', {});
+  }
+  rescan() {
+    const old = new Set(this.days);
+    this.scan();
+    const same = old.size === this.days.size &&
+      [...old].every((k) => this.days.has(k));
+    if (!same) this.emit('days', {});
+  }
+
+  // ------------------------------------------------ reading, writing
+  async read(key) {
+    if (this.cache.has(key)) return { ...this.cache.get(key) };
+    if (!this.days.has(key)) return blank();
+    const bytes = await vfs.readFile(this.pathOf(key));
+    let text;
+    if (isSealed(bytes)) {
+      if (!this.lock) throw new Error('This day is locked');
+      text = await this.lock.unseal(bytes);
+    } else {
+      text = latin1(bytes);
+    }
+    const entry = parse(text);
+    this.cache.set(key, entry);
+    return { ...entry };
+  }
+  /** Read every day (for finding and exporting): [{ key, entry }]. */
+  async readAll(keys = [...this.days].sort()) {
+    const out = [];
+    for (const key of keys) {
+      try { out.push({ key, entry: await this.read(key) }); }
+      catch { /* (a day we can't read is left out) */ }
+    }
+    return out;
+  }
+  async write(key, entry) {
+    const path = this.pathOf(key);
+    if (isEmpty(entry)) {
+      this.cache.delete(key);
+      if (this.days.delete(key)) {
+        this.stamps.delete(key);
+        if (vfs.exists(path)) vfs.delete(path, { force: true });
+        this.tidy(vfs.parent(path));
+        this.emit('days', {});
+      }
+      return;
+    }
+    const text = format(entry);
+    vfs.mkdir(vfs.parent(path), { parents: true });
+    if (this.lock) {
+      vfs.writeFile(path, await this.lock.seal(text),
+        { filetype: LOCKED });
+    } else {
+      vfs.writeFile(path, text, { filetype: TEXT });
+    }
+    this.cache.set(key, { ...entry });
+    this.stamps.set(key, vfs.stat(path).date.getTime());
+    if (!this.days.has(key)) {
+      this.days.add(key);
+      this.emit('days', {});
+    }
+  }
+  /** Remove a month's (and then a year's) folder once it's empty. */
+  tidy(dir) {
+    for (let i = 0; i < 2; i++) {
+      if (!vfs.isDir(dir) || vfs.list(dir).length) return;
+      vfs.delete(dir, { force: true });
+      dir = vfs.parent(dir);
+    }
+  }
+}
+
+/** Bytes to text, one character a byte (RISC OS's Latin-1). */
+export function latin1(bytes) {
+  let s = '';
+  for (let i = 0; i < bytes.length; i += 8192) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return s;
+}

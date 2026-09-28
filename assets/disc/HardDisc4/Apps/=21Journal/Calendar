@@ -1,0 +1,227 @@
+// Calendar - the month window: a page of a calendar with the days
+// you have written on marked, with their mood and weather. Click a
+// day to open it. The arrows turn the months (ADJUST turns them the
+// other way, as it does on RISC OS's adjuster arrows); so do the left
+// and right arrow keys, and up and down go a year at a time.
+//
+//   const cal = new Calendar(app)
+//   cal.show(key)          open it at the month with that day in it
+//   cal.refresh()          the days have changed: draw them again
+//   cal.paint(g)           draw the page (for printing too)
+import { wimp, Menu, formatTime } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { drawMood, drawWeather } from './Symbols';
+import { countWords } from './Days';
+import { exportMenu, printMonth } from './Export';
+
+const CW = 78, CH = 60, M = 12, TOP = 54, NAMES = 24, FOOT = 34;
+export const W = M * 2 + CW * 7, H = TOP + NAMES + CH * 6 + FOOT;
+const FONT = 'Homerton';
+
+export class Calendar {
+  constructor(app) {
+    this.app = app;
+    const t = D.today();
+    this.year = +t.slice(0, 4);
+    this.month = +t.slice(5, 7);
+    this.info = new Map();             // key -> the day's entry
+    const w = this.win = app.task.createWindow({
+      title: 'Journal', x: 60, y: 90, w: W, h: H,
+      extent: { w: W, h: H }, colours: { workBg: 1 },
+      flags: { back: true, close: true, title: true, moveable: true },
+      workButton: 'click',
+      help: 'This is the Journal\'s calendar.|MClick SELECT on a ' +
+        'day to open its page. Days you have written on are marked.',
+      menu: () => this.menu(),
+      icons: [
+        { x: M, y: 12, w: 32, h: 32, sprite: 'left',
+          validation: 'Sleft,pleft', button: 'click', name: 'prev',
+          help: 'Click SELECT to see the month before, ADJUST for ' +
+            'the month after.' },
+        { x: M + 36, y: 12, w: 32, h: 32, sprite: 'right',
+          validation: 'Sright,pright', button: 'click', name: 'next',
+          help: 'Click SELECT to see the month after, ADJUST for ' +
+            'the month before.' },
+        { x: W - M - 90, y: 10, w: 90, h: 36, text: 'Today',
+          border: true, filled: true, hcentre: true, button: 'click',
+          validation: 'R5,3', name: 'today',
+          help: 'Click SELECT to open today\'s page.' },
+      ],
+    });
+    w.useCanvas((g) => this.paint(g));
+    w.on('click', (ev) => this.click(ev));
+    w.on('key', (ev) => this.key(ev));
+    w.on('close', (ev) => { ev.preventDefault(); w.close(); });
+  }
+
+  get size() { return { w: W, h: H }; }
+  get title() {
+    return formatTime('%MO %CE%YR', D.dateOf(this.dayKey(1)));
+  }
+  dayKey(day) {
+    return `${this.year}-${String(this.month).padStart(2, '0')}-` +
+      String(day).padStart(2, '0');
+  }
+
+  show(key = D.today()) {
+    this.year = +key.slice(0, 4);
+    this.month = +key.slice(5, 7);
+    const w = this.win;
+    if (!w.isOpen) w.open({ behind: 'top' });
+    else w.bringToFront();
+    wimp.setCaret(w);                  // (so the arrow keys work)
+    this.refresh();
+  }
+  /** If it's open, show the month with that day in it. */
+  follow(key) {
+    if (!this.win.isOpen) return;
+    this.year = +key.slice(0, 4);
+    this.month = +key.slice(5, 7);
+    this.refresh();
+  }
+  turn(months) {
+    const k = D.addMonths(this.dayKey(1), months);
+    this.year = +k.slice(0, 4);
+    this.month = +k.slice(5, 7);
+    this.refresh();
+  }
+
+  /** Read the month's days (for their moods), then draw. */
+  async refresh() {
+    const j = this.app.journal;
+    this.info.clear();
+    if (j) {
+      const keys = this.grid().flat().filter((k) => j.days.has(k));
+      for (const { key, entry } of await j.readAll(keys)) {
+        this.info.set(key, entry);
+      }
+    }
+    this.win.invalidate();
+  }
+  grid() { return D.monthGrid(this.year, this.month); }
+
+  // ------------------------------------------------ drawing
+  paint(g) {
+    g.fillStyle = '#dddddd';
+    g.fillRect(0, 0, W, H);
+    g.fillStyle = '#000000';
+    g.textBaseline = 'middle';
+    g.font = `bold 20px ${FONT}`;
+    g.fillText(this.title, M + 84, 28);
+    // the names of the days
+    g.font = `12px ${FONT}`;
+    g.textAlign = 'center';
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    names.forEach((n, i) => {
+      g.fillText(n, M + i * CW + CW / 2, TOP + NAMES / 2);
+    });
+    g.textAlign = 'left';
+    const today = D.today();
+    const days = this.app.journal?.days ?? new Set();
+    this.grid().forEach((week, r) => week.forEach((key, c) => {
+      const x = M + c * CW, y = TOP + NAMES + r * CH;
+      const inMonth = +key.slice(5, 7) === this.month;
+      g.fillStyle = inMonth ? (c >= 5 ? '#f4f4ec' : '#ffffff')
+        : '#c8c8c8';
+      g.fillRect(x, y, CW, CH);
+      g.strokeStyle = '#999999'; g.lineWidth = 1;
+      g.strokeRect(x + 0.5, y + 0.5, CW, CH);
+      const written = days.has(key);
+      g.fillStyle = inMonth ? '#000000' : '#777777';
+      g.font = `${written ? 'bold ' : ''}14px ${FONT}`;
+      g.textBaseline = 'top';
+      g.fillText(String(+key.slice(8)), x + 6, y + 5);
+      if (key === today) {
+        g.strokeStyle = '#dd0000'; g.lineWidth = 2;
+        g.strokeRect(x + 2, y + 2, CW - 3, CH - 3);
+      }
+      if (written) this.paintDay(g, key, x, y);
+    }));
+    g.textBaseline = 'middle';
+    g.fillStyle = '#000000';
+    g.font = `13px ${FONT}`;
+    g.fillText(this.summary(), M, H - FOOT / 2);
+  }
+  /** A written day: its mood and weather, or lines of "writing". */
+  paintDay(g, key, x, y) {
+    const e = this.info.get(key);
+    if (e?.mood) drawMood(g, e.mood, x + 16, y + CH - 16, 9);
+    if (e?.weather) drawWeather(g, e.weather, x + CW - 17, y + CH - 16,
+      9);
+    if (!e?.mood && !e?.weather) {
+      g.fillStyle = '#6688bb';
+      const n = Math.min(3, 1 + Math.floor(countWords(e?.body ?? '') /
+        60));
+      for (let i = 0; i < n; i++) {
+        g.fillRect(x + 8, y + CH - 24 + i * 6, CW - 16 - i * 12, 2);
+      }
+    }
+  }
+  summary() {
+    const j = this.app.journal;
+    if (!j) return 'The journal is locked.';
+    const prefix = this.dayKey(1).slice(0, 8);
+    const n = [...j.days].filter((k) => k.startsWith(prefix)).length;
+    const streak = this.app.streak();
+    return `Written on ${n} day${n === 1 ? '' : 's'} this month.` +
+      (streak ? `  Writing streak: ${streak} day` +
+        `${streak === 1 ? '' : 's'}.` : '');
+  }
+
+  // ------------------------------------------------ mouse and keys
+  dayAt(x, y) {
+    const c = Math.floor((x - M) / CW), r = Math.floor((y - TOP -
+      NAMES) / CH);
+    if (c < 0 || c > 6 || r < 0 || r > 5 || x < M) return null;
+    return this.grid()[r][c];
+  }
+  click(ev) {
+    if (ev.button === 'menu') return undefined;
+    wimp.setCaret(this.win);
+    const adjust = ev.button === 'adjust';
+    switch (ev.icon?.name) {
+      case 'prev': this.turn(adjust ? 1 : -1); return true;
+      case 'next': this.turn(adjust ? -1 : 1); return true;
+      case 'today':
+        this.show(D.today());
+        this.app.openDay(D.today());
+        return true;
+    }
+    const key = this.dayAt(ev.x, ev.y);
+    if (key) this.app.openDay(key);
+    return true;
+  }
+  key(ev) {
+    switch (ev.code) {
+      case 0x18C: this.turn(-1); return true;       // left
+      case 0x18D: this.turn(1); return true;        // right
+      case 0x18F: this.turn(-12); return true;      // up
+      case 0x18E: this.turn(12); return true;       // down
+      case 0x184: this.app.find(); return true;     // F4
+      case 0x185: this.app.goTo(); return true;     // F5
+      case 0x180: printMonth(this.app, this); return true;  // Print
+      case 0x1A2: this.win.close(); return true;    // Ctrl-F2
+    }
+    return undefined;
+  }
+  menu() {
+    const app = this.app;
+    return new Menu('Journal', [
+      { text: 'Today', action: () => app.openDay(D.today()),
+        help: 'Open today\'s page.' },
+      { text: 'Go to...', key: 'F5', action: () => app.goTo(),
+        help: 'Open the page for a date you type in.' },
+      { text: 'Find...', key: 'F4', action: () => app.find(),
+        help: 'Look for words in every day of the journal.' },
+      { text: 'On this day', action: () => app.onThisDay(),
+        dotted: true,
+        help: 'See what you wrote on this date in other years.' },
+      { text: 'Export', submenu: exportMenu(app, this),
+        help: 'Save the month or the whole journal as a text ' +
+          'file, a web page or a Draw file.' },
+      { text: 'Print month', key: 'Print',
+        action: () => printMonth(app, this),
+        help: 'Print this page of the calendar.' },
+    ]);
+  }
+}
