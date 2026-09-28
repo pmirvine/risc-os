@@ -1,0 +1,185 @@
+// ListView - a list of rows to choose from, filling a window.
+//
+//   const list = new ListView(w, {
+//     columns: [{ title: 'Name', width: 200, text: (c) => c.name }],
+//     key: (c) => c.id,        // what tells one item from another
+//     top: 36,                 // room above the list (a toolbar)
+//   });
+//   list.setItems(array)       show these items (keeps the selection)
+//   list.selected()            the selected items, in list order
+//   list.select(item) / list.selectAll() / list.clear()
+//   list.ensureVisible(item)
+// Events: 'select' (the selection changed), 'open' (an item was
+// double-clicked or Return pressed), 'menu' ({ ev, temporary }),
+// 'drag' (ev: a drag started on the selection).
+// Select chooses one row, Adjust adds or removes one; the arrow keys,
+// Home, Copy (End), Page Up and Page Down move when the window has
+// the input focus.
+import { wimp, wimpColour } from 'riscos';
+import { Emitter } from './Emitter';
+
+const ROW = 20;
+
+export class ListView extends Emitter {
+  constructor(win, { columns, key = (x) => x, top = 0 }) {
+    super();
+    Object.assign(this, { win, columns, key, top });
+    this.items = [];
+    this.sel = new Set();            // keys of the selected items
+    this.current = null;             // key of the row the keys move
+    this.temporary = false;          // selected just for a menu
+    win.useCanvas((g, r) => this.draw(g, r));
+    win.on('click', (ev) => this.click(ev));
+    win.on('doubleclick', (ev) => this.double(ev));
+    win.on('drag', (ev) => this.drag(ev));
+    win.on('key', (ev) => this.key(ev));
+    win.on('open', (ev) => { this.resize(ev.w); });
+  }
+
+  get width() {
+    return this.columns.reduce((a, c) => a + c.width, 0);
+  }
+  rowY(i) { return this.top + ROW * (i + 1); }       // after headings
+  indexAt(y) { return Math.floor((y - this.top) / ROW) - 1; }
+
+  setItems(items) {
+    this.items = items;
+    const keys = new Set(items.map(this.key));
+    for (const k of [...this.sel]) {
+      if (!keys.has(k)) this.sel.delete(k);
+    }
+    this.resize();
+    this.win.invalidate();
+  }
+  resize(w = this.win.w) {
+    this.win.setExtent({
+      w: Math.max(w, this.width + 8),
+      h: Math.max(this.win.h, this.rowY(this.items.length) + 4),
+    });
+  }
+
+  // ------------------------------------------------ the selection
+  selected() {
+    return this.items.filter((x) => this.sel.has(this.key(x)));
+  }
+  isSelected(x) { return this.sel.has(this.key(x)); }
+  select(x, only = true) {
+    if (only) this.sel.clear();
+    this.sel.add(this.key(x));
+    this.current = this.key(x);
+    this.changed();
+  }
+  selectAll() {
+    for (const x of this.items) this.sel.add(this.key(x));
+    this.changed();
+  }
+  clear() { this.sel.clear(); this.changed(); }
+  changed() {
+    this.win.invalidate();
+    this.emit('select', this.selected());
+  }
+  /** A menu opened over an unselected row: put things back. */
+  endTemporary() {
+    if (this.temporary) { this.temporary = false; this.clear(); }
+  }
+
+  // ------------------------------------------------ the mouse
+  click(ev) {
+    // (a click on the headings)
+    if (ev.y < this.win.scrollY + this.top + ROW) return true;
+    const i = this.indexAt(ev.y), x = this.items[i];
+    if (ev.button === 'menu') {
+      this.temporary = !!x && !this.isSelected(x);
+      if (this.temporary) this.select(x);
+      this.emit('menu', { ev, temporary: this.temporary });
+      return true;
+    }
+    wimp.setCaret(this.win);          // the list takes the keys
+    if (!x) { if (ev.button === 'select') this.clear(); return true; }
+    if (ev.button === 'adjust') {
+      const k = this.key(x);
+      if (this.sel.has(k)) this.sel.delete(k); else this.sel.add(k);
+      this.current = k;
+      this.changed();
+    } else this.select(x);
+    return true;
+  }
+  double(ev) {
+    const x = this.items[this.indexAt(ev.y)];
+    if (x && ev.button === 'select') this.emit('open', x);
+    return true;
+  }
+  drag(ev) {
+    const x = this.items[this.indexAt(ev.y)];
+    if (!x || ev.button === 'menu') return true;
+    if (!this.isSelected(x)) this.select(x);
+    this.emit('drag', ev);
+    return true;
+  }
+
+  // ------------------------------------------------ the keyboard
+  key(ev) {
+    const n = this.items.length;
+    if (!n) return undefined;
+    const page = Math.max(1, Math.floor(this.win.h / ROW) - 2);
+    let i = this.items.findIndex((x) => this.key(x) === this.current);
+    switch (ev.code) {
+      case 0x18F: i = Math.max(0, i - 1); break;          // up
+      case 0x18E: i = Math.min(n - 1, i + 1); break;      // down
+      case 30: i = 0; break;                              // Home
+      case 0x18B: i = n - 1; break;                       // Copy/End
+      case 0x19F: i = Math.max(0, i - page); break;       // Page Up
+      case 0x19E: i = Math.min(n - 1, i + page); break;   // Page Down
+      case 13:
+        if (i >= 0) this.emit('open', this.items[i]);
+        return true;
+      default: return undefined;                          // not ours
+    }
+    this.select(this.items[i]);
+    this.ensureVisible(this.items[i]);
+    return true;
+  }
+  ensureVisible(x) {
+    const y = this.rowY(this.items.indexOf(x)), w = this.win;
+    if (y < w.scrollY + this.top + ROW) {
+      w.scrollTo(w.scrollX, Math.max(0, y - this.top - ROW));
+    } else if (y + ROW > w.scrollY + w.h) {
+      w.scrollTo(w.scrollX, y + ROW - w.h);
+    }
+  }
+
+  // ------------------------------------------------ drawing
+  draw(g, r) {
+    g.font = '14px Homerton';
+    g.textBaseline = 'middle';
+    const first = Math.max(0, this.indexAt(r.y0));
+    const last = Math.min(this.items.length - 1, this.indexAt(r.y1));
+    for (let i = first; i <= last; i++) {
+      const x = this.items[i], y = this.rowY(i);
+      const on = this.isSelected(x);
+      g.fillStyle = wimpColour(on ? 7 : 0);    // selected: reversed
+      g.fillRect(r.x0, y, r.x1 - r.x0, ROW);
+      g.fillStyle = wimpColour(on ? 0 : 7);
+      this.row(g, this.columns.map((c) => c.text(x)), y);
+    }
+    // the headings stay at the top of the visible area
+    const hy = Math.max(this.top, r.y0 + this.top);
+    g.fillStyle = wimpColour(1);
+    g.fillRect(r.x0, hy, r.x1 - r.x0, ROW);
+    g.fillStyle = wimpColour(7);
+    g.font = 'bold 14px Homerton';
+    this.row(g, this.columns.map((c) => c.title), hy);
+  }
+  /** Draw one row of texts, each clipped to its column. */
+  row(g, texts, y) {
+    let x = 6;
+    texts.forEach((t, k) => {
+      const w = this.columns[k].width;
+      g.save();
+      g.beginPath(); g.rect(x, y, w - 8, ROW); g.clip();
+      g.fillText(String(t ?? ''), x, y + ROW / 2 + 1);
+      g.restore();
+      x += w;
+    });
+  }
+}

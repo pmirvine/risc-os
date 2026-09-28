@@ -1,0 +1,101 @@
+// Lock - a password for the journal. While a journal is locked each
+// day is kept scrambled (AES encryption, done by the browser), so
+// nobody can read it without the password: not in !Edit, and not by
+// looking at the disc. The password itself isn't kept anywhere. A
+// file called Lock in the journal's folder holds a random "salt" (so
+// the same password makes a different key for every journal) and a
+// line scrambled with the key, which tells whether a password is
+// right.
+//
+//   Lock.present(root)                  is this journal locked?
+//   await Lock.create(root, password)   lock it (makes the Lock file)
+//   await Lock.open(root, password)     a Lock, or null if it's wrong
+//   await lock.seal(text) -> bytes      scramble a day
+//   await lock.unseal(bytes) -> text    and unscramble it
+//   isSealed(bytes)                     is this a scrambled day?
+//   Lock.remove(root)
+//
+// If the password is forgotten, the days can't be read again: there
+// is no way round that (it wouldn't be a lock if there were).
+import { vfs } from 'riscos';
+
+const MAGIC = 'JLK1';                  // the start of a sealed day
+const CHECK = 'Journal lock check';
+const ROUNDS = 150000;                 // PBKDF2: slow to guess
+export const LOCK_TYPE = 0x1C6;
+
+const enc = (s) => Uint8Array.from(String(s), (c) =>
+  c.charCodeAt(0) & 255);
+const dec = (b) => {
+  let s = '';
+  for (let i = 0; i < b.length; i += 8192) {
+    s += String.fromCharCode(...b.subarray(i, i + 8192));
+  }
+  return s;
+};
+const b64 = (b) => btoa(dec(b));
+const unb64 = (s) => enc(atob(s));
+
+export function isSealed(bytes) {
+  return bytes.length > 16 && dec(bytes.subarray(0, 4)) === MAGIC;
+}
+
+async function keyFor(password, salt) {
+  const base = await crypto.subtle.importKey('raw',
+    new TextEncoder().encode(password), 'PBKDF2', false,
+    ['deriveKey']);
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: ROUNDS, hash: 'SHA-256' },
+    base, { name: 'AES-GCM', length: 256 }, false,
+    ['encrypt', 'decrypt']);
+}
+
+export class Lock {
+  constructor(key) { this.key = key; }
+
+  static pathOf(root) { return `${root}.Lock`; }
+  static present(root) { return vfs.exists(Lock.pathOf(root)); }
+
+  static async create(root, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const lock = new Lock(await keyFor(password, salt));
+    const check = await lock.seal(CHECK);
+    vfs.mkdir(root, { parents: true });
+    vfs.writeFile(Lock.pathOf(root),
+      `Journal lock 1\n${b64(salt)}\n${b64(check)}\n`,
+      { filetype: LOCK_TYPE });
+    return lock;
+  }
+  static async open(root, password) {
+    const [head, salt, check] =
+      (await vfs.readText(Lock.pathOf(root))).split('\n');
+    if (head !== 'Journal lock 1') {
+      throw new Error('The Lock file in this journal is damaged');
+    }
+    const lock = new Lock(await keyFor(password, unb64(salt)));
+    try {
+      return (await lock.unseal(unb64(check))) === CHECK ? lock : null;
+    } catch {
+      return null;                     // the wrong password
+    }
+  }
+  static remove(root) {
+    if (Lock.present(root)) vfs.delete(Lock.pathOf(root),
+      { force: true });
+  }
+
+  async seal(text) {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const data = new Uint8Array(await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv }, this.key, enc(text)));
+    const out = new Uint8Array(4 + 12 + data.length);
+    out.set(enc(MAGIC)); out.set(iv, 4); out.set(data, 16);
+    return out;
+  }
+  async unseal(bytes) {
+    const iv = bytes.subarray(4, 16);
+    const data = await crypto.subtle.decrypt({ name: 'AES-GCM', iv },
+      this.key, bytes.subarray(16));
+    return dec(new Uint8Array(data));
+  }
+}

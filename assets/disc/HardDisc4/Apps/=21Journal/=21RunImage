@@ -1,0 +1,292 @@
+// Journal - a diary to write in, a page a day, for RISC OS. Click its
+// icon on the icon bar to open today's page and start writing; click
+// ADJUST for the calendar, where the days you have written on are
+// marked. Pages are kept as Text files in a folder on the hard disc
+// (./Days says how), and can be locked with a password (./Lock).
+//
+// !RunImage is where it starts: the icon on the icon bar and its
+// menu, opening the journal (asking for its password if it's locked),
+// the pages that are open, files dropped on the icon, and quitting.
+// The windows are ./Calendar, ./DayWindow and ./Finder; saving it in
+// other forms and printing are in ./Export; the choices and password
+// boxes are in ./Settings.
+import { wimp, vfs, Menu, infoBox, discardChanges } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { Journal, LOCKED } from './Days';
+import { Lock } from './Lock';
+import { Calendar } from './Calendar';
+import { DayWindow } from './DayWindow';
+import * as finder from './Finder';
+import { loadChoices, openChoices, askPassword, fontCss, say }
+  from './Settings';
+
+export default async function start(task, ctx) {
+  const file = ctx.argv[0];
+  // only one Journal at a time: pass the file to the one running
+  const other = wimp.tasks.find((t) => t !== task && t.alive &&
+    t.name === task.name);
+  if (other) {
+    if (file) {
+      wimp.sendMessage('DataOpen', { path: file, filetype: LOCKED },
+        { to: other });
+    }
+    task.quit();
+    return;
+  }
+
+  let opening = null;                  // (while the password is asked)
+  const app = {
+    task, dir: ctx.dir,
+    prefs: await loadChoices(),
+    journal: null,                     // the open journal (./Days)
+    calendar: null,
+    days: new Map(),                   // key -> its DayWindow
+    get fontCss() { return fontCss(app.prefs); },
+
+    /** Open the journal, if it isn't already. False: it couldn't be. */
+    ready() {
+      if (app.journal) return Promise.resolve(true);
+      opening ??= openJournal().finally(() => { opening = null; });
+      return opening;
+    },
+    async openDay(key, select = null) {
+      if (!(await app.ready())) return null;
+      let day = app.days.get(key);
+      if (day) day.win.bringToFront();
+      else day = new DayWindow(app, key, await app.journal.read(key));
+      if (select) day.area.select(select.start, select.end);
+      day.area.focus();
+      return day;
+    },
+    async openCalendar(key = D.today()) {
+      if (!(await app.ready())) return;
+      app.calendar ??= new Calendar(app);
+      app.calendar.show(key);
+    },
+    async find() { if (await app.ready()) finder.find(app); },
+    async goTo() { if (await app.ready()) finder.goTo(app); },
+    async onThisDay(key) {
+      if (await app.ready()) finder.onThisDay(app, key);
+    },
+    readText: (path) => vfs.readText(path),
+
+    /** Days written on in a row, up to today (or yesterday). */
+    streak() {
+      const days = app.journal?.days;
+      if (!days) return 0;
+      let k = D.today(), n = 0;
+      if (!days.has(k)) k = D.addDays(k, -1);
+      while (days.has(k)) { n++; k = D.addDays(k, -1); }
+      return n;
+    },
+
+    /** Save every page with changes (or ask about them). */
+    async settleAll() {
+      for (const day of [...app.days.values()]) {
+        if (!(await day.settle())) return false;
+      }
+      return true;
+    },
+    async closeAll() {
+      if (!(await app.settleAll())) return false;
+      for (const day of [...app.days.values()]) day.dispose();
+      return true;
+    },
+    /** Use another folder as the journal. */
+    async useFolder(root) {
+      const path = vfs.canonical(root);
+      if (app.journal && path.toLowerCase() ===
+        app.journal.root.toLowerCase()) return true;
+      if (!(await app.closeAll())) return false;
+      app.journal?.dispose();
+      app.journal = null;
+      app.prefs.folder = path;
+      app.calendar?.win.close();
+      return app.ready();
+    },
+    async setChoices(prefs) {
+      const folder = prefs.folder !== app.prefs.folder;
+      Object.assign(app.prefs, { ...prefs, folder: app.prefs.folder });
+      for (const day of app.days.values()) {
+        day.area.setFont(app.fontCss);
+      }
+      if (folder) await app.useFolder(prefs.folder);
+      app.calendar?.refresh();
+    },
+    /** A file double-clicked or dropped: a day, or a journal's Lock. */
+    async openPath(path) {
+      if (/^lock$/i.test(vfs.leaf(path))) {
+        if (await app.useFolder(vfs.parent(path))) app.openCalendar();
+        return;
+      }
+      const key = Journal.keyOf(path);
+      if (!key) {
+        say(`${vfs.leaf(path)} is not a page of a journal`);
+        return;
+      }
+      if (await app.useFolder(Journal.rootOf(path))) app.openDay(key);
+    },
+  };
+
+  // ------------------------------------------------ opening
+  async function openJournal() {
+    const root = app.prefs.folder;
+    let lock = null;
+    if (Lock.present(root)) {
+      const pw = await askPassword(task, { title: 'Journal locked',
+        message: 'This journal is locked. Type its password.' });
+      if (pw == null) return false;
+      lock = await Lock.open(root, pw);
+      if (!lock) {
+        say('That is not the password for this journal');
+        return false;
+      }
+    }
+    const j = new Journal(root, lock);
+    j.scan();
+    j.on('days', () => app.calendar?.refresh());
+    app.journal = j;
+    app.calendar?.refresh();
+    return true;
+  }
+
+  // ------------------------------------------------ passwords
+  async function checkPassword(title) {
+    const pw = await askPassword(task, { title,
+      message: 'Type the journal\'s password.' });
+    if (pw == null) return false;
+    if (!(await Lock.open(app.journal.root, pw))) {
+      say('That is not the password for this journal');
+      return false;
+    }
+    return true;
+  }
+  /** Write every day again, with a new lock (or none). */
+  async function reseal(makeLock) {
+    if (!(await app.settleAll())) return false;
+    const j = app.journal;
+    const items = await j.readAll();
+    j.lock = await makeLock(j.root);
+    for (const { key, entry } of items) await j.write(key, entry);
+    if (!j.lock) Lock.remove(j.root);
+    app.calendar?.refresh();
+    return true;
+  }
+  async function lockJournal() {
+    if (!(await app.ready()) || app.journal.lock) return;
+    const pw = await askPassword(task, { title: 'Lock journal',
+      twice: true, message: 'Choose a password. Without it, nobody ' +
+        'can read the journal - not even you.' });
+    if (pw == null) return;
+    if (await reseal((root) => Lock.create(root, pw))) {
+      say('The journal is locked. You will be asked for ' +
+        'its password the next time it is opened.', 'info');
+    }
+  }
+  async function changePassword() {
+    if (!app.journal?.lock || !(await checkPassword('Change ' +
+      'password'))) return;
+    const pw = await askPassword(task, { title: 'Change password',
+      twice: true, message: 'Choose a new password.' });
+    if (pw != null) await reseal((root) => Lock.create(root, pw));
+  }
+  async function removePassword() {
+    if (!app.journal?.lock || !(await checkPassword('Remove ' +
+      'password'))) return;
+    if (await reseal(async () => null)) {
+      say('The journal is no longer locked: its pages are ' +
+        'Text files again.', 'info');
+    }
+  }
+
+  // ------------------------------------------------ the icon bar
+  const info = infoBox(task, { name: 'Journal',
+    purpose: 'A page a day', author: 'You',
+    version: '1.00 (28-Sep-26)' });
+  const locked = () => !!app.journal?.lock ||
+    (!app.journal && Lock.present(app.prefs.folder));
+  const quit = async () => {
+    if (!(await app.closeAll())) return;
+    task.quit();
+  };
+  const menu = () => new Menu('Journal', [
+    { text: 'Info', submenu: info },
+    { text: 'Today', action: () => app.openDay(D.today()),
+      help: 'Open today\'s page.' },
+    { text: 'Calendar', action: () => app.openCalendar(),
+      help: 'Open the calendar, where the days you have written ' +
+        'on are marked.' },
+    { text: 'Find...', key: 'F4', action: () => app.find(),
+      help: 'Look for words in every day of the journal.' },
+    { text: 'Password', dotted: true, submenu: new Menu('Password', [
+      { text: 'Lock journal...', shaded: locked,
+        action: lockJournal,
+        help: 'Choose a password, and scramble every page with it.' },
+      { text: 'Change password...', shaded: () => !locked(),
+        action: changePassword },
+      { text: 'Remove password...', shaded: () => !locked(),
+        action: removePassword,
+        help: 'Make the pages ordinary Text files again.' },
+    ]) },
+    { text: 'Choices...', action: () => openChoices(app),
+      help: 'Change where the journal is kept and how it behaves.' },
+    { text: 'Quit', action: quit, help: 'Stop the Journal.' },
+  ]);
+  task.addIconbarIcon({
+    sprite: '!journal', menu,
+    help: 'This is the Journal.|MClick SELECT to write today\'s ' +
+      'page, ADJUST to open the calendar.',
+    onClick: (ev) => (ev.button === 'adjust' ? app.openCalendar()
+      : app.openDay(D.today())),
+    onDataLoad: (ev) => dropped(ev.files),
+  });
+  async function dropped(files) {
+    for (const f of files) {
+      if (vfs.isDir(f.path)) {
+        if (await app.useFolder(f.path)) app.openCalendar();
+      } else if (f.filetype === LOCKED || Journal.keyOf(f.path)) {
+        await app.openPath(f.path);
+      } else if (f.filetype === 0xFFF) {
+        // any other text: added to the end of today's page
+        const day = await app.openDay(D.today());
+        if (!day) return;
+        const text = await vfs.readText(f.path);
+        day.area.select(day.area.text.length);
+        day.area.insert((day.area.text ? '\n\n' : '') + text);
+      }
+    }
+  }
+
+  // ------------------------------------------------ messages
+  task.onMessage('DataOpen', (msg) => {
+    if (msg.filetype !== LOCKED) return false;
+    app.openPath(msg.path);
+    return true;
+  });
+  task.onMessage('PreQuit', async (msg) => {
+    const dirty = [...app.days.values()].filter((d) => d.dirty);
+    if (!dirty.length) return;
+    if (app.prefs.autosave) {
+      for (const d of dirty) await d.save();
+      return;
+    }
+    msg.object?.();                    // "wait": stop the shutdown
+    if (await discardChanges(task,
+      'Some journal pages have changes. Discard them?')) {
+      for (const d of dirty) d.dirty = false;
+      task.quit();
+      if (!msg.single) wimp.emit('hotkey:CtrlShiftF12', {});
+    }
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  // ------------------------------------------------ starting
+  if (file) {
+    await app.openPath(file);
+  } else if (app.prefs.onThisDay && !Lock.present(app.prefs.folder)) {
+    await app.ready();
+    const today = D.today(), md = today.slice(4);
+    if ([...app.journal.days].some((k) => k.endsWith(md) &&
+      k !== today)) app.onThisDay(today);
+  }
+}

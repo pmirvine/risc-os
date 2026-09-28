@@ -365,3 +365,15 @@ docs/ASSETS.md §5).
 * Tests: `tests/core/test-memory.mjs` (node: sizes, limits, accounting, settings, bar scale against the 3.7
   screenshots) and `tests/core/test-taskmanager.mjs` (Playwright: the Task display at 256MB, 4MB and 64MB, bar drag,
   !MemNow, `*WimpSlot` refusal, !Configure's RAM size), both in `node --test tests/core`.
+
+## !Journal — changes in shared code
+**Status:** done. Additive (existing TextArea users unchanged: `tests/core/test-appkit.mjs`, `node --test tests/jsapps`).
+* `src/core/textarea.js` (TextArea, given to programs by jsrun): a selection (`selection`, `select(a, b)`,
+  `selectedText`; Shift-Left / Shift-Right, drag with Select, Adjust or Shift-click to extend, double-click a word),
+  typing and `insert()` replace it; undo / redo (`undo()`, `redo()`, F8 / F9, a typed word is one step);
+  Ctrl-C / Ctrl-X copy and cut to the host clipboard, Ctrl-V lets the browser paste; Shift-Up / Shift-Down (Page Up /
+  Page Down) move a box full; the mouse wheel scrolls a box, which shows a scroll indicator when its text overflows;
+  `resize(w, h)`, `setFont(css)`, `scrollBy(rows)`. Options `grow: true` (the box is as tall as its text and emits
+  `'resize' {h}`; the caret is kept in view by scrolling the *window*, so a window's own scroll bars move a long
+  text) and `border: false`. Keys it doesn't use (other Ctrl-keys, function keys) still go on to the program.
+* The disc app itself (`tools/journal/!Journal`, `tools/disc-journal.mjs`) only uses the public `riscos` module.

@@ -109,6 +109,43 @@ try {
   ok('Tab moves through fields and text areas in reading order', tc.first && tc.second && tc.back, tc);
   ok('the caret leaving the text area takes its keys away', tb.blurred && tb.icon === 'A' && tb.text === 'tw', tb);
 
+  // ---------------------------------------------------------------- TextArea: selection, undo, growing, scrolling
+  const td = await page.evaluate(() => {
+    const a = __area;
+    a.text = 'one two three';
+    a.focus();
+    const out = {};
+    a.select(4, 7); out.sel = a.selectedText;
+    a.insert('2'); out.replaced = a.text;
+    a.key({ code: 0x188 }); out.undone = a.text;                  // F8
+    a.key({ code: 0x189 }); out.redone = a.text;                  // F9
+    a.select(0, 0); for (const c of 'abc de') a.key({ code: c.charCodeAt(0) });
+    a.key({ code: 0x188 }); out.typedUndo = a.text;               // a typed word is one step
+    a.text = 'abc one 2 three'; a.select(0, 0); a.key({ code: 0x19D }); a.key({ code: 0x19D }); out.shiftSel = a.selectedText;
+    a.key({ code: 8 }); out.delSel = a.text;
+    out.unknownCtrl = a.key({ code: 20, ctrl: true });            // Ctrl-T is left for the program
+    // a box that scrolls inside itself
+    a.text = Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n');
+    a.select(0, 0); a.key({ code: 0x1AE }); out.scrolled = a.scroll > 0;
+    // a growing box: its height follows the text
+    const w = __notesWin;
+    const g = new globalThis.__riscos.TextArea(w, { x: 220, y: 50, w: 90, h: 40, grow: true, text: 'x' });
+    let resized = 0; g.on('resize', () => resized++);
+    const h0 = g.h;
+    g.text = Array.from({ length: 10 }, () => 'more').join('\n');
+    out.grew = g.h > h0 && resized > 0 && g.scroll === 0;
+    g.resize(90, 20); out.shrinkMin = g.h > 20;
+    g.remove();
+    return out;
+  });
+  ok('TextArea: select and replace', td.sel === 'two' && td.replaced === 'one 2 three', td);
+  ok('TextArea: F8 undo / F9 redo', td.undone === 'one two three' && td.redone === 'one 2 three', td);
+  ok('TextArea: a typed word undoes in one step', td.typedUndo === 'abc one 2 three', td.typedUndo);
+  ok('TextArea: Shift-arrows select, Backspace deletes the selection', td.shiftSel === 'ab' && td.delSel === 'c one 2 three', td);
+  ok('TextArea: Ctrl-keys it does not use go to the program', td.unknownCtrl === undefined, td.unknownCtrl);
+  ok('TextArea: scrolls to keep the caret in view', td.scrolled, td);
+  ok('TextArea: grow makes the box as tall as its text', td.grew && td.shrinkMin, td);
+
   // ---------------------------------------------------------------- the names reach a JSScript program
   const prog = await page.evaluate(async () => {
     os.vfs.writeFile('RAM::RamDisc0.$.Names', "print(typeof TextArea, typeof dragSave, typeof choices, typeof formatTime, typeof textWidth, typeof discardChanges, typeof sprites);\n", { filetype: 0xF81 });

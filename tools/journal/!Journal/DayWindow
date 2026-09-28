@@ -1,0 +1,362 @@
+// DayWindow - a page of the journal: one day's writing. The date is
+// in the title bar (with a * after it while there are changes that
+// haven't been saved), the mood and the weather are at the top, and
+// the rest of the window is the day's text, which you type into
+// straight away. The window's scroll bar moves through a long day.
+//
+// With autosave on (Choices) the page is saved a moment after you
+// stop typing, and when it's closed; with it off, F3 saves it and
+// closing it asks first, as closing a document does.
+//
+// Keys: Ctrl-T starts a new entry with the time, Ctrl-D types the
+// date, F3 saves, F4 finds, F5 goes to a date, Print prints the day,
+// Ctrl-Shift-Left and Ctrl-Shift-Right turn to the day before and
+// after, Ctrl-F2 closes the window. The text keeps the desktop's
+// TextArea keys (F8 undo, F9 redo, Ctrl-C, Ctrl-X, Ctrl-V ...).
+import { wimp, Menu, TextArea, formatTime } from 'riscos';
+import * as D from './Toolkit/Dates';
+import { Form } from './Toolkit/Form';
+import { countWords } from './Days';
+import { MOODS, WEATHER, PROMPTS } from './Symbols';
+import { dayExportMenu, printDay } from './Export';
+import { say } from './Settings';
+
+const HEAD = 44;                       // the mood and weather strip
+const SAVE_AFTER = 1500;               // ms after the last change
+
+export class DayWindow {
+  constructor(app, key, entry) {
+    this.app = app;
+    this.key = key;
+    this.entry = entry;
+    this.dirty = false;
+    this.timer = null;
+    const n = app.days.size % 6;
+    this.width = 560;
+    const w = this.win = app.task.createWindow({
+      title: this.title, x: 120 + 26 * n, y: 70 + 26 * n,
+      w: this.width, h: 420, extent: { w: this.width, h: 420 },
+      colours: { workBg: 0 }, workButton: 'clickdragdouble',
+      flags: { back: true, close: true, title: true, toggle: true,
+        vscroll: true, size: true, moveable: true,
+        ignoreRight: true, ignoreBottom: true },
+      minW: 380, minH: 160,
+      help: 'This is a page of your journal.|MType to write; ' +
+        'Ctrl-T starts a new entry with the time.',
+      menu: () => this.menu(),
+      icons: [
+        { x: 8, y: 8, w: 52, h: 28, text: 'Mood', rjustify: true },
+        { x: 64, y: 8, w: 110, h: 28, text: '', border: true,
+          filled: true, bg: 1, validation: 'R2', name: 'mood',
+          help: 'How you felt on this day.' },
+        { x: 176, y: 8, w: 28, h: 28, sprite: 'gright',
+          validation: 'Sgright,pgright', button: 'click',
+          name: 'mood!', help: 'Click SELECT to choose a mood.' },
+        { x: 212, y: 8, w: 70, h: 28, text: 'Weather',
+          rjustify: true },
+        { x: 286, y: 8, w: 96, h: 28, text: '', border: true,
+          filled: true, bg: 1, validation: 'R2', name: 'weather',
+          help: 'What the weather was like.' },
+        { x: 384, y: 8, w: 28, h: 28, sprite: 'gright',
+          validation: 'Sgright,pgright', button: 'click',
+          name: 'weather!',
+          help: 'Click SELECT to choose the weather.' },
+        { x: this.width - 128, y: 8, w: 120, h: 28, text: '',
+          rjustify: true, name: 'words',
+          help: 'How many words there are on this page.' },
+      ],
+    });
+    this.area = new TextArea(w, { x: 0, y: HEAD, w: this.width,
+      h: 420 - HEAD, text: entry.body, grow: true, border: false,
+      font: app.fontCss });
+    this.area.on('change', () => {
+      this.entry.body = this.area.text;
+      this.changed();
+    });
+    this.area.on('resize', ({ h }) =>
+      w.setExtent({ w: this.width, h: HEAD + h }));
+    w.on('open', (ev) => {             // resized: the text follows
+      ev.preventDefault();
+      w.open(ev);
+      if (ev.w !== this.width || ev.h - HEAD !== this.area.minH) {
+        this.fit(ev.w, ev.h);
+      }
+    });
+    w.on('click', (ev) => this.click(ev));
+    w.on('key', (ev) => this.keyPress(ev));
+    w.on('close', (ev) => { ev.preventDefault(); this.close(); });
+    w.on('dataload', (ev) => { this.dropped(ev.files); return true; });
+    this.offs = [app.journal.on('changed', ({ key: k }) => {
+      if (k === this.key) this.changedElsewhere();
+    })];
+    this.showDetails();
+    app.days.set(key, this);
+    w.open({ behind: 'top' });
+    this.area.select(this.area.text.length);
+    this.area.focus();
+  }
+
+  get title() {
+    return formatTime('%WE %ZDY%ST %MO %CE%YR', D.dateOf(this.key)) +
+      (this.dirty ? ' *' : '');
+  }
+  fit(width, height) {
+    this.width = width;
+    this.area.resize(width, height - HEAD);
+    const ic = this.win.iconByName('words');
+    ic.moveTo({ ...ic.bbox, x0: width - 128, x1: width - 8 });
+    this.win.setExtent({ w: width, h: HEAD + this.area.h });
+  }
+  showDetails() {
+    const w = this.win, e = this.entry;
+    w.iconByName('mood').setText(e.mood || 'None');
+    w.iconByName('weather').setText(e.weather || 'None');
+    const n = countWords(e.body);
+    w.iconByName('words').setText(`${n} word${n === 1 ? '' : 's'}`);
+    w.setTitle(this.title);
+  }
+
+  // ------------------------------------------------ changes, saving
+  changed() {
+    this.dirty = true;
+    this.showDetails();
+    if (!this.app.prefs.autosave) return;
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => this.save(), SAVE_AFTER);
+  }
+  async save() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    if (!this.app.journal) return false;
+    try {
+      await this.app.journal.write(this.key, this.entry);
+    } catch (e) {
+      say(`The page could not be saved: ${e.message}`);
+      return false;
+    }
+    this.dirty = false;
+    this.showDetails();
+    this.app.calendar?.refresh();
+    return true;
+  }
+  /** Another program (!Edit, say) changed this day's file. */
+  async changedElsewhere() {
+    if (this.dirty) {
+      const r = await askForm(this.app.task, 'changed',
+        'This day has been changed by another program.',
+        ['Keep mine', 'Load new']);
+      if (r !== 'Load new') { this.changed(); return; }
+    }
+    this.load(await this.app.journal.read(this.key));
+  }
+  load(entry) {
+    const caret = this.area.selection.start;
+    this.entry = entry;
+    this.area.text = entry.body;
+    this.area.select(Math.min(caret, entry.body.length));
+    this.dirty = false;
+    this.showDetails();
+  }
+
+  // ------------------------------------------------ closing, turning
+  /** Ready to leave this page? (Saves it, or asks.) */
+  async settle() {
+    if (!this.dirty) return true;
+    if (this.app.prefs.autosave) return this.save();
+    const r = await askForm(this.app.task, 'close',
+      'This page has been changed.', ['Discard', 'Cancel', 'Save']);
+    if (r === 'Save') return this.save();
+    return r === 'Discard';
+  }
+  async close() {
+    if (!(await this.settle())) return false;
+    this.dispose();
+    return true;
+  }
+  dispose() {
+    clearTimeout(this.timer);
+    for (const off of this.offs) off();
+    this.area.remove();
+    this.win.delete();
+    this.app.days.delete(this.key);
+  }
+  /** Turn to another day in this window. */
+  async turnTo(key) {
+    const other = this.app.days.get(key);
+    if (other) { other.win.bringToFront(); other.area.focus(); return; }
+    if (!(await this.settle())) return;
+    this.app.days.delete(this.key);
+    this.key = key;
+    this.app.days.set(key, this);
+    this.load(await this.app.journal.read(key));
+    this.area.select(this.area.text.length);
+    this.area.focus();
+    this.app.calendar?.follow(key);
+  }
+
+  // ------------------------------------------------ typing things in
+  insertTime() {
+    const a = this.area, t = a.text, i = a.selection.start;
+    let before = '';
+    if (i > 0 && t[i - 1] !== '\n') before = '\n\n';
+    else if (i > 1 && t[i - 2] !== '\n') before = '\n';
+    a.insert(before + formatTime('%24:%MI', new Date()) + '\n');
+    a.focus();
+  }
+  insertDate() {
+    this.area.insert(formatTime('%WE %ZDY%ST %MO %CE%YR', new Date()));
+    this.area.focus();
+  }
+  insertPrompt(p) {
+    const a = this.area, t = a.text, i = a.selection.start;
+    const before = i > 0 && t[i - 1] !== '\n' ? '\n' : '';
+    a.insert(`${before}${p}\n`);
+    a.focus();
+  }
+  setDetail(field, value) {
+    this.entry[field] = value;
+    this.changed();
+  }
+  async dropped(files) {
+    for (const f of files) {
+      if (f.filetype !== 0xFFF) continue;
+      const text = await this.app.readText(f.path);
+      this.area.insert(text.replace(/\r\n?/g, '\n'));
+    }
+  }
+
+  // ------------------------------------------------ mouse and keys
+  click(ev) {
+    if (ev.button === 'menu') return undefined;
+    const name = ev.icon?.name;
+    if (name === 'mood!' || name === 'weather!') {
+      const field = name.slice(0, -1);
+      const ic = this.win.iconByName(field);
+      const p = this.win.workToScreen(ic.bbox.x1 + 28, ic.bbox.y0);
+      wimp.menus.open(this.detailMenu(field), p.x, p.y,
+        { task: this.app.task });
+      return true;
+    }
+    if (ev.y < HEAD) { this.area.focus(); return true; }
+    return undefined;
+  }
+  keyPress(ev) {
+    const app = this.app;
+    switch (ev.code) {
+      case 20: this.insertTime(); return true;          // Ctrl-T
+      case 4: this.insertDate(); return true;           // Ctrl-D
+      case 0x183: this.save(); return true;             // F3
+      case 0x184: app.find(); return true;              // F4
+      case 0x185: app.goTo(); return true;              // F5
+      case 0x180: printDay(app, this.key, this.entry); return true;
+      case 0x1A2: this.close(); return true;            // Ctrl-F2
+      case 0x1BC: this.turnTo(D.addDays(this.key, -1)); return true;
+      case 0x1BD: this.turnTo(D.addDays(this.key, 1)); return true;
+    }
+    return undefined;
+  }
+
+  // ------------------------------------------------ menus
+  detailMenu(field) {
+    const list = field === 'mood' ? MOODS : WEATHER;
+    const title = field === 'mood' ? 'Mood' : 'Weather';
+    return new Menu(title, [
+      ...list.map((x) => ({ text: x.name,
+        ticked: () => this.entry[field] === x.name,
+        action: () => this.setDetail(field, x.name) })),
+      { text: 'None', ticked: () => !this.entry[field],
+        action: () => this.setDetail(field, '') },
+    ]);
+  }
+  menu() {
+    const app = this.app, a = this.area;
+    const edit = new Menu('Edit', [
+      { text: 'Undo', key: 'F8', shaded: () => !a.canUndo,
+        action: () => a.undo() },
+      { text: 'Redo', key: 'F9', shaded: () => !a.canRedo,
+        action: () => a.redo(), dotted: true },
+      { text: 'Cut', key: '^X', shaded: () => !a.selectedText,
+        action: () => { a.copy(); a.insert(''); } },
+      { text: 'Copy', key: '^C', shaded: () => !a.selectedText,
+        action: () => a.copy() },
+      { text: 'Select all', action: () => a.select(0, a.text.length) },
+    ]);
+    const insert = new Menu('Insert', [
+      { text: 'Time', key: '^T', action: () => this.insertTime(),
+        help: 'Start a new entry, headed with the time now.' },
+      { text: 'Date', key: '^D', action: () => this.insertDate(),
+        help: 'Type today\'s date.' },
+      { text: 'Prompt', submenu: new Menu('Prompt', PROMPTS.map((p) =>
+        ({ text: p, action: () => this.insertPrompt(p) }))),
+      help: 'Something to start you writing.' },
+    ]);
+    return new Menu('Journal', [
+      { text: 'Page', submenu: new Menu('Page', [
+        { text: 'Info', submenu: () => this.infoWindow(),
+          help: 'How much is written on this page.' },
+        { text: 'Save', key: 'F3', action: () => this.save(),
+          help: 'Save the page now.' },
+        { text: 'Export', submenu: dayExportMenu(app, this),
+          help: 'Save the page as a text file or a web page.' },
+        { text: 'Print', key: 'Print',
+          action: () => printDay(app, this.key, this.entry) },
+      ]) },
+      { text: 'Edit', submenu: edit },
+      { text: 'Insert', submenu: insert, dotted: true },
+      { text: 'Mood', submenu: this.detailMenu('mood') },
+      { text: 'Weather', submenu: this.detailMenu('weather'),
+        dotted: true },
+      { text: 'Previous day', key: '^\u21e7\u2190',
+        action: () => this.turnTo(D.addDays(this.key, -1)) },
+      { text: 'Next day', key: '^\u21e7\u2192',
+        action: () => this.turnTo(D.addDays(this.key, 1)) },
+      { text: 'Calendar', action: () => app.openCalendar(this.key),
+        dotted: true },
+      { text: 'Go to...', key: 'F5', action: () => app.goTo() },
+      { text: 'Find...', key: 'F4', action: () => app.find() },
+      { text: 'On this day', action: () => app.onThisDay(this.key) },
+    ]);
+  }
+  /** The Info box: how much there is on the page. */
+  infoWindow() {
+    const body = this.entry.body;
+    const entries = (body.match(/^\d\d:\d\d$/gm) ?? []).length;
+    const rows = [
+      ['Date', formatTime('%W3 %ZDY %M3 %CE%YR', D.dateOf(this.key))],
+      ['Words', String(countWords(body))],
+      ['Characters', String(body.length)],
+      ['Entries', String(entries || (body.trim() ? 1 : 0))],
+      ['Streak', `${this.app.streak()} days`],
+    ];
+    if (!this.info) {
+      this.info = this.app.task.createWindow({
+        title: 'About this page', w: 300, h: rows.length * 34 + 12,
+        extent: { w: 300, h: rows.length * 34 + 12 },
+        flags: { title: true, moveable: true },
+        icons: rows.flatMap((r, i) => [
+          { x: 8, y: 8 + i * 34, w: 100, h: 28, text: r[0],
+            rjustify: true },
+          { x: 116, y: 8 + i * 34, w: 176, h: 28, text: '',
+            border: true, filled: true, bg: 1, validation: 'R2',
+            name: `v${i}` },
+        ]),
+      });
+    }
+    rows.forEach((r, i) => this.info.iconByName(`v${i}`).setText(r[1]));
+    return this.info;
+  }
+}
+
+// ------------------------------------------------ questions
+const forms = new Map();
+/** A box with a message and buttons: resolves the button's name. */
+export async function askForm(task, id, message, buttons) {
+  let f = forms.get(id);
+  if (!f) {
+    f = new Form(task, { title: 'Journal', fields: [], message,
+      buttons });
+    forms.set(id, f);
+  }
+  const r = await f.run();
+  return r?.button ?? 'Cancel';
+}

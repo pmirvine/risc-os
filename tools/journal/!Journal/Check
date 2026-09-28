@@ -1,0 +1,117 @@
+// Check - tests the parts of the Journal that don't need windows:
+// reading and writing days, the lock, finding, and exporting. It
+// makes a journal of its own on the RAM disc, and removes it again.
+// Double-click it: it prints ok or FAIL for each test, and 'all ok'
+// if they all pass.
+import { print, vfs } from 'riscos';
+import { Journal, parse, format, countWords, LOCKED } from './Days';
+import { Lock, isSealed } from './Lock';
+import { findWords, snippet } from './Finder';
+import { textOf, htmlOf, drawMonth } from './Export';
+import { moodOf, weatherOf } from './Symbols';
+
+let failed = 0;
+function check(what, got, want) {
+  const ok = JSON.stringify(got) === JSON.stringify(want);
+  if (!ok) failed++;
+  print(`${ok ? 'ok  ' : 'FAIL'} ${what}`);
+  if (!ok) print(`     got ${JSON.stringify(got)}`);
+}
+
+export default async function start() {
+  // ------------------------------------------------ a day's text
+  const text = 'Mood: Happy\nWeather: Rain\n\n09:14\nWent out.\n';
+  const e = parse(text);
+  check('reading a day', e, { mood: 'Happy', weather: 'Rain',
+    body: '09:14\nWent out.' });
+  check('writing it back', format(e), text);
+  check('a day with no mood', parse('Just words\n'),
+    { mood: '', weather: '', body: 'Just words' });
+  check('counting words', countWords(' One  two\nthree '), 3);
+  check('moods and weather, any case', [moodOf('happy')?.name,
+    weatherOf('SNOW')?.name, moodOf('Glum')], ['Happy', 'Snow', null]);
+
+  // ------------------------------------------------ a journal
+  const root = 'RAM::RamDisc0.$.JCheck';
+  if (vfs.exists(root)) vfs.delete(root, { recursive: true,
+    force: true });
+  const j = new Journal(root);
+  await j.write('2026-09-28', { mood: '', weather: 'Sunny',
+    body: 'A walk by the river.' });
+  await j.write('2025-09-28', { mood: 'Calm', weather: '',
+    body: 'Rain all day. The river was high.' });
+  await j.write('2026-10-01', { mood: '', weather: '',
+    body: 'October.' });
+  check('a day is a Text file in year.month.day',
+    [vfs.stat(`${root}.2026.09.28`)?.filetype,
+      vfs.readFileSync(`${root}.2026.09.28`).length > 0],
+    [0xFFF, true]);
+  const again = new Journal(root);
+  again.scan();
+  check('finding the days', [...again.days].sort(),
+    ['2025-09-28', '2026-09-28', '2026-10-01']);
+  check('reading one', (await again.read('2025-09-28')).mood, 'Calm');
+  check('the key of a file', Journal.keyOf(`${root}.2026.09.28`),
+    '2026-09-28');
+  check('the journal of a file',
+    Journal.rootOf(`${root}.2026.09.28`).toLowerCase(),
+    vfs.canonical(root).toLowerCase());
+  await j.write('2026-10-01', { mood: '', weather: '', body: ' ' });
+  check('an empty day is deleted, and its empty folder',
+    [vfs.exists(`${root}.2026.10.01`), vfs.exists(`${root}.2026.10`),
+      j.days.has('2026-10-01')], [false, false, false]);
+
+  // ------------------------------------------------ finding
+  const app = { journal: j };
+  const found = await findWords(app, 'RIVER');
+  check('finding words, any case', found.map((f) => f.key),
+    ['2025-09-28', '2026-09-28']);
+  check('where they are', found[0].at, 18);
+  check('the words around them', snippet('a'.repeat(40) + 'river' +
+    'b'.repeat(40), 40, 5).startsWith('...aaa'), true);
+  check('finding a mood', (await findWords(app, 'calm'))
+    .map((f) => f.key), ['2025-09-28']);
+
+  // ------------------------------------------------ exporting
+  const items = await j.readAll();
+  const t = textOf(items);
+  check('as text', t.startsWith('Sunday 28th September 2025\n---'),
+    true);
+  check('as text: the mood', t.includes('Mood: Calm\n'), true);
+  const h = htmlOf(items, 'Journal');
+  check('as a web page', [h.includes('<h2>Monday 28th September ' +
+    '2026</h2>'), h.includes('<title>Journal</title>')], [true, true]);
+  const draw = await drawMonth(app, 2026, 9);
+  check('as a Draw file', String.fromCharCode(...draw.subarray(0, 4)),
+    'Draw');
+  check('the Draw file\'s size is a whole number of words',
+    draw.length % 4, 0);
+
+  // ------------------------------------------------ the lock
+  const lock = await Lock.create(root, 'secret');
+  const sealed = await lock.seal('Dear diary');
+  check('sealed', isSealed(sealed), true);
+  check('unsealed', await lock.unseal(sealed), 'Dear diary');
+  check('the wrong password', await Lock.open(root, 'guess'), null);
+  const opened = await Lock.open(root, 'secret');
+  check('the right password', !!opened, true);
+  const locked = new Journal(root, opened);
+  await locked.write('2026-09-29', { mood: 'Tired', weather: '',
+    body: 'Private.' });
+  const bytes = vfs.readFileSync(`${root}.2026.09.29`);
+  check('a locked day is scrambled', [isSealed(bytes),
+    vfs.stat(`${root}.2026.09.29`).filetype], [true, LOCKED]);
+  const reader = new Journal(root, opened);
+  reader.scan();
+  check('and can be read with the password',
+    (await reader.read('2026-09-29')).body, 'Private.');
+  const noKey = new Journal(root);
+  noKey.scan();
+  let refused = false;
+  try { await noKey.read('2026-09-29'); } catch { refused = true; }
+  check('but not without it', refused, true);
+
+  for (const x of [j, again, locked, reader, noKey]) x.dispose();
+  vfs.delete(root, { recursive: true, force: true });
+  print(failed ? `${failed} FAILED` : 'all ok');
+}
