@@ -19,7 +19,7 @@ const site = http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/html', ...(deny ? { 'X-Frame-Options': 'DENY' } : {}) });
   res.end(`<!doctype html><title>${deny ? 'Denied' : 'Framed'}</title><body style="background:#0a0"><h1>${req.url}</h1>`);
 }).listen(SITE, '127.0.0.1');
-const server = spawn(process.execPath, ['serve.mjs', String(PORT)], { cwd: ROOT, stdio: 'ignore' });
+const server = spawn(process.execPath, ['serve.mjs', String(PORT)], { cwd: ROOT, stdio: 'ignore', env: { ...process.env, RISCOS_CHECK_ALLOW_PRIVATE: '1' } });   // (its fixtures are on this machine)
 for (let i = 0; i < 50; i++) { try { if ((await fetch(BASE)).ok) break; } catch { /* not yet */ } await sleep(100); }
 
 const { browser, page, logs } = await launch({ width: 1200, height: 860 });
