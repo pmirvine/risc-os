@@ -4,8 +4,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Defaults are the production paths; the RO_* overrides exist only for testing.
-VHOST="${RO_VHOST_FILE:-/etc/apache2/vhosts.d/tsihome.mynetgear.com-le-ssl.conf}"
+# RO_VHOST_FILE is required (your site's SSL vhost). The other defaults are the usual paths; their RO_* overrides exist only for testing.
+VHOST="${RO_VHOST_FILE:-}"
+[ -n "$VHOST" ] || { echo "set RO_VHOST_FILE to your site's SSL vhost file, e.g. /etc/apache2/vhosts.d/<site>-le-ssl.conf" >&2; exit 1; }
 INC="${RO_INC_FILE:-/etc/apache2/conf.d/ro.inc}"
 ENVF="${RO_ENV_FILE:-/srv/riscos/.env}"
 HTPASSWD="${RO_HTPASSWD_FILE:-/etc/apache2/ro.htpasswd}"

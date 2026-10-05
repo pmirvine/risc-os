@@ -5,7 +5,7 @@ import { parseTrustArgs, makeTrust } from '../../tools/trust.mjs';
 
 const SECRET = '0123456789abcdef0123';
 const req = (remoteAddress, headers = {}) => ({ socket: { remoteAddress }, headers });
-const pub = () => makeTrust(parseTrustArgs(['--public-url=https://tsihome.mynetgear.com/ro/'], { RISCOS_PROXY_SECRET: SECRET }), 8080);
+const pub = () => makeTrust(parseTrustArgs(['--public-url=https://example.test/ro/'], { RISCOS_PROXY_SECRET: SECRET }), 8080);
 const local = () => makeTrust({ publicUrl: null, secret: null }, 8080);
 
 test('loopback peer is allowed without secret', () => {
@@ -13,7 +13,7 @@ test('loopback peer is allowed without secret', () => {
 });
 
 test('non-loopback peer without secret refused', () => {
-  assert.equal(local().allowedRemote(req('192.168.1.5')), false);
+  assert.equal(local().allowedRemote(req('192.168.20.5')), false);
   assert.equal(local().allowedRemote(req('172.17.0.1', { 'x-proxy-auth': SECRET })), false);   // header ignored with no public URL
 });
 
@@ -39,8 +39,8 @@ test('x-forwarded-for/host headers never grant access', () => {
 
 test('public host and origin are accepted only in public mode', () => {
   const p = pub(), l = local();
-  assert.ok(p.hosts.has('tsihome.mynetgear.com') && p.origins.has('https://tsihome.mynetgear.com'));
-  assert.ok(!l.hosts.has('tsihome.mynetgear.com') && !l.origins.has('https://tsihome.mynetgear.com'));
+  assert.ok(p.hosts.has('example.test') && p.origins.has('https://example.test'));
+  assert.ok(!l.hosts.has('example.test') && !l.origins.has('https://example.test'));
   for (const t of [p, l]) {
     for (const h of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080']) {
       assert.ok(t.hosts.has(h), h);

@@ -24,9 +24,10 @@ USER node
 EXPOSE 8371
 
 # Extra Chrome flags come from RISCOS_BROWSER_ARGS (set in compose.yml), read by tools/browser-server.mjs.
-# RISCOS_PROXY_SECRET must be in the environment (compose passes it).
+# RISCOS_PROXY_SECRET and RISCOS_PUBLIC_URL (e.g. https://your-server/ro) must be in the environment: compose reads
+# them from the server's .env file, so no site name is built into the image.
 # PID 1 init: compose `init: true` (docker run --init).
-CMD ["node","serve.mjs","8371","--listen=0.0.0.0","--public-url=https://tsihome.mynetgear.com/ro","--browser","--browser-profile=/profile","--host","Server=/data"]
+CMD ["sh","-c","exec node serve.mjs 8371 --listen=0.0.0.0 --public-url=\"$RISCOS_PUBLIC_URL\" --browser --browser-profile=/profile --host Server=/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:8371/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

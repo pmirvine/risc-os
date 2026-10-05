@@ -1,7 +1,7 @@
-# Deploying the desktop at https://tsihome.mynetgear.com/ro/
+# Deploying the desktop at https://your-server/ro/
 
 The !Browse engine and HostFS run in a locked-down Docker container on the server. Apache
-(already serving tsihome.mynetgear.com on 443) adds basic auth and proxies `/ro/` to it,
+(already serving your site on 443) adds basic auth and proxies `/ro/` to it,
 stripping the `/ro` prefix. Nothing new listens on a public port.
 
 ## Files
@@ -45,10 +45,11 @@ never touches data, profile or secret.
 1. Create directories and the secret:
    `mkdir -p /srv/riscos/{src,data,profile,backups}`; `chown 1000:1000 /srv/riscos/data /srv/riscos/profile`
    (the container user is uid 1000 and writes both).
-   `umask 077; echo "RISCOS_PROXY_SECRET=$(openssl rand -hex 24)" > /srv/riscos/.env`
+   `umask 077; printf 'RISCOS_PROXY_SECRET=%s\nRISCOS_PUBLIC_URL=https://your-server/ro\n' "$(openssl rand -hex 24)" > /srv/riscos/.env`
+   (`RISCOS_PUBLIC_URL` is the address people type, ending in `/ro`; nothing site-specific is built into the image.)
 2. Copy the repo subset (`index.html assets src tools serve.mjs deploy`) to `/srv/riscos/src`
    (the unit and cron file refer to `/srv/riscos/src/deploy`).
-3. Password: `htpasswd -B -c /etc/apache2/ro.htpasswd pirvine` (prompts; chmod 0640, group of the
+3. Password: `htpasswd -B -c /etc/apache2/ro.htpasswd <user>` (prompts; chmod 0640, group of the
    Apache user, e.g. `chgrp www /etc/apache2/ro.htpasswd`).
 4. Re-check that 172.30.50.0/24 is free (`ip route`, `docker network ls`); if not, change the
    subnet in `compose.yml` and `GW` in `ro-firewall.sh`. Then start the container:
@@ -58,7 +59,7 @@ never touches data, profile or secret.
    The rules do not need `br-ro` to exist (iptables accepts the name early), so they hold even if
    the container starts after the firewall, or is recreated. Only Docker's `DOCKER-USER` chain
    must exist; the script waits up to 60 s for it and fails visibly if it never appears.
-6. Apache: `./install-apache.sh` (backs up the vhost, writes `/etc/apache2/conf.d/ro.inc`,
+6. Apache: `RO_VHOST_FILE=/etc/apache2/vhosts.d/<site>-le-ssl.conf ./install-apache.sh` (backs up the vhost, writes `/etc/apache2/conf.d/ro.inc`,
    adds one `Include`, runs `apachectl configtest`, reloads only on `Syntax OK`).
 7. Backups: `cp riscos.cron /etc/cron.d/riscos` (mode 0644) and run `./backup.sh` once.
 8. Test from outside: the page loads after the password prompt; `/ro` redirects to `/ro/`.
@@ -73,9 +74,9 @@ The container is still non-root with every capability but SYS_CHROOT dropped, bu
 second layer. If SELinux turns out to be enforcing, add `:z` to the two bind mounts.
 The seccomp path in `compose.yml` is relative; if compose does not read it, use an absolute path.
 
-`install-apache.sh` reads `RO_VHOST_FILE`, `RO_INC_FILE`, `RO_ENV_FILE`, `RO_HTPASSWD_FILE`, `RO_APACHECTL`,
-`RO_SYSTEMCTL` and `RO_OWNER` (setting `RO_OWNER` also skips the root check). They exist for testing only;
-leave them unset on the server.
+`install-apache.sh` needs `RO_VHOST_FILE` (your site's SSL vhost file). It also reads `RO_INC_FILE`, `RO_ENV_FILE`, `RO_HTPASSWD_FILE`, `RO_APACHECTL`,
+`RO_SYSTEMCTL` and `RO_OWNER` (setting `RO_OWNER` also skips the root check). Apart from `RO_VHOST_FILE`
+they exist for testing only; leave them unset on the server.
 
 ## Rotating secrets
 
@@ -84,7 +85,7 @@ leave them unset on the server.
   `sed -i "s|^RISCOS_PROXY_SECRET=.*|RISCOS_PROXY_SECRET=$(openssl rand -hex 24)|" /srv/riscos/.env`
   (do not use `echo >`, which would wipe the other lines). Then `docker compose up -d` and
   `./install-apache.sh` again: the Apache include carries the same secret and must be regenerated.
-* Password: `htpasswd -B /etc/apache2/ro.htpasswd pirvine` (prompts; no reload needed).
+* Password: `htpasswd -B /etc/apache2/ro.htpasswd <user>` (prompts; no reload needed).
 
 ## Updating Chromium
 
@@ -94,7 +95,7 @@ rebuilt. Do this about monthly: `cd /srv/riscos/src/deploy && docker compose bui
 ## Rollback
 
 1. `./ro-firewall.sh remove`; `systemctl disable --now ro-firewall`.
-2. Restore the vhost: `cp -p /etc/apache2/vhosts.d/tsihome.mynetgear.com-le-ssl.conf.bak-<date> <same name without .bak>`;
+2. Restore the vhost: `cp -p /etc/apache2/vhosts.d/<site>-le-ssl.conf.bak-<date> <same name without .bak>`;
    `rm /etc/apache2/conf.d/ro.inc`; `apachectl configtest && systemctl reload apache2`.
 3. `docker compose down`; optionally `docker network rm riscos_ro_net`, `rm /etc/cron.d/riscos`.
 4. Data stays in `/srv/riscos/data` and `/srv/riscos/profile` until you delete it.
@@ -102,7 +103,7 @@ rebuilt. Do this about monthly: `cd /srv/riscos/src/deploy && docker compose bui
 ## Known limits
 
 * `apache-ro.conf` and `install-apache.sh` have not been run against a real httpd. The WebSocket
-  rule is `ProxyPass ... upgrade=websocket`, which needs httpd 2.4.47+ (Leap 15.6 ships 2.4.58; check
+  rule is `ProxyPass ... upgrade=websocket`, which needs httpd 2.4.47+ (check
   `httpd -v`). Modules needed: proxy, proxy_http, headers, auth_basic, authn_file. The snippet changes
   nothing outside `/ro`. It adds no MIME types: the app sets its own Content-Types, so the server's
   missing .woff2/.mjs/.wasm mappings do not matter for proxied responses.
@@ -128,13 +129,14 @@ Set `RO_PRIVATE_URL` and `RO_ROUTER_URL` to addresses on the server's network th
 `deploy/fail2ban/` has the jail and filter used on the server: five wrong passwords or unknown user names
 within 10 minutes ban the address from ports 80 and 443 for an hour (`firewallcmd-rich-rules`, as firewalld
 is active). The filter matches only Apache basic-auth failures (`AH01617`, `AH01618`) in the vhost's error
-log, not the other things the stock `apache-auth` filter counts. The home network (192.168.1.0/24) and
-loopback are never banned. Install:
+log, not the other things the stock `apache-auth` filter counts. Your own network and loopback are never
+banned (the `ignoreip` line). Fill in the two placeholders in the template, then install:
 
     zypper in fail2ban
     cp deploy/fail2ban/apache-basic-auth.conf /etc/fail2ban/filter.d/
-    cp deploy/fail2ban/ro-auth.local /etc/fail2ban/jail.d/
-    fail2ban-regex /var/log/apache2/tsihome.mynetgear.com-error_log apache-basic-auth   # should match your failures
+    sed -e 's|__ERROR_LOG__|/var/log/apache2/<site>-error_log|' -e 's|__LAN__|<your LAN, e.g. 192.168.0.0/24>|' \
+        deploy/fail2ban/ro-auth.local.template > /etc/fail2ban/jail.d/ro-auth.local
+    fail2ban-regex /var/log/apache2/<site>-error_log apache-basic-auth   # should match your failures
     systemctl enable --now fail2ban
     fail2ban-client status apache-basic-auth
 

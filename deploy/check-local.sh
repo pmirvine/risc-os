@@ -18,18 +18,17 @@ docker build -f deploy/Dockerfile -t riscos-web:check .
 
 docker run -d --name "$NAME" --init --read-only --tmpfs /tmp:rw,uid=1000,gid=1000 --cap-drop ALL \
   --security-opt no-new-privileges:true --security-opt "seccomp=deploy/chrome-seccomp.json" \
-  -e RISCOS_PROXY_SECRET="$SECRET" -e RISCOS_BROWSER_ARGS="--no-sandbox --disable-dev-shm-usage" \
+  -e RISCOS_PROXY_SECRET="$SECRET" -e RISCOS_PUBLIC_URL=https://example.test/ro -e RISCOS_BROWSER_ARGS="--no-sandbox --disable-dev-shm-usage" \
   -v "$TMP/data:/data" -v "$TMP/profile:/profile" -p "127.0.0.1:$PORT:8371" riscos-web:check >/dev/null
 
 for _ in $(seq 1 30); do curl -fs -o /dev/null "http://127.0.0.1:$PORT/" && break; sleep 1; done
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 c="$(code "http://127.0.0.1:$PORT/")";                                             [ "$c" = 200 ] || fail "/ returned $c"
+c="$(code -H 'Host: example.test' "http://127.0.0.1:$PORT/__hostfs/")";   [ "$c" = 403 ] || fail "/__hostfs/ without secret returned $c, want 403"
 c="$(code -H "Host: localhost:8371" "http://127.0.0.1:$PORT/__hostfs/")";           [ "$c" = 403 ] || fail "/__hostfs/ as localhost without secret returned $c, want 403"
-c="$(code -H 'Host: tsihome.mynetgear.com' "http://127.0.0.1:$PORT/__hostfs/")";   [ "$c" = 403 ] || fail "/__hostfs/ without secret returned $c, want 403"
-c="$(code -H "Host: localhost:8371" "http://127.0.0.1:$PORT/__hostfs/")";           [ "$c" = 403 ] || fail "/__hostfs/ as localhost without secret returned $c, want 403"
-c="$(code -H 'Host: tsihome.mynetgear.com' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
+c="$(code -H 'Host: example.test' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
 [ "$c" = 200 ] || fail "/__hostfs/ with secret returned $c, want 200"
-body="$(curl -s -H 'Host: tsihome.mynetgear.com' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
+body="$(curl -s -H 'Host: example.test' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
 case "$body" in *Server*) ;; *) fail "no Server mount in: $body";; esac
 echo "check-local: all checks passed"
