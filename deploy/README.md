@@ -122,3 +122,22 @@ rebuilt. Do this about monthly: `cd /srv/riscos/src/deploy && docker compose bui
     RO_URL=https://your-server/ro/ RO_USER=name RO_PASS=password node tests/core/remote-check.mjs
 
 Set `RO_PRIVATE_URL` and `RO_ROUTER_URL` to addresses on the server's network that must not be reachable from the engine.
+
+## Blocking repeated wrong passwords (fail2ban)
+
+`deploy/fail2ban/` has the jail and filter used on the server: five wrong passwords or unknown user names
+within 10 minutes ban the address from ports 80 and 443 for an hour (`firewallcmd-rich-rules`, as firewalld
+is active). The filter matches only Apache basic-auth failures (`AH01617`, `AH01618`) in the vhost's error
+log, not the other things the stock `apache-auth` filter counts. The home network (192.168.1.0/24) and
+loopback are never banned. Install:
+
+    zypper in fail2ban
+    cp deploy/fail2ban/apache-basic-auth.conf /etc/fail2ban/filter.d/
+    cp deploy/fail2ban/ro-auth.local /etc/fail2ban/jail.d/
+    fail2ban-regex /var/log/apache2/tsihome.mynetgear.com-error_log apache-basic-auth   # should match your failures
+    systemctl enable --now fail2ban
+    fail2ban-client status apache-basic-auth
+
+Unban an address: `fail2ban-client set apache-basic-auth unbanip <address>`. Bans live in firewalld's
+runtime rules, so `firewall-cmd --reload` drops them until the next failure; fail2ban re-applies its bans
+when restarted.
