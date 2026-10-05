@@ -55,7 +55,7 @@ desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal,
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
-right = Menu, Shift + left = Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>`, `?reset=disc|cmos|all` (see below).
+right = Menu, Shift + left = Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>` (`?run` and `?cmd` work only on localhost), `?reset=disc|cmos|all` (see below).
 
 A cold load fetches about 0.9 MB (uncompressed) in about 130 requests. On localhost the desktop is ready in about
 1.4 s, most of which is the boot screen (under 0.1 s with `?fast=1` and a warm cache). Only small application

@@ -67,3 +67,11 @@ test('isPublic says whether a public URL is set', () => {
   assert.equal(pub().isPublic, true);
   assert.equal(local().isPublic, false);
 });
+
+test('public mode: a loopback peer needs the secret too (the engine\'s own Chrome is loopback)', () => {
+  for (const a of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+    assert.equal(pub().allowedRemote(req(a)), false, a);
+    assert.equal(pub().allowedRemote(req(a, { 'x-proxy-auth': 'x'.repeat(SECRET.length) })), false, a);
+    assert.equal(pub().allowedRemote(req(a, { 'x-proxy-auth': SECRET })), true, a);
+  }
+});

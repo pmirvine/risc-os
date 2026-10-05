@@ -36,9 +36,25 @@ before(async () => {
 });
 after(() => { child?.kill(); fs.rmSync(dir, { recursive: true, force: true }); });
 
-test('loopback with a loopback Host still works in public mode', async () => {
-  const r = await req('GET', '/__hostfs/', { host: `localhost:${port}` });
-  assert.equal(r.status, 200);
+test('loopback with a loopback Host and no secret is refused in public mode', async () => {
+  for (const p of ['/__hostfs/', '/__browse/']) {
+    assert.equal((await req('GET', p, { host: `localhost:${port}` })).status, 403, p);
+    assert.equal((await req('GET', p, { host: `127.0.0.1:${port}` })).status, 403, p);
+  }
+});
+
+test('loopback with the secret works (the proxy on the same machine)', async () => {
+  assert.equal((await req('GET', '/__hostfs/', { host: `localhost:${port}`, 'x-proxy-auth': SECRET })).status, 200);
+});
+
+test('without --public-url plain loopback still works', async () => {
+  const p2 = await freePort();
+  const c = spawn(process.execPath, ['serve.mjs', String(p2), '--listen=127.0.0.1', '--host', `Srv=${dir}`], { cwd: repo, stdio: ['ignore', 'pipe', 'inherit'] });
+  try {
+    await new Promise((ok, fail) => { c.on('exit', (x) => fail(new Error(`exit ${x}`))); c.stdout.on('data', (d) => { if (/HostFS::Srv/.test(d)) ok(); }); });
+    const status = await new Promise((ok, fail) => http.get({ host: '127.0.0.1', port: p2, path: '/__hostfs/', headers: { host: `localhost:${p2}` } }, (r) => { r.resume(); ok(r.statusCode); }).on('error', fail));
+    assert.equal(status, 200);
+  } finally { c.kill(); }
 });
 
 test('the proxy (secret, public Host) gets the mount list', async () => {

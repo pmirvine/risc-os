@@ -88,10 +88,10 @@ test('--browser-check-private sets checkPrivate (off by default)', () => {
 
 // /__browse/check through the handler, from loopback, with the token from GET /__browse/
 const PORT = 8371;
-const checkVia = async (opts, trust) => {
+const checkVia = async (opts, trust, auth = {}) => {
   const { handle } = browserHandler({ enabled: false, ...opts }, PORT, trust);
   const call = async (path, extra = {}) => {
-    const req = { socket: { remoteAddress: '127.0.0.1' }, headers: { host: `localhost:${PORT}`, ...extra }, method: 'GET', on() {} };
+    const req = { socket: { remoteAddress: '127.0.0.1' }, headers: { host: `localhost:${PORT}`, ...auth, ...extra }, method: 'GET', on() {} };
     const out = { code: null, body: '' };
     const res = { headersSent: false, writeHead(c) { out.code = c; this.headersSent = true; }, write() {}, end(b) { out.body += b ?? ''; } };
     await handle(req, res, new URL(path, 'http://x'));
@@ -107,7 +107,7 @@ test('/__browse/check refuses private targets by default, not with checkPrivate,
   const r = await checkVia({ checkPrivate: true }, local());
   assert.notEqual(r.reason, 'Private address');       // it tried to connect (and failed)
   const pub = makeTrust({ publicUrl: new URL('https://example.test/ro'), secret: 'a-long-enough-secret' }, PORT);
-  assert.equal((await checkVia({ checkPrivate: true }, pub)).reason, 'Private address');
+  assert.equal((await checkVia({ checkPrivate: true }, pub, { 'x-proxy-auth': 'a-long-enough-secret' })).reason, 'Private address');
 });
 
 test('serve.mjs refuses --browser-check-private with --public-url', () => {

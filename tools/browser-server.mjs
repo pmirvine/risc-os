@@ -119,11 +119,39 @@ export function findChrome(explicit) {
   return chromeCandidates().find(exists) ?? null;
 }
 
+/** Chromium leaves SingletonLock (a dangling symlink "host-pid"), SingletonSocket and SingletonCookie behind when it
+ *  is killed; a new container has a new host name and Chromium then refuses the profile. Call only when no Chrome of
+ *  ours is running. */
+export function clearStaleProfileLocks(profileDir) {
+  for (const n of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    try { fs.rmSync(path.join(profileDir, n), { force: true }); } catch { /* not ours to worry about */ }
+  }
+}
+
+/** The environment for Chrome: ours without the proxy secret (a page's renderer must never be near it). */
+export function chromeEnv(env = process.env) {
+  const e = { ...env };
+  delete e.RISCOS_PROXY_SECRET;
+  return e;
+}
+
+/** Ask a Chrome to stop (default: SIGTERM) and resolve when it has exited; after `ms` send SIGKILL and resolve. */
+export function stopChild(c, ms = 5000, ask = () => c.kill()) {
+  return new Promise((resolve) => {
+    if (c.exited) return resolve();
+    const t = setTimeout(() => { c.kill('SIGKILL'); resolve(); }, ms);
+    c.once('exit', () => { clearTimeout(t); resolve(); });
+    ask();
+  });
+}
+
 // ------------------------------------------------------------------ Chrome over a pipe (CDP)
 class Chrome extends EventEmitter {
   constructor(bin, args) {
     super();
-    this.proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+    this.proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: chromeEnv() });
+    this.exited = false;
+    this.once('exit', () => { this.exited = true; });
     this.log = '';
     this.proc.stdio[2].on('data', (d) => { this.log = (this.log + d).slice(-4000); });
     this.out = this.proc.stdio[3];
@@ -167,7 +195,7 @@ class Chrome extends EventEmitter {
       this.out.write(JSON.stringify(m) + '\0');
     });
   }
-  kill() { try { this.proc.kill(); } catch { /* gone */ } }
+  kill(sig) { try { this.proc.kill(sig); } catch { /* gone */ } }
 }
 
 // ------------------------------------------------------------------ a small WebSocket server (RFC 6455)
@@ -311,7 +339,7 @@ const extensionId = () => {
 
 const ALLOWED_URL = /^(https?:|about:blank$|data:|blob:)/i;
 
-class Service {
+export class Service {
   constructor(opts) {
     this.opts = opts;
     this.chrome = null;
@@ -335,8 +363,8 @@ class Service {
   idleStop() {
     if (this.clients.size || this.starting || !this.chrome) return;
     const c = this.chrome;
-    this.stopped();                 // forget it now, so that an ensure() before its exit starts a new one
-    c.kill();
+    this.stopped();                 // forget it now; ensure() then waits for its exit (Chrome's profile lock) first
+    const p = this.stopping = stopChild(c).then(() => { if (this.stopping === p) this.stopping = null; });
     console.log('  !Browse: the browser engine stopped (idle)');
   }
 
@@ -350,7 +378,7 @@ class Service {
 
   ensure() {
     if (this.chrome) return Promise.resolve();
-    this.starting ??= this.launch().finally(() => { this.starting = null; });
+    this.starting ??= (async () => { await this.stopping; return this.launch(); })().finally(() => { this.starting = null; });
     return this.starting;
   }
 
@@ -362,6 +390,7 @@ class Service {
       this.tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'riscos-browse-'));
       await fsp.mkdir(path.join(this.tmp, 'downloads'));
     }
+    if (!this.chrome) clearStaleProfileLocks(this.opts.profile);
     const id = this.extId = extensionId();
     const args = ['--headless', '--remote-debugging-pipe', `--user-data-dir=${this.opts.profile}`, '--no-first-run',
       '--no-default-browser-check', '--disable-search-engine-choice-screen', '--password-store=basic', '--use-mock-keychain',
@@ -409,6 +438,14 @@ class Service {
     this.tabs.clear(); this.bySession.clear(); this.byTarget.clear(); this.frames.clear();
     for (const cl of this.clients) cl.ws.send({ ev: 'error', message: 'The browser engine stopped' });
     if (log) console.log('  !Browse: the browser engine stopped');
+  }
+
+  /** Close Chrome properly (so the profile is flushed and unlocked) and wait up to `ms` for it to exit. */
+  async close(ms = 3000) {
+    this.idle.cancel();
+    const c = this.chrome;
+    if (c) await stopChild(c, ms, () => c.send('Browser.close').catch(() => c.kill()));
+    await this.stopping;
   }
 
   shutdown() {
@@ -958,5 +995,5 @@ export function browserHandler(opts, port, trust = makeTrust({ publicUrl: null, 
     }
   };
 
-  return { handle, upgrade, service, shutdown: () => service?.shutdown() };
+  return { handle, upgrade, service, shutdown: () => service?.shutdown(), close: () => service?.close() ?? Promise.resolve() };
 }

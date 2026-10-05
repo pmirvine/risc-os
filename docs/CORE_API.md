@@ -399,7 +399,7 @@ Tool sprites: `sprites.tool('bicon')`. To draw a sprite on a canvas: `ctx.drawIm
   says whether there is one (!Bookworm hands its web links over this way).
 * Frames (`<iframe>`) in a window: `body.dragging iframe { pointer-events: none }` (desktop.css) keeps window and file
   drags going over them.
-* URL parameters: `?fast=1` skip the boot screen, `?open=<path>`, `?run=<app>`, `?cmd=<*command>`, `?zoom=2`, `?buttons=adjust`.
+* URL parameters: `?fast=1` skip the boot screen, `?open=<path>`, `?run=<app>`, `?cmd=<*command>` (`?cmd` and `?run` work only on localhost: `src/core/devparams.js`), `?zoom=2`, `?buttons=adjust`.
 
 ## 11a. JavaScript programs on the disc (`*JSRun`)
 Files of type &F81 (JSScript) run with `*JSRun <file> [args]` (`Alias$@RunType_F81`, `src/core/jsrun.js`), so a

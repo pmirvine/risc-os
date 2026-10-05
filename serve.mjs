@@ -79,7 +79,8 @@ for (const addr of addresses) {
     }
   });
 }
-const quit = () => { browse.shutdown(); process.exit(0); };
+// ask Chrome to close and give it 3 s, so that its profile is flushed and unlocked (no Chrome: straight out)
+const quit = () => { browse.close().catch(() => {}).finally(() => process.exit(0)); };
 process.on('SIGINT', quit);
 process.on('SIGTERM', quit);
 process.on('exit', () => browse.shutdown());

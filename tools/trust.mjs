@@ -2,7 +2,8 @@
 //
 // By default only this machine: loopback peers, for loopback Host names. To run behind a reverse proxy (Docker +
 // Apache), give --public-url=<url> and set RISCOS_PROXY_SECRET (16+ characters); the proxy adds that secret as an
-// X-Proxy-Auth header, and requests carrying it are accepted from any peer, for the public host name.
+// X-Proxy-Auth header, and requests carrying it are accepted from any peer, for the public host name, and nothing without it is, not even
+// loopback (the engine's Chrome runs on the same machine).
 // X-Forwarded-* headers are never consulted: anyone can send those.
 import crypto from 'node:crypto';
 
@@ -34,10 +35,10 @@ export function makeTrust({ publicUrl, secret }, port) {
   }
   const want = secret ? Buffer.from(secret) : null;
 
-  /** True for a loopback peer or, with a public URL, a request carrying the proxy's secret. */
+  /** Local mode: loopback peers. Public mode: only requests carrying the proxy's secret, loopback or not (the
+   *  engine's own Chrome is a loopback peer and must not be able to reach HostFS or the engine). */
   const allowedRemote = (req) => {
-    if (LOOPBACK.has(req.socket.remoteAddress)) return true;
-    if (!want) return false;
+    if (!want) return LOOPBACK.has(req.socket.remoteAddress);
     const got = req.headers['x-proxy-auth'];
     if (typeof got !== 'string') return false;
     const have = Buffer.from(got);

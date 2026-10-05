@@ -10,8 +10,8 @@ const SECRET = 'a-long-enough-secret';
 const PORT = 8371;
 const trust = makeTrust({ publicUrl: new URL('https://example.test/ro'), secret: SECRET }, PORT);
 
-const call = async (handle, path, headers) => {
-  const req = { socket: { remoteAddress: '172.17.0.1' }, headers, method: 'GET', on() {} };
+const call = async (handle, path, headers, peer = '172.17.0.1') => {
+  const req = { socket: { remoteAddress: peer }, headers, method: 'GET', on() {} };
   const out = { code: null, body: '' };
   const res = { headersSent: false, writeHead(c) { out.code = c; this.headersSent = true; }, write() {}, end(b) { out.body += b ?? ''; } };
   await handle(req, res, new URL(path, 'http://x'));
@@ -33,5 +33,15 @@ for (const [name, make, path] of cases) {
     const ok = await call(handle, path, good);
     assert.equal(ok.code, 200);
     assert.ok(JSON.parse(ok.body).token);
+  });
+}
+
+for (const [name, make, path] of cases) {
+  test(`${name}: in public mode a loopback peer (the engine's own Chrome) needs the secret too`, async () => {
+    const handle = make();
+    for (const peer of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+      assert.equal((await call(handle, path, { host: `localhost:${PORT}` }, peer)).code, 403, peer);
+      assert.equal((await call(handle, path, { host: `localhost:${PORT}`, 'x-proxy-auth': SECRET }, peer)).code, 200, peer);
+    }
   });
 }
