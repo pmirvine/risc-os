@@ -1,0 +1,80 @@
+# Deploying the desktop at https://tsihome.mynetgear.com/ro/
+
+The !Browse engine and HostFS run in a locked-down Docker container on the server. Apache
+(already serving tsihome.mynetgear.com on 443) adds basic auth and proxies `/ro/` to it,
+stripping the `/ro` prefix. Nothing new listens on a public port.
+
+## Files
+
+| File | What it is |
+| --- | --- |
+| `Dockerfile` | Node 22 + Chromium image; copies only `serve.mjs index.html assets src tools`; runs as `node` (uid 1000) under dumb-init. |
+| `.dockerignore` | Allow-list so tests, vendor, chrome, docs and git history never enter the build context. |
+| `compose.yml` | The service: non-root, `cap_drop ALL`, `no-new-privileges`, read-only root fs, tmpfs `/tmp`, `init`, 2 GB / 2 CPUs / 512 pids, shm 512 MB, published on `127.0.0.1:18371` only, own bridge `br-ro` (172.30.50.0/24, no inter-container traffic), DNS 1.1.1.1 and 9.9.9.9. |
+| `chrome-seccomp.json` | Seccomp profile that lets Chromium create its sandbox (see Source below). |
+| `apache-ro.conf` | Apache snippet: auth, proxy, WebSocket, MIME types. Keeps the placeholder `__SECRET__`. |
+| `install-apache.sh` | Installs the snippet with the real secret, includes it from the 443 vhost, tests, reloads. |
+| `ro-firewall.sh`, `ro-firewall.service` | Blocks the container from the host and from private networks. |
+| `backup.sh`, `riscos.cron` | Nightly tarball of data and profile, 7 daily + 4 weekly kept. |
+| `check-local.sh` | Builds the image and smoke-tests it where Docker runs (skips if it does not). |
+
+## Source of the seccomp profile
+
+`chrome-seccomp.json` is Playwright's `utils/docker/seccomp_profile.json`, downloaded from
+`https://raw.githubusercontent.com/microsoft/playwright/main/utils/docker/seccomp_profile.json`
+on 2026-10-05 (branch `main`; no release tag recorded). It is Docker's default profile plus
+unprivileged user namespaces. It has not yet been run on the server; Task 7 validates it.
+
+## Install order (as root on the server; the controller does this)
+
+1. Create directories and the secret:
+   `mkdir -p /srv/riscos/{data,profile,backups,deploy}`; `chown 1000:1000 /srv/riscos/data /srv/riscos/profile`
+   (the container user is uid 1000 and writes both).
+   `umask 077; echo "RISCOS_PROXY_SECRET=$(openssl rand -hex 24)" > /srv/riscos/.env`
+2. Copy the repository (or at least `deploy/` plus the files the Dockerfile copies) to the server
+   and put `deploy/` at `/srv/riscos/deploy` (the unit and cron file refer to that path).
+3. Password: `htpasswd -B -c /etc/apache2/ro.htpasswd pirvine` (prompts; chmod 0640, group of the
+   Apache user, e.g. `chgrp www /etc/apache2/ro.htpasswd`).
+4. Start the container: `cd /srv/riscos/deploy && docker compose --env-file /srv/riscos/.env up -d --build`
+   (`docker compose ps` should say healthy). This creates `br-ro`.
+5. Firewall: `cp ro-firewall.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now ro-firewall`.
+   Re-check that 172.30.50.0/24 is free (`ip route`, `docker network ls`) before step 4.
+6. Apache: `./install-apache.sh` (backs up the vhost, writes `/etc/apache2/conf.d/ro.inc`,
+   adds one `Include`, runs `apachectl configtest`, reloads only on `Syntax OK`).
+7. Backups: `cp riscos.cron /etc/cron.d/riscos` (mode 0644) and run `./backup.sh` once.
+8. Test from outside: the page loads after the password prompt; `/ro` redirects to `/ro/`.
+
+## Sandbox fallback
+
+By default `RISCOS_BROWSER_ARGS` is empty and Chromium tries its own sandbox under the seccomp
+profile. If pages do not load and `docker logs riscos` shows sandbox or namespace errors, set
+the fallback and recreate: add `RISCOS_BROWSER_ARGS=--no-sandbox --disable-dev-shm-usage` to the
+shell (or a `.env` next to compose.yml) and run `docker compose --env-file /srv/riscos/.env up -d`.
+The container is still non-root with all capabilities dropped, but the browser then has no
+second layer. If SELinux turns out to be enforcing, add `:z` to the two bind mounts.
+The seccomp path in `compose.yml` is relative; if compose does not read it, use an absolute path.
+
+## Rotating secrets
+
+* Proxy secret: `umask 077; echo "RISCOS_PROXY_SECRET=$(openssl rand -hex 24)" > /srv/riscos/.env`,
+  then `docker compose --env-file /srv/riscos/.env up -d` and `./install-apache.sh`.
+* Password: `htpasswd -B /etc/apache2/ro.htpasswd pirvine` (prompts; no reload needed).
+
+## Rollback
+
+1. `./ro-firewall.sh remove`; `systemctl disable --now ro-firewall`.
+2. Restore the vhost: `cp -p /etc/apache2/vhosts.d/tsihome.mynetgear.com-le-ssl.conf.bak-<date> <same name without .bak>`;
+   `rm /etc/apache2/conf.d/ro.inc`; `apachectl configtest && systemctl reload apache2`.
+3. `docker compose down`; optionally `docker network rm riscos_ro_net`, `rm /etc/cron.d/riscos`.
+4. Data stays in `/srv/riscos/data` and `/srv/riscos/profile` until you delete it.
+
+## Known limits
+
+* `apache-ro.conf` and `install-apache.sh` have not been run against a real httpd. The WebSocket
+  rule uses the portable rewrite form; `upgrade=websocket` is an alternative on httpd 2.4.47+.
+* The seccomp profile and the default (sandboxed) Chromium are unproven on this host until Task 7.
+* The firewall script drops the bridge's traffic to private ranges and to the host; it relies on
+  Docker's `DOCKER-USER` chain and does not survive a Docker restart that flushes it
+  (`systemctl restart ro-firewall` re-applies).
+* Backups are on the same machine (`/srv` and `/root`); there is no off-site copy.
+* The image is not pinned by digest and Chromium comes from Debian's package, so rebuilds move versions.
