@@ -194,7 +194,10 @@ docs/ASSETS.md §5).
 * `src/core/pinboard.js`: pins on a HostFS disc that isn't mounted are kept (`parked`) and come back when it is,
   instead of being dropped.
 * `serve.mjs`: `--host Name=/path`, `--host-ro Name=/path` and `/__hostfs/` (tools/hostfs-server.mjs); every static
-  response carries `X-HostFS: 1`, so the page only asks for `/__hostfs/` from this server.
+  response carries `X-HostFS: 1`, so the page only asks for `/__hostfs/` from this server. `--public-url=<url>` with
+  `RISCOS_PROXY_SECRET` (`tools/trust.mjs`) also lets HostFS and !Browse's engine answer a trusted reverse proxy
+  (`X-Proxy-Auth`); see `deploy/` and `$.Docs.Server`. New engine options `--browser-arg`, `--browser-idle`,
+  `--browser-check-private`.
 * `assets/filetypes.json` (+ `tools/misc.mjs`): names for later file types (JSON, WebP, MP4, Zip, SVG, …) that HostFS
   gives files by extension.
 * `*Dismount` dismounts HostFS discs (still no effect for others). New commands `*HostFS`, `*HostMount`,

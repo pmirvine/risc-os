@@ -32,16 +32,26 @@ node serve.mjs            # static server on http://localhost:8371/ (node serve.
 node serve.mjs --host Work=~/riscos-files   # ... with a host folder as HostFS::Work (see HostFS below)
 node serve.mjs --browser  # ... with a real web browser engine for !Browse (see !Browse below)
 node serve.mjs --lan      # ... answering other computers on the network too
+node serve.mjs --public-url=https://host/ro   # ... behind a trusted reverse proxy (see deploy/)
 ```
 
+Further options: `--public-url=<url>` (with the environment variable `RISCOS_PROXY_SECRET`, at least 16
+characters) lets HostFS and !Browse's engine answer requests that arrive through a reverse proxy which adds the header
+`X-Proxy-Auth: <secret>` and passes the public Host; `--browser-arg=<flag>` (repeatable; or `RISCOS_BROWSER_ARGS`) adds
+Chrome flags; `--browser-idle=<seconds>` stops Chrome after that long with no desktop connected (default 300, 0 =
+never) and restarts it on demand. `--browser-check-private` (tests only; not with `--public-url`) lets the frame check
+reach private addresses. `deploy/` has a complete deployment (Docker, Apache, firewall, backups; see
+`deploy/README.md`) and the user guide is `$.Docs.Server`.
+
 `serve.mjs` only answers this computer unless `--lan` (every network interface) or `--listen=<address>` is given;
-HostFS and !Browse's engine only ever answer this computer.
+HostFS and !Browse's engine only answer this computer, even with `--lan`, unless `--public-url` is given, when they also
+answer requests that come through the trusted proxy (and carry its secret).
 
 Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static web server works. The first visit in a
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, the machine's memory, programming in JavaScript and the game Lander II — with `Contents` listing
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, the machine's memory, using the desktop from another computer, programming in JavaScript and the game Lander II — with `Contents` listing
 them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -100,7 +110,9 @@ mounted and remembered, each with a choice of being mounted when the desktop sta
 Each mounted folder gets an icon on the left of the icon bar (Select opens it; Menu has Rescan, Free, Mount at
 start-up, Dismount and Forget) and can be used like any other disc: open and save files in applications, copy, rename and delete in the
 Filer, run BASIC and Obey applications from it, `*Cat HostFS::Work.$`. A guide is on the hard disc itself, in
-`$.Docs.HostFS` (source `tools/docs/HostFS`).
+`$.Docs.HostFS` (source `tools/docs/HostFS`). On a deployed server (`deploy/`) the folder given as `--host Server=/data`
+is mounted on every computer that opens the desktop, so `HostFS::Server` is shared between them (the hard disc stays
+per browser); see `$.Docs.Server`.
 
 * **Click !HostFS's icon** (Chrome, Edge and other Chromium browsers) to pick a folder. Changes are written back to
   the folder. The browser remembers the folder: after a reload it comes back, or shows a "no disc" icon to click to
@@ -145,6 +157,9 @@ in !Browse, and other programs (and !Bookworm's links) use `*URLOpen_http <addre
 Chrome runs headless over a private pipe (no debugging port is opened); pages reach the desktop as a stream of
 JPEG frames, and the mouse and keys go back. Without `--browser` (any other server, or from another computer)
 !Browse shows pages in a frame instead: many sites refuse that, and it offers to open them in your own browser.
+Behind a trusted proxy (`--public-url`, see `deploy/`) the engine also serves the computers that reach it that way;
+it has one Chrome profile (shared logins), and stops Chrome when idle (`--browser-idle`). Its Chrome is not filtered
+for private addresses: the deployment's container firewall does that.
 A guide is on the hard disc, in `$.Docs.Browse` (source `tools/docs/Browse`); the design is in `docs/apps/Browse.md`.
 
 ## What's included
@@ -318,6 +333,7 @@ node --test tests/core            # and tests/draw tests/edit tests/paint tests/
 node --test tests/integration     # cross-application flows + a long random ("monkey") test
 node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example programs
 node --test tests/jsapps          # the second tutorial's applications (!Contacts, !Organiser and their stages)
+node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/test-proxy-handlers.mjs tests/core/test-browser-hardening.mjs   # --public-url, the trusted proxy and the engine's guards
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds

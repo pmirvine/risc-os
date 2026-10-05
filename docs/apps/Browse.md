@@ -99,6 +99,18 @@ requests with 400 rather than stopping, and its pages carry `frame-ancestors 'se
 so the host's own browser's cookies are never involved. With `--lan` the desktop is served to the network but the
 engine still only answers this machine (other computers get the embedded mode).
 
+With `--public-url=<url>` and `RISCOS_PROXY_SECRET` (`tools/trust.mjs`) the engine also answers a request that
+carries `X-Proxy-Auth: <secret>` from a trusted reverse proxy, whose Host is the public one; the token and
+same-origin checks are unchanged. Without `--public-url` nothing changes. `/__browse/check` (the frame check)
+refuses private and loopback addresses (reason "Private address") unless `--browser-check-private` (tests/dev;
+refused with `--public-url`). That filter does not cover Chrome's own fetches: in `deploy/` the container firewall
+(`ro-firewall.sh`) keeps Chrome from the host and the LAN. Chrome has one profile (`--browser-profile`), so all
+connected desktops share cookies. `--browser-idle=<seconds>` (default 300; 0 = never) stops Chrome when no desktop is
+connected for that long and starts it on demand; `--browser-arg=<flag>` (repeatable) / `RISCOS_BROWSER_ARGS` add flags
+(e.g. `--no-sandbox` in a container). The 'remote' notice in the window says the engine is not available from this
+address. Tests: `tests/core/test-trust.mjs`, `test-proxy-mode.mjs`, `test-proxy-handlers.mjs`,
+`test-browser-hardening.mjs`. User guide: `$.Docs.Server`.
+
 ## Behaviour
 
 * Window: title = the page's title; button bar (Home, Back, Reload — Adjust: without the cache —, Stop, Forward, Add
