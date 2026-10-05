@@ -69,7 +69,7 @@ By default `RISCOS_BROWSER_ARGS` is empty and Chromium tries its own sandbox und
 profile. If pages do not load and `docker logs riscos` shows sandbox or namespace errors, set
 the fallback and recreate: add the line `RISCOS_BROWSER_ARGS=--no-sandbox --disable-dev-shm-usage` to
 `/srv/riscos/.env` and run `docker compose up -d`.
-The container is still non-root with all capabilities dropped, but the browser then has no
+The container is still non-root with every capability but SYS_CHROOT dropped, but the browser then has no
 second layer. If SELinux turns out to be enforcing, add `:z` to the two bind mounts.
 The seccomp path in `compose.yml` is relative; if compose does not read it, use an absolute path.
 
@@ -106,7 +106,7 @@ rebuilt. Do this about monthly: `cd /srv/riscos/src/deploy && docker compose bui
   `httpd -v`). Modules needed: proxy, proxy_http, headers, auth_basic, authn_file. The snippet changes
   nothing outside `/ro`. It adds no MIME types: the app sets its own Content-Types, so the server's
   missing .woff2/.mjs/.wasm mappings do not matter for proxied responses.
-* The seccomp profile and the default (sandboxed) Chromium are unproven on this host until Task 7.
+* Checked on the server: with the seccomp profile and `cap_add: [SYS_CHROOT]` Chromium runs with its own sandbox (without `SYS_CHROOT` the sandbox aborts with "sys_chroot failed"), so `--no-sandbox` is not needed.
 * The firewall script drops the bridge's traffic to private ranges and to the host; it relies on
   Docker's `DOCKER-USER` chain and does not survive a Docker restart that flushes it
   (`systemctl restart ro-firewall` re-applies).
