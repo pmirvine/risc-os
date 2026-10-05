@@ -25,7 +25,9 @@ for _ in $(seq 1 30); do curl -fs -o /dev/null "http://127.0.0.1:$PORT/" && brea
 
 code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 c="$(code "http://127.0.0.1:$PORT/")";                                             [ "$c" = 200 ] || fail "/ returned $c"
+c="$(code -H "Host: localhost:8371" "http://127.0.0.1:$PORT/__hostfs/")";           [ "$c" = 403 ] || fail "/__hostfs/ as localhost without secret returned $c, want 403"
 c="$(code -H 'Host: tsihome.mynetgear.com' "http://127.0.0.1:$PORT/__hostfs/")";   [ "$c" = 403 ] || fail "/__hostfs/ without secret returned $c, want 403"
+c="$(code -H "Host: localhost:8371" "http://127.0.0.1:$PORT/__hostfs/")";           [ "$c" = 403 ] || fail "/__hostfs/ as localhost without secret returned $c, want 403"
 c="$(code -H 'Host: tsihome.mynetgear.com' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
 [ "$c" = 200 ] || fail "/__hostfs/ with secret returned $c, want 200"
 body="$(curl -s -H 'Host: tsihome.mynetgear.com' -H "X-Proxy-Auth: $SECRET" "http://127.0.0.1:$PORT/__hostfs/")"
