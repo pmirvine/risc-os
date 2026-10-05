@@ -4,6 +4,13 @@
 //   node serve.mjs --browser=/path/to/chrome
 //   node serve.mjs --browser --browser-profile ~/somewhere   (default ~/.riscos-browse; cookies and logins persist)
 //
+//   --browser-arg=<flag>      an extra flag for Chrome (repeatable), e.g. --browser-arg=--no-sandbox for a container;
+//                             RISCOS_BROWSER_ARGS="--flag --flag" (whitespace-separated) adds more
+//   --browser-idle=<seconds>  stop Chrome when no page has been connected for this long (default 300; 0 = never);
+//                             the next connection starts a fresh one (the profile is kept)
+//   --browser-check-private   for tests/development only: lets /__browse/check probe private/loopback addresses
+//                             (serve.mjs refuses it with --public-url, and public mode ignores it)
+//
 // Chrome runs headless, driven over a private pipe (--remote-debugging-pipe: no DevTools port is opened), with
 // its own profile. Each tab in !Browse is a page in Chrome: the page's pictures come as JPEG frames (a screencast,
 // acknowledged frame by frame so a slow connection only gets fewer frames), the desktop sends mouse and keys
@@ -23,6 +30,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import dns from 'node:dns/promises';
+import net from 'node:net';
+import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const EXT_DIR = path.join(HERE, 'browse-ext');
@@ -31,16 +41,37 @@ const MAX_UPLOAD = 512 * 1024 * 1024;
 const HIGH_WATER = 2 * 1024 * 1024;         // frames wait while this much is still unsent to the page
 const WORLD = 'riscos';                     // the isolated world !Browse's helper script runs in
 
-/** --browser[=chrome], --browser-profile dir. */
+/** --browser[=chrome], --browser-profile dir, --browser-arg=flag (repeatable), --browser-idle=seconds, --browser-check-private; env RISCOS_BROWSER_ARGS. */
 export function parseBrowserArgs(argv) {
-  const o = { enabled: false, chrome: null, profile: path.join(os.homedir(), '.riscos-browse') };
+  const o = { enabled: false, chrome: null, profile: path.join(os.homedir(), '.riscos-browse'), extraArgs: [], idle: 300, checkPrivate: false };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--browser-check-private') { o.checkPrivate = true; continue; }
+    const a = /^--browser-arg=(.+)$/.exec(argv[i]);
+    if (a) { o.extraArgs.push(a[1]); continue; }
+    const idle = /^--browser-idle=(\d+(?:\.\d+)?)$/.exec(argv[i]);
+    if (idle) { o.idle = +idle[1]; continue; }
     const m = /^--browser(?:=(.*))?$/.exec(argv[i]);
     if (m) { o.enabled = true; if (m[1]) o.chrome = m[1]; continue; }
     const p = /^--browser-profile(?:=(.*))?$/.exec(argv[i]);
     if (p) o.profile = path.resolve((p[1] ?? argv[++i]).replace(/^~(?=$|\/)/, os.homedir()));
   }
+  o.extraArgs.push(...(process.env.RISCOS_BROWSER_ARGS ?? '').split(/\s+/).filter(Boolean));
   return o;
+}
+
+/** A timer that calls fire() `seconds` after arm() unless cancelled; 0 never fires. It never keeps the process alive. */
+export function makeIdleTimer(seconds, fire) {
+  let t = null;
+  const cancel = () => { if (t) clearTimeout(t); t = null; };
+  return {
+    cancel,
+    arm() {
+      cancel();
+      if (!(seconds > 0)) return;
+      t = setTimeout(() => { t = null; fire(); }, seconds * 1000);
+      t.unref();
+    },
+  };
 }
 
 // ------------------------------------------------------------------ finding a Chrome
@@ -88,11 +119,39 @@ export function findChrome(explicit) {
   return chromeCandidates().find(exists) ?? null;
 }
 
+/** Chromium leaves SingletonLock (a dangling symlink "host-pid"), SingletonSocket and SingletonCookie behind when it
+ *  is killed; a new container has a new host name and Chromium then refuses the profile. Call only when no Chrome of
+ *  ours is running. */
+export function clearStaleProfileLocks(profileDir) {
+  for (const n of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    try { fs.rmSync(path.join(profileDir, n), { force: true }); } catch { /* not ours to worry about */ }
+  }
+}
+
+/** The environment for Chrome: ours without the proxy secret (a page's renderer must never be near it). */
+export function chromeEnv(env = process.env) {
+  const e = { ...env };
+  delete e.RISCOS_PROXY_SECRET;
+  return e;
+}
+
+/** Ask a Chrome to stop (default: SIGTERM) and resolve when it has exited; after `ms` send SIGKILL and resolve. */
+export function stopChild(c, ms = 5000, ask = () => c.kill()) {
+  return new Promise((resolve) => {
+    if (c.exited) return resolve();
+    const t = setTimeout(() => { c.kill('SIGKILL'); resolve(); }, ms);
+    c.once('exit', () => { clearTimeout(t); resolve(); });
+    ask();
+  });
+}
+
 // ------------------------------------------------------------------ Chrome over a pipe (CDP)
 class Chrome extends EventEmitter {
   constructor(bin, args) {
     super();
-    this.proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] });
+    this.proc = spawn(bin, args, { stdio: ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'], env: chromeEnv() });
+    this.exited = false;
+    this.once('exit', () => { this.exited = true; });
     this.log = '';
     this.proc.stdio[2].on('data', (d) => { this.log = (this.log + d).slice(-4000); });
     this.out = this.proc.stdio[3];
@@ -136,7 +195,7 @@ class Chrome extends EventEmitter {
       this.out.write(JSON.stringify(m) + '\0');
     });
   }
-  kill() { try { this.proc.kill(); } catch { /* gone */ } }
+  kill(sig) { try { this.proc.kill(sig); } catch { /* gone */ } }
 }
 
 // ------------------------------------------------------------------ a small WebSocket server (RFC 6455)
@@ -280,7 +339,7 @@ const extensionId = () => {
 
 const ALLOWED_URL = /^(https?:|about:blank$|data:|blob:)/i;
 
-class Service {
+export class Service {
   constructor(opts) {
     this.opts = opts;
     this.chrome = null;
@@ -297,6 +356,16 @@ class Service {
     this.tmp = null;
     this.bin = null;
     this.error = null;
+    this.idle = makeIdleTimer(opts.idle ?? 300, () => this.idleStop());
+  }
+
+  /** No page has been connected for a while: let Chrome go (ensure() starts a fresh one; the profile is untouched). */
+  idleStop() {
+    if (this.clients.size || this.starting || !this.chrome) return;
+    const c = this.chrome;
+    this.stopped();                 // forget it now; ensure() then waits for its exit (Chrome's profile lock) first
+    const p = this.stopping = stopChild(c).then(() => { if (this.stopping === p) this.stopping = null; });
+    console.log('  !Browse: the browser engine stopped (idle)');
   }
 
   status() {
@@ -309,7 +378,7 @@ class Service {
 
   ensure() {
     if (this.chrome) return Promise.resolve();
-    this.starting ??= this.launch().finally(() => { this.starting = null; });
+    this.starting ??= (async () => { await this.stopping; return this.launch(); })().finally(() => { this.starting = null; });
     return this.starting;
   }
 
@@ -321,10 +390,11 @@ class Service {
       this.tmp = await fsp.mkdtemp(path.join(os.tmpdir(), 'riscos-browse-'));
       await fsp.mkdir(path.join(this.tmp, 'downloads'));
     }
+    if (!this.chrome) clearStaleProfileLocks(this.opts.profile);
     const id = this.extId = extensionId();
     const args = ['--headless', '--remote-debugging-pipe', `--user-data-dir=${this.opts.profile}`, '--no-first-run',
       '--no-default-browser-check', '--disable-search-engine-choice-screen', '--password-store=basic', '--use-mock-keychain',
-      `--load-extension=${EXT_DIR}`, `--disable-extensions-except=${EXT_DIR}`, `--allowlisted-extension-id=${id}`, 'about:blank'];
+      `--load-extension=${EXT_DIR}`, `--disable-extensions-except=${EXT_DIR}`, `--allowlisted-extension-id=${id}`, ...(this.opts.extraArgs ?? []), 'about:blank'];
     const c = new Chrome(bin, args);
     c.on('event', (m) => this.event(m));
     const ready = new Promise((resolve, reject) => {
@@ -335,7 +405,7 @@ class Service {
     const version = await ready.catch((e) => { c.kill(); throw e; });
     this.chrome = c;
     this.userAgent = version.userAgent.replace('HeadlessChrome', 'Chrome');
-    c.on('exit', () => this.stopped());
+    c.on('exit', () => { if (this.chrome === c) this.stopped(); });   // (not when idleStop() already let go of it)
     await c.send('Target.setDiscoverTargets', { discover: true });
     await c.send('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: path.join(this.tmp, 'downloads'), eventsEnabled: true });
     // the first tab Chrome opened isn't one of ours
@@ -370,7 +440,16 @@ class Service {
     if (log) console.log('  !Browse: the browser engine stopped');
   }
 
+  /** Close Chrome properly (so the profile is flushed and unlocked) and wait up to `ms` for it to exit. */
+  async close(ms = 3000) {
+    this.idle.cancel();
+    const c = this.chrome;
+    if (c) await stopChild(c, ms, () => c.send('Browser.close').catch(() => c.kill()));
+    await this.stopping;
+  }
+
   shutdown() {
+    this.idle.cancel();
     this.chrome?.kill();
     if (this.tmp) fs.rmSync(this.tmp, { recursive: true, force: true });
   }
@@ -729,6 +808,7 @@ class Service {
   connect(ws) {
     const client = { ws, tabs: new Set(), uploads: new Map(), audio: false };
     this.clients.add(client);
+    this.idle.cancel();
     ws.on('message', async (text, binary) => {
       if (binary) return;
       let o;
@@ -740,6 +820,7 @@ class Service {
     });
     ws.on('close', () => {
       this.clients.delete(client);
+      if (!this.clients.size) this.idle.arm();
       for (const id of client.tabs) { const t = this.tabs.get(id); if (t) this.closeTab(t); }
       for (const [id, f] of this.files) if (f.client === client) { this.files.delete(id); fsp.rm(f.path, { force: true }).catch(() => {}); }
       for (const p of client.uploads.values()) fsp.rm(path.dirname(p), { recursive: true, force: true }).catch(() => {});
@@ -751,19 +832,70 @@ class Service {
 }
 
 // ------------------------------------------------------------------ can a site be shown in a frame?
-async function frameCheck(url) {
+const MAX_HOPS = 5;
+
+/** Is this IP address one that only this machine or its own network should reach? (Loopback, private, link-local,
+ *  CGNAT, unspecified, unique-local, and IPv4 carried inside IPv6.) */
+export function isPrivateAddress(ip) {
+  ip = String(ip).replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  const v = net.isIP(ip);
+  if (v === 4) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+  }
+  if (v !== 6) return false;
+  // expand to eight 16-bit groups
+  let [head, tail = null] = ip.toLowerCase().split('::');
+  const dotted = /(\d+\.\d+\.\d+\.\d+)$/.exec(tail ?? head);
+  const fix = (x) => dotted ? x.replace(dotted[1], () => { const q = dotted[1].split('.').map(Number); return ((q[0] << 8) | q[1]).toString(16) + ':' + ((q[2] << 8) | q[3]).toString(16); }) : x;
+  const h = (tail === null ? fix(head) : head).split(':').filter(Boolean);
+  const t = tail === null ? [] : fix(tail).split(':').filter(Boolean);
+  const g = tail === null ? h : [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
+  const n = g.map((x) => parseInt(x, 16));
+  if (n.length !== 8) return false;
+  const mapped = n.slice(0, 5).every((x) => x === 0) && n[5] === 0xffff;          // ::ffff:a.b.c.d
+  const nat64 = n[0] === 0x64 && n[1] === 0xff9b && n.slice(2, 6).every((x) => x === 0);   // 64:ff9b::a.b.c.d
+  if (mapped || nat64) return isPrivateAddress(`${n[6] >> 8}.${n[6] & 255}.${n[7] >> 8}.${n[7] & 255}`);
+  if (n.every((x) => x === 0) || (n.slice(0, 7).every((x) => x === 0) && n[7] === 1)) return true;   // :: and ::1
+  return (n[0] & 0xfe00) === 0xfc00 || (n[0] & 0xffc0) === 0xfe80;               // fc00::/7, fe80::/10
+}
+
+/** True if the host of this URL is, or resolves to, a private address (any one of its answers is enough). */
+async function privateHost(url, lookup) {
+  const host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+  if (net.isIP(host)) return isPrivateAddress(host);
+  const answers = await lookup(host, { all: true });
+  return answers.some((a) => isPrivateAddress(a.address));
+}
+
+// Whether a site lets itself be framed. This probe refuses private and loopback targets in every mode, so that
+// /__browse/check can't be used to scan this machine's network. (It doesn't limit what the Chrome engine itself
+// loads: that is the container's firewall in a public deployment.) --browser-check-private lifts it, for the
+// test suites, whose fixtures are served from this machine.
+export async function frameCheck(url, { fetch: fetchImpl = fetch, lookup = dns.lookup, allowPrivate = false } = {}) {
   if (!/^https?:\/\//i.test(url)) return { frameable: false, reason: 'Only http: and https: pages can be shown' };
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 6000);
   try {
-    const r = await fetch(url, { redirect: 'follow', signal: ac.signal, headers: { 'User-Agent': 'Mozilla/5.0 (RISC OS) !Browse' } });
+    let r;
+    for (let hop = 0; ; hop++) {
+      if (!allowPrivate && await privateHost(url, lookup)) return { frameable: null, reason: 'Private address' };
+      r = await fetchImpl(url, { redirect: 'manual', signal: ac.signal, headers: { 'User-Agent': 'Mozilla/5.0 (RISC OS) !Browse' } });
+      const next = r.status >= 300 && r.status < 400 ? r.headers.get('location') : null;
+      if (!next) break;
+      r.body?.cancel?.().catch(() => {});
+      if (hop >= MAX_HOPS) return { frameable: null, reason: 'Too many redirects' };
+      url = new URL(next, url).href;
+      if (!/^https?:\/\//i.test(url)) return { frameable: false, reason: 'Only http: and https: pages can be shown' };
+    }
     ac.abort();
     const xfo = (r.headers.get('x-frame-options') ?? '').toLowerCase();
     const csp = r.headers.get('content-security-policy') ?? '';
     const fa = /(?:^|;)\s*frame-ancestors\s+([^;]*)/i.exec(csp)?.[1]?.trim().toLowerCase();
-    if (xfo.includes('deny') || xfo.includes('sameorigin')) return { frameable: false, reason: 'X-Frame-Options', url: r.url };
-    if (fa != null && !fa.split(/\s+/).includes('*')) return { frameable: false, reason: 'frame-ancestors', url: r.url };
-    return { frameable: true, url: r.url };
+    if (xfo.includes('deny') || xfo.includes('sameorigin')) return { frameable: false, reason: 'X-Frame-Options', url };
+    if (fa != null && !fa.split(/\s+/).includes('*')) return { frameable: false, reason: 'frame-ancestors', url };
+    return { frameable: true, url };
   } catch (e) {
     return { frameable: null, reason: e.name === 'AbortError' ? 'No answer' : e.cause?.code ?? e.message };
   } finally { clearTimeout(timer); }
@@ -772,22 +904,21 @@ async function frameCheck(url) {
 // ------------------------------------------------------------------ the HTTP side
 class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
 
-export function browserHandler(opts, port) {
+export function browserHandler(opts, port, trust = makeTrust({ publicUrl: null, secret: null }, port)) {
   const service = opts.enabled ? new Service(opts) : null;
+  const allowPrivate = !!opts.checkPrivate && !trust.isPublic;   // (a flag, not an env var; never in public mode)
   const token = crypto.randomBytes(16).toString('hex');
-  const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
-  const origins = new Set([...hosts].map((h) => `http://${h}`));
   const SAFE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
   const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...SAFE }); res.end(JSON.stringify(obj)); };
   const guard = (req) => {
-    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) throw new HttpError(403, '!Browse\'s engine is only available on this machine');
-    if (!hosts.has(req.headers.host)) throw new HttpError(403, 'Bad host');
+    if (!trust.allowedRemote(req)) throw new HttpError(403, '!Browse\'s engine is only available on this machine');
+    if (!trust.hosts.has((req.headers.host ?? '').toLowerCase())) throw new HttpError(403, 'Bad host');
     const site = req.headers['sec-fetch-site'];
     if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site request');
   };
   const client = (req, t) => {
     if (t !== token) throw new HttpError(403, 'Bad token');
-    if (req.headers.origin && !origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
+    if (req.headers.origin && !trust.origins.has(req.headers.origin.toLowerCase())) throw new HttpError(403, 'Bad origin');
   };
 
   const handle = async (req, res, url) => {
@@ -798,7 +929,7 @@ export function browserHandler(opts, port) {
         return send(res, 200, { token, enabled: !!service, ...(service ? service.status() : {}) });
       }
       client(req, req.headers['x-browse-token'] ?? url.searchParams.get('t'));
-      if (rest === 'check') return send(res, 200, await frameCheck(url.searchParams.get('url') ?? ''));
+      if (rest === 'check') return send(res, 200, await frameCheck(url.searchParams.get('url') ?? '', { allowPrivate }));
       if (!service) throw new HttpError(404, 'Start the server with --browser');
       const cl = [...service.clients].find((c) => c.ws.id === url.searchParams.get('c'));
       if (rest.startsWith('file/') && req.method === 'GET') {
@@ -853,7 +984,7 @@ export function browserHandler(opts, port) {
       const url = new URL(req.url, 'http://x');
       if (url.pathname !== '/__browse/ws' || !service) throw new HttpError(404, 'Not found');
       guard(req);
-      if (!origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
+      if (!trust.origins.has((req.headers.origin ?? '').toLowerCase())) throw new HttpError(403, 'Bad origin');
       if (url.searchParams.get('t') !== token) throw new HttpError(403, 'Bad token');
       const ws = acceptWebSocket(req, socket, head);
       ws.id = crypto.randomBytes(8).toString('hex');
@@ -864,5 +995,5 @@ export function browserHandler(opts, port) {
     }
   };
 
-  return { handle, upgrade, service, shutdown: () => service?.shutdown() };
+  return { handle, upgrade, service, shutdown: () => service?.shutdown(), close: () => service?.close() ?? Promise.resolve() };
 }

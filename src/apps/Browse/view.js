@@ -703,7 +703,7 @@ export class FrameTab {
     this.zoom = 1;
     this.iframe = null;
     this.shown = false;
-    const why = { off: 'start the server with node serve.mjs --browser', nochrome: 'no Chrome was found for serve.mjs --browser', remote: 'the full browser only works on the computer running the server', server: 'this web server has no browser engine: use node serve.mjs --browser' }[bw.app.probe?.reason];
+    const why = { off: 'start the server with node serve.mjs --browser', nochrome: 'no Chrome was found for serve.mjs --browser', remote: 'the engine is not available from this address (it answers only its own computer, or a trusted server set up by its owner)', server: 'this web server has no browser engine: use node serve.mjs --browser' }[bw.app.probe?.reason];
     this.notice = `Some sites won't show here: for the full browser, ${why ?? 'use node serve.mjs --browser'}`;
   }
   get canBack() { return this.pos > 0; }

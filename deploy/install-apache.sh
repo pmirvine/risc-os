@@ -1,0 +1,64 @@
+#!/bin/bash
+# Install the /ro Apache config. Run as root on the server:  ./install-apache.sh
+# Idempotent. On any failure the vhost is restored and Apache is NOT reloaded.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Defaults are the production paths; the RO_* overrides exist only for testing.
+VHOST="${RO_VHOST_FILE:-/etc/apache2/vhosts.d/tsihome.mynetgear.com-le-ssl.conf}"
+INC="${RO_INC_FILE:-/etc/apache2/conf.d/ro.inc}"
+ENVF="${RO_ENV_FILE:-/srv/riscos/.env}"
+HTPASSWD="${RO_HTPASSWD_FILE:-/etc/apache2/ro.htpasswd}"
+APACHECTL="${RO_APACHECTL:-apachectl}"
+SYSTEMCTL="${RO_SYSTEMCTL:-systemctl}"
+OWNER="${RO_OWNER:-root:root}"
+LINE="Include $INC"
+STAMP="$(date +%Y%m%d-%H%M%S)"
+BAK="$VHOST.bak-$STAMP"
+INCBAK=""
+
+[ "$(id -u)" = 0 ] || [ -n "${RO_OWNER:-}" ] || { echo "run as root" >&2; exit 1; }
+[ -f "$VHOST" ] || { echo "missing $VHOST" >&2; exit 1; }
+[ -f "$HTPASSWD" ] || { echo "missing $HTPASSWD (see README)" >&2; exit 1; }
+SECRET="$(sed -n 's/^RISCOS_PROXY_SECRET=//p' "$ENVF" | head -n1)"
+[ "${#SECRET}" -ge 16 ] || { echo "RISCOS_PROXY_SECRET missing or short in $ENVF" >&2; exit 1; }
+case "$SECRET" in *[!A-Za-z0-9._~+/=-]*) echo "secret has characters unsafe for the config; use openssl rand -hex 24" >&2; exit 1;; esac
+
+cp -p "$VHOST" "$BAK"
+[ -f "$INC" ] && { INCBAK="$INC.bak-$STAMP"; cp -p "$INC" "$INCBAK"; }
+
+restore() {
+  echo "FAILED: restoring $VHOST" >&2
+  cp -p "$BAK" "$VHOST"
+  if [ -n "$INCBAK" ]; then cp -p "$INCBAK" "$INC"; else rm -f "$INC"; fi
+  exit 1
+}
+trap restore ERR
+
+# The config contains the secret: root only.
+umask 077
+SECRET="$SECRET" awk '{ while ((i = index($0, "__SECRET__")) > 0) $0 = substr($0, 1, i-1) ENVIRON["SECRET"] substr($0, i+10); print }' "$HERE/apache-ro.conf" > "$INC.new"
+chown "$OWNER" "$INC.new"; chmod 0640 "$INC.new"
+mv "$INC.new" "$INC"
+
+if ! grep -qE "^[[:space:]]*Include[[:space:]]+$INC[[:space:]]*$" "$VHOST"; then
+  # Insert just before the </VirtualHost> that closes the *:443 vhost (first such block only).
+  awk -v line="    $LINE" '
+    /<VirtualHost[^>]*:443>/ { in443=1 }
+    in443 && !done && /<\/VirtualHost>/ { print line; done=1; in443=0 }
+    { print }
+  ' "$VHOST" > "$VHOST.new"
+  grep -qE "^[[:space:]]*Include[[:space:]]+$INC[[:space:]]*$" "$VHOST.new" || { echo "no <VirtualHost *:443> block found" >&2; rm -f "$VHOST.new"; false; }
+  cat "$VHOST.new" > "$VHOST"; rm -f "$VHOST.new"
+fi
+
+OUT="$("$APACHECTL" configtest 2>&1)" || { echo "$OUT" >&2; false; }
+echo "$OUT"
+case "$OUT" in *"Syntax OK"*) ;; *) false;; esac
+
+trap - ERR
+# Old copies of the include hold the secret: keep only the latest 3.
+# Never fatal (no backups exist on a first install, so ls fails).
+{ { ls -1t "$INC".bak-* 2>/dev/null || true; } | tail -n +4 | while read -r old; do rm -f "$old"; done; } || true
+"$SYSTEMCTL" reload apache2
+echo "Apache reloaded. Backup: $BAK"

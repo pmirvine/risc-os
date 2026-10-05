@@ -20,4 +20,11 @@ when it quits.
 * Remembered mounts are the IndexedDB records of `src/core/hostfs/hostfs.js` (`MountStore`): picked folders keep
   their handle; server folders a record only once their start-up choice has been set. Snapshots aren't remembered.
 
+Server backend and security: `tools/hostfs-server.mjs` answers only this machine, for this server's own host names,
+not cross-site and with the per-run token. With `serve.mjs --public-url=<url>` and `RISCOS_PROXY_SECRET`
+(`tools/trust.mjs`) it also answers requests that carry `X-Proxy-Auth: <secret>` and the public Host, so a desktop
+served through a trusted reverse proxy (see `deploy/`) gets its `--host` folders, e.g. `Server=/data`, mounted at
+start-up on every computer; the hard disc stays per browser. Last save wins when two computers write the same file.
+Guide: `$.Docs.Server`; tests: `tests/core/test-trust.mjs`, `test-proxy-mode.mjs`, `test-proxy-handlers.mjs`.
+
 Tests: `tests/core/test-hostfs-app.mjs` (and `test-hostfs.mjs` for HostFS itself).

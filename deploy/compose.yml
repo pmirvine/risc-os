@@ -1,0 +1,55 @@
+# Lives at /srv/riscos/src/deploy/compose.yml (build context .. = /srv/riscos/src); state is under /srv/riscos.
+# Run from this directory:  docker compose -f compose.yml up -d --build
+# Needs /srv/riscos/.env (mode 0600) containing RISCOS_PROXY_SECRET=<openssl rand -hex 24>.
+name: riscos
+services:
+  riscos:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: riscos-web:latest
+    container_name: riscos
+    hostname: riscos   # fixed: Chromium's profile lock names the host, and a recreated container gets a new ID
+    restart: unless-stopped
+    init: true
+    user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1g,uid=1000,gid=1000
+    cap_drop: [ALL]
+    # The seccomp profile only allows chroot() with CAP_SYS_CHROOT, and Chromium's user-namespace sandbox
+    # needs it. Tested on the server: without this the sandbox aborts (sys_chroot failed); with it the
+    # sandbox works. It only matters inside Chromium's own user namespace (the container user is not root).
+    cap_add: [SYS_CHROOT]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./chrome-seccomp.json
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    shm_size: 512m
+    dns: [1.1.1.1, 9.9.9.9]
+    env_file: /srv/riscos/.env   # RISCOS_PROXY_SECRET (and optionally RISCOS_BROWSER_ARGS)
+    # RISCOS_BROWSER_ARGS is read from env_file (absent = empty = sandbox on; fallback in README).
+    ports:
+      - "127.0.0.1:18371:8371"
+    volumes:
+      - /srv/riscos/data:/data
+      - /srv/riscos/profile:/profile
+    networks: [ro_net]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8371/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+networks:
+  ro_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-ro
+      com.docker.network.bridge.enable_icc: "false"
+    ipam:
+      config:
+        - subnet: 172.30.50.0/24

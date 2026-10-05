@@ -28,6 +28,7 @@ import { installBasicHost } from './core/basichost.js';
 import { installBasicWimp } from './core/basicwimp/index.js';
 import { config } from './core/config.js';
 import { memory } from './core/memory.js';
+import { devParamsAllowed } from './core/devparams.js';
 import { watchPowerOnKeys, resetAndRestart, confirmReset } from './core/reset.js';
 
 const params = new URLSearchParams(location.search);
@@ -147,8 +148,10 @@ async function boot() {
   if (wf && !/^(system|homerton)$/i.test(wf)) fontRegistry.load(wf).then((f) => { if (f?.disc) config.apply(); }).catch(() => {});
   // developer conveniences: ?open=<path>  ?run=<app>  ?cmd=<*command>
   if (params.get('open')) filer.openDir(params.get('open'));
-  if (params.get('run')) apps.start(params.get('run'));
-  if (params.get('cmd')) cli.run(params.get('cmd')).catch((e) => reportError(e.message));
+  if (devParamsAllowed(location.hostname)) {       // (?cmd and ?run only on localhost: a link from another site must not run commands)
+    if (params.get('run')) apps.start(params.get('run'));
+    if (params.get('cmd')) cli.run(params.get('cmd')).catch((e) => reportError(e.message));
+  }
 }
 
 boot().catch((e) => {
