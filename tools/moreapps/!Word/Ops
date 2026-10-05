@@ -1,0 +1,94 @@
+// Ops - the operations that change a Doc, each returning its inverse.
+//
+//   apply(doc, op) -> inverse op
+//
+// apply(doc, apply(doc, op)) leaves doc deep-equal to how it was
+// before op (paragraph ids included). An op that is refused throws
+// RangeError and leaves doc unchanged. Positions are
+// [sectionIndex, blockIndex]; offsets are UTF-16 code units.
+//
+//   replaceText  {block, at, del, ins, rPr?, rStyle?, inlines?}
+//   setProps     {block, pPr?, pStyle?, range?, rPr?, rStyle?}
+//   splitBlock   {block, at}         mergeBlock  {block}
+//   insertBlock  {at, block}         removeBlock {at}
+//   restoreBlock {block, snapshot}   (replace a block)
+//   spliceText   {block, at, del, content: {text, runs, inlines}}
+//   compound     {ops: [...]}        (all or nothing)
+//
+// NEVER CHANGE A MODEL OBJECT IN PLACE. Blocks, runs, rPr, pPr,
+// inlines and Xml nodes are shared between the live Doc and the
+// inverse ops in undo history (copy-on-write: an op that changes a
+// part makes new objects for that part only). apply() copies the op
+// it is given, so callers' objects never enter the Doc; applyOwn()
+// does not, and is only for ops this module made (Document's undo).
+import {fail, checkBlock} from './ModelCheck';
+import {clone} from './Model';
+import {locate, idUsed} from './OpsUtil';
+import {replaceText, spliceText, splitBlock, mergeBlock}
+  from './OpsText';
+import {setProps} from './OpsProps';
+
+/** Check block `b`; its id must be free in doc (but for `skip`). */
+function check(doc, b, skip) {
+  checkBlock(b);
+  if (b.type === 'p' && idUsed(doc, b.id, skip))
+    fail('paragraph id ' + b.id + ' is already in use');
+  return b;
+}
+
+function insertBlock(doc, op) {
+  const {s, i, blocks} = locate(doc, op.at, true);
+  blocks.splice(i, 0, check(doc, op.block));
+  return {op: 'removeBlock', at: [s, i]};
+}
+
+function removeBlock(doc, op) {
+  const {s, i, blocks} = locate(doc, op.at);
+  const [b] = blocks.splice(i, 1);
+  return {op: 'insertBlock', at: [s, i], block: b};
+}
+
+function restoreBlock(doc, op) {
+  const {s, i, blocks} = locate(doc, op.block);
+  const old = blocks[i];
+  blocks[i] = check(doc, op.snapshot, old);
+  return {op: 'restoreBlock', block: [s, i], snapshot: old};
+}
+
+function compound(doc, op) {
+  if (!Array.isArray(op.ops)) fail('compound needs ops');
+  const done = [];
+  try {
+    for (const o of op.ops) done.push(applyOwn(doc, o));
+  } catch (e) {
+    for (let k = done.length - 1; k >= 0; k--) applyOwn(doc, done[k]);
+    throw e;
+  }
+  return {op: 'compound', ops: done.reverse()};
+}
+
+const KINDS = {replaceText, spliceText, setProps, splitBlock,
+  mergeBlock, insertBlock, removeBlock, restoreBlock, compound};
+
+/**
+ * Apply `op` to `doc` and return the op that undoes it. The op is
+ * copied first, so nothing the caller holds becomes part of doc.
+ * @param {object} doc a Doc (see Model)
+ * @param {object} op
+ * @returns {object}
+ */
+export function apply(doc, op) {
+  return applyOwn(doc, clone(op));
+}
+
+/**
+ * apply() without the copy: `op` and everything in it may become
+ * part of doc, so it must be an op nobody will change, such as an
+ * inverse returned by apply() or applyOwn().
+ */
+export function applyOwn(doc, op) {
+  const kind = op && typeof op.op === 'string' &&
+    Object.hasOwn(KINDS, op.op) ? KINDS[op.op] : null;
+  if (!kind) fail('unknown op ' + (op && op.op));
+  return kind(doc, op);
+}

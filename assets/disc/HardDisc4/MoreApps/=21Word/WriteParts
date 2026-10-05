@@ -1,0 +1,154 @@
+// WriteParts - the package around the parts: XML text, content
+// types, relationships and the order of the zip entries.
+//
+//   xmlBytes(root, prolog)   UTF-8 bytes of a part (see declOf)
+//   declOf(prolog)           the XML declaration to write
+//   contentTypes(ct, names, known, fix)  root of [Content_Types].xml
+//   relsTree(rels)           root of a .rels part
+//   relType(kind, strict)    a relationship type URI
+//   zipOrder(names, order)   the order to write the entries in
+//   CT                       content types of the parts we write
+import {el, serialize} from 'wimplib/Xml';
+
+/** The declaration Word writes. */
+export const STD_DECL =
+  'xml version="1.0" encoding="UTF-8" standalone="yes"';
+
+const ENC = /(encoding[ \t\n]*=[ \t\n]*)(["'])([^"']*)\2/;
+
+/**
+ * The declaration for a part read with `prolog` ({decl, before,
+ * after}, or undefined for a new part: STD_DECL). Parts are always
+ * written as UTF-8, so an original declaration naming another
+ * encoding (UTF-16) is corrected; one that says UTF-8 (in any case)
+ * or no encoding is kept as it was, and a part that had no
+ * declaration gets none.
+ */
+export function declOf(prolog) {
+  if (!prolog) return STD_DECL;
+  const d = prolog.decl;
+  if (!d) return null;
+  const m = ENC.exec(d);
+  if (!m || /^utf-8$/i.test(m[3])) return d;
+  return d.replace(ENC, (all, pre, q) => pre + q + 'UTF-8' + q);
+}
+
+const utf8 = new TextEncoder();
+
+/** The bytes of an XML part: root plus its prolog, as UTF-8. */
+export function xmlBytes(root, prolog) {
+  return utf8.encode(serialize(root, {decl: declOf(prolog),
+    before: prolog ? prolog.before : [],
+    after: prolog ? prolog.after : []}));
+}
+
+const OX = 'application/vnd.openxmlformats-';
+const WML = OX + 'officedocument.wordprocessingml.';
+
+/** Content types of the parts the writer makes. */
+export const CT = {
+  main: WML + 'document.main+xml', styles: WML + 'styles+xml',
+  numbering: WML + 'numbering+xml', settings: WML + 'settings+xml',
+  core: OX + 'package.core-properties+xml',
+  app: OX + 'officedocument.extended-properties+xml',
+  rels: OX + 'package.relationships+xml', xml: 'application/xml',
+};
+
+/** Default content types by extension, for parts that lack one. */
+const BY_EXT = {
+  rels: CT.rels, xml: CT.xml, png: 'image/png', jpeg: 'image/jpeg',
+  jpg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp',
+  tif: 'image/tiff', tiff: 'image/tiff', svg: 'image/svg+xml',
+  emf: 'image/x-emf', wmf: 'image/x-wmf',
+  bin: 'application/vnd.openxmlformats-officedocument.oleObject',
+  odttf: 'application/vnd.openxmlformats-officedocument.' +
+    'obfuscatedFont',
+};
+
+const CT_NS =
+  'http://schemas.openxmlformats.org/package/2006/content-types';
+
+const extOf = (n) => {
+  const leaf = n.slice(n.lastIndexOf('/') + 1);
+  const i = leaf.lastIndexOf('.');
+  return i >= 0 ? leaf.slice(i + 1).toLowerCase() : null;
+};
+
+/**
+ * [Content_Types].xml: the original Default and Override entries in
+ * their order, with the type of each part in `fix` (Map name ->
+ * content type, see ./PartTypes) set: in its Override, else in a new
+ * one; plus an Override for each part in `known` (Map name ->
+ * content type) that has none, plus whatever makes every name in
+ * `names` covered (a Default for its extension, or an Override).
+ */
+export function contentTypes(ct, names, known, fix = new Map()) {
+  const defaults = ct.defaults.map(([e, t]) => [e, t]);
+  const overrides = ct.overrides.map(([p, t]) => [p, t]);
+  const ovOf = (n) => overrides.find(([p]) =>
+    p.toLowerCase() === '/' + n.toLowerCase());
+  const hasOv = (n) => !!ovOf(n);
+  for (const [n, t] of fix) {
+    const o = ovOf(n);
+    if (o) o[1] = t;
+    else overrides.push(['/' + n, t]);
+  }
+  const hasDef = (e) => defaults.some(([x]) => x.toLowerCase() === e);
+  // a part whose extension's Default already gives its type needs no
+  // Override (a package may type document.xml through Default xml)
+  const defType = (e) => (defaults.find(([x]) =>
+    x.toLowerCase() === e) || [])[1];
+  for (const [n, t] of known) {
+    const e = extOf(n);
+    if (!hasOv(n) && !(e && defType(e) === t)) {
+      overrides.push(['/' + n, t]);
+    }
+  }
+  for (const n of names) {
+    if (n === '[Content_Types].xml' || hasOv(n)) continue;
+    const e = extOf(n);
+    if (e && hasDef(e)) continue;
+    if (e) defaults.push([e, BY_EXT[e] || 'application/octet-stream']);
+    else overrides.push(['/' + n, 'application/octet-stream']);
+  }
+  return el('Types', {xmlns: CT_NS},
+    defaults.map(([e, t]) => el('Default',
+      [['Extension', e], ['ContentType', t]])),
+    overrides.map(([p, t]) => el('Override',
+      [['PartName', p], ['ContentType', t]])));
+}
+
+const PKG_REL_NS =
+  'http://schemas.openxmlformats.org/package/2006/relationships';
+const REL_BASE = ['http://schemas.openxmlformats.org/officeDocument/' +
+  '2006/relationships/', 'http://purl.oclc.org/ooxml/officeDocument/' +
+  'relationships/'];
+
+/** The type URI of a relationship kind ('styles'...). */
+export const relType = (kind, strict) =>
+  REL_BASE[strict ? 1 : 0] + kind;
+
+/** A .rels part: each Rel's original attributes when it has them. */
+export function relsTree(rels) {
+  return el('Relationships', {xmlns: PKG_REL_NS}, rels.map((r) =>
+    el('Relationship', r.attrs || [['Id', r.id], ['Type', r.type],
+      ['Target', r.target], ['TargetMode', r.mode]])));
+}
+
+/**
+ * The order of the zip entries: [Content_Types].xml first, then the
+ * names that were in the original file in their original order,
+ * then the new ones in the order given.
+ */
+export function zipOrder(names, order = []) {
+  const have = new Set(names);
+  const out = ['[Content_Types].xml'];
+  const seen = new Set(out);
+  for (const n of order.concat(names)) {
+    if (have.has(n) && !seen.has(n)) {
+      out.push(n);
+      seen.add(n);
+    }
+  }
+  return out;
+}

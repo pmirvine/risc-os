@@ -1,0 +1,84 @@
+// WriteStyles - a StyleTable (./Styles) -> the root of styles.xml.
+//
+//   stylesTree(styles) -> w:styles element
+//
+// Children: the original w:docDefaults when there is one, else one
+// built from docDefaults; the original w:latentStyles; every style
+// in table order; then styles.extraStyles (kept raw by the reader).
+// A style read from a file is written as its original element
+// (style.raw) VERBATIM: the Foundation never edits styles, so a
+// change to the fields of a style that has `raw` is NOT written
+// (a later editor must drop `raw` when it changes a style). A style
+// without raw (the built-ins of a new document) is built from its
+// fields, children in the CT_Style schema order.
+import {el} from 'wimplib/Xml';
+import {NS, W, onOff} from './Wml';
+import {rootScope} from './Ns';
+import {DocxError} from './DocxError';
+import {rPrNode, pPrNode, orderBy, badModel} from './WriteProps';
+
+/** CT_Style children, in schema order (local names). */
+const STYLE = ['name', 'aliases', 'basedOn', 'next', 'link',
+  'autoRedefine', 'hidden', 'uiPriority', 'semiHidden',
+  'unhideWhenUsed', 'qFormat', 'locked', 'personal',
+  'personalCompose', 'personalReply', 'rsid', 'pPr', 'rPr', 'tblPr',
+  'trPr', 'tcPr', 'tblStylePr'];
+const STR = ['name', 'basedOn', 'next', 'link'];
+const BOOL = ['semiHidden', 'unhideWhenUsed', 'qFormat', 'locked'];
+
+const flag = (v) => v === undefined ? undefined : v ? '1' : '0';
+
+/** A w:style built from the fields of `s`. */
+function styleNode(s, map) {
+  const kids = [];
+  for (const f of STR) {
+    if (s[f] === undefined) continue;
+    if (typeof s[f] !== 'string') throw badModel('style ' + f);
+    kids.push(W(f, {'w:val': s[f]}));
+  }
+  if (s.uiPriority !== undefined) {
+    if (!Number.isSafeInteger(s.uiPriority))
+      throw badModel('style uiPriority');
+    kids.push(W('uiPriority', {'w:val': s.uiPriority}));
+  }
+  for (const f of BOOL) kids.push(onOff(f, s[f]));
+  kids.push(pPrNode(s.pPr, undefined, null, map),
+    rPrNode(s.rPr, undefined, map));
+  return W('style', [['w:type', s.type],
+    ['w:default', flag(s.isDefault)],
+    ['w:customStyle', flag(s.custom)], ['w:styleId', s.id]],
+  orderBy(STYLE, (s.extra || []).concat(kids.filter((c) => c)), map));
+}
+
+/** w:docDefaults from docDefaults, or null when there is nothing. */
+function defaultsNode(d, map) {
+  const rPr = rPrNode(d.rPr, undefined, map);
+  const pPr = pPrNode(d.pPr, undefined, null, map);
+  if (!rPr && !pPr) return null;
+  return W('docDefaults', null, rPr && W('rPrDefault', null, rPr),
+    pPr && W('pPrDefault', null, pPr));
+}
+
+/** The root element of styles.xml for `styles`. */
+export function stylesTree(styles) {
+  const attrs = styles.rootAttrs ?
+    styles.rootAttrs.map(([n, v]) => [n, v]) : [];
+  const w = attrs.find(([n]) => n === 'xmlns:w');
+  const built = !styles.docDefaultsRaw ||
+    [...styles.styles.values()].some((s) => !s.raw);
+  if (w && w[1] !== NS.w) {
+    if (built) {
+      throw new DocxError('unsupported', 'styles: the prefix w is ' +
+        'bound to ' + w[1]);
+    }
+  } else if (!w && built) attrs.push(['xmlns:w', NS.w]);
+  const name = styles.rootName || 'w:styles';
+  const map = rootScope({name, attrs});
+  const kids = [styles.docDefaultsRaw ||
+    defaultsNode(styles.docDefaults, map), styles.latent];
+  for (const s of styles.styles.values()) {
+    kids.push(s.raw || styleNode(s, map));
+  }
+  kids.push(...(styles.extraStyles || []));
+  return el(name, attrs, kids);
+}

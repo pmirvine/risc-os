@@ -10,6 +10,7 @@
 //   * a module (uses import / export), like the desktop's own applications:
 //       import { print, Menu } from 'riscos';           // the same names as above (except task / ctx)
 //       import { drawGrid } from './Grid';              // another file in the same directory (Grid or Grid/js)
+//       import { readZip } from 'wimplib/Zip';          // WimpLib: found through WimpLib$Path (resolveWimpLib)
 //       export default function start(task, ctx) { ... }
 //
 // ctx: {args (the command tail), argv (split), file (the program's full path), dir (its directory), os}.
@@ -23,6 +24,7 @@
 
 import { wimp } from './wimp.js';
 import { vfs } from './vfs.js';
+import { sysvars } from './sysvars.js';
 import { os } from './os.js';
 import { cli, CLIError, splitArgs } from './cli.js';
 import { Menu, colourMenu } from './menu.js';
@@ -212,6 +214,50 @@ function resolveImport(dir, spec) {
   throw new Error(`Can't find '${spec}' (imported by a program in ${dir})`);
 }
 
+/** A 'wimplib' import specifier: 'wimplib' or 'wimplib/...', the prefix in any case. */
+const WIMPLIB = /^wimplib(\/|$)/i;
+/** One directory or leaf name of a 'wimplib/<Name>' import: no dots, specials, wildcards or spaces. */
+const WIMPLIB_SEG = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+
+/**
+ * RISC OS path of a 'wimplib/<Name>' import ('wimplib/Zip', 'wimplib/Dir/Name'): a module of WimpLib, the library
+ * in $.!Boot.Resources.!WimpLib. It is looked for in each directory of the system variable WimpLib$Path in turn
+ * (a path list, as for any <Name>$Path: directories ending in '.' or ':', with commas between), then in
+ * WimpLib$Dir; in each, as Name then Name/js (a directory of that name is not a module). The first found is used.
+ * The library's !Boot sets both at start-up, unless they are set already, so a user can put a directory of their
+ * own first. Each name between the slashes is letters, digits, _ and - (not starting with -), so the import stays
+ * in the directories searched ('..', '^', '$', '@', '<Var>', ':', dots, wildcards... are refused).
+ */
+function resolveWimpLib(spec) {
+  const name = spec.replace(/^wimplib\/?/i, '');
+  if (!WIMPLIB.test(spec) || !name) throw new Error(`Can't find '${spec}' (no module name)`);
+  if (!name.split('/').every((s) => WIMPLIB_SEG.test(s))) {
+    throw new Error(`Can't find '${spec}' (a WimpLib module name is letters, digits, _ and -, with / between directories)`);
+  }
+  const rel = name.split('/').join('.');
+  // an entry with no final '.' or ':' that is a directory is searched as that directory (MyLib -> MyLib.)
+  const sep = (d) => (/[.:]$/.test(d) || !vfs.isDir(d) ? d : d + '.');
+  const list = (sysvars.get('WimpLib$Path') ?? '').split(',').map((d) => d.trim()).filter(Boolean).map(sep);
+  const dir = (sysvars.get('WimpLib$Dir') ?? '').trim().replace(/\.$/, '');
+  if (!list.length && !dir) throw new Error(`Can't find '${spec}' (WimpLib is not installed: WimpLib$Dir is not set)`);
+  // a directory as the error names it: its full name if it exists
+  const shown = (pre) => { const d = pre.replace(/\.$/, ''); return vfs.stat(d)?.path ?? sysvars.gstrans(d); };
+  const find = (pre) => {
+    for (const cand of [rel, `${rel}/js`]) {
+      const st = vfs.stat(pre + cand);
+      if (st?.type === 'file') return st.path;
+    }
+    return null;
+  };
+  for (const pre of list) { const p = find(pre); if (p) return p; }
+  const inPath = list.map(shown).filter((d, i, a) => a.findIndex((e) => e.toLowerCase() === d.toLowerCase()) === i);
+  const dirShown = dir && shown(dir);
+  const dirNew = dir && !inPath.some((d) => d.toLowerCase() === dirShown.toLowerCase());
+  if (dirNew) { const p = find(dir + '.'); if (p) return p; }
+  const where = [inPath.length && `WimpLib$Path: ${inPath.join(', ')}`, dirNew && `WimpLib$Dir: ${dirShown}`].filter(Boolean);
+  throw new Error(`Can't find '${spec}' (not in ${where.join('; nor in ')})`);
+}
+
 /** Load a module and (first) the modules it imports from the disc. Resolves its blob URL. */
 async function moduleURL(path, info, cache, env) {
   const key = path.toLowerCase();
@@ -226,6 +272,7 @@ async function moduleURL(path, info, cache, env) {
     for (const s of specs) {
       if (s === 'riscos') urls.set(s, riscosModule(env));
       else if (s.startsWith('./') || s.startsWith('../')) urls.set(s, await moduleURL(resolveImport(dir, s), info, cache, env));
+      else if (WIMPLIB.test(s)) urls.set(s, await moduleURL(resolveWimpLib(s), info, cache, env));
     }
     const code = src.replace(re, (all, pre, q, s) => (urls.has(s) ? `${pre}${q}${urls.get(s)}${q}` : all));
     const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));

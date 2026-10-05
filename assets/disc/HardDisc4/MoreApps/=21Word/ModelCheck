@@ -1,0 +1,187 @@
+// ModelCheck - invariants of the document model, and run
+// normalisation.
+//
+// A Para's runs are sorted, non-empty, contiguous and cover exactly
+// [0, text.length); adjacent runs never have equal formatting (rPr,
+// including its extra nodes, and rStyle). Each U+FFFC in text has an
+// entry in inlines (key: its index as a decimal string) and every
+// entry points at a U+FFFC. Offsets are UTF-16 code units and never
+// fall inside a surrogate pair. An inline is one the writer can
+// write: a raw inline has its node, a br its node or a brType (the
+// writer makes <w:br w:type=.../>), a tab needs neither.
+
+export const OBJ = '\ufffc';
+
+/** Throw a RangeError (the error every refused op gives). */
+export function fail(msg) {
+  throw new RangeError(msg);
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/**
+ * Deep equality of plain data (objects, arrays, Xml nodes,
+ * primitives); key order does not matter. Same object: true at once.
+ */
+export function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== 'object' || typeof b !== 'object' ||
+    a === null || b === null) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  for (const k of ka) {
+    if (!Object.hasOwn(b, k) || !deepEqual(a[k], b[k])) return false;
+  }
+  return true;
+}
+
+/** True when two runs have the same formatting (rPr and rStyle). */
+export function sameFmt(a, b) {
+  return a.rStyle === b.rStyle && deepEqual(a.rPr, b.rPr);
+}
+
+const isHi = (c) => c >= 0xd800 && c <= 0xdbff;
+const isLo = (c) => c >= 0xdc00 && c <= 0xdfff;
+
+/** True when `pos` falls between the halves of a surrogate pair. */
+export function midPair(text, pos) {
+  return pos > 0 && pos < text.length &&
+    isHi(text.charCodeAt(pos - 1)) && isLo(text.charCodeAt(pos));
+}
+
+/** True when `s` has no unpaired surrogate. */
+export function wellFormed(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (isHi(c) && isLo(s.charCodeAt(i + 1))) i++;
+    else if (isHi(c) || isLo(c)) return false;
+  }
+  return true;
+}
+
+/** Throw unless 0 <= pos <= text.length on a code-point boundary. */
+export function checkPos(text, pos, what = 'offset') {
+  if (!Number.isInteger(pos) || pos < 0 || pos > text.length)
+    fail(what + ' ' + pos + ' out of range');
+  if (midPair(text, pos)) fail(what + ' ' + pos + ' splits a pair');
+}
+
+/**
+ * Drop empty runs and merge neighbours with equal formatting.
+ * Returns a new array; run objects are copied when merged.
+ */
+export function normRuns(runs) {
+  const out = [];
+  for (const r of runs) {
+    if (r.end <= r.start) continue;
+    const q = out[out.length - 1];
+    if (q && q.end === r.start && sameFmt(q, r)) {
+      out[out.length - 1] = {...q, end: r.end};
+    } else out.push(r);
+  }
+  return out;
+}
+
+/** Throw RangeError unless `p` is a well-formed, normalised Para. */
+export function checkPara(p) {
+  if (!isObj(p) || p.type !== 'p') fail('not a paragraph');
+  if (!Number.isInteger(p.id)) fail('paragraph id must be an integer');
+  if (!Array.isArray(p.extraP)) fail('extraP must be an array');
+  checkProps(p.pPr, 'pPr');
+  if (p.pStyle !== undefined && typeof p.pStyle !== 'string')
+    fail('pStyle must be a string');
+  checkContent(p, true);
+}
+
+/**
+ * Throw unless {text, runs, inlines} agree: runs non-empty, contiguous
+ * and covering text (and normalised, with `norm`); inlines as above.
+ */
+export function checkContent(c, norm = false) {
+  if (!isObj(c) || typeof c.text !== 'string' || !wellFormed(c.text))
+    fail('bad text');
+  if (!Array.isArray(c.runs)) fail('runs must be an array');
+  let at = 0;
+  c.runs.forEach((r, k) => {
+    if (!isObj(r) || r.start !== at || !(r.end > r.start))
+      fail('runs must be non-empty and contiguous');
+    checkProps(r.rPr, 'rPr');
+    if (r.rStyle !== undefined && typeof r.rStyle !== 'string')
+      fail('rStyle must be a string');
+    if (midPair(c.text, r.end)) fail('a run splits a pair');
+    if (norm && k && sameFmt(c.runs[k - 1], r))
+      fail('runs not normalised');
+    at = r.end;
+  });
+  if (at !== c.text.length) fail('runs must cover the text');
+  checkInlines(c.text, c.inlines);
+}
+
+/**
+ * Throw unless `o` is a property object with an `extra` array, and
+ * every `extra` in the objects nested in it is an array too.
+ */
+export function checkProps(o, what) {
+  if (!isObj(o) || !Array.isArray(o.extra))
+    fail(what + ' must be an object with an extra array');
+  nestedExtra(o, what);
+}
+
+function nestedExtra(o, what) {
+  for (const k of Object.keys(o)) {
+    const v = o[k];
+    if (k === 'extra' && !Array.isArray(v))
+      fail(what + ': extra must be an array');
+    if (isObj(v)) nestedExtra(v, what);
+  }
+}
+
+const KINDS = ['raw', 'br', 'tab'];
+const LEVELS = ['p', 'r'];
+
+/** Throw unless `x` is a valid Inline (kind, level and node). */
+function checkInline(x, i) {
+  if (!isObj(x)) fail('U+FFFC at ' + i + ' has no inline');
+  if (!KINDS.includes(x.kind)) fail('bad inline kind ' + x.kind);
+  if (x.level === undefined && x.kind === 'tab') return;
+  if (!LEVELS.includes(x.level))
+    fail('inline at ' + i + ' needs level p or r');
+  if (x.level === 'p' && x.kind !== 'raw')
+    fail('a ' + x.kind + ' inline must be at level r');
+  // what the writer writes: the node, or for a br its w:type
+  const none = x.node === undefined || x.node === null;
+  if (none && x.kind === 'raw') {
+    fail('raw inline at ' + i + ' has no node');
+  }
+  if (none && x.kind === 'br' && typeof x.brType !== 'string')
+    fail('br inline at ' + i + ' needs a node or a brType');
+}
+
+/** Throw unless inlines and the U+FFFC characters of text agree. */
+export function checkInlines(text, inlines) {
+  if (!isObj(inlines)) fail('inlines must be an object');
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text.charCodeAt(i) !== 0xfffc) continue;
+    checkInline(inlines[i], i);
+    n++;
+  }
+  if (Object.keys(inlines).length !== n)
+    fail('an inline does not point at U+FFFC');
+}
+
+/** Throw unless `b` is a valid block (Para or Opaque). */
+export function checkBlock(b) {
+  if (isObj(b) && b.type === 'opaque') {
+    if (!isObj(b.node)) fail('opaque block needs a node');
+  } else checkPara(b);
+}

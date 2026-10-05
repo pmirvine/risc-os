@@ -1,0 +1,143 @@
+// XmlWrite - serialize, and small helpers for building and reading
+// the node trees that parseXml makes.
+//
+//   node = {name, attrs: [[name, value]...], children: [...]}
+//   children are nodes, strings (text), {comment} or {pi}.
+
+import {XmlError, esc, escAttr, isName, badCharAt, validDecl}
+  from './XmlText';
+
+const fail = (msg) => { throw new XmlError('malformed', msg); };
+
+/** Throw unless `s` holds only characters XML allows. */
+function chars(s, what) {
+  if (badCharAt(s) >= 0) fail('invalid character in ' + what);
+}
+
+/**
+ * Write a node (and the XML declaration, if given) as text.
+ * Deterministic: the same tree always gives the same string.
+ * Throws XmlError 'malformed' for anything that is not valid XML
+ * (bad names, "--" in a comment, "?>" in a PI, illegal characters);
+ * trees made by parseXml never do.
+ * @param {object} node
+ * @param {{decl?: string|null, before?: object[], after?: object[]}}
+ *   [opts] decl: declaration text without the <? and ?>; before and
+ *   after: the {comment}/{pi} nodes parseXml found outside the root.
+ *   Each of these is written on a line of its own.
+ * @returns {string}
+ */
+export function serialize(node, opts = {}) {
+  const out = [];
+  if (opts.decl) {
+    if (!validDecl(opts.decl)) fail('bad XML declaration');
+    out.push('<?', opts.decl, '?>\n');
+  }
+  for (const c of opts.before || []) { write(c, out); out.push('\n'); }
+  write(node, out);
+  for (const c of opts.after || []) { out.push('\n'); write(c, out); }
+  return out.join('');
+}
+
+function write(node, out) {
+  if (typeof node === 'string') {
+    chars(node, 'text');
+    out.push(esc(node));
+    return;
+  }
+  if (node.comment !== undefined) {
+    const c = String(node.comment);
+    chars(c, 'a comment');
+    if (c.indexOf('--') >= 0 || c.endsWith('-'))
+      fail('"--" in a comment');
+    out.push('<!--', c, '-->');
+    return;
+  }
+  if (node.pi !== undefined) {
+    const p = String(node.pi);
+    chars(p, 'a processing instruction');
+    const t = p.search(/[ \t\n]/);
+    if (!isName(t < 0 ? p : p.slice(0, t)) ||
+        p.indexOf('?>') >= 0)
+      fail('bad processing instruction');
+    out.push('<?', p, '?>');
+    return;
+  }
+  if (!isName(node.name)) fail('bad element name ' + node.name);
+  out.push('<', node.name);
+  for (const [k, v] of node.attrs) {
+    if (!isName(k)) fail('bad attribute name ' + k);
+    chars(v, 'an attribute value');
+    out.push(' ', k, '="', escAttr(v), '"');
+  }
+  if (!node.children.length) { out.push('/>'); return; }
+  out.push('>');
+  for (const c of node.children) write(c, out);
+  out.push('</', node.name, '>');
+}
+
+function isNodeLike(a) {
+  if (!a || typeof a !== 'object' || Array.isArray(a)) return false;
+  if (a.name !== undefined && Array.isArray(a.children)) return true;
+  const keys = Object.keys(a);
+  return keys.length === 1 &&
+    (keys[0] === 'comment' || keys[0] === 'pi');
+}
+
+/**
+ * Build an element.
+ * @param {string} name
+ * @param {object|Array<[string,*]>|null} [attrs] undefined and null
+ *   values are skipped. A string or a node here is a mistake (the
+ *   children start at the third argument) and throws a TypeError.
+ * @param {...*} children strings, nodes, or arrays of them
+ * @returns {object}
+ */
+export function el(name, attrs, ...children) {
+  if (typeof attrs === 'string' || isNodeLike(attrs))
+    throw new TypeError('el(' + name + '): attrs must be an object ' +
+      'or an array of pairs; children come after it');
+  const pairs = Array.isArray(attrs) ? attrs :
+    Object.entries(attrs || {});
+  const kids = [];
+  const add = (c) => {
+    if (Array.isArray(c)) c.forEach(add);
+    else if (c !== undefined && c !== null) kids.push(c);
+  };
+  children.forEach(add);
+  return {
+    name,
+    attrs: pairs.filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => [k, String(v)]),
+    children: kids,
+  };
+}
+
+/** All the text under a node, in order. */
+export function text(node) {
+  if (typeof node === 'string') return node;
+  if (!node.children) return '';
+  let s = '';
+  for (const c of node.children) s += text(c);
+  return s;
+}
+
+const isEl = (c) => typeof c === 'object' && c.name !== undefined;
+
+/** The first child element called `name`, or null. */
+export function find(node, name) {
+  for (const c of node.children)
+    if (isEl(c) && c.name === name) return c;
+  return null;
+}
+
+/** Every child element called `name`. */
+export function findAll(node, name) {
+  return node.children.filter((c) => isEl(c) && c.name === name);
+}
+
+/** An attribute's value, or undefined. */
+export function attr(node, name) {
+  for (const [k, v] of node.attrs) if (k === name) return v;
+  return undefined;
+}

@@ -1,0 +1,130 @@
+// NewDoc - a new, empty Word document, as readDocx would read it.
+//
+//   newDoc({paper: 'a4'|'letter', date}) -> Doc
+//
+// What Word starts a blank document with: Calibri 11 pt, 8 pt after
+// each paragraph at 1.08 line spacing, 1 inch margins, one empty
+// paragraph; the built-in styles (./StylesBuiltin); settings with
+// compatibilityMode 15, so Word does not use Compatibility Mode.
+// The parts are built as XML and then read with the reader's own
+// functions, so the Doc has exactly the shape readDocx gives
+// (original nodes in section.raw, style.raw...) and writing it and
+// reading it back gives an equal Doc. Its docProps parts (core and
+// app) are made here with `date` (default now) as created and
+// modified time.
+import {el, serialize} from 'wimplib/Xml';
+import {NS, W} from './Wml';
+import {rootScope} from './Ns';
+import {newPara, newSection} from './Model';
+import {newStyleTable, ensureBuiltins} from './Styles';
+import {readBody} from './ReadBody';
+import {readStyles} from './ReadStyles';
+import {bodyNode} from './WriteBody';
+import {stylesTree} from './WriteStyles';
+import {CT, STD_DECL, relType} from './WriteParts';
+
+const PAPER = {a4: [11906, 16838], letter: [12240, 15840]};
+
+const DOC = 'word/document.xml';
+const PKG = 'http://schemas.openxmlformats.org/package/2006/';
+const OD = 'http://schemas.openxmlformats.org/officeDocument/2006/';
+
+const rel = (id, type, target) => ({id, type, target,
+  attrs: [['Id', id], ['Type', type], ['Target', target]]});
+
+const bytes = (root) => new TextEncoder().encode(
+  serialize(root, {decl: STD_DECL}));
+
+/** docProps/core.xml for a new document made at `date`. */
+function core(date) {
+  const t = date.toISOString().slice(0, 19) + 'Z';
+  const when = (n) => el('dcterms:' + n,
+    {'xsi:type': 'dcterms:W3CDTF'}, t);
+  return bytes(el('cp:coreProperties', [
+    ['xmlns:cp', PKG + 'metadata/core-properties'],
+    ['xmlns:dc', 'http://purl.org/dc/elements/1.1/'],
+    ['xmlns:dcterms', 'http://purl.org/dc/terms/'],
+    ['xmlns:dcmitype', 'http://purl.org/dc/dcmitype/'],
+    ['xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance']],
+  el('dc:title'), el('cp:lastModifiedBy', null, 'Word'),
+  when('created'), when('modified')));
+}
+
+/** docProps/app.xml. */
+const app = () => bytes(el('Properties', [
+  ['xmlns', OD + 'extended-properties'],
+  ['xmlns:vt', OD + 'docPropsVTypes']],
+el('Application', null, 'Word')));
+
+/**
+ * @param {{paper?: 'a4'|'letter', date?: Date}} [opts]
+ * @returns {object} a Doc (see ./Model and ./DocxRead)
+ */
+export function newDoc(opts = {}) {
+  const size = PAPER[opts.paper || 'a4'];
+  if (!size) throw new RangeError('bad paper: ' + opts.paper);
+  const date = opts.date || new Date();
+  const section = newSection();
+  section.props = {pgSz: {w: size[0], h: size[1]},
+    pgMar: {top: 1440, right: 1440, bottom: 1440, left: 1440,
+      header: 708, footer: 708, gutter: 0},
+    cols: {space: 708}, extra: []};
+  section.blocks.push(newPara());
+  const rootAttrs = [['xmlns:w', NS.w], ['xmlns:r', NS.r]];
+  const map = rootScope({name: 'w:document', attrs: rootAttrs});
+  const meta = {bodySectPr: true, bodyName: 'w:body', bodyAttrs: []};
+  const body = bodyNode({sections: [section], meta}, map);
+  const {sections} = readBody(body, map);
+
+  const draft = newStyleTable();
+  draft.docDefaults = {
+    rPr: {rFonts: {ascii: 'Calibri', hAnsi: 'Calibri',
+      eastAsia: 'Calibri', cs: 'Calibri'}, sz: 22, szCs: 22, extra: []},
+    pPr: {spacing: {after: 160, line: 259, lineRule: 'auto'},
+      extra: []},
+  };
+  const st = stylesTree(ensureBuiltins(draft));
+  const styles = readStyles(st, rootScope(st));
+  // compatibilityMode 15 (Word 2013 and later): without it Word
+  // opens the document in Compatibility Mode. CT_Settings order:
+  // zoom comes before compat.
+  const settings = el('w:settings', {'xmlns:w': NS.w},
+    W('zoom', {'w:percent': 100}), W('compat', null,
+      W('compatSetting', [['w:name', 'compatibilityMode'],
+        ['w:uri', 'http://schemas.microsoft.com/office/word'],
+        ['w:val', 15]])));
+
+  const decl = () => ({decl: STD_DECL, before: [], after: []});
+  return {
+    sections, styles, numbering: null, rawSettings: settings,
+    parts: new Map([['docProps/core.xml', core(date)],
+      ['docProps/app.xml', app()]]),
+    rels: [rel('rId1', relType('styles'), 'styles.xml'),
+      rel('rId2', relType('settings'), 'settings.xml')],
+    meta: {
+      contentTypes: {
+        defaults: [['rels', CT.rels], ['xml', CT.xml]],
+        overrides: [['/' + DOC, CT.main],
+          ['/word/styles.xml', CT.styles],
+          ['/word/settings.xml', CT.settings],
+          ['/docProps/core.xml', CT.core],
+          ['/docProps/app.xml', CT.app]],
+      },
+      packageRels: [rel('rId1', relType('officeDocument'), DOC),
+        rel('rId2', PKG + 'relationships/metadata/core-properties',
+          'docProps/core.xml'),
+        rel('rId3', relType('extended-properties'),
+          'docProps/app.xml')],
+      mainPart: DOC,
+      zipOrder: ['[Content_Types].xml', '_rels/.rels', DOC,
+        'word/_rels/document.xml.rels', 'word/styles.xml',
+        'word/settings.xml', 'docProps/core.xml', 'docProps/app.xml'],
+      prolog: new Map([[DOC, decl()], ['word/styles.xml', decl()],
+        ['word/settings.xml', decl()]]),
+      stylesPart: 'word/styles.xml', settingsPart: 'word/settings.xml',
+      conformance: 'transitional',
+      documentRoot: {name: 'w:document', attrs: rootAttrs},
+      beforeBody: [], afterBody: [], ...meta,
+    },
+  };
+}

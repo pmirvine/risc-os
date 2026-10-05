@@ -1,0 +1,153 @@
+// ZipRead - reads the entries out of a zip file. See ./Zip.
+//
+// The central directory at the end of the file is trusted for each
+// entry's name, method, CRC, sizes and offset (a data descriptor may
+// leave the local header's copies empty). The local header is only
+// used to find where the data starts. Methods 0 (stored) and 8
+// (deflate) are supported. The limits are checked from the declared
+// sizes before anything is inflated.
+import { crc32 } from './Crc32';
+import { ZipError } from './ZipError';
+import { checkName } from './ZipNames';
+
+const MAX_COMMENT = 65535;
+const EOCD_SIZE = 22;
+
+/** Inflates raw deflate data, giving up if it passes `limit` bytes. */
+async function inflate(data, limit) {
+  if (typeof globalThis.DecompressionStream !== 'function')
+    throw new ZipError('bad-method', 'no DecompressionStream');
+  const chunks = [];
+  let total = 0;
+  try {
+    const stream = new Blob([data]).stream()
+      .pipeThrough(new DecompressionStream('deflate-raw'));
+    const reader = stream.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel();
+        throw new ZipError('too-big', 'entry is larger than it claims');
+      }
+      chunks.push(value);
+    }
+  } catch (err) {
+    if (err instanceof ZipError) throw err;
+    throw new ZipError('bad-crc', 'corrupt compressed data');
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
+
+/** Offset of the end of central directory record whose comment
+ *  length reaches exactly to the end of the file. */
+function findEocd(dv) {
+  const last = dv.byteLength - EOCD_SIZE;
+  const first = Math.max(0, last - MAX_COMMENT);
+  for (let i = last; i >= first; i--)
+    if (dv.getUint32(i, true) === 0x06054b50 &&
+        i + EOCD_SIZE + dv.getUint16(i + 20, true) === dv.byteLength)
+      return i;
+  throw new ZipError('not-zip', 'no end of central directory');
+}
+
+/**
+ * @param {Uint8Array} bytes the whole zip file
+ * @param {{maxTotal?: number, maxRatio?: number}} [opts]
+ *   maxTotal: most bytes to unpack altogether (default 256 MB)
+ *   maxRatio: most unpacked bytes per packed byte (default 1000)
+ * @returns {Promise<Map<string, Uint8Array>>} in directory order
+ */
+export async function readZip(bytes, opts = {}) {
+  if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
+  if (!(bytes instanceof Uint8Array))
+    throw new ZipError('not-zip', 'bytes expected');
+  try {
+    return await parse(bytes, opts);
+  } catch (err) {
+    if (err instanceof ZipError) throw err;
+    throw new ZipError('not-zip', 'unreadable: ' + err);
+  }
+}
+
+async function parse(bytes, opts) {
+  const maxTotal = opts.maxTotal ?? 256 * 1024 * 1024;
+  const maxRatio = opts.maxRatio ?? 1000;
+  if (bytes.length < EOCD_SIZE) throw new ZipError('not-zip');
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  const eocd = findEocd(dv);
+  const count = dv.getUint16(eocd + 10, true);
+  const cdSize = dv.getUint32(eocd + 12, true);
+  let p = dv.getUint32(eocd + 16, true);
+  if (count === 0xFFFF || cdSize === 0xFFFFFFFF || p === 0xFFFFFFFF)
+    throw new ZipError('zip64');
+  if (p + cdSize > eocd) throw new ZipError('truncated');
+
+  // First pass: the directory, and the limits, before any inflating.
+  const entries = [];
+  let declared = 0;
+  for (let n = 0; n < count; n++) {
+    if (p + 46 > bytes.length || dv.getUint32(p, true) !== 0x02014b50)
+      throw new ZipError('truncated', 'bad central directory');
+    const e = {
+      flags: dv.getUint16(p + 8, true),
+      method: dv.getUint16(p + 10, true),
+      crc: dv.getUint32(p + 16, true),
+      csize: dv.getUint32(p + 20, true),
+      size: dv.getUint32(p + 24, true),
+      offset: dv.getUint32(p + 42, true),
+    };
+    const nameLen = dv.getUint16(p + 28, true);
+    const skip = nameLen + dv.getUint16(p + 30, true)
+      + dv.getUint16(p + 32, true);
+    if (p + 46 + skip > bytes.length) throw new ZipError('truncated');
+    e.name = new TextDecoder().decode(
+      bytes.subarray(p + 46, p + 46 + nameLen));
+    p += 46 + skip;
+    if (e.csize === 0xFFFFFFFF || e.size === 0xFFFFFFFF ||
+        e.offset === 0xFFFFFFFF) {
+      // A real zip64 entry; a lone 4 GB-1 size is the same marker.
+      throw new ZipError('zip64');
+    }
+    if (e.flags & 1) throw new ZipError('encrypted');
+    checkName(e.name);
+    if (e.name.endsWith('/')) continue;
+    if (e.method !== 0 && e.method !== 8)
+      throw new ZipError('bad-method');
+    declared += e.size;
+    if (declared > maxTotal ||
+        e.size > Math.max(1, e.csize) * maxRatio)
+      throw new ZipError('too-big', e.name);
+    entries.push(e);
+  }
+
+  const out = new Map();
+  for (const e of entries) {
+    const h = e.offset;
+    if (h + 30 > bytes.length) throw new ZipError('truncated');
+    if (dv.getUint32(h, true) !== 0x04034b50)
+      throw new ZipError('not-zip', 'bad local header');
+    const start = h + 30 + dv.getUint16(h + 26, true)
+      + dv.getUint16(h + 28, true);
+    if (start + e.csize > bytes.length) throw new ZipError('truncated');
+    const raw = bytes.subarray(start, start + e.csize);
+    let data;
+    if (e.method === 0) {
+      if (e.csize !== e.size) throw new ZipError('bad-crc', e.name);
+      data = raw.slice();
+    } else {
+      data = e.csize === 0 ? new Uint8Array(0)
+        : await inflate(raw, e.size);
+    }
+    if (data.length !== e.size || crc32(data) !== e.crc)
+      throw new ZipError('bad-crc', e.name);
+    if (out.has(e.name))
+      throw new ZipError('not-zip', 'duplicate name ' + e.name);
+    out.set(e.name, data);
+  }
+  return out;
+}

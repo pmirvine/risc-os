@@ -1,0 +1,113 @@
+// FontMap - Word font names to the bundled metric-compatible fonts.
+//
+//   substitute(name)  -> {family, css}  case-insensitive, trimmed;
+//                        css always ends with a generic family and
+//                        is safe to put in a CSS font-family value
+//   fontFiles()       -> the 20 leaf names expected in !Word.Fonts
+//                        (no extension on the disc)
+//   fontFile(family, bold, italic) -> leaf name or null
+//   fontsToLoad(families) -> the bundled families those are shown in
+//
+// Metric-compatible means the same advance widths, so lines break
+// where they do in Word: Carlito = Calibri, Caladea = Cambria,
+// Liberation Sans/Serif/Mono = Arial/Times New Roman/Courier New.
+//
+// `css` is for CSS only (style.fontFamily, ctx.font), never for HTML
+// text. substitute never throws, whatever it is given; all tables are
+// Maps so names like '__proto__' or 'constructor' are just unknown.
+
+const SANS = '"Liberation Sans", sans-serif';
+const SERIF = '"Liberation Serif", serif';
+const MONO = '"Liberation Mono", monospace';
+
+// bundled family -> [file prefix, generic fallback]
+const BUNDLED = new Map([
+  ['Carlito', ['Carlito', 'sans-serif']],
+  ['Caladea', ['Caladea', 'serif']],
+  ['Liberation Sans', ['LiberationSans', 'sans-serif']],
+  ['Liberation Serif', ['LiberationSerif', 'serif']],
+  ['Liberation Mono', ['LiberationMono', 'monospace']],
+]);
+const STYLES = ['Regular', 'Bold', 'Italic', 'BoldItalic'];
+
+// lower-case Word name -> bundled family
+const ALIAS = new Map([
+  ['calibri', 'Carlito'],
+  ['calibri light', 'Carlito'], // no Light face bundled: use Regular
+  ['cambria', 'Caladea'],
+  ['arial', 'Liberation Sans'],
+  ['helvetica', 'Liberation Sans'],
+  ['times new roman', 'Liberation Serif'],
+  ['times', 'Liberation Serif'],
+  ['courier new', 'Liberation Mono'],
+  ['courier', 'Liberation Mono'],
+]);
+// RISC OS names are kept; only the fallbacks are chosen
+const NATIVE = new Map([
+  ['homerton', ['Homerton', SANS]],
+  ['trinity', ['Trinity', SERIF]],
+  ['corpus', ['Corpus', MONO]],
+]);
+const GENERIC = new Map([
+  ['serif', SERIF], ['sans-serif', SANS], ['monospace', MONO],
+]);
+const DEFAULT = {family: 'Liberation Sans', css: SANS};
+
+/** Remove what could end a CSS string, start an escape or a tag. */
+function clean(name) {
+  return name.replace(/["\\<>\u0000-\u001f\u007f-\u009f]/g, '').trim();
+}
+
+function text(v) {
+  if (typeof v === 'string') return v;
+  if (v == null || typeof v === 'symbol') return '';
+  try { return String(v); } catch (e) { return ''; }
+}
+
+export function substitute(wordName) {
+  const name = clean(text(wordName));
+  if (!name) return {...DEFAULT};
+  const key = name.toLowerCase();
+  const b = ALIAS.get(key);
+  if (b) return {family: b, css: `"${b}", ${BUNDLED.get(b)[1]}`};
+  const n = NATIVE.get(key);
+  if (n) return {family: n[0], css: `"${n[0]}", ${n[1]}`};
+  if (GENERIC.has(key)) return {family: key, css: GENERIC.get(key)};
+  return {family: name, css: `"${name}", ${SANS}`};
+}
+
+export function fontFiles() {
+  const out = [];
+  for (const [prefix] of BUNDLED.values()) {
+    for (const s of STYLES) out.push(`${prefix}-${s}`);
+  }
+  return out;
+}
+
+export function fontFile(family, bold, italic) {
+  const b = BUNDLED.get(family);
+  if (!b) return null;
+  return `${b[0]}-${bold ? (italic ? 'BoldItalic' : 'Bold')
+    : (italic ? 'Italic' : 'Regular')}`;
+}
+
+/** Bundled family names. */
+export function bundledFamilies() { return [...BUNDLED.keys()]; }
+
+/**
+ * The bundled families to load for text shown in `used` families:
+ * those that are bundled, and the bundled fallback of each other one
+ * (Liberation Sans for an unknown font, which the browser draws in
+ * when this computer does not have it). Sorted, each once.
+ */
+export function fontsToLoad(used) {
+  const out = new Set();
+  for (const f of used) {
+    if (BUNDLED.has(f)) { out.add(f); continue; }
+    const css = substitute(f).css;
+    for (const b of BUNDLED.keys()) {
+      if (css.includes(`"${b}"`)) out.add(b);
+    }
+  }
+  return [...out].sort();
+}

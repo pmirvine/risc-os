@@ -380,3 +380,41 @@ docs/ASSETS.md §5).
   `'resize' {h}`; the caret is kept in view by scrolling the *window*, so a window's own scroll bars move a long
   text) and `border: false`. Keys it doesn't use (other Ctrl-keys, function keys) still go on to the program.
 * The disc app itself (`tools/journal/!Journal`, `tools/disc-journal.mjs`) only uses the public `riscos` module.
+
+## MoreApps ($.MoreApps, !Word, WimpLib) — changes in shared code
+**Status:** done. Additive (relative imports and the existing boot unchanged: `node tests/jstutor/jsrun.mjs`,
+`node tests/core/test-persist.mjs`).
+* `src/core/jsrun.js`: the import specifier `'wimplib/<Name>'` (or `'wimplib/<Dir>/<Name>'`) loads a module of
+  WimpLib, the system library `$.!Boot.Resources.!WimpLib`: `resolveWimpLib` searches each directory of the system
+  variable `WimpLib$Path` in turn (a path list, prefixes used as written, as `vfs` does for `<Name>$Path`), then
+  `WimpLib$Dir` (unless already in the path), for `Name` then `Name/js` (files only); first found wins. Errors name
+  what was searched: "Can't find 'wimplib/X' (not in WimpLib$Path: <dir>, <dir>)" (`; nor in WimpLib$Dir: <dir>`),
+  and with neither variable set "Can't find 'wimplib/X' (WimpLib is not installed: WimpLib$Dir is not set)"; a
+  bare `'wimplib'` is "(no module name)" (docs/CORE_API.md 11a). The earlier hard-coded lookup of
+  `$.MoreApps.WimpLib` is gone (the library moved; the specifier did not). The name is confined: the prefix matches in any
+  case (`/^wimplib(\/|$)/i`, in `moduleURL` and `resolveWimpLib`) and every segment after it must match the
+  whitelist `/^[A-Za-z0-9_][A-Za-z0-9_-]*$/`, so `..`, `^`, `$`, `@`, `<Var>`, `:`, dots (`Zip.js`), wildcards,
+  spaces and empty segments are refused with "Can't find '<spec>' (a WimpLib module name is letters, digits, _ and
+  -, with / between directories)" (tested in `tests/moreapps/jsrun-wimplib.mjs`).
+  Pre-existing: circular imports hang, and `import` text inside comments is resolved.
+* `src/main.js`: after `Repeat Filer_Boot <BootResources$Dir>`, start-up runs `Repeat Filer_Boot
+  ADFS::HardDisc4.$.MoreApps -Applications -Tasks` when the directory exists (errors are only logged), so the
+  applications' `!Boot` files set their sprites and file types (!Word: &A7E) from a cold boot. This desktop runs
+  neither `Choices.Boot.Desktop` nor PreDesktop's `*AddApp`, so the boot is done here.
+* `tools/disc-wimplib.mjs` (new; in `tools/build.mjs` after `disc.mjs`, before `disc-moreapps.mjs`) installs
+  `tools/moreapps/!WimpLib` as `$.!Boot.Resources.!WimpLib` (an addition to the system resources: `!Boot`, `!Run`,
+  `!Help`, `!Sprites` and the modules), rewriting only that subtree and its manifest node (inserted at its sorted
+  place; the other `Resources` entries untouched). Its `!Boot` sets `WimpLib$Dir`, `WimpLib$Path` (only when unset)
+  and `WimpLib$Version`; `src/main.js`'s existing `Repeat Filer_Boot <BootResources$Dir>` runs it at start-up,
+  before the MoreApps line, so no new `main.js` code was needed. `--check` as below, plus <= 250 lines and no
+  `riscos` outside an import from it. It shares `MOREAPPS_SRC` / `MOREAPPS_DISC` and the `.moreapps-lock` with
+  `disc-moreapps.mjs`.
+* `tools/moreapps/package.json` (new): the package `wimplib` with `"exports": {"./*": "./!WimpLib/*"}`, so the
+  `!Word` sources' `'wimplib/<Name>'` imports resolve in Node (package self-reference) for the unit tests.
+* `tools/disc-moreapps.mjs` now installs only `$.MoreApps.!Word`, and removes `MoreApps.WimpLib` (disc and manifest)
+  when present. It (after `disc.mjs` in `tools/build.mjs`) adds one line each to `!Boot`'s and
+  `Utilities.!ResetBoot`'s `Choices.Boot.Desktop` (`Filer_Boot` of `Boot:^.MoreApps`) and `PreDesktop` (`AddApp
+  Boot:^.MoreApps.!*`), as RISC OS would have them.
+* Tests: `tests/moreapps/disc.test.mjs` (node), `tests/moreapps/jsrun-wimplib.mjs` and `tests/moreapps/boot.mjs`
+  (Playwright), in `node --test tests/moreapps/index.mjs`. The application and library are described in
+  `docs/apps/Word.md`; the user guide is `$.Docs.Word`.

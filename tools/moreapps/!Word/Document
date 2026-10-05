@@ -1,0 +1,107 @@
+// Document - a Doc with undo, redo and change events.
+//
+//   const d = new Document(emptyDoc());
+//   d.apply(op); d.undo(); d.redo();
+//   d.group(() => { d.apply(a); d.apply(b); });
+//   const off = d.on('change', ({kind, ops}) => ...);
+//
+// kind is 'apply', 'undo' or 'redo'; ops are the ops just applied
+// (for undo, the inverse ops). A group (groups may nest) is one undo
+// step and one 'change' event, sent when the outermost group ends.
+// Prefer group(fn) to groupStart()/groupEnd(): it ends the group
+// even when fn throws. fn must be SYNCHRONOUS: the group ends when
+// fn returns, so the ops of an async fn after its first await would
+// not be in it. An op that throws changes nothing: not the
+// Doc, not the stacks, and not the group it was applied in. A
+// listener that throws does not undo the change or stop the other
+// listeners; its error goes to d.onListenerError(err) (by default
+// thrown again from a microtask).
+import {apply, applyOwn} from './Ops';
+import {reserveIds} from './Model';
+import {DocEvents} from './DocEvents';
+
+export class Document {
+  /** @param {object} doc a Doc (see Model) */
+  constructor(doc) {
+    this.doc = doc;
+    reserveIds(doc);
+    this._undo = [];
+    this._redo = [];
+    this._depth = 0;
+    this._group = null;
+    this._events = new DocEvents();
+  }
+
+  get canUndo() { return this._undo.length > 0; }
+  get canRedo() { return this._redo.length > 0; }
+
+  get onListenerError() { return this._events.onError; }
+  set onListenerError(fn) { this._events.onError = fn; }
+
+  /** Listen for 'change'; returns a function that stops it. */
+  on(name, fn) {
+    return this._events.on(name, fn);
+  }
+
+  /** Apply op (throws RangeError, changing nothing, if refused). */
+  apply(op) {
+    const inv = apply(this.doc, op);
+    if (this._depth) {
+      this._group.ops.push(op);
+      this._group.inv.push(inv);
+      return;
+    }
+    this._record([op], [inv]);
+  }
+
+  groupStart() {
+    if (!this._depth++) this._group = {ops: [], inv: []};
+  }
+
+  groupEnd() {
+    if (!this._depth) throw new Error('groupEnd without groupStart');
+    if (--this._depth) return;
+    const g = this._group;
+    this._group = null;
+    if (g.ops.length) this._record(g.ops, g.inv);
+  }
+
+  /** Run fn() as one group (one undo step); returns what fn does. */
+  group(fn) {
+    this.groupStart();
+    try {
+      return fn();
+    } finally {
+      this.groupEnd();
+    }
+  }
+
+  _record(ops, invs) {
+    const inverse = invs.length === 1 ? invs[0]
+      : {op: 'compound', ops: invs.slice().reverse()};
+    this._undo.push(inverse);
+    this._redo.length = 0;
+    this._events.emit('change', {kind: 'apply', ops});
+  }
+
+  /** Undo one step; false if there is nothing to undo. */
+  undo() {
+    return this._step(this._undo, this._redo, 'undo');
+  }
+
+  /** Redo one step; false if there is nothing to redo. */
+  redo() {
+    return this._step(this._redo, this._undo, 'redo');
+  }
+
+  _step(from, to, kind) {
+    if (this._depth) throw new Error(kind + ' inside a group');
+    if (!from.length) return false;
+    const op = from[from.length - 1];
+    const inv = applyOwn(this.doc, op);
+    from.pop();
+    to.push(inv);
+    this._events.emit('change', {kind, ops: [op]});
+    return true;
+  }
+}

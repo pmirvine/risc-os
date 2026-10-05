@@ -1,0 +1,111 @@
+// DocxRead - reads a Word .docx file into the Model, keeping
+// everything it does not model so that it can be written back.
+//
+//   await readDocx(bytes, opts) -> Doc     (see ./Model)
+//   DocxError (see ./DocxError)
+//   opts: maxTotal, maxRatio (zip limits); per parsed XML part
+//         maxXmlBytes (default 64 MB) and maxElements (default 4
+//         million), both checked before parsing (./PartXml);
+//         maxParagraphs in the body (default 1 million)
+//
+// What a read Doc holds besides sections:
+//   styles       StyleTable from the styles part (./ReadStyles); a
+//                document without one gets the built-in styles and
+//                meta.stylesGenerated = true
+//   numbering    ./ReadNumbering, or null
+//   rawSettings  the root element of settings.xml, or null
+//   rels         the main part's relationships (./Rels)
+//   parts        Map name -> bytes of every zip entry not consumed:
+//                all but [Content_Types].xml, _rels/.rels, the main
+//                part and its .rels, and the styles, numbering and
+//                settings parts (headers, footers, media, docProps,
+//                other .rels files... are all here, untouched)
+//   meta         contentTypes, packageRels, mainPart, zipOrder,
+//                stylesPart?, numberingPart?, settingsPart?,
+//                prolog Map part -> {decl, before, after},
+//                documentRoot {name, attrs}, bodyName, bodyAttrs,
+//                beforeBody, afterBody (other root children),
+//                bodySectPr, conformance, stylesGenerated?
+// conformance is 'strict' when the main document's root is in the
+// Strict WML namespace, else 'transitional'. Every parsed part is read
+// with Strict namespace URIs mapped to transitional ones (./NsMap);
+// a writer saving Strict maps them back with mapNamespaces(...,
+// 'toStrict'). Relationship types and the bytes in doc.parts are
+// left exactly as they were (Strict stays Strict).
+// Nothing is ever fetched: external relationships are only data.
+import {openPackage} from './Package';
+import {DocxError} from './DocxError';
+import {rootScope, wName, isEl} from './Ns';
+import {readBody, maxParagraphs} from './ReadBody';
+import {readStyles} from './ReadStyles';
+import {readNumbering} from './ReadNumbering';
+import {newStyleTable, ensureBuiltins} from './Styles';
+
+export {DocxError} from './DocxError';
+
+/**
+ * @param {Uint8Array|ArrayBuffer} bytes
+ * @param {{maxTotal?: number, maxRatio?: number,
+ *   maxElements?: number, maxParagraphs?: number}} [opts]
+ * @returns {Promise<object>} the Doc
+ * @throws {DocxError}
+ */
+export async function readDocx(bytes, opts = {}) {
+  const pkg = await openPackage(bytes, opts);
+  const {meta} = pkg;
+  const main = meta.mainPart;
+  const root = pkg.parse(main,
+    {...opts, maxParagraphs: maxParagraphs(opts)});
+  meta.conformance = pkg.strict.has(main) ? 'strict' : 'transitional';
+  const m = rootScope(root);
+  if (wName(root, m) !== 'document') {
+    throw new DocxError('no-document', main + ' is not a document',
+      {part: main});
+  }
+  meta.documentRoot = {name: root.name,
+    attrs: root.attrs.map(([n, v]) => [n, v])};
+  meta.beforeBody = [];
+  meta.afterBody = [];
+  let body = null;
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    if (!body && wName(c, m) === 'body') body = c;
+    else (body ? meta.afterBody : meta.beforeBody).push(c);
+  }
+  let sections;
+  if (body) {
+    meta.bodyName = body.name;
+    meta.bodyAttrs = body.attrs.map(([n, v]) => [n, v]);
+    const r = readBody(body, m, opts, main);
+    sections = r.sections;
+    meta.bodySectPr = r.bodySectPr;
+  } else {
+    sections = [{props: {extra: []}, blocks: [], raw: null}];
+    meta.bodyName = null;
+    meta.bodyAttrs = [];
+    meta.bodySectPr = false;
+  }
+
+  let styles;
+  if (meta.stylesPart) {
+    const s = pkg.parse(meta.stylesPart);
+    styles = readStyles(s, rootScope(s));
+  } else {
+    styles = ensureBuiltins(newStyleTable());
+    meta.stylesGenerated = true;
+  }
+  let numbering = null;
+  if (meta.numberingPart) {
+    const n = pkg.parse(meta.numberingPart);
+    numbering = readNumbering(n, rootScope(n));
+  }
+  const rawSettings = meta.settingsPart ?
+    pkg.parse(meta.settingsPart) : null;
+
+  const parts = new Map();
+  for (const [name, data] of pkg.zip) {
+    if (!pkg.names.has(name)) parts.set(name, data);
+  }
+  return {sections, styles, numbering, parts, rels: pkg.rels, meta,
+    rawSettings};
+}

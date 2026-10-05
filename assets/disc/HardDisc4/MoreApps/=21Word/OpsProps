@@ -1,0 +1,109 @@
+// OpsProps - setProps: paragraph and run properties.
+import {fail, normRuns, checkPara} from './ModelCheck';
+import {paraAt, checkRange} from './OpsUtil';
+import {RPR_FIELDS, PPR_FIELDS, withoutRaw} from './PropNames';
+
+/**
+ * `props` (not changed) without the raw elements in its extra that
+ * the fields set or deleted by `patch` replace (and `also`: 'pStyle'
+ * or 'rStyle' when that is set or removed). See ./PropNames.
+ */
+function replaceRaw(props, patch, fields, also) {
+  const names = Object.keys(patch || {})
+    .filter((k) => fields.has(k) && patch[k] !== undefined)
+    .map((k) => fields.get(k));
+  if (also) names.push(also);
+  const extra = withoutRaw(props.extra, names);
+  return extra === props.extra ? props : {...props, extra};
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/**
+ * Merge a partial property object into a copy of `base`. A key whose
+ * value is null is deleted; a plain object is merged one level
+ * further in the same way (and dropped if that leaves it empty);
+ * anything else replaces the old value. `extra` (at the top) can
+ * only be replaced by another array. Copy-on-write: `base` is not
+ * changed, and values from `patch` are used as they are.
+ */
+export function mergeProps(base, patch, top = true) {
+  if (!isObj(patch)) fail('properties must be an object');
+  const out = {...base};
+  for (const k of Object.keys(patch)) {
+    const v = patch[k];
+    if (k === '__proto__') fail('bad property name');
+    if (v === undefined) continue;
+    if (top && k === 'extra') {
+      if (!Array.isArray(v)) fail('extra must be an array');
+      out.extra = v;
+    } else if (v === null) {
+      delete out[k];
+    } else if (isObj(v)) {
+      const m = mergeProps(isObj(out[k]) ? out[k] : {}, v, false);
+      if (Object.keys(m).length) out[k] = m;
+      else delete out[k];
+    } else out[k] = v;
+  }
+  return out;
+}
+
+/** Copy of run `r` with rPr merged and rStyle set or removed. */
+function restyle(r, op) {
+  const q = {...r};
+  if (op.rPr !== undefined) q.rPr = mergeProps(r.rPr, op.rPr);
+  q.rPr = replaceRaw(q.rPr, op.rPr, RPR_FIELDS,
+    op.rStyle !== undefined ? 'rStyle' : null);
+  if (op.rStyle === null) delete q.rStyle;
+  else if (op.rStyle !== undefined) q.rStyle = op.rStyle;
+  return q;
+}
+
+function checkStyle(v, what) {
+  if (v !== undefined && v !== null && typeof v !== 'string')
+    fail(what + ' must be a string or null');
+}
+
+/**
+ * {op:'setProps', block, pPr?, pStyle?, range?, rPr?, rStyle?}
+ * pPr and rPr are partial (see mergeProps). pStyle/rStyle: a string
+ * sets, null removes. Setting or removing a field also drops a raw
+ * element of the same name from that extra (./PropNames): the edit
+ * replaces it entirely. rPr/rStyle apply to the runs in range
+ * {start, end} (splitting runs at its ends), or to every run.
+ */
+export function setProps(doc, op) {
+  const {s, i, blocks, p} = paraAt(doc, op.block);
+  checkStyle(op.pStyle, 'pStyle');
+  checkStyle(op.rStyle, 'rStyle');
+  const q = {...p};
+  if (op.pPr !== undefined) q.pPr = mergeProps(p.pPr, op.pPr);
+  if (op.pPr !== undefined || op.pStyle !== undefined) {
+    q.pPr = replaceRaw(q.pPr, op.pPr, PPR_FIELDS,
+      op.pStyle !== undefined ? 'pStyle' : null);
+  }
+  if (op.pStyle === null) delete q.pStyle;
+  else if (op.pStyle !== undefined) q.pStyle = op.pStyle;
+  let a = 0;
+  let e = p.text.length;
+  if (op.range !== undefined) {
+    checkRange(p, op.range);
+    ({start: a, end: e} = op.range);
+  }
+  if (op.rPr !== undefined || op.rStyle !== undefined) {
+    const runs = [];
+    for (const r of p.runs) {
+      const x = Math.max(r.start, a);
+      const y = Math.min(r.end, e);
+      if (y <= x) { runs.push(r); continue; }
+      if (x > r.start) runs.push({...r, end: x});
+      runs.push(restyle({...r, start: x, end: y}, op));
+      if (y < r.end) runs.push({...r, start: y});
+    }
+    q.runs = normRuns(runs);
+  }
+  checkPara(q);
+  blocks[i] = q;
+  return {op: 'restoreBlock', block: [s, i], snapshot: p};
+}

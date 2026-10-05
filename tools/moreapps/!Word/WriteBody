@@ -1,0 +1,85 @@
+// WriteBody - the main document part: w:document and w:body.
+//
+//   documentTree(doc) -> the root element of the main part
+//   bodyNode(doc, map) -> w:body, or null (a file without a body)
+//   docScope(doc) -> {attrs, map}: root attributes and their scope
+//
+// The root is meta.documentRoot (name and attributes as read). It
+// must bind the prefix w to the WML namespace, since the elements
+// the writer makes are w:...; xmlns:w is added when it is missing,
+// and a w bound to anything else is refused ('unsupported').
+// Children: meta.beforeBody, the body, meta.afterBody.
+//
+// Sections: blocks in order (Para -> w:p, Opaque -> its node as it
+// is). A section that is not the last ends with a paragraph whose
+// w:pPr holds its w:sectPr; if its last block is not a paragraph
+// (or it has none), an empty paragraph is added to carry it. The
+// last section's w:sectPr is the last child of w:body when the file
+// had one there (meta.bodySectPr) or when it has page properties;
+// one that came from the last paragraph's w:pPr goes back there.
+// Each section's sectPr is written exactly once.
+import {NS} from './Wml';
+import {rootScope} from './Ns';
+import {paraNode} from './WritePara';
+import {sectPrNode, hasProps} from './WriteProps';
+import {DocxError} from './DocxError';
+
+/** Root attributes (xmlns:w ensured) and the scope they make. */
+export function docScope(doc) {
+  const root = doc.meta.documentRoot;
+  const attrs = root.attrs.map(([n, v]) => [n, v]);
+  const w = attrs.find(([n]) => n === 'xmlns:w');
+  if (!w) attrs.push(['xmlns:w', NS.w]);
+  else if (w[1] !== NS.w) {
+    throw new DocxError('unsupported', 'the prefix w is bound to ' +
+      w[1] + ', not WordprocessingML', {part: doc.meta.mainPart});
+  }
+  return {attrs, map: rootScope({name: root.name, attrs})};
+}
+
+/** Where the sectPr of section k goes: 'para', 'body' or none. */
+function placeOf(doc, k) {
+  const s = doc.sections[k];
+  if (k < doc.sections.length - 1) return 'para';
+  const last = s.blocks[s.blocks.length - 1];
+  if (!doc.meta.bodySectPr && s.raw && last && last.type === 'p')
+    return 'para';
+  if (doc.meta.bodySectPr || s.raw || hasProps(s.props)) return 'body';
+  return null;
+}
+
+/** The w:body of `doc`, or null when there is nothing to write. */
+export function bodyNode(doc, map) {
+  const kids = [];
+  doc.sections.forEach((s, k) => {
+    const place = placeOf(doc, k);
+    const sp = place ? sectPrNode(s, map) : null;
+    const n = s.blocks.length;
+    s.blocks.forEach((b, i) => {
+      if (b.type !== 'p') kids.push(b.node);
+      else kids.push(paraNode(b, place === 'para' && i === n - 1 ?
+        sp : null, map));
+    });
+    if (place === 'para' && (!n || s.blocks[n - 1].type !== 'p')) {
+      // the section must end with a paragraph to carry its sectPr
+      kids.push({name: 'w:p', attrs: [], children: [
+        {name: 'w:pPr', attrs: [], children: [sp]}]});
+    }
+    if (place === 'body') kids.push(sp);
+  });
+  const {meta} = doc;
+  if (!kids.length && meta.bodyName === null) return null;
+  return {name: meta.bodyName || 'w:body',
+    attrs: (meta.bodyAttrs || []).map(([n, v]) => [n, v]),
+    children: kids};
+}
+
+/** The root element of the main document part. */
+export function documentTree(doc) {
+  const {attrs, map} = docScope(doc);
+  const body = bodyNode(doc, map);
+  const {meta} = doc;
+  return {name: meta.documentRoot.name, attrs, children:
+    [...(meta.beforeBody || []), ...(body ? [body] : []),
+      ...(meta.afterBody || [])]};
+}

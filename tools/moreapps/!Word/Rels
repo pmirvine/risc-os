@@ -1,0 +1,104 @@
+// Rels - relationships (the _rels/*.rels parts of a package).
+//
+//   Rel {id, type, target, mode?, attrs}
+//     attrs: every attribute of the <Relationship>, [[name, value]]
+//     in the original order (for faithful rewriting).
+//     mode is 'External' for TargetMode="External" (and whatever
+//     else TargetMode says). External targets are data: nothing
+//     here (or anywhere in the reader) ever fetches one.
+//
+// Relationship types are matched both in their transitional form
+// (http://schemas.openxmlformats.org/officeDocument/2006/
+// relationships/...) and their Strict form (http://purl.oclc.org/
+// ooxml/officeDocument/relationships/...).
+
+const BASES = [
+  'http://schemas.openxmlformats.org/officeDocument/2006/' +
+    'relationships/',
+  'http://purl.oclc.org/ooxml/officeDocument/relationships/',
+];
+
+const local = (n) => n.slice(n.indexOf(':') + 1);
+const isEl = (c) => typeof c === 'object' && c.name !== undefined;
+
+/** The Rel list of a parsed .rels part (its root element). */
+export function parseRels(root) {
+  const out = [];
+  if (local(root.name) !== 'Relationships') return out;
+  for (const c of root.children) {
+    if (!isEl(c) || local(c.name) !== 'Relationship') continue;
+    const rel = {id: '', type: '', target: ''};
+    for (const [n, v] of c.attrs) {
+      if (n === 'Id') rel.id = v;
+      else if (n === 'Type') rel.type = v;
+      else if (n === 'Target') rel.target = v;
+      else if (n === 'TargetMode') rel.mode = v;
+    }
+    rel.attrs = c.attrs.map(([n, v]) => [n, v]);
+    out.push(rel);
+  }
+  return out;
+}
+
+/**
+ * The short kind of a relationship type ('officeDocument',
+ * 'styles'...) and whether it was the Strict form; null for types
+ * from elsewhere.
+ */
+export function relKind(type) {
+  for (let k = 0; k < BASES.length; k++) {
+    if (type.startsWith(BASES[k]))
+      return {kind: type.slice(BASES[k].length), strict: k === 1};
+  }
+  return null;
+}
+
+/** The first internal relationship of `kind`, or null. */
+export function firstOfKind(rels, kind) {
+  for (const r of rels) {
+    const k = relKind(r.type);
+    if (k && k.kind === kind && r.mode !== 'External') return r;
+  }
+  return null;
+}
+
+/**
+ * The part name a target points at, from the part `from` ('' for
+ * the package): no leading slash, '.' and '..' resolved. Null when
+ * '..' would climb out of the package.
+ */
+export function resolvePart(from, target) {
+  const base = target.startsWith('/') ? []
+    : from.split('/').slice(0, -1);
+  const out = [];
+  for (const s of base.concat(target.split('/'))) {
+    if (s === '' || s === '.') continue;
+    if (s === '..') {
+      if (!out.length) return null;
+      out.pop();
+    } else out.push(s);
+  }
+  return out.join('/');
+}
+
+/** The .rels part of `part`: a/b.xml -> a/_rels/b.xml.rels */
+export function relsNameFor(part) {
+  const i = part.lastIndexOf('/');
+  return part.slice(0, i + 1) + '_rels/' + part.slice(i + 1) + '.rels';
+}
+
+/**
+ * The name under which `name` is in `zip` (a Map): exactly, else
+ * percent-decoded, else ignoring case (part names are
+ * case-insensitive); null when it is not there.
+ */
+export function findPart(zip, name) {
+  if (name === null) return null;
+  if (zip.has(name)) return name;
+  let dec = null;
+  try { dec = decodeURIComponent(name); } catch (e) { dec = null; }
+  if (dec !== null && zip.has(dec)) return dec;
+  const want = (dec ?? name).toLowerCase();
+  for (const k of zip.keys()) if (k.toLowerCase() === want) return k;
+  return null;
+}

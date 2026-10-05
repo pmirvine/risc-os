@@ -1,0 +1,67 @@
+// ReadBody - w:body -> the sections of the Model.
+//
+// A paragraph whose w:pPr holds a w:sectPr ends a section (it is the
+// section's last block; that sectPr describes the section). The
+// w:sectPr that is the body's last element describes the last
+// section. Without any sectPr there is one section with props
+// {extra: []}. Each section is {props, blocks, raw}: raw is the
+// original w:sectPr node, or null.
+//
+// Blocks are Paras, or Opaque {type: 'opaque', node} for everything
+// else at body level (w:tbl, w:sdt, w:customXml, bookmarks,
+// mc:AlternateContent, a w:sectPr that is not last, unknown...),
+// in place. Text and comments directly in w:body are dropped.
+import {wName, isEl, scope} from './Ns';
+import {readPara} from './ReadPara';
+import {readSect} from './ReadSect';
+import {DocxError} from './DocxError';
+
+/** Most paragraphs accepted in a body (opts.maxParagraphs). */
+export const MAX_PARAGRAPHS = 1000000;
+
+/** The paragraph limit that applies with these options. */
+export const maxParagraphs = (opts) =>
+  opts.maxParagraphs ?? MAX_PARAGRAPHS;
+
+const section = (props, blocks, raw) => ({props, blocks, raw});
+
+/**
+ * @returns {{sections: object[], bodySectPr: boolean}} bodySectPr:
+ *   whether the body ended with its own w:sectPr
+ */
+export function readBody(body, map, opts = {}, part = '') {
+  const max = maxParagraphs(opts);
+  const m = body.attrs.length ? scope(map, body) : map;
+  const kids = body.children.filter(isEl);
+  const last = kids.length - 1;
+  const final = last >= 0 && wName(kids[last], m) === 'sectPr';
+  const sections = [];
+  let blocks = [];
+  let paras = 0;
+  kids.forEach((c, k) => {
+    if (final && k === last) return;
+    const l = wName(c, m);
+    if (l === 'p' && ++paras > max) {
+      throw new DocxError('unsupported', part +
+        ': more than ' + max + ' paragraphs', {part});
+    }
+    const got = l === 'p' ? readPara(c, m) : null;
+    if (!got) {
+      blocks.push({type: 'opaque', node: c});
+      return;
+    }
+    blocks.push(got.para);
+    if (got.sectPr) {
+      sections.push(section(readSect(got.sectPr, m), blocks,
+        got.sectPr));
+      blocks = [];
+    }
+  });
+  if (final) {
+    const s = kids[last];
+    sections.push(section(readSect(s, m), blocks, s));
+  } else if (blocks.length || !sections.length) {
+    sections.push(section({extra: []}, blocks, null));
+  }
+  return {sections, bodySectPr: final};
+}

@@ -1,0 +1,92 @@
+// ZipWrite - builds a zip file from named byte arrays. See ./Zip.
+//
+// Each entry is stored or deflated, whichever is smaller; sizes are
+// known up front so there are no data descriptors. Names are UTF-8
+// (flag 0x0800). Without CompressionStream everything is stored.
+import { crc32 } from './Crc32';
+
+/** Raw-deflates a byte array, or null when that is not possible. */
+async function deflate(data) {
+  if (typeof globalThis.CompressionStream !== 'function') return null;
+  const stream = new Blob([data]).stream()
+    .pipeThrough(new globalThis.CompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** MS-DOS time and date words for a Date (local time, 1980-2107). */
+function dosTime(d) {
+  const year = Math.min(Math.max(d.getFullYear(), 1980), 2107);
+  return {
+    time: (d.getHours() << 11) | (d.getMinutes() << 5) |
+      (d.getSeconds() >> 1),
+    date: ((year - 1980) << 9) | ((d.getMonth() + 1) << 5) |
+      d.getDate(),
+  };
+}
+
+/**
+ * @param {Map<string, Uint8Array>|[string, Uint8Array][]} parts
+ * @param {{date?: Date}} [opts] modification time (default now)
+ * @returns {Promise<Uint8Array>}
+ */
+export async function writeZip(parts, opts = {}) {
+  const { time, date } = dosTime(opts.date || new Date());
+  const enc = new TextEncoder();
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const [name, data] of parts) {
+    const nameBytes = enc.encode(name);
+    const packed = data.length ? await deflate(data) : null;
+    const deflated = packed !== null && packed.length < data.length;
+    const body = deflated ? packed : data;
+    const crc = crc32(data);
+    const method = deflated ? 8 : 0;
+    const head = new Uint8Array(30 + nameBytes.length);
+    const h = new DataView(head.buffer);
+    h.setUint32(0, 0x04034b50, true);
+    h.setUint16(4, 20, true);
+    h.setUint16(6, 0x0800, true);
+    h.setUint16(8, method, true);
+    h.setUint16(10, time, true);
+    h.setUint16(12, date, true);
+    h.setUint32(14, crc, true);
+    h.setUint32(18, body.length, true);
+    h.setUint32(22, data.length, true);
+    h.setUint16(26, nameBytes.length, true);
+    head.set(nameBytes, 30);
+    const cen = new Uint8Array(46 + nameBytes.length);
+    const c = new DataView(cen.buffer);
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true);
+    c.setUint16(6, 20, true);
+    c.setUint16(8, 0x0800, true);
+    c.setUint16(10, method, true);
+    c.setUint16(12, time, true);
+    c.setUint16(14, date, true);
+    c.setUint32(16, crc, true);
+    c.setUint32(20, body.length, true);
+    c.setUint32(24, data.length, true);
+    c.setUint16(28, nameBytes.length, true);
+    c.setUint32(42, offset, true);
+    cen.set(nameBytes, 46);
+    locals.push(head, body);
+    centrals.push(cen);
+    offset += head.length + body.length;
+  }
+  const cdSize = centrals.reduce((n, a) => n + a.length, 0);
+  const eocd = new Uint8Array(22);
+  const e = new DataView(eocd.buffer);
+  e.setUint32(0, 0x06054b50, true);
+  e.setUint16(8, centrals.length, true);
+  e.setUint16(10, centrals.length, true);
+  e.setUint32(12, cdSize, true);
+  e.setUint32(16, offset, true);
+  const out = new Uint8Array(offset + cdSize + 22);
+  let at = 0;
+  for (const a of [...locals, ...centrals, eocd]) {
+    out.set(a, at);
+    at += a.length;
+  }
+  return out;
+}

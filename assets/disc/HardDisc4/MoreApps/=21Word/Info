@@ -1,0 +1,129 @@
+// Info - what a document holds, in words: the info line at the top of
+// its window and the Info box of its menu.
+//
+//   summary(doc) -> '7 paragraphs, 5 preserved items (1 table,
+//                    1 link, 1 drawing, ...), fonts: Caladea, Carlito'
+//   facts(doc)   -> {paragraphs, preserved, kinds: [[kind, n]],
+//                    fonts: [family]}
+//   kindOf(node) -> 'table', 'content control', 'drawing'...
+//   infoWindow(task, leaf, doc) -> a Window for an Info submenu
+//
+// Preserved items are the things Word keeps that this program does
+// not show: blocks kept whole (tables...) and the items in
+// paragraphs kept as they were (links, pictures, fields...), counted
+// by what they are. The kinds that are not seen (./Kinds: proofing
+// marks, bookmarks, comment ranges, a field's codes...) and bare text
+// (a tab inside a w:t) are not counted, as they are not drawn. Fonts
+// are the families the text is shown in (./FontMap), from the
+// resolved run formatting.
+import {runFamily} from './Fmt';
+import {UNSEEN, localName} from './Kinds';
+
+const KINDS = new Map([
+  ['tbl', 'table'], ['sdt', 'content control'], ['drawing', 'drawing'],
+  ['pict', 'picture'], ['object', 'object'], ['hyperlink', 'link'],
+  ['fldSimple', 'field'],
+  ['footnoteReference', 'footnote'], ['endnoteReference', 'endnote'],
+  ['commentReference', 'comment'],
+  ['ins', 'insertion'], ['del', 'deletion'], ['oMath', 'equation'],
+  ['oMathPara', 'equation'], ['sym', 'symbol'], ['br', 'break'],
+  ['customXml', 'custom XML'], ['AlternateContent', 'drawing'],
+  ['smartTag', 'smart tag'], ['sectPr', 'section break'],
+]);
+const ORDER = [...new Set(KINDS.values())];
+
+/** What an element is, in words ('table', 'drawing'...). */
+export function kindOf(node) {
+  const l = localName(node);
+  return l ? KINDS.get(l) || l : 'item';
+}
+
+/** Whether a kept element counts (see the header). */
+function counts(node) {
+  const l = localName(node);
+  return l !== 't' && !UNSEEN.has(l);
+}
+
+/** See the header. */
+export function facts(doc) {
+  const kinds = new Map();
+  const fonts = new Set();
+  const cache = new Map();
+  let paragraphs = 0;
+  const add = (node) => {
+    if (!counts(node)) return;
+    const k = kindOf(node);
+    kinds.set(k, (kinds.get(k) || 0) + 1);
+  };
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b.type !== 'p') { add(b.node); continue; }
+      paragraphs++;
+      for (const x of Object.values(b.inlines)) {
+        if (x.kind === 'raw' || (x.kind === 'br' && x.brType)) {
+          add(x.node);
+        }
+      }
+      for (const r of b.runs) {
+        fonts.add(runFamily(doc.styles, b, r, cache));
+      }
+    }
+  }
+  // the commonest first; equal counts in the order of KINDS (tables
+  // first), then the others by name
+  const rank = (k) => {
+    const i = ORDER.indexOf(k);
+    return i < 0 ? ORDER.length : i;
+  };
+  const list = [...kinds].sort((a, b) => b[1] - a[1] ||
+    rank(a[0]) - rank(b[0]) || (a[0] < b[0] ? -1 : 1));
+  const preserved = list.reduce((n, [, v]) => n + v, 0);
+  return {paragraphs, preserved, kinds: list,
+    fonts: [...fonts].sort()};
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** The kinds kept, the commonest three first. */
+function kindsText(f) {
+  if (!f.preserved) return 'none';
+  const top = f.kinds.slice(0, 3).map(([k, n]) => plural(n, k));
+  return top.join(', ') + (f.kinds.length > 3 ? ', ...' : '');
+}
+
+/** See the header. */
+export function summary(doc, f = facts(doc)) {
+  const fonts = f.fonts.length ? f.fonts.join(', ') : 'none';
+  return `${plural(f.paragraphs, 'paragraph')}, ` +
+    (f.preserved ? `${plural(f.preserved, 'preserved item')} ` +
+      `(${kindsText(f)})` : 'no preserved items') + `, fonts: ${fonts}`;
+}
+
+/** The Info box of a document: a window with its facts. */
+export function infoWindow(task, leaf, doc) {
+  const f = facts(doc);
+  const rows = [
+    ['File', leaf],
+    ['Paragraphs', String(f.paragraphs)],
+    ['Preserved', f.preserved ? `${f.preserved} (${kindsText(f)})`
+      : 'none'],
+    ['Fonts', f.fonts.join(', ') || 'none'],
+    ['Editing', 'not yet: this is a read-only view'],
+  ];
+  const LW = 100, VW = 380, RH = 40;
+  const icons = [];
+  rows.forEach(([label, value], i) => {
+    const y = 12 + i * RH;
+    icons.push({x: 8, y, w: LW, h: 32, text: label, rjustify: true});
+    icons.push({x: LW + 16, y, w: VW, h: 32, text: value,
+      border: true, filled: true, bg: 1, validation: 'R2',
+      name: label.toLowerCase()});
+  });
+  return task.createWindow({
+    title: 'About this document', w: LW + VW + 24,
+    h: 12 + rows.length * RH + 8,
+    extent: {w: LW + VW + 24, h: 12 + rows.length * RH + 8},
+    flags: {title: true, moveable: true, back: false, close: false},
+    colours: {workBg: 1}, icons,
+  });
+}

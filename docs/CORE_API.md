@@ -407,7 +407,21 @@ program written in !Edit can be double-clicked. A *script* (no `import`/`export`
 (`{args, argv, file, dir, os}`), `os`, `wimp`, `vfs`, `print`, `await input(prompt)`, `await sleep(ms)`, `Menu`,
 `colourMenu`, `wimpColour`, `beep`, `sound(ch, amp, pitch, dur)`, `saveAs`, `query` and `infoBox` in scope. A
 *module* exports `default function start(task, ctx)` and imports the same names from `'riscos'` and other files
-relative to itself (`'./Grid'` finds `Grid` or `grid/js`). Each run is a task named after the file (or the
+relative to itself (`'./Grid'` finds `Grid` or `grid/js`). The specifier `'wimplib/<Name>'` (or `'wimplib/<Dir>/<Name>'`) imports a module of
+WimpLib, the system library `$.!Boot.Resources.!WimpLib`. It is found **by name through the system variable
+`WimpLib$Path`**: each directory of that path list (comma-separated, each ending in `.` or `:`, used as written) is
+tried in turn for `Name` then `Name/js` (a file, not a directory), then `WimpLib$Dir` if it is not already in the
+path; the first found wins. The library's `!Boot` (run at start-up with the rest of `!Boot.Resources`) sets
+`WimpLib$Dir` and `WimpLib$Path` (`<WimpLib$Dir>.`) only when they are unset, so a directory put first in the path
+(`Set WimpLib$Path RAM::RamDisc0.$.MyLib.,<WimpLib$Dir>.`) overrides single modules. Errors: "Can't find
+'wimplib/X' (not in WimpLib$Path: <dir>, ...)" (`; nor in WimpLib$Dir: <dir>` when that was searched too), "Can't
+find 'wimplib/X' (WimpLib is not installed: WimpLib$Dir is not set)" with neither variable, "(no module name)" for a
+bare `'wimplib'`. Obey and BASIC name the files `<WimpLib$Dir>.Zip` (or `WimpLib:Zip`). The prefix matches in any
+case (`'WimpLib/Zip'`), and every segment after it must match
+`/^[A-Za-z0-9_][A-Za-z0-9_-]*$/` (letters, digits, `_` and `-`), so the import stays in the directories searched: `..`,
+`.`, `^`, `$`, `@`, `<Var>`, `:`, `&`, `%`, backslash, wildcards, spaces, dotted names (`'wimplib/Zip.js'`) and
+empty segments are refused with "Can't find '<spec>' (a WimpLib module name is letters, digits, _ and -, with /
+between directories)" (the library is described in docs/apps/Word.md). A module in the same place imported both ways is loaded once. Each run is a task named after the file (or the
 application, for `<App>.!RunImage`); `print`/`input` use the task window it was run from or an output window of
 its own. Errors, including ones thrown later by its event handlers and timers, are reported with the line number.
 The tutorial `$.Manuals.JSTutor` teaches with it (`tools/jstutor/README.md`).
@@ -533,3 +547,12 @@ own entries in `assets/disc/manifest.json` (read, patch and write the manifest i
 `tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
 ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).
+`disc-wimplib` builds the library `$.!Boot.Resources.!WimpLib` (from `tools/moreapps/!WimpLib`; its manifest node
+inserted among the other `Resources` entries, which stay as they are) and runs before `disc-moreapps`, which builds
+`$.MoreApps` (`!Word`, from `tools/moreapps/`, removing the library's old `MoreApps.WimpLib`; fonts as Data
+&FFD, sprites from `tools/moreapps/icon.mjs`) and adds one line each to `!Boot`'s (and `!ResetBoot`'s)
+`Choices.Boot.Desktop` (`Filer_Boot` of `Boot:^.MoreApps`) and `PreDesktop` (`AddApp Boot:^.MoreApps.!*`); it must
+run after `disc.mjs`, which rewrites those files (the desktop runs neither file: `src/main.js` does the
+same itself, `Repeat Filer_Boot` of `!Boot.Resources` and then of `$.MoreApps` when it exists, so `!Word`'s sprites
+and the .docx type &A7E are known from a cold boot; docs/apps/Word.md). `--check` checks the sources (Latin-1, no tabs or CR, 72 columns;
+the fonts exempt).

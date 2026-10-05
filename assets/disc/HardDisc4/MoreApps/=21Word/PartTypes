@@ -1,0 +1,114 @@
+// PartTypes - the content type a part must have, by the kind of
+// relationship that reaches it, and the repair of a package index
+// that types such a part only generically.
+//
+//   typeForRel(type)   the content type for a relationship type
+//                      URI (Transitional, Strict, Office), or null
+//   repairs(ct, sources, has)  Map part name -> content type for
+//                      every known part typed application/xml or
+//                      text/xml, or not at all
+//
+// Word does not accept such a package as it is: core properties
+// typed application/xml make it fail to open ("Word experienced an
+// error trying to open the file"), and footnotes typed so give an
+// "unreadable content ... recover?" prompt. So the writer gives
+// such parts their own type. A part typed something else specific
+// is left alone (it may be meant).
+import {relKind, resolvePart} from './Rels';
+
+const OX = 'application/vnd.openxmlformats-';
+const OD = OX + 'officedocument.';
+const WML = OD + 'wordprocessingml.';
+const MSW = 'application/vnd.ms-word.';
+
+/** relKind kinds (Transitional and Strict forms) -> type. */
+const KINDS = new Map([
+  ['officeDocument', WML + 'document.main+xml'],
+  ['styles', WML + 'styles+xml'],
+  ['numbering', WML + 'numbering+xml'],
+  ['settings', WML + 'settings+xml'],
+  ['fontTable', WML + 'fontTable+xml'],
+  ['webSettings', WML + 'webSettings+xml'],
+  ['footnotes', WML + 'footnotes+xml'],
+  ['endnotes', WML + 'endnotes+xml'],
+  ['comments', WML + 'comments+xml'],
+  ['header', WML + 'header+xml'],
+  ['footer', WML + 'footer+xml'],
+  ['glossaryDocument', WML + 'document.glossary+xml'],
+  ['theme', OD + 'theme+xml'],
+  ['extended-properties', OD + 'extended-properties+xml'],
+  ['extendedProperties', OD + 'extended-properties+xml'],
+  ['custom-properties', OD + 'custom-properties+xml'],
+  ['customProperties', OD + 'custom-properties+xml'],
+  ['customXmlProps', OD + 'customXmlProperties+xml'],
+]);
+
+const PKG = 'http://schemas.openxmlformats.org/package/2006/' +
+  'relationships/metadata/';
+const MS = 'http://schemas.microsoft.com/office/';
+/** An old spelling (all lower case, no /package/) seen in 7 files. */
+const LEGACY_CORE = 'http://schemas.openxmlformats.org/' +
+  'officedocument/2006/relationships/metadata/core-properties';
+
+/** Full relationship type URIs not covered by relKind. */
+const FULL = new Map([
+  [PKG + 'core-properties', OX + 'package.core-properties+xml'],
+  [LEGACY_CORE, OX + 'package.core-properties+xml'],
+  [MS + '2011/relationships/commentsExtended',
+    WML + 'commentsExtended+xml'],
+  [MS + '2016/09/relationships/commentsIds', WML + 'commentsIds+xml'],
+  [MS + '2018/08/relationships/commentsExtensible',
+    WML + 'commentsExtensible+xml'],
+  [MS + '2011/relationships/people', WML + 'people+xml'],
+  [MS + '2007/relationships/stylesWithEffects',
+    MSW + 'stylesWithEffects+xml'],
+]);
+
+/** The content type for a relationship type URI, or null. */
+export function typeForRel(type) {
+  if (FULL.has(type)) return FULL.get(type);
+  const k = relKind(type);
+  return k && KINDS.has(k.kind) ? KINDS.get(k.kind) : null;
+}
+
+const GENERIC = new Set(['application/xml', 'text/xml']);
+
+const extOf = (n) => {
+  const leaf = n.slice(n.lastIndexOf('/') + 1);
+  const i = leaf.lastIndexOf('.');
+  return i >= 0 ? leaf.slice(i + 1).toLowerCase() : null;
+};
+
+/**
+ * @param {{defaults: Array, overrides: Array}} ct the index read
+ * @param {Array<[string, Array]>} sources [[from part ('' for the
+ *   package), Rel list]...]
+ * @param {(name: string) => string|null} has the written part name
+ *   for a resolved name (case-insensitive), or null
+ * @returns {Map<string, string>} part name -> type to give it
+ */
+export function repairs(ct, sources, has) {
+  const out = new Map();
+  const typeOf = (n) => {
+    const p = '/' + n.toLowerCase();
+    const o = ct.overrides.find(([q]) => q.toLowerCase() === p);
+    if (o) return o[1];
+    const e = extOf(n);
+    const d = ct.defaults.find(([x]) => x.toLowerCase() === e);
+    return d ? d[1] : null;
+  };
+  for (const [from, rels] of sources) {
+    for (const r of rels) {
+      if (r.mode === 'External') continue;
+      const want = typeForRel(r.type);
+      const to = want && resolvePart(from, r.target);
+      const name = to && has(to);
+      if (!name || out.has(name)) continue;
+      const now = typeOf(name);
+      if (!now || GENERIC.has(now.trim().toLowerCase())) {
+        out.set(name, want);
+      }
+    }
+  }
+  return out;
+}

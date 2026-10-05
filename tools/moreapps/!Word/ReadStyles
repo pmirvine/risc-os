@@ -1,0 +1,93 @@
+// ReadStyles - styles.xml -> a StyleTable (see ./Styles).
+//
+// Besides the StyleTable fields, the table read from a file has:
+//   rootName, rootAttrs    the w:styles element's name and
+//                          attributes ([[name, value]], in order)
+//   docDefaultsRaw         the original w:docDefaults node, or null
+//   latent                 the original w:latentStyles node, or null
+//   extraStyles            raw nodes kept but not modelled: styles
+//                          with a repeated or missing id or an unknown
+//                          type, and any other child of w:styles
+// Each Style keeps its whole original element in `raw`; the children
+// it does not model (w:rsid, w:tblPr, w:tblStylePr, w:hidden,
+// w:autoRedefine, w:personal...) are in its `extra`, in order.
+import {newStyleTable, addStyle, setDefault} from './Styles';
+import {scope, wName, wAttr, isEl} from './Ns';
+import {readProps, readRPr, readPPr, str, int, onOff, onOffOf}
+  from './ReadProps';
+
+const TYPES = ['paragraph', 'character', 'table', 'numbering'];
+const STR = ['name', 'basedOn', 'next', 'link'];
+const BOOL = ['qFormat', 'semiHidden', 'unhideWhenUsed', 'locked'];
+
+const KIDS = new Map([
+  ...STR.map((f) => [f, {field: f, read: str}]),
+  ...BOOL.map((f) => [f, {field: f, read: onOff}]),
+  ['uiPriority', {field: 'uiPriority', read: int}],
+  ['pPr', {field: 'pPr', read: (a, n, m) =>
+    a.size ? undefined : readPPr(n, m, false).pPr}],
+  ['rPr', {field: 'rPr', read: (a, n, m) =>
+    a.size ? undefined : readRPr(n, m, false).rPr}],
+]);
+const FIELDS = [...STR, ...BOOL, 'uiPriority', 'pPr', 'rPr'];
+
+/** A w:style -> a Style object, or null if it cannot be one. */
+function readStyle(node, map) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  const id = wAttr(node, m, 'styleId');
+  const type = wAttr(node, m, 'type') ?? 'paragraph';
+  if (!id || !TYPES.includes(type)) return null;
+  const {props} = readProps(node, m, KIDS);
+  const s = {id, type};
+  for (const f of FIELDS) if (props[f] !== undefined) s[f] = props[f];
+  s.extra = props.extra;
+  s.raw = node;
+  const def = onOffOf(wAttr(node, m, 'default'));
+  if (def !== undefined) s.isDefault = def;
+  const custom = onOffOf(wAttr(node, m, 'customStyle'));
+  if (custom !== undefined) s.custom = custom;
+  return s;
+}
+
+/** rPrDefault/pPrDefault -> docDefaults, when unambiguous. */
+function readDefaults(t, node, m) {
+  const one = (n, name) => {
+    const all = n.children.filter((c) => wName(c, m) === name);
+    return all.length === 1 && !all[0].attrs.length ? all[0] : null;
+  };
+  const rd = one(node, 'rPrDefault');
+  const rPr = rd && one(rd, 'rPr');
+  if (rPr) t.docDefaults.rPr = readRPr(rPr, m, false).rPr;
+  const pd = one(node, 'pPrDefault');
+  const pPr = pd && one(pd, 'pPr');
+  if (pPr) t.docDefaults.pPr = readPPr(pPr, m, false).pPr;
+}
+
+/** The StyleTable of a styles part (its root element). */
+export function readStyles(root, map) {
+  const t = newStyleTable();
+  t.rootName = root.name;
+  t.rootAttrs = root.attrs.map(([n, v]) => [n, v]);
+  t.docDefaultsRaw = null;
+  t.extraStyles = [];
+  const m = scope(map, root);
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'docDefaults' && !t.docDefaultsRaw) {
+      t.docDefaultsRaw = c;
+      readDefaults(t, c, c.attrs.length ? scope(m, c) : m);
+    } else if (l === 'latentStyles' && !t.latent) {
+      t.latent = c;
+    } else if (l === 'style') {
+      const s = readStyle(c, m);
+      if (!s || t.styles.has(s.id)) t.extraStyles.push(c);
+      else {
+        addStyle(t, s);
+        if (s.isDefault && !t.defaults[s.type])
+          setDefault(t, s.type, s.id);
+      }
+    } else t.extraStyles.push(c);
+  }
+  return t;
+}

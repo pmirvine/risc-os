@@ -1,0 +1,172 @@
+// XmlParse - parseXml, a small safe XML parser.
+//
+// One pass, no regular expressions, no recursion: the cost is
+// linear in the size of the text. There is no DTD support and no
+// custom entities, so entity-expansion attacks cannot happen.
+// Prefixes and attribute order are kept exactly as written.
+
+import {XmlError, lineAt, isName, isSpace, badCharAt, decodeRefs,
+  validDecl} from './XmlText';
+
+/** Deepest element nesting accepted. */
+export const MAX_DEPTH = 256;
+
+/**
+ * Parse an XML document.
+ * @param {string} input
+ * @returns {{decl: string|null, before: object[], root: object,
+ *   after: object[]}} before/after: comments and PIs ({comment} or
+ *   {pi}) outside the root element, in document order
+ * @throws {XmlError}
+ */
+export function parseXml(input) {
+  let s = String(input);
+  if (s.charCodeAt(0) === 0xFEFF) s = s.slice(1);
+  if (s.indexOf('\r') >= 0) s = s.replace(/\r\n?/g, '\n');
+  const n = s.length;
+  const fail = (pos, msg, code = 'malformed') => {
+    throw new XmlError(code, msg, lineAt(s, pos));
+  };
+  const bad = badCharAt(s);
+  if (bad >= 0) fail(bad, 'invalid character');
+
+  const stack = [];
+  const before = [], after = [];
+  let root = null, decl = null, pos = 0;
+  /** Where a comment or PI goes: the open element, or prolog/epilog. */
+  const here = () => stack.length ? stack[stack.length - 1].children :
+    root ? after : before;
+
+  const skipSpace = (p) => {
+    while (p < n && isSpace(s.charCodeAt(p))) p++;
+    return p;
+  };
+  const nameEnd = (p) => {
+    while (p < n) {
+      const c = s.charCodeAt(p);
+      if (isSpace(c) || c === 62 || c === 47 || c === 61) break;
+      p++;
+    }
+    return p;
+  };
+  const addText = (t) => {
+    if (!t) return;
+    const kids = stack[stack.length - 1].children;
+    const last = kids.length - 1;
+    if (last >= 0 && typeof kids[last] === 'string') kids[last] += t;
+    else kids.push(t);
+  };
+
+  while (pos < n) {
+    if (s.charCodeAt(pos) !== 60) {
+      let end = s.indexOf('<', pos);
+      if (end < 0) end = n;
+      const raw = s.slice(pos, end);
+      if (!stack.length) {
+        for (let i = 0; i < raw.length; i++)
+          if (!isSpace(raw.charCodeAt(i)))
+            fail(pos + i, 'text outside the root element');
+      } else {
+        if (raw.indexOf(']]>') >= 0) fail(pos, '"]]>" in text');
+        const at = pos;
+        addText(decodeRefs(raw, () => lineAt(s, at)));
+      }
+      pos = end;
+    } else if (s.startsWith('<!--', pos)) {
+      const end = s.indexOf('-->', pos + 4);
+      if (end < 0) fail(pos, 'unterminated comment');
+      const body = s.slice(pos + 4, end);
+      if (body.indexOf('--') >= 0 || body.endsWith('-'))
+        fail(pos, '"--" inside a comment');
+      here().push({comment: body});
+      pos = end + 3;
+    } else if (s.startsWith('<![CDATA[', pos)) {
+      const end = s.indexOf(']]>', pos + 9);
+      if (end < 0) fail(pos, 'unterminated CDATA section');
+      if (!stack.length) fail(pos, 'CDATA outside the root element');
+      addText(s.slice(pos + 9, end));
+      pos = end + 3;
+    } else if (s.startsWith('<!DOCTYPE', pos)) {
+      fail(pos, 'DTDs are not supported', 'dtd');
+    } else if (s.startsWith('<!', pos)) {
+      fail(pos, 'bad markup declaration');
+    } else if (s.charCodeAt(pos + 1) === 63) {
+      const end = s.indexOf('?>', pos + 2);
+      if (end < 0) fail(pos, 'unterminated processing instruction');
+      const body = s.slice(pos + 2, end);
+      let t = 0;
+      while (t < body.length && !isSpace(body.charCodeAt(t))) t++;
+      const target = body.slice(0, t);
+      if (!isName(target)) fail(pos, 'bad processing instruction');
+      if (target.toLowerCase() === 'xml') {
+        if (pos !== 0) fail(pos, 'misplaced XML declaration');
+        if (!validDecl(body)) fail(pos, 'bad XML declaration');
+        decl = body;
+      } else {
+        here().push({pi: body});
+      }
+      pos = end + 2;
+    } else if (s.charCodeAt(pos + 1) === 47) {
+      const end = s.indexOf('>', pos);
+      if (end < 0) fail(pos, 'unterminated end tag');
+      let name = s.slice(pos + 2, end), e = name.length;
+      while (e > 0 && isSpace(name.charCodeAt(e - 1))) e--;
+      name = name.slice(0, e);
+      if (!stack.length || stack[stack.length - 1].name !== name)
+        fail(pos, 'mismatched end tag </' + name + '>');
+      stack.pop();
+      pos = end + 1;
+    } else {
+      pos = startTag(pos);
+    }
+  }
+  if (stack.length) fail(n, 'unclosed element <' +
+    stack[stack.length - 1].name + '>');
+  if (!root) fail(n, 'no root element');
+  return {decl, before, root, after};
+
+  /** Parse a start tag at `pos`; returns the offset after it. */
+  function startTag(start) {
+    let p = start + 1;
+    const ne = nameEnd(p);
+    const name = s.slice(p, ne);
+    if (!isName(name)) fail(start, 'bad element name');
+    if (!stack.length && root) fail(start, 'more than one root');
+    if (stack.length >= MAX_DEPTH)
+      fail(start, 'nested more than ' + MAX_DEPTH + ' deep', 'depth');
+    const node = {name, attrs: [], children: []};
+    const seen = new Set();
+    p = ne;
+    for (;;) {
+      const q = skipSpace(p);
+      if (q >= n) fail(start, 'unterminated start tag');
+      const c = s.charCodeAt(q);
+      if (c === 62 || (c === 47 && s.charCodeAt(q + 1) === 62)) {
+        if (!stack.length) root = node;
+        else stack[stack.length - 1].children.push(node);
+        if (c === 62) stack.push(node);
+        return q + (c === 62 ? 1 : 2);
+      }
+      if (q === p) fail(q, 'attribute needs a space before it');
+      const ae = nameEnd(q);
+      const an = s.slice(q, ae);
+      if (!isName(an)) fail(q, 'bad attribute name');
+      if (seen.has(an)) fail(q, 'duplicate attribute ' + an);
+      seen.add(an);
+      let r = skipSpace(ae);
+      if (s.charCodeAt(r) !== 61) fail(r, 'attribute needs "="');
+      r = skipSpace(r + 1);
+      const quote = s.charCodeAt(r);
+      if (quote !== 34 && quote !== 39)
+        fail(r, 'attribute needs quotes');
+      const close = s.indexOf(quote === 34 ? '"' : "'", r + 1);
+      if (close < 0) fail(r, 'unterminated attribute value');
+      const raw = s.slice(r + 1, close);
+      if (raw.indexOf('<') >= 0) fail(r, '"<" in attribute value');
+      const val = decodeRefs(raw.replace(/[\t\n]/g, ' '),
+        () => lineAt(s, r));
+      node.attrs.push([an, val]);
+      p = close + 1;
+    }
+  }
+}

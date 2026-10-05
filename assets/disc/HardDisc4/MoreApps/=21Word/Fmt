@@ -1,0 +1,122 @@
+// Fmt - how a paragraph and its runs look on the screen, from the
+// RESOLVED properties (styles, defaults and direct formatting).
+//
+//   runFmt(styles, para, run, cache)  -> {css, px, family, bold,
+//                                         italic, colour, under,
+//                                         strike}
+//   paraFmt(styles, para)  -> {left, first, right, before, after,
+//                              align, factor, heading}
+//   runFamily(styles, para, run) -> the substituted family name
+//
+// Sizes are screen pixels at 96 dpi: a twip is 1/1440 inch, so
+// px = twips / 15; w:sz is in half points, so px = sz * 2 / 3.
+// A run with no size is 11 point; headings (outline level 0 to 5 or
+// a style called Heading1..6) with no size of their own get Word's
+// heading sizes, bold. Pure: no desktop services.
+import {resolvePara, resolveRun} from './Styles';
+import {substitute} from './FontMap';
+
+const HEADING_PT = [16, 13, 12, 11, 11, 11];
+
+/** The run's font name: rFonts, else a theme font, else Calibri. */
+function fontName(rPr) {
+  const f = rPr.rFonts;
+  if (f && (f.ascii || f.hAnsi)) return f.ascii || f.hAnsi;
+  // theme fonts (w:asciiTheme...) are kept as raw rFonts elements:
+  // Word's default themes use Calibri (Calibri Light for headings)
+  for (const n of rPr.extra || []) {
+    if (!n || typeof n.name !== 'string') continue;
+    if (n.name.split(':').pop() !== 'rFonts') continue;
+    for (const [k, v] of n.attrs || []) {
+      const l = k.split(':').pop();
+      if (l === 'ascii' || l === 'hAnsi') return v;
+      if (l === 'asciiTheme') {
+        return /^major/.test(v) ? 'Calibri Light' : 'Calibri';
+      }
+    }
+  }
+  return 'Calibri';
+}
+
+/** The heading level 1..6 of a paragraph, or 0. */
+export function headingLevel(styles, para, pPr) {
+  const o = pPr.outlineLvl;
+  if (Number.isInteger(o) && o >= 0 && o < 6) return o + 1;
+  const s = para.pStyle === undefined ? undefined
+    : styles.styles.get(para.pStyle);
+  const name = s && typeof s.name === 'string' ? s.name : para.pStyle;
+  const m = /^heading ?([1-6])$/i.exec(String(name ?? ''));
+  return m ? +m[1] : 0;
+}
+
+const key = (para, run) => JSON.stringify([para.pStyle, run.rStyle,
+  run.rPr, para.pPr && para.pPr.outlineLvl]);
+
+/** The look of `run` in `para` (cached by its properties). */
+export function runFmt(styles, para, run, cache) {
+  const k = key(para, run);
+  const got = cache && cache.get(k);
+  if (got) return got;
+  const rPr = resolveRun(styles, para, run);
+  let pt = Number.isInteger(rPr.sz) && rPr.sz > 0 ? rPr.sz / 2 : 0;
+  let bold = rPr.b === true;
+  if (!pt) {
+    const h = headingLevel(styles, para, resolvePara(styles, para));
+    pt = h ? HEADING_PT[h - 1] : 11;
+    if (h && rPr.b === undefined) bold = true;
+  }
+  pt = Math.min(Math.max(pt, 4), 200);
+  const px = Math.round(pt * 4 / 3 * 100) / 100;
+  const italic = rPr.i === true;
+  const sub = substitute(fontName(rPr));
+  const c = typeof rPr.color === 'string' &&
+    /^[0-9a-f]{6}$/i.test(rPr.color) ? '#' + rPr.color : '#000000';
+  const f = {
+    css: `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}` +
+      `${px}px ${sub.css}`,
+    px, family: sub.family, bold, italic, colour: c,
+    under: typeof rPr.u === 'string' && rPr.u !== 'none',
+    strike: rPr.strike === true,
+  };
+  if (cache) cache.set(k, f);
+  return f;
+}
+
+/** The substituted family of a run (for the info line). */
+export function runFamily(styles, para, run, cache) {
+  return runFmt(styles, para, run, cache).family;
+}
+
+// limits, in twips, so that a hostile file cannot ask for a work
+// area of millions of pixels: spacing 5000 (3.5 inches), indents
+// 30000 (about 21 inches)
+const SPACE = 5000, IND = 30000;
+const tw = (v, most) => (Number.isInteger(v)
+  ? Math.min(Math.max(v, -most), most) / 15 : 0);
+
+/** The paragraph's indents, spacing and alignment, in pixels. */
+export function paraFmt(styles, para) {
+  const pPr = resolvePara(styles, para);
+  const ind = pPr.ind || {};
+  const sp = pPr.spacing || {};
+  let first = 0;
+  if (Number.isInteger(ind.firstLine)) first = tw(ind.firstLine, IND);
+  if (Number.isInteger(ind.hanging)) first = -tw(ind.hanging, IND);
+  const left = Math.max(0, tw(ind.left, IND));
+  const jc = pPr.jc;
+  const align = jc === 'center' ? 'center'
+    : jc === 'right' || jc === 'end' ? 'right' : 'left';
+  // line spacing: only 'auto' (in 240ths of a line) is honoured
+  let factor = 1;
+  if (Number.isInteger(sp.line) && sp.line > 0 &&
+    (!sp.lineRule || sp.lineRule === 'auto')) {
+    factor = Math.min(Math.max(sp.line / 240, 0.5), 4);
+  }
+  return {
+    left, right: Math.max(0, tw(ind.right, IND)),
+    first: Math.max(first, -left),    // (never left of the margin)
+    before: Math.max(0, tw(sp.before, SPACE)),
+    after: Math.max(0, tw(sp.after, SPACE)), align, factor,
+    heading: headingLevel(styles, para, pPr),
+  };
+}

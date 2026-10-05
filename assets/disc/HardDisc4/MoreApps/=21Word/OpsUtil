@@ -1,0 +1,93 @@
+// OpsUtil - finding blocks for the operations in Ops, and cutting
+// and joining paragraph content.
+//
+// Ops never change a model object in place (see Ops): cut and join
+// reuse run objects whose offsets do not change, and always reuse
+// rPr objects and Inline objects.
+import {fail, normRuns, checkPos} from './ModelCheck';
+
+/** The section at index `s`, or RangeError. */
+export function sectionAt(doc, s) {
+  if (!Number.isInteger(s) || s < 0 || s >= doc.sections.length)
+    fail('no section ' + s);
+  return doc.sections[s];
+}
+
+/**
+ * Check a [sectionIndex, blockIndex] position. With `end` the index
+ * may be one past the last block (where a block can be inserted).
+ * @returns {{s: number, i: number, blocks: Array}}
+ */
+export function locate(doc, pos, end = false) {
+  if (!Array.isArray(pos) || pos.length !== 2) fail('bad position');
+  const [s, i] = pos;
+  const blocks = sectionAt(doc, s).blocks;
+  const n = blocks.length + (end ? 1 : 0);
+  if (!Number.isInteger(i) || i < 0 || i >= n) fail('no block ' + i);
+  return {s, i, blocks};
+}
+
+/** The paragraph at `pos`, or RangeError (also for Opaque blocks). */
+export function paraAt(doc, pos) {
+  const at = locate(doc, pos);
+  const p = at.blocks[at.i];
+  if (!p || p.type !== 'p') fail('block is not a paragraph');
+  return {...at, p};
+}
+
+/** True if a paragraph other than `skip` in `doc` has id `id`. */
+export function idUsed(doc, id, skip) {
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b !== skip && b.type === 'p' && b.id === id) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The content of p in [a, b), shifted to start at 0:
+ * {text, runs, inlines}. a and b must already be checked.
+ */
+export function cut(p, a, b) {
+  const runs = [];
+  for (const r of p.runs) {
+    const s = Math.max(r.start, a);
+    const e = Math.min(r.end, b);
+    if (e <= s) continue;
+    if (s - a === r.start && e - a === r.end) runs.push(r);
+    else runs.push({...r, start: s - a, end: e - a});
+  }
+  const inlines = {};
+  for (const k of Object.keys(p.inlines)) {
+    const n = Number(k);
+    if (n >= a && n < b) inlines[n - a] = p.inlines[k];
+  }
+  return {text: p.text.slice(a, b), runs, inlines};
+}
+
+/** Join pieces made by cut(): {text, runs (normalised), inlines}. */
+export function join(...parts) {
+  let text = '';
+  const runs = [];
+  const inlines = {};
+  for (const x of parts) {
+    const d = text.length;
+    for (const r of x.runs) {
+      runs.push(d ? {...r, start: r.start + d, end: r.end + d} : r);
+    }
+    for (const k of Object.keys(x.inlines)) {
+      inlines[Number(k) + d] = x.inlines[k];
+    }
+    text += x.text;
+  }
+  return {text, runs: normRuns(runs), inlines};
+}
+
+/** Check a {start, end} range of p's text. */
+export function checkRange(p, range) {
+  if (range === null || typeof range !== 'object') fail('bad range');
+  checkPos(p.text, range.start, 'range start');
+  checkPos(p.text, range.end, 'range end');
+  if (range.end < range.start) fail('range ends before it starts');
+}

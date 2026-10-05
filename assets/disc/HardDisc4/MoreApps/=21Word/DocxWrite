@@ -1,0 +1,164 @@
+// DocxWrite - writes a Doc (see ./Model, ./DocxRead) as a .docx file
+// that Word opens without complaint.
+//
+//   await writeDocx(doc, {date}) -> Uint8Array
+//   newDoc({paper, date}) -> Doc        (see ./NewDoc)
+//   DocxError (code 'bad-model' for a Doc it will not write,
+//              'unsupported' for a root binding w to another URI)
+//
+// readDocx(await writeDocx(doc)) equals doc (paragraph ids aside)
+// for every Doc readDocx makes; differences by design: property
+// children are written in schema order (./Order), empty w:pPr and
+// w:rPr are left out, xmlns:w is added to a root that lacks it, and
+// a document read without a styles part gets one (from its
+// built-in styles), with a relationship and a content type.
+//
+// Parts written: [Content_Types].xml (the original entries plus
+// what the written parts need; a part of a known kind (footnotes,
+// core properties...) typed only application/xml gets its own type,
+// see ./PartTypes), _rels/.rels, the main part and its
+// .rels, styles, numbering and settings (raw, verbatim) and every
+// entry of doc.parts byte-identical. XML parts are UTF-8. Zip order:
+// [Content_Types].xml, the original order, then new parts. With
+// opts.date the output is the same bytes every time.
+// A Strict document (meta.conformance 'strict') is written Strict:
+// every tree is mapped back with mapNamespacesCopy(.., 'toStrict').
+import {writeZip} from 'wimplib/Zip';
+import {XmlError} from 'wimplib/Xml';
+import {checkBlock} from './ModelCheck';
+import {DocxError} from './DocxError';
+import {mapNamespacesCopy} from './NsMap';
+import {firstOfKind, resolvePart, relsNameFor, findPart}
+  from './Rels';
+import {repairs} from './PartTypes';
+import {documentTree} from './WriteBody';
+import {stylesTree} from './WriteStyles';
+import {xmlBytes, contentTypes, relsTree, relType, zipOrder, CT}
+  from './WriteParts';
+import {newDoc} from './NewDoc';
+
+export {newDoc} from './NewDoc';
+export {DocxError} from './DocxError';
+
+/** Throw DocxError 'bad-model' unless every block is valid. */
+function check(doc) {
+  if (!doc || !Array.isArray(doc.sections) || !doc.sections.length)
+    throw new DocxError('bad-model', 'a Doc needs sections');
+  doc.sections.forEach((s, k) => {
+    if (!s || !s.props || !Array.isArray(s.props.extra) ||
+      !Array.isArray(s.blocks))
+      throw new DocxError('bad-model', 'section ' + k + ' is bad');
+    s.blocks.forEach((b, i) => {
+      try {
+        checkBlock(b);
+      } catch (e) {
+        throw new DocxError('bad-model', 'section ' + k + ' block ' +
+          i + ': ' + e.message, {cause: e});
+      }
+    });
+  });
+}
+
+/** `doc` with the package data of a new document filled in. */
+function complete(doc) {
+  if (doc.meta && doc.meta.mainPart) return doc;
+  const base = newDoc();
+  return {...doc, meta: base.meta, rels: base.rels,
+    styles: doc.styles || base.styles,
+    rawSettings: doc.rawSettings || base.rawSettings,
+    parts: new Map([...base.parts, ...(doc.parts || [])])};
+}
+
+/** A relationship id not used in `rels`. */
+function freshId(rels) {
+  for (let k = rels.length + 1; ; k++) {
+    if (!rels.some((r) => r.id === 'rId' + k)) return 'rId' + k;
+  }
+}
+
+/** Target of `part` relative to the main part `main`. */
+function target(main, part) {
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  return part.startsWith(dir) ? part.slice(dir.length) : '/' + part;
+}
+
+/**
+ * Where the styles go: the styles part read, else (a document read
+ * without one) the target of an existing styles relationship, else
+ * styles.xml beside the main part, with a new relationship.
+ */
+function stylesName(doc, rels, strict) {
+  const {meta} = doc;
+  if (meta.stylesPart) return meta.stylesPart;
+  const main = meta.mainPart;
+  const old = firstOfKind(rels, 'styles');
+  const to = old && resolvePart(main, old.target);
+  if (to) return to;
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  let name = dir + 'styles.xml';
+  for (let k = 2; doc.parts.has(name); k++) {
+    name = dir + 'styles' + k + '.xml';
+  }
+  const id = freshId(rels);
+  const type = relType('styles', strict);
+  rels.push({id, type, target: target(main, name), attrs: [['Id', id],
+    ['Type', type], ['Target', target(main, name)]]});
+  return name;
+}
+
+/** Map name -> bytes of every part; see the header. */
+function buildParts(doc) {
+  const {meta} = doc;
+  const strict = meta.conformance === 'strict';
+  const fin = (t) => strict ? mapNamespacesCopy(t, 'toStrict') : t;
+  const out = new Map();
+  const known = new Map();
+  const put = (name, tree, type) => {
+    out.set(name, xmlBytes(fin(tree), meta.prolog.get(name)));
+    if (type) known.set(name, type);
+  };
+  const main = meta.mainPart;
+  const rels = doc.rels.slice();
+  put(main, documentTree(doc), CT.main);
+  const sName = doc.styles ? stylesName(doc, rels, strict) : null;
+  const mainRels = relsNameFor(main);
+  if (rels.length || meta.zipOrder.includes(mainRels))
+    out.set(mainRels, xmlBytes(relsTree(rels)));
+  if (sName) put(sName, stylesTree(doc.styles), CT.styles);
+  if (doc.numbering && doc.numbering.raw && meta.numberingPart)
+    put(meta.numberingPart, doc.numbering.raw, CT.numbering);
+  if (doc.rawSettings && meta.settingsPart)
+    put(meta.settingsPart, doc.rawSettings, CT.settings);
+  for (const [n, b] of doc.parts) if (!out.has(n)) out.set(n, b);
+  const names = ['_rels/.rels', ...out.keys()];
+  out.set('_rels/.rels', xmlBytes(relsTree(meta.packageRels)));
+  const fix = repairs(meta.contentTypes, [['', meta.packageRels],
+    [main, rels]], (n) => findPart(out, n));
+  out.set('[Content_Types].xml', xmlBytes(contentTypes(
+    meta.contentTypes, names, known, fix)));
+  return out;
+}
+
+/**
+ * @param {object} doc a Doc
+ * @param {{date?: Date}} [opts] zip time stamps (default now)
+ * @returns {Promise<Uint8Array>}
+ * @throws {DocxError} 'bad-model' or 'unsupported'
+ */
+export async function writeDocx(doc, opts = {}) {
+  check(doc);
+  const d = complete(doc);
+  let parts;
+  try {
+    parts = buildParts(d);
+  } catch (e) {
+    if (e instanceof XmlError || e instanceof RangeError) {
+      throw new DocxError('bad-model', 'cannot write: ' + e.message,
+        {cause: e});
+    }
+    throw e;
+  }
+  const order = zipOrder([...parts.keys()], d.meta.zipOrder);
+  return writeZip(order.map((n) => [n, parts.get(n)]),
+    {date: opts.date});
+}

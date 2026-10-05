@@ -1,0 +1,120 @@
+// Styles - the style table of a document and style resolution.
+//
+//   StyleTable {docDefaults: {rPr, pPr}, styles: Map<id, Style>,
+//               defaults: {paragraph, character, table}, latent}
+//   Style      {id, type: 'paragraph'|'character'|'table'|'numbering',
+//               name?, basedOn?, next?, link?, pPr, rPr, extra, raw,
+//               isDefault?, custom?, uiPriority?, qFormat?,
+//               semiHidden?, unhideWhenUsed?, locked?}
+//   raw is the original XML node when the style was read from a
+//   file, otherwise null (writers must handle null).
+//
+// RPr and PPr are the property objects of Model (PPr here also
+// holds outlineLvl?: number, 0 for Heading1 and so on). resolvePara and
+// resolveRun return NEW objects; the table is never changed by them.
+// (Like Model objects, styles of a live Doc must not be changed in
+// place; only a table under construction may be.)
+import {mergeInto} from './StylesMerge';
+
+export {ensureBuiltins} from './StylesBuiltin';
+
+/** An empty style table. */
+export function newStyleTable() {
+  return {
+    docDefaults: {rPr: {extra: []}, pPr: {extra: []}},
+    styles: new Map(),
+    defaults: {paragraph: null, character: null, table: null},
+    latent: null,
+  };
+}
+
+/**
+ * The style `id` of the given type; when there is none, the default
+ * style of that type; else null.
+ */
+export function styleOf(styles, id, type) {
+  const s = id === undefined || id === null ? undefined
+    : styles.styles.get(id);
+  if (s && s.type === type) return s;
+  const d = styles.defaults[type];
+  const ds = d ? styles.styles.get(d) : undefined;
+  return ds && ds.type === type ? ds : null;
+}
+
+/** Styles from the root ancestor down to `id`; cycle-safe. */
+function chain(styles, id, type) {
+  const out = [];
+  const seen = new Set();
+  let s = id === undefined || id === null ? undefined
+    : styles.styles.get(id);
+  while (s && s.type === type && !seen.has(s.id)) {
+    seen.add(s.id);
+    out.push(s);
+    s = s.basedOn === undefined ? undefined
+      : styles.styles.get(s.basedOn);
+  }
+  return out.reverse();
+}
+
+/** The paragraph style chain of `para`, default style if unknown. */
+function paraChain(styles, para) {
+  let c = chain(styles, para.pStyle, 'paragraph');
+  if (!c.length)
+    c = chain(styles, styles.defaults.paragraph, 'paragraph');
+  return c;
+}
+
+/** The paragraph properties of `para`, all inheritance applied. */
+export function resolvePara(styles, para) {
+  const out = mergeInto({extra: []}, styles.docDefaults.pPr);
+  for (const s of paraChain(styles, para)) mergeInto(out, s.pPr);
+  return mergeInto(out, para.pPr || {});
+}
+
+/** The character properties of `run` in `para`, all applied. */
+export function resolveRun(styles, para, run) {
+  const out = mergeInto({extra: []}, styles.docDefaults.rPr);
+  for (const s of paraChain(styles, para)) mergeInto(out, s.rPr);
+  for (const s of chain(styles, run.rStyle, 'character'))
+    mergeInto(out, s.rPr);
+  return mergeInto(out, run.rPr || {});
+}
+
+const TYPES = ['paragraph', 'character', 'table', 'numbering'];
+const FLAGS = ['isDefault', 'custom', 'uiPriority', 'qFormat',
+  'semiHidden', 'unhideWhenUsed', 'locked'];
+
+/**
+ * Store a normalised COPY of `style` in the table and return it.
+ * Throws RangeError for a bad id or type, or when the id exists and
+ * opts.replace is not true.
+ * @param {{replace?: boolean}} [opts]
+ */
+export function addStyle(styles, style, opts = {}) {
+  if (!style || typeof style.id !== 'string' || !style.id)
+    throw new RangeError('style needs a non-empty id');
+  if (!TYPES.includes(style.type))
+    throw new RangeError('bad style type: ' + style.type);
+  if (styles.styles.has(style.id) && !opts.replace)
+    throw new RangeError('style exists: ' + style.id);
+  const s = structuredClone(style);
+  if (!s.pPr) s.pPr = {extra: []};
+  if (!s.rPr) s.rPr = {extra: []};
+  if (!Array.isArray(s.pPr.extra)) s.pPr.extra = [];
+  if (!Array.isArray(s.rPr.extra)) s.rPr.extra = [];
+  if (!Array.isArray(s.extra)) s.extra = [];
+  if (s.raw === undefined) s.raw = null;
+  for (const f of FLAGS) if (s[f] === undefined) delete s[f];
+  styles.styles.set(s.id, s);
+  return s;
+}
+
+/** Make style `id` the default of `type`; RangeError if unknown. */
+export function setDefault(styles, type, id) {
+  if (!TYPES.includes(type))
+    throw new RangeError('bad style type: ' + type);
+  if (!styles.styles.has(id))
+    throw new RangeError('no such style: ' + id);
+  styles.defaults[type] = id;
+  return styles;
+}

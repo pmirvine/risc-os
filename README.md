@@ -53,8 +53,8 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, the machine's memory, using the desktop from another computer, programming in JavaScript and the game Lander II — with `Contents` listing
-them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, !Word, the machine's memory, using the desktop from another computer, programming in JavaScript and the
+game Lander II — with `Contents` listing them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
 right = Menu, Shift + left = Adjust), `?open=<dir>`, `?run=<app>`, `?cmd=<*command>` (`?run` and `?cmd` work only on localhost), `?reset=disc|cmos|all` (see below).
@@ -203,6 +203,22 @@ as text, a web page or a Draw calendar page; pages print through !Printers. Pass
 page with AES (through the browser's Web Crypto) until the password is given. It is written in JavaScript on the
 disc, like Lander II. Guide: `$.Docs.Journal`; developers: `docs/apps/Journal.md`.
 
+**A word processor for Microsoft Word files (a first step):** `$.MoreApps.!Word` opens a `.docx` (double-click one,
+on the hard disc or a HostFS drive; or drop it on its icon bar icon) in a window with its text, headings, bold,
+italic, underlining, colours, sizes, indents and alignment, and an info band saying what the file holds. Tables,
+pictures, footnotes and the like are shown as boxes, and *Save copy as .docx* writes the document back keeping
+**everything** in it (tables, pictures, comments, tracked changes, headers and footers, custom XML). It cannot edit yet;
+later steps add editing, page layout and pagination (which will only approximate Word), styles and lists, printing,
+tables and images, RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents from public
+test collections; real Microsoft Word could not be run during development, so a hand-off check was prepared. Older `.doc`
+and password-protected files are refused with a clear message. Documents never run anything and nothing is fetched.
+Calibri, Cambria, Arial, Times New Roman and Courier New are shown in the metric-compatible Carlito, Caladea and Liberation
+fonts bundled on the disc (all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the
+library of plain JavaScript modules (zip, XML...) it is built on, is installed with the system resources as
+`$.!Boot.Resources.!WimpLib`: any disc program imports it as `'wimplib/<Module>'`, found through the system variable
+`WimpLib$Path` (set at start-up with `WimpLib$Dir`; put a directory of your own first to override a module). Guide:
+`$.Docs.Word` (part 9 for programmers); developers: `docs/apps/Word.md`.
+
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
 applications. The book *Programming in JavaScript* (`$.Manuals.JSTutor`, read with !Bookworm) teaches JavaScript
@@ -236,6 +252,8 @@ font menu.
 | | !JsEdit: programmer's editor (JavaScript, BASIC, Obey) | |
 | | !GraphTask: BASIC programs in desktop windows (see above) | |
 | | !Journal: a diary with a page a day, in JavaScript (see above) | |
+| | !Word (MoreApps): reads and saves Word .docx files, in JavaScript (see above) | |
+| | !WimpLib (!Boot.Resources): the `'wimplib/...'` JavaScript library (see above) | |
 | | !Browse: web browser (see above) | |
 | | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
@@ -337,6 +355,13 @@ node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example
 node --test tests/jsapps          # the second tutorial's applications (!Contacts, !Organiser and their stages)
 node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/test-proxy-handlers.mjs tests/core/test-browser-hardening.mjs   # --public-url, the trusted proxy and the engine's guards
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving
+node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
+node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)
+node tests/moreapps/validate.mjs  # check what the .docx writer writes against the Word schema (needs xmllint)
+MOREAPPS_REAL_DOCX=1 MOREAPPS_REAL_DOCX_DIRS=~/Documents node --test tests/moreapps/docx-roundtrip.test.mjs   # also round-trip .docx files on this machine (off by default; system folders + the listed ones, never the home folder)
 node tests/integration/flows.mjs dnd print   # one group: dnd print help chars tw configure pinboard shutdown reset basic
 node tests/integration/monkey.mjs 5000 1 2 3 # steps, seeds
 ```

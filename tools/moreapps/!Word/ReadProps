@@ -1,0 +1,157 @@
+// ReadProps - lossless readers for property elements (rPr, pPr,
+// sectPr, a style's children).
+//
+// The rule: a known child element becomes a model field only when it
+// is understood completely - every attribute is a known WML one with
+// a value of the expected form, it has no unexpected content, and it
+// is the only child of that name. Anything else (unknown elements,
+// extensions such as w14:*, repeated elements, theme fonts...) is
+// kept as the original XML node in `extra`, in document order.
+// Comments and white space between the children are dropped.
+//
+// SECURITY: field names come only from the fixed tables below; names
+// found in the file are only ever used as Map keys, so an element or
+// attribute called __proto__ or constructor is inert.
+import {scope, wName, wAttrs, isEl, blank} from './Ns';
+
+const INT = /^-?(0|[1-9][0-9]*)$/;
+
+/** The integer an attribute value spells exactly, or undefined. */
+export function intOf(s) {
+  if (typeof s !== 'string' || !INT.test(s)) return undefined;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : undefined;
+}
+
+const ON = ['1', 'true', 'on'];
+const OFF = ['0', 'false', 'off'];
+
+/** true / false for an ST_OnOff value, else undefined. */
+export function onOffOf(v) {
+  return ON.includes(v) ? true : OFF.includes(v) ? false : undefined;
+}
+
+const empty = (node) => node.children.length === 0;
+
+/** <w:b/>, <w:b w:val="0"/> ... -> boolean. */
+export const onOff = (a, node) => {
+  if (!empty(node)) return undefined;
+  if (a.size === 0) return true;
+  return a.size === 1 && a.has('val') ? onOffOf(a.get('val'))
+    : undefined;
+};
+
+/** <w:x w:val="..."/> -> the string. */
+export const str = (a, node) => empty(node) && a.size === 1 &&
+  a.has('val') ? a.get('val') : undefined;
+
+/** <w:x w:val="12"/> -> 12. */
+export const int = (a, node) => empty(node) && a.size === 1 &&
+  a.has('val') ? intOf(a.get('val')) : undefined;
+
+/**
+ * An element whose attributes are some of `keys` -> object; the
+ * keys in `ints` must be integers.
+ */
+export const attrsObj = (keys, ints) => (a, node) => {
+  if (!empty(node)) return undefined;
+  const o = {};
+  for (const [k, v] of a) {
+    const at = keys.indexOf(k);
+    if (at < 0) return undefined;
+    const x = ints.includes(k) ? intOf(v) : v;
+    if (x === undefined) return undefined;
+    o[keys[at]] = x;
+  }
+  return o;
+};
+
+/**
+ * Read the children of `node` with `table` (Map of local name ->
+ * {field, read(attrs, node, map)}). Returns {props, top}: props has
+ * the fields and `extra`; fields marked {top: true} go to `top`.
+ */
+export function readProps(node, map, table) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  const kids = node.children.filter(isEl);
+  const count = new Map();
+  for (const c of kids) {
+    const l = wName(c, m);
+    if (l !== null) count.set(l, (count.get(l) || 0) + 1);
+  }
+  const props = {extra: []};
+  const top = {};
+  for (const c of kids) {
+    const l = wName(c, m);
+    const spec = l !== null && count.get(l) === 1 ? table.get(l)
+      : undefined;
+    const a = spec ? wAttrs(c, m) : null;
+    const v = a ? spec.read(a, c, m) : undefined;
+    if (v === undefined) props.extra.push(c);
+    else if (spec.top) top[spec.field] = v;
+    else props[spec.field] = v;
+  }
+  return {props, top};
+}
+
+const entry = (field, read, top) => [field, {field, read, top}];
+
+/** numPr: only <w:ilvl w:val=n/> and <w:numId w:val=n/> inside. */
+const numPr = (a, node, m) => {
+  if (a.size) return undefined;
+  const o = {};
+  for (const c of node.children) {
+    if (typeof c === 'string' && blank(c)) continue;
+    const l = wName(c, m);
+    if (l !== 'ilvl' && l !== 'numId') return undefined;
+    const ca = wAttrs(c, m);
+    const v = ca ? int(ca, c) : undefined;
+    if (v === undefined || o[l] !== undefined) return undefined;
+    if (l === 'ilvl') o.ilvl = v; else o.numId = v;
+  }
+  return o;
+};
+
+const RPR = [
+  entry('b', onOff), entry('i', onOff), entry('strike', onOff),
+  entry('u', str), entry('color', str), entry('highlight', str),
+  entry('vertAlign', str), entry('sz', int), entry('szCs', int),
+  entry('rFonts', attrsObj(['ascii', 'hAnsi', 'eastAsia', 'cs',
+    'hint'], [])),
+];
+const PPR = [
+  entry('jc', str), entry('keepNext', onOff),
+  entry('keepLines', onOff), entry('pageBreakBefore', onOff),
+  entry('outlineLvl', int), entry('numPr', numPr),
+  entry('spacing', attrsObj(['before', 'after', 'line', 'lineRule'],
+    ['before', 'after', 'line'])),
+  entry('ind', attrsObj(['left', 'right', 'firstLine', 'hanging'],
+    ['left', 'right', 'firstLine', 'hanging'])),
+];
+const sectPr = (a, node) => node;
+
+const RUN_RPR = new Map([...RPR, entry('rStyle', str, true)]);
+const STYLE_RPR = new Map(RPR);
+const PARA_PPR = new Map([...PPR, entry('pStyle', str, true),
+  entry('sectPr', sectPr, true)]);
+const STYLE_PPR = new Map(PPR);
+
+/**
+ * A w:rPr -> {rPr, rStyle?}. In a run (`inRun`) w:rStyle becomes
+ * rStyle; elsewhere (styles, defaults) it stays in extra.
+ */
+export function readRPr(node, map, inRun) {
+  const {props, top} = readProps(node, map,
+    inRun ? RUN_RPR : STYLE_RPR);
+  return {rPr: props, rStyle: top.rStyle};
+}
+
+/**
+ * A w:pPr -> {pPr, pStyle?, sectPr?}. In a paragraph (`inPara`)
+ * w:pStyle becomes pStyle and w:sectPr is handed back as its node.
+ */
+export function readPPr(node, map, inPara) {
+  const {props, top} = readProps(node, map,
+    inPara ? PARA_PPR : STYLE_PPR);
+  return {pPr: props, pStyle: top.pStyle, sectPr: top.sectPr};
+}

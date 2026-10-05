@@ -1,0 +1,104 @@
+// Model - the document model of !Word: plain data, Word units.
+//
+//   Doc     {sections, styles, numbering, parts, rels, meta,
+//            rawSettings}
+//   Section {props: {pgSz?, pgMar?, cols?, titlePg?, extra}, blocks,
+//            raw}   raw: the original w:sectPr node, or null
+//   Para    {type:'p', id, text, runs, inlines, pPr, pStyle?, extraP}
+//   Run     {start, end, rPr, rStyle?}   (UTF-16 offsets into text)
+//   Inline  {kind:'raw'|'br'|'tab', level:'p'|'r', node?, text?,
+//            brType?}
+//   Opaque  {type:'opaque', node}
+//
+// Inline.level says where its node belongs when written: 'p' directly
+// in the w:p (w:hyperlink, w:ins, bookmarks...), 'r' inside a w:r
+// with that run's formatting (w:drawing, w:fldChar, w:br...). level
+// is required for 'raw' and 'br'; 'br' and 'tab' are always 'r' ('tab'
+// may leave it out). Inline.text is only for display.
+//
+// NEVER CHANGE A MODEL OBJECT IN PLACE: the live Doc shares blocks,
+// runs, rPr/pPr objects, inlines and Xml nodes with its undo history.
+// Change a Doc only through Ops (or Document), which copy on write.
+//
+// Non-text items in a paragraph are one U+FFFC (OBJ) each in text,
+// described by inlines[index]. See ModelCheck for the invariants and
+// Ops for the operations that change a Doc.
+//
+// Paragraph ids come from one counter for the whole program, so they
+// are unique within a Doc; reserveIds(doc) moves the counter past
+// the ids a Doc already holds (Document does this when it is made).
+import {fail, normRuns, checkPara, checkProps}
+  from './ModelCheck';
+
+export {OBJ, deepEqual, sameFmt, checkPara, checkBlock, normRuns}
+  from './ModelCheck';
+
+let lastId = 0;
+
+/** A new paragraph id, larger than every id handed out so far. */
+export function nextId() {
+  return ++lastId;
+}
+
+/** Make sure nextId() never returns an id already used in `doc`. */
+export function reserveIds(doc) {
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b.type === 'p' && b.id > lastId) lastId = b.id;
+    }
+  }
+}
+
+/** A deep copy (blocks, props, XML nodes). */
+export const clone = (v) => structuredClone(v);
+
+/** Property object with its `extra` array (copied). */
+export function props(o) {
+  const p = clone(o || {});
+  if (!Array.isArray(p.extra)) p.extra = [];
+  checkProps(p, 'props');
+  return p;
+}
+
+/**
+ * A new paragraph. Without opts.runs the whole text is one run
+ * formatted with opts.rPr (and opts.rStyle). Every U+FFFC in text
+ * needs an entry in opts.inlines. Runs given are normalised; inputs
+ * are copied. Throws RangeError for anything inconsistent.
+ * @param {string} [text]
+ * @param {{id?, runs?, rPr?, rStyle?, inlines?, pPr?, pStyle?,
+ *   extraP?}} [opts]
+ */
+export function newPara(text = '', opts = {}) {
+  if (typeof text !== 'string') fail('text must be a string');
+  let runs;
+  if (opts.runs) runs = normRuns(clone(opts.runs));
+  else if (!text) runs = [];
+  else {
+    runs = [{start: 0, end: text.length, rPr: props(opts.rPr)}];
+    if (opts.rStyle !== undefined) runs[0].rStyle = opts.rStyle;
+  }
+  let id = opts.id;
+  if (id === undefined) id = nextId();
+  else if (Number.isInteger(id) && id > lastId) lastId = id;
+  const p = {type: 'p', id, text, runs,
+    inlines: clone(opts.inlines || {}), pPr: props(opts.pPr)};
+  if (opts.pStyle !== undefined) p.pStyle = opts.pStyle;
+  p.extraP = clone(opts.extraP || []);
+  checkPara(p);
+  return p;
+}
+
+/** A new section with no blocks and no page properties. */
+export function newSection() {
+  return {props: {extra: []}, blocks: [], raw: null};
+}
+
+/** A new document: one section holding one empty paragraph. */
+export function emptyDoc() {
+  const s = newSection();
+  s.blocks.push(newPara());
+  return {sections: [s], styles: null, numbering: null,
+    parts: new Map(), rels: [], meta: {}, rawSettings: null};
+}
+

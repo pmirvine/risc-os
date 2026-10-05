@@ -1,0 +1,167 @@
+// ReadPara - one w:p -> a Para of the Model (or null: keep it raw).
+//
+// In a w:r: w:t is text; w:tab is '\t'; a plain w:br (no attributes)
+// is '\n'; any other w:br is U+FFFC with inline {kind:'br',
+// level:'r', brType?, node}; every other element (w:drawing,
+// w:fldChar, w:instrText, w:sym, w:footnoteReference...) is U+FFFC
+// with {kind:'raw', level:'r', node} and the run's formatting. A
+// tab, newline or U+FFFC written inside w:t is kept as a level 'r'
+// raw inline holding a w:t with just that character, so text never
+// gains a meaning the file did not give it.
+//
+// Every other child of w:p (w:hyperlink, w:fldSimple, w:ins, w:del,
+// w:sdt, w:smartTag, bookmarks, w:proofErr, m:oMath, unknown...) is
+// one U+FFFC with {kind:'raw', level:'p', node, text}: text (for
+// display only) is the plain text of the w:t elements inside, maybe
+// ''. A w:r that cannot be split up safely (unknown attributes, text
+// directly in it, a misplaced or repeated w:rPr) is such a level 'p'
+// inline too, whole. Run rsid attributes are not kept.
+//
+// The attributes of w:p (rsids, w14:paraId...) go to extraP as
+// [[name, value]] pairs. A w:pPr carrying attributes makes the whole
+// paragraph raw (returns null). Comments directly in w:p or w:r are
+// dropped; white space between elements is ignored.
+import {newPara, OBJ} from './Model';
+import {scope, wName, wAttrs, wAttr, isEl, blank, plainText}
+  from './Ns';
+import {readRPr, readPPr} from './ReadProps';
+
+const RSIDS = ['rsidR', 'rsidRPr', 'rsidDel'];
+const plain = () => ({rPr: {extra: []}});
+
+/** Collects text, runs and inlines for one paragraph. */
+class Builder {
+  constructor() {
+    this.parts = [];
+    this.len = 0;
+    this.runs = [];
+    this.inlines = {};
+  }
+
+  text(s, fmt) {
+    if (!s) return;
+    const run = {start: this.len, end: this.len + s.length,
+      rPr: fmt.rPr};
+    if (fmt.rStyle !== undefined) run.rStyle = fmt.rStyle;
+    this.runs.push(run);
+    this.parts.push(s);
+    this.len += s.length;
+  }
+
+  inline(x, fmt) {
+    this.inlines[this.len] = x;
+    this.text(OBJ, fmt);
+  }
+
+  /** A child of w:p kept whole. */
+  pRaw(node, map) {
+    const text = typeof node === 'string' ? node
+      : plainText(node, map);
+    this.inline({kind: 'raw', level: 'p', node, text}, plain());
+  }
+}
+
+/** True when the run must be kept whole: see the header. */
+function awkward(r, m) {
+  const a = wAttrs(r, m);
+  if (!a) return true;
+  for (const k of a.keys()) if (!RSIDS.includes(k)) return true;
+  let seen = false;
+  for (const c of r.children) {
+    if (typeof c === 'string') {
+      if (!blank(c)) return true;
+    } else if (isEl(c)) {
+      if (wName(c, m) === 'rPr') {
+        if (seen || c.attrs.length) return true;
+      }
+      seen = true;
+    }
+  }
+  return false;
+}
+
+/** The text of a w:t, or null when it is not plain text. */
+function tText(t, m) {
+  for (const [n] of t.attrs) if (n !== 'xml:space') return null;
+  let s = '';
+  for (const c of t.children) {
+    if (typeof c !== 'string') return null;
+    s += c;
+  }
+  return s;
+}
+
+function readT(t, m, b, fmt) {
+  const s = tText(t, m);
+  if (s === null) {
+    b.inline({kind: 'raw', level: 'r', node: t}, fmt);
+    return;
+  }
+  let from = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c !== 9 && c !== 10 && c !== 0xfffc) continue;
+    b.text(s.slice(from, i), fmt);
+    b.inline({kind: 'raw', level: 'r', node: {name: t.name,
+      attrs: t.attrs.map(([n, v]) => [n, v]), children: [s[i]]}}, fmt);
+    from = i + 1;
+  }
+  b.text(s.slice(from), fmt);
+}
+
+function readRun(r, map, b) {
+  const m = r.attrs.length ? scope(map, r) : map;
+  if (awkward(r, m)) {
+    b.pRaw(r, map);
+    return;
+  }
+  let fmt = plain();
+  for (const c of r.children) {
+    if (isEl(c) && wName(c, m) === 'rPr') fmt = readRPr(c, m, true);
+  }
+  for (const c of r.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'rPr') continue;
+    const bare = !c.attrs.length && !c.children.length;
+    if (l === 't') readT(c, m, b, fmt);
+    else if (l === 'tab' && bare) b.text('\t', fmt);
+    else if (l === 'br' && bare) b.text('\n', fmt);
+    else if (l === 'br') {
+      const x = {kind: 'br', level: 'r', node: c};
+      const type = wAttr(c, c.attrs.length ? scope(m, c) : m, 'type');
+      if (type !== undefined) x.brType = type;
+      b.inline(x, fmt);
+    } else b.inline({kind: 'raw', level: 'r', node: c}, fmt);
+  }
+}
+
+/**
+ * Read a w:p. Returns {para, sectPr} (sectPr: the w:pPr/w:sectPr
+ * node or null), or null when the paragraph must stay raw.
+ */
+export function readPara(node, map) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  const b = new Builder();
+  let pp = {pPr: {extra: []}};
+  let first = true;
+  for (const c of node.children) {
+    if (typeof c === 'string') {
+      if (!blank(c)) b.pRaw(c, m);
+      continue;
+    }
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'pPr' && first) {
+      if (c.attrs.length) return null;
+      pp = readPPr(c, m, true);
+    } else if (l === 'r') readRun(c, m, b);
+    else b.pRaw(c, m);
+    first = false;
+  }
+  const opts = {runs: b.runs, inlines: b.inlines, pPr: pp.pPr,
+    extraP: node.attrs.map(([n, v]) => [n, v])};
+  if (pp.pStyle !== undefined) opts.pStyle = pp.pStyle;
+  const para = newPara(b.parts.join(''), opts);
+  return {para, sectPr: pp.sectPr || null};
+}

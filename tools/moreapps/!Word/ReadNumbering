@@ -1,0 +1,60 @@
+// ReadNumbering - numbering.xml -> doc.numbering.
+//
+//   {raw, nums: Map<numId, {abstractNumId, levels}>}
+//   raw     the original w:numbering root element (kept whole: the
+//           writer puts it back as it was)
+//   levels  [{ilvl, numFmt?, lvlText?, start?}] from the w:lvl
+//           children of the w:abstractNum the w:num points at
+//           (w:lvlOverride is not applied yet)
+// Ids are numbers when they are integers, else the original strings.
+import {scope, wName, wAttr, isEl} from './Ns';
+import {intOf} from './ReadProps';
+
+const idOf = (s) => intOf(s) ?? s;
+
+/** The w:val of the first `name` child of `node`, or undefined. */
+function childVal(node, m, name) {
+  for (const c of node.children) {
+    if (wName(c, m) === name) return wAttr(c, m, 'val');
+  }
+  return undefined;
+}
+
+function levels(abs, m) {
+  const out = [];
+  for (const c of abs.children) {
+    if (wName(c, m) !== 'lvl') continue;
+    const lvl = {ilvl: idOf(wAttr(c, m, 'ilvl'))};
+    const fmt = childVal(c, m, 'numFmt');
+    if (fmt !== undefined) lvl.numFmt = fmt;
+    const text = childVal(c, m, 'lvlText');
+    if (text !== undefined) lvl.lvlText = text;
+    const start = intOf(childVal(c, m, 'start'));
+    if (start !== undefined) lvl.start = start;
+    out.push(lvl);
+  }
+  return out;
+}
+
+/** doc.numbering for a numbering part (its root element). */
+export function readNumbering(root, map) {
+  const m = scope(map, root);
+  const abstract = new Map();
+  const nums = new Map();
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'abstractNum') {
+      const id = idOf(wAttr(c, m, 'abstractNumId'));
+      if (!abstract.has(id)) abstract.set(id, levels(c, m));
+    } else if (l === 'num') {
+      const id = idOf(wAttr(c, m, 'numId'));
+      const abs = idOf(childVal(c, m, 'abstractNumId'));
+      if (!nums.has(id)) nums.set(id, {abstractNumId: abs, levels: []});
+    }
+  }
+  for (const n of nums.values()) {
+    n.levels = structuredClone(abstract.get(n.abstractNumId) || []);
+  }
+  return {raw: root, nums};
+}

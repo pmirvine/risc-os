@@ -1,0 +1,97 @@
+// FontLoad - registers the bundled fonts with the page.
+//
+//   loadFonts(vfs, dir, doc, families, FontFaceCtor)
+//     -> Promise<{loaded: string[], failed: string[]}>
+//
+// Reads each font file from the disc directory `dir` (path
+// 'dir.leaf') and adds a FontFace to doc.fonts. Each face is added
+// once per page, however often !Word is started: a face the page
+// already has (same family, weight and style, loaded or loading) is
+// used as it is, and calls in flight share their work through a job
+// map kept on globalThis (Symbol.for('word.fontjobs')), so it
+// outlives this module (each run of !Word loads it afresh). The
+// faces stay with the page when !Word quits, for the next run.
+// A file that cannot be read or decoded goes into `failed` (its leaf
+// name), is not remembered, and is tried again by the next call;
+// nothing is thrown. Families that are not bundled are skipped
+// silently (they are not reported in `failed`). `doc` and
+// `FontFaceCtor` default to the browser's globals and can be faked
+// in tests.
+import {bundledFamilies, fontFile} from './FontMap';
+
+const KEY = Symbol.for('word.fontjobs');
+
+/** The job map for a FontFaceSet: Map(leaf -> Promise). */
+function jobsFor(fonts) {
+  let all = globalThis[KEY];
+  if (!(all instanceof WeakMap)) {
+    all = new WeakMap();
+    globalThis[KEY] = all;
+  }
+  if (!all.has(fonts)) all.set(fonts, new Map());
+  return all.get(fonts);
+}
+
+const bare = (s) => String(s).replace(/^["']|["']$/g, '');
+const isBold = (w) => w === 'bold' || Number(w) >= 600;
+
+/** A face in `fonts` for this family and style that is usable. */
+function present(fonts, family, bold, italic) {
+  if (!fonts || typeof fonts[Symbol.iterator] !== 'function') {
+    return null;
+  }
+  for (const f of fonts) {
+    if (!f || bare(f.family) !== family) continue;
+    if (isBold(String(f.weight)) !== bold) continue;
+    if ((f.style === 'italic' || f.style === 'oblique') !== italic) {
+      continue;
+    }
+    if (f.status === 'loaded' || f.status === 'loading') return f;
+  }
+  return null;
+}
+
+function loadOne(vfs, dir, fonts, family, bold, italic, Ctor, leaf) {
+  return (async () => {
+    const had = present(fonts, family, bold, italic);
+    if (had) {
+      if (had.status === 'loading' && had.loaded) await had.loaded;
+      return true;
+    }
+    const bytes = await vfs.readFile(`${dir}.${leaf}`);
+    const face = new Ctor(family, bytes, {
+      weight: bold ? 'bold' : 'normal',
+      style: italic ? 'italic' : 'normal',
+    });
+    await face.load();
+    fonts.add(face);
+    return true;
+  })();
+}
+
+export async function loadFonts(vfs, dir, doc = globalThis.document,
+  families = bundledFamilies(), FontFaceCtor = globalThis.FontFace) {
+  const loaded = [], failed = [];
+  const fonts = doc.fonts;
+  const map = jobsFor(fonts);
+  const work = [];
+  for (const family of families) {
+    for (const bold of [false, true]) {
+      for (const italic of [false, true]) {
+        const leaf = fontFile(family, bold, italic);
+        if (!leaf) continue;
+        if (!map.has(leaf)) {
+          const p = loadOne(vfs, dir, fonts, family, bold, italic,
+            FontFaceCtor, leaf);
+          map.set(leaf, p);
+          p.catch(() => { if (map.get(leaf) === p) map.delete(leaf); });
+        }
+        work.push(map.get(leaf).then(
+          () => loaded.push(leaf), () => failed.push(leaf)));
+      }
+    }
+  }
+  await Promise.all(work);
+  loaded.sort(); failed.sort();
+  return {loaded, failed};
+}

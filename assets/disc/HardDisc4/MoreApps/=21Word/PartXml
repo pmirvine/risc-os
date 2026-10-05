@@ -1,0 +1,116 @@
+// PartXml - turns the bytes of one package part into parsed XML,
+// within limits that are checked BEFORE anything is allocated.
+//
+//   parsePart(bytes, name, limits) -> {decl, before, root, after}
+//   limits {maxXmlBytes, maxElements, maxParagraphs?}
+//
+// The gate: a part longer than maxXmlBytes, or one with more start
+// tags than maxElements (one pass over the bytes counting '<' not
+// followed by '/', '!' or '?'; an upper bound on the elements), is
+// refused with DocxError 'unsupported' before it is decoded or
+// parsed. With maxParagraphs (given for the main document only),
+// start tags with the local name 'p' (w:p, and any other x:p: an
+// upper bound on the paragraphs) are limited the same way, in UTF-8
+// parts. The exact element count is checked again after parsing.
+// Text is UTF-8, or UTF-16 when the part starts with a BOM.
+import {parseXml, XmlError} from 'wimplib/Xml';
+import {DocxError} from './DocxError';
+import {isEl} from './Ns';
+
+/** Most bytes in one parsed XML part (opts.maxXmlBytes). */
+export const MAX_XML_BYTES = 64 * 1024 * 1024;
+/** Most elements in one parsed part (opts.maxElements). */
+export const MAX_ELEMENTS = 4000000;
+
+function encodingOf(b) {
+  if (b[0] === 0xff && b[1] === 0xfe) return 'utf-16le';
+  if (b[0] === 0xfe && b[1] === 0xff) return 'utf-16be';
+  return 'utf-8';
+}
+
+/**
+ * Start tags in `b` (an upper bound on its elements), counting no
+ * further than limit + 1.
+ */
+export function startTags(b, enc, limit) {
+  const start = (c) => c !== 0x2f && c !== 0x21 && c !== 0x3f;
+  let n = 0;
+  if (enc === 'utf-8') {
+    for (let i = b.indexOf(0x3c); i >= 0; i = b.indexOf(0x3c, i + 1)) {
+      if (start(b[i + 1]) && ++n > limit) return n;
+    }
+    return n;
+  }
+  const be = enc === 'utf-16be';
+  const unit = (k) => be ? (b[2 * k] << 8) | b[2 * k + 1]
+    : b[2 * k] | (b[2 * k + 1] << 8);
+  const len = b.length >> 1;
+  for (let k = 0; k < len; k++) {
+    if (unit(k) === 0x3c && start(unit(k + 1)) && ++n > limit)
+      return n;
+  }
+  return n;
+}
+
+/** Start tags p or <prefix>:p in UTF-8 `b`, up to limit + 1. */
+export function pTags(b, limit) {
+  let n = 0;
+  for (let i = b.indexOf(0x3c); i >= 0; i = b.indexOf(0x3c, i + 1)) {
+    let j = i + 1;
+    while (j < b.length && j - i < 64 && b[j] !== 0x3a &&
+      b[j] !== 0x3e && b[j] !== 0x2f && b[j] > 0x20) j++;
+    const at = b[j] === 0x3a ? j + 1 : i + 1;
+    const end = b[at + 1];
+    if (b[at] === 0x70 && (end === 0x3e || end === 0x2f ||
+      end === 0x20 || end === 0x09 || end === 0x0a || end === 0x0d) &&
+      ++n > limit) return n;
+  }
+  return n;
+}
+
+function over(root, limit) {
+  let n = 0;
+  const stack = [root];
+  while (stack.length) {
+    const node = stack.pop();
+    if (++n > limit) return true;
+    for (const c of node.children) if (isEl(c)) stack.push(c);
+  }
+  return false;
+}
+
+const refuse = (part, why) =>
+  new DocxError('unsupported', part + ': ' + why, {part});
+
+/** Parse one part; see the header. */
+export function parsePart(bytes, part, limits = {}) {
+  const maxBytes = limits.maxXmlBytes ?? MAX_XML_BYTES;
+  const maxEls = limits.maxElements ?? MAX_ELEMENTS;
+  if (bytes.length > maxBytes)
+    throw refuse(part, 'more than ' + maxBytes + ' bytes');
+  const enc = encodingOf(bytes);
+  if (startTags(bytes, enc, maxEls) > maxEls)
+    throw refuse(part, 'more than ' + maxEls + ' elements');
+  const maxP = limits.maxParagraphs;
+  if (maxP !== undefined && enc === 'utf-8' &&
+    pTags(bytes, maxP) > maxP)
+    throw refuse(part, 'more than ' + maxP + ' paragraphs');
+  let text;
+  try {
+    text = new TextDecoder(enc, {fatal: true}).decode(bytes);
+  } catch (e) {
+    throw new DocxError('bad-xml', part + ': bad text encoding',
+      {part, cause: e});
+  }
+  let x;
+  try {
+    x = parseXml(text);
+  } catch (e) {
+    if (!(e instanceof XmlError)) throw e;
+    throw new DocxError('bad-xml', part + ': ' + e.message +
+      ' (line ' + e.line + ')', {part, cause: e});
+  }
+  if (over(x.root, maxEls))
+    throw refuse(part, 'more than ' + maxEls + ' elements');
+  return x;
+}

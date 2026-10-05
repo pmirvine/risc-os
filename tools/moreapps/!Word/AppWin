@@ -1,0 +1,147 @@
+// AppWin - the window of one open document: its text, read-only, in
+// a scrolling window, with the info line at the top; its menu saves
+// a copy, shows the Info box or closes it.
+//
+//   const dw = new DocWindow(app, path, doc)
+//   dw.show()          open it (or bring it to the front)
+//   dw.relayout()      lay it out again (fonts have arrived)
+//   dw.saveBytes()     -> Promise<Uint8Array>, the copy to save
+//   dw.close()
+// app: {task, docs (Map key -> DocWindow), closed(dw), open(path)}.
+import {wimp, vfs, Menu, saveAs} from 'riscos';
+import {writeDocx} from './DocxWrite';
+import {makeMeasure} from './Render';
+import {Layout} from './Layout';
+import {summary, infoWindow} from './Info';
+
+const W = 640, H = 560, LINE = 20;
+let count = 0;                         // (to place windows in turn)
+
+export class DocWindow {
+  constructor(app, path, doc) {
+    this.app = app;
+    this.path = path;
+    this.doc = doc;
+    this.leaf = vfs.leaf(path);
+    this.boxes = new Map();            // 'save', 'info' -> Window
+    this.summary = summary(doc);
+    this.text = [];
+    for (const s of doc.sections) {
+      for (const b of s.blocks) {
+        if (b.type === 'p') this.text.push(b.text);
+      }
+    }
+    const n = count++ % 8;
+    const w = this.win = app.task.createWindow({
+      title: this.leaf, x: 160 + n * 28, y: 70 + n * 28, w: W, h: H,
+      extent: {w: Math.max(W, wimp.width), h: H},
+      flags: {back: true, close: true, title: true, toggle: true,
+        vscroll: true, size: true, moveable: true},
+      colours: {workBg: 0}, minW: 240, minH: 120,
+      workButton: 'click',
+      help: 'This is a Word document, shown as text (it cannot be ' +
+        'edited yet).|MClick MENU to save a copy of it.',
+      menu: () => this.menu(),
+    });
+    const canvas = w.useCanvas((g, rect) => this.paint(g, rect));
+    this.L = new Layout(doc, makeMeasure(canvas.getContext('2d')));
+    this.relayout();
+    w.on('moved', () => {
+      if (Math.round(w.w) !== this.L.width) this.relayout();
+    });
+    w.on('close', (ev) => { ev.preventDefault(); this.close(); });
+    w.on('key', (ev) => this.key(ev.code));
+    w.on('dataload', (ev) => {
+      for (const f of ev.files) if (f.type !== 'dir') app.open(f.path);
+      return true;
+    });
+  }
+
+  /** Lay the text out for the window's width; set the extent. */
+  relayout() {
+    const w = this.win;
+    const h = this.L.layout(Math.round(w.w));
+    w.setExtent({w: Math.max(W, wimp.width), h: Math.max(h, 64)});
+    w.invalidate();
+  }
+
+  paint(g, rect) {
+    // the width changed without a 'moved' (toggle size, say)
+    if (Math.round(this.win.w) !== this.L.width) {
+      Promise.resolve().then(() => this.relayout());
+    }
+    this.L.paint(g, rect, this.summary);
+  }
+
+  show() {
+    const w = this.win;
+    if (w.isOpen) w.bringToFront();
+    else w.open({behind: 'top'});
+    wimp.setCaret(w);
+  }
+
+  /** Scrolling keys; others are left for the Wimp to pass on. */
+  key(code) {
+    const w = this.win;
+    const max = Math.max(0, w.extent.y1 - w.h);
+    const page = Math.max(LINE, w.h - 32);
+    const y = {
+      [0x19E]: w.scrollY + page, [0x19F]: w.scrollY - page, // Page
+      [0x18E]: w.scrollY + LINE, [0x18F]: w.scrollY - LINE, // arrows
+      [30]: 0, [0x1AF]: 0,                    // Home, Ctrl-up
+      [0x18B]: max, [0x1AE]: max,             // End (Copy), Ctrl-down
+    }[code];
+    if (y === undefined) return undefined;
+    w.scrollTo(0, Math.min(Math.max(0, y), max));
+    return true;
+  }
+
+  /** The bytes of the copy; an error names the file. */
+  async saveBytes() {
+    try {
+      return await writeDocx(this.doc);
+    } catch (e) {
+      throw new Error(`'${this.leaf}' could not be saved: ` +
+        (e && e.message ? e.message : String(e)));
+    }
+  }
+
+  /**
+   * The Save and Info boxes: made once (a menu asks for a submenu
+   * each time the pointer goes over its arrow), made again only if
+   * deleted, and deleted with the document.
+   */
+  box(name, make) {
+    let b = this.boxes.get(name);
+    if (!b) {
+      b = make();
+      this.boxes.set(name, b);
+      b.on('deleted', () => {
+        if (this.boxes.get(name) === b) this.boxes.delete(name);
+      });
+    }
+    return b;
+  }
+
+  menu() {
+    const task = this.app.task;
+    return new Menu('Word', [
+      {text: 'Save copy as .docx', submenu: () => this.box('save',
+        () => saveAs({task, title: 'Save as', filename: this.leaf,
+          filetype: 0xA7E, getData: () => this.saveBytes()})),
+      help: 'Save a copy of this document as a Word .docx file: ' +
+        'the parts it does not show are saved as they were.'},
+      {text: 'Info', submenu: () => this.box('info',
+        () => infoWindow(task, this.leaf, this.doc)),
+      help: 'What the document holds.'},
+      {text: 'Close', action: () => this.close(),
+        help: 'Close this document.'},
+    ]);
+  }
+
+  close() {
+    for (const b of [...this.boxes.values()]) b.delete();
+    this.win.delete();
+    this.app.closed(this);
+  }
+}

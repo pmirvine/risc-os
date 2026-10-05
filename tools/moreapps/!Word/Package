@@ -1,0 +1,134 @@
+// Package - opens a .docx: the zip, its content types and
+// relationships, and the parts the reader interprets.
+//
+// openPackage(bytes, opts) -> {zip, meta, rels, names, parse, strict}
+//   meta   contentTypes {defaults: [[ext, type]], overrides:
+//          [[partName, type]]}, packageRels, mainPart, zipOrder,
+//          stylesPart?, numberingPart?, settingsPart?,
+//          prolog: Map part name -> {decl, before, after}
+//   rels   the relationships of the main part (see ./Rels)
+//   names  zip names the reader consumes (not copied to doc.parts)
+//   parse(name, limits?) -> the root element of that part: parsed
+//          within the limits (./PartXml), Strict namespaces mapped
+//          to transitional (./NsMap); its prolog goes in meta
+//   strict Set of the parsed parts whose root element was in the
+//          Strict WML namespace
+// Part names come from the file, so they are only ever Map keys.
+import {readZip} from 'wimplib/Zip';
+import {ZipError} from 'wimplib/ZipError';
+import {DocxError} from './DocxError';
+import {isEl, rootScope} from './Ns';
+import {mapNamespaces, STRICT_W} from './NsMap';
+import {parsePart} from './PartXml';
+import {parseRels, firstOfKind, resolvePart, relsNameFor, findPart}
+  from './Rels';
+
+const ZIP_CODES = {
+  'not-zip': 'not-docx', truncated: 'not-docx', 'bad-crc': 'not-docx',
+  zip64: 'unsupported', encrypted: 'unsupported',
+  'too-big': 'unsupported', 'bad-method': 'unsupported',
+};
+
+const local = (n) => n.slice(n.indexOf(':') + 1);
+
+function contentTypes(root) {
+  const ct = {defaults: [], overrides: []};
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const get = (a) => {
+      for (const [n, v] of c.attrs) if (n === a) return v;
+      return '';
+    };
+    if (local(c.name) === 'Default') {
+      ct.defaults.push([get('Extension'), get('ContentType')]);
+    } else if (local(c.name) === 'Override') {
+      ct.overrides.push([get('PartName'), get('ContentType')]);
+    }
+  }
+  return ct;
+}
+
+/** True when the root element is in the Strict WML namespace. */
+function strictRoot(root) {
+  const i = root.name.indexOf(':');
+  return rootScope(root).get(i < 0 ? '' : root.name.slice(0, i)) ===
+    STRICT_W;
+}
+
+/** The first bytes of an OLE2 (CFB) file: .doc, encrypted .docx. */
+const OLE2 = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1];
+
+/**
+ * @param {Uint8Array|ArrayBuffer} bytes
+ * @param {{maxTotal?: number, maxRatio?: number,
+ *   maxElements?: number, maxXmlBytes?: number}} [opts]
+ */
+export async function openPackage(bytes, opts = {}) {
+  const head = bytes instanceof Uint8Array ? bytes
+    : new Uint8Array(bytes);
+  if (OLE2.every((b, i) => head[i] === b)) {
+    throw new DocxError('not-docx', 'This is an older Word (.doc) or ' +
+      'a password-protected file, not a .docx file', {kind: 'ole2'});
+  }
+  let zip;
+  try {
+    zip = await readZip(bytes, opts);
+  } catch (e) {
+    if (!(e instanceof ZipError)) throw e;
+    throw new DocxError(ZIP_CODES[e.code] || 'not-docx',
+      'not a .docx file: ' + e.message, {cause: e});
+  }
+  const meta = {contentTypes: {defaults: [], overrides: []},
+    packageRels: [], mainPart: null, zipOrder: [...zip.keys()],
+    prolog: new Map()};
+  const names = new Set();
+  const strict = new Set();
+
+  const parse = (name, limits = opts) => {
+    const x = parsePart(zip.get(name), name, limits);
+    if (strictRoot(x.root)) strict.add(name);
+    mapNamespaces(x.root, 'toTransitional');
+    meta.prolog.set(name, {decl: x.decl, before: x.before,
+      after: x.after});
+    names.add(name);
+    return x.root;
+  };
+
+  const ctName = findPart(zip, '[Content_Types].xml');
+  const pkgRels = findPart(zip, '_rels/.rels');
+  if (!ctName && !pkgRels)
+    throw new DocxError('not-docx', 'not a Word package');
+  if (ctName) meta.contentTypes = contentTypes(parse(ctName));
+  if (!pkgRels)
+    throw new DocxError('no-document', 'no package relationships');
+  meta.packageRels = parseRels(parse(pkgRels));
+  const office = firstOfKind(meta.packageRels, 'officeDocument');
+  const main = office &&
+    findPart(zip, resolvePart('', office.target));
+  if (!main) throw new DocxError('no-document', 'no main document');
+  meta.mainPart = main;
+  // The content types and package relationships are re-derived from
+  // meta when writing; so are the main part's relationships.
+  meta.prolog.delete(ctName);
+  meta.prolog.delete(pkgRels);
+
+  const mainRels = findPart(zip, relsNameFor(main));
+  let rels = [];
+  if (mainRels) {
+    rels = parseRels(parse(mainRels));
+    meta.prolog.delete(mainRels);
+  }
+  const sub = (kind, key) => {
+    const r = firstOfKind(rels, kind);
+    const name = r && findPart(zip, resolvePart(main, r.target));
+    if (name && name !== main && !names.has(name)) {
+      meta[key] = name;
+      names.add(name);
+    }
+  };
+  sub('styles', 'stylesPart');
+  sub('numbering', 'numberingPart');
+  sub('settings', 'settingsPart');
+  names.add(main);
+  return {zip, meta, rels, names, parse, strict};
+}

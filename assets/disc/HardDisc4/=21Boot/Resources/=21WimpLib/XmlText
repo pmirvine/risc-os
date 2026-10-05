@@ -1,0 +1,156 @@
+// XmlText - low-level helpers for the Xml parser and serializer:
+// the error class, name and character checks, escaping, and
+// decoding of character and entity references.
+//
+// Pure JavaScript: no browser or RISC OS APIs are used.
+
+/**
+ * What the parser throws for a document it will not accept.
+ *   code  'malformed' | 'dtd' | 'depth' | 'entity'
+ *   line  1-based line number where the problem was found
+ */
+export class XmlError extends Error {
+  /**
+   * @param {string} code see above
+   * @param {string} [message] defaults to the code
+   * @param {number} [line] 1-based
+   * @param {*} [cause] an underlying error, if any
+   */
+  constructor(code, message, line, cause) {
+    super(message || code, cause === undefined ? undefined : {cause});
+    this.name = 'XmlError';
+    this.code = code;
+    this.line = line || 1;
+  }
+}
+
+/** The 1-based line of offset `pos` in `s` (newlines are \n). */
+export function lineAt(s, pos) {
+  let line = 1;
+  for (let i = s.indexOf('\n'); i >= 0 && i < pos;
+       i = s.indexOf('\n', i + 1)) line++;
+  return line;
+}
+
+/** Escape character data: & < > and CR (as a numeric reference). */
+export function esc(s) {
+  return String(s).replace(/[&<>\r]/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' :
+    '&#13;');
+}
+
+/** Escape an attribute value: & < > " and tab, LF, CR. */
+export function escAttr(s) {
+  return String(s).replace(/[&<>"\t\n\r]/g, (c) =>
+    c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' :
+    c === '"' ? '&quot;' : '&#' + c.charCodeAt(0) + ';');
+}
+
+/** True for the XML whitespace characters (CR is gone by now). */
+export function isSpace(c) {
+  return c === 32 || c === 10 || c === 9 || c === 13;
+}
+
+function nameStart(c) {
+  return (c >= 97 && c <= 122) || (c >= 65 && c <= 90) || c === 95 ||
+    c === 58 || (c >= 0xC0 && c !== 0xD7 && c !== 0xF7 && c < 0x2000) ||
+    (c >= 0x2C00 && c < 0xD800) || c >= 0xE000;
+}
+
+function nameChar(c) {
+  return nameStart(c) || (c >= 48 && c <= 57) || c === 45 || c === 46 ||
+    c === 0xB7;
+}
+
+/** True if `s` is a plausible XML name (prefixes allowed). */
+export function isName(s) {
+  if (!s.length || !nameStart(s.charCodeAt(0))) return false;
+  for (let i = 1; i < s.length; i++)
+    if (!nameChar(s.charCodeAt(i))) return false;
+  return true;
+}
+
+/**
+ * Offset of the first character not allowed in XML text, or -1.
+ * Disallowed: C0 controls except tab, LF, CR; U+FFFE, U+FFFF;
+ * unpaired surrogates.
+ */
+export function badCharAt(s) {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 32 && c < 0xD800) continue;
+    if (c === 9 || c === 10 || c === 13) continue;
+    if (c >= 0xD800 && c < 0xDC00) {
+      const d = s.charCodeAt(i + 1);
+      if (d >= 0xDC00 && d < 0xE000) { i++; continue; }
+      return i;
+    }
+    if (c >= 0xDC00 && c < 0xE000) return i;
+    if (c >= 0xE000 && c < 0xFFFE) continue;
+    return i;
+  }
+  return -1;
+}
+
+/** Value of the digits of body from `from`; -1 if bad or too big. */
+function numRef(body, from, radix) {
+  if (body.length - from < 1 || body.length - from > 64) return -1;
+  let v = 0;
+  for (let i = from; i < body.length; i++) {
+    const d = parseInt(body[i], radix);
+    if (!(d >= 0) || body[i] === '+' || body[i] === '-') return -1;
+    v = v * radix + d;
+    if (v > 0x10FFFF) return -1;
+  }
+  return v;
+}
+
+/** True for a well-formed XML declaration body (without <? ?>). */
+export function validDecl(d) {
+  const S = '[ \\t\\n]+', Q = '[ \\t\\n]*=[ \\t\\n]*';
+  const re = new RegExp('^xml' + S + 'version' + Q +
+    '(["\'])1\\.[0-9]+\\1' +
+    '(?:' + S + 'encoding' + Q + '(["\'])[A-Za-z][A-Za-z0-9._-]*\\2)?' +
+    '(?:' + S + 'standalone' + Q + '(["\'])(?:yes|no)\\3)?[ \\t\\n]*$');
+  return re.test(d);
+}
+
+const NAMED = {amp: '&', lt: '<', gt: '>', quot: '"', apos: "'"};
+
+/**
+ * Replace references in already-extracted text. Only the five
+ * predefined entities and numeric references are known.
+ * @param {string} s
+ * @param {function(): number} line gives the line, for errors
+ * @returns {string}
+ */
+export function decodeRefs(s, line) {
+  let at = s.indexOf('&');
+  if (at < 0) return s;
+  let out = '', from = 0;
+  while (at >= 0) {
+    const semi = s.indexOf(';', at);
+    if (semi < 0 || semi - at > 70)
+      throw new XmlError('malformed', 'bad reference', line());
+    const body = s.slice(at + 1, semi);
+    out += s.slice(from, at);
+    if (body.charCodeAt(0) === 35) {
+      const hex = body.charCodeAt(1) === 120;
+      const cp = numRef(body, hex ? 2 : 1, hex ? 16 : 10);
+      const ok = cp === 9 || cp === 10 || cp === 13 ||
+        (cp >= 32 && cp <= 0x10FFFF && !(cp >= 0xD800 && cp < 0xE000) &&
+         cp !== 0xFFFE && cp !== 0xFFFF);
+      if (!ok) throw new XmlError('malformed',
+        'invalid character reference', line());
+      out += String.fromCodePoint(cp);
+    } else if (Object.hasOwn(NAMED, body)) {
+      out += NAMED[body];
+    } else {
+      throw new XmlError('entity', 'unknown entity &' + body + ';',
+        line());
+    }
+    from = semi + 1;
+    at = s.indexOf('&', from);
+  }
+  return out + s.slice(from);
+}

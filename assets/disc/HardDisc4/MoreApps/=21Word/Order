@@ -1,0 +1,68 @@
+// Order - the child order Word insists on inside property containers.
+//
+// ECMA-376 defines w:pPr, w:rPr, w:tblPr, w:tcPr, w:trPr and w:sectPr
+// as xsd:sequence; Word reports "unreadable content" when the children
+// come in another order. Build those elements with sortChildren.
+import {PPR} from './OrderP';
+import {RPR} from './OrderR';
+import {TBLPR, TCPR, TRPR} from './OrderTbl';
+import {SECTPR} from './OrderSect';
+
+export const ORDER = {
+  pPr: PPR, rPr: RPR, tblPr: TBLPR, tcPr: TCPR, trPr: TRPR,
+  sectPr: SECTPR,
+};
+
+/** 'w:b' -> 'b' (only the first colon counts). */
+export function localName(name) {
+  const i = name.indexOf(':');
+  return i < 0 ? name : name.slice(i + 1);
+}
+
+/**
+ * Put the children of a property container in schema order.
+ *
+ * A known child is an element named w:<name> with <name> in ORDER.
+ * Known children are sorted stably by ORDER index, so repeated names
+ * keep their relative order.
+ *
+ * An extension element is any element whose name does not start
+ * with 'w:' (w14:*, w15:*, mc:*...). Extensions get ONE slot: after
+ * all known children except the Change element (pPrChange,
+ * rPrChange, sectPrChange, tblPrChange, tcPrChange, trPrChange, the
+ * last name of each ORDER list), and before it; several keep their
+ * input order. That is where Word writes them.
+ *
+ * Everything else (a w: element not in ORDER, text, comments) stays
+ * directly behind the nearest known child that precedes it in the
+ * input and moves with it; such children before the first known
+ * child stay first.
+ *
+ * Returns a new array; never drops, duplicates or modifies children;
+ * sorting twice changes nothing. An unrecognised parent name returns
+ * the children unchanged.
+ * @param {string} parentLocalName 'pPr', 'rPr', ... ('w:' is allowed)
+ * @param {Array} children
+ * @returns {Array}
+ */
+export function sortChildren(parentLocalName, children) {
+  const order = ORDER[localName(parentLocalName)];
+  if (!order) return children.slice();
+  const change = order.length - 1;
+  const lead = [];
+  const groups = [];
+  const ext = [];
+  for (const c of children) {
+    const named = c && typeof c.name === 'string';
+    const isW = named && c.name.startsWith('w:');
+    const n = isW ? order.indexOf(localName(c.name)) : -1;
+    if (n >= 0) groups.push({n, items: [c]});
+    else if (named && !isW) ext.push(c);
+    else if (groups.length) groups[groups.length - 1].items.push(c);
+    else lead.push(c);
+  }
+  groups.sort((a, b) => a.n - b.n);
+  const items = (gs) => gs.flatMap((g) => g.items);
+  return lead.concat(items(groups.filter((g) => g.n < change)), ext,
+    items(groups.filter((g) => g.n === change)));
+}

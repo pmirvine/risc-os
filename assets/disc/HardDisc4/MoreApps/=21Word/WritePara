@@ -1,0 +1,83 @@
+// WritePara - one Para of the Model -> a w:p element.
+//
+//   paraNode(para, sectPr, map) -> w:p   (sectPr: a w:sectPr node to
+//                                         put in the w:pPr, or null)
+//
+// The attributes of w:p are para.extraP. w:pPr is written only when
+// it has something in it. Each run becomes one w:r (w:rPr first,
+// then its content): text in w:t (xml:space="preserve" when it
+// starts or ends with white space), '\t' as w:tab, '\n' as w:br. A
+// U+FFFC is its inline: level 'r' (w:drawing, w:fldChar, w:br...)
+// inside the w:r with that run's formatting; level 'p' (w:hyperlink,
+// bookmarks, a whole kept w:r...) directly in the w:p, between runs.
+// An inline with no node (made by editing) is written as what its
+// kind says: <w:br w:type=brType/> or <w:tab/>.
+import {el} from 'wimplib/Xml';
+import {W} from './Wml';
+import {wName, isEl} from './Ns';
+import {rPrNode, pPrNode, badModel} from './WriteProps';
+
+const SPECIAL = /[\t\n\ufffc]/g;
+const EDGE = /^[ \t\n\r]|[ \t\n\r]$/;
+
+/** A w:t holding `s`. */
+function tNode(s) {
+  return {name: 'w:t', attrs: EDGE.test(s) ?
+    [['xml:space', 'preserve']] : [], children: [s]};
+}
+
+/** The node an inline stands for. */
+function inlineNode(x, at) {
+  if (x.node !== undefined && x.node !== null) return x.node;
+  if (x.kind === 'br') return W('br', {'w:type': x.brType});
+  if (x.kind === 'tab') return W('tab');
+  throw badModel('inline at ' + at + ' has no node');
+}
+
+/** Write the runs of `p` into `kids` (the children of the w:p). */
+function writeRuns(p, kids, map) {
+  for (const run of p.runs) {
+    const rPr = rPrNode(run.rPr, run.rStyle, map);
+    let cur = [];
+    const endRun = () => {
+      if (!cur.length) return;
+      kids.push({name: 'w:r', attrs: [],
+        children: rPr ? [rPr].concat(cur) : cur});
+      cur = [];
+    };
+    const text = p.text.slice(run.start, run.end);
+    let from = 0;
+    SPECIAL.lastIndex = 0;
+    for (let m = SPECIAL.exec(text); m; m = SPECIAL.exec(text)) {
+      const i = m.index;
+      if (i > from) cur.push(tNode(text.slice(from, i)));
+      from = i + 1;
+      const c = text[i];
+      if (c === '\t') cur.push(W('tab'));
+      else if (c === '\n') cur.push(W('br'));
+      else {
+        const at = run.start + i;
+        const x = p.inlines[at];
+        if (x.level === 'p') {
+          endRun();
+          kids.push(inlineNode(x, at));
+        } else cur.push(inlineNode(x, at));
+      }
+    }
+    if (from < text.length) cur.push(tNode(text.slice(from)));
+    endRun();
+  }
+}
+
+/** The w:p for paragraph `p`; see the header. */
+export function paraNode(p, sectPr, map) {
+  const kids = [];
+  const pPr = pPrNode(p.pPr, p.pStyle, sectPr, map);
+  if (pPr) kids.push(pPr);
+  writeRuns(p, kids, map);
+  // A kept w:pPr inline must not become the paragraph's own pPr.
+  if (!pPr && isEl(kids[0]) && wName(kids[0], map) === 'pPr')
+    kids.unshift(el('w:pPr'));
+  return {name: 'w:p', attrs: p.extraP.map(([n, v]) => [n, v]),
+    children: kids};
+}

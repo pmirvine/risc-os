@@ -1,0 +1,175 @@
+// WriteProps - property objects of the Model -> XML, in the child
+// order Word insists on.
+//
+//   rPrNode(rPr, rStyle, map)          w:rPr, or null when empty
+//   pPrNode(pPr, pStyle, sectPr, map)  w:pPr, or null when empty
+//   sectPrNode(section, map)           w:sectPr of a Section
+//   ordered(kind, children, map)       children in schema order
+//   orderBy(names, children, map)      the same for any list
+//   badModel(message)                  DocxError 'bad-model'
+//
+// `map` is the namespace scope of the part (prefix -> URI, see ./Ns).
+// Children are put in order by namespace and local name, so a raw
+// node kept with another prefix for WML is ordered correctly too;
+// the order is Order.sortChildren's (extension elements such as
+// w14:* in one slot before the *Change element). The extra nodes go
+// in before the field elements, so an unknown w: element stays
+// behind the extra node it followed in the file.
+// Each field is written with the same value syntax the reader
+// (./ReadProps, ./ReadSect) understands, so it reads back equal. A
+// field of the wrong type, or a key the Model does not have, is a
+// bad model: nothing is written for it, the whole write is refused.
+import {el} from 'wimplib/Xml';
+import {W, onOff} from './Wml';
+import {sortChildren} from './Order';
+import {RPR_FIELDS, PPR_FIELDS, SECT_FIELDS} from './PropNames';
+import {wName, isEl} from './Ns';
+import {DocxError} from './DocxError';
+import {deepEqual} from './ModelCheck';
+import {readSect} from './ReadSect';
+
+/** The error for a Model the writer will not write. */
+export const badModel = (msg) => new DocxError('bad-model', msg);
+
+/** Stand-ins for sortChildren: names by namespace, not prefix. */
+const wrap = (kids, map) => kids.map((c) => {
+  if (!isEl(c)) return {c};
+  const l = wName(c, map);
+  return {name: l === null ? '#ext' : 'w:' + l, c};
+});
+
+/** Children of a pPr, rPr, sectPr... in ORDER (see ./Order). */
+export function ordered(kind, kids, map) {
+  return sortChildren(kind, wrap(kids, map)).map((x) => x.c);
+}
+
+/**
+ * `kids` in the order of `names` (local names; for lists Order does
+ * not know, such as the children of w:style): other children stay
+ * behind the known child before them.
+ */
+export function orderBy(names, kids, map) {
+  let at = -1;
+  const keyed = wrap(kids, map).map((x) => {
+    const i = x.name ? names.indexOf(x.name.slice(2)) : -1;
+    if (x.name !== '#ext' && i >= 0) at = i;
+    return {k: at, c: x.c};
+  });
+  return keyed.sort((a, b) => a.k - b.k).map((x) => x.c);
+}
+
+const isBool = (v) => typeof v === 'boolean';
+const isStr = (v) => typeof v === 'string';
+const isInt = (v) => Number.isSafeInteger(v);
+
+const bool = (name) => (v) => isBool(v) ? onOff(name, v) : null;
+const str = (name) => (v) => isStr(v) ? W(name, {'w:val': v}) : null;
+const int = (name) => (v) => isInt(v) ? W(name, {'w:val': v}) : null;
+
+/** An element with some of the attributes `keys` (`ints` integer). */
+const obj = (name, keys, ints) => (v) => {
+  if (v === null || typeof v !== 'object' || Array.isArray(v))
+    return null;
+  for (const k of Object.keys(v)) {
+    if (!keys.includes(k)) return null;
+    if (!(ints.includes(k) ? isInt(v[k]) : isStr(v[k]))) return null;
+  }
+  return W(name, keys.filter((k) => v[k] !== undefined)
+    .map((k) => ['w:' + k, v[k]]));
+};
+
+const numPr = (v) => {
+  if (v === null || typeof v !== 'object') return null;
+  for (const k of Object.keys(v)) {
+    if ((k !== 'ilvl' && k !== 'numId') || !isInt(v[k])) return null;
+  }
+  return W('numPr', null, v.ilvl === undefined ? null
+    : W('ilvl', {'w:val': v.ilvl}), v.numId === undefined ? null
+    : W('numId', {'w:val': v.numId}));
+};
+
+const FONTS = ['ascii', 'hAnsi', 'eastAsia', 'cs', 'hint'];
+const SPACING = ['before', 'after', 'line', 'lineRule'];
+const IND = ['left', 'right', 'firstLine', 'hanging'];
+const MAR = ['top', 'right', 'bottom', 'left', 'header', 'footer',
+  'gutter'];
+
+/** field -> writer, for the fields (and element names) in `names`. */
+const table = (names, kinds) => Object.fromEntries([...names]
+  .map(([f, e]) => [f, kinds[f](e)]));
+
+const RPR = table(RPR_FIELDS, {
+  rFonts: (n) => obj(n, FONTS, []), b: bool, i: bool, strike: bool,
+  color: str, sz: int, szCs: int, highlight: str, u: str,
+  vertAlign: str,
+});
+const PPR = table(PPR_FIELDS, {
+  keepNext: bool, keepLines: bool, pageBreakBefore: bool,
+  numPr: () => numPr, spacing: (n) => obj(n, SPACING,
+    SPACING.slice(0, 3)), ind: (n) => obj(n, IND, IND), jc: str,
+  outlineLvl: int,
+});
+const SECT = table(SECT_FIELDS, {
+  pgSz: (n) => obj(n, ['w', 'h', 'orient', 'code'], ['w', 'h', 'code']),
+  pgMar: (n) => obj(n, MAR, MAR),
+  cols: (n) => obj(n, ['num', 'space'], ['num', 'space']),
+  titlePg: bool,
+});
+
+/** The field elements of property object `o` (not extra). */
+function fields(o, table, what) {
+  if (!o) return [];
+  const out = [];
+  for (const k of Object.keys(o)) {
+    if (k === 'extra' || o[k] === undefined) continue;
+    const make = Object.hasOwn(table, k) ? table[k] : null;
+    const node = make && make(o[k]);
+    if (!node) throw badModel(what + ': bad ' + k);
+    out.push(node);
+  }
+  return out;
+}
+
+/** w:rPr for run properties (and rStyle), or null when empty. */
+export function rPrNode(rPr, rStyle, map) {
+  const kids = fields(rPr, RPR, 'rPr');
+  if (rStyle !== undefined) {
+    if (!isStr(rStyle)) throw badModel('rStyle must be a string');
+    kids.unshift(W('rStyle', {'w:val': rStyle}));
+  }
+  const all = ordered('rPr', (rPr ? rPr.extra : []).concat(kids), map);
+  return all.length ? el('w:rPr', null, all) : null;
+}
+
+/** w:pPr (with pStyle and a section's sectPr), or null if empty. */
+export function pPrNode(pPr, pStyle, sectPr, map) {
+  const kids = fields(pPr, PPR, 'pPr');
+  if (pStyle !== undefined) {
+    if (!isStr(pStyle)) throw badModel('pStyle must be a string');
+    kids.unshift(W('pStyle', {'w:val': pStyle}));
+  }
+  if (sectPr) kids.push(sectPr);
+  const all = ordered('pPr', (pPr ? pPr.extra : []).concat(kids), map);
+  return all.length ? el('w:pPr', null, all) : null;
+}
+
+/**
+ * The w:sectPr of a section: its original node (children put in
+ * order) while that still says what props say, else one built from
+ * props, with the attributes (rsids) of the original.
+ */
+export function sectPrNode(section, map) {
+  const {props, raw} = section;
+  const kids = raw && deepEqual(readSect(raw, map), props) ?
+    ordered('sectPr', raw.children, map)
+    : ordered('sectPr', props.extra.concat(fields(props, SECT,
+      'section')), map);
+  return {name: raw ? raw.name : 'w:sectPr',
+    attrs: raw ? raw.attrs : [], children: kids};
+}
+
+/** True when a section has page properties worth writing. */
+export function hasProps(props) {
+  return Object.keys(props).some((k) => k !== 'extra') ||
+    props.extra.length > 0;
+}

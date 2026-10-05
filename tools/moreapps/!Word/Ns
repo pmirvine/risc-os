@@ -1,0 +1,101 @@
+// Ns - namespace handling for the .docx reader.
+//
+// Elements are recognised by namespace URI and local name, never by
+// a fixed 'w:' prefix: a scope is a Map from prefix ('' for the
+// default namespace) to URI, made from the xmlns attributes of an
+// element and its ancestors. (Strict namespace URIs have already been
+// mapped to the transitional ones by then: see ./NsMap.)
+import {NS} from './Wml';
+
+/** The WordprocessingML main namespace (transitional). */
+export const W = NS.w;
+
+const XML_NS = 'http://www.w3.org/XML/1998/namespace';
+
+/** The scope at the root element `node`. */
+export function rootScope(node) {
+  return scope(new Map([['xml', XML_NS]]), node);
+}
+
+/** The scope inside `node`, given the scope around it. */
+export function scope(map, node) {
+  let out = map;
+  for (const [n, v] of node.attrs) {
+    let pre;
+    if (n === 'xmlns') pre = '';
+    else if (n.startsWith('xmlns:')) pre = n.slice(6);
+    else continue;
+    if (out === map) out = new Map(map);
+    out.set(pre, v);
+  }
+  return out;
+}
+
+/** True for an element node (not text, a comment or a PI). */
+export const isEl = (c) => typeof c === 'object' &&
+  c.name !== undefined;
+
+/** True for text made only of XML white space. */
+export const blank = (s) => !/[^ \t\n\r]/.test(s);
+
+/**
+ * The local name of `node` when it is a WML element, else null.
+ * `map` is the scope around it; its own xmlns attributes count too.
+ */
+export function wName(node, map) {
+  if (!isEl(node)) return null;
+  const n = node.name;
+  const i = n.indexOf(':');
+  const pre = i < 0 ? '' : n.slice(0, i);
+  let uri = map.get(pre);
+  if (node.attrs.length) {
+    const decl = i < 0 ? 'xmlns' : 'xmlns:' + pre;
+    for (const [k, v] of node.attrs) if (k === decl) uri = v;
+  }
+  return uri === W ? n.slice(i + 1) : null;
+}
+
+/**
+ * The attributes of `node` as a Map of local name -> value, or null
+ * unless every attribute is a WML one (w:val...) and none repeats.
+ */
+export function wAttrs(node, map) {
+  const out = new Map();
+  for (const [n, v] of node.attrs) {
+    const i = n.indexOf(':');
+    if (i < 0 || map.get(n.slice(0, i)) !== W) return null;
+    const l = n.slice(i + 1);
+    if (out.has(l)) return null;
+    out.set(l, v);
+  }
+  return out;
+}
+
+/** The value of WML attribute `local` of `node`, or undefined. */
+export function wAttr(node, map, local) {
+  for (const [n, v] of node.attrs) {
+    const i = n.indexOf(':');
+    if (i > 0 && n.slice(i + 1) === local &&
+      map.get(n.slice(0, i)) === W) return v;
+  }
+  return undefined;
+}
+
+/** The text of every WML w:t below `node`, joined. */
+export function plainText(node, map) {
+  let s = '';
+  const stack = [[node, map]];
+  while (stack.length) {
+    const [n, m0] = stack.pop();
+    const m = n.attrs.length ? scope(m0, n) : m0;
+    if (wName(n, m) === 't') {
+      for (const c of n.children) if (typeof c === 'string') s += c;
+      continue;
+    }
+    for (let k = n.children.length - 1; k >= 0; k--) {
+      const c = n.children[k];
+      if (isEl(c)) stack.push([c, m]);
+    }
+  }
+  return s;
+}

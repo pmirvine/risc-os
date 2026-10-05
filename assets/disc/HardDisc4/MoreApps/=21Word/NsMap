@@ -1,0 +1,104 @@
+// NsMap - maps namespace URIs between ISO/IEC 29500 Strict and the
+// transitional form, both ways, so that a Strict document is read
+// with transitional URIs and can be written back as Strict.
+//
+//   mapNamespaces(node, dir)      in place, on a tree you own (one
+//                                 just parsed); true if it changed
+//   mapNamespacesCopy(node, dir)  the same on a new tree; `node` is
+//                                 left alone (use it on model data)
+//   dir: 'toTransitional' | 'toStrict'
+//   NS_PAIRS                      [[strict, transitional]...]
+//
+// Rewritten: the values of xmlns and xmlns:* attributes, the uri
+// attribute of a:graphicData, and each quoted URI inside a
+// w:dataBinding prefixMappings value. Relationship types are not
+// namespaces and are left alone.
+//
+// Pairs as listed by Microsoft's Open XML SDK
+// (OpenXmlNamespaceResolver.cs); every Strict URI here is a
+// registered PURL. Left out (no PURL: the Strict URI gives 404):
+// drawingml/compatibility, officeDocument/customXmlDataProps.
+import {NS, STRICT_TO_TRANSITIONAL} from './Wml';
+
+const S = 'http://purl.oclc.org/ooxml/';
+const T = 'http://schemas.openxmlformats.org/';
+const D = T + 'drawingml/2006/';
+const O = T + 'officeDocument/2006/';
+
+/** [[strict, transitional]...]: a one-to-one table. */
+export const NS_PAIRS = [
+  ...Object.entries(STRICT_TO_TRANSITIONAL),
+  [S + 'drawingml/chart', D + 'chart'],
+  [S + 'drawingml/chartDrawing', D + 'chartDrawing'],
+  [S + 'drawingml/diagram', D + 'diagram'],
+  [S + 'drawingml/lockedCanvas', D + 'lockedCanvas'],
+  [S + 'drawingml/spreadsheetDrawing', D + 'spreadsheetDrawing'],
+  [S + 'officeDocument/bibliography', O + 'bibliography'],
+  [S + 'officeDocument/customProperties', O + 'custom-properties'],
+  [S + 'officeDocument/customXml', O + 'customXml'],
+  [S + 'officeDocument/docPropsVTypes', O + 'docPropsVTypes'],
+  [S + 'officeDocument/extendedProperties',
+    O + 'extended-properties'],
+  [S + 'officeDocument/math', O + 'math'],
+  [S + 'officeDocument/sharedTypes', O + 'sharedTypes'],
+  [S + 'schemaLibrary/main', T + 'schemaLibrary/2006/main'],
+];
+
+const TO_T = new Map(NS_PAIRS);
+const TO_S = new Map(NS_PAIRS.map(([s, t]) => [t, s]));
+
+/** The strict WML namespace (what a Strict document's root uses). */
+export const STRICT_W = TO_S.get(NS.w);
+
+const local = (n) => n.slice(n.indexOf(':') + 1);
+const isEl = (c) => typeof c === 'object' && c.name !== undefined;
+
+function table(dir) {
+  if (dir === 'toTransitional') return TO_T;
+  if (dir === 'toStrict') return TO_S;
+  throw new RangeError('bad direction: ' + dir);
+}
+
+/** A prefixMappings value with each known quoted URI mapped. */
+function mapList(v, map) {
+  return v.replace(/(['"])([^'"]*)\1/g, (all, q, uri) =>
+    map.has(uri) ? q + map.get(uri) + q : all);
+}
+
+/** The new value of attribute n=v of element `el`, or undefined. */
+function mapped(el, n, v, map) {
+  if (n === 'xmlns' || n.startsWith('xmlns:')) return map.get(v);
+  if (n === 'uri' && local(el) === 'graphicData') return map.get(v);
+  if (local(n) === 'prefixMappings') {
+    const w = mapList(v, map);
+    return w === v ? undefined : w;
+  }
+  return undefined;
+}
+
+/** Map `node` and everything below it in place; true if changed. */
+export function mapNamespaces(node, dir) {
+  const map = table(dir);
+  let changed = false;
+  const stack = [node];
+  while (stack.length) {
+    const el = stack.pop();
+    const a = el.attrs;
+    for (let k = 0; k < a.length; k++) {
+      const w = mapped(el.name, a[k][0], a[k][1], map);
+      if (w !== undefined) {
+        a[k] = [a[k][0], w];
+        changed = true;
+      }
+    }
+    for (const c of el.children) if (isEl(c)) stack.push(c);
+  }
+  return changed;
+}
+
+/** A mapped copy of `node`; `node` itself is not changed. */
+export function mapNamespacesCopy(node, dir) {
+  const copy = structuredClone(node);
+  mapNamespaces(copy, dir);
+  return copy;
+}

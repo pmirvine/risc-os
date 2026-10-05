@@ -1,0 +1,133 @@
+// OpsText - replaceText (and the spliceText op it becomes),
+// splitBlock and mergeBlock.
+//
+// Each checks everything first, builds new paragraphs, then puts
+// them in the document, and returns the inverse op. Text edits are
+// undone by splicing the removed content back (so undo history
+// costs about the size of the edit); split and merge are undone by
+// restoring the old paragraph objects, which nothing ever changes.
+import {fail, wellFormed, checkPos, checkInlines, checkContent,
+  checkPara} from './ModelCheck';
+import {props, nextId, reserveIds} from './Model';
+import {paraAt, cut, join} from './OpsUtil';
+
+/**
+ * The format that text inserted at `at` gets when `del` units are
+ * deleted there. Typing over a selection (del > 0): that of the
+ * first selected character. Otherwise: that of the character before
+ * `at` (so at a boundary, the preceding run); at offset 0 the first
+ * run's; in an empty paragraph none.
+ */
+function fmtAt(p, at, del) {
+  if (!p.runs.length) return {rPr: {extra: []}};
+  const r = del > 0 ? p.runs.find((x) => x.start <= at && at < x.end)
+    : at === 0 ? p.runs[0]
+      : p.runs.find((x) => x.start < at && at <= x.end);
+  return r.rStyle === undefined ? {rPr: r.rPr}
+    : {rPr: r.rPr, rStyle: r.rStyle};
+}
+
+/** fmtAt, then op.rPr (replaces the rPr) and op.rStyle (null: none). */
+function fmtFor(p, op) {
+  const f = {...fmtAt(p, op.at, op.del)};
+  if (op.rPr !== undefined) {
+    f.rPr = props(op.rPr);
+    delete f.rStyle;
+  }
+  if (op.rStyle === null) delete f.rStyle;
+  else if (op.rStyle !== undefined) {
+    if (typeof op.rStyle !== 'string') fail('bad rStyle');
+    f.rStyle = op.rStyle;
+  }
+  return f;
+}
+
+function checkRegion(p, at, del) {
+  checkPos(p.text, at, 'at');
+  if (!Number.isInteger(del) || del < 0) fail('bad del ' + del);
+  checkPos(p.text, at + del, 'end of deletion');
+}
+
+/**
+ * {op:'replaceText', block, at, del, ins, rPr?, rStyle?, inlines?}
+ * Delete `del` code units at `at` and insert `ins` there, formatted
+ * as fmtFor() says. op.inlines maps offsets in `ins` to the Inline of
+ * each U+FFFC in `ins`; each must be a valid Inline, with its level
+ * (see Model and ModelCheck.checkInlines).
+ */
+export function replaceText(doc, op) {
+  const {p} = paraAt(doc, op.block);
+  if (typeof op.ins !== 'string' || !wellFormed(op.ins))
+    fail('bad ins');
+  checkRegion(p, op.at, op.del);
+  const ins = op.ins;
+  const add = op.inlines || {};
+  checkInlines(ins, add);
+  const runs = ins
+    ? [{start: 0, end: ins.length, ...fmtFor(p, op)}] : [];
+  return spliceText(doc, {op: 'spliceText', block: op.block,
+    at: op.at, del: op.del, content: {text: ins, runs, inlines: add}});
+}
+
+/**
+ * {op:'spliceText', block, at, del, content: {text, runs, inlines}}
+ * Replace `del` code units at `at` by content, formatted as it says
+ * (runs need not be normalised). The inverse is a spliceText too.
+ */
+export function spliceText(doc, op) {
+  const {s, i, blocks, p} = paraAt(doc, op.block);
+  const {at, del, content} = op;
+  checkRegion(p, at, del);
+  checkContent(content);
+  const old = cut(p, at, at + del);
+  const q = {...p, ...join(cut(p, 0, at), content,
+    cut(p, at + del, p.text.length))};
+  checkPara(q);
+  blocks[i] = q;
+  return {op: 'spliceText', block: [s, i], at,
+    del: content.text.length, content: old};
+}
+
+/**
+ * {op:'splitBlock', block, at}: split the paragraph at `at`. The
+ * first part keeps the id, pPr, pStyle and extraP; the second gets a
+ * new id, the same pPr (shared: never changed in place) and pStyle,
+ * but extraP = []: extraP holds raw paragraph-level XML tied to that
+ * one paragraph (such as w14:paraId, which must stay unique), so it
+ * is never duplicated.
+ */
+export function splitBlock(doc, op) {
+  const {s, i, blocks, p} = paraAt(doc, op.block);
+  checkPos(p.text, op.at, 'at');
+  const len = p.text.length;
+  const a = {...p, ...join(cut(p, 0, op.at))};
+  reserveIds(doc);
+  const b = {type: 'p', id: nextId(), ...join(cut(p, op.at, len)),
+    pPr: p.pPr};
+  if (p.pStyle !== undefined) b.pStyle = p.pStyle;
+  b.extraP = [];
+  blocks.splice(i, 1, a, b);
+  return {op: 'compound', ops: [
+    {op: 'removeBlock', at: [s, i + 1]},
+    {op: 'restoreBlock', block: [s, i], snapshot: p},
+  ]};
+}
+
+/**
+ * {op:'mergeBlock', block}: append the next block of the same
+ * section, which must be a paragraph, to this one. The result keeps
+ * this paragraph's id, pPr, pStyle and extraP.
+ */
+export function mergeBlock(doc, op) {
+  const {s, i, blocks, p} = paraAt(doc, op.block);
+  const n = blocks[i + 1];
+  if (!n || n.type !== 'p') fail('next block is not a paragraph');
+  const q = {...p, ...join(cut(p, 0, p.text.length),
+    cut(n, 0, n.text.length))};
+  checkPara(q);
+  blocks.splice(i, 2, q);
+  return {op: 'compound', ops: [
+    {op: 'restoreBlock', block: [s, i], snapshot: p},
+    {op: 'insertBlock', at: [s, i + 1], block: n},
+  ]};
+}
