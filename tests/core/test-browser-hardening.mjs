@@ -1,7 +1,9 @@
 // Engine hardening: the /check probe refuses private targets, extra Chrome args, the idle timer. No Chrome needed.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPrivateAddress, frameCheck, parseBrowserArgs, makeIdleTimer } from '../../tools/browser-server.mjs';
+import { spawnSync } from 'node:child_process';
+import { isPrivateAddress, frameCheck, parseBrowserArgs, makeIdleTimer, browserHandler } from '../../tools/browser-server.mjs';
+import { makeTrust } from '../../tools/trust.mjs';
 
 test('isPrivateAddress', () => {
   for (const ip of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.1.10', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', '::', 'fd00::1', 'fe80::1', '::ffff:192.168.1.1', '::ffff:c0a8:0101', '::ffff:7f00:1']) assert.equal(isPrivateAddress(ip), true, ip);
@@ -77,4 +79,39 @@ test('idle timer: fires after the delay, cancel stops it, 0 never arms', async (
   const off = makeIdleTimer(0, () => { fired++; });
   off.arm(); await wait(50);
   assert.equal(fired, 1);
+});
+
+test('--browser-check-private sets checkPrivate (off by default)', () => {
+  assert.equal(parseBrowserArgs(['--browser']).checkPrivate, false);
+  assert.equal(parseBrowserArgs(['--browser', '--browser-check-private']).checkPrivate, true);
+});
+
+// /__browse/check through the handler, from loopback, with the token from GET /__browse/
+const PORT = 8371;
+const checkVia = async (opts, trust) => {
+  const { handle } = browserHandler({ enabled: false, ...opts }, PORT, trust);
+  const call = async (path, extra = {}) => {
+    const req = { socket: { remoteAddress: '127.0.0.1' }, headers: { host: `localhost:${PORT}`, ...extra }, method: 'GET', on() {} };
+    const out = { code: null, body: '' };
+    const res = { headersSent: false, writeHead(c) { out.code = c; this.headersSent = true; }, write() {}, end(b) { out.body += b ?? ''; } };
+    await handle(req, res, new URL(path, 'http://x'));
+    return JSON.parse(out.body);
+  };
+  const { token } = await call('/__browse/');
+  return call('/__browse/check?url=' + encodeURIComponent('http://127.0.0.1:1/'), { 'x-browse-token': token });
+};
+const local = () => makeTrust({ publicUrl: null, secret: null }, PORT);
+
+test('/__browse/check refuses private targets by default, not with checkPrivate, and again when public', async () => {
+  assert.equal((await checkVia({}, local())).reason, 'Private address');
+  const r = await checkVia({ checkPrivate: true }, local());
+  assert.notEqual(r.reason, 'Private address');       // it tried to connect (and failed)
+  const pub = makeTrust({ publicUrl: new URL('https://example.test/ro'), secret: 'a-long-enough-secret' }, PORT);
+  assert.equal((await checkVia({ checkPrivate: true }, pub)).reason, 'Private address');
+});
+
+test('serve.mjs refuses --browser-check-private with --public-url', () => {
+  const r = spawnSync(process.execPath, ['serve.mjs', '9', '--browser-check-private', '--public-url=https://example.test/'], { cwd: new URL('../..', import.meta.url).pathname, env: { ...process.env, RISCOS_PROXY_SECRET: 'a-long-enough-secret' }, encoding: 'utf8', timeout: 10000 });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /--browser-check-private cannot be used with --public-url/);
 });

@@ -18,6 +18,7 @@ const listen = args.includes('--lan') ? null : (args.find((a) => a.startsWith('-
 const hostMounts = parseHostArgs(args);
 let trustArgs;
 try { trustArgs = parseTrustArgs(args); } catch (e) { console.error(`serve.mjs: ${e.message}`); process.exit(1); }
+if (trustArgs.publicUrl && args.includes('--browser-check-private')) { console.error('serve.mjs: --browser-check-private cannot be used with --public-url'); process.exit(1); }
 const trust = makeTrust(trustArgs, port);
 const hostfs = hostfsHandler(hostMounts, port, trust);
 // !Browse: node serve.mjs --browser (tools/browser-server.mjs)

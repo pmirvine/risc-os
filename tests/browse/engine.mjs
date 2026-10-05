@@ -21,7 +21,7 @@ if (!findChrome()) { console.log('SKIP no Chrome to test with'); process.exit(0)
 // (a server already on the port would be tested instead: stop)
 try { await fetch(BASE); console.log(`FAIL something is already running on port ${PORT}`); process.exit(1); } catch { /* free */ }
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'browse-test-'));
-const server = spawn(process.execPath, ['serve.mjs', String(PORT), '--browser', '--browser-profile', profile], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, RISCOS_CHECK_ALLOW_PRIVATE: '1' } });   // (its fixtures are on this machine)
+const server = spawn(process.execPath, ['serve.mjs', String(PORT), '--browser-check-private', '--browser', '--browser-profile', profile], { cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'] });   // (its fixtures are on this machine)
 let serverOut = '';
 server.stdout.on('data', (d) => { serverOut += d; });
 try {

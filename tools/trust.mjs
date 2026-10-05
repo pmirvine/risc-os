@@ -44,5 +44,5 @@ export function makeTrust({ publicUrl, secret }, port) {
     return have.length === want.length && crypto.timingSafeEqual(have, want);
   };
 
-  return { hosts, origins, allowedRemote };
+  return { hosts, origins, allowedRemote, isPublic: !!publicUrl };
 }

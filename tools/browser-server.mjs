@@ -8,6 +8,8 @@
 //                             RISCOS_BROWSER_ARGS="--flag --flag" (whitespace-separated) adds more
 //   --browser-idle=<seconds>  stop Chrome when no page has been connected for this long (default 300; 0 = never);
 //                             the next connection starts a fresh one (the profile is kept)
+//   --browser-check-private   for tests/development only: lets /__browse/check probe private/loopback addresses
+//                             (serve.mjs refuses it with --public-url, and public mode ignores it)
 //
 // Chrome runs headless, driven over a private pipe (--remote-debugging-pipe: no DevTools port is opened), with
 // its own profile. Each tab in !Browse is a page in Chrome: the page's pictures come as JPEG frames (a screencast,
@@ -39,10 +41,11 @@ const MAX_UPLOAD = 512 * 1024 * 1024;
 const HIGH_WATER = 2 * 1024 * 1024;         // frames wait while this much is still unsent to the page
 const WORLD = 'riscos';                     // the isolated world !Browse's helper script runs in
 
-/** --browser[=chrome], --browser-profile dir, --browser-arg=flag (repeatable), --browser-idle=seconds; env RISCOS_BROWSER_ARGS. */
+/** --browser[=chrome], --browser-profile dir, --browser-arg=flag (repeatable), --browser-idle=seconds, --browser-check-private; env RISCOS_BROWSER_ARGS. */
 export function parseBrowserArgs(argv) {
-  const o = { enabled: false, chrome: null, profile: path.join(os.homedir(), '.riscos-browse'), extraArgs: [], idle: 300 };
+  const o = { enabled: false, chrome: null, profile: path.join(os.homedir(), '.riscos-browse'), extraArgs: [], idle: 300, checkPrivate: false };
   for (let i = 0; i < argv.length; i++) {
+    if (argv[i] === '--browser-check-private') { o.checkPrivate = true; continue; }
     const a = /^--browser-arg=(.+)$/.exec(argv[i]);
     if (a) { o.extraArgs.push(a[1]); continue; }
     const idle = /^--browser-idle=(\d+(?:\.\d+)?)$/.exec(argv[i]);
@@ -831,7 +834,7 @@ async function privateHost(url, lookup) {
 
 // Whether a site lets itself be framed. This probe refuses private and loopback targets in every mode, so that
 // /__browse/check can't be used to scan this machine's network. (It doesn't limit what the Chrome engine itself
-// loads: that is the container's firewall in a public deployment.) RISCOS_CHECK_ALLOW_PRIVATE=1 lifts it, for the
+// loads: that is the container's firewall in a public deployment.) --browser-check-private lifts it, for the
 // test suites, whose fixtures are served from this machine.
 export async function frameCheck(url, { fetch: fetchImpl = fetch, lookup = dns.lookup, allowPrivate = false } = {}) {
   if (!/^https?:\/\//i.test(url)) return { frameable: false, reason: 'Only http: and https: pages can be shown' };
@@ -866,6 +869,7 @@ class HttpError extends Error { constructor(code, msg) { super(msg); this.code =
 
 export function browserHandler(opts, port, trust = makeTrust({ publicUrl: null, secret: null }, port)) {
   const service = opts.enabled ? new Service(opts) : null;
+  const allowPrivate = !!opts.checkPrivate && !trust.isPublic;   // (a flag, not an env var; never in public mode)
   const token = crypto.randomBytes(16).toString('hex');
   const SAFE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
   const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...SAFE }); res.end(JSON.stringify(obj)); };
@@ -888,7 +892,7 @@ export function browserHandler(opts, port, trust = makeTrust({ publicUrl: null, 
         return send(res, 200, { token, enabled: !!service, ...(service ? service.status() : {}) });
       }
       client(req, req.headers['x-browse-token'] ?? url.searchParams.get('t'));
-      if (rest === 'check') return send(res, 200, await frameCheck(url.searchParams.get('url') ?? '', { allowPrivate: process.env.RISCOS_CHECK_ALLOW_PRIVATE === '1' }));
+      if (rest === 'check') return send(res, 200, await frameCheck(url.searchParams.get('url') ?? '', { allowPrivate }));
       if (!service) throw new HttpError(404, 'Start the server with --browser');
       const cl = [...service.clients].find((c) => c.ws.id === url.searchParams.get('c'));
       if (rest.startsWith('file/') && req.method === 'GET') {

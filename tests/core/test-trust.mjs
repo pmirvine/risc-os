@@ -62,3 +62,8 @@ test('http(s) only', () => {
   assert.throws(() => parseTrustArgs(['--public-url=nonsense'], { RISCOS_PROXY_SECRET: SECRET }));
   assert.doesNotThrow(() => parseTrustArgs(['--public-url=http://a.example/'], { RISCOS_PROXY_SECRET: SECRET }));
 });
+
+test('isPublic says whether a public URL is set', () => {
+  assert.equal(pub().isPublic, true);
+  assert.equal(local().isPublic, false);
+});
