@@ -54,6 +54,10 @@ The container is still non-root with all capabilities dropped, but the browser t
 second layer. If SELinux turns out to be enforcing, add `:z` to the two bind mounts.
 The seccomp path in `compose.yml` is relative; if compose does not read it, use an absolute path.
 
+`install-apache.sh` reads `RO_VHOST_FILE`, `RO_INC_FILE`, `RO_ENV_FILE`, `RO_HTPASSWD_FILE`, `RO_APACHECTL`,
+`RO_SYSTEMCTL` and `RO_OWNER` (setting `RO_OWNER` also skips the root check). They exist for testing only;
+leave them unset on the server.
+
 ## Rotating secrets
 
 * Proxy secret: `umask 077; echo "RISCOS_PROXY_SECRET=$(openssl rand -hex 24)" > /srv/riscos/.env`,
