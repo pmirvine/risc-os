@@ -42,6 +42,8 @@ Chrome flags; `--browser-idle=<seconds>` stops Chrome after that long with no de
 never) and restarts it on demand. `--browser-check-private` (tests only; not with `--public-url`) lets the frame check
 reach private addresses. `deploy/` has a complete deployment (Docker, Apache, firewall, backups; see
 `deploy/README.md`) and the user guide is `$.Docs.Server`.
+`./deploy.sh` syncs a checkout to the servers afterwards (the full deployment and/or a plain static copy);
+it reads the server details from a git-ignored `.deploy.env` (see `deploy.env.example`).
 
 `serve.mjs` only answers this computer unless `--lan` (every network interface) or `--listen=<address>` is given;
 HostFS and !Browse's engine only answer this computer, even with `--lan`, unless `--public-url` is given, when they also

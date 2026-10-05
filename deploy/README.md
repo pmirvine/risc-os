@@ -143,3 +143,29 @@ banned (the `ignoreip` line). Fill in the two placeholders in the template, then
 Unban an address: `fail2ban-client set apache-basic-auth unbanip <address>`. Bans live in firewalld's
 runtime rules, so `firewall-cmd --reload` drops them until the next failure; fail2ban re-applies its bans
 when restarted.
+
+## Updating the servers: `deploy.sh`
+
+After the first-time install above, `./deploy.sh` at the top of the repository sends a checkout to the
+server(s):
+
+    ./deploy.sh                 # both: the full deployment (/ro) and the plain static copy (/roweb)
+    ./deploy.sh ro              # only the full deployment
+    ./deploy.sh roweb           # only the static copy (index.html, assets/, src/; no login, no engine)
+    ./deploy.sh --dry-run       # list what would change, change nothing
+    ./deploy.sh --test          # run the core tests first
+    ./deploy.sh ro --no-restart # copy files, leave the container alone
+
+It refuses to deploy with uncommitted changes (`--allow-dirty` overrides). Files are compared by content,
+so it lists only what really changed. For `ro` it rebuilds the image (cached layers make an unchanged
+build quick), brings the container up (recreating it only if the image or settings changed), waits for it to
+be healthy and checks that the address still asks for a login. For `roweb` it keeps files that exist only on
+the server (such as its `.htaccess`) and sets the web server's ownership.
+
+It only moves the app. Changes to `apache-ro.conf`, the firewall, cron, `backup.sh` or `fail2ban/` are
+copied across but not installed; the script says when one of them changed, and the steps above apply them.
+
+Server details are read from `.deploy.env` (git-ignored; copy `deploy.env.example` and fill it in):
+the ssh target, the two directories, the web server's owner and the two public addresses used for the final
+check. Nothing about the servers is kept in the repository.
+
