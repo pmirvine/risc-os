@@ -32,9 +32,12 @@ case "$cmd" in
       ensure iptables DOCKER-USER -i "$BR" -d "$net" -j DROP
     done
     # The container uses 1.1.1.1/9.9.9.9 for DNS, so nothing on the host is needed: drop all from the bridge.
-    ensure iptables INPUT -i "$BR" -j DROP
+    # Order matters (ACCEPT must precede DROP), so re-apply always removes both and re-inserts them in order.
+    drop iptables INPUT -i "$BR" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    drop iptables INPUT -i "$BR" -j DROP
+    iptables -I INPUT 1 -i "$BR" -j DROP
     # Replies to connections the host starts (Apache -> docker-proxy -> container) must still get in; inserted last = first.
-    ensure iptables INPUT -i "$BR" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -I INPUT 1 -i "$BR" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
     if command -v ip6tables >/dev/null 2>&1; then
       ip6tables -n -L DOCKER-USER >/dev/null 2>&1 && ensure ip6tables DOCKER-USER -i "$BR" -j DROP
       ensure ip6tables INPUT -i "$BR" -j DROP

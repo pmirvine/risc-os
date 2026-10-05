@@ -32,18 +32,18 @@ trap restore ERR
 
 # The config contains the secret: root only.
 umask 077
-sed "s|__SECRET__|$SECRET|g" "$HERE/apache-ro.conf" > "$INC.new"
+SECRET="$SECRET" awk '{ while ((i = index($0, "__SECRET__")) > 0) $0 = substr($0, 1, i-1) ENVIRON["SECRET"] substr($0, i+10); print }' "$HERE/apache-ro.conf" > "$INC.new"
 chown root:root "$INC.new"; chmod 0640 "$INC.new"
 mv "$INC.new" "$INC"
 
-if ! grep -qF "$LINE" "$VHOST"; then
+if ! grep -qE "^[[:space:]]*Include[[:space:]]+$INC[[:space:]]*$" "$VHOST"; then
   # Insert just before the </VirtualHost> that closes the *:443 vhost (first such block only).
   awk -v line="    $LINE" '
     /<VirtualHost[^>]*:443>/ { in443=1 }
     in443 && !done && /<\/VirtualHost>/ { print line; done=1; in443=0 }
     { print }
   ' "$VHOST" > "$VHOST.new"
-  grep -qF "$LINE" "$VHOST.new" || { echo "no <VirtualHost *:443> block found" >&2; rm -f "$VHOST.new"; false; }
+  grep -qE "^[[:space:]]*Include[[:space:]]+$INC[[:space:]]*$" "$VHOST.new" || { echo "no <VirtualHost *:443> block found" >&2; rm -f "$VHOST.new"; false; }
   cat "$VHOST.new" > "$VHOST"; rm -f "$VHOST.new"
 fi
 
@@ -52,5 +52,7 @@ echo "$OUT"
 case "$OUT" in *"Syntax OK"*) ;; *) false;; esac
 
 trap - ERR
+# Old copies of the include hold the secret: keep only the latest 3.
+ls -1t "$INC".bak-* 2>/dev/null | tail -n +4 | xargs -r rm -f
 systemctl reload apache2
 echo "Apache reloaded. Backup: $BAK"

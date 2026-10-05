@@ -5,7 +5,7 @@ FROM node:22-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium fonts-liberation fonts-noto-cjk fonts-noto-color-emoji fonts-dejavu-core \
-      dumb-init ca-certificates curl \
+      ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /app /data /profile \
  && chown node:node /data /profile
@@ -25,7 +25,7 @@ EXPOSE 8371
 
 # Extra Chrome flags come from RISCOS_BROWSER_ARGS (set in compose.yml), read by tools/browser-server.mjs.
 # RISCOS_PROXY_SECRET must be in the environment (compose passes it).
-ENTRYPOINT ["dumb-init", "--"]
+# PID 1 init: compose `init: true` (docker run --init).
 CMD ["node","serve.mjs","8371","--listen=0.0.0.0","--public-url=https://tsihome.mynetgear.com/ro","--browser","--browser-profile=/profile","--host","Server=/data"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

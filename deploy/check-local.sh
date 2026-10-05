@@ -5,10 +5,10 @@ cd "$(dirname "$0")/.."
 
 if ! docker info >/dev/null 2>&1; then echo "docker not available: skipped"; exit 0; fi
 
-NAME=riscos-check-$$
+NAME=riscos-smoke-check-$$
 TMP="$(mktemp -d)"
 SECRET="throwaway-secret-$$-$RANDOM$RANDOM"
-PORT=18371
+PORT=28371
 cleanup() { docker rm -f "$NAME" >/dev/null 2>&1 || true; rm -rf "$TMP"; docker rmi riscos-web:check >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; docker logs "$NAME" 2>&1 | tail -20 >&2 || true; exit 1; }

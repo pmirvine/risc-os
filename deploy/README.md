@@ -8,8 +8,8 @@ stripping the `/ro` prefix. Nothing new listens on a public port.
 
 | File | What it is |
 | --- | --- |
-| `Dockerfile` | Node 22 + Chromium image; copies only `serve.mjs index.html assets src tools`; runs as `node` (uid 1000) under dumb-init. |
-| `.dockerignore` | Allow-list so tests, vendor, chrome, docs and git history never enter the build context. |
+| `Dockerfile` | Node 22 + Chromium image; copies only `serve.mjs index.html assets src tools`; runs as `node` (uid 1000). |
+| `Dockerfile.dockerignore` | (BuildKit reads it for `-f deploy/Dockerfile`, context = repo root.) Allow-list so tests, vendor, chrome, docs and git history never enter the build context. |
 | `compose.yml` | The service: non-root, `cap_drop ALL`, `no-new-privileges`, read-only root fs, tmpfs `/tmp`, `init`, 2 GB / 2 CPUs / 512 pids, shm 512 MB, published on `127.0.0.1:18371` only, own bridge `br-ro` (172.30.50.0/24, no inter-container traffic), DNS 1.1.1.1 and 9.9.9.9. |
 | `chrome-seccomp.json` | Seccomp profile that lets Chromium create its sandbox (see Source below). |
 | `apache-ro.conf` | Apache snippet: auth, proxy, WebSocket, MIME types. Keeps the placeholder `__SECRET__`. |
@@ -35,7 +35,7 @@ unprivileged user namespaces. It has not yet been run on the server; Task 7 vali
    and put `deploy/` at `/srv/riscos/deploy` (the unit and cron file refer to that path).
 3. Password: `htpasswd -B -c /etc/apache2/ro.htpasswd pirvine` (prompts; chmod 0640, group of the
    Apache user, e.g. `chgrp www /etc/apache2/ro.htpasswd`).
-4. Start the container: `cd /srv/riscos/deploy && docker compose --env-file /srv/riscos/.env up -d --build`
+4. Start the container: `cd /srv/riscos/deploy && docker compose up -d --build`
    (`docker compose ps` should say healthy). This creates `br-ro`.
 5. Firewall: `cp ro-firewall.service /etc/systemd/system/ && systemctl daemon-reload && systemctl enable --now ro-firewall`.
    Re-check that 172.30.50.0/24 is free (`ip route`, `docker network ls`) before step 4.
@@ -48,8 +48,8 @@ unprivileged user namespaces. It has not yet been run on the server; Task 7 vali
 
 By default `RISCOS_BROWSER_ARGS` is empty and Chromium tries its own sandbox under the seccomp
 profile. If pages do not load and `docker logs riscos` shows sandbox or namespace errors, set
-the fallback and recreate: add `RISCOS_BROWSER_ARGS=--no-sandbox --disable-dev-shm-usage` to the
-shell (or a `.env` next to compose.yml) and run `docker compose --env-file /srv/riscos/.env up -d`.
+the fallback and recreate: add the line `RISCOS_BROWSER_ARGS=--no-sandbox --disable-dev-shm-usage` to
+`/srv/riscos/.env` and run `docker compose up -d`.
 The container is still non-root with all capabilities dropped, but the browser then has no
 second layer. If SELinux turns out to be enforcing, add `:z` to the two bind mounts.
 The seccomp path in `compose.yml` is relative; if compose does not read it, use an absolute path.
@@ -57,7 +57,7 @@ The seccomp path in `compose.yml` is relative; if compose does not read it, use 
 ## Rotating secrets
 
 * Proxy secret: `umask 077; echo "RISCOS_PROXY_SECRET=$(openssl rand -hex 24)" > /srv/riscos/.env`,
-  then `docker compose --env-file /srv/riscos/.env up -d` and `./install-apache.sh`.
+  then `docker compose up -d` and `./install-apache.sh`.
 * Password: `htpasswd -B /etc/apache2/ro.htpasswd pirvine` (prompts; no reload needed).
 
 ## Rollback
@@ -71,7 +71,10 @@ The seccomp path in `compose.yml` is relative; if compose does not read it, use 
 ## Known limits
 
 * `apache-ro.conf` and `install-apache.sh` have not been run against a real httpd. The WebSocket
-  rule uses the portable rewrite form; `upgrade=websocket` is an alternative on httpd 2.4.47+.
+  rule is `ProxyPass ... upgrade=websocket`, which needs httpd 2.4.47+ (Leap 15.6 ships 2.4.58; check
+  `httpd -v`). Modules needed: proxy, proxy_http, headers, auth_basic, authn_file. The snippet changes
+  nothing outside `/ro`. It adds no MIME types: the app sets its own Content-Types, so the server's
+  missing .woff2/.mjs/.wasm mappings do not matter for proxied responses.
 * The seccomp profile and the default (sandboxed) Chromium are unproven on this host until Task 7.
 * The firewall script drops the bridge's traffic to private ranges and to the host; it relies on
   Docker's `DOCKER-USER` chain and does not survive a Docker restart that flushes it
