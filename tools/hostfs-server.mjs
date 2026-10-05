@@ -13,6 +13,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { makeTrust } from './trust.mjs';
 
 const MAX_BODY = 1024 * 1024 * 1024;
 
@@ -38,10 +39,8 @@ export function parseHostArgs(argv) {
 
 class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
 
-export function hostfsHandler(mounts, port) {
+export function hostfsHandler(mounts, port, trust = makeTrust({ publicUrl: null, secret: null }, port)) {
   const token = crypto.randomBytes(16).toString('hex');
-  const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
-  const origins = new Set([...hosts].map((h) => `http://${h}`));
 
   const SAFE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
   const send = (res, code, obj) => {
@@ -105,8 +104,8 @@ export function hostfsHandler(mounts, port) {
 
   return async function handle(req, res, url) {
     try {
-      if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) throw new HttpError(403, 'HostFS is only available on this machine');
-      if (!hosts.has(req.headers.host)) throw new HttpError(403, 'Bad host');
+      if (!trust.allowedRemote(req)) throw new HttpError(403, 'HostFS is only available on this machine');
+      if (!trust.hosts.has((req.headers.host ?? '').toLowerCase())) throw new HttpError(403, 'Bad host');
       const site = req.headers['sec-fetch-site'];
       if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site request');
       const rest = url.pathname.slice('/__hostfs/'.length);
@@ -132,7 +131,7 @@ export function hostfsHandler(mounts, port) {
       }
       // changes: same-origin requests carrying the token only
       if (req.headers['x-hostfs-token'] !== token) throw new HttpError(403, 'Bad token');
-      if (req.headers.origin && !origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
+      if (req.headers.origin && !trust.origins.has(req.headers.origin.toLowerCase())) throw new HttpError(403, 'Bad origin');
       const op = req.method === 'PUT' ? 'write' : q.get('op');
       if (op === 'statfs') {
         const s = await fsp.statfs(m.root);

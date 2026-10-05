@@ -1,23 +1,28 @@
 // Tiny zero-dependency static server:
 //   node serve.mjs [port] [--lan | --listen=address] [--host Name=/path] [--host-ro Name=/path] [--browser[=chrome]]
 // It answers only this machine unless --lan (every network interface) or --listen is given; HostFS and !Browse's
-// engine stay this-machine-only either way.
+// engine stay this-machine-only either way, unless --public-url=<url> and RISCOS_PROXY_SECRET say a reverse proxy
+// in front of it is trusted (tools/trust.mjs).
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseHostArgs, hostfsHandler } from './tools/hostfs-server.mjs';
 import { parseBrowserArgs, browserHandler } from './tools/browser-server.mjs';
+import { parseTrustArgs, makeTrust } from './tools/trust.mjs';
 const root = path.dirname(new URL(import.meta.url).pathname);
 const args = process.argv.slice(2);
 const port = +args.find((a) => /^\d+$/.test(a)) || 8371;
 const listen = args.includes('--lan') ? null : (args.find((a) => a.startsWith('--listen='))?.slice(9) ?? 'loopback');
 // HostFS: node serve.mjs --host Work=~/riscos-files [--host-ro Name=/path] (tools/hostfs-server.mjs)
 const hostMounts = parseHostArgs(args);
-const hostfs = hostfsHandler(hostMounts, port);
+let trustArgs;
+try { trustArgs = parseTrustArgs(args); } catch (e) { console.error(`serve.mjs: ${e.message}`); process.exit(1); }
+const trust = makeTrust(trustArgs, port);
+const hostfs = hostfsHandler(hostMounts, port, trust);
 // !Browse: node serve.mjs --browser (tools/browser-server.mjs)
 const browserOpts = parseBrowserArgs(args);
-const browse = browserHandler(browserOpts, port);
+const browse = browserHandler(browserOpts, port, trust);
 const types = { '.html':'text/html', '.js':'text/javascript', '.mjs':'text/javascript', '.css':'text/css', '.json':'application/json', '.png':'image/png', '.gif':'image/gif', '.svg':'image/svg+xml', '.woff2':'font/woff2', '.ttf':'font/ttf', '.otf':'font/otf', '.wav':'audio/wav', '.txt':'text/plain' };
 const handler = (req, res) => {
   try { serveRequest(req, res); } catch { if (!res.headersSent) res.writeHead(400); res.end(); }   // e.g. a bad %-escape
@@ -35,7 +40,7 @@ const serveRequest = (req, res) => {
     return res.end(JSON.stringify({ files }));
   }
   const f = path.join(root, p);
-  if (!f.startsWith(root)) { res.writeHead(403); return res.end(); }
+  if (f !== root && !f.startsWith(root + path.sep)) { res.writeHead(403); return res.end(); }
   fs.readFile(f, (err, data) => {
     if (err) { res.writeHead(404); return res.end('Not found'); }
     // X-HostFS: tells the page this server has /__hostfs/ and /__browse/ (other static servers don't; see
@@ -60,10 +65,11 @@ for (const addr of addresses) {
     if (!first) return;
     first = false;
     console.log(`RISC OS on http://localhost:${port}/`);
+    if (trustArgs.publicUrl) console.log(`  public at ${trustArgs.publicUrl.href} (behind a trusted reverse proxy)`);
     if (listen !== 'loopback') {
       const nets = Object.values(os.networkInterfaces()).flat().filter((n) => n && !n.internal && n.family === 'IPv4');
       for (const n of nets) console.log(`  also on the network at http://${n.address}:${port}/`);
-      if (hostMounts.length || browserOpts.enabled) console.log('  (HostFS and !Browse\'s engine are only available on this machine)');
+      if ((hostMounts.length || browserOpts.enabled) && !trustArgs.publicUrl) console.log('  (HostFS and !Browse\'s engine are only available on this machine)');
     }
     for (const m of hostMounts) console.log(`  HostFS::${m.name} -> ${m.root}${m.readonly ? ' (read-only)' : ''}`);
     if (browserOpts.enabled) {

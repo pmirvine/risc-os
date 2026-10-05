@@ -23,6 +23,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { makeTrust } from './trust.mjs';
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 const EXT_DIR = path.join(HERE, 'browse-ext');
@@ -772,22 +773,20 @@ async function frameCheck(url) {
 // ------------------------------------------------------------------ the HTTP side
 class HttpError extends Error { constructor(code, msg) { super(msg); this.code = code; } }
 
-export function browserHandler(opts, port) {
+export function browserHandler(opts, port, trust = makeTrust({ publicUrl: null, secret: null }, port)) {
   const service = opts.enabled ? new Service(opts) : null;
   const token = crypto.randomBytes(16).toString('hex');
-  const hosts = new Set([`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]);
-  const origins = new Set([...hosts].map((h) => `http://${h}`));
   const SAFE = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Cross-Origin-Resource-Policy': 'same-origin' };
   const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json', ...SAFE }); res.end(JSON.stringify(obj)); };
   const guard = (req) => {
-    if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) throw new HttpError(403, '!Browse\'s engine is only available on this machine');
-    if (!hosts.has(req.headers.host)) throw new HttpError(403, 'Bad host');
+    if (!trust.allowedRemote(req)) throw new HttpError(403, '!Browse\'s engine is only available on this machine');
+    if (!trust.hosts.has((req.headers.host ?? '').toLowerCase())) throw new HttpError(403, 'Bad host');
     const site = req.headers['sec-fetch-site'];
     if (site && site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site request');
   };
   const client = (req, t) => {
     if (t !== token) throw new HttpError(403, 'Bad token');
-    if (req.headers.origin && !origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
+    if (req.headers.origin && !trust.origins.has(req.headers.origin.toLowerCase())) throw new HttpError(403, 'Bad origin');
   };
 
   const handle = async (req, res, url) => {
@@ -853,7 +852,7 @@ export function browserHandler(opts, port) {
       const url = new URL(req.url, 'http://x');
       if (url.pathname !== '/__browse/ws' || !service) throw new HttpError(404, 'Not found');
       guard(req);
-      if (!origins.has(req.headers.origin)) throw new HttpError(403, 'Bad origin');
+      if (!trust.origins.has((req.headers.origin ?? '').toLowerCase())) throw new HttpError(403, 'Bad origin');
       if (url.searchParams.get('t') !== token) throw new HttpError(403, 'Bad token');
       const ws = acceptWebSocket(req, socket, head);
       ws.id = crypto.randomBytes(8).toString('hex');
