@@ -114,3 +114,11 @@ rebuilt. Do this about monthly: `cd /srv/riscos/src/deploy && docker compose bui
   !Browse are staged there.
 * Backups are on the same machine (`/srv` and `/root`); there is no off-site copy.
 * The image is not pinned by digest and Chromium comes from Debian's package, so rebuilds move versions.
+
+## Checking a live deployment
+
+`tests/core/remote-check.mjs` checks a deployed desktop through its real URL (logins required, the Server drive, writes, !Browse's engine, private addresses refused). It is not part of the default suites:
+
+    RO_URL=https://your-server/ro/ RO_USER=name RO_PASS=password node tests/core/remote-check.mjs
+
+Set `RO_PRIVATE_URL` and `RO_ROUTER_URL` to addresses on the server's network that must not be reachable from the engine.
