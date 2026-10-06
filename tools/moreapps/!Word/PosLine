@@ -1,0 +1,129 @@
+// PosLine - one line of a laid-out paragraph (./LineLayout): where an
+// offset is drawn in it, which offset an x falls on, and the x extent
+// of a range of offsets. The rules are in ./PositionMap's header.
+//
+//   xIn(pl, line, off)      -> x of the caret at off in this line
+//   offIn(pl, line, x)      -> {off, alt}: the offset nearest x in
+//                              this line; alt the other edge of an
+//                              atomic item there (else undefined)
+//   rangeX(pl, line, a, b)  -> [x0, x1] drawn for [a, b), or null
+//
+// pl is {para, y, h, lines, metrics}; metrics has widthTo and offsetAt
+// (WimpLib/TextMetrics), which measure a long item a few times
+// instead of once per character. Pure: no desktop services.
+import {graphemes} from 'wimplib/Segment';
+
+const WIN = 32;                        // the snap window, either side
+
+/** Width of the first k units of item it. */
+const wTo = (pl, it, k) => pl.metrics.widthTo(it.text, it.f.css, k);
+
+const isRI = (text, i) => text.charCodeAt(i) === 0xd83c &&
+  text.charCodeAt(i + 1) >= 0xdde6 && text.charCodeAt(i + 1) <= 0xddff;
+
+/**
+ * Where to start segmenting for a window that starts at s: not
+ * inside a surrogate pair, and in a run of regional indicators (flag
+ * letters, which pair from the run's start) at a pair's start.
+ */
+function restart(text, s) {
+  if (s <= 0) return 0;
+  if ((text.charCodeAt(s) & 0xfc00) === 0xdc00 &&
+    (text.charCodeAt(s - 1) & 0xfc00) === 0xd800) s--;
+  let r = s;
+  while (r >= 2 && isRI(text, r - 2)) r -= 2;
+  return s - (s - r) % 4;
+}
+
+/**
+ * off, or the grapheme boundary of text before it when off falls
+ * inside a cluster (one split between two runs). Only a window of
+ * text around off is segmented; it grows to the left while no real
+ * boundary is found in it (a very long cluster), so the cost stays
+ * linear in the cluster's length (and in a run of flag letters, in
+ * a scan of the run).
+ */
+export function snap(text, off) {
+  if (off <= 0 || off >= text.length) return off;
+  const e = Math.min(text.length, off + WIN);
+  for (let w = WIN; ; w *= 2) {
+    const s = restart(text, off - w);
+    const bs = graphemes(text.slice(s, e));
+    // 0 is a boundary only at the start of the text, and the first
+    // one after it may be false (a cluster cut by the window): the
+    // later ones are real
+    let best = -1;
+    for (let k = s === 0 ? 0 : 2; k < bs.length; k++) {
+      if (bs[k] <= off - s) best = bs[k];
+    }
+    if (best >= 0) return s + best;
+  }
+}
+
+/** See the header. */
+export function xIn(pl, line, off) {
+  let x = null;
+  for (const it of line.items) {
+    if (it.from > off) break;
+    if (it.to === off) {
+      // the last item ending here: after a wrapper's last piece
+      if (it.kind !== 'break') x = it.x + it.w;
+    } else if (it.from === off) {
+      return x ?? it.x;
+    } else if (it.to > off) {
+      // inside: a place in model text, else the item's left edge
+      return it.shown ? it.x : it.x + wTo(pl, it, off - it.from);
+    }
+  }
+  if (x !== null) return x;
+  const last = line.items[line.items.length - 1];
+  return last ? last.x + last.w : line.x;
+}
+
+/** See the header. */
+export function offIn(pl, line, x) {
+  let hit = null, last = null;
+  for (const it of line.items) {
+    if (!(it.w > 0)) continue;
+    last = it;
+    if (x < it.x + it.w) { hit = it; break; }
+  }
+  if (!last) return {off: line.from, alt: undefined};
+  const it = hit || last;
+  const dx = Math.min(Math.max(x - it.x, 0), it.w);
+  if (!it.shown) {
+    return {off: snap(pl.para.text,
+      it.from + pl.metrics.offsetAt(it.text, it.f.css, dx)),
+    alt: undefined};
+  }
+  // atomic: its two edges; a wrapper's later piece [i+1, i+1)
+  // stands between i and i+1 as well
+  const a = it.from < it.to ? it.from : it.from - 1;
+  const b = it.from < it.to ? it.to : it.from;
+  return dx * 2 > it.w ? {off: b, alt: a} : {off: a, alt: b};
+}
+
+/** See the header. */
+export function rangeX(pl, line, a, b) {
+  let x0 = Infinity, x1 = -Infinity;
+  for (const it of line.items) {
+    if (it.from > b) break;
+    if (!(it.w > 0)) continue;
+    let s, e;
+    if (it.from === it.to) {
+      // a wrapper's later piece: selected with the wrapper
+      if (!(a < it.from && b >= it.from)) continue;
+      s = it.x; e = it.x + it.w;
+    } else {
+      const lo = Math.max(a, it.from), hi = Math.min(b, it.to);
+      if (lo >= hi) continue;
+      if (it.shown) { s = it.x; e = it.x + it.w; } else {
+        s = it.x + wTo(pl, it, lo - it.from);
+        e = it.x + wTo(pl, it, hi - it.from);
+      }
+    }
+    if (s < x0) x0 = s;
+    if (e > x1) x1 = e;
+  }
+  return x1 > x0 ? [x0, x1] : null;
+}

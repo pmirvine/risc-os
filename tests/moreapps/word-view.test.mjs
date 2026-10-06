@@ -1,11 +1,12 @@
 // The pure parts of the !Word stub's window: the info line (Info), the
-// look of runs and paragraphs (Fmt) and line breaking (Render).
+// look of runs and paragraphs (Fmt) and line breaking (LineLayout).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
 import {summary, facts, kindOf} from '../../tools/moreapps/!Word/Info';
 import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {layoutPara} from '../../tools/moreapps/!Word/Render';
+import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
+import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {describe as why, openDocx}
   from '../../tools/moreapps/!Word/Open';
 import {DocxError} from '../../tools/moreapps/!Word/DocxError';
@@ -26,7 +27,7 @@ const doc = (body) => buildDocx({'word/document.xml': documentXml(body),
 const paras = (d) => d.sections.flatMap((s) => s.blocks)
   .filter((b) => b.type === 'p');
 // every character 10 px wide, whatever the font
-const measure = (t) => t.length * 10;
+const measure = new TextMetrics((t) => t.length * 10);
 
 describe('Info', () => {
   it('counts paragraphs, kept items and fonts', async () => {
@@ -86,7 +87,7 @@ describe('Fmt', () => {
   });
 });
 
-describe('Render', () => {
+describe('LineLayout', () => {
   it('breaks lines at spaces to fit the width', async () => {
     const d = await doc(p(r('aaaa bbbb cccc dddd')));
     const l = layoutPara(paras(d)[0], d.styles, 100, measure, new Map());

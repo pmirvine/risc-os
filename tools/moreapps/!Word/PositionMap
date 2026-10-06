@@ -1,0 +1,184 @@
+// PositionMap - offsets <-> places for one laid-out paragraph: caret
+// rectangles, hit testing, line start and end, moving up and down,
+// selection rectangles.
+//
+//   pl = {para, y, h, lines, metrics}: lines from ./LineLayout, y the
+//   paragraph's top, metrics a WimpLib/TextMetrics. x is in the
+//   coordinates of the line items; y adds pl.y to the line's y.
+//
+//   caretRect(pl, off, aff = 'down') -> {x, y, h, line}
+//   hitTest(pl, x, y)                -> {off, affinity}
+//   lineOf(pl, off, aff)             -> index of the caret's line
+//   lineStart(pl, off, aff)          -> {off, affinity} (Home)
+//   lineEnd(pl, off, aff)            -> {off, affinity} (End)
+//   vertical(pl, off, aff, dir, goalX) -> {off, affinity, line} or
+//                null past the first (dir -1) or last (dir 1) line
+//   selectionRects(pl, from, to)     -> [{x, y, w, h}], one per line
+//
+// Offsets are UTF-16 indices into para.text. A caret stands at a
+// grapheme boundary, never inside an atomic item (a tab, a [...] box,
+// a hyphen, an unseen inline, a wrapper's text): those give the
+// nearer of their two edges. At a soft wrap an offset has two places:
+// affinity 'up' is the end of the upper line (after any hanging
+// spaces), 'down' (default) the start of the lower. A click right of
+// a wrapped line gives its end with affinity 'up'; a click right of a
+// line ending in a break gives the place before the break. y above
+// the first line hits it, below the last hits that.
+//
+// Wrappers (a hyperlink, an insertion, a field result...) stand for
+// one offset i but show text, broken into pieces that may wrap: the
+// first piece is [i, i+1), the later ones [i+1, i+1). The caret at i
+// is before the first piece; the caret at i+1 is after the LAST piece
+// (wherever that is, whatever the affinity). A click in the first
+// piece gives i on its left half, i+1 on its right; in a later piece,
+// i on its left half and i+1 on its right (so a click right of a
+// line that ends inside a wrapper puts the caret after the wrapper,
+// on a later line: deliberate, the wrapper is one thing). Up and Down
+// take the nearer edge of the item under goalX, else its other edge,
+// so a line whose pieces lead back to the line left is not a dead
+// end; a line holding only later pieces has no caret place of its
+// own and is passed over. Home and End on the line before stop
+// before the wrapper. A selection holding [i, i+1) lights every piece.
+//
+// End leaves out the spaces hanging at a soft wrap. Selection
+// rectangles leave out zero-width items, and nothing is added for a
+// paragraph end (the view draws that). Long items are measured with
+// widthTo/offsetAt, a few measures each. Pure: no desktop services.
+import {xIn, offIn, rangeX} from './PosLine';
+import {isSpace} from './LineTokens';
+
+const clamp = (pl, off) =>
+  Math.min(Math.max(Math.floor(off) || 0, 0), pl.para.text.length);
+
+/** Index of the first line with to > off, else the last line. */
+function downLine(lines, off) {
+  let lo = 0, hi = lines.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].to > off) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** Index of the line that y (relative to the paragraph) falls in. */
+function lineAtY(lines, y) {
+  let lo = 0, hi = lines.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lines[mid].y + lines[mid].h > y) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** See the header. */
+export function lineOf(pl, off, aff = 'down') {
+  const {lines} = pl;
+  off = clamp(pl, off);
+  const d = downLine(lines, off), L = lines[d];
+  if (aff !== 'up' || d === 0 || L.from !== off) return d;
+  const P = lines[d - 1];
+  if (P.to !== off || P.endsWithBreak) return d;
+  // after a wrapper's later pieces at the start of L: only there
+  if (L.items.length && L.items[0].to === off) return d;
+  return d - 1;
+}
+
+/** See the header. */
+export function caretRect(pl, off, aff = 'down') {
+  off = clamp(pl, off);
+  const i = lineOf(pl, off, aff), L = pl.lines[i];
+  return {x: xIn(pl, L, off), y: pl.y + L.y, h: L.h, line: i};
+}
+
+/** off with its affinity, as a hit on line i gives it. */
+function withAff(pl, i, off) {
+  off = clamp(pl, off);
+  const up = lineOf(pl, off, 'up') === i &&
+    lineOf(pl, off, 'down') !== i;
+  return {off, affinity: up ? 'up' : 'down'};
+}
+
+/** The offset and affinity for x in line i. */
+const place = (pl, i, x) =>
+  withAff(pl, i, offIn(pl, pl.lines[i], x).off);
+
+/** See the header. */
+export function hitTest(pl, x, y) {
+  return place(pl, lineAtY(pl.lines, y - pl.y), +x || 0);
+}
+
+/** See the header. */
+export function lineStart(pl, off, aff = 'down') {
+  const i = lineOf(pl, off, aff), s = pl.lines[i].from;
+  if (lineOf(pl, s, 'down') === i) return {off: s, affinity: 'down'};
+  if (lineOf(pl, s, 'up') === i) return {off: s, affinity: 'up'};
+  // L.from has no place on L: L holds only a wrapper's later pieces
+  // and the caret is the wrapper's end at L's end ('up'), so already
+  // at the only place L has
+  return {off: clamp(pl, off), affinity: aff};
+}
+
+/** See the header. */
+export function lineEnd(pl, off, aff = 'down') {
+  const {lines} = pl, text = pl.para.text;
+  const i = lineOf(pl, off, aff), L = lines[i];
+  if (L.endsWithBreak) {
+    const brk = L.items[L.items.length - 1];
+    return {off: brk.from, affinity: 'down'};
+  }
+  if (i === lines.length - 1) return {off: L.to, affinity: 'down'};
+  let e = L.to;
+  while (e > L.from && isSpace(text[e - 1])) e--;  // hanging spaces
+  if (e < L.to) return {off: e, affinity: 'down'};
+  if (lineOf(pl, e, 'up') === i) return {off: e, affinity: 'up'};
+  // the line ends inside a wrapper: stop before it
+  for (let k = L.items.length - 1; k >= 0; k--) {
+    const it = L.items[k];
+    if (it.from < it.to) {
+      if (lineOf(pl, it.from) === i) {
+        return {off: it.from, affinity: 'down'};
+      }
+      break;
+    }
+  }
+  // L holds only a wrapper's later pieces (and the caret is the
+  // wrapper's end on it, by 'up'): there is no other place on L
+  return {off: clamp(pl, off), affinity: aff};
+}
+
+/** See the header. */
+export function vertical(pl, off, aff, dir, goalX) {
+  const i = lineOf(pl, off, aff), n = pl.lines.length;
+  const gx = goalX ?? caretRect(pl, off, aff).x;
+  const step = dir < 0 ? -1 : 1;
+  // the nearer edge: any line past i; the other edge: t or past it
+  const past = (j, t) => (step > 0 ? j > i && j >= t : j < i && j <= t);
+  const ok = (j, t, k) => (k ? past(j, t) : step > 0 ? j > i : j < i);
+  for (let t = i + step; t >= 0 && t < n; t += step) {
+    // the nearer edge of the item at gx, else its other edge (a
+    // wrapper's piece: i on one line, i+1 on another); else skip t
+    const h = offIn(pl, pl.lines[t], gx);
+    const offs = h.alt === undefined ? [h.off] : [h.off, h.alt];
+    for (let k = 0; k < offs.length; k++) {
+      const p = withAff(pl, t, offs[k]);
+      const j = lineOf(pl, p.off, p.affinity);
+      if (ok(j, t, k)) return {...p, line: j};
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export function selectionRects(pl, from, to) {
+  const a = clamp(pl, Math.min(from, to));
+  const b = clamp(pl, Math.max(from, to));
+  const out = [], {lines} = pl;
+  if (a === b) return out;
+  for (let i = downLine(lines, a); i < lines.length; i++) {
+    const L = lines[i];
+    if (L.from > b) break;
+    const r = rangeX(pl, L, a, b);
+    if (r) out.push({x: r[0], y: pl.y + L.y, w: r[1] - r[0], h: L.h});
+  }
+  return out;
+}

@@ -1,0 +1,120 @@
+// EditMouse - the mouse in a document's window (./EditView):
+//
+//   Select click       the caret where clicked
+//   Select drag        selects from where the button went down to the
+//                      pointer; while the pointer is outside the
+//                      window, every 60 ms the window scrolls towards
+//                      it (20 px up or down, 16 across) and the
+//                      selection follows, until the button is let go
+//                      (nothing is drawn while neither moves: at the
+//                      end of the scrolling, or after the window has
+//                      closed, when the timer stops)
+//   Adjust click, Shift-Select click   moves the selection's head to
+//                      the place clicked (its anchor stays)
+//   Adjust drag        likewise, following the pointer
+//   double-click       the word there (not the spaces after it), or a
+//                      kept block (a table) whole
+//   triple-click       a Select click within the double-click time of
+//                      a double-click (the Wimp reports no third
+//                      click; the rule of !Edit): the paragraph
+//   Menu               opens the window's menu and leaves the
+//                      selection as it is, wherever the click is (as
+//                      in !Edit)
+//
+//   attachMouse(view)  the window must be made with workButton
+//                      'clickdragdouble' (Wimp button type 10: clicks,
+//                      drags and double-clicks reported)
+//
+// A drag is followed with wimp.drag (Wimp_DragBox, type 'point'), so
+// it ends when the button is released, wherever the pointer is.
+import {wimp, os} from 'riscos';
+import * as S from './Selection';
+
+const TICK = 60, STEP_Y = 20, STEP_X = 16;
+const doubleMs = () => os.input?.config?.doubleClickMs ?? 400;
+const now = () => performance.now();
+
+/** See the header. */
+export function attachMouse(v) {
+  const w = v.win;
+  let lastDouble = -Infinity;
+  const hit = (ev) => v.L.hitTest(ev.x, ev.y);
+  w.on('click', (ev) => {
+    // (the Wimp reports Menu as a click: passed on, the menu opens)
+    if (ev.button === 'menu') return undefined;
+    const h = hit(ev);
+    if (!h || !v.sel) return true;
+    let sel;
+    if (ev.button === 'adjust' || ev.shift) {
+      sel = S.select(v.sel.anchor, h.pos, h.affinity);
+    } else if (now() - lastDouble < doubleMs()) {
+      sel = S.selectPara(v.L, h.pos);
+    } else {
+      sel = S.caret(h.pos, h.affinity);
+    }
+    lastDouble = -Infinity;
+    v.setSelection(sel, {scroll: false});
+    v.focus();
+    return true;
+  });
+  w.on('doubleclick', (ev) => {
+    const h = hit(ev);
+    if (!h || !v.sel) return true;
+    if (ev.button !== 'select' || ev.shift) {
+      v.setSelection(S.select(v.sel.anchor, h.pos, h.affinity),
+        {scroll: false});
+    } else {
+      v.setSelection(S.selectWord(v.L, h.pos), {scroll: false});
+      lastDouble = now();
+    }
+    v.focus();
+    return true;
+  });
+  w.on('drag', (ev) => {
+    if (!v.sel) return undefined;
+    follow(v, ev);
+    return true;
+  });
+}
+
+/** Extend the selection with the pointer until the button is up. */
+function follow(v, ev) {
+  const w = v.win;
+  const inp = os.input;
+  let last = {x: inp ? inp.mouseX : ev.sx, y: inp ? inp.mouseY : ev.sy};
+  const update = () => {
+    if (!w.isOpen || !v.sel) return;
+    const p = w.screenToWork(last.x, last.y);
+    const h = v.L.hitTest(p.x, p.y), s = v.sel;
+    // (only a new head is drawn again)
+    if (h && (h.pos.id !== s.head.id || h.pos.off !== s.head.off ||
+      h.affinity !== s.affinity)) {
+      v.setSelection(S.select(v.sel.anchor, h.pos, h.affinity),
+        {scroll: false});
+    }
+  };
+  const timer = setInterval(() => {
+    if (!w.isOpen) { clearInterval(timer); return; }
+    let dx = 0, dy = 0;
+    if (last.y < w.y) dy = -STEP_Y;
+    else if (last.y > w.y + w.h) dy = STEP_Y;
+    if (last.x < w.x) dx = -STEP_X;
+    else if (last.x > w.x + w.w) dx = STEP_X;
+    if (!dx && !dy) return;
+    const sx = w.scrollX, sy = w.scrollY;
+    w.scrollTo(Math.max(0, sx + dx), Math.max(0, sy + dy));
+    // at the extent's edge nothing moves: nothing to draw
+    if (w.scrollX !== sx || w.scrollY !== sy) update();
+  }, TICK);
+  wimp.drag({type: 'point', event: ev.pointerEvent,
+    onMove: (s) => { last = {x: s.sx, y: s.sy}; update(); },
+    onEnd: (d) => {
+      clearInterval(timer);
+      // (the last moves may come together with the release)
+      if (d && Number.isFinite(d.sx)) {
+        last = {x: d.sx, y: d.sy};
+        update();
+      }
+    }});
+  update();
+}

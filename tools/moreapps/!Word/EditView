@@ -1,0 +1,162 @@
+// EditView - the caret and the selection in a document's window: it
+// draws the page, the text and the selection (./EditPaint), shows
+// the caret, keeps it in view and moves it by the keys (./Keys). The
+// mouse is ./EditMouse. Read-only: nothing here changes the text.
+//
+//   const v = new EditView(win, L)  win: the Window; L: a ./DocLayout
+//   v.L, v.sel             the layout; the selection (./Selection),
+//                          at first a caret at the document's start
+//   v.paint(g, rect)       the window's canvas redraw
+//   v.setSelection(sel, {scroll = true})  show sel; scroll its head
+//                          into view (24 px from the window's edges)
+//   v.setLayout(L, oldL)   a new layout (fonts arrived): the
+//                          selection is made valid for it
+//                          (Selection.clamp); call v.placed() once
+//                          L is laid out
+//   v.placed()             the column has moved (a new window width,
+//                          a new layout): the caret is shown again
+//   v.focus()              take the input focus; show the caret
+//   v.key(ev)              a 'key' event -> true if used, undefined
+//                          if not (the Wimp passes it on)
+//   v.caretRect()          -> {x, y, h}: the head's place (work area)
+//   v.text()               the selection as plain text
+//   v.hook()               for tests: {selection, layout, text(),
+//                          caretRect(), setSelection(a, b?, aff?)}
+//
+// The caret is the Wimp's (wimp.setCaret with a work-area place), so
+// there is one in the whole desktop, in the window with the input
+// focus; it does not blink yet. While something is selected it is
+// hidden (the window keeps the input focus), as in Word.
+// Page Up and Page Down scroll the window by its height less 32 px
+// and move the caret as far, so it stays where it was in the window.
+// Ctrl-Home and Ctrl-End scroll to the very top or bottom.
+// Ctrl-A selects everything without scrolling; Escape makes a
+// selection a caret at its head (a caret's Escape is passed on).
+import {wimp} from 'riscos';
+import * as S from './Selection';
+import {command} from './Keys';
+import {paintView} from './EditPaint';
+
+const MARGIN = 24, LINE = 20;
+
+export class EditView {
+  constructor(win, L) {
+    this.win = win;
+    this.L = L;
+    const a = L.docStart();
+    this.sel = a ? S.caret(a) : null;
+    win.pointer = 'ptr_write';
+    const lit = () => win.invalidate();
+    win.on('gaincaret', lit);
+    win.on('losecaret', lit);
+  }
+
+  get hasFocus() { return wimp.caret?.window === this.win; }
+
+  paint(g, rect) {
+    paintView(this.L, g, rect, this.sel, this.hasFocus);
+  }
+
+  caretRect() {
+    if (!this.sel) return null;
+    return this.L.caretRect(this.sel.head, this.sel.affinity);
+  }
+
+  text() { return this.sel ? S.text(this.sel, this.L) : ''; }
+
+  /** See the header. */
+  setSelection(sel, {scroll = true} = {}) {
+    if (!sel) return;
+    this.sel = sel;
+    this.win.invalidate();
+    if (scroll) this.scrollToCaret();
+    this.showCaret();
+  }
+
+  /** See the header. */
+  setLayout(L, oldL) {
+    this.L = L;
+    if (this.sel) this.sel = S.clamp(this.sel, L.doc, oldL);
+    else {
+      const a = L.docStart();
+      this.sel = a ? S.caret(a) : null;
+    }
+    this.win.invalidate();
+  }
+
+  placed() { this.showCaret(); }
+
+  focus() { this.showCaret(true); }
+
+  /** The Wimp's caret at the head (if this window has the focus). */
+  showCaret(take = false) {
+    const w = this.win;
+    if (!w.isOpen || (!take && !this.hasFocus)) return;
+    const one = this.sel && S.collapsed(this.sel);
+    const c = one ? this.caretRect() : null;
+    if (c) wimp.setCaret(w, null, -1, {x: c.x, y: c.y, h: c.h});
+    else wimp.setCaret(w);
+  }
+
+  /** Scroll so that the head is 24 px inside the window's edges. */
+  scrollToCaret() {
+    const w = this.win, c = this.caretRect();
+    if (!c || !w.isOpen) return;
+    let sx = w.scrollX, sy = w.scrollY;
+    if (c.y + c.h + MARGIN > sy + w.h) sy = c.y + c.h + MARGIN - w.h;
+    if (c.y - MARGIN < sy) sy = c.y - MARGIN;
+    if (c.x + MARGIN > sx + w.w) sx = c.x + MARGIN - w.w;
+    if (c.x - MARGIN < sx) sx = c.x - MARGIN;
+    sx = Math.max(0, Math.round(sx));
+    sy = Math.max(0, Math.round(sy));
+    if (sx !== w.scrollX || sy !== w.scrollY) w.scrollTo(sx, sy);
+  }
+
+  /** See the header. */
+  key(ev) {
+    const k = command(ev.code,
+      {shift: ev.shift, ctrl: ev.ctrl, key: ev.key});
+    if (!k || !this.sel) return undefined;
+    const L = this.L;
+    switch (k.cmd) {
+      case 'selectAll':
+        this.setSelection(S.selectAll(L), {scroll: false});
+        return true;
+      case 'collapse':
+        if (S.collapsed(this.sel)) return undefined;
+        this.setSelection(S.caret(this.sel.head, this.sel.affinity));
+        return true;
+      case 'pageUp': case 'pageDown': {
+        const w = this.win, d = k.cmd === 'pageDown' ? 1 : -1;
+        const step = Math.max(LINE, w.h - 32);
+        const sel = S.move(this.sel, L, k.cmd, k.extend, step);
+        w.scrollTo(w.scrollX, Math.max(0, w.scrollY + d * step));
+        this.setSelection(sel);
+        return true;
+      }
+      case 'docHome': case 'docEnd': {
+        // all the way: the page's top (or bottom) edge shows too
+        const w = this.win;
+        w.scrollTo(w.scrollX, k.cmd === 'docHome' ? 0 : w.extent.y1);
+        this.setSelection(S.move(this.sel, L, k.cmd, k.extend));
+        return true;
+      }
+      default:
+        this.setSelection(S.move(this.sel, L, k.cmd, k.extend));
+        return true;
+    }
+  }
+
+  /** See the header. */
+  hook() {
+    const v = this;
+    return {
+      get selection() { return v.sel; },
+      get layout() { return v.L; },
+      text: () => v.text(),
+      caretRect: () => v.caretRect(),
+      setSelection: (a, b = a, aff) =>
+        v.setSelection(S.select(a, b, aff)),
+    };
+  }
+}

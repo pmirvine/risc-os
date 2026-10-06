@@ -1,0 +1,81 @@
+// Keys - the caret and selection command a key gives in a document
+// window: a Wimp key code (src/core/input.js) -> {cmd, extend}, or
+// null for a key the window does not use (it is passed on, so F12,
+// the hot keys and the rest still reach the desktop).
+//
+//   command(code, {shift, ctrl, key}?) -> {cmd, extend} | null
+//
+// cmd is a ./SelMove command (left right up down home end wordLeft
+// wordRight paraStart paraEnd docHome docEnd pageUp pageDown), or
+// selectAll (Ctrl-A, code 1) or collapse (Escape, 27). extend: Shift
+// was held, so the selection's head moves and its anchor stays.
+//
+//   arrows   left right up down; with Ctrl wordLeft wordRight,
+//            paraStart (up) paraEnd (down)
+//   Home     home; Ctrl-Home docHome
+//   End      end (the Copy key); Ctrl-End docEnd
+//   Page Up / Page Down   pageUp pageDown (with or without Ctrl)
+//
+// The Wimp's codes: arrows &18C left, &18D right, &18E down, &18F up,
+// Copy/End &18B, each +&10 with Shift and +&20 with Ctrl; Home is 30
+// and Page Down/Up &19E/&19F (+&20 with Ctrl) whatever Shift does.
+// So Shift-Down and Page Down are both &19E: key, the browser's name
+// for the key (ArrowDown, PageDown...), tells them apart, and shift
+// and ctrl are the modifiers held. Without a key name (a key sent by
+// Wimp_ProcessKey) the code decides: &19E/&19F are Page Down/Up, as
+// Shift-Down/Up are in RISC OS. Pure: no desktop services.
+
+const NAMES = {
+  // key: [code (no modifiers), plain, with Ctrl]
+  ArrowLeft: [0x18C, 'left', 'wordLeft'],
+  ArrowRight: [0x18D, 'right', 'wordRight'],
+  ArrowDown: [0x18E, 'down', 'paraEnd'],
+  ArrowUp: [0x18F, 'up', 'paraStart'],
+  End: [0x18B, 'end', 'docEnd'],
+  Home: [30, 'home', 'docHome'],
+  PageDown: [0x19E, 'pageDown', 'pageDown'],
+  PageUp: [0x19F, 'pageUp', 'pageUp'],
+};
+const BY_CODE = new Map(Object.values(NAMES).map((r) => [r[0], r]));
+const PAGE = new Set([0x19E, 0x19F]);
+
+/** The row of NAMES that code is (a modified form of), and mods. */
+function decode(code) {
+  if (code === 30) return {row: NAMES.Home, shift: false, ctrl: false};
+  if (PAGE.has(code & ~0x20)) {
+    return {row: BY_CODE.get(code & ~0x20), shift: false,
+      ctrl: (code & 0x20) !== 0};
+  }
+  const base = code & ~0x30;
+  if (base >= 0x18B && base <= 0x18F) {
+    return {row: BY_CODE.get(base), shift: (code & 0x10) !== 0,
+      ctrl: (code & 0x20) !== 0};
+  }
+  return null;
+}
+
+/** Whether code is a form of the key with this row. */
+function fits(row, code) {
+  const c = row[0];
+  if (c === 30) return code === 30;
+  if (PAGE.has(c)) return (code & ~0x20) === c;
+  return (code & ~0x30) === c;
+}
+
+/** See the header. */
+export function command(code, mods = {}) {
+  if (!Number.isInteger(code)) return null;
+  if (code === 1) return {cmd: 'selectAll', extend: false};
+  if (code === 27) return {cmd: 'collapse', extend: false};
+  const {key} = mods || {};
+  const named = typeof key === 'string' && Object.hasOwn(NAMES, key)
+    ? NAMES[key] : null;
+  if (named) {
+    if (!fits(named, code)) return null;
+    return {cmd: mods.ctrl ? named[2] : named[1], extend: !!mods.shift};
+  }
+  const d = decode(code);
+  if (!d) return null;
+  const ctrl = d.ctrl || !!mods.ctrl, shift = d.shift || !!mods.shift;
+  return {cmd: ctrl ? d.row[2] : d.row[1], extend: shift};
+}

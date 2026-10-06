@@ -1,20 +1,34 @@
 // AppWin - the window of one open document: its text, read-only, in
-// a scrolling window, with the info line at the top; its menu saves
-// a copy, shows the Info box or closes it.
+// a scrolling window, as a column the width of the text on its page
+// (./DocLayout), on a white page on a grey desk; a caret and a
+// selection made with the mouse and the keys (./EditView,
+// ./EditMouse). Its menu saves a copy, shows the Info box (what the
+// document holds) or closes it.
 //
 //   const dw = new DocWindow(app, path, doc)
-//   dw.show()          open it (or bring it to the front)
-//   dw.relayout()      lay it out again (fonts have arrived)
+//   dw.show()          open it (or bring it to the front), with the
+//                      input focus
+//   dw.relayout()      lay it out again (fonts have arrived): the
+//                      selection is kept
+//   dw.view            its ./EditView
 //   dw.saveBytes()     -> Promise<Uint8Array>, the copy to save
 //   dw.close()
 // app: {task, docs (Map key -> DocWindow), closed(dw), open(path)}.
+//
+// A new window is as wide as the page and its grey edges (at most
+// the screen's width less 40 px), so the whole line can be seen; it
+// scrolls across when made narrower. The work area is the page's
+// height, and at least the screen's width, so that the window can be
+// made as wide as the screen (the page stays centred).
 import {wimp, vfs, Menu, saveAs} from 'riscos';
 import {writeDocx} from './DocxWrite';
-import {makeMeasure} from './Render';
-import {Layout} from './Layout';
+import {TextMetrics} from 'wimplib/TextMetrics';
+import {DocLayout} from './DocLayout';
+import {EditView} from './EditView';
+import {attachMouse} from './EditMouse';
 import {summary, infoWindow} from './Info';
 
-const W = 640, H = 560, LINE = 20;
+const H = 560, EDGE = 48;
 let count = 0;                         // (to place windows in turn)
 
 export class DocWindow {
@@ -31,69 +45,86 @@ export class DocWindow {
         if (b.type === 'p') this.text.push(b.text);
       }
     }
+    this.ctx = null;                   // the canvas's, to measure with
+    this.L = new DocLayout(doc, this.metrics());
+    const L = this.L;
+    const W = Math.max(240, Math.min(wimp.width - 40,
+      Math.ceil(Math.max(L.pageW, L.marL + L.textW) + EDGE)));
     const n = count++ % 8;
     const w = this.win = app.task.createWindow({
-      title: this.leaf, x: 160 + n * 28, y: 70 + n * 28, w: W, h: H,
+      title: this.leaf, w: W, h: H, y: 70 + n * 28,
+      x: Math.max(8, Math.min(160 + n * 28, wimp.width - W - 40)),
       extent: {w: Math.max(W, wimp.width), h: H},
       flags: {back: true, close: true, title: true, toggle: true,
-        vscroll: true, size: true, moveable: true},
+        vscroll: true, hscroll: true, size: true, moveable: true},
       colours: {workBg: 0}, minW: 240, minH: 120,
-      workButton: 'click',
-      help: 'This is a Word document, shown as text (it cannot be ' +
-        'edited yet).|MClick MENU to save a copy of it.',
+      workButton: 'clickdragdouble',
+      help: 'This is a Word document. Click or drag to select its ' +
+        'text, double-click for a word, and use the arrow keys; it ' +
+        'cannot be edited yet.|MClick MENU to save a copy of it.',
       menu: () => this.menu(),
     });
-    const canvas = w.useCanvas((g, rect) => this.paint(g, rect));
-    this.L = new Layout(doc, makeMeasure(canvas.getContext('2d')));
-    this.relayout();
+    const canvas = w.useCanvas((g, rect) => this.paint(g, rect),
+      {hiDPI: true});
+    this.ctx = canvas.getContext('2d');
+    this.view = new EditView(w, L);
+    attachMouse(this.view);
+    this.fit();
     w.on('moved', () => {
-      if (Math.round(w.w) !== this.L.width) this.relayout();
+      if (Math.round(w.w) !== this.L.width) this.fit();
     });
     w.on('close', (ev) => { ev.preventDefault(); this.close(); });
-    w.on('key', (ev) => this.key(ev.code));
+    w.on('key', (ev) => this.view.key(ev));
     w.on('dataload', (ev) => {
       for (const f of ev.files) if (f.type !== 'dir') app.open(f.path);
       return true;
     });
   }
 
-  /** Lay the text out for the window's width; set the extent. */
-  relayout() {
+  /** Text widths, measured on the window's canvas. */
+  metrics() {
+    return new TextMetrics((text, css) => {
+      const g = this.ctx;
+      g.font = css;
+      return g.measureText(text).width;
+    });
+  }
+
+  /**
+   * Place the column for the window's width (the lines are broken
+   * once, for the page); set the extent: the page, and at least the
+   * screen's width so that the window can be made as wide.
+   */
+  fit() {
     const w = this.win;
-    const h = this.L.layout(Math.round(w.w));
-    w.setExtent({w: Math.max(W, wimp.width), h: Math.max(h, 64)});
+    const r = this.L.layout(Math.round(w.w));
+    w.setExtent({w: Math.max(r.w, wimp.width),
+      h: Math.max(r.h, 64)});
+    this.view.placed();
     w.invalidate();
+  }
+
+  /** See the header: new widths, so a new layout. */
+  relayout() {
+    const old = this.L;
+    this.L = new DocLayout(this.doc, this.metrics());
+    this.view.setLayout(this.L, old);
+    this.fit();                        // (lays it out)
   }
 
   paint(g, rect) {
     // the width changed without a 'moved' (toggle size, say)
     if (Math.round(this.win.w) !== this.L.width) {
-      Promise.resolve().then(() => this.relayout());
+      Promise.resolve().then(() => this.fit());
     }
-    this.L.paint(g, rect, this.summary);
+    this.view.paint(g, rect);
   }
 
   show() {
     const w = this.win;
     if (w.isOpen) w.bringToFront();
     else w.open({behind: 'top'});
-    wimp.setCaret(w);
-  }
-
-  /** Scrolling keys; others are left for the Wimp to pass on. */
-  key(code) {
-    const w = this.win;
-    const max = Math.max(0, w.extent.y1 - w.h);
-    const page = Math.max(LINE, w.h - 32);
-    const y = {
-      [0x19E]: w.scrollY + page, [0x19F]: w.scrollY - page, // Page
-      [0x18E]: w.scrollY + LINE, [0x18F]: w.scrollY - LINE, // arrows
-      [30]: 0, [0x1AF]: 0,                    // Home, Ctrl-up
-      [0x18B]: max, [0x1AE]: max,             // End (Copy), Ctrl-down
-    }[code];
-    if (y === undefined) return undefined;
-    w.scrollTo(0, Math.min(Math.max(0, y), max));
-    return true;
+    this.view.focus();
   }
 
   /** The bytes of the copy; an error names the file. */

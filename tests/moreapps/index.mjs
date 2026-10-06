@@ -3,7 +3,9 @@
 // tools/disc-wimplib.mjs and disc-moreapps.mjs) the 'wimplib' import
 // through WimpLib$Path (jsrun-wimplib.mjs), !Boot.Resources.!WimpLib and
 // $.MoreApps booted at desktop start (boot.mjs), and the !Word stub
-// opening and saving .docx files (word.mjs, word-life.mjs). The unit tests are the *.test.mjs files
+// opening and saving .docx files (word.mjs, word-life.mjs), its caret and
+// selection (word-edit.mjs), also on hostile documents
+// (word-edit-hostile.mjs). The unit tests are the *.test.mjs files
 // here: node --test tests/moreapps finds them itself.
 import { suite } from '../lib/suite.mjs';
 suite('moreapps', [
@@ -12,5 +14,7 @@ suite('moreapps', [
   { name: "the 'wimplib' import and the !Word stub", args: ['tests/moreapps/jsrun-wimplib.mjs'] },
   { name: 'WimpLib and $.MoreApps booted at start-up (cold boot)', args: ['tests/moreapps/boot.mjs'] },
   { name: '!Word opens a .docx read-only and saves a faithful copy', args: ['tests/moreapps/word.mjs'] },
+  { name: '!Word: click, drag and keys select; the caret', args: ['tests/moreapps/word-edit.mjs'] },
+  { name: '!Word: hostile and odd documents (huge words, absurd sizes, random input)', args: ['tests/moreapps/word-edit-hostile.mjs'] },
   { name: '!Word without its fonts; open, close and Quit leave nothing behind', args: ['tests/moreapps/word-life.mjs'] },
 ]);

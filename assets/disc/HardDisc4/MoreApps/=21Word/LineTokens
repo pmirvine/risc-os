@@ -1,0 +1,136 @@
+// LineTokens - one paragraph as the tokens ./LineLayout breaks into
+// lines, each with the model offsets (UTF-16 indices into Para.text)
+// it stands for.
+//
+//   tokens(para, styles, cache) -> [{t, text, f, kind, from, to,
+//                                     shown}]
+//   t     'w' a word or a piece of one (no break inside), 's' spaces,
+//         'tab', 'nl' (a line break), 'z' (an unseen inline: drawn
+//         as nothing, zero width; it sticks to the word next to it)
+//   kind  'text' | 'link' | 'box' | 'tab' | 'break'
+//   shown true when text is not the model text of [from, to)
+//
+// U+FFFC items stand for one offset each: a hyperlink shows its text
+// in blue, underlined; other wrappers with text (an insertion, a
+// simple field, a content control...) show it in the format there.
+// Their text breaks into words and spaces like any other (so it can
+// wrap): the first piece stands for [i, i+1), the later ones for the
+// empty [i+1, i+1), all shown (there is no offset inside the item);
+// a tab or newline in that text is drawn as it is. The unseen kinds
+// of ./Kinds (proofing marks, bookmarks, field codes) and deletions
+// are 'z'; a non-breaking hyphen is '-', a soft hyphen nothing;
+// anything else is a small grey [...] box. A run boundary inside a
+// surrogate pair is moved past the pair. Pure: no desktop services.
+import {OBJ} from './Model';
+import {runFmt} from './Fmt';
+import {UNSEEN, localName} from './Kinds';
+
+export const PLAIN = {rPr: {extra: []}};
+
+/**
+ * A space for line breaking (and hanging at a wrap): only U+0020.
+ * Tabs and breaks are tokens of their own; U+00A0, U+2002, U+3000
+ * and the like are word characters. The regexes below agree.
+ */
+export const isSpace = (ch) => ch === ' ';
+
+const linkFmt = (f) => ({...f, colour: '#0000c0', under: true,
+  css: f.css});
+const boxFmt = (f) => {
+  const px = Math.max(8, Math.round(f.px * 0.75));
+  return {...f, px, colour: '#606060', under: false, strike: false,
+    css: `${px}px "Liberation Sans", sans-serif`};
+};
+
+/** The text of a raw inline that is a w:t (a tab in a w:t...). */
+function bareT(x) {
+  const n = x.node;
+  if (x.kind !== 'raw' || !n || typeof n.name !== 'string' ||
+    n.name.split(':').pop() !== 't') return '';
+  return (n.children || []).filter((c) => typeof c === 'string')
+    .join('');
+}
+
+// drawn as nothing, besides ./Kinds: deletions (tracked changes)
+const NOTHING = new Set(['del', 'moveFrom', 'softHyphen']);
+
+/** Words, spaces, tabs and breaks of text (at offset off) in f. */
+function words(text, off, f, out) {
+  for (const m of text.matchAll(/ +|\t|\n|[^ \t\n]+/g)) {
+    const s = m[0], from = off + m.index, to = from + s.length;
+    if (s === '\t') {
+      out.push({t: 'tab', text: '', f, kind: 'tab', from, to,
+        shown: true});
+    } else if (s === '\n') {
+      out.push({t: 'nl', text: '', f, kind: 'break', from, to,
+        shown: true});
+    } else {
+      out.push({t: isSpace(s[0]) ? 's' : 'w', text: s, f,
+        kind: 'text', from, to, shown: false});
+    }
+  }
+}
+
+/** The words and spaces of an inline's text: see the header. */
+function shownWords(text, i, f, kind, out) {
+  let from = i;
+  for (const m of text.matchAll(/ +|[^ ]+/g)) {
+    const s = m[0];
+    out.push({t: isSpace(s[0]) ? 's' : 'w', text: s, f, kind, from,
+      to: i + 1, shown: true});
+    from = i + 1;
+  }
+}
+
+/** The tokens of the inline x at offset i, in format f. */
+function inline(x, i, f, out) {
+  const one = (t, text, g, kind, shown = true) => out.push({t, text,
+    f: g, kind, from: i, to: i + 1, shown});
+  const l = localName(x.node), bare = bareT(x);
+  if (x.kind === 'br' || bare === '\n') one('nl', '', f, 'break');
+  else if (x.kind === 'tab' || bare === '\t') one('tab', '', f, 'tab');
+  else if (bare === OBJ) one('w', bare, f, 'text', false);
+  else if (bare) shownWords(bare, i, f, 'text', out);
+  else if (UNSEEN.has(l) || NOTHING.has(l)) one('z', '', f, 'text');
+  else if (l === 'noBreakHyphen') one('w', '-', f, 'text');
+  else if (x.text && l === 'hyperlink') {
+    shownWords(x.text, i, linkFmt(f), 'link', out);
+  } else if (x.text) shownWords(x.text, i, f, 'text', out);
+  else one('w', '[...]', boxFmt(f), 'box');
+}
+
+/** See the header. */
+export function tokens(para, styles, cache) {
+  const out = [];
+  const text = para.text, n = text.length;
+  const runs = para.runs.length ? para.runs
+    : [{start: 0, end: n, rPr: {extra: []}}];
+  // a boundary inside a surrogate pair moves past it
+  const fix = (b) => {
+    b = Math.min(Math.max(b, 0), n);
+    const c = text.charCodeAt(b - 1);
+    return b > 0 && b < n && c >= 0xd800 && c < 0xdc00 &&
+      (text.charCodeAt(b) & 0xfc00) === 0xdc00 ? b + 1 : b;
+  };
+  const piece = (from, to, run) => {
+    if (to <= from) return;
+    const f = runFmt(styles, para, run, cache);
+    let k = from;
+    for (let i = from; i <= to; i++) {
+      if (i < to && text[i] !== OBJ) continue;
+      if (i > k) words(text.slice(k, i), k, f, out);
+      if (i < to) inline(para.inlines[i] || {}, i, f, out);
+      k = i + 1;
+    }
+  };
+  let at = 0;
+  for (const run of runs) {
+    const s = Math.max(at, fix(run.start));
+    const e = Math.max(s, fix(run.end));
+    piece(at, s, PLAIN);
+    piece(s, e, run);
+    at = e;
+  }
+  piece(at, n, PLAIN);
+  return out;
+}

@@ -203,21 +203,23 @@ as text, a web page or a Draw calendar page; pages print through !Printers. Pass
 page with AES (through the browser's Web Crypto) until the password is given. It is written in JavaScript on the
 disc, like Lander II. Guide: `$.Docs.Journal`; developers: `docs/apps/Journal.md`.
 
-**A word processor for Microsoft Word files (a first step):** `$.MoreApps.!Word` opens a `.docx` (double-click one,
-on the hard disc or a HostFS drive; or drop it on its icon bar icon) in a window with its text, headings, bold,
-italic, underlining, colours, sizes, indents and alignment, and an info band saying what the file holds. Tables,
-pictures, footnotes and the like are shown as boxes, and *Save copy as .docx* writes the document back keeping
-**everything** in it (tables, pictures, comments, tracked changes, headers and footers, custom XML). It cannot edit yet;
-later steps add editing, page layout and pagination (which will only approximate Word), styles and lists, printing,
-tables and images, RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents from public
-test collections; real Microsoft Word could not be run during development, so a hand-off check was prepared. Older `.doc`
-and password-protected files are refused with a clear message. Documents never run anything and nothing is fetched.
-Calibri, Cambria, Arial, Times New Roman and Courier New are shown in the metric-compatible Carlito, Caladea and Liberation
-fonts bundled on the disc (all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the
-library of plain JavaScript modules (zip, XML...) it is built on, is installed with the system resources as
-`$.!Boot.Resources.!WimpLib`: any disc program imports it as `'wimplib/<Module>'`, found through the system variable
-`WimpLib$Path` (set at start-up with `WimpLib$Dir`; put a directory of your own first to override a module). Guide:
-`$.Docs.Word` (part 9 for programmers); developers: `docs/apps/Word.md`.
+**A word processor for Microsoft Word files (a first step):** `$.MoreApps.!Word` opens a `.docx` (double-click one, on
+the hard disc or a HostFS drive; or drop it on its icon bar icon) in a window with its text, headings, bold, italic,
+underlining, colours, sizes, indents and alignment, in a column as wide as the text on its page (Info says what the
+file holds). Tables, pictures, footnotes and the like are shown as boxes, and *Save copy as .docx* writes the document
+back keeping **everything** in it (tables, pictures, comments, tracked changes, headers and footers, custom XML). Text
+can be selected with the mouse and keys (caret, drag, double/triple click, Shift+arrows, Ctrl-A), but it cannot edit
+yet; later steps add editing, page layout and pagination (which will only approximate Word), styles and lists,
+printing, tables and images, RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents
+from public test collections; real Microsoft Word could not be run during development, so a hand-off check was
+prepared. Older `.doc` and password-protected files are refused with a clear message. Documents never run anything and
+nothing is fetched. Calibri, Cambria, Arial, Times New Roman and Courier New are shown in the metric-compatible
+Carlito, Caladea and Liberation fonts bundled on the disc (all SIL OFL 1.1; licences in
+`$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules (zip, XML...) it is built on, is
+installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program imports it as
+`'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with `WimpLib$Dir`; put a
+directory of your own first to override a module). Guide: `$.Docs.Word` (part 9 for programmers); developers:
+`docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
@@ -357,7 +359,8 @@ node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents)
+node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
 node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)
 node tests/moreapps/validate.mjs  # check what the .docx writer writes against the Word schema (needs xmllint)

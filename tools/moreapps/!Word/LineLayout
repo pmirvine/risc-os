@@ -1,0 +1,137 @@
+// LineLayout - lays out one paragraph for the screen: its text broken
+// into lines that fit a width, run by run in each run's font, every
+// line and item keeping the model offsets it stands for.
+//
+//   layoutPara(para, styles, width, metrics, cache) -> {h, lines}
+//   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
+//   cache:   a Map for the run formats (./Fmt)
+//   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak}
+//          x: where the line starts (after indent and alignment)
+//   item:  {x, w, text, f, kind, from, to, shown}
+//          kind 'text' | 'link' | 'box' | 'tab' | 'break'
+//
+// Offsets are UTF-16 indices into para.text. The lines cover the text
+// without gaps or overlap (lines[0].from is 0, the last .to is the
+// length, each .to is the next .from), and so do the items of a line.
+// An item's text is what is drawn; shown is true when that is not the
+// model text of [from, to): a hyperlink or other wrapper (its text),
+// a [...] box, a non-breaking hyphen, and the zero-width items with
+// text '' (an unseen inline, a tab, a line break; spaces at the start
+// of a line after a break are not drawn either, as in the stub).
+//
+// Lines break greedily at spaces. Spaces that end a wrapped line hang
+// in it: they count in its items (for hit-testing) but not for its
+// alignment; the next line starts at the next non-space. A word
+// longer than the line is not broken: it overflows on a line of its
+// own (measured once, so a 100,000-character word costs one measure).
+// A tab item runs from where it starts to the next half-inch stop. A
+// line break (\n or w:br) ends its line, endsWithBreak, and its offset
+// belongs to that line; wrapped is true when the line ends because
+// the next word did not fit. Items are merged only when both are
+// model text in the same format, touching in x and in offsets. An
+// empty paragraph has one line, from = to = 0, as high as the text of
+// its mark (first run) would be. Alignment: left, centre or right
+// (justified is shown left); it moves items, never offsets.
+// Pure: no desktop services.
+import {runFmt, paraFmt} from './Fmt';
+import {tokens, PLAIN} from './LineTokens';
+
+const TAB = 48;                        // half an inch at 96 dpi
+
+/** See the header. */
+export function layoutPara(para, styles, width, metrics, cache) {
+  const pf = paraFmt(styles, para);
+  const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
+  const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
+  const lines = [];
+  let line = null, x = 0, pos = 0;
+  let y = pf.before;
+  const start = (first) => {
+    line = {from: pos, to: pos, x: 0, y: 0, h: 0, base: 0, items: [],
+      wrapped: false, endsWithBreak: false, px: 0, real: false,
+      ink: left};
+    x = line.x = left + (first ? pf.first : 0);
+  };
+  const finish = (how) => {
+    const px = line.px || base.px;
+    line.h = px * 1.25 * pf.factor;
+    line.base = line.h - px * 0.27;
+    line.y = y;
+    line.to = pos;
+    if (how) line[how] = true;
+    y += line.h;
+    // alignment: the text up to the last thing that is not a space
+    const room = maxX - line.ink;
+    const dx = pf.align === 'center' ? room / 2
+      : pf.align === 'right' ? room : 0;
+    if (dx > 0) {
+      for (const it of line.items) it.x += dx;
+      line.x += dx;
+    }
+    delete line.px;
+    delete line.real;
+    delete line.ink;
+    lines.push(line);
+  };
+  // put token tk, w wide, at x; real: drawn as the stub drew it
+  const place = (tk, w, real = tk.t !== 'z') => {
+    const items = line.items;
+    const last = items[items.length - 1];
+    if (real) {
+      line.px = Math.max(line.px, tk.f.px);
+      line.real = true;
+    }
+    if (last && !last.shown && !tk.shown && last.f === tk.f &&
+      last.kind === tk.kind && last.to === tk.from &&
+      Math.abs(last.x + last.w - x) < 0.01) {
+      last.text += tk.text;
+      last.w += w;
+      last.to = tk.to;
+    } else {
+      items.push({x, w, text: tk.text, f: tk.f, kind: tk.kind,
+        from: tk.from, to: tk.to, shown: tk.shown});
+    }
+    x += w;
+    if (/\S/.test(tk.text)) line.ink = x;
+    pos = tk.to;
+  };
+  let group = [], groupW = 0;
+  const flush = () => {
+    if (!group.length) return;
+    if (line.real && groupW > 0 && x + groupW > maxX) {
+      finish('wrapped');
+      start();
+    }
+    for (const [tk, w] of group) place(tk, w);
+    group = []; groupW = 0;
+  };
+  start(true);
+  for (const tk of tokens(para, styles, cache)) {
+    if (tk.t === 'w' || tk.t === 'z') {
+      const w = tk.t === 'z' ? 0 : metrics.width(tk.text, tk.f.css) +
+        (tk.kind === 'box' ? 6 : 0);
+      group.push([tk, w]);
+      groupW += w;
+    } else if (tk.t === 's') {
+      flush();
+      if (line.real || !lines.length) {
+        place(tk, metrics.width(tk.text, tk.f.css));
+      } else {
+        // after a break: kept for its offsets, not drawn (as before)
+        place({...tk, text: '', shown: true}, 0, false);
+      }
+    } else if (tk.t === 'tab') {
+      flush();
+      const stop = left + TAB * (Math.floor((x - left) / TAB) + 1);
+      place(tk, stop - x);
+    } else {
+      flush();
+      place(tk, 0);
+      finish('endsWithBreak');
+      start();
+    }
+  }
+  flush();
+  finish();
+  return {h: y + pf.after, lines};
+}

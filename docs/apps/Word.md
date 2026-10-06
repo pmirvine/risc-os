@@ -8,7 +8,7 @@ library of shared plain modules), put on the disc as `ADFS::HardDisc4.$.MoreApps
 `tools/moreapps/!WimpLib/!Help`. Not part of RISC OS 3.71.
 
 The first step of a word processor for Microsoft Word files. Today `!Word` is a **stub**: it opens a `.docx` read-only
-in a window (info band, formatted paragraphs, grey boxes for what it does not show) and saves a faithful copy. What
+in a window (formatted paragraphs in a page-width column, grey boxes for what it does not show) and saves a faithful copy. What
 is built to last is underneath: a document model with operations and undo, a reader and a writer for `.docx` that keep
 everything they do not understand, and `WimpLib`. Later sub-projects add editing, layout and pagination, styles and
 lists, printing, tables and images, headers/footers/footnotes, RTF/PDF export and spell check.
@@ -40,7 +40,7 @@ tests/moreapps/   everything below under Testing
 
 All files on the disc are Latin-1 text, no tabs, **at most 72 columns**, extensionless, and import each other with
 exact-name relative specifiers (`'./Ops'`), which Node 22.7+ also resolves natively (so the unit tests import the
-disc files as they are). The pure modules never import `'riscos'`; only `!RunImage` and `AppWin` do (`Info`'s
+disc files as they are). The pure modules never import `'riscos'`; only `!RunImage`, `AppWin`, `EditView` and `EditMouse` do (`Info`'s
 `infoWindow` is handed the task, so `Info` stays pure).
 
 ## WimpLib
@@ -122,6 +122,8 @@ lowercase `wimplib/` and has no `Name/js` fallback. Tests under `tests/` are out
 | `XmlParse` | parser: one pass, no regexes, no recursion, **no DTD** (`XmlError` `dtd`), no custom entities, depth <= 256 | `parseXml(text) -> {decl, before, root, after}` (`before`/`after`: `{comment}` / `{pi}` outside the root), `MAX_DEPTH` |
 | `XmlWrite` | serializer and builders | `serialize(node, {decl, before, after}) -> string`, `el(name, attrs, ...children)`, `text(node)`, `find(node, name)`, `findAll(node, name)`, `attr(node, name)` |
 | `XmlText` | character helpers | `XmlError` (`code` `malformed dtd depth entity`, `line`), `esc`, `escAttr`, plus helpers for the parser |
+| `Segment` | grapheme and word boundaries in UTF-16 text (`Intl.Segmenter`, injectable); per-text cache of 64 entries, none for texts over 4096 units | `graphemes(text) -> frozen sorted boundaries 0..length`, `nextBoundary/prevBoundary(text, off)`, `wordBounds(text, off) -> {from, to}` (at a boundary the word on the right wins), `nextWord`, `prevWord` |
+| `TextMetrics` | text widths and hit testing over an injected `measure(text, css) -> px`, LRU cache (`max` 20000, none over 4096 units) | `width(text, css)`; `widthTo(text, css, off)` = width of `text.slice(0, off)` (off clamped, uncached, measured as a string so kerning and ligatures count); `prefixWidths(text, css)` = width of the prefix at each grapheme boundary, O(n^2) so give it line-sized text (<= ~2000); `offsetAt(text, css, x)` = nearest grapheme boundary, ties left, `x <= 0 -> 0`, `x >= width -> length`, O(log n) measures; `size`; `ctxMeasure(ctx)` for a canvas |
 
 A node is `{name, attrs: [[name, value]...], children}`; children are nodes, strings, `{comment}` or `{pi}`. Prefixes and
 attribute order are kept as written. `serialize` throws `XmlError('malformed')` for anything that is not valid XML
@@ -188,11 +190,64 @@ The application
 |---|---|
 | `!RunImage` | start-up (single instance), icon bar icon and menu, opening files, DataOpen/Quit messages, the `task.word` test hook |
 | `Open` | `openDocx(vfs, path)` (refuses more than `MAX_PARAGRAPHS` = 200,000 paragraphs), `describe(err, leaf)` (the plain-words error text) |
-| `AppWin` | `DocWindow`: window, scrolling keys, menu (Save copy / Info / Close), cached Save and Info boxes |
-| `Layout`, `Render`, `Fmt` | screen layout: `Layout` (whole document, binary search for painting), `layoutPara` (greedy line breaking), `runFmt`/`paraFmt` from the resolved properties |
+| `AppWin` | `DocWindow`: window (workButton `clickdragdouble`, hiDPI canvas, both scroll bars; first width `min(page + 48, screen - 40)`), `fit()` on a width change, `relayout()` (fonts arrived: a new `DocLayout` and `TextMetrics`, selection kept by `Selection.clamp(sel, doc, oldL)`), menu (Save copy / Info / Close), cached Save and Info boxes |
+| `EditView`, `EditMouse`, `EditPaint`, `Keys` | the caret and selection in a window. `EditView(win, L)`: `sel`, `setSelection(sel, {scroll})` (scrolls the head 24 px inside the edges), `setLayout(L, oldL)`, `placed()`, `focus()`, `key(ev)` (true if used, `undefined` to pass the key on), `caretRect()`, `text()`, `hook()`; the caret is the Wimp's (`wimp.setCaret(win, null, -1, {x, y, h})`), shown only while nothing is selected (no blink yet); Page Up/Down scroll by the window height less 32 and move the caret as far; Ctrl-Home/End scroll to the very top/bottom; Ctrl-A does not scroll; Escape collapses to the head. `EditMouse.attachMouse(view)`: click caret, Shift/Adjust click extends from the anchor, drag via `wimp.drag({type: 'point'})` with a 60 ms auto-scroll timer outside the window (the release position is applied too: Chrome may deliver the last moves with it), double-click word (`selectWord`), triple-click = a Select click within `os.input.config.doubleClickMs` of a double-click (paragraph), Menu leaves the selection alone (as !Edit). `EditPaint.paintView(L, g, rect, sel, active)`: grey desk `#888`, white page with border and shadow, text (`DocPaint`), selection multiplied in (`#b3d4fc`, inactive `#d4d4d4`). `Keys.command(code, {shift, ctrl, key})` (pure): Wimp code -> `{cmd, extend}` or null; the browser's key name separates Shift-Down from Page Down (both &19E) |
+| `DocLayout`, `DocRects`, `DocPaint` | the whole document as a page-width column: `new DocLayout(doc, metrics)`, `layout(viewWidth) -> {w, h}` (text width `(pgSz.w - pgMar.left - pgMar.right) / 15` from the FIRST section, A4/1440 defaults, clamped 80..4000 px; page `pgSz.w / 15` centred, at least 24 px from the left; 24 px above and below; lines depend only on the text width, so a new view width only moves the column; `invalidate()` re-breaks), `items` `{id, block, kind: 'p'\|'box', index, y, h, lines?, label?}` (a `'p'` item is also PositionMap's `pl`; x in item coordinates + `left`), `byId`, `itemAtY`, `locate(pos)`, `caretRect(pos, aff)`, `hitTest(x, y) -> {pos, affinity}` (above all: start; below all: end; a box: nearer edge), `selectionRects(sel, y0?, y1?)` (`DocRects`: only items/lines in the band; 6 px paragraph-mark stubs for paragraphs whose end is selected; a box lit whole when both edges are in), `boxRect`, `paraStart/End`, `docStart/End`, `next/prevItem`; `DocPaint.paint(L, g, rect)` draws the items in rect |
+| `Selection`, `SelMove`, `DocPos` | positions `{id, off}`: a paragraph id and UTF-16 offset, or a kept block (`DocPos.blockId`: a negative id held in a WeakMap per block object) with off 0 (before) or 1 (after). `Selection` is a frozen value `{anchor, head, affinity, goalX}`: `caret`, `select`, `collapsed`, `ordered(sel, L)`, `move(sel, L, cmd, extend, pageH)` (`SelMove`: left/right by grapheme of the whole paragraph text (`DocPos.nextG/prevG`, windowed on texts over 4096 units), every item boundary one step, boxes atomic; up/down keep `goalX` and cross into the next item; home/end per line; wordLeft/wordRight; paraStart/paraEnd; docHome/docEnd; pageUp/pageDown; non-extending left/right collapse a selection to its edge), `selectWord` (not the space after a word), `selectPara`, `selectAll`, `text(sel, L)` (paragraphs joined by `\n`, inline wrappers as their text), `clamp(sel, doc, oldL?)` |
+| `LineLayout`, `LineTokens`, `Fmt` | screen layout: `LineLayout.layoutPara(para, styles, width, metrics, cache)` (greedy line breaking; lines and items keep the UTF-16 model offsets `from`/`to` they stand for, gap-free; `shown` marks items whose drawn text is not the model text; trailing spaces hang; a word wider than the line overflows on its own line), `LineTokens.tokens` (words, `isSpace` (only U+0020 breaks and hangs), spaces, tabs, breaks and inlines with their offsets; a run boundary inside a surrogate pair moves past it), `runFmt`/`paraFmt` from the resolved properties |
+| `PositionMap`, `PosLine` | offsets <-> places in one laid-out paragraph `pl = {para, y, h, lines, metrics}`: `caretRect(pl, off, aff)`, `hitTest(pl, x, y)`, `lineOf`, `lineStart`/`lineEnd` (End leaves out spaces hanging at a soft wrap, sits before a break), `vertical(pl, off, aff, dir, goalX)` (null past the first/last line), `selectionRects(pl, from, to)`. At a soft wrap an offset has two places by affinity (`'up'` end of the upper line, `'down'` start of the lower); atomic items (tab, box, hyphen, unseen, wrapper text) give the nearer edge; a wrapper's offset `i+1` is after its last piece, a line of only later wrapper pieces has no caret place; Up/Down fall back to the other edge of a hit wrapper piece so they never dead-end. Lines carry `x` (start after indent and alignment) for empty lines. Long items are measured with `widthTo`/`offsetAt` |
 | `Kinds` | `UNSEEN` (the inline elements drawn as nothing and not counted: `proofErr`, `bookmarkStart/End`, `commentRangeStart/End`, `permStart/End`, `lastRenderedPageBreak`, `instrText`, `delText`, `fldChar`), `localName(node)` |
 | `Info` | `facts(doc)`, `summary(doc)`, `kindOf(node)`, `infoWindow` |
 | `FontMap`, `FontLoad` | `substitute(name) -> {family, css}`, `fontFiles()`, `fontFile(family, bold, italic)`, `bundledFamilies()`, `fontsToLoad(families)`; `loadFonts(vfs, dir, doc, families, FontFaceCtor)` |
+
+### Caret and selection: the design
+
+**Position model.** A position is `{id, off}`: a paragraph's id and a UTF-16 offset into its text, or, for a kept
+block (a table, which the model holds but the view draws as one box), `DocPos.blockId(block)` (a negative id) with
+`off` 0 (before) or 1 (after). A selection is the frozen value `{anchor, head, affinity, goalX}`
+(`Selection.caret/select`); `goalX` is the column Up/Down keep. Positions name paragraphs by id, not by index, so
+they survive a new layout; `Selection.clamp(sel, doc, oldL)` repairs a selection after the document changed.
+
+**Affinity.** At a soft line wrap one offset has two places: `'up'` (the end of the upper line) and `'down'` (the
+start of the lower; the default). Clicks, End and Left/Right set it; `caretRect`, `lineOf`, `vertical` take it.
+
+**The offsets contract (`LineLayout`).** Every line and item carries the model offsets `from`/`to` it stands for,
+gap-free across a paragraph. An inline element (link, field...) stands for ONE offset `i` but may show text: its
+first piece covers `[i, i+1)` and the later pieces (after a wrap) are zero-length `[i+1, i+1)`, all `shown`. A
+`shown` item's drawn text is not model text, so a caret inside it snaps to an edge. `PositionMap`'s header has the
+rules for the caret at `i` / `i+1`, clicks in later pieces, Home/End and Up/Down around wrappers.
+
+**Selection rules.** Left/Right move by grapheme of the whole paragraph text (`DocPos.nextG/prevG`; for texts over
+4096 units a window of text is segmented, with `PosLine.snap` doing the same for a boundary inside a cluster),
+one step per item boundary, boxes atomic; a non-extending Left/Right collapses a selection to its edge. Up/Down keep
+`goalX` and cross into the next item. Word moves use `Segment.nextWord/prevWord`; double-click `selectWord` takes
+the word under the caret (not the space after it; a box whole); triple-click `selectPara`; Ctrl-A `selectAll`;
+Escape collapses to the head. Keys: `Keys.command(code, {shift, ctrl, key})` is pure. Shift-Down and Page Down are
+both Wimp code &19E, so the optional browser key name (`ArrowDown`/`PageDown`) decides; without a name (a key sent
+by `Wimp_ProcessKey`) &19E/&19F are Page Down/Up. The Menu button never moves the selection (as !Edit).
+
+**Test strategy.** The modules are pure and take a measurer, so tests use a fake one (8 px per UTF-16 unit, 9 when bold,
+in `tests/moreapps/positionmap.test.mjs`, `doclayout.test.mjs`) and exact numbers; the browser suites
+`word-edit.mjs` and `word-edit-hostile.mjs` use the real canvas and the `task.word` hook. `snap.test.mjs` checks
+`PosLine.snap` against `Segment.graphemes()` at every offset of short stress texts (flags in odd and even runs, ZWJ
+chains over 32 units, modifier + ZWJ, 70 combining marks before flags, Devanagari conjuncts, Hangul, CRLF, lone
+surrogates). `hostile-view.test.mjs` runs the hostile documents in a worker under a watchdog.
+
+**Performance (measured, Node, this machine).** A 5000-paragraph document opens in the desktop in about 140 ms;
+Ctrl-A on it takes about 2 ms; 50,000 paragraphs lay out in about 0.9 s (`doclayout.test.mjs` requires < 1.5 s) and
+select-all draws visible rectangles in < 50 ms. Every call on the hostile documents is < 50 ms.
+
+**Limits and known minors.**
+
+* Grapheme snapping in a long paragraph is windowed (32 units either side, doubling while no boundary is found);
+  texts over 4096 units are not cached, so each call re-segments them.
+* The Wimp drag listeners of the core stay after a window is closed mid-drag until the button is released
+  (nothing is drawn; the 60 ms auto-scroll timer stops on its next tick, within 60 ms).
+* Tables are one atomic box (no caret in cells); right-to-left text is positioned in stored order, with no bidi
+  caret logic; no clipboard, no typing, no blink for the caret.
+* The layout uses the FIRST section's page width for the whole document.
+* Shared code (`src/core`) was not changed: `docs/CORE_API.md` needs nothing; the drag listeners above are noted in
+  `docs/CHANGES_NEEDED.md`.
 
 ## The data model
 
@@ -388,12 +443,13 @@ shows a document once its fonts are loaded, waiting at most 2.5 s, and lays it o
   by double-click (the type &A7E, `MSWordX`, is bound by `!Boot`: `Alias$@RunType_A7E` runs `!Run`), by a drop on
   the icon bar icon or a document window, and by `DataOpen`. The icon (`!word`) opens an information box on Select
   ("cannot make new documents yet"); its menu is Info, Quit.
-* `AppWin` — one `DocWindow` per document (key = canonical path, lower-cased). Painting is a canvas: `Layout` lays out
-  every paragraph (words measured once, cached) but only paints what is in view. Menu: *Save copy as .docx*
+* `AppWin` — one `DocWindow` per document (key = canonical path, lower-cased). Painting is a canvas: `DocLayout` lays out
+  every paragraph once for the page's text width (words measured once, cached) and `DocPaint` paints only what is
+  in view, on a white page on a grey desk, with the selection (`EditView`/`EditPaint`); the window has both scroll bars and its extent holds the page (and is at least the screen's width). Menu: *Save copy as .docx*
   (`saveAs` with `writeDocx`; the Save and Info boxes are created once per window and deleted with it — a menu asks
-  for a submenu on every hover), *Info*, *Close*. Keys: Page Up/Down, up/down, Home, Copy (End), Ctrl-up/down.
-* Test hooks: `task.word.docs` (`{path, doc, text, summary, win, saveBytes()}`) and `task.word.open(path)`.
-* `Render` draws inlines so: a `w:hyperlink` with text in blue, underlined (the only link style); any other
+  for a submenu on every hover), *Info*, *Close*. Mouse and keys: `EditMouse`, `EditView`, `Keys` (arrows, Ctrl-arrows, Home, End/Copy, Ctrl-Home/End, Page Up/Down, Shift to extend, Ctrl-A, Escape); other keys are passed on.
+* Test hooks: `task.word.docs` (`{path, doc, text, summary, win, saveBytes(), view}`; `view` is `EditView.hook()`: `{selection, layout, text(), caretRect(), setSelection(a, b?, aff?)}`) and `task.word.open(path)` (resolves to the `DocWindow`).
+* `LineTokens` draws inlines so (each stands for one offset; a wrapper's text still wraps word by word, its first piece covering `[i, i+1)` and later pieces the empty `[i+1, i+1)`, all `shown`; a tab or newline in that text is drawn as it is): a `w:hyperlink` with text in blue, underlined (the only link style); any other
   paragraph-level wrapper with text (`w:ins`, `w:fldSimple`, `w:sdt`, `w:smartTag`, `w:customXml`, a `w:r` kept
   whole) as plain text in the format at that position; nothing for `Kinds.UNSEEN`, `w:del`, `w:moveFrom` and
   `w:softHyphen`; `-` for `w:noBreakHyphen`; a grey `[...]` box for the rest (drawings, pictures, objects, footnote,
@@ -459,13 +515,17 @@ VALIDATE_DIR=tests/moreapps/corpus VALIDATE_MAX=150 node tests/moreapps/validate
   `docx-edit` (extension elements, edits replacing raw properties), `docx-roundtrip` (read -> write -> read equal;
   textutil output; real files on the machine only with `MOREAPPS_REAL_DOCX=1`, see below), `docx-corpus-fixes` (regressions the corpus found),
   `docx-compare` (the `assertSameDoc` helper), `docx-package` (content-type repair; valid fixtures' types
-  unchanged; the linter on `newDoc` output and on its own cases), `fontmap`, `fontload`, `fontfiles`, `word-view` (Info, Fmt, Render),
+  unchanged; the linter on `newDoc` output and on its own cases), `fontmap`, `fontload`, `fontfiles`, `word-view` (Info, Fmt, LineLayout), `linelayout` (offsets, and the same lines as the stub's layout, `old-render.mjs`, on 200 generated paragraphs), `positionmap` (caret, hit test, Home/End, Up/Down, selection rectangles; `hitTest(caretRect(off))` round trip on 500 generated paragraphs), `doclayout` (the page-width column, items, caret/hit/selection rectangles, 50,000 paragraphs laid out < 1.5 s and select-all drawn < 50 ms), `selection` (every movement command, boxes, words, select word/paragraph/all, text, clamp; random moves never land inside a grapheme), `snap` (`PosLine.snap` against the true boundaries at every offset of short stress texts), `hostile-view` (with `hostile-docs.mjs`: a 100,000-character word, 50,000 runs, 5000 tabs, absurd indents and page sizes, only inlines, tables first and last, an empty document; every call < 50 ms and the selection valid, run in a worker under a 10 s watchdog; 500 random key/mouse sequences; windowed grapheme steps in paragraphs over 4096 units equal the whole text's, flag runs included),
   `disc` (the build script against a temporary disc), `harness` (pins Node's native handling of the disc layout).
 * Browser tests (`index.mjs`, Playwright with the Chromium used by the other suites; `tests/lib/suite.mjs`): `disc
   --check`, `jsrun-wimplib.mjs` (the `wimplib/` import), `boot.mjs` (cold boot: `File$Type_A7E` set and a `.docx` runs
   !Word), `word.mjs` (open, text, formatting, save copy equals the original, 5000 paragraphs opens in ~150 ms,
   the menu does not leak windows), `word-life.mjs` (three runs of !Word add each font face to the page once; no fonts, close, Quit leave nothing
-  behind).
+  behind), `word-edit.mjs` (caret and selection: clicks, drags with auto-scroll, Shift/Adjust, double/triple
+  clicks, the keys, hiDPI; 30 documents and a document closed mid-drag leave no windows, timers or pointer
+  listeners), `word-edit-hostile.mjs` (the hostile documents in the desktop: clicks at extreme places and keys
+  < 50 ms; a drag held at the end of the scrolling draws nothing; a drag while the window closes; 500 random
+  keys and mouse actions).
   Screenshots: `KEEP_SHOTS=1` writes them to `tests/screens/`.
 * **The corpus** (`tests/moreapps/corpus/`, git-ignored, never committed): `tools/moreapps-corpus.mjs` fetches sample
   `.docx` files pinned to commits (python-docx MIT, Apache POI Apache-2.0, Open XML SDK MIT, a few LibreOffice test
@@ -535,8 +595,8 @@ Reader / writer
 * Level-`'p'` inlines inside formatted text lose their paragraph-level formatting when edited, and a `w:tab` read from
   a document comes back as `\t` text (editor sub-project).
 * Header/footer references are not regrouped and `styles.extraStyles` are written after the other styles (valid, but not
-  in their original place); `proofErr`, bookmarks and `lastRenderedPageBreak` are U+FFFC inlines (`Render` draws
-  nothing for them; an editor must still step over them).
+  in their original place); `proofErr`, bookmarks and `lastRenderedPageBreak` are U+FFFC inlines (`LineLayout` draws
+  nothing for them, a zero-width item; an editor must still step over them).
 * The writer repairs only the package index of the package and main-part relationships; it does not add missing
   parts (real Word does not need `settings.xml` for footnotes: see "Verified in real Word").
 * Mixed Strict/Transitional URIs in one document do not round-trip; UTF-16 prolog parts are written as UTF-8 with a

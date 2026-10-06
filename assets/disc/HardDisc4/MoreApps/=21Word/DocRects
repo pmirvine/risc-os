@@ -1,0 +1,78 @@
+// DocRects - the rectangles that show a selection in a ./DocLayout.
+//
+//   selectionRects(L, sel, y0, y1) -> [{x, y, w, h}] in work-area
+//   coordinates, for the items that meet the band y0..y1 only
+//
+// sel is a ./Selection ({anchor, head}); its ends are put in order.
+// Text is lit line by line (./PositionMap). A paragraph whose end is
+// inside the selection (the selection goes on past it) also gets a
+// stub 6 px wide where its last line ends, for its paragraph mark;
+// an empty paragraph crossed shows just that. A kept block is lit
+// whole when both its edges are in the selection. Only the items
+// (and in a long paragraph only the lines) in the band are looked
+// at, so selecting a whole long document costs no more to draw than
+// a short one. Pure: no desktop services.
+import * as PM from './PositionMap';
+import {compare} from './DocPos';
+
+const STUB = 6;
+
+/** Index of the line of item it that y (work area) falls in. */
+function lineAt(it, y) {
+  const {lines} = it;
+  let lo = 0, hi = lines.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (it.y + lines[mid].y + lines[mid].h > y) hi = mid;
+    else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** See the header. */
+export function selectionRects(L, sel, y0, y1) {
+  const out = [];
+  if (!sel) return out;
+  const flip = compare(L, sel.anchor, sel.head) > 0;
+  const f = L.locate(flip ? sel.head : sel.anchor);
+  const t = L.locate(flip ? sel.anchor : sel.head);
+  if (!f || !t || (f.index === t.index && f.off === t.off)) return out;
+  let i0 = f.index, i1 = t.index;
+  if (y0 > -Infinity) i0 = Math.max(i0, L.itemAtY(y0).index);
+  if (y1 < Infinity) i1 = Math.min(i1, L.itemAtY(y1).index);
+  for (let i = i0; i <= i1; i++) {
+    const it = L.items[i];
+    if (it.kind === 'box') {
+      const lit = (i > f.index || f.off === 0) &&
+        (i < t.index || t.off === 1);
+      if (lit) {
+        out.push(L.boxRect(it));
+      }
+      continue;
+    }
+    const len = it.block.text.length;
+    let a = i === f.index ? f.off : 0;
+    let b = i === t.index ? t.off : len;
+    const {lines} = it;
+    if (lines.length > 1 && it.y < y0) {
+      // from one before the first line in view: a wrapper's later
+      // piece there is lit only when its offset is in the range
+      const s = lines[lineAt(it, y0)].from - 1;
+      if (s > a) a = s;
+    }
+    if (lines.length > 1 && it.y + it.h > y1) {
+      const e = lines[lineAt(it, y1)].to;
+      if (e < b) b = e;
+    }
+    if (a < b) {
+      for (const r of PM.selectionRects(it, a, b)) {
+        out.push({x: r.x + L.left, y: r.y, w: r.w, h: r.h});
+      }
+    }
+    if (i < t.index) {
+      const c = PM.caretRect(it, len, 'down');
+      out.push({x: c.x + L.left, y: c.y, w: STUB, h: c.h});
+    }
+  }
+  return out;
+}

@@ -1,3 +1,8 @@
+// The !Word stub's line breaking (tools/moreapps/!Word/Render before
+// LineLayout), kept only so linelayout.test.mjs can check that the
+// new layout breaks lines exactly as it did. One change: alignment
+// leaves out the spaces at the end of a line even when they were
+// merged into the item before them (the stub counted them then).
 // Render - lays out one paragraph for the screen: its text broken
 // into lines that fit a width, run by run in each run's font.
 //
@@ -16,9 +21,9 @@
 // hyphen nothing; anything else is a small grey [...] box.
 // Alignment: left, centre or right (justified is shown left).
 // Pure: no desktop services.
-import {OBJ} from './Model';
-import {runFmt, paraFmt} from './Fmt';
-import {UNSEEN, localName} from './Kinds';
+import {OBJ} from '../../tools/moreapps/!Word/Model';
+import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
+import {UNSEEN, localName} from '../../tools/moreapps/!Word/Kinds';
 
 const TAB = 48;                        // half an inch at 96 dpi
 const PLAIN = {rPr: {extra: []}};
@@ -134,7 +139,8 @@ export function layoutPara(para, styles, width, measure, cache) {
     let end = left;
     for (const it of line.items) {
       if (it.text === undefined || /\S/.test(it.text)) {
-        end = it.x + it.w;
+        end = it.x + it.w - (it.kind === 'box' ? 0 : measure(
+          it.text.slice(it.text.trimEnd().length), it.f.css));
       }
     }
     const room = maxX - end;

@@ -1,0 +1,81 @@
+// DocPos - positions in a document: {id, off}, a paragraph id and a
+// UTF-16 offset into its text, or the id of a kept block (a table,
+// ./DocLayout's 'box' items) with off 0 (before it) or 1 (after it).
+//
+//   blockId(block)        -> the paragraph's id; a kept block has no
+//                            id in the model, so it is given one (a
+//                            negative number) that stays with that
+//                            block object for as long as it lives
+//   itemEnd(item)         -> the last offset of a layout item
+//   clampOff(item, off)   -> off within the item, at a boundary
+//   nextG(text, off)      -> the next grapheme boundary
+//   prevG(text, off)      -> the previous one
+//   compare(L, a, b)      -> <0, 0, >0: a before, at or after b
+//   isWordText(text)      -> whether a word run holds a letter/digit
+//
+// Short texts use WimpLib/Segment (cached per text). In a long text
+// (over 4096 units) only a window around off is segmented, starting
+// at a real boundary (./PosLine snap), so a step costs about the
+// length of the cluster it crosses, not of the paragraph.
+// Pure: no desktop services.
+import {nextBoundary, prevBoundary, graphemes}
+  from 'wimplib/Segment';
+import {snap} from './PosLine';
+
+const LONG = 4096, WIN = 64;
+const ids = new WeakMap();
+let lastBox = 0;
+
+/** See the header. */
+export function blockId(b) {
+  if (b.type === 'p') return b.id;
+  let id = ids.get(b);
+  if (id === undefined) ids.set(b, id = --lastBox);
+  return id;
+}
+
+/** See the header. */
+export const itemEnd = (it) =>
+  (it.kind === 'box' ? 1 : it.block.text.length);
+
+/** See the header. */
+export function clampOff(it, off) {
+  const n = Math.min(Math.max(Math.floor(off) || 0, 0), itemEnd(it));
+  return it.kind === 'box' ? n : snap(it.block.text, n);
+}
+
+/** See the header. */
+export function nextG(text, off) {
+  const n = text.length;
+  if (off >= n) return n;
+  if (off < 0) return 0;
+  if (n <= LONG) return nextBoundary(text, off);
+  const s = snap(text, off);
+  for (let w = WIN; ; w *= 2) {
+    const e = Math.min(n, off + w);
+    // boundaries before the window's end are real ones
+    for (const b of graphemes(text.slice(s, e))) {
+      if (s + b > off && (s + b < e || e === n)) return s + b;
+    }
+    if (e === n) return n;
+  }
+}
+
+/** See the header. */
+export function prevG(text, off) {
+  if (off <= 0) return 0;
+  const n = text.length;
+  if (off > n) return n;
+  if (n <= LONG) return prevBoundary(text, off);
+  return snap(text, off - 1);
+}
+
+/** See the header. */
+export function compare(L, a, b) {
+  if (a.id === b.id) return a.off - b.off;
+  const x = L.byId.get(a.id), y = L.byId.get(b.id);
+  return (x ? x.index : -1) - (y ? y.index : -1);
+}
+
+/** See the header. */
+export const isWordText = (t) => /[\p{L}\p{N}_]/u.test(t.slice(0, 64));

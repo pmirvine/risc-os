@@ -1,0 +1,196 @@
+// DocLayout - the whole document laid out as one column the width of
+// the text on its page: paragraphs and kept blocks stacked, and
+// positions ({id, off}, ./DocPos) <-> places in the work area.
+//
+//   const L = new DocLayout(doc, metrics)  (WimpLib/TextMetrics)
+//   L.layout(viewWidth) -> {w, h}: the work area's extent
+//   L.items  [{id, block, kind: 'p'|'box', index, y, h, lines?,
+//             label?}] in document order; a 'p' item is also the
+//             pl ({para, y, h, lines, metrics}) of ./PositionMap
+//   L.byId   Map id -> item
+//   L.left, L.textW, L.pageLeft, L.pageW: the column (px)
+//   L.itemAtY(y)            -> the item at y (clamped to the ends)
+//   L.locate(pos)           -> {item, index, off} (off clamped), or
+//                              null for an id not in the document
+//   L.caretRect(pos, aff)   -> {x, y, h} in work-area coordinates
+//   L.hitTest(x, y)         -> {pos, affinity}
+//   L.selectionRects(sel, y0?, y1?) -> [{x, y, w, h}] (./DocRects)
+//   L.paraStart(pos), L.paraEnd(pos), L.docStart(), L.docEnd()
+//   L.nextItem(item), L.prevItem(item) -> item or null
+//   L.boxRect(item)         -> {x, y, w, h} of a kept block's box
+//   L.invalidate()          lay the lines out again on next layout
+//
+// The text width comes from the FIRST section's pgSz and pgMar
+// (twips; A4 with 1-inch margins when it has none): (w - left -
+// right) / 15, clamped to 80..4000 px. The page (pgSz.w / 15 px, at
+// most margins + text) is centred in the view, at least 24 px from
+// its left edge; the text starts at the page's left margin. 24 px
+// above the first item and below the last. Lines depend only on the
+// text width, so a new view width moves the column and nothing else.
+// A kept block is one box item, labelled with its kind; the caret
+// stands before it (off 0, its left edge) or after it (off 1, its
+// right edge). A hit above everything is the start of the document,
+// below everything its end, in a box the nearer edge.
+// Pure: no desktop services.
+import {layoutPara} from './LineLayout';
+import {kindOf} from './Info';
+import * as PM from './PositionMap';
+import {blockId, itemEnd, clampOff} from './DocPos';
+import {selectionRects} from './DocRects';
+
+const MARGIN = 24;                     // above, below, left of page
+export const BOX = 28;                 // a kept block's box
+const num = (v, d) => (Number.isFinite(v) ? v : d);
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+
+export class DocLayout {
+  constructor(doc, metrics) {
+    this.doc = doc;
+    this.metrics = metrics;
+    this.cache = new Map();            // run formats (./Fmt)
+    this.items = [];
+    this.byId = new Map();
+    this.laid = false;
+    this.width = 0;
+    this.height = 2 * MARGIN;
+    const sp = (doc.sections[0] && doc.sections[0].props) || {};
+    const sz = sp.pgSz || {}, mar = sp.pgMar || {};
+    const pw = num(sz.w, 11906);
+    const ml = num(mar.left, 1440), mr = num(mar.right, 1440);
+    this.textW = clamp((pw - ml - mr) / 15, 80, 4000);
+    this.marL = clamp(ml / 15, 0, 1000);
+    const marR = clamp(mr / 15, 0, 1000);
+    this.pageW = clamp(pw / 15, 80, this.marL + this.textW + marR);
+    this.pageLeft = MARGIN;
+    this.left = MARGIN + this.marL;
+    for (const s of doc.sections) {
+      for (const b of s.blocks) {
+        const it = b.type === 'p'
+          ? {id: b.id, block: b, para: b, kind: 'p', index: 0, y: 0,
+            h: 0, lines: null, metrics}
+          : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
+            h: BOX + 12, label: `[${kindOf(b.node)} - preserved, ` +
+              'not shown]'};
+        it.index = this.items.length;
+        this.items.push(it);
+        this.byId.set(it.id, it);
+      }
+    }
+  }
+
+  /** See the header. */
+  layout(viewWidth) {
+    const vw = Math.max(0, num(+viewWidth, 0));
+    this.width = vw;
+    this.pageLeft = Math.max(MARGIN, (vw - this.pageW) / 2);
+    this.left = this.pageLeft + this.marL;
+    if (!this.laid) this.stack();
+    const right = this.pageLeft + Math.max(this.pageW,
+      this.marL + this.textW) + MARGIN;
+    return {w: Math.max(vw, Math.ceil(right)), h: this.height};
+  }
+
+  /** Break every paragraph and stack the items. */
+  stack() {
+    let y = MARGIN;
+    const styles = this.doc.styles;
+    for (const it of this.items) {
+      if (it.kind === 'p') {
+        const l = layoutPara(it.block, styles, this.textW,
+          this.metrics, this.cache);
+        it.lines = l.lines;
+        it.h = l.h;
+      }
+      it.y = y;
+      y += it.h;
+    }
+    this.height = y + MARGIN;
+    this.laid = true;
+  }
+
+  invalidate() { this.laid = false; }
+
+  /** See the header. */
+  itemAtY(y) {
+    const {items} = this;
+    let lo = 0, hi = items.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (items[mid].y + items[mid].h > y) hi = mid; else lo = mid + 1;
+    }
+    return items[lo] || null;
+  }
+
+  /** See the header. */
+  locate(pos) {
+    const it = pos && this.byId.get(pos.id);
+    if (!it) return null;
+    return {item: it, index: it.index, off: clampOff(it, pos.off)};
+  }
+
+  /** See the header. */
+  caretRect(pos, aff = 'down') {
+    const loc = this.locate(pos);
+    if (!loc) return null;
+    const it = loc.item;
+    if (it.kind === 'box') {
+      const r = this.boxRect(it);
+      return {x: r.x + (loc.off ? r.w : 0), y: r.y, h: r.h};
+    }
+    const c = PM.caretRect(it, loc.off, aff);
+    return {x: c.x + this.left, y: c.y, h: c.h};
+  }
+
+  /** The box drawn for a kept block. */
+  boxRect(it) {
+    return {x: this.left, y: it.y + 6, w: this.textW, h: BOX};
+  }
+
+  /** See the header. */
+  hitTest(x, y) {
+    const {items} = this;
+    if (!items.length) return null;
+    const last = items[items.length - 1];
+    if (!(y >= items[0].y)) {
+      return {pos: this.docStart(), affinity: 'down'};
+    }
+    if (y >= last.y + last.h) {
+      return {pos: this.docEnd(), affinity: 'down'};
+    }
+    const it = this.itemAtY(y);
+    if (it.kind === 'box') {
+      const off = x < this.left + this.textW / 2 ? 0 : 1;
+      return {pos: {id: it.id, off}, affinity: 'down'};
+    }
+    const h = PM.hitTest(it, num(x, 0) - this.left, y);
+    return {pos: {id: it.id, off: h.off}, affinity: h.affinity};
+  }
+
+  /** See the header (./DocRects). */
+  selectionRects(sel, y0 = -Infinity, y1 = Infinity) {
+    return selectionRects(this, sel, y0, y1);
+  }
+
+  paraStart(pos) { return {id: pos.id, off: 0}; }
+
+  paraEnd(pos) {
+    const it = this.byId.get(pos.id);
+    return {id: pos.id, off: it ? itemEnd(it) : 0};
+  }
+
+  docStart() {
+    const it = this.items[0];
+    return it ? {id: it.id, off: 0} : null;
+  }
+
+  docEnd() {
+    const it = this.items[this.items.length - 1];
+    return it ? {id: it.id, off: itemEnd(it)} : null;
+  }
+
+  nextItem(it) { return this.items[it.index + 1] || null; }
+
+  prevItem(it) {
+    return it.index > 0 ? this.items[it.index - 1] : null;
+  }
+}

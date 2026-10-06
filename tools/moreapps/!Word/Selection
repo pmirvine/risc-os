@@ -1,0 +1,163 @@
+// Selection - the caret and the selection of a document, as a value:
+// {anchor, head, affinity, goalX}, frozen; every change makes a new
+// one. anchor and head are positions {id, off} (./DocPos); affinity
+// is the head's ('up' or 'down' at a soft wrap, ./PositionMap);
+// goalX the work-area x that Up and Down keep to (null when unset).
+//
+//   caret(pos, affinity?)           -> a collapsed selection
+//   select(anchor, head, affinity?) -> a selection
+//   collapsed(sel)                  -> whether anchor and head meet
+//   ordered(sel, L)                 -> {from, to} in document order
+//   move(sel, L, cmd, extend, pageH) -> moved by a key (./SelMove)
+//   selectWord(L, pos)  the word at pos (not the spaces after it,
+//                       when pos is at the end of a word); an inline
+//                       (a link...) alone; a kept block whole
+//   selectPara(L, pos)  the paragraph at pos (or the kept block)
+//   selectAll(L)        the whole document
+//   text(sel, L)        the selection as plain text: paragraphs
+//                       joined by \n, a kept block as an empty
+//                       line, a tab as \t, a line break as \n, an
+//                       inline wrapper (a link...) as its text and
+//                       other inline items as nothing
+//   clamp(sel, doc, oldL?) the selection made valid for doc: an
+//                       offset past its paragraph's end is its end;
+//                       a position whose paragraph is gone goes to
+//                       the start of the next block still there in
+//                       the old layout oldL (else the end of the one
+//                       before, else the start of the document)
+//
+// L is a ./DocLayout. Pure: no desktop services.
+import {wordBounds} from 'wimplib/Segment';
+import {blockId, itemEnd, clampOff, compare, isWordText}
+  from './DocPos';
+import {make, move} from './SelMove';
+
+export {move};
+
+/** See the header. */
+export const caret = (pos, affinity = 'down') =>
+  make(pos, pos, affinity);
+
+/** See the header. */
+export const select = (anchor, head, affinity = 'down') =>
+  make(anchor, head, affinity);
+
+/** See the header. */
+export const collapsed = (sel) =>
+  sel.anchor.id === sel.head.id && sel.anchor.off === sel.head.off;
+
+/** See the header. */
+export function ordered(sel, L) {
+  return compare(L, sel.anchor, sel.head) > 0
+    ? {from: sel.head, to: sel.anchor}
+    : {from: sel.anchor, to: sel.head};
+}
+
+/** See the header. */
+export function selectWord(L, pos) {
+  const loc = L.locate(pos);
+  if (!loc) return null;
+  const it = loc.item, id = it.id;
+  if (it.kind === 'box') return select({id, off: 0}, {id, off: 1});
+  const text = it.block.text;
+  if (!text) return caret({id, off: 0});
+  let w = wordBounds(text, loc.off);
+  if (!isWordText(text.slice(w.from, w.to)) && loc.off > 0) {
+    const b = wordBounds(text, loc.off - 1);
+    if (isWordText(text.slice(b.from, b.to))) w = b;
+  }
+  // an inline (a link...) is one thing: not the spaces around it
+  const o = loc.off;
+  const k = text[o] === '\uFFFC' && o >= w.from && o < w.to ? o
+    : text[o - 1] === '\uFFFC' && o - 1 >= w.from ? o - 1 : -1;
+  if (k >= 0) return select({id, off: k}, {id, off: k + 1});
+  return select({id, off: w.from}, {id, off: w.to});
+}
+
+/** See the header. */
+export function selectPara(L, pos) {
+  const loc = L.locate(pos);
+  if (!loc) return null;
+  const id = loc.item.id;
+  return select({id, off: 0}, L.paraEnd({id}));
+}
+
+/** See the header. */
+export function selectAll(L) {
+  const a = L.docStart();
+  return a ? select(a, L.docEnd()) : null;
+}
+
+/** The text of [a, b) of a paragraph, inline items as text. */
+function paraText(para, a, b) {
+  const s = para.text.slice(a, b);
+  if (!s.includes('\uFFFC')) return s;
+  return s.replace(/\uFFFC/g, (m, i) => {
+    const x = para.inlines && para.inlines[a + i];
+    if (!x) return '';
+    if (x.kind === 'tab') return '\t';
+    if (x.kind === 'br') return '\n';
+    return typeof x.text === 'string' ? x.text : '';
+  });
+}
+
+/** See the header. */
+export function text(sel, L) {
+  const {from, to} = ordered(sel, L);
+  const f = L.locate(from), t = L.locate(to);
+  if (!f || !t) return '';
+  const out = [];
+  for (let i = f.index; i <= t.index; i++) {
+    const it = L.items[i];
+    if (it.kind === 'box') {
+      if (i !== f.index || i !== t.index) out.push('');
+      continue;
+    }
+    const a = i === f.index ? f.off : 0;
+    const b = i === t.index ? t.off : itemEnd(it);
+    out.push(paraText(it.block, a, b));
+  }
+  return out.join('\n');
+}
+
+/** Map id -> block of doc, and the blocks in order. */
+function blocksOf(doc) {
+  const map = new Map(), list = [];
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      map.set(blockId(b), b);
+      list.push(b);
+    }
+  }
+  return {map, list};
+}
+
+/** One position made valid (see the header). */
+function clampPos(pos, d, oldL) {
+  const b = d.map.get(pos.id);
+  if (b) {
+    const it = b.type === 'p' ? {kind: 'p', block: b} : {kind: 'box'};
+    return {id: pos.id, off: clampOff(it, pos.off)};
+  }
+  const old = oldL && oldL.byId.get(pos.id);
+  if (old) {
+    for (let i = old.index + 1; i < oldL.items.length; i++) {
+      const id = oldL.items[i].id;
+      if (d.map.has(id)) return {id, off: 0};
+    }
+    for (let i = old.index - 1; i >= 0; i--) {
+      const id = oldL.items[i].id, x = d.map.get(id);
+      if (x) return {id, off: x.type === 'p' ? x.text.length : 1};
+    }
+  }
+  const first = d.list[0];
+  return first ? {id: blockId(first), off: 0} : pos;
+}
+
+/** See the header. */
+export function clamp(sel, doc, oldL) {
+  const d = blocksOf(doc);
+  const a = clampPos(sel.anchor, d, oldL);
+  const h = clampPos(sel.head, d, oldL);
+  return make(a, h, sel.affinity, null);
+}

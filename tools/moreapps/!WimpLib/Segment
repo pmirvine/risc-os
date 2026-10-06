@@ -1,0 +1,121 @@
+// Segment - grapheme and word boundaries in UTF-16 text.
+//
+//   graphemes(text)         -> sorted boundary offsets, 0 .. length
+//   nextBoundary(text, off) -> the next grapheme boundary (clamped)
+//   prevBoundary(text, off) -> the previous one (clamped)
+//   wordBounds(text, off)   -> {from, to}: the word, or the run of
+//                              spaces/punctuation, around off; at a
+//                              boundary the one on the right wins
+//   nextWord(text, off)     -> start of the next word (Ctrl-Right)
+//   prevWord(text, off)     -> start of the word on the left
+//                              (Ctrl-Left)
+//
+// The last argument seg is an optional segmenter (an object with
+// segment(text) giving {index, segment, isWordLike}); the default is
+// Intl.Segmenter. Results are cached per text (bounded), so repeated
+// calls on one paragraph cost one segmentation (texts over 4096
+// characters are not cached). graphemes() returns a frozen array.
+// Pure JavaScript.
+
+const MAX_CACHE = 64;
+const MAX_TEXT = 4096; // longer texts are not cached
+let defaults = null;
+const caches = new WeakMap();
+
+/** The segmenters to use: {g, w} for graphemes and words. */
+function pick(seg) {
+  if (seg) return {key: seg, g: seg, w: seg};
+  if (!defaults) {
+    defaults = {g: new Intl.Segmenter(undefined,
+      {granularity: 'grapheme'}), w: new Intl.Segmenter(undefined,
+      {granularity: 'word'})};
+    defaults.key = defaults;
+  }
+  return defaults;
+}
+
+/** Cache entry {g, w} for this text (each filled on demand). */
+function entry(text, s) {
+  if (text.length > MAX_TEXT) return {g: null, w: null};
+  let c = caches.get(s.key);
+  if (!c) caches.set(s.key, c = new Map());
+  let e = c.get(text);
+  if (e) { c.delete(text); c.set(text, e); return e; }
+  if (c.size >= MAX_CACHE) c.delete(c.keys().next().value);
+  c.set(text, e = {g: null, w: null});
+  return e;
+}
+
+/** Grapheme boundaries of text. */
+export function graphemes(text, seg) {
+  const s = pick(seg), e = entry(text, s);
+  if (!e.g) {
+    const out = [0];
+    for (const p of s.g.segment(text))
+      if (p.index > 0) out.push(p.index);
+    if (out[out.length - 1] !== text.length) out.push(text.length);
+    e.g = Object.freeze(out);
+  }
+  return e.g;
+}
+
+/** Word runs [{from, to, word}]; non-word pieces are merged. */
+function runs(text, seg) {
+  const s = pick(seg), e = entry(text, s);
+  if (!e.w) {
+    const out = [];
+    for (const p of s.w.segment(text)) {
+      const word = !!p.isWordLike, to = p.index + p.segment.length;
+      const last = out[out.length - 1];
+      if (last && !word && !last.word) last.to = to;
+      else out.push({from: p.index, to, word});
+    }
+    e.w = out;
+  }
+  return e.w;
+}
+
+/** Index of the first element of sorted b that is > v (or length). */
+function above(b, v) {
+  let lo = 0, hi = b.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (b[mid] > v) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+export function nextBoundary(text, off, seg) {
+  const b = graphemes(text, seg), i = above(b, off);
+  return i < b.length ? b[i] : text.length;
+}
+
+export function prevBoundary(text, off, seg) {
+  const b = graphemes(text, seg), i = above(b, off - 1);
+  return i > 0 ? b[i - 1] : 0;
+}
+
+export function wordBounds(text, off, seg) {
+  const r = runs(text, seg);
+  if (!r.length) return {from: 0, to: 0};
+  let lo = 0, hi = r.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (r[mid].from <= off) lo = mid; else hi = mid - 1;
+  }
+  return {from: r[lo].from, to: r[lo].to};
+}
+
+export function nextWord(text, off, seg) {
+  const r = runs(text, seg);
+  for (let i = 0; i < r.length; i++)
+    if (r[i].word && r[i].from > off) return r[i].from;
+  return text.length;
+}
+
+export function prevWord(text, off, seg) {
+  const r = runs(text, seg);
+  for (let i = r.length - 1; i >= 0; i--)
+    if (r[i].word && r[i].from < off) return r[i].from;
+  return 0;
+}

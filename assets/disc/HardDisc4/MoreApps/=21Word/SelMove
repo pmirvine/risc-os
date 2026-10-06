@@ -1,0 +1,161 @@
+// SelMove - moving the caret or the selection's head by one key's
+// command, over a ./DocLayout. Used through ./Selection.
+//
+//   move(sel, L, cmd, extend, pageH) -> a new selection
+//   make(anchor, head, affinity, goalX) -> a frozen selection
+//
+// Commands: left right (a grapheme of the paragraph's whole text;
+// past an end, to the next item's start or the item before's end),
+// up down (a line, keeping goalX, the work-area x the column was
+// asked for; past a paragraph's first or last line into the item
+// next to it; past the first or last item, to the start or end of
+// the document), home end (the line, ./PositionMap), wordLeft
+// wordRight (the start of a word, WimpLib/Segment; at a paragraph's
+// edge, as left and right), paraStart paraEnd (this paragraph's
+// start or end, or the next one's when already there), docHome
+// docEnd, pageUp pageDown (pageH px up or down at goalX, default
+// 400). A kept block is atomic: its two positions are off 0 and 1
+// and left/right step over it; going into it by up/down gives the
+// edge nearer goalX. Every item boundary is one step, like a
+// paragraph mark: from the end of a paragraph, right gives the place
+// before the box after it, then after the box, then the start of
+// the paragraph after that.
+//
+// Only up, down, pageUp and pageDown keep goalX; every other command
+// clears it. With extend the anchor stays and the head moves;
+// without it the selection collapses to the new place, and left or
+// right on a selection collapse to its left or right edge instead of
+// moving (up, down and the page keys move from the top or bottom
+// edge; the other commands from the head). Spaces hidden after a
+// line break are each one step: the caret does not move on the
+// screen over them. Unknown commands give sel back unchanged.
+// Pure: no desktop services.
+import * as PM from './PositionMap';
+import {nextWord, prevWord} from 'wimplib/Segment';
+import {itemEnd, nextG, prevG, compare} from './DocPos';
+
+/** See the header. */
+export const make = (anchor, head, affinity = 'down', goalX = null) =>
+  Object.freeze({anchor, head, affinity, goalX});
+
+const at = (it, off, affinity = 'down') =>
+  ({pos: {id: it.id, off}, affinity});
+const start = (it) => at(it, 0);
+const end = (it) => at(it, itemEnd(it));
+
+/** The next item's start, or stay at p. */
+function forward(L, it, p) {
+  const n = L.nextItem(it);
+  return n ? start(n) : at(it, p.off);
+}
+
+/** The previous item's end, or stay at p. */
+function backward(L, it, p) {
+  const n = L.prevItem(it);
+  return n ? end(n) : at(it, p.off);
+}
+
+function right(L, it, p) {
+  if (p.off < itemEnd(it)) {
+    return at(it, it.kind === 'box' ? 1 : nextG(it.block.text, p.off));
+  }
+  return forward(L, it, p);
+}
+
+function left(L, it, p) {
+  if (p.off > 0) {
+    return at(it, it.kind === 'box' ? 0 : prevG(it.block.text, p.off));
+  }
+  return backward(L, it, p);
+}
+
+/** Into item n from above (dir 1) or below (-1), at goalX gx. */
+function enter(L, n, dir, gx) {
+  if (n.kind === 'box') {
+    return at(n, gx < L.left + L.textW / 2 ? 0 : 1);
+  }
+  const ln = n.lines[dir > 0 ? 0 : n.lines.length - 1];
+  const h = PM.hitTest(n, gx - L.left, n.y + ln.y + ln.h / 2);
+  return at(n, h.off, h.affinity);
+}
+
+function vertical(L, it, p, aff, gx, dir) {
+  if (it.kind === 'p') {
+    const r = PM.vertical(it, p.off, aff, dir, gx - L.left);
+    if (r) return at(it, r.off, r.affinity);
+  }
+  const n = dir > 0 ? L.nextItem(it) : L.prevItem(it);
+  if (n) return enter(L, n, dir, gx);
+  return {pos: dir > 0 ? L.docEnd() : L.docStart(), affinity: 'down'};
+}
+
+function page(L, p, aff, gx, dir, pageH) {
+  const c = L.caretRect(p, aff);
+  const h = Number.isFinite(pageH) && pageH > 0 ? pageH : 400;
+  return L.hitTest(gx, c.y + c.h / 2 + dir * h);
+}
+
+const CMDS = {
+  left, right,
+  home: (L, it, p, aff) => (it.kind === 'box' ? at(it, 0)
+    : withAff(it, PM.lineStart(it, p.off, aff))),
+  end: (L, it, p, aff) => (it.kind === 'box' ? at(it, 1)
+    : withAff(it, PM.lineEnd(it, p.off, aff))),
+  wordRight: (L, it, p) => (it.kind === 'p' && p.off < itemEnd(it)
+    ? at(it, nextWord(it.block.text, p.off)) : right(L, it, p)),
+  wordLeft: (L, it, p) => (it.kind === 'p' && p.off > 0
+    ? at(it, prevWord(it.block.text, p.off)) : left(L, it, p)),
+  paraStart: (L, it, p) => {
+    if (p.off > 0) return start(it);
+    const n = L.prevItem(it);
+    return n ? start(n) : start(it);
+  },
+  paraEnd: (L, it, p) => {
+    if (p.off < itemEnd(it)) return end(it);
+    const n = L.nextItem(it);
+    return n ? end(n) : end(it);
+  },
+  docHome: (L) => ({pos: L.docStart(), affinity: 'down'}),
+  docEnd: (L) => ({pos: L.docEnd(), affinity: 'down'}),
+  up: (L, it, p, aff, gx) => vertical(L, it, p, aff, gx, -1),
+  down: (L, it, p, aff, gx) => vertical(L, it, p, aff, gx, 1),
+  pageUp: (L, it, p, aff, gx, h) => page(L, p, aff, gx, -1, h),
+  pageDown: (L, it, p, aff, gx, h) => page(L, p, aff, gx, 1, h),
+};
+const KEEP = new Set(['up', 'down', 'pageUp', 'pageDown']);
+const EDGE = new Set(['left', 'right', ...KEEP]);
+
+function withAff(it, r) {
+  return at(it, r.off, r.affinity);
+}
+
+/** See the header. */
+export function move(sel, L, cmd, extend = false, pageH) {
+  const fn = Object.hasOwn(CMDS, cmd) ? CMDS[cmd] : null;
+  if (!fn || !sel) return sel;
+  const ha = L.locate(sel.head), an = L.locate(sel.anchor);
+  if (!ha || !an) return sel;
+  const back = compare(L, sel.anchor, sel.head) > 0;
+  const same = ha.index === an.index && ha.off === an.off;
+  let it = ha.item, off = ha.off, aff = sel.affinity;
+  if (!extend && !same && EDGE.has(cmd)) {
+    // left/right: to that edge; up/down: from it
+    const first = cmd === 'left' || cmd === 'up' || cmd === 'pageUp';
+    const edge = first === back ? ha : an;
+    if (edge !== ha) aff = 'down';
+    if (cmd === 'left' || cmd === 'right') {
+      const p = {id: edge.item.id, off: edge.off};
+      return make(p, p, aff);
+    }
+    it = edge.item;
+    off = edge.off;
+  }
+  const p = {id: it.id, off};
+  const keep = KEEP.has(cmd);
+  const gx = keep ? sel.goalX ?? L.caretRect(p, aff).x : null;
+  const r = fn(L, it, p, aff, gx, pageH);
+  if (!r || !r.pos) return sel;
+  const goal = keep ? gx : null;
+  return extend ? make(sel.anchor, r.pos, r.affinity, goal)
+    : make(r.pos, r.pos, r.affinity, goal);
+}

@@ -123,14 +123,17 @@ try {
       await window.__frames(4);
       const c = d.win._canvas, g = c.getContext('2d');
       const img = g.getImageData(0, 0, c.width, c.height).data;
-      const W = c.width;
-      const dark = (x, y) => { const k = (y * W + x) * 4; return img[k] + img[k + 1] + img[k + 2] < 384; };
+      const W = c.width, k = W / d.win.w, L = d.view.layout;
+      const dark = (x, y) => { const q = (y * W + x) * 4; return img[q] + img[q + 1] + img[q + 2] < 384; };
+      // the page: inside its border
+      const px0 = Math.ceil((L.pageLeft + 2) * k), px1 = Math.min(W, Math.floor((L.pageLeft + L.pageW - 2) * k));
       const rows = [];
-      for (let y = 0; y < c.height; y++) { let n = 0; for (let x = 0; x < W; x++) if (dark(x, y)) n++; rows.push(n); }
-      const k0 = 0;
-      res.band = [img[k0], img[k0 + 1], img[k0 + 2]];
-      // ink clusters below the band
-      const top = d.layoutTop ?? 30;
+      for (let y = 0; y < c.height; y++) { let n = 0; for (let x = px0; x < px1; x++) if (dark(x, y)) n++; rows.push(n); }
+      const at = (x, y) => { const q = (Math.round(y * k) * W + Math.round(x * k)) * 4; return [img[q], img[q + 1], img[q + 2]]; };
+      res.band = at(L.pageLeft + 10, 12);
+      res.desk = at(2, 2);
+      // ink clusters on the page, below its top edge
+      const top = Math.ceil(12 * k);
       const clusters = [];
       let start = -1;
       for (let y = top; y < rows.length; y++) {
@@ -151,7 +154,8 @@ try {
       && /1 link/.test(r1.summary) && /1 drawing/.test(r1.summary) && /fonts: .*Caladea.*Carlito|fonts: .*Carlito.*Caladea/.test(r1.summary),
     r1.summary);
   ok('no errors opening it', !r1.msgs.length, r1.msgs);
-  ok('the header band is grey', r1.band && r1.band[0] === r1.band[1] && r1.band[0] > 150 && r1.band[0] < 250, r1.band);
+  ok('no info band: the top of the page is white, on a grey desk', r1.band && r1.band.every((v) => v === 255)
+    && r1.desk.every((v) => v === 0x88), [r1.band, r1.desk]);
   ok('the document is drawn', r1.ink > 2000, r1.ink);
   ok('the heading is taller than body text', r1.clusters?.length >= 2 && r1.clusters[0][1] > r1.clusters[1][1], r1.clusters);
   await shot('word-window.png');
@@ -207,18 +211,23 @@ try {
   }
   ok('Info window shows the summary', /Report/.test(r3.info) && /1 table/.test(r3.info), r3.info);
 
-  // narrower: the text is laid out again (taller), and drawn
+  // narrower: the column keeps the page's width; the window scrolls
   const r7 = await page.evaluate(async () => {
     const d = window.__word()[0].word.docs[0];
-    const before = d.win.extent.y1;
+    const before = d.win.extent.y1, lines = d.view.layout.items.map((it) => it.lines);
     d.win.open({ x: 300, y: 80, w: 360, h: 560 });
     await window.__frames(4);
-    const after = d.win.extent.y1;
+    const L = d.view.layout;
+    const after = d.win.extent.y1, wide = d.win.extent.x1 - d.win.extent.x0;
+    const res = { before, after, wide, page: L.pageW, left: L.pageLeft, w: d.win.w,
+      same: L.items.every((it, i) => it.lines === lines[i]) };
     d.win.open({ x: 300, y: 80, w: 640, h: 560 });
     await window.__frames(4);
-    return { before, after, back: d.win.extent.y1 };
+    return { ...res, back: d.win.extent.y1 };
   });
-  ok('a narrower window lays the text out again', r7.after > r7.before && r7.back === r7.before, r7);
+  ok('a narrower window keeps the page-width column (scrolls across)',
+    r7.after === r7.before && r7.back === r7.before && r7.same && r7.left === 24
+      && r7.w === 360 && r7.wide >= Math.ceil(24 + r7.page + 24) && r7.page > 700, r7);
 
   // the window menu's Save and Info boxes are made once per document:
   // hovering over their arrows again and again makes no new windows
@@ -351,34 +360,35 @@ try {
   });
   ok('5000 paragraphs open in under 2 s', r6.paras === 5000 && r6.ms < 2000, r6);
   ok('and scroll (drawn at each place)', r6.ink > 1000 && r6.ink2 > 1000 && r6.scrollMs.every((x) => x < 500), r6);
-  // the keyboard scrolls the window
+  // Page Down / Up move the caret and the view together; Ctrl-End
+  // and Ctrl-Home go to the ends; other keys are passed on
   const rK = await page.evaluate(async () => {
     const t = window.__word()[0];
     const d = t.word.docs.find((x) => x.win.title === 'Big'), w = d.win;
     w.scrollTo(0, 0);
-    const max = w.extent.y1 - w.h;
-    const res = { h: w.h, max };
-    const key = (code) => { const ev = w.emit('key', { code }); return [w.scrollY, !!ev.handled, !!ev.defaultPrevented]; };
-    res.pageDown = key(0x19E);
-    res.down = key(0x18E);
-    res.up = key(0x18F);
-    res.pageUp = key(0x19F);
-    res.end = key(0x18B);
-    res.home = key(30);
-    res.ctrlDown = key(0x1AE);
-    res.ctrlUp = key(0x1AF);
-    res.other = key(65);
-    // and real keys reach it (it has the input focus)
     os.wimp.setCaret(w);
+    d.view.setSelection(d.view.layout.docStart());
+    const max = w.extent.y1 - w.h;
+    const res = { h: w.h, max, c0: d.view.caretRect().y };
+    const key = (code, key, ctrl = false) => {
+      const ev = w.emit('key', { code, key, ctrl, shift: false });
+      return [w.scrollY, !!ev.handled, !!ev.defaultPrevented, Math.round(d.view.caretRect().y)];
+    };
+    res.pageDown = key(0x19E, 'PageDown');
+    res.pageUp = key(0x19F, 'PageUp');
+    res.end = key(0x1AB, 'End', true);
+    res.home = key(30, 'Home', true);
+    res.other = key(65, 'A');
     return res;
   });
   await page.keyboard.press('PageDown');
   await page.waitForTimeout(100);
   const rK2 = await page.evaluate(() => window.__word()[0].word.docs.find((x) => x.win.title === 'Big').win.scrollY);
   const pg = rK.h - 32;
-  ok('Page Down / Up, arrows, Home, End scroll', rK.pageDown[0] === pg && rK.down[0] === pg + 20 && rK.up[0] === pg
-    && rK.pageUp[0] === 0 && Math.abs(rK.end[0] - rK.max) <= 1 && rK.home[0] === 0 && Math.abs(rK.ctrlDown[0] - rK.max) <= 1 && rK.ctrlUp[0] === 0
-    && [rK.pageDown, rK.end, rK.home].every((k) => k[1]), rK);
+  ok('Page Down / Up move the view and the caret; Ctrl-End / Ctrl-Home go to the ends',
+    rK.pageDown[0] === pg && Math.abs(rK.pageDown[3] - rK.c0 - pg) < 30 && rK.pageUp[0] === 0
+    && Math.abs(rK.end[0] - rK.max) <= 1 && rK.home[0] === 0
+    && [rK.pageDown, rK.pageUp, rK.end, rK.home].every((k) => k[1]), rK);
   ok('other keys are passed on', !rK.other[1] && !rK.other[2], rK.other);
   ok('a real Page Down key scrolls', rK2 === pg, rK2);
   console.log(`timings: first open ${r1.ms} ms, 5000 paragraphs ${r6.ms} ms, scrolls ${r6.scrollMs?.join('/')} ms`);

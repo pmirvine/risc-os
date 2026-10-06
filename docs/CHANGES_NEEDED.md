@@ -418,3 +418,11 @@ docs/ASSETS.md §5).
 * Tests: `tests/moreapps/disc.test.mjs` (node), `tests/moreapps/jsrun-wimplib.mjs` and `tests/moreapps/boot.mjs`
   (Playwright), in `node --test tests/moreapps/index.mjs`. The application and library are described in
   `docs/apps/Word.md`; the user guide is `$.Docs.Word`.
+
+## wimp.drag keeps its pointer listeners after a mid-drag close — noted by the WORD work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`src/core/wimp.js` `wimp.drag({type: 'point'})`: if the window that started the drag is closed while the button is
+still down, the drag's pointer listeners stay on the document until the button is released (then `onEnd` runs).
+Nothing is drawn meanwhile; !Word's `EditMouse` stops its own auto-scroll timer on its next tick (within 60 ms).
+Possible fix: let `wimp.drag` end the drag when its owner window is deleted or closed.

@@ -1,0 +1,124 @@
+// TextMetrics - text widths and hit-testing, with a bounded cache.
+//
+//   const tm = new TextMetrics(measure, {max: 20000})
+//   tm.width(text, css)        -> width in px
+//   tm.widthTo(text, css, off) -> width of text.slice(0, off); off is
+//                                 clamped; not cached
+//   tm.prefixWidths(text, css) -> width of text.slice(0, b) for each
+//                                 grapheme boundary b. O(n^2): pass
+//                                 line-sized text (<= ~2000 chars)
+//   tm.offsetAt(text, css, x)  -> nearest grapheme boundary to x; ties
+//                                 go left; x <= 0 -> 0, x >= width ->
+//                                 text.length. O(log n) measures
+//   tm.size                    -> cache entries now held
+//   ctxMeasure(ctx)            -> a measure(text, css) for a canvas 2D
+//                                 context (sets ctx.font, measureText)
+//
+// measure(text, css) -> number is injected, so tests use a fake.
+// Prefixes are measured as text, not summed per character, so kerning
+// and ligatures are right. The cache holds at most max entries (least
+// recently used dropped first) and skips texts over 4096 characters.
+// Pure JavaScript (no canvas of its own).
+import {graphemes} from './Segment';
+
+const MAX_TEXT = 4096;
+
+/** A measure function for a canvas 2D context. */
+export function ctxMeasure(ctx) {
+  return (text, css) => {
+    ctx.font = css;
+    return ctx.measureText(text).width;
+  };
+}
+
+export class TextMetrics {
+  /** @param {(text: string, css: string) => number} measure */
+  constructor(measure, {max = 20000} = {}) {
+    this.measure = measure;
+    this.max = Math.max(1, Math.floor(max) || 1);
+    // a list, least recently used first: moving a node on a hit is
+    // a few pointer changes (a Map deleted from and added to on
+    // every hit grows slow when it holds thousands of entries)
+    this.head = {prev: null, next: null};
+    this.head.prev = this.head.next = this.head;
+    this.count = 0;
+    this.index = new Map(); // kind + css -> Map(text -> node)
+  }
+
+  get size() { return this.count; }
+
+  /** Take node out of the list. */
+  #unlink(node) {
+    node.prev.next = node.next;
+    node.next.prev = node.prev;
+  }
+
+  /** Put node at the end of the list (most recently used). */
+  #append(node) {
+    const h = this.head;
+    node.prev = h.prev;
+    node.next = h;
+    h.prev.next = node;
+    h.prev = node;
+  }
+
+  /** Cached value for (kind, css, text), made by make() if absent. */
+  #get(kind, css, text, make) {
+    if (text.length > MAX_TEXT) return make();
+    const k = kind + css;
+    let inner = this.index.get(k);
+    const hit = inner?.get(text);
+    if (hit) {
+      this.#unlink(hit); this.#append(hit);
+      return hit.v;
+    }
+    const v = make();
+    while (this.count >= this.max) {
+      const old = this.head.next;
+      this.#unlink(old);
+      this.count--;
+      const m = this.index.get(old.k);
+      m.delete(old.text);
+      if (!m.size) this.index.delete(old.k);
+    }
+    inner = this.index.get(k);
+    if (!inner) this.index.set(k, inner = new Map());
+    const node = {k, text, v, prev: null, next: null};
+    inner.set(text, node);
+    this.#append(node);
+    this.count++;
+    return v;
+  }
+
+  width(text, css) {
+    return this.#get('w', css, text, () => this.measure(text, css));
+  }
+
+  widthTo(text, css, off) {
+    if (!(off > 0)) return 0;
+    if (off >= text.length) return this.width(text, css);
+    return this.measure(text.slice(0, off), css);
+  }
+
+  prefixWidths(text, css) {
+    return this.#get('p', css, text, () => {
+      const b = graphemes(text), out = [0];
+      for (let i = 1; i < b.length; i++)
+        out.push(this.widthTo(text, css, b[i]));
+      return out;
+    });
+  }
+
+  offsetAt(text, css, x) {
+    const b = graphemes(text);
+    if (!(x > 0) || b.length < 2) return 0;
+    if (x >= this.width(text, css)) return text.length;
+    // largest lo with width(b[lo]) <= x; width(b[hi]) > x
+    let lo = 0, hi = b.length - 1, wlo = 0, whi = this.width(text, css);
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1, w = this.widthTo(text, css, b[mid]);
+      if (w <= x) { lo = mid; wlo = w; } else { hi = mid; whi = w; }
+    }
+    return x - wlo <= whi - x ? b[lo] : b[hi];
+  }
+}
