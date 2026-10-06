@@ -101,7 +101,7 @@ try {
       focus: os.wimp.caret?.window === w, L: { pageW: d.view.layout.pageW } };
   });
   ok('text pointer, horizontal scroll bar', w0.ptr === 'ptr_write' && w0.hscroll, w0);
-  ok('the help says it can be selected, not edited', /select/i.test(w0.help) && /not .*edit|cannot be edited/i.test(w0.help), w0.help);
+  ok('the help says it can be selected and typed in', /select/i.test(w0.help) && /type/i.test(w0.help), w0.help);
   ok('it opens with the caret at the start, and the input focus', w0.focus && w0.caret?.anchor?.off === 0, w0);
 
   // ---------------------------------------------------- click
@@ -388,17 +388,18 @@ try {
     const pass = await ev(async () => {
       const d = window.__doc(), w = d.win;
       const k = (code, key, extra = {}) => { const e = w.emit('key', { code, key, shift: false, ctrl: false, ...extra }); return !!(e.handled || e.defaultPrevented); };
-      const res = { F5: k(0x185, 'F5'), a: k(97, 'a'), A: k(65, 'A'), enter: k(13, 'Enter'), ctrlB: k(2, 'b', { ctrl: true }), left: k(0x18C, 'ArrowLeft') };
+      // (letters and Enter are typed now: tests/moreapps/word-typing.mjs)
+      const res = { F5: k(0x185, 'F5'), ctrlB: k(2, 'b', { ctrl: true }), altA: k(97, 'a', { alt: true }), left: k(0x18C, 'ArrowLeft') };
       const seen = [];
       const off = os.wimp.on('key', (e) => { seen.push(e.code); });
       window.__seen = seen; window.__off = off;
       return res;
     });
-    await press('F5'); await press('x'); await press('Control+F12');
+    await press('F5'); await press('Control+F12');
     await page.waitForTimeout(100);
     const seen = await ev(() => { window.__off(); return [...window.__seen]; });
-    ok('keys it does not use are passed on (F5, letters, Enter, Ctrl-B)', !pass.F5 && !pass.a && !pass.A && !pass.enter && !pass.ctrlB && pass.left, pass);
-    ok('... and real F5 and x reach the desktop', seen.includes(0x185) && seen.includes(120), seen);
+    ok('keys it does not use are passed on (F5, Ctrl-B, Alt-A)', !pass.F5 && !pass.altA && !pass.ctrlB && pass.left, pass);
+    ok('... and real F5 reaches the desktop', seen.includes(0x185), seen);
     await ev(() => { for (const w of [...os.wimp.windows]) if (w.isOpen && /Task window|Command/.test(w.title ?? '')) w.close(); if (os.cli?.active) os.cli.close?.(); });
   }
 

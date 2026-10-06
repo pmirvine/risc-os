@@ -203,14 +203,19 @@ as text, a web page or a Draw calendar page; pages print through !Printers. Pass
 page with AES (through the browser's Web Crypto) until the password is given. It is written in JavaScript on the
 disc, like Lander II. Guide: `$.Docs.Journal`; developers: `docs/apps/Journal.md`.
 
-**A word processor for Microsoft Word files (a first step):** `$.MoreApps.!Word` opens a `.docx` (double-click one, on
+**A word processor for Microsoft Word files (early steps):** `$.MoreApps.!Word` opens a `.docx` (double-click one, on
 the hard disc or a HostFS drive; or drop it on its icon bar icon) in a window with its text, headings, bold, italic,
 underlining, colours, sizes, indents and alignment, in a column as wide as the text on its page (Info says what the
 file holds). Tables, pictures, footnotes and the like are shown as boxes, and *Save copy as .docx* writes the document
 back keeping **everything** in it (tables, pictures, comments, tracked changes, headers and footers, custom XML). Text
-can be selected with the mouse and keys (caret, drag, double/triple click, Shift+arrows, Ctrl-A), but it cannot edit
-yet; later steps add editing, page layout and pagination (which will only approximate Word), styles and lists,
-printing, tables and images, RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents
+can be selected with the mouse and keys (caret, drag, double/triple click, Shift+arrows, Ctrl-A) and **typed**: click
+in the text and type (any Unicode, dead-key accents, input methods and emoji pickers, through an opt-in text-input
+caret in the core), with Enter, Shift-Enter, Tab, Backspace, Delete, Ctrl-Backspace/Delete, Insert (overwrite), and
+undo and redo (Ctrl-Z, Ctrl-Y or Ctrl-Shift-Z, or the Edit menu; a word is one step, 1000 steps are kept); a `*` in
+the title shows unsaved changes (only a copy can be saved yet, so it stays). To try it, double-click a `.docx`, click
+in the text, type, and press Ctrl-Z. There is no formatting, copy and paste, find or real Save yet; later steps add
+those, page layout and pagination (which will only approximate Word), styles and lists, printing, tables and images,
+RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents
 from public test collections; real Microsoft Word could not be run during development, so a hand-off check was
 prepared. Older `.doc` and password-protected files are refused with a clear message. Documents never run anything and
 nothing is fetched. Calibri, Cambria, Arial, Times New Roman and Courier New are shown in the metric-compatible
@@ -218,7 +223,7 @@ Carlito, Caladea and Liberation fonts bundled on the disc (all SIL OFL 1.1; lice
 `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules (zip, XML...) it is built on, is
 installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program imports it as
 `'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with `WimpLib$Dir`; put a
-directory of your own first to override a module). Guide: `$.Docs.Word` (part 9 for programmers); developers:
+directory of your own first to override a module). Guide: `$.Docs.Word` (part 10 for programmers); developers:
 `docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
@@ -357,11 +362,15 @@ node --test tests/jstutor         # *JSRun and the JavaScript tutorial's example
 node --test tests/jsapps          # the second tutorial's applications (!Contacts, !Organiser and their stages)
 node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/test-proxy-handlers.mjs tests/core/test-browser-hardening.mjs   # --public-url, the trusted proxy and the engine's guards
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
-node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7)
+node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden field: typed text, dead keys, input methods; Playwright)
+node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; 1000+ tests, about 30 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
+node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
+WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # !Word's editing round trip on every corpus file (~2 min; by default one file in ten)
 node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)
 node tests/moreapps/validate.mjs  # check what the .docx writer writes against the Word schema (needs xmllint)
 MOREAPPS_REAL_DOCX=1 MOREAPPS_REAL_DOCX_DIRS=~/Documents node --test tests/moreapps/docx-roundtrip.test.mjs   # also round-trip .docx files on this machine (off by default; system folders + the listed ones, never the home folder)

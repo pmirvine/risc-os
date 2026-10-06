@@ -165,6 +165,9 @@ action, return `true` to mark it handled.
 | `datasave` | another app's Save box dropped here: `{leafname, filetype, size, x, y, icon, accept(path), receive() → Promise<data>}` | also `DataSave` message |
 | `iconchanged` | a writable icon's text was edited `{icon}` | |
 | `paste` | clipboard text pasted while focused (non-writable) `{text}` | |
+| `textinput` | text caret only (3.2): committed text `{text, truncated, window}` — a typed printable key, a dead-key character, an input method's commit, an emoji picker. `text` is cleaned: CR/CRLF become `\n`, other control characters except `\n` and `\t` are dropped, lone surrogates become U+FFFD, at most 100,000 UTF-16 units (`truncated: true` when cut). Return `true` if used | none (unhandled text is dropped) |
+| `composition` | text caret only: an input method is composing `{text, start, window}` (`start: true` on the first update of a composition); show `text` at the caret, nothing is committed yet | |
+| `compositionend` | text caret only: the composition finished `{text, cancelled, window}`; committed text follows as one `textinput`; `cancelled: true` (empty `text`) when it was dropped, or when the caret left the window mid-composition | |
 | `menuopen`, `menuclosed` | window shown/hidden as a menu dialogue box | |
 
 Mouse buttons (default, the Acorn layout): Select = left, Menu = middle or Ctrl+right, Adjust = right
@@ -180,6 +183,35 @@ title moves a window without raising it; Select on the back icon sends it to the
 `wimp.setCaret(win, icon, index)` — caret in a writable icon; `wimp.setCaret(win, null, -1, {x, y, h})` — draw the
 Wimp caret yourself at work-area x,y (Edit style); `wimp.setCaret(win)` — focus without visible caret;
 `wimp.setCaret(null)` — nobody. `wimp.caret` = `{window, icon, index, pos}`. Keys go to the focus window.
+
+**Text-input caret** (opt-in, for word processors and editors that want real text input):
+`wimp.setCaret(win, null, -1, {x, y, h}, {text: true})` (or `setCaret(win, null, -1, null, {text: true})` with no
+drawn caret). `wimp.caret.text` is then `true` (the property is absent for every other caret). One hidden
+`<textarea>` (`wimp.textInput.el`, made on first use, outside `.screen`, fixed, 1x1 px, opacity 0, 16px font so
+iOS does not zoom, autocapitalize/autocorrect/autocomplete off, no spellcheck, `tabindex=-1`, `aria-hidden`) takes
+the browser focus inside the call, so call `setCaret` from the `click` / `key` handler that places the caret (iOS
+shows its keyboard only within the gesture); it follows the caret (input-method candidate windows open there) and
+is blurred when the caret goes to any other window, a non-text caret or nobody (a composition in progress then
+ends with a cancelled `compositionend` to the old window). While it has the focus:
+* printable keys (`key` is one character, no Cmd, no Ctrl; AltGr, which browsers report as Ctrl+Alt, counts
+  when the AltGraph modifier is on or the character is not an ASCII letter or digit, e.g. AltGr+Q = `@`, while
+  Ctrl+Alt+C or Ctrl+Alt+1 stay `key` events) are **not**
+  sent as `key`: the browser types them and they arrive once as `textinput` (space and Shift symbols included,
+  auto-repeat gives one event per repeat);
+* every other key (arrows, F-keys, Ctrl/Cmd-letters, Return, Tab, Backspace, Delete, Escape, ...) is a `key`
+  event exactly as for other carets, and is `preventDefault`ed so the hidden field is never edited; F12,
+  Ctrl-F12, Shift-F12 and Ctrl-Shift-F12 keep priority; open menus and a modal state see keys first as usual;
+* keys that belong to an input method (`isComposing`, keyCode 229, or during a composition) and dead keys are left
+  to the browser; the result arrives as `composition` / `compositionend` / `textinput`;
+* a keyboard that edits with no usable keydown (keyCode 229, typical of Android) has its Backspace, Delete and
+  Enter delivered as `key` 8, 127 and 13 (once: when a real keydown came first it was already the `key`);
+* paste keeps using the `paste` event; any other browser edit of the field (paste/drop insertion, undo, cut) is
+  cancelled. If the field loses the browser focus (e.g. the user clicked into a page field outside the
+  desktop), keys reach the window as ordinary `key` events again, so no input is lost.
+A composition that ends with empty data takes the field's value as the committed text (some browsers do this); an
+empty value is a cancel. A caret restored after a menu closes keeps `text: true`.
+Without `{text: true}` nothing changes: the hidden field is never focused and keys reach `key` as before.
+Not included yet: copy/cut listeners, HTML paste, caret blinking, triple-click counting.
 Writable icons edit themselves (←/→, Home, Delete/Backspace, Copy(=End), Ctrl-U, ↑/↓/Tab between writables, `A`
 validation, `bufLen`); Return and unhandled keys reach your `key` handler. A character rejected by an icon's `A`
 validation also goes on to the `key` handler (Key_Pressed), as in the real Wimp.

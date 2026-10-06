@@ -1,0 +1,130 @@
+// Keymap - the keys of !Word's editing commands: a table of rows
+// {id, keys: ['Ctrl+Z', ...], label: 'Undo', menu: 'Edit'} and
+//
+//   keymap.lookup(ev) -> id | null   ev: {code, key, shift, ctrl, alt}
+//   keymap.labelFor(id) -> 'Ctrl+Z'  the first key, for a menu
+//   keymap.row(id) -> the row | null
+//   new Keymap().bind(rows) -> the Keymap (replaces its rows)
+//   keymap                           the one bound to ROWS
+//
+// Key names: 'Ctrl+Shift+Z', 'Shift+Enter', 'Backspace': optional
+// 'Ctrl+' and 'Shift+', then Enter Backspace Delete Tab Insert or a
+// letter. Labels are Word's ('Ctrl+Z'), not RISC OS's ('^Z').
+//
+// ev is what the window got: code the Wimp key code
+// (src/core/input.js keyCode), key the browser's name for the key
+// (absent for a key sent by Wimp_ProcessKey), shift, ctrl, alt the
+// modifiers. The Wimp gives Enter 13, Backspace 8 and Delete 127
+// whatever is held, Tab &18A and Insert &1CD (+&10 Shift, +&20
+// Ctrl), Ctrl-letters 1..26: so with a key name the name and the
+// flags decide, and the code alone only when there is none (then
+// the bits of the code count as modifiers, and a code 1..26 is
+// Ctrl-letter). A key that is '' (Wimp_ProcessKey gives the char
+// there, '' below 32) or no single character or known name counts
+// as no name. Alt gives null, and so does any key without a row:
+// the handler then returns undefined and the key goes on. Movement
+// keys are ./Keys's, not ours (it also decides Ctrl-A, selectAll).
+// Pure: no desktop services.
+import {command} from './Keys';
+
+export const ROWS = [
+  {id: 'enter', keys: ['Enter'], label: 'New paragraph'},
+  {id: 'shiftEnter', keys: ['Shift+Enter'], label: 'Line break'},
+  {id: 'backspace', keys: ['Backspace', 'Shift+Backspace'],
+    label: 'Delete back'},
+  {id: 'delete', keys: ['Delete'], label: 'Delete forward'},
+  {id: 'ctrlBackspace', keys: ['Ctrl+Backspace'],
+    label: 'Delete word back'},
+  {id: 'ctrlDelete', keys: ['Ctrl+Delete'],
+    label: 'Delete word forward'},
+  {id: 'tab', keys: ['Tab'], label: 'Tab'},
+  {id: 'insert', keys: ['Insert'], label: 'Overwrite'},
+  {id: 'undo', keys: ['Ctrl+Z'], label: 'Undo', menu: 'Edit'},
+  {id: 'redo', keys: ['Ctrl+Y', 'Ctrl+Shift+Z'], label: 'Redo',
+    menu: 'Edit'},
+  {id: 'selectAll', keys: ['Ctrl+A'], label: 'Select all',
+    menu: 'Edit'},
+];
+
+const NAMES = ['Enter', 'Backspace', 'Delete', 'Tab', 'Insert'];
+
+/** 'Ctrl+Shift+Z' -> the canonical form, or throws. */
+function canon(name) {
+  const parts = String(name).split('+');
+  const k = parts.pop();
+  const mods = new Set(parts);
+  const known = NAMES.includes(k) || /^[A-Za-z]$/.test(k);
+  if (!known || [...mods].some((m) => m !== 'Ctrl' && m !== 'Shift'))
+    throw new Error('Keymap: bad key ' + name);
+  return form(k.toUpperCase().length === 1 ? k.toUpperCase() : k,
+    mods.has('Ctrl'), mods.has('Shift'));
+}
+
+const form = (k, ctrl, shift) => (ctrl ? 'Ctrl+' : '') +
+  (shift ? 'Shift+' : '') + k;
+
+/** The canonical key name of the event, or null (unknown key). */
+function nameOf(ev) {
+  const {code} = ev;
+  let k = typeof ev.key === 'string' ? ev.key : null;
+  // no name: '' (Wimp_ProcessKey, codes < 32), or not a name we know
+  if (k !== null && k.length !== 1 && !NAMES.includes(k)) k = null;
+  let shift = !!ev.shift, ctrl = !!ev.ctrl;
+  if (k === null) {
+    if (!Number.isInteger(code) || code < 0) return null;
+    if (code === 13) k = 'Enter';
+    else if (code === 8) k = 'Backspace';
+    else if (code === 127) k = 'Delete';
+    else if (code === 9) k = 'Tab';
+    else if (code >= 1 && code <= 26) {
+      k = String.fromCharCode(64 + code);
+      ctrl = true;
+    } else {
+      const base = code & ~0x30;
+      if (base !== 0x18A && base !== 0x1CD) return null;
+      k = base === 0x18A ? 'Tab' : 'Insert';
+      shift = shift || (code & 0x10) !== 0;
+      ctrl = ctrl || (code & 0x20) !== 0;
+    }
+  } else if (k.length === 1) k = k.toUpperCase();
+  return form(k, ctrl, shift);
+}
+
+export class Keymap {
+  constructor() {
+    this._rows = new Map();
+    this._keys = new Map();
+  }
+
+  /** Replace the table with rows; returns this. */
+  bind(rows) {
+    const rs = new Map(), keys = new Map();
+    for (const r of rows) {
+      rs.set(r.id, r);
+      for (const k of r.keys || []) keys.set(canon(k), r.id);
+    }
+    this._rows = rs;
+    this._keys = keys;
+    return this;
+  }
+
+  row(id) { return this._rows.get(id) || null; }
+
+  /** The first key of row id as 'Ctrl+Z' ('' when none). */
+  labelFor(id) {
+    const r = this._rows.get(id);
+    return r && r.keys && r.keys.length ? r.keys[0] : '';
+  }
+
+  /** See the header. */
+  lookup(ev) {
+    if (!ev || typeof ev !== 'object' || ev.alt) return null;
+    const a = command(ev.code, {shift: ev.shift, ctrl: ev.ctrl,
+      key: ev.key});
+    if (a && a.cmd === 'selectAll') return 'selectAll';
+    const n = nameOf(ev);
+    return n === null ? null : this._keys.get(n) || null;
+  }
+}
+
+export const keymap = new Keymap().bind(ROWS);

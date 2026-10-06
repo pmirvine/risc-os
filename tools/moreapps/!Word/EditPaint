@@ -2,12 +2,14 @@
 // white column with a thin border and a shadow), the text
 // (./DocPaint) and the selection.
 //
-//   paintView(L, g, rect, sel, active)
+//   paintView(L, g, rect, sel, active, {comp, overwrite}?)
 //     L     a ./DocLayout, laid out
 //     g     a canvas 2D context in work-area coordinates
 //     rect  {x0, y0, x1, y1}, the part to draw (work area)
 //     sel   a ./Selection, or null
 //     active  whether the window has the input focus
+//     comp  the text an input method is composing, or null
+//     overwrite  whether typing replaces (Insert)
 //   pageRect(L) -> {x, y, w, h}, the white page (work area)
 //
 // The selection is lit after the text, multiplied into what is
@@ -16,10 +18,21 @@
 // focus, light grey (SEL_OFF) in another. Only the band in rect is
 // looked at (./DocRects), so a selection of a whole long document
 // costs no more to draw than a short one.
+//
+// Composing (comp): the text is drawn at the selection's head, black
+// on white over whatever follows it (it is not in the document, and
+// the line is not laid out again for it), underlined in COMP, in a
+// sans-serif face as tall as the caret allows. Overwrite with a
+// caret in the focused window: the grapheme after the caret (8 px
+// at a paragraph's end) is shaded in OVER, multiplied, so Insert
+// shows as a block caret over the character that typing replaces.
 // Draws on the context it is given; imports no desktop services.
 import {paint} from './DocPaint';
+import {nextG} from './DocPos';
+import {collapsed} from './Selection';
 
 export const DESK = '#888888', SEL = '#b3d4fc', SEL_OFF = '#d4d4d4';
+export const COMP = '#0050c8', OVER = '#a0a0a0';
 const TOP = 8, SHADOW = 3;
 
 /** See the header. */
@@ -30,7 +43,7 @@ export function pageRect(L) {
 }
 
 /** See the header. */
-export function paintView(L, g, rect, sel, active) {
+export function paintView(L, g, rect, sel, active, more = {}) {
   g.fillStyle = DESK;
   g.fillRect(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
   const p = pageRect(L);
@@ -44,10 +57,53 @@ export function paintView(L, g, rect, sel, active) {
   paint(L, g, rect);
   if (!sel) return;
   const rects = L.selectionRects(sel, rect.y0, rect.y1);
-  if (!rects.length) return;
   g.save();
   g.globalCompositeOperation = 'multiply';
   g.fillStyle = active ? SEL : SEL_OFF;
   for (const r of rects) g.fillRect(r.x, r.y, r.w, r.h);
+  if (more.overwrite && active && !more.comp && collapsed(sel)) {
+    const r = overRect(L, sel);
+    if (r) {
+      g.fillStyle = OVER;
+      g.fillRect(r.x, r.y, r.w, r.h);
+    }
+  }
+  g.restore();
+  if (more.comp) composing(L, g, sel, String(more.comp));
+}
+
+/** The grapheme after a caret, for overwrite (see the header). */
+function overRect(L, sel) {
+  const c = L.caretRect(sel.head, sel.affinity);
+  const loc = L.locate(sel.head);
+  if (!c || !loc) return null;
+  let w = 8;
+  if (loc.item.kind === 'p') {
+    const t = loc.item.block.text;
+    if (loc.off < t.length) {
+      const n = L.caretRect({id: sel.head.id, off: nextG(t, loc.off)},
+        'up');
+      if (n && n.y === c.y && n.x > c.x) w = n.x - c.x;
+    }
+  }
+  return {x: c.x, y: c.y, w, h: c.h};
+}
+
+/** The composition text at the head (see the header). */
+function composing(L, g, sel, text) {
+  const c = L.caretRect(sel.head, sel.affinity);
+  if (!c || !text) return;
+  const px = Math.max(8, Math.round(c.h * 0.7));
+  g.save();
+  g.font = `${px}px "Liberation Sans", Arial, sans-serif`;
+  g.textBaseline = 'alphabetic';
+  const w = Math.ceil(g.measureText(text).width) + 2;
+  g.fillStyle = '#ffffff';
+  g.fillRect(c.x, c.y, w, c.h);
+  g.fillStyle = '#000000';
+  const base = c.y + Math.round(c.h * 0.78);
+  g.fillText(text, c.x + 1, base);
+  g.fillStyle = COMP;
+  g.fillRect(c.x, Math.min(base + 2, c.y + c.h - 2), w, 2);
   g.restore();
 }

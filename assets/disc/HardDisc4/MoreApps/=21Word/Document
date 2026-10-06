@@ -16,24 +16,50 @@
 // listener that throws does not undo the change or stop the other
 // listeners; its error goes to d.onListenerError(err) (by default
 // thrown again from a microtask).
+//
+// Typing support: apply(op, {coalesce: key}) and group(fn,
+// {coalesce: key}) merge into the previous undo step when it has the
+// same non-null key and breakCoalesce() (or an undo, redo or unkeyed
+// edit) has not intervened. markSaved() / dirty track the saved
+// state; maxSteps (1000) caps the history; clearHistory() empties it.
+// The 'change' payload also carries dirty.
+//
+// atomic(fn, opts) is group(fn, opts) that is all or nothing: when
+// fn throws, the ops it applied are undone (nothing is recorded, the
+// stacks are as before) and the error is thrown again. If undoing
+// them fails too, still nothing is recorded (the Doc may be left
+// half reverted) and fn's error is thrown, with the rollback's error
+// as its cause. The editing
+// commands (./Edit, ./EditDel) run in it.
+
 import {apply, applyOwn} from './Ops';
 import {reserveIds} from './Model';
 import {DocEvents} from './DocEvents';
+import {DocHistory} from './DocHistory';
 
 export class Document {
   /** @param {object} doc a Doc (see Model) */
   constructor(doc) {
     this.doc = doc;
     reserveIds(doc);
-    this._undo = [];
-    this._redo = [];
+    this._h = new DocHistory();
     this._depth = 0;
     this._group = null;
     this._events = new DocEvents();
   }
 
-  get canUndo() { return this._undo.length > 0; }
-  get canRedo() { return this._redo.length > 0; }
+  get canUndo() { return this._h.undo.length > 0; }
+  get canRedo() { return this._h.redo.length > 0; }
+  get dirty() { return this._h.dirty; }
+  /** Number of undo steps kept. */
+  get undoDepth() { return this._h.undo.length; }
+
+  get maxSteps() { return this._h.maxSteps; }
+  set maxSteps(n) {
+    if (typeof n !== 'number' || Number.isNaN(n)) return;
+    this._h.maxSteps = Math.max(1, Math.floor(n));
+    this._h._trim();
+  }
 
   get onListenerError() { return this._events.onError; }
   set onListenerError(fn) { this._events.onError = fn; }
@@ -43,19 +69,31 @@ export class Document {
     return this._events.on(name, fn);
   }
 
-  /** Apply op (throws RangeError, changing nothing, if refused). */
-  apply(op) {
+  /** The current state is the saved one (dirty becomes false). */
+  markSaved() { this._h.markSaved(); }
+
+  /** The next keyed edit starts a new undo step. */
+  breakCoalesce() { this._h.breakCoalesce(); }
+
+  /** Forget all undo and redo steps (the Doc is unchanged). */
+  clearHistory() { this._h.clear(); }
+
+  /** Apply op; inside a group opts is ignored (the group's key rules).
+   * (throws RangeError, changing nothing, if refused). */
+  apply(op, opts) {
     const inv = apply(this.doc, op);
     if (this._depth) {
       this._group.ops.push(op);
       this._group.inv.push(inv);
       return;
     }
-    this._record([op], [inv]);
+    this._record([op], [inv], opts && opts.coalesce);
   }
 
-  groupStart() {
-    if (!this._depth++) this._group = {ops: [], inv: []};
+  groupStart(opts) {
+    if (!this._depth++) {
+      this._group = {ops: [], inv: [], key: opts && opts.coalesce};
+    }
   }
 
   groupEnd() {
@@ -63,12 +101,12 @@ export class Document {
     if (--this._depth) return;
     const g = this._group;
     this._group = null;
-    if (g.ops.length) this._record(g.ops, g.inv);
+    if (g.ops.length) this._record(g.ops, g.inv, g.key);
   }
 
   /** Run fn() as one group (one undo step); returns what fn does. */
-  group(fn) {
-    this.groupStart();
+  group(fn, opts) {
+    this.groupStart(opts);
     try {
       return fn();
     } finally {
@@ -76,32 +114,58 @@ export class Document {
     }
   }
 
-  _record(ops, invs) {
+  /** See the header. */
+  atomic(fn, opts) {
+    this.groupStart(opts);
+    const g = this._group, n0 = g.ops.length;
+    try {
+      return fn();
+    } catch (e) {
+      // a rollback that fails too records nothing either; the
+      // original error is thrown, the rollback's as its cause
+      try {
+        for (let k = g.inv.length - 1; k >= n0; k--)
+          applyOwn(this.doc, g.inv[k]);
+      } catch (e2) {
+        if (e && typeof e === 'object' && e.cause === undefined) {
+          try { e.cause = e2; } catch (e3) { /* frozen error */ }
+        }
+      } finally {
+        g.ops.length = n0;
+        g.inv.length = n0;
+      }
+      throw e;
+    } finally {
+      this.groupEnd();
+    }
+  }
+
+  _record(ops, invs, key) {
     const inverse = invs.length === 1 ? invs[0]
       : {op: 'compound', ops: invs.slice().reverse()};
-    this._undo.push(inverse);
-    this._redo.length = 0;
-    this._events.emit('change', {kind: 'apply', ops});
+    this._h.push(inverse, key);
+    this._events.emit('change',
+      {kind: 'apply', ops, dirty: this._h.dirty});
   }
 
   /** Undo one step; false if there is nothing to undo. */
   undo() {
-    return this._step(this._undo, this._redo, 'undo');
+    return this._step('undo');
   }
 
   /** Redo one step; false if there is nothing to redo. */
   redo() {
-    return this._step(this._redo, this._undo, 'redo');
+    return this._step('redo');
   }
 
-  _step(from, to, kind) {
+  _step(kind) {
     if (this._depth) throw new Error(kind + ' inside a group');
-    if (!from.length) return false;
-    const op = from[from.length - 1];
-    const inv = applyOwn(this.doc, op);
-    from.pop();
-    to.push(inv);
-    this._events.emit('change', {kind, ops: [op]});
+    const step = this._h.peek(kind);
+    if (!step) return false;
+    const inv = applyOwn(this.doc, step.inv);
+    this._h.moved(kind, inv);
+    this._events.emit('change',
+      {kind, ops: [step.inv], dirty: this._h.dirty});
     return true;
   }
 }

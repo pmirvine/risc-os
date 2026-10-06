@@ -426,3 +426,31 @@ docs/ASSETS.md §5).
 still down, the drag's pointer listeners stay on the document until the button is released (then `onEnd` runs).
 Nothing is drawn meanwhile; !Word's `EditMouse` stops its own auto-scroll timer on its next tick (within 60 ms).
 Possible fix: let `wimp.drag` end the drag when its owner window is deleted or closed.
+
+## Text-input caret (opt-in text-input proxy) — changes in shared code, for !Word typing
+**Status:** Done: documented in CORE_API.md §3.1 (`textinput`, `composition`, `compositionend`) and §3.2
+(text-input caret). Not included yet (Open, later !Word deliverable): copy/cut listeners, HTML (rich) paste,
+caret blinking, triple-click counting.
+
+* `src/core/textinput.js` (new): `TextInput`, one hidden `<textarea>` appended to `document.body` (outside
+  `.screen`) the first time a text caret is set, never before; `sanitizeText(s)` (pure) and `MAX_TEXT` (100,000).
+  Commits come from `beforeinput` `insertText` / `insertReplacementText` (cancelled, so the field stays empty) and
+  from `compositionend` (the input method's own `insertCompositionText` / `insertFromComposition` edits are left to
+  it); a non-cancellable edit is caught by the `input` event once and the field cleared (an edit already delivered by
+  `beforeinput` is not delivered again: the `_sent` flag). Some browsers end a composition with empty `data` although
+  the field holds the committed text: that value is used (after a real cancel the field is empty, so it is a cancel).
+  Known limitation: while the field lacks the browser focus (the user clicked a page field outside the desktop),
+  AltGr/Option characters arrive as `key` events with Ctrl+Alt and !Word's printable fallback drops them.
+* `src/core/wimp.js`: `wimp.textInput`; `setCaret(win, icon, index, pos, opts)` — a 5th argument `{text: true}`
+  sets `wimp.caret.text = true` (only then; the property is absent otherwise) and focuses the proxy synchronously
+  at the caret; any other caret blurs it (no effect when it was never made). `_drawCaret` moves it with the caret.
+  `_keyDown`: the guard that ignores keys typed in page fields outside `.screen` lets the proxy's own keys through
+  (`e.target === wimp.textInput.el` while the caret is a text caret); for those keys, composing keys (isComposing,
+  keyCode 229) are left to the browser, printable keys (one character, no Ctrl/Cmd; Ctrl+Alt only as AltGr: AltGraph modifier on, or a character other
+  than an ASCII letter or digit) return before
+  the `key` event and without `preventDefault` so they arrive once as `textinput`, and a modal state cancels every
+  key. All other paths are unchanged.
+* `src/core/menu.js`: restoring the caret after a menu closes passes `{text: true}` again for a text caret.
+* Tests: `tests/core/test-textinput.mjs` (Playwright and CDP: `insertText`, dead keys, `Input.imeSetComposition`,
+  auto-repeat, hot keys, focus/blur) and `tests/core/test-textinput-pure.mjs` (node), both in
+  `tests/core/index.mjs`.

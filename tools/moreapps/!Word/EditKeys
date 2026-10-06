@@ -1,0 +1,82 @@
+// EditKeys - a key in a document's window (./EditView):
+//
+//   keyFor(view, ev) -> true if used, undefined if not (the Wimp
+//                       then passes it on)
+//
+// ./Keys first (moving the caret, extending the selection, Ctrl-A,
+// Escape), then ./Keymap (editing: view.run). A printable key that
+// still comes as a 'key' (the Wimp's hidden text field has lost the
+// browser's focus, or Wimp_ProcessKey sent it) is typed: one
+// character, no Ctrl, no Alt, no Cmd (Meta: a browser shortcut such
+// as Cmd-C or Cmd-V, never text), and not from the text field while
+// it has the focus (view.fromProxy(ev): such a key was not typed
+// there, so it is not text either). Page Up and Page Down scroll the
+// window by its height less 32 px and move the caret as far, so it
+// stays where it was in the window; Ctrl-Home and Ctrl-End scroll
+// to the very top or bottom; Ctrl-A selects everything without
+// scrolling; Escape makes a selection a caret at its head (a
+// caret's Escape is passed on). Uses only the view: no desktop
+// services.
+import * as S from './Selection';
+import {command} from './Keys';
+import {keymap} from './Keymap';
+
+const LINE = 20;
+
+/** The character a 'key' types, or null (see the header). */
+function printable(v, ev) {
+  if (ev.ctrl || ev.alt) return null;
+  const e = ev.domEvent;
+  if (e && (e.metaKey || e.ctrlKey || e.altKey)) return null;
+  if (v.fromProxy && v.fromProxy(ev)) return null;
+  const k = typeof ev.key === 'string' && [...ev.key].length === 1
+    ? ev.key : ev.char;
+  if (typeof k !== 'string' || !k) return null;
+  const c = k.codePointAt(0);
+  return c < 32 || (c >= 127 && c < 160) ? null : k;
+}
+
+/** See the header. */
+export function keyFor(v, ev) {
+  const k = command(ev.code,
+    {shift: ev.shift, ctrl: ev.ctrl, key: ev.key});
+  if (k) return v.sel ? move(v, k) : undefined;
+  const id = keymap.lookup(ev);
+  if (id) return v.run(id);
+  const ch = printable(v, ev);
+  if (ch === null) return undefined;
+  v.input(ch);
+  return true;
+}
+
+/** A ./Keys command. */
+function move(v, k) {
+  const L = v.L;
+  switch (k.cmd) {
+    case 'selectAll':
+      v.setSelection(S.selectAll(L), {scroll: false});
+      return true;
+    case 'collapse':
+      if (S.collapsed(v.sel)) return undefined;
+      v.setSelection(S.caret(v.sel.head, v.sel.affinity));
+      return true;
+    case 'pageUp': case 'pageDown': {
+      const w = v.win, d = k.cmd === 'pageDown' ? 1 : -1;
+      const step = Math.max(LINE, w.h - 32);
+      const sel = S.move(v.sel, L, k.cmd, k.extend, step);
+      w.scrollTo(w.scrollX, Math.max(0, w.scrollY + d * step));
+      v.setSelection(sel);
+      return true;
+    }
+    case 'docHome': case 'docEnd': {
+      // all the way: the page's top (or bottom) edge shows too
+      const w = v.win;
+      w.scrollTo(w.scrollX, k.cmd === 'docHome' ? 0 : w.extent.y1);
+      v.setSelection(S.move(v.sel, L, k.cmd, k.extend));
+      return true;
+    }
+    default:
+      v.setSelection(S.move(v.sel, L, k.cmd, k.extend));
+      return true;
+  }
+}

@@ -1,0 +1,95 @@
+// EditPos - positions for the editing commands (./Edit, ./EditDel),
+// found in the Doc itself: no layout needed.
+//
+//   findBlock(doc, id)    -> {s, i, k, b}: section s, index i, index
+//                            k in document order, block b; or null
+//   neighbour(doc, at, d) -> the block before (d -1) or after (d 1)
+//                            `at` in document order, as findBlock
+//                            gives it, crossing sections; or null
+//   checkPos(doc, pos)    -> findBlock of a valid position {id, off}
+//                            (a paragraph offset on a code point, a
+//                            kept block's 0 or 1), else null
+//   orderedPos(doc, sel)  -> {from, to, f, t} in document order (f,
+//                            t: their findBlock), or null when a
+//                            position is not valid
+//   atIndex(doc, k)       -> the block at index k (document order)
+//   posOf(loc, off)       -> the position {id, off} in a block
+//   endOf(b)              -> the last offset of a block
+//
+// Ids are as ./DocPos gives them (a kept block's is negative). A
+// lookup scans the blocks once: O(blocks) per command, no index
+// (deliverable 3 adds one).
+// Pure: no desktop services.
+import {blockId} from './DocPos';
+import {midPair} from './ModelCheck';
+
+/** See the header. */
+export function findBlock(doc, id) {
+  if (typeof id !== 'number') return null;
+  let k = 0;
+  const secs = doc.sections;
+  for (let s = 0; s < secs.length; s++) {
+    const bs = secs[s].blocks;
+    for (let i = 0; i < bs.length; i++, k++) {
+      const b = bs[i];
+      if ((b.type === 'p' ? b.id : blockId(b)) === id)
+        return {s, i, k, b};
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export function neighbour(doc, at, d) {
+  const secs = doc.sections;
+  let s = at.s, i = at.i + d;
+  while (s >= 0 && s < secs.length) {
+    const bs = secs[s].blocks;
+    if (i >= 0 && i < bs.length) {
+      return {s, i, k: at.k + d, b: bs[i]};
+    }
+    s += d;
+    if (s >= 0 && s < secs.length)
+      i = d > 0 ? 0 : secs[s].blocks.length - 1;
+  }
+  return null;
+}
+
+/** The block at index k in document order, as findBlock; or null. */
+export function atIndex(doc, k) {
+  let base = 0;
+  const secs = doc.sections;
+  for (let s = 0; s < secs.length; s++) {
+    const n = secs[s].blocks.length;
+    if (k >= base && k < base + n)
+      return {s, i: k - base, k, b: secs[s].blocks[k - base]};
+    base += n;
+  }
+  return null;
+}
+
+/** See the header. */
+export const endOf = (b) => (b.type === 'p' ? b.text.length : 1);
+
+/** See the header. */
+export const posOf = (loc, off) => ({id: blockId(loc.b), off});
+
+/** See the header. */
+export function checkPos(doc, pos) {
+  if (!pos || !Number.isInteger(pos.off) || pos.off < 0) return null;
+  const loc = findBlock(doc, pos.id);
+  if (!loc || pos.off > endOf(loc.b)) return null;
+  if (loc.b.type === 'p' && midPair(loc.b.text, pos.off)) return null;
+  return loc;
+}
+
+/** See the header. */
+export function orderedPos(doc, sel) {
+  const a = checkPos(doc, sel.anchor);
+  const h = a && checkPos(doc, sel.head);
+  if (!h) return null;
+  const back = h.k < a.k ||
+    (h.k === a.k && sel.head.off < sel.anchor.off);
+  return back ? {from: sel.head, to: sel.anchor, f: h, t: a}
+    : {from: sel.anchor, to: sel.head, f: a, t: h};
+}

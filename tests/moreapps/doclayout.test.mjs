@@ -205,8 +205,10 @@ describe('DocLayout selectionRects', () => {
 });
 
 describe('DocLayout on a large document', () => {
-  it('50,000 paragraphs: layout < 1.5 s; select all and the ' +
-    'visible rects < 50 ms', () => {
+  // (generous limits: the unit tests run in parallel, and this one
+  // guards against quadratic time, not a few hundred ms)
+  it('50,000 paragraphs: layout < 5 s; select all and the ' +
+    'visible rects < 250 ms', () => {
     const words = 'the quick brown fox jumps over the lazy dog ';
     const blocks = [];
     for (let i = 0; i < 50000; i++) {
@@ -218,13 +220,13 @@ describe('DocLayout on a large document', () => {
     const L = new DocLayout(doc, tm());
     const r = L.layout(1000);
     const took = performance.now() - t0;
-    assert.ok(took < 1500, `layout took ${took} ms`);
+    assert.ok(took < 5000, `layout took ${took} ms`);
     assert.ok(r.h > 50000 * 18);
     t0 = performance.now();
     const s = selectAll(L);
     const y0 = r.h / 2, rs = L.selectionRects(s, y0, y0 + 800);
     const t2 = performance.now() - t0;
-    assert.ok(t2 < 50, `select all + rects took ${t2} ms`);
+    assert.ok(t2 < 250, `select all + rects took ${t2} ms`);
     assert.ok(rs.length > 20 && rs.length < 400, `${rs.length} rects`);
   });
 });

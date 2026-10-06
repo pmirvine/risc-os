@@ -5,6 +5,7 @@ import { Emitter, el, clamp, allowedChar } from './util.js';
 import { Window, templateToDef } from './window.js';
 import { loadTemplates } from './templates.js';
 import { input, keyCode, startPointerDrag, autoRepeat, BUT } from './input.js';
+import { TextInput } from './textinput.js';
 import { sprites } from './sprites.js';
 import { fonts } from './fonts.js';
 import { IF } from './templates.js';
@@ -106,6 +107,7 @@ export class Wimp extends Emitter {
       modal: el('div', 'layer-modal', scr),
     };
     this.caretEl = el('div', 'caret');
+    this.textInput = new TextInput();   // the text-input proxy; its element is made on the first text caret
     this._ptr = null;
     setTimeout(() => this.setPointer(''), 0);
     this.systemTask = new Task(this, 'Window Manager', { kind: 'module', memory: 0 });
@@ -336,13 +338,21 @@ export class Wimp extends Emitter {
    *   setCaret(win)                          give win the input focus, invisible caret
    *   setCaret(win, icon, index)             caret in a writable icon
    *   setCaret(win, null, -1, {x, y, h})     caret drawn at work-area x,y (height h)
+   *   setCaret(win, null, -1, {x, y, h}, {text: true})
+   *                                          the same, and a text-input caret: typed text, dead keys and input
+   *                                          methods arrive as textinput / composition events (src/core/textinput.js)
    */
-  setCaret(win, icon = null, index = -1, pos = null) {
+  setCaret(win, icon = null, index = -1, pos = null, opts = null) {
     const old = this.caret;
     const oldWin = old?.window ?? null;
     if (typeof icon === 'number') icon = win?.icons[icon] ?? null;
     if (win && icon && index < 0) index = icon.text.length;
     this.caret = win ? { window: win, icon, index: icon ? clamp(index, 0, icon.text.length) : index, pos } : null;
+    if (win && !icon && opts?.text) this.caret.text = true;
+    // the proxy takes the focus now, inside the click or key that placed the caret (iOS shows its keyboard only
+    // then); a caret going elsewhere first ends any composition in the old window
+    if (!this.caret?.text) this.textInput.blur();
+    else if (old?.text && oldWin !== win) this.textInput.blur();
     if (oldWin && oldWin !== win) { oldWin._layout(); oldWin.emit('losecaret', {}); if (old.icon) old.icon.render(); }
     if (win) {
       win._layout();
@@ -351,6 +361,13 @@ export class Wimp extends Emitter {
     }
     if (old?.icon && old.icon !== icon) old.icon.render();
     this._drawCaret();
+    if (this.caret?.text && this.caret.window.isOpen) this.textInput.attach(this).focusAt(...this._caretClientXY());
+  }
+  /** Where the caret is in the browser window (client px), for the text-input proxy. */
+  _caretClientXY() {
+    const ce = this.caretEl;
+    const r = (ce.isConnected ? ce : this.caret.window.work).getBoundingClientRect();
+    return [r.left, r.top];
   }
   caretIndexClamp() { if (this.caret?.icon) this.caret.index = clamp(this.caret.index, 0, this.caret.icon.text.length); }
   _drawCaret() {
@@ -363,6 +380,7 @@ export class Wimp extends Emitter {
     ce.style.left = Math.round(p.x) + 'px';
     ce.style.top = Math.round(p.y) + 'px';
     ce.style.height = Math.round(p.h ?? 20) + 'px';
+    if (c.text && this.textInput.focused) this.textInput.moveTo(...this._caretClientXY());
   }
 
   // ------------------------------------------------------------------ pointer
@@ -784,7 +802,12 @@ export class Wimp extends Emitter {
 
   // ------------------------------------------------------------------ keyboard
   _keyDown(e) {
-    if (e.target?.closest?.('input,textarea,[contenteditable]') && !e.target.closest('.screen')) return;
+    // keys typed in the page's own fields outside the desktop are theirs; the text-input proxy's are the desktop's
+    const proxy = e.target === this.textInput.el && !!this.caret?.text;
+    if (e.target?.closest?.('input,textarea,[contenteditable]') && !e.target.closest('.screen') && !proxy) return;
+    // a key that is part of an input method's composition belongs to it (a dead key is ignored by keyCode below,
+    // so the browser composes it)
+    if (proxy && (e.isComposing || e.keyCode === 229 || this.textInput.composing)) return;
     const k = keyCode(e);
     if (!k) return;
     // Global hot keys (Wimp_ProcessKey fall-backs)
@@ -794,8 +817,14 @@ export class Wimp extends Emitter {
     if (k.code === 0x1EC) { e.preventDefault(); this.emit('hotkey:CtrlF12', {}); return; }         // Ctrl-F12
     if (k.code === 0x1DC) { e.preventDefault(); this.toggleIconbarFront(); return; }                // Shift-F12
     if (k.code === 0x1FC) { e.preventDefault(); this.emit('hotkey:CtrlShiftF12', {}); return; }    // Ctrl-Shift-F12
-    if (this.modal) { if (this.modal.onKey?.(e, k)) e.preventDefault(); return; }
+    if (this.modal) { if (this.modal.onKey?.(e, k) || proxy) e.preventDefault(); return; }
     if (this.menus?.isOpen && this.menus.key(e, k)) { e.preventDefault(); return; }
+    // a text caret: a printable key is left to the browser, which types it into the proxy, so it arrives once, as
+    // textinput, and never as key. Printable: one character, no Cmd, no Ctrl - except AltGr, which browsers
+    // report as Ctrl+Alt: that counts when the AltGraph modifier is on or the key gives something other than an
+    // ASCII letter or digit (AltGr+Q = '@'); Ctrl+Alt+C or Ctrl+Alt+1 stay `key` events
+    if (proxy && !e.metaKey && [...e.key].length === 1 && (!e.ctrlKey
+      || (e.altKey && (e.getModifierState?.('AltGraph') || !/^[A-Za-z0-9]$/.test(e.key))))) return;
     const c = this.caret;
     let handled = false, allowDefault = false;
     if (c?.window?.isOpen) {

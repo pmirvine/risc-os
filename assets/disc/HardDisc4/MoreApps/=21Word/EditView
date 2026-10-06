@@ -1,60 +1,108 @@
-// EditView - the caret and the selection in a document's window: it
-// draws the page, the text and the selection (./EditPaint), shows
-// the caret, keeps it in view and moves it by the keys (./Keys). The
-// mouse is ./EditMouse. Read-only: nothing here changes the text.
+// EditView - the caret, the selection and the editing in a document's
+// window: it draws it (./EditPaint), shows the caret and keeps it in
+// view. Keys: ./EditKeys; typed text and input methods: ./EditInput;
+// the mouse: ./EditMouse; commands: ./EditApply.
 //
-//   const v = new EditView(win, L)  win: the Window; L: a ./DocLayout
-//   v.L, v.sel             the layout; the selection (./Selection),
-//                          at first a caret at the document's start
+//   const v = new EditView(win, L, d, typing, rebuild)
+//     win: the Window; L: a ./DocLayout of d.doc; d: its ./Document;
+//     typing: its ./Typing; rebuild(): makes a new layout after an
+//     edit and calls v.setLayout (./AppWin)
+//   v.L, v.sel             the layout (made again first if the
+//                          document has changed); the selection
+//                          (./Selection), at first a caret at the start
 //   v.paint(g, rect)       the window's canvas redraw
-//   v.setSelection(sel, {scroll = true})  show sel; scroll its head
-//                          into view (24 px from the window's edges)
-//   v.setLayout(L, oldL)   a new layout (fonts arrived): the
-//                          selection is made valid for it
-//                          (Selection.clamp); call v.placed() once
-//                          L is laid out
-//   v.placed()             the column has moved (a new window width,
-//                          a new layout): the caret is shown again
-//   v.focus()              take the input focus; show the caret
-//   v.key(ev)              a 'key' event -> true if used, undefined
-//                          if not (the Wimp passes it on)
-//   v.caretRect()          -> {x, y, h}: the head's place (work area)
-//   v.text()               the selection as plain text
-//   v.hook()               for tests: {selection, layout, text(),
-//                          caretRect(), setSelection(a, b?, aff?)}
+//   v.setSelection(sel, {scroll = true})  show sel, its head scrolled
+//                          into view (24 px inside); not an edit, so
+//                          the next typing is a new undo step
+//   v.setLayout(L, oldL)   a new layout: the selection is made valid
+//                          for it (Selection.clamp); then v.placed()
+//   v.placed(), v.focus()  show the caret (focus: take the focus;
+//                          placed() never takes the browser focus)
+//   v.key(ev)              -> true if used, undefined if not
+//   v.input(text)          type text;  v.compose(text|null): show
+//                          what an input method composes
+//   v.run(id)              a ./Keymap command -> true, or undefined
+//   v.undo(), v.redo(), v.overwrite (Insert's mode), v.caretRect(),
+//   v.text(), v.destroy(), v.hook() (for tests)
 //
-// The caret is the Wimp's (wimp.setCaret with a work-area place), so
-// there is one in the whole desktop, in the window with the input
-// focus; it does not blink yet. While something is selected it is
-// hidden (the window keeps the input focus), as in Word.
-// Page Up and Page Down scroll the window by its height less 32 px
-// and move the caret as far, so it stays where it was in the window.
-// Ctrl-Home and Ctrl-End scroll to the very top or bottom.
-// Ctrl-A selects everything without scrolling; Escape makes a
-// selection a caret at its head (a caret's Escape is passed on).
+// The caret is the Wimp's text-input caret ({text: true}), hidden
+// while something is selected, as in Word. After an edit the
+// selection is the command's; after an undo or a redo,
+// EditApply.stepEnd's. The layout is made again at most once a frame
+// (a burst of typing is laid out once), then the caret is scrolled
+// into view. A refused edit (no paragraph to type in) beeps.
 import {wimp} from 'riscos';
 import * as S from './Selection';
-import {command} from './Keys';
+import {keyFor} from './EditKeys';
+import {run, stepEnd} from './EditApply';
 import {paintView} from './EditPaint';
 
-const MARGIN = 24, LINE = 20;
+const MARGIN = 24, TEXT = {text: true};
 
 export class EditView {
-  constructor(win, L) {
+  constructor(win, L, d, typing, rebuild) {
     this.win = win;
-    this.L = L;
+    this._L = L;
+    this.d = d;
+    this.typing = typing;
+    this._rebuild = rebuild;
+    this._stale = false;
+    this._raf = 0;
+    this.comp = null;
+    this.overwrite = false;
     const a = L.docStart();
     this.sel = a ? S.caret(a) : null;
     win.pointer = 'ptr_write';
     const lit = () => win.invalidate();
     win.on('gaincaret', lit);
     win.on('losecaret', lit);
+    this._off = d.on('change', (ev) => this._changed(ev));
   }
+
+  get L() { this.ensure(); return this._L; }
 
   get hasFocus() { return wimp.caret?.window === this.win; }
 
+  /** The document changed: see the header. */
+  _changed(ev) {
+    if (ev.kind !== 'apply') {
+      const p = stepEnd(this.d.doc, ev.ops, this._L);
+      if (p) this.sel = S.caret(p);
+    }
+    this._stale = true;
+    if (!this._raf) {
+      this._raf = requestAnimationFrame(() => this.flush());
+    }
+  }
+
+  /** A new layout now if the document has changed. */
+  ensure() {
+    if (!this._stale) return;
+    this._stale = false;
+    this._rebuild();
+  }
+
+  /** After edits: lay out, scroll to the caret, show it. */
+  flush() {
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = 0;
+    if (!this.win.isOpen) return;
+    this.ensure();
+    this.scrollToCaret();
+    this.showCaret();
+    this.win.invalidate();
+  }
+
+  destroy() {
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = 0;
+    this.comp = null;
+    this._off();
+  }
+
   paint(g, rect) {
-    paintView(this.L, g, rect, this.sel, this.hasFocus);
+    paintView(this.L, g, rect, this.sel, this.hasFocus,
+      {comp: this.comp, overwrite: this.overwrite});
   }
 
   caretRect() {
@@ -67,15 +115,24 @@ export class EditView {
   /** See the header. */
   setSelection(sel, {scroll = true} = {}) {
     if (!sel) return;
+    this.typing.reset();
     this.sel = sel;
     this.win.invalidate();
     if (scroll) this.scrollToCaret();
     this.showCaret();
   }
 
+  /** The selection after an edit: shown when laid out (flush). */
+  edited(sel) {
+    this.sel = sel;
+    if (!this._raf) {
+      this._raf = requestAnimationFrame(() => this.flush());
+    }
+  }
+
   /** See the header. */
   setLayout(L, oldL) {
-    this.L = L;
+    this._L = L;
     if (this.sel) this.sel = S.clamp(this.sel, L.doc, oldL);
     else {
       const a = L.docStart();
@@ -94,8 +151,17 @@ export class EditView {
     if (!w.isOpen || (!take && !this.hasFocus)) return;
     const one = this.sel && S.collapsed(this.sel);
     const c = one ? this.caretRect() : null;
-    if (c) wimp.setCaret(w, null, -1, {x: c.x, y: c.y, h: c.h});
-    else wimp.setCaret(w);
+    const ti = wimp.textInput;
+    if (!take && wimp.caret?.text && ti && !ti.focused) {
+      // not a user gesture and the hidden field is not the focus
+      // owner (the focus is in a page field outside the desktop):
+      // move the caret only, never take the focus
+      wimp.caret.pos = c ? {x: c.x, y: c.y, h: c.h} : null;
+      wimp._drawCaret();
+      return;
+    }
+    if (c) wimp.setCaret(w, null, -1, {x: c.x, y: c.y, h: c.h}, TEXT);
+    else wimp.setCaret(w, null, -1, null, TEXT);
   }
 
   /** Scroll so that the head is 24 px inside the window's edges. */
@@ -113,39 +179,60 @@ export class EditView {
   }
 
   /** See the header. */
-  key(ev) {
-    const k = command(ev.code,
-      {shift: ev.shift, ctrl: ev.ctrl, key: ev.key});
-    if (!k || !this.sel) return undefined;
-    const L = this.L;
-    switch (k.cmd) {
-      case 'selectAll':
-        this.setSelection(S.selectAll(L), {scroll: false});
-        return true;
-      case 'collapse':
-        if (S.collapsed(this.sel)) return undefined;
-        this.setSelection(S.caret(this.sel.head, this.sel.affinity));
-        return true;
-      case 'pageUp': case 'pageDown': {
-        const w = this.win, d = k.cmd === 'pageDown' ? 1 : -1;
-        const step = Math.max(LINE, w.h - 32);
-        const sel = S.move(this.sel, L, k.cmd, k.extend, step);
-        w.scrollTo(w.scrollX, Math.max(0, w.scrollY + d * step));
-        this.setSelection(sel);
-        return true;
-      }
-      case 'docHome': case 'docEnd': {
-        // all the way: the page's top (or bottom) edge shows too
-        const w = this.win;
-        w.scrollTo(w.scrollX, k.cmd === 'docHome' ? 0 : w.extent.y1);
-        this.setSelection(S.move(this.sel, L, k.cmd, k.extend));
-        return true;
-      }
-      default:
-        this.setSelection(S.move(this.sel, L, k.cmd, k.extend));
-        return true;
-    }
+  input(text) {
+    this.comp = null;
+    const s = String(text ?? '');
+    if (!s || !this.win.isOpen) return;
+    const out = this.sel
+      ? this.typing.type(this.sel, s, {overwrite: this.overwrite})
+      : null;
+    if (!out || out === this.sel) { wimp.beep(); return; }
+    this.edited(out);
   }
+
+  /** See the header. */
+  compose(text) {
+    const t = text ? String(text) : null;
+    if (t === this.comp) return;
+    this.comp = t;
+    this.win.invalidate();
+  }
+
+  undo() { this._step('undo'); }
+
+  redo() { this._step('redo'); }
+
+  _step(kind) {
+    this.ensure();
+    if (!(kind === 'undo' ? this.d.canUndo : this.d.canRedo)) return;
+    this.typing.command(() => this.d[kind]());
+    this.edited(this.sel);
+  }
+
+  /** See the header. */
+  run(id) {
+    if (id === 'undo' || id === 'redo') { this[id](); return true; }
+    if (id === 'selectAll') {
+      if (this.sel) {
+        this.setSelection(S.selectAll(this.L), {scroll: false});
+      }
+      return true;
+    }
+    if (id === 'insert') {
+      this.overwrite = !this.overwrite;
+      this.typing.reset();
+      this.win.invalidate();
+      return true;
+    }
+    if (!this.sel) return undefined;
+    const out = run(id, this.d, this.typing, this.sel);
+    if (out === undefined) return undefined;
+    if (out !== this.sel) this.edited(out);
+    return true;
+  }
+
+  /** See the header (./EditKeys). */
+  key(ev) { return keyFor(this, ev); }
 
   /** See the header. */
   hook() {
@@ -153,10 +240,20 @@ export class EditView {
     return {
       get selection() { return v.sel; },
       get layout() { return v.L; },
+      get dirty() { return v.d.dirty; },
+      get undoDepth() { return v.d.undoDepth; },
+      get overwrite() { return v.overwrite; },
+      get composing() { return v.comp; },
       text: () => v.text(),
       caretRect: () => v.caretRect(),
       setSelection: (a, b = a, aff) =>
         v.setSelection(S.select(a, b, aff)),
+      type: (t) => v.input(t),
+      press: (id) => v.run(id),
+      compose: (t) => v.compose(t),
+      flush: () => v.flush(),
+      lines: () => v.d.doc.sections.flatMap((s) =>
+        s.blocks.map((b) => (b.type === 'p' ? b.text : null))),
     };
   }
 }

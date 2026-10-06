@@ -1,0 +1,104 @@
+// DocHistory - the undo/redo stacks of a Document, with coalescing,
+// a saved marker and a size cap. Pure bookkeeping, no Doc access.
+//
+// Every state of the document has a serial number. A step is
+// {inv, id}: inv undoes it and id is the state AFTER it. The state
+// before the oldest step is _base. The saved state is a serial too,
+// so dirty is just "current serial differs from saved serial": it
+// survives undo, redo, coalescing (a merged step gets a new serial;
+// markSaved() ends the coalescing run, so the saved state is always
+// the end of a step and stays reachable by undo) and trimming (a
+// dropped step's serial can never be current again).
+let serial = 0;
+
+/** Most ops one merged (coalesced) undo step may hold. */
+export const MAX_MERGE = 128;
+
+const opsOf = (inv) => inv.op === 'compound' ? inv.ops : [inv];
+
+export class DocHistory {
+  constructor() {
+    this.maxSteps = 1000;
+    this.maxMerge = MAX_MERGE;
+    this.undo = [];
+    this.redo = [];
+    this._base = 0;
+    this._saved = 0;
+    this._key = null;
+  }
+
+  get id() {
+    const u = this.undo;
+    return u.length ? u[u.length - 1].id : this._base;
+  }
+
+  get dirty() { return this.id !== this._saved; }
+
+  markSaved() {
+    this._saved = this.id;
+    this._key = null; // keep the saved state addressable
+  }
+
+  breakCoalesce() { this._key = null; }
+
+  clear() {
+    this._base = this.id;
+    this.undo.length = 0;
+    this.redo.length = 0;
+    this._key = null;
+  }
+
+  /**
+   * Record inverse `inv` (apply order); merge when key matches and
+   * the top step is not yet maxMerge ops long. A merged step keeps
+   * its pieces oldest first in `parts` (appending is O(1)) and
+   * builds the compound, newest piece first, only when undone.
+   */
+  push(inv, key) {
+    this.redo.length = 0;
+    const top = this.undo[this.undo.length - 1];
+    if (key != null && top && key === this._key &&
+        top.n < this.maxMerge) {
+      if (!top.parts) top.parts = [top.inv];
+      top.parts.push(inv);
+      top.n += opsOf(inv).length;
+      top.id = ++serial;
+      return;
+    }
+    this.undo.push({inv, id: ++serial, n: opsOf(inv).length});
+    this._key = key == null ? null : key;
+    // O(maxSteps) per trim through shift(); fine at the 1000 cap.
+    this._trim();
+  }
+
+  _trim() {
+    while (this.undo.length > this.maxSteps) {
+      this._base = this.undo.shift().id;
+    }
+  }
+
+  /** The step to take from `kind` ('undo'|'redo'), or null. */
+  peek(kind) {
+    const s = this[kind];
+    if (!s.length) return null;
+    const top = s[s.length - 1];
+    if (top.parts) {
+      const ops = [];
+      for (let k = top.parts.length - 1; k >= 0; k--) {
+        for (const o of opsOf(top.parts[k])) ops.push(o);
+      }
+      return {inv: {op: 'compound', ops}, id: top.id};
+    }
+    return top;
+  }
+
+  /** Move the top step across; `inv` undoes what was just applied. */
+  moved(kind, inv) {
+    const from = kind === 'undo' ? this.undo : this.redo;
+    const to = kind === 'undo' ? this.redo : this.undo;
+    const step = from.pop();
+    // The state after the opposite step is where we came from.
+    to.push({inv, id: step.id, n: opsOf(inv).length});
+    this._key = null;
+  }
+}

@@ -1,0 +1,62 @@
+// EditPara - Enter: splitting a paragraph, for ./Edit.
+//
+//   splitAt(d, loc, off)   split the paragraph at loc (EditPos) at
+//                          off, inside the caller's group; returns
+//                          the caret position (the new paragraph's
+//                          start)
+//   nextStyle(styles, id)  the style a paragraph after one of style
+//                          id gets when Enter is pressed at its end:
+//                          a style id, null (the default paragraph
+//                          style: no pStyle), or undefined (keep id)
+//
+// splitBlock (./OpsText) gives the new paragraph a fresh id and the
+// same pPr and pStyle (so a list item's numbering carries on). At
+// the paragraph's end, the "next style" rule: the style table's
+// `next` of the paragraph's style, when it names another paragraph
+// style. When the table cannot tell (no table, the style is not in
+// it, or it has no usable `next`), a style whose id or name is
+// Heading 1-9 or Title (any case, space optional) is followed by the
+// default style (Normal); any other keeps its style.
+//
+// In an empty list item (pPr.numPr set, no text) Enter removes the
+// numbering instead of splitting, as in Word.
+// Pure: no desktop services.
+
+const HEAD = /^(heading ?[1-9]|title)$/i;
+const isHead = (x) => typeof x === 'string' && HEAD.test(x);
+
+/** See the header. */
+export function nextStyle(styles, id) {
+  const map = styles && styles.styles instanceof Map ? styles.styles
+    : null;
+  const dflt = styles && styles.defaults ? styles.defaults.paragraph
+    : undefined;
+  const sid = id === undefined ? dflt : id;
+  const st = map && typeof sid === 'string' ? map.get(sid) : undefined;
+  if (st && st.type === 'paragraph' && typeof st.next === 'string') {
+    if (st.next === st.id) return undefined;
+    const n = map.get(st.next);
+    if (n && n.type === 'paragraph')
+      return st.next === dflt ? null : st.next;
+  }
+  return isHead(sid) || isHead(st && st.name) ? null : undefined;
+}
+
+/** See the header. */
+export function splitAt(d, loc, off) {
+  const p = loc.b, {s, i} = loc;
+  if (!p.text && p.pPr.numPr !== undefined) {
+    d.apply({op: 'setProps', block: [s, i], pPr: {numPr: null}});
+    return {id: p.id, off: 0};
+  }
+  d.apply({op: 'splitBlock', block: [s, i], at: off});
+  const n = d.doc.sections[s].blocks[i + 1];
+  if (off === p.text.length) {
+    const ns = nextStyle(d.doc.styles, p.pStyle);
+    const now = p.pStyle === undefined ? null : p.pStyle;
+    if (ns !== undefined && ns !== now) {
+      d.apply({op: 'setProps', block: [s, i + 1], pStyle: ns});
+    }
+  }
+  return {id: n.id, off: 0};
+}

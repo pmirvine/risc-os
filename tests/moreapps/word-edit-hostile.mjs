@@ -94,6 +94,9 @@ try {
           time(`double ${x},${y}`, () => w.emit('doubleclick', { button: 'select', x, y, shift: false, ctrl: false, window: w, kind: 'double' }));
         }
       }
+      // moving keys only: ['a', 1] is Ctrl-A (code 1, select all), which
+      // Keys takes before any typing, so nothing here edits (checked:
+      // res.dirty); typing is the explicit check after it
       const KEYS = [['ArrowLeft', 0x18C], ['ArrowRight', 0x18D], ['ArrowDown', 0x18E], ['ArrowUp', 0x18F], ['End', 0x18B], ['Home', 30],
         ['PageDown', 0x19E], ['PageUp', 0x19F], ['a', 1], ['Escape', 27]];
       for (const start of [() => dw.view.L.docStart(), () => dw.view.L.docEnd()]) {
@@ -107,6 +110,27 @@ try {
           }
         }
       }
+      res.dirty = dw.d.dirty;
+      // typing, Enter and Backspace at both ends, laid out and drawn
+      // (flush), then all undone
+      res.typeMs = 0;
+      for (const start of [() => dw.view.L.docStart(), () => dw.view.L.docEnd()]) {
+        const p = start();
+        if (!p) continue;
+        dw.view.setSelection({ anchor: p, head: p, affinity: 'down', goalX: null });
+        for (const e of [['textinput', { text: 'x\u{1F600}', window: w }], ['key', { code: 13, key: 'Enter' }],
+          ['key', { code: 8, key: 'Backspace' }], ['key', { code: 8, key: 'Backspace' }]]) {
+          const t0 = performance.now();
+          w.emit(e[0], e[1]);
+          dw.view.flush();
+          res.typeMs = Math.max(res.typeMs, performance.now() - t0);
+          const b = window.__bad(dw);
+          if (b) res.bad.push(`after ${e[0]}: ${b}`);
+        }
+      }
+      while (dw.d.canUndo) dw.view.undo();
+      dw.view.flush();
+      res.undone = !dw.d.dirty;
       // repaints at the far ends
       w.scrollTo(1e9, 1e9);
       await window.__frames(2);
@@ -119,7 +143,8 @@ try {
     }, name);
     ok(`${name}: opens (in ${Math.round(r.openMs)} ms) and is drawn (${Math.round(r.paintMs)} ms)`, !r.fail && r.openMs < 5000 && r.paintMs < 250 && !r.msgs
       && (name === 'empty' ? r.items === 0 : r.items > 0), r);
-    ok(`${name}: clicks and keys under 50 ms (worst ${r.worst?.toFixed(1)} ms: ${r.what}), the selection valid`, r.worst < 50 && !r.bad?.length, r);
+    ok(`${name}: clicks and keys under 50 ms (worst ${r.worst?.toFixed(1)} ms: ${r.what}), the selection valid, nothing edited`, r.worst < 50 && !r.bad?.length && r.dirty === false, r);
+    ok(`${name}: typing, Enter and Backspace at both ends under 250 ms (worst ${r.typeMs?.toFixed(1)} ms), valid, all undone`, r.typeMs < 250 && !r.bad?.length && r.undone, r);
   }
 
   // ---------------------------------------------------- real clicks at the window's far corners

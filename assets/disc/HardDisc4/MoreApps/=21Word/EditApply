@@ -1,0 +1,121 @@
+// EditApply - what an editing key does, and where the caret goes
+// after an undo or a redo.
+//
+//   run(id, d, typing, sel) -> the new selection, or undefined for
+//                         an id that is not an edit (./Keymap ids:
+//                         enter shiftEnter backspace delete
+//                         ctrlBackspace ctrlDelete tab)
+//   stepEnd(doc, ops, oldL) -> {id, off} | null: the caret after an
+//                         undo or redo whose 'change' event carried
+//                         ops (./Document); oldL: the layout from
+//                         before it (a ./DocLayout), or null
+//
+// Each command runs through typing.command (./Typing), so it ends
+// the typing's undo step and is one of its own (./Edit, ./EditDel).
+//
+// The caret after an undo or redo is at the end of the last change
+// it made: the last op applied (the last of a compound, in the order
+// applied) decides, read against the document after it:
+//   spliceText, replaceText   after the text put in (at + length):
+//                             so undoing typing leaves the caret
+//                             where the typing began, undoing a
+//                             deletion after the text it puts back
+//   restoreBlock              where the restored paragraph first
+//                             differs from what it replaced (the
+//                             block of that id in oldL): undoing
+//                             Enter puts the caret where the
+//                             paragraph was split
+//   splitBlock                the start of the new (second) part
+//   insertBlock(s)            the start of the first block put in
+//   removeBlock(s)            the end of the block before the gap
+//                             (the start of the one after when the
+//                             gap is at the section's start)
+//   mergeBlock, setProps      the start of that paragraph
+// A kept block (a table) gives its edge {id, off: 0} (or 1 at an
+// end). Null when nothing fits (the caller keeps its selection).
+// Pure: no desktop services.
+import {splitPara, lineBreak, insertTab} from './Edit';
+import {deleteBack, deleteForward, deleteWordBack, deleteWordForward}
+  from './EditDel';
+import {blockId} from './DocPos';
+
+const COMMANDS = {
+  enter: splitPara,
+  shiftEnter: lineBreak,
+  backspace: deleteBack,
+  delete: deleteForward,
+  ctrlBackspace: deleteWordBack,
+  ctrlDelete: deleteWordForward,
+  tab: insertTab,
+};
+
+/** See the header. */
+export function run(id, d, typing, sel) {
+  const fn = Object.hasOwn(COMMANDS, id) ? COMMANDS[id] : null;
+  if (!fn) return undefined;
+  return typing.command(() => fn(d, sel));
+}
+
+/** The last leaf op of op (compounds opened, in order applied). */
+function last(op) {
+  while (op && op.op === 'compound' && Array.isArray(op.ops) &&
+    op.ops.length) op = op.ops[op.ops.length - 1];
+  return op || null;
+}
+
+const blockAt = (doc, at) => {
+  if (!Array.isArray(at)) return null;
+  const s = doc.sections[at[0]];
+  return (s && s.blocks[at[1]]) || null;
+};
+const start = (b) => (b ? {id: blockId(b), off: 0} : null);
+const end = (b) => (b ? {id: blockId(b),
+  off: b.type === 'p' ? b.text.length : 1} : null);
+
+/** The length of the common start of a and b. */
+function common(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+  // (not inside a surrogate pair)
+  if (i > 0 && i < a.length && (a.charCodeAt(i) & 0xFC00) === 0xDC00)
+    i--;
+  return i;
+}
+
+/** See the header. */
+export function stepEnd(doc, ops, oldL) {
+  const op = Array.isArray(ops) && ops.length
+    ? last(ops[ops.length - 1]) : null;
+  if (!op) return null;
+  switch (op.op) {
+    case 'spliceText': case 'replaceText': {
+      const b = blockAt(doc, op.block);
+      if (!b || b.type !== 'p') return start(b);
+      const n = op.op === 'spliceText'
+        ? (op.content && op.content.text || '').length
+        : (op.ins || '').length;
+      return {id: b.id, off: Math.min(op.at + n, b.text.length)};
+    }
+    case 'restoreBlock': {
+      const b = blockAt(doc, op.block);
+      const o = b && oldL && oldL.byId.get(blockId(b));
+      if (b && b.type === 'p' && o && o.block.type === 'p')
+        return {id: b.id, off: common(o.block.text, b.text)};
+      return start(b);
+    }
+    case 'splitBlock':
+      return start(blockAt(doc, [op.block[0], op.block[1] + 1]));
+    case 'insertBlock': case 'insertBlocks':
+      return start(blockAt(doc, op.at));
+    case 'removeBlock': case 'removeBlocks': {
+      const [s, i] = op.at || [];
+      return end(blockAt(doc, [s, i - 1])) ||
+        start(blockAt(doc, [s, i]));
+    }
+    case 'mergeBlock': case 'setProps':
+      return start(blockAt(doc, op.block));
+    default:
+      return null;
+  }
+}

@@ -1,0 +1,50 @@
+// OpsBlocks - removeBlocks and insertBlocks: many blocks of one
+// section in one op, in time linear in the section's size (deleting
+// a selection of 40,000 paragraphs is one op, not 40,000).
+//
+//   removeBlocks {at: [s, i], count}  -> insertBlocks
+//   insertBlocks {at: [s, i], blocks} -> removeBlocks
+//
+// insertBlocks checks every block, and that no paragraph id is used
+// twice (among the new blocks or in the document): one pass over the
+// document, not one per block.
+import {fail, checkBlock} from './ModelCheck';
+import {locate} from './OpsUtil';
+
+/** {op:'removeBlocks', at, count}: count >= 1 blocks from at. */
+export function removeBlocks(doc, op) {
+  const {s, i, blocks} = locate(doc, op.at);
+  const n = op.count;
+  if (!Number.isInteger(n) || n < 1 || i + n > blocks.length)
+    fail('bad count ' + n);
+  const gone = blocks.splice(i, n);
+  return {op: 'insertBlocks', at: [s, i], blocks: gone};
+}
+
+/** The paragraph ids of doc, in a Set. */
+function usedIds(doc) {
+  const out = new Set();
+  for (const sec of doc.sections) {
+    for (const b of sec.blocks) if (b.type === 'p') out.add(b.id);
+  }
+  return out;
+}
+
+/** {op:'insertBlocks', at, blocks}: blocks (>= 1) put before at. */
+export function insertBlocks(doc, op) {
+  const {s, i, blocks} = locate(doc, op.at, true);
+  const add = op.blocks;
+  if (!Array.isArray(add) || !add.length) fail('no blocks to insert');
+  const used = usedIds(doc);
+  for (const b of add) {
+    checkBlock(b);
+    if (b.type !== 'p') continue;
+    if (used.has(b.id))
+      fail('paragraph id ' + b.id + ' is already in use');
+    used.add(b.id);
+  }
+  const tail = blocks.splice(i);
+  for (const b of add) blocks.push(b);
+  for (const b of tail) blocks.push(b);
+  return {op: 'removeBlocks', at: [s, i], count: add.length};
+}

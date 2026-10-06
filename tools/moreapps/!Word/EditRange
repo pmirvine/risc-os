@@ -1,0 +1,144 @@
+// EditRange - the ops that delete a range of a document, for the
+// editing commands (./Edit, ./EditDel). Each applies ops to a
+// Document, which the command has already put in a group, and
+// returns where the caret goes ({id, off}).
+//
+//   deleteRange(d, o)      o from EditPos.orderedPos: delete from
+//                          o.from to o.to (not collapsed)
+//   mergeAt(d, a, b)       join paragraph b (the block after a in
+//                          document order, maybe in the next
+//                          section) into paragraph a: see below
+//   paraBy(d, loc, off)    a new empty paragraph before (off 0) or
+//                          after (off 1) the kept block at loc
+//
+// Merge rule (Backspace, Delete, and the two ends of a deleted
+// range): the first paragraph keeps its id, properties and style,
+// and the caret goes to the join; but when the first is empty and
+// the second is not, the first is removed and the second keeps its
+// own (caret at its start). Word's behaviour, to be checked in real
+// Word.
+//
+// A range across paragraphs and kept blocks: the first paragraph is
+// cut at from, the last cut before to, the blocks between removed
+// (removeBlocks: one op per section, so O(blocks), not O(n^2)), and
+// the two ends merged. A kept block is in the range when the range
+// covers it (from at its off 0, or to at its off 1).
+//
+// Section breaks are never removed (deleting across one to merge two
+// sections is not supported yet: a section op is a later
+// deliverable). A section the range leaves with no block gets one
+// empty paragraph (fresh id), in the same undo step, so every
+// section stays reachable by the caret and the document never has
+// no block at all; so does one left ending with a kept block (not
+// the last section: the writer would add a paragraph there to carry
+// the section break, and the file would read back with one more).
+// Pure: no desktop services.
+import {newPara, reserveIds} from './Model';
+import {cut} from './OpsUtil';
+import {atIndex, endOf, posOf} from './EditPos';
+
+const at = (loc) => [loc.s, loc.i];
+
+/** Cut [a, b) out of the paragraph at loc. */
+function cutOut(d, loc, a, b) {
+  if (b > a) {
+    d.apply({op: 'replaceText', block: at(loc), at: a, del: b - a,
+      ins: ''});
+  }
+}
+
+/** See the header. */
+export function paraBy(d, loc, off) {
+  reserveIds(d.doc);
+  const p = newPara('');
+  d.apply({op: 'insertBlock', at: [loc.s, loc.i + (off ? 1 : 0)],
+    block: p});
+  return {id: p.id, off: 0};
+}
+
+/**
+ * See the header. a and b are {s, i, b} as EditPos gives them, read
+ * just before the call.
+ */
+export function mergeAt(d, a, b) {
+  const p = a.b, q = b.b;
+  if (!p.text && q.text) {
+    d.apply({op: 'removeBlock', at: at(a)});
+    return {id: q.id, off: 0};
+  }
+  if (a.s === b.s) d.apply({op: 'mergeBlock', block: at(a)});
+  else {
+    d.apply({op: 'spliceText', block: at(a), at: p.text.length,
+      del: 0, content: cut(q, 0, q.text.length)});
+    d.apply({op: 'removeBlock', at: at(b)});
+  }
+  return {id: p.id, off: p.text.length};
+}
+
+/** Remove the whole blocks k = lo..hi (document order). */
+function removeWhole(d, f, t, lo, hi) {
+  const secs = d.doc.sections;
+  for (let s = t.s; s >= f.s; s--) {
+    const a = s === f.s ? f.i + (lo - f.k) : 0;
+    const b = s === t.s ? t.i - (t.k - hi) : secs[s].blocks.length - 1;
+    if (b >= a) {
+      d.apply({op: 'removeBlocks', at: [s, a], count: b - a + 1});
+    }
+  }
+}
+
+/**
+ * An empty paragraph in each section s0..s1 left with no block, and
+ * at the end of each but the document's last left ending with a kept
+ * block (the paragraph that carries the section break).
+ */
+function fillEmpty(d, s0, s1) {
+  const secs = d.doc.sections;
+  for (let s = s0; s <= s1; s++) {
+    const bs = secs[s].blocks, last = bs[bs.length - 1];
+    if (!last || (last.type !== 'p' && s < secs.length - 1)) {
+      paraBy(d, {s, i: bs.length - 1}, 1);
+    }
+  }
+}
+
+/** See the header. */
+export function deleteRange(d, o) {
+  const pos = cutRange(d, o);
+  fillEmpty(d, o.f.s, o.t.s);
+  if (pos) return pos;
+  // only kept blocks at the ends: the next block left, else the end
+  // of the one before (fillEmpty made sure there is one)
+  const doc = d.doc;
+  const lo = o.f.k + (o.from.off === 1 ? 1 : 0);
+  const next = atIndex(doc, lo);
+  if (next) return posOf(next, 0);
+  const prev = atIndex(doc, lo - 1);
+  return posOf(prev, endOf(prev.b));
+}
+
+/** deleteRange's ops; the caret, or null when no paragraph end. */
+function cutRange(d, o) {
+  const {from, to, f, t} = o;
+  const doc = d.doc;
+  if (f.k === t.k && f.b.type === 'p') {
+    cutOut(d, f, from.off, to.off);
+    return from;
+  }
+  const A = f.b.type === 'p', B = t.b.type === 'p';
+  const lo = f.k + (A || from.off === 1 ? 1 : 0);
+  const hi = t.k - (B || to.off === 0 ? 1 : 0);
+  if (B) cutOut(d, t, 0, to.off);
+  if (hi >= lo) removeWhole(d, f, t, lo, hi);
+  if (A) cutOut(d, f, from.off, f.b.text.length);
+  if (A && B) {
+    const a = {s: f.s, i: f.i, b: doc.sections[f.s].blocks[f.i]};
+    const b = f.s === t.s ? {s: f.s, i: f.i + 1}
+      : {s: t.s, i: 0};
+    b.b = doc.sections[b.s].blocks[b.i];
+    return mergeAt(d, a, b);
+  }
+  if (A) return from;
+  if (B) return {id: t.b.id, off: 0};
+  return null;
+}

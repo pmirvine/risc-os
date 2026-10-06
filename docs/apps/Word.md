@@ -7,11 +7,14 @@ library of shared plain modules), put on the disc as `ADFS::HardDisc4.$.MoreApps
 `$.Docs.Word` (`tools/docs/Word`); the app's own `!Help` is `tools/moreapps/!Word/!Help`, the library's
 `tools/moreapps/!WimpLib/!Help`. Not part of RISC OS 3.71.
 
-The first step of a word processor for Microsoft Word files. Today `!Word` is a **stub**: it opens a `.docx` read-only
-in a window (formatted paragraphs in a page-width column, grey boxes for what it does not show) and saves a faithful copy. What
-is built to last is underneath: a document model with operations and undo, a reader and a writer for `.docx` that keep
-everything they do not understand, and `WimpLib`. Later sub-projects add editing, layout and pagination, styles and
-lists, printing, tables and images, headers/footers/footnotes, RTF/PDF export and spell check.
+The early steps of a word processor for Microsoft Word files. Today `!Word` opens a `.docx` in a window (formatted
+paragraphs in a page-width column, grey boxes for what it does not show), lets you select and **type, delete and undo**
+(deliverable 2: typing through the core's opt-in text-input caret, Enter, Shift-Enter, Tab, Backspace, Delete, the word
+forms, Insert overwrite, Ctrl-Z/Ctrl-Y, IME composition, a `*` in the title while unsaved) and saves a faithful copy
+(*Save copy as .docx*; no real Save yet: the star stays). What is built to last is underneath: a document model with
+operations and undo, a reader and a writer for `.docx` that keep everything they do not understand, and `WimpLib`.
+Not there yet: formatting commands, clipboard, find, real Save and new documents (later deliverables), layout and
+pagination, styles and lists, printing, tables and images, headers/footers/footnotes, RTF/PDF export and spell check.
 
 **Fidelity:** content round-trip (text, formatting, every other part) is checked on 600+ real documents (below).
 Page layout and pagination are not implemented and, when they are, will only approximate Word. Real Microsoft Word
@@ -40,7 +43,7 @@ tests/moreapps/   everything below under Testing
 
 All files on the disc are Latin-1 text, no tabs, **at most 72 columns**, extensionless, and import each other with
 exact-name relative specifiers (`'./Ops'`), which Node 22.7+ also resolves natively (so the unit tests import the
-disc files as they are). The pure modules never import `'riscos'`; only `!RunImage`, `AppWin`, `EditView` and `EditMouse` do (`Info`'s
+disc files as they are). The pure modules never import `'riscos'`; only `!RunImage`, `AppWin`, `EditView`, `EditMouse`, `EditInput` and `EditMenu` do (`EditPaint` is handed its canvas) (`Info`'s
 `infoWindow` is handed the task, so `Info` stays pure).
 
 ## WimpLib
@@ -158,11 +161,13 @@ Model and operations
 | `Model` | factories and the data model (header comment): `newPara(text, opts)`, `newSection()`, `emptyDoc()`, `nextId()`, `reserveIds(doc)`, `clone`, `props`; re-exports `OBJ deepEqual sameFmt checkPara checkBlock normRuns` |
 | `ModelCheck` | the invariants: `checkPara`, `checkBlock`, `checkInlines`, `checkProps`, `checkPos`, `checkContent`, `normRuns`, `deepEqual`, `fail` (throws `RangeError`) |
 | `Ops` | `apply(doc, op) -> inverse`, `applyOwn`; insertBlock, removeBlock, restoreBlock, compound |
+| `OpsBlocks` | removeBlocks `{at, count}` and its inverse insertBlocks `{at, blocks}`: many blocks of one section in one op, linear time (ids checked against one Set of the document's ids) |
 | `OpsText` | replaceText, spliceText, splitBlock, mergeBlock |
 | `OpsProps` | setProps, `mergeProps(base, patch)` |
 | `OpsUtil` | `locate paraAt sectionAt idUsed cut join checkRange` |
 | `DocEvents` | tiny emitter; one failing listener does not stop the others |
-| `Document` | `new Document(doc)`: `apply(op)`, `undo()`, `redo()`, `group(fn)`, `groupStart/End`, `on('change', fn)`, `canUndo`, `canRedo`, `onListenerError` |
+| `Document` | `new Document(doc)`: `apply(op, {coalesce})`, `undo()`, `redo()`, `group(fn, {coalesce})`, `atomic(fn, opts)` (a group that, when fn throws, undoes the ops it applied, records nothing and rethrows; the editing commands run in it), `groupStart/End`, `on('change', fn)`, `canUndo`, `canRedo`, `breakCoalesce()`, `markSaved()`, `dirty`, `undoDepth`, `maxSteps` (1000), `clearHistory()`, `onListenerError` (details under Operations and undo) |
+| `DocHistory` | the undo and redo stacks behind `Document`: serial numbers per state (so `dirty` is "current serial != saved serial"), coalescing by key, `MAX_MERGE` = 128 ops per merged step, the `maxSteps` trim (O(1000) `shift`), `markSaved` (also ends the coalescing run, so the saved state stays reachable by undo). Pure bookkeeping, no access to the Doc |
 | `Styles` | `newStyleTable()`, `styleOf`, `resolvePara`, `resolveRun`, `addStyle`, `setDefault`, `ensureBuiltins` |
 | `StylesBuiltin`, `StylesMerge` | the built-in styles of a new document; property merging without aliasing |
 | `PropNames` | which property fields exist and the WML element each is read from / written as; `withoutRaw` |
@@ -190,12 +195,15 @@ The application
 |---|---|
 | `!RunImage` | start-up (single instance), icon bar icon and menu, opening files, DataOpen/Quit messages, the `task.word` test hook |
 | `Open` | `openDocx(vfs, path)` (refuses more than `MAX_PARAGRAPHS` = 200,000 paragraphs), `describe(err, leaf)` (the plain-words error text) |
-| `AppWin` | `DocWindow`: window (workButton `clickdragdouble`, hiDPI canvas, both scroll bars; first width `min(page + 48, screen - 40)`), `fit()` on a width change, `relayout()` (fonts arrived: a new `DocLayout` and `TextMetrics`, selection kept by `Selection.clamp(sel, doc, oldL)`), menu (Save copy / Info / Close), cached Save and Info boxes |
-| `EditView`, `EditMouse`, `EditPaint`, `Keys` | the caret and selection in a window. `EditView(win, L)`: `sel`, `setSelection(sel, {scroll})` (scrolls the head 24 px inside the edges), `setLayout(L, oldL)`, `placed()`, `focus()`, `key(ev)` (true if used, `undefined` to pass the key on), `caretRect()`, `text()`, `hook()`; the caret is the Wimp's (`wimp.setCaret(win, null, -1, {x, y, h})`), shown only while nothing is selected (no blink yet); Page Up/Down scroll by the window height less 32 and move the caret as far; Ctrl-Home/End scroll to the very top/bottom; Ctrl-A does not scroll; Escape collapses to the head. `EditMouse.attachMouse(view)`: click caret, Shift/Adjust click extends from the anchor, drag via `wimp.drag({type: 'point'})` with a 60 ms auto-scroll timer outside the window (the release position is applied too: Chrome may deliver the last moves with it), double-click word (`selectWord`), triple-click = a Select click within `os.input.config.doubleClickMs` of a double-click (paragraph), Menu leaves the selection alone (as !Edit). `EditPaint.paintView(L, g, rect, sel, active)`: grey desk `#888`, white page with border and shadow, text (`DocPaint`), selection multiplied in (`#b3d4fc`, inactive `#d4d4d4`). `Keys.command(code, {shift, ctrl, key})` (pure): Wimp code -> `{cmd, extend}` or null; the browser's key name separates Shift-Down from Page Down (both &19E) |
-| `DocLayout`, `DocRects`, `DocPaint` | the whole document as a page-width column: `new DocLayout(doc, metrics)`, `layout(viewWidth) -> {w, h}` (text width `(pgSz.w - pgMar.left - pgMar.right) / 15` from the FIRST section, A4/1440 defaults, clamped 80..4000 px; page `pgSz.w / 15` centred, at least 24 px from the left; 24 px above and below; lines depend only on the text width, so a new view width only moves the column; `invalidate()` re-breaks), `items` `{id, block, kind: 'p'\|'box', index, y, h, lines?, label?}` (a `'p'` item is also PositionMap's `pl`; x in item coordinates + `left`), `byId`, `itemAtY`, `locate(pos)`, `caretRect(pos, aff)`, `hitTest(x, y) -> {pos, affinity}` (above all: start; below all: end; a box: nearer edge), `selectionRects(sel, y0?, y1?)` (`DocRects`: only items/lines in the band; 6 px paragraph-mark stubs for paragraphs whose end is selected; a box lit whole when both edges are in), `boxRect`, `paraStart/End`, `docStart/End`, `next/prevItem`; `DocPaint.paint(L, g, rect)` draws the items in rect |
+| `AppWin` | `DocWindow`: window (workButton `clickdragdouble`, hiDPI canvas, both scroll bars; first width `min(page + 48, screen - 40)`), `fit()` on a width change, `relayout()` (fonts arrived: a new `DocLayout` and `TextMetrics`, selection kept by `Selection.clamp(sel, doc, oldL)`), `rebuild()` (after an edit: `new DocLayout(doc, old.metrics, old)` keeps the lines of unchanged paragraph objects, then `fit()`), `d` (the `Document`, one per window) and `typing` (its `Typing`), title `leaf *` while `d.dirty` (Save copy does not `markSaved`: it is a copy; real Save is deliverable 6, closing does not ask yet), menu (Save copy / Info / Edit / Close), cached Save and Info boxes (the Edit submenu is a plain `Menu`, made each time) |
+| `EditView`, `EditMouse`, `EditPaint`, `Keys` | the caret, selection and editing in a window. `EditView(win, L, d, typing, rebuild)`: `L` (a getter: makes the layout again first when the document changed), `sel`, `input(text)` (`Typing.type`, with `overwrite`; refused -> `wimp.beep()`), `compose(text\|null)`, `run(id)` (Keymap ids: `undo`, `redo`, `insert` toggles `overwrite`, `selectAll`, the rest via `EditApply.run`), `undo()`, `redo()`, `ensure()`, `flush()`, `destroy()`; every Document `change` marks the layout stale and asks for one `requestAnimationFrame` flush (lay out, scroll to the caret, show it), so a burst of typing is laid out once; `setSelection` is a non-edit move and calls `typing.reset()`; `setSelection(sel, {scroll})` (scrolls the head 24 px inside the edges), `setLayout(L, oldL)`, `placed()` (re-places the caret; never takes the browser focus: after a resize or when fonts arrive it must not pull the focus from a page field outside the desktop; it moves `wimp.caret.pos` only while the hidden field is not the focus owner), `focus()` (a user gesture: takes it), `key(ev)` (`EditKeys.keyFor`: true if used, `undefined` to pass the key on), `caretRect()`, `text()`, `hook()` (adds `type`, `press`, `compose`, `flush`, `lines()`, `dirty`, `undoDepth`, `overwrite`, `composing`); the caret is the Wimp's text-input caret (`wimp.setCaret(win, null, -1, {x, y, h} or null, {text: true})`), shown only while nothing is selected (no blink yet); Page Up/Down scroll by the window height less 32 and move the caret as far; Ctrl-Home/End scroll to the very top/bottom; Ctrl-A does not scroll; Escape collapses to the head. `EditMouse.attachMouse(view)`: click caret, Shift/Adjust click extends from the anchor, drag via `wimp.drag({type: 'point'})` with a 60 ms auto-scroll timer outside the window (the release position is applied too: Chrome may deliver the last moves with it), double-click word (`selectWord`), triple-click = a Select click within `os.input.config.doubleClickMs` of a double-click (paragraph), Menu leaves the selection alone (as !Edit). `EditPaint.paintView(L, g, rect, sel, active, {comp, overwrite})`: grey desk `#888`, white page with border and shadow, text (`DocPaint`), selection multiplied in (`#b3d4fc`, inactive `#d4d4d4`); overwrite: the grapheme after the caret shaded `#a0a0a0` (multiplied; 8 px at a paragraph end); composition: the text drawn at the head black on white over what follows (not laid out: a known limitation), underlined 2 px `#0050c8`. `Keys.command(code, {shift, ctrl, key})` (pure): Wimp code -> `{cmd, extend}` or null; the browser's key name separates Shift-Down from Page Down (both &19E) |
+| `DocLayout`, `DocRects`, `DocPaint` | the whole document as a page-width column: `new DocLayout(doc, metrics, prev?)` (`prev`: a laid-out layout of the same doc, metrics and text width: the lines of every paragraph object it had are reused), `layout(viewWidth) -> {w, h}` (text width `(pgSz.w - pgMar.left - pgMar.right) / 15` from the FIRST section, A4/1440 defaults, clamped 80..4000 px; page `pgSz.w / 15` centred, at least 24 px from the left; 24 px above and below; lines depend only on the text width, so a new view width only moves the column; `invalidate()` re-breaks every paragraph), `items` `{id, block, kind: 'p'\|'box', index, y, h, lines?, label?}` (a `'p'` item is also PositionMap's `pl`; x in item coordinates + `left`), `byId`, `itemAtY`, `locate(pos)`, `caretRect(pos, aff)`, `hitTest(x, y) -> {pos, affinity}` (above all: start; below all: end; a box: nearer edge), `selectionRects(sel, y0?, y1?)` (`DocRects`: only items/lines in the band; 6 px paragraph-mark stubs for paragraphs whose end is selected; a box lit whole when both edges are in), `boxRect`, `paraStart/End`, `docStart/End`, `next/prevItem`; `DocPaint.paint(L, g, rect)` draws the items in rect |
 | `Selection`, `SelMove`, `DocPos` | positions `{id, off}`: a paragraph id and UTF-16 offset, or a kept block (`DocPos.blockId`: a negative id held in a WeakMap per block object) with off 0 (before) or 1 (after). `Selection` is a frozen value `{anchor, head, affinity, goalX}`: `caret`, `select`, `collapsed`, `ordered(sel, L)`, `move(sel, L, cmd, extend, pageH)` (`SelMove`: left/right by grapheme of the whole paragraph text (`DocPos.nextG/prevG`, windowed on texts over 4096 units), every item boundary one step, boxes atomic; up/down keep `goalX` and cross into the next item; home/end per line; wordLeft/wordRight; paraStart/paraEnd; docHome/docEnd; pageUp/pageDown; non-extending left/right collapse a selection to its edge), `selectWord` (not the space after a word), `selectPara`, `selectAll`, `text(sel, L)` (paragraphs joined by `\n`, inline wrappers as their text), `clamp(sel, doc, oldL?)` |
 | `LineLayout`, `LineTokens`, `Fmt` | screen layout: `LineLayout.layoutPara(para, styles, width, metrics, cache)` (greedy line breaking; lines and items keep the UTF-16 model offsets `from`/`to` they stand for, gap-free; `shown` marks items whose drawn text is not the model text; trailing spaces hang; a word wider than the line overflows on its own line), `LineTokens.tokens` (words, `isSpace` (only U+0020 breaks and hangs), spaces, tabs, breaks and inlines with their offsets; a run boundary inside a surrogate pair moves past it), `runFmt`/`paraFmt` from the resolved properties |
 | `PositionMap`, `PosLine` | offsets <-> places in one laid-out paragraph `pl = {para, y, h, lines, metrics}`: `caretRect(pl, off, aff)`, `hitTest(pl, x, y)`, `lineOf`, `lineStart`/`lineEnd` (End leaves out spaces hanging at a soft wrap, sits before a break), `vertical(pl, off, aff, dir, goalX)` (null past the first/last line), `selectionRects(pl, from, to)`. At a soft wrap an offset has two places by affinity (`'up'` end of the upper line, `'down'` start of the lower); atomic items (tab, box, hyphen, unseen, wrapper text) give the nearer edge; a wrapper's offset `i+1` is after its last piece, a line of only later wrapper pieces has no caret place; Up/Down fall back to the other edge of a hit wrapper piece so they never dead-end. Lines carry `x` (start after indent and alignment) for empty lines. Long items are measured with `widthTo`/`offsetAt` |
+| `Edit`, `EditDel`, `EditPara`, `EditRange`, `EditPos` | the editing commands, pure, no layout: each `(d: Document, sel: Selection, ...) -> Selection` applies ONE `d.group` (one undo step) and returns a caret (affinity `'down'`, no `goalX`), or `sel` unchanged when nothing happens. `Edit`: `typeText(d, sel, text, {overwrite, key})` (`\r\n`/`\r` -> `\n`, other controls and U+FFFC dropped, lone surrogates -> U+FFFD; `\t` stays a tab character in the text (the reader's form of `<w:tab/>`), `\n` splits (bulk: `restoreBlock` + `insertBlocks`); over a selection the first selected character's format; `{coalesce: key}` unless `\n`/`\t`; a kept block's edge gets a new empty paragraph; a document with no blocks: refused), `overwrite` (replaces as many graphemes as typed, not past the paragraph end, a U+FFFC, a tab or a line break), `splitPara` (`EditPara.splitAt`: empty list item -> numPr removed; at the end the style's `next` when it names another paragraph style, else Heading 1-9/Title by id or name -> default style), `lineBreak` (a `\n` character in the text, the reader's form of a plain `<w:br/>`: typed tabs and line breaks are the same model before and after a save; older `tab`/`br` inlines still read, display and write), `insertTab`. `EditDel`: `deleteBack`, `deleteForward` (grapheme clusters; merge at paragraph edges, not across sections; next to a kept block the first press returns the block selected, the second deletes it), `deleteWordBack/Forward` (`Segment.prevWord/nextWord`), `deleteSelection`. `EditRange`: `deleteRange` (cut the ends, `removeBlocks` per section, merge the ends; 40k of 50k paragraphs in a few ms; section breaks are never removed: removing one by deleting across it is not supported yet (a section op is a later deliverable), so a section the range empties gets one empty paragraph in the same undo step and stays reachable, and so does one it leaves ending with a kept block (not the last section: the paragraph that carries the section break, which the writer would otherwise add, so the file would read back with one paragraph more)), `mergeAt` (merge rule: the first paragraph keeps id/pPr/pStyle unless it is empty and the second is not, then the empty one is removed), `paraBy`. `EditPos`: `findBlock`, `neighbour`, `atIndex`, `checkPos`, `orderedPos(doc, sel)` (document order without a layout) |
+| `Typing`, `Keymap` | pure. `new Typing(d, {now, pauseMs = 1000})`: `type(sel, text)` (`Edit.typeText` with key `'typing'`; a new undo step on the first call after `reset()`, after a pause over `pauseMs`, when the caret is not where the last typing ended, or for the first non-space after a space, so "hello " and "world" are two steps; `\n`/`\t` text and typing over a selection are never joined), `command(fn)` (`d.breakCoalesce()`, then `fn()`), `reset()`. `Keymap`: `bind(rows)` of `{id, keys: ['Ctrl+Z'], label, menu}`, `lookup({code, key, shift, ctrl, alt})` -> id or null (ids `enter shiftEnter backspace delete ctrlBackspace ctrlDelete tab insert undo redo selectAll`; the browser key name and flags decide, the Wimp code alone only without a name; Alt and unmapped keys give null so the key propagates; movement and Ctrl-A stay with `Keys`), `labelFor(id)` (Word style `Ctrl+Z`), `row(id)`; `keymap` is the default table (Ctrl+Y and Ctrl+Shift+Z both redo) |
+| `EditKeys`, `EditInput`, `EditMenu`, `EditApply` | editing in the window. `EditKeys.keyFor(view, ev)` (pure): `Keys.command` first (movement, Ctrl-A, Escape), then `Keymap.lookup` -> `view.run(id)`, then a printable key that still arrives as `key` (the proxy lost the browser focus, or `Wimp_ProcessKey`) is typed: exactly one character (not a C0/C1 control), and none of Ctrl, Alt or Meta (Cmd: a browser shortcut such as Cmd-C is never text; Ctrl and Alt are read from the Wimp event's flags, and Ctrl, Alt and Meta from the DOM event's `ctrlKey/altKey/metaKey`: the Wimp event has no Meta flag), and not an event whose DOM target is the text-input field while it has the focus (`view.fromProxy(ev)`, made by `EditInput`: such a key was not typed there, so it is not text); anything else `undefined`, so the key goes on to the desktop (F-keys, Ctrl-B, Cmd-letters). The routing order is therefore: `Keys.command` (movement, Ctrl-A, Escape), `Keymap.lookup` (editing), the printable fallback. `EditInput.attachInput(view)` (the proxy contract is in `docs/CORE_API.md` 3.1/3.2: committed text, composition, composition end; plain printable keys never arrive as `key` while the field has the focus; Backspace, Delete, Enter, Tab, arrows and Ctrl/Cmd keys do): `textinput` -> `view.input` (one event is one edit and one undo step, however long, at most 100,000 characters), `composition` -> `view.compose(text)`, `compositionend`/`losecaret` clear it; events for a closed window are ignored. `EditMenu.editMenu(view)`: Undo `Ctrl+Z`, Redo `Ctrl+Y` (shaded by `canUndo`/`canRedo`), Select all `Ctrl+A`, labels from `Keymap.labelFor`. `EditApply` (pure): `run(id, d, typing, sel)` (enter shiftEnter backspace delete ctrlBackspace ctrlDelete tab through `typing.command`; other ids `undefined`), `stepEnd(doc, ops, oldL)`: the caret after undo/redo from the last leaf op applied (spliceText/replaceText: `at` + inserted length; restoreBlock: where the restored paragraph first differs from the one of that id in `oldL`, so undoing Enter goes back to the split point; splitBlock: start of the new paragraph; insertBlock(s): start of the first; removeBlock(s): end of the block before the gap; mergeBlock/setProps: start of that paragraph) |
 | `Kinds` | `UNSEEN` (the inline elements drawn as nothing and not counted: `proofErr`, `bookmarkStart/End`, `commentRangeStart/End`, `permStart/End`, `lastRenderedPageBreak`, `instrText`, `delText`, `fldChar`), `localName(node)` |
 | `Info` | `facts(doc)`, `summary(doc)`, `kindOf(node)`, `infoWindow` |
 | `FontMap`, `FontLoad` | `substitute(name) -> {family, css}`, `fontFiles()`, `fontFile(family, bold, italic)`, `bundledFamilies()`, `fontsToLoad(families)`; `loadFonts(vfs, dir, doc, families, FontFaceCtor)` |
@@ -231,7 +239,7 @@ in `tests/moreapps/positionmap.test.mjs`, `doclayout.test.mjs`) and exact number
 `word-edit.mjs` and `word-edit-hostile.mjs` use the real canvas and the `task.word` hook. `snap.test.mjs` checks
 `PosLine.snap` against `Segment.graphemes()` at every offset of short stress texts (flags in odd and even runs, ZWJ
 chains over 32 units, modifier + ZWJ, 70 combining marks before flags, Devanagari conjuncts, Hangul, CRLF, lone
-surrogates). `hostile-view.test.mjs` runs the hostile documents in a worker under a watchdog.
+surrogates). `hostile-view.test.mjs` runs the hostile documents in a worker under a watchdog. The editing tests are in "Testing" below.
 
 **Performance (measured, Node, this machine).** A 5000-paragraph document opens in the desktop in about 140 ms;
 Ctrl-A on it takes about 2 ms; 50,000 paragraphs lay out in about 0.9 s (`doclayout.test.mjs` requires < 1.5 s) and
@@ -244,10 +252,50 @@ select-all draws visible rectangles in < 50 ms. Every call on the hostile docume
 * The Wimp drag listeners of the core stay after a window is closed mid-drag until the button is released
   (nothing is drawn; the 60 ms auto-scroll timer stops on its next tick, within 60 ms).
 * Tables are one atomic box (no caret in cells); right-to-left text is positioned in stored order, with no bidi
-  caret logic; no clipboard, no typing, no blink for the caret.
+  caret logic (typing and deleting follow the stored order too); no clipboard, no formatting commands, no find, no
+  blink for the caret.
 * The layout uses the FIRST section's page width for the whole document.
-* Shared code (`src/core`) was not changed: `docs/CORE_API.md` needs nothing; the drag listeners above are noted in
-  `docs/CHANGES_NEEDED.md`.
+* Shared code (`src/core`) changed for typing: the opt-in text-input proxy (`src/core/textinput.js`, `wimp.js`,
+  `menu.js`), in `docs/CORE_API.md` 3.1/3.2 and `docs/CHANGES_NEEDED.md`; the drag listeners above are noted there too.
+
+**Editing: limits and known minors** (deliverable 2).
+
+* A document with no block at all cannot be typed into (`Edit` returns `sel`; `EditView.input` beeps). Every other
+  document has at least one paragraph or kept block, and the section-break rule below keeps it so.
+* Section breaks are never removed (a section op is a later deliverable): a deletion across one leaves every section,
+  an emptied one holds one empty paragraph, a section left ending with a kept block (not the last) gets an empty
+  paragraph after it; Backspace at a section's first paragraph and Delete at its last do nothing.
+* Composition text is drawn at the caret over what follows and is NOT laid out: the line reflows when the text is
+  committed (a known cosmetic limitation; the composing text is in the view, never in the document).
+* Printable keys: with the proxy focused they arrive as `textinput` only. If the field lacks the browser focus
+  (the user clicked a page field outside the desktop and back without a click in the window), an AltGr/Option
+  character typed meanwhile arrives as a `key` with Ctrl+Alt set and the printable fallback drops it (Ctrl and Alt
+  are excluded so Ctrl-letters and Alt-menus stay shortcuts); click in the window to focus. Cmd (Meta) shortcuts are
+  not mapped: Ctrl is the modifier, Cmd-letters are left to the browser and type nothing.
+* `DocLayout(doc, metrics, prev)` keeps the lines of every block OBJECT of `prev` (the key is the paragraph object,
+  the metrics and the text width). Today only the text and the paragraph's own properties can change a paragraph's
+  lines, and an edit makes a new paragraph object; when styles or numbering become editable the key must grow (a
+  style change must invalidate), as the header of `DocLayout` says.
+* Undo steps: typing joins the previous step (same position, within 1 s, not a non-space after a space, no `\n`/`\t`,
+  not over a selection, same overwrite mode), at most `MAX_MERGE` = 128 ops per step; the history holds 1000 steps
+  (`maxSteps`); closing a window asks nothing, whatever the `dirty` state.
+* Text typed right after a hyperlink (or any paragraph-level wrapper) is plain text after it, never inside it; typing
+  over a selection takes the first selected character's run format (`rPr`/`rStyle`), as Word does.
+* Typed tab and line break are the characters `\t` and `\n` in the paragraph text (the reader's form of `<w:tab/>` and
+  a plain `<w:br/>`), so they are the same before and after a save; older `tab`/`br` inlines still work.
+* The caret after an undo or redo is the end of the last op applied (`EditApply.stepEnd`, above); when no rule fits the
+  selection stays and is clamped.
+* Enter is `Edit.splitPara` (`EditPara.splitAt` over `splitBlock`; a bulk `\n` in typed text is `restoreBlock` +
+  `insertBlocks`, linear in the number of lines).
+
+**Performance of editing** (measured on this machine, Node 26 and the Chromium of the browser suites, 2026-10-06):
+a keystroke in a 5000-paragraph document with its layout and drawing 2/1/1/1/1 ms (`word-typing.mjs`
+requires < 100 ms; the layout keeps the lines of unchanged paragraphs, one `requestAnimationFrame` flush per burst);
+100,000 characters in one `textinput` event 17 ms (40 ms through the real text field), one undo step; a storm of 5000
+typed events 332 ms (35 ms for 5000 mixed events, laid out once); 3000 Backspaces 17 ms; 20,000 Enters 1.7 s (worst
+one 2 ms); 1000 undos 149 ms and 1000 redos 148 ms; 50,000 paragraphs open in about 0.9 s, select all and type in them
+2 ms and its undo 0.3 s; each keystroke in a 100,000-character word 9 ms; deleting 40,000 of 50,000 paragraphs
+(`removeBlocks`, `editdel.test.mjs`) and undoing it takes about 0.25 s in all (the tests allow 3 s each).
 
 ## The data model
 
@@ -383,6 +431,16 @@ group. `undo`/`redo` inside a group throw. `on('change', fn)` receives `{kind: '
 listener that throws neither undoes the change nor stops the others: the error goes to `onListenerError(err)`
 (by default rethrown from a microtask).
 
+Typing support (`DocHistory` holds the stacks): `apply(op, {coalesce: key})` and `group(fn, {coalesce: key})` merge into
+the previous undo step when it has the same non-null key and nothing broke the run (`breakCoalesce()`, a successful
+`undo`/`redo`, an unkeyed or differently keyed edit); the merged inverse is `compound` of the new inverse(s) then the
+old one (undo order, newest first). A merged step holds at most 128 ops (`MAX_MERGE`; a longer run starts a new step), so one undo stays fast and `maxSteps` still bounds memory. A nested group's key is ignored; `apply(op, {coalesce})` inside a group ignores its option. `markSaved()` / `dirty`: every state has a serial
+number, `dirty` means the current serial differs from the saved one, so it is right through undo, redo, coalescing (a
+merged step gets a new serial, and `markSaved()` ends the coalescing run so the saved state stays reachable by undo) and trimming
+(`maxSteps`, default 1000: oldest steps dropped; a dropped saved state stays dirty until `markSaved`).
+`clearHistory()` empties both stacks and keeps `dirty`; `undoDepth` is the number of undo steps. `'change'` payloads
+also carry `dirty`.
+
 ### Never change a model object in place
 
 The live Doc shares blocks, runs, `rPr`/`pPr` objects, inlines and XML nodes with its undo history (copy on write: an
@@ -447,15 +505,15 @@ shows a document once its fonts are loaded, waiting at most 2.5 s, and lays it o
   every paragraph once for the page's text width (words measured once, cached) and `DocPaint` paints only what is
   in view, on a white page on a grey desk, with the selection (`EditView`/`EditPaint`); the window has both scroll bars and its extent holds the page (and is at least the screen's width). Menu: *Save copy as .docx*
   (`saveAs` with `writeDocx`; the Save and Info boxes are created once per window and deleted with it — a menu asks
-  for a submenu on every hover), *Info*, *Close*. Mouse and keys: `EditMouse`, `EditView`, `Keys` (arrows, Ctrl-arrows, Home, End/Copy, Ctrl-Home/End, Page Up/Down, Shift to extend, Ctrl-A, Escape); other keys are passed on.
-* Test hooks: `task.word.docs` (`{path, doc, text, summary, win, saveBytes(), view}`; `view` is `EditView.hook()`: `{selection, layout, text(), caretRect(), setSelection(a, b?, aff?)}`) and `task.word.open(path)` (resolves to the `DocWindow`).
+  for a submenu on every hover), *Info*, *Edit* (Undo, Redo, Select all: `EditMenu`), *Close*. Mouse and keys: `EditMouse`, `EditView`, `Keys` (arrows, Ctrl-arrows, Home, End/Copy, Ctrl-Home/End, Page Up/Down, Shift to extend, Ctrl-A, Escape), `Keymap` (editing keys); other keys are passed on.
+* Test hooks: `task.word.docs` (`{path, doc, text, summary, win, saveBytes(), view}`; `view` is `EditView.hook()`: `{selection, layout, text(), caretRect(), setSelection(a, b?, aff?), type, press, compose, flush, lines(), dirty, undoDepth, overwrite, composing}`) and `task.word.open(path)` (resolves to the `DocWindow`).
 * `LineTokens` draws inlines so (each stands for one offset; a wrapper's text still wraps word by word, its first piece covering `[i, i+1)` and later pieces the empty `[i+1, i+1)`, all `shown`; a tab or newline in that text is drawn as it is): a `w:hyperlink` with text in blue, underlined (the only link style); any other
   paragraph-level wrapper with text (`w:ins`, `w:fldSimple`, `w:sdt`, `w:smartTag`, `w:customXml`, a `w:r` kept
   whole) as plain text in the format at that position; nothing for `Kinds.UNSEEN`, `w:del`, `w:moveFrom` and
   `w:softHyphen`; `-` for `w:noBreakHyphen`; a grey `[...]` box for the rest (drawings, pictures, objects, footnote,
   endnote and comment references, `w:sym`...). `Info` counts the same way: the `UNSEEN` kinds are not preserved
   items, so a field made of `fldChar`s is not counted (its result is shown as text).
-* Not shown yet: bullets/numbering, superscript, highlight, justification, table contents, tabs never wrap, a word
+* Not shown yet (and not in the way of typing): bullets/numbering, superscript, highlight, justification, table contents, tabs never wrap, a word
   longer than the line runs over.
 
 ## Build and disc pipeline
@@ -503,6 +561,13 @@ node tools/disc-moreapps.mjs --check          # sources: Latin-1, 72 columns
 node tools/disc-wimplib.mjs --check           # the library's sources: the same, <= 250 lines, no 'riscos'
 node tools/moreapps-corpus.mjs                # fetch the optional sample corpus (needs the GitHub CLI, `gh auth status`)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/corpus.test.mjs   # ~25 s, up to ~1.9 GB RSS
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # 50 random edits per fixture and corpus file, write, read back, lint, xmllint, undo all (~25 s: one corpus file in ten)
+WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # the same on every corpus file (~2 min)
+node tests/moreapps/word-typing.mjs           # browser: typing, deleting, undo, IME, the Edit menu, Save copy (in index.mjs)
+node tests/moreapps/word-typing-hostile.mjs   # browser: storms, 50,000 paragraphs, 500 random actions (in index.mjs)
+node tests/core/test-textinput.mjs            # core, browser: the text-input proxy (in tests/core/index.mjs)
+node --test tests/core/test-textinput-pure.mjs   # core: sanitizeText
+node tests/moreapps/handoff-typing.mjs       # writes the typed-*.docx real-Word hand-off files (local, corpus/handoff)
 node tools/moreapps-fonts.mjs                 # re-fetch the fonts (pinned, checked)
 node tests/moreapps/validate.mjs              # xmllint schema validation of what the writer writes
 node tests/moreapps/lint-package.mjs FILE.docx|DIR...   # package linter (exit 1 if any file has an error)
@@ -517,6 +582,13 @@ VALIDATE_DIR=tests/moreapps/corpus VALIDATE_MAX=150 node tests/moreapps/validate
   `docx-compare` (the `assertSameDoc` helper), `docx-package` (content-type repair; valid fixtures' types
   unchanged; the linter on `newDoc` output and on its own cases), `fontmap`, `fontload`, `fontfiles`, `word-view` (Info, Fmt, LineLayout), `linelayout` (offsets, and the same lines as the stub's layout, `old-render.mjs`, on 200 generated paragraphs), `positionmap` (caret, hit test, Home/End, Up/Down, selection rectangles; `hitTest(caretRect(off))` round trip on 500 generated paragraphs), `doclayout` (the page-width column, items, caret/hit/selection rectangles, 50,000 paragraphs laid out < 1.5 s and select-all drawn < 50 ms), `selection` (every movement command, boxes, words, select word/paragraph/all, text, clamp; random moves never land inside a grapheme), `snap` (`PosLine.snap` against the true boundaries at every offset of short stress texts), `hostile-view` (with `hostile-docs.mjs`: a 100,000-character word, 50,000 runs, 5000 tabs, absurd indents and page sizes, only inlines, tables first and last, an empty document; every call < 50 ms and the selection valid, run in a worker under a 10 s watchdog; 500 random key/mouse sequences; windowed grapheme steps in paragraphs over 4096 units equal the whole text's, flag runs included),
   `disc` (the build script against a temporary disc), `harness` (pins Node's native handling of the disc layout).
+  Editing (deliverable 2): `document-edit` (history: coalescing, `markSaved`/`dirty`, the 1000-step cap, `MAX_MERGE`,
+  atomic rollback), `ops-blocks` (`removeBlocks`/`insertBlocks`), `edit` (typing, Enter, Shift-Enter, Tab, overwrite),
+  `editdel` (Backspace, Delete, word forms, ranges, section breaks, 50,000 paragraphs), `edit-prop` (seeded random
+  editing with undo and redo back to the start), `layout-prop` (120 seeded editing/undo sequences: the layout made from the previous one equals a full layout, lines and all), `edit-roundtrip` (random edits on fixtures and corpus files, write,
+  read back, lint, `xmllint`, undo all; one corpus file in ten, or all with `WORD_EDIT_CORPUS=1`, ~2 min), `typing`
+  (the coalescing rules with a fake clock), `keymap`, `editapply` (the commands and `stepEnd`, the caret after undo).
+  The unit suite is about 1000 tests and runs in about 30 s.
 * Browser tests (`index.mjs`, Playwright with the Chromium used by the other suites; `tests/lib/suite.mjs`): `disc
   --check`, `jsrun-wimplib.mjs` (the `wimplib/` import), `boot.mjs` (cold boot: `File$Type_A7E` set and a `.docx` runs
   !Word), `word.mjs` (open, text, formatting, save copy equals the original, 5000 paragraphs opens in ~150 ms,
@@ -525,7 +597,11 @@ VALIDATE_DIR=tests/moreapps/corpus VALIDATE_MAX=150 node tests/moreapps/validate
   clicks, the keys, hiDPI; 30 documents and a document closed mid-drag leave no windows, timers or pointer
   listeners), `word-edit-hostile.mjs` (the hostile documents in the desktop: clicks at extreme places and keys
   < 50 ms; a drag held at the end of the scrolling draws nothing; a drag while the window closes; 500 random
-  keys and mouse actions).
+  keys and mouse actions), `word-typing.mjs` (typing through `insertText`, key presses and an input method via CDP;
+  the keys table; undo and redo with the star and the caret; Insert; a link and a table; the Edit menu; Save copy
+  writes the typed text; Cmd and Ctrl-C/V/X change nothing; hiDPI; 30 open-type-close cycles leak nothing; a window resize leaves the focus in a page field outside the desktop, a click focuses the field again),
+  `word-typing-hostile.mjs` (100,000 characters in one event, event storms, 20,000 Enters, 3000 Backspaces, 1000 undos
+  and redos, 50,000 paragraphs, a 100,000-character word, a window closed mid-composition, 500 random actions).
   Screenshots: `KEEP_SHOTS=1` writes them to `tests/screens/`.
 * **The corpus** (`tests/moreapps/corpus/`, git-ignored, never committed): `tools/moreapps-corpus.mjs` fetches sample
   `.docx` files pinned to commits (python-docx MIT, Apache POI Apache-2.0, Open XML SDK MIT, a few LibreOffice test
@@ -581,6 +657,28 @@ The writer repairs the generic content types of known parts (`tools/moreapps/!Wo
 package linter (`tests/moreapps/lint-package.mjs`) reports a known part typed generically (`ct-generic`) or wrongly
 (`ct-wrong`), core properties and footnotes, endnotes and comments included, at level `error`, its most severe
 class (the other level, `word`, is for things whose absence is not known to matter).
+
+### To check in real Word (editing, deliverable 2)
+
+Behaviour chosen without real Word to compare, for the hand-off list (the user guide's section 3 says they are
+guessed):
+
+1. the merge rule at a paragraph boundary (the first paragraph's properties win unless it is empty and the second is
+   not);
+2. the extent of Ctrl-Backspace / Ctrl-Delete (a run of punctuation counts as a word; what they do across a line
+   break is not decided);
+3. Enter applying a style's `next` for any style (not only headings; otherwise Heading 1-9 and Title give Normal);
+4. deleting a selection across a section break (Word removes the break and merges the sections; !Word keeps every
+   section, emptied ones with an empty paragraph, and one left ending with a table gets an empty paragraph after it);
+5. undo granularity (a word with its trailing spaces; a pause over 1 s, a caret move, Enter, Tab and every deletion
+   start a new step; each Backspace is a step);
+6. text typed right after a hyperlink is plain text after it (does Word join it to the link?);
+7. Enter in an empty list item ends the list; Shift-Enter in a list item stays in it.
+
+The hand-off files for these questions are made by `node tests/moreapps/handoff-typing.mjs` (local, in
+`tests/moreapps/corpus/handoff/`: `typed-1-basic.docx`, `typed-2-rich.docx`, `typed-3-undo.docx`, `typed-4-sections.docx` and `typed-README.txt`; the
+corpus is git-ignored, so none of it is committed). They must be opened in real Word by the owner before the branch is
+merged: nothing in this deliverable has been seen in real Word.
 
 ## Known limitations and deferred items
 

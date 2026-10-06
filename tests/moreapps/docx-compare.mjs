@@ -10,6 +10,9 @@ import {join, basename} from 'node:path';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {sortChildren} from '../../tools/moreapps/!Word/Order';
+import {NS} from '../../tools/moreapps/!Word/Wml';
+import {repairs} from '../../tools/moreapps/!Word/PartTypes';
+import {findPart} from '../../tools/moreapps/!Word/Rels';
 
 /**
  * Put the `extra` nodes of a property object in the order the
@@ -253,4 +256,40 @@ export function realDocxFiles(env = process.env, opts = {}) {
     return list;
   });
   return found;
+}
+
+/**
+ * The documented normalisations of the writer, applied to a model
+ * `doc` read from a file: what reading back what it wrote must give
+ * (the w namespace declared on the root; known parts typed
+ * application/xml get their own type; a part nothing types gets
+ * application/octet-stream).
+ */
+export function expectedBack(doc) {
+  const d = structuredClone(doc);
+  const at = d.meta.documentRoot.attrs;
+  if (!at.some(([n]) => n === 'xmlns:w')) at.push(['xmlns:w', NS.w]);
+  // a known part typed application/xml gets its own type (PartTypes)
+  const {defaults, overrides} = d.meta.contentTypes;
+  const m = d.meta;
+  const names = new Map([...d.parts.keys(), m.mainPart, m.stylesPart,
+    m.numberingPart, m.settingsPart].filter(Boolean).map((n) => [n, 1]));
+  const fix = repairs(m.contentTypes, [['', m.packageRels],
+    [m.mainPart, d.rels]], (n) => findPart(names, n));
+  for (const [n, t] of fix) {
+    const o = overrides.find(([q]) => q.toLowerCase() === '/' +
+      n.toLowerCase());
+    if (o) o[1] = t; else overrides.push(['/' + n, t]);
+  }
+  // the writer types a part nothing covers (no extension, no Override)
+  for (const n of d.parts.keys()) {
+    const e = n.includes('.') ? n.slice(n.lastIndexOf('.') + 1)
+      .toLowerCase() : null;
+    if (!overrides.some(([p]) => p.toLowerCase() === '/' +
+      n.toLowerCase()) && !(e && defaults.some(([x]) =>
+      x.toLowerCase() === e))) {
+      overrides.push(['/' + n, 'application/octet-stream']);
+    }
+  }
+  return d;
 }

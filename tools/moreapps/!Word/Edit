@@ -1,0 +1,181 @@
+// Edit - the typing commands of !Word: text, Enter, line break, tab,
+// overwrite.
+//
+//   typeText(d, sel, text, {overwrite, key}) type text
+//   overwrite(d, sel, text, {key})           typeText in overwrite
+//   splitPara(d, sel)                        Enter (./EditPara)
+//   lineBreak(d, sel)                        Shift-Enter
+//   insertTab(d, sel)                        Tab
+//
+// d is a ./Document, sel a ./Selection; each returns the selection
+// after it, a caret (affinity 'down', no goalX) after what was put
+// in, and makes one undo step (one d.atomic group: a command that
+// fails changes nothing): a selection is deleted first (./EditRange)
+// in the same step; section breaks are kept (see there). Nothing to
+// do (no text left, a position not in the document, a document with
+// no blocks at all): sel is returned and nothing changes.
+//
+// Text: \r\n and \r become \n; control characters other than \n and
+// \t, and U+FFFC, are dropped; a lone surrogate becomes U+FFFD. \t is
+// a tab character, as the reader gives <w:tab/>; \n splits the
+// paragraph
+// (new paragraphs: fresh ids, the same pPr and pStyle; text typed as
+// exactly '\n' is Enter, with all its rules). The typed text gets
+// the formatting of the character before it, or over a selection of
+// the first selected one (./OpsText). Text after an inline wrapper
+// (a hyperlink...) is ordinary text after it, never inside it.
+// {key} is passed to d.group as {coalesce: key} (one undo step for
+// consecutive typing, ./Document) unless the text has \n or \t or
+// replaces a selection (a replacement is a step of its own).
+//
+// Overwrite (Insert): with a caret, the text replaces as many
+// grapheme clusters after it as it has, in this paragraph, stopping
+// at its end, at an inline (U+FFFC), a tab or a line break: beyond
+// them it is inserted.
+//
+// A caret on a kept block's edge (a table): typing and Enter first
+// put an empty paragraph there (before it at off 0, after it at 1).
+// Line break: a \n character in the paragraph's text, as the reader
+// gives a plain <w:br/> (the writer writes it back as one). Typed
+// tabs and line breaks are thus the same model before and after a
+// save (older documents' tab and br inlines still work).
+// Pure: no desktop services.
+import {graphemes} from 'wimplib/Segment';
+import {nextId, reserveIds} from './Model';
+import {cut, join} from './OpsUtil';
+import {caret, collapsed} from './Selection';
+import {nextG} from './DocPos';
+import {orderedPos, findBlock} from './EditPos';
+import {deleteRange, paraBy} from './EditRange';
+import {splitAt} from './EditPara';
+
+const CTRL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\ufffc]/g;
+const STOP = /[\t\n\ufffc]/;
+
+/** The text as typed: see the header. */
+function clean(text) {
+  const t = String(text === undefined || text === null ? '' : text)
+    .replace(/\r\n?/g, '\n').replace(CTRL, '');
+  return t.toWellFormed ? t.toWellFormed() : t;
+}
+
+/**
+ * In one group (opts: d.group's), from sel's place: the selection
+ * deleted, a paragraph made by a kept block; then fn(loc, off) with
+ * the paragraph (EditPos) and offset, and the format of the first
+ * selected character (null for a caret, or when it is a paragraph
+ * mark), returning the caret position. With `enter`, at a kept
+ * block's off 0 the caret stays there.
+ */
+function edit(d, sel, fn, opts, enter = false) {
+  const o = orderedPos(d.doc, sel);
+  if (!o) return sel;
+  const fmt = collapsed(sel) ? null : firstFmt(o);
+  let out = null;
+  d.atomic(() => {
+    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    let loc = findBlock(d.doc, pos.id);
+    if (loc.b.type !== 'p') {
+      const p = paraBy(d, loc, pos.off);
+      if (enter) { out = pos.off === 0 ? pos : p; return; }
+      pos = p;
+      loc = findBlock(d.doc, pos.id);
+    }
+    out = fn(loc, pos.off, fmt);
+  }, opts);
+  return out ? caret(out) : sel;
+}
+
+/** Split the paragraph at loc at the \n of ins (put in at off). */
+function splitLines(d, loc, off, ins) {
+  const {s, i} = loc;
+  const q = d.doc.sections[s].blocks[i];
+  const cuts = [];
+  for (let j = ins.indexOf('\n'); j >= 0; j = ins.indexOf('\n', j + 1))
+    cuts.push(off + j);
+  const pieces = [];
+  let a = 0;
+  for (const c of cuts) {
+    pieces.push(cut(q, a, c));
+    a = c + 1;
+  }
+  pieces.push(cut(q, a, q.text.length));
+  reserveIds(d.doc);
+  const rest = pieces.slice(1).map((pc) => {
+    const b = {type: 'p', id: nextId(), ...join(pc), pPr: q.pPr};
+    if (q.pStyle !== undefined) b.pStyle = q.pStyle;
+    b.extraP = [];
+    return b;
+  });
+  d.apply({op: 'restoreBlock', block: [s, i],
+    snapshot: {...q, ...join(pieces[0])}});
+  d.apply({op: 'insertBlocks', at: [s, i + 1], blocks: rest});
+  const last = cuts[cuts.length - 1];
+  return {id: rest[rest.length - 1].id,
+    off: off + ins.length - last - 1};
+}
+
+/** Code units to replace in overwrite: n graphemes from off. */
+function overSpan(text, off, n) {
+  let e = off;
+  while (n-- > 0 && e < text.length && !STOP.test(text[e]))
+    e = nextG(text, e);
+  return e - off;
+}
+
+/** {rPr, rStyle} of the first selected character, or null. */
+function firstFmt(o) {
+  const p = o.f.b, at = o.from.off;
+  if (p.type !== 'p' || at >= p.text.length) return null;
+  const r = p.runs.find((x) => x.start <= at && at < x.end);
+  return {rPr: r.rPr, rStyle: r.rStyle === undefined ? null
+    : r.rStyle};
+}
+
+/**
+ * Put ins in at loc/off, replacing del units, formatted as fmt (or
+ * null: ./OpsText's rule); its \n split the paragraph (with
+ * `lines`: they stay, line breaks); see the header.
+ */
+function put(d, loc, off, ins, fmt, del = 0, lines = false) {
+  d.apply({op: 'replaceText', block: [loc.s, loc.i], at: off, del,
+    ins, ...fmt});
+  if (lines || !ins.includes('\n')) {
+    return {id: loc.b.id, off: off + ins.length};
+  }
+  return splitLines(d, loc, off, ins);
+}
+
+/** See the header. */
+export function typeText(d, sel, text, opts) {
+  opts = opts || {};
+  const t = clean(text);
+  if (!t) return sel;
+  if (t === '\n') return splitPara(d, sel);
+  const over = !!opts.overwrite && collapsed(sel) && !t.includes('\n');
+  const n = over ? graphemes(t).length - 1 : 0;
+  const keyed = opts.key !== undefined && opts.key !== null &&
+    collapsed(sel) && !/[\n\t]/.test(t);
+  return edit(d, sel, (loc, off, fmt) => put(d, loc, off, t,
+    fmt, over ? overSpan(loc.b.text, off, n) : 0),
+  keyed ? {coalesce: opts.key} : undefined);
+}
+
+/** See the header. */
+export const overwrite = (d, sel, text, opts = {}) =>
+  typeText(d, sel, text, {...opts, overwrite: true});
+
+/** See the header. */
+export function splitPara(d, sel) {
+  return edit(d, sel, (loc, off) => splitAt(d, loc, off), undefined,
+    true);
+}
+
+/** See the header. */
+export function lineBreak(d, sel) {
+  return edit(d, sel, (loc, off, fmt) => put(d, loc, off, '\n', fmt,
+    0, true));
+}
+
+/** See the header. */
+export const insertTab = (d, sel) => typeText(d, sel, '\t');

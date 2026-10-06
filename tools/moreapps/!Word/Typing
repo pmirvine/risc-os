@@ -1,0 +1,74 @@
+// Typing - when typed text joins the undo step before it. One
+// Typing per Document (and window).
+//
+//   new Typing(d, {now = Date.now, pauseMs = 1000})
+//   t.type(sel, text, {overwrite}) -> sel
+//                              ./Edit.typeText, key 'typing'
+//   t.command(fn) -> fn()      any other command, after a break
+//   t.reset()                  the next typing is a new step
+//
+// Typing joins the previous step (one undo step for a word) unless:
+// it is the first since reset(); more than pauseMs passed since the
+// previous call; the caret is not where the previous typing ended
+// (moved, or a selection: compared by position); the text starts
+// with something other than white space after white space typed
+// before (a word plus the spaces after it is one step, the next
+// word a new one, as in Word). Text with \n or \t, and text typed
+// over a selection, is never joined (./Edit does not key it) and
+// the next typing starts afresh; '\n' alone is Enter. A command run
+// through t.command() breaks first and the next typing is new.
+// d is a ./Document, sel a ./Selection. Pure: no desktop services.
+import {typeText} from './Edit';
+import {collapsed} from './Selection';
+
+const KEY = 'typing';
+
+export class Typing {
+  constructor(d, {now = Date.now, pauseMs = 1000} = {}) {
+    this.d = d;
+    this._now = now;
+    this._pause = pauseMs;
+    this.reset();
+  }
+
+  /** The next typing starts a new undo step. */
+  reset() {
+    this._end = null; // {id, off} where the last typing ended
+    this._at = 0; // the time of the last call
+    this._space = false; // the last typed character was white space
+    this._over = false; // the last typing overwrote
+  }
+
+  /** Whether typing text at sel at time now continues the step. */
+  _joins(sel, text, now, over) {
+    const e = this._end;
+    if (!e || over !== this._over || !collapsed(sel)) return false;
+    if (now - this._at > this._pause) return false;
+    if (sel.head.id !== e.id || sel.head.off !== e.off) return false;
+    return !(this._space && !/^\s/.test(text));
+  }
+
+  /** See the header. */
+  type(sel, text, {overwrite = false} = {}) {
+    const s = String(text === undefined || text === null ? '' : text);
+    if (!s) return sel;
+    const now = this._now();
+    if (!this._joins(sel, s, now, !!overwrite)) this.d.breakCoalesce();
+    const plain = collapsed(sel) && !/[\r\n\t]/.test(s);
+    const out = typeText(this.d, sel, s, {overwrite: !!overwrite,
+      key: plain ? KEY : undefined});
+    if (out === sel) return sel;
+    this._at = now;
+    this._end = plain ? out.head : null;
+    this._space = /\s$/.test(s);
+    this._over = !!overwrite;
+    return out;
+  }
+
+  /** See the header. */
+  command(fn) {
+    this.d.breakCoalesce();
+    this.reset();
+    return fn();
+  }
+}

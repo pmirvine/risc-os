@@ -15,12 +15,9 @@ import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
 import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
 import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
 import {sortChildren} from '../../tools/moreapps/!Word/Order';
-import {NS} from '../../tools/moreapps/!Word/Wml';
-import {repairs} from '../../tools/moreapps/!Word/PartTypes';
-import {findPart} from '../../tools/moreapps/!Word/Rels';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
-import {assertSameDoc, entries, xmlEntries, sameBytes}
+import {assertSameDoc, entries, xmlEntries, sameBytes, expectedBack}
   from './docx-compare.mjs';
 
 const DIR = fileURLToPath(new URL('./corpus/', import.meta.url));
@@ -36,36 +33,6 @@ function find(dir, out = []) {
     else if (/\.docx$/i.test(e.name)) out.push(p);
   }
   return out.sort();
-}
-
-/** The documented normalisation of a model read back (see roundtrip). */
-function expected(doc) {
-  const d = structuredClone(doc);
-  const at = d.meta.documentRoot.attrs;
-  if (!at.some(([n]) => n === 'xmlns:w')) at.push(['xmlns:w', NS.w]);
-  // a known part typed application/xml gets its own type (PartTypes)
-  const {defaults, overrides} = d.meta.contentTypes;
-  const m = d.meta;
-  const names = new Map([...d.parts.keys(), m.mainPart, m.stylesPart,
-    m.numberingPart, m.settingsPart].filter(Boolean).map((n) => [n, 1]));
-  const fix = repairs(m.contentTypes, [['', m.packageRels],
-    [m.mainPart, d.rels]], (n) => findPart(names, n));
-  for (const [n, t] of fix) {
-    const o = overrides.find(([q]) => q.toLowerCase() === '/' +
-      n.toLowerCase());
-    if (o) o[1] = t; else overrides.push(['/' + n, t]);
-  }
-  // the writer types a part nothing covers (no extension, no Override)
-  for (const n of d.parts.keys()) {
-    const e = n.includes('.') ? n.slice(n.lastIndexOf('.') + 1)
-      .toLowerCase() : null;
-    if (!overrides.some(([p]) => p.toLowerCase() === '/' +
-      n.toLowerCase()) && !(e && defaults.some(([x]) =>
-      x.toLowerCase() === e))) {
-      overrides.push(['/' + n, 'application/octet-stream']);
-    }
-  }
-  return d;
 }
 
 const isEl = (c) => typeof c === 'object' && c.name !== undefined;
@@ -116,7 +83,7 @@ async function check(bytes, what) {
   }
   const out1 = await write(a);
   const b = await readDocx(out1);
-  assertSameDoc(b, expected(a), what);
+  assertSameDoc(b, expectedBack(a), what);
   const out2 = await write(b);
   assert.ok(sameBytes(await write(await readDocx(out2)), out2),
     what + ': second generation is stable');

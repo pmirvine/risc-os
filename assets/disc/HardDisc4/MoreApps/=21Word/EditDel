@@ -1,0 +1,114 @@
+// EditDel - the deleting commands of !Word: Backspace, Delete, and
+// their word forms; deleting the selection.
+//
+//   deleteBack(d, sel)        Backspace
+//   deleteForward(d, sel)     Delete
+//   deleteWordBack(d, sel)    Ctrl-Backspace: to the start of the
+//                             word on the left (WimpLib/Segment)
+//   deleteWordForward(d, sel) Ctrl-Delete: to the start of the next
+//                             word
+//   deleteSelection(d, sel)   the selected range (./EditRange)
+//
+// d is a ./Document, sel a ./Selection; each returns the selection
+// after it: a caret (affinity 'down', no goalX), the same sel when
+// nothing changes (an invalid or collapsed sel, the document's start
+// or end), and one undo step (d.atomic: a command that fails changes
+// nothing) when something does. With a selection, every command
+// deletes it. deleteWordBack and deleteWordForward at a paragraph's
+// start or end act as Backspace and Delete.
+//
+// Backspace and Delete remove one grapheme cluster (a surrogate
+// pair, a letter with its accents, an emoji ZWJ sequence: as Word
+// does for emoji and browsers' text fields do). At a paragraph's
+// start (end) they merge it with the one before (after) by the
+// ./EditRange merge rule, but never across a section break (a no-op
+// there: deleting section breaks is not supported yet). Next to a
+// kept block (a table) the first press selects the block and returns
+// that selection without changing the document; the second, with it
+// selected, deletes it. With the caret on a kept block's edge facing
+// a paragraph: an empty paragraph there is removed, otherwise the
+// caret just moves into it.
+// Pure: no desktop services.
+import {prevWord, nextWord} from 'wimplib/Segment';
+import {caret, select, collapsed} from './Selection';
+import {prevG, nextG} from './DocPos';
+import {checkPos, orderedPos, neighbour, posOf} from './EditPos';
+import {deleteRange, mergeAt} from './EditRange';
+
+/** Run fn in one group; its position (or null: none) as a caret. */
+function run(d, sel, fn) {
+  let out = null;
+  d.atomic(() => { out = fn(); });
+  return out ? caret(out) : sel;
+}
+
+const boxSel = (loc) => select(posOf(loc, 0), posOf(loc, 1));
+
+/** See the header. */
+export function deleteSelection(d, sel) {
+  const o = orderedPos(d.doc, sel);
+  if (!o || collapsed(sel)) return sel;
+  return run(d, sel, () => deleteRange(d, o));
+}
+
+/** Delete [a, b) of the paragraph at loc; caret at a. */
+function cutText(d, sel, loc, a, b) {
+  return run(d, sel, () => {
+    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: a,
+      del: b - a, ins: ''});
+    return {id: loc.b.id, off: a};
+  });
+}
+
+/**
+ * At a block boundary: `loc` is where the caret is (a paragraph's
+ * edge or a kept block's), dir -1 (Backspace) or 1 (Delete).
+ */
+function atEdge(d, sel, loc, dir) {
+  const n = neighbour(d.doc, loc, dir);
+  if (!n || n.s !== loc.s) return sel;
+  if (n.b.type !== 'p') return boxSel(n);
+  if (loc.b.type !== 'p') {
+    // a kept block's edge facing a paragraph
+    if (n.b.text) return caret(posOf(n, dir < 0 ? n.b.text.length : 0));
+    return run(d, sel, () => {
+      d.apply({op: 'removeBlock', at: [n.s, n.i]});
+      return sel.head;
+    });
+  }
+  return run(d, sel, () => (dir < 0 ? mergeAt(d, n, loc)
+    : mergeAt(d, loc, n)));
+}
+
+/** Backspace or Delete (dir -1 or 1), stepping with `step`. */
+function del(d, sel, dir, step) {
+  if (!collapsed(sel)) return deleteSelection(d, sel);
+  const loc = checkPos(d.doc, sel.head);
+  if (!loc) return sel;
+  const off = sel.head.off;
+  if (loc.b.type !== 'p') {
+    // a kept block: from inside its edge, select it
+    if (off === (dir < 0 ? 1 : 0)) return boxSel(loc);
+    return atEdge(d, sel, loc, dir);
+  }
+  const text = loc.b.text;
+  if (dir < 0 ? off === 0 : off === text.length)
+    return atEdge(d, sel, loc, dir);
+  const to = step(text, off);
+  return dir < 0 ? cutText(d, sel, loc, to, off)
+    : cutText(d, sel, loc, off, to);
+}
+
+/** See the header. */
+export const deleteBack = (d, sel) => del(d, sel, -1, prevG);
+
+/** See the header. */
+export const deleteForward = (d, sel) => del(d, sel, 1, nextG);
+
+/** See the header. */
+export const deleteWordBack = (d, sel) => del(d, sel, -1,
+  (t, off) => prevWord(t, off));
+
+/** See the header. */
+export const deleteWordForward = (d, sel) => del(d, sel, 1,
+  (t, off) => nextWord(t, off));

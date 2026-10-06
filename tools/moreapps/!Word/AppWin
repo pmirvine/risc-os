@@ -1,16 +1,21 @@
-// AppWin - the window of one open document: its text, read-only, in
-// a scrolling window, as a column the width of the text on its page
+// AppWin - the window of one open document: its text in a scrolling
+// window, as a column the width of the text on its page
 // (./DocLayout), on a white page on a grey desk; a caret and a
-// selection made with the mouse and the keys (./EditView,
-// ./EditMouse). Its menu saves a copy, shows the Info box (what the
-// document holds) or closes it.
+// selection made with the mouse and the keys, typing, deleting and
+// undo (./EditView, ./EditMouse, ./EditInput). Its menu saves a
+// copy, shows the Info box (what the document holds), undoes and
+// redoes (./EditMenu) or closes it.
 //
 //   const dw = new DocWindow(app, path, doc)
 //   dw.show()          open it (or bring it to the front), with the
 //                      input focus
 //   dw.relayout()      lay it out again (fonts have arrived): the
 //                      selection is kept
+//   dw.d, dw.typing    its ./Document (dw.doc is dw.d.doc) and
+//                      ./Typing
 //   dw.view            its ./EditView
+//   dw.text            the paragraphs' texts, as they are now
+//   dw.summary         the Info line, as the document was opened
 //   dw.saveBytes()     -> Promise<Uint8Array>, the copy to save
 //   dw.close()
 // app: {task, docs (Map key -> DocWindow), closed(dw), open(path)}.
@@ -20,12 +25,20 @@
 // scrolls across when made narrower. The work area is the page's
 // height, and at least the screen's width, so that the window can be
 // made as wide as the screen (the page stays centred).
+// The title is the file's leaf name, with ' *' while the document
+// has changes that are not saved (Document.dirty). Saving a copy
+// does not count as saving it (it is a copy: the star stays); there
+// is no Save yet, and closing does not ask.
 import {wimp, vfs, Menu, saveAs} from 'riscos';
 import {writeDocx} from './DocxWrite';
 import {TextMetrics} from 'wimplib/TextMetrics';
 import {DocLayout} from './DocLayout';
 import {EditView} from './EditView';
 import {attachMouse} from './EditMouse';
+import {attachInput} from './EditInput';
+import {editMenu} from './EditMenu';
+import {Document} from './Document';
+import {Typing} from './Typing';
 import {summary, infoWindow} from './Info';
 
 const H = 560, EDGE = 48;
@@ -36,15 +49,11 @@ export class DocWindow {
     this.app = app;
     this.path = path;
     this.doc = doc;
+    this.d = new Document(doc);
+    this.typing = new Typing(this.d);
     this.leaf = vfs.leaf(path);
     this.boxes = new Map();            // 'save', 'info' -> Window
-    this.summary = summary(doc);
-    this.text = [];
-    for (const s of doc.sections) {
-      for (const b of s.blocks) {
-        if (b.type === 'p') this.text.push(b.text);
-      }
-    }
+    this.summary = summary(doc);       // (as opened)
     this.ctx = null;                   // the canvas's, to measure with
     this.L = new DocLayout(doc, this.metrics());
     const L = this.L;
@@ -59,16 +68,20 @@ export class DocWindow {
         vscroll: true, hscroll: true, size: true, moveable: true},
       colours: {workBg: 0}, minW: 240, minH: 120,
       workButton: 'clickdragdouble',
-      help: 'This is a Word document. Click or drag to select its ' +
-        'text, double-click for a word, and use the arrow keys; it ' +
-        'cannot be edited yet.|MClick MENU to save a copy of it.',
+      help: 'This is a Word document: click to put the caret in ' +
+        'it and type. Drag to select text, double-click for a ' +
+        'word; Ctrl-Z undoes, Ctrl-Y redoes.|MClick MENU to save ' +
+        'a copy of it, or to undo.',
       menu: () => this.menu(),
     });
     const canvas = w.useCanvas((g, rect) => this.paint(g, rect),
       {hiDPI: true});
     this.ctx = canvas.getContext('2d');
-    this.view = new EditView(w, L);
+    this.view = new EditView(w, L, this.d, this.typing,
+      () => this.rebuild());
     attachMouse(this.view);
+    attachInput(this.view);
+    this.d.on('change', () => this.retitle());
     this.fit();
     w.on('moved', () => {
       if (Math.round(w.w) !== this.L.width) this.fit();
@@ -79,6 +92,15 @@ export class DocWindow {
       for (const f of ev.files) if (f.type !== 'dir') app.open(f.path);
       return true;
     });
+  }
+
+  /** The paragraphs' texts now (kept blocks left out). */
+  get text() {
+    const out = [];
+    for (const s of this.doc.sections) {
+      for (const b of s.blocks) if (b.type === 'p') out.push(b.text);
+    }
+    return out;
   }
 
   /** Text widths, measured on the window's canvas. */
@@ -96,12 +118,31 @@ export class DocWindow {
    * screen's width so that the window can be made as wide.
    */
   fit() {
+    // (after an edit: the new layout first; it fits itself). fit
+    // may run inside a redraw (EditView.paint -> L -> rebuild):
+    // setExtent there only asks for another redraw, which then
+    // draws the new extent and scroll offsets
+    if (this.view) this.view.ensure();
     const w = this.win;
     const r = this.L.layout(Math.round(w.w));
     w.setExtent({w: Math.max(r.w, wimp.width),
       h: Math.max(r.h, 64)});
     this.view.placed();
     w.invalidate();
+  }
+
+  /** The title: the leaf name, ' *' when changed (the header). */
+  retitle() {
+    const t = this.leaf + (this.d.dirty ? ' *' : '');
+    if (this.win.title !== t) this.win.setTitle(t);
+  }
+
+  /** After an edit: a new layout keeping the unchanged lines. */
+  rebuild() {
+    const old = this.L;
+    this.L = new DocLayout(this.doc, old.metrics, old);
+    this.view.setLayout(this.L, old);
+    this.fit();
   }
 
   /** See the header: new widths, so a new layout. */
@@ -160,17 +201,21 @@ export class DocWindow {
       {text: 'Save copy as .docx', submenu: () => this.box('save',
         () => saveAs({task, title: 'Save as', filename: this.leaf,
           filetype: 0xA7E, getData: () => this.saveBytes()})),
-      help: 'Save a copy of this document as a Word .docx file: ' +
-        'the parts it does not show are saved as they were.'},
+      help: 'Save a copy of this document, as it is now, as a ' +
+        'Word .docx file: the parts it does not show are saved ' +
+        'as they were.'},
       {text: 'Info', submenu: () => this.box('info',
         () => infoWindow(task, this.leaf, this.doc)),
       help: 'What the document holds.'},
+      {text: 'Edit', submenu: () => editMenu(this.view),
+        help: 'Undo, redo, select all.'},
       {text: 'Close', action: () => this.close(),
         help: 'Close this document.'},
     ]);
   }
 
   close() {
+    this.view.destroy();
     for (const b of [...this.boxes.values()]) b.delete();
     this.win.delete();
     this.app.closed(this);

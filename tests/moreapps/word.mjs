@@ -1,5 +1,5 @@
 // The !Word stub in the real desktop: a .docx opened as a double-click
-// opens it starts !Word, which shows it read-only and saves a faithful
+// opens it starts !Word, which shows it and saves a faithful
 // copy (tools/moreapps/!Word). The fixtures are made here with
 // build-docx.mjs; the saved copy is checked in Node with readDocx.
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
@@ -182,7 +182,7 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save copy as .docx, Info, Close', JSON.stringify(r2.items) === '["Save copy as .docx","Info","Close"]', r2.items);
+  ok('window menu: Save copy as .docx, Info, Edit, Close', JSON.stringify(r2.items) === '["Save copy as .docx","Info","Edit","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();
@@ -378,7 +378,7 @@ try {
     res.pageUp = key(0x19F, 'PageUp');
     res.end = key(0x1AB, 'End', true);
     res.home = key(30, 'Home', true);
-    res.other = key(65, 'A');
+    res.other = key(0x185, 'F5');     // (letters are typed now)
     return res;
   });
   await page.keyboard.press('PageDown');

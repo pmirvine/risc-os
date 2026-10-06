@@ -30,6 +30,7 @@ function bigDoc(chars, nRuns) {
 
 function typeAndUndo(chars, nRuns, keys) {
   const doc = new Document(bigDoc(chars, nRuns));
+  doc.maxSteps = Infinity; // measure the whole history, not the cap
   const m0 = heap();
   const t0 = performance.now();
   for (let k = 0; k < keys; k++) {

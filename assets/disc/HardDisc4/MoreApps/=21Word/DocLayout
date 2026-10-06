@@ -2,7 +2,14 @@
 // the text on its page: paragraphs and kept blocks stacked, and
 // positions ({id, off}, ./DocPos) <-> places in the work area.
 //
-//   const L = new DocLayout(doc, metrics)  (WimpLib/TextMetrics)
+//   const L = new DocLayout(doc, metrics, prev?)  (WimpLib/TextMetrics)
+//                           prev: an older layout of doc with the
+//                           same metrics, after an edit: the lines
+//                           of every block object it had are kept
+//                           (the key: the paragraph object, the
+//                           metrics and the text width; it must
+//                           grow when styles or numbering can be
+//                           edited, as lines depend on them too)
 //   L.layout(viewWidth) -> {w, h}: the work area's extent
 //   L.items  [{id, block, kind: 'p'|'box', index, y, h, lines?,
 //             label?}] in document order; a 'p' item is also the
@@ -18,7 +25,8 @@
 //   L.paraStart(pos), L.paraEnd(pos), L.docStart(), L.docEnd()
 //   L.nextItem(item), L.prevItem(item) -> item or null
 //   L.boxRect(item)         -> {x, y, w, h} of a kept block's box
-//   L.invalidate()          lay the lines out again on next layout
+//   L.invalidate()          lay all the lines out again on next
+//                           layout
 //
 // The text width comes from the FIRST section's pgSz and pgMar
 // (twips; A4 with 1-inch margins when it has none): (w - left -
@@ -44,7 +52,7 @@ const num = (v, d) => (Number.isFinite(v) ? v : d);
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
 export class DocLayout {
-  constructor(doc, metrics) {
+  constructor(doc, metrics, prev) {
     this.doc = doc;
     this.metrics = metrics;
     this.cache = new Map();            // run formats (./Fmt)
@@ -63,6 +71,8 @@ export class DocLayout {
     this.pageW = clamp(pw / 15, 80, this.marL + this.textW + marR);
     this.pageLeft = MARGIN;
     this.left = MARGIN + this.marL;
+    const keep = prev && prev.laid && prev.metrics === metrics &&
+      prev.doc === doc && prev.textW === this.textW;
     for (const s of doc.sections) {
       for (const b of s.blocks) {
         const it = b.type === 'p'
@@ -71,6 +81,11 @@ export class DocLayout {
           : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
             h: BOX + 12, label: `[${kindOf(b.node)} - preserved, ` +
               'not shown]'};
+        const o = keep && b.type === 'p' && prev.byId.get(b.id);
+        if (o && o.block === b && o.lines) {
+          it.lines = o.lines;
+          it.h = o.h;
+        }
         it.index = this.items.length;
         this.items.push(it);
         this.byId.set(it.id, it);
@@ -95,7 +110,7 @@ export class DocLayout {
     let y = MARGIN;
     const styles = this.doc.styles;
     for (const it of this.items) {
-      if (it.kind === 'p') {
+      if (it.kind === 'p' && !it.lines) {
         const l = layoutPara(it.block, styles, this.textW,
           this.metrics, this.cache);
         it.lines = l.lines;
@@ -108,7 +123,10 @@ export class DocLayout {
     this.laid = true;
   }
 
-  invalidate() { this.laid = false; }
+  invalidate() {
+    for (const it of this.items) if (it.kind === 'p') it.lines = null;
+    this.laid = false;
+  }
 
   /** See the header. */
   itemAtY(y) {
