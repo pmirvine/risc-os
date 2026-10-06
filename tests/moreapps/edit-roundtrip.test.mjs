@@ -28,37 +28,21 @@
 // files present locally (the real-Word hand-off files in
 // corpus/handoff included).
 import {describe, it} from 'node:test';
-import assert from 'node:assert/strict';
-import {existsSync, readdirSync, readFileSync, writeFileSync,
-  mkdtempSync, rmSync} from 'node:fs';
-import {join, relative} from 'node:path';
-import {tmpdir} from 'node:os';
-import {execFileSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
 import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
 import {blockId} from '../../tools/moreapps/!Word/DocPos';
 import * as S from '../../tools/moreapps/!Word/Selection';
 import * as E from '../../tools/moreapps/!Word/Edit';
 import * as X from '../../tools/moreapps/!Word/EditDel';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
-import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
-import {lintPackage} from './lint-package.mjs';
-import {assertSameDoc, expectedBack, sameBytes, sameTree}
-  from './docx-compare.mjs';
 import {rng} from './word-docs.mjs';
+import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
+  SKIP_CORPUS} from './roundtrip-lib.mjs';
 
-const DATE = new Date(2024, 4, 6, 7, 8, 10);
-const write = (doc) => writeDocx(doc, {date: DATE});
 const EDITS = 50;
 const EDIT_MS = 4000;
-const HERE = fileURLToPath(new URL('./', import.meta.url));
-const CORPUS = join(HERE, 'corpus');
 
 // ------------------------------------------------------------ edits
 
@@ -148,119 +132,6 @@ function editAll(d, seed, {every = false} = {}) {
   return {steps: k, capped: k < EDITS};
 }
 
-// ------------------------------------------------------------ xmllint
-
-const CACHE = fileURLToPath(new URL('../../tools/moreapps/.cache/',
-  import.meta.url));
-const NEEDED = ['wml.xsd', 'shared-commonSimpleTypes.xsd',
-  'shared-math.xsd', 'shared-relationshipReference.xsd',
-  'dml-wordprocessingDrawing.xsd', 'dml-main.xsd'];
-const XML_XSD = '<xs:schema xmlns:xs="http://www.w3.org/2001/' +
-  'XMLSchema" targetNamespace="http://www.w3.org/XML/1998/namespace">' +
-  '<xs:attribute name="space"><xs:simpleType><xs:restriction base=' +
-  '"xs:NCName"><xs:enumeration value="default"/><xs:enumeration ' +
-  'value="preserve"/></xs:restriction></xs:simpleType>' +
-  '</xs:attribute><xs:attribute name="lang" type="xs:language"/>' +
-  '</xs:schema>';
-const IMPORT = '<xsd:import namespace="http://www.w3.org/XML/1998/' +
-  'namespace"/>';
-
-/** A schema checker (as validate.mjs), or a reason it cannot run. */
-function schemaChecker() {
-  try {
-    execFileSync('xmllint', ['--version'], {stdio: 'ignore'});
-  } catch (e) {
-    return 'xmllint not found';
-  }
-  const missing = NEEDED.filter((f) => !existsSync(join(CACHE, f)));
-  if (missing.length) return 'not in tools/moreapps/.cache: ' + missing;
-  const dir = mkdtempSync(join(tmpdir(), 'edit-rt-xsd-'));
-  for (const f of readdirSync(CACHE).filter((n) => n.endsWith('.xsd'))) {
-    writeFileSync(join(dir, f), readFileSync(join(CACHE, f), 'utf8')
-      .replace(IMPORT, IMPORT.replace('/>', ' schemaLocation="xml.xsd"/>')));
-  }
-  writeFileSync(join(dir, 'xml.xsd'), XML_XSD);
-  const schema = join(dir, 'wml.xsd'), file = join(dir, 'part.xml');
-  return {
-    /** The set of xmllint's messages (no line numbers) for bytes. */
-    errors(bytes) {
-      writeFileSync(file, bytes);
-      try {
-        execFileSync('xmllint', ['--noout', '--nonet', '--schema',
-          schema, file], {stdio: 'pipe', maxBuffer: 1 << 28});
-        return new Set();
-      } catch (e) {
-        return new Set(String(e.stderr).split('\n')
-          .filter((l) => l && !l.endsWith('fails to validate') &&
-            !l.endsWith('validates'))
-          .map((l) => l.replace(file + ':', '').replace(/^\d+:\s*/, '')));
-      }
-    },
-    done() { rmSync(dir, {recursive: true, force: true}); },
-  };
-}
-
-// ------------------------------------------------------------ one file
-
-/** The schema errors of an original's main part, by its bytes. */
-const schemaOf = new WeakMap();
-
-const errs = (zip) => lintPackage(zip).problems
-  .filter((q) => q.level === 'error')
-  .map((q) => q.rule + ' ' + q.part + ' ' + q.detail);
-
-/**
- * Open bytes, edit, check (see the header). Returns {refused: code}
- * when the reader refuses the file, else {steps, capped, blocks,
- * schema}.
- */
-async function roundTrip(bytes, what, seed, {xsd = null, every} = {}) {
-  let a;
-  try {
-    a = await readDocx(bytes);
-  } catch (e) {
-    if (e instanceof DocxError) return {refused: e.code};
-    throw e;
-  }
-  const out0 = await write(a);
-  const before = structuredClone(a.sections);
-  const d = new Document(a);
-  const st = await editAll(d, seed, {every});
-  // the edited model round-trips
-  const out1 = await write(d.doc);
-  assertSameDoc(await readDocx(out1), expectedBack(d.doc),
-    what + ' (edited, seed ' + seed + ')');
-  // no package error the original did not have
-  const z = await readZip(out1);
-  const had = new Set(errs(await readZip(bytes)));
-  assert.deepEqual(errs(z).filter((k) => !had.has(k)), [],
-    what + ': package errors added');
-  // no schema error in the main part the original did not have
-  let schema = 'skipped';
-  const main = d.doc.meta.mainPart;
-  const orig = xsd && main ? (await readZip(bytes)).get(main) : null;
-  if (orig && z.get(main)) {
-    if (!schemaOf.has(bytes)) schemaOf.set(bytes, xsd.errors(orig));
-    const was = schemaOf.get(bytes);
-    const added = [...xsd.errors(z.get(main))].filter((m) => !was.has(m));
-    assert.deepEqual(added.slice(0, 5), [], what + ': schema errors ' +
-      'added (seed ' + seed + ')');
-    schema = 'checked';
-  }
-  // undo everything: the opened model, the same bytes
-  while (d.undo());
-  sameTree(d.doc.sections, before, what + ': undo all (seed ' + seed +
-    ')');
-  const outU = await write(d.doc);
-  if (!sameBytes(outU, out0)) {
-    assertSameDoc(await readDocx(outU), await readDocx(out0),
-      what + ': undone and written');
-    assert.fail(what + ': undone, written: bytes differ');
-  }
-  const blocks = d.doc.sections.reduce((n, s) => n + s.blocks.length, 0);
-  return {...st, blocks, schema};
-}
-
 // ------------------------------------------------------------ documents
 
 const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/>' +
@@ -279,16 +150,7 @@ const MORE = [
   ['no paragraphs', doc('')],
 ];
 
-const hash = (s) => {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i),
-    16777619);
-  return h >>> 0;
-};
-
-let xsd = schemaChecker();
-const xsdNote = typeof xsd === 'string' ? xsd : null;
-if (xsdNote) xsd = null;
+const {xsd, note: xsdNote} = schema();
 
 describe('editing round trip: generated documents', () => {
   for (const [name, make] of [...FIXTURES, ...MORE]) {
@@ -296,7 +158,7 @@ describe('editing round trip: generated documents', () => {
       const bytes = await make();
       for (let k = 0; k < 4; k++) {
         // (the schema check, slow on some fixtures, for one seed)
-        await roundTrip(bytes, name, hash(name) + k,
+        await roundTrip(bytes, name, hash(name) + k, editAll,
           {xsd: k === 0 ? xsd : null, every: true});
       }
     });
@@ -304,69 +166,12 @@ describe('editing round trip: generated documents', () => {
   it('schema check available', {skip: xsdNote || false}, () => {});
 });
 
-function find(dir, out = []) {
-  for (const e of readdirSync(dir, {withFileTypes: true})) {
-    const q = join(dir, e.name);
-    if (e.isDirectory()) find(q, out);
-    else if (/\.docx$/i.test(e.name) && !e.name.startsWith('~$')) {
-      out.push(q);
-    }
-  }
-  return out.sort();
-}
-const EXPECTED = JSON.parse(readFileSync(join(HERE,
-  'corpus-expected.json'), 'utf8'));
-const ALL = process.env.WORD_EDIT_CORPUS === '1';
-// a deterministic sample (one file in ten, by name) unless
-// WORD_EDIT_CORPUS=1 asks for every file
-const files = (existsSync(CORPUS) ? find(CORPUS) : []).filter((f) =>
-  ALL || hash(relative(CORPUS, f).split('\\').join('/')) % 10 === 0);
+const files = corpusFiles();
 
 describe('editing round trip: the corpus', {
-  skip: files.length ? false : 'tests/moreapps/corpus is missing or ' +
-    'empty (optional, git-ignored: run node tools/moreapps-corpus.mjs)',
+  skip: files.length ? false : SKIP_CORPUS,
 }, () => {
   it(`50 edits in ${ALL ? 'every' : 'one in ten'} corpus file ` +
-    'round-trip; undo restores', async () => {
-    const failures = [], times = [], capped = [];
-    let ok = 0, refused = 0, blocks = 0, schema = 0;
-    for (const f of files) {
-      const name = relative(CORPUS, f).split('\\').join('/');
-      const t0 = Date.now();
-      try {
-        const res = await roundTrip(readFileSync(f), name, hash(name),
-          {xsd});
-        if (res.refused) {
-          refused++;
-          if (EXPECTED[name] !== res.refused) {
-            failures.push(`${name}: refused (${res.refused}), expected ` +
-              (EXPECTED[name] || 'to read'));
-          }
-        } else {
-          ok++;
-          blocks += res.blocks;
-          if (res.schema === 'checked') schema++;
-          if (res.capped) capped.push(`${name} (${res.steps} edits)`);
-        }
-      } catch (e) {
-        failures.push(`${name}: ${e.name} ` +
-          String(e.message).split('\n').slice(0, 3).join(' | ')
-            .slice(0, 400));
-      }
-      times.push([Date.now() - t0, name]);
-    }
-    times.sort((x, y) => y[0] - x[0]);
-    console.log(`# edited corpus${ALL ? '' : ' (sample; ' +
-      'WORD_EDIT_CORPUS=1 for all)'}: ${files.length} files, ${ok} ok, ` +
-      `${refused} refused by the reader, ${failures.length} failures, ` +
-      `${blocks} blocks, ${schema} main parts schema-checked` +
-      (xsdNote ? ` (schema check skipped: ${xsdNote})` : ''));
-    if (capped.length) console.log('# edits capped: ' + capped.join('; '));
-    console.log('# slowest: ' + times.slice(0, 5)
-      .map(([ms, n]) => `${n} ${ms} ms`).join('; '));
-    for (const x of failures) console.log('# FAIL ' + x);
-    assert.deepEqual(failures, []);
-  });
+    'round-trip; undo restores', () => corpusRun(files, editAll, xsd,
+    xsdNote, 'edited corpus'));
 });
-
-process.on('exit', () => xsd && xsd.done());

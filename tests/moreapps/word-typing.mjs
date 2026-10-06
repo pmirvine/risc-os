@@ -293,7 +293,7 @@ try {
     const pass = await ev(() => {
       const w = window.__doc().win;
       const k = (code, key, extra = {}) => { const e = w.emit('key', { code, key, shift: false, ctrl: false, ...extra }); return !!(e.handled || e.defaultPrevented); };
-      const res = { F5: k(0x185, 'F5'), ctrlB: k(2, 'b', { ctrl: true }), ctrlF12: k(0x1EC, 'F12', { ctrl: true }), left: k(0x18C, 'ArrowLeft') };
+      const res = { F5: k(0x185, 'F5'), ctrlQ: k(17, 'q', { ctrl: true }), ctrlF12: k(0x1EC, 'F12', { ctrl: true }), left: k(0x18C, 'ArrowLeft') };
       const seen = [];
       window.__off = os.wimp.on('key', (e) => { seen.push(e.code); });
       window.__seen = seen;
@@ -302,7 +302,7 @@ try {
     await press('F5');
     await page.waitForFunction(() => window.__seen.includes(0x185), null, { timeout: 2000 }).catch(() => {});
     const seen = await ev(() => { window.__off(); return [...window.__seen]; });
-    ok('keys it does not use go on (F5, Ctrl-B, Ctrl-F12) and reach the desktop', !pass.F5 && !pass.ctrlB && !pass.ctrlF12 && pass.left && seen.includes(0x185), { pass, seen });
+    ok('keys it does not use go on (F5, Ctrl-Q, Ctrl-F12) and reach the desktop', !pass.F5 && !pass.ctrlQ && !pass.ctrlF12 && pass.left && seen.includes(0x185), { pass, seen });
     // a printable key that comes as a key (the text field lost the focus) is typed
     const fb = await ev(() => {
       const d = window.__doc(), w = d.win, before = d.view.lines()[7];
@@ -394,7 +394,7 @@ try {
       dw.close();
       return { fresh, edited, undone };
     });
-    ok('window menu: Save copy as .docx, Info, Edit, Close', same(shades.fresh.top, ['Save copy as .docx', 'Info', 'Edit', 'Close']), shades.fresh);
+    ok('window menu: Save copy as .docx, Info, Edit, Format, Zoom, Close', same(shades.fresh.top, ['Save copy as .docx', 'Info', 'Edit', 'Format', 'Zoom', 'Close']), shades.fresh);
     ok('Edit menu on a fresh document: Undo Ctrl+Z and Redo Ctrl+Y shaded, Select all Ctrl+A', same(shades.fresh.items,
       [['Undo', 'Ctrl+Z', true], ['Redo', 'Ctrl+Y', true], ['Select all', 'Ctrl+A', false]]), shades.fresh);
     ok('Edit menu after an edit: Undo enabled, Redo shaded', same(shades.edited.items.map((i) => i[2]), [false, true, false]), shades.edited);

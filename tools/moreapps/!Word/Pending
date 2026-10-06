@@ -1,0 +1,91 @@
+// Pending - the pending format: what formatting a command given at a
+// caret (Ctrl-B with nothing selected...) sets for the text typed
+// next. A plain value, never changed in place:
+//
+//   {b?, i?, u?, strike?, sz?, szCs?, color?, highlight?,
+//    vertAlign?, rFonts?, rStyle?}
+//
+// a partial run format as ./OpsProps's setProps takes it (null
+// deletes a key; rFonts is merged one level), plus rStyle (a
+// character style id, or null for none).
+//
+//   EMPTY                      no pending format
+//   isEmpty(p)                 nothing pending (undefined too)
+//   merge(p, patch, base?)     p with patch on top; with base (the
+//                              {rPr, rStyle} the typed text would get
+//                              without it) keys that change nothing
+//                              are left out, so toggling twice gives
+//                              EMPTY again
+//   forTyping(p)               the rPr patch for ./Edit.typeText's
+//                              {rPr} (undefined when none)
+//   styleFor(p)                its rStyle (undefined when none)
+//   applyTo(rPr, patch)        rPr with patch merged in, without the
+//                              raw elements the patch replaces
+//                              (./PropNames); rPr itself unchanged
+//   onRun(base, p)             the {rPr, rStyle} typed text gets: the
+//                              format base with p on top
+//
+// The view keeps the pending format and drops it when the caret
+// moves or the selection changes (deliverable 4, Task 3).
+// Pure: no desktop services.
+import {mergeProps} from './OpsProps';
+import {RPR_FIELDS, withoutRaw} from './PropNames';
+import {deepEqual} from './ModelCheck';
+
+export const EMPTY = Object.freeze({});
+
+/** See the header. */
+export const isEmpty = (p) => !p || Object.keys(p).length === 0;
+
+/** Whether pending key k (value v) changes nothing over base. */
+function noop(k, v, base) {
+  if (k === 'rStyle') {
+    const was = base.rStyle === undefined ? null : base.rStyle;
+    return v === was;
+  }
+  const old = base.rPr ? base.rPr[k] : undefined;
+  if (v === null) return old === undefined;
+  if (v && typeof v === 'object' && old && typeof old === 'object')
+    return deepEqual({...old, ...v}, old);
+  return deepEqual(v, old);
+}
+
+/** See the header. */
+export function merge(p, patch, base) {
+  const out = {...(p || {}), ...(patch || {})};
+  if (base) {
+    for (const k of Object.keys(out)) {
+      if (noop(k, out[k], base)) delete out[k];
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function forTyping(p) {
+  if (isEmpty(p)) return undefined;
+  const out = {...p};
+  delete out.rStyle;
+  return isEmpty(out) ? undefined : out;
+}
+
+/** See the header. */
+export const styleFor = (p) => (p ? p.rStyle : undefined);
+
+/** See the header. */
+export function applyTo(rPr, patch) {
+  if (isEmpty(patch)) return rPr;
+  const out = mergeProps(rPr, patch);
+  const names = Object.keys(patch).filter((k) => RPR_FIELDS.has(k))
+    .map((k) => RPR_FIELDS.get(k));
+  out.extra = withoutRaw(out.extra || [], names);
+  return out;
+}
+
+/** See the header. */
+export function onRun(base, p) {
+  const rs = styleFor(p);
+  const rStyle = rs === undefined ? base.rStyle
+    : rs === null ? undefined : rs;
+  return {rPr: applyTo(base.rPr, forTyping(p)), rStyle};
+}

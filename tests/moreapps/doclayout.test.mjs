@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
 import {selectAll} from '../../tools/moreapps/!Word/Selection';
 import * as PM from '../../tools/moreapps/!Word/PositionMap';
+import {pageRect} from '../../tools/moreapps/!Word/EditPaint';
 import {loadStyles, tm, mkDoc, box} from './word-docs.mjs';
 
 before(loadStyles);
@@ -66,6 +67,55 @@ describe('DocLayout column', () => {
     L.layout(1400);
     assert.equal(L.items[0].lines, lines);
     near(L.pageLeft, (1400 - A4W) / 2);
+  });
+});
+
+describe('DocLayout top (a toolbar over the window)', () => {
+  it('everything moves down by top; hits above it are the start', () => {
+    const a = laid(), L = new DocLayout(three(), tm(), undefined,
+      {top: 40});
+    const r = L.layout(1000);
+    assert.equal(L.top, 40);
+    assert.equal(a.top, 0);
+    assert.equal(L.items[0].y, 24 + 40);
+    near(r.h, a.height + 40, 'extent');
+    const p = {id: L.items[0].id, off: 3};
+    const c = L.caretRect(p);
+    const c0 = a.caretRect({id: a.items[0].id, off: 3});
+    assert.deepEqual([c.x, c.y - 40, c.h], [c0.x, c0.y, c0.h]);
+    assert.deepEqual(L.hitTest(c.x + 1, c.y + 2).pos, p);
+    assert.deepEqual(L.hitTest(c.x, 41).pos, L.docStart());
+    assert.deepEqual(L.hitTest(c.x, 0).pos, L.docStart());
+    const rs = L.selectionRects(selectAll(L)), r0 =
+      a.selectionRects(selectAll(a));
+    const k = (x) => Math.round(x * 1000);
+    assert.deepEqual(rs.map((x) => k(x.y - 40)), r0.map((x) => k(x.y)));
+  });
+  it('the white page starts below top too (EditPaint.pageRect)', () => {
+    const a = laid(), L = new DocLayout(three(), tm(), undefined,
+      {top: 40});
+    L.layout(1000);
+    const p = pageRect(L), p0 = pageRect(a);
+    assert.equal(p.y, p0.y + 40);
+    assert.equal(p.h, p0.h);
+    assert.ok(p.y < L.items[0].y);
+    assert.equal(p.y + p.h, Math.round(L.height - p0.y));
+  });
+  it('a bad top is 0; a huge one is clamped', () => {
+    for (const t of [NaN, -5, 'x', undefined]) {
+      assert.equal(new DocLayout(three(), tm(), undefined, {top: t})
+        .top, 0);
+    }
+    assert.equal(new DocLayout(three(), tm(), undefined, {top: 1e9})
+      .top, 1000);
+  });
+  it('a layout made from an older one keeps its top', () => {
+    const L = new DocLayout(three(), tm(), undefined, {top: 40});
+    L.layout(1000);
+    const M = new DocLayout(L.doc, L.metrics, L);
+    M.layout(1000);
+    assert.equal(M.top, 40);
+    assert.equal(M.items[0].y, 64);
   });
 });
 

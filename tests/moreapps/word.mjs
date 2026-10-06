@@ -130,10 +130,11 @@ try {
       const rows = [];
       for (let y = 0; y < c.height; y++) { let n = 0; for (let x = px0; x < px1; x++) if (dark(x, y)) n++; rows.push(n); }
       const at = (x, y) => { const q = (Math.round(y * k) * W + Math.round(x * k)) * 4; return [img[q], img[q + 1], img[q + 2]]; };
-      res.band = at(L.pageLeft + 10, 12);
+      // (the page starts below the toolbar: L.top)
+      res.band = at(L.pageLeft + 10, L.top + 12);
       res.desk = at(2, 2);
       // ink clusters on the page, below its top edge
-      const top = Math.ceil(12 * k);
+      const top = Math.ceil((L.top + 12) * k);
       const clusters = [];
       let start = -1;
       for (let y = top; y < rows.length; y++) {
@@ -182,7 +183,7 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save copy as .docx, Info, Edit, Close', JSON.stringify(r2.items) === '["Save copy as .docx","Info","Edit","Close"]', r2.items);
+  ok('window menu: Save copy as .docx, Info, Edit, Format, Zoom, Close', JSON.stringify(r2.items) === '["Save copy as .docx","Info","Edit","Format","Zoom","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();
@@ -262,7 +263,8 @@ try {
   });
   const [[w0, n0], [w1, n1]] = rL.cycles;
   ok('60 hovers over the Save and Info arrows make no new windows', w0 === w1 && n1 - n0 < 50, rL.cycles);
-  ok('closing a document deletes its boxes', rL.open === rL.base + 3 && rL.closed === rL.base, rL);
+  // (the window, its toolbar and ruler panes, the Save and Info boxes)
+  ok('closing a document deletes its boxes', rL.open === rL.base + 5 && rL.closed === rL.base, rL);
 
   // a second file goes to the running Word; the same file again re-uses its window
   const r4 = await page.evaluate(async () => {
@@ -276,7 +278,10 @@ try {
     await window.__sleep(200);
     res.after = t.word.docs.length;
     const s = os.wimp.stack;
-    res.front = s.filter((w) => w.task === t).pop() === first;
+    // (its toolbar and ruler, panes, are kept just in front of it)
+    const panes = [t.word.docs[0].toolbar.pane, t.word.docs[0].ruler.pane];
+    const top = s.filter((w) => w.task === t && !panes.includes(w)).pop();
+    res.front = top === first && panes.every((p) => s.indexOf(p) > s.indexOf(first) && s.indexOf(p) <= s.indexOf(first) + 2);
     return res;
   });
   ok('a second file opens in the running Word', r4.tasks === 1 && r4.docs.join() === 'Report,Second', r4);
@@ -384,7 +389,7 @@ try {
   await page.keyboard.press('PageDown');
   await page.waitForTimeout(100);
   const rK2 = await page.evaluate(() => window.__word()[0].word.docs.find((x) => x.win.title === 'Big').win.scrollY);
-  const pg = rK.h - 32;
+  const pg = rK.h - 58 - 32;          // (less the toolbar's 34 px and the ruler's 24)
   ok('Page Down / Up move the view and the caret; Ctrl-End / Ctrl-Home go to the ends',
     rK.pageDown[0] === pg && Math.abs(rK.pageDown[3] - rK.c0 - pg) < 30 && rK.pageUp[0] === 0
     && Math.abs(rK.end[0] - rK.max) <= 1 && rK.home[0] === 0

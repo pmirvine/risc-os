@@ -1,0 +1,144 @@
+// FormatPara - the paragraph formatting commands (see ./FormatSet,
+// which exports them, for the arguments and what they return).
+//
+//   setPara(d, typing, sel, patch, pending)  ./FormatCheck.paraPatch
+//   indentBy(d, typing, sel, delta, pending) the left indent to the
+//       next multiple of |delta| twips (Ctrl+M 720, Ctrl+Shift+M
+//       -720), never below 0
+//   clearParaFormat(d, typing, sel, pending) removes direct jc, ind
+//       and spacing
+//   dragIndents(d, typing, sel, {marker, at, textW, free}, pending)
+//       a ruler's indent marker dropped (./RulerBind): WimpLib
+//       RulerMath.dragIndent on each paragraph's own resolved
+//       indents (the same marker value for all; the first line kept
+//       as Word keeps it); only the values that change are written
+//   paraStyle(d, typing, sel, id, pending)   pStyle id (null: none)
+//   paraCommand(d, typing, sel, pending, patchFor) patchFor(p, res)
+//       -> {pPr?, pStyle?} | null for each paragraph the selection
+//       formats (./FormatOps.touched): a caret's paragraph, kept
+//       blocks skipped; paragraphs it would not change get no op
+//
+// A value equal to the one the paragraph's style gives is removed
+// (null) rather than written. Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {resolver, paraOf, alignOf, firstOf} from './FormatEff';
+import {buildOps, changes, runOps} from './FormatOps';
+import {paraPatch} from './FormatCheck';
+import {dragIndent} from 'wimplib/RulerMath';
+
+const NONE = {extra: []};
+const DEFAULTS = {spacing: {line: 240, lineRule: 'auto'}};
+
+/** See the header. */
+export function paraCommand(d, typing, sel, pending, patchFor) {
+  const res = resolver(d.doc);
+  const ops = buildOps(d.doc, sel, (en) => {
+    if (!en.para) return null;
+    const x = patchFor(en.p, res);
+    return x && changes(en.p, 'pPr', x, 'pStyle') ? [x] : null;
+  });
+  runOps(d, typing, ops);
+  return {sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY};
+}
+
+/** Sub-object o of a checked patch made explicit against inh. */
+function sub(o, inh, defs) {
+  if (o === null || o === undefined) return o;
+  const out = {};
+  for (const k of Object.keys(o)) {
+    const was = inh && Number.isInteger(inh[k]) ? inh[k]
+      : inh && typeof inh[k] === 'string' ? inh[k] : defs[k] ?? 0;
+    out[k] = o[k] === was ? null : o[k];
+  }
+  return out;
+}
+
+/**
+ * The ind part: as sub(), but firstLine and hanging are one value
+ * (./Styles.resolvePara): the one given is written (the other
+ * deleted), and both are deleted when the style gives that value.
+ * A first line of 0 over a style's hanging is firstLine 0, which
+ * cancels it (as Word writes it).
+ */
+function indent(o, inh) {
+  if (o === null || o === undefined) return o;
+  const {firstLine: f, hanging: h, ...rest} = o;
+  const out = sub(rest, inh, {});
+  if (f === undefined && h === undefined) return out;
+  const v = f != null ? f : h != null ? -h : null;
+  const keep = v !== null && v !== firstOf(inh);
+  out.firstLine = keep && f != null ? f : null;
+  out.hanging = keep && f == null ? h : null;
+  return out;
+}
+
+/** A checked patch v made explicit for paragraph p (see header). */
+function explicit(v, p, res) {
+  const inh = res.para({pStyle: p.pStyle, pPr: NONE});
+  const out = {};
+  if (v.jc !== undefined) {
+    out.jc = v.jc !== null && alignOf(v.jc) === alignOf(inh.jc) ? null
+      : v.jc;
+  }
+  if (v.ind !== undefined) out.ind = indent(v.ind, inh.ind);
+  if (v.spacing !== undefined)
+    out.spacing = sub(v.spacing, inh.spacing, DEFAULTS.spacing);
+  return {pPr: out};
+}
+
+/** See the header. */
+export function setPara(d, typing, sel, patch, pending) {
+  const v = paraPatch(patch);
+  return paraCommand(d, typing, sel, pending,
+    (p, res) => explicit(v, p, res));
+}
+
+/** See the header. */
+export function indentBy(d, typing, sel, delta, pending) {
+  if (typeof delta !== 'number' || !Number.isFinite(delta) ||
+    Math.round(delta) === 0) fail('bad indent step');
+  const st = Math.abs(Math.round(delta));
+  return paraCommand(d, typing, sel, pending, (p, res) => {
+    const cur = paraOf(res.para(p), p, res).indentLeft;
+    const n = delta > 0 ? Math.floor(cur / st) * st + st
+      : Math.ceil(cur / st) * st - st;
+    const left = Math.min(Math.max(n, 0), 31680);
+    return explicit({ind: {left}}, p, res);
+  });
+}
+
+const MARKERS = ['left', 'first', 'hanging', 'right'];
+
+/** See the header. */
+export function dragIndents(d, typing, sel, arg, pending) {
+  const {marker, at, textW, free} = arg || {};
+  if (!MARKERS.includes(marker) || typeof at !== 'number' ||
+    Number.isNaN(at) || typeof textW !== 'number' ||
+    !Number.isFinite(textW) || textW <= 0) fail('bad indent drag');
+  return paraCommand(d, typing, sel, pending, (p, res) => {
+    const q = paraOf(res.para(p), p, res);
+    const was = {left: q.indentLeft, first: q.indentFirst,
+      right: q.indentRight};
+    const n = dragIndent(marker, at, was, textW, !!free);
+    const ind = {};
+    if (n.left !== was.left) ind.left = n.left;
+    if (n.right !== was.right) ind.right = n.right;
+    if (n.first !== was.first) {
+      if (n.first < 0) ind.hanging = -n.first;
+      else ind.firstLine = n.first;
+    }
+    return Object.keys(ind).length ? explicit({ind}, p, res) : null;
+  });
+}
+
+const CLEAR = {pPr: {jc: null, ind: null, spacing: null}};
+
+/** See the header. */
+export const clearParaFormat = (d, typing, sel, pending) =>
+  paraCommand(d, typing, sel, pending, () => CLEAR);
+
+/** See the header. */
+export const paraStyle = (d, typing, sel, id, pending) =>
+  paraCommand(d, typing, sel, pending, () => ({pStyle: id}));

@@ -146,7 +146,8 @@ function firstDiff(a, b, path) {
         }
       }
     } else {
-      const ka = Object.keys(a), kb = Object.keys(b);
+      // (key order does not matter to isDeepStrictEqual: nor here)
+      const ka = Object.keys(a).sort(), kb = Object.keys(b).sort();
       if (!isDeepStrictEqual(ka, kb)) {
         return {path: path + ' keys', got: ka, want: kb};
       }

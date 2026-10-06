@@ -7,8 +7,10 @@
 //   cache:   a Map for the run formats (./Fmt)
 //   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak}
 //          x: where the line starts (after indent and alignment)
-//   item:  {x, w, text, f, kind, from, to, shown}
+//   item:  {x, w, text, f, kind, from, to, shown, hl, dy, js?}
 //          kind 'text' | 'link' | 'box' | 'tab' | 'break'
+//          hl the highlight colour or null, dy the baseline shift
+//          (./Fmt), js the width a justified space gained
 //
 // Offsets are UTF-16 indices into para.text. The lines cover the text
 // without gaps or overlap (lines[0].from is 0, the last .to is the
@@ -30,11 +32,18 @@
 // the next word did not fit. Items are merged only when both are
 // model text in the same format, touching in x and in offsets. An
 // empty paragraph has one line, from = to = 0, as high as the text of
-// its mark (first run) would be. Alignment: left, centre or right
-// (justified is shown left); it moves items, never offsets.
-// Pure: no desktop services.
+// its mark (first run) would be. A line is 1.25 times its largest
+// text high (times the line spacing), its baseline 0.27 of that text
+// above its bottom; it grows, only when it holds superscript or
+// subscript, to keep that shifted text (0.98 of its size above its
+// baseline, 0.27 below) inside it. Alignment: left, centre or right;
+// it moves items, never offsets. Justified ('both'): items are not
+// merged and a space in model text is an item of its own, and a
+// wrapped line is spread to the width by ./Justify (not the last
+// line, nor one ending in a break). Pure: no desktop services.
 import {runFmt, paraFmt} from './Fmt';
 import {tokens, PLAIN} from './LineTokens';
+import {justify} from './Justify';
 
 const TAB = 48;                        // half an inch at 96 dpi
 
@@ -49,16 +58,21 @@ export function layoutPara(para, styles, width, metrics, cache) {
   const start = (first) => {
     line = {from: pos, to: pos, x: 0, y: 0, h: 0, base: 0, items: [],
       wrapped: false, endsWithBreak: false, px: 0, real: false,
-      ink: left};
+      ink: left, up: 0, down: 0};
     x = line.x = left + (first ? pf.first : 0);
   };
   const finish = (how) => {
-    const px = line.px || base.px;
+    const px = line.px || (base.vert ? base.full : base.px);
     line.h = px * 1.25 * pf.factor;
     line.base = line.h - px * 0.27;
+    // room for raised and lowered text (0 on other lines)
+    const up = Math.max(0, line.up - line.base);
+    line.h += up + Math.max(0, line.down - (line.h - line.base));
+    line.base += up;
     line.y = y;
     line.to = pos;
     if (how) line[how] = true;
+    if (how === 'wrapped' && pf.justify) justify(line, maxX);
     y += line.h;
     // alignment: the text up to the last thing that is not a space
     const room = maxX - line.ink;
@@ -71,25 +85,34 @@ export function layoutPara(para, styles, width, metrics, cache) {
     delete line.px;
     delete line.real;
     delete line.ink;
+    delete line.up;
+    delete line.down;
     lines.push(line);
   };
   // put token tk, w wide, at x; real: drawn as the stub drew it
   const place = (tk, w, real = tk.t !== 'z') => {
     const items = line.items;
     const last = items[items.length - 1];
+    const f = tk.f;
     if (real) {
-      line.px = Math.max(line.px, tk.f.px);
+      // super/subscript: the line is as high as for the full size
+      line.px = Math.max(line.px, f.vert ? f.full : f.px);
       line.real = true;
+      if (f.dy < 0) line.up = Math.max(line.up, f.px * 0.98 - f.dy);
+      if (f.dy > 0) {
+        line.down = Math.max(line.down, f.px * 0.27 + f.dy);
+      }
     }
-    if (last && !last.shown && !tk.shown && last.f === tk.f &&
-      last.kind === tk.kind && last.to === tk.from &&
+    if (!pf.justify && last && !last.shown && !tk.shown &&
+      last.f === tk.f && last.kind === tk.kind && last.to === tk.from &&
       Math.abs(last.x + last.w - x) < 0.01) {
       last.text += tk.text;
       last.w += w;
       last.to = tk.to;
     } else {
-      items.push({x, w, text: tk.text, f: tk.f, kind: tk.kind,
-        from: tk.from, to: tk.to, shown: tk.shown});
+      items.push({x, w, text: tk.text, f, kind: tk.kind,
+        from: tk.from, to: tk.to, shown: tk.shown,
+        hl: f.highlight ?? null, dy: f.dy || 0});
     }
     x += w;
     if (/\S/.test(tk.text)) line.ink = x;
@@ -115,7 +138,15 @@ export function layoutPara(para, styles, width, metrics, cache) {
     } else if (tk.t === 's') {
       flush();
       if (line.real || !lines.length) {
-        place(tk, metrics.width(tk.text, tk.f.css));
+        const w = metrics.width(tk.text, tk.f.css);
+        const n = tk.text.length;
+        if (pf.justify && !tk.shown && n > 1) {
+          // one item per space, each to be widened (./Justify)
+          for (let k = 0; k < n; k++) {
+            place({...tk, text: ' ', from: tk.from + k,
+              to: tk.from + k + 1}, w / n);
+          }
+        } else place(tk, w);
       } else {
         // after a break: kept for its offsets, not drawn (as before)
         place({...tk, text: '', shown: true}, 0, false);

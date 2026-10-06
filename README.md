@@ -213,18 +213,29 @@ in the text and type (any Unicode, dead-key accents, input methods and emoji pic
 caret in the core), with Enter, Shift-Enter, Tab, Backspace, Delete, Ctrl-Backspace/Delete, Insert (overwrite), and
 undo and redo (Ctrl-Z, Ctrl-Y or Ctrl-Shift-Z, or the Edit menu; a word is one step, 1000 steps are kept); a `*` in
 the title shows unsaved changes (only a copy can be saved yet, so it stays). To try it, double-click a `.docx`, click
-in the text, type, and press Ctrl-Z. There is no formatting, copy and paste, find or real Save yet; later steps add
-those, page layout and pagination (which will only approximate Word), styles and lists, printing, tables and images,
-RTF/PDF export and spell check. Reading and writing is checked on 600+ real documents
-from public test collections; real Microsoft Word could not be run during development, so a hand-off check was
-prepared. Older `.doc` and password-protected files are refused with a clear message. Documents never run anything and
-nothing is fetched. Calibri, Cambria, Arial, Times New Roman and Courier New are shown in the metric-compatible
-Carlito, Caladea and Liberation fonts bundled on the disc (all SIL OFL 1.1; licences in
-`$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules (zip, XML...) it is built on, is
-installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program imports it as
-`'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with `WimpLib$Dir`; put a
-directory of your own first to override a module). Guide: `$.Docs.Word` (part 10 for programmers); developers:
-`docs/apps/Word.md`.
+in the text, type, and press Ctrl-Z. Selected text can be **formatted** with Word's keys (Ctrl-B/I/U, Ctrl-L/E/R/J,
+Ctrl-Shift->/<, Ctrl-=, Ctrl-M, Ctrl-Space) or the window menu's Format submenu (font, size, colour, highlight,
+alignment, indent, the paragraph styles the document has, more colours as swatches or RRGGBB) or the **toolbar**
+across the window's top (style, font and size fields with popups, bigger/smaller, B I U S, superscript/subscript, text
+colour and highlight, alignment, indent, clear formatting: pressed in or filled in from the selection); at a caret a
+character format applies to the text typed next (moving the caret, undo or Enter forgets it). The text of a link,
+field, tracked change or content control is not changed by formatting. A **ruler** under the toolbar shows the
+paragraph's indents: drag its markers (first line, hanging, left, right; 1/16-inch steps, Shift for free) to indent
+every selected paragraph in one undo step; Format > Ruler hides it (margins are shown but not editable; tab stops are
+not shown). The window menu's **Zoom** (50% to 200%, Zoom in/out) or Ctrl+wheel shows the page larger or smaller, per
+window (no zoom keys; Ctrl+= and Ctrl+Shift+= are subscript and superscript). To try formatting: open a `.docx`,
+select some words, press Ctrl-B or choose Format > Colour, drag a ruler marker, and Ctrl+wheel; Ctrl-Z undoes each.
+There is no copy and paste, find, lists, tab stops, margins or real Save yet; later steps add those, page layout and
+pagination (which will only approximate Word), making styles and lists, printing, tables and images, RTF/PDF export
+and spell check. Reading and writing is checked on 600+ real documents from public test collections; real Microsoft
+Word could not be run during development, so a hand-off check was prepared. Older `.doc` and password-protected files
+are refused with a clear message. Documents never run anything and nothing is fetched. Calibri, Cambria, Arial, Times
+New Roman and Courier New are shown in the metric-compatible Carlito, Caladea and Liberation fonts bundled on the disc
+(all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules
+(zip, XML...) it is built on, is installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program
+imports it as `'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with
+`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 11 for programmers;
+part 4 is formatting); developers: `docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
@@ -364,11 +375,15 @@ node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden field: typed text, dead keys, input methods; Playwright)
 node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
-node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; 1000+ tests, about 30 s)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 1280 tests, about 33 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)
+node tests/moreapps/word-format.mjs  # one browser group alone: formatting by keys, pending format and the Format menu (also word-toolbar.mjs, word-ruler.mjs, word-zoom.mjs, word-format-hostile.mjs: 50,000 paragraphs, 500 random actions)
+node --test tests/moreapps/format.test.mjs tests/moreapps/formatset.test.mjs tests/moreapps/format-prop.test.mjs tests/moreapps/format-display.test.mjs tests/moreapps/formatapply.test.mjs   # formatting: queries, commands, seeded random commands with undo, drawing (unit; also fontlist, numberfield, colourlist, rulermath, zoom, toolbarbuttons)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/format-roundtrip.test.mjs   # random formatting on fixtures and corpus files, written and read back (WORD_EDIT_CORPUS=1: every corpus file)
+node tests/moreapps/handoff-format.mjs   # writes the fmt-*.docx files to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
 WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # !Word's editing round trip on every corpus file (~2 min; by default one file in ten)
 node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)

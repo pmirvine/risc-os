@@ -164,3 +164,84 @@ describe('Keymap table', () => {
       keys: ['Ctrl+']}]));
   });
 });
+
+describe('Keymap: formatting rows', () => {
+  const cases = [
+    ['b', {ctrl: true}, 'bold'],
+    ['B', {ctrl: true}, 'bold'],
+    ['i', {ctrl: true}, 'italic'],
+    ['u', {ctrl: true}, 'underline'],
+    ['l', {ctrl: true}, 'alignLeft'],
+    ['e', {ctrl: true}, 'alignCenter'],
+    ['r', {ctrl: true}, 'alignRight'],
+    ['j', {ctrl: true}, 'alignJustify'],
+    [' ', {ctrl: true}, 'clearFormat'],
+    ['=', {ctrl: true}, 'subscript'],
+    ['+', {ctrl: true, shift: true}, 'superscript'],
+    ['=', {ctrl: true, shift: true}, 'superscript'],
+    ['>', {ctrl: true, shift: true}, 'fontBigger'],
+    ['.', {ctrl: true, shift: true}, 'fontBigger'],
+    ['<', {ctrl: true, shift: true}, 'fontSmaller'],
+    [',', {ctrl: true, shift: true}, 'fontSmaller'],
+    ['m', {ctrl: true}, 'indentMore'],
+    ['M', {ctrl: true, shift: true}, 'indentLess'],
+  ];
+  for (const [key, mods, want] of cases) {
+    it(`${JSON.stringify(key)} ${JSON.stringify(mods)} -> ${want}`,
+      () => assert.equal(id(key, mods), want));
+  }
+  it('real codes: Ctrl-I is 9, Ctrl-M 13, yet the name decides', () => {
+    assert.equal(ev('i', {ctrl: true}).code, 9);
+    assert.equal(ev('m', {ctrl: true}).code, 13);
+    assert.equal(ev('b', {ctrl: true}).code, 2);
+    assert.equal(ev(' ', {ctrl: true}).code, 32);
+    assert.equal(id('Tab'), 'tab');
+    assert.equal(id('Enter'), 'enter');
+    assert.equal(id('Backspace'), 'backspace');
+  });
+  it('plain symbols, letters and space are not commands', () => {
+    for (const [key, mods] of [['b', {}], ['=', {}], [' ', {}],
+      ['>', {shift: true}], ['+', {shift: true}], ['m', {}],
+      ['b', {ctrl: true, alt: true}], ['=', {ctrl: true, alt: true}]])
+      assert.equal(id(key, mods), null, key + JSON.stringify(mods));
+  });
+  it('a bare Wimp code: Ctrl-letters, but 8, 9 and 13 stay', () => {
+    const P = (code, mods = {}) => keymap.lookup({code, key: '',
+      shift: false, ctrl: false, alt: false, ...mods});
+    assert.equal(P(2), 'bold');
+    assert.equal(P(21), 'underline');
+    assert.equal(P(12), 'alignLeft');
+    assert.equal(P(5), 'alignCenter');
+    assert.equal(P(18), 'alignRight');
+    assert.equal(P(10), 'alignJustify');
+    assert.equal(P(9), 'tab');
+    assert.equal(P(13), 'enter');
+    assert.equal(P(8), 'backspace');
+    assert.equal(keymap.lookup({code: 2}), 'bold');
+    assert.equal(keymap.lookup({code: 9}), 'tab');
+    assert.equal(keymap.lookup({code: 13}), 'enter');
+  });
+  it('labels and menu', () => {
+    assert.equal(keymap.labelFor('bold'), 'Ctrl+B');
+    assert.equal(keymap.labelFor('clearFormat'), 'Ctrl+Space');
+    assert.equal(keymap.labelFor('superscript'), 'Ctrl+Shift+=');
+    assert.equal(keymap.labelFor('subscript'), 'Ctrl+=');
+    assert.equal(keymap.labelFor('fontBigger'), 'Ctrl+Shift+>');
+    assert.equal(keymap.labelFor('indentLess'), 'Ctrl+Shift+M');
+    assert.equal(keymap.row('bold').menu, 'Format');
+    assert.equal(keymap.row('bold').label, 'Bold');
+  });
+  it('key names with symbols bind', () => {
+    const k = new Keymap().bind([{id: 'p', keys: ['Ctrl++']},
+      {id: 'm', keys: ['Ctrl+-']}, {id: 'z', keys: ['Ctrl+0']},
+      {id: 's', keys: ['Shift+Space']}]);
+    assert.equal(k.lookup({code: 43, key: '+', ctrl: true}), 'p');
+    assert.equal(k.lookup({code: 45, key: '-', ctrl: true}), 'm');
+    assert.equal(k.lookup({code: 48, key: '0', ctrl: true}), 'z');
+    assert.equal(k.lookup({code: 32, key: ' ', shift: true}), 's');
+    for (const bad of ['Ctrl+', 'Ctrl+Space+', 'Alt+B', 'Ctrl+F5',
+      'Ctrl+é'])
+      assert.throws(() => new Keymap().bind([{id: 'x', keys: [bad]}]),
+        bad);
+  });
+});

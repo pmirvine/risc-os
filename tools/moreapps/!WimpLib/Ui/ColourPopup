@@ -1,0 +1,98 @@
+// ColourPopup - a small dialogue box for choosing a colour: a grid of
+// swatches (../ColourList: 8 x 5), an Automatic button and a field
+// for any colour as 'RRGGBB'. It is opened as a menu, so a click
+// outside it closes it (and the caret goes back where it was).
+//
+//   colourPopup({task, at, current, allowAuto = true, onPick,
+//                title = 'Colour'}) -> the Window
+//     at       {x, y}: open it there (screen; its top left), as a
+//              menu; without it, the Window is returned unopened, to
+//              be a submenu (a menu item's submenu: () => ...)
+//     current  'RRGGBB' or 'auto': its swatch is outlined and the
+//              field shows it
+//     onPick(value)  value 'RRGGBB' or 'auto' (Automatic): called
+//              after the menu has closed
+// Clicking a swatch or Automatic picks it; Return in the field picks
+// what it holds (a beep when that is not a colour); Escape closes it.
+// The Window is deleted when it closes.
+import {wimp} from 'riscos';
+import {SWATCHES, COLS, ROWS, swatchAt, parseHex, cssOf}
+  from '../ColourList';
+
+const CELL = 22, PAD = 8;
+const GRID_W = COLS * CELL, GRID_H = ROWS * CELL;
+
+/** See the header. */
+export function colourPopup(opts) {
+  const {task, at, current = null, allowAuto = true, onPick,
+    title = 'Colour'} = opts;
+  const y = PAD + GRID_H + 8, W = GRID_W + 2 * PAD;
+  const hex = /^[0-9A-F]{6}$/i.test(String(current)) ?
+    String(current).toUpperCase() : '';
+  const icons = [
+    {x: PAD, y, w: 88, h: 28, text: 'Automatic', name: 'auto',
+      border: true, filled: true, hcentre: true, button: 'click',
+      validation: 'R5,3', shaded: !allowAuto,
+      help: 'Click to use the automatic colour (black, or what ' +
+        'the style says).'},
+    {x: W - PAD - 84, y, w: 84, h: 28, text: hex, name: 'hex',
+      border: true, filled: true, bg: 0, hcentre: false,
+      button: 'writable', maxLen: 7, validation: 'R7;A0-9a-fA-F#',
+      help: 'Type a colour as six hex digits, RRGGBB (red, green, ' +
+        'blue), and press Return.'},
+  ];
+  const win = task.createWindow({title, w: W, h: y + 28 + PAD,
+    extent: {w: W, h: y + 28 + PAD}, flags: {title: true},
+    colours: {workBg: 1}, icons, workButton: 'click',
+    help: 'Click a colour to use it.'});
+  win.useCanvas((g) => paint(g, current), {hiDPI: true});
+  let done = false;
+  const pick = (value) => {
+    if (done) return;
+    done = true;
+    wimp.menus.close();
+    onPick && onPick(value);
+  };
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    if (ev.icon) {
+      if (ev.icon.name === 'auto' && !ev.icon.shaded) pick('auto');
+      return true;
+    }
+    const c = swatchAt(Math.floor((ev.x - PAD) / CELL),
+      Math.floor((ev.y - PAD) / CELL));
+    if (c) pick(c);
+    return true;
+  });
+  win.on('key', (ev) => {
+    if (ev.code === 27) { wimp.menus.close(); return true; }
+    if (ev.code !== 13) return undefined;
+    const c = parseHex(win.iconByName('hex').text);
+    if (c) pick(c); else wimp.beep();
+    return true;
+  });
+  let gone = false;
+  win.on('deleted', () => { gone = true; });
+  win.on('menuclosed', () => {
+    Promise.resolve().then(() => { if (!gone) win.delete(); });
+  });
+  if (at) wimp.menus.open(win, at.x, at.y, {task});
+  return win;
+}
+
+/** The swatches, the current one outlined. */
+function paint(g, current) {
+  SWATCHES.forEach((c, i) => {
+    const x = PAD + (i % COLS) * CELL, y = PAD + Math.floor(i / COLS) *
+      CELL;
+    g.fillStyle = '#555555';
+    g.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+    g.fillStyle = cssOf(c);
+    g.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+    if (c === current) {
+      g.strokeStyle = '#000000';
+      g.lineWidth = 2;
+      g.strokeRect(x, y, CELL, CELL);
+    }
+  });
+}

@@ -3,23 +3,39 @@
 //
 //   runFmt(styles, para, run, cache)  -> {css, px, family, bold,
 //                                         italic, colour, under,
-//                                         strike}
+//                                         strike, highlight, vert,
+//                                         dy, full}
 //   paraFmt(styles, para)  -> {left, first, right, before, after,
-//                              align, factor, heading}
+//                              align, factor, heading, justify}
 //   runFamily(styles, para, run) -> the substituted family name
+//   sizeBold(styles, para, rPr, pPr?) -> {pt, bold} of a resolved rPr
 //
 // Sizes are screen pixels at 96 dpi: a twip is 1/1440 inch, so
 // px = twips / 15; w:sz is in half points, so px = sz * 2 / 3.
 // A run with no size is 11 point; headings (outline level 0 to 5 or
 // a style called Heading1..6) with no size of their own get Word's
-// heading sizes, bold. Pure: no desktop services.
+// heading sizes, bold. colour is '#rrggbb' for six hex digits, else
+// black (automatic and theme colours); highlight a CSS colour
+// (./Highlight) or null. Superscript and subscript (vert 'sup' or
+// 'sub') are drawn at 0.65 of the run's size, their baseline moved
+// by dy px (negative is up): up 0.35 of the run's full size for
+// superscript, down 0.15 of it for subscript (px and dy rounded to
+// 1/100 px; full is the px of the run's full size, which sets the
+// height of its line); other text has vert null, dy 0, full = px.
+// Pure: no desktop services.
 import {resolvePara, resolveRun} from './Styles';
 import {substitute} from './FontMap';
+import {highlightCss} from './Highlight';
 
-const HEADING_PT = [16, 13, 12, 11, 11, 11];
+const VERT = {superscript: 'sup', subscript: 'sub'};
+const SMALL = 0.65, UP = 0.35, DOWN = 0.15;
+const r100 = (v) => Math.round(v * 100) / 100;
+
+/** Word's heading sizes (points), levels 1 to 6. */
+export const HEADING_PT = [16, 13, 12, 11, 11, 11];
 
 /** The run's font name: rFonts, else a theme font, else Calibri. */
-function fontName(rPr) {
+export function fontName(rPr) {
   const f = rPr.rFonts;
   if (f && (f.ascii || f.hAnsi)) return f.ascii || f.hAnsi;
   // theme fonts (w:asciiTheme...) are kept as raw rFonts elements:
@@ -52,21 +68,35 @@ export function headingLevel(styles, para, pPr) {
 const key = (para, run) => JSON.stringify([para.pStyle, run.rStyle,
   run.rPr, para.pPr && para.pPr.outlineLvl]);
 
+/**
+ * Points and boldness of a RESOLVED rPr in `para` (the one rule for
+ * the screen and ./Format): its sz; with none, Word's heading size in
+ * a heading (bold too unless b is set) or 11. pPr: the resolved
+ * paragraph properties (made when needed if not given).
+ */
+export function sizeBold(styles, para, rPr, pPr) {
+  const pt = Number.isInteger(rPr.sz) && rPr.sz > 0 ? rPr.sz / 2 : 0;
+  if (pt) return {pt, bold: rPr.b === true};
+  const h = headingLevel(styles, para,
+    pPr || resolvePara(styles, para));
+  return {pt: h ? HEADING_PT[h - 1] : 11,
+    bold: rPr.b === true || (h > 0 && rPr.b === undefined)};
+}
+
 /** The look of `run` in `para` (cached by its properties). */
 export function runFmt(styles, para, run, cache) {
   const k = key(para, run);
   const got = cache && cache.get(k);
   if (got) return got;
   const rPr = resolveRun(styles, para, run);
-  let pt = Number.isInteger(rPr.sz) && rPr.sz > 0 ? rPr.sz / 2 : 0;
-  let bold = rPr.b === true;
-  if (!pt) {
-    const h = headingLevel(styles, para, resolvePara(styles, para));
-    pt = h ? HEADING_PT[h - 1] : 11;
-    if (h && rPr.b === undefined) bold = true;
-  }
-  pt = Math.min(Math.max(pt, 4), 200);
-  const px = Math.round(pt * 4 / 3 * 100) / 100;
+  const look = sizeBold(styles, para, rPr);
+  const bold = look.bold;
+  const pt = Math.min(Math.max(look.pt, 4), 200);
+  const full = r100(pt * 4 / 3);
+  const vert = VERT[rPr.vertAlign] || null;
+  const px = vert ? r100(full * SMALL) : full;
+  const dy = vert === 'sup' ? -r100(full * UP)
+    : vert === 'sub' ? r100(full * DOWN) : 0;
   const italic = rPr.i === true;
   const sub = substitute(fontName(rPr));
   const c = typeof rPr.color === 'string' &&
@@ -77,6 +107,7 @@ export function runFmt(styles, para, run, cache) {
     px, family: sub.family, bold, italic, colour: c,
     under: typeof rPr.u === 'string' && rPr.u !== 'none',
     strike: rPr.strike === true,
+    highlight: highlightCss(rPr.highlight), vert, dy, full,
   };
   if (cache) cache.set(k, f);
   return f;
@@ -104,6 +135,7 @@ export function paraFmt(styles, para) {
   if (Number.isInteger(ind.hanging)) first = -tw(ind.hanging, IND);
   const left = Math.max(0, tw(ind.left, IND));
   const jc = pPr.jc;
+  // 'both' is justified (./LineLayout); 'distribute' is shown left
   const align = jc === 'center' ? 'center'
     : jc === 'right' || jc === 'end' ? 'right' : 'left';
   // line spacing: only 'auto' (in 240ths of a line) is honoured
@@ -117,6 +149,7 @@ export function paraFmt(styles, para) {
     first: Math.max(first, -left),    // (never left of the margin)
     before: Math.max(0, tw(sp.before, SPACE)),
     after: Math.max(0, tw(sp.after, SPACE)), align, factor,
+    justify: jc === 'both',
     heading: headingLevel(styles, para, pPr),
   };
 }

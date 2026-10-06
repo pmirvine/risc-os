@@ -2,7 +2,8 @@
 // the text on its page: paragraphs and kept blocks stacked, and
 // positions ({id, off}, ./DocPos) <-> places in the work area.
 //
-//   const L = new DocLayout(doc, metrics, prev?)  (WimpLib/TextMetrics)
+//   const L = new DocLayout(doc, metrics, prev?, {top}?)
+//                           (metrics: WimpLib/TextMetrics)
 //                           prev: an older layout of doc with the
 //                           same metrics, after an edit: the lines
 //                           of every block object it had are kept
@@ -10,12 +11,15 @@
 //                           metrics and the text width; it must
 //                           grow when styles or numbering can be
 //                           edited, as lines depend on them too)
+//                           top: px above everything (a toolbar over
+//                           the window's top), 0..1000; prev's when
+//                           not given
 //   L.layout(viewWidth) -> {w, h}: the work area's extent
 //   L.items  [{id, block, kind: 'p'|'box', index, y, h, lines?,
 //             label?}] in document order; a 'p' item is also the
 //             pl ({para, y, h, lines, metrics}) of ./PositionMap
 //   L.byId   Map id -> item
-//   L.left, L.textW, L.pageLeft, L.pageW: the column (px)
+//   L.left, L.textW, L.pageLeft, L.pageW: the column (px); L.top
 //   L.itemAtY(y)            -> the item at y (clamped to the ends)
 //   L.locate(pos)           -> {item, index, off} (off clamped), or
 //                              null for an id not in the document
@@ -32,8 +36,8 @@
 // (twips; A4 with 1-inch margins when it has none): (w - left -
 // right) / 15, clamped to 80..4000 px. The page (pgSz.w / 15 px, at
 // most margins + text) is centred in the view, at least 24 px from
-// its left edge; the text starts at the page's left margin. 24 px
-// above the first item and below the last. Lines depend only on the
+// its left edge; the text starts at the page's left margin. top + 24
+// px above the first item, 24 below the last. Lines depend only on the
 // text width, so a new view width moves the column and nothing else.
 // A kept block is one box item, labelled with its kind; the caret
 // stands before it (off 0, its left edge) or after it (off 1, its
@@ -52,15 +56,17 @@ const num = (v, d) => (Number.isFinite(v) ? v : d);
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
 export class DocLayout {
-  constructor(doc, metrics, prev) {
+  constructor(doc, metrics, prev, opts = {}) {
     this.doc = doc;
+    const top = opts.top === undefined && prev ? prev.top : opts.top;
+    this.top = clamp(num(top, 0), 0, 1000);
     this.metrics = metrics;
     this.cache = new Map();            // run formats (./Fmt)
     this.items = [];
     this.byId = new Map();
     this.laid = false;
     this.width = 0;
-    this.height = 2 * MARGIN;
+    this.height = 2 * MARGIN + this.top;
     const sp = (doc.sections[0] && doc.sections[0].props) || {};
     const sz = sp.pgSz || {}, mar = sp.pgMar || {};
     const pw = num(sz.w, 11906);
@@ -107,7 +113,7 @@ export class DocLayout {
 
   /** Break every paragraph and stack the items. */
   stack() {
-    let y = MARGIN;
+    let y = MARGIN + this.top;
     const styles = this.doc.styles;
     for (const it of this.items) {
       if (it.kind === 'p' && !it.lines) {

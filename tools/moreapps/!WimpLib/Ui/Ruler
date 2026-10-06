@@ -1,0 +1,206 @@
+// Ruler - a horizontal ruler across a window, under its toolbar: a
+// pane (kept in front of its parent, moved with it, as wide as it)
+// marked in inches over the page (../RulerMath: every 1/8 inch, the
+// half inches longer, the inches numbered out from the text's left
+// edge both ways, as Word numbers them), the page's margins grey, and
+// markers that can be dragged (small triangles and boxes). Drawn by
+// ./RulerPaint.
+//
+//   const r = new Ruler({task, parent, dy = 0, height = 24, menu,
+//                        help})
+//     menu(ev) -> a Menu for a Menu click on the ruler, or nothing;
+//     help: the ruler's interactive help
+//   r.setScale({origin, page: [x0, x1], text: [x0, x1], zoom,
+//               scrollX})  px in the PARENT's work area: origin is
+//                      where 0 is (twips are measured from it), page
+//                      and text the page and the text between its
+//                      margins (outside the text: grey); scrollX the
+//                      parent's (the ruler scrolls across with it)
+//   r.setMarkers([{id, twips, kind, help}])  kind 'down' (a triangle
+//                      at the top), 'up' (at the bottom), 'box' (under
+//                      an 'up' one)
+//   r.on('drag', fn), r.on('commit', fn)  fn({id, twips, free}): a
+//                      marker dragged (Select or Adjust): the
+//                      pointer's place in twips (kept at the same
+//                      distance from the marker as where it was
+//                      pressed), free while Shift is held; 'commit'
+//                      once when the button is let go, wherever the
+//                      pointer is. The client snaps and clamps, and
+//                      sets the markers (a dotted line marks the
+//                      dragged one meanwhile)
+//   r.on('end', fn)    fn({id}): the drag is over, committed or not
+//                      (a cancelled pointer gives no place: no
+//                      'commit'); the client sets the markers again
+//   r.dragging         the id of the marker being dragged, or null
+//   r.show(on), r.shown   shown or hidden (hidden: the pane is closed
+//                      each time its parent opens it)
+//   r.paints           how many times it has been drawn (tests)
+//   r.pane, r.destroy()   the pane; deleted (safe twice)
+// Setting the scale or the markers to what they were draws nothing,
+// so they can be set on every move of the window. The ruler never
+// takes the caret.
+import {wimp, os} from 'riscos';
+import {toPx, toTwips} from '../RulerMath';
+import {paintRuler} from './RulerPaint';
+import {forwardWheel} from './PaneWheel';
+
+const NEAR = 6;                        // px: a press this near a marker
+
+/** Whether Shift is held now. */
+const shiftDown = () => {
+  const k = os.input && os.input.keysDown;
+  return !!k && (k.has('ShiftLeft') || k.has('ShiftRight'));
+};
+
+export class Ruler {
+  constructor({task, parent, dy = 0, height = 24, menu, help}) {
+    this.parent = parent;
+    this.dy = dy;
+    this.height = height;
+    this.scale = null;
+    this.markers = [];
+    this.handlers = {drag: [], commit: [], end: []};
+    this.dragging = null;
+    this.shown = true;
+    this.paints = 0;
+    this._dead = false;
+    const pane = this.pane = task.createWindow({
+      flags: {pane: true}, colours: {workBg: 1}, x: 0, y: 0, w: 200,
+      h: height, extent: {w: 8000, h: height}, icons: [],
+      workButton: 'clickdrag',
+    });
+    pane.helpText = help || null;
+    pane.useCanvas((g) => this._paint(g), {hiDPI: true});
+    pane.on('deleted', () => { this._dead = true; });
+    pane.on('click', (ev) => {
+      if (ev.button === 'menu') {
+        const m = menu && menu(ev);
+        if (m) wimp.menus.openAt(m, ev, {task});
+      }
+      return true;
+    });
+    pane.on('drag', (ev) => this._drag(ev));
+    pane.on('helprequest', (ev) => {
+      const m = this._at(ev.x, ev.y);
+      if (m && m.help) ev.text = m.help;
+    });
+    parent.attachPane(pane, {dx: 0, dy, h: height, fitWidth: true});
+    forwardWheel(pane, parent);
+    // hidden: closed again each time the parent opens it
+    const hide = () => {
+      if (!this.shown && pane.isOpen) pane.close();
+    };
+    this._offs = [parent.on('moved', hide), parent.on('opened', hide)];
+  }
+
+  on(kind, fn) { this.handlers[kind].push(fn); }
+
+  _emit(kind, ev) {
+    for (const fn of this.handlers[kind].slice()) fn(ev);
+  }
+
+  setScale(s) {
+    const o = this.scale;
+    if (o && o.origin === s.origin && o.scrollX === s.scrollX &&
+      o.zoom === s.zoom && o.page[0] === s.page[0] &&
+      o.page[1] === s.page[1] && o.text[0] === s.text[0] &&
+      o.text[1] === s.text[1]) return;
+    this.scale = {...s, page: [...s.page], text: [...s.text]};
+    this._redraw();
+  }
+
+  setMarkers(list) {
+    const o = this.markers;
+    if (o.length === list.length && list.every((m, i) =>
+      m.id === o[i].id && m.twips === o[i].twips &&
+      m.kind === o[i].kind)) return;
+    this.markers = list.map((m) => ({...m}));
+    this._redraw();
+  }
+
+  show(on) {
+    this.shown = !!on;
+    if (this._dead) return;
+    const p = this.parent, pane = this.pane;
+    if (!this.shown) { pane.close(); return; }
+    if (!p.isOpen || pane.isOpen) return;
+    // (as the parent's attachPane places it; stacked in front of it)
+    pane.open({x: p.x, y: p.y + this.dy, w: p.w, h: this.height,
+      behind: 'keep'});
+    this._redraw();
+  }
+
+  _redraw() {
+    if (!this._dead && this.pane.isOpen) this.pane.invalidate();
+  }
+
+  /** The pane's x of a twips value. */
+  _x(twips) {
+    const s = this.scale;
+    return s.origin + toPx(twips, s.zoom) - s.scrollX;
+  }
+
+  /** The marker at pane point (x, y), or null. */
+  _at(x, y) {
+    if (!this.scale) return null;
+    const h = this.height, band = (m) => (m.kind === 'down'
+      ? y < h * 0.4 : m.kind === 'up' ? y >= h * 0.4 && y < h * 0.8
+        : y >= h * 0.8);
+    let best = null, bd = NEAR + 1;
+    for (const pass of [true, false]) {
+      for (const m of this.markers) {
+        const d = Math.abs(this._x(m.twips) - x);
+        if (d < bd && (!pass || band(m))) { best = m; bd = d; }
+      }
+      if (best) return best;
+    }
+    return null;
+  }
+
+  _drag(ev) {
+    if (ev.button === 'menu' || !this.scale) return true;
+    const m = this._at(ev.x, ev.y);
+    if (!m) return true;
+    const pane = this.pane, id = m.id;
+    const grab = ev.x - this._x(m.twips);
+    this.dragging = id;
+    this._redraw();
+    const twipsAt = (sx, sy) => {
+      const s = this.scale;
+      const p = pane.screenToWork(sx, sy);
+      return toTwips(p.x - grab + s.scrollX - s.origin, s.zoom);
+    };
+    const live = (sx, sy, free) => {
+      if (this._dead) return;
+      // (the client sets the markers: that draws it again)
+      this._emit('drag', {id, twips: twipsAt(sx, sy), free});
+    };
+    wimp.drag({type: 'point', event: ev.pointerEvent,
+      onMove: (s) => live(s.sx, s.sy, shiftDown()),
+      onEnd: (d) => {
+        this.dragging = null;
+        if (this._dead) return;
+        const free = d && d.shift !== undefined ? !!d.shift
+          : shiftDown();
+        if (d && Number.isFinite(d.sx)) {
+          this._emit('commit', {id, twips: twipsAt(d.sx, d.sy), free});
+        }
+        this._emit('end', {id});
+        this._redraw();
+      }});
+    return true;
+  }
+
+  _paint(g) {
+    this.paints++;
+    paintRuler(g, this);
+  }
+
+  destroy() {
+    for (const off of this._offs) off();
+    this._offs = [];
+    this.handlers = {drag: [], commit: [], end: []};
+    if (!this._dead) this.pane.delete();
+    this._dead = true;
+  }
+}

@@ -1,0 +1,113 @@
+// EditFormat - formatting in a document's window (./EditView): the
+// pending format, the formatting of the selection, and who is told
+// when it changes. The view calls these; they use only the view.
+//
+//   initFormat(v)        v.pending (./Pending, EMPTY at first),
+//                        v.selRev (0), v.formatListeners ([])
+//   touch(v)             the selection, the document or the pending
+//                        format changed: v.selRev goes up by one and
+//                        the listeners are called (fn(v)) at the
+//                        next animation frame, once however many
+//                        changes came before it
+//   dropPending(v)       no pending format (the caret moved, the
+//                        selection changed, a command that is not a
+//                        format ran); touches when there was one
+//   formatQuery(v) -> ./Format.query of the selection with the
+//                        pending format; made again only when
+//                        v.selRev has changed (so the menus and the
+//                        toolbar can ask as often as they like)
+//   formatRun(v, id, arg) -> true if applied: ./FormatApply.apply on
+//                        the selection with the pending format, the
+//                        pending format it gives kept; false for an
+//                        id that is not a format, no selection, a
+//                        closed window or an argument refused
+//                        (RangeError: nothing changed). The command
+//                        breaks the typing's undo step
+//                        (typing.command); the new layout comes at
+//                        the next frame (v.edited)
+//   docFonts(v) -> the fonts the document's text is in (./Info.facts),
+//                        found once after each change of the document
+//                        (not on every menu or popup)
+//   stopFormat(v)        no more listener calls (the window closes)
+import {query} from './Format';
+import {facts} from './Info';
+import {apply, isFormat} from './FormatApply';
+import {EMPTY, isEmpty} from './Pending';
+
+/** See the header. */
+export function initFormat(v) {
+  v.pending = EMPTY;
+  v.selRev = 0;
+  v.formatListeners = [];
+  v._q = null;
+  v._qRev = -1;
+  v._fraf = 0;
+  v._fonts = null;
+  v._fontsOff = v.d.on('change', () => { v._fonts = null; });
+}
+
+/** Call the listeners (see touch). */
+function fire(v) {
+  v._fraf = 0;
+  for (const fn of v.formatListeners.slice()) {
+    try {
+      fn(v);
+    } catch (e) {
+      console.error(e);
+    }
+  }
+}
+
+/** See the header. */
+export function touch(v) {
+  v.selRev++;
+  if (!v._fraf && v.formatListeners.length) {
+    v._fraf = requestAnimationFrame(() => fire(v));
+  }
+}
+
+/** See the header. */
+export function dropPending(v) {
+  if (isEmpty(v.pending)) return;
+  v.pending = EMPTY;
+  touch(v);
+}
+
+/** See the header. */
+export function formatQuery(v) {
+  if (v._qRev !== v.selRev || !v._q) {
+    v._q = query(v.d.doc, v.sel || {}, v.pending);
+    v._qRev = v.selRev;
+  }
+  return v._q;
+}
+
+/** See the header. */
+export function formatRun(v, id, arg) {
+  if (!isFormat(id) || !v.sel || !v.win.isOpen) return false;
+  let out;
+  try {
+    out = apply(id, v.d, v.typing, v.sel, arg, v.pending);
+  } catch (e) {
+    if (e instanceof RangeError) return false;
+    throw e;
+  }
+  v.pending = out.pending || EMPTY;
+  v.edited(out.sel);
+  return true;
+}
+
+/** See the header. */
+export function docFonts(v) {
+  if (!v._fonts) v._fonts = facts(v.d.doc).fonts;
+  return v._fonts;
+}
+
+/** See the header. */
+export function stopFormat(v) {
+  if (v._fontsOff) v._fontsOff();
+  v._fontsOff = null;
+  if (v._fraf) cancelAnimationFrame(v._fraf);
+  v._fraf = 0;
+  v.formatListeners.length = 0;
+}

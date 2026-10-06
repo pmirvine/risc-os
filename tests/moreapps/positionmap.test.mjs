@@ -292,9 +292,14 @@ function rng(seed) {
 }
 
 /** A random paragraph: words, emoji, runs, tabs, breaks, inlines. */
-function generated(seed, w) {
+function generated(seed, w, jc) {
   const rnd = rng(seed), pick = (a) => a[Math.floor(rnd() * a.length)];
   const fmts = [{}, {}, {b: true}, {sz: 40}];
+  // justified: also superscript, subscript and highlight
+  if (jc) {
+    fmts.push({vertAlign: 'superscript'}, {vertAlign: 'subscript',
+      highlight: 'yellow'}, {highlight: 'green', b: true});
+  }
   let text = '';
   const runs = [], inlines = {};
   let fmt = {}, start = 0;
@@ -327,6 +332,7 @@ function generated(seed, w) {
   }
   if (text.length > start) runs.push([start, text.length, fmt]);
   const opts = {inlines, pPr: {jc: pick(['left', 'center', 'right'])}};
+  if (jc) opts.pPr.jc = jc;
   if (runs.length) {
     opts.runs = runs.map(([s, e, rPr]) => ({start: s, end: e,
       rPr: {...rPr, extra: []}}));
@@ -343,9 +349,11 @@ function stops(pl) {
 }
 
 describe('PositionMap round trip', () => {
-  it('hitTest(caretRect(off)) gives off on 500 paragraphs', () => {
+  for (const jc of [undefined, 'both']) {
+  it(`hitTest(caretRect(off)) gives off on 500 paragraphs${jc
+    ? ' (justified)' : ''}`, () => {
     for (let s = 1; s <= 500; s++) {
-      const pl = generated(s, [90, 160, 400][s % 3]);
+      const pl = generated(s, [90, 160, 400][s % 3], jc);
       const items = pl.lines.flatMap((l) => l.items);
       const offs = stops(pl), rnd = rng(s * 7);
       for (let k = 0; k < 30 && offs.length; k++) {
@@ -365,6 +373,7 @@ describe('PositionMap round trip', () => {
       }
     }
   });
+  }
 });
 const g = (pl) => new Set(graphemes(pl.para.text));
 

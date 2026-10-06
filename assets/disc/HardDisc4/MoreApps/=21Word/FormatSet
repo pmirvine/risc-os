@@ -1,0 +1,216 @@
+// FormatSet - the formatting commands of !Word.
+//
+// Every command takes (d, typing, sel, ..., pending?) and returns
+// {sel, pending}: sel is the selection it was given (formatting moves
+// nothing) and pending the pending format (./Pending) the view keeps
+// for the text typed next:
+//   a caret      character commands (toggle, setChar, sizeBy,
+//                clearFormat, a character style) change no document
+//                and return the new pending format; paragraph
+//                commands change the caret's paragraph and return
+//                pending as it was given
+//   a selection  the command formats it; pending is cleared (EMPTY)
+// d is a ./Document, typing its ./Typing (or null). A command is one
+// undo step (typing.command and d.atomic: all or nothing), none when
+// it changes nothing. Bad arguments throw RangeError first.
+//
+//   toggle(d, typing, sel, key, pending)  key: bold italic underline
+//       strike superscript subscript. Word's rule: when every
+//       selected character has it, it goes, otherwise all get it;
+//       superscript and subscript exclude each other (one vertAlign)
+//   setChar(d, typing, sel, patch, pending)  ./FormatCheck.charPatch
+//   sizeBy(d, typing, sel, steps, pending)   each run's size moves
+//       steps along Word's list (Ctrl+Shift+> 1, Ctrl+Shift+< -1)
+//   stepSize(pt, steps) -> pt  that list: 8 9 10 11 12 14 16 18 20
+//       22 24 26 28 36 48 72, then tens up to 400; below 8 by 1
+//       down to 1
+//   clearFormat(d, typing, sel, pending)  removes the run fields
+//       rFonts b i strike color sz szCs highlight u vertAlign and
+//       rStyle (raw run properties, such as caps, stay)
+//   applyStyle(d, typing, sel, id, pending)  a paragraph style on
+//       the paragraphs, a character style on the selected runs (the
+//       default style of the type: the key removed); an id that is
+//       not a paragraph or character style: RangeError
+//   setPara, indentBy, clearParaFormat  ./FormatPara
+//
+// Written values are explicit (b:false in a heading bold by its
+// style) and removed (null) when the run's styles give that value
+// already, so formatting back and forth leaves the runs as they were
+// (./OpsProps merges them again). Ops: ./FormatOps (one setProps per
+// paragraph formatted alike: a 50,000 paragraph selection is linear).
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {collapsed} from './Selection';
+import {EMPTY, merge, onRun} from './Pending';
+import {resolver, charOf, canon, look} from './FormatEff';
+import {touched, caretAt, buildOps, charOps, runOps, pieces}
+  from './FormatOps';
+import {charPatch} from './FormatCheck';
+import {paraStyle} from './FormatPara';
+
+export {setPara, indentBy, clearParaFormat} from './FormatPara';
+
+/**
+ * Run patchFor(p, run, res) -> {rPr?, rStyle?} | null over the
+ * selected runs, or over the caret's format into pending.
+ */
+function charCommand(d, typing, sel, pending, patchFor) {
+  const res = resolver(d.doc);
+  if (collapsed(sel)) {
+    if (typing) typing.command(() => {});
+    const at = caretAt(d.doc, sel);
+    if (!at) return {sel, pending: pending || EMPTY};
+    const patch = patchFor(at.p, onRun(at.base, pending), res) || {};
+    const flat = {...(patch.rPr || {})};
+    if (patch.rStyle !== undefined) flat.rStyle = patch.rStyle;
+    return {sel, pending: merge(pending, flat, at.base)};
+  }
+  const ops = buildOps(d.doc, sel,
+    (en) => charOps(en, (r) => patchFor(en.p, r, res)));
+  runOps(d, typing, ops);
+  return {sel, pending: EMPTY};
+}
+
+/**
+ * values (field -> value) made explicit for run r of p. Bold is the
+ * effective bold of ./Fmt.sizeBold (a heading with no size is bold
+ * unless b is set): b is compared with what the run shows without
+ * its own b, and a size change makes b what keeps the text as bold
+ * as it was (written only when the rest does not give it). A size
+ * is removed only when the style chain gives that very size; where
+ * no style gives one it is always written (Word shows 10 pt there,
+ * !Word 11 pt: the file says what was chosen).
+ */
+function explicit(values, p, r, res) {
+  const rr = res.run(p, r.rPr, r.rStyle);
+  const inh = res.base(p, r.rStyle);
+  const out = {};
+  let sz = rr.sz;
+  for (const f of Object.keys(values)) {
+    const v = values[f];
+    if (f === 'sz') {
+      const none = v === null || (inh.sz !== undefined && v === inh.sz);
+      out.sz = none ? null : v;
+      out.szCs = v === null || v === inh.szCs ? null : v;
+      sz = none ? inh.sz : v;
+    } else if (f === 'b') continue;
+    else if (f === 'rFonts' || v === null) out[f] = v;
+    else out[f] = canon(f, v) === canon(f, inh[f]) ? null : v;
+  }
+  const after = {...rr, sz};
+  let b = values.b;
+  if (b === undefined && sz !== rr.sz) b = look(rr, p, res).bold;
+  if (b !== undefined) {
+    out.b = b === null ||
+      look({...after, b: inh.b}, p, res).bold === b ? null : b;
+  }
+  return {rPr: out};
+}
+
+// key -> [field, value on, value off]
+const TOGGLE = {bold: ['b', true, false], italic: ['i', true, false],
+  underline: ['u', 'single', 'none'], strike: ['strike', true, false],
+  superscript: ['vertAlign', 'superscript', 'baseline'],
+  subscript: ['vertAlign', 'subscript', 'baseline']};
+
+/** Whether resolved rPr rr of p has field f at its on value. */
+function has(f, on, rr, p, res) {
+  if (f === 'b') return look(rr, p, res).bold;
+  return f === 'u' ? canon('u', rr.u) !== 'none'
+    : canon(f, rr[f]) === canon(f, on);
+}
+
+/** Whether every selected character (or the caret's) has f = on. */
+function allHave(d, sel, pending, f, on, res) {
+  const hit = (p, r) => has(f, on, res.run(p, r.rPr, r.rStyle), p,
+    res);
+  if (collapsed(sel)) {
+    const at = caretAt(d.doc, sel);
+    return !!at && hit(at.p, onRun(at.base, pending));
+  }
+  let any = false;
+  for (const en of touched(d.doc, sel) || []) {
+    for (const r of en.p.runs) {
+      if (!pieces(en.p, Math.max(r.start, en.a),
+        Math.min(r.end, en.e)).length) continue;
+      if (!hit(en.p, r)) return false;
+      any = true;
+    }
+  }
+  return any;
+}
+
+/** See the header. */
+export function toggle(d, typing, sel, key, pending) {
+  if (!Object.hasOwn(TOGGLE, key)) fail('bad toggle ' + key);
+  const [f, on, off] = TOGGLE[key];
+  const res = resolver(d.doc);
+  const v = allHave(d, sel, pending, f, on, res) ? off : on;
+  return charCommand(d, typing, sel, pending,
+    (p, r) => explicit({[f]: v}, p, r, res));
+}
+
+/** See the header. */
+export function setChar(d, typing, sel, patch, pending) {
+  const v = charPatch(patch);
+  const res = resolver(d.doc);
+  return charCommand(d, typing, sel, pending,
+    (p, r) => explicit(v, p, r, res));
+}
+
+const LIST = [8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36,
+  48, 72];
+
+function up(pt) {
+  if (pt < 8) return Math.min(Math.floor(pt) + 1, 8);
+  const n = LIST.find((x) => x > pt);
+  return n !== undefined ? n : Math.min(Math.floor(pt / 10) * 10 + 10,
+    400);
+}
+
+function down(pt) {
+  if (pt > 80) return Math.ceil(pt / 10) * 10 - 10;
+  if (pt > 72) return 72;
+  const n = LIST.filter((x) => x < pt).pop();
+  return n !== undefined ? n : Math.max(Math.ceil(pt) - 1, 1);
+}
+
+/** See the header. */
+export function stepSize(pt, steps) {
+  let v = pt;
+  const n = Math.min(Math.abs(Math.trunc(steps)), 100);
+  for (let k = 0; k < n; k++) v = steps > 0 ? up(v) : down(v);
+  return v;
+}
+
+/** See the header. */
+export function sizeBy(d, typing, sel, steps, pending) {
+  if (!Number.isInteger(steps)) fail('bad size step');
+  const res = resolver(d.doc);
+  return charCommand(d, typing, sel, pending, (p, r) => {
+    const pt = charOf(res.run(p, r.rPr, r.rStyle), p, res).size;
+    const sz = Math.min(Math.max(Math.round(stepSize(pt, steps) * 2),
+      2), 800);
+    return explicit({sz}, p, r, res);
+  });
+}
+
+const CLEAR = {rPr: {rFonts: null, b: null, i: null, strike: null,
+  color: null, sz: null, szCs: null, highlight: null, u: null,
+  vertAlign: null}, rStyle: null};
+
+/** See the header. */
+export const clearFormat = (d, typing, sel, pending) =>
+  charCommand(d, typing, sel, pending, () => CLEAR);
+
+/** See the header. */
+export function applyStyle(d, typing, sel, id, pending) {
+  const st = d.doc.styles;
+  const s = typeof id === 'string' && st ? st.styles.get(id) : null;
+  if (!s || (s.type !== 'paragraph' && s.type !== 'character'))
+    fail('no such style: ' + id);
+  const v = id === st.defaults[s.type] ? null : id;
+  if (s.type === 'paragraph')
+    return paraStyle(d, typing, sel, v, pending);
+  return charCommand(d, typing, sel, pending, () => ({rStyle: v}));
+}

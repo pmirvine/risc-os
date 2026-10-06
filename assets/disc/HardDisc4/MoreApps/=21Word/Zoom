@@ -1,0 +1,126 @@
+// Zoom - the zoom of a document's window: a view transform. The
+// layout (./DocLayout) stays at 100% (96 dpi, 1 px = 15 twips); the
+// window shows it z times as large (z = percent / 100). The top px
+// of the work area (L.top: what the toolbar and the ruler cover) are
+// not scaled: the page starts just below them at every zoom, and
+// everything under them is scaled:
+//
+//   screen x = layout x * z
+//   screen y = top + (layout y - top) * z
+//
+// ("screen": the window's work area, the coordinates of its canvas,
+// mouse events, scrolling and the Wimp's caret; "layout": L's.)
+//
+//   ZOOMS                 the steps of the Zoom menu (percent)
+//   MIN, MAX              10 and 500: the range a zoom is kept in
+//   clampZoom(pct)        a whole percent in MIN..MAX (not a finite
+//                         number: 100)
+//   step(pct, dir)        the next step of ZOOMS above pct (dir > 0)
+//                         or below it (dir < 0); none: pct
+//   wheelStep(pct, dy)    up (dy < 0) a step in, down a step out
+//   WHEEL0, wheelAcc(state, dy, t) -> {state, dir}  Ctrl+wheel: the
+//                         wheel's dy added up (a pause of IDLE ms or
+//                         a turn the other way starts again); dir 1
+//                         (in) or -1 (out) when it reaches NOTCH and
+//                         the last step was GAP ms or more before t,
+//                         else 0. So a mouse's notch (100) is a step,
+//                         and a touchpad's stream of small moves (or
+//                         a burst of them) steps at most every GAP ms
+//   toScreen(x, y, z, top), toLayout(x, y, z, top) -> {x, y}
+//   layoutRect({x0, y0, x1, y1}, z, top)  a screen rect in layout px
+//   caretOf({x, y, h}, z, top)   a caret on the screen (h scaled)
+//   extentOf({w, h}, z, top)     the work area's extent for a
+//                         layout's extent (whole px)
+//   zoomScroll(oldScroll, viewSize, oldZ, newZ, top = 0) -> the new
+//                         scroll offset that keeps the centre of what
+//                         can be seen (below top) where it was (not
+//                         below 0)
+//   zoomScrollX(oldScroll, viewW, oldZ, newZ, oldPageLeft,
+//               newPageLeft) -> the same across: the layout is laid
+//                         out again for the window's width / zoom, so
+//                         its page moves (pageLeft, layout px): the
+//                         place on the page at the centre is kept
+// Pure: no desktop services.
+
+export const ZOOMS = [50, 75, 100, 125, 150, 200];
+export const MIN = 10, MAX = 500;
+export const NOTCH = 100, GAP = 100, IDLE = 300;
+export const WHEEL0 = Object.freeze({acc: 0, at: -Infinity,
+  last: -Infinity});
+
+/** See the header. */
+export function clampZoom(pct) {
+  if (typeof pct !== 'number' || !Number.isFinite(pct)) return 100;
+  return Math.round(Math.min(Math.max(pct, MIN), MAX));
+}
+
+/** See the header. */
+export function step(pct, dir) {
+  const p = clampZoom(pct);
+  if (dir > 0) return ZOOMS.find((s) => s > p) ?? p;
+  if (dir < 0) return [...ZOOMS].reverse().find((s) => s < p) ?? p;
+  return p;
+}
+
+/** See the header. */
+export function wheelStep(pct, dy) {
+  if (!(dy < 0 || dy > 0)) return clampZoom(pct);
+  return step(pct, dy < 0 ? 1 : -1);
+}
+
+/** See the header. */
+export const toScreen = (x, y, z, top) =>
+  ({x: x * z, y: top + (y - top) * z});
+
+/** See the header. */
+export const toLayout = (x, y, z, top) =>
+  ({x: x / z, y: top + (y - top) / z});
+
+/** See the header. */
+export function layoutRect(r, z, top) {
+  const a = toLayout(r.x0, r.y0, z, top);
+  const b = toLayout(r.x1, r.y1, z, top);
+  return {x0: a.x, y0: a.y, x1: b.x, y1: b.y};
+}
+
+/** See the header. */
+export function caretOf(c, z, top) {
+  if (!c) return null;
+  const p = toScreen(c.x, c.y, z, top);
+  return {x: p.x, y: p.y, h: c.h * z};
+}
+
+/** See the header. */
+export function extentOf(r, z, top) {
+  return {w: Math.ceil(r.w * z), h: Math.ceil(top + (r.h - top) * z)};
+}
+
+/** See the header. */
+export function zoomScroll(oldScroll, viewSize, oldZ, newZ, top = 0) {
+  if (!Number.isFinite(oldScroll)) return 0;
+  const mid = (top + viewSize) / 2;
+  const l = toLayout(0, oldScroll + mid, oldZ, top).y;
+  const s = toScreen(0, l, newZ, top).y - mid;
+  return Math.max(0, Math.round(s));
+}
+
+/** See the header. */
+export function zoomScrollX(oldScroll, viewW, oldZ, newZ, p0, p1) {
+  if (!Number.isFinite(oldScroll)) return 0;
+  const lx = (oldScroll + viewW / 2) / oldZ - p0;
+  return Math.max(0, Math.round((lx + p1) * newZ - viewW / 2));
+}
+
+/** See the header. */
+export function wheelAcc(st, dy, t) {
+  if (!(dy < 0 || dy > 0)) return {state: st, dir: 0};
+  const turned = st.acc && Math.sign(st.acc) !== Math.sign(dy);
+  let acc = t - st.at > IDLE || turned ? dy : st.acc + dy;
+  let last = st.last, dir = 0;
+  if (Math.abs(acc) >= NOTCH && t - last >= GAP) {
+    dir = acc < 0 ? 1 : -1;
+    acc = 0;
+    last = t;
+  }
+  return {state: {acc, at: t, last}, dir};
+}

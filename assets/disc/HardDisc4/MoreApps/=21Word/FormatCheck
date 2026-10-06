@@ -1,0 +1,126 @@
+// FormatCheck - the values the formatting commands (./FormatSet)
+// accept, checked and put in the form the model holds. Each throws
+// RangeError for a value it does not accept (the command then
+// changes nothing).
+//
+//   charPatch(patch) -> {b?, i?, u?, strike?, sz?, color?,
+//       highlight?, vertAlign?, rFonts?}
+//       b, i, strike  true | false | null
+//       u             a Word underline name ('single'...), true
+//                     ('single'), false ('none') or null
+//       sz            half-points, rounded and clamped to 2..800
+//                     (1..400 pt)
+//       color         'RRGGBB' (made upper case), 'auto' or null
+//       highlight     a Word highlight name, 'none' or null
+//       vertAlign     'superscript' | 'subscript' | 'baseline' | null
+//       rFonts        a family name or {ascii, hAnsi}: written as
+//                     {ascii, hAnsi} (merged, so eastAsia, cs and
+//                     hint stay), or null
+//   paraPatch(patch) -> {jc?, ind?, spacing?}
+//       jc            'left' | 'center' | 'right' | 'both' | null
+//       ind           {left, right, firstLine, hanging}: twips
+//                     (clamped to +-31680) or null; firstLine and
+//                     hanging are one property (./FormatPara): both
+//                     at once is refused, setting one deletes the
+//                     other
+//       spacing       {before, after, line} twips (0..31680) or null,
+//                     lineRule 'auto' | 'exact' | 'atLeast' | null
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {HIGHLIGHT} from './Highlight';
+
+/** Word's highlight colours (the names of ./Highlight). */
+export const HIGHLIGHTS = Object.keys(HIGHLIGHT);
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const clamp = (v, lo, hi) => Math.min(Math.max(Math.round(v), lo), hi);
+
+function num(v, lo, hi, what) {
+  if (v === null) return null;
+  if (typeof v !== 'number' || !Number.isFinite(v)) fail('bad ' + what);
+  return clamp(v, lo, hi);
+}
+
+function oneOf(v, list, what) {
+  if (v === null || list.includes(v)) return v;
+  return fail('bad ' + what + ' ' + v);
+}
+
+function bool(v, what) {
+  if (v === null || v === true || v === false) return v;
+  return fail('bad ' + what);
+}
+
+function font(v) {
+  if (v === null) return null;
+  const n = typeof v === 'string' ? v : isObj(v) ? v.ascii || v.hAnsi
+    : null;
+  if (typeof n !== 'string' || !n.trim() || n.length > 128)
+    fail('bad font family');
+  return {ascii: n, hAnsi: n};
+}
+
+function under(v) {
+  if (v === true) return 'single';
+  if (v === false) return 'none';
+  const name = typeof v === 'string' && /^[a-zA-Z]{1,32}$/.test(v);
+  if (v === null || name) return v;
+  return fail('bad underline');
+}
+
+function colour(v) {
+  if (v === null || v === 'auto') return v;
+  if (typeof v === 'string' && /^[0-9a-f]{6}$/i.test(v))
+    return v.toUpperCase();
+  return fail('bad colour ' + v);
+}
+
+const CHAR = {
+  b: (v) => bool(v, 'bold'), i: (v) => bool(v, 'italic'),
+  strike: (v) => bool(v, 'strike'), u: under,
+  sz: (v) => num(v, 2, 800, 'size'), color: colour,
+  highlight: (v) => oneOf(v, [...HIGHLIGHTS, 'none'], 'highlight'),
+  vertAlign: (v) => oneOf(v, ['superscript', 'subscript', 'baseline'],
+    'vertAlign'),
+  rFonts: font,
+};
+
+/** Check each key of obj with table; undefined values left out. */
+function each(obj, table, what) {
+  if (!isObj(obj)) fail('bad ' + what);
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    if (!Object.hasOwn(table, k)) fail('bad ' + what + ' key ' + k);
+    if (obj[k] !== undefined) out[k] = table[k](obj[k]);
+  }
+  return out;
+}
+
+/** See the header. */
+export const charPatch = (patch) => each(patch, CHAR, 'format');
+
+const tw = (lo) => (v) => num(v, lo, 31680, 'measure');
+const IND = {left: tw(-31680), right: tw(-31680),
+  firstLine: tw(0), hanging: tw(0)};
+const SPACING = {before: tw(0), after: tw(0), line: tw(0),
+  lineRule: (v) => oneOf(v, ['auto', 'exact', 'atLeast'], 'lineRule')};
+
+/** See the header. */
+export function paraPatch(patch) {
+  const out = each(patch, {
+    jc: (v) => oneOf(v, ['left', 'center', 'right', 'both'], 'jc'),
+    ind: (v) => (v === null ? null : each(v, IND, 'indent')),
+    spacing: (v) => (v === null ? null : each(v, SPACING, 'spacing')),
+  }, 'paragraph format');
+  const ind = out.ind;
+  if (ind) {
+    if (ind.firstLine != null && ind.hanging != null)
+      fail('firstLine and hanging both given');
+    if (ind.firstLine != null && ind.hanging === undefined)
+      ind.hanging = null;
+    if (ind.hanging != null && ind.firstLine === undefined)
+      ind.firstLine = null;
+  }
+  return out;
+}

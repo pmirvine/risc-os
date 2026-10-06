@@ -1,0 +1,130 @@
+// RulerMath - the arithmetic of a horizontal ruler (./Ui/Ruler) over
+// a page measured in twips (1440 to the inch; 1 px = 15 twips at 96
+// dpi, at zoom 1), and of the indent markers a word processor puts on
+// it (left, first line, hanging, right) as Word moves them.
+//
+//   toPx(twips, zoom = 1), toTwips(px, zoom = 1)
+//   zoomOf(z)         z clamped to 0.1 .. 5 (not a number: 1)
+//   snap(twips, free = false)  to the nearest 1/16 inch (SNAP, 90
+//                     twips); free (Shift held): to a whole twip
+//   clampTo(v, lo, hi)  v in [lo, hi]; NaN, or hi < lo, give lo
+//   ticks(from, to) -> [{at, size, label?}]  every 1/8 inch (180
+//                     twips) from the origin (0) between from and to
+//                     (each clamped to 100 inches): size 3 and label
+//                     on the inch (the inches from the origin, left
+//                     of it too: unsigned, as Word shows them; none
+//                     at the origin itself), 2 on the half inch, 1
+//                     otherwise
+//   indentMarks({left, first, right}, textW) -> [{id, twips, kind}]
+//                     the markers of a paragraph's indents (twips,
+//                     first the first line's offset from left: < 0 a
+//                     hanging indent) on a text textW twips wide, from
+//                     the left margin: 'first' (kind 'down': a
+//                     triangle at the top) at left + first, 'hanging'
+//                     ('up': a triangle at the bottom) and 'left'
+//                     ('box' under it) at left, 'right' ('up') at
+//                     textW - right
+//   dragIndent(id, at, ind, textW, free = false) -> {left, first,
+//                     right}: marker id dropped at at (twips from the
+//                     left margin): 'left' moves left and the first
+//                     line with it; 'hanging' moves left, the first
+//                     line staying where it is; 'first' the first
+//                     line only; 'right' the right indent. Each marker
+//                     snaps to 1/16 inch from the margin it is measured
+//                     from (free: not). Then clamped, room being
+//                     textW - MIN_TEXT (a quarter inch is always left
+//                     for the text): left to 0 .. room - right (the
+//                     right indent stays), first to -left ..
+//                     room - left, right to 0 .. room - left. A NaN
+//                     at or an unknown id changes nothing. Whole twips.
+// Pure: no desktop services.
+
+export const TWIPS_PER_INCH = 1440;
+export const TWIPS_PER_PX = 15;
+export const SNAP = 90;
+export const MIN_TEXT = 360;
+const TICK = 180, FAR = 100 * TWIPS_PER_INCH;
+const whole = (v) => Math.round(v) || 0;   // (never -0)
+
+/** See the header. */
+export function zoomOf(z) {
+  return typeof z === 'number' && Number.isFinite(z)
+    ? Math.min(Math.max(z, 0.1), 5) : 1;
+}
+
+/** See the header. */
+export const toPx = (twips, zoom = 1) =>
+  twips / TWIPS_PER_PX * zoomOf(zoom);
+
+/** See the header. */
+export const toTwips = (px, zoom = 1) =>
+  px * TWIPS_PER_PX / zoomOf(zoom);
+
+/** See the header. */
+export function clampTo(v, lo, hi) {
+  if (Number.isNaN(v) || hi < lo) return lo;
+  return Math.min(Math.max(v, lo), hi);
+}
+
+/** See the header. */
+export function snap(twips, free = false) {
+  if (!Number.isFinite(twips)) return 0;
+  return free ? whole(twips) : whole(twips / SNAP) * SNAP;
+}
+
+/** See the header. */
+export function ticks(from, to) {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return [];
+  const a = Math.ceil(clampTo(from, -FAR, FAR) / TICK);
+  const b = Math.floor(clampTo(to, -FAR, FAR) / TICK);
+  const out = [];
+  for (let k = a; k <= b; k++) {
+    const at = k * TICK || 0;
+    if (at === 0) out.push({at, size: 3});
+    else if (at % TWIPS_PER_INCH === 0) {
+      out.push({at, size: 3, label: Math.abs(at / TWIPS_PER_INCH)});
+    } else {
+      out.push({at, size: at % 720 === 0 ? 2 : 1});
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function indentMarks({left, first, right}, textW) {
+  return [
+    {id: 'first', twips: left + first, kind: 'down'},
+    {id: 'hanging', twips: left, kind: 'up'},
+    {id: 'left', twips: left, kind: 'box'},
+    {id: 'right', twips: textW - right, kind: 'up'},
+  ];
+}
+
+/** See the header. */
+export function dragIndent(id, at, ind, textW, free = false) {
+  const {left, first, right} = ind;
+  const same = {left, first, right};
+  if (Number.isNaN(at) || typeof at !== 'number') return same;
+  const room = textW - MIN_TEXT;
+  const leftTo = (v) => whole(clampTo(v, 0, Math.max(0, room - right)));
+  const firstFor = (l, f) => whole(clampTo(f, -l, room - l));
+  const pos = snap(clampTo(at, -FAR * 10, FAR * 10), free);
+  switch (id) {
+    case 'left': {
+      const l = leftTo(pos);
+      return {left: l, first: firstFor(l, first), right};
+    }
+    case 'hanging': {
+      const l = leftTo(pos);
+      return {left: l, first: firstFor(l, left + first - l), right};
+    }
+    case 'first':
+      return {left, first: firstFor(left, pos - left), right};
+    case 'right': {
+      const r = snap(textW - clampTo(at, -FAR * 10, FAR * 10), free);
+      return {left, first,
+        right: whole(clampTo(r, 0, Math.max(0, room - left)))};
+    }
+    default: return same;
+  }
+}

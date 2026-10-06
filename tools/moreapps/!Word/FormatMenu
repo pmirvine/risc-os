@@ -1,0 +1,141 @@
+// FormatMenu - the Format submenu of a document's window menu:
+//
+//   formatMenu(view, {ruler, toggleRuler}?) -> a Menu
+//   fontsMenu(view), sizeMenu(view), highlightMenu(view),
+//   styleMenu(view) -> its submenus (the toolbar's popups too:
+//                  ./ToolbarBind)
+//
+//   Bold, Italic, Underline, Strikethrough, Superscript, Subscript
+//                  ticked when the whole selection (or the caret's
+//                  format, with the pending one) has it
+//   Font >         the document's fonts (./EditFormat.docFonts: found
+//                  once per change of the document), then Word's,
+//                  then Desktop fonts > (WimpLib Ui/FontMenu); the
+//                  selection's ticked
+//   Size >         Word's sizes (points), Bigger, Smaller
+//   Colour >       the 16 desktop colours (./FormatApply.PALETTE),
+//                  Automatic, More colours... > (a dialogue box of
+//                  swatches and a hex field: WimpLib Ui/ColourPopup)
+//   Highlight >    None and Word's 16 highlight colours
+//   Align >        Left, Centre, Right, Justify
+//   Indent >       More, Less (half an inch)
+//   Style >        the document's paragraph styles (./FormatApply
+//                  .paraStyles); the caret paragraph's ticked
+//   Clear formatting
+//   Ruler          ticked while the window's ruler is shown (ruler());
+//                  toggleRuler() shows or hides it (when given)
+//
+// Each runs view.format(id, arg) (./EditView), so a choice is one
+// undo step, and at a caret sets the pending format for the text
+// typed next. Ticks come from view.query(), worked out once per
+// change of the selection (view.selRev) when the menu is drawn, not
+// on every key; keys are ./Keymap's labels. Everything is shaded
+// when there is no selection (a document with no paragraphs).
+// view is the window's ./EditView.
+import {Menu} from 'riscos';
+import {fontMenu} from 'wimplib/Ui/FontMenu';
+import {colourPopup} from 'wimplib/Ui/ColourPopup';
+import {keymap} from './Keymap';
+import {docFonts} from './EditFormat';
+import {PALETTE, SIZES, HIGHLIGHTS, paraStyles} from './FormatApply';
+
+const NAMES = ['White', 'Grey 1', 'Grey 2', 'Grey 3', 'Grey 4',
+  'Grey 5', 'Grey 6', 'Black', 'Dark blue', 'Yellow', 'Light green',
+  'Red', 'Cream', 'Dark green', 'Orange', 'Light blue'];
+
+/** An item that runs view.format(id, arg); ticked when is() holds. */
+function item(v, text, id, arg, is, more = {}) {
+  return {text, key: keymap.labelFor(id) || undefined,
+    ticked: is ? () => !!v.sel && is(v.query()) : undefined,
+    shaded: () => !v.sel,
+    action: () => v.format(id, arg), ...more};
+}
+
+export function fontsMenu(v) {
+  return fontMenu({current: v.sel ? v.query().family : null,
+    docFonts: docFonts(v), onPick: (n) => v.format('font', n)});
+}
+
+export function sizeMenu(v) {
+  const items = SIZES.map((n, i) => item(v, String(n), 'size', n,
+    (q) => q.size === n, {dotted: i === SIZES.length - 1}));
+  items.push(item(v, 'Bigger', 'fontBigger'),
+    item(v, 'Smaller', 'fontSmaller'));
+  return new Menu('Size', items);
+}
+
+function colourMenu(v) {
+  const items = PALETTE.map((c, n) => item(v, NAMES[n], 'color', n,
+    (q) => q.color === c, {colour: n,
+      dotted: n === PALETTE.length - 1}));
+  items.push(item(v, 'Automatic', 'color', 'auto',
+    (q) => q.color === 'auto'));
+  items.push({text: 'More colours...', shaded: () => !v.sel,
+    submenu: () => colourPopup({task: v.win.task,
+      current: v.query().color, onPick: (c) => v.format('color', c)}),
+    help: 'Any colour: a swatch, or six hex digits RRGGBB.'});
+  return new Menu('Colour', items);
+}
+
+export function highlightMenu(v) {
+  return new Menu('Highlight', HIGHLIGHTS.map(([k, t], i) =>
+    item(v, t, 'highlight', k, (q) => q.highlight === k,
+      {dotted: i === 0})));
+}
+
+function alignMenu(v) {
+  return new Menu('Align', [['Left', 'alignLeft', 'left'],
+    ['Centre', 'alignCenter', 'center'],
+    ['Right', 'alignRight', 'right'],
+    ['Justify', 'alignJustify', 'both']].map(([t, id, a]) =>
+    item(v, t, id, undefined, (q) => q.align === a)));
+}
+
+export function styleMenu(v) {
+  const list = paraStyles(v.d.doc.styles);
+  if (!list.length) {
+    return new Menu('Style', [{text: 'None', shaded: true}]);
+  }
+  return new Menu('Style', list.map((s) => item(v, s.name, 'style',
+    s.id, (q) => q.style === s.id)));
+}
+
+/** See the header. */
+export function formatMenu(v, {ruler, toggleRuler} = {}) {
+  const sub = (text, make, help, more = {}) => ({text,
+    submenu: () => make(v), shaded: () => !v.sel, help, ...more});
+  const toggle = (text, id, key, help, more) =>
+    item(v, text, id, undefined, (q) => q[key[0]] === key[1],
+      {help, ...more});
+  return new Menu('Format', [
+    toggle('Bold', 'bold', ['bold', true], 'Make the selection bold ' +
+      '(or not, when all of it is bold).'),
+    toggle('Italic', 'italic', ['italic', true], 'Italic.'),
+    toggle('Underline', 'underline', ['underline', true],
+      'Underline.'),
+    toggle('Strikethrough', 'strike', ['strike', true],
+      'Strike through.'),
+    toggle('Superscript', 'superscript', ['vert', 'superscript'],
+      'Smaller, above the line.'),
+    toggle('Subscript', 'subscript', ['vert', 'subscript'],
+      'Smaller, below the line.', {dotted: true}),
+    sub('Font', fontsMenu, 'The font of the selection.'),
+    sub('Size', sizeMenu, 'The size of the text, in points.'),
+    sub('Colour', colourMenu, 'The colour of the text.'),
+    sub('Highlight', highlightMenu, 'A colour behind the text.',
+      {dotted: true}),
+    sub('Align', alignMenu, 'How the paragraph\'s lines line up.'),
+    sub('Indent', (w) => new Menu('Indent', [
+      item(w, 'More', 'indentMore'), item(w, 'Less', 'indentLess'),
+    ]), 'Move the paragraph\'s left edge in or out.'),
+    sub('Style', styleMenu, 'A paragraph style of the document.',
+      {dotted: true}),
+    item(v, 'Clear formatting', 'clearFormat', undefined, null,
+      {help: 'Remove the character formatting of the selection.',
+        dotted: !!toggleRuler}),
+    ...(toggleRuler ? [{text: 'Ruler', ticked: () => !!ruler(),
+      action: () => toggleRuler(),
+      help: 'Show or hide the ruler under the toolbar: the ' +
+        'paragraph\'s indents, to drag.'}] : []),
+  ]);
+}

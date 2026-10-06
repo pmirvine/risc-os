@@ -135,7 +135,7 @@ clear the drag stops at the edge instead. Window flag bit 6 (`noBounds`) turns e
 by its title bar is never pushed back.
 Shift-Select (or Alt-click) on a close icon iconises a window onto the Pinboard (`iconise` event, cancellable);
 double-clicking the icon re-opens it. The mouse wheel scrolls the window under the pointer (`wheel` event
-`{dx, dy}` first — return true to handle it yourself; windows with scroll-request flags get `scrollrequest`).
+`{dx, dy, shift}` first — return true to handle it yourself; windows with scroll-request flags get `scrollrequest`).
 Templates: `wimp.createWindowFromTemplate(tplOrUrl, name, overrides, task)` accepts the assets JSON
 (`assets/templates/<App>.json`), a parsed binary file (`parseTemplateFile(bytes)`), or a URL (→ Promise).
 Icons keep their template indices (`w.icons[3]`). Templates whose icons use the app's own sprites need its

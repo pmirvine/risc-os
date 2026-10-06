@@ -1,0 +1,133 @@
+// FormatEff - effective (resolved) formatting values for ./Format and
+// ./FormatSet, and the canonical form of a run property used to
+// compare a written value with the one a style gives.
+//
+//   resolver(doc) -> {run(p, rPr, rStyle), base(p, rStyle),
+//                     para(p), styles}
+//       run: the RESOLVED rPr (./Styles.resolveRun) of a run with
+//       that direct rPr and rStyle in paragraph p; base: the same
+//       with no direct formatting (what a key deleted from the run's
+//       rPr falls back to); para: resolvePara. Cached by value, so a
+//       selection of 50,000 paragraphs resolves each format once.
+//       Returned objects are shared: never change them.
+//   charOf(r, p, res) -> {bold, italic, underline, strike, size,
+//       family, color, highlight, vert} of a resolved rPr r (res:
+//       a resolver)
+//   paraOf(pp, p, res) -> {align, indentLeft, indentFirst,
+//       indentRight, spaceBefore, spaceAfter, lineSpacing, style}
+//   canon(field, v)  the comparable form of rPr field value v
+//                    (undefined: as absent)
+//   alignOf(jc)      the align value of a jc value
+//   firstOf(ind)     the first line's indent (twips, hanging < 0)
+//   look(r, p, res)  {pt, bold} of a resolved rPr: ./Fmt.sizeBold,
+//                    the rule the screen uses (a heading with no
+//                    size anywhere is bold unless b says otherwise)
+//
+// Values (as ./Format.query documents): size in points (11 when no
+// size is given, Word's heading size in a heading, as ./Fmt shows
+// it; bold likewise), family the Word font name (./Fmt.fontName),
+// color 'RRGGBB' upper case or 'auto', highlight a Word name or
+// 'none', vert 'superscript'|'subscript'|'baseline', align
+// 'left'|'center'|'right'|'both', indents and spacing in twips
+// (indentFirst negative for a hanging indent), lineSpacing
+// {line, rule} (rule 'auto': line in 240ths of a line).
+// Pure: no desktop services.
+import {resolvePara, resolveRun, newStyleTable} from './Styles';
+import {fontName, sizeBold} from './Fmt';
+
+const EMPTY_STYLES = newStyleTable();
+
+/** See the header. */
+export function resolver(doc) {
+  const styles = doc.styles || EMPTY_STYLES;
+  const runs = new Map(), paras = new Map();
+  const none = {extra: []};
+  const run = (p, rPr, rStyle) => {
+    const k = JSON.stringify([p.pStyle, rStyle, rPr]);
+    let r = runs.get(k);
+    if (!r) {
+      r = resolveRun(styles, p, rStyle === undefined ? {rPr}
+        : {rPr, rStyle});
+      runs.set(k, r);
+    }
+    return r;
+  };
+  const para = (p) => {
+    const k = JSON.stringify([p.pStyle, p.pPr]);
+    let r = paras.get(k);
+    if (!r) {
+      r = resolvePara(styles, p);
+      paras.set(k, r);
+    }
+    return r;
+  };
+  const base = (p, rStyle) => run(p, none, rStyle);
+  return {styles, run, para, base};
+}
+
+/** {pt, bold} of a resolved rPr r in p: ./Fmt.sizeBold. */
+export const look = (r, p, res) => sizeBold(res.styles, p, r,
+  res.para(p));
+
+const HEX = /^[0-9a-f]{6}$/i;
+
+/** See the header. */
+export function canon(field, v) {
+  switch (field) {
+    case 'b': case 'i': case 'strike': return v === true;
+    case 'u': return typeof v === 'string' && v !== 'none' ? v
+      : 'none';
+    case 'vertAlign': return v === 'superscript' || v === 'subscript'
+      ? v : 'baseline';
+    case 'color': return typeof v === 'string' && HEX.test(v)
+      ? v.toUpperCase() : 'auto';
+    case 'highlight': return typeof v === 'string' ? v : 'none';
+    default: return v === undefined ? null : v;
+  }
+}
+
+/** See the header. */
+export function charOf(r, p, res) {
+  return {
+    bold: look(r, p, res).bold, italic: r.i === true,
+    underline: canon('u', r.u) !== 'none', strike: r.strike === true,
+    size: look(r, p, res).pt, family: fontName(r),
+    color: canon('color', r.color),
+    highlight: canon('highlight', r.highlight),
+    vert: canon('vertAlign', r.vertAlign),
+  };
+}
+
+/** The first line's indent of an ind (hanging negative; hanging
+ * wins when both are there, as OOXML says). */
+export function firstOf(ind) {
+  if (!ind) return 0;
+  return int(ind.hanging) !== undefined ? -ind.hanging
+    : int(ind.firstLine) ?? 0;
+}
+
+const ALIGN = {center: 'center', right: 'right', end: 'right',
+  both: 'both', distribute: 'both'};
+
+/** The align value of a jc value. */
+export const alignOf = (jc) => ALIGN[jc] || 'left';
+const int = (v) => (Number.isInteger(v) ? v : undefined);
+
+/** See the header. */
+export function paraOf(pp, p, res) {
+  const ind = pp.ind || {};
+  const sp = pp.spacing || {};
+  const first = firstOf(ind);
+  return {
+    align: alignOf(pp.jc),
+    indentLeft: int(ind.left) ?? int(ind.start) ?? 0,
+    indentFirst: first,
+    indentRight: int(ind.right) ?? int(ind.end) ?? 0,
+    spaceBefore: int(sp.before) ?? 0,
+    spaceAfter: int(sp.after) ?? 0,
+    lineSpacing: {line: int(sp.line) ?? 240,
+      rule: typeof sp.lineRule === 'string' ? sp.lineRule : 'auto'},
+    style: p.pStyle !== undefined ? p.pStyle
+      : res.styles.defaults.paragraph || null,
+  };
+}

@@ -1,0 +1,121 @@
+// FormatApply - the formatting commands by id, as the keys
+// (./Keymap's Format rows), the Format menu (./FormatMenu) and the
+// toolbar give them, onto ./FormatSet; and the lists the menu shows.
+//
+//   isFormat(id)        whether id is one of the ids below
+//   apply(id, d, typing, sel, arg, pending) -> {sel, pending}, or
+//                       undefined for an id that is not a format
+//                       (./FormatSet: one undo step; a bad arg
+//                       throws RangeError and changes nothing)
+//     bold italic underline strike superscript subscript   toggle
+//     alignLeft alignCenter alignRight alignJustify        jc
+//     align (arg 'left'|'center'|'right'|'both')           jc
+//     clearFormat                                          runs
+//     fontBigger fontSmaller      a step along Word's sizes
+//     indentMore indentLess       the left indent, 720 twips
+//     indentDrag (arg {marker, at, textW, free}) a ruler's marker
+//                                 (./FormatPara.dragIndents)
+//     size (arg points)  font (arg a family name)
+//     color (arg colourValue's)  highlight (arg a Word name, 'none')
+//     style (arg a paragraph or character style id)
+//   PALETTE             the desktop's 16 Wimp colours as 'RRGGBB'
+//                       (src/core/palette.js, RISC OS 3.71's)
+//   colourValue(arg)    a palette number 0-15 -> its 'RRGGBB';
+//                       'auto' (Automatic: black, or the style's);
+//                       'RRGGBB' (any case) -> upper case
+//   SIZES               Word's size list (points)
+//   WORD_FONTS, fontList   WimpLib's FontList (Word's common fonts,
+//                       shown in the bundled metric-compatible fonts:
+//                       ./FontMap; the document's, Word's and the
+//                       desktop's fonts, each once)
+//   HIGHLIGHTS          [[name, label]]: 'none', then Word's 16
+//   paraStyles(styles)  [{id, name}] the paragraph styles that are
+//                       not hidden, by name (none for no table)
+// Pure: no desktop services.
+import {toggle, setChar, setPara, sizeBy, indentBy, clearFormat,
+  applyStyle} from './FormatSet';
+import {HIGHLIGHTS as NAMES} from './FormatCheck';
+import {dragIndents} from './FormatPara';
+import {fail} from './ModelCheck';
+export {WORD_FONTS, fontList} from 'wimplib/FontList';
+
+export const PALETTE = Object.freeze(['FFFFFF', 'DDDDDD', 'BBBBBB',
+  '999999', '777777', '555555', '333333', '000000', '004499',
+  'EEEE00', '00CC00', 'DD0000', 'EEEEBB', '558800', 'FFBB00',
+  '00BBFF']);
+
+export const SIZES = Object.freeze([8, 9, 10, 11, 12, 14, 16, 18, 20,
+  22, 24, 26, 28, 36, 48, 72]);
+
+/** See the header. */
+export function colourValue(arg) {
+  if (Number.isInteger(arg) && arg >= 0 && arg < 16) {
+    return PALETTE[arg];
+  }
+  if (arg === 'auto') return 'auto';
+  if (typeof arg === 'string' && /^[0-9a-f]{6}$/i.test(arg))
+    return arg.toUpperCase();
+  return fail('bad colour ' + String(arg));
+}
+
+const pts = (arg) => {
+  if (typeof arg !== 'number' || !Number.isFinite(arg))
+    fail('bad size ' + String(arg));
+  return Math.round(arg * 2);
+};
+const tog = (key) => (d, t, s, a, p) => toggle(d, t, s, key, p);
+const jc = (v) => (d, t, s, a, p) => setPara(d, t, s, {jc: v}, p);
+const chr = (f) => (d, t, s, a, p) => setChar(d, t, s, f(a), p);
+
+const TABLE = new Map([
+  ['bold', tog('bold')], ['italic', tog('italic')],
+  ['underline', tog('underline')], ['strike', tog('strike')],
+  ['superscript', tog('superscript')],
+  ['subscript', tog('subscript')],
+  ['alignLeft', jc('left')], ['alignCenter', jc('center')],
+  ['alignRight', jc('right')], ['alignJustify', jc('both')],
+  ['align', (d, t, s, a, p) => setPara(d, t, s, {jc: a}, p)],
+  ['clearFormat', (d, t, s, a, p) => clearFormat(d, t, s, p)],
+  ['fontBigger', (d, t, s, a, p) => sizeBy(d, t, s, 1, p)],
+  ['fontSmaller', (d, t, s, a, p) => sizeBy(d, t, s, -1, p)],
+  ['indentMore', (d, t, s, a, p) => indentBy(d, t, s, 720, p)],
+  ['indentLess', (d, t, s, a, p) => indentBy(d, t, s, -720, p)],
+  ['indentDrag', (d, t, s, a, p) => dragIndents(d, t, s, a, p)],
+  ['size', chr((a) => ({sz: pts(a)}))],
+  ['font', chr((a) => {
+    if (typeof a !== 'string' || !a.trim()) fail('bad font');
+    return {rFonts: a.trim()};
+  })],
+  ['color', chr((a) => ({color: colourValue(a)}))],
+  ['highlight', chr((a) => ({highlight: a}))],
+  ['style', (d, t, s, a, p) => applyStyle(d, t, s, a, p)],
+]);
+
+/** See the header. */
+export const isFormat = (id) => typeof id === 'string' && TABLE.has(id);
+
+/** See the header. */
+export function apply(id, d, typing, sel, arg, pending) {
+  if (!isFormat(id)) return undefined;
+  return TABLE.get(id)(d, typing, sel, arg, pending);
+}
+
+/** 'darkBlue' -> 'Dark blue'. */
+const label = (k) => k.charAt(0).toUpperCase() +
+  k.slice(1).replace(/[A-Z]/g, (c) => ' ' + c.toLowerCase());
+
+export const HIGHLIGHTS = Object.freeze([['none', 'None'],
+  ...NAMES.map((k) => [k, label(k)])]);
+
+/** See the header. */
+export function paraStyles(styles) {
+  if (!styles || !(styles.styles instanceof Map)) return [];
+  const out = [];
+  for (const s of styles.styles.values()) {
+    if (s.type !== 'paragraph' || s.semiHidden) continue;
+    out.push({id: s.id, name: String(s.name || s.id)});
+  }
+  const key = (s) => s.name.toLowerCase();
+  return out.sort((a, b) => (key(a) < key(b) ? -1
+    : key(a) > key(b) ? 1 : 0));
+}

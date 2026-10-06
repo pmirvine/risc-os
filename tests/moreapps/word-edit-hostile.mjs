@@ -250,7 +250,8 @@ try {
       w.open({ x: 80, y: 60, w: 640, h: 360, behind: 'top', scrollX: 0, scrollY: 0 });
       await window.__frames(2);
       window.__dw = dw;
-      const a = window.__client(w, w.scrollX, w.scrollY), b = window.__client(w, w.scrollX + w.w, w.scrollY + w.h);
+      // (the document below the toolbar: its buttons open popups)
+      const a = window.__client(w, w.scrollX, w.scrollY + dw.view.inset), b = window.__client(w, w.scrollX + w.w, w.scrollY + w.h);
       return { x0: a.x, y0: a.y, x1: b.x, y1: b.y };
     });
     const rnd = rng(11), pick = (a) => a[Math.floor(rnd() * a.length)];

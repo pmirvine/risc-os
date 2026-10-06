@@ -1,0 +1,186 @@
+// Toolbar - a row of buttons across the top of a window: a pane (a
+// window of its own that the Wimp keeps in front of its parent, moves
+// with it and makes as wide as it; buttons that do not fit are cut
+// off at its right edge).
+//
+//   const tb = new Toolbar({task, parent, height = 40, buttons, menu})
+//     buttons: [{name, kind, sprite?, text?, help, group?, w?, gap?,
+//                validation?, maxLen?, swatch?}]   left to right
+//       kind 'action'   a button (sprite or text)
+//            'toggle'   a button shown pressed in or not (setPressed)
+//            'radio'    a toggle in a group: pressing one lets the
+//                       others of its group out
+//            'popup'    the menu arrow (the Wimp's gright sprite)
+//            'field'    a text field: writable (validation 'R7;...')
+//                       when validation starts R7, else a display
+//       gap: px of space before it (default 0; 2 between buttons)
+//       swatch: a bar of colour is drawn under the sprite (setSwatch)
+//     menu(ev) -> a Menu for a Menu click on the toolbar, or nothing
+//   tb.on(name, fn)       fn({name, kind, button, text}): kind 'click'
+//                         (Select or Adjust on a button), 'return' or
+//                         'escape' (keys in a writable field)
+//   tb.setPressed(name, on), tb.pressed(name)
+//   tb.setText(name, text), tb.text(name)
+//   tb.shade(name, on), tb.setSwatch(name, css | null)
+//   tb.popupAt(name) -> {x, y}: the screen point under the button's
+//                         left edge, where its menu opens
+//   tb.editing           the name of the field holding the caret, or
+//                         null
+//   tb.pane, tb.width    the pane; the width the buttons need
+//   tb.destroy()         delete the pane (deleting the parent does it
+//                         too); safe twice
+// Nothing changes on screen when a value is set to what it was, so
+// setting every control on each change of the selection is cheap.
+// A click does not press a toggle or radio in by itself: the client
+// does what it stands for, then sets the pressed state (setPressed)
+// from the new state of what it shows.
+import {wimp} from 'riscos';
+import {forwardWheel} from './PaneWheel';
+
+const SIZE = 26, GAP = 2;
+
+/** The icon spec of button b at x. */
+function spec(b, x, height) {
+  const w = b.w ?? (b.kind === 'popup' ? 22 : SIZE);
+  const y = Math.round((height - SIZE) / 2);
+  const base = {x, y, w, h: SIZE, name: b.name, help: b.help};
+  if (b.kind === 'field') {
+    const v = b.validation ?? 'R2';
+    return {...base, text: b.text ?? '', border: true, filled: true,
+      bg: 0, hcentre: false, validation: v, maxLen: b.maxLen ?? 32,
+      button: v.startsWith('R7') ? 'writable' : 'click'};
+  }
+  if (b.kind === 'popup') {
+    return {...base, sprite: 'gright', button: 'click',
+      validation: 'R5;Sgright,pgright'};
+  }
+  return {...base, sprite: b.sprite, text: b.text, border: true,
+    filled: !b.swatch, hcentre: true, vcentre: true, button: 'click',
+    validation: b.validation ?? 'R5,2'};
+}
+
+export class Toolbar {
+  constructor({task, parent, height = 40, buttons, menu}) {
+    this.height = height;
+    this.buttons = new Map();          // name -> spec given
+    this.handlers = new Map();         // name -> [fn]
+    this.swatches = new Map();         // name -> css
+    this._dead = false;
+    const icons = [];
+    let x = GAP;
+    for (const b of buttons) {
+      x += b.gap ?? 0;
+      const s = spec(b, x, height);
+      icons.push(s);
+      this.buttons.set(b.name, b);
+      x += s.w + GAP;
+    }
+    this.width = x;
+    const pane = this.pane = task.createWindow({
+      flags: {pane: true}, colours: {workBg: 1}, x: 0, y: 0,
+      w: Math.min(x, 400), h: height, extent: {w: 4000, h: height},
+      icons, workButton: 'click',
+    });
+    if (buttons.some((b) => b.swatch)) {
+      pane.useCanvas((g) => this._paint(g), {hiDPI: true});
+    }
+    pane.on('deleted', () => { this._dead = true; });
+    pane.on('click', (ev) => this._click(ev, task, menu));
+    pane.on('key', (ev) => this._key(ev));
+    parent.attachPane(pane, {dx: 0, dy: 0, h: height, fitWidth: true});
+    forwardWheel(pane, parent);
+  }
+
+  icon(name) { return this._dead ? null : this.pane.iconByName(name); }
+
+  on(name, fn) {
+    if (!this.handlers.has(name)) this.handlers.set(name, []);
+    this.handlers.get(name).push(fn);
+  }
+
+  _emit(name, kind, button, text) {
+    for (const fn of (this.handlers.get(name) || []).slice()) {
+      fn({name, kind, button, text});
+    }
+  }
+
+  _click(ev, task, menu) {
+    if (ev.button === 'menu') {
+      const m = menu && menu(ev);
+      if (m) wimp.menus.openAt(m, ev, {task});
+      return true;
+    }
+    const icon = ev.icon, name = icon && icon.name;
+    if (!name || icon.shaded || icon.writable) return true;
+    this._emit(name, 'click', ev.button, icon.text);
+    return true;
+  }
+
+  _key(ev) {
+    const icon = ev.icon, name = icon && icon.name;
+    if (!name || !(ev.code === 13 || ev.code === 27)) return undefined;
+    this._emit(name, ev.code === 13 ? 'return' : 'escape', null,
+      icon.text);
+    return true;
+  }
+
+  get editing() {
+    const c = wimp.caret;
+    return c && c.window === this.pane && c.icon ? c.icon.name : null;
+  }
+
+  pressed(name) { return !!this.icon(name)?.selected; }
+
+  setPressed(name, on) {
+    const icon = this.icon(name), b = this.buttons.get(name);
+    if (!icon || icon.selected === !!on) return;
+    icon.setState({selected: !!on});
+    if (!on || !b.group) return;
+    for (const [n, o] of this.buttons) {
+      if (n !== name && o.group === b.group) this.setPressed(n, false);
+    }
+  }
+
+  text(name) { return this.icon(name)?.text ?? ''; }
+
+  setText(name, text) {
+    const icon = this.icon(name), t = String(text ?? '');
+    if (icon && icon.text !== t) icon.setText(t);
+  }
+
+  shade(name, on) {
+    const icon = this.icon(name);
+    if (icon && icon.shaded !== !!on) icon.setState({shaded: !!on});
+  }
+
+  setSwatch(name, css) {
+    if (this._dead || (this.swatches.get(name) ?? null) === css) return;
+    if (css) this.swatches.set(name, css);
+    else this.swatches.delete(name);
+    this.pane.invalidate();
+  }
+
+  _paint(g) {
+    for (const [name, css] of this.swatches) {
+      const icon = this.icon(name);
+      if (!icon) continue;
+      const {x0, x1, y1} = icon.bbox;
+      g.fillStyle = '#000000';
+      g.fillRect(x0 + 4, y1 - 9, x1 - x0 - 8, 6);
+      g.fillStyle = css;
+      g.fillRect(x0 + 5, y1 - 8, x1 - x0 - 10, 4);
+    }
+  }
+
+  popupAt(name) {
+    const icon = this.icon(name);
+    if (!icon) return {x: 0, y: 0};
+    return this.pane.workToScreen(icon.bbox.x0, icon.bbox.y1);
+  }
+
+  destroy() {
+    this.handlers.clear();
+    if (!this._dead) this.pane.delete();
+    this._dead = true;
+  }
+}

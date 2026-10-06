@@ -146,7 +146,8 @@ try {
       const d = window.__doc(), w = d.win;
       w.scrollTo(0, 0);
       await window.__frames(2);
-      return window.__client(d, w.scrollX + w.w - 3, 2);
+      // (just below the toolbar: L.top)
+      return window.__client(d, w.scrollX + w.w - 3, d.view.layout.top + 2);
     });
     await page.mouse.click(t.x, t.y);
     const above = await sel();
@@ -389,7 +390,7 @@ try {
       const d = window.__doc(), w = d.win;
       const k = (code, key, extra = {}) => { const e = w.emit('key', { code, key, shift: false, ctrl: false, ...extra }); return !!(e.handled || e.defaultPrevented); };
       // (letters and Enter are typed now: tests/moreapps/word-typing.mjs)
-      const res = { F5: k(0x185, 'F5'), ctrlB: k(2, 'b', { ctrl: true }), altA: k(97, 'a', { alt: true }), left: k(0x18C, 'ArrowLeft') };
+      const res = { F5: k(0x185, 'F5'), ctrlQ: k(17, 'q', { ctrl: true }), altA: k(97, 'a', { alt: true }), left: k(0x18C, 'ArrowLeft') };
       const seen = [];
       const off = os.wimp.on('key', (e) => { seen.push(e.code); });
       window.__seen = seen; window.__off = off;
@@ -398,7 +399,7 @@ try {
     await press('F5'); await press('Control+F12');
     await page.waitForTimeout(100);
     const seen = await ev(() => { window.__off(); return [...window.__seen]; });
-    ok('keys it does not use are passed on (F5, Ctrl-B, Alt-A)', !pass.F5 && !pass.altA && !pass.ctrlB && pass.left, pass);
+    ok('keys it does not use are passed on (F5, Ctrl-Q, Alt-A)', !pass.F5 && !pass.altA && !pass.ctrlQ && pass.left, pass);
     ok('... and real F5 reaches the desktop', seen.includes(0x185), seen);
     await ev(() => { for (const w of [...os.wimp.windows]) if (w.isOpen && /Task window|Command/.test(w.title ?? '')) w.close(); if (os.cli?.active) os.cli.close?.(); });
   }
@@ -458,7 +459,7 @@ try {
       const find = (k) => [...lis].find((x) => x.t === k.t && x.f === k.f && x.c === k.c);
       window.addEventListener = function (t, f, o) { if (this === window || this == null) { const k = key(t, f, o); if (!find(k)) lis.add(k); } return ae.call(this ?? window, t, f, o); };
       window.removeEventListener = function (t, f, o) { if (this === window || this == null) { const k = find(key(t, f, o)); if (k) lis.delete(k); } return re.call(this ?? window, t, f, o); };
-      window.__live = () => ({ timers: [...live.values()].filter((f) => /STEP_Y/.test(f)).length, pointer: [...lis].filter((k) => /^pointer/.test(k.t)).length });
+      window.__live = () => ({ timers: [...live.values()].filter((f) => /dragStep/.test(f)).length, pointer: [...lis].filter((k) => /^pointer/.test(k.t)).length });
       os.vfs.writeFile('RAM::RamDisc0.$.Copy', await os.vfs.readFile('RAM::RamDisc0.$.Edit'), { filetype: 0xA7E });
       const dw = await window.__word().word.open('RAM::RamDisc0.$.Copy');
       dw.win.open({ x: 100, y: 60, w: 600, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });

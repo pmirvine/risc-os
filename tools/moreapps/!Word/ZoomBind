@@ -1,0 +1,90 @@
+// ZoomBind - the zoom of a document's window (./AppWin): how large
+// the page is shown (./Zoom: the layout stays at 100%, the view is
+// scaled under the toolbar and the ruler, which are not).
+//
+//   const zb = bindZoom(dw)
+//   zb.pct              the zoom (percent; 100 at first: each window
+//                       has its own, and it is not saved)
+//   zb.set(pct)         zoom to pct (clamped to 10..500): the extent
+//                       made again, the centre of what can be seen
+//                       kept there (./Zoom.zoomScroll; across, the
+//                       same place on the page: zoomScrollX), the
+//                       caret and the ruler moved with it
+//   zb.destroy()        the wheel no longer listened to
+//   zoomMenu(dw) -> the Zoom submenu of the window's menu: 50%..200%
+//                       (the zoom ticked), Zoom in, Zoom out (the next
+//                       step: shaded when there is none)
+//
+// Ctrl+wheel over the window zooms a step in (up) or out (down) for
+// each notch (./Zoom.wheelAcc: small moves added up, one step at most
+// every GAP ms, so a touchpad's stream of events does not race
+// through the zooms); the plain wheel still scrolls, Ctrl+wheel does
+// not. There are no zoom keys: Ctrl+= and Ctrl+Shift+= are
+// subscript and superscript (as in Word), Ctrl+0 Word's paragraph
+// spacing.
+import {Menu, os} from 'riscos';
+import {ZOOMS, clampZoom, step, zoomScroll, zoomScrollX, WHEEL0,
+  wheelAcc} from './Zoom';
+
+/** Whether Ctrl is held now. */
+const ctrlDown = () => {
+  const k = os.input && os.input.keysDown;
+  return !!k && (k.has('ControlLeft') || k.has('ControlRight'));
+};
+
+/** See the header. */
+export function bindZoom(dw) {
+  const w = dw.win;
+  let wheel = WHEEL0;
+  const zb = {
+    get pct() { return Math.round(dw.view.zoom * 100); },
+    set(pct) {
+      const v = dw.view, old = v.zoom, z = clampZoom(pct) / 100;
+      if (z === old) return;
+      // (read before fit(): a smaller extent may move the scroll)
+      const p0 = dw.L.pageLeft, sx0 = w.scrollX;
+      const sy = zoomScroll(w.scrollY, w.h, old, z, dw.L.top);
+      v.zoom = z;
+      dw.fit();                        // (the extent and page at z)
+      const sx = zoomScrollX(sx0, w.w, old, z, p0, dw.L.pageLeft);
+      if (w.isOpen) w.scrollTo(sx, sy);
+      // fit() already placed the caret at z (its work-area place
+      // does not depend on the scroll) and the ruler, but with the
+      // old scrollX; scrollTo's 'moved' updates the ruler only when
+      // the offsets changed and the window is open. Both are cheap
+      // and draw nothing when unchanged, so they are called again
+      // here, after the scroll, to leave them right in every case
+      // (the input method's field is moved with the caret)
+      v.placed();
+      dw.rb.refresh();
+    },
+    destroy() { off(); },
+  };
+  const off = w.on('wheel', (ev) => {
+    if (!ctrlDown()) return undefined;
+    const r = wheelAcc(wheel, ev.dy, performance.now());
+    wheel = r.state;
+    if (r.dir) zb.set(step(zb.pct, r.dir));
+    return true;
+  });
+  return zb;
+}
+
+/** See the header. */
+export function zoomMenu(dw) {
+  const to = (p) => () => {
+    dw.setZoom(p());
+    // (a menu took the browser's focus: give it back)
+    if (dw.view.hasFocus) dw.view.focus();
+  };
+  const items = ZOOMS.map((p, i) => ({text: `${p}%`,
+    ticked: () => dw.zoom === p, action: to(() => p),
+    dotted: i === ZOOMS.length - 1}));
+  const by = (dir) => ({
+    text: dir > 0 ? 'Zoom in' : 'Zoom out',
+    shaded: () => step(dw.zoom, dir) === dw.zoom,
+    action: to(() => step(dw.zoom, dir)),
+    help: dir > 0 ? 'Show the page larger.' : 'Show the page smaller.',
+  });
+  return new Menu('Zoom', [...items, by(1), by(-1)]);
+}

@@ -1,0 +1,88 @@
+// Format - the formatting of a selection, for the toolbar, the menus
+// and the commands of ./FormatSet.
+//
+//   query(doc, sel, pending?) -> {bold, italic, underline, strike,
+//       size, family, color, highlight, vert, align, indentLeft,
+//       indentFirst, indentRight, spaceBefore, spaceAfter,
+//       lineSpacing, style}
+//
+// Each value is what the RESOLVED formatting (styles, defaults and
+// direct formatting: ./Styles) gives, or null when it is mixed (or
+// nothing is there: a selection of kept blocks only, a position not
+// in the document). Values and units: ./FormatEff (size in points,
+// family a Word font name, color 'RRGGBB' or 'auto', align
+// 'left'|'center'|'right'|'both', indents and spacing in twips).
+//
+// Character values come from the selected characters; paragraph
+// values from the paragraphs paragraph formatting would apply to
+// (./FormatOps.touched). A caret, or a selection holding no
+// character (only empty paragraphs): the format text typed at its
+// start would get (the character before it, at 0 the first; in an
+// empty paragraph its style and the defaults), with the pending
+// format (./Pending) on top. Kept blocks (tables) are skipped.
+// Pure: no desktop services.
+import {deepEqual} from './ModelCheck';
+import {collapsed} from './Selection';
+import {resolver, charOf, paraOf} from './FormatEff';
+import {touched, caretAt, pieces} from './FormatOps';
+import {onRun} from './Pending';
+
+const CHAR = ['bold', 'italic', 'underline', 'strike', 'size',
+  'family', 'color', 'highlight', 'vert'];
+const PARA = ['align', 'indentLeft', 'indentFirst', 'indentRight',
+  'spaceBefore', 'spaceAfter', 'lineSpacing', 'style'];
+
+/** All null. */
+function nothing() {
+  const out = {};
+  for (const k of CHAR.concat(PARA)) out[k] = null;
+  return out;
+}
+
+/** Fold v into acc (undefined: first; differing: null). */
+function fold(acc, v) {
+  if (!acc) return {...v};
+  for (const k of Object.keys(acc)) {
+    if (acc[k] !== null && !deepEqual(acc[k], v[k])) acc[k] = null;
+  }
+  return acc;
+}
+
+/** See the header. */
+export function query(doc, sel, pending) {
+  const out = nothing();
+  const list = touched(doc, sel);
+  if (!list || !list.length) return out;
+  const res = resolver(doc);
+  let ch = null, pa = null;
+  const seen = new Map();
+  for (const en of list) {
+    if (en.para) pa = fold(pa, paraOf(res.para(en.p), en.p, res));
+    if (collapsed(sel)) continue;
+    for (const r of en.p.runs) {
+      if (!pieces(en.p, Math.max(r.start, en.a),
+        Math.min(r.end, en.e)).length) continue;
+      // each resolved format once per resolved paragraph format
+      const rr = res.run(en.p, r.rPr, r.rStyle), pr = res.para(en.p);
+      let done = seen.get(rr);
+      if (!done) seen.set(rr, done = new Set());
+      if (done.has(pr)) continue;
+      done.add(pr);
+      ch = fold(ch, charOf(rr, en.p, res));
+    }
+  }
+  if (!ch) {
+    const at = caretAt(doc, collapsed(sel) ? sel
+      : {head: orderedFrom(list)});
+    if (at) {
+      const run = collapsed(sel) ? onRun(at.base, pending) : at.base;
+      ch = charOf(res.run(at.p, run.rPr, run.rStyle), at.p, res);
+    }
+  }
+  return {...out, ...(ch || {}), ...(pa || {})};
+}
+
+/** The selection's start, from touched()'s first entry. */
+function orderedFrom(list) {
+  return {id: list[0].p.id, off: list[0].a};
+}

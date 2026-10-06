@@ -97,6 +97,30 @@ describe('Styles', () => {
     assert.deepEqual(r.ind, {left: 720, firstLine: 360});
   });
 
+  it('ind: firstLine and hanging are one value across layers', () => {
+    const t = add(newStyleTable(), st('Hang',
+      {pPr: rp({ind: {left: 720, hanging: 360}})}),
+      st('First', {pPr: rp({ind: {firstLine: 200}})}),
+      st('Sub', {basedOn: 'Hang', pPr: rp({ind: {firstLine: 100}})}));
+    const ind = (pStyle, ind) => resolvePara(t, newPara('x',
+      {pStyle, pPr: rp(ind ? {ind} : {})})).ind;
+    // a direct left only keeps the style's hanging
+    assert.deepEqual(ind('Hang', {left: 1440}),
+      {left: 1440, hanging: 360});
+    // a direct first line drops the style's hanging
+    assert.deepEqual(ind('Hang', {firstLine: 0}),
+      {left: 720, firstLine: 0});
+    // a direct hanging drops the style's first line
+    assert.deepEqual(ind('First', {hanging: 180}), {hanging: 180});
+    // so does a style based on another
+    assert.deepEqual(ind('Sub'), {left: 720, firstLine: 100});
+    // both in one layer: kept as given (hanging wins when read)
+    assert.deepEqual(ind('Hang', {firstLine: 5, hanging: 6}),
+      {left: 720, firstLine: 5, hanging: 6});
+    // nothing direct: the style's
+    assert.deepEqual(ind('Hang'), {left: 720, hanging: 360});
+  });
+
   it('rFonts merge', () => {
     const t = add(newStyleTable(),
       st('A', {rPr: rp({rFonts: {ascii: 'Times', cs: 'Arial'}})}));

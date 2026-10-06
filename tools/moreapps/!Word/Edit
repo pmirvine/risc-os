@@ -1,7 +1,7 @@
 // Edit - the typing commands of !Word: text, Enter, line break, tab,
 // overwrite.
 //
-//   typeText(d, sel, text, {overwrite, key}) type text
+//   typeText(d, sel, text, {overwrite, key, rPr, rStyle}) type text
 //   overwrite(d, sel, text, {key})           typeText in overwrite
 //   splitPara(d, sel)                        Enter (./EditPara)
 //   lineBreak(d, sel)                        Shift-Enter
@@ -22,7 +22,10 @@
 // (new paragraphs: fresh ids, the same pPr and pStyle; text typed as
 // exactly '\n' is Enter, with all its rules). The typed text gets
 // the formatting of the character before it, or over a selection of
-// the first selected one (./OpsText). Text after an inline wrapper
+// the first selected one (./OpsText); {rPr} (a partial rPr, as
+// ./Pending.applyTo merges it) and {rStyle} (an id, or null for
+// none) change that format for the new text only: the pending format
+// (./Pending.forTyping, styleFor). Text after an inline wrapper
 // (a hyperlink...) is ordinary text after it, never inside it.
 // {key} is passed to d.group as {coalesce: key} (one undo step for
 // consecutive typing, ./Document) unless the text has \n or \t or
@@ -46,6 +49,8 @@ import {cut, join} from './OpsUtil';
 import {caret, collapsed} from './Selection';
 import {nextG} from './DocPos';
 import {orderedPos, findBlock} from './EditPos';
+import {fmtAt} from './OpsText';
+import {applyTo} from './Pending';
 import {deleteRange, paraBy} from './EditRange';
 import {splitAt} from './EditPara';
 
@@ -156,9 +161,23 @@ export function typeText(d, sel, text, opts) {
   const n = over ? graphemes(t).length - 1 : 0;
   const keyed = opts.key !== undefined && opts.key !== null &&
     collapsed(sel) && !/[\n\t]/.test(t);
-  return edit(d, sel, (loc, off, fmt) => put(d, loc, off, t,
-    fmt, over ? overSpan(loc.b.text, off, n) : 0),
-  keyed ? {coalesce: opts.key} : undefined);
+  return edit(d, sel, (loc, off, fmt) => {
+    const del = over ? overSpan(loc.b.text, off, n) : 0;
+    return put(d, loc, off, t, withFmt(opts, fmt, loc.b, off, del),
+      del);
+  }, keyed ? {coalesce: opts.key} : undefined);
+}
+
+/**
+ * fmt (null: ./OpsText's rule for p, off, del) changed by opts.rPr
+ * and opts.rStyle (see the header).
+ */
+function withFmt(opts, fmt, p, off, del) {
+  if (opts.rPr === undefined && opts.rStyle === undefined) return fmt;
+  const f = fmt || fmtAt(p, off, del);
+  const rs = opts.rStyle !== undefined ? opts.rStyle
+    : f.rStyle === undefined ? null : f.rStyle;
+  return {rPr: applyTo(f.rPr, opts.rPr), rStyle: rs};
 }
 
 /** See the header. */

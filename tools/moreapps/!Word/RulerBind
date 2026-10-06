@@ -1,0 +1,92 @@
+// RulerBind - the ruler of a document's window (./AppWin): a pane
+// under the toolbar (WimpLib Ui/Ruler) showing the page in inches
+// from the text's left edge, its margins grey, and the indents of the
+// first paragraph the selection touches (./RulerInd): the first line
+// (the triangle at the top), the hanging indent (the triangle at the
+// bottom: the left indent, the first line staying where it is), the
+// left indent (the box under it: the first line moves with it) and
+// the right indent (the triangle at the right). Dragging a marker
+// moves it, snapped to 1/16 inch (Shift: free) and kept inside the
+// text (WimpLib RulerMath.dragIndent), with a dotted line through it;
+// the text stays as it is until the button is let go, wherever the
+// pointer is: then every selected paragraph gets that indent, one
+// undo step (view.format('indentDrag'): ./FormatPara.dragIndents).
+// The markers come up to date from view.formatListeners (once a frame
+// after the selection or the document changes), the scale on each
+// move or scroll of the window (drawn again only when it changed).
+// The page's margins are shown only: they cannot be dragged. Tab
+// stops are not shown. At a zoom (view.zoom) the ruler is scaled
+// with the page.
+//
+//   const rb = bindRuler(view, {task, parent, dy, menu})
+//   rb.ruler            the Ui/Ruler
+//   rb.refresh()        scale and markers now
+//   rb.show(on)         shown or hidden (./AppWin moves the page)
+//   rb.destroy()        listeners removed, the pane deleted
+import {Ruler} from 'wimplib/Ui/Ruler';
+import {indentMarks, dragIndent} from 'wimplib/RulerMath';
+import {RULER_H, firstIndents, textTwips, scaleOf} from './RulerInd';
+
+const D = '|MDrag it with SELECT (hold SHIFT to move it freely).';
+const HELP = {
+  first: 'The first line\'s indent.' + D,
+  hanging: 'The hanging indent: the left edge of the lines after the ' +
+    'first.' + D,
+  left: 'The left indent: moves the first line too.' + D,
+  right: 'The right indent.' + D,
+};
+
+/** See the header. */
+export function bindRuler(v, {task, parent, dy, menu}) {
+  const ruler = new Ruler({task, parent, dy, height: RULER_H, menu,
+    help: 'This is the ruler, in inches from the left margin; the ' +
+      'margins are grey. The triangles and the box show the ' +
+      'paragraph\'s indents.' + D});
+  let ind0 = null;                     // the indents shown
+  const marks = (ind) => indentMarks(ind, textTwips(v.L))
+    .map((m) => ({...m, help: HELP[m.id]}));
+  const scale = () => {
+    if (parent.isOpen) {
+      ruler.setScale(scaleOf(v.L, parent.scrollX, v.zoom));
+    }
+  };
+  const refresh = () => {
+    scale();
+    if (ruler.dragging) return;
+    ind0 = v.sel && v.win.isOpen ? firstIndents(v.d.doc, v.sel) : null;
+    ruler.setMarkers(ind0 ? marks(ind0) : []);
+  };
+  ruler.on('drag', ({id, twips, free}) => {
+    if (!ind0) return;
+    ruler.setMarkers(marks(dragIndent(id, twips, ind0,
+      textTwips(v.L), free)));
+  });
+  ruler.on('commit', ({id, twips, free}) => {
+    if (ind0 && v.sel && v.win.isOpen) {
+      v.format('indentDrag', {marker: id, at: twips,
+        textW: textTwips(v.L), free});
+    }
+  });
+  // after every drag, committed or cancelled (no place to drop it):
+  // the markers as the paragraph has them
+  ruler.on('end', () => refresh());
+  const listener = () => refresh();
+  v.formatListeners.push(listener);
+  const unpane = v.addPane(ruler.pane);
+  const off = parent.on('moved', scale);
+  refresh();
+  return {
+    ruler, refresh,
+    show(on) {
+      ruler.show(on);
+      refresh();
+    },
+    destroy() {
+      const i = v.formatListeners.indexOf(listener);
+      if (i >= 0) v.formatListeners.splice(i, 1);
+      unpane();
+      off();
+      ruler.destroy();
+    },
+  };
+}

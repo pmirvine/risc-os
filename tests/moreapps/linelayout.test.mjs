@@ -310,3 +310,24 @@ describe('LineLayout breaks lines as the stub did', () => {
     }
   });
 });
+
+describe('LineLayout justified (jc both)', () => {
+  it('keeps the offset invariants on 200 generated paragraphs', () => {
+    for (let s = 1; s <= 200; s++) {
+      const g = generated(s);
+      const pa = {...g, pPr: {...g.pPr, jc: 'both'}};
+      for (const w of [120, 300]) {
+        const l = lay(pa, w);
+        check(l, pa);
+        for (const ln of l.lines) {
+          for (const it of ln.items) {
+            assert.ok(it.w >= 0 && Number.isFinite(it.x));
+            if (it.text === '' && it.kind !== 'tab') {
+              assert.equal(it.w, 0, `seed ${s}: unseen stay 0 wide`);
+            }
+          }
+        }
+      }
+    }
+  });
+});

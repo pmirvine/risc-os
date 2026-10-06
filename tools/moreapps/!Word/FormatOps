@@ -1,0 +1,182 @@
+// FormatOps - the paragraphs a selection touches, and the setProps
+// ops (./OpsProps) a formatting command makes for them.
+//
+//   touched(doc, sel) -> [{s, i, p, a, e, para}] | null
+//       every paragraph from the selection's start to its end in
+//       document order (kept blocks, such as tables, left out), with
+//       [a, e) the selected part of its text (all of it but in the
+//       first and last paragraphs) and para whether paragraph
+//       formatting applies to it: to all of them but a last one the
+//       selection only reaches the start of (as in Word). A caret:
+//       its paragraph, a = e = its offset (none on a kept block).
+//       null when a position is not in the document. One pass.
+//   caretAt(doc, sel) -> {p, base} | null
+//       the caret's paragraph and the {rPr, rStyle?} text typed there
+//       gets (./OpsText.fmtAt); on a kept block an empty paragraph
+//   buildOps(doc, sel, perPara) -> ops
+//       perPara(entry) -> a list of partial setProps ops ({pPr?,
+//       pStyle?, range?, rPr?, rStyle?}); each gets op and block
+//   charOps(entry, patchFor) -> partial ops for the runs of
+//       [a, e): patchFor(run) -> {rPr?, rStyle?} or null (nothing to
+//       change); neighbouring runs with equal patches share one op
+//       (one op for a paragraph formatted alike)
+//   pieces(p, x, y) -> [[s, t]...]  the parts of [x, y) of p that
+//       character formatting reaches: all of it but the U+FFFC of
+//       inlines written outside any run (level 'p': a hyperlink, a
+//       kept run, a bookmark...), whose run's format is not saved
+//   changes(obj, props, patch, style) whether patch ({rPr?,
+//       rStyle?} or {pPr?, pStyle?}: props and style name the keys)
+//       would change obj (a run or a paragraph)
+//   runOps(d, typing, ops) applies them as one undo step
+//       (typing.command and d.atomic: all or nothing); with no ops it
+//       only ends the typing's step
+// Character formatting changes only the runs' rPr and rStyle: inline
+// items (U+FFFC: links, fields...) keep their raw nodes untouched,
+// and the U+FFFC of a level 'p' inline keeps its run format too
+// (pieces): the file could not hold it, so it would not come back.
+// Pure: no desktop services.
+import {orderedPos, checkPos} from './EditPos';
+import {fmtAt} from './OpsText';
+import {deepEqual} from './ModelCheck';
+import {mergeProps} from './OpsProps';
+import {RPR_FIELDS, PPR_FIELDS, withoutRaw} from './PropNames';
+
+/** See the header. */
+export function touched(doc, sel) {
+  const o = orderedPos(doc, sel);
+  if (!o) return null;
+  const out = [];
+  const secs = doc.sections;
+  for (let s = o.f.s; s <= o.t.s; s++) {
+    const bs = secs[s].blocks;
+    const i0 = s === o.f.s ? o.f.i : 0;
+    const i1 = s === o.t.s ? o.t.i : bs.length - 1;
+    for (let i = i0; i <= i1; i++) {
+      const p = bs[i];
+      if (p.type !== 'p') continue;
+      const first = s === o.f.s && i === o.f.i;
+      const last = s === o.t.s && i === o.t.i;
+      const a = first ? o.from.off : 0;
+      const e = last ? o.to.off : p.text.length;
+      out.push({s, i, p, a, e, para: first || !last || e > 0});
+    }
+  }
+  return out;
+}
+
+const EMPTY_P = {type: 'p', text: '', runs: [], inlines: {},
+  pPr: {extra: []}, extraP: []};
+
+/** See the header. */
+export function caretAt(doc, sel) {
+  const loc = checkPos(doc, sel.head);
+  if (!loc) return null;
+  if (loc.b.type !== 'p') return {p: EMPTY_P, base: {rPr: {extra: []}}};
+  return {p: loc.b, base: fmtAt(loc.b, sel.head.off, 0)};
+}
+
+/** See the header. */
+export function buildOps(doc, sel, perPara) {
+  const list = touched(doc, sel) || [];
+  const ops = [];
+  for (const en of list) {
+    for (const x of perPara(en) || []) {
+      ops.push({op: 'setProps', block: [en.s, en.i], ...x});
+    }
+  }
+  return ops;
+}
+
+/** See the header. */
+export function changes(obj, props, patch, style) {
+  const pp = patch[props], v = patch[style];
+  if (pp !== undefined || v !== undefined) {
+    // as ./OpsProps.setProps does it: a raw element of a field the
+    // patch sets or deletes goes too (a raw w:jc is a change even
+    // when the jc written is null), and so does a raw w:pStyle or
+    // w:rStyle when the style is set or removed
+    const fields = props === 'rPr' ? RPR_FIELDS : PPR_FIELDS;
+    const m = pp !== undefined ? mergeProps(obj[props], pp)
+      : {...obj[props]};
+    const names = pp === undefined ? [] : Object.keys(pp)
+      .filter((k) => pp[k] !== undefined && fields.has(k))
+      .map((k) => fields.get(k));
+    if (v !== undefined) names.push(style);
+    m.extra = withoutRaw(m.extra, names);
+    if (!deepEqual(m, obj[props])) return true;
+  }
+  return v !== undefined && (v === null ? undefined : v) !==
+    obj[style];
+}
+
+const holes = new WeakMap();
+
+/** The offsets of p's level 'p' inlines, in order (cached). */
+function holesOf(p) {
+  let h = holes.get(p);
+  if (!h) {
+    h = [];
+    for (const k of Object.keys(p.inlines || {})) {
+      const x = p.inlines[k];
+      if (x && x.level === 'p') h.push(Number(k));
+    }
+    h.sort((u, v) => u - v);
+    holes.set(p, h);
+  }
+  return h;
+}
+
+/** See the header. */
+export function pieces(p, x, y) {
+  if (y <= x) return [];
+  const h = holesOf(p);
+  if (!h.length) return [[x, y]];
+  const out = [];
+  let s = x;
+  for (const k of h) {
+    if (k < x) continue;
+    if (k >= y) break;
+    if (k > s) out.push([s, k]);
+    s = k + 1;
+  }
+  if (s < y) out.push([s, y]);
+  return out;
+}
+
+/** See the header. */
+export function charOps(en, patchFor) {
+  const {p, a, e} = en;
+  const out = [];
+  let cur = null;
+  for (const r of p.runs) {
+    const parts = pieces(p, Math.max(r.start, a), Math.min(r.end, e));
+    if (!parts.length) continue;
+    const patch = patchFor(r);
+    const live = patch && changes(r, 'rPr', patch, 'rStyle');
+    if (!live) { cur = null; continue; }
+    for (const [x, y] of parts) {
+      if (cur && cur.range.end === x && deepEqual(cur.patch, patch)) {
+        cur.range.end = y;
+        continue;
+      }
+      cur = {patch, range: {start: x, end: y}};
+      out.push(cur);
+    }
+  }
+  return out.map(({patch, range}) => {
+    const whole = range.start === 0 && range.end === p.text.length;
+    return whole ? {...patch} : {...patch, range};
+  });
+}
+
+/** See the header. */
+export function runOps(d, typing, ops) {
+  const go = () => {
+    if (!ops.length) return;
+    d.atomic(() => {
+      for (const op of ops) d.apply(op);
+    });
+  };
+  if (typing) typing.command(go);
+  else go();
+}

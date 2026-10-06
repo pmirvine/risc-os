@@ -454,3 +454,36 @@ caret blinking, triple-click counting.
 * Tests: `tests/core/test-textinput.mjs` (Playwright and CDP: `insertText`, dead keys, `Input.imeSetComposition`,
   auto-repeat, hot keys, focus/blur) and `tests/core/test-textinput-pure.mjs` (node), both in
   `tests/core/index.mjs`.
+
+## wimp.drag does not say that a pointer drag was cancelled — noted by the !Word formatting work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`wimp.drag({type: 'point'})` (`src/core/wimp.js`, over `startPointerDrag` in `src/core/input.js`) ends on `pointerup`
+and on `pointercancel` alike, and what it resolves with is the same. !Word's ruler (`tools/moreapps/!WimpLib/Ui/Ruler`) cannot tell a cancelled drag from a
+release, so it commits the indent at the coordinates of the cancel event, where a cancel should leave the paragraph
+alone. Possible fix: add `cancelled: true` to the drop information on `pointercancel` (and on a mid-drag close).
+
+## The core has no detachPane — noted by the !Word formatting work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+A pane attached with `attachPane` cannot be detached again. !Word's ruler is hidden by Format > Ruler, so `Ui/Ruler`
+closes the pane again after every `moved` or `opened` event of its parent window (it reopens when shown). It works,
+but each parent move restacks the windows once more. Possible fix: `detachPane(pane)` (or `attachPane` accepting a
+hidden state) in `src/core`.
+
+## The wheel event has no Ctrl flag — noted by the !Word formatting work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+The core's `wheel` event (`src/core/wimp.js` `_wheel`) carries `dx`, `dy` and `shift` but not Ctrl, so !Word's zoom (`ZoomBind`) reads Ctrl from
+`os.input.keysDown` for Ctrl+wheel. A trackpad pinch reaches the browser as a wheel event with `ctrlKey` set but
+nothing in `keysDown`, so a pinch scrolls instead of zooming. Possible fix: add `ctrl` to the `wheel` event
+(the pinch could then zoom).
+
+## The wheel scrolls pane windows that have no scroll bars — noted by the !Word formatting work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`src/core/wimp.js` `_wheel` scrolls whatever window is under the pointer, panes included. A toolbar or ruler pane is
+wider than its window (extents 4000 and 8000 px), so a sideways wheel, Shift+wheel or trackpad swipe over it slid its
+contents away for good, and a wheel over it did nothing for its document. Possible fix: skip pane windows (or windows
+with no scroll bars) in `_wheel` and route the wheel to the parent. Worked round in !Word: `Ui/PaneWheel` (used by
+`Ui/Toolbar` and `Ui/Ruler`) claims the pane's `wheel` event and forwards it to the parent window.

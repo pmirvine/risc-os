@@ -243,4 +243,20 @@ describe('Typing', () => {
     assert.equal(d.undoDepth, 5);
     assert.deepEqual(texts(d), ['ab', 'c', 'd']);
   });
+  it('a pending format given is a new step; the word after joins',
+    () => {
+      const {d, t, clock} = setup();
+      let s = typeAll(t, C(d, 0, 0), 'ab', clock);
+      assert.equal(d.undoDepth, 1);
+      clock.t += 50;
+      s = t.type(s, 'c', {rPr: {b: true}});
+      assert.equal(d.undoDepth, 2);
+      s = typeAll(t, s, 'de', clock);
+      assert.equal(d.undoDepth, 2);
+      clock.t += 50;
+      s = t.type(s, 'f', {rStyle: null});
+      assert.equal(d.undoDepth, 3);
+      d.undo(); d.undo();
+      assert.deepEqual(texts(d), ['ab']);
+    });
 });

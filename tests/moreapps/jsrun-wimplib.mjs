@@ -41,6 +41,14 @@ try {
     res.vars = ['Dir', 'Path', 'Version']
       .map((n) => os.sysvars.get(`WimpLib$${n}`));
     res.nope = await run(D + 'Nope', "import { x } from 'wimplib/Nope';\nexport default function start() {}\n");
+    // a module in a directory of the library ('wimplib/Ui/...'), and
+    // one that imports from the directory above ('../FontList')
+    res.sub = await run(D + 'Sub', head
+      + "import { fontMenu } from 'wimplib/Ui/FontMenu';\n"
+      + "import { halfPoints } from 'wimplib/NumberField';\n"
+      + "export default function start() {\n"
+      + "  const m = fontMenu({ docFonts: ['Georgia'], desktop: [] });\n"
+      + "  print(m.items.map((i) => i.text).join(',') + ' ' + halfPoints('11.5'));\n}\n");
     res.bare = await run(D + 'Bare', "import * as w from 'wimplib';\nexport default function start() {}\n");
     // names: letters, digits, _ and -, with / between directories;
     // the prefix in any case
@@ -153,6 +161,8 @@ try {
   const LIB = 'ADFS::HardDisc4.$.!Boot.Resources.!WimpLib';
   ok('WimpLib$Dir, WimpLib$Path and WimpLib$Version are set', r.vars[0] === LIB && r.vars[1] === LIB + '.' && /^\d+\.\d\d$/.test(r.vars[2]), r.vars);
   ok("'wimplib/Nope' is not found, naming where it looked", r.nope.msgs.length === 1 && r.nope.msgs[0].includes(`Can't find 'wimplib/Nope' (not in WimpLib$Path: ${LIB})`), r.nope);
+  ok("'wimplib/Ui/FontMenu' (a directory of the library; it imports '../FontList')", !r.sub.msgs.length
+    && r.sub.text === 'Georgia,Calibri,Cambria,Arial,Times New Roman,Courier New 23\n', r.sub);
   ok("bare 'wimplib' needs a name", r.bare.msgs.length === 1 && /Can't find 'wimplib' \(no module name\)/.test(r.bare.msgs[0]), r.bare);
   const WL = "(a WimpLib module name is letters, digits, _ and -, with / between directories)";
   for (const [spec, msgs] of r.hostile) {

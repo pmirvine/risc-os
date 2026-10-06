@@ -1,0 +1,149 @@
+// ToolbarBind - the toolbar of a document's window (./AppWin): a pane
+// across its top (WimpLib Ui/Toolbar) whose controls show the
+// formatting of the selection (view.query()) and change it
+// (view.format(id, arg): ./EditView). Left to right:
+//
+//   Style  the paragraph style's name; its arrow (or the name) lists
+//          the document's paragraph styles (./FormatMenu.styleMenu)
+//   Font   the font's name: type one and press Return; its arrow
+//          lists the fonts (./FormatMenu.fontsMenu)
+//   Size   in points: type one and press Return (WimpLib NumberField:
+//          to the nearest half point, 1 to 400); its arrow lists
+//          Word's sizes; the up and down arrows step along them
+//   B I U S, superscript, subscript   pressed in when the whole
+//          selection has it; a click sets or clears it (Word's rule)
+//   A      the text's colour, shown under the A: a click opens the
+//          swatches (WimpLib Ui/ColourPopup)
+//   marker the highlight colours (./FormatMenu.highlightMenu)
+//   align  left, centre, right, justify: the paragraph's is pressed in
+//   indent less, more (half an inch); clear formatting
+//
+// A mixed selection shows an empty field and buttons let out. The
+// controls are brought up to date by a listener in
+// view.formatListeners (called at most once a frame, after the
+// selection, the document or the pending format changes; the query is
+// cached). A click on a button leaves the document's caret and
+// selection as they are; Return or Escape in a field gives the caret
+// back to the document (Escape restores what the field showed), and
+// while a field has the caret the selection stays lit (view.addPane).
+//
+//   const bar = bindToolbar(view, {task, parent, height, menu})
+//   bar.tb          the Ui/Toolbar;  bar.refresh()   now
+//   bar.destroy()   the listener removed, the pane deleted, and a
+//                   popup of the toolbar's that is open closed
+import {wimp} from 'riscos';
+import {Toolbar} from 'wimplib/Ui/Toolbar';
+import {colourPopup} from 'wimplib/Ui/ColourPopup';
+import {desktopFonts} from 'wimplib/Ui/FontMenu';
+import {halfPoints, formatPoints} from 'wimplib/NumberField';
+import {fontList, findFont, cleanFont} from 'wimplib/FontList';
+import {cssOf} from 'wimplib/ColourList';
+import {fontsMenu, sizeMenu, highlightMenu, styleMenu}
+  from './FormatMenu';
+import {docFonts} from './EditFormat';
+import {BUTTONS, TOGGLES, ALIGNS, ACTIONS} from './ToolbarButtons';
+
+/** The name of style id (its id when it has none), or ''. */
+function styleName(styles, id) {
+  if (!id) return '';
+  const s = styles && styles.styles instanceof Map &&
+    styles.styles.get(id);
+  return String((s && s.name) || id);
+}
+
+/** See the header. */
+export function bindToolbar(v, {task, parent, height, menu}) {
+  const tb = new Toolbar({task, parent, height, buttons: BUTTONS,
+    menu});
+  let popup = null;                    // an open ColourPopup
+  let menu0 = null;                    // the last popup menu opened
+  const shown = () => v.query();
+
+  const refresh = () => {
+    const on = !!v.sel && v.win.isOpen;
+    for (const b of BUTTONS) tb.shade(b.name, !on);
+    if (!on) return;
+    const q = shown();
+    for (const [name, key, value] of TOGGLES) {
+      tb.setPressed(name, q[key] === value);
+    }
+    for (const [name, a] of ALIGNS) tb.setPressed(name, q.align === a);
+    const ed = tb.editing;
+    if (ed !== 'size') tb.setText('size', formatPoints(q.size));
+    if (ed !== 'font') tb.setText('font', q.family ?? '');
+    tb.setText('style', styleName(v.d.doc.styles, q.style));
+    tb.setSwatch('color', q.color == null ? null : cssOf(q.color));
+  };
+
+  /** Give the caret back to the document from a field. */
+  const leave = () => {
+    const ed = tb.editing;
+    if (!ed) return;
+    v.focus();
+    refresh();
+  };
+  const open = (name, make) => {
+    leave();
+    if (!v.sel) return;
+    const at = tb.popupAt(name);
+    menu0 = make(v);
+    wimp.menus.open(menu0, at.x, at.y, {task});
+  };
+
+  for (const id of ACTIONS) {
+    tb.on(id, () => { leave(); v.format(id); });
+  }
+  tb.on('styleMenu', () => open('style', styleMenu));
+  tb.on('style', () => open('style', styleMenu));
+  tb.on('fontMenu', () => open('font', fontsMenu));
+  tb.on('sizeMenu', () => open('size', sizeMenu));
+  tb.on('highlight', () => open('highlight', highlightMenu));
+  tb.on('color', () => {
+    leave();
+    if (!v.sel) return;
+    popup = colourPopup({task, at: tb.popupAt('color'),
+      current: shown().color, onPick: (c) => v.format('color', c)});
+    popup.on('deleted', () => { popup = null; });
+  });
+  tb.on('size', (ev) => {
+    if (ev.kind === 'return') {
+      const hp = halfPoints(ev.text);
+      if (hp === null) wimp.beep();
+      else v.format('size', hp / 2);
+    }
+    v.focus();
+    refresh();
+  });
+  tb.on('font', (ev) => {
+    const name = ev.kind === 'return' ? cleanFont(ev.text) : null;
+    if (name) {
+      const l = fontList(docFonts(v), desktopFonts());
+      v.format('font', findFont(l, name) ?? name);
+    }
+    v.focus();
+    refresh();
+  });
+
+  const listener = () => refresh();
+  v.formatListeners.push(listener);
+  const unpane = v.addPane(tb.pane);
+  // the field lets the caret go: the selection is drawn grey again
+  tb.pane.on('losecaret', () => v.win.invalidate());
+  refresh();
+
+  return {
+    tb, refresh,
+    destroy() {
+      const i = v.formatListeners.indexOf(listener);
+      if (i >= 0) v.formatListeners.splice(i, 1);
+      unpane();
+      // (a popup of this toolbar still open: closed)
+      const top = wimp.menus.levels[0];
+      if (top && ((menu0 && top.menu === menu0) ||
+        (popup && top.win === popup))) wimp.menus.close();
+      if (popup) popup.delete();
+      popup = menu0 = null;
+      tb.destroy();
+    },
+  };
+}
