@@ -172,6 +172,15 @@ export const FIXTURES = [
   ['styles', doc(p(r('x'), '<w:pStyle w:val="H2x"/>'),
     {'word/styles.xml': STYLES})],
   ['numbering', doc(p(r('x')), {'word/numbering.xml': NUMBERING})],
+  ['numbering overrides', doc(p(r('x'), '<w:numPr><w:ilvl w:val="1"/>' +
+    '<w:numId w:val="6"/></w:numPr>'), {'word/numbering.xml':
+    NUMBERING.replace('</w:numbering>', '<w:num w:numId="6">' +
+      '<w:abstractNumId w:val="0"/><w:lvlOverride w:ilvl="0">' +
+      '<w:startOverride w:val="4"/></w:lvlOverride><w:lvlOverride ' +
+      'w:ilvl="1"><w:lvl w:ilvl="1"><w:numFmt w:val="lowerRoman"/>' +
+      '<w:suff w:val="space"/><w:pPr><w:ind w:left="1440" ' +
+      'w:hanging="360"/></w:pPr></w:lvl></w:lvlOverride></w:num>' +
+      '</w:numbering>')})],
   ['strict', strictDocx],
   ['transitional ns', () => buildDocx({'word/document.xml':
     documentXml(p(r('t')), {rootAttrs: ' xmlns:a="http://schemas.' +

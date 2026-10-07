@@ -1,0 +1,122 @@
+// ListNumbers - the list labels (numbers and bullets) of a Doc.
+//
+//   labels(doc) -> Map<paraId, Label>, one pass over the paragraphs
+//   of every section in order (kept blocks are skipped: they neither
+//   count nor restart anything); paragraphs with no label are not in
+//   the map.
+//   Label {text, level, numId, indent?, suff, jc, rPr, bullet, fmt}
+//     text    what is shown ('' for numFmt none or an empty lvlText)
+//     level   the ilvl 0..8 counted; numId the numbering instance
+//     indent  {left?, hanging?, firstLine?} in twips: only what the
+//             level's w:ind gives (absent when it gives none of
+//             them); hanging and firstLine are one value, hanging
+//             winning when both are given (as ./Styles merges)
+//     suff    'tab' | 'space' | 'nothing'; jc 'left' | 'center' |
+//             'right' (the level's lvlJc, Strict start/end mapped;
+//             default left); rPr the level's run properties
+//             (shared: never change them) or null
+//     bullet  numFmt is bullet; fmt the format used (NumFormat.fmtOf)
+//
+// Rules (Word's): the numbering is the paragraph's numPr over its
+// style's (Styles.paraNumPr; numId 0 or an unknown numId: no label).
+// When no layer gives an ilvl, the level is the one whose w:pStyle
+// names the paragraph's style (heading numbering), else 0. One set
+// of counters per abstractNum (per numId when a num names none),
+// continued through the whole document: numIds over one abstractNum
+// share them, as Word does. A paragraph at ilvl k restarts the
+// deeper counters that restart after it (ListLevel restarts, with
+// its numId's levels), then counts k: the first time k is counted
+// under a numId with a startOverride for k, the counter becomes
+// that value (once per numId and level); otherwise an unused (or
+// restarted) counter gives the level's start, else +1. In lvlText,
+// %n shows counter n-1 in level n-1's format; a counter not used
+// yet shows its level's start. Levels
+// the definition lacks use the nearest defined level below them
+// (ListLevel.levelsIn); with none, no label and nothing counts.
+// Counters stay safe integers: start is within 2^31 and each
+// paragraph adds 1.
+import {paraNumPr, paraStyleId} from './Styles';
+import {levelsIn, startOf, overrideStart, restarts, labelMaker,
+  levelIndent, styleLevel} from './ListLevel';
+import {fmtOf} from './NumFormat';
+
+const SUFF = ['tab', 'space', 'nothing'];
+const JC = new Map([['left', 'left'], ['center', 'center'],
+  ['right', 'right'], ['start', 'left'], ['end', 'right']]);
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** State of one numId; `count` is shared by its abstractNum. */
+function newState(num, count) {
+  return {num, levels: levelsIn(num), count, used: new Array(9),
+    makers: new Array(9), byStyle: new Map()};
+}
+
+/** The ilvl of a paragraph whose numbering gives none. */
+function byStyle(st, styles, para) {
+  const id = paraStyleId(styles, para);
+  if (id === null) return 0;
+  if (!st.byStyle.has(id)) st.byStyle.set(id, styleLevel(st.num, id));
+  return st.byStyle.get(id);
+}
+
+/** Count paragraph at ilvl k of state st; the Label. */
+function count(st, numId, k) {
+  const level = st.levels[k];
+  for (let j = k + 1; j < 9; j++) {
+    if (st.count[j] !== undefined && restarts(st.levels[j], k))
+      st.count[j] = undefined;
+  }
+  const ov = st.used[k] ? undefined : overrideStart(st.num, k);
+  st.used[k] = true;
+  if (ov !== undefined) st.count[k] = ov;
+  else st.count[k] = st.count[k] === undefined ? startOf(level)
+    : st.count[k] + 1;
+  const value = (j) => (st.count[j] !== undefined ? st.count[j]
+    : startOf(st.levels[j]));
+  const fmt = fmtOf(level.numFmt);
+  if (!st.makers[k]) st.makers[k] = labelMaker(level, st.levels);
+  const label = {text: st.makers[k](value), level: k,
+    numId, suff: SUFF.includes(level.suff) ? level.suff : 'tab',
+    jc: JC.get(level.lvlJc) || 'left',
+    rPr: isObj(level.rPr) ? level.rPr : null,
+    bullet: fmt === 'bullet', fmt};
+  const indent = levelIndent(level);
+  if (indent) label.indent = indent;
+  return label;
+}
+
+/** The labels of every list paragraph of `doc` (see above). */
+export function labels(doc) {
+  const out = new Map();
+  const nums = doc.numbering && doc.numbering.nums;
+  if (!(nums instanceof Map) || !nums.size) return out;
+  const styles = doc.styles || null;
+  const states = new Map();
+  const shared = new Map();
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b.type !== 'p') continue;
+      const np = paraNumPr(styles, b);
+      if (!np) continue;
+      let st = states.get(np.numId);
+      if (!st) {
+        const num = nums.get(np.numId);
+        if (!isObj(num)) continue;
+        const a = num.abstractNumId;
+        const key = a === undefined || a === null ? null : a;
+        let count = key === null ? undefined : shared.get(key);
+        if (!count) {
+          count = new Array(9);
+          if (key !== null) shared.set(key, count);
+        }
+        st = newState(num, count);
+        states.set(np.numId, st);
+      }
+      const k = np.ilvlGiven ? np.ilvl : byStyle(st, styles, b);
+      if (!st.levels[k]) continue;
+      out.set(b.id, count(st, np.numId, k));
+    }
+  }
+  return out;
+}

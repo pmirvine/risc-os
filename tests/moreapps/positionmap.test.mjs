@@ -33,11 +33,14 @@ before(async () => {
   styles = d.styles;
 });
 
-/** A laid-out paragraph {para, y, h, lines, metrics} at y = PY. */
-function lay(text, w = 400, opts = {}) {
+/**
+ * A laid-out paragraph {para, y, h, lines, metrics} at y = PY;
+ * label: a list label (./ListNumbers) for it, or undefined.
+ */
+function lay(text, w = 400, opts = {}, label) {
   const para = newPara(text, opts);
   const metrics = new TextMetrics(fake);
-  const l = layoutPara(para, styles, w, metrics, new Map());
+  const l = layoutPara(para, styles, w, metrics, new Map(), label);
   return {para, y: PY, h: l.h, lines: l.lines, metrics};
 }
 const mid = (pl, i) => PY + pl.lines[i].y + pl.lines[i].h / 2;
@@ -291,8 +294,11 @@ function rng(seed) {
   };
 }
 
-/** A random paragraph: words, emoji, runs, tabs, breaks, inlines. */
-function generated(seed, w, jc) {
+/**
+ * A random paragraph: words, emoji, runs, tabs, breaks, inlines;
+ * label: a list label to lay it out with (or undefined).
+ */
+function generated(seed, w, jc, label) {
   const rnd = rng(seed), pick = (a) => a[Math.floor(rnd() * a.length)];
   const fmts = [{}, {}, {b: true}, {sz: 40}];
   // justified: also superscript, subscript and highlight
@@ -337,7 +343,20 @@ function generated(seed, w, jc) {
     opts.runs = runs.map(([s, e, rPr]) => ({start: s, end: e,
       rPr: {...rPr, extra: []}}));
   }
-  return lay(text, w, opts);
+  return lay(text, w, opts, label);
+}
+
+/** A random list label (./ListNumbers) for seed s. */
+function randomLabel(s) {
+  const rnd = rng(s * 31), pick = (a) => a[Math.floor(rnd() * a.length)];
+  const indent = pick([{left: 720, hanging: 360},
+    {left: 1440, hanging: 720}, {left: 0, hanging: 0},
+    {left: 360, hanging: 0, firstLine: 360}]);
+  return {text: pick(['1.', 'iv)', '\u2022', '', 'Article 12:']),
+    level: 0, numId: 1, indent, suff: pick(['tab', 'space', 'nothing']),
+    jc: pick(['left', 'center', 'right']),
+    rPr: pick([null, {b: true, sz: 40, extra: []}]),
+    bullet: false, fmt: 'decimal'};
 }
 
 /** Offsets a caret can stand at: see PositionMap's header. */
@@ -376,6 +395,53 @@ describe('PositionMap round trip', () => {
   }
 });
 const g = (pl) => new Set(graphemes(pl.para.text));
+
+describe('PositionMap with a list label on the first line', () => {
+  for (const jc of [undefined, 'both']) {
+  it(`hitTest(caretRect(off)) gives off on 300 labelled paragraphs${jc
+    ? ' (justified)' : ''}`, () => {
+    for (let s = 1; s <= 300; s++) {
+      const pl = generated(s, [90, 160, 400][s % 3], jc, randomLabel(s));
+      const L0 = pl.lines[0];
+      assert.ok(L0.label, 'seed ' + s);
+      assert.equal(L0.from, 0);
+      const offs = stops(pl), rnd = rng(s * 7);
+      for (let k = 0; k < 20 && offs.length; k++) {
+        const off = offs[Math.floor(rnd() * offs.length)];
+        for (const aff of ['down', 'up']) {
+          const c = caretRect(pl, off, aff);
+          const h = hitTest(pl, c.x, c.y + c.h / 2);
+          assert.deepEqual(caretRect(pl, h.off, h.affinity), c,
+            `seed ${s} off ${off} ${aff} -> ${h.off}`);
+        }
+      }
+      // a click on the label is a click at the start of the text
+      const y0 = PY + L0.y + L0.h / 2;
+      assert.deepEqual(hitTest(pl, L0.label.x + 1, y0),
+        hitTest(pl, L0.x, y0), 'seed ' + s);
+      // the caret at 0 is not left of the text start
+      assert.ok(caretRect(pl, 0).x >= L0.x - 1e-9, 'seed ' + s);
+      // selection rectangles never cover the label
+      for (const q of selectionRects(pl, 0, pl.para.text.length)) {
+        if (q.y === PY + L0.y) {
+          assert.ok(q.x >= L0.x - 1e-9, 'seed ' + s);
+        }
+      }
+    }
+  });
+  }
+  it('plain text: a click on the label gives 0, the caret at 0 is '
+    + 'the text start', () => {
+    const lab = {text: '1.', indent: {left: 1440, hanging: 720},
+      suff: 'tab', jc: 'left', rPr: null, bullet: false};
+    const pl = lay('alpha beta', 400, {}, lab);
+    const L0 = pl.lines[0];
+    assert.deepEqual(hitTest(pl, L0.label.x + 3, mid(pl, 0)),
+      {off: 0, affinity: 'down'});
+    assert.equal(caretRect(pl, 0).x, 96);
+    assert.equal(selectionRects(pl, 0, 3)[0].x, 96);
+  });
+});
 
 describe('PositionMap properties', () => {
   it('Up and Down always reach a line that has caret places', () => {

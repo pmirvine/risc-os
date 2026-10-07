@@ -1,16 +1,33 @@
 // ReadNumbering - numbering.xml -> doc.numbering.
 //
-//   {raw, nums: Map<numId, {abstractNumId, levels}>}
-//   raw     the original w:numbering root element (kept whole: the
-//           writer puts it back as it was)
-//   levels  [{ilvl, numFmt?, lvlText?, start?}] from the w:lvl
-//           children of the w:abstractNum the w:num points at
-//           (w:lvlOverride is not applied yet)
-// Ids are numbers when they are integers, else the original strings.
+//   {raw, nums: Map<numId, Num>}
+//   raw  the original w:numbering root element (kept whole: the
+//        writer puts it back as it was, so reading more of it never
+//        changes the saved bytes)
+//   Num  {abstractNumId, levels, overrides, multiLevelType?,
+//         styleLink?, numStyleLink?}
+//   levels     Level objects (./NumLevel) of the w:abstractNum the
+//              w:num points at, indexed by ilvl 0..8; a level the
+//              definition lacks is absent (a hole). Other ilvl
+//              values and repeats (the first wins) are ignored.
+//   overrides  Map<ilvl, {start?, level?}> from w:lvlOverride:
+//              start from w:startOverride, level a whole replacement
+//              w:lvl (its ilvl is the override's). Not applied to
+//              `levels`: levelOf(num, ilvl) gives the level in force.
+//   multiLevelType  'singleLevel' | 'multilevel' | 'hybridMultilevel'
+//   styleLink / numStyleLink  the numbering style names; an abstract
+//              with a numStyleLink takes its levels from the numbering
+//              style's numPr numId (followed through `styles` when
+//              given; loops end with the abstract's own levels).
+// Ids are numbers when they are integers, else the original strings
+// (only ever Map keys). At most 1000 w:lvlOverride per w:num are read.
 import {scope, wName, wAttr, isEl} from './Ns';
 import {intOf} from './ReadProps';
+import {readLevel, ilvlOf, boundedInt} from './NumLevel';
 
 const idOf = (s) => intOf(s) ?? s;
+const MAX_OVERRIDES = 1000;
+const MULTI = ['singleLevel', 'multilevel', 'hybridMultilevel'];
 
 /** The w:val of the first `name` child of `node`, or undefined. */
 function childVal(node, m, name) {
@@ -20,41 +37,104 @@ function childVal(node, m, name) {
   return undefined;
 }
 
-function levels(abs, m) {
-  const out = [];
+const inner = (m, c) => c.attrs.length ? scope(m, c) : m;
+
+/** A w:abstractNum -> {levels, multiLevelType?, styleLink?, ...}. */
+function readAbstract(abs, m) {
+  const levels = [];
   for (const c of abs.children) {
     if (wName(c, m) !== 'lvl') continue;
-    const lvl = {ilvl: idOf(wAttr(c, m, 'ilvl'))};
-    const fmt = childVal(c, m, 'numFmt');
-    if (fmt !== undefined) lvl.numFmt = fmt;
-    const text = childVal(c, m, 'lvlText');
-    if (text !== undefined) lvl.lvlText = text;
-    const start = intOf(childVal(c, m, 'start'));
-    if (start !== undefined) lvl.start = start;
-    out.push(lvl);
+    const cm = inner(m, c);
+    const ilvl = ilvlOf(c, cm);
+    if (ilvl === null || levels[ilvl]) continue;
+    levels[ilvl] = readLevel(c, cm, ilvl);
+  }
+  const a = {levels};
+  const multi = childVal(abs, m, 'multiLevelType');
+  if (MULTI.includes(multi)) a.multiLevelType = multi;
+  for (const k of ['styleLink', 'numStyleLink']) {
+    const v = childVal(abs, m, k);
+    if (v) a[k] = v;
+  }
+  return a;
+}
+
+/** The w:lvlOverride children of a w:num -> Map<ilvl, override>. */
+function readOverrides(num, m) {
+  const out = new Map();
+  let count = 0;
+  for (const c of num.children) {
+    if (wName(c, m) !== 'lvlOverride') continue;
+    if (++count > MAX_OVERRIDES) break;
+    const cm = inner(m, c);
+    const ilvl = ilvlOf(c, cm);
+    if (ilvl === null || out.has(ilvl)) continue;
+    const o = {};
+    for (const k of c.children) {
+      const l = wName(k, cm);
+      if (l === 'startOverride' && !('start' in o)) {
+        o.start = boundedInt(wAttr(k, inner(cm, k), 'val'));
+        if (o.start === undefined) delete o.start;
+      } else if (l === 'lvl' && !o.level) {
+        o.level = readLevel(k, cm, ilvl);
+      }
+    }
+    out.set(ilvl, o);
   }
   return out;
 }
 
-/** doc.numbering for a numbering part (its root element). */
-export function readNumbering(root, map) {
+/** The abstract whose levels `a` uses, following numStyleLink. */
+function linked(abstract, nums, styles, a) {
+  const seen = new Set([a]);
+  let cur = a;
+  while (cur.numStyleLink && styles) {
+    const s = styles.styles.get(cur.numStyleLink);
+    const np = s && s.type === 'numbering' && s.pPr && s.pPr.numPr;
+    const n = np ? nums.get(np.numId) : undefined;
+    const next = n ? abstract.get(n.abstractNumId) : undefined;
+    if (!next || seen.has(next)) return a;
+    seen.add(next);
+    cur = next;
+  }
+  return cur;
+}
+
+/**
+ * doc.numbering for a numbering part (its root element); `styles`
+ * (the StyleTable, optional) resolves numStyleLink.
+ */
+export function readNumbering(root, map, styles) {
   const m = scope(map, root);
   const abstract = new Map();
   const nums = new Map();
   for (const c of root.children) {
     if (!isEl(c)) continue;
     const l = wName(c, m);
+    const cm = inner(m, c);
     if (l === 'abstractNum') {
-      const id = idOf(wAttr(c, m, 'abstractNumId'));
-      if (!abstract.has(id)) abstract.set(id, levels(c, m));
+      const id = idOf(wAttr(c, cm, 'abstractNumId'));
+      if (!abstract.has(id)) abstract.set(id, readAbstract(c, cm));
     } else if (l === 'num') {
-      const id = idOf(wAttr(c, m, 'numId'));
-      const abs = idOf(childVal(c, m, 'abstractNumId'));
-      if (!nums.has(id)) nums.set(id, {abstractNumId: abs, levels: []});
+      const id = idOf(wAttr(c, cm, 'numId'));
+      const abs = idOf(childVal(c, cm, 'abstractNumId'));
+      if (!nums.has(id)) nums.set(id, {abstractNumId: abs, levels: [],
+        overrides: readOverrides(c, cm)});
     }
   }
   for (const n of nums.values()) {
-    n.levels = structuredClone(abstract.get(n.abstractNumId) || []);
+    const a = abstract.get(n.abstractNumId);
+    if (!a) continue;
+    for (const k of ['multiLevelType', 'styleLink', 'numStyleLink'])
+      if (a[k] !== undefined) n[k] = a[k];
+    const from = linked(abstract, nums, styles, a);
+    n.levels = structuredClone(from.levels);
   }
   return {raw: root, nums};
+}
+
+/** The level in force for `ilvl` of a Num (override first). */
+export function levelOf(num, ilvl) {
+  const o = num.overrides && num.overrides.get(ilvl);
+  return o && o.level ? o.level : num.levels[ilvl];
 }

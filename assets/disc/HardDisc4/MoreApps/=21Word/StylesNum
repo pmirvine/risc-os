@@ -1,0 +1,82 @@
+// StylesNum - the numbering a paragraph's pPr layers give.
+//
+//   layerNumPr(pPr)    the numPr of one layer: its numPr field;
+//                      else a w:numPr kept raw in its `extra` (one
+//                      the reader could not model, e.g. with a
+//                      tracked change inside): {numId?, ilvl?} read
+//                      from its w:numId / w:ilvl, other children
+//                      ignored; else undefined
+//   numberingOf(layers)  the layers (lowest first) merged key by
+//                      key as StylesMerge does (a null layer value
+//                      clears the lower ones) ->
+//                      {numId, ilvl, ilvlGiven} or null for none:
+//                      no numId, numId 0 (no numbering, overriding a
+//                      style's) or an ilvl outside 0..8. ilvl is 0
+//                      when no layer gives one (ilvlGiven false):
+//                      Word then takes the level whose w:pStyle is
+//                      the paragraph's style (see ListNumbers).
+// A raw node carries no namespace scope of its own: the prefix 'w'
+// is taken as WML (what every writer uses), and any xmlns on the
+// node itself counts.
+import {W, scope, wName, wAttr} from './Ns';
+import {intOf} from './ReadProps';
+
+const BASE = new Map([['w', W]]);
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** {numId?, ilvl?} of a raw w:numPr node, else undefined. */
+function rawNumPr(node) {
+  if (!node || typeof node.name !== 'string' ||
+    !Array.isArray(node.attrs) || !Array.isArray(node.children))
+    return undefined;
+  const m = scope(BASE, node);
+  if (wName(node, m) !== 'numPr') return undefined;
+  const o = {};
+  for (const c of node.children) {
+    if (!c || typeof c.name !== 'string' || !Array.isArray(c.attrs))
+      continue;
+    const l = wName(c, m);
+    if ((l !== 'numId' && l !== 'ilvl') || o[l] !== undefined)
+      continue;
+    const v = intOf(wAttr(c, scope(m, c), 'val'));
+    if (v !== undefined) o[l] = v;
+  }
+  return o;
+}
+
+/** The numPr one pPr layer gives (see above), or undefined. */
+export function layerNumPr(pPr) {
+  if (!isObj(pPr)) return undefined;
+  if (pPr.numPr !== undefined) return pPr.numPr;
+  if (!Array.isArray(pPr.extra)) return undefined;
+  for (const n of pPr.extra) {
+    const o = rawNumPr(n);
+    if (o) return o;
+  }
+  return undefined;
+}
+
+/** The numbering in force of pPr layers, lowest first. */
+export function numberingOf(layers) {
+  let acc;
+  for (const pPr of layers) {
+    const np = layerNumPr(pPr);
+    if (np === undefined) continue;
+    if (!isObj(np)) {
+      acc = np;
+      continue;
+    }
+    const next = isObj(acc) ? {...acc} : {};
+    if (np.numId !== undefined) next.numId = np.numId;
+    if (np.ilvl !== undefined) next.ilvl = np.ilvl;
+    acc = next;
+  }
+  if (!isObj(acc)) return null;
+  const {numId} = acc;
+  if (numId === undefined || numId === null || numId === 0) return null;
+  const ilvlGiven = acc.ilvl !== undefined;
+  const ilvl = ilvlGiven ? acc.ilvl : 0;
+  return Number.isInteger(ilvl) && ilvl >= 0 && ilvl <= 8
+    ? {numId, ilvl, ilvlGiven} : null;
+}

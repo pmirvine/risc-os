@@ -1,5 +1,6 @@
 // Edit: typing, Enter, line break, tab, overwrite (pure commands over
 // a Document, no layout).
+import {NUMS} from './list-docs.mjs';
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import * as E from '../../tools/moreapps/!Word/Edit';
@@ -276,10 +277,17 @@ describe('splitPara (Enter)', () => {
   it('in an empty list item: removes the numbering', () => {
     const pPr = {numPr: {ilvl: 0, numId: 1}, jc: 'left', extra: []};
     const d = mk([['', {pPr}]]);
+    d.doc.numbering = {raw: null, nums: NUMS()};
     const s = undoable(d, () => E.splitPara(d, C(d, 0, 0)));
     assert.deepEqual(texts(d), ['']);
     assert.deepEqual(P(d, 0).pPr, {jc: 'left', extra: []});
     assert.deepEqual(at(d, s), [0, 0]);
+  });
+  it('an empty paragraph whose numPr gives no label splits', () => {
+    const pPr = {numPr: {ilvl: 0, numId: 1}, extra: []};
+    const d = mk([['', {pPr}]]);
+    E.splitPara(d, C(d, 0, 0));
+    assert.deepEqual(texts(d), ['', '']);
   });
   it('at the end of a list item: the next is numbered too', () => {
     const pPr = {numPr: {ilvl: 0, numId: 1}, extra: []};

@@ -100,14 +100,20 @@ const XS = [-1e6, -1, 0, 30, 200, 700, 5000, 1e9, NaN, Infinity, -Infinity];
 
 /** Timing of each call: {worst, what, calls}. */
 function timer() {
-  const t = { worst: 0, what: '', calls: 0 };
+  const t = { worst: 0, what: '', calls: 0, all: [] };
   t.run = (what, fn) => {
     const s = performance.now();
     const v = fn();
     const d = performance.now() - s;
     t.calls++;
+    t.all.push(d);
     if (d > t.worst) { t.worst = d; t.what = what; }
     return v;
+  };
+  /** The 95th percentile of the calls' times (ms). */
+  t.p95 = () => {
+    const a = [...t.all].sort((x, y) => x - y);
+    return a.length ? a[Math.min(a.length - 1, Math.floor(a.length * 0.95))] : 0;
   };
   return t;
 }
@@ -170,7 +176,7 @@ export async function sweep(name) {
     t.run('selectionRects', () => L.selectionRects(all));
     t.run('text', () => S.text(all, L));
   }
-  return { worst: t.worst, what: t.what, calls: t.calls, bad, items: L.items.length };
+  return { worst: t.worst, what: t.what, calls: t.calls, p95: t.p95(), bad, items: L.items.length };
 }
 
 /**
@@ -206,5 +212,5 @@ export async function fuzz(seed = 1, n = 500) {
       L.selectionRects(s, L.caretRect(s.head).y - 300, L.caretRect(s.head).y + 300);
     }
   }
-  return { bad, steps, worst: t.worst, what: t.what };
+  return { bad, steps, worst: t.worst, what: t.what, p95: t.p95() };
 }

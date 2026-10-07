@@ -665,7 +665,8 @@ describe('DocxRead: styles and numbering', () => {
     assert.equal(n.raw.name, 'w:numbering');
     assert.deepEqual(n.nums.get(5), {abstractNumId: 0, levels: [
       {ilvl: 0, numFmt: 'decimal', lvlText: '%1.', start: 1},
-      {ilvl: 1, numFmt: 'bullet', lvlText: '•'}]});
+      {ilvl: 1, numFmt: 'bullet', lvlText: '•'}],
+      overrides: new Map()});
   });
 });
 

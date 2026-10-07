@@ -1,0 +1,124 @@
+// FormatList - the list commands: a list paragraph's level, or its
+// numbering taken away (./FormatSet exports them; arguments and
+// what they return as there).
+//
+//   setList(d, typing, sel, patch, pending) -> {sel, pending}
+//       on every paragraph the selection formats (./FormatOps.touched)
+//       that is in a list (./ParaInd.listOf: one with a label);
+//       others are left alone. patch is one of
+//     {by: 1 | -1}   one level deeper (Tab, Demote) or higher
+//                    (Shift-Tab, Promote)
+//     {level: n}     level n (an integer; clamped to 0..8)
+//     {off: true, keep?: true}  out of the list: the direct numPr
+//                    removed, or numId 0 written when the paragraph's
+//                    style gives it a list (as Word does: the style
+//                    stays). keep (Backspace at an item's start):
+//                    the text stays where it was drawn, so the
+//                    level's left indent (./ParaInd.effective) is
+//                    written as a direct one, and a hanging first
+//                    line (the label's place; the text started at
+//                    the left indent after it) becomes firstLine 0;
+//                    a first line that is not hanging is kept.
+//                    Without keep the paragraph goes back to its
+//                    style's indents (as Word's Numbering button)
+//       Levels stay within the ones the numbering defines (ListLevel
+//       definedRange): a step goes to the next level DEFINED in
+//       that direction (ListLevel levelAt: levels 0 and 2 only,
+//       Tab on 0 gives 2; a paragraph at an undefined level beyond
+//       the last, shown as the last, steps up to the last); past
+//       the deepest (or the highest) it does nothing; a level given
+//       outright is clamped into them. A new
+//       level is written as direct numPr {numId, ilvl}; its indent
+//       follows unless the paragraph has a direct one. One undo step;
+//       none (and the document not changed) when nothing changes,
+//       e.g. no selected paragraph is in a list. A bad patch throws
+//       RangeError first.
+//   listParas(doc, sel) -> n  how many of the paragraphs the
+//       selection formats are in a list (0 for a bad selection)
+//   hasList(doc, sel) -> boolean  listParas > 0, stopping at the
+//       first list paragraph (at once when the document has no
+//       numbering): for menus over a select-all of a long document
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {touched} from './FormatOps';
+import {paraCommand, explicit} from './FormatPara';
+import {listOf, numOf, effective} from './ParaInd';
+import {definedRange, levelAt} from './ListLevel';
+
+/** The checked patch (see the header). */
+function check(patch) {
+  const ok = (o, keys) => Object.keys(o).every((k) => keys.includes(k));
+  if (typeof patch !== 'object' || patch === null) fail('bad list');
+  if (patch.off !== undefined) {
+    if (patch.off !== true || !ok(patch, ['off', 'keep']) ||
+      (patch.keep !== undefined && typeof patch.keep !== 'boolean'))
+      fail('bad list off');
+    return {off: true, keep: patch.keep === true};
+  }
+  if (patch.by !== undefined) {
+    if ((patch.by !== 1 && patch.by !== -1) || !ok(patch, ['by']))
+      fail('bad list step');
+    return {by: patch.by};
+  }
+  if (!Number.isInteger(patch.level) || !ok(patch, ['level']))
+    fail('bad list level');
+  return {level: Math.min(Math.max(patch.level, 0), 8)};
+}
+
+/** The new ilvl of list li (in num) for patch v, or li.ilvl. */
+function levelFor(v, li, num) {
+  const r = definedRange(num);
+  if (!r) return li.ilvl;
+  if (v.level !== undefined)
+    return Math.min(Math.max(v.level, r.min), r.max);
+  let k = li.ilvl + v.by;
+  if (v.by < 0 && k > r.max) k = r.max;
+  if (v.by > 0 && k < r.min) k = r.min;
+  for (; k >= r.min && k <= r.max; k += v.by) {
+    if (levelAt(num, k)) return k;
+  }
+  return li.ilvl;
+}
+
+/** The patch taking p (in list li) out of its list. */
+function offPatch(v, li, p, d, res) {
+  const pPr = {numPr: li.fromStyle ? {numId: 0, ilvl: null} : null};
+  if (!v.keep) return {pPr};
+  const e = effective(d.doc, p);
+  const ind = {left: e.left};
+  if (e.first < 0) ind.firstLine = 0;
+  else ind.firstLine = e.first;
+  return {pPr: {...pPr, ...explicit({ind}, p, res, null).pPr}};
+}
+
+/** See the header. */
+export function setList(d, typing, sel, patch, pending) {
+  const v = check(patch);
+  return paraCommand(d, typing, sel, pending, (p, res) => {
+    const li = listOf(d.doc, p);
+    if (!li) return null;
+    if (v.off) return offPatch(v, li, p, d, res);
+    const k = levelFor(v, li, numOf(d.doc, p));
+    if (k === li.ilvl) return null;
+    return {pPr: {numPr: {numId: li.numId, ilvl: k}}};
+  });
+}
+
+/** See the header. */
+export function listParas(doc, sel) {
+  let n = 0;
+  for (const en of touched(doc, sel) || []) {
+    if (en.para && listOf(doc, en.p)) n++;
+  }
+  return n;
+}
+
+/** See the header. */
+export function hasList(doc, sel) {
+  const nums = doc && doc.numbering && doc.numbering.nums;
+  if (!(nums instanceof Map) || !nums.size) return false;
+  for (const en of touched(doc, sel) || []) {
+    if (en.para && listOf(doc, en.p)) return true;
+  }
+  return false;
+}

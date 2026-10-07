@@ -1,0 +1,182 @@
+// ListLevel - the levels of one numbering instance (a Num of
+// ./ReadNumbering) as ListNumbers uses them, never trusting the data.
+//
+//   levelsIn(num)    9 entries: the Level in force for ilvl 0..8
+//                    (override level first), a level the definition
+//                    lacks taking the nearest defined level BELOW it
+//                    (so ilvl 5 of a 3-level list looks like ilvl 2),
+//                    null when none is defined at or below it
+//   levelAt(num, k)  the Level in force for ilvl k exactly (the
+//                    lvlOverride level first), or null
+//   startOf(level)   where a counter of `level` starts: its start,
+//                    else 0 (the schema's default); only integers
+//                    within 2^31
+//   overrideStart(num, k)  the num's startOverride for ilvl k, or
+//                    undefined
+//   restarts(level, k)  true when a paragraph at ilvl k restarts
+//                    this (deeper) level: lvlRestart absent -> any
+//                    higher level; 0 -> never; n -> ilvl below n
+//   labelText(level, value, levels)  the label: lvlText with %1..%9
+//                    replaced by value(j) formatted with level j's
+//                    format (decimal for a legal level, isLgl); any
+//                    other % stays as it is; bullets via BulletGlyph;
+//                    'none' gives ''; capped at LABEL_CAP. At most
+//                    MAX_TEMPLATE characters of lvlText are read
+//                    (NumLevel keeps no more), and placeholders that
+//                    show nothing are dropped when it is read.
+//   labelMaker(level, levels)  the same as a function of value,
+//                    the template read once
+//   levelIndent(level)  {left?, hanging?, firstLine?} twips: what the
+//                    level's w:ind gives (hanging winning over
+//                    firstLine, as Styles merges), or undefined
+//   styleLevel(num, id)  the ilvl whose w:pStyle is style id, else 0
+//   definedRange(num)  {min, max} of the ilvls defined (levelAt), or
+//                    null when there are none
+import {formatNumber, fmtOf, capLabel, LABEL_CAP}
+  from './NumFormat';
+import {bulletText} from './BulletGlyph';
+
+const LIMIT = 2 ** 31;
+export const MAX_TEMPLATE = 255;
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+const okInt = (n) => Number.isSafeInteger(n) && Math.abs(n) <= LIMIT;
+
+/** The Level in force for ilvl k (override first), or null. */
+export function levelAt(num, k) {
+  const ov = num.overrides instanceof Map ? num.overrides.get(k)
+    : undefined;
+  if (isObj(ov) && isObj(ov.level)) return ov.level;
+  const ls = Array.isArray(num.levels) ? num.levels : [];
+  return isObj(ls[k]) ? ls[k] : null;
+}
+
+/** The 9 levels used for ilvl 0..8 (see above). */
+export function levelsIn(num) {
+  const out = [];
+  let last = null;
+  for (let k = 0; k < 9; k++) {
+    last = levelAt(num, k) || last;
+    out.push(last);
+  }
+  return out;
+}
+
+/** Where a counter of `level` starts (see above). */
+export function startOf(level) {
+  return level && okInt(level.start) ? level.start : 0;
+}
+
+/** The startOverride of ilvl k in `num`, or undefined. */
+export function overrideStart(num, k) {
+  const ov = num.overrides instanceof Map ? num.overrides.get(k)
+    : undefined;
+  return isObj(ov) && okInt(ov.start) ? ov.start : undefined;
+}
+
+/** Does a paragraph at ilvl k restart `level` (deeper than k)? */
+export function restarts(level, k) {
+  const r = level ? level.lvlRestart : undefined;
+  if (!Number.isSafeInteger(r) || r < 0) return true;
+  return r > 0 && k < r;
+}
+
+/** The run font of a level (for bullets), or undefined. */
+function fontOf(level) {
+  const f = isObj(level.rPr) && isObj(level.rPr.rFonts)
+    ? level.rPr.rFonts : null;
+  return f ? f.ascii || f.hAnsi : undefined;
+}
+
+/**
+ * The parts of a number template: literal strings and {j, f} (show
+ * counter j in format f), placeholders that show nothing (format
+ * none or bullet) left out; at most MAX_TEMPLATE characters read.
+ */
+function parse(text, levels, legal) {
+  const parts = [];
+  let lit = '';
+  const end = Math.min(text.length, MAX_TEMPLATE);
+  for (let i = 0; i < end; i++) {
+    const c = text[i];
+    const d = c === '%' ? text.charCodeAt(i + 1) - 48 : 0;
+    if (!(d >= 1 && d <= 9)) {
+      lit += c;
+      continue;
+    }
+    i++;
+    const l = levels[d - 1];
+    const f = legal ? 'decimal' : fmtOf(l ? l.numFmt : undefined);
+    if (f === 'none' || f === 'bullet') continue;
+    if (lit) parts.push(lit);
+    lit = '';
+    parts.push({j: d - 1, f});
+  }
+  if (lit) parts.push(lit);
+  return parts;
+}
+
+/**
+ * labelMaker(level, levels) -> (value) => label text: the template
+ * read once (ListNumbers keeps one per numId and level).
+ */
+export function labelMaker(level, levels) {
+  const fmt = fmtOf(level.numFmt);
+  const text = typeof level.lvlText === 'string' ? level.lvlText : '';
+  if (fmt === 'bullet' || fmt === 'none') {
+    const t = fmt === 'none' ? '' : bulletText(text.slice(0,
+      MAX_TEMPLATE), fontOf(level));
+    return () => t;
+  }
+  const parts = parse(text, levels, level.isLgl === true);
+  return (value) => {
+    let s = '';
+    for (const p of parts) {
+      s += typeof p === 'string' ? p : formatNumber(value(p.j), p.f);
+      if (s.length > LABEL_CAP) break;
+    }
+    return capLabel(s);
+  };
+}
+
+/** The label text of a paragraph at `level` (see above). */
+export function labelText(level, value, levels) {
+  return labelMaker(level, levels)(value);
+}
+
+const twips = (v) => (Number.isSafeInteger(v) ? v : 0);
+
+/** The indent a level gives (see above). */
+export function levelIndent(level) {
+  const ind = isObj(level) && isObj(level.pPr) && isObj(level.pPr.ind)
+    ? level.pPr.ind : null;
+  if (!ind) return undefined;
+  const out = {};
+  if (ind.left !== undefined) out.left = twips(ind.left);
+  if (ind.hanging !== undefined) out.hanging = twips(ind.hanging);
+  else if (ind.firstLine !== undefined) {
+    out.firstLine = twips(ind.firstLine);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** The ilvl tied to paragraph style id (see above). */
+export function styleLevel(num, id) {
+  if (id === null || id === undefined) return 0;
+  for (let i = 0; i < 9; i++) {
+    const l = levelAt(num, i);
+    if (l && l.pStyle === id) return i;
+  }
+  return 0;
+}
+
+/** The lowest and highest ilvl defined, or null. */
+export function definedRange(num) {
+  let min = -1, max = -1;
+  for (let k = 0; k < 9; k++) {
+    if (!levelAt(num, k)) continue;
+    if (min < 0) min = k;
+    max = k;
+  }
+  return min < 0 ? null : {min, max};
+}

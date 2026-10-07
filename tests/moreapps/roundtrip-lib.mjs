@@ -11,7 +11,14 @@
 //   (skipped when xmllint or the schemas are missing);
 // - undoing every change gives back the opened model exactly
 //   (paragraph ids included), and writing it gives the very bytes the
-//   unchanged document was written as.
+//   unchanged document was written as;
+// - with {keep: ['numberingPart', ...]} (meta keys naming parts):
+//   each such part is written with the very bytes of the unchanged
+//   document's (the edits never touch it), and holds the same XML
+//   tree as the file as it was opened (parsed: the writer writes its
+//   own prolog, line ends and empty tags, so the bytes themselves
+//   match the file's only when it was written that way: counted as
+//   keptAsRead).
 //
 // Also the corpus sample (tests/moreapps/corpus, git-ignored): one
 // file in ten, chosen by a hash of the name, or every one with
@@ -27,6 +34,7 @@ import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
 import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
 import {Document} from '../../tools/moreapps/!Word/Document';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
+import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {lintPackage} from './lint-package.mjs';
 import {assertSameDoc, expectedBack, sameBytes, sameTree}
   from './docx-compare.mjs';
@@ -101,6 +109,10 @@ export function schema() {
 /** The schema errors of an original's main part, by its bytes. */
 const schemaOf = new WeakMap();
 
+const dec = new TextDecoder();
+/** A part's parsed tree (BOM dropped). */
+const xmlOf = (b) => parseXml(dec.decode(b).replace(/^\uFEFF/, ''));
+
 const errs = (zip) => lintPackage(zip).problems
   .filter((q) => q.level === 'error')
   .map((q) => q.rule + ' ' + q.part + ' ' + q.detail);
@@ -111,7 +123,7 @@ const errs = (zip) => lintPackage(zip).problems
  * else {...stats, blocks, schema}.
  */
 export async function roundTrip(bytes, what, seed, change,
-  {xsd = null, every} = {}) {
+  {xsd = null, every, keep = []} = {}) {
   let a;
   try {
     a = await readDocx(bytes);
@@ -129,7 +141,24 @@ export async function roundTrip(bytes, what, seed, change,
     what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);
-  const had = new Set(errs(await readZip(bytes)));
+  const zin = await readZip(bytes);
+  let kept = 0, keptAsRead = 0;
+  if (keep.length) {
+    const z0 = await readZip(out0);
+    for (const k of keep) {
+      const name = d.doc.meta[k];
+      if (!name || !z0.get(name)) continue;
+      assert.ok(sameBytes(z.get(name), z0.get(name)), what + ': ' +
+        name + ' bytes changed (seed ' + seed + ')');
+      kept++;
+      if (sameBytes(z.get(name), zin.get(name))) keptAsRead++;
+      else {
+        sameTree(xmlOf(z.get(name)), xmlOf(zin.get(name)), what + ': ' +
+          name + ' tree changed');
+      }
+    }
+  }
+  const had = new Set(errs(zin));
   assert.deepEqual(errs(z).filter((k) => !had.has(k)), [],
     what + ': package errors added');
   // no schema error in the main part the original did not have
@@ -155,7 +184,7 @@ export async function roundTrip(bytes, what, seed, change,
     assert.fail(what + ': undone, written: bytes differ');
   }
   const blocks = d.doc.sections.reduce((n, s) => n + s.blocks.length, 0);
-  return {...st, blocks, schema: schemaDone};
+  return {...st, blocks, schema: schemaDone, kept, keptAsRead};
 }
 
 // ------------------------------------------------------------ corpus
@@ -194,16 +223,18 @@ export const SKIP_CORPUS = 'tests/moreapps/corpus is missing or ' +
  * Run roundTrip over files (seeded by name); prints counts, the
  * capped files and the slowest; asserts no failures.
  */
-export async function corpusRun(files, change, xsd, xsdNote, label) {
+export async function corpusRun(files, change, xsd, xsdNote, label,
+  {keep = []} = {}) {
   const failures = [], times = [], capped = [];
-  let ok = 0, refused = 0, blocks = 0, checked = 0;
+  let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
+    keptAsRead = 0;
   const totals = {};
   for (const f of files) {
     const name = nameOf(f);
     const t0 = Date.now();
     try {
       const res = await roundTrip(readFileSync(f), name, hash(name),
-        change, {xsd});
+        change, {xsd, keep});
       if (res.refused) {
         refused++;
         if (EXPECTED[name] !== res.refused) {
@@ -214,6 +245,8 @@ export async function corpusRun(files, change, xsd, xsdNote, label) {
         ok++;
         blocks += res.blocks;
         if (res.schema === 'checked') checked++;
+        kept += res.kept;
+        keptAsRead += res.keptAsRead;
         if (res.capped) capped.push(`${name} (${res.steps} steps)`);
         for (const [k, n] of Object.entries(res.counts || {}))
           totals[k] = (totals[k] || 0) + n;
@@ -231,6 +264,10 @@ export async function corpusRun(files, change, xsd, xsdNote, label) {
     `${refused} refused by the reader, ${failures.length} failures, ` +
     `${blocks} blocks, ${checked} main parts schema-checked` +
     (xsdNote ? ` (schema check skipped: ${xsdNote})` : ''));
+  if (keep.length) {
+    console.log(`# kept parts (${keep}): ${kept} byte-identical to ` +
+      `the unedited write, ${keptAsRead} also to the file as read`);
+  }
   if (Object.keys(totals).length)
     console.log('# commands: ' + JSON.stringify(totals));
   if (capped.length) console.log('# capped: ' + capped.join('; '));

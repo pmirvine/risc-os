@@ -4,26 +4,34 @@
 //   setPara(d, typing, sel, patch, pending)  ./FormatCheck.paraPatch
 //   indentBy(d, typing, sel, delta, pending) the left indent to the
 //       next multiple of |delta| twips (Ctrl+M 720, Ctrl+Shift+M
-//       -720), never below 0
+//       -720), never below 0, from the left indent drawn (a list
+//       level's too: ./ParaInd)
 //   clearParaFormat(d, typing, sel, pending) removes direct jc, ind
 //       and spacing
 //   dragIndents(d, typing, sel, {marker, at, textW, free}, pending)
 //       a ruler's indent marker dropped (./RulerBind): WimpLib
-//       RulerMath.dragIndent on each paragraph's own resolved
-//       indents (the same marker value for all; the first line kept
+//       RulerMath.dragIndent on each paragraph's own indents as
+//       drawn (the same marker value for all; the first line kept
 //       as Word keeps it); only the values that change are written
 //   paraStyle(d, typing, sel, id, pending)   pStyle id (null: none)
 //   paraCommand(d, typing, sel, pending, patchFor) patchFor(p, res)
 //       -> {pPr?, pStyle?} | null for each paragraph the selection
 //       formats (./FormatOps.touched): a caret's paragraph, kept
 //       blocks skipped; paragraphs it would not change get no op
+//   explicit(v, p, res, lvl?) -> {pPr}  a checked patch v made
+//       explicit for p (as below); lvl: the list level indent under
+//       the direct one (default: p's own, ./ParaInd.levelInd; null:
+//       none, for a paragraph leaving its list)
 //
-// A value equal to the one the paragraph's style gives is removed
-// (null) rather than written. Pure: no desktop services.
+// A value equal to the one the paragraph's style gives (with a list
+// paragraph's level indent over it) is removed (null) rather than
+// written: back at the level's indent, the paragraph follows its
+// level again. Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {collapsed} from './Selection';
 import {EMPTY} from './Pending';
 import {resolver, paraOf, alignOf, firstOf} from './FormatEff';
+import {levelInd, effPara} from './ParaInd';
 import {buildOps, changes, runOps} from './FormatOps';
 import {paraPatch} from './FormatCheck';
 import {dragIndent} from 'wimplib/RulerMath';
@@ -75,8 +83,9 @@ function indent(o, inh) {
 }
 
 /** A checked patch v made explicit for paragraph p (see header). */
-function explicit(v, p, res) {
-  const inh = res.para({pStyle: p.pStyle, pPr: NONE});
+export function explicit(v, p, res, lvl) {
+  const l = lvl === undefined ? levelInd(res.doc, p) : lvl || undefined;
+  const inh = res.para({pStyle: p.pStyle, pPr: NONE}, l);
   const out = {};
   if (v.jc !== undefined) {
     out.jc = v.jc !== null && alignOf(v.jc) === alignOf(inh.jc) ? null
@@ -101,7 +110,7 @@ export function indentBy(d, typing, sel, delta, pending) {
     Math.round(delta) === 0) fail('bad indent step');
   const st = Math.abs(Math.round(delta));
   return paraCommand(d, typing, sel, pending, (p, res) => {
-    const cur = paraOf(res.para(p), p, res).indentLeft;
+    const cur = paraOf(effPara(res, d.doc, p), p, res).indentLeft;
     const n = delta > 0 ? Math.floor(cur / st) * st + st
       : Math.ceil(cur / st) * st - st;
     const left = Math.min(Math.max(n, 0), 31680);
@@ -118,7 +127,7 @@ export function dragIndents(d, typing, sel, arg, pending) {
     Number.isNaN(at) || typeof textW !== 'number' ||
     !Number.isFinite(textW) || textW <= 0) fail('bad indent drag');
   return paraCommand(d, typing, sel, pending, (p, res) => {
-    const q = paraOf(res.para(p), p, res);
+    const q = paraOf(effPara(res, d.doc, p), p, res);
     const was = {left: q.indentLeft, first: q.indentFirst,
       right: q.indentRight};
     const n = dragIndent(marker, at, was, textW, !!free);

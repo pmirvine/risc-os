@@ -1,0 +1,102 @@
+// LineLabel - a list label (number or bullet, ./ListNumbers) on the
+// first line of its paragraph: where it goes, how it looks, where
+// the text starts after it.
+//
+//   labelLine(label, para, styles, pf, metrics, cache)
+//     -> {label: {x, w, text, f, bullet}, textX}
+//     pf: the paragraph's ./Fmt paraFmt, made with label.indent
+//   sameLabel(a, b) -> true when labels a and b (or nulls) lay out
+//     the same: text, indent, suffix, lvlJc, rPr (by identity: the
+//     level's, never changed), bullet
+//
+// The label is not text: it is in no line's from/to and is no item
+// (./LineLayout puts it in line.label). It starts where the first
+// line starts (left + first: with a hanging indent, the hanging
+// space [left - hanging, left)); lvlJc right or center puts it at
+// the right of, or centred in, that space when it is narrower than
+// the space. The text starts after the suffix: tab -> at left when
+// the label ends there or before, else at the next 48 px stop after
+// it, counted from the margin (Word's default stops); space -> one
+// space of the label's font after it; nothing -> where it ends.
+// Its format: the paragraph's first run (Word: the paragraph mark,
+// not modelled) without its underline, strike, highlight, vertAlign
+// and character style, the level's rPr over it (but not its
+// highlight or vertAlign). A bullet is a Unicode glyph
+// (./BulletGlyph): it keeps the paragraph's font (not the level's
+// Symbol or Wingdings) and "DejaVu Sans" is put before the generic
+// fallback. DejaVu Sans is not shipped with !Word: it is used when
+// the system has it; otherwise the browser's per-glyph fallback
+// (Chromium's system font search) finds a font with the shape.
+// Pure.
+import {runFmt} from './Fmt';
+import {PLAIN} from './LineTokens';
+
+const TAB = 48;                        // half an inch at 96 dpi
+const DROP = ['u', 'strike', 'highlight', 'vertAlign'];
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** The run the label is drawn as (see the header). */
+function labelRun(label, para) {
+  const r = para.runs[0] || PLAIN;
+  const rPr = {...(isObj(r.rPr) ? r.rPr : {})};
+  for (const k of DROP) delete rPr[k];
+  if (!Array.isArray(rPr.extra)) rPr.extra = [];
+  const lv = isObj(label.rPr) ? label.rPr : null;
+  if (lv) {
+    for (const k of Object.keys(lv)) {
+      if (k === 'extra' || k === 'highlight' || k === 'vertAlign')
+        continue;
+      if (label.bullet && k === 'rFonts') continue;
+      rPr[k] = lv[k];
+    }
+  }
+  return {rPr};
+}
+
+/** f with "DejaVu Sans" before its generic family (cached). */
+function bulletFmt(f, cache) {
+  const k = '\u0001bullet ' + f.css;
+  const got = cache && cache.get(k);
+  if (got) return got;
+  const m = /, ([a-z-]+)$/.exec(f.css);
+  const css = m ? f.css.slice(0, m.index) + ', "DejaVu Sans", ' + m[1]
+    : f.css + ', "DejaVu Sans", sans-serif';
+  const b = {...f, css};
+  if (cache) cache.set(k, b);
+  return b;
+}
+
+/** See the header. */
+export function labelLine(label, para, styles, pf, metrics, cache) {
+  let f = runFmt(styles, para, labelRun(label, para), cache);
+  if (label.bullet) f = bulletFmt(f, cache);
+  const text = typeof label.text === 'string' ? label.text : '';
+  const w = text ? metrics.width(text, f.css) : 0;
+  const x0 = pf.left + pf.first;
+  const free = Math.max(0, pf.left - x0 - w);
+  const x = x0 + (label.jc === 'right' ? free
+    : label.jc === 'center' ? free / 2 : 0);
+  const end = x + w;
+  let textX = end;
+  if (label.suff === 'space') textX = end + metrics.width(' ', f.css);
+  else if (label.suff !== 'nothing') {
+    textX = end <= pf.left ? pf.left
+      : TAB * (Math.floor(end / TAB) + 1);
+  }
+  return {label: {x, w, text, f, bullet: label.bullet === true},
+    textX};
+}
+
+const sameInd = (a, b) => a === b || (!!a && !!b &&
+  a.left === b.left && a.hanging === b.hanging &&
+  a.firstLine === b.firstLine);
+
+/** See the header. */
+export function sameLabel(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.text === b.text && a.suff === b.suff && a.jc === b.jc &&
+    a.rPr === b.rPr && a.bullet === b.bullet &&
+    sameInd(a.indent, b.indent);
+}

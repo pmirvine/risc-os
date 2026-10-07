@@ -1,0 +1,86 @@
+// ParaInd - a paragraph's list and the indents it is drawn with.
+//
+//   listOf(doc, para) -> {numId, ilvl, fromStyle} | null
+//       the list the paragraph is in, as ./ListNumbers counts it:
+//       its numbering (Styles.paraNumPr: direct numPr over the
+//       style's; numId 0 none), ilvl the level counted (the one
+//       whose w:pStyle is the paragraph's style when no layer gives
+//       one), fromStyle whether its style gives a numId (so taking
+//       it out of the list needs numId 0). null when it has no
+//       label: no numbering, a numId the document does not define,
+//       no level defined at or below ilvl
+//   numOf(doc, para) -> the Num of that list (./ReadNumbering) | null
+//   levelInd(doc, para) -> {left?, hanging?, firstLine?} | undefined
+//       the indent of its level (ListLevel.levelIndent): the
+//       label's indent (./ListNumbers), worked out for this
+//       paragraph alone (a level's indent depends on no other)
+//   effPara(res, doc, para) -> the resolved pPr with that layer
+//       (res: a ./FormatEff resolver; Styles.resolvePara's order:
+//       style < level < direct)
+//   effective(doc, para, labels?) -> {left, first, right}  twips,
+//       first < 0 for a hanging indent: what the screen draws
+//       (./LineLayout); labels: a ./ListNumbers map to take the
+//       level's indent from (the layout's), else levelInd
+//
+// Format.query, the ruler's markers (./RulerInd), Ctrl-M (indentBy)
+// and a ruler drag (./FormatPara) all use these, so they show and
+// change the indents that are drawn. Pure: no desktop services.
+import {paraNumPr, paraStyleId} from './Styles';
+import {levelsIn, levelIndent, styleLevel} from './ListLevel';
+import {resolver, paraOf} from './FormatEff';
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+const NONE = {extra: []};
+
+/** The paragraph's list, its level's definition too (see above). */
+function find(doc, para) {
+  const nums = doc && doc.numbering && doc.numbering.nums;
+  if (!(nums instanceof Map) || !nums.size) return null;
+  const styles = doc.styles || null;
+  const np = paraNumPr(styles, para);
+  if (!np) return null;
+  const num = nums.get(np.numId);
+  if (!isObj(num)) return null;
+  const k = np.ilvlGiven ? np.ilvl
+    : styleLevel(num, paraStyleId(styles, para));
+  const level = levelsIn(num)[k];
+  if (!level) return null;
+  const own = paraNumPr(styles, {pStyle: para.pStyle, pPr: NONE});
+  return {numId: np.numId, ilvl: k, fromStyle: own !== null, level,
+    num};
+}
+
+/** See the header. */
+export function listOf(doc, para) {
+  const f = find(doc, para);
+  return f ? {numId: f.numId, ilvl: f.ilvl, fromStyle: f.fromStyle}
+    : null;
+}
+
+/** The definition of the paragraph's numbering (./FormatList). */
+export function numOf(doc, para) {
+  const f = find(doc, para);
+  return f ? f.num : null;
+}
+
+/** See the header. */
+export function levelInd(doc, para) {
+  const f = find(doc, para);
+  return f ? levelIndent(f.level) : undefined;
+}
+
+/** See the header. */
+export const effPara = (res, doc, para) =>
+  res.para(para, levelInd(doc, para));
+
+/** See the header. */
+export function effective(doc, para, labels) {
+  const l = labels instanceof Map ? labels.get(para.id) : undefined;
+  const ind = labels instanceof Map ? l && l.indent
+    : levelInd(doc, para);
+  const res = resolver(doc);
+  const q = paraOf(res.para(para, ind), para, res);
+  return {left: q.indentLeft, first: q.indentFirst,
+    right: q.indentRight};
+}

@@ -2,11 +2,18 @@
 // into lines that fit a width, run by run in each run's font, every
 // line and item keeping the model offsets it stands for.
 //
-//   layoutPara(para, styles, width, metrics, cache) -> {h, lines}
+//   layoutPara(para, styles, width, metrics, cache, label?)
+//                                     -> {h, lines}
 //   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
 //   cache:   a Map for the run formats (./Fmt)
-//   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak}
-//          x: where the line starts (after indent and alignment)
+//   label:   the paragraph's list label (./ListNumbers), or none
+//   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
+//          label?}
+//          x: where the line's text starts (after indent, a list
+//          label and alignment: the caret at its first offset)
+//          label: on the first line of a list paragraph only,
+//          {x, w, text, f, bullet} (./LineLabel): drawn there, but
+//          no item and in no offsets
 //   item:  {x, w, text, f, kind, from, to, shown, hl, dy, js?}
 //          kind 'text' | 'link' | 'box' | 'tab' | 'break'
 //          hl the highlight colour or null, dy the baseline shift
@@ -40,16 +47,23 @@
 // it moves items, never offsets. Justified ('both'): items are not
 // merged and a space in model text is an item of its own, and a
 // wrapped line is spread to the width by ./Justify (not the last
-// line, nor one ending in a break). Pure: no desktop services.
+// line, nor one ending in a break). A list paragraph takes its
+// level's indents (under its own: ./Fmt paraFmt), and its first
+// line holds the label (./LineLabel: in the hanging space, the text
+// after it at its suffix); the label is at least as high as its
+// text, moves with the alignment and is never spread. Pure: no
+// desktop services.
 import {runFmt, paraFmt} from './Fmt';
 import {tokens, PLAIN} from './LineTokens';
 import {justify} from './Justify';
+import {labelLine} from './LineLabel';
 
 const TAB = 48;                        // half an inch at 96 dpi
 
 /** See the header. */
-export function layoutPara(para, styles, width, metrics, cache) {
-  const pf = paraFmt(styles, para);
+export function layoutPara(para, styles, width, metrics, cache,
+  label) {
+  const pf = paraFmt(styles, para, label ? label.indent : undefined);
   const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
   const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
   const lines = [];
@@ -81,6 +95,7 @@ export function layoutPara(para, styles, width, metrics, cache) {
     if (dx > 0) {
       for (const it of line.items) it.x += dx;
       line.x += dx;
+      if (line.label) line.label.x += dx;
     }
     delete line.px;
     delete line.real;
@@ -129,6 +144,15 @@ export function layoutPara(para, styles, width, metrics, cache) {
     group = []; groupW = 0;
   };
   start(true);
+  if (label) {
+    const ll = labelLine(label, para, styles, pf, metrics, cache);
+    line.label = ll.label;
+    x = line.x = line.ink = ll.textX;
+    if (ll.label.text) {
+      line.px = Math.max(ll.label.f.px, base.vert ? base.full
+        : base.px);
+    }
+  }
   for (const tk of tokens(para, styles, cache)) {
     if (tk.t === 'w' || tk.t === 'z') {
       const w = tk.t === 'z' ? 0 : metrics.width(tk.text, tk.f.css) +

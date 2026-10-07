@@ -25,6 +25,7 @@ describe('Keymap.lookup from real key events', () => {
     ['Delete', {}, 'delete'],
     ['Delete', {ctrl: true}, 'ctrlDelete'],
     ['Tab', {}, 'tab'],
+    ['Tab', {shift: true}, 'shiftTab'],
     ['Insert', {}, 'insert'],
     ['z', {ctrl: true}, 'undo'],
     ['Z', {ctrl: true}, 'undo'],
@@ -51,7 +52,8 @@ describe('Keymap.lookup from real key events', () => {
     for (const [key, mods] of [['a', {}], ['z', {}], ['F5', {}],
       ['Escape', {}], ['ArrowLeft', {}], ['Home', {}],
       ['PageDown', {}], ['x', {ctrl: true}], ['c', {ctrl: true}],
-      ['Tab', {shift: true}], ['Tab', {ctrl: true}],
+      ['Tab', {ctrl: true}], ['Tab', {ctrl: true, shift: true}],
+      ['Tab', {alt: true}], ['Tab', {alt: true, shift: true}],
       ['Enter', {ctrl: true}], ['Delete', {shift: true}],
       ['Insert', {ctrl: true}], ['Insert', {shift: true}],
       ['y', {ctrl: true, shift: true}],
@@ -91,7 +93,12 @@ describe('Keymap.lookup from a bare Wimp code', () => {
     assert.equal(L(13, {shift: true}), 'shiftEnter');
     assert.equal(L(8, {ctrl: true}), 'ctrlBackspace');
     assert.equal(L(127, {ctrl: true}), 'ctrlDelete');
-    assert.equal(L(0x18A + 0x10), null);
+    assert.equal(L(0x18A + 0x10), 'shiftTab');
+    assert.equal(L(0x18A + 0x20), null);
+    assert.equal(L(0x18A + 0x30), null);
+    assert.equal(L(0x18A + 0x10, {alt: true}), null);
+    assert.equal(L(9, {shift: true}), 'shiftTab');
+    assert.equal(L(9, {ctrl: true}), null);
     assert.equal(L(0x1CD + 0x20), null);
     assert.equal(L(13, {alt: true}), null);
   });
@@ -111,6 +118,8 @@ describe('Keymap.lookup from Wimp_ProcessKey events', () => {
     assert.equal(P(26), 'undo');
     assert.equal(P(25), 'redo');
     assert.equal(P(0x18A), 'tab');
+    assert.equal(P(0x19A), 'shiftTab');
+    assert.equal(P(0x1AA), null);
     assert.equal(P(127), 'delete');
     assert.equal(P(0x1CD), 'insert');
     assert.equal(P(1), 'selectAll');
@@ -147,8 +156,10 @@ describe('Keymap table', () => {
   });
   it('every id of the deliverable has a row', () => {
     for (const i of ['enter', 'shiftEnter', 'backspace', 'delete',
-      'ctrlBackspace', 'ctrlDelete', 'tab', 'insert', 'undo', 'redo',
-      'selectAll']) assert.ok(keymap.row(i), i);
+      'ctrlBackspace', 'ctrlDelete', 'tab', 'shiftTab', 'insert',
+      'undo', 'redo', 'selectAll']) assert.ok(keymap.row(i), i);
+    assert.equal(keymap.labelFor('tab'), 'Tab');
+    assert.equal(keymap.labelFor('shiftTab'), 'Shift+Tab');
   });
   it('bind replaces the table; a new Keymap starts empty', () => {
     const k = new Keymap();

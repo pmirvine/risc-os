@@ -7,17 +7,25 @@
 //                           prev: an older layout of doc with the
 //                           same metrics, after an edit: the lines
 //                           of every block object it had are kept
-//                           (the key: the paragraph object, the
+//                           (the key: the paragraph object, its
+//                           list label (./LineLabel sameLabel:
+//                           text, indent, suffix, lvlJc, rPr), the
 //                           metrics and the text width; it must
-//                           grow when styles or numbering can be
-//                           edited, as lines depend on them too)
+//                           grow when styles or numbering
+//                           definitions can be edited)
 //                           top: px above everything (a toolbar over
 //                           the window's top), 0..1000; prev's when
 //                           not given
 //   L.layout(viewWidth) -> {w, h}: the work area's extent
 //   L.items  [{id, block, kind: 'p'|'box', index, y, h, lines?,
-//             label?}] in document order; a 'p' item is also the
-//             pl ({para, y, h, lines, metrics}) of ./PositionMap
+//             list?, label?}] in document order; a 'p' item is also
+//             the pl ({para, y, h, lines, metrics}) of ./PositionMap
+//             and has list: its list label or null; a box has label:
+//             the text drawn in it
+//   L.labels  the document's list labels (./ListNumbers labels:
+//             Map paraId -> Label), worked out once per layout object
+//             (one linear pass); lines[0].label of a list paragraph
+//             is where its label is drawn (./LineLayout)
 //   L.byId   Map id -> item
 //   L.left, L.textW, L.pageLeft, L.pageW: the column (px); L.top
 //   L.itemAtY(y)            -> the item at y (clamped to the ends)
@@ -45,6 +53,8 @@
 // below everything its end, in a box the nearer edge.
 // Pure: no desktop services.
 import {layoutPara} from './LineLayout';
+import {sameLabel} from './LineLabel';
+import {labels} from './ListNumbers';
 import {kindOf} from './Info';
 import * as PM from './PositionMap';
 import {blockId, itemEnd, clampOff} from './DocPos';
@@ -79,16 +89,19 @@ export class DocLayout {
     this.left = MARGIN + this.marL;
     const keep = prev && prev.laid && prev.metrics === metrics &&
       prev.doc === doc && prev.textW === this.textW;
+    this.labels = labels(doc);
     for (const s of doc.sections) {
       for (const b of s.blocks) {
         const it = b.type === 'p'
           ? {id: b.id, block: b, para: b, kind: 'p', index: 0, y: 0,
-            h: 0, lines: null, metrics}
+            h: 0, lines: null, metrics,
+            list: this.labels.get(b.id) || null}
           : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
             h: BOX + 12, label: `[${kindOf(b.node)} - preserved, ` +
               'not shown]'};
         const o = keep && b.type === 'p' && prev.byId.get(b.id);
-        if (o && o.block === b && o.lines) {
+        if (o && o.block === b && o.lines &&
+          sameLabel(o.list, it.list)) {
           it.lines = o.lines;
           it.h = o.h;
         }
@@ -118,7 +131,7 @@ export class DocLayout {
     for (const it of this.items) {
       if (it.kind === 'p' && !it.lines) {
         const l = layoutPara(it.block, styles, this.textW,
-          this.metrics, this.cache);
+          this.metrics, this.cache, it.list || undefined);
         it.lines = l.lines;
         it.h = l.h;
       }

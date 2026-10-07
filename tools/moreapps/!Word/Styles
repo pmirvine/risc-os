@@ -10,11 +10,15 @@
 //   file, otherwise null (writers must handle null).
 //
 // RPr and PPr are the property objects of Model (PPr here also
-// holds outlineLvl?: number, 0 for Heading1 and so on). resolvePara and
-// resolveRun return NEW objects; the table is never changed by them.
+// holds outlineLvl?: number, 0 for Heading1 and so on, and numPr?:
+// {numId, ilvl?}; resolvePara's numPr is {numId, ilvl, ilvlGiven}
+// or null: see ./StylesNum).
+// resolvePara and resolveRun return NEW objects; the table is never
+// changed by them.
 // (Like Model objects, styles of a live Doc must not be changed in
 // place; only a table under construction may be.)
 import {mergeInto} from './StylesMerge';
+import {numberingOf} from './StylesNum';
 
 export {ensureBuiltins} from './StylesBuiltin';
 
@@ -80,11 +84,56 @@ function mergePara(out, pPr) {
   return mergeInto(out, pPr);
 }
 
-/** The paragraph properties of `para`, all inheritance applied. */
-export function resolvePara(styles, para) {
-  const out = mergePara({extra: []}, styles.docDefaults.pPr);
-  for (const s of paraChain(styles, para)) mergePara(out, s.pPr);
-  return mergePara(out, para.pPr || {});
+/** The pPr layers of `para`, lowest first (docDefaults... direct). */
+function paraLayers(styles, para) {
+  const out = [];
+  if (styles) {
+    out.push(styles.docDefaults && styles.docDefaults.pPr);
+    for (const s of paraChain(styles, para)) out.push(s.pPr);
+  }
+  out.push(para.pPr || {});
+  return out;
+}
+
+/**
+ * The numbering in force for `para`: {numId, ilvl, ilvlGiven} or
+ * null (StylesNum.numberingOf; a numPr kept raw counts). `styles`
+ * may be null (direct formatting only).
+ */
+export function paraNumPr(styles, para) {
+  return numberingOf(paraLayers(styles, para));
+}
+
+/** The id of the paragraph style in force for `para`, or null. */
+export function paraStyleId(styles, para) {
+  if (!styles) return null;
+  const c = paraChain(styles, para);
+  return c.length ? c[c.length - 1].id : null;
+}
+
+/**
+ * The paragraph properties of `para`, all inheritance applied;
+ * numPr is the numbering in force (paraNumPr): the direct numPr
+ * over the style chain's, key by key. levelInd: the indent of the
+ * paragraph's numbering level ({left?, hanging?, firstLine?} twips,
+ * ./ListNumbers), a layer between the style and the direct pPr
+ * (Word's order), attribute by attribute: only what it gives
+ * overrides (hanging and firstLine as one value, see mergePara).
+ */
+export function resolvePara(styles, para, levelInd) {
+  const layers = paraLayers(styles, para);
+  if (levelInd) {
+    const ind = {};
+    for (const k of ['left', 'hanging', 'firstLine']) {
+      if (levelInd[k] !== undefined) ind[k] = levelInd[k];
+    }
+    if (ind.hanging !== undefined) delete ind.firstLine;
+    layers.splice(layers.length - 1, 0, {ind});
+  }
+  const out = {extra: []};
+  for (const l of layers) mergePara(out, l);
+  out.numPr = numberingOf(layers);
+  return out;
 }
 
 /** The character properties of `run` in `para`, all applied. */

@@ -1,0 +1,73 @@
+// EditList - Tab, Shift-Tab and Backspace where lists change what
+// they do (./EditApply runs these for the ./Keymap ids tab, shiftTab
+// and backspace):
+//
+//   listTab(d, sel)       Tab: a caret at the start of a list item,
+//                         or a selection over list items (more than
+//                         one paragraph, or one from its start):
+//                         one level deeper (./FormatList setList
+//                         {by: 1}: the next level the numbering
+//                         defines; on the deepest level nothing);
+//                         otherwise a tab character (./Edit)
+//   listShiftTab(d, sel)  Shift-Tab: a caret or a selection in a
+//                         list item, anywhere: one level higher
+//                         (nothing at the highest); otherwise
+//                         undefined (the key is not used and goes on)
+//   listBack(d, sel)      Backspace: a caret at the start of a list
+//                         item takes it out of the list, the text
+//                         staying where it was (setList {off, keep});
+//                         the next Backspace there joins it to the
+//                         paragraph before as always (./EditDel);
+//                         anything else is ./EditDel.deleteBack
+//   usesShiftTab(doc, sel) whether listShiftTab does something
+//
+// Each returns the selection after it (the same sel for a level or
+// numbering change: the text does not move); one undo step at most
+// (d.atomic: the caller runs it in typing.command). Pure: no desktop
+// services.
+import {collapsed} from './Selection';
+import {checkPos} from './EditPos';
+import {touched} from './FormatOps';
+import {insertTab} from './Edit';
+import {deleteBack} from './EditDel';
+import {setList} from './FormatList';
+import {listOf} from './ParaInd';
+
+/** A caret at offset 0 of a list paragraph (any offset: anywhere). */
+function caretInList(doc, sel, anywhere) {
+  const loc = checkPos(doc, sel.head);
+  return !!loc && loc.b.type === 'p' && (anywhere || sel.head.off ===
+    0) && !!listOf(doc, loc.b);
+}
+
+/** Whether the keys work on the list (see the header). */
+function onList(doc, sel, anywhere) {
+  if (!sel) return false;
+  if (collapsed(sel)) return caretInList(doc, sel, anywhere);
+  const list = touched(doc, sel);
+  if (!list || !list.length) return false;
+  if (!anywhere && list.length === 1 && list[0].a > 0) return false;
+  return list.some((en) => en.para && !!listOf(doc, en.p));
+}
+
+/** See the header. */
+export const usesShiftTab = (doc, sel) => onList(doc, sel, true);
+
+/** See the header. */
+export function listTab(d, sel) {
+  if (!onList(d.doc, sel, false)) return insertTab(d, sel);
+  return setList(d, null, sel, {by: 1}).sel;
+}
+
+/** See the header. */
+export function listShiftTab(d, sel) {
+  if (!usesShiftTab(d.doc, sel)) return undefined;
+  return setList(d, null, sel, {by: -1}).sel;
+}
+
+/** See the header. */
+export function listBack(d, sel) {
+  if (!sel || !collapsed(sel) || !caretInList(d.doc, sel, false))
+    return deleteBack(d, sel);
+  return setList(d, null, sel, {off: true, keep: true}).sel;
+}

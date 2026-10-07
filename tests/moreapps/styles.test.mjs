@@ -55,6 +55,50 @@ describe('Styles', () => {
     assert.equal(resolvePara(t, newPara('x', {pStyle: 'S'})).jc, 'right');
   });
 
+  it('numPr: direct over the chain key by key; numId 0 is none',
+    () => {
+      const t = add(newStyleTable(),
+        st('H1', {pPr: rp({numPr: {numId: 3}})}),
+        st('H2', {basedOn: 'H1', pPr: rp({numPr: {ilvl: 1}})}),
+        st('C1', {basedOn: 'C2', pPr: rp({numPr: {numId: 5}})}),
+        st('C2', {basedOn: 'C1', pPr: rp({numPr: {ilvl: 2}})}));
+      const np = (pStyle, pPr) =>
+        resolvePara(t, newPara('x', {pStyle, pPr: rp(pPr)})).numPr;
+      assert.deepEqual(np('H1'), {numId: 3, ilvl: 0, ilvlGiven: false});
+      assert.deepEqual(np('H2'), {numId: 3, ilvl: 1, ilvlGiven: true});
+      assert.deepEqual(np('H2', {numPr: {numId: 8}}),
+        {numId: 8, ilvl: 1, ilvlGiven: true});
+      assert.equal(np('H2', {numPr: {numId: 0}}), null);
+      assert.equal(np('H2', {numPr: null}), null);
+      assert.equal(np(undefined), null);
+      assert.equal(np(undefined, {numPr: {ilvl: 12, numId: 3}}), null);
+      assert.deepEqual(np('C1'), {numId: 5, ilvl: 2, ilvlGiven: true});
+    });
+
+  it('numPr kept raw in extra counts (unknown children ignored)',
+    () => {
+      const X = (name, attrs = [], children = []) =>
+        ({name, attrs, children});
+      const raw = (...k) => X('w:numPr', [], k);
+      const v = (n, x) => X(n, [['w:val', String(x)]]);
+      const t = add(newStyleTable(),
+        st('H1', {pPr: rp({numPr: {numId: 3, ilvl: 4}})}),
+        st('R', {pPr: rp({extra: [raw(v('w:numId', 6))]})}));
+      const np = (pStyle, extra) => resolvePara(t, newPara('x',
+        {pStyle, pPr: rp({extra})})).numPr;
+      assert.deepEqual(np('H1', [raw(v('w:numId', 7), X('w:ins'))]),
+        {numId: 7, ilvl: 4, ilvlGiven: true});
+      assert.deepEqual(np('H1', [raw(v('w:ilvl', 1), X('w:ins'),
+        v('w:numId', 2))]), {numId: 2, ilvl: 1, ilvlGiven: true});
+      assert.equal(np('H1', [raw(v('w:numId', 0), X('w:ins'))]), null);
+      assert.deepEqual(np('H1', [raw(v('w:numId', 'x'))]),
+        {numId: 3, ilvl: 4, ilvlGiven: true});
+      // another namespace's numPr is not WML
+      assert.deepEqual(np('H1', [X('x:numPr', [['xmlns:x', 'urn:x']],
+        [v('x:numId', 9)])]), {numId: 3, ilvl: 4, ilvlGiven: true});
+      assert.deepEqual(np('R'), {numId: 6, ilvl: 0, ilvlGiven: false});
+    });
+
   it('direct formatting beats the style', () => {
     const t = add(newStyleTable(), st('A', {pPr: rp({jc: 'center'}),
       rPr: rp({b: true, sz: 30})}));

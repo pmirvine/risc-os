@@ -225,8 +225,14 @@ every selected paragraph in one undo step; Format > Ruler hides it (margins are 
 not shown). The window menu's **Zoom** (50% to 200%, Zoom in/out) or Ctrl+wheel shows the page larger or smaller, per
 window (no zoom keys; Ctrl+= and Ctrl+Shift+= are subscript and superscript). To try formatting: open a `.docx`,
 select some words, press Ctrl-B or choose Format > Colour, drag a ruler marker, and Ctrl+wheel; Ctrl-Z undoes each.
-There is no copy and paste, find, lists, tab stops, margins or real Save yet; later steps add those, page layout and
-pagination (which will only approximate Word), making styles and lists, printing, tables and images, RTF/PDF export
+**Lists** show their bullets and numbers as Word would (still to be checked in real Word; bullets from Symbol/Wingdings drawn as Unicode shapes; 1. a) i.
+I. 01 1st; nine-level multilevel lists, legal 1.1.1, headings numbered by their styles; Word's level indents), renumbered
+live as you edit; Enter continues a list, Tab / Shift-Tab at an item's start change its level (Shift-Tab anywhere in an
+item), Backspace at an item's start takes its number away first, and Format > List has Demote, Promote and Remove from
+list. To try lists: open a `.docx` with a numbered list, click at the start of an item and press Tab, Shift-Tab, then
+Backspace. Lists cannot be created, nor their numbering changed, yet.
+There is no copy and paste, find, tab stops, margins or real Save yet; later steps add those, page layout and
+pagination (which will only approximate Word), making styles and new lists, printing, tables and images, RTF/PDF export
 and spell check. Reading and writing is checked on 600+ real documents from public test collections; real Microsoft
 Word could not be run during development, so a hand-off check was prepared. Older `.doc` and password-protected files
 are refused with a clear message. Documents never run anything and nothing is fetched. Calibri, Cambria, Arial, Times
@@ -234,8 +240,8 @@ New Roman and Courier New are shown in the metric-compatible Carlito, Caladea an
 (all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules
 (zip, XML...) it is built on, is installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program
 imports it as `'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with
-`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 11 for programmers;
-part 4 is formatting); developers: `docs/apps/Word.md`.
+`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 12 for programmers;
+part 4 is formatting, part 5 lists); developers: `docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
@@ -375,15 +381,19 @@ node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden field: typed text, dead keys, input methods; Playwright)
 node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
-node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 1280 tests, about 33 s)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 1460 tests, about 34 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)
 node tests/moreapps/word-format.mjs  # one browser group alone: formatting by keys, pending format and the Format menu (also word-toolbar.mjs, word-ruler.mjs, word-zoom.mjs, word-format-hostile.mjs: 50,000 paragraphs, 500 random actions)
 node --test tests/moreapps/format.test.mjs tests/moreapps/formatset.test.mjs tests/moreapps/format-prop.test.mjs tests/moreapps/format-display.test.mjs tests/moreapps/formatapply.test.mjs   # formatting: queries, commands, seeded random commands with undo, drawing (unit; also fontlist, numberfield, colourlist, rulermath, zoom, toolbarbuttons)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/format-roundtrip.test.mjs   # random formatting on fixtures and corpus files, written and read back (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/handoff-format.mjs   # writes the fmt-*.docx files to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+node --test tests/moreapps/numbering-read.test.mjs tests/moreapps/numformat.test.mjs tests/moreapps/listnumbers.test.mjs tests/moreapps/list-prop.test.mjs tests/moreapps/list-display.test.mjs tests/moreapps/formatlist.test.mjs tests/moreapps/parind.test.mjs tests/moreapps/editlist.test.mjs   # lists: numbering read, number formats, labels (with a reference model), drawing, level and Remove from list commands, list indents, Tab/Shift-Tab/Backspace (unit)
+node tests/moreapps/word-lists.mjs   # one browser group alone: lists drawn and edited in !Word (also word-lists-hostile.mjs)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/list-roundtrip.test.mjs   # random list edits on list fixtures and corpus files, written and read back; numbering part unchanged (WORD_EDIT_CORPUS=1: every corpus file)
+node tests/moreapps/handoff-lists.mjs   # writes the list-*.docx files and list-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
 WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # !Word's editing round trip on every corpus file (~2 min; by default one file in ten)
 node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)

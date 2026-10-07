@@ -1,0 +1,105 @@
+// NumLevel - one w:lvl of a numbering definition -> a Level object.
+//
+//   Level {ilvl, numFmt?, lvlText?, start?, suff?, lvlRestart?,
+//          isLgl?, lvlJc?, pStyle?, pPr?: {ind}, rPr?}
+//   suff     'tab' | 'space' | 'nothing' (absent: Word's 'tab')
+//   lvlJc    'left' | 'center' | 'right' (Strict start/end mapped)
+//   pPr.ind  {left?, right?, firstLine?, hanging?} in twips (Strict
+//            start/end read as left/right; hanging wins over
+//            firstLine, as in Word)
+//   rPr      only b, i, color, sz, rFonts (the run readers' forms)
+// A field is there only when its element is present and its value
+// is understood; anything else is ignored, never thrown. The first
+// element of a name wins. Integers must be within 2^31 either way.
+// lvlText keeps at most its first 255 characters and numFmt 64
+// (Word's own are a few characters; this bounds the work per label).
+// SECURITY: field names come only from the tables here.
+import {scope, wName, wAttr} from './Ns';
+import {intOf, onOffOf, readRPr} from './ReadProps';
+
+const LIMIT = 2 ** 31;
+const MAX_TEXT = 255;
+
+/** The integer `s` spells, when |n| <= 2^31; else undefined. */
+export function boundedInt(s) {
+  const n = intOf(s);
+  return n !== undefined && Math.abs(n) <= LIMIT ? n : undefined;
+}
+
+const SUFF = ['tab', 'space', 'nothing'];
+const JC = new Map([['left', 'left'], ['center', 'center'],
+  ['right', 'right'], ['start', 'left'], ['end', 'right']]);
+const RPR = ['b', 'i', 'color', 'sz', 'rFonts'];
+const IND = [['left', 'start'], ['right', 'end'],
+  ['firstLine', null], ['hanging', null]];
+
+/** A w:ind -> {left?, right?, firstLine?, hanging?}, or undefined. */
+function indOf(node, m) {
+  const o = {};
+  for (const [k, alt] of IND) {
+    let v = boundedInt(wAttr(node, m, k));
+    if (v === undefined && alt) v = boundedInt(wAttr(node, m, alt));
+    if (v !== undefined) o[k] = v;
+  }
+  if (o.hanging !== undefined) delete o.firstLine;
+  return Object.keys(o).length ? o : undefined;
+}
+
+/** The w:ind of a level's w:pPr -> {ind}, or undefined. */
+function pPrOf(node, m) {
+  for (const c of node.children) {
+    if (wName(c, m) !== 'ind') continue;
+    const ind = indOf(c, c.attrs.length ? scope(m, c) : m);
+    return ind ? {ind} : undefined;
+  }
+  return undefined;
+}
+
+/** The modelled run properties of a level's w:rPr, or undefined. */
+function rPrOf(node, m) {
+  const all = readRPr(node, m, false).rPr;
+  const o = {};
+  for (const k of RPR) if (all[k] !== undefined) o[k] = all[k];
+  return Object.keys(o).length ? o : undefined;
+}
+
+const READ = new Map([
+  ['start', (v) => boundedInt(v)],
+  ['numFmt', (v) => typeof v === 'string' ? v.slice(0, 64)
+    : undefined],
+  ['lvlText', (v) => typeof v === 'string'
+    ? v.slice(0, MAX_TEXT) : undefined],
+  ['lvlRestart', (v) => {
+    const n = boundedInt(v);
+    return n !== undefined && n >= 0 ? n : undefined;
+  }],
+  ['pStyle', (v) => v || undefined],
+  ['isLgl', (v) => v === undefined ? true : onOffOf(v)],
+  ['suff', (v) => SUFF.includes(v) ? v : undefined],
+  ['lvlJc', (v) => JC.get(v)],
+]);
+
+/** A w:lvl node -> Level with the given ilvl. */
+export function readLevel(node, map, ilvl) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  const lvl = {ilvl};
+  const seen = new Set();
+  for (const c of node.children) {
+    const l = wName(c, m);
+    if (l === null || seen.has(l)) continue;
+    seen.add(l);
+    const cm = c.attrs.length ? scope(m, c) : m;
+    let v;
+    if (l === 'pPr') v = pPrOf(c, cm);
+    else if (l === 'rPr') v = rPrOf(c, cm);
+    else if (READ.has(l)) v = READ.get(l)(wAttr(c, cm, 'val'));
+    if (v !== undefined) lvl[l] = v;
+  }
+  return lvl;
+}
+
+/** The ilvl a w:lvl / w:lvlOverride gives, when 0..8; else null. */
+export function ilvlOf(node, map) {
+  const n = intOf(wAttr(node, map, 'ilvl'));
+  return n !== undefined && n >= 0 && n <= 8 ? n : null;
+}
