@@ -183,13 +183,14 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save copy as .docx, Info, Edit, Format, Zoom, Close', JSON.stringify(r2.items) === '["Save copy as .docx","Info","Edit","Format","Zoom","Close"]', r2.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close',
+    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Format","Zoom","New","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();
     const t = window.__word()[0], d = t.word.docs[0];
     const m = typeof d.win.menu === 'function' ? d.win.menu({}) : d.win.menu;
-    const item = m.items.find((i) => /^Save copy/.test(i.text));
+    const item = m.items.find((i) => i.text === 'Save a copy');
     const box = typeof item.submenu === 'function' ? item.submenu() : item.submenu;
     const res = { filename: box.filename(), filetype: box.filetype };
     box.icons[1].setText('RAM::RamDisc0.$.Saved');
@@ -203,7 +204,7 @@ try {
     res.info = iw.icons.map((i) => i.text).join('|');
     return res;
   });
-  ok('Save box: leaf name and &A7E', r3.filename === 'Report' && r3.filetype === 0xA7E, r3);
+  ok('Save box: a full path (OK works) and &A7E', /\.\$\.Report$/.test(r3.filename) && r3.filetype === 0xA7E, r3);
   try {
     assertSameDoc(await readDocx(new Uint8Array(r3.bytes ?? [])), await readDocx(original), 'Save box');
     ok('Save box writes a .docx that reads back equal', r3.type === 0xA7E, r3.type);
@@ -230,7 +231,7 @@ try {
     r7.after === r7.before && r7.back === r7.before && r7.same && r7.left === 24
       && r7.w === 360 && r7.wide >= Math.ceil(24 + r7.page + 24) && r7.page > 700, r7);
 
-  // the window menu's Save and Info boxes are made once per document:
+  // the window menu's Save a copy and Info boxes are made once per document:
   // hovering over their arrows again and again makes no new windows
   const rL = await page.evaluate(async () => {
     const t = window.__word()[0], M = os.wimp.menus;
@@ -240,9 +241,10 @@ try {
       M.open(m, p.x, p.y, { task: t });
       const lv = M.levels[0];
       const out = [];
+      const at = (text) => m.items.findIndex((x) => x.text === text);
       for (let i = 0; i < n; i++) {
-        M._openSub(lv, 0, 'arrow');
-        M._openSub(lv, 1, 'arrow');
+        M._openSub(lv, at('Save a copy'), 'arrow');
+        M._openSub(lv, at('Info'), 'arrow');
         if (i === 0 || i === n - 1) out.push([t.windows.size, document.querySelectorAll('*').length]);
       }
       M.close();
@@ -262,7 +264,7 @@ try {
     return res;
   });
   const [[w0, n0], [w1, n1]] = rL.cycles;
-  ok('60 hovers over the Save and Info arrows make no new windows', w0 === w1 && n1 - n0 < 50, rL.cycles);
+  ok('60 hovers over the Save a copy and Info arrows make no new windows', w0 === w1 && n1 - n0 < 50, rL.cycles);
   // (the window, its toolbar and ruler panes, the Save and Info boxes)
   ok('closing a document deletes its boxes', rL.open === rL.base + 5 && rL.closed === rL.base, rL);
 
@@ -322,7 +324,7 @@ try {
     const keep = d.doc.sections;
     d.doc.sections = null;               // writeDocx throws
     const m = d.win.menu({});
-    const box = m.items[0].submenu();
+    const box = m.items.find((i) => i.text === 'Save a copy').submenu();
     box.icons[1].setText('RAM::RamDisc0.$.NoCopy');
     box.emit('click', { icon: box.icons[0], button: 'select' });
     for (let i = 0; i < 40 && !msgs.length; i++) await window.__sleep(25);

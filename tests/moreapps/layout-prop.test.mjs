@@ -83,6 +83,7 @@ describe('DocLayout reuse equals a full layout', () => {
         full.layout(w);
         assert.deepEqual(shape(L), shape(full),
           `seed ${seed} step ${step} command ${c}`);
+        assert.equal(L.height, full.height, `height, seed ${seed}`);
         const texts = (x) => x.items.map((i) => i.block.type === 'p'
           ? i.block.text : '#');
         assert.deepEqual(texts(L), texts(full));
@@ -164,6 +165,7 @@ describe('DocLayout reuse equals a full layout, with lists', () => {
         full.layout(800);
         assert.deepEqual(shape(L), shape(full),
           `seed ${seed} step ${step} command ${c}`);
+        assert.equal(L.height, full.height, `height, seed ${seed}`);
       }
     }
     assert.ok(reused > 500, 'lines were reused: ' + reused);

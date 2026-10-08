@@ -2,24 +2,29 @@
 //
 // It opens .docx files (double-click one, or drop it on Word's icon)
 // and shows their text, with a caret and a selection; text can be
-// typed, deleted and formatted, with undo and redo, and a faithful
-// copy saved (everything it does not show is kept). No Save over the
-// file itself yet.
+// typed, deleted and formatted, with undo and redo, and saved
+// (everything it does not show is kept): Save, Save as, Save a copy.
+// New documents come from the icon bar icon (./IconBar); recently
+// used files are under Recent (./RecentFiles); quitting asks first
+// about unsaved changes (./Quit).
 //
-// !RunImage is where it starts: one Word at a time, the icon on the
-// icon bar and its menu, opening files, and quitting. A document's
-// window is ./AppWin; reading files is ./Open; the info line and the
-// Info boxes are ./Info.
-import {wimp, vfs, Menu, infoBox, reportError} from 'riscos';
+// !RunImage is where it starts: one Word at a time, opening files,
+// the messages. A document's window is ./AppWin; reading files is
+// ./Open; the info line and the Info boxes are ./Info.
+import {wimp, vfs, reportError} from 'riscos';
 import {openDocx, describe} from './Open';
 import {DocWindow} from './AppWin';
 import {loadFonts} from './FontLoad';
 import {fontsToLoad} from './FontMap';
 import {facts} from './Info';
+import {newDoc} from './NewDoc';
+import {loadRecent, noteRecent} from './RecentFiles';
+import {preQuit} from './Quit';
+import {addIcon} from './IconBar';
+import {testHook} from './TestHook';
 
 const DOCX = 0xA7E;
-const say = (m, category = 'error') =>
-  reportError(m, {appName: 'Word', category});
+const say = (m) => reportError(m, {appName: 'Word'});
 
 export default async function start(task, ctx) {
   const file = ctx.argv[0];
@@ -45,14 +50,18 @@ export default async function start(task, ctx) {
       .catch(() => null);
   };
 
-  const docs = new Map();              // canonical path -> DocWindow
+  // canonical path (lower case, with a '$') -> DocWindow; a name
+  // that is not a path: '?name'; an untitled one: 'untitled:N'
+  const docs = new Map();
+  let untitled = 0;
   const keyOf = (path) => {
     try { return vfs.canonical(path).toLowerCase(); }
-    catch (e) { return String(path).toLowerCase(); }
+    catch (e) { return '?' + String(path).toLowerCase(); }
   };
   const opening = new Map();           // key -> Promise (in progress)
   const app = {
-    task, docs,
+    task, docs, keyOf, recent: [], fonts: fontsFor,
+    prompt: null, closing: null,       // (./CloseDoc, ./Quit)
     /** Open a .docx (or bring its window to the front). */
     open(path) {
       const key = keyOf(path);
@@ -67,6 +76,20 @@ export default async function start(task, ctx) {
     closed(dw) {
       for (const [k, v] of docs) if (v === dw) docs.delete(k);
     },
+    /** dw has a new path (or none): its key again. */
+    rekey(dw) {
+      app.closed(dw);
+      if (dw.closed) return;           // (closed: not put back)
+      docs.set(dw.path ? keyOf(dw.path) : `untitled:${++untitled}`,
+        dw);
+    },
+    /** A new, empty, untitled document (paper 'a4' or 'letter'). */
+    async newDoc(o) {
+      const paper = o && o.paper === 'letter' ? 'letter' : 'a4';
+      return place(null, `untitled:${++untitled}`, newDoc({paper}));
+    },
+    /** path was opened or saved (./RecentFiles). */
+    noteRecent: (path) => noteRecent(app, path),
   };
   async function load(path, key) {
     let doc;
@@ -77,6 +100,10 @@ export default async function start(task, ctx) {
       return null;
     }
     if (!task.alive) return null;
+    app.noteRecent(path);
+    return place(path, key, doc);
+  }
+  async function place(path, key, doc) {
     const fonts = fontsFor(doc);
     await Promise.race([fonts,
       new Promise((res) => setTimeout(res, 2500))]);
@@ -84,52 +111,14 @@ export default async function start(task, ctx) {
     const dw = new DocWindow(app, path, doc);
     docs.set(key, dw);
     dw.show();
-    fonts.then(() => { if (docs.get(key) === dw) dw.relayout(); });
+    fonts.then(() => {
+      if ([...docs.values()].includes(dw)) dw.relayout();
+    });
     return dw;
   }
 
-  // for tests: the open documents (view: the caret, selection and
-  // editing, ./EditView hook: type, press, compose, dirty...), and
-  // opening one
-  task.word = {
-    get docs() {
-      return [...docs.values()].map((d) => ({
-        path: d.path, doc: d.doc, text: d.text,
-        summary: d.summary,             // (as opened)
-        win: d.win, saveBytes: () => d.saveBytes(), d: d.d,
-        view: d.view.hook(),
-        toolbar: d.bar.tb,              // (WimpLib Ui/Toolbar)
-        ruler: d.rb.ruler,              // (WimpLib Ui/Ruler)
-        get rulerOn() { return d.rulerOn; },
-        setRuler: (on) => d.setRuler(on),
-        get zoom() { return d.zoom; },  // (percent)
-        setZoom: (z) => d.setZoom(z),
-        relayout: () => d.relayout(),
-      }));
-    },
-    open: (path) => app.open(path),
-  };
-
-  // ------------------------------------------------ the icon bar
-  const info = infoBox(task, {name: 'Word',
-    purpose: 'Word documents (.docx)', author: 'MoreApps',
-    version: '0.10 (05-Oct-26)'});
-  const menu = () => new Menu('Word', [
-    {text: 'Info', submenu: info},
-    {text: 'Quit', action: () => task.quit(),
-      help: 'Stop Word: changes not saved as a copy are lost.'},
-  ]);
-  task.addIconbarIcon({
-    sprite: '!word', menu,
-    help: 'This is Word.|MDrop a Word .docx file on this icon to ' +
-      'open it, or double-click one in a directory display.',
-    onClick: () => say('Word cannot make new documents yet: ' +
-      'double-click a .docx file, or drop one on this icon, to ' +
-      'see it.', 'info'),
-    onDataLoad: (ev) => {
-      for (const f of ev.files) if (f.type !== 'dir') app.open(f.path);
-    },
-  });
+  task.word = testHook(app);           // (for tests: ./TestHook)
+  addIcon(app);
 
   // ------------------------------------------------ messages
   task.onMessage('DataOpen', (msg) => {
@@ -137,9 +126,13 @@ export default async function start(task, ctx) {
     app.open(msg.path);
     return true;
   });
+  // (the Task Manager's Quit, shutdown: asks first; Quit itself and
+  // task.quit() do not)
+  task.onMessage('PreQuit', preQuit(app));
   task.onMessage('Quit', () => task.quit());
 
   // ------------------------------------------------ starting
   // (not awaited: the Filer's double-click does not wait for it)
+  loadRecent(app);
   if (file) app.open(file);
 }

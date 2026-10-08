@@ -1,0 +1,197 @@
+// CloseDoc - closing a document's window (./AppWin) and Revert.
+//
+//   requestClose(dw) -> Promise<boolean>  the close icon and Close:
+//                  no changes: closed at once. Changes: WimpLib
+//                  Ui/SaveQuery asks Save / Discard / Cancel. Save
+//                  saves (dw.save(): an untitled document opens the
+//                  Save box) and closes only once that has saved it
+//                  (and nothing was typed meanwhile); Discard closes;
+//                  Cancel (Escape, the box's close icon) keeps it.
+//                  true when the window was closed. Asked again while
+//                  it asks (or the Save box is open), nothing happens;
+//                  while another window's prompt is open, that prompt
+//                  comes to the front (and a beep). A Save that fails
+//                  (reported) or leaves changes typed meanwhile (said
+//                  so) keeps the window, with the caret back in it.
+//                  The name in the message is cut to 40 characters.
+//                  A prompt that cannot open is reported (kept).
+//   revert(dw) -> Promise<boolean>   reload the file from the disc:
+//                  untitled: nothing (the menu item is shaded); with
+//                  changes the Wimp's query asks Discard / Cancel
+//                  first (app.prompt while open: a close request
+//                  brings it forward). It waits for the window's
+//                  saves to end (./DocSave idle: Revert after Save
+//                  as reloads what was saved), and gives up, keeping
+//                  the document, if it is changed while the file is
+//                  read. The new document gets a new window in the
+//                  old one's place (position, size, scroll, stacking,
+//                  zoom, ruler, the caret's focus) and the old one is
+//                  closed without asking: a fresh Document, Typing,
+//                  layout, toolbar and ruler, with no undo history.
+//                  A file that has gone or is not a .docx is reported
+//                  (./Open describe) and the old document is kept.
+//   destroy(dw)    close the window without asking (dw.close(), the
+//                  tests, Quit): its boxes, toolbar, ruler, view and
+//                  window deleted, app.closed(dw); dw.closed is true
+//
+// app.prompt is {dw, buttons, win} while the prompt is open (tests;
+// ./Quit's prompt sets it too, with dw null); app.closing is the
+// promise of the requestClose that is asking or saving (./Quit waits
+// for it before it asks).
+import {wimp, vfs, query, reportError} from 'riscos';
+import {saveQuery} from 'wimplib/Ui/SaveQuery';
+import {openDocx, describe} from './Open';
+import {idle} from './DocSave';
+
+const BUTTONS = ['Save', 'Discard', 'Cancel'];
+const busy = new WeakSet();            // windows asking (or saving)
+const MAXN = 40;
+
+/** A document's name for a message: at most MAXN characters. */
+export function shortName(leaf) {
+  const s = String(leaf);
+  return s.length <= MAXN ? s : s.slice(0, MAXN - 3) + '...';
+}
+
+const say = (m) => reportError(m, {appName: 'Word'});
+
+/** See the header. */
+export function destroy(dw) {
+  if (dw.closed) return;
+  dw.closed = true;
+  dw.view.destroy();
+  dw.bar.destroy();
+  dw.rb.destroy();
+  dw.zb.destroy();
+  for (const b of [...dw.boxes.values()]) b.delete();
+  dw.win.delete();
+  dw.app.closed(dw);
+}
+
+/** Save / Discard / Cancel for dw: the button's text. */
+async function ask(dw) {
+  const app = dw.app;
+  const q = saveQuery({task: app.task, title: 'Word', buttons: BUTTONS,
+    message: `'${shortName(dw.leaf)}' has changes that are not ` +
+      'saved.'});
+  app.prompt = {dw, buttons: BUTTONS, get win() { return q.win; }};
+  try {
+    return await q;
+  } finally {
+    app.prompt = null;
+  }
+}
+
+/** See the header. */
+export function requestClose(dw) {
+  if (dw.closed || busy.has(dw)) return Promise.resolve(false);
+  if (!dw.d.dirty) { destroy(dw); return Promise.resolve(true); }
+  const app = dw.app, other = app.prompt;  // (another's, or Quit's)
+  if (other) {
+    if (other.win && other.win.isOpen) other.win.bringToFront();
+    wimp.beep();
+    return Promise.resolve(false);
+  }
+  busy.add(dw);
+  const p = asked(dw);
+  app.closing = p;                     // (./Quit waits for it)
+  const end = () => { if (app.closing === p) app.closing = null; };
+  p.then(end, end);
+  return p;
+}
+
+/** The prompt, and what its answer does. */
+async function asked(dw) {
+  try {
+    let r;
+    try {
+      r = await ask(dw);
+    } catch (e) {                      // (the box could not open)
+      say(`'${shortName(dw.leaf)}' was not closed: ${e.message || e}`);
+      return keep(dw);
+    }
+    if (dw.closed) return true;        // (Quit meanwhile)
+    if (r === 'Save') {
+      const ok = await dw.save();
+      if (dw.closed) return true;
+      if (ok && dw.d.dirty) {
+        say(`'${shortName(dw.leaf)}' changed while it was being ` +
+          'saved: it has not been closed.');
+      }
+      if (!ok || dw.d.dirty) return keep(dw);
+    } else if (r !== 'Discard') {
+      return keep(dw);
+    }
+    destroy(dw);
+    return true;
+  } finally {
+    busy.delete(dw);
+  }
+}
+
+/** The window stays: the caret back in it. */
+function keep(dw) {
+  if (!dw.closed && dw.win.isOpen) dw.view.focus();
+  return false;
+}
+
+/** Revert's question (the Wimp's query); app.prompt while open. */
+async function askRevert(dw) {
+  const app = dw.app, task = app.task, had = new Set(task.windows);
+  const q = query({task, title: 'Word', buttons: ['Discard', 'Cancel'],
+    message: `Discard changes to '${shortName(dw.leaf)}' and ` +
+      'reload it?'});
+  const qw = [...task.windows].find((w) => !had.has(w)) || null;
+  const mine = {dw, buttons: ['Discard', 'Cancel'],
+    get win() { return qw && qw.isOpen ? qw : null; }};
+  if (!app.prompt) app.prompt = mine;
+  try {
+    return await q;
+  } finally {
+    if (app.prompt === mine) app.prompt = null;
+  }
+}
+
+/** See the header. */
+export async function revert(dw) {
+  if (dw.closed || !dw.path || busy.has(dw)) return false;
+  busy.add(dw);
+  let doc, id;
+  try {
+    await idle(dw);
+    if (dw.closed || !dw.path) return false;
+    if (dw.d.dirty) {
+      const r = await askRevert(dw);
+      if (r !== 'Discard' || dw.closed) return false;
+    }
+    id = dw.d.stateId;
+    try {
+      doc = await openDocx(vfs, dw.path);
+    } catch (e) {
+      say(describe(e, dw.leaf));
+      return false;
+    }
+  } finally {
+    busy.delete(dw);
+  }
+  // (typed in while the file was read: those changes are kept)
+  if (dw.closed || dw.d.stateId !== id) return false;
+  replace(dw, doc);
+  return true;
+}
+
+/** A new window for doc where dw is; dw closed. */
+function replace(dw, doc) {
+  const app = dw.app, old = dw.win;
+  const nw = new dw.constructor(app, dw.path, doc);
+  nw.setRuler(dw.rulerOn);
+  nw.setZoom(dw.zoom);
+  const focus = dw.view.hasFocus, was = old.isOpen;
+  if (was) nw.win.open({...old.getState(), behind: old});
+  destroy(dw);
+  app.docs.set(app.keyOf(nw.path), nw);
+  if (focus || !was) nw.show();
+  if (app.fonts) {
+    app.fonts(doc).then(() => { if (!nw.closed) nw.relayout(); });
+  }
+}

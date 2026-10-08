@@ -1,0 +1,49 @@
+// CopySave - Save a copy: the window menu's box that writes a copy
+// of the document and changes nothing in the window (its name, path
+// and '*' stay).
+//
+//   copyBox(dw)    the box (made once, kept in dw.boxes: ./Boxes):
+//                  offered a full path, so that OK works as well as
+//                  dragging the icon (the document's path, or for an
+//                  untitled one a free name: SaveState.suggestName);
+//                  ./DocSave sets it again when the window is
+//                  renamed. Saving: the file of another open window
+//                  is refused (DocSave canWrite, said in an error
+//                  box); an input method's composing text is put in
+//                  the document first; the bytes are written with
+//                  file type &A7E. OK onto a file that is there asks
+//                  Replace / Cancel first (./Replace), even when it
+//                  is the window's own file. A write that fails
+//                  is said as Save does: "'leaf' could not be
+//                  saved: why" (DocSave notSaved).
+import {vfs, saveAs} from 'riscos';
+import {suggestName, defaultDir, leafOf} from './SaveState';
+import {box} from './Boxes';
+import {canWrite, commitComposition, notSaved} from './DocSave';
+import {guardOK} from './Replace';
+
+const DOCX = 0xA7E;
+const there = (p) => vfs.exists(p);
+
+/** See the header. */
+export function copyBox(dw) {
+  return box(dw, 'copy', () => {
+    const b = saveAs({task: dw.app.task, title: 'Save a copy',
+      filename: suggestName(dw, defaultDir(dw.app.recent), there),
+      filetype: DOCX, getData: () => dw.saveBytes(),
+      save: async (path) => {
+        const why = canWrite(dw, path);
+        if (why) throw new Error(why);
+        if (!dw.closed) commitComposition(dw.view);
+        const bytes = await dw.saveBytes();
+        if (canWrite(dw, path)) throw new Error(canWrite(dw, path));
+        try {
+          vfs.writeFile(path, bytes, {filetype: DOCX});
+        } catch (e) {
+          throw notSaved(leafOf(path), e);
+        }
+      }});
+    guardOK(b, dw.app.task, (p) => !!canWrite(dw, p));
+    return b;
+  });
+}

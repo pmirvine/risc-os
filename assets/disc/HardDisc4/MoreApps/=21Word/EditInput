@@ -14,6 +14,12 @@
 //                   next as a textinput (nothing when cancelled)
 //   losecaret       the input focus went elsewhere: any composing
 //                   text goes too
+// A save types the composing text in itself (./DocSave) and sets
+// v.lateCommit to {text, at}: the input method's own commit of that
+// text, if it comes next within LATE_MS of the save, is not typed a
+// second time. Anything else first (other text, composing, a key,
+// a click or drag in the window, the caret leaving) ends that, so
+// the same text typed on purpose is always typed.
 // Events for a window that is no longer open are ignored.
 // It also gives the view fromProxy(ev): whether a 'key' event came
 // from the Wimp's hidden text field while it had the focus (a
@@ -31,6 +37,7 @@ import * as S from './Selection';
 import {EMPTY, forTyping, styleFor} from './Pending';
 
 const TEXT = {text: true};
+const LATE_MS = 800;
 
 /** See the header. */
 export function showCaret(v, take = false) {
@@ -81,11 +88,21 @@ export function attachInput(v) {
     const t = wimp.textInput, e = ev && ev.domEvent;
     return !!(e && t && t.el && t.focused && e.target === t.el);
   };
+  const late = (text) => {
+    const l = v.lateCommit;
+    v.lateCommit = null;
+    return !!l && l.text === text && performance.now() - l.at < LATE_MS;
+  };
+  const off = () => { v.lateCommit = null; };
+  for (const e of ['key', 'click', 'doubleclick', 'drag']) {
+    w.on(e, off, {first: true});
+  }
   w.on('textinput', (ev) => {
-    if (w.isOpen) v.input(ev.text);
+    if (w.isOpen && !late(ev.text)) v.input(ev.text);
     return true;
   });
   w.on('composition', (ev) => {
+    v.lateCommit = null;
     if (w.isOpen && wimp.caret?.window === w) v.compose(ev.text);
     return true;
   });
@@ -93,5 +110,5 @@ export function attachInput(v) {
     v.compose(null);
     return true;
   });
-  w.on('losecaret', () => v.compose(null));
+  w.on('losecaret', () => { off(); v.compose(null); });
 }

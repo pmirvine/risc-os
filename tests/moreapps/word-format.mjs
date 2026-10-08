@@ -383,7 +383,7 @@ try {
   const top = await levelItems(0);
   await pick(0, 'Format', { hover: true });
   const fm = await levelItems(1);
-  ok('the window menu: Save copy as .docx, Info, Edit, Format, Zoom, Close', same(top?.map((x) => x[0]), ['Save copy as .docx', 'Info', 'Edit', 'Format', 'Zoom', 'Close']), top);
+  ok('the window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Format', 'Zoom', 'New', 'Close']), top);
   const tick = (list, t) => list?.find((x) => x[0] === t)?.[1];
   ok('the Format menu opens; Bold is ticked in a bold selection, Italic not', fm && tick(fm, 'Bold') === true && tick(fm, 'Italic') === false
     && ['Bold', 'Italic', 'Underline', 'Strikethrough', 'Superscript', 'Subscript', 'Font', 'Size', 'Colour', 'Highlight', 'Align', 'Indent',

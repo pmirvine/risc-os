@@ -72,7 +72,7 @@ try {
     // menus with boxes, then close them all with the menu's Close
     for (const d of t.word.docs) {
       const m = d.win.menu({});
-      m.items[0].submenu(); m.items[1].submenu();
+      for (const n of ['Save as', 'Save a copy', 'Info']) m.items.find((i) => i.text === n).submenu();
     }
     for (const d of t.word.docs) d.win.menu({}).items.find((i) => i.text === 'Close').action();
     await frames(2);

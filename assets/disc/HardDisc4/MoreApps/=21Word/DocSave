@@ -1,0 +1,244 @@
+// DocSave - saving the document of a window (./AppWin): Save, Save
+// as, the Save boxes of its menu (./WinMenu), and what a save
+// changes in the window.
+//
+//   save(dw) -> Promise<boolean>   Save: a titled document is written
+//                  to its file; an untitled one opens the Save as box
+//                  (centred), true only once it has been saved from
+//                  there (false when the box is closed and stays
+//                  closed: not when the menu is opened again over it).
+//                  One such promise per window: Save again while it
+//                  waits gives the same one, and leaves the name typed
+//                  in an open box as it is
+//   saveAsTo(dw, path) -> Promise<boolean>   write it as path and
+//                  take that name; an error is reported, false
+//   writeTo(dw, path) -> Promise<path>       the same, but throws
+//                  (the Save box reports what it throws); null when
+//                  nothing was written (Discard, below). The saves
+//                  of a window run one after another, in the order
+//                  asked: a slow one never overwrites a later one
+//   bytesOf(dw) -> Promise<Uint8Array>   the bytes (dw.saveBytes)
+//   idle(dw) -> Promise    settles when the window's saves (those
+//                  asked so far) have ended; saving(dw): any running
+//   canWrite(dw, path) -> null, or why not: path is the file of
+//                  another open document (saving over it is refused)
+//   saveBox(dw)  the Save as box (made once, kept in dw.boxes:
+//                  ./Boxes); OK onto another file that is there asks
+//                  Replace / Cancel (./Replace). Save a copy is
+//                  ./CopySave
+//   commitComposition(view)  the composing text typed in
+//   notSaved(name, e) -> Error  "'name' could not be saved: why"
+// A file saved goes to app.noteRecent (./RecentFiles); app.recent
+// gives the Save box's directory for an untitled document
+// (SaveState.defaultDir), with a name no file there has.
+//
+// A save first puts an input method's composing text into the
+// document (the method's late commit of it is not typed again:
+// ./EditInput), ends the undo step being typed and takes the state's id
+// (Document.stateId); writeDocx makes the parts before its first
+// await, so the bytes are that state. Only when vfs.writeFile has
+// succeeded is that state marked saved (Document.markSavedAt):
+// typing during the write keeps the '*', undo back to it is clean.
+// Always file type &A7E; a leaf with no '/docx' is kept as typed.
+// A save that renames the window changes its title, dw.path,
+// dw.leaf, its app.docs key (app.rekey), the Save as box's name and
+// the Save a copy box's and the Info box. Save a copy changes
+// nothing in the window.
+//
+// Save on a titled document takes dw.path when its turn comes (after
+// a Save as still writing: the new name). A window closed while its
+// save was writing is left alone: the file is written (true), the
+// path goes to Recent, but the closed window is not renamed, marked
+// or put back in app.docs. A save still waiting its turn when the
+// window is closed with changes made after it was asked for (Discard)
+// writes nothing (false): the changes thrown away are not saved.
+import {wimp, vfs, saveAs, reportError} from 'riscos';
+import {suggestName, defaultDir, leafOf} from './SaveState';
+import {box} from './Boxes';
+import {writeDocx} from './DocxWrite';
+import {guardOK, samePath} from './Replace';
+
+const DOCX = 0xA7E;
+const waiting = new WeakMap();         // dw -> {p, res, off} (save())
+const queue = new WeakMap();           // dw -> the last save's end
+const gone = new WeakSet();            // Save boxes deleted
+const there = (p) => vfs.exists(p);
+
+/** See the header. */
+export function canWrite(dw, path) {
+  const other = dw.app.docs.get(dw.app.keyOf(path));
+  if (!other || other === dw) return null;
+  return `'${other.leaf}' is open in another window: close ` +
+    'it first, or save this document under another name.';
+}
+
+/** See the header. */
+export function notSaved(name, e) {
+  return new Error(`'${name}' could not be saved: ` +
+    (e && e.message ? e.message : String(e)));
+}
+
+/** See the header (the input method stopped). */
+export function commitComposition(v) {
+  const t = v.comp;
+  if (!t) return;
+  const ti = wimp.textInput, had = v.hasFocus;
+  if (ti && ti.composing) ti.blur();
+  v.compose(null);
+  v.input(t);
+  v.lateCommit = {text: t, at: performance.now()};  // ./EditInput
+  v.flush();
+  if (had) v.focus();
+}
+
+/** See the header. */
+export async function bytesOf(dw) {
+  try {
+    return await writeDocx(dw.doc);
+  } catch (e) {
+    throw notSaved(dw.leaf, e);
+  }
+}
+
+/** See the header. */
+export function idle(dw) { return queue.get(dw) || Promise.resolve(); }
+
+/** See the header. */
+export function saving(dw) { return queue.has(dw); }
+
+/** See the header: after the window's saves before it (path null:
+ *  dw.path, when it runs). */
+export function writeTo(dw, path) {
+  const asked = dw.d.stateId;
+  const prev = queue.get(dw), run = () => write1(dw, path, asked);
+  const p = prev ? prev.then(run) : run();
+  const end = p.then(() => {}, () => {});
+  queue.set(dw, end);
+  end.then(() => { if (queue.get(dw) === end) queue.delete(dw); });
+  return p;
+}
+
+/** One save (writeTo); null: not written (the header). */
+async function write1(dw, to, asked) {
+  if (dw.closed && dw.d.stateId !== asked) return null;
+  const path = to == null ? dw.path : to;
+  let why = canWrite(dw, path);
+  if (why) throw new Error(why);
+  const d = dw.d;
+  if (!dw.closed) {
+    commitComposition(dw.view);
+    d.breakCoalesce();
+  }
+  const id = d.stateId;
+  const bytes = await dw.saveBytes();  // (its error names the file)
+  why = canWrite(dw, path);            // (opened meanwhile)
+  if (why) throw new Error(why);
+  let full;
+  try {
+    full = vfs.writeFile(path, bytes, {filetype: DOCX});
+  } catch (e) {
+    throw notSaved(leafOf(path), e);
+  }
+  if (dw.app.noteRecent) dw.app.noteRecent(full);
+  if (dw.closed) return full;          // (closed while it was written)
+  d.markSavedAt(id);
+  rename(dw, full);
+  dw.retitle();
+  return full;
+}
+
+/** dw is now the document at path (canonical). */
+function rename(dw, path) {
+  if (dw.path === path) return;
+  dw.path = path;
+  dw.leaf = vfs.leaf(path);
+  dw.app.rekey(dw);
+  const b = dw.boxes.get('saveas');
+  if (b) b.setFilename(path);
+  const c = dw.boxes.get('copy');
+  if (c) c.setFilename(path);
+  const info = dw.boxes.get('info');
+  const f = info && info.iconByName && info.iconByName('file');
+  if (f) f.setText(dw.leaf);
+}
+
+/** See the header. */
+export async function saveAsTo(dw, path) {
+  try {
+    return (await writeTo(dw, path)) != null;
+  } catch (e) {
+    reportError(e && e.message ? e.message : String(e),
+      {appName: 'Word'});
+    return false;
+  }
+}
+
+/** The save() waiting for the Save box (if any) gets ok. */
+function settle(dw, ok) {
+  const w = waiting.get(dw);
+  if (!w) return;
+  waiting.delete(dw);
+  if (w.off) w.off();
+  w.res(ok);
+}
+
+/**
+ * The Save box closed: false for the save() waiting, unless it opens
+ * again at once (the menu opened again over it): then when it, or
+ * the menu tree it may come back in, closes again.
+ */
+function closed(dw, b) {
+  queueMicrotask(() => {
+    const w = waiting.get(dw);
+    if (!w || b.isOpen) return;
+    const M = wimp.menus, task = dw.app.task;
+    if (!gone.has(b) && M.isOpen && M.owner === task) {
+      if (!w.off) {
+        w.off = task.onMessage('MenusDeleted', () => {
+          w.off();
+          w.off = null;
+          closed(dw, b);
+        });
+      }
+      return;
+    }
+    settle(dw, false);
+  });
+}
+
+/** See the header. */
+export function save(dw) {
+  if (dw.path) return saveAsTo(dw, null);
+  const b = saveBox(dw);
+  let w = waiting.get(dw);
+  if (!w) {
+    w = {off: null};
+    w.p = new Promise((res) => { w.res = res; });
+    waiting.set(dw, w);
+  }
+  if (!b.isOpen) {
+    b.setFilename(suggestName(dw, defaultDir(dw.app.recent), there));
+    b.openCentred();
+  }
+  return w.p;
+}
+
+/** See the header. */
+export function saveBox(dw) {
+  return box(dw, 'saveas', () => {
+    const b = saveAs({task: dw.app.task, title: 'Save as',
+      filename: suggestName(dw, defaultDir(dw.app.recent), there),
+      filetype: DOCX, getData: () => dw.saveBytes(),
+      save: async (path) => {
+        // (null: nothing written, Discard: no save to settle)
+        if (await writeTo(dw, path) != null) settle(dw, true);
+      },
+      // (the box shows the path as typed: the canonical one again)
+      onSaved: () => { if (dw.path) b.setFilename(dw.path); }});
+    guardOK(b, dw.app.task, (p) => (!!dw.path && samePath(p, dw.path))
+      || !!canWrite(dw, p));
+    b.on('closed', () => closed(dw, b));
+    b.on('deleted', () => { gone.add(b); settle(dw, false); });
+    return b;
+  });
+}

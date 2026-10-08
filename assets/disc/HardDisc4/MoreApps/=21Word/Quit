@@ -1,0 +1,155 @@
+// Quit - quitting Word: the icon bar menu's Quit and the PreQuit
+// message (the Task Manager's Quit, shutdown, leaving the desktop).
+// With documents that have unsaved changes it asks once, whatever
+// their number (WimpLib Ui/SaveQuery, as !Edit and !Paint do):
+// 'N documents have unsaved changes.' Discard / Cancel; Return is
+// Discard, Escape and the box's close icon Cancel.
+//
+//   changed(app)         the open windows with unsaved changes
+//   quitMessage(n)       '1 document has unsaved changes.', 'N ...'
+//   mustAsk(app)         (synchronous) a document has changes, or a
+//                        close prompt (./CloseDoc app.closing) or the
+//                        quit prompt is open
+//   mayQuit(app) -> Promise<boolean>  true: Word may quit (nothing
+//                        changed, or Discard). A close prompt that is
+//                        open is answered first (brought to the
+//                        front); then the changes are counted again:
+//                        none left, no prompt. Asked again while it
+//                        asks: the same promise (the box to the front)
+//                        A Save as box a close prompt's Save waits
+//                        on comes forward instead, and over it its
+//                        Replace question when that is open
+//   quit(app)            the menu's Quit: at once if mustAsk is false;
+//                        else mayQuit, and on Discard every window is
+//                        closed without asking and the task quits
+//   preQuit(app)         the PreQuit handler: if mustAsk, msg.object()
+//                        at once (before anything waits), then
+//                        mayQuit; on Discard the windows are closed and
+//                        the task quits (msg.single: the Task Manager)
+//                        or the closedown starts again (Ctrl-Shift-F12:
+//                        this time Word has nothing to ask), once per
+//                        answer however often it was asked
+// A prompt that cannot be shown is reported and Word does not quit.
+//
+// While the quit prompt is open app.prompt is {dw: null, quit: true,
+// buttons, win}, so a close request brings it to the front.
+import {wimp, reportError} from 'riscos';
+import {saveQuery} from 'wimplib/Ui/SaveQuery';
+import {destroy} from './CloseDoc';
+import {questionOf} from './Replace';
+
+const BUTTONS = ['Discard', 'Cancel'];
+const asking = new WeakMap();          // app -> mayQuit's promise
+const restarted = new WeakSet();       // answers that restarted it
+
+/** The prompt could not be asked: said, and no quitting. */
+function failed(e) {
+  reportError('Word could not ask about unsaved changes: ' +
+    (e && e.message ? e.message : String(e)), {appName: 'Word'});
+  return false;
+}
+
+/** See the header. */
+export function changed(app) {
+  return [...app.docs.values()].filter((dw) => !dw.closed &&
+    dw.d.dirty);
+}
+
+/** See the header. */
+export function quitMessage(n) {
+  return n === 1 ? '1 document has unsaved changes.' :
+    `${n} documents have unsaved changes.`;
+}
+
+/** See the header. */
+export function mustAsk(app) {
+  return !!app.closing || asking.has(app) || changed(app).length > 0;
+}
+
+/** The prompt open (a close or the quit prompt) to the front; with
+ *  none, a Save as box open (a close prompt's Save waiting on it),
+ *  and over it its Replace question if that is open (./Replace). */
+function front(app) {
+  const w = app.prompt && app.prompt.win;
+  if (w && w.isOpen) { w.bringToFront(); return; }
+  for (const dw of app.docs.values()) {
+    const b = dw.boxes && dw.boxes.get('saveas');
+    if (!b || !b.isOpen) continue;
+    b.bringToFront();
+    const q = questionOf(b);
+    if (q) q.bringToFront();
+  }
+}
+
+/** See the header. */
+export function mayQuit(app) {
+  let p = asking.get(app);
+  if (p) { front(app); return p; }
+  p = decide(app);
+  asking.set(app, p);
+  const end = () => { if (asking.get(app) === p) asking.delete(app); };
+  p.then(end, end);
+  return p;
+}
+
+async function decide(app) {
+  for (;;) {
+    if (!app.task.alive) return false;
+    if (app.closing) {
+      front(app);
+      await app.closing.catch(() => false);
+      continue;
+    }
+    const n = changed(app).length;
+    if (!n) return true;
+    const q = saveQuery({task: app.task, title: 'Word',
+      buttons: BUTTONS, message: quitMessage(n)});
+    const mine = {dw: null, quit: true, buttons: BUTTONS,
+      get win() { return q.win; }};
+    app.prompt = mine;
+    let r;
+    try {
+      r = await q;
+    } finally {
+      if (app.prompt === mine) app.prompt = null;
+    }
+    return r === 'Discard' && app.task.alive;
+  }
+}
+
+/** Every window closed without asking. */
+function discardAll(app) {
+  for (const dw of [...app.docs.values()]) destroy(dw);
+}
+
+/** See the header. */
+export function quit(app) {
+  const end = () => {
+    if (!app.task.alive) return;
+    discardAll(app);
+    app.task.quit();
+  };
+  if (!mustAsk(app)) { end(); return Promise.resolve(true); }
+  return mayQuit(app).then((yes) => { if (yes) end(); return yes; })
+    .catch(failed);
+}
+
+/** See the header. */
+export function preQuit(app) {
+  return (msg) => {
+    if (!mustAsk(app)) return undefined;
+    if (msg && typeof msg.object === 'function') msg.object();
+    const p = mayQuit(app);
+    p.then((yes) => {
+      if (!yes) return;
+      if (app.task.alive) discardAll(app);
+      if (msg && msg.single) {
+        if (app.task.alive) app.task.quit();
+      } else if (!restarted.has(p)) {  // (asked twice: once)
+        restarted.add(p);
+        wimp.emit('hotkey:CtrlShiftF12', {});
+      }
+    }).catch(failed);
+    return true;
+  };
+}

@@ -1,0 +1,79 @@
+// Replace - a Save box's OK (or Return) asks before it saves over a
+// file that is already there: 'Report' already exists. Replace it?
+// Replace / Cancel (WimpLib Ui/SaveQuery). Return and Escape are
+// both Cancel, the safe answer (the Wimp's own query box would make
+// Return the first button). Cancel leaves the file and the document
+// as they were, with the caret back in the Save box's name; Replace
+// saves as OK would have.
+//
+//   guardOK(box, task, skip)  box: a core saveAs box; skip(path):
+//                  true when saving there asks nothing (Save as onto
+//                  the window's own file; the file of another open
+//                  window, refused anyway). Asks only when the name
+//                  is a full path (OK saves nothing otherwise) and
+//                  the file exists and is not locked (refused).
+//                  Dragging the box's icon to a directory display
+//                  saves as the core does, without asking.
+//   questionOf(box) -> the window of box's Replace question while
+//                  it is open, else null (./Quit brings it forward
+//                  over the box)
+import {wimp, vfs} from 'riscos';
+import {saveQuery} from 'wimplib/Ui/SaveQuery';
+import {leafOf} from './SaveState';
+
+const there = (p) => { try { return vfs.exists(p); } catch (e) {
+  return false; } };
+const open = new WeakMap();            // box -> its question
+const locked = (p) => { try { return !!vfs.stat(p).locked; }
+  catch (e) { return false; } };
+
+/** Whether two paths name the same file (case ignored). */
+export function samePath(a, b) {
+  try {
+    return vfs.canonical(a).toLowerCase() ===
+      vfs.canonical(b).toLowerCase();
+  } catch (e) {
+    return false;
+  }
+}
+
+/** See the header. */
+export function questionOf(box) {
+  const q = open.get(box), w = q && q.win;
+  return w && w.isOpen ? w : null;
+}
+
+/** See the header. */
+export function guardOK(box, task, skip) {
+  let allow = null, asking = false;
+  const ok = () => box.emit('click', {icon: box.icons[0],
+    button: 'select'});
+  const check = () => {
+    const to = box.filename();
+    const yes = allow === to;
+    allow = null;
+    if (yes) return undefined;         // (Replace: the core's OK)
+    if (asking) return true;
+    if (!/[.:]/.test(to) || skip(to) || !there(to)) return undefined;
+    if (locked(to)) return undefined;  // (the save says why)
+    asking = true;
+    const q = saveQuery({task, title: 'Word',
+      buttons: ['Replace', 'Cancel'], enter: 'Cancel',
+      message: `'${leafOf(to)}' already exists. Replace it?`});
+    open.set(box, q);
+    q.then((r) => {
+      asking = false;
+      open.delete(box);
+      if (r === 'Replace') { allow = to; ok(); return; }
+      const name = box.icons[1];
+      if (box.isOpen && name) {
+        wimp.setCaret(box, name, name.text.length);
+      }
+    }, () => { asking = false; open.delete(box); });
+    return true;
+  };
+  box.on('click', (ev) => (ev.icon === box.icons[0] &&
+    ev.button !== 'menu' ? check() : undefined), {first: true});
+  box.on('key', (ev) => (ev.code === 13 ? check() : undefined),
+    {first: true});
+}

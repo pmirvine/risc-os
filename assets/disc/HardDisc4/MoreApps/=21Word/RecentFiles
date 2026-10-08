@@ -1,0 +1,74 @@
+// RecentFiles - the files recently opened or saved in Word, kept in
+// Choices:Word (as {"recent": [path, ...]}, newest first, 8 at most:
+// ./Recent), and the icon bar menu's Recent submenu.
+//
+//   loadRecent(app)      app.recent = [] now, then the list read from
+//                        Choices:Word (cleaned: missing, corrupt or
+//                        hostile choices give []); app.recentReady
+//                        is that read's promise
+//   noteRecent(app, path)  path was opened or saved: it goes first
+//                        (by its canonical path), files that have
+//                        gone are dropped, and the list is written
+//                        (after the read, if that is still going on).
+//                        A write that fails is told to the console
+//                        only: it never stops a save
+//   recentItem(app)      the menu item 'Recent' (shaded with nothing
+//                        to show), its submenu made when it opens:
+//                        the files of app.recent that exist (by their
+//                        leaf names), each opened with app.open (which
+//                        brings an open one to the front)
+//
+// app.recent is the cache the menu is made from (synchronously).
+import {vfs, choices, Menu} from 'riscos';
+import {fromChoices, add, shown, labels} from './Recent';
+
+const NAME = 'Word';
+const ready = new WeakSet();           // apps whose list has been read
+
+/** A path's key: canonical, lower case. */
+function keyOf(p) {
+  try { return vfs.canonical(p).toLowerCase(); }
+  catch (e) { return String(p).toLowerCase(); }
+}
+
+const exists = (p) => vfs.exists(p);
+
+/** See the header. */
+export function loadRecent(app) {
+  app.recent = [];
+  app.recentReady = choices.read(NAME, {recent: []})
+    .then((c) => { app.recent = fromChoices(c, keyOf); })
+    .catch((e) => console.warn('Word: Choices:Word not read', e))
+    .then(() => { ready.add(app); });
+  return app.recentReady;
+}
+
+/** See the header. */
+export function noteRecent(app, path) {
+  if (!ready.has(app)) {
+    (app.recentReady || Promise.resolve())
+      .then(() => { ready.add(app); noteRecent(app, path); });
+    return;
+  }
+  let full = path;
+  try { full = vfs.canonical(path); } catch (e) { /* as given */ }
+  app.recent = add(shown(app.recent, exists), full, keyOf);
+  try {
+    choices.write(NAME, {recent: app.recent});
+  } catch (e) {
+    console.warn('Word: Choices:Word not written', e);
+  }
+}
+
+/** See the header. */
+export function recentItem(app) {
+  return {text: 'Recent',
+    shaded: () => !shown(app.recent, exists).length,
+    submenu: () => {
+      const list = shown(app.recent, exists), names = labels(list);
+      return new Menu('Recent', list.map((p, i) => ({text: names[i],
+        action: () => { app.open(p); }, help: `Open ${p}`})));
+    },
+    help: 'The documents opened or saved most recently: choose ' +
+      'one to open it.'};
+}

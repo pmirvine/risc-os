@@ -10,7 +10,15 @@
 // hostile.mjs), and formatting: as drawn, by keys and the Format menu (word-format.mjs), and by its toolbar
 // (word-toolbar.mjs) and its ruler (word-ruler.mjs); zoom (word-zoom.mjs); formatting against hostile input
 // (word-format-hostile.mjs); list numbers and bullets drawn and edited (word-lists.mjs), also against hostile input
-// (word-lists-hostile.mjs). The unit tests are the *.test.mjs files
+// (word-lists-hostile.mjs); untitled documents and Save / Save as
+// (word-save.mjs); the Save / Discard / Cancel prompt on close, and
+// Revert (word-close.mjs); New, Recent files, Quit and PreQuit
+// (word-quit.mjs); documents against hostile use: saves onto open,
+// locked and read-only files, 1000 Saves, input methods, shutdowns,
+// Recent, 500 random actions (word-documents-hostile.mjs); Save
+// boxes and existing files: Replace / Cancel (word-replace.mjs); a
+// new document's whole white page (word-page.mjs). The unit
+// tests are the *.test.mjs files
 // here: node --test tests/moreapps finds them itself.
 import { suite } from '../lib/suite.mjs';
 suite('moreapps', [
@@ -30,5 +38,11 @@ suite('moreapps', [
   { name: '!Word: formatting against hostile input (50,000 paragraphs, 1000 toggles, input methods, absurd sizes, zoom while resizing, 500 random actions)', args: ['tests/moreapps/word-format-hostile.mjs'] },
   { name: '!Word: list numbers and bullets drawn in the hanging space; not selected; click on a label; 50,000 list paragraphs; 200%', args: ['tests/moreapps/word-lists.mjs'] },
   { name: '!Word: lists against hostile input (100,000 list paragraphs, Tab spam, absurd numbering, select all + Backspace, 500 random actions)', args: ['tests/moreapps/word-lists-hostile.mjs'] },
+  { name: '!Word: untitled documents, Save, Save as and Save a copy (Save box OK and drag, typing during a save, locked / read-only / bad names, another open document, input methods)', args: ['tests/moreapps/word-save.mjs'] },
+  { name: '!Word: closing asks Save / Discard / Cancel (keys, the Save box for an untitled document, one prompt); Revert; saves of a window in turn; leaks', args: ['tests/moreapps/word-close.mjs'] },
+  { name: '!Word: New from the icon bar (one per double-click), Recent files (Choices:Word, missing / hostile entries), Quit and PreQuit ask once (Task Manager, shutdown, a close prompt open); 50 dirty windows; leaks', args: ['tests/moreapps/word-quit.mjs'] },
+  { name: '!Word: documents against hostile use (Save as onto open / locked / read-only / bad names, 1000 Saves, Save while typing and composing, 50 dirty windows at shutdown, shutdown twice, prompts that cannot open, 10,000 hostile Recent entries, Revert of a deleted file, Quit with the Save box open, 500 random actions)', args: ['tests/moreapps/word-documents-hostile.mjs'] },
+  { name: '!Word: Save boxes and existing files (a free name for a new document, Replace / Cancel, Save a copy refusing open files and holding composing text); the late commit only straight after a Save; prompts brought forward (Quit with a Save box or its Replace question, Revert); a failed Save a copy named as Save names it', args: ['tests/moreapps/word-replace.mjs'] },
+  { name: '!Word: a new document shows a whole page (A4, Letter; the white page down the window, its height and end; 50% and 200%; clicks low in the page, typing, Ctrl-End, Page Down)', args: ['tests/moreapps/word-page.mjs'] },
   { name: '!Word without its fonts; open, close and Quit leave nothing behind', args: ['tests/moreapps/word-life.mjs'] },
 ]);

@@ -1,0 +1,99 @@
+// SaveQuery - the box a program shows before it throws changes away:
+// a message and three buttons, Save, Discard and Cancel (the Wimp's
+// own query box has two at most).
+//
+//   saveQuery({task, title, message,
+//              buttons = ['Save', 'Discard', 'Cancel'], enter})
+//     -> Promise of the text of the button pressed
+//   The box is centred on the screen and has the caret. Return is
+//   enter (default the first button; it has the default border),
+//   Escape and the box's close icon the last button; the first is
+//   drawn at the right, the last to its left, the rest further
+//   left. (enter: the last too, for a box whose safe answer is
+//   the same for both keys, such as Replace / Cancel.) Its icons
+//   are named 'button:<text>' (win.iconByName) and 'message'; the
+//   promise's win is the box, while it is open.
+//   One box at a time for a task: asked again while one is open, the
+//   new question waits, and its box opens when the one before has
+//   been answered (each gets its own answer). The box is deleted
+//   when it answers (and answers with the last button when its task
+//   deletes it, or has gone before a waiting box could open).
+// A long message is cut off at the screen's width: keep it short.
+// There is no parent option: the box is not tied to a window.
+import {wimp} from 'riscos';
+
+const BW = 96, BH = 36, GAP = 12, PAD = 16, CHAR = 8.5, MH = 32;
+const tail = new WeakMap();            // task -> its last question
+
+/** The buttons left to right: the last, then the first, at right. */
+function order(buttons) {
+  if (buttons.length < 2) return buttons.slice();
+  return [...buttons.slice(1, -1), buttons[buttons.length - 1],
+    buttons[0]];
+}
+
+/** See the header. */
+export function saveQuery(opts) {
+  const task = opts.task, h = {win: null}, prev = tail.get(task);
+  const run = () => ask(opts, h);
+  const p = prev ? prev.then(run) : run();
+  Object.defineProperty(p, 'win', {get: () => h.win});
+  const end = p.then(() => {}, () => {});
+  tail.set(task, end);
+  end.then(() => { if (tail.get(task) === end) tail.delete(task); });
+  return p;
+}
+
+/** One box: h.win is it while it is open. */
+function ask(opts, h) {
+  const {task, title = 'Query', message = '',
+    buttons = ['Save', 'Discard', 'Cancel']} = opts;
+  const enter = buttons.includes(opts.enter) ? opts.enter : buttons[0];
+  const last = buttons[buttons.length - 1];
+  if (task.alive === false) return Promise.resolve(last);
+  const msg = String(message);
+  const row = buttons.length * (BW + GAP) - GAP;
+  const W = Math.round(Math.min(wimp.width - 40,
+    Math.max(row, msg.length * CHAR) + 2 * PAD));
+  const H = PAD + MH + PAD + BH + PAD;
+  const icons = [{x: PAD, y: PAD, w: W - 2 * PAD, h: MH, text: msg,
+    name: 'message', vcentre: true}];
+  order(buttons).forEach((text, i, all) => icons.push({
+    x: W - PAD - (all.length - i) * (BW + GAP) + GAP, y: H - PAD - BH,
+    w: BW, h: BH, text, name: `button:${text}`, border: true,
+    filled: true, hcentre: true, vcentre: true, button: 'click',
+    validation: text === enter ? 'R6,3' : 'R5,3'}));
+  const win = task.createWindow({title, w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons,
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'click',
+    help: `Click ${buttons.join(', ')}; Return is ${enter}, ` +
+      `Escape is ${last}.`});
+  let answer, over = false;
+  const p = new Promise((res) => { answer = res; });
+  const finish = (v) => {
+    if (over) return;
+    over = true;
+    h.win = null;
+    win.delete();
+    answer(v);
+  };
+  win.on('click', (ev) => {
+    const n = ev.icon && ev.button !== 'menu' ? ev.icon.name : '';
+    if (n && n.startsWith('button:')) finish(n.slice(7));
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); finish(last); });
+  win.on('key', (ev) => {
+    if (ev.code === 13) finish(enter);
+    else if (ev.code === 27) finish(last);
+    else return undefined;
+    return true;
+  });
+  win.on('deleted', () => finish(last));
+  h.win = win;
+  win.open({x: Math.round((wimp.width - W) / 2),
+    y: Math.round((wimp.height - H) / 2), behind: 'top'});
+  wimp.setCaret(win);
+  return p;
+}

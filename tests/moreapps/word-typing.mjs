@@ -394,7 +394,7 @@ try {
       dw.close();
       return { fresh, edited, undone };
     });
-    ok('window menu: Save copy as .docx, Info, Edit, Format, Zoom, Close', same(shades.fresh.top, ['Save copy as .docx', 'Info', 'Edit', 'Format', 'Zoom', 'Close']), shades.fresh);
+    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Format', 'Zoom', 'New', 'Close']), shades.fresh);
     ok('Edit menu on a fresh document: Undo Ctrl+Z and Redo Ctrl+Y shaded, Select all Ctrl+A', same(shades.fresh.items,
       [['Undo', 'Ctrl+Z', true], ['Redo', 'Ctrl+Y', true], ['Select all', 'Ctrl+A', false]]), shades.fresh);
     ok('Edit menu after an edit: Undo enabled, Redo shaded', same(shades.edited.items.map((i) => i[2]), [false, true, false]), shades.edited);

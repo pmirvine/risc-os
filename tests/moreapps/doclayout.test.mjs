@@ -33,7 +33,10 @@ describe('DocLayout column', () => {
     assert.equal(r.w, 1000);
     assert.equal(L.items[0].y, 24);
     const last = L.items.at(-1);
-    near(r.h, last.y + last.h + 24, 'height');
+    // (a short document: the extent is the whole A4 page, 8 px of
+    // desk above and below it; see 'DocLayout page height')
+    near(r.h, Math.max(last.y + last.h + 24, 16838 / 15 + 16),
+      'height');
   });
   it('a narrow view: no negative offsets, the extent holds the page',
     () => {
@@ -116,6 +119,77 @@ describe('DocLayout top (a toolbar over the window)', () => {
     M.layout(1000);
     assert.equal(M.top, 40);
     assert.equal(M.items[0].y, 64);
+  });
+});
+
+describe('DocLayout page height (a full page, never shorter)', () => {
+  const A4H = 16838 / 15, LETTERH = 15840 / 15;
+  const sect = (w, h) => ({pgSz: {w, h}, pgMar: {left: 1440,
+    right: 1440, top: 1440, bottom: 1440}, extra: []});
+  // (EditPaint.pageRect: the page's top edge is 8 px below top, its
+  // bottom 8 px above the extent's bottom)
+  it('an empty A4 document: the extent holds the whole page', () => {
+    const L = new DocLayout(mkDoc(['']), tm());
+    const r = L.layout(1000);
+    near(L.pageH, A4H, 'pageH');
+    near(r.h, A4H + 16, 'extent');
+    const p = pageRect(L);
+    assert.equal(p.y, 8);
+    assert.equal(p.h, Math.round(A4H));
+  });
+  it('Letter and a custom paper size: their own height', () => {
+    const L = new DocLayout(mkDoc([''], sect(12240, 15840)), tm());
+    near(L.layout(1000).h, LETTERH + 16, 'letter');
+    assert.equal(pageRect(L).h, LETTERH);
+    const C = new DocLayout(mkDoc(['a', 'b'], sect(8000, 20000)), tm());
+    near(C.layout(1000).h, 20000 / 15 + 16, 'custom');
+  });
+  it('a missing, zero or absurd height: A4, or clamped 200..20000',
+    () => {
+      const h = (pgSz) => {
+        const L = new DocLayout(mkDoc([''], {pgSz, pgMar: {},
+          extra: []}), tm());
+        L.layout(1000);
+        return L.pageH;
+      };
+      near(h({w: 11906}), A4H, 'missing');
+      near(h(undefined), A4H, 'no pgSz');
+      near(h({w: 11906, h: NaN}), A4H, 'NaN');
+      assert.equal(h({w: 11906, h: 0}), 200);
+      assert.equal(h({w: 11906, h: -50}), 200);
+      assert.equal(h({w: 11906, h: 1e12}), 20000);
+      assert.equal(h({w: 11906, h: Infinity}), A4H);
+    });
+  it('a short document: a full page below its text', () => {
+    const L = laid(), r = L.layout(1000), last = L.items.at(-1);
+    assert.ok(last.y + last.h + 24 < A4H, 'the text is short');
+    near(r.h, A4H + 16, 'extent');
+    // a click in the empty page below the text: the end
+    assert.deepEqual(L.hitTest(L.left + 30, A4H - 40).pos, L.docEnd());
+  });
+  it('a long document: the end of its text, as before', () => {
+    const blocks = [];
+    for (let i = 0; i < 200; i++) blocks.push('words '.repeat(20) + i);
+    const L = laid(mkDoc(blocks)), last = L.items.at(-1);
+    const r = L.layout(1000);
+    assert.ok(last.y + last.h > A4H);
+    near(r.h, last.y + last.h + 24, 'extent');
+    assert.equal(pageRect(L).h, Math.round(r.h - 16));
+  });
+  it('the toolbar inset adds to the page height', () => {
+    const L = new DocLayout(mkDoc(['']), tm(), undefined, {top: 40});
+    near(L.layout(1000).h, 40 + A4H + 16, 'extent');
+    const p = pageRect(L);
+    assert.equal(p.y, 48);
+    assert.equal(p.h, Math.round(A4H));
+  });
+  it('a layout from an older one has the same height', () => {
+    const L = new DocLayout(mkDoc(['a', 'b']), tm(), undefined,
+      {top: 30});
+    L.layout(900);
+    const M = new DocLayout(L.doc, L.metrics, L);
+    near(M.layout(900).h, L.height, 'reused');
+    near(M.height, 30 + A4H + 16);
   });
 });
 

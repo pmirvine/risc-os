@@ -28,6 +28,7 @@
 //             is where its label is drawn (./LineLayout)
 //   L.byId   Map id -> item
 //   L.left, L.textW, L.pageLeft, L.pageW: the column (px); L.top
+//   L.pageH  the page's height (px); L.height  the extent's (layout)
 //   L.itemAtY(y)            -> the item at y (clamped to the ends)
 //   L.locate(pos)           -> {item, index, off} (off clamped), or
 //                              null for an id not in the document
@@ -45,7 +46,12 @@
 // right) / 15, clamped to 80..4000 px. The page (pgSz.w / 15 px, at
 // most margins + text) is centred in the view, at least 24 px from
 // its left edge; the text starts at the page's left margin. top + 24
-// px above the first item, 24 below the last. Lines depend only on the
+// px above the first item, 24 below the last. The page is a whole
+// page high at least (pgSz.h / 15 px, A4 when missing or not finite,
+// clamped to 200..20000): the extent is top + PAGE_TOP + pageH +
+// PAGE_TOP or more (the white page's edges, ./EditPaint pageRect),
+// so a short document shows a full page; a longer one ends 24 px
+// below its text (no page breaks yet). Lines depend only on the
 // text width, so a new view width moves the column and nothing else.
 // A kept block is one box item, labelled with its kind; the caret
 // stands before it (off 0, its left edge) or after it (off 1, its
@@ -61,6 +67,7 @@ import {blockId, itemEnd, clampOff} from './DocPos';
 import {selectionRects} from './DocRects';
 
 const MARGIN = 24;                     // above, below, left of page
+export const PAGE_TOP = 8;             // desk above and below the page
 export const BOX = 28;                 // a kept block's box
 const num = (v, d) => (Number.isFinite(v) ? v : d);
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
@@ -76,9 +83,10 @@ export class DocLayout {
     this.byId = new Map();
     this.laid = false;
     this.width = 0;
-    this.height = 2 * MARGIN + this.top;
     const sp = (doc.sections[0] && doc.sections[0].props) || {};
     const sz = sp.pgSz || {}, mar = sp.pgMar || {};
+    this.pageH = clamp(num(sz.h, 16838) / 15, 200, 20000);
+    this.height = this.minHeight(2 * MARGIN + this.top);
     const pw = num(sz.w, 11906);
     const ml = num(mar.left, 1440), mr = num(mar.right, 1440);
     this.textW = clamp((pw - ml - mr) / 15, 80, 4000);
@@ -138,8 +146,13 @@ export class DocLayout {
       it.y = y;
       y += it.h;
     }
-    this.height = y + MARGIN;
+    this.height = this.minHeight(y + MARGIN);
     this.laid = true;
+  }
+
+  /** h, or a whole page below top if that is more (the header). */
+  minHeight(h) {
+    return Math.max(h, this.top + 2 * PAGE_TOP + this.pageH);
   }
 
   invalidate() {

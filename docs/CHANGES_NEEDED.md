@@ -487,3 +487,55 @@ wider than its window (extents 4000 and 8000 px), so a sideways wheel, Shift+whe
 contents away for good, and a wheel over it did nothing for its document. Possible fix: skip pane windows (or windows
 with no scroll bars) in `_wheel` and route the wheel to the parent. Worked round in !Word: `Ui/PaneWheel` (used by
 `Ui/Toolbar` and `Ui/Ruler`) claims the pane's `wheel` event and forwards it to the parent window.
+
+## The Wimp's query() has two buttons at most — noted by the !Word documents work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`query({task, title, message, buttons})` (`src/core/dialogs.js`) lays out and answers two buttons only, so the
+Save / Discard / Cancel box a program shows before it throws changes away cannot be made with it. !Word built its own
+in WimpLib (`tools/moreapps/!WimpLib/Ui/SaveQuery`: any number of buttons, Return = the first, Escape and the close
+icon = the last, one box per task at a time). Possible fix: let `query()` take three buttons (or more), with the
+same Return / Escape rule; `Ui/SaveQuery` could then become a thin wrapper.
+
+## The Save box's OK needs a full path; doSave carries on after the box is deleted — noted by the !Word documents work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`saveAs()` (`src/core/dialogs.js`): OK (and Return) only saves when the name contains `.` or `:`; a bare leaf says
+"To save, drag the icon to a directory display". !Word therefore fills its Save as box with a full path (the
+document's, or a directory and the window's name for an untitled one). Also, `doSave` awaits the program's `save`
+(or `getData`) and then calls `wimp.menus.close()`, `nameI.setText`, `w.close()` and `opts.onSaved` even when the box
+was deleted meanwhile (its owner window closed while the bytes were being made); !Word's `onSaved` and pending-save
+code cope with a deleted box (`DocSave`: a `gone` set; a skipped write settles nothing). Possible fix: OK with a bare
+leaf could save into a default directory supplied by the program (`opts.dir`), and `doSave` could stop after its
+await if the window has been deleted.
+
+## Shutdown restarted after PreQuit ends in the shutdown, even from Exit — noted by the !Word documents work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+The PreQuit pattern (`src/apps/Edit/main.js`, followed by !Journal and !Word): when every task is asked
+(`os.switcher.preQuitAll()`, used by both `shutdown()` and `exitDesktop()`), a program that objected and then got
+Discard restarts the closedown with `wimp.emit('hotkey:CtrlShiftF12')`, which is always the shutdown. So leaving the
+desktop (Task Manager > Exit) with unsaved changes in !Edit or !Word, answered Discard, ends in the shutdown's
+restart box instead of the command line. The message does not say which closedown sent it. Possible fix: pass the
+closedown's kind in the PreQuit message (`{all: true, exit: true}`) or give the switcher a `restartClosedown()`
+that repeats the last one; programs would call that instead of emitting the hot key.
+
+## Icon bar icons never report a double-click; doubleClickMs is not reachable from 'riscos' — noted by the !Word documents work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`wimp.iconbar.add` makes button type 3 icons, and `wimp._workPointerDown` reports every press on them as a `click`
+(only types 5, 8 and 10 produce `double`), so a double-click on an icon bar icon reaches the program as two Select
+clicks. !Word (whose click makes a new document) ignores a click within 500 ms of the one that made a document, a
+constant: the configured double-click time (`os.input.config.doubleClickMs`, set by !Configure) is not among the
+names the `'riscos'` module gives a disc program. Possible fix: report `kind: 'double'` for the second click of a
+double-click on an icon bar icon, or give programs the configured double-click time (through `'riscos'`).
+
+## HostFS writes complete after the save has returned — noted by the !Word documents work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`vfs.writeFile` on a HostFS drive (`src/core/hostfs/hostfs.js`) updates the mount's metadata synchronously and writes
+the bytes to the host (File System Access or the server) a moment later. If the host refuses the write (a read-only
+folder, the permission withdrawn, the server gone), the HostFS Filer reports it in an error box, but the program has
+already been told the save succeeded: !Word marks the document saved (no `*`). Possible fix: a `vfs.flush(path)` (or
+`writeFileAsync`) that resolves when the host has the bytes and rejects when it refused, so a program can mark the
+document saved only then.
