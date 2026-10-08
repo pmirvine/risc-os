@@ -93,3 +93,23 @@ test('an error in tick calls onError once and stops', () => {
   assert.deepEqual(errs, ['boom']);
   assert.equal(loop.running, false);
 });
+
+test('an error with no onError is rethrown and stops the loop', () => {
+  const t = fakeTimers();
+  const loop = new Loop({ raf: t.raf, caf: t.caf, now: t.now,
+    tick: () => { throw new Error('boom'); } });
+  loop.start();
+  assert.throws(() => t.fire(17), /boom/);
+  assert.equal(loop.running, false);
+});
+
+test('stop() inside a tick skips draw and the frame count', () => {
+  const t = fakeTimers();
+  let draws = 0;
+  const loop = new Loop({ raf: t.raf, caf: t.caf, now: t.now,
+    tick: () => loop.stop(), draw: () => draws++ });
+  loop.start();
+  t.fire(17);
+  assert.equal(draws, 0);
+  assert.equal(loop.frames, 0);
+});
