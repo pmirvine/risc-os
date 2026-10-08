@@ -1,0 +1,193 @@
+GameLib - the library of game parts
+===================================
+
+GameLib is a set of JavaScript modules for writing games on this
+desktop: a main loop that keeps time, a block of pixels to draw
+into, shapes and text, the keyboard and a gamepad, a sound
+synthesiser, and a high score table. !Pacman is built from them, and
+so can your own games be. This guide is for programmers; to play
+!Pacman, see its own guide.
+
+Contents
+--------
+  1  Where it is
+  2  Importing a module
+  3  The modules
+  4  A small game
+  5  Using your own copy of a module
+
+1  Where it is
+--------------
+GameLib is in $.!Boot.Resources.!GameLib, with the other system
+resources. Double-click !GameLib to see its help text, or open it
+with SHIFT held down to see the modules (they are ordinary files of
+type JSScript, so you can load any of them into !Edit and read it:
+each starts with a few lines saying what it is for).
+
+When the desktop starts it runs !GameLib's !Boot file, which sets
+three system variables. Press F12 and type:
+
+  *Show GameLib$*
+
+to see them:
+
+  GameLib$Dir      the library's directory
+  GameLib$Path     where programs look for modules: a list of
+                   directories, each ending in a '.', with commas
+                   between (normally just <GameLib$Dir>.)
+  GameLib$Version  the library's version, 1.00
+
+A variable that is already set when the desktop starts is kept.
+
+2  Importing a module
+---------------------
+In a JavaScript program (a file of type JSScript, run by double-
+clicking it), import a module by its name after 'gamelib/':
+
+  import { Loop } from 'gamelib/Loop';
+  import { Surface, rgb } from 'gamelib/Surface';
+
+This works wherever the program is. The name is looked for in each
+directory of GameLib$Path in turn, and then in GameLib$Dir; the
+first file found is used. 'GameLib/Loop' works too. A module name is
+letters, digits, _ and -, so it cannot reach outside the library.
+
+If a module is not found you are told where it was looked for:
+
+  Can't find 'gamelib/Nope' (not in GameLib$Path: ...)
+
+From an Obey file or the command line, the files are called
+<GameLib$Dir>.Loop, or GameLib:Loop.
+
+3  The modules
+--------------
+Maths      wrap and wrapDelta (positions on a space that repeats,
+           such as a tunnel), clamp, lerp, and Rng, a random number
+           generator you give a seed to, so a game can be played
+           again exactly.
+
+Loop       the main loop. The screen may redraw 60, 120 or 144
+           times a second, but a game's world should move at one
+           fixed rate. A Loop calls your tick() that many times a
+           second (60 is usual) and your draw() once a frame. After
+           a long pause it drops the lost ticks instead of racing
+           to catch up.
+
+Surface    a block of pixels, width by height, that you draw into
+           in software, as on the Archimedes. rgb(r, g, b) makes a
+           colour. Methods: clear, pixel, get, fillRect, hline,
+           shade, blit (copy another surface, skipping one colour)
+           and present (copy it to a canvas).
+
+Raster     fills triangles and boxes a row at a time. Shapes uses
+           it; a game seldom needs it.
+
+Shapes     disc, pie (a disc with a mouth), arc, line, polygon and
+           roundRect, drawn onto a Surface.
+
+Font       the 8 by 8 pixel RISC OS system font, drawn onto a
+           Surface: drawText (with scale, shadow, outline and
+           alignment), drawLines and textWidth.
+
+Display    where the picture appears: the whole desktop, or a
+           window, with the surface scaled up to fit in whole
+           pixels so it stays sharp. It looks after the window's
+           close icon and losing the keyboard.
+
+Keys       the keyboard as named actions. You say {left:
+           ['ArrowLeft', 'KeyA']} and ask held('left'),
+           pressed('left') or latest(['left', 'right']).
+
+Pad        the first gamepad, as named presses (PadUp, PadA...).
+
+Options    a game's settings, described by a list: each has a key,
+           a label and its possible values. Checks saved settings
+           and steps a setting up or down.
+
+ScoreTable a high score table kept sorted: qualifies, insertScore
+           and cleanTable (which checks a table read from a file).
+
+Choices    where a game saves its files: <Choices$Write>.<name>,
+           normally $.!Boot.Choices.<name>. Never fails: a game
+           that cannot save carries on.
+
+Audio      plays sounds through the browser. Sounds are made by
+           the synthesiser below when first needed, played with
+           play(), looped with loop(), and quietened with the
+           desktop's speaker setting.
+
+Synth      a small sound synthesiser: oscillators, noise and
+           filters working on arrays of samples.
+SynthEnv   the helpers that shape a sound over time: envelopes,
+           sweeps, glides, steps and notes.
+SynthFx    finishing touches: filter, echo, fadeOut, normalise,
+           vidc8 (the gritty 8-bit sound of the old VIDC chip).
+
+Everything except Display, Audio and Surface.present works without
+a browser, so a game's rules can be tested from the command line
+with Node.
+
+4  A small game
+---------------
+This moves a yellow dot about with the arrow keys. Save it in !Edit
+as a JSScript file (see the JavaScript books in Manuals) and double-
+click it.
+
+import { wimp } from 'riscos';
+import { Loop } from 'gamelib/Loop';
+import { Surface, rgb } from 'gamelib/Surface';
+import { Display } from 'gamelib/Display';
+import { Keys } from 'gamelib/Keys';
+import { disc } from 'gamelib/Shapes';
+import { drawText } from 'gamelib/Font';
+
+export default function start(task, ctx) {
+  const surface = new Surface(160, 120);
+  const keys = new Keys({ left: ['ArrowLeft'], right: ['ArrowRight'],
+    up: ['ArrowUp'], down: ['ArrowDown'] });
+  const display = new Display({ task, wimp, os: ctx.os, title: 'Dot',
+    width: 160, height: 120, background: '#000', onClose: quit });
+  let x = 80, y = 60;
+  const loop = new Loop({ hz: 60,
+    tick() {
+      x += keys.held('right') - keys.held('left');
+      y += keys.held('down') - keys.held('up');
+    },
+    draw() {
+      surface.clear(rgb(0, 0, 40));
+      disc(surface, x, y, 6, rgb(255, 220, 0));
+      drawText(surface, 'Arrows', 4, 4, { colour: rgb(255, 255, 255) });
+      display.present(surface);
+    } });
+  const down = (e) => display.keysActive() && keys.keyDown(e)
+    && e.preventDefault();
+  const up = (e) => keys.keyUp(e);
+  function quit() {
+    loop.stop(); display.close(); task.quit();
+    removeEventListener('keydown', down);
+    removeEventListener('keyup', up);
+  }
+  addEventListener('keydown', down);
+  addEventListener('keyup', up);
+  display.open('window');
+  loop.start();
+}
+
+Display.open('full') takes the whole desktop instead. A real game
+also stops when the window loses the keyboard (Display's onBlur;
+call keys.release() there).
+
+5  Using your own copy of a module
+----------------------------------
+To try a changed module without touching the library's, put the
+module in a directory of your own, and put that directory first in
+the path. After the desktop has started, press F12 and type:
+
+  *Set GameLib$Path RAM::RamDisc0.$.MyLib.,<GameLib$Dir>.
+
+Programs started after that find your Maths (say) before the
+library's. A module's own imports are by relative name, so if you
+change an inner module (SynthEnv, say) copy the modules that import
+it as well. GameLib$Path is stored with <GameLib$Dir> filled in:
+change GameLib$Dir later and you must set GameLib$Path again. To go
+back, type *Unset GameLib$Path and run !GameLib's !Boot file.

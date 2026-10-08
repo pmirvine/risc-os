@@ -1,0 +1,140 @@
+// GameLib - Surface: a block of pixels that the game draws into.
+//
+// Everything - maze, sprites, score bar, menus - is drawn into one
+// Surface in software, a pixel at a time, as the Archimedes did into
+// screen memory. present() then copies it to a canvas on the real
+// screen, scaled up. A Surface needs no browser until present() is
+// called, so the drawing code runs (and is tested) under Node.
+//
+// Pixels are 32-bit numbers made with rgb(): the ImageData layout
+// (0xAABBGGRR on little-endian machines, which is all of them now).
+
+/** A pixel value from red, green and blue levels 0-255. */
+export const rgb = (r, g, b) =>
+  ((255 << 24) | (b << 16) | (g << 8) | r) >>> 0;
+
+/** A pixel value from 4-bit levels 0-15. */
+export const rgb4 = (r, g, b) => rgb(r * 17, g * 17, b * 17);
+
+/** The red, green and blue parts of a pixel value. */
+export const unrgb = (c) =>
+  [c & 255, (c >>> 8) & 255, (c >>> 16) & 255];
+
+export class Surface {
+  constructor(width, height) {
+    this._canvas = null;      // made by the first present()
+    this._cctx = null;
+    this._image = null;
+    this.resize(width, height);
+  }
+
+  /** Change the size (the pixels are lost). */
+  resize(width, height) {
+    this.width = width;
+    this.height = height;
+    this.pixels = new Uint32Array(width * height);
+    this._image = null;
+    if (this._canvas) {
+      this._canvas.width = width;
+      this._canvas.height = height;
+    }
+  }
+
+  /** Fill everything with one colour. */
+  clear(c) { this.pixels.fill(c); }
+
+  /** One pixel (clipped). */
+  pixel(x, y, c) {
+    x |= 0; y |= 0;
+    if (x >= 0 && y >= 0 && x < this.width && y < this.height) {
+      this.pixels[y * this.width + x] = c;
+    }
+  }
+
+  /** One pixel's value; 0 outside the surface. */
+  get(x, y) {
+    x |= 0; y |= 0;
+    if (x < 0 || y < 0 || x >= this.width || y >= this.height) return 0;
+    return this.pixels[y * this.width + x];
+  }
+
+  /** A filled rectangle (clipped). */
+  fillRect(x, y, w, h, c) {
+    let x0 = Math.max(0, x | 0), y0 = Math.max(0, y | 0);
+    const x1 = Math.min(this.width, (x + w) | 0);
+    const y1 = Math.min(this.height, (y + h) | 0);
+    if (x1 <= x0) return;
+    for (; y0 < y1; y0++) {
+      const o = y0 * this.width;
+      this.pixels.fill(c, o + x0, o + x1);
+    }
+  }
+
+  /** A horizontal line from x0 to x1 inclusive (clipped). */
+  hline(x0, x1, y, c) {
+    if (x1 < x0) { const t = x0; x0 = x1; x1 = t; }
+    this.fillRect(x0, y, x1 - x0 + 1, 1, c);
+  }
+
+  /**
+   * Darken (or tint) a rectangle: each pixel becomes
+   * pixel * (1 - a) + c * a, for dimming the game behind a menu.
+   */
+  shade(x, y, w, h, c, a) {
+    const [cr, cg, cb] = unrgb(c);
+    const x0 = Math.max(0, x | 0), y0 = Math.max(0, y | 0);
+    const x1 = Math.min(this.width, (x + w) | 0);
+    const y1 = Math.min(this.height, (y + h) | 0);
+    const k = 1 - a;
+    for (let yy = y0; yy < y1; yy++) {
+      const e = yy * this.width + x1;
+      for (let i = yy * this.width + x0; i < e; i++) {
+        const p = this.pixels[i];
+        this.pixels[i] = rgb(
+          ((p & 255) * k + cr * a) | 0,
+          (((p >>> 8) & 255) * k + cg * a) | 0,
+          (((p >>> 16) & 255) * k + cb * a) | 0);
+      }
+    }
+  }
+
+  /**
+   * Copy another Surface in with its top left at (dx, dy), clipped.
+   * Pixels equal to `key` (if given) are left out, for transparency.
+   */
+  blit(src, dx, dy, key = null) {
+    dx |= 0; dy |= 0;
+    const x0 = Math.max(0, -dx);
+    const x1 = Math.min(src.width, this.width - dx);
+    const y0 = Math.max(0, -dy);
+    const y1 = Math.min(src.height, this.height - dy);
+    for (let y = y0; y < y1; y++) {
+      let s = y * src.width + x0, d = (y + dy) * this.width + dx + x0;
+      for (let x = x0; x < x1; x++, s++, d++) {
+        const p = src.pixels[s];
+        if (p !== key) this.pixels[d] = p;
+      }
+    }
+  }
+
+  /**
+   * Copy the pixels to a 2D canvas context, scaled into the rectangle
+   * (dx, dy, dw, dh) without smoothing, so each pixel stays square.
+   * This is the only place a Surface uses the document.
+   */
+  present(ctx, dx, dy, dw, dh) {
+    if (!this._canvas) {
+      this._canvas = ctx.canvas.ownerDocument.createElement('canvas');
+      this._canvas.width = this.width;
+      this._canvas.height = this.height;
+      this._cctx = this._canvas.getContext('2d');
+    }
+    if (!this._image) {
+      this._image = this._cctx.createImageData(this.width, this.height);
+    }
+    new Uint32Array(this._image.data.buffer).set(this.pixels);
+    this._cctx.putImageData(this._image, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(this._canvas, dx, dy, dw, dh);
+  }
+}

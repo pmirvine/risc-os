@@ -82,7 +82,7 @@ application in `!Boot.Resources` (the Filer runs each `!Boot` in safe mode: `Set
 MoreApps application boots and without a Filer window being opened (`tests/moreapps/boot.mjs` checks both, with a
 probe application in `$.MoreApps` whose `!Boot` records `<WimpLib$Dir>`). No `main.js` code is specific to the library.
 
-**Resolution of `'wimplib/<Name>'`** (`resolveWimpLib` in `src/core/jsrun.js`; `docs/CORE_API.md` 11a):
+**Resolution of `'wimplib/<Name>'`** (`resolveLib` in `src/core/jsrun.js`; `docs/CORE_API.md` 11a):
 
 1. The specifier must be `wimplib/` (any case) followed by segments matching `/^[A-Za-z0-9_][A-Za-z0-9_-]*$/`,
    `/` between them (the rule below); `Dir/Name` becomes `Dir.Name`.

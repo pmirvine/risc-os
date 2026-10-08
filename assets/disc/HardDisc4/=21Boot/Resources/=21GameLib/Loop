@@ -1,0 +1,96 @@
+// GameLib - Loop: a fixed-rate game loop on requestAnimationFrame.
+//
+// The screen may refresh at 30, 60, 120 or 144 Hz, but the game's
+// world must advance at one fixed rate (hz ticks a second). Each frame
+// the time since the last one is added to an accumulator and as many
+// whole ticks as it holds are run, then the picture is drawn once.
+//
+// advance() is the pure part: it works out how many ticks are due.
+// Loop wraps it with the frame callbacks and the browser's timer; the
+// timer functions can be passed in, so the loop runs under Node too.
+//
+//   new Loop({ hz: 60, frame, tick, draw, onError }).start();
+
+import { clamp } from './Maths';
+
+/**
+ * Add dt seconds (times speed) to acc and return {n, acc}: n whole
+ * ticks of length `tick` are due and acc is the time left over. More
+ * than maxTicks (after a long pause) are dropped, not caught up.
+ */
+export function advance(acc, dt, tick, speed = 1, maxTicks = 6) {
+  acc += dt * speed;
+  let n = Math.floor(acc / tick);
+  acc -= n * tick;
+  if (n > maxTicks) { n = maxTicks; acc = 0; }
+  return { n, acc };
+}
+
+export class Loop {
+  /**
+   * frame(dt) runs once a frame; tick() once per due tick (return false
+   * to skip this frame's remaining ticks); draw() once a frame after.
+   * speed() gives the game speed (1 = normal). onError(e) is called
+   * once if anything throws, and the loop stops (with no onError the
+   * error is rethrown after stopping).
+   */
+  constructor({ hz = 60, maxTicks = 6, maxDt = 0.25, speed = () => 1,
+    frame, tick, draw, onError, raf, caf, now } = {}) {
+    this.hz = hz; this.maxTicks = maxTicks; this.maxDt = maxDt;
+    this.speed = speed;
+    this.onFrame = frame; this.onTick = tick; this.onDraw = draw;
+    this.onError = onError;
+    this.raf = raf ?? ((f) => requestAnimationFrame(f));
+    this.caf = caf ?? ((h) => cancelAnimationFrame(h));
+    this.now = now ?? (() => performance.now());
+    this.running = false;
+    this.ticks = 0;
+    this.frames = 0;
+    this.acc = 0;
+    this.last = 0;
+    this.handle = null;
+    this.step = (t) => this.frameAt(t);
+  }
+
+  start() {
+    if (this.running) return;
+    this.running = true;
+    this.acc = 0;
+    this.last = this.now();
+    this.handle = this.raf(this.step);
+  }
+
+  stop() {
+    this.running = false;
+    if (this.handle != null) this.caf(this.handle);
+    this.handle = null;
+  }
+
+  // one animation frame; t is the browser's time in milliseconds
+  frameAt(t) {
+    if (!this.running) return;
+    this.handle = this.raf(this.step);
+    try {
+      const dt = clamp((t - this.last) / 1000, 0, this.maxDt);
+      this.last = t;
+      this.onFrame?.(dt);
+      const r = advance(this.acc, dt, 1 / this.hz, this.speed(),
+        this.maxTicks);
+      this.acc = r.acc;
+      for (let i = 0; i < r.n && this.running; i++) {
+        this.ticks++;
+        if (this.onTick?.() === false) break;
+      }
+      if (!this.running) return;      // a callback called stop()
+      this.onDraw?.();
+      if (!this.running) return;
+      this.frames++;
+    } catch (e) {
+      this.stop();
+      // with no onError the error is rethrown, so it reaches the
+      // browser's console instead of vanishing
+      if (!this.onError) throw e;
+      this.onError(e);
+    }
+  }
+}

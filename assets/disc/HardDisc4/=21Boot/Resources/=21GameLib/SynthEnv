@@ -1,0 +1,81 @@
+// GameLib - SynthEnv: the parameter helpers of the sound synthesiser.
+//
+// A synthesiser parameter (a pitch, a level, a filter cut-off) is
+// either a number or a function of time t (seconds from the start of
+// that layer), so pitches and levels can move while a sound plays. This
+// module holds the functions that make the moving kind: envelopes
+// (perc, line, sweep, glide, steps), wobble for vibrato and tremolo,
+// times to multiply parameters together, and note to turn a note name
+// such as 'A4' into a frequency. Synth uses them to build sounds, and
+// the recipes use them to describe each sound.
+
+const LN1000 = Math.log(1000);
+
+/** Value of a parameter p (a number or a function of t) at time t. */
+export const val = (p, t) => (typeof p === 'function' ? p(t) : p);
+
+/**
+ * Percussive envelope: rises in `attack` seconds, then dies away
+ * exponentially, reaching -60 dB `decay` seconds later.
+ */
+export function perc(attack, decay, peak = 1) {
+  return (t) => {
+    if (t < attack) return peak * t / attack;
+    return peak * Math.exp(-(t - attack) / decay * LN1000);
+  };
+}
+
+/** Straight lines through points [[t, v], ...] (flat at the ends). */
+export function line(points) {
+  return (t) => {
+    if (t <= points[0][0]) return points[0][1];
+    for (let i = 1; i < points.length; i++) {
+      const [t1, v1] = points[i];
+      if (t <= t1) {
+        const [t0, v0] = points[i - 1];
+        return v0 + (v1 - v0) * (t - t0) / (t1 - t0 || 1);
+      }
+    }
+    return points[points.length - 1][1];
+  };
+}
+
+/** Exponential slide from f0 to f1 over `dur` seconds (pitch sweep). */
+export function sweep(f0, f1, dur) {
+  return (t) => f0 * Math.pow(f1 / f0, Math.min(1, t / dur));
+}
+
+/** Straight-line slide from a to b over `dur` seconds. */
+export function glide(a, b, dur) {
+  return (t) => a + (b - a) * Math.min(1, t / dur);
+}
+
+/** Step through `values`, `each` seconds per step (arpeggios). */
+export function steps(each, values, loop = false) {
+  return (t) => {
+    let i = Math.floor(t / each);
+    i = loop ? i % values.length : Math.min(i, values.length - 1);
+    return values[i];
+  };
+}
+
+/** A parameter wobbled by a sine: vibrato or tremolo. */
+export function wobble(p, rate, depth) {
+  return (t) => val(p, t)
+    * (1 + depth * Math.sin(2 * Math.PI * rate * t));
+}
+
+/** Multiply parameters together (e.g. an envelope and a tremolo). */
+export function times(...ps) {
+  return (t) => ps.reduce((m, p) => m * val(p, t), 1);
+}
+
+const NOTES = { C: -9, D: -7, E: -5, F: -4, G: -2, A: 0, B: 2 };
+
+/** Frequency of a note name such as 'A4' (440 Hz), 'C#5' or 'Bb3'. */
+export function note(name) {
+  const m = /^([A-G])([#b]?)(-?\d)$/.exec(name);
+  const semis = NOTES[m[1]] + (m[2] === '#' ? 1 : m[2] === 'b' ? -1 : 0)
+    + (Number(m[3]) - 4) * 12;
+  return 440 * Math.pow(2, semis / 12);
+}

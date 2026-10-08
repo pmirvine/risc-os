@@ -1,0 +1,186 @@
+// GameLib - Display: where the game's picture appears.
+//
+// A game draws into a Surface; the Display puts it on the screen.
+// open('full') takes the whole desktop (os.cli.acquireScreen);
+// open('window') makes an ordinary desktop window instead. Either
+// way the Display owns one canvas, scales it to fit - in whole
+// screen pixels where it can, so the pixels stay sharp - and keeps
+// it centred when the window or screen changes size.
+//
+// The document is only touched when a display is opened, so this
+// module loads under Node. Pointer lock is left to the game.
+
+const BUTTONS = ['select', 'menu', 'adjust'];
+
+/**
+ * The size and place of the canvas in an area aw x ah for a surface
+ * sw x sh, on a display with dev device pixels per OS pixel.
+ * whole: use whole device pixels once there are two or more.
+ */
+export function fitScale(aw, ah, sw, sh, dev, whole) {
+  const ok = (v) => (Number.isFinite(v) ? Math.max(1, v) : 1);
+  aw = ok(aw); ah = ok(ah);
+  let k = Math.min(aw / sw, ah / sh);
+  if (whole && k * dev >= 2) k = Math.floor(k * dev) / dev;
+  const cw = Math.max(1, Math.round(sw * k));
+  const ch = Math.max(1, Math.round(sh * k));
+  return { cw, ch, left: Math.round((aw - cw) / 2),
+    top: Math.round((ah - ch) / 2) };
+}
+
+export class Display {
+  constructor({ task, wimp, os, title, width, height, background,
+    whole = true, onClose, onBlur, onPointer }) {
+    Object.assign(this, { task, wimp, os, title, width, height,
+      background, whole, onClose, onBlur, onPointer });
+    this.kind = null;
+    this.canvas = null;
+    this.el = null;
+    this._scr = null;
+    this._win = null;
+    this._ctx = null;
+    this._wentFull = false;
+  }
+
+  /** Show the display as 'full' (whole screen) or 'window'. */
+  open(kind) {
+    this.close();
+    const canvas = document.createElement('canvas');
+    canvas.width = this.width;
+    canvas.height = this.height;
+    canvas.style.cssText = 'position:absolute;left:0;top:0;' +
+      'image-rendering:pixelated;touch-action:none;outline:none';
+    this.canvas = canvas;
+    this._ctx = canvas.getContext('2d');
+    if (kind === 'full') this._openFull();
+    else this._openWindow();
+    this.kind = kind;
+    this.el.appendChild(canvas);
+    this._listen(canvas);
+    this.layout(true);
+  }
+
+  _openFull() {
+    this._scr = this.os.cli.acquireScreen({
+      background: this.background, onKey: () => {} });
+    this.el = this._scr.el;
+  }
+
+  _openWindow() {
+    const { wimp, width, height } = this;
+    const k = Math.max(1, Math.floor(Math.min(
+      (wimp.width - 80) / width, (wimp.height - 120) / height)));
+    const w = width * k, h = height * k;
+    const win = this.task.createWindow({
+      title: this.title, w, h,
+      x: Math.max(20, (wimp.width - w) >> 1),
+      y: Math.max(60, (wimp.height - h) >> 1),
+      extent: { w: 4096, h: 4096 }, minW: 160, minH: 128,
+      flags: { title: true, close: true, back: true, moveable: true,
+        size: true, toggle: true },
+    });
+    this._win = win;
+    this.el = win.view;
+    this.el.style.background = this.background;
+    win.on('moved', () => this.layout());
+    win.on('close', (ev) => {
+      ev.preventDefault();
+      this.onClose?.();
+    });
+    win.on('key', () => true);        // the game has all the keys
+    win.on('losecaret', () => this.onBlur?.());
+    win.open({ behind: 'top' });
+    wimp.setCaret(win);
+  }
+
+  _listen(canvas) {
+    const at = (e) => {
+      const r = canvas.getBoundingClientRect();
+      return {
+        x: ((e.clientX - r.left) * this.width) / Math.max(1, r.width),
+        y: ((e.clientY - r.top) * this.height) / Math.max(1, r.height),
+      };
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      if (!this.kind) return;
+      if (this.kind === 'window') {
+        // we look after the window ourselves: front, and the caret
+        e.stopPropagation();
+        this._win.open({ behind: 'top' });
+        this.wimp.setCaret(this._win);
+      }
+      this.onPointer?.({ type: 'down', ...at(e),
+        button: BUTTONS[e.button] ?? 'select' });
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (this.kind) this.onPointer?.({ type: 'move', ...at(e) });
+    });
+    canvas.addEventListener('pointerup', (e) => {
+      if (this.kind) this.onPointer?.({ type: 'up', ...at(e) });
+    });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('auxclick', (e) => e.preventDefault());
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 1) e.preventDefault();   // (no scrolling)
+    });
+  }
+
+  /** Remove the display (harmless if there is none). */
+  close() {
+    if (!this.kind) return;
+    this.kind = null;
+    if (document.pointerLockElement === this.canvas) {
+      document.exitPointerLock?.();
+    }
+    this.canvas.remove();
+    this._scr?.release();
+    this._win?.delete();
+    this._scr = this._win = this.el = null;
+    this.browserFull(false);
+  }
+
+  /** True when key presses are for the game. */
+  keysActive() {
+    return !!this.kind && (this.kind === 'full' ||
+      this.wimp.caret?.window === this._win);
+  }
+
+  /** Size and centre the canvas (force: even if nothing moved). */
+  layout(force = false) {
+    if (!this.kind) return;
+    const full = this.kind === 'full';
+    const { wimp } = this;
+    const aw = full ? (this.el.clientWidth || wimp.width) : this._win.w;
+    const ah = full ? (this.el.clientHeight || wimp.height)
+      : this._win.h;
+    const dev = (wimp.scale || 1) * (globalThis.devicePixelRatio || 1);
+    const r = fitScale(aw, ah, this.width, this.height, dev,
+      this.whole);
+    const s = this.canvas.style;
+    if (!force && s.width === r.cw + 'px' && s.height === r.ch + 'px' &&
+      s.left === r.left + 'px' && s.top === r.top + 'px') return;
+    Object.assign(s, { width: r.cw + 'px', height: r.ch + 'px',
+      left: r.left + 'px', top: r.top + 'px' });
+  }
+
+  /** Copy a Surface onto the canvas. */
+  present(surface) {
+    if (!this.kind) return;
+    surface.present(this._ctx, 0, 0, this.canvas.width,
+      this.canvas.height);
+  }
+
+  /** Ask the browser to go (or stop being) full screen. */
+  browserFull(on) {
+    try {
+      if (on && !document.fullscreenElement) {
+        this._wentFull = true;
+        const root = document.documentElement;
+        root.requestFullscreen?.()?.catch?.(() => {});
+      } else if (!on && this._wentFull && document.fullscreenElement) {
+        this._wentFull = false;
+        document.exitFullscreen?.()?.catch?.(() => {});
+      }
+    } catch { /* not allowed without a click or key press */ }
+  }
+}

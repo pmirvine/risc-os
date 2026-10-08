@@ -385,14 +385,14 @@ docs/ASSETS.md §5).
 **Status:** done. Additive (relative imports and the existing boot unchanged: `node tests/jstutor/jsrun.mjs`,
 `node tests/core/test-persist.mjs`).
 * `src/core/jsrun.js`: the import specifier `'wimplib/<Name>'` (or `'wimplib/<Dir>/<Name>'`) loads a module of
-  WimpLib, the system library `$.!Boot.Resources.!WimpLib`: `resolveWimpLib` searches each directory of the system
+  WimpLib, the system library `$.!Boot.Resources.!WimpLib`: `resolveLib` searches each directory of the system
   variable `WimpLib$Path` in turn (a path list, prefixes used as written, as `vfs` does for `<Name>$Path`), then
   `WimpLib$Dir` (unless already in the path), for `Name` then `Name/js` (files only); first found wins. Errors name
   what was searched: "Can't find 'wimplib/X' (not in WimpLib$Path: <dir>, <dir>)" (`; nor in WimpLib$Dir: <dir>`),
   and with neither variable set "Can't find 'wimplib/X' (WimpLib is not installed: WimpLib$Dir is not set)"; a
   bare `'wimplib'` is "(no module name)" (docs/CORE_API.md 11a). The earlier hard-coded lookup of
   `$.MoreApps.WimpLib` is gone (the library moved; the specifier did not). The name is confined: the prefix matches in any
-  case (`/^wimplib(\/|$)/i`, in `moduleURL` and `resolveWimpLib`) and every segment after it must match the
+  case (`/^(wimplib|gamelib)(\/|$)/i`, in `moduleURL` and `resolveLib`) and every segment after it must match the
   whitelist `/^[A-Za-z0-9_][A-Za-z0-9_-]*$/`, so `..`, `^`, `$`, `@`, `<Var>`, `:`, dots (`Zip.js`), wildcards,
   spaces and empty segments are refused with "Can't find '<spec>' (a WimpLib module name is letters, digits, _ and
   -, with / between directories)" (tested in `tests/moreapps/jsrun-wimplib.mjs`).
@@ -598,3 +598,17 @@ Also: Ctrl-V reaches this path in !Word's Find box only because `Ui/FindBox` set
 TextArea and !Browse do); writable icons have no selection, so Ctrl-C / Ctrl-X (and Cmd-C / Cmd-X) copy and cut
 nothing from them. Copying from a writable icon would need a selection model in `_editKey` and a plain-caret branch
 in `_copyCut`: not done (no shared-code change in the !Word work).
+
+## jsrun: 'gamelib' import specifier (resolveLib); disc-gamelib, disc-pacman; tools/games package — noted by the !Pacman / GameLib work (GameLib)
+**Status:** Resolved: documented in CORE_API.md 11a and 14.
+
+* `src/core/jsrun.js`: `resolveWimpLib` became `resolveLib`, serving two libraries from the `LIBS` table
+  (`wimplib` / `WimpLib`, `gamelib` / `GameLib`): the import specifier `'gamelib/<Name>'` is searched through
+  `GameLib$Path`, then `GameLib$Dir`, exactly as `'wimplib/<Name>'` is through `WimpLib$*`, with the library's name in
+  the messages. The `WimpLib` messages and behaviour are unchanged (`tests/moreapps/jsrun-wimplib.mjs` is untouched
+  and passes); `GameLib` is tested in `tests/games/jsrun-gamelib.mjs`.
+* `tools/disc-gamelib.mjs` (`$.!Boot.Resources.!GameLib`, from `tools/games/!GameLib`) is registered in
+  `tools/build.mjs` after `disc-wimplib.mjs`; `disc-pacman.mjs` (`!Pacman`) follows with the game. `tools/games` is a
+  package (`package.json` maps `gamelib/*` to the sources) so the tests import the modules as the disc programs do.
+* Pre-existing, unchanged: `import` text inside comments is resolved, so the library's sources have none (checked by
+  `disc-gamelib.mjs`).

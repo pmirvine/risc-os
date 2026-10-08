@@ -28,4 +28,5 @@ run(d + 'disc-hostfs.mjs');      // $.Utilities.!HostFS (mounting folders from t
 run(d + 'disc-graphtask.mjs');   // $.Apps.!GraphTask (BASIC programs in desktop windows)
 run(d + 'disc-journal.mjs');     // $.Apps.!Journal (a diary with a page a day, JavaScript on the disc, from tools/journal)
 run(d + 'disc-wimplib.mjs');     // $.!Boot.Resources.!WimpLib (the 'wimplib/<Name>' library, from tools/moreapps/!WimpLib)
+run(d + 'disc-gamelib.mjs');     // $.!Boot.Resources.!GameLib (the 'gamelib/<Name>' library, from tools/games/!GameLib)
 run(d + 'disc-moreapps.mjs');    // $.MoreApps (!Word, from tools/moreapps) and its lines in !Boot's Desktop / PreDesktop

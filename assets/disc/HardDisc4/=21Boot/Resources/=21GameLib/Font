@@ -1,0 +1,175 @@
+// GameLib - Font: text drawn a pixel at a time onto a Surface.
+//
+// The letters are the RISC OS system font, the 8 x 8 pixel characters
+// you see at the command line (from the Kernel's vdufontl1, as the
+// desktop's own assets/fonts/system8x8.json). Each character is eight
+// bytes, one per row from the top; bit 7 is the leftmost pixel.
+//
+// Text can be drawn at any whole-number scale, in one colour or with a
+// colour per row (for shaded titles), with a drop shadow and a dark
+// outline. For big title letters, `smooth` first enlarges each
+// character with the Scale2x ("EPX") pixel-art algorithm, which rounds
+// off the staircase edges of diagonals while keeping shapes crisp.
+//
+//   drawText(surface, 'SCORE', 8, 8, { scale: 2,
+//            colour: rgb(255, 255, 0), shadow: rgb(0, 0, 0),
+//            align: 'left' });
+
+// Characters 32 (space) to 126 (~), 16 hex digits each.
+const GLYPHS =
+  '000000000000000018181818180018006c6c6c000000000036367f367f363600' +
+  '0c3f683e0b7e180060660c1830660600386c6c386d663b001818180000000000' +
+  '0c18303030180c0030180c0c0c18300000187e3c7e1800000018187e18180000' +
+  '00000000001818300000007e00000000000000000018180000060c1830600000' +
+  '3c666e7e76663c001838181818187e003c66060c18307e003c66061c06663c00' +
+  '0c1c3c6c7e0c0c007e607c0606663c001c30607c66663c007e060c1830303000' +
+  '3c66663c66663c003c66663e060c380000001818001818000000181800181830' +
+  '0c18306030180c0000007e007e00000030180c060c1830003c660c1818001800' +
+  '3c666e6a6e603c003c66667e666666007c66667c66667c003c66606060663c00' +
+  '786c6666666c78007e60607c60607e007e60607c606060003c66606e66663c00' +
+  '6666667e666666007e18181818187e003e0c0c0c0c6c3800666c7870786c6600' +
+  '6060606060607e0063777f6b6b6363006666767e6e6666003c66666666663c00' +
+  '7c66667c606060003c6666666a6c36007c66667c6c6666003c66603c06663c00' +
+  '7e181818181818006666666666663c0066666666663c180063636b6b7f776300' +
+  '66663c183c6666006666663c181818007e060c1830607e007c60606060607c00' +
+  '006030180c0600003e06060606063e003c6600000000000000000000000000ff' +
+  '301800000000000000003c063e663e0060607c6666667c0000003c6660663c00' +
+  '06063e6666663e0000003c667e603c001c30307c3030300000003e66663e063c' +
+  '60607c66666666001800381818183c0018003818181818706060666c786c6600' +
+  '3818181818183c000000367f6b6b630000007c666666660000003c6666663c00' +
+  '00007c66667c606000003e66663e060700006c766060600000003e603c067c00' +
+  '30307c3030301c000000666666663e0000006666663c18000000636b6b7f3600' +
+  '0000663c183c660000006666663e063c00007e0c18307e000c18187018180c00' +
+  '18181818181818003018180e18183000316b460000000000';
+
+export const CHAR_W = 8;
+export const CHAR_H = 8;
+
+// Each character as a square bitmap (1 = ink), made when first needed:
+// cache[level][code]: level 0 is 8 x 8, 1 is 16 x 16, 2 is 32 x 32.
+const cache = [[], [], []];
+
+function glyph(code, level) {
+  if (code < 32 || code > 126) code = 63;       // '?' for anything else
+  let g = cache[level][code];
+  if (g) return g;
+  if (level === 0) {
+    g = new Uint8Array(64);
+    const o = (code - 32) * 16;
+    for (let row = 0; row < 8; row++) {
+      const bits = parseInt(GLYPHS.substr(o + row * 2, 2), 16);
+      for (let col = 0; col < 8; col++) {
+        g[row * 8 + col] = (bits >> (7 - col)) & 1;
+      }
+    }
+  } else {
+    g = scale2x(glyph(code, level - 1), 8 << (level - 1));
+  }
+  cache[level][code] = g;
+  return g;
+}
+
+/**
+ * Scale2x: each pixel P becomes four. A corner copies the neighbour on
+ * that side only when the two neighbours meeting at the corner agree
+ * and the other two do not - so diagonal steps are filled in smoothly
+ * but straight edges and single pixels are left alone.
+ */
+function scale2x(src, n) {
+  const out = new Uint8Array(n * n * 4), m = n * 2;
+  const at = (x, y) => (x < 0 || y < 0 || x >= n || y >= n
+    ? 0 : src[y * n + x]);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const p = at(x, y), a = at(x, y - 1), b = at(x + 1, y);
+      const c = at(x - 1, y), d = at(x, y + 1);
+      let e0 = p, e1 = p, e2 = p, e3 = p;
+      if (c === a && c !== d && a !== b) e0 = a;
+      if (a === b && a !== c && b !== d) e1 = b;
+      if (d === c && d !== b && c !== a) e2 = c;
+      if (b === d && b !== a && d !== c) e3 = d;
+      const o = y * 2 * m + x * 2;
+      out[o] = e0; out[o + 1] = e1;
+      out[o + m] = e2; out[o + m + 1] = e3;
+    }
+  }
+  return out;
+}
+
+/** Width in pixels of text drawn at this scale. */
+export function textWidth(text, scale = 1) {
+  return String(text).length * CHAR_W * scale;
+}
+
+// One pass of the letters in a single colour (or a colour per row).
+function ink(surface, text, x, y, scale, colour, level) {
+  const size = 8 << level;                  // the bitmap's size
+  const px = scale / (1 << level);          // screen pixels per bit
+  const perRow = typeof colour === 'function';
+  for (let i = 0; i < text.length; i++) {
+    const g = glyph(text.charCodeAt(i), level);
+    const gx = x + i * CHAR_W * scale;
+    for (let row = 0; row < size; row++) {
+      const c = perRow ? colour(row / size) : colour;
+      let run = -1;                    // runs of ink are one rectangle
+      for (let col = 0; col <= size; col++) {
+        const on = col < size && g[row * size + col];
+        if (on && run < 0) run = col;
+        else if (!on && run >= 0) {
+          surface.fillRect(gx + run * px, y + row * px,
+            (col - run) * px, px, c);
+          run = -1;
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Draw text on a surface. options:
+ *   scale    whole-number size (1 = 8 pixels high)
+ *   colour   a pixel value (Surface.rgb), or a function (t) giving one
+ *            for each row, t going from 0 at the top to 1 at the bottom
+ *   shadow   pixel value of a drop shadow (or null), offset by
+ *            shadowOffset pixels (default: the scale / 2, at least 1)
+ *   outline  pixel value of a one-pixel outline all round (or null)
+ *   align    'left' (x is the left edge), 'centre' or 'right'
+ *   smooth   round off the edges of large letters (scale 2 or more)
+ * Returns the width of the text in pixels.
+ */
+export function drawText(surface, text, x, y, options = {}) {
+  text = String(text);
+  const scale = Math.max(1, Math.round(options.scale ?? 1));
+  const w = textWidth(text, scale);
+  if (options.align === 'centre') x -= w >> 1;
+  else if (options.align === 'right') x -= w;
+  x = Math.round(x); y = Math.round(y);
+  // smoothing needs 2 or 4 screen pixels per bitmap pixel
+  let level = 0;
+  if (options.smooth && scale % 4 === 0) level = 2;
+  else if (options.smooth && scale % 2 === 0) level = 1;
+  if (options.shadow != null) {
+    const o = options.shadowOffset ?? Math.max(1, scale >> 1);
+    ink(surface, text, x + o, y + o, scale, options.shadow, level);
+  }
+  if (options.outline != null) {
+    const k = options.outlineWidth ?? 1;
+    const around = [[-k, 0], [k, 0], [0, -k], [0, k],
+      [-k, -k], [k, k], [-k, k], [k, -k]];
+    for (const [dx, dy] of around) {
+      ink(surface, text, x + dx, y + dy, scale, options.outline, level);
+    }
+  }
+  ink(surface, text, x, y, scale, options.colour ?? 0xFFFFFFFF, level);
+  return w;
+}
+
+/** Draw lines of text, one below the other; returns the height. */
+export function drawLines(surface, lines, x, y, options = {}) {
+  const scale = Math.max(1, Math.round(options.scale ?? 1));
+  const step = options.lineHeight
+    ?? CHAR_H * scale + Math.max(1, scale * 2);
+  lines.forEach((line, i) => drawText(surface, line, x, y + i * step,
+    options));
+  return lines.length * step;
+}

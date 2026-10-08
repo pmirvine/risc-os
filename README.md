@@ -53,7 +53,7 @@ Open `http://localhost:8371/` in a recent Chrome, Firefox or Safari. Any static 
 session shows the boot sequence; later reloads go straight to the desktop.
 
 **Start with `$.Docs`** on the hard disc (click the hard disc icon, then open Docs): a guide to each thing this
-desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, !Word, the machine's memory, using the desktop from another computer, programming in JavaScript and the
+desktop adds to RISC OS 3.71 — !Browse, !GraphTask, HostFS, !JsEdit, !Journal, !Word, the game library GameLib, the machine's memory, using the desktop from another computer, programming in JavaScript and the
 game Lander II — with `Contents` listing them. The sources are in `tools/docs/` (`node tools/disc-docs.mjs` puts them on the disc).
 
 URL options: `?fast=1` (skip the boot screen), `?zoom=2` (double-size pixels), `?buttons=menu` (two-button mapping:
@@ -294,6 +294,7 @@ font menu.
 | | !Journal: a diary with a page a day, in JavaScript (see above) | |
 | | !Word (MoreApps): reads and saves Word .docx files, in JavaScript (see above) | |
 | | !WimpLib (!Boot.Resources): the `'wimplib/...'` JavaScript library (see above) | |
+| | !GameLib (!Boot.Resources): the `'gamelib/...'` JavaScript library for games (see below) | |
 | | !Browse: web browser (see above) | |
 | | !HostFS (Utilities): folders from this computer as discs | |
 | | !Player: sample player | !Lander: David Braben's 1987 demo (see below) |
@@ -354,6 +355,17 @@ Settings and high scores are kept in `Choices:Lander2`. The user guide is `$.Doc
 `tools/docs/Lander2`); the design is in `docs/apps/Lander2.md`; `node tools/disc-lander2.mjs` puts the sources
 (`tools/lander2/!Lander2`) on the disc.
 
+### GameLib: a library for writing games
+
+`$.!Boot.Resources.!GameLib` is a library of plain JavaScript modules for games, installed with the system resources
+beside WimpLib: a fixed-rate main loop, a software pixel surface with shapes and the 8×8 system font, keyboard and
+gamepad as named actions, a sound synthesiser, saved options and a high score table, and a full screen or windowed
+display. Any disc program imports a module as `'gamelib/<Module>'` (`import { Loop } from 'gamelib/Loop'`), found
+through the system variable `GameLib$Path` (set at start-up with `GameLib$Dir` and `GameLib$Version`; put a directory
+of your own first to override a module). Double-clicking `!GameLib` shows its help. The guide is `$.Docs.GameLib`
+(source `tools/docs/GameLib`), with a small game as an example; the design is in `docs/apps/GameLib.md`;
+`node tools/disc-gamelib.mjs` puts the sources (`tools/games/!GameLib`) on the disc.
+
 ## Architecture
 
 ```
@@ -399,6 +411,8 @@ node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden fie
 node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
 node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 2060 tests, about 35 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
+node --test tests/games          # GameLib unit tests and the disc script (no browser)
+URL=http://localhost:8372/ node --test tests/games/index.mjs   # the 'gamelib' import in a real browser (server on 8372)
 node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions), saving, closing and quitting (word-save.mjs, word-close.mjs, word-quit.mjs: New, Recent, Quit and PreQuit prompts; word-fkeys.mjs: F2, F3, Ctrl-F2, Ctrl-S, Ctrl-N, F8/F9; word-find.mjs: Find and Replace; word-clipboard.mjs and word-clipboard-hostile.mjs: copy, cut, paste and Find against 50,000 paragraphs, 5 MB pastes, hostile HTML, a real input method, 500 random actions; word-documents-hostile.mjs: saves onto open, locked and read-only files, 1000 Saves, a real input method, shutdowns, 10,000 Recent entries, 500 random actions)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)

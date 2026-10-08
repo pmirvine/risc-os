@@ -482,7 +482,12 @@ case (`'WimpLib/Zip'`), and every segment after it must match
 `/^[A-Za-z0-9_][A-Za-z0-9_-]*$/` (letters, digits, `_` and `-`), so the import stays in the directories searched: `..`,
 `.`, `^`, `$`, `@`, `<Var>`, `:`, `&`, `%`, backslash, wildcards, spaces, dotted names (`'wimplib/Zip.js'`) and
 empty segments are refused with "Can't find '<spec>' (a WimpLib module name is letters, digits, _ and -, with /
-between directories)" (the library is described in docs/apps/Word.md). A module in the same place imported both ways is loaded once. Each run is a task named after the file (or the
+between directories)" (the library is described in docs/apps/Word.md). The specifier `'gamelib/<Name>'` does
+the same for GameLib, the game library `$.!Boot.Resources.!GameLib` (`resolveLib` in `src/core/jsrun.js` serves both
+prefixes from the `LIBS` table: `GameLib$Path`, `GameLib$Dir` and `GameLib$Version`, set by its `!Boot`): the search is
+the same, and so are the messages with `GameLib` for `WimpLib` ("Can't find 'gamelib/X' (not in GameLib$Path: ...)",
+"(GameLib is not installed: GameLib$Dir is not set)", "(no module name)", "(a GameLib module name is letters, digits, _
+and -, with / between directories)"); see docs/apps/GameLib.md. A module in the same place imported both ways is loaded once. Each run is a task named after the file (or the
 application, for `<App>.!RunImage`); `print`/`input` use the task window it was run from or an output window of
 its own. Errors, including ones thrown later by its event handlers and timers, are reported with the line number.
 The tutorial `$.Manuals.JSTutor` teaches with it (`tools/jstutor/README.md`).
@@ -608,6 +613,9 @@ own entries in `assets/disc/manifest.json` (read, patch and write the manifest i
 `tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
 ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).
+`disc-gamelib` builds the game library `$.!Boot.Resources.!GameLib` (from `tools/games/!GameLib`, icon from
+`tools/games/icon.mjs`; the same way as `disc-wimplib`, checking Latin-1, 72 columns, 250 lines, no `riscos` and no
+`import ... from` text in comments; `GAMES_SRC` / `GAMES_DISC` for tests/games/disc.test.mjs).
 `disc-wimplib` builds the library `$.!Boot.Resources.!WimpLib` (from `tools/moreapps/!WimpLib`; its manifest node
 inserted among the other `Resources` entries, which stay as they are) and runs before `disc-moreapps`, which builds
 `$.MoreApps` (`!Word`, from `tools/moreapps/`, removing the library's old `MoreApps.WimpLib`; fonts as Data
