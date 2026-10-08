@@ -33,7 +33,7 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Theme | `TITLE`, `COLOURS`, `GHOSTS` (id, name, nickname, colour), `FRUIT` |
 | Maze | `new Maze(rows, special)`: `walkable`, `isTunnel`, `isRedZone`, `exits`, `dotAt`, `eat` -> 0/10/50, `dotsLeft`, `reset` |
 | Mover | `UNIT`, `STEP`, `steps(actor, pct)` -> whole pixels this frame |
-| Player | `new Player(start)`, `tick(maze, want, pct)` -> `{moved, ate}`; `anim`, `stopped`, `pause`. Per pixel: `turn` (reverse at once; a side turn when he is on the centre line of his way and within 3 px either side of the tile centre, `past()` -3..3, and `open`), then the stop check (`past() >= 0` and the next tile closed), then the step: 1 px along `dir` plus 1 px of `slack()` towards the centre line across it (the diagonal cut). Ghosts never corner: they turn exactly at centres |
+| Player | `new Player(start)`, `tick(maze, want, pct)` -> `{moved, ate}`; `anim`, `stopped`, `pause`. Per pixel: `turn` (reverse at once; a side turn when he is on the centre line of his way and within 3 px either side of the tile centre, `past()` -3..3, and `open`), then the stop check (`past() >= 0` and the next tile closed: he stops only on the centre line; if a reversal left him off it he first finishes the cut sideways), then the step: 1 px along `dir` plus 1 px of `slack()` towards the centre line across it (the diagonal cut). Ghosts never corner: they turn exactly at centres |
 | Targets | `chooseExit(maze, tile, dir, target, redZones)` (`redZones` is a boolean "apply red zones"; tiles from `Maze.isRedZone`). Play passes true for a ghost that is neither eyes nor blue (scatter or chase), never otherwise |
 | Ghost | a ghost: `state` `house` (bobbing y 112-120) / `leaving` / `active` / `eyes` (after `eat()`: target (13, 11), red zones ignored, `EYES_PCT` 200 until the level table, down the door at (112, 92) to (112, 116), sideways to home x, then `leaving` and not blue); `leave()`; `tick(ctx)`; decides one tile ahead (`turn`, `ahead`); `reverse` flag (boolean, so two signals make one reversal); house moves at 50% |
 | Modes | `new Modes(level)`: `mode` (`scatter`/`chase`), `phase`, `timer`, `tick(frightOn)` -> switched?, `reset(level)` |
@@ -86,9 +86,10 @@ state is `'start'` or `'play'` for now. Settings are `{display: 'full' | 'window
 
 Each rule of the mechanics reference (sections 1-12) and the test that checks it (`pm-<module>` is
 `tests/games/pm-<module>.test.mjs`). `pm-golden` pins a whole 3000-tick run for seeds 1, 2 and 3 as sha256 hashes of
-`game.snapshot()`; **a change to those hashes must say why in its commit message.** (The scripted route dies early and
-rarely reaches an energizer, so the hashes mostly guard movement, decisions and the Rng; the rules below are checked
-one by one.)
+`game.snapshot()`; **a change to those hashes must say why in its commit message.** (The scripted route is dull: on all three seeds
+Pac-Man eats 10 dots and dies twice, and never reaches an energizer, so the three hashes differ only by the Rng state
+and guard just movement and the ghosts' decisions. The rules below are checked one by one; a richer golden, a long
+autopilot demo run through an energizer and a level clear, arrives in Task 22.)
 
 | section | rule | test |
 |---|---|---|

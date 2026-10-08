@@ -1063,6 +1063,7 @@ test('level 2: the 1-frame scatter gives one reversal', () => {
   g.player.tx = g.player.ty = -9;
   g.debug.place(0, 100, 44, LEFT);
   g.modes.phase = 5;
+  g.modes.mode = 'chase';
   g.modes.timer = 61978;           // 65518 frames in: switches at 65520
   const modes = [];
   let turns = 0;

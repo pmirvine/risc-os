@@ -234,10 +234,14 @@ test('cornering: a turn up to 3 px after the centre cuts back', () => {
 });
 
 test('cornering: 4 px away is too far, a wall is not turned into', () => {
-  const far = corner(56);
+  const far = corner(48, RIGHT);   // tile 6, 4 px before its centre
   far.p.tick(far.m, UP, 100);
-  assert.equal(far.p.dir, LEFT);
+  assert.equal(far.p.dir, RIGHT);
   assert.equal(far.p.py, 44);
+  const near = corner(49, RIGHT);  // 3 px before: the window opens
+  near.p.acc = 10000;
+  near.p.tick(near.m, UP, 79);
+  assert.equal(near.p.dir, UP);
   const wall = corner(63);   // column 7: row 4 above is wall
   for (let i = 0; i < 6; i++) wall.p.tick(wall.m, UP, 100);
   assert.equal(wall.p.dir, LEFT);
@@ -266,5 +270,39 @@ test('cornering: he never ends up inside a wall', () => {
     s.p.tick(s.m, seq[Math.floor(f / 7) % 4], 100);
     s.m.reset();
     assert.ok(s.m.walkable(s.p.px >> 3, s.p.py >> 3, 'pac'), `f${f}`);
+    if (s.p.stopped) {
+      assert.deepEqual([s.p.px & 7, s.p.py & 7], [4, 4], `f${f}`);
+    }
   }
+});
+
+/** Row 1, moving LEFT: a 3 px side turn DOWN at column 6, reversed
+ *  after one diagonal pixel into the wall above. */
+function stuck(startPx, centre) {
+  const s = setup();
+  s.m.dots.fill(0);
+  Object.assign(s.p, { px: startPx, py: 12, tx: startPx >> 3, ty: 1,
+    dir: LEFT });
+  const one = (want) => { s.p.acc = 10000; s.p.tick(s.m, want, 79); };
+  one(DOWN);
+  assert.equal(s.p.dir, DOWN);
+  assert.equal(s.p.py, 13);
+  one(UP);
+  for (let i = 0; i < 6; i++) one(UP);
+  assert.deepEqual([s.p.px, s.p.py], [centre, 12]);
+  s.one = one;
+  return s;
+}
+
+test('cornering: reversed after one pixel, he ends on the lane', () => {
+  const s = stuck(49, 52);     // 3 px after the centre
+  for (let i = 0; i < 20; i++) s.one(RIGHT);
+  assert.ok(s.p.px > 52 && s.p.dir === RIGHT);
+});
+
+test('cornering: the same 3 px before the centre', () => {
+  const s = stuck(55, 52);
+  for (let i = 0; i < 20; i++) s.one(LEFT);
+  assert.ok(s.p.px < 52 && s.p.dir === LEFT);
+  assert.equal(s.p.py, 12);
 });
