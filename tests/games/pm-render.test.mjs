@@ -117,6 +117,19 @@ test('Pac-Man mouth: 0, 22, 45, 22 degrees', () => {
   assert.equal(s.get(11, 16), col(COLOURS.pac));
 });
 
+test('a stopped Pac-Man keeps the mouth he stopped with', () => {
+  const pacPixels = (anim, stopped) => {
+    const g = new Game({ seed: 1 });
+    g.player.anim = anim;
+    g.player.stopped = stopped;
+    const s = new Surface(224, 288);
+    drawGame(s, g, 0);
+    return count(s, col(COLOURS.pac));
+  };
+  assert.equal(pacPixels(4, true), pacPixels(4, false));
+  assert.ok(pacPixels(4, true) < pacPixels(0, true));
+});
+
 test('Pac-Man dies: the wedge widens, then a burst', () => {
   const n = [];
   for (let d = 0; d <= 10; d++) {
