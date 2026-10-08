@@ -178,3 +178,127 @@ test('a ghost leaving the house is still blue', () => {
   assert.equal(g.ghosts[1].state, 'active');
   assert.equal(g.ghosts[1].blue, true);
 });
+
+/** A game with a stationary Pac-Man; blue ghost id put on him. */
+function still() {
+  const g = playing();
+  g.player.pause = 1e9;
+  return g;
+}
+function bluePlace(g, id) {
+  const p = g.player;
+  g.debug.place(id, p.px, p.py, LEFT);
+  g.ghosts[id].blue = true;
+}
+const freeze = (g, n) => run(g, [[-1, n]]);
+
+test('ghost chain: 200, 400, 800, 1600, each a 60 frame freeze', () => {
+  const g = still();
+  g.fright.start();
+  const got = [];
+  for (let id = 0; id < 4; id++) {
+    const s0 = g.score;
+    bluePlace(g, id);
+    const ev = g.tick({ want: -1 });
+    got.push(...ev.filter((e) => e.type === 'ghostEaten'));
+    assert.equal(g.state, 'eaten');
+    assert.deepEqual(g.popups.map((p) => [p.text, p.frames]),
+      [[String(200 * 2 ** id), 60]]);
+    assert.equal(g.popups[0].px, g.player.px);
+    assert.equal(g.ghosts[id].state, 'eyes');
+    assert.equal(g.ghosts[id].blue, false);
+    freeze(g, 59);
+    assert.equal(g.state, 'eaten');
+    freeze(g, 1);
+    assert.equal(g.state, 'play');
+    assert.equal(g.popups.length, 0);
+    assert.equal(g.score - s0, 200 * 2 ** id);
+  }
+  assert.deepEqual(got.map((e) => [e.id, e.points]),
+    [[0, 200], [1, 400], [2, 800], [3, 1600]]);
+});
+
+test('during the freeze only eyes move, and Pac-Man waits', () => {
+  const g = still();
+  g.fright.start();
+  bluePlace(g, 0);
+  g.tick({ want: -1 });
+  g.debug.place(1, 60, 44, RIGHT);
+  g.ghosts[1].eat();
+  g.ghosts[2].blue = true;
+  const e1 = [g.ghosts[1].px, g.ghosts[1].py];
+  const eaten = [g.ghosts[0].px, g.ghosts[0].py];
+  const f = g.fright.elapsed;
+  freeze(g, 10);
+  assert.notDeepEqual([g.ghosts[1].px, g.ghosts[1].py], e1);
+  assert.deepEqual([g.ghosts[0].px, g.ghosts[0].py], eaten);
+  assert.equal(g.fright.elapsed, f);
+});
+
+test('12000 bonus once, after 4 ghosts on each of 4 energizers', () => {
+  const g = still();
+  let bonus = 0, ghosts = 0;
+  for (let e = 0; e < 4; e++) {
+    g.fright.start();
+    for (let id = 0; id < 4; id++) {
+      g.fright.on = true;
+      bluePlace(g, id);
+      const ev = g.tick({ want: -1 });
+      ghosts += ev.filter((x) => x.type === 'ghostEaten').length;
+      bonus += ev.filter((x) => x.type === 'bonus').length;
+      const sc = g.score;
+      if (ghosts === 15) assert.equal(bonus, 0);
+      freeze(g, 60);
+      assert.equal(g.score, sc);
+    }
+  }
+  assert.equal(ghosts, 16);
+  assert.equal(bonus, 1);
+  assert.equal(g.score, 4 * 3000 + 12000);
+});
+
+test('three full sweeps give no bonus', () => {
+  const g = still();
+  for (let e = 0; e < 3; e++) {
+    g.fright.start();
+    for (let id = 0; id < 4; id++) {
+      bluePlace(g, id);
+      g.tick({ want: -1 });
+      freeze(g, 60);
+    }
+  }
+  assert.equal(g.score, 9000);
+});
+
+test('a revived ghost leaves the house not blue, the rest still are', () => {
+  const g = still();
+  g.fright.start();
+  for (const x of g.ghosts) x.blue = true;
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(2, 120, 92, LEFT);
+  g.ghosts[2].blue = true;
+  g.ghosts[2].eat();
+  const others = [0, 1, 3];
+  let left = false;
+  for (let i = 0; i < 400 && !left; i++) {
+    g.tick({ want: -1 });
+    g.fright.elapsed = 0;       // keep the fright going
+    if (g.ghosts[2].state === 'leaving') left = true;
+  }
+  assert.ok(left, 'revived');
+  assert.equal(g.ghosts[2].blue, false);
+  assert.ok(others.every((i) => g.ghosts[i].blue), 'others blue');
+  run(g, [[-1, 120]]);
+  assert.equal(g.ghosts[2].blue, false);
+});
+
+test('eyes steer for (13, 11) and ignore red zones', () => {
+  const g = still();
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(0, 60, 44, RIGHT);
+  g.ghosts[0].eat();
+  const seen = [], b = g.ghosts[0], orig = b.tick.bind(b);
+  b.tick = (c) => { seen.push([c.target, c.redZones]); return orig(c); };
+  g.tick({ want: -1 });
+  assert.deepEqual(seen[0], [[13, 11], false]);
+});

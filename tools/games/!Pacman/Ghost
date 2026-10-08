@@ -8,12 +8,19 @@
 // the game, in the house too) chooses at random with frightExit.
 //
 // A ghost is 'house' (bobbing between y 112 and 120), 'leaving' (to
-// x 112, up to y 92, then off to the left) or 'active' (in the maze).
-// The house moves are at half speed.
+// x 112, up to y 92, then off to the left), 'active' (in the maze) or
+// 'eyes' (eaten). Eyes steer for the tile above the door, red zones
+// ignored; on passing (112, 92) they go down to (112, 116), then
+// sideways to their home x, and revive as a 'leaving' ghost, not
+// blue. The house moves are at half speed, the eyes at EYES_PCT.
 
 import { DX, DY, UP, LEFT, DOWN, RIGHT } from './Dirs';
 import { steps } from './Mover';
 import { chooseExit, frightExit } from './Targets';
+
+// Until the level table (Task 17) the eyes' speed is a constant.
+export const EYES_PCT = 200;
+const HOME_X = [112, 112, 96, 128];
 
 export class Ghost {
   constructor(id, start) {
@@ -26,12 +33,21 @@ export class Ghost {
   reset() {
     const { px, py, dir } = this.start;
     this.place(px, py, dir);
-    this.blue = false;
+    this.blue = this.flash = false;
     if (py > 100) this.state = 'house';
   }
 
   /** Start the way out of the house (from the House's release). */
   leave() { if (this.state === 'house') this.state = 'leaving'; }
+
+  /** Eaten: eyes that head for the door; never blue again. */
+  eat() {
+    this.state = 'eyes';
+    this.blue = this.flash = false;
+    this.reverse = false;
+    this.ahead = -1;
+    this.stage = 0;
+  }
 
   place(px, py, dir) {
     this.px = px;
@@ -44,16 +60,20 @@ export class Ghost {
     this.turn = dir;
     this.ahead = -1;
     this.reverse = false;
+    this.stage = 0;
   }
 
   /** One frame. ctx = {maze, pct, target, frightened, rng,
    *  redZones}; frightened makes the choices random. */
   tick(ctx) {
-    if (this.state !== 'active') return this.inHouse();
+    const eyes = this.state === 'eyes';
+    if (this.state !== 'active' && !eyes) return this.inHouse();
+    if (eyes && this.stage) return this.goHome();
     this.ctx = ctx;
-    const { maze, target, redZones } = ctx;
+    const { maze, target } = ctx;
+    const redZones = ctx.redZones && !eyes;
     if (this.ahead < 0) this.plan(maze, target, redZones);
-    const n = steps(this, ctx.pct);
+    const n = steps(this, eyes ? EYES_PCT : ctx.pct);
     for (let i = 0; i < n; i++) {
       this.px = (this.px + DX[this.dir] + 224) % 224;
       this.py += DY[this.dir];
@@ -65,6 +85,34 @@ export class Ghost {
       }
       if ((this.px & 7) === 4 && (this.py & 7) === 4) {
         this.dir = this.turn;
+      }
+      if (eyes && this.px === 112 && this.py === 92) {
+        this.stage = 1;
+        this.dir = this.turn = DOWN;
+        return this.goHome(n - i - 1);
+      }
+    }
+  }
+
+  /** Eyes inside: down the door, sideways, then revive and leave. */
+  goHome(n = steps(this, EYES_PCT)) {
+    const hx = HOME_X[this.id];
+    for (let i = 0; i < n; i++) {
+      if (this.stage === 1) {
+        this.py++;
+        if (this.py === 116) this.stage = 2;
+      } else if (this.px !== hx) {
+        this.dir = this.px < hx ? RIGHT : LEFT;
+        this.px += DX[this.dir];
+      }
+      this.turn = this.dir;
+      this.tx = this.px >> 3;
+      this.ty = this.py >> 3;
+      if (this.stage === 2 && this.px === hx) {
+        this.blue = this.flash = false;
+        this.state = 'leaving';
+        this.dir = UP;
+        return;
       }
     }
   }

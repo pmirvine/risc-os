@@ -237,3 +237,47 @@ test('Hud: score, lives and level fruit', () => {
   }
   assert.ok(fruit > 20);
 });
+
+/** Pixels of colour c in the 24 x 24 box centred on maze (px, py). */
+function near(s, px, py, c) {
+  let n = 0;
+  for (let y = py - 12; y < py + 12; y++) {
+    for (let x = px - 12; x < px + 12; x++) {
+      if (s.get(x, y + MAZE_TOP) === c) n++;
+    }
+  }
+  return n;
+}
+
+test('while a ghost is eaten: no Pac-Man, no ghost, its score', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  g.debug.place(0, 60, 44, 3);
+  g.debug.place(1, 160, 44, 3);
+  g.ghosts[2].state = g.ghosts[3].state = 'house';
+  g.ghosts[2].py = g.ghosts[3].py = 200;      // out of the way
+  g.eatenId = 0;
+  g.popups = [{ px: 60, py: 44, text: '200', frames: 40 }];
+  g.state = 'eaten';
+  const s = new Surface(W, 288);
+  drawGame(s, g, 0);
+  assert.equal(near(s, 112, 188, col(COLOURS.pac)), 0, 'no Pac-Man');
+  assert.equal(near(s, 60, 44, col(COLOURS.ghosts[0])), 0, 'no ghost');
+  assert.ok(near(s, 60, 44, col(COLOURS.text)) > 10, 'the score');
+  assert.ok(near(s, 160, 44, col(COLOURS.ghosts[1])) > 40, 'others');
+  g.state = 'play';
+  const t = new Surface(W, 288);
+  drawGame(t, g, 0);
+  assert.ok(near(t, 112, 188, col(COLOURS.pac)) > 40, 'Pac-Man back');
+});
+
+test('eyes (an eaten ghost on its way home) draw no body', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  g.debug.place(0, 60, 44, 3);
+  g.ghosts[0].eat();
+  const s = new Surface(W, 288);
+  drawGame(s, g, 0);
+  assert.equal(near(s, 60, 44, col(COLOURS.ghosts[0])), 0);
+  assert.ok(near(s, 60, 44, rgb(255, 255, 255)) > 8, 'eyes');
+});

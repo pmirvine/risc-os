@@ -7,23 +7,68 @@
 // mode change turns the ghosts in the maze round. Speeds are single
 // values for now (the level table comes later). An energizer starts
 // a fright (Fright): the ghosts outside turn round, every ghost turns
-// blue, and the scatter and chase clock waits until it ends.
+// blue, and the scatter and chase clock waits until it ends. Touching
+// a blue ghost eats it (Fright gives the points: 200 to 1600) and
+// freezes the game for 60 frames in the 'eaten' state, while eyes
+// already on their way home keep moving. Eating all four ghosts of
+// each of the four energizers of a level earns 12000, once.
 
 import { chaseTarget } from './Targets';
 
 const PAC_PCT = 80, GHOST_PCT = 75;
 
-/** Do Pac-Man and a ghost share a tile? If so, the death happens. */
+export const FREEZE = 60;
+const BONUS = 12000;
+
+/** Do Pac-Man and a ghost share a tile? A blue one is eaten, any
+ *  other (not eyes) kills him. True if the frame is over. */
 function collide(game) {
   const p = game.player;
   for (const g of game.ghosts) {
-    if (g.tx === p.tx && g.ty === p.ty) {
+    if (g.state === 'eyes' || g.tx !== p.tx || g.ty !== p.ty) continue;
+    if (g.blue) eat(game, g);
+    else {
       game.events.push({ type: 'death' });
       game.resetActors();
-      return true;
     }
+    return true;
   }
   return false;
+}
+
+/** Pac-Man eats a ghost: points, a popup, and the freeze. */
+function eat(game, g) {
+  const points = game.fright.nextScore();
+  game.score += points;
+  g.eat();
+  game.events.push({ type: 'ghostEaten', id: g.id, points });
+  game.popups.push({ px: g.px, py: g.py, text: String(points),
+    frames: FREEZE });
+  if (game.fright.eaten === 4 && ++game.sweeps === 4) {
+    game.score += BONUS;
+    game.events.push({ type: 'bonus', points: BONUS });
+  }
+  game.eatenId = g.id;
+  game.setState('eaten');
+}
+
+/** One frame of the freeze: only the eyes move. */
+export function eatenFrame(game) {
+  for (const g of game.ghosts) {
+    if (g.state === 'eyes' && g.id !== game.eatenId) moveGhost(game, g);
+  }
+  for (const p of game.popups) p.frames--;
+  if (++game.stateTimer >= FREEZE) {
+    game.popups = [];
+    game.eatenId = -1;
+    game.setState('play');
+  }
+}
+
+function moveGhost(game, g) {
+  const eyes = g.state === 'eyes';
+  g.tick({ maze: game.maze, pct: GHOST_PCT, target: targetOf(game, g),
+    frightened: g.blue, rng: game.rng, redZones: !eyes });
 }
 
 /** Run one frame of play with input {want: 0..3 | -1}. */
@@ -45,10 +90,7 @@ export function playFrame(game, input) {
       if (g.state === 'active') g.reverse = true;
     }
   }
-  for (const g of game.ghosts) {
-    g.tick({ maze, pct: GHOST_PCT, target: targetOf(game, g),
-      frightened: g.blue, rng: game.rng, redZones: true });
-  }
+  for (const g of game.ghosts) moveGhost(game, g);
   for (const g of game.ghosts) {
     g.flash = g.blue && game.fright.flashWhite();
   }
@@ -72,6 +114,7 @@ function endFright(game) {
 
 /** The tile a ghost steers for now. */
 function targetOf(game, g) {
+  if (g.state === 'eyes') return game.data.maze.SPECIAL.eyesTarget;
   const corner = game.data.maze.SPECIAL.scatter[g.id];
   if (game.modes.mode === 'scatter') return corner;
   return chaseTarget(g.id, game.player, game.ghosts[0], corner, g);

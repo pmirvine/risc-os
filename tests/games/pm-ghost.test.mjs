@@ -128,3 +128,47 @@ test('seeded game: ghosts reverse only after a mode change', () => {
   assert.deepEqual(bad, []);
   assert.ok(flips > 0, 'the mode changes should have caused some');
 });
+
+/** Eyes for ghost id, started at (px, 92) heading dir. */
+function eyesAt(id, px, dir) {
+  const g = new Ghost(id, SPECIAL.starts.ghosts[id]);
+  g.place(px, 92, dir);
+  g.blue = true;
+  g.flash = true;
+  g.eat();
+  return g;
+}
+const eyeCtx = (m) => ({ maze: m, pct: 75, target: [13, 11],
+  frightened: false, rng: null, redZones: false });
+
+test('eating a ghost makes eyes and clears blue and flash', () => {
+  const g = eyesAt(0, 120, LEFT);
+  assert.equal(g.state, 'eyes');
+  assert.equal(g.blue, false);
+  assert.equal(g.flash, false);
+});
+
+for (const [id, home] of [[0, 112], [1, 112], [2, 96], [3, 128]]) {
+  test(`eyes of ghost ${id} go down the door, then to x ${home}`, () => {
+    const m = maze(), g = eyesAt(id, 120, LEFT);
+    const path = [];
+    let guard = 0;
+    while (g.state === 'eyes' && guard++ < 400) {
+      g.tick(eyeCtx(m));
+      path.push([g.px, g.py]);
+    }
+    assert.equal(g.state, 'leaving');
+    assert.equal(g.blue, false);
+    assert.deepEqual([g.px, g.py], [home, 116]);
+    const down = path.filter(([x, y]) => x === 112 && y > 92);
+    assert.ok(down.length >= 8, 'went down the door');
+    assert.equal(Math.max(...path.map((p) => p[1])), 116);
+  });
+}
+
+test('eyes run at 200%', () => {
+  const m = maze(), g = eyesAt(2, 140, LEFT);
+  const x0 = g.px;
+  for (let i = 0; i < 10; i++) g.tick(eyeCtx(m));
+  assert.ok(x0 - g.px >= 24 && x0 - g.px <= 26, `moved ${x0 - g.px}`);
+});
