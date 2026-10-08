@@ -119,3 +119,92 @@ export function fakeAudioContext({ state = 'suspended' } = {}) {
   };
   return c;
 }
+
+/** A fake DOM element: style, children, listeners, a fixed box. */
+export function fakeElement(tag = 'div', doc = null) {
+  const el = { tag, style: {}, children: [], listeners: {}, width: 0,
+    height: 0, removed: 0, box: { left: 0, top: 0, width: 0, height: 0 },
+    clientWidth: 0, clientHeight: 0, ownerDocument: doc };
+  el.appendChild = (c) => { el.children.push(c); return c; };
+  el.remove = () => { el.removed++; };
+  el.addEventListener = (type, f) => {
+    (el.listeners[type] ??= []).push(f);
+  };
+  el.getBoundingClientRect = () => ({ ...el.box });
+  el.getContext = () => (el.ctx ??= { canvas: el, drawn: [] });
+  /** Dispatch an event; the fake event records preventDefault. */
+  el.fire = (type, props = {}) => {
+    const ev = { type, ...props, prevented: 0, stopped: 0,
+      preventDefault() { this.prevented++; },
+      stopPropagation() { this.stopped++; } };
+    for (const f of el.listeners[type] ?? []) f(ev);
+    return ev;
+  };
+  return el;
+}
+
+/** A fake document; installs nothing itself (the test sets it). */
+export function fakeDocument() {
+  const doc = { made: [], fullscreenElement: null, fullRequests: 0,
+    exits: 0 };
+  doc.createElement = (tag) => {
+    const el = fakeElement(tag, doc);
+    doc.made.push(el);
+    return el;
+  };
+  doc.documentElement = {
+    requestFullscreen() { doc.fullRequests++; doc.fullscreenElement = 1;
+      return Promise.resolve(); } };
+  doc.exitFullscreen = () => { doc.exits++; doc.fullscreenElement = null;
+    return Promise.resolve(); };
+  return doc;
+}
+
+/** A fake window as task.createWindow returns it (see CORE_API). */
+export function fakeWindow(def) {
+  const w = { def, w: def.w, h: def.h, view: fakeElement('div'),
+    handlers: {}, opens: [], deleted: 0 };
+  w.on = (name, f) => { (w.handlers[name] ??= []).push(f); };
+  w.open = (o) => { w.opens.push(o); };
+  w.delete = () => { w.deleted++; };
+  /** Emit a window event; returns the event, with preventDefault. */
+  w.emit = (name, props = {}) => {
+    const ev = { ...props, prevented: 0,
+      preventDefault() { this.prevented++; } };
+    for (const f of w.handlers[name] ?? []) f(ev);
+    return ev;
+  };
+  return w;
+}
+
+/** A fake task whose createWindow records its definitions. */
+export function fakeTask() {
+  const t = { windows: [] };
+  t.createWindow = (def) => {
+    const w = fakeWindow(def);
+    t.windows.push(w);
+    return w;
+  };
+  return t;
+}
+
+/** A fake wimp: screen size, scale, and the caret. */
+export function fakeWimp({ width = 1024, height = 768, scale = 1 } = {}) {
+  const w = { width, height, scale, caret: { window: null } };
+  w.setCaret = (win) => { w.caret = { window: win }; };
+  return w;
+}
+
+/** A fake os with cli.acquireScreen as cli.js gives it. */
+export function fakeOs(wimp) {
+  const os = { acquired: [], released: 0 };
+  os.cli = { acquireScreen(opts) {
+    const el = fakeElement('div');
+    el.clientWidth = wimp.width;
+    el.clientHeight = wimp.height;
+    os.acquired.push(opts);
+    return { el, width: wimp.width, height: wimp.height,
+      release() { os.released++; } };
+  } };
+  return os;
+}
