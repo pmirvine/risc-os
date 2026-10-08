@@ -53,7 +53,7 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Title | the title picture and its menu |
 | Sfx | `RATE` (24000), `WAVES` (our 32-level 4-bit tables, high at both ends), `RECIPES` {name: {make, loop}}: startJingle (4.2 s), waka0/1, siren0-4, fright, eyes (loops: one voice, a whole number of cycles, so no crossfade), ghostEaten, fruitEaten, extraLife, death |
 | SoundMap | pure: `soundsFor(events, mem)` (dot/energizer alternate `waka0`/`waka1` through `mem.waka`; unknown events ignored), `loopFor(game)` (null unless `'play'` and not demo; `eyes`, `fright`, `siren0`-`4` by `maze.dotsLeft` > 180 / 128 / 64 / 32) |
-| Sound | `new Sound(settings, os.config)`: defines the recipes in a GameLib `Audio`; `resume()` (every click and key), `update(screens, moved)` each tick, `silence()`, `toggle()`, `close()`. Silent while paused, off the play screen, or `settings.sound === false`; volume is `settings.volume / 100` times `desktopGain` |
+| Sound | `new Sound(settings, os.config)`: defines the recipes in a GameLib `Audio`; `resume()` (every click and key), `update(screens, moved)` each tick, `silence()`, `toggle()`, `close()`. Silent while paused, off the play screen, or `settings.sound === false`; volume is `settings.volume` (0..1, values 0.2-1, default 0.8; `tidyVolume(saved)` turns an old percent such as 80 into 0.8) times `desktopGain` |
 | Screens | `Screens(app)`, `ACTIONS` (the key names), `DIRS`, `wantFor`; `frame`, `tick`, `draw`, `blur`, `pointer` |
 
 `task.game` (set by `!RunImage`) exposes `app`, `settings`, `keys`, `surface`, `display`, `audio`, `sound`, `game`, `screen`, `frames`

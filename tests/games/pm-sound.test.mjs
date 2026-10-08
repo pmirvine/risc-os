@@ -127,3 +127,22 @@ test('loopFor: siren steps by dots left (appendix 12)', () => {
     [33, 'siren3'], [32, 'siren4'], [1, 'siren4']];
   for (const [n, s] of want) assert.equal(at(n), s, 'dots ' + n);
 });
+
+test('volume is 0..1; an old percent is converted', async () => {
+  const { tidyVolume, Sound } =
+    await import('../../tools/games/!Pacman/Sound');
+  const { sanitise } = await import('../../tools/games/!GameLib/Options');
+  const O = [{ key: 'volume', values: [0.2, 0.4, 0.6, 0.8, 1] }];
+  const load = (v) => sanitise(O, { volume: 0.8 },
+    tidyVolume({ volume: v })).volume;
+  assert.equal(load(0.6), 0.6);
+  assert.equal(load(1), 1);
+  assert.equal(load(80), 0.8);
+  assert.equal(load(20), 0.2);
+  for (const bad of [45, 500, -3, 'loud', null, NaN]) {
+    assert.equal(load(bad), 0.8, String(bad));
+  }
+  assert.equal(tidyVolume(undefined), undefined);
+  assert.equal(new Sound({ volume: 0.4 }, null).volume(), 0.4);
+  assert.equal(new Sound({}, null).volume(), 0.8);
+});
