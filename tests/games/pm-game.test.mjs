@@ -37,6 +37,7 @@ test('eating scores 10 a dot', () => {
 
 test('Blinky closes in on Pac-Man', () => {
   const g = playing();
+  g.modes.mode = 'chase';   // in scatter he heads for his corner
   const start = dist(g);
   const ev = run(g, [[LEFT, 140]]);
   assert.ok(!ev.some((e) => e.type === 'death'));
@@ -65,7 +66,8 @@ test('the same seed plays the same game', () => {
   assert.deepEqual(a.snapshot(), b.snapshot());
   const s = a.snapshot();
   assert.deepEqual(JSON.parse(JSON.stringify(s)), s);
-  assert.equal(s.ghosts.length, 1);
+  assert.equal(s.ghosts.length, 4);
+  assert.equal(s.modes.mode, 'scatter');
 });
 
 test('Blinky stays in the maze and never enters the house', () => {
@@ -76,4 +78,36 @@ test('Blinky stays in the maze and never enters the house', () => {
     const b = g.ghosts[0];
     assert.ok(g.maze.walkable(b.tx, b.ty, 'ghost'), `${b.tx},${b.ty}`);
   }
+});
+
+test('a mode change reverses every active ghost, and only them', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  g.ghosts[1].state = 'house';
+  g.ghosts[1].py = 116;
+  g.debug.place(0, 101, 92, LEFT);
+  g.modes.timer = 418;              // two frames to the change
+  g.tick({ want: -1 });
+  assert.equal(g.modes.mode, 'scatter');
+  const ev = g.tick({ want: -1 });
+  assert.ok(ev.some((e) => e.type === 'modeChange'));
+  assert.equal(g.modes.mode, 'chase');
+  assert.equal(g.ghosts[0].reverse, true);
+  assert.equal(g.ghosts[3].state, 'house');
+  assert.equal(g.ghosts[3].reverse, false);
+});
+
+test('scatter aims at the corner, chase at chaseTarget', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  const seen = [];
+  const b = g.ghosts[0], orig = b.tick.bind(b);
+  b.tick = (c) => { seen.push(c.target); return orig(c); };
+  g.tick({ want: -1 });
+  assert.deepEqual(seen[0], SPECIAL.scatter[0]);
+  g.modes.timer = 419;
+  g.tick({ want: -1 });
+  g.tick({ want: -1 });
+  assert.deepEqual(seen.at(-1), [g.player.tx, g.player.ty]);
 });

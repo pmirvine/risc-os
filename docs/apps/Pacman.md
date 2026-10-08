@@ -11,8 +11,8 @@ it lives on the disc as JavaScript that `*JSRun` loads, so users can read and ch
 `riscos` module and `'gamelib/<Name>'`. No shared code was changed for it beyond the `gamelib` specifier (CORE_API 11a).
 No ROM data: the sprites are drawn from GameLib `Shapes`, sounds will be synthesised, tunes are our own.
 
-This is the first stage: the maze, dots and energizers, Pac-Man, Blinky, the title, the pause menu and the desktop
-shell. Later stages add the other ghosts, fright, levels, lives, fruit, sound, settings, scores and the demo.
+This is the first stage: the maze, dots and energizers, Pac-Man, the four ghosts with scatter and chase, the title, the
+pause menu and the desktop shell. Later stages add fright, levels, lives, fruit, sound, settings, scores and the demo.
 
 ## Layers
 
@@ -35,8 +35,10 @@ shell. Later stages add the other ghosts, fright, levels, lives, fruit, sound, s
 | Mover | `UNIT`, `STEP`, `steps(actor, pct)` -> whole pixels this frame |
 | Player | `new Player(start)`, `tick(maze, want, pct)` -> `{moved, ate}`; `anim`, `stopped`, `pause` |
 | Targets | `chooseExit(maze, tile, dir, target, redZones)` (`redZones` is a boolean "apply red zones") |
-| Ghost | a ghost on the maze; `tick(ctx)`; decides one tile ahead (`turn`, `ahead`) |
-| Play | `playFrame(game, input)`: one frame of the `'play'` state in the arcade's order |
+| Ghost | a ghost: `state` `house` (bobbing y 112-120) / `leaving` / `active`; `leave()`; `tick(ctx)`; decides one tile ahead (`turn`, `ahead`); `reverse` flag (boolean, so two signals make one reversal); house moves at 50% |
+| Modes | `new Modes(level)`: `mode` (`scatter`/`chase`), `phase`, `timer`, `tick(frightOn)` -> switched?, `reset(level)` |
+| Levels | `schedule(n)`: the scatter/chase phase lengths in frames (only this so far) |
+| Play | `playFrame(game, input)`: one frame of the `'play'` state in the arcade's order; each ghost's target is its `SPECIAL.scatter` corner or `chaseTarget`; a `modeChange` event reverses the active ghosts. `tempRelease` (Pinky 0, Inky 240, Clyde 480 frames) is temporary, until the House |
 | Game | the state machine (`'start'` 252 frames, then `'play'`); `tick(input)` -> events; `snapshot()`; `debug` |
 | MazeDraw | `wallPixels(rows)`, `mazeSurface(rows, colours)` (cached) |
 | Sprites | `drawPac`, `drawGhost`, `drawDigits` |
