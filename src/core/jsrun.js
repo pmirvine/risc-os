@@ -10,7 +10,8 @@
 //   * a module (uses import / export), like the desktop's own applications:
 //       import { print, Menu } from 'riscos';           // the same names as above (except task / ctx)
 //       import { drawGrid } from './Grid';              // another file in the same directory (Grid or Grid/js)
-//       import { readZip } from 'wimplib/Zip';          // WimpLib: found through WimpLib$Path (resolveWimpLib)
+//       import { readZip } from 'wimplib/Zip';          // WimpLib: found through WimpLib$Path (resolveLib)
+//       import { Loop } from 'gamelib/Loop';            // GameLib: the same, through GameLib$Path ('gamelib/<Name>')
 //       export default function start(task, ctx) { ... }
 //
 // ctx: {args (the command tail), argv (split), file (the program's full path), dir (its directory), os}.
@@ -214,32 +215,37 @@ function resolveImport(dir, spec) {
   throw new Error(`Can't find '${spec}' (imported by a program in ${dir})`);
 }
 
-/** A 'wimplib' import specifier: 'wimplib' or 'wimplib/...', the prefix in any case. */
-const WIMPLIB = /^wimplib(\/|$)/i;
+/** The libraries a program imports as '<prefix>/<Name>': their system variables are <name>$Path and <name>$Dir. */
+const LIBS = [{ prefix: 'wimplib', name: 'WimpLib' }, { prefix: 'gamelib', name: 'GameLib' }];
+/** A library import specifier: 'wimplib' or 'wimplib/...' (or 'gamelib'), the prefix in any case. */
+const LIB = /^(wimplib|gamelib)(\/|$)/i;
 /** One directory or leaf name of a 'wimplib/<Name>' import: no dots, specials, wildcards or spaces. */
-const WIMPLIB_SEG = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
+const LIB_SEG = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 /**
  * RISC OS path of a 'wimplib/<Name>' import ('wimplib/Zip', 'wimplib/Dir/Name'): a module of WimpLib, the library
- * in $.!Boot.Resources.!WimpLib. It is looked for in each directory of the system variable WimpLib$Path in turn
- * (a path list, as for any <Name>$Path: directories ending in '.' or ':', with commas between), then in
+ * in $.!Boot.Resources.!WimpLib; 'gamelib/<Name>' is the same for GameLib ($.!Boot.Resources.!GameLib, with
+ * GameLib$Path and GameLib$Dir). A module is looked for in each directory of the system variable WimpLib$Path
+ * in turn (a path list, as for any <Name>$Path: directories ending in '.' or ':', with commas between), then in
  * WimpLib$Dir; in each, as Name then Name/js (a directory of that name is not a module). The first found is used.
  * The library's !Boot sets both at start-up, unless they are set already, so a user can put a directory of their
  * own first. Each name between the slashes is letters, digits, _ and - (not starting with -), so the import stays
  * in the directories searched ('..', '^', '$', '@', '<Var>', ':', dots, wildcards... are refused).
  */
-function resolveWimpLib(spec) {
-  const name = spec.replace(/^wimplib\/?/i, '');
-  if (!WIMPLIB.test(spec) || !name) throw new Error(`Can't find '${spec}' (no module name)`);
-  if (!name.split('/').every((s) => WIMPLIB_SEG.test(s))) {
-    throw new Error(`Can't find '${spec}' (a WimpLib module name is letters, digits, _ and -, with / between directories)`);
+function resolveLib(spec) {
+  const lib = LIBS.find((l) => l.prefix === spec.split('/')[0].toLowerCase());
+  const { name: libName } = lib ?? LIBS[0];
+  const name = spec.replace(/^(wimplib|gamelib)\/?/i, '');
+  if (!LIB.test(spec) || !name) throw new Error(`Can't find '${spec}' (no module name)`);
+  if (!name.split('/').every((s) => LIB_SEG.test(s))) {
+    throw new Error(`Can't find '${spec}' (a ${libName} module name is letters, digits, _ and -, with / between directories)`);
   }
   const rel = name.split('/').join('.');
   // an entry with no final '.' or ':' that is a directory is searched as that directory (MyLib -> MyLib.)
   const sep = (d) => (/[.:]$/.test(d) || !vfs.isDir(d) ? d : d + '.');
-  const list = (sysvars.get('WimpLib$Path') ?? '').split(',').map((d) => d.trim()).filter(Boolean).map(sep);
-  const dir = (sysvars.get('WimpLib$Dir') ?? '').trim().replace(/\.$/, '');
-  if (!list.length && !dir) throw new Error(`Can't find '${spec}' (WimpLib is not installed: WimpLib$Dir is not set)`);
+  const list = (sysvars.get(`${libName}$Path`) ?? '').split(',').map((d) => d.trim()).filter(Boolean).map(sep);
+  const dir = (sysvars.get(`${libName}$Dir`) ?? '').trim().replace(/\.$/, '');
+  if (!list.length && !dir) throw new Error(`Can't find '${spec}' (${libName} is not installed: ${libName}$Dir is not set)`);
   // a directory as the error names it: its full name if it exists
   const shown = (pre) => { const d = pre.replace(/\.$/, ''); return vfs.stat(d)?.path ?? sysvars.gstrans(d); };
   const find = (pre) => {
@@ -254,7 +260,7 @@ function resolveWimpLib(spec) {
   const dirShown = dir && shown(dir);
   const dirNew = dir && !inPath.some((d) => d.toLowerCase() === dirShown.toLowerCase());
   if (dirNew) { const p = find(dir + '.'); if (p) return p; }
-  const where = [inPath.length && `WimpLib$Path: ${inPath.join(', ')}`, dirNew && `WimpLib$Dir: ${dirShown}`].filter(Boolean);
+  const where = [inPath.length && `${libName}$Path: ${inPath.join(', ')}`, dirNew && `${libName}$Dir: ${dirShown}`].filter(Boolean);
   throw new Error(`Can't find '${spec}' (not in ${where.join('; nor in ')})`);
 }
 
@@ -272,7 +278,7 @@ async function moduleURL(path, info, cache, env) {
     for (const s of specs) {
       if (s === 'riscos') urls.set(s, riscosModule(env));
       else if (s.startsWith('./') || s.startsWith('../')) urls.set(s, await moduleURL(resolveImport(dir, s), info, cache, env));
-      else if (WIMPLIB.test(s)) urls.set(s, await moduleURL(resolveWimpLib(s), info, cache, env));
+      else if (LIB.test(s)) urls.set(s, await moduleURL(resolveLib(s), info, cache, env));
     }
     const code = src.replace(re, (all, pre, q, s) => (urls.has(s) ? `${pre}${q}${urls.get(s)}${q}` : all));
     const url = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
