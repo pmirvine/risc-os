@@ -608,7 +608,8 @@ in `_copyCut`: not done (no shared-code change in the !Word work).
   the messages. The `WimpLib` messages and behaviour are unchanged (`tests/moreapps/jsrun-wimplib.mjs` is untouched
   and passes); `GameLib` is tested in `tests/games/jsrun-gamelib.mjs`.
 * `tools/disc-gamelib.mjs` (`$.!Boot.Resources.!GameLib`, from `tools/games/!GameLib`) is registered in
-  `tools/build.mjs` after `disc-wimplib.mjs`; `disc-pacman.mjs` (`!Pacman`) follows with the game. `tools/games` is a
+  `tools/build.mjs` after `disc-wimplib.mjs`; `disc-pacman.mjs` (`$.Diversions.!Pacman`, from `tools/games/!Pacman`, with the same checks plus the `riscos`-only-in-an-import-line
+  rule for `!RunImage`) runs after `disc-lander2.mjs`. `tools/games` is a
   package (`package.json` maps `gamelib/*` to the sources) so the tests import the modules as the disc programs do.
 * Pre-existing, unchanged: `import` text inside comments is resolved, so the library's sources have none (checked by
   `disc-gamelib.mjs`).

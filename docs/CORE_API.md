@@ -616,6 +616,9 @@ own entries in `assets/disc/manifest.json` (read, patch and write the manifest i
 `disc-gamelib` builds the game library `$.!Boot.Resources.!GameLib` (from `tools/games/!GameLib`, icon from
 `tools/games/icon.mjs`; the same way as `disc-wimplib`, checking Latin-1, 72 columns, 250 lines, no `riscos` and no
 `import ... from` text in comments; `GAMES_SRC` / `GAMES_DISC` for tests/games/disc.test.mjs).
+`disc-pacman` builds `$.Diversions.!Pacman` (from `tools/games/!Pacman`, icon from `tools/games/icon.mjs`; like
+`disc-lander2`, with the same checks as `disc-gamelib`, also on `!RunImage` where `riscos` may appear only in its
+import line; run after `disc-lander2`; the other `Diversions` entries stay as they are).
 `disc-wimplib` builds the library `$.!Boot.Resources.!WimpLib` (from `tools/moreapps/!WimpLib`; its manifest node
 inserted among the other `Resources` entries, which stay as they are) and runs before `disc-moreapps`, which builds
 `$.MoreApps` (`!Word`, from `tools/moreapps/`, removing the library's old `MoreApps.WimpLib`; fonts as Data

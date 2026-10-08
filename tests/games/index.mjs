@@ -6,5 +6,7 @@
 import { suite } from '../lib/suite.mjs';
 suite('games', [
   { name: 'the library sources (Latin-1, 72 columns, 250 lines)', args: ['tools/disc-gamelib.mjs', '--check'], browser: false },
+  { name: 'the game sources (Latin-1, 72 columns, 250 lines)', args: ['tools/disc-pacman.mjs', '--check'], browser: false },
   { name: "the 'gamelib' import", args: ['tests/games/jsrun-gamelib.mjs'] },
+  { name: '!Pacman in the desktop', args: ['tests/core/shot.mjs', 'games-pacman', 'tests/games/pacman.mjs'] },
 ]);

@@ -146,3 +146,136 @@ describe('disc-gamelib on a disc root', () => {
     assert.equal(m.totalBytes, bytes);
   });
 });
+
+// tools/disc-pacman.mjs: !Pacman in $.Diversions, its --check, and the
+// same five faults as disc-gamelib (also in !RunImage, which the unit
+// rules test skips).
+describe('disc-pacman --check', () => {
+  const pac = (args, env) => spawnSync(process.execPath,
+    [path.join(ROOT, 'tools/disc-pacman.mjs'), ...args],
+    {env: {...process.env, ...env}, encoding: 'utf8'});
+
+  it('passes on the real sources', () => {
+    const r = pac(['--check']);
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /pacman: !Pacman \d+ files;/);
+  });
+
+  it('reports tabs, long lines and files, riscos, import text', () => {
+    const src = fs.mkdtempSync(path.join(os.tmpdir(), 'pacman-src-'));
+    try {
+      const app = path.join(src, '!Pacman');
+      fs.mkdirSync(app, {recursive: true});
+      fs.writeFileSync(path.join(app, 'Tab'), 'a\tb\n');
+      fs.writeFileSync(path.join(app, 'Long'),
+        'ok\n' + 'x'.repeat(73) + '\n');
+      fs.writeFileSync(path.join(app, 'Big'), 'x\n'.repeat(251));
+      fs.writeFileSync(path.join(app, 'Os'), '// uses riscos\n');
+      fs.writeFileSync(path.join(app, 'Imp'), "// import x from 'y'\n");
+      // the shell may import riscos, but only in an import line
+      fs.writeFileSync(path.join(app, '!RunImage'),
+        "import { os } from 'riscos';\n// the riscos shell\n"
+        + 'y'.repeat(73) + '\n');
+      fs.writeFileSync(path.join(app, 'Fine'), 'x'.repeat(72) + '\n'
+        + "import {Rng} from 'gamelib/Maths';\n" + 'x\n'.repeat(240));
+      const r = pac(['--check'], {GAMES_SRC: src});
+      assert.equal(r.status, 1);
+      assert.match(r.stderr, /!Pacman\/Tab: only Latin-1/);
+      assert.match(r.stderr, /!Pacman\/Long:2: longer than 72/);
+      assert.match(r.stderr, /!Pacman\/Big: 251 lines/);
+      assert.match(r.stderr, /!Pacman\/Os:1: 'riscos'/);
+      assert.match(r.stderr, /!Pacman\/Imp:1: .*import/);
+      assert.match(r.stderr, /!Pacman\/!RunImage:2: 'riscos'/);
+      assert.match(r.stderr, /!Pacman\/!RunImage:3: longer than 72/);
+      assert.doesNotMatch(r.stderr, /!RunImage:1:/);
+      assert.doesNotMatch(r.stderr, /Fine/);
+    } finally { fs.rmSync(src, {recursive: true, force: true}); }
+  });
+});
+
+describe('disc-pacman on a disc root', () => {
+  let tmp, others;
+  const DIV = ['Diversions'];
+  const APP = 'HardDisc4/Diversions/=21Pacman';
+  const pac = (env) => spawnSync(process.execPath,
+    [path.join(ROOT, 'tools/disc-pacman.mjs')],
+    {env: {...process.env, ...env}, encoding: 'utf8'});
+  const mf = () => JSON.parse(
+    fs.readFileSync(path.join(tmp, 'manifest.json'), 'utf8'));
+
+  before(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'pacman-disc-'));
+    const m = {files: 0, totalBytes: 0, root: {name: '$', children: [
+      {name: 'Diversions', type: 'dir', children: [
+        {name: '!Lander', type: 'app', children: []},
+        {name: '!Lander2', type: 'app', children: []},
+        {name: '!Zarch', type: 'app', children: []},
+        {name: 'Zebra', type: 'f81', size: 0, placeholder: true},
+      ]}]}};
+    others = JSON.stringify(node(m, DIV).children);
+    fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(m));
+  });
+  after(() => fs.rmSync(tmp, {recursive: true, force: true}));
+
+  it('builds Diversions.!Pacman in name order, typed', () => {
+    const r = pac({GAMES_DISC: tmp});
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stdout, /^pacman: /);
+    const m = mf();
+    const names = node(m, DIV).children.map((c) => c.name);
+    assert.deepEqual(names, ['!Lander', '!Lander2', '!Pacman', '!Zarch',
+      'Zebra']);
+    assert.equal(node(m, [...DIV, '!Pacman']).type, 'app');
+    const type = (n) => node(m, [...DIV, '!Pacman', n])?.type;
+    assert.equal(type('!Boot'), 'feb');
+    assert.equal(type('!Run'), 'feb');
+    assert.equal(type('!Help'), 'fff');
+    assert.equal(type('!Sprites'), 'ff9');
+    assert.equal(type('!RunImage'), 'f81');
+    assert.equal(type('Game'), 'f81');
+    const run = fs.readFileSync(path.join(tmp, APP, '=21Run'), 'latin1');
+    assert.match(run, /^Set Pacman\$Dir <Obey\$Dir>$/m);
+    assert.match(run, /^IconSprites <Pacman\$Dir>\.!Sprites$/m);
+    assert.match(run, /^WimpSlot -min 512K -max 512K$/m);
+    assert.match(run, /^Run <Pacman\$Dir>\.!RunImage %\*0$/m);
+  });
+
+  it('leaves the other Diversions entries as they were', () => {
+    assert.equal(JSON.stringify(node(mf(), DIV).children
+      .filter((c) => c.name !== '!Pacman')), others);
+  });
+
+  it('draws the !pacman sprites, 34 and 18 pixels square', () => {
+    const b = fs.readFileSync(path.join(tmp, APP, '=21Sprites'));
+    const got = {};
+    for (let i = 0, o = b.readUInt32LE(4) - 4; i < b.readUInt32LE(0); i++) {
+      const name = b.toString('latin1', o + 4, o + 16).replace(/\0+$/, '');
+      const w = (b.readUInt32LE(o + 16) + 1) * 8
+        - (31 - b.readUInt32LE(o + 28)) / 4;
+      got[name] = [w, b.readUInt32LE(o + 20) + 1];
+      o += b.readUInt32LE(o);
+    }
+    assert.deepEqual(got, {'!pacman': [34, 34], 'sm!pacman': [18, 18]});
+  });
+
+  it('changes nothing when run again', () => {
+    const first = snapshot(tmp);
+    const r = pac({GAMES_DISC: tmp});
+    assert.equal(r.status, 0, r.stderr);
+    assert.deepEqual(snapshot(tmp), first);
+  });
+
+  it('keeps the manifest totals consistent', () => {
+    const m = mf();
+    let files = 0, bytes = 0;
+    const walk = (n) => {
+      for (const c of n.children ?? []) {
+        if (c.children) walk(c);
+        else if (!c.placeholder) { files++; bytes += c.size ?? 0; }
+      }
+    };
+    walk(m.root);
+    assert.equal(m.files, files);
+    assert.equal(m.totalBytes, bytes);
+  });
+});

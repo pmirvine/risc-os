@@ -18,6 +18,7 @@ run(d + 'disc-patch.mjs');        // !Patch's ,fc3 patch files (disc.mjs skips t
 run(d + 'disc-basicdemos.mjs');   // $.Demos.BASIC (BBC BASIC demo programs from src/basic/demos)
 run(d + 'disc-lander.mjs');       // $.Diversions.!Lander (the JS app; the original binary is never on the disc)
 run(d + 'disc-lander2.mjs');      // $.Diversions.!Lander2 (Lander II: the enhanced, Zarch-like game, JavaScript on the disc, from tools/lander2)
+run(d + 'disc-pacman.mjs');       // $.Diversions.!Pacman (a tribute to the 1980 maze game: JavaScript on the disc, from tools/games/!Pacman, built on GameLib)
 run(d + 'disc-type1.mjs');        // $.Utilities.Type1Fonts (a sample SIL OFL Type 1 font for !T1ToFont, from tools/type1)
 run(d + 'disc-docs.mjs');        // $.Docs (help files for this desktop's own features, e.g. HostFS, from tools/docs)
 run(d + 'disc-jstutor.mjs');     // $.Manuals.JSTutor (the JavaScript tutorial) and $.Examples.JS, from tools/jstutor
