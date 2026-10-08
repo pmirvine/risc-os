@@ -468,3 +468,187 @@ test('revived eyes leave the house without disturbing the House', () => {
   assert.deepEqual(g.house.waiting, waiting);
   assert.deepEqual(g.house.out, []);
 });
+
+// ---- Task 15: levels, level complete, fruit ----
+
+test('fright uses the level table: 6 s then 2 s', () => {
+  assert.equal(playing().fright.frames, 360);
+  assert.equal(playing({ level: 5 }).fright.frames, 120);
+  assert.equal(playing({ level: 9 }).fright.flashes, 3);
+});
+
+for (const level of [17, 19, 21, 30]) {
+  test(`level ${level}: energizer reverses ghosts, nobody turns blue`,
+    () => {
+      const g = playing({ level });
+      Object.assign(g.player, { px: 12, py: 38, tx: 1, ty: 4, dir: UP });
+      g.debug.place(0, 100, 92, LEFT);
+      g.ghosts[3].state = 'house';
+      let ev = [];
+      while (!ev.some((e) => e.type === 'frightStart')) {
+        ev = g.tick({ want: UP });
+      }
+      assert.equal(g.fright.on, false);
+      assert.ok(g.ghosts.every((x) => !x.blue), 'none blue');
+      assert.equal(g.ghosts[0].reverse, true);
+      assert.equal(g.score, 50);
+      const rest = run(g, [[-1, 600]]);
+      assert.ok(!rest.some((e) => e.type === 'frightEnd'));
+      assert.ok(g.ghosts.every((x) => !x.blue && !x.flash));
+    });
+}
+
+/** Clear the level and run the sequence, noting what is seen. */
+function levelDone(g) {
+  g.debug.clearLevel();
+  const seen = [];
+  const ev = [];
+  for (let i = 0; i < 241; i++) {
+    ev.push(...g.tick({ want: -1 }));
+    seen.push([g.state, g.stateTimer]);
+  }
+  return { seen, ev };
+}
+
+test('clearing the level: levelDone for 240 frames, then ready', () => {
+  const g = playing();
+  g.debug.clearLevel();
+  assert.equal(g.maze.dotsLeft, 0);
+  const first = g.tick({ want: -1 });
+  assert.deepEqual(first.filter((e) => e.type === 'levelDone'),
+    [{ type: 'levelDone' }]);
+  assert.equal(g.state, 'levelDone');
+  assert.equal(g.level, 1);
+  for (let i = 0; i < 239; i++) g.tick({ want: -1 });
+  assert.equal(g.state, 'levelDone');
+  g.tick({ want: -1 });
+  assert.equal(g.state, 'ready');
+  assert.equal(g.level, 2);
+  assert.equal(g.maze.dotsLeft, 244);
+  assert.equal(g.maze.dotsEaten, 0);
+  for (let i = 0; i < 119; i++) g.tick({ want: -1 });
+  assert.equal(g.state, 'ready');
+  g.tick({ want: -1 });
+  assert.equal(g.state, 'play');
+});
+
+test('the new level starts clean and uses its own table', () => {
+  const g = playing();
+  g.sweeps = 3;
+  g.eatenId = 2;
+  g.popups = [{ px: 1, py: 1, text: '200', frames: 50 }];
+  g.fright.start();
+  g.house.counts[2] = 9;
+  g.ghosts[1].blue = true;
+  levelDone(g);
+  assert.equal(g.sweeps, 0);
+  assert.equal(g.eatenId, -1);
+  assert.deepEqual(g.popups, []);
+  assert.equal(g.fright.on, false);
+  assert.equal(g.fright.frames, 300);
+  assert.deepEqual(g.house.limits, [0, 0, 0, 50]);
+  assert.equal(g.house.counts[2], 0);
+  assert.equal(g.modes.list[0], 420);
+  assert.equal(g.modes.mode, 'scatter');
+  assert.equal(g.fruit.shown, false);
+  assert.ok(g.ghosts.every((x) => !x.blue));
+  assert.equal(g.player.px, SPECIAL.starts.pac.px);
+});
+
+test('a new level resets the 12000 sweeps', () => {
+  const g = playing();
+  g.sweeps = 3;
+  levelDone(g);
+  g.sweeps = 0;
+  g.debug.skipIntro();
+  assert.equal(g.sweeps, 0);
+});
+
+test('levelDone counts stateTimer 0 to 239 and the ghosts stay put', () => {
+  const g = playing();
+  g.debug.clearLevel();
+  g.tick({ want: -1 });
+  const at = g.ghosts.map((x) => [x.px, x.py]);
+  const timers = [g.stateTimer];
+  for (let i = 1; i < 240; i++) {
+    g.tick({ want: -1 });
+    timers.push(g.stateTimer);
+    assert.equal(g.state, i < 240 ? 'levelDone' : 'ready');
+  }
+  assert.deepEqual(timers, Array.from({ length: 240 }, (_, i) => i));
+  assert.deepEqual(g.ghosts.map((x) => [x.px, x.py]), at);
+});
+
+test('a level 17 clear goes to level 18, and so on', () => {
+  const g = playing({ level: 17 });
+  levelDone(g);
+  assert.equal(g.level, 18);
+  assert.equal(g.fright.frames, 60);
+});
+
+/** Pac-Man one pixel from the fruit's tile, going left. */
+function atFruit() {
+  const g = playing();
+  Object.assign(g.player, { px: 112, py: 140, tx: 14, ty: 17,
+    dir: LEFT, pause: 0 });
+  return g;
+}
+
+test('the fruit appears at 70 dots, is eaten for its points', () => {
+  const g = atFruit();
+  g.fruit.onDots(70);
+  assert.equal(g.fruit.shown, true);
+  const s0 = g.score;
+  const ev = g.tick({ want: LEFT });
+  const e = ev.find((x) => x.type === 'fruitEaten');
+  assert.ok(e, 'event');
+  assert.deepEqual([e.kind, e.points], ['cherries', 100]);
+  assert.equal(g.score - s0, 100);
+  assert.equal(g.fruit.shown, false);
+  assert.deepEqual(g.popups.map((p) => [p.px, p.py, p.text, p.frames]),
+    [[112, 140, '100', 120]]);
+  for (let i = 0; i < 119; i++) g.tick({ want: -1 });
+  assert.equal(g.popups.length, 1);
+  g.tick({ want: -1 });
+  assert.equal(g.popups.length, 0);
+});
+
+test('the fruit shows when the 70th dot is eaten, by itself', () => {
+  const g = playing();
+  const row = g.player.ty;
+  let tx = 0;
+  for (let x = 0; x < g.maze.w; x++) {
+    if (x < 13 && g.maze.dotAt(x, row) === 10) tx = x;
+  }
+  for (let y = 0; y < g.maze.h && g.maze.dotsEaten < 69; y++) {
+    for (let x = 0; x < g.maze.w && g.maze.dotsEaten < 69; x++) {
+      if (g.maze.dotAt(x, y) === 10 && !(y === row && x === tx)) {
+        g.maze.eat(x, y);
+      }
+    }
+  }
+  assert.equal(g.maze.dotsEaten, 69);
+  assert.equal(g.fruit.shown, false);
+  run(g, [[LEFT, 200]]);
+  assert.ok(g.maze.dotsEaten >= 70);
+  assert.equal(g.fruit.shown, true);
+});
+
+test('a missed fruit goes away and a death removes it', () => {
+  const g = playing();
+  g.fruit.onDots(70);
+  const t = g.fruit.timer;
+  g.player.pause = 1e9;
+  for (let i = 0; i < t; i++) g.tick({ want: -1 });
+  assert.equal(g.fruit.shown, false);
+  g.fruit.onDots(170);
+  assert.equal(g.fruit.shown, true);
+  g.debug.kill();
+  assert.equal(g.fruit.shown, false);
+});
+
+test('the fruit follows the level', () => {
+  const g = playing({ level: 9 });
+  g.fruit.onDots(170);
+  assert.deepEqual([g.fruit.kind, g.fruit.points], ['rocket', 2000]);
+});

@@ -13,7 +13,9 @@
 // a blue ghost eats it (Fright gives the points: 200 to 1600) and
 // freezes the game for 60 frames in the 'eaten' state, while eyes
 // already on their way home keep moving. Eating all four ghosts of
-// each of the four energizers of a level earns 12000, once.
+// each of the four energizers of a level earns 12000, once. The
+// bonus fruit (Fruit) appears at 70 and 170 dots eaten and is eaten
+// by standing on its tile; the last dot ends the level.
 
 import { chaseTarget } from './Targets';
 
@@ -43,6 +45,7 @@ export function kill(game) {
   game.resetActors();
   game.house.restart();
   game.house.onDeath();
+  game.fruit.clear();
   game.setState('ready');
 }
 
@@ -67,12 +70,40 @@ export function eatenFrame(game) {
   for (const g of game.ghosts) {
     if (g.state === 'eyes' && g.id !== game.eatenId) step(game, g);
   }
-  for (const p of game.popups) p.frames--;
+  tickPopups(game);
   if (++game.stateTimer >= FREEZE) {
-    game.popups = [];
     game.eatenId = -1;
     game.setState('play');
   }
+}
+
+function tickPopups(game) {
+  for (const p of game.popups) p.frames--;
+  game.popups = game.popups.filter((p) => p.frames > 0);
+}
+
+/** Standing on the fruit's tile eats it. */
+function eatFruit(game) {
+  const f = game.data.maze.SPECIAL.fruit;
+  const p = game.player;
+  if (!game.fruit.shown
+    || !f.tiles.some(([x, y]) => x === p.tx && y === p.ty)) return;
+  const kind = game.fruit.kind;
+  const points = game.fruit.eat();
+  game.score += points;
+  game.events.push({ type: 'fruitEaten', kind, points });
+  game.popups.push({ px: f.px, py: f.py, text: String(points),
+    frames: 120 });
+}
+
+/** The last dot: the ghosts stop, the level-complete show begins. */
+function levelDone(game) {
+  game.events.push({ type: 'levelDone' });
+  if (game.fright.on) endFright(game);
+  game.fright.reset();
+  game.fruit.clear();
+  game.popups = [];
+  game.setState('levelDone');
 }
 
 /** Move a ghost; one that reaches the exit (112, 92) has left. */
@@ -94,14 +125,19 @@ function moveGhost(game, g) {
 export function playFrame(game, input) {
   const want = input && input.want !== undefined ? input.want : -1;
   const { maze, player } = game;
+  tickPopups(game);
+  game.fruit.tick();
   if (game.fright.tick()) endFright(game);
   const r = player.tick(maze, want, PAC_PCT);
   if (r.ate) {
     game.score += r.ate;
     game.house.onDot();
+    game.fruit.onDots(maze.dotsEaten);
     game.events.push({ type: r.ate === 50 ? 'energizer' : 'dot' });
     if (r.ate === 50) startFright(game);
   }
+  eatFruit(game);
+  if (maze.dotsLeft === 0) return levelDone(game);
   if (collide(game)) return;
   release(game);
   if (game.modes.tick(game.fright.on)) {

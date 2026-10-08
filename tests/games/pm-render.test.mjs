@@ -2,12 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Surface, rgb } from '../../tools/games/!GameLib/Surface';
 import { drawText } from '../../tools/games/!GameLib/Font';
-import { ROWS } from '../../tools/games/!Pacman/MazeData';
+import { ROWS, SPECIAL } from '../../tools/games/!Pacman/MazeData';
 import { COLOURS } from '../../tools/games/!Pacman/Theme';
 import { Game } from '../../tools/games/!Pacman/Game';
 import { wallPixels, mazeSurface }
   from '../../tools/games/!Pacman/MazeDraw';
-import { drawPac, drawGhost, drawDigits }
+import { drawPac, drawGhost, drawDigits, drawFruit }
   from '../../tools/games/!Pacman/Sprites';
 import { drawHud } from '../../tools/games/!Pacman/Hud';
 import { drawGame, MAZE_TOP } from '../../tools/games/!Pacman/Render';
@@ -280,4 +280,88 @@ test('eyes (an eaten ghost on its way home) draw no body', () => {
   drawGame(s, g, 0);
   assert.equal(near(s, 60, 44, col(COLOURS.ghosts[0])), 0);
   assert.ok(near(s, 60, 44, rgb(255, 255, 255)) > 8, 'eyes');
+});
+
+// ---- levelDone, fruit, and the Hud's fruit from Levels ----
+
+/** Count wall-coloured pixels of the maze area. */
+function wallCount(g, frame = 0) {
+  const s = new Surface(W, 288);
+  drawGame(s, g, frame);
+  let n = 0;
+  const c = col(COLOURS.wall);
+  for (let y = MAZE_TOP; y < MAZE_TOP + 248; y++) {
+    for (let x = 0; x < W; x++) n += s.get(x, y) === c;
+  }
+  return n;
+}
+
+test('levelDone: the maze goes white as Levels says', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  g.state = 'levelDone';
+  g.stateTimer = 100;
+  const blue = wallCount(g);
+  assert.ok(blue > 500);
+  g.stateTimer = 120;
+  assert.equal(wallCount(g), 0, 'white at 120');
+  g.stateTimer = 134;
+  assert.equal(wallCount(g), 0);
+  g.stateTimer = 135;
+  assert.equal(wallCount(g), blue);
+  g.stateTimer = 210;
+  assert.equal(wallCount(g), 0);
+  g.stateTimer = 225;
+  assert.equal(wallCount(g), blue);
+});
+
+test('levelDone: Pac-Man stays, ghosts vanish from tick 60', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  g.state = 'levelDone';
+  g.stateTimer = 59;
+  const a = new Surface(W, 288);
+  drawGame(a, g, 0);
+  assert.ok(near(a, g.ghosts[0].px, g.ghosts[0].py,
+    col(COLOURS.ghosts[0])) > 40, 'Blinky at 59');
+  assert.ok(near(a, g.player.px, g.player.py, col(COLOURS.pac)) > 40);
+  g.stateTimer = 60;
+  const b = new Surface(W, 288);
+  drawGame(b, g, 0);
+  assert.equal(near(b, g.ghosts[0].px, g.ghosts[0].py,
+    col(COLOURS.ghosts[0])), 0, 'Blinky gone at 60');
+  assert.ok(near(b, g.player.px, g.player.py, col(COLOURS.pac)) > 40);
+});
+
+test('the fruit is drawn only while it is shown', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  const f = SPECIAL.fruit;
+  const a = new Surface(W, 288);
+  drawGame(a, g, 0);
+  const none = [0, 1, 2].map((i) => near(a, f.px, f.py, i)).join();
+  g.fruit.onDots(70);
+  const b = new Surface(W, 288);
+  drawGame(b, g, 0);
+  let lit = 0;
+  for (let y = f.py - 8; y < f.py + 8; y++) {
+    for (let x = f.px - 8; x < f.px + 8; x++) {
+      lit += b.get(x, y + MAZE_TOP) !== a.get(x, y + MAZE_TOP);
+    }
+  }
+  assert.ok(lit > 20, 'fruit pixels ' + lit + ' ' + none);
+});
+
+test('the Hud fruit row follows Levels', () => {
+  const g = new Game({ seed: 1, level: 13 });
+  const s = new Surface(224, 288);
+  drawHud(s, g, 0, 0);
+  const t = new Surface(224, 288);
+  drawFruit(t, 208, 280, 'key');
+  drawFruit(t, 192, 280, 'bell');
+  let diff = 0;
+  for (let y = 264; y < 288; y++) {
+    for (let x = 190; x < 224; x++) diff += s.get(x, y) !== t.get(x, y);
+  }
+  assert.equal(diff, 0);
 });
