@@ -116,3 +116,39 @@ test('wraps through the tunnel', () => {
   assert.equal(s.p.px, 223);
   assert.equal(s.p.tx, 27);
 });
+
+test('eating pauses: 1 frame a dot, 3 an energizer, acc kept', () => {
+  const s = setup();
+  s.p.px = 28; s.p.py = 188; s.p.dir = LEFT;
+  s.p.tx = 3; s.p.ty = 23;
+  s.m.eat(2, 23);
+  let r;
+  do { r = s.p.tick(s.m, LEFT, 80); } while (!r.ate || r.ate === 10);
+  assert.equal(r.ate, 50);
+  const acc = s.p.acc, px = s.p.px;
+  for (let i = 0; i < 3; i++) {
+    assert.deepEqual(s.p.tick(s.m, LEFT, 80), { moved: 0, ate: 0 });
+    assert.equal(s.p.acc, acc);
+    assert.equal(s.p.px, px);
+  }
+  assert.equal(s.p.pause, 0);
+  s.p.tick(s.m, LEFT, 80);
+  assert.ok(s.p.acc !== acc || s.p.px !== px);
+});
+
+/** Frames to run left along row 1 from tile 12 to pixel px. */
+function runTo(s, px) {
+  Object.assign(s.p, { px: 100, py: 12, tx: 12, ty: 1, dir: LEFT });
+  let f = 0;
+  while (s.p.px > px && f < 999) { s.p.tick(s.m, LEFT, 80); f++; }
+  return f;
+}
+
+test('a run of 10 dots takes 10 frames longer than none', () => {
+  const a = setup(), b = setup();
+  for (let x = 2; x < 12; x++) {
+    assert.equal(a.m.dotAt(x, 1), 10);
+    b.m.eat(x, 1);
+  }
+  assert.equal(runTo(a, 20) - runTo(b, 20), 10);
+});

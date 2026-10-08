@@ -4,7 +4,7 @@ import { Game, START_FRAMES } from '../../tools/games/!Pacman/Game';
 import { SPECIAL } from '../../tools/games/!Pacman/MazeData';
 import { LEFT, RIGHT, UP, DOWN, DX, DY } from '../../tools/games/!Pacman/Dirs';
 import { playing, run } from './script.mjs';
-import { addScore, ghostPct, targetOf } from '../../tools/games/!Pacman/Play';
+import { addScore, ghostPct, pacPct, targetOf } from '../../tools/games/!Pacman/Play';
 import { chaseTarget } from '../../tools/games/!Pacman/Targets';
 import { levelSpec } from '../../tools/games/!Pacman/Levels';
 
@@ -840,7 +840,9 @@ test('Cruise Elroy 1: Blinky 75, 75, then 80 and 85', () => {
   leave(g, 10);
   assert.equal(g.elroy, 2);
   assert.equal(ghostPct(g, b), 85);
-  assert.equal(ghostPct(g, g.ghosts[1]), 75);
+  assert.equal(ghostPct(g, g.ghosts[1]), 50);   // still in the house
+  g.debug.place(1, 112, 188, LEFT);
+  assert.equal(ghostPct(g, g.ghosts[1]), 75);   // out, no Elroy
 });
 
 test('in Elroy Blinky chases during scatter', () => {
@@ -883,4 +885,144 @@ test('a new game or level resets what the last one left', () => {
   assert.equal(g.maze.dotsEaten, 0);
   assert.deepEqual([g.sweeps, g.eatenId, g.popups.length, g.fruit.shown,
     g.elroyOff], [0, -1, 0, false, false]);
+});
+
+// ---- Task 17: per-level speeds, precedence, flash counts ----
+
+/** Pixels ghost id moves in n ticks, Pac-Man parked out of the way. */
+function ghostPixels(g, id, n) {
+  g.player.pause = 1e9;
+  g.player.tx = -99;
+  g.house.tick = () => null;
+  const gh = g.ghosts[id];
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const x = gh.px, y = gh.py;
+    g.tick(idle);
+    const dx = Math.abs(gh.px - x);
+    sum += Math.min(dx, 224 - dx) + Math.abs(gh.py - y);
+  }
+  return sum;
+}
+const wantPx = (pct, n) => Math.floor(pct * 12626 * n / 1e6);
+const near = (got, pct, n, what) => assert.ok(
+  Math.abs(got - wantPx(pct, n)) <= 1,
+  what + ': ' + got + ' vs ' + wantPx(pct, n));
+
+test('ghost speed precedence', () => {
+  const at = (id, px, py, dir, setup) => {
+    const g = playing();
+    g.debug.place(id, px, py, dir);
+    if (setup) setup(g, g.ghosts[id]);
+    return g;
+  };
+  let g = at(1, 112, 188, LEFT, (_, x) => x.eat());
+  near(ghostPixels(g, 1, 30), 200, 30, 'eyes');
+  assert.equal(ghostPct(g, g.ghosts[1]), 200);
+  g = at(1, 44, 116, LEFT);
+  assert.equal(ghostPct(g, g.ghosts[1]), 40);
+  near(ghostPixels(g, 1, 120), 40, 120, 'tunnel');
+  g = at(1, 112, 188, LEFT, (_, x) => { x.blue = true; });
+  near(ghostPixels(g, 1, 600), 50, 600, 'blue');
+  g = at(0, 112, 188, LEFT, (gg) => leave(gg, 10));
+  assert.equal(g.elroy, 2);
+  near(ghostPixels(g, 0, 600), 85, 600, 'Elroy 2');
+  g = at(1, 112, 188, LEFT);
+  near(ghostPixels(g, 1, 600), 75, 600, 'normal');
+  g = playing();
+  near(ghostPixels(g, 2, 600), 50, 600, 'house');
+  assert.equal(g.ghosts[2].state, 'house');
+});
+
+test('speed precedence: blue beats Elroy, tunnel beats Elroy', () => {
+  let g = playing();
+  leave(g, 10);
+  const b = g.ghosts[0];
+  b.place(112, 188, LEFT);
+  assert.equal(ghostPct(g, b), 85);
+  b.blue = true;
+  assert.equal(ghostPct(g, b), 50);
+  near(ghostPixels(g, 0, 600), 50, 600, 'blue Elroy');
+  b.blue = false;
+  b.place(44, 116, LEFT);
+  assert.equal(ghostPct(g, b), 40);
+  near(ghostPixels(g, 0, 120), 40, 120, 'Elroy in the tunnel');
+  b.blue = true;
+  assert.equal(ghostPct(g, b), 40);       // the tunnel beats blue
+  b.eat();
+  assert.equal(ghostPct(g, b), 200);      // eyes beat everything
+});
+
+test('the ghosts follow the level table', () => {
+  const g = playing({ level: 5 });
+  g.debug.place(1, 112, 188, LEFT);
+  assert.equal(ghostPct(g, g.ghosts[1]), 95);
+  g.ghosts[1].blue = true;
+  assert.equal(ghostPct(g, g.ghosts[1]), 60);
+  g.debug.place(1, 44, 116, LEFT);
+  assert.equal(ghostPct(g, g.ghosts[1]), 50);
+});
+
+/** Pixels Pac-Man moves in n ticks left along the tunnel row. */
+function pacPixels(g, n) {
+  g.player.px = 44; g.player.py = 116;
+  g.player.tx = 5; g.player.ty = 14;
+  g.player.dir = LEFT;
+  g.house.tick = () => null;
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const x = g.player.px;
+    g.tick({ want: LEFT });
+    sum += (x - g.player.px + 224) % 224;
+  }
+  return sum;
+}
+
+test('Pac-Man speed: normal, frightened, level 5 and 21', () => {
+  let g = playing();
+  assert.equal(pacPct(g), 80);
+  g.fright.on = true;
+  assert.equal(pacPct(g), 90);
+  g = playing({ level: 5 });
+  assert.equal(pacPct(g), 100);
+  g = playing({ level: 21 });
+  assert.equal(pacPct(g), 90);
+  g.fright.on = true;                    // no fright speed: still 90
+  assert.equal(pacPct(g), 90);
+});
+
+test('Pac-Man is not slowed in the tunnel', () => {
+  near(pacPixels(playing(), 60), 80, 60, 'level 1');
+  const g = playing();
+  g.fright.on = true;
+  near(pacPixels(g, 60), 90, 60, 'level 1 fright');
+  near(pacPixels(playing({ level: 5 }), 60), 100, 60, 'level 5');
+  near(pacPixels(playing({ level: 21 }), 60), 90, 60, 'level 21');
+});
+
+/** Ticks until ghost 0's flash shows white, each time it starts. */
+function whiteStarts(level) {
+  const g = playing({ level });
+  g.player.pause = 1e9;
+  g.player.tx = -99;
+  g.fright.start();
+  g.ghosts[0].blue = true;
+  const starts = [];
+  let was = false;
+  for (let i = 0; i < 400 && g.fright.on; i++) {
+    g.tick(idle);
+    const f = g.ghosts[0].flash;
+    if (f && !was) starts.push(i);
+    was = f;
+  }
+  return starts;
+}
+
+test('flash counts: level 1 five flashes, level 9 from the start', () => {
+  const a = whiteStarts(1);
+  assert.equal(a.length, 5);
+  assert.ok(a[0] >= 220 && a[0] <= 236, 'first ' + a[0]);
+  const b = whiteStarts(9);
+  assert.ok(b[0] <= 14, 'level 9 white from ' + b[0]);
+  assert.equal(b.length, 2);             // 60 frames hold two whites
 });
