@@ -16,3 +16,6 @@ export function run(game, steps) {
   }
   return events;
 }
+
+/** A fixed route for golden runs: left, up, right, down, 90 ticks each. */
+export const scripted = (f) => [1, 0, 3, 2][Math.floor(f / 90) % 4];

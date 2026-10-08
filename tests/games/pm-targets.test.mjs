@@ -67,6 +67,14 @@ test('chooseExit: red zones refuse up only when asked', () => {
   assert.notEqual(chooseExit(m, [12, 11], RIGHT, [12, 0], true), UP);
 });
 
+test('red zone at (12, 23) arriving left: no up when asked', () => {
+  const m = maze();
+  assert.equal(m.isRedZone(12, 23), true);
+  assert.equal(chooseExit(m, [12, 23], LEFT, [12, 0], false), UP);
+  assert.notEqual(chooseExit(m, [12, 23], LEFT, [12, 0], true), UP);
+  assert.equal(chooseExit(m, [12, 23], LEFT, [12, 0], true), LEFT);
+});
+
 test('frightExit follows the seeded rule and never reverses', () => {
   const m = maze(), a = new Rng(1), b = new Rng(1);
   const tile = [6, 5], dir = RIGHT;

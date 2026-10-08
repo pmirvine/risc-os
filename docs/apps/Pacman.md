@@ -33,8 +33,8 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Theme | `TITLE`, `COLOURS`, `GHOSTS` (id, name, nickname, colour), `FRUIT` |
 | Maze | `new Maze(rows, special)`: `walkable`, `isTunnel`, `isRedZone`, `exits`, `dotAt`, `eat` -> 0/10/50, `dotsLeft`, `reset` |
 | Mover | `UNIT`, `STEP`, `steps(actor, pct)` -> whole pixels this frame |
-| Player | `new Player(start)`, `tick(maze, want, pct)` -> `{moved, ate}`; `anim`, `stopped`, `pause` |
-| Targets | `chooseExit(maze, tile, dir, target, redZones)` (`redZones` is a boolean "apply red zones") |
+| Player | `new Player(start)`, `tick(maze, want, pct)` -> `{moved, ate}`; `anim`, `stopped`, `pause`. Per pixel: `turn` (reverse at once; a side turn when he is on the centre line of his way and within 3 px either side of the tile centre, `past()` -3..3, and `open`), then the stop check (`past() >= 0` and the next tile closed), then the step: 1 px along `dir` plus 1 px of `slack()` towards the centre line across it (the diagonal cut). Ghosts never corner: they turn exactly at centres |
+| Targets | `chooseExit(maze, tile, dir, target, redZones)` (`redZones` is a boolean "apply red zones"; tiles from `Maze.isRedZone`). Play passes true for a ghost that is neither eyes nor blue (scatter or chase), never otherwise |
 | Ghost | a ghost: `state` `house` (bobbing y 112-120) / `leaving` / `active` / `eyes` (after `eat()`: target (13, 11), red zones ignored, `EYES_PCT` 200 until the level table, down the door at (112, 92) to (112, 116), sideways to home x, then `leaving` and not blue); `leave()`; `tick(ctx)`; decides one tile ahead (`turn`, `ahead`); `reverse` flag (boolean, so two signals make one reversal); house moves at 50% |
 | Modes | `new Modes(level)`: `mode` (`scatter`/`chase`), `phase`, `timer`, `tick(frightOn)` -> switched?, `reset(level)` |
 | Fright | `new Fright({frightFrames, flashes})` (frightFrames null: nobody turns blue): `start()` -> blue?, `tick()` -> true on the ending frame, `on`, `elapsed`, `flashWhite(frame)`, `nextScore()` 200/400/800/1600, `reset()`. Play starts it on an energizer (`frightStart` event; active ghosts get `reverse`, every non-eyes ghost `blue`), freezes Modes while `on`, sets `ghost.flash`, ends it with `frightEnd`. A blue ghost chooses with `frightExit` and the game's Rng. Built from `levelSpec(level)` (a new Fright on each level); with null frames an energizer still reverses the ghosts but nobody turns blue |
@@ -74,9 +74,77 @@ state is `'start'` or `'play'` for now. Settings are `{display: 'full' | 'window
 ## Tests
 
 * `node --test tests/games` (no browser): `pm-*.test.mjs` for each engine and drawing module, `pm-rules.test.mjs`
-  (what each module may import), `disc.test.mjs` (both disc scripts and their `--check`s).
+  (what each module may import), `pm-golden.test.mjs` (pinned hashes of three scripted 3000-tick runs; see Rule
+  coverage), `disc.test.mjs` (both disc scripts and their `--check`s).
 * `URL=http://localhost:8372/ node --test tests/games/index.mjs`: the source checks, the `gamelib` import
   (`jsrun-gamelib.mjs`) and `pacman.mjs` in a real browser through `tests/core/shot.mjs`: start from the Filer, full
   screen and title, Return, an arrow key and a dot eaten, pause, the pause menu to the desktop (icon stays), Window
   from the icon bar menu, View source opens !JsEdit, Quit during play leaves nothing. Screenshots
   `pacman-title.png`, `pacman-play.png` in `SHOTDIR`.
+
+## Rule coverage
+
+Each rule of the mechanics reference (sections 1-12) and the test that checks it (`pm-<module>` is
+`tests/games/pm-<module>.test.mjs`). `pm-golden` pins a whole 3000-tick run for seeds 1, 2 and 3 as sha256 hashes of
+`game.snapshot()`; **a change to those hashes must say why in its commit message.** (The scripted route dies early and
+rarely reaches an energizer, so the hashes mostly guard movement, decisions and the Rng; the rules below are checked
+one by one.)
+
+| section | rule | test |
+|---|---|---|
+| 1 | tile = pixel >> 3, centre at 8x + 4; start (112, 188) | pm-player "starts at the start and moves left" |
+| 1 | directions UP 0, LEFT 1, DOWN 2, RIGHT 3; reverse is `d ^ 2` | pm-dirs "directions are numbered in tie-break order", "reverse flips each direction" |
+| 1 | the tunnel row wraps modulo 224 (Pac-Man, ghosts) | pm-player "wraps through the tunnel"; pm-game "the tunnel slows a ghost entering column 5 and wraps it" |
+| 2 | 31 x 28 maze, 244 dots, symmetric, connected, no dead ends | pm-maze "31 rows of 28, 244 dots, symmetric", "300 walkable tiles, connected, no dead ends" |
+| 2 | energizers, door, house interior, tunnel tiles | pm-maze "special tiles" |
+| 2 | no-dot corridors (house band, start, tunnel) | pm-maze "no dots in the band round the house, the start and the tunnel" |
+| 2 | exit tile, fruit tile, eyes' target, starts | pm-maze "the places of the appendix: exit, fruit, eyes, starts" |
+| 2 | red zones: columns 12-15 of rows 11 and 23 | pm-maze "red zones are the 8 tiles only" |
+| 2 | walls, door and house are closed to Pac-Man; open to ghosts only by their paths | pm-maze "walkable by who", "exits lists the open directions" |
+| 3 | the five starting positions and facings | pm-game "starting positions: the five actors of the appendix"; "sharing a tile is a death and everyone goes back" (after a death) |
+| 4 | accumulator: `acc += pct * 12626`, whole pixels per frame | pm-mover "constants", "600 frames per speed" |
+| 4 | eating pauses: 1 frame a dot, 3 an energizer, accumulator not advanced | pm-player "eats on tile entry and pauses", "50 for an energizer, pause 3", "eating pauses: 1 frame a dot, 3 an energizer, acc kept", "a run of 10 dots takes 10 frames longer than none" |
+| 4 | eyes 200%, house and leaving 50% | pm-ghost "eyes run at 200%", "house speed is 50%: 60 frames bob about 38 pixels"; pm-game "ghost speed precedence" |
+| 4 | precedence eyes > tunnel > frightened > Elroy > normal | pm-game "ghost speed precedence", "speed precedence: blue beats Elroy, tunnel beats Elroy" |
+| 4 | Pac-Man: PacFright while a fright runs, else PacSpeed; not slowed in the tunnel | pm-game "Pac-Man speed: normal, frightened, level 5 and 21", "Pac-Man is not slowed in the tunnel" |
+| 4 | the tunnel slows a ghost on `T` tiles (level table `tunnel`) | pm-game "the tunnel slows a ghost entering column 5 and wraps it", "the ghosts follow the level table" |
+| 4 | the level table (21 rows) and levels 22+ | pm-levels "every row of the appendix table", "there are 17 rows and 21 levels", "level 22 and beyond are level 21", "frightFrames are seconds x 60" |
+| 4 | levels with no fright: reverse, nobody turns blue | pm-fright "no fright time: nobody turns blue"; pm-game "level N: energizer reverses ghosts, nobody turns blue" |
+| 4 | flashing: 14 + 14 frames, last `flashes x 28`, short frights flash from the start | pm-fright "flashing: the last 5 flashes of 360 frames", "a short fright flashes from the start"; pm-game "flash counts: level 1 five flashes, level 9 from the start" |
+| 5 | buffered input (kept after the key is let go) | pm-player "an impossible turn is buffered, he keeps going"; pm-screens "wantFor: the latest held direction, else the old want", "a direction press sets want and it persists" |
+| 5 | turns open anywhere: at the centre, and reversing at any moment | pm-player "turns at the centre of a tile with an opening", "reverses at once mid-tile" |
+| 5 | cornering: pre-turn up to 3 px, diagonal cut, 3 pixel steps saved | pm-player "cornering: a turn 3 px early cuts the corner diagonally", "cornering: each diagonal step is 1 px up and 1 px across", "cornering: at 80% the early turn is 2 or 3 frames sooner" |
+| 5 | cornering: post-turn up to 3 px after the centre | pm-player "cornering: a turn up to 3 px after the centre cuts back" |
+| 5 | no turn 4 px away or into a wall; reversal mid-diagonal; never inside a wall | pm-player "cornering: 4 px away is too far, a wall is not turned into", "cornering: reversing works in the middle of a diagonal", "cornering: he never ends up inside a wall" |
+| 5 | he stops at the centre of a tile whose next tile is closed | pm-player "stops at the centre of the last tile" |
+| 5 | ghosts turn only at tile centres | pm-ghost "a reverse flag turns an active ghost at the next tile entry", "seeded game: ghosts reverse only after a mode change or fright" |
+| 5 | collision = same tile, checked after Pac-Man moves and again after the ghosts | pm-game "a collision is seen right after Pac-Man moves", "a collision is seen again after the ghosts move", "sharing a tile is a death and everyone goes back". The swap pass-through in the appendix cannot arise with single pixel steps and a check after each mover, so it has no test of its own |
+| 6 | decide one tile ahead; never reverse; no `-`, `H`, `#`; ties up, left, down, right | pm-targets "chooseExit: ties go up, left, down, right", "chooseExit never reverses", "chooseExit never goes into the door"; pm-ghost "a reverse flag turns an active ghost at the next tile entry" |
+| 6 | red zones: no UP at a red-zone tile in scatter or chase, not frightened, not eyes | pm-targets "chooseExit: red zones refuse up only when asked", "red zone at (12, 23) arriving left: no up when asked"; pm-game "red zones apply to chasing and scattering ghosts only" |
+| 6 | forced reversal on a mode change and a fright start, not at its end; boolean flag | pm-game "a mode change reverses every active ghost, and only them", "active ghosts reverse when the fright starts", "the end of a fright turns nobody round"; pm-ghost "two signals before a tile entry make one reversal"; pm-game "level 2: the 1-frame scatter gives one reversal" |
+| 6 | chase targets of Blinky, Pinky (up bug), Inky (up bug), Clyde | pm-targets "Blinky targets Pac-Man whatever way he faces", "Pinky aims 4 ahead; facing up also 4 left", "Inky doubles the line from Blinky to 2 ahead of Pac-Man", "Clyde heads home within 8 tiles, else chases" |
+| 6 | scatter corners | pm-targets "the scatter row is pinned"; pm-game "scatter aims at the corner, chase at chaseTarget" |
+| 6 | exits facing right after a mode change | not implemented on purpose: the reference chooses to always exit left |
+| 7 | scatter / chase schedules, in frames, by level | pm-modes "the schedule by level", "level 1 switches at the scheduled frames, then never", "levels 2 and 5 follow their own lists" |
+| 7 | the timer stops during a fright and restarts on a new level or life | pm-modes "a fright stops the timer", "reset restarts at phase 0 for the level"; pm-game "the Modes timer is frozen during a fright, and it ends", "a lost life: ready, ghosts back in the house, Pinky at 7 dots" |
+| 8 | fright: every non-eyes ghost blue (house too), chain restarts, second energizer restarts the timer | pm-game "an energizer turns every ghost blue and turns active ones", "a ghost leaving the house is still blue"; pm-fright "scores double, then stay at 1600; a restart starts over" |
+| 8 | frightened ghosts choose with `rng.int(4)` | pm-targets "frightExit follows the seeded rule and never reverses"; pm-game "blue ghosts outside choose with the game rng" |
+| 8 | eyes: target (13, 11), red zones ignored, down the door, home column, revive not blue and leave | pm-game "eyes steer for (13, 11) and ignore red zones", "a revived ghost leaves the house not blue, the rest still are", "revived eyes leave the house without disturbing the House"; pm-ghost "eyes of ghost N go down the door, then to x HOME", "eating a ghost makes eyes and clears blue and flash" |
+| 8 | Cruise Elroy 1 and 2, chases in scatter, suspended after a death | pm-game "Cruise Elroy 1: Blinky 75, 75, then 80 and 85", "in Elroy Blinky chases during scatter", "after a death Elroy is off until Clyde is out" |
+| 9 | bobbing 4 px either side of 116; the release path (to x 112, up to y 92, then left) | pm-ghost "ghosts in the house bob 4 pixels either side of 116", "a leaving ghost goes to x 112, up to y 92, then left", "a ghost put back in the house bobs within y 112-120" |
+| 9 | personal dot counters by level, first waiting ghost only | pm-house "limits by level", "level 1: personal counters, first waiting ghost only", "level 2 and 3"; pm-game "Pinky leaves at once at level 1, Inky and Clyde wait", "Inky leaves on the 30th dot, Clyde on his own 60th after" |
+| 9 | global counter after a death (7, 17, 32) and its switch-off | pm-house "after a death the global counter releases at 7, 17", "global counter at 32 switches off without releasing Clyde" |
+| 9 | idle timer 240 / 180 frames, reset by a dot | pm-house "idle timer", "the idle timer counts from the first tick: 240 frames"; pm-game "there is no release timer: nothing at frame 240 but the idle", "a dot resets the idle timer" |
+| 10 | dot 10, energizer 50 | pm-player "eats on tile entry and pauses", "50 for an energizer, pause 3"; pm-game "eating scores 10 a dot" |
+| 10 | ghosts 200 / 400 / 800 / 1600, 60 frame freeze, eyes keep moving | pm-game "ghost chain: 200, 400, 800, 1600, each a 60 frame freeze", "during the freeze only eyes move, and Pac-Man waits" |
+| 10 | 12000 bonus for 16 ghosts, once per level | pm-game "12000 bonus once, after 4 ghosts on each of 4 energizers", "three full sweeps give no bonus", "a new level resets the 12000 sweeps" |
+| 10 | fruit at 70 and 170 dots, `540 + rng.int(60)` frames, 120 frame points, the level table | pm-fruit (all), pm-levels "the fruit of each level"; pm-game "the fruit appears at 70 dots, is eaten for its points", "a missed fruit goes away and a death removes it", "the fruit follows the level" |
+| 10 | 3 lives (setting), one extra life at the bonus score | pm-game "extra life: once at 10000, not again at 20000", "extra life: bonus 0 never, 15000 at 15000 only", "a big jump past the bonus is one life", "the options are kept" |
+| 11 | game start 252 frames, actors and a life at frame 120 | pm-game "the intro lasts 252 frames, then play", "start: 252 frames, actors and the first life at frame 120" |
+| 11 | later lives: 120 frames of READY! | pm-game "a lost life: ready, ghosts back in the house, Pinky at 7 dots" |
+| 11 | death: 60 + 90 + 60, 11 frames of animation, then reset or game over | pm-game "death: freeze, vanish, 11 frame animation, pause, ready", "death animation: frame k lasts 90/11 ticks from tick 60" |
+| 11 | level complete: 120 + 120, four white flashes of 15 + 15 | pm-game "clearing the level: levelDone for 240 frames, then ready", "levelDone counts stateTimer 0 to 239 and the ghosts stay put"; pm-levels "the maze is white in four bursts of 15 frames" |
+| 11 | game over: 180 frames | pm-game "the last life: gameOver for 180 frames, then over for good" |
+| 11 | intermissions, kill screen | out of scope for version 1 (the reference says so); levels go on for ever from the level 21 row (pm-game "a level 17 clear goes to level 18, and so on", pm-levels "level 22 and beyond are level 21") |
+| 12 | sounds (jingle, waka, siren, fright loop, eyes, eaten, fruit, extra life, death) | not yet implemented: they belong to the sound stage that follows this one; the events they will follow (`dot`, `energizer`, `frightStart`, `ghostEaten`, `fruitEaten`, `extraLife`, `death`) are checked in pm-game |
+| all | the whole engine is deterministic | pm-golden "golden run, seed 1" (and 2, 3), "two runs of seed 1 agree, and the seeds differ"; pm-game "the same seed plays the same game" |

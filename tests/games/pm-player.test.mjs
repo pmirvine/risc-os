@@ -152,3 +152,119 @@ test('a run of 10 dots takes 10 frames longer than none', () => {
   }
   assert.equal(runTo(a, 20) - runTo(b, 20), 10);
 });
+
+// Cornering. Row 5 runs left to the junction at column 6 (centre
+// x 52, y 44); column 6 goes up to (52, 20), the centre of row 2.
+const corner = (px, dir = LEFT) => {
+  const s = setup();
+  s.m.dots.fill(0);
+  Object.assign(s.p, { px, py: 44, tx: px >> 3, ty: 5, dir });
+  return s;
+};
+
+/** Pixels moved (a frame moves at most one, at 79%) until (px, py);
+ *  returns the count and every position on the way. */
+function walkTo(s, want, px, py) {
+  let n = 0;
+  const path = [];
+  for (let f = 0; f < 200 && (s.p.px !== px || s.p.py !== py); f++) {
+    const m = s.p.tick(s.m, want(s.p), 79).moved;
+    n += m;
+    if (m) path.push([s.p.px, s.p.py]);
+  }
+  return { n, path };
+}
+
+test('cornering: a turn 3 px early cuts the corner diagonally', () => {
+  const s = corner(55);
+  const early = walkTo(s, () => UP, 52, 20);
+  assert.equal(s.p.dir, UP);
+  assert.deepEqual(early.path.slice(0, 3).map((q) => q.join()).sort(),
+    ['52,41', '53,42', '54,43']);
+  const late = corner(55);
+  const centre = walkTo(late, (p) => (p.px === 52 ? UP : LEFT), 52, 20);
+  assert.equal(centre.n - early.n, 3);
+  assert.equal(early.n, 24);
+});
+
+test('cornering: each diagonal step is 1 px up and 1 px across', () => {
+  const s = corner(55);
+  const seen = [];
+  for (let i = 0; i < 4; i++) {
+    const [x, y] = [s.p.px, s.p.py];
+    s.p.acc = 10000;
+    s.p.tick(s.m, UP, 79);
+    if (s.p.px !== x || s.p.py !== y) {
+      seen.push([s.p.px - x, s.p.py - y]);
+    }
+  }
+  assert.deepEqual(seen.slice(0, 3), [[-1, -1], [-1, -1], [-1, -1]]);
+  assert.deepEqual(seen[3], [0, -1]);
+});
+
+test('cornering: at 80% the early turn is 2 or 3 frames sooner', () => {
+  const frames = (px, want) => {
+    const s = corner(px);
+    let f = 0;
+    while ((s.p.px !== 52 || s.p.py !== 20) && f < 999) {
+      s.p.tick(s.m, want(s.p), 80);
+      f++;
+    }
+    return f;
+  };
+  const early = frames(55, () => UP);
+  const centre = frames(55, (p) => (p.px === 52 ? UP : LEFT));
+  assert.ok(centre - early >= 2 && centre - early <= 3,
+    `${centre} - ${early}`);
+});
+
+test('cornering: a turn up to 3 px after the centre cuts back', () => {
+  const s = corner(49);
+  const late = walkTo(s, () => UP, 52, 20);
+  assert.equal(s.p.dir, UP);
+  assert.deepEqual(late.path.slice(0, 3).map((q) => q.join()).sort(),
+    ['50,43', '51,42', '52,41']);
+  assert.equal(late.n, 24);
+  // Turning at the centre needs the same 24 pixels once aligned; a
+  // turn that came 3 px later than the centre would have been lost
+  // before: going back to the centre costs 3 more.
+  const back = corner(49);
+  const old = walkTo(back, (p) => (p.px === 52 ? UP : RIGHT), 52, 20);
+  assert.equal(old.n - late.n, 3);
+});
+
+test('cornering: 4 px away is too far, a wall is not turned into', () => {
+  const far = corner(56);
+  far.p.tick(far.m, UP, 100);
+  assert.equal(far.p.dir, LEFT);
+  assert.equal(far.p.py, 44);
+  const wall = corner(63);   // column 7: row 4 above is wall
+  for (let i = 0; i < 6; i++) wall.p.tick(wall.m, UP, 100);
+  assert.equal(wall.p.dir, LEFT);
+  assert.equal(wall.p.py, 44);
+});
+
+test('cornering: reversing works in the middle of a diagonal', () => {
+  const s = corner(55);
+  s.p.acc = 0;
+  s.p.tick(s.m, UP, 80);
+  s.p.tick(s.m, UP, 80);
+  assert.equal(s.p.dir, UP);
+  assert.ok(s.p.py < 44 && s.p.px < 55);
+  const y = s.p.py;
+  for (let i = 0; i < 40; i++) s.p.tick(s.m, DOWN, 80);
+  assert.equal(s.p.dir, DOWN);
+  assert.ok(s.p.py > y);
+  assert.equal(s.p.px & 7, 4);
+  assert.ok(s.m.walkable(s.p.px >> 3, s.p.py >> 3, 'pac'));
+});
+
+test('cornering: he never ends up inside a wall', () => {
+  const s = setup();
+  const seq = [UP, LEFT, DOWN, RIGHT];
+  for (let f = 0; f < 6000; f++) {
+    s.p.tick(s.m, seq[Math.floor(f / 7) % 4], 100);
+    s.m.reset();
+    assert.ok(s.m.walkable(s.p.px >> 3, s.p.py >> 3, 'pac'), `f${f}`);
+  }
+});

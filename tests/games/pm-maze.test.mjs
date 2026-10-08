@@ -122,3 +122,28 @@ test('wallMask marks the walls', () => {
   assert.equal(w[0], 1);
   assert.equal(w[28 + 1], 0);
 });
+
+test('no dots in the band round the house, the start and the tunnel', () => {
+  const m = maze();
+  const free = [];
+  for (let y = 9; y <= 19; y++) {
+    for (let x = 0; x < 28; x++) if (x !== 6 && x !== 21) free.push([x, y]);
+  }
+  free.push([13, 23], [14, 23]);
+  for (let x = 0; x < 28; x++) free.push([x, 14]);
+  for (const [x, y] of free) {
+    if (x === 6 || x === 21) continue;
+    assert.equal(m.dotAt(x, y), 0, `(${x}, ${y})`);
+  }
+  assert.equal(m.dotAt(6, 14), 10);
+});
+
+test('the places of the appendix: exit, fruit, eyes, starts', () => {
+  assert.deepEqual(SPECIAL.exit, { px: 112, py: 92 });
+  assert.equal(SPECIAL.fruit.px, 112);
+  assert.equal(SPECIAL.fruit.py, 140);
+  assert.deepEqual(SPECIAL.fruit.tiles, [[13, 17], [14, 17]]);
+  assert.deepEqual(SPECIAL.eyesTarget, [13, 11]);
+  assert.equal(SPECIAL.tunnelRow, 14);
+  assert.deepEqual(SPECIAL.starts.pac, { px: 112, py: 188, dir: 1 });
+});

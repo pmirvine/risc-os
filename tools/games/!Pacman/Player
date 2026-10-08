@@ -7,7 +7,7 @@
 // eating makes him pause (1 frame for a dot, 3 for an energizer).
 // anim counts pixels moved, for the mouth. Row 14 wraps at px 224.
 
-import { DX, DY } from './Dirs';
+import { DX, DY, LEFT, UP } from './Dirs';
 import { steps } from './Mover';
 
 export class Player {
@@ -30,6 +30,38 @@ export class Player {
     this.stopped = false;
   }
 
+  /** Can he go from his tile in direction d? */
+  open(maze, d) {
+    return maze.walkable(this.tx + DX[d], this.ty + DY[d], 'pac');
+  }
+
+  /** The centre line across his way is where the pixel is 4 into
+   *  its tile; the pixels between him and it (signed), 0 if on it. */
+  slack() {
+    const v = this.dir & 1 ? this.py : this.px;
+    return 4 - (v & 7);
+  }
+
+  /** How far past the centre of his tile he is, along his way
+   *  (negative: still approaching it). */
+  past() {
+    const a = (this.dir & 1 ? this.px : this.py) & 7;
+    return this.dir === LEFT || this.dir === UP ? 4 - a : a - 4;
+  }
+
+  /** The turn he takes this pixel, if any. Reversing is always
+   *  allowed. A turn to a side street is allowed within 3 pixels
+   *  either side of the centre (cornering), once he is back on the
+   *  centre line of the way he was going. */
+  turn(maze, want) {
+    if (want < 0 || want === this.dir) return;
+    if (want === (this.dir ^ 2)) { this.dir = want; return; }
+    if (this.slack() === 0 && Math.abs(this.past()) <= 3 &&
+      this.open(maze, want)) {
+      this.dir = want;
+    }
+  }
+
   /** One frame at pct percent speed, wanting direction want (-1: no
    *  change). Returns {moved, ate}: pixels moved, points eaten. */
   tick(maze, want, pct) {
@@ -37,18 +69,16 @@ export class Player {
     let moved = 0, ate = 0;
     const n = steps(this, pct);
     for (let i = 0; i < n; i++) {
-      if (want >= 0 && want === (this.dir ^ 2)) this.dir = want;
-      if ((this.px & 7) === 4 && (this.py & 7) === 4) {
-        const open = (d) => maze.walkable(
-          this.tx + DX[d], this.ty + DY[d], 'pac');
-        if (want >= 0 && want !== this.dir && open(want)) {
-          this.dir = want;
-        }
-        if (!open(this.dir)) { this.stopped = true; break; }
+      this.turn(maze, want);
+      if (this.past() >= 0 && !this.open(maze, this.dir)) {
+        this.stopped = true;
+        break;
       }
       this.stopped = false;
-      this.px = (this.px + DX[this.dir] + 224) % 224;
-      this.py += DY[this.dir];
+      // Cornering: also one pixel towards the centre line.
+      const s = Math.sign(this.slack()), side = this.dir & 1;
+      this.px = (this.px + DX[this.dir] + (side ? 0 : s) + 224) % 224;
+      this.py += DY[this.dir] + (side ? s : 0);
       this.anim++;
       moved++;
       const tx = this.px >> 3, ty = this.py >> 3;

@@ -1026,3 +1026,134 @@ test('flash counts: level 1 five flashes, level 9 from the start', () => {
   assert.ok(b[0] <= 14, 'level 9 white from ' + b[0]);
   assert.equal(b.length, 2);             // 60 frames hold two whites
 });
+
+/** Run a tick and report the redZones flag each ghost was given. */
+function redFlags(g) {
+  const seen = [];
+  g.ghosts.forEach((x, i) => {
+    const tick = x.tick.bind(x);
+    x.tick = (ctx) => { seen[i] = ctx.redZones; return tick(ctx); };
+  });
+  g.tick({ want: -1 });
+  return seen;
+}
+
+test('red zones apply to chasing and scattering ghosts only', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(0, 101, 92, LEFT);
+  g.debug.place(1, 112, 188, LEFT);
+  assert.equal(g.modes.mode, 'scatter');
+  assert.deepEqual(redFlags(g).slice(0, 2), [true, true]);
+  g.modes.mode = 'chase';
+  assert.deepEqual(redFlags(g).slice(0, 2), [true, true]);
+  g.ghosts[0].blue = true;
+  g.ghosts[1].eat();
+  assert.deepEqual(redFlags(g).slice(0, 2), [false, false]);
+  g.ghosts[1].state = 'active';
+  g.ghosts[1].blue = false;       // revived mid-fright: not blue
+  g.fright.on = true;
+  assert.equal(redFlags(g)[1], true);
+});
+
+test('level 2: the 1-frame scatter gives one reversal', () => {
+  const g = playing({ level: 2 });
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(0, 100, 44, LEFT);
+  g.modes.phase = 5;
+  g.modes.timer = 61978;           // 65518 frames in: switches at 65520
+  const modes = [];
+  let turns = 0;
+  for (let i = 0; i < 40; i++) {
+    const was = g.ghosts[0].dir;
+    const ev = g.tick({ want: -1 });
+    if (ev.some((e) => e.type === 'modeChange')) modes.push(g.modes.mode);
+    if (g.ghosts[0].dir === (was ^ 2)) turns++;
+  }
+  assert.deepEqual(modes, ['scatter', 'chase']);
+  assert.equal(turns, 1);
+});
+
+test('the tunnel slows a ghost entering column 5 and wraps it', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(1, 56, 116, LEFT);
+  const b = g.ghosts[1];
+  b.choose = (m, tile, dir) => dir;      // straight on, whatever the aim
+  const pcts = new Map();
+  let wrapped = false, prev = b.px;
+  for (let i = 0; i < 400 && !wrapped; i++) {
+    pcts.set(b.tx, ghostPct(g, b));
+    g.tick({ want: -1 });
+    if (prev === 0 || prev === 1) wrapped = b.px === 223 || b.px === 222;
+    prev = b.px;
+  }
+  assert.equal(pcts.get(6), 75);
+  assert.equal(pcts.get(5), 40);
+  assert.equal(pcts.get(0), 40);
+  assert.ok(wrapped);
+  assert.equal(b.tx, 27);
+  assert.equal(ghostPct(g, b), 40);
+});
+
+test('starting positions: the five actors of the appendix', () => {
+  const g = playing();
+  const at = (a) => [a.px, a.py, a.dir];
+  assert.deepEqual(at(g.player), [112, 188, LEFT]);
+  assert.deepEqual(at(g.ghosts[0]), [112, 92, LEFT]);
+  assert.equal(g.ghosts[0].state, 'active');
+  assert.deepEqual(at(g.ghosts[1]), [112, 116, DOWN]);
+  assert.deepEqual(at(g.ghosts[2]), [96, 116, UP]);
+  assert.deepEqual(at(g.ghosts[3]), [128, 116, UP]);
+  for (const i of [1, 2, 3]) assert.equal(g.ghosts[i].state, 'house');
+});
+
+test('the end of a fright turns nobody round', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(0, 100, 44, LEFT);
+  g.fright.start();
+  g.ghosts[0].blue = true;
+  let flips = 0, ended = false;
+  for (let i = 0; i < 420; i++) {
+    const was = g.ghosts[0].dir;
+    const ev = g.tick(idle);
+    if (g.ghosts[0].dir === (was ^ 2)) flips++;
+    if (ev.some((e) => e.type === 'frightEnd')) {
+      ended = true;
+      assert.equal(g.ghosts[0].reverse, false);
+    }
+  }
+  assert.ok(ended);
+  assert.equal(flips, 0);
+});
+
+test('a collision is seen right after Pac-Man moves', () => {
+  const g = playing();
+  const b = g.ghosts[0];
+  g.debug.place(0, 104, 188, LEFT);      // tile 13, in his way
+  g.player.px = 112; g.player.py = 188;  // tile 14, edge of tile 13
+  g.player.tx = 14; g.player.ty = 23;
+  g.player.acc = 900000;
+  const bx = b.px, ev = g.tick({ want: LEFT });
+  assert.equal(g.player.tx, 13);
+  assert.ok(ev.some((e) => e.type === 'death'));
+  assert.equal(b.px, bx);                // the ghosts had not moved yet
+});
+
+test('a collision is seen again after the ghosts move', () => {
+  const g = playing();
+  g.player.pause = 1e9;                  // Pac-Man stands still
+  g.debug.place(0, 112, 188, RIGHT);     // tile 14, Pac-Man's own tile
+  g.ghosts[0].px = 103;
+  g.ghosts[0].tx = 12;
+  g.ghosts[0].acc = 900000;
+  g.player.px = 104; g.player.tx = 13;
+  const ev = g.tick({ want: -1 });
+  assert.equal(g.ghosts[0].tx, 13);
+  assert.ok(ev.some((e) => e.type === 'death'));
+});

@@ -102,15 +102,16 @@ test('a ghost put back in the house bobs within y 112-120', () => {
   }
 });
 
-test('seeded game: ghosts reverse only after a mode change', () => {
+test('seeded game: ghosts reverse only after a mode change or fright', () => {
   const g = playing({ seed: 4 });
   const prev = g.ghosts.map((x) => [x.dir, x.state]);
   let lastSwitch = -1, bad = [], flips = 0;
   const wants = [LEFT, UP, RIGHT, UP];
   for (let t = 0; t < 5000; t++) {
     const ev = g.tick({ want: wants[(t >> 6) & 3] });
-    if (ev.some((e) => e.type === 'modeChange')) lastSwitch = t;
-    if (ev.some((e) => e.type === 'death')) {
+    if (ev.some((e) => e.type === 'modeChange'
+      || e.type === 'frightStart')) lastSwitch = t;
+    if (ev.some((e) => e.type === 'death' || e.type === 'ready')) {
       prev.forEach((p, i) => { p[0] = -1; });
       lastSwitch = -1e9;
       continue;
