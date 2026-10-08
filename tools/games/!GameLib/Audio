@@ -1,0 +1,221 @@
+// GameLib - Audio: plays a game's synthesised sounds through Web Audio.
+//
+// How a game uses it:
+//
+//   const audio = new Audio({ volume: 0.8,
+//     desktopGain: desktopGain(cfg) });
+//   audio.define('blip', (k) => ..., { rate: 22050 });  // a recipe
+//   audio.define('siren', make, { rate: 22050, loop: true });
+//   audio.resume();        // from a click or key press (browsers
+//                          // only let pages start sound after a
+//                          // gesture); also renders the recipes
+//   audio.play('blip', { gain: 0.5, rate: 1.2, delay: 0.1 });
+//   audio.loop('siren', true);  audio.loop('siren', false);
+//   audio.silence();       // pausing: loops and sounds stop
+//   audio.setVolume(0.5);  audio.setDesktopGain(g);
+//   audio.close();         // quitting: the audio system is freed
+//
+// A recipe is a function make(k) that takes a Synth and returns samples
+// (see Synth). Defining a sound only stores its recipe; every recipe is
+// rendered once, at the first resume() that finds a working audio
+// system, and each is balanced to the same loudness (see SynthFx).
+//
+// Without Web Audio (under node, or a very old browser) every method
+// quietly does nothing and play returns false, so a game never fails
+// because of sound. Anything that goes wrong is kept in lastError.
+
+import { renderDef } from './SynthFx';
+
+const TARGET = -19;      // dB loudness every sound is balanced to
+
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// A small hash of a name, so each sound's noise is different but the
+// same every time it is made.
+const seedOf = (name) => [...name].reduce(
+  (h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
+
+/**
+ * The desktop's sound level, 0..1, from its configuration (an object
+ * with get(name)): 0 if the speaker is off, else the volume setting
+ * 0..7 as (volume + 1) / 8. With no configuration, 1.
+ */
+export function desktopGain(config) {
+  return config?.get?.('speaker') === false ? 0
+    : ((config?.get?.('volume') ?? 7) + 1) / 8;
+}
+
+export class Audio {
+  /**
+   * volume 0..1 (the game's own setting); desktopGain 0..1 (from the
+   * desktop's speaker and volume settings); context: an AudioContext to
+   * use instead of making one (tests pass a fake).
+   */
+  constructor({ volume = 0.8, desktopGain = 1, context = null } = {}) {
+    this.volume = volume;
+    this.desktopGain = desktopGain;
+    this.ctx = null;
+    this.ready = false;      // the recipes have been rendered
+    this.defs = {};          // recipes by name: { make, rate, loop }
+    this.buffers = {};       // rendered AudioBuffers by name
+    this.loops = {};         // loops running, by name: { src, g }
+    this.sources = [];       // one-shots playing: { src, g }
+    this.lastError = null;   // anything that went wrong (never throws)
+    if (context) this._build(context);
+  }
+
+  /** True if sound can be heard (Web Audio is working and rendered). */
+  get live() { return !!this.ctx && this.ready; }
+
+  /**
+   * Store a sound's recipe. opts = { rate (samples per second, default
+   * 22050), loop (true for a sound that repeats; a number is also the
+   * seconds of its end faded into its start to make it seamless) }.
+   */
+  define(name, make, { rate = 22050, loop = false } = {}) {
+    this.defs[name] = { make, rate, loop };
+    if (this.live) this._render(name);
+  }
+
+  /**
+   * Start (or restart) sound, rendering the recipes the first time.
+   * Call it from a user gesture. Cheap and safe to call as often as you
+   * like.
+   */
+  resume() {
+    try {
+      if (!this.ctx) {
+        const AC = globalThis.AudioContext
+          || globalThis.webkitAudioContext;
+        if (!AC) return;
+        this._build(new AC({ latencyHint: 'interactive' }));
+      }
+      if (this.ctx.state === 'suspended') {
+        this.ctx.resume().catch(() => {});
+      }
+      if (!this.ready) {
+        this.ready = true;
+        for (const name of Object.keys(this.defs)) this._render(name);
+      }
+    } catch (e) { this.lastError = e; }
+  }
+
+  /**
+   * Play a sound by name. opts (all optional): gain (1 = normal), rate
+   * (playback speed and pitch, 1 = normal), delay (seconds from now).
+   * Returns true if it started.
+   */
+  play(name, { gain = 1, rate = 1, delay = 0 } = {}) {
+    if (!this.live) return false;
+    try {
+      const buffer = this.buffers[name];
+      if (!buffer) return false;
+      const now = this.ctx.currentTime;
+      this.sources = this.sources.filter((v) => v.end > now);
+      const v = this._source(buffer, gain);
+      v.src.playbackRate.value = rate;
+      v.src.start(now + delay);
+      v.end = now + delay + buffer.duration / rate;
+      v.src.onended = () => { v.g.disconnect(); };
+      this.sources.push(v);
+      return true;
+    } catch (e) { this.lastError = e; return false; }
+  }
+
+  /** Start or stop a looping sound. Starting one running does nothing.
+ * */
+  loop(name, on, { gain = 1 } = {}) {
+    if (!this.live) return;
+    try {
+      if (!on) { this._stopLoop(name); return; }
+      const buffer = this.buffers[name];
+      if (!buffer || this.loops[name]) return;
+      const v = this._source(buffer, gain);
+      v.src.loop = true;
+      v.src.start(this.ctx.currentTime);
+      this.loops[name] = v;
+    } catch (e) { this.lastError = e; }
+  }
+
+  /** Stop every loop and sound at once (pausing, leaving the game). */
+  silence() {
+    try {
+      for (const name of Object.keys(this.loops)) this._stopLoop(name);
+      for (const v of this.sources) this._stop(v);
+      this.sources = [];
+    } catch (e) { this.lastError = e; }
+  }
+
+  /** The game's volume setting, 0..1. */
+  setVolume(v) { this.volume = clamp(+v || 0, 0, 1); this._level(); }
+
+  /** The desktop's volume (0 when its speaker is off), 0..1. */
+  setDesktopGain(g) {
+    this.desktopGain = clamp(+g || 0, 0, 1);
+    this._level();
+  }
+
+  /** Free the audio system (the task is quitting). Safe to repeat. */
+  close() {
+    this.silence();
+    const ctx = this.ctx;
+    this.ctx = null;
+    this.ready = false;
+    this.buffers = {};
+    try { if (ctx) ctx.close(); } catch (e) { this.lastError = e; }
+  }
+
+  // The output chain: every sound -> its own gain -> the master gain
+  // (the volume) -> the speakers.
+  _build(ctx) {
+    this.ctx = ctx;
+    this.master = ctx.createGain();
+    this.master.gain.value = this.volume * this.desktopGain;
+    this.master.connect(ctx.destination);
+  }
+
+  _level() {
+    if (!this.ctx) return;
+    const g = this.volume * this.desktopGain;
+    this.master.gain.setTargetAtTime(g, this.ctx.currentTime, 0.02);
+  }
+
+  // Make the AudioBuffer for a defined sound.
+  _render(name) {
+    try {
+      const d = this.defs[name];
+      const set = { rate: d.rate, target: TARGET };
+      const fade = typeof d.loop === 'number' ? d.loop : 0;
+      const def = { make: d.make, loop: fade };
+      const a = renderDef(set, def, seedOf(name));
+      const b = this.ctx.createBuffer(1, a.length, d.rate);
+      b.getChannelData(0).set(a);
+      this.buffers[name] = b;
+    } catch (e) { this.lastError = e; }
+  }
+
+  // A buffer source feeding its own gain, feeding the master gain.
+  _source(buffer, gain) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = this.ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g);
+    g.connect(this.master);
+    return { src, g, end: Infinity };
+  }
+
+  // Fade a sound out over a few milliseconds (a hard stop would click).
+  _stop(v) {
+    const now = this.ctx.currentTime;
+    v.g.gain.setTargetAtTime(0, now, 0.008);
+    try { v.src.stop(now + 0.05); } catch { /* not started yet */ }
+  }
+
+  _stopLoop(name) {
+    const v = this.loops[name];
+    if (!v) return;
+    this._stop(v);
+    delete this.loops[name];
+  }
+}

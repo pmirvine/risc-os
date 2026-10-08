@@ -1,0 +1,200 @@
+// GameLib - Synth: a tiny sound synthesiser working on plain arrays of
+// samples (Float32Array, -1..1).
+//
+// Every sound in a game is made here, from nothing: there are no sample
+// files. A recipe describes a sound as layers ("a square wave sweeping
+// down from 1800 Hz to 200 Hz in 90 ms") and the layers are added into
+// an array once, when the sounds are first needed. Audio then hands the
+// arrays to Web Audio as buffers, so playing a sound mid-game is cheap.
+//
+// Working on arrays (rather than wiring up Web Audio nodes) keeps the
+// recipes short, makes every sound come out the same each time and lets
+// sounds be made and measured under node, without a browser.
+//
+// The pieces: Svf, a state-variable filter (lowpass, highpass or
+// bandpass) whose cut-off can move while it plays; and Synth, whose
+// generators are tone (sine, square, pulse, saw, triangle), noise
+// (white, or "sample and hold" noise that sounds pitched and crunchy),
+// pluck (a plucked string) and bell. Parameters may be numbers or
+// functions of time (see SynthEnv).
+
+import { val, perc, times } from './SynthEnv';
+
+/**
+ * A state-variable filter (the "TPT" form from Vadim Zavalishin's book
+ * on virtual analogue filters). It stays stable however fast its
+ * cut-off moves, which suits explosions whose rumble closes down over a
+ * second. type: 'lp' lowpass, 'hp' highpass, 'bp' bandpass; freq and q
+ * are parameters (q 0.7 = gentle, 5 = sharp and ringing).
+ */
+export class Svf {
+  constructor(rate, type, freq, q = 0.707) {
+    this.rate = rate; this.type = type; this.freq = freq; this.q = q;
+    this.s1 = 0; this.s2 = 0; this.n = 0;
+  }
+  run(x, t) {
+    if ((this.n++ & 7) === 0) {           // recalculate every 8 samples
+      const f = Math.min(val(this.freq, t), this.rate * 0.45);
+      const g = Math.tan(Math.PI * Math.max(f, 10) / this.rate);
+      this.k = 1 / val(this.q, t);
+      this.a1 = 1 / (1 + g * (g + this.k));
+      this.a2 = g * this.a1;
+      this.a3 = g * this.a2;
+    }
+    const v3 = x - this.s2;
+    const v1 = this.a1 * this.s1 + this.a2 * v3;
+    const v2 = this.s2 + this.a2 * this.s1 + this.a3 * v3;
+    this.s1 = 2 * v1 - this.s1;
+    this.s2 = 2 * v2 - this.s2;
+    if (this.type === 'lp') return v2;
+    if (this.type === 'bp') return v1;
+    return x - this.k * v1 - v2;           // 'hp'
+  }
+}
+
+// PolyBLEP: rounds off the jumps in square and saw waves just enough to
+// stop high notes making whistling "alias" tones.
+function blep(ph, dt) {
+  if (ph < dt) { ph /= dt; return ph + ph - ph * ph - 1; }
+  if (ph > 1 - dt) { ph = (ph - 1) / dt; return ph * ph + ph + ph + 1; }
+  return 0;
+}
+
+/**
+ * A synthesiser working at `rate` samples per second. Its random
+ * numbers are seeded, so a recipe makes the same sound every time.
+ */
+export class Synth {
+  constructor(rate, seed = 0x2545F491) {
+    this.rate = rate;
+    this.seed = seed >>> 0 || 1;
+  }
+
+  /** A random number in [-1, 1) (xorshift32). */
+  random() {
+    let s = this.seed;
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    this.seed = s >>> 0;
+    return this.seed / 2147483648 - 1;
+  }
+
+  /** An empty (silent) sound `seconds` long. */
+  buffer(seconds) {
+    const n = Math.round(seconds * this.rate);
+    return new Float32Array(Math.max(1, n));
+  }
+
+  // Shared by the generators: works out where a layer starts and how
+  // many samples it runs for, makes the optional filter, then calls
+  // sample(t) for each sample and adds it (times the gain) into `out`.
+  _layer(out, o, sample) {
+    const r = this.rate;
+    const i0 = Math.round((o.start ?? 0) * r);
+    const len = o.dur === undefined ? out.length
+      : Math.round(o.dur * r);
+    const n = Math.min(len, out.length - i0);
+    const f = o.filter;
+    const flt = f ? new Svf(r, f.type, f.freq, f.q ?? 0.707) : null;
+    const gain = o.gain ?? 1;
+    for (let i = 0; i < n; i++) {
+      const t = i / r;
+      let x = sample(t);
+      if (flt) x = flt.run(x, t);
+      out[i0 + i] += x * val(gain, t);
+    }
+    return out;
+  }
+
+  /**
+   * An oscillator. o = { wave: 'sine' | 'square' | 'pulse' | 'saw' |
+   * 'tri', freq, gain, start, dur, duty (pulse width, 0.5 = square),
+   * filter }.
+   */
+  tone(out, o) {
+    const r = this.rate, wave = o.wave ?? 'sine';
+    let ph = o.phase ?? 0;
+    return this._layer(out, o, (t) => {
+      const f = val(o.freq, t), dt = Math.min(f / r, 0.5);
+      const duty = val(o.duty ?? 0.5, t);
+      let x;
+      if (wave === 'sine') x = Math.sin(2 * Math.PI * ph);
+      else if (wave === 'tri') x = ph < 0.5 ? 4 * ph - 1 : 3 - 4 * ph;
+      else if (wave === 'saw') x = 2 * ph - 1 - blep(ph, dt);
+      else {                                  // square / pulse
+        x = ph < duty ? 1 : -1;
+        x += blep(ph, dt) - blep((ph + 1 - duty) % 1, dt);
+      }
+      ph += dt;
+      ph -= Math.floor(ph);
+      return x;
+    });
+  }
+
+  /**
+   * Noise. o = { hold, gain, start, dur, filter }. With no `hold` it is
+   * white noise (a new random value every sample). With hold = h, a new
+   * random value is picked h times a second and held in between
+   * ("sample and hold"): the lower h, the lower and grittier the noise
+   * sounds. Sweeping h down is how the old arcade machines made an
+   * explosion's noise seem to fall in pitch.
+   */
+  noise(out, o) {
+    const r = this.rate;
+    let acc = 1, v = 0;
+    return this._layer(out, o, (t) => {
+      acc += (o.hold === undefined ? r : val(o.hold, t)) / r;
+      if (acc >= 1) { acc -= Math.floor(acc); v = this.random(); }
+      return v;
+    });
+  }
+
+  /**
+   * A plucked string (the Karplus-Strong algorithm): a short burst of
+   * noise goes round a delay line one period long, softened a little
+   * each time round, so it starts bright and mellows as it dies away.
+   * o = { freq, start, dur, gain, decay (seconds to die away), bright
+   * (0..1) }.
+   */
+  pluck(out, o) {
+    const r = this.rate, freq = o.freq;
+    // The loop is the delay line (L samples) plus half a sample for the
+    // averaging, plus a fraction from an all-pass filter that tunes it.
+    const n = r / freq - 0.5;
+    let L = Math.floor(n), frac = n - L;
+    if (frac < 0.1) { L -= 1; frac += 1; }
+    const C = (1 - frac) / (1 + frac);
+    const loss = Math.pow(0.001, 1 / (freq * (o.decay ?? 1)));
+    const ring = new Float32Array(L);
+    const soft = new Svf(r, 'lp', 400 + 8000 * (o.bright ?? 0.6));
+    for (let i = 0; i < L; i++) ring[i] = soft.run(this.random(), 0);
+    let p = 0, prev = 0, apx = 0, apy = 0;
+    return this._layer(out, { ...o, filter: undefined }, () => {
+      const cur = ring[p];
+      const avg = 0.5 * (cur + prev) * loss;
+      prev = cur;
+      const ap = C * avg + apx - C * apy;
+      apx = avg; apy = ap;
+      ring[p] = ap;
+      p = p + 1 === L ? 0 : p + 1;
+      return cur * 1.6;
+    });
+  }
+
+  /**
+   * A struck bell: a few sine partials at a bell's inharmonic ratios,
+   * the higher ones dying away faster. o = { freq, start, dur, gain,
+   * decay }.
+   */
+  bell(out, o) {
+    const parts = [[1, 1, 1], [2, 0.45, 0.6], [2.76, 0.3, 0.4],
+      [5.4, 0.12, 0.25]];
+    const decay = o.decay ?? 0.6;
+    for (const [mul, amp, len] of parts) {
+      this.tone(out, {
+        wave: 'sine', freq: o.freq * mul, start: o.start, dur: o.dur,
+        gain: times(o.gain ?? 1, perc(0.002, decay * len, amp)),
+      });
+    }
+    return out;
+  }
+}

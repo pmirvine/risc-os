@@ -1,0 +1,129 @@
+// GameLib - SynthFx: finishing touches for synthesised sounds.
+//
+// Once Synth has laid a recipe's layers into an array, these functions
+// finish it: filter, echo, fadeOut, normalise (balance the loudness, so
+// a click and an explosion sit at sensible levels whatever their
+// recipes add up to), vidc8 (8-bit logarithmic quantising, as the
+// Archimedes' sound chip played samples), loopify (make a sound loop
+// seamlessly) and levels (measure a finished sound). renderDef runs a
+// whole recipe from start to finish: make it, loop it, balance it, give
+// it the set's finish.
+
+import { Svf, Synth } from './Synth';
+
+/** Filter a whole sound in place. */
+export function filter(a, rate, type, freq, q = 0.707) {
+  const f = new Svf(rate, type, freq, q);
+  for (let i = 0; i < a.length; i++) a[i] = f.run(a[i], i / rate);
+  return a;
+}
+
+/** A simple echo: repeats `delay` seconds later, `feedback` as loud. */
+export function echo(a, rate, delay, feedback, wet = 1) {
+  const d = Math.round(delay * rate);
+  const line = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    const back = i >= d ? line[i - d] : 0;
+    line[i] = a[i] + back * feedback;
+    a[i] += back * wet;
+  }
+  return a;
+}
+
+/** Fade the last `seconds` of a sound smoothly to silence. */
+export function fadeOut(a, rate, seconds) {
+  const n = Math.min(a.length, Math.round(seconds * rate));
+  for (let i = 0; i < n; i++) a[a.length - 1 - i] *= i / n;
+  return a;
+}
+
+/**
+ * Measure a sound: peak (the loudest single sample) and loudness (the
+ * loudest 50 ms stretch, as an RMS level), both in dB below full scale.
+ * Loudness is weighted roughly as ears hear (like the "K-weighting" of
+ * broadcast loudness meters): deep bass counts for less, and the
+ * 2-5 kHz region, where hearing is keenest, for a little more.
+ */
+export function levels(a, rate) {
+  let peak = 0;
+  for (let i = 0; i < a.length; i++) {
+    peak = Math.max(peak, Math.abs(a[i]));
+  }
+  const bass = new Svf(rate, 'hp', 60);
+  const treble = new Svf(rate, 'hp', 1500);
+  const k = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) {
+    const x = bass.run(a[i], 0);
+    k[i] = x + 0.58 * treble.run(x, 0);       // +4 dB above 1.5 kHz
+  }
+  const w = Math.max(1, Math.round(rate * 0.05));
+  const hop = Math.max(1, w >> 2);
+  let loud = 0;
+  for (let s = 0; s < a.length; s += hop) {
+    let sum = 0;
+    const e = Math.min(a.length, s + w);
+    for (let i = s; i < e; i++) sum += k[i] * k[i];
+    loud = Math.max(loud, sum / w);
+  }
+  const db = (x) => 20 * Math.log10(Math.max(x, 1e-9));
+  return { peak: db(peak), loud: db(Math.sqrt(loud)),
+    seconds: a.length / rate };
+}
+
+/**
+ * Scale a sound so its loudness (see levels) is `loudDb`, but never let
+ * a sample go past `ceiling`.
+ */
+export function normalise(a, rate, loudDb, ceiling = 0.89) {
+  const m = levels(a, rate);
+  let g = Math.pow(10, (loudDb - m.loud) / 20);
+  g = Math.min(g, ceiling / Math.pow(10, m.peak / 20));
+  for (let i = 0; i < a.length; i++) a[i] *= g;
+  return a;
+}
+
+/**
+ * Quantise to 8-bit logarithmic samples, as the Archimedes' VIDC chip
+ * played them (much like telephone "mu-law"): quiet sounds keep their
+ * detail but everything gains a faint grainy edge.
+ */
+export function vidc8(a) {
+  const K = Math.log(256);
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i], s = x < 0 ? -1 : 1;
+    const q = Math.round(Math.log(1 + 255 * Math.min(1, Math.abs(x)))
+      / K * 127) / 127;
+    a[i] = s * (Math.exp(q * K) - 1) / 255;
+  }
+  return a;
+}
+
+/**
+ * Make a sound loop seamlessly: the last `seconds` are faded into the
+ * start, and the result is that much shorter.
+ */
+export function loopify(a, rate, seconds) {
+  const f = Math.round(seconds * rate), n = a.length - f;
+  const out = a.slice(0, n);
+  for (let i = 0; i < f; i++) {
+    const x = i / f;
+    out[i] = a[n + i] * Math.cos(x * Math.PI / 2)
+      + a[i] * Math.sin(x * Math.PI / 2);
+  }
+  return out;
+}
+
+/**
+ * Render one recipe from a sound set { rate, target, finish } into
+ * finished samples: make it, balance its level, and give it the set's
+ * finish (e.g. 8-bit). The seed makes each sound's noise different but
+ * repeatable.
+ */
+export function renderDef(set, def, seed = 1) {
+  const k = new Synth(set.rate, 0x9E3779B9 ^ (seed * 7919));
+  let a = def.make(k);
+  if (def.loop) a = loopify(a, set.rate, def.loop);
+  normalise(a, set.rate, set.target + (def.level ?? 0));
+  if (set.finish) set.finish(a);
+  return a;
+}

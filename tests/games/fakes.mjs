@@ -88,3 +88,34 @@ export function fakePads({ down = [], axes = [0, 0] } = {}) {
   }
   return () => [null, { connected: true, buttons, axes }];
 }
+
+/** A fake AudioContext recording its sources and gains. */
+export function fakeAudioContext({ state = 'suspended' } = {}) {
+  const c = { state, sources: [], gains: [], resumed: 0, closed: 0,
+    currentTime: 0, destination: { dest: true }, failSource: false };
+  const param = (v = 1) => ({ value: v,
+    setTargetAtTime(x) { this.value = x; },
+    cancelScheduledValues() {} });
+  c.resume = async () => { c.resumed++; c.state = 'running'; };
+  c.close = async () => { c.closed++; c.state = 'closed'; };
+  c.createBuffer = (ch, len, rate) => {
+    const data = new Float32Array(len);
+    return { length: len, sampleRate: rate, duration: len / rate,
+      getChannelData: () => data };
+  };
+  c.createGain = () => {
+    const g = { gain: param(), connect() {}, disconnect() {} };
+    c.gains.push(g);
+    return g;
+  };
+  c.createBufferSource = () => {
+    if (c.failSource) throw new Error('no source');
+    const s = { buffer: null, loop: false, playbackRate: param(),
+      started: [], stopped: 0, connect() {}, disconnect() {},
+      start(...a) { s.started.push(a); },
+      stop() { s.stopped++; } };
+    c.sources.push(s);
+    return s;
+  };
+  return c;
+}
