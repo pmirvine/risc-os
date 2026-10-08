@@ -363,7 +363,7 @@ Bandai Namco; this program is not connected with them), written in JavaScript as
 GameLib, so its whole source can be read and changed in !JsEdit (View source on its title or icon bar menu). It is
 under way: so far the arcade maze with its dots and energizers, Pac-Man steered by the arrow keys, W A S D or a
 gamepad, and the four ghosts chasing him and scattering by turns, at a fixed 60 Hz, full screen or in a window, with a title
-and a pause menu; fright, levels, lives, fruit, sound, settings and high scores follow. Its choices are kept in `Choices:Pacman`. The
+and a pause menu, and energizers that turn the ghosts blue; eating them, levels, lives, fruit, sound, settings and high scores follow. Its choices are kept in `Choices:Pacman`. The
 user guide is `$.Docs.Pacman` (source `tools/docs/Pacman`); the design is in `docs/apps/Pacman.md`;
 `node tools/disc-pacman.mjs` puts the sources (`tools/games/!Pacman`) on the disc.
 

@@ -12,7 +12,7 @@ it lives on the disc as JavaScript that `*JSRun` loads, so users can read and ch
 No ROM data: the sprites are drawn from GameLib `Shapes`, sounds will be synthesised, tunes are our own.
 
 This is the first stage: the maze, dots and energizers, Pac-Man, the four ghosts with scatter and chase, the title, the
-pause menu and the desktop shell. Later stages add fright, levels, lives, fruit, sound, settings, scores and the demo.
+pause menu and the desktop shell. Fright (blue and flashing ghosts) is in; later stages add eating ghosts, levels, lives, fruit, sound, settings, scores and the demo.
 
 ## Layers
 
@@ -37,6 +37,7 @@ pause menu and the desktop shell. Later stages add fright, levels, lives, fruit,
 | Targets | `chooseExit(maze, tile, dir, target, redZones)` (`redZones` is a boolean "apply red zones") |
 | Ghost | a ghost: `state` `house` (bobbing y 112-120) / `leaving` / `active`; `leave()`; `tick(ctx)`; decides one tile ahead (`turn`, `ahead`); `reverse` flag (boolean, so two signals make one reversal); house moves at 50% |
 | Modes | `new Modes(level)`: `mode` (`scatter`/`chase`), `phase`, `timer`, `tick(frightOn)` -> switched?, `reset(level)` |
+| Fright | `new Fright({frightFrames, flashes})` (frightFrames null: nobody turns blue): `start()` -> blue?, `tick()` -> true on the ending frame, `on`, `elapsed`, `flashWhite(frame)`, `nextScore()` 200/400/800/1600, `reset()`. Play starts it on an energizer (`frightStart` event; active ghosts get `reverse`, every non-eyes ghost `blue`), freezes Modes while `on`, sets `ghost.flash`, ends it with `frightEnd`. A blue ghost chooses with `frightExit` and the game's Rng. Fixed {360, 5} until the level table |
 | Levels | `schedule(n)`: the scatter/chase phase lengths in frames (only this so far) |
 | Play | `playFrame(game, input)`: one frame of the `'play'` state in the arcade's order; each ghost's target is its `SPECIAL.scatter` corner or `chaseTarget`; a `modeChange` event reverses the active ghosts. `tempRelease` (Pinky 0, Inky 240, Clyde 480 frames) is temporary, until the House |
 | Game | the state machine (`'start'` 252 frames, then `'play'`); `tick(input)` -> events; `snapshot()`; `debug` |
@@ -55,7 +56,7 @@ and `open`, `play`, `title`, `toDesktop` for the browser test.
 ## Data shapes
 
 An actor (Player, Ghost) is `{px, py, dir, acc, tx, ty}`, all integers. `game.tick({want})` takes `want` 0..3 (up,
-left, down, right) or -1 and returns the frame's events (`{type: 'dot' | 'energizer' | 'death' | 'start'}`). The
+left, down, right) or -1 and returns the frame's events (`{type: 'dot' | 'energizer' | 'frightStart' | 'frightEnd' | 'death' | 'start'}`). The
 state is `'start'` or `'play'` for now. Settings are `{display: 'full' | 'window', browserFull}` in
 `Choices:Pacman.Settings` (GameLib `Choices`, checked by `Options.sanitise`).
 

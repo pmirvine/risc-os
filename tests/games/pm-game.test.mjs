@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Game, START_FRAMES } from '../../tools/games/!Pacman/Game';
 import { SPECIAL } from '../../tools/games/!Pacman/MazeData';
-import { LEFT, RIGHT } from '../../tools/games/!Pacman/Dirs';
+import { LEFT, RIGHT, UP } from '../../tools/games/!Pacman/Dirs';
 import { playing, run } from './script.mjs';
 
 const dist = (g) => Math.abs(g.ghosts[0].tx - g.player.tx)
@@ -110,4 +110,71 @@ test('scatter aims at the corner, chase at chaseTarget', () => {
   g.tick({ want: -1 });
   g.tick({ want: -1 });
   assert.deepEqual(seen.at(-1), [g.player.tx, g.player.ty]);
+});
+
+/** A game with Pac-Man a few pixels below an energizer. */
+function nearEnergizer() {
+  const g = playing();
+  assert.equal(g.maze.dotAt(1, 3), 50);
+  Object.assign(g.player, { px: 12, py: 38, tx: 1, ty: 4, dir: UP });
+  return g;
+}
+
+test('an energizer turns every ghost blue and turns active ones', () => {
+  const g = nearEnergizer();
+  g.ghosts[3].state = 'house';
+  const ev = run(g, [[UP, 14]]);
+  const types = ev.map((e) => e.type);
+  assert.ok(types.includes('energizer'));
+  assert.ok(types.includes('frightStart'));
+  assert.ok(g.fright.on);
+  assert.ok(g.ghosts.every((x) => x.blue), 'all blue');
+  assert.equal(g.ghosts[3].state, 'house');
+});
+
+test('active ghosts reverse when the fright starts', () => {
+  const g = nearEnergizer();
+  g.debug.place(0, 100, 92, LEFT);
+  let ev = [];
+  while (!ev.some((e) => e.type === 'frightStart')) ev = g.tick({ want: UP });
+  assert.equal(g.ghosts[0].reverse, true);
+});
+
+test('the Modes timer is frozen during a fright, and it ends', () => {
+  const g = nearEnergizer();
+  g.player.pause = 0;
+  run(g, [[UP, 14]]);
+  assert.ok(g.fright.on);
+  const t = g.modes.timer;
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;    // out of any ghost's way
+  const ev = run(g, [[-1, 100]]);
+  assert.equal(g.modes.timer, t);
+  assert.equal(ev.some((e) => e.type === 'frightEnd'), false);
+  const rest = run(g, [[-1, 400]]);
+  assert.equal(rest.filter((e) => e.type === 'frightEnd').length, 1);
+  assert.equal(g.fright.on, false);
+  assert.ok(g.ghosts.every((x) => !x.blue));
+  assert.ok(g.modes.timer > t);
+});
+
+test('blue ghosts outside choose with the game rng', () => {
+  const g = nearEnergizer();
+  run(g, [[UP, 14]]);
+  g.player.pause = 1e9;
+  g.debug.place(0, 100, 92, LEFT);
+  g.ghosts[0].blue = true;
+  const before = g.rng.s;
+  run(g, [[-1, 30]]);
+  assert.notEqual(g.rng.s, before);
+});
+
+test('a ghost leaving the house is still blue', () => {
+  const g = nearEnergizer();
+  run(g, [[UP, 14]]);
+  g.player.pause = 1e9;
+  g.ghosts[1].leave();
+  run(g, [[-1, 120]]);
+  assert.equal(g.ghosts[1].state, 'active');
+  assert.equal(g.ghosts[1].blue, true);
 });
