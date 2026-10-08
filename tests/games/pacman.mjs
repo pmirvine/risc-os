@@ -3,7 +3,9 @@
 // screen and draws the title, start a game with Return, steer and eat
 // a dot, pause, go back to the desktop through the pause menu (the
 // icon stays), play in a window chosen from the icon bar menu, View
-// source (!JsEdit opens), and quit during play (nothing is left).
+// source (!JsEdit opens), sound (silent before a gesture, the Sound
+// item, a siren in play), and quit during play (nothing is left,
+// the AudioContext is closed).
 // Screenshots: pacman-title.png, pacman-play.png in SHOTDIR.
 // node tests/core/shot.mjs games-pacman tests/games/pacman.mjs
 const SHOT = process.env.SHOTDIR || 'tests/screens';
@@ -71,6 +73,14 @@ export default async (page) => {
   if (pix.lit < 0.02 || pix.colours < 8) {
     fail('the title looks empty: ' + JSON.stringify(pix));
   }
+  // no sound before the first gesture; watch the AudioContext made
+  if (await G(`return g.audio.live`)) fail('audio live before a gesture');
+  await page.evaluate(() => {
+    const Real = window.AudioContext;
+    window.AudioContext = class extends Real {
+      constructor(...a) { super(...a); window.__ac = this; }
+    };
+  });
   await page.screenshot({ path: `${SHOT}/pacman-title.png` });
 
   // Return starts a game; Pac-Man is moved by the arrow key
@@ -143,6 +153,17 @@ export default async (page) => {
   if (w2.frames <= f1) fail('the window is not being drawn');
   if (w2.screen !== 'play') fail('keys do not reach the window');
 
+  // Sound item: ticked by default, unticks, and silences
+  if (!(await G(`return g.audio.live`))) fail('no sound after a gesture');
+  if (!(await iconMenu('Sound'))) fail('no Sound item');
+  if ((await G(`return g.settings.sound`)) !== false) {
+    fail('the Sound item did not turn sound off');
+  }
+  if (!(await iconMenu('Sound'))) fail('no Sound item (again)');
+  if ((await G(`return g.settings.sound`)) !== true) {
+    fail('the Sound item did not turn sound back on');
+  }
+
   // View source: !JsEdit opens on the application's directory
   if (!(await iconMenu('View source'))) fail('no View source item');
   await page.waitForFunction(() => os.wimp.tasks.some(
@@ -159,6 +180,19 @@ export default async (page) => {
     (x) => x.name === 'Pacman').game.play());
   await page.waitForTimeout(300);
   if ((await state())?.screen !== 'play') fail('not playing before Quit');
+  if (!(await G(`return g.audio.sources.length`))) {
+    fail('no start jingle');
+  }
+  await page.waitForFunction(() => Object.keys(os.wimp.tasks.find(
+    (x) => x.name === 'Pacman').game.audio.loops).length > 0, null,
+  { timeout: 15000 }).catch(() => {});
+  const loops = await G(`return Object.keys(g.audio.loops)`);
+  if (loops.length !== 1 || !/^siren/.test(loops[0])) {
+    fail('no siren while playing: ' + loops);
+  }
+  if (await page.evaluate(() => window.__ac?.state) === 'closed') {
+    fail('the context was closed before Quit');
+  }
   await page.evaluate(() => os.wimp.tasks.find(
     (x) => x.name === 'Pacman').quit());
   await page.waitForTimeout(300);
@@ -168,6 +202,10 @@ export default async (page) => {
     .querySelector('.fullscreen-program'))) fail('the screen is left up');
   if (await page.evaluate(() => os.wimp.iconbar.items.some(
     (i) => i.task?.name === 'Pacman'))) fail('the icon is left');
+  if (await page.evaluate(() => window.__ac?.state) !== 'closed') {
+    fail('Quit left the AudioContext ' + await page.evaluate(
+      () => window.__ac?.state));
+  }
   await page.keyboard.press('ArrowLeft');
   await page.keyboard.press('KeyP');
   await page.waitForTimeout(300);

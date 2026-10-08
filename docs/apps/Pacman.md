@@ -9,10 +9,10 @@ A personal, non-commercial tribute to Namco's 1980 arcade game (the notice is in
 `!RunImage` header: "Pac-Man is a trademark of Bandai Namco; this program is not connected with them."). Like Lander II
 it lives on the disc as JavaScript that `*JSRun` loads, so users can read and change it; it uses only the public
 `riscos` module and `'gamelib/<Name>'`. No shared code was changed for it beyond the `gamelib` specifier (CORE_API 11a).
-No ROM data: the sprites are drawn from GameLib `Shapes`, sounds will be synthesised, tunes are our own.
+No ROM data: the sprites are drawn from GameLib `Shapes`, sounds are synthesised, tunes are our own.
 
 This is the first stage: the maze, dots and energizers, Pac-Man, the four ghosts with scatter and chase, the title, the
-pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghosts, lives, the death sequence, the extra life, game over and Cruise Elroy are in; later stages add sound, settings, scores and the demo.
+pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghosts, lives, the death sequence, the extra life, game over and Cruise Elroy are in; sound is in; later stages add settings, scores and the demo.
 
 ## Layers
 
@@ -51,9 +51,12 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Render | `drawGame(surface, game, frame)`, `MAZE_TOP` |
 | Menu | a list of items with keys and pointer |
 | Title | the title picture and its menu |
+| Sfx | `RATE` (24000), `WAVES` (our 32-level 4-bit tables, high at both ends), `RECIPES` {name: {make, loop}}: startJingle (4.2 s), waka0/1, siren0-4, fright, eyes (loops: one voice, a whole number of cycles, so no crossfade), ghostEaten, fruitEaten, extraLife, death |
+| SoundMap | pure: `soundsFor(events, mem)` (dot/energizer alternate `waka0`/`waka1` through `mem.waka`; unknown events ignored), `loopFor(game)` (null unless `'play'` and not demo; `eyes`, `fright`, `siren0`-`4` by `maze.dotsLeft` > 180 / 128 / 64 / 32) |
+| Sound | `new Sound(settings, os.config)`: defines the recipes in a GameLib `Audio`; `resume()` (every click and key), `update(screens, moved)` each tick, `silence()`, `toggle()`, `close()`. Silent while paused, off the play screen, or `settings.sound === false`; volume is `settings.volume / 100` times `desktopGain` |
 | Screens | `Screens(app)`, `ACTIONS` (the key names), `DIRS`, `wantFor`; `frame`, `tick`, `draw`, `blur`, `pointer` |
 
-`task.game` (set by `!RunImage`) exposes `app`, `settings`, `keys`, `surface`, `display`, `game`, `screen`, `frames`
+`task.game` (set by `!RunImage`) exposes `app`, `settings`, `keys`, `surface`, `display`, `audio`, `sound`, `game`, `screen`, `frames`
 and `open`, `play`, `title`, `toDesktop` for the browser test.
 
 ## Data shapes
@@ -147,5 +150,5 @@ autopilot demo run through an energizer and a level clear, arrives in Task 22.)
 | 11 | level complete: 120 + 120, four white flashes of 15 + 15 | pm-game "clearing the level: levelDone for 240 frames, then ready", "levelDone counts stateTimer 0 to 239 and the ghosts stay put"; pm-levels "the maze is white in four bursts of 15 frames" |
 | 11 | game over: 180 frames | pm-game "the last life: gameOver for 180 frames, then over for good" |
 | 11 | intermissions, kill screen | out of scope for version 1 (the reference says so); levels go on for ever from the level 21 row (pm-game "a level 17 clear goes to level 18, and so on", pm-levels "level 22 and beyond are level 21") |
-| 12 | sounds (jingle, waka, siren, fright loop, eyes, eaten, fruit, extra life, death) | not yet implemented: they belong to the sound stage that follows this one; the events they will follow (`dot`, `energizer`, `frightStart`, `ghostEaten`, `fruitEaten`, `extraLife`, `death`) are checked in pm-game |
+| 12 | sounds (jingle, waka, siren, fright loop, eyes, eaten, fruit, extra life, death) | implemented in `Sfx` (own 4-bit waveforms and tunes), `SoundMap` and `Sound`; siren steps are dots left > 180, > 128, > 64, > 32, else; pm-sound checks the recipes and the mapping, pacman.mjs the shell (silent before a gesture, siren in play, context closed on Quit) |
 | all | the whole engine is deterministic | pm-golden "golden run, seed 1" (and 2, 3), "two runs of seed 1 agree, and the seeds differ"; pm-game "the same seed plays the same game" |

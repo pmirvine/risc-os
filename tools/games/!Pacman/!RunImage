@@ -17,6 +17,8 @@
 //   FruitArt, Hud, Render    the fruit, the scores, a whole picture
 //   Menu, Title, Screens     the title, the menus, and which screen
 //                            is showing (no desktop in them)
+//   Sfx, SoundMap, Sound     the sounds, which events make them, and
+//                            playing them (no desktop in them)
 //
 // The library it is built on (display, loop, keys, drawing, text,
 // sound) is GameLib, in <GameLib$Dir>; its own !Help lists its parts.
@@ -37,15 +39,19 @@ import { choicesStore } from 'gamelib/Choices';
 import { sanitise } from 'gamelib/Options';
 import { TITLE } from './Theme';
 import { Screens, ACTIONS } from './Screens';
+import { Sound } from './Sound';
 
 const JSEDIT = 'ADFS::HardDisc4.$.Apps.!JsEdit';
 
-// The settings so far (the settings screen comes later).
+// The settings so far.
 const OPTIONS = [
   { key: 'display', values: ['full', 'window'] },
   { key: 'browserFull', values: [false, true] },
+  { key: 'sound', values: [true, false] },
+  { key: 'volume', values: [20, 40, 60, 80, 100] },
 ];
-const DEFAULTS = { display: 'full', browserFull: false };
+const DEFAULTS = { display: 'full', browserFull: false, sound: true,
+  volume: 80 };
 const QUIET_MS = 300;       // ignore focus changes our own close causes
 
 export default async function start(task, ctx) {
@@ -53,12 +59,13 @@ export default async function start(task, ctx) {
     'Pacman');
   const settings = sanitise(OPTIONS, DEFAULTS,
     await store.read('Settings', DEFAULTS));
+  const save = () => store.write('Settings', settings);
   const keys = new Keys(ACTIONS);
+  const sound = new Sound(settings, os.config);
   const surface = new Surface(224, 288);
   const off = [];                    // removes every listener we add
   let screens = null;
-  let frames = 0;
-  let padHeld = new Set();
+  let frames = 0, padHeld = new Set();
   let quietUntil = 0;       // closing the display is not a blur
 
   const app = {
@@ -108,6 +115,7 @@ export default async function start(task, ctx) {
   function toDesktop() {
     settle();
     loop.stop();
+    sound.silence();
     screens = null;
     keys.release();
     display.close();
@@ -142,7 +150,7 @@ export default async function start(task, ctx) {
       screens.frame(mine);
       keys.clearEdges();
     },
-    tick() { screens.tick(); },
+    tick() { sound.update(screens, screens.tick()); },
     draw() {
       screens.draw(surface);
       display.present(surface);
@@ -160,7 +168,9 @@ export default async function start(task, ctx) {
     target.addEventListener(type, fn, opt);
     off.push(() => target.removeEventListener(type, fn, opt));
   };
+  listen(window, 'click', () => sound.resume(), true);
   listen(window, 'keydown', (e) => {
+    sound.resume();
     if (!display.keysActive()) return;
     keys.keyDown(e);
     if (display.kind === 'window' && !e.metaKey) e.preventDefault();
@@ -181,7 +191,7 @@ export default async function start(task, ctx) {
   });
   const show = (kind) => {
     settings.display = kind;
-    store.write('Settings', settings);
+    save();
     openDisplay(kind);
   };
   const iconMenu = () => new WimpMenu(TITLE, [
@@ -193,6 +203,8 @@ export default async function start(task, ctx) {
     { text: 'Browser full screen',
       ticked: () => !!document.fullscreenElement, dotted: true,
       action: () => browserFull(!document.fullscreenElement) },
+    { text: 'Sound', ticked: () => settings.sound !== false,
+      action: () => { sound.toggle(); save(); } },
     { text: 'View source', action: () => app.viewSource() },
     { text: 'Open directory', dotted: true,
       action: () => app.openDirectory() },
@@ -214,13 +226,14 @@ export default async function start(task, ctx) {
 
   task.on('quit', () => {
     toDesktop();
+    sound.close();
     for (const remove of off) remove();
     off.length = 0;
   });
 
   // --------------------------------------------------------- for tests
   task.game = {
-    app, settings, keys, surface, display, audio: null,
+    app, settings, keys, surface, display, audio: sound.audio, sound,
     get game() { return screens?.game ?? null; },
     get screen() { return screens?.name ?? null; },
     get frames() { return frames; },

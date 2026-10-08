@@ -1,0 +1,83 @@
+// !Pacman - Sound: plays the game's sounds through GameLib's Audio.
+//
+// A personal, non-commercial tribute to Namco's 1980 arcade game.
+// Pac-Man is a trademark of Bandai Namco; this program is not
+// connected with them.
+//
+// It defines every recipe in Sfx, then each tick turns the frame's
+// events into sounds (SoundMap) and keeps the right looping sound
+// running. Nothing is heard before the first click or key press
+// (browsers insist), which is when resume() is called. The volume is
+// the Volume setting times the desktop's own (desktopGain). It has no
+// desktop in it: the shell passes in the settings and os.config.
+
+import { Audio, desktopGain } from 'gamelib/Audio';
+import { RATE, RECIPES } from './Sfx';
+import { soundsFor, loopFor } from './SoundMap';
+
+export class Sound {
+  constructor(settings, config) {
+    this.settings = settings;
+    this.config = config;
+    this.mem = { waka: 0 };       // which waka comes next
+    this.current = null;          // the loop running, if any
+    this.wasOn = false;           // sounds may be playing
+    this.audio = new Audio({ volume: this.volume(),
+      desktopGain: desktopGain(config) });
+    for (const [name, r] of Object.entries(RECIPES)) {
+      this.audio.define(name, r.make, { rate: RATE, loop: r.loop });
+    }
+  }
+
+  volume() { return (this.settings.volume ?? 80) / 100; }
+
+  /** From every click and key press: lets sound start. */
+  resume() { this.audio.resume(); }
+
+  /**
+   * Once a tick. screens is the shell's Screens (or null), moved is
+   * true if the game ticked (so its events are new).
+   */
+  update(screens, moved) {
+    const a = this.audio;
+    if (!a.live) { this.current = null; return; }
+    a.setVolume(this.volume());
+    a.setDesktopGain(desktopGain(this.config));
+    const game = screens?.game;
+    const on = this.settings.sound !== false && game
+      && screens.name === 'play' && !screens.paused && !game.demo;
+    if (!on) {
+      if (this.wasOn) this.silence();
+      return;
+    }
+    this.wasOn = true;
+    if (moved) {
+      for (const n of soundsFor(game.events, this.mem)) a.play(n);
+    }
+    const next = loopFor(game);
+    if (next !== this.current) {
+      if (this.current) a.loop(this.current, false);
+      if (next) a.loop(next, true);
+      this.current = next;
+    }
+  }
+
+  /** Pausing, leaving the game, or the sound turned off. */
+  silence() {
+    this.audio.silence();
+    this.current = null;
+    this.wasOn = false;
+  }
+
+  /** The icon bar menu's Sound item: on or off. */
+  toggle() {
+    this.settings.sound = this.settings.sound === false;
+    if (this.settings.sound === false) this.silence();
+  }
+
+  /** Quitting: the audio system is freed. */
+  close() {
+    this.silence();
+    this.audio.close();
+  }
+}

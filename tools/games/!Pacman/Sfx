@@ -1,0 +1,174 @@
+// !Pacman - Sfx: the game's sounds, made from nothing at 24 kHz.
+//
+// A personal, non-commercial tribute to Namco's 1980 arcade game.
+// Pac-Man is a trademark of Bandai Namco; this program is not
+// connected with them.
+//
+// Every sound is a recipe: a function make(k) that is given a Synth
+// (see GameLib's Synth) and returns an array of samples. The shell
+// hands these to Audio, which renders each once. The tones come from
+// our own little 4-bit waveforms (WAVES: 32 steps, each a level from
+// 0 to 15), played by voice() below, and the tunes are our own too.
+//
+// The looping sounds (the siren, the fright sound and the eyes) are
+// made to repeat seamlessly: each is one voice that runs a whole
+// number of cycles, and every waveform is at the top of its range at
+// both ends of the table, so the last sample runs into the first.
+
+import { val, line, note } from 'gamelib/SynthEnv';
+
+export const RATE = 24000;
+
+/** Our waveforms: 32 levels each, 0..15, high at both ends. */
+export const WAVES = {
+  tri: [15, 15, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2,
+    1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 15].map(
+    (v, i) => (i === 31 ? 15 : v)),
+  pulse: [15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 15, 15, 15, 15],
+  reed: [15, 15, 15, 14, 12, 11, 12, 13, 12, 9, 7, 6, 7, 8, 7, 4,
+    2, 1, 2, 4, 5, 4, 2, 0, 0, 1, 3, 6, 9, 12, 14, 15],
+  saw: [15, 15, 15, 14, 14, 13, 13, 12, 12, 11, 11, 10, 10, 9, 9, 8,
+    8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 1, 0, 0],
+};
+
+const EDGE = 0.004;    // seconds: the soft start and end of a note
+
+/**
+ * Add one voice into out. o = { wave (a WAVES table), freq (Hz or a
+ * function of t), start, dur (seconds), gain (number or function),
+ * edge (false for a loop that must run on without a dip) }.
+ */
+function voice(k, out, o) {
+  const r = k.rate, wave = o.wave ?? WAVES.tri;
+  const i0 = Math.round((o.start ?? 0) * r);
+  const n = Math.min(Math.round(o.dur * r), out.length - i0);
+  let ph = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / r;
+    const x = (wave[Math.floor(ph * 32)] - 7.5) / 7.5;
+    const e = o.edge === false ? 1
+      : Math.min(1, t / EDGE, (o.dur - t) / EDGE);
+    out[i0 + i] += x * e * val(o.gain ?? 1, t);
+    ph += val(o.freq, t) / r;
+    ph -= Math.floor(ph);
+  }
+  return out;
+}
+
+// A tune: notes [name, beats] (a null name is a rest) played one after
+// another from `start` seconds, `beat` seconds each.
+function tune(k, out, notes, o) {
+  let t = o.start ?? 0;
+  for (const [name, beats] of notes) {
+    const len = beats * o.beat;
+    if (name) {
+      voice(k, out, { wave: o.wave, freq: note(name), start: t,
+        dur: len * (o.hold ?? 0.9), gain: o.gain });
+    }
+    t += len;
+  }
+}
+
+// ------------------------------------------------------ the start tune
+const BEAT = 0.35;                 // 12 beats make 4.2 seconds
+const MELODY = [
+  ['E4', 0.5], ['A4', 0.5], ['C5', 0.5], ['E5', 0.5], ['D5', 1],
+  ['C5', 0.5], ['B4', 0.5], ['A4', 1],
+  ['G4', 0.5], ['B4', 0.5], ['D5', 0.5], ['G5', 0.5], ['F5', 1],
+  ['E5', 0.5], ['D5', 0.5], ['C5', 0.5], ['E5', 0.5], ['A5', 2],
+];
+const BASS = ['A2', 'A2', 'G2', 'G2', 'F2', 'A2'].map((n) => [n, 2]);
+
+function startJingle(k) {
+  const out = k.buffer(4.2);
+  tune(k, out, MELODY, { beat: BEAT, wave: WAVES.reed, gain: 0.6 });
+  tune(k, out, BASS, { beat: BEAT, wave: WAVES.tri, gain: 0.7,
+    hold: 0.95 });
+  return out;
+}
+
+// -------------------------------------------------------------- waka
+// Two short tones, one swooping up and one down; they take turns.
+function waka(from, to) {
+  return (k) => {
+    const out = k.buffer(0.13);
+    const f = line([[0, from], [0.12, to]]);
+    return voice(k, out, { wave: WAVES.tri, freq: f, dur: 0.12 });
+  };
+}
+
+// ------------------------------------------------------------ loops
+// A loop is one voice of `len` seconds with a pitch that moves in a
+// pattern repeating exactly every `len` (so a whole number of cycles).
+const SECOND = 1;
+function loopVoice(len, wave, freq) {
+  return (k) => voice(k, k.buffer(len), { wave, freq, dur: len,
+    edge: false });
+}
+
+// The siren whoops up and down once a second; it is higher at each of
+// its five steps.
+const SIREN = [330, 380, 440, 510, 590];
+const siren = (f0) => loopVoice(SECOND, WAVES.tri,
+  (t) => f0 * (1 + 0.25 * Math.sin(2 * Math.PI * t / SECOND)));
+
+// Frightened: a low, quick warble (16 wobbles in half a second).
+const fright = loopVoice(0.5, WAVES.pulse,
+  (t) => 200 * (1 + 0.5 * Math.sin(2 * Math.PI * 16 * t)));
+
+// Eyes returning: a bright falling sweep, four in every 0.4 seconds
+// (it ends low, so the last sample is still near the top of a cycle).
+const eyes = loopVoice(0.4, WAVES.saw,
+  (t) => 1400 - 800 * ((t / 0.1) % 1));
+
+// ----------------------------------------------------------- effects
+function ghostEaten(k) {                       // a fast rising slide
+  const out = k.buffer(0.55);
+  const f = line([[0, 180], [0.5, 1500]]);
+  return voice(k, out, { wave: WAVES.reed, freq: (t) =>
+    Math.round(f(t) / 60) * 60, dur: 0.5 });
+}
+
+function fruitEaten(k) {                       // a rising four notes
+  const out = k.buffer(0.5);
+  tune(k, out, ['C5', 'E5', 'G5', 'C6'].map((n) => [n, 1]),
+    { beat: 0.1, wave: WAVES.reed, hold: 0.95 });
+  return out;
+}
+
+function extraLife(k) {                        // beeps in alternation
+  const out = k.buffer(1.2);
+  const seq = [];
+  for (let i = 0; i < 8; i++) seq.push([i % 2 ? 'E6' : 'B5', 1]);
+  tune(k, out, seq, { beat: 0.14, wave: WAVES.pulse, gain: 0.5,
+    hold: 0.8 });
+  return out;
+}
+
+function death(k) {            // a sinking whoop, then a few ticks
+  const out = k.buffer(1.7);
+  voice(k, out, { wave: WAVES.tri, dur: 1.2, freq: (t) =>
+    900 * Math.pow(0.12, t / 1.2) * (1 + 0.1 * Math.sin(40 * t)) });
+  tune(k, out, [['A3', 1], ['E3', 1], ['C3', 1], ['A2', 2]],
+    { start: 1.2, beat: 0.1, wave: WAVES.saw, hold: 0.6 });
+  return out;
+}
+
+/** The recipes by name; loop is true for a sound that repeats. */
+export const RECIPES = {
+  startJingle: { make: startJingle, loop: false },
+  waka0: { make: waka(300, 560), loop: false },
+  waka1: { make: waka(560, 300), loop: false },
+  siren0: { make: siren(SIREN[0]), loop: true },
+  siren1: { make: siren(SIREN[1]), loop: true },
+  siren2: { make: siren(SIREN[2]), loop: true },
+  siren3: { make: siren(SIREN[3]), loop: true },
+  siren4: { make: siren(SIREN[4]), loop: true },
+  fright: { make: fright, loop: true },
+  eyes: { make: eyes, loop: true },
+  ghostEaten: { make: ghostEaten, loop: false },
+  fruitEaten: { make: fruitEaten, loop: false },
+  extraLife: { make: extraLife, loop: false },
+  death: { make: death, loop: false },
+};
