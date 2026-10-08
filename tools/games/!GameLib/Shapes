@@ -1,0 +1,104 @@
+// GameLib - Shapes: discs, pies, arcs, lines and polygons on a Surface.
+//
+// Pac-Man himself is a pie with a mouth cut out, and the maze walls are
+// arcs and rounded rectangles, so these are drawn with no antialiasing:
+// a pixel is filled when its centre (x + 0.5, y + 0.5) is inside the
+// shape. Angles are in radians, 0 points along +x and they increase
+// towards +y, which is clockwise on the screen (y points down).
+//
+//   disc(s, 8, 8, 6.5, yellow);
+//   pie(s, 8, 8, 6.5, 0.4, TAU - 0.4, yellow);   // mouth open to +x
+
+import { fillTriangle } from './Raster';
+
+const TWO_PI = Math.PI * 2;
+const EPS = 1e-9;
+
+// Fill the pixels whose centres lie in a ring: inner < distance <=
+// outer from (cx, cy), and (if wanted) inside the sweep a0 to a1.
+function spans(s, cx, cy, outer, inner, a0, a1, c) {
+  const sweep = a1 - a0;
+  const full = sweep >= TWO_PI - EPS;
+  const y0 = Math.max(0, Math.floor(cy - outer));
+  const y1 = Math.min(s.height - 1, Math.ceil(cy + outer));
+  const ro = outer * outer, ri = inner * inner;
+  for (let y = y0; y <= y1; y++) {
+    const dy = y + 0.5 - cy;
+    if (dy * dy > ro + EPS) continue;
+    const h = Math.sqrt(Math.max(0, ro - dy * dy));
+    const xa = Math.max(0, Math.ceil(cx - h - 0.5 - EPS));
+    const xb = Math.min(s.width - 1, Math.floor(cx + h - 0.5 + EPS));
+    for (let x = xa; x <= xb; x++) {
+      const dx = x + 0.5 - cx;
+      const d2 = dx * dx + dy * dy;
+      if (inner > 0 && d2 <= ri + EPS) continue;
+      if (!full) {
+        let rel = (Math.atan2(dy, dx) - a0) % TWO_PI;
+        if (rel < 0) rel += TWO_PI;
+        if (rel > sweep) continue;
+      }
+      s.pixels[y * s.width + x] = c;
+    }
+  }
+}
+
+/** A filled circle of radius r about (cx, cy). */
+export function disc(s, cx, cy, r, c) {
+  spans(s, cx, cy, r, 0, 0, TWO_PI, c);
+}
+
+/** A filled pie slice: the disc between angles a0 and a1 (a0 < a1). */
+export function pie(s, cx, cy, r, a0, a1, c) {
+  spans(s, cx, cy, r, 0, a0, a1, c);
+}
+
+/**
+ * An arc of a ring from angle a0 to a1: pixels whose centres are
+ * between r - width and r from (cx, cy). The outer edge is r.
+ */
+export function arc(s, cx, cy, r, a0, a1, c, width = 1) {
+  spans(s, cx, cy, r, Math.max(0, r - width), a0, a1, c);
+}
+
+/** A line of single pixels from (x0, y0) to (x1, y1), both ends in. */
+export function line(s, x0, y0, x1, y1, c) {
+  x0 = Math.floor(x0); y0 = Math.floor(y0);
+  x1 = Math.floor(x1); y1 = Math.floor(y1);
+  const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  for (;;) {
+    s.pixel(x0, y0, c);
+    if (x0 === x1 && y0 === y1) return;
+    const e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+
+/** A filled convex polygon from [[x, y], ...] (a triangle fan). */
+export function polygon(s, pts, c) {
+  const [ax, ay] = pts[0];
+  for (let i = 1; i + 1 < pts.length; i++) {
+    fillTriangle(s.pixels, s.width, 0, s.height, ax, ay,
+      pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1], c);
+  }
+}
+
+/** A filled rectangle with corners rounded to radius r. */
+export function roundRect(s, x, y, w, h, r, c) {
+  r = Math.min(r, w / 2, h / 2);
+  const y0 = Math.max(0, Math.ceil(y - 0.5));
+  const y1 = Math.min(s.height, Math.ceil(y + h - 0.5));
+  for (let py = y0; py < y1; py++) {
+    const yc = py + 0.5;
+    let dy = 0;
+    if (yc < y + r) dy = y + r - yc;
+    else if (yc > y + h - r) dy = yc - (y + h - r);
+    const inset = r > 0
+      ? r - Math.sqrt(Math.max(0, r * r - dy * dy)) : 0;
+    const xa = Math.ceil(x + inset - 0.5 - EPS);
+    const xb = Math.floor(x + w - inset - 0.5 + EPS);
+    if (xb >= xa) s.hline(xa, xb, py, c);
+  }
+}
