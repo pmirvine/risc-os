@@ -1,0 +1,96 @@
+// !Pacman - MazeDraw: the maze walls, drawn once from the maze rows.
+//
+// The walls are outlines, not filled blocks. For each pixel of a wall
+// tile ('#', and anything outside the grid) we find the distance to
+// the nearest pixel of a tile that is not a wall ('-' and 'H' are not
+// walls). Pixels 2.5 to 3.5 away are the line. Wall regions that touch
+// the edge of the grid also get a second line 5.5 to 6.5 away: that is
+// the outer double line, and the double walls of the ghost house.
+// The distance rule makes the corners round by itself.
+//
+// mazeSurface() draws the lines (and the door, a 2 pixel pink bar)
+// into a Surface of its own, kept for next time, so the walls cost one
+// blit a frame. Pixels with no wall are 0 (transparent for a blit).
+
+import { Surface, rgb } from 'gamelib/Surface';
+
+const R = 6;                        // the furthest line, rounded up
+
+/** Which tiles are in a wall region that touches the grid's edge. */
+function edgeTiles(rows) {
+  const h = rows.length, w = rows[0].length;
+  const edge = new Uint8Array(w * h);
+  const stack = [];
+  const push = (x, y) => {
+    if (x < 0 || y < 0 || x >= w || y >= h) return;
+    if (rows[y][x] !== '#' || edge[y * w + x]) return;
+    edge[y * w + x] = 1;
+    stack.push([x, y]);
+  };
+  for (let x = 0; x < w; x++) { push(x, 0); push(x, h - 1); }
+  for (let y = 0; y < h; y++) { push(0, y); push(w - 1, y); }
+  while (stack.length) {
+    const [x, y] = stack.pop();
+    push(x + 1, y); push(x - 1, y); push(x, y + 1); push(x, y - 1);
+  }
+  return edge;
+}
+
+/** 1 for each wall line pixel; Uint8Array(224 * 248) for the maze. */
+export function wallPixels(rows) {
+  const tw = rows[0].length, th = rows.length;
+  const w = tw * 8, h = th * 8;
+  const best = new Int16Array(w * h).fill(0x7fff);   // distance squared
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (rows[y >> 3][x >> 3] === '#') continue;
+      for (let dy = -R - 1; dy <= R + 1; dy++) {
+        const yy = y + dy;
+        if (yy < 0 || yy >= h) continue;
+        for (let dx = -R - 1; dx <= R + 1; dx++) {
+          const xx = x + dx;
+          if (xx < 0 || xx >= w || rows[yy >> 3][xx >> 3] !== '#') {
+            continue;
+          }
+          const d = dx * dx + dy * dy, i = yy * w + xx;
+          if (d < best[i]) best[i] = d;
+        }
+      }
+    }
+  }
+  const edge = edgeTiles(rows);
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const d = best[y * w + x];
+      if (d >= 7 && d <= 12) out[y * w + x] = 1;       // 2.5 - 3.5
+      else if (d >= 31 && d <= 42 && edge[(y >> 3) * tw + (x >> 3)]) {
+        out[y * w + x] = 1;                            // 5.5 - 6.5
+      }
+    }
+  }
+  return out;
+}
+
+const cache = new WeakMap();
+
+/** The maze as a Surface (cached by rows and wall colour). */
+export function mazeSurface(rows, colours) {
+  const key = colours.wall.join(',') + '/' + colours.door.join(',');
+  let hit = cache.get(rows);
+  if (!hit) cache.set(rows, hit = new Map());
+  let s = hit.get(key);
+  if (s) return s;
+  const w = rows[0].length * 8, h = rows.length * 8;
+  s = new Surface(w, h);
+  const wall = rgb(...colours.wall), door = rgb(...colours.door);
+  const px = wallPixels(rows);
+  for (let i = 0; i < px.length; i++) if (px[i]) s.pixels[i] = wall;
+  for (let y = 0; y < h >> 3; y++) {
+    for (let x = 0; x < w >> 3; x++) {
+      if (rows[y][x] === '-') s.fillRect(x * 8, y * 8 + 3, 8, 2, door);
+    }
+  }
+  hit.set(key, s);
+  return s;
+}

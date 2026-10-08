@@ -1,0 +1,143 @@
+// !Pacman - Screens: which screen is showing and what a key does.
+//
+// One object the shell talks to, with no desktop in it: the shell
+// (!RunImage) passes in `app`, which has
+//   keys        the Keys of the game (ACTIONS below)
+//   settings    {lives, bonus, ...}
+//   high        the best score so far
+//   seed()      a seed number for a new game
+//   toDesktop() leave the game and show the desktop
+//   viewSource() open the program's files in !JsEdit
+// Screens are 'title', 'play' and 'pause' (the Escape menu over the
+// game). Each display frame the shell calls frame(presses), then
+// tick() for every 60 Hz tick due, then draw(surface). P pauses a
+// game by itself (paused); losing the keyboard focus does the same.
+
+import { Game } from './Game';
+import { drawGame } from './Render';
+import { Menu } from './Menu';
+import { Title } from './Title';
+import { rgb } from 'gamelib/Surface';
+import { drawText } from 'gamelib/Font';
+import { COLOURS } from './Theme';
+
+export const ACTIONS = {
+  up: ['ArrowUp', 'KeyW', 'Quote', 'PadUp'],
+  down: ['ArrowDown', 'KeyS', 'Slash', 'PadDown'],
+  left: ['ArrowLeft', 'KeyA', 'KeyZ', 'PadLeft'],
+  right: ['ArrowRight', 'KeyD', 'KeyX', 'PadRight'],
+  pause: ['KeyP', 'PadStart'],
+  menu: ['Escape', 'PadB'],
+  full: ['KeyF'],
+  select: ['Enter', 'Space', 'PadA'],
+};
+
+// In the order of the engine's numbers: up 0, left 1, down 2, right 3.
+export const DIRS = ['up', 'left', 'down', 'right'];
+
+/** The wanted direction: the latest one held, else the old want. */
+export function wantFor(keys, want) {
+  const n = keys.latest(DIRS);
+  return n === null ? want : DIRS.indexOf(n);
+}
+
+export class Screens {
+  constructor(app) {
+    this.app = app;
+    this.game = null;
+    this.want = -1;
+    this.paused = false;
+    this.title();
+  }
+
+  get menu() { return this.name === 'title' ? this.titleScreen.menu
+    : this.name === 'pause' ? this.pauseMenu : null; }
+
+  title() {
+    const a = this.app;
+    this.name = 'title';
+    this.game = null;
+    this.titleScreen = new Title([
+      { text: 'Play', action: () => this.play() },
+      { text: 'View source', action: () => a.viewSource() },
+      { text: 'Desktop', action: () => a.toDesktop() },
+    ]);
+  }
+
+  play() {
+    const s = this.app.settings;
+    this.game = new Game({ seed: this.app.seed?.() ?? 1,
+      lives: s.lives ?? 3, bonus: s.bonus ?? 10000 });
+    this.want = -1;
+    this.paused = false;
+    this.name = 'play';
+  }
+
+  openPause() {
+    const c = () => { this.name = 'play'; };
+    this.name = 'pause';
+    this.pauseMenu = new Menu([
+      { text: 'Continue', action: c },
+      { text: 'Restart', action: () => this.play() },
+      { text: 'Title', action: () => this.title() },
+      { text: 'Desktop', action: () => this.app.toDesktop() },
+    ], { y: 112 });
+  }
+
+  /** The key presses of this display frame ([{code, repeat}]). */
+  frame(presses) {
+    const keys = this.app.keys;
+    let dir = -1;
+    for (const p of presses) {
+      for (const name of keys.namesFor(p.code)) {
+        const d = DIRS.indexOf(name);
+        if (d >= 0) dir = d;
+        this.action(name, p.repeat);
+      }
+    }
+    if (dir >= 0 && this.name === 'play') {
+      this.want = wantFor(keys, dir);
+    }
+  }
+
+  action(name, repeat) {
+    const m = this.menu;
+    if (this.name === 'play') {
+      if (repeat) return;
+      if (name === 'pause') this.paused = !this.paused;
+      else if (name === 'menu') this.openPause();
+    } else if (name === 'menu' && !repeat) {
+      if (this.name === 'pause') this.name = 'play';
+      else this.app.toDesktop();
+    } else if (m && !(repeat && name === 'select')) m.press(name);
+  }
+
+  /** One 60 Hz tick: true if the game moved. */
+  tick() {
+    if (this.name === 'title') this.titleScreen.tick();
+    if (this.name !== 'play' || this.paused) return false;
+    this.game.tick({ want: this.want });
+    return true;
+  }
+
+  draw(s) {
+    if (this.name === 'title') return this.titleScreen.draw(s);
+    const g = this.game;
+    drawGame(s, g, g.frame);
+    if (this.paused) {
+      s.shade(0, 24, 224, 248, 0, 0.5);
+      drawText(s, 'PAUSED', 112, 160, { align: 'centre',
+        colour: rgb(...COLOURS.ready) });
+    } else if (this.name === 'pause') {
+      s.shade(0, 24, 224, 248, 0, 0.6);
+      this.pauseMenu.draw(s);
+    }
+  }
+
+  /** The keyboard focus went elsewhere: stop a game in progress. */
+  blur() {
+    if (this.name === 'play') this.paused = true;
+  }
+
+  pointer(p) { this.menu?.pointer(p); }
+}

@@ -1,0 +1,92 @@
+// !Pacman - Render: one picture of a game, a function of
+// (surface, game, frame).
+//
+// The surface is 224 x 288 and the maze sits MAZE_TOP pixels down.
+// Order: clear, the maze (white while it flashes at the end of a
+// level), dots, energizers (blinking every 10 frames), the fruit,
+// Pac-Man, the ghosts, the scores that pop up, then the Hud. Actors
+// are drawn into a layer as wide as the maze and blitted, so one in
+// the tunnel is cut off at the edge, not wrapped round.
+//
+// What it reads from the game: state ('start', 'ready', 'play',
+// 'dying', 'levelend', 'over'), stateTimer, player, ghosts (id, px,
+// py, dir, turn, state, blue, flash), fruit (null or {kind}) and
+// popups ({px, py, text}, maze pixels).
+
+import { Surface, rgb } from 'gamelib/Surface';
+import { disc } from 'gamelib/Shapes';
+import { COLOURS } from './Theme';
+import { mazeSurface } from './MazeDraw';
+import { drawPac, drawGhost, drawFruit, drawDigits } from './Sprites';
+import { drawHud } from './Hud';
+
+export const MAZE_TOP = 24;
+
+let layer = null;                     // transparent (0) where empty
+
+/** Draw the game into the 224 x 288 surface. */
+export function drawGame(surface, game, frame) {
+  const { rows } = game.maze;
+  surface.clear(rgb(0, 0, 0));
+  const flashing = game.state === 'levelend'
+    && (game.stateTimer >> 3) % 2 === 1;
+  const colours = flashing ? { ...COLOURS, wall: COLOURS.flash }
+    : COLOURS;
+  surface.blit(mazeSurface(rows, colours), 0, MAZE_TOP, 0);
+  dots(surface, game, frame);
+  const maze = rows.length * 8;
+  if (!layer || layer.width !== rows[0].length * 8
+    || layer.height !== maze) {
+    layer = new Surface(rows[0].length * 8, maze);
+  }
+  layer.clear(0);
+  actors(layer, game, frame);
+  surface.blit(layer, 0, MAZE_TOP, 0);
+  for (const p of game.popups) {
+    drawDigits(surface, p.px - ((String(p.text).length * 4) >> 1),
+      p.py + MAZE_TOP - 3, p.text, rgb(...COLOURS.text));
+  }
+  drawHud(surface, game, frame, game.high ?? 0);
+}
+
+function dots(surface, game, frame) {
+  const { maze } = game;
+  const dot = rgb(...COLOURS.dot);
+  const lit = Math.floor(frame / 10) % 2 === 0;
+  for (let y = 0; y < maze.h; y++) {
+    for (let x = 0; x < maze.w; x++) {
+      const v = maze.dotAt(x, y);
+      if (v === 10) {
+        surface.fillRect(x * 8 + 4, y * 8 + 4 + MAZE_TOP, 2, 2, dot);
+      } else if (v === 50 && lit) {
+        disc(surface, x * 8 + 4, y * 8 + 4 + MAZE_TOP, 4, dot);
+      }
+    }
+  }
+}
+
+function actors(s, game, frame) {
+  const { player, state } = game;
+  const fruit = game.fruit;
+  if (fruit) {
+    const f = game.data.maze.SPECIAL.fruit;
+    drawFruit(s, f.px, f.py, fruit.kind);
+  }
+  if (state === 'dying') {
+    const k = Math.min(10, Math.floor(game.stateTimer / 6));
+    drawPac(s, player.px, player.py, player.dir, 0, k);
+    return;
+  }
+  if (state === 'over' || state === 'levelend') {
+    if (state === 'levelend') {
+      drawPac(s, player.px, player.py, player.dir, 0, -1);
+    }
+    return;
+  }
+  const still = player.stopped ? 0 : player.anim;
+  drawPac(s, player.px, player.py, player.dir, still, -1);
+  for (const g of game.ghosts) {
+    const white = !!g.flash && ((frame >> 3) & 1) === 1;
+    drawGhost(s, g.px, g.py, g, frame, white);
+  }
+}

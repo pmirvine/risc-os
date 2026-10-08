@@ -1,0 +1,233 @@
+// !Pacman - !RunImage: the application itself.
+//
+// A personal, non-commercial tribute to Namco's 1980 arcade game.
+// Pac-Man is a trademark of Bandai Namco; this program is not
+// connected with them.
+//
+// This file is the "shell" round the game: it puts the icon on the
+// icon bar, opens the display, passes the keys on and runs the main
+// loop. It is the only file that talks to the desktop. The rest are
+// in this directory (Shift-double-click one to read it in !JsEdit):
+//
+//   Dirs, MazeData, Theme    directions, the maze, names and colours
+//   Maze, Mover, Player,     the rules: walls and dots, movement,
+//   Ghost, Targets, Play     Pac-Man, the ghosts, one frame of play
+//   Game                     the state of a game and its clock
+//   MazeDraw, Sprites,       drawing: the walls, Pac-Man and ghosts,
+//   FruitArt, Hud, Render    the fruit, the scores, a whole picture
+//   Menu, Title, Screens     the title, the menus, and which screen
+//                            is showing (no desktop in them)
+//
+// The library it is built on (display, loop, keys, drawing, text,
+// sound) is GameLib, in <GameLib$Dir>; its own !Help lists its parts.
+//
+// The main loop is GameLib's Loop at 60 ticks a second, however fast
+// the screen is redrawn: each frame the keys go to Screens, the
+// ticks that are due run, the picture is drawn once into a 224 x 288
+// Surface and the Display scales it onto the screen.
+
+import { Menu as WimpMenu, infoBox } from 'riscos';
+import { os, wimp, choices, vfs } from 'riscos';
+import { Display } from 'gamelib/Display';
+import { Loop } from 'gamelib/Loop';
+import { Keys } from 'gamelib/Keys';
+import { pollPad } from 'gamelib/Pad';
+import { Surface } from 'gamelib/Surface';
+import { choicesStore } from 'gamelib/Choices';
+import { sanitise } from 'gamelib/Options';
+import { TITLE } from './Theme';
+import { Screens, ACTIONS } from './Screens';
+
+const JSEDIT = 'ADFS::HardDisc4.$.Apps.!JsEdit';
+
+// The settings so far (the settings screen comes later).
+const OPTIONS = [
+  { key: 'display', values: ['full', 'window'] },
+  { key: 'browserFull', values: [false, true] },
+];
+const DEFAULTS = { display: 'full', browserFull: false };
+const QUIET_MS = 300;       // ignore focus changes our own close causes
+
+export default async function start(task, ctx) {
+  const store = choicesStore({ choices, vfs, sysvars: os.sysvars },
+    'Pacman');
+  const settings = sanitise(OPTIONS, DEFAULTS,
+    await store.read('Settings', DEFAULTS));
+  const keys = new Keys(ACTIONS);
+  const surface = new Surface(224, 288);
+  const off = [];                    // removes every listener we add
+  let screens = null;
+  let frames = 0;
+  let padHeld = new Set();
+  let quietUntil = 0;       // closing the display is not a blur
+
+  const app = {
+    task, keys, settings, high: 0, surface,
+    seed: () => (Date.now() % 0x7fffffff) || 1,
+    toDesktop: () => toDesktop(),
+    viewSource() {
+      toDesktop();
+      os.cli.run(`Run ${JSEDIT} ${ctx.dir}`)
+        .catch?.((e) => task.reportError(e.message));
+    },
+    openDirectory() {
+      os.cli.run(`Filer_OpenDir ${ctx.dir}`)
+        .catch?.((e) => task.reportError(e.message));
+    },
+  };
+
+  // ---------------------------------------------------------- display
+  // The display's own close (or switch) makes the window lose the
+  // caret, and leaving browser full screen follows a little later:
+  // neither is the player going away, so neither pauses the game.
+  const settle = () => { quietUntil = performance.now() + QUIET_MS; };
+  const quiet = () => performance.now() < quietUntil;
+
+  function onBlur() {
+    if (quiet()) return;
+    keys.release();
+    screens?.blur();
+  }
+
+  const display = new Display({
+    task, wimp, os, title: TITLE, width: 224, height: 288,
+    background: '#000', onClose: () => toDesktop(), onBlur,
+    onPointer: (p) => screens?.pointer(p),
+  });
+
+  function openDisplay(kind) {
+    settle();
+    display.open(kind);
+    if (settings.browserFull) display.browserFull(true);
+    screens ??= new Screens(app);
+    padHeld = new Set();
+    loop.start();
+  }
+
+  /** Back to the desktop: the game stops, the icon stays. */
+  function toDesktop() {
+    settle();
+    loop.stop();
+    screens = null;
+    keys.release();
+    display.close();
+  }
+
+  function browserFull(on) {
+    settings.browserFull = on;
+    display.browserFull(on);
+  }
+
+  // -------------------------------------------------------- main loop
+  function readPad() {
+    const r = pollPad(() => navigator.getGamepads?.(), padHeld);
+    for (const n of r.presses) keys.keyDown({ code: n });
+    for (const n of padHeld) {
+      if (!r.held.has(n)) keys.keyUp({ code: n });
+    }
+    padHeld = r.held;
+  }
+
+  const loop = new Loop({
+    hz: 60,
+    frame() {
+      display.layout();
+      readPad();
+      const mine = [];
+      for (const k of keys.takePresses()) {
+        if (!k.repeat && keys.namesFor(k.code).includes('full')) {
+          browserFull(!document.fullscreenElement);
+        } else mine.push(k);
+      }
+      screens.frame(mine);
+      keys.clearEdges();
+    },
+    tick() { screens.tick(); },
+    draw() {
+      screens.draw(surface);
+      display.present(surface);
+      frames++;
+    },
+    onError(e) { toDesktop(); throw e; },
+  });
+
+  // ----------------------------------------------------------- events
+  const listen = (target, type, fn, opt) => {
+    target.addEventListener(type, fn, opt);
+    off.push(() => target.removeEventListener(type, fn, opt));
+  };
+  listen(window, 'keydown', (e) => {
+    if (!display.keysActive()) return;
+    keys.keyDown(e);
+    if (display.kind === 'window' && !e.metaKey) e.preventDefault();
+  }, true);
+  listen(window, 'keyup', (e) => keys.keyUp(e), true);
+  listen(window, 'blur', onBlur);
+  listen(document, 'visibilitychange', () => {
+    if (document.hidden) onBlur();
+  });
+  listen(document, 'fullscreenchange', () => {
+    if (!quiet()) settings.browserFull = !!document.fullscreenElement;
+  });
+
+  // ------------------------------------------------------ the icon bar
+  const info = infoBox(task, {
+    name: TITLE, purpose: 'Maze game',
+    author: 'After Namco, 1980', version: '0.10 (08 Oct 2026)',
+  });
+  const show = (kind) => {
+    settings.display = kind;
+    store.write('Settings', settings);
+    openDisplay(kind);
+  };
+  const iconMenu = () => new WimpMenu(TITLE, [
+    { text: 'Info', submenu: info },
+    { text: 'Full screen', ticked: () => settings.display === 'full',
+      action: () => show('full') },
+    { text: 'Window', ticked: () => settings.display === 'window',
+      action: () => show('window') },
+    { text: 'Browser full screen',
+      ticked: () => !!document.fullscreenElement, dotted: true,
+      action: () => browserFull(!document.fullscreenElement) },
+    { text: 'View source', action: () => app.viewSource() },
+    { text: 'Open directory', dotted: true,
+      action: () => app.openDirectory() },
+    { text: 'Quit', action: () => task.quit() },
+  ]);
+  task.addIconbarIcon({
+    sprite: '!pacman', side: 'right',
+    onClick(ev) {
+      if (ev.button === 'menu') return;
+      if (display.kind === 'window') {
+        display._win.open({ behind: 'top' });
+        wimp.setCaret(display._win);
+      } else if (!display.kind) openDisplay(settings.display);
+    },
+    menu: iconMenu,
+    help: 'This is the Pacman icon.|MClick SELECT to play Pacman.',
+  });
+  task.onMessage('Quit', () => task.quit());
+
+  task.on('quit', () => {
+    toDesktop();
+    for (const remove of off) remove();
+    off.length = 0;
+  });
+
+  // --------------------------------------------------------- for tests
+  task.game = {
+    app, settings, keys, surface, display, audio: null,
+    get game() { return screens?.game ?? null; },
+    get screen() { return screens?.name ?? null; },
+    get frames() { return frames; },
+    open: (kind = settings.display) => openDisplay(kind),
+    play: () => {
+      if (!display.kind) openDisplay(settings.display);
+      screens.play();
+    },
+    title: () => screens?.title(),
+    toDesktop,
+  };
+
+  openDisplay(settings.display);
+}
