@@ -5,7 +5,7 @@ import { Emitter, el, clamp, allowedChar } from './util.js';
 import { Window, templateToDef } from './window.js';
 import { loadTemplates } from './templates.js';
 import { input, keyCode, startPointerDrag, autoRepeat, BUT } from './input.js';
-import { TextInput } from './textinput.js';
+import { TextInput, pastePayload, copyData, MAX_HTML, MAX_TEXT } from './textinput.js';
 import { sprites } from './sprites.js';
 import { fonts } from './fonts.js';
 import { IF } from './templates.js';
@@ -81,6 +81,21 @@ export class Task extends Emitter {
 
 // ---------------------------------------------------------------------------- Wimp
 
+// a text/html clipboard item larger than this (bytes; UTF-8 has at most 3 per UTF-16 unit) is not read at all:
+// it cannot fit pastePayload's MAX_HTML characters
+const MAX_HTML_BYTES = 3 * MAX_HTML;
+// a text/plain item: only this many bytes are read (enough for MAX_TEXT units in any UTF-8 text with room for
+// line ends and dropped characters); the rest is cut by pastePayload anyway
+const MAX_TEXT_BYTES = 4 * MAX_TEXT;
+
+// The letter a Ctrl/Cmd shortcut means: e.key when it is an ASCII letter (so Dvorak's own C, X, V count),
+// otherwise the physical key (Cyrillic, Greek, Hebrew... layouts: the letter on the C, X, V keys)
+const CLIP_CODES = { KeyC: 'c', KeyX: 'x', KeyV: 'v' };
+function clipLetter(e) {
+  const k = e.key ?? '';
+  return /^[A-Za-z]$/.test(k) ? k.toLowerCase() : CLIP_CODES[e.code] ?? '';
+}
+
 export class Wimp extends Emitter {
   constructor() {
     super();
@@ -122,6 +137,8 @@ export class Wimp extends Emitter {
     scr.addEventListener('dblclick', (e) => e.preventDefault());
     window.addEventListener('keydown', (e) => this._keyDown(e), true);
     window.addEventListener('paste', (e) => this._paste(e));
+    document.addEventListener('copy', (e) => this._copyCut(e));
+    document.addEventListener('cut', (e) => this._copyCut(e));
   }
 
   setScale(s) { this.zoom = s; this._resize(); }
@@ -340,7 +357,11 @@ export class Wimp extends Emitter {
    *   setCaret(win, null, -1, {x, y, h})     caret drawn at work-area x,y (height h)
    *   setCaret(win, null, -1, {x, y, h}, {text: true})
    *                                          the same, and a text-input caret: typed text, dead keys and input
-   *                                          methods arrive as textinput / composition events (src/core/textinput.js)
+   *                                          methods arrive as textinput / composition events (src/core/textinput.js),
+   *                                          the clipboard as paste {text, html, files} / copy / cut
+   *     options with text: true: blink: true  the caret blinks (not with prefers-reduced-motion)
+   *                              clipboard: true  keep a selected placeholder in the text-input proxy while the
+   *                                          window says it has a selection (wimp.textInput.setHasSelection)
    */
   setCaret(win, icon = null, index = -1, pos = null, opts = null) {
     const old = this.caret;
@@ -348,7 +369,11 @@ export class Wimp extends Emitter {
     if (typeof icon === 'number') icon = win?.icons[icon] ?? null;
     if (win && icon && index < 0) index = icon.text.length;
     this.caret = win ? { window: win, icon, index: icon ? clamp(index, 0, icon.text.length) : index, pos } : null;
-    if (win && !icon && opts?.text) this.caret.text = true;
+    if (win && !icon && opts?.text) {
+      this.caret.text = true;
+      if (opts.blink) this.caret.blink = true;
+      if (opts.clipboard) this.caret.clipboard = true;
+    }
     // the proxy takes the focus now, inside the click or key that placed the caret (iOS shows its keyboard only
     // then); a caret going elsewhere first ends any composition in the old window
     if (!this.caret?.text) this.textInput.blur();
@@ -380,6 +405,9 @@ export class Wimp extends Emitter {
     ce.style.left = Math.round(p.x) + 'px';
     ce.style.top = Math.round(p.y) + 'px';
     ce.style.height = Math.round(p.h ?? 20) + 'px';
+    // a blinking text caret starts each move visible (the animation restarts)
+    if (c.blink) { ce.classList.add('blink'); for (const a of ce.getAnimations?.() ?? []) a.currentTime = 0; }
+    else if (ce.classList.contains('blink')) ce.classList.remove('blink');
     if (c.text && this.textInput.focused) this.textInput.moveTo(...this._caretClientXY());
   }
 
@@ -711,6 +739,13 @@ export class Wimp extends Emitter {
     const last = this._lastClick;
     const isDouble = last && last.win === win && last.icon === icon && last.button === button && now - last.t < input.config.doubleClickMs && Math.abs(last.x - p.x) + Math.abs(last.y - p.y) < input.config.doubleClickMove;
     this._lastClick = isDouble ? null : { win, icon, button, t: now, x: p.x, y: p.y };
+    // count: 1, 2, 3 for consecutive quick clicks of one button in one window near the same place (a triple click);
+    // further quick clicks stay 3. Independent of isDouble (which pairs clicks and still decides doubleclick)
+    const run = this._clickRun;
+    const count = run && run.win === win && run.button === button && now - run.t < input.config.doubleClickMs
+      && Math.abs(run.x - p.x) + Math.abs(run.y - p.y) < input.config.doubleClickMove ? Math.min(run.n + 1, 3) : 1;
+    this._clickRun = { win, button, t: now, x: p.x, y: p.y, n: count };
+    base.count = count;
     if ([5, 8, 10].includes(btype) && !isDouble) this._doublePtrOn(p); else this._doublePtrOff();
 
     const selects = [4, 5, 7, 8, 11].includes(btype);
@@ -851,9 +886,13 @@ export class Wimp extends Emitter {
       const ev = this.emit('key', { code: k.code, char: k.char, key: e.key });
       handled = ev.handled;
     }
-    // stop browser defaults for keys the desktop owns
+    // stop browser defaults for keys the desktop owns. Cmd + C/V/X/R/L are left to the browser; with a text caret
+    // only Ctrl/Cmd + C/X/V without Alt are (the browser fires copy / cut / paste: _copyCut, _paste)
     if (!allowDefault && (handled || c || /^F\d+$/.test(e.key) || ['Tab', 'Backspace', ' '].includes(e.key))) {
-      if (!(e.metaKey && ['c', 'v', 'x', 'r', 'l'].includes(e.key.toLowerCase()))) e.preventDefault();
+      const key = e.key.toLowerCase();
+      const exempt = proxy ? (e.ctrlKey || e.metaKey) && !e.altKey && ['c', 'x', 'v'].includes(clipLetter(e))
+        : e.metaKey && ['c', 'v', 'x', 'r', 'l'].includes(key);
+      if (!exempt) e.preventDefault();
     }
   }
 
@@ -881,6 +920,7 @@ export class Wimp extends Emitter {
 
   _paste(e) {
     const c = this.caret;
+    if (c?.text) { this._textPaste(e, c); return; }
     const text = e.clipboardData?.getData('text');
     if (!text || !c?.window) return;
     if (c.icon?.writable) {
@@ -888,6 +928,71 @@ export class Wimp extends Emitter {
     } else {
       c.window.emit('paste', { text });
     }
+  }
+
+  /**
+   * A clipboard event aimed at the desktop: its text-input proxy, something on the screen, or the document itself
+   * (nothing has the browser focus, e.g. the proxy lost it); not a page field outside the desktop.
+   */
+  _clipTarget(e) {
+    const t = e.target;
+    return t === this.textInput.el || t === document.body || t === document.documentElement || !!t?.closest?.('.screen');
+  }
+
+  // paste with a text caret: {text, html, files} (capped, src/core/textinput.js pastePayload). The proxy cancels
+  // the browser's own insertion, so the text arrives once, here, never also as textinput
+  _textPaste(e, c) {
+    if (!c.window.isOpen || !this._clipTarget(e)) return;
+    const dt = e.clipboardData;
+    const p = pastePayload({ text: dt?.getData('text/plain'), html: dt?.getData('text/html'), files: dt?.files });
+    if (!p.text && !p.html && !p.files.length) return;
+    const ev = c.window.emit('paste', { ...p, window: c.window });
+    if (ev.handled || ev.defaultPrevented) e.preventDefault();
+  }
+
+  // copy / cut with a text caret: the window puts its data on the clipboard with setData (src/core/textinput.js
+  // copyData); with nothing set the browser's default is left alone
+  _copyCut(e) {
+    const c = this.caret;
+    if (!c?.text || !c.window?.isOpen || !this._clipTarget(e)) return;
+    const d = copyData();
+    try { c.window.emit(e.type, { window: c.window, cut: e.type === 'cut', setData: d.setData }); } finally { d.close(); }
+    if (!d.entries.size || !e.clipboardData) return;
+    for (const [type, data] of d.entries) e.clipboardData.setData(type, data);
+    e.preventDefault();
+  }
+
+  /**
+   * Paste from a menu item: read the system clipboard (the browser may ask the user) and send the caret's text
+   * window a `paste` event like Ctrl-V's (no files). Resolves true when read, false when there is no text caret or
+   * the browser refused or has no clipboard access (tell the user to press Ctrl-V).
+   */
+  async readClipboard() {
+    const c = this.caret;
+    if (!c?.text || !c.window?.isOpen) return false;
+    const w = c.window;
+    let text = '', html = '';
+    try {
+      const nc = navigator.clipboard;
+      if (nc?.read) {
+        for (const item of await nc.read()) {
+          if (!text && item.types.includes('text/plain')) {
+            const b = await item.getType('text/plain');
+            text = await (b.size > MAX_TEXT_BYTES ? b.slice(0, MAX_TEXT_BYTES) : b).text();
+          }
+          if (!html && item.types.includes('text/html')) {
+            const b = await item.getType('text/html');
+            if (b.size <= MAX_HTML_BYTES) html = await b.text();
+          }
+        }
+      } else if (nc?.readText) text = await nc.readText();
+      else return false;
+    } catch { return false; }
+    // the caret may have moved while the browser asked: the paste was for this window only
+    if (this.caret?.window !== w || !this.caret.text || !w.isOpen) return true;
+    const p = pastePayload({ text, html, files: [] });
+    if (p.text || p.html) w.emit('paste', { ...p, window: w });
+    return true;
   }
 
   /**

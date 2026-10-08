@@ -1,0 +1,100 @@
+// ClipSlice - a selection as clipboard blocks, for Copy and Cut.
+//
+//   slice(doc, sel) -> {blocks, ids, styleNames, plain} | null
+//   plainOf(blocks) -> the blocks as plain text
+//   paraPlain(block) -> one paragraph block as plain text
+//
+// blocks (the clipboard's one block shape: ./ClipRead gives it too,
+// ./ClipClean and ./ClipPaste take it):
+//   {type:'p', text, runs, inlines, pPr, pStyle?}  no id, no extraP
+//   {type:'opaque', node}                          a kept block
+// A paragraph block is the selected part of a paragraph: its text
+// from OpsUtil.cut (runs cut at the edges, inlines shifted), with
+// the paragraph's pPr and pStyle. A kept block (a table) is in the
+// slice when the selection covers it (as ./EditRange deletes it).
+// ids: the source paragraph id of each block (null for a kept
+// block), for ./ClipHtml's list labels. styleNames: Map id ->
+// {name, type} of the paragraph and character styles the blocks
+// use, so another document can map them by name (./ClipClean).
+// null: a collapsed selection, a position not in the document, or
+// nothing in it.
+//
+// plain: paragraphs joined by \n, a kept block an empty line, a tab
+// \t, a line break \n, an inline wrapper (a link...) its text, other
+// inline items nothing (as ./Selection.text).
+//
+// Nothing is copied: blocks share runs, rPr, pPr, inlines and nodes
+// with the document (model objects never change in place: ./Model).
+// Pure: no desktop services.
+import {cut} from './OpsUtil';
+import {collapsed} from './Selection';
+import {orderedPos, neighbour} from './EditPos';
+
+/** See the header. */
+export function paraPlain(b) {
+  const s = b.text;
+  if (!s.includes('\ufffc')) return s;
+  return s.replace(/\ufffc/g, (m, i) => {
+    const x = b.inlines && b.inlines[i];
+    if (!x) return '';
+    if (x.kind === 'tab') return '\t';
+    if (x.kind === 'br') return '\n';
+    return typeof x.text === 'string' ? x.text : '';
+  });
+}
+
+/** See the header. */
+export const plainOf = (blocks) => blocks.map((b) => (b.type === 'p'
+  ? paraPlain(b) : '')).join('\n');
+
+/** The block for [a, e) of paragraph p. */
+function paraBlock(p, a, e) {
+  const c = cut(p, a, e);
+  const b = {type: 'p', text: c.text, runs: c.runs, inlines: c.inlines,
+    pPr: p.pPr};
+  if (p.pStyle !== undefined) b.pStyle = p.pStyle;
+  return b;
+}
+
+/** Map id -> {name, type} of the styles the blocks use. */
+function namesOf(doc, blocks) {
+  const out = new Map();
+  const map = doc.styles && doc.styles.styles;
+  if (!(map instanceof Map)) return out;
+  const add = (id) => {
+    if (typeof id !== 'string' || out.has(id)) return;
+    const s = map.get(id);
+    if (s && typeof s.name === 'string')
+      out.set(id, {name: s.name, type: s.type});
+  };
+  for (const b of blocks) {
+    if (b.type !== 'p') continue;
+    add(b.pStyle);
+    for (const r of b.runs) add(r.rStyle);
+  }
+  return out;
+}
+
+/** See the header. */
+export function slice(doc, sel) {
+  if (!sel || collapsed(sel)) return null;
+  const o = orderedPos(doc, sel);
+  if (!o) return null;
+  const {from, to, f, t} = o;
+  const blocks = [], ids = [];
+  for (let loc = f; loc && loc.k <= t.k; loc = neighbour(doc, loc, 1)) {
+    const b = loc.b;
+    const first = loc.k === f.k, last = loc.k === t.k;
+    if (b.type === 'p') {
+      blocks.push(paraBlock(b, first ? from.off : 0,
+        last ? to.off : b.text.length));
+      ids.push(b.id);
+    } else if ((!first || from.off === 0) && (!last || to.off === 1)) {
+      blocks.push({type: 'opaque', node: b.node});
+      ids.push(null);
+    }
+  }
+  if (!blocks.length) return null;
+  return {blocks, ids, styleNames: namesOf(doc, blocks),
+    plain: plainOf(blocks)};
+}

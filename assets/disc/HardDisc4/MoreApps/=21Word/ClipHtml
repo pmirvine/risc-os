@@ -1,0 +1,121 @@
+// ClipHtml - a slice as HTML for other programs (text/html on the
+// clipboard), escaped, with only these tags: p h1-h6 ul ol li b i u
+// s sup sub span br a.
+//
+//   toHtml(doc, slice, {token, urlOf, max}) -> string | null
+//   MAX_HTML  2,000,000: the default max
+//
+// doc is the document the slice was taken from (./ClipSlice): its
+// styles resolve the formatting, its list labels (./ListNumbers)
+// make the lists. null when the HTML would be longer than max
+// characters: the caller then puts plain text only on the clipboard
+// (nothing is cut short).
+//
+// token (16 hex digits, ./ClipStore) is written first, as the
+// comment <!--word-clip:token-->, so a paste in !Word finds the
+// exact copy again; any other token is left out. urlOf(inline) ->
+// the URL of a link inline, or nothing; the default is none, so
+// links are their text (the model holds a link's target in the
+// document's relationships, not in the inline).
+//
+// A paragraph is <p>, a heading (outline level or style named
+// Heading 1-6, ./Fmt.headingLevel) <hN>, a list paragraph (one with
+// a label) <li> in an <ol>, or a <ul> for a bullet (consecutive ones
+// share it; levels are not nested). Each has style white-space:
+// pre-wrap (tabs and spaces kept) and text-align for centred,
+// right-aligned and justified text. An empty paragraph, or one
+// ending with a line break, gets one <br> more (a browser shows
+// none for the last). A kept block (a table) is an empty paragraph.
+// Runs: ./ClipHtmlRun. Pure: no desktop services.
+import {resolver, alignOf} from './FormatEff';
+import {headingLevel} from './Fmt';
+import {labels} from './ListNumbers';
+import {esc, runHtml} from './ClipHtmlRun';
+import {paraPlain} from './ClipSlice';
+import {MARK} from './ClipStore';
+
+export const MAX_HTML = 2000000;
+const TOKEN = /^[0-9a-f]{16}$/;
+const ALIGN = {center: 'center', right: 'right', both: 'justify'};
+const EMPTY = '<p style="white-space:pre-wrap"><br></p>';
+
+/** Appends strings while under max; over: true once it is not. */
+class Out {
+  constructor(max) {
+    this.parts = [];
+    this.len = 0;
+    this.max = max;
+    this.over = false;
+  }
+
+  put(s) {
+    if (this.over) return;
+    this.len += s.length;
+    if (this.len > this.max) this.over = true;
+    else this.parts.push(s);
+  }
+}
+
+/** The opening tag and style of paragraph block p. */
+function openTag(tag, pp) {
+  let css = 'white-space:pre-wrap';
+  const a = ALIGN[alignOf(pp.jc)];
+  if (a) css += ';text-align:' + a;
+  return '<' + tag + ' style="' + esc(css) + '">';
+}
+
+/** Paragraph block p as HTML, in element `tag`. */
+function paraHtml(p, tag, pp, res, head, urlOf) {
+  let s = openTag(tag, pp);
+  for (const r of p.runs) s += runHtml(p, r, res, head, urlOf);
+  const t = paraPlain(p);
+  if (!t || t.endsWith('\n')) s += '<br>';
+  return s + '</' + tag + '>';
+}
+
+/** See the header. */
+export function toHtml(doc, slice, opts = {}) {
+  const max = Number.isFinite(opts.max) ? opts.max : MAX_HTML;
+  const blocks = slice.blocks;
+  let n = 0;
+  for (const b of blocks) if (b.type === 'p') n += b.text.length;
+  if (n > max) return null;
+  const res = resolver(doc);
+  const lab = doc.numbering ? labels(doc) : new Map();
+  const ids = Array.isArray(slice.ids) ? slice.ids : [];
+  const urlOf = typeof opts.urlOf === 'function' ? opts.urlOf : null;
+  const out = new Out(max);
+  if (typeof opts.token === 'string' && TOKEN.test(opts.token))
+    out.put(MARK + opts.token + '-->');
+  let list = null;
+  const close = () => {
+    if (list) out.put('</' + list + '>');
+    list = null;
+  };
+  for (let k = 0; k < blocks.length && !out.over; k++) {
+    const b = blocks[k];
+    if (b.type !== 'p') {
+      close();
+      out.put(EMPTY);
+      continue;
+    }
+    const pp = res.para(b);
+    const l = ids[k] !== null && ids[k] !== undefined
+      ? lab.get(ids[k]) : undefined;
+    if (l) {
+      const want = l.bullet ? 'ul' : 'ol';
+      if (list !== want) {
+        close();
+        out.put('<' + want + '>');
+        list = want;
+      }
+      out.put(paraHtml(b, 'li', pp, res, false, urlOf));
+      continue;
+    }
+    close();
+    const hl = headingLevel(res.styles, b, pp);
+    out.put(paraHtml(b, hl ? 'h' + hl : 'p', pp, res, hl > 0, urlOf));
+  }
+  close();
+  return out.over ? null : out.parts.join('');
+}

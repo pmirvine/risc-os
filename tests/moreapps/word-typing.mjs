@@ -315,19 +315,32 @@ try {
     // Cmd (Meta) and Ctrl shortcuts are never text; Ctrl ones go on to the desktop
     {
       await click(7, 1);
+      await ev(() => window.__set(7, 1));   // (a caret: the click may have been a double-click, a word selected)
       const before = await state();
       const seenM = [];
       await ev(() => { window.__seenM = []; window.__offM = os.wimp.on('key', (e) => { window.__seenM.push(e.code); }); });
-      for (const k of ['Meta+c', 'Meta+x', 'Meta+z', 'Meta+s', 'Meta+v']) await press(k);
+      // (Cmd-C / Cmd-X / Cmd-V are the browser's copy, cut and paste now: at a caret, with nothing on this fresh
+      // browser's clipboard, they change nothing; Cmd-Z is Undo on a Mac: ./MacKeys)
+      for (const k of ['Meta+c', 'Meta+x', 'Meta+s', 'Meta+v']) await press(k);
       await settle();
       const afterMeta = await state();
+      const mac = await ev(() => /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform));
+      await press('Meta+z');
+      await settle();
+      const afterZ = await state();
+      if (mac) await press('Control+y');
+      await settle();
+      ok(mac ? 'Cmd-Z on a Mac undoes one step (Ctrl-Y redoes it)' : 'Cmd-Z off a Mac changes nothing', mac
+        ? afterZ.depth === before.depth - 1 && !same(afterZ.lines, before.lines) && same((await state()).lines, before.lines)
+        : same(afterZ.lines, before.lines) && afterZ.depth === before.depth, { mac, before: before.depth, afterZ });
       for (const k of ['Control+c', 'Control+v', 'Control+x']) await press(k);
       await page.waitForFunction(() => [3, 22, 24].every((c) => window.__seenM.includes(c)), null, { timeout: 2000 }).catch(() => {});
       await settle();
       const afterCtrl = await state();
       seenM.push(...await ev(() => { window.__offM(); return window.__seenM; }));
-      ok('Cmd-C, Cmd-X, Cmd-Z, Cmd-S, Cmd-V type nothing and change nothing', same(afterMeta.lines, before.lines) && same(afterMeta.h, before.h)
-        && afterMeta.depth === before.depth, { before: before.lines[7], after: afterMeta.lines[7], depth: [before.depth, afterMeta.depth] });
+      ok('Cmd-C, Cmd-X, Cmd-S, Cmd-V at a caret (empty clipboard) type nothing and change nothing', same(afterMeta.lines, before.lines) && same(afterMeta.h, before.h)
+        && afterMeta.depth === before.depth, { diff: afterMeta.lines.map((l, i) => (l === before.lines[i] ? null : [i, before.lines[i], l])).filter(Boolean),
+        n: [before.lines.length, afterMeta.lines.length], depth: [before.depth, afterMeta.depth], clip: await ev(() => window.__doc().dw.clip) });
       ok('Ctrl-C, Ctrl-V, Ctrl-X change nothing and reach the desktop', same(afterCtrl.lines, before.lines) && [3, 22, 24].every((c) => seenM.includes(c)),
         { after: afterCtrl.lines[7], seenM });
       // a printable key that comes as a key from the focused text field is not text either
@@ -392,13 +405,20 @@ try {
       dw.view.undo();
       const undone = look();
       dw.close();
-      return { fresh, edited, undone };
+      return { fresh, edited, undone, mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
     });
     ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Format', 'Zoom', 'New', 'Close']), shades.fresh);
-    ok('Edit menu on a fresh document: Undo Ctrl+Z and Redo Ctrl+Y shaded, Select all Ctrl+A', same(shades.fresh.items,
-      [['Undo', 'Ctrl+Z', true], ['Redo', 'Ctrl+Y', true], ['Select all', 'Ctrl+A', false]]), shades.fresh);
-    ok('Edit menu after an edit: Undo enabled, Redo shaded', same(shades.edited.items.map((i) => i[2]), [false, true, false]), shades.edited);
-    ok('Edit menu after an undo: Undo shaded again, Redo enabled', same(shades.undone.items.map((i) => i[2]), [true, false, false]), shades.undone);
+    // (Cut and Copy shaded at the caret; Paste never; the Find items never: word-clipboard.mjs, word-find.mjs)
+    // (on a Mac the labels are Cmd+: MacKeys.macLabel)
+    const K = shades.mac ? 'Cmd+' : 'Ctrl+';
+    const rest = [['Cut', K + 'X', true], ['Copy', K + 'C', true], ['Paste', K + 'V', false], ['Select all', K + 'A', false],
+      ['Find...', K + 'F', false], ['Find next', K + 'G', false], ['Find previous', K + 'Shift+G', false],
+      ['Replace...', 'Ctrl+H', false]];   // (Replace is Ctrl+H on a Mac too: Cmd-H hides the program)
+    ok(`Edit menu on a fresh document: Undo ${K}Z and Redo ${K}Y shaded, Select all ${K}A`, same(shades.fresh.items,
+      [['Undo', K + 'Z', true], ['Redo', K + 'Y', true], ...rest]), shades.fresh);
+    const tail = rest.map((i) => i[2]);
+    ok('Edit menu after an edit: Undo enabled, Redo shaded', same(shades.edited.items.map((i) => i[2]), [false, true, ...tail]), shades.edited);
+    ok('Edit menu after an undo: Undo shaded again, Redo enabled', same(shades.undone.items.map((i) => i[2]), [true, false, ...tail]), shades.undone);
     const m2 = await ev(() => {
       const d = window.__doc(), sub = d.win.menu({}).items.find((i) => i.text === 'Edit').submenu();
       const before = d.view.lines()[7];

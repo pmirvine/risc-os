@@ -1,0 +1,231 @@
+// EditClip - Copy, Cut and Paste in a document's window (./AppWin),
+// through the Wimp's clipboard events for a text caret (the browser's
+// own copy, cut and paste: Ctrl-C, Ctrl-X, Ctrl-V; Cmd on a Mac):
+//
+//   attachClip(dw)    dw.docKey, dw.clip, view.mac; the window's
+//                     copy, cut and paste events
+//   copyMenu(v), cutMenu(v), pasteMenu(v)   the Edit menu's items
+//   clipHook(dw) -> {copy(), cut(), paste(payload), stash(blocks,
+//                     plain)}   for the tests (copy and cut return
+//                     {plain, html} or null; stash puts blocks in the
+//                     store under this window's key: their marker)
+//
+// Copy: the selection as a slice (./ClipSlice): text/plain always,
+// text/html (./ClipHtml, links with a web or mail address from the
+// document's relationships: ./ClipLinks); longer than 2,000,000
+// characters, the text in a <pre> instead, if that is not longer
+// (else no HTML: !Word's paste then gets the plain text, cut at
+// 100,000 characters); the slice is kept in ./ClipStore under this
+// window's docKey, its token in the HTML.
+// Nothing selected: nothing (the browser's default). Cut: the same,
+// then the selection deleted: one undo step. Paste (./ClipPick):
+// this program's own copy exactly (all of it in the same
+// document: the same docKey; from another window as from another
+// document, ./ClipClean); else
+// HTML from other programs read with a whitelist (./ClipRead,
+// parsed by ./ClipDom: an inert document, never shown); else the
+// plain text. It replaces the selection in one undo step, breaks
+// the typing's step and drops the pending format; content the
+// model refuses (a RangeError) is pasted as the plain text instead,
+// any other error is thrown on. Only pictures or files: nothing
+// pasted, a beep and a message (dw.clip.status says the same).
+// Plain text the Wimp cut at 100,000 characters (./ClipPick
+// cutShort on the raw text of the browser's paste event, seen by a
+// capture listener on the page while the window is there): pasted,
+// then a beep and a message. While an input
+// method is composing, a paste and a cut are refused with a beep.
+//
+// docKey: a number of its own for each window (Revert makes a new
+// window, so a new key: a copy from before is then pasted as from
+// another document). dw.clip {last, status}: the last paste's route
+// ('exact', 'html', 'plain', 'files', 'composing', 'none') and
+// message. The menu's Copy and Cut run the browser's own command in
+// the click (wimp.textInput.exec); Paste asks to read the clipboard
+// (wimp.readClipboard): refused, a message says to press Ctrl-V.
+import {wimp, reportError} from 'riscos';
+import * as S from './Selection';
+import {slice} from './ClipSlice';
+import {toHtml, MAX_HTML} from './ClipHtml';
+import {store, MARK} from './ClipStore';
+import {pick, cutShort} from './ClipPick';
+import {linkUrl} from './ClipLinks';
+import {parserOf} from './ClipDom';
+import {pasteBlocks, pastePlain, deleteSelection} from './ClipPaste';
+import {dropPending} from './EditFormat';
+import {isMac} from './MacKeys';
+
+let keys = 0;
+// whether the browser's last paste event held more text than the
+// Wimp passes on (./ClipPick cutShort); null when not known (a
+// paste through wimp.readClipboard, or after that event)
+let lost = null;
+const esc = (t) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+/** Note a paste event's raw text, before the Wimp's listener. */
+function notePaste(e) {
+  lost = cutShort(e.clipboardData?.getData('text/plain') ?? '');
+  setTimeout(() => { lost = null; }, 0);
+}
+const parseHtml = parserOf(globalThis.DOMParser);
+const FILES = 'Pictures and files cannot be pasted into a document ' +
+  'yet.';
+const CUT = 'Only the first 100,000 characters were pasted: the ' +
+  'clipboard held more.';
+const say = (m) => reportError(m, {appName: 'Word'});
+
+/** Copy the selection with set(type, data); the slice, or null. */
+function copyOut(dw, set) {
+  const v = dw.view;
+  if (!v.sel || S.collapsed(v.sel)) return null;
+  const doc = v.d.doc, s = slice(doc, v.sel);
+  if (!s) return null;
+  const token = store.put(s, dw.docKey);
+  const html = toHtml(doc, s, {token, urlOf: linkUrl(doc)});
+  set('text/plain', s.plain);
+  if (html !== null) set('text/html', html);
+  else {
+    // too big as formatted HTML: the text in a <pre> (with the
+    // marker, so a paste in !Word finds the copy) if that fits
+    const pre = s.plain.length < MAX_HTML ? (token ? MARK + token +
+      '-->' : '') + '<pre>' + esc(s.plain) + '</pre>' : '';
+    if (pre && pre.length <= MAX_HTML) set('text/html', pre);
+  }
+  return s;
+}
+
+/** Copy, then delete the selection (one undo step). */
+function cutOut(dw, set) {
+  const v = dw.view;
+  if (v.comp !== null && v.comp !== undefined) {
+    wimp.beep();
+    return false;
+  }
+  if (!copyOut(dw, set)) return false;
+  dropPending(v);
+  const out = v.typing.command(() => deleteSelection(v.d, v.sel));
+  if (out !== v.sel) v.edited(out);
+  return true;
+}
+
+/** Paste payload {text, html, files} at the selection. */
+function pasteIn(dw, p) {
+  const v = dw.view, st = dw.clip;
+  st.status = '';
+  if (v.comp !== null && v.comp !== undefined) {
+    st.last = 'composing';
+    wimp.beep();
+    return true;
+  }
+  const r = pick(p, {store, docKey: dw.docKey, parseHtml});
+  if (!r) {
+    const files = !!(p && p.files && p.files.length);
+    st.last = files ? 'files' : 'none';
+    if (files) {
+      st.status = FILES;
+      wimp.beep();
+      say(FILES);
+    }
+    return files || undefined;
+  }
+  st.last = r.route;
+  if (!v.sel) {
+    wimp.beep();
+    return true;
+  }
+  v.ensure();
+  dropPending(v);
+  const sel = v.sel, d = v.d;
+  const run = (x) => v.typing.command(() => (x.route === 'plain'
+    ? pastePlain(d, sel, x.text)
+    : pasteBlocks(d, sel, x.blocks, x.opts)));
+  let out = sel;
+  try {
+    out = run(r);
+  } catch (e) {
+    // content the model refuses: the text instead; a bug is thrown
+    if (!(e instanceof RangeError)) throw e;
+    if (r.route !== 'plain' && p.text) {
+      st.last = 'plain';
+      out = run({route: 'plain', text: p.text});
+    }
+  }
+  if (out === sel) wimp.beep();
+  else v.edited(out);
+  // the Wimp cuts a paste's text at MAX_TEXT: say so when it did
+  if (st.last === 'plain' && out !== sel && lost) {
+    st.status = CUT;
+    wimp.beep();
+    say(CUT);
+  }
+  return true;
+}
+
+/** See the header. */
+export function attachClip(dw) {
+  const w = dw.win, v = dw.view;
+  dw.docKey = ++keys;
+  dw.clip = {last: null, status: ''};
+  v.mac = isMac(globalThis.navigator?.platform);
+  const on = (type, fn) => w.on(type, (ev) => (w.isOpen
+    ? fn(dw, ev) : undefined));
+  on('copy', (x, ev) => { copyOut(x, ev.setData); return true; });
+  on('cut', (x, ev) => { cutOut(x, ev.setData); return true; });
+  on('paste', pasteIn);
+  // the raw text of the browser's paste event (capture: before the
+  // Wimp's own listener), taken away with the window
+  const g = globalThis, note = (e) => notePaste(e);
+  if (typeof g.addEventListener === 'function') {
+    g.addEventListener('paste', note, true);
+    w.on('deleted', () => g.removeEventListener('paste', note, true));
+  }
+}
+
+/** The key's name here: 'Ctrl-V', or 'Cmd-V' on a Mac. */
+const keyName = (v, k) => (v.mac ? 'Cmd-' : 'Ctrl-') + k;
+
+/** The browser's own copy or cut, in the menu click. */
+function viaBrowser(v, cmd, k) {
+  if (!v.sel || S.collapsed(v.sel)) return;
+  if (!v.hasFocus) v.focus();
+  const ti = wimp.textInput;
+  if (!ti || !ti.exec(cmd)) {
+    say('The browser did not let Word ' + cmd + ': press ' +
+      keyName(v, k) + ' instead.');
+  }
+}
+
+/** See the header. */
+export const copyMenu = (v) => viaBrowser(v, 'copy', 'C');
+export const cutMenu = (v) => viaBrowser(v, 'cut', 'X');
+
+/** See the header. */
+export async function pasteMenu(v) {
+  if (!v.hasFocus) v.focus();
+  let done = false;
+  try {
+    done = await wimp.readClipboard();
+  } catch (e) {
+    done = false;
+  }
+  if (!done) {
+    say('Press ' + keyName(v, 'V') + ' to paste: the browser did ' +
+      'not let Word read the clipboard.');
+  }
+  return done;
+}
+
+/** See the header. */
+export function clipHook(dw) {
+  const collect = (fn) => {
+    const o = {};
+    return fn(dw, (t, data) => { o[t] = data; return true; })
+      ? {plain: o['text/plain'], html: o['text/html'] ?? null} : null;
+  };
+  return {
+    copy: () => collect(copyOut),
+    cut: () => collect(cutOut),
+    paste: (p) => pasteIn(dw, {text: '', html: '', files: [], ...p}),
+    stash: (blocks, plain) => MARK + store.put({blocks,
+      styleNames: new Map(), plain}, dw.docKey) + '-->',
+  };
+}

@@ -308,11 +308,13 @@ try {
     const w = window.__doc('Keys').win;
     const k = (code, key, extra = {}) => { const e = w.emit('key', { code, key, shift: false, ctrl: false, ...extra }); return !!(e.handled || e.defaultPrevented); };
     return { F5: k(0x185, 'F5'), ctrlF12: k(0x1EC, 'F12', { ctrl: true }), altA: k(97, 'a', { alt: true }),
-      metaB: k(98, 'b', { domEvent: { metaKey: true } }), ctrlQ: k(17, 'q', { ctrl: true }), ctrlB: k(2, 'b', { ctrl: true }) };
+      metaB: k(98, 'b', { domEvent: { metaKey: true } }), ctrlQ: k(17, 'q', { ctrl: true }), ctrlB: k(2, 'b', { ctrl: true }),
+      mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
   });
-  ok('keys it does not use go on (F5, Ctrl-F12, Alt-A, Cmd-B, Ctrl-Q); Ctrl-B is used', !pass.F5 && !pass.ctrlF12 && !pass.altA && !pass.metaB
-    && !pass.ctrlQ && pass.ctrlB, pass);
-  await press('Control+z');
+  // (on a Mac Cmd-B is Bold: ./MacKeys)
+  ok(`keys it does not use go on (F5, Ctrl-F12, Alt-A, Ctrl-Q${pass.mac ? '' : ', Cmd-B'}); Ctrl-B is used${pass.mac ? ', and Cmd-B on a Mac' : ''}`,
+    !pass.F5 && !pass.ctrlF12 && !pass.altA && pass.metaB === pass.mac && !pass.ctrlQ && pass.ctrlB, pass);
+  await press('Control+z', pass.mac ? 2 : 1);
 
   // ---------------------------------------------------- Ctrl-I, Ctrl-M, Ctrl-= at a caret and on a selection (Task 7)
   await kclick(3, 0);
@@ -397,9 +399,13 @@ try {
   await closeMenus();
   const em = await ev(() => {
     const d = window.__doc('Keys'), sub = d.win.menu({}).items.find((i) => i.text === 'Edit').submenu();
-    return sub.items.map((i) => [i.text, i.key]);
+    return { items: sub.items.map((i) => [i.text, i.key]), mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
   });
-  ok('the Edit menu is unchanged', same(em, [['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Y'], ['Select all', 'Ctrl+A']]), em);
+  const K = em.mac ? 'Cmd+' : 'Ctrl+';   // (on a Mac the labels are Cmd+: MacKeys.macLabel)
+  ok('the Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace... (no format items)',
+    same(em.items, [['Undo', K + 'Z'], ['Redo', K + 'Y'], ['Cut', K + 'X'], ['Copy', K + 'C'], ['Paste', K + 'V'],
+      ['Select all', K + 'A'], ['Find...', K + 'F'], ['Find next', K + 'G'], ['Find previous', K + 'Shift+G'],
+      ['Replace...', 'Ctrl+H']]), em);
 
   /** Select paragraph i whole, then Format > sub > item from the menu. */
   const choose = async (i, sub, item) => {

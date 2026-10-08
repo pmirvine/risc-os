@@ -1,0 +1,166 @@
+// FindBox - a Find and Replace box: a Find field and a Replace
+// field, the options Match case and Whole words, the buttons Find
+// next, Find previous, Replace, Replace all and Close, and a line
+// for a message ('3 replaced', 'Not found'). It only asks: the
+// program does the finding (onAction).
+//
+//   findBox(task, {title, onAction, onClose, onKey}) -> the box
+//     One box for a task: asked again, the same box (the handlers
+//     given replace its own). It is made when first asked for.
+//     onAction(name)  'next' (the button, or Return in the box),
+//                     'prev', 'replace', 'all'
+//     onClose()       after Close, Escape or the close icon hid it
+//     onKey(ev)       other keys while the box has the caret: true
+//                     if used (a program's Find next key, say)
+//   box.open({text, replace, x, y, focus})  shows it at the front
+//                     with the caret in the Find field (with
+//                     replace, in the Replace field when Find has
+//                     text; focus false: the caret left where it
+//                     is, to show a message); text, if
+//                     given, goes in the Find field first; x, y the
+//                     top left (else where it was; first time the
+//                     middle of the screen)
+//   box.close()       hides it (onClose); box.isOpen, box.win
+//   box.find, box.replace     the fields' text (set them too)
+//   box.matchCase, box.whole  the options (true / false)
+//   box.message       the message line: set to show one ('' none)
+//   box.delete()      gone (asked for again: a new one)
+// The fields keep what is in them between openings. They hold at
+// most MAXLEN (1000) characters each. Icons are named 'find',
+// 'replace', 'matchCase', 'whole', 'message' and 'button:<text>'
+// (win.iconByName). The box is deleted with its task. Ctrl-V in a
+// field is left to the browser, whose paste the Wimp types into the
+// field (its first line; Cmd-V on a Mac always was); Ctrl-C and
+// Ctrl-X do nothing (a writable icon has no selection to copy).
+import {wimp} from 'riscos';
+
+export const MAXLEN = 1000;
+const W = 584, PAD = 16, BW = 104, BH = 36, GAP = 8, LW = 76;
+const FH = 36, OH = 28;
+const BUTTONS = ['Close', 'Replace all', 'Replace', 'Find previous',
+  'Find next'];
+const ACT = {'Find next': 'next', 'Find previous': 'prev',
+  'Replace': 'replace', 'Replace all': 'all'};
+const boxes = new WeakMap();           // task -> its box
+
+/** The box's icons, top to bottom. */
+function icons() {
+  const fx = PAD + LW + GAP, fw = W - fx - PAD;
+  const field = (y, name, help) => ({x: fx, y, w: fw, h: FH,
+    text: '', name, border: true, filled: true, bg: 0,
+    button: 'writable', validation: 'R7', maxLen: MAXLEN,
+    vcentre: true, help});
+  const label = (y, text) => ({x: PAD, y, w: LW, h: FH, text,
+    rjustify: true, vcentre: true});
+  const opt = (x, w, text, name, help) => ({x, y: 104, w, h: OH, text,
+    sprite: 'optoff', validation: 'Soptoff,opton', button: 'radio',
+    esg: 0, name, help});
+  const out = [
+    label(16, 'Find'),
+    field(16, 'find', 'Type the text to look for. Return finds the ' +
+      'next.'),
+    label(60, 'Replace'),
+    field(60, 'replace', 'Type the text to put in its place.'),
+    opt(fx, 160, 'Match case', 'matchCase', 'When this is on, ' +
+      'capitals and small letters must be as typed.'),
+    opt(fx + 176, 180, 'Whole words', 'whole', 'When this is on, ' +
+      'only whole words are found.'),
+    {x: PAD, y: 140, w: W - 2 * PAD, h: OH, text: '', name: 'message',
+      vcentre: true},
+  ];
+  const y = 176;
+  BUTTONS.forEach((text, i) => out.push({
+    x: W - PAD - (BUTTONS.length - i) * (BW + GAP) + GAP, y, w: BW,
+    h: BH, text, name: `button:${text}`, border: true, filled: true,
+    hcentre: true, vcentre: true, button: 'click',
+    validation: text === 'Find next' ? 'R6,3' : 'R5,3'}));
+  return out;
+}
+
+/** See the header. */
+export function findBox(task, opts = {}) {
+  let b = boxes.get(task);
+  if (!b || b.gone) {
+    b = make(task);
+    boxes.set(task, b);
+  }
+  for (const k of ['onAction', 'onClose', 'onKey']) {
+    if (typeof opts[k] === 'function') b.h[k] = opts[k];
+  }
+  if (opts.title) b.win.setTitle(String(opts.title));
+  return b.api;
+}
+
+/** A new box for task. */
+function make(task) {
+  const H = 176 + BH + PAD;
+  const win = task.createWindow({title: 'Find', w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'click',
+    help: 'Type what to find, then click Find next (or press ' +
+      'Return). Escape closes the box.'});
+  const b = {win, gone: false, placed: false, h: {}};
+  const I = (n) => win.iconByName(n);
+  const act = (name) => { if (b.h.onAction) b.h.onAction(name); };
+  const hide = () => {
+    if (!win.isOpen) return;
+    win.close();
+    if (b.h.onClose) b.h.onClose();
+  };
+  win.on('click', (ev) => {
+    const n = ev.icon && ev.button !== 'menu' ? ev.icon.name : '';
+    if (!n || !n.startsWith('button:')) return undefined;
+    const t = n.slice(7);
+    if (t === 'Close') hide();
+    else act(ACT[t]);
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  win.on('key', (ev) => {
+    // Ctrl-V in a field: the browser's paste (the Wimp then types
+    // the clipboard's first line into the field)
+    if (ev.code === 22 && ev.ctrl && !ev.alt && ev.icon &&
+      ev.icon.writable) {
+      ev.allowDefault = true;
+      return true;
+    }
+    if (ev.code === 13) act('next');
+    else if (ev.code === 27) hide();
+    else return b.h.onKey ? b.h.onKey(ev) || undefined : undefined;
+    return true;
+  });
+  win.on('deleted', () => { b.gone = true; });
+  const caretIn = (ic) => wimp.setCaret(win, ic, ic.text.length);
+  b.api = {
+    win,
+    get isOpen() { return win.isOpen; },
+    get find() { return I('find').text; },
+    set find(t) { I('find').setText(t); },
+    get replace() { return I('replace').text; },
+    set replace(t) { I('replace').setText(t); },
+    get matchCase() { return !!I('matchCase').selected; },
+    set matchCase(v) { I('matchCase').setState({selected: !!v}); },
+    get whole() { return !!I('whole').selected; },
+    set whole(v) { I('whole').setState({selected: !!v}); },
+    get message() { return I('message').text; },
+    set message(t) { I('message').setText(String(t ?? '')); },
+    open({text, replace = false, x, y, focus = true} = {}) {
+      if (b.gone) return;
+      if (typeof text === 'string') I('find').setText(text);
+      let at = {};
+      if (Number.isFinite(x) && Number.isFinite(y)) at = {x, y};
+      else if (!b.placed) {
+        at = {x: Math.round((wimp.width - W) / 2),
+          y: Math.round((wimp.height - H) / 2)};
+      }
+      b.placed = true;
+      win.open({...at, behind: 'top'});
+      if (focus)
+        caretIn(replace && I('find').text ? I('replace') : I('find'));
+    },
+    close: hide,
+    delete() { if (!b.gone) win.delete(); },
+  };
+  return b;
+}

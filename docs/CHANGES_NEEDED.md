@@ -429,8 +429,8 @@ Possible fix: let `wimp.drag` end the drag when its owner window is deleted or c
 
 ## Text-input caret (opt-in text-input proxy) — changes in shared code, for !Word typing
 **Status:** Done: documented in CORE_API.md §3.1 (`textinput`, `composition`, `compositionend`) and §3.2
-(text-input caret). Not included yet (Open, later !Word deliverable): copy/cut listeners, HTML (rich) paste,
-caret blinking, triple-click counting.
+(text-input caret). Copy/cut events, HTML (rich) paste, caret blinking and click counts followed: see "Clipboard
+events for text carets" below.
 
 * `src/core/textinput.js` (new): `TextInput`, one hidden `<textarea>` appended to `document.body` (outside
   `.screen`) the first time a text caret is set, never before; `sanitizeText(s)` (pure) and `MAX_TEXT` (100,000).
@@ -454,6 +454,50 @@ caret blinking, triple-click counting.
 * Tests: `tests/core/test-textinput.mjs` (Playwright and CDP: `insertText`, dead keys, `Input.imeSetComposition`,
   auto-repeat, hot keys, focus/blur) and `tests/core/test-textinput-pure.mjs` (node), both in
   `tests/core/index.mjs`.
+
+## Clipboard events for text carets; caret blink; click count — changes in shared code, for !Word copy and paste
+**Status:** Done: documented in CORE_API.md §3.1 (`click` `count`, `paste`, `copy`, `cut`) and §3.2 (text-input
+caret: keys, options, `exec`, `readClipboard`). Used by !Word's copy, cut, paste and Find (`docs/apps/Word.md`,
+"Clipboard and Find"), which needed no further core change. Open:
+* pictures and other rich types from the asynchronous clipboard (`readClipboard` reads text and HTML only), and
+  pasted `File`s are passed on but never read: !Word refuses a files-only paste with a message;
+* the `clipboard: true` placeholder is untested in Safari and Firefox (no WebKit or Firefox to test with: Chrome
+  fires copy / cut with an empty field) and stays off unless asked for; !Word does not ask for it, so copy and cut in
+  those browsers are unverified (on the owner's hand-off list);
+* the `paste` payload does not carry `sanitizeText`'s `truncated` flag: !Word recomputes it from the raw event in a
+  capture listener of its own (`ClipPick.cutShort`), which a paste through `readClipboard` does not have. Possible
+  fix: `pastePayload` returns `truncated` and `_textPaste` / `readClipboard` pass it on.
+
+Everything except the click `count` (an extra field on every `click` / `doubleclick` / `drag`) applies only to a
+text caret (`wimp.caret.text`); other carets, writable icons, TextArea, Edit, !Browse and every other app behave
+as before (control tests below).
+* `src/core/textinput.js`: pure `pastePayload({text, html, files})` (text through `sanitizeText`, html dropped over
+  `MAX_HTML` 2,000,000 characters, at most `MAX_FILES` 8 files) and `copyData()` (`setData` for `COPY_TYPES`
+  text/plain, text/html, text/uri-list, string data only, caps `MAX_COPY_TEXT` 5,000,000 / `MAX_COPY_HTML`
+  8,000,000, a larger value drops the type; `close()` ends it); `TextInput.exec(cmd)`, `setHasSelection(on)` and the
+  placeholder (only with the caret option `clipboard`; the declaration is dropped when the caret leaves the window,
+  so apps declare it again on `gaincaret`); the `input` fallback never delivers an `insertFromPaste*`
+  edit as text (so a browser that ignores the cancelled `beforeinput` cannot deliver a paste twice); a cancelled
+  composition that leaves the placeholder behind is not text.
+* `src/core/wimp.js`: `_paste` sends a text caret's window `{text, html, files, window}` (`_textPaste`) and calls
+  `preventDefault` when it was used; the plain branch and the writable-icon branch are unchanged. New `copy` / `cut`
+  listeners on `document` (`_copyCut`, added once in `init`): only with a text caret in an open window and the event
+  aimed at the hidden field or inside `.screen`; data set through `setData` is written with
+  `clipboardData.setData` and the default cancelled, none leaves the default (the document's `body` / `html` as the
+  target, when the hidden field lost the browser focus, counts as the desktop; a page field does not).
+  `_keyDown`: for the focused hidden field, Ctrl/Cmd + C/X/V without Alt are not `preventDefault`ed (the letter:
+  `e.key` when an ASCII letter, else `e.code` KeyC/KeyX/KeyV for non-Latin layouts; the `key` event still comes
+  first) and the old
+  Cmd + c/v/x/r/l exemption does not apply (Cmd-R, Cmd-L, Cmd+Alt+C are cancelled); other targets keep the old rule.
+  `readClipboard()` (call inside a user gesture; text items read at most 400,000 bytes, HTML items over
+  6,000,000 bytes skipped). `setCaret` options `blink`, `clipboard` (`wimp.caret.blink` / `.clipboard`), `_drawCaret`
+  toggles the `blink` class and restarts the animation. `_workPointerDown` adds `count` (a separate run tracker,
+  `_clickRun`; `isDouble` / `_lastClick` untouched).
+* `src/core/menu.js`: the caret restored after a menu closes keeps `blink` and `clipboard`.
+* `src/core/desktop.css`: `.caret.blink` (`caret-blink 1.06s steps(1) infinite`, none with reduced motion).
+* Tests: `tests/core/test-clipboard.mjs` (Playwright, in `tests/core/index.mjs`: synthetic `ClipboardEvent`s, real
+  Ctrl/Cmd keys with clipboard permissions, plain-caret and writable-icon controls, `exec`, `readClipboard`, blink,
+  counts) and `tests/core/test-textinput-pure.mjs` (the caps).
 
 ## wimp.drag does not say that a pointer drag was cancelled — noted by the !Word formatting work (!Word)
 **Status:** Open: shared code, not changed by the !Word work.
@@ -539,3 +583,18 @@ folder, the permission withdrawn, the server gone), the HostFS Filer reports it 
 already been told the save succeeded: !Word marks the document saved (no `*`). Possible fix: a `vfs.flush(path)` (or
 `writeFileAsync`) that resolves when the host has the bytes and rejects when it refused, so a program can mark the
 document saved only then.
+
+## A long paste into a writable icon is typed character by character — noted by the !Word Find work (!Word)
+**Status:** Open: shared code, not changed by the !Word work.
+
+`wimp._paste` (`src/core/wimp.js`) gives a writable icon with the caret the clipboard's first line one character at a
+time through `_editKey`; past the icon's `maxLen` every further character beeps (`wimp.beep`, VDU 7) and is dropped.
+A 3000-character paste into !Word's Find field (`maxLen` 1000) takes about 50 ms and beeps 2000 times; a 1 MB paste
+would run a million `_editKey` calls and beeps. The text is not passed through `sanitizeText` either. Possible fix:
+take the line, cut it to the room left in the icon (`maxLen - text.length`, at a code point), insert it in one
+`set`, and beep once when anything was cut.
+
+Also: Ctrl-V reaches this path in !Word's Find box only because `Ui/FindBox` sets `ev.allowDefault` for it (as the
+TextArea and !Browse do); writable icons have no selection, so Ctrl-C / Ctrl-X (and Cmd-C / Cmd-X) copy and cut
+nothing from them. Copying from a writable icon would need a selection model in `_editKey` and a plain-caret branch
+in `_copyCut`: not done (no shared-code change in the !Word work).

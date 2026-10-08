@@ -1,0 +1,101 @@
+// ClipHtmlRun - one run of a paragraph as HTML, for ./ClipHtml.
+//
+//   esc(s)        s with & < > " ' as character references: every
+//                 text and attribute value written goes through it
+//   runHtml(p, r, res, head, urlOf) -> HTML of run r of paragraph
+//                 block p (res: a ./FormatEff resolver of the source
+//                 document; head: p is written as a heading)
+//   safeUrl(v)    v when it is an http, https or mailto URL with no
+//                 space or control character (at most 2048 units),
+//                 else null
+//
+// The RESOLVED formatting (styles applied, ./FormatEff.charOf) is
+// written, so other programs see what !Word shows: b i u s and sup
+// or sub, then a span for colour, font family, size and highlight
+// (background-color). Family and size are left out at Calibri and
+// 11 pt, except in a heading, which also gets font-weight:normal for
+// text that is not bold (an <h1> is bold and large on its own).
+// Text: \n is <br>, tabs stay (the paragraph is white-space:
+// pre-wrap); each U+FFFC is its inline: a tab, a <br>, or the text
+// of a wrapper (a link...), as an <a href> only when urlOf(inline)
+// gives a safe URL; other inline items are nothing. Pure: no
+// desktop services.
+import {charOf} from './FormatEff';
+import {highlightCss} from './Highlight';
+
+const ENT = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;',
+  "'": '&#39;'};
+const SPECIAL = /[&<>"'\n]/g;
+
+/** See the header. */
+export const esc = (s) => String(s).replace(/[&<>"']/g,
+  (c) => ENT[c]);
+
+/** Text as HTML: escaped, \n as <br>. */
+const textHtml = (s) => s.replace(SPECIAL,
+  (c) => (c === '\n' ? '<br>' : ENT[c]));
+
+/** See the header. */
+export function safeUrl(v) {
+  if (typeof v !== 'string' || v.length > 2048) return null;
+  if (!/^(https?:\/\/|mailto:)/i.test(v)) return null;
+  return /[\s\u0000-\u001f\u007f]/.test(v) ? null : v;
+}
+
+/** A family name safe inside a CSS string, or null. */
+const famOf = (f) => (typeof f === 'string' &&
+  /^[\p{L}\p{N} ._&+-]{1,64}$/u.test(f) ? f : null);
+
+/** The HTML of one inline (U+FFFC at offset i of p). */
+function inlineHtml(x, urlOf) {
+  if (!x) return '';
+  if (x.kind === 'tab') return '\t';
+  if (x.kind === 'br') return '<br>';
+  const t = typeof x.text === 'string'
+    ? x.text.replace(/\ufffc/g, '') : '';
+  const url = urlOf && t ? safeUrl(urlOf(x)) : null;
+  return url ? '<a href="' + esc(url) + '">' + textHtml(t) + '</a>'
+    : textHtml(t);
+}
+
+/** The text of p in [a, b) as HTML. */
+function partHtml(p, a, b, urlOf) {
+  const s = p.text.slice(a, b);
+  return s.replace(/[&<>"'\n\ufffc]/g, (c, i) => (c === '\ufffc'
+    ? inlineHtml(p.inlines[a + i], urlOf)
+    : c === '\n' ? '<br>' : ENT[c]));
+}
+
+/** The tags and CSS of a resolved format. */
+function look(c, head) {
+  const tags = [];
+  if (c.bold) tags.push('b');
+  if (c.italic) tags.push('i');
+  if (c.underline) tags.push('u');
+  if (c.strike) tags.push('s');
+  if (c.vert === 'superscript') tags.push('sup');
+  else if (c.vert === 'subscript') tags.push('sub');
+  const css = [];
+  if (head && !c.bold) css.push('font-weight:normal');
+  if (c.color !== 'auto') css.push('color:#' + c.color);
+  const fam = famOf(c.family);
+  if (fam && (head || fam !== 'Calibri'))
+    css.push("font-family:'" + fam + "'");
+  if (head || c.size !== 11) css.push('font-size:' + c.size + 'pt');
+  const hl = highlightCss(c.highlight);
+  if (hl) css.push('background-color:' + hl);
+  return {tags, css};
+}
+
+/** See the header. */
+export function runHtml(p, r, res, head, urlOf) {
+  const c = charOf(res.run(p, r.rPr, r.rStyle), p, res);
+  const {tags, css} = look(c, head);
+  let s = '';
+  for (const t of tags) s += '<' + t + '>';
+  if (css.length) s += '<span style="' + esc(css.join(';')) + '">';
+  s += partHtml(p, r.start, r.end, urlOf);
+  if (css.length) s += '</span>';
+  for (let k = tags.length - 1; k >= 0; k--) s += '</' + tags[k] + '>';
+  return s;
+}

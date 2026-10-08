@@ -8,6 +8,12 @@
 // is never kept: it is cleared after every commit, and every browser edit that is not text being typed or composed
 // is cancelled, so Backspace, Enter, paste and so on never change it. The proxy never evaluates, fetches or stores
 // text. With no text caret it stays blurred and the desktop's keyboard handling is unchanged.
+//
+// The clipboard (Wimp._paste / _copyCut / readClipboard): a text caret's window gets `paste` {text, html, files} and
+// `copy` / `cut` {cut, setData}. pastePayload and copyData below hold the caps; the clipboard's contents are
+// passed on as strings (and File objects, unread) and never interpreted here. exec('copy' | 'cut') runs the
+// browser's own command from a menu item; setHasSelection keeps a selected placeholder in the proxy for browsers
+// that fire copy / cut only with a selection (opt-in: setCaret option clipboard: true).
 
 export const MAX_TEXT = 100000;     // UTF-16 units in one textinput event
 
@@ -19,7 +25,8 @@ export const MAX_TEXT = 100000;     // UTF-16 units in one textinput event
 export function sanitizeText(s) {
   s = String(s ?? '').replace(/\r\n?/g, '\n');
   let out = '';
-  for (let i = 0; i < s.length; i++) {
+  // (stops once past the cap: the rest cannot change the result, so a 5 MB paste is not scanned to the end)
+  for (let i = 0; i < s.length && out.length <= MAX_TEXT; i++) {
     const c = s.charCodeAt(i);
     if (c >= 0xD800 && c <= 0xDBFF) {
       const d = s.charCodeAt(i + 1);
@@ -33,6 +40,42 @@ export function sanitizeText(s) {
   const last = out.charCodeAt(n - 1);
   if (last >= 0xD800 && last <= 0xDBFF) n--;
   return { text: out.slice(0, n), truncated: true };
+}
+
+export const MAX_HTML = 2000000;          // characters of pasted text/html; more is dropped (never truncated)
+export const MAX_FILES = 8;               // pasted File objects passed on
+export const MAX_COPY_TEXT = 5000000;     // UTF-16 units a copy may put on the clipboard as text/plain (or text/uri-list)
+export const MAX_COPY_HTML = 8000000;     // characters a copy may put on the clipboard as text/html
+export const COPY_TYPES = new Set(['text/plain', 'text/html', 'text/uri-list']);
+
+/**
+ * The `paste` payload from raw clipboard data {text, html, files}: text cleaned and capped by sanitizeText, html
+ * passed through unless longer than MAX_HTML (then ''), at most MAX_FILES files (File objects, not read).
+ */
+export function pastePayload(raw) {
+  const html = raw?.html;
+  return {
+    text: sanitizeText(raw?.text).text,
+    html: typeof html === 'string' && html.length <= MAX_HTML ? html : '',
+    files: Array.from(raw?.files ?? []).slice(0, MAX_FILES),
+  };
+}
+
+/**
+ * What a `copy` / `cut` handler may put on the clipboard: setData(type, data) -> true when kept. Only COPY_TYPES
+ * with string data under the caps; a value over its cap is dropped (with any earlier value for that type).
+ * close() ends it: setData afterwards does nothing.
+ */
+export function copyData() {
+  const entries = new Map();
+  let open = true;
+  const setData = (type, data) => {
+    if (!open || !COPY_TYPES.has(type) || typeof data !== 'string') return false;
+    if (data.length > (type === 'text/html' ? MAX_COPY_HTML : MAX_COPY_TEXT)) { entries.delete(type); return false; }
+    entries.set(type, data);
+    return true;
+  };
+  return { entries, setData, close() { open = false; } };
 }
 
 // beforeinput types that are typed text (not composing); everything else that would edit the proxy is cancelled
@@ -50,6 +93,7 @@ export class TextInput {
     this._realKey = false;      // the last keydown was an ordinary key (already delivered as `key`)
     this._sent = false;         // text was delivered by beforeinput; the matching input event only clears
     this._muted = false;        // blur() is ending a composition itself: ignore the browser's events
+    this._hasSel = false;       // the caret's window has a selection (setHasSelection; for the placeholder)
   }
 
   /** Create the element (once) and connect it to the Wimp. */
@@ -83,6 +127,7 @@ export class TextInput {
   focusAt(x, y) {
     this.moveTo(x, y);
     if (!this.focused) this.el.focus({ preventScroll: true });
+    this._syncPlaceholder();
   }
   moveTo(x, y) {
     this.el.style.left = Math.round(x) + 'px';
@@ -101,7 +146,38 @@ export class TextInput {
       this._muted = true;
       try { this.el.blur(); } finally { this._muted = false; }
     }
+    this._hasSel = false;
     this.el.value = '';
+  }
+
+  /**
+   * Run the browser's copy or cut command (a menu item's Copy / Cut, inside the click): the proxy takes the focus
+   * if it does not have it and the caret's window gets the usual `copy` / `cut` event. Only for a text caret.
+   * Returns what document.execCommand returned (false for any other command).
+   */
+  exec(cmd) {
+    if ((cmd !== 'copy' && cmd !== 'cut') || !this.el || !this._target()) return false;
+    if (!this.focused) this.el.focus({ preventScroll: true });
+    this._syncPlaceholder();
+    try { return document.execCommand(cmd); } catch { return false; }
+  }
+
+  /**
+   * The caret's window says whether it has a selection. With the caret option clipboard: true, a selected
+   * placeholder (one space) is kept in the proxy meanwhile, for browsers that fire copy / cut only when the focused
+   * field has a selection; without it this only records the state.
+   */
+  setHasSelection(on) {
+    this._hasSel = !!on;
+    this._syncPlaceholder();
+  }
+
+  _syncPlaceholder() {
+    if (!this.el || this.composing) return;
+    const on = this._hasSel && !!this.wimp?.caret?.clipboard && !!this._target() && this.focused;
+    const want = on ? ' ' : '';
+    if (this.el.value !== want) this.el.value = want;
+    if (on && (this.el.selectionStart !== 0 || this.el.selectionEnd !== 1)) this.el.setSelectionRange(0, 1);
   }
 
   /** The window text goes to: the caret's, when it is a text caret in an open window. */
@@ -141,8 +217,10 @@ export class TextInput {
     if (this._muted || this.composing || e.isComposing) return;
     const v = this.el.value;
     this.el.value = '';
-    if (v && !this._sent) this._emitText(v);
+    // pasted text reaches the window only through the `paste` event (Wimp._paste), never also as typed text
+    if (v && !this._sent && !/^insertFromPaste/.test(e.inputType ?? '')) this._emitText(v);
     this._sent = false;
+    this._syncPlaceholder();
   }
 
   _compStart() {
@@ -150,6 +228,7 @@ export class TextInput {
     this.composing = true;
     this._compWin = this._target();
     this._started = false;
+    this._phStart = this.el.value === ' ' && this._hasSel;   // the placeholder was selected when it started
   }
 
   _compUpdate(e) {
@@ -166,7 +245,8 @@ export class TextInput {
     const w = this._compWin;
     // some browsers end a composition with empty data although the field holds the committed text (after a real
     // cancel the field is empty)
-    const raw = e.data || this.el.value;
+    // (a cancelled composition may leave the selection placeholder behind: that is not text)
+    const raw = e.data || (this._phStart && this.el.value === ' ' ? '' : this.el.value);
     this._endComposition();
     const { text } = sanitizeText(raw);
     if (w?.isOpen) w.emit('compositionend', { text, cancelled: !text, window: w });
@@ -179,5 +259,6 @@ export class TextInput {
     this._started = false;
     this._sent = false;
     if (this.el) this.el.value = '';
+    this._syncPlaceholder();
   }
 }

@@ -1,0 +1,195 @@
+// ClipRead - HTML pasted from other programs -> clipboard blocks (the
+// shape of ./ClipSlice), read with a whitelist. The HTML is
+// untrusted: it is parsed by the caller's `parseHtml` (DOMParser in
+// the browser, which runs no script and loads nothing for a parsed
+// document) and only walked here: no innerHTML, nothing evaluated,
+// fetched or kept but text and a few checked formats.
+//
+//   readHtml(html, parseHtml) -> {blocks, styleNames} | null
+//       null when there is nothing to paste or anything throws: the
+//       caller pastes the plain text instead
+//   readTree(root, limits?) -> {blocks, styleNames}
+//       root: a DOM-like node: nodeType (1 element, 3 text, 4 CDATA,
+//       9 document, 11 fragment; others skipped), nodeName,
+//       childNodes, data, getAttribute(name). Entities are decoded
+//       by the parser (DOMParser does).
+//   LIMITS {depth: 200, nodes: 200,000, text: 5,000,000, html}
+//       elements nested deeper than depth are unwrapped (their
+//       text kept, their formatting and structure ignored; dropped
+//       and hidden ones still dropped); after `nodes` nodes the
+//       walk stops (it bounds the work at any depth); text past
+//       `text` units is cut; HTML longer than `html` is not read.
+//
+// Elements: p div h1-h6 ul ol li pre blockquote and the other
+// sectioning elements are paragraphs (an empty one makes none); li
+// items are ordinary paragraphs (no list is made); h1-h6 are bold at
+// Word's heading sizes (./Fmt.HEADING_PT) with pStyle 'Heading' + n,
+// named 'heading n' in styleNames, so ./ClipClean gives them the
+// target's Heading n style when it has one. br is a line break, hr
+// a paragraph end. Tables are flattened: a row is a paragraph, its
+// cells joined by tabs (blocks in a cell are spaces). b strong i em
+// u ins s strike del sup sub th font and the style attribute
+// (./ClipCss) format text; a is its text only (href never kept or
+// followed). script style iframe object embed img svg link meta head
+// title noscript template and the like are dropped with their
+// content, as are elements styled display:none (and Word's list
+// labels, mso-list:ignore). Any other element is unwrapped: its
+// content is read, the element ignored. Comments (Word's
+// conditional comments too) are skipped. Event attributes and every
+// attribute but style (and color size face on font, id on b) are
+// never read. Google Docs wraps a copy in <b style="font-weight:
+// normal" id="docs-internal-guid-..."> : not bold.
+//
+// White space, line breaks and paragraphs: ./ClipBuild. Pure: no
+// desktop services.
+import {Builder} from './ClipBuild';
+import {parseStyle, colour, family, fontTagSize} from './ClipCss';
+import {HEADING_PT} from './Fmt';
+
+export const LIMITS = Object.freeze({depth: 200, nodes: 200000,
+  text: 5000000, html: 4000000});
+
+const DROP = new Set(['script', 'style', 'iframe', 'object', 'embed',
+  'img', 'svg', 'link', 'meta', 'head', 'title', 'noscript',
+  'template', 'math', 'canvas', 'video', 'audio', 'picture', 'source',
+  'track', 'select', 'option', 'textarea', 'input', 'frame',
+  'frameset', 'applet', 'param', 'base', 'map', 'area', 'dialog']);
+const BLOCK = new Set(['p', 'div', 'ul', 'ol', 'li', 'pre', 'xmp',
+  'listing', 'blockquote', 'section', 'article', 'header', 'footer',
+  'main', 'nav', 'aside', 'address', 'figure', 'figcaption', 'dl',
+  'dt', 'dd', 'center', 'form', 'fieldset', 'legend', 'details',
+  'summary', 'caption', 'table', 'thead', 'tbody', 'tfoot', 'tr']);
+const FMT = {b: {b: true}, strong: {b: true}, th: {b: true},
+  i: {i: true}, em: {i: true}, cite: {i: true}, dfn: {i: true},
+  u: {u: true}, ins: {u: true}, s: {strike: true},
+  strike: {strike: true}, del: {strike: true},
+  sup: {vert: 'superscript'}, sub: {vert: 'subscript'},
+  pre: {pre: true}, xmp: {pre: true}, listing: {pre: true}};
+const STYLE_KEYS = ['b', 'i', 'u', 'strike', 'vert', 'color', 'sz',
+  'font', 'pre'];
+
+const attr = (el, k) => {
+  const v = typeof el.getAttribute === 'function'
+    ? el.getAttribute(k) : null;
+  return typeof v === 'string' ? v : null;
+};
+
+/** Format g after the tag `name` of el (changes g). */
+function tagFmt(name, el, g) {
+  const h = /^h([1-6])$/.exec(name);
+  if (h) {
+    g.head = +h[1];
+    g.b = true;
+    g.sz = HEADING_PT[g.head - 1] * 2;
+    return;
+  }
+  if (name === 'b' && /^docs-internal-guid/.test(attr(el, 'id') || ''))
+    return;
+  if (Object.hasOwn(FMT, name)) Object.assign(g, FMT[name]);
+  if (name !== 'font') return;
+  const c = colour(attr(el, 'color') || '');
+  const sz = fontTagSize(attr(el, 'size') || '');
+  const fa = family(attr(el, 'face') || '');
+  if (c) g.color = c;
+  if (sz) g.sz = sz;
+  if (fa) g.font = fa;
+}
+
+/**
+ * The frame for element (or document) el under format f, or null
+ * to skip it (dropped, hidden, or a br / hr handled here).
+ */
+function enter(el, f, b) {
+  if (el.nodeType !== 1) return {n: el, i: 0, f, exit: null};
+  const name = String(el.nodeName || '').toLowerCase();
+  if (DROP.has(name)) return null;
+  const inCell = f.cell > 0;
+  if (name === 'br' || name === 'hr') {
+    if (inCell) b.soft(f);
+    else if (name === 'br') b.br(f);
+    else b.flush();
+    return null;
+  }
+  const g = {...f};
+  tagFmt(name, el, g);
+  const st = parseStyle(attr(el, 'style'), g.sz ? g.sz / 2 : 11);
+  if (st.hidden) return null;
+  for (const k of STYLE_KEYS) if (st[k] !== undefined) g[k] = st[k];
+  const block = BLOCK.has(name) || g.head !== f.head;
+  if (block && st.jc) g.jc = st.jc;
+  if (name === 'tr') g.row = {n: 0};
+  if (name === 'td' || name === 'th') {
+    if (f.row && f.row.n++ > 0) b.tab(g);
+    g.cell = (f.cell || 0) + 1;
+    return {n: el, i: 0, f: g, exit: null};
+  }
+  if (!block) return {n: el, i: 0, f: g, exit: null};
+  const edge = () => (inCell ? b.soft(g) : b.flush());
+  edge();
+  return {n: el, i: 0, f: g, exit: edge};
+}
+
+/**
+ * An element nested deeper than LIMITS.depth: unwrapped (its text
+ * read in the format around it), unless dropped or hidden.
+ */
+function deep(el, f) {
+  if (el.nodeType === 1) {
+    const name = String(el.nodeName || '').toLowerCase();
+    if (DROP.has(name) || parseStyle(attr(el, 'style'), 11).hidden)
+      return null;
+  }
+  return {n: el, i: 0, f, exit: null};
+}
+
+/** See the header. */
+export function readTree(root, limits = LIMITS) {
+  const b = new Builder(limits.text);
+  const stack = [{n: {childNodes: [root]}, i: 0, f: {cell: 0},
+    exit: null}];
+  let nodes = 0;
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    const kids = top.n.childNodes;
+    const stop = b.full || nodes >= limits.nodes;
+    if (stop || !kids || top.i >= kids.length) {
+      stack.pop();
+      if (top.exit) top.exit();
+      continue;
+    }
+    const c = kids[top.i++];
+    nodes++;
+    if (!c || typeof c !== 'object') continue;
+    const t = c.nodeType;
+    if (t === 3 || t === 4) {
+      const s = c.data;
+      if (typeof s === 'string' && s) b.text(s, top.f);
+      continue;
+    }
+    if (t !== 1 && t !== 9 && t !== 11) continue;
+    const fr = stack.length > limits.depth ? deep(c, top.f)
+      : enter(c, top.f, b);
+    if (fr) stack.push(fr);
+  }
+  b.flush();
+  const heads = new Map();
+  for (const x of b.blocks) {
+    if (x.pStyle && !heads.has(x.pStyle)) {
+      heads.set(x.pStyle, {name: 'heading ' + x.pStyle.slice(7),
+        type: 'paragraph'});
+    }
+  }
+  return {blocks: b.blocks, styleNames: heads};
+}
+
+/** See the header. */
+export function readHtml(html, parseHtml) {
+  if (typeof html !== 'string' || !html || html.length > LIMITS.html ||
+    typeof parseHtml !== 'function') return null;
+  try {
+    const r = readTree(parseHtml(html));
+    return r.blocks.length ? r : null;
+  } catch (e) {
+    return null;
+  }
+}

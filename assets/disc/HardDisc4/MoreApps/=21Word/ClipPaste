@@ -1,0 +1,128 @@
+// ClipPaste - Paste and Cut in a document.
+//
+//   pasteBlocks(d, sel, blocks, {sameDoc, styleNames}) -> sel
+//   pastePlain(d, sel, text) -> sel       ./Edit.typeText
+//   cutSelection(d, sel) -> {slice, sel}  ./ClipSlice, then deleted
+//   deleteSelection(d, sel) -> sel        ./EditDel's
+//
+// d is a ./Document, sel a ./Selection; each returns the selection
+// after it (a caret at the end of what was put in) and makes one
+// undo step (d.atomic: a paste that fails changes nothing, its
+// RangeError is thrown again), or returns sel unchanged when there
+// is nothing to do (nothing to paste, a position not in the
+// document). Callers run them through Typing.command (a new undo
+// step; typing after it starts another).
+//
+// pasteBlocks: blocks (./ClipSlice's shape) first go through
+// ./ClipClean (sameDoc, styleNames: see there), then the selection
+// is deleted (./EditRange) and they go in at the caret, in the same
+// step. At a kept block's edge (a table), as typing does, an empty
+// paragraph is made there first (before it at off 0, after it at 1)
+// and the blocks go into it. Into paragraph P at offset off:
+//   - one paragraph: its content is spliced in (spliceText): P keeps
+//     its id and properties, the pasted runs their formatting
+//   - several blocks: P's text before off and the first block's
+//     content are P's (its id, extraP; its properties, but the first
+//     block's at off 0, where nothing of P is left before it); the
+//     blocks between go in whole (fresh ids, extraP []); the last
+//     block's content and P's text after off (with its formatting)
+//     make a new paragraph (fresh id) with P's properties: P's
+//     paragraph mark ends it. A first block that is a kept block
+//     leaves P's head alone, and when that head is empty the blocks
+//     go in before P, which keeps its id and takes the last block's
+//     content; a last kept block leaves the tail on its own. Ops:
+//     restoreBlock and one insertBlocks (linear: 100,000 paragraphs
+//     are one op).
+// The caret: after the last block's content (at the start of the
+// tail after a kept block).
+//
+// pastePlain: the text typed (\n splits paragraphs, controls go:
+// ./Edit), one undo step of its own.
+// Pure: no desktop services.
+import {nextId, reserveIds} from './Model';
+import {cut, join} from './OpsUtil';
+import {caret, collapsed} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {deleteRange, paraBy} from './EditRange';
+import {deleteSelection} from './EditDel';
+import {typeText} from './Edit';
+import {clean} from './ClipClean';
+import {slice} from './ClipSlice';
+
+export {deleteSelection};
+
+const content = (b) => ({text: b.text, runs: b.runs,
+  inlines: b.inlines});
+
+/** A paragraph of content c with the properties of `from`. */
+function para(id, c, from, extraP = []) {
+  const p = {type: 'p', id, ...c, pPr: from.pPr};
+  if (from.pStyle !== undefined) p.pStyle = from.pStyle;
+  p.extraP = extraP;
+  return p;
+}
+
+/** A pasted block, fresh id, for the middle. */
+const whole = (b) => (b.type === 'p'
+  ? para(nextId(), join(content(b)), b) : {type: 'opaque',
+    node: b.node});
+
+/** Put list (cleaned, >= 1 block) in at loc/off; the caret. */
+function insert(d, loc, off, list) {
+  const P = loc.b, {s, i} = loc, n = list.length;
+  const first = list[0], last = list[n - 1];
+  if (n === 1 && first.type === 'p') {
+    d.apply({op: 'spliceText', block: [s, i], at: off, del: 0,
+      content: content(first)});
+    return {id: P.id, off: off + first.text.length};
+  }
+  const fp = first.type === 'p', lp = n > 1 && last.type === 'p';
+  const head = fp ? join(cut(P, 0, off), content(first))
+    : join(cut(P, 0, off));
+  const tail = lp ? join(content(last), cut(P, off, P.text.length))
+    : join(cut(P, off, P.text.length));
+  reserveIds(d.doc);
+  const mids = list.slice(fp ? 1 : 0, lp ? n - 1 : n).map(whole);
+  const end = lp ? last.text.length : 0;
+  if (!head.text && !fp) {
+    // nothing of P before: the blocks go in before P
+    d.apply({op: 'insertBlocks', at: [s, i], blocks: mids});
+    d.apply({op: 'restoreBlock', block: [s, i + mids.length],
+      snapshot: para(P.id, tail, P, P.extraP)});
+    return {id: P.id, off: end};
+  }
+  const t = para(nextId(), tail, P);
+  d.apply({op: 'restoreBlock', block: [s, i], snapshot:
+    para(P.id, head, fp && off === 0 ? first : P, P.extraP)});
+  d.apply({op: 'insertBlocks', at: [s, i + 1], blocks: [...mids, t]});
+  return {id: t.id, off: end};
+}
+
+/** See the header. */
+export function pasteBlocks(d, sel, blocks, opts = {}) {
+  const list = clean(blocks, d.doc, opts);
+  if (!list.length) return sel;
+  const o = orderedPos(d.doc, sel);
+  if (!o) return sel;
+  let out = null;
+  d.atomic(() => {
+    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    let loc = findBlock(d.doc, pos.id);
+    if (loc.b.type !== 'p') {
+      pos = paraBy(d, loc, pos.off);
+      loc = findBlock(d.doc, pos.id);
+    }
+    out = insert(d, loc, pos.off, list);
+  });
+  return out ? caret(out) : sel;
+}
+
+/** See the header. */
+export const pastePlain = (d, sel, text) => typeText(d, sel, text);
+
+/** See the header. */
+export function cutSelection(d, sel) {
+  const s = slice(d.doc, sel);
+  if (!s) return {slice: null, sel};
+  return {slice: s, sel: deleteSelection(d, sel)};
+}

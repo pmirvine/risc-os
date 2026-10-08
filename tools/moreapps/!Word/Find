@@ -1,0 +1,145 @@
+// Find - finding text in a document and replacing it (the Find box:
+// ./EditFind).
+//
+//   search(doc, from, needle, {matchCase, whole, backwards, wrap})
+//     -> {s, i, from, to, inInline, wrapped} | null
+//   count(doc, needle, opts) -> the number of matches
+//   replaceOne(d, match, repl) -> {s, i, from, to} (the text put
+//                         in) | null (an inline in it, or gone)
+//   replaceAll(d, needle, repl, opts) -> {count, skipped, last}
+//                         last: {s, i, from, to} of the last text
+//                         put in (null when none)
+//   fold, prepare, MAX    from ./FindText
+//
+// from is {s, i, off}: section s, block i, offset off in its text.
+// Forwards: the first match starting at or after it; backwards
+// (backwards: true): the last one ending at or before it. With wrap
+// a search that reaches the end (start) goes on from the start
+// (end) of the document: the match says wrapped. A match is in one
+// paragraph (never across two); kept blocks (tables) are passed
+// over. s and i say where it is, from and to its offsets in the
+// text; what matches (case, whole words, inline items, grapheme
+// clusters) is ./FindText's. A match with an inline item in it
+// (inInline: link text) can be selected but is never replaced
+// (replaceAll counts it in skipped). The needle is literal (no
+// wildcards); an empty one finds nothing. count and replaceAll
+// take the matches first to last, none overlapping.
+//
+// The replacement is plain text (./Edit clean: control characters
+// and U+FFFC dropped, CR LF is LF): a new line (LF) in it is a line
+// break in the paragraph (the LF that SHIFT-RETURN types), a tab a
+// tab. It takes the format of the first character it replaces.
+// replaceOne and replaceAll are each one undo step (d.atomic);
+// replaceAll changes each paragraph once (one spliceText), in one
+// pass over the blocks by index: text put in is never searched
+// again. Pure: no desktop services.
+import {cut, join} from './OpsUtil';
+import {fmtAt} from './OpsText';
+import {clean} from './Edit';
+import {view, shownAt, inPara, matches, needleOf, OBJ}
+  from './FindText';
+
+export {fold, prepare, MAX} from './FindText';
+
+/** Search the blocks from (s, i) to one end; off limits the first. */
+function scan(doc, s, i, off, n, o) {
+  const secs = doc.sections, d = o.backwards ? -1 : 1;
+  let first = true;
+  for (; s >= 0 && s < secs.length; s += d) {
+    const bs = secs[s].blocks;
+    if (!first) i = d > 0 ? 0 : bs.length - 1;
+    for (; i >= 0 && i < bs.length; i += d) {
+      const p = bs[i];
+      if (p.type === 'p') {
+        const v = view(p), len = v.text.length;
+        const lim = first && off !== null ? shownAt(v, off) : null;
+        const m = d > 0 ? inPara(p, n, o, lim ?? 0, len, s, i)
+          : inPara(p, n, o, 0, lim ?? len, s, i);
+        if (m) return m;
+      }
+      first = false;
+    }
+    first = false;
+  }
+  return null;
+}
+
+/** See the header. */
+export function search(doc, from, needle, opts = {}) {
+  const o = {...opts}, n = needleOf(needle, o);
+  const secs = doc.sections;
+  if (!n || !secs.length) return null;
+  const s = Math.min(Math.max(from?.s | 0, 0), secs.length - 1);
+  const i = from?.i | 0, off = from?.off | 0;
+  const m = scan(doc, s, i, off, n, o);
+  if (m || !o.wrap) return m ? {...m, wrapped: false} : null;
+  const last = secs.length - 1;
+  const w = o.backwards
+    ? scan(doc, last, secs[last].blocks.length - 1, null, n, o)
+    : scan(doc, 0, 0, null, n, o);
+  return w ? {...w, wrapped: true} : null;
+}
+
+/** See the header. */
+export function count(doc, needle, opts = {}) {
+  const o = {...opts, backwards: false}, n = needleOf(needle, o);
+  let c = 0;
+  if (!n) return 0;
+  doc.sections.forEach((sec, s) => sec.blocks.forEach((p, i) => {
+    if (p.type === 'p') for (const m of matches(p, n, o, s, i)) c++;
+  }));
+  return c;
+}
+
+/** The replacement as content formatted as p's character at. */
+function piece(p, at, del, text) {
+  const f = fmtAt(p, at, del);
+  return {text, inlines: {},
+    runs: text ? [{start: 0, end: text.length, ...f}] : []};
+}
+
+/** See the header. */
+export function replaceOne(d, m, repl) {
+  const b = m && d.doc.sections[m.s]?.blocks[m.i];
+  if (!b || b.type !== 'p' || !(m.from >= 0) || !(m.to > m.from) ||
+    m.to > b.text.length || b.text.slice(m.from, m.to).includes(OBJ))
+    return null;
+  const text = clean(repl);
+  d.atomic(() => d.apply({op: 'spliceText', block: [m.s, m.i],
+    at: m.from, del: m.to - m.from,
+    content: piece(b, m.from, m.to - m.from, text)}));
+  return {s: m.s, i: m.i, from: m.from, to: m.from + text.length};
+}
+
+/** See the header. */
+export function replaceAll(d, needle, repl, opts = {}) {
+  const o = {...opts, backwards: false}, n = needleOf(needle, o);
+  const text = clean(repl);
+  let c = 0, skipped = 0, last = null;
+  if (!n) return {count: c, skipped, last};
+  d.atomic(() => {
+    d.doc.sections.forEach((sec, s) => {
+      const bs = sec.blocks;
+      for (let i = 0; i < bs.length; i++) {
+        const p = bs[i];
+        if (p.type !== 'p') continue;
+        const parts = [];
+        let at = -1, pos = 0;
+        for (const m of matches(p, n, o, s, i)) {
+          if (m.inInline) { skipped++; continue; }
+          if (at < 0) at = pos = m.from;
+          parts.push(cut(p, pos, m.from),
+            piece(p, m.from, m.to - m.from, text));
+          pos = m.to;
+          c++;
+        }
+        if (at < 0) continue;
+        const content = join(...parts), end = at + content.text.length;
+        d.apply({op: 'spliceText', block: [s, i], at, del: pos - at,
+          content});
+        last = {s, i, from: end - text.length, to: end};
+      }
+    });
+  });
+  return {count: c, skipped, last};
+}

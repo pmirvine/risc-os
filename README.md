@@ -240,7 +240,14 @@ documents have unsaved changes. A click on !Word's icon bar icon (or *New*) make
 `Choices:Word`). OK onto a file that is already there asks Replace / Cancel (Return and Escape are Cancel); a new
 document's Save box offers a name no file has. Documents are file type &A7E (`Report/docx` on the desktop is `Report.docx` on a HostFS drive; a plain
 name gets `,a7e`). To try: click !Word's icon, type, choose *Save* from the window's menu and click OK; type again and
-close the window to see the prompt. No automatic saving or backup file. There is no copy and paste, find, tab stops or margins yet; later steps add those, page layout and
+close the window to see the prompt. No automatic saving or backup file. The RISC OS keys work as in !Edit: F2 (or Ctrl-N) a new
+document, F3 the Save as box, Ctrl-S Save, Ctrl-F2 Close, F8 / F9 undo and redo. Ctrl-C, Ctrl-X and Ctrl-V (Cmd on a Mac, and the Edit menu) copy, cut
+and paste: exactly between !Word documents, as text and HTML formatting with other programs (in another document links
+become text, list items plain paragraphs and tables are left out; tables from other programs come as tab-separated text;
+pictures and files cannot be pasted; pasted HTML is read with a whitelist, nothing in it runs or is fetched).
+Ctrl-F (or F4) opens the Find box: Find next / previous, Match case, Whole words, Replace and Replace all (one undo step;
+text as typed, no wildcards; link text found but not replaced); Ctrl-H Replace, Ctrl-G / Ctrl-Shift-G find again
+(`$.Docs.Word`, part 4). There are no tab stops or margins yet; later steps add those, page layout and
 pagination (which will only approximate Word), making styles and new lists, printing, tables and images, RTF/PDF export
 and spell check. Reading and writing is checked on 600+ real documents from public test collections; real Microsoft
 Word could not be run during development, so a hand-off check was prepared. Older `.doc` and password-protected files
@@ -249,8 +256,8 @@ New Roman and Courier New are shown in the metric-compatible Carlito, Caladea an
 (all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules
 (zip, XML...) it is built on, is installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program
 imports it as `'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with
-`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 13 for programmers;
-part 4 is formatting, part 5 lists, part 6 saving, part 7 new documents, closing and quitting); developers: `docs/apps/Word.md`.
+`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 14 for programmers;
+part 4 is copy, paste and find, part 5 formatting, part 6 lists, part 7 saving, part 8 new documents, closing and quitting); developers: `docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
@@ -390,9 +397,9 @@ node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden field: typed text, dead keys, input methods; Playwright)
 node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
-node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 1505 tests, about 35 s)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 2060 tests, about 35 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions), saving, closing and quitting (word-save.mjs, word-close.mjs, word-quit.mjs: New, Recent, Quit and PreQuit prompts; word-documents-hostile.mjs: saves onto open, locked and read-only files, 1000 Saves, a real input method, shutdowns, 10,000 Recent entries, 500 random actions)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions), saving, closing and quitting (word-save.mjs, word-close.mjs, word-quit.mjs: New, Recent, Quit and PreQuit prompts; word-fkeys.mjs: F2, F3, Ctrl-F2, Ctrl-S, Ctrl-N, F8/F9; word-find.mjs: Find and Replace; word-clipboard.mjs and word-clipboard-hostile.mjs: copy, cut, paste and Find against 50,000 paragraphs, 5 MB pastes, hostile HTML, a real input method, 500 random actions; word-documents-hostile.mjs: saves onto open, locked and read-only files, 1000 Saves, a real input method, shutdowns, 10,000 Recent entries, 500 random actions)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)
 node tests/moreapps/word-format.mjs  # one browser group alone: formatting by keys, pending format and the Format menu (also word-toolbar.mjs, word-ruler.mjs, word-zoom.mjs, word-format-hostile.mjs: 50,000 paragraphs, 500 random actions)
@@ -404,9 +411,12 @@ node tests/moreapps/word-lists.mjs   # one browser group alone: lists drawn and 
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/list-roundtrip.test.mjs   # random list edits on list fixtures and corpus files, written and read back; numbering part unchanged (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/handoff-lists.mjs   # writes the list-*.docx files and list-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node --test tests/moreapps/savestate.test.mjs tests/moreapps/recent.test.mjs   # documents: untitled names, leaf names, the Save box's directory, the Recent list (unit)
-node tests/moreapps/word-save.mjs   # one browser group alone: Save, Save as, Save a copy (also word-close.mjs: the close prompt and Revert; word-quit.mjs: New, Recent, Quit and PreQuit; word-replace.mjs: Replace / Cancel, free names; word-page.mjs: a new document's whole page; word-documents-hostile.mjs)
+node tests/moreapps/word-save.mjs   # one browser group alone: Save, Save as, Save a copy (also word-close.mjs: the close prompt and Revert; word-quit.mjs: New, Recent, Quit and PreQuit; word-replace.mjs: Replace / Cancel, free names; word-page.mjs: a new document's whole page; word-clipboard.mjs: copy, cut and paste; word-find.mjs: Find and Replace; word-documents-hostile.mjs)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/documents-roundtrip.test.mjs   # new and corpus documents saved through !Word's own save code (DocSave), read back, linted and schema-checked (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/handoff-documents.mjs   # writes new-*.docx, saved-*.docx and doc-README.txt, made by !Word in the desktop, to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/clipboard-roundtrip.test.mjs   # random copy, cut, paste (own, other documents', other programs' HTML) and Find / Replace on fixtures and corpus files, written and read back (WORD_EDIT_CORPUS=1: every corpus file)
+node tests/moreapps/word-clipboard.mjs   # one browser group alone: copy, cut and paste in !Word (also word-clipboard-hostile.mjs, word-find.mjs)
+node tests/moreapps/handoff-clipboard.mjs   # writes clip-*.docx, find-1-replaceall.docx and clip-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
 WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # !Word's editing round trip on every corpus file (~2 min; by default one file in ten)
 node tools/moreapps-fonts.mjs     # re-fetch the bundled fonts (pinned and checked)

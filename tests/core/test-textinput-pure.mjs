@@ -34,3 +34,70 @@ test('at most MAX_TEXT (100,000) UTF-16 units, flagged truncated, never splittin
   assert.equal(p.truncated, true);
   assert.equal(p.text, 'x'.repeat(99999));
 });
+
+// ---- clipboard caps (src/core/textinput.js pastePayload / copyData, used by Wimp._paste / _copyCut)
+import { pastePayload, copyData, MAX_HTML, MAX_FILES, MAX_COPY_TEXT, MAX_COPY_HTML, COPY_TYPES } from '../../src/core/textinput.js';
+
+test('caps: constants', () => {
+  assert.equal(MAX_HTML, 2000000);
+  assert.equal(MAX_FILES, 8);
+  assert.equal(MAX_COPY_TEXT, 5000000);
+  assert.equal(MAX_COPY_HTML, 8000000);
+  assert.deepEqual([...COPY_TYPES], ['text/plain', 'text/html', 'text/uri-list']);
+});
+
+test('pastePayload: text cleaned and capped like typed text, html kept as is', () => {
+  const p = pastePayload({ text: 'a\r\nb\u0001', html: '<b>x</b><script>y</script>', files: [] });
+  assert.deepEqual(p, { text: 'a\nb', html: '<b>x</b><script>y</script>', files: [] });
+  assert.equal(pastePayload({ text: 'x'.repeat(150000) }).text.length, MAX_TEXT);
+  assert.deepEqual(pastePayload({}), { text: '', html: '', files: [] });
+  assert.deepEqual(pastePayload(null), { text: '', html: '', files: [] });
+});
+
+test('pastePayload: html over 2,000,000 characters is dropped, never truncated', () => {
+  assert.equal(pastePayload({ html: 'h'.repeat(MAX_HTML) }).html.length, MAX_HTML);
+  assert.equal(pastePayload({ html: 'h'.repeat(MAX_HTML + 1) }).html, '');
+  assert.equal(pastePayload({ html: 42 }).html, '');
+});
+
+test('pastePayload: at most 8 files, passed through unread', () => {
+  const files = Array.from({ length: 9 }, (_, i) => ({ name: 'f' + i }));
+  const p = pastePayload({ files });
+  assert.equal(p.files.length, 8);
+  assert.equal(p.files[0], files[0]);
+  assert.equal(p.files[7], files[7]);
+  assert.deepEqual(pastePayload({ files: { length: 2, 0: 'a', 1: 'b' } }).files, ['a', 'b']);   // array-like (FileList)
+});
+
+test('copyData: only text/plain, text/html, text/uri-list with string data under the caps', () => {
+  const d = copyData();
+  assert.equal(d.setData('text/plain', 'a'), true);
+  assert.equal(d.setData('text/html', '<b>a</b>'), true);
+  assert.equal(d.setData('application/x-evil', 'x'), false);
+  assert.equal(d.setData('text/uri-list', 'http://example.com/'), true);
+  assert.equal(d.setData('TEXT/PLAIN', 'b'), false);
+  assert.equal(d.setData('text/plain', 5), false);
+  assert.equal(d.setData('text/plain', null), false);
+  assert.deepEqual([...d.entries], [['text/plain', 'a'], ['text/html', '<b>a</b>'], ['text/uri-list', 'http://example.com/']]);
+  assert.equal(d.setData('text/plain', 'c'), true);   // a later value replaces the earlier one
+  assert.equal(d.entries.get('text/plain'), 'c');
+});
+
+test('copyData: larger than the caps is dropped (and an earlier value for that type removed)', () => {
+  const d = copyData();
+  assert.equal(d.setData('text/plain', 'x'.repeat(MAX_COPY_TEXT)), true);
+  assert.equal(d.setData('text/plain', 'x'.repeat(MAX_COPY_TEXT + 1)), false);
+  assert.equal(d.entries.has('text/plain'), false);
+  assert.equal(d.setData('text/html', 'h'.repeat(MAX_COPY_HTML)), true);
+  assert.equal(d.setData('text/html', 'h'.repeat(MAX_COPY_HTML + 1)), false);
+  assert.equal(d.entries.size, 0);
+  assert.equal(d.setData('text/uri-list', 'u'.repeat(MAX_COPY_TEXT + 1)), false);
+});
+
+test('copyData: setData after close() does nothing', () => {
+  const d = copyData();
+  d.setData('text/plain', 'a');
+  d.close();
+  assert.equal(d.setData('text/plain', 'b'), false);
+  assert.equal(d.entries.get('text/plain'), 'a');
+});

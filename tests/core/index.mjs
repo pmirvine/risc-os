@@ -9,6 +9,7 @@ suite('core', [
   { name: 'test-hostfs-names', args: ['tests/core/test-hostfs-names.mjs'], browser: false },
   { name: 'test-memory', args: ['tests/core/test-memory.mjs'], browser: false },
   { name: 'test-textinput', args: ['tests/core/test-textinput.mjs'] },
+  { name: 'test-clipboard', args: ['tests/core/test-clipboard.mjs'] },
   { name: 'test-textinput-pure', args: ['tests/core/test-textinput-pure.mjs'], browser: false },
   { name: 'test-taskmanager', args: ['tests/core/test-taskmanager.mjs'] },
   { name: 'monkey 300', args: ['tests/core/monkey.mjs', '300', '12345'], allow: [/^no errors$/] },

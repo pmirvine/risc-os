@@ -1,0 +1,178 @@
+// ClipBuild - the paragraphs ./ClipRead makes from pasted HTML: text
+// in, white space treated as HTML does, blocks out.
+//
+//   const b = new Builder(limit)    limit: text units in all
+//   b.text(s, f)   a text node in format f (./ClipRead's state)
+//   b.br(f)        a line break (<br>)
+//   b.tab(f)       a tab (between table cells)
+//   b.soft(f)      a space unless there is one (a block boundary in
+//                  a table cell)
+//   b.flush()      end the paragraph (a block boundary)
+//   b.blocks       the blocks made: {type:'p', text, runs, inlines:
+//                  {}, pPr, pStyle?} (./ClipSlice's shape)
+//   b.full         the limit is reached: nothing more is taken
+//
+// White space (f.pre false): runs of space, tab, CR, LF and FF are
+// one space; none at a paragraph's start, after a line break or
+// after another collapsible space; one at its end or before a line
+// break is dropped. A no-break space (U+00A0, &nbsp;) becomes a
+// space and is kept; so is a space before preformatted text. With
+// f.pre (<pre>, white-space: pre / pre-wrap) everything is kept, a
+// tab is a tab character and each line feed starts a new paragraph
+// (as plain text pasted). One line break at a paragraph's end is
+// dropped (a browser shows none: <p>a<br></p> is "a", <p><br></p>
+// an empty paragraph). A paragraph is made when it has text or a
+// line break; an empty element makes none.
+//
+// Text goes through ./Edit.clean (control characters, U+FFFC and
+// lone surrogates). A paragraph takes its properties from the format
+// in force at its first text (f.jc: its jc; f.head: heading level n,
+// pStyle 'Heading' + n, see ./ClipRead). Run formats are rPr objects
+// made once per distinct format and shared. Pure: no desktop
+// services.
+import {clean} from './Edit';
+
+const WS = /[ \t\n\r\f]+/g;
+
+/** The rPr of format f (only what it sets; see ./ClipRead). */
+function rprOf(f) {
+  const r = {};
+  if (f.b) r.b = true;
+  else if (f.head && f.b === false) r.b = false;
+  if (f.i) r.i = true;
+  if (f.u) r.u = 'single';
+  if (f.strike) r.strike = true;
+  if (f.vert && f.vert !== 'baseline') r.vertAlign = f.vert;
+  if (f.color) r.color = f.color;
+  if (f.sz) r.sz = f.sz;
+  if (f.font) r.rFonts = {ascii: f.font, hAnsi: f.font};
+  r.extra = [];
+  return r;
+}
+
+export class Builder {
+  constructor(limit) {
+    this.blocks = [];
+    this.limit = limit;
+    this.total = 0;
+    this._rprs = new Map();
+    this._start();
+  }
+
+  get full() { return this.total >= this.limit; }
+
+  _start() {
+    this.str = '';
+    this.runs = [];
+    this.props = null;
+    this.forced = false;
+    this.ws = true; // the last thing was collapsible space (or none)
+    this.trail = false; // the text ends with a collapsible space
+  }
+
+  _rpr(f) {
+    const r = rprOf(f);
+    const k = JSON.stringify(r);
+    let o = this._rprs.get(k);
+    if (!o) this._rprs.set(k, o = r);
+    return o;
+  }
+
+  /** Append s (cleaned) in format f. */
+  _add(s, f) {
+    if (!s || this.full) return;
+    const room = this.limit - this.total;
+    if (s.length > room) {
+      s = s.slice(0, room);
+      if (/[\ud800-\udbff]$/.test(s)) s = s.slice(0, -1);
+      this.total = this.limit;
+    } else this.total += s.length;
+    if (!s) return;
+    if (!this.props) this.props = f;
+    const rPr = this._rpr(f);
+    const n = this.str.length;
+    const last = this.runs[this.runs.length - 1];
+    if (last && last.rPr === rPr) last.end = n + s.length;
+    else this.runs.push({start: n, end: n + s.length, rPr});
+    this.str += s;
+  }
+
+  text(s, f) {
+    if (f.pre) {
+      // a space before preformatted text is kept, not collapsible
+      this.trail = false;
+      this.ws = false;
+      const lines = clean(s).replace(/\u00a0/g, ' ').split('\n');
+      lines.forEach((l, k) => {
+        if (k) {
+          if (!this.props) this.props = f;
+          this.forced = true;
+          this.flush();
+        }
+        this._add(l, f);
+      });
+      this.ws = false;
+      this.trail = false;
+      return;
+    }
+    let t = s.replace(WS, ' ');
+    if (this.ws && t[0] === ' ') t = t.slice(1);
+    if (!t) return;
+    this.ws = t.endsWith(' ');
+    this.trail = this.ws;
+    this._add(clean(t.replace(/\u00a0/g, ' ')), f);
+  }
+
+  br(f) {
+    this._dropTrail();
+    if (!this.props) this.props = f;
+    this._add('\n', f);
+    this.forced = true;
+    this.ws = true;
+    this.trail = false;
+  }
+
+  tab(f) {
+    this._dropTrail();
+    this._add('\t', f);
+    this.ws = true;
+    this.trail = false;
+  }
+
+  soft(f) {
+    if (!this.str || this.ws) return;
+    this._add(' ', f);
+    this.ws = true;
+    this.trail = true;
+  }
+
+  /** Drop a collapsible space at the end. */
+  _dropTrail() {
+    if (!this.trail) return;
+    this.trail = false;
+    this._cut();
+  }
+
+  /** Remove the last code unit. */
+  _cut() {
+    const n = this.str.length;
+    if (!n) return;
+    this.str = this.str.slice(0, n - 1);
+    const last = this.runs[this.runs.length - 1];
+    if (--last.end <= last.start) this.runs.pop();
+  }
+
+  flush() {
+    this._dropTrail();
+    if (this.str.endsWith('\n')) this._cut();
+    if (this.str || this.forced) {
+      const f = this.props || {};
+      const b = {type: 'p', text: this.str, runs: this.runs,
+        inlines: {}, pPr: f.jc && f.jc !== 'left'
+          ? {jc: f.jc, extra: []} : {extra: []}};
+      if (f.head) b.pStyle = 'Heading' + f.head;
+      this.blocks.push(b);
+    }
+    this._start();
+  }
+}

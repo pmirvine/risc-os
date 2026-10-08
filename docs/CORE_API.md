@@ -149,7 +149,7 @@ action, return `true` to mark it handled.
 
 | event | when / fields | default action |
 |---|---|---|
-| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window, shiftAdjust}` (`shiftAdjust`: Adjust given as Shift+left, so `shift` is part of the button) | Menu button: opens `w.menu` if set |
+| `click` | mouse click reported per button type. `{button ('select' / 'menu' / 'adjust'), buttons (4/2/1), x, y (work), sx, sy (screen), icon (Icon or null), iconIndex, kind:'click', shift, ctrl, alt, window, shiftAdjust, count}` (`shiftAdjust`: Adjust given as Shift+left, so `shift` is part of the button; `count`: 1, 2 or 3 for consecutive quick clicks of the same button in the same window within `doubleClickMs` and `doubleClickMove` px of the last one (a triple click is `count: 3`; further quick clicks stay 3); it does not change which clicks are reported as `doubleclick`, so with type 10 four quick clicks are click 1, doubleclick 2, click 3, doubleclick 3; Menu clicks have no `count`) | Menu button: opens `w.menu` if set |
 | `doubleclick` | same fields | |
 | `drag` | a drag started (button types with drag): same fields + `pointerEvent`, `startSX/SY` | — (start one with `wimp.drag`) |
 | `key` | key press while the window has the input focus: `{code (Wimp key code), char, key (DOM), shift, ctrl, alt, icon, domEvent}`; return `true` if used; set `ev.allowDefault = true` to let the host browser act on the key too (e.g. Ctrl-V then becomes a `paste` event) | unhandled keys go on to `hotkey` windows |
@@ -164,7 +164,8 @@ action, return `true` to mark it handled.
 | `dataload` | files dropped on the window: `{files:[{path, filetype, size, name, type}], path, filetype, x, y, sx, sy, icon, from, shift}`; return true | also sent as `DataLoad` message to the task |
 | `datasave` | another app's Save box dropped here: `{leafname, filetype, size, x, y, icon, accept(path), receive() → Promise<data>}` | also `DataSave` message |
 | `iconchanged` | a writable icon's text was edited `{icon}` | |
-| `paste` | clipboard text pasted while focused (non-writable) `{text}` | |
+| `paste` | clipboard text pasted while focused (non-writable) `{text}` (the raw text). With a text caret (3.2): `{text, html, files, window}`: `text` cleaned and capped like `textinput` (100,000 units), `html` the clipboard's `text/html` as it is (untrusted: never insert it as markup) or `''` when longer than 2,000,000 characters (dropped, never cut), `files` at most 8 `File` objects (not read); sent when any of the three is non-empty, also by `wimp.readClipboard()`. Return `true` (or `false` / `preventDefault()`) when used: the browser's paste is then cancelled. The text never also arrives as `textinput` | text caret: nothing (the hidden field cancels the browser's insertion) |
+| `copy`, `cut` | text caret only: the user copies or cuts (Ctrl/Cmd-C, Ctrl/Cmd-X, a browser menu, or `wimp.textInput.exec`) `{window, cut, setData(type, data)}`: call `setData` with `'text/plain'`, `'text/html'` or `'text/uri-list'` and a string (at most 5,000,000 units; 8,000,000 characters for HTML; other types, non-strings and larger data are refused: it returns `false`); only during the handler. A cut deletes the selection itself | with data set: it goes on the system clipboard and the browser's own copy is cancelled; with none: the browser's default (copies nothing) |
 | `textinput` | text caret only (3.2): committed text `{text, truncated, window}` — a typed printable key, a dead-key character, an input method's commit, an emoji picker. `text` is cleaned: CR/CRLF become `\n`, other control characters except `\n` and `\t` are dropped, lone surrogates become U+FFFD, at most 100,000 UTF-16 units (`truncated: true` when cut). Return `true` if used | none (unhandled text is dropped) |
 | `composition` | text caret only: an input method is composing `{text, start, window}` (`start: true` on the first update of a composition); show `text` at the caret, nothing is committed yet | |
 | `compositionend` | text caret only: the composition finished `{text, cancelled, window}`; committed text follows as one `textinput`; `cancelled: true` (empty `text`) when it was dropped, or when the caret left the window mid-composition | |
@@ -205,13 +206,41 @@ ends with a cancelled `compositionend` to the old window). While it has the focu
   to the browser; the result arrives as `composition` / `compositionend` / `textinput`;
 * a keyboard that edits with no usable keydown (keyCode 229, typical of Android) has its Backspace, Delete and
   Enter delivered as `key` 8, 127 and 13 (once: when a real keydown came first it was already the `key`);
-* paste keeps using the `paste` event; any other browser edit of the field (paste/drop insertion, undo, cut) is
-  cancelled. If the field loses the browser focus (e.g. the user clicked into a page field outside the
+* Ctrl-C, Ctrl-X, Ctrl-V and Cmd-C, Cmd-X, Cmd-V (without Alt) are `key` events first and are then left to the
+  browser (not `preventDefault`ed, even when used), which fires `copy` / `cut` / `paste` (3.1); the letter is
+  `key` when that is an ASCII letter (Dvorak's own C, X, V), otherwise the physical C, X or V key (`code`
+  `KeyC` / `KeyX` / `KeyV`: Cyrillic, Greek, Hebrew and other non-Latin layouts); every other
+  Cmd key, Cmd-R and Cmd-L included, is `preventDefault`ed like other keys (other carets keep the old rule: Cmd + C,
+  V, X, R, L always reach the browser, Ctrl-C/X/V are cancelled);
+* the clipboard arrives as `paste` / `copy` / `cut` (3.1) when the browser event is aimed at the hidden field, the
+  desktop, or the document itself (`body` / `html`: nothing has the browser focus), not at a page field outside
+  the desktop; any browser edit of the field (paste/drop insertion, undo, cut) is
+  cancelled, so pasted text never also arrives as `textinput`. If the field loses the browser focus (e.g. the user clicked into a page field outside the
   desktop), keys reach the window as ordinary `key` events again, so no input is lost.
 A composition that ends with empty data takes the field's value as the committed text (some browsers do this); an
 empty value is a cancel. A caret restored after a menu closes keeps `text: true`.
 Without `{text: true}` nothing changes: the hidden field is never focused and keys reach `key` as before.
-Not included yet: copy/cut listeners, HTML paste, caret blinking, triple-click counting.
+Options with `text: true`: `blink: true` makes the caret blink (class `blink` on `wimp.caretEl`, animation
+`caret-blink` 1.06s, on then off, restarted visible on every move; none with `prefers-reduced-motion: reduce`);
+`clipboard: true` keeps a selected placeholder (one space) in the hidden field while the window says it has a
+selection with `wimp.textInput.setHasSelection(true | false)`, for browsers that fire `copy` / `cut` only when
+the focused field has a selection (Chrome fires them without; Safari and Firefox are untested, so it is off
+unless asked for). Both options survive a menu dialogue box taking the caret, but the selection declaration does
+not: it is dropped whenever the caret leaves the window (a menu dialogue box with a writable icon included), so an
+app using `clipboard: true` calls `setHasSelection` again in its `gaincaret` handler.
+Menu items: `wimp.textInput.exec('copy' | 'cut')` (text caret only) focuses the
+hidden field if needed and runs the browser's command, which sends the usual `copy` / `cut` event; it returns
+`document.execCommand`'s result (`false` for other commands or no text caret). `await wimp.readClipboard()`
+reads the system clipboard (`navigator.clipboard.read()` for text and HTML, else `readText()`; the browser may ask
+the user; a text item larger than 400,000 bytes is read only that far, an HTML item larger than 6,000,000 bytes is
+not read) and sends the caret window a `paste` event (no files); it resolves `true`, or `false` with no text caret,
+no clipboard access, or a refusal (tell the user to press Ctrl-V). If the caret left that window meanwhile nothing
+is sent. Call both inside the user's gesture (the menu item's `click`/selection handler, synchronously for `exec`
+and starting there for `readClipboard`): browsers refuse clipboard access outside one.
+Not included yet: pictures and other rich types from the asynchronous clipboard (`readClipboard` gives text and
+HTML only), writing anything but text/plain, text/html and text/uri-list. The first user is !Word
+(`tools/moreapps/!Word/EditClip`, `docs/apps/Word.md` "Clipboard and Find"): `{text: true, blink: true}`, no
+`clipboard: true`; it treats `html` as untrusted (an inert `DOMParser` document walked with a whitelist).
 Writable icons edit themselves (←/→, Home, Delete/Backspace, Copy(=End), Ctrl-U, ↑/↓/Tab between writables, `A`
 validation, `bufLen`); Return and unhandled keys reach your `key` handler. A character rejected by an icon's `A`
 validation also goes on to the `key` handler (Key_Pressed), as in the real Wimp.

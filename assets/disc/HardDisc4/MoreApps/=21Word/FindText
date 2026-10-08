@@ -1,0 +1,199 @@
+// FindText - matching text in one paragraph, for ./Find:
+//
+//   fold(text)            the text in lower case, as long as it was
+//   prepare(needle) -> {needle, cut}   at most MAX characters (cut:
+//                         it was longer; never half a surrogate
+//                         pair), well formed
+//   MAX                   1000
+//   needleOf(needle, o)   the needle as compared (folded unless
+//                         o.matchCase)
+//   view(p) -> {text, map, simple, low}   the paragraph as shown
+//   shownAt(v, off)       the first shown index at or after off
+//   inPara(p, n, o, lo, hi, s, i) -> the first match of needle n
+//                         (o.backwards: the last) in shown [lo, hi)
+//   matches(p, n, o, s, i)  every match of p, first to last, none
+//                         overlapping
+//
+// A match is {s, i, from, to, inInline}: from and to are offsets in
+// p.text (s, i: given). An inline item (U+FFFC: a link...) is
+// searched as the text it shows (a tab as a tab, a line break as a
+// new line, a link as its text, a picture as nothing), so a match
+// may take in its U+FFFC: inInline, and from and to then cover the
+// whole item.
+// Case (o.matchCase false): each character is compared in lower
+// case (fold); a character whose lower case is longer (U+0130,
+// capital I with a dot, is 'i' and U+0307) counts as the first
+// character of it if that is as long, else as itself, so offsets
+// never shift. Characters are not normalised: a composed e acute
+// does not match e and a combining acute. A match starts and ends
+// between grapheme clusters (needle 'e' does not match the e of e
+// + combining acute, nor a thumbs-up the start of a thumbs-up with
+// a skin tone). Whole words (o.whole): an end of the match whose
+// character is a letter or digit must be the edge of a word
+// (WimpLib/Segment's word runs: Chinese and Japanese words as the
+// browser splits them); an end that is a space or punctuation needs
+// nothing ('foo.' is found in 'foo.bar'); in a paragraph over 4096
+// characters only 256 characters either side are looked at. A link
+// whose text holds the needle twice is one match (its whole item):
+// the next search starts after it.
+// Pure: no desktop services.
+import {wordBounds} from 'wimplib/Segment';
+import {nextG, prevG} from './DocPos';
+
+export const MAX = 1000;
+export const OBJ = '\uFFFC';
+const ASCII = /^[\u0000-\u007f]*$/;
+const SIMPLE = /^[\u0000-\u02ff\uFFFC]*$/;
+const LONG = 4096, WIN = 256;
+const lower = new Map();
+const views = new WeakMap();
+
+/** One character (code point) in lower case, as long as it is. */
+function low1(c) {
+  let f = lower.get(c);
+  if (f !== undefined) return f;
+  const l = c.toLowerCase();
+  if (l.length === c.length) f = l;
+  else {
+    const h = String.fromCodePoint(l.codePointAt(0));
+    f = h.length === c.length ? h : c;
+  }
+  if (lower.size < 20000) lower.set(c, f);
+  return f;
+}
+
+/** See the header. */
+export function fold(t) {
+  if (ASCII.test(t)) return t.toLowerCase();
+  let out = '';
+  for (const c of t) out += low1(c);
+  return out;
+}
+
+/** See the header. */
+export function prepare(needle) {
+  let n = String(needle ?? '');
+  const over = n.length > MAX;
+  if (over) {
+    n = n.slice(0, MAX);
+    const c = n.charCodeAt(MAX - 1);   // (not half a pair)
+    if (c >= 0xD800 && c <= 0xDBFF) n = n.slice(0, -1);
+  }
+  return {needle: n.toWellFormed ? n.toWellFormed() : n, cut: over};
+}
+
+/** See the header. */
+export const needleOf = (needle, o) => (o.matchCase
+  ? String(needle ?? '') : fold(String(needle ?? '')));
+
+/** A paragraph as shown: {text, map, simple, low}; map[k] is the
+ *  offset in p.text of shown character k (null: the same). */
+export function view(p) {
+  let v = views.get(p);
+  if (v) return v;
+  const t = p.text;
+  v = {text: t, map: null, simple: SIMPLE.test(t), low: null};
+  if (t.includes(OBJ)) {
+    let s = '';
+    const map = [];
+    for (let k = 0; k < t.length; k++) {
+      let x = t[k];
+      if (x === OBJ) {
+        const n = p.inlines && p.inlines[k];
+        x = !n ? '' : n.kind === 'tab' ? '\t' : n.kind === 'br'
+          ? '\n' : typeof n.text === 'string' ? n.text : '';
+      }
+      for (let j = 0; j < x.length; j++) map.push(k);
+      s += x;
+    }
+    map.push(t.length);
+    v.text = s;
+    v.map = map;
+  }
+  views.set(p, v);
+  return v;
+}
+
+const lowOf = (v) => v.low ?? (v.low = fold(v.text));
+const mOf = (v, d) => (v.map ? v.map[d] : d);
+
+/** The first shown index whose text offset is >= off. */
+export function shownAt(v, off) {
+  if (!v.map) return Math.min(Math.max(off, 0), v.text.length);
+  let lo = 0, hi = v.map.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (v.map[mid] >= off) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** Whether x is between grapheme clusters of t. */
+const isBound = (t, x) => x <= 0 || x >= t.length ||
+  prevG(t, nextG(t, x)) === x;
+
+const WORDY = /^[\p{L}\p{M}\p{N}]$/u;
+const first = (t, a) => String.fromCodePoint(t.codePointAt(a));
+const last = (t, b) => {
+  const c = t.charCodeAt(b - 1);
+  return b >= 2 && c >= 0xDC00 && c <= 0xDFFF ? t.slice(b - 2, b)
+    : t[b - 1];
+};
+
+/** Whether shown [a, b) is whole words (the header): an end whose
+ *  character is a letter or digit must be a word's edge. */
+function wholeAt(t, a, b) {
+  const ca = WORDY.test(first(t, a)), cb = WORDY.test(last(t, b));
+  if (!ca && !cb) return true;
+  let o = 0, s = t;
+  if (t.length > LONG) {
+    o = Math.max(0, a - WIN);
+    s = t.slice(o, Math.min(t.length, b + WIN));
+  }
+  return (!ca || wordBounds(s, a - o).from === a - o) &&
+    (!cb || wordBounds(s, b - 1 - o).to === b - o);
+}
+
+/** The match at shown [a, b) of p, or null when it does not count. */
+function matchAt(p, v, a, b, o, s, i) {
+  const from = mOf(v, a), to = mOf(v, b - 1) + 1;
+  if (!v.simple && (!isBound(p.text, from) || !isBound(p.text, to)))
+    return null;
+  if (o.whole && !wholeAt(v.text, a, b)) return null;
+  return {s, i, from, to, inInline: p.text.slice(from, to)
+    .includes(OBJ)};
+}
+
+/** The first (last, backwards) match of p in shown [lo, hi). */
+export function inPara(p, n, o, lo, hi, s, i) {
+  const v = view(p), hay = o.matchCase ? v.text : lowOf(v);
+  if (!o.backwards) {
+    for (let k = hay.indexOf(n, lo); k >= 0 && k + n.length <= hi;
+      k = hay.indexOf(n, k + 1)) {
+      const m = matchAt(p, v, k, k + n.length, o, s, i);
+      if (m) return m;
+    }
+    return null;
+  }
+  const top = hi - n.length;
+  for (let k = top < 0 ? -1 : hay.lastIndexOf(n, top); k >= lo;
+    k = k > 0 ? hay.lastIndexOf(n, k - 1) : -1) {
+    const m = matchAt(p, v, k, k + n.length, o, s, i);
+    if (m) return m;
+  }
+  return null;
+}
+
+/** The matches of p, first to last, none overlapping: after one,
+ *  the next starts at or after its end in p.text (so an inline item
+ *  gives one match, however often its text holds the needle: as
+ *  Find next walks them). */
+export function* matches(p, n, o, s, i) {
+  const v = view(p), hay = o.matchCase ? v.text : lowOf(v);
+  for (let k = hay.indexOf(n); k >= 0;) {
+    const m = matchAt(p, v, k, k + n.length, o, s, i);
+    if (m) yield m;
+    k = hay.indexOf(n, m ? Math.max(k + n.length, shownAt(v, m.to))
+      : k + 1);
+  }
+}

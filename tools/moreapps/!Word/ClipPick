@@ -1,0 +1,89 @@
+// ClipPick - what a paste puts in, from what is on the clipboard:
+//
+//   pick({text, html}, {store, docKey, parseHtml}) -> null |
+//     {route: 'exact', blocks, opts: {sameDoc, styleNames}}
+//     {route: 'html',  blocks, opts: {sameDoc: false, styleNames}}
+//     {route: 'plain', text}
+//   samePlain(clipText, storedPlain) -> boolean
+//   MAX_TEXT  100,000: the most text a paste brings (the Wimp's cap)
+//   cutShort(raw) -> boolean   whether the Wimp cut the clipboard's
+//             text raw (as the browser gave it) at MAX_TEXT: its
+//             cleaning (CR LF and CR a new line, C0 controls but tab
+//             and new line and C1 controls dropped, a lone surrogate
+//             one character) leaves more than MAX_TEXT units. The
+//             same rule as the Wimp's sanitizeText, whose own flag
+//             does not reach the paste event.
+//
+// text and html are the paste's (the Wimp has cleaned the text and
+// cut it at MAX_TEXT). exact: html carries the marker of a copy
+// that store (./ClipStore) still holds AND the clipboard's text is
+// that copy's text (samePlain): otherwise the clipboard has been
+// changed since by another program that kept the marker, and the
+// HTML is read as any other. sameDoc only when the copy's docKey is
+// this document's (a window's key changes with Revert: ./EditClip).
+// html: the HTML read with ./ClipRead (parseHtml: ./ClipDom), when
+// it gives some text. plain: the text. null: nothing to paste.
+// samePlain compares both after the same cleaning (./Edit.clean: CR
+// LF, controls, U+FFFC; then cut at MAX_TEXT, never in a surrogate
+// pair). Pure: no desktop services.
+import {tokenIn} from './ClipStore';
+import {readHtml} from './ClipRead';
+import {clean} from './Edit';
+
+export const MAX_TEXT = 100000;
+
+/** s cut at MAX_TEXT units, never between a surrogate pair. */
+function cap(s) {
+  if (s.length <= MAX_TEXT) return s;
+  const c = s.charCodeAt(MAX_TEXT - 1);
+  return s.slice(0, c >= 0xd800 && c <= 0xdbff ? MAX_TEXT - 1
+    : MAX_TEXT);
+}
+
+/** See the header. */
+export function cutShort(raw) {
+  if (typeof raw !== 'string' || raw.length <= MAX_TEXT) return false;
+  let n = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw.charCodeAt(i);
+    if (c === 13) {
+      if (raw.charCodeAt(i + 1) === 10) i++;
+      n++;
+    } else if (c >= 0xd800 && c <= 0xdbff) {
+      const d = raw.charCodeAt(i + 1);
+      if (d >= 0xdc00 && d <= 0xdfff) {
+        n += 2;
+        i++;
+      } else n++;
+    } else if ((c < 32 && c !== 9 && c !== 10) ||
+      (c >= 0x7f && c <= 0x9f)) continue;
+    else n++;
+    if (n > MAX_TEXT) return true;
+  }
+  return false;
+}
+
+/** See the header. */
+export function samePlain(clip, stored) {
+  if (typeof clip !== 'string' || typeof stored !== 'string')
+    return false;
+  return cap(clean(clip)) === cap(clean(stored));
+}
+
+/** See the header. */
+export function pick(payload, {store, docKey, parseHtml}) {
+  const text = typeof payload?.text === 'string' ? payload.text : '';
+  const html = typeof payload?.html === 'string' ? payload.html : '';
+  const t = html && store ? tokenIn(html) : null;
+  const e = t ? store.get(t) : null;
+  if (e && samePlain(text, e.plain)) {
+    return {route: 'exact', blocks: e.blocks, opts: {sameDoc:
+      e.docKey === docKey, styleNames: e.styleNames}};
+  }
+  const r = html && parseHtml ? readHtml(html, parseHtml) : null;
+  if (r) {
+    return {route: 'html', blocks: r.blocks, opts: {sameDoc: false,
+      styleNames: r.styleNames}};
+  }
+  return text ? {route: 'plain', text} : null;
+}

@@ -1,0 +1,108 @@
+// ClipStore - the last copies made in !Word, kept in memory, so a
+// paste of !Word's own HTML gets the exact blocks back.
+//
+//   new ClipStore({rand, max = 4})
+//   s.put(slice, docKey) -> token | null
+//   s.get(token) -> {blocks, styleNames, plain, docKey} | null
+//   s.clear()
+//   store            the one store of the program (all windows)
+//   tokenIn(html)    the token of a marker comment in html, or null
+//   MARK             '<!--word-clip:' + token + '-->' is the marker
+//   LIMITS           {text: 5,000,000, blocks: 100,000}
+//
+// slice is a ./ClipSlice slice ({blocks, styleNames, plain}) or an
+// array of blocks; docKey says which document it came from (the
+// caller's key: same key, same document). put refuses (null) an
+// empty slice, one over LIMITS.blocks blocks or LIMITS.text units of
+// paragraph text; only the last `max` entries are kept. A token is
+// 16 lower-case hex digits from 8 random bytes: rand() -> 8 values
+// 0..255 (default crypto.getRandomValues, else Math.random); a token
+// already in use is drawn again. plain: the slice's, else made
+// from the blocks (./ClipSlice.plainOf).
+//
+// The copy's HTML carries the token in a comment (./ClipHtml); a
+// paste looks it up by exact match only: a token the store does not
+// hold (an old copy, HTML from elsewhere, a guess) gives null and
+// the HTML is read as any other. Nothing is ever parsed from the
+// clipboard into blocks here: the entry is the slice object itself.
+// Pure: no desktop services.
+import {plainOf} from './ClipSlice';
+
+export const MARK = '<!--word-clip:';
+export const LIMITS = Object.freeze({text: 5000000, blocks: 100000});
+const TOKEN = /^[0-9a-f]{16}$/;
+const FIND = /<!--word-clip:([0-9a-f]{16})-->/;
+
+/** 8 random bytes. */
+function bytes() {
+  const c = globalThis.crypto;
+  if (c && typeof c.getRandomValues === 'function')
+    return c.getRandomValues(new Uint8Array(8));
+  return Array.from({length: 8}, () => Math.floor(Math.random() * 256));
+}
+
+const hex = (list) => Array.from(list, (v) => ((v & 255) | 256)
+  .toString(16).slice(1)).join('');
+
+/** See the header. */
+export function tokenIn(html) {
+  if (typeof html !== 'string') return null;
+  const m = FIND.exec(html);
+  return m ? m[1] : null;
+}
+
+/** Whether blocks are within LIMITS. */
+function fits(blocks) {
+  if (!Array.isArray(blocks) || !blocks.length ||
+    blocks.length > LIMITS.blocks) return false;
+  let n = 0;
+  for (const b of blocks) {
+    if (b && typeof b.text === 'string') n += b.text.length;
+    if (n > LIMITS.text) return false;
+  }
+  return true;
+}
+
+export class ClipStore {
+  constructor({rand = bytes, max = 4} = {}) {
+    this._rand = rand;
+    this._max = max;
+    this._m = new Map();
+  }
+
+  /** See the header. */
+  put(slice, docKey) {
+    const blocks = Array.isArray(slice) ? slice
+      : slice && slice.blocks;
+    if (!fits(blocks)) return null;
+    let token = hex(this._rand());
+    for (let k = 0; this._m.has(token) || !TOKEN.test(token); k++) {
+      if (k > 16) return null;
+      token = hex(this._rand());
+    }
+    const names = slice && slice.styleNames instanceof Map
+      ? slice.styleNames : new Map();
+    const plain = slice && typeof slice.plain === 'string'
+      ? slice.plain : plainOf(blocks);
+    this._m.set(token, {blocks, styleNames: names, plain, docKey});
+    while (this._m.size > this._max) {
+      this._m.delete(this._m.keys().next().value);
+    }
+    return token;
+  }
+
+  /** See the header. */
+  get(token) {
+    if (typeof token !== 'string' || !TOKEN.test(token)) return null;
+    const e = this._m.get(token);
+    return e ? {...e} : null;
+  }
+
+  /** Forget every entry. */
+  clear() {
+    this._m.clear();
+  }
+}
+
+/** See the header. */
+export const store = new ClipStore();

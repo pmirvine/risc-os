@@ -111,7 +111,7 @@ export class MenuManager {
       const sc = this._savedCaret;
       this._savedCaret = null;
       if (caretInMenu) {
-        if (sc?.window?.isOpen) this.wimp.setCaret(sc.window, sc.icon ?? null, sc.index ?? -1, sc.pos ?? null, sc.text ? { text: true } : undefined);
+        if (sc?.window?.isOpen) this.wimp.setCaret(sc.window, sc.icon ?? null, sc.index ?? -1, sc.pos ?? null, sc.text ? { text: true, blink: !!sc.blink, clipboard: !!sc.clipboard } : undefined);
         else this.wimp.setCaret(null);
       }
     }

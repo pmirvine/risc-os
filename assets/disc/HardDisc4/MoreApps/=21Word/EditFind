@@ -1,0 +1,250 @@
+// EditFind - Find and Replace in !Word: the task's one Find box
+// (WimpLib Ui/FindBox) working on the document whose window last
+// had the caret (the active one: the box goes with it as you click
+// from document to document). The finding is ./Find's.
+//
+//   attachFind(dw)        (./DocKeys) dw becomes the active document
+//                         when its window gains the caret
+//   openFind(dw, replace) CTRL-F, F4, Find... (replace: CTRL-H,
+//                         Replace...): the box at the front, the
+//                         caret in it; a selection of at most 100
+//                         characters in one line is put in Find
+//   findStep(dw, back)    CTRL-G, CTRL-SHIFT-G: Find next / previous
+//                         with what the box holds (no text yet: the
+//                         box opens)
+//   findHook(app) -> {box, active, open(replace), run(action,
+//                         fields)}   for the tests (fields: find,
+//                         replace, matchCase, whole put in the box;
+//                         find is looked for as given, even when
+//                         longer than the field holds) -> message
+//
+// Find next: from the end of the selection (Find previous: from its
+// start), going round from the top (bottom) when it reaches the end
+// (start), the message saying so; the match is selected and scrolled
+// into view (grey while the box has the caret). Not found: a beep
+// and 'Not found'. Replace: when the selection is a match, it is
+// replaced (one undo step) and the next found; otherwise it finds
+// first. Replace all: every match in the document, one undo step,
+// 'N replaced'. Text in a link is found but never replaced (said in
+// the message). An empty Find field is refused ('Type the text to
+// find.'); only the first 1000 characters are looked for (said).
+// Close, Escape and the box's close icon give the caret back to the
+// active document. In the box, CTRL-G and CTRL-SHIFT-G (Cmd on a
+// Mac) find too. While the box is open it is a pane of the active
+// document's view (./FindView): the match is drawn in the usual
+// selection colour, its window brought to the front, the box moved
+// off it. CTRL-G that goes round (or finds nothing) with the box
+// shut opens it, without the caret, to show the message. Replace
+// all leaves the caret after the last text it put in.
+import {wimp} from 'riscos';
+import {findBox} from 'wimplib/Ui/FindBox';
+import * as S from './Selection';
+import {orderedPos} from './EditPos';
+import {search, replaceOne, replaceAll, prepare, MAX} from './Find';
+import {dropPending} from './EditFormat';
+import {keymap} from './Keymap';
+import {macKey, isMac} from './MacKeys';
+import {lend, unlend, show} from './FindView';
+
+const states = new WeakMap();          // app -> {active, box, pane}
+const PREFILL = 100;
+const st = (app) => {
+  let s = states.get(app);
+  if (!s) states.set(app, s = {active: null, box: null, pane: null});
+  return s;
+};
+const alive = (dw) => !!dw && !dw.closed && dw.win.isOpen;
+const END = 'Reached the end: continuing from the top';
+const START = 'Reached the start: continuing from the end';
+
+/** See the header. */
+export function attachFind(dw) {
+  const s = st(dw.app);
+  dw.win.on('gaincaret', () => {
+    s.active = dw;
+    if (s.box && s.box.isOpen) lend(s, dw, s.box);
+  });
+  dw.win.on('deleted', () => {
+    if (s.pane && s.pane.view === dw.view) unlend(s);
+    if (s.active === dw) s.active = null;
+  });
+}
+
+/** The box for app, with its handlers. */
+function boxOf(app) {
+  const s = st(app);
+  return (s.box = findBox(app.task, {
+    onAction: (a) => run(app, a),
+    onClose: () => {
+      unlend(s);
+      if (alive(s.active)) s.active.view.focus();
+    },
+    onKey: (ev) => {
+      const dw = st(app).active;
+      const mac = dw ? dw.view.mac
+        : isMac(globalThis.navigator?.platform);
+      const id = keymap.lookup(macKey(ev, mac));
+      if (id === 'findNext' || id === 'findPrev') {
+        run(app, id === 'findNext' ? 'next' : 'prev');
+        return true;
+      }
+      return id === 'find' || id === 'replace' || undefined;
+    },
+  }));
+}
+
+/** The selection's text if short and on one line, else null. */
+function prefill(v) {
+  const o = v.sel && !S.collapsed(v.sel) && orderedPos(v.d.doc, v.sel);
+  if (!o || o.f.k !== o.t.k || o.to.off - o.from.off > PREFILL)
+    return null;
+  const t = v.text();
+  return t && t.length <= PREFILL && !/[\n\r]/.test(t) ? t : null;
+}
+
+/** See the header. */
+export function openFind(dw, replace = false) {
+  st(dw.app).active = dw;
+  const b = boxOf(dw.app);
+  b.message = '';
+  b.open({text: prefill(dw.view) ?? undefined, replace});
+  lend(st(dw.app), dw, b);
+  return true;
+}
+
+/** See the header. */
+export function findStep(dw, back) {
+  st(dw.app).active = dw;
+  const b = boxOf(dw.app);
+  if (!b.find) return openFind(dw);
+  run(dw.app, back ? 'prev' : 'next');
+  if (!b.isOpen && b.message) {
+    // went round, or nothing found: the box shows it, the caret
+    // stays in the document
+    b.open({focus: false});
+    lend(st(dw.app), dw, b);
+    show(dw, b);
+  }
+  return true;
+}
+
+/** Select match m in dw's document (scrolled into view). */
+function select(dw, m) {
+  const id = dw.view.d.doc.sections[m.s].blocks[m.i].id;
+  dw.view.setSelection(S.select({id, off: m.from}, {id, off: m.to}));
+  show(dw, boxOf(dw.app));
+}
+
+/** Find from the selection's end (start); the message. */
+function step(dw, n, o, back, at) {
+  const v = dw.view, doc = v.d.doc;
+  let from = at;
+  if (!from) {
+    const p = v.sel && orderedPos(doc, v.sel);
+    from = !p ? {s: 0, i: 0, off: 0} : back
+      ? {s: p.f.s, i: p.f.i, off: p.from.off}
+      : {s: p.t.s, i: p.t.i, off: p.to.off};
+  }
+  const m = search(doc, from, n, {...o, backwards: back, wrap: true});
+  if (!m) {
+    wimp.beep();
+    return 'Not found';
+  }
+  select(dw, m);
+  return m.wrapped ? (back ? START : END) : '';
+}
+
+/** The match the selection is, or null. */
+function current(dw, n, o) {
+  const v = dw.view, doc = v.d.doc;
+  const p = v.sel && !S.collapsed(v.sel) && orderedPos(doc, v.sel);
+  if (!p || p.f.k !== p.t.k) return null;
+  const m = search(doc, {s: p.f.s, i: p.f.i, off: p.from.off}, n, o);
+  return m && m.s === p.f.s && m.i === p.f.i &&
+    m.from === p.from.off && m.to === p.to.off ? m : null;
+}
+
+/** Replace the selection if a match, then find the next. */
+function replaceStep(dw, n, o, repl) {
+  const m = current(dw, n, o);
+  if (!m) return step(dw, n, o, false);
+  if (m.inInline) {
+    const s = step(dw, n, o, false, {s: m.s, i: m.i, off: m.to});
+    return 'Link text is kept. ' + s;
+  }
+  const v = dw.view;
+  v.ensure();
+  dropPending(v);
+  const r = v.typing.command(() => replaceOne(v.d, m, repl));
+  if (!r) return 'Not replaced';
+  const id = v.d.doc.sections[r.s].blocks[r.i].id;
+  v.setSelection(S.caret({id, off: r.to}));
+  const s = step(dw, n, o, false, {s: r.s, i: r.i, off: r.to});
+  return '1 replaced' + (s === 'Not found' ? '; no more found'
+    : s ? '. ' + s : '');
+}
+
+/** Replace all; the message. */
+function all(dw, n, o, repl) {
+  const v = dw.view;
+  v.ensure();
+  dropPending(v);
+  const r = v.typing.command(() => replaceAll(v.d, n, repl, o));
+  if (!r.count && !r.skipped) {
+    wimp.beep();
+    return 'Not found';
+  }
+  if (r.last) {
+    const id = v.d.doc.sections[r.last.s].blocks[r.last.i].id;
+    v.edited(S.caret({id, off: r.last.to}));
+  }
+  const k = r.skipped;
+  return `${r.count} replaced` + (k ? `; ${k} in links not ` +
+    'replaced' : '');
+}
+
+/** A button of the box (or Return, or a key); raw: the text to
+ *  find instead of the field's (the tests: longer than it holds). */
+function run(app, action, raw) {
+  const b = boxOf(app), dw = st(app).active;
+  if (!alive(dw)) {
+    wimp.beep();
+    b.message = 'No document to search: click in one first.';
+    return;
+  }
+  const p = prepare(raw ?? b.find);
+  if (!p.needle) {
+    wimp.beep();
+    b.message = 'Type the text to find.';
+    return;
+  }
+  const o = {matchCase: b.matchCase, whole: b.whole};
+  let msg;
+  if (action === 'prev' || action === 'next')
+    msg = step(dw, p.needle, o, action === 'prev');
+  else if (action === 'replace')
+    msg = replaceStep(dw, p.needle, o, b.replace);
+  else if (action === 'all') msg = all(dw, p.needle, o, b.replace);
+  else return;
+  b.message = (p.cut ? `Only the first ${MAX} characters are ` +
+    'looked for. ' : '') + msg;
+}
+
+/** See the header. */
+export function findHook(app) {
+  return {
+    get box() { return boxOf(app); },
+    get active() { return st(app).active; },
+    open: (replace) => {
+      const dw = st(app).active;
+      return alive(dw) ? openFind(dw, replace) : false;
+    },
+    run: (action, f = {}) => {
+      const b = boxOf(app);
+      for (const k of ['find', 'replace', 'matchCase', 'whole'])
+        if (f[k] !== undefined) b[k] = f[k];
+      run(app, action, f.find);
+      return b.message;
+    },
+  };
+}

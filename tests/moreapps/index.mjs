@@ -17,7 +17,10 @@
 // locked and read-only files, 1000 Saves, input methods, shutdowns,
 // Recent, 500 random actions (word-documents-hostile.mjs); Save
 // boxes and existing files: Replace / Cancel (word-replace.mjs); a
-// new document's whole white page (word-page.mjs). The unit
+// new document's whole white page (word-page.mjs); copy, cut and
+// paste (word-clipboard.mjs), also against hostile input
+// (word-clipboard-hostile.mjs); the RISC OS function keys and Ctrl-S /
+// Ctrl-N (word-fkeys.mjs); Find and Replace (word-find.mjs). The unit
 // tests are the *.test.mjs files
 // here: node --test tests/moreapps finds them itself.
 import { suite } from '../lib/suite.mjs';
@@ -44,5 +47,9 @@ suite('moreapps', [
   { name: '!Word: documents against hostile use (Save as onto open / locked / read-only / bad names, 1000 Saves, Save while typing and composing, 50 dirty windows at shutdown, shutdown twice, prompts that cannot open, 10,000 hostile Recent entries, Revert of a deleted file, Quit with the Save box open, 500 random actions)', args: ['tests/moreapps/word-documents-hostile.mjs'] },
   { name: '!Word: Save boxes and existing files (a free name for a new document, Replace / Cancel, Save a copy refusing open files and holding composing text); the late commit only straight after a Save; prompts brought forward (Quit with a Save box or its Replace question, Revert); a failed Save a copy named as Save names it', args: ['tests/moreapps/word-replace.mjs'] },
   { name: '!Word: a new document shows a whole page (A4, Letter; the white page down the window, its height and end; 50% and 200%; clicks low in the page, typing, Ctrl-End, Page Down)', args: ['tests/moreapps/word-page.mjs'] },
+  { name: '!Word: copy, cut and paste (real keys and the system clipboard, other programs\' HTML, the exact copy between and within documents, stale copies, Revert, files only, composing, the Edit menu, Mac Cmd keys, 50,000 paragraphs, 1000 pastes, hostile HTML, a DOMParser round trip); leaks', args: ['tests/moreapps/word-clipboard.mjs'] },
+  { name: '!Word: copy, paste and Find against hostile input (50,000 paragraphs copied and Replace all, 5 MB of text, 100,000 paragraphs of HTML, 10,000-deep and script-laden HTML, files only, a table first, a real input method composing, 1000 real Ctrl-V, regular expression characters, 500 random actions)', args: ['tests/moreapps/word-clipboard-hostile.mjs'] },
+  { name: '!Word: RISC OS function keys (F2 New, Ctrl-F2 Close, F3 the Save as box, Ctrl-S Save, Ctrl-N New, F8 / F9 undo and redo, Ctrl-F10 to the back; held keys once; keys not used go on; F12 the desktop\'s; menu labels; Mac Cmd-S, Cmd-N); leaks', args: ['tests/moreapps/word-fkeys.mjs'] },
+  { name: '!Word: Find and Replace (Ctrl-F, F4, Ctrl-H, Ctrl-G; the one Find box: Return, Find previous, wrap, Replace, Replace all in one undo step, Match case, Whole words, link text not replaced, Escape / Close back to the document, two documents, the Edit menu, messages, 10,000 matches, a 1 MB needle, Mac Cmd-F / Cmd-G); leaks', args: ['tests/moreapps/word-find.mjs'] },
   { name: '!Word without its fonts; open, close and Quit leave nothing behind', args: ['tests/moreapps/word-life.mjs'] },
 ]);

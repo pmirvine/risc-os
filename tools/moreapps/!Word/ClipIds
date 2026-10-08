@@ -1,0 +1,153 @@
+// ClipIds - what a paste in the same document must not copy: XML
+// that carries an id which has to stay unique in a document (for
+// ./ClipClean).
+//
+//   UNIQUE              names (no prefix) of the elements whose id
+//                       must be unique: bookmarks, comment ranges
+//                       and references, ins, del, moves, note
+//                       references, perm ranges, customXml*Range
+//   hasUnique(node)     node holds (or is) an element of UNIQUE, at
+//                       any depth (cached per node: models are
+//                       immutable)
+//   hasIds(node)        hasUnique, or a wp:docPr (a picture's id),
+//                       a w:id element (a content control's), or
+//                       any element with an id attribute other
+//                       than r:id (w:id: change records such as
+//                       w:pPrChange and w:rPrChange)
+//   dropIds(props)      props ({..., extra}) without the extra
+//                       elements that hasIds; the same object when
+//                       there are none
+//   keepIds(node)       a kept block's XML without w14:paraId and
+//                       w14:textId (Word gives them afresh); the
+//                       same node when it has none
+//   flatten(node)       a kept block (a table) as plain paragraph
+//                       blocks: a paragraph per row (w:tr), its
+//                       cells' text joined by tabs (a cell's own
+//                       paragraphs and tabs are spaces); without
+//                       rows, a paragraph per w:p. Text is w:t only
+//                       (no deleted text) and a run's tabs and
+//                       breaks (not tab stops: nothing in pPr, rPr
+//                       or other properties), cleaned as typed.
+// Pure: no desktop services.
+import {clean as cleanText} from './Edit';
+
+export const UNIQUE = new Set(['bookmarkStart', 'bookmarkEnd',
+  'commentRangeStart', 'commentRangeEnd', 'commentReference', 'ins',
+  'del', 'moveFrom', 'moveTo', 'footnoteReference',
+  'endnoteReference', 'permStart', 'permEnd', 'moveFromRangeStart',
+  'moveFromRangeEnd', 'moveToRangeStart', 'moveToRangeEnd',
+  'customXmlInsRangeStart', 'customXmlInsRangeEnd',
+  'customXmlDelRangeStart', 'customXmlDelRangeEnd',
+  'customXmlMoveFromRangeStart', 'customXmlMoveFromRangeEnd',
+  'customXmlMoveToRangeStart', 'customXmlMoveToRangeEnd']);
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const local = (n) => String(n).split(':').pop();
+const kids = (x) => (Array.isArray(x.children) ? x.children : []);
+const attrs = (x) => (Array.isArray(x.attrs) ? x.attrs : []);
+
+/** Whether any element under n (n included) satisfies test. */
+function any(n, test, cache) {
+  if (!isObj(n)) return false;
+  let v = cache.get(n);
+  if (v !== undefined) return v;
+  v = false;
+  const stack = [n];
+  while (stack.length && !v) {
+    const x = stack.pop();
+    if (!isObj(x)) continue;
+    if (test(x)) v = true;
+    else for (const c of kids(x)) stack.push(c);
+  }
+  cache.set(n, v);
+  return v;
+}
+
+const uniq = new WeakMap(), ids = new WeakMap();
+
+/** See the header. */
+export const hasUnique = (n) => any(n, (x) => UNIQUE.has(local(x.name)),
+  uniq);
+
+const idAttr = (a) => Array.isArray(a) && local(a[0]) === 'id' &&
+  a[0] !== 'r:id';
+
+/** See the header. */
+export const hasIds = (n) => any(n, (x) => {
+  const k = local(x.name);
+  return UNIQUE.has(k) || k === 'docPr' || k === 'id' ||
+    attrs(x).some(idAttr);
+}, ids);
+
+/** See the header. */
+export function dropIds(props) {
+  if (!isObj(props) || !Array.isArray(props.extra) ||
+    !props.extra.some(hasIds)) return props;
+  return {...props, extra: props.extra.filter((x) => !hasIds(x))};
+}
+
+const fresh = (a) => Array.isArray(a) && (local(a[0]) === 'paraId' ||
+  local(a[0]) === 'textId');
+const paraIds = new WeakMap();
+
+/** See the header. */
+export function keepIds(node) {
+  if (!any(node, (x) => attrs(x).some(fresh), paraIds)) return node;
+  const copy = (x) => (isObj(x) ? {...x, attrs: attrs(x).filter((a) =>
+    !fresh(a)), children: kids(x).map(copy)} : x);
+  return copy(node);
+}
+
+/** Properties (pPr, rPr, tcPr... and their change records): no
+ *  text in them (a w:tab there is a tab stop). */
+const isProps = (k) => /Pr(Change)?$/.test(k);
+
+/** The w:t text under x; a run's tab and br elements as `tab`,
+ *  `br` (inRun: x is inside a w:r). */
+function textOf(x, tab, br, out = [], inRun = false) {
+  if (!isObj(x)) return out;
+  const k = local(x.name);
+  if (isProps(k)) return out;
+  if (k === 't') {
+    for (const c of kids(x)) if (typeof c === 'string') out.push(c);
+  } else if (k === 'tab' || k === 'ptab') {
+    if (inRun) out.push(tab);
+  } else if (k === 'br' || k === 'cr') {
+    if (inRun) out.push(br);
+  } else {
+    if (k === 'p' && out.length) out.push(br === '\n' ? '' : ' ');
+    const run = inRun || k === 'r';
+    for (const c of kids(x)) textOf(c, tab, br, out, run);
+  }
+  return out;
+}
+
+/** A plain paragraph block of text. */
+function para(text) {
+  const t = cleanText(text);
+  return {type: 'p', text: t, inlines: {}, pPr: {extra: []},
+    runs: t ? [{start: 0, end: t.length, rPr: {extra: []}}] : []};
+}
+
+/** The elements named `name` under x, not inside another of them. */
+function find(x, name, out = []) {
+  for (const c of kids(x)) {
+    if (!isObj(c)) continue;
+    if (local(c.name) === name) out.push(c);
+    else find(c, name, out);
+  }
+  return out;
+}
+
+/** See the header. */
+export function flatten(node) {
+  if (!isObj(node)) return [];
+  const rows = find(node, 'tr');
+  if (rows.length) {
+    return rows.map((tr) => para(find(tr, 'tc').map((tc) =>
+      textOf(tc, ' ', ' ').join('')).join('\t')));
+  }
+  return find(node, 'p').map((p) => para(textOf(p, '\t', '\n')
+    .join('')));
+}
