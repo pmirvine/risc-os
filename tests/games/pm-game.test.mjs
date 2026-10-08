@@ -4,6 +4,9 @@ import { Game, START_FRAMES } from '../../tools/games/!Pacman/Game';
 import { SPECIAL } from '../../tools/games/!Pacman/MazeData';
 import { LEFT, RIGHT, UP, DOWN, DX, DY } from '../../tools/games/!Pacman/Dirs';
 import { playing, run } from './script.mjs';
+import { addScore, ghostPct, targetOf } from '../../tools/games/!Pacman/Play';
+import { chaseTarget } from '../../tools/games/!Pacman/Targets';
+import { levelSpec } from '../../tools/games/!Pacman/Levels';
 
 const dist = (g) => Math.abs(g.ghosts[0].tx - g.player.tx)
   + Math.abs(g.ghosts[0].ty - g.player.ty);
@@ -51,6 +54,7 @@ test('sharing a tile is a death and everyone goes back', () => {
   g.debug.place(0, t.px - 4, t.py, RIGHT);
   const ev = run(g, [[LEFT, 1]]);
   assert.ok(ev.some((e) => e.type === 'death'));
+  run(g, [[LEFT, 210]]);                // the death sequence
   const s = SPECIAL.starts;
   assert.deepEqual([g.player.px, g.player.py, g.player.dir],
     [s.pac.px, s.pac.py, s.pac.dir]);
@@ -423,6 +427,8 @@ test('a lost life: ready, ghosts back in the house, Pinky at 7 dots', () => {
   untilDots(g, 35);                  // Pinky, Inky out
   assert.equal(g.ghosts[2].state !== 'house', true);
   g.debug.kill();
+  assert.equal(g.state, 'dying');
+  for (let i = 0; i < 210; i++) g.tick({ want: -1 });
   assert.equal(g.state, 'ready');
   assert.deepEqual(states(g), ['active', 'house', 'house', 'house']);
   assert.deepEqual(g.house.waiting, [1, 2, 3]);
@@ -446,6 +452,8 @@ test('a ghost touching Pac-Man is a death into ready', () => {
   g.debug.place(0, g.player.px - 4, g.player.py, RIGHT);
   const ev = run(g, [[LEFT, 1]]);
   assert.ok(ev.some((e) => e.type === 'death'));
+  assert.equal(g.state, 'dying');
+  run(g, [[LEFT, 210]]);
   assert.equal(g.state, 'ready');
   assert.equal(g.house.global, true);
 });
@@ -651,4 +659,228 @@ test('the fruit follows the level', () => {
   const g = playing({ level: 9 });
   g.fruit.onDots(170);
   assert.deepEqual([g.fruit.kind, g.fruit.points], ['rocket', 2000]);
+});
+
+const idle = { want: -1 };
+const ticks = (g, n) => { const ev = []; for (let i = 0; i < n; i++) ev.push(...g.tick(idle)); return ev; };
+
+test('start: 252 frames, actors and the first life at frame 120', () => {
+  const g = new Game({ seed: 1 });
+  assert.equal(g.actorsShown, false);
+  const first = g.tick(idle);
+  assert.deepEqual(first, [{ type: 'start' }]);
+  ticks(g, 118);                                  // 119 ticks
+  assert.deepEqual([g.actorsShown, g.lives], [false, 3]);
+  g.tick(idle);                                   // 120
+  assert.deepEqual([g.actorsShown, g.lives], [true, 2]);
+  ticks(g, 131);                                  // 251
+  assert.equal(g.state, 'start');
+  g.tick(idle);
+  assert.equal(g.state, 'play');
+  assert.equal(g.lives, 2);
+  assert.equal(g.actorsShown, true);
+});
+
+test('death: freeze, vanish, 11 frame animation, pause, ready', () => {
+  const g = playing();
+  untilDots(g, 5);
+  const eaten = g.maze.dotsEaten, score = g.score;
+  g.fruit.onDots(70);
+  g.popups.push({ px: 112, py: 100, text: '100', frames: 90 });
+  g.eatenId = 2;
+  assert.equal(g.lives, 2);
+  g.events = [];
+  g.debug.kill();
+  assert.deepEqual(g.events, [{ type: 'death' }]);
+  assert.equal(g.state, 'dying');
+  assert.deepEqual(g.popups, []);
+  assert.equal(g.fruit.shown, false);
+  assert.equal(g.eatenId, -1);
+  const px = g.player.px, bx = g.ghosts[0].px;
+  const seen = [];
+  for (let t = 1; t <= 209; t++) {
+    g.tick(idle);
+    assert.equal(g.state, 'dying', 'tick ' + t);
+    assert.equal(g.stateTimer, t);
+    seen.push(g.deathFrame);
+    assert.equal(g.ghostsShown, t < 60, 'ghosts at ' + t);
+  }
+  assert.equal(g.player.px, px);
+  assert.equal(g.ghosts[0].px, bx);           // frozen, not reset yet
+  assert.deepEqual([seen[58], seen[59], seen[148], seen[208]],
+    [-1, 0, 10, 10]);                     // ticks 59, 60, 149, 209
+  assert.deepEqual([...new Set(seen)], [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  assert.equal(g.lives, 2);
+  const evs = g.tick(idle);                   // the 210th
+  assert.deepEqual(evs, [{ type: 'ready' }]);
+  assert.equal(g.state, 'ready');
+  assert.equal(g.lives, 1);
+  assert.equal(g.maze.dotsEaten, eaten);
+  assert.equal(g.score, score);
+  assert.equal(g.house.global, true);
+  assert.equal(g.modes.timer, 0);
+  assert.equal(g.modes.phase, 0);
+  assert.equal(g.fruit.shown, false);
+  assert.equal(g.actorsShown, true);
+  ticks(g, 119);
+  assert.equal(g.state, 'ready');
+  g.tick(idle);
+  assert.equal(g.state, 'play');
+});
+
+test('death animation: frame k lasts 90/11 ticks from tick 60', () => {
+  const g = playing();
+  g.debug.kill();
+  const at = {};
+  for (let t = 1; t <= 150; t++) { g.tick(idle); at[t] = g.deathFrame; }
+  assert.equal(at[59], -1);
+  assert.equal(at[60], 0);
+  assert.equal(at[68], 0);
+  assert.equal(at[69], 1);
+  assert.equal(at[149], 10);
+});
+
+test('the last life: gameOver for 180 frames, then over for good', () => {
+  const g = playing({ lives: 1 });
+  assert.equal(g.lives, 0);
+  g.debug.kill();
+  ticks(g, 209);
+  assert.equal(g.state, 'dying');
+  const ev = g.tick(idle);
+  assert.deepEqual(ev, [{ type: 'gameOver' }]);
+  assert.equal(g.state, 'gameOver');
+  assert.equal(g.lives, 0);
+  ticks(g, 179);
+  assert.equal(g.state, 'gameOver');
+  g.tick(idle);
+  assert.equal(g.state, 'over');
+  const snap = JSON.stringify(g.snapshot());
+  assert.deepEqual(ticks(g, 50), []);
+  assert.equal(JSON.stringify(g.snapshot()), snap);
+});
+
+test('a death with lives to spare is not game over', () => {
+  const g = playing({ lives: 2 });
+  g.debug.kill();
+  ticks(g, 210);
+  assert.equal(g.state, 'ready');
+  assert.equal(g.lives, 0);
+  g.debug.skipIntro();
+  g.debug.kill();
+  ticks(g, 210);
+  assert.equal(g.state, 'gameOver');
+});
+
+test('extra life: once at 10000, not again at 20000', () => {
+  const g = playing();
+  g.score = 9990;
+  const ev = [];
+  g.events = ev;
+  addScore(g, 10);
+  assert.deepEqual(ev, [{ type: 'extraLife' }]);
+  assert.equal(g.lives, 3);
+  addScore(g, 10000);
+  assert.equal(g.score, 20000);
+  assert.equal(g.lives, 3);
+  assert.equal(ev.length, 1);
+});
+
+test('extra life from a real dot', () => {
+  const g = playing();
+  g.score = 9990;
+  g.player.pause = 0;
+  const e = run(g, [[LEFT, 300]]);
+  assert.equal(e.filter((x) => x.type === 'extraLife').length, 1);
+  assert.equal(g.lives, 3);
+});
+
+test('extra life: bonus 0 never, 15000 at 15000 only', () => {
+  const none = playing({ bonus: 0 });
+  none.score = 9990;
+  addScore(none, 100000);
+  assert.equal(none.lives, 2);
+  const g = playing({ bonus: 15000 });
+  addScore(g, 10000);
+  assert.equal(g.lives, 2);
+  g.score = 14990;
+  addScore(g, 10);
+  assert.equal(g.lives, 3);
+});
+
+test('a big jump past the bonus is one life', () => {
+  const g = playing();
+  addScore(g, 12000);
+  assert.equal(g.lives, 3);
+});
+
+/** Eat dots until n are left. */
+function leave(g, n) {
+  for (let y = 0; y < g.maze.h && g.maze.dotsLeft > n; y++) {
+    for (let x = 0; x < g.maze.w && g.maze.dotsLeft > n; x++) {
+      g.maze.eat(x, y);
+    }
+  }
+  assert.equal(g.maze.dotsLeft, n);
+}
+
+test('Cruise Elroy 1: Blinky 75, 75, then 80 and 85', () => {
+  const g = playing();
+  const b = g.ghosts[0], s = levelSpec(1);
+  assert.deepEqual([s.elroy1Dots, s.elroy1, s.elroy2Dots, s.elroy2],
+    [20, 80, 10, 85]);
+  assert.equal(ghostPct(g, b), 75);
+  leave(g, 21);
+  assert.equal(g.elroy, 0);
+  assert.equal(ghostPct(g, b), 75);
+  leave(g, 20);
+  assert.equal(g.elroy, 1);
+  assert.equal(ghostPct(g, b), 80);
+  leave(g, 11);
+  assert.equal(ghostPct(g, b), 80);
+  leave(g, 10);
+  assert.equal(g.elroy, 2);
+  assert.equal(ghostPct(g, b), 85);
+  assert.equal(ghostPct(g, g.ghosts[1]), 75);
+});
+
+test('in Elroy Blinky chases during scatter', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  const b = g.ghosts[0];
+  assert.equal(g.modes.mode, 'scatter');
+  assert.deepEqual(targetOf(g, b), SPECIAL.scatter[0]);
+  leave(g, 20);
+  const want = chaseTarget(0, g.player, b, SPECIAL.scatter[0], b);
+  assert.deepEqual(targetOf(g, b), want);
+  assert.notDeepEqual(targetOf(g, b), SPECIAL.scatter[0]);
+  assert.deepEqual(targetOf(g, g.ghosts[1]), SPECIAL.scatter[1]);
+});
+
+test('after a death Elroy is off until Clyde is out', () => {
+  const g = playing();
+  g.debug.kill();
+  ticks(g, 330);
+  assert.equal(g.state, 'play');
+  leave(g, 15);
+  assert.equal(g.elroy, 0);
+  assert.equal(ghostPct(g, g.ghosts[0]), 75);
+  assert.notEqual(g.ghosts[3].state, 'active');
+  g.ghosts[3].state = 'active';
+  g.tick(idle);
+  assert.equal(g.elroy, 1);
+  assert.equal(ghostPct(g, g.ghosts[0]), 80);
+});
+
+test('a new game or level resets what the last one left', () => {
+  const g = playing();
+  g.sweeps = 3;
+  g.eatenId = 1;
+  g.popups.push({ px: 1, py: 1, text: '1', frames: 9 });
+  g.fruit.onDots(70);
+  g.elroyOff = true;
+  leave(g, 100);
+  g.startLevel(1);
+  assert.equal(g.maze.dotsEaten, 0);
+  assert.deepEqual([g.sweeps, g.eatenId, g.popups.length, g.fruit.shown,
+    g.elroyOff], [0, -1, 0, false, false]);
 });

@@ -82,6 +82,7 @@ test('mazeSurface is a cached 224 x 248 Surface', () => {
 
 test('drawGame at the start shows the maze, Pac-Man and Blinky', () => {
   const g = new Game({ seed: 1 });
+  g.actorsShown = true;           // they appear at frame 120
   const s = new Surface(224, 288);
   drawGame(s, g, 0);
   assert.ok(count(s, col(COLOURS.wall)) > 1000);
@@ -120,6 +121,7 @@ test('Pac-Man mouth: 0, 22, 45, 22 degrees', () => {
 test('a stopped Pac-Man keeps the mouth he stopped with', () => {
   const pacPixels = (anim, stopped) => {
     const g = new Game({ seed: 1 });
+    g.actorsShown = true;
     g.player.anim = anim;
     g.player.stopped = stopped;
     const s = new Surface(224, 288);
@@ -170,6 +172,7 @@ test('blue and eaten ghosts look different', () => {
 
 test('actors in the tunnel never write outside the maze', () => {
   const g = new Game({ seed: 1 });
+  g.actorsShown = true;
   g.player.px = 2; g.player.py = 14 * 8 + 4;
   g.ghosts[0].px = 221; g.ghosts[0].py = 14 * 8 + 4;
   const s = new Surface(240, 288);
@@ -364,4 +367,106 @@ test('the Hud fruit row follows Levels', () => {
     for (let x = 190; x < 224; x++) diff += s.get(x, y) !== t.get(x, y);
   }
   assert.equal(diff, 0);
+});
+
+// ---- the lives sequences: start, ready, dying, game over ----
+
+test('Hud: ready draws READY! and not PLAYER ONE', () => {
+  const g = new Game({ seed: 1 });
+  g.setState('ready');
+  const s = new Surface(224, 288);
+  drawHud(s, g, 0, 0);
+  const ref = new Surface(224, 288);
+  drawText(ref, 'READY!', 88, 160, { colour: col(COLOURS.ready) });
+  assert.ok(same(ref, s, 88, 160, 48, 8) > 20, 'READY!');
+  let lit = 0;
+  for (let y = 112; y < 120; y++) {
+    for (let x = 64; x < 160; x++) lit += s.get(x, y) !== 0;
+  }
+  assert.equal(lit, 0, 'no PLAYER ONE');
+  g.setState('start');
+  const t = new Surface(224, 288);
+  drawHud(t, g, 0, 0);
+  lit = 0;
+  for (let y = 112; y < 120; y++) {
+    for (let x = 64; x < 160; x++) lit += t.get(x, y) !== 0;
+  }
+  assert.ok(lit > 30, 'PLAYER ONE at the start');
+});
+
+test('Hud: GAME OVER in gameOver and over, lives are spare ones', () => {
+  const g = new Game({ seed: 1, lives: 3 });
+  const spares = (st) => {
+    g.setState(st);
+    const s = new Surface(224, 288);
+    drawHud(s, g, 0, 0);
+    let pac = 0, text = 0;
+    for (let y = 270; y < 288; y++) {
+      for (let x = 0; x < 100; x++) pac += s.get(x, y) === col(COLOURS.pac);
+    }
+    for (let y = 160; y < 168; y++) {
+      for (let x = 80; x < 144; x++) text += s.get(x, y) === col(COLOURS.over);
+    }
+    return [pac, text];
+  };
+  const [three] = spares('play');
+  g.lives = 1;
+  const [one, none] = spares('play');
+  assert.equal(none, 0);
+  assert.ok(three > 2 * one && one > 40, three + ' vs ' + one);
+  g.lives = 0;
+  assert.equal(spares('play')[0], 0);
+  for (const st of ['gameOver', 'over']) {
+    assert.ok(spares(st)[1] > 30, st);
+  }
+});
+
+test('start: no actors until actorsShown', () => {
+  const g = new Game({ seed: 1 });
+  const a = new Surface(W, 288);
+  drawGame(a, g, 0);
+  assert.equal(near(a, g.player.px, g.player.py, col(COLOURS.pac)), 0);
+  assert.equal(near(a, g.ghosts[0].px, g.ghosts[0].py,
+    col(COLOURS.ghosts[0])), 0);
+  g.actorsShown = true;
+  const b = new Surface(W, 288);
+  drawGame(b, g, 0);
+  assert.ok(near(b, g.player.px, g.player.py, col(COLOURS.pac)) > 40);
+  assert.ok(near(b, g.ghosts[0].px, g.ghosts[0].py,
+    col(COLOURS.ghosts[0])) > 40);
+});
+
+test('dying: ghosts only before they vanish, Pac-Man collapses', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  g.debug.kill();
+  const draw = () => {
+    const s = new Surface(W, 288);
+    drawGame(s, g, 0);
+    return [near(s, g.player.px, g.player.py, col(COLOURS.pac)),
+      near(s, g.ghosts[0].px, g.ghosts[0].py, col(COLOURS.ghosts[0]))];
+  };
+  const [pac0, ghost0] = draw();
+  assert.ok(pac0 > 40 && ghost0 > 40);
+  for (let i = 0; i < 59; i++) g.tick({ want: -1 });
+  assert.ok(draw()[1] > 40, 'still there at 59');
+  g.tick({ want: -1 });
+  assert.equal(draw()[1], 0, 'gone at 60');
+  for (let i = 0; i < 40; i++) g.tick({ want: -1 });
+  const [pac, ghost] = draw();
+  assert.ok(pac > 0 && pac < pac0, 'collapsing ' + pac);
+  assert.equal(ghost, 0);
+});
+
+test('gameOver and over draw no actors', () => {
+  const g = new Game({ seed: 1 });
+  g.debug.skipIntro();
+  for (const st of ['gameOver', 'over']) {
+    g.state = st;
+    const s = new Surface(W, 288);
+    drawGame(s, g, 0);
+    assert.equal(near(s, g.player.px, g.player.py, col(COLOURS.pac)), 0);
+    assert.equal(near(s, g.ghosts[0].px, g.ghosts[0].py,
+      col(COLOURS.ghosts[0])), 0);
+  }
 });

@@ -6,8 +6,11 @@
 // scatter corner or its chase target (Modes says which), and every
 // mode change turns the ghosts in the maze round. The House (dots
 // eaten, then an idle timer) says when a ghost leaves its pen; a
-// death puts everyone back and starts 'ready'. Speeds are single
-// values for now (the level table comes later). An energizer starts
+// death starts the 'dying' show (Game puts everyone back after it).
+// Blinky speeds up as Cruise Elroy when few dots are left, and then
+// chases even in scatter, until a death suspends it. Speeds are
+// single values for now (the level table comes later). Points go
+// through addScore, which gives the extra life. An energizer starts
 // a fright (Fright): the ghosts outside turn round, every ghost turns
 // blue, and the scatter and chase clock waits until it ends. Touching
 // a blue ghost eats it (Fright gives the points: 200 to 1600) and
@@ -18,6 +21,7 @@
 // by standing on its tile; the last dot ends the level.
 
 import { chaseTarget } from './Targets';
+import { levelSpec } from './Levels';
 
 const PAC_PCT = 80, GHOST_PCT = 75;
 
@@ -42,23 +46,48 @@ function collide(game) {
  *  17, 32 dots) takes over from the personal ones. */
 export function kill(game) {
   game.events.push({ type: 'death' });
-  game.resetActors();
-  game.house.restart();
-  game.house.onDeath();
+  game.popups = [];
+  game.eatenId = -1;
   game.fruit.clear();
-  game.setState('ready');
+  game.elroyOff = true;
+  game.deathFrame = -1;
+  game.ghostsShown = true;
+  game.setState('dying');
+}
+
+/** One frame of the death: Pac-Man freezes for 60 frames, the ghosts
+ *  vanish, his 11 frame collapse takes 90, and he pauses for 60.
+ *  True when the 210 frames are over. */
+export function dyingFrame(game) {
+  const t = ++game.stateTimer;
+  game.ghostsShown = t < 60;
+  game.deathFrame = t < 60 ? -1
+    : Math.min(10, Math.floor(((t - 60) * 11) / 90));
+  return t >= 210;
+}
+
+/** Points; crossing the bonus score (once) earns an extra life. */
+export function addScore(game, points) {
+  const was = game.score;
+  game.score += points;
+  if (game.bonus > 0 && !game.extraDone && was < game.bonus
+    && game.score >= game.bonus) {
+    game.extraDone = true;
+    game.lives++;
+    game.events.push({ type: 'extraLife' });
+  }
 }
 
 /** Pac-Man eats a ghost: points, a popup, and the freeze. */
 function eat(game, g) {
   const points = game.fright.nextScore();
-  game.score += points;
+  addScore(game, points);
   g.eat();
   game.events.push({ type: 'ghostEaten', id: g.id, points });
   game.popups.push({ px: g.px, py: g.py, text: String(points),
     frames: FREEZE });
   if (game.fright.eaten === 4 && ++game.sweeps === 4) {
-    game.score += BONUS;
+    addScore(game, BONUS);
     game.events.push({ type: 'bonus', points: BONUS });
   }
   game.eatenId = g.id;
@@ -90,7 +119,7 @@ function eatFruit(game) {
     || !f.tiles.some(([x, y]) => x === p.tx && y === p.ty)) return;
   const kind = game.fruit.kind;
   const points = game.fruit.eat();
-  game.score += points;
+  addScore(game, points);
   game.events.push({ type: 'fruitEaten', kind, points });
   game.popups.push({ px: f.px, py: f.py, text: String(points),
     frames: 120 });
@@ -115,10 +144,20 @@ function step(game, g) {
   }
 }
 
+/** Blinky speeds up in Cruise Elroy (the others keep GHOST_PCT). */
+export function ghostPct(game, g) {
+  if (g.id !== 0 || g.state !== 'active' || g.blue || !game.elroy) {
+    return GHOST_PCT;
+  }
+  const s = levelSpec(game.level);
+  return game.elroy === 2 ? s.elroy2 : s.elroy1;
+}
+
 function moveGhost(game, g) {
   const eyes = g.state === 'eyes';
-  g.tick({ maze: game.maze, pct: GHOST_PCT, target: targetOf(game, g),
-    frightened: g.blue, rng: game.rng, redZones: !eyes });
+  g.tick({ maze: game.maze, pct: ghostPct(game, g),
+    target: targetOf(game, g), frightened: g.blue, rng: game.rng,
+    redZones: !eyes });
 }
 
 /** Run one frame of play with input {want: 0..3 | -1}. */
@@ -126,11 +165,14 @@ export function playFrame(game, input) {
   const want = input && input.want !== undefined ? input.want : -1;
   const { maze, player } = game;
   tickPopups(game);
+  if (game.elroyOff && game.ghosts[3].state === 'active') {
+    game.elroyOff = false;
+  }
   game.fruit.tick();
   if (game.fright.tick()) endFright(game);
   const r = player.tick(maze, want, PAC_PCT);
   if (r.ate) {
-    game.score += r.ate;
+    addScore(game, r.ate);
     game.house.onDot();
     game.fruit.onDots(maze.dotsEaten);
     game.events.push({ type: r.ate === 50 ? 'energizer' : 'dot' });
@@ -169,10 +211,12 @@ function endFright(game) {
 }
 
 /** The tile a ghost steers for now. */
-function targetOf(game, g) {
+export function targetOf(game, g) {
   if (g.state === 'eyes') return game.data.maze.SPECIAL.eyesTarget;
   const corner = game.data.maze.SPECIAL.scatter[g.id];
-  if (game.modes.mode === 'scatter') return corner;
+  if (game.modes.mode === 'scatter' && !(g.id === 0 && game.elroy)) {
+    return corner;
+  }
   return chaseTarget(g.id, game.player, game.ghosts[0], corner, g);
 }
 

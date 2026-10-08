@@ -3,10 +3,14 @@
 // Composes the maze, Pac-Man and the ghosts, and runs the states:
 // 'start' (the opening jingle, 252 frames) then 'play' (Play.playFrame
 // does a frame), with 'eaten' (a 60 frame freeze) after a ghost is
-// eaten and 'ready' (120 frames) after Pac-Man is caught. When the
-// last dot goes, 'levelDone' (240 frames: the ghosts vanish after 60,
-// then the maze flashes) leads to 'ready' on the next level, with
-// every dot back and the table row for the new level.
+// eaten. Pac-Man caught starts 'dying' (210 frames: freeze, ghosts
+// vanish, the collapse, a pause); then 'ready' (120 frames, a life
+// from the reserve) or, with none left, 'gameOver' (180 frames) and
+// at last 'over', where nothing happens. When the last dot goes,
+// 'levelDone' (240 frames: the ghosts vanish after 60, then the maze
+// flashes) leads to 'ready' on the next level, with every dot back
+// and the table row for the new level. lives counts the spare
+// lives; one is taken as the actors appear.
 // tick(input) runs one 60 Hz frame and returns the events of that
 // frame ({type: 'dot'} and so on); snapshot() gives the whole state
 // as plain data. debug has helpers for tests.
@@ -22,11 +26,12 @@ import { Fright } from './Fright';
 import { House } from './House';
 import { Fruit } from './Fruit';
 import { levelSpec } from './Levels';
-import { playFrame, eatenFrame, kill } from './Play';
+import { playFrame, eatenFrame, kill, dyingFrame } from './Play';
 
 export const START_FRAMES = 252;
 export const READY_FRAMES = 120;
 export const DONE_FRAMES = 240;
+export const OVER_FRAMES = 180;
 
 export class Game {
   constructor({ seed = 1, level = 1, lives = 3, bonus = 10000,
@@ -45,17 +50,18 @@ export class Game {
     this.events = [];
     this.popups = [];
     this.eatenId = -1;         // the ghost just eaten (the freeze)
-    this.sweeps = 0;           // energizers with all four ghosts eaten
+    this.extraDone = false;    // the extra life has been given
+    this.actorsShown = false;  // not during the first 120 frames
+    this.ghostsShown = true;   // false for most of a death
+    this.deathFrame = -1;      // -1, or Pac-Man's collapse 0 to 10
     this.maze = new Maze(ROWS, SPECIAL);
     this.player = new Player(SPECIAL.starts.pac);
     this.ghosts = SPECIAL.starts.ghosts.map((s, i) => new Ghost(i, s));
     this.modes = new Modes(level);
-    this.fright = new Fright(levelSpec(level));
-    this.house = new House(level);
-    this.fruit = new Fruit(level, this.rng);
+    this.startLevel(level);
     const g = this;
     this.debug = {
-      skipIntro() { g.setState('play'); },
+      skipIntro() { g.showActors(); g.setState('play'); },
       place(id, px, py, dir) { g.ghosts[id].place(px, py, dir); },
       kill() { kill(g); },
       clearLevel() {
@@ -79,27 +85,72 @@ export class Game {
     this.fright.reset();
   }
 
-  /** The next level: every dot back, everyone at the start. */
-  nextLevel() {
-    this.level++;
+  /** Level n from scratch: every dot back, everyone at the start,
+   *  no sweeps, popups, fruit or fright, Elroy allowed. */
+  startLevel(n) {
+    this.level = n;
     this.maze.reset();
     this.sweeps = 0;
     this.eatenId = -1;
     this.popups = [];
-    this.fright = new Fright(levelSpec(this.level));
-    this.house = new House(this.level);
-    this.fruit = new Fruit(this.level, this.rng);
+    this.elroyOff = false;
+    this.fright = new Fright(levelSpec(n));
+    this.house = new House(n);
+    this.fruit = new Fruit(n, this.rng);
     this.resetActors();
+  }
+
+  /** The next level, after 'levelDone'. */
+  nextLevel() {
+    this.startLevel(this.level + 1);
+    this.ready();
+  }
+
+  /** 'ready' for 120 frames. */
+  ready() {
+    this.events.push({ type: 'ready' });
     this.setState('ready');
+  }
+
+  /** The actors appear and a life leaves the reserve (once). */
+  showActors() {
+    if (this.actorsShown) return;
+    this.actorsShown = true;
+    this.lives--;
+  }
+
+  /** Cruise Elroy stage of Blinky: 0, 1 or 2. */
+  get elroy() {
+    if (this.elroyOff) return 0;
+    const s = levelSpec(this.level), left = this.maze.dotsLeft;
+    return left <= s.elroy2Dots ? 2 : left <= s.elroy1Dots ? 1 : 0;
+  }
+
+  /** The death show is over: back to the start, or game over. */
+  afterDeath() {
+    this.resetActors();
+    this.house.restart();
+    this.house.onDeath();
+    this.deathFrame = -1;
+    this.ghostsShown = true;
+    if (this.lives > 0) {
+      this.lives--;
+      this.ready();
+    } else {
+      this.events.push({ type: 'gameOver' });
+      this.setState('gameOver');
+    }
   }
 
   /** One frame; returns this frame's events. */
   tick(input) {
     this.events = [];
+    if (this.state === 'over') return this.events;
     this.frame++;
     if (this.state === 'start') {
       if (this.stateTimer === 0) this.events.push({ type: 'start' });
-      if (++this.stateTimer >= START_FRAMES) this.setState('play');
+      if (++this.stateTimer === 120) this.showActors();
+      if (this.stateTimer >= START_FRAMES) this.setState('play');
     } else if (this.state === 'play') {
       this.stateTimer++;
       playFrame(this, input);
@@ -107,6 +158,10 @@ export class Game {
       if (++this.stateTimer >= READY_FRAMES) this.setState('play');
     } else if (this.state === 'eaten') {
       eatenFrame(this);
+    } else if (this.state === 'dying') {
+      if (dyingFrame(this)) this.afterDeath();
+    } else if (this.state === 'gameOver') {
+      if (++this.stateTimer >= OVER_FRAMES) this.setState('over');
     } else if (this.state === 'levelDone') {
       if (++this.stateTimer >= DONE_FRAMES) this.nextLevel();
     }
