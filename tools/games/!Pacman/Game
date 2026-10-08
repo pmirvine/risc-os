@@ -1,0 +1,87 @@
+// !Pacman - Game: the state of a game and its clock.
+//
+// Composes the maze, Pac-Man and the ghosts, and runs the states:
+// 'start' (the opening jingle, 252 frames) then 'play' (Play.playFrame
+// does a frame). tick(input) runs one 60 Hz frame and returns the
+// events of that frame ({type: 'dot'} and so on); snapshot() gives
+// the whole state as plain data. debug has helpers for tests.
+
+import { Rng } from 'gamelib/Maths';
+import * as MazeData from './MazeData';
+import * as Theme from './Theme';
+import { Maze } from './Maze';
+import { Player } from './Player';
+import { Ghost } from './Ghost';
+import { playFrame } from './Play';
+
+export const START_FRAMES = 252;
+
+export class Game {
+  constructor({ seed = 1, level = 1, lives = 3, bonus = 10000,
+    demo = false, data } = {}) {
+    this.data = data || { maze: MazeData, theme: Theme };
+    const { ROWS, SPECIAL } = this.data.maze;
+    this.rng = new Rng(seed);
+    this.level = level;
+    this.lives = demo ? 1 : lives;
+    this.bonus = demo ? 0 : bonus;
+    this.demo = demo;
+    this.score = 0;
+    this.frame = 0;
+    this.state = 'start';
+    this.stateTimer = 0;
+    this.events = [];
+    this.popups = [];
+    this.maze = new Maze(ROWS, SPECIAL);
+    this.player = new Player(SPECIAL.starts.pac);
+    this.ghosts = [new Ghost(0, SPECIAL.starts.ghosts[0])];
+    const g = this;
+    this.debug = {
+      skipIntro() { g.setState('play'); },
+      place(id, px, py, dir) { g.ghosts[id].place(px, py, dir); },
+    };
+  }
+
+  setState(state) {
+    this.state = state;
+    this.stateTimer = 0;
+  }
+
+  /** Everyone back to the start, as after a death. */
+  resetActors() {
+    this.player.reset();
+    for (const g of this.ghosts) g.reset();
+  }
+
+  /** One frame; returns this frame's events. */
+  tick(input) {
+    this.events = [];
+    this.frame++;
+    if (this.state === 'start') {
+      if (this.stateTimer === 0) this.events.push({ type: 'start' });
+      if (++this.stateTimer >= START_FRAMES) this.setState('play');
+    } else if (this.state === 'play') {
+      this.stateTimer++;
+      playFrame(this, input);
+    }
+    return this.events;
+  }
+
+  /** The state as plain JSON, for golden tests. */
+  snapshot() {
+    const actor = (a) => ({ px: a.px, py: a.py, dir: a.dir, acc: a.acc,
+      tx: a.tx, ty: a.ty });
+    return JSON.parse(JSON.stringify({
+      state: this.state, stateTimer: this.stateTimer,
+      frame: this.frame, level: this.level, score: this.score,
+      lives: this.lives, rng: this.rng.s,
+      dotsLeft: this.maze.dotsLeft, dotsEaten: this.maze.dotsEaten,
+      player: { ...actor(this.player), pause: this.player.pause,
+        anim: this.player.anim, stopped: this.player.stopped },
+      ghosts: this.ghosts.map((g) => ({ id: g.id, ...actor(g),
+        state: g.state, turn: g.turn, ahead: g.ahead,
+        reverse: g.reverse, blue: g.blue })),
+      popups: this.popups,
+    }));
+  }
+}
