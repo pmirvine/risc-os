@@ -4,7 +4,9 @@
 // checked; each ghost moves; a collision is checked again. A collision
 // is Pac-Man and a ghost in the same tile. Each ghost steers for its
 // scatter corner or its chase target (Modes says which), and every
-// mode change turns the ghosts in the maze round. Speeds are single
+// mode change turns the ghosts in the maze round. The House (dots
+// eaten, then an idle timer) says when a ghost leaves its pen; a
+// death puts everyone back and starts 'ready'. Speeds are single
 // values for now (the level table comes later). An energizer starts
 // a fright (Fright): the ghosts outside turn round, every ghost turns
 // blue, and the scatter and chase clock waits until it ends. Touching
@@ -27,13 +29,21 @@ function collide(game) {
   for (const g of game.ghosts) {
     if (g.state === 'eyes' || g.tx !== p.tx || g.ty !== p.ty) continue;
     if (g.blue) eat(game, g);
-    else {
-      game.events.push({ type: 'death' });
-      game.resetActors();
-    }
+    else kill(game);
     return true;
   }
   return false;
+}
+
+/** Pac-Man is caught: everyone goes back and 'ready' follows. The
+ *  ghosts restart in the house, and the House's global counter (7,
+ *  17, 32 dots) takes over from the personal ones. */
+export function kill(game) {
+  game.events.push({ type: 'death' });
+  game.resetActors();
+  game.house.restart();
+  game.house.onDeath();
+  game.setState('ready');
 }
 
 /** Pac-Man eats a ghost: points, a popup, and the freeze. */
@@ -55,13 +65,22 @@ function eat(game, g) {
 /** One frame of the freeze: only the eyes move. */
 export function eatenFrame(game) {
   for (const g of game.ghosts) {
-    if (g.state === 'eyes' && g.id !== game.eatenId) moveGhost(game, g);
+    if (g.state === 'eyes' && g.id !== game.eatenId) step(game, g);
   }
   for (const p of game.popups) p.frames--;
   if (++game.stateTimer >= FREEZE) {
     game.popups = [];
     game.eatenId = -1;
     game.setState('play');
+  }
+}
+
+/** Move a ghost; one that reaches the exit (112, 92) has left. */
+function step(game, g) {
+  const was = g.state;
+  moveGhost(game, g);
+  if (was === 'leaving' && g.state === 'active') {
+    game.house.onLeft(g.id);
   }
 }
 
@@ -79,18 +98,19 @@ export function playFrame(game, input) {
   const r = player.tick(maze, want, PAC_PCT);
   if (r.ate) {
     game.score += r.ate;
+    game.house.onDot();
     game.events.push({ type: r.ate === 50 ? 'energizer' : 'dot' });
     if (r.ate === 50) startFright(game);
   }
   if (collide(game)) return;
-  tempRelease(game);
+  release(game);
   if (game.modes.tick(game.fright.on)) {
     game.events.push({ type: 'modeChange', mode: game.modes.mode });
     for (const g of game.ghosts) {
       if (g.state === 'active') g.reverse = true;
     }
   }
-  for (const g of game.ghosts) moveGhost(game, g);
+  for (const g of game.ghosts) step(game, g);
   for (const g of game.ghosts) {
     g.flash = g.blue && game.fright.flashWhite();
   }
@@ -120,12 +140,11 @@ function targetOf(game, g) {
   return chaseTarget(g.id, game.player, game.ghosts[0], corner, g);
 }
 
-// TEMPORARY (Task 14 replaces this with the House's dot counters):
-// Pinky leaves at once, Inky after 240 frames of play, Clyde after
-// 480. To remove: delete this function, its call above, and
-// releaseClock in Game.
-function tempRelease(game) {
-  const t = game.releaseClock++;
-  const who = t === 0 ? 1 : t === 240 ? 2 : t === 480 ? 3 : 0;
-  if (who) game.ghosts[who].leave();
+/** The House says who is due (the same ghost every frame until it
+ *  is dealt with): start its way out once, and tell the House. */
+function release(game) {
+  const id = game.house.tick();
+  if (id === null) return;
+  game.ghosts[id].leave();
+  game.house.onRelease(id);
 }

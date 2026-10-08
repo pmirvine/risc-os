@@ -85,21 +85,21 @@ test('a leaving ghost goes to x 112, up to y 92, then left', () => {
   }
 });
 
-test('the temporary release: Pinky 0, Inky 240, Clyde 480', () => {
-  const g = playing();
-  const left = [-1, -1, -1, -1];
-  g.player.pause = 1e9;
-  g.player.tx = g.player.ty = -9;     // out of the way
-  for (let t = 0; t < 600; t++) {
-    g.tick({ want: -1 });
-    g.ghosts.forEach((x, i) => {
-      if (left[i] < 0 && x.state !== 'house') left[i] = t;
-    });
+test('a ghost put back in the house bobs within y 112-120', () => {
+  const m = maze();
+  for (const id of [1, 2, 3]) {
+    const g = new Ghost(id, SPECIAL.starts.ghosts[id]);
+    g.leave();
+    for (let i = 0; i < 300; i++) g.tick(ctx(m));
+    assert.equal(g.state, 'active');
+    g.reset();
+    assert.equal(g.state, 'house');
+    for (let i = 0; i < 500; i++) {
+      g.tick(ctx(m));
+      assert.ok(g.py >= 112 && g.py <= 120, 'y ' + g.py);
+      assert.equal(g.px, SPECIAL.starts.ghosts[id].px);
+    }
   }
-  assert.equal(left[0], 0);
-  assert.equal(left[1], 0);
-  assert.equal(left[2], 240);
-  assert.equal(left[3], 480);
 });
 
 test('seeded game: ghosts reverse only after a mode change', () => {

@@ -5,9 +5,17 @@
 // life one global counter takes over (Pinky at 7, Inky at 17, Clyde
 // at 32); if it reaches 32 with Clyde still inside it switches off
 // and the personal counts, which were kept, carry on. If no dot is
-// eaten for a while the first waiting ghost leaves anyway. tick()
-// names the ghost to release (or null); the caller calls onLeft(id)
-// once that ghost has left, and onDot() for each dot eaten.
+// eaten for a while the first waiting ghost leaves anyway.
+//
+// How the caller uses it: onDot() for each dot or energizer eaten;
+// tick() once per play frame. tick() names the first ghost that has
+// not been released and is due; it names the SAME ghost on every
+// frame until that ghost is dealt with, so the caller must act only
+// once: start its way out, then call onRelease(id). A released
+// ghost is skipped (it neither counts dots nor blocks the next one,
+// whose own count starts at once) but stays on the list until the
+// caller calls onLeft(id), exactly once, when it reaches the exit
+// (112, 92). After a lost life: restart(), then onDeath().
 
 import { houseLimits, idleLimit } from './Levels';
 import { PINKY, INKY, CLYDE } from './Dirs';
@@ -23,30 +31,50 @@ export class House {
     this.counts = [0, 0, 0, 0];
     this.globalCount = 0;
     this.idle = 0;
+    this.out = [];             // released, not yet at the exit
   }
+
+  /** The first waiting ghost not already on its way out. */
+  first() { return this.waiting.find((i) => !this.out.includes(i)); }
 
   /** Pac-Man ate a dot. */
   onDot() {
     this.idle = 0;
     if (this.global) this.globalCount++;
-    else if (this.waiting.length) this.counts[this.waiting[0]]++;
+    else {
+      const id = this.first();
+      if (id !== undefined) this.counts[id]++;
+    }
   }
 
   /** One frame; the id of the ghost to let out now, or null. */
   tick() {
-    const id = this.waiting[0];
+    const id = this.first();
     if (id === undefined) return null;
+    this.idle++;
     if (this.global && id === CLYDE &&
         this.globalCount >= GLOBAL_LIMIT[CLYDE]) {
       this.global = false;
     }
     if (this.global ? this.globalCount >= GLOBAL_LIMIT[id]
                     : this.counts[id] >= this.limits[id]) return id;
-    if (++this.idle >= this.idleMax) {
+    if (this.idle >= this.idleMax) {
       this.idle = 0;
       return id;
     }
     return null;
+  }
+
+  /** The caller has started ghost id on its way out. */
+  onRelease(id) {
+    if (!this.out.includes(id)) this.out.push(id);
+  }
+
+  /** A life was lost: everyone is back inside (counts are kept). */
+  restart() {
+    this.waiting = [PINKY, INKY, CLYDE];
+    this.out = [];
+    this.idle = 0;
   }
 
   /** A life was lost: the global counter takes over. */
@@ -59,5 +87,7 @@ export class House {
   onLeft(id) {
     const i = this.waiting.indexOf(id);
     if (i >= 0) this.waiting.splice(i, 1);
+    const j = this.out.indexOf(id);
+    if (j >= 0) this.out.splice(j, 1);
   }
 }

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Game, START_FRAMES } from '../../tools/games/!Pacman/Game';
 import { SPECIAL } from '../../tools/games/!Pacman/MazeData';
-import { LEFT, RIGHT, UP } from '../../tools/games/!Pacman/Dirs';
+import { LEFT, RIGHT, UP, DOWN, DX, DY } from '../../tools/games/!Pacman/Dirs';
 import { playing, run } from './script.mjs';
 
 const dist = (g) => Math.abs(g.ghosts[0].tx - g.player.tx)
@@ -301,4 +301,170 @@ test('eyes steer for (13, 11) and ignore red zones', () => {
   b.tick = (c) => { seen.push([c.target, c.redZones]); return orig(c); };
   g.tick({ want: -1 });
   assert.deepEqual(seen[0], [[13, 11], false]);
+});
+
+// ---- the ghost house (Task 14) ----
+
+const states = (g) => g.ghosts.map((x) => x.state);
+
+/** The way (0..3) towards the nearest dot from Pac-Man's tile. */
+function toNearestDot(g) {
+  const { player: p, maze: m } = g;
+  const seen = new Set([p.tx + ',' + p.ty]);
+  let q = [[p.tx, p.ty, -1]];
+  while (q.length) {
+    const next = [];
+    for (const [x, y, first] of q) {
+      for (const d of [UP, LEFT, DOWN, RIGHT]) {
+        const nx = x + DX[d], ny = y + DY[d], k = nx + ',' + ny;
+        if (seen.has(k) || !m.walkable(nx, ny, 'pac')) continue;
+        seen.add(k);
+        const f = first < 0 ? d : first;
+        if (m.dotAt(nx, ny)) return f;
+        next.push([nx, ny, f]);
+      }
+    }
+    q = next;
+  }
+  return -1;
+}
+
+/** Eat n more dots (or energizers), steering to the nearest one, and
+ *  keeping any active ghost out of Pac-Man's tile so that nothing
+ *  ends the run. Returns the frames used. */
+function untilDots(g, n) {
+  let eaten = 0, t = 0;
+  while (eaten < n) {
+    for (const x of g.ghosts) {
+      if (x.state === 'active' && Math.abs(x.tx - g.player.tx) +
+        Math.abs(x.ty - g.player.ty) <= 2) {
+        const far = g.player.tx < 14 ? 212 : 12;   // a far corner
+        g.debug.place(x.id, far, 20, RIGHT);
+      }
+    }
+    const ev = g.tick({ want: toNearestDot(g) });
+    t++;
+    assert.ok(!ev.some((e) => e.type === 'death'), 'no death ' +
+      JSON.stringify([g.player.tx, g.player.ty, g.state,
+        g.ghosts.map((x) => [x.state, x.tx, x.ty])]));
+    eaten += ev.filter((e) => e.type === 'dot' ||
+      e.type === 'energizer').length;
+    assert.ok(t < 4000, 'too long');
+  }
+  return t;
+}
+
+test('Pinky leaves at once at level 1, Inky and Clyde wait', () => {
+  const g = playing();
+  g.tick({ want: -1 });
+  assert.deepEqual(states(g), ['active', 'leaving', 'house', 'house']);
+});
+
+test('Inky leaves on the 30th dot, Clyde on his own 60th after', () => {
+  const g = playing();
+  untilDots(g, 29);
+  assert.equal(g.ghosts[2].state, 'house');
+  untilDots(g, 1);
+  assert.equal(g.ghosts[2].state, 'leaving', '30th dot');
+  assert.equal(g.house.counts[2], 30);
+  assert.equal(g.ghosts[3].state, 'house');
+  untilDots(g, 59);       // Clyde counts from the dot after Inky's
+  assert.equal(g.ghosts[3].state, 'house');
+  untilDots(g, 1);
+  assert.equal(g.ghosts[3].state, 'leaving', 'his 60th dot');
+  assert.equal(g.house.counts[3], 60);
+});
+
+test('there is no release timer: nothing at frame 240 but the idle', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  for (let t = 1; t <= 239; t++) {
+    g.tick({ want: -1 });
+    assert.equal(g.ghosts[2].state, 'house', 'frame ' + t);
+  }
+  g.tick({ want: -1 });
+  assert.equal(g.ghosts[2].state, 'leaving', 'the idle timer, frame 240');
+  assert.equal(g.ghosts[3].state, 'house');
+  for (let t = 241; t <= 479; t++) g.tick({ want: -1 });
+  assert.equal(g.ghosts[3].state, 'house');
+  g.tick({ want: -1 });
+  assert.equal(g.ghosts[3].state, 'leaving', 'idle again at 480');
+});
+
+test('a dot resets the idle timer', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  run(g, [[-1, 200]]);
+  g.house.onDot();
+  run(g, [[-1, 100]]);
+  assert.equal(g.ghosts[2].state, 'house');
+});
+
+test('onLeft happens once, when the ghost reaches the exit', () => {
+  const g = playing();
+  g.player.pause = 1e9;
+  g.player.tx = g.player.ty = -9;
+  const calls = [], orig = g.house.onLeft.bind(g.house);
+  g.house.onLeft = (id) => { calls.push([id, g.frame]); orig(id); };
+  let exit = -1;
+  for (let t = 0; t < 120; t++) {
+    g.tick({ want: -1 });
+    if (exit < 0 && g.ghosts[1].state === 'active') exit = g.frame;
+  }
+  assert.ok(exit > 0);
+  assert.deepEqual(calls, [[1, exit]]);
+  assert.deepEqual(g.house.waiting, [2, 3]);
+});
+
+test('a lost life: ready, ghosts back in the house, Pinky at 7 dots', () => {
+  const g = playing();
+  untilDots(g, 35);                  // Pinky, Inky out
+  assert.equal(g.ghosts[2].state !== 'house', true);
+  g.debug.kill();
+  assert.equal(g.state, 'ready');
+  assert.deepEqual(states(g), ['active', 'house', 'house', 'house']);
+  assert.deepEqual(g.house.waiting, [1, 2, 3]);
+  assert.equal(g.house.global, true);
+  for (let i = 0; i < 119; i++) g.tick({ want: -1 });
+  assert.equal(g.state, 'ready');
+  g.tick({ want: -1 });
+  assert.equal(g.state, 'play');
+  untilDots(g, 6);
+  assert.equal(g.ghosts[1].state, 'house');
+  untilDots(g, 1);
+  assert.equal(g.ghosts[1].state, 'leaving', '7th dot');
+  assert.equal(g.ghosts[2].state, 'house');
+  untilDots(g, 10);
+  assert.equal(g.ghosts[2].state, 'leaving', '17th dot');
+});
+
+test('a ghost touching Pac-Man is a death into ready', () => {
+  const g = playing();
+  run(g, [[LEFT, 20]]);
+  g.debug.place(0, g.player.px - 4, g.player.py, RIGHT);
+  const ev = run(g, [[LEFT, 1]]);
+  assert.ok(ev.some((e) => e.type === 'death'));
+  assert.equal(g.state, 'ready');
+  assert.equal(g.house.global, true);
+});
+
+test('revived eyes leave the house without disturbing the House', () => {
+  const g = still();
+  g.house.onRelease(1);
+  g.house.onLeft(1);              // Pinky is out, as in a real game
+  g.player.tx = g.player.ty = -9;
+  g.debug.place(1, 120, 92, LEFT);
+  g.ghosts[1].eat();
+  const waiting = g.house.waiting.slice();
+  let n = 0;
+  while (g.ghosts[1].state !== 'active' && n++ < 600) {
+    g.tick({ want: -1 });
+    assert.ok(g.ghosts[1].state !== 'house');
+  }
+  assert.equal(g.ghosts[1].state, 'active');
+  assert.equal(g.ghosts[1].blue, false);
+  assert.deepEqual(g.house.waiting, waiting);
+  assert.deepEqual(g.house.out, []);
 });

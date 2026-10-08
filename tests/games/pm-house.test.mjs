@@ -107,3 +107,55 @@ test('idle timer', () => {
     assert.equal(h.tick(), CLYDE);
   }
 });
+
+test('tick repeats the due ghost until it is released or has left', () => {
+  const h = new House(1);
+  assert.equal(h.tick(), PINKY);
+  assert.equal(h.tick(), PINKY);
+  h.onRelease(PINKY);
+  assert.equal(h.tick(), null);
+});
+
+test('a ghost on its way out does not count dots or block the next', () => {
+  const h = new House(1);
+  h.onRelease(PINKY);
+  dots(h, 30);
+  assert.equal(h.counts[PINKY], 0, 'Pinky does not absorb dots');
+  assert.equal(h.counts[INKY], 30, 'Inky counts from the release');
+  assert.equal(h.tick(), INKY);
+  h.onLeft(PINKY);
+  assert.deepEqual(h.waiting, [INKY, CLYDE]);
+  assert.equal(h.tick(), INKY);
+});
+
+test('onRelease twice and onLeft later are harmless', () => {
+  const h = new House(1);
+  h.onRelease(PINKY);
+  h.onRelease(PINKY);
+  h.onLeft(PINKY);
+  h.onLeft(PINKY);
+  assert.deepEqual(h.waiting, [INKY, CLYDE]);
+  assert.equal(h.tick(), null);
+});
+
+test('restart puts everyone back, keeps personal counts', () => {
+  const h = new House(1);
+  h.onRelease(PINKY);
+  h.onLeft(PINKY);
+  dots(h, 12);
+  h.restart();
+  h.onDeath();
+  assert.deepEqual(h.waiting, [PINKY, INKY, CLYDE]);
+  assert.equal(h.counts[INKY], 12);
+  dots(h, 6);
+  assert.equal(h.tick(), null);
+  h.onDot();
+  assert.equal(h.tick(), PINKY);
+});
+
+test('the idle timer counts from the first tick: 240 frames', () => {
+  const h = new House(1);
+  h.onRelease(PINKY);
+  for (let i = 0; i < 239; i++) assert.equal(h.tick(), null);
+  assert.equal(h.tick(), INKY);
+});
