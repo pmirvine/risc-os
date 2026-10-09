@@ -59,3 +59,28 @@ test('write returns true, or false without throwing', async () => {
   a.vfs.fail = true;
   assert.equal(await a.store.write('Scores', {}), false);
 });
+
+test('dir survives a throwing system variable lookup', () => {
+  const choices = fakeChoices(), vfs = fakeVfs();
+  const store = choicesStore({ choices, vfs,
+    sysvars: { get: () => { throw new Error('sysvar'); } } }, 'Pacman');
+  assert.equal(store.dir(), 'ADFS::HardDisc4.$.!Boot.Choices.Pacman');
+});
+
+test('write survives a throwing system variable lookup', async () => {
+  const choices = fakeChoices(), vfs = fakeVfs();
+  const store = choicesStore({ choices, vfs,
+    sysvars: { get: () => { throw new Error('sysvar'); } } }, 'Pacman');
+  assert.equal(await store.write('Scores', {}), true);
+});
+
+test('defaults come back as an independent deep copy', async () => {
+  const defaults = { a: 1, nest: { b: [1, 2] } };
+  const a = make();
+  const r = await a.store.read('Settings', defaults);
+  assert.deepEqual(r, defaults);
+  assert.notEqual(r.nest, defaults.nest);
+  r.nest.b.push(3);
+  r.nest.c = 1;
+  assert.deepEqual(defaults, { a: 1, nest: { b: [1, 2] } });
+});

@@ -49,3 +49,21 @@ test('today formats a date', () => {
   assert.equal(today(new Date(2026, 9, 8)), '2026-10-08');
   assert.match(today(), /^\d{4}-\d\d-\d\d$/);
 });
+
+test('qualifies never throws and refuses a non-finite score', () => {
+  assert.equal(qualifies([], 5, 0), false);
+  assert.equal(qualifies([], NaN, 10), false);
+  assert.equal(qualifies([], Infinity, 10), false);
+  assert.equal(qualifies([{ score: 1 }], 5, 0), false);
+  assert.equal(qualifies([], 5, 10), true);
+});
+
+test('dates are printable ASCII only, else a safe default', () => {
+  const t = cleanTable([{ score: 3, date: '2026-10-\x0708' },
+    { score: 2, date: '20€6-10-08' },
+    { score: 1, date: '\u{1F600}' }]);
+  assert.equal(t[0].date, '2026-10-08');
+  assert.equal(t[1].date, '2026-10-08'.replace('2026', '206'));
+  assert.equal(t[2].date, '');
+  assert.ok(t.every((e) => !/[^\x20-\x7e]/.test(e.date)));
+});
