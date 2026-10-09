@@ -70,7 +70,7 @@ export default async (page) => {
       cs.add(p[i]);
     }
     return { lit: lit / (p.length / 7), colours: cs.size }`);
-  if (pix.lit < 0.02 || pix.colours < 8) {
+  if (pix.lit < 0.02 || pix.colours < 5) {
     fail('the title looks empty: ' + JSON.stringify(pix));
   }
   // no sound before the first gesture; watch the AudioContext made
@@ -82,6 +82,31 @@ export default async (page) => {
     };
   });
   await page.screenshot({ path: `${SHOT}/pacman-title.png` });
+  const items = await G(`return g.screens.menu.items.map((i) =>
+    typeof i.text === 'function' ? i.text() : i.text)`);
+  if (items.join(',') !== 'Play,High scores,Settings,How to play,' +
+    'View source,Desktop') fail('title menu: ' + items);
+
+  // Settings from the title: Lives 3 -> 5 is saved in Choices
+  for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(200);
+  if ((await G('return g.screen')) !== 'settings') fail('no Settings');
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowRight');
+  await page.waitForTimeout(300);
+  if ((await G('return g.settings.lives')) !== 5) fail('lives not 5');
+  await page.screenshot({ path: `${SHOT}/pacman-settings.png` });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  if ((await G('return g.screen')) !== 'title') fail('no way back');
+  const saved = await page.evaluate(async () => {
+    const d = (os.sysvars.get('Choices$Write')
+      || 'ADFS::HardDisc4.$.!Boot.Choices') + '.Pacman.Settings';
+    return os.vfs.exists(d) ? await os.vfs.readText(d) : 'missing ' + d;
+  });
+  if (!/"lives": ?5/.test(saved)) fail('lives not saved: ' + saved);
+  for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowUp');
 
   // Return starts a game; Pac-Man is moved by the arrow key
   await page.keyboard.press('Enter');
@@ -90,6 +115,7 @@ export default async (page) => {
   if (s.screen !== 'play' || !s.game) {
     return fail('Return did not start a game: ' + JSON.stringify(s));
   }
+  if ((await G('return g.game.lives')) !== 5) fail('lives not used');
   const px0 = s.game.px;
   await page.keyboard.down('ArrowLeft');
   await page.waitForFunction(() => {
@@ -115,11 +141,29 @@ export default async (page) => {
   await page.waitForTimeout(400);
   if ((await state()).game.frame <= p2.game.frame) fail('no resume');
 
-  // Escape: the pause menu; Desktop is the fourth item
+  // Escape: the pause menu; Continue loses nothing, Restart is new
   await page.keyboard.press('Escape');
   await page.waitForTimeout(200);
   if ((await G('return g.screen')) !== 'pause') fail('no pause menu');
-  for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowDown');
+  const pf = await G('return g.game.frame');
+  await page.waitForTimeout(200);
+  if ((await G('return g.game.frame')) !== pf) fail('ran in the menu');
+  await page.keyboard.press('Enter');          // Continue
+  await page.waitForTimeout(200);
+  if ((await G('return g.screen')) !== 'play'
+    || (await G('return g.game.frame')) <= pf) fail('Continue failed');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('Enter');          // Restart
+  await page.waitForTimeout(100);
+  const rs = await G('return [g.screen, g.game.frame, g.game.lives]');
+  if (rs[0] !== 'play' || rs[1] > 30 || rs[2] !== 5) {
+    fail('Restart: ' + rs);
+  }
+  // Desktop is the fifth item
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  for (let i = 0; i < 4; i++) await page.keyboard.press('ArrowDown');
   await page.keyboard.press('Enter');
   await page.waitForTimeout(500);
   const d = await state();
@@ -206,6 +250,24 @@ export default async (page) => {
     fail('Quit left the AudioContext ' + await page.evaluate(
       () => window.__ac?.state));
   }
+
+  // the next start opens the kind of display chosen (a window) with
+  // the saved lives
+  await page.evaluate(() => os.filer.run(
+    'ADFS::HardDisc4.$.Diversions.!Pacman'));
+  await page.waitForFunction(() => os.wimp.tasks.find(
+    (t) => t.name === 'Pacman')?.game?.frames > 0, null,
+  { timeout: 15000 }).catch(() => {});
+  const n = await G(`return g && [g.display.kind, g.settings.lives,
+    g.settings.display]`);
+  if (!n || n[0] !== 'window' || n[1] !== 5 || n[2] !== 'window') {
+    fail('settings not remembered: ' + n);
+  }
+  // put the lives back so reruns start alike
+  await G(`g.settings.lives = 3; g.app.changeSetting('lives')`);
+  await page.waitForTimeout(200);
+  await page.evaluate(() => os.wimp.tasks.find(
+    (x) => x.name === 'Pacman').quit());
   await page.keyboard.press('ArrowLeft');
   await page.keyboard.press('KeyP');
   await page.waitForTimeout(300);

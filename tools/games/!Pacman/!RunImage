@@ -15,8 +15,10 @@
 //   Game                     the state of a game and its clock
 //   MazeDraw, Sprites,       drawing: the walls, Pac-Man and ghosts,
 //   FruitArt, Hud, Render    the fruit, the scores, a whole picture
-//   Menu, Title, Screens     the title, the menus, and which screen
-//                            is showing (no desktop in them)
+//   Menu, Title, Pages,      the title, the menus, the text pages,
+//   Settings, Screens        the options, and which screen is
+//                            showing (no desktop in them)
+//   Input                    focus changes and the gamepad
 //   Sfx, SoundMap, Sound     the sounds, which events make them, and
 //                            playing them (no desktop in them)
 //
@@ -33,45 +35,46 @@ import { os, wimp, choices, vfs } from 'riscos';
 import { Display } from 'gamelib/Display';
 import { Loop } from 'gamelib/Loop';
 import { Keys } from 'gamelib/Keys';
-import { pollPad } from 'gamelib/Pad';
 import { Surface } from 'gamelib/Surface';
 import { choicesStore } from 'gamelib/Choices';
-import { sanitise } from 'gamelib/Options';
 import { TITLE } from './Theme';
 import { Screens, ACTIONS } from './Screens';
-import { Sound, tidyVolume } from './Sound';
+import { Sound } from './Sound';
+import { loadSettings, saveSettings } from './Settings';
+import { Quiet, syncPad } from './Input';
 
 const JSEDIT = 'ADFS::HardDisc4.$.Apps.!JsEdit';
-
-// The settings so far.
-const OPTIONS = [
-  { key: 'display', values: ['full', 'window'] },
-  { key: 'browserFull', values: [false, true] },
-  { key: 'sound', values: [true, false] },
-  { key: 'volume', values: [0.2, 0.4, 0.6, 0.8, 1] },
-];
-const DEFAULTS = { display: 'full', browserFull: false, sound: true,
-  volume: 0.8 };
-const QUIET_MS = 300;       // ignore focus changes our own close causes
 
 export default async function start(task, ctx) {
   const store = choicesStore({ choices, vfs, sysvars: os.sysvars },
     'Pacman');
-  const settings = sanitise(OPTIONS, DEFAULTS,
-    tidyVolume(await store.read('Settings', DEFAULTS)));
-  const save = () => store.write('Settings', settings);
+  const settings = await loadSettings(store);
+  const save = () => saveSettings(store, settings);
   const keys = new Keys(ACTIONS);
   const sound = new Sound(settings, os.config);
   const surface = new Surface(224, 288);
   const off = [];                    // removes every listener we add
   let screens = null;
   let frames = 0, padHeld = new Set();
-  let quietUntil = 0;       // closing the display is not a blur
+  const quiet = new Quiet();  // closing the display is not a blur
 
   const app = {
     task, keys, settings, high: 0, surface,
     seed: () => (Date.now() % 0x7fffffff) || 1,
     toDesktop: () => toDesktop(),
+    toggleBrowserFull() {
+      settings.browserFull = !document.fullscreenElement;
+      app.changeSetting('browserFull');
+    },
+    /** A setting has changed (Settings, F, icon menu): act, save. */
+    changeSetting(key) {
+      if (key === 'display') openDisplay(settings.display);
+      else if (key === 'browserFull' && display.kind) {
+        quiet.settle();
+        display.browserFull(settings.browserFull);
+      } else if (key === 'sound' && !settings.sound) sound.silence();
+      save();
+    },
     viewSource() {
       toDesktop();
       os.cli.run(`Run ${JSEDIT} ${ctx.dir}`)
@@ -87,11 +90,8 @@ export default async function start(task, ctx) {
   // The display's own close (or switch) makes the window lose the
   // caret, and leaving browser full screen follows a little later:
   // neither is the player going away, so neither pauses the game.
-  const settle = () => { quietUntil = performance.now() + QUIET_MS; };
-  const quiet = () => performance.now() < quietUntil;
-
   function onBlur() {
-    if (quiet()) return;
+    if (quiet.active) return;
     keys.release();
     screens?.blur();
   }
@@ -103,7 +103,7 @@ export default async function start(task, ctx) {
   });
 
   function openDisplay(kind) {
-    settle();
+    quiet.settle();
     display.open(kind);
     if (settings.browserFull) display.browserFull(true);
     screens ??= new Screens(app);
@@ -113,7 +113,7 @@ export default async function start(task, ctx) {
 
   /** Back to the desktop: the game stops, the icon stays. */
   function toDesktop() {
-    settle();
+    quiet.settle();
     loop.stop();
     sound.silence();
     screens = null;
@@ -121,33 +121,13 @@ export default async function start(task, ctx) {
     display.close();
   }
 
-  function browserFull(on) {
-    settings.browserFull = on;
-    display.browserFull(on);
-  }
-
   // -------------------------------------------------------- main loop
-  function readPad() {
-    const r = pollPad(() => navigator.getGamepads?.(), padHeld);
-    for (const n of r.presses) keys.keyDown({ code: n });
-    for (const n of padHeld) {
-      if (!r.held.has(n)) keys.keyUp({ code: n });
-    }
-    padHeld = r.held;
-  }
-
   const loop = new Loop({
     hz: 60,
     frame() {
       display.layout();
-      readPad();
-      const mine = [];
-      for (const k of keys.takePresses()) {
-        if (!k.repeat && keys.namesFor(k.code).includes('full')) {
-          browserFull(!document.fullscreenElement);
-        } else mine.push(k);
-      }
-      screens.frame(mine);
+      padHeld = syncPad(keys, padHeld);
+      screens.frame(keys.takePresses());
       keys.clearEdges();
     },
     tick() { sound.update(screens, screens.tick()); },
@@ -181,7 +161,9 @@ export default async function start(task, ctx) {
     if (document.hidden) onBlur();
   });
   listen(document, 'fullscreenchange', () => {
-    if (!quiet()) settings.browserFull = !!document.fullscreenElement;
+    if (!quiet.active) {
+      settings.browserFull = !!document.fullscreenElement;
+    }
   });
 
   // ------------------------------------------------------ the icon bar
@@ -191,8 +173,7 @@ export default async function start(task, ctx) {
   });
   const show = (kind) => {
     settings.display = kind;
-    save();
-    openDisplay(kind);
+    app.changeSetting('display');
   };
   const iconMenu = () => new WimpMenu(TITLE, [
     { text: 'Info', submenu: info },
@@ -202,9 +183,12 @@ export default async function start(task, ctx) {
       action: () => show('window') },
     { text: 'Browser full screen',
       ticked: () => !!document.fullscreenElement, dotted: true,
-      action: () => browserFull(!document.fullscreenElement) },
+      action: () => app.toggleBrowserFull() },
     { text: 'Sound', ticked: () => settings.sound !== false,
-      action: () => { sound.toggle(); save(); } },
+      action: () => {
+        settings.sound = !settings.sound;
+        app.changeSetting('sound');
+      } },
     { text: 'View source', action: () => app.viewSource() },
     { text: 'Open directory', dotted: true,
       action: () => app.openDirectory() },
@@ -235,6 +219,7 @@ export default async function start(task, ctx) {
   task.game = {
     app, settings, keys, surface, display, audio: sound.audio, sound,
     get game() { return screens?.game ?? null; },
+    get screens() { return screens; },
     get screen() { return screens?.name ?? null; },
     get frames() { return frames; },
     open: (kind = settings.display) => openDisplay(kind),

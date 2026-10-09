@@ -8,15 +8,22 @@
 //   seed()      a seed number for a new game
 //   toDesktop() leave the game and show the desktop
 //   viewSource() open the program's files in !JsEdit
-// Screens are 'title', 'play' and 'pause' (the Escape menu over the
-// game). Each display frame the shell calls frame(presses), then
+//   changeSetting(key)   a setting was changed: apply and save it
+//   toggleBrowserFull()   browser full screen on or off (the F key)
+// Screens are 'title', 'play', 'pause' (the Escape menu over the
+// game), 'settings', 'scores' and 'help' (the last two are pages of
+// text). Each display frame the shell calls frame(presses), then
 // tick() for every 60 Hz tick due, then draw(surface). P pauses a
 // game by itself (paused); losing the keyboard focus does the same.
+// When a game ends, gameFinished(game) says what comes next.
 
 import { Game } from './Game';
 import { drawGame } from './Render';
 import { Menu } from './Menu';
 import { Title } from './Title';
+import { OPTIONS } from './Settings';
+import { HELP, NO_SCORES, drawPage } from './Pages';
+import { stepOption, optionName } from 'gamelib/Options';
 import { rgb } from 'gamelib/Surface';
 import { drawText } from 'gamelib/Font';
 import { COLOURS } from './Theme';
@@ -47,11 +54,14 @@ export class Screens {
     this.game = null;
     this.want = -1;
     this.paused = false;
+    this.typing = false;       // a name is being typed: F is a letter
     this.title();
   }
 
-  get menu() { return this.name === 'title' ? this.titleScreen.menu
-    : this.name === 'pause' ? this.pauseMenu : null; }
+  get menu() {
+    return { title: this.titleScreen.menu, pause: this.pauseMenu,
+      settings: this.settingsMenu }[this.name] ?? null;
+  }
 
   title() {
     const a = this.app;
@@ -59,6 +69,9 @@ export class Screens {
     this.game = null;
     this.titleScreen = new Title([
       { text: 'Play', action: () => this.play() },
+      { text: 'High scores', action: () => this.page('scores') },
+      { text: 'Settings', action: () => this.settings() },
+      { text: 'How to play', action: () => this.page('help') },
       { text: 'View source', action: () => a.viewSource() },
       { text: 'Desktop', action: () => a.toDesktop() },
     ]);
@@ -79,9 +92,37 @@ export class Screens {
     this.pauseMenu = new Menu([
       { text: 'Continue', action: c },
       { text: 'Restart', action: () => this.play() },
+      { text: 'Settings', action: () => this.settings() },
       { text: 'Title', action: () => this.title() },
       { text: 'Desktop', action: () => this.app.toDesktop() },
     ], { y: 112 });
+  }
+
+  /** Show a text page ('scores' or 'help'); any key goes back. */
+  page(name) { this.back = this.name; this.name = name; }
+
+  /** The Settings screen, from the title or the pause menu. */
+  settings() {
+    const s = this.app.settings;
+    const change = (key, d) => {
+      stepOption(OPTIONS, s, key, d);
+      this.app.changeSetting?.(key);
+    };
+    this.back = this.name;
+    this.name = 'settings';
+    this.settingsMenu = new Menu([...OPTIONS.map((o) => ({
+      text: () => `${o.label}: ${optionName(OPTIONS, s, o.key)}`,
+      action: () => change(o.key, 1), step: (d) => change(o.key, d),
+    })), { text: 'Back', action: () => this.leave() }],
+    { y: 80, step: 16 });
+  }
+
+  /** Back from Settings or a text page to where it was opened. */
+  leave() { this.name = this.back; }
+
+  /** The game is over (GAME OVER has shown): where next? */
+  gameFinished(game) {
+    this.title();
   }
 
   /** The key presses of this display frame ([{code, repeat}]). */
@@ -102,12 +143,19 @@ export class Screens {
 
   action(name, repeat) {
     const m = this.menu;
-    if (this.name === 'play') {
+    if (name === 'full' && !repeat && !this.typing) {
+      this.app.toggleBrowserFull?.();
+    } else if (this.name === 'scores' || this.name === 'help') {
+      if (!repeat && ['select', 'menu', 'pause'].includes(name)) {
+        this.leave();
+      }
+    } else if (this.name === 'play') {
       if (repeat) return;
       if (name === 'pause') this.paused = !this.paused;
       else if (name === 'menu') this.openPause();
     } else if (name === 'menu' && !repeat) {
       if (this.name === 'pause') this.name = 'play';
+      else if (this.name === 'settings') this.leave();
       else this.app.toDesktop();
     } else if (m && !(repeat && name === 'select')) m.press(name);
   }
@@ -117,11 +165,20 @@ export class Screens {
     if (this.name === 'title') this.titleScreen.tick();
     if (this.name !== 'play' || this.paused) return false;
     this.game.tick({ want: this.want });
+    if (this.game.state === 'over') this.gameFinished(this.game);
     return true;
   }
 
   draw(s) {
     if (this.name === 'title') return this.titleScreen.draw(s);
+    if (this.name === 'scores') return drawPage(s, 'HIGH SCORES',
+      NO_SCORES, 'Return: back');
+    if (this.name === 'help') return drawPage(s, 'HOW TO PLAY', HELP,
+      'Return: back');
+    if (this.back === 'title' && this.name === 'settings') {
+      drawPage(s, 'SETTINGS', [], 'Left/right change, Esc back');
+      return this.settingsMenu.draw(s);
+    }
     const g = this.game;
     drawGame(s, g, g.frame);
     if (this.paused) {
@@ -131,12 +188,16 @@ export class Screens {
     } else if (this.name === 'pause') {
       s.shade(0, 24, 224, 248, 0, 0.6);
       this.pauseMenu.draw(s);
+    } else if (this.name === 'settings') {
+      s.shade(0, 24, 224, 248, 0, 0.8);
+      this.settingsMenu.draw(s);
     }
   }
 
   /** The keyboard focus went elsewhere: stop a game in progress. */
   blur() {
     if (this.name === 'play') this.paused = true;
+    this.want = -1;
   }
 
   pointer(p) { this.menu?.pointer(p); }
