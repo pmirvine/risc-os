@@ -280,6 +280,11 @@ export default async (page) => {
     (x) => x.name === 'Pacman').game.play());
   await page.waitForTimeout(300);
   if ((await state())?.screen !== 'play') fail('not playing before Quit');
+  // losing the window's focus (the real onBlur wiring) pauses play
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  const bl = await G(`return [g.screens.paused, g.screens.want]`);
+  if (bl[0] !== true || bl[1] !== -1) fail('blur did not pause: ' + bl);
+  await G(`g.screens.paused = false`);
   if (!(await G(`return g.audio.sources.length`))) {
     fail('no start jingle');
   }
@@ -345,6 +350,24 @@ export default async (page) => {
   // put the lives back so reruns start alike
   await G(`g.settings.lives = 3; g.app.changeSetting('lives')`);
   await page.waitForTimeout(200);
+  // an error in the main loop closes the display and is reported
+  // once (by the core, with its line number), not twice
+  await page.evaluate(() => {
+    window.__reports = [];
+    const w = os.wimp, f = w.reportError.bind(w);
+    w.reportError = (m, o) => { window.__reports.push(String(m));
+      return f(m, o); };
+  });
+  await G(`g.screens.tick = () => { throw new Error('boom test') }`);
+  await page.waitForTimeout(600);
+  const rep = await page.evaluate(() => window.__reports.filter(
+    (m) => m.includes('boom test')));
+  if (rep.length !== 1) fail('loop error reported ' + rep.length
+    + ' times: ' + JSON.stringify(rep));
+  const dk = await G(`return [g.display.kind, g.screen]`);
+  if (dk[0] !== null || dk[1] !== null) {
+    fail('loop error left the display up: ' + dk);
+  }
   await page.evaluate(() => os.wimp.tasks.find(
     (x) => x.name === 'Pacman').quit());
   await page.keyboard.press('ArrowLeft');

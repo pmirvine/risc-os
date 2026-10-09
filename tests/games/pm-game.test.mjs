@@ -637,9 +637,14 @@ test('the fruit shows when the 70th dot is eaten, by itself', () => {
   }
   assert.equal(g.maze.dotsEaten, 69);
   assert.equal(g.fruit.shown, false);
-  run(g, [[LEFT, 200]]);
+  const seen = [];
+  for (let i = 0; i < 200 && !g.fruit.shown; i++) {
+    seen.push(...g.tick({ want: LEFT }));
+  }
   assert.ok(g.maze.dotsEaten >= 70);
   assert.equal(g.fruit.shown, true);
+  assert.deepEqual(seen.filter((e) => e.type === 'fruitShown'),
+    [{ type: 'fruitShown', kind: g.fruit.kind }]);
 });
 
 test('a missed fruit goes away and a death removes it', () => {

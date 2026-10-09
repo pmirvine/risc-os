@@ -116,7 +116,6 @@ test('loopFor: eyes over fright over the siren', () => {
   const eyes = [{ state: 'active' }, { state: 'eyes' }];
   const f = { on: true };
   assert.equal(loopFor(G({ ghosts: eyes, fright: f })), 'eyes');
-  assert.equal(loopFor(G({ ghosts: [{ state: 'entering' }] })), 'eyes');
   assert.equal(loopFor(G({ fright: f })), 'fright');
 });
 

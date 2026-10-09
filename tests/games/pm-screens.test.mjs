@@ -5,8 +5,9 @@ import { Surface } from '../../tools/games/!GameLib/Surface';
 import { DEFAULTS } from '../../tools/games/!Pacman/Settings';
 import { GHOSTS } from '../../tools/games/!Pacman/Theme';
 import { Title } from '../../tools/games/!Pacman/Title';
-import { Screens, wantFor, ACTIONS } from
+import { Screens, ACTIONS } from
   '../../tools/games/!Pacman/Screens';
+import { wantFor } from '../../tools/games/!Pacman/Input';
 import { Entry } from '../../tools/games/!Pacman/Entry';
 import { SEED, loadScores, saveScores } from
   '../../tools/games/!Pacman/Scores';
@@ -739,4 +740,25 @@ test('the demo is a game the autopilot steers, not still', () => {
   const g = screens.game;
   assert.ok(g.frame >= 190);
   assert.ok(g.score > 0 || g.maze.dotsEaten > 0);
+});
+
+test('a paused game left for the title: the demo is not paused', () => {
+  const { screens, tap } = make();
+  tap('Enter');
+  tap('KeyP');
+  assert.equal(screens.paused, true);
+  tap('Escape');
+  tap('ArrowDown'); tap('ArrowDown'); tap('ArrowDown');
+  tap('Enter');                      // Title
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.paused, false);
+  assert.equal(screens.want, -1);
+  ticks(screens, 600);
+  assert.equal(screens.name, 'attract-demo');
+  const s = new Surface(224, 288);
+  let shades = 0;
+  const shade = s.shade.bind(s);
+  s.shade = (...a) => { shades++; return shade(...a); };
+  screens.draw(s);
+  assert.equal(shades, 0);
 });
