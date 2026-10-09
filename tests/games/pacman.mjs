@@ -5,7 +5,9 @@
 // icon stays), play in a window chosen from the icon bar menu, View
 // source (!JsEdit opens), sound (silent before a gesture, the Sound
 // item, a siren in play), and quit during play (nothing is left,
-// the AudioContext is closed).
+// the AudioContext is closed), and the attract demo (left alone for
+// 10 s of real time the title runs a demo; a key returns to the title
+// and does not start a game).
 // Screenshots: pacman-title.png, pacman-play.png in SHOTDIR.
 // node tests/core/shot.mjs games-pacman tests/games/pacman.mjs
 const SHOT = process.env.SHOTDIR || 'tests/screens';
@@ -111,6 +113,26 @@ export default async (page) => {
     typeof i.text === 'function' ? i.text() : i.text)`);
   if (items.join(',') !== 'Play,High scores,Settings,How to play,' +
     'View source,Desktop') fail('title menu: ' + items);
+
+  // Attract mode, in real time: about 10 s of the title untouched.
+  await page.waitForFunction(() => os.wimp.tasks.find(
+    (t) => t.name === 'Pacman')?.game?.screen === 'attract-demo', null,
+  { timeout: 20000 }).catch(() => fail('no attract demo after 10 s'));
+  const d1 = await state();
+  await page.waitForTimeout(700);
+  const d2 = await state();
+  if (d2.screen !== 'attract-demo' || !d2.game?.frame
+    || d2.game.frame <= d1.game.frame + 10) {
+    fail('the demo is not running: ' + JSON.stringify([d1, d2]));
+  }
+  if (await G('return g.game.demo') !== true) fail('not a demo game');
+  await page.screenshot({ path: `${SHOT}/pacman-demo.png` });
+  await page.keyboard.press('Enter');      // would be Play
+  await page.waitForTimeout(300);
+  const d3 = await state();
+  if (d3.screen !== 'title' || d3.game) {
+    fail('a key did not return to the title: ' + JSON.stringify(d3));
+  }
 
   // Settings from the title: Lives 3 -> 5 is saved in Choices
   for (let i = 0; i < 2; i++) await page.keyboard.press('ArrowDown');

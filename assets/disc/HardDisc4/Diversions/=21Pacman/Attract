@@ -1,0 +1,85 @@
+// !Pacman - Attract: the title screen's idle cycle and its demo.
+//
+// Screens hands every key, click and tick to one Attract (no desktop
+// in it). On the title it counts 60 Hz frames since the last key or
+// click; at 600 (10 seconds) the screen becomes 'attract-demo': a
+// demo game (Game with demo: true) steered by the Autopilot, with no
+// sound and no part in the high scores. That ends on the first death
+// (the game reaches 'over') or after 3600 frames, and 'attract-scores'
+// shows the table for 360 frames before the title returns. Any key or
+// click during either returns to the title at once and goes no
+// further: the menu never sees it. The seed of each demo comes from
+// app.demoSeed, which the shell counts up.
+
+import { Game } from './Game';
+import { Autopilot } from './Autopilot';
+import { Rng } from 'gamelib/Maths';
+
+export const WAIT = 600, LONGEST = 3600, SCORES = 360;
+
+export class Attract {
+  constructor(app) {
+    this.app = app;
+    this.pilot = null;
+    this.reset();
+  }
+
+  /** The title has just appeared: start counting again. */
+  reset() { this.idle = 0; this.t = 0; }
+
+  /** True on the attract screens, which have no menu. */
+  showing(screens) { return screens.name.startsWith('attract'); }
+
+  /** The demo game begins. */
+  start(screens) {
+    const a = this.app;
+    a.demoSeed ??= 1;
+    const seed = a.demoSeed++;
+    this.pilot = new Autopilot(new Rng(seed));
+    this.t = 0;
+    screens.game = new Game({ demo: true, seed });
+    screens.game.high = screens.table[0]?.score ?? 0;
+    screens.name = 'attract-demo';
+  }
+
+  /** This frame's key presses; true if they have been dealt with. */
+  frame(screens, presses) {
+    const demo = this.showing(screens);
+    if (presses.length) {
+      if (demo) screens.title();
+      else this.idle = 0;
+    }
+    return demo;
+  }
+
+  /** A pointer event; true if it is not for the menu. */
+  pointer(screens, p) {
+    const demo = this.showing(screens);
+    if (p.type === 'down') {
+      this.idle = 0;
+      if (demo) screens.title();
+    }
+    return demo;
+  }
+
+  /** One 60 Hz tick; true if on an attract screen. */
+  tick(screens) {
+    const name = screens.name;
+    if (name === 'attract-demo') {
+      const g = screens.game;
+      const want = g.state === 'play' ? this.pilot.drive(g) : -1;
+      g.tick({ want });
+      if (++this.t >= LONGEST || g.state === 'over') {
+        screens.name = 'attract-scores';
+        this.t = 0;
+      }
+    } else if (name === 'attract-scores') {
+      if (++this.t >= SCORES) screens.title();
+    } else if (name !== 'title') {
+      this.idle = 0;
+    } else if (++this.idle >= WAIT) {
+      this.start(screens);
+    }
+    return this.showing(screens);
+  }
+}

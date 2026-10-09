@@ -11,6 +11,7 @@ import { Entry } from '../../tools/games/!Pacman/Entry';
 import { SEED, loadScores, saveScores } from
   '../../tools/games/!Pacman/Scores';
 import { choicesStore } from '../../tools/games/!GameLib/Choices';
+import { Sound } from '../../tools/games/!Pacman/Sound';
 import { fakeChoices, fakeVfs, fakeSysvars } from './fakes.mjs';
 
 const press = (code, repeat = false) => ({ code, key: code, repeat });
@@ -562,4 +563,180 @@ test('saveScores writes the Scores leaf and reads back', async () => {
   assert.equal(await saveScores(st, data), true);
   assert.equal(choices.writes[0][0], 'Pacman.Scores');
   assert.deepEqual(await loadScores(st), data);
+});
+
+// ---- attract mode: title, demo, high scores, title ----
+
+const ticks = (screens, n) => { for (let i = 0; i < n; i++) screens.tick(); };
+
+test('idle on the title for 600 frames starts a demo game', () => {
+  const { screens } = make();
+  ticks(screens, 599);
+  assert.equal(screens.name, 'title');
+  screens.tick();
+  assert.equal(screens.name, 'attract-demo');
+  assert.equal(screens.game.demo, true);
+  assert.equal(screens.game.high, 10000);
+});
+
+test('each demo has its own seed from the shell', () => {
+  const { screens, app } = make();
+  app.demoSeed = 5;
+  ticks(screens, 600);
+  const a = screens.game.snapshot().rng;
+  assert.equal(app.demoSeed, 6);
+  screens.title();
+  ticks(screens, 600);
+  assert.notEqual(screens.game.snapshot().rng, a);
+});
+
+test('a key at frame 599 restarts the wait', () => {
+  const { screens, tap } = make();
+  ticks(screens, 599);
+  tap('ArrowUp');
+  ticks(screens, 599);
+  assert.equal(screens.name, 'title');
+  screens.tick();
+  assert.equal(screens.name, 'attract-demo');
+});
+
+test('the wait runs on the title only, not in Settings or help', () => {
+  const { screens, tap } = make();
+  ticks(screens, 400);
+  tap('ArrowDown'); tap('ArrowDown');
+  tap('Enter');                    // Settings
+  assert.equal(screens.name, 'settings');
+  ticks(screens, 1000);
+  assert.equal(screens.name, 'settings');
+  tap('Escape');
+  assert.equal(screens.name, 'title');
+  ticks(screens, 599);             // restarted from zero
+  assert.equal(screens.name, 'title');
+  screens.tick();
+  assert.equal(screens.name, 'attract-demo');
+});
+
+test('a pointer click on the title restarts the wait', () => {
+  const { screens } = make();
+  ticks(screens, 599);
+  screens.pointer({ type: 'down', x: 0, y: 0 });
+  ticks(screens, 599);
+  assert.equal(screens.name, 'title');
+});
+
+test('the demo ends on its first death, then scores, then title', () => {
+  const { screens, log } = make();
+  ticks(screens, 600);
+  ticks(screens, 200);
+  screens.game.debug.kill();
+  let n = 0;
+  while (screens.name === 'attract-demo' && n++ < 1000) screens.tick();
+  assert.equal(screens.name, 'attract-scores');
+  assert.equal(screens.game.state, 'over');
+  ticks(screens, 359);
+  assert.equal(screens.name, 'attract-scores');
+  screens.tick();
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.game, null);
+  assert.deepEqual(log, []);
+});
+
+test('a demo that survives ends after 3600 frames', () => {
+  const { screens } = make();
+  ticks(screens, 600);
+  const g = screens.game;
+  g.debug.skipIntro?.();
+  screens.attract.t = 3598;              // as if 3598 frames played
+  screens.tick();
+  assert.equal(screens.name, 'attract-demo');
+  assert.notEqual(g.state, 'over');
+  screens.tick();
+  assert.equal(screens.name, 'attract-scores');
+});
+
+test('any key during the demo returns to the title, consumed', () => {
+  const { screens, tap, log } = make();
+  screens.titleScreen.menu.sel = 2;      // Settings is chosen
+  ticks(screens, 700);
+  assert.equal(screens.name, 'attract-demo');
+  tap('Enter');
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.game, null);
+  assert.equal(screens.titleScreen.menu.sel, 0, 'a new title');
+  assert.deepEqual(log, []);
+});
+
+test('a key is not passed to the menu (nothing starts)', () => {
+  const { screens, tap, log } = make();
+  ticks(screens, 700);
+  tap('Escape');                          // would be Desktop
+  assert.equal(screens.name, 'title');
+  ticks(screens, 700);
+  tap('KeyF');                            // would toggle full screen
+  assert.equal(screens.name, 'title');
+  ticks(screens, 700);
+  tap('Space');                           // would be Play
+  assert.equal(screens.name, 'title');
+  assert.deepEqual(log, []);
+});
+
+test('a click during the demo returns to the title, consumed', () => {
+  const { screens, log } = make();
+  ticks(screens, 700);
+  screens.pointer({ type: 'down', x: 112, y: 214 });  // over Play
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.game, null);
+  assert.deepEqual(log, []);
+});
+
+test('a key during the high scores shown after a demo goes back', () => {
+  const { screens, tap } = make();
+  ticks(screens, 600);
+  screens.game.debug.kill();
+  ticks(screens, 600);
+  assert.equal(screens.name, 'attract-scores');
+  tap('Enter');
+  assert.equal(screens.name, 'title');
+});
+
+test('the demo draws a game and the scores draw the table', () => {
+  const { screens } = make();
+  ticks(screens, 700);
+  const s = new Surface(224, 288);
+  screens.draw(s);
+  let lit = 0;
+  for (let y = 24; y < 248; y++) lit += s.get(100, y) !== 0;
+  assert.ok(lit > 0, 'the maze');
+  screens.game.debug.kill();
+  ticks(screens, 600);
+  screens.draw(s);
+});
+
+test('the demo is silent and never writes the score table', () => {
+  const { screens, log, app } = make();
+  const calls = [];
+  const snd = new Sound(app.settings, { get: () => undefined });
+  snd.audio = { live: true,
+    play: (n) => calls.push('play:' + n),
+    loop: (n, on) => calls.push('loop:' + n + on),
+    silence() {}, setVolume() {}, setDesktopGain() {} };
+  ticks(screens, 600);
+  screens.game.score = 99999;            // above the table
+  let n = 0;
+  while (screens.name !== 'title' && n++ < 3000) {
+    snd.update(screens, screens.tick());
+  }
+  assert.equal(screens.name, 'title');
+  assert.deepEqual(calls, []);
+  assert.deepEqual(log, []);
+  assert.deepEqual(app.scores.table, SEED);
+  assert.equal(screens.typing, false);
+});
+
+test('the demo is a game the autopilot steers, not still', () => {
+  const { screens } = make();
+  ticks(screens, 600 + 200);
+  const g = screens.game;
+  assert.ok(g.frame >= 190);
+  assert.ok(g.score > 0 || g.maze.dotsEaten > 0);
 });

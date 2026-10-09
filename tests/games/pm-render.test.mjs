@@ -470,3 +470,18 @@ test('gameOver and over draw no actors', () => {
       col(COLOURS.ghosts[0])), 0);
   }
 });
+
+test('Hud: a demo shows no PLAYER ONE, READY! stays', () => {
+  const g = new Game({ demo: true, seed: 1 });
+  assert.equal(g.state, 'start');
+  const s = new Surface(224, 288);
+  drawHud(s, g, 0, 0);
+  let lit = 0;
+  for (let y = 112; y < 120; y++) {
+    for (let x = 64; x < 160; x++) lit += s.get(x, y) !== 0;
+  }
+  assert.equal(lit, 0, 'no PLAYER ONE');
+  const ref = new Surface(224, 288);
+  drawText(ref, 'READY!', 88, 160, { colour: col(COLOURS.ready) });
+  assert.ok(same(ref, s, 88, 160, 48, 8) > 20, 'READY!');
+});
