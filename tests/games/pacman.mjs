@@ -288,6 +288,29 @@ export default async (page) => {
   if (!n || n[0] !== 'window' || n[1] !== 5 || n[2] !== 'window') {
     fail('settings not remembered: ' + n);
   }
+  // high scores: a finished game asks for a name, then is saved
+  const hs = await G(`window.__hs = JSON.stringify(
+      g.screens.table); g.play(); const m = g.game;
+    m.score = 12000; m.lives = 0; m.setState('gameOver');
+    return g.screens.table.length`);
+  if (hs !== 10) fail('high scores not loaded: ' + hs);
+  await page.waitForFunction(() => os.wimp.tasks.find(
+    (t) => t.name === 'Pacman')?.game?.screen === 'entry', null,
+  { timeout: 15000 }).catch(() => fail('no name entry'));
+  for (const k of ['KeyT', 'KeyS', 'KeyT', 'Enter']) {
+    await page.keyboard.press(k);
+  }
+  await page.waitForTimeout(300);
+  const hs2 = await G(`return [g.screen, g.screens.table[0].name,
+    g.screens.table[0].score]`);
+  if (hs2[0] !== 'scores' || hs2[1] !== 'TST' || hs2[2] !== 12000) {
+    fail('score not entered: ' + hs2);
+  }
+  await page.screenshot({ path: SHOT + '/pacman-scores.png' });
+  // put the table back so reruns start alike
+  await G(`const a = g.screens.app;
+    a.scores.table = JSON.parse(window.__hs);
+    a.scores.lastName = ''; a.saveScores()`);
   // put the lives back so reruns start alike
   await G(`g.settings.lives = 3; g.app.changeSetting('lives')`);
   await page.waitForTimeout(200);

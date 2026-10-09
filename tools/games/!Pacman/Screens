@@ -4,25 +4,32 @@
 // (!RunImage) passes in `app`, which has
 //   keys        the Keys of the game (ACTIONS below)
 //   settings    {lives, bonus, ...}
-//   high        the best score so far
+//   scores      {table, lastName}, the high scores (see Scores)
 //   seed()      a seed number for a new game
 //   toDesktop() leave the game and show the desktop
 //   viewSource() open the program's files in !JsEdit
 //   changeSetting(key)   a setting was changed: apply and save it
 //   toggleBrowserFull()   browser full screen on or off (the F key)
+//   saveScores()   the table has changed: save it
 // Screens are 'title', 'play', 'pause' (the Escape menu over the
-// game), 'settings', 'scores' and 'help' (the last two are pages of
-// text). Each display frame the shell calls frame(presses), then
-// tick() for every 60 Hz tick due, then draw(surface). P pauses a
-// game by itself (paused); losing the keyboard focus does the same.
-// When a game ends, gameFinished(game) says what comes next.
+// game), 'settings', 'scores', 'help' (the last two are pages) and
+// 'entry' (typing a name; `typing` is true so F is a letter). Each
+// display frame the shell calls frame(presses), then tick() for
+// every 60 Hz tick due, then draw(surface). P pauses a game by
+// itself (paused); losing the keyboard focus does the same.
+// When a game ends, gameFinished(game) says what comes next: name
+// entry if it made the top ten (never for a demo game), else the
+// title.
 
 import { Game } from './Game';
 import { drawGame } from './Render';
 import { Menu } from './Menu';
 import { Title } from './Title';
 import { OPTIONS } from './Settings';
-import { HELP, NO_SCORES, drawPage } from './Pages';
+import { HELP, drawPage, drawScores, drawEntry } from './Pages';
+import { Entry } from './Entry';
+import { SIZE, record } from './Scores';
+import { qualifies, today } from 'gamelib/ScoreTable';
 import { stepOption, optionName } from 'gamelib/Options';
 import { rgb } from 'gamelib/Surface';
 import { drawText } from 'gamelib/Font';
@@ -55,8 +62,11 @@ export class Screens {
     this.want = -1;
     this.paused = false;
     this.typing = false;       // a name is being typed: F is a letter
+    this.frames = 0;
     this.title();
   }
+
+  get table() { return this.app.scores?.table ?? []; }
 
   get menu() {
     return { title: this.titleScreen.menu, pause: this.pauseMenu,
@@ -81,6 +91,7 @@ export class Screens {
     const s = this.app.settings;
     this.game = new Game({ seed: this.app.seed?.() ?? 1,
       lives: s.lives ?? 3, bonus: s.bonus ?? 10000 });
+    this.game.high = this.table[0]?.score ?? 0;
     this.want = -1;
     this.paused = false;
     this.name = 'play';
@@ -123,6 +134,21 @@ export class Screens {
   /** The game is over (GAME OVER has shown): where next? */
   gameFinished(game) {
     this.title();
+    if (game.demo || !qualifies(this.table, game.score, SIZE)) return;
+    this.pending = { score: game.score, level: game.level };
+    this.entry = new Entry(this.app.scores.lastName);
+    this.name = 'entry';
+    this.typing = true;
+  }
+
+  /** Name entered: into the table, saved, and show the table. */
+  enter() {
+    const { score, level } = this.pending;
+    record(this.app.scores, this.entry.name, score, level, today());
+    this.app.saveScores?.();
+    this.typing = false;
+    this.title();
+    this.page('scores');
   }
 
   /** The key presses of this display frame ([{code, repeat}]). */
@@ -130,6 +156,10 @@ export class Screens {
     const keys = this.app.keys;
     let dir = -1;
     for (const p of presses) {
+      if (this.name === 'entry') {
+        if (this.entry.key(p) === 'done') this.enter();
+        continue;
+      }
       for (const name of keys.namesFor(p.code)) {
         const d = DIRS.indexOf(name);
         if (d >= 0) dir = d;
@@ -154,7 +184,10 @@ export class Screens {
       if (name === 'pause') this.paused = !this.paused;
       else if (name === 'menu') this.openPause();
     } else if (name === 'menu' && !repeat) {
-      if (this.name === 'pause') this.name = 'play';
+      if (this.name === 'pause') {
+        this.name = 'play';
+        this.paused = false;
+      }
       else if (this.name === 'settings') this.leave();
       else this.app.toDesktop();
     } else if (m && !(repeat && name === 'select')) m.press(name);
@@ -162,6 +195,7 @@ export class Screens {
 
   /** One 60 Hz tick: true if the game moved. */
   tick() {
+    this.frames++;
     if (this.name === 'title') this.titleScreen.tick();
     if (this.name !== 'play' || this.paused) return false;
     this.game.tick({ want: this.want });
@@ -171,8 +205,11 @@ export class Screens {
 
   draw(s) {
     if (this.name === 'title') return this.titleScreen.draw(s);
-    if (this.name === 'scores') return drawPage(s, 'HIGH SCORES',
-      NO_SCORES, 'Return: back');
+    if (this.name === 'scores') return drawScores(s, this.table);
+    if (this.name === 'entry') {
+      return drawEntry(s, this.pending.score, this.entry.text,
+        this.frames);
+    }
     if (this.name === 'help') return drawPage(s, 'HOW TO PLAY', HELP,
       'Return: back');
     if (this.back === 'title' && this.name === 'settings') {

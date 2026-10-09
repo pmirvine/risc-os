@@ -12,7 +12,7 @@ it lives on the disc as JavaScript that `*JSRun` loads, so users can read and ch
 No ROM data: the sprites are drawn from GameLib `Shapes`, sounds are synthesised, tunes are our own.
 
 This is the first stage: the maze, dots and energizers, Pac-Man, the four ghosts with scatter and chase, the title, the
-pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghosts, lives, the death sequence, the extra life, game over and Cruise Elroy are in; sound is in, and so are the title roll-call, the pause menu, the Settings screen and How to play; later stages add scores and the demo.
+pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghosts, lives, the death sequence, the extra life, game over and Cruise Elroy are in; sound is in, and so are the title roll-call, the pause menu, the Settings screen, How to play, the high score table and name entry; a later stage adds the demo.
 
 ## Layers
 
@@ -51,13 +51,15 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Render | `drawGame(surface, game, frame)`, `MAZE_TOP` |
 | Menu | a list of items with keys and pointer; `left`/`right` call an item's `step(-1 or 1)` (a setting) |
 | Title | the title picture and its menu; the ghost roll-call (`shown()`: one more every 60 frames from frame 30; `rollCall()`), `legend` (10, 50) |
-| Pages | `HELP`, `NO_SCORES`, `drawPage` for the How to play and High scores screens (a placeholder until the scores arrive) |
+| Pages | `HELP`, `drawPage` (How to play), `drawScores(s, table)` (rank, name, score, level, date; a header row), `drawEntry(s, score, text, frame)` (name entry with a blinking cursor) |
+| Scores | `SEED` (ten entries ARM..POW, 10000 down to 1000, level 1, '1987-06-01'), `SIZE` 10, `loadScores(store)` -> `{table, lastName}` (GameLib `cleanTable` with `{size: 10, nameLength: 3, extra: ['level']}`; missing, corrupt or empty gives a copy of `SEED`; `lastName` is 3 printable ASCII capitals or ''), `saveScores(store, data)`, `record(data, name, score, level, date)` (sets `lastName`, `insertScore`); leaf `Scores` of `Choices:Pacman` |
+| Entry | `new Entry(initial)`; `key({key, repeat, ctrl})` -> `'done'` on Enter/Escape else null; letters become capitals, digits, space, `.` and `-` are kept, everything else (accents, Tab, F keys, dead keys, emoji, a 4th character, ctrl combinations, auto-repeat except Backspace) is ignored; `text` is what was typed, `name` is `text` or `'???'` if blank |
 | Settings | `OPTIONS` (GameLib Options list: key, label, values, names), `DEFAULTS`, `loadSettings(store)` (sanitise after `tidyVolume`), `saveSettings(store, s)`; leaf `Settings` of `Choices:Pacman` |
 | Input | `Quiet` (a 300 ms quiet window after the shell changes the display, so its own focus loss is not a pause), `syncPad(keys, held)` (gamepad to key presses) |
 | Sfx | `RATE` (24000), `WAVES` (our 32-level 4-bit tables, high at both ends), `RECIPES` {name: {make, loop}}: startJingle (4.2 s), waka0/1, siren0-4, fright, eyes (loops: one voice, a whole number of cycles, so no crossfade), ghostEaten, fruitEaten, extraLife, death |
 | SoundMap | pure: `soundsFor(events, mem)` (dot/energizer alternate `waka0`/`waka1` through `mem.waka`; unknown events ignored), `loopFor(game)` (null unless `'play'` and not demo; `eyes`, `fright`, `siren0`-`4` by `maze.dotsLeft` > 180 / 128 / 64 / 32) |
 | Sound | `new Sound(settings, os.config)`: defines the recipes in a GameLib `Audio`; `resume()` (every click and key), `update(screens, moved)` each tick, `silence()`, `toggle()`, `close()`. Silent while paused, off the play screen, or `settings.sound === false`; volume is `settings.volume` (0..1, values 0.2-1, default 0.8; `tidyVolume(saved)` turns an old percent such as 80 into 0.8) times `desktopGain` |
-| Screens | `Screens(app)`, `ACTIONS` (the key names), `DIRS`, `wantFor`; `frame`, `tick`, `draw`, `blur` (pauses and clears `want`), `pointer`; screens `title`, `play`, `pause`, `settings`, `scores`, `help`; `typing` (true while a name is typed: F is then a letter); `gameFinished(game)` is called once when a game reaches `'over'` (now: back to the title; Task 21 adds name entry). `app` supplies `changeSetting(key)` (apply and save) and `toggleBrowserFull()` |
+| Screens | `Screens(app)`, `ACTIONS` (the key names), `DIRS`, `wantFor`; `frame`, `tick`, `draw`, `blur` (pauses and clears `want`), `pointer`; screens `title`, `play`, `pause`, `settings`, `scores`, `help`; `typing` (true while a name is typed: F is then a letter); `gameFinished(game)` is called once when a game reaches `'over'`: unless `game.demo` (a demo is never recorded), if `qualifies(table, score, 10)` the screen is `'entry'` (`typing` true; `entry`, `pending`) and Return/Escape calls `enter()` (record with `today()`, `app.saveScores()` once, then the High scores screen over the title); otherwise the title. A new game gets `game.high = table[0].score` (the Hud shows the larger of that and the score). `app` supplies `scores` (`{table, lastName}`), `saveScores()`, `changeSetting(key)` (apply and save) and `toggleBrowserFull()` |
 
 `task.game` (set by `!RunImage`) exposes `app`, `settings`, `keys`, `surface`, `display`, `audio`, `sound`, `game`, `screen`, `screens`, `frames`
 and `open`, `play`, `title`, `toDesktop` for the browser test.
@@ -67,7 +69,7 @@ and `open`, `play`, `title`, `toDesktop` for the browser test.
 An actor (Player, Ghost) is `{px, py, dir, acc, tx, ty}`, all integers. `game.tick({want})` takes `want` 0..3 (up,
 left, down, right) or -1 and returns the frame's events (`{type: 'dot' | 'energizer' | 'frightStart' | 'frightEnd' | 'death' | 'start'}`). The
 state is `'start'` or `'play'` for now. Settings are `{display, browserFull, sound, volume, lives, bonus}` in
-`Choices:Pacman.Settings` (GameLib `Choices`, checked by `Options.sanitise`; see Settings above). `lives` and `bonus` go
+`Choices:Pacman.Settings` (GameLib `Choices`, checked by `Options.sanitise`; see Settings above); the high scores are `{table: [{name, score, level, date}], lastName}` in `Choices:Pacman.Scores`. `lives` and `bonus` go
 into `new Game({lives, bonus})` on Play and Restart.
 
 ## Source rules

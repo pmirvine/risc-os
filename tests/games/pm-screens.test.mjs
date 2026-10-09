@@ -7,14 +7,20 @@ import { GHOSTS } from '../../tools/games/!Pacman/Theme';
 import { Title } from '../../tools/games/!Pacman/Title';
 import { Screens, wantFor, ACTIONS } from
   '../../tools/games/!Pacman/Screens';
+import { Entry } from '../../tools/games/!Pacman/Entry';
+import { SEED, loadScores, saveScores } from
+  '../../tools/games/!Pacman/Scores';
+import { choicesStore } from '../../tools/games/!GameLib/Choices';
+import { fakeChoices, fakeVfs, fakeSysvars } from './fakes.mjs';
 
 const press = (code, repeat = false) => ({ code, key: code, repeat });
 
-function make() {
+function make(table = SEED.map((e) => ({ ...e }))) {
   const keys = new Keys(ACTIONS);
   const log = [];
   const app = {
-    keys, settings: { ...DEFAULTS }, high: 0,
+    keys, settings: { ...DEFAULTS }, scores: { table, lastName: '' },
+    saveScores: () => log.push('save'),
     changeSetting: (k) => log.push('set:' + k),
     toggleBrowserFull: () => log.push('full'),
     toDesktop: () => log.push('desktop'),
@@ -27,7 +33,22 @@ function make() {
     screens.frame(keys.takePresses());
     keys.keyUp({ code });
   };
-  return { keys, app, screens, log, tap };
+  const type = (key, code = key) => {
+    keys.keyDown({ code, key });
+    screens.frame(keys.takePresses());
+    keys.keyUp({ code });
+  };
+  return { keys, app, screens, log, tap, type };
+}
+
+/** Play a game to its end with this score; true once it has ended. */
+function endGame(screens, score, extra = {}) {
+  const g = screens.game;
+  Object.assign(g, { score, lives: 0 }, extra);
+  g.setState('gameOver');
+  for (let i = 0; i < 400 && screens.name === 'play'; i++) {
+    screens.tick();
+  }
 }
 
 test('wantFor: the latest held direction, else the old want', () => {
@@ -322,4 +343,223 @@ test('P, Escape, Continue: the game runs again, not paused', () => {
   assert.equal(screens.paused, false);
   screens.tick();
   assert.equal(screens.game.frame, 1);
+});
+
+test('P, Escape, Escape: the game is not left paused', () => {
+  const { screens, tap } = make();
+  tap('Enter');
+  tap('KeyP');
+  tap('Escape');
+  assert.equal(screens.name, 'pause');
+  tap('Escape');
+  assert.equal(screens.name, 'play');
+  assert.equal(screens.paused, false);
+  screens.tick();
+  assert.equal(screens.game.frame, 1);
+});
+
+test('Entry ignores odd characters', () => {
+  const e = new Entry();
+  const k = (key, extra = {}) => e.key({ key, ...extra });
+  assert.equal(k('a'), null);
+  assert.equal(e.name, 'A');
+  for (const key of ['1', ' ', '.', '-']) assert.equal(k(key), null);
+  assert.equal(e.name, 'A1 ');
+  const odd = new Entry();
+  for (const key of ['\u20ac', 'Tab', 'F1', 'Dead', 'Shift',
+    '\u{1F600}', '', undefined]) {
+    assert.equal(odd.key({ key }), null);
+  }
+  assert.equal(odd.name, '???');
+  assert.equal(odd.text, '');
+  const full = new Entry();
+  for (const key of 'abcd') full.key({ key });
+  assert.equal(full.name, 'ABC');
+  full.key({ key: 'Backspace' });
+  assert.equal(full.name, 'AB');
+  full.key({ key: 'z' });
+  assert.equal(full.name, 'ABZ');
+  assert.equal(full.key({ key: 'Enter' }), 'done');
+  assert.equal(new Entry().key({ key: 'Escape' }), 'done');
+  assert.equal(new Entry().key({ key: 'a', ctrl: true }), null);
+  assert.equal(new Entry().key({ key: 'a', repeat: true }), null);
+});
+
+test('Entry: initial name, blank counts as empty, backspace safe', () => {
+  assert.equal(new Entry('xy\u20ac!qq').name, 'XYQ');
+  assert.equal(new Entry('  ').name, '???');
+  const e = new Entry();
+  e.key({ key: 'Backspace' });
+  assert.equal(e.name, '???');
+  const r = new Entry('AB');
+  r.key({ key: 'Backspace', repeat: true });
+  assert.equal(r.name, 'A');
+});
+
+test('a game scoring 12000 asks for a name and is saved once', () => {
+  const { screens, tap, type, app, log } = make();
+  tap('Enter');
+  screens.game.level = 3;
+  endGame(screens, 12000);
+  assert.equal(screens.name, 'entry');
+  assert.equal(screens.typing, true);
+  const s = new Surface(224, 288);
+  screens.draw(s);
+  type('p'); type('a', 'KeyA'); type('c');
+  assert.deepEqual(log, []);
+  type('Enter');
+  assert.equal(log.filter((x) => x === 'save').length, 1);
+  assert.equal(screens.typing, false);
+  assert.equal(screens.name, 'scores');
+  const t = app.scores.table;
+  assert.equal(t.length, 10);
+  assert.deepEqual({ ...t[0], date: 0 },
+    { name: 'PAC', score: 12000, level: 3, date: 0 });
+  assert.match(t[0].date, /^\d{4}-\d\d-\d\d$/);
+  assert.equal(t[1].score, 10000);
+  assert.equal(app.scores.lastName, 'PAC');
+  screens.draw(s);
+  tap('Enter');
+  assert.equal(screens.name, 'title');
+});
+
+test('Escape ends name entry; empty gives ???; F types a letter', () => {
+  const { screens, tap, type, app, log } = make();
+  tap('Enter');
+  endGame(screens, 12000);
+  type('f', 'KeyF');
+  type('Backspace');
+  assert.ok(!log.includes('full'));
+  type('Escape');
+  assert.equal(app.scores.table[0].name, '???');
+  assert.equal(log.filter((x) => x === 'save').length, 1);
+  tap('Enter'); tap('Enter');
+  endGame(screens, 13000);
+  type('p', 'KeyP');                 // P is a letter here
+  type('Escape');
+  assert.equal(app.scores.table[0].name, 'P');
+});
+
+test('the next name entry starts with the last name', () => {
+  const { screens, tap, type, app } = make();
+  tap('Enter');
+  endGame(screens, 12000);
+  type('b'); type('o'); type('b'); type('Enter');
+  tap('Enter');
+  tap('Enter');
+  endGame(screens, 13000);
+  assert.equal(screens.entry.name, 'BOB');
+});
+
+test('no name for zero or a score below the tenth place', () => {
+  const { screens, tap, log, app } = make();
+  tap('Enter');
+  endGame(screens, 0);
+  assert.equal(screens.name, 'title');
+  tap('Enter');
+  endGame(screens, 1000);            // equal to the tenth: no
+  assert.equal(screens.name, 'title');
+  tap('Enter');
+  endGame(screens, 900);
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.typing, false);
+  assert.deepEqual(log, []);
+  assert.deepEqual(app.scores.table, SEED);
+  tap('Enter');
+  endGame(screens, 1001);
+  assert.equal(screens.name, 'entry');
+});
+
+test('a short table takes any score above zero', () => {
+  const { screens, tap, type, app } = make([]);
+  tap('Enter');
+  endGame(screens, 10);
+  assert.equal(screens.name, 'entry');
+  type('Enter');
+  assert.equal(app.scores.table.length, 1);
+});
+
+test('a demo game is never recorded', () => {
+  const { screens, tap, log, app } = make();
+  tap('Enter');
+  screens.game.demo = true;
+  endGame(screens, 99999);
+  assert.equal(screens.name, 'title');
+  assert.equal(screens.typing, false);
+  assert.deepEqual(log, []);
+  assert.deepEqual(app.scores.table, SEED);
+});
+
+test('a game starts with the best score as its high score', () => {
+  const { screens, tap, app } = make();
+  tap('Enter');
+  assert.equal(screens.game.high, 10000);
+  app.scores.table = [];
+  screens.title();
+  tap('Enter');
+  assert.equal(screens.game.high, 0);
+});
+
+test('the High scores screen shows the table', () => {
+  const a = make();
+  const b = make([{ name: 'ZZZ', score: 777, level: 9,
+    date: '2026-01-02' }]);
+  const sa = new Surface(224, 288), sb = new Surface(224, 288);
+  a.tap('ArrowDown'); a.tap('Enter');
+  b.tap('ArrowDown'); b.tap('Enter');
+  a.screens.draw(sa); b.screens.draw(sb);
+  assert.equal(a.screens.name, 'scores');
+  assert.ok(sa.pixels.some((p, i) => p !== sb.pixels[i]));
+  assert.ok(sa.pixels.filter((p) => p !== sa.pixels[0]).length > 500);
+});
+
+const store = (files = {}) => {
+  const choices = fakeChoices(files);
+  return { choices, store: choicesStore({ choices, vfs: fakeVfs(),
+    sysvars: fakeSysvars() }, 'Pacman') };
+};
+
+test('SEED is ten entries of our own names', () => {
+  assert.deepEqual(SEED.map((e) => e.name), ['ARM', 'BBC', 'VDU', 'RAM',
+    'ROM', 'CPU', 'BIT', 'KEY', 'DOT', 'POW']);
+  assert.deepEqual(SEED.map((e) => e.score), [10000, 9000, 8000, 7000,
+    6000, 5000, 4000, 3000, 2000, 1000]);
+  assert.ok(SEED.every((e) => e.level === 1 && e.date === '1987-06-01'));
+});
+
+test('loadScores: missing, corrupt and huge files', async () => {
+  const miss = await loadScores(store().store);
+  assert.deepEqual(miss, { table: SEED, lastName: '' });
+  assert.notEqual(miss.table, SEED);
+  miss.table[0].score = 1;
+  assert.equal(SEED[0].score, 10000);
+  for (const bad of ['str', null, [1, 2], 5, { table: 'x' },
+    { table: [] }, { table: [null, { score: 'x' }] }]) {
+    const r = await loadScores(store({ 'Pacman.Scores': bad }).store);
+    assert.deepEqual(r.table, SEED);
+  }
+  const big = [];
+  for (let i = 0; i < 10000; i++) {
+    big.push({ name: 'Q\x07\u20acRSTU', score: i, level: 2,
+      date: '2026-10-08\x00zzzz' });
+  }
+  const r = await loadScores(store({ 'Pacman.Scores':
+    { table: big, lastName: 'abcdefg' } }).store);
+  assert.equal(r.table.length, 10);
+  assert.equal(r.table[0].score, 9999);
+  assert.equal(r.table[0].name, 'QRS');
+  assert.equal(r.table[0].date, '2026-10-08');
+  assert.equal(r.lastName, 'abc'.toUpperCase());
+  const hostile = await loadScores(store({ 'Pacman.Scores':
+    { table: SEED, lastName: { x: 1 } } }).store);
+  assert.equal(hostile.lastName, '');
+});
+
+test('saveScores writes the Scores leaf and reads back', async () => {
+  const { store: st, choices } = store();
+  const data = { table: [{ name: 'AAA', score: 5, level: 1,
+    date: '2026-10-08' }], lastName: 'AAA' };
+  assert.equal(await saveScores(st, data), true);
+  assert.equal(choices.writes[0][0], 'Pacman.Scores');
+  assert.deepEqual(await loadScores(st), data);
 });
