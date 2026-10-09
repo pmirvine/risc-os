@@ -310,3 +310,16 @@ test('gameFinished: GAME OVER returns to the title', () => {
   assert.equal(screens.name, 'title');
   assert.equal(screens.game, null);
 });
+
+test('P, Escape, Continue: the game runs again, not paused', () => {
+  const { screens, tap } = make();
+  tap('Enter');
+  tap('KeyP');
+  assert.equal(screens.paused, true);
+  tap('Escape');
+  tap('Enter');                      // Continue
+  assert.equal(screens.name, 'play');
+  assert.equal(screens.paused, false);
+  screens.tick();
+  assert.equal(screens.game.frame, 1);
+});

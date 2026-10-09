@@ -63,15 +63,40 @@ export default async (page) => {
   const b = await state();
   console.log(`pacman: ${b.frames - a.frames} frames in 1.5 s`);
   if (b.frames <= a.frames + 5) fail('frames are not being drawn');
+  // the roll-call takes about 4 s to show all four ghosts
+  await page.waitForFunction(() => os.wimp.tasks.find(
+    (x) => x.name === 'Pacman').game.screens.titleScreen.shown() === 4,
+  null, { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(100);
   const pix = await G(`const p = g.surface.pixels; let lit = 0;
     const cs = new Set();
     for (let i = 0; i < p.length; i += 7) {
       if ((p[i] & 0xffffff) > 0x101010) lit++;
       cs.add(p[i]);
     }
-    return { lit: lit / (p.length / 7), colours: cs.size }`);
-  if (pix.lit < 0.02 || pix.colours < 5) {
+    const W = g.surface.width, any = (y0, y1) => {
+      for (let i = y0 * W; i < y1 * W; i++) {
+        if ((p[i] & 0xffffff) > 0x101010) return true;
+      }
+      return false;
+    };
+    const has = (r, gr, b) => {
+      const want = ((255 << 24) | (b << 16) | (gr << 8) | r) >>> 0;
+      for (let i = 0; i < p.length; i++) if (p[i] >>> 0 === want) {
+        return true;
+      }
+      return false;
+    };
+    return { lit: lit / (p.length / 7), colours: cs.size,
+      legend: any(170, 200), menu: any(214, 284),
+      ghosts: [[255, 0, 0], [255, 184, 255], [0, 255, 255],
+        [255, 184, 81]].map((c) => has(...c)) }`);
+  if (pix.lit < 0.02 || pix.colours < 8) {
     fail('the title looks empty: ' + JSON.stringify(pix));
+  }
+  if (!pix.legend || !pix.menu || pix.ghosts.includes(false)) {
+    fail('the title lacks roll-call, legend or menu: '
+      + JSON.stringify(pix));
   }
   // no sound before the first gesture; watch the AudioContext made
   if (await G(`return g.audio.live`)) fail('audio live before a gesture');
