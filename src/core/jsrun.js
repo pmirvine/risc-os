@@ -219,7 +219,7 @@ function resolveImport(dir, spec) {
 const LIBS = [{ prefix: 'wimplib', name: 'WimpLib' }, { prefix: 'gamelib', name: 'GameLib' }];
 /** A library import specifier: 'wimplib' or 'wimplib/...' (or 'gamelib'), the prefix in any case. */
 const LIB = /^(wimplib|gamelib)(\/|$)/i;
-/** One directory or leaf name of a 'wimplib/<Name>' import: no dots, specials, wildcards or spaces. */
+/** One directory or leaf name of a 'wimplib/<Name>' or 'gamelib/<Name>' import: no dots, specials, wildcards or spaces. */
 const LIB_SEG = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/;
 
 /**
