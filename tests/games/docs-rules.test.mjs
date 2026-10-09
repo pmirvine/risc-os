@@ -22,3 +22,19 @@ for (const f of FILES) {
     });
   });
 }
+
+const TRIBUTE = "A personal, non-commercial tribute to Namco's 1980 "
+  + 'arcade game. Pac-Man is a trademark of Bandai Namco; this '
+  + 'program is not connected with them.';
+const flat = (f) => readFileSync(new URL('../../' + f,
+  import.meta.url), 'utf8').replace(/\s+/g, ' ');
+
+for (const f of ['tools/docs/Pacman', 'tools/games/!Pacman/!Help']) {
+  test('tribute notice: ' + f, () => {
+    assert.ok(flat(f).includes(TRIBUTE), f + ' lacks the notice');
+  });
+}
+
+test('no placeholder in the Pacman guide', () => {
+  assert.ok(!flat('tools/docs/Pacman').includes('(to come)'));
+});
