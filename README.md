@@ -24,6 +24,7 @@ This is an unashamedly retro experience from when I owned a RiscPC with a Strong
 | ![JsEdit](docs/screenshots/jsedit.png) !JsEdit, the programmer's editor, completing a name in the Snake game's source | ![Programming in JavaScript](docs/screenshots/jstutor.png) *Programming in JavaScript*, the tutorial book, in !Bookworm |
 | ![Browse](docs/screenshots/browse.png) !Browse showing today's web, in tabs (`node serve.mjs --browser`) | ![Browse select menu](docs/screenshots/browse-select.png) A web page's drop-down list as a RISC OS menu |
 | ![Lander II](docs/screenshots/div-lander2.png) !Lander2: Lander II, a Zarch-like game grown from Lander, written in JavaScript on the disc | ![Lander II title](docs/screenshots/div-lander2-title.png) Lander II's title page |
+| ![Pacman](docs/screenshots/games-pacman.png) !Pacman: the 1980 arcade game, written in JavaScript on the disc with the shared !GameLib | ![Pacman title](docs/screenshots/games-pacman-title.png) !Pacman's title page |
 
 ## Running it
 
