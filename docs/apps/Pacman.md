@@ -11,8 +11,11 @@ it lives on the disc as JavaScript that `*JSRun` loads, so users can read and ch
 `riscos` module and `'gamelib/<Name>'`. No shared code was changed for it beyond the `gamelib` specifier (CORE_API 11a).
 No ROM data: the sprites are drawn from GameLib `Shapes`, sounds are synthesised, tunes are our own.
 
-This is the first stage: the maze, dots and energizers, Pac-Man, the four ghosts with scatter and chase, the title, the
-pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghosts, lives, the death sequence, the extra life, game over and Cruise Elroy are in; sound is in, and so are the title roll-call, the pause menu, the Settings screen, How to play, the high score table and name entry; the demo game (`Game` option `demo`, played by `Autopilot`) is in, and so are the attract screens (`Attract`).
+The game is complete as far as version 1 goes: the maze, dots and energizers, Pac-Man, the four ghosts (scatter, chase,
+fright, eyes, the ghost house, Cruise Elroy), the level table and endless levels, fruit, lives, the death and
+level-complete sequences, game over and the extra life, sound, the title with its roll-call, the pause menu, Settings,
+How to play, the high score table with name entry, and the attract mode (a demo game, `Game` option `demo`, played by
+`Autopilot`, shown by `Attract`). What it leaves out on purpose is under Known limitations below.
 
 ## Layers
 
@@ -43,11 +46,11 @@ pause menu and the desktop shell. Fright (blue and flashing ghosts), eating ghos
 | Level complete | the last dot gives the `levelDone` event and state `'levelDone'` for 240 frames (`stateTimer` 0-239; Render hides the ghosts from 60 and whitens the maze by `mazeWhite`), then `nextLevel()`: dots back, new Fright/House/Fruit, `sweeps`, `eatenId` and popups reset, state `'ready'`. `debug.clearLevel()` eats every dot |
 | House | `new House(level)`: `waiting` (ids in order), `out` (released, still leaving), `counts`, `global`, `globalCount`, `idle`; `onDot()` per dot or energizer, `tick()` once per play frame, `onRelease(id)`, `onLeft(id)`, `restart()`, `onDeath()`. **Contract:** `tick()` returns the first unreleased ghost that is due on EVERY frame until it is dealt with (only the idle release fires once, then the timer restarts). The caller acts once: start the ghost's way out and call `onRelease(id)`; a released ghost no longer counts dots nor blocks the next one's personal count, but stays in `waiting` until `onLeft(id)`, called exactly once when it reaches the exit (112, 92). After a death: `restart()` (all back inside, counts kept), then `onDeath()` (global counter 7/17/32). The idle timer counts from the first `tick()` (240 frames, 180 from level 5) and a dot resets it |
 | Play | `playFrame(game, input)`: one frame of the `'play'` state in the arcade's order; each ghost's target is its `SPECIAL.scatter` corner or `chaseTarget`; a `modeChange` event reverses the active ghosts. A blue ghost in Pac-Man's tile is eaten (`eat`: `Fright.nextScore()`, `ghostEaten {id, points}`, a popup `{px, py, text, frames: 60}`, state `'eaten'`); `eatenFrame` runs the 60 frame freeze (only other eyes move); the fourth ghost of the fourth energizer (`game.sweeps`) adds 12000 once (`bonus` event). Eyes are never collided with. `release` asks the House each frame (`Ghost.leave()` once, then `onRelease`); `step` calls `onLeft(id)` when a `'leaving'` ghost becomes `'active'`; `kill(game)` (a `death` event; clears popups, `eatenId` and the fruit; Elroy off; state `'dying'`) is also `debug.kill()`; `dyingFrame(game)` runs one frame of the 210 frame death (sets `game.ghostsShown`, false from frame 60, and `game.deathFrame`, -1 then 0-10 over frames 60-149). `addScore(game, n)` is how every score is added: crossing `game.bonus` once gives `extraLife` and `lives + 1` (bonus 0 never). `ghostPct(game, g)` gives the ghost's percent by precedence: eyes 200 (`EYES_PCT`), then 50 for a ghost in the house or leaving, then `tunnel` in a `T` tile, then `ghostFright` if blue, then Blinky's `elroy1`/`elroy2` if active, else `ghost`; `pacPct(game)` is `pacFright` while `fright.on` (when the level has one), else `pac`, never slowed in the tunnel; both read `levelSpec` (`game.elroy` 0-2 by dots left; `game.elroyOff` after a death until Clyde is `'active'`); in Elroy `targetOf` gives Blinky his chase target in scatter |
-| Game | the state machine: `'start'` 252 frames (`start` event on frame 1; at frame 120 `actorsShown` and a spare life goes: `lives` is the spare lives the Hud draws). `new Game({demo: true})`: `lives` 1 which `showActors()` takes at once in the constructor (0 spare), `bonus` 0 (no extra life), `'start'` only `DEMO_FRAMES` = 60 with actors shown from frame 0 and no `start` event, `'ready'` 60; everything else, ghosts and scoring included, is the normal code, driven by `Autopilot`'s `want`. The demo is silent (`loopFor` null, Sound off) and never recorded (`Screens.gameFinished`), `'play'`, `'eaten'` 60, `'dying'` 210 (`death` event at its start), then `'ready'` 120 (60 in a demo; `ready` event, `lives - 1`; dots kept; `afterDeath()` resets actors, Modes, `house.restart()` and `onDeath()`) or, with `lives` 0, `'gameOver'` 180 (`gameOver` event) and `'over'` (`tick` does nothing); also `'levelDone'`. `startLevel(n)` resets maze, sweeps, `eatenId`, popups, Fright, House, Fruit, actors and Elroy; the constructor and `nextLevel()` use it. `tick(input)` -> events; `snapshot()`; `debug` |
+| Game | the state machine: `'start'` 252 frames (`start` event on frame 1; at frame 120 `actorsShown` and a spare life goes: `lives` is the spare lives the Hud draws), `'play'`, `'eaten'` 60, `'dying'` 210 (`death` event at its start), then `'ready'` 120 (`ready` event, `lives - 1`; dots kept; `afterDeath()` resets actors, Modes, `house.restart()` and `onDeath()`) or, with `lives` 0, `'gameOver'` 180 (`gameOver` event) and `'over'` (`tick` does nothing); also `'levelDone'`. `new Game({demo: true})` is the demo game: `lives` 1, which `showActors()` takes at once in the constructor (0 spare), `bonus` 0 (no extra life), `'start'` of only `DEMO_FRAMES` = 60 with the actors shown from frame 0 and no `start` event, and `'ready'` 60; everything else, ghosts and scoring included, is the normal code, driven by `Autopilot`'s `want`. The demo is silent (`loopFor` null, Sound off) and never recorded (`Screens.gameFinished`). `startLevel(n)` resets maze, sweeps, `eatenId`, popups, Fright, House, Fruit, actors and Elroy; the constructor and `nextLevel()` use it. `tick(input)` -> events; `snapshot()`; `debug` |
 | MazeDraw | `wallPixels(rows)`, `mazeSurface(rows, colours)` (cached) |
 | Sprites | `drawPac`, `drawGhost`, `drawDigits` |
 | FruitArt | `drawFruit` |
-| Autopilot | engine, pure (imports `Dirs` and, by rule, only `Maze`/`Dirs`/`gamelib/Maths`). `new Autopilot(rng)` (its own `Rng`, never the game's); `choose(game)` -> 0..3 or -1: the way from Pac-Man's tile by the policy of spec 9a, in order: flee (a non-eyes, non-blue ghost within 6 steps: the exit with most room to run, then farthest from the ghost, never into a pocket of fewer than 10 tiles Pac-Man could reach before the ghost), eat blue ghosts the fright left (frames / 9 per tile) can reach, take an energizer nearer to him than to every ghost when a ghost is within 10, else the nearest dot; ties keep `player.dir`, then the Rng. Distances are breadth-first over `Maze.walkable(.., 'pac')` including the tunnel wrap (graph cached per `Maze`, scratch arrays reused: no allocation per decision); paths for rules 2-4 avoid tiles a ghost reaches no later than one step after him. `drive(game)` is what the shell calls every play frame: it decides once per tile, when he is at the tile centre (`past() >= 0` in a new tile, or stopped), and holds the answer; pass it as `want` |
+| Autopilot | engine, pure (imports `Dirs` and, by rule, only `Maze`/`Dirs`/`gamelib/Maths`). `new Autopilot(rng)` (its own `Rng`, never the game's); `choose(game)` -> 0..3 or -1: the way from Pac-Man's tile by the policy of spec 9a, in order: flee (a non-eyes, non-blue ghost within 6 steps: the exit with most room to run, then farthest from the ghost, never into a pocket of fewer than 10 tiles Pac-Man could reach before the ghost), eat blue ghosts the fright left (frames / 9 per tile) can reach, take an energizer nearer to him than to every ghost when a ghost is within 10, else the nearest dot; ties keep `player.dir`, then the Rng. Distances are breadth-first over `Maze.walkable(.., 'pac')` including the tunnel wrap (the neighbour graph is built once per `Maze` and cached; the search and scratch arrays are allocated once per `Autopilot` and reused; each decision still makes a few small arrays of exits and targets); paths for rules 2-4 avoid tiles a ghost reaches no later than one step after him. `drive(game)` is what the shell calls every play frame: it decides once per tile, when he is at the tile centre (`past() >= 0` in a new tile, or stopped), and holds the answer; pass it as `want` |
 | Hud | `drawHud` (`DEMO` in place of `GAME OVER` for a demo game, which also has no `PLAYER ONE`; `READY!` stays) |
 | Attract | `new Attract(app)`, owned by `Screens` (no desktop): `reset()` (the title appeared), `frame(screens, presses)` (any press resets the wait; during an attract screen it goes back to the title and returns true so `Screens.frame` stops: the key is consumed), `pointer(screens, p)` (a `down` does the same), `tick(screens)`. Counters are 60 Hz frames: `idle` 600 (`WAIT`) on the title proper (zeroed on every tick elsewhere, so Settings, pages, play, pause and entry do not count) -> `'attract-demo'`: `Game({demo: true, seed})` with `seed = app.demoSeed++` (the shell sets `demoSeed`) and `new Autopilot(new Rng(seed))`, `drive(game)` each tick while `'play'`; `screens.game` is the demo (`high` from the table), until `game.state === 'over'` (the first death, after the dying sequence and DEMO) or `t` 3600 (`LONGEST`) -> `'attract-scores'` 360 (`SCORES`) -> `screens.title()`. `Screens.tick` returns false on these screens, and `Sound.update` plays only in `'play'`, so a demo is silent; `gameFinished` is not called, so the table is never written |
 | Render | `drawGame(surface, game, frame)`, `MAZE_TOP` |
@@ -69,7 +72,7 @@ and `open`, `play`, `title`, `toDesktop` for the browser test.
 ## Data shapes
 
 An actor (Player, Ghost) is `{px, py, dir, acc, tx, ty}`, all integers. `game.tick({want})` takes `want` 0..3 (up,
-left, down, right) or -1 and returns the frame's events (`{type: 'dot' | 'energizer' | 'frightStart' | 'frightEnd' | 'death' | 'start'}`). The
+left, down, right) or -1 and returns the frame's events (`{type}` with `type` one of `'dot'`, `'energizer'`, `'frightStart'`, `'frightEnd'`, `'ghostEaten'`, `'fruitEaten'`, `'bonus'`, `'extraLife'`, `'modeChange'`, `'death'`, `'start'`, `'ready'`, `'gameOver'` or `'levelDone'`). The
 state is one of `'start'`, `'play'`, `'eaten'`, `'dying'`, `'ready'`, `'levelDone'`, `'gameOver'`, `'over'`. Settings are `{display, browserFull, sound, volume, lives, bonus}` in
 `Choices:Pacman.Settings` (GameLib `Choices`, checked by `Options.sanitise`; see Settings above); the high scores are `{table: [{name, score, level, date}], lastName}` in `Choices:Pacman.Scores`. `lives` and `bonus` go
 into `new Game({lives, bonus})` on Play and Restart.
@@ -86,12 +89,34 @@ into `new Game({lives, bonus})` on Play and Restart.
 
 * `node --test tests/games` (no browser): `pm-*.test.mjs` for each engine and drawing module, `pm-rules.test.mjs`
   (what each module may import), `pm-golden.test.mjs` (pinned hashes of three scripted 3000-tick runs; see Rule
-  coverage), `disc.test.mjs` (both disc scripts and their `--check`s).
+  coverage), `disc.test.mjs` (both disc scripts and their `--check`s), `docs-rules.test.mjs` (the guides and `!Help`
+  files: Latin-1, no tabs, at most 72 columns).
 * `URL=http://localhost:8372/ node --test tests/games/index.mjs`: the source checks, the `gamelib` import
-  (`jsrun-gamelib.mjs`) and `pacman.mjs` in a real browser through `tests/core/shot.mjs`: start from the Filer, full
-  screen and title, Return, an arrow key and a dot eaten, pause, the title menu items, a Settings change saved in Choices, the pause menu (Continue, Restart, Desktop; icon stays), the next start remembering Window and the lives, Window
-  from the icon bar menu, View source opens !JsEdit, Quit during play leaves nothing. Screenshots
-  `pacman-title.png`, `pacman-play.png` in `SHOTDIR`.
+  (`jsrun-gamelib.mjs`) and `pacman.mjs` in a real browser through `tests/core/shot.mjs` (the header of `pacman.mjs`
+  lists what it covers: start from the Filer, the title, the attract demo, a Settings change saved in Choices, a game
+  with an arrow key and a dot eaten, pause and the pause menu, Window and Sound from the icon bar menu, View source
+  opening !JsEdit, Quit during play, the next start remembering Window and the lives, and a high score with name
+  entry). Screenshots `pacman-title.png`, `pacman-demo.png`, `pacman-settings.png`, `pacman-play.png` and
+  `pacman-scores.png` in `SHOTDIR`. `tests/core/shot.mjs` takes its server from `URL`; without it the default server
+  is used, which may not be this tree's.
+
+## Known limitations
+
+What is intentionally not implemented, or not checked, in version 1:
+
+* **Intermissions** (the short films between levels) and the **kill screen** (the broken level 256): out of scope,
+  the reference says so. Levels go on for ever from the level 21 row.
+* **Exiting the house facing right after a mode change:** the reference's rule is not implemented; a ghost always
+  leaves to the left.
+* **Two ghosts swapping places** (the reference's pass-through rule): it cannot arise with single-pixel steps and a
+  collision check after each mover, so it has no code and no test.
+* **Scatter corners of Inky and Clyde** (`SPECIAL.scatter`, row 32): UNVERIFIED. The reference puts them at screen
+  row 35 (maze row 32) but it rests on one source and is not confirmed; a test pins the tile, which proves only that
+  it has not changed. Nothing in the user guides claims it is verified.
+* **Sound** was judged by measurement (the recipes' lengths, levels, loop seams, and what each event plays), not by
+  ear: the tunes and tones are our own and have not been compared with the arcade's.
+* **Autopilot** is a demo player, not a perfect one: it flees, chases blue ghosts and eats the nearest dots, and may
+  die at once.
 
 ## Rule coverage
 

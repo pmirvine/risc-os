@@ -360,12 +360,22 @@ Settings and high scores are kept in `Choices:Lander2`. The user guide is `$.Doc
 
 `$.Diversions.!Pacman` is a personal, non-commercial tribute to Namco's 1980 arcade game (Pac-Man is a trademark of
 Bandai Namco; this program is not connected with them), written in JavaScript as modules on the disc, built on
-GameLib, so its whole source can be read and changed in !JsEdit (View source on its title or icon bar menu). It is
-under way: so far the arcade maze with its dots and energizers, Pac-Man steered by the arrow keys, W A S D or a
-gamepad, and the four ghosts chasing him and scattering by turns, at a fixed 60 Hz, full screen or in a window, with a title
-and a pause menu, and energizers that turn the ghosts blue, which you can then eat (200 to 1600 points, eyes running home, a 12000 bonus), ghosts that leave their pen by the dots you eat; bonus fruit and a level table (speeds, fright time, schedule, ghost house limits), with the level-complete sequence and endless levels; lives (three, one extra at 10000), the death sequence, game over and Blinky's Cruise Elroy; the arcade's cornering (turns started up to three pixels early or late), red zones for chasing ghosts and the slowing tunnel; synthesised sound (our own tunes and waveforms; a Sound item on the icon bar menu, scaled by the desktop volume); a title that introduces the four ghosts, a pause menu (Continue, Restart, Settings, Title, Desktop), a How to play page and a Settings screen (display, browser full screen, sound, volume, lives, bonus life; kept in `Choices:Pacman.Settings`); a table of the ten best scores (name, score, level, date) with three-character name entry for a score that makes it, kept in `Choices:Pacman.Scores`; and attract mode (leave the title for 10 s and a silent demo game, played by an autopilot, runs until its first death or 60 s, then the scores show for 6 s; any key or click returns to the title and is not passed on). Its choices are kept in `Choices:Pacman`. The
-user guide is `$.Docs.Pacman` (source `tools/docs/Pacman`); the design is in `docs/apps/Pacman.md`;
-`node tools/disc-pacman.mjs` puts the sources (`tools/games/!Pacman`) on the disc.
+GameLib, so its whole source can be read and changed in !JsEdit (View source on its title or icon bar menu). It plays
+the arcade maze at a fixed 60 Hz, full screen or in a window, steered by the arrow keys, W A S D or a gamepad, with the
+arcade's cornering (turns started up to three pixels early or late); four ghosts with their own targets, scatter and
+chase, red zones, the slowing tunnel, Cruise Elroy and a ghost house that lets them out by the dots you eat; energizers
+that turn the ghosts blue, which you can then eat (200 to 1600 points, eyes running home, a 12000 bonus); bonus fruit and
+a level table (speeds, fright time, schedule, house limits) with the level-complete sequence and endless levels; lives
+(three, one extra at 10000), the death sequence and game over; synthesised sound (our own tunes and waveforms; a Sound
+item on the icon bar menu, scaled by the desktop volume); a title that introduces the four ghosts, a pause menu
+(Continue, Restart, Settings, Title, Desktop), a How to play page and a Settings screen (display, browser full screen,
+sound, volume, lives, bonus life; kept in `Choices:Pacman.Settings`); a table of the ten best scores (name, score, level,
+date) with three-character name entry for a score that makes it, kept in `Choices:Pacman.Scores`; and attract mode
+(leave the title for 10 s and a silent demo game, played by an autopilot, runs until its first death or 60 s, then the
+scores show for 6 s; any key or click returns to the title and is not passed on). Not in it: the intermissions, the kill
+screen, and a few arcade details listed under Known limitations in `docs/apps/Pacman.md`. The user guide is
+`$.Docs.Pacman` (source `tools/docs/Pacman`); the design is in `docs/apps/Pacman.md`; `node tools/disc-pacman.mjs` puts
+the sources (`tools/games/!Pacman`) on the disc.
 
 ### GameLib: a library for writing games
 

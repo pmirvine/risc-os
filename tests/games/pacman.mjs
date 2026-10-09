@@ -1,15 +1,24 @@
 // !Pacman (the JavaScript game on the disc in $.Diversions), the real
-// shell on the real core: start it from the Filer, check it takes the
-// screen and draws the title, start a game with Return, steer and eat
-// a dot, pause, go back to the desktop through the pause menu (the
-// icon stays), play in a window chosen from the icon bar menu, View
-// source (!JsEdit opens), sound (silent before a gesture, the Sound
-// item, a siren in play), and quit during play (nothing is left,
-// the AudioContext is closed), and the attract demo (left alone for
-// 10 s of real time the title runs a demo; a key returns to the title
-// and does not start a game).
-// Screenshots: pacman-title.png, pacman-play.png in SHOTDIR.
-// node tests/core/shot.mjs games-pacman tests/games/pacman.mjs
+// shell on the real core. In order: start it from the Filer, check it
+// takes the screen and draws a title with its roll-call, legend and
+// menu; no sound before a gesture; the attract demo (the title left
+// alone for 10 s of real time runs a demo; a key returns to the title
+// and does not start a game); a Settings change (Lives) saved in
+// Choices; Return starts a game and an arrow key moves Pac-Man, who
+// eats a dot; P pauses and resumes; the pause menu (Continue, Restart,
+// Desktop, which leaves the icon on the icon bar); the windowed
+// display chosen from the icon bar menu; the Sound item; View source
+// (!JsEdit opens); a siren in play and a start jingle; Quit during
+// play (nothing is left, the AudioContext is closed); the next start
+// opening the remembered Window with the saved lives; and a finished
+// game with a top-ten score asking for a name (typed, entered into
+// the table; the table is then put back). Not covered here: the
+// rules of the game (tests/games/pm-*.test.mjs) and what the pictures
+// look like beyond the title having its parts.
+// Screenshots in SHOTDIR: pacman-title.png, pacman-demo.png,
+// pacman-settings.png, pacman-play.png, pacman-scores.png.
+// URL=http://localhost:8372/ node tests/core/shot.mjs games-pacman \
+//   tests/games/pacman.mjs
 const SHOT = process.env.SHOTDIR || 'tests/screens';
 export default async (page) => {
   const errs = [];
