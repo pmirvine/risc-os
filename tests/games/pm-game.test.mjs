@@ -27,7 +27,7 @@ test('the intro lasts 252 frames, then play', () => {
 test('the options are kept', () => {
   const g = new Game({ seed: 3, level: 2, lives: 5, bonus: 20000 });
   assert.deepEqual([g.level, g.lives, g.bonus], [2, 5, 20000]);
-  assert.equal(new Game({ demo: true }).lives, 1);
+  assert.equal(new Game({ demo: true }).lives, 0);
 });
 
 test('eating scores 10 a dot', () => {

@@ -1,0 +1,188 @@
+// !Pacman - Autopilot: the computer player of the demo game.
+//
+// choose(game) says which way to go from Pac-Man's tile: 0 to 3, or
+// -1 if he has nowhere to go. drive(game) calls it once per tile, as
+// he reaches the tile's centre, and holds the answer until the next
+// tile: the result is the same input (want) a person would give.
+// The distances are steps along the maze (breadth-first search over
+// the tiles open to Pac-Man, through the tunnel too), never straight
+// lines. The policy, in this order:
+//   1. flee: a ghost (not eyes, not blue) within 6 steps: take the
+//      neighbour farthest from it, never into a pocket the ghost
+//      would close before he could get out;
+//   2. eat blue ghosts the fright left can still reach;
+//   3. a ghost within 10 steps and an energizer nearer to him than
+//      to any ghost: take the energizer;
+//   4. the nearest dot, keeping his way on ties (the seeded Rng
+//      breaks any others).
+// Paths for 2 to 4 avoid tiles a ghost reaches as soon as he does.
+// It is a demo, not a perfect player.
+
+import { DX, DY } from './Dirs';
+
+const FLEE = 6, NEAR = 10, FAR = 999, POCKET = 10;
+const TICKS = 9;   // frames per tile at about 90% speed
+const graphs = new WeakMap();
+
+/** The tiles open to Pac-Man: nb[4 * tile + dir] is the tile beyond,
+ *  or -1. A tile is y * width + x, as in Maze.dots. */
+function graphOf(maze) {
+  let g = graphs.get(maze);
+  if (g) return g;
+  const { w, h } = maze;
+  const nb = new Int16Array(w * h * 4).fill(-1);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (!maze.walkable(x, y, 'pac')) continue;
+      for (let d = 0; d < 4; d++) {
+        const ny = y + DY[d];
+        let nx = x + DX[d];
+        if (y === maze.special.tunnelRow) nx = (nx + w) % w;
+        if (maze.walkable(nx, ny, 'pac')) {
+          nb[(y * w + x) * 4 + d] = ny * w + nx;
+        }
+      }
+    }
+  }
+  g = { nb, n: w * h };
+  graphs.set(maze, g);
+  return g;
+}
+
+export class Autopilot {
+  constructor(rng) {
+    this.rng = rng;
+    this.held = -1;
+    this.last = -1;
+  }
+
+  /** Breadth-first distances from the sources into out (-1: not
+   *  reached); tiles with mask set are never entered. */
+  bfs(sources, out, mask) {
+    const { nb } = this.g, q = this.q;
+    out.fill(-1);
+    let head = 0, tail = 0;
+    for (const s of sources) {
+      if (out[s] < 0) { out[s] = 0; q[tail++] = s; }
+    }
+    while (head < tail) {
+      const t = q[head++];
+      for (let d = 0; d < 4; d++) {
+        const m = nb[t * 4 + d];
+        if (m < 0 || out[m] >= 0 || (mask && mask[m])) continue;
+        out[m] = out[t] + 1;
+        q[tail++] = m;
+      }
+    }
+  }
+
+  /** The want for this frame: decided when he reaches a tile centre
+   *  and held after. */
+  drive(game) {
+    const p = game.player, t = p.ty * game.maze.w + p.tx;
+    if (p.stopped || (t !== this.last && p.past() >= 0)) {
+      this.last = t;
+      this.held = this.choose(game);
+    }
+    return this.held;
+  }
+
+  /** The way from Pac-Man's tile; the best of the tied exits. */
+  choose(game) {
+    const { maze, player: p } = game;
+    const g = this.g = graphOf(maze);
+    if (!this.dp || this.dp.length !== g.n) {
+      for (const k of ['dp', 'dg', 'dt', 'dr']) {
+        this[k] = new Int16Array(g.n);
+      }
+      this.mask = new Uint8Array(g.n);
+      this.unsafe = new Uint8Array(g.n);
+      this.q = new Int16Array(g.n);
+    }
+    const at = (x, y) => y * maze.w + x, me = at(p.tx, p.ty);
+    const exits = [];
+    for (let d = 0; d < 4; d++) {
+      if (g.nb[me * 4 + d] >= 0) exits.push(d);
+    }
+    if (!exits.length) return -1;
+    const { dp, dg, mask } = this;
+    this.bfs([me], dp);
+    const foes = [], blues = [];
+    for (const o of game.ghosts) {
+      if (o.state !== 'active') continue;
+      (o.blue ? blues : foes).push(at(o.tx, o.ty));
+    }
+    if (foes.length) this.bfs(foes, dg);
+    for (let i = 0; i < g.n; i++) {
+      if (!foes.length || dg[i] < 0) dg[i] = FAR;
+      mask[i] = i !== me && dg[i] <= dp[i] + 1 ? 1 : 0;
+    }
+    const near = dg[me];
+    if (near <= FLEE) return this.pick(game, this.flee(me, exits));
+    let ways = null;
+    const f = game.fright, left = f.on ? f.frames - f.elapsed : 0;
+    if (blues.length && left > 0) {
+      ways = this.toward(me, exits, blues, mask, left / TICKS);
+    }
+    if (!ways && near <= NEAR) {
+      const es = [];
+      for (let i = 0; i < g.n; i++) {
+        if (maze.dots[i] === 50 && dp[i] < dg[i]) es.push(i);
+      }
+      if (es.length) ways = this.toward(me, exits, es, mask, FAR);
+    }
+    if (!ways) {
+      const ds = [];
+      for (let i = 0; i < g.n; i++) if (maze.dots[i]) ds.push(i);
+      ways = this.toward(me, exits, ds, mask, FAR) ||
+        this.toward(me, exits, ds, null, FAR);
+    }
+    return this.pick(game, ways || exits);
+  }
+
+  /** The exits that shorten the walk to the nearest of the targets
+   *  (by paths clear of mask) if it is within max steps, else null. */
+  toward(me, exits, targets, mask, max) {
+    if (!targets.length) return null;
+    this.bfs(targets, this.dt, mask);
+    const dt = this.dt, d0 = dt[me];
+    if (d0 <= 0 || d0 > max) return null;
+    const nb = this.g.nb;
+    const out = exits.filter((d) => dt[nb[me * 4 + d]] === d0 - 1);
+    return out.length ? out : null;
+  }
+
+  /** The exits that are best for running from the ghosts: not into a
+   *  pocket, then farthest from them, then most room to run. */
+  flee(me, exits) {
+    const { nb } = this.g, { dp, dg, dr } = this;
+    const unsafe = this.unsafe;
+    for (let i = 0; i < unsafe.length; i++) {
+      unsafe[i] = i === me || dg[i] <= dp[i] ? 1 : 0;
+    }
+    let best = null, top = null;
+    for (const d of exits) {
+      const n = nb[me * 4 + d];
+      let room = 0;
+      if (!unsafe[n]) {
+        this.bfs([n], dr, unsafe);
+        for (let i = 0; i < dr.length && room < 99; i++) {
+          if (dr[i] >= 0) room++;
+        }
+      }
+      const s = [room >= POCKET ? 1 : 0, dg[n], room];
+      const c = top ? s[0] - top[0] || s[1] - top[1] || s[2] - top[2]
+        : 1;
+      if (c > 0) { best = [d]; top = s; }
+      else if (c === 0) best.push(d);
+    }
+    return best;
+  }
+
+  /** One of the tied ways: the way he is going, else by the Rng. */
+  pick(game, ways) {
+    if (ways.includes(game.player.dir)) return game.player.dir;
+    if (ways.length === 1) return ways[0];
+    return ways[this.rng.int(ways.length)];
+  }
+}
