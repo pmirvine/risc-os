@@ -18,6 +18,16 @@ import {docScope} from '../../tools/moreapps/!Word/WriteBody';
 import {readSect} from '../../tools/moreapps/!Word/ReadSect';
 import {deepEqual, newPara} from '../../tools/moreapps/!Word/Model';
 
+// the Default types ./WriteParts gives an extension it adds (its
+// BY_EXT, which it does not export)
+const BY_EXT = {png: 'image/png', jpeg: 'image/jpeg', jpg: 'image/jpeg',
+  gif: 'image/gif', bmp: 'image/bmp', tif: 'image/tiff',
+  tiff: 'image/tiff', svg: 'image/svg+xml', emf: 'image/x-emf',
+  wmf: 'image/x-wmf', xml: 'application/xml',
+  bin: 'application/vnd.openxmlformats-officedocument.oleObject',
+  odttf: 'application/vnd.openxmlformats-officedocument.' +
+    'obfuscatedFont'};
+
 /**
  * Put the `extra` nodes of a property object in the order the
  * writer's contract gives them (Order.sortChildren: schema order,
@@ -329,15 +339,17 @@ export function expectedBack(doc) {
       n.toLowerCase());
     if (o) o[1] = t; else overrides.push(['/' + n, t]);
   }
-  // the writer types a part nothing covers (no extension, no Override)
+  // the writer types a part nothing covers: a Default for its
+  // extension (./WriteParts BY_EXT), else an Override
   for (const n of d.parts.keys()) {
-    const e = n.includes('.') ? n.slice(n.lastIndexOf('.') + 1)
+    const leaf = n.slice(n.lastIndexOf('/') + 1);
+    const e = leaf.includes('.') ? leaf.slice(leaf.lastIndexOf('.') + 1)
       .toLowerCase() : null;
-    if (!overrides.some(([p]) => p.toLowerCase() === '/' +
-      n.toLowerCase()) && !(e && defaults.some(([x]) =>
-      x.toLowerCase() === e))) {
-      overrides.push(['/' + n, 'application/octet-stream']);
-    }
+    if (overrides.some(([p]) => p.toLowerCase() === '/' +
+      n.toLowerCase()) || (e && defaults.some(([x]) =>
+      x.toLowerCase() === e))) continue;
+    if (e) defaults.push([e, BY_EXT[e] || 'application/octet-stream']);
+    else overrides.push(['/' + n, 'application/octet-stream']);
   }
   return d;
 }
@@ -350,8 +362,9 @@ export function expectedBack(doc) {
  * as it writes. These are taken from `got` (what was read back) after
  * checking they are only additions: every entry `want` has is in
  * `got` in the same order, the extra parts are the styles and
- * numbering parts, and the extra relationships are a styles or a
- * numbering one to such an added part. Anything else stays for
+ * numbering parts or parts `want.parts` holds (a picture's media),
+ * and the extra relationships are a styles or a numbering one to
+ * such an added part. Anything else stays for
  * assertSameDoc to find.
  */
 export function withNewParts(want, got) {
@@ -373,7 +386,10 @@ export function withNewParts(want, got) {
     main.slice(main.lastIndexOf('/') + 1) + '.rels';
   const allowed = [g.stylesPart, g.numberingPart, relsName]
     .filter(Boolean);
-  if (!extra.every((n) => allowed.includes(n))) return want;
+  // (a part the model holds that the file had not: a picture's media
+  // put in by a command, Batch B)
+  const held = (n) => want.parts instanceof Map && want.parts.has(n);
+  if (!extra.every((n) => allowed.includes(n) || held(n))) return want;
   const inOrder = (a, b) => {
     let at = 0;
     return a.every((x) => {

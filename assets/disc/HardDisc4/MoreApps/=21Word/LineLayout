@@ -2,13 +2,14 @@
 // into lines that fit a width, run by run in each run's font, every
 // line and item keeping the model offsets it stands for.
 //
-//   layoutPara(para, styles, width, metrics, cache, label?, defPx?)
-//                                     -> {h, lines}
+//   layoutPara(para, styles, width, metrics, cache, label?, defPx?,
+//              map?) -> {h, lines}
 //   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
 //   cache:   a Map for the run formats (./Fmt)
 //   label:   the paragraph's list label (./ListNumbers), or none
 //   defPx:   the default tab stop in px (./TabStops defaultStop / 15;
 //            48, half an inch, when not given)
+//   map:     the scope raw inlines are read in (./PicRead docMap)
 //   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
 //          label?, clip?, bars?}
 //          x: where the line's text starts (after indent, a list
@@ -17,61 +18,23 @@
 //          {x, w, text, f, bullet} (./LineLabel): drawn there, but
 //          no item and in no offsets
 //   item:  {x, w, text, f, kind, from, to, shown, hl, sh, dy, js?,
-//          label?, leader?}
-//          kind 'text' | 'link' | 'box' | 'tab' | 'break' |
+//          label?, leader?, pic?}
+//          kind 'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
 //          'pagebreak' (label: its ./BreakMarks label)
+//          pic (kind 'pic'): {...pictureOf, w, h}, w, h its size
+//          in px (= item w); text '', shown, dy 0
 //          hl the highlight colour or null, sh the character
 //          shading's (./Fmt shade) or null, dy the baseline shift
 //          (./Fmt), js the width a justified space gained
 //
-// Offsets are UTF-16 indices into para.text. The lines cover the text
-// without gaps or overlap (lines[0].from is 0, the last .to is the
-// length, each .to is the next .from), and so do the items of a line.
-// An item's text is what is drawn; shown is true when that is not the
-// model text of [from, to): a hyperlink or other wrapper (its text),
-// a [...] box, a non-breaking hyphen, and the zero-width items with
-// text '' (an unseen inline, a tab, a line break; spaces at the start
-// of a line after a break are not drawn either, as in the stub).
-//
-// Lines break greedily at spaces. Spaces that end a wrapped line hang
-// in it: they count in its items (for hit-testing) but not for its
-// alignment; the next line starts at the next non-space. A word longer
-// than the line is not broken: it overflows on a line of its own
-// (measured once, so a 100,000-character word costs one measure). A tab
-// item runs from where it starts to its stop (./TabStops nextStop: the
-// paragraph's stops, else the default ones, counted from the margin);
-// after a right, centre or decimal stop it is widened once its segment
-// is placed, to line it up (./TabAlign: its last non-space, else no
-// width); leader: the stop's leader, drawn by ./DocPaint. bars: the x
-// of each bar stop, on every line (drawn, no item). A line break (\n or
-// a plain w:br) ends its line, endsWithBreak, and its offset belongs to
-// that line; so does a page or column break, a rule (shown, text '', no
-// highlight, no shading) from where the text ends to the line's end,
-// at least ./BreakMarks MIN_RULE wide (when less is left the line
-// wraps before it); after one that ends the paragraph (nothing but
-// unseen inlines after it) there is no empty line (the paragraph mark
-// is on the rule's line, as in Word). wrapped is true when the line
-// ends because the next word did not fit. Items are merged only when
-// both are model text in the same format, touching in x and in offsets.
-// An empty paragraph has one line, from = to = 0, as high as the text
-// of its mark (first run) would be. A line's height and baseline are
-// ./ParaSpace lineBox's for the paragraph's line spacing: single, 1.25
-// times its largest text high, its baseline 0.27 of that text above its
-// bottom; it grows, only when it holds superscript or subscript, to
-// keep that shifted text (0.98 of its size above its baseline, 0.27
-// below) inside it; line.clip is set on an exact line too low for its
-// text. Alignment: left, centre or right (./Justify align); it moves
-// items, never offsets. Justified ('both'): items are not merged and a
-// space in model text is an item of its own, and a wrapped line is
-// spread to the width by ./Justify (not the last line, nor one ending
-// in a break). A list paragraph
-// takes its level's indents (under its own: ./Fmt paraFmt), and its
-// first line holds the label (./LineLabel: in the hanging space, the
-// text after it at its suffix); the label is at least as high as its
-// text, moves with the alignment and is never spread. Pure: no desktop
-// services.
+// The rules (offsets, breaking, tabs, breaks, line heights, labels,
+// pictures): docs/apps/Word.md, "LineLayout: the rules". A picture
+// (./PicLine fitPic: never measured) stands on the baseline and
+// raises the line; it is a group of its own, so a line may break
+// before and after it (as Word's). Pure: no desktop services.
 import {runFmt, paraFmt} from './Fmt';
 import {tokens, PLAIN} from './LineTokens';
+import {fitPic} from './PicLine';
 import {justify, align} from './Justify';
 import {labelLine} from './LineLabel';
 import {lineBox} from './ParaSpace';
@@ -83,7 +46,7 @@ const SCRATCH = ['px', 'real', 'ink', 'up', 'down'];
 
 /** See the header. */
 export function layoutPara(para, styles, width, metrics, cache,
-  label, defPx = DEFAULT_TW / 15) {
+  label, defPx = DEFAULT_TW / 15, map) {
   const pf = paraFmt(styles, para, label ? label.indent : undefined);
   const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
   const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
@@ -144,10 +107,17 @@ export function layoutPara(para, styles, width, metrics, cache,
         hl: f.highlight ?? null, sh: f.shade ?? null,
         dy: f.dy || 0});
     }
+    if (tk.fit) {
+      // a picture: its bottom on the baseline
+      const it = items[items.length - 1];
+      it.pic = {...tk.pic.info, ...tk.fit};
+      it.dy = 0;
+      line.up = Math.max(line.up, tk.fit.h);
+    }
     if (pend && pend.dot === null) pend.dot = dotIn([[tk, w]], x,
       metrics);
     x += w;
-    if (/\S/.test(tk.text)) line.ink = x;
+    if (tk.fit || /\S/.test(tk.text)) line.ink = x;
     pos = tk.to;
   };
   let group = [], groupW = 0;
@@ -176,17 +146,27 @@ export function layoutPara(para, styles, width, metrics, cache,
         : base.px);
     }
   }
-  const toks = tokens(para, styles, cache);
+  const toks = tokens(para, styles, cache, map);
   // after the last token that is not 'z' (unseen) a break ends the
   // paragraph: the unseen ones stay on its line
   let tail = toks.length - 1;
   while (tail >= 0 && toks[tail].t === 'z') tail--;
   let how;
   for (let k = 0; k < toks.length; k++) {
-    const tk = toks[k];
+    let tk = toks[k];
+    // (a picture starting a line: what the line leaves, x on); a
+    // picture is a group alone: a break before and after it
+    if (tk.pic) {
+      flush();
+      tk = {...tk, fit: fitPic(tk.pic, maxX - (line.real ? left : x))};
+      group.push([tk, tk.fit.w]);
+      groupW += tk.fit.w;
+      flush();
+      continue;
+    }
     if (tk.t === 'w' || tk.t === 'z') {
-      const w = tk.t === 'z' ? 0 : metrics.width(tk.text, tk.f.css) +
-        (tk.kind === 'box' ? 6 : 0);
+      const w = tk.fit ? tk.fit.w : tk.t === 'z' ? 0 : metrics.width(
+        tk.text, tk.f.css) + (tk.kind === 'box' ? 6 : 0);
       group.push([tk, w]);
       groupW += w;
     } else if (tk.t === 's') {

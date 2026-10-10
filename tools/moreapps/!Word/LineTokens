@@ -2,14 +2,16 @@
 // lines, each with the model offsets (UTF-16 indices into Para.text)
 // it stands for.
 //
-//   tokens(para, styles, cache) -> [{t, text, f, kind, from, to,
-//                                     shown}]
+//   tokens(para, styles, cache, map?) -> [{t, text, f, kind, from,
+//                                          to, shown, pic?}]
 //   t     'w' a word or a piece of one (no break inside), 's' spaces,
 //         'tab', 'nl' (a line break), 'pb' (a page or column break:
 //         ./BreakMarks, with its label), 'z' (an unseen inline: drawn
 //         as nothing, zero width; it sticks to the word next to it)
-//   kind  'text' | 'link' | 'box' | 'tab' | 'break' | 'pagebreak'
+//   kind  'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
+//         'pagebreak'
 //   shown true when text is not the model text of [from, to)
+//   map   the scope raw inlines are read in (./PicRead docMap)
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
 // in blue, underlined; other wrappers with text (an insertion, a
@@ -20,13 +22,16 @@
 // a tab in that text is a 'tab' token (it goes to the next stop, as
 // in Word), a newline is drawn as it is. The unseen kinds
 // of ./Kinds (proofing marks, bookmarks, field codes) and deletions
-// are 'z'; a non-breaking hyphen is '-', a soft hyphen nothing;
-// anything else is a small grey [...] box. A run boundary inside a
-// surrogate pair is moved past the pair. Pure: no desktop services.
+// are 'z'; a non-breaking hyphen is '-', a soft hyphen nothing; a
+// picture ./PicRead understands is one 'w' token of kind 'pic', text
+// '' (./PicLine picToken); anything else is a small grey [...] box.
+// A run boundary inside a surrogate pair is moved past the pair.
+// Pure: no desktop services.
 import {OBJ} from './Model';
 import {runFmt} from './Fmt';
 import {unseen, localName} from './Kinds';
 import {isPageBreak, pbToken} from './BreakMarks';
+import {picToken} from './PicLine';
 
 export const PLAIN = {rPr: {extra: []}};
 
@@ -84,7 +89,7 @@ function shownWords(text, i, f, kind, out) {
 }
 
 /** The tokens of the inline x at offset i, in format f. */
-function inline(x, i, f, out) {
+function inline(x, i, f, out, map) {
   const one = (t, text, g, kind, shown = true) => out.push({t, text,
     f: g, kind, from: i, to: i + 1, shown});
   const l = localName(x.node), bare = bareT(x);
@@ -98,11 +103,15 @@ function inline(x, i, f, out) {
   else if (x.text && l === 'hyperlink') {
     shownWords(x.text, i, linkFmt(f), 'link', out);
   } else if (x.text) shownWords(x.text, i, f, 'text', out);
-  else one('w', '[...]', boxFmt(f), 'box');
+  else {
+    const pic = picToken(x, i, f, map);
+    if (pic) out.push(pic);
+    else one('w', '[...]', boxFmt(f), 'box');
+  }
 }
 
 /** See the header. */
-export function tokens(para, styles, cache) {
+export function tokens(para, styles, cache, map) {
   const out = [];
   const text = para.text, n = text.length;
   const runs = para.runs.length ? para.runs
@@ -121,7 +130,7 @@ export function tokens(para, styles, cache) {
     for (let i = from; i <= to; i++) {
       if (i < to && text[i] !== OBJ) continue;
       if (i > k) words(text.slice(k, i), k, f, out);
-      if (i < to) inline(para.inlines[i] || {}, i, f, out);
+      if (i < to) inline(para.inlines[i] || {}, i, f, out, map);
       k = i + 1;
     }
   };

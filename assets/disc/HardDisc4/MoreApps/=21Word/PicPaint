@@ -1,0 +1,137 @@
+// PicPaint - a picture item drawn (pure; Batch B).
+//
+//   paintPic(L, g, item, left, base)
+//       item: a ./LineLayout item of kind 'pic' (item.pic: {...
+//       ./PicRead pictureOf, w, h}); its box is {left, base - h, w,
+//       h}: the picture stands on the baseline. When L.pics (a
+//       ./PicCache view: get(bytes, mime, info)) has the bitmap of
+//       its media (./PicMedia mediaOf(L.doc, embed)) the bitmap is
+//       drawn into the box, cut to srcRect (1/1000 % of each edge;
+//       a negative edge, which Word draws as space, as 0; uncropped
+//       when that leaves no width or height). It asks for the
+//       bitmap at the size the whole picture is shown at in device
+//       px (want: its longest side x the scale of g's transform,
+//       which holds the zoom and the pixel ratio). Else the
+//       box is outlined #a0a0a0 with the alt text, or failing that
+//       a LABEL, in 11 px sans-serif cut to the box:
+//         missing      no media part (mediaOf null)
+//         unsupported  + the part's extension in capitals: not PNG,
+//                      JPEG or GIF by its bytes (EMF, SVG...), a
+//                      header that cannot be read, or a decode that
+//                      failed
+//         large        decodable refuses it (over 20 MB, a side
+//                      over 16384 px, over 64 Mpx)
+//         loading      ('') while it is being decoded
+//         waiting      'Loading picture...' while the cache has no
+//                      room for it (deferred)
+//       Media that decodable refuses is never asked of L.pics (so
+//       never decoded). A floating picture (wp:anchor) also gets a
+//       1 px dashed outline ([4, 3], #606060) round its box: it is
+//       shown in its paragraph, not where Word puts it.
+// Draws on the context it is given (as ./DocPaint); imports no
+// desktop services. imageInfo is worked out once per bytes object.
+import {mediaOf, imageInfo, decodable} from './PicMedia';
+
+export const LABEL = {missing: 'Picture missing',
+  unsupported: 'Picture not shown: ',
+  large: 'Picture too large to show', loading: '',
+  waiting: 'Loading picture...'};
+
+const infos = new WeakMap();
+
+/** imageInfo of bytes, once per bytes object. */
+function infoOf(bytes) {
+  if (infos.has(bytes)) return infos.get(bytes);
+  const i = imageInfo(bytes);
+  infos.set(bytes, i);
+  return i;
+}
+
+/** The part name's extension in capitals ('' when none). */
+function extOf(name) {
+  const leaf = String(name).slice(String(name).lastIndexOf('/') + 1);
+  const i = leaf.lastIndexOf('.');
+  return i < 0 ? '' : leaf.slice(i + 1).toUpperCase();
+}
+
+const edge = (v) => Math.max(0, v || 0) / 100000;
+
+/** srcRect as fractions {l, t, r, b}; null: uncropped. */
+function cropOf(sr) {
+  if (!sr) return null;
+  const c = {l: edge(sr.l), t: edge(sr.t), r: edge(sr.r),
+    b: edge(sr.b)};
+  return c.l + c.r < 1 && c.t + c.b < 1 ? c : null;
+}
+
+/** The scale of g's transform (zoom x pixel ratio); 1 without. */
+function scaleOf(g) {
+  const m = typeof g.getTransform === 'function' && g.getTransform();
+  const k = m ? Math.hypot(m.a, m.b) : 1;
+  return k > 0 && Number.isFinite(k) ? k : 1;
+}
+
+/** See the header. */
+export function paintPic(L, g, item, left, base) {
+  const p = item.pic;
+  const w = p.w, h = p.h, top = base - h;
+  const m = mediaOf(L.doc, p.embed);
+  let label = LABEL.loading;
+  if (!m) label = LABEL.missing;
+  else {
+    const info = m.mime ? infoOf(m.bytes) : null;
+    const why = info ? decodable(info, m.bytes) : 'not-image';
+    if (why === 'not-image') label = LABEL.unsupported + extOf(m.name);
+    else if (why) label = LABEL.large;
+    else if (L.pics) {
+      const c = cropOf(p.srcRect);
+      const want = scaleOf(g) * (c ? Math.max(w / (1 - c.l - c.r),
+        h / (1 - c.t - c.b)) : Math.max(w, h));
+      const r = L.pics.get(m.bytes, m.mime, info, want);
+      if (r.state === 'ready') {
+        drawBitmap(g, r.bitmap, c, left, top, w, h);
+        if (p.floating) dashed(g, left, top, w, h);
+        return;
+      }
+      if (r.state === 'failed') {
+        label = LABEL.unsupported + extOf(m.name);
+      } else if (r.state === 'deferred') label = LABEL.waiting;
+    }
+  }
+  box(g, p.alt || label, left, top, w, h);
+  if (p.floating) dashed(g, left, top, w, h);
+}
+
+function drawBitmap(g, bm, c, left, top, w, h) {
+  const bw = bm.width, bh = bm.height;
+  const {l, t, r, b} = c || {l: 0, t: 0, r: 0, b: 0};
+  g.drawImage(bm, l * bw, t * bh, (1 - l - r) * bw, (1 - t - b) * bh,
+    left, top, w, h);
+}
+
+/** The outlined box with `text` cut to it. */
+function box(g, text, left, top, w, h) {
+  g.strokeStyle = '#a0a0a0';
+  g.lineWidth = 1;
+  g.strokeRect(Math.round(left) + 0.5, Math.round(top) + 0.5,
+    Math.max(0, Math.round(w) - 1), Math.max(0, Math.round(h) - 1));
+  if (!text) return;
+  g.save();
+  g.beginPath();
+  g.rect(left, top, w, h);
+  g.clip();
+  g.fillStyle = '#606060';
+  g.font = '11px "Liberation Sans", sans-serif';
+  g.fillText(text, left + 4, top + Math.min(h - 3, 14));
+  g.restore();
+}
+
+/** The dashed outline of a floating picture. */
+function dashed(g, left, top, w, h) {
+  g.strokeStyle = '#606060';
+  g.lineWidth = 1;
+  g.setLineDash([4, 3]);
+  g.strokeRect(Math.round(left) - 0.5, Math.round(top) - 0.5,
+    Math.round(w) + 1, Math.round(h) + 1);
+  g.setLineDash([]);
+}

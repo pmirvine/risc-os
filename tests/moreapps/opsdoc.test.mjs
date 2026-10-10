@@ -88,7 +88,7 @@ describe('setDocPart', () => {
     const d = newDoc();
     const before = structuredClone(d);
     const bad = [
-      ['__proto__', {}], ['parts', new Map()], ['meta', {}],
+      ['__proto__', {}], ['meta', {}],
       ['constructor', null], ['toString', null], ['sections', []],
       ['rawSettings', null], [7, null], [undefined, null],
       ['numbering', {raw: 'x', nums: new Map()}],
@@ -161,6 +161,89 @@ describe('setDocPart', () => {
     assert.ok(back.numbering.nums.has(1));
     d.undo();
     assert.deepEqual(await write(d.doc), plain);
+  });
+});
+
+describe('setDocPart parts (plan R5)', () => {
+  const PNG = () => new Uint8Array([137, 80, 78, 71]);
+  const withMedia = () => {
+    const d = newDoc();
+    d.parts = new Map(d.parts).set('word/media/image1.png', PNG());
+    return d;
+  };
+
+  it('adds a name: the old bytes objects kept; the inverse gives ' +
+    'the old Map back', () => {
+    const d = withMedia();
+    const old = d.parts, bytes = PNG();
+    const next = new Map(old).set('word/media/image2.png', bytes);
+    const inv = apply(d, {op: 'setDocPart', key: 'parts', value: next});
+    assert.equal(d.parts, next);
+    for (const [k, v] of old) assert.equal(d.parts.get(k), v, k);
+    assert.equal(d.parts.get('word/media/image2.png'), bytes);
+    assert.equal(inv.value, old, 'the old Map itself');
+    const inv2 = applyOwn(d, inv);
+    assert.equal(d.parts, old, 'undo: the same Map object');
+    assert.equal(inv2.value, next, 'redo gives the new Map again');
+    applyOwn(d, inv2);
+    assert.equal(d.parts, next);
+  });
+
+  it('in Document: one step; undo restores the same Map', () => {
+    const d = new Document(withMedia());
+    const old = d.doc.parts;
+    d.apply({op: 'setDocPart', key: 'parts', value: new Map(old)
+      .set('word/media/image9.gif', PNG())});
+    assert.equal(d.undoDepth, 1);
+    d.undo();
+    assert.equal(d.doc.parts, old);
+  });
+
+  it('refused: not a Map, changed bytes, taken or bad names, ' +
+    'not bytes; doc unchanged', () => {
+    const d = withMedia();
+    const before = structuredClone(d), old = d.parts;
+    const add = (k, v = PNG()) => new Map(old).set(k, v);
+    const bad = [
+      ['not a Map', [...old]], ['object', {}], ['null', null],
+      ['changed bytes', add('word/media/image1.png')],
+      ['main', add('word/document.xml')],
+      ['content types', add('[Content_Types].xml')],
+      ['rels', add('word/_rels/x.rels')],
+      ['case', add('WORD/MEDIA/IMAGE1.PNG')],
+      ['styles', add('Word/Styles.xml')],
+      ['climb', add('../x.png')], ['absolute', add('/word/x.png')],
+      ['empty', add('')], ['backslash', add('word\\x.png')],
+      ['not bytes', add('word/media/image2.png', [1, 2])],
+      ['string bytes', add('word/media/image2.png', 'x')],
+      ['twice', add('word/media/a.png').set('word/media/A.PNG',
+        PNG())],
+      ['not a string', new Map(old).set(7, PNG())],
+      ['drive letter', add('C:/x.png')],
+      ['a folder of a part', add('word/media')],
+      ['inside a part', add('word/media/image1.png/x.png')],
+    ];
+    for (const [what, value] of bad) {
+      assert.throws(() => apply(d, {op: 'setDocPart', key: 'parts',
+        value}), RangeError, what);
+      assert.equal(d.parts, old, what);
+      assert.deepEqual(d, before, what);
+    }
+  });
+
+  it('a removed name is taken back by undo; the numbering part ' +
+    'name is not free', () => {
+    const d = withMedia();
+    const old = d.parts;
+    const less = new Map(old);
+    less.delete('word/media/image1.png');
+    const inv = apply(d, {op: 'setDocPart', key: 'parts', value: less});
+    applyOwn(d, inv);
+    assert.equal(d.parts, old);
+    d.meta = {...d.meta, numberingPart: 'word/numbering.xml'};
+    assert.throws(() => apply(d, {op: 'setDocPart', key: 'parts',
+      value: new Map(old).set('word/Numbering.xml', PNG())}),
+    RangeError);
   });
 });
 

@@ -1,0 +1,91 @@
+// PicLoad - a picture read from somewhere and put in the document
+// (Insert > Picture..., ./PicInsertBox; a drop and a paste later).
+//
+//   putPicture(dw, read, {at, live}?) -> Promise<boolean>
+//       read() -> Promise<Uint8Array>: the file's bytes. The picture
+//       goes in at the selection (replacing it), or at {id, off}
+//       (a drop point: so a window with no selection takes a drop),
+//       as one undo step (./InsertPicture insert in typing.command),
+//       the picture then selected; true when it did. Neither: a beep.
+//       The read is asynchronous, so the window must still be open
+//       and the document's state and selection what they were when
+//       it began: else nothing goes in (MSG.changed). Every refusal
+//       (./InsertPicture's RangeError codes, a read that fails)
+//       beeps and says why with reportError (MSG), changing nothing.
+//       live() -> false (the box that asked was cancelled or closed)
+//       or a document closed meanwhile: false quietly, no message.
+//       Never rejects: an unexpected error is reported (MSG.failed).
+//   MSG   the messages
+//
+// Bytes come only from read(): nothing is loaded by address.
+import {wimp, reportError} from 'riscos';
+import {insert} from './InsertPicture';
+import {caret} from './Selection';
+
+export const MSG = {
+  notImage: 'This is not a PNG, JPEG or GIF picture.',
+  tooBig: 'The picture is too large: at most 20 MB.',
+  tooLarge: 'The picture is too large: at most 16,384 pixels a side ' +
+    'and 64 million in all.',
+  ids: 'No picture id is free in this document.',
+  name: 'No picture name is free in this document.',
+  pasteFree: 'This picture could not be pasted: no free name or id.',
+  changed: 'The document changed while the picture was being read: ' +
+    'nothing was put in.',
+  unreadable: 'The file could not be read.',
+  noPackage: 'This document cannot take a picture.',
+  failed: 'The picture could not be put in: ',
+};
+const BY_CODE = {'not-image': MSG.notImage, 'too-big': MSG.tooBig,
+  'too-large': MSG.tooLarge, ids: MSG.ids,
+  'no-package': MSG.noPackage, name: MSG.name};
+
+/** A refusal: a beep and the message. */
+function refuse(text) {
+  wimp.beep();
+  reportError(text, {appName: 'Word'});
+  return false;
+}
+
+/** Where the document and its selection are. */
+const where = (v) => v.sel && JSON.stringify([v.sel.anchor, v.sel.head,
+  v.d.stateId]);
+
+/** See the header. */
+export async function putPicture(dw, read, opts = {}) {
+  try {
+    return await put(dw, read, opts);
+  } catch (e) {
+    return refuse(MSG.failed + (e && e.message ? e.message : e));
+  }
+}
+
+async function put(dw, read, {at, live} = {}) {
+  const v = dw.view;
+  if (!v.sel && !at) {
+    wimp.beep();                       // nowhere to put it
+    return false;
+  }
+  const before = where(v);
+  const alive = () => !dw.closed && dw.win.isOpen &&
+    (!live || live());
+  let bytes;
+  try {
+    bytes = await read();
+  } catch (e) {
+    return alive() ? refuse(MSG.unreadable) : false;
+  }
+  if (!alive()) return false;
+  if (where(v) !== before) return refuse(MSG.changed);
+  const sel = at ? caret(at) : v.sel;
+  try {
+    const out = v.typing.command(() => insert(v.d, sel, {bytes}));
+    if (!out || out === sel) return false;
+    v.edited(out);
+    return true;
+  } catch (e) {
+    if (e instanceof RangeError && BY_CODE[e.message])
+      return refuse(BY_CODE[e.message]);
+    throw e;
+  }
+}

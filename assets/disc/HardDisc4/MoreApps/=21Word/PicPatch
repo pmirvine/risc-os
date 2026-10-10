@@ -1,0 +1,96 @@
+// PicPatch - the Picture dialogue box's values (./PicBox) from a
+// picture, and the ./PicOps setPicture patch they make (pure).
+//
+//   fill(pic, info) -> {width, height, keep: true, alt, shaded}
+//       pic ./PicRead pictureOf's result, info ./PicMedia
+//       imageInfo's of its bytes (or null). width, height: the
+//       extent in twips (EMU / 635); alt the description. shaded
+//       names the controls that stay as they are: width, height,
+//       keep and reset for a floating picture (plan R12) or one
+//       whose size cannot be written (R2); reset without a natural
+//       size (./PicMedia naturalEmu null); alt (undefined then, left
+//       unchanged) for a description over 1024 characters (R17; tabs
+//       and line ends in one are fine: the field shows it without
+//       them, and unless the user edits it, it is left as it is)
+//   patchOf(values, pic, reset?) -> {cx?, cy?, descr?} | {error}
+//       values {width, height (twips; null: text that is not a
+//       length; undefined: untouched), keep, alt}. Only what
+//       changed, compared as the fields show it (a hundredth of an
+//       inch): {} when nothing did. One side changed with keep on:
+//       the other follows, in proportion to the picture's extent;
+//       both changed: both as given. reset {cx, cy} (EMU: the
+//       natural size Reset size put in the fields): when the fields
+//       still show it (to 0.01 inch) that extent is the patch as it
+//       is, exact, whatever Keep proportions says. error 'range'
+//       (a side not 15..31680 twips, empty, not a length, or the
+//       follower out of it: never clamped, R17) or 'alt' (over 1024
+//       characters or a control character other than tab and line
+//       ends). Size values of a floating or unsupported picture are
+//       ignored; alt is not.
+import {formatLength} from 'wimplib/Units';
+import {naturalEmu} from './PicMedia';
+import {MAX_ALT, CONTROL} from './PicOps';
+
+const EMU = 635, LO = 15, HI = 31680;
+const twips = (e) => Math.round(e / EMU);
+const same = (a, b) => formatLength(a) === formatLength(b);
+const fixed = (p) => p.floating || !p.supported;
+const badAlt = (t) => t.length > MAX_ALT || CONTROL.test(t);
+const shown = (t) => t.replace(/[\u0000-\u001f\u007f-\u009f]/g, '');
+
+/** See the header. */
+export function fill(pic, info) {
+  const shaded = [];
+  if (fixed(pic)) shaded.push('width', 'height', 'keep', 'reset');
+  else if (!naturalEmu(info)) shaded.push('reset');
+  const keepAlt = pic.alt.length > MAX_ALT;
+  if (keepAlt) shaded.push('alt');
+  return {width: twips(pic.cx), height: twips(pic.cy), keep: true,
+    alt: keepAlt ? undefined : pic.alt, shaded};
+}
+
+/** {cx?, cy?} (EMU) asked for; null: none; false: a bad one. */
+function size(v, pic, reset) {
+  const w = twips(pic.cx), h = twips(pic.cy), out = {};
+  for (const k of ['width', 'height']) {
+    const t = v[k];
+    if (typeof t !== 'number' || !Number.isFinite(t) || t < LO ||
+      t > HI) return false;
+  }
+  const cw = !same(v.width, w), ch = !same(v.height, h);
+  if (reset && same(v.width, twips(reset.cx)) &&
+    same(v.height, twips(reset.cy))) {
+    if (reset.cx !== pic.cx) out.cx = reset.cx;
+    if (reset.cy !== pic.cy) out.cy = reset.cy;
+    return out;
+  }
+  if (!cw && !ch) return null;
+  let cx = cw ? v.width * EMU : pic.cx;
+  let cy = ch ? v.height * EMU : pic.cy;
+  if (v.keep && cw !== ch) {
+    if (cw) cy = Math.round(cx * pic.cy / pic.cx);
+    else cx = Math.round(cy * pic.cx / pic.cy);
+    if (cx < LO * EMU || cx > HI * EMU || cy < LO * EMU ||
+      cy > HI * EMU) return false;
+  }
+  if (cx !== pic.cx) out.cx = cx;
+  if (cy !== pic.cy) out.cy = cy;
+  return out;
+}
+
+/** See the header. */
+export function patchOf(values, pic, reset) {
+  const out = {};
+  if (!fixed(pic)) {
+    const s = size(values, pic, reset);
+    if (s === false) return {error: 'range'};
+    Object.assign(out, s);
+  }
+  const t = values.alt;
+  if (t !== undefined && pic.alt.length <= MAX_ALT &&
+    t !== pic.alt && t !== shown(pic.alt)) {
+    if (typeof t !== 'string' || badAlt(t)) return {error: 'alt'};
+    out.descr = t;
+  }
+  return out;
+}

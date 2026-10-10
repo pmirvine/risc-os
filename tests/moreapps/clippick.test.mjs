@@ -111,6 +111,56 @@ describe('ClipPick.pick', () => {
   });
 });
 
+describe('ClipPick.pick: pictures (R10)', () => {
+  const store = new ClipStore();
+  const f = (type, size = 100) => ({type, size});
+  const png = f('image/png');
+  const go = (payload) => pick(payload, {store, docKey: 1, parseHtml});
+  it('no text and a PNG file: the picture route', () => {
+    const r = go({text: '', html: '<img src=x>', files: [png]});
+    assert.deepEqual([r.route, r.file], ['picture', png]);
+    for (const t of ['image/jpeg', 'image/gif']) {
+      const x = f(t);
+      assert.equal(go({text: '', html: '', files: [x]}).file, x);
+    }
+  });
+  it('text with the file: the text (a spreadsheet\'s paste)', () => {
+    const r = go({text: 'a\tb', html: '', files: [png]});
+    assert.deepEqual([r.route, r.text], ['plain', 'a\tb']);
+    assert.equal(go({text: 'a', html: '<p>a</p>', files: [png]})
+      .route, 'html');
+  });
+  it('the exact copy comes first', () => {
+    const s = new ClipStore();
+    const t = s.put({blocks: [P('one')], styleNames: new Map(),
+      plain: ''}, 'k1');
+    const r = pick({text: '', html: tag(t) + '<p>one</p>',
+      files: [png]}, {store: s, docKey: 'k1', parseHtml});
+    assert.equal(r.route, 'exact');
+  });
+  it('other types or beyond the first 8: not a picture; over 20 MB: too big',
+    () => {
+      assert.equal(go({text: '', html: '', files: [f('image/svg+xml')]}),
+        null);
+      assert.equal(go({text: '', html: '', files: [f('image/bmp'),
+        f('')]}), null);
+      const big = f('image/png', 30 * 1024 * 1024);
+      const r = go({text: '', html: '', files: [big]});
+      assert.deepEqual([r.route, r.file, r.tooBig], ['picture', big,
+        true]);
+      assert.equal(go({text: '', html: '', files: [png]}).tooBig,
+        false);
+      const nine = Array.from({length: 8}, () => f('text/plain'));
+      assert.equal(go({text: '', html: '', files: [...nine, png]}),
+        null);
+      const eight = nine.slice(1);
+      assert.equal(go({text: '', html: '', files: [...eight, png]})
+        .file, png);
+      assert.equal(go({text: '', html: '', files: [f('image/svg+xml'),
+        png]}).file, png, 'the first picture of the files');
+    });
+});
+
 describe('ClipLinks.linkUrl', () => {
   const link = (attrs, name = 'w:hyperlink') => ({kind: 'raw',
     level: 'p', text: 'here', node: {name, attrs, children: []}});

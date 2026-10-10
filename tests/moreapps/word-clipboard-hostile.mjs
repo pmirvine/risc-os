@@ -113,7 +113,7 @@ try {
       const dt = new DataTransfer();
       if (text != null) dt.setData('text/plain', text);
       if (html != null) dt.setData('text/html', html);
-      for (let i = 0; i < files; i++) dt.items.add(new File(['x' + i], 'pic' + i + '.png', { type: 'image/png' }));
+      for (let i = 0; i < files; i++) dt.items.add(new File(['x' + i], 'doc' + i + '.pdf', { type: 'application/pdf' }));
       return dt;
     };
     /** A paste as the browser fires it, into dw's window: whether it was prevented. */
@@ -344,7 +344,7 @@ try {
       return { pv, pv2, beeps: window.__beeps - b0, msgs: [...window.__msgs], same: window.__json(dw) === before, last: dw.clipboard.last };
     });
     ok('a clipboard with only files (3, then 9): nothing pasted, a beep and the message each time',
-      fo.pv && fo.pv2 && fo.beeps === 2 && fo.msgs.length === 2 && /Pictures and files cannot be pasted/.test(fo.msgs[0]) && fo.same && fo.last === 'files', fo);
+      fo.pv && fo.pv2 && fo.beeps === 2 && fo.msgs.length === 2 && /Only PNG, JPEG and GIF pictures can be pasted/.test(fo.msgs[0]) && fo.same && fo.last === 'files', fo);
     await ev(() => { window.__msgs.length = 0; });
   }
 

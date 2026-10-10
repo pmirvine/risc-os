@@ -92,7 +92,9 @@ const typeByName = (n, dir) => {
 /**
  * Build a .docx.
  * @param {Object<string, string|Uint8Array>} parts
+ * extDefaults: [[extension, type]...] more Default content types.
  * @param {{main?: string, strict?: boolean, docRels?: Array,
+ *   extDefaults?: Array,
  *   pkgRels?: Array|false, contentTypes?: string|false,
  *   docRelsXml?: false}} [opts]
  * @returns {Promise<Uint8Array>}
@@ -122,6 +124,8 @@ export async function buildDocx(parts, opts = {}) {
       '"application/vnd.openxmlformats-package.relationships+xml"/>' +
       '<Default Extension="xml" ContentType="application/xml"/>' +
       '<Default Extension="png" ContentType="image/png"/>' +
+      (opts.extDefaults || []).map(([e, t]) =>
+        `<Default Extension="${e}" ContentType="${t}"/>`).join('') +
       ov.join('') + '</Types>')]);
   }
   if (opts.pkgRels !== false && !parts['_rels/.rels']) {

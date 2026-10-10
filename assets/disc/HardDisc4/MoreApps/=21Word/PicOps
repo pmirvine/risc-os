@@ -1,0 +1,125 @@
+// PicOps - a picture's size and alt text, as one undo step (pure;
+// Batch B). The resize drag and the Picture dialog call it.
+//
+//   setPicture(d, sel, {cx?, cy?, descr?}) -> sel
+//       d a ./Document; sel a ./Selection covering exactly one
+//       picture's U+FFFC [off, off + 1] (either way round) in a
+//       paragraph. cx, cy: the new extent (EMU; one may be left
+//       out: it stays), descr the new alt text ('' removes it).
+//       What differs from the picture is checked, all of it before
+//       anything is done, then the new node (./PicEdit withSize,
+//       withDescr) goes in by ONE replaceText {del: 1, ins: OBJ,
+//       inlines: {0: {...x, node}}} in d.atomic (the run's format
+//       kept: ./OpsText fmtFor of the replaced character). Returns
+//       the picture selected again, anchor at off.
+//       Nothing different: sel back, no step. A selection that is
+//       not a picture (null, a caret, text, gone): sel back.
+//       Throws RangeError (nothing changed):
+//         'floating'     a new size for a wp:anchor picture (R12)
+//         'unsupported'  a new size for one without a:xfrm (R2)
+//         'range'        a new cx or cy not an integer in
+//                        ./PicSize MIN_EMU..MAX_EMU
+//         'alt'          a new descr not a string, over 1024
+//                        characters or holding a control character
+//                        other than tab, line feed, carriage return
+//
+//   stepSel(doc, ops) -> sel | null
+//       after an undo or redo whose 'change' event carried ops
+//       (./Document): when the last op applied (the last of a
+//       compound) put one picture's U+FFFC in place of one
+//       character or of nothing (a resize undone or redone, a
+//       deleted picture given back), that picture selected; else
+//       null (./EditView: ./EditApply stepEnd's
+//       caret then)
+//
+// Typing's command (./Typing) is the caller's: B3.2's drag and B6's
+// dialog run it as v.typing.command(() => setPicture(...)).
+import {OBJ} from './Model';
+import {select} from './Selection';
+import {findBlock} from './EditPos';
+import {pictureOf, docMap} from './PicRead';
+import {withSize, withDescr} from './PicEdit';
+import {MIN_EMU, MAX_EMU} from './PicSize';
+
+export const MAX_ALT = 1024;
+export const CONTROL = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/;
+
+/** {loc, off, x, info} of the picture sel covers, else null. */
+function picIn(doc, sel) {
+  if (!sel || !sel.anchor || !sel.head) return null;
+  const {anchor: a, head: h} = sel;
+  if (a.id !== h.id || !Number.isInteger(a.off) ||
+    !Number.isInteger(h.off) || Math.abs(a.off - h.off) !== 1) {
+    return null;
+  }
+  const loc = findBlock(doc, a.id);
+  if (!loc || loc.b.type !== 'p') return null;
+  const off = Math.min(a.off, h.off);
+  const x = loc.b.inlines && loc.b.inlines[off];
+  if (!x || x.kind !== 'raw' || loc.b.text[off] !== OBJ) return null;
+  const map = docMap(doc);
+  const info = pictureOf(x.node, map);
+  return info ? {loc, off, x, info, map} : null;
+}
+
+function emu(v) {
+  if (!Number.isInteger(v) || v < MIN_EMU || v > MAX_EMU) {
+    throw new RangeError('range');
+  }
+  return v;
+}
+
+/** See the header. */
+export function setPicture(d, sel, o = {}) {
+  const at = picIn(d.doc, sel);
+  if (!at) return sel;
+  const {info, map, x, loc, off} = at;
+  let node = x.node;
+  const cx = o.cx === undefined ? info.cx : o.cx;
+  const cy = o.cy === undefined ? info.cy : o.cy;
+  if (cx !== info.cx || cy !== info.cy) {
+    if (info.floating) throw new RangeError('floating');
+    if (!info.supported) throw new RangeError('unsupported');
+    if (cx !== info.cx) emu(cx);
+    if (cy !== info.cy) emu(cy);
+    node = withSize(node, map, cx, cy);
+  }
+  const t = o.descr;
+  if (t !== undefined && t !== info.alt) {
+    const bad = typeof t !== 'string' || t.length > MAX_ALT ||
+      CONTROL.test(t);
+    if (bad) throw new RangeError('alt');
+    node = withDescr(node, map, t);
+  }
+  if (node === x.node) return sel;
+  d.atomic(() => d.apply({op: 'replaceText', block: [loc.s, loc.i],
+    at: off, del: 1, ins: OBJ, inlines: {0: {...x, node}}}));
+  const id = loc.b.id;
+  return select({id, off}, {id, off: off + 1});
+}
+
+/** The last op applied of ops (compounds opened). */
+function lastOp(ops) {
+  for (let k = (Array.isArray(ops) ? ops.length : 0) - 1; k >= 0;
+    k--) {
+    const op = ops[k];
+    if (op && op.op === 'compound') {
+      const r = lastOp(op.ops);
+      if (r) return r;
+    } else if (op) return op;
+  }
+  return null;
+}
+
+/** See the header. */
+export function stepSel(doc, ops) {
+  const op = lastOp(ops);
+  if (!op || op.op !== 'spliceText' || op.del > 1 ||
+    !op.content || op.content.text !== OBJ) return null;
+  const [s, i] = op.block || [];
+  const b = doc.sections[s] && doc.sections[s].blocks[i];
+  if (!b || b.type !== 'p') return null;
+  const sel = select({id: b.id, off: op.at}, {id: b.id,
+    off: op.at + 1});
+  return picIn(doc, sel) ? sel : null;
+}

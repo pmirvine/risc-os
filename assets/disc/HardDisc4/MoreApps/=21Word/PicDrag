@@ -1,0 +1,202 @@
+// PicDrag - a picture selected, resized and opened with the mouse
+// (Batch B). ./EditMouse asks these first; each returns true when it
+// has used the event (it then goes no further).
+//
+//   picClick(v, ev) -> boolean
+//       a Select click (no Ctrl) on a handle of the selected
+//       picture (./PicFind handleAt at v.zoom) leaves it selected
+//       (a drag may follow; Shift too); one without Shift on a
+//       picture (./PicFind picAt) selects it (its U+FFFC)
+//   picDragStart(v, ev) -> boolean
+//       a Select drag (no Ctrl) starting on a handle of the selected
+//       picture. A floating or unsupported one (./PicRead floating,
+//       !supported: plan R2, R12) beeps: no drag. Else the pointer
+//       is followed (wimp.drag, type 'point'): v.picGhost {x, y, w,
+//       h} (layout px) is the box it would get (./PicSize dragSize;
+//       Shift, read live from os.input.keysDown, frees a corner),
+//       drawn dashed by ./EditPaint; v.picDrag {cancel()} while it
+//       lasts (./EditKeys: Escape ends it, the ghost gone, nothing
+//       changed). On release the new extent goes in by
+//       v.typing.command(() => ./PicOps setPicture(...)), one undo
+//       step (none when nothing changes), shown by v.edited; a
+//       refusal beeps. The file's extent changes as the box does
+//       (cx x new w / old w, so a picture shown smaller than its
+//       extent, fitted to the column, keeps its proportions), each
+//       side within ./PicSize MIN_EMU..MAX_EMU; an edge handle
+//       leaves the other side's extent as it was; a corner without
+//       Shift keeps the extent's proportions (one factor, kept so
+//       that both sides are in range; the larger side worked out
+//       from the smaller: within 1 EMU; none: a beep). The ghost
+//       shows that extent. Back where it began: no change, no
+//       step. When the document changes (d.stateId) or the
+//       picture is no longer selected during the drag (a key: Delete,
+//       Ctrl-Z, typing), the drag ends at once with a beep: nothing
+//       is put in
+//   picDouble(v, ev) -> boolean
+//       a Select double-click (no Shift, Ctrl) on a picture selects
+//       it and calls v.onPicture?.() (the Picture dialog: B6)
+//
+// None of them acts while the format painter is on (v.painter:
+// ./PaintBind) or there is no selection: the mouse then works as it
+// does on text. Points are the window's (zoomed): ./Zoom toLayout.
+import {wimp, os} from 'riscos';
+import * as S from './Selection';
+import {picAt, selectedPic, handleAt} from './PicFind';
+import {dragSize, MIN_EMU, MAX_EMU} from './PicSize';
+import {setPicture} from './PicOps';
+import {toLayout} from './Zoom';
+
+const SIGNS = {nw: [-1, -1], n: [0, -1], ne: [1, -1], e: [1, 0],
+  se: [1, 1], s: [0, 1], sw: [-1, 1], w: [-1, 0]};
+
+/** A Select press the pictures may use. */
+const ours = (v, ev) => ev.button === 'select' && !ev.ctrl &&
+  !v.painter && !!v.sel;
+
+const pointOf = (v, x, y) => toLayout(x, y, v.zoom, v.L.top);
+
+/** {s, name}: the selected picture's handle at p, else null. */
+function onHandle(v, p) {
+  const s = selectedPic(v.L, v.sel);
+  const name = s && handleAt(s.rect, p.x, p.y, v.zoom);
+  return name ? {s, name} : null;
+}
+
+/** Select the picture found (./PicFind). */
+function choose(v, f) {
+  const {id, off} = f.pos;
+  v.setSelection(S.select({id, off}, {id, off: off + 1}),
+    {scroll: false});
+  v.focus();
+}
+
+/** See the header. */
+export function picClick(v, ev) {
+  if (!ours(v, ev)) return false;
+  const p = pointOf(v, ev.x, ev.y);
+  if (onHandle(v, p)) {
+    v.focus();
+    return true;
+  }
+  const f = !ev.shift && picAt(v.L, p.x, p.y);
+  if (!f) return false;
+  choose(v, f);
+  return true;
+}
+
+/** See the header. */
+export function picDouble(v, ev) {
+  if (!ours(v, ev) || ev.shift) return false;
+  const p = pointOf(v, ev.x, ev.y);
+  const f = picAt(v.L, p.x, p.y);
+  if (!f) return false;
+  choose(v, f);
+  if (typeof v.onPicture === 'function') v.onPicture();
+  return true;
+}
+
+const shiftDown = () => !!os.input &&
+  ['ShiftLeft', 'ShiftRight'].some((k) => os.input.keysDown.has(k));
+
+/** The box r becomes at size {w, h}, its far side kept. */
+function ghostOf(r, name, size) {
+  const [sx, sy] = SIGNS[name];
+  return {x: sx < 0 ? r.x + r.w - size.w : r.x,
+    y: sy < 0 ? r.y + r.h - size.h : r.y, w: size.w, h: size.h};
+}
+
+const lim = (v) => Math.min(MAX_EMU, Math.max(MIN_EMU,
+  Math.round(v)));
+
+/** The extent for box size (see the header); null: none fits. */
+function extentFor(info, name, start, size, free) {
+  const [sx, sy] = SIGNS[name];
+  const {cx, cy} = info, kw = size.w / start.w, kh = size.h / start.h;
+  if (!sx || !sy || free) {
+    return {cx: sx ? lim(cx * kw) : cx, cy: sy ? lim(cy * kh) : cy};
+  }
+  // a corner: one factor for both sides, kept in range
+  const big = Math.max(cx, cy), small = Math.min(cx, cy);
+  const k = Math.min(MAX_EMU / big, Math.max(MIN_EMU / small, kw));
+  let s1 = Math.round(small * k), b1 = Math.round(s1 * big / small);
+  while (b1 > MAX_EMU && s1 > MIN_EMU) {
+    s1 -= 1;
+    b1 = Math.round(s1 * big / small);
+  }
+  if (s1 < MIN_EMU || b1 > MAX_EMU) return null;
+  return cx >= cy ? {cx: b1, cy: s1} : {cx: s1, cy: b1};
+}
+
+/** See the header. */
+export function picDragStart(v, ev) {
+  if (!ours(v, ev) || v.picDrag) return false;
+  const p0 = pointOf(v, ev.x, ev.y), hit = onHandle(v, p0);
+  if (!hit) return false;
+  const info = hit.s.item.pic, name = hit.name, pos = hit.s.pos;
+  if (info.floating || !info.supported) {
+    wimp.beep();
+    return true;
+  }
+  const w = v.win, r = hit.s.rect, start = {w: r.w, h: r.h};
+  const sel = v.sel, state = v.d.stateId;
+  let ext = info, free = false, done = false;
+  const end = () => {
+    done = true;
+    v.picGhost = null;
+    v.picDrag = null;
+    if (w.isOpen) w.invalidate();
+  };
+  // the document changed, or the picture is no longer selected
+  const stale = () => {
+    if (!w.isOpen) return true;
+    const s = v.d.stateId === state && selectedPic(v.L, v.sel);
+    return !s || s.pos.id !== pos.id || s.pos.off !== pos.off;
+  };
+  const alive = () => {
+    if (done) return false;
+    if (!stale()) return true;
+    end();
+    wimp.beep();
+    return false;
+  };
+  const follow = (sx, sy) => {
+    if (!alive()) return;
+    const q = w.screenToWork(sx, sy), p = pointOf(v, q.x, q.y);
+    free = shiftDown();
+    const size = dragSize(start, name, p.x - p0.x, p.y - p0.y,
+      {free});
+    ext = extentFor(info, name, start, size, free);
+    v.picGhost = ghostOf(r, name, ext ? {w: start.w * ext.cx /
+      info.cx, h: start.h * ext.cy / info.cy} : size);
+    w.invalidate();
+  };
+  v.picDrag = {cancel: end};
+  v.picGhost = {...r};
+  w.invalidate();
+  wimp.drag({type: 'point', event: ev.pointerEvent,
+    onMove: (s) => follow(s.sx, s.sy),
+    onEnd: (d) => {
+      // (the last moves may come together with the release)
+      if (d && Number.isFinite(d.sx)) follow(d.sx, d.sy);
+      if (!alive()) return;
+      end();
+      if (!ext) wimp.beep();
+      else if (ext.cx !== info.cx || ext.cy !== info.cy) {
+        resize(v, sel, ext);
+      }
+    }});
+  return true;
+}
+
+/** Put the new extent in (one undo step); a refusal beeps. */
+function resize(v, sel, ext) {
+  let out;
+  try {
+    out = v.typing.command(() => setPicture(v.d, sel, ext));
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    wimp.beep();
+    return;
+  }
+  v.edited(out);
+}

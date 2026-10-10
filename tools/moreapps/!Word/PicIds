@@ -1,0 +1,123 @@
+// PicIds - the wp:docPr ids a document uses (pure; Batch B, R8).
+//
+//   usedDocPrIds(doc) -> {max, ids: Set}
+//       ids: every docPr id found (decimal integers of at most ten
+//       digits); max: the largest of them below 2^31 (0 when none),
+//       so one odd id of 2^31 or more cannot block inserts
+//   freshDocPrId(used) -> used.max + 1; RangeError 'ids' when that
+//       would be 2^31 or more (2147483647 is in the document)
+//
+// Looked through: the main part (every node of every paragraph's
+// inlines at any depth, mc:AlternateContent branches included, kept
+// blocks such as tables, meta.beforeBody / afterBody); and, by a
+// text scan of their bytes (UTF-8, not fatal), the header, footer,
+// footnotes, endnotes and comments parts of doc.parts: those the
+// main part's relationships of those kinds name, and those whose
+// file name says so (header1.xml, comments.xml...). An element is a
+// docPr by its local name (any prefix), its id the attribute `id`
+// of the element's own start tag (one in another attribute's value
+// is not; the tag ends at the first < or >, so the scan is linear).
+// Results are cached per paragraph or block object and per bytes
+// object (WeakMaps: model objects and part bytes never change).
+import {relKind, resolvePart, findPart} from './Rels';
+
+const LIMIT = 2147483648;
+const ID = /^\d{1,10}$/;
+const SCAN = /<(?:[\w.-]+:)?docPr\b([^<>]*)/g;
+const ATTR = /\s([\w.:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+const KINDS = new Set(['header', 'footer', 'footnotes', 'endnotes',
+  'comments']);
+const BY_NAME =
+  /(^|\/)(header|footer|footnotes|endnotes|comments)\d*\.xml$/i;
+
+const byObj = new WeakMap(), byBytes = new WeakMap();
+
+/** The docPr ids in nodes (any depth; no recursion). */
+function nodeIds(nodes) {
+  const out = [];
+  const todo = [...nodes];
+  while (todo.length) {
+    const n = todo.pop();
+    if (!n || typeof n !== 'object' || typeof n.name !== 'string')
+      continue;
+    const local = n.name.slice(n.name.indexOf(':') + 1);
+    if (local === 'docPr' && Array.isArray(n.attrs)) {
+      const a = n.attrs.find(([k]) => k === 'id');
+      if (a && ID.test(a[1])) out.push(Number(a[1]));
+    }
+    if (Array.isArray(n.children)) todo.push(...n.children);
+  }
+  return out;
+}
+
+/** The ids in block b (cached per block object). */
+function blockIds(b) {
+  if (!b || typeof b !== 'object') return [];
+  let ids = byObj.get(b);
+  if (ids) return ids;
+  if (b.type === 'p') {
+    ids = nodeIds(Object.values(b.inlines || {}).map((x) => x &&
+      x.node));
+  } else ids = nodeIds([b.node]);
+  byObj.set(b, ids);
+  return ids;
+}
+
+/** The ids a text scan finds in bytes (cached per bytes object). */
+function bytesIds(bytes) {
+  let ids = byBytes.get(bytes);
+  if (ids) return ids;
+  const s = new TextDecoder('utf-8', {fatal: false}).decode(bytes);
+  ids = [];
+  for (const m of s.matchAll(SCAN)) {
+    for (const a of m[1].matchAll(ATTR)) {
+      const v = a[2] === undefined ? a[3] : a[2];
+      if (a[1] === 'id' && ID.test(v)) { ids.push(Number(v)); break; }
+    }
+  }
+  byBytes.set(bytes, ids);
+  return ids;
+}
+
+/** The names of the parts to scan. */
+function partNames(doc) {
+  const parts = doc.parts instanceof Map ? doc.parts : new Map();
+  const names = new Set();
+  for (const k of parts.keys()) {
+    if (typeof k === 'string' && BY_NAME.test(k)) names.add(k);
+  }
+  const main = doc.meta && doc.meta.mainPart;
+  if (typeof main === 'string' && Array.isArray(doc.rels)) {
+    for (const r of doc.rels) {
+      const k = r && typeof r.type === 'string' && relKind(r.type);
+      if (!k || !KINDS.has(k.kind) || r.mode === 'External') continue;
+      const at = resolvePart(main, r.target);
+      const name = at === null ? null : findPart(parts, at);
+      if (name !== null) names.add(name);
+    }
+  }
+  return [...names].map((n) => parts.get(n))
+    .filter((b) => b instanceof Uint8Array);
+}
+
+/** See the header. */
+export function usedDocPrIds(doc) {
+  const ids = new Set();
+  const add = (list) => { for (const n of list) ids.add(n); };
+  for (const s of doc.sections || []) {
+    for (const b of s.blocks || []) add(blockIds(b));
+  }
+  const m = doc.meta || {};
+  add(nodeIds([...(m.beforeBody || []), ...(m.afterBody || [])]));
+  for (const b of partNames(doc)) add(bytesIds(b));
+  let max = 0;
+  for (const n of ids) if (n < LIMIT && n > max) max = n;
+  return {max, ids};
+}
+
+/** See the header. */
+export function freshDocPrId(used) {
+  const n = used.max + 1;
+  if (!(n < LIMIT)) throw new RangeError('ids');
+  return n;
+}

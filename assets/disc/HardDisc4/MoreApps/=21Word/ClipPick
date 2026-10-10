@@ -1,9 +1,11 @@
 // ClipPick - what a paste puts in, from what is on the clipboard:
 //
 //   pick({text, html}, {store, docKey, parseHtml}) -> null |
-//     {route: 'exact', blocks, opts: {sameDoc, styleNames, lists}}
+//     {route: 'exact', blocks, opts: {sameDoc, styleNames, lists,
+//       pics, picScope}}
 //     {route: 'html',  blocks, opts: {sameDoc: false, styleNames}}
 //     {route: 'plain', text}
+//     {route: 'picture', file, tooBig}
 //   samePlain(clipText, storedPlain) -> boolean
 //   MAX_TEXT  100,000: the most text a paste brings (the Wimp's cap)
 //   cutShort(raw) -> boolean   whether the Wimp cut the clipboard's
@@ -23,6 +25,11 @@
 // this document's (a window's key changes with Revert: ./EditClip).
 // html: the HTML read with ./ClipRead (parseHtml: ./ClipDom), when
 // it gives some text. plain: the text. null: nothing to paste.
+// picture: the clipboard has no text (cleaned) and one of its first
+// 8 files (the Wimp passes at most 8) is a File of type image/png,
+// image/jpeg or image/gif of at most 20 MB: the first such file, put
+// in as a picture (./PicLoad) instead of any HTML (a paste with text
+// and a rendered image, a spreadsheet's, stays text).
 // samePlain compares both after the same cleaning (./Edit.clean: CR
 // LF, controls, U+FFFC; then cut at MAX_TEXT, never in a surrogate
 // pair). Pure: no desktop services.
@@ -31,6 +38,21 @@ import {readHtml} from './ClipRead';
 import {clean} from './Edit';
 
 export const MAX_TEXT = 100000;
+const PIC_MIME = ['image/png', 'image/jpeg', 'image/gif'];
+const MAX_PIC = 20 * 1024 * 1024;
+
+/** The first of the files that is a PNG, JPEG or GIF; tooBig when it
+ *  is over 20 MB (never read). */
+function pictureIn(files) {
+  if (!files || !files.length) return null;
+  for (let i = 0; i < Math.min(files.length, 8); i++) {
+    const f = files[i];
+    if (f && PIC_MIME.includes(f.type)) {
+      return {file: f, tooBig: !(f.size <= MAX_PIC)};
+    }
+  }
+  return null;
+}
 
 /** s cut at MAX_TEXT units, never between a surrogate pair. */
 function cap(s) {
@@ -78,8 +100,11 @@ export function pick(payload, {store, docKey, parseHtml}) {
   const e = t ? store.get(t) : null;
   if (e && samePlain(text, e.plain)) {
     return {route: 'exact', blocks: e.blocks, opts: {sameDoc:
-      e.docKey === docKey, styleNames: e.styleNames, lists: e.lists}};
+      e.docKey === docKey, styleNames: e.styleNames, lists: e.lists,
+      pics: e.pics, picScope: e.picScope}};
   }
+  const pic = clean(text).trim() ? null : pictureIn(payload?.files);
+  if (pic) return {route: 'picture', ...pic};
   const r = html && parseHtml ? readHtml(html, parseHtml) : null;
   if (r) {
     return {route: 'html', blocks: r.blocks, opts: {sameDoc: false,

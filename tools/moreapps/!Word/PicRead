@@ -1,0 +1,199 @@
+// PicRead - what a picture's w:drawing says (pure; Batch B).
+//
+//   pictureOf(node, map?) -> {embed, cx, cy, alt, name, docPrId,
+//       floating, srcRect?, supported} | null
+//   docMap(doc) -> map      the scope a raw inline of `doc` is read
+//                           in (WriteBody.docScope; cached per root)
+//   PIC_SCOPE               w wp a pic r bound to their URIs (the
+//                           default map; docMap of a doc without root)
+//   EMU_PX = 9525           EMU per CSS pixel (96 dpi)
+//   MAX_EXT = 2147483647    the largest extent understood
+//
+// A picture is understood ONLY as: a w:drawing whose one element
+// child is wp:inline or wp:anchor (floating), holding one wp:extent
+// (cx, cy: decimal integers 1..MAX_EXT), one wp:docPr and one
+// a:graphic / a:graphicData (uri: the picture namespace) / pic:pic
+// / pic:blipFill / a:blip with r:embed and no r:link. Anything else
+// (w:pict, mc:AlternateContent, charts, shapes, linked pictures,
+// text in the w:drawing, a repeated element on that path) is null:
+// kept as it is and drawn as a box.
+//
+// Elements and the r: attributes are recognised by namespace URI
+// and local name in `map` plus each element's own xmlns (./Ns
+// scope), never by prefix; Strict URIs were mapped at read (NsMap).
+// alt is wp:docPr descr or ''; name its name or ''; docPrId its id
+// when a decimal integer 0..4294967295, else null. srcRect {l, t,
+// r, b} (a:srcRect of pic:blipFill, 1/1000 %; absent ones 0) is
+// there only when every value given is an integer in
+// -100000..100000 and l + r < 100000, t + b < 100000; in a Strict
+// document (isStrict scope) also Strict's percent form "12.5%"
+// (up to 3 decimals, read as 12500; same limits), else shown
+// uncropped. supported: the picture
+// has pic:spPr / a:xfrm / a:ext, so a new size can be written
+// consistently (plan R2).
+//
+// Results are frozen and cached per map, then node (WeakMaps; nodes
+// are never changed in place).
+import {NS} from './Wml';
+import {rootScope, scope, isEl, blank, isStrict} from './Ns';
+import {docScope} from './WriteBody';
+
+export const EMU_PX = 9525;
+export const MAX_EXT = 2147483647;
+
+export const PIC_SCOPE = rootScope({name: 'w:document', attrs: [
+  ['xmlns:w', NS.w], ['xmlns:wp', NS.wp], ['xmlns:a', NS.a],
+  ['xmlns:pic', NS.pic], ['xmlns:r', NS.r]]});
+
+/** Element `n` (with `m` the scope inside it) is uri:local. */
+function is(n, m, uri, local) {
+  const s = n.name;
+  const i = s.indexOf(':');
+  return s.slice(i + 1) === local &&
+    m.get(i < 0 ? '' : s.slice(0, i)) === uri;
+}
+
+/** [[child, scope]...] of `n`, or null when it holds real text. */
+function kids(n, m) {
+  const out = [];
+  for (const c of n.children) {
+    if (typeof c === 'string') {
+      if (!blank(c)) return null;
+    } else if (isEl(c)) {
+      out.push([c, c.attrs.length ? scope(m, c) : m]);
+    }
+  }
+  return out;
+}
+
+/** The one child uri:local of [n, m] as [node, scope], else null. */
+function child(e, uri, local) {
+  const list = e && kids(e[0], e[1]);
+  if (!list) return null;
+  let hit = null;
+  for (const k of list) {
+    if (!is(k[0], k[1], uri, local)) continue;
+    if (hit) return null;
+    hit = k;
+  }
+  return hit;
+}
+
+/** The unprefixed attribute `local` of `n`, or undefined. */
+function plain(n, local) {
+  for (const [k, v] of n.attrs) if (k === local) return v;
+  return undefined;
+}
+
+/** Attribute uri:local of [n, m]: undefined absent, null repeated. */
+function nsAttr([n, m], uri, local) {
+  let out;
+  for (const [k, v] of n.attrs) {
+    const i = k.indexOf(':');
+    if (i <= 0 || k.slice(i + 1) !== local) continue;
+    if (m.get(k.slice(0, i)) !== uri) continue;
+    if (out !== undefined) return null;
+    out = v;
+  }
+  return out;
+}
+
+const DIGITS = /^[0-9]{1,10}$/;
+
+function extentOf(v) {
+  if (v === undefined || !DIGITS.test(v)) return null;
+  const n = Number(v);
+  return n >= 1 && n <= MAX_EXT ? n : null;
+}
+
+function idOf(v) {
+  if (v === undefined || !DIGITS.test(v)) return null;
+  const n = Number(v);
+  return n <= 4294967295 ? n : null;
+}
+
+/** {l, t, r, b} of an a:srcRect, or null when not usable. */
+function rectOf(n, strict) {
+  const out = {};
+  for (const k of ['l', 't', 'r', 'b']) {
+    const v = plain(n, k);
+    if (v === undefined) {
+      out[k] = 0;
+      continue;
+    }
+    let x;
+    if (/^-?[0-9]{1,6}$/.test(v)) x = Number(v);
+    else if (strict && /^-?[0-9]{1,3}(\.[0-9]{1,3})?%$/.test(v)) {
+      x = Math.round(parseFloat(v) * 1000);
+    } else return null;
+    if (x < -100000 || x > 100000) return null;
+    out[k] = x === 0 ? 0 : x;
+  }
+  if (out.l + out.r >= 100000 || out.t + out.b >= 100000) return null;
+  return Object.freeze(out);
+}
+
+function read(node, map) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  if (!is(node, m, NS.w, 'drawing')) return null;
+  const top = kids(node, m);
+  if (!top || top.length !== 1) return null;
+  const f = top[0];
+  const floating = is(f[0], f[1], NS.wp, 'anchor');
+  if (!floating && !is(f[0], f[1], NS.wp, 'inline')) return null;
+  const ext = child(f, NS.wp, 'extent');
+  const docPr = child(f, NS.wp, 'docPr');
+  const data = child(child(f, NS.a, 'graphic'), NS.a, 'graphicData');
+  if (!ext || !docPr || !data) return null;
+  if (plain(data[0], 'uri') !== NS.pic) return null;
+  const cx = extentOf(plain(ext[0], 'cx'));
+  const cy = extentOf(plain(ext[0], 'cy'));
+  if (cx === null || cy === null) return null;
+  const pic = child(data, NS.pic, 'pic');
+  const fill = child(pic, NS.pic, 'blipFill');
+  const blip = child(fill, NS.a, 'blip');
+  if (!blip) return null;
+  const embed = nsAttr(blip, NS.r, 'embed');
+  if (!embed || nsAttr(blip, NS.r, 'link') !== undefined) return null;
+  const xfrm = child(child(pic, NS.pic, 'spPr'), NS.a, 'xfrm');
+  const x = {embed, cx, cy, alt: plain(docPr[0], 'descr') || '',
+    name: plain(docPr[0], 'name') || '',
+    docPrId: idOf(plain(docPr[0], 'id')), floating};
+  const src = child(fill, NS.a, 'srcRect');
+  const rect = src && rectOf(src[0], isStrict(src[1]));
+  if (rect) x.srcRect = rect;
+  x.supported = !!child(xfrm, NS.a, 'ext');
+  return Object.freeze(x);
+}
+
+const caches = new WeakMap();
+
+/** What `node` (a raw inline's node) says as a picture, or null. */
+export function pictureOf(node, map = PIC_SCOPE) {
+  if (!node || typeof node !== 'object') return null;
+  let cache = caches.get(map);
+  if (!cache) caches.set(map, cache = new WeakMap());
+  if (cache.has(node)) return cache.get(node);
+  const x = isEl(node) && Array.isArray(node.attrs) &&
+    Array.isArray(node.children) ? read(node, map) : null;
+  cache.set(node, x);
+  return x;
+}
+
+const maps = new WeakMap();
+
+/** The scope the raw inlines of `doc` are read in. */
+export function docMap(doc) {
+  const root = doc && doc.meta && doc.meta.documentRoot;
+  if (!root || typeof root !== 'object') return PIC_SCOPE;
+  let m = maps.get(root);
+  if (!m) {
+    try {
+      m = docScope(doc).map;
+    } catch {
+      m = PIC_SCOPE;
+    }
+    maps.set(root, m);
+  }
+  return m;
+}

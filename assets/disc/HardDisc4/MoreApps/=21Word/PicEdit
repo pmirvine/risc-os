@@ -1,0 +1,155 @@
+// PicEdit - copies of a picture's w:drawing node with a new size,
+// alt text, docPr ids or r:embed (pure; Batch B).
+//
+//   withSize(node, map, cx, cy) -> node
+//       wp:extent cx, cy and pic:spPr / a:xfrm / a:ext cx, cy (when
+//       there is one; never an a:ext of an a:extLst); cx, cy integers
+//       1..MAX_EXT, else RangeError 'range'
+//   withDescr(node, map, text) -> node
+//       wp:docPr descr replaced in place, else appended last; ''
+//       removes it
+//   withDocPrIds(node, map, next) -> node
+//       every wp:docPr id at any depth (mc:AlternateContent and all:
+//       any node, not only a picture) renumbered: one old id, one
+//       new id, next() called once for each old id met
+//   withEmbed(node, map, embed) -> node
+//       the picture's a:blip r:embed only
+//
+// map is the scope the node is read in (./PicRead docMap). Each
+// returns a NEW node that shares every untouched subtree with the
+// old one, which is never changed; the SAME node when nothing
+// changes. withSize, withDescr and withEmbed change only what
+// ./PicRead pictureOf understands (anything else comes back as it
+// is); every other attribute and child, and attribute order, is
+// kept (plan: fidelity).
+import {NS} from './Wml';
+import {scope, isEl} from './Ns';
+import {pictureOf, MAX_EXT} from './PicRead';
+
+const inside = (m, n) => (n.attrs.length ? scope(m, n) : m);
+
+/** Element n (m: the scope inside it) is uri and one of `locals`. */
+function is(n, m, uri, locals) {
+  const s = n.name, i = s.indexOf(':');
+  return locals.includes(s.slice(i + 1)) &&
+    m.get(i < 0 ? '' : s.slice(0, i)) === uri;
+}
+
+/** Index of the one element child [uri, locals] of n, else -1. */
+function one(n, m, [uri, ...locals]) {
+  let hit = -1;
+  for (let i = 0; i < n.children.length; i++) {
+    const c = n.children[i];
+    if (!isEl(c) || !Array.isArray(c.attrs)) continue;
+    if (!is(c, inside(m, c), uri, locals)) continue;
+    if (hit >= 0) return -1;
+    hit = i;
+  }
+  return hit;
+}
+
+/** n with fn applied at path below it (m: the scope inside n). */
+function at(n, m, path, fn) {
+  if (!path.length) return fn(n, m);
+  const i = one(n, m, path[0]);
+  if (i < 0) return n;
+  const c = n.children[i];
+  const d = at(c, inside(m, c), path.slice(1), fn);
+  if (d === c) return n;
+  const children = n.children.slice();
+  children[i] = d;
+  return {...n, children};
+}
+
+/**
+ * n with the first attribute that `match` takes set to v (in place),
+ * else [name, v] appended; v null removes it.
+ */
+function attr(n, match, name, v) {
+  const i = n.attrs.findIndex(([k]) => match(k));
+  let attrs;
+  if (v === null) {
+    if (i < 0) return n;
+    attrs = n.attrs.filter((_, j) => j !== i);
+  } else if (i >= 0) {
+    if (n.attrs[i][1] === v) return n;
+    attrs = n.attrs.slice();
+    attrs[i] = [n.attrs[i][0], v];
+  } else {
+    attrs = [...n.attrs, [name, v]];
+  }
+  return {...n, attrs};
+}
+
+const named = (s) => (k) => k === s;
+const FRAME = [NS.wp, 'inline', 'anchor'];
+const XFRM_EXT = [FRAME, [NS.a, 'graphic'], [NS.a, 'graphicData'],
+  [NS.pic, 'pic'], [NS.pic, 'spPr'], [NS.a, 'xfrm'], [NS.a, 'ext']];
+const BLIP = [FRAME, [NS.a, 'graphic'], [NS.a, 'graphicData'],
+  [NS.pic, 'pic'], [NS.pic, 'blipFill'], [NS.a, 'blip']];
+
+/** fn at path in a picture `node`, or node when it is not one. */
+function edit(node, map, path, fn) {
+  if (!pictureOf(node, map)) return node;
+  return at(node, inside(map, node), path, fn);
+}
+
+function size(v) {
+  if (!Number.isInteger(v) || v < 1 || v > MAX_EXT) {
+    throw new RangeError('range');
+  }
+  return String(v);
+}
+
+/** See the header. */
+export function withSize(node, map, cx, cy) {
+  const x = size(cx), y = size(cy);
+  const set = (n) => attr(attr(n, named('cx'), 'cx', x), named('cy'),
+    'cy', y);
+  const e = edit(node, map, [FRAME, [NS.wp, 'extent']], set);
+  return edit(e, map, XFRM_EXT, set);
+}
+
+/** See the header. */
+export function withDescr(node, map, text) {
+  const v = text === '' ? null : String(text);
+  return edit(node, map, [FRAME, [NS.wp, 'docPr']],
+    (n) => attr(n, named('descr'), 'descr', v));
+}
+
+/** See the header. */
+export function withEmbed(node, map, embed) {
+  return edit(node, map, BLIP, (n, m) => attr(n, (k) => {
+    const i = k.indexOf(':');
+    return i > 0 && k.slice(i + 1) === 'embed' &&
+      m.get(k.slice(0, i)) === NS.r;
+  }, 'r:embed', String(embed)));
+}
+
+function renumber(n, m, ids, next) {
+  const s = inside(m, n);
+  let out = n;
+  if (is(n, s, NS.wp, ['docPr'])) {
+    const old = n.attrs.find(([k]) => k === 'id');
+    if (old) {
+      if (!ids.has(old[1])) ids.set(old[1], String(next()));
+      out = attr(n, named('id'), 'id', ids.get(old[1]));
+    }
+  }
+  let kids = n.children;
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i];
+    if (!isEl(c) || !Array.isArray(c.attrs)) continue;
+    const d = renumber(c, s, ids, next);
+    if (d === c) continue;
+    if (kids === n.children) kids = kids.slice();
+    kids[i] = d;
+  }
+  return kids === n.children ? out : {...out, children: kids};
+}
+
+/** See the header. */
+export function withDocPrIds(node, map, next) {
+  if (!node || !isEl(node) || !Array.isArray(node.attrs)) return node;
+  return renumber(node, map, new Map(), next);
+}

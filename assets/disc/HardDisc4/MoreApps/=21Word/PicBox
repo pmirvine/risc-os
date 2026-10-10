@@ -1,0 +1,161 @@
+// PicBox - the Picture dialogue box (Format > Picture..., and a
+// double-click on a picture: ./PicDrag onPicture, set by ./DocKeys),
+// as Word's Format Picture: Width and Height (inches), Keep
+// proportions, Reset size, Alt text, a message line, and the buttons
+// Cancel and OK. Built by WimpLib Ui/Dialog; the values and the
+// patch they make: ./PicPatch; the command: ./PicOps setPicture.
+//
+//   picBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'pic:<docKey>'), kept in dw.boxes ('pic') so
+//       ./CloseDoc deletes it with the document; asked again while
+//       it is open, the same box comes to the front. Nothing (null,
+//       and a beep) when no picture is selected (./PicFind
+//       selectedPic).
+//
+// It opens filled from the selected picture: Width and Height of its
+// extent, Keep proportions on, its alt text. A floating picture, or
+// one whose size cannot be written, has Width, Height, Keep
+// proportions and Reset size shaded (plan R12, R2); alt text longer
+// than 1024 characters in the file shades Alt text, left as it is
+// (R17; tabs and line ends in one are shown without them and kept
+// unless the text is edited). Reset size puts the picture's
+// natural size (./PicMedia naturalEmu: pixels over the file's dpi) in
+// Width and Height, to be applied by OK; shaded when the file gives
+// none. OK (or Return): one command, one undo step (none when
+// nothing changed), the picture stays selected. A size outside 0.01
+// to 22 inches, an empty field, or text that is not a length, beeps,
+// says so in the message line and keeps the box (never clamped,
+// R17). An emptied Alt text removes the description. After Reset
+// size, OK sets exactly the natural extent (when the fields still
+// show it). Asked again while open, the box is filled again when the
+// selection or document changed since. If the
+// document or the selection changed while the box was open (the
+// picture is no longer the one selected), OK beeps and fills the box
+// again from the selected picture (or says there is none) and keeps
+// it. Cancel, Escape and the close icon change nothing; the caret
+// goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {selectedPic} from './PicFind';
+import {mediaOf, imageInfo, naturalEmu} from './PicMedia';
+import {fill, patchOf} from './PicPatch';
+import {setPicture} from './PicOps';
+
+const rows = () => [
+  [{kind: 'length', name: 'width', label: 'Width', min: -1000000,
+    max: 1000000, help: 'How wide the picture is, in inches.'},
+  {kind: 'length', name: 'height', label: 'Height', min: -1000000,
+    max: 1000000, help: 'How tall the picture is, in inches.'}],
+  {kind: 'option', name: 'keep', text: 'Keep proportions',
+    help: 'Changing Width or Height changes the other as well.'},
+  {kind: 'button', name: 'reset', text: 'Reset size',
+    help: 'Put the size the picture file itself has in Width and ' +
+      'Height (OK applies it).'},
+  {kind: 'text', name: 'alt', label: 'Alt text', maxLen: 1024, w: 360,
+    help: 'A description of the picture for people who cannot see ' +
+      'it.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+const HELP = 'Picture: the size and the alt text of the selected ' +
+  'picture.';
+const MSG = {range: 'Width and Height must be lengths from 0.01" ' +
+  'to 22".', alt: 'Alt text cannot hold control characters.',
+  changed: 'The document changed while the box was open: look ' +
+    'again, then click OK.',
+  none: 'No picture is selected now: Cancel, select one, and ' +
+    'ask again.'};
+
+const state = new WeakMap();      // api -> {at, pic, natural}
+const TW = 635;
+
+/** Where the document and its selection are (stale check). */
+const where = (v) => JSON.stringify([v.sel.anchor, v.sel.head,
+  v.d.stateId]);
+
+/** See the header. */
+export function picBox(dw) {
+  const v = dw.view;
+  const f = v.sel && selectedPic(v.L, v.sel);
+  if (!f) {
+    wimp.beep();
+    return null;
+  }
+  const api = dialog({task: dw.app.task, key: `pic:${dw.docKey}`,
+    title: 'Picture', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 520});
+  box(dw, 'pic', () => api.win);
+  if (api.isOpen) {
+    const st = state.get(api);
+    if (st && st.at !== where(v)) refill(api, v, f);
+    return api;
+  }
+  if (!state.has(api)) wire(api, v);
+  refill(api, v, f);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the picture f (./PicFind selectedPic). */
+function refill(api, v, f) {
+  const pic = f.item.pic, doc = v.d.doc;
+  const m = mediaOf(doc, pic.embed);
+  const info = m ? imageInfo(m.bytes) : null;
+  const vals = fill(pic, info);
+  for (const k of ['width', 'height', 'keep', 'alt']) {
+    api.set(k, vals[k]);
+  }
+  for (const k of ['width', 'height', 'keep', 'reset', 'alt']) {
+    api.shade(k, vals.shaded.includes(k));
+  }
+  api.set('msg', '');
+  state.set(api, {at: where(v), pic, natural: naturalEmu(info),
+    keepAlt: vals.shaded.includes('alt'), reset: null});
+}
+
+/** A message in the box, with a beep. */
+function no(api, text, field) {
+  wimp.beep();
+  api.set('msg', text);
+  if (field) api.focus(field);
+  return false;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  api.on('button', ({name, values}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    const st = state.get(api);
+    if (name === 'reset') {
+      const n = st.natural;
+      if (!n) { wimp.beep(); return false; }
+      st.reset = n;
+      api.set('width', Math.round(n.cx / TW));
+      api.set('height', Math.round(n.cy / TW));
+      api.set('msg', '');
+      return false;
+    }
+    const f = v.sel && selectedPic(v.L, v.sel);
+    if (!f || where(v) !== st.at) {
+      if (f) refill(api, v, f);
+      return no(api, f ? MSG.changed : MSG.none);
+    }
+    const vals = {...values, alt: st.keepAlt ? undefined :
+      values.alt ?? ''};
+    const r = patchOf(vals, st.pic, st.reset);
+    if (r.error) return no(api, MSG[r.error], r.error === 'alt' ?
+      'alt' : 'width');
+    if (Object.keys(r).length) {
+      let sel;
+      try {
+        sel = v.typing.command(() => setPicture(v.d, v.sel, r));
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e;
+        return no(api, MSG[e.message] || MSG.range);
+      }
+      v.edited(sel);
+    }
+    v.focus();
+    return undefined;
+  });
+}

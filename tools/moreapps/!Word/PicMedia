@@ -1,0 +1,201 @@
+// PicMedia - a picture's bytes, type, size and dpi (pure; Batch B).
+//
+//   mediaOf(doc, embed) -> {bytes, mime, name} | null
+//       the main part's relationship `embed`: kind image
+//       (Transitional or Strict), not External, its part in
+//       doc.parts. mime is by magic bytes ('image/png', 'image/jpeg'
+//       or 'image/gif'), else null (EMF, SVG, anything). The lookup
+//       Map is cached per doc.rels array.
+//   imageInfo(bytes) -> {mime, ext, w, h, dpiX, dpiY} | null
+//       from the headers only: PNG IHDR (13 bytes) and pHYs, JPEG
+//       SOFn and JFIF, GIF logical screen and first image
+//       descriptor (w = max(screen, left + frame width), h likewise:
+//       browsers grow the canvas to the first frame's offset). The
+//       JPEG and PNG walks hop segment / chunk lengths (4 or 12
+//       bytes read each) and stop after 512 segments (64 chunks) or
+//       the end of the bytes, so a phone photo with 100 KB of
+//       metadata works; the GIF walk reads 64 KB. Never throws.
+//       dpi (plan R18): each axis on its own; 96 when absent, 0, or
+//       above 10000 (PNG unit 1: per metre x 0.0254, taken as the
+//       whole dpi when within 0.02 of one, as 11811 is 300 dpi;
+//       JPEG units 1 dpi, 2 dpcm x 2.54, 0 none).
+//   decodable(info, bytes) -> null | 'too-big' | 'too-large' |
+//       'not-image' (info null: imageInfo found nothing)
+//       bytes over MAX_BYTES; a side over MAX_SIDE or w * h over
+//       MAX_PIXELS. Decides from the headers, before any decode.
+//   naturalEmu(info) -> {cx, cy} | null   px / dpi * 914400,
+//       rounded; null when info is null or a side would be under 1
+//       or over 2147483647 EMU (a tiny dpi), for the caller to
+//       refuse or clamp.
+// mediaOf returns the document's own bytes object: never mutate it.
+import {relKind, resolvePart, findPart} from './Rels';
+
+export const MAX_BYTES = 20971520;
+export const MAX_SIDE = 16384;
+export const MAX_PIXELS = 64000000;
+const SCAN = 65536;
+const DPI = 96;
+
+const u16 = (b, i) => b[i] << 8 | b[i + 1];
+const u32 = (b, i) => b[i] * 16777216 +
+  (b[i + 1] << 16 | b[i + 2] << 8 | b[i + 3]);
+const le16 = (b, i) => b[i] | b[i + 1] << 8;
+const ascii = (b, i, s) => {
+  for (let k = 0; k < s.length; k++) {
+    if (b[i + k] !== s.charCodeAt(k)) return false;
+  }
+  return true;
+};
+
+/** The mime of `b` by its first bytes, or null. */
+function mimeOf(b) {
+  if (!b || b.length < 6) return null;
+  if (b[0] === 137 && ascii(b, 1, 'PNG\r\n') && b[6] === 26 &&
+    b[7] === 10) return 'image/png';
+  if (b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) {
+    return 'image/jpeg';
+  }
+  if (ascii(b, 0, 'GIF87a') || ascii(b, 0, 'GIF89a')) {
+    return 'image/gif';
+  }
+  return null;
+}
+
+const dpiOf = (v) => (v > 0 && v <= 10000 ? v : DPI);
+// px per metre is whole: within 0.02 of a whole dpi, that dpi
+const ppm = (v) => {
+  const d = v * 0.0254, r = Math.round(d);
+  return dpiOf(Math.abs(d - r) < 0.02 ? r : d);
+};
+
+function png(b, n) {
+  if (n < 33 || !ascii(b, 12, 'IHDR') || u32(b, 8) !== 13) {
+    return null;
+  }
+  const out = {w: u32(b, 16), h: u32(b, 20), dpiX: DPI, dpiY: DPI};
+  for (let i = 33, c = 0; i + 12 <= n && c++ < 64;) {
+    const len = u32(b, i);
+    if (ascii(b, i + 4, 'IDAT') || ascii(b, i + 4, 'IEND')) break;
+    if (ascii(b, i + 4, 'pHYs') && len >= 9 && i + 17 <= n &&
+      b[i + 16] === 1) {
+      out.dpiX = ppm(u32(b, i + 8));
+      out.dpiY = ppm(u32(b, i + 12));
+      break;
+    }
+    i += 12 + len;
+  }
+  return out;
+}
+
+const SOF = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9,
+  0xca, 0xcb, 0xcd, 0xce, 0xcf]);
+
+function jpeg(b, n) {
+  let dpiX = DPI, dpiY = DPI;
+  let i = 2, segs = 0;
+  while (i + 4 <= n && segs++ < 512) {
+    if (b[i] !== 0xff) return null;
+    const m = b[i + 1];
+    if (m === 0xff) { i++; continue; }
+    if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) {
+      i += 2;
+      continue;
+    }
+    if (m === 0xd9 || m === 0xda) return null;
+    const len = u16(b, i + 2);
+    if (m === 0xe0 && len >= 16 && i + 18 <= n &&
+      ascii(b, i + 4, 'JFIF\0')) {
+      const k = b[i + 11] === 1 ? 1 : b[i + 11] === 2 ? 2.54 : 0;
+      if (k) {
+        dpiX = dpiOf(u16(b, i + 12) * k);
+        dpiY = dpiOf(u16(b, i + 14) * k);
+      }
+    }
+    if (SOF.has(m)) {
+      if (i + 9 > n) return null;
+      return {w: u16(b, i + 7), h: u16(b, i + 5), dpiX, dpiY};
+    }
+    if (len < 2) return null;
+    i += 2 + len;
+  }
+  return null;
+}
+
+function gif(b, n) {
+  if (n < 13) return null;
+  let i = 13 + (b[10] & 0x80 ? 3 << (b[10] & 7) + 1 : 0);
+  while (i < n) {
+    if (b[i] === 0x2c) {
+      if (i + 9 > n) return null;
+      return {w: Math.max(le16(b, 6), le16(b, i + 1) + le16(b, i + 5)),
+        h: Math.max(le16(b, 8), le16(b, i + 3) + le16(b, i + 7)),
+        dpiX: DPI, dpiY: DPI};
+    }
+    if (b[i] !== 0x21) return null;
+    i += 2;
+    while (i < n && b[i] !== 0) i += b[i] + 1;
+    i++;
+  }
+  return null;
+}
+
+const KINDS = {'image/png': ['png', png], 'image/jpeg': ['jpeg', jpeg],
+  'image/gif': ['gif', gif]};
+
+export function imageInfo(bytes) {
+  try {
+    const mime = mimeOf(bytes);
+    if (!mime) return null;
+    const [ext, read] = KINDS[mime];
+    const n = mime === 'image/gif' ? Math.min(bytes.length, SCAN)
+      : bytes.length;
+    const i = read(bytes, n);
+    if (!i || !(i.w > 0) || !(i.h > 0)) return null;
+    return {mime, ext, w: i.w, h: i.h, dpiX: i.dpiX, dpiY: i.dpiY};
+  } catch (e) {
+    return null;
+  }
+}
+
+export function decodable(info, bytes) {
+  if (bytes.length > MAX_BYTES) return 'too-big';
+  if (!info) return 'not-image';
+  if (info.w > MAX_SIDE || info.h > MAX_SIDE ||
+    info.w * info.h > MAX_PIXELS) return 'too-large';
+  return null;
+}
+
+export function naturalEmu(info) {
+  if (!info) return null;
+  const cx = Math.round(info.w / info.dpiX * 914400);
+  const cy = Math.round(info.h / info.dpiY * 914400);
+  return cx >= 1 && cx <= 2147483647 && cy >= 1 && cy <= 2147483647
+    ? {cx, cy} : null;
+}
+
+const byRels = new WeakMap();
+
+/** Map id -> Rel of the internal image relationships of `rels`. */
+function images(rels) {
+  let m = byRels.get(rels);
+  if (m) return m;
+  m = new Map();
+  for (const r of rels) {
+    const k = relKind(r.type);
+    if (k && k.kind === 'image' && r.mode !== 'External' &&
+      !m.has(r.id)) m.set(r.id, r);
+  }
+  byRels.set(rels, m);
+  return m;
+}
+
+export function mediaOf(doc, embed) {
+  if (!doc.rels) return null;
+  const r = images(doc.rels).get(embed);
+  if (!r) return null;
+  const name = findPart(doc.parts, resolvePart(doc.meta.mainPart,
+    r.target));
+  if (name === null) return null;
+  const bytes = doc.parts.get(name);
+  return {bytes, mime: mimeOf(bytes), name};
+}

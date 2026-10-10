@@ -1,0 +1,249 @@
+// PicCache - the program's decoded pictures (Batch B, plan R4).
+//
+//   createPicCache({decode, maxCount = 32, maxBytes = 134217728,
+//     recent = 1000, now = performance.now}) -> cache
+//       decode(bytes, mime, info, opts) -> Promise<bitmap>; the
+//       default: createImageBitmap(new Blob([bytes], {type: mime}),
+//       opts) (opts: decodeSize's resize, or none)
+//   cache.get(bytes, mime, info, onReady?, want?) ->
+//       {state: 'ready', bitmap} | {state: 'pending'} |
+//       {state: 'deferred'} | {state: 'failed'}
+//       want: the longest side the picture is shown at, in device
+//       px (zoom and pixel ratio in); none: its own size. It is
+//       decoded at bucketOf(info, want). The first get of `bytes`
+//       starts one decode; each get while it runs adds its onReady,
+//       each called once when it ends (well or not). A failed decode
+//       is remembered, never retried. Asked for a bigger bucket than
+//       it has, a ready picture is decoded again, once (the small
+//       bitmap is answered meanwhile; the bigger one replaces it).
+//       'deferred': no room now (below); onReady is called when
+//       there may be.
+//   cache.stats() -> {count, bytes, pending, decodes}
+//       bitmaps held, their size (width * height * 4), decodes
+//       running, decodes started ever
+//   cache.clear()   close every bitmap, forget everything (a decode
+//                   still running closes its bitmap when it ends)
+//   cache.forget(bytes)   close the bitmap of bytes and forget it (a
+//                   closed document's: ./PicRelease)
+//   bucketOf(info, want?) -> px   the longest side to decode at:
+//       the power of two from 32 up that holds want, at most the
+//       picture's own longest side and MAX_DECODE (4096)
+//   decodeSize(info, long = MAX_DECODE) -> null | {resizeWidth,
+//       resizeHeight, resizeQuality: 'medium'}   proportions kept
+//   CACHE           the one cache of the program
+//   picView(onReady) -> {get(bytes, mime, info, want?)}  CACHE.get
+//                   with a window's own onReady (its repaint)
+//
+// Entries are kept in a WeakMap by the bytes object (a document's
+// part: the same bytes, the same picture); the bitmaps in an LRU
+// list of {ref: WeakRef(bytes), bitmap, size}, oldest first. Over
+// maxCount bitmaps or maxBytes, the oldest are closed (bitmap.close)
+// and forgotten - first any whose bytes are gone (the document
+// closed) - but not one asked for in the last `recent` ms: it is in
+// view, and closing it would decode it again on the next redraw,
+// and again, every frame. So the caps are soft: up to twice
+// maxBytes and any number of bitmaps may be held while they are in
+// view; a timer (`recent` ms) trims them back once they are not. No
+// decode starts while the bitmaps held and coming (sizes from info)
+// would pass twice maxBytes: get answers 'deferred' and its onReady
+// is called after the next trim. Callers decide what may be decoded
+// (./PicMedia decodable) before they ask.
+// Uses only browser globals (createImageBitmap, Blob, WeakRef,
+// setTimeout).
+
+export const MAX_DECODE = 4096;
+const MIN_BUCKET = 32;
+
+/** See the header. */
+export function bucketOf(info, want) {
+  const top = Math.min(Math.max(info.w, info.h) || 1, MAX_DECODE);
+  if (!(want > 0)) return top;
+  let b = MIN_BUCKET;
+  while (b < want && b < top) b *= 2;
+  return Math.min(b, top);
+}
+
+/** See the header. */
+export function decodeSize(info, long = MAX_DECODE) {
+  const w = info && info.w, h = info && info.h;
+  if (!(w > long || h > long)) return null;
+  const k = long / Math.max(w, h);
+  return {resizeWidth: Math.max(1, Math.round(w * k)),
+    resizeHeight: Math.max(1, Math.round(h * k)),
+    resizeQuality: 'medium'};
+}
+
+function decodeImage(bytes, mime, info, opts) {
+  const blob = new Blob([bytes], {type: mime});
+  return opts ? createImageBitmap(blob, opts) : createImageBitmap(blob);
+}
+
+const sizeOf = (b) => Math.max(0, (b && b.width) * (b && b.height) *
+  4 || 0);
+
+const close = (b) => {
+  try {
+    if (b && typeof b.close === 'function') b.close();
+  } catch (e) { /* closed already */ }
+};
+
+const call = (fs) => {
+  for (const f of fs) {
+    try { f(); } catch (err) { /* a window's own trouble */ }
+  }
+};
+
+/** See the header. */
+export function createPicCache({decode = decodeImage, maxCount = 32,
+  maxBytes = 134217728, recent = 1000,
+  now = () => performance.now()} = {}) {
+  let byBytes = new WeakMap(), deferred = new Set(), timer = null;
+  const lru = new Set();               // ready entries, oldest first
+  let total = 0, pending = 0, decodes = 0, era = 0, coming = 0;
+  const over = () => lru.size > maxCount || total > maxBytes;
+
+  /** Drop what may go; arm the timer while something must wait. */
+  function trim() {
+    const t = now();
+    for (const e of lru) if (!e.ref.deref()) drop(e);
+    for (const e of lru) {
+      if (!over() || lru.size === 1) break;
+      if (t - e.used >= recent) drop(e);
+    }
+    if (over() || deferred.size) arm();
+  }
+
+  function arm() {
+    if (timer !== null) return;
+    timer = setTimeout(() => {
+      timer = null;
+      const d = deferred;
+      deferred = new Set();
+      trim();
+      call(d);
+    }, recent);
+    if (timer && timer.unref) timer.unref();   // (Node tests)
+  }
+
+  function drop(e) {
+    lru.delete(e);
+    total -= e.size;
+    close(e.bitmap);
+    const b = e.ref.deref();
+    if (b && byBytes.get(b) === e) byBytes.delete(b);
+    e.bitmap = null;
+    e.dropped = true;
+  }
+
+  function done(e, bm, mine) {
+    if (mine !== era) {                // cleared meanwhile
+      close(bm);
+      return;
+    }
+    pending--;
+    coming -= e.coming;
+    e.busy = false;
+    const waiting = e.waiting;
+    e.waiting = new Set();
+    if (bm && e.dropped) close(bm);
+    else if (bm) {
+      if (e.bitmap) {                  // (a bigger one replaces it)
+        lru.delete(e);
+        total -= e.size;
+        close(e.bitmap);
+      }
+      e.state = 'ready';
+      e.bitmap = bm;
+      e.size = sizeOf(bm);
+      e.used = now();
+      lru.add(e);
+      total += e.size;
+      trim();
+    } else if (!e.bitmap) e.state = 'failed';
+    call(waiting);
+  }
+
+  /** Decode bytes at bucket b into e; false when there is no room. */
+  function run(e, bytes, mime, info, b, onReady) {
+    const opts = decodeSize(info, b);
+    const size = opts ? opts.resizeWidth * opts.resizeHeight * 4
+      : sizeOf({width: info.w, height: info.h});
+    if (total + coming + size > 2 * maxBytes) {
+      trim();
+      if (total + coming + size > 2 * maxBytes) {
+        if (onReady) deferred.add(onReady);
+        arm();
+        return false;
+      }
+    }
+    e.tried = b;
+    e.busy = true;
+    e.coming = size;
+    coming += size;
+    pending++;
+    decodes++;
+    if (onReady) e.waiting.add(onReady);
+    const mine = era;
+    let p;
+    try {
+      p = Promise.resolve(decode(bytes, mime, info, opts));
+    } catch (err) {
+      done(e, null, mine);
+      return true;
+    }
+    p.then((bm) => done(e, bm || null, mine),
+      () => done(e, null, mine));
+    return true;
+  }
+
+  return {
+    get(bytes, mime, info, onReady, want) {
+      const b = bucketOf(info, want);
+      let e = byBytes.get(bytes);
+      if (!e) {
+        e = {ref: new WeakRef(bytes), state: 'pending', bitmap: null,
+          size: 0, used: 0, tried: 0, busy: false, coming: 0,
+          dropped: false, waiting: new Set()};
+        if (!run(e, bytes, mime, info, b, onReady)) {
+          return {state: 'deferred'};
+        }
+        byBytes.set(bytes, e);         // (a failure is remembered)
+        return {state: e.state};
+      }
+      if (e.bitmap) {
+        e.used = now();
+        lru.delete(e);
+        lru.add(e);
+        if (b > e.tried && !e.busy) {
+          run(e, bytes, mime, info, b, onReady);
+        }
+        return {state: 'ready', bitmap: e.bitmap};
+      }
+      if (e.state === 'pending' && onReady) e.waiting.add(onReady);
+      return {state: e.state};
+    },
+    stats: () => ({count: lru.size, bytes: total, pending, decodes}),
+    forget(bytes) {
+      const e = bytes && byBytes.get(bytes);
+      if (e) drop(e);
+    },
+    clear() {
+      for (const e of lru) close(e.bitmap);
+      lru.clear();
+      byBytes = new WeakMap();
+      deferred = new Set();
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      total = pending = coming = 0;
+      era++;
+    },
+  };
+}
+
+export const CACHE = createPicCache();
+
+/** See the header. */
+export function picView(onReady) {
+  return {get: (bytes, mime, info, want) =>
+    CACHE.get(bytes, mime, info, onReady, want)};
+}

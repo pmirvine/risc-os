@@ -3,7 +3,8 @@
 // (./DocLayout), on a white page on a grey desk; a caret and a
 // selection made with the mouse and the keys, typing, deleting and
 // undo (./EditView, ./EditMouse, ./EditInput), copy, cut and paste
-// (./EditClip: dw.docKey, dw.clip), F2, F3, Ctrl-F2... (./DocKeys).
+// (./EditClip: dw.docKey, dw.clip), F2, F3, Ctrl-F2... (./DocKeys),
+// files dropped on it (./PicDrop: a picture goes in, others open).
 // Its menu saves, undoes, formats or closes it (./WinMenu). Two
 // toolbar rows across its top show and change the formatting, a
 // ruler under them the indents (./WinPanes); the page starts below
@@ -27,6 +28,8 @@
 //                      moves up or down, the caret kept in view
 //   dw.zoom, dw.setZoom(pct)  the zoom (percent, per window)
 //   dw.text            the paragraphs' texts, as they are now
+//   dw.pics            its view of the pictures (./PicCache picView:
+//                      a picture decoded redraws the window if open)
 //   dw.summary         the Info line, as the document was opened
 //   dw.saveBytes()     -> Promise<Uint8Array>, the bytes to save
 //   dw.requestClose(), dw.revert()  ask first (./CloseDoc)
@@ -56,10 +59,12 @@ import {bindZoom} from './ZoomBind';
 import {extentOf} from './Zoom';
 import {Document} from './Document';
 import {Typing} from './Typing';
+import {dropFiles} from './PicDrop';
 import {summary} from './Info';
 import {untitledName} from './SaveState';
 import {save, saveAsTo, bytesOf} from './DocSave';
 import {requestClose, revert, destroy} from './CloseDoc';
+import {picView} from './PicCache';
 
 const H0 = 560, EDGE = 48, BELOW = 92;  // (icon bar, scroll bar)
 let count = 0;                         // (to place windows in turn)
@@ -77,8 +82,11 @@ export class DocWindow {
     this.summary = summary(doc);       // (as opened)
     this.ctx = null;                   // the canvas's, to measure with
     this.rulerOn = true;
+    this.pics = picView(() => {        // (a picture decoded)
+      if (this.win.isOpen) this.win.invalidate();
+    });
     const L = this.L = new DocLayout(doc, this.metrics(), null,
-      {top: this.inset()});
+      {top: this.inset(), pics: this.pics});
     const W = Math.max(240, Math.min(wimp.width - 40,
       Math.ceil(Math.max(L.pageW, L.marL + L.textW) + EDGE)));
     const n = count++ % 8, y = 70 + n * 28;
@@ -119,10 +127,7 @@ export class DocWindow {
       this.requestClose();
     });
     w.on('key', (ev) => this.view.key(ev));
-    w.on('dataload', (ev) => {
-      for (const f of ev.files) if (f.type !== 'dir') app.open(f.path);
-      return true;
-    });
+    w.on('dataload', (ev) => dropFiles(this, ev));
   }
 
   /** The paragraphs' texts now (kept blocks left out). */
@@ -181,7 +186,7 @@ export class DocWindow {
   newLayout(metrics, prev) {
     const old = this.L;
     this.L = new DocLayout(this.doc, metrics, prev,
-      {top: this.inset()});
+      {top: this.inset(), pics: this.pics});
     this.view.setLayout(this.L, old);
     this.fit();                        // (lays it out)
   }

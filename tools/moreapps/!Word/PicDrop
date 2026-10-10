@@ -1,0 +1,46 @@
+// PicDrop - files dropped on a document's window (./AppWin dataload).
+//
+//   dropFiles(dw, ev) -> true
+//       ev.files: the first file whose filetype is in PIC_TYPES goes
+//       in as a picture at the drop point (v.hitAt(ev.x, ev.y); the
+//       selection when that is no text), through ./PicLoad
+//       putPicture (one undo step, the read asynchronous: refusals
+//       beep and say why there); any further picture file is
+//       ignored; every other file that is not a directory is
+//       opened as a document, as before. While an input method is
+//       composing the picture is refused with a beep; the pending
+//       format is dropped, as a paste does.
+//   PIC_TYPES   0xB60 PNG, 0xC85 JPEG, 0x695 GIF
+//
+// A file over 20 MB is refused before it is read.
+import {wimp, vfs, reportError} from 'riscos';
+import {putPicture, MSG} from './PicLoad';
+import {dropPending} from './EditFormat';
+
+export const PIC_TYPES = [0xb60, 0xc85, 0x695];
+const MAX = 20 * 1024 * 1024;
+
+/** See the header. */
+export function dropFiles(dw, ev) {
+  let pic = null;
+  for (const f of ev.files) {
+    if (f.type === 'dir') continue;
+    if (PIC_TYPES.includes(f.filetype)) pic = pic || f;
+    else dw.app.open(f.path);
+  }
+  if (!pic) return true;
+  const v = dw.view;
+  if (v.comp !== null && v.comp !== undefined) {
+    wimp.beep();                     // an input method is composing
+    return true;
+  }
+  if (pic.size > MAX) {
+    wimp.beep();
+    reportError(MSG.tooBig, {appName: 'Word'});
+    return true;
+  }
+  const at = v.hitAt(ev.x, ev.y)?.pos;
+  dropPending(v);
+  putPicture(dw, () => vfs.readFile(pic.path), {at});
+  return true;
+}

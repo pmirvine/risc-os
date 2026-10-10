@@ -1,17 +1,19 @@
-// Writes INDEX.txt: one list of every Batch A real-Word hand-off file
+// Writes INDEX.txt: one list of every Batch A and Batch B (pictures)
+// real-Word hand-off file
 // (local only, never committed: tests/moreapps/corpus/ is git-ignored).
 // Not a test:
 //
 //   node tests/moreapps/handoff-index.mjs
 //
 // Run the generators first (handoff-spacing, handoff-newlists,
-// handoff-breaks, handoff-tabs, handoff-borders, handoff-links, each
-// `node tests/moreapps/<name>.mjs`); this reads what they wrote in
+// handoff-breaks, handoff-tabs, handoff-borders, handoff-links,
+// handoff-pictures, each `node tests/moreapps/<name>.mjs`); this reads what they wrote in
 // tests/moreapps/corpus/handoff/ and says, by deliverable, which file
 // to open, which README has its questions, and what to try, in the
 // order for one session in real Word. For every file that exists it
 // gives the size and the word count !Word shows (Edit > Word count,
-// whole document) to compare with Word's. A file that is listed but
+// whole document) to compare with Word's, and for the pictures the
+// number of pictures !Word reads in it. A file that is listed but
 // missing is reported (and left out of the counts); nothing else in
 // the folder is touched. INDEX.txt is written only when its bytes
 // change.
@@ -20,6 +22,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
 import {count} from '../../tools/moreapps/!Word/WordCount';
+import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
 
 const DIR = fileURLToPath(new URL('./corpus/handoff/', import.meta.url));
 
@@ -59,12 +62,44 @@ const SETS = [
       ['lnk-1-links.docx', 'web, mail, ftp, www., ScreenTip, formatted, anchor links; one edited, one removed'],
       ['bm-1-bookmarks.docx', 'bookmarks over words, paragraphs, a caret, nested, overlapping, moved; hidden ones'],
       ['paint-1.docx', 'the format painter: a drag, a replaced format, a paragraph format, a list item']]},
+  {id: 'B', title: 'Pictures', readme: 'pic-README.txt', extra: 'PI*',
+    expect: ['!Word expects: no repair prompt for any of these files; each',
+      'picture at the size, docPr id and alt text pic-README.txt lists',
+      'under "What !Word wrote"; 16 questions (PI1..PI9, PI*, P1..P6),',
+      'of which PI9, PI* and P1..P5 have no file. Order: steps 1 to 8',
+      'of pic-README.txt, the files in the order below.'],
+    pics: true,
+    files: [
+      ['pic-1-inserted.docx', 'PNG, JPEG and GIF from Insert > Picture...: sizes in Size and Position (PI1)'],
+      ['pic-2-resized.docx', 'a corner and an edge resize, alt text: Word shows 3 x 1.5 in and 2 x 2 in (PI2)'],
+      ['pic-2b-real.docx', 'a Word-made picture resized and given alt text in !Word (PI2)'],
+      ['pic-3-strict.docx', 'a Strict document with a picture: opens and stays Strict (PI3)'],
+      ['pic-4-dpi.docx', 'Size > Reset equals !Word\'s natural sizes for 300, 72 dpi and dpcm (PI4)'],
+      ['pic-5-floating.docx', 'a floating picture keeps its place and wrap; alt text set (PI5)'],
+      ['pic-6-source.docx', 'where the pasted picture came from (PI8)'],
+      ['pic-6-pasted.docx', 'duplicate docPr ids kept, pasted pictures with fresh ids, crop and alt text (PI6, PI8, P6)'],
+      ['pic-7-deleted.docx', 'a deleted picture\'s media part and relationship left: no repair (PI7)']]},
 ];
+
+/** The pictures !Word reads in doc (every paragraph, any kind). */
+function picCount(doc) {
+  const map = docMap(doc);
+  let k = 0;
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b.type !== 'p') continue;
+      for (const x of Object.values(b.inlines)) {
+        if (x && x.kind === 'raw' && pictureOf(x.node, map)) k++;
+      }
+    }
+  }
+  return k;
+}
 
 /** The question ids a README holds, in ranges (BD1..BD10, SY1..SY5). */
 function questions(text) {
   const by = new Map();
-  for (const m of text.matchAll(/^([A-Z]{1,3})(\d+)\s/gm)) {
+  for (const m of text.matchAll(/^(?:  )?([A-Z]{1,3})(\d+)\s/gm)) {
     if (!by.has(m[1])) by.set(m[1], []);
     by.get(m[1]).push(Number(m[2]));
   }
@@ -75,8 +110,8 @@ function questions(text) {
 }
 
 const out = [
-  'Batch A hand-off for real Word: every file, by deliverable',
-  '===========================================================',
+  'Batch A and B hand-off for real Word: every file, by deliverable',
+  '=================================================================',
   '',
   'All of these are made by !Word\'s own commands (the generators are',
   'tests/moreapps/handoff-*.mjs; this list by handoff-index.mjs) and',
@@ -90,7 +125,8 @@ const out = [
   '1. Smoke test: open EVERY file below in Word once and note only',
   '   whether Word complains (a repair prompt, "unreadable content").',
   '   Any complaint is the most valuable finding: write down the file.',
-  '2. Then go deliverable by deliverable (A1 to A6), reading the',
+  '2. Then go deliverable by deliverable (A1 to A6, then B, the',
+  '   pictures), reading the',
   '   README first and answering its questions with the files open.',
   '   Questions with "(No file)" are done by making the thing in Word',
   '   and opening the result in !Word, or the reverse.',
@@ -107,9 +143,12 @@ for (const set of SETS) {
   out.push(head, '-'.repeat(head.length));
   const rp = path.join(DIR, set.readme);
   let qs = '(README missing)';
-  if (fs.existsSync(rp)) qs = questions(fs.readFileSync(rp, 'utf8'));
-  else missing.push(set.readme);
+  if (fs.existsSync(rp)) {
+    qs = questions(fs.readFileSync(rp, 'utf8')) +
+      (set.extra ? ' ' + set.extra : '');
+  } else missing.push(set.readme);
   out.push(`README: ${set.readme}   questions: ${qs}`, '');
+  if (set.expect) out.push(...set.expect.map((l) => '  ' + l), '');
   for (const [name, what] of set.files) {
     const f = path.join(DIR, name);
     if (!fs.existsSync(f)) {
@@ -118,11 +157,13 @@ for (const set of SETS) {
       continue;
     }
     const bytes = fs.readFileSync(f);
-    const c = count(await readDocx(new Uint8Array(bytes)));
+    const doc = await readDocx(new Uint8Array(bytes));
+    const c = count(doc);
     out.push(`  ${String(++n).padStart(2)}. ${name}   (${bytes.length} bytes)`,
       `      try: ${what}`,
       `      !Word counts: ${c.words} words, ${c.charsNoSpaces} characters ` +
-      `without spaces, ${c.chars} with, ${c.paras} paragraphs`);
+      `without spaces, ${c.chars} with, ${c.paras} paragraphs` +
+      (set.pics ? `, ${picCount(doc)} pictures` : ''));
   }
   out.push('');
 }

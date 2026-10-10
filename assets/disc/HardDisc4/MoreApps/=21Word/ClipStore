@@ -3,14 +3,18 @@
 //
 //   new ClipStore({rand, max = 4})
 //   s.put(slice, docKey) -> token | null
-//   s.get(token) -> {blocks, styleNames, lists, plain, docKey} | null
+//   s.get(token) -> {blocks, styleNames, lists, pics, picScope,
+//     plain, docKey} | null
 //   s.clear()
 //   store            the one store of the program (all windows)
 //   tokenIn(html)    the token of a marker comment in html, or null
 //   MARK             '<!--word-clip:' + token + '-->' is the marker
 //   LIMITS           {text: 5,000,000, blocks: 100,000}
+//   MAX_PIC_STORE    268,435,456: the most picture bytes (256 MB)
+//                    all entries' pics hold together
 //
-// slice is a ./ClipSlice slice ({blocks, styleNames, lists, plain})
+// slice is a ./ClipSlice slice ({blocks, styleNames, lists, pics,
+// picScope, plain})
 // or an array of blocks; docKey says which document it came from (the
 // caller's key: same key, same document). put refuses (null) an
 // empty slice, one over LIMITS.blocks blocks or LIMITS.text units of
@@ -18,7 +22,12 @@
 // 16 lower-case hex digits from 8 random bytes: rand() -> 8 values
 // 0..255 (default crypto.getRandomValues, else Math.random); a token
 // already in use is drawn again. plain: the slice's, else made
-// from the blocks (./ClipSlice.plainOf).
+// from the blocks (./ClipSlice.plainOf). Pictures (Batch B): each
+// entry's pics (Map embed -> {bytes, ext}) holds its source's media,
+// which stays alive while the entry does; when the entries together
+// hold more than MAX_PIC_STORE bytes (each entry its pics' sum), the
+// OLDEST entries are dropped whole until they fit (never the new
+// one: a slice holds at most 200 MB, ./ClipPics).
 //
 // The copy's HTML carries the token in a comment (./ClipHtml); a
 // paste looks it up by exact match only: a token the store does not
@@ -30,6 +39,7 @@ import {plainOf} from './ClipSlice';
 
 export const MARK = '<!--word-clip:';
 export const LIMITS = Object.freeze({text: 5000000, blocks: 100000});
+export const MAX_PIC_STORE = 268435456;
 const TOKEN = /^[0-9a-f]{16}$/;
 const FIND = /<!--word-clip:([0-9a-f]{16})-->/;
 
@@ -63,6 +73,17 @@ function fits(blocks) {
   return true;
 }
 
+/** The picture bytes all entries of map m hold. */
+function picBytes(m) {
+  let n = 0;
+  for (const e of m.values()) {
+    for (const p of e.pics.values()) {
+      if (p && p.bytes && p.bytes.length > 0) n += p.bytes.length;
+    }
+  }
+  return n;
+}
+
 export class ClipStore {
   constructor({rand = bytes, max = 4} = {}) {
     this._rand = rand;
@@ -86,9 +107,14 @@ export class ClipStore {
       : new Map();
     const plain = slice && typeof slice.plain === 'string'
       ? slice.plain : plainOf(blocks);
-    this._m.set(token, {blocks, styleNames: names, lists, plain,
-      docKey});
-    while (this._m.size > this._max) {
+    const pics = slice && slice.pics instanceof Map ? slice.pics
+      : new Map();
+    const picScope = slice && slice.picScope instanceof Map
+      ? slice.picScope : null;
+    this._m.set(token, {blocks, styleNames: names, lists, pics,
+      picScope, plain, docKey});
+    while (this._m.size > this._max || (this._m.size > 1 &&
+      picBytes(this._m) > MAX_PIC_STORE)) {
       this._m.delete(this._m.keys().next().value);
     }
     return token;

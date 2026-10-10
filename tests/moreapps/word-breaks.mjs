@@ -332,14 +332,14 @@ try {
   });
   const row = (n) => mn.rows.find((x) => x.text === n);
   ok('the window menu has Insert after Edit', same(mn.top.slice(5, 8), ['Edit', 'Insert', 'Format']), mn.top);
-  ok('Insert: Page break, Section break >, Symbol..., Special character, Hyperlink..., Bookmark...',
-    same(mn.rows.map((x) => x.text), ['Page break', 'Section break', 'Symbol...', 'Special character', 'Hyperlink...', 'Bookmark...'])
+  ok('Insert: Page break, Section break >, Picture..., Symbol..., Special character, Hyperlink..., Bookmark...',
+    same(mn.rows.map((x) => x.text), ['Page break', 'Section break', 'Picture...', 'Symbol...', 'Special character', 'Hyperlink...', 'Bookmark...'])
     && mn.rows.every((x) => x.help), mn.rows);
   ok('Page break shows Ctrl+Enter (also on a Mac: Ctrl, as Cmd-Enter stays Enter); Symbol... and Special character > are live (word-symbols.mjs); Hyperlink... is live with Ctrl+K (Cmd+K on a Mac: word-links.mjs); Bookmark... is live with Ctrl+Shift+F5 (also on a Mac)',
     row('Page break').key === 'Ctrl+Enter' && mn.mac[0] === 'Ctrl+Enter' && row('Page break').shaded === false
     && ['Symbol...', 'Special character'].every((n) => !row(n).shaded && !row(n).key)
-    && !row('Hyperlink...').shaded && row('Hyperlink...').key === 'Ctrl+K' && mn.mac[4] === 'Cmd+K'
-    && !row('Bookmark...').shaded && row('Bookmark...').key === 'Ctrl+Shift+F5' && mn.mac[5] === 'Ctrl+Shift+F5', mn);
+    && !row('Hyperlink...').shaded && row('Hyperlink...').key === 'Ctrl+K' && mn.mac[5] === 'Cmd+K'
+    && !row('Bookmark...').shaded && row('Bookmark...').key === 'Ctrl+Shift+F5' && mn.mac[6] === 'Ctrl+Shift+F5', mn);
   ok('Section break > Next page, Continuous: no keys, not shaded', same(mn.sec.map((x) => x.text), ['Next page', 'Continuous'])
     && mn.sec.every((x) => !x.key && !x.shaded) && row('Section break').sub, mn.sec);
   const viaMenu = await ev(async () => {

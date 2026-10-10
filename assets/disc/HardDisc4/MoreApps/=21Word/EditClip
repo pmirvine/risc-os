@@ -26,9 +26,13 @@
 // parsed by ./ClipDom: an inert document, never shown); else the
 // plain text. It replaces the selection in one undo step, breaks
 // the typing's step and drops the pending format; content the
-// model refuses (a RangeError) is pasted as the plain text instead,
-// any other error is thrown on. Only pictures or files: nothing
-// pasted, a beep and a message (dw.clip.status says the same).
+// model refuses (a RangeError) is pasted as the plain text instead
+// (no text: a picture with no free name or id says so, MSG
+// pasteFree), any other error is thrown on. A PNG, JPEG or GIF
+// file with no text (./ClipPick 'picture'): put in as a picture at
+// the selection (./PicLoad, asynchronous: dw.clip.last 'picture').
+// Other files: nothing pasted, a beep and a message (dw.clip.status
+// says the same).
 // Plain text the Wimp cut at 100,000 characters (./ClipPick
 // cutShort on the raw text of the browser's paste event, seen by a
 // capture listener on the page while the window is there): pasted,
@@ -38,10 +42,11 @@
 // docKey: a number of its own for each window (Revert makes a new
 // window, so a new key: a copy from before is then pasted as from
 // another document). dw.clip {last, status}: the last paste's route
-// ('exact', 'html', 'plain', 'files', 'composing', 'none') and
-// message. The menu's Copy and Cut run the browser's own command in
-// the click (wimp.textInput.exec); Paste asks to read the clipboard
-// (wimp.readClipboard): refused, a message says to press Ctrl-V.
+// ('exact', 'html', 'plain', 'picture', 'files', 'composing',
+// 'none') and message. The menu's Copy and Cut run the browser's
+// own command in the click (wimp.textInput.exec); Paste asks to read
+// the clipboard (wimp.readClipboard): refused, a message says to
+// press Ctrl-V.
 import {wimp, reportError} from 'riscos';
 import * as S from './Selection';
 import {slice} from './ClipSlice';
@@ -53,6 +58,7 @@ import {parserOf} from './ClipDom';
 import {pasteBlocks, pastePlain, deleteSelection} from './ClipPaste';
 import {dropPending} from './EditFormat';
 import {isMac} from './MacKeys';
+import {putPicture, MSG} from './PicLoad';
 
 let keys = 0;
 // whether the browser's last paste event held more text than the
@@ -67,8 +73,8 @@ function notePaste(e) {
   setTimeout(() => { lost = null; }, 0);
 }
 const parseHtml = parserOf(globalThis.DOMParser);
-const FILES = 'Pictures and files cannot be pasted into a document ' +
-  'yet.';
+const FILES = 'Only PNG, JPEG and GIF pictures can be pasted: other ' +
+  'files cannot.';
 const CUT = 'Only the first 100,000 characters were pasted: the ' +
   'clipboard held more.';
 const say = (m) => reportError(m, {appName: 'Word'});
@@ -132,6 +138,17 @@ function pasteIn(dw, p) {
     wimp.beep();
     return true;
   }
+  if (r.route === 'picture') {
+    dropPending(v);
+    if (r.tooBig) {
+      wimp.beep();
+      say(MSG.tooBig);
+      return true;
+    }
+    putPicture(dw, () => r.file.arrayBuffer()
+      .then((b) => new Uint8Array(b)));
+    return true;
+  }
   v.ensure();
   dropPending(v);
   const sel = v.sel, d = v.d;
@@ -147,7 +164,7 @@ function pasteIn(dw, p) {
     if (r.route !== 'plain' && p.text) {
       st.last = 'plain';
       out = run({route: 'plain', text: p.text});
-    }
+    } else if (/^(ids|name)$/.test(e.message)) say(MSG.pasteFree);
   }
   if (out === sel) wimp.beep();
   else v.edited(out);

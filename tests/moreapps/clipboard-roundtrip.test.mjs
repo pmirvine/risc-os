@@ -20,7 +20,11 @@
 // in ten by a hash of its name; WORD_EDIT_CORPUS=1 for every file).
 // 40 seeded commands per file (CLIP_MS caps the time per file). The
 // commands run per kind are counted and printed; each kind must have
-// run and changed a document.
+// run and changed a document. Pictures (Batch B, B7): a source and
+// a target with pictures (PNG, JPEG, two on one embed, a linked one,
+// VML); a copy from another document brings its pictures' media
+// (counted: 'pictures made'); a paste within one gives fresh docPr
+// ids; undo all gives back the parts Map and its bytes.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {slice} from '../../tools/moreapps/!Word/ClipSlice';
@@ -46,6 +50,7 @@ import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
 import {STYLES, rng} from './word-docs.mjs';
 import {parseHtml} from './html-fake.mjs';
 import {sourceDocx} from './clip-lists-docs.mjs';
+import {picDocx, jpegBytes} from './pic-fixtures.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
 
@@ -227,6 +232,7 @@ function clipAll(src) {
       if (Date.now() - t0 > CLIP_MS) break;
       if (!sel || rd() < 0.5) sel = randSel(rd, d);
       const depth = d.undoDepth, nb = d.doc.numbering;
+      const parts = d.doc.parts;
       let kind = '?';
       try {
         [kind, sel] = command(rd, d, sel, st);
@@ -239,6 +245,10 @@ function clipAll(src) {
       if (d.doc.numbering !== nb && kind.startsWith('paste')) {
         // lists of another document made here (L6)
         counts['lists made'] = (counts['lists made'] || 0) + 1;
+      }
+      if (d.doc.parts !== parts && kind.startsWith('paste')) {
+        // pictures of another document made here (B7)
+        counts['pictures made'] = (counts['pictures made'] || 0) + 1;
       }
       if (d.undoDepth > depth) {
         counts[kind + ' changed'] = (counts[kind + ' changed'] || 0) + 1;
@@ -287,7 +297,15 @@ async function madeLists() {
   toggleList(d, t, over(5, 6), {kind: 'number', entry: 'a)'});
   return writeDocx(d.doc, {date: new Date(Date.UTC(2026, 9, 9))});
 }
+/** Pictures among text: two on one embed, a JPEG, linked, VML. */
+const PICS = () => picDocx({pics: [{descr: 'one'},
+  {embed: 'rId11', rel: false, bytes: null, cx: 300000, cy: 200000},
+  {ext: 'jpeg', bytes: jpegBytes(1, 1)}, {embed: null, link: 'rId9'}],
+body: p(r('Text the ') + '<w:r><w:pict><v:rect xmlns:v="urn:' +
+  'schemas-microsoft-com:vml"/></w:pict></w:r>' + r(' after')) +
+  p(r('Para the end'))});
 const MORE = [
+  ['pictures (B7)', PICS],
   ['lists made by !Word (ListMake)', madeLists],
   ['rich (edit-rich.mjs)', richDocx],
   ['styled: headings, formats, a link, a table', STYLED],
@@ -308,9 +326,10 @@ const CHANGED = ['cut', 'paste copy', 'paste foreign', 'paste own html',
 
 /** The source document for copies from another document. */
 async function source(k) {
-  // odd seeds: lists, borders, shading and tab stops (L6)
+  // odd seeds: lists, borders, shading and tab stops (L6); seed 2:
+  // pictures (B7)
   return new Document(await readDocx(await (k % 2 ? sourceDocx()
-    : STYLED())));
+    : k === 2 ? PICS() : STYLED())));
 }
 
 describe('clipboard and find round trip: generated documents', () => {
@@ -334,6 +353,7 @@ describe('clipboard and find round trip: generated documents', () => {
     console.log('# clipboard and find commands (generated): ' +
       JSON.stringify(total));
     assert.ok(total['lists made'] > 0, 'a paste made lists (L6)');
+    assert.ok(total['pictures made'] > 0, 'a paste made pictures (B7)');
     for (const kind of KINDS)
       assert.ok(total[kind] > 3, kind + ' ran: ' + JSON.stringify(total));
     for (const kind of CHANGED) {

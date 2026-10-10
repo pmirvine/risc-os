@@ -1,0 +1,113 @@
+// PicFind - the picture under a point or selected, and its handles
+// (pure; Batch B).
+//
+//   picAt(L, x, y) -> {pos: {id, off}, item, line, pi, rect} | null
+//       the picture shown at layout point x, y of ./DocLayout L
+//       (./Zoom toLayout of a window point): item its line item
+//       (kind 'pic'), line its line, pi its paragraph's L.items
+//       entry, pos where it is (off: the picture's U+FFFC), rect
+//       {x, y, w, h} its box in layout coordinates (as ./PicPaint
+//       draws it: standing on the baseline)
+//   selectedPic(L, sel) -> the same | null
+//       when sel (./Selection, either way round) covers exactly
+//       [off, off + 1] of a picture in one paragraph
+//   handleRects(rect, zoom) -> [{name, x, y, w, h}]
+//       the eight handles nw n ne e se s sw w (in that order), each
+//       a square 7 px on the screen (7 / zoom in layout) centred on
+//       a corner or the middle of an edge of rect
+//   handleAt(rect, x, y, zoom) -> name | null
+//       the handle a layout point hits: within 5 screen px around
+//       it; where they overlap (a tiny picture) the nearest, a
+//       corner before an edge. zoom: the view's factor (1 = 100%;
+//       anything not above 0 counts as 1)
+//
+// Only top-level paragraphs are laid out, so only their pictures
+// are found.
+const SIDE = 7, AROUND = 5;
+const NAMES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
+const FX = [0, 0.5, 1, 1, 1, 0.5, 0, 0];
+const FY = [0, 0, 0, 0.5, 1, 1, 1, 0.5];
+
+/** The box of picture item `item` of line `line` in item pi. */
+function rectOf(L, pi, line, item) {
+  const base = pi.y + line.y + line.base + (item.dy || 0);
+  return {x: L.left + item.x, y: base - item.pic.h, w: item.pic.w,
+    h: item.pic.h};
+}
+
+const found = (L, pi, line, item) => ({pos: {id: pi.id,
+  off: item.from}, item, line, pi, rect: rectOf(L, pi, line, item)});
+
+/** Index of the first line of pi for which key(line) > v. */
+function lineBy(lines, key, v) {
+  let lo = 0, hi = lines.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (key(lines[mid]) > v) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** See the header. */
+export function picAt(L, x, y) {
+  if (!L || !L.items || !L.items.length) return null;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  const pi = L.itemAtY(y);
+  if (!pi || pi.kind !== 'p' || !pi.lines || !pi.lines.length) {
+    return null;
+  }
+  const line = pi.lines[lineBy(pi.lines, (l) => pi.y + l.y + l.h, y)];
+  for (const item of line.items) {
+    if (item.kind !== 'pic' || !item.pic) continue;
+    const r = rectOf(L, pi, line, item);
+    if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+      return found(L, pi, line, item);
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export function selectedPic(L, sel) {
+  if (!L || !sel || !sel.anchor || !sel.head) return null;
+  const {anchor: a, head: h} = sel;
+  if (a.id !== h.id || Math.abs(a.off - h.off) !== 1) return null;
+  const off = Math.min(a.off, h.off);
+  const loc = L.locate({id: a.id, off});
+  const pi = loc && loc.item;
+  if (!pi || pi.kind !== 'p' || !pi.lines || !pi.lines.length) {
+    return null;
+  }
+  const line = pi.lines[lineBy(pi.lines, (l) => l.to, off)];
+  const item = line.items.find((t) => t.kind === 'pic' && t.pic &&
+    t.from === off);
+  return item ? found(L, pi, line, item) : null;
+}
+
+const zoomOf = (z) => (Number.isFinite(z) && z > 0 ? z : 1);
+
+/** See the header. */
+export function handleRects(rect, zoom) {
+  const s = SIDE / zoomOf(zoom);
+  return NAMES.map((name, i) => ({name,
+    x: rect.x + rect.w * FX[i] - s / 2,
+    y: rect.y + rect.h * FY[i] - s / 2, w: s, h: s}));
+}
+
+/** See the header. */
+export function handleAt(rect, x, y, zoom) {
+  const z = zoomOf(zoom), reach = (SIDE / 2 + AROUND) / z;
+  let best = null, dist = Infinity;
+  for (let i = 0; i < NAMES.length; i += 1) {
+    const dx = Math.abs(x - (rect.x + rect.w * FX[i]));
+    const dy = Math.abs(y - (rect.y + rect.h * FY[i]));
+    if (dx > reach || dy > reach) continue;
+    const d = dx * dx + dy * dy;
+    const corner = i % 2 === 0;
+    if (d < dist || (d === dist && corner)) {
+      best = NAMES[i];
+      dist = d;
+    }
+  }
+  return best;
+}

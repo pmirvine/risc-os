@@ -1,0 +1,149 @@
+// PicCarry - a picture's w:drawing made fit for another document
+// (pure; Batch B, B7: for ./ClipPics).
+//
+//   rebind(node, from, to) -> node
+//       node (read in scope `from`) with xmlns declarations added to
+//       its top element for every prefix it uses but does not
+//       declare that `to` binds otherwise (or not at all), the URI
+//       `from` gives (xmlns="" for a default `from` lacks), so it
+//       means the same in `to`; the same node when none is needed
+//   onlyEmbed(node, map) -> boolean
+//       whether the picture's a:blip r:embed is the ONE attribute of
+//       node's subtree in a relationships namespace (by URI in
+//       scope, any prefix, any depth: an svgBlip or imgLayer
+//       r:embed, an a:hlinkClick / a:hlinkHover r:id, an r:link...
+//       each refer to a part or link of the source document). node
+//       must be a picture ./PicRead pictureOf understands in map.
+//   withCrop(node, from, to) -> node
+//       the a:srcRect of a picture (pic:blipFill) in the form the
+//       target wants when one of the scopes is a Strict document's
+//       and the other not (./Ns isStrict): Strict 'N%' (up to three
+//       decimals), Transitional integers (1/1000 %). The values are
+//       those ./PicRead read in `from` (only when valid); a srcRect
+//       it did not take, or a repeated one, is removed (the picture
+//       is shown uncropped, as it was). Only the l t r b attributes
+//       present change, the rest kept. The same node otherwise.
+import {NS} from './Wml';
+import {scope, isEl, isStrict} from './Ns';
+import {pictureOf} from './PicRead';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const isNode = (c) => isEl(c) && Array.isArray(c.attrs) &&
+  Array.isArray(c.children);
+const isDecl = (k) => k === 'xmlns' || k.startsWith('xmlns:');
+const preOf = (s) => (s.includes(':') ? s.slice(0, s.indexOf(':'))
+  : '');
+const inside = (m, n) => (n.attrs.length ? scope(m, n) : m);
+const REL = /\/relationships$/;
+
+/** The prefixes node uses and does not declare above their use. */
+function freePrefixes(node) {
+  const out = new Set();
+  const todo = [[node, new Set()]];
+  while (todo.length) {
+    const [n, outer] = todo.pop();
+    let own = outer;
+    for (const [k] of n.attrs) {
+      if (!isDecl(k)) continue;
+      if (own === outer) own = new Set(outer);
+      own.add(k === 'xmlns' ? '' : k.slice(6));
+    }
+    const use = (p) => { if (!own.has(p)) out.add(p); };
+    use(preOf(n.name));
+    for (const [k] of n.attrs) {
+      if (!isDecl(k) && k.includes(':')) use(preOf(k));
+    }
+    for (const c of n.children) if (isNode(c)) todo.push([c, own]);
+  }
+  out.delete('xml');
+  return out;
+}
+
+/** See the header. */
+export function rebind(node, from, to) {
+  if (!isObj(node) || !Array.isArray(node.attrs)) return node;
+  const add = [];
+  for (const p of [...freePrefixes(node)].sort()) {
+    const u = from.get(p);
+    if (u === to.get(p)) continue;
+    if (u !== undefined) add.push([p ? 'xmlns:' + p : 'xmlns', u]);
+    else if (p === '') add.push(['xmlns', '']);
+  }
+  return add.length ? {...node, attrs: [...node.attrs, ...add]} : node;
+}
+
+/** See the header. */
+export function onlyEmbed(node, map) {
+  if (!pictureOf(node, map)) return false;
+  let n = 0;
+  const todo = [[node, map]];
+  while (todo.length) {
+    const [e, outer] = todo.pop();
+    const m = inside(outer, e);
+    for (const [k] of e.attrs) {
+      if (isDecl(k) || !k.includes(':')) continue;
+      const u = m.get(preOf(k));
+      if ((u === NS.r || (typeof u === 'string' && REL.test(u))) &&
+        ++n > 1) return false;
+    }
+    for (const c of e.children) if (isNode(c)) todo.push([c, m]);
+  }
+  return n === 1;
+}
+
+/** Element n (scope m inside it) is uri:local. */
+const is = (n, m, uri, local) => n.name.slice(n.name.indexOf(':') +
+  1) === local && m.get(preOf(n.name)) === uri;
+
+const FILL = [[NS.wp, 'inline', 'anchor'], [NS.a, 'graphic'],
+  [NS.a, 'graphicData'], [NS.pic, 'pic'], [NS.pic, 'blipFill']];
+
+/** A value v (1/1000 %) as Strict 'N%' or a Transitional integer. */
+const form = (v, strict) => (strict ? String(Number((v / 1000)
+  .toFixed(3))) + '%' : String(v));
+
+/** n (scope m inside it) with fn applied at path's first match. */
+function down(n, m, path, fn) {
+  if (!path.length) return fn(n, m);
+  const [uri, ...locals] = path[0];
+  for (let i = 0; i < n.children.length; i++) {
+    const c = n.children[i];
+    if (!isNode(c)) continue;
+    const cm = inside(m, c);
+    if (!locals.some((l) => is(c, cm, uri, l))) continue;
+    const d = down(c, cm, path.slice(1), fn);
+    if (d === c) return n;
+    const children = n.children.slice();
+    children[i] = d;
+    return {...n, children};
+  }
+  return n;
+}
+
+/** See the header. */
+export function withCrop(node, from, to) {
+  const strict = isStrict(to);
+  if (strict === isStrict(from)) return node;
+  const info = pictureOf(node, from);
+  if (!info) return node;
+  const rect = info.srcRect;
+  return down(node, inside(from, node), FILL, (fill, fm) => {
+    const at = [];
+    fill.children.forEach((c, i) => {
+      if (isNode(c) && is(c, inside(fm, c), NS.a, 'srcRect'))
+        at.push(i);
+    });
+    if (!at.length) return fill;
+    if (at.length > 1 || !rect) {
+      return {...fill, children: fill.children.filter((_, i) =>
+        !at.includes(i))};
+    }
+    const old = fill.children[at[0]];
+    const attrs = old.attrs.map(([k, v]) => (['l', 't', 'r', 'b']
+      .includes(k) ? [k, form(rect[k], strict)] : [k, v]));
+    const children = fill.children.slice();
+    children[at[0]] = {...old, attrs};
+    return {...fill, children};
+  });
+}

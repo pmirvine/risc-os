@@ -3,6 +3,8 @@
 //   setDocPart {key, value} -> setDocPart {key, value: the old one}
 //   partFree(doc, name) -> true when setDocPart takes `name` as the
 //   numbering part (./NumWrite chooses a name with it)
+//   newPartFree(doc, name) -> true when setDocPart parts takes
+//   `name` as a new part (./InsertPicture chooses media names)
 //
 //   key            what it replaces      value
 //   numbering      doc.numbering         null or {raw, nums: Map}
@@ -13,6 +15,18 @@
 //                                        undefined (no numbering
 //                                        part: the key is removed
 //                                        from meta)
+//   parts          doc.parts             a Map name -> Uint8Array
+//
+// parts (plan R5): the new Map differs from doc.parts only by names
+// added or removed; a name in both holds the SAME bytes object. An
+// added name is well formed (as numberingPart), no other part's and
+// not meta.numberingPart (case ignored), given once, its value a
+// Uint8Array. So the inverse (the old Map, which removes them) is
+// taken by the same check, and undo gives the very old Map back.
+// No size or count cap here (callers enforce theirs: 20 MB a
+// picture in ./InsertPicture), and a removed part may still be named
+// by a relationship; a name with a drive letter, or one that is a
+// folder of another part or inside one, is refused.
 //
 // The value REPLACES the old one whole: the caller builds a new
 // numbering root, rels array or style table (./DocParts) and never
@@ -23,7 +37,7 @@
 // change the Doc and its undo history behind their backs (not
 // supported). meta is replaced by a copy (copy-on-write).
 // Refused (RangeError, doc unchanged): any other key (__proto__,
-// parts, meta...); a value of the wrong shape; a part name that
+// meta, sections...); a value of the wrong shape; a part name that
 // another part has (main, styles, settings, [Content_Types].xml,
 // any .rels, an entry of doc.parts, an Override of another type;
 // case ignored); settings other than null in a document without a
@@ -95,7 +109,8 @@ function taken(doc, name) {
 function checkPartName(v, doc) {
   if (v === undefined || v === null) return;
   if (typeof v !== 'string' || !v || v.length > 255 ||
-    v.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(v) ||
+    v.startsWith('/') || /^[A-Za-z]:/.test(v) ||
+    /[\\\u0000-\u001f\u007f]/.test(v) ||
     v.split('/').some((s) => s === '' || s === '.' || s === '..'))
     fail('bad part name');
   if (taken(doc, v.toLowerCase()))
@@ -116,6 +131,42 @@ export function partFree(doc, name) {
   return true;
 }
 
+/** True when `name` is a folder of a part, or inside a part. */
+function folderClash(doc, name) {
+  const lc = name.toLowerCase();
+  const m = isObj(doc.meta) ? doc.meta : {};
+  const known = [m.mainPart, m.stylesPart, m.settingsPart,
+    ...(doc.parts instanceof Map ? doc.parts.keys() : [])];
+  return known.some((x) => typeof x === 'string' &&
+    (x.toLowerCase().startsWith(lc + '/') ||
+    lc.startsWith(x.toLowerCase() + '/')));
+}
+
+/** See the header. */
+export function newPartFree(doc, name) {
+  const m = isObj(doc.meta) ? doc.meta : {};
+  return partFree(doc, name) && !folderClash(doc, name) &&
+    !(typeof m.numberingPart === 'string'
+    && m.numberingPart.toLowerCase() === name.toLowerCase());
+}
+
+function checkParts(v, doc) {
+  if (!(v instanceof Map)) fail('parts must be a Map');
+  const old = doc.parts instanceof Map ? doc.parts : new Map();
+  const added = new Set();
+  for (const [k, b] of v) {
+    if (old.has(k)) {
+      if (old.get(k) !== b) fail('part ' + k + ' changed');
+      continue;
+    }
+    if (!(b instanceof Uint8Array)) fail('part ' + k + ' not bytes');
+    if (!newPartFree(doc, k)) fail('part name ' + k + ' not free');
+    const lc = k.toLowerCase();
+    if (added.has(lc)) fail('part ' + k + ' given twice');
+    added.add(lc);
+  }
+}
+
 // key -> [where it lives, the doc field, the value check]
 const KEYS = new Map([
   ['numbering', ['doc', 'numbering', checkNumbering]],
@@ -123,6 +174,7 @@ const KEYS = new Map([
   ['styles', ['doc', 'styles', checkStyles]],
   ['settings', ['doc', 'rawSettings', checkSettings]],
   ['numberingPart', ['meta', 'numberingPart', checkPartName]],
+  ['parts', ['doc', 'parts', checkParts]],
 ]);
 
 /** See the header. */

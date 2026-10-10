@@ -1,0 +1,93 @@
+// PicInsertBox - the Insert picture dialogue box (Insert > Picture...
+// in ./InsertMenu): the path of a PNG, JPEG or GIF file on the
+// disc, typed or filled by dropping a file icon on the box.
+//
+//   picInsertBox(dw) -> the box's api (WimpLib Ui/Dialog), one box
+//       per document (key 'picins:<docKey>'), kept in dw.boxes
+//       ('picins') so ./CloseDoc deletes it with the document; asked
+//       again while it is open, the same box comes to the front.
+//       Nothing (null) when the document has no selection.
+//
+// Insert (or Return) reads the file with vfs and puts the picture in
+// at the selection (./PicLoad putPicture: one undo step); the box
+// then goes. A path with :// in it is refused (an address is never
+// fetched), as are a missing file, a directory and a file over
+// 20 MB: the message is in the box, which stays, with a beep.
+// Other refusals (not a picture, too many pixels...) are ./PicLoad's
+// messages, the box kept. Cancel, Escape and the close icon change
+// nothing, even while a file is being read (the picture then does
+// not go in).
+import {wimp, vfs} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {putPicture, MSG} from './PicLoad';
+
+const MAX = 20 * 1024 * 1024;
+const rows = () => [
+  {kind: 'text', name: 'path', label: 'Path', maxLen: 255, w: 360,
+    help: 'The path of a PNG, JPEG or GIF file; or drop a file icon ' +
+      'on this box.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+const HELP = 'Insert picture: put a PNG, JPEG or GIF picture file in ' +
+  'the document at the caret.';
+
+const wired = new WeakSet();      // boxes with handlers
+const busy = new WeakSet();       // boxes with a read under way
+
+/** See the header. */
+export function picInsertBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `picins:${dw.docKey}`,
+    title: 'Insert picture', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Insert'], enter: 'Insert', minW: 520});
+  box(dw, 'picins', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) { wired.add(api); wire(api, dw); }
+  api.set('path', '');
+  api.set('msg', '');
+  api.open();
+  return api;
+}
+
+/** What is wrong with a path, or '' when it can be read. */
+function check(path) {
+  if (!path) return 'Type the path of a picture file.';
+  if (path.includes('://')) return 'Only files on the disc can be ' +
+    'used, not addresses.';
+  const s = vfs.stat(path);
+  if (!s) return 'There is no such file.';
+  if (s.type === 'dir') return 'That is a directory, not a file.';
+  if (s.size > MAX) return MSG.tooBig;
+  return '';
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  api.win.on('dataload', (ev) => {
+    const f = ev.files.find((x) => x.type !== 'dir');
+    if (f) { api.set('path', f.path); api.set('msg', ''); }
+    return true;
+  });
+  api.on('button', ({name, values}) => {
+    if (name === 'Cancel') { dw.view.focus(); return undefined; }
+    if (busy.has(api)) return false;
+    const path = (values.path || '').trim();
+    const why = check(path);
+    if (why) {
+      wimp.beep();
+      api.set('msg', why);
+      return false;
+    }
+    busy.add(api);
+    api.set('msg', '');
+    putPicture(dw, () => vfs.readFile(path),
+      {live: () => !api.gone}).then((done) => {
+      if (!done || api.gone) return;
+      api.delete();
+      if (!dw.closed) dw.view.focus();
+    }).finally(() => busy.delete(api));
+    return false;
+  });
+}

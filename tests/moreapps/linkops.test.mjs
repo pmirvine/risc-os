@@ -602,3 +602,24 @@ describe('review fixes', () => {
     assert.equal(linkUnder(L, c1.x + 4, -50), null);
   });
 });
+
+describe('LinkOps: a picture is not made a link (final review B2)',
+  () => {
+    it('a selection holding a picture: refused with the message, ' +
+      'nothing changed; text beside it still links', async () => {
+      const {picDocx} = await import('./pic-fixtures.mjs');
+      const doc = await readDocx(await picDocx({body: p(r('after'))}));
+      const d = new Document(doc), t = new Typing(d);
+      const MSG = 'A picture cannot be made a link yet.';
+      const before = structuredClone(d.doc);
+      assert.deepEqual(selInfo(d.doc, SEL(d, 0, 0, 0, 1)), {error: MSG});
+      const r1 = insertLink(d, t, SEL(d, 0, 0, 0, 1),
+        {address: 'https://example.com/'});
+      assert.deepEqual(r1, {error: MSG});
+      assert.equal(d.undoDepth, 0);
+      assert.deepStrictEqual(d.doc, before);
+      const r2 = insertLink(d, t, SEL(d, 1, 0, 1, 5),
+        {address: 'https://example.com/'});
+      assert.ok(r2.sel, 'text still links');
+    });
+  });

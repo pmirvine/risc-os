@@ -1,0 +1,162 @@
+// InsertPicture - a picture put in at the selection, as one undo step
+// (pure; Batch B: the spec's InsertPicture.insert, plan R21).
+//
+//   insert(d, sel, {bytes}) -> sel
+//       d a ./Document, sel a ./Selection, bytes a Uint8Array (a
+//       file's or a pasted image's). Checked first, nothing changed
+//       when refused (RangeError, plan R13):
+//         'not-image'   not PNG, JPEG or GIF by its magic bytes and
+//                       headers (./PicMedia imageInfo), not bytes
+//         'too-big'     over 20 MB    'too-large' over the decode
+//                       caps (16384 px a side, 64 Mpx), or no size
+//         'ids'         no docPr id free below 2^31 (./PicIds)
+//         'no-package'  a Doc without meta.mainPart / documentRoot
+//         'name'        no media name is free (a main part whose
+//                       folder is too long for one)
+//       Then, in ONE d.atomic: setDocPart parts (a new Map: the old
+//       one and the bytes as <main dir>media/imageN.<png|jpeg|gif>,
+//       N the first number from 1 that no part, content-type
+//       Override or relationship target names as imageN.<any
+//       extension>, case ignored: plan R6, ./PicNames, the rule a
+//       paste follows), setDocPart rels (./DocParts addRel,
+//       kind image, target media/imageN.ext, Strict type in a Strict
+//       document), and the picture's inline put in as ./InsertApply
+//       putIn does (the selection deleted, a paragraph made at a
+//       kept block's edge; the run's format that of the text
+//       before). Returns the picture selected (anchor before it).
+//       A sel whose position is not in the document: sel back,
+//       nothing done.
+//   pictureXml({cx, cy, id, rid, file}, pre?) -> the w:drawing node
+//       (Word's form: wp:inline, wp:docPr id / name "Picture id",
+//       pic:cNvPr name file, a:blip r:embed rid, a:xfrm / a:ext the
+//       extent). pre: the prefixes (default wp a pic r, declared at
+//       the root).
+//
+// Size (plan R18): pixels / dpi (./PicMedia naturalEmu); when that
+// is out of range (a tiny dpi), the 96 dpi size. Then, wider than
+// the column of the caret's section (page width less the margins,
+// A4 and 1 in by default, divided by w:cols num less the spaces) or
+// than 6.5 in, or taller than 9 in, scaled down to fit, proportions
+// kept; refused ('too-large') when the width would fall below 15
+// twips.
+// Prefixes: one bound at the document's root to the right URI is
+// used (./PicRead docMap: Transitional URIs, the writer maps them
+// to Strict for a Strict document); else wp, a, pic or r (or wp1...
+// when the root binds that prefix to something else) declared on
+// wp:inline, a:graphicFrameLocks and a:graphic, pic:pic, a:blip.
+import {OBJ} from './Model';
+import {select} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {putIn} from './InsertApply';
+import {addRel} from './DocParts';
+import {usedNumbers, mediaName} from './PicNames';
+import {NS} from './Wml';
+import {docMap, EMU_PX, MAX_EXT} from './PicRead';
+import {imageInfo, decodable, naturalEmu} from './PicMedia';
+import {usedDocPrIds, freshDocPrId} from './PicIds';
+
+const IN = 914400, CAP = 6.5 * IN, TW = 635, MAXH = 9 * IN;
+const MIN_EMU = 15 * TW;
+const num = (v, d) => (Number.isFinite(v) ? v : d);
+const n = (name, attrs = [], children = []) => ({name, attrs,
+  children});
+const STD = {wp: ['wp', []], a: ['a', []], pic: ['pic', []],
+  r: ['r', []]};
+
+/** See the header. */
+export function pictureXml({cx, cy, id, rid, file}, pre = STD) {
+  const [wp, dWp] = pre.wp, [a, dA] = pre.a, [pic, dPic] = pre.pic;
+  const [r, dR] = pre.r;
+  const W = (s) => wp + ':' + s, A = (s) => a + ':' + s;
+  const P = (s) => pic + ':' + s;
+  const ext = [['cx', String(cx)], ['cy', String(cy)]];
+  const blip = n(A('blip'), [...dR, [r + ':embed', rid]]);
+  const pict = n(P('pic'), dPic, [
+    n(P('nvPicPr'), [], [n(P('cNvPr'), [['id', '0'], ['name', file]]),
+      n(P('cNvPicPr'))]),
+    n(P('blipFill'), [], [blip, n(A('stretch'), [],
+      [n(A('fillRect'))])]),
+    n(P('spPr'), [], [n(A('xfrm'), [], [n(A('off'), [['x', '0'],
+      ['y', '0']]), n(A('ext'), ext)]), n(A('prstGeom'),
+      [['prst', 'rect']], [n(A('avLst'))])])]);
+  return n('w:drawing', [], [n(W('inline'), [['distT', '0'],
+    ['distB', '0'], ['distL', '0'], ['distR', '0'], ...dWp], [
+    n(W('extent'), ext),
+    n(W('effectExtent'), [['l', '0'], ['t', '0'], ['r', '0'],
+      ['b', '0']]),
+    n(W('docPr'), [['id', String(id)], ['name', 'Picture ' + id]]),
+    n(W('cNvGraphicFramePr'), [], [n(A('graphicFrameLocks'),
+      [...dA, ['noChangeAspect', '1']])]),
+    n(A('graphic'), dA, [n(A('graphicData'), [['uri', NS.pic]],
+      [pict])])])]);
+}
+
+/** [prefix, declarations] for each of wp a pic r in scope map. */
+function prefixes(map) {
+  const out = {};
+  for (const k of ['wp', 'a', 'pic', 'r']) {
+    let p = null;
+    for (const [q, u] of map) if (q && u === NS[k]) { p = q; break; }
+    if (p) { out[k] = [p, []]; continue; }
+    p = k;
+    for (let i = 1; map.has(p); i++) p = k + i;
+    out[k] = [p, [['xmlns:' + p, NS[k]]]];
+  }
+  return out;
+}
+
+/** The extent: natural size, fitted to the section (plan R18). */
+function sizeFor(info, props) {
+  let e = naturalEmu(info);
+  if (!e) {
+    e = {cx: info.w * EMU_PX, cy: info.h * EMU_PX};
+    if (!(e.cx >= 1 && e.cx <= MAX_EXT && e.cy >= 1 &&
+      e.cy <= MAX_EXT)) throw new RangeError('too-large');
+  }
+  const sz = (props && props.pgSz) || {}, mar = (props &&
+    props.pgMar) || {}, cols = (props && props.cols) || {};
+  const tw = num(sz.w, 11906) - num(mar.left, 1440) -
+    num(mar.right, 1440);
+  const k = cols.num > 1 ? Math.floor(cols.num) : 1;
+  const colw = tw - (k - 1) * num(cols.space, 720);
+  const maxW = Math.min(CAP, colw > 0 ? colw / k * TW : CAP);
+  const f = Math.min(1, maxW / e.cx, MAXH / e.cy);
+  if (f === 1) return e;
+  const cx = Math.round(e.cx * f);
+  if (cx < MIN_EMU) throw new RangeError('too-large');
+  return {cx, cy: Math.max(1, Math.round(e.cy * f))};
+}
+
+/** See the header. */
+export function insert(d, sel, {bytes} = {}) {
+  const doc = d.doc;
+  const o = sel ? orderedPos(doc, sel) : null;
+  if (!o) return sel;
+  if (!(bytes instanceof Uint8Array)) throw new RangeError('not-image');
+  const info = imageInfo(bytes);
+  const why = decodable(info, bytes);
+  if (why) throw new RangeError(why);
+  const meta = doc.meta || {};
+  const main = meta.mainPart;
+  if (typeof main !== 'string' || !main || !meta.documentRoot)
+    throw new RangeError('no-package');
+  const sec = doc.sections[findBlock(doc, o.from.id).s];
+  const {cx, cy} = sizeFor(info, sec && sec.props);
+  const id = freshDocPrId(usedDocPrIds(doc));
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  const name = mediaName(doc, dir, info.ext, usedNumbers(doc, dir));
+  const file = name.slice(dir.length + 'media/'.length);
+  const add = addRel(Array.isArray(doc.rels) ? doc.rels : [],
+    {kind: 'image', target: name.slice(dir.length),
+      strict: meta.conformance === 'strict'});
+  const parts = new Map(doc.parts).set(name, bytes);
+  const node = pictureXml({cx, cy, id, rid: add.id, file},
+    prefixes(docMap(doc)));
+  return d.atomic(() => {
+    d.apply({op: 'setDocPart', key: 'parts', value: parts});
+    d.apply({op: 'setDocPart', key: 'rels', value: add.rels});
+    const c = putIn(d, sel, OBJ, {kind: 'raw', level: 'r', node});
+    const at = c.head;
+    return select({id: at.id, off: at.off - 1}, at);
+  });
+}

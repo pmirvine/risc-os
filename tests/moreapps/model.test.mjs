@@ -985,7 +985,8 @@ function gen(rnd) {
   // document-level parts: a new value (never the old one changed)
   const part = (d) => {
     const key = pick(['numbering', 'rels', 'styles', 'settings',
-      'numberingPart', 'numberingPart', 'rels', '__proto__', 'meta']);
+      'numberingPart', 'numberingPart', 'rels', '__proto__', 'meta',
+      'parts', 'parts']);
     let value;
     if (key === 'numbering') value = pick([null, numbering()]);
     else if (key === 'rels') {
@@ -998,6 +999,17 @@ function gen(rnd) {
     } else if (key === 'settings') value = pick([null, X('w:settings')]);
     else if (key === 'numberingPart') {
       value = pick(['word/numbering.xml', undefined, null, '../bad']);
+    } else if (key === 'parts') {
+      // add a media part, take one away, or a refused change
+      const m = new Map(d.parts);
+      const r = rnd(), k = [...m.keys()];
+      if (r < 0.5) {
+        m.set('word/media/image' + int(5) + '.png',
+          new Uint8Array([int(256)]));
+      } else if (r < 0.75 && k.length) m.delete(pick(k));
+      else if (k.length) m.set(pick(k), new Uint8Array(1));
+      else m.set('../bad.png', new Uint8Array(1));
+      value = m;
     } else value = {};
     return {op: 'setDocPart', key, value};
   };
@@ -1090,6 +1102,8 @@ function runSequence(seed, grouped) {
         doc.apply(op);
         ok++;
         applied.set(op.op, (applied.get(op.op) || 0) + 1);
+        if (op.key === 'parts')
+          applied.set('parts', (applied.get('parts') || 0) + 1);
       } catch (e) {
         if (!(e instanceof RangeError)) throw e;
         assert.deepEqual(doc.doc, before, 'failed op changed the doc');
@@ -1121,6 +1135,8 @@ describe('property: random ops then undo/redo', () => {
     for (const k of NEW) {
       assert.ok(applied.get(k) >= 150, k + ': ' + applied.get(k));
     }
+    assert.ok(applied.get('parts') >= 30, 'parts: ' +
+      applied.get('parts'));
   };
   it('500 sequences', () => {
     applied.clear();

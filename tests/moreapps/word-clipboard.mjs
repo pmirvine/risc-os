@@ -7,10 +7,14 @@
 // the Edit menu, the Mac Cmd keys (navigator.platform injected),
 // 50,000 paragraphs, 1000 rapid pastes, hostile HTML (no request, no
 // script), undo/redo exactness, leaks, and a DOMParser round trip of
-// the HTML read back from the system clipboard.
+// the HTML read back from the system clipboard. Pictures (Batch B,
+// B7): a picture copied in one window and pasted in another is drawn
+// there, saved with its media part, and Ctrl-Z takes it and its part
+// away.
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, numberingXml, p, r, REL } from './build-docx.mjs';
+import { picDocx, pngBytes } from './pic-fixtures.mjs';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const RICH = '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/><w:b/><w:i/><w:color w:val="C00000"/><w:sz w:val="32"/>';
@@ -39,6 +43,8 @@ const files = {
   Alpha: Array.from(await withLink(ALPHA)), Gamma: Array.from(await withLink(ALPHA)), Rt: Array.from(await withLink(RT)),
   Beta: Array.from(await plainDoc(['Target one.', 'Target two.', 'Target three.'])),
   Big: Array.from(await plainDoc(Array.from({ length: 50000 }, (_, i) => BIGP(i)))),
+  PicSrc: Array.from(await picDocx({ pics: [{ bytes: pngBytes(40, 20, { rgb: [220, 20, 30] }) }], body: p(r('Under the picture.')) })),
+  PicDst: Array.from(await plainDoc(['Pictures go here.', 'Second.'])),
 };
 
 const out = [];
@@ -98,7 +104,7 @@ async function start(page, platform, open) {
       const dt = new DataTransfer();
       if (text != null) dt.setData('text/plain', text);
       if (html != null) dt.setData('text/html', html);
-      for (let i = 0; i < files; i++) dt.items.add(new File(['x' + i], 'pic' + i + '.png', { type: 'image/png' }));
+      for (let i = 0; i < files; i++) dt.items.add(new File(['x' + i], 'doc' + i + '.pdf', { type: 'application/pdf' }));
       return dt;
     };
     /** A paste (as the browser fires it) into leaf's window: whether it was prevented. */
@@ -320,7 +326,7 @@ try {
   await ev(() => { window.__msgs.length = 0; });
   const fp = await fire('Beta', { files: 2 });
   const fs1 = await st('Beta'), fmsg = await ev(() => [...window.__msgs]);
-  const FILES = 'Pictures and files cannot be pasted into a document yet.';
+  const FILES = 'Only PNG, JPEG and GIF pictures can be pasted: other files cannot.';
   ok('a paste of files only: no change, a beep, the message shown (reportError), prevented', (await snap('Beta')) === sn0
     && (await beeps()) === be0 + 1 && fp && fs1.clip.last === 'files' && fs1.clip.status === FILES && same(fmsg, [FILES]), { fs1, fmsg });
   await ev(() => window.__doc('Beta').view.compose('か'));
@@ -598,6 +604,92 @@ try {
     rt && rtr.last === 'html' && same(rtr.src, rtr.dst), rtr);
   ok('... same bold, italic, underline, strike, size, font, colour, super/subscript on every run; alignment', !diff.length
     && same(rtr.jc, [['center', 'center']]), { diff, jc: rtr.jc });
+
+  // ---------------------------------------------------- B7: a picture pasted into another document
+  await ev(async () => {
+    for (const n of ['PicSrc', 'PicDst']) {
+      await os.filer.run('RAM::RamDisc0.$.' + n);
+      for (let i = 0; i < 200 && !window.__doc(n); i++) await window.__sleep(50);
+    }
+    window.__doc('PicSrc').win.open({ x: 30, y: 60, w: 470, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });
+    window.__doc('PicDst').win.open({ x: 520, y: 60, w: 470, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });
+    window.__picsOf = (leaf) => {
+      const d = window.__doc(leaf), L = d.view.layout, res = [];
+      for (const it of L.items) for (const ln of it.lines || []) for (const x of ln.items) {
+        if (x.kind !== 'pic') continue;
+        const base = it.y + ln.y + ln.base + (x.dy || 0);
+        res.push({ x: L.left + x.x, y: base - x.pic.h, w: x.pic.w, h: x.pic.h });
+      }
+      return res;
+    };
+    window.__pxOf = (leaf, x, y) => {
+      const d = window.__doc(leaf), w = d.win, cv = w._canvas, k = cv.width / w.w, z = d.view.zoom, t = d.view.layout.top;
+      const c = cv.getContext('2d').getImageData(Math.floor((x * z - w.scrollX) * k), Math.floor((t + (y - t) * z - w.scrollY) * k), 1, 1).data;
+      return [c[0], c[1], c[2]];
+    };
+    window.__media = (leaf) => [...window.__doc(leaf).d.doc.parts.keys()].filter((k) => /media\//.test(k));
+    await window.__frames(4);
+  });
+  await click('PicSrc', 1, 3);
+  await sel('PicSrc', 0, 0, 0, 1);
+  await press(MOD + '+c');
+  await settle();
+  await click('PicDst', 0, 17);
+  await press(MOD + '+v');
+  await wait(300);
+  const pv1 = await ev(async () => {
+    await window.__frames(6);
+    await window.__sleep(200);
+    await window.__frames(4);
+    const d = window.__doc('PicDst'), b = window.__picsOf('PicDst')[0];
+    return { media: window.__media('PicDst'), n: window.__picsOf('PicDst').length, depth: d.view.undoDepth, line: d.view.lines()[0],
+      c: b ? window.__pxOf('PicDst', b.x + b.w / 2, b.y + b.h / 2) : null, w: b?.w, h: b?.h, src: window.__media('PicSrc') };
+  });
+  ok('B7: a picture copied in one window and pasted in another: drawn there in its colours, one undo step, its media part made',
+    pv1.n === 1 && pv1.depth === 1 && pv1.media.length === 1 && pv1.line === 'Pictures go here.\ufffc' && pv1.c
+    && Math.abs(pv1.c[0] - 220) < 12 && Math.abs(pv1.c[1] - 20) < 12 && Math.abs(pv1.c[2] - 30) < 12 && pv1.w === 96 && pv1.h === 48, pv1);
+  await press('Control+s');
+  await wait(400);
+  const pv2 = await ev(async () => {
+    const b = await os.vfs.readFile('RAM::RamDisc0.$.PicDst');
+    const s = new TextDecoder('latin1').decode(b);
+    return { media: s.includes('word/media/image1.png'), dirty: window.__doc('PicDst').view.dirty };
+  });
+  ok('... saved, the file holds the media part', pv2.media && !pv2.dirty, pv2);
+  await click('PicDst', 1, 2);
+  await press('Control+z');
+  await settle();
+  const pv3 = await ev(async () => {
+    await window.__frames(3);
+    const d = window.__doc('PicDst');
+    return { media: window.__media('PicDst'), n: window.__picsOf('PicDst').length, depth: d.view.undoDepth, line: d.view.lines()[0] };
+  });
+  ok('... Ctrl-Z removes the picture and its part', pv3.n === 0 && pv3.media.length === 0 && pv3.depth === 0
+    && pv3.line === 'Pictures go here.', pv3);
+  // a picture alone into a document with no docPr id left: refused with a message
+  const pf0 = await ev(() => {
+    const d = window.__doc('PicDst').d;
+    window.__partsWas = d.doc.parts;
+    d.doc.parts = new Map(d.doc.parts).set('word/header9.xml', new TextEncoder().encode('<w:hdr xmlns:wp="y"><wp:docPr id="2147483647"/></w:hdr>'));
+    window.__msgs.length = 0;
+    return { beeps: window.__beeps ?? 0 };
+  });
+  await click('PicSrc', 1, 3);
+  await sel('PicSrc', 0, 0, 0, 1);
+  await press(MOD + '+c');
+  await settle();
+  await click('PicDst', 0, 17);
+  await press(MOD + '+v');
+  await wait(300);
+  const pf1 = await ev(() => {
+    const d = window.__doc('PicDst');
+    const r = { beeps: window.__beeps, msgs: [...window.__msgs], depth: d.view.undoDepth, line: d.view.lines()[0], media: window.__media('PicDst') };
+    d.d.doc.parts = window.__partsWas;
+    return r;
+  });
+  ok('A4: a lone picture pasted where no id is free: the message "could not be pasted: no free name or id", nothing changed',
+    pf1.msgs.length === 1 && /could not be pasted: no free name or id/.test(pf1.msgs[0]) && pf1.depth === 0
+    && pf1.line === 'Pictures go here.' && pf1.media.length === 0 && pf1.beeps > pf0.beeps, [pf0, pf1]);
 
   // ---------------------------------------------------- 50,000 paragraphs: select all, copy
   await ev(async () => {

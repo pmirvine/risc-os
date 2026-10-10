@@ -1,0 +1,222 @@
+// ClipPics - pictures pasted between documents, and fresh docPr ids
+// for a paste within one (pure; Batch B, plan R14, R15).
+//
+//   picsOf(doc, blocks) -> Map embed -> {bytes, ext}
+//       the media of the pictures in clipboard blocks (./ClipSlice),
+//       in order: each embed whose picture ./PicRead understands
+//       (read in docMap(doc)) and whose part exists (./PicMedia
+//       mediaOf: an internal image relationship), of at most 20 MB,
+//       its part name ending in an extension of EXTS (lower case,
+//       kept). At most MAX_PICS embeds and MAX_PIC_BYTES bytes in
+//       all: any more are left out (those pictures are dropped).
+//       bytes: the document's own object (never changed).
+//   picKept(x, pics, from, doc) -> boolean
+//       inline x is a picture that goes into doc from another
+//       document (for ./ClipClean): pictureOf(x.node, from)
+//       understands it, its a:blip r:embed is its one relationship
+//       reference (./PicCarry onlyEmbed: a picture with an svgBlip,
+//       an imgLayer, a hyperlink... is dropped), that embed is in
+//       pics, doc has a package, and the node bound to doc's
+//       namespaces (./PicCarry rebind) still reads as a picture
+//   copyPics(doc, blocks, pics, from, next?) -> {ops, blocks}
+//       the picture inlines (picKept) of cleaned blocks made fit for
+//       doc: per source embed one new part <main dir>media/imageN.ext
+//       (the source's bytes object and extension; N the first free
+//       number from 1 over every imageN.<any extension> that a
+//       part, a content-type Override or a relationship's target
+//       names, case ignored, at most max(used + 2, 1024) tried: plan
+//       R6) and one relationship (./DocParts addRel, kind image,
+//       Strict in a Strict document); each inline's node bound to
+//       doc's namespaces (./PicCarry rebind), its crop in doc's form
+//       (withCrop), its a:blip r:embed the new id (./PicEdit
+//       withEmbed) and its wp:docPr ids fresh
+//       (withDocPrIds: one more than the largest, each new). ops:
+//       setDocPart parts (a new Map: plan R5), then rels; none when
+//       no picture. from: the source's scope (./ClipSlice picScope).
+//       next: the docPr id counter (default: a new one for doc)
+//   freshDocPrs(doc, blocks, next?) -> blocks
+//       the same document (R14): every wp:docPr id in the blocks'
+//       raw inlines (pictures and other drawings, any depth) made
+//       fresh; one old id within one inline, one new id (Choice and
+//       Fallback agree); untouched blocks are the same objects.
+//   samePaste(doc, blocks, pics, from) -> {ops, blocks}
+//       a paste within one document: the pictures whose embed no
+//       longer gives the bytes the copy held (stalePics: an undo
+//       took their part or relationship away, or a later command
+//       gave the id to other media) are carried as across documents
+//       (copyPics with only those), then freshDocPrs; one counter of
+//       ids for both. The other pictures share their media.
+//   stalePics(doc, blocks, pics, from) -> Map embed -> {bytes, ext}
+//       the entries of pics whose picture is in blocks and whose
+//       embed in doc (./PicMedia mediaOf) is missing or other bytes
+//   MAX_PICS = 1000   MAX_PIC_BYTES = 209715200 (200 MB)
+//   MAX_ONE = 20971520 (20 MB)   EXTS
+// Fresh ids: ./PicIds usedDocPrIds(doc) as the paste finds doc.
+// RangeError: 'ids' when none is left below 2^31, 'name' when no
+// media name is free (./EditClip then pastes the text).
+import {pictureOf, docMap} from './PicRead';
+import {mediaOf} from './PicMedia';
+import {withEmbed, withDocPrIds} from './PicEdit';
+import {usedDocPrIds, freshDocPrId} from './PicIds';
+import {addRel} from './DocParts';
+import {usedNumbers, mediaName} from './PicNames';
+import {rebind, onlyEmbed, withCrop} from './PicCarry';
+
+export const MAX_PICS = 1000;
+export const MAX_PIC_BYTES = 209715200;
+export const MAX_ONE = 20971520;
+export const EXTS = ['png', 'jpeg', 'jpg', 'gif', 'bmp', 'tif', 'tiff',
+  'emf', 'wmf', 'svg'];
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const rawOf = (x) => (isObj(x) && x.kind === 'raw' && isObj(x.node)
+  ? x.node : null);
+
+/** The extension of part `name` when it is one of EXTS, else null. */
+function extOf(name) {
+  const leaf = name.slice(name.lastIndexOf('/') + 1);
+  const m = /\.([A-Za-z]{3,4})$/.exec(leaf);
+  const e = m && m[1].toLowerCase();
+  return e && EXTS.includes(e) ? e : null;
+}
+
+/** Each inline of each paragraph block: fn(x). */
+function eachInline(blocks, fn) {
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    if (!isObj(b) || b.type !== 'p' || !isObj(b.inlines)) continue;
+    for (const k of Object.keys(b.inlines)) fn(b.inlines[k]);
+  }
+}
+
+/** See the header. */
+export function picsOf(doc, blocks) {
+  const out = new Map();
+  if (!doc || !Array.isArray(doc.rels) || !(doc.parts instanceof Map) ||
+    !doc.meta || typeof doc.meta.mainPart !== 'string') return out;
+  const map = docMap(doc), seen = new Set();
+  let total = 0;
+  eachInline(blocks, (x) => {
+    const info = pictureOf(rawOf(x), map);
+    if (!info || seen.has(info.embed)) return;
+    seen.add(info.embed);
+    if (out.size >= MAX_PICS) return;
+    const m = mediaOf(doc, info.embed);
+    const ext = m && extOf(m.name);
+    if (!ext || !(m.bytes instanceof Uint8Array) ||
+      m.bytes.length > MAX_ONE ||
+      total + m.bytes.length > MAX_PIC_BYTES) return;
+    total += m.bytes.length;
+    out.set(info.embed, {bytes: m.bytes, ext});
+  });
+  return out;
+}
+
+/** See the header. */
+export function picKept(x, pics, from, doc) {
+  if (!(pics instanceof Map) || !pics.size) return false;
+  const m = (doc && doc.meta) || {};
+  if (!m.mainPart || typeof m.mainPart !== 'string' ||
+    !m.documentRoot) return false;
+  const src = from instanceof Map ? from : docMap(null);
+  const info = pictureOf(rawOf(x), src);
+  if (!info || !pics.has(info.embed) || !onlyEmbed(x.node, src))
+    return false;
+  const to = docMap(doc);
+  return !!pictureOf(rebind(x.node, src, to), to);
+}
+
+/** A counter of fresh docPr ids for doc (the scan when first used). */
+function ids(doc) {
+  let used = null;
+  return () => {
+    if (!used) used = usedDocPrIds(doc);
+    const n = freshDocPrId(used);
+    used.max = n;
+    return n;
+  };
+}
+
+/** blocks with each inline x replaced by fn(x) (same when same). */
+function mapInlines(blocks, fn) {
+  return blocks.map((b) => {
+    if (!isObj(b) || b.type !== 'p' || !isObj(b.inlines)) return b;
+    let inl = null;
+    for (const k of Object.keys(b.inlines)) {
+      const x = b.inlines[k], y = fn(x);
+      if (y === x) continue;
+      if (!inl) inl = {...b.inlines};
+      inl[k] = y;
+    }
+    return inl ? {...b, inlines: inl} : b;
+  });
+}
+
+/** See the header. */
+export function copyPics(doc, blocks, pics, from, next = ids(doc)) {
+  const src = from instanceof Map ? from : docMap(null);
+  const keep = (x) => picKept(x, pics, src, doc);
+  let any = false;
+  eachInline(blocks, (x) => { if (keep(x)) any = true; });
+  if (!any) return {ops: [], blocks};
+  const main = doc.meta.mainPart;
+  const dir = main.slice(0, main.lastIndexOf('/') + 1),
+    strict = doc.meta.conformance === 'strict';
+  const to = docMap(doc);
+  const used = usedNumbers(doc, dir), ridOf = new Map();
+  const parts = new Map(doc.parts);
+  let rels = Array.isArray(doc.rels) ? doc.rels : [];
+  const out = mapInlines(blocks, (x) => {
+    if (!keep(x)) return x;
+    const embed = pictureOf(x.node, src).embed;
+    if (!ridOf.has(embed)) {
+      const {bytes, ext} = pics.get(embed);
+      const name = mediaName(doc, dir, ext, used);
+      parts.set(name, bytes);
+      const a = addRel(rels, {kind: 'image',
+        target: name.slice(dir.length), strict});
+      rels = a.rels;
+      ridOf.set(embed, a.id);
+    }
+    let n = withCrop(rebind(x.node, src, to), src, to);
+    n = withDocPrIds(withEmbed(n, to, ridOf.get(embed)), to, next);
+    return {...x, node: n};
+  });
+  return {ops: [{op: 'setDocPart', key: 'parts', value: parts},
+    {op: 'setDocPart', key: 'rels', value: rels}], blocks: out};
+}
+
+/** See the header. */
+export function freshDocPrs(doc, blocks, next = ids(doc)) {
+  const to = docMap(doc);
+  return mapInlines(blocks, (x) => {
+    const n = rawOf(x);
+    if (!n) return x;
+    const m = withDocPrIds(n, to, next);
+    return m === n ? x : {...x, node: m};
+  });
+}
+
+/** See the header. */
+export function stalePics(doc, blocks, pics, from) {
+  const out = new Map();
+  if (!(pics instanceof Map) || !pics.size) return out;
+  const src = from instanceof Map ? from : docMap(doc);
+  eachInline(blocks, (x) => {
+    const info = pictureOf(rawOf(x), src);
+    const e = info && pics.get(info.embed);
+    if (!e || out.has(info.embed)) return;
+    const m = mediaOf(doc, info.embed);
+    if (!m || m.bytes !== e.bytes) out.set(info.embed, e);
+  });
+  return out;
+}
+
+/** See the header. */
+export function samePaste(doc, blocks, pics, from) {
+  const next = ids(doc);
+  const stale = stalePics(doc, blocks, pics, from);
+  const c = stale.size ? copyPics(doc, blocks, stale, from, next)
+    : {ops: [], blocks};
+  return {ops: c.ops, blocks: freshDocPrs(doc, c.blocks, next)};
+}
