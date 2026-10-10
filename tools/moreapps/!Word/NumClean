@@ -1,0 +1,151 @@
+// NumClean - WordprocessingML XML of one document made fit for
+// another (./NumCopy: numbering definitions; ./ClipClean: the raw
+// extras of pasted paragraph and run properties). The result is a
+// new tree that refers to nothing of the source package.
+//
+//   cleanEl(node, scope, strict) -> node | null
+//     node: an element; scope: the namespace scope around it (./Ns:
+//     a Map prefix -> URI). A new element named w:<local> (whatever
+//     prefix the source used) with only its WML attributes, also
+//     named w:<local>, and xml:space / xml:lang; its children
+//     cleaned the same way (text kept as it is, comments and
+//     processing instructions left out); an mc:AlternateContent is
+//     replaced by its mc:Fallback's children (cleaned). null when
+//     the element must go (with all it holds):
+//       - an element of another namespace (w14, w15...: the target
+//         may not declare them) or more than 64 deep
+//       - one with an attribute of the relationships namespace
+//         (r:id, r:embed: a part of the source)
+//       - one with a w:id attribute (change records, tracked
+//         insertions, content controls: ids unique in a document)
+//       - DROP: the source's style ids (pStyle, rStyle), its picture
+//         bullets (lvlPicBulletId), list style links (styleLink,
+//         numStyleLink), its lists (numPr), section properties
+//         (sectPr: headers by r:id, a section break), HTML divs of
+//         its web settings (divId), table style conditions (cnfStyle)
+//     Other attributes of other namespaces are left out.
+//     Left and right are spelled as the target spells them (strict:
+//     start / end; else left / right; as ./JcName): w:ind's
+//     left / start, right / end (and their ...Chars), the w:val of
+//     w:jc, w:lvlJc and w:tab, and the side elements of w:pBdr; an
+//     attribute or side the element already has is not repeated.
+//   cleanExtra(extra, strict) -> extra  a pPr or rPr extra list (raw
+//     elements: ./ReadProps) cleaned element by element, in the
+//     scope the writer writes them in (w and r as their prefixes, and
+//     each element's own declarations); a new array.
+// Pure: no desktop services.
+import {NS} from './Wml';
+import {scope as inScope} from './Ns';
+import {jcName} from './JcName';
+
+export const DROP = new Set(['pStyle', 'rStyle', 'lvlPicBulletId',
+  'styleLink', 'numStyleLink', 'numPr', 'sectPr', 'divId',
+  'cnfStyle']);
+const MAX_DEPTH = 64;
+const isEl = (c) => c !== null && typeof c === 'object' &&
+  typeof c.name === 'string' && Array.isArray(c.attrs);
+const SIDE = {left: 'start', right: 'end', leftChars: 'startChars',
+  rightChars: 'endChars'};
+const BACK = Object.fromEntries(Object.entries(SIDE)
+  .map(([a, b]) => [b, a]));
+const SIDES = new Set(['left', 'right', 'start', 'end']);
+const VALS = new Set(['jc', 'lvlJc', 'tab']);
+const WRITER = new Map([['w', NS.w], ['r', NS.r], ['mc', NS.mc],
+  ['xml', 'http://www.w3.org/XML/1998/namespace']]);
+
+/** Side name n as the target spells it. */
+const side = (n, strict) => (strict ? SIDE[n] : BACK[n]) || n;
+
+/** [prefix, local] of a qualified name. */
+function split(n) {
+  const i = String(n).indexOf(':');
+  return i < 0 ? ['', String(n)] : [n.slice(0, i), n.slice(i + 1)];
+}
+
+/** The cleaned attributes of a w:<local> element, or null (drop). */
+function attrsOf(node, m, local, strict) {
+  const out = [], seen = new Set();
+  for (const [k, v] of node.attrs) {
+    if (k === 'xmlns' || k.startsWith('xmlns:')) continue;
+    const [pre, l] = split(k);
+    if (pre === 'xml') {
+      if ((l === 'space' || l === 'lang') && !seen.has(k)) {
+        seen.add(k);
+        out.push([k, v]);
+      }
+      continue;
+    }
+    const uri = pre ? m.get(pre) : undefined;
+    if (uri === NS.r) return null;
+    if (uri !== NS.w) continue;
+    if (l === 'id') return null;
+    const name = 'w:' + (local === 'ind' ? side(l, strict) : l);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push([name, l === 'val' && VALS.has(local) ? jcName(v, strict)
+      : v]);
+  }
+  return out;
+}
+
+/** The cleaned children of node (scope m inside it). */
+function kidsOf(node, m, strict, depth, local) {
+  const out = [], seen = new Set();
+  for (const c of kidList(node)) {
+    if (typeof c === 'string') {
+      out.push(c);
+      continue;
+    }
+    for (const k of clean(c, m, strict, depth + 1)) {
+      if (local === 'pBdr') {
+        const l = k.name.slice(2);
+        const n = SIDES.has(l) ? side(l, strict) : l;
+        if (seen.has(n)) continue;
+        seen.add(n);
+        out.push(n === l ? k : {...k, name: 'w:' + n});
+      } else out.push(k);
+    }
+  }
+  return out;
+}
+
+const isMc = (c, m) => isEl(c) && (c.attrs.length ? inScope(m, c)
+  : m).get(split(c.name)[0]) === NS.mc;
+const kidList = (n) => (Array.isArray(n.children) ? n.children : []);
+
+/** node cleaned: a list of elements (none, one, or a fallback's). */
+function clean(node, around, strict, depth) {
+  if (!isEl(node) || depth > MAX_DEPTH) return [];
+  const m = node.attrs.length ? inScope(around, node) : around;
+  const [pre, l] = split(node.name);
+  const uri = m.get(pre);
+  if (uri === NS.mc) {
+    if (l !== 'AlternateContent') return [];
+    const fb = kidList(node).find((c) => isMc(c, m) &&
+      split(c.name)[1] === 'Fallback');
+    if (!fb) return [];
+    const fm = fb.attrs.length ? inScope(m, fb) : m;
+    return kidsOf(fb, fm, strict, depth, null)
+      .filter((k) => typeof k !== 'string');
+  }
+  if (uri !== NS.w || DROP.has(l)) return [];
+  const attrs = attrsOf(node, m, l, strict);
+  if (!attrs) return [];
+  return [{name: 'w:' + l, attrs,
+    children: kidsOf(node, m, strict, depth, l)}];
+}
+
+/** See the header. */
+export function cleanEl(node, scope, strict) {
+  const got = clean(node, scope instanceof Map ? scope : new Map(),
+    !!strict, 0);
+  return got.length ? got[0] : null;
+}
+
+/** See the header. */
+export function cleanExtra(extra, strict) {
+  const out = [];
+  for (const n of Array.isArray(extra) ? extra : [])
+    out.push(...clean(n, WRITER, !!strict, 0));
+  return out;
+}

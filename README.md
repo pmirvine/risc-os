@@ -239,8 +239,9 @@ counts from. Typing `*`, `-`, `>`, `1.`, `1)`, `(1)`, `a.`, `A.`, `i.` and the l
 a paragraph makes it a list item (Ctrl-Z gives back what was typed; Format > AutoFormat lists turns it off, kept in
 `Choices:Word`). The definitions !Word writes are Word's own gallery lists and are still to be checked in real Word. To
 try lists: open a `.docx` with a numbered list, click at the start of an item and press Tab, Shift-Tab, then Backspace;
-or click Numbering in a new document and type. A list's bullets and numbers cannot be defined by you yet, and list items
-pasted into another document become plain paragraphs (`$.Docs.Word`, part 7).
+or click Numbering in a new document and type. A list's bullets and numbers cannot be defined by you yet; whole list
+items (selected up to the start of the next paragraph) pasted into another !Word document bring their list along as a
+new list there (`$.Docs.Word`, parts 4 and 7).
 **Page and section breaks:** the window menu's *Insert* item (after Edit) has Page break (Ctrl-Enter, Ctrl on a Mac too),
 Section break > Next page / Continuous, Symbol... (a window of characters: Latin-1, Latin Extended-A, Greek, Cyrillic, punctuation,
 currency, letterlike and fractions, arrows, maths and shapes, with a Recently used row; click one and Insert, or double-click)
@@ -277,7 +278,8 @@ name gets `,a7e`). To try: click !Word's icon, type, choose *Save* from the wind
 close the window to see the prompt. No automatic saving or backup file. The RISC OS keys work as in !Edit: F2 (or Ctrl-N) a new
 document, F3 the Save as box, Ctrl-S Save, Ctrl-F2 Close, F8 / F9 undo and redo. Ctrl-C, Ctrl-X and Ctrl-V (Cmd on a Mac, and the Edit menu) copy, cut
 and paste: exactly between !Word documents, as text and HTML formatting with other programs (in another document links
-become text, list items plain paragraphs and tables are left out; tables from other programs come as tab-separated text;
+become text and tables are left out, while whole list items bring their list as a new list and whole paragraphs keep
+their borders, shading and tab stops; tables from other programs come as tab-separated text;
 pictures and files cannot be pasted; pasted HTML is read with a whitelist, nothing in it runs or is fetched).
 Ctrl-F (or F4) opens the Find box: Find next / previous, Match case, Whole words, Replace and Replace all (one undo step;
 text as typed, no wildcards; link text found but not replaced); Ctrl-H Replace, Ctrl-G / Ctrl-Shift-G find again
@@ -511,6 +513,7 @@ NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/documents-roun
 node tests/moreapps/handoff-documents.mjs   # writes new-*.docx, saved-*.docx and doc-README.txt, made by !Word in the desktop, to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/clipboard-roundtrip.test.mjs   # random copy, cut, paste (own, other documents', other programs' HTML) and Find / Replace on fixtures and corpus files, written and read back (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/word-clipboard.mjs   # one browser group alone: copy, cut and paste in !Word (also word-clipboard-hostile.mjs, word-find.mjs)
+node tests/moreapps/handoff-cliplists.mjs   # writes cl-*.docx and cl-README.txt: lists, borders and shading pasted between documents, to try in real Word (local, in tests/moreapps/corpus/handoff/)
 node tests/moreapps/handoff-clipboard.mjs   # writes clip-*.docx, find-1-replaceall.docx and clip-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node tools/moreapps-corpus.mjs    # fetch the optional sample .docx corpus for the corpus test (needs the GitHub CLI, gh)
 WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/edit-roundtrip.test.mjs   # !Word's editing round trip on every corpus file (~2 min; by default one file in ten)

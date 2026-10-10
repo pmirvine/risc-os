@@ -1,0 +1,113 @@
+// NumCopy - the lists of a paste from another document made in the
+// target's numbering part (for ./ClipPaste; pure).
+//
+//   copyNums(doc, nums, numIds, opts?) -> {ops, map}
+//     nums: ./ClipNums numsOf's Map (the source's definitions);
+//     numIds: the source numIds the pasted paragraphs keep (those
+//     not in nums are passed over). For each source abstract they
+//     use, one new w:abstractNum: the source's cleaned for the
+//     target (./NumClean: nothing of the source package, left and
+//     right spelled as the target spells them), a new id and a new
+//     w:nsid that no abstract of the part has, first; for each
+//     numId a new w:num on it holding the source num's
+//     w:lvlOverride elements (cleaned; ilvl 0..8, the first of
+//     each). So the pasted items are a list of their own (never
+//     merged with a list of the target, as Word's "keep source
+//     formatting"), and two source numIds over one abstract still
+//     share one count. Placed and numbered as ./NumWrite's: new
+//     abstracts after the last abstract and before the first num,
+//     new nums after the last num and before w:numIdMacAtCleanup;
+//     ids one more than the largest (numIds named anywhere avoided:
+//     ./ListUsed). No old node is changed (a new root holds the same
+//     child objects). The part is made when missing (NumWrite
+//     ensurePart). ops: the setDocPart ops for the target (numbering,
+//     numberingPart, rels: ./ListRestart partOps), none when nothing
+//     is made; map: source numId -> new numId.
+//     RangeError, nothing made: no free id below 2^31, a numbering
+//     that is not a part !Word can extend, a Doc with no package.
+//     opts.rand () -> uint32 for the nsids (Math.random).
+import {el} from 'wimplib/Xml';
+import {NS} from './Wml';
+import {rootScope, scope, wName, isEl} from './Ns';
+import {scan, absAt, numAt, MAX_ID} from './NumScan';
+import {ensurePart, given, nsidOf, withKids} from './NumWrite';
+import {readNumbering} from './ReadNumbering';
+import {ilvlOf} from './NumLevel';
+import {usedNumIds} from './ListUsed';
+import {partOps} from './ListRestart';
+import {cleanEl} from './NumClean';
+import {isStrictDoc} from './JcName';
+
+const inner = (m, c) => (c.attrs.length ? scope(m, c) : m);
+const val = (name, v) => el('w:' + name, [['w:val', String(v)]]);
+const rand32 = () => Math.floor(Math.random() * 2 ** 32);
+
+/** The new abstract for source abstract `abs`, or null. */
+function newAbs(abs, m, id, nsid, decl, strict) {
+  const c = cleanEl(abs, m, strict);
+  if (!c) return null;
+  const kids = c.children.filter((k) => typeof k !== 'string' &&
+    k.name !== 'w:nsid');
+  return {name: 'w:abstractNum', attrs: [['w:abstractNumId',
+    String(id)], ...decl], children: [val('nsid', nsid), ...kids]};
+}
+
+/** The new num `id` on abstract absId, with num's overrides. */
+function newNum(num, m, id, absId, decl, strict) {
+  const nm = inner(m, num), seen = new Set(), kids = [];
+  for (const c of num.children) {
+    if (!isEl(c) || wName(c, nm) !== 'lvlOverride') continue;
+    const k = ilvlOf(c, inner(nm, c));
+    if (k === null || seen.has(k)) continue;
+    seen.add(k);
+    const o = cleanEl(c, nm, strict);
+    if (o) kids.push(o);
+  }
+  return {name: 'w:num', attrs: [['w:numId', String(id)], ...decl],
+    children: [val('abstractNumId', absId), ...kids]};
+}
+
+/** See the header. */
+export function copyNums(doc, nums, numIds, opts = {}) {
+  const map = new Map();
+  const want = [...new Set(numIds)].filter((id) => nums instanceof Map
+    && nums.has(id));
+  if (!want.length) return {ops: [], map};
+  const part = ensurePart(doc);
+  const n = given(part.numbering);
+  const info = scan(n.raw, usedNumIds(doc));
+  const strict = isStrictDoc(doc);
+  const decl = info.prefixOk ? [] : [['xmlns:w', NS.w]];
+  const rand = opts.rand || rand32;
+  const absBy = new Map(), abss = [], made = [];
+  let absId = info.abs, numId = info.num;
+  for (const id of want) {
+    const {num, abs, m} = nums.get(id);
+    if (!absBy.has(abs)) {
+      if (absId + 1 > MAX_ID) throw new RangeError('no free id');
+      const nsid = nsidOf(info.nsids, rand);
+      const a = newAbs(abs, m, absId + 1, nsid, decl, strict);
+      absBy.set(abs, a ? absId + 1 : null);
+      if (!a) continue;
+      absId++;
+      info.nsids.add(nsid);
+      abss.push(a);
+    }
+    const to = absBy.get(abs);
+    if (to === null) continue;
+    if (numId + 1 > MAX_ID) throw new RangeError('no free id');
+    numId++;
+    made.push(newNum(num, m, numId, to, decl, strict));
+    map.set(id, numId);
+  }
+  if (!made.length) return {ops: [], map};
+  const at = absAt(info), nat = numAt(info, n.raw, at);
+  const raw = withKids(n.raw, [...abss.map((a) => [at, a]),
+    ...made.map((x) => [nat, x])]);
+  const mini = {name: raw.name, attrs: raw.attrs,
+    children: [...abss, ...made]};
+  const got = readNumbering(mini, rootScope(mini)).nums;
+  const all = new Map(n.nums instanceof Map ? n.nums : []);
+  for (const id of map.values()) all.set(id, got.get(id));
+  return {ops: partOps(doc, part, {raw, nums: all}), map};
+}

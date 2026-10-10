@@ -1,7 +1,7 @@
 // ClipClean - clipboard blocks made fit to go into a document, for
 // ./ClipPaste.
 //
-//   clean(blocks, doc, {sameDoc, styleNames}) -> blocks
+//   clean(blocks, doc, {sameDoc, styleNames, lists}) -> blocks
 //
 // blocks: ./ClipSlice's shape (from a copy, or ./ClipRead); the
 // result has the same shape (no ids: ./ClipPaste gives fresh ones;
@@ -29,7 +29,7 @@
 // (w:pPrChange, w:rPrChange: tracked format changes) are dropped.
 //
 // Another document (or HTML): what refers to the source document's
-// parts cannot come, as the target has no op to add them:
+// parts cannot come:
 //   - every raw inline goes: one with display text (a link, any
 //     level 'p' wrapper) becomes that text (./Edit.clean: no control
 //     characters, no U+FFFC), a w:t holding a character becomes that
@@ -43,23 +43,22 @@
 //   - pStyle and rStyle are mapped by NAME (styleNames: Map id ->
 //     {name, type}, ./ClipSlice) to the target's style of that name
 //     and type (case ignored), else dropped (the default style)
-//   - rPr keeps its modelled fields (rFonts b i u strike color sz
-//     szCs highlight vertAlign shd: ./PropNames), its raw extra
-//     goes; pPr keeps jc ind spacing keepNext keepLines
-//     pageBreakBefore outlineLvl, numPr, the other fields (tabs,
-//     pBdr, shd, widowControl, contextualSpacing) and the raw extra
-//     go (no list is made)
+//   - rPr and pPr keep their modelled fields and their raw extras
+//     cleaned, as Word keeps them (./ClipProps: borders, shading,
+//     tab stops... left and right spelled as the target spells
+//     them); numPr only for a list of opts.lists (Map numId ->
+//     definition: ./ClipNums) with the source's numId, which
+//     ./ClipPaste then makes in the target (./NumCopy)
 //   - kept blocks (tables, whose XML can point at the source's
 //     parts) are skipped.
 // Pure: no desktop services.
 import {fail, normRuns, checkContent} from './ModelCheck';
-import {RPR_FIELDS} from './PropNames';
+import {crossPPr, crossRPr} from './ClipProps';
 import {clean as cleanText} from './Edit';
 import {hasUnique, hasIds, dropIds, keepIds, flatten} from './ClipIds';
 import {isPageBreak} from './BreakMarks';
+import {isStrictDoc} from './JcName';
 
-const PPR_KEEP = ['jc', 'ind', 'spacing', 'keepNext', 'keepLines',
-  'pageBreakBefore', 'outlineLvl'];
 const OBJ = '\ufffc';
 const isObj = (v) => v !== null && typeof v === 'object' &&
   !Array.isArray(v);
@@ -90,16 +89,6 @@ function mapper(doc, names) {
   };
 }
 
-/** Copy of o with only `keys` (and extra: []). */
-function keep(o, keys) {
-  const out = {};
-  if (isObj(o)) {
-    for (const k of keys) if (o[k] !== undefined) out[k] = o[k];
-  }
-  out.extra = [];
-  return out;
-}
-
 /** 'w:noBreakHyphen' or 'w:softHyphen' for such a bare inline. */
 function hyphen(x) {
   const n = isObj(x) && x.kind === 'raw' && x.level === 'r' && x.node;
@@ -109,8 +98,6 @@ function hyphen(x) {
 }
 const attrsOf = (n) => Array.isArray(n.attrs) && n.attrs.length > 0;
 const kids = (n) => Array.isArray(n.children) && n.children.length > 0;
-
-const RKEEP = [...RPR_FIELDS.keys()];
 
 /** The text an inline becomes across documents (null: kept). */
 function inlineText(x) {
@@ -158,11 +145,11 @@ function rebuild(c, swap, fmt) {
 }
 
 /** Paragraph block b for another document. */
-function cross(b, map) {
+function cross(b, map, strict, lists) {
   const rprs = new Map();
   const fmt = (r) => {
     let rPr = rprs.get(r.rPr);
-    if (!rPr) rprs.set(r.rPr, rPr = keep(r.rPr, RKEEP));
+    if (!rPr) rprs.set(r.rPr, rPr = crossRPr(r.rPr, strict));
     const rs = map(r.rStyle, 'character');
     return rs === undefined ? {rPr} : {rPr, rStyle: rs};
   };
@@ -178,13 +165,12 @@ function cross(b, map) {
         node: {name: hyphen(x), attrs: [], children: []}};
     }
   }
-  const out = {type: 'p', ...c, pPr: keep(b.pPr, PPR_KEEP)};
+  const pPr = crossPPr(b.pPr, strict, lists);
+  const out = {type: 'p', ...c, pPr};
   const ps = map(b.pStyle, 'paragraph');
   if (ps !== undefined) out.pStyle = ps;
   return out;
 }
-
-const local = (n) => String(n).split(':').pop();
 
 /** Same document: the text an inline becomes, or null (kept). */
 const sameSwap = (x) => (isObj(x) && x.kind === 'raw' &&
@@ -219,7 +205,8 @@ export function clean(blocks, doc, opts = {}) {
       if (hasIds(b.node)) out.push(...flatten(b.node));
       else out.push({type: 'opaque', node: keepIds(b.node)});
     } else if (b.type === 'p') {
-      out.push(sameDoc ? same(b) : cross(b, map));
+      out.push(sameDoc ? same(b) : cross(b, map, isStrictDoc(doc),
+        opts.lists));
     }
   }
   return out;

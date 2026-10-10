@@ -1,0 +1,135 @@
+// ClipNums - the numbering definitions of the lists a clipboard
+// slice's paragraphs are in, so that a paste into another document
+// can make those lists there (./ClipSlice keeps them in the slice,
+// ./NumCopy makes them in the target).
+//
+//   numsOf(doc, blocks) -> Map numId -> {num, abs, m}
+//     for each numId (an integer 1..2^31 - 1) that a paragraph
+//     block's direct numPr names: the document's first top-level
+//     w:num of that id, the w:abstractNum it names (the first of
+//     that id), and m, the namespace scope around them (the
+//     numbering part's root: ./Ns rootScope). An abstract with a
+//     numStyleLink takes the abstract of the numbering style's num
+//     instead (the style's numPr: ./StylesNum; one step only).
+//     The nodes are the document's own, shared, never changed
+//     (models are immutable). Left out (a paste then drops that
+//     paragraph's numPr: a plain paragraph): a numId with no such
+//     num or abstract, an abstract still linked after one step, a
+//     num and abstract of more than MAX_NODES elements together, any
+//     numId after the first MAX_LISTS, and any once MAX_TOTAL
+//     elements have been taken in all.
+// Pure: no desktop services.
+import {rootScope, scope, wName, wAttr} from './Ns';
+import {intOf} from './ReadProps';
+import {layerNumPr} from './StylesNum';
+import {MAX_ID} from './NumScan';
+
+export const MAX_LISTS = 1000;
+export const MAX_NODES = 5000;
+export const MAX_TOTAL = 200000;
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+const isEl = (c) => isObj(c) && typeof c.name === 'string' &&
+  Array.isArray(c.attrs) && Array.isArray(c.children);
+const inner = (m, c) => (c.attrs.length ? scope(m, c) : m);
+const idOk = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_ID;
+
+/** The w:val of node's first WML child `name`, as an integer. */
+function childId(node, m, name) {
+  for (const c of node.children) {
+    if (isEl(c) && wName(c, m) === name)
+      return intOf(wAttr(c, inner(m, c), 'val'));
+  }
+  return undefined;
+}
+
+/** The w:val of node's first WML child `name`, as a string. */
+function childVal(node, m, name) {
+  for (const c of node.children) {
+    if (isEl(c) && wName(c, m) === name)
+      return wAttr(c, inner(m, c), 'val');
+  }
+  return undefined;
+}
+
+/** Maps of the top-level nums and abstracts by id (first wins). */
+function index(root, m) {
+  const nums = new Map(), abss = new Map();
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    const cm = inner(m, c);
+    if (l === 'num') {
+      const id = intOf(wAttr(c, cm, 'numId'));
+      if (id !== undefined && !nums.has(id)) nums.set(id, c);
+    } else if (l === 'abstractNum') {
+      const id = intOf(wAttr(c, cm, 'abstractNumId'));
+      if (id !== undefined && !abss.has(id)) abss.set(id, c);
+    }
+  }
+  return {nums, abss};
+}
+
+/** Elements in node (itself included), counted up to cap + 1. */
+function size(node, cap) {
+  let n = 0;
+  const stack = [node];
+  while (stack.length && n <= cap) {
+    const x = stack.pop();
+    if (!isEl(x)) continue;
+    n++;
+    // (children counted before they are pushed: a node with 300,000
+    // children stops here, never spread as call arguments)
+    if (n + stack.length + x.children.length > cap) return cap + 1;
+    for (const c of x.children) stack.push(c);
+  }
+  return n;
+}
+
+/** The numIds the blocks' direct numPr name, in order, distinct. */
+function usedIds(blocks) {
+  const out = new Set();
+  for (const b of Array.isArray(blocks) ? blocks : []) {
+    const np = isObj(b) && b.type === 'p' && isObj(b.pPr)
+      ? b.pPr.numPr : null;
+    if (isObj(np) && idOk(np.numId)) out.add(np.numId);
+    if (out.size >= MAX_LISTS) break;
+  }
+  return out;
+}
+
+/** See the header. */
+export function numsOf(doc, blocks) {
+  const out = new Map();
+  const root = isObj(doc) && isObj(doc.numbering)
+    ? doc.numbering.raw : null;
+  if (!isEl(root) || !Array.isArray(root.children)) return out;
+  const ids = usedIds(blocks);
+  if (!ids.size) return out;
+  const m = rootScope(root);
+  const {nums, abss} = index(root, m);
+  const styles = isObj(doc.styles) && doc.styles.styles instanceof Map
+    ? doc.styles.styles : new Map();
+  const absOf = (num) => abss.get(childId(num, inner(m, num),
+    'abstractNumId'));
+  const linked = (abs) => childVal(abs, inner(m, abs), 'numStyleLink');
+  let total = 0;
+  for (const id of ids) {
+    const num = nums.get(id);
+    let abs = num && absOf(num);
+    if (abs && linked(abs) !== undefined) {
+      const st = styles.get(linked(abs));
+      const np = isObj(st) ? layerNumPr(st.pPr) : undefined;
+      const via = np && nums.get(np.numId);
+      abs = via && absOf(via);
+      if (abs && linked(abs) !== undefined) abs = undefined;
+    }
+    if (!abs) continue;
+    const n = size(num, MAX_NODES) + size(abs, MAX_NODES);
+    if (n > MAX_NODES || total + n > MAX_TOTAL) continue;
+    total += n;
+    out.set(id, {num, abs, m});
+  }
+  return out;
+}

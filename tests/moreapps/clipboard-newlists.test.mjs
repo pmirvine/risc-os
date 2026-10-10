@@ -129,9 +129,10 @@ describe('copy and paste within the document: new lists', () => {
 });
 
 describe('pasted into another document', () => {
-  it('numPr is dropped, the text and the paragraphs stay (L6)', () => {
+  it('the list is made there, one undo step (L6)', () => {
     const src = numbered();
-    const dst = mk(['target']);
+    const dst = mk(['target', '']);
+    const before = state(dst);
     const store = new ClipStore();
     const s = slice(src.doc, SEL(src, 0, 0, 2, 5));
     const token = store.put(s, 1);
@@ -139,15 +140,26 @@ describe('pasted into another document', () => {
     const x = pick({text: s.plain, html: h}, {store, docKey: 2,
       parseHtml});
     assert.equal(x.route, 'exact');
+    pasteBlocks(dst, C(dst, 1, 0), x.blocks, x.opts);
+    assert.deepEqual(texts(dst), ['target', 'one', 'two', 'three']);
+    // the last piece takes the target paragraph's properties
+    assert.deepEqual(numIds(dst), [null, 1, 1, null]);
+    assert.deepEqual(shown(dst), [null, '1.', '2.', null]);
+    assert.ok(dst.doc.numbering, 'a numbering part made');
+    assert.equal(dst.undoDepth, 1);
+    dst.undo();
+    assert.deepEqual(state(dst), before);
+  });
+  it('the HTML of the same copy gives no list', () => {
+    const src = numbered();
+    const dst = mk(['target']);
+    const s = slice(src.doc, SEL(src, 0, 0, 2, 5));
+    const x = pick({text: s.plain, html: toHtml(src.doc, s)},
+      {store: new ClipStore(), docKey: 2, parseHtml});
+    assert.equal(x.route, 'html');
     pasteBlocks(dst, C(dst, 0, 6), x.blocks, x.opts);
-    assert.deepEqual(texts(dst), ['targetone', 'two', 'three']);
     assert.deepEqual(numIds(dst), [null, null, null]);
     assert.equal(dst.doc.numbering, null, 'no numbering part made');
-    assert.deepEqual(shown(dst), [null, null, null]);
-    for (const b of blocks(dst)) {
-      assert.ok(!b.pPr.numPr);
-      // (List Paragraph is mapped by name, or dropped: never a list)
-    }
   });
   it('another program\'s <ol> / <ul> gives paragraphs, no list', () => {
     const dst = mk(['a']);

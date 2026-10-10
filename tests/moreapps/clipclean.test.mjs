@@ -59,7 +59,8 @@ describe('ClipClean: across documents', () => {
     assert.equal(o.text, 'a');
     assert.deepEqual(o.inlines, {});
   });
-  it('styles are mapped by name or dropped; numPr dropped', () => {
+  it('styles are mapped by name or dropped; numPr dropped without ' +
+    'lists', () => {
     const d = mk(['']);
     addStyle(d.doc.styles, {id: 'MyQuote', type: 'paragraph',
       name: 'Quote'});
@@ -88,31 +89,113 @@ describe('ClipClean: across documents', () => {
       {styleNames: names});
     assert.ok(none.every((b) => b.pStyle === undefined));
   });
-  it('modelled run and paragraph fields kept, raw extras dropped', () => {
+  it('modelled run and paragraph fields kept, raw extras kept ' +
+    'cleaned (L6)', () => {
     const rPr = {b: true, i: true, u: 'double', strike: true,
       color: 'FF0000', sz: 30, szCs: 30, highlight: 'yellow',
       vertAlign: 'subscript', rFonts: {ascii: 'Arial', hAnsi: 'Arial'},
       extra: [el('caps')]};
     const pPr = {jc: 'right', ind: {left: 720}, spacing: {after: 0},
       keepNext: true, keepLines: true, pageBreakBefore: true,
-      outlineLvl: 2, extra: [el('shd')]};
+      outlineLvl: 2, extra: [el('suppressAutoHyphens')]};
     const [q] = clean([P('x', {pPr, runs: [{start: 0, end: 1, rPr}],
       extraP: [['w14:paraId', '1']]})], mk(['']).doc, {});
-    assert.deepEqual(q.runs[0].rPr, {...rPr, extra: []});
-    assert.deepEqual(q.pPr, {...pPr, extra: []});
+    assert.deepEqual(q.runs[0].rPr, rPr);
+    assert.notEqual(q.runs[0].rPr.extra, rPr.extra, 'a new array');
+    assert.deepEqual(q.pPr, pPr);
     assert.equal(q.extraP, undefined);
     assert.equal(q.id, undefined);
   });
   it('run shading kept; tabs, borders, shading, flow flags of the ' +
-    'paragraph dropped', () => {
+    'paragraph kept too (L6)', () => {
     const shd = {val: 'clear', color: 'auto', fill: 'FFFF00'};
-    const pPr = {jc: 'right', tabs: [{val: 'left', pos: 720}],
-      pBdr: {top: {val: 'single'}}, shd, widowControl: false,
-      contextualSpacing: true, extra: []};
+    const pPr = {jc: 'right', tabs: [{val: 'left', pos: 720},
+      {val: 'decimal', pos: 1440, leader: 'dot'}],
+      pBdr: {top: {val: 'single'}, left: {val: 'double'}}, shd,
+      widowControl: false, contextualSpacing: true, extra: []};
     const [q] = clean([P('x', {pPr, runs: [{start: 0, end: 1,
       rPr: {shd, extra: []}}]})], mk(['']).doc, {});
     assert.deepEqual(q.runs[0].rPr, {shd, extra: []});
-    assert.deepEqual(q.pPr, {jc: 'right', extra: []});
+    assert.deepEqual(q.pPr, pPr);
+    // a Strict target spells left / right start / end (jc, tab stops;
+    // ind and pBdr sides are the writer's)
+    const sd = mk(['']).doc;
+    sd.meta.conformance = 'strict';
+    const [s] = clean([P('x', {pPr})], sd, {});
+    assert.equal(s.pPr.jc, 'end');
+    assert.deepEqual(s.pPr.tabs, [{val: 'start', pos: 720},
+      {val: 'decimal', pos: 1440, leader: 'dot'}]);
+    assert.equal(s.pPr.pBdr, pPr.pBdr);
+    assert.deepEqual(pPr.tabs[0], {val: 'left', pos: 720}, 'unchanged');
+    // and a Strict source's start / end come back for Transitional
+    const [t] = clean([P('x', {pPr: {...pPr, jc: 'start', tabs: [{val:
+      'end', pos: 5}]}})], mk(['']).doc, {});
+    assert.equal(t.pPr.jc, 'left');
+    assert.deepEqual(t.pPr.tabs, [{val: 'right', pos: 5}]);
+  });
+  it('raw extras: only what names nothing of the source (L6)', () => {
+    const X = (name, attrs = [], children = []) => ({name, attrs,
+      children});
+    const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
+    const pPr = {extra: [
+      X('w:suppressAutoHyphens'),
+      X('w:pPrChange', [['w:id', '1']], [X('w:pPr')]),
+      X('w:sectPr', [], [X('w:headerReference', [['r:id', 'rId9']])]),
+      X('w:divId', [['w:val', '5']]), X('w:cnfStyle', [['w:val', '1']]),
+      X('w:numPr', [], [X('w:numId', [['w:val', '1']])]),
+      X('w14:thing', [['xmlns:w14', W14]]),
+      X('w:rPr', [], [X('w:rStyle', [['w:val', 'Src']]), X('w:b'),
+        X('w:ins', [['w:id', '3']]), X('w:lang', [['w:val', 'en-GB'],
+          ['w14:x', '1']])]),
+      X('w:framePr', [['w:w', '10'], ['r:id', 'x']]),
+      X('w:textAlignment', [['w:val', 'top'], ['odd', '1']]),
+      X('w:ind', [['w:left', '1'], ['w:start', '2'], ['w:right', '3']]),
+      X('w:pBdr', [], [X('w:left', [['w:val', 'single']]),
+        X('w:start', [['w:val', 'double']])]),
+      X('w:jc', [['w:val', 'right']]),
+      X('mc:AlternateContent', [], [X('mc:Choice', [['Requires',
+        'w14']], [X('w14:a')]), X('mc:Fallback', [],
+        [X('w:snapToGrid', [['w:val', '0']])])]),
+    ]};
+    const [q] = clean([P('x', {pPr})], mk(['']).doc, {});
+    assert.deepEqual(q.pPr.extra, [X('w:suppressAutoHyphens'),
+      X('w:rPr', [], [X('w:b'), X('w:lang', [['w:val', 'en-GB']])]),
+      X('w:textAlignment', [['w:val', 'top']]),
+      X('w:ind', [['w:left', '1'], ['w:right', '3']]),
+      X('w:pBdr', [], [X('w:left', [['w:val', 'single']])]),
+      X('w:jc', [['w:val', 'right']]),
+      X('w:snapToGrid', [['w:val', '0']])]);
+    const sd = mk(['']).doc;
+    sd.meta.conformance = 'strict';
+    const [s] = clean([P('x', {pPr})], sd, {});
+    assert.deepEqual(s.pPr.extra.slice(3, 6), [
+      X('w:ind', [['w:start', '1'], ['w:end', '3']]),
+      X('w:pBdr', [], [X('w:start', [['w:val', 'single']])]),
+      X('w:jc', [['w:val', 'end']])]);
+  });
+  it('an mc:AlternateContent extra beside a modelled field: not ' +
+    'written twice (review 5b)', () => {
+    const X = (name, attrs = [], children = []) => ({name, attrs,
+      children});
+    const alt = X('mc:AlternateContent', [], [X('mc:Fallback', [],
+      [X('w:jc', [['w:val', 'left']]), X('w:snapToGrid')])]);
+    const [q] = clean([P('x', {pPr: {jc: 'center', extra: [alt]}})],
+      mk(['']).doc, {});
+    assert.deepEqual(q.pPr, {jc: 'center', extra: [X('w:snapToGrid')]});
+    const [n] = clean([P('x', {pPr: {extra: [alt]}})], mk(['']).doc, {});
+    assert.deepEqual(n.pPr.extra.map((e) => e.name), ['w:jc',
+      'w:snapToGrid']);
+  });
+  it('numPr kept for a list the slice carries, or numId 0 (L6)', () => {
+    const lists = new Map([[4, {}]]);
+    const np = (numPr) => P('x', {pPr: R({numPr})});
+    const out = clean([np({numId: 4, ilvl: 2}), np({numId: 5, ilvl: 0}),
+      np({numId: 0}), np({ilvl: 1}), np({numId: '4'})],
+    mk(['']).doc, {lists});
+    assert.deepEqual(out.map((b) => b.pPr.numPr), [{numId: 4, ilvl: 2},
+      undefined, {numId: 0}, undefined, undefined]);
+    assert.equal(clean([np({numId: 4})], mk(['']).doc, {})[0].pPr.numPr,
+      undefined);
   });
   it('opaque blocks are skipped; junk ignored', () => {
     const out = clean([{type: 'opaque', node: el('tbl')}, null, 5,

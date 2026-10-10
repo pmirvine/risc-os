@@ -45,6 +45,7 @@ import {richDocx} from './edit-rich.mjs';
 import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
 import {STYLES, rng} from './word-docs.mjs';
 import {parseHtml} from './html-fake.mjs';
+import {sourceDocx} from './clip-lists-docs.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
 
@@ -208,8 +209,8 @@ function command(rd, d, sel, st) {
     // copied here, pasted as from another document
     const e = pick(st.clip, {store: st.store, docKey: -1, parseHtml});
     if (!e || e.route !== 'exact') return ['paste cross', sel];
-    const out = pasteBlocks(d, sel, e.blocks, {sameDoc: false,
-      styleNames: e.opts.styleNames});
+    const out = pasteBlocks(d, sel, e.blocks, {...e.opts,
+      sameDoc: false});
     return ['paste cross', out];
   }
   const [route, out] = pasteIn(d, sel, payload, st.store);
@@ -225,7 +226,7 @@ function clipAll(src) {
     for (; k < STEPS; k++) {
       if (Date.now() - t0 > CLIP_MS) break;
       if (!sel || rd() < 0.5) sel = randSel(rd, d);
-      const depth = d.undoDepth;
+      const depth = d.undoDepth, nb = d.doc.numbering;
       let kind = '?';
       try {
         [kind, sel] = command(rd, d, sel, st);
@@ -235,12 +236,16 @@ function clipAll(src) {
         throw e;
       }
       counts[kind] = (counts[kind] || 0) + 1;
+      if (d.doc.numbering !== nb && kind.startsWith('paste')) {
+        // lists of another document made here (L6)
+        counts['lists made'] = (counts['lists made'] || 0) + 1;
+      }
       if (d.undoDepth > depth) {
         counts[kind + ' changed'] = (counts[kind + ' changed'] || 0) + 1;
       }
     }
     for (const b of allBlocks(d)) checkBlock(b);
-    return {steps: k, capped: k < STEPS, counts};
+    return {steps: k, capped: k < STEPS, counts, grows: true};
   };
 }
 
@@ -302,8 +307,10 @@ const CHANGED = ['cut', 'paste copy', 'paste foreign', 'paste own html',
   'paste plain', 'paste cross', 'replaceAll', 'replaceOne'];
 
 /** The source document for copies from another document. */
-async function source() {
-  return new Document(await readDocx(await STYLED()));
+async function source(k) {
+  // odd seeds: lists, borders, shading and tab stops (L6)
+  return new Document(await readDocx(await (k % 2 ? sourceDocx()
+    : STYLED())));
 }
 
 describe('clipboard and find round trip: generated documents', () => {
@@ -311,11 +318,13 @@ describe('clipboard and find round trip: generated documents', () => {
   for (const [name, make] of [...FIXTURES, ...MORE]) {
     it(name, async () => {
       const bytes = await make();
-      const src = await source();
       for (let k = 0; k < 4; k++) {
-        // (the schema check, slow on some fixtures, for one seed)
+        const src = await source(k);
+        // (the schema check, slow on some fixtures, for a seed of
+        // each source; the numbering part only grows: L6)
         const res = await roundTrip(bytes, name, hash(name) + k,
-          clipAll(src), {xsd: k === 0 ? xsd : null, every: true});
+          clipAll(src), {xsd: k < 2 ? xsd : null, every: true,
+            keep: ['numberingPart']});
         for (const [c, n] of Object.entries(res.counts || {}))
           total[c] = (total[c] || 0) + n;
       }
@@ -324,6 +333,7 @@ describe('clipboard and find round trip: generated documents', () => {
   it('every kind of command ran, and changed documents', () => {
     console.log('# clipboard and find commands (generated): ' +
       JSON.stringify(total));
+    assert.ok(total['lists made'] > 0, 'a paste made lists (L6)');
     for (const kind of KINDS)
       assert.ok(total[kind] > 3, kind + ' ran: ' + JSON.stringify(total));
     for (const kind of CHANGED) {

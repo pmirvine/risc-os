@@ -1,6 +1,6 @@
 // ClipPaste - Paste and Cut in a document.
 //
-//   pasteBlocks(d, sel, blocks, {sameDoc, styleNames}) -> sel
+//   pasteBlocks(d, sel, blocks, {sameDoc, styleNames, lists}) -> sel
 //   pastePlain(d, sel, text) -> sel       ./Edit.typeText
 //   cutSelection(d, sel) -> {slice, sel}  ./ClipSlice, then deleted
 //   deleteSelection(d, sel) -> sel        ./EditDel's
@@ -14,11 +14,11 @@
 // step; typing after it starts another).
 //
 // pasteBlocks: blocks (./ClipSlice's shape) first go through
-// ./ClipClean (sameDoc, styleNames: see there), then the selection
-// is deleted (./EditRange) and they go in at the caret, in the same
-// step. At a kept block's edge (a table), as typing does, an empty
-// paragraph is made there first (before it at off 0, after it at 1)
-// and the blocks go into it. Into paragraph P at offset off:
+// ./ClipClean (sameDoc, styleNames, lists: see there), then the
+// selection is deleted (./EditRange) and they go in at the caret, in
+// the same step. At a kept block's edge (a table), as typing does, an
+// empty paragraph is made there first (before it at off 0, after it
+// at 1) and the blocks go into it. Into paragraph P at offset off:
 //   - one paragraph: its content is spliced in (spliceText): P keeps
 //     its id and properties, the pasted runs their formatting
 //   - several blocks: P's text before off and the first block's
@@ -35,6 +35,13 @@
 //     are one op).
 // The caret: after the last block's content (at the start of the
 // tail after a kept block).
+// Lists from another document (opts.lists, ./ClipNums): the pasted
+// paragraphs that keep their properties (the first at off 0 and the
+// ones between) and are in a list of opts.lists get that list made
+// anew in the target (./NumCopy: its setDocPart ops first, in the
+// same step) and their numPr names it; every other numPr of the
+// source is dropped, as is one whose list cannot be made (no free
+// id: a plain paragraph).
 //
 // pastePlain: the text typed (\n splits paragraphs, controls go:
 // ./Edit), one undo step of its own.
@@ -48,6 +55,7 @@ import {deleteSelection} from './EditDel';
 import {typeText} from './Edit';
 import {clean} from './ClipClean';
 import {slice} from './ClipSlice';
+import {copyNums} from './NumCopy';
 
 export {deleteSelection};
 
@@ -98,9 +106,45 @@ function insert(d, loc, off, list) {
   return {id: t.id, off: end};
 }
 
+/** The indexes of list whose pPr insert() keeps, at offset off. */
+function kept(list, off) {
+  const n = list.length, out = [];
+  if (n === 1 && list[0].type === 'p') return out;
+  const fp = list[0].type === 'p';
+  const lp = n > 1 && list[n - 1].type === 'p';
+  if (fp && off === 0) out.push(0);
+  for (let i = fp ? 1 : 0; i < (lp ? n - 1 : n); i++) out.push(i);
+  return out;
+}
+
+/** list with the source's lists made in d (see the header). */
+function relist(d, list, off, lists) {
+  const np = (b) => (b.type === 'p' ? b.pPr.numPr : undefined);
+  const want = kept(list, off).map((i) => np(list[i]))
+    .filter((x) => x && x.numId !== 0).map((x) => x.numId);
+  let got = {ops: [], map: new Map()};
+  if (want.length && lists instanceof Map) {
+    try {
+      got = copyNums(d.doc, lists, want);
+    } catch (e) {
+      // no free id, a numbering !Word cannot extend: no list
+      if (!(e instanceof RangeError)) throw e;
+    }
+  }
+  for (const op of got.ops) d.apply(op);
+  const map = got.map;
+  return list.map((b) => {
+    const x = np(b);
+    if (!x || x.numId === 0) return b;
+    const {numPr, ...rest} = b.pPr;
+    return {...b, pPr: map.has(x.numId) ? {...rest, numPr: {...numPr,
+      numId: map.get(x.numId)}} : rest};
+  });
+}
+
 /** See the header. */
 export function pasteBlocks(d, sel, blocks, opts = {}) {
-  const list = clean(blocks, d.doc, opts);
+  let list = clean(blocks, d.doc, opts);
   if (!list.length) return sel;
   const o = orderedPos(d.doc, sel);
   if (!o) return sel;
@@ -112,6 +156,7 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
       pos = paraBy(d, loc, pos.off);
       loc = findBlock(d.doc, pos.id);
     }
+    if (!opts.sameDoc) list = relist(d, list, pos.off, opts.lists);
     out = insert(d, loc, pos.off, list);
   });
   return out ? caret(out) : sel;

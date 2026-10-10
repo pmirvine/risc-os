@@ -1,0 +1,65 @@
+// ClipProps - paragraph and run properties pasted into another
+// document (for ./ClipClean). As Word, the formatting comes along;
+// only what names the source's package stays behind.
+//
+//   crossRPr(rPr, strict) -> rPr  the modelled fields (./PropNames
+//     RPR_FIELDS: rFonts b i u strike color sz szCs highlight
+//     vertAlign shd) and the raw extra cleaned (./NumClean
+//     cleanExtra: no element of another namespace, none naming a
+//     part, an id, a style, a list or a section)
+//   crossPPr(pPr, strict, lists) -> pPr  the modelled fields
+//     (PPR_FIELDS: jc ind spacing keepNext keepLines pageBreakBefore
+//     outlineLvl tabs pBdr shd widowControl contextualSpacing) and
+//     the raw extra cleaned; jc and the tab stops' val spelled as
+//     the target spells them (strict: start / end; ./JcName), ind
+//     and pBdr's sides are written so by the writer (left / right
+//     in the model); numPr kept as it is (the source's numId) when
+//     lists (a Map: ./ClipNums) has its numId or the numId is 0 (no
+//     list), else left out
+// A cleaned extra element named as a field that is set (an
+// mc:AlternateContent's fallback w:jc beside a modelled jc) is left
+// out, so nothing is written twice. New objects (the values of kept
+// fields shared: models are immutable). Pure: no desktop services.
+import {RPR_FIELDS, PPR_FIELDS} from './PropNames';
+import {cleanExtra} from './NumClean';
+import {jcName} from './JcName';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const RKEEP = [...RPR_FIELDS.keys()];
+const PKEEP = [...PPR_FIELDS.keys()].filter((k) => k !== 'numPr');
+
+/** Copy of o with only `keys`, its extra cleaned for the target. */
+function keep(o, keys, strict) {
+  const out = {};
+  if (isObj(o)) {
+    for (const k of keys) if (o[k] !== undefined) out[k] = o[k];
+  }
+  // (an extra that is a set field's element, such as w:jc from an
+  // mc:AlternateContent's fallback, would be written twice: dropped)
+  out.extra = cleanExtra(isObj(o) ? o.extra : [], strict)
+    .filter((e) => out[e.name.slice(2)] === undefined);
+  return out;
+}
+
+/** The tab stops spelled for the target (the same array if so). */
+function tabsFor(tabs, strict) {
+  if (!Array.isArray(tabs) || tabs.every((t) => !isObj(t) ||
+    jcName(t.val, strict) === t.val)) return tabs;
+  return tabs.map((t) => (isObj(t) ? {...t, val: jcName(t.val, strict)}
+    : t));
+}
+
+/** See the header. */
+export const crossRPr = (rPr, strict) => keep(rPr, RKEEP, strict);
+
+/** See the header. */
+export function crossPPr(pPr, strict, lists) {
+  const out = keep(pPr, PKEEP, strict);
+  if (typeof out.jc === 'string') out.jc = jcName(out.jc, strict);
+  if (out.tabs !== undefined) out.tabs = tabsFor(out.tabs, strict);
+  const np = isObj(pPr) ? pPr.numPr : undefined;
+  if (isObj(np) && Number.isInteger(np.numId) && (np.numId === 0 ||
+    (lists instanceof Map && lists.has(np.numId)))) out.numPr = np;
+  return out;
+}
