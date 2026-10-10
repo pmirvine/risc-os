@@ -1,0 +1,107 @@
+// WordChoices - Word's choices: one JSON object in Choices:Word,
+// shared by everything that keeps a choice there (./RecentFiles:
+// 'recent'; ./AutoFormatOpt: 'autoList'). Each changes only its own
+// key and writes the whole object, so none overwrites another's
+// (keys it does not know are kept as they were read).
+//
+//   loadChoices(app) -> Promise  app.choices = {} at once, then the
+//                     object read from Choices:Word (missing,
+//                     corrupt or not an object: {}); the promise is
+//                     app.choicesReady (one read per app: a second
+//                     call gives the same promise). Never rejects
+//   choiceOf(app, key) -> the value of key (an own property of the
+//                     choices), or undefined
+//   setChoice(app, key, value) -> Promise  after the read (at once,
+//                     synchronously, when it is done): the choices
+//                     in Choices:Word now (read again when the disc
+//                     has the file in
+//                     memory, so another writer's keys are kept;
+//                     else app.choices), key set, written whole,
+//                     and app.choices is that. A write that fails is
+//                     told to the console only: it never stops a
+//                     save. Never rejects
+//   mergeChoice(stored, key, value) -> a new object: stored (a
+//                     plain object; anything else {}) with key set
+//
+// key is one of ours ('recent', 'autoList'), never a name read from
+// the file; JSON.parse makes '__proto__' an ordinary own key, which
+// the spread copies as data (no prototype is ever changed).
+import {vfs, choices} from 'riscos';
+
+const NAME = 'Word', PATH = 'Choices:' + NAME;
+const ready = new WeakSet();           // apps whose choices are read
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** See the header. */
+export const mergeChoice = (stored, key, value) =>
+  ({...(isObj(stored) ? stored : {}), [key]: value});
+
+/** JSON text -> the choices object, or null. */
+function parse(text) {
+  try {
+    const c = JSON.parse(text);
+    return isObj(c) ? c : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** Bytes as Latin-1 text (as the core writes them). */
+function latin1(bytes) {
+  let s = '';
+  for (let k = 0; k < bytes.length; k += 8192) {
+    s += String.fromCharCode(...bytes.subarray(k, k + 8192));
+  }
+  return s;
+}
+
+/** The choices in the file now, if it can be read at once. */
+function current() {
+  try {
+    if (!vfs.exists(PATH)) return null;
+    return parse(latin1(vfs.readFileSync(PATH)));
+  } catch (e) {
+    return null;                       // (not in memory, unreadable)
+  }
+}
+
+/** See the header. */
+export function loadChoices(app) {
+  if (app.choicesReady) return app.choicesReady;
+  app.choices = {};
+  app.choicesReady = (async () => {
+    try {
+      if (vfs.exists(PATH)) {
+        app.choices = parse(await vfs.readText(PATH)) || {};
+      }
+    } catch (e) {
+      console.warn('Word: Choices:Word not read', e);
+    }
+    ready.add(app);
+  })();
+  return app.choicesReady;
+}
+
+/** See the header. */
+export function choiceOf(app, key) {
+  const c = app.choices;
+  return isObj(c) && Object.hasOwn(c, key) ? c[key] : undefined;
+}
+
+/** See the header. */
+export function setChoice(app, key, value) {
+  const write = () => {
+    app.choices = mergeChoice(current() || app.choices, key, value);
+    try {
+      choices.write(NAME, app.choices);
+    } catch (e) {
+      console.warn('Word: Choices:Word not written', e);
+    }
+  };
+  if (ready.has(app)) {
+    write();
+    return Promise.resolve();
+  }
+  return loadChoices(app).then(write);
+}

@@ -1,0 +1,137 @@
+// LinkFind - the hyperlink at a selection, what the Hyperlink box
+// (./LinkBox) shows of it, and where a new one may go (./LinkOps).
+//
+//   isLink(x)            a raw level-'p' inline whose node is a
+//                        w:hyperlink (any prefix)
+//   docMap(doc)          the namespace scope of the main document
+//                        (./WriteBody docScope), or null
+//   linkAt(doc, sel) -> {s, i, p, off, x} | null  the link selected
+//                        (the selection is its U+FFFC alone), or
+//                        next to a caret (the one before it first)
+//   linkInfo(doc, x) -> {text, address, tip}  as the box shows it:
+//                        address the relationship's target ('' when
+//                        the r:id names none: such a link can be
+//                        given an address again), '#name' for
+//                        w:anchor (after the target when both)
+//   linkRange(doc, sel) -> {o, a, z, kept} | {error}  where a new
+//                        link would go: one paragraph (or a caret on
+//                        a kept block's edge: kept), holding no link
+//                        or other level-'p' item (links never nest)
+//   linkUnder(L, x, y) -> {id, off, x} | null  the link drawn under
+//                        the layout point (x, y) of ./DocLayout L (a
+//                        piece of its text: the item the pointer is
+//                        on, not the caret place a click gives,
+//                        which may be next to another link)
+//   selInfo(doc, sel) -> {text, plain} | {error}  what Insert would
+//                        link: the selected text (plain: it holds no
+//                        item, tab or line break, so the box may show
+//                        it), or why not
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {orderedPos} from './EditPos';
+import {docScope} from './WriteBody';
+import {scope} from './Ns';
+import {NS} from './Wml';
+import {localName} from './Kinds';
+
+const no = (error) => ({error});
+
+/** See the header. */
+export const isLink = (x) => !!x && x.kind === 'raw' &&
+  x.level === 'p' && !!x.node && typeof x.node === 'object' &&
+  localName(x.node) === 'hyperlink';
+
+/** See the header. */
+export function docMap(doc) {
+  try { return docScope(doc).map; } catch { return null; }
+}
+
+/** See the header. */
+export function linkAt(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  if (!o || o.f.b !== o.t.b || o.f.b.type !== 'p') return null;
+  const p = o.f.b, a = o.from.off, z = o.to.off;
+  let off = null;
+  if (z - a === 1 && isLink(p.inlines[a])) off = a;
+  else if (a === z && isLink(p.inlines[a - 1])) off = a - 1;
+  else if (a === z && isLink(p.inlines[a])) off = a;
+  return off === null ? null
+    : {s: o.f.s, i: o.f.i, p, off, x: p.inlines[off]};
+}
+
+/** {rid, anchor, tip} of a w:hyperlink node. */
+function attrsOf(node, map) {
+  const out = {rid: null, anchor: null, tip: null};
+  for (const [k, v] of Array.isArray(node.attrs) ? node.attrs : []) {
+    const s = String(k), c = s.indexOf(':');
+    const pre = c < 0 ? '' : s.slice(0, c), l = s.slice(c + 1);
+    const uri = map ? map.get(pre) : pre === 'w' ? NS.w : null;
+    if (pre === 'xmlns' || c < 0) continue;
+    if (l === 'id' && uri !== NS.w) out.rid = String(v);
+    else if (uri === NS.w && l === 'anchor') out.anchor = String(v);
+    else if (uri === NS.w && l === 'tooltip') out.tip = String(v);
+  }
+  return out;
+}
+
+/** See the header. */
+export function linkInfo(doc, x) {
+  const map = docMap(doc);
+  const a = attrsOf(x.node, map && scope(map, x.node));
+  let address = '';
+  if (a.rid !== null) {
+    const r = (Array.isArray(doc.rels) ? doc.rels : [])
+      .find((q) => q && q.id === a.rid);
+    address = r && typeof r.target === 'string' ? r.target : '';
+  }
+  if (a.anchor !== null) address += '#' + a.anchor;
+  return {text: typeof x.text === 'string' ? x.text : '', address,
+    tip: a.tip || ''};
+}
+
+/** See the header. */
+export function linkRange(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  if (!o) return no('There is no place for a link here.');
+  if (o.f.b !== o.t.b)
+    return no('A link cannot cross paragraphs: select text in one.');
+  const a = o.from.off, z = o.to.off;
+  if (o.f.b.type !== 'p') {
+    return a === z ? {o, a, z, kept: true}
+      : no('A link cannot hold a table.');
+  }
+  for (let k = a; k < z; k++) {
+    const x = o.f.b.inlines[k];
+    if (x && x.level === 'p') {
+      return no(isLink(x) ? 'The selection holds a link: links ' +
+        'cannot go inside links.' : 'The selection holds an item ' +
+        'that a link cannot go round.');
+    }
+  }
+  return {o, a, z, kept: false};
+}
+
+/** See the header. */
+export function linkUnder(L, x, y) {
+  if (!L || !L.items || !L.items.length || !(y >= L.items[0].y))
+    return null;
+  const it = L.itemAtY(y), p = it && it.block;
+  if (!p || p.type !== 'p' || !it.lines || y >= it.y + it.h)
+    return null;
+  const line = it.lines.find((l) => y - it.y < l.y + l.h);
+  const lx = x - L.left;
+  const t = line && line.items.find((q) => q.kind === 'link' &&
+    lx >= q.x && lx < q.x + q.w);
+  if (!t) return null;
+  const off = t.from < t.to ? t.from : t.from - 1;
+  const x0 = p.inlines[off];
+  return isLink(x0) ? {id: p.id, off, x: x0} : null;
+}
+
+/** See the header. */
+export function selInfo(doc, sel) {
+  const r = linkRange(doc, sel);
+  if (r.error) return r;
+  const t = r.kept ? '' : r.o.f.b.text.slice(r.a, r.z);
+  return {text: t, plain: !t.includes(OBJ) && !/[\t\n]/.test(t)};
+}

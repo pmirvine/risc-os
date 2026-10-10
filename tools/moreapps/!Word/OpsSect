@@ -1,0 +1,107 @@
+// OpsSect - splitting a section in two, joining two sections, and
+// giving a section new properties.
+//
+//   splitSection {at: [s, i], props, raw}
+//       -> mergeSection {at: s, keep: {props, raw}}
+//   mergeSection {at: s, keep?: {props, raw}}
+//       -> splitSection {at: [s, i], props, raw}
+//   setSection {at: s, props, raw} -> setSection (the old ones)
+//
+// splitSection: blocks 0..i stay in section s, which takes the NEW
+// props and raw (it is the section before the break: its sectPr is
+// written in paragraph i); blocks i+1.. become section s+1 with the
+// old props and raw. Refused when block i is not a paragraph (the
+// sectPr needs one) or when either half would be empty. props is
+// checked as the reader's are (an object with an extra array, only
+// the section fields of ./PropNames); raw is a w:sectPr node or null
+// (undefined: the section gets no raw key).
+//
+// mergeSection: sections s and s+1 become one, holding s+1's props
+// and raw (s+1's very objects); the inverse gives back s's. keep,
+// when given, must equal s+1's props and raw (an undo that finds
+// the sections changed is refused). Refused for the last section,
+// when s does not end with a paragraph or s+1 is empty (the inverse
+// split would be refused).
+//
+// setSection: section s takes props and raw (checked as a split's;
+// raw undefined: no raw key), its blocks kept: the section break
+// commands (./SectBreak) give a section its w:type with it.
+//
+// Section objects are replaced, never changed; the sections that are
+// not split or joined, and every block, keep their identity.
+import {fail, checkProps, deepEqual} from './ModelCheck';
+import {sectionAt} from './OpsUtil';
+import {SECT_FIELDS} from './PropNames';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const local = (n) => n.slice(n.indexOf(':') + 1);
+
+/** Throw unless props are section props and raw a sectPr or null. */
+function checkSect(props, raw) {
+  checkProps(props, 'section props');
+  for (const k of Object.keys(props)) {
+    if (k !== 'extra' && !SECT_FIELDS.has(k))
+      fail('unknown section property ' + k);
+  }
+  if (raw === null) return;
+  if (!isObj(raw) || typeof raw.name !== 'string' ||
+    !Array.isArray(raw.attrs) || !Array.isArray(raw.children) ||
+    local(raw.name) !== 'sectPr')
+    fail('raw must be a w:sectPr node or null');
+}
+
+/** See the header. */
+export function splitSection(doc, op) {
+  const at = op.at;
+  if (!Array.isArray(at) || at.length !== 2) fail('bad position');
+  const [s, i] = at;
+  const sec = sectionAt(doc, s);
+  const bs = sec.blocks;
+  if (!Number.isInteger(i) || i < 0 || i >= bs.length)
+    fail('no block ' + i);
+  if (i === bs.length - 1) fail('the second section would be empty');
+  if (bs[i].type !== 'p') fail('a section must end with a paragraph');
+  checkSect(op.props, op.raw ?? null);
+  const head = {...sec, props: op.props, blocks: bs.slice(0, i + 1)};
+  // (raw left out: a section made without one, kept so by undo)
+  if (op.raw === undefined) delete head.raw;
+  else head.raw = op.raw;
+  const tail = {...sec, blocks: bs.slice(i + 1)};
+  doc.sections.splice(s, 1, head, tail);
+  return {op: 'mergeSection', at: s,
+    keep: {props: sec.props, raw: sec.raw}};
+}
+
+/** See the header. */
+export function mergeSection(doc, op) {
+  const s = op.at;
+  const a = sectionAt(doc, s);
+  if (s === doc.sections.length - 1) fail('no section after ' + s);
+  const b = doc.sections[s + 1];
+  const n = a.blocks.length;
+  if (!n || a.blocks[n - 1].type !== 'p')
+    fail('section ' + s + ' does not end with a paragraph');
+  if (!b.blocks.length) fail('section ' + (s + 1) + ' is empty');
+  const k = op.keep;
+  if (k !== undefined && (!isObj(k) ||
+    !deepEqual(k.props, b.props) ||
+    !deepEqual(k.raw === undefined ? null : k.raw, b.raw ?? null)))
+    fail('the sections are not the ones expected');
+  const joined = {...b, blocks: a.blocks.concat(b.blocks)};
+  doc.sections.splice(s, 2, joined);
+  return {op: 'splitSection', at: [s, n - 1], props: a.props,
+    raw: a.raw};
+}
+
+/** See the header. */
+export function setSection(doc, op) {
+  const s = op.at;
+  const sec = sectionAt(doc, s);
+  checkSect(op.props, op.raw ?? null);
+  const next = {...sec, props: op.props};
+  if (op.raw === undefined) delete next.raw;
+  else next.raw = op.raw;
+  doc.sections[s] = next;
+  return {op: 'setSection', at: s, props: sec.props, raw: sec.raw};
+}

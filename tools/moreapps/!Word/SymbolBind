@@ -1,0 +1,114 @@
+// SymbolBind - Insert > Symbol... and Insert > Special character >,
+// for ./InsertMenu: the task's one WimpLib Ui/CharGrid working on
+// the document whose window last had the caret (as the Find box does,
+// ./EditFind: the grid goes with it as you click from document to
+// document).
+//
+//   attachSymbols(dw)     (./DocKeys) dw becomes the active document
+//                         when its window gains the caret
+//   openSymbols(dw)       Insert > Symbol...: the grid at the front
+//                         (the document is the active one)
+//   insertSpecial(dw, x)  an item of ./SpecialChars: a character is
+//                         typed (putChar; so is the no-break space),
+//                         another command is dw.view.run
+//   putChar(dw, ch) -> bool   type ch at dw's caret, as a typed
+//                         character: the pending format, a selection
+//                         replaced, and ALWAYS an undo step of its
+//                         own (the typing is ended before and after
+//                         it, so two symbols in a second are two
+//                         steps and the next typing is another)
+//   symbolsHook(app) -> {grid, active, open(), withSets(sets)}   for
+//                         the tests (withSets: the grid deleted and
+//                         made again with other sets)
+//
+// The grid's Insert, Return and double-click type the chosen
+// character with putChar, then give the caret back to the document
+// (for the next key); a click elsewhere makes that window the active
+// one. With no document (closed, or none clicked yet) the grid says
+// 'No document to insert into: click in one first.' and beeps.
+// A symbol goes in through view.input like a typed character, so it
+// is an ordinary character of the text in the current font; a lone
+// space never comes from here (no set holds one, and U+00A0 is not
+// the Space that AutoFormat lists act on, ./EditInput).
+import {wimp} from 'riscos';
+import {charGrid} from 'wimplib/Ui/CharGrid';
+
+const states = new WeakMap();          // app -> {active}
+const st = (app) => {
+  let s = states.get(app);
+  if (!s) states.set(app, s = {active: null});
+  return s;
+};
+const alive = (dw) => !!dw && !dw.closed && dw.win.isOpen;
+const NONE = 'No document to insert into: click in one first.';
+
+/** See the header. */
+export function attachSymbols(dw) {
+  const s = st(dw.app);
+  dw.win.on('gaincaret', () => { s.active = dw; });
+  dw.win.on('deleted', () => { if (s.active === dw) s.active = null; });
+}
+
+/** See the header. */
+export function putChar(dw, ch) {
+  const v = dw.view;
+  if (!alive(dw) || !v.sel) return false;
+  const before = v.d.stateId;
+  v.typing.reset();
+  v.input(ch);
+  v.typing.reset();
+  return v.d.stateId !== before;
+}
+
+/** The task's grid, with its handlers (sets: the tests'). */
+function gridOf(app, sets) {
+  const s = st(app);
+  const g = charGrid({task: app.task, title: 'Symbol', sets,
+    onInsert: (ch) => {
+      const dw = s.active;
+      if (!alive(dw)) {
+        wimp.beep();
+        g.message(NONE);
+        return false;
+      }
+      const ok = putChar(dw, ch);
+      if (ok) dw.view.focus();
+      return ok;
+    },
+    onClose: () => { if (alive(s.active)) s.active.view.focus(); }});
+  return g;
+}
+
+/** See the header. */
+export function openSymbols(dw) {
+  st(dw.app).active = dw;
+  const g = gridOf(dw.app);
+  g.message('');
+  g.open();
+  return true;
+}
+
+/** See the header. */
+export function insertSpecial(dw, x) {
+  if (!x || !dw.view.sel) return false;
+  st(dw.app).active = dw;
+  if (x.ch) return putChar(dw, x.ch);
+  if (x.cmd === 'nbsp') return putChar(dw, '\xA0');
+  return !!dw.view.run(x.cmd);
+}
+
+/** See the header. */
+export function symbolsHook(app) {
+  return {
+    get grid() { return gridOf(app); },
+    get active() { return st(app).active; },
+    open: () => {
+      const dw = st(app).active;
+      return alive(dw) ? openSymbols(dw) : false;
+    },
+    withSets: (sets) => {
+      gridOf(app).delete();
+      return gridOf(app, sets);
+    },
+  };
+}

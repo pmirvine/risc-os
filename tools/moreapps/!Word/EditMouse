@@ -18,6 +18,14 @@
 //   triple-click       a Select click within the double-click time of
 //                      a double-click (the Wimp reports no third
 //                      click; the rule of !Edit): the paragraph
+//   Ctrl-Select click  (Cmd-click too on a Mac: view.mac, the Cmd
+//                      key read from os.input.keysDown) on a link to
+//                      a bookmark (w:anchor; the link drawn under the
+//                      pointer: ./LinkFind linkUnder): the caret goes
+//                      to the bookmark (./BookmarkFind findBookmark),
+//                      scrolled into view; a beep when there is no
+//                      such bookmark. On a link to an address it is
+//                      a plain click: links are never opened
 //   Menu               opens the window's menu and leaves the
 //                      selection as it is, wherever the click is (as
 //                      in !Edit)
@@ -26,12 +34,20 @@
 //                      'clickdragdouble' (Wimp button type 10: clicks,
 //                      drags and double-clicks reported)
 //
+// The format painter (./PaintBind) is told through v.onMousePress when
+// the button goes down (the Wimp's click), v.onMouseDrag when a drag
+// starts and v.onMouseSelect when the drag ends; it paints when the
+// button is up.
+//
 // A drag is followed with wimp.drag (Wimp_DragBox, type 'point'), so
 // it ends when the button is released, wherever the pointer is.
 // Points are the window's (zoomed): view.hitAt finds the place.
 import {wimp, os} from 'riscos';
 import * as S from './Selection';
 import {dragStep} from './EditScroll';
+import {linkUnder, linkInfo} from './LinkFind';
+import {toLayout} from './Zoom';
+import {findBookmark} from './BookmarkFind';
 
 const TICK = 60;
 const doubleMs = () => os.input?.config?.doubleClickMs ?? 400;
@@ -47,6 +63,8 @@ export function attachMouse(v) {
     if (ev.button === 'menu') return undefined;
     const h = hit(ev);
     if (!h || !v.sel) return true;
+    if (ev.button === 'select' && !ev.shift && (ev.ctrl || cmd(v)) &&
+      jump(v, ev)) return true;
     let sel;
     if (ev.button === 'adjust' || ev.shift) {
       sel = S.select(v.sel.anchor, h.pos, h.affinity);
@@ -58,6 +76,7 @@ export function attachMouse(v) {
     lastDouble = -Infinity;
     v.setSelection(sel, {scroll: false});
     v.focus();
+    v.onMousePress?.();
     return true;
   });
   w.on('doubleclick', (ev) => {
@@ -75,9 +94,34 @@ export function attachMouse(v) {
   });
   w.on('drag', (ev) => {
     if (!v.sel) return undefined;
+    v.onMouseDrag?.();
     follow(v, ev);
     return true;
   });
+}
+
+/** Cmd held on a Mac (the Wimp's click has no Meta flag). */
+const cmd = (v) => !!v.mac && !!os.input &&
+  ['MetaLeft', 'MetaRight'].some((k) => os.input.keysDown.has(k));
+
+/**
+ * Ctrl-click ev: true when it is on a link to a bookmark (the caret
+ * moved there, or a beep when the bookmark is not there).
+ */
+function jump(v, ev) {
+  const L = v.L, doc = v.d.doc;
+  const p = toLayout(ev.x, ev.y, v.zoom, L.top);
+  const at = linkUnder(L, p.x, p.y);
+  const a = at ? linkInfo(doc, at.x).address : '';
+  if (!a.startsWith('#')) return false;
+  const to = findBookmark(doc, a.slice(1));
+  if (!to) {
+    wimp.beep();
+    return true;
+  }
+  v.setSelection(S.caret(to));
+  v.focus();
+  return true;
 }
 
 /** Extend the selection with the pointer until the button is up. */
@@ -114,6 +158,7 @@ function follow(v, ev) {
         last = {x: d.sx, y: d.sy};
         update();
       }
+      v.onMouseSelect?.();
     }});
   update();
 }

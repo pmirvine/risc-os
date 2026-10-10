@@ -1,0 +1,132 @@
+// SpacingRaw - a w:spacing the model keeps raw (in pPr.extra: one
+// with attributes the model does not hold, such as
+// w:beforeAutospacing, w:beforeLines or another namespace's), read
+// for the screen and changed in place by the spacing commands.
+//
+//   spacingNode(pPr) -> the first raw w:spacing of pPr.extra, or null
+//       (WordprocessingML's only: an element of another namespace
+//       called spacing is never read nor changed, nor are attributes
+//       of another namespace on a w:spacing). With several w:spacing
+//       elements the first is read and patched, and none becomes the
+//       field (the reader keeps them all raw)
+//   rawSpacing(pPr) -> {before?, after?, line?, lineRule?}  what it
+//       says, for the screen and ./Format (./Styles merges it into
+//       resolvePara's spacing): before, after, line in twips clamped
+//       to 0..31680, lineRule auto | exact | atLeast; with
+//       w:beforeAutospacing (w:afterAutospacing) on, before (after)
+//       is AUTO_TW, 280 (14 pt: what Word shows as Auto); {} when
+//       there is none
+//   patchSpacing(pPr, set) -> {extra} | {spacing}  the raw element
+//       with set's attributes changed ({before?, after?, line?,
+//       lineRule?}: a value written, null removed, undefined left
+//       alone). Setting or clearing before also removes
+//       beforeAutospacing and beforeLines (they would win over it),
+//       after likewise afterAutospacing and afterLines; every other
+//       attribute stays as it was, where it was. When what is left
+//       is only what ./ReadProps reads as the model's field (before,
+//       after, line as integers and lineRule, in the element's own
+//       namespace, no children, the only w:spacing there): {spacing}
+//       (null when nothing is left), and the raw element goes
+//       (./OpsProps); else {extra}: pPr.extra with the new element
+//       in the old one's place.
+// Pure: no desktop services.
+import {intOf, onOffOf} from './ReadPropsMore';
+import {wName, W} from './Ns';
+
+export const AUTO_TW = 280;
+const KEYS = ['before', 'after', 'line', 'lineRule'];
+const INTS = new Set(['before', 'after', 'line']);
+const RULES = new Set(['auto', 'exact', 'atLeast']);
+
+const local = (k) => String(k).split(':').pop();
+// the writer's scope: prefix w is WordprocessingML (Strict is mapped
+// to it in memory: ./NsMap); a node's own xmlns attributes count
+const SCOPE = new Map([['w', W]]);
+const isSpacing = (n) => !!n && typeof n === 'object' &&
+  typeof n.name === 'string' && Array.isArray(n.attrs) &&
+  wName(n, SCOPE) === 'spacing';
+
+/** See the header. */
+export function spacingNode(pPr) {
+  for (const n of (pPr && pPr.extra) || []) if (isSpacing(n)) return n;
+  return null;
+}
+
+/** See the header. */
+export function rawSpacing(pPr) {
+  const out = {};
+  const n = spacingNode(pPr);
+  if (!n) return out;
+  let ab = false, aa = false;
+  for (const a of n.attrs) {
+    if (!Array.isArray(a) || typeof a[1] !== 'string') continue;
+    const k = local(a[0]);
+    if (a[0] !== nameIn(n, k)) continue;   // (another namespace's)
+    if (INTS.has(k) && /^-?\d{1,9}$/.test(a[1])) {
+      out[k] = Math.min(Math.max(+a[1], 0), 31680);
+    } else if (k === 'lineRule' && RULES.has(a[1])) {
+      out.lineRule = a[1];
+    } else if (k === 'beforeAutospacing') ab = onOffOf(a[1]) === true;
+    else if (k === 'afterAutospacing') aa = onOffOf(a[1]) === true;
+  }
+  if (ab) out.before = AUTO_TW;
+  if (aa) out.after = AUTO_TW;
+  return out;
+}
+
+/** The node's namespace prefix ('' for none). */
+const prefixOf = (n) => (n.name.includes(':')
+  ? n.name.slice(0, n.name.indexOf(':')) : '');
+
+/** The attribute name k in WordprocessingML for node n: its own
+ *  prefix, or w (an unprefixed attribute is in no namespace). */
+const nameIn = (n, k) => (prefixOf(n) || 'w') + ':' + k;
+
+/** The model field node n is read as, else undefined. */
+function asField(n) {
+  if ((n.children || []).some((c) => typeof c !== 'string' ||
+    c.trim())) return undefined;
+  const o = {};
+  for (const [k, v] of n.attrs) {
+    const l = local(k);
+    if (k !== nameIn(n, l) || !KEYS.includes(l)) return undefined;
+    const x = INTS.has(l) ? intOf(v) : v;
+    if (x === undefined) return undefined;
+    o[l] = x;
+  }
+  return o;
+}
+
+/** See the header. */
+export function patchSpacing(pPr, set) {
+  const extra = pPr.extra;
+  const node = spacingNode(pPr);
+  const drop = new Set();
+  if (set.before !== undefined) {
+    drop.add('beforeAutospacing').add('beforeLines');
+  }
+  if (set.after !== undefined) drop.add('afterAutospacing')
+    .add('afterLines');
+  const attrs = [], done = new Set();
+  for (const a of node.attrs || []) {
+    const l = local(a[0]);
+    const ours = a[0] === nameIn(node, l);
+    if (ours && drop.has(l)) continue;
+    if (ours && KEYS.includes(l) && set[l] !== undefined) {
+      done.add(l);
+      if (set[l] !== null) attrs.push([a[0], String(set[l])]);
+      continue;
+    }
+    attrs.push(a);
+  }
+  for (const k of KEYS) {
+    if (set[k] != null && !done.has(k)) {
+      attrs.push([nameIn(node, k), String(set[k])]);
+    }
+  }
+  const n = {...node, attrs};
+  const only = extra.filter(isSpacing).length === 1;
+  const f = only ? asField(n) : undefined;
+  if (f) return {spacing: Object.keys(f).length ? f : null};
+  return {extra: extra.map((x) => (x === node ? n : x))};
+}

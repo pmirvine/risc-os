@@ -1,0 +1,181 @@
+// BorderResolve - the paragraph borders and shading and the character
+// shading in force, and how they look: what ./BorderGroups and ./Fmt
+// draw and ./Format reports.
+//
+//   paraBorders(styles, para) -> {pBdr, shd}  pBdr {top?, left?,
+//       bottom?, right?, between?, bar?}: each side the one of the
+//       highest layer (./Styles paraLayers: the document defaults,
+//       the style chain, the paragraph's own) that gives that side,
+//       whole (a side is never merged attribute by attribute, as
+//       Word holds it); shd the highest layer's, whole, or null
+//   bordersOf(layers) -> the same from pPr layers, lowest first
+//   runShade(styles, para, run) -> shd or null  the same for a run
+//       (./Styles runLayers: defaults, paragraph style chain,
+//       character style chain, the run's own)
+//   shadeCss(shd)  -> '#rrggbb' or null (nothing drawn): clear the
+//       fill; solid the colour; pctN the colour N% over the fill;
+//       any other pattern half and half; colour auto is black, fill
+//       auto is none (white under a pattern); nil none
+//   edgeOf(side)   -> {style, sz, lw, t, space, color, shadow} or
+//       null a side as drawn: style single | double | dotted | dashed |
+//       thick (others are drawn single), sz in eighths of a point
+//       clamped 2..96 (4 when missing), lw one line's width in px (sz /
+//       6, rounded, at least 1), t the whole edge's (a double is two
+//       lines and the gap between, 3 lw), space px (w:space points
+//       clamped 0..31, times 4 / 3, rounded), color '#rrggbb' (auto:
+//       black), shadow (not drawn); null for nil, none and a side
+//       without a good val
+//
+// A layer's field (pPr.pBdr, pPr.shd, rPr.shd: ./ReadPropsMore) is
+// read first; a layer without one whose extra keeps the element raw
+// (w:themeColor, w:themeFill, a w14 attribute...) is read best
+// effort: the first WordprocessingML w:pBdr / w:shd there (matched
+// by namespace, as ./SpacingRaw does; a Strict w:start / w:end side
+// is the left / right one, the first given winning), its w:val,
+// w:sz, w:space, w:color, w:fill, w:shadow, w:frame (good values
+// only), every other
+// attribute ignored: a theme colour shows as the w:color / w:fill
+// Word writes beside it. Nothing raw is ever changed. Pure: no
+// desktop services.
+import {paraLayers, runLayers} from './Styles';
+import {intOf, onOffOf, SIDES, NAME, HEX} from './ReadPropsMore';
+import {wName, wAttr, scope, W} from './Ns';
+
+const SCOPE = new Map([['w', W]]);
+const STYLES = new Set(['single', 'double', 'dotted', 'dashed',
+  'thick']);
+
+/** The first raw WordprocessingML element `local` of a layer. */
+function rawEl(l, local) {
+  for (const n of (l && Array.isArray(l.extra) && l.extra) || []) {
+    if (n && typeof n === 'object' && typeof n.name === 'string' &&
+      Array.isArray(n.attrs) && Array.isArray(n.children) &&
+      wName(n, SCOPE) === local) return n;
+  }
+  return null;
+}
+
+/** The good attributes of a raw side or shd node, best effort. */
+function rawAttrs(n, map, keys) {
+  const m = scope(map, n);
+  const o = {};
+  for (const k of keys) {
+    const v = wAttr(n, m, k);
+    if (typeof v !== 'string') continue;
+    const flag = k === 'shadow' || k === 'frame';
+    if (k === 'val' ? NAME.test(v) : k === 'color' || k === 'fill'
+      ? HEX.test(v) : flag ? onOffOf(v) !== undefined
+        : intOf(v) >= 0) {
+      o[k] = k === 'sz' || k === 'space' ? intOf(v)
+        : flag ? onOffOf(v) : v;
+    }
+  }
+  return typeof o.val === 'string' ? o : null;
+}
+
+const SIDE_KEYS = ['val', 'sz', 'space', 'color', 'shadow', 'frame'];
+// (Strict's w:start and w:end are the left and right sides)
+const SIDE_OF = new Map([...SIDES.map((k) => [k, k]),
+  ['start', 'left'], ['end', 'right']]);
+
+/** A layer's pBdr: the field, else the raw element, else null. */
+function pBdrOf(l) {
+  if (l && l.pBdr && typeof l.pBdr === 'object') return l.pBdr;
+  const n = rawEl(l, 'pBdr');
+  if (!n) return null;
+  const m = scope(SCOPE, n), o = {};
+  for (const c of n.children) {
+    const n = c && typeof c === 'object' && Array.isArray(c.attrs)
+      ? wName(c, m) : null;
+    const k = n ? SIDE_OF.get(n) : undefined;
+    if (!k || o[k]) continue;
+    const s = rawAttrs(c, m, SIDE_KEYS);
+    if (s) o[k] = s;
+  }
+  return o;
+}
+
+/** A layer's shd: the field, else the raw element, else null. */
+function shdOf(l) {
+  if (l && l.shd && typeof l.shd === 'object') return l.shd;
+  const n = rawEl(l, 'shd');
+  return n ? rawAttrs(n, SCOPE, ['val', 'color', 'fill']) : null;
+}
+
+/** See the header. */
+export function paraBorders(styles, para) {
+  return bordersOf(paraLayers(styles, para));
+}
+
+/** See the header. */
+export function bordersOf(layers) {
+  const pBdr = {};
+  let shd = null;
+  for (const l of layers) {
+    if (!l) continue;
+    const b = pBdrOf(l);
+    if (b) {
+      for (const k of SIDES) {
+        const s = b[k];
+        if (s && typeof s === 'object' && typeof s.val === 'string')
+          pBdr[k] = s;
+      }
+    }
+    const s = shdOf(l);
+    if (s && typeof s.val === 'string') shd = s;
+  }
+  return {pBdr, shd};
+}
+
+/** See the header. */
+export function runShade(styles, para, run) {
+  let shd = null;
+  for (const l of runLayers(styles, para, run)) {
+    const s = l ? shdOf(l) : null;
+    if (s && typeof s.val === 'string') shd = s;
+  }
+  return shd;
+}
+
+const hex = (v) => (typeof v === 'string' &&
+  /^[0-9A-Fa-f]{6}$/.test(v) ? v.toLowerCase() : null);
+
+/** a over b by k (0..1), '#rrggbb'. */
+function mix(a, b, k) {
+  let out = '#';
+  for (let i = 0; i < 6; i += 2) {
+    const x = parseInt(a.slice(i, i + 2), 16);
+    const y = parseInt(b.slice(i, i + 2), 16);
+    out += Math.round(x * k + y * (1 - k)).toString(16)
+      .padStart(2, '0');
+  }
+  return out;
+}
+
+/** See the header. */
+export function shadeCss(shd) {
+  const v = shd && typeof shd.val === 'string' ? shd.val : 'nil';
+  if (v === 'nil') return null;
+  const fill = hex(shd.fill), col = hex(shd.color) || '000000';
+  if (v === 'clear') return fill ? '#' + fill : null;
+  if (v === 'solid') return '#' + col;
+  const m = /^pct([0-9]{1,3})$/.exec(v);
+  const k = m ? Math.min(+m[1], 100) / 100 : 0.5;
+  return mix(col, fill || 'ffffff', k);
+}
+
+/** See the header. */
+export function edgeOf(s) {
+  if (!s || typeof s.val !== 'string' || !NAME.test(s.val) ||
+    s.val === 'nil' || s.val === 'none') return null;
+  const style = STYLES.has(s.val) ? s.val : 'single';
+  const sz = Number.isInteger(s.sz) ? Math.min(Math.max(s.sz, 2), 96)
+    : 4;
+  const sp = Number.isInteger(s.space)
+    ? Math.min(Math.max(s.space, 0), 31) : 0;
+  const lw = Math.max(1, Math.round(sz / 6));
+  const c = hex(s.color);
+  return {style, sz, lw, t: style === 'double' ? 3 * lw : lw,
+    space: Math.round(sp * 4 / 3), color: '#' + (c || '000000'),
+    shadow: s.shadow === true};
+}

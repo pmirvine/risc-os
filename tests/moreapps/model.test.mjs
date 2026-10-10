@@ -5,6 +5,8 @@ import {newPara, newSection, emptyDoc, OBJ}
   from '../../tools/moreapps/!Word/Model';
 import {apply} from '../../tools/moreapps/!Word/Ops';
 import {Document} from '../../tools/moreapps/!Word/Document';
+import {addRel, withStyle} from '../../tools/moreapps/!Word/DocParts';
+import {newStyleTable} from '../../tools/moreapps/!Word/Styles';
 
 const R = (o = {}) => ({...o, extra: []});
 const X = (name) => ({name, attrs: [['w:val', '1']], children: []});
@@ -955,10 +957,49 @@ function gen(rnd) {
         {type: 'opaque', node: X('w:tbl')});
       else d.sections[0].blocks.push(mkPara());
     }
-    if (rnd() < 0.3) {
-      d.sections.push({props: {extra: []}, blocks: [mkPara()]});
+    // more sections (0..3), of 1..3 blocks, most ending with a
+    // paragraph, so that section splits and merges get their chance
+    for (let k = int(4); k > 0; k--) {
+      const bs = [];
+      for (let j = 1 + int(3); j > 0; j--) bs.push(mkPara());
+      if (rnd() < 0.1) bs.unshift({type: 'opaque', node: X('w:tbl')});
+      const sec = {props: {extra: []}, blocks: bs};
+      if (rnd() < 0.7) sec.raw = rnd() < 0.5 ? null : sectRaw();
+      d.sections.push(sec);
     }
+    if (rnd() < 0.3) d.sections[0].raw = sectRaw();
+    if (rnd() < 0.3) d.rels = addRel([], {kind: 'styles',
+      target: 'styles.xml'}).rels;
+    if (rnd() < 0.2) d.numbering = numbering();
+    if (rnd() < 0.2) d.meta = {numberingPart: 'word/numbering.xml'};
     return d;
+  };
+  const sectRaw = () => ({name: 'w:sectPr', attrs: [['w:rsidR', '01']],
+    children: [X('w:titlePg')]});
+  const numbering = () => ({raw: X('w:numbering'), nums: new Map([[1,
+    {abstractNumId: 0, levels: [], overrides: new Map()}]])});
+  const sectProps = () => pick([{extra: []},
+    {pgSz: {w: 12240, h: 15840}, extra: []},
+    {titlePg: true, extra: [X('w:type')]},
+    {foo: 1, extra: []}]);       // refused
+  // document-level parts: a new value (never the old one changed)
+  const part = (d) => {
+    const key = pick(['numbering', 'rels', 'styles', 'settings',
+      'numberingPart', 'numberingPart', 'rels', '__proto__', 'meta']);
+    let value;
+    if (key === 'numbering') value = pick([null, numbering()]);
+    else if (key === 'rels') {
+      value = rnd() < 0.8 ? addRel(d.rels, {kind: pick(['hyperlink',
+        'numbering']), target: 'x', external: rnd() < 0.5,
+      strict: rnd() < 0.3}).rels : [];
+    } else if (key === 'styles') {
+      value = pick([null, newStyleTable(), withStyle(d.styles ||
+        newStyleTable(), {id: 'S' + int(1e6), type: 'paragraph'})]);
+    } else if (key === 'settings') value = pick([null, X('w:settings')]);
+    else if (key === 'numberingPart') {
+      value = pick(['word/numbering.xml', undefined, null, '../bad']);
+    } else value = {};
+    return {op: 'setDocPart', key, value};
   };
   const op = (d) => {
     const s = int(d.sections.length);
@@ -971,7 +1012,27 @@ function gen(rnd) {
     const pos = () => (rnd() < 0.9 ? int(len + 1)
       : int(len + 2) - (rnd() < 0.3 ? 1 : 0));
     const kind = pick(['rt', 'rt', 'rt', 'sp', 'sp', 'split', 'merge',
-      'ins', 'rm']);
+      'ins', 'rm', 'ssplit', 'ssplit', 'smerge', 'smerge', 'part',
+      'sset']);
+    if (kind === 'sset') {
+      const o = {op: 'setSection', at: int(d.sections.length + 1) -
+        (rnd() < 0.05 ? 1 : 0), props: sectProps()};
+      if (rnd() < 0.8) o.raw = pick([null, sectRaw()]);
+      return o;
+    }
+    if (kind === 'ssplit') {
+      const o = {op: 'splitSection', at: [s, i], props: sectProps()};
+      if (rnd() < 0.8) o.raw = pick([null, sectRaw()]);
+      return o;
+    }
+    if (kind === 'smerge') {
+      const o = {op: 'mergeSection', at: int(d.sections.length + 1) -
+        (rnd() < 0.05 ? 1 : 0)};
+      const b = d.sections[o.at + 1];
+      if (b && rnd() < 0.3) o.keep = {props: b.props, raw: b.raw ?? null};
+      return o;
+    }
+    if (kind === 'part') return part(d);
     if (kind === 'rt') {
       const at = pos();
       const {s: ins, inlines} = str(int(4));
@@ -1008,6 +1069,8 @@ function gen(rnd) {
   return {doc, op, int, rnd};
 }
 
+const applied = new Map();   // op kind -> times applied (not refused)
+
 function runSequence(seed, grouped) {
   const g = gen(mulberry32(seed));
   const doc = new Document(g.doc());
@@ -1026,6 +1089,7 @@ function runSequence(seed, grouped) {
       try {
         doc.apply(op);
         ok++;
+        applied.set(op.op, (applied.get(op.op) || 0) + 1);
       } catch (e) {
         if (!(e instanceof RangeError)) throw e;
         assert.deepEqual(doc.doc, before, 'failed op changed the doc');
@@ -1051,12 +1115,23 @@ function runSequence(seed, grouped) {
 
 describe('property: random ops then undo/redo', () => {
   const BASE = 20261005;
+  const NEW = ['splitSection', 'mergeSection', 'setDocPart',
+    'setSection'];
+  const counted = () => {
+    for (const k of NEW) {
+      assert.ok(applied.get(k) >= 150, k + ': ' + applied.get(k));
+    }
+  };
   it('500 sequences', () => {
+    applied.clear();
     let ok = 0;
     for (let k = 0; k < 500; k++) ok += runSequence(BASE + k, false);
     assert.ok(ok > 2000, 'enough ops succeeded: ' + ok);
+    counted();
   });
   it('500 sequences with random groups', () => {
+    applied.clear();
     for (let k = 0; k < 500; k++) runSequence(BASE + 100000 + k, true);
+    counted();
   });
 });

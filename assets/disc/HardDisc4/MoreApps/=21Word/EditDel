@@ -22,18 +22,29 @@
 // does for emoji and browsers' text fields do). At a paragraph's
 // start (end) they merge it with the one before (after) by the
 // ./EditRange merge rule, but never across a section break (a no-op
-// there: deleting section breaks is not supported yet). Next to a
+// here: the keys remove the break first, ./EditApply and
+// ./SectBreak deleteBreakAt). Next to a
 // kept block (a table) the first press selects the block and returns
 // that selection without changing the document; the second, with it
 // selected, deletes it. With the caret on a kept block's edge facing
-// a paragraph: an empty paragraph there is removed, otherwise the
+// a paragraph: an empty paragraph there (or one holding only unseen
+// inlines, such as a bookmark's marks) is removed, otherwise the
 // caret just moves into it.
+//
+// Unseen inlines (bookmarks, proofing marks, field codes: ./Kinds
+// unseenAt) are never deleted by these keys: the keys look past the
+// ones next to the caret and delete the character (or word) beyond
+// them, keeping every unseen inline in what they delete; with only
+// such inlines between the caret and the paragraph's edge, they join
+// the paragraphs (the inlines kept). A selection deleted takes its
+// inlines with it (bookmarks whole: ./BookmarkKeep).
 // Pure: no desktop services.
 import {prevWord, nextWord} from 'wimplib/Segment';
 import {caret, select, collapsed} from './Selection';
 import {prevG, nextG} from './DocPos';
 import {checkPos, orderedPos, neighbour, posOf} from './EditPos';
 import {deleteRange, mergeAt} from './EditRange';
+import {unseenAt, onlyUnseen} from './Kinds';
 
 /** Run fn in one group; its position (or null: none) as a caret. */
 function run(d, sel, fn) {
@@ -51,12 +62,23 @@ export function deleteSelection(d, sel) {
   return run(d, sel, () => deleteRange(d, o));
 }
 
-/** Delete [a, b) of the paragraph at loc; caret at a. */
-function cutText(d, sel, loc, a, b) {
+/**
+ * Delete [a, b) of the paragraph at loc but its unseen inlines (the
+ * pieces between them, last first); the caret at `to`.
+ */
+function cutText(d, sel, loc, a, b, to) {
+  const p = loc.b;
   return run(d, sel, () => {
-    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: a,
-      del: b - a, ins: ''});
-    return {id: loc.b.id, off: a};
+    let z = b;
+    for (let k = b - 1; k >= a - 1; k--) {
+      if (k >= a && !unseenAt(p, k)) continue;
+      if (z > k + 1) {
+        d.apply({op: 'replaceText', block: [loc.s, loc.i], at: k + 1,
+          del: z - k - 1, ins: ''});
+      }
+      z = k;
+    }
+    return {id: p.id, off: to};
   });
 }
 
@@ -70,7 +92,9 @@ function atEdge(d, sel, loc, dir) {
   if (n.b.type !== 'p') return boxSel(n);
   if (loc.b.type !== 'p') {
     // a kept block's edge facing a paragraph
-    if (n.b.text) return caret(posOf(n, dir < 0 ? n.b.text.length : 0));
+    if (!onlyUnseen(n.b)) {
+      return caret(posOf(n, dir < 0 ? n.b.text.length : 0));
+    }
     return run(d, sel, () => {
       d.apply({op: 'removeBlock', at: [n.s, n.i]});
       return sel.head;
@@ -91,12 +115,15 @@ function del(d, sel, dir, step) {
     if (off === (dir < 0 ? 1 : 0)) return boxSel(loc);
     return atEdge(d, sel, loc, dir);
   }
-  const text = loc.b.text;
-  if (dir < 0 ? off === 0 : off === text.length)
+  const p = loc.b, text = p.text;
+  let k = off;
+  if (dir < 0) while (k > 0 && unseenAt(p, k - 1)) k--;
+  else while (k < text.length && unseenAt(p, k)) k++;
+  if (dir < 0 ? k === 0 : k === text.length)
     return atEdge(d, sel, loc, dir);
-  const to = step(text, off);
-  return dir < 0 ? cutText(d, sel, loc, to, off)
-    : cutText(d, sel, loc, off, to);
+  const to = step(text, k);
+  return dir < 0 ? cutText(d, sel, loc, to, k, to)
+    : cutText(d, sel, loc, k, to, off);
 }
 
 /** See the header. */

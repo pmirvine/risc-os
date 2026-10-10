@@ -335,12 +335,13 @@ try {
 
     // Page Down moves the caret and the view together
     await ev(() => window.__set(1, 4));
-    const p0 = await ev(() => ({ y: window.__doc().win.scrollY, c: window.__doc().view.caretRect(), h: window.__doc().win.h }));
+    const p0 = await ev(() => ({ y: window.__doc().win.scrollY, c: window.__doc().view.caretRect(), h: window.__doc().win.h, ins: window.__doc().inset }));
     await press('PageDown');
     const p1 = await ev(() => ({ y: window.__doc().win.scrollY, c: window.__doc().view.caretRect(), s: window.__sel() }));
     const dy = p1.y - p0.y, dc = p1.c.y - p0.c.y;
     ok('Page Down scrolls by about a window', dy > p0.h / 2 && dy <= p0.h, [p0, p1]);
     ok('... and the caret moves with it', Math.abs(dc - dy) < 30 && p1.s.h[0] > 1, [p0, p1]);
+    ok('... by the window\'s height less the bars (dw.inset()) and 32', dy === p0.h - p0.ins - 32 && p0.ins > 0, [p0, p1]);
     await press('PageUp');
     const p2 = await ev(() => ({ y: window.__doc().win.scrollY, s: window.__sel() }));
     ok('Page Up comes back', p2.y === p0.y && p2.s.h[0] === 1, p2);

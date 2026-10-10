@@ -8,8 +8,10 @@ import {newPara, newSection, deepEqual}
   from '../../tools/moreapps/!Word/Model';
 import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
 import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {mk, texts, ids, P, C, SEL, at, undoable, valid, snap, box, S}
+import {mk, texts, ids, P, C, SEL, at, undoable, valid, snap, box, S, O}
   from './edit-docs.mjs';
+import {run} from '../../tools/moreapps/!Word/EditApply';
+import {Typing} from '../../tools/moreapps/!Word/Typing';
 
 /** Sections [ab][cd][ef] (the last one newDoc's, with its page). */
 function three() {
@@ -134,7 +136,8 @@ describe('merging paragraphs', () => {
     assert.equal(P(d, 0).pPr.jc, 'right');
     assert.deepEqual(at(d, s), [0, 0]);
   });
-  it('not across a section break', () => {
+  it('not across a section break (EditDel itself: the keys go to ' +
+    'SectBreak first, below)', () => {
     const d = mk(['ab']);
     const s2 = newSection();
     s2.blocks.push(newPara('cd'));
@@ -143,6 +146,24 @@ describe('merging paragraphs', () => {
     assert.equal(X.deleteBack(d, c), c);
     assert.equal(X.deleteForward(d, e), e);
     assert.equal(d.undoDepth, 0);
+  });
+  it('the keys (EditApply.run) at a section edge: the first press ' +
+    'merges the sections, the second the paragraphs', () => {
+    for (const [id, k, off] of [['backspace', 1, 0], ['delete', 0, 2],
+      ['ctrlBackspace', 1, 0], ['ctrlDelete', 0, 2]]) {
+      const d = three();
+      const t = new Typing(d);
+      const before = snap(d);
+      const s1 = undoable(d, () => run(id, d, t, C(d, k, off)));
+      assert.deepEqual(counts(d), [2, 1], id);
+      assert.deepEqual(secTexts(d.doc), [['ab', 'cd'], ['ef']]);
+      assert.deepEqual(at(d, s1), [k, off]);
+      const s2 = undoable(d, () => run(id, d, t, s1));
+      assert.deepEqual(secTexts(d.doc), [['abcd'], ['ef']], id);
+      assert.deepEqual(at(d, s2), [0, 2]);
+      while (d.undo());
+      assert.ok(deepEqual(d.doc.sections, before), id + ' undo all');
+    }
   });
 });
 
@@ -352,5 +373,112 @@ describe('50k paragraphs', () => {
     d.undo();
     assert.ok(performance.now() - t1 < 3000, 'undo');
     assert.ok(deepEqual(d.doc.sections, before));
+  });
+});
+
+describe('Backspace and Delete next to unseen inlines (bookmarks)', () => {
+  const mark = (n, id) => ({kind: 'raw', level: 'p', text: '',
+    node: {name: 'w:' + n, attrs: [['w:id', String(id)]], children: []}});
+  /** 'a' [start] 'b' [end] 'c' */
+  const doc = () => mk([['a' + O + 'b' + O + 'c', {inlines: {
+    1: mark('bookmarkStart', 1), 3: mark('bookmarkEnd', 1)}}], 'next']);
+  const kinds = (d, k) => Object.entries(P(d, k).inlines)
+    .map(([o, x]) => [Number(o), x.node.name.slice(2)]);
+  it('Backspace after a mark deletes the character before it; the ' +
+    'mark stays', () => {
+    const d = doc();
+    const s = undoable(d, () => X.deleteBack(d, C(d, 0, 4)));
+    assert.equal(P(d, 0).text, 'a' + O + O + 'c');
+    assert.deepEqual(kinds(d, 0), [[1, 'bookmarkStart'],
+      [2, 'bookmarkEnd']]);
+    assert.deepEqual(at(d, s), [0, 2]);
+  });
+  it('Delete before a mark deletes the character after it', () => {
+    const d = doc();
+    const s = undoable(d, () => X.deleteForward(d, C(d, 0, 1)));
+    assert.equal(P(d, 0).text, 'a' + O + O + 'c');
+    assert.deepEqual(at(d, s), [0, 1]);
+  });
+  it('only marks before the caret at a paragraph\'s start: Backspace ' +
+    'joins the paragraphs, the marks kept', () => {
+    const d = mk(['ab', [O + 'cd', {inlines: {0: mark('bookmarkStart',
+      1)}}]]);
+    const s = undoable(d, () => X.deleteBack(d, C(d, 1, 1)));
+    assert.deepEqual(texts(d), ['ab' + O + 'cd']);
+    assert.deepEqual(at(d, s), [0, 2]);
+  });
+  it('only marks after the caret at a paragraph\'s end: Delete joins',
+    () => {
+      const d = mk([['ab' + O, {inlines: {2: mark('bookmarkEnd', 1)}}],
+        'cd']);
+      undoable(d, () => X.deleteForward(d, C(d, 0, 2)));
+      assert.deepEqual(texts(d), ['ab' + O + 'cd']);
+    });
+  it('Ctrl-Backspace and Ctrl-Delete keep the marks of the word', () => {
+    const d = mk([['xy ab' + O + 'cd', {inlines: {5: mark('bookmarkStart',
+      1)}}]]);
+    const s1 = undoable(d, () => X.deleteWordBack(d, C(d, 0, 8)));
+    assert.equal(P(d, 0).text, 'xy ab' + O);
+    const s = undoable(d, () => X.deleteWordBack(d, s1));
+    assert.equal(P(d, 0).text, 'xy ' + O);
+    assert.equal(P(d, 0).inlines[3].node.name, 'w:bookmarkStart');
+    assert.deepEqual(at(d, s), [0, 3]);
+    const e = mk([['ab' + O + 'cd ef', {inlines: {2: mark('bookmarkEnd',
+      1)}}]]);
+    undoable(e, () => X.deleteWordForward(e, C(e, 0, 0)));
+    assert.equal(P(e, 0).text, O + 'cd ef', 'the mark inside the ' +
+      'word deleted is kept');
+  });
+  it('a proofErr document: Backspace keeps the proofing marks, and ' +
+    'they are written back', async () => {
+    const {buildDocx, documentXml, p, r} = await import(
+      './build-docx.mjs');
+    const {Document} = await import('../../tools/moreapps/!Word/Document');
+    const doc = await readDocx(await buildDocx({'word/document.xml':
+      documentXml(p(r('Hi ') + '<w:proofErr w:type="spellStart"/>' +
+        r('wrold') + '<w:proofErr w:type="spellEnd"/>'))}));
+    const d = new Document(doc);
+    let s = C(d, 0, 10);
+    for (let k = 0; k < 5; k++) s = X.deleteBack(d, s);
+    assert.equal(P(d, 0).text, 'Hi ' + O + O);
+    s = X.deleteBack(d, s);
+    assert.equal(P(d, 0).text, 'Hi' + O + O);
+    const back = await readDocx(await writeDocx(d.doc,
+      {date: new Date(Date.UTC(2026, 0, 1))}));
+    const q = back.sections[0].blocks[0];
+    assert.equal(q.text, 'Hi' + O + O);
+    assert.deepEqual(Object.values(q.inlines).map((x) => x.node.name),
+      ['w:proofErr', 'w:proofErr']);
+  });
+});
+
+describe('review: soft hyphens are characters; marks-only paragraphs', () => {
+  const sh = {kind: 'raw', level: 'r', node: {name: 'w:softHyphen',
+    attrs: [], children: []}};
+  it('Backspace after a soft hyphen deletes it; Delete before it too',
+    () => {
+      const d = mk([['a' + O + 'b', {inlines: {1: sh}}]]);
+      const s = undoable(d, () => X.deleteBack(d, C(d, 0, 2)));
+      assert.equal(P(d, 0).text, 'ab');
+      assert.deepEqual(at(d, s), [0, 1]);
+      const e = mk([['a' + O + 'b', {inlines: {1: sh}}]]);
+      undoable(e, () => X.deleteForward(e, C(e, 0, 1)));
+      assert.equal(P(e, 0).text, 'ab');
+    });
+  it('a paragraph holding only bookmark marks is empty: Delete at a ' +
+    'table\'s end removes it', () => {
+    const mark = (n) => ({kind: 'raw', level: 'p', text: '', node: {name:
+      'w:' + n, attrs: [['w:id', '1']], children: []}});
+    const d = mk([box(), [O + O, {inlines: {0: mark('bookmarkStart'),
+      1: mark('bookmarkEnd')}}], 'z']);
+    undoable(d, () => X.deleteForward(d, C(d, 0, 1)));
+    assert.deepEqual(texts(d), ['#', 'z']);
+    const e = mk(['z', [O, {inlines: {0: mark('bookmarkEnd')}}], box()]);
+    undoable(e, () => X.deleteBack(e, C(e, 2, 0)));
+    assert.deepEqual(texts(e), ['z', '#']);
+    const k = mk([box(), [O + 'q', {inlines: {0: mark('bookmarkEnd')}}]]);
+    const s = X.deleteForward(k, C(k, 0, 1));
+    assert.deepEqual(texts(k), ['#', O + 'q'], 'text: only moves');
+    assert.deepEqual(at(k, s), [1, 0]);
   });
 });

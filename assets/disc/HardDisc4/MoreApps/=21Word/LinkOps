@@ -1,0 +1,161 @@
+// LinkOps - hyperlinks: insert, edit and remove (Insert >
+// Hyperlink..., Ctrl-K: ./LinkBox). Finding them: ./LinkFind
+// (isLink, linkAt, linkInfo, selInfo: exported here too).
+//
+//   insertLink(d, typing, sel, {text, address, anchor, tip})
+//   editLink(d, typing, sel, {text, address, anchor, tip})
+//   removeLink(d, typing, sel)
+//       -> {sel} (the new selection) | {error} (a message; nothing
+//       changed). One undo step each (typing.command, d.atomic),
+//       relationship and style included; none when nothing changes.
+//       address: a URL (./LinkUrl cleanUrl) or '#name'; anchor: a
+//       bookmark name (instead of address); undefined: not given
+//
+// A link is a raw level-'p' inline: <w:hyperlink r:id="rIdN"
+// w:history="1"> (a new External relationship per link: ./DocParts
+// addRel) or w:anchor="name" for a bookmark (no relationship), and
+// w:tooltip for a ScreenTip, holding w:r runs written by ./WritePara
+// with each run's own formatting and w:rStyle Hyperlink (./DocParts
+// hyperlinkStyle: added to the styles on first use). Insert links
+// the selected text (./LinkFind linkRange: one paragraph, no link
+// or other kept wrapper in it, so links never nest); text given
+// that differs from it (or at a caret) becomes one run in the
+// format there (at a caret with no text: the address). The caret
+// goes after the link. Edit changes only what was given and differs
+// (address: a new relationship; the old one stays, unused, as is
+// valid; text: one run in the format of the link's first run).
+// Remove unwraps: the link's children read back as text, runs and
+// inlines by ./ReadPara, w:rStyle Hyperlink dropped, selected (a
+// caret: after them). Addresses: ./LinkUrl (http, https, mailto,
+// ftp only); text (1024) and ScreenTip (255) lose control
+// characters (./LinkParts). Links are never opened. Pure: no
+// desktop services.
+import {caret, select, collapsed} from './Selection';
+import {findBlock} from './EditPos';
+import {paraBy} from './EditRange';
+import {cut} from './OpsUtil';
+import {fmtAt} from './OpsText';
+import {findStyle} from './DocParts';
+import {linkAt, linkInfo, linkRange, docMap} from './LinkFind';
+import {clean, cleanText, target, withTarget, withTip, runNodes,
+  styleFor, shown, linkX, ONE, inside, TEXT_MAX, TIP_MAX}
+  from './LinkParts';
+
+export {isLink, linkAt, linkInfo, selInfo} from './LinkFind';
+
+const no = (error) => ({error});
+const NONE = 'There is no link here.';
+
+/** Apply ops, then the splice made by last(); one undo step. */
+function run(d, typing, ops, last) {
+  let out = null;
+  try {
+    typing.command(() => d.atomic(() => {
+      for (const op of ops) d.apply(op);
+      out = last();
+    }));
+  } catch (e) {
+    return no('The link could not be made: ' + e.message);
+  }
+  return {sel: out};
+}
+
+/** See the header. */
+export function insertLink(d, typing, sel, o = {}) {
+  const doc = d.doc, map = docMap(doc);
+  if (!map) return no('This document cannot take links.');
+  const t = target(o);
+  if (!t) return no('Type the address the link goes to.');
+  if (t.error) return t;
+  const text = clean(o.text, TEXT_MAX, 'text to display');
+  const tip = clean(o.tip, TIP_MAX, 'ScreenTip');
+  const bad = [text, tip].find((v) => v && v.error);
+  if (bad) return bad;
+  const r = linkRange(doc, sel);
+  if (r.error) return r;
+  const p = r.o.f.b, old = r.kept ? '' : p.text.slice(r.a, r.z);
+  const keep = r.z > r.a && (!text || text === cleanText(old));
+  const ops = [], style = styleFor(doc, ops);
+  const attrs = withTip(withTarget([['w:history', '1']], t, doc, map,
+    ops), tip);
+  const make = (q, a) => {
+    const s = shown(t, text);
+    const c = keep ? cut(q, r.a, r.z) : {text: s, inlines: {},
+      runs: [{start: 0, end: s.length, ...(r.kept ? {rPr: {extra: []}}
+        : fmtAt(q, a, r.z - r.a))}]};
+    return {name: 'w:hyperlink', attrs, children: runNodes(c, style,
+      map)};
+  };
+  return run(d, typing, ops, () => {
+    let loc = r.o.f, a = r.a;
+    if (r.kept) {
+      const pos = paraBy(d, loc, a);
+      loc = findBlock(d.doc, pos.id);
+      a = pos.off;
+    }
+    const q = loc.b;
+    d.apply({op: 'spliceText', block: [loc.s, loc.i], at: a,
+      del: r.kept ? 0 : r.z - r.a, content: ONE(linkX(make(q, a),
+        map))});
+    return caret({id: q.id, off: a + 1});
+  });
+}
+
+/** See the header. */
+export function editLink(d, typing, sel, o = {}) {
+  const doc = d.doc, map = docMap(doc), at = linkAt(doc, sel);
+  if (!at) return no(NONE);
+  if (!map) return no('This document cannot take links.');
+  const info = linkInfo(doc, at.x), node = at.x.node;
+  const ops = [];
+  let attrs = Array.isArray(node.attrs) ? node.attrs : [];
+  const same = o.anchor !== undefined ? '#' + o.anchor === info.address
+    : o.address === undefined || (typeof o.address === 'string' &&
+      o.address.trim() === info.address);
+  const t = same ? null : target(o);
+  if (t && t.error) return t;
+  const text = clean(o.text, TEXT_MAX, 'text to display');
+  const tip = clean(o.tip, TIP_MAX, 'ScreenTip');
+  const bad = [text, tip].find((v) => v && v.error);
+  if (bad) return bad;
+  let kids = node.children;
+  if (text !== undefined && text !== cleanText(info.text)) {
+    const c = inside(node, map);
+    const f = c && c.runs.length ? c.runs[0] : null;
+    const s = text || (t ? shown(t) : info.address.replace(/^#/, ''));
+    if (!s) return no('Type the text to display.');
+    const style = f ? f.rStyle : styleFor(doc, ops);
+    kids = runNodes({text: s, inlines: {}, runs: s ? [{start: 0,
+      end: s.length, rPr: f ? f.rPr : {extra: []}}] : []}, style, map);
+  }
+  if (t) attrs = withTarget(attrs, t, doc, map, ops);
+  if (tip !== undefined && tip !== cleanText(info.tip))
+    attrs = withTip(attrs, tip);
+  if (attrs === node.attrs && kids === node.children) return {sel};
+  const x = linkX({...node, attrs, children: kids}, map);
+  return run(d, typing, ops, () => {
+    d.apply({op: 'spliceText', block: [at.s, at.i], at: at.off, del: 1,
+      content: ONE(x, fmtAt(at.p, at.off, 1))});
+    return caret({id: at.p.id, off: at.off + 1});
+  });
+}
+
+/** See the header. */
+export function removeLink(d, typing, sel) {
+  const doc = d.doc, map = docMap(doc), at = linkAt(doc, sel);
+  if (!at) return no(NONE);
+  const c = map ? inside(at.x.node, map) : null;
+  if (!c) return no('This link cannot be taken apart.');
+  const h = findStyle(doc.styles, 'Hyperlink', 'Hyperlink');
+  const hid = h ? h.id : 'Hyperlink';
+  const runs = c.runs.map(({rStyle, ...q}) => (rStyle === hid ||
+    rStyle === undefined ? q : {...q, rStyle}));
+  const n = c.text.length;
+  return run(d, typing, [], () => {
+    d.apply({op: 'spliceText', block: [at.s, at.i], at: at.off, del: 1,
+      content: {text: c.text, runs, inlines: c.inlines}});
+    const a = {id: at.p.id, off: at.off};
+    return n && !collapsed(sel) ? select(a, {id: a.id, off: a.off + n})
+      : caret({id: a.id, off: a.off + n});
+  });
+}

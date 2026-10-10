@@ -17,9 +17,18 @@
 //   marker the highlight colours (./FormatMenu.highlightMenu)
 //   align  left, centre, right, justify: the paragraph's is pressed in
 //   indent less, more (half an inch); clear formatting
+// and on row 2:
+//   line spacing  its popup is ./ParaMenu.spacingMenu
+//   bullets, numbers  pressed in when the whole selection is a list
+//          of that kind; a click makes or removes one (the default
+//          bullet or 1. a. i.); each has a popup of the gallery
+//          (./ListMenu)
+//   painter  the format painter (./PaintBind): Select picks up the
+//          selection's formatting for the next click or drag, Adjust
+//          keeps painting until Escape; pressed while it is on
 //
 // A mixed selection shows an empty field and buttons let out. The
-// controls are brought up to date by a listener in
+// controls are brought up to date by a listener of the row's in
 // view.formatListeners (called at most once a frame, after the
 // selection, the document or the pending format changes; the query is
 // cached). A click on a button leaves the document's caret and
@@ -27,7 +36,11 @@
 // back to the document (Escape restores what the field showed), and
 // while a field has the caret the selection stays lit (view.addPane).
 //
-//   const bar = bindToolbar(view, {task, parent, height, menu})
+//   const bar = bindToolbar(view, {task, parent, height, menu,
+//     buttons = BUTTONS, dy = 0, paragraph})   one row: its buttons
+//     (./ToolbarButtons BUTTONS or BUTTONS2), dy px down (./WinPanes)
+//   (paragraph(): the Paragraph box, for the line spacing popup's
+//   Line spacing options...: ./ParaBox)
 //   bar.tb          the Ui/Toolbar;  bar.refresh()   now
 //   bar.destroy()   the listener removed, the pane deleted, and a
 //                   popup of the toolbar's that is open closed
@@ -40,8 +53,12 @@ import {fontList, findFont, cleanFont} from 'wimplib/FontList';
 import {cssOf} from 'wimplib/ColourList';
 import {fontsMenu, sizeMenu, highlightMenu, styleMenu}
   from './FormatMenu';
+import {spacingMenu} from './ParaMenu';
+import {bulletMenu, numberMenu} from './ListMenu';
 import {docFonts} from './EditFormat';
-import {BUTTONS, TOGGLES, ALIGNS, ACTIONS} from './ToolbarButtons';
+import {bindPainter} from './PaintBind';
+import {BUTTONS, TOGGLES, LIST_TOGGLES, ALIGNS, ACTIONS}
+  from './ToolbarButtons';
 
 /** The name of style id (its id when it has none), or ''. */
 function styleName(styles, id) {
@@ -52,27 +69,39 @@ function styleName(styles, id) {
 }
 
 /** See the header. */
-export function bindToolbar(v, {task, parent, height, menu}) {
-  const tb = new Toolbar({task, parent, height, buttons: BUTTONS,
-    menu});
+export function bindToolbar(v, {task, parent, height, menu,
+  buttons = BUTTONS, dy = 0, paragraph}) {
+  const tb = new Toolbar({task, parent, height, buttons, menu, dy});
+  const has = new Set(buttons.map((b) => b.name));
+  const toggles = [...TOGGLES, ...LIST_TOGGLES]
+    .filter((t) => has.has(t[0]));
+  const aligns = ALIGNS.filter((a) => has.has(a[0]));
   let popup = null;                    // an open ColourPopup
   let menu0 = null;                    // the last popup menu opened
   const shown = () => v.query();
 
   const refresh = () => {
     const on = !!v.sel && v.win.isOpen;
-    for (const b of BUTTONS) tb.shade(b.name, !on);
-    if (!on) return;
+    for (const b of buttons) tb.shade(b.name, !on);
+    if (!on || !has.size) return;
     const q = shown();
-    for (const [name, key, value] of TOGGLES) {
+    for (const [name, key, value] of toggles) {
       tb.setPressed(name, q[key] === value);
     }
-    for (const [name, a] of ALIGNS) tb.setPressed(name, q.align === a);
+    for (const [name, a] of aligns) tb.setPressed(name, q.align === a);
     const ed = tb.editing;
-    if (ed !== 'size') tb.setText('size', formatPoints(q.size));
-    if (ed !== 'font') tb.setText('font', q.family ?? '');
-    tb.setText('style', styleName(v.d.doc.styles, q.style));
-    tb.setSwatch('color', q.color == null ? null : cssOf(q.color));
+    if (has.has('size') && ed !== 'size') {
+      tb.setText('size', formatPoints(q.size));
+    }
+    if (has.has('font') && ed !== 'font') {
+      tb.setText('font', q.family ?? '');
+    }
+    if (has.has('style')) {
+      tb.setText('style', styleName(v.d.doc.styles, q.style));
+    }
+    if (has.has('color')) {
+      tb.setSwatch('color', q.color == null ? null : cssOf(q.color));
+    }
   };
 
   /** Give the caret back to the document from a field. */
@@ -90,22 +119,30 @@ export function bindToolbar(v, {task, parent, height, menu}) {
     wimp.menus.open(menu0, at.x, at.y, {task});
   };
 
-  for (const id of ACTIONS) {
-    tb.on(id, () => { leave(); v.format(id); });
+  // (only the row's own buttons get handlers)
+  const on = (name, fn) => { if (has.has(name)) tb.on(name, fn); };
+  for (const id of ACTIONS) on(id, () => { leave(); v.format(id); });
+  on('styleMenu', () => open('style', styleMenu));
+  on('style', () => open('style', styleMenu));
+  on('fontMenu', () => open('font', fontsMenu));
+  on('sizeMenu', () => open('size', sizeMenu));
+  on('highlight', () => open('highlight', highlightMenu));
+  on('lineSpacing', () => open('lineSpacing',
+    (w) => spacingMenu(w, {options: paragraph})));
+  for (const [name, , , id] of LIST_TOGGLES) {
+    on(name, () => { leave(); v.format(id); });
   }
-  tb.on('styleMenu', () => open('style', styleMenu));
-  tb.on('style', () => open('style', styleMenu));
-  tb.on('fontMenu', () => open('font', fontsMenu));
-  tb.on('sizeMenu', () => open('size', sizeMenu));
-  tb.on('highlight', () => open('highlight', highlightMenu));
-  tb.on('color', () => {
+  const unpaint = has.has('painter') ? bindPainter(v, tb) : null;
+  on('bulletsMenu', () => open('bullets', bulletMenu));
+  on('numbersMenu', () => open('numbers', numberMenu));
+  on('color', () => {
     leave();
     if (!v.sel) return;
     popup = colourPopup({task, at: tb.popupAt('color'),
       current: shown().color, onPick: (c) => v.format('color', c)});
     popup.on('deleted', () => { popup = null; });
   });
-  tb.on('size', (ev) => {
+  on('size', (ev) => {
     if (ev.kind === 'return') {
       const hp = halfPoints(ev.text);
       if (hp === null) wimp.beep();
@@ -114,7 +151,7 @@ export function bindToolbar(v, {task, parent, height, menu}) {
     v.focus();
     refresh();
   });
-  tb.on('font', (ev) => {
+  on('font', (ev) => {
     const name = ev.kind === 'return' ? cleanFont(ev.text) : null;
     if (name) {
       const l = fontList(docFonts(v), desktopFonts());
@@ -137,6 +174,7 @@ export function bindToolbar(v, {task, parent, height, menu}) {
       const i = v.formatListeners.indexOf(listener);
       if (i >= 0) v.formatListeners.splice(i, 1);
       unpane();
+      if (unpaint) unpaint();
       // (a popup of this toolbar still open: closed)
       const top = wimp.menus.levels[0];
       if (top && ((menu0 && top.menu === menu0) ||

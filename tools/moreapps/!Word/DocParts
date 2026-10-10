@@ -1,0 +1,89 @@
+// DocParts - pure helpers that build NEW document-level parts for
+// setDocPart (./OpsDoc): the old ones are never changed.
+//
+//   freshRelId(rels) -> 'rIdN', an id no relationship in rels has
+//   addRel(rels, {kind, target, external?, strict?}) -> {rels, id}
+//       rels: a NEW array, the old relationships (the same objects)
+//       and one more, of type relType(kind, strict) (./WriteParts:
+//       the Strict form for a Strict document, as the file had);
+//       external: TargetMode="External" (a hyperlink's URL)
+//   withStyle(styles, style, opts?) -> a NEW StyleTable with a new
+//       Map holding `style`, normalised as ./Styles addStyle does;
+//       the other styles are the same objects, unchanged.
+//       opts.replace: an existing id is replaced (else RangeError)
+//   findStyle(styles, id, name) -> the style with that id, else the
+//       first whose name is `name` (case ignored, as Word does), or
+//       null
+//   hyperlinkStyle(styles) -> {id, styles} | null  the character
+//       style links get (./LinkOps): the table's own Hyperlink (by
+//       id, else by name), or Word's definition added to a NEW table
+//       (colour 0563C1, single underline, based on the default
+//       character style, uiPriority 99, unhideWhenUsed); null when
+//       there is no table or its Hyperlink is not a character style
+import {addStyle} from './Styles';
+import {relType} from './WriteParts';
+
+/** See the header. */
+export function freshRelId(rels) {
+  const used = new Set(rels.map((r) => r && r.id));
+  for (let k = rels.length + 1; ; k++) {
+    if (!used.has('rId' + k)) return 'rId' + k;
+  }
+}
+
+const KIND = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+
+/** See the header. */
+export function addRel(rels, {kind, target, external = false,
+  strict = false} = {}) {
+  if (!Array.isArray(rels)) throw new RangeError('rels must be a list');
+  if (typeof kind !== 'string' || !KIND.test(kind))
+    throw new RangeError('bad relationship kind');
+  if (typeof target !== 'string' || !target || target.length > 2048 ||
+    /[\u0000-\u001f\u007f]/.test(target))
+    throw new RangeError('bad relationship target');
+  const id = freshRelId(rels);
+  const type = relType(kind, !!strict);
+  const attrs = [['Id', id], ['Type', type], ['Target', target]];
+  const rel = {id, type, target, attrs};
+  if (external) {
+    rel.mode = 'External';
+    attrs.push(['TargetMode', 'External']);
+  }
+  return {rels: rels.concat([rel]), id};
+}
+
+/** See the header. */
+export function withStyle(styles, style, opts = {}) {
+  const t = {...styles, styles: new Map(styles.styles)};
+  addStyle(t, style, opts);
+  return t;
+}
+
+/** See the header. */
+export function findStyle(styles, id, name) {
+  if (!styles) return null;
+  if (typeof id === 'string' && styles.styles.has(id))
+    return styles.styles.get(id);
+  if (typeof name !== 'string') return null;
+  const want = name.toLowerCase();
+  for (const s of styles.styles.values()) {
+    if (typeof s.name === 'string' && s.name.toLowerCase() === want)
+      return s;
+  }
+  return null;
+}
+
+/** See the header. */
+export function hyperlinkStyle(styles) {
+  if (!styles || !(styles.styles instanceof Map)) return null;
+  const s = findStyle(styles, 'Hyperlink', 'Hyperlink');
+  if (s) return s.type === 'character' ? {id: s.id, styles} : null;
+  const style = {id: 'Hyperlink', name: 'Hyperlink', type: 'character',
+    uiPriority: 99, unhideWhenUsed: true, pPr: {extra: []},
+    rPr: {color: '0563C1', u: 'single', extra: []}, extra: []};
+  const base = styles.defaults && styles.defaults.character;
+  if (typeof base === 'string' && styles.styles.has(base))
+    style.basedOn = base;
+  return {id: 'Hyperlink', styles: withStyle(styles, style)};
+}

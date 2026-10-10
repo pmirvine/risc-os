@@ -1,0 +1,164 @@
+// BookmarkFind - the bookmarks of a document, found: the one lookup
+// for the Bookmark box (./Bookmarks, ./BookmarkBox), the Hyperlink
+// box's popup (./LinkBox) and a Ctrl-click on a link (./EditMouse).
+//
+//   marks(doc) -> [{kind 'start' | 'end', name (start: its w:name,
+//       else null), id (w:id as written, or null), s, i, off, table,
+//       direct}] every w:bookmarkStart and w:bookmarkEnd in document
+//       order: s, i the block; off the offset of its U+FFFC in the
+//       paragraph (a mark inside a kept wrapper, a link or an
+//       insertion, has the wrapper's); table: in a kept block (off
+//       0); direct: the mark is a level-'p' inline itself (so it can
+//       be moved or deleted). marks.complete is false when the walk
+//       stopped at its 1,000,000-node limit
+//   pairs(doc) -> [{name, id, start, end}] one per start with a name
+//       (start and end marks; end null when there is none): each end
+//       goes with the earliest start before it with its id that has
+//       none yet. pairs.marks is marks(doc)
+//   findPair(ps, name) -> the pair named name exactly, else the first
+//       one with case ignored (Word's names are unique so), or null
+//   list(doc, {hidden, sort}) -> [{name, id, at: {s, i, off} | null
+//       (in a table)}] one per name (case ignored: the first), hidden
+//       ones (a name starting '_', such as _Toc...) only with hidden;
+//       sort 'location' (document order, the default) or 'name'
+//       (case ignored, by UTF-16 code units: the same on every
+//       machine)
+//   bookmarkNames(doc, {hidden?, max = 500}) -> list's names
+//   linkNames(doc) -> the names a link may go to (./LinkBox's
+//       popup): bookmarkNames without the ones ./LinkUrl checkAnchor
+//       refuses (U+FFFC, spaces, controls...)
+//   findBookmark(doc, name) -> {id, off} | null  where it starts: the
+//       offset of its U+FFFC (a wrapper's when inside one); in a kept
+//       block (a table) the block's start {id, off: 0}. id is the
+//       ./DocPos blockId
+//
+// Names from files are only compared, never used as object keys (a
+// bookmark may be called __proto__); ids are Map keys. Pure: no
+// desktop services.
+import {OBJ} from './Model';
+import {blockId} from './DocPos';
+import {localName} from './Kinds';
+import {checkAnchor} from './LinkUrl';
+
+const LIMIT = 1e6;
+const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end'};
+
+/** The value of the attribute with local name `local`, or null. */
+function attr(n, local) {
+  if (!Array.isArray(n.attrs)) return null;
+  for (const [k, v] of n.attrs) {
+    if (String(k).split(':').pop() === local) return String(v);
+  }
+  return null;
+}
+
+/** See the header. */
+export function marks(doc) {
+  const out = [];
+  let seen = 0;
+  out.complete = true;
+  const inNode = (top, at) => {
+    const stack = [top];
+    while (stack.length) {
+      const n = stack.pop();
+      if (++seen > LIMIT) return false;
+      if (!n || typeof n !== 'object') continue;
+      const kind = KIND[localName(n)];
+      if (kind) {
+        out.push({kind, name: kind === 'start' ? attr(n, 'name') : null,
+          id: attr(n, 'id'), ...at, direct: n === top && !at.table});
+      }
+      const kids = Array.isArray(n.children) ? n.children : [];
+      for (let k = kids.length - 1; k >= 0; k--) {
+        if (kids[k] && typeof kids[k] === 'object') stack.push(kids[k]);
+      }
+    }
+    return true;
+  };
+  doc.sections.forEach((sec, s) => {
+    sec.blocks.forEach((b, i) => {
+      if (!out.complete) return;
+      if (b.type !== 'p') {
+        out.complete = inNode(b.node, {s, i, off: 0, table: true});
+        return;
+      }
+      if (b.text.indexOf(OBJ) < 0) return;
+      const offs = Object.keys(b.inlines).map(Number)
+        .sort((x, y) => x - y);
+      for (const off of offs) {
+        const x = b.inlines[off];
+        if (x.kind !== 'raw' || x.level !== 'p' || !x.node) continue;
+        if (!inNode(x.node, {s, i, off, table: false})) {
+          out.complete = false;
+          return;
+        }
+      }
+    });
+  });
+  return out;
+}
+
+/** See the header. */
+export function pairs(doc) {
+  const ms = marks(doc), out = [], open = new Map();
+  for (const m of ms) {
+    if (m.kind === 'start') {
+      if (m.name === null) continue;
+      const p = {name: m.name, id: m.id, start: m, end: null};
+      out.push(p);
+      if (m.id === null) continue;
+      if (!open.has(m.id)) open.set(m.id, []);
+      open.get(m.id).push(p);
+    } else {
+      const q = m.id === null ? null : open.get(m.id);
+      if (q && q.length) q.shift().end = m;
+    }
+  }
+  out.marks = ms;
+  return out;
+}
+
+/** See the header. */
+export function findPair(ps, name) {
+  if (typeof name !== 'string' || !name) return null;
+  const want = name.toLowerCase();
+  return ps.find((p) => p.name === name) ||
+    ps.find((p) => p.name.toLowerCase() === want) || null;
+}
+
+const byName = (a, b) => {
+  const x = a.name.toLowerCase(), y = b.name.toLowerCase();
+  if (x !== y) return x < y ? -1 : 1;
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+};
+
+/** See the header. */
+export function list(doc, {hidden = false, sort = 'location'} = {}) {
+  const out = [], low = new Set();
+  for (const p of pairs(doc)) {
+    const k = p.name.toLowerCase();
+    if (!p.name || low.has(k)) continue;
+    low.add(k);
+    if (!hidden && p.name.startsWith('_')) continue;
+    const m = p.start;
+    out.push({name: p.name, id: p.id, at: m.table ? null
+      : {s: m.s, i: m.i, off: m.off}});
+  }
+  return sort === 'name' ? out.sort(byName) : out;
+}
+
+/** See the header. */
+export const bookmarkNames = (doc, {hidden = false, max = 500} = {}) =>
+  list(doc, {hidden}).slice(0, max).map((b) => b.name);
+
+/** See the header. */
+export const linkNames = (doc) =>
+  bookmarkNames(doc).filter((n) => checkAnchor(n) === null);
+
+/** See the header. */
+export function findBookmark(doc, name) {
+  const p = findPair(pairs(doc), name);
+  if (!p) return null;
+  const m = p.start;
+  return {id: blockId(doc.sections[m.s].blocks[m.i]), off: m.off};
+}

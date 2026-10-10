@@ -13,7 +13,12 @@
 // refresh cost on 5000 paragraphs, popups (the colour swatches too)
 // closing on an outside click, every wb_* button sprite really drawn,
 // 60 random clicks over the toolbar, and 30 open/close cycles leaving
-// nothing behind.
+// nothing behind. Two rows (WinPanes): row 1's icons where they always
+// were, row 2 under it (Menu opens the window's menu, the wheel
+// scrolls the document), both cut off in narrow windows (300, 500,
+// 842 px, and a resize from wide to narrow and back) with the page
+// and hit-testing still below them, the ruler hidden and shown. The
+// inset is taken from the window (dw.inset()), never written here.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
@@ -120,13 +125,29 @@ try {
   // ---------------------------------------------------- where it is
   const geo = await ev(() => {
     const d = window.__doc(), tb = d.toolbar, pane = tb.pane, w = d.win, L = d.view.layout;
+    const p2 = d.toolbar2.pane, ru = d.ruler.pane;
     return { pane: [pane.isOpen, pane.x, pane.y, pane.w, pane.h], win: [w.x, w.y, w.w, w.h], top: L.top,
-      first: L.items[0].y, width: tb.width, front: pane.el.style.zIndex >= w.el.style.zIndex };
+      first: L.items[0].y, width: tb.width, bh: tb.height, front: pane.el.style.zIndex >= w.el.style.zIndex, inset: d.inset,
+      row2: [p2.isOpen, p2.x, p2.y, p2.w, p2.h], front2: +p2.el.style.zIndex > +w.el.style.zIndex, ruler: [ru.y, ru.h],
+      icons: [...pane.icons].filter(Boolean).map((ic) => [ic.name, ic.bbox.x0, ic.bbox.y0, ic.bbox.x1 - ic.bbox.x0, ic.bbox.y1 - ic.bbox.y0]) };
   });
   ok('the toolbar is a pane across the window\'s top, BAR_H high', geo.pane[0] && geo.pane[1] === geo.win[0] && geo.pane[2] === geo.win[1]
-    && geo.pane[3] === geo.win[2] && geo.pane[4] === 34, geo);
-  ok('... the page starts below it and the ruler (L.top = 34 + 24: the first line at 24 + 58)', geo.top === 58 && geo.first === 82, geo);
+    && geo.pane[3] === geo.win[2] && geo.pane[4] === geo.bh, geo);
+  // (row 1 exactly as before the second row: names, order, x, y, size)
+  const W1 = { style: 96, font: 108, size: 36, styleMenu: 22, fontMenu: 22, sizeMenu: 22 };
+  const ROW1 = [['style', 2], ['styleMenu', 100], ['font', 130], ['fontMenu', 240], ['size', 270], ['sizeMenu', 308],
+    ['fontBigger', 332], ['fontSmaller', 360], ['bold', 394], ['italic', 422], ['underline', 450], ['strike', 478],
+    ['superscript', 506], ['subscript', 534], ['color', 568], ['highlight', 596], ['alignLeft', 630], ['alignCenter', 658],
+    ['alignRight', 686], ['alignJustify', 714], ['indentLess', 748], ['indentMore', 776], ['clearFormat', 810]]
+    .map(([n, x]) => [n, x, 4, W1[n] ?? 26, 26]);
+  ok('row 1: the same icons in the same order at the same x, y and size as before', same(geo.icons, ROW1), geo.icons);
+  ok('row 2 is a pane under row 1 (dy = BAR_H), as wide as the window, BAR_H high, in front of it', geo.row2[0]
+    && geo.row2[1] === geo.win[0] && geo.row2[2] === geo.win[1] + geo.pane[4] && geo.row2[3] === geo.win[2] && geo.row2[4] === geo.bh
+    && geo.front2, geo);
+  ok('... the ruler is under row 2; the page starts below them all (L.top = dw.inset())', geo.ruler[0] === geo.row2[2] + geo.row2[4]
+    && geo.inset === geo.ruler[0] + geo.ruler[1] - geo.win[1] && geo.top === geo.inset && geo.first === 24 + geo.inset, geo);
   ok('... all the buttons fit in a page-wide window', geo.width <= 842, geo);
+  const I = geo.inset;
 
   // ---------------------------------------------------- B on a selection
   await clickAt(0, 2);
@@ -392,8 +413,8 @@ try {
   // ---------------------------------------------------- the inset
   await ev(() => { const d = window.__doc(); d.win.scrollTo(0, 0); });
   await settle();
-  // (the inset: the toolbar's 34 px and the ruler's 24)
-  const under = await ev(() => { const w = window.__doc().win; return window.__screen(w.x + 300, w.y + 58 + 3); });
+  // (the inset: the toolbar's rows and the ruler)
+  const under = await ev((I) => { const w = window.__doc().win; return window.__screen(w.x + 300, w.y + I + 3); }, I);
   await page.mouse.click(under.x, under.y);
   await settle();
   const first = await ev(() => { const v = window.__doc().view, L = v.layout; return { head: v.selection.head, id: L.items[0].id }; });
@@ -402,22 +423,77 @@ try {
   await page.keyboard.press('PageDown');
   await settle();
   const pd2 = await ev(() => window.__doc().win.scrollY);
-  ok('Page Down scrolls by the visible height less the toolbar, the ruler and 32 px', pd2 - pd.sy === pd.h - 58 - 32, { pd, pd2 });
-  const hidden = await ev(async () => {
+  ok('Page Down scrolls by the visible height less the toolbar, the ruler and 32 px', pd2 - pd.sy === pd.h - I - 32, { pd, pd2 });
+  const hidden = await ev(async (I) => {
     const d = window.__doc(), v = d.view, L = v.layout, w = d.win;
     const it = L.items[30];
-    w.scrollTo(0, it.y - 58 - 2);
+    w.scrollTo(0, it.y - I - 2);
     await window.__frames(2);
     return { y: it.y, sy: w.scrollY };
-  });
+  }, I);
   await clickAt(30, 2);
   await page.keyboard.press('ArrowUp');
   await page.keyboard.press('ArrowUp');
   await settle();
   const cv = await ev(() => { const d = window.__doc(), c = d.view.caretRect(); return { c, sy: d.win.scrollY }; });
   // (24 px inside what can be seen: EditScroll's margin)
-  ok('the caret moved up under the toolbar is scrolled back into view below it and the ruler', cv.c.y >= cv.sy + 58 + 24
-    && cv.c.y <= cv.sy + 58 + 24 + 1, { hidden, cv });
+  ok('the caret moved up under the toolbar is scrolled back into view below it and the ruler', cv.c.y >= cv.sy + I + 24
+    && cv.c.y <= cv.sy + I + 24 + 1, { hidden, cv });
+
+  // ---------------------------------------------------- row 2: Menu, the wheel
+  await ev(async () => { const w = window.__doc().win; w.open({ x: 60, y: 40, w: 900, h: 500, behind: 'top', scrollX: 0, scrollY: 0 }); await window.__frames(2); });
+  const r2at = await ev(() => { const p = window.__doc().toolbar2.pane; return window.__client(p, 300, p.h / 2); });
+  await page.mouse.click(r2at.x, r2at.y, { button: 'middle' });
+  await wait(150);
+  const r2menu = await levelTexts(0);
+  await page.keyboard.press('Escape');
+  await settle();
+  ok('a Menu click on row 2 opens the window\'s menu', !!r2menu && ['Save', 'Format', 'Zoom', 'Close'].every((t) => r2menu.some((x) => x.startsWith(t))), r2menu);
+  if (await menusOpen()) await ev(() => os.wimp.menus.close());
+  await page.mouse.move(r2at.x, r2at.y);
+  const wh0 = await ev(() => { const d = window.__doc(); return { sy: d.win.scrollY, py: d.toolbar2.pane.scrollY }; });
+  await page.mouse.wheel(0, 150);
+  await wait(150);
+  await settle();
+  const wh1 = await ev(() => { const d = window.__doc(); return { sy: d.win.scrollY, py: d.toolbar2.pane.scrollY, zoom: d.zoom }; });
+  ok('the wheel over row 2 scrolls the document (the pane stays put)', wh1.sy > wh0.sy && wh1.py === 0 && wh0.py === 0 && wh1.zoom === 100, { wh0, wh1 });
+
+  // ---------------------------------------------------- narrow windows: both rows cut off, the page below
+  const narrow = async (W, ruler = true) => {
+    const g = await ev(async ([W, ruler]) => {
+      const d = window.__doc(), w = d.win;
+      d.setRuler(ruler);
+      w.open({ x: 100, y: 60, w: W, h: 400, behind: 'top', scrollX: 0, scrollY: 0 });
+      await window.__frames(3);
+      const L = d.view.layout, a = d.toolbar.pane, b = d.toolbar2.pane, r = d.ruler.pane;
+      const under = ruler ? r.y + r.h : b.y + b.h;
+      return { W: w.w, a: [a.isOpen, a.x, a.y, a.w, a.h], b: [b.isOpen, b.x, b.y, b.w, b.h], r: [r.isOpen, r.w], wy: w.y, wx: w.x,
+        inset: d.inset, rh: d.ruler.height, top: L.top, width: L.width, first: L.items[0].y, under, ruler: d.rulerOn,
+        at: window.__screen(w.x + Math.min(W / 2, 200), w.y + d.inset + 3) };
+    }, [W, ruler]);
+    // (the caret put elsewhere first: the click must bring it back)
+    g.away = await ev(() => { const v = window.__doc().view, L = v.layout; v.setSelection({ id: L.items[5].id, off: 2 });
+      return v.selection.head.id === L.items[5].id && v.selection.head.off === 2; });
+    await wait(450);                   // (not a double click with the last)
+    await page.mouse.click(g.at.x, g.at.y);
+    await settle();
+    g.hit = await ev(() => { const v = window.__doc().view, L = v.layout; return v.selection.head.id === L.items[0].id && v.selection.head.off === 0; });
+    g.ok = g.W === W && g.a[0] && g.b[0] && g.a[3] === W && g.b[3] === W && g.a[1] === g.wx && g.b[1] === g.wx
+      && g.a[2] === g.wy && g.b[2] === g.wy + g.a[4] && g.r[0] === ruler && (!ruler || g.r[1] === W)
+      && g.top === g.inset && g.under === g.wy + g.inset && g.first > g.top && g.width === W && g.away && g.hit && g.ruler === ruler;
+    return g;
+  };
+  const nw = [];
+  for (const W of [300, 500, 842]) nw.push(await narrow(W));
+  ok('windows 300, 500 and 842 px wide: both rows as wide as the window (cut off), the page and the hit-testing below them',
+    nw.every((g) => g.ok) && nw[0].inset === I, nw);
+  const nr = [await narrow(300, false), await narrow(300, true)];
+  ok('... at 300 px the ruler hidden (the page moves up to the rows) and shown again', nr.every((g) => g.ok)
+    && nr[0].inset === I - nr[0].rh && nr[1].inset === I, nr);
+  const rs = [];
+  for (const W of [900, 300, 900]) rs.push(await narrow(W));
+  ok('... a resize from wide to narrow and back: the rows follow, nothing overlaps the page', rs.every((g) => g.ok), rs);
+  await ev(async () => { const w = window.__doc().win; w.open({ x: 60, y: 40, w: 900, h: 500, behind: 'top', scrollX: 0, scrollY: 0 }); await window.__frames(2); });
 
   // ---------------------------------------------------- formatListeners: once a frame, never after closing
   const fl = await ev(async () => {

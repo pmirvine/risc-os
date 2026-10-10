@@ -1,0 +1,189 @@
+// BorderPatch - the Borders and shading box's values (./BorderBox):
+// filled from a query (./Format query: borders, paraShade,
+// charShade) and turned into the command OK runs.
+//
+//   fill(q, apply = 'para') -> values {setting, top, bottom, left,
+//       right, between, style, width, colour, fillkind, fill, apply}
+//     setting   'none' | 'box' (top, bottom, left and right, no
+//               between) | 'custom' (./settingOf)
+//     top...between  whether that side is drawn (an option)
+//     style     a STYLES id, width a WIDTHS id (eighths of a point),
+//               colour 'RRGGBB' or 'auto': the drawn sides' common
+//               one; with no side drawn Word's single, 1/2 pt,
+//               automatic
+//     fillkind  'none' | 'colour', fill 'RRGGBB' (fillkind
+//               'colour'): the shading of the paragraphs (apply
+//               'para') or of the text ('text'): w:val clear with a
+//               fill, or solid; clear with fill auto, nil and none
+//               are 'none'
+//     A mixed value (null in q), or one the box cannot show (a wavy
+//     side's style, a pattern's fill), is undefined: left as it is
+//   settingOf(values) -> the setting the five options make
+//   sidesOf(setting) -> {top...between} for 'none' and 'box' (what
+//       picking it sets), null for 'custom'
+//   patch(values, q) -> {id, arg, bad}  what OK does: compared with
+//       fill(q, values.apply), so a field left as the box showed it
+//       changes nothing
+//     apply 'para': id 'borders', arg {pBdr?, shd?} (./FormatApply):
+//       a side turned off is null; a side turned on, or on with the
+//       style, width or colour changed, is written whole: the
+//       fields' values (a field left undefined keeps the side's own
+//       value, else Word's default), the side's own space and
+//       shadow kept (a new side: space 1 pt above and below, 4 pt
+//       left and right, Word's; an old side without w:space keeps
+//       none); fill none: shd null (unchanged when the box showed
+//       none too, whatever the colour button holds); a colour:
+//       {val: 'clear', color: 'auto', fill}; a mixed selection
+//       (no side known) whose Style, Width or Colour changed with
+//       no side chosen: bad ['sides'] (nothing to draw them on)
+//     apply 'text': id 'charShade', arg the shd (or null); borders
+//       are paragraph things and not looked at
+//     arg undefined when nothing changes; bad the names of fields
+//       whose value is not one the box offers (nothing done then)
+//   STYLES, WIDTHS, SIDES5, NAMES
+// Pure: no desktop services.
+
+/** The border styles the box offers. */
+export const STYLES = Object.freeze([{id: 'single', text: 'Single'},
+  {id: 'double', text: 'Double'}, {id: 'dotted', text: 'Dotted'},
+  {id: 'dashed', text: 'Dashed'}, {id: 'thick', text: 'Thick'}]);
+
+/** The widths (eighths of a point) the box offers. */
+export const WIDTHS = Object.freeze([[2, '1/4'], [4, '1/2'],
+  [6, '3/4'], [8, '1'], [12, '1 1/2'], [18, '2 1/4'], [24, '3']]
+  .map(([id, t]) => ({id, text: t + ' pt'})));
+
+export const SIDES5 = Object.freeze(['top', 'bottom', 'left', 'right',
+  'between']);
+export const NAMES = Object.freeze(['setting', ...SIDES5, 'style',
+  'width', 'colour', 'fillkind', 'fill', 'apply']);
+
+const BOX = ['top', 'bottom', 'left', 'right'];
+const SPACE = {top: 1, bottom: 1, left: 4, right: 4, between: 1};
+const KEYS = ['val', 'sz', 'space', 'color', 'shadow', 'frame'];
+const HEX = /^[0-9A-F]{6}$/;
+const colourOf = (c) => (typeof c === 'string' && HEX.test(
+  c.toUpperCase()) ? c.toUpperCase() : 'auto');
+
+/** The one value of list, or undefined when they differ. */
+function common(list) {
+  const s = new Set(list);
+  return s.size === 1 ? [...s][0] : undefined;
+}
+
+/** {fillkind, fill} of a query's shading value. */
+function shadeOf(sh) {
+  if (sh === null || sh === undefined) return {};
+  if (sh === 'none' || sh.val === 'nil') return {fillkind: 'none'};
+  const c = sh.val === 'clear' ? sh.fill : sh.val === 'solid'
+    ? sh.color : undefined;
+  if (sh.val === 'clear' && colourOf(c) === 'auto')
+    return {fillkind: 'none'};
+  return c !== undefined && colourOf(c) !== 'auto'
+    ? {fillkind: 'colour', fill: colourOf(c)} : {};
+}
+
+/** See the header. */
+export function settingOf(v) {
+  const on = SIDES5.map((k) => v[k]);
+  if (on.every((x) => x === false)) return 'none';
+  if (BOX.every((k) => v[k] === true) && v.between === false)
+    return 'box';
+  return 'custom';
+}
+
+/** See the header. */
+export function sidesOf(setting) {
+  if (setting !== 'none' && setting !== 'box') return null;
+  return Object.fromEntries(SIDES5.map((k) => [k,
+    setting === 'box' && k !== 'between']));
+}
+
+/** See the header. */
+export function fill(q, apply = 'para') {
+  const b = q.borders, out = {};
+  for (const k of SIDES5) out[k] = b ? !!b[k] : undefined;
+  const drawn = b ? SIDES5.filter((k) => b[k]).map((k) => b[k]) : [];
+  const one = (f, def) => (!b ? undefined : drawn.length
+    ? common(drawn.map(f)) : def);
+  const st = one((s) => s.val, 'single');
+  const w = one((s) => (Number.isInteger(s.sz) ? s.sz : 4), 4);
+  out.style = STYLES.some((x) => x.id === st) ? st : undefined;
+  out.width = WIDTHS.some((x) => x.id === w) ? w : undefined;
+  out.colour = one((s) => colourOf(s.color), 'auto');
+  out.setting = b ? settingOf(out) : undefined;
+  const sh = shadeOf(apply === 'text' ? q.charShade : q.paraShade);
+  out.fillkind = sh.fillkind;
+  out.fill = sh.fill;
+  out.apply = apply;
+  return out;
+}
+
+/** The fields whose values the box does not offer. */
+function badOf(v) {
+  const bad = [];
+  const is = (k, ok) => { if (v[k] !== undefined && !ok) bad.push(k); };
+  is('style', STYLES.some((x) => x.id === v.style));
+  is('width', WIDTHS.some((x) => x.id === v.width));
+  is('colour', v.colour === 'auto' || HEX.test(String(v.colour)));
+  is('fillkind', v.fillkind === 'none' || v.fillkind === 'colour');
+  is('fill', HEX.test(String(v.fill)));
+  for (const k of SIDES5) is(k, typeof v[k] === 'boolean');
+  if (v.fillkind === 'colour' && v.fill === undefined) bad.push('fill');
+  if (v.apply !== 'para' && v.apply !== 'text') bad.push('apply');
+  return bad;
+}
+
+/** The shading OK writes, or undefined (unchanged). */
+function shading(v, was) {
+  if (v.fillkind === undefined || (v.fillkind === was.fillkind &&
+    (v.fillkind === 'none' || v.fill === was.fill))) return undefined;
+  return v.fillkind === 'none' ? null
+    : {val: 'clear', color: 'auto', fill: v.fill};
+}
+
+const lookOf = (v, was) => ['style', 'width', 'colour'].some((k) =>
+  v[k] !== undefined && v[k] !== was[k]);
+
+/** The pBdr OK writes, or undefined (unchanged). */
+function sides(v, was, q) {
+  const look = lookOf(v, was);
+  const out = {};
+  for (const k of SIDES5) {
+    if (v[k] === undefined) continue;
+    if (!v[k]) {
+      if (was[k] !== false) out[k] = null;
+      continue;
+    }
+    if (was[k] === true && !look) continue;
+    const cur = (q.borders && q.borders[k]) || {}, s = {};
+    for (const x of KEYS) if (cur[x] !== undefined) s[x] = cur[x];
+    s.val = v.style ?? cur.val ?? 'single';
+    s.sz = v.width ?? cur.sz ?? 4;
+    s.color = v.colour ?? colourOf(cur.color);
+    // Word's space only for a new side (an old one without w:space
+    // keeps none: its edge would move)
+    if (!(q.borders && q.borders[k])) s.space = SPACE[k];
+    out[k] = s;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** See the header. */
+export function patch(v, q) {
+  const apply = v.apply ?? 'para';
+  const bad = badOf({...v, apply});
+  const was = fill(q, apply);
+  if (apply === 'text') {
+    return {id: 'charShade', arg: bad.length ? undefined
+      : shading(v, was), bad};
+  }
+  if (!bad.length && lookOf(v, was) &&
+    SIDES5.every((k) => v[k] === undefined)) bad.push('sides');
+  if (bad.length) return {id: 'borders', arg: undefined, bad};
+  const arg = {}, pBdr = sides(v, was, q), shd = shading(v, was);
+  if (pBdr !== undefined) arg.pBdr = pBdr;
+  if (shd !== undefined) arg.shd = shd;
+  return {id: 'borders', arg: Object.keys(arg).length ? arg
+    : undefined, bad};
+}

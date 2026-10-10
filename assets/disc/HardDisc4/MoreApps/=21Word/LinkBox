@@ -1,0 +1,176 @@
+// LinkBox - the Hyperlink dialogue box (Insert > Hyperlink..., and
+// Ctrl+K, Cmd+K on a Mac: ./DocKeys), as Word's Insert / Edit
+// Hyperlink: Text to display, Address (a writable field, and a popup
+// of the document's bookmarks that puts '#name' in it: ./BookmarkFind),
+// ScreenTip, two message lines, and the buttons Remove link, Cancel
+// and OK. Built by WimpLib Ui/Dialog; what the buttons do:
+// ./LinkOps.
+//
+//   linkBox(dw) -> the box's api (WimpLib Ui/Dialog), opened one box
+//       per document (key 'link:<docKey>'), kept in dw.boxes
+//       ('link') so ./CloseDoc deletes it with the document; asked
+//       again while it is open, the same box is brought to the
+//       front. Nothing (null) when the document has no selection.
+//
+// On a link (selected, or next to the caret: ./LinkFind linkAt) the
+// box edits it: its text, address ('' for a relationship that is
+// missing) and ScreenTip, Remove link live. Elsewhere it makes one:
+// the text is the selection's (shaded and left as it is when the
+// selection holds items, a picture, a tab or a line break, or is
+// longer than the field's 1000 characters: the link then holds it
+// as it is; a link's own text, address or ScreenTip longer than its
+// field (1000, 1000, 255) likewise: shaded and left unchanged, never
+// cut short), the address and tip empty, Remove link shaded. The
+// popup offers the names ./BookmarkFind linkNames gives (not hidden
+// ones, nor names a link cannot hold). A place a
+// link cannot go (across paragraphs, round a link) is said in the
+// message lines at once, with a beep. OK (or Return): one command,
+// one undo step (none when nothing changed); the caret goes after
+// the link. An address that is refused (javascript:, file:, a
+// control character, too long...: ./LinkUrl) beeps, says why in the
+// message lines and keeps the box; so does a document or selection
+// that changed while the box was open (the box is filled again).
+// Remove link unwraps the link. Cancel, Escape and the close icon
+// change nothing; the caret goes back to the document. Addresses
+// are never opened or fetched.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {dropPending} from './EditFormat';
+import {linkAt, linkInfo, selInfo, insertLink, editLink, removeLink}
+  from './LinkOps';
+import {linkNames} from './BookmarkFind';
+
+const REMOVE = 'Remove link', LINE = 58, FIELD = 1000, TIP = 255;
+const NONE = {id: '', text: '(none)'};
+const rows = () => [
+  {kind: 'text', name: 'text', label: 'Text to display', maxLen: FIELD,
+    w: 360, help: 'The text the link shows in the document.'},
+  [{kind: 'text', name: 'address', label: 'Address', maxLen: 1000,
+    w: 230, help: 'Where the link goes: a web or e-mail address ' +
+      '(http://, https://, mailto:, ftp://, www.) or #bookmark.'},
+  {kind: 'popup', name: 'marks', label: 'Bookmark', w: 120,
+    choices: [NONE], help: 'Link to a bookmark in this document.'}],
+  {kind: 'text', name: 'tip', label: 'ScreenTip', maxLen: TIP, w: 360,
+    help: 'Text Word shows when the pointer is over the link.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+  {kind: 'label', name: 'msg2', text: '', w: 460},
+];
+const HELP = 'Hyperlink: a link from the selected text to a web or ' +
+  'e-mail address, or to a bookmark in the document.';
+
+const state = new WeakMap();      // api -> {at, doc, edit, keep, names}
+
+/** Where the document and its selection are (stale check). */
+const where = (v) => JSON.stringify([v.sel.anchor, v.sel.head,
+  v.d.stateId]);
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim().slice(0, LINE);
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+/** See the header. */
+export function linkBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `link:${dw.docKey}`,
+    title: 'Hyperlink', rows: rows(), help: HELP,
+    buttons: [REMOVE, 'Cancel', 'OK'], enter: 'OK', minW: 520});
+  box(dw, 'link', () => api.win);
+  if (api.isOpen) return api;
+  if (!state.has(api)) wire(api, v);
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the document and its selection. */
+function refill(api, v) {
+  const doc = v.d.doc, at = linkAt(doc, v.sel);
+  const names = linkNames(doc);
+  api.choices('marks', [NONE, ...names.map((n, k) => ({id: 'm' + k,
+    text: n.length > 40 ? n.slice(0, 40) + '...' : n}))]);
+  api.set('marks', '');
+  const x = {at: where(v), doc, edit: !!at, keep: false, names,
+    keepAddress: false, keepTip: false};
+  let why = '';
+  if (at) {
+    const info = linkInfo(doc, at.x);
+    x.keep = info.text.length > FIELD;
+    x.keepAddress = info.address.length > FIELD;
+    x.keepTip = info.tip.length > TIP;
+    api.set('text', x.keep ? undefined : info.text);
+    api.set('address', x.keepAddress ? undefined : info.address);
+    api.set('tip', x.keepTip ? undefined : info.tip);
+    api.win.setTitle('Edit hyperlink');
+  } else {
+    const s = selInfo(doc, v.sel);
+    x.keep = !s.error && (!s.plain || s.text.length > FIELD);
+    api.set('text', s.error || x.keep ? undefined : s.text);
+    api.set('address', undefined);
+    api.set('tip', undefined);
+    api.win.setTitle('Insert hyperlink');
+    why = s.error || '';
+  }
+  api.shade('text', x.keep);
+  api.shade('address', x.keepAddress);
+  api.shade('marks', x.keepAddress);
+  api.shade('tip', x.keepTip);
+  api.shade(REMOVE, !at);
+  state.set(api, x);
+  say(api, why);
+  if (why) wimp.beep();
+}
+
+/** Done: the selection shown, the caret back in the document. */
+function done(v, sel) {
+  dropPending(v);
+  if (sel !== v.sel) v.edited(sel);
+  v.focus();
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  const no = (why, field) => {
+    wimp.beep();
+    say(api, why);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const x = state.get(api);
+    if (name !== 'marks' || !x || !value) return;
+    const n = x.names[Number(value.slice(1))];
+    if (n !== undefined) api.set('address', '#' + n);
+  });
+  api.on('button', ({name, values}) => {
+    const x = state.get(api);
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (!v.sel || where(v) !== x.at || v.d.doc !== x.doc) {
+      if (v.sel) refill(api, v);
+      return no('The document changed while the box was open: ' +
+        'look again, then click OK.');
+    }
+    let r;
+    if (name === REMOVE) r = removeLink(v.d, v.typing, v.sel);
+    else {
+      const o = {};
+      if (!x.keepAddress) o.address = values.address ?? '';
+      if (!x.keepTip) o.tip = values.tip ?? '';
+      if (!x.keep) o.text = values.text ?? '';
+      r = (x.edit ? editLink : insertLink)(v.d, v.typing, v.sel, o);
+    }
+    if (r.error) return no(r.error, name === REMOVE ? null : 'address');
+    done(v, r.sel);
+    return undefined;
+  });
+}

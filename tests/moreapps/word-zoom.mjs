@@ -22,7 +22,7 @@ const PARAS = [
 const docx = async (body) => Array.from(await buildDocx({ 'word/document.xml': documentXml(body) }));
 const files = { T: await docx(PARAS.join('')) };
 const HUGE = await docx(Array.from({ length: 50000 }, (_, i) => p(r(`${i} some words in a paragraph`))).join(''));
-const TOP = 58;
+let TOP = 0;                           // (dw.inset(), from the window)
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -132,6 +132,7 @@ const selPixels = (rc) => ev((rc) => {
 try {
   const s0 = await start(page);
   ok('the document opens at 100%', s0.ok && !s0.msgs.length, s0);
+  TOP = await ev(() => window.__doc().inset);
   const bar0 = await ev(() => { const d = window.__doc(); return [d.toolbar.pane.x - d.win.x, d.toolbar.pane.y - d.win.y, d.toolbar.pane.w, d.toolbar.pane.h]; });
 
   for (const Z of [50, 100, 200]) {
@@ -435,10 +436,11 @@ try {
   await setZoom(100);
   const paneAt = (which) => ev((w) => { const d = window.__doc(), p = d[w].pane;
     return window.__client(p, 60, p.h / 2); }, which);
-  const paneState = () => ev(() => { const d = window.__doc(); return { t: d.toolbar.pane.scrollX, r: d.ruler.pane.scrollX,
-    ty: d.toolbar.pane.scrollY, ry: d.ruler.pane.scrollY, zoom: d.zoom, sx: d.win.scrollX, sy: d.win.scrollY }; });
+  const paneState = () => ev(() => { const d = window.__doc(); return { t: d.toolbar.pane.scrollX + d.toolbar2.pane.scrollX,
+    r: d.ruler.pane.scrollX, ty: d.toolbar.pane.scrollY + d.toolbar2.pane.scrollY, ry: d.ruler.pane.scrollY, zoom: d.zoom,
+    sx: d.win.scrollX, sy: d.win.scrollY }; });
   const panes = {};
-  for (const which of ['toolbar', 'ruler']) {
+  for (const which of ['toolbar', 'toolbar2', 'ruler']) {
     const at0 = await paneAt(which);
     await page.mouse.move(at0.x, at0.y);
     await page.mouse.wheel(300, 0);
@@ -462,7 +464,7 @@ try {
     await home();
     await setZoom(100);
   }
-  ok('a sideways or Shift wheel over the toolbar or the ruler leaves the pane unscrolled; a vertical wheel scrolls the document; Ctrl+wheel steps the zoom once',
+  ok('a sideways or Shift wheel over either toolbar row or the ruler leaves the pane unscrolled; a vertical wheel scrolls the document; Ctrl+wheel steps the zoom once',
     Object.values(panes).every((s) => s.sideways.t === 0 && s.sideways.r === 0 && s.down.t === 0 && s.down.r === 0
       && s.zoomed.t === 0 && s.zoomed.r === 0 && s.zoomed.ty === 0 && s.zoomed.ry === 0
       && s.down.sy > s.before.sy && s.down.zoom === 100 && s.zoomed.zoom === 125), panes);

@@ -234,7 +234,7 @@ describe('ListNumbers: label fields', () => {
       suff: 'tab', jc: 'left',
       rPr: {rFonts: {ascii: 'Symbol', hAnsi: 'Symbol'}},
       bullet: true, fmt: 'bullet'});
-    assert.equal(m.get(ps[1].id).text, '\u25CB');
+    assert.equal(m.get(ps[1].id).text, '\u25E6');
     // a bare level: decimal, no text (no lvlText), no indent
     assert.deepEqual(m.get(ps[2].id), {text: '', level: 2, numId: 1,
       suff: 'tab', jc: 'left', rPr: null, bullet: false,

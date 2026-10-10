@@ -1,0 +1,86 @@
+// ListBox - the Set numbering value dialogue box (Format > List >
+// Set numbering value... in ./ListMenu): the selected item's list
+// either starts a new list at a Value (Restart at 1 is the same
+// with 1) or continues from the previous list. Built by WimpLib
+// Ui/Dialog.
+//
+//   listBox(dw) -> the box's api (WimpLib Ui/Dialog), opened
+//       one box per document (key 'listvalue:<docKey>'), kept in
+//       dw.boxes ('listvalue') so ./CloseDoc deletes it with the
+//       document; asked again while it is open, the same box is
+//       brought to the front. Nothing when the document has no
+//       selection.
+//
+// Start new list (Value, a whole number 0 to 32767, Word's limit;
+// 1 when the box opens) or Continue from previous list; Value is
+// shaded for Continue. OK runs view.format('listRestart', value) or
+// view.format('listContinue'): one undo step, none when nothing
+// changes. A Value that is not a whole number (5.7, text, past
+// 32767) is not rounded or clamped: OK beeps, keeps the box and puts
+// the caret in the field, nothing is written; so does OK with no
+// selection. Cancel, Escape and the close icon change nothing. The
+// caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+
+// Word's limit for Start at is 32767. The field's own maximum is
+// far above it so that the field never clamps: OK checks.
+export const MAX_VALUE = 32767;
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;
+
+const rows = () => [
+  {kind: 'radio', name: 'modeNew', group: 'mode', value: 'new',
+    text: 'Start new list'},
+  {kind: 'number', name: 'value', label: 'Value', min: 0,
+    max: FIELD_MAX, decimals: 0, value: 1},
+  {kind: 'radio', name: 'modeCont', group: 'mode', value: 'continue',
+    text: 'Continue from previous list'},
+];
+
+const HELP = 'Set numbering value: start the selected item\'s list ' +
+  'again at a number, or continue the list before it.';
+
+/** See the header. */
+export function listBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `listvalue:${dw.docKey}`,
+    title: 'Set numbering value', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK']});
+  box(dw, 'listvalue', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, v);
+  api.set('mode', 'new');
+  api.set('value', 1);
+  api.shade('value', false);
+  api.open();
+  return api;
+}
+
+const wired = new WeakSet();
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  api.on('change', ({name, value}) => {
+    if (name === 'mode') api.shade('value', value === 'continue');
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (!v.sel) { wimp.beep(); return false; }
+    if (values.mode === 'continue') {
+      v.format('listContinue');
+    } else {
+      const n = values.value;
+      if (!Number.isInteger(n) || n < 0 || n > MAX_VALUE) {
+        wimp.beep();
+        api.focus('value');
+        return false;
+      }
+      v.format('listRestart', n);
+    }
+    v.focus();
+    return undefined;
+  });
+}

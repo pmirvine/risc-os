@@ -1,0 +1,154 @@
+// DocStack - puts the items of a ./DocLayout one under another:
+// breaks the paragraphs that have no lines yet and gives each item
+// its y, with the gaps and marks its decorators ask for.
+//
+//   stack(L)          lay out L.items from y = L.top + MARGIN; sets
+//                     L.height (L.minHeight of the end + MARGIN)
+//   DECORATORS        the decorators every layout uses unless it is
+//                     given others: ./ParaSpace spacingDeco, then
+//                     ./BorderGroups borderDeco (border boxes and
+//                     shading), ./SectDeco sectDeco (the section
+//                     break band, under the bottom border),
+//                     ./FlowDeco flowDeco (page break before, above
+//                     the top border)
+//   MARGIN            24 px above the first item and below the last
+//
+// A decorator is a function (item, L, acc) -> {gapAbove?, gapBelow?,
+// marks?} or null, called in the order of L.decorators for every
+// item; acc is what the earlier ones gave (so far). Gaps (px, finite,
+// else 0; gapBelow >= 0, gapAbove may be negative: space taken back
+// from a paragraph's own space before and the one above's after)
+// are added up and marks put one after another. item.y stays the
+// top of the item's text (its first line, or its box): y +=
+// gapAbove, item.y = y, y += h + gapBelow, where a negative gapAbove
+// never takes y above the first item's top, nor item.y + h to or
+// above the item before's end (so itemAtY's search holds). A gap
+// belongs to no item: L.itemAtY gives the item below it (the item
+// whose y + h is the first beyond), as between items without gaps;
+// where items overlap (a negative gap) it gives the lower one from
+// the top of its first line on (./DocLayout itemAtY).
+// Marks are drawn only: never text, never in from/to. Paragraphs
+// get the document's default tab stop (./TabStops defaultStop:
+// doc.rawSettings, in the reuse key).
+// Every paragraph is broken into lines before any item is
+// decorated, so a decorator (and its keyOf) may read the lines of
+// the items on both sides.
+// What the decorators give is kept in item.deco and carried over
+// by ./DocItems with the lines it keeps, so only under the full
+// reuse key: the block object, its list label (sameLabel), its
+// section-end mark, the metrics, the text width and doc.styles,
+// doc.numbering, doc.rawSettings by identity (and the same decorator
+// list). L.invalidate() drops it. A decorator that reads anything
+// else (a neighbour, say) gives a function f.keyOf(item, L) -> a
+// value (or an array of values) worked out on every layout, so
+// keep it cheap: when it is not the same (Object.is, element by
+// element for arrays) as the one the result was worked out with,
+// every decorator is asked again for that item. keyOf may read
+// item.deco (the result in hand: ./BorderGroups gives null for an
+// item whose result has no box); the keys kept with a new result
+// are worked out again once it is in item.deco. Pure: no desktop
+// services.
+import {layoutPara} from './LineLayout';
+import {defaultStop} from './TabStops';
+import {spacingDeco} from './ParaSpace';
+import {sectDeco} from './SectDeco';
+import {flowDeco} from './FlowDeco';
+import {borderDeco} from './BorderGroups';
+
+export const MARGIN = 24;
+export const DECORATORS = Object.freeze([spacingDeco, borderDeco,
+  sectDeco, flowDeco]);
+const NONE = Object.freeze([]);
+
+const gap = (v) => (Number.isFinite(v) && v > 0 ? v : 0);
+const signed = (v) => (Number.isFinite(v) ? v : 0);
+
+/** a and b the same key (see the header). */
+function same(a, b) {
+  if (Object.is(a, b)) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) ||
+    a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!Object.is(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+/** The decorators' keys for it (null when none has keyOf). */
+function keysOf(L, it, decos) {
+  let keys = null;
+  for (let i = 0; i < decos.length; i++) {
+    const k = decos[i].keyOf;
+    if (typeof k !== 'function') continue;
+    if (!keys) keys = new Array(decos.length);
+    keys[i] = k(it, L);
+  }
+  return keys;
+}
+
+/** Whether it.deco still holds for keys. */
+function fresh(d, keys) {
+  if (!d) return false;
+  if (!keys) return true;
+  for (let i = 0; i < keys.length; i++) {
+    if (!same(d.keys[i], keys[i])) return false;
+  }
+  return true;
+}
+
+/**
+ * What the decorators give for it (see the header), put in it.deco
+ * with the keys worked out once it is there.
+ */
+function decorate(L, it, decos) {
+  const acc = {gapAbove: 0, gapBelow: 0, marks: []};
+  for (const f of decos) {
+    const r = f(it, L, acc);
+    if (!r) continue;
+    acc.gapAbove += signed(r.gapAbove);
+    acc.gapBelow += gap(r.gapBelow);
+    if (Array.isArray(r.marks)) acc.marks.push(...r.marks);
+  }
+  const d = {gapAbove: acc.gapAbove, gapBelow: acc.gapBelow,
+    keys: NONE, marks: acc.marks.length ? Object.freeze(acc.marks)
+      : NONE};
+  it.deco = d;
+  d.keys = keysOf(L, it, decos) || NONE;
+  Object.freeze(d);
+}
+
+/** See the header. */
+export function stack(L) {
+  const y0 = MARGIN + L.top;
+  let y = y0;
+  const {textW, metrics, cache: fmt} = L;
+  const {styles} = L.doc;
+  const defPx = defaultStop(L.doc) / 15;
+  const decos = L.decorators || DECORATORS;
+  for (const it of L.items) {
+    if (it.kind === 'p' && !it.lines) {
+      const l = layoutPara(it.block, styles, textW, metrics, fmt,
+        it.list || undefined, defPx);
+      it.lines = l.lines;
+      it.h = l.h;
+    }
+  }
+  for (const it of L.items) {
+    if (decos.length) {
+      const keys = keysOf(L, it, decos);
+      if (!fresh(it.deco, keys)) decorate(L, it, decos);
+      const d = it.deco;
+      it.gapAbove = d.gapAbove;
+      it.gapBelow = d.gapBelow;
+      it.marks = d.marks;
+    }
+    // (a negative gap: see the header)
+    y += it.gapAbove < 0
+      ? Math.max(it.gapAbove, y0 - y, Math.min(0, 1 - it.h))
+      : it.gapAbove;
+    it.y = y;
+    y += it.h + it.gapBelow;
+  }
+  L.height = L.minHeight(y + MARGIN);
+  L.laid = true;
+}

@@ -1,0 +1,108 @@
+// DocItems - the items of a ./DocLayout, one per block, and which of
+// an older layout's lines may be kept.
+//
+//   buildItems(L, doc, prev?) fills L.items, L.byId, L.labels and
+//                       records L.styles, L.numbering, L.settings
+//                       (doc.styles, doc.numbering, doc.rawSettings)
+//   reuseKey(item)  -> {block, list, mark}: what a paragraph's lines
+//                       depend on besides the layout-wide key
+//   sameKey(a, b)   -> true when two reuse keys (or two items: they
+//                       have the same fields) lay out the same
+//   sameMark(a, b)  -> true when two section-end marks are alike
+//   markOf(doc, s)  -> the mark of section s's last block ({type}:
+//                       the following section's w:type, as
+//                       ./SectMark has it), or null for the last
+//
+// An item: {id, block, kind: 'p'|'box', index, y, h, gapAbove,
+// gapBelow, marks, lines?, metrics?, para?, list?, mark?, label?}.
+// gapAbove / gapBelow (px, 0) and marks (drawn only, never text)
+// come from ./DocStack's decorators (deco: their result, carried
+// over under the same reuse key, boxes too: see ./DocStack). An
+// item's mark (a paragraph's or a kept block's) is its section-end
+// mark when it is the last block of a section that is not the last,
+// else null (./SectDeco draws the band under it).
+//
+// prev's lines of a paragraph are kept when prev was laid out with
+// the same metrics, doc and text width; doc.styles, doc.numbering
+// and doc.rawSettings are the very objects prev saw (they are
+// replaced, never changed, by an edit); and the reuse keys agree:
+// the same paragraph object, the same list label
+// (./LineLabel sameLabel) and the same mark. Pure: no desktop
+// services.
+import {sameLabel} from './LineLabel';
+import {labels} from './ListNumbers';
+import {kindOf} from './Info';
+import {blockId} from './DocPos';
+import {markOf} from './SectMark';
+
+export {markOf};
+
+export const BOX = 28;                 // a kept block's box
+const NONE = Object.freeze([]);
+
+/** See the header. */
+export function sameMark(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.type === b.type;
+}
+
+/** See the header. */
+export function reuseKey(it) {
+  return {block: it.block, list: it.list || null,
+    mark: it.mark || null};
+}
+
+/** See the header. */
+export function sameKey(a, b) {
+  return a.block === b.block && sameLabel(a.list, b.list) &&
+    sameMark(a.mark, b.mark);
+}
+
+/** Whether prev's lines may be kept at all (the header). */
+function keepable(L, doc, prev) {
+  return !!prev && prev.laid && prev.metrics === L.metrics &&
+    prev.doc === doc && prev.textW === L.textW &&
+    prev.styles === L.styles && prev.numbering === L.numbering &&
+    prev.settings === L.settings;
+}
+
+/** See the header. */
+export function buildItems(L, doc, prev) {
+  const {metrics} = L;
+  L.styles = doc.styles;
+  L.numbering = doc.numbering;
+  L.settings = doc.rawSettings;
+  L.items = [];
+  L.byId = new Map();
+  L.labels = labels(doc);
+  const keep = keepable(L, doc, prev);
+  const secs = doc.sections;
+  for (let s = 0; s < secs.length; s++) {
+    const bs = secs[s].blocks;
+    const end = bs.length - 1;
+    const mark = markOf(doc, s);
+    for (let i = 0; i <= end; i++) {
+      const b = bs[i];
+      const it = b.type === 'p'
+        ? {id: b.id, block: b, para: b, kind: 'p', index: 0, y: 0,
+          h: 0, gapAbove: 0, gapBelow: 0, marks: NONE, deco: null,
+          lines: null,
+          metrics, list: L.labels.get(b.id) || null,
+          mark: i === end ? mark : null}
+        : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
+          h: BOX + 12, gapAbove: 0, gapBelow: 0, marks: NONE,
+          deco: null, mark: i === end ? mark : null,
+          label: `[${kindOf(b.node)} - preserved, not shown]`};
+      const o = keep && prev.byId.get(it.id);
+      if (o && (b.type !== 'p' || o.lines) && sameKey(o, it)) {
+        if (b.type === 'p') { it.lines = o.lines; it.h = o.h; }
+        // (./DocStack's result: the same key, so the same gaps)
+        if (prev.decorators === L.decorators) it.deco = o.deco;
+      }
+      it.index = L.items.length;
+      L.items.push(it);
+      L.byId.set(it.id, it);
+    }
+  }
+}

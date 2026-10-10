@@ -7,8 +7,8 @@
 // shelf, '!wimplib' 34 x 34 and 'sm!wimplib' 18 x 18.
 // barSprites(): the buttons of !Word's toolbar (WimpLib Ui/Toolbar, !Word ToolbarBind), 20 x 20, named wb_* so
 // that they meet no other sprite in the Wimp's pool: bold, italic, underline, strike, super, sub, the four
-// alignments, indent more / less, colour (an A: the toolbar draws the colour under it), highlight, clear and
-// style. (No zoom button: zoom is on the window menu and Ctrl+wheel, the toolbar has no room.) Letters come from the small bitmaps in GLYPHS; the rest are lines and triangles. A pressed button
+// alignments, indent more / less, colour (an A: the toolbar draws the colour under it), highlight, clear,
+// style and (row 2) line spacing, bullets, numbers and the format painter. (No zoom button: zoom is on the window menu and Ctrl+wheel, the toolbar has no room.) Letters come from the small bitmaps in GLYPHS; the rest are lines and triangles. A pressed button
 // is shown by its slab border going in and its highlight colour (validation R5), so no pressed variants.
 import { sprite, spriteFile } from '../lib/spritewrite.mjs';
 
@@ -123,6 +123,9 @@ function glyph(c, ch, x0, y0, col = null) {
   GLYPHS[ch].forEach((row, y) => [...row].forEach((k, x) => { if (k !== '.') c.put(x0 + x, y0 + y, col ?? k); }));
 }
 
+// 1 2 3 in 3 x 4 pixels, for wb_numbers
+const DIGITS = [['.K.', 'KK.', '.K.', 'KKK'], ['KK.', '..K', '.K.', 'KKK'], ['KK.', '.KK', '..K', 'KK.']];
+
 const N = 20;
 // lines across, 3 px apart, from y 3: [x0, length] each
 function lines(spec) {
@@ -171,6 +174,45 @@ const BAR = {
   },
   wb_clear: () => letter('A', 1, 2, (c) => { c.line(10, 11, 17, 18, 'R', 2); c.line(17, 11, 10, 18, 'R', 2); }),
   wb_style: () => letter('P', 6, 4),
+  wb_bullets: () => {
+    // three bullets, each with a line of text
+    const c = canvas(N);
+    for (const y of [4, 9, 14]) {
+      c.rect(2, y - 1, 4, y + 1, 'K');
+      c.line(8, y, 17, y, 'K');
+    }
+    return c.rows();
+  },
+  wb_numbers: () => {
+    // 1 2 3 down the left, a line of text beside each
+    const c = canvas(N);
+    DIGITS.forEach((d, i) => {
+      d.forEach((row, y) => [...row].forEach((k, x) => { if (k !== '.') c.put(2 + x, 2 + 5 * i + y, 'K'); }));
+      c.line(8, 4 + 5 * i, 17, 4 + 5 * i, 'K');
+    });
+    return c.rows();
+  },
+  wb_painter: () => {
+    // a paintbrush: a handle from the upper right, a blue ferrule,
+    // yellow bristles at the lower left
+    const c = canvas(N);
+    c.line(17, 2, 12, 7, 'K', 2);
+    c.line(11, 8, 9, 10, 'B', 3);
+    c.line(8, 11, 4, 15, 'Y', 3);
+    c.line(4, 15, 3, 16, 'K', 1);
+    c.line(2, 17, 5, 17, 'K', 2);
+    return c.rows();
+  },
+  wb_spacing: () => {
+    // lines of text on the right, an up-and-down arrow on the left
+    const c = lines([[9, 9], [9, 9], [9, 9], [9, 9], [9, 9]]);
+    c.line(4, 3, 4, 15, 'B');
+    for (let i = 1; i < 4; i++) {
+      c.line(4 - i, 3 + i, 4 + i, 3 + i, 'B');
+      c.line(4 - i, 15 - i, 4 + i, 15 - i, 'B');
+    }
+    return c.rows();
+  },
 };
 
 /** The toolbar's sprites (see the header): [[name, rows]]. */

@@ -6,7 +6,9 @@
 //
 //   textinput       the text is typed (view.input): one event, one
 //                   edit, however long (at most 100,000 characters,
-//                   the Wimp's limit)
+//                   the Wimp's limit). One that is an input method's
+//                   commit (straight after its compositionend, in
+//                   the same task) is typed as {composed: true}
 //   composition     an input method is composing: its text is shown
 //                   at the caret (view.compose), not yet in the
 //                   document
@@ -30,11 +32,18 @@
 //                  (v.caretRect(): zoomed), so the input method's
 //                  candidates show there; only if the window has the
 //                  focus, or take (a user gesture: it takes it)
-//   inputView(v, text)  type text (with the pending format)
+//   inputView(v, text, {composed}?)  type text (with the pending
+//                  format). A single space typed at a caret, not in
+//                  overwrite mode, not composed, with no input
+//                  method composing, while v.autoList() (./DocKeys)
+//                  says AutoFormat lists is on, may then make the
+//                  paragraph a list item (./AutoList afterSpace: an
+//                  undo step of its own)
 //   composeView(v, text|null)  show what is being composed
 import {wimp} from 'riscos';
 import * as S from './Selection';
 import {EMPTY, forTyping, styleFor} from './Pending';
+import {afterSpace} from './AutoList';
 
 const TEXT = {text: true, blink: true};
 const LATE_MS = 800;
@@ -59,18 +68,22 @@ export function showCaret(v, take = false) {
 }
 
 /** See the header. */
-export function inputView(v, text) {
+export function inputView(v, text, {composed = false} = {}) {
   v.comp = null;
   const s = String(text ?? '');
   if (!s || !v.win.isOpen) return;
   const p = v.pending;
-  const out = v.sel
-    ? v.typing.type(v.sel, s, {overwrite: v.overwrite,
+  const at = v.sel;
+  const out = at
+    ? v.typing.type(at, s, {overwrite: v.overwrite,
       rPr: forTyping(p), rStyle: styleFor(p)})
     : null;
-  if (!out || out === v.sel) { wimp.beep(); return; }
+  if (!out || out === at) { wimp.beep(); return; }
   v.pending = EMPTY;
-  v.edited(out);
+  const auto = s === ' ' && !composed && !v.overwrite &&
+    S.collapsed(at) && !wimp.textInput?.composing &&
+    !!v.autoList && v.autoList();
+  v.edited((auto && afterSpace(v.d, v.typing, out)) || out);
 }
 
 /** See the header. */
@@ -97,8 +110,13 @@ export function attachInput(v) {
   for (const e of ['key', 'click', 'doubleclick', 'drag']) {
     w.on(e, off, {first: true});
   }
+  // (an input method's commit comes as a textinput straight after
+  // its compositionend, in the same task: marked composed)
+  let commit = false;
   w.on('textinput', (ev) => {
-    if (w.isOpen && !late(ev.text)) v.input(ev.text);
+    const composed = commit;
+    commit = false;
+    if (w.isOpen && !late(ev.text)) v.input(ev.text, {composed});
     return true;
   });
   w.on('composition', (ev) => {
@@ -108,6 +126,8 @@ export function attachInput(v) {
   });
   w.on('compositionend', () => {
     v.compose(null);
+    commit = true;
+    queueMicrotask(() => { commit = false; });
     return true;
   });
   w.on('losecaret', () => { off(); v.compose(null); });

@@ -1,0 +1,229 @@
+// WordCount - the numbers of Edit > Word count... (./CountBox).
+//
+//   count(doc, sel?, L?) -> {words, chars, charsNoSpaces, paras,
+//       lines, scope, partial?}
+//       of the selection (a range, not a caret) or, with none, of
+//       the whole document; scope says which ('selection' |
+//       'document'). L (a ./DocLayout) gives lines (null without it)
+//   countView(view) -> count of the view's selection and layout
+//
+// Words are the runs of non-white-space characters: a no-break space
+// (U+00A0) and a no-break hyphen join; every other space (the Unicode
+// white space, a tab, a line break) ends a word. As Word counts, each
+// East Asian character (ideographs, kana, Hangul, Bopomofo) is a
+// word of its own and ends the word beside it. Characters count code
+// points (an emoji is one), with and without spaces (white space and
+// the no-break space), tabs and line breaks included as one each, the
+// optional hyphen as none, paragraph marks not. A paragraph is
+// counted when it has any character. Lines are the layout's lines of
+// the paragraphs (those a selection touches). Text counted: the
+// paragraphs' text and the XML of their inline items (a link, an
+// insertion, a field, a content control...), walked like a table's
+// and other kept blocks': w:t, tabs and breaks, never a field's
+// codes, deleted or moved-away text, ruby text, formulas, drawings or
+// properties; of an mc:AlternateContent only the Choice (else the
+// Fallback). The walks take at most 1,000,000 nodes in all (past
+// that `partial` is true and the rest is left out). A table inside a
+// selection
+// counts when it lies inside it. Pure: no desktop services; linear.
+import {orderedPos} from './EditPos';
+import {collapsed} from './Selection';
+import {localName} from './Kinds';
+import {hyphenText} from './InlineText';
+
+export const NODE_LIMIT = 1e6;
+
+/** White space: the Unicode White_Space but the no-break ones. */
+function isSpace(c) {
+  if (c < 128) return c === 32 || (c >= 9 && c <= 13);
+  return c === 0x85 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a &&
+    c !== 0x2007) || c === 0x2028 || c === 0x2029 || c === 0x205f ||
+    c === 0x3000;
+}
+
+/** An East Asian character: counted as a word by itself. */
+function isAsian(c) {
+  if (c < 0x1100) return false;
+  return (c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3040 && c <= 0x30ff &&
+    c !== 0x30fb) || (c >= 0xac00 && c <= 0xd7af) ||
+    (c >= 0x3400 && c <= 0x4dbf) || (c >= 0x1100 && c <= 0x11ff) ||
+    (c >= 0x3100 && c <= 0x318f) || (c >= 0x31f0 && c <= 0x31ff) ||
+    (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff66 && c <= 0xffdc) ||
+    (c >= 0x20000 && c <= 0x2fa1f);
+}
+
+/** The running numbers. */
+class Tally {
+  constructor() {
+    this.words = 0;
+    this.chars = 0;
+    this.noSpaces = 0;
+    this.paras = 0;
+    this.here = 0;            // characters in this paragraph
+    this.inWord = false;
+  }
+
+  /** Count the text s of a paragraph. */
+  text(s) {
+    let words = this.words, chars = this.chars, ns = this.noSpaces;
+    let inWord = this.inWord;
+    const n = s.length;
+    for (let i = 0; i < n; i++) {
+      let c = s.charCodeAt(i);
+      if (c >= 0xd800 && c < 0xdc00 && i + 1 < n) {
+        const d = s.charCodeAt(i + 1);
+        if (d >= 0xdc00 && d < 0xe000) {
+          c = (c - 0xd800) * 0x400 + d - 0xdc00 + 0x10000;
+          i++;
+        }
+      }
+      chars++;
+      if (isSpace(c)) { inWord = false; continue; }
+      if (c !== 0xa0 && c !== 0x2007 && c !== 0x202f) ns++;
+      if (isAsian(c)) { words++; inWord = false; continue; }
+      if (!inWord) { words++; inWord = true; }
+    }
+    this.here += chars - this.chars;
+    this.words = words;
+    this.chars = chars;
+    this.noSpaces = ns;
+    this.inWord = inWord;
+  }
+
+  /** A tab or a line break: a character, ends the word. */
+  gap() {
+    this.chars++;
+    this.here++;
+    this.inWord = false;
+  }
+
+  /** The end of a paragraph. */
+  end() {
+    if (this.here > 0) this.paras++;
+    this.here = 0;
+    this.inWord = false;
+  }
+}
+
+/** The text of [a, e) of paragraph p into t (budget: see walk). */
+function para(t, p, a, e, budget) {
+  const s = p.text;
+  let from = a;
+  for (let i = s.indexOf('\uFFFC', a); i >= 0 && i < e;
+    i = s.indexOf('\uFFFC', from)) {
+    if (i > from) t.text(s.slice(from, i));
+    from = i + 1;
+    const x = p.inlines[i];
+    if (!x) continue;
+    if (x.kind === 'tab' || x.kind === 'br') t.gap();
+    else if (x.kind === 'raw' && x.level === 'p' && x.node) {
+      // (a link, an insertion, a field, a content control...: the
+      // same walk as a table's)
+      if (!walk(t, x.node, budget)) budget.partial = true;
+    } else {
+      const h = hyphenText(x);
+      if (h) t.text(h);
+    }
+  }
+  if (from < e) t.text(s.slice(from, e));
+  t.end();
+}
+
+const SKIP = new Set(['del', 'moveFrom', 'delText', 'instrText',
+  'drawing', 'pict', 'txbxContent', 'object', 'rt', 'oMath',
+  'oMathPara']);
+// properties (pPr, rPr, tblPr, trPr, tcPr, sdtPr, sectPr and their
+// change records) hold no text: a w:tab there is a tab stop
+const PROPS = /Pr(Change)?$/;
+const END = {};
+
+/** An element of another vocabulary (m:t of a formula...). */
+const foreign = (n) => /^(m|a|wp|v|o|w10):/.test(n.name);
+
+/**
+ * The text of a kept block's XML into t; budget.left nodes may still
+ * be walked (false: it ran out).
+ */
+function walk(t, top, budget) {
+  const stack = [top];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n === END) { t.end(); continue; }
+    if (typeof n === 'string') continue;
+    if (!n || typeof n !== 'object') continue;
+    if (--budget.left < 0) return false;
+    const l = localName(n);
+    if (SKIP.has(l) || PROPS.test(l) || foreign(n)) continue;
+    const kids = Array.isArray(n.children) ? n.children : [];
+    if (l === 'AlternateContent') {
+      // (Choice and Fallback show the same: the Choice, else the
+      // Fallback)
+      const pick = kids.find((c) => localName(c) === 'Choice') ||
+        kids.find((c) => localName(c) === 'Fallback');
+      if (pick) stack.push(pick);
+      continue;
+    }
+    if (l === 't') {
+      for (const c of kids) if (typeof c === 'string') t.text(c);
+      continue;
+    }
+    if (l === 'tab' || l === 'br' || l === 'cr') { t.gap(); continue; }
+    if (l === 'noBreakHyphen') { t.text('-'); continue; }
+    if (l === 'p') stack.push(END);
+    for (let k = kids.length - 1; k >= 0; k--) stack.push(kids[k]);
+  }
+  return true;
+}
+
+/** The lines of item it from offset a to e (the whole when all). */
+function linesOf(it, a, e) {
+  if (!it || !it.lines) return 0;
+  if (a <= 0 && e >= it.block.text.length) return it.lines.length;
+  let n = 0;
+  for (const l of it.lines) if (l.from < e && l.to > a) n++;
+  return n;
+}
+
+/** See the header. */
+export function count(doc, sel, L) {
+  const range = sel && !collapsed(sel) ? orderedPos(doc, sel) : null;
+  const t = new Tally();
+  const budget = {left: NODE_LIMIT, partial: false};
+  let lines = L ? 0 : null;
+  const secs = doc.sections;
+  const s0 = range ? range.f.s : 0, s1 = range ? range.t.s
+    : secs.length - 1;
+  for (let s = s0; s <= s1; s++) {
+    const bs = secs[s].blocks;
+    const i0 = range && s === range.f.s ? range.f.i : 0;
+    const i1 = range && s === range.t.s ? range.t.i : bs.length - 1;
+    for (let i = i0; i <= i1; i++) {
+      const b = bs[i];
+      const first = range && s === range.f.s && i === range.f.i;
+      const last = range && s === range.t.s && i === range.t.i;
+      if (b.type === 'p') {
+        const a = first ? range.from.off : 0;
+        const e = last ? range.to.off : b.text.length;
+        para(t, b, a, e, budget);
+        if (L) lines += linesOf(L.byId.get(b.id), a, e);
+        continue;
+      }
+      // a kept block counts when the selection holds it
+      if (range && ((first && range.from.off > 0) ||
+        (last && range.to.off < 1))) continue;
+      if (!budget.partial && !walk(t, b.node, budget)) {
+        budget.partial = true;
+      }
+    }
+  }
+  const out = {words: t.words, chars: t.chars,
+    charsNoSpaces: t.noSpaces, paras: t.paras, lines,
+    scope: range ? 'selection' : 'document'};
+  if (budget.partial) out.partial = true;
+  return out;
+}
+
+/** See the header. */
+export function countView(v) {
+  return count(v.d.doc, v.sel, v.L);
+}

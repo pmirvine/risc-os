@@ -35,11 +35,29 @@ describe('ClipClean: across documents', () => {
     const t = {kind: 'raw', level: 'r', node: {name: 'w:t', attrs: [],
       children: ['\t']}};
     const b = P(O + O + O + O, {inlines: {0: {kind: 'tab'},
-      1: {kind: 'br', level: 'r', brType: 'page'}, 2: t,
+      1: {kind: 'br', level: 'r', node: el('br')}, 2: t,
       3: {kind: 'raw', level: 'p', text: '\u0001x￼',
         node: el('sdt')}}});
     const [q] = clean([b], mk(['']).doc, {});
     assert.equal(q.text, '\t\n\tx');
+  });
+  it('page and column breaks stay breaks (new inlines, no node)', () => {
+    const br = (brType) => ({kind: 'br', level: 'r', brType,
+      node: {name: 'w:br', attrs: [['w:type', brType],
+        ['x:odd', '1']], children: []}});
+    const b = P('a' + O + 'b' + O + O, {inlines: {1: br('page'),
+      3: br('column'), 4: br('textWrapping')}});
+    const [q] = clean([b], mk(['']).doc, {});
+    assert.equal(q.text, 'a' + O + 'b' + O + '\n');
+    assert.deepEqual(q.inlines, {1: {kind: 'br', level: 'r',
+      brType: 'page'}, 3: {kind: 'br', level: 'r', brType: 'column'}});
+    checkContent(q, true);
+    // a br inline with a page brType but not a br kind stays text
+    const odd = P('a' + O, {inlines: {1: {kind: 'raw', level: 'r',
+      brType: 'page', node: el('sym')}}});
+    const [o] = clean([odd], mk(['']).doc, {});
+    assert.equal(o.text, 'a');
+    assert.deepEqual(o.inlines, {});
   });
   it('styles are mapped by name or dropped; numPr dropped', () => {
     const d = mk(['']);
@@ -84,6 +102,17 @@ describe('ClipClean: across documents', () => {
     assert.deepEqual(q.pPr, {...pPr, extra: []});
     assert.equal(q.extraP, undefined);
     assert.equal(q.id, undefined);
+  });
+  it('run shading kept; tabs, borders, shading, flow flags of the ' +
+    'paragraph dropped', () => {
+    const shd = {val: 'clear', color: 'auto', fill: 'FFFF00'};
+    const pPr = {jc: 'right', tabs: [{val: 'left', pos: 720}],
+      pBdr: {top: {val: 'single'}}, shd, widowControl: false,
+      contextualSpacing: true, extra: []};
+    const [q] = clean([P('x', {pPr, runs: [{start: 0, end: 1,
+      rPr: {shd, extra: []}}]})], mk(['']).doc, {});
+    assert.deepEqual(q.runs[0].rPr, {shd, extra: []});
+    assert.deepEqual(q.pPr, {jc: 'right', extra: []});
   });
   it('opaque blocks are skipped; junk ignored', () => {
     const out = clean([{type: 'opaque', node: el('tbl')}, null, 5,

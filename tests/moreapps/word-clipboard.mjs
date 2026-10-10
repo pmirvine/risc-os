@@ -442,13 +442,13 @@ try {
     window.__sel('Beta', 0, 0, 0, 6);
     return { caret, sel: look() };
   });
-  ok('Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace... with their keys',
+  ok('Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Word count... with their keys (none for the count)',
     same(em.caret.map((x) => x.slice(0, 2)), [['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Y'], ['Cut', 'Ctrl+X'], ['Copy', 'Ctrl+C'],
       ['Paste', 'Ctrl+V'], ['Select all', 'Ctrl+A'], ['Find...', 'Ctrl+F'], ['Find next', 'Ctrl+G'],
-      ['Find previous', 'Ctrl+Shift+G'], ['Replace...', 'Ctrl+H']]), em);
+      ['Find previous', 'Ctrl+Shift+G'], ['Replace...', 'Ctrl+H'], ['Word count...', '']]), em);
   ok('... Cut and Copy shaded at a caret, not with a selection; Paste and the Find items never',
-    same(em.caret.map((x) => x[2]).slice(2), [true, true, false, false, false, false, false, false])
-    && same(em.sel.map((x) => x[2]).slice(2), [false, false, false, false, false, false, false, false]), em);
+    same(em.caret.map((x) => x[2]).slice(2), [true, true, false, false, false, false, false, false, false])
+    && same(em.sel.map((x) => x[2]).slice(2), [false, false, false, false, false, false, false, false, false]), em);
   const menuAt = async (leaf) => {
     const pt = await ev((l) => window.__point(l, 1, 2), leaf);
     await page.mouse.click(pt.x, pt.y, { button: 'middle' });

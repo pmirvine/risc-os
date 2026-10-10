@@ -10,19 +10,36 @@ import {fail, wellFormed, checkPos, checkInlines, checkContent,
   checkPara} from './ModelCheck';
 import {props, nextId, reserveIds} from './Model';
 import {paraAt, cut, join} from './OpsUtil';
+import {unseenAt} from './Kinds';
+
+/** An unseen level-'p' inline at offset k of p (see fmtAt). */
+const bare = (p, k) => unseenAt(p, k) && p.inlines[k].level === 'p';
 
 /**
  * The format that text inserted at `at` gets when `del` units are
  * deleted there. Typing over a selection (del > 0): that of the
  * first selected character. Otherwise: that of the character before
  * `at` (so at a boundary, the preceding run); at offset 0 the first
- * run's; in an empty paragraph none.
+ * run's; in an empty paragraph none. Unseen level-'p' inlines
+ * (./Kinds unseenAt: bookmarks, proofing marks...; they sit between
+ * runs, so the reader gives them a plain run) are passed over: the
+ * character before them counts, or with none, the first one after
+ * them. (A level-'r' one, a soft hyphen, has its run's format.)
  */
 export function fmtAt(p, at, del) {
   if (!p.runs.length) return {rPr: {extra: []}};
-  const r = del > 0 ? p.runs.find((x) => x.start <= at && at < x.end)
-    : at === 0 ? p.runs[0]
-      : p.runs.find((x) => x.start < at && at <= x.end);
+  let k = at;
+  if (del <= 0) {
+    while (k > 0 && bare(p, k - 1)) k--;
+    if (k === 0) {
+      let j = at;
+      while (j < p.text.length && bare(p, j)) j++;
+      if (j < p.text.length) del = 1, k = j;
+    }
+  }
+  const r = del > 0 ? p.runs.find((x) => x.start <= k && k < x.end)
+    : k === 0 ? p.runs[0]
+      : p.runs.find((x) => x.start < k && k <= x.end);
   return r.rStyle === undefined ? {rPr: r.rPr}
     : {rPr: r.rPr, rStyle: r.rStyle};
 }

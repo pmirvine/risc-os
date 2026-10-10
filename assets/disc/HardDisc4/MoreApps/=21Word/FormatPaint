@@ -1,0 +1,162 @@
+// FormatPaint - the format painter's rules: what a selection gives
+// (pick) and putting it on other text (paint).
+//
+//   pick(doc, sel) -> {rPr, rStyle?, pPr?, pStyle?} | null
+//       a caret: the character format at the caret (what text typed
+//       there gets: ./OpsText fmtAt) and its paragraph's format; a
+//       selection inside one paragraph: the character format of its
+//       first character (an inline written outside any run, such as
+//       a link, is passed over); a selection that reaches the end of
+//       its paragraph (or goes on to the next) also gives that
+//       paragraph's format, its list included (pPr with numPr,
+//       pStyle). pPr is there only when the paragraph format is.
+//       null when the selection is not in a paragraph
+//   paint(d, typing, sel, picked, L?) -> sel
+//       the format put on sel as ONE undo step (nothing changed: no
+//       step). The characters get exactly the picked run properties
+//       and character style (they are REPLACED, not merged: what the
+//       picked text does not have is taken away); a paragraph
+//       touched (./FormatOps touched) gets the picked pPr and pStyle
+//       the same way when the pick has them, leaving the raw
+//       elements that are not paragraph formatting (the mark's
+//       rPr...). The U+FFFC of an inline written outside any run is
+//       skipped, as ./FormatOps pieces does. A caret (a click)
+//       paints the word there (with L, the layout) and its
+//       paragraph; the selection is returned as it was
+// A pick is made without its id-bearing raw elements (./ClipIds
+// dropIds: change records...), and a run keeps its own when its
+// properties are replaced; the raw paragraph children that are not
+// in ./PropNames PPR_FIELDS (bidi, framePr, suppressAutoHyphens,
+// textAlignment, textDirection, pPrChange, sectPr...) stay as the
+// target has them and are never carried. A numbering or style the
+// document no longer has (a sticky pick after an undo) is left out of
+// the pick when it is used: the target's list is not touched.
+// Run and paragraph properties are changed with setProps in two
+// passes (first what the target has and the pick lacks is removed,
+// then the pick is set), so a raw element of the pick is not lost to
+// a field removed. Pure: no desktop services.
+import {fmtAt} from './OpsText';
+import {orderedPos} from './EditPos';
+import {collapsed, selectWord} from './Selection';
+import {touched, charOps, runOps, changes} from './FormatOps';
+import {PPR_FIELDS, withoutRaw} from './PropNames';
+import {dropIds, hasIds} from './ClipIds';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/** See the header. */
+export function pick(doc, sel) {
+  const o = orderedPos(doc, sel);
+  if (!o) return null;
+  const p = doc.sections[o.f.s].blocks[o.f.i];
+  if (p.type !== 'p') return null;
+  const same = o.f.s === o.t.s && o.f.i === o.t.i;
+  const caret = same && o.from.off === o.to.off;
+  const end = same ? o.to.off : p.text.length;
+  let k = o.from.off;
+  const bare = (x) => p.inlines[x] && p.inlines[x].level === 'p';
+  while (!caret && k < end && bare(k)) k++;
+  const base = caret || k >= end ? fmtAt(p, o.from.off, 0)
+    : fmtAt(p, k, 1);
+  const out = {rPr: dropIds(base.rPr)};
+  if (base.rStyle !== undefined) out.rStyle = base.rStyle;
+  if (caret || !same || o.to.off >= p.text.length) {
+    out.pPr = dropIds(p.pPr);
+    out.pStyle = p.pStyle ?? null;
+  }
+  return out;
+}
+
+/** The patch that removes what `have` holds and `want` lacks. */
+function removal(have, want, skip) {
+  const out = {};
+  for (const k of Object.keys(have)) {
+    if (k === 'extra' || k === skip) continue;
+    const h = have[k], w = want[k];
+    if (w === undefined) out[k] = null;
+    else if (isObj(h) && isObj(w)) {
+      const sub = removal(h, w);
+      if (Object.keys(sub).length) out[k] = sub;
+    }
+  }
+  return out;
+}
+
+const names = [...PPR_FIELDS.values()];
+const isFormatRaw = (n) => withoutRaw([n], names).length === 0;
+
+/** The runs' ops (see charOps) for entries en, picked rPr/rStyle. */
+function runPatches(en, picked) {
+  const gone = (r) => ({rPr: removal(r.rPr, picked.rPr)});
+  // (the target's own change records and other id-bearing elements
+  // stay: they are its history, not its formatting)
+  const set = (r) => ({rPr: {...picked.rPr, extra: [...picked.rPr.extra,
+    ...r.rPr.extra.filter(hasIds)]}, rStyle: picked.rStyle ?? null});
+  return [...charOps(en, gone), ...charOps(en, set)];
+}
+
+/** [clear, set] patches making p's paragraph format the pick's. */
+function paraPatches(p, picked, keepList) {
+  const extra = [...withoutRaw(p.pPr.extra, names),
+    ...picked.pPr.extra.filter(isFormatRaw)];
+  const gone = {pPr: removal(p.pPr, picked.pPr,
+    keepList ? 'numPr' : undefined)};
+  const set = {pPr: {...picked.pPr, extra}, pStyle: picked.pStyle};
+  return [gone, set];
+}
+
+/**
+ * The pick as it can be used in doc now (a sticky pick may be older
+ * than an undo): a numbering or a character style that is gone is
+ * left out (the list stays as the target has it; no character style
+ * is set), a gone paragraph style likewise.
+ */
+function usable(doc, picked) {
+  const out = {...picked};
+  const styles = doc.styles && doc.styles.styles;
+  const has = (id) => styles instanceof Map && styles.has(id);
+  if (out.rStyle !== undefined && !has(out.rStyle)) delete out.rStyle;
+  if (out.pStyle && !has(out.pStyle)) delete out.pStyle;
+  let keepList = false;
+  const np = out.pPr && out.pPr.numPr;
+  if (np && np.numId > 0) {
+    const nums = doc.numbering && doc.numbering.nums;
+    if (!(nums instanceof Map && nums.has(np.numId))) {
+      const {numPr, ...rest} = out.pPr;
+      out.pPr = rest;
+      keepList = true;
+    }
+  }
+  return [out, keepList];
+}
+
+/** See the header. */
+export function paint(d, typing, sel, picked, L) {
+  const doc = d.doc;
+  const paras = touched(doc, sel);
+  if (!paras || !picked) return sel;
+  let keepList;
+  [picked, keepList] = usable(doc, picked);
+  let chars = paras;
+  if (collapsed(sel)) {
+    const w = L && selectWord(L, sel.head);
+    chars = w && !collapsed(w) ? touched(doc, w) || [] : [];
+  }
+  const ops = [];
+  const add = (en, x) => ops.push({op: 'setProps',
+    block: [en.s, en.i], ...x});
+  for (const en of chars) {
+    for (const x of runPatches(en, picked)) add(en, x);
+  }
+  if (picked.pPr) {
+    for (const en of paras) {
+      if (!en.para) continue;
+      for (const x of paraPatches(en.p, picked, keepList)) {
+        if (changes(en.p, 'pPr', x, 'pStyle')) add(en, x);
+      }
+    }
+  }
+  runOps(d, typing, ops);
+  return sel;
+}

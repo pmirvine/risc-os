@@ -1,0 +1,153 @@
+// ParaBox - the Paragraph dialogue box (Format > Paragraph..., and
+// Line spacing options... in ./ParaMenu): alignment, the indents
+// (left, right, special: first line or hanging, by), the space
+// before and after, the line spacing (a choice and At: lines for
+// Multiple, points for At least and Exactly), the option "Don't add
+// space between paragraphs of the same style", and Line and page
+// breaks: widow / orphan control, keep with next, keep lines
+// together, page break before; a Tabs... button opens the Tabs box
+// (./TabsBox: the Paragraph box stays open as it is; what its OK
+// does is not a change "while the box was open", below). Built by
+// WimpLib Ui/Dialog.
+//
+//   paraBox(dw) -> the box's api (WimpLib Ui/Dialog), opened
+//       one box per document (key 'para:<docKey>'), kept in
+//       dw.boxes ('para') so ./CloseDoc deletes it with the
+//       document; asked again while it is open, the same box is
+//       brought to the front. Nothing when the document has no
+//       selection.
+//
+// It opens filled from the document's query (./ParaPatch fill): a
+// mixed value is an empty field (an option off) and an untouched
+// one is left as it is. By is shaded for None, At for Single, 1.5
+// lines and Double; picking another kind of spacing puts that
+// kind's usual At in. OK (or Return): ./ParaPatch patch against the
+// query made when the box opened; text that is not a value, or an
+// At the screen cannot draw (0.5..4 lines, 1.5..1584 points), beeps
+// and keeps the box with the caret in the field; else one
+// view.format('paraBox', patch), one undo step (none when nothing
+// changed). If the selection or the document changed while the box
+// was open (./TabsBox where: by a key, the toolbar, a menu, the
+// ruler...), OK beeps, fills the box again from the new selection
+// and keeps it; with no selection it beeps and keeps it. Cancel, Escape
+// and the close icon change nothing. The caret goes back to the
+// document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {tabsBox, where} from './TabsBox';
+import {fill, patch, NAMES, ALIGNS, SPECIALS, LINES}
+  from './ParaPatch';
+
+const lab = (label, c) => ({label, ...c});
+const rows = () => [
+  [lab('Alignment', {kind: 'popup', name: 'align', choices: ALIGNS})],
+  [lab('Left', {kind: 'length', name: 'left'}),
+    lab('Right', {kind: 'length', name: 'right'})],
+  [lab('Special', {kind: 'popup', name: 'special',
+    choices: SPECIALS}),
+  lab('By', {kind: 'length', name: 'by', min: 0})],
+  [lab('Before', {kind: 'length', name: 'before', unit: 'pt'}),
+    lab('After', {kind: 'length', name: 'after', unit: 'pt'})],
+  [lab('Line spacing', {kind: 'popup', name: 'spacing',
+    choices: LINES}),
+  lab('At', {kind: 'number', name: 'at', min: 0, max: 100000}),
+  {kind: 'label', name: 'atunit', text: 'lines'}],
+  {kind: 'option', name: 'noctx', text: 'Don\'t add space between ' +
+    'paragraphs of the same style'},
+  {kind: 'label', text: 'Line and page breaks'},
+  {kind: 'option', name: 'widow', text: 'Widow/orphan control'},
+  {kind: 'option', name: 'keepnext', text: 'Keep with next'},
+  {kind: 'option', name: 'keeplines', text: 'Keep lines together'},
+  {kind: 'option', name: 'pagebreak', text: 'Page break before'},
+  {kind: 'button', name: 'tabs', text: 'Tabs...'},
+];
+
+const HELP = 'Paragraph: alignment, indents, spacing and the ' +
+  'line and page breaks of the selected paragraphs.';
+const WRITABLE = ['left', 'right', 'by', 'before', 'after', 'at'];
+const FIXED = ['single', '1.5', 'double'];
+const kindOf = (s) => (s === 'multiple' ? 'lines' : s === 'atleast' ||
+  s === 'exactly' ? 'pt' : '');
+
+const state = new WeakMap();           // api -> {q, mode}
+
+/** See the header. */
+export function paraBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `para:${dw.docKey}`,
+    title: 'Paragraph', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK']});
+  box(dw, 'para', () => api.win);
+  if (api.isOpen) return api;
+  if (!state.has(api)) wire(api, v, dw);
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the current query. */
+function refill(api, v) {
+  const q = v.query(), vals = fill(q);
+  for (const k of NAMES) api.set(k, vals[k]);
+  state.set(api, {q, mode: kindOf(vals.spacing), at: where(v)});
+  adapt(api, vals.special, vals.spacing);
+}
+
+/** Shade By and At, and say At's unit. */
+function adapt(api, special, spacing) {
+  api.shade('by', special === 'none');
+  api.shade('at', FIXED.includes(spacing));
+  api.set('atunit', kindOf(spacing) || '');
+}
+
+/** The handlers of a new box. */
+function wire(api, v, dw) {
+  state.set(api, {q: null, mode: ''});
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'special') {
+      if (value === 'none') api.set('by', undefined);
+      else if (api.get('by') === undefined) api.set('by', 720);
+      api.shade('by', value === 'none');
+    } else if (name === 'spacing') {
+      const now = kindOf(value);
+      if (now !== st.mode) {
+        api.set('at', now === 'lines' ? 3 : now === 'pt' ? 12
+          : undefined);
+      }
+      st.mode = now;
+      adapt(api, api.get('special'), value);
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name === 'tabs') {
+      // its own Tabs box's OK, from the state this box shows: fresh
+      tabsBox(dw, {done: (was, now) => {
+        const st = state.get(api);
+        if (st && st.at === was) st.at = now;
+      }});
+      return false;
+    }
+    if (name !== 'OK') { v.focus(); return undefined; }
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      wimp.beep();
+      if (v.sel) refill(api, v);
+      return false;
+    }
+    const r = patch(values, st.q);
+    if (r.bad.length) {
+      wimp.beep();
+      const f = r.bad.find((k) => WRITABLE.includes(k));
+      if (f) api.focus(f);
+      return false;
+    }
+    if (Object.keys(r.patch).length && v.sel) {
+      v.format('paraBox', r.patch);
+    }
+    v.focus();
+    return undefined;
+  });
+}

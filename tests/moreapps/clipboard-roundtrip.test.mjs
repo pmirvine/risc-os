@@ -37,6 +37,9 @@ import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
 import {blockId} from '../../tools/moreapps/!Word/DocPos';
 import * as S from '../../tools/moreapps/!Word/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
+import {toggleList} from '../../tools/moreapps/!Word/ListMake';
+import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {Typing} from '../../tools/moreapps/!Word/Typing';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';
 import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
@@ -261,7 +264,26 @@ const STYLED = doc(H('The title') +
   TBL + H('Sub', 2) + p(r('Tab') + '<w:r><w:tab/></w:r>' + r('stop') +
     '<w:r><w:br/></w:r>' + r('next line'), '<w:jc w:val="center"/>') +
   SECT, true);
+/**
+ * A document whose lists were made by !Word (ListMake: the numbering
+ * part, relationship and List Paragraph all new): a bullet list, a
+ * numbered list, a plain gap and a second list continued after it.
+ */
+async function madeLists() {
+  const d = new Document(await readDocx(await doc(
+    ['one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight']
+      .map((t, i) => p(r(t + ' the'))).join(''))()));
+  const bs = () => d.doc.sections.flatMap((s) => s.blocks);
+  const over = (a, b) => S.select({id: bs()[a].id, off: 0},
+    {id: bs()[b].id, off: bs()[b].text.length});
+  const t = new Typing(d);
+  toggleList(d, t, over(0, 1), {kind: 'bullet'});
+  toggleList(d, t, over(2, 3), {kind: 'number'});
+  toggleList(d, t, over(5, 6), {kind: 'number', entry: 'a)'});
+  return writeDocx(d.doc, {date: new Date(Date.UTC(2026, 9, 9))});
+}
 const MORE = [
+  ['lists made by !Word (ListMake)', madeLists],
   ['rich (edit-rich.mjs)', richDocx],
   ['styled: headings, formats, a link, a table', STYLED],
   ['table first', doc(TBL + p(r('after the table')) + TBL)],

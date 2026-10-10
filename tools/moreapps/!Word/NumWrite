@@ -1,0 +1,222 @@
+// NumWrite - numbering definitions written for new lists (pure). The
+// numbering part is made when missing and extended when present; no
+// old node is ever changed or rebuilt (a new root holds the same
+// child objects), so the results can be given to setDocPart
+// (./OpsDoc: values immutable, kept by reference).
+//
+//   ensurePart(doc) -> {numbering, rels, numberingPart}
+//     what the document needs for a numbering part: the doc's own
+//     values (the same objects) when it has one; else a new root
+//     (w:numbering with xmlns:w only: Transitional in memory, mapped
+//     to Strict on write) and a part name: the target of a numbering
+//     relationship that names a free part (rels unchanged), else
+//     numbering.xml beside the main part (word/), or the first free
+//     numberingN.xml (N = 2, 3...; ./OpsDoc partFree: not a part of
+//     doc.parts, main, styles, settings, nor another type's
+//     Override), with a NEW rels array (./DocParts addRel; Strict
+//     type for a Strict document) put before an unusable numbering
+//     relationship, so the reader finds the new one first. The
+//     content type comes from the writer. RangeError for a Doc with
+//     no package data (meta.mainPart).
+//   addList(numbering, entry, opts?) -> {numbering, numId,
+//     abstractNumId}
+//     entry: a ./ListGallery entry or its id. numbering: a Doc's
+//     (or null: a new root). A new w:abstractNum (w:nsid, w:multi-
+//     LevelType hybridMultilevel, 9 w:lvl: start, numFmt, lvlText,
+//     lvlJc, pPr ind, rPr rFonts for bullets) goes after the last
+//     abstract (or w:numPicBullet, or mc:AlternateContent holding
+//     one) and never after the first w:num; a new w:num after the
+//     last w:num, before w:numIdMacAtCleanup.
+//     opts.usedNumIds: ids also taken (paragraphs naming a missing
+//     num); opts.rand () -> uint32 for the nsid (Math.random);
+//     opts.strict: Strict names (pass meta.conformance === 'strict'):
+//     w:ind w:start, lvlJc start / end (Transitional: w:left, left /
+//     right); ./NumLevel reads both the same. opts.start: level
+//     0's w:start (a safe integer 0..2^31 - 1, else RangeError;
+//     default the entry's 1): a list typed as `3. ` (./AutoList).
+//   addRestart(numbering, numId, ilvl, start, opts?) -> {numbering,
+//     numId}
+//     a new w:num on numId's abstract with a w:lvlOverride (ilvl
+//     0..8) holding w:startOverride start (0..2^31 - 1): Restart
+//     numbering (1) or Set numbering value. Of the source w:num's
+//     other w:lvlOverride nodes (every level but ilvl) only level
+//     replacements (holding a w:lvl) are kept, the same node objects
+//     (a new one without its w:startOverride when it has one: a
+//     restart never restarts another level), all in level order
+//     (its xmlns declarations copied). Placed as addList's;
+//     opts.usedNumIds as addList's.
+//
+// Ids: one more than the largest numeric id (leading zeros and signs
+// read as numbers; others ignored) of the w:abstractNum elements and
+// the abstracts that w:num elements name (a num naming a missing
+// abstract must not start showing ours), or of the w:num elements
+// (and usedNumIds); abstracts from 0, nums from 1. Refused
+// (RangeError, nothing changed) when that passes 2^31 - 1. The nsid
+// is 8 hex digits that no abstract of the part has. The new Num of
+// `nums` is derived with ./ReadNumbering; the old Num objects are
+// kept (a new Map).
+import {el} from 'wimplib/Xml';
+import {NS} from './Wml';
+import {rootScope} from './Ns';
+import {scan, absAt, numAt, numNode, overridesOf, MAX_ID}
+  from './NumScan';
+import {readNumbering} from './ReadNumbering';
+import {entryOf} from './ListGallery';
+import {addRel} from './DocParts';
+import {firstOfKind, resolvePart} from './Rels';
+import {partFree, isNode} from './OpsDoc';
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** A new, empty numbering: {raw, nums}. */
+export const newNumbering = () => ({
+  raw: el('w:numbering', [['xmlns:w', NS.w]]), nums: new Map()});
+
+/** See the header. */
+export function ensurePart(doc) {
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  const main = meta.mainPart;
+  if (typeof main !== 'string' || !main)
+    throw new RangeError('the document has no package data');
+  const rels = Array.isArray(doc.rels) ? doc.rels : [];
+  const numbering = isObj(doc.numbering) ? doc.numbering
+    : newNumbering();
+  if (meta.numberingPart)
+    return {numbering, rels, numberingPart: meta.numberingPart};
+  const old = firstOfKind(rels, 'numbering');
+  const at = old && resolvePart(main, old.target);
+  if (at && partFree(doc, at))
+    return {numbering, rels, numberingPart: at};
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  let name = dir + 'numbering.xml';
+  for (let k = 2; !partFree(doc, name); k++)
+    name = dir + 'numbering' + k + '.xml';
+  const add = addRel(rels, {kind: 'numbering',
+    target: name.slice(dir.length),
+    strict: meta.conformance === 'strict'});
+  return {numbering, numberingPart: name,
+    rels: old ? [add.rels.at(-1), ...rels] : add.rels};
+}
+
+
+const A = (name, attrs, ...kids) => el('w:' + name, attrs, ...kids);
+const val = (name, v) => A(name, [['w:val', v]]);
+const hex = (x) => x.toString(16).toUpperCase().padStart(8, '0');
+
+/** An nsid no abstract has. */
+function nsidOf(used, rand) {
+  let x = 0;
+  for (let i = 0; i < 16; i++) {
+    x = Number(rand()) >>> 0;
+    if (!used.has(hex(x))) return hex(x);
+  }
+  do x = (x + 1) >>> 0; while (used.has(hex(x)));
+  return hex(x);
+}
+
+const JC_STRICT = {left: 'start', right: 'end'};
+
+/** A gallery Level -> its w:lvl node (Strict names when strict). */
+function lvlNode(l, strict) {
+  const ind = l.pPr.ind;
+  return A('lvl', [['w:ilvl', l.ilvl]], val('start', l.start),
+    val('numFmt', l.numFmt), val('lvlText', l.lvlText),
+    val('lvlJc', strict ? JC_STRICT[l.lvlJc] : l.lvlJc),
+    A('pPr', null, A('ind', [[strict ? 'w:start' : 'w:left', ind.left],
+      ['w:hanging', ind.hanging]])),
+    l.rPr ? A('rPr', null, A('rFonts', Object.entries(l.rPr.rFonts)
+      .map(([k, v]) => ['w:' + k, v]))) : null);
+}
+
+/** numbering checked: {raw, nums} (null: a new one). */
+function given(numbering) {
+  if (numbering === null || numbering === undefined)
+    return newNumbering();
+  if (!isObj(numbering) || !isNode(numbering.raw))
+    throw new RangeError('not a numbering');
+  return numbering;
+}
+
+/** A new root: `kids` [index, node] inserted (ascending index). */
+function withKids(root, kids) {
+  const out = [];
+  let from = 0;
+  for (const [at, node] of kids) {
+    out.push(...root.children.slice(from, at), node);
+    from = at;
+  }
+  out.push(...root.children.slice(from));
+  return {name: root.name, attrs: root.attrs, children: out};
+}
+
+const oldNums = (n) => new Map(n.nums instanceof Map ? n.nums : []);
+
+/** See the header. */
+export function addList(numbering, entry, opts = {}) {
+  const e = entryOf(typeof entry === 'string' ? entry
+    : isObj(entry) ? entry.id : undefined);
+  if (!e || (typeof entry !== 'string' && entry !== e))
+    throw new RangeError('not a list gallery entry');
+  const st = opts.start;
+  if (st !== undefined && (!Number.isSafeInteger(st) || st < 0 ||
+    st > MAX_ID)) throw new RangeError('bad start ' + String(st));
+  const n = given(numbering);
+  const info = scan(n.raw, opts.usedNumIds || []);
+  const absId = info.abs + 1, numId = info.num + 1;
+  const decl = info.prefixOk ? [] : [['xmlns:w', NS.w]];
+  const abs = A('abstractNum', [['w:abstractNumId', absId], ...decl],
+    val('nsid', nsidOf(info.nsids, opts.rand ||
+      (() => Math.floor(Math.random() * 2 ** 32)))),
+    val('multiLevelType', 'hybridMultilevel'),
+    e.levels.map((l) => lvlNode(st !== undefined && l.ilvl === 0
+      ? {...l, start: st} : l, opts.strict === true)));
+  const num = A('num', [['w:numId', numId], ...decl],
+    val('abstractNumId', absId));
+  const at = absAt(info);
+  const raw = withKids(n.raw, [[at, abs],
+    [numAt(info, n.raw, at), num]]);
+  const mini = {name: raw.name, attrs: raw.attrs, children: [abs, num]};
+  const nums = oldNums(n);
+  nums.set(numId, readNumbering(mini, rootScope(mini)).nums.get(numId));
+  return {numbering: {raw, nums}, numId, abstractNumId: absId};
+}
+
+/** See the header. */
+export function addRestart(numbering, numId, ilvl, start,
+  opts = {}) {
+  if (!isObj(numbering)) throw new RangeError('not a numbering');
+  const n = given(numbering);
+  const old = n.nums instanceof Map ? n.nums.get(numId) : undefined;
+  if (!isObj(old) || old.abstractNumId === undefined ||
+    old.abstractNumId === null)
+    throw new RangeError('no list ' + numId);
+  if (!Number.isInteger(ilvl) || ilvl < 0 || ilvl > 8)
+    throw new RangeError('bad level ' + ilvl);
+  if (!Number.isSafeInteger(start) || start < 0 || start > MAX_ID)
+    throw new RangeError('bad start ' + start);
+  const info = scan(n.raw, opts.usedNumIds || []);
+  const id = info.num + 1;
+  const src = numNode(n.raw, numId);
+  const own = src ? src.node.attrs.filter(([k]) =>
+    (k === 'xmlns' || k.startsWith('xmlns:')) && k !== 'xmlns:w')
+    : [];
+  const decl = info.prefixOk && !(src && src.node.attrs.some(([k]) =>
+    k === 'xmlns:w')) ? own : [...own, ['xmlns:w', NS.w]];
+  const kids = (src ? overridesOf(src) : [])
+    .filter((o) => o.ilvl !== ilvl && o.level)
+    .map((o) => ({ilvl: o.ilvl, node: o.level}))
+    .concat([{ilvl, node: A('lvlOverride', [['w:ilvl', ilvl]],
+      val('startOverride', start))}])
+    .sort((a, b) => (a.ilvl ?? 9) - (b.ilvl ?? 9));
+  const node = A('num', [['w:numId', id], ...decl],
+    val('abstractNumId', String(old.abstractNumId)),
+    kids.map((o) => o.node));
+  const raw = withKids(n.raw, [[numAt(info, n.raw, 0), node]]);
+  const mini = {name: raw.name, attrs: raw.attrs, children: [node]};
+  const got = readNumbering(mini, rootScope(mini)).nums.get(id);
+  const nums = oldNums(n);
+  nums.set(id, {...old, levels: structuredClone(old.levels),
+    overrides: got.overrides});
+  return {numbering: {raw, nums}, numId: id};
+}

@@ -1,0 +1,129 @@
+// ParaSpace - line spacing and the space between paragraphs, for the
+// screen.
+//
+//   lineBox(pf, px, up?, down?) -> {h, base, clip}  one line's height
+//       and baseline (px from its top). pf: ./Fmt.paraFmt's
+//       {lineRule, lineTw, factor}; px: the size of the line's
+//       largest text (px); up / down: how far raised and lowered
+//       text (superscript, subscript) reaches above / below the
+//       baseline (px, 0 when none)
+//         auto     1.25 px times factor (the line in 240ths of a
+//                  line, ./Fmt: 0.5..4), the baseline 0.27 px above
+//                  the bottom; grown to hold raised and lowered text
+//         atLeast  as auto at factor 1, then at least lineTw / 15 px
+//                  (the extra room goes above the text)
+//         exact    lineTw / 15 px whatever the text, the baseline at
+//                  0.8 of it; clip is true when the text is higher
+//                  than the line (Word cuts it off: ./DocPaint)
+//       lineTw clamped to MIN_LINE..MAX_LINE px, 2..2112 (1584 pt,
+//       the most Word takes; 240 twips when missing). auto's factor
+//       stays 0.5..4 (./Fmt), though Word takes up to 132 lines
+//   contextual(prev, next) -> {cutAfter, cutBefore}  px of space
+//       dropped between two paragraphs ({style, contextual, before,
+//       after}: their style id, contextualSpacing, and space before
+//       and after in px). Word's "Don't add space between paragraphs
+//       of the same style": only between paragraphs of one style,
+//       and each one's own flag drops its own space (prev's after,
+//       next's before), so with both flags none is left
+//   contextualOf(styles, para) -> its contextualSpacing, resolved
+//   rawSpacing(pPr)     ./SpacingRaw's (re-exported)
+//   spacingDeco         the ./DocStack decorator that applies
+//       contextual() as a negative gapAbove of the second paragraph;
+//       none across a section break (the band is between them) or
+//       a page break before (./FlowDeco: another page).
+//       spacingDeco.keyOf: the paragraph above, as the reuse key
+//       (null when it ends a section: then nothing is cut whatever
+//       it is)
+//
+// The space before and after are a paragraph's own (./LineLayout:
+// the first line starts `before` down, `after` is under the last),
+// read back here from its laid-out lines. Pure: no desktop services.
+import {paraLayers, paraStyleId} from './Styles';
+import {breaksBefore} from './FlowDeco';
+export {rawSpacing} from './SpacingRaw';
+
+export const MIN_LINE = 2, MAX_LINE = 2112;   // (1584 pt: Word's most)
+const NAT = 1.25, DESC = 0.27, EXACT_BASE = 0.8;
+
+/** The line of lineTw twips in px, clamped. */
+function linePx(tw) {
+  const v = Number.isFinite(tw) ? tw / 15 : 16;
+  return Math.min(Math.max(v, MIN_LINE), MAX_LINE);
+}
+
+/** See the header. */
+export function lineBox(pf, px, up = 0, down = 0) {
+  const rule = pf.lineRule || 'auto';
+  if (rule === 'exact') {
+    const h = linePx(pf.lineTw);
+    const base = h * EXACT_BASE;
+    const clip = px * NAT > h + 0.01 || up > base ||
+      down > h - base;
+    return {h, base, clip};
+  }
+  const f = rule === 'auto' && Number.isFinite(pf.factor)
+    ? pf.factor : 1;
+  let h = px * NAT * f;
+  let base = h - px * DESC;
+  // room for raised and lowered text
+  const u = Math.max(0, up - base);
+  h += u + Math.max(0, down - (h - base));
+  base += u;
+  if (rule === 'atLeast') {
+    const min = linePx(pf.lineTw);
+    if (min > h) {
+      base += min - h;
+      h = min;
+    }
+  }
+  return {h, base, clip: false};
+}
+
+const px0 = (v) => (Number.isFinite(v) && v > 0 ? v : 0);
+
+/** See the header. */
+export function contextual(prev, next) {
+  const none = {cutAfter: 0, cutBefore: 0};
+  if (!prev || !next || prev.style == null ||
+    prev.style !== next.style) return none;
+  return {cutAfter: prev.contextual === true ? px0(prev.after) : 0,
+    cutBefore: next.contextual === true ? px0(next.before) : 0};
+}
+
+/** See the header. */
+export function contextualOf(styles, para) {
+  let v = false;
+  for (const l of paraLayers(styles, para)) {
+    if (l && typeof l.contextualSpacing === 'boolean')
+      v = l.contextualSpacing;
+  }
+  return v;
+}
+
+/** {style, contextual, before, after} of a laid-out item. */
+function sideOf(styles, it, flag) {
+  const ls = it.lines;
+  const last = ls[ls.length - 1];
+  return {style: paraStyleId(styles, it.block), contextual: flag,
+    before: ls[0].y, after: it.h - (last.y + last.h)};
+}
+
+/** See the header. */
+export function spacingDeco(it, L) {
+  if (it.kind !== 'p' || !(it.index > 0) || !it.lines) return null;
+  const pr = L.items[it.index - 1];
+  if (!pr || pr.kind !== 'p' || !pr.lines || pr.mark) return null;
+  const styles = L.doc.styles;
+  if (breaksBefore(styles, it.block)) return null;
+  const a = contextualOf(styles, pr.block);
+  const b = contextualOf(styles, it.block);
+  if (!a && !b) return null;
+  const c = contextual(sideOf(styles, pr, a), sideOf(styles, it, b));
+  const cut = c.cutAfter + c.cutBefore;
+  return cut > 0 ? {gapAbove: -cut} : null;
+}
+
+spacingDeco.keyOf = (it, L) => {
+  const pr = it.index > 0 ? L.items[it.index - 1] : null;
+  return pr && !pr.mark ? pr.block : null;
+};

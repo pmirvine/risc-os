@@ -126,7 +126,7 @@ try {
   });
   ok('the icon bar menu: New, Recent, Info, Quit (Recent shaded while empty)', i5.items.join() === 'New,Recent,Info,Quit' && i5.recentShaded, i5);
   ok('New in the icon bar menu makes a document; app.newDoc({paper}) too', i5.n === 4 && i5.letter === 1, i5);
-  ok('the window menu has New', i5.wm.join() === 'Save,Save as,Revert,Save a copy,Info,Edit,Format,Zoom,New,Close', i5.wm);
+  ok('the window menu has New', i5.wm.join() === 'Save,Save as,Revert,Save a copy,Info,Edit,Insert,Format,Zoom,New,Close', i5.wm);
 
   // ------------------------------------------------ Recent
   const r1 = await ev(async () => {

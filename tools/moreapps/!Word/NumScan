@@ -1,0 +1,162 @@
+// NumScan - what a numbering part (an Xml root) holds, for
+// ./NumWrite: the largest ids, the nsids, and where new nodes go.
+//
+//   scan(root, used?) -> info
+//     {abs, num}   the largest numeric abstract id (of w:abstractNum
+//                  and of the abstracts w:num elements name; -1 for
+//                  none) and num id (of w:num and the integers of
+//                  `used`, others ignored; 0 for none);
+//                  numeric: leading zeros and a sign allowed, other
+//                  ids ignored. RangeError when either + 1 would pass
+//                  MAX_ID (2^31 - 1).
+//     nsids        Set of the nsid values (upper case) of abstracts
+//     lastAbs      index (in root.children) of the last w:abstractNum,
+//                  w:numPicBullet or mc:AlternateContent holding one
+//     firstNum, lastNum  of the first and last w:num (or
+//                  mc:AlternateContent holding one); end the first
+//                  w:numIdMacAtCleanup; -1 for none
+//     prefixOk     the root binds w: to the WML namespace
+//   absAt(info)          where a new w:abstractNum goes: after lastAbs,
+//                        never after the first w:num or the cleanup
+//   numAt(info, root, min)  where a new w:num goes: before the
+//                        cleanup, else after the last w:num, else at
+//                        the end; never before `min`
+//   numNode(root, numId) -> {node, m} the first top-level w:num
+//                        whose numId is numId (as ./ReadNumbering
+//                        reads ids) and the scope inside it, or null
+//   overridesOf({node, m}) -> [{ilvl, node, level}] its
+//                        w:lvlOverride children (ilvl null when not
+//                        0..8); level: the override as a level
+//                        replacement alone (it holds a w:lvl): the
+//                        node itself, or a new node without its
+//                        w:startOverride when it has one; else null
+// Elements inside mc:AlternateContent (any mc:Choice / mc:Fallback)
+// count as if they were at its place.
+import {NS} from './Wml';
+import {rootScope, scope, wName, wAttr, isEl} from './Ns';
+import {intOf} from './ReadProps';
+import {ilvlOf} from './NumLevel';
+
+export const MAX_ID = 2 ** 31 - 1;
+const NUMERIC = /^[ \t\n\r]*[+-]?[0-9]+[ \t\n\r]*$/;
+const idNum = (s) => typeof s === 'string' && NUMERIC.test(s)
+  ? Number(s) : undefined;
+
+/** The local name of an mc: element, else null. */
+function mcName(node, m) {
+  const i = node.name.indexOf(':');
+  return m.get(i < 0 ? '' : node.name.slice(0, i)) === NS.mc
+    ? node.name.slice(i + 1) : null;
+}
+
+/**
+ * What the part holds: the largest ids, the nsids, and where new
+ * nodes go (see the header). `info` is filled in.
+ */
+function scanNode(c, m, info) {
+  const l = wName(c, m);
+  const cm = c.attrs.length ? scope(m, c) : m;
+  const up = (k, v) => {
+    if (v !== undefined && v > info[k]) info[k] = v;
+  };
+  if (l === 'abstractNum') {
+    up('abs', idNum(wAttr(c, cm, 'abstractNumId')));
+    for (const k of c.children) {
+      if (!isEl(k) || wName(k, cm) !== 'nsid') continue;
+      const v = wAttr(k, k.attrs.length ? scope(cm, k) : cm, 'val');
+      if (typeof v === 'string') info.nsids.add(v.toUpperCase());
+    }
+    return 'abs';
+  }
+  if (l === 'num') {
+    up('num', idNum(wAttr(c, cm, 'numId')));
+    for (const k of c.children) {
+      if (isEl(k) && wName(k, cm) === 'abstractNumId') {
+        up('abs', idNum(wAttr(k, k.attrs.length ? scope(cm, k) : cm,
+          'val')));
+      }
+    }
+    return 'num';
+  }
+  if (l === 'numPicBullet') return 'abs';
+  if (l === 'numIdMacAtCleanup') return 'end';
+  if (mcName(c, cm) !== 'AlternateContent') return null;
+  let kind = null;
+  for (const alt of c.children) {
+    if (!isEl(alt)) continue;
+    const am = alt.attrs.length ? scope(cm, alt) : cm;
+    for (const k of alt.children) {
+      if (!isEl(k)) continue;
+      const got = scanNode(k, am, info);
+      if (got === 'abs' || got === 'num') kind = kind || got;
+    }
+  }
+  return kind;
+}
+
+/** See the header. */
+export function scan(root, used = []) {
+  const m = rootScope(root);
+  const info = {abs: -1, num: 0, nsids: new Set(), lastAbs: -1,
+    firstNum: -1, lastNum: -1, end: -1, prefixOk: m.get('w') === NS.w};
+  root.children.forEach((c, i) => {
+    if (!isEl(c)) return;
+    const kind = scanNode(c, m, info);
+    if (kind === 'abs') info.lastAbs = i;
+    else if (kind === 'num') {
+      if (info.firstNum < 0) info.firstNum = i;
+      info.lastNum = i;
+    } else if (kind === 'end' && info.end < 0) info.end = i;
+  });
+  for (const u of used) {
+    const v = typeof u === 'number' ? u : idNum(u);
+    if (Number.isInteger(v) && v > info.num) info.num = v;
+  }
+  if (info.abs + 1 > MAX_ID || info.num + 1 > MAX_ID)
+    throw new RangeError('no free numbering id below 2^31');
+  return info;
+}
+
+/** See the header. */
+export function numAt(info, root, min) {
+  const at = info.end >= 0 ? info.end : info.lastNum >= 0
+    ? info.lastNum + 1 : root.children.length;
+  return Math.max(at, min);
+}
+
+/** See the header. */
+export function absAt(info) {
+  let at = info.lastAbs + 1;
+  if (info.firstNum >= 0) at = Math.min(at, info.firstNum);
+  if (info.end >= 0) at = Math.min(at, info.end);
+  return at;
+}
+
+/** See the header. */
+export function numNode(root, numId) {
+  const m = rootScope(root);
+  for (const c of root.children) {
+    if (!isEl(c) || wName(c, m) !== 'num') continue;
+    const cm = c.attrs.length ? scope(m, c) : m;
+    const v = wAttr(c, cm, 'numId');
+    if ((intOf(v) ?? v) === numId) return {node: c, m: cm};
+  }
+  return null;
+}
+
+/** See the header. */
+export function overridesOf({node, m}) {
+  const out = [];
+  for (const c of node.children) {
+    if (!isEl(c) || wName(c, m) !== 'lvlOverride') continue;
+    const cm = c.attrs.length ? scope(m, c) : m;
+    const is = (k, n) => isEl(k) && wName(k, k.attrs.length
+      ? scope(cm, k) : cm) === n;
+    const start = c.children.some((k) => is(k, 'startOverride'));
+    const level = !c.children.some((k) => is(k, 'lvl')) ? null
+      : !start ? c : {name: c.name, attrs: c.attrs, children:
+        c.children.filter((k) => !is(k, 'startOverride'))};
+    out.push({ilvl: ilvlOf(c, cm), node: c, level});
+  }
+  return out;
+}

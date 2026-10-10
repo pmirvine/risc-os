@@ -1,0 +1,140 @@
+// ListGallery - the bullet and numbering definitions !Word gives a
+// new list: Word's own, as ./NumWrite writes them (pure).
+//
+//   BULLETS  6 entries: disc, circle, square, diamond, arrow, check
+//   NUMBERS  6 entries: '1.' (1. a. i.), '1)' (1) a) i)), 'I.'
+//            (I. A. 1.), 'A.' (A. a. i.), 'a)' (a) i) 1)), 'i.'
+//            (i. a. 1.)
+//   HIDDEN   3 entries the galleries do not show, for AutoFormat
+//            as you type (./AutoList): 'dash' (an en dash U+2013 in
+//            Calibri at level 0), 'a.' (a. i. 1.), '(1)' ((1) (a)
+//            (i))
+//   ENTRIES  all of them: bullets, numbers, then the hidden ones
+//   Entry    {id, kind: 'bullet' | 'number', name, levels}
+//   levels   9 Level objects (./NumLevel's shape) for ilvl 0..8:
+//            {ilvl, start: 1, numFmt, lvlText, lvlJc, suff: 'tab',
+//             pPr: {ind: {left: 720 (k + 1), hanging: 360}},
+//             rPr?: {rFonts}} (rPr for bullets only)
+//   entryOf(id)          the entry, or null
+//   kindOf(level)        'bullet' (numFmt bullet) | 'number'
+//   matches(num, id)     true when the Num's level 0 (its override
+//                        first) is the entry's: a bullet showing the
+//                        same glyph (./BulletGlyph), or a number of
+//                        the same format and lvlText, not legal
+//
+// Word's bullet levels cycle U+F0B7 in Symbol, 'o' in Courier New,
+// U+F0A7 in Wingdings. Every entry has its glyph at level 0 (circle
+// 'o', square U+F0A7, Wingdings U+F076 diamond, U+F0D8 arrow, U+F0FC
+// check) and Word's cycle at level k >= 1 (k mod 3), as Word keeps
+// for every library bullet. Numberings cycle their three
+// formats; roman levels are right-aligned (lvlJc right), as Word's.
+// Everything here is frozen: never change it.
+import {fmtOf} from './NumFormat';
+import {bulletText} from './BulletGlyph';
+import {levelAt} from './ListLevel';
+
+const font = (name, cs) => ({rFonts: cs
+  ? {ascii: name, hAnsi: name, cs: name, hint: 'default'}
+  : {ascii: name, hAnsi: name, hint: 'default'}});
+const SYM = ['\uF0B7', font('Symbol')];
+const CN = ['o', font('Courier New', true)];
+const WD = (ch) => [ch, font('Wingdings')];
+const CYCLE = [SYM, CN, WD('\uF0A7')];
+
+const freeze = (o) => {
+  for (const v of Object.values(o)) {
+    if (typeof v === 'object' && v !== null) freeze(v);
+  }
+  return Object.freeze(o);
+};
+
+/** The common part of level k. */
+const base = (k, numFmt, lvlText, lvlJc) => ({ilvl: k, start: 1,
+  numFmt, lvlText, lvlJc, suff: 'tab',
+  pPr: {ind: {left: 720 * (k + 1), hanging: 360}}});
+
+/** A bullet entry: `glyph` ([char, rPr]) at level 0. */
+function bullet(id, name, glyph) {
+  const levels = Array.from({length: 9}, (_, k) => {
+    const [ch, rPr] = k ? CYCLE[k % 3] : glyph;
+    return {...base(k, 'bullet', ch, 'left'),
+      rPr: structuredClone(rPr)};
+  });
+  return {id, kind: 'bullet', name, levels};
+}
+
+/**
+ * A numbering entry: three formats cycling, `pre` before and `end`
+ * after each.
+ */
+function number(id, fmts, end, pre = '') {
+  const levels = Array.from({length: 9}, (_, k) => {
+    const f = fmts[k % 3];
+    return base(k, f, pre + '%' + (k + 1) + end,
+      /Roman$/.test(f) ? 'right' : 'left');
+  });
+  const show = {decimal: '1', lowerLetter: 'a', upperLetter: 'A',
+    lowerRoman: 'i', upperRoman: 'I'};
+  return {id, kind: 'number', levels,
+    name: fmts.map((f) => pre + show[f] + end).join(' ')};
+}
+
+export const BULLETS = freeze([
+  bullet('disc', 'Disc', SYM),
+  bullet('circle', 'Circle', CN),
+  bullet('square', 'Square', CYCLE[2]),
+  bullet('diamond', 'Diamond', WD('\uF076')),
+  bullet('arrow', 'Arrow', WD('\uF0D8')),
+  bullet('check', 'Check mark', WD('\uF0FC')),
+]);
+
+const D = 'decimal', LL = 'lowerLetter', LR = 'lowerRoman';
+const UL = 'upperLetter', UR = 'upperRoman';
+export const NUMBERS = freeze([
+  number('1.', [D, LL, LR], '.'),
+  number('1)', [D, LL, LR], ')'),
+  number('I.', [UR, UL, D], '.'),
+  number('A.', [UL, LL, LR], '.'),
+  number('a)', [LL, LR, D], ')'),
+  number('i.', [LR, LL, D], '.'),
+]);
+
+export const HIDDEN = freeze([
+  bullet('dash', 'Dash', ['\u2013', font('Calibri', true)]),
+  number('a.', [LL, LR, D], '.'),
+  number('(1)', [D, LL, LR], ')', '('),
+]);
+
+export const ENTRIES = Object.freeze([...BULLETS, ...NUMBERS,
+  ...HIDDEN]);
+const BY_ID = new Map(ENTRIES.map((e) => [e.id, e]));
+
+/** See the header. */
+export const entryOf = (id) => BY_ID.get(id) || null;
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** See the header. */
+export const kindOf = (level) => isObj(level) &&
+  fmtOf(level.numFmt) === 'bullet' ? 'bullet' : 'number';
+
+/** The run font of a level, or undefined. */
+const fontOf = (l) => isObj(l.rPr) && isObj(l.rPr.rFonts)
+  ? l.rPr.rFonts.ascii || l.rPr.rFonts.hAnsi : undefined;
+
+/** The glyph a bullet level shows. */
+const shows = (l) => bulletText(typeof l.lvlText === 'string'
+  ? l.lvlText : '', fontOf(l));
+
+/** See the header. */
+export function matches(num, id) {
+  const e = entryOf(id);
+  if (!e || !isObj(num)) return false;
+  const l = levelAt(num, 0);
+  const want = e.levels[0];
+  if (!isObj(l) || kindOf(l) !== e.kind) return false;
+  if (e.kind === 'bullet') return shows(l) === shows(want);
+  return l.isLgl !== true && l.numFmt === want.numFmt &&
+    l.lvlText === want.lvlText;
+}

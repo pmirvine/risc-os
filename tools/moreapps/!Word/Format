@@ -2,16 +2,29 @@
 // and the commands of ./FormatSet.
 //
 //   query(doc, sel, pending?) -> {bold, italic, underline, strike,
-//       size, family, color, highlight, vert, align, indentLeft,
-//       indentFirst, indentRight, spaceBefore, spaceAfter,
-//       lineSpacing, style}
+//       size, family, color, highlight, vert, charShade, align,
+//       indentLeft, indentFirst, indentRight, spaceBefore,
+//       spaceAfter, lineSpacing, style, contextual, keepNext,
+//       keepLines, widowControl, pageBreakBefore, listKind,
+//       listEntry, paraShade, borders}
 //
 // Each value is what the RESOLVED formatting (styles, defaults and
 // direct formatting: ./Styles) gives, or null when it is mixed (or
 // nothing is there: a selection of kept blocks only, a position not
 // in the document). Values and units: ./FormatEff (size in points,
 // family a Word font name, color 'RRGGBB' or 'auto', align
-// 'left'|'center'|'right'|'both', indents and spacing in twips).
+// 'left'|'center'|'right'|'both', indents and spacing in twips,
+// lineSpacing {line, rule}: rule 'auto' (line in 240ths of a line),
+// 'exact' or 'atLeast' (line in twips); the flags true or false;
+// listKind 'bullet' | 'number' and listEntry a ./ListGallery id:
+// ./ListMake listFacts, null for a paragraph in no
+// list, as for mixed ones; charShade and paraShade the shading in
+// force, {val, color?, fill?} as ./ReadPropsMore reads it, or
+// 'none'; borders the sides drawn, {top?, left?, bottom?, right?,
+// between?} each {val, sz?, space?, color?...}, {} for none: nil
+// and none sides left out; whole elements from the highest layer
+// that gives them, read best effort when kept raw:
+// ./BorderResolve).
 //
 // Character values come from the selected characters; paragraph
 // values from the paragraphs paragraph formatting would apply to
@@ -29,11 +42,15 @@ import {resolver, charOf, paraOf} from './FormatEff';
 import {touched, caretAt, pieces} from './FormatOps';
 import {effPara} from './ParaInd';
 import {onRun} from './Pending';
+import {listFacts} from './ListMake';
+import {paraBorders, runShade, edgeOf} from './BorderResolve';
 
 const CHAR = ['bold', 'italic', 'underline', 'strike', 'size',
-  'family', 'color', 'highlight', 'vert'];
+  'family', 'color', 'highlight', 'vert', 'charShade'];
 const PARA = ['align', 'indentLeft', 'indentFirst', 'indentRight',
-  'spaceBefore', 'spaceAfter', 'lineSpacing', 'style'];
+  'spaceBefore', 'spaceAfter', 'lineSpacing', 'style', 'contextual',
+  'keepNext', 'keepLines', 'widowControl', 'pageBreakBefore',
+  'listKind', 'listEntry', 'paraShade', 'borders'];
 
 /** All null. */
 function nothing() {
@@ -61,7 +78,8 @@ export function query(doc, sel, pending) {
   const seen = new Map();
   for (const en of list) {
     if (en.para) {
-      pa = fold(pa, paraOf(effPara(res, doc, en.p), en.p, res));
+      pa = fold(pa, {...paraOf(effPara(res, doc, en.p), en.p, res),
+        ...listFacts(doc, en.p), ...boxOf(res.styles, en.p)});
     }
     if (collapsed(sel)) continue;
     for (const r of en.p.runs) {
@@ -73,7 +91,8 @@ export function query(doc, sel, pending) {
       if (!done) seen.set(rr, done = new Set());
       if (done.has(pr)) continue;
       done.add(pr);
-      ch = fold(ch, charOf(rr, en.p, res));
+      ch = fold(ch, {...charOf(rr, en.p, res),
+        charShade: shade(runShade(res.styles, en.p, r))});
     }
   }
   if (!ch) {
@@ -81,10 +100,23 @@ export function query(doc, sel, pending) {
       : {head: orderedFrom(list)});
     if (at) {
       const run = collapsed(sel) ? onRun(at.base, pending) : at.base;
-      ch = charOf(res.run(at.p, run.rPr, run.rStyle), at.p, res);
+      ch = {...charOf(res.run(at.p, run.rPr, run.rStyle), at.p, res),
+        charShade: shade(runShade(res.styles, at.p, run))};
     }
   }
   return {...out, ...(ch || {}), ...(pa || {})};
+}
+
+const shade = (s) => (s && s.val !== 'nil' ? s : 'none');
+
+/** paraShade and borders of paragraph p (see the header). */
+function boxOf(styles, p) {
+  const {pBdr, shd} = paraBorders(styles, p);
+  const borders = {};
+  for (const k of ['top', 'left', 'bottom', 'right', 'between']) {
+    if (edgeOf(pBdr[k])) borders[k] = pBdr[k];
+  }
+  return {paraShade: shade(shd), borders};
 }
 
 /** The selection's start, from touched()'s first entry. */

@@ -1,0 +1,175 @@
+// ListRestart - Restart / Start at and Continue numbering, and what
+// ./ListMake's commands share (pure; ./ListMake exports the commands
+// too: one undo step each, none when nothing changes).
+//
+//   restart(d, typing, sel, start = 1, pending) -> {sel, pending}
+//       the first paragraph the selection formats (a caret's), when
+//       in a list: a new w:num on its abstract with a startOverride
+//       of `start` (0..2^31 - 1) for its level (NumWrite addRestart);
+//       it and every later paragraph of its numId move to the new one;
+//       nothing (no undo step, no new w:num) when no label would
+//       change (Restart at 1 on a list's first item, pressed again)
+//   continueList(d, typing, sel, pending) -> {sel, pending}
+//       the run of that paragraph's numId (its paragraphs around it,
+//       with only paragraphs in no list and kept blocks between,
+//       up to a paragraph of another list either side) joins the
+//       previous list of the same kind (the nearest list paragraph
+//       before the run with another numId and that kind; ones
+//       numbered by their style alone skipped): every paragraph of
+//       the run with that numId takes the previous numId. Nothing
+//       before it: nothing changes (no undo step)
+//   numKind(num) -> 'bullet' | 'number'  the kind of a list: that of
+//       its level 0 (the first level defined), as ListGallery.matches
+//       looks at level 0; a numbered list with bullet sublevels is a
+//       numbered list
+//   partOps(doc, part, numbering) -> setDocPart ops for what differs
+//       from the doc: numbering, numberingPart, rels (in that order)
+//   result(sel, pending) -> {sel, pending}: pending kept for a caret
+//   styleOnly(f, p)  whether list f (ParaInd.listInfo) of paragraph
+//       p comes from its style alone (no direct numPr)
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {touched, runOps} from './FormatOps';
+import {listInfo} from './ParaInd';
+import {kindOf} from './ListGallery';
+import {ensurePart, addRestart} from './NumWrite';
+import {MAX_ID} from './NumScan';
+import {layerNumPr} from './StylesNum';
+import {levelsIn} from './ListLevel';
+import {usedNumIds} from './ListUsed';
+import {labels} from './ListNumbers';
+
+/** See the header. */
+export function numKind(num) {
+  const ls = levelsIn(num);
+  return kindOf(ls[0] || ls.find(Boolean));
+}
+
+/** See the header. */
+export function partOps(doc, part, numbering) {
+  const ops = [];
+  const set = (key, value) => ops.push({op: 'setDocPart', key, value});
+  if (numbering !== doc.numbering) set('numbering', numbering);
+  if (part.numberingPart !== (doc.meta || {}).numberingPart)
+    set('numberingPart', part.numberingPart);
+  if (part.rels !== doc.rels) set('rels', part.rels);
+  return ops;
+}
+
+/** See the header (as ./FormatPara.paraCommand). */
+export const result = (sel, pending) =>
+  ({sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY});
+
+/** See the header. */
+export const styleOnly = (f, p) => f.fromStyle && !layerNumPr(p.pPr);
+
+/** The first paragraph the selection formats, in a list: {en, f}. */
+function target(doc, sel) {
+  const en = (touched(doc, sel) || []).find((x) => x.para);
+  const f = en ? listInfo(doc, en.p) : null;
+  return f ? {en, f} : null;
+}
+
+/** setProps ops: from `at` on, numId `from` -> `to` (level kept). */
+function moveOps(doc, at, from, to) {
+  const ops = [];
+  const secs = doc.sections;
+  for (let s = at.en.s; s < secs.length; s++) {
+    const bs = secs[s].blocks;
+    for (let i = s === at.en.s ? at.en.i : 0; i < bs.length; i++) {
+      if (bs[i].type !== 'p') continue;
+      const f = listInfo(doc, bs[i]);
+      if (!f || f.numId !== from) continue;
+      ops.push({op: 'setProps', block: [s, i],
+        pPr: {numPr: {numId: to, ilvl: f.ilvl}}});
+    }
+  }
+  return ops;
+}
+
+/** Whether numbering and ops (setProps numPr) change no label. */
+function sameLabels(doc, numbering, ops) {
+  const np = new Map(ops.map((o) => [o.block.join(), o.pPr.numPr]));
+  const sections = doc.sections.map((sec, s) => ({...sec, blocks:
+    sec.blocks.map((b, i) => {
+      const x = np.get(s + ',' + i);
+      return x ? {...b, pPr: {...b.pPr, numPr: x}} : b;
+    })}));
+  const a = labels(doc);
+  const b = labels({...doc, numbering, sections});
+  if (a.size !== b.size) return false;
+  for (const [id, l] of a) {
+    const m = b.get(id);
+    if (!m || m.text !== l.text) return false;
+  }
+  return true;
+}
+
+/** See the header. */
+export function restart(d, typing, sel, start = 1, pending) {
+  if (!Number.isSafeInteger(start) || start < 0 || start > MAX_ID)
+    fail('bad start ' + String(start));
+  const doc = d.doc;
+  const at = target(doc, sel);
+  let ops = [];
+  if (at) {
+    const part = ensurePart(doc);
+    const add = addRestart(part.numbering, at.f.numId, at.f.ilvl,
+      start, {usedNumIds: usedNumIds(doc)});
+    const moves = moveOps(doc, at, at.f.numId, add.numId);
+    if (!sameLabels(doc, add.numbering, moves)) {
+      ops = [...partOps(doc, part, add.numbering), ...moves];
+    }
+  }
+  runOps(d, typing, ops);
+  return result(sel, pending);
+}
+
+/** Every paragraph's place, in document order: [{s, i, p}]. */
+function paras(doc) {
+  const out = [];
+  doc.sections.forEach((sec, s) => sec.blocks.forEach((p, i) => {
+    if (p.type === 'p') out.push({s, i, p});
+  }));
+  return out;
+}
+
+/** See the header. */
+export function continueList(d, typing, sel, pending) {
+  const doc = d.doc;
+  const at = target(doc, sel);
+  const ops = [];
+  if (at) {
+    const ps = paras(doc);
+    const old = at.f.numId, kind = numKind(at.f.num);
+    const info = ps.map(() => undefined);
+    const f = (k) => info[k] === undefined
+      ? (info[k] = listInfo(doc, ps[k].p)) : info[k];
+    const here = ps.findIndex((x) => x.p === at.en.p);
+    // the run: stops at a paragraph of another list
+    const same = (k) => !f(k) || f(k).numId === old;
+    let a = here, b = here;
+    for (let k = here - 1; k >= 0 && same(k); k--) {
+      if (f(k)) a = k;
+    }
+    for (let k = here + 1; k < ps.length && same(k); k++) {
+      if (f(k)) b = k;
+    }
+    let prev = null;
+    for (let k = a - 1; k >= 0 && !prev; k--) {
+      const g = f(k);
+      if (g && g.numId !== old && numKind(g.num) === kind &&
+        !styleOnly(g, ps[k].p)) prev = g;
+    }
+    for (let k = a; prev && k <= b; k++) {
+      if (f(k) && f(k).numId === old) {
+        ops.push({op: 'setProps', block: [ps[k].s, ps[k].i],
+          pPr: {numPr: {numId: prev.numId, ilvl: f(k).ilvl}}});
+      }
+    }
+  }
+  runOps(d, typing, ops);
+  return result(sel, pending);
+}

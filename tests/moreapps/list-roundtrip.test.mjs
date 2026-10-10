@@ -10,7 +10,11 @@
 // xmllint/wml.xsd (when available, for one seed) add no error; undo
 // of everything gives back the opened model and its bytes. Also: the
 // numbering part is written with the very bytes it had (editing
-// changes only paragraphs' numPr, never the definitions), and the
+// changes only paragraphs' numPr, never the definitions), except in a
+// run that made lists (Bullets, Numbering, Restart: ./newlist-
+// commands.mjs, a few in the mix of the seeds with bit 1 set): there every original child of the
+// numbering root must come back serialized identically and in order,
+// the new ones only added (roundtrip-lib's "grown" rule). And the
 // labels (./ListNumbers) can be worked out after every step.
 //
 // Documents: the list fixtures (list-fixtures.mjs: bullets,
@@ -35,6 +39,7 @@ import * as S from '../../tools/moreapps/!Word/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {LIST_DOCS} from './list-fixtures.mjs';
+import {makeCommand, MAKE_KINDS} from './newlist-commands.mjs';
 import {rng} from './word-docs.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
@@ -72,7 +77,7 @@ function randSel(rd, d) {
 }
 
 /** One random command; returns [kind, sel after]. */
-function command(rd, d, t, sel) {
+function command(rd, d, t, sel, every, makes) {
   const x = rd();
   if (x < 0.07) {
     let n = 1 + Math.floor(rd() * 4);
@@ -82,6 +87,7 @@ function command(rd, d, t, sel) {
     return ['undo/redo', null];
   }
   if (!sel) return ['none', null];
+  if (makes && x < 0.2) return makeCommand(rd, d, t, sel, every);
   const key = (id) => run(id, d, t, sel) || sel;
   if (x < 0.22) return ['tab', key('tab')];
   if (x < 0.34) return ['shiftTab', key('shiftTab')];
@@ -105,6 +111,7 @@ function listAll(d, seed, {every = false} = {}) {
   const t = new Typing(d, {now: () => (now += 2000)});
   let sel = null;
   const counts = {};
+  let grows = false;
   const t0 = Date.now();
   let k = 0;
   for (; k < STEPS; k++) {
@@ -113,7 +120,7 @@ function listAll(d, seed, {every = false} = {}) {
     let kind = '?';
     const depth = d.undoDepth;
     try {
-      [kind, sel] = command(rd, d, t, sel);
+      [kind, sel] = command(rd, d, t, sel, every, (seed >>> 1) & 1);
       if (every) {
         for (const b of allBlocks(d)) checkBlock(b);
         labels(d.doc);
@@ -123,12 +130,14 @@ function listAll(d, seed, {every = false} = {}) {
       throw e;
     }
     counts[kind] = (counts[kind] || 0) + 1;
-    if (d.undoDepth > depth)
+    if (d.undoDepth > depth) {
       counts[kind + ' changed'] = (counts[kind + ' changed'] || 0) + 1;
+      if (MAKE_KINDS.includes(kind)) grows = true;
+    }
   }
   for (const b of allBlocks(d)) checkBlock(b);
   labels(d.doc);
-  return {steps: k, capped: k < STEPS, counts};
+  return {steps: k, capped: k < STEPS, counts, grows};
 }
 
 const {xsd, note: xsdNote} = schema();
@@ -138,7 +147,7 @@ const NUMBERED = FIXTURES.filter(([n]) => /numbering/.test(n));
 
 describe('list round trip: generated documents', () => {
   const total = {};
-  let kept = 0, asRead = 0;
+  let kept = 0, asRead = 0, grown = 0;
   for (const [name, make] of [...LIST_DOCS, ...NUMBERED]) {
     it(name, async () => {
       const bytes = await make();
@@ -150,6 +159,7 @@ describe('list round trip: generated documents', () => {
           total[c] = (total[c] || 0) + n;
         kept += res.kept;
         asRead += res.keptAsRead;
+        grown += res.grown;
       }
     });
   }
@@ -157,14 +167,16 @@ describe('list round trip: generated documents', () => {
     'numbering part kept byte for byte', () => {
     console.log('# list commands (generated): ' + JSON.stringify(total));
     console.log(`# numbering part: ${kept} writes identical to the ` +
-      `unedited write, ${asRead} also to the file as read`);
+      `unedited write, ${asRead} also to the file as read, ${grown} ` +
+      'grown by list-making commands (originals kept in order)');
     for (const kind of KINDS) {
       assert.ok(total[kind] > 5, kind + ' ran: ' + JSON.stringify(total));
       if (kind !== 'undo/redo')
         assert.ok(total[kind + ' changed'] > 0, kind + ' changed');
     }
     const runs = (LIST_DOCS.length + NUMBERED.length) * 4;
-    assert.equal(kept, runs, 'every run had a numbering part');
+    assert.equal(kept + grown, runs, 'every run had a numbering part');
+    assert.ok(grown > 0 && kept > 0, 'both rules were used');
     assert.equal(asRead, kept, 'generated parts: as read too');
   });
   it('schema check available', {skip: xsdNote || false}, () => {});

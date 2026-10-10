@@ -1,0 +1,160 @@
+// ReadPropsMore - value readers and the readers of the larger
+// property elements, for ./ReadProps (and ./ReadSect). Each reader
+// gets (attrs, node, map) and returns the model value, or undefined
+// when the element is not understood completely (it is then kept
+// raw, whole, in extra: see ./ReadProps).
+//
+//   intOf(s), onOffOf(v)  an attribute value -> integer / boolean
+//   tabs   w:tabs -> [{val, pos, leader?}] in file order: only w:tab
+//          children (white space between them allowed), each with
+//          w:val (TAB_VALS: Strict start/end kept as written), w:pos
+//          an integer and maybe w:leader (LEADERS); at most MAX_STOPS,
+//          each pos within +-MAX_POS and no pos twice (the commands
+//          could not keep such stops: the w:tabs stays raw instead)
+//   pBdr   w:pBdr -> {top?, left?, bottom?, right?, between?, bar?}
+//          (in a Strict document, ./Ns isStrict, the sides w:start
+//          and w:end are left and right, and a w:left / w:right
+//          keeps the w:pBdr raw; Transitional the other way round)
+//          each side {val, sz?, space?, color?, shadow?, frame?}:
+//          sz and space integers >= 0, color 'auto' or six hex
+//          digits as written, shadow and frame booleans (any other
+//          attribute, such as w:themeColor, keeps the w:pBdr raw)
+//   shd    w:shd -> {val, color?, fill?} (w:themeFill... keep it raw)
+//   sectType  w:type -> 'nextPage' ... (SECT_TYPES)
+//
+// SECURITY: names from the file are only compared with fixed lists
+// and used as Map keys; model keys come from those lists.
+import {wName, wAttrs, isEl, blank, isStrict} from './Ns';
+
+const INT = /^-?(0|[1-9][0-9]*)$/;
+
+/** The integer an attribute value spells exactly, or undefined. */
+export function intOf(s) {
+  if (typeof s !== 'string' || !INT.test(s)) return undefined;
+  const n = Number(s);
+  return Number.isSafeInteger(n) ? n : undefined;
+}
+
+const ON = ['1', 'true', 'on'];
+const OFF = ['0', 'false', 'off'];
+
+/** true / false for an ST_OnOff value, else undefined. */
+export function onOffOf(v) {
+  return ON.includes(v) ? true : OFF.includes(v) ? false : undefined;
+}
+
+export const TAB_VALS = ['left', 'center', 'right', 'decimal', 'bar',
+  'clear', 'num', 'start', 'end'];
+export const LEADERS = ['none', 'dot', 'hyphen', 'underscore', 'heavy',
+  'middleDot'];
+export const SIDES = ['top', 'left', 'bottom', 'right', 'between',
+  'bar'];
+export const SECT_TYPES = ['nextPage', 'continuous', 'evenPage',
+  'oddPage', 'nextColumn'];
+export const MAX_STOPS = 256;
+/** A side's element name in a Strict document, where it differs. */
+export const STRICT_SIDE = new Map([['left', 'start'],
+  ['right', 'end']]);
+export const MAX_POS = 31680;
+
+/** A border or shading name (ST_Border, ST_Shd): letters, digits. */
+export const NAME = /^[A-Za-z][A-Za-z0-9]{0,63}$/;
+/** ST_HexColor as the reader keeps it. */
+export const HEX = /^(auto|[0-9A-Fa-f]{6})$/;
+
+const empty = (node) => node.children.length === 0;
+
+/** The element children of node, or null if it has anything else. */
+function elements(node) {
+  const out = [];
+  for (const c of node.children) {
+    if (typeof c === 'string' && blank(c)) continue;
+    if (!isEl(c)) return null;
+    out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Attributes `a` (Map) read by `spec` (attribute -> reader of the
+ * string value, giving undefined when bad) into an object; the
+ * names in `need` must be there. undefined if anything else.
+ */
+function attrsBy(a, spec, need) {
+  const o = {};
+  for (const [k, v] of a) {
+    const read = spec.get(k);
+    const x = read ? read(v) : undefined;
+    if (x === undefined) return undefined;
+    o[k] = x;
+  }
+  return need.every((k) => o[k] !== undefined) ? o : undefined;
+}
+
+const oneOf = (list) => (v) => list.includes(v) ? v : undefined;
+const match = (re) => (v) => re.test(v) ? v : undefined;
+const uint = (v) => {
+  const n = intOf(v);
+  return n !== undefined && n >= 0 ? n : undefined;
+};
+
+const TAB = new Map([['val', oneOf(TAB_VALS)], ['leader',
+  oneOf(LEADERS)], ['pos', intOf]]);
+
+/** See the header. */
+export const tabs = (a, node, m) => {
+  const kids = a.size === 0 ? elements(node) : null;
+  if (!kids || kids.length > MAX_STOPS) return undefined;
+  const out = [];
+  const seen = new Set();
+  for (const c of kids) {
+    const ca = wName(c, m) === 'tab' ? wAttrs(c, m) : null;
+    const t = ca && empty(c) ? attrsBy(ca, TAB, ['val', 'pos'])
+      : undefined;
+    if (!t || Math.abs(t.pos) > MAX_POS || seen.has(t.pos)) {
+      return undefined;
+    }
+    seen.add(t.pos);
+    out.push(t.leader === undefined ? {val: t.val, pos: t.pos}
+      : {val: t.val, pos: t.pos, leader: t.leader});
+  }
+  return out;
+};
+
+const SIDE = new Map([['val', match(NAME)], ['sz', uint],
+  ['space', uint], ['color', match(HEX)], ['shadow', onOffOf],
+  ['frame', onOffOf]]);
+
+/** The w:pBdr child names (Transitional, Strict) -> the sides. */
+const SIDE_OF = new Map(SIDES.map((k) => [k, k]));
+const SIDE_OF_S = new Map(SIDES.map((k) => [STRICT_SIDE.get(k) || k,
+  k]));
+
+/** See the header. */
+export const pBdr = (a, node, m) => {
+  const kids = a.size === 0 ? elements(node) : null;
+  if (!kids) return undefined;
+  const names = isStrict(m) ? SIDE_OF_S : SIDE_OF;
+  const o = {};
+  for (const c of kids) {
+    const n = wName(c, m);
+    const l = n === null ? undefined : names.get(n);
+    if (l === undefined || o[l] !== undefined) return undefined;
+    const ca = wAttrs(c, m);
+    const s = ca && empty(c) ? attrsBy(ca, SIDE, ['val']) : undefined;
+    if (!s) return undefined;
+    o[l] = s;
+  }
+  return o;
+};
+
+const SHD = new Map([['val', match(NAME)], ['color', match(HEX)],
+  ['fill', match(HEX)]]);
+
+/** See the header. */
+export const shd = (a, node) =>
+  empty(node) ? attrsBy(a, SHD, ['val']) : undefined;
+
+/** See the header. */
+export const sectType = (a, node) => empty(node) && a.size === 1 &&
+  SECT_TYPES.includes(a.get('val')) ? a.get('val') : undefined;

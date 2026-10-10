@@ -1,0 +1,149 @@
+// ParaPatch - the Paragraph dialogue box's values (./ParaBox) from a
+// query, and the paraPatch they make.
+//
+//   fill(q) -> {name: value}   the box's values for the query
+//       q = ./Format.query's: a mixed value (null) gives undefined,
+//       a field left empty (an option off, untouched)
+//   patch(values, q) -> {patch, bad}
+//       patch  the ./FormatCheck.paraPatch of what the user changed
+//              (the values against fill(q), compared as the fields
+//              show them: a length rounded to a hundredth of an
+//              inch is not a change); {} when nothing changed. An
+//              untouched mixed field (undefined) changes nothing
+//       bad    the names of fields refused: text that is not a value
+//              (null) where the value counts, At out of LIMITS
+//   NAMES      the control names:
+//       align left right special by before after spacing at noctx
+//       widow keepnext keeplines pagebreak
+//       left right by: twips (inches); before after: twips (points);
+//       align: ALIGNS id; special: SPECIALS id; spacing: LINES id;
+//       at: lines for Multiple, points for At least and Exactly
+//   ALIGNS SPECIALS LINES  [{id, text}] the popups' choices
+//   LIMITS  {lines: [0.5, 4], points: [1.5, 1584]}: At's range, as
+//       the screen draws it (./Fmt clamps auto spacing to 0.5..4
+//       lines; ./ParaSpace 2..2112 px exact and at least); Word
+//       takes up to 132 lines
+// Special: First line / Hanging with By (empty: half an inch); None
+// is a first line of 0. Line spacing: Single 240, 1.5 lines 360,
+// Double 480, Multiple At lines (At empty: 3), At least / Exactly
+// At points (empty: 12). Pure: no desktop services.
+import {formatLength, formatPoints} from 'wimplib/Units';
+import {formatNumber} from 'wimplib/NumberField';
+
+export const NAMES = Object.freeze(['align', 'left', 'right',
+  'special', 'by', 'before', 'after', 'spacing', 'at', 'noctx',
+  'widow', 'keepnext', 'keeplines', 'pagebreak']);
+export const ALIGNS = Object.freeze([
+  {id: 'left', text: 'Left'}, {id: 'center', text: 'Centre'},
+  {id: 'right', text: 'Right'}, {id: 'both', text: 'Justify'}]);
+export const SPECIALS = Object.freeze([
+  {id: 'none', text: '(none)'}, {id: 'first', text: 'First line'},
+  {id: 'hanging', text: 'Hanging'}]);
+export const LINES = Object.freeze([
+  {id: 'single', text: 'Single'}, {id: '1.5', text: '1.5 lines'},
+  {id: 'double', text: 'Double'}, {id: 'atleast', text: 'At least'},
+  {id: 'exactly', text: 'Exactly'},
+  {id: 'multiple', text: 'Multiple'}]);
+export const LIMITS = Object.freeze({lines: [0.5, 4],
+  points: [1.5, 1584]});
+
+const FIXED = {single: 240, '1.5': 360, double: 480};
+const FLAGS = {noctx: 'contextual', widow: 'widowControl',
+  keepnext: 'keepNext', keeplines: 'keepLines',
+  pagebreak: 'pageBreakBefore'};
+const KEY = {noctx: 'contextualSpacing', widow: 'widowControl',
+  keepnext: 'keepNext', keeplines: 'keepLines',
+  pagebreak: 'pageBreakBefore'};
+const HALF_INCH = 720, PER_LINE = 240, PER_POINT = 20;
+
+const un = (v) => (v === null ? undefined : v);
+
+/** See the header. */
+export function fill(q) {
+  const out = {align: un(q.align), left: un(q.indentLeft),
+    right: un(q.indentRight), before: un(q.spaceBefore),
+    after: un(q.spaceAfter)};
+  const f = un(q.indentFirst);
+  out.special = f === undefined ? undefined : f > 0 ? 'first'
+    : f < 0 ? 'hanging' : 'none';
+  out.by = f ? Math.abs(f) : undefined;
+  const ls = un(q.lineSpacing);
+  out.spacing = out.at = undefined;
+  if (ls && ls.rule === 'auto') {
+    const id = Object.keys(FIXED).find((k) => FIXED[k] === ls.line);
+    out.spacing = id ?? 'multiple';
+    out.at = id ? undefined : ls.line / PER_LINE;
+  } else if (ls) {
+    out.spacing = ls.rule === 'exact' ? 'exactly' : 'atleast';
+    out.at = ls.line / PER_POINT;
+  }
+  for (const [k, from] of Object.entries(FLAGS)) out[k] = un(q[from]);
+  return out;
+}
+
+/** The text a field shows for v (to tell a change from a rounding). */
+const show = (k, v) => {
+  if (v === undefined || v === null) return '';
+  if (k === 'at') return formatNumber(v, 2);
+  if (k === 'before' || k === 'after') return formatPoints(v);
+  if (['left', 'right', 'by'].includes(k)) return formatLength(v);
+  return String(v);
+};
+
+/** See the header. */
+export function patch(vals, q) {
+  const was = fill(q), out = {}, bad = [];
+  const need = (k) => {
+    const sp = vals.spacing;
+    if (k === 'at') return sp === 'multiple' || sp === 'atleast' ||
+      sp === 'exactly';
+    if (k === 'by') return vals.special === 'first' ||
+      vals.special === 'hanging';
+    return true;
+  };
+  for (const k of NAMES) {
+    if (vals[k] === null && need(k)) bad.push(k);
+  }
+  const changed = (k) => vals[k] !== undefined && vals[k] !== null &&
+    show(k, vals[k]) !== show(k, was[k]);
+  const sub = (k, o) => { out[k] = {...out[k], ...o}; };
+  if (changed('align')) out.jc = vals.align;
+  if (changed('left')) sub('ind', {left: vals.left});
+  if (changed('right')) sub('ind', {right: vals.right});
+  const s = vals.special ?? was.special;
+  if (s !== undefined && vals.special !== null &&
+    (changed('special') || (s !== 'none' && changed('by')))) {
+    const by = vals.by ?? was.by ?? HALF_INCH;
+    if (s === 'hanging' && by) sub('ind', {hanging: by});
+    else sub('ind', {firstLine: s === 'none' ? 0 : by});
+  }
+  if (changed('before')) sub('spacing', {before: vals.before});
+  if (changed('after')) sub('spacing', {after: vals.after});
+  line(vals, was, changed, sub, bad);
+  for (const k of Object.keys(KEY)) {
+    if (vals[k] !== undefined && vals[k] !== null &&
+      vals[k] !== was[k]) out[KEY[k]] = !!vals[k];
+  }
+  return bad.length ? {patch: {}, bad} : {patch: out, bad};
+}
+
+/** The line spacing part (see the header). */
+function line(vals, was, changed, sub, bad) {
+  const sp = vals.spacing;
+  if (sp === undefined || sp === null) return;
+  const pts = sp === 'atleast' || sp === 'exactly';
+  if (!(sp in FIXED) && !pts && sp !== 'multiple') return;
+  const uses = !(sp in FIXED);
+  if (!changed('spacing') && !(uses && changed('at'))) return;
+  if (sp in FIXED) {
+    sub('spacing', {line: FIXED[sp], lineRule: 'auto'});
+    return;
+  }
+  const dflt = was.spacing === sp ? was.at : undefined;
+  const at = vals.at ?? dflt ?? (pts ? 12 : 3);
+  const [lo, hi] = pts ? LIMITS.points : LIMITS.lines;
+  if (vals.at === null) return;
+  if (!(at >= lo && at <= hi)) { bad.push('at'); return; }
+  sub('spacing', {line: Math.round(at * (pts ? PER_POINT : PER_LINE)),
+    lineRule: pts ? (sp === 'exactly' ? 'exact' : 'atLeast') : 'auto'});
+}

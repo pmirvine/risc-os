@@ -216,23 +216,56 @@ caret in the core), with Enter, Shift-Enter, Tab, Backspace, Delete, Ctrl-Backsp
 undo and redo (Ctrl-Z, Ctrl-Y or Ctrl-Shift-Z, or the Edit menu; a word is one step, 1000 steps are kept); a `*` in
 the title shows unsaved changes (Save clears it). To try it, double-click a `.docx`, click
 in the text, type, and press Ctrl-Z. Selected text can be **formatted** with Word's keys (Ctrl-B/I/U, Ctrl-L/E/R/J,
-Ctrl-Shift->/<, Ctrl-=, Ctrl-M, Ctrl-Space) or the window menu's Format submenu (font, size, colour, highlight,
+Ctrl-Shift->/<, Ctrl-=, Ctrl-M, Ctrl-Space; Shift-F3 changes the case of the selection or of the caret's word: capitals, small letters, Title Case; `$.Docs.Word`, part 5) or the window menu's Format submenu (font, size, colour, highlight, Change case >,
 alignment, indent, the paragraph styles the document has, more colours as swatches or RRGGBB) or the **toolbar**
 across the window's top (style, font and size fields with popups, bigger/smaller, B I U S, superscript/subscript, text
 colour and highlight, alignment, indent, clear formatting: pressed in or filled in from the selection); at a caret a
 character format applies to the text typed next (moving the caret, undo or Enter forgets it). The text of a link,
 field, tracked change or content control is not changed by formatting. A **ruler** under the toolbar shows the
 paragraph's indents: drag its markers (first line, hanging, left, right; 1/16-inch steps, Shift for free) to indent
-every selected paragraph in one undo step; Format > Ruler hides it (margins are shown but not editable; tab stops are
-not shown). The window menu's **Zoom** (50% to 200%, Zoom in/out) or Ctrl+wheel shows the page larger or smaller, per
+every selected paragraph in one undo step; it shows the tab stops too (a style's grey): click the ruler to add one of
+the kind in the box at its left end (click the box: left, centre, right, decimal), drag one to move it or down off the
+ruler to remove it (a paragraph with stops !Word keeps as the file has them, or over 64 of its own, beeps instead; Format > Tabs... opens the Tabs box for numbers, leaders, bars and the document's default tab stop; `$.Docs.Word`, part 6); Format > Ruler hides it (margins are shown but not editable). Format > Borders and shading... draws lines round the selected paragraphs and a fill behind them, or behind the selected text only, in one undo step (borders or shading the file gives in theme colours are kept as they are: changing them beeps; paragraphs with the same borders and indents are drawn as one box; `$.Docs.Word`, part 6). The window menu's **Zoom** (50% to 200%, Zoom in/out) or Ctrl+wheel shows the page larger or smaller, per
 window (no zoom keys; Ctrl+= and Ctrl+Shift+= are subscript and superscript). To try formatting: open a `.docx`,
 select some words, press Ctrl-B or choose Format > Colour, drag a ruler marker, and Ctrl+wheel; Ctrl-Z undoes each.
 **Lists** show their bullets and numbers as Word would (still to be checked in real Word; bullets from Symbol/Wingdings drawn as Unicode shapes; 1. a) i.
 I. 01 1st; nine-level multilevel lists, legal 1.1.1, headings numbered by their styles; Word's level indents), renumbered
 live as you edit; Enter continues a list, Tab / Shift-Tab at an item's start change its level (Shift-Tab anywhere in an
 item), Backspace at an item's start takes its number away first, and Format > List has Demote, Promote and Remove from
-list. To try lists: open a `.docx` with a numbered list, click at the start of an item and press Tab, Shift-Tab, then
-Backspace. Lists cannot be created, nor their numbering changed, yet.
+list. **New lists:** the toolbar's second row has Bullets and Numbering buttons, each with an arrow opening a gallery (six
+bullets, six numberings, None); Ctrl-Shift-L makes or removes a bulleted list; Format > List > Bullets > / Numbering >
+give the same galleries, and Restart at 1, Continue numbering and Set numbering value... (a small box) change where a list
+counts from. Typing `*`, `-`, `>`, `1.`, `1)`, `(1)`, `a.`, `A.`, `i.` and the like and a space (or Tab) at the start of
+a paragraph makes it a list item (Ctrl-Z gives back what was typed; Format > AutoFormat lists turns it off, kept in
+`Choices:Word`). The definitions !Word writes are Word's own gallery lists and are still to be checked in real Word. To
+try lists: open a `.docx` with a numbered list, click at the start of an item and press Tab, Shift-Tab, then Backspace;
+or click Numbering in a new document and type. A list's bullets and numbers cannot be defined by you yet, and list items
+pasted into another document become plain paragraphs (`$.Docs.Word`, part 7).
+**Page and section breaks:** the window menu's *Insert* item (after Edit) has Page break (Ctrl-Enter, Ctrl on a Mac too),
+Section break > Next page / Continuous, Symbol... (a window of characters: Latin-1, Latin Extended-A, Greek, Cyrillic, punctuation,
+currency, letterlike and fractions, arrows, maths and shapes, with a Recently used row; click one and Insert, or double-click)
+and Special character > (dashes, quotes, copyright and trademark signs, degree, the no-break space on Ctrl-Shift-Space,
+the no-break hyphen on Ctrl-Shift-- and the optional hyphen), Hyperlink... (Ctrl-K, Cmd-K on a Mac: insert, edit or
+remove a link to an http, https, mailto or ftp address or to a bookmark; never opened or fetched; Ctrl-click on a link
+to a bookmark goes there; Edit hyperlink and Remove link on a link) and Bookmark... (Ctrl-Shift-F5: add a bookmark round the selection, Go to or Delete one by name;
+Word's naming rules; the caret keys never stop at a bookmark and Backspace / Delete never delete one; an optional hyphen is an ordinary
+character for them). A page break ends its paragraph (the rest starts the next, as Enter does) and shows as a dotted rule
+labelled "Page break"; a section break shows as a double dotted band labelled "Section break (Next page)" or "(Continuous)"
+under the last paragraph of the section, whose properties (page size, margins, headers, page-number start) the section
+before the break copies. Delete at a section's end or Backspace at the start of the next one takes the break out; a
+paragraph with Page break before set shows a dotted rule above it. !Word does not show pages yet (that is still to come): breaks are marks on the screen, but
+they are saved as Word saves them. Symbol..., Special character >, hyperlinks and bookmarks are described in the same part (`$.Docs.Word`, part 8). To try it: open a document, click in a line and press
+Ctrl-Enter, or use Insert > Section break; select some words and press Ctrl-K, type `www.example.org` and press Return, then Ctrl-Shift-F5 on another word, type a name and press Return.
+**Format painter:** the brush on the toolbar's second row (and Format > Format painter) copies formatting: click it with
+Select and the next click or drag paints it, with Adjust it stays on until Escape or another click on it. A caret picks up the
+character format there and its paragraph's format (indents, spacing, style, list); a selection inside a paragraph the
+character format of its first character; a selection reaching the end of a paragraph its paragraph format too. A click paints
+the word there and a drag the dragged text, both when the button is let go; what is painted replaces the old formatting; one undo step. The pointer keeps its shape. To try it: select a
+bold word, click the brush, then click a plain word (`$.Docs.Word`, part 5).
+**Word count:** the Edit menu's last item, *Word count...* (no key), shows the words, characters (with and without spaces),
+paragraphs and lines of the selection, or of the whole document when nothing is selected; table text, link text and field
+results are counted, field codes and tracked deletions are not; a no-break space or hyphen joins words and each East Asian
+character is a word (`$.Docs.Word`, part 3).
 **Documents:** *Save* writes back to the file, *Save as* (a Save box filled in with a full pathname, so OK works; or drag
 its icon) renames the window, *Save a copy* leaves it as it was; closing a window with unsaved changes asks Save / Discard
 / Cancel, and *Revert* reloads the file; Quit, the Task Manager, shutdown and Exit ask once (Discard / Cancel) when
@@ -248,8 +281,8 @@ become text, list items plain paragraphs and tables are left out; tables from ot
 pictures and files cannot be pasted; pasted HTML is read with a whitelist, nothing in it runs or is fetched).
 Ctrl-F (or F4) opens the Find box: Find next / previous, Match case, Whole words, Replace and Replace all (one undo step;
 text as typed, no wildcards; link text found but not replaced); Ctrl-H Replace, Ctrl-G / Ctrl-Shift-G find again
-(`$.Docs.Word`, part 4). There are no tab stops or margins yet; later steps add those, page layout and
-pagination (which will only approximate Word), making styles and new lists, printing, tables and images, RTF/PDF export
+(`$.Docs.Word`, part 4). **Paragraph spacing:** Ctrl-1 / Ctrl-2 / Ctrl-5 set single, double and one-and-a-half line spacing, Ctrl-0 adds or removes 12 pt before a paragraph; Format > Line spacing and the Line spacing button on the toolbar's second row give 1.0 to 3.0 lines and add or remove space before and after; Format > Paragraph... opens the Paragraph dialogue box (alignment, indents, first line / hanging, before / after, Single / 1.5 / Double / At least / Exactly / Multiple, and keep with next, keep lines together, widow control and page break before, which are saved but have no effect until pages arrive). Documents are drawn with the line spacing and the space around paragraphs they ask for (`$.Docs.Word`, part 6). Tab stops are set on the ruler (above) or in Format > Tabs... (the Tabs dialogue box: position, alignment including bar, leader, Set / Clear / Clear all, and the document's default tab stops); margins cannot be changed yet; later steps add that, page layout and
+pagination (which will only approximate Word), making styles, bullets and numbering of your own, printing, tables and images, RTF/PDF export
 and spell check. Reading and writing is checked on 600+ real documents from public test collections; real Microsoft
 Word could not be run during development, so a hand-off check was prepared. Older `.doc` and password-protected files
 are refused with a clear message. Documents never run anything and nothing is fetched. Calibri, Cambria, Arial, Times
@@ -257,8 +290,8 @@ New Roman and Courier New are shown in the metric-compatible Carlito, Caladea an
 (all SIL OFL 1.1; licences in `$.MoreApps.!Word.Fonts.Licences`). WimpLib, the library of plain JavaScript modules
 (zip, XML...) it is built on, is installed with the system resources as `$.!Boot.Resources.!WimpLib`: any disc program
 imports it as `'wimplib/<Module>'`, found through the system variable `WimpLib$Path` (set at start-up with
-`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 14 for programmers;
-part 4 is copy, paste and find, part 5 formatting, part 6 lists, part 7 saving, part 8 new documents, closing and quitting); developers: `docs/apps/Word.md`.
+`WimpLib$Dir`; put a directory of your own first to override a module). Guide: `$.Docs.Word` (part 16 for programmers;
+part 3 typing, deleting, undo and the word count, part 4 is copy, paste and find, part 5 formatting and the format painter, part 6 paragraph spacing, tab stops, borders and shading, part 7 lists, part 8 page and section breaks, symbols, special characters, hyperlinks and bookmarks, part 9 saving, part 10 new documents, closing and quitting); developers: `docs/apps/Word.md`.
 
 **JavaScript programs:** files of type JSScript (&F81) run when double-clicked, like BASIC programs, so you can
 write your own desktop programs in JavaScript in !Edit, using the same programming interface as the built-in
@@ -432,21 +465,46 @@ node --test tests/core/test-trust.mjs tests/core/test-proxy-mode.mjs tests/core/
 node --test tests/browse          # !Browse and its engine (needs a Chrome; local pages only)
 node tests/core/test-textinput.mjs   # the opt-in text-input caret (a hidden field: typed text, dead keys, input methods; Playwright)
 node --test tests/core/test-textinput-pure.mjs   # its text cleaning (no browser)
-node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 2060 tests, about 35 s)
+node --test tests/moreapps        # !Word and WimpLib unit tests (no browser; Node >= 22.7; about 3300 tests, about 50 s)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1GB heap (the corpus test needs this care)
 node --test tests/games          # GameLib and !Pacman unit tests and the two disc scripts (no browser)
 URL=http://localhost:8372/ node --test tests/games/index.mjs   # the source checks, the 'gamelib' import and !Pacman in a real browser (server on 8372)
-node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions), saving, closing and quitting (word-save.mjs, word-close.mjs, word-quit.mjs: New, Recent, Quit and PreQuit prompts; word-fkeys.mjs: F2, F3, Ctrl-F2, Ctrl-S, Ctrl-N, F8/F9; word-find.mjs: Find and Replace; word-clipboard.mjs and word-clipboard-hostile.mjs: copy, cut, paste and Find against 50,000 paragraphs, 5 MB pastes, hostile HTML, a real input method, 500 random actions; word-documents-hostile.mjs: saves onto open, locked and read-only files, 1000 Saves, a real input method, shutdowns, 10,000 Recent entries, 500 random actions)
+node --test tests/moreapps/index.mjs   # the browser suite: disc check, the wimplib import, cold boot, !Word opening and saving, and its caret and selection (word-edit.mjs, word-edit-hostile.mjs: clicks, drags, keys, hostile documents), typing in it (word-typing.mjs, word-typing-hostile.mjs: storms, 50,000 paragraphs, random input), formatting by keys, menu, toolbar and ruler (word-format.mjs, word-toolbar.mjs, word-ruler.mjs), zoom (word-zoom.mjs), lists (word-lists.mjs, word-lists-hostile.mjs: 100,000 list paragraphs, Tab spam, absurd numbering, 500 random actions; word-lists-ui.mjs: the Bullets and Numbering buttons, Ctrl-Shift-L, Format > List and its box; word-autolist.mjs: AutoFormat as you type; word-newlists-hostile.mjs: 1000 rapid markers with Ctrl-Z, 100,000 paragraphs made a list, 1000 toggles, Restart spam, hostile numbering parts, lists inside styles, 500 random actions), saving, closing and quitting (word-save.mjs, word-close.mjs, word-quit.mjs: New, Recent, Quit and PreQuit prompts; word-fkeys.mjs: F2, F3, Ctrl-F2, Ctrl-S, Ctrl-N, F8/F9; word-find.mjs: Find and Replace; word-dialog.mjs: the WimpLib dialog builder Ui/Dialog; word-spacing.mjs: line spacing and space before / after by keys, menu and toolbar, 50,000 paragraphs; word-parabox.mjs: the Paragraph dialogue box; word-tabs.mjs: the Tabs dialogue box and the default tab stop; word-spacing-hostile.mjs: 50,000 paragraphs, 1000 Ctrl-2 / Ctrl-1 toggles, absurd line values, the box open while its window closes, 500 random actions; word-clipboard.mjs and word-clipboard-hostile.mjs: copy, cut, paste and Find against 50,000 paragraphs, 5 MB pastes, hostile HTML, a real input method, 500 random actions; word-documents-hostile.mjs: saves onto open, locked and read-only files, 1000 Saves, a real input method, shutdowns, 10,000 Recent entries, 500 random actions)
 node tests/moreapps/word-edit.mjs  # one browser group alone: !Word's caret and selection (also word-edit-hostile.mjs)
 node tests/moreapps/word-typing.mjs  # one browser group alone: typing, deleting, undo and input methods in !Word (also word-typing-hostile.mjs)
 node tests/moreapps/word-format.mjs  # one browser group alone: formatting by keys, pending format and the Format menu (also word-toolbar.mjs, word-ruler.mjs, word-zoom.mjs, word-format-hostile.mjs: 50,000 paragraphs, 500 random actions)
-node --test tests/moreapps/format.test.mjs tests/moreapps/formatset.test.mjs tests/moreapps/format-prop.test.mjs tests/moreapps/format-display.test.mjs tests/moreapps/formatapply.test.mjs   # formatting: queries, commands, seeded random commands with undo, drawing (unit; also fontlist, numberfield, colourlist, rulermath, zoom, toolbarbuttons)
+node --test tests/moreapps/format.test.mjs tests/moreapps/formatset.test.mjs tests/moreapps/format-prop.test.mjs tests/moreapps/format-display.test.mjs tests/moreapps/formatapply.test.mjs   # formatting: queries, commands, seeded random commands with undo, drawing (unit; also fontlist, numberfield, colourlist, rulermath, rulertabs, zoom, toolbarbuttons)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/format-roundtrip.test.mjs   # random formatting on fixtures and corpus files, written and read back (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/handoff-format.mjs   # writes the fmt-*.docx files to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node --test tests/moreapps/numbering-read.test.mjs tests/moreapps/numformat.test.mjs tests/moreapps/listnumbers.test.mjs tests/moreapps/list-prop.test.mjs tests/moreapps/list-display.test.mjs tests/moreapps/formatlist.test.mjs tests/moreapps/parind.test.mjs tests/moreapps/editlist.test.mjs   # lists: numbering read, number formats, labels (with a reference model), drawing, level and Remove from list commands, list indents, Tab/Shift-Tab/Backspace (unit)
+node --test tests/moreapps/paraspace.test.mjs tests/moreapps/parapatch.test.mjs tests/moreapps/tabspatch.test.mjs tests/moreapps/settingsedit.test.mjs tests/moreapps/borderpatch.test.mjs tests/moreapps/docitems.test.mjs tests/moreapps/dialoglayout.test.mjs   # paragraph spacing: the line boxes, the decorator, the Paragraph box's values and patch, the Borders and shading box's values and commands, the layout pieces, the dialog builder (unit; also opsdoc, opssect, props-more, toolbarbuttons)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/spacing-roundtrip.test.mjs   # random line spacing, space, flow and Paragraph-box patches on fixtures and corpus files, written and read back; undo restores (WORD_EDIT_CORPUS=1: every corpus file)
+node tests/moreapps/word-spacing.mjs   # one browser group alone: line spacing and space by keys, menu and toolbar (also word-parabox.mjs, word-tabs.mjs, word-spacing-hostile.mjs)
+node tests/moreapps/handoff-spacing.mjs   # writes the sp-*.docx files and sp-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node tests/moreapps/word-lists.mjs   # one browser group alone: lists drawn and edited in !Word (also word-lists-hostile.mjs)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/list-roundtrip.test.mjs   # random list edits on list fixtures and corpus files, written and read back; numbering part unchanged (WORD_EDIT_CORPUS=1: every corpus file)
 node tests/moreapps/handoff-lists.mjs   # writes the list-*.docx files and list-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/newlist-roundtrip.test.mjs   # random Bullets, Numbering, Restart, Continue and AutoFormat commands with list edits on fixtures and corpus files, written and read back; every old child of the numbering part kept in order (WORD_EDIT_CORPUS=1: every corpus file; also list-roundtrip.test.mjs and clipboard-newlists.test.mjs)
+node tests/moreapps/handoff-newlists.mjs   # writes the nl-*.docx files and nl-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+node tests/moreapps/word-breaks.mjs   # one browser group alone: page and section breaks, the Insert menu and Page break before (also word-breaks-hostile.mjs: 50,000 paragraphs, 1000 breaks, delete storms, 500 random actions)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/breaks-roundtrip.test.mjs   # random page breaks, section breaks (inserted and removed by the keys) and Page break before on fixtures and corpus files, written and read back; undo restores (WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=4096: every corpus file)
+node tests/moreapps/handoff-breaks.mjs   # writes the brk-*.docx files and brk-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/tabs-roundtrip.test.mjs   # random ruler and Tabs box commands (hostile positions, kinds, leaders, the default tab stop) with typing and undo on fixtures and corpus files, written and read back; undo restores (WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=4096: every corpus file)
+node tests/moreapps/word-tabs-hostile.mjs   # one browser group alone: 10,000 stops, positions beyond the limits, 1000 ruler adds, Tab storms, 500 random actions
+node tests/moreapps/handoff-tabs.mjs   # writes the tab-*.docx files and tab-README.txt to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/borders-roundtrip.test.mjs   # random border, shading, change case, symbol and special character commands with typing and undo on fixtures and corpus files, written and read back; refused commands change nothing; raw themed borders kept; undo restores (WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=4096: every corpus file)
+node tests/moreapps/word-borders-hostile.mjs   # one browser group alone: 50,000 bordered paragraphs, widths 0 and 96, theme colours kept raw, 1000 Shift-F3, the Symbol window open while documents close, 500 random actions
+node tests/moreapps/handoff-borders.mjs   # writes bdr-1-boxes, bdr-2-shading, sym-1-symbols and case-1 .docx and bdr-README.txt (questions BD1.., SY1.., CS1..) to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
+node tests/moreapps/word-borders.mjs   # one browser group alone: paragraph borders and shading and character shading read from the canvas; 50,000 bordered paragraphs; the Borders and shading box (also bordergroups.test.mjs and borderpatch.test.mjs, unit)
+node --test tests/moreapps/charsets.test.mjs tests/moreapps/chargridpaint.test.mjs tests/moreapps/insertchars.test.mjs   # the symbol sets (every character in Carlito, Liberation Sans and Serif), the symbol grid's geometry and keys, no-break space / hyphen and optional hyphen (unit)
+node tests/moreapps/word-symbols.mjs   # one browser group alone: Insert > Symbol... (real clicks in the grid), Special character, Ctrl-Shift-Space and Ctrl-Shift--
+node --test tests/moreapps/changecase.test.mjs   # Change case: upper / lower / sentence / title / toggle / the Shift-F3 cycle, lengths never change (sharp s, Turkish I, final sigma, emoji), runs and inlines kept, a caret takes its word, one undo step, 50,000 paragraphs (unit)
+node tests/moreapps/word-case.mjs   # one browser group alone: Shift-F3 by a real key, the Format > Change case menu
+node --test tests/moreapps/linkops.test.mjs tests/moreapps/bookmarks.test.mjs tests/moreapps/formatpaint.test.mjs tests/moreapps/wordcount.test.mjs   # hyperlinks (addresses, insert, edit, remove), bookmarks (names, ids, orphan rule, 10,000), the format painter's pick and paint, and the word count's rules (unit)
+node tests/moreapps/word-links.mjs   # one browser group alone: Ctrl-K and Ctrl-Shift-F5 boxes by real keys and clicks, Ctrl-click to a bookmark (also word-painter.mjs: the format painter; word-count.mjs: Edit > Word count...)
+NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/links-roundtrip.test.mjs   # random link, bookmark, format painter and word count commands with typing and undo on fixtures and corpus files, written and read back, no rid-unresolved; refused commands change nothing; undo restores (WORD_EDIT_CORPUS=1 NODE_OPTIONS=--max-old-space-size=4096: every corpus file)
+node tests/moreapps/word-links-hostile.mjs   # one browser group alone: bad addresses and a 1 MB one, 10,000 bookmarks, duplicate names, 1000 painter uses, a word count of 1,000,000 words, 500 random actions; no network request
+node tests/moreapps/handoff-links.mjs   # writes lnk-1-links, bm-1-bookmarks and paint-1 .docx and lnk-README.txt (questions H.., BM.., FP.., W.. and the word counts !Word shows) to try in real Word (local, in tests/moreapps/corpus/handoff; never committed)
 node --test tests/moreapps/savestate.test.mjs tests/moreapps/recent.test.mjs   # documents: untitled names, leaf names, the Save box's directory, the Recent list (unit)
 node tests/moreapps/word-save.mjs   # one browser group alone: Save, Save as, Save a copy (also word-close.mjs: the close prompt and Revert; word-quit.mjs: New, Recent, Quit and PreQuit; word-replace.mjs: Replace / Cancel, free names; word-page.mjs: a new document's whole page; word-clipboard.mjs: copy, cut and paste; word-find.mjs: Find and Replace; word-documents-hostile.mjs)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/documents-roundtrip.test.mjs   # new and corpus documents saved through !Word's own save code (DocSave), read back, linted and schema-checked (WORD_EDIT_CORPUS=1: every corpus file)

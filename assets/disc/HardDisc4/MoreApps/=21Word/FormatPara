@@ -14,6 +14,9 @@
 //       drawn (the same marker value for all; the first line kept
 //       as Word keeps it); only the values that change are written
 //   paraStyle(d, typing, sel, id, pending)   pStyle id (null: none)
+//   spaceBefore12(d, typing, sel, pending) Word's Ctrl+0: space
+//       before 240 twips (12 pt) when every paragraph formatted has
+//       none, else 0
 //   paraCommand(d, typing, sel, pending, patchFor) patchFor(p, res)
 //       -> {pPr?, pStyle?} | null for each paragraph the selection
 //       formats (./FormatOps.touched): a caret's paragraph, kept
@@ -26,15 +29,30 @@
 // A value equal to the one the paragraph's style gives (with a list
 // paragraph's level indent over it) is removed (null) rather than
 // written: back at the level's indent, the paragraph follows its
-// level again. Pure: no desktop services.
+// level again. The flags (keepNext, keepLines, widowControl,
+// pageBreakBefore, contextualSpacing) are compared with what the
+// style gives: off when it gives none, but widowControl on (Word's
+// default), so turning it off is written w:val="0". Spacing: line
+// and lineRule are written together, never one alone (an omitted
+// lineRule would mean auto). Where the paragraph has a raw w:spacing
+// (one the model cannot hold: autospacing, beforeLines...), only the
+// attributes set change in it (./SpacingRaw patchSpacing: setting
+// before drops beforeAutospacing and beforeLines, after likewise;
+// line and lineRule leave before and after alone). tabs: the direct
+// stops as given (a removed style stop is a clear stop in them).
+// pBdr and shd: ./BorderExplicit boxExplicit (whole sides and
+// shading against what the styles give; a raw own one refused).
+// Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {collapsed} from './Selection';
 import {EMPTY} from './Pending';
 import {resolver, paraOf, alignOf, firstOf} from './FormatEff';
 import {levelInd, effPara} from './ParaInd';
-import {buildOps, changes, runOps} from './FormatOps';
+import {buildOps, changes, runOps, touched} from './FormatOps';
 import {paraPatch} from './FormatCheck';
 import {dragIndent} from 'wimplib/RulerMath';
+import {spacingNode, rawSpacing, patchSpacing} from './SpacingRaw';
+import {boxExplicit} from './BorderExplicit';
 
 const NONE = {extra: []};
 const DEFAULTS = {spacing: {line: 240, lineRule: 'auto'}};
@@ -92,9 +110,39 @@ export function explicit(v, p, res, lvl) {
       : v.jc;
   }
   if (v.ind !== undefined) out.ind = indent(v.ind, inh.ind);
-  if (v.spacing !== undefined)
-    out.spacing = sub(v.spacing, inh.spacing, DEFAULTS.spacing);
+  if (v.spacing !== undefined) {
+    Object.assign(out, spacing(v.spacing, p, inh));
+  }
+  if (v.tabs !== undefined) out.tabs = v.tabs;
+  if (v.pBdr !== undefined || v.shd !== undefined) {
+    Object.assign(out, boxExplicit(v, res, p));
+  }
+  for (const k of FLAGS) {
+    if (v[k] === undefined) continue;
+    const was = k === 'widowControl' ? inh[k] !== false
+      : inh[k] === true;
+    out[k] = v[k] === null || v[k] === was ? null : v[k];
+  }
   return {pPr: out};
+}
+
+const FLAGS = ['keepNext', 'keepLines', 'widowControl',
+  'pageBreakBefore', 'contextualSpacing'];
+
+/** The spacing part: {spacing} or {extra} (see the header). */
+function spacing(o, p, inh) {
+  if (o === null) return {spacing: null};
+  const val = sub(o, inh.spacing, DEFAULTS.spacing);
+  const own = {...rawSpacing(p.pPr), ...((p.pPr || {}).spacing || {})};
+  const st = inh.spacing || {};
+  if (val.line != null && val.lineRule == null) {
+    val.lineRule = o.lineRule ?? own.lineRule ?? st.lineRule ?? 'auto';
+  }
+  if (val.lineRule != null && val.line == null) {
+    val.line = o.line ?? own.line ?? st.line ?? 240;
+  }
+  if (!spacingNode(p.pPr)) return {spacing: val};
+  return patchSpacing(p.pPr, val);
 }
 
 /** See the header. */
@@ -147,6 +195,18 @@ const CLEAR = {pPr: {jc: null, ind: null, spacing: null}};
 /** See the header. */
 export const clearParaFormat = (d, typing, sel, pending) =>
   paraCommand(d, typing, sel, pending, () => CLEAR);
+
+/** See the header. */
+export function spaceBefore12(d, typing, sel, pending) {
+  const res = resolver(d.doc);
+  const before = (p) => paraOf(effPara(res, d.doc, p), p, res)
+    .spaceBefore;
+  const list = (touched(d.doc, sel) || []).filter((en) => en.para);
+  const to = list.length && list.every((en) => before(en.p) === 0)
+    ? 240 : 0;
+  return paraCommand(d, typing, sel, pending,
+    (p, res2) => explicit({spacing: {before: to}}, p, res2));
+}
 
 /** See the header. */
 export const paraStyle = (d, typing, sel, id, pending) =>

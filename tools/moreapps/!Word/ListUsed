@@ -1,0 +1,136 @@
+// ListUsed - the numIds a document names anywhere, so a new list
+// never takes one (./NumWrite usedNumIds; pure).
+//
+//   usedNumIds(doc) -> [numId]  the numIds of: every paragraph's
+//       numPr (a raw w:numPr too: ./StylesNum layerNumPr); every
+//       w:numId element (any prefix, w:val of up to 10 digits) in
+//       kept blocks (tables) and in paragraphs' inline raw nodes
+//       (text boxes, drawings); every style's numPr; and every
+//       w:numId in the other XML parts of the package (doc.parts:
+//       headers, footers, footnotes, endnotes, comments...), found
+//       in their text (UTF-8) once per part data (cached)
+//   reusable(doc, entry, strict, used = usedNumIds(doc)) -> numId |
+//       null  a w:num ./NumWrite addList could have written for the
+//       gallery entry (levels equal to the definition it writes, no
+//       override, no style link) that nothing names (used) and whose
+//       abstract no num in use counts on (numIds over one abstract
+//       share one count): applying that entry again takes it instead
+//       of adding one more definition (Bullets off and on)
+// A numId such a place names without a w:num would start showing
+// the new list if it were reused. Pure: no desktop services.
+import {layerNumPr} from './StylesNum';
+import {addList} from './NumWrite';
+import {deepEqual} from './ModelCheck';
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+const PFX = '(?:[\\w.-]+:)?';
+const NUM_ID = new RegExp('<' + PFX + 'numId\\b[^>]*?\\s' + PFX +
+  'val\\s*=\\s*["\']\\s*(\\d{1,10})\\s*["\']', 'g');
+const inParts = new WeakMap();
+
+/** The numIds named in one part's data (bytes or text). */
+function partIds(data) {
+  if (!isObj(data) && typeof data !== 'string') return [];
+  const key = isObj(data) ? data : null;
+  if (key && inParts.has(key)) return inParts.get(key);
+  let text = '';
+  try {
+    text = typeof data === 'string' ? data
+      : new TextDecoder('utf-8').decode(data);
+  } catch (e) {
+    text = '';
+  }
+  const out = [];
+  for (const m of text.matchAll(NUM_ID)) out.push(Number(m[1]));
+  if (key) inParts.set(key, out);
+  return out;
+}
+
+/** See the header. */
+export function usedNumIds(doc) {
+  const out = new Set();
+  const add = (np) => {
+    if (isObj(np) && Number.isInteger(np.numId)) out.add(np.numId);
+  };
+  const raw = [];
+  for (const s of doc.sections) {
+    for (const b of s.blocks) {
+      if (b.type !== 'p') {
+        raw.push(b.node);
+        continue;
+      }
+      add(layerNumPr(b.pPr));
+      for (const x of Object.values(b.inlines || {})) {
+        if (isObj(x) && x.node) raw.push(x.node);
+      }
+      // raw property elements (an old w:numPr in a w:pPrChange...)
+      if (isObj(b.pPr) && Array.isArray(b.pPr.extra))
+        raw.push(...b.pPr.extra);
+      for (const r of Array.isArray(b.runs) ? b.runs : []) {
+        if (isObj(r) && isObj(r.rPr) && Array.isArray(r.rPr.extra))
+          raw.push(...r.rPr.extra);
+      }
+    }
+  }
+  const st = doc.styles && doc.styles.styles;
+  if (st instanceof Map) {
+    for (const s of st.values()) {
+      add(layerNumPr(s.pPr));
+      if (isObj(s) && s.raw) raw.push(s.raw);
+    }
+  }
+  // w:numId elements in raw nodes (no recursion: any depth)
+  while (raw.length) {
+    const n = raw.pop();
+    if (!isObj(n) || !Array.isArray(n.children)) continue;
+    if (/(^|:)numId$/.test(n.name) && Array.isArray(n.attrs)) {
+      for (const [k, v] of n.attrs) {
+        if (/(^|:)val$/.test(k) && /^\d{1,10}$/.test(v)) out.add(+v);
+      }
+    }
+    for (const c of n.children) raw.push(c);
+  }
+  if (doc.parts instanceof Map) {
+    for (const [name, data] of doc.parts) {
+      if (typeof name !== 'string' || !/\.xml$/i.test(name)) continue;
+      for (const id of partIds(data)) out.add(id);
+    }
+  }
+  return [...out];
+}
+
+const levels = new Map();
+
+/** The levels addList writes for entry e (cached). */
+function levelsOf(e, strict) {
+  const k = e.id + (strict ? ' s' : '');
+  if (!levels.has(k)) {
+    const add = addList(null, e, {strict, rand: () => 0});
+    levels.set(k, add.numbering.nums.get(add.numId).levels);
+  }
+  return levels.get(k);
+}
+
+/** See the header. */
+export function reusable(doc, entry, strict, used = usedNumIds(doc)) {
+  const nums = doc.numbering && doc.numbering.nums;
+  if (!(nums instanceof Map) || !nums.size) return null;
+  const inUse = new Set(used);
+  const counted = new Set();
+  for (const id of inUse) {
+    const n = nums.get(id);
+    if (isObj(n)) counted.add(n.abstractNumId);
+  }
+  const want = levelsOf(entry, strict === true);
+  for (const [id, n] of nums) {
+    if (!Number.isSafeInteger(id) || id < 1 || inUse.has(id) ||
+      !isObj(n) || counted.has(n.abstractNumId) ||
+      n.abstractNumId === undefined || n.abstractNumId === null ||
+      !(n.overrides instanceof Map) || n.overrides.size ||
+      n.styleLink !== undefined || n.numStyleLink !== undefined ||
+      n.multiLevelType !== 'hybridMultilevel') continue;
+    if (deepEqual(n.levels, want)) return id;
+  }
+  return null;
+}

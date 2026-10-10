@@ -15,12 +15,44 @@
 //     indentMore indentLess       the left indent, 720 twips
 //     indentDrag (arg {marker, at, textW, free}) a ruler's marker
 //                                 (./FormatPara.dragIndents)
+//     tabs (arg {add} | {remove} | {move} | {set})  tab stops on
+//                                 each paragraph's direct stops
+//                                 (./FormatTabs setTabs)
+//     tabsBox (arg {tabs?, defaultTab?})  the Tabs dialog's OK: the
+//                                 stops and settings.xml's default
+//                                 stop in one step (./TabsCommand)
 //     listIn listOut listOff      a list item one level deeper,
 //                                 higher, out of its list
 //                                 (./FormatList setList)
 //     size (arg points)  font (arg a family name)
 //     color (arg colourValue's)  highlight (arg a Word name, 'none')
 //     style (arg a paragraph or character style id)
+//     lineSpacing (arg a factor of LINE_FACTORS, or {line, lineRule?}:
+//                 ./FormatCheck spacing, lineRule 'auto' if not
+//                 given)                           spacing line
+//     lineSingle lineDouble line15   1, 2, 1.5 lines (the keys)
+//     spaceBefore spaceAfter (arg twips, or null: the style's)
+//     spaceBefore12               Ctrl+0: 12 pt before on or off
+//                                 (./FormatPara spaceBefore12)
+//     paraBox (arg a ./ParaPatch patch)  the Paragraph box's
+//                                 changes: ./FormatCheck paraPatch
+//                                 (an empty one changes nothing)
+//     bullets numbering (arg a ./ListGallery entry id of that kind,
+//                 or none)        a list on or off (./ListMake
+//                                 toggleList)
+//     listRestart (arg start, default 1)  Restart / Start at
+//     listContinue                Continue numbering (./ListMake)
+//     borders (arg {pBdr?, shd?})  paragraph borders and shading,
+//                                 whole sides (./BorderCommand)
+//     paraShade charShade (arg {val, color?, fill?} or null)  the
+//                                 paragraphs' / the text's shading
+//     changeCase (arg a ./ChangeCase mode: sentence lower upper
+//                 title toggle cycle)  the selection's letters, or
+//                 the caret's word; caseCycle (Shift+F3) is the
+//                 mode cycle
+//   LINE_FACTORS        [1, 1.15, 1.5, 2, 2.5, 3]: Word's line
+//                       spacing choices (240ths: 240 276 360 480 600
+//                       720)
 //   PALETTE             the desktop's 16 Wimp colours as 'RRGGBB'
 //                       (src/core/palette.js, RISC OS 3.71's)
 //   colourValue(arg)    a palette number 0-15 -> its 'RRGGBB';
@@ -38,7 +70,12 @@
 import {toggle, setChar, setPara, sizeBy, indentBy, clearFormat,
   applyStyle, setList} from './FormatSet';
 import {HIGHLIGHTS as NAMES} from './FormatCheck';
-import {dragIndents} from './FormatPara';
+import {dragIndents, spaceBefore12} from './FormatPara';
+import {toggleList, restart, continueList} from './ListMake';
+import {setTabs} from './FormatTabs';
+import {tabsBox} from './TabsCommand';
+import {borders, paraShade, charShade} from './BorderCommand';
+import {changeCase} from './ChangeCase';
 import {fail} from './ModelCheck';
 export {WORD_FONTS, fontList} from 'wimplib/FontList';
 
@@ -66,6 +103,24 @@ const pts = (arg) => {
     fail('bad size ' + String(arg));
   return Math.round(arg * 2);
 };
+export const LINE_FACTORS = Object.freeze([1, 1.15, 1.5, 2, 2.5, 3]);
+
+/** The spacing of a lineSpacing argument (see the header). */
+function lineArg(a) {
+  if (typeof a === 'number' && LINE_FACTORS.includes(a))
+    return {line: Math.round(a * 240), lineRule: 'auto'};
+  if (a && typeof a === 'object' && typeof a.line === 'number' &&
+    Object.keys(a).every((k) => k === 'line' || k === 'lineRule'))
+    return {line: a.line, lineRule: a.lineRule ?? 'auto'};
+  return fail('bad line spacing ' + String(a));
+}
+const sp = (f) => (d, t, s, a, p) => setPara(d, t, s,
+  {spacing: f(a)}, p);
+const twips = (k) => sp((a) => {
+  if (a !== null && typeof a !== 'number') fail('bad ' + k);
+  return {[k]: a};
+});
+
 const tog = (key) => (d, t, s, a, p) => toggle(d, t, s, key, p);
 const jc = (v) => (d, t, s, a, p) => setPara(d, t, s, {jc: v}, p);
 const chr = (f) => (d, t, s, a, p) => setChar(d, t, s, f(a), p);
@@ -84,6 +139,8 @@ const TABLE = new Map([
   ['indentMore', (d, t, s, a, p) => indentBy(d, t, s, 720, p)],
   ['indentLess', (d, t, s, a, p) => indentBy(d, t, s, -720, p)],
   ['indentDrag', (d, t, s, a, p) => dragIndents(d, t, s, a, p)],
+  ['tabs', (d, t, s, a, p) => setTabs(d, t, s, a, p)],
+  ['tabsBox', (d, t, s, a, p) => tabsBox(d, t, s, a, p)],
   ['listIn', (d, t, s, a, p) => setList(d, t, s, {by: 1}, p)],
   ['listOut', (d, t, s, a, p) => setList(d, t, s, {by: -1}, p)],
   ['listOff', (d, t, s, a, p) => setList(d, t, s, {off: true}, p)],
@@ -95,6 +152,23 @@ const TABLE = new Map([
   ['color', chr((a) => ({color: colourValue(a)}))],
   ['highlight', chr((a) => ({highlight: a}))],
   ['style', (d, t, s, a, p) => applyStyle(d, t, s, a, p)],
+  ['lineSpacing', sp(lineArg)],
+  ['lineSingle', sp(() => lineArg(1))],
+  ['lineDouble', sp(() => lineArg(2))],
+  ['line15', sp(() => lineArg(1.5))],
+  ['spaceBefore', twips('before')], ['spaceAfter', twips('after')],
+  ['spaceBefore12', (d, t, s, a, p) => spaceBefore12(d, t, s, p)],
+  ['paraBox', (d, t, s, a, p) => setPara(d, t, s, a, p)],
+  ['bullets', (d, t, s, a, p) => toggleList(d, t, s,
+    {kind: 'bullet', entry: a}, p)],
+  ['numbering', (d, t, s, a, p) => toggleList(d, t, s,
+    {kind: 'number', entry: a}, p)],
+  ['listRestart', (d, t, s, a, p) => restart(d, t, s, a ?? 1, p)],
+  ['listContinue', (d, t, s, a, p) => continueList(d, t, s, p)],
+  ['borders', borders], ['paraShade', paraShade],
+  ['charShade', charShade],
+  ['changeCase', (d, t, s, a, p) => changeCase(d, t, s, a, p)],
+  ['caseCycle', (d, t, s, a, p) => changeCase(d, t, s, 'cycle', p)],
 ]);
 
 /** See the header. */

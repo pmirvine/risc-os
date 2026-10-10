@@ -1,0 +1,93 @@
+// WritePropsMore - writers of the larger property fields, for
+// ./WriteProps: each takes the model value and returns the element,
+// or null for a value the model cannot hold (the write is then
+// refused: ./WriteProps.badModel). The values are those
+// ./ReadPropsMore reads, so a field written reads back equal.
+//
+//   tabsNode(v)   [{val, pos, leader?}] -> w:tabs, written in model
+//                 order (never sorted); at most MAX_STOPS
+//   pBdrNode(v, strict)  {top?, left?, ...} -> w:pBdr, sides in
+//                 schema order (strict: left and right named w:start
+//                 and w:end, Strict's names, in the same places)
+//   shdNode(v)    {val, color?, fill?} -> w:shd
+//   typeNode(v)   'nextPage'... -> w:type
+//
+// Attributes are written in the order Word writes them (w:val
+// first); booleans as "1" / "0".
+import {W} from './Wml';
+import {TAB_VALS, LEADERS, SIDES, SECT_TYPES, MAX_STOPS, NAME, HEX,
+  STRICT_SIDE} from './ReadPropsMore';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const isInt = (v) => Number.isSafeInteger(v);
+const isUint = (v) => isInt(v) && v >= 0;
+const isName = (v) => typeof v === 'string' && NAME.test(v);
+const isHex = (v) => typeof v === 'string' && HEX.test(v);
+const isBool = (v) => typeof v === 'boolean';
+
+/**
+ * The attribute pairs of object `o`, whose keys must all be in
+ * `spec` (name -> test, in the order written); `need` must be there.
+ * null when anything is wrong.
+ */
+function attrs(o, spec, need) {
+  if (!isObj(o)) return null;
+  for (const k of Object.keys(o)) {
+    const test = Object.hasOwn(spec, k) ? spec[k] : null;
+    if (!test || (o[k] !== undefined && !test(o[k]))) return null;
+  }
+  if (need.some((k) => o[k] === undefined)) return null;
+  return Object.keys(spec).filter((k) => o[k] !== undefined)
+    .map((k) => ['w:' + k, isBool(o[k]) ? (o[k] ? '1' : '0') : o[k]]);
+}
+
+const TAB = {
+  val: (v) => TAB_VALS.includes(v), leader: (v) => LEADERS.includes(v),
+  pos: isInt,
+};
+
+/** See the header. */
+export function tabsNode(v) {
+  if (!Array.isArray(v) || v.length > MAX_STOPS) return null;
+  const kids = [];
+  for (const t of v) {
+    const a = attrs(t, TAB, ['val', 'pos']);
+    if (!a) return null;
+    kids.push(W('tab', a));
+  }
+  return W('tabs', null, ...kids);
+}
+
+const SIDE = {
+  val: isName, sz: isUint, space: isUint, color: isHex,
+  shadow: isBool, frame: isBool,
+};
+
+/** See the header. */
+export function pBdrNode(v, strict = false) {
+  if (!isObj(v)) return null;
+  for (const k of Object.keys(v)) {
+    if (!SIDES.includes(k)) return null;
+  }
+  const kids = [];
+  for (const s of SIDES) {
+    if (v[s] === undefined) continue;
+    const a = attrs(v[s], SIDE, ['val']);
+    if (!a) return null;
+    kids.push(W(strict ? STRICT_SIDE.get(s) || s : s, a));
+  }
+  return W('pBdr', null, ...kids);
+}
+
+const SHD = {val: isName, color: isHex, fill: isHex};
+
+/** See the header. */
+export function shdNode(v) {
+  const a = attrs(v, SHD, ['val']);
+  return a && W('shd', a);
+}
+
+/** See the header. */
+export const typeNode = (v) => SECT_TYPES.includes(v) ?
+  W('type', {'w:val': v}) : null;

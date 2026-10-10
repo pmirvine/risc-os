@@ -1,0 +1,113 @@
+// ListMenu - the list menus: Format > List > (./FormatMenu) and the
+// toolbar's bullets and numbers popups (./ToolbarBind).
+//
+//   bulletMenu(view) -> a Menu: None, then the gallery's six bullets
+//       (./ListGallery BULLETS), each shown as its glyph and name
+//   numberMenu(view) -> a Menu: None, then the six numberings shown
+//       as three samples ('1. 2. 3.', 'I. II. III.', 'a) b) c)'...)
+//   listItems(view, {value}?) -> the items of Format > List:
+//       Bullets >            bulletMenu; Ctrl+Shift+L (./Keymap) is
+//                            the key that makes or removes a default
+//                            bullet list
+//       Numbering >          numberMenu
+//       Restart at 1         the first selected paragraph's list
+//                            starts again at 1 (./ListRestart)
+//       Continue numbering   it goes on from the list before
+//       Set numbering value...  value() when given (./ListBox),
+//                            else shaded
+//       Demote (Tab), Promote (Shift+Tab), Remove from list
+//   listMenu(view, {value}?) -> a Menu of listItems
+//   inList(view) -> whether a selected paragraph is in a list
+//       (worked out once per change of the selection or the
+//       document: view.selRev)
+// A gallery item makes the selection a list of that kind and entry,
+// or takes it out when all of it already is (./ListMake toggleList:
+// view.format('bullets' | 'numbering', id)); the entry the whole
+// selection has is ticked (view.query() listKind, listEntry). None
+// takes the selected paragraphs out of their list (listOff).
+// Everything is shaded when there is no selection; Restart,
+// Continue, Set value and the level items too outside lists.
+import {Menu} from 'riscos';
+import {keymap} from './Keymap';
+import {BULLETS, NUMBERS} from './ListGallery';
+import {formatNumber} from './NumFormat';
+import {MENU_GLYPHS} from './BulletGlyph';
+import {hasList} from './FormatList';
+
+const seen = new WeakMap();
+
+/** See the header. */
+export function inList(v) {
+  if (!v.sel) return false;
+  const m = seen.get(v);
+  if (m && m.rev === v.selRev && m.sel === v.sel) return m.yes;
+  const yes = hasList(v.d.doc, v.sel);
+  seen.set(v, {rev: v.selRev, sel: v.sel, yes});
+  return yes;
+}
+
+const glyph = (e) => MENU_GLYPHS[e.id];
+const sample = (e) => [1, 2, 3].map((n) => e.levels[0].lvlText
+  .replace('%1', formatNumber(n, e.levels[0].numFmt))).join(' ');
+
+/** A gallery menu of kind id ('bullets' | 'numbering'). */
+function gallery(v, title, id, list, show) {
+  const kind = id === 'bullets' ? 'bullet' : 'number';
+  const items = list.map((e) => ({text: show(e),
+    ticked: () => {
+      if (!v.sel) return false;
+      const q = v.query();
+      return q.listKind === kind && q.listEntry === e.id;
+    },
+    shaded: () => !v.sel, action: () => v.format(id, e.id),
+    help: `${e.name}: make the selection a list like this, or ` +
+      'take it out of its list when it is one already.'}));
+  items.unshift({text: 'None', dotted: true,
+    shaded: () => !inList(v), action: () => v.format('listOff'),
+    help: 'No bullet or number: the paragraphs are out of the list.'});
+  return new Menu(title, items);
+}
+
+/** See the header. */
+export const bulletMenu = (v) => gallery(v, 'Bullets', 'bullets',
+  BULLETS, (e) => `${glyph(e)}  ${e.name}`);
+
+/** See the header. */
+export const numberMenu = (v) => gallery(v, 'Numbering', 'numbering',
+  NUMBERS, sample);
+
+/** See the header. */
+export function listItems(v, {value} = {}) {
+  const sub = (text, make, help, more = {}) => ({text,
+    submenu: () => make(v), shaded: () => !v.sel, help, ...more});
+  const it = (text, id, arg, help, more = {}) => ({text,
+    key: keymap.labelFor(id) || undefined,
+    shaded: () => !inList(v), action: () => v.format(id, arg), help,
+    ...more});
+  const tab = (text, id, key, help) => it(text, id, undefined, help,
+    {key: keymap.labelFor(key) || undefined});
+  return [
+    sub('Bullets', bulletMenu, 'Choose a bullet for the selected ' +
+      'paragraphs.', {key: keymap.labelFor('bullets') || undefined}),
+    sub('Numbering', numberMenu, 'Choose a numbering for the ' +
+      'selected paragraphs.', {dotted: true}),
+    it('Restart at 1', 'listRestart', 1, 'Number this list from 1 ' +
+      'again, from this item on.'),
+    it('Continue numbering', 'listContinue', undefined, 'Go on ' +
+      'from the numbers of the list before this one.'),
+    {text: 'Set numbering value...', dotted: true,
+      shaded: () => !inList(v) || typeof value !== 'function',
+      action: () => { if (typeof value === 'function') value(); },
+      help: 'Start the list again at a number you choose, or ' +
+        'continue the previous list.'},
+    tab('Demote', 'listIn', 'tab', 'One level deeper (Tab at the ' +
+      'start of an item).'),
+    tab('Promote', 'listOut', 'shiftTab', 'One level higher.'),
+    it('Remove from list', 'listOff', undefined, 'No number or ' +
+      'bullet: the paragraph is out of the list.', {key: undefined}),
+  ];
+}
+
+/** Format > List > itself: a Menu of listItems. */
+export const listMenu = (v, opts) => new Menu('List',
+  listItems(v, opts));

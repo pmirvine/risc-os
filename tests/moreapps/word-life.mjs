@@ -1,8 +1,9 @@
 // !Word's life: without its font files it still opens and draws
 // documents (in fallback fonts, with no error); three documents
 // opened and closed, then Quit, leave no windows, tasks or page
-// elements behind. First, with its fonts: !Word started three times
-// adds each font face to the page once.
+// elements behind; 30 windows opened and closed leave no panes (the
+// toolbar rows, the ruler). First, with its fonts: !Word started three
+// times adds each font face to the page once.
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
@@ -35,6 +36,37 @@ try {
     return { faces };
   }, Array.from(docs[0]));
   ok('a run of !Word after Quit adds no font faces again', r2.faces[0] > 0 && r2.faces.every((n) => n === r2.faces[0]), r2.faces);
+  // 30 windows opened and closed: no panes (toolbar rows, ruler) left
+  const r3 = await page.evaluate(async (bytes) => {
+    const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+    const frames = async (n) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
+    const v = os.vfs;
+    v.writeFile('RAM::RamDisc0.$.First', new Uint8Array(bytes), { filetype: 0xA7E });
+    v.writeFile('RAM::RamDisc0.$.Cyc', new Uint8Array(bytes), { filetype: 0xA7E });
+    await os.filer.run('RAM::RamDisc0.$.First');
+    let t = null;
+    for (let i = 0; i < 200 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Word'))?.word?.docs.length; i++) await sleep(50);
+    await frames(3);
+    const panes = () => [...os.wimp.windows].filter((w) => w._paneParent).length;
+    const count = () => [t.windows.size, os.wimp.windows.size, panes(), document.querySelectorAll('*').length];
+    const before = count();
+    const per = [];
+    for (let i = 0; i < 30; i++) {
+      const dw = await t.word.open('RAM::RamDisc0.$.Cyc');
+      await frames(1);
+      per.push([dw.bar.tb.pane, dw.bar2.tb.pane, dw.rb.ruler.pane].filter((p) => p && p._paneParent === dw.win).length);
+      if (i % 3 === 1) dw.setRuler(false);
+      dw.close();
+    }
+    await frames(3);
+    const after = count();
+    t.quit();
+    await sleep(200);
+    return { before, after, per };
+  }, Array.from(docs[0]));
+  ok('30 windows opened and closed: each had its three panes, none is left behind', r3.per.every((n) => n === 3)
+    && r3.after[0] === r3.before[0] && r3.after[1] === r3.before[1] && r3.after[2] === r3.before[2]
+    && Math.abs(r3.after[3] - r3.before[3]) <= 5, r3);
   const r1 = await page.evaluate(async (bytes) => {
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     const frames = async (n) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };

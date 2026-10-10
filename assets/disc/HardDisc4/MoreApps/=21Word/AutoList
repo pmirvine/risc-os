@@ -1,0 +1,179 @@
+// AutoList - AutoFormat lists as you type, as Word does: a marker
+// typed at the very start of a paragraph that is in no list, then a
+// space (or Tab), makes the paragraph a list item; the marker and
+// the space go (pure).
+//
+//   markerOf(text), MAX_MARKER, MAX_START  ./ListMarker (exported
+//       here too): the markers ('*' '-' '>', '1.' '1)' '(1)',
+//       'a.' 'a)' 'A.', 'i.' 'I.'...) as {kind, entry, start}. One
+//       letter that can be roman (i v x l c d m, either case) is
+//       read here both ways first: the reading that continues the
+//       nearer earlier list of its format (the label it would get
+//       there is the letter typed) wins, so 'v.' after i. .. iv.
+//       is roman 5, 'i.' after a. .. h. the letter i (and 'i)'
+//       after a) .. h)); neither: markerOf's rule ('i.' roman 1,
+//       'v.' the letter v, 'i)' none).
+//   afterSpace(d, typing, sel, {typed = ' '}?) -> sel | undefined
+//       sel: the caret straight after `typed` (' ' or '\t') was typed.
+//       When the text before the caret is a marker and that character
+//       (after nothing but invisible marks: bookmarks, proofing,
+//       comment and permission ranges, Word's last page break mark
+//       (INVISIBLE); a link, a field, a drawing, a tab or any other
+//       inline refuses; at most MAX_LEAD (16) marks), in a paragraph
+//       with no numbering of its own or from its style (in no list, not
+//       numbered by a heading style, no numId 0), it becomes a list
+//       item: the marker and the character removed (the marks before it
+//       and the text after the caret stay), numPr {numId, ilvl 0}, List
+//       Paragraph for a paragraph of the default style (as ./ListMake).
+//       The list: the nearest list paragraph before it in the section
+//       whose list has the entry's format (ListGallery.matches; lists
+//       of other formats and paragraphs numbered by their style alone
+//       skipped) is continued for a bullet, and for a number when the
+//       label the paragraph would get there is the marker typed ('3.'
+//       after '1.' '2.'); else a new list (./NumWrite addList, level 0
+//       starting at `start`). One undo step of its own (typing.command,
+//       d.atomic) after the typing's: its ops are the text removed
+//       first, so undoing it puts the caret back after the space
+//       (./EditApply stepEnd). Returns the caret at the start of the
+//       item's text (after the marks); undefined (nothing changed, no
+//       undo step) when it does not apply or NumWrite refuses the
+//       numbering part (RangeError).
+// Callers decide when it may run: a single typed space or Tab at a
+// caret, AutoFormat on, not in overwrite mode, not an input method's
+// commit, never paste, Find / Replace, Symbol, undo or redo.
+import {collapsed, caret} from './Selection';
+import {findBlock} from './EditPos';
+import {listInfo} from './ParaInd';
+import {paraLayers} from './Styles';
+import {layerNumPr} from './StylesNum';
+import {entryOf, matches} from './ListGallery';
+import {ensurePart, addList} from './NumWrite';
+import {partOps, styleOnly} from './ListRestart';
+import {usedNumIds} from './ListUsed';
+import {listStyle, plainStyle} from './ListMake';
+import {labels} from './ListNumbers';
+import {markerOf, readings, MAX_MARKER} from './ListMarker';
+import {runOps} from './FormatOps';
+import {localName} from './Kinds';
+
+export {markerOf, MAX_MARKER, MAX_START} from './ListMarker';
+
+export const INVISIBLE = new Set(['proofErr', 'bookmarkStart',
+  'bookmarkEnd', 'commentRangeStart', 'commentRangeEnd', 'permStart',
+  'permEnd', 'lastRenderedPageBreak']);
+
+const MAX_LEAD = 16;
+
+/** The leading invisible marks of p: how many U+FFFC. */
+function leadOf(p) {
+  let k = 0;
+  while (k < MAX_LEAD && p.text[k] === '\uFFFC') {
+    const x = p.inlines[k];
+    if (!x || x.kind !== 'raw' || !INVISIBLE.has(localName(x.node)))
+      break;
+    k++;
+  }
+  return k;
+}
+
+/** Whether p has numbering of its own or from its style. */
+const numbered = (doc, p) => !!listInfo(doc, p) ||
+  paraLayers(doc.styles || null, p)
+    .some((l) => layerNumPr(l) !== undefined);
+
+/** The nearest list before block i of section s matching e. */
+function previous(doc, s, i, e) {
+  const bs = doc.sections[s].blocks;
+  for (let k = i - 1; k >= 0; k--) {
+    const b = bs[k];
+    if (b.type !== 'p') continue;
+    const f = listInfo(doc, b);
+    if (f && !styleOnly(f, b) && matches(f.num, e.id))
+      return {f, k};
+  }
+  return null;
+}
+
+/** The marker typed (see markerOf and its header note), or null. */
+function pick(doc, at, typed) {
+  let best = null, near = -1;
+  for (const m of readings(typed)) {
+    const prev = previous(doc, at.s, at.i, entryOf(m.entry));
+    if (prev && prev.k > near &&
+      labelIn(doc, at, prev.f.numId) === typed) {
+      best = m;
+      near = prev.k;
+    }
+  }
+  return best || markerOf(typed);
+}
+
+/** The label paragraph `at` would have in list numId, level 0. */
+function labelIn(doc, at, numId) {
+  const p = at.b;
+  const q = {...p, pPr: {...p.pPr, numPr: {numId, ilvl: 0}}};
+  const sections = doc.sections.map((sec, k) => (k !== at.s ? sec
+    : {...sec, blocks: sec.blocks.map((b, j) => (j === at.i ? q
+      : b))}));
+  const l = labels({...doc, sections}).get(p.id);
+  return l ? l.text : null;
+}
+
+/** The ops making paragraph `at` an item for marker m (see above). */
+function opsFor(doc, at, m, lead, del) {
+  const ops = [{op: 'replaceText', block: [at.s, at.i], at: lead, del,
+    ins: ''}];
+  const e = entryOf(m.entry);
+  const found = previous(doc, at.s, at.i, e);
+  const prev = found && found.f;
+  const typed = at.b.text.slice(lead, lead + del - 1);
+  let numId = prev && (m.kind === 'bullet' ||
+    labelIn(doc, at, prev.numId) === typed) ? prev.numId : null;
+  if (numId === null) {
+    const part = ensurePart(doc);
+    const add = addList(part.numbering, e, {usedNumIds:
+      usedNumIds(doc), strict: (doc.meta || {}).conformance ===
+      'strict', start: m.kind === 'number' && m.start !== 1
+      ? m.start : undefined});
+    numId = add.numId;
+    ops.push(...partOps(doc, part, add.numbering));
+  }
+  const x = {pPr: {numPr: {numId, ilvl: 0}}};
+  const lp = plainStyle(doc, at.b) ? listStyle(doc) : null;
+  if (lp) {
+    x.pStyle = lp.id;
+    if (lp.styles !== doc.styles)
+      ops.push({op: 'setDocPart', key: 'styles', value: lp.styles});
+  }
+  ops.push({op: 'setProps', block: [at.s, at.i], ...x});
+  return ops;
+}
+
+/** Whether text may be a marker (a cheap first look). */
+const markerOrLetter = (t) => !!markerOf(t) || readings(t).length > 0;
+
+/** See the header. */
+export function afterSpace(d, typing, sel, {typed = ' '} = {}) {
+  if ((typed !== ' ' && typed !== '\t') || !sel || !collapsed(sel))
+    return undefined;
+  const doc = d.doc;
+  const off = sel.head.off;
+  if (!Number.isInteger(off) || off < 2 ||
+    off > MAX_MARKER + 1 + MAX_LEAD) return undefined;
+  const at = findBlock(doc, sel.head.id);
+  if (!at || at.b.type !== 'p' || at.b.text[off - 1] !== typed)
+    return undefined;
+  const lead = leadOf(at.b);
+  const text = at.b.text.slice(lead, off - 1);
+  if (!text || text.length > MAX_MARKER || !markerOrLetter(text) ||
+    numbered(doc, at.b)) return undefined;
+  const m = pick(doc, at, text);
+  if (!m) return undefined;
+  try {
+    runOps(d, typing, opsFor(doc, at, m, lead, off - lead));
+  } catch (e) {
+    if (e instanceof RangeError) return undefined;
+    throw e;
+  }
+  return caret({id: at.b.id, off: lead});
+}

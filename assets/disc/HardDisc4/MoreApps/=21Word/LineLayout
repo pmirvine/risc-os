@@ -2,21 +2,26 @@
 // into lines that fit a width, run by run in each run's font, every
 // line and item keeping the model offsets it stands for.
 //
-//   layoutPara(para, styles, width, metrics, cache, label?)
+//   layoutPara(para, styles, width, metrics, cache, label?, defPx?)
 //                                     -> {h, lines}
 //   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
 //   cache:   a Map for the run formats (./Fmt)
 //   label:   the paragraph's list label (./ListNumbers), or none
+//   defPx:   the default tab stop in px (./TabStops defaultStop / 15;
+//            48, half an inch, when not given)
 //   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
-//          label?}
+//          label?, clip?, bars?}
 //          x: where the line's text starts (after indent, a list
 //          label and alignment: the caret at its first offset)
 //          label: on the first line of a list paragraph only,
 //          {x, w, text, f, bullet} (./LineLabel): drawn there, but
 //          no item and in no offsets
-//   item:  {x, w, text, f, kind, from, to, shown, hl, dy, js?}
-//          kind 'text' | 'link' | 'box' | 'tab' | 'break'
-//          hl the highlight colour or null, dy the baseline shift
+//   item:  {x, w, text, f, kind, from, to, shown, hl, sh, dy, js?,
+//          label?, leader?}
+//          kind 'text' | 'link' | 'box' | 'tab' | 'break' |
+//          'pagebreak' (label: its ./BreakMarks label)
+//          hl the highlight colour or null, sh the character
+//          shading's (./Fmt shade) or null, dy the baseline shift
 //          (./Fmt), js the width a justified space gained
 //
 // Offsets are UTF-16 indices into para.text. The lines cover the text
@@ -30,44 +35,64 @@
 //
 // Lines break greedily at spaces. Spaces that end a wrapped line hang
 // in it: they count in its items (for hit-testing) but not for its
-// alignment; the next line starts at the next non-space. A word
-// longer than the line is not broken: it overflows on a line of its
-// own (measured once, so a 100,000-character word costs one measure).
-// A tab item runs from where it starts to the next half-inch stop. A
-// line break (\n or w:br) ends its line, endsWithBreak, and its offset
-// belongs to that line; wrapped is true when the line ends because
-// the next word did not fit. Items are merged only when both are
-// model text in the same format, touching in x and in offsets. An
-// empty paragraph has one line, from = to = 0, as high as the text of
-// its mark (first run) would be. A line is 1.25 times its largest
-// text high (times the line spacing), its baseline 0.27 of that text
-// above its bottom; it grows, only when it holds superscript or
-// subscript, to keep that shifted text (0.98 of its size above its
-// baseline, 0.27 below) inside it. Alignment: left, centre or right;
-// it moves items, never offsets. Justified ('both'): items are not
-// merged and a space in model text is an item of its own, and a
-// wrapped line is spread to the width by ./Justify (not the last
-// line, nor one ending in a break). A list paragraph takes its
-// level's indents (under its own: ./Fmt paraFmt), and its first
-// line holds the label (./LineLabel: in the hanging space, the text
-// after it at its suffix); the label is at least as high as its
-// text, moves with the alignment and is never spread. Pure: no
-// desktop services.
+// alignment; the next line starts at the next non-space. A word longer
+// than the line is not broken: it overflows on a line of its own
+// (measured once, so a 100,000-character word costs one measure). A tab
+// item runs from where it starts to its stop (./TabStops nextStop: the
+// paragraph's stops, else the default ones, counted from the margin);
+// after a right, centre or decimal stop it is widened once its segment
+// is placed, to line it up (./TabAlign: its last non-space, else no
+// width); leader: the stop's leader, drawn by ./DocPaint. bars: the x
+// of each bar stop, on every line (drawn, no item). A line break (\n or
+// a plain w:br) ends its line, endsWithBreak, and its offset belongs to
+// that line; so does a page or column break, a rule (shown, text '', no
+// highlight, no shading) from where the text ends to the line's end,
+// at least ./BreakMarks MIN_RULE wide (when less is left the line
+// wraps before it); after one that ends the paragraph (nothing but
+// unseen inlines after it) there is no empty line (the paragraph mark
+// is on the rule's line, as in Word). wrapped is true when the line
+// ends because the next word did not fit. Items are merged only when
+// both are model text in the same format, touching in x and in offsets.
+// An empty paragraph has one line, from = to = 0, as high as the text
+// of its mark (first run) would be. A line's height and baseline are
+// ./ParaSpace lineBox's for the paragraph's line spacing: single, 1.25
+// times its largest text high, its baseline 0.27 of that text above its
+// bottom; it grows, only when it holds superscript or subscript, to
+// keep that shifted text (0.98 of its size above its baseline, 0.27
+// below) inside it; line.clip is set on an exact line too low for its
+// text. Alignment: left, centre or right (./Justify align); it moves
+// items, never offsets. Justified ('both'): items are not merged and a
+// space in model text is an item of its own, and a wrapped line is
+// spread to the width by ./Justify (not the last line, nor one ending
+// in a break). A list paragraph
+// takes its level's indents (under its own: ./Fmt paraFmt), and its
+// first line holds the label (./LineLabel: in the hanging space, the
+// text after it at its suffix); the label is at least as high as its
+// text, moves with the alignment and is never spread. Pure: no desktop
+// services.
 import {runFmt, paraFmt} from './Fmt';
 import {tokens, PLAIN} from './LineTokens';
-import {justify} from './Justify';
+import {justify, align} from './Justify';
 import {labelLine} from './LineLabel';
+import {lineBox} from './ParaSpace';
+import {ruleFit} from './BreakMarks';
+import {nextStop, barsOf, DEFAULT_TW} from './TabStops';
+import {alignedEnd, close, dotIn} from './TabAlign';
 
-const TAB = 48;                        // half an inch at 96 dpi
+const SCRATCH = ['px', 'real', 'ink', 'up', 'down'];
 
 /** See the header. */
 export function layoutPara(para, styles, width, metrics, cache,
-  label) {
+  label, defPx = DEFAULT_TW / 15) {
   const pf = paraFmt(styles, para, label ? label.indent : undefined);
   const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
   const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
-  const lines = [];
-  let line = null, x = 0, pos = 0;
+  const lines = [], bars = barsOf(pf.tabs);
+  let line = null, x = 0, pos = 0, pend = null;
+  const closeTab = () => {
+    if (pend) x += close(line, pend, Math.max(pend.x, line.ink));
+    pend = null;
+  };
   let y = pf.before;
   const start = (first) => {
     line = {from: pos, to: pos, x: 0, y: 0, h: 0, base: 0, items: [],
@@ -76,32 +101,21 @@ export function layoutPara(para, styles, width, metrics, cache,
     x = line.x = left + (first ? pf.first : 0);
   };
   const finish = (how) => {
+    closeTab();
+    if (bars.length) line.bars = bars;
     const px = line.px || (base.vert ? base.full : base.px);
-    line.h = px * 1.25 * pf.factor;
-    line.base = line.h - px * 0.27;
-    // room for raised and lowered text (0 on other lines)
-    const up = Math.max(0, line.up - line.base);
-    line.h += up + Math.max(0, line.down - (line.h - line.base));
-    line.base += up;
+    // (line.up, line.down: raised and lowered text, 0 on most lines)
+    const box = lineBox(pf, px, line.up, line.down);
+    line.h = box.h;
+    line.base = box.base;
+    if (box.clip) line.clip = true;
     line.y = y;
     line.to = pos;
     if (how) line[how] = true;
     if (how === 'wrapped' && pf.justify) justify(line, maxX);
     y += line.h;
-    // alignment: the text up to the last thing that is not a space
-    const room = maxX - line.ink;
-    const dx = pf.align === 'center' ? room / 2
-      : pf.align === 'right' ? room : 0;
-    if (dx > 0) {
-      for (const it of line.items) it.x += dx;
-      line.x += dx;
-      if (line.label) line.label.x += dx;
-    }
-    delete line.px;
-    delete line.real;
-    delete line.ink;
-    delete line.up;
-    delete line.down;
+    align(line, pf.align, maxX);
+    for (const k of SCRATCH) delete line[k];
     lines.push(line);
   };
   // put token tk, w wide, at x; real: drawn as the stub drew it
@@ -127,8 +141,11 @@ export function layoutPara(para, styles, width, metrics, cache,
     } else {
       items.push({x, w, text: tk.text, f, kind: tk.kind,
         from: tk.from, to: tk.to, shown: tk.shown,
-        hl: f.highlight ?? null, dy: f.dy || 0});
+        hl: f.highlight ?? null, sh: f.shade ?? null,
+        dy: f.dy || 0});
     }
+    if (pend && pend.dot === null) pend.dot = dotIn([[tk, w]], x,
+      metrics);
     x += w;
     if (/\S/.test(tk.text)) line.ink = x;
     pos = tk.to;
@@ -136,7 +153,12 @@ export function layoutPara(para, styles, width, metrics, cache,
   let group = [], groupW = 0;
   const flush = () => {
     if (!group.length) return;
-    if (line.real && groupW > 0 && x + groupW > maxX) {
+    let end = x + groupW;
+    if (pend) {
+      end = alignedEnd(pend, end, pend.dot ?? dotIn(group, x, metrics));
+      if (end === null || end > maxX) { pend = null; end = x + groupW; }
+    }
+    if (line.real && groupW > 0 && end > maxX) {
       finish('wrapped');
       start();
     }
@@ -145,7 +167,8 @@ export function layoutPara(para, styles, width, metrics, cache,
   };
   start(true);
   if (label) {
-    const ll = labelLine(label, para, styles, pf, metrics, cache);
+    const ll = labelLine(label, para, styles, pf, metrics, cache,
+      defPx, maxX);
     line.label = ll.label;
     x = line.x = line.ink = ll.textX;
     if (ll.label.text) {
@@ -153,7 +176,14 @@ export function layoutPara(para, styles, width, metrics, cache,
         : base.px);
     }
   }
-  for (const tk of tokens(para, styles, cache)) {
+  const toks = tokens(para, styles, cache);
+  // after the last token that is not 'z' (unseen) a break ends the
+  // paragraph: the unseen ones stay on its line
+  let tail = toks.length - 1;
+  while (tail >= 0 && toks[tail].t === 'z') tail--;
+  let how;
+  for (let k = 0; k < toks.length; k++) {
+    const tk = toks[k];
     if (tk.t === 'w' || tk.t === 'z') {
       const w = tk.t === 'z' ? 0 : metrics.width(tk.text, tk.f.css) +
         (tk.kind === 'box' ? 6 : 0);
@@ -177,8 +207,31 @@ export function layoutPara(para, styles, width, metrics, cache,
       }
     } else if (tk.t === 'tab') {
       flush();
-      const stop = left + TAB * (Math.floor((x - left) / TAB) + 1);
-      place(tk, stop - x);
+      closeTab();
+      const st = nextStop(pf.tabs, x, left, defPx, maxX), at = x;
+      const lined = st.val !== 'left';
+      place(tk, lined ? 0 : st.pos - x);
+      const it = line.items[line.items.length - 1];
+      if (st.leader) it.leader = st.leader;
+      if (lined) pend = {...st, it, x: at, dot: null,
+        idx: line.items.length - 1};
+    } else if (tk.t === 'pb') {
+      flush();
+      closeTab();
+      if (ruleFit(x, maxX, line.real).wrap) {
+        finish('wrapped');
+        start();
+      }
+      place(tk, ruleFit(x, maxX, false).w);
+      const it = line.items[line.items.length - 1];
+      it.label = tk.label;
+      it.hl = it.sh = null;
+      line.ink = x;
+      if (k >= tail) how = 'endsWithBreak';
+      else {
+        finish('endsWithBreak');
+        start();
+      }
     } else {
       flush();
       place(tk, 0);
@@ -187,6 +240,6 @@ export function layoutPara(para, styles, width, metrics, cache,
     }
   }
   flush();
-  finish();
+  finish(how);
   return {h: y + pf.after, lines};
 }

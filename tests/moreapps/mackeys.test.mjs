@@ -51,6 +51,38 @@ describe('MacKeys', () => {
     assert.equal(keymap.lookup(macKey(cmd('m', {shift: true}), true)),
       null);
   });
+  it('Cmd-Shift-L (Safari\'s sidebar) is never bullets: Ctrl-Shift-L ' +
+    'is, on a Mac too', () => {
+    const e = cmd('L', {shift: true});
+    assert.equal(macKey(e, true), e);
+    assert.equal(keymap.lookup(macKey(e, true)), null);
+    assert.ok(!CMD.has('l'));
+    assert.equal(macLabel(keymap.labelFor('bullets'), true),
+      'Ctrl+Shift+L');
+    const c = {code: 'L'.codePointAt(0), key: 'L', shift: true,
+      ctrl: true, alt: false,
+      domEvent: {metaKey: false, ctrlKey: true, shiftKey: true}};
+    assert.equal(keymap.lookup(macKey(c, true)), 'bullets');
+  });
+  it('the Insert menu\'s Page break label is Ctrl+Enter on a Mac ' +
+    'too; Hyperlink is Ctrl+K (Cmd+K); Bookmark is Ctrl+Shift+F5 (Ctrl ' +
+    'on a Mac too)', () => {
+    assert.equal(keymap.labelFor('pageBreak'), 'Ctrl+Enter');
+    assert.equal(macLabel(keymap.labelFor('pageBreak'), true),
+      'Ctrl+Enter');
+    for (const id of ['sectionNext', 'sectionContinuous']) {
+      assert.equal(macLabel(keymap.labelFor(id), true), '');
+    }
+    // Ctrl+K: hyperlink (Cmd+K on a Mac); Ctrl+Shift+F5 bookmark
+    assert.equal(keymap.lookup({code: 11, key: 'k', ctrl: true}),
+      'hyperlink');
+    assert.equal(keymap.lookup(macKey(cmd('k'), true)), 'hyperlink');
+    assert.equal(macLabel(keymap.labelFor('hyperlink'), true), 'Cmd+K');
+    assert.equal(keymap.lookup({code: 0x1B5, key: 'F5', ctrl: true,
+      shift: true}), 'bookmark');
+    assert.equal(macLabel(keymap.labelFor('bookmark'), true),
+      'Ctrl+Shift+F5');
+  });
   it('not on other platforms, nor with Alt or Ctrl held, nor w/o Cmd',
     () => {
       const ev = cmd('z');
@@ -131,4 +163,22 @@ describe('MacKeys', () => {
     assert.equal(JSON.stringify(ev), copy);
     assert.equal(e.domEvent, ev.domEvent);
   });
+});
+
+describe('MacKeys: the line spacing keys', () => {
+  it('Ctrl+1 (not Cmd) works on a Mac; Cmd+digit is never mapped',
+    () => {
+      for (const [key, want] of [['1', 'lineSingle'], ['2', 'lineDouble'],
+        ['5', 'line15'], ['0', 'spaceBefore12']]) {
+        const ctrl = {code: key.charCodeAt(0), key, shift: false,
+          ctrl: true, alt: false, domEvent: {metaKey: false,
+            ctrlKey: true, altKey: false, shiftKey: false}};
+        assert.equal(macKey(ctrl, true), ctrl);
+        assert.equal(keymap.lookup(macKey(ctrl, true)), want);
+        const c = cmd(key);
+        assert.equal(macKey(c, true), c, 'Cmd+' + key + ' as it is');
+        assert.equal(keymap.lookup(macKey(c, true)), null);
+      }
+      assert.ok(![...CMD].some((k) => /[0-9]/.test(k)));
+    });
 });

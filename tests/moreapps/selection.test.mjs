@@ -349,3 +349,95 @@ describe('Selection property test', () => {
       }
     });
 });
+
+describe('Selection over unseen inlines (bookmarks, proofing marks)', () => {
+  const ink = (n) => raw(n);
+  /** 'a' [bookmarkStart] 'b' [proofErr] [bookmarkEnd] 'c' */
+  const marked = () => laid([['a' + O + 'b' + O + O + 'c', {inlines: {
+    1: ink('bookmarkStart'), 3: ink('proofErr'), 4: ink('bookmarkEnd')}}],
+  'next']);
+  it('right and left step over them with the next character: every ' +
+    'press moves the caret on the screen', () => {
+    const L = marked();
+    const offs = [];
+    let s = S.caret({id: ids(L)[0], off: 0});
+    for (let k = 0; k < 4; k++) {
+      s = S.move(s, L, 'right');
+      offs.push(at(L, s.head));
+    }
+    assert.deepEqual(offs, [[0, 1], [0, 3], [0, 6], [1, 0]]);
+    const back = [];
+    for (let k = 0; k < 4; k++) {
+      s = S.move(s, L, 'left');
+      back.push(at(L, s.head));
+    }
+    assert.deepEqual(back, [[0, 6], [0, 5], [0, 2], [0, 0]]);
+    const xs = new Set([1, 3, 6].map((o) =>
+      L.caretRect({id: ids(L)[0], off: o}).x));
+    assert.equal(xs.size, 3, 'three different places');
+  });
+  it('Shift extends the same way', () => {
+    const L = marked();
+    const s = run(L, 0, 1, ['right', 'right'], true);
+    assert.deepEqual([s.anchor.off, s.head.off], [1, 6]);
+    const b = run(L, 0, 6, ['left', 'left'], true);
+    assert.deepEqual([b.anchor.off, b.head.off], [6, 2]);
+  });
+  it('at a paragraph\'s edges: the mark goes with the paragraph mark',
+    () => {
+      const L = laid(['ab', [O + 'cd' + O, {inlines: {0: ink('bookmarkStart'),
+        3: ink('bookmarkEnd')}}], 'ef']);
+      assert.deepEqual(at(L, run(L, 0, 2, ['right']).head), [1, 0]);
+      assert.deepEqual(at(L, run(L, 1, 0, ['right']).head), [1, 2]);
+      assert.deepEqual(at(L, run(L, 1, 1, ['left']).head), [0, 2]);
+      assert.deepEqual(at(L, run(L, 1, 2, ['right']).head), [1, 3]);
+      assert.deepEqual(at(L, run(L, 1, 3, ['right']).head), [2, 0],
+        'the end mark goes with the paragraph mark');
+      assert.deepEqual(at(L, run(L, 2, 0, ['left']).head), [1, 4]);
+      assert.deepEqual(at(L, run(L, 1, 4, ['left']).head), [1, 2]);
+    });
+  it('a paragraph of marks alone is one step, like an empty one', () => {
+    const L = laid(['ab', [O + O, {inlines: {0: ink('bookmarkStart'),
+      1: ink('bookmarkEnd')}}], 'cd']);
+    assert.deepEqual(at(L, run(L, 0, 2, ['right']).head), [1, 0]);
+    assert.deepEqual(at(L, run(L, 1, 0, ['right']).head), [2, 0]);
+    assert.deepEqual(at(L, run(L, 2, 0, ['left']).head), [1, 2]);
+    assert.deepEqual(at(L, run(L, 1, 2, ['left']).head), [0, 2]);
+  });
+  it('a link, a picture, a tab are seen: still one step each', () => {
+    const L = laid([['a' + O + O + 'b', {inlines: {
+      1: raw('hyperlink', 'p', 'lk'), 2: raw('drawing', 'r')}}]]);
+    assert.deepEqual(run(L, 0, 0, ['right', 'right', 'right'])
+      .head.off, 3);
+  });
+  it('a real proofErr document: the marks never cost a press',
+    async () => {
+      const {readDocx} = await import(
+        '../../tools/moreapps/!Word/DocxRead');
+      const {buildDocx, documentXml, p, r} = await import(
+        './build-docx.mjs');
+      const doc = await readDocx(await buildDocx({'word/document.xml':
+        documentXml(p(r('Hi ') + '<w:proofErr w:type="spellStart"/>' +
+          r('wrold') + '<w:proofErr w:type="spellEnd"/>' + r('!')))}));
+      const L = new DocLayout(doc, tm());
+      L.layout(800);
+      const t = L.items[0].block.text;
+      assert.equal(t, 'Hi ' + O + 'wrold' + O + '!');
+      let s = S.caret({id: L.items[0].id, off: 0});
+      const offs = [];
+      for (let k = 0; k < 10; k++) {
+        s = S.move(s, L, 'right');
+        offs.push(s.head.off);
+      }
+      assert.deepEqual(offs, [1, 2, 3, 5, 6, 7, 8, 9, 11, 11]);
+    });
+});
+
+describe('review: a soft hyphen is a character for the caret keys', () => {
+  it('right and left take a press for it (it draws as nothing)', () => {
+    const L = laid([['a' + O + 'b', {inlines: {1: raw('softHyphen',
+      'r')}}]]);
+    assert.equal(run(L, 0, 1, ['right']).head.off, 2);
+    assert.equal(run(L, 0, 2, ['left']).head.off, 1);
+  });
+});

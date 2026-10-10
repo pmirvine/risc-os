@@ -1,0 +1,240 @@
+// BorderGroups - paragraph borders and shading on the screen: which
+// paragraphs share one box, and each one's part of it (a ./DocStack
+// decorator; ./BorderPaint draws the parts).
+//
+//   boxInfo(styles, para, levelInd?) -> info or null  what a
+//       paragraph's box looks like on its own: null when it has no side
+//       drawn and no shading (./BorderResolve), else {sides: {top?,
+//       left?, bottom?, right?, between?} (./BorderResolve edgeOf),
+//       fill ('#rrggbb' or null), left (px: the left indent), inL (px:
+//       the box's inner left edge, the left indent or the first line's
+//       when that is further left, so a bullet in a hanging indent is
+//       inside), right (px: the right indent), breaks (page break
+//       before, ./FlowDeco), any (a side is drawn), k (what must be
+//       equal to share a box: the side definitions and the left and
+//       right indents)}. levelInd: the list level's indent
+//       (./Fmt paraFmt). Kept per paragraph object (a paragraph whose
+//       own pPr gives no borders, shading, indents nor page break
+//       before and keeps nothing raw: per style) for the same styles
+//       object and level indent, so a relayout asks nothing again for
+//       the paragraphs that did not change; paragraphs that look the
+//       same share one (frozen) info, and one decorator result per way
+//       they join their neighbours (few objects for 50,000 bordered
+//       paragraphs: many small ones slowed every later layout down)
+//   borderDeco(item, L) -> {gapAbove: padTop, gapBelow: padBottom,
+//       marks: [mark]} for a paragraph with a box, else null
+//   borderDeco.keyOf(item, L)  its neighbours (their lines, or the
+//       kept block), see below
+//   boxMark(item) -> its mark, or null
+//
+// One box: consecutive paragraphs (no kept block between them, the same
+// section: the upper one is not a section's last; the lower one has no
+// page break before) whose resolved w:pBdr are the same definition:
+// every side (between and bar too) equal attribute by attribute (val,
+// sz, space, color, shadow, frame, as written: a wave and a single
+// side, sz 0 and 2, auto and 000000 differ although drawn alike; nil,
+// none and no side differ too), and whose left and right indents are
+// equal (each keeps its own inL); paragraphs with no side drawn at all
+// share one only with an equal fill as well (Word's rule as believed:
+// question BD1). The mark: {kind: 'border', inL, inR (px from the
+// column's left: the right indent's edge, at least left + 40, as
+// ./LineLayout's maxX), fill, joinAbove, joinBelow (the paragraph above
+// / below shares the box), padTop, padBottom, top? (the box's first
+// paragraph), between? (the others: drawn above them, when set),
+// bottom? (the last), left?, right?}. padTop is space +
+// t of the top (or between) edge, padBottom of the bottom edge:
+// the gaps above and below, so the text never moves inside its own
+// lines; the edges sit next to the text (inside the space before
+// and after when there is room: ./BorderPaint). Left and right are
+// drawn in the indent area, outside the text. Shadows, frames and
+// the bar side are not drawn (they count for sharing a box).
+// What it gives depends on the item's neighbours too: keyOf gives
+// the line arrays of the paragraphs above and below (or the kept
+// blocks), which ./DocItems keeps only under their reuse key and
+// ./DocStack makes before any item is decorated; null for a
+// paragraph whose decoration (still valid) has no box. Pure: no
+// desktop services.
+import {bordersOf, shadeCss, edgeOf} from './BorderResolve';
+import {indentPx} from './Fmt';
+import {paraLayers} from './Styles';
+import {SIDES} from './ReadPropsMore';
+
+const DRAWN = ['top', 'left', 'bottom', 'right', 'between'];
+const cache = new WeakMap();
+const SHARED = new Map(), MAX_SHARED = 4096;
+const MARKS = new WeakMap();
+const BY_STYLE = new WeakMap();
+const IND = ['left', 'hanging', 'firstLine'];
+const IND_KEYS = [...IND, 'right'];
+
+/** Two level indents alike (absent alike). */
+function sameInd(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return IND.every((k) => a[k] === b[k]);
+}
+
+/**
+ * The ind in force from pPr layers and a level indent (the rule of
+ * ./Styles resolvePara for ind alone: firstLine and hanging one
+ * value; the level's indent under the paragraph's own).
+ */
+function indOf(layers, levelInd) {
+  const out = {};
+  const put = (ind) => {
+    if (!ind || typeof ind !== 'object') return;
+    const f = ind.firstLine !== undefined;
+    const h = ind.hanging !== undefined;
+    if (f && !h) delete out.hanging;
+    if (h && !f) delete out.firstLine;
+    for (const k of IND_KEYS) {
+      if (ind[k] !== undefined) out[k] = ind[k];
+    }
+  };
+  const n = layers.length;
+  for (let i = 0; i < n - 1; i++) put(layers[i] && layers[i].ind);
+  if (levelInd) {
+    const {left, hanging, firstLine} = levelInd;
+    put(hanging !== undefined ? {left, hanging} : {left, firstLine});
+  }
+  put(layers[n - 1] && layers[n - 1].ind);
+  return out;
+}
+
+/** The page break before flag in force (./FlowDeco's rule). */
+function breaksIn(layers) {
+  let v = false;
+  for (const l of layers) {
+    if (l && typeof l.pageBreakBefore === 'boolean') {
+      v = l.pageBreakBefore;
+    }
+  }
+  return v;
+}
+
+const DEF = ['val', 'sz', 'space', 'color', 'shadow', 'frame'];
+/** A side's definition, attribute by attribute (null: none). */
+const defOf = (s) => (s ? DEF.map((a) => (s[a] === undefined ? null
+  : s[a])) : null);
+
+/** boxInfo without the cache. */
+function work(styles, para, levelInd) {
+  const layers = paraLayers(styles, para);
+  const {pBdr, shd} = bordersOf(layers);
+  const sides = {};
+  let any = false;
+  for (const k of DRAWN) {
+    const e = edgeOf(pBdr[k]);
+    if (e) { sides[k] = Object.freeze(e); any = true; }
+  }
+  const fill = shadeCss(shd);
+  if (!any && !fill) return null;
+  const pf = indentPx(indOf(layers, levelInd));
+  const inL = pf.left + Math.min(0, pf.first);
+  // (the definitions themselves, every side: drawn alike is not
+  // enough to share a box)
+  const k = JSON.stringify([SIDES.map((n) => defOf(pBdr[n])), pf.left,
+    pf.right]);
+  const breaks = breaksIn(layers);
+  // (one object for every paragraph that looks the same)
+  const key = JSON.stringify([k, sides, fill, inL, breaks]);
+  let v = SHARED.get(key);
+  if (!v) {
+    if (SHARED.size >= MAX_SHARED) SHARED.clear();
+    v = Object.freeze({sides: Object.freeze(sides), fill,
+      left: pf.left, inL, right: pf.right, any, breaks, k});
+    SHARED.set(key, v);
+  }
+  return v;
+}
+
+/** Whether a pPr may change the box its style gives. */
+const ownBox = (pPr) => !!pPr && (pPr.pBdr !== undefined ||
+  pPr.shd !== undefined || pPr.ind !== undefined ||
+  pPr.pageBreakBefore !== undefined ||
+  (Array.isArray(pPr.extra) && pPr.extra.length > 0));
+
+/** See the header. */
+export function boxInfo(styles, para, levelInd) {
+  if (styles && !levelInd && !ownBox(para.pPr)) {
+    // (the style's box: worked out once per style)
+    let m = BY_STYLE.get(styles);
+    if (!m) BY_STYLE.set(styles, m = new Map());
+    const k = para.pStyle;
+    let v = m.get(k);
+    if (v === undefined) m.set(k, v = work(styles, para));
+    return v;
+  }
+  const c = cache.get(para);
+  if (c && c.styles === styles &&
+    (c.v === null || sameInd(c.ind, levelInd))) return c.v;
+  const v = work(styles, para, levelInd);
+  cache.set(para, {styles, ind: levelInd, v});
+  return v;
+}
+
+const infoOf = (styles, it) => (it && it.kind === 'p' && it.block
+  ? boxInfo(styles, it.block, it.list ? it.list.indent : undefined)
+  : null);
+
+/** Whether item a (info ai) and the one below, b (bi), share a box. */
+function share(a, ai, b, bi) {
+  return !!ai && !!bi && !a.mark && !bi.breaks && ai.k === bi.k &&
+    (ai.any || ai.fill === bi.fill);
+}
+
+const pad = (e) => (e ? (e.space + e.t) | 0 : 0);
+
+/** See the header. */
+export function borderDeco(it, L) {
+  if (!it || it.kind !== 'p') return null;
+  const st = L.doc.styles;
+  const me = infoOf(st, it);
+  if (!me) return null;
+  const up = L.items[it.index - 1], dn = L.items[it.index + 1];
+  const joinAbove = share(up, infoOf(st, up), it, me);
+  const joinBelow = share(it, me, dn, infoOf(st, dn));
+  const inR = Math.max(me.left + 40, L.textW - me.right);
+  // (one mark for every paragraph that looks the same)
+  let ms = MARKS.get(me);
+  if (!ms) {
+    MARKS.set(me, ms = [new Map(), new Map(), new Map(), new Map()]);
+  }
+  const by = ms[(joinAbove ? 2 : 0) + (joinBelow ? 1 : 0)];
+  let r = by.get(inR);
+  if (!r) by.set(inR, r = part(me, inR, joinAbove, joinBelow));
+  return r;
+}
+
+/** The decorator's result for a box part (see the header). */
+function part(me, inR, joinAbove, joinBelow) {
+  const s = me.sides;
+  const m = {kind: 'border', inL: me.inL, inR, fill: me.fill,
+    joinAbove, joinBelow, padTop: 0, padBottom: 0};
+  if (joinAbove) {
+    if (s.between) m.between = s.between;
+  } else if (s.top) m.top = s.top;
+  if (!joinBelow && s.bottom) m.bottom = s.bottom;
+  if (s.left) m.left = s.left;
+  if (s.right) m.right = s.right;
+  m.padTop = pad(m.top || m.between);
+  m.padBottom = pad(m.bottom);
+  return Object.freeze({gapAbove: m.padTop, gapBelow: m.padBottom,
+    marks: Object.freeze([Object.freeze(m)])});
+}
+
+/** See the header. */
+export function boxMark(it) {
+  const ms = it && it.marks;
+  for (let i = 0; ms && i < ms.length; i++) {
+    if (ms[i] && ms[i].kind === 'border') return ms[i];
+  }
+  return null;
+}
+
+const near = (x) => (x ? x.lines || x.block : null);
+
+borderDeco.keyOf = (it, L) => {
+  if (it.kind !== 'p' || (it.deco && !boxMark(it.deco))) return null;
+  return [near(L.items[it.index - 1]), near(L.items[it.index + 1])];
+};

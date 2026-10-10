@@ -64,8 +64,8 @@ try {
     && n1.path === null && n1.untitled && !n1.dirty && n1.open && n1.lines.length === 1 && n1.lines[0] === '', n1);
   ok('its app.docs key is a synthetic untitled:N one', n1.keys.length === 1 && /^untitled:\d+$/.test(n1.keys[0]), n1.keys);
   ok('its Info box names it, and says nothing stale', /Untitled/.test(n1.info) && !/read-only/.test(n1.info), n1.info);
-  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close',
-    JSON.stringify(n1.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Format","Zoom","New","Close"]', n1.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close',
+    JSON.stringify(n1.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Zoom","New","Close"]', n1.items);
 
   const n2 = await ev(async () => {
     const t = window.__word();

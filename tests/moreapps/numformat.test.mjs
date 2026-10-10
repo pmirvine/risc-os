@@ -108,8 +108,8 @@ describe('BulletGlyph', () => {
   const T = [
     ['\uF0B7', undefined, '\u2022'], ['\u00B7', 'Symbol', '\u2022'],
     ['\u00B7', undefined, '\u2022'], ['\u2022', 'Arial', '\u2022'],
-    ['\uF0A7', 'Wingdings', '\u25AA'], ['o', 'Courier New', '\u25CB'],
-    ['o', undefined, '\u25CB'], ['\uF0D8', 'Wingdings', '\u27A2'],
+    ['\uF0A7', 'Wingdings', '\u25AA'], ['o', 'Courier New', '\u25E6'],
+    ['o', undefined, '\u25E6'], ['\uF0D8', 'Wingdings', '\u27A2'],
     ['\uF0FC', 'Wingdings', '\u2713'], ['\uF076', 'Wingdings', '\u25C6'],
     ['\uF0A8', 'Wingdings', '\u25FB'], ['\uF06E', 'Wingdings', '\u25A0'],
     ['\uF06C', 'Wingdings', '\u25CF'], ['\uF0E0', 'Wingdings', '\u2022'],
@@ -136,9 +136,10 @@ describe('BulletGlyph', () => {
   it('documented choices: o is always a circle, F0B7 in any font',
     () => {
       // Word's 'o' bullet is Courier New; a plain 'o' in any font is
-      // shown as a white circle too (a letter o bullet is rare)
+      // shown as a white bullet, U+25E6, too (a letter o bullet is
+      // rare; owner: Word's level-1 bullet is drawn as U+25E6)
       for (const font of ['Courier New', 'Arial', undefined])
-        assert.equal(glyphFor('o', font), '\u25CB');
+        assert.equal(glyphFor('o', font), '\u25E6');
       // U+F0B7 is Symbol's bullet; Word often gives no font or
       // Wingdings for it: always a bullet
       for (const font of ['Symbol', 'Wingdings', 'Arial', undefined])

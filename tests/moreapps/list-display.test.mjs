@@ -396,3 +396,58 @@ describe('list display: layoutPara and reuse', () => {
       assert.ok(again < 1000, `again ${again} ms`);
     });
 });
+
+// G6 settled (Batch A, A4.1): a label's tab suffix and a tab in the
+// text count their stops the same way: from the margin, through the
+// paragraph's own stops and the document's default stop.
+describe('list display: the tab suffix matches tabs in the text', () => {
+  const settings = (tw) => ({name: 'w:settings', attrs: [['xmlns:w',
+    'http://schemas.openxmlformats.org/wordprocessingml/2006/main']],
+  children: [{name: 'w:defaultTabStop', attrs: [['w:val', String(tw)]],
+    children: []}]});
+  /** x where the text starts after 'Article 1:' as a label and as
+   *  text followed by a tab, with the same indents and stops. */
+  function both(pPr = {}, tw) {
+    const ind = {left: 1440, hanging: 720};
+    const lab = docOf([li('ab', 0, {pPr})], nums({lvlText: 'Article %1:'}));
+    const txt = docOf([newPara('Article 1:\tab', {pPr: {...pPr, ind}})]);
+    if (tw) { lab.rawSettings = settings(tw); txt.rawSettings = settings(tw); }
+    const a = first(lay(lab)).x;
+    const t = first(lay(txt)).items.find((i) => i.from === 11).x;
+    return [a, t];
+  }
+  it('the default stops (0.5")', () => {
+    assert.deepEqual(both(), [144, 144]);
+  });
+  it('a stop of the paragraph after the label', () => {
+    assert.deepEqual(both({tabs: [{val: 'left', pos: 2400}]}), [160, 160]);
+  });
+  it('a stop of the paragraph before the indent', () => {
+    const [a, t] = both({tabs: [{val: 'left', pos: 1200}]});
+    assert.equal(a, t);
+    assert.equal(a, 144, 'the stop at 80 px is passed (label ends 128)');
+  });
+  it('the document\'s default stop (1000 twips)', () => {
+    const [a, t] = both({}, 1000);
+    assert.equal(a, t);
+    assert.ok(Math.abs(a - 2 * 1000 / 15) < 0.02, String(a));
+  });
+  it('a hanging indent over 0.5": the text at the indent, not at a ' +
+    'default stop before it', () => {
+    const ns = new Map([[1, N([lv(0, {pPr: {ind: {left: 2160,
+      hanging: 1440}}})])]]);
+    const ln = first(lay(docOf([li('ab')], ns)));
+    assert.equal(ln.label.x, 48);
+    assert.equal(ln.x, 144);
+    const txt = first(lay(docOf([newPara('1.\tab', {pPr: {ind:
+      {left: 2160, hanging: 1440}}})]))).items.find((i) => i.from === 3);
+    assert.equal(txt.x, 144);
+  });
+  it('a label that fits: the text at the indent, as a tab would go',
+    () => {
+      const lab = first(lay(docOf([li('ab')]))).x;
+      const txt = first(lay(docOf([newPara('1.\tab', {pPr: {ind:
+        {left: 1440, hanging: 720}}})]))).items.find((i) => i.from === 3);
+      assert.deepEqual([lab, txt.x], [96, 96]);
+    });
+});

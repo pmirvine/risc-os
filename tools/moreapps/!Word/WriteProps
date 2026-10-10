@@ -16,17 +16,22 @@
 // in before the field elements, so an unknown w: element stays
 // behind the extra node it followed in the file.
 // Each field is written with the same value syntax the reader
-// (./ReadProps, ./ReadSect) understands, so it reads back equal. A
+// (./ReadProps, ./ReadSect) understands, so it reads back equal
+// (tabs, pBdr, shd and a section's type: ./WritePropsMore). A
 // field of the wrong type, or a key the Model does not have, is a
 // bad model: nothing is written for it, the whole write is refused.
+// In a Strict document's scope (./Ns isStrict) w:ind is written with
+// w:start / w:end and w:pBdr's left / right sides as w:start /
+// w:end, as ./ReadProps reads them there.
 import {el} from 'wimplib/Xml';
 import {W, onOff} from './Wml';
 import {sortChildren} from './Order';
 import {RPR_FIELDS, PPR_FIELDS, SECT_FIELDS} from './PropNames';
-import {wName, isEl} from './Ns';
+import {wName, isEl, isStrict} from './Ns';
 import {DocxError} from './DocxError';
 import {deepEqual} from './ModelCheck';
 import {readSect} from './ReadSect';
+import {tabsNode, pBdrNode, shdNode, typeNode} from './WritePropsMore';
 
 /** The error for a Model the writer will not write. */
 export const badModel = (msg) => new DocxError('bad-model', msg);
@@ -66,8 +71,11 @@ const bool = (name) => (v) => isBool(v) ? onOff(name, v) : null;
 const str = (name) => (v) => isStr(v) ? W(name, {'w:val': v}) : null;
 const int = (name) => (v) => isInt(v) ? W(name, {'w:val': v}) : null;
 
-/** An element with some of the attributes `keys` (`ints` integer). */
-const obj = (name, keys, ints) => (v) => {
+/**
+ * An element with some of the attributes `keys` (`ints` integer),
+ * named `names` when they are not the keys.
+ */
+const obj = (name, keys, ints, names = keys) => (v) => {
   if (v === null || typeof v !== 'object' || Array.isArray(v))
     return null;
   for (const k of Object.keys(v)) {
@@ -75,7 +83,7 @@ const obj = (name, keys, ints) => (v) => {
     if (!(ints.includes(k) ? isInt(v[k]) : isStr(v[k]))) return null;
   }
   return W(name, keys.filter((k) => v[k] !== undefined)
-    .map((k) => ['w:' + k, v[k]]));
+    .map((k) => ['w:' + names[keys.indexOf(k)], v[k]]));
 };
 
 const numPr = (v) => {
@@ -101,19 +109,23 @@ const table = (names, kinds) => Object.fromEntries([...names]
 const RPR = table(RPR_FIELDS, {
   rFonts: (n) => obj(n, FONTS, []), b: bool, i: bool, strike: bool,
   color: str, sz: int, szCs: int, highlight: str, u: str,
-  vertAlign: str,
+  vertAlign: str, shd: () => shdNode,
 });
 const PPR = table(PPR_FIELDS, {
   keepNext: bool, keepLines: bool, pageBreakBefore: bool,
   numPr: () => numPr, spacing: (n) => obj(n, SPACING,
     SPACING.slice(0, 3)), ind: (n) => obj(n, IND, IND), jc: str,
-  outlineLvl: int,
+  outlineLvl: int, widowControl: bool, contextualSpacing: bool,
+  tabs: () => tabsNode, pBdr: () => pBdrNode, shd: () => shdNode,
 });
+// Strict (see the header)
+const PPR_S = {...PPR, ind: obj('ind', IND, IND, ['start', 'end',
+  'firstLine', 'hanging']), pBdr: (v) => pBdrNode(v, true)};
 const SECT = table(SECT_FIELDS, {
   pgSz: (n) => obj(n, ['w', 'h', 'orient', 'code'], ['w', 'h', 'code']),
   pgMar: (n) => obj(n, MAR, MAR),
   cols: (n) => obj(n, ['num', 'space'], ['num', 'space']),
-  titlePg: bool,
+  titlePg: bool, type: () => typeNode,
 });
 
 /** The field elements of property object `o` (not extra). */
@@ -143,7 +155,7 @@ export function rPrNode(rPr, rStyle, map) {
 
 /** w:pPr (with pStyle and a section's sectPr), or null if empty. */
 export function pPrNode(pPr, pStyle, sectPr, map) {
-  const kids = fields(pPr, PPR, 'pPr');
+  const kids = fields(pPr, isStrict(map) ? PPR_S : PPR, 'pPr');
   if (pStyle !== undefined) {
     if (!isStr(pStyle)) throw badModel('pStyle must be a string');
     kids.unshift(W('pStyle', {'w:val': pStyle}));

@@ -13,10 +13,15 @@
 // caret consistent); the caret stays in the document; hover help; the
 // window closing in the middle of a drag; a drag ending with no place
 // (the markers put back); the inch numbers unsigned, none at the
-// margin; 30 open/close cycles; hiDPI.
+// margin; 30 open/close cycles; hiDPI. Tab stops (A4.2): a click adds a
+// stop of the selector's kind (snapped), the selector cycles left ->
+// centre -> right -> decimal, a stop drags (snapped, Shift free), dragged
+// down off the ruler it goes, a style's stop is grey and removing it writes
+// a clear stop, a mixed selection shows the first paragraph's stops and
+// each paragraph gets the change, one undo step each; at zoom 50% and 200%.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
-import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { buildDocx, documentXml, stylesXml, p, r } from './build-docx.mjs';
 
 const PARAS = [
   p(r('First paragraph, indented with a first line.'), '<w:ind w:left="720" w:firstLine="360"/>'),   // 0
@@ -24,9 +29,21 @@ const PARAS = [
   p(r('Third paragraph, plain.')),                                                                   // 2
   p(r('Fourth paragraph, plain.')),                                                                  // 3
   ...Array.from({ length: 80 }, (_, i) => p(r(`Filler ${i} with a few words in it.`))),
+  p(r('Styled with a stop at 1 inch.'), '<w:pStyle w:val="TabStyle"/>'),                              // 84
+  // 85: stops where indent markers are (a right stop at the right margin, a left one at the hanging indent)
+  p(r('Stops on the markers.'), '<w:tabs><w:tab w:val="left" w:pos="720"/><w:tab w:val="right" w:pos="9026"/></w:tabs><w:ind w:left="720" w:hanging="720"/>'),
+  // 86: 70 stops of its own (more than a command may set)
+  p(r('Seventy stops.'), `<w:tabs>${Array.from({ length: 70 }, (_, k) => `<w:tab w:val="left" w:pos="${100 * (k + 1)}"/>`).join('')}</w:tabs>`),
+  // 87: 257 stops: a w:tabs the model keeps raw
+  p(r('Raw stops.'), `<w:tabs>${Array.from({ length: 257 }, (_, k) => `<w:tab w:val="left" w:pos="${20 * (k + 1)}"/>`).join('')}</w:tabs>`),
 ];
-const files = { T: Array.from(await buildDocx({ 'word/document.xml': documentXml(PARAS.join('')) })) };
-const TW = 9026, BAR = 34, RUL = 24;
+const STYLES = stylesXml('<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>'
+  + '<w:style w:type="paragraph" w:styleId="TabStyle"><w:name w:val="Tab Style"/><w:basedOn w:val="Normal"/>'
+  + '<w:pPr><w:tabs><w:tab w:val="left" w:pos="1440"/></w:tabs></w:pPr></w:style>');
+const files = { T: Array.from(await buildDocx({ 'word/document.xml': documentXml(PARAS.join('')), 'word/styles.xml': STYLES })) };
+const TW = 9026;
+let RUL = 0;                           // (the ruler's height, from the hook)
+let BAR = 0;                           // (the toolbar rows: dw.inset() less the ruler)
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -52,7 +69,7 @@ async function start(page, at = { x: 60, y: 40, w: 900, h: 500 }) {
     /** The client point on marker id (its band: top, bottom triangle, box). */
     window.__mark = (id) => {
       const ru = window.__doc().ruler, m = ru.markers.find((k) => k.id === id);
-      const y = m.kind === 'down' ? 3 : m.kind === 'up' ? Math.round(ru.height * 0.62) : ru.height - 2;
+      const y = m.kind === 'down' ? 3 : m.kind === 'up' || m.kind.startsWith('tab') ? Math.round(ru.height * 0.62) : ru.height - 2;
       return window.__client(ru.pane, ru._x(m.twips), y);
     };
     window.__marks = () => Object.fromEntries(window.__doc().ruler.markers.map((m) => [m.id, m.twips]));
@@ -95,16 +112,18 @@ async function drag(id, dx, { shift = false, between, to } = {}) {
 try {
   const s0 = await start(page);
   ok('the document opens with a ruler', s0.ok && !s0.msgs.length, s0);
+  RUL = await ev(() => window.__doc().ruler.height);
+  BAR = (await ev(() => window.__doc().inset)) - RUL;
 
   // ---------------------------------------------------- where it is
   const geo = await ev(() => {
     const d = window.__doc(), ru = d.ruler, pane = ru.pane, w = d.win, L = d.view.layout;
     return { pane: [pane.isOpen, pane.x, pane.y, pane.w, pane.h], win: [w.x, w.y, w.w, w.h], top: L.top, first: L.items[0].y,
-      front: +pane.el.style.zIndex > +w.el.style.zIndex, bar: d.toolbar.pane.y + d.toolbar.pane.h, on: d.rulerOn };
+      front: +pane.el.style.zIndex > +w.el.style.zIndex, bar: d.toolbar2.pane.y + d.toolbar2.pane.h, on: d.rulerOn };
   });
-  ok('the ruler is a pane under the toolbar, as wide as the window, 24 px high', geo.pane[0] && geo.pane[1] === geo.win[0]
+  ok('the ruler is a pane under the toolbar rows, as wide as the window, its height', geo.pane[0] && geo.pane[1] === geo.win[0]
     && geo.pane[2] === geo.win[1] + BAR && geo.pane[2] === geo.bar && geo.pane[3] === geo.win[2] && geo.pane[4] === RUL && geo.front && geo.on, geo);
-  ok('... the page starts below both (L.top 58: the first line at 24 + 58)', geo.top === BAR + RUL && geo.first === 24 + BAR + RUL, geo);
+  ok('... the page starts below them (L.top = dw.inset(): the first line 24 below)', geo.top === BAR + RUL && geo.first === 24 + BAR + RUL, geo);
 
   // ---------------------------------------------------- the markers show the caret paragraph
   await sel(1, 2);
@@ -193,12 +212,16 @@ try {
   // ---------------------------------------------------- the caret stays in the document; clicks on the ruler; help
   await sel(3, 2);
   const mk = await ev(() => window.__mark('left'));
+  const left3 = (await ind(3)).left;
   await page.mouse.click(mk.x + 200, mk.y);
   await settle();
   await page.keyboard.type('Q');
   await settle();
-  const typed = await ev(() => ({ text: window.__doc().doc.sections[0].blocks[3].text, caret: os.wimp.caret?.window === window.__doc().win }));
-  ok('a click on the ruler changes nothing and keys still type into the document', typed.text.startsWith('FoQurth') && typed.caret, typed);
+  const typed = await ev(() => ({ text: window.__doc().doc.sections[0].blocks[3].text, caret: os.wimp.caret?.window === window.__doc().win,
+    tabs: window.__doc().doc.sections[0].blocks[3].pPr.tabs }));
+  ok('a click on the ruler adds a left tab stop there (snapped) and keys still type into the document', typed.text.startsWith('FoQurth')
+    && typed.caret && typed.tabs?.length === 1 && typed.tabs[0].val === 'left' && typed.tabs[0].pos % 90 === 0
+    && Math.abs(typed.tabs[0].pos - left3 - 3000) <= 60, { typed, left3 });
   const help = await ev(() => {
     const ru = window.__doc().ruler, m = ru.markers.find((k) => k.id === 'left');
     const s = ru.pane.workToScreen(ru._x(m.twips), ru.height - 2), s2 = ru.pane.workToScreen(ru._x(m.twips) + 150, 8);
@@ -269,7 +292,7 @@ try {
     await window.__frames(2);
     return res;
   });
-  ok('Format > Ruler (ticked) hides it: the page moves up (L.top 34), the caret and focus stay in the document',
+  ok('Format > Ruler (ticked) hides it: the page moves up (L.top = the rows), the caret and focus stay in the document',
     tick1 === true && !off.on && !off.open && off.top === BAR && off.first === 24 + BAR && off.caret && off.focused, { tick1, off });
   ok('... and it stays hidden when the window moves', off.moved === false, off);
   const clickBelow = async (y) => {
@@ -302,6 +325,174 @@ try {
   ok('... a click just below the ruler is the start of the first line', await clickBelow(BAR + RUL + 3));
   const pdOn = await pd();
   ok('... Page Down: the visible height less the toolbar, the ruler and 32; the caret below the ruler', pgOk(pdOn, BAR + RUL), pdOn);
+
+  // ---------------------------------------------------- tab stops (A4.2)
+  const tabs = (i) => ev((i) => window.__doc().doc.sections[0].blocks[i].pPr?.tabs ?? null, i);
+  const rulerAt = (twips) => ev((t) => { const ru = window.__doc().ruler; return window.__client(ru.pane, ru._x(t), Math.round(ru.height * 0.62)); }, twips);
+  const click = async (pt) => { await page.mouse.click(pt.x, pt.y); await wait(30); await settle(); };
+  const depth = () => ev(() => window.__doc().view.undoDepth);
+  const tabMarks = () => ev(() => window.__doc().ruler.markers.filter((m) => m.id.startsWith('tab:')).map((m) => [m.twips, m.kind, !!m.grey]));
+  const T = (val, pos, leader) => (leader ? { val, pos, leader } : { val, pos });
+  await sel(10, 1);
+  let u = await depth();
+  await click(await rulerAt(2900));
+  ok('tabs: a click in the text part of the ruler adds a left stop, snapped to 1/16 inch; one undo step; a black L marker',
+    same(await tabs(10), [T('left', 2880)]) && (await depth()) === u + 1 && same(await tabMarks(), [[2880, 'tabL', false]]),
+    { tabs: await tabs(10), marks: await tabMarks() });
+  const selPt = await ev(() => { const ru = window.__doc().ruler; return window.__client(ru.pane, 12, Math.round(ru.height / 2)); });
+  const kinds = [];
+  u = await depth();
+  for (let i = 0; i < 4; i++) { await click(selPt); kinds.push(await ev(() => window.__doc().ruler.selector)); }
+  const selHelp = await ev(() => { const ru = window.__doc().ruler, s = ru.pane.workToScreen(12, Math.round(ru.height / 2)); return os.wimp.helpAt(s.x, s.y); });
+  ok('... the selector (left end) cycles centre, right, decimal, left; it changes nothing in the document; its help says what it adds',
+    same(kinds, ['center', 'right', 'decimal', 'left']) && (await depth()) === u && /left tab stop/.test(selHelp ?? '')
+    && (await ev(() => os.wimp.caret?.window === window.__doc().win)), { kinds, selHelp });
+  await click(selPt);
+  await click(selPt);
+  await click(await rulerAt(5760));
+  ok('... with the selector at right: a right stop (marker kind tabR)', same(await tabs(10), [T('left', 2880), T('right', 5760)])
+    && same(await tabMarks(), [[2880, 'tabL', false], [5760, 'tabR', false]]), await tabs(10));
+  await click(await rulerAt(-720));
+  await click(await rulerAt(TW + 300));
+  ok('... clicks in the margins add nothing', same(await tabs(10), [T('left', 2880), T('right', 5760)]), await tabs(10));
+  u = await depth();
+  const mid = await drag('tab:2880', 48, { between: () => ev(() => ({ marks: window.__doc().ruler.markers.filter((m) => m.id.startsWith('tab:'))
+    .map((m) => [m.id, m.twips]), tabs: window.__doc().doc.sections[0].blocks[10].pPr.tabs })) });
+  ok('... a stop dragged 48 px: shown moving (the text unchanged), let go: 3600; one undo step',
+    same(mid.marks, [['tab:2880', 3600], ['tab:5760', 5760]]) && same(mid.tabs, [T('left', 2880), T('right', 5760)])
+    && same(await tabs(10), [T('left', 3600), T('right', 5760)]) && (await depth()) === u + 1, { mid, tabs: await tabs(10) });
+  await drag('tab:3600', 37, { shift: true });
+  const freeTab = (await tabs(10))[0].pos;
+  ok('... Shift held: free (about 4155, not a multiple of 90)', freeTab % 90 !== 0 && Math.abs(freeTab - 4155) <= 15, await tabs(10));
+  u = await depth();
+  const rt = await ev(() => window.__mark('tab:5760'));
+  const offMid = await drag('tab:5760', 0, { to: { x: rt.x, y: rt.y + RUL + 30 }, between: () => tabMarks() });
+  ok('... dragged down off the ruler: gone from the ruler while there, removed on release; one undo step',
+    offMid.length === 1 && same((await tabs(10)).map((t) => t.val), ['left']) && (await depth()) === u + 1, { offMid, tabs: await tabs(10) });
+  await page.keyboard.press('Control+z');
+  await settle();
+  ok('... Ctrl-Z brings it back', same((await tabs(10))[1], T('right', 5760)), await tabs(10));
+  const rn = await ev(() => window.__mark('tab:5760'));
+  await drag('tab:5760', 0, { to: { x: rn.x, y: rn.y + 10 } });
+  ok('... dragged only a little below the ruler (not 16 px): it stays', same((await tabs(10))[1], T('right', 5760)), await tabs(10));
+
+  // a mixed selection: the first paragraph's stops shown, the change on each paragraph's own stops
+  await click(selPt);
+  await click(selPt);
+  ok('the selector is kept (per window): right -> decimal -> left', (await ev(() => window.__doc().ruler.selector)) === 'left');
+  await sel(12, 1);
+  await click(await rulerAt(1440));
+  await sel(11, 0, 12, 3);
+  const mixMarks = await tabMarks();
+  u = await depth();
+  await click(await rulerAt(4320));
+  ok('a selection of two paragraphs: the first one\'s stops shown (none); a click adds the stop to each, one undo step',
+    same(mixMarks, []) && same(await tabs(11), [T('left', 4320)]) && same(await tabs(12), [T('left', 1440), T('left', 4320)])
+    && (await depth()) === u + 1, { mixMarks, t11: await tabs(11), t12: await tabs(12) });
+  await drag('tab:4320', -96);
+  ok('... a stop dragged: moved in each paragraph', same(await tabs(11), [T('left', 2880)])
+    && same(await tabs(12), [T('left', 1440), T('left', 2880)]), [await tabs(11), await tabs(12)]);
+
+  // a stop from the paragraph's style
+  await sel(84, 1);
+  const grey = await tabMarks();
+  const greyHelp = await ev(() => { const ru = window.__doc().ruler, m = ru.markers.find((k) => k.id === 'tab:1440'), s = ru.pane.workToScreen(ru._x(m.twips), Math.round(ru.height * 0.62)); return os.wimp.helpAt(s.x, s.y); });
+  ok('a style\'s stop is shown grey (help: from the style); the paragraph has no stops of its own', same(grey, [[1440, 'tabL', true]])
+    && (await tabs(84)) === null && /style/.test(greyHelp ?? ''), { grey, greyHelp });
+  const gm = await ev(() => window.__mark('tab:1440'));
+  await drag('tab:1440', 0, { to: { x: gm.x, y: gm.y + RUL + 30 } });
+  ok('... dragged off: a clear stop written in the paragraph\'s own stops; no marker', same(await tabs(84), [T('clear', 1440)])
+    && same(await tabMarks(), []), await tabs(84));
+  await page.keyboard.press('Control+z');
+  await settle();
+  await drag('tab:1440', 96);
+  ok('... (undone) dragged to 2 inches: clear at 1 inch, a black stop at 2', same(await tabs(84), [T('clear', 1440), T('left', 2880)])
+    && same(await tabMarks(), [[2880, 'tabL', false]]), await tabs(84));
+
+  // a stop where an indent marker is: both can be grabbed (the lower part of the band: the stop)
+  const dragAt = async (twips, yk, dx) => {
+    const pt = await ev(([t, yk]) => { const ru = window.__doc().ruler; return window.__client(ru.pane, ru._x(t), Math.round(ru.height * yk)); }, [twips, yk]);
+    await page.mouse.move(pt.x, pt.y);
+    await page.mouse.down();
+    await page.mouse.move(pt.x + dx, pt.y, { steps: 6 });
+    await page.mouse.up();
+    await wait(30);
+    await settle();
+  };
+  await sel(85, 1);
+  await dragAt(TW, 0.45, -48);
+  ok('a right stop at the right margin: pressed in the upper part of the band, the right indent moves (the stop stays)',
+    (await ind(85))?.right === 720 && same(await tabs(85), [T('left', 720), T('right', TW)]), [await ind(85), await tabs(85)]);
+  await page.keyboard.press('Control+z');
+  await settle();
+  await dragAt(TW, 0.75, -48);
+  ok('... pressed in the lower part: the stop moves (the right indent stays)', (await ind(85))?.right === undefined
+    && same(await tabs(85), [T('left', 720), T('right', 8280)]), [await ind(85), await tabs(85)]);
+  await dragAt(720, 0.75, 48);
+  ok('a stop at the hanging indent: the lower part moves the stop', same(await ind(85), { left: 720, hanging: 720 })
+    && same(await tabs(85), [T('left', 1440), T('right', 8280)]), [await ind(85), await tabs(85)]);
+  await page.keyboard.press('Control+z');
+  await settle();
+  await dragAt(720, 0.45, 48);
+  ok('... the upper part moves the hanging triangle (the stop stays)', same(await ind(85), { left: 1440, hanging: 1440 })
+    && same(await tabs(85), [T('left', 720), T('right', 8280)]), [await ind(85), await tabs(85)]);
+  await page.keyboard.press('Control+z');
+  await settle();
+  await dragAt(720, 0.95, 48);
+  ok('... and the box under it (bottom) the left indent with the first line', same(await ind(85), { left: 1440, hanging: 720 }) && same(await tabs(85), [T('left', 720), T('right', 8280)]),
+    [await ind(85), await tabs(85)]);
+
+  // refused gestures beep and change nothing
+  await ev(() => { window.__beeps = 0; window.__realBeep = os.wimp.beep; os.wimp.beep = () => { window.__beeps++; }; });
+  const beeps = () => ev(() => window.__beeps);
+  await sel(86, 1);
+  u = await depth();
+  await click(await rulerAt(8100));
+  ok('70 stops of its own: a click (a 71st) is refused with a beep, nothing changed',
+    (await beeps()) === 1 && (await tabs(86)).length === 70 && (await depth()) === u, { beeps: await beeps(), n: (await tabs(86)).length });
+  await sel(87, 1);
+  const rawBefore = await ev(() => { const p = window.__doc().doc.sections[0].blocks[87]; return { tabs: p.pPr.tabs, extra: p.pPr.extra.length }; });
+  const rawMarks = (await tabMarks()).length;
+  await click(await rulerAt(7200));
+  const rm1 = await ev(() => window.__mark('tab:20'));
+  await drag('tab:20', 0, { to: { x: rm1.x, y: rm1.y + RUL + 30 } });
+  await drag('tab:40', 96);
+  const rawAfter = await ev(() => { const p = window.__doc().doc.sections[0].blocks[87]; return { tabs: p.pPr.tabs, extra: p.pPr.extra.length }; });
+  ok('a w:tabs kept raw (257 stops): shown, but a click, a drag off and a move are each refused with a beep; it stays raw',
+    rawMarks === 64 && rawBefore.tabs === undefined && rawBefore.extra === 1 && same(rawAfter, rawBefore) && (await beeps()) === 4
+    && (await depth()) === u && (await tabMarks()).length === 64, { rawMarks, rawBefore, rawAfter, beeps: await beeps() });
+  await ev(() => { os.wimp.beep = window.__realBeep; });
+  await sel(15, 1);
+  u = await depth();
+  const ap = await rulerAt(2880);
+  await page.mouse.click(ap.x, ap.y, { button: 'right' });
+  await wait(30);
+  await settle();
+  await page.mouse.move(ap.x, ap.y);
+  await page.mouse.down();
+  await page.mouse.move(ap.x + 40, ap.y, { steps: 6 });
+  await page.mouse.up();
+  await wait(30);
+  await settle();
+  ok('an Adjust click, and a drag started away from the markers, add nothing', (await tabs(15)) === null && (await depth()) === u,
+    { t: await tabs(15), u, d: await depth() });
+
+  // zoom 200% and 50%
+  for (const [z, p, dx, to] of [[200, 13, 48, 1800], [50, 14, 48, 4320]]) {
+    await ev(async (z) => { window.__doc().setZoom(z); await window.__frames(3); }, z);
+    await sel(p, 1);
+    await click(await rulerAt(1440 * (z === 50 ? 2 : 1)));
+    const at = await tabs(p);
+    await drag(`tab:${at?.[0]?.pos}`, dx);
+    const lineUp = await ev((p) => {
+      const d = window.__doc(), ru = d.ruler, m = ru.markers.find((k) => k.id.startsWith('tab:'));
+      return { mark: ru.pane.workToScreen(ru._x(m.twips), 0).x, page: d.win.workToScreen(d.view.layout.left * d.view.zoom + m.twips / 15 * d.view.zoom, 0).x };
+    }, p);
+    ok(`zoom ${z}%: a click adds the stop at the place clicked; a 48 px drag moves it ${to - (z === 50 ? 2880 : 1440)} twips; the marker over its place on the page`,
+      same(at, [T('left', z === 50 ? 2880 : 1440)]) && same(await tabs(p), [T('left', to)]) && Math.abs(lineUp.mark - lineUp.page) <= 1,
+      { at, now: await tabs(p), lineUp });
+  }
+  await ev(async () => { window.__doc().setZoom(100); await window.__frames(3); });
 
   // ---------------------------------------------------- the window closes in the middle of a drag
   const mc = await ev(async () => {

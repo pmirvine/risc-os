@@ -1,0 +1,128 @@
+// InsertApply - the commands of the Insert menu (and their keys),
+// for ./EditApply:
+//
+//   insert(id, d, typing, sel, arg) -> the new selection, or
+//                         undefined for an id that is not one of
+//                         them (or no selection)
+//   pageBreak(d, sel)  -> the selection after Insert > Page break
+//                         (Ctrl-Enter), in one d.atomic group
+//
+// ids: pageBreak; sectionNext, sectionContinuous (Insert > Section
+// break > Next page / Continuous: ./SectBreak insertSection); nbsp,
+// nbHyphen, softHyphen (Insert > Special character, below). Each
+// runs through typing.command (./Typing), so it ends the typing's
+// undo step and is one of its own; arg is the command's argument
+// (none yet).
+//
+// nbsp (Ctrl-Shift-Space) puts a no-break space, U+00A0, in as text
+// at the caret (the selection is deleted first, as for the page
+// break; the format is that of the text before it, as ./OpsText
+// says; ./EditRun types it with the pending format instead, when
+// it is a key, so this is the form without). It is not a Space for
+// AutoFormat lists (./EditInput: only ' ' typed counts). nbHyphen
+// (Ctrl-Shift--) and softHyphen (Insert > Special character >
+// Optional hyphen) put in an inline of their own, a U+FFFC with
+// {kind: 'raw', level: 'r', node: w:noBreakHyphen / w:softHyphen}
+// that is written in the run as Word does; ./LineTokens draws the
+// first as '-' and the second as nothing (it is one caret step).
+// arg (EditRun's, for the two hyphens) is {rPr, rStyle}: the pending
+// format, on top of the text before, as for typed text; the inline
+// takes it, so what is typed next goes on in it. The caret is
+// after what went in. A position that is not in the
+// document changes nothing.
+//
+// Page break (Word 2013's form): the selection is deleted first
+// (./EditRange, in the same step); a caret on a kept block's edge (a
+// table) first gets an empty paragraph there (before it at off 0,
+// after it at 1); then a page break, a U+FFFC with the inline
+// {kind: 'br', level: 'r', brType: 'page'} (no node: written as
+// <w:br w:type="page"/> in a run with the format of the text before
+// it, ./OpsText), goes in at the caret, and the paragraph is split
+// after it as Enter splits it (./EditPara: the new paragraph has a
+// fresh id, the same pPr and pStyle, so a list goes on; after a
+// heading the next style). So the break always ends its paragraph,
+// and the caret is at the start of the new one. A position that is
+// not in the document changes nothing (sel is returned, no step).
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {caret, collapsed} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {deleteRange, paraBy} from './EditRange';
+import {splitAt} from './EditPara';
+import {insertSection} from './SectBreak';
+import {W} from './Wml';
+import {fmtAt} from './OpsText';
+import {applyTo} from './Pending';
+
+const PAGE = () => ({kind: 'br', level: 'r', brType: 'page'});
+
+/** See the header. */
+export function pageBreak(d, sel) {
+  const o = sel ? orderedPos(d.doc, sel) : null;
+  if (!o) return sel;
+  let out = null;
+  d.atomic(() => {
+    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    let loc = findBlock(d.doc, pos.id);
+    if (loc.b.type !== 'p') {
+      pos = paraBy(d, loc, pos.off);
+      loc = findBlock(d.doc, pos.id);
+    }
+    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: pos.off,
+      del: 0, ins: OBJ, inlines: {0: PAGE()}});
+    loc = findBlock(d.doc, pos.id);
+    out = splitAt(d, loc, pos.off + 1);
+  });
+  return out ? caret(out) : sel;
+}
+
+/** The rPr / rStyle for the op: the text before, then fmt on top. */
+function pendingFmt(p, off, fmt) {
+  if (!fmt || (fmt.rPr === undefined && fmt.rStyle === undefined))
+    return {};
+  const f = fmtAt(p, off, 0);
+  return {rPr: applyTo(f.rPr, fmt.rPr), rStyle: fmt.rStyle !== undefined
+    ? fmt.rStyle : f.rStyle === undefined ? null : f.rStyle};
+}
+
+/** Put `ins` (text, or one U+FFFC for inline `x`) at the caret. */
+function putIn(d, sel, ins, x, fmt) {
+  const o = sel ? orderedPos(d.doc, sel) : null;
+  if (!o) return sel;
+  let out = null;
+  d.atomic(() => {
+    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    let loc = findBlock(d.doc, pos.id);
+    if (loc.b.type !== 'p') {
+      pos = paraBy(d, loc, pos.off);
+      loc = findBlock(d.doc, pos.id);
+    }
+    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: pos.off,
+      del: 0, ins, inlines: x ? {0: x} : undefined,
+      ...pendingFmt(loc.b, pos.off, fmt)});
+    out = {id: pos.id, off: pos.off + ins.length};
+  });
+  return caret(out);
+}
+
+const raw = (name) => () => ({kind: 'raw', level: 'r', node: W(name)});
+const hyphen = raw('noBreakHyphen'), soft = raw('softHyphen');
+
+const COMMANDS = new Map([
+  ['pageBreak', (d, t, sel) => t.command(() => pageBreak(d, sel))],
+  ['nbsp', (d, t, sel) => t.command(() => putIn(d, sel, '\xA0'))],
+  ['nbHyphen',
+    (d, t, sel, a) => t.command(() => putIn(d, sel, OBJ, hyphen(), a))],
+  ['softHyphen',
+    (d, t, sel, a) => t.command(() => putIn(d, sel, OBJ, soft(), a))],
+  ['sectionNext', (d, t, sel) => insertSection(d, t, sel, 'nextPage')],
+  ['sectionContinuous',
+    (d, t, sel) => insertSection(d, t, sel, 'continuous')],
+]);
+
+/** See the header. */
+export function insert(id, d, typing, sel, arg) {
+  const fn = COMMANDS.get(id);
+  if (!fn || !sel) return undefined;
+  return fn(d, typing, sel, arg);
+}

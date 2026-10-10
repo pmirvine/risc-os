@@ -1,0 +1,225 @@
+// ChangeCase - Format > Change case and Shift+F3 (pure).
+//
+//   changeCase(d, typing, sel, mode, pending) -> {sel, pending}
+//   MODES      the modes: sentence lower upper title toggle cycle
+//   caseState(texts) -> 'upper' | 'lower' | 'title' | 'mixed'
+//
+//   sentence   the first letter of each sentence a capital, every
+//              other letter small. A sentence starts at the start of
+//              each paragraph's part that is changed, and after . !
+//              or ? (and closing quotes or brackets) followed by
+//              white space; a digit ends the wait ("3 apples" keeps
+//              its a), as Word does
+//   lower      all letters small
+//   upper      all letters capitals
+//   title      Capitalize Each Word: a capital at the start of each
+//              word, the other letters small. A word is letters,
+//              digits and marks; an apostrophe (' or U+2019) between
+//              two of them stays inside ("don't" is Don't, "3rd"
+//              stays 3rd); a hyphen starts a new word
+//   toggle     tOGGLE cASE: capitals become small and small capitals
+//   cycle      Shift+F3, Word's order from what the text is now:
+//              capitals -> small -> Title Case -> capitals; anything
+//              else (a sentence, a mixture) -> capitals. A step that
+//              would change nothing (3rd has no Title Case form) is
+//              skipped for the next one (at most three tried)
+//
+// What is changed: the selection, or at a caret the word it is in (or
+// ends: the caret stays where it was; none, if it is not in a word).
+// Text lengths NEVER change: a character whose case form is longer or
+// shorter is left as it is (the sharp s stays when capitals are asked
+// for, as does the Turkish dotted capital I when small letters are,
+// the fi ligature...); a capital sigma at the end of a word becomes
+// the final sigma; each character is changed on its own otherwise
+// (no locale, no normalisation, a surrogate pair is one character).
+// U+FFFC (links, fields, breaks...) and everything with no case is
+// left; so is every run, inline and formatting: a changed paragraph
+// is one spliceText over the first to the last changed character with
+// the old runs and inlines for that stretch. One command is one undo
+// step (none when nothing changes); the selection is kept. A mode
+// that is none of MODES throws RangeError first. pending is returned
+// (as the other commands of ./FormatSet do) EMPTY for a selection.
+// Whether Word's Capitalize Each Word makes the rest small is not
+// known to be the same (docs/apps/Word.md, to check in real Word).
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {wordBounds} from 'wimplib/Segment';
+import {isWordText} from './DocPos';
+import {touched, runOps} from './FormatOps';
+import {cut} from './OpsUtil';
+import {EMPTY} from './Pending';
+import {collapsed} from './Selection';
+
+export const MODES = Object.freeze(['sentence', 'lower', 'upper',
+  'title', 'toggle', 'cycle']);
+
+const LETTER = /^\p{L}$/u, DIGIT = /^\p{N}$/u, MARK = /^\p{M}$/u;
+const ASCII = /^[\x00-\x7f]*$/;
+const CLOSERS = '"\')]}\u2019\u201D\u203A\u00BB';
+const isLetter = (c) => LETTER.test(c);
+const isWordCh = (c) => isLetter(c) || DIGIT.test(c) || MARK.test(c);
+
+/** c in capitals if that is as long as c, else c. */
+function up(c) {
+  const u = c.toUpperCase();
+  return u.length === c.length ? u : c;
+}
+
+/** c small if that is as long as c (final sigma by t, i), else c. */
+function low(c, t, i) {
+  if (c === '\u03A3') {
+    const before = i > 0 && isLetter(prevChar(t, i));
+    const after = i + 1 < t.length && isLetter(nextChar(t, i + 1));
+    return before && !after ? '\u03C2' : '\u03C3';
+  }
+  const l = c.toLowerCase();
+  return l.length === c.length ? l : c;
+}
+
+const prevChar = (t, i) => {
+  const lo = t.charCodeAt(i - 1);
+  return lo >= 0xDC00 && lo <= 0xDFFF && i > 1 ?
+    t.slice(i - 2, i) : t[i - 1];
+};
+const nextChar = (t, i) => String.fromCodePoint(t.codePointAt(i));
+
+const isLow = (c) => up(c) !== c;
+const isUp = (c) => c.toLowerCase() !== c && c.toLowerCase().length ===
+  c.length;
+
+/** The characters of t[a, e) with their offsets: [[c, i], ...]. */
+function chars(t, a, e) {
+  const out = [];
+  for (let i = a; i < e;) {
+    const c = String.fromCodePoint(t.codePointAt(i));
+    out.push([c, i]);
+    i += c.length;
+  }
+  return out;
+}
+
+/** t[a, e) in `mode` (not cycle), the same length. */
+function convert(t, a, e, mode) {
+  const s = t.slice(a, e);
+  if (ASCII.test(s)) {
+    if (mode === 'upper') return s.toUpperCase();
+    if (mode === 'lower') return s.toLowerCase();
+  }
+  let out = '', cap = true, ended = false, inWord = false;
+  const list = chars(t, a, e);
+  list.forEach(([c, i], k) => {
+    let r = c;
+    if (mode === 'upper') r = up(c);
+    else if (mode === 'lower') r = low(c, t, i);
+    else if (mode === 'toggle') {
+      r = isLow(c) ? up(c) : isUp(c) ? low(c, t, i) : c;
+    } else if (mode === 'sentence') {
+      if (isLetter(c)) {
+        r = cap ? up(c) : low(c, t, i);
+        cap = false;
+        ended = false;
+      } else if (DIGIT.test(c)) cap = ended = false;
+      else if ('.!?'.includes(c)) ended = true;
+      else if (/\s/.test(c)) cap = cap || ended;
+      else if (!CLOSERS.includes(c) && c !== '\uFFFC') ended = false;
+    } else if (mode === 'title') {
+      const next = k + 1 < list.length ? list[k + 1][0] : '';
+      if (isWordCh(c)) {
+        if (isLetter(c)) r = inWord ? low(c, t, i) : up(c);
+        inWord = true;
+      } else {
+        const glue = (c === "'" || c === '\u2019') && inWord &&
+          next !== '' && isWordCh(next);
+        if (!glue) inWord = false;
+      }
+    }
+    out += r;
+  });
+  return out;
+}
+
+/** See the header. */
+export function caseState(texts) {
+  let hasU = false, hasL = false, title = true;
+  for (const t of texts) {
+    let inWord = false;
+    const list = chars(t, 0, t.length);
+    list.forEach(([c], k) => {
+      const next = k + 1 < list.length ? list[k + 1][0] : '';
+      if (isWordCh(c)) {
+        if (isUp(c)) { hasU = true; if (inWord) title = false; }
+        if (isLow(c)) { hasL = true; if (!inWord) title = false; }
+        inWord = true;
+      } else if (!((c === "'" || c === '\u2019') && inWord &&
+        next !== '' && isWordCh(next))) inWord = false;
+    });
+  }
+  if (hasU && !hasL) return 'upper';
+  if (hasL && !hasU) return 'lower';
+  return hasU && title ? 'title' : 'mixed';
+}
+
+const NEXT = {upper: 'lower', lower: 'title', title: 'upper',
+  mixed: 'upper'};
+
+/** The word at (or ending at) offset off of t: [from, to] or null. */
+function wordAt(t, off) {
+  if (!t) return null;
+  let w = wordBounds(t, off);
+  if (!isWordText(t.slice(w.from, w.to)) && off > 0) {
+    const b = wordBounds(t, off - 1);
+    if (isWordText(t.slice(b.from, b.to))) w = b;
+  }
+  return isWordText(t.slice(w.from, w.to)) && w.to > w.from ?
+    [w.from, w.to] : null;
+}
+
+/** See the header. */
+export function changeCase(d, typing, sel, mode, pending) {
+  if (!MODES.includes(mode)) fail('bad case mode ' + String(mode));
+  const keep = {sel, pending: collapsed(sel) ? pending || EMPTY :
+    EMPTY};
+  const list = touched(d.doc, sel) || [];
+  const parts = [];
+  for (const en of list) {
+    let [a, e] = [en.a, en.e];
+    if (a === e) {
+      const w = wordAt(en.p.text, a);
+      if (!w) continue;
+      [a, e] = w;
+    }
+    if (e > a) parts.push({en, a, e});
+  }
+  const opsFor = (m) => {
+    const ops = [];
+    for (const {en, a, e} of parts) {
+      const old = en.p.text.slice(a, e);
+      const now = convert(en.p.text, a, e, m);
+      if (now === old) continue;
+      let lo = 0, hi = old.length;
+      while (old[lo] === now[lo]) lo++;
+      while (old[hi - 1] === now[hi - 1]) hi--;
+      // (never inside a surrogate pair)
+      if (/[\uDC00-\uDFFF]/.test(old[lo])) lo--;
+      if (/[\uD800-\uDBFF]/.test(old[hi - 1])) hi++;
+      ops.push({op: 'spliceText', block: [en.s, en.i], at: a + lo,
+        del: hi - lo, content: {...cut(en.p, a + lo, a + hi),
+          text: now.slice(lo, hi)}});
+    }
+    return ops;
+  };
+  let ops;
+  if (mode !== 'cycle') ops = opsFor(mode);
+  else {
+    // the next mode of the cycle; one that changes nothing (a word
+    // that cannot be capitalised: 3rd, the fi ligature) is skipped
+    let m = NEXT[caseState(parts.map((x) => x.en.p.text.slice(x.a,
+      x.e)))];
+    for (let k = 0; k < 3; k++, m = NEXT[m]) {
+      ops = opsFor(m);
+      if (ops.length) break;
+    }
+  }
+  runOps(d, typing, ops);
+  return keep;
+}

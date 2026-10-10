@@ -1,0 +1,220 @@
+// CharGrid - a window of characters to pick from, for a symbol
+// picker: a popup of named sets (../CharSets), a row of Recently
+// used characters, the set as a grid of 16 columns (8 rows show;
+// more scroll), a status line ('U+00E9  Latin-1') and the buttons
+// Insert and Close. It only asks: the program inserts (onInsert).
+//
+//   charGrid({task, title, sets, font, onInsert, onClose}) -> api
+//     One grid for a task: asked again, the same grid (the handlers
+//     given replace its own). Made when first asked for.
+//     sets      [{id, name, chars}] (default ../CharSets SETS)
+//     font      a CSS family for the shapes (default '"Carlito"',
+//               a family !Word bundles: the sets only hold what
+//               every bundled family has)
+//     onInsert(ch)  called with the chosen character; false says it
+//               could not be put in (not remembered as recent)
+//     onClose() after Close, Escape or the close icon hid it
+//   api.open({x, y, set})  to the front (the caret in the window,
+//        for the keys); first time in the middle of the screen
+//   api.close(), api.delete(), api.isOpen, api.gone, api.win
+//   api.set, api.pick(id)  the shown set's id; show another
+//   api.selected, api.select(ch) -> bool   the chosen character
+//   api.insert() -> bool   as Insert / Return / a double-click
+//   api.recent             the last 16 inserted, newest first (kept
+//        for the task for the session, not for the grid)
+//   api.top, api.scrollTo(row)   the first row shown
+//   api.where(ch, inRecent) -> {x, y, w, h} in the work area (null
+//        when not shown), for tests; api.message(text) the status
+//        line shows text instead (until the next choice)
+// Characters are drawn on a canvas in the window's work area with
+// the font, not as icons: the desktop font (Homerton) lacks many
+// symbols, and one canvas draws a set of 128 at once. Select-click
+// chooses (and takes the keys), a double-click inserts; keys: arrows
+// move, Page Up / Down and the wheel scroll, Home / End, Return
+// inserts, Escape closes. The popup lists the sets (ticked).
+import {wimp, Menu} from 'riscos';
+import {SETS, statusText} from '../CharSets';
+import {COLS, ROWS, RECENT, CW, CH, PAD, RY, GY, GRIDW, W, H, icons,
+  paint, target} from './CharGridPaint';
+
+const grids = new WeakMap();           // task -> its grid
+const recents = new WeakMap();         // task -> [chars]
+
+/** See the header. */
+export function charGrid(opts = {}) {
+  const {task} = opts;
+  let b = grids.get(task);
+  if (!b || b.gone) grids.set(task, b = make(opts));
+  for (const k of ['onInsert', 'onClose']) {
+    if (typeof opts[k] === 'function') b.h[k] = opts[k];
+  }
+  if (opts.title) b.win.setTitle(String(opts.title));
+  return b.api;
+}
+
+/** A new grid. */
+function make({task, sets, font, title = 'Symbol'}) {
+  const list = (Array.isArray(sets) && sets.length ? sets : SETS)
+    .map((s) => ({id: String(s.id), name: String(s.name),
+      chars: String(s.chars)}));
+  const fam = font || '"Carlito", "Liberation Sans", sans-serif';
+  let rec = recents.get(task);
+  if (!rec) recents.set(task, rec = []);
+  const s = {set: list[0], top: 0, sel: null, msg: ''};
+  const win = task.createWindow({title: String(title), w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'clickdragdouble',
+    help: 'Click a character, then Insert (or double-click it). ' +
+      'Escape closes the box.'});
+  const b = {win, gone: false, placed: false, h: {}};
+  const I = (n) => win.iconByName(n);
+  const rows = () => Math.ceil(s.set.chars.length / COLS);
+  const maxTop = () => Math.max(0, rows() - ROWS);
+  const at = (i) => s.set.chars[i] || null;
+  const show = () => {
+    I('set').setText(s.set.name);
+    I('status').setText(s.msg || (s.sel ?
+      statusText(s.sel, s.set.id) : ''));
+    I('button:Insert').setState({shaded: !s.sel});
+    win.invalidate();
+  };
+  const scrollTo = (r) => {
+    s.top = Math.max(0, Math.min(maxTop(), Math.round(+r) || 0));
+    win.invalidate();
+  };
+  const pick = (id) => {
+    const n = list.find((x) => x.id === id);
+    if (!n) return false;
+    s.set = n;
+    scrollTo(0);
+    if (s.sel && !n.chars.includes(s.sel)) s.sel = null;
+    show();
+    return true;
+  };
+  const select = (ch) => {
+    if (typeof ch !== 'string' || !ch) return false;
+    if (!s.set.chars.includes(ch)) {
+      const o = list.find((x) => x.chars.includes(ch));
+      if (!o) return false;
+      s.set = o;
+    }
+    s.sel = ch;
+    s.msg = '';
+    const r = Math.floor(s.set.chars.indexOf(ch) / COLS);
+    if (r < s.top) scrollTo(r);
+    else if (r >= s.top + ROWS) scrollTo(r - ROWS + 1);
+    show();
+    return true;
+  };
+  const insert = () => {
+    if (!s.sel) { wimp.beep(); return false; }
+    const ch = s.sel;
+    if (b.h.onInsert && b.h.onInsert(ch) === false) return false;
+    const i = rec.indexOf(ch);
+    if (i >= 0) rec.splice(i, 1);
+    rec.unshift(ch);
+    rec.length = Math.min(rec.length, RECENT);
+    win.invalidate();
+    return true;
+  };
+  const hide = () => {
+    if (!win.isOpen) return;
+    win.close();
+    if (b.h.onClose) b.h.onClose();
+  };
+  /** The character under work point (x, y), or null. */
+  const charAt = (x, y) => {
+    const c = Math.floor((x - PAD) / CW);
+    if (c < 0 || c >= COLS) return null;
+    if (y >= RY && y < RY + CH) return rec[c] || null;
+    const r = Math.floor((y - GY) / CH);
+    return y >= GY && r < ROWS ? at((s.top + r) * COLS + c) : null;
+  };
+  const menu = () => {
+    const a = I('set').bbox, p = win.workToScreen(a.x0, a.y1);
+    wimp.menus.open(new Menu('Set', list.map((n) => ({text: n.name,
+      ticked: () => n === s.set, action: () => pick(n.id)}))),
+    p.x, p.y, {task});
+  };
+  win.useCanvas((g) => paint(g, s, rec, fam, rows()), {hiDPI: true});
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    const n = ev.icon ? ev.icon.name : '';
+    if (n === 'button:Close') hide();
+    else if (n === 'button:Insert') insert();
+    else if (n === 'set' || n === 'arrow') menu();
+    else if (!ev.icon) {
+      wimp.setCaret(win);
+      if (ev.x >= PAD + GRIDW && ev.y >= GY && ev.y < GY + ROWS * CH) {
+        scrollTo(s.top + (ev.y < GY + (ROWS * CH) / 2 ? -ROWS + 1 :
+          ROWS - 1));
+      } else {
+        const ch = charAt(ev.x, ev.y);
+        if (ch) select(ch);
+      }
+    }
+    return true;
+  });
+  win.on('doubleclick', (ev) => {
+    const ch = ev.icon ? null : charAt(ev.x, ev.y);
+    if (ch && select(ch)) insert();
+    return true;
+  });
+  win.on('wheel', (ev) => {
+    if (maxTop()) scrollTo(s.top + Math.sign(ev.dy));
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  win.on('key', (ev) => key(ev));
+  const key = (ev) => {
+    if (ev.code === 13) insert();
+    else if (ev.code === 27) hide();
+    else {
+      const t = target(ev.code, s.set.chars.indexOf(s.sel ?? ''),
+        s.set.chars.length, ev.key);
+      if (t === null) return undefined;
+      if (typeof t === 'object') scrollTo(s.top + t.page * ROWS);
+      else select(at(t));
+    }
+    return true;
+  };
+  win.on('deleted', () => { b.gone = true; });
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => win.invalidate());
+  }
+  b.api = {
+    win,
+    get isOpen() { return win.isOpen; },
+    get gone() { return b.gone; },
+    get set() { return s.set.id; },
+    get selected() { return s.sel; },
+    get recent() { return rec.slice(); },
+    get top() { return s.top; },
+    pick, select, insert, scrollTo,
+    message(t) { s.msg = String(t ?? ''); show(); },
+    where(ch, inRecent = false) {
+      const i = inRecent ? rec.indexOf(ch) : s.set.chars.indexOf(ch);
+      if (i < 0) return null;
+      const r = inRecent ? 0 : Math.floor(i / COLS) - s.top;
+      if (r < 0 || r >= ROWS) return null;
+      return {x: PAD + (i % COLS) * CW, y: (inRecent ? RY : GY) +
+        r * CH, w: CW, h: CH};
+    },
+    open({x, y, set} = {}) {
+      if (b.gone) return;
+      if (set !== undefined) pick(set);
+      show();
+      const p = Number.isFinite(x) && Number.isFinite(y) ? {x, y} :
+        b.placed ? {} : {x: Math.round((wimp.width - W) / 2),
+          y: Math.round((wimp.height - H) / 2)};
+      b.placed = true;
+      win.open({...p, behind: 'top'});
+      wimp.setCaret(win);
+    },
+    close: hide,
+    delete() { if (!b.gone) win.delete(); },
+  };
+  show();
+  return b;
+}

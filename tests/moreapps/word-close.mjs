@@ -227,7 +227,7 @@ try {
     return res;
   });
   ok('the window menu has Revert after Save as', JSON.stringify(r0.items)
-    === '["Save","Save as","Revert","Save a copy","Info","Edit","Format","Zoom","New","Close"]', r0.items);
+    === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Zoom","New","Close"]', r0.items);
   ok('Revert of an untitled document is shaded and does nothing', r0.shaded === true && r0.result === false
     && r0.queries === 0 && r0.open, r0);
 

@@ -1,0 +1,140 @@
+// PaintBind - the format painter in a document's window (./FormatPaint
+// has the rules): the toolbar's Format painter button (row 2, sprite
+// wb_painter) and Format > Format painter.
+//
+//   attachPainter(v)      (once; the others call it) v.painter
+//                         (null), v.painterListeners ([]) and the
+//                         hooks: v.onMousePress, v.onMouseDrag and
+//                         v.onMouseSelect (./EditMouse: the button
+//                         down, a drag started, a drag ended) and
+//                         v.endPainter (./EditKeys: Escape); from
+//                         ./DocKeys attachKeys
+//   togglePainter(v, sticky)   Format painter off: it picks up the
+//                         format of the selection (./FormatPaint
+//                         pick; a beep when there is none) and is on,
+//                         once (Select on the button, the menu item)
+//                         or sticky (Adjust: it stays on); on, the
+//                         same again (Adjust on a button that is on
+//                         once makes it sticky) turns it off. v.painter
+//                         is {picked, sticky} while it is on
+//   bindPainter(v, tb) -> remove()   the toolbar button wired: its
+//                         pressed state follows v.painter
+//   detachPainter(v)      the window is closing (./CloseDoc destroy):
+//                         the painter off and the release it waits for
+//                         forgotten (its window listener removed);
+//                         nothing is painted in v afterwards
+//
+// When the next mouse selection ends the picked format is put on it:
+// the button going down only arms it (the Wimp reports a click then,
+// before any drag is known); a drag paints its final selection when
+// the button is let go (./EditMouse: v.onMouseDrag, v.onMouseSelect),
+// a press without a drag paints the word there and its paragraph at
+// the pointer's release (a one-shot pointerup). One undo step; a once
+// painter is then off, a sticky one stays on until Escape or another
+// click on the button. The pointer does not change shape (the
+// desktop has no pointer API for it). Escape ends it and does nothing
+// else. A document-less view (no selection) is left alone.
+import {wimp} from 'riscos';
+import {pick, paint} from './FormatPaint';
+
+/** The painter changed: the buttons look again. */
+function changed(v) {
+  for (const fn of v.painterListeners.slice()) fn();
+}
+
+/** See the header. */
+export function togglePainter(v, sticky) {
+  attachPainter(v);
+  if (v.painter && (!sticky || v.painter.sticky)) {
+    v.painter = null;
+  } else if (v.painter) {
+    v.painter = {...v.painter, sticky: true};
+  } else {
+    const picked = v.sel ? pick(v.d.doc, v.sel) : null;
+    if (!picked) {
+      wimp.beep();
+      return false;
+    }
+    v.painter = {picked, sticky: !!sticky};
+  }
+  changed(v);
+  return true;
+}
+
+const UP = ['pointerup', 'pointercancel'];
+
+/** The button went down: wait for its release (see the header). */
+function pressed(v) {
+  disarm(v);
+  if (!v.painter) return;
+  const arm = {dragged: false};
+  arm.off = () => {
+    for (const e of UP) window.removeEventListener(e, arm.up, true);
+  };
+  arm.up = () => {
+    arm.off();
+    if (v.armed === arm) v.armed = null;
+    if (!arm.dragged) landed(v);
+  };
+  for (const e of UP) window.addEventListener(e, arm.up, true);
+  v.armed = arm;
+}
+
+/** Nothing is waited for any more. */
+function disarm(v) {
+  if (v.armed) v.armed.off();
+  v.armed = null;
+}
+
+/** A mouse selection has ended: paint it (see the header). */
+function landed(v) {
+  disarm(v);
+  const st = v.painter;
+  if (!st || !v.sel || v.painterGone) return;
+  if (!st.sticky) {
+    v.painter = null;
+    changed(v);
+  }
+  paint(v.d, v.typing, v.sel, st.picked, v.L);
+}
+
+/** See the header. */
+export function attachPainter(v) {
+  if (v.painterListeners) return;
+  v.painter = null;
+  v.painterListeners = [];
+  v.armed = null;
+  v.onMousePress = () => pressed(v);
+  v.onMouseDrag = () => { if (v.armed) v.armed.dragged = true; };
+  v.onMouseSelect = () => landed(v);
+  v.endPainter = () => {
+    if (!v.painter) return false;
+    v.painter = null;
+    disarm(v);
+    changed(v);
+    return true;
+  };
+}
+
+/** See the header. */
+export function detachPainter(v) {
+  if (!v.painterListeners) return;
+  disarm(v);
+  v.painter = null;
+  v.painterGone = true;
+}
+
+/** See the header. */
+export function bindPainter(v, tb) {
+  attachPainter(v);
+  const sync = () => tb.setPressed('painter', !!v.painter);
+  v.painterListeners.push(sync);
+  tb.on('painter', (ev) => {
+    togglePainter(v, ev.button === 'adjust');
+  });
+  sync();
+  return () => {
+    const i = v.painterListeners.indexOf(sync);
+    if (i >= 0) v.painterListeners.splice(i, 1);
+  };
+}

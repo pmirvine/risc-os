@@ -4,12 +4,10 @@
 // selection made with the mouse and the keys, typing, deleting and
 // undo (./EditView, ./EditMouse, ./EditInput), copy, cut and paste
 // (./EditClip: dw.docKey, dw.clip), F2, F3, Ctrl-F2... (./DocKeys).
-// Its menu saves, undoes, formats or closes it (./WinMenu). A
-// toolbar across its top (./ToolbarBind, BAR_H high) shows and
-// changes the formatting, a ruler under it (./RulerBind, RULER_H)
-// the indents; the page starts below them and the caret is kept out
-// from under them: dw.inset() px, given to both the layout (DocLayout
-// top) and the view (EditView inset). The page is shown at
+// Its menu saves, undoes, formats or closes it (./WinMenu). Two
+// toolbar rows across its top show and change the formatting, a
+// ruler under them the indents (./WinPanes); the page starts below
+// them: dw.inset() px, given to the layout and the view. Shown at
 // dw.zoom percent (./ZoomBind: the window's menu, Ctrl+wheel): the
 // layout stays at 100%, laid out for the window's width / zoom, the
 // extent and everything under the bars scaled (./Zoom).
@@ -22,7 +20,8 @@
 //   dw.save(), dw.saveAs(path) -> Promise<boolean>  (./DocSave)
 //   dw.relayout()      lay it out again (fonts came), same selection
 //   dw.d, dw.typing    its ./Document (dw.doc = dw.d.doc), ./Typing
-//   dw.view            its ./EditView;  dw.bar  its ./ToolbarBind
+//   dw.view            its ./EditView;  dw.bar, dw.bar2  its toolbar
+//                      rows (./ToolbarBind);  dw.inset()  (./WinPanes)
 //   dw.rb, dw.rulerOn  its ./RulerBind; whether the ruler is shown
 //   dw.setRuler(on)    show or hide it (Format > Ruler): the page
 //                      moves up or down, the caret kept in view
@@ -36,14 +35,13 @@
 // rekey(dw), recent, noteRecent(path), closed(dw), open, newDoc}.
 //
 // A new window is as wide as the page and its grey edges (at most
-// the screen's width less 40 px); it scrolls across when narrower.
-// It is as tall as a whole page under the bars where the screen has
-// room above the icon bar, and never less than 560 px.
-// The work area is the page's height, and at least the screen's
-// width, so the window can be made as wide (the page centred).
-// The title is dw.leaf, with ' *' while the document has changes
-// that are not saved (Document.dirty; a save calls retitle). Saving
-// a copy does not count (the star stays).
+// the screen's width less 40 px; it scrolls across when narrower),
+// as tall as a whole page under the bars where the screen has room
+// above the icon bar, and never less than 560 px. The work area is
+// the page's height, and at least the screen's width (the page
+// centred). The title is dw.leaf, with ' *' while the document has
+// changes that are not saved (Document.dirty; a save calls retitle;
+// saving a copy does not count).
 import {wimp, vfs} from 'riscos';
 import {TextMetrics} from 'wimplib/TextMetrics';
 import {DocLayout, PAGE_TOP} from './DocLayout';
@@ -53,10 +51,7 @@ import {attachInput} from './EditInput';
 import {attachClip} from './EditClip';
 import {attachKeys} from './DocKeys';
 import {windowMenu} from './WinMenu';
-import {bindToolbar} from './ToolbarBind';
-import {BAR_H} from './ToolbarButtons';
-import {bindRuler} from './RulerBind';
-import {RULER_H} from './RulerInd';
+import {makePanes, inset, setRuler} from './WinPanes';
 import {bindZoom} from './ZoomBind';
 import {extentOf} from './Zoom';
 import {Document} from './Document';
@@ -82,9 +77,8 @@ export class DocWindow {
     this.summary = summary(doc);       // (as opened)
     this.ctx = null;                   // the canvas's, to measure with
     this.rulerOn = true;
-    this.L = new DocLayout(doc, this.metrics(), null,
+    const L = this.L = new DocLayout(doc, this.metrics(), null,
       {top: this.inset()});
-    const L = this.L;
     const W = Math.max(240, Math.min(wimp.width - 40,
       Math.ceil(Math.max(L.pageW, L.marL + L.textW) + EDGE)));
     const n = count++ % 8, y = 70 + n * 28;
@@ -105,20 +99,15 @@ export class DocWindow {
         'to save it, to undo, or to format the text.',
       menu: () => this.menu(),
     });
-    const canvas = w.useCanvas((g, rect) => this.paint(g, rect),
-      {hiDPI: true});
-    this.ctx = canvas.getContext('2d');
+    this.ctx = w.useCanvas((g, rect) => this.paint(g, rect),
+      {hiDPI: true}).getContext('2d');
     this.view = new EditView(w, L, this.d, this.typing,
       () => this.rebuild());
-    this.view.inset = this.inset();
     attachMouse(this.view);
     attachInput(this.view);
     attachClip(this);
     attachKeys(this);
-    this.bar = bindToolbar(this.view, {task: app.task, parent: w,
-      height: BAR_H, menu: () => this.menu()});
-    this.rb = bindRuler(this.view, {task: app.task, parent: w,
-      dy: BAR_H, menu: () => this.menu()});
+    makePanes(this);
     this.zb = bindZoom(this);
     this.d.on('change', () => this.retitle());
     this.fit();
@@ -138,11 +127,8 @@ export class DocWindow {
 
   /** The paragraphs' texts now (kept blocks left out). */
   get text() {
-    const out = [];
-    for (const s of this.doc.sections) {
-      for (const b of s.blocks) if (b.type === 'p') out.push(b.text);
-    }
-    return out;
+    return this.doc.sections.flatMap((s) => s.blocks
+      .filter((b) => b.type === 'p').map((b) => b.text));
   }
 
   /** Text widths, measured on the window's canvas. */
@@ -156,10 +142,9 @@ export class DocWindow {
 
   /** Place the column for the window's width; the extent (header). */
   fit() {
-    // (after an edit: the new layout first; it fits itself). fit
-    // may run inside a redraw (EditView.paint -> L -> rebuild):
-    // setExtent there only asks for another redraw, which then
-    // draws the new extent and scroll offsets
+    // (after an edit: the new layout first; it fits itself). Inside
+    // a redraw (EditView.paint -> L -> rebuild) setExtent only asks
+    // for another redraw (with the new extent and scroll offsets)
     if (this.view) this.view.ensure();
     const w = this.win, L = this.L;
     const r = extentOf(L.layout(this.viewW()), this.view.zoom, L.top);
@@ -173,24 +158,12 @@ export class DocWindow {
   /** The width to lay out for: the window's, at 100%. */
   viewW() { return Math.round(this.win.w) / this.view.zoom; }
 
+  /** See the header (./ZoomBind, ./WinPanes). */
   get zoom() { return this.zb.pct; }
-
-  /** See the header (./ZoomBind). */
   setZoom(pct) { this.zb.set(pct); }
-
-  /** px at the window's top hidden by the toolbar and the ruler. */
-  inset() { return BAR_H + (this.rulerOn ? RULER_H : 0); }
-
-  /** See the header. */
-  setRuler(on) {
-    if (!!on === this.rulerOn) return;
-    this.rulerOn = !!on;
-    this.rb.show(this.rulerOn);
-    this.view.inset = this.inset();
-    this.rebuild();
-    this.view.scrollToCaret();
-    if (this.view.hasFocus) this.view.focus();   // (after a menu)
-  }
+  /** px at the window's top hidden by the toolbars and the ruler. */
+  inset() { return inset(this); }
+  setRuler(on) { setRuler(this, on); }
 
   /** The title: the leaf name, ' *' when changed (the header). */
   retitle() {
@@ -228,20 +201,14 @@ export class DocWindow {
     this.view.focus();
   }
 
+  // See the header (./DocSave, ./WinMenu, ./CloseDoc)
   get isUntitled() { return !this.path; }
-
   save() { return save(this); }
-
   saveAs(path) { return saveAsTo(this, path); }
-
   /** The bytes to save; an error names the file. */
   saveBytes() { return bytesOf(this); }
-
   menu() { return windowMenu(this); }
-
   requestClose() { return requestClose(this); }
-
   revert() { return revert(this); }
-
   close() { destroy(this); }
 }

@@ -16,13 +16,19 @@
 //                                    (many blocks: ./OpsBlocks)
 //   spliceText   {block, at, del, content: {text, runs, inlines}}
 //   compound     {ops: [...]}        (all or nothing)
+//   setDocPart   {key, value}        (numbering, rels, styles,
+//                                    settings, numberingPart: ./OpsDoc)
+//   splitSection {at, props, raw}    mergeSection {at, keep?}
+//   setSection   {at, props, raw}    (./OpsSect)
 //
 // NEVER CHANGE A MODEL OBJECT IN PLACE. Blocks, runs, rPr, pPr,
 // inlines and Xml nodes are shared between the live Doc and the
 // inverse ops in undo history (copy-on-write: an op that changes a
 // part makes new objects for that part only). apply() copies the op
-// it is given, so callers' objects never enter the Doc; applyOwn()
-// does not, and is only for ops this module made (Document's undo).
+// it is given, so callers' objects never enter the Doc (except a
+// setDocPart's value: immutable by contract, kept by reference);
+// applyOwn() does not, and is only for ops this module made
+// (Document's undo).
 import {fail, checkBlock} from './ModelCheck';
 import {clone} from './Model';
 import {locate, idUsed} from './OpsUtil';
@@ -30,6 +36,9 @@ import {replaceText, spliceText, splitBlock, mergeBlock}
   from './OpsText';
 import {setProps} from './OpsProps';
 import {removeBlocks, insertBlocks} from './OpsBlocks';
+import {setDocPart} from './OpsDoc';
+import {splitSection, mergeSection, setSection}
+  from './OpsSect';
 
 /** Check block `b`; its id must be free in doc (but for `skip`). */
 function check(doc, b, skip) {
@@ -81,7 +90,8 @@ function compound(doc, op) {
 
 const KINDS = {replaceText, spliceText, setProps, splitBlock,
   mergeBlock, insertBlock, removeBlock, restoreBlock, compound,
-  removeBlocks, insertBlocks};
+  removeBlocks, insertBlocks, setDocPart, splitSection,
+  mergeSection, setSection};
 
 /**
  * Apply `op` to `doc` and return the op that undoes it. The op is
@@ -91,7 +101,20 @@ const KINDS = {replaceText, spliceText, setProps, splitBlock,
  * @returns {object}
  */
 export function apply(doc, op) {
-  return applyOwn(doc, clone(op));
+  return applyOwn(doc, copy(op));
+}
+
+/**
+ * A copy of op for apply(): a setDocPart's value is NOT copied (it
+ * is immutable by contract, see ./OpsDoc: a whole numbering or style
+ * table copied per apply would cost time and lose the sharing).
+ */
+function copy(op) {
+  if (op && op.op === 'setDocPart')
+    return {op: 'setDocPart', key: op.key, value: op.value};
+  if (op && op.op === 'compound' && Array.isArray(op.ops))
+    return {op: 'compound', ops: op.ops.map(copy)};
+  return clone(op);
 }
 
 /**

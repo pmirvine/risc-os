@@ -1,0 +1,165 @@
+// DialogLayout - where a dialog box's icons go: rows of controls laid
+// out left to right, a label column as wide as the longest label at
+// the start of a row, the buttons in a row at the bottom right, and
+// the size of the window. Ui/Dialog makes the icons.
+//
+//   controls(rows) -> [control, ...] copies with .row (the row's
+//     index) and .index (in this list)
+//     rows: [row, ...], a row an array of controls or one control:
+//       {kind, name, label?, text?, after?, w?, group?, choices?}
+//       kind    one of KINDS: 'label' (text), 'text' (a writable
+//               field), 'length', 'number' (writable), 'option' (an
+//               option icon), 'radio' (one of a group: group names
+//               it), 'popup' (a display field and a menu arrow:
+//               choices [{id, text}]), 'colour' (a swatch button),
+//               'button' (a button in a row)
+//       name    letters, digits, _ and -, starting with a letter;
+//               unique (groups too); a 'label' may have none
+//       label   text before the control (in the label column for a
+//               row's first control); after: text after it ('lines')
+//       w       the field's width in px (else from its kind / text)
+//     Throws a TypeError for anything else (more than 31 groups).
+//   layout(rows, {buttons, measure, minW, maxW}) -> {w, h, extent,
+//       boxes}  w the window's width (at most maxW: the screen's),
+//       extent the width of everything (the work area)
+//     buttons  the texts of the bottom row's buttons, left to right
+//     measure(text) -> px (default: 9 px a character)
+//     boxes    [{name, kind, part, row, ci, x, y, w, h, text,
+//              rjustify}] (ci: the control's index; buttons none)
+//              part 'label', 'field', 'arrow' (a popup's), 'after',
+//              or 'button' (the bottom row: name is the text)
+//     A 'label' control first in its row and with no label starts
+//     at the left edge (a heading); other rows' controls start
+//     after the label column. Px, y down, from the window's top
+//     left; PAD round the edge.
+// Pure JavaScript.
+
+export const KINDS = ['label', 'text', 'length', 'number', 'option',
+  'radio', 'popup', 'colour', 'button'];
+export const PAD = 16;
+const GAP = 8, FH = 36, OH = 28, BH = 36, BW = 96, ARROW = 22;
+const SPRITE = 32, NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const MAXGROUPS = 31;
+
+const bad = (what) => { throw new TypeError(`dialog: ${what}`); };
+const str = (v) => (v == null ? '' : String(v));
+
+/** See the header. */
+export function controls(rows) {
+  if (!Array.isArray(rows)) bad('rows must be an array');
+  const out = [], names = new Set(), groups = new Set();
+  rows.forEach((row, i) => {
+    const list = Array.isArray(row) ? row : [row];
+    for (const c of list) {
+      if (!c || typeof c !== 'object') bad(`row ${i}: not a control`);
+      if (!KINDS.includes(c.kind)) bad(`unknown kind ${str(c.kind)}`);
+      if (c.name !== undefined || c.kind !== 'label') {
+        if (!NAME.test(str(c.name))) bad(`bad name ${str(c.name)}`);
+        if (names.has(c.name)) bad(`two controls ${c.name}`);
+        names.add(c.name);
+      }
+      if (c.kind === 'radio') {
+        if (!NAME.test(str(c.group))) bad(`radio ${c.name}: group`);
+        groups.add(c.group);
+      }
+      if (c.kind === 'popup' && c.choices !== undefined &&
+        !Array.isArray(c.choices)) bad(`popup ${c.name}: choices`);
+      out.push({...c, row: i, index: out.length});
+    }
+  });
+  for (const g of groups) if (names.has(g)) bad(`group ${g} is a name`);
+  if (groups.size > MAXGROUPS) bad('too many radio groups');
+  return out;
+}
+
+/** The width of control c's field. */
+function fieldW(c, m) {
+  if (Number.isFinite(c.w) && c.w > 0) return Math.round(c.w);
+  switch (c.kind) {
+    case 'label': return m(str(c.text)) + 8;
+    case 'text': return 240;
+    case 'length': case 'number': return 88;
+    case 'option': case 'radio': return SPRITE + m(str(c.text)) + 8;
+    case 'popup': return Math.max(80, ...(c.choices || []).map((x) =>
+      m(str(x && x.text)) + 16));
+    case 'colour': return 48;
+    default: return Math.max(BW, m(str(c.text)) + 24);
+  }
+}
+
+const height = (c) => (['label', 'option', 'radio'].includes(c.kind) ?
+  OH : FH);
+
+/** See the header. */
+export function layout(rows, opts = {}) {
+  const {buttons = [], minW = 0} = opts;
+  const maxW = Number.isFinite(opts.maxW) ? opts.maxW : Infinity;
+  const m0 = typeof opts.measure === 'function' ? opts.measure :
+    (t) => t.length * 9;
+  const m = (t) => Math.ceil(Math.max(0, Number(m0(t)) || 0));
+  const list = controls(rows);
+  if (new Set(buttons.map(str)).size !== buttons.length) {
+    bad('two buttons with one text');
+  }
+  const heading = (c, first) => first && c.kind === 'label' &&
+    c.label === undefined;
+  let LW = 0;
+  const byRow = [];
+  for (const c of list) (byRow[c.row] ||= []).push(c);
+  for (const r of byRow) {
+    if (r && r[0].label !== undefined) {
+      LW = Math.max(LW, m(str(r[0].label)));
+    }
+  }
+  const fx = PAD + (LW ? LW + GAP : 0);
+  const boxes = [];
+  let y = PAD, right = 0;
+  byRow.forEach((r, row) => {
+    if (!r) return;
+    const rh = Math.max(...r.map((c) => (c.label !== undefined ||
+      c.after !== undefined ? FH : height(c))));
+    const put = (c, part, x, w, h, text, more) => {
+      boxes.push({name: c.name, kind: c.kind, part, row, ci: c.index,
+        x, w, h,
+        y: y + Math.round((rh - h) / 2), text, ...more});
+      right = Math.max(right, x + w);
+      return x + w;
+    };
+    let x = heading(r[0], true) ? PAD : fx;
+    r.forEach((c, i) => {
+      if (c.label !== undefined) {
+        const lw = i === 0 ? LW : m(str(c.label)) + 8;
+        const lx = i === 0 ? PAD : x;
+        put(c, 'label', lx, lw, FH, str(c.label), {rjustify: true});
+        if (i) x += lw + GAP;
+      }
+      x = put(c, 'field', x, fieldW(c, m), height(c), str(c.text));
+      if (c.kind === 'popup') {
+        x = put(c, 'arrow', x + 4, ARROW, ARROW + 4, '');
+      }
+      if (c.after !== undefined) {
+        const t = str(c.after);
+        x = put(c, 'after', x + 4, m(t) + 8, FH, t);
+      }
+      x += GAP * 2;
+    });
+    y += rh + GAP;
+  });
+  if (boxes.length) y += GAP;
+  const bw = buttons.map((t) => Math.max(BW, m(str(t)) + 24));
+  const row = bw.reduce((a, b) => a + b, 0) + 12 * Math.max(0,
+    bw.length - 1);
+  const E = Math.max(Math.round(minW) || 0, right + PAD, row + 2 * PAD,
+    2 * PAD);
+  // the buttons at the right of what shows (at PAD if they are wider)
+  const W = Math.max(2 * PAD, Math.min(E, Math.round(maxW)));
+  const bx0 = Math.max(PAD, W - PAD - row);
+  let bx = bx0;
+  buttons.forEach((t, i) => {
+    boxes.push({name: str(t), kind: 'button', part: 'button', row: -1,
+      x: bx, y, w: bw[i], h: BH, text: str(t)});
+    bx += bw[i] + 12;
+  });
+  const H = (buttons.length ? y + BH : Math.max(y - GAP, PAD)) + PAD;
+  return {w: W, h: H, extent: Math.max(E, bx0 + row + PAD), boxes};
+}

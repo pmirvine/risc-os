@@ -1,0 +1,134 @@
+// DialogValues - what the controls of a Ui/Dialog box hold: read from
+// and shown in their icons.
+//
+//   store({list, groups, icon, repaint}) -> {get, set, values,
+//       invalid, colour}
+//     list     ./DialogLayout's controls(rows); groups the radio
+//              groups (./DialogIcons esgOf(list))
+//     icon(name) -> the icon of that name (win.iconByName)
+//     repaint()  the colour swatches need drawing again
+//     get(name), set(name, v), values(), invalid(): as Ui/Dialog's
+//     colour(name) -> a colour control's value (for drawing it)
+//   readField(c, text) -> the value a writable field shows:
+//       undefined when empty (a mixed value left as it was), null
+//       when it is not one (a length that is not a length); else
+//       'text' the text (control characters removed), 'length'
+//       twips (./Units: unit 'pt' for points, else inches),
+//       'number' a number (./NumberField: min, max, step, unit;
+//       a minus sign only when min is below 0)
+//   showField(c, v) -> the text a field shows for value v ('' for
+//       undefined or null)
+//   choiceText(c, id) -> a popup's text for choice id ('' if none)
+//   WRITE   the writable kinds
+// Pure JavaScript (icons are only asked for and set).
+import {parseLength, formatLength, parsePoints, formatPoints}
+  from './Units';
+import {parseNumber, formatNumber} from './NumberField';
+
+export const WRITE = ['text', 'length', 'number'];
+const CTRL = /[\u0000-\u001f\u007f-\u009f]/g;
+
+/** See the header. */
+export function readField(c, text) {
+  const t = String(text ?? '');
+  if (!t.trim()) return undefined;
+  if (c.kind === 'length') {
+    const f = c.unit === 'pt' ? parsePoints : parseLength;
+    return f(t, {min: c.min, max: c.max});
+  }
+  if (c.kind === 'number') {
+    const neg = /^ *-/.test(t);
+    if (neg && !(c.min < 0)) return null;
+    const n = parseNumber(neg ? t.replace(/^ *- */, '') : t,
+      {step: c.step, unit: c.unit});
+    if (n === null) return null;
+    const lo = c.min ?? -Infinity, hi = c.max ?? Infinity;
+    return Math.min(Math.max(neg ? -n : n, lo), hi) || 0;
+  }
+  return t.replace(CTRL, '');
+}
+
+/** See the header. */
+export function showField(c, v) {
+  if (v === undefined || v === null) return '';
+  if (c.kind === 'length') {
+    return c.unit === 'pt' ? formatPoints(v) : formatLength(v);
+  }
+  if (c.kind === 'number') {
+    const s = formatNumber(v, c.decimals ?? 2);
+    return s && c.unit ? `${s} ${c.unit}` : s;
+  }
+  return String(v).replace(CTRL, '');
+}
+
+/** See the header. */
+export function choiceText(c, id) {
+  const ch = (c.choices || []).find((x) => x && x.id === id);
+  return ch ? String(ch.text ?? '') : '';
+}
+
+/** See the header. */
+export function store({list, groups, icon: I, repaint}) {
+  const ctl = new Map(list.filter((c) => c.name !== undefined)
+    .map((c) => [c.name, c]));
+  const grp = new Map([...groups.keys()].map((g) => [g,
+    list.filter((c) => c.kind === 'radio' && c.group === g)]));
+  const val = new Map();               // option, popup, colour
+  const get = (name) => {
+    const c = ctl.get(name);
+    if (!c) {
+      const on = (grp.get(name) || []).find((r) => I(r.name).selected);
+      return on ? on.value ?? on.name : undefined;
+    }
+    if (WRITE.includes(c.kind)) return readField(c, I(name).text);
+    if (c.kind === 'radio') return !!I(name).selected;
+    if (c.kind === 'label') return I(name).text;
+    if (c.kind === 'option' && val.get(name) !== undefined) {
+      return !!I(name).selected;
+    }
+    return val.get(name);
+  };
+  const set = (name, v) => {
+    const c = ctl.get(name);
+    if (!c) {
+      for (const r of grp.get(name) || []) {
+        const on = v !== undefined && (r.value ?? r.name) === v;
+        I(r.name).setState({selected: on});
+      }
+      return;
+    }
+    const ic = I(name);
+    if (WRITE.includes(c.kind)) ic.setText(showField(c, v));
+    else if (c.kind === 'label' || c.kind === 'button') {
+      ic.setText(String(v ?? ''));
+    } else if (c.kind === 'radio') {
+      if (v) set(c.group, c.value ?? c.name);
+      else ic.setState({selected: false});
+    } else if (c.kind === 'option') {
+      val.set(name, v === undefined ? undefined : !!v);
+      ic.setState({selected: !!v});
+    } else {
+      val.set(name, v);
+      if (c.kind === 'popup') ic.setText(choiceText(c, v));
+      else repaint();
+    }
+  };
+  return {
+    get, set,
+    /** An option was clicked: it has a value now. */
+    touched(name) { val.set(name, true); },
+    colour: (name) => val.get(name),
+    values() {
+      const o = {};
+      for (const c of list) {
+        if (c.name !== undefined && c.kind !== 'button') {
+          o[c.name] = get(c.name);
+        }
+      }
+      for (const g of grp.keys()) o[g] = get(g);
+      return o;
+    },
+    invalid: () => list.filter((c) => WRITE.includes(c.kind) &&
+      get(c.name) === null).map((c) => c.name),
+  };
+}

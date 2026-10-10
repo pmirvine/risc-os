@@ -18,7 +18,13 @@
 //   tree as the file as it was opened (parsed: the writer writes its
 //   own prolog, line ends and empty tags, so the bytes themselves
 //   match the file's only when it was written that way: counted as
-//   keptAsRead).
+//   keptAsRead). When the change reports {grows: true} (it made list
+//   definitions), that rule is relaxed for the part: every child of
+//   its root in the unchanged write must come back serialized
+//   identically and in the same order, the new children only in
+//   between and after (counted as grown), and the root's attributes
+//   and the order of kinds (numPicBullet, abstractNum, num,
+//   numIdMacAtCleanup) kept.
 //
 // Also the corpus sample (tests/moreapps/corpus, git-ignored): one
 // file in ten, chosen by a hash of the name, or every one with
@@ -36,7 +42,7 @@ import {Document} from '../../tools/moreapps/!Word/Document';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {lintPackage} from './lint-package.mjs';
-import {assertSameDoc, expectedBack, sameBytes, sameTree}
+import {assertSameDoc, expectedBack, withNewParts, sameBytes, sameTree}
   from './docx-compare.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
@@ -96,6 +102,47 @@ export function schemaChecker() {
   };
 }
 
+const extOf = new WeakMap();
+const EXT = /Element '(\{[^}]*\}[^']*)', attribute '(\{http:\/\/schemas\.microsoft\.com\/[^}]*\}[^']*)': The attribute .* is not allowed/;
+
+/** The element and attribute of an extension "not allowed" message
+ * ('{ns}el|{ns}attr'), or null. */
+export const extKey = (m) => {
+  const x = EXT.exec(m);
+  return x ? x[1] + '|' + x[2] : null;
+};
+
+/** Every '{ns}el|{ns}attr' pair of Microsoft extension attributes in
+ * an XML part's bytes (as extKey names them). */
+export function extAttrs(bytes) {
+  const out = new Set();
+  const walk = (n, map) => {
+    if (!n || typeof n !== 'object' || !Array.isArray(n.attrs)) return;
+    let m = map;
+    for (const [k, v] of n.attrs) {
+      if (k !== 'xmlns' && !k.startsWith('xmlns:')) continue;
+      if (m === map) m = new Map(map);
+      m.set(k === 'xmlns' ? '' : k.slice(6), v);
+    }
+    const q = (name, dflt) => {
+      const i = name.indexOf(':');
+      const ns = i < 0 ? (dflt ? m.get('') : '') : m.get(name.slice(0, i));
+      return '{' + (ns || '') + '}' + name.slice(i + 1);
+    };
+    const el = q(n.name, true);
+    for (const [k] of n.attrs) {
+      if (k === 'xmlns' || k.startsWith('xmlns:')) continue;
+      const a = q(k, false);
+      if (a.startsWith('{http://schemas.microsoft.com/')) {
+        out.add(el + '|' + a);
+      }
+    }
+    for (const c of n.children || []) walk(c, m);
+  };
+  walk(parseXml(new TextDecoder().decode(bytes)).root, new Map());
+  return out;
+}
+
 /** {xsd, note}: a checker, or null and why not (once per process). */
 export function schema() {
   const x = schemaChecker();
@@ -117,6 +164,38 @@ const errs = (zip) => lintPackage(zip).problems
   .filter((q) => q.level === 'error')
   .map((q) => q.rule + ' ' + q.part + ' ' + q.detail);
 
+const RANK = {numPicBullet: 0, abstractNum: 1, num: 2,
+  numIdMacAtCleanup: 3};
+const rankOf = (n) => RANK[String(n.name).replace(/^.*:/, '')] ?? -1;
+
+/**
+ * `now` (a numbering root) only adds children to `was`: every one of
+ * was's children is in now, serialized as it was and in order, the
+ * root's attributes are the same, and (when was's kinds were in the
+ * order Word keeps) the kinds stay in that order.
+ */
+function grownOnly(now, was, what) {
+  assert.deepEqual(now.attrs, was.attrs, what + ': root attributes');
+  const a = was.children, b = now.children;
+  let at = 0;
+  for (const [i, kid] of a.entries()) {
+    let found = false;
+    while (at < b.length && !found) {
+      found = JSON.stringify(b[at]) === JSON.stringify(kid);
+      at++;
+    }
+    assert.ok(found, what + ': an original child was changed, moved ' +
+      'or lost (child ' + i + ')');
+  }
+  assert.ok(b.length >= a.length, what + ': children lost');
+  const ranks = (x) => x.map(rankOf);
+  const sorted = (x) => x.every((v, i) => i === 0 || v >= x[i - 1]);
+  if (sorted(ranks(a)) && !ranks(a).includes(-1)) {
+    assert.ok(sorted(ranks(b)), what + ': kinds out of order ' +
+      ranks(b));
+  }
+}
+
 /**
  * Open bytes, change(d, seed, {every}) -> stats, check (see the
  * header). Returns {refused: code} when the reader refuses the file,
@@ -137,17 +216,29 @@ export async function roundTrip(bytes, what, seed, change,
   const st = await change(d, seed, {every});
   // the changed model round-trips
   const out1 = await write(d.doc);
-  assertSameDoc(await readDocx(out1), expectedBack(d.doc),
+  const back = await readDocx(out1);
+  assertSameDoc(back, withNewParts(expectedBack(d.doc), back),
     what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);
   const zin = await readZip(bytes);
-  let kept = 0, keptAsRead = 0;
+  let kept = 0, keptAsRead = 0, grown = 0;
   if (keep.length) {
     const z0 = await readZip(out0);
     for (const k of keep) {
       const name = d.doc.meta[k];
-      if (!name || !z0.get(name)) continue;
+      if (!name) continue;
+      if (!z0.get(name)) {
+        // a part made by the commands (no original to keep)
+        if (z.get(name)) grown++;
+        continue;
+      }
+      if (st && st.grows && !sameBytes(z.get(name), z0.get(name))) {
+        grownOnly(xmlOf(z.get(name)).root, xmlOf(z0.get(name)).root,
+          what + ': ' + name + ' (seed ' + seed + ')');
+        grown++;
+        continue;
+      }
       assert.ok(sameBytes(z.get(name), z0.get(name)), what + ': ' +
         name + ' bytes changed (seed ' + seed + ')');
       kept++;
@@ -168,7 +259,15 @@ export async function roundTrip(bytes, what, seed, change,
   if (orig && z.get(main)) {
     if (!schemaOf.has(bytes)) schemaOf.set(bytes, xsd.errors(orig));
     const was = schemaOf.get(bytes);
-    const added = [...xsd.errors(z.get(main))].filter((m) => !was.has(m));
+    // (xmllint stops checking a content model at its first error, so
+    // an original whose first error hides a later paragraph's w14:
+    // attributes reports them only once an edit moves that paragraph
+    // up: such a "not allowed" Microsoft attribute is passed over,
+    // but only one the opened part already has on that element)
+    if (!extOf.has(bytes)) extOf.set(bytes, extAttrs(orig));
+    const ext = extOf.get(bytes);
+    const added = [...xsd.errors(z.get(main))].filter((m) => !was.has(m) &&
+      !ext.has(extKey(m)));
     assert.deepEqual(added.slice(0, 5), [], what + ': schema errors ' +
       'added (seed ' + seed + ')');
     schemaDone = 'checked';
@@ -184,7 +283,7 @@ export async function roundTrip(bytes, what, seed, change,
     assert.fail(what + ': undone, written: bytes differ');
   }
   const blocks = d.doc.sections.reduce((n, s) => n + s.blocks.length, 0);
-  return {...st, blocks, schema: schemaDone, kept, keptAsRead};
+  return {...st, blocks, schema: schemaDone, kept, keptAsRead, grown};
 }
 
 // ------------------------------------------------------------ corpus
@@ -227,7 +326,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
   {keep = []} = {}) {
   const failures = [], times = [], capped = [];
   let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
-    keptAsRead = 0;
+    keptAsRead = 0, grown = 0;
   const totals = {};
   for (const f of files) {
     const name = nameOf(f);
@@ -247,6 +346,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
         if (res.schema === 'checked') checked++;
         kept += res.kept;
         keptAsRead += res.keptAsRead;
+        grown += res.grown;
         if (res.capped) capped.push(`${name} (${res.steps} steps)`);
         for (const [k, n] of Object.entries(res.counts || {}))
           totals[k] = (totals[k] || 0) + n;
@@ -266,7 +366,8 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
     (xsdNote ? ` (schema check skipped: ${xsdNote})` : ''));
   if (keep.length) {
     console.log(`# kept parts (${keep}): ${kept} byte-identical to ` +
-      `the unedited write, ${keptAsRead} also to the file as read`);
+      `the unedited write, ${keptAsRead} also to the file as read, ` +
+      `${grown} only grown (originals kept in order)`);
   }
   if (Object.keys(totals).length)
     console.log('# commands: ' + JSON.stringify(totals));

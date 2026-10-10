@@ -1,0 +1,199 @@
+// FormatTabs - the tab stop commands (the ruler: ./RulerBind; the
+// Tabs dialog) and the stops the ruler shows.
+//
+//   rulerStops(doc, p) -> [{val, pos, leader?, style}]  the stops in
+//       force for paragraph p (./TabStops resolveTabs: val left |
+//       center | right | decimal | bar), style true for one the
+//       paragraph's style gives (its own pPr has no stop there)
+//   setTabs(d, typing, sel, arg, pending) -> {sel, pending}
+//       (./FormatApply 'tabs') each paragraph the selection formats
+//       (./FormatPara paraCommand: one undo step, none when nothing
+//       changes) gets arg applied to its DIRECT stops; arg (one key):
+//     {add: {val, pos, leader?}}  a stop at pos (one there replaced)
+//     {remove: pos}               the stop at pos goes
+//     {move: {from, to, val?, leader?}}  the stop at from goes to to,
+//                       of the kind the paragraph's own stop at from
+//                       has (else val, default left, and leader)
+//     {set: [{val, pos, leader?}...]}  the stops in force made
+//                       exactly these (at most MAX_TABS)
+//     {edits: [{add} | {remove} | {set}...]}  those in turn (the
+//                       Tabs dialog, ./TabsBox; at most MAX_EDITS)
+//       val left | center | right | decimal | bar (Strict start, end
+//       too), leader one of ./ReadPropsMore LEADERS, positions twips
+//       (rounded); a bad arg throws RangeError, nothing changed.
+//   tabOps(doc, sel, arg) -> the setProps ops of setTabs (not run;
+//       ./TabsCommand runs them with a settings change)
+//   directFor(doc, p, arg) -> the new direct stops of p (an array,
+//       [] for none), or null when they would not change
+//   isRawTabs(p)  whether p's own stops are a w:tabs kept raw (one
+//       the model cannot hold: a w14 attribute, more than 256 stops)
+//
+// A stop the style gives that is to go is written as a clear stop in
+// the direct ones (Word); a direct stop the same as the style's at
+// that place (kind and leader) is not written, and a clear over a
+// style stop that comes back is dropped. In a Strict document a new
+// left / right stop is written start / end. A paragraph whose own
+// w:tabs is kept raw is never changed: the command is refused
+// (RangeError) when the selection formats one, so what the model does
+// not understand is not lost. Over MAX_TABS direct entries after the
+// change: refused too (./FormatCheck). Pure: no desktop services.
+import {resolveTabs, ownTabs} from './TabStops';
+import {buildOps, changes, runOps} from './FormatOps';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {paraPatch, MAX_TABS} from './FormatCheck';
+import {TAB_VALS, LEADERS} from './ReadPropsMore';
+import {fail} from './ModelCheck';
+
+const KINDS = ['left', 'center', 'right', 'decimal', 'bar', 'start',
+  'end'];
+const NORM = new Map([['start', 'left'], ['end', 'right'],
+  ['num', 'left']]);
+const norm = (v) => NORM.get(v) || v;
+const STRICT = new Map([['left', 'start'], ['right', 'end']]);
+const LIMIT = 31680;
+const NONE = {extra: []};
+export const MAX_EDITS = 256;
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const pos = (v) => {
+  if (typeof v !== 'number' || !Number.isFinite(v)) fail('bad tab pos');
+  return Math.min(Math.max(Math.round(v), -LIMIT), LIMIT);
+};
+const only = (o, keys, what) => {
+  if (!isObj(o) || !Object.keys(o).every((k) => keys.includes(k)))
+    fail('bad ' + what);
+};
+
+/** A checked {val, pos, leader?} (val required unless dflt). */
+function stopOf(o, dflt) {
+  only(o, ['val', 'pos', 'leader'], 'tab stop');
+  const val = o.val === undefined && dflt ? dflt : o.val;
+  if (!KINDS.includes(val)) fail('bad tab kind');
+  if (o.leader !== undefined && !LEADERS.includes(o.leader))
+    fail('bad leader');
+  const out = {val, pos: pos(o.pos)};
+  if (o.leader !== undefined && o.leader !== 'none') {
+    out.leader = o.leader;
+  }
+  return out;
+}
+
+/** The argument checked (see the header). */
+function check(a, inner) {
+  only(a, inner ? ['add', 'remove', 'set'] : ['add', 'remove', 'move',
+    'set', 'edits'], 'tabs');
+  const ks = Object.keys(a);
+  if (ks.length !== 1) fail('one tabs change at a time');
+  if (a.edits !== undefined) {
+    if (!Array.isArray(a.edits) || a.edits.length > MAX_EDITS)
+      fail('bad tab edits');
+    return {edits: a.edits.map((e) => check(e, true))};
+  }
+  if (a.add !== undefined) return {add: stopOf(a.add)};
+  if (a.remove !== undefined) return {remove: pos(a.remove)};
+  if (a.move !== undefined) {
+    const m = a.move;
+    only(m, ['from', 'to', 'val', 'leader'], 'tab move');
+    const s = stopOf({val: m.val, pos: m.to, leader: m.leader}, 'left');
+    return {move: {from: pos(m.from), to: s}};
+  }
+  if (!Array.isArray(a.set) || a.set.length > MAX_TABS)
+    fail('bad tab stops');
+  return {set: a.set.map((s) => stopOf(s))};
+}
+
+/** A direct entry as checked by ./FormatCheck, copied; or null. */
+function entry(t) {
+  const none = t && t.leader == null;
+  if (!isObj(t) || !TAB_VALS.includes(t.val) ||
+    !Number.isSafeInteger(t.pos) || Math.abs(t.pos) > LIMIT ||
+    (!none && !LEADERS.includes(t.leader))) return null;
+  return none ? {val: t.val, pos: t.pos}
+    : {val: t.val, pos: t.pos, leader: t.leader};
+}
+
+/** The stops p's style gives: Map pos -> resolved stop. */
+const inherited = (doc, p) => new Map(resolveTabs(doc.styles,
+  {pStyle: p.pStyle, pPr: NONE}).map((s) => [s.pos, s]));
+
+const sameStop = (a, b) => !!a && !!b && norm(a.val) === norm(b.val) &&
+  (a.leader || 'none') === (b.leader || 'none');
+
+/** See the header. */
+export function directFor(doc, p, a) {
+  const own = (ownTabs((p && p.pPr) || NONE) || []).map(entry)
+    .filter(Boolean).sort((x, y) => x.pos - y.pos);
+  const map = new Map(own.map((t) => [t.pos, t]));
+  const inh = inherited(doc, p);
+  const strict = !!(doc.meta && doc.meta.conformance === 'strict');
+  const drop = (at) => {
+    map.delete(at);
+    if (inh.has(at)) map.set(at, {val: 'clear', pos: at});
+  };
+  const put = (s) => {
+    map.delete(s.pos);
+    if (sameStop(inh.get(s.pos), s)) return;
+    const val = strict ? STRICT.get(s.val) || s.val : s.val;
+    map.set(s.pos, {...s, val});
+  };
+  for (const e of a.edits || [a]) {
+    if (e.add) put(e.add);
+    else if (e.remove !== undefined) drop(e.remove);
+    else if (e.move) {
+      const cur = resolveTabs(doc.styles, p).find((s) =>
+        s.pos === e.move.from);
+      drop(e.move.from);
+      const s = {...e.move.to};
+      if (cur) {
+        s.val = cur.val;
+        if (cur.leader) s.leader = cur.leader; else delete s.leader;
+      }
+      put(s);
+    } else {
+      map.clear();
+      const want = new Set(e.set.map((s) => s.pos));
+      for (const at of inh.keys()) if (!want.has(at)) drop(at);
+      for (const s of e.set) put(s);
+    }
+  }
+  const out = [...map.values()].sort((x, y) => x.pos - y.pos);
+  return JSON.stringify(out) === JSON.stringify(own) ? null : out;
+}
+
+/** See the header. */
+export const isRawTabs = (p) => !!(p && p.pPr) &&
+  p.pPr.tabs === undefined && ownTabs(p.pPr) !== null;
+
+/** See the header. */
+export function rulerStops(doc, p) {
+  const own = new Set((ownTabs((p && p.pPr) || NONE) || [])
+    .map(entry).filter((t) => t && t.val !== 'clear')
+    .map((t) => t.pos));
+  return resolveTabs(doc.styles, p).map((s) => {
+    const o = {val: s.val, pos: s.pos};
+    if (s.leader) o.leader = s.leader;
+    o.style = !own.has(s.pos);
+    return o;
+  });
+}
+
+/** See the header. */
+export function tabOps(doc, sel, arg) {
+  const a = check(arg);
+  return buildOps(doc, sel, (en) => {
+    if (!en.para) return null;
+    if (isRawTabs(en.p)) fail('tab stops the model keeps raw');
+    const list = directFor(doc, en.p, a);
+    if (!list) return null;
+    const x = {pPr: {tabs: paraPatch({tabs: list}).tabs}};
+    return changes(en.p, 'pPr', x, 'pStyle') ? [x] : null;
+  });
+}
+
+/** See the header. */
+export function setTabs(d, typing, sel, arg, pending) {
+  runOps(d, typing, tabOps(d.doc, sel, arg));
+  return {sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY};
+}

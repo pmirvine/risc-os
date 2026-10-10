@@ -1,0 +1,166 @@
+// TabsPatch - the Tabs dialogue box's state (./TabsBox): the list of
+// stops as the box shows them, what Set, Clear and Clear all did to
+// it, and the change OK makes (./TabsCommand's argument).
+//
+//   start(stops, def) -> a state: stops the paragraph's stops in
+//       force (./FormatTabs rulerStops: [{val, pos, leader?}]), def
+//       the default tab stop shown (twips)
+//   setStop(st, {pos, val, leader}) -> {st} | {bad}  a stop at pos
+//       (one there replaced); leader undefined keeps the leader of
+//       the stop there (none for a new one). bad 'pos' for a pos
+//       that is not a whole number within -LIMIT..LIMIT (null: text
+//       that is not a length; undefined: an empty field), 'full'
+//       for a new stop past MAX_USED, 'kind' / 'leader' for one
+//       not in KINDS / LEADERS
+//   clearStop(st, pos) -> st   the stop at pos goes (st itself when
+//       there is none)
+//   clearAll(st) -> st         every stop goes (a style's too)
+//   choices(st) -> [{id, text}] the popup's list ('1" Left, dots');
+//       [{id: '', text: '(none)'}] when there are no stops
+//   stopOf(st, id) -> the stop of a choice id, or null
+//   placeOf(st, pos, picked?) -> the position the field's pos means:
+//       a stop's own when the field shows its position (a field
+//       holds hundredths of an inch: 0.01" is 14 twips, a stop at 20
+//       shows as 0.01"): picked (a pos) if it shows so, else the one
+//       stop of st that does; else pos
+//   clearedText(st) -> what goes: '' | 'All' | '1", 2.5"' (cut short)
+//   patch(st, def) -> {patch, bad}  OK: patch {tabs?, defaultTab?}
+//       for view.format('tabsBox'); tabs {edits: [...]} (./FormatTabs:
+//       a set [] for Clear all, then one add or remove per place, in
+//       the order of positions) only when something was done; def
+//       the Default tab stops field's value (undefined: shaded or
+//       empty, unchanged), compared with the start's as the field
+//       shows it (to a hundredth of an inch), so an untouched field
+//       changes nothing; bad ['deftab'] for text that is not a length
+//       or a value outside MIN_TW..MAX_TW (./TabStops)
+//   KINDS LEADERS  [{id, text}] the radios: Left Centre Right
+//       Decimal Bar; None Dots Dashes Line
+//   LIMIT  31680 twips (22 inches, Word's)
+// The state is never changed: each step gives a new one. Pure: no
+// desktop services.
+import {formatLength} from 'wimplib/Units';
+import {MAX_USED, MIN_TW, MAX_TW} from './TabStops';
+
+export const KINDS = Object.freeze([{id: 'left', text: 'Left'},
+  {id: 'center', text: 'Centre'}, {id: 'right', text: 'Right'},
+  {id: 'decimal', text: 'Decimal'}, {id: 'bar', text: 'Bar'}]);
+export const LEADERS = Object.freeze([{id: 'none', text: 'None'},
+  {id: 'dot', text: 'Dots'}, {id: 'hyphen', text: 'Dashes'},
+  {id: 'underscore', text: 'Line'}]);
+export const LIMIT = 31680;
+const ALL_LEADS = new Map([['dot', 'dots'], ['hyphen', 'dashes'],
+  ['underscore', 'line'], ['heavy', 'heavy line'],
+  ['middleDot', 'middle dots']]);
+const MAX_TEXT = 60;
+
+const sorted = (m) => [...m.values()].sort((a, b) => a.pos - b.pos);
+const copy = (s) => (s.leader && s.leader !== 'none'
+  ? {val: s.val, pos: s.pos, leader: s.leader}
+  : {val: s.val, pos: s.pos});
+
+/** See the header. */
+export function start(stops, def) {
+  const m = new Map();
+  for (const s of stops || []) m.set(s.pos, copy(s));
+  return {stops: m, base: new Map(m), ops: new Map(), all: false,
+    def};
+}
+
+const next = (st, o) => ({...st, ...o});
+
+/** See the header. */
+export function setStop(st, {pos, val, leader}) {
+  if (!Number.isInteger(pos) || Math.abs(pos) > LIMIT) {
+    return {bad: 'pos'};
+  }
+  if (!KINDS.some((k) => k.id === val)) return {bad: 'kind'};
+  if (leader !== undefined && !ALL_LEADS.has(leader) &&
+    leader !== 'none') return {bad: 'leader'};
+  if (!st.stops.has(pos) && st.stops.size >= MAX_USED) {
+    return {bad: 'full'};
+  }
+  const old = st.stops.get(pos);
+  const lead = leader === undefined ? old && old.leader : leader;
+  const s = copy({val, pos, leader: lead});
+  const stops = new Map(st.stops).set(pos, s);
+  const ops = new Map(st.ops).set(pos, {add: s});
+  return {st: next(st, {stops, ops})};
+}
+
+/** See the header. */
+export function clearStop(st, pos) {
+  if (!st.stops.has(pos)) return st;
+  const stops = new Map(st.stops);
+  stops.delete(pos);
+  const ops = new Map(st.ops);
+  if (st.base.has(pos)) ops.set(pos, {remove: pos});
+  else ops.delete(pos);
+  return next(st, {stops, ops});
+}
+
+/** See the header. */
+export function clearAll(st) {
+  return next(st, {stops: new Map(), base: new Map(), ops: new Map(),
+    all: true});
+}
+
+/** The text of a stop in the popup. */
+function stopText(s) {
+  const k = KINDS.find((x) => x.id === s.val);
+  const lead = ALL_LEADS.get(s.leader);
+  return `${formatLength(s.pos)} ${k ? k.text : s.val}` +
+    (lead ? `, ${lead}` : '');
+}
+
+/** See the header. */
+export function choices(st) {
+  const list = sorted(st.stops).map((s) => ({id: 'p' + s.pos,
+    text: stopText(s)}));
+  return list.length ? list : [{id: '', text: '(none)'}];
+}
+
+/** See the header. */
+export function stopOf(st, id) {
+  if (typeof id !== 'string' || !/^p-?[0-9]+$/.test(id)) return null;
+  return st.stops.get(Number(id.slice(1))) || null;
+}
+
+/** See the header. */
+export function placeOf(st, pos, picked) {
+  if (!Number.isInteger(pos) || st.stops.has(pos)) return pos;
+  const t = formatLength(pos);
+  if (Number.isInteger(picked) && formatLength(picked) === t &&
+    st.stops.has(picked)) return picked;
+  const near = [...st.stops.keys()]
+    .filter((p) => formatLength(p) === t);
+  return near.length === 1 ? near[0] : pos;
+}
+
+/** See the header. */
+export function clearedText(st) {
+  if (st.all) return 'All';
+  const gone = [...st.ops.values()]
+    .filter((o) => o.remove !== undefined)
+    .map((o) => o.remove).sort((a, b) => a - b).map(formatLength);
+  const t = gone.join(', ');
+  return t.length > MAX_TEXT ? t.slice(0, MAX_TEXT - 3) + '...' : t;
+}
+
+/** See the header. */
+export function patch(st, def) {
+  const out = {};
+  if (def === null) return {patch: {}, bad: ['deftab']};
+  if (def !== undefined && formatLength(def) !== formatLength(st.def)) {
+    if (!(def >= MIN_TW && def <= MAX_TW)) {
+      return {patch: {}, bad: ['deftab']};
+    }
+    out.defaultTab = def;
+  }
+  const edits = st.all ? [{set: []}] : [];
+  for (const pos of [...st.ops.keys()].sort((a, b) => a - b)) {
+    const o = st.ops.get(pos);
+    edits.push(o.add ? {add: {...o.add}} : {remove: o.remove});
+  }
+  if (edits.length) out.tabs = {edits};
+  return {patch: out, bad: []};
+}

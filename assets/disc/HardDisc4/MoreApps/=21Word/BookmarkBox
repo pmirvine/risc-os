@@ -1,0 +1,156 @@
+// BookmarkBox - the Bookmark dialogue box (Insert > Bookmark..., and
+// Ctrl+Shift+F5: ./DocKeys), as Word's: a Bookmark name field with a
+// popup of the document's bookmarks (a pick puts its name in the
+// field), Sort by Name / Location, the option Hidden bookmarks, two
+// message lines, and the buttons Add, Delete, Go to and Close. Built
+// by WimpLib Ui/Dialog; what the buttons do: ./Bookmarks.
+//
+//   bookmarkBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'bookmark:<docKey>'), kept in dw.boxes
+//       ('bookmark') so ./CloseDoc deletes it with the document;
+//       asked again while it is open, the same box is brought to the
+//       front. Nothing (null) when the document has no selection.
+//
+// Add (or Return) marks the selection (or the caret's place) with the
+// name in the field: one undo step; a name already there is moved
+// (case ignored); the box closes and the caret goes back to the
+// document, the bookmarked text selected. Delete removes the named
+// bookmark (one step; the selection stays), Go to selects its text
+// (the window scrolled to it); both keep the box open, its popup
+// filled again. A name that is refused (empty, a digit or _ first,
+// a space, longer than 40: ./Bookmarks checkName), a name with no
+// bookmark, a bookmark in a table (Go to and Delete), a selection at
+// a table: a beep and why in the message lines, the box kept and
+// nothing changed. Close, Escape and the close icon change nothing.
+// The popup lists at most MAX_SHOWN names (sorted as chosen; hidden
+// ones, such as Word's _Toc..., only with Hidden bookmarks; a name
+// longer than 40 characters is shown cut short), and says when there
+// are more: any name can be typed.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {dropPending} from './EditFormat';
+import {list, addBookmark, deleteBookmark, goTo, NAME_MAX}
+  from './Bookmarks';
+
+export const MAX_SHOWN = 200;
+// the field takes more than a name may have, so a longer name typed
+// or pasted is refused with a message, never cut short
+const FIELD = 2 * NAME_MAX;
+const LINE = 58, ADD = 'Add', DEL = 'Delete', GO = 'Go to';
+const NONE = {id: '', text: '(none)'};
+const rows = () => [
+  [{kind: 'text', name: 'name', label: 'Bookmark name',
+    maxLen: FIELD, w: 260, help: 'The bookmark\'s name: a letter ' +
+      'first, then letters, digits and _ (no spaces), at most 40 ' +
+      'characters.'},
+  {kind: 'popup', name: 'names', w: 120, choices: [NONE],
+    help: 'The bookmarks of this document: choose one.'}],
+  [{kind: 'radio', name: 'byName', group: 'sort', value: 'name',
+    text: 'Name', label: 'Sort by',
+    help: 'List the bookmarks by name.'},
+  {kind: 'radio', name: 'byPlace', group: 'sort', value: 'location',
+    text: 'Location', help: 'List the bookmarks in document order.'}],
+  {kind: 'option', name: 'hidden', text: 'Hidden bookmarks',
+    help: 'Also list hidden bookmarks (names starting _), such as ' +
+      'the ones Word makes for a table of contents.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+  {kind: 'label', name: 'msg2', text: '', w: 460},
+];
+const HELP = 'Bookmark: name the selected text or a place in the ' +
+  'document, to go back to it or link to it (Insert > Hyperlink...).';
+
+const names = new WeakMap();      // api -> the names in the popup
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim().slice(0, LINE);
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+/** See the header. */
+export function bookmarkBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `bookmark:${dw.docKey}`,
+    title: 'Bookmark', rows: rows(), help: HELP,
+    buttons: [ADD, DEL, GO, 'Close'], enter: ADD, minW: 480});
+  box(dw, 'bookmark', () => api.win);
+  if (api.isOpen) return api;
+  if (!names.has(api)) {
+    api.set('sort', 'location');
+    wire(api, v);
+  }
+  api.set('name', '');
+  say(api, '');
+  fill(api, v);
+  api.open();
+  return api;
+}
+
+/** The popup filled from the document, as sorted and shown. */
+function fill(api, v) {
+  const all = list(v.d.doc, {hidden: api.get('hidden') === true,
+    sort: api.get('sort') === 'name' ? 'name' : 'location'});
+  const shown = all.slice(0, MAX_SHOWN).map((b) => b.name);
+  names.set(api, shown);
+  api.choices('names', [NONE, ...shown.map((n, k) => ({id: 'b' + k,
+    text: n.length > 40 ? n.slice(0, 40) + '...' : n}))]);
+  api.set('names', '');
+  if (all.length > MAX_SHOWN) {
+    say(api, `${all.length} bookmarks: the list shows the first ` +
+      `${MAX_SHOWN}; type any name.`);
+  }
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  const no = (why) => {
+    wimp.beep();
+    say(api, why);
+    api.focus('name');
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    if (name === 'names' && value) {
+      const n = (names.get(api) || [])[Number(value.slice(1))];
+      if (n !== undefined) api.set('name', n);
+    } else if (name === 'sort' || name === 'hidden') {
+      say(api, '');
+      fill(api, v);
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name === 'Close') { v.focus(); return undefined; }
+    if (!v.sel) return no('There is no selection in the document.');
+    const text = typeof values.name === 'string' ? values.name : '';
+    if (name === ADD) {
+      const r = addBookmark(v.d, v.typing, v.sel, text);
+      if (r.error) return no(r.error);
+      dropPending(v);
+      if (r.sel !== v.sel) v.edited(r.sel);
+      v.focus();
+      return undefined;
+    }
+    if (name === DEL) {
+      const r = deleteBookmark(v.d, v.typing, text, v.sel);
+      if (r.error) return no(r.error);
+      if (r.sel !== v.sel) v.edited(r.sel);
+      fill(api, v);
+      say(api, `The bookmark "${r.name}" is deleted.`);
+      return false;
+    }
+    const r = goTo(v.d.doc, text);
+    if (r.error) return no(r.error);
+    v.setSelection(r.sel);
+    say(api, '');
+    return false;
+  });
+}

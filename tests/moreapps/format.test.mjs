@@ -22,7 +22,29 @@ describe('Format.query', () => {
       size: 11, family: 'Calibri', color: 'auto', highlight: 'none',
       vert: 'baseline', align: 'left', indentLeft: 0, indentFirst: 0,
       indentRight: 0, spaceBefore: 0, spaceAfter: 160,
-      lineSpacing: {line: 259, rule: 'auto'}, style: 'Normal'});
+      lineSpacing: {line: 259, rule: 'auto'}, style: 'Normal',
+      contextual: false, keepNext: false, keepLines: false,
+      widowControl: true, pageBreakBefore: false, listKind: null,
+      listEntry: null, charShade: 'none', paraShade: 'none',
+      borders: {}});
+  });
+  it('the paragraph flags: resolved through the style, mixed', () => {
+    // (widowControl: on unless turned off, Word's default)
+    const d = mk(['a', ['b', {pPr: {keepNext: true,
+      contextualSpacing: true, widowControl: false, keepLines: true,
+      pageBreakBefore: true, extra: []}}]]);
+    const q0 = F.query(d.doc, SEL(d, 0, 0, 0, 1));
+    const q1 = F.query(d.doc, SEL(d, 1, 0, 1, 1));
+    for (const k of ['contextual', 'keepNext', 'keepLines',
+      'widowControl', 'pageBreakBefore']) {
+      const off = k === 'widowControl';
+      assert.equal(q1[k], !off, k);
+      assert.equal(q0[k], off, k);
+      assert.equal(F.query(d.doc, SEL(d, 0, 0, 1, 1))[k], null, k);
+    }
+    // through a style: List Paragraph's contextualSpacing
+    const e = mk([['x', {pStyle: 'ListParagraph'}]]);
+    assert.equal(F.query(e.doc, SEL(e, 0, 0, 0, 1)).contextual, true);
   });
   it('a bold run, and mixed across runs (null)', () => {
     const d = mk([two('ab', 'cd')]);

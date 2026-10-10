@@ -1,30 +1,81 @@
 // DocPaint - draws a ./DocLayout on a canvas 2D context: the
-// paragraphs' text, and a grey box for each kept block.
+// paragraphs' text, their border boxes and shading, a grey box for
+// each kept block, and the section break bands.
 //
 //   paint(L, g, rect)   draw what lies in rect {x0, y0, x1, y1}
 //                       (work-area coordinates)
 //
-// A line's highlights are drawn first, each the full height of the
-// line under its item (spaces too); then its text, raised or lowered
+// The shading of the border boxes (./BorderGroups marks, drawn by
+// ./BorderPaint) of the items in rect is drawn first, under all
+// their text, and their edges last, over it. A line's character
+// shading and highlights are drawn next, each the full height of
+// the line under its item (spaces too; the highlight over the
+// shading); then its text, raised or lowered
 // by the item's dy (superscript, subscript) with its underline and
 // strike line. A list paragraph's label (line.label of its first
 // line, ./LineLayout) is drawn on that line's baseline in its own
 // format, with no highlight (and selection never covers it). Only
-// the items in rect are drawn: the first is found by a binary
-// search (L.itemAtY), and within a paragraph only its lines in
-// rect.
-// Draws on the context it is given; imports no desktop services.
+// the items in rect are drawn, an item with its gaps (its marks are
+// drawn there: y - gapAbove .. y + h + gapBelow): the first is found
+// by a binary search (L.itemAtY), then the items before it whose
+// gap below reaches into rect; within a paragraph only its lines in
+// rect. A line marked clip (./ParaSpace: an exact line spacing lower
+// than its text) is drawn cut to its own height. A page or column
+// break's item (kind 'pagebreak', ./BreakMarks) is a grey dotted
+// rule across the middle of its line with its label ("Page break")
+// in small grey italics in the middle; never a highlight colour.
+// A section break band (./SectDeco) under an item: a grey double
+// dotted rule across the text column with its label ("Section break
+// (Next page)") in the middle. A paragraph with page break before
+// (./FlowDeco) has a single dotted rule labelled "Page break before"
+// in the 12 px gap above it. A tab item with a leader (./LineLayout,
+// ./TabStops) is filled with it in the tab's own format: dots,
+// hyphens or middle dots (whole characters on a grid of their own
+// width counted from the margin, so the leaders of successive lines
+// line up), or a line under it (underscore; heavy: twice as
+// thick). A bar stop is a one-pixel vertical line, in black, the height
+// of each line of its paragraph, at its position. The grey rules and
+// labels are ./MarkPaint's. Draws on the context it is given; imports
+// no desktop services.
+import {bandOf} from './SectDeco';
+import {flowMark} from './FlowDeco';
+import {paintBand, paintFlow, paintRule} from './MarkPaint';
+import {boxMark} from './BorderGroups';
+import {paintFill, paintEdges} from './BorderPaint';
 
 /** See the header. */
 export function paint(L, g, rect) {
   g.textBaseline = 'alphabetic';
   const first = L.itemAtY(rect.y0);
   if (!first) return;
-  for (let i = first.index; i < L.items.length; i++) {
-    const it = L.items[i];
-    if (it.y >= rect.y1) break;
-    if (it.kind === 'p') paintPara(L, g, it, rect);
-    else paintBox(L, g, it);
+  const {items} = L;
+  let i0 = first.index, i1 = i0;
+  // (an item above whose gap below, its band, is in rect)
+  while (i0 > 0 && bottom(items[i0 - 1]) > rect.y0) i0--;
+  while (i1 < items.length && top(items[i1]) < rect.y1) i1++;
+  boxes(L, g, i0, i1, rect, paintFill);
+  for (let i = i0; i < i1; i++) {
+    const it = items[i];
+    if (it.y < rect.y1 && it.y + it.h > rect.y0) {
+      if (it.kind === 'p') paintPara(L, g, it, rect);
+      else paintBox(L, g, it);
+    }
+    const m = bandOf(it);
+    if (m) paintBand(L, g, it, m, rect);
+    const f = flowMark(it);
+    if (f) paintFlow(L, g, it, f, rect);
+  }
+  boxes(L, g, i0, i1, rect, paintEdges);
+}
+
+const bottom = (it) => it.y + it.h + it.gapBelow;
+const top = (it) => it.y - Math.max(0, it.gapAbove);
+
+/** The border boxes' shading or edges of items i0..i1 - 1. */
+function boxes(L, g, i0, i1, rect, f) {
+  for (let i = i0; i < i1; i++) {
+    const it = L.items[i], m = boxMark(it);
+    if (m && it.lines) f(g, m, it, L.items[i - 1], L.left, rect);
   }
 }
 
@@ -33,32 +84,81 @@ function paintPara(L, g, it, rect) {
     const top = it.y + ln.y;
     if (top >= rect.y1) break;
     if (top + ln.h <= rect.y0) continue;
-    highlights(L, g, ln, top);
-    if (ln.label && ln.label.text) paintLabel(L, g, ln, top);
-    for (const x of ln.items) {
-      if (!x.text) continue;
-      const f = x.f;
-      const left = L.left + x.x;
-      const base = top + ln.base + (x.dy || 0);
-      if (x.kind === 'box') {
-        g.strokeStyle = '#a0a0a0';
-        g.lineWidth = 1;
-        const h = f.px * 1.3;
-        g.strokeRect(Math.round(left) + 0.5,
-          Math.round(base - f.px) + 0.5, Math.round(x.w - 2),
-          Math.round(h));
-        g.fillStyle = f.colour;
-        g.font = f.css;
-        g.fillText(x.text, left + 2, base);
-        continue;
-      }
-      g.fillStyle = f.colour;
-      if (g.font !== f.css) g.font = f.css;
-      g.fillText(x.text, left, base);
-      const t = Math.max(1, Math.round(f.px / 14));
-      if (f.under) g.fillRect(left, base + 2, x.w, t);
-      if (f.strike) g.fillRect(left, base - f.px * 0.3, x.w, t);
+    if (ln.clip) {
+      // an exact line spacing too small for the text: cut off (Word)
+      g.save();
+      g.beginPath();
+      g.rect(rect.x0, top, rect.x1 - rect.x0, ln.h);
+      g.clip();
     }
+    paintLine(L, g, ln, top);
+    if (ln.clip) g.restore();
+  }
+}
+
+/** Line ln of a paragraph, its top at top. */
+function paintLine(L, g, ln, top) {
+  highlights(L, g, ln, top);
+  if (ln.label && ln.label.text) paintLabel(L, g, ln, top);
+  if (ln.bars) paintBars(L, g, ln, top);
+  for (const x of ln.items) {
+    if (x.kind === 'pagebreak') {
+      paintRule(L, g, x, top, ln.h);
+      continue;
+    }
+    if (x.leader && x.w > 0) paintLeader(L, g, x, top + ln.base);
+    if (!x.text) continue;
+    const f = x.f;
+    const left = L.left + x.x;
+    const base = top + ln.base + (x.dy || 0);
+    if (x.kind === 'box') {
+      g.strokeStyle = '#a0a0a0';
+      g.lineWidth = 1;
+      const h = f.px * 1.3;
+      g.strokeRect(Math.round(left) + 0.5,
+        Math.round(base - f.px) + 0.5, Math.round(x.w - 2),
+        Math.round(h));
+      g.fillStyle = f.colour;
+      g.font = f.css;
+      g.fillText(x.text, left + 2, base);
+      continue;
+    }
+    g.fillStyle = f.colour;
+    if (g.font !== f.css) g.font = f.css;
+    g.fillText(x.text, left, base);
+    const t = Math.max(1, Math.round(f.px / 14));
+    if (f.under) g.fillRect(left, base + 2, x.w, t);
+    if (f.strike) g.fillRect(left, base - f.px * 0.3, x.w, t);
+  }
+}
+
+const LEAD = {dot: '.', hyphen: '-', middleDot: '\u00b7'};
+
+/** The leader of tab item x, its baseline at base. */
+function paintLeader(L, g, x, base) {
+  const f = x.f, left = L.left + x.x;
+  g.fillStyle = f.colour;
+  if (x.leader === 'underscore' || x.leader === 'heavy') {
+    const t = Math.max(1, Math.round(f.px / 14));
+    g.fillRect(left, base + 2, x.w, x.leader === 'heavy' ? 2 * t : t);
+    return;
+  }
+  const ch = LEAD[x.leader];
+  if (!ch) return;
+  if (g.font !== f.css) g.font = f.css;
+  const cw = g.measureText ? g.measureText(ch).width : f.px / 3;
+  if (!(cw > 0)) return;
+  const k = Math.ceil(x.x / cw);
+  const n = Math.min(Math.floor((x.x + x.w) / cw) - k, 2000);
+  if (n > 0) g.fillText(ch.repeat(n), L.left + k * cw, base);
+}
+
+/** The bar stops of line ln (top: its top). */
+function paintBars(L, g, ln, top) {
+  g.fillStyle = '#000000';
+  for (const b of ln.bars) {
+    g.fillRect(Math.round(L.left + b), Math.round(top), 1,
+      Math.round(ln.h));
   }
 }
 
@@ -70,14 +170,18 @@ function paintLabel(L, g, ln, top) {
   g.fillText(text, L.left + x, top + ln.base);
 }
 
-/** The highlight rectangles of line ln (top: its top). */
+/** The shading, then highlight, rectangles of line ln (at top). */
 function highlights(L, g, ln, top) {
   const y0 = Math.round(top), y1 = Math.round(top + ln.h);
   for (const x of ln.items) {
-    if (!x.hl || !(x.w > 0)) continue;
+    if ((!x.hl && !x.sh) || !(x.w > 0)) continue;
     const a = Math.floor(L.left + x.x);
-    g.fillStyle = x.hl;
-    g.fillRect(a, y0, Math.ceil(L.left + x.x + x.w) - a, y1 - y0);
+    const w = Math.ceil(L.left + x.x + x.w) - a;
+    for (const c of [x.sh, x.hl]) {
+      if (!c) continue;
+      g.fillStyle = c;
+      g.fillRect(a, y0, w, y1 - y0);
+    }
   }
 }
 

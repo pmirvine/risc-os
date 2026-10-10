@@ -385,7 +385,7 @@ try {
   const top = await levelItems(0);
   await pick(0, 'Format', { hover: true });
   const fm = await levelItems(1);
-  ok('the window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Format', 'Zoom', 'New', 'Close']), top);
+  ok('the window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'Format', 'Zoom', 'New', 'Close']), top);
   const tick = (list, t) => list?.find((x) => x[0] === t)?.[1];
   ok('the Format menu opens; Bold is ticked in a bold selection, Italic not', fm && tick(fm, 'Bold') === true && tick(fm, 'Italic') === false
     && ['Bold', 'Italic', 'Underline', 'Strikethrough', 'Superscript', 'Subscript', 'Font', 'Size', 'Colour', 'Highlight', 'Align', 'Indent',
@@ -402,10 +402,10 @@ try {
     return { items: sub.items.map((i) => [i.text, i.key]), mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
   });
   const K = em.mac ? 'Cmd+' : 'Ctrl+';   // (on a Mac the labels are Cmd+: MacKeys.macLabel)
-  ok('the Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace... (no format items)',
+  ok('the Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Word count... (no format items)',
     same(em.items, [['Undo', K + 'Z'], ['Redo', K + 'Y'], ['Cut', K + 'X'], ['Copy', K + 'C'], ['Paste', K + 'V'],
       ['Select all', K + 'A'], ['Find...', K + 'F'], ['Find next', K + 'G'], ['Find previous', K + 'Shift+G'],
-      ['Replace...', 'Ctrl+H']]), em);
+      ['Replace...', 'Ctrl+H'], ['Word count...', undefined]]), em);
 
   /** Select paragraph i whole, then Format > sub > item from the menu. */
   const choose = async (i, sub, item) => {

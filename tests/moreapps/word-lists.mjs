@@ -388,15 +388,21 @@ try {
   await menuAt(0);
   await pick(0, 'Format', { hover: true });
   const fm0 = (await rows(1))?.find((x) => x[0] === 'List');
+  await pick(1, 'List', { hover: true });
+  const lm0 = await rows(2);
   await ev(() => os.wimp.menus.close());
   await menuAt(2);
   await pick(0, 'Format', { hover: true });
   const fm1 = (await rows(1))?.find((x) => x[0] === 'List');
   await pick(1, 'List', { hover: true });
   const lm = await rows(2);
-  ok('Format > List: shaded in a plain paragraph; in a list item Demote (Tab), Promote (Shift+Tab), Remove from list',
-    fm0?.[2] === true && fm1?.[2] === false && same(lm, [['Demote', 'Tab', false], ['Promote', 'Shift+Tab', false],
-      ['Remove from list', '', false]]), { fm0, fm1, lm });
+  ok('Format > List: in a plain paragraph only Bullets and Numbering are open; in a list item all of it, with Demote (Tab), Promote (Shift+Tab), Remove from list',
+    fm0?.[2] === false && fm1?.[2] === false
+    && same(lm0.map((x) => [x[0], x[2]]), [['Bullets', false], ['Numbering', false], ['Restart at 1', true], ['Continue numbering', true],
+      ['Set numbering value...', true], ['Demote', true], ['Promote', true], ['Remove from list', true]])
+    && same(lm, [['Bullets', 'Ctrl+Shift+L', false], ['Numbering', '', false], ['Restart at 1', '', false], ['Continue numbering', '', false],
+      ['Set numbering value...', '', false], ['Demote', 'Tab', false], ['Promote', 'Shift+Tab', false], ['Remove from list', '', false]]),
+    { fm0, fm1, lm0, lm });
   await pick(2, 'Demote');
   const f1 = await state();
   await menuAt(2);

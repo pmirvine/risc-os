@@ -35,15 +35,20 @@
 //     characters, no U+FFFC), a w:t holding a character becomes that
 //     character, any other (a picture with its r:embed, a field
 //     character, a bookmark...) becomes nothing; a tab inline is a
-//     tab character and a br inline (a page break too) a line break,
-//     as typed ones are; the text keeps its run's formatting
+//     tab character and a br inline a line break, as typed ones are,
+//     except a page or column break (./BreakMarks), a w:noBreakHyphen
+//     and a w:softHyphen (no attributes, no children), which stay
+//     one (a new inline: it refers to no part); the text keeps its
+//     run's formatting
 //   - pStyle and rStyle are mapped by NAME (styleNames: Map id ->
 //     {name, type}, ./ClipSlice) to the target's style of that name
 //     and type (case ignored), else dropped (the default style)
 //   - rPr keeps its modelled fields (rFonts b i u strike color sz
-//     szCs highlight vertAlign: ./PropNames), its raw extra goes;
-//     pPr keeps jc ind spacing keepNext keepLines pageBreakBefore
-//     outlineLvl, numPr and the raw extra go (no list is made)
+//     szCs highlight vertAlign shd: ./PropNames), its raw extra
+//     goes; pPr keeps jc ind spacing keepNext keepLines
+//     pageBreakBefore outlineLvl, numPr, the other fields (tabs,
+//     pBdr, shd, widowControl, contextualSpacing) and the raw extra
+//     go (no list is made)
 //   - kept blocks (tables, whose XML can point at the source's
 //     parts) are skipped.
 // Pure: no desktop services.
@@ -51,6 +56,7 @@ import {fail, normRuns, checkContent} from './ModelCheck';
 import {RPR_FIELDS} from './PropNames';
 import {clean as cleanText} from './Edit';
 import {hasUnique, hasIds, dropIds, keepIds, flatten} from './ClipIds';
+import {isPageBreak} from './BreakMarks';
 
 const PPR_KEEP = ['jc', 'ind', 'spacing', 'keepNext', 'keepLines',
   'pageBreakBefore', 'outlineLvl'];
@@ -94,11 +100,22 @@ function keep(o, keys) {
   return out;
 }
 
+/** 'w:noBreakHyphen' or 'w:softHyphen' for such a bare inline. */
+function hyphen(x) {
+  const n = isObj(x) && x.kind === 'raw' && x.level === 'r' && x.node;
+  return isObj(n) && (n.name === 'w:noBreakHyphen' ||
+    n.name === 'w:softHyphen') && !attrsOf(n) && !kids(n) ? n.name :
+    null;
+}
+const attrsOf = (n) => Array.isArray(n.attrs) && n.attrs.length > 0;
+const kids = (n) => Array.isArray(n.children) && n.children.length > 0;
+
 const RKEEP = [...RPR_FIELDS.keys()];
 
-/** The text an inline becomes across documents. */
+/** The text an inline becomes across documents (null: kept). */
 function inlineText(x) {
   if (!isObj(x)) return '';
+  if (isPageBreak(x) || hyphen(x)) return null;
   if (x.kind === 'tab') return '\t';
   if (x.kind === 'br') return '\n';
   if (typeof x.text === 'string') return cleanText(x.text);
@@ -149,8 +166,19 @@ function cross(b, map) {
     const rs = map(r.rStyle, 'character');
     return rs === undefined ? {rPr} : {rPr, rStyle: rs};
   };
-  const out = {type: 'p', ...rebuild(contentOf(b), inlineText, fmt),
-    inlines: {}, pPr: keep(b.pPr, PPR_KEEP)};
+  const c = rebuild(contentOf(b), inlineText, fmt);
+  for (const k of Object.keys(c.inlines)) {
+    const x = c.inlines[k];
+    // a page or column break, a hyphen: a new inline (any other
+    // kept as it is)
+    if (isPageBreak(x)) {
+      c.inlines[k] = {kind: 'br', level: 'r', brType: x.brType};
+    } else if (hyphen(x)) {
+      c.inlines[k] = {kind: 'raw', level: 'r',
+        node: {name: hyphen(x), attrs: [], children: []}};
+    }
+  }
+  const out = {type: 'p', ...c, pPr: keep(b.pPr, PPR_KEEP)};
   const ps = map(b.pStyle, 'paragraph');
   if (ps !== undefined) out.pStyle = ps;
   return out;

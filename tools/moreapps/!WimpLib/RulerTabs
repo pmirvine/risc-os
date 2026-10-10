@@ -1,0 +1,126 @@
+// RulerTabs - the tab stops of a word processor's ruler (./Ui/Ruler):
+// their markers, the tab-type selector's cycle, and where a stop goes
+// when it is added with a click or dragged (as Word does it). A stop
+// is {pos, val, leader?, style?, id?}: pos twips from the left margin,
+// val a Word tab kind (left center right decimal bar; Strict start and
+// end, and num, shown as left, right, left), style a stop the
+// paragraph's style gives (drawn grey), id the marker's id when it is
+// not tabId(pos) (a stop being dragged keeps its id).
+//
+//   KIND               val -> marker kind: tabL tabC tabR tabD tabBar
+//   tabMarks(stops) -> [{id, twips, kind, grey}]  one marker per stop
+//                      (clear stops and malformed entries: none)
+//   tabId(pos) 'tab:<pos>', posOf(id) the pos of such an id (else
+//                      NaN), isTab(id), isTabKind(kind)
+//   SELECTOR           ['left', 'center', 'right', 'decimal']: the
+//                      kinds a click adds (a bar stop only from a Tabs
+//                      dialog)
+//   nextKind(kind)     the selector's next kind: left -> center ->
+//                      right -> decimal -> left (anything else: left)
+//   addAt(stops, at, kind, free = false, max = MAX) -> {stops, stop}
+//                      a kind stop added at at (twips), snapped to
+//                      1/16 inch (free: a whole twip; ./RulerMath
+//                      snap) and kept in 0 .. max; one already there
+//                      is replaced; null for at outside 0 .. max, not
+//                      a number, or a kind not of SELECTOR or bar
+//   dragTab(stops, id, at, free = false, max = MAX) -> {stops, from,
+//                      to, stop}  the stop id dropped at at: snapped
+//                      as addAt and clamped to 0 .. max, its kind,
+//                      leader and id kept, one already at to replaced;
+//                      null for an unknown id or at not a number
+//   removeAt(stops, pos) -> stops without the one at pos
+//   defaultTicks(stops, every, max = MAX) -> [twips]  where the
+//                      default stops are (Word's small marks under
+//                      the scale): every multiple of every past the
+//                      last stop that is not a bar, up to max; at
+//                      most MAX_TICKS; [] for every not above 0
+// Stops come back sorted by pos; the input is never changed.
+// Pure: no desktop services.
+import {snap, clampTo} from './RulerMath';
+
+export const MAX = 31680;
+export const MAX_TICKS = 1000;
+export const KIND = Object.freeze({left: 'tabL', center: 'tabC',
+  right: 'tabR', decimal: 'tabD', bar: 'tabBar', start: 'tabL',
+  end: 'tabR', num: 'tabL'});
+export const SELECTOR = Object.freeze(['left', 'center', 'right',
+  'decimal']);
+const KINDS = new Set(['tabL', 'tabC', 'tabR', 'tabD', 'tabBar']);
+const has = (o, k) => typeof k === 'string' && Object.hasOwn(o, k);
+
+/** See the header. */
+export const tabId = (pos) => 'tab:' + pos;
+
+/** See the header. */
+export const isTab = (id) => typeof id === 'string' &&
+  id.startsWith('tab:');
+
+/** See the header. */
+export const posOf = (id) => (isTab(id) && /^-?[0-9]+$/
+  .test(id.slice(4)) ? Number(id.slice(4)) : NaN);
+
+/** See the header. */
+export const isTabKind = (kind) => KINDS.has(kind);
+
+const valid = (s) => !!s && typeof s === 'object' &&
+  Number.isFinite(s.pos) && has(KIND, s.val);
+
+/** See the header. */
+export function tabMarks(stops) {
+  if (!Array.isArray(stops)) return [];
+  return stops.filter(valid).map((s) => ({
+    id: typeof s.id === 'string' ? s.id : tabId(s.pos),
+    twips: s.pos, kind: KIND[s.val], grey: !!s.style}));
+}
+
+/** See the header. */
+export function nextKind(kind) {
+  const i = SELECTOR.indexOf(kind);
+  return i < 0 ? 'left' : SELECTOR[(i + 1) % SELECTOR.length];
+}
+
+const sorted = (list) => list.sort((a, b) => a.pos - b.pos);
+
+/** A place at in 0 .. max, snapped (see the header). */
+const place = (at, free, max) =>
+  Math.round(clampTo(snap(clampTo(at, 0, max), free), 0, max)) || 0;
+
+/** See the header. */
+export function addAt(stops, at, kind, free = false, max = MAX) {
+  if (typeof at !== 'number' || !(at >= 0 && at <= max) ||
+    !(SELECTOR.includes(kind) || kind === 'bar')) return null;
+  const pos = place(at, free, max);
+  const stop = {pos, val: kind};
+  const list = (stops || []).filter((s) => valid(s) && s.pos !== pos);
+  return {stops: sorted([...list, stop]), stop};
+}
+
+/** See the header. */
+export function dragTab(stops, id, at, free = false, max = MAX) {
+  if (typeof at !== 'number' || Number.isNaN(at)) return null;
+  const list = (stops || []).filter(valid);
+  const old = list.find((s) => (typeof s.id === 'string' ? s.id
+    : tabId(s.pos)) === id);
+  if (!old) return null;
+  const to = place(at, free, max);
+  const stop = {...old, pos: to, id};
+  const rest = list.filter((s) => s !== old && s.pos !== to);
+  return {stops: sorted([...rest, stop]), from: old.pos, to, stop};
+}
+
+/** See the header. */
+export const removeAt = (stops, pos) =>
+  (stops || []).filter((s) => !(s && s.pos === pos));
+
+/** See the header. */
+export function defaultTicks(stops, every, max = MAX) {
+  if (!(every > 0) || !(max > 0)) return [];
+  let last = 0;
+  for (const s of stops || []) {
+    if (valid(s) && s.val !== 'bar' && s.pos > last) last = s.pos;
+  }
+  const out = [];
+  for (let k = Math.floor(last / every) + 1; k * every <= max &&
+    out.length < MAX_TICKS; k++) out.push(k * every);
+  return out;
+}

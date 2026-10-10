@@ -3,6 +3,10 @@
 // new layout breaks lines exactly as it did. One change: alignment
 // leaves out the spaces at the end of a line even when they were
 // merged into the item before them (the stub counted them then).
+// And one more since tab stops (A4.1, TabStops): a tab's half-inch
+// stops are counted from the margin, as Word counts them, not from
+// the left indent, and a tab with no stop before the right edge
+// goes to the right edge.
 // Render - lays out one paragraph for the screen: its text broken
 // into lines that fit a width, run by run in each run's font.
 //
@@ -184,7 +188,7 @@ export function layoutPara(para, styles, width, measure, cache) {
       }
     } else if (tk.t === 'tab') {
       flush();
-      x = left + TAB * (Math.floor((x - left) / TAB) + 1);
+      if (x < maxX) x = Math.min(maxX, TAB * (Math.floor(x / TAB) + 1));
       line.px = Math.max(line.px, tk.f.px);
       line.items.push({x, w: 0, text: '', f: tk.f, kind: 'text'});
     } else {

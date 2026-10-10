@@ -1,0 +1,168 @@
+// SectBreak - section breaks: Insert > Section break, and Delete or
+// Backspace at a break.
+//
+//   insertSection(d, typing, sel, type) -> the new selection (sel
+//                       when nothing changed; undefined for a type
+//                       that is not one of SECT_TYPES' first four or
+//                       no sel), one undo step (typing.command, one
+//                       d.atomic group)
+//   deleteBreakAt(d, sel, dir) -> the new selection after the break
+//                       is removed, or undefined when the caret is not
+//                       at a section edge (dir 1: Delete at the end
+//                       of a section's last paragraph; -1: Backspace
+//                       at the start of the next section's first
+//                       block): the caller goes on as before
+//   markOf, sectLabel  ./SectMark's (re-exported)
+//
+// Insert: the selection is deleted first (./EditRange), and a caret
+// on a kept block's edge first gets an empty paragraph there. Then,
+// at a caret inside or at the end of a non-empty paragraph, the
+// paragraph is split there (as Enter: ./EditPara) and the first half
+// ends the section; at the start of a non-empty paragraph, a new
+// empty paragraph before it (Enter at its start) ends the section;
+// an empty paragraph ends the section itself (an empty paragraph is
+// added after it when it was the section's last block). The caret
+// goes to the start of the block after the break. The section BEFORE
+// the break gets a copy of the old section's properties and sectPr
+// (every child: header and footer references too, so both sections
+// name the same header parts, as Word does); the section AFTER keeps
+// the original sectPr and takes w:type = type (written even for
+// nextPage): w:type says how a section starts, so the break's kind
+// is the following section's type (./OpsSect splitSection then
+// setSection). The copy leaves out w:sectPrChange (a tracked
+// change's revision id must stay unique; the original keeps it).
+//
+// Delete: sections s and s+1 become one (mergeSection: the following
+// section's properties and sectPr) with the type of section s (its
+// w:type field, or a raw w:type it kept; none when it had none), as
+// one undo step; the caret stays. A section that ends with a kept
+// block cannot be merged: undefined (the caller's rule applies).
+// Pure: no desktop services.
+import {caret, collapsed} from './Selection';
+import {orderedPos, findBlock, checkPos, posOf} from './EditPos';
+import {deleteRange, paraBy} from './EditRange';
+import {splitAt} from './EditPara';
+import {withoutRaw} from './PropNames';
+import {deepEqual} from './Model';
+
+export {markOf, sectLabel} from './SectMark';
+
+const INSERTS = new Set(['nextPage', 'continuous', 'evenPage',
+  'oddPage']);
+
+const isType = (n) => !!n && typeof n === 'object' &&
+  n.name === 'w:type';
+
+/**
+ * props with the type of `from` (props): its type field, or its raw
+ * w:type elements, or none.
+ */
+function withType(props, from) {
+  const extra = withoutRaw(props.extra, ['type']);
+  const out = {...props, extra};
+  delete out.type;
+  if (from.type !== undefined) out.type = from.type;
+  else {
+    const kept = (from.extra || []).filter(isType);
+    if (kept.length) out.extra = extra.concat(kept);
+  }
+  return out;
+}
+
+const isChange = (n) => !!n && typeof n === 'object' &&
+  typeof n.name === 'string' && /^(w:)?sectPrChange$/.test(n.name);
+
+/** The section before a break: sec's props and raw, but changes. */
+function copyOf(sec) {
+  const props = {...sec.props,
+    extra: withoutRaw(sec.props.extra, ['sectPrChange'])};
+  const raw = sec.raw && Array.isArray(sec.raw.children) &&
+    sec.raw.children.some(isChange) ? {...sec.raw,
+      children: sec.raw.children.filter((n) => !isChange(n))}
+    : sec.raw;
+  return {props, raw};
+}
+
+/** Split section loc.s after block i; the one after takes type. */
+function splitHere(d, s, i, type) {
+  const sec = d.doc.sections[s];
+  const c = copyOf(sec);
+  const op = {op: 'splitSection', at: [s, i], props: c.props};
+  if (c.raw !== undefined) op.raw = c.raw;
+  d.apply(op);
+  const tail = d.doc.sections[s + 1];
+  const set = {op: 'setSection', at: s + 1,
+    props: withType(tail.props, {type, extra: []})};
+  if (tail.raw !== undefined) set.raw = tail.raw;
+  d.apply(set);
+}
+
+/** The ops of insertSection; the caret position after. */
+function place(d, sel, o, type) {
+  let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+  let loc = findBlock(d.doc, pos.id);
+  if (loc.b.type !== 'p') {
+    pos = paraBy(d, loc, pos.off);
+    loc = findBlock(d.doc, pos.id);
+  }
+  const {s, i, b} = loc;
+  let out;
+  if (b.text) out = splitAt(d, loc, pos.off);
+  else if (i === d.doc.sections[s].blocks.length - 1) {
+    // (not splitAt: an empty list item would leave the list)
+    d.apply({op: 'splitBlock', block: [s, i], at: 0});
+    out = posOf({b: d.doc.sections[s].blocks[i + 1]}, 0);
+  } else out = posOf({b: d.doc.sections[s].blocks[i + 1]}, 0);
+  splitHere(d, s, i, type);
+  return out;
+}
+
+/** See the header. */
+export function insertSection(d, typing, sel, type) {
+  if (!sel || !INSERTS.has(type)) return undefined;
+  const o = orderedPos(d.doc, sel);
+  if (!o) return sel;
+  return typing.command(() => {
+    let out = null;
+    d.atomic(() => { out = place(d, sel, o, type); });
+    return out ? caret(out) : sel;
+  });
+}
+
+/** The section s whose break the caret at sel is next to, or -1. */
+function edgeOf(doc, sel, dir) {
+  if (!sel || !collapsed(sel)) return -1;
+  const loc = checkPos(doc, sel.head);
+  if (!loc) return -1;
+  const secs = doc.sections, off = sel.head.off;
+  let s;
+  if (dir > 0) {
+    if (loc.b.type !== 'p' || off !== loc.b.text.length ||
+      loc.i !== secs[loc.s].blocks.length - 1 ||
+      loc.s === secs.length - 1) return -1;
+    s = loc.s;
+  } else {
+    if (dir !== -1 || loc.i !== 0 || off !== 0 || loc.s === 0)
+      return -1;
+    s = loc.s - 1;
+  }
+  const bs = secs[s].blocks;
+  return bs.length && bs[bs.length - 1].type === 'p' ? s : -1;
+}
+
+/** See the header. */
+export function deleteBreakAt(d, sel, dir) {
+  const s = edgeOf(d.doc, sel, dir);
+  if (s < 0) return undefined;
+  d.atomic(() => {
+    const a = d.doc.sections[s];
+    d.apply({op: 'mergeSection', at: s});
+    const m = d.doc.sections[s];
+    const props = withType(m.props, a.props);
+    if (deepEqual(props, m.props)) return;
+    const set = {op: 'setSection', at: s, props};
+    if (m.raw !== undefined) set.raw = m.raw;
+    d.apply(set);
+  });
+  return caret(sel.head);
+}

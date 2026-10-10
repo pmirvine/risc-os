@@ -1,0 +1,203 @@
+// TabsBox - the Tabs dialogue box (Format > Tabs..., and the Tabs...
+// button of the Paragraph box, ./ParaBox), as Word's: Default tab
+// stops (settings.xml's, for the whole document), Tab stop position
+// with a popup of the paragraph's stops, Alignment (Left, Centre,
+// Right, Decimal, Bar), Leader (None, Dots, Dashes, Line), the
+// buttons Set, Clear and Clear all, and what is to be cleared.
+// Built by WimpLib Ui/Dialog.
+//
+//   tabsBox(dw, {done}?) -> the box's api (WimpLib Ui/Dialog),
+//       opened one box per document (key 'tabs:<docKey>'), kept in
+//       dw.boxes ('tabs') so ./CloseDoc deletes it with the document;
+//       asked again while it is open, the same box is brought to the
+//       front. Nothing when the document has no selection. done
+//       (until the next call): done(before, after) after each OK
+//       that changed the document, with where(view) before and
+//       after it (./ParaBox: its own Tabs... does not make it stale)
+//   where(view)  a string naming the document's state and selection
+//       (the stale check of the boxes)
+//
+// It opens with the stops in force in the first paragraph the
+// selection touches (./FormatTabs rulerStops, as the ruler shows
+// them; a style's too), the position empty, Left and None. Picking a
+// stop from the popup puts its position, alignment and leader in the
+// fields (a position, shown to a hundredth of an inch, means the stop
+// that shows so: ./TabsPatch placeOf). Set puts a stop at the
+// position (one there replaced; the leader of a stop picked kept
+// when no leader is chosen); Clear
+// takes away the stop at the position; Clear all takes them all
+// (./TabsPatch). Nothing changes in the document until OK, which
+// also sets a stop at the position when the field is not empty (as
+// Word does) and then makes one view.format('tabsBox', ...): every
+// selected paragraph gets the same changes on its own stops, and a
+// new default tab stop, one undo step (./TabsCommand). A document
+// with no settings part shows its default (0.5") with the field
+// shaded. Beeps, the box kept and nothing written: a position that
+// is not a length or past 22 inches, Clear where there is no stop,
+// a 65th stop, a default outside 36 twips to 22", a selection
+// that holds a paragraph whose stops are kept raw (Set, Clear, Clear
+// all and OK with a position beep at once, ./FormatTabs isRawTabs;
+// the default alone still goes in), a change the
+// command refuses (more than 64 stops of a paragraph's own). If the
+// selection or the document changed while the box was open, OK
+// beeps, fills the box again and keeps it. Cancel, Escape and the
+// close icon change nothing; the caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {firstPara} from './RulerInd';
+import {rulerStops, isRawTabs} from './FormatTabs';
+import {touched} from './FormatOps';
+import {defaultStop} from './TabStops';
+import {start, setStop, clearStop, clearAll, choices, stopOf,
+  placeOf, clearedText, patch, KINDS, LEADERS} from './TabsPatch';
+
+const FIELD = 1e9;                     // the fields never clamp
+const radios = (group, list, pre) => list.map((k) => ({kind: 'radio',
+  name: pre + k.id, group, value: k.id, text: k.text}));
+const rows = () => [
+  {kind: 'length', name: 'deftab', label: 'Default tab stops',
+    min: -FIELD, max: FIELD},
+  [{kind: 'length', name: 'pos', label: 'Tab stop position',
+    min: -FIELD, max: FIELD},
+  {kind: 'popup', name: 'stops', label: 'Stops', w: 170,
+    choices: [{id: '', text: '(none)'}]}],
+  {kind: 'label', text: 'Alignment'},
+  radios('align', KINDS, 'k'),
+  {kind: 'label', text: 'Leader'},
+  radios('leader', LEADERS, 'l'),
+  [{kind: 'button', name: 'set', text: 'Set'},
+    {kind: 'button', name: 'clear', text: 'Clear'},
+    {kind: 'button', name: 'clearall', text: 'Clear all'}],
+  {kind: 'label', name: 'cleared', label: 'To be cleared', text: '',
+    w: 320},
+];
+
+const HELP = 'Tabs: the tab stops of the selected paragraphs, and ' +
+  'the default stops of the whole document.';
+const LEAD = new Set(LEADERS.map((l) => l.id));
+const ROW = ['set', 'clear', 'clearall'];
+
+const state = new WeakMap();           // api -> {st, at, raw}
+const after = new WeakMap();           // api -> done
+
+/** See the header. */
+export const where = (v) => JSON.stringify([v.sel && v.sel.anchor,
+  v.sel && v.sel.head, v.d.stateId]);
+
+/** See the header. */
+export function tabsBox(dw, {done} = {}) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `tabs:${dw.docKey}`,
+    title: 'Tabs', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK']});
+  after.set(api, done);
+  box(dw, 'tabs', () => api.win);
+  if (api.isOpen) return api;
+  if (!state.has(api)) wire(api, v);
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the document and its selection. */
+function refill(api, v) {
+  const doc = v.d.doc, p = firstPara(doc, v.sel);
+  const st = start(p ? rulerStops(doc, p) : [], defaultStop(doc));
+  const raw = (touched(doc, v.sel) || []).some((en) => en.para &&
+    isRawTabs(en.p));
+  state.set(api, {st, at: where(v), doc, raw});
+  api.set('deftab', st.def);
+  api.shade('deftab', !(doc.rawSettings && doc.meta &&
+    doc.meta.settingsPart));
+  api.set('pos', undefined);
+  api.set('align', 'left');
+  api.set('leader', 'none');
+  show(api, st, undefined);
+}
+
+/** The popup and the cleared list for st; the popup showing id. */
+function show(api, st, id) {
+  api.choices('stops', choices(st));
+  api.set('stops', id ?? (st.stops.size ? undefined : ''));
+  api.set('cleared', clearedText(st));
+}
+
+/** The stop the fields make (for Set and OK); x the box's state. */
+const fields = (api, x) => ({pos: posOf(api, x),
+  val: api.get('align') ?? 'left', leader: api.get('leader')});
+/** The position field's value (a stop's own: ./TabsPatch placeOf). */
+const posOf = (api, x) => placeOf(x.st, api.get('pos'), x.picked);
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  const no = (focus) => {
+    wimp.beep();
+    if (focus) api.focus('pos');
+    return false;
+  };
+  const row = (name, x) => {
+    if (x.raw) return no(false);
+    if (name === 'set') {
+      const s = fields(api, x), r = setStop(x.st, s);
+      if (r.bad) return no(true);
+      x.st = r.st;
+      show(api, x.st, 'p' + s.pos);
+    } else if (name === 'clear') {
+      const pos = posOf(api, x);
+      if (!x.st.stops.has(pos)) return no(true);
+      x.st = clearStop(x.st, pos);
+      api.set('pos', undefined);
+      show(api, x.st, undefined);
+    } else {
+      x.st = clearAll(x.st);
+      api.set('pos', undefined);
+      show(api, x.st, undefined);
+    }
+    api.focus('pos');
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const x = state.get(api);
+    if (name !== 'stops' || !x) return;
+    const s = stopOf(x.st, value);
+    if (!s) return;
+    x.picked = s.pos;
+    api.set('pos', s.pos);
+    api.set('align', s.val);
+    api.set('leader', LEAD.has(s.leader || 'none') ? s.leader || 'none'
+      : undefined);
+  });
+  api.on('button', ({name}) => {
+    const x = state.get(api);
+    if (ROW.includes(name)) return row(name, x);
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (!v.sel || where(v) !== x.at || v.d.doc !== x.doc) {
+      wimp.beep();
+      if (v.sel) refill(api, v);
+      return false;
+    }
+    let st = x.st;
+    if (api.get('pos') !== undefined) {
+      if (x.raw) return no(true);
+      const r = setStop(st, fields(api, x));
+      if (r.bad) return no(true);
+      st = r.st;
+    }
+    const shaded = api.win.iconByName('deftab').shaded;
+    const r = patch(st, shaded ? undefined : api.get('deftab'));
+    if (r.bad.length) {
+      wimp.beep();
+      api.focus('deftab');
+      return false;
+    }
+    const was = where(v);
+    if (Object.keys(r.patch).length &&
+      !v.format('tabsBox', r.patch)) return no(false);
+    const done = after.get(api), now = where(v);
+    if (done && now !== was) done(was, now);
+    v.focus();
+    return undefined;
+  });
+}

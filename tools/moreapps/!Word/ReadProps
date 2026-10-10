@@ -1,5 +1,6 @@
 // ReadProps - lossless readers for property elements (rPr, pPr,
-// sectPr, a style's children).
+// sectPr, a style's children). intOf, onOffOf and the readers of
+// tabs, pBdr and shd are in ./ReadPropsMore.
 //
 // The rule: a known child element becomes a model field only when it
 // is understood completely - every attribute is a known WML one with
@@ -8,28 +9,18 @@
 // extensions such as w14:*, repeated elements, theme fonts...) is
 // kept as the original XML node in `extra`, in document order.
 // Comments and white space between the children are dropped.
+// In a Strict document (./Ns isStrict of the scope) w:ind's w:start
+// and w:end attributes are the left and right fields, and w:left /
+// w:right keep the w:ind raw (Transitional the other way round), so
+// what is read is written back with the same names (./WriteProps).
 //
 // SECURITY: field names come only from the fixed tables below; names
 // found in the file are only ever used as Map keys, so an element or
 // attribute called __proto__ or constructor is inert.
-import {scope, wName, wAttrs, isEl, blank} from './Ns';
+import {scope, wName, wAttrs, isEl, blank, isStrict} from './Ns';
+import {intOf, onOffOf, tabs, pBdr, shd} from './ReadPropsMore';
 
-const INT = /^-?(0|[1-9][0-9]*)$/;
-
-/** The integer an attribute value spells exactly, or undefined. */
-export function intOf(s) {
-  if (typeof s !== 'string' || !INT.test(s)) return undefined;
-  const n = Number(s);
-  return Number.isSafeInteger(n) ? n : undefined;
-}
-
-const ON = ['1', 'true', 'on'];
-const OFF = ['0', 'false', 'off'];
-
-/** true / false for an ST_OnOff value, else undefined. */
-export function onOffOf(v) {
-  return ON.includes(v) ? true : OFF.includes(v) ? false : undefined;
-}
+export {intOf, onOffOf};
 
 const empty = (node) => node.children.length === 0;
 
@@ -51,15 +42,16 @@ export const int = (a, node) => empty(node) && a.size === 1 &&
 
 /**
  * An element whose attributes are some of `keys` -> object; the
- * keys in `ints` must be integers.
+ * keys in `ints` must be integers. `names`: the attribute names, if
+ * they are not the keys (Strict's start for the key left).
  */
-export const attrsObj = (keys, ints) => (a, node) => {
+export const attrsObj = (keys, ints, names = keys) => (a, node) => {
   if (!empty(node)) return undefined;
   const o = {};
   for (const [k, v] of a) {
-    const at = keys.indexOf(k);
+    const at = names.indexOf(k);
     if (at < 0) return undefined;
-    const x = ints.includes(k) ? intOf(v) : v;
+    const x = ints.includes(keys[at]) ? intOf(v) : v;
     if (x === undefined) return undefined;
     o[keys[at]] = x;
   }
@@ -85,7 +77,8 @@ export function readProps(node, map, table) {
     const l = wName(c, m);
     const spec = l !== null && count.get(l) === 1 ? table.get(l)
       : undefined;
-    const a = spec ? wAttrs(c, m) : null;
+    // (spec.any: any attributes, the node handed back whole)
+    const a = spec ? (spec.any ? new Map() : wAttrs(c, m)) : null;
     const v = a ? spec.read(a, c, m) : undefined;
     if (v === undefined) props.extra.push(c);
     else if (spec.top) top[spec.field] = v;
@@ -94,7 +87,8 @@ export function readProps(node, map, table) {
   return {props, top};
 }
 
-const entry = (field, read, top) => [field, {field, read, top}];
+const entry = (field, read, top, any) => [field,
+  {field, read, top, any}];
 
 /** numPr: only <w:ilvl w:val=n/> and <w:numId w:val=n/> inside. */
 const numPr = (a, node, m) => {
@@ -112,29 +106,37 @@ const numPr = (a, node, m) => {
   return o;
 };
 
+const IND = ['left', 'right', 'firstLine', 'hanging'];
 const RPR = [
   entry('b', onOff), entry('i', onOff), entry('strike', onOff),
   entry('u', str), entry('color', str), entry('highlight', str),
   entry('vertAlign', str), entry('sz', int), entry('szCs', int),
   entry('rFonts', attrsObj(['ascii', 'hAnsi', 'eastAsia', 'cs',
-    'hint'], [])),
+    'hint'], [])), entry('shd', shd),
 ];
 const PPR = [
   entry('jc', str), entry('keepNext', onOff),
   entry('keepLines', onOff), entry('pageBreakBefore', onOff),
   entry('outlineLvl', int), entry('numPr', numPr),
+  entry('widowControl', onOff), entry('contextualSpacing', onOff),
+  entry('tabs', tabs), entry('pBdr', pBdr), entry('shd', shd),
   entry('spacing', attrsObj(['before', 'after', 'line', 'lineRule'],
     ['before', 'after', 'line'])),
-  entry('ind', attrsObj(['left', 'right', 'firstLine', 'hanging'],
-    ['left', 'right', 'firstLine', 'hanging'])),
+  entry('ind', attrsObj(IND, IND)),
 ];
 const sectPr = (a, node) => node;
+// Strict: w:ind w:start / w:end (w:pBdr: ./ReadPropsMore pBdr)
+const PPR_S = PPR.map((e) => e[0] !== 'ind' ? e : entry('ind',
+  attrsObj(IND, IND, ['start', 'end', 'firstLine', 'hanging'])));
 
 const RUN_RPR = new Map([...RPR, entry('rStyle', str, true)]);
 const STYLE_RPR = new Map(RPR);
-const PARA_PPR = new Map([...PPR, entry('pStyle', str, true),
-  entry('sectPr', sectPr, true)]);
+const PARA = [entry('pStyle', str, true),
+  entry('sectPr', sectPr, true, true)];
+const PARA_PPR = new Map([...PPR, ...PARA]);
 const STYLE_PPR = new Map(PPR);
+const PARA_PPR_S = new Map([...PPR_S, ...PARA]);
+const STYLE_PPR_S = new Map(PPR_S);
 
 /**
  * A w:rPr -> {rPr, rStyle?}. In a run (`inRun`) w:rStyle becomes
@@ -148,10 +150,12 @@ export function readRPr(node, map, inRun) {
 
 /**
  * A w:pPr -> {pPr, pStyle?, sectPr?}. In a paragraph (`inPara`)
- * w:pStyle becomes pStyle and w:sectPr is handed back as its node.
+ * w:pStyle becomes pStyle and w:sectPr is handed back as its node
+ * (whatever its attributes: rsids, w14 or mc ones; it ends a section).
  */
 export function readPPr(node, map, inPara) {
-  const {props, top} = readProps(node, map,
-    inPara ? PARA_PPR : STYLE_PPR);
+  const s = isStrict(map);
+  const {props, top} = readProps(node, map, inPara
+    ? (s ? PARA_PPR_S : PARA_PPR) : (s ? STYLE_PPR_S : STYLE_PPR));
   return {pPr: props, pStyle: top.pStyle, sectPr: top.sectPr};
 }

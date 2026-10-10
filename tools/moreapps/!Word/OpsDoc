@@ -1,0 +1,150 @@
+// OpsDoc - setDocPart: replace one document-level part of a Doc.
+//
+//   setDocPart {key, value} -> setDocPart {key, value: the old one}
+//   partFree(doc, name) -> true when setDocPart takes `name` as the
+//   numbering part (./NumWrite chooses a name with it)
+//
+//   key            what it replaces      value
+//   numbering      doc.numbering         null or {raw, nums: Map}
+//   rels           doc.rels              an array of Rel (./Rels)
+//   styles         doc.styles            null or a StyleTable
+//   settings       doc.rawSettings       null or an Xml node
+//   numberingPart  doc.meta.numberingPart  a part name (or null), or
+//                                        undefined (no numbering
+//                                        part: the key is removed
+//                                        from meta)
+//
+// The value REPLACES the old one whole: the caller builds a new
+// numbering root, rels array or style table (./DocParts) and never
+// changes the old one, which the inverse holds. IMMUTABLE BY
+// CONTRACT: Ops.apply keeps the value by reference (no copy), so
+// neither the caller nor anyone reading the Doc may change a value
+// once it is given, nor one an inverse returns: changing it would
+// change the Doc and its undo history behind their backs (not
+// supported). meta is replaced by a copy (copy-on-write).
+// Refused (RangeError, doc unchanged): any other key (__proto__,
+// parts, meta...); a value of the wrong shape; a part name that
+// another part has (main, styles, settings, [Content_Types].xml,
+// any .rels, an entry of doc.parts, an Override of another type;
+// case ignored); settings other than null in a document without a
+// settings part (the writer would drop them). The writer needs
+// nothing new: it reads doc.numbering.raw, doc.rels, doc.styles,
+// meta.numberingPart.
+import {fail} from './ModelCheck';
+import {CT} from './WriteParts';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/** True for an Xml element node {name, attrs, children}. */
+export const isNode = (v) => isObj(v) && typeof v.name === 'string' &&
+  Array.isArray(v.attrs) && Array.isArray(v.children);
+
+function checkNumbering(v) {
+  if (v === null) return;
+  if (!isObj(v) || !isNode(v.raw) || !(v.nums instanceof Map))
+    fail('numbering must be null or {raw, nums}');
+}
+
+function checkRels(v) {
+  if (!Array.isArray(v)) fail('rels must be an array');
+  const ids = new Set();
+  for (const r of v) {
+    if (!isObj(r) || typeof r.id !== 'string' || !r.id ||
+      typeof r.type !== 'string' || typeof r.target !== 'string')
+      fail('bad relationship');
+    if (r.attrs !== undefined && !Array.isArray(r.attrs))
+      fail('bad relationship attrs');
+    if (ids.has(r.id)) fail('relationship id ' + r.id + ' used twice');
+    ids.add(r.id);
+  }
+}
+
+function checkStyles(v) {
+  if (v === null) return;
+  if (!isObj(v) || !(v.styles instanceof Map) ||
+    !isObj(v.docDefaults) || !isObj(v.defaults))
+    fail('styles must be null or a style table');
+}
+
+function checkSettings(v, doc) {
+  if (v === null) return;
+  if (!isNode(v)) fail('settings must be null or a node');
+  if (!(isObj(doc.meta) && doc.meta.settingsPart))
+    fail('the document has no settings part');
+}
+
+/** True when part `name` (lower case) is another part's. */
+function taken(doc, name) {
+  const m = isObj(doc.meta) ? doc.meta : {};
+  const lc = (x) => typeof x === 'string' ? x.toLowerCase() : null;
+  if (name === '[content_types].xml' || name.endsWith('.rels') ||
+    name.split('/').includes('_rels')) return true;
+  if ([m.mainPart, m.stylesPart, m.settingsPart].some((x) =>
+    lc(x) === name)) return true;
+  if (doc.parts instanceof Map) {
+    for (const k of doc.parts.keys()) if (lc(k) === name) return true;
+  }
+  const ov = m.contentTypes && Array.isArray(m.contentTypes.overrides)
+    ? m.contentTypes.overrides : [];
+  return ov.some((o) => Array.isArray(o) && lc(o[0]) === '/' + name &&
+    o[1] !== CT.numbering);
+}
+
+/** A part name: relative, no '..', no backslash or control. */
+function checkPartName(v, doc) {
+  if (v === undefined || v === null) return;
+  if (typeof v !== 'string' || !v || v.length > 255 ||
+    v.startsWith('/') || /[\\\u0000-\u001f\u007f]/.test(v) ||
+    v.split('/').some((s) => s === '' || s === '.' || s === '..'))
+    fail('bad part name');
+  if (taken(doc, v.toLowerCase()))
+    fail('part ' + v + ' is another part of the document');
+}
+
+/**
+ * True when `name` is a part name setDocPart would take for the
+ * numbering part: well formed and no other part's (see above).
+ */
+export function partFree(doc, name) {
+  if (typeof name !== 'string') return false;
+  try {
+    checkPartName(name, doc);
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+
+// key -> [where it lives, the doc field, the value check]
+const KEYS = new Map([
+  ['numbering', ['doc', 'numbering', checkNumbering]],
+  ['rels', ['doc', 'rels', checkRels]],
+  ['styles', ['doc', 'styles', checkStyles]],
+  ['settings', ['doc', 'rawSettings', checkSettings]],
+  ['numberingPart', ['meta', 'numberingPart', checkPartName]],
+]);
+
+/** See the header. */
+export function setDocPart(doc, op) {
+  const k = typeof op.key === 'string' ? KEYS.get(op.key) : undefined;
+  if (!k) fail('bad document part ' + op.key);
+  const [where, field, check] = k;
+  const v = op.value;
+  if (where === 'doc') {
+    if (v === undefined) fail('setDocPart needs a value');
+    check(v, doc);
+    const old = doc[field];
+    doc[field] = v;
+    return {op: 'setDocPart', key: op.key, value: old};
+  }
+  check(v, doc);
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  const has = Object.hasOwn(meta, field);
+  const old = has ? meta[field] : undefined;
+  const next = {...meta};
+  if (v === undefined) delete next[field];
+  else next[field] = v;
+  doc.meta = next;
+  return {op: 'setDocPart', key: op.key, value: old};
+}

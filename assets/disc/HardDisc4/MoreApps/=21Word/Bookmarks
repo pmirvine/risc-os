@@ -1,0 +1,204 @@
+// Bookmarks - Insert > Bookmark... (Ctrl+Shift+F5: ./BookmarkBox):
+// add, delete and go to a bookmark. Finding them: ./BookmarkFind
+// (list, bookmarkNames, linkNames, findBookmark: exported here too).
+//
+//   checkName(name) -> null | why not: Word's rule: a letter first,
+//       then letters, digits and _, at most NAME_MAX (40) characters
+//       (so no hidden name starting '_': Word makes those itself)
+//   addBookmark(d, typing, sel, name)
+//   deleteBookmark(d, typing, name, sel?)
+//       -> {sel} | {error} (a message; nothing changed): delete's sel
+//       is the one given (else a caret where the bookmark started),
+//       its offsets moved for the marks gone; name: the deleted
+//       bookmark's, as stored. One undo
+//       step each (typing.command, d.atomic); none when nothing
+//       changes
+//   goTo(doc, name) -> {sel} | {error}: the bookmarked text selected
+//       (between its start and end marks; a caret when they meet or
+//       there is no end); one in a table is refused with a message
+//
+// A bookmark is a pair of raw level-'p' inlines, <w:bookmarkStart
+// w:id="N" w:name="name"/> before the selection and <w:bookmarkEnd
+// w:id="N"/> after it (a caret: the two together), each a U+FFFC in
+// a plain run, as the reader gives it (text typed next to one takes
+// the format of the text beyond it: ./OpsText fmtAt). N is one more
+// than the largest bookmark id in the document (tables' XML
+// included; ids that are not whole numbers from 0 to MAX_ID,
+// 2^31 - 1, are passed over); past MAX_ID the bookmark is refused.
+// A selection may cross paragraphs (and tables between), but must
+// not start or end on a table. Names are unique with case ignored:
+// adding a name that is there (in any case; every such bookmark, as
+// a file may have two) moves it: its marks go, the new ones come, in
+// one step; when it already marks the same text (only unseen marks
+// between the old and new places), nothing changes. A bookmark whose
+// marks are not inlines of their own (in a table, inside a link) is
+// not moved or deleted: refused with a message. Delete removes the
+// start and its end (./BookmarkFind pairs). Names are only compared.
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {caret, select} from './Selection';
+import {orderedPos} from './EditPos';
+import {blockId} from './DocPos';
+import {unseenAt} from './Kinds';
+import {pairs, findPair} from './BookmarkFind';
+
+export {list, bookmarkNames, linkNames, findBookmark}
+  from './BookmarkFind';
+
+export const NAME_MAX = 40, MAX_ID = 2147483647;
+const NAME = /^\p{L}[\p{L}\p{Nd}_]*$/u;
+const no = (error) => ({error});
+const q = (name) => `"${name.length > 40 ? name.slice(0, 40) + '...'
+  : name}"`;
+
+/** See the header. */
+export function checkName(name) {
+  if (typeof name !== 'string' || !name)
+    return 'Type a name for the bookmark.';
+  if (name.length > NAME_MAX) {
+    return `A bookmark name is at most ${NAME_MAX} characters.`;
+  }
+  if (!NAME.test(name)) {
+    return 'A bookmark name starts with a letter and holds only ' +
+      'letters, digits and _ (no spaces).';
+  }
+  return null;
+}
+
+/** The next free id (a number), or null past MAX_ID. */
+function nextId(ms) {
+  let max = -1;
+  for (const m of ms) {
+    if (m.id === null || !/^\d{1,10}$/.test(m.id)) continue;
+    const n = Number(m.id);
+    if (n <= MAX_ID && n > max) max = n;
+  }
+  return max < MAX_ID ? max + 1 : null;
+}
+
+const node = (local, attrs) => ({name: 'w:' + local, attrs,
+  children: []});
+const inl = (n) => ({kind: 'raw', level: 'p', node: n, text: ''});
+
+/** Apply edits [{s, i, off, del | x}]: last first; one step. */
+function apply(d, typing, edits, after) {
+  edits.sort((a, b) => (b.s - a.s) || (b.i - a.i) || (b.off - a.off) ||
+    ((a.x ? 1 : 0) - (b.x ? 1 : 0)) || ((b.order ?? 0) -
+    (a.order ?? 0)));
+  let out = null;
+  try {
+    typing.command(() => d.atomic(() => {
+      for (const e of edits) {
+        d.apply(e.x ? {op: 'spliceText', block: [e.s, e.i], at: e.off,
+          del: 0, content: {text: OBJ, inlines: {0: e.x}, runs: [{start:
+            0, end: 1, rPr: {extra: []}}]}}
+          : {op: 'replaceText', block: [e.s, e.i], at: e.off, del: 1,
+            ins: ''});
+      }
+      out = after();
+    }));
+  } catch (e) {
+    return no('The bookmark could not be changed: ' + e.message);
+  }
+  return out;
+}
+
+/** The deletions of pair p's marks (direct ones only). */
+const dropOf = (p) => [p.start, p.end].filter(Boolean)
+  .map((m) => ({s: m.s, i: m.i, off: m.off}));
+
+/** Mark m and place {s, i, off} differ only by unseen marks. */
+function near(doc, m, s, i, off) {
+  if (!m || m.s !== s || m.i !== i) return false;
+  const p = doc.sections[s].blocks[i];
+  for (let k = Math.min(m.off, off); k < Math.max(m.off, off); k++) {
+    if (!unseenAt(p, k)) return false;
+  }
+  return true;
+}
+
+/** The pairs named name (case ignored), or {error}. */
+function movable(ps, name, what) {
+  const low = name.toLowerCase();
+  const got = ps.filter((p) => p.name.toLowerCase() === low);
+  const bad = got.find((p) => !p.start.direct ||
+    (p.end && !p.end.direct));
+  if (!bad) return got;
+  return no(`The bookmark ${q(bad.name)} is in a table or inside ` +
+    `another item: !Word cannot ${what} it.`);
+}
+
+/** See the header. */
+export function addBookmark(d, typing, sel, name) {
+  const why = checkName(name);
+  if (why) return no(why);
+  const doc = d.doc, o = sel ? orderedPos(doc, sel) : null;
+  if (!o) return no('There is no place for a bookmark here.');
+  if (o.f.b.type !== 'p' || o.t.b.type !== 'p') {
+    return no('A bookmark cannot start or end at a table: put the ' +
+      'caret in text, or select text.');
+  }
+  const ps = pairs(doc), old = movable(ps, name, 'move');
+  if (old.error) return old;
+  const a = {s: o.f.s, i: o.f.i, off: o.from.off};
+  const z = {s: o.t.s, i: o.t.i, off: o.to.off};
+  if (old.length === 1 && old[0].name === name && old[0].end &&
+    near(doc, old[0].start, a.s, a.i, a.off) &&
+    near(doc, old[0].end, z.s, z.i, z.off)) return {sel};
+  if (!ps.marks.complete) {
+    return no('This document is too large to add a bookmark to.');
+  }
+  const id = nextId(ps.marks);
+  if (id === null) {
+    return no('No bookmark number is free: this document\'s bookmark ' +
+      'numbers have reached their limit.');
+  }
+  const edits = old.flatMap(dropOf);
+  edits.push({...a, order: 0, x: inl(node('bookmarkStart',
+    [['w:id', String(id)], ['w:name', name]]))});
+  edits.push({...z, order: 1, x: inl(node('bookmarkEnd',
+    [['w:id', String(id)]]))});
+  return apply(d, typing, edits, () => goTo(d.doc, name));
+}
+
+/** Position pos after the marks `drops` are gone. */
+function moved(doc, drops, pos) {
+  let off = pos.off;
+  for (const e of drops) {
+    const b = doc.sections[e.s].blocks[e.i];
+    if (b.type === 'p' && b.id === pos.id && e.off < pos.off) off--;
+  }
+  return {id: pos.id, off};
+}
+
+/** See the header. */
+export function deleteBookmark(d, typing, name, sel) {
+  const p = findPair(pairs(d.doc), name);
+  if (!p) return no(`There is no bookmark called ${q(String(name))}.`);
+  const ok = movable([p], p.name, 'delete');
+  if (ok.error) return ok;
+  const drops = dropOf(p), doc = d.doc, a = p.start;
+  const s0 = sel || caret({id: blockId(doc.sections[a.s].blocks[a.i]),
+    off: a.off});
+  const s1 = {anchor: moved(doc, drops, s0.anchor),
+    head: moved(doc, drops, s0.head)};
+  return apply(d, typing, drops, () => ({sel: select(s1.anchor,
+    s1.head, s0.affinity), name: p.name}));
+}
+
+/** See the header. */
+export function goTo(doc, name) {
+  const p = findPair(pairs(doc), name);
+  if (!p) return no(`There is no bookmark called ${q(String(name))}.`);
+  const {start: a, end: z} = p;
+  if (a.table) {
+    return no(`The bookmark ${q(p.name)} is in a table: !Word cannot ` +
+      'go there yet.');
+  }
+  const pos = (m, skip) => ({id: blockId(doc.sections[m.s].blocks[m.i]),
+    off: m.off + (skip && m.direct ? 1 : 0)});
+  const from = pos(a, true);
+  const after = z && !z.table && (z.s > a.s || (z.s === a.s &&
+    (z.i > a.i || (z.i === a.i && z.off > a.off))));
+  return {sel: after ? select(from, pos(z, false)) : caret(from)};
+}

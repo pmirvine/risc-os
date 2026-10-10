@@ -1,0 +1,138 @@
+// SettingsEdit - the default tab stop of a document's settings part
+// (w:defaultTabStop in settings.xml: doc.rawSettings), read and
+// changed without touching anything else in it.
+//
+//   defaultTabOf(root, map?) -> twips of the first w:defaultTabStop
+//       child of root, or null (none, or a value that is not a
+//       measure: ./TabStops twipsOf). map: root's namespace scope
+//       (default ./Ns rootScope(root))
+//   withDefaultTab(root, twips, map?) -> a NEW root whose first
+//       w:defaultTabStop has w:val twips; root itself when it has
+//       that value already. twips a whole number MIN_TW..MAX_TW
+//       (./TabStops), else RangeError
+//   BEFORE   the CT_Settings children that come before
+//            w:defaultTabStop (ECMA-376 wml.xsd), in order
+//
+// The new root has every attribute and every other child of the old
+// one, the same objects (setDocPart values are immutable and kept by
+// reference: ./OpsDoc), so the part written differs only in that
+// element. An existing w:defaultTabStop is copied with its other
+// attributes and children; its value is written in twips, or in
+// points ('36pt') when it was written with a unit (Strict files).
+// With none, a new one goes in schema order: after the last child
+// named in BEFORE (WordprocessingML ones only), else first; its
+// prefix is the root's for WordprocessingML (one is declared on it
+// when the root has none). Text and foreign children never move.
+// Pure: no desktop services.
+import {rootScope, scope, wName, wAttr, isEl, W} from './Ns';
+import {twipsOf, MIN_TW, MAX_TW} from './TabStops';
+import {fail} from './ModelCheck';
+
+export const BEFORE = Object.freeze(['writeProtection', 'view',
+  'zoom', 'removePersonalInformation', 'removeDateAndTime',
+  'doNotDisplayPageBoundaries', 'displayBackgroundShape',
+  'printPostScriptOverText', 'printFractionalCharacterWidth',
+  'printFormsData', 'embedTrueTypeFonts', 'embedSystemFonts',
+  'saveSubsetFonts', 'saveFormsData', 'mirrorMargins',
+  'alignBordersAndEdges', 'bordersDoNotSurroundHeader',
+  'bordersDoNotSurroundFooter', 'gutterAtTop', 'hideSpellingErrors',
+  'hideGrammaticalErrors', 'activeWritingStyle', 'proofState',
+  'formsDesign', 'attachedTemplate', 'linkStyles',
+  'stylePaneFormatFilter', 'stylePaneSortMethod', 'documentType',
+  'mailMerge', 'revisionView', 'trackRevisions', 'doNotTrackMoves',
+  'doNotTrackFormatting', 'documentProtection', 'autoFormatOverride',
+  'styleLockTheme', 'styleLockQFSet']);
+const BEFORE_SET = new Set(BEFORE);
+const NAME = 'defaultTabStop';
+const UNIT = /[a-z]$/;
+
+const isRoot = (r) => !!r && typeof r === 'object' &&
+  Array.isArray(r.attrs) && Array.isArray(r.children);
+
+/** [index of the first w:defaultTabStop or -1, insert index]. */
+function places(root, map) {
+  let found = -1, after = 0;
+  root.children.forEach((c, i) => {
+    if (!isEl(c) || !Array.isArray(c.attrs)) return;
+    const n = wName(c, map);
+    if (n === NAME && found < 0) found = i;
+    if (BEFORE_SET.has(n)) after = i + 1;
+  });
+  return [found, after];
+}
+
+/** See the header. */
+export function defaultTabOf(root, map) {
+  if (!isRoot(root)) return null;
+  const m = map || rootScope(root);
+  const [i] = places(root, m);
+  if (i < 0) return null;
+  const c = root.children[i];
+  const v = twipsOf(wAttr(c, scope(m, c), 'val'));
+  return Number.isFinite(v) ? v : null;
+}
+
+/** twips as points: '36pt', '36.05pt'. */
+const points = (tw) => String(Math.round(tw * 5) / 100) + 'pt';
+
+/** The prefix bound to WordprocessingML in map ('' when only the
+ * default namespace is), or null. */
+function prefixOf(map) {
+  let dflt = null;
+  for (const [k, v] of map) {
+    if (v !== W) continue;
+    if (k) return k;
+    dflt = k;
+  }
+  return dflt;
+}
+
+/** A new w:defaultTabStop for a root whose scope is map. */
+function fresh(map, val) {
+  const p = prefixOf(map);
+  if (p) return {name: `${p}:${NAME}`, attrs: [[`${p}:val`, val]],
+    children: []};
+  // no prefix for WordprocessingML: declare one on the element
+  let q = 'w';
+  for (let k = 0; map.has(q); k++) q = 'w' + k;
+  return {name: `${q}:${NAME}`, attrs: [[`xmlns:${q}`, W],
+    [`${q}:val`, val]], children: []};
+}
+
+/** See the header. */
+export function withDefaultTab(root, twips, map) {
+  if (!isRoot(root)) fail('settings must be a node');
+  if (!Number.isInteger(twips) || twips < MIN_TW || twips > MAX_TW)
+    fail('bad default tab stop');
+  const m = map || rootScope(root);
+  const [i, at] = places(root, m);
+  const kids = root.children.slice();
+  if (i < 0) {
+    kids.splice(at, 0, fresh(m, String(twips)));
+    return {...root, children: kids};
+  }
+  const old = kids[i], cm = scope(m, old);
+  const was = wAttr(old, cm, 'val');
+  if (twipsOf(was) === twips) return root;
+  const val = typeof was === 'string' && UNIT.test(was)
+    ? points(twips) : String(twips);
+  let done = false;
+  const attrs = old.attrs.map(([k, v]) => {
+    const c = k.indexOf(':');
+    if (done || c < 0 || k.slice(c + 1) !== 'val' ||
+      cm.get(k.slice(0, c)) !== W) return [k, v];
+    done = true;
+    return [k, val];
+  });
+  if (!done) {
+    const p = prefixOf(cm);
+    if (p) attrs.push([`${p}:val`, val]);
+    else {
+      const f = fresh(cm, val);
+      kids[i] = {...old, name: f.name, attrs: [...attrs, ...f.attrs]};
+      return {...root, children: kids};
+    }
+  }
+  kids[i] = {...old, attrs};
+  return {...root, children: kids};
+}

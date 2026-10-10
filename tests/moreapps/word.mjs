@@ -183,8 +183,8 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close',
-    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Format","Zoom","New","Close"]', r2.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close',
+    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Zoom","New","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();
@@ -265,8 +265,8 @@ try {
   });
   const [[w0, n0], [w1, n1]] = rL.cycles;
   ok('60 hovers over the Save a copy and Info arrows make no new windows', w0 === w1 && n1 - n0 < 50, rL.cycles);
-  // (the window, its toolbar and ruler panes, the Save and Info boxes)
-  ok('closing a document deletes its boxes', rL.open === rL.base + 5 && rL.closed === rL.base, rL);
+  // (the window, its two toolbar rows and ruler (panes), the Save and Info boxes)
+  ok('closing a document deletes its boxes', rL.open === rL.base + 6 && rL.closed === rL.base, rL);
 
   // a second file goes to the running Word; the same file again re-uses its window
   const r4 = await page.evaluate(async () => {
@@ -280,10 +280,10 @@ try {
     await window.__sleep(200);
     res.after = t.word.docs.length;
     const s = os.wimp.stack;
-    // (its toolbar and ruler, panes, are kept just in front of it)
-    const panes = [t.word.docs[0].toolbar.pane, t.word.docs[0].ruler.pane];
+    // (its toolbar rows and ruler, panes, are kept just in front of it)
+    const panes = [t.word.docs[0].toolbar.pane, t.word.docs[0].toolbar2.pane, t.word.docs[0].ruler.pane];
     const top = s.filter((w) => w.task === t && !panes.includes(w)).pop();
-    res.front = top === first && panes.every((p) => s.indexOf(p) > s.indexOf(first) && s.indexOf(p) <= s.indexOf(first) + 2);
+    res.front = top === first && panes.every((p) => s.indexOf(p) > s.indexOf(first) && s.indexOf(p) <= s.indexOf(first) + panes.length);
     return res;
   });
   ok('a second file opens in the running Word', r4.tasks === 1 && r4.docs.join() === 'Report,Second', r4);
@@ -376,7 +376,7 @@ try {
     os.wimp.setCaret(w);
     d.view.setSelection(d.view.layout.docStart());
     const max = w.extent.y1 - w.h;
-    const res = { h: w.h, max, c0: d.view.caretRect().y };
+    const res = { h: w.h, max, c0: d.view.caretRect().y, inset: d.inset };
     const key = (code, key, ctrl = false) => {
       const ev = w.emit('key', { code, key, ctrl, shift: false });
       return [w.scrollY, !!ev.handled, !!ev.defaultPrevented, Math.round(d.view.caretRect().y)];
@@ -391,7 +391,7 @@ try {
   await page.keyboard.press('PageDown');
   await page.waitForTimeout(100);
   const rK2 = await page.evaluate(() => window.__word()[0].word.docs.find((x) => x.win.title === 'Big').win.scrollY);
-  const pg = rK.h - 58 - 32;          // (less the toolbar's 34 px and the ruler's 24)
+  const pg = rK.h - rK.inset - 32;    // (less the toolbar rows and the ruler: dw.inset())
   ok('Page Down / Up move the view and the caret; Ctrl-End / Ctrl-Home go to the ends',
     rK.pageDown[0] === pg && Math.abs(rK.pageDown[3] - rK.c0 - pg) < 30 && rK.pageUp[0] === 0
     && Math.abs(rK.end[0] - rK.max) <= 1 && rK.home[0] === 0

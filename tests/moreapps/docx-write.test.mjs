@@ -284,7 +284,8 @@ describe('DocxWrite: paragraphs and runs', () => {
     const back = await readDocx(bytes);
     assertSameDoc(back, doc);
     assert.deepEqual(paras(back)[0].pPr.extra.map((n) => n.name),
-      ['w:tabs', 'w:rPr']);
+      ['w:rPr']);
+    assert.deepEqual(paras(back)[0].pPr.tabs, []);
     assert.equal(paras(back)[0].pPr.pageBreakBefore, false);
   });
 

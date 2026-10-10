@@ -4,7 +4,7 @@
 // changes nothing).
 //
 //   charPatch(patch) -> {b?, i?, u?, strike?, sz?, color?,
-//       highlight?, vertAlign?, rFonts?}
+//       highlight?, vertAlign?, rFonts?, shd?}
 //       b, i, strike  true | false | null
 //       u             a Word underline name ('single'...), true
 //                     ('single'), false ('none') or null
@@ -16,7 +16,13 @@
 //       rFonts        a family name or {ascii, hAnsi}: written as
 //                     {ascii, hAnsi} (merged, so eastAsia, cs and
 //                     hint stay), or null
-//   paraPatch(patch) -> {jc?, ind?, spacing?}
+//       shd           {val, color?, fill?}: val a shading name of
+//                     Word's schema (./BorderNames SHD_VALS: 'clear',
+//                     'solid', 'pct10'...), colours as color above;
+//                     or null
+//   paraPatch(patch) -> {jc?, ind?, spacing?, keepNext?, keepLines?,
+//       widowControl?, pageBreakBefore?, contextualSpacing?, tabs?,
+//       pBdr?, shd?}
 //       jc            'left' | 'center' | 'right' | 'both' | null
 //       ind           {left, right, firstLine, hanging}: twips
 //                     (clamped to +-31680) or null; firstLine and
@@ -25,9 +31,27 @@
 //                     other
 //       spacing       {before, after, line} twips (0..31680) or null,
 //                     lineRule 'auto' | 'exact' | 'atLeast' | null
+//       keepNext, keepLines, widowControl, pageBreakBefore,
+//       contextualSpacing  true | false | null
+//       tabs          [{val, pos, leader?}] (a new array, in the order
+//                     given): val a tab kind (./ReadPropsMore
+//                     TAB_VALS), pos twips clamped to +-31680, no two
+//                     at one pos, leader one of LEADERS; at most
+//                     MAX_TABS stops; or null (also for [], as a
+//                     w:tabs needs at least one w:tab)
+//       pBdr          {top?, left?, bottom?, right?, between?, bar?}
+//                     each {val, sz?, space?, color?, shadow?,
+//                     frame?} or null: val a border name of Word's
+//                     schema (./BorderNames BORDER_VALS), sz eighths
+//                     of a point clamped to 0..96, space points
+//                     0..31, color as above, shadow and frame
+//                     booleans; or null
+//       shd           as for charPatch
 // Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {HIGHLIGHT} from './Highlight';
+import {TAB_VALS, LEADERS, SIDES} from './ReadPropsMore';
+import {BORDER_VALS, SHD_VALS} from './BorderNames';
 
 /** Word's highlight colours (the names of ./Highlight). */
 export const HIGHLIGHTS = Object.keys(HIGHLIGHT);
@@ -76,6 +100,19 @@ function colour(v) {
   return fail('bad colour ' + v);
 }
 
+function shading(v) {
+  if (v === null) return null;
+  const o = each(v, {val: (x) => name(x, SHD_VALS, 'shading'),
+    color: colour, fill: colour}, 'shading');
+  if (o.val == null) fail('shading needs val');
+  return o;
+}
+
+function name(v, names, what) {
+  if (typeof v === 'string' && names.has(v)) return v;
+  return fail('bad ' + what + ' ' + v);
+}
+
 const CHAR = {
   b: (v) => bool(v, 'bold'), i: (v) => bool(v, 'italic'),
   strike: (v) => bool(v, 'strike'), u: under,
@@ -83,7 +120,7 @@ const CHAR = {
   highlight: (v) => oneOf(v, [...HIGHLIGHTS, 'none'], 'highlight'),
   vertAlign: (v) => oneOf(v, ['superscript', 'subscript', 'baseline'],
     'vertAlign'),
-  rFonts: font,
+  rFonts: font, shd: shading,
 };
 
 /** Check each key of obj with table; undefined values left out. */
@@ -106,12 +143,53 @@ const IND = {left: tw(-31680), right: tw(-31680),
 const SPACING = {before: tw(0), after: tw(0), line: tw(0),
   lineRule: (v) => oneOf(v, ['auto', 'exact', 'atLeast'], 'lineRule')};
 
+/** The most tab stops a command may set. */
+export const MAX_TABS = 64;
+
+function stops(v) {
+  if (v === null) return null;
+  if (!Array.isArray(v) || v.length > MAX_TABS) fail('bad tabs');
+  if (!v.length) return null;
+  const seen = new Set();
+  return v.map((t) => {
+    const o = each(t, {val: (x) => oneOf(x, TAB_VALS, 'tab'),
+      pos: (x) => num(x, -31680, 31680, 'tab position'),
+      leader: (x) => oneOf(x, LEADERS, 'leader')}, 'tab');
+    if (o.val == null || o.pos == null || o.leader === null ||
+      seen.has(o.pos)) fail('bad tab stop');
+    seen.add(o.pos);
+    return o;
+  });
+}
+
+const SIDE = {val: (v) => name(v, BORDER_VALS, 'border'),
+  sz: (v) => num(v, 0, 96, 'border width'),
+  space: (v) => num(v, 0, 31, 'border space'), color: colour,
+  shadow: (v) => bool(v, 'shadow'), frame: (v) => bool(v, 'frame')};
+
+function borders(v) {
+  if (v === null) return null;
+  return each(v, Object.fromEntries(SIDES.map((s) => [s, (x) => {
+    if (x === null) return null;
+    const o = each(x, SIDE, 'border');
+    if (o.val == null) fail('a border needs val');
+    return o;
+  }])), 'borders');
+}
+
+const flag = (k) => (v) => bool(v, k);
+
 /** See the header. */
 export function paraPatch(patch) {
   const out = each(patch, {
     jc: (v) => oneOf(v, ['left', 'center', 'right', 'both'], 'jc'),
     ind: (v) => (v === null ? null : each(v, IND, 'indent')),
     spacing: (v) => (v === null ? null : each(v, SPACING, 'spacing')),
+    keepNext: flag('keepNext'), keepLines: flag('keepLines'),
+    widowControl: flag('widowControl'),
+    pageBreakBefore: flag('pageBreakBefore'),
+    contextualSpacing: flag('contextualSpacing'),
+    tabs: stops, pBdr: borders, shd: shading,
   }, 'paragraph format');
   const ind = out.ind;
   if (ind) {

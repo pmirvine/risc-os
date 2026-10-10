@@ -6,6 +6,8 @@
 // indents and spacing; ruler drags; paragraph and character styles
 // (and an unknown style, refused); clear formatting of characters
 // and of paragraphs; Ctrl+Shift+> / < steps; indent more / less;
+// the flow flags; line spacing and space before / after by the ids
+// of the keys, menu and toolbar (./FormatApply);
 // typing with a pending format; bursts of undo and redo), then
 // written and read back. The checks are those of roundtrip-lib.mjs:
 // the model read back equals the formatted model; the package linter
@@ -23,6 +25,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from '../../tools/moreapps/!Word/FormatSet';
+import * as FA from '../../tools/moreapps/!Word/FormatApply';
 import {dragIndents} from '../../tools/moreapps/!Word/FormatPara';
 import {Typing} from '../../tools/moreapps/!Word/Typing';
 import {forTyping, styleFor} from '../../tools/moreapps/!Word/Pending';
@@ -119,8 +122,24 @@ function paraPatch(rd) {
       }
     }
   }
+  // the flow flags (written for real: ./FormatPara explicit)
+  if (rd() < 0.35) {
+    out[pick(rd, ['keepNext', 'keepLines', 'widowControl',
+      'pageBreakBefore', 'contextualSpacing'])] = pick(rd,
+      [true, false, null]);
+  }
   return out;
 }
+
+// the line spacing commands of the keys, the menu and the toolbar
+// (./FormatApply), with absurd and refused arguments
+const SPACING = [['lineSingle'], ['lineDouble'], ['line15'],
+  ['spaceBefore12'], ['lineSpacing', 1.15], ['lineSpacing', 3],
+  ['lineSpacing', {line: 0, lineRule: 'exact'}],
+  ['lineSpacing', {line: 1e9, lineRule: 'atLeast'}],
+  ['lineSpacing', {line: 300}], ['lineSpacing', 7],
+  ['spaceBefore', 240], ['spaceBefore', null], ['spaceAfter', 0],
+  ['spaceAfter', 'x']];
 
 /** Style ids of type (and, now and then, one that does not exist). */
 function styleIds(d, type) {
@@ -187,6 +206,10 @@ function command(rd, d, t, sel, pending, every) {
     const at = pick(rd, [0, 720, 1500, -1e9, 1e9, int(rd, -500, 9000)]);
     run = () => dragIndents(d, t, sel, {marker, at, textW: 9026,
       free: rd() < 0.3}, pending);
+  } else if (x < 0.95) {
+    kind = 'spacing';
+    const [id, arg] = pick(rd, SPACING);
+    run = () => FA.apply(id, d, t, sel, arg, pending);
   } else {
     // typing at a caret with the pending format (Ctrl-B, then text)
     kind = 'typePending';
@@ -283,7 +306,7 @@ const MORE = [
 const {xsd, note: xsdNote} = schema();
 const KINDS = ['toggle', 'setChar', 'setPara', 'paraStyle', 'charStyle',
   'clearFormat', 'clearParaFormat', 'sizeBy', 'indentBy', 'ruler',
-  'typePending', 'undo/redo'];
+  'typePending', 'undo/redo', 'spacing'];
 
 describe('formatting round trip: generated documents', () => {
   const total = {};
@@ -308,7 +331,7 @@ describe('formatting round trip: generated documents', () => {
         assert.ok(total[kind + ' changed'] > 0, kind + ' changed');
       }
     }
-    for (const kind of ['setChar', 'paraStyle'])
+    for (const kind of ['setChar', 'paraStyle', 'spacing'])
       assert.ok(total[kind + ' refused'] > 0, kind + ' refused');
   });
   it('schema check available', {skip: xsdNote || false}, () => {});

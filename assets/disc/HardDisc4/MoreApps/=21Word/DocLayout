@@ -2,87 +2,67 @@
 // the text on its page: paragraphs and kept blocks stacked, and
 // positions ({id, off}, ./DocPos) <-> places in the work area.
 //
-//   const L = new DocLayout(doc, metrics, prev?, {top}?)
-//                           (metrics: WimpLib/TextMetrics)
-//                           prev: an older layout of doc with the
-//                           same metrics, after an edit: the lines
-//                           of every block object it had are kept
-//                           (the key: the paragraph object, its
-//                           list label (./LineLabel sameLabel:
-//                           text, indent, suffix, lvlJc, rPr), the
-//                           metrics and the text width; it must
-//                           grow when styles or numbering
-//                           definitions can be edited)
-//                           top: px above everything (a toolbar over
-//                           the window's top), 0..1000; prev's when
-//                           not given
+//   const L = new DocLayout(doc, metrics, prev?, {top, decorators}?)
+//              metrics: WimpLib/TextMetrics; prev: an older layout
+//              of doc whose lines may be kept (./DocItems); top: px
+//              above everything (the panes), 0..1000; decorators:
+//              ./DocStack's (DECORATORS); both prev's when not given
 //   L.layout(viewWidth) -> {w, h}: the work area's extent
-//   L.items  [{id, block, kind: 'p'|'box', index, y, h, lines?,
-//             list?, label?}] in document order; a 'p' item is also
-//             the pl ({para, y, h, lines, metrics}) of ./PositionMap
-//             and has list: its list label or null; a box has label:
-//             the text drawn in it
-//   L.labels  the document's list labels (./ListNumbers labels:
-//             Map paraId -> Label), worked out once per layout object
-//             (one linear pass); lines[0].label of a list paragraph
-//             is where its label is drawn (./LineLayout)
-//   L.byId   Map id -> item
+//   L.items  [{id, block, kind: 'p'|'box', index, y, h, gapAbove,
+//             gapBelow, marks, lines?, list?, mark?, label?}]
+//             (./DocItems) in document order; a 'p' item is also the
+//             pl ({para, y, h, lines, metrics}) of ./PositionMap
+//   L.labels  Map paraId -> list Label (./ListNumbers), once per
+//             layout object; L.byId  Map id -> item
 //   L.left, L.textW, L.pageLeft, L.pageW: the column (px); L.top
 //   L.pageH  the page's height (px); L.height  the extent's (layout)
-//   L.itemAtY(y)            -> the item at y (clamped to the ends)
+//   L.itemAtY(y)            -> the item at y (clamped to the ends;
+//                              a gap gives the item below it; where
+//                              items overlap, the lower one from
+//                              the top of its first line)
 //   L.locate(pos)           -> {item, index, off} (off clamped), or
 //                              null for an id not in the document
 //   L.caretRect(pos, aff)   -> {x, y, h} in work-area coordinates
-//   L.hitTest(x, y)         -> {pos, affinity}
+//   L.hitTest(x, y)         -> {pos, affinity} (in a section break
+//                              band, ./SectDeco: the end of the
+//                              block above it; in the gap of a
+//                              bottom border, ./BorderGroups: the
+//                              paragraph above, its last line)
 //   L.selectionRects(sel, y0?, y1?) -> [{x, y, w, h}] (./DocRects)
 //   L.paraStart(pos), L.paraEnd(pos), L.docStart(), L.docEnd()
 //   L.nextItem(item), L.prevItem(item) -> item or null
 //   L.boxRect(item)         -> {x, y, w, h} of a kept block's box
-//   L.invalidate()          lay all the lines out again on next
-//                           layout
+//   L.invalidate()          lay all the lines out (and ask the
+//                           decorators) again on next layout
 //
-// The text width comes from the FIRST section's pgSz and pgMar
-// (twips; A4 with 1-inch margins when it has none): (w - left -
-// right) / 15, clamped to 80..4000 px. The page (pgSz.w / 15 px, at
-// most margins + text) is centred in the view, at least 24 px from
-// its left edge; the text starts at the page's left margin. top + 24
-// px above the first item, 24 below the last. The page is a whole
-// page high at least (pgSz.h / 15 px, A4 when missing or not finite,
-// clamped to 200..20000): the extent is top + PAGE_TOP + pageH +
-// PAGE_TOP or more (the white page's edges, ./EditPaint pageRect),
-// so a short document shows a full page; a longer one ends 24 px
-// below its text (no page breaks yet). Lines depend only on the
-// text width, so a new view width moves the column and nothing else.
-// A kept block is one box item, labelled with its kind; the caret
-// stands before it (off 0, its left edge) or after it (off 1, its
-// right edge). A hit above everything is the start of the document,
-// below everything its end, in a box the nearer edge.
-// Pure: no desktop services.
-import {layoutPara} from './LineLayout';
-import {sameLabel} from './LineLabel';
-import {labels} from './ListNumbers';
-import {kindOf} from './Info';
+// The page geometry (text width from the first section, the page
+// centred, a whole page high at least), kept blocks and hits outside
+// the items: docs/apps/Word.md, DocLayout. Pure: no desktop services.
+import {buildItems, BOX} from './DocItems';
+import {stack, MARGIN, DECORATORS} from './DocStack';
 import * as PM from './PositionMap';
-import {blockId, itemEnd, clampOff} from './DocPos';
+import {itemEnd, clampOff} from './DocPos';
 import {selectionRects} from './DocRects';
+import {inBand} from './SectDeco';
+import {boxMark} from './BorderGroups';
 
-const MARGIN = 24;                     // above, below, left of page
+export {BOX};
 export const PAGE_TOP = 8;             // desk above and below the page
-export const BOX = 28;                 // a kept block's box
 const num = (v, d) => (Number.isFinite(v) ? v : d);
 const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const textTop = (it) => it.y + (it.lines && it.lines.length
+  ? it.lines[0].y : 0);
 
 export class DocLayout {
   constructor(doc, metrics, prev, opts = {}) {
     this.doc = doc;
     const top = opts.top === undefined && prev ? prev.top : opts.top;
     this.top = clamp(num(top, 0), 0, 1000);
+    this.decorators = opts.decorators ||
+      (prev && prev.decorators) || DECORATORS;
     this.metrics = metrics;
     this.cache = new Map();            // run formats (./Fmt)
-    this.items = [];
-    this.byId = new Map();
-    this.laid = false;
-    this.width = 0;
+    this.laid = false; this.width = 0;
     const sp = (doc.sections[0] && doc.sections[0].props) || {};
     const sz = sp.pgSz || {}, mar = sp.pgMar || {};
     this.pageH = clamp(num(sz.h, 16838) / 15, 200, 20000);
@@ -93,31 +73,8 @@ export class DocLayout {
     this.marL = clamp(ml / 15, 0, 1000);
     const marR = clamp(mr / 15, 0, 1000);
     this.pageW = clamp(pw / 15, 80, this.marL + this.textW + marR);
-    this.pageLeft = MARGIN;
-    this.left = MARGIN + this.marL;
-    const keep = prev && prev.laid && prev.metrics === metrics &&
-      prev.doc === doc && prev.textW === this.textW;
-    this.labels = labels(doc);
-    for (const s of doc.sections) {
-      for (const b of s.blocks) {
-        const it = b.type === 'p'
-          ? {id: b.id, block: b, para: b, kind: 'p', index: 0, y: 0,
-            h: 0, lines: null, metrics,
-            list: this.labels.get(b.id) || null}
-          : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
-            h: BOX + 12, label: `[${kindOf(b.node)} - preserved, ` +
-              'not shown]'};
-        const o = keep && b.type === 'p' && prev.byId.get(b.id);
-        if (o && o.block === b && o.lines &&
-          sameLabel(o.list, it.list)) {
-          it.lines = o.lines;
-          it.h = o.h;
-        }
-        it.index = this.items.length;
-        this.items.push(it);
-        this.byId.set(it.id, it);
-      }
-    }
+    this.pageLeft = MARGIN; this.left = MARGIN + this.marL;
+    buildItems(this, doc, prev);
   }
 
   /** See the header. */
@@ -132,35 +89,20 @@ export class DocLayout {
     return {w: Math.max(vw, Math.ceil(right)), h: this.height};
   }
 
-  /** Break every paragraph and stack the items. */
-  stack() {
-    let y = MARGIN + this.top;
-    const styles = this.doc.styles;
-    for (const it of this.items) {
-      if (it.kind === 'p' && !it.lines) {
-        const l = layoutPara(it.block, styles, this.textW,
-          this.metrics, this.cache, it.list || undefined);
-        it.lines = l.lines;
-        it.h = l.h;
-      }
-      it.y = y;
-      y += it.h;
-    }
-    this.height = this.minHeight(y + MARGIN);
-    this.laid = true;
-  }
+  /** Break every paragraph and stack the items (./DocStack). */
+  stack() { stack(this); }
 
-  /** h, or a whole page below top if that is more (the header). */
+  /** h, or a whole page below top if that is more. */
   minHeight(h) {
     return Math.max(h, this.top + 2 * PAGE_TOP + this.pageH);
   }
 
   invalidate() {
+    for (const it of this.items) it.deco = null;
     for (const it of this.items) if (it.kind === 'p') it.lines = null;
     this.laid = false;
   }
 
-  /** See the header. */
   itemAtY(y) {
     const {items} = this;
     let lo = 0, hi = items.length - 1;
@@ -168,14 +110,16 @@ export class DocLayout {
       const mid = (lo + hi) >> 1;
       if (items[mid].y + items[mid].h > y) hi = mid; else lo = mid + 1;
     }
+    // items that overlap (a negative gap: ./DocStack): the one below
+    // once its text has begun (its space before is above that)
+    while (lo + 1 < items.length && textTop(items[lo + 1]) <= y) lo++;
     return items[lo] || null;
   }
 
-  /** See the header. */
   locate(pos) {
     const it = pos && this.byId.get(pos.id);
-    if (!it) return null;
-    return {item: it, index: it.index, off: clampOff(it, pos.off)};
+    return it ? {item: it, index: it.index, off: clampOff(it, pos.off)}
+      : null;
   }
 
   /** See the header. */
@@ -201,13 +145,20 @@ export class DocLayout {
     const {items} = this;
     if (!items.length) return null;
     const last = items[items.length - 1];
-    if (!(y >= items[0].y)) {
-      return {pos: this.docStart(), affinity: 'down'};
-    }
-    if (y >= last.y + last.h) {
-      return {pos: this.docEnd(), affinity: 'down'};
-    }
+    const D = 'down';
+    if (!(y >= items[0].y)) return {pos: this.docStart(), affinity: D};
+    if (y >= last.y + last.h) return {pos: this.docEnd(), affinity: D};
     const it = this.itemAtY(y);
+    const up = this.items[it.index - 1];
+    const bm = up && y < it.y ? boxMark(up) : null;
+    if (bm && y < up.y + up.h + bm.padBottom) {
+      // (the bottom border's gap: still the paragraph above)
+      const h = PM.hitTest(up, num(x, 0) - this.left, y);
+      return {pos: {id: up.id, off: h.off}, affinity: h.affinity};
+    }
+    if (up && y < it.y && inBand(up, y)) {
+      return {pos: {id: up.id, off: itemEnd(up)}, affinity: D};
+    }
     if (it.kind === 'box') {
       const off = x < this.left + this.textW / 2 ? 0 : 1;
       return {pos: {id: it.id, off}, affinity: 'down'};
@@ -222,15 +173,13 @@ export class DocLayout {
   }
 
   paraStart(pos) { return {id: pos.id, off: 0}; }
-
   paraEnd(pos) {
     const it = this.byId.get(pos.id);
     return {id: pos.id, off: it ? itemEnd(it) : 0};
   }
 
   docStart() {
-    const it = this.items[0];
-    return it ? {id: it.id, off: 0} : null;
+    return this.items.length ? {id: this.items[0].id, off: 0} : null;
   }
 
   docEnd() {
@@ -239,8 +188,5 @@ export class DocLayout {
   }
 
   nextItem(it) { return this.items[it.index + 1] || null; }
-
-  prevItem(it) {
-    return it.index > 0 ? this.items[it.index - 1] : null;
-  }
+  prevItem(it) { return this.items[it.index - 1] || null; }
 }

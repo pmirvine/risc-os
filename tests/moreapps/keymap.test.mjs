@@ -54,7 +54,7 @@ describe('Keymap.lookup from real key events', () => {
       ['PageDown', {}], ['q', {ctrl: true}], ['w', {ctrl: true}],
       ['Tab', {ctrl: true}], ['Tab', {ctrl: true, shift: true}],
       ['Tab', {alt: true}], ['Tab', {alt: true, shift: true}],
-      ['Enter', {ctrl: true}], ['Delete', {shift: true}],
+      ['Enter', {ctrl: true, shift: true}], ['Delete', {shift: true}],
       ['Insert', {ctrl: true}], ['Insert', {shift: true}],
       ['y', {ctrl: true, shift: true}],
       ['Enter', {alt: true}], ['Backspace', {alt: true}],
@@ -129,6 +129,8 @@ describe('Keymap.lookup from Wimp_ProcessKey events', () => {
     assert.equal(P(13, {shift: true}), 'shiftEnter');
     assert.equal(P(8, {ctrl: true}), 'ctrlBackspace');
     assert.equal(P(13, {alt: true}), null);
+    assert.equal(P(13, {ctrl: true}), 'pageBreak');
+    assert.equal(id('Enter', {ctrl: true}), 'pageBreak');
     assert.equal(keymap.lookup({code: 13, key: 'Unidentified'}),
       'enter');
     assert.equal(P(24), 'cut');
@@ -313,7 +315,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
   it('unmapped function keys, Shift and Alt forms are null', () => {
     for (const [key, mods] of [['F1', {}], ['F5', {}], ['F6', {}],
       ['F7', {}], ['F10', {}], ['F11', {}], ['F12', {}],
-      ['F2', {shift: true}], ['F3', {shift: true}],
+      ['F2', {shift: true}], ['F3', {ctrl: true, shift: true}],
       ['F3', {ctrl: true}], ['F2', {ctrl: true, shift: true}],
       ['F5', {ctrl: true}], ['F8', {shift: true}],
       ['F12', {ctrl: true}], ['F12', {shift: true}],
@@ -326,6 +328,8 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
       ['F4', {ctrl: true}]]) {
       assert.equal(id(key, mods), null, key + JSON.stringify(mods));
     }
+    // (Shift-F3 is Change case: ./ChangeCase)
+    assert.equal(id('F3', {shift: true}), 'caseCycle');
   });
   it('a bare Wimp code: the bits of the code are the modifiers', () => {
     const P = (code, mods = {}) => keymap.lookup({code, char: '',
@@ -346,9 +350,10 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(P(0x182, {ctrl: true}), 'close');
     assert.equal(keymap.lookup({code: 0x182}), 'new');
     assert.equal(keymap.lookup({code: 0x1A2}), 'close');
-    for (const c of [0x181, 0x185, 0x186, 0x187, 0x192, 0x193, 0x1A5,
+    for (const c of [0x181, 0x185, 0x186, 0x187, 0x192, 0x1A5,
       0x1B2, 0x1CA, 0x1CB, 0x1CC, 0x1DC, 0x1EC, 0x1FC, 0x180,
       0x18A + 0x20]) assert.equal(P(c), null, c.toString(16));
+    assert.equal(P(0x193), 'caseCycle');
     assert.equal(P(0x182, {alt: true}), null);
     assert.equal(P(0x183, {alt: true}), null);
   });
@@ -376,8 +381,9 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
       assert.equal(keymap.row(i).menu, 'Window', i);
   });
   it('WINDOW lists the window commands', () => {
-    assert.deepEqual([...WINDOW].sort(), ['close', 'find', 'findNext',
-      'findPrev', 'new', 'replace', 'save', 'saveBox', 'sendToBack']);
+    assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
+      'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
+      'saveBox', 'sendToBack']);
   });
   it('function key names bind: F1..F12 with Ctrl and Shift', () => {
     const k = new Keymap().bind([{id: 'a', keys: ['F1']},
@@ -389,5 +395,56 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(k.lookup({code: 0x195, key: 'F5', shift: true}), 'c');
     assert.equal(k.lookup({code: 0x195}), 'c');
     assert.equal(k.lookup({code: 0x185, key: 'F5'}), null);
+  });
+});
+
+describe('Keymap: Ctrl+Shift+L is bullets', () => {
+  it('Ctrl+Shift+L (either case) is bullets, in the Format menu',
+    () => {
+      for (const key of ['L', 'l']) {
+        assert.equal(id(key, {ctrl: true, shift: true}), 'bullets', key);
+      }
+      assert.equal(keymap.row('bullets').menu, 'Format');
+      assert.equal(keymap.labelFor('bullets'), 'Ctrl+Shift+L');
+    });
+  it('Ctrl+L is still align left; L alone and Alt+Ctrl+Shift+L are ' +
+    'nothing', () => {
+    assert.equal(id('l', {ctrl: true}), 'alignLeft');
+    assert.equal(id('l', {}), null);
+    assert.equal(id('L', {shift: true}), null);
+    assert.equal(id('L', {ctrl: true, shift: true, alt: true}), null);
+  });
+});
+
+describe('Keymap: Word\'s line spacing keys', () => {
+  it('Ctrl+1, 2, 5 and Ctrl+0 as real key events', () => {
+    for (const [key, want] of [['1', 'lineSingle'], ['2', 'lineDouble'],
+      ['5', 'line15'], ['0', 'spaceBefore12']]) {
+      const e = ev(key, {ctrl: true});
+      // the code keyCode gives: the digit, not a Ctrl-letter
+      assert.equal(e.code, key.charCodeAt(0));
+      assert.equal(id(key, {ctrl: true}), want, key);
+      assert.equal(keymap.row(want).menu, 'Format');
+      assert.equal(keymap.labelFor(want), 'Ctrl+' + key);
+      // not a movement key either
+      assert.equal(command(e.code, {ctrl: true, key}), null);
+    }
+  });
+  it('the digits alone, with Alt or Shift, or other digits: none', () => {
+    for (const [key, mods] of [['1', {}], ['0', {}], ['1', {alt: true}],
+      ['2', {ctrl: true, alt: true}], ['!', {ctrl: true, shift: true}],
+      ['1', {ctrl: true, shift: true}], ['3', {ctrl: true}],
+      ['9', {ctrl: true}]]) {
+      assert.equal(id(key, mods), null, key + JSON.stringify(mods));
+    }
+  });
+  it('no key is bound twice', () => {
+    const seen = new Map();
+    for (const r of ROWS) {
+      for (const k of r.keys || []) {
+        assert.ok(!seen.has(k), `${k}: ${seen.get(k)} and ${r.id}`);
+        seen.set(k, r.id);
+      }
+    }
   });
 });

@@ -1,0 +1,125 @@
+// LinkParts - the pieces ./LinkOps builds links from: cleaned text,
+// the target given, the w:hyperlink attributes, its runs and the
+// Hyperlink style, and a link's content read back.
+//
+//   clean(s, max, what) -> undefined | the text | {error}: C0/C1
+//       controls and U+FFFC become spaces, trimmed; longer than max
+//       or broken UTF-16: {error}
+//   cleanText(s)        the same cleaning, no limit (to compare a
+//       field with what the document holds: an untouched field is
+//       no change)
+//   target(o)           {url} | {anchor} | {error} | null (none given)
+//   withTarget(attrs, t, doc, map, ops)  attrs with t's r:id (a new
+//       External relationship: a rels op pushed) or w:anchor, the
+//       old target attributes dropped
+//   withTip(attrs, tip) w:tooltip set ('' removes it)
+//   runNodes(c, style, map)  w:r nodes for {text, runs, inlines},
+//       each run styled `style` (./WritePara paraNode)
+//   styleFor(doc, ops)  the Hyperlink style id (a styles op pushed on
+//       first use: ./DocParts hyperlinkStyle), or null
+//   shown(t, given)     the text a link shows: given, else the address
+//   linkX(node, map), ONE(x, f)  the inline, and a one-U+FFFC content
+//   inside(node, map)   the link's children as a Para (./ReadPara), or
+//       null (a w:pPr first, or unreadable)
+//   TEXT_MAX 1024, TIP_MAX 255
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {paraNode} from './WritePara';
+import {readPara} from './ReadPara';
+import {scope, plainText, wName, isEl} from './Ns';
+import {NS} from './Wml';
+import {addRel, hyperlinkStyle} from './DocParts';
+import {parseAddress, checkAnchor} from './LinkUrl';
+
+export const TEXT_MAX = 1024, TIP_MAX = 255;
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f\uFFFC]/g;
+const no = (error) => ({error});
+
+/** See the header. */
+export const cleanText = (s) => String(s).replace(CONTROLS, ' ').trim();
+
+/** Text or ScreenTip cleaned, or {error}. */
+export function clean(s, max, what) {
+  if (s === undefined) return undefined;
+  if (typeof s !== 'string') return no(`The ${what} is not text.`);
+  const t = cleanText(s);
+  if (t.length > max || !t.isWellFormed()) {
+    return no(`The ${what} is too long: at most ${max} characters.`);
+  }
+  return t;
+}
+
+/** The target given: {url} | {anchor} | {error} | null (none). */
+export function target(o) {
+  if (o.anchor !== undefined) {
+    const why = checkAnchor(o.anchor);
+    return why ? no(why) : {anchor: o.anchor};
+  }
+  return o.address === undefined ? null : parseAddress(o.address);
+}
+
+/** The prefix bound to the relationships namespace, and attrs. */
+function rPrefix(map) {
+  for (const [p, u] of map) if (p && u === NS.r) return {p, decl: []};
+  let p = 'r';
+  for (let k = 1; map.has(p); k++) p = 'r' + k;
+  return {p, decl: [['xmlns:' + p, NS.r]]};
+}
+
+/** Attributes for target t on top of old ones (its own dropped). */
+export function withTarget(old, t, doc, map, ops) {
+  const a = old.filter(([k]) => {
+    const l = String(k).split(':').pop();
+    return !(l === 'anchor' || (l === 'id' && !String(k)
+      .startsWith('w:')) || /^xmlns:r\d*$/.test(k));
+  });
+  if (t.anchor !== undefined) return [['w:anchor', t.anchor], ...a];
+  const {p, decl} = rPrefix(map);
+  const add = addRel(Array.isArray(doc.rels) ? doc.rels : [],
+    {kind: 'hyperlink', target: t.url, external: true,
+      strict: (doc.meta || {}).conformance === 'strict'});
+  ops.push({op: 'setDocPart', key: 'rels', value: add.rels});
+  return [...decl, [p + ':id', add.id], ...a];
+}
+
+/** The tooltip attribute set (or removed: '') in attrs. */
+export function withTip(attrs, tip) {
+  const a = attrs.filter(([k]) => k !== 'w:tooltip');
+  if (tip) a.splice(a.findIndex(([k]) => k === 'w:history') + 1 ||
+    a.length, 0, ['w:tooltip', tip]);
+  return a;
+}
+
+/** w:r nodes for content {text, runs, inlines}, styled `style`. */
+export function runNodes(c, style, map) {
+  const runs = c.runs.map((r) => (style ? {...r, rStyle: style} : r));
+  return paraNode({type: 'p', text: c.text, runs, inlines: c.inlines,
+    pPr: {extra: []}, extraP: []}, null, map).children;
+}
+
+/** The style id for runs, pushing a styles op when it is new. */
+export function styleFor(doc, ops) {
+  const h = hyperlinkStyle(doc.styles);
+  if (h && h.styles !== doc.styles)
+    ops.push({op: 'setDocPart', key: 'styles', value: h.styles});
+  return h ? h.id : null;
+}
+
+/** Shown text for a target without text: the address or the name. */
+export const shown = (t, given) => (given || t.url || t.anchor || '');
+
+/** The link inline for node (text from its w:t). */
+export const linkX = (node, map) => ({kind: 'raw', level: 'p', node,
+  text: plainText(node, scope(map, node))});
+export const ONE = (x, f = {rPr: {extra: []}}) => ({text: OBJ,
+  runs: [{start: 0, end: 1, ...f}], inlines: {0: x}});
+
+/** The content of link node (its children as a paragraph), or null. */
+export function inside(node, map) {
+  const m = scope(map, node);
+  const kids = Array.isArray(node.children) ? node.children : [];
+  const first = kids.find(isEl);
+  if (first && wName(first, m) === 'pPr') return null;
+  const got = readPara({name: 'w:p', attrs: [], children: kids}, m);
+  return got && !got.sectPr ? got.para : null;
+}

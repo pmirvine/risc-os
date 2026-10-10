@@ -1,6 +1,7 @@
 // FormatMenu - the Format submenu of a document's window menu:
 //
-//   formatMenu(view, {ruler, toggleRuler}?) -> a Menu
+//   formatMenu(view, {ruler, toggleRuler, paragraph, tabs, borders,
+//     listValue, autoList}?) -> a Menu
 //   fontsMenu(view), sizeMenu(view), highlightMenu(view),
 //   styleMenu(view) -> its submenus (the toolbar's popups too:
 //                  ./ToolbarBind)
@@ -17,18 +18,34 @@
 //                  Automatic, More colours... > (a dialogue box of
 //                  swatches and a hex field: WimpLib Ui/ColourPopup)
 //   Highlight >    None and Word's 16 highlight colours
+//   Change case >  Sentence case, lowercase, UPPERCASE, Capitalize
+//                  Each Word, tOGGLE cASE, and Next case
+//                  (Shift+F3: ./ChangeCase)
 //   Align >        Left, Centre, Right, Justify
 //   Indent >       More, Less (half an inch)
-//   List >         Demote (Tab), Promote (Shift+Tab), Remove from
-//                  list: the selected list items' level, or out of
-//                  the list (./FormatList); shaded when no selected
-//                  paragraph is in a list (FormatList.hasList, once
-//                  per v.selRev)
+//   Line spacing > ./ParaMenu spacingMenu: 1.0 to 3.0 lines, space
+//                  before and after
+//   List >         Bullets > and Numbering > (the gallery), Restart
+//                  at 1, Continue numbering, Set numbering value...
+//                  (listValue(): ./ListBox), Demote (Tab), Promote
+//                  (Shift+Tab), Remove from list: ./ListMenu
 //   Style >        the document's paragraph styles (./FormatApply
 //                  .paraStyles); the caret paragraph's ticked
+//   Paragraph...   paragraph() when given: the Paragraph dialogue
+//                  box (./ParaBox); shaded without a selection
+//   Tabs...        tabs() when given: the Tabs dialogue box
+//                  (./TabsBox); shaded without a selection
+//   Borders and shading...  borders() when given: the Borders and
+//                  shading box (./BorderBox); shaded without a
+//                  selection
 //   Clear formatting
+//   Format painter  ticked while it is on; picks up the selection's
+//                  formatting for the next click or drag (./PaintBind;
+//                  Adjust on the toolbar's button keeps it on)
 //   Ruler          ticked while the window's ruler is shown (ruler());
 //                  toggleRuler() shows or hides it (when given)
+//   AutoFormat lists  the item autoList when given (./AutoFormatOpt
+//                  autoListItem: ticked while on), last
 //
 // Each runs view.format(id, arg) (./EditView), so a choice is one
 // undo step, and at a caret sets the pending format for the text
@@ -43,7 +60,9 @@ import {colourPopup} from 'wimplib/Ui/ColourPopup';
 import {keymap} from './Keymap';
 import {docFonts} from './EditFormat';
 import {PALETTE, SIZES, HIGHLIGHTS, paraStyles} from './FormatApply';
-import {hasList} from './FormatList';
+import {listMenu} from './ListMenu';
+import {spacingMenu} from './ParaMenu';
+import {togglePainter} from './PaintBind';
 
 const NAMES = ['White', 'Grey 1', 'Grey 2', 'Grey 3', 'Grey 4',
   'Grey 5', 'Grey 6', 'Black', 'Dark blue', 'Yellow', 'Light green',
@@ -89,40 +108,25 @@ export function highlightMenu(v) {
       {dotted: i === 0})));
 }
 
+const CASES = [['Sentence case', 'sentence'], ['lowercase', 'lower'],
+  ['UPPERCASE', 'upper'], ['Capitalize Each Word', 'title'],
+  ['tOGGLE cASE', 'toggle']];
+
+function caseMenu(v) {
+  const items = CASES.map(([t, m], i) => item(v, t, 'changeCase', m,
+    null, {dotted: i === CASES.length - 1}));
+  items.push(item(v, 'Next case', 'caseCycle', undefined, null,
+    {help: 'Capitals, then small letters, then a capital for each ' +
+      'word, from what the text is now.'}));
+  return new Menu('Change case', items);
+}
+
 function alignMenu(v) {
   return new Menu('Align', [['Left', 'alignLeft', 'left'],
     ['Centre', 'alignCenter', 'center'],
     ['Right', 'alignRight', 'right'],
     ['Justify', 'alignJustify', 'both']].map(([t, id, a]) =>
     item(v, t, id, undefined, (q) => q.align === a)));
-}
-
-/**
- * Whether a selected paragraph is in a list: worked out once per
- * change of the selection or the document (v.selRev; the menu asks
- * for each of its items), stopping at the first list paragraph.
- */
-const seen = new WeakMap();
-function inList(v) {
-  if (!v.sel) return false;
-  const m = seen.get(v);
-  if (m && m.rev === v.selRev && m.sel === v.sel) return m.yes;
-  const yes = hasList(v.d.doc, v.sel);
-  seen.set(v, {rev: v.selRev, sel: v.sel, yes});
-  return yes;
-}
-
-function listMenu(v) {
-  const it = (text, id, key, help) => item(v, text, id, undefined,
-    null, {key: keymap.labelFor(key) || undefined, help,
-      shaded: () => !inList(v)});
-  return new Menu('List', [
-    it('Demote', 'listIn', 'tab', 'One level deeper (Tab at the ' +
-      'start of an item).'),
-    it('Promote', 'listOut', 'shiftTab', 'One level higher.'),
-    it('Remove from list', 'listOff', '', 'No number or bullet: ' +
-      'the paragraph is out of the list.'),
-  ]);
 }
 
 export function styleMenu(v) {
@@ -135,7 +139,8 @@ export function styleMenu(v) {
 }
 
 /** See the header. */
-export function formatMenu(v, {ruler, toggleRuler} = {}) {
+export function formatMenu(v, {ruler, toggleRuler, paragraph, tabs,
+  borders, listValue, autoList} = {}) {
   const sub = (text, make, help, more = {}) => ({text,
     submenu: () => make(v), shaded: () => !v.sel, help, ...more});
   const toggle = (text, id, key, help, more) =>
@@ -156,22 +161,45 @@ export function formatMenu(v, {ruler, toggleRuler} = {}) {
     sub('Font', fontsMenu, 'The font of the selection.'),
     sub('Size', sizeMenu, 'The size of the text, in points.'),
     sub('Colour', colourMenu, 'The colour of the text.'),
-    sub('Highlight', highlightMenu, 'A colour behind the text.',
-      {dotted: true}),
+    sub('Highlight', highlightMenu, 'A colour behind the text.'),
+    sub('Change case', caseMenu, 'Capitals, small letters, a ' +
+      'capital for each word, or the start of each sentence: of ' +
+      'the selection, or the word at the caret.', {dotted: true}),
     sub('Align', alignMenu, 'How the paragraph\'s lines line up.'),
     sub('Indent', (w) => new Menu('Indent', [
       item(w, 'More', 'indentMore'), item(w, 'Less', 'indentLess'),
     ]), 'Move the paragraph\'s left edge in or out.'),
-    sub('List', listMenu, 'The level of a numbered or bulleted ' +
-      'item, or out of its list.', {shaded: () => !inList(v)}),
+    sub('Line spacing', (w) => spacingMenu(w, {options: paragraph}),
+      'The space between the paragraph\'s lines, and above and ' +
+      'below it.'),
+    sub('List', (w) => listMenu(w, {value: listValue}),
+      'Bullets and numbering; the level of an item, or out of its ' +
+      'list.'),
     sub('Style', styleMenu, 'A paragraph style of the document.',
       {dotted: true}),
+    {text: 'Paragraph...', shaded: () => !v.sel || !paragraph,
+      action: () => { if (paragraph) paragraph(); },
+      help: 'Alignment, indents, spacing and the line and page ' +
+        'breaks of the paragraph, in a box.'},
+    {text: 'Tabs...', shaded: () => !v.sel || !tabs,
+      action: () => { if (tabs) tabs(); },
+      help: 'The tab stops of the paragraph and the document\'s ' +
+        'default tab stops, in a box.'},
+    {text: 'Borders and shading...', shaded: () => !v.sel || !borders,
+      action: () => { if (borders) borders(); },
+      help: 'Lines round the paragraph and a colour behind it or ' +
+        'behind the text, in a box.'},
     item(v, 'Clear formatting', 'clearFormat', undefined, null,
-      {help: 'Remove the character formatting of the selection.',
-        dotted: !!toggleRuler}),
+      {help: 'Remove the character formatting of the selection.'}),
+    {text: 'Format painter', ticked: () => !!v.painter,
+      shaded: () => !v.sel, action: () => togglePainter(v, false),
+      dotted: !!toggleRuler || !!autoList,
+      help: 'Copy the formatting of the selection (or the caret) ' +
+        'onto the next text you select with the mouse.'},
     ...(toggleRuler ? [{text: 'Ruler', ticked: () => !!ruler(),
       action: () => toggleRuler(),
       help: 'Show or hide the ruler under the toolbar: the ' +
         'paragraph\'s indents, to drag.'}] : []),
+    ...(autoList ? [autoList] : []),
   ]);
 }

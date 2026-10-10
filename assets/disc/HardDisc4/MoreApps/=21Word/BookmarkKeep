@@ -1,0 +1,141 @@
+// BookmarkKeep - a deleted range keeps bookmarks whole: the rule
+// ./EditRange deleteRange follows (so Backspace or Delete over a
+// selection, typing over it, a cut, a paste over it...).
+//
+//   keptMarks(doc, o) -> [inline]  o from EditPos.orderedPos: the
+//       bookmark marks (w:bookmarkStart / w:bookmarkEnd level-'p'
+//       inlines) in the range from o.from to o.to whose partner (a
+//       mark of the other kind with the same w:id) is outside it,
+//       somewhere in the document (a mark inside a table or a
+//       wrapper the range covers is inside it): their ends first,
+//       then their starts, in document order. [] when the range
+//       holds none (without looking further)
+//   putMarks(d, pos, xs)  put them back at pos (a position {id,
+//       off}), each a U+FFFC in a plain run (as read); pos at a kept
+//       block (a table: a range that ended on tables both sides) puts
+//       them at the start of the nearest paragraph after it, else at
+//       the end of the nearest one before (every section may hold
+//       only tables: then they are not put back, and nothing can
+//       find them anyway)
+//
+// So a bookmark that only starts (or ends) in a deleted range moves
+// its start (end) to where the range was, as Word does: a pair is
+// never broken by a deletion. A bookmark wholly in the range goes
+// with it; marks inside a table or another kept item go with that
+// item; an end with no start anywhere (or a start with no end) is
+// not kept. Pure: no desktop services.
+import {OBJ} from './Model';
+import {localName} from './Kinds';
+import {findBlock} from './EditPos';
+import {marks} from './BookmarkFind';
+
+const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end'};
+
+/** The id of a mark node (any prefix), or null. */
+function idOf(n) {
+  for (const [k, v] of Array.isArray(n.attrs) ? n.attrs : []) {
+    if (String(k).split(':').pop() === 'id') return String(v);
+  }
+  return null;
+}
+
+/** The direct marks in the range: [{kind, id, x}]. */
+function inRange(doc, o) {
+  const out = [], {from, to, f, t} = o;
+  for (let s = f.s; s <= t.s; s++) {
+    const bs = doc.sections[s].blocks;
+    const i1 = s === t.s ? t.i : bs.length - 1;
+    for (let i = s === f.s ? f.i : 0; i <= i1; i++) {
+      const b = bs[i];
+      if (b.type !== 'p') continue;
+      const a = s === f.s && i === f.i ? from.off : 0;
+      const z = s === t.s && i === t.i ? to.off : b.text.length;
+      for (let k = b.text.indexOf(OBJ, a); k >= 0 && k < z;
+        k = b.text.indexOf(OBJ, k + 1)) {
+        const x = b.inlines[k];
+        const kind = x && x.kind === 'raw' && x.level === 'p' &&
+          KIND[localName(x.node)];
+        if (kind) out.push({kind, id: idOf(x.node), x});
+      }
+    }
+  }
+  return out;
+}
+
+/** Block (s, i) before (<0), at (0) or after (>0) block b. */
+const cmp = (s, i, b) => (s - b.s) || (i - b.i);
+
+/**
+ * Mark m (./BookmarkFind marks) is deleted with the range: in a
+ * paragraph within it (inside a wrapper: the wrapper's offset), or
+ * in a kept block (a table) the range covers.
+ */
+function covered(m, o) {
+  const a = cmp(m.s, m.i, o.f), z = cmp(m.s, m.i, o.t);
+  if (a < 0 || z > 0) return false;
+  if (m.table) {
+    return (a > 0 || o.from.off === 0) && (z < 0 || o.to.off === 1);
+  }
+  return (a > 0 || m.off >= o.from.off) && (z < 0 || m.off < o.to.off);
+}
+
+/** See the header. */
+export function keptMarks(doc, o) {
+  const got = inRange(doc, o).filter((m) => m.id !== null);
+  if (!got.length) return [];
+  const count = (list) => {
+    const c = new Map();
+    for (const m of list) {
+      const k = m.kind + ' ' + m.id;
+      c.set(k, (c.get(k) || 0) + 1);
+    }
+    return c;
+  };
+  const ms = marks(doc);
+  const all = count(ms), here = count(ms.filter((m) => covered(m, o)));
+  const outside = (kind, id) => {
+    const k = kind + ' ' + id;
+    return (all.get(k) || 0) - (here.get(k) || 0) > 0;
+  };
+  const keep = (kind, other) => got.filter((m) => m.kind === kind &&
+    outside(other, m.id)).map((m) => m.x);
+  return [...keep('end', 'start'), ...keep('start', 'end')];
+}
+
+/** The paragraph nearest kept block loc: {loc, off} or null. */
+function nearPara(doc, loc) {
+  const secs = doc.sections;
+  for (let s = loc.s, i = loc.i + 1; s < secs.length; s++, i = 0) {
+    const bs = secs[s].blocks;
+    for (; i < bs.length; i++) {
+      if (bs[i].type === 'p') return {loc: {s, i, b: bs[i]}, off: 0};
+    }
+  }
+  for (let s = loc.s, i = loc.i - 1; s >= 0; s--) {
+    const bs = secs[s].blocks;
+    if (s !== loc.s) i = bs.length - 1;
+    for (; i >= 0; i--) {
+      if (bs[i].type === 'p') {
+        return {loc: {s, i, b: bs[i]}, off: bs[i].text.length};
+      }
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export function putMarks(d, pos, xs) {
+  if (!xs.length || !pos) return;
+  let loc = findBlock(d.doc, pos.id), off = pos.off;
+  if (loc && loc.b.type !== 'p') {
+    const near = nearPara(d.doc, loc);
+    loc = near && near.loc;
+    off = near && near.off;
+  }
+  if (!loc) return;
+  const inlines = {};
+  xs.forEach((x, k) => { inlines[k] = x; });
+  d.apply({op: 'spliceText', block: [loc.s, loc.i], at: off,
+    del: 0, content: {text: OBJ.repeat(xs.length), inlines,
+      runs: [{start: 0, end: xs.length, rPr: {extra: []}}]}});
+}

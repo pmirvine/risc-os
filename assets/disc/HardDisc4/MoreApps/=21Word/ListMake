@@ -1,0 +1,206 @@
+// ListMake - the commands that make lists and change which list a
+// paragraph is in: Bullets, Numbering (a ./ListGallery entry),
+// Restart / Start at and Continue numbering (arguments and results
+// as ./FormatSet's commands; one undo step, typing.command and
+// d.atomic, numbering, relationship and style changes included;
+// none when nothing changes; bad arguments: RangeError first).
+//
+//   toggleList(d, typing, sel, {kind, entry?}, pending) ->
+//       {sel, pending}  kind 'bullet' | 'number'; entry a gallery
+//       id of that kind. On the paragraphs the selection formats
+//       (./FormatOps.touched; kept blocks skipped):
+//     off  when every one is in a list of that kind (listKindOf:
+//          the kind of its level 0) and, when entry is given, a
+//          list the entry matches (ListGallery.matches): the direct
+//          numPr removed, or numId 0 when the style gives a list (a
+//          style-numbered heading); List Paragraph back to the
+//          default paragraph style
+//     on   otherwise, with entry (default 'disc' / '1.'): the
+//          nearest list paragraph BEFORE the first one, in the same
+//          section, with only non-list paragraphs and kept blocks
+//          between (any gap, as Word: the owner's ruling; paragraphs
+//          numbered by their style alone do not count), is continued
+//          when its level 0 matches the entry; else the first
+//          selected paragraph in a list the entry matches; else an
+//          unused w:num of exactly the entry's definition
+//          (./ListUsed reusable: Bullets off and on adds nothing);
+//          else a new list (./NumWrite addList: the numbering part
+//          made when missing; numIds named anywhere avoided).
+//          Each paragraph gets direct numPr {numId, ilvl}: its level
+//          when it is in a list already, else 0; one whose style is
+//          the default paragraph style gets List Paragraph (the
+//          document's, by id or name; the built-in one added when
+//          missing)
+//   restart, continueList  ./ListRestart (exported here too)
+//   listKindOf(doc, para) -> 'bullet' | 'number' | null  the kind of
+//       its list (./ListRestart numKind: level 0's; null: in no
+//       list). So a bullet sublevel of a numbered list is in a
+//       numbered list: Numbering takes it out of the list, Bullets
+//       gives it a bullet list of its own at its level
+//   listEntryOf(doc, para) -> the id of the gallery entry its list
+//       matches, or null
+//   listFacts(doc, para) -> {listKind, listEntry}  both (./Format)
+//   listStyle(doc) -> {id, styles} | null  the List Paragraph style
+//       (styles: the doc's table, or a new one with the built-in
+//       style added, based on the default paragraph style when the
+//       table has one); null when it cannot be used
+//   plainStyle(doc, para)  whether it has the default paragraph
+//       style (such a paragraph gets List Paragraph in a list)
+//
+// Ops: setDocPart (numbering, numberingPart, rels, styles: new
+// values, ./OpsDoc) first, then one setProps per paragraph changed.
+// Hostile numbering parts: NumWrite refuses ids it cannot make
+// (RangeError) before anything is applied. Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {touched, changes, runOps} from './FormatOps';
+import {listInfo} from './ParaInd';
+import {entryOf, matches, ENTRIES} from './ListGallery';
+import {ensurePart, addList} from './NumWrite';
+import {paraStyleId} from './Styles';
+import {withStyle, findStyle} from './DocParts';
+import {builtinStyle} from './StylesBuiltin';
+import {partOps, result, styleOnly, numKind} from './ListRestart';
+import {usedNumIds, reusable} from './ListUsed';
+
+export {restart, continueList} from './ListRestart';
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+const DEFAULT = {bullet: 'disc', number: '1.'};
+const LP = 'ListParagraph';
+
+/** See the header. */
+export function listKindOf(doc, para) {
+  const f = listInfo(doc, para);
+  return f ? numKind(f.num) : null;
+}
+
+const entries = new WeakMap();
+
+/** The gallery entry id a Num matches, or null (cached per Num). */
+function entryFor(num) {
+  if (!isObj(num)) return null;
+  if (!entries.has(num)) {
+    const e = ENTRIES.find((x) => matches(num, x.id));
+    entries.set(num, e ? e.id : null);
+  }
+  return entries.get(num);
+}
+
+/** See the header. */
+export function listEntryOf(doc, para) {
+  const f = listInfo(doc, para);
+  return f ? entryFor(f.num) : null;
+}
+
+/** See the header. */
+export function listFacts(doc, para) {
+  const f = listInfo(doc, para);
+  return {listKind: f ? numKind(f.num) : null,
+    listEntry: f ? entryFor(f.num) : null};
+}
+
+/** The checked {kind, entry} argument. */
+function checkArg(a) {
+  if (!isObj(a) || !Object.keys(a).every((k) => k === 'kind' ||
+    k === 'entry')) fail('bad list');
+  if (a.kind !== 'bullet' && a.kind !== 'number') fail('bad list kind');
+  if (a.entry === undefined || a.entry === null)
+    return {kind: a.kind, entry: null};
+  const e = typeof a.entry === 'string' ? entryOf(a.entry) : null;
+  if (!e || e.kind !== a.kind) fail('bad list entry ' + a.entry);
+  return {kind: a.kind, entry: e};
+}
+
+/** See the header. */
+export function listStyle(doc) {
+  const st = doc.styles;
+  if (!st || !(st.styles instanceof Map)) return null;
+  const s = findStyle(st, LP, 'List Paragraph');
+  if (s) return s.type === 'paragraph' ? {id: s.id, styles: st} : null;
+  // based on the document's default paragraph style (Standard in a
+  // German Word's files), not the built-in's Normal (hyperlinkStyle)
+  const lp = {...builtinStyle(LP)};
+  const base = st.defaults && st.defaults.paragraph;
+  if (typeof base === 'string' && st.styles.has(base))
+    lp.basedOn = base;
+  else delete lp.basedOn;
+  return {id: LP, styles: withStyle(st, lp)};
+}
+
+/** See the header. */
+export function plainStyle(doc, p) {
+  const st = doc.styles;
+  if (!st) return false;
+  const id = paraStyleId(st, p);
+  return id === null || id === st.defaults.paragraph;
+}
+
+/** The nearest list paragraph before block i of section s, or null. */
+function before(doc, s, i) {
+  const bs = doc.sections[s].blocks;
+  for (let k = i - 1; k >= 0; k--) {
+    if (bs[k].type !== 'p') continue;
+    const f = listInfo(doc, bs[k]);
+    if (f && !styleOnly(f, bs[k])) return f;
+  }
+  return null;
+}
+
+/** The numId to continue for entry e, or null (a new list). */
+function continued(doc, list, infos, e) {
+  const prev = before(doc, list[0].s, list[0].i);
+  if (prev) return matches(prev.num, e.id) ? prev.numId : null;
+  for (let k = 0; k < list.length; k++) {
+    const f = infos[k];
+    if (f && !styleOnly(f, list[k].p) && matches(f.num, e.id))
+      return f.numId;
+  }
+  return null;
+}
+
+/** One setProps op for entry en when patch x changes it. */
+const propOp = (en, x) => (changes(en.p, 'pPr', x, 'pStyle')
+  ? {op: 'setProps', block: [en.s, en.i], ...x} : null);
+
+/** See the header. */
+export function toggleList(d, typing, sel, arg, pending) {
+  const v = checkArg(arg);
+  const doc = d.doc;
+  const list = (touched(doc, sel) || []).filter((en) => en.para);
+  const infos = list.map((en) => listInfo(doc, en.p));
+  const lp = list.length ? listStyle(doc) : null;
+  const ops = [];
+  const isOff = list.length && infos.every((f) => f &&
+    numKind(f.num) === v.kind &&
+    (!v.entry || matches(f.num, v.entry.id)));
+  if (isOff) {
+    list.forEach((en, k) => ops.push(propOp(en, {pPr: {numPr:
+      infos[k].fromStyle ? {numId: 0, ilvl: null} : null},
+    ...(lp && en.p.pStyle === lp.id ? {pStyle: null} : {})})));
+  } else if (list.length) {
+    const e = v.entry || entryOf(DEFAULT[v.kind]);
+    let numId = continued(doc, list, infos, e);
+    const strict = (doc.meta || {}).conformance === 'strict';
+    const used = numId === null ? usedNumIds(doc) : null;
+    if (numId === null) numId = reusable(doc, e, strict, used);
+    if (numId === null) {
+      const part = ensurePart(doc);
+      const add = addList(part.numbering, e, {usedNumIds: used,
+        strict});
+      numId = add.numId;
+      ops.push(...partOps(doc, part, add.numbering));
+    }
+    list.forEach((en, k) => ops.push(propOp(en, {pPr: {numPr: {numId,
+      ilvl: infos[k] ? infos[k].ilvl : 0}}, ...(lp &&
+      plainStyle(doc, en.p) ? {pStyle: lp.id} : {})})));
+  }
+  const props = ops.filter((o) => o && o.op === 'setProps');
+  const uses = lp && lp.styles !== doc.styles &&
+    props.some((o) => o.pStyle === lp.id);
+  const docOps = ops.filter((o) => o && o.op === 'setDocPart');
+  if (uses) docOps.push({op: 'setDocPart', key: 'styles',
+    value: lp.styles});
+  runOps(d, typing, props.length ? [...docOps, ...props] : []);
+  return result(sel, pending);
+}

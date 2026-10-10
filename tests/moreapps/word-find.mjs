@@ -334,9 +334,9 @@ try {
   // ---------------------------------------------------- the Edit menu
   const em = await ev(() => window.__doc('Alpha').win.menu({}).items.find((i) => i.text === 'Edit').submenu().items
     .map((i) => [i.text, i.key ?? '', typeof i.shaded === 'function' ? !!i.shaded() : !!i.shaded]).slice(6));
-  ok('the Edit menu: Find... Ctrl+F, Find next Ctrl+G, Find previous Ctrl+Shift+G, Replace... Ctrl+H, none shaded', same(em,
+  ok('the Edit menu: Find... Ctrl+F, Find next Ctrl+G, Find previous Ctrl+Shift+G, Replace... Ctrl+H, Word count... (no key), none shaded', same(em,
     [['Find...', 'Ctrl+F', false], ['Find next', 'Ctrl+G', false], ['Find previous', 'Ctrl+Shift+G', false],
-      ['Replace...', 'Ctrl+H', false]]), em);
+      ['Replace...', 'Ctrl+H', false], ['Word count...', '', false]]), em);
   await ev(() => window.__box().close());
   await ev(() => { const it = window.__doc('Alpha').win.menu({}).items.find((i) => i.text === 'Edit').submenu().items; it.find((i) => i.text === 'Replace...').action(); });
   await settle();
@@ -434,7 +434,7 @@ await browser.close();
     const m3 = await e2(() => window.__state());
     ok('Mac: Cmd-H is not Replace (macOS hides the program with it): the box stays shut', !m3.open, m3);
     const ml = await e2(() => window.__doc('Beta').win.menu({}).items.find((i) => i.text === 'Edit').submenu().items.map((i) => i.key ?? '').slice(6));
-    ok('Mac: the Edit menu shows Cmd+F, Cmd+G, Cmd+Shift+G and Ctrl+H', same(ml, ['Cmd+F', 'Cmd+G', 'Cmd+Shift+G', 'Ctrl+H']), ml);
+    ok('Mac: the Edit menu shows Cmd+F, Cmd+G, Cmd+Shift+G and Ctrl+H (Word count... has no key)', same(ml, ['Cmd+F', 'Cmd+G', 'Cmd+Shift+G', 'Ctrl+H', '']), ml);
   } catch (e) {
     out.push('FAIL exception (Mac) ' + (e.stack ?? e));
   }

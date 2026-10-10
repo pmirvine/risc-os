@@ -452,8 +452,9 @@ describe('DocxRead: properties', () => {
     assert.deepEqual(rest, {keepNext: true, keepLines: true,
       pageBreakBefore: true, numPr: {ilvl: 1, numId: 3},
       spacing: {before: 120, after: 0, line: 276, lineRule: 'auto'},
-      ind: {left: 720, hanging: 360}, jc: 'center', outlineLvl: 0});
-    assert.deepEqual(extra.map((n) => n.name), ['w:tabs', 'w:rPr']);
+      ind: {left: 720, hanging: 360}, jc: 'center', outlineLvl: 0,
+      tabs: [{val: 'left', pos: 1440}]});
+    assert.deepEqual(extra.map((n) => n.name), ['w:rPr']);
   });
 
   it('numPr with something else inside stays raw', async () => {
@@ -514,8 +515,9 @@ describe('DocxRead: sections and blocks', () => {
       orient: 'landscape'});
     assert.deepEqual(b.props.cols, {num: 2, space: 708});
     assert.equal(b.props.titlePg, true);
+    assert.equal(b.props.type, 'continuous');
     assert.deepEqual(b.props.extra.map((n) => n.name),
-      ['w:headerReference', 'w:type', 'w:docGrid']);
+      ['w:headerReference', 'w:docGrid']);
     assert.equal(a.raw.name, 'w:sectPr');
     assert.deepEqual(b.raw.attrs, [['w:rsidR', '00A1']]);
     assert.equal(doc.meta.bodySectPr, true);

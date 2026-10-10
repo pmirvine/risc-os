@@ -1,0 +1,101 @@
+// ListMarker - the list markers AutoFormat knows (pure; ./AutoList
+// uses them).
+//
+//   markerOf(text) -> {kind, entry, start} | null
+//       text: what is before the space. kind 'bullet' | 'number';
+//       entry a ./ListGallery id; start the number typed (1 for a
+//       bullet). At most MAX_MARKER (8) characters:
+//         *  disc      -  dash (hidden entry)     >  arrow
+//         1.  1)  (1)  any number 0..MAX_START (32767), no leading
+//                      zero ('01.' is not one): entries '1.' '1)'
+//                      and '(1)' (hidden)
+//         a.  a)  A.   one letter: a = 1 .. z = 26 (entries 'a.'
+//                      (hidden), 'a)', 'A.'); 'A)' is not one
+//         i.  I.       roman, '.' only: one letter i / I is roman
+//                      1 (any other single letter is a letter: 'v.'
+//                      is v = 22, 'M.' is M = 13); two or more
+//                      letters are roman only when ./NumFormat
+//                      writes that number back exactly (canonical:
+//                      'iv' yes, 'iiii' and 'ic' no) and it is at
+//                      most 39 (xxxix); 'i)' and mixed case are not
+//                      markers
+//       Anything else ('1.5', 'a.b', 'e.g.', '10000000000.', '-1.')
+//       is null: the rule without the document (./AutoList first
+//       tries both readings of a letter that can be roman).
+//   readings(text) -> [marker...]  the readings of one letter that
+//       can be roman (i v x l c d m, either case): with '.'
+//       [roman, letter]; lower case with ')' [letter]; anything
+//       else []
+//   MAX_MARKER 8, MAX_START 32767
+import {formatNumber} from './NumFormat';
+
+export const MAX_MARKER = 8, MAX_START = 32767;
+const BULLET = new Map([['*', 'disc'], ['-', 'dash'], ['>', 'arrow']]);
+const ROMAN = new Map([['I', 1], ['V', 5], ['X', 10], ['L', 50],
+  ['C', 100], ['D', 500], ['M', 1000]]);
+const MAX_ROMAN = 39;
+
+/** The value of roman numerals s (upper case), not checked. */
+function romanValue(s) {
+  let v = 0;
+  for (let k = 0; k < s.length; k++) {
+    const a = ROMAN.get(s[k]), b = ROMAN.get(s[k + 1]) || 0;
+    v += a < b ? -a : a;
+  }
+  return v;
+}
+
+const num = (entry, start) => ({kind: 'number', entry, start});
+
+/** A letter or roman marker: w the letters, end '.' or ')'. */
+function letters(w, end) {
+  if (w.length === 1 && w !== 'i' && w !== 'I') {
+    const lower = w >= 'a';
+    if (!lower && end === ')') return null;
+    return num(lower ? 'a' + end : 'A.',
+      w.charCodeAt(0) - (lower ? 97 : 65) + 1);
+  }
+  if (end !== '.') return null;
+  const lower = w === w.toLowerCase();
+  if (!lower && w !== w.toUpperCase()) return null;
+  const up = w.toUpperCase();
+  if (![...up].every((c) => ROMAN.has(c))) return null;
+  const v = romanValue(up);
+  if (v < 1 || v > MAX_ROMAN ||
+    formatNumber(v, lower ? 'lowerRoman' : 'upperRoman') !== w)
+    return null;
+  return num(lower ? 'i.' : 'I.', v);
+}
+
+/** See the header. */
+export function markerOf(text) {
+  if (typeof text !== 'string' || !text || text.length > MAX_MARKER)
+    return null;
+  if (BULLET.has(text))
+    return {kind: 'bullet', entry: BULLET.get(text), start: 1};
+  let m = /^(?:([0-9]+)([.)])|\(([0-9]+)\))$/.exec(text);
+  if (m) {
+    const ds = m[1] === undefined ? m[3] : m[1];
+    if (ds.length > 1 && ds[0] === '0') return null;
+    const n = Number(ds);
+    if (!(n <= MAX_START)) return null;
+    return num(m[1] === undefined ? '(1)' : '1' + m[2], n);
+  }
+  m = /^([A-Za-z]+)([.)])$/.exec(text);
+  return m ? letters(m[1], m[2]) : null;
+}
+
+/** See the header. */
+export function readings(text) {
+  const m = /^([ivxlcdmIVXLCDM])([.)])$/.exec(text);
+  if (!m) return [];
+  const [, w, end] = m, lower = w >= 'a';
+  const out = [];
+  if (end === '.')
+    out.push(num(lower ? 'i.' : 'I.', romanValue(w.toUpperCase())));
+  if (lower || end === '.') {
+    out.push(num(lower ? 'a' + end : 'A.',
+      w.charCodeAt(0) - (lower ? 97 : 65) + 1));
+  }
+  return out;
+}

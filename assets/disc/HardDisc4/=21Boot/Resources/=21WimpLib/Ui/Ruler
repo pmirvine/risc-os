@@ -11,14 +11,20 @@
 //     menu(ev) -> a Menu for a Menu click on the ruler, or nothing;
 //     help: the ruler's interactive help
 //   r.setScale({origin, page: [x0, x1], text: [x0, x1], zoom,
-//               scrollX})  px in the PARENT's work area: origin is
-//                      where 0 is (twips are measured from it), page
-//                      and text the page and the text between its
-//                      margins (outside the text: grey); scrollX the
-//                      parent's (the ruler scrolls across with it)
-//   r.setMarkers([{id, twips, kind, help}])  kind 'down' (a triangle
-//                      at the top), 'up' (at the bottom), 'box' (under
-//                      an 'up' one)
+//               scrollX, ticks?})  px in the PARENT's work area:
+//                      origin is where 0 is (twips are measured from
+//                      it), page and text the page and the text
+//                      between its margins (outside the text: grey);
+//                      scrollX the parent's (the ruler scrolls across
+//                      with it); ticks [twips] small grey marks at the
+//                      foot (the default tab stops: ../RulerTabs)
+//   r.setMarkers([{id, twips, kind, help, grey}])  kind 'down' (a
+//                      triangle at the top), 'up' (at the bottom),
+//                      'box' (under an 'up' one), or a tab stop's
+//                      (../RulerTabs: tabL tabC tabR tabD tabBar; grey
+//                      a style's: ./RulerTabPaint)
+//   r.setSelector(kind, help)  the tab-type selector shown (a box at
+//                      the left end) with kind's glyph; null: none
 //   r.on('drag', fn), r.on('commit', fn)  fn({id, twips, free}): a
 //                      marker dragged (Select or Adjust): the
 //                      pointer's place in twips (kept at the same
@@ -27,11 +33,17 @@
 //                      once when the button is let go, wherever the
 //                      pointer is. The client snaps and clamps, and
 //                      sets the markers (a dotted line marks the
-//                      dragged one meanwhile)
+//                      dragged one meanwhile). A tab stop with the
+//                      pointer more than OFF px below the ruler has
+//                      remove: true too (drag and commit)
+//   r.on('add', fn)    fn({twips, free}): a Select click on the ruler
+//                      away from the markers (and the selector)
+//   r.on('selector', fn)  fn({}): a Select click on the selector
 //   r.on('end', fn)    fn({id}): the drag is over, committed or not
 //                      (a cancelled pointer gives no place: no
 //                      'commit'); the client sets the markers again
 //   r.dragging         the id of the marker being dragged, or null
+//   r.beep()           the Wimp's beep (a gesture the client refused)
 //   r.show(on), r.shown   shown or hidden (hidden: the pane is closed
 //                      each time its parent opens it)
 //   r.paints           how many times it has been drawn (tests)
@@ -42,9 +54,15 @@
 import {wimp, os} from 'riscos';
 import {toPx, toTwips} from '../RulerMath';
 import {paintRuler} from './RulerPaint';
+import {isTabKind} from '../RulerTabs';
+import {inSelector} from './RulerTabPaint';
+import {pickMarker} from '../RulerPick';
 import {forwardWheel} from './PaneWheel';
 
 const NEAR = 6;                        // px: a press this near a marker
+export const OFF = 16;                 // px below: a tab stop removed
+const HANDLERS = () => ({drag: [], commit: [], end: [], add: [],
+  selector: []});
 
 /** Whether Shift is held now. */
 const shiftDown = () => {
@@ -59,7 +77,9 @@ export class Ruler {
     this.height = height;
     this.scale = null;
     this.markers = [];
-    this.handlers = {drag: [], commit: [], end: []};
+    this.selector = null;
+    this._selHelp = null;
+    this.handlers = HANDLERS();
     this.dragging = null;
     this.shown = true;
     this.paints = 0;
@@ -67,7 +87,7 @@ export class Ruler {
     const pane = this.pane = task.createWindow({
       flags: {pane: true}, colours: {workBg: 1}, x: 0, y: 0, w: 200,
       h: height, extent: {w: 8000, h: height}, icons: [],
-      workButton: 'clickdrag',
+      workButton: 'releasedrag',
     });
     pane.helpText = help || null;
     pane.useCanvas((g) => this._paint(g), {hiDPI: true});
@@ -76,13 +96,14 @@ export class Ruler {
       if (ev.button === 'menu') {
         const m = menu && menu(ev);
         if (m) wimp.menus.openAt(m, ev, {task});
-      }
+      } else if (ev.button === 'select') this._click(ev);
       return true;
     });
     pane.on('drag', (ev) => this._drag(ev));
     pane.on('helprequest', (ev) => {
       const m = this._at(ev.x, ev.y);
-      if (m && m.help) ev.text = m.help;
+      if (this._onSel(ev.x, ev.y)) ev.text = this._selHelp || ev.text;
+      else if (m && m.help) ev.text = m.help;
     });
     parent.attachPane(pane, {dx: 0, dy, h: height, fitWidth: true});
     forwardWheel(pane, parent);
@@ -104,8 +125,10 @@ export class Ruler {
     if (o && o.origin === s.origin && o.scrollX === s.scrollX &&
       o.zoom === s.zoom && o.page[0] === s.page[0] &&
       o.page[1] === s.page[1] && o.text[0] === s.text[0] &&
-      o.text[1] === s.text[1]) return;
-    this.scale = {...s, page: [...s.page], text: [...s.text]};
+      o.text[1] === s.text[1] && String(o.ticks) === String(s.ticks))
+      return;
+    this.scale = {...s, page: [...s.page], text: [...s.text],
+      ticks: s.ticks ? [...s.ticks] : undefined};
     this._redraw();
   }
 
@@ -113,9 +136,30 @@ export class Ruler {
     const o = this.markers;
     if (o.length === list.length && list.every((m, i) =>
       m.id === o[i].id && m.twips === o[i].twips &&
-      m.kind === o[i].kind)) return;
+      m.kind === o[i].kind && !m.grey === !o[i].grey)) return;
     this.markers = list.map((m) => ({...m}));
     this._redraw();
+  }
+
+  setSelector(kind, help = null) {
+    this._selHelp = help;
+    if (this.selector === (kind ?? null)) return;
+    this.selector = kind ?? null;
+    this._redraw();
+  }
+
+  _onSel(x, y) {
+    return this.selector !== null && inSelector(x, y, this.height);
+  }
+
+  /** A Select click (no drag): the selector, or add away from marks. */
+  _click(ev) {
+    if (this._onSel(ev.x, ev.y)) this._emit('selector', {});
+    else if (this.scale && !this._at(ev.x, ev.y)) {
+      const s = this.scale;
+      this._emit('add', {twips: toTwips(ev.x + s.scrollX - s.origin,
+        s.zoom), free: !!ev.shift});
+    }
   }
 
   show(on) {
@@ -140,22 +184,14 @@ export class Ruler {
     return s.origin + toPx(twips, s.zoom) - s.scrollX;
   }
 
-  /** The marker at pane point (x, y), or null. */
+  /** The marker at pane point (x, y), or null (../RulerPick). */
   _at(x, y) {
-    if (!this.scale) return null;
-    const h = this.height, band = (m) => (m.kind === 'down'
-      ? y < h * 0.4 : m.kind === 'up' ? y >= h * 0.4 && y < h * 0.8
-        : y >= h * 0.8);
-    let best = null, bd = NEAR + 1;
-    for (const pass of [true, false]) {
-      for (const m of this.markers) {
-        const d = Math.abs(this._x(m.twips) - x);
-        if (d < bd && (!pass || band(m))) { best = m; bd = d; }
-      }
-      if (best) return best;
-    }
-    return null;
+    return this.scale ? pickMarker(this.markers, x, y, this.height,
+      (t) => this._x(t), NEAR) : null;
   }
+
+  /** A gesture the client refused. */
+  beep() { wimp.beep(); }
 
   _drag(ev) {
     if (ev.button === 'menu' || !this.scale) return true;
@@ -165,15 +201,19 @@ export class Ruler {
     const grab = ev.x - this._x(m.twips);
     this.dragging = id;
     this._redraw();
-    const twipsAt = (sx, sy) => {
+    const tab = isTabKind(m.kind);
+    const at = (sx, sy, free) => {
       const s = this.scale;
       const p = pane.screenToWork(sx, sy);
-      return toTwips(p.x - grab + s.scrollX - s.origin, s.zoom);
+      const o = {id, twips: toTwips(p.x - grab + s.scrollX - s.origin,
+        s.zoom), free};
+      if (tab && p.y > this.height + OFF) o.remove = true;
+      return o;
     };
     const live = (sx, sy, free) => {
       if (this._dead) return;
       // (the client sets the markers: that draws it again)
-      this._emit('drag', {id, twips: twipsAt(sx, sy), free});
+      this._emit('drag', at(sx, sy, free));
     };
     wimp.drag({type: 'point', event: ev.pointerEvent,
       onMove: (s) => live(s.sx, s.sy, shiftDown()),
@@ -183,7 +223,7 @@ export class Ruler {
         const free = d && d.shift !== undefined ? !!d.shift
           : shiftDown();
         if (d && Number.isFinite(d.sx)) {
-          this._emit('commit', {id, twips: twipsAt(d.sx, d.sy), free});
+          this._emit('commit', at(d.sx, d.sy, free));
         }
         this._emit('end', {id});
         this._redraw();
@@ -199,7 +239,7 @@ export class Ruler {
   destroy() {
     for (const off of this._offs) off();
     this._offs = [];
-    this.handlers = {drag: [], commit: [], end: []};
+    this.handlers = HANDLERS();
     if (!this._dead) this.pane.delete();
     this._dead = true;
   }

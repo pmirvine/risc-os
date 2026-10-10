@@ -263,13 +263,13 @@ try {
       rulerOn: window.__by('Plain').rulerOn, zoom: window.__by('Plain').zoom }));
     await ev(() => { window.__seen = []; window.__off = os.wimp.on('key', (e) => { window.__seen.push(e.code); }); });
     const keys = [['F1', 0x181], ['Shift+F4', 0x194], ['F5', 0x185], ['F6', 0x186], ['F7', 0x187], ['F10', 0x1CA], ['F11', 0x1CB],
-      ['Shift+F2', 0x192], ['Shift+F3', 0x193], ['Control+F5', 0x1A5], ['Alt+F2', 0x182], ['Control+Shift+F2', 0x1B2]];
+      ['Shift+F2', 0x192], ['Control+F5', 0x1A5], ['Alt+F2', 0x182], ['Control+Shift+F2', 0x1B2]];
     for (const [k] of keys) await press(k);
-    await ev(() => window.__until(() => window.__seen.length >= 12, 2000));
+    await ev((n) => window.__until(() => window.__seen.length >= n, 2000), keys.length);
     const seen = await ev(() => { window.__off(); return [...window.__seen]; });
     const st1 = await ev(() => ({ n: window.__docs().length, text: window.__by('Plain').text, boxes: window.__saveBoxes().length,
       rulerOn: window.__by('Plain').rulerOn, zoom: window.__by('Plain').zoom, prompts: window.__prompts().length }));
-    ok('F1, Shift-F4, F5, F6, F7, F10, F11, Shift-F2, Shift-F3, Ctrl-F5, Alt-F2, Ctrl-Shift-F2 go on to the desktop and do nothing here',
+    ok('F1, Shift-F4, F5, F6, F7, F10, F11, Shift-F2, Ctrl-F5, Alt-F2, Ctrl-Shift-F2 go on to the desktop and do nothing here',
       keys.every(([, c]) => seen.includes(c)) && same(st0, { ...st1, prompts: undefined }) && st1.prompts === 0, { seen, st0, st1 });
     const h = await ev(() => {
       const w = window.__by('Plain').win;
@@ -309,7 +309,7 @@ try {
       return { top, ed };
     });
     ok('the window menu shows Ctrl+S, F3, F2 and Ctrl+F2', same(m.top, [['Save', 'Ctrl+S'], ['Save as', 'F3'], ['Revert', ''],
-      ['Save a copy', ''], ['Info', ''], ['Edit', ''], ['Format', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
+      ['Save a copy', ''], ['Info', ''], ['Edit', ''], ['Insert', ''], ['Format', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
     ok('the Edit menu shows Ctrl+Z, Ctrl+Y and Ctrl+F for Find... (F4 named in its help)', m.ed[0][1] === 'Ctrl+Z'
       && m.ed[1][1] === 'Ctrl+Y' && same(m.ed.find((x) => x[0] === 'Find...'), ['Find...', 'Ctrl+F']), m.ed);
     const tb = await ev(() => { const d = window.__by('Plain'); return { toolbar: !!d.toolbar, ruler: d.rulerOn, zoom: d.zoom }; });

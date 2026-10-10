@@ -1,0 +1,250 @@
+// Dialog - a dialogue box built from rows of controls: labels, text,
+// length and number fields, option and radio icons, popup menus,
+// colour buttons and buttons, with a row of buttons at the bottom
+// right (../DialogLayout places them, ../DialogIcons makes them,
+// ../DialogValues reads and shows their values).
+//
+//   dialog({task, key, title, rows, buttons, enter, help, minW})
+//     -> the box's api (not yet open)
+//     rows     ../DialogLayout's rows; a control may also have:
+//              help; value (its first value; an option's is false);
+//              text fields maxLen, validation (an A command);
+//              length unit 'pt' (points, else inches), min, max
+//              (twips); number min, max, step, unit, decimals;
+//              popup choices [{id, text}]; colour allowAuto; radio
+//              value (its group's value when chosen)
+//     buttons  texts, left to right (default ['Cancel', 'OK'])
+//     enter    the button Return presses (default the last): it has
+//              the default border. Escape and the close icon press
+//              'Cancel' if there is one (even when it is shaded),
+//              else the last button: give every box a Cancel
+//     key      one box per key for a task: asked again while it is
+//              there, the same api (the box brought to the front).
+//              Keys are per task, not per window: a box for one
+//              document needs that document in its key
+//              ('para:<docKey>'), and its program deletes it when
+//              the document closes
+//   api.get(name), api.set(name, v)   a control's value (set does
+//       not report a change): text a string, length twips, number
+//       a number, option true / false, radio true / false (its
+//       group's name: the chosen radio's value or name), popup the
+//       choice's id, colour 'RRGGBB' or 'auto', label its text.
+//       A mixed value is undefined: the field is shown empty (an
+//       option off) and reads undefined until it is changed; a
+//       field whose text is not a value reads null
+//   api.values()      {name: value} of every control and group
+//   api.invalid()     the names of fields that read null
+//   api.shade(name, on)   a control (all its icons), or a button
+//   api.choices(name, list)  a popup's choices [{id, text}] now
+//   api.focus(name)   the caret into that field
+//   api.on('button', fn)  fn({name, values}): a bottom button or a
+//       row's button (name: its text / its name). After a bottom
+//       button the box is deleted, unless a handler returned false
+//   api.on('change', fn)  fn({name, value}) when the user changes a
+//       control; api.on('close', fn) when it closes or goes
+//   api.open({x, y})  shown at the front, the caret in the first
+//       field (first time centred); api.close() hides it; api.win,
+//       api.isOpen, api.gone; api.delete() (also with its task)
+// Popup menus open at the right of their arrow; a colour button
+// opens ./ColourPopup there.
+import {wimp, Menu, textWidth} from 'riscos';
+import {layout, controls} from '../DialogLayout';
+import {iconSpecs, esgOf} from '../DialogIcons';
+import {store, WRITE} from '../DialogValues';
+import {cssOf} from '../ColourList';
+import {colourPopup} from './ColourPopup';
+
+const boxes = new WeakMap();           // task -> Map key -> box
+
+/** See the header. */
+export function dialog(opts) {
+  const {task, key} = opts;
+  let reg = boxes.get(task);
+  if (!reg) boxes.set(task, reg = new Map());
+  const old = key === undefined ? null : reg.get(key);
+  if (old && !old.gone) {
+    if (old.win.isOpen) old.win.bringToFront();
+    return old.api;
+  }
+  const b = make(opts);
+  if (key !== undefined) {
+    reg.set(key, b);
+    b.win.on('deleted', () => {
+      if (reg.get(key) === b) reg.delete(key);
+    });
+  }
+  return b.api;
+}
+
+/** A new box. */
+function make(opts) {
+  const {task, title = 'Dialog', rows = [], help} = opts;
+  const buttons = (opts.buttons ?? ['Cancel', 'OK']).map(String);
+  const last = buttons[buttons.length - 1];
+  const enter = buttons.includes(opts.enter) ? opts.enter : last;
+  const cancel = buttons.includes('Cancel') ? 'Cancel' : last;
+  const list = controls(rows), groups = esgOf(list);
+  const L = layout(rows, {buttons, minW: opts.minW,
+    maxW: wimp.width - 40, measure: (t) => textWidth(t)});
+  const win = task.createWindow({title: String(title), w: L.w, h: L.h,
+    extent: {w: L.extent, h: L.h}, colours: {workBg: 1},
+    icons: iconSpecs(L.boxes, list, {enter, groups}),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'click', help});
+  const ctl = new Map(list.filter((c) => c.name !== undefined)
+    .map((c) => [c.name, c]));
+  const h = {button: [], change: [], close: []};
+  const b = {win, gone: false, placed: false};
+  const I = (n) => win.iconByName(n);
+  const v = store({list, groups, icon: I,
+    repaint: () => win.invalidate()});
+  let closed = true;
+  const emit = (type, ev) => {
+    let keep = false;
+    for (const fn of h[type].slice()) if (fn(ev) === false) keep = true;
+    return keep;
+  };
+  const ended = () => {
+    if (closed) return;
+    closed = true;
+    emit('close', {});
+  };
+  const changed = (name) => emit('change', {name, value: v.get(name)});
+  if (list.some((c) => c.kind === 'colour')) {
+    win.useCanvas((g) => {
+      for (const c of list) {
+        const col = c.kind === 'colour' ? v.colour(c.name) : null;
+        if (!col) continue;
+        const {x0, y0, x1, y1} = I(c.name).bbox;
+        g.fillStyle = cssOf(col);
+        g.fillRect(x0 + 6, y0 + 6, x1 - x0 - 12, y1 - y0 - 12);
+      }
+    }, {hiDPI: true});
+  }
+  for (const c of list) {
+    if ('value' in c) v.set(c.name, c.value);
+    else if (c.kind === 'option') v.set(c.name, false);
+  }
+  /** A pick from a popup: c's value is now x. */
+  const pick = (c, x) => {
+    if (b.gone) return;
+    v.set(c.name, x);
+    changed(c.name);
+  };
+  const popup = (c) => {
+    const at = I(`arrow:${c.name}`).bbox;
+    const p = win.workToScreen(at.x1, at.y0);
+    const m = new Menu(String(c.label ?? c.name), (c.choices || [])
+      .map((ch) => ({text: String(ch.text ?? ''),
+        ticked: () => v.get(c.name) === ch.id,
+        action: () => pick(c, ch.id)})));
+    wimp.menus.open(m, p.x, p.y, {task});
+  };
+  const colour = (c) => {
+    const at = I(c.name).bbox;
+    colourPopup({task, at: win.workToScreen(at.x1, at.y0),
+      current: v.colour(c.name) ?? null,
+      allowAuto: c.allowAuto ?? true,
+      title: String(c.label ?? 'Colour'), onPick: (x) => pick(c, x)});
+  };
+  const press = (name, always) => {
+    const ic = I(`button:${name}`);
+    if (!ic || (ic.shaded && !always)) return;
+    if (!emit('button', {name, values: v.values()})) api.delete();
+  };
+  win.on('click', (ev) => {
+    const ic = ev.icon;
+    if (!ic || ev.button === 'menu' || ic.shaded) return true;
+    const n = ic.name || '';
+    if (n.startsWith('button:')) { press(n.slice(7)); return true; }
+    const c = ctl.get(n.startsWith('arrow:') ? n.slice(6) : n);
+    if (!c) return true;
+    if (c.kind === 'popup') popup(c);
+    else if (c.kind === 'colour') colour(c);
+    else if (c.kind === 'button') {
+      emit('button', {name: c.name, values: v.values()});
+    } else if (c.kind === 'option') {
+      v.touched(c.name);
+      changed(c.name);
+    } else if (c.kind === 'radio') {
+      if (!ic.selected) ic.setState({selected: true});
+      changed(c.group);
+    }
+    return true;
+  });
+  win.on('iconchanged', (ev) => {
+    if (ev.icon && ctl.has(ev.icon.name)) changed(ev.icon.name);
+  });
+  const escape = () => (buttons.length ? press(cancel, true) :
+    api.delete());
+  win.on('close', (ev) => { ev.preventDefault(); escape(); });
+  win.on('key', (ev) => {
+    if (ev.code === 13) press(enter);
+    else if (ev.code === 27) escape();
+    else if (ev.code === 22 && ev.ctrl && !ev.alt && ev.icon &&
+      ev.icon.writable) ev.allowDefault = true; // the browser pastes
+    else return undefined;
+    return true;
+  });
+  win.on('deleted', () => { b.gone = true; ended(); });
+  const first = () => list.find((c) => WRITE.includes(c.kind) &&
+    !I(c.name).shaded);
+  const caretIn = () => {
+    const f = first();
+    if (f) api.focus(f.name); else wimp.setCaret(win);
+  };
+  const api = {
+    win,
+    get: (name) => (b.gone ? undefined : v.get(name)),
+    set: (name, x) => { if (!b.gone) v.set(name, x); },
+    values: () => (b.gone ? {} : v.values()),
+    invalid: () => (b.gone ? [] : v.invalid()),
+    get isOpen() { return win.isOpen; }, get gone() { return b.gone; },
+    shade(name, on) {
+      if (b.gone) return;
+      const s = {shaded: !!on};
+      if (!ctl.has(name)) { I(`button:${name}`)?.setState(s); return; }
+      for (const p of ['', 'label:', 'arrow:', 'after:']) {
+        I(p + name)?.setState(s);
+      }
+      const k = wimp.caret;
+      if (on && k && k.window === win && k.icon === I(name)) caretIn();
+    },
+    choices(name, list) {
+      const c = ctl.get(name);
+      if (b.gone || c?.kind !== 'popup' || !Array.isArray(list)) return;
+      c.choices = list.map((x) => ({id: x.id, text: String(x.text)}));
+      v.set(name, v.get(name));
+    },
+    focus(name) {
+      const ic = b.gone ? null : I(name);
+      if (ic && ic.writable && !ic.shaded && win.isOpen) {
+        wimp.setCaret(win, ic, ic.text.length);
+      }
+    },
+    on(type, fn) {
+      if (h[type] && typeof fn === 'function') h[type].push(fn);
+    },
+    open({x, y} = {}) {
+      if (b.gone) return;
+      let at = {};
+      if (Number.isFinite(x) && Number.isFinite(y)) at = {x, y};
+      else if (!b.placed) {
+        at = {x: Math.round((wimp.width - L.w) / 2),
+          y: Math.round((wimp.height - L.h) / 2)};
+      }
+      b.placed = true;
+      closed = false;
+      win.open({...at, behind: 'top'});
+      caretIn();
+    },
+    close() {
+      if (b.gone || !win.isOpen) return;
+      win.close();
+      ended();
+    },
+    delete() { if (!b.gone) win.delete(); },
+  };
+  b.api = api;
+  return b;
+}

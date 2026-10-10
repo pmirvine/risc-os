@@ -13,6 +13,10 @@ import {sortChildren} from '../../tools/moreapps/!Word/Order';
 import {NS} from '../../tools/moreapps/!Word/Wml';
 import {repairs} from '../../tools/moreapps/!Word/PartTypes';
 import {findPart} from '../../tools/moreapps/!Word/Rels';
+import {sectPrNode, hasProps} from '../../tools/moreapps/!Word/WriteProps';
+import {docScope} from '../../tools/moreapps/!Word/WriteBody';
+import {readSect} from '../../tools/moreapps/!Word/ReadSect';
+import {deepEqual, newPara} from '../../tools/moreapps/!Word/Model';
 
 /**
  * Put the `extra` nodes of a property object in the order the
@@ -270,6 +274,49 @@ export function expectedBack(doc) {
   const d = structuredClone(doc);
   const at = d.meta.documentRoot.attrs;
   if (!at.some(([n]) => n === 'xmlns:w')) at.push(['xmlns:w', NS.w]);
+  // a document that gained section properties (a break made the last
+  // section one with a w:type) has its sectPr written at the body's
+  // end (WriteBody.placeOf) and reads back as having one there
+  const ls = d.sections[d.sections.length - 1];
+  if (ls && !d.meta.bodySectPr && !ls.raw && hasProps(ls.props)) {
+    d.meta.bodySectPr = true;
+  }
+  const {map} = docScope(d);
+  // a section whose props no longer read as its raw sectPr (a section
+  // break command gave it a type) is written from its props with the
+  // raw node's name and attributes: that node reads back. Only those:
+  // every other raw sectPr is compared as it is.
+  // (a section with no raw node that is written anyway, a break's
+  // copy of a section that had none, reads back with the node)
+  d.sections.forEach((s, k) => {
+    const written = s.raw || k < d.sections.length - 1 ||
+      d.meta.bodySectPr || hasProps(s.props);
+    if (s.raw ? !deepEqual(readSect(s.raw, map), s.props) : written)
+      s.raw = sectPrNode(s, map);
+  });
+  // a section that ends with a kept block (a table: Delete at its end
+  // removed the empty paragraph that carried the section's break) is
+  // written with an empty paragraph to carry its sectPr
+  // (WriteBody.bodyNode), which reads back as a block of its own
+  d.sections.forEach((s, k) => {
+    const last = s.blocks[s.blocks.length - 1];
+    if (k < d.sections.length - 1 && (!last || last.type !== 'p')) {
+      s.blocks.push(newPara(''));
+    }
+  });
+  // a br made by editing (no node: a page break) reads back with the
+  // <w:br w:type="..."/> the writer wrote for it
+  for (const s of d.sections) {
+    for (const b of s.blocks) {
+      if (b.type !== 'p') continue;
+      for (const x of Object.values(b.inlines)) {
+        if (x.kind === 'br' && (x.node === undefined || x.node === null)) {
+          x.node = {name: 'w:br', attrs: [['w:type', x.brType]],
+            children: []};
+        }
+      }
+    }
+  }
   // a known part typed application/xml gets its own type (PartTypes)
   const {defaults, overrides} = d.meta.contentTypes;
   const m = d.meta;
@@ -293,4 +340,93 @@ export function expectedBack(doc) {
     }
   }
   return d;
+}
+
+/**
+ * `want` (from expectedBack) for a document that GAINED a styles or
+ * numbering part since it was opened (ListMake makes a numbering part
+ * and the List Paragraph style): the writer records the new part in
+ * the zip order, the content types, the prolog and the relationships
+ * as it writes. These are taken from `got` (what was read back) after
+ * checking they are only additions: every entry `want` has is in
+ * `got` in the same order, the extra parts are the styles and
+ * numbering parts, and the extra relationships are a styles or a
+ * numbering one to such an added part. Anything else stays for
+ * assertSameDoc to find.
+ */
+export function withNewParts(want, got) {
+  want = withWrittenStyles(want, got);
+  const w = want.meta, g = got.meta;
+  // (a styles part written for generated styles: assertSameDoc's own
+  // rule, which takes it out of `got`, so it is not added to `want`)
+  const skip = w.stylesGenerated ? g.stylesPart : null;
+  const ctFirst = (z) => {
+    const i = z.indexOf('[Content_Types].xml');
+    return i > 0 ? [z[i], ...z.slice(0, i), ...z.slice(i + 1)] : z;
+  };
+  const wz = ctFirst(w.zipOrder);
+  const extra = g.zipOrder.filter((n) => !wz.includes(n) && n !== skip);
+  if (!extra.length) return want;
+  // (a document with no relationships gets its rels part)
+  const main = w.mainPart;
+  const relsName = main.slice(0, main.lastIndexOf('/') + 1) + '_rels/' +
+    main.slice(main.lastIndexOf('/') + 1) + '.rels';
+  const allowed = [g.stylesPart, g.numberingPart, relsName]
+    .filter(Boolean);
+  if (!extra.every((n) => allowed.includes(n))) return want;
+  const inOrder = (a, b) => {
+    let at = 0;
+    return a.every((x) => {
+      while (at < b.length && !isDeepStrictEqual(b[at], x)) at++;
+      return at++ < b.length;
+    });
+  };
+  const out = structuredClone(want);
+  const o = out.meta;
+  const zip = g.zipOrder.filter((n) => n !== skip);
+  if (inOrder(wz, zip)) o.zipOrder = zip;
+  const ov = g.contentTypes.overrides
+    .filter(([n]) => !skip || n !== '/' + skip);
+  if (inOrder(w.contentTypes.overrides, ov)) {
+    o.contentTypes.overrides = structuredClone(ov);
+  }
+  for (const n of extra) {
+    if (g.prolog.has(n)) o.prolog.set(n, structuredClone(g.prolog.get(n)));
+  }
+  const tail = skip ? skip.slice(skip.lastIndexOf('/') + 1) : null;
+  const rels = got.rels.filter((r) => !(skip &&
+    r.type.endsWith('/styles') && r.target.endsWith(tail) &&
+    !want.rels.some((x) => x.id === r.id)));
+  // the relationships added: only a styles or numbering one, to a
+  // part that was added (anything else stays for assertSameDoc)
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  const partOf = (t) => typeof t !== 'string' ? null
+    : t.startsWith('/') ? t.slice(1) : t.includes('..') ? null : dir + t;
+  const newRel = (r) => !want.rels.some((x) => isDeepStrictEqual(x, r));
+  const okRel = (r) => /\/(styles|numbering)$/.test(r.type) &&
+    !r.mode && extra.includes(partOf(r.target)) &&
+    (r.type.endsWith('/styles') ? partOf(r.target) === g.stylesPart
+      : partOf(r.target) === g.numberingPart);
+  if (inOrder(want.rels, rels) && rels.filter(newRel).every(okRel)) {
+    out.rels = structuredClone(rels);
+  }
+  return out;
+}
+
+/**
+ * A style added by a command (List Paragraph, ./ListMake) has no
+ * original XML in the model (raw null); read back, it has the node
+ * the writer wrote. `want` with that node taken from `got` for those
+ * styles (every other field is still compared).
+ */
+function withWrittenStyles(want, got) {
+  const t = want.styles && want.styles.styles;
+  if (!(t instanceof Map) || ![...t.values()].some((x) => !x.raw))
+    return want;
+  const out = structuredClone(want);
+  for (const [id, st] of out.styles.styles) {
+    const back = got.styles && got.styles.styles.get(id);
+    if (!st.raw && back && back.raw) st.raw = structuredClone(back.raw);
+  }
+  return out;
 }

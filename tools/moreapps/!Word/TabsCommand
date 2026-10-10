@@ -1,0 +1,48 @@
+// TabsCommand - what OK in the Tabs dialog (./TabsBox) does: the
+// paragraphs' tab stops and the document's default tab stop, one
+// command.
+//
+//   tabsBox(d, typing, sel, arg, pending) -> {sel, pending}
+//       (./FormatApply 'tabsBox') arg {tabs?, defaultTab?}:
+//     tabs        a ./FormatTabs setTabs argument ({edits: [...]}
+//                 from ./TabsPatch) for each paragraph the selection
+//                 formats
+//     defaultTab  twips (MIN_TW..MAX_TW of ./TabStops): settings.xml's
+//                 w:defaultTabStop (./SettingsEdit withDefaultTab, a
+//                 new settings root through setDocPart 'settings')
+//   Both in ONE undo step (typing.command, d.atomic); only the parts
+//   that change make ops (a default the same as the one written makes
+//   none), and nothing changed makes no undo step. Refused
+//   (RangeError, nothing changed): a bad arg, a defaultTab for a
+//   document without a settings part (none was read: creating the
+//   part is not done), the tabs refused by ./FormatTabs (a paragraph
+//   whose stops are kept raw, too many stops).
+// Pure: no desktop services.
+import {tabOps} from './FormatTabs';
+import {withDefaultTab} from './SettingsEdit';
+import {runOps} from './FormatOps';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {fail} from './ModelCheck';
+
+const KEYS = ['tabs', 'defaultTab'];
+
+/** See the header. */
+export function tabsBox(d, typing, sel, arg, pending) {
+  if (!arg || typeof arg !== 'object' || Array.isArray(arg) ||
+    !Object.keys(arg).every((k) => KEYS.includes(k)))
+    fail('bad tabs box change');
+  const doc = d.doc, ops = [];
+  if (arg.defaultTab !== undefined) {
+    const meta = doc.meta || {};
+    if (!doc.rawSettings || !meta.settingsPart)
+      fail('the document has no settings part');
+    const root = withDefaultTab(doc.rawSettings, arg.defaultTab);
+    if (root !== doc.rawSettings) {
+      ops.push({op: 'setDocPart', key: 'settings', value: root});
+    }
+  }
+  if (arg.tabs !== undefined) ops.push(...tabOps(doc, sel, arg.tabs));
+  runOps(d, typing, ops);
+  return {sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY};
+}

@@ -1,0 +1,131 @@
+// BorderExplicit - paragraph borders and shading, and character
+// shading, made explicit for one paragraph or run: what a command
+// writes in its own pPr / rPr so that it shows what was asked, as
+// Word holds these (a side, and a w:shd, whole: never merged
+// attribute by attribute with what a style gives).
+//
+//   boxExplicit(v, res, p) -> {pBdr?, shd?}  for ./FormatPara
+//       explicit: v a checked patch (./FormatCheck paraPatch) whose
+//       pBdr and / or shd are given; res ./FormatEff resolver's
+//       (its styles; what is read is cached for its command)
+//     pBdr null      the paragraph's own w:pBdr goes (null)
+//     pBdr {side: s} each side given: s null (no side) is null when
+//                    the paragraph's styles draw none there, else
+//                    {val: 'nil'} over the style's; s a side is null
+//                    when the styles give that very side, else the
+//                    whole side (every attribute key, null for the
+//                    ones not given, so ./OpsProps mergeProps
+//                    replaces the side rather than merging it)
+//     shd null       null when the styles draw no shading, else
+//                    NO_SHADE (Word's "No Color") over theirs
+//     shd {val...}   null when the styles give that very shading,
+//                    else the whole shd (color and fill null when
+//                    not given)
+//   runShade(shd, res, p, r) -> the rPr.shd to write for run r
+//       of p: the same rule against the run's styles (./Styles
+//       runLayers without the run's own)
+//   isRawOwn(props, key) -> whether props (a pPr or rPr) keeps its
+//       own w:<key> raw (one the model cannot hold: w:themeFill, a
+//       w14 attribute...): ./PropNames withoutRaw finds it
+//   NO_SHADE        {val: 'clear', color: 'auto', fill: 'auto'}
+//
+// A paragraph whose own w:pBdr (or w:shd) is kept raw is never
+// changed by a patch giving pBdr (or shd): writing one side would
+// drop the raw element and its other sides. boxExplicit throws
+// RangeError then (the command changes nothing; the dialog beeps),
+// as ./FormatTabs does for a raw w:tabs; runShade likewise for a
+// run's raw w:shd. What the styles give is read from ./Styles
+// paraLayers / runLayers with ./BorderResolve (never resolvePara,
+// which merges sides attribute by attribute), cached per resolver
+// (one command) and style. Pure: no desktop services.
+import {paraLayers} from './Styles';
+import {bordersOf, shadeCss, edgeOf, runShade as shadeOf}
+  from './BorderResolve';
+import {withoutRaw} from './PropNames';
+import {deepEqual, fail} from './ModelCheck';
+
+export const NO_SHADE = Object.freeze({val: 'clear', color: 'auto',
+  fill: 'auto'});
+
+const SIDE_KEYS = ['val', 'sz', 'space', 'color', 'shadow', 'frame'];
+const SHD_KEYS = ['val', 'color', 'fill'];
+const NONE = {extra: []};
+
+/** See the header. */
+export const isRawOwn = (props, key) => !!props &&
+  props[key] === undefined && Array.isArray(props.extra) &&
+  withoutRaw(props.extra, [key]) !== props.extra;
+
+/** o with every key of keys: its value, or null. */
+function whole(o, keys) {
+  const out = {};
+  for (const k of keys) out[k] = o[k] === undefined ? null : o[k];
+  return out;
+}
+
+/** o without null / undefined values (to compare). */
+function plain(o) {
+  const out = {};
+  for (const k of Object.keys(o || {})) {
+    if (o[k] !== null && o[k] !== undefined) out[k] = o[k];
+  }
+  return out;
+}
+
+const cache = new WeakMap();           // res -> Map key -> value
+
+/** f() cached per resolver (one command) and key. */
+function memo(res, key, f) {
+  let m = cache.get(res);
+  if (!m) cache.set(res, m = new Map());
+  if (!m.has(key)) m.set(key, f());
+  return m.get(key);
+}
+
+/** What p's styles give: {pBdr, shd} (./BorderResolve). */
+const inherited = (res, p) => memo(res,
+  JSON.stringify(['p', p.pStyle ?? null]), () => bordersOf(
+    paraLayers(res.styles, {pStyle: p.pStyle, pPr: NONE})));
+
+/** The shd to write over inh (see the header). */
+function shade(want, inh) {
+  if (want === null) return shadeCss(inh) ? {...NO_SHADE} : null;
+  return deepEqual(plain(want), plain(inh)) ? null
+    : whole(want, SHD_KEYS);
+}
+
+/** See the header. */
+export function boxExplicit(v, res, p) {
+  const own = p.pPr || NONE, out = {};
+  if (v.pBdr !== undefined) {
+    if (isRawOwn(own, 'pBdr')) fail('the paragraph\'s borders are raw');
+    if (v.pBdr === null) out.pBdr = null;
+    else {
+      const inh = inherited(res, p).pBdr, b = {};
+      for (const k of Object.keys(v.pBdr)) {
+        const s = v.pBdr[k];
+        if (s === null) {
+          b[k] = edgeOf(inh[k]) ? whole({val: 'nil'}, SIDE_KEYS) : null;
+        } else {
+          b[k] = deepEqual(plain(s), plain(inh[k])) ? null
+            : whole(s, SIDE_KEYS);
+        }
+      }
+      out.pBdr = b;
+    }
+  }
+  if (v.shd !== undefined) {
+    if (isRawOwn(own, 'shd')) fail('the paragraph\'s shading is raw');
+    out.shd = shade(v.shd, inherited(res, p).shd);
+  }
+  return out;
+}
+
+/** See the header. */
+export function runShade(shd, res, p, r) {
+  if (isRawOwn(r.rPr, 'shd')) fail('the text\'s shading is raw');
+  const inh = memo(res, JSON.stringify(['r', p.pStyle ?? null,
+    r.rStyle ?? null]), () => shadeOf(res.styles, p,
+    {rStyle: r.rStyle, rPr: NONE}));
+  return shade(shd, inh);
+}

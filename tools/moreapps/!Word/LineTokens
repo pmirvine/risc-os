@@ -5,9 +5,10 @@
 //   tokens(para, styles, cache) -> [{t, text, f, kind, from, to,
 //                                     shown}]
 //   t     'w' a word or a piece of one (no break inside), 's' spaces,
-//         'tab', 'nl' (a line break), 'z' (an unseen inline: drawn
+//         'tab', 'nl' (a line break), 'pb' (a page or column break:
+//         ./BreakMarks, with its label), 'z' (an unseen inline: drawn
 //         as nothing, zero width; it sticks to the word next to it)
-//   kind  'text' | 'link' | 'box' | 'tab' | 'break'
+//   kind  'text' | 'link' | 'box' | 'tab' | 'break' | 'pagebreak'
 //   shown true when text is not the model text of [from, to)
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
@@ -16,14 +17,16 @@
 // Their text breaks into words and spaces like any other (so it can
 // wrap): the first piece stands for [i, i+1), the later ones for the
 // empty [i+1, i+1), all shown (there is no offset inside the item);
-// a tab or newline in that text is drawn as it is. The unseen kinds
+// a tab in that text is a 'tab' token (it goes to the next stop, as
+// in Word), a newline is drawn as it is. The unseen kinds
 // of ./Kinds (proofing marks, bookmarks, field codes) and deletions
 // are 'z'; a non-breaking hyphen is '-', a soft hyphen nothing;
 // anything else is a small grey [...] box. A run boundary inside a
 // surrogate pair is moved past the pair. Pure: no desktop services.
 import {OBJ} from './Model';
 import {runFmt} from './Fmt';
-import {UNSEEN, localName} from './Kinds';
+import {unseen, localName} from './Kinds';
+import {isPageBreak, pbToken} from './BreakMarks';
 
 export const PLAIN = {rPr: {extra: []}};
 
@@ -51,9 +54,6 @@ function bareT(x) {
     .join('');
 }
 
-// drawn as nothing, besides ./Kinds: deletions (tracked changes)
-const NOTHING = new Set(['del', 'moveFrom', 'softHyphen']);
-
 /** Words, spaces, tabs and breaks of text (at offset off) in f. */
 function words(text, off, f, out) {
   for (const m of text.matchAll(/ +|\t|\n|[^ \t\n]+/g)) {
@@ -74,9 +74,10 @@ function words(text, off, f, out) {
 /** The words and spaces of an inline's text: see the header. */
 function shownWords(text, i, f, kind, out) {
   let from = i;
-  for (const m of text.matchAll(/ +|[^ ]+/g)) {
-    const s = m[0];
-    out.push({t: isSpace(s[0]) ? 's' : 'w', text: s, f, kind, from,
+  for (const m of text.matchAll(/ +|\t|[^ \t]+/g)) {
+    const s = m[0], tab = s === '\t';
+    out.push({t: tab ? 'tab' : isSpace(s[0]) ? 's' : 'w',
+      text: tab ? '' : s, f, kind: tab ? 'tab' : kind, from,
       to: i + 1, shown: true});
     from = i + 1;
   }
@@ -87,11 +88,12 @@ function inline(x, i, f, out) {
   const one = (t, text, g, kind, shown = true) => out.push({t, text,
     f: g, kind, from: i, to: i + 1, shown});
   const l = localName(x.node), bare = bareT(x);
-  if (x.kind === 'br' || bare === '\n') one('nl', '', f, 'break');
+  if (isPageBreak(x)) out.push(pbToken(x, i, f));
+  else if (x.kind === 'br' || bare === '\n') one('nl', '', f, 'break');
   else if (x.kind === 'tab' || bare === '\t') one('tab', '', f, 'tab');
   else if (bare === OBJ) one('w', bare, f, 'text', false);
   else if (bare) shownWords(bare, i, f, 'text', out);
-  else if (UNSEEN.has(l) || NOTHING.has(l)) one('z', '', f, 'text');
+  else if (unseen(x)) one('z', '', f, 'text');
   else if (l === 'noBreakHyphen') one('w', '-', f, 'text');
   else if (x.text && l === 'hyperlink') {
     shownWords(x.text, i, linkFmt(f), 'link', out);

@@ -407,13 +407,13 @@ try {
       dw.close();
       return { fresh, edited, undone, mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
     });
-    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Format, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Format', 'Zoom', 'New', 'Close']), shades.fresh);
+    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'Format', 'Zoom', 'New', 'Close']), shades.fresh);
     // (Cut and Copy shaded at the caret; Paste never; the Find items never: word-clipboard.mjs, word-find.mjs)
     // (on a Mac the labels are Cmd+: MacKeys.macLabel)
     const K = shades.mac ? 'Cmd+' : 'Ctrl+';
     const rest = [['Cut', K + 'X', true], ['Copy', K + 'C', true], ['Paste', K + 'V', false], ['Select all', K + 'A', false],
       ['Find...', K + 'F', false], ['Find next', K + 'G', false], ['Find previous', K + 'Shift+G', false],
-      ['Replace...', 'Ctrl+H', false]];   // (Replace is Ctrl+H on a Mac too: Cmd-H hides the program)
+      ['Replace...', 'Ctrl+H', false], ['Word count...', undefined, false]];   // (Replace is Ctrl+H on a Mac too: Cmd-H hides the program)
     ok(`Edit menu on a fresh document: Undo ${K}Z and Redo ${K}Y shaded, Select all ${K}A`, same(shades.fresh.items,
       [['Undo', K + 'Z', true], ['Redo', K + 'Y', true], ...rest]), shades.fresh);
     const tail = rest.map((i) => i[2]);

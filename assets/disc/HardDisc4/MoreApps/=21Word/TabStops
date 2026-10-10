@@ -1,0 +1,218 @@
+// TabStops - a paragraph's tab stops and where a tab goes.
+//
+//   resolveTabs(styles, para) -> frozen [{pos, px, val, leader?}]
+//       the stops in force, sorted by pos (twips from the margin; px
+//       = pos / 15 to 1/64 px), at most MAX_USED; val left |
+//       center | right | decimal | bar (Strict start -> left, end ->
+//       right, num -> left); leader only when not none. Cached per
+//       paragraph object and styles table (both are replaced, never
+//       changed, by an edit).
+//   defaultStop(doc) -> twips: w:defaultTabStop of settings.xml
+//       (doc.rawSettings; cached per root object), DEFAULT_TW 720
+//       when absent, not a measure, or outside MIN_TW..MAX_TW
+//   nextStop(stops, x, leftPx, defPx, maxX) -> {pos, val, leader?}
+//       where a tab at x (px from the margin) goes: see below
+//   ownTabs(pPr) -> [{val, pos, leader?}] | null  the stops one pPr
+//       layer gives as written (clear ones too): its tabs field, else
+//       a raw w:tabs in its extra (see below; not checked)
+//
+// Stops are merged as Word merges them: the layers of ./Styles
+// paraLayers (document defaults, the style chain from its root, the
+// direct pPr), lowest first; a layer's stop replaces one at the same
+// position, its clear removes one there (a clear with nothing to
+// remove does nothing). A layer's stops are its tabs field, else a
+// w:tabs it keeps raw in extra (one the model cannot hold: 257 stops
+// or more, a w14 attribute...), read for the screen only: its w:tab
+// children's w:val, w:pos and w:leader (in WordprocessingML, prefix
+// w or the node's own xmlns, as ./SpacingRaw matches). Only the
+// first MAX_LAYER entries of a layer are read, and of the merged
+// stops the MAX_USED leftmost are used,
+// so a hostile file with thousands of stops costs no more than one
+// with 256. A malformed entry (no integer pos, unknown val) is
+// passed over.
+//
+// The next stop: the first custom stop (not a bar) right of x; when
+// x is left of the left indent (leftPx: Word's implicit stop at a
+// hanging indent) only a custom stop before it comes first, the
+// default stops left of it are not used; with no custom stop right
+// of x, the next default stop: a multiple of defPx counted from the
+// margin. Custom stops clear the default ones left of them (Word):
+// a default stop is used only past the last custom one. A stop past
+// maxX (the right indent) is pulled back to maxX (keeping its val);
+// a default stop past it gives a left tab at maxX; x at or past maxX
+// gives pos x (a tab of no width). Positions are rounded to 1/64 px
+// (exact in binary, so x + w of a tab item is the next item's x even
+// after alignment moves both). Pure: no desktop services.
+import {paraLayers} from './Styles';
+import {rootScope, scope, wName, wAttr, W} from './Ns';
+import {intOf} from './ReadPropsMore';
+
+export const DEFAULT_TW = 720;
+export const MIN_TW = 36, MAX_TW = 31680;
+export const MAX_LAYER = 256;
+export const MAX_USED = 64;
+
+const VAL = new Map([['left', 'left'], ['center', 'center'],
+  ['right', 'right'], ['decimal', 'decimal'], ['bar', 'bar'],
+  ['num', 'left'], ['start', 'left'], ['end', 'right']]);
+const LEADS = new Set(['dot', 'hyphen', 'underscore', 'heavy',
+  'middleDot']);
+const EPS = 0.01;
+const snap = (v) => Math.round(v * 64) / 64;
+const NONE = Object.freeze([]);
+
+const byPara = new WeakMap();
+
+const SCOPE = new Map([['w', W]]);
+const isNode = (n) => !!n && typeof n === 'object' &&
+  typeof n.name === 'string' && Array.isArray(n.attrs) &&
+  Array.isArray(n.children);
+
+/** The stops of a raw w:tabs in pPr.extra (see the header), or null. */
+function rawTabs(pPr) {
+  for (const n of pPr.extra) {
+    if (!isNode(n)) continue;
+    const m = n.attrs.length ? scope(SCOPE, n) : SCOPE;
+    if (wName(n, m) !== 'tabs') continue;
+    const out = [];
+    for (const c of n.children) {
+      if (out.length >= MAX_LAYER) break;
+      if (!isNode(c)) continue;
+      const cm = c.attrs.length ? scope(m, c) : m;
+      if (wName(c, cm) !== 'tab') continue;
+      const at = (k) => wAttr(c, cm, k);
+      out.push({val: at('val'), pos: intOf(at('pos')),
+        leader: at('leader')});
+    }
+    return out;
+  }
+  return null;
+}
+
+/** See the header. */
+export function ownTabs(l) {
+  if (!l || typeof l !== 'object') return null;
+  if (l.tabs !== undefined) return l.tabs;
+  return Array.isArray(l.extra) && l.extra.length ? rawTabs(l) : null;
+}
+
+/** One layer's stops merged into map (pos -> stop). */
+function mergeLayer(map, tabs) {
+  if (!Array.isArray(tabs)) return;
+  const n = Math.min(tabs.length, MAX_LAYER);
+  for (let i = 0; i < n; i++) {
+    const t = tabs[i];
+    if (!t || typeof t !== 'object' || !Number.isSafeInteger(t.pos))
+      continue;
+    if (t.val === 'clear') { map.delete(t.pos); continue; }
+    const val = typeof t.val === 'string' ? VAL.get(t.val) : undefined;
+    if (!val) continue;
+    const s = {pos: t.pos, px: snap(t.pos / 15), val};
+    if (LEADS.has(t.leader)) s.leader = t.leader;
+    map.set(t.pos, Object.freeze(s));
+  }
+}
+
+/** See the header. */
+export function resolveTabs(styles, para) {
+  const got = byPara.get(para);
+  if (got && got.styles === styles) return got.tabs;
+  const map = new Map();
+  for (const l of paraLayers(styles, para)) {
+    mergeLayer(map, ownTabs(l));
+  }
+  const tabs = map.size ? Object.freeze([...map.values()]
+    .sort((a, b) => a.pos - b.pos).slice(0, MAX_USED)) : NONE;
+  if (para && typeof para === 'object') {
+    byPara.set(para, {styles, tabs});
+  }
+  return tabs;
+}
+
+// a length as ST_TwipsMeasure spells it: twips, or a number with
+// a unit (Strict); twips per unit
+const UNIT = {mm: 1440 / 25.4, cm: 1440 / 2.54, in: 1440, pt: 20,
+  pc: 240, pi: 240};
+
+/** Twips of a measure value, or NaN. */
+export function twipsOf(v) {
+  if (typeof v !== 'string') return NaN;
+  const m = /^(-?[0-9]+(?:\.[0-9]+)?)(mm|cm|in|pt|pc|pi)?$/.exec(v);
+  if (!m) return NaN;
+  const n = Number(m[1]) * (m[2] ? UNIT[m[2]] : 1);
+  return m[2] ? Math.round(n) : (Number.isInteger(n) ? n : NaN);
+}
+
+const bySettings = new WeakMap();
+
+/** The value of the first w:defaultTabStop child of root, or NaN. */
+function readDefault(root) {
+  if (!root || !Array.isArray(root.children) ||
+    !Array.isArray(root.attrs)) return NaN;
+  const map = rootScope(root);
+  for (const c of root.children) {
+    if (!c || typeof c !== 'object' || !Array.isArray(c.attrs))
+      continue;
+    const m = c.attrs.length ? scope(map, c) : map;
+    if (wName(c, m) === 'defaultTabStop') {
+      return twipsOf(wAttr(c, m, 'val'));
+    }
+  }
+  return NaN;
+}
+
+/** See the header. */
+export function defaultStop(doc) {
+  const root = doc && doc.rawSettings;
+  if (!root || typeof root !== 'object') return DEFAULT_TW;
+  let tw = bySettings.get(root);
+  if (tw === undefined) {
+    const v = readDefault(root);
+    tw = v >= MIN_TW && v <= MAX_TW ? v : DEFAULT_TW;
+    bySettings.set(root, tw);
+  }
+  return tw;
+}
+
+/** The first stop of stops (sorted) right of x that is not a bar. */
+function customAfter(stops, x) {
+  let lo = 0, hi = stops.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (stops[mid].px > x + EPS) hi = mid; else lo = mid + 1;
+  }
+  for (let i = lo; i < stops.length; i++) {
+    if (stops[i].val !== 'bar') return stops[i];
+  }
+  return null;
+}
+
+/** See the header. */
+export function nextStop(stops, x, leftPx, defPx, maxX) {
+  if (!(x < maxX - EPS)) return {pos: x, val: 'left'};
+  const c = stops && stops.length ? customAfter(stops, x) : null;
+  let pos, val = 'left', leader;
+  const hang = leftPx > x + EPS;
+  if (c && (!hang || c.px < leftPx)) {
+    pos = c.px;
+    val = c.val;
+    leader = c.leader;
+  } else if (hang) pos = leftPx;
+  else {
+    const d = defPx > 0 ? defPx : DEFAULT_TW / 15;
+    pos = snap(d * (Math.floor((x + EPS) / d) + 1));
+  }
+  if (pos > maxX) pos = maxX;
+  const out = {pos, val};
+  if (leader) out.leader = leader;
+  return out;
+}
+
+/** The bar stops of stops, in px (an empty array when none). */
+export function barsOf(stops) {
+  let out = null;
+  for (const s of stops || NONE) {
+    if (s.val === 'bar') (out || (out = [])).push(s.px);
+  }
+  return out ? Object.freeze(out) : NONE;
+}

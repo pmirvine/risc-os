@@ -1,0 +1,115 @@
+// LinkUrl - the address of a hyperlink, as typed in the Hyperlink
+// box (./LinkBox), checked and cleaned. Addresses are data: nothing
+// here (or anywhere in !Word) fetches or opens one.
+//
+//   cleanUrl(text) -> {url} | {error}
+//       text trimmed; 'www.' at the start gets 'http://' before it;
+//       the scheme must be http, https, mailto or ftp (any case,
+//       written in lower case): anything else (javascript:, data:,
+//       file:, vbscript:...) or none is refused, with a message
+//       saying what is allowed; http, https and ftp need '//' and a
+//       host, mailto something after it. Control characters (C0,
+//       DEL, C1) and broken UTF-16 are refused; a space and any
+//       character a URL may not hold as it is (non-ASCII letters of
+//       an IRI, " < > \ ^ ` { | }, a % not before two hex digits)
+//       is percent-encoded (UTF-8). The result is at most MAX
+//       (2048) characters, else refused.
+//   checkAnchor(name) -> null, or why it cannot be a link's place
+//       in the document: 1..255 characters, no white space, no
+//       control character, no '#', no U+FFF9..U+FFFD (U+FFFC is an
+//       item's mark in !Word's text) and no non-character (U+FDD0..
+//       U+FDEF, U+xFFFE, U+xFFFF)
+//   parseAddress(text) -> {url} | {anchor} | {error}
+//       '#name' is a link to bookmark name (checkAnchor), anything
+//       else cleanUrl's
+//   SCHEMES, MAX
+// Messages are for the user (the box shows them). Pure: no desktop
+// services.
+
+export const SCHEMES = ['http', 'https', 'mailto', 'ftp'];
+export const MAX = 2048;
+
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+const SCHEME = /^([A-Za-z][A-Za-z0-9+.-]*):/;
+// what a URL may hold as it is (RFC 3986 unreserved and reserved)
+const KEEP = /[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=]/;
+const HEX2 = /^[0-9A-Fa-f]{2}$/;
+/** A special (U+FFF9..U+FFFD) or a non-character. */
+const odd = (ch) => {
+  const c = ch.codePointAt(0);
+  return (c >= 0xfff9 && c <= 0xfffd) || (c >= 0xfdd0 && c <= 0xfdef) ||
+    (c & 0xfffe) === 0xfffe;
+};
+const ALLOWED = 'Use an address starting http://, https://, ' +
+  'mailto:, ftp:// or www.';
+
+/** s with every character a URL may not hold percent-encoded. */
+function encode(s) {
+  let out = '';
+  let i = 0;
+  for (const ch of s) {
+    if (ch === '%' && HEX2.test(s.slice(i + 1, i + 3))) out += ch;
+    else if (KEEP.test(ch)) out += ch;
+    else out += encodeURIComponent(ch);
+    i += ch.length;
+  }
+  return out;
+}
+
+/** See the header. */
+export function cleanUrl(text) {
+  if (typeof text !== 'string') return {error: 'There is no address.'};
+  let s = text.trim();
+  if (!s) return {error: 'Type the address the link goes to.'};
+  if (s.length > MAX) {
+    return {error: `The address is too long: at most ${MAX} ` +
+      'characters.'};
+  }
+  if (CONTROL.test(s) || !s.isWellFormed()) {
+    return {error: 'The address holds control characters: it ' +
+      'cannot be used.'};
+  }
+  if (/^www\./i.test(s)) s = 'http://' + s;
+  const m = SCHEME.exec(s);
+  if (!m) return {error: ALLOWED};
+  const scheme = m[1].toLowerCase();
+  if (!SCHEMES.includes(scheme)) {
+    return {error: `Links of the kind "${m[1].slice(0, 16)}:" are ` +
+      'not allowed. ' + ALLOWED};
+  }
+  const rest = s.slice(m[0].length);
+  if (scheme === 'mailto' ? !rest.trim()
+    : !/^\/\/[^/?#\s]+(?:[/?#]|$)/.test(rest)) {
+    return {error: scheme === 'mailto' ? 'Give the e-mail address ' +
+      'after mailto:.' : `Give the name of the computer after ` +
+      `${scheme}://.`};
+  }
+  const url = scheme + ':' + encode(rest);
+  if (url.length > MAX) {
+    return {error: `The address is too long: at most ${MAX} ` +
+      'characters.'};
+  }
+  return {url};
+}
+
+/** See the header. */
+export function checkAnchor(name) {
+  if (typeof name !== 'string' || !name)
+    return 'Give the name of a bookmark after #.';
+  if (name.length > 255) return 'The bookmark name is too long.';
+  if (/[\s#]/.test(name) || CONTROL.test(name) ||
+    !name.isWellFormed() || [...name].some(odd))
+    return 'A bookmark name holds no spaces, # or control characters.';
+  return null;
+}
+
+/** See the header. */
+export function parseAddress(text) {
+  if (typeof text !== 'string') return {error: 'There is no address.'};
+  const s = text.trim();
+  if (s.startsWith('#')) {
+    const why = checkAnchor(s.slice(1));
+    return why ? {error: why} : {anchor: s.slice(1)};
+  }
+  return cleanUrl(s);
+}

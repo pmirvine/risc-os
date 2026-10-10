@@ -1,0 +1,148 @@
+// BorderBox - the Borders and shading dialogue box (Format > Borders
+// and shading...), as Word's: Setting (None, Box, Custom), the sides
+// (Top, Bottom, Left, Right, Between: option icons), Style (Single,
+// Double, Dotted, Dashed, Thick), Width (1/4 to 3 pt), Colour
+// (WimpLib Ui/ColourPopup: Automatic allowed), Fill (None or Colour,
+// with its colour button) and Apply to (Paragraph or Text). Built
+// by WimpLib Ui/Dialog; the values and what OK does: ./BorderPatch.
+//
+//   borderBox(dw) -> the box's api (WimpLib Ui/Dialog), opened
+//       one box per document (key 'borders:<docKey>'), kept in
+//       dw.boxes ('borders') so ./CloseDoc deletes it with the
+//       document; asked again while it is open, the same box is
+//       brought to the front. Nothing when the document has no
+//       selection.
+//
+// It opens filled from the document's query (./BorderPatch fill): a
+// mixed value is empty (an option off, a popup blank) and left as it
+// is unless changed. Picking None or Box sets the sides; clicking a
+// side makes the setting what the sides now are (Custom unless they
+// are none or a box). Fill Colour shows Word's light grey (D9D9D9)
+// until a colour is picked; Fill None shades the colour button.
+// Apply to Text shades the borders (text gets shading only: rPr
+// w:shd over the selected characters) and shows the text's
+// shading; Paragraph the paragraphs'. OK (or Return): one
+// view.format('borders' or 'charShade', ...), one undo step (none
+// when nothing changed).
+// Beeps, the box kept and nothing written: a value the box does not
+// offer, Style, Width or Colour changed for a mixed selection with
+// no side chosen (./BorderPatch: nothing to draw them on), a
+// paragraph (or run) whose own w:pBdr or w:shd is kept raw (a themed
+// border: the command refuses it, ./BorderExplicit), and a
+// selection or document that changed while the box was open (the
+// box is filled again). Cancel, Escape and the close icon change
+// nothing; the caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {fill, patch, settingOf, sidesOf, STYLES, WIDTHS, SIDES5}
+  from './BorderPatch';
+
+const radio = (group, value, text, label) => ({kind: 'radio',
+  name: group + '-' + value, group, value, text, label});
+const FILLS = [{id: 'none', text: 'None'},
+  {id: 'colour', text: 'Colour'}];
+const rows = () => [
+  [radio('setting', 'none', 'None', 'Setting'),
+    radio('setting', 'box', 'Box'), radio('setting', 'custom',
+      'Custom')],
+  SIDES5.map((k, i) => ({kind: 'option', name: k,
+    text: k.charAt(0).toUpperCase() + k.slice(1),
+    label: i ? undefined : 'Borders'})),
+  [{kind: 'popup', name: 'style', label: 'Style', choices: STYLES},
+    {kind: 'popup', name: 'width', label: 'Width', choices: WIDTHS}],
+  {kind: 'colour', name: 'colour', label: 'Colour', allowAuto: true},
+  [{kind: 'popup', name: 'fillkind', label: 'Fill', choices: FILLS},
+    {kind: 'colour', name: 'fill', label: 'Fill colour',
+      allowAuto: false}],
+  [radio('apply', 'para', 'Paragraph', 'Apply to'),
+    radio('apply', 'text', 'Text')],
+];
+
+const HELP = 'Borders and shading: lines round the selected ' +
+  'paragraphs, and a colour behind them or behind the text.';
+const BORDER = ['setting-none', 'setting-box', 'setting-custom',
+  ...SIDES5, 'style', 'width', 'colour'];
+const VALUES = ['setting', ...SIDES5, 'style', 'width', 'colour',
+  'fillkind', 'fill', 'apply'];
+
+const state = new WeakMap();           // api -> {q, at, doc}
+
+/** Where the document and its selection are (stale check). */
+const where = (v) => JSON.stringify([v.sel.anchor, v.sel.head,
+  v.d.stateId]);
+
+/** See the header. */
+export function borderBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `borders:${dw.docKey}`,
+    title: 'Borders and shading', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK']});
+  box(dw, 'borders', () => api.win);
+  if (api.isOpen) return api;
+  if (!state.has(api)) wire(api, v);
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the current query. */
+function refill(api, v) {
+  const q = v.query(), vals = fill(q);
+  for (const k of VALUES) api.set(k, vals[k]);
+  state.set(api, {q, at: where(v), doc: v.d.doc});
+  adapt(api);
+}
+
+/** Shade the borders for Text, the fill colour for Fill None. */
+function adapt(api) {
+  const text = api.get('apply') === 'text';
+  for (const k of BORDER) api.shade(k, text);
+  api.shade('fill', api.get('fillkind') !== 'colour');
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  api.on('change', ({name, value}) => {
+    const x = state.get(api);
+    if (name === 'setting') {
+      const s = sidesOf(value);
+      if (s) for (const k of SIDES5) api.set(k, s[k]);
+    } else if (SIDES5.includes(name)) {
+      const o = {};
+      for (const k of SIDES5) o[k] = api.get(k);
+      api.set('setting', settingOf(o));
+    } else if (name === 'fill') {
+      api.set('fillkind', 'colour');
+    } else if (name === 'fillkind' && value === 'colour' &&
+      api.get('fill') === undefined) {
+      api.set('fill', 'D9D9D9');
+    } else if (name === 'apply' && x) {
+      const f = fill(x.q, value);
+      api.set('fillkind', f.fillkind);
+      api.set('fill', f.fill);
+    }
+    adapt(api);
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    const x = state.get(api);
+    if (!v.sel || where(v) !== x.at || v.d.doc !== x.doc) {
+      wimp.beep();
+      if (v.sel) refill(api, v);
+      return false;
+    }
+    const r = patch(values, x.q);
+    if (r.bad.length) {
+      wimp.beep();
+      return false;
+    }
+    if (r.arg !== undefined && !v.format(r.id, r.arg)) {
+      wimp.beep();
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}

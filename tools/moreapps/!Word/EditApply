@@ -1,13 +1,25 @@
 // EditApply - what an editing key does, and where the caret goes
 // after an undo or a redo.
 //
-//   run(id, d, typing, sel) -> the new selection, or undefined for
-//                         an id that is not an edit (./Keymap ids:
-//                         enter shiftEnter backspace delete
-//                         ctrlBackspace ctrlDelete tab shiftTab;
-//                         tab, shiftTab and backspace as ./EditList
-//                         has them in lists; shiftTab outside a list
-//                         is undefined too)
+//   run(id, d, typing, sel, {autoList}?) -> the new selection, or
+//                         undefined for an id that is not an edit
+//                         (./Keymap ids: enter shiftEnter backspace
+//                         delete ctrlBackspace ctrlDelete tab
+//                         shiftTab; tab, shiftTab and backspace as
+//                         ./EditList has them in lists; shiftTab
+//                         outside a list is undefined too). With
+//                         autoList (AutoFormat lists on, not in
+//                         overwrite mode: the caller's), a Tab typed
+//                         at a caret after a marker may then make the
+//                         paragraph a list item, as a space does
+//                         (./AutoList afterSpace, typed '\t': an undo
+//                         step of its own). The Insert menu's ids
+//                         (pageBreak...) go to ./InsertApply, with
+//                         {arg}. backspace, delete and their Ctrl
+//                         forms next to a section break remove it
+//                         first (./SectBreak deleteBreakAt: a step
+//                         of its own; the next press merges the
+//                         paragraphs as before)
 //   stepEnd(doc, ops, oldL) -> {id, off} | null: the caret after an
 //                         undo or redo whose 'change' event carried
 //                         ops (./Document); oldL: the layout from
@@ -34,6 +46,12 @@
 //                             (the start of the one after when the
 //                             gap is at the section's start)
 //   mergeBlock, setProps      the start of that paragraph
+//   splitSection, mergeSection  the start of the paragraph at the
+//                             split (the one that ends the first
+//                             section; for a merge found in oldL)
+//   setDocPart, setSection    skipped: the op before it decides;
+//                             only these: null (the selection
+//                             stays)
 // A kept block (a table) gives its edge {id, off: 0} (or 1 at an
 // end). Null when nothing fits (the caller keeps its selection).
 // Pure: no desktop services.
@@ -43,6 +61,10 @@ import {deleteForward, deleteWordBack, deleteWordForward}
 import {listTab, listShiftTab, listBack, usesShiftTab}
   from './EditList';
 import {blockId} from './DocPos';
+import {collapsed} from './Selection';
+import {afterSpace} from './AutoList';
+import {insert} from './InsertApply';
+import {deleteBreakAt} from './SectBreak';
 
 const COMMANDS = {
   enter: splitPara,
@@ -54,20 +76,58 @@ const COMMANDS = {
   tab: listTab,
   shiftTab: listShiftTab,
 };
+const EDGE = new Map([['backspace', -1], ['delete', 1],
+  ['ctrlBackspace', -1], ['ctrlDelete', 1]]);
+const SKIP = new Set(['setDocPart', 'setSection']);
 
 /** See the header. */
-export function run(id, d, typing, sel) {
+export function run(id, d, typing, sel, {autoList = false, arg} = {}) {
   const fn = Object.hasOwn(COMMANDS, id) ? COMMANDS[id] : null;
-  if (!fn || (id === 'shiftTab' && !usesShiftTab(d.doc, sel)))
-    return undefined;
-  return typing.command(() => fn(d, sel));
+  if (!fn) return insert(id, d, typing, sel, arg);
+  if (id === 'shiftTab' && !usesShiftTab(d.doc, sel)) return undefined;
+  if (EDGE.has(id)) {
+    const r = typing.command(() => deleteBreakAt(d, sel, EDGE.get(id)));
+    if (r !== undefined) return r;
+  }
+  const out = typing.command(() => fn(d, sel));
+  if (id !== 'tab' || !autoList || !out || out === sel ||
+    !collapsed(sel)) return out;
+  return afterSpace(d, typing, out, {typed: '\t'}) || out;
 }
 
-/** The last leaf op of op (compounds opened, in order applied). */
-function last(op) {
-  while (op && op.op === 'compound' && Array.isArray(op.ops) &&
-    op.ops.length) op = op.ops[op.ops.length - 1];
-  return op || null;
+/**
+ * The last leaf op of ops (compounds opened, in order applied) that
+ * is not a setDocPart or a setSection, or null.
+ */
+function last(ops) {
+  for (let k = ops.length - 1; k >= 0; k--) {
+    const op = ops[k];
+    if (!op || SKIP.has(op.op)) continue;
+    if (op.op !== 'compound') return op;
+    const r = Array.isArray(op.ops) ? last(op.ops) : null;
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
+ * After mergeSection {at: s}: the paragraph that ended section s,
+ * from oldL (the first section-end mark from s's first item; the
+ * sections before s are as they were).
+ */
+function mergeEnd(doc, s, oldL) {
+  const sec = doc.sections[s];
+  if (!sec) return null;
+  let c = 0;
+  for (let k = 0; k < s; k++) c += doc.sections[k].blocks.length;
+  const items = (oldL && oldL.items) || [];
+  for (let j = c; j < items.length && j - c < sec.blocks.length;
+    j++) {
+    if (!items[j].mark) continue;
+    return sec.blocks[j - c] === items[j].block
+      ? start(items[j].block) : null;
+  }
+  return null;
 }
 
 const blockAt = (doc, at) => {
@@ -92,8 +152,7 @@ function common(a, b) {
 
 /** See the header. */
 export function stepEnd(doc, ops, oldL) {
-  const op = Array.isArray(ops) && ops.length
-    ? last(ops[ops.length - 1]) : null;
+  const op = Array.isArray(ops) ? last(ops) : null;
   if (!op) return null;
   switch (op.op) {
     case 'spliceText': case 'replaceText': {
@@ -122,6 +181,13 @@ export function stepEnd(doc, ops, oldL) {
     }
     case 'mergeBlock': case 'setProps':
       return start(blockAt(doc, op.block));
+    case 'splitSection':
+      return start(blockAt(doc, op.at));
+    case 'mergeSection': {
+      const sec = doc.sections[op.at];
+      return mergeEnd(doc, op.at, oldL) ||
+        start(sec && sec.blocks[0]);
+    }
     default:
       return null;
   }
