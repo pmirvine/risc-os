@@ -10,10 +10,17 @@
 // the HTML read back from the system clipboard. Pictures (Batch B,
 // B7): a picture copied in one window and pasted in another is drawn
 // there, saved with its media part, and Ctrl-Z takes it and its part
-// away.
+// away. Tables (Batch C6.2): a Grid Table 4 table copied in one
+// window and pasted in another is drawn there with the style's black
+// header (the style copied into the target), Ctrl-Z removes it and
+// the copied style, and the saved file reopens with both. Tables
+// as HTML (Batch C6.3): that copy's text/html holds a <table> and its
+// text/plain a line per row; HTML holding a table pasted from
+// another program goes in as a table (spans, shading, borders).
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
-import { buildDocx, documentXml, numberingXml, p, r, REL } from './build-docx.mjs';
+import { buildDocx, documentXml, numberingXml, stylesXml, p, r, REL } from './build-docx.mjs';
+import { tbl, tr, tc, TABLE_NORMAL, GRID_TABLE_4 } from './tbl-fixtures.mjs';
 import { picDocx, pngBytes } from './pic-fixtures.mjs';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
@@ -39,12 +46,18 @@ const withLink = (paras) => buildDocx({ 'word/document.xml': documentXml(paras.j
   { docRels: [['rIdL', REL('hyperlink'), 'http://example.com/', 'External'], ['rIdN', REL('numbering'), 'numbering.xml']] });
 const plainDoc = (texts) => buildDocx({ 'word/document.xml': documentXml(texts.map((t) => p(r(t))).join('')) });
 const BIGP = (i) => `${i}: the quick brown fox jumps over the lazy dog.`;
+const GT4T = tbl([['Name', 'Qty'], ['one', '1'], ['two', '2']].map((row) => tr(row.map((t) => tc(p(r(t)))))), {
+  tblPr: '<w:tblStyle w:val="GridTable4"/><w:tblW w:w="0" w:type="auto"/><w:tblLook w:val="04A0" w:firstRow="1" '
+    + 'w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>', grid: [3000, 3000] });
 const files = {
   Alpha: Array.from(await withLink(ALPHA)), Gamma: Array.from(await withLink(ALPHA)), Rt: Array.from(await withLink(RT)),
   Beta: Array.from(await plainDoc(['Target one.', 'Target two.', 'Target three.'])),
   Big: Array.from(await plainDoc(Array.from({ length: 50000 }, (_, i) => BIGP(i)))),
   PicSrc: Array.from(await picDocx({ pics: [{ bytes: pngBytes(40, 20, { rgb: [220, 20, 30] }) }], body: p(r('Under the picture.')) })),
   PicDst: Array.from(await plainDoc(['Pictures go here.', 'Second.'])),
+  TblSrc: Array.from(await buildDocx({ 'word/document.xml': documentXml(p(r('Table source.')) + GT4T + p(r('After.'))),
+    'word/styles.xml': stylesXml(TABLE_NORMAL + GRID_TABLE_4) })),
+  TblDst: Array.from(await plainDoc(['Tables go here.', 'Second.'])),
 };
 
 const out = [];
@@ -690,6 +703,93 @@ try {
   ok('A4: a lone picture pasted where no id is free: the message "could not be pasted: no free name or id", nothing changed',
     pf1.msgs.length === 1 && /could not be pasted: no free name or id/.test(pf1.msgs[0]) && pf1.depth === 0
     && pf1.line === 'Pictures go here.' && pf1.media.length === 0 && pf1.beeps > pf0.beeps, [pf0, pf1]);
+
+  // ---------------------------------------------------- C6.2: a table and its style pasted into another document
+  await ev(async () => {
+    for (const n of ['TblSrc', 'TblDst']) await os.filer.run('RAM::RamDisc0.$.' + n);
+  });
+  await page.waitForFunction(() => window.__doc('TblSrc') && window.__doc('TblDst'), null, { timeout: 20000 });
+  await ev(async () => {
+    window.__doc('TblSrc').win.open({ x: 30, y: 60, w: 470, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });
+    window.__doc('TblDst').win.open({ x: 520, y: 60, w: 470, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });
+    window.__tblSt = (leaf) => {
+      const d = window.__doc(leaf), bl = d.d.doc.sections.flatMap((s) => s.blocks), t = bl.find((b) => b.type === 'tbl');
+      const it = d.view.layout.items.find((x) => x.kind === 'tbl'), h = it?.rows[0];
+      const px = h ? window.__pxOf(leaf, h.cells[0].x + h.cells[0].w / 2, h.y + h.h / 2) : null;
+      return { types: bl.map((b) => b.type), style: t?.tblPr?.tblStyle, has: d.d.doc.styles.styles.has('GridTable4'),
+        depth: d.view.undoDepth, dirty: d.view.dirty, px, rows: it?.rows.length };
+    };
+    const d = window.__doc('TblSrc'), bl = d.d.doc.sections[0].blocks;
+    d.view.setSelection({ id: bl[0].id, off: 0 }, { id: bl[2].id, off: 2 });
+    d.win.bringToFront();
+    d.dw.view.focus();
+    await window.__frames(3);
+  });
+  await press(MOD + '+c');
+  await settle();
+  const c63 = await ev(() => window.__read());
+  const h63 = c63['text/html'] ?? '';
+  ok('C6.3: that copy puts the table on the system clipboard as HTML (<table>, a <td> per cell, its text) and as plain text '
+    + '(a row per line, cells joined by tabs)', c63['text/plain'] === 'Table source.\nName\tQty\none\t1\ntwo\t2\nAf'
+    && /<table[^>]*>(<tbody>)?<tr><td[^>]*><p[^>]*>Name<\/p><\/td>/.test(h63) && (h63.match(/<td/g) || []).length === 6
+    && (h63.match(/<tr>/g) || []).length === 3, { plain: c63['text/plain'], html: h63.slice(0, 400) });
+  await click('TblDst', 0, 15);
+  await press(MOD + '+v');
+  await page.waitForFunction(() => window.__doc('TblDst').view.undoDepth === 1, null, { timeout: 10000 });
+  await settle();
+  const tb1 = await ev(() => window.__tblSt('TblDst'));
+  ok('C6.2: a Grid Table 4 table copied in one window and pasted in another: a table there, its style copied, the header drawn '
+    + 'black (the style\'s firstRow shading), one undo step', same(tb1.types, ['p', 'tbl', 'p', 'p']) && tb1.style === 'GridTable4'
+    && tb1.has && tb1.depth === 1 && tb1.rows === 3 && same(tb1.px, [0, 0, 0]), tb1);
+  await press('Control+z');
+  await page.waitForFunction(() => window.__doc('TblDst').view.undoDepth === 0, null, { timeout: 10000 });
+  await settle();
+  const tb2 = await ev(() => window.__tblSt('TblDst'));
+  ok('... Ctrl-Z removes the table and the copied style', same(tb2.types, ['p', 'p']) && !tb2.has, tb2);
+  await press(MOD + '+v');
+  await page.waitForFunction(() => window.__doc('TblDst').view.undoDepth === 1, null, { timeout: 10000 });
+  await press('Control+s');
+  await page.waitForFunction(() => !window.__doc('TblDst').view.dirty, null, { timeout: 10000 });
+  await ev(async () => {
+    window.__doc('TblDst').dw.close();
+    await os.filer.run('RAM::RamDisc0.$.TblDst');
+  });
+  await page.waitForFunction(() => window.__doc('TblDst')?.view.layout, null, { timeout: 20000 });
+  await ev(async () => {
+    window.__doc('TblDst').win.open({ x: 520, y: 60, w: 470, h: 300, behind: 'top', scrollX: 0, scrollY: 0 });
+    await window.__frames(3);
+  });
+  const tb3 = await ev(() => window.__tblSt('TblDst'));
+  ok('... pasted again, saved and reopened: the table and its style are in the file, drawn as before',
+    same(tb3.types, ['p', 'tbl', 'p', 'p']) && tb3.style === 'GridTable4' && tb3.has && tb3.depth === 0 && same(tb3.px, [0, 0, 0]), tb3);
+
+  // ---------------------------------------------------- C6.3: an HTML table pasted from another program
+  const HT = '<meta charset="utf-8"><table border="1"><tbody><tr><th colspan="2">Head</th></tr><tr><td rowspan="2" '
+    + 'style="background-color:#00ff00;width:72pt">m</td><td onclick="window.__pwned=1">x<script>window.__pwned=2</script>'
+    + '</td></tr><tr><td>y</td></tr></tbody></table>';
+  const hp = await ev(async (html) => {
+    const d = window.__doc('TblDst'), bl = d.d.doc.sections[0].blocks, last = bl[bl.length - 1];
+    d.view.setSelection({ id: last.id, off: last.text.length });
+    const depth = d.view.undoDepth, before = JSON.stringify(d.d.doc.sections);
+    const prevented = window.__fire('TblDst', { text: 'Head\nm\tx\n\ty', html });
+    const t0 = performance.now();
+    while (d.view.undoDepth === depth && performance.now() - t0 < 5000) await window.__frames(1);
+    const tbls = d.d.doc.sections[0].blocks.filter((b) => b.type === 'tbl'), t = tbls[tbls.length - 1];
+    const cells = t?.rows.map((r) => r.cells.map((c) => [c.blocks.map((b) => b.text).join('|'), c.tcPr.gridSpan ?? 1,
+      c.tcPr.vMerge ?? '-', c.tcPr.shd?.fill ?? '', !!c.tcPr.tcBorders]));
+    const items = d.view.layout.items.filter((x) => x.kind === 'tbl').length;
+    const res = { prevented, n: tbls.length, cells, grid: t?.grid, bold: t?.rows[0].cells[0].blocks[0].runs[0]?.rPr.b,
+      depth: d.view.undoDepth - depth, items, last: d.clipboard?.last, pwned: window.__pwned ?? null };
+    d.view.press('undo');
+    d.view.flush();
+    res.restored = JSON.stringify(d.d.doc.sections) === before;
+    return res;
+  }, HT);
+  ok('C6.3: HTML holding a table (synthetic paste event) goes in as a real table: colspan, rowspan, th bold, shading, '
+    + 'borders, a width in pt; scripts and handlers inert; one undo step that restores the document',
+  hp.prevented && hp.last === 'html' && hp.n === 2 && hp.items === 2 && hp.depth === 1 && hp.bold === true && hp.pwned === null && hp.restored
+    && same(hp.cells, [[['Head', 2, '-', '', true]], [['m', 1, 'restart', '00FF00', true], ['x', 1, '-', '', true]],
+      [['', 1, 'continue', '00FF00', true], ['y', 1, '-', '', true]]]) && hp.grid?.[0] === 1440, hp);
 
   // ---------------------------------------------------- 50,000 paragraphs: select all, copy
   await ev(async () => {

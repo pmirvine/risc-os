@@ -1,0 +1,103 @@
+// TblSplitBox - the Split cells dialogue box (Batch C4.3, D25; the
+// Table menu's Split cells..., C4.4): Columns and Rows, whole numbers
+// 1 to 63 (2 and 1 when the box opens, as Word). Built by WimpLib
+// Ui/Dialog.
+//
+//   tblSplitBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'tblsplit:<docKey>'), kept in dw.boxes
+//       ('tblsplit') so ./CloseDoc deletes it with the document;
+//       asked again while it is open, the same box comes to the
+//       front. Nothing (null) when the document has no selection.
+//
+// OK splits the cell the caret is in, or merges the selected cells
+// and splits the result (./TblCmd splitCellsCmd): one undo step, the
+// caret in the first new cell, the box gone. A number that is not a
+// whole number 1 to 63 is not rounded or clamped: OK beeps, says so,
+// keeps the box and puts the caret in the field. A split the table
+// cannot take (past 63 grid columns, rows that do not divide the
+// rows a cell is merged over, no table cell selected) beeps, says
+// why and keeps the box; so does 1 x 1 (nothing to split). If the
+// selection or the document changed while the box was open (a click,
+// a key, another menu), OK beeps, says so and keeps the box, with
+// the numbers typed; the next OK splits at the new caret (so does
+// asking for the box again; ./TabsBox where, as ./TblInsertBox:
+// final-2 I2). Cancel, Escape and the close icon change nothing; the
+// caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {splitCellsCmd, splitWhy} from './TblCmd';
+import {MAX_COLS} from './TblCheck';
+
+// The fields never clamp (their maximum is far above 63): OK checks.
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;
+const num = (name, label, help) => ({kind: 'number', name, label,
+  min: 0, max: FIELD_MAX, decimals: 0, w: 120, help});
+const rows = () => [
+  num('cols', 'Columns', 'How many columns to split into: 1 to 63.'),
+  num('rows', 'Rows', 'How many rows to split into: 1 to 63.'),
+  {kind: 'label', name: 'msg', text: '', w: 440},
+];
+const HELP = 'Split cells: split the cell the caret is in (or the ' +
+  'selected cells, merged first) into columns and rows.';
+const ok = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_COLS;
+
+/** See the header. */
+export function tblSplitBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `tblsplit:${dw.docKey}`,
+    title: 'Split cells', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 468});
+  box(dw, 'tblsplit', () => api.win);
+  state.set(api, where(v));
+  if (api.isOpen) {
+    api.set('msg', '');
+    return api;
+  }
+  if (!wired.has(api)) wire(api, v);
+  api.set('cols', 2);
+  api.set('rows', 1);
+  api.set('msg', '');
+  api.open();
+  return api;
+}
+
+const wired = new WeakSet();
+const state = new WeakMap();           // api -> where(v) when asked
+const CHANGED = 'The document changed while the box was open: look ' +
+  'again, then click OK.';
+
+/** Why splitCellsCmd refused cols x rows (see the header). */
+const why = (v, cols, rows) => splitWhy(v.d.doc, v.sel, cols, rows);
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    for (const [f, label] of [['cols', 'Columns'], ['rows', 'Rows']]) {
+      if (!ok(values[f])) return no(label + ': a whole number from 1 ' +
+        'to 63.', f);
+    }
+    const {cols, rows: nr} = values;
+    if (!v.sel) return no(why(v, cols, nr));
+    if (where(v) !== state.get(api)) {
+      state.set(api, where(v));
+      return no(CHANGED);
+    }
+    const out = v.typing.command(() => splitCellsCmd(v.d, v.sel,
+      {cols, rows: nr}));
+    if (!out) return no(why(v, cols, nr));
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

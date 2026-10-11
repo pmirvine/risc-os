@@ -94,11 +94,13 @@ const TYPES = {png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif'};
  * A .docx with one paragraph per picture (Promise<Uint8Array>).
  * opts: strict; pics [{...drawingXml opts, bytes (null: no media
  * part), ext ('png'), target, mode, rel (false: no relationship)}]
- * (default one PNG picture); body (XML after the pictures).
+ * (default one PNG picture); body (XML after the pictures); parts:
+ * more parts ({name: XML}, such as word/styles.xml).
  */
-export function picDocx({strict = false, pics = [{}], body = ''} = {}) {
+export function picDocx({strict = false, pics = [{}], body = '',
+  parts: more = {}} = {}) {
   const u = strict ? STRICT_URIS : URIS;
-  const parts = {};
+  const parts = {...more};
   const rels = [];
   let xml = '';
   pics.forEach((o, k) => {

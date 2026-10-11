@@ -41,8 +41,9 @@ describe('InsertApply: the page break command', () => {
       'pageBreak');
     assert.equal(keymap.lookup({code: 13, ctrl: true}), 'pageBreak');
     assert.equal(keymap.lookup({code: 13, key: 'Enter'}), 'enter');
+    // (Ctrl+Shift+Enter is split table since C4.1, R21)
     assert.equal(keymap.lookup({code: 13, key: 'Enter', ctrl: true,
-      shift: true}), null);
+      shift: true}), 'splitTable');
     assert.equal(keymap.labelFor('pageBreak'), 'Ctrl+Enter');
   });
   it('mid-paragraph: the break ends the first part', () => {

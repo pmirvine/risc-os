@@ -1,0 +1,238 @@
+// TblEditCols - the column and distribute commands of a Table as
+// pure functions (Batch C4.2, D24, D26), in ./TblEdit's manner: each
+// returns a NEW table (a NEW grid array; every row, cell and block
+// it does not change shared; no tcPr / trPr / tblPr object changed
+// in place) or the same table when nothing changes. g is the table's
+// ./TblGrid gridOf (computed when not given); columns c0..c1 are
+// INCLUSIVE grid columns (./SelShape's), rows r0..r1 the same.
+//
+//   insertCols(t, g, {c0, c1, right}, textTw) -> t'  c1 - c0 + 1 new
+//       grid columns left of c0 or right of c1, of the widths of
+//       columns c0..c1 in order (D24). Each row: where a cell's
+//       gridSpan crosses the point, the span grows (a dxa tcW by the
+//       new widths); at a cell boundary, new cells of one column
+//       each beside the neighbour on the side the columns copy
+//       (right: the cell ending there; left: the one starting
+//       there), copies of its tcPr without vMerge or gridSpan, tcW
+//       dxa of the new width, one ./TblEdit emptyLike paragraph of
+//       its first paragraph (fresh ids: reserve the document's
+//       first); where that side is the row's gridBefore / gridAfter,
+//       that grows; past the row's end nothing (rows stay ragged).
+//       A table within textTw (twips, a number: the grid's total <=
+//       it; anything else never scales) that
+//       would exceed it is scaled back to its old total (TB12):
+//       every grid column (integers, the remainder to the largest
+//       fractions) and every dxa tcW. A dxa tblW grows with the grid
+//       when not scaled. RangeError for columns not in g, 'columns'
+//       past ./TblCheck MAX_COLS (R16).
+//   deleteCols(t, g, {c0, c1}) -> t' | null  the grid columns gone
+//       (D24, TB25): spans crossing them shrink (a dxa tcW by the
+//       columns' widths), cells wholly inside go with their content,
+//       gridBefore / gridAfter over them shrink, rows left with no
+//       cell go; null when every column (or every row) goes. A dxa
+//       tblW shrinks with the grid. The marks of what goes (each
+//       cell's lead, its paragraphs' bookmark marks whose partner
+//       does not go too; a row gone: its lead and tail as well) move
+//       to the front of the next kept cell's lead in the row, else
+//       of the row's tail; a row's gone to the next kept row's lead,
+//       else the table's tail: a bookmark pair is never broken.
+//   distributeCols, distributeRows  ./TblEditDist's (re-exported)
+//   tcPrWith(tcPr, n, w?) -> a copy with gridSpan n (none at 1) and
+//       tcW dxa w when w is given; trPrWith(trPr, before, after) ->
+//       a copy with gridBefore / gridAfter (none at 0): ./TblMerge's
+// A raw tcW (./TblNorm rawW: a Strict w:w="155.80pt") of a cell
+// whose columns change becomes tcW dxa of its new columns (C5.3).
+// Both commands start from ./TblNorm unstray (a stray continue cell
+// written restart, so a narrower neighbour cannot make it join a
+// merge) and set fields with prWith (a raw element of the name
+// dropped: no second w:tcW).
+// Pure: no desktop services.
+import {newCell} from './Model';
+import {gridOf} from './TblGrid';
+import {MAX_COLS} from './TblCheck';
+import {emptyLike, firstPara, cellMarks, unpaired, nodesOf}
+  from './TblEdit';
+import {dxa, isDxa, sum, checkCols} from './TblEditDist';
+import {prWith, unstray, rawW} from './TblNorm';
+
+export {distributeCols, distributeRows} from './TblEditDist';
+
+const arr = (v) => (Array.isArray(v) ? v : []);
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header (tcPrWith). */
+export function tcPrWith(tcPr, n, w) {
+  const o = {gridSpan: n > 1 ? n : undefined};
+  if (w !== undefined) o.tcW = dxa(w);
+  return prWith(tcPr, o);
+}
+
+/** See the header (trPrWith). */
+export function trPrWith(trPr, before, after) {
+  return prWith(trPr, {gridBefore: before > 0 ? before : undefined,
+    gridAfter: after > 0 ? after : undefined});
+}
+
+/** grid scaled to the total `to`: integers, the remainder to the
+ *  largest fractions (the first among equals). */
+function scaled(grid, to) {
+  const from = sum(grid), raw = grid.map((w) => w * to / from);
+  const out = raw.map(Math.floor);
+  const order = raw.map((w, k) => k).sort((a, b) =>
+    (raw[b] - out[b]) - (raw[a] - out[a]) || a - b);
+  for (let i = 0, rem = to - sum(out); i < rem; i++) out[order[i]]++;
+  return out;
+}
+
+/** tblPr with a dxa tblW changed by dw (when it has one). */
+const tblPrBy = (tblPr, dw) => (dw && isObj(tblPr) &&
+  isDxa(tblPr.tblW) ? prWith(tblPr, {tblW: dxa(Math.max(0,
+    tblPr.tblW.w + dw))}) : tblPr);
+
+/** Where the n new columns go in row gr (see the header): {grow: k}
+ *  a crossing cell, {at: k, tmpl: j} new cells, {before} / {after}
+ *  a count grown, or null. */
+function slotIn(gr, p, right) {
+  const gc = gr.cells, {before, after} = gr;
+  const end = gc.length ? gc[gc.length - 1].c1 : before;
+  let L = null, R = null;
+  for (let k = 0; k < gc.length; k++) {
+    if (gc[k].c0 < p && p < gc[k].c1) return {grow: k};
+    if (gc[k].c0 === p) {
+      R = {cell: k};
+      L = k ? {cell: k - 1} : before ? {gap: 'before'} : null;
+    }
+  }
+  if (!R) {
+    if (p < before) return {gap: 'before'};
+    if (p === end && gc.length) {
+      L = {cell: gc.length - 1};
+      R = after ? {gap: 'after'} : null;
+    } else if (p > end && p < end + after) return {gap: 'after'};
+    else if (p === end + after && after) L = {gap: 'after'};
+  }
+  const side = right ? L : R;
+  return side && side.cell !== undefined ? {at: right ? side.cell + 1
+    : side.cell, tmpl: side.cell} : side;
+}
+
+/** See the header. */
+export function insertCols(t, g, {c0, c1, right} = {}, textTw) {
+  g = g || gridOf(t);
+  checkCols(g, c0, c1);
+  t = unstray(t, g);
+  const n = c1 - c0 + 1;
+  if (g.cols + n > MAX_COLS) {
+    throw new RangeError('columns: at most ' + MAX_COLS);
+  }
+  const p = right ? c1 + 1 : c0, widths = g.grid.slice(c0, c1 + 1);
+  const add = sum(widths), old = g.width;
+  let grid = [...g.grid.slice(0, p), ...widths, ...g.grid.slice(p)];
+  const scale = typeof textTw === 'number' && old > 0 &&
+    old <= textTw && old + add > textTw;
+  if (scale) grid = scaled(grid, old);
+  const f = scale ? old / (old + add) : 1;
+  // (a start at p moves past the new columns; an end at p does not)
+  const at = (x, end) => (x > p || (x === p && !end) ? x + n : x);
+  const fit = (c, gc) => (isDxa(c.tcPr.tcW) ? {...c, tcPr:
+    prWith(c.tcPr, {tcW: dxa(Math.round(c.tcPr.tcW.w * f))})}
+    : rawW(c.tcPr) ? {...c, tcPr: prWith(c.tcPr, {tcW: dxa(sum(grid,
+      at(gc.c0), at(gc.c1, true)))})} : c);
+  const rows = t.rows.map((row, r) => {
+    const gr = g.rows[r], s = slotIn(gr, p, right);
+    let cells = row.cells.slice(), trPr = row.trPr;
+    if (s && s.grow !== undefined) {
+      const c = cells[s.grow], gc = gr.cells[s.grow], w = c.tcPr.tcW;
+      cells[s.grow] = {...c, tcPr: tcPrWith(c.tcPr, gc.c1 - gc.c0 + n,
+        isDxa(w) ? Math.round((w.w + add) * f) : rawW(c.tcPr)
+          ? sum(grid, gc.c0, gc.c1 + n) : undefined)};
+    } else if (s && s.gap) {
+      trPr = trPrWith(trPr, gr.before + (s.gap === 'before' ? n : 0),
+        gr.after + (s.gap === 'after' ? n : 0));
+    }
+    if (scale) cells = cells.map((c, k) => (s && k === s.grow ? c
+      : fit(c, gr.cells[k])));
+    if (s && s.tmpl !== undefined) {
+      const m = row.cells[s.tmpl], made = [];
+      for (let i = 0; i < n; i++) {
+        const tcPr = prWith(tcPrWith(m.tcPr, 1, grid[p + i]),
+          {vMerge: undefined});
+        made.push(newCell([emptyLike(firstPara(m))], tcPr));
+      }
+      cells.splice(s.at, 0, ...made);
+    }
+    if (trPr === row.trPr && cells.length === row.cells.length &&
+      cells.every((c, k) => c === row.cells[k])) return row;
+    return {...row, trPr, cells};
+  });
+  return {...t, tblPr: tblPrBy(t.tblPr, scale ? 0 : add), grid, rows};
+}
+
+/** See the header. */
+export function deleteCols(t, g, {c0, c1} = {}) {
+  g = g || gridOf(t);
+  checkCols(g, c0, c1);
+  if (c0 === 0 && c1 === g.cols - 1) return null;
+  t = unstray(t, g);
+  const lost = (a, b) => Math.max(0, Math.min(b, c1 + 1) -
+    Math.max(a, c0));
+  const lostW = (a, b) => sum(g.grid, Math.max(a, c0),
+    Math.min(b, c1 + 1));
+  const goes = (gc) => lost(gc.c0, gc.c1) === gc.c1 - gc.c0;
+  // what goes, for the pairs: a bookmark pair wholly in it goes too
+  const all = [], marks = new Map();
+  t.rows.forEach((row, r) => {
+    const gone = g.rows[r].cells.map(goes);
+    const whole = gone.every(Boolean);
+    if (whole) all.push(...arr(row.lead));
+    row.cells.forEach((c, k) => {
+      if (gone[k]) all.push(...marks.set(c, cellMarks(c, [])).get(c));
+    });
+    if (whole) all.push(...arr(row.tail));
+  });
+  const moving = new Set(unpaired(all));
+  const moved = (got) => nodesOf(got.filter((m) => moving.has(m)));
+  const rows = [];
+  let carry = [];
+  t.rows.forEach((row, r) => {
+    const gr = g.rows[r], cells = [];
+    let pend = [], tail = arr(row.tail);
+    row.cells.forEach((c, k) => {
+      const gc = gr.cells[k];
+      if (goes(gc)) {
+        pend.push(...moved(marks.get(c)));
+        return;
+      }
+      let tcPr = c.tcPr;
+      const x = lost(gc.c0, gc.c1);
+      if (x) {
+        const w = tcPr.tcW;
+        const keep = sum(g.grid, gc.c0, gc.c1) - lostW(gc.c0, gc.c1);
+        tcPr = tcPrWith(tcPr, gc.c1 - gc.c0 - x, isDxa(w) ? Math.max(0,
+          w.w - lostW(gc.c0, gc.c1)) : rawW(tcPr) ? keep : undefined);
+      }
+      cells.push(tcPr === c.tcPr && !pend.length ? c : {...c, tcPr,
+        lead: [...pend, ...arr(c.lead)]});
+      pend = [];
+    });
+    if (!cells.length) {
+      carry = [...carry, ...moved(arr(row.lead)), ...pend,
+        ...moved(arr(row.tail))];
+      return;
+    }
+    if (pend.length) tail = [...pend, ...tail];
+    const end = gr.cells[gr.cells.length - 1].c1;
+    const nb = lost(0, gr.before), na = lost(end, end + gr.after);
+    const trPr = nb || na ? trPrWith(row.trPr, gr.before - nb,
+      gr.after - na) : row.trPr;
+    const lead = carry.length ? [...carry, ...arr(row.lead)] : row.lead;
+    carry = [];
+    rows.push(trPr === row.trPr && lead === row.lead && !pend.length &&
+      cells.length === row.cells.length && cells.every((c, k) => c ===
+        row.cells[k]) ? row : {...row, trPr, cells, lead, tail});
+  });
+  if (!rows.length) return null;
+  const grid = [...g.grid.slice(0, c0), ...g.grid.slice(c1 + 1)];
+  return {...t, tblPr: tblPrBy(t.tblPr, -sum(g.grid, c0, c1 + 1)), grid,
+    rows, tail: carry.length ? [...carry, ...arr(t.tail)] : t.tail};
+}

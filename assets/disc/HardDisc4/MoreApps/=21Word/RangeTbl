@@ -1,0 +1,230 @@
+// RangeTbl - deleting a range in and around tables (Batch C3.4,
+// D10, TB11): ./EditRange deleteRange's part for a range with an end
+// in a table's cell, and Backspace over cells (./EditDel).
+//
+//   deleteIn(d, o) -> the caret {id, off}  o from EditPos.orderedPos,
+//     an end in a cell; by the selection's shape (./SelShape):
+//     'cells': the cells cleared (./TblEdit clearCells: each keeps
+//       one empty paragraph with its first paragraph's pPr and
+//       style), the caret at the start of the top-left cell;
+//     else a range in ONE container (the deepest cell holding both
+//       ends' blocks, or the body): the first paragraph cut at from,
+//       the last cut before to, the blocks between removed, the two
+//       merged (./RangeOps, as at top level); a table an end is in
+//       loses the rows from that end's row to its edge toward the
+//       other end (./TblEdit deleteRows) and goes when they are all
+//       its rows ('mixed', D10); a table spanned goes whole; a
+//       nested table's two edges {t,0}..{t,1}: that table
+//   backCells(d, sh, o) -> the caret  Backspace over a 'cells' shape
+//     sh that is not the whole table (TB11): rows r0..r1 removed
+//     when the rectangle spans every grid column (the caret at the
+//     start of the row after them, else of the one before), else
+//     cleared as by Delete
+//
+// Ops in the caller's group (one undo step; a table changed by ONE
+// restoreBlock: ./TblCmd onTable). A cell the range would empty gets
+// an empty paragraph first (a cell keeps a block), and one it leaves
+// ending with a table gets one at its end (as a section does,
+// ./RangeOps fillEmpty). The caret: at from when its paragraph
+// stays, else at the start of to's; else in the block after the
+// range (a table cut from its start: its first paragraph), else at
+// the end of the one before (a table cut to its end: its last).
+// Bookmarks: the marks in the paragraphs deleted or cleared (rows of
+// a table an end is in included; ./SelShape paraRanges) whose
+// partner is still in the document afterwards go back at the caret
+// (./BookmarkKeep stillPaired, putMarks: a pair is never broken;
+// cells cleared: starts at the start of the first cell, ends at the
+// end of the last, putAround: never reversed, C6 fix B3);
+// the marks between removed rows move to the next row (deleteRows);
+// two tables (typed or Opaque) a range leaves next to each other
+// (rows cut from each, or a range from one's edge to the other's)
+// get an empty paragraph between them, the caret in it (./RangeOps
+// apart; D27: tables never touch; C6 and C7 fixes);
+// a table taken whole goes with the marks whose partner goes too;
+// the others go to the caret (./BookmarkKeep tableMarks, C7 fix);
+// a pair the marks put at the caret would leave end before start
+// (the caret in a table whose removed rows' marks went to its first
+// row's lead or its tail) gets its end moved to just after its
+// start: an empty bookmark, never a reversed one (./TblPairs
+// endsAfter; final-1 I2).
+// Pure: no desktop services.
+import {endOf, posOf, neighbour, atIndex, findBlock}
+  from './EditPos';
+import {at as walkAt} from './Walk';
+import {samePath, sib} from './Path';
+import {shapeOf, paraRanges} from './SelShape';
+import {gridOf} from './TblGrid';
+import {endsCell} from './TblCheck';
+import {clearCells, deleteRows} from './TblEdit';
+import {onTable, firstPos, lastPos, cellPos, rowPos} from './TblCmd';
+import {marksIn, stillPaired, putMarks, putAround, tableMarks}
+  from './BookmarkKeep';
+import {marks} from './BookmarkFind';
+import {reversedIds, endsAfter} from './TblPairs';
+import {cutOut, putPara, mergeAt, removeTop, fillEmpty, apart}
+  from './RangeOps';
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+const inside = (at, w) => at.length > w.length &&
+  samePath(at.slice(0, w.length), w);
+
+/**
+ * fn() (the deletion: the caret) with the bookmark rule of the header:
+ * the marks of o's paragraphs (but in the tables at paths `whole`)
+ * and of the tables at `whole` (taken whole: their loose marks too)
+ * read first, the ones still paired put back at the caret.
+ */
+function keeping(d, o, whole, fn) {
+  const got = [];
+  for (const r of paraRanges(d.doc, {anchor: o.from, head: o.to})) {
+    if (whole.some((w) => inside(r.at, w))) continue;
+    marksIn(walkAt(d.doc, r.at), r.from, r.to, got);
+  }
+  for (const w of whole) tableMarks(walkAt(d.doc, w), got);
+  const was = got.length ? reversedIds(marks(d.doc)) : null;
+  const pos = fn();
+  const kept = stillPaired(d.doc, got);
+  putMarks(d, pos, kept);
+  if (kept.length) ordered(d, pos, was);
+  return pos;
+}
+
+/** The top-level table holding pos with no pair reversed but those
+ *  in was (see the header). */
+function ordered(d, pos, was) {
+  const loc = findBlock(d.doc, pos.id);
+  if (!loc || loc.at.length < 5) return;
+  const at = loc.at.slice(0, 2), t = walkAt(d.doc, at);
+  const n = endsAfter(was, t);
+  if (n !== t) d.apply({op: 'restoreBlock', block: at, snapshot: n});
+}
+
+/** Clear the cells of sh; the start of its top-left cell. The
+ *  kept marks (read first): starts there, ends at the end of the
+ *  last cell (./BookmarkKeep putAround: no pair reversed). */
+function clear(d, o, sh) {
+  const got = [];
+  for (const r of paraRanges(d.doc, {anchor: o.from, head: o.to}))
+    marksIn(walkAt(d.doc, r.at), r.from, r.to, got);
+  const c = sh.cells[0], z = sh.cells[sh.cells.length - 1];
+  onTable(d, sh.table, (t) => clearCells(t, sh.cells));
+  const t = walkAt(d.doc, sh.table);
+  const pos = cellPos(t, c.r, c.k) || {id: t.id, off: 0};
+  const bl = t.rows[z.r].cells[z.k].blocks, p = bl[bl.length - 1];
+  putAround(d, pos, {id: p.id, off: p.text.length},
+    stillPaired(d.doc, got));
+  return pos;
+}
+
+/** See the header. */
+export function deleteIn(d, o) {
+  const doc = d.doc;
+  if (o.f.b === o.t.b && isTbl(o.f.b)) {
+    return keeping(d, o, [o.f.at], () => span(d, o, []));
+  }
+  const sh = shapeOf(doc, {anchor: o.from, head: o.to});
+  if (sh.kind === 'cells') return clear(d, o, sh);
+  const tables = sh.kind === 'mixed' ? sh.tables : [];
+  const whole = tables.filter((x) => x.r0 === 0 &&
+    x.r1 === walkAt(doc, x.table).rows.length - 1).map((x) => x.table);
+  return keeping(d, o, whole, () => span(d, o, tables));
+}
+
+/** See the header. */
+export function backCells(d, sh, o) {
+  const t = walkAt(d.doc, sh.table);
+  if (sh.c0 !== 0 || sh.c1 !== gridOf(t).cols - 1) {
+    return clear(d, o, sh);
+  }
+  return keeping(d, o, [], () => {
+    const s = onTable(d, sh.table, (x) => deleteRows(x, sh.r0, sh.r1),
+      (n) => rowPos(n, Math.min(sh.r0, n.rows.length - 1)));
+    return s ? s.head : firstPos(t) || {id: t.id, off: 0};
+  });
+}
+
+/** The length of the paths of the container's blocks: 2 + 3 x the
+ *  cells both paths are in. */
+function level(a, b) {
+  let n = 2;
+  while (n + 3 <= a.length && n + 3 <= b.length &&
+    samePath(a.slice(0, n + 2), b.slice(0, n + 2))) n += 3;
+  return n;
+}
+
+/** The blocks of the cell at path prefix pre (table path, r, c). */
+const cellBlocks = (doc, pre) => walkAt(doc, pre.slice(0, -2))
+  .rows[pre[pre.length - 2]].cells[pre[pre.length - 1]].blocks;
+
+/** deleteIn's range in one container (see the header). */
+function span(d, o, tables) {
+  const doc = d.doc, {from, to, f, t} = o;
+  const n = level(f.at, t.at), top = n === 2;
+  const pre = f.at.slice(0, n - 1);
+  const bf = f.at.slice(0, n), bt = t.at.slice(0, n);
+  const fb = walkAt(doc, bf), tb = walkAt(doc, bt);
+  const one = samePath(bf, bt);
+  const fP = fb.type === 'p', tP = tb.type === 'p';
+  if (one && fP) {
+    cutOut(d, bf, from.off, to.off);
+    return from;
+  }
+  const rowsOf = (b, p) => (isTbl(b) &&
+    tables.find((x) => samePath(x.table, p))) || null;
+  const xf = rowsOf(fb, bf), xt = rowsOf(tb, bt);
+  // (an end in a table its shape does not take: the C1.5 refusal)
+  if ((f.at.length > n && !xf) || (t.at.length > n && !xt))
+    throw new RangeError('a range in a table');
+  const all = (x, b) => x.r0 === 0 && x.r1 === b.rows.length - 1;
+  const keepF = fP || (xf ? !all(xf, fb) : from.off === 1);
+  const keepT = tP || (xt ? !all(xt, tb) : to.off === 0);
+  const ix = (p, loc) => (top ? loc.k : p[n - 1]);
+  const lo = ix(bf, f) + (keepF ? 1 : 0);
+  const hi = ix(bt, t) - (keepT ? 1 : 0);
+  const len = top ? 0 : cellBlocks(doc, pre).length;
+  const rows = (p, x) => onTable(d, p,
+    (T) => deleteRows(T, x.r0, x.r1));
+  if (keepT && !one) {
+    if (tP) cutOut(d, bt, 0, to.off);
+    else if (xt) rows(bt, xt);
+  }
+  if (hi >= lo && top) removeTop(d, f, t, lo, hi);
+  else if (hi >= lo) {
+    // (the carrier first: no op leaves a cell ending with a table)
+    const before = lo > 0 ? cellBlocks(doc, pre)[lo - 1] : null;
+    if (hi === len - 1 && (!before || endsCell(before))) {
+      putPara(d, [...pre, len]);
+    }
+    d.apply({op: 'removeBlocks', at: [...pre, lo], count: hi - lo + 1});
+  }
+  if (keepF) {
+    if (fP) cutOut(d, bf, from.off, fb.text.length);
+    else if (xf) rows(bf, xf);
+  }
+  // (two tables left next to each other would touch: Word joins
+  // them; D27: an empty paragraph between, ./RangeOps apart)
+  if (!fP && !tP) apart(d, sib(bf, lo - ix(bf, f)));
+  let pos = null;
+  if (fP && tP) {
+    const a = {...f, b: walkAt(doc, bf)};
+    pos = mergeAt(d, a, neighbour(doc, a, 1));
+  }
+  if (top) fillEmpty(d, f.s, t.s);
+  else if (hi === len - 1) {
+    const bs = cellBlocks(doc, pre);
+    if (bs[bs.length - 1].type !== 'p') putPara(d, [...pre, bs.length]);
+  }
+  if (pos) return pos;
+  if (fP) return from;
+  if (tP) return {id: tb.id, off: 0};
+  const at = (k) => (top ? (atIndex(doc, k) || {}).b
+    : walkAt(doc, [...pre, k]));
+  const next = at(lo);
+  if (next) {
+    return (xt && keepT && isTbl(next) && firstPos(next)) ||
+      posOf({b: next}, 0);
+  }
+  const prev = at(lo - 1);
+  return (xf && keepF && isTbl(prev) && lastPos(prev)) ||
+    posOf({b: prev}, endOf(prev));
+}

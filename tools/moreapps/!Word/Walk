@@ -1,0 +1,216 @@
+// Walk - one walk of the model for every scanner (Batch C, D7):
+// scanners walk the MODEL, and read XML only inside an Opaque node.
+//
+//   blocks(doc)          every block in flow order, as entries
+//                        {b, at, depth, cell}: a table, then its rows'
+//                        cells' blocks row by row, cell by cell, then
+//                        what follows it; sections in order
+//   forEachBlock(doc, fn)  the same without entry objects, for hot
+//                        loops: fn(b, at, depth, cell); fn returning
+//                        false stops; returns false when stopped
+//   walkBlocks(blocks, at0 = [])  the same over a block list (the
+//                        clipboard's blocks, which have no ids): paths
+//                        are at0 + [j, (r, c, j)...]
+//   forEachIn(blocks, at0, fn)  forEachBlock over a block list
+//   scan(doc, fn)        fn(b) for every block in flow order, no
+//                        paths and no stop: whole-document scans (a
+//                        plain loop over each section; tables by the
+//                        walk), as cheap as before tables
+//   loose(table)         the table's own marks between rows and cells
+//                        in document order: [{node, r?, c?, where}],
+//                        where 'rowLead' (r: before row r), 'lead'
+//                        (r, c: before cell c), 'rowTail' (r: after
+//                        its last cell), 'tail' (after the last row)
+//   ids(doc)             every 'p' and 'tbl' id, every depth (array)
+//   blockIds(blocks)     the same over a block list
+//   forEachId(doc, fn)   fn(id) for each of ids(doc), no array
+//   at(doc, path)        the block at a ./Path path or null; no throw
+//   mapBlocks(blocks, fn, {opaque, table}?)  fn(p) -> p' for every
+//                        paragraph at every depth; copies a table, row
+//                        or cell only when something under it changed
+//                        (else SAME array); opaque(b) -> a block or an
+//                        array of blocks (spliced in) for each Opaque
+//                        block; table(t) -> t' for each table, after
+//                        its cells (innermost first): the clipboard's
+//                        cleaning and fresh ids (./ClipCleanTbl)
+//   flatText(table, nodeText?)  R10: a line per row, its cells' text
+//                        joined by tabs, a cell's paragraphs (nested
+//                        tables' too) by spaces; tabs and breaks are
+//                        spaces, a raw inline or an Opaque block gives
+//                        nodeText(node) (default: nothing)
+//
+// `depth` is the number of tables around the block (./Path depthOf),
+// so a top-level table is at depth 0 and its cells' blocks at 1.
+// `cell` is {table: path, r, c} of the innermost cell, null at top
+// level; entries and their arrays are shared: read only.
+// The walk is an explicit-stack loop (./WalkCursor: no recursion, no
+// generator in forEachBlock); mapBlocks recurses once per table level
+// and refuses more than MAX_DEPTH (./TblCheck). Pure: no desktop
+// services.
+import {isPath} from './Path';
+import {MAX_DEPTH} from './TblCheck';
+import {Cursor, isObj, isTbl, arr} from './WalkCursor';
+
+/** See the header. */
+export function forEachIn(list, at0, fn) {
+  const cur = new Cursor(list, at0, true);
+  while (cur.next())
+    if (fn(cur.b, cur.at, cur.depth, cur.cell) === false) return false;
+  return true;
+}
+
+/** See the header. */
+export function forEachBlock(doc, fn) {
+  const secs = arr(doc && doc.sections);
+  for (let s = 0; s < secs.length; s++)
+    if (!forEachIn(secs[s] && secs[s].blocks, [s], fn)) return false;
+  return true;
+}
+
+function* entries(cur) {
+  while (cur.next()) yield {b: cur.b, at: cur.at, depth: cur.depth,
+    cell: cur.cell};
+}
+
+/** See the header. */
+export function* blocks(doc) {
+  const secs = arr(doc && doc.sections);
+  for (let s = 0; s < secs.length; s++)
+    yield* entries(new Cursor(secs[s] && secs[s].blocks, [s], true));
+}
+
+/** See the header. */
+export const walkBlocks = (list, at0 = []) =>
+  entries(new Cursor(list, at0, true));
+
+/** The list's own blocks in a plain loop (ids are scanned per
+ *  split: a long document must stay cheap); tables by a Cursor. */
+function scanIn(list, fn) {
+  for (const x of arr(list)) {
+    if (!isTbl(x)) { fn(x); continue; }
+    const cur = new Cursor([x], null, false);
+    while (cur.next()) fn(cur.b);
+  }
+}
+
+/** See the header. */
+export function scan(doc, fn) {
+  for (const s of arr(doc && doc.sections)) scanIn(s && s.blocks, fn);
+}
+
+const idOf = (fn) => (b) => {
+  if (isObj(b) && (b.type === 'p' || b.type === 'tbl')) fn(b.id);
+};
+/** See the header. */
+export const forEachId = (doc, fn) => scan(doc, idOf(fn));
+const idsIn = (list, fn) => scanIn(list, idOf(fn));
+
+function collect(walk, x) {
+  const out = [];
+  walk(x, (id) => out.push(id));
+  return out;
+}
+
+/** See the header. */
+export const ids = (doc) => collect(forEachId, doc);
+/** See the header. */
+export const blockIds = (list) => collect(idsIn, list);
+
+/** See the header. */
+export function loose(t) {
+  const out = [];
+  const add = (list, o) => arr(list).forEach((node) =>
+    out.push({node, ...o}));
+  arr(t && t.rows).forEach((row, r) => {
+    if (!isObj(row)) return;
+    add(row.lead, {r, where: 'rowLead'});
+    arr(row.cells).forEach((cell, c) =>
+      add(isObj(cell) && cell.lead, {r, c, where: 'lead'}));
+    add(row.tail, {r, where: 'rowTail'});
+  });
+  add(t && t.tail, {where: 'tail'});
+  return out;
+}
+
+/** See the header. */
+export function at(doc, path) {
+  if (!isPath(path) || !isObj(doc)) return null;
+  const sec = arr(doc.sections)[path[0]];
+  let b = arr(isObj(sec) ? sec.blocks : null)[path[1]];
+  for (let k = 2; k < path.length; k += 3) {
+    if (!isTbl(b)) return null;
+    const row = b.rows[path[k]];
+    const cell = arr(isObj(row) ? row.cells : null)[path[k + 1]];
+    b = arr(isObj(cell) ? cell.blocks : null)[path[k + 2]];
+  }
+  return isObj(b) ? b : null;
+}
+
+function mapIn(list, fn, d, o) {
+  let out = null;
+  for (let j = 0; j < list.length; j++) {
+    const b = list[j];
+    let nb = b;
+    if (isObj(b) && b.type === 'p') nb = fn(b);
+    else if (isTbl(b)) nb = mapTable(b, fn, d + 1, o);
+    else if (o.opaque && isObj(b) && b.type === 'opaque')
+      nb = o.opaque(b);
+    if (nb !== b && !out) out = list.slice(0, j);
+    if (!out) continue;
+    if (!Array.isArray(nb)) out.push(nb);
+    else for (const x of nb) out.push(x);
+  }
+  return out || list;
+}
+
+function mapTable(t, fn, d, o) {
+  if (d > MAX_DEPTH) throw new RangeError('table nested too deep');
+  let rows = null;
+  t.rows.forEach((row, r) => {
+    let cells = null;
+    row.cells.forEach((cell, c) => {
+      const bl = mapIn(cell.blocks, fn, d, o);
+      if (bl !== cell.blocks) (cells ||= row.cells.slice())[c] =
+        {...cell, blocks: bl};
+    });
+    if (cells) (rows ||= t.rows.slice())[r] = {...row, cells};
+  });
+  const nt = rows ? {...t, rows} : t;
+  return o.table ? o.table(nt) : nt;
+}
+
+/** See the header. */
+export const mapBlocks = (list, fn, o = {}) => mapIn(list, fn, 0, o);
+
+/** A paragraph's text for flatText: objects by their inline. */
+function paraText(p, nodeText) {
+  if (!/[\t\n\ufffc]/.test(p.text)) return p.text;
+  let s = '';
+  for (let k = 0; k < p.text.length; k++) {
+    const ch = p.text[k], x = p.inlines[k];
+    if (ch === '\t' || ch === '\n') s += ' ';
+    else if (ch !== '\ufffc') s += ch;
+    else if (!x) continue;
+    else if (x.kind === 'tab' || x.kind === 'br') s += ' ';
+    else if (x.node) s += nodeText(x.node);
+  }
+  return s;
+}
+
+function cellText(cell, nodeText) {
+  let s = '';
+  forEachIn(cell.blocks, [], (b) => {
+    if (!isObj(b)) return;
+    if (b.type === 'p') {
+      s += (s ? ' ' : '') + paraText(b, nodeText);
+    } else if (b.type === 'opaque') {
+      const x = nodeText(b.node);
+      if (x) s += (s ? ' ' : '') + x;
+    }
+  });
+  return s;
+}
+
+/** See the header. */
+export const flatText = (t, nodeText = () => '') => t.rows.map((row) =>
+  row.cells.map((cell) => cellText(cell, nodeText)).join('\t'));

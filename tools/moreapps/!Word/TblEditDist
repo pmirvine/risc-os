@@ -1,0 +1,132 @@
+// TblEditDist - distribute columns and rows evenly (Batch C4.2, D26),
+// pure functions on a Table in ./TblEdit's manner (a NEW table and
+// grid array, everything unchanged shared, no property object changed
+// in place; the same table when nothing changes), and the width
+// helpers ./TblEditCols shares. Columns c0..c1 and rows r0..r1 are
+// INCLUSIVE; g is the table's ./TblGrid gridOf (computed when not
+// given).
+//
+//   distributeCols(t, g, {c0, c1}) -> t'  columns c0..c1 equal over
+//       their total (integers, the remainder to the last); every
+//       cell over them tcW dxa = its columns' sum (D26)
+//   distributeRows(t, {r0, r1}, heights) -> t'  rows r0..r1 trHeight
+//       {val, hRule: 'atLeast'}, val the tallest of heights (px of
+//       the layout, heights[i] for row r0 + i) in twips (./TblWidth
+//       TW_PX), at most MAX_TW (D26); RangeError for bad rows or
+//       heights
+//   withCols(t, g, grid, {fitW, styleW}?) -> t'  the columns `grid`
+//       (twips, integers 0..MAX_TW, one per column of g; RangeError
+//       otherwise): a NEW grid array, every cell over a column that
+//       changes tcW dxa = its columns' sum (a pct, auto or raw one
+//       too, D33); with fitW (the table's right edge dragged) a dxa
+//       or pct tblW becomes dxa of the grid's total (the table's
+//       own, else styleW: its style's, which the table then
+//       overrides, so the drag shows). Starts from
+//       ./TblNorm unstray; the same table when nothing changes
+//   dxa(w) -> {w, type: 'dxa'}; isDxa(width); sum(a, i?, j?) the
+//       sum of a[i..j); checkCols(g, c0, c1) RangeError for columns
+//       not in g
+// Fields are set with ./TblNorm prWith (a raw w:tcW / w:trHeight of
+// a Strict file dropped, never written twice).
+// Pure: no desktop services.
+import {gridOf} from './TblGrid';
+import {MAX_TW} from './TblCheck';
+import {TW_PX} from './TblWidth';
+import {prWith, unstray} from './TblNorm';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+export const dxa = (w) => ({w, type: 'dxa'});
+export const isDxa = (v) => isObj(v) && v.type === 'dxa' &&
+  Number.isInteger(v.w);
+export const sum = (a, i = 0, j = a.length) => {
+  let s = 0;
+  for (let k = i; k < j; k++) s += a[k];
+  return s;
+};
+
+/** See the header (checkCols). */
+export function checkCols(g, c0, c1) {
+  if (!Number.isInteger(c0) || !Number.isInteger(c1) || c0 < 0 ||
+    c1 < c0 || c1 >= g.cols) throw new RangeError('no such columns');
+}
+
+/** See the header. */
+export function distributeCols(t, g, {c0, c1} = {}) {
+  g = g || gridOf(t);
+  checkCols(g, c0, c1);
+  const n = c1 - c0 + 1, total = sum(g.grid, c0, c1 + 1);
+  const each = Math.floor(total / n), grid = g.grid.slice();
+  for (let i = 0; i < n; i++) grid[c0 + i] = each;
+  grid[c1] += total - each * n;
+  let changed = grid.length !== t.grid.length ||
+    grid.some((w, k) => w !== t.grid[k]);
+  const rows = t.rows.map((row, r) => {
+    const gcs = g.rows[r].cells;
+    const cells = row.cells.map((c, k) => {
+      const gc = gcs[k];
+      if (gc.c1 <= c0 || gc.c0 > c1) return c;
+      const w = sum(grid, gc.c0, gc.c1), was = c.tcPr.tcW;
+      if (isDxa(was) && was.w === w) return c;
+      return {...c, tcPr: prWith(c.tcPr, {tcW: dxa(w)})};
+    });
+    if (cells.every((c, k) => c === row.cells[k])) return row;
+    changed = true;
+    return {...row, cells};
+  });
+  return changed ? {...t, grid, rows} : t;
+}
+
+/** See the header. */
+export function distributeRows(t, {r0, r1} = {}, heights) {
+  if (!Number.isInteger(r0) || !Number.isInteger(r1) || r0 < 0 ||
+    r1 < r0 || r1 >= t.rows.length) {
+    throw new RangeError('no such rows');
+  }
+  if (!Array.isArray(heights) || heights.length !== r1 - r0 + 1 ||
+    !heights.every((h) => typeof h === 'number' && h >= 0 &&
+      Number.isFinite(h))) throw new RangeError('heights');
+  const top = heights.reduce((a, h) => (h > a ? h : a), 0);
+  const val = Math.min(MAX_TW, Math.round(top * TW_PX));
+  let changed = false;
+  const rows = t.rows.map((row, r) => {
+    const h = row.trPr && row.trPr.trHeight;
+    if (r < r0 || r > r1 || (isObj(h) && h.val === val &&
+      h.hRule === 'atLeast')) return row;
+    changed = true;
+    return {...row, trPr: prWith(row.trPr, {trHeight: {val,
+      hRule: 'atLeast'}})};
+  });
+  return changed ? {...t, grid: [...t.grid], rows} : t;
+}
+
+/** See the header (withCols). */
+export function withCols(t, g, grid, {fitW = false, styleW} = {}) {
+  g = g || gridOf(t);
+  if (!Array.isArray(grid) || grid.length !== g.cols ||
+    !grid.every((w) => Number.isInteger(w) && w >= 0 && w <= MAX_TW)) {
+    throw new RangeError('grid');
+  }
+  const ch = grid.map((w, c) => w !== g.grid[c]);
+  const own = isObj(t.tblPr) ? t.tblPr.tblW : undefined;
+  const w0 = own === undefined ? styleW : own;
+  const fit = fitW && isObj(w0) && (w0.type === 'dxa' ||
+    w0.type === 'pct') && !(isDxa(w0) && w0.w === sum(grid));
+  if (!fit && !ch.some(Boolean) && grid.length === t.grid.length) {
+    return t;
+  }
+  const u = unstray(t, g);
+  const rows = u.rows.map((row, r) => {
+    const cells = row.cells.map((c, k) => {
+      const {c0, c1} = g.rows[r].cells[k];
+      if (!ch.slice(c0, c1).some(Boolean)) return c;
+      const w = sum(grid, c0, c1), was = c.tcPr.tcW;
+      if (isDxa(was) && was.w === w) return c;
+      return {...c, tcPr: prWith(c.tcPr, {tcW: dxa(w)})};
+    });
+    return cells.every((c, k) => c === row.cells[k]) ? row
+      : {...row, cells};
+  });
+  const tblPr = fit ? prWith(u.tblPr, {tblW: dxa(sum(grid))})
+    : u.tblPr;
+  return {...u, tblPr, grid: [...grid], rows};
+}

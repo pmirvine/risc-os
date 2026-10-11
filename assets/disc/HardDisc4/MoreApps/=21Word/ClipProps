@@ -16,6 +16,25 @@
 //     in the model); numPr kept as it is (the source's numId) when
 //     lists (a Map: ./ClipNums) has its numId or the numId is 0 (no
 //     list), else left out
+//   crossTblPr(pr, strict, style, kind?) -> pr  a table's tblPr, or
+//     a row's trPr or a cell's tcPr (kind 'tbl', 'tr', 'tc'; Batch
+//     C6.1, D28): every modelled
+//     field kept (none of them names the source's package) but
+//     tblStyle, which is style(id) (./ClipClean: the target's style
+//     of that name, else undefined: left out); jc spelled as the
+//     target spells it; the raw extra cleaned as above (./NumClean
+//     cleanExtra), keeping w:cnfStyle (the table's own conditional
+//     formatting: it comes with the table), and a raw w:tblStyle
+//     dropped. Set with ./TblNorm prWith (the one way to set a table
+//     property: a raw element of a set field's name is dropped).
+//     Then each raw element left that the target reads as a field
+//     (./TblProps, in the target's conformance: a Strict source's
+//     w:tblBorders with w:left, which Word 2010 writes, read raw
+//     there, is a field in a Transitional document, and the
+//     reverse) becomes that field, unless the field is set or the
+//     element is not alone of its name: what the pasted table's
+//     file reads back as is what the model holds (C6 fix B4).
+//     pr not an object: as it is.
 // A cleaned extra element named as a field that is set (an
 // mc:AlternateContent's fallback w:jc beside a modelled jc) is left
 // out, so nothing is written twice. New objects (the values of kept
@@ -23,6 +42,9 @@
 import {RPR_FIELDS, PPR_FIELDS} from './PropNames';
 import {cleanExtra} from './NumClean';
 import {jcName} from './JcName';
+import {prWith} from './TblNorm';
+import {readTblPr, readTrPr, readTcPr} from './TblProps';
+import {W, rootScope, strictScope} from './Ns';
 
 const isObj = (v) => v !== null && typeof v === 'object' &&
   !Array.isArray(v);
@@ -62,4 +84,43 @@ export function crossPPr(pPr, strict, lists) {
   if (isObj(np) && Number.isInteger(np.numId) && (np.numId === 0 ||
     (lists instanceof Map && lists.has(np.numId)))) out.numPr = np;
   return out;
+}
+
+const CNF = new Set(['cnfStyle']);
+
+/** See the header. */
+export function crossTblPr(pr, strict, style, kind) {
+  if (!isObj(pr)) return pr;
+  const patch = {};
+  for (const k of Object.keys(pr)) if (k !== 'extra') patch[k] = pr[k];
+  if (typeof patch.jc === 'string') patch.jc = jcName(patch.jc, strict);
+  patch.tblStyle = pr.tblStyle === undefined ? undefined
+    : style(pr.tblStyle);
+  return asRead(prWith({extra: cleanExtra(pr.extra, strict, CNF)},
+    patch), strict, kind);
+}
+
+const READ = {tbl: [readTblPr, 'w:tblPr'], tr: [readTrPr, 'w:trPr'],
+  tc: [readTcPr, 'w:tcPr']};
+const SCOPE = rootScope({name: 'w:x', attrs: [['xmlns:w', W]]});
+const STRICT = strictScope(SCOPE);
+
+/** pr with each raw extra element the target reads as a field made
+ *  that field (see the header). */
+function asRead(pr, strict, kind) {
+  const r = Object.hasOwn(READ, kind) ? READ[kind] : null;
+  if (!r || !pr.extra.length) return pr;
+  const names = new Map();
+  for (const e of pr.extra) names.set(e.name, (names.get(e.name) || 0)
+    + 1);
+  const patch = {};
+  for (const e of pr.extra) {
+    if (names.get(e.name) !== 1) continue;
+    const got = r[0]({name: r[1], attrs: [], children: [e]},
+      strict ? STRICT : SCOPE);
+    for (const k of Object.keys(got)) {
+      if (k !== 'extra' && pr[k] === undefined) patch[k] = got[k];
+    }
+  }
+  return Object.keys(patch).length ? prWith(pr, patch) : pr;
 }

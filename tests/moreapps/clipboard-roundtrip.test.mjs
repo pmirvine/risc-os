@@ -18,13 +18,21 @@
 // documents with styles, headings, hyperlinks, tables and sections,
 // and the corpus sample, gated as edit-roundtrip.test.mjs (one file
 // in ten by a hash of its name; WORD_EDIT_CORPUS=1 for every file).
-// 40 seeded commands per file (CLIP_MS caps the time per file). The
+// 40 seeded commands per file (CLIP_MS caps the time per file);
+// positions are taken in blocks at every depth (./Walk: in cells too,
+// so copies of cell rectangles and whole rows, Batch C6.1; a document
+// without tables gets the same commands as before). The
 // commands run per kind are counted and printed; each kind must have
 // run and changed a document. Pictures (Batch B, B7): a source and
 // a target with pictures (PNG, JPEG, two on one embed, a linked one,
 // VML); a copy from another document brings its pictures' media
 // (counted: 'pictures made'); a paste within one gives fresh docPr
-// ids; undo all gives back the parts Map and its bytes.
+// ids; undo all gives back the parts Map and its bytes. Tables
+// (Batch C6.2): a source with Grid Table 4 tables (one nested, a list
+// item and a picture in cells) for one seed, and targets with tables
+// (a 3x3 with merges, one with its own Grid Table 4, a nested one):
+// pastes over cells, in cells and across documents copy the table
+// styles (counted: 'styles made').
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {slice} from '../../tools/moreapps/!Word/ClipSlice';
@@ -38,7 +46,9 @@ import * as F from '../../tools/moreapps/!Word/Find';
 import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
 import {Document} from '../../tools/moreapps/!Word/Document';
 import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
+import {blocks as walkAll} from '../../tools/moreapps/!Word/Walk';
 import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {shapeOf} from '../../tools/moreapps/!Word/SelShape';
 import * as S from '../../tools/moreapps/!Word/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {toggleList} from '../../tools/moreapps/!Word/ListMake';
@@ -46,13 +56,17 @@ import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
 import {Typing} from '../../tools/moreapps/!Word/Typing';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';
-import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
+import {buildDocx, documentXml, stylesXml, p, r, REL}
+  from './build-docx.mjs';
 import {STYLES, rng} from './word-docs.mjs';
 import {parseHtml} from './html-fake.mjs';
 import {sourceDocx} from './clip-lists-docs.mjs';
 import {picDocx, jpegBytes} from './pic-fixtures.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
+import {tbl, tr, tc, TABLE_NORMAL, GRID_TABLE_4}
+  from './tbl-fixtures.mjs';
+import {drawingXml} from './pic-fixtures.mjs';
 
 const STEPS = 40;
 const CLIP_MS = 4000;
@@ -87,7 +101,7 @@ const REPLS = ['', 'X', 'longer text', '\t', 'a\nb', '\u{1F469}\u200d' +
 
 // ------------------------------------------------------------ commands
 
-const allBlocks = (d) => d.doc.sections.flatMap((s) => s.blocks);
+const allBlocks = (d) => [...walkAll(d.doc)].map((e) => e.b);
 const pickOf = (rd, a) => a[Math.floor(rd() * a.length)];
 
 /** A random position in block b (a grapheme boundary, or a box edge). */
@@ -232,7 +246,9 @@ function clipAll(src) {
       if (Date.now() - t0 > CLIP_MS) break;
       if (!sel || rd() < 0.5) sel = randSel(rd, d);
       const depth = d.undoDepth, nb = d.doc.numbering;
-      const parts = d.doc.parts;
+      const parts = d.doc.parts, styles = d.doc.styles;
+      const cells = !!sel && !S.collapsed(sel) &&
+        shapeOf(d.doc, sel).kind === 'cells';
       let kind = '?';
       try {
         [kind, sel] = command(rd, d, sel, st);
@@ -245,6 +261,14 @@ function clipAll(src) {
       if (d.doc.numbering !== nb && kind.startsWith('paste')) {
         // lists of another document made here (L6)
         counts['lists made'] = (counts['lists made'] || 0) + 1;
+      }
+      if (cells && kind.startsWith('paste') && d.undoDepth > depth) {
+        // a paste over a cell rectangle (C6.2: a table overwrites)
+        counts['paste over cells'] = (counts['paste over cells'] || 0) + 1;
+      }
+      if (d.doc.styles !== styles && kind.startsWith('paste')) {
+        // table styles of another document made here (C6.2)
+        counts['styles made'] = (counts['styles made'] || 0) + 1;
       }
       if (d.doc.parts !== parts && kind.startsWith('paste')) {
         // pictures of another document made here (B7)
@@ -304,7 +328,31 @@ const PICS = () => picDocx({pics: [{descr: 'one'},
 body: p(r('Text the ') + '<w:r><w:pict><v:rect xmlns:v="urn:' +
   'schemas-microsoft-com:vml"/></w:pict></w:r>' + r(' after')) +
   p(r('Para the end'))});
+const GT4 = '<w:tblStyle w:val="GridTable4"/>';
+const CELL_PIC = p('<w:r>' + drawingXml({id: 41, embed: 'rId11',
+  decl: false}) + '</w:r>');
+const MERGED = tbl([
+  tr([tc(p(r('m1 the')), {tcPr: '<w:vMerge w:val="restart"/>'}),
+    tc(p(r('two'))), tc(p(r('three')))]),
+  tr([tc(p(), {tcPr: '<w:vMerge/>'}), tc(p(r('five the')), {tcPr:
+    '<w:gridSpan w:val="2"/>'})]),
+  tr([tc(p(r('7'))), tc(p(r('8'))), tc(p(r('9 the')))])]);
+const NEST = tbl([tr([tc([p(r('outer the')), tbl([tr([tc(p(r('in'))),
+  tc(p(r('ner')))])]), p()]), tc(p(r('right')))])], {tblPr: GT4});
+/** Tables to paste over and into, one with Word's Grid Table 4. */
+const TABLES = () => buildDocx({'word/document.xml': documentXml(
+  p(r('Before the tables')) + MERGED + p(r('between')) + NEST +
+  p(r('after'))), 'word/styles.xml': stylesXml(TABLE_NORMAL +
+  GRID_TABLE_4)});
+/** The source of seed 3: Grid Table 4 tables, a nested one, a list
+ *  item and a picture in cells. */
+const tableSource = () => picDocx({body: p(r('Source the')) + tbl([
+  tr([tc(p(r('head a'))), tc(p(r('head b')))]),
+  tr([tc(CELL_PIC), tc([p(r('x')), tbl([tr([tc(p(r('deep')))])],
+    {tblPr: GT4}), p()])])], {tblPr: GT4}) + p(r('Source end')),
+parts: {'word/styles.xml': stylesXml(TABLE_NORMAL + GRID_TABLE_4)}});
 const MORE = [
+  ['tables: merged, nested, Grid Table 4 (C6.2)', TABLES],
   ['pictures (B7)', PICS],
   ['lists made by !Word (ListMake)', madeLists],
   ['rich (edit-rich.mjs)', richDocx],
@@ -328,8 +376,9 @@ const CHANGED = ['cut', 'paste copy', 'paste foreign', 'paste own html',
 async function source(k) {
   // odd seeds: lists, borders, shading and tab stops (L6); seed 2:
   // pictures (B7)
-  return new Document(await readDocx(await (k % 2 ? sourceDocx()
-    : k === 2 ? PICS() : STYLED())));
+  // seed 3: tables with Grid Table 4 (C6.2)
+  return new Document(await readDocx(await (k === 3 ? tableSource()
+    : k % 2 ? sourceDocx() : k === 2 ? PICS() : STYLED())));
 }
 
 describe('clipboard and find round trip: generated documents', () => {
@@ -354,6 +403,9 @@ describe('clipboard and find round trip: generated documents', () => {
       JSON.stringify(total));
     assert.ok(total['lists made'] > 0, 'a paste made lists (L6)');
     assert.ok(total['pictures made'] > 0, 'a paste made pictures (B7)');
+    assert.ok(total['paste over cells'] > 0, 'pastes over cells');
+    assert.ok(total['styles made'] > 0, 'a paste made table styles ' +
+      '(C6.2)');
     for (const kind of KINDS)
       assert.ok(total[kind] > 3, kind + ' ran: ' + JSON.stringify(total));
     for (const kind of CHANGED) {

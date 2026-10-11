@@ -1,0 +1,224 @@
+// TblPatch - the Table properties box's values (./TblBox) from a
+// table and the selection, and the patch they make (Batch C5.1,
+// D26; pure: no desktop services).
+//
+//   fill(shape, table, g?) -> values, in twips; undefined where the
+//       shape's cells differ (mixed) or the file's value is one the
+//       box cannot show (a percentage, a raw element kept in extra):
+//       the field is then left empty and, untouched, unchanged.
+//       shape ./TblCmd rectOf's {r0, r1, c0, c1} (INCLUSIVE); g the
+//       table's ./TblGrid gridOf (computed when not given)
+//         widthMode 'auto' | 'length'   tblW (none, auto, nil: auto)
+//         width                         tblW dxa
+//         align 'left' | 'center' | 'right'   jc (none: left; the
+//                                       Strict start / end read too)
+//         indent                        tblInd dxa (none: 0)
+//         rowMode 'auto' | 'atLeast' | 'exact', rowHeight   the
+//                                       trHeight of rows r0..r1
+//         colWidth                      the grid columns c0..c1
+//         cellWidth                     tcW dxa of the shape's cells
+//                                       (none or auto: the columns')
+//         vAlign 'top' | 'center' | 'bottom'
+//       The shape's cells are those the rectangle touches, a merged
+//       cell once (its top cell).
+//   patchOf(values, q, strict?) -> patch | {error: 'range', field}
+//       values the box's (twips; undefined: untouched; null: text
+//       that is not a length), q what fill gave when the box opened.
+//       Only what changed, compared as the boxes show it (a hundredth
+//       of an inch); {} when nothing did. The patch is what
+//       ./TblEditProps setProps takes:
+//         tblPr {tblW?, jc?, tblInd?}   jc spelt as a Strict
+//                                       document wants when strict
+//         rows {trHeight}   {val, hRule}; null: Auto, no trHeight
+//         cols {widthTw}    cells {tcW?, vAlign?}   (widths: dxa
+//                                       numbers, twips)
+//       Never clamped: a width (table, column, cell) not 29 to 31680
+//       twips (0.02 to 22 inches), a row height or an indent not 0 to
+//       22 inches (an indent -22 to 22), a length that is not one, a
+//       length wanted but blank, or a changed row height length with
+//       no Auto / At least / Exactly to go with it, or a changed
+//       table width with no Auto / Length (field widthMode: the box
+//       shades the width then), is {error: 'range', field} (field:
+//       the values' name). A length still as shown with only its
+//       mode changed keeps the stored twips.
+//   fieldOf(patch, run) -> field | undefined  the box's field of the
+//       first part of patch that run (the command on a one-part
+//       patch) refuses with a RangeError, for the box's message.
+import {formatLength} from 'wimplib/Units';
+import {gridOf} from './TblGrid';
+import {withoutRaw} from './PropNames';
+import {cellsOf} from './TblEditProps';
+import {MAX_TW} from './TblCheck';
+
+export const MIN_WIDTH = 29;
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const raw = (pr, name) => !!pr && Array.isArray(pr.extra) &&
+  withoutRaw(pr.extra, [name]) !== pr.extra;
+const dxaOf = (w) => (isObj(w) && w.type === 'dxa' &&
+  Number.isInteger(w.w) ? w.w : undefined);
+const uniform = (xs) => (xs.length && xs.every((x) => x === xs[0])
+  ? xs[0] : undefined);
+
+/** The tblW, jc and tblInd values. */
+function tableValues(pr) {
+  const out = {};
+  const w = pr.tblW;
+  if (!raw(pr, 'tblW')) {
+    if (w === undefined || (isObj(w) && (w.type === 'auto' ||
+      w.type === 'nil'))) out.widthMode = 'auto';
+    else if (dxaOf(w) !== undefined) {
+      out.widthMode = 'length';
+      out.width = w.w;
+    }
+  }
+  const ALIGN = {left: 'left', start: 'left', center: 'center',
+    right: 'right', end: 'right'};
+  if (!raw(pr, 'jc')) {
+    out.align = pr.jc === undefined ? 'left' : (typeof pr.jc ===
+      'string' && Object.hasOwn(ALIGN, pr.jc) ? ALIGN[pr.jc]
+      : undefined);
+  }
+  if (!raw(pr, 'tblInd')) {
+    const i = pr.tblInd;
+    out.indent = i === undefined || (isObj(i) && i.type === 'nil') ? 0
+      : dxaOf(i);
+  }
+  return out;
+}
+
+/** The mode and height of one row's trHeight, [undefined] if raw. */
+function heightOf(row) {
+  const pr = row.trPr || {}, h = pr.trHeight;
+  if (raw(pr, 'trHeight')) return [undefined, undefined];
+  if (!isObj(h)) return ['auto', undefined];
+  if (h.hRule === 'auto') return ['auto', undefined];
+  return [h.hRule === 'exact' ? 'exact' : 'atLeast', h.val];
+}
+
+/** See the header. */
+export function fill(shape, table, g = gridOf(table)) {
+  const out = tableValues(table.tblPr || {});
+  const hs = [];
+  for (let r = shape.r0; r <= shape.r1; r++) hs.push(heightOf(
+    table.rows[r]));
+  out.rowMode = uniform(hs.map((h) => h[0]));
+  out.rowHeight = out.rowMode && out.rowMode !== 'auto'
+    ? uniform(hs.map((h) => h[1])) : undefined;
+  out.colWidth = uniform(g.grid.slice(shape.c0, shape.c1 + 1));
+  const ws = [], vs = [];
+  for (const [r, k] of cellsOf(g, shape)) {
+    const c = table.rows[r].cells[k], pr = c.tcPr || {}, gc =
+      g.rows[r].cells[k];
+    const w = pr.tcW;
+    if (raw(pr, 'tcW')) ws.push(undefined);
+    else if (w === undefined || (isObj(w) && (w.type === 'auto' ||
+      w.type === 'nil'))) {
+      ws.push(g.grid.slice(gc.c0, gc.c1).reduce((a, b) => a + b, 0));
+    } else ws.push(dxaOf(w));
+    vs.push(raw(pr, 'vAlign') ? undefined : (pr.vAlign === undefined
+      ? 'top' : ['top', 'center', 'bottom'].includes(pr.vAlign)
+        ? pr.vAlign : undefined));
+  }
+  out.cellWidth = uniform(ws);
+  out.vAlign = uniform(vs);
+  return out;
+}
+
+const shown = (a, b) => formatLength(a) === formatLength(b);
+
+/** Whether length v is a changed, valid one: 'same' / 'bad' / 'new'. */
+function lengthOf(v, was, lo, hi) {
+  if (v === undefined) return 'same';
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < lo ||
+    v > hi) return 'bad';
+  return was !== undefined && shown(v, was) ? 'same' : 'new';
+}
+
+/** A length as stored when it is still as shown (not changed). */
+const asShown = (v, was) => (v === undefined || (was !== undefined &&
+  typeof v === 'number' && shown(v, was)) ? was : v);
+
+const SPELL = {left: ['left', 'start'], center: ['center', 'center'],
+  right: ['right', 'end']};
+
+/** See the header. */
+export function patchOf(values, q, strict = false) {
+  const v = values || {}, out = {}, tblPr = {};
+  const bad = (field) => ({error: 'range', field});
+  const W = [MIN_WIDTH, MAX_TW];
+  const mode = v.widthMode === undefined ? q.widthMode : v.widthMode;
+  const w = lengthOf(v.width, q.width, ...W);
+  if (w === 'bad') return bad('width');
+  if (v.widthMode !== undefined && !['auto', 'length'].includes(
+    v.widthMode)) return bad('widthMode');
+  if (mode === undefined && w === 'new') return bad('widthMode');
+  if (mode === 'auto' && v.widthMode !== undefined &&
+    v.widthMode !== q.widthMode) tblPr.tblW = {w: 0, type: 'auto'};
+  else if (mode === 'length' && (w === 'new' || (v.widthMode ===
+    'length' && q.widthMode !== 'length'))) {
+    const n = asShown(v.width, q.width);
+    if (n === undefined || n === null || lengthOf(n, undefined,
+      ...W) === 'bad') return bad('width');
+    tblPr.tblW = {w: n, type: 'dxa'};
+  }
+  if (v.align !== undefined && v.align !== q.align) {
+    if (!Object.hasOwn(SPELL, v.align)) return bad('align');
+    tblPr.jc = SPELL[v.align][strict ? 1 : 0];
+  }
+  const ind = lengthOf(v.indent, q.indent, -MAX_TW, MAX_TW);
+  if (ind === 'bad') return bad('indent');
+  if (ind === 'new') tblPr.tblInd = {w: v.indent, type: 'dxa'};
+  if (Object.keys(tblPr).length) out.tblPr = tblPr;
+  const rm = v.rowMode === undefined ? q.rowMode : v.rowMode;
+  const rh = lengthOf(v.rowHeight, q.rowHeight, 0, MAX_TW);
+  if (rh === 'bad') return bad('rowHeight');
+  if (v.rowMode !== undefined && !['auto', 'atLeast', 'exact']
+    .includes(v.rowMode)) return bad('rowMode');
+  if (rm === 'auto') {
+    if (v.rowMode !== undefined && v.rowMode !== q.rowMode) {
+      out.rows = {trHeight: null};
+    }
+  } else if (rh === 'new' || (v.rowMode !== undefined &&
+    v.rowMode !== q.rowMode)) {
+    const n = asShown(v.rowHeight, q.rowHeight);
+    if (rm === undefined || typeof n !== 'number') return bad(
+      rm === undefined ? 'rowMode' : 'rowHeight');
+    out.rows = {trHeight: {val: n, hRule: rm}};
+  }
+  const cw = lengthOf(v.colWidth, q.colWidth, ...W);
+  if (cw === 'bad') return bad('colWidth');
+  if (cw === 'new') out.cols = {widthTw: v.colWidth};
+  const cells = {}, tw = lengthOf(v.cellWidth, q.cellWidth, ...W);
+  if (tw === 'bad') return bad('cellWidth');
+  if (tw === 'new') cells.tcW = v.cellWidth;
+  if (v.vAlign !== undefined && v.vAlign !== q.vAlign) {
+    if (!['top', 'center', 'bottom'].includes(v.vAlign)) {
+      return bad('vAlign');
+    }
+    cells.vAlign = v.vAlign;
+  }
+  if (Object.keys(cells).length) out.cells = cells;
+  return out;
+}
+
+// The box's field of each part of a patch, in the box's order.
+const PARTS = [['tblPr', 'tblW', 'width'], ['tblPr', 'jc', 'align'],
+  ['tblPr', 'tblInd', 'indent'], ['rows', 'trHeight', 'rowHeight'],
+  ['cols', 'widthTw', 'colWidth'], ['cells', 'tcW', 'cellWidth'],
+  ['cells', 'vAlign', 'vAlign']];
+
+/** See the header. */
+export function fieldOf(patch, run) {
+  for (const [part, key, field] of PARTS) {
+    const p = patch && patch[part];
+    if (!p || !Object.hasOwn(p, key)) continue;
+    try {
+      run({[part]: {[key]: p[key]}});
+    } catch (e) {
+      if (e instanceof RangeError) return field;
+      throw e;
+    }
+  }
+  return undefined;
+}

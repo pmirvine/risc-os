@@ -12,13 +12,13 @@ import {mk, texts, ids, P, undoable, valid, box, raw, O, bold, plain,
   snap} from './edit-docs.mjs';
 import {rng} from './word-docs.mjs';
 
-const at = (s, i, off) => ({s, i, off});
+const at = (s, i, off) => ({at: [s, i], off});
 /** replaceAll's count and skipped (its last: tested on its own). */
 const replaceAll = (...a) => {
   const {count: c, skipped} = replaceAll0(...a);
   return {count: c, skipped};
 };
-const pick = (m) => (m ? [m.s, m.i, m.from, m.to] : null);
+const pick = (m) => (m ? [...m.at, m.from, m.to] : null);
 const link = (text) => raw('hyperlink', 'p', text);
 
 describe('search: plain text', () => {
@@ -281,7 +281,7 @@ describe('replaceOne', () => {
     const id = ids(d)[0];
     const m = search(d.doc, at(0, 0, 0), 'bc');
     const r = undoable(d, () => replaceOne(d, m, 'XYZ'));
-    assert.deepEqual(r, {s: 0, i: 0, from: 1, to: 4});
+    assert.deepEqual(r, {at: [0, 0], from: 1, to: 4});
     assert.deepEqual(texts(d), ['aXYZd']);
     assert.equal(ids(d)[0], id);
     assert.deepEqual(P(d, 0).runs, [{start: 0, end: 4, rPr: bold},
@@ -293,7 +293,7 @@ describe('replaceOne', () => {
     const m = search(d.doc, at(0, 0, 0), 'it');
     assert.equal(replaceOne(d, m, 'x'), null);
     assert.equal(replaceOne(d, null, 'x'), null);
-    assert.equal(replaceOne(d, {s: 0, i: 5, from: 0, to: 1}, 'x'),
+    assert.equal(replaceOne(d, {at: [0, 5], from: 0, to: 1}, 'x'),
       null);
     assert.ok(deepEqual(d.doc.sections, before));
     assert.equal(d.undoDepth, 0);
@@ -344,7 +344,7 @@ describe('replaceAll', () => {
   it('last: where the last text put in is', () => {
     const d = mk(['a cat', 'no', 'cat and cat', 'no']);
     const r = replaceAll0(d, 'cat', 'dog!');
-    assert.deepEqual(r.last, {s: 0, i: 2, from: 9, to: 13});
+    assert.deepEqual(r.last, {at: [0, 2], from: 9, to: 13});
     assert.equal(P(d, 2).text.slice(9, 13), 'dog!');
     assert.equal(replaceAll0(d, 'zebra', 'x').last, null);
   });
@@ -443,7 +443,7 @@ function naive(p, needle, o, s, i) {
       (wordy(cs.at(-1)) && !ends.has(e)))) continue;
     let nx = map.findIndex((x) => x >= to);
     if (nx < 0) nx = shown.length;
-    out.push({s, i, from, to, ds: k, de: e, next: Math.max(e, nx),
+    out.push({at: [s, i], i, from, to, ds: k, de: e, next: Math.max(e, nx),
       inInline: p.text.slice(from, to).includes(O)});
   }
   return out;

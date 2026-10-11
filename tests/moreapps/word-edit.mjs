@@ -23,8 +23,9 @@ const PARAS = [
   p(r('Another line of text that is long enough to reach far right.')),
   p(r('Emoji \u{1F600} here and é there.')),
   p(r('Tab') + '<w:r><w:tab/></w:r>' + r('stop, a ') + LINK + r(' and the end.')),
-  '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' +
-    p(r('a cell')) + '</w:tc></w:tr></w:tbl>',
+  // a kept (Opaque: no w:tblGrid) table, the box this suite tests; a typed table's cells take the caret
+  // (Batch C3.1: word-tables-edit.mjs)
+  '<w:tbl><w:tblPr/><w:tr><w:tc>' + p(r('a cell')) + '</w:tc></w:tr></w:tbl>',
   p(r(LONG), '<w:ind w:left="720"/>'),
   p(r('Last of the text.')),
   ...Array.from({ length: 30 }, (_, i) => p(r(`Filler paragraph ${i} with some words in it.`))),

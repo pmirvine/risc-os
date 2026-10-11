@@ -1,8 +1,12 @@
 // Model, operations with inverses, and Document (undo/redo, groups).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {newPara, newSection, emptyDoc, OBJ}
-  from '../../tools/moreapps/!Word/Model';
+import {newPara, newSection, emptyDoc, OBJ, newTable, newRow, newCell,
+  nextId, checkBlock} from '../../tools/moreapps/!Word/Model';
+import {forEachBlock, at as walkAt, mapBlocks}
+  from '../../tools/moreapps/!Word/Walk';
+import {sib, tableOf, isTop} from '../../tools/moreapps/!Word/Path';
+import {freeze} from './tbl-fixtures.mjs';
 import {apply} from '../../tools/moreapps/!Word/Ops';
 import {Document} from '../../tools/moreapps/!Word/Document';
 import {addRel, withStyle} from '../../tools/moreapps/!Word/DocParts';
@@ -64,12 +68,15 @@ function checkPara(p, where) {
 
 function checkDoc(d) {
   const ids = new Set();
-  d.sections.forEach((s, si) => s.blocks.forEach((b, bi) => {
-    if (b.type !== 'p') return;
-    checkPara(b, si + '/' + bi);
+  for (const s of d.sections) {
+    for (const b of s.blocks) if (b.type === 'tbl') checkBlock(b);
+  }
+  forEachBlock(d, (b, at) => {
+    if (b.type !== 'p' && b.type !== 'tbl') return;
+    if (b.type === 'p') checkPara(b, at.join('/'));
     assert.ok(!ids.has(b.id), 'duplicate id ' + b.id);
     ids.add(b.id);
-  }));
+  });
 }
 
 // ---- factories ---------------------------------------------------------
@@ -904,7 +911,7 @@ function mulberry32(seed) {
   };
 }
 
-function gen(rnd) {
+function gen(rnd, {tables = false} = {}) {
   const int = (n) => Math.floor(rnd() * n);
   const pick = (a) => a[int(a.length)];
   const rPrs = [R(), R({b: true}), R({i: true}), R({b: true, i: true}),
@@ -948,7 +955,44 @@ function gen(rnd) {
     if (rnd() < 0.2) o.extraP = [X('w14:paraId')];
     return newPara(s, o);
   };
+  const opaque = () => ({type: 'opaque', node: X('w:sdt')});
+  // a typed table: 1..3 x 1..3, cells of 1..2 blocks, some of them
+  // nested tables (to depth 3) or Opaque blocks
+  const mkTable = (depth = 1) => {
+    const nr = 1 + int(3), nc = 1 + int(3);
+    const rows = [];
+    for (let r = 0; r < nr; r++) {
+      const cells = [];
+      for (let c = 0; c < nc; c++) {
+        const bl = [];
+        for (let k = 1 + int(2); k > 0; k--) {
+          const x = rnd();
+          bl.push(x < 0.15 && depth < 3 ? mkTable(depth + 1)
+            : x < 0.2 ? opaque() : mkPara());
+        }
+        // (a cell ends with a paragraph: TblCheck, C3 fix wave)
+        if (bl[bl.length - 1].type === 'tbl') bl.push(newPara(''));
+        cells.push(newCell(bl));
+      }
+      rows.push(newRow(cells));
+    }
+    return newTable({grid: Array(nc).fill(1000), rows});
+  };
   const doc = () => {
+    const d = tables ? tableDoc() : plainDoc();
+    // (tables are immutable: frozen, an op writing one would throw)
+    if (tables) forEachBlock(d, (b) => void (b.type === 'tbl' && freeze(b)));
+    return d;
+  };
+  const tableDoc = () => {
+    const d = plainDoc();
+    for (let k = 1 + int(2); k > 0; k--) {
+      const sec = d.sections[int(d.sections.length)];
+      sec.blocks.splice(int(sec.blocks.length + 1), 0, mkTable());
+    }
+    return d;
+  };
+  const plainDoc = () => {
     const d = emptyDoc();
     const n = 1 + int(6);
     d.sections[0].blocks = [];
@@ -1013,19 +1057,74 @@ function gen(rnd) {
     } else value = {};
     return {op: 'setDocPart', key, value};
   };
+  // a path in a cell (a block, or one past a container's last);
+  // null when the document has no table
+  const nested = (d) => {
+    const all = [];
+    forEachBlock(d, (b, at) => void (at.length > 2 && all.push(at)));
+    if (!all.length) return null;
+    const at = pick(all);
+    return rnd() < 0.1 ? sib(at, 1 + int(2)) : at;
+  };
+  // a new version of the table holding `at` (or the table at `at`):
+  // a row removed or duplicated (fresh paragraph ids; sometimes an
+  // id used elsewhere, refused), or paragraphs reformatted
+  const tableRestore = (d, at) => {
+    const tp = walkAt(d, at) && walkAt(d, at).type === 'tbl' ? at
+      : isTop(at) ? null : tableOf(at);
+    const t = tp && walkAt(d, tp);
+    if (!t) return {op: 'restoreBlock', block: at, snapshot: mkPara()};
+    const rows = t.rows.slice();
+    const r = int(rows.length);
+    const x = rnd();
+    if (x < 0.3 && rows.length > 1) rows.splice(r, 1);
+    else if (x < 0.75) {
+      const reuse = rnd() < 0.1;
+      rows.splice(r, 0, {...rows[r], attrs: [], lead: [], tail: [],
+        cells: rows[r].cells.map((c) => ({...c, lead: [],
+          blocks: mapBlocks(c.blocks, (p) => ({...p, extraP: [],
+            id: reuse ? p.id : nextId()}))}))});
+    } else {
+      rows[r] = {...rows[r], cells: rows[r].cells.map((c) => ({...c,
+        blocks: mapBlocks(c.blocks, (p) => ({...p,
+          pPr: {...p.pPr, jc: pick(['left', 'center'])}}))}))};
+    }
+    return {op: 'restoreBlock', block: tp, snapshot: {...t, rows}};
+  };
+  const KINDS = ['rt', 'rt', 'rt', 'sp', 'sp', 'split', 'merge',
+    'ins', 'rm', 'ssplit', 'ssplit', 'smerge', 'smerge', 'part',
+    'sset'];
+  const TKINDS = ['rt', 'rt', 'sp', 'split', 'merge', 'ins', 'ins',
+    'rm', 'insT', 'insN', 'rmN', 'tres', 'tres', 'pres', 'ssplit'];
   const op = (d) => {
     const s = int(d.sections.length);
     const blocks = d.sections[s].blocks;
     // mostly valid positions; some out of range on purpose
     const i = blocks.length && rnd() < 0.9 ? int(blocks.length)
       : int(blocks.length + 1);
-    const b = blocks[i];
+    let path = [s, i];
+    const deep = tables && rnd() < 0.7 ? nested(d) : null;
+    if (deep) path = deep;
+    const b = walkAt(d, path);
     const len = b && b.type === 'p' ? b.text.length : 0;
     const pos = () => (rnd() < 0.9 ? int(len + 1)
       : int(len + 2) - (rnd() < 0.3 ? 1 : 0));
-    const kind = pick(['rt', 'rt', 'rt', 'sp', 'sp', 'split', 'merge',
-      'ins', 'rm', 'ssplit', 'ssplit', 'smerge', 'smerge', 'part',
-      'sset']);
+    const kind = pick(deep ? TKINDS : KINDS);
+    if (kind === 'insT') {
+      return {op: 'insertBlock', at: path, block: mkTable(2)};
+    }
+    if (kind === 'insN') {
+      return {op: 'insertBlocks', at: path, blocks: [mkPara(),
+        rnd() < 0.5 ? mkTable(3) : opaque()]};
+    }
+    if (kind === 'rmN') {
+      return {op: 'removeBlocks', at: path, count: 1 + int(2)};
+    }
+    if (kind === 'tres') return tableRestore(d, path);
+    if (kind === 'pres') {
+      return {op: 'restoreBlock', block: path, snapshot: b && b.type ===
+        'p' ? {...b, pPr: {...b.pPr, jc: 'right'}} : mkPara()};
+    }
     if (kind === 'sset') {
       const o = {op: 'setSection', at: int(d.sections.length + 1) -
         (rnd() < 0.05 ? 1 : 0), props: sectProps()};
@@ -1033,7 +1132,7 @@ function gen(rnd) {
       return o;
     }
     if (kind === 'ssplit') {
-      const o = {op: 'splitSection', at: [s, i], props: sectProps()};
+      const o = {op: 'splitSection', at: path, props: sectProps()};
       if (rnd() < 0.8) o.raw = pick([null, sectRaw()]);
       return o;
     }
@@ -1048,14 +1147,14 @@ function gen(rnd) {
     if (kind === 'rt') {
       const at = pos();
       const {s: ins, inlines} = str(int(4));
-      const o = {op: 'replaceText', block: [s, i], at,
+      const o = {op: 'replaceText', block: path, at,
         del: int(Math.max(1, len - at + 1)), ins};
       if (Object.keys(inlines).length || rnd() < 0.1) o.inlines = inlines;
       if (rnd() < 0.2) o.rPr = clone(pick(rPrs));
       return o;
     }
     if (kind === 'sp') {
-      const o = {op: 'setProps', block: [s, i]};
+      const o = {op: 'setProps', block: path};
       if (rnd() < 0.4) o.pPr = pick([{jc: 'right'}, {jc: null},
         {spacing: {after: 60}}, {spacing: {before: null}},
         {ind: {left: null}}]);
@@ -1070,21 +1169,21 @@ function gen(rnd) {
       }
       return o;
     }
-    if (kind === 'split') return {op: 'splitBlock', block: [s, i], at: pos()};
-    if (kind === 'merge') return {op: 'mergeBlock', block: [s, i]};
+    if (kind === 'split') return {op: 'splitBlock', block: path, at: pos()};
+    if (kind === 'merge') return {op: 'mergeBlock', block: path};
     if (kind === 'ins') {
-      return {op: 'insertBlock', at: [s, i], block: rnd() < 0.8
+      return {op: 'insertBlock', at: path, block: rnd() < 0.8
         ? mkPara() : {type: 'opaque', node: X('w:sdt')}};
     }
-    return {op: 'removeBlock', at: [s, i]};
+    return {op: 'removeBlock', at: path};
   };
   return {doc, op, int, rnd};
 }
 
 const applied = new Map();   // op kind -> times applied (not refused)
 
-function runSequence(seed, grouped) {
-  const g = gen(mulberry32(seed));
+function runSequence(seed, grouped, tables = false) {
+  const g = gen(mulberry32(seed), {tables});
   const doc = new Document(g.doc());
   checkDoc(doc.doc);
   const initial = clone(doc.doc);
@@ -1104,6 +1203,9 @@ function runSequence(seed, grouped) {
         applied.set(op.op, (applied.get(op.op) || 0) + 1);
         if (op.key === 'parts')
           applied.set('parts', (applied.get('parts') || 0) + 1);
+        const path = op.block || op.at;
+        if (Array.isArray(path) && path.length > 2)
+          applied.set('nested', (applied.get('nested') || 0) + 1);
       } catch (e) {
         if (!(e instanceof RangeError)) throw e;
         assert.deepEqual(doc.doc, before, 'failed op changed the doc');
@@ -1120,7 +1222,8 @@ function runSequence(seed, grouped) {
     while (doc.undo());
     assert.deepEqual(doc.doc, initial, 'undo all again');
   } catch (e) {
-    e.message = 'seed ' + seed + (grouped ? ' (grouped)' : '') + ': ' +
+    e.message = 'seed ' + seed + (grouped ? ' (grouped)' : '') +
+      (tables ? ' (tables)' : '') + ': ' +
       e.message + '\nops: ' + JSON.stringify(log);
     throw e;
   }
@@ -1149,5 +1252,19 @@ describe('property: random ops then undo/redo', () => {
     applied.clear();
     for (let k = 0; k < 500; k++) runSequence(BASE + 100000 + k, true);
     counted();
+  });
+  it('500 sequences on documents with typed tables', () => {
+    applied.clear();
+    let ok = 0;
+    for (let k = 0; k < 500; k++) {
+      ok += runSequence(BASE + 200000 + k, k % 2 === 1, true);
+    }
+    assert.ok(ok > 2000, 'enough ops succeeded: ' + ok);
+    for (const k of ['restoreBlock', 'insertBlocks', 'removeBlocks',
+      'splitBlock', 'mergeBlock', 'insertBlock', 'removeBlock']) {
+      assert.ok(applied.get(k) >= 100, k + ': ' + applied.get(k));
+    }
+    assert.ok(applied.get('nested') >= 1500, 'at nested paths: ' +
+      applied.get('nested'));
   });
 });

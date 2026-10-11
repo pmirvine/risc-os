@@ -4,8 +4,10 @@
 //   insertSection(d, typing, sel, type) -> the new selection (sel
 //                       when nothing changed; undefined for a type
 //                       that is not one of SECT_TYPES' first four or
-//                       no sel), one undo step (typing.command, one
-//                       d.atomic group)
+//                       no sel; null, nothing changed, when either
+//                       end is in a table's cell: refused, the
+//                       caller beeps), one undo step (typing.command,
+//                       one d.atomic group)
 //   deleteBreakAt(d, sel, dir) -> the new selection after the break
 //                       is removed, or undefined when the caret is not
 //                       at a section edge (dir 1: Delete at the end
@@ -39,7 +41,8 @@
 // block cannot be merged: undefined (the caller's rule applies).
 // Pure: no desktop services.
 import {caret, collapsed} from './Selection';
-import {orderedPos, findBlock, checkPos, posOf} from './EditPos';
+import {orderedPos, findBlock, checkPos, posOf, isNested, topOnly,
+  neighbour} from './EditPos';
 import {deleteRange, paraBy} from './EditRange';
 import {splitAt} from './EditPara';
 import {withoutRaw} from './PropNames';
@@ -83,7 +86,8 @@ function copyOf(sec) {
   return {props, raw};
 }
 
-/** Split section loc.s after block i; the one after takes type. */
+/** Split section s after block i (top level by definition: the
+ *  caller's location passed isNested); the one after takes type. */
 function splitHere(d, s, i, type) {
   const sec = d.doc.sections[s];
   const c = copyOf(sec);
@@ -106,13 +110,14 @@ function place(d, sel, o, type) {
     loc = findBlock(d.doc, pos.id);
   }
   const {s, i, b} = loc;
+  if (isNested(loc)) throw new RangeError('a section break in a cell');
   let out;
   if (b.text) out = splitAt(d, loc, pos.off);
   else if (i === d.doc.sections[s].blocks.length - 1) {
     // (not splitAt: an empty list item would leave the list)
-    d.apply({op: 'splitBlock', block: [s, i], at: 0});
-    out = posOf({b: d.doc.sections[s].blocks[i + 1]}, 0);
-  } else out = posOf({b: d.doc.sections[s].blocks[i + 1]}, 0);
+    d.apply({op: 'splitBlock', block: loc.at, at: 0});
+    out = posOf(neighbour(d.doc, loc, 1), 0);
+  } else out = posOf(neighbour(d.doc, loc, 1), 0);
   splitHere(d, s, i, type);
   return out;
 }
@@ -122,6 +127,7 @@ export function insertSection(d, typing, sel, type) {
   if (!sel || !INSERTS.has(type)) return undefined;
   const o = orderedPos(d.doc, sel);
   if (!o) return sel;
+  if (!topOnly(o)) return null;
   return typing.command(() => {
     let out = null;
     d.atomic(() => { out = place(d, sel, o, type); });
@@ -133,7 +139,7 @@ export function insertSection(d, typing, sel, type) {
 function edgeOf(doc, sel, dir) {
   if (!sel || !collapsed(sel)) return -1;
   const loc = checkPos(doc, sel.head);
-  if (!loc) return -1;
+  if (!loc || isNested(loc)) return -1;
   const secs = doc.sections, off = sel.head.off;
   let s;
   if (dir > 0) {

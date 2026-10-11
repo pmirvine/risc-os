@@ -1,0 +1,248 @@
+// TblWidth - table widths and units for display (D18, R24): the one
+// rule for twips -> px, column widths, the table's place in its
+// column and a cell's box. Pure: nothing measures text here (a
+// cell's min width comes in as minOf).
+//
+//   TW_PX 15 twips per px; MAX_PX 4000 (a table's widest, R24)
+//   twToPx(tw) -> tw / TW_PX (not rounded)
+//   widthTw(w, baseTw) -> twips | null   a width {w, type}: dxa as
+//     it is; pct of baseTw (w / 5000, or the "n%" string's n / 100);
+//     auto, nil and anything not understood null
+//   colsOf(table, view, textW, minOf?, deps?) -> {cols, left, width}
+//     (px,
+//     frozen). view: the table style's (./TblStyle viewOf, or null);
+//     its tblPr gives tblW, tblLayout, tblInd and jc when the
+//     table's own tblPr does not. D18:
+//     1. the file's grid (./TblGrid gridOf), fixed and autofit alike;
+//     2. unless it is unusable (every entry 0, fewer columns than the
+//        widest row, or its sum off a dxa tblW by more than 1/20):
+//        then each column the widest tcW (dxa, or pct of the table's
+//        width: tblW, else textW) of the single-span cells in it;
+//        the columns no cell sizes share what is left equally, each
+//        at least the widest minOf(r, k) (px) of its single-span
+//        cells, that capped at textW;
+//     3. a tblW dxa / pct with tblLayout autofit (or none) scales the
+//        columns to it; fixed never scales;
+//     4. wider than textW is allowed; every column at least 1 px
+//        and the total at most MAX_PX (columns under 1 px lifted to
+//        1, the others shrunk to make room).
+//     left = alignOf(tblPr, width, textW). textW is taken in
+//     1..MAX_PX. Memoised per (grid array, tblPr object, view,
+//     textW), and without a usable grid also per rows array and
+//     deps (an array of what minOf measures with, compared item by
+//     item: the styles and the metrics): minOf must give the same
+//     for the same rows and deps (cells are immutable).
+//   alignOf(tblPr, width, colW) -> px   jc center / right (Strict
+//     end) place the table in its column when it fits; otherwise
+//     tblInd (dxa, within +-MAX_TW twips; pct / auto 0) shifts it.
+//   marginsOf(...mars) -> {top, left, bottom, right} px   each side
+//     from the first margins object giving it as dxa (0..MAX_TW) or
+//     nil (0); pass tcMar, the style layer's, tblCellMar, the
+//     style's in that order. Default left / right 108 twips, top /
+//     bottom 0.
+//   spacingOf(...widths) -> px   the first dxa (0..MAX_TW) or nil
+//     (0) of the tblCellSpacing given (row's, table's, style's);
+//     else 0.
+//   spacedRow(trPr, tblPr, styleTblPr) -> boolean   whether a row has
+//     cell spacing (spacingOf its, the table's, the style's > 0):
+//     each of its cells then draws its own four sides (D22)
+//   cellBox(cols, c0, c1, mar, spacing) -> {x, w, tx, tw}   the cell
+//     box over grid columns c0..c1 (px from the table's left), inset
+//     by `spacing` on each side (tblCellSpacing around every cell),
+//     and its text area: w minus the left and right margins, at
+//     least 1 px.
+import {gridOf} from './TblGrid';
+import {MAX_TW} from './TblCheck';
+import {WIDTH_PCT} from './TblNames';
+
+export const TW_PX = 15, MAX_PX = 4000;
+const DEF_MAR = 108, KEEP = 4;
+
+/** See the header. */
+export const twToPx = (tw) => tw / TW_PX;
+
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const sum = (a) => a.reduce((x, y) => x + y, 0);
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export function widthTw(w, baseTw) {
+  if (!isObj(w)) return null;
+  const v = w.w;
+  if (w.type === 'dxa') return Number.isFinite(v) ? v : null;
+  if (w.type !== 'pct' || !Number.isFinite(baseTw)) return null;
+  if (Number.isFinite(v)) return v / 5000 * baseTw;
+  if (typeof v === 'string' && WIDTH_PCT.test(v)) {
+    return parseFloat(v) / 100 * baseTw;
+  }
+  return null;
+}
+
+/** A dxa (or nil: 0) width in px within 0..MAX_TW twips, or null. */
+function dxaPx(w) {
+  if (!isObj(w)) return null;
+  if (w.type === 'nil') return 0;
+  const tw = w.type === 'dxa' ? widthTw(w, 0) : null;
+  return tw === null ? null : twToPx(clamp(tw, 0, MAX_TW));
+}
+
+/** See the header. */
+export function alignOf(tblPr, width, colW) {
+  const jc = isObj(tblPr) ? tblPr.jc : undefined;
+  if (width <= colW) {
+    if (jc === 'center') return (colW - width) / 2;
+    if (jc === 'right' || jc === 'end') return colW - width;
+  }
+  const ind = isObj(tblPr) && isObj(tblPr.tblInd) &&
+    tblPr.tblInd.type === 'dxa' ? widthTw(tblPr.tblInd, 0) : null;
+  return ind === null ? 0 : twToPx(clamp(ind, -MAX_TW, MAX_TW));
+}
+
+const SIDES = ['top', 'left', 'bottom', 'right'];
+const DEF = {top: 0, left: DEF_MAR / TW_PX, bottom: 0,
+  right: DEF_MAR / TW_PX};
+
+/** See the header. */
+export function marginsOf(...mars) {
+  const o = {};
+  for (const side of SIDES) {
+    o[side] = DEF[side];
+    for (const m of mars) {
+      const px = isObj(m) ? dxaPx(m[side]) : null;
+      if (px !== null) {
+        o[side] = px;
+        break;
+      }
+    }
+  }
+  return o;
+}
+
+/** See the header. */
+export function spacingOf(...widths) {
+  for (const w of widths) {
+    const px = dxaPx(w);
+    if (px !== null) return px;
+  }
+  return 0;
+}
+
+/** See the header. */
+export const spacedRow = (trPr, tblPr, sty) => spacingOf(
+  isObj(trPr) ? trPr.tblCellSpacing : undefined, isObj(tblPr)
+    ? tblPr.tblCellSpacing : undefined, isObj(sty)
+    ? sty.tblCellSpacing : undefined) > 0;
+
+/** See the header. */
+export function cellBox(cols, c0, c1, mar, spacing) {
+  const s = Number.isFinite(spacing) && spacing > 0 ? spacing : 0;
+  let x = 0, span = 0;
+  for (let c = 0; c < c1 && c < cols.length; c++) {
+    if (c < c0) x += cols[c];
+    else span += cols[c];
+  }
+  const w = Math.max(1, span - 2 * s);
+  return {x: x + s, w, tx: x + s + mar.left,
+    tw: Math.max(1, w - mar.left - mar.right)};
+}
+
+const memo = new WeakMap();
+const sameDeps = (a, b) => a.length === b.length &&
+  a.every((v, i) => v === b[i]);
+
+/** See the header. */
+export function colsOf(table, view, textW, minOf, deps = []) {
+  const key = table.grid;
+  const list = isObj(key) ? memo.get(key) || [] : [];
+  for (const e of list) {
+    if (e.tblPr === table.tblPr && e.view === view &&
+      e.textW === textW && (e.rows === null || (e.rows === table.rows &&
+        sameDeps(e.deps, deps)))) {
+      return e.res;
+    }
+  }
+  const {res, usable} = widths(table, view, textW, minOf);
+  if (isObj(key)) {
+    list.unshift({tblPr: table.tblPr, view, textW, res,
+      rows: usable ? null : table.rows, deps: [...deps]});
+    if (list.length > KEEP) list.pop();
+    memo.set(key, list);
+  }
+  return res;
+}
+
+/** The table's field, else the style's. */
+function pick(table, view, f) {
+  const own = isObj(table.tblPr) ? table.tblPr[f] : undefined;
+  if (own !== undefined) return own;
+  return isObj(view) && isObj(view.tblPr) ? view.tblPr[f] : undefined;
+}
+
+/** D18 steps 1-4 (see the header). */
+function widths(table, view, textW, minOf) {
+  const W = Math.min(MAX_PX, textW > 0 ? textW : 1);
+  const g = gridOf(table), tblW = pick(table, view, 'tblW');
+  const wTw = widthTw(tblW, W * TW_PX);
+  const target = wTw > 0 ? wTw : null;
+  const file = Array.isArray(table.grid) ? table.grid : [];
+  const fileSum = sum(g.grid.slice(0, file.length));
+  const usable = fileSum > 0 && g.cols <= file.length &&
+    !(target !== null && tblW.type === 'dxa' &&
+      Math.abs(fileSum - target) > target / 20);
+  let cols = usable ? g.grid.map(twToPx)
+    : fromCells(table, g, target === null ? W : twToPx(target), W,
+      minOf);
+  if (target !== null && (tblW.type === 'dxa' || tblW.type === 'pct')
+    && pick(table, view, 'tblLayout') !== 'fixed') {
+    cols = scaled(cols, twToPx(target));
+  }
+  cols = capped(cols);
+  const width = sum(cols);
+  const left = alignOf({jc: pick(table, view, 'jc'),
+    tblInd: pick(table, view, 'tblInd')}, width, W);
+  return {usable, res: Object.freeze({cols: Object.freeze(cols), left,
+    width})};
+}
+
+/** cols scaled to total `to` (as they are when their sum is 0). */
+function scaled(cols, to) {
+  const s = sum(cols);
+  if (!(s > 0) || s === to || !Number.isFinite(to)) return cols;
+  const f = to / s;
+  return cols.map((c) => c * f);
+}
+
+/** Step 4: each column >= 1 px, the total <= MAX_PX (header). */
+function capped(cols) {
+  let c = cols.map((v) => (v >= 1 ? v : 1));
+  for (let pass = 0; pass < c.length && sum(c) > MAX_PX; pass++) {
+    const big = sum(c.filter((v) => v > 1));
+    const f = (MAX_PX - (c.length - c.filter((v) => v > 1).length)) /
+      big;
+    c = c.map((v) => (v > 1 ? Math.max(1, v * f) : v));
+  }
+  return c;
+}
+
+/** D18 step 2: the columns from the cells; base the table's px. */
+function fromCells(table, g, base, W, minOf) {
+  const n = g.cols, sized = new Array(n).fill(0);
+  const single = (fn) => g.rows.forEach((row, r) => row.cells.forEach(
+    (c, k) => c.c1 - c.c0 === 1 && fn(c.c0, r, k)));
+  single((c, r, k) => {
+    const tcPr = table.rows[r].cells[k].tcPr;
+    const tw = widthTw(isObj(tcPr) ? tcPr.tcW : null, base * TW_PX);
+    if (tw > 0) sized[c] = Math.max(sized[c], twToPx(tw));
+  });
+  const mins = new Array(n).fill(0);
+  if (typeof minOf === 'function') {
+    single((c, r, k) => {
+      if (sized[c] > 0) return;
+      const m = Number(minOf(r, k));
+      if (m > 0) mins[c] = Math.max(mins[c], Math.min(m, W));
+    });
+  }
+  const free = sized.filter((s) => !(s > 0)).length;
+  const share = free ? Math.max(0, base - sum(sized)) / free : 0;
+  return sized.map((s, c) => (s > 0 ? s : Math.max(share, mins[c])));
+}

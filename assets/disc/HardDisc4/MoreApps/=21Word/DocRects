@@ -10,14 +10,28 @@
 // an empty paragraph crossed shows just that (a paragraph ending in a
 // page break's rule: the stub inside the text column, at its end).
 // A kept block is lit whole when both its edges are in the
-// selection. Only the items
-// (and in a long paragraph only the lines) in the band are looked
-// at, so selecting a whole long document costs no more to draw than
-// a short one. Pure: no desktop services.
+// selection. Tables go by the selection's shape (./SelShape,
+// memoised per layout; a layout without a typed table is all text):
+// 'cells' lights each cell's box on whole pixels (a merged cell
+// over every row it spans), a whole table its rows; 'mixed' lights
+// the text range as above and each table it takes as one box over
+// its taken rows (the table's width), not their text. Only the items
+// (and in a long paragraph only the lines, in a table only the
+// rows) in the band are looked at, so selecting a whole long
+// document costs no more to draw than a short one. The items are
+// taken from L.flow (by place, ./DocPos placeOf: cells' items too;
+// the band's ends mapped from the root column's items, a table's to
+// its end place), each at its column's x and w (./DocItems); an
+// item in a cell outside the band is passed. Pure: no desktop
+// services.
 import * as PM from './PositionMap';
 import {compare} from './DocPos';
+import {shapeOf} from './SelShape';
+import {rowAtY, bottomOf} from './TblLayout';
+import {at as walkAt} from './Walk';
 
 const STUB = 6;
+const TEXT = {kind: 'text'};
 
 /** Index of the line of item it that y (work area) falls in. */
 function lineAt(it, y) {
@@ -31,20 +45,94 @@ function lineAt(it, y) {
   return lo;
 }
 
+/** The layout item of the table at path tp, or null. */
+function tableItem(L, tp) {
+  const t = walkAt(L.doc, tp);
+  const it = t && L.byId.get(t.id);
+  return it && it.kind === 'tbl' ? it : null;
+}
+
+/** One box over rows r0..r1 of table item it, in the band. */
+function rowsBox(it, r0, r1, y0, y1, out) {
+  const {rows} = it, n = rows.length;
+  const a = Math.max(r0, rowAtY(it, y0));
+  const b = Math.min(r1, rowAtY(it, y1));
+  if (a > b) return;
+  const top = a === 0 ? it.y : rows[a].y;
+  const end = b === n - 1 ? it.y + it.h : rows[b].y + rows[b].h;
+  out.push({x: it.x + it.left, y: top, w: it.width, h: end - top});
+}
+
+/** The box x0..x1, y0..y1 on whole pixels: neighbouring cells'
+ *  boxes meet without a seam or an overlap (./TablePaint's rule). */
+function onPixels(x0, y0, x1, y1) {
+  const x = Math.round(x0), y = Math.round(y0);
+  return {x, y, w: Math.round(x1) - x, h: Math.round(y1) - y};
+}
+
+/** A 'cells' shape's boxes in the band (see the header). */
+function cellRects(L, sh, y0, y1) {
+  const out = [], it = tableItem(L, sh.table);
+  if (!it || !it.rows.length) return out;
+  if (sh.whole) {
+    rowsBox(it, 0, it.rows.length - 1, y0, y1, out);
+    return out;
+  }
+  const a = Math.max(sh.r0, rowAtY(it, y0));
+  const b = Math.min(sh.r1, rowAtY(it, y1));
+  const g = it.key.g;
+  for (let r = a; r <= b; r++) {
+    for (let c of it.rows[r].cells) {
+      if (c.c0 < sh.c0 || c.c1 - 1 > sh.c1) continue;
+      if (c.cont) {
+        // a merge from above the band: its top cell, once
+        const [tr, tk] = g.rows[r].cells[c.k].top;
+        if (r !== a || tr >= r) continue;
+        c = it.rows[tr].cells[tk];
+      }
+      out.push(onPixels(c.x, it.rows[c.r].y, c.x + c.w,
+        bottomOf(it, c)));
+    }
+  }
+  return out;
+}
+
 /** See the header. */
 export function selectionRects(L, sel, y0, y1) {
   const out = [];
   if (!sel) return out;
+  // (no typed table: L.flow is L.items, the shape is text)
+  const sh = L.flow === L.items ? TEXT : shapeOf(L.doc, sel, L);
+  if (sh.kind === 'cells') return cellRects(L, sh, y0, y1);
   const flip = compare(L, sel.anchor, sel.head) > 0;
   const f = L.locate(flip ? sel.head : sel.anchor);
   const t = L.locate(flip ? sel.anchor : sel.head);
   if (!f || !t || (f.index === t.index && f.off === t.off)) return out;
   let i0 = f.index, i1 = t.index;
+  const lit = new Map();
+  for (const x of sh.kind === 'mixed' ? sh.tables : []) {
+    const it = tableItem(L, x.table);
+    if (!it) continue;
+    lit.set(it, x);
+    i0 = Math.min(i0, it.index);
+    i1 = Math.max(i1, it.endIndex);
+  }
   if (y0 > -Infinity) i0 = Math.max(i0, L.itemAtY(y0).index);
-  if (y1 < Infinity) i1 = Math.min(i1, L.itemAtY(y1).index);
+  if (y1 < Infinity) {
+    const e = L.itemAtY(y1);
+    i1 = Math.min(i1, e.kind === 'tbl' ? e.endIndex : e.index);
+  }
   for (let i = i0; i <= i1; i++) {
-    const it = L.items[i];
-    if (it.kind === 'box') {
+    const it = L.flow[i];
+    const x = it.kind === 'tbl' && i === it.index && lit.get(it);
+    if (x) {
+      rowsBox(it, x.r0, x.r1, y0, y1, out);
+      i = it.endIndex;
+      continue;
+    }
+    if (it.col !== L.root && (it.y > y1 || it.y + it.h < y0)) continue;
+    if (it.kind === 'tbl') continue;
+    if (it.kind !== 'p') {
       const lit = (i > f.index || f.off === 0) &&
         (i < t.index || t.off === 1);
       if (lit) {
@@ -68,15 +156,15 @@ export function selectionRects(L, sel, y0, y1) {
     }
     if (a < b) {
       for (const r of PM.selectionRects(it, a, b)) {
-        out.push({x: r.x + L.left, y: r.y, w: r.w, h: r.h});
+        out.push({x: r.x + it.x, y: r.y, w: r.w, h: r.h});
       }
     }
     if (i < t.index) {
       const c = PM.caretRect(it, len, 'down');
       // after a page break's rule: inside the column
       const x = lines[lines.length - 1].endsWithBreak
-        ? Math.min(c.x, L.textW - STUB) : c.x;
-      out.push({x: x + L.left, y: c.y, w: STUB, h: c.h});
+        ? Math.min(c.x, it.w - STUB) : c.x;
+      out.push({x: x + it.x, y: c.y, w: STUB, h: c.h});
     }
   }
   return out;

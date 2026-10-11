@@ -1,0 +1,70 @@
+// TblWrite - a typed Table of ./Model -> its w:tbl element (D13).
+// Pure.
+//
+//   tblNode(table, map) -> w:tbl
+//
+// w:tbl (table.attrs, in order): w:tblPr (always), w:tblGrid
+// (gridAttrs; a w:gridCol w:w per grid entry), then per row its
+// `lead` marks and its w:tr (attrs; the raw tblPrEx node; w:trPr
+// when not empty; per cell its `lead` marks and its w:tc (attrs;
+// w:tcPr when not empty; the blocks: a Para by ./WritePara paraNode,
+// never with a sectPr; a Table by tblNode; an Opaque block's node as
+// it is)); the row's `tail`; at the end the table's `tail`. A cell
+// whose last block is not a paragraph is written as it is.
+// Properties: ./TblWriteProps. Each element's content is written in
+// its own namespace scope (map plus the xmlns of the attrs of w:tbl,
+// w:tr and w:tc around it), as ./TblRead read it: a prefix bound on
+// a w:tc still names a known property there. The model is checked
+// before writing (./TblCheck, through ./ModelCheck checkBlock in
+// ./DocxWrite); a bad property value is refused here (./WriteProps
+// badModel).
+//
+// SECURITY: recursion is at most one level per table, and a model
+// table is at most MAX_DEPTH (./TblCheck) deep.
+import {W} from './Wml';
+import {scope} from './Ns';
+import {paraNode} from './WritePara';
+import {tblPrNode, trPrNode, tcPrNode} from './TblWriteProps';
+
+const pairs = (a) => a.map(([n, v]) => [n, v]);
+/** The scope inside an element with attributes `attrs`. */
+const inside = (attrs, map) => attrs.length ? scope(map, {attrs})
+  : map;
+
+/** One block of a cell. */
+function blockNode(b, map) {
+  if (b.type === 'p') return paraNode(b, null, map);
+  if (b.type === 'tbl') return tblNode(b, map);
+  return b.node;
+}
+
+function cellNode(cell, around) {
+  const map = inside(cell.attrs, around);
+  const kids = [];
+  const tcPr = tcPrNode(cell.tcPr, map);
+  if (tcPr) kids.push(tcPr);
+  for (const b of cell.blocks) kids.push(blockNode(b, map));
+  return {name: 'w:tc', attrs: pairs(cell.attrs), children: kids};
+}
+
+function rowNode(row, around) {
+  const map = inside(row.attrs, around);
+  const kids = [];
+  if (row.tblPrEx) kids.push(row.tblPrEx);
+  const trPr = trPrNode(row.trPr, map);
+  if (trPr) kids.push(trPr);
+  for (const c of row.cells) kids.push(...c.lead, cellNode(c, map));
+  kids.push(...row.tail);
+  return {name: 'w:tr', attrs: pairs(row.attrs), children: kids};
+}
+
+/** See the header. */
+export function tblNode(table, around) {
+  const map = inside(table.attrs, around);
+  const kids = [tblPrNode(table.tblPr, map), {name: 'w:tblGrid',
+    attrs: pairs(table.gridAttrs), children: table.grid.map((w) =>
+      W('gridCol', {'w:w': w}))}];
+  for (const r of table.rows) kids.push(...r.lead, rowNode(r, map));
+  kids.push(...table.tail);
+  return {name: 'w:tbl', attrs: pairs(table.attrs), children: kids};
+}

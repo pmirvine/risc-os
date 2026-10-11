@@ -14,6 +14,7 @@ import {blockId} from '../../tools/moreapps/!Word/DocPos';
 import * as S from '../../tools/moreapps/!Word/Selection';
 import {mk, C, SEL, blocks as blocksOf, O} from './edit-docs.mjs';
 import {loadStyles, tm, mkDoc, raw, box} from './word-docs.mjs';
+import {modelTable} from './tbl-fixtures.mjs';
 
 before(loadStyles);
 
@@ -311,5 +312,43 @@ describe('WordCount: size', () => {
     const t0 = Date.now();
     assert.equal(count(d).words, 1800000);
     assert.ok(Date.now() - t0 < 1000);
+  });
+});
+
+describe('WordCount: a selection in a typed table (C3.5)', () => {
+  const T = () => modelTable([['one two', 'three'], ['four', 'five six']]);
+  const cell = (d, r, c) => d.doc.sections[0].blocks[1].rows[r].cells[c]
+    .blocks[0];
+  it('an end in a cell counts the selection, not the document', () => {
+    const d = mk(['a b', T(), 'c']);
+    const p0 = blocksOf(d)[0];
+    // from the paragraph before into cell (0,1): row 0 whole (Word)
+    const x = count(d.doc, S.select({id: p0.id, off: 0},
+      {id: cell(d, 0, 1).id, off: 1}));
+    assert.deepEqual([x.scope, x.words, x.paras], ['selection', 5, 3]);
+    // inside one cell: its text only
+    const y = count(d.doc, S.select({id: cell(d, 1, 1).id, off: 0},
+      {id: cell(d, 1, 1).id, off: 4}));
+    assert.deepEqual([y.scope, y.words, y.paras], ['selection', 1, 1]);
+    // a column of cells: (0,0) and (1,0)
+    const z = count(d.doc, S.select({id: cell(d, 0, 0).id, off: 1},
+      {id: cell(d, 1, 0).id, off: 1}));
+    assert.deepEqual([z.words, z.paras], [3, 2]);
+    assert.equal(count(d.doc).words, 9);
+  });
+  it('lines: the lines of a typed table\'s cells count, in the ' +
+    'document and in a selection over the table (C3 fix wave)', () => {
+    const long = 'word '.repeat(40).trim();
+    const d = mk(['a b', modelTable([[long, 'x'], ['y', 'z']]), 'c']);
+    const L = new DocLayout(d.doc, tm());
+    L.layout(800);
+    const want = [...L.byId.values()].reduce((a, it) => a +
+      (it.kind === 'p' ? it.lines.length : 0), 0);
+    assert.ok(want > 6, 'the long cell wraps: ' + want);
+    assert.equal(count(d.doc, null, L).lines, want);
+    const p0 = blocksOf(d)[0], p2 = blocksOf(d)[2];
+    const all = S.select({id: p0.id, off: 0}, {id: p2.id, off: 1});
+    assert.equal(count(d.doc, all, L).lines, want);
+    assert.equal(count(d.doc, null, L).words, 3 + 40 + 3);
   });
 });

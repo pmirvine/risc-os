@@ -25,8 +25,8 @@ const PARAS = [
   p(r('Emoji \u{1F600} and é here.')),                                  // 2
   p(r('Tab') + '<w:r><w:tab/></w:r>' + r('stop')),                            // 3
   p(r('A ') + LINK + r(' after.')),                                           // 4
-  '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' +
-    p(r('a cell')) + '</w:tc></w:tr></w:tbl>',                                // 5
+  // a kept (Opaque: no w:tblGrid) table, the box this suite tests (a typed table's cells take the caret: C3.1)
+  '<w:tbl><w:tblPr/><w:tr><w:tc>' + p(r('a cell')) + '</w:tc></w:tr></w:tbl>', // 5
   p(r('List item'), '<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>'), // 6
   p(r('Last paragraph.')),                                                    // 7
   ...Array.from({ length: 20 }, (_, i) => p(r(`Filler ${i} with words.`))),
@@ -407,7 +407,7 @@ try {
       dw.close();
       return { fresh, edited, undone, mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
     });
-    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'Format', 'Zoom', 'New', 'Close']), shades.fresh);
+    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Table, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'Format', 'Table', 'Zoom', 'New', 'Close']), shades.fresh);
     // (Cut and Copy shaded at the caret; Paste never; the Find items never: word-clipboard.mjs, word-find.mjs)
     // (on a Mac the labels are Cmd+: MacKeys.macLabel)
     const K = shades.mac ? 'Cmd+' : 'Ctrl+';

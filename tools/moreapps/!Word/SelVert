@@ -1,0 +1,98 @@
+// SelVert - the moves of ./SelMove that cross lines and items by the
+// flow or by a point: into an item at a goal x, by a page, the next
+// caret place in flow order (./SelTable does Up and Down, which
+// cross cells by their geometry).
+//
+//   make(anchor, head, affinity?, goalX?) -> a frozen selection
+//                              (./SelMove's, ./Selection's)
+//   at(it, off, affinity?)     -> {pos: {id, off}, affinity}
+//   withAff(it, r)             -> at(it, r.off, r.affinity)
+//   enter(L, n, dir, gx)       into item n (a paragraph or a kept
+//                              block; a table: ./SelTable enter)
+//                              from above (dir 1) or below (-1)
+//   page(L, p, aff, gx, dir, pageH)    pageH px (default 400)
+//   step(L, it, off, dir)      the next caret place in flow order
+//                              after (dir 1) or before (-1) the
+//                              position (it, off), or null: an
+//                              item's start (dir 1) or end (-1); a
+//                              table's edge only where reachable
+//                              (D8), else on into or out of it;
+//                              the items of a vMerge continue cell
+//                              (never drawn or hit) passed, as Up,
+//                              Down, clicks and Tab pass them
+//   reachable(t, edge)         whether table item t's edge (0 its
+//                              start, 1 its end) is a caret place
+//                              for the keys: no paragraph beside it
+//                              in its column (D8)
+//
+// Each gives {pos, affinity}, as ./SelMove's commands. goalX is in
+// the work area; an item's own x is its column's (it.x, it.w:
+// ./DocItems). Flow order is ./DocLayout's L.flow (cells' items
+// too). Pure: no desktop services.
+import * as PM from './PositionMap';
+import {itemEnd, placeOf} from './DocPos';
+
+const hid = new WeakMap();             // layout -> Set of columns
+
+/** The columns of L in a vMerge continue cell (at any depth), found
+ *  once per layout in one pass over its table items, which the flow
+ *  lists before their cells' items (the cells' own cont flags). */
+function hiddenCols(L) {
+  let s = hid.get(L);
+  if (s) return s;
+  hid.set(L, s = new Set());
+  for (const n of L.flow) {
+    if (n.kind !== 'tbl' || !n.rows) continue;
+    const all = s.has(n.col);
+    for (const row of n.rows) {
+      for (const c of row.cells) if (all || c.cont) s.add(c.col);
+    }
+  }
+  return s;
+}
+
+/** Whether item n of layout L is in a vMerge continue cell. */
+const hidden = (L, n) => n.col !== L.root && hiddenCols(L).has(n.col);
+
+/** See the header. */
+export const make = (anchor, head, affinity = 'down', goalX = null) =>
+  Object.freeze({anchor, head, affinity, goalX});
+
+export const at = (it, off, affinity = 'down') =>
+  ({pos: {id: it.id, off}, affinity});
+
+export function withAff(it, r) {
+  return at(it, r.off, r.affinity);
+}
+
+/** Into item n from above (dir 1) or below (-1), at goalX gx. */
+export function enter(L, n, dir, gx) {
+  if (n.kind !== 'p') {
+    const r = L.boxRect(n);
+    return at(n, gx < r.x + r.w / 2 ? 0 : 1);
+  }
+  const ln = n.lines[dir > 0 ? 0 : n.lines.length - 1];
+  const h = PM.hitTest(n, gx - n.x, n.y + ln.y + ln.h / 2);
+  return at(n, h.off, h.affinity);
+}
+
+export function reachable(t, edge) {
+  const b = t.col.items[t.ci + (edge ? 1 : -1)];
+  return !b || b.kind !== 'p';
+}
+
+export function step(L, it, off, dir) {
+  for (let q = placeOf(it, off) + dir, n; (n = L.flow[q]); q += dir) {
+    if (hidden(L, n)) continue;
+    if (n.kind !== 'tbl') return at(n, dir > 0 ? 0 : itemEnd(n));
+    const edge = q === n.endIndex ? 1 : 0;
+    if (reachable(n, edge)) return at(n, edge);
+  }
+  return null;
+}
+
+export function page(L, p, aff, gx, dir, pageH) {
+  const c = L.caretRect(p, aff);
+  const h = Number.isFinite(pageH) && pageH > 0 ? pageH : 400;
+  return L.hitTest(gx, c.y + c.h / 2 + dir * h);
+}

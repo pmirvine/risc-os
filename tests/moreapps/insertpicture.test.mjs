@@ -23,6 +23,10 @@ import {drawingXml, picDocx, pngBytes, jpegBytes, gifBytes}
   from './pic-fixtures.mjs';
 import {lintPackage} from './lint-package.mjs';
 import {schemaChecker} from './roundtrip-lib.mjs';
+import {tbl, tr, tc} from './tbl-fixtures.mjs';
+import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import {loadStyles, tm} from './word-docs.mjs';
+import {findBlock} from '../../tools/moreapps/!Word/EditPos';
 
 const DATE = new Date(Date.UTC(2026, 0, 1));
 const write = (doc) => writeDocx(doc, {date: DATE});
@@ -393,4 +397,72 @@ describe('InsertPicture: final review fixes (A3)', () => {
       const rel = d.doc.rels.find((x) => x.id === info.embed);
       assert.equal(rel.target, 'media/image2.png');
     });
+});
+
+describe('InsertPicture in a table cell (C3 fix wave)', () => {
+  const W = (tw) => ({tcPr: `<w:tcW w:w="${tw}" w:type="dxa"/>`});
+  /** p, a 2-column table (1 in, 4 in) whose (0,0) holds a nested one,
+   *  p: the doc, its layout, the paragraph id of text t. */
+  async function setup() {
+    await loadStyles();
+    const inner = tbl([tr([tc(p(r('in')), W(720))])], {grid: [720]});
+    const body = p(r('x')) + tbl([tr([tc(p(r('narrow')) + inner + p(),
+      W(1440)), tc(p(r('wide')), W(5760))])], {grid: [1440, 5760]}) +
+      p(r('y'));
+    const d = await open(body);
+    const L = new DocLayout(d.doc, tm());
+    L.layout(800);
+    const id = (t) => {
+      let out = null;
+      L.byId.forEach((it) => {
+        if (it.kind === 'p' && it.block.text === t) out = it;
+      });
+      return out;
+    };
+    return {d, L, id};
+  }
+  /** The picture just put in at item it's paragraph (offset 0). */
+  const placed = (d, it) => {
+    const b = findBlock(d.doc, it.id).b;
+    return pictureOf(b.inlines[0].node, docMap(d.doc));
+  };
+
+  it('sized to the cell\'s text width (the cell less its margins), ' +
+    'not the section\'s column; proportions kept', async () => {
+    const {d, L, id} = await setup();
+    const it = id('narrow');
+    const tw = Math.floor(it.col.w * 15);
+    assert.ok(tw > 0 && tw < 1440, 'the cell is under an inch: ' + tw);
+    insert(d, caret({id: it.id, off: 0}), {bytes: pngBytes(4000, 1000),
+      L});
+    const info = placed(d, it);
+    assert.equal(info.cx, tw * 635);
+    assert.equal(info.cy, Math.round(1000 * tw * 635 / 4000));
+    assert.equal(d.undoDepth, 1);
+  });
+
+  it('a nested table\'s cell: its own (narrower) width; a picture that ' +
+    'fits the cell keeps its natural size', async () => {
+    const {d, L, id} = await setup();
+    const it = id('in');
+    const tw = Math.floor(it.col.w * 15);
+    insert(d, caret({id: it.id, off: 0}), {bytes: pngBytes(4000, 1000),
+      L});
+    assert.equal(placed(d, it).cx, tw * 635);
+    const w = id('wide');
+    insert(d, caret({id: w.id, off: 0}), {bytes: pngBytes(96, 48), L});
+    assert.equal(placed(d, w).cx, IN);
+  });
+
+  it('outside a table, or without a layout: the section\'s column, ' +
+    'as before', async () => {
+    const {d, L, id} = await setup();
+    const x = id('x');
+    insert(d, caret({id: x.id, off: 0}), {bytes: pngBytes(4000, 1000),
+      L});
+    assert.equal(placed(d, x).cx, (11906 - 2880) * 635);
+    const n = id('narrow');
+    insert(d, caret({id: n.id, off: 0}), {bytes: pngBytes(4000, 1000)});
+    assert.equal(placed(d, n).cx, (11906 - 2880) * 635);
+  });
 });

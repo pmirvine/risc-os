@@ -1,0 +1,192 @@
+// TblPairs - bookmark pairs kept in order by a table command that
+// moves content and marks within a table (Batch C4 fix wave: Merge
+// cells, and Split cells over a cells shape, which merges first), so
+// a pair is never written end before start (Word would drop it, and
+// links and cross-references to it would break).
+//
+//   endIn(cells) -> whether a bookmark end is among the cells' marks
+//       (their leads, their paragraphs at any depth): the cheap test
+//       before inOrder (nothing that moves holds an end: nothing to
+//       put right)
+//   inOrder(old, t, r, k) -> t'  t, a command's result from table
+//       old, with every bookmark pair that t has end before start but
+//       old had start first put right: its start goes to the front of
+//       cell (r, k)'s lead (the cell the command moved content into),
+//       which is before everything moved there. Marks counted: the
+//       table's own between rows and cells (row leads, cell leads,
+//       row tails, its tail) and those in paragraphs at any depth
+//       (./BookmarkKeep marksIn); a mark whose id is on more than one
+//       start or end is left as it is. t itself when nothing is put
+//       right; otherwise a copy (copy-on-write: ./Walk mapBlocks for
+//       a paragraph losing a mark, ./OpsUtil cut and join).
+//   reversedIds(list) -> Set  the ids of list's pairs that are end
+//       first (list: marks in document order, {kind, id}, as
+//       ./BookmarkFind marks gives): what was so before a command
+//   endsAfter(was, t) -> t'  every pair of table t (counted as
+//       inOrder counts) that is end before start, its id not in
+//       `was`, put right by moving its END to just after its start
+//       (in the start's paragraph, or after it in its lead or tail):
+//       the bookmark becomes empty there, never longer (a deletion
+//       that took all between them: ./RangeTbl, final-1 I2: marks of
+//       removed rows moved to the next row's lead, their partner put
+//       at the caret after it). t itself when none
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {markOf, marksIn} from './BookmarkKeep';
+import {forEachIn, mapBlocks} from './Walk';
+import {cut, join} from './OpsUtil';
+
+const arr = (v) => (Array.isArray(v) ? v : []);
+const isP = (b) => !!b && b.type === 'p';
+
+/** The marks of cell c pushed to out: {kind, id, node, x?}. */
+function cellOrder(c, out) {
+  nodes(c.lead, out);
+  forEachIn(c.blocks, [], (b) => {
+    if (!isP(b)) return;
+    for (const m of marksIn(b, 0, b.text.length, [])) {
+      out.push({kind: m.kind, id: m.id, node: m.x.node, x: m.x});
+    }
+  });
+  return out;
+}
+
+/** The mark nodes of list pushed to out. */
+function nodes(list, out) {
+  for (const n of arr(list)) {
+    const m = markOf(n);
+    if (m) out.push({...m, node: n});
+  }
+}
+
+/** See the header. */
+export const endIn = (cells) => cells.some((c) =>
+  cellOrder(c, []).some((m) => m.kind === 'end'));
+
+/** The marks of table t in document order (see the header). */
+function order(t) {
+  const out = [];
+  for (const row of t.rows) {
+    nodes(row.lead, out);
+    for (const c of row.cells) cellOrder(c, out);
+    nodes(row.tail, out);
+  }
+  nodes(t.tail, out);
+  return out;
+}
+
+/** id -> {start, end} marks of each pair of list that is end
+ *  first. */
+function reversed(list) {
+  const by = new Map();
+  list.forEach((m, i) => {
+    if (m.id === null) return;
+    const e = by.get(m.id) || {n: 0};
+    e.n++;
+    e[m.kind] = {m, i};
+    by.set(m.id, e);
+  });
+  const out = new Map();
+  for (const [id, e] of by) {
+    if (e.n === 2 && e.start && e.end && e.end.i < e.start.i) {
+      out.set(id, {start: e.start.m, end: e.end.m});
+    }
+  }
+  return out;
+}
+
+/** Paragraph p without the mark inlines in xs. */
+function dropIn(p, xs) {
+  const at = Object.keys(p.inlines).map(Number)
+    .filter((k) => xs.has(p.inlines[k])).sort((a, b) => a - b);
+  if (!at.length) return p;
+  const parts = [];
+  let a = 0;
+  for (const k of at) {
+    parts.push(cut(p, a, k));
+    a = k + 1;
+  }
+  parts.push(cut(p, a, p.text.length));
+  return {...p, ...join(...parts)};
+}
+
+/** Table t without the nodes ns in its leads and tails. */
+const dropNodes = (t, ns) => eachList(t, (list) =>
+  (arr(list).some((n) => ns.has(n))
+    ? arr(list).filter((n) => !ns.has(n)) : list));
+
+/** Table t with f(list) for each of its leads and tails (a copy only
+ *  where f gives a new list). */
+function eachList(t, f) {
+  const rows = t.rows.map((row) => {
+    const cells = row.cells.map((c) => {
+      const lead = f(c.lead);
+      return lead === c.lead ? c : {...c, lead};
+    });
+    const lead = f(row.lead), tail = f(row.tail);
+    return lead === row.lead && tail === row.tail &&
+      cells.every((c, k) => c === row.cells[k]) ? row
+      : {...row, lead, tail, cells};
+  });
+  return {...t, rows, tail: f(t.tail)};
+}
+
+/** See the header. */
+export function inOrder(old, t, r, k) {
+  const was = reversed(order(old));
+  const fix = [...reversed(order(t))].filter(([id]) => !was.has(id))
+    .map(([, e]) => e.start);
+  if (!fix.length) return t;
+  const xs = new Set(fix.filter((m) => m.x).map((m) => m.x));
+  let out = xs.size ? mapBlocks([t], (p) => dropIn(p, xs))[0] : t;
+  out = dropNodes(out, new Set(fix.filter((m) => !m.x)
+    .map((m) => m.node)));
+  const row = out.rows[r], c = row.cells[k], rows = out.rows.slice();
+  const cells = row.cells.slice();
+  cells[k] = {...c, lead: [...fix.map((m) => m.node), ...arr(c.lead)]};
+  rows[r] = {...row, cells};
+  return {...out, rows};
+}
+
+/** See the header. */
+export const reversedIds = (list) => new Set(reversed(list).keys());
+
+/** Paragraph p with inline after.get(x) put after each inline x. */
+function afterIn(p, after) {
+  const at = Object.keys(p.inlines).map(Number)
+    .filter((k) => after.has(p.inlines[k])).sort((a, b) => a - b);
+  if (!at.length) return p;
+  const parts = [];
+  let a = 0;
+  for (const k of at) {
+    parts.push(cut(p, a, k + 1), {text: OBJ, inlines: {0: after.get(
+      p.inlines[k])}, runs: [{start: 0, end: 1, rPr: {extra: []}}]});
+    a = k + 1;
+  }
+  parts.push(cut(p, a, p.text.length));
+  return {...p, ...join(...parts)};
+}
+
+/** See the header. */
+export function endsAfter(was, t) {
+  const fix = [...reversed(order(t))].filter(([id]) => !was.has(id))
+    .map(([, e]) => e);
+  if (!fix.length) return t;
+  const ends = fix.map((e) => e.end);
+  const xs = new Set(ends.filter((m) => m.x).map((m) => m.x));
+  let out = xs.size ? mapBlocks([t], (p) => dropIn(p, xs))[0] : t;
+  out = dropNodes(out, new Set(ends.filter((m) => !m.x)
+    .map((m) => m.node)));
+  const inl = new Map(), loose = new Map();
+  for (const {start, end} of fix) {
+    if (start.x) {
+      inl.set(start.x, end.x || {kind: 'raw', level: 'p',
+        node: end.node, text: ''});
+    } else loose.set(start.node, end.node);
+  }
+  if (inl.size) out = mapBlocks([out], (p) => afterIn(p, inl))[0];
+  if (!loose.size) return out;
+  const two = (n) => (loose.has(n) ? [n, loose.get(n)] : [n]);
+  return eachList(out, (list) => (arr(list).some((n) => loose.has(n))
+    ? arr(list).flatMap(two) : list));
+}

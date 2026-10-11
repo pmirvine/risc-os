@@ -25,16 +25,44 @@
 // bottom; Ctrl-A selects everything without scrolling; Escape makes a
 // selection a caret at its head (a caret's Escape is passed on; with
 // the format painter on it only ends that: ./PaintBind; during a
-// picture's handle drag only that, nothing changed: ./PicDrag). Uses
+// picture's handle drag or a table border's only that, nothing
+// changed: ./PicDrag, ./TblDrag). In a
+// table's cell (the selection's head: ./SelTable cellTabTarget, D10)
+// Tab and Shift-Tab select the next and previous cell's content
+// (before the keymap: in a list paragraph in a cell too); Tab in
+// the last cell adds a row below the last one (view.run('tabRow'):
+// ./TblCmd tabRowCmd, C4.1, D23; cellTabTarget's 'last' checked by
+// direction), Shift-Tab at the first cell does nothing; Ctrl-Tab
+// (cellTab) types a tab character there,
+// as typing does (view.input), and elsewhere goes on (R21: no
+// command runs, so a pending typing format is kept). Uses
 // only the view: no desktop services.
 import * as S from './Selection';
 import {command} from './Keys';
 import {keymap} from './Keymap';
 import {pageStep, visible} from './EditScroll';
 import {macKey} from './MacKeys';
+import {cellTabTarget, inCell} from './SelTable';
 
 const CLIP = new Set(['cut', 'copy', 'paste']);
 const ONCE = new Set(['new', 'close', 'save', 'saveBox']);
+const TABS = new Set(['tab', 'shiftTab', 'cellTab']);
+
+/** Tab, Shift-Tab, Ctrl-Tab in a cell; undefined elsewhere. */
+function inTable(v, id) {
+  const doc = v.d && v.d.doc;
+  if (!doc) return undefined;
+  if (id === 'cellTab') {
+    if (!inCell(doc, v.sel.head)) return undefined;
+    v.input('\t');
+    return true;
+  }
+  const to = cellTabTarget(doc, v.sel, id === 'tab' ? 1 : -1);
+  if (to === null) return undefined;
+  if (to === 'last' && id === 'tab') return v.run('tabRow');
+  if (to !== 'last') v.setSelection(to);
+  return true;
+}
 
 /** The character a 'key' types, or null (see the header). */
 function printable(v, ev) {
@@ -51,10 +79,11 @@ function printable(v, ev) {
 
 /** See the header. */
 export function keyFor(v, e0) {
-  // (Escape ends a picture's drag, ./PicDrag, then the format
-  // painter, ./PaintBind, and nothing else)
-  if (e0.code === 27 && v.picDrag) {
-    v.picDrag.cancel();
+  // (Escape ends a picture's or a table border's drag, ./PicDrag,
+  // ./TblDrag, then the format painter, ./PaintBind, nothing else)
+  const drag = e0.code === 27 && (v.picDrag || v.tblDrag);
+  if (drag) {
+    drag.cancel();
     return true;
   }
   if (e0.code === 27 && v.endPainter && v.endPainter()) return true;
@@ -64,6 +93,9 @@ export function keyFor(v, e0) {
   if (k) return v.sel ? move(v, k) : undefined;
   const id = keymap.lookup(ev);
   if (id) {
+    const t = TABS.has(id) && v.sel ? inTable(v, id) : undefined;
+    // (Ctrl-Tab outside a cell goes on: no command, pending kept)
+    if (t !== undefined || id === 'cellTab') return t;
     if (CLIP.has(id)) return undefined;
     if (ONCE.has(id) && ev.domEvent && ev.domEvent.repeat) return true;
     return v.run(id);

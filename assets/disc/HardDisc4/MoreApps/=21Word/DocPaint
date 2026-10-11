@@ -36,14 +36,19 @@
 // thick). A bar stop is a one-pixel vertical line, in black, the height
 // of each line of its paragraph, at its position. The grey rules and
 // labels are ./MarkPaint's. A picture's item (kind 'pic') is
-// ./PicPaint's: its bitmap from L.pics, or a labelled box. Draws on
-// the context it is given; imports no desktop services.
+// ./PicPaint's: its bitmap from L.pics, or a labelled box. A typed
+// table's item (kind 'tbl') is ./TablePaint's: its shading, its
+// cells' items, its resolved borders, only the rows in rect. Draws
+// on the context it is given; imports no desktop services. The items
+// drawn are the root column's (L.items, ./DocItems), each at its
+// own x and w.
 import {bandOf} from './SectDeco';
 import {flowMark} from './FlowDeco';
-import {paintBand, paintFlow, paintRule} from './MarkPaint';
+import {paintBand, paintFlow} from './MarkPaint';
 import {boxMark} from './BorderGroups';
 import {paintFill, paintEdges} from './BorderPaint';
-import {paintPic} from './PicPaint';
+import {paintPara, paintBox} from './ItemPaint';
+import {paintTable} from './TablePaint';
 
 /** See the header. */
 export function paint(L, g, rect) {
@@ -51,7 +56,7 @@ export function paint(L, g, rect) {
   const first = L.itemAtY(rect.y0);
   if (!first) return;
   const {items} = L;
-  let i0 = first.index, i1 = i0;
+  let i0 = first.ci, i1 = i0;
   // (an item above whose gap below, its band, is in rect)
   while (i0 > 0 && bottom(items[i0 - 1]) > rect.y0) i0--;
   while (i1 < items.length && top(items[i1]) < rect.y1) i1++;
@@ -60,6 +65,7 @@ export function paint(L, g, rect) {
     const it = items[i];
     if (it.y < rect.y1 && it.y + it.h > rect.y0) {
       if (it.kind === 'p') paintPara(L, g, it, rect);
+      else if (it.kind === 'tbl') paintTable(L, g, it, rect);
       else paintBox(L, g, it);
     }
     const m = bandOf(it);
@@ -77,128 +83,6 @@ const top = (it) => it.y - Math.max(0, it.gapAbove);
 function boxes(L, g, i0, i1, rect, f) {
   for (let i = i0; i < i1; i++) {
     const it = L.items[i], m = boxMark(it);
-    if (m && it.lines) f(g, m, it, L.items[i - 1], L.left, rect);
+    if (m && it.lines) f(g, m, it, L.items[i - 1], it.x, rect);
   }
-}
-
-function paintPara(L, g, it, rect) {
-  for (const ln of it.lines) {
-    const top = it.y + ln.y;
-    if (top >= rect.y1) break;
-    if (top + ln.h <= rect.y0) continue;
-    if (ln.clip) {
-      // an exact line spacing too small for the text: cut off (Word)
-      g.save();
-      g.beginPath();
-      g.rect(rect.x0, top, rect.x1 - rect.x0, ln.h);
-      g.clip();
-    }
-    paintLine(L, g, ln, top);
-    if (ln.clip) g.restore();
-  }
-}
-
-/** Line ln of a paragraph, its top at top. */
-function paintLine(L, g, ln, top) {
-  highlights(L, g, ln, top);
-  if (ln.label && ln.label.text) paintLabel(L, g, ln, top);
-  if (ln.bars) paintBars(L, g, ln, top);
-  for (const x of ln.items) {
-    if (x.kind === 'pagebreak') {
-      paintRule(L, g, x, top, ln.h);
-      continue;
-    }
-    if (x.leader && x.w > 0) paintLeader(L, g, x, top + ln.base);
-    if (x.kind === 'pic') {
-      paintPic(L, g, x, L.left + x.x, top + ln.base + (x.dy || 0));
-      continue;
-    }
-    if (!x.text) continue;
-    const f = x.f;
-    const left = L.left + x.x;
-    const base = top + ln.base + (x.dy || 0);
-    if (x.kind === 'box') {
-      g.strokeStyle = '#a0a0a0';
-      g.lineWidth = 1;
-      const h = f.px * 1.3;
-      g.strokeRect(Math.round(left) + 0.5,
-        Math.round(base - f.px) + 0.5, Math.round(x.w - 2),
-        Math.round(h));
-      g.fillStyle = f.colour;
-      g.font = f.css;
-      g.fillText(x.text, left + 2, base);
-      continue;
-    }
-    g.fillStyle = f.colour;
-    if (g.font !== f.css) g.font = f.css;
-    g.fillText(x.text, left, base);
-    const t = Math.max(1, Math.round(f.px / 14));
-    if (f.under) g.fillRect(left, base + 2, x.w, t);
-    if (f.strike) g.fillRect(left, base - f.px * 0.3, x.w, t);
-  }
-}
-
-const LEAD = {dot: '.', hyphen: '-', middleDot: '\u00b7'};
-
-/** The leader of tab item x, its baseline at base. */
-function paintLeader(L, g, x, base) {
-  const f = x.f, left = L.left + x.x;
-  g.fillStyle = f.colour;
-  if (x.leader === 'underscore' || x.leader === 'heavy') {
-    const t = Math.max(1, Math.round(f.px / 14));
-    g.fillRect(left, base + 2, x.w, x.leader === 'heavy' ? 2 * t : t);
-    return;
-  }
-  const ch = LEAD[x.leader];
-  if (!ch) return;
-  if (g.font !== f.css) g.font = f.css;
-  const cw = g.measureText ? g.measureText(ch).width : f.px / 3;
-  if (!(cw > 0)) return;
-  const k = Math.ceil(x.x / cw);
-  const n = Math.min(Math.floor((x.x + x.w) / cw) - k, 2000);
-  if (n > 0) g.fillText(ch.repeat(n), L.left + k * cw, base);
-}
-
-/** The bar stops of line ln (top: its top). */
-function paintBars(L, g, ln, top) {
-  g.fillStyle = '#000000';
-  for (const b of ln.bars) {
-    g.fillRect(Math.round(L.left + b), Math.round(top), 1,
-      Math.round(ln.h));
-  }
-}
-
-/** The list label of line ln (top: its top). */
-function paintLabel(L, g, ln, top) {
-  const {f, text, x} = ln.label;
-  g.fillStyle = f.colour;
-  if (g.font !== f.css) g.font = f.css;
-  g.fillText(text, L.left + x, top + ln.base);
-}
-
-/** The shading, then highlight, rectangles of line ln (at top). */
-function highlights(L, g, ln, top) {
-  const y0 = Math.round(top), y1 = Math.round(top + ln.h);
-  for (const x of ln.items) {
-    if ((!x.hl && !x.sh) || !(x.w > 0)) continue;
-    const a = Math.floor(L.left + x.x);
-    const w = Math.ceil(L.left + x.x + x.w) - a;
-    for (const c of [x.sh, x.hl]) {
-      if (!c) continue;
-      g.fillStyle = c;
-      g.fillRect(a, y0, w, y1 - y0);
-    }
-  }
-}
-
-function paintBox(L, g, it) {
-  const {x, y, w, h} = L.boxRect(it);
-  g.fillStyle = '#eeeeee';
-  g.fillRect(x, y, w, h);
-  g.strokeStyle = '#888888';
-  g.lineWidth = 1;
-  g.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
-  g.fillStyle = '#555555';
-  g.font = 'italic 13px "Liberation Sans", sans-serif';
-  g.fillText(it.label, x + 10, y + 18);
 }

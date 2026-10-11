@@ -1,0 +1,146 @@
+// TblInsertBox - the Insert Table dialogue box (Batch C4.4, D27, D30;
+// Insert > Table... and Table > Insert table...): Columns (1 to 63,
+// 2 when the box opens), Rows (1 to 1000, 2) and Column width: Auto
+// (the columns fill the text width) or Fixed with a length from 0.1
+// to 22 inches. Built by WimpLib Ui/Dialog.
+//
+//   tblInsertBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'tblins:<docKey>'), kept in dw.boxes ('tblins')
+//       so ./CloseDoc deletes it with the document; asked again while
+//       it is open, the same box comes to the front. Nothing (null)
+//       when the document has no selection.
+//
+// OK (or Return) puts the table at the caret (./TblInsert
+// insertTable: the selection deleted first, the caret in its first
+// cell; Auto: in a cell the layout's width of the cell, else the
+// section's column, ./TblInsert layoutTw): one undo step, the box
+// gone. A number that is not a whole number in range,
+// a Fixed width that is empty, not a length or outside 0.1 to 22
+// inches, columns that together are wider than 22 inches, or a caret
+// already in 8 nested tables is not rounded or clamped (no field has
+// a range of its own): OK beeps, says why in the box and keeps it,
+// with the caret in the field. If the selection or the document
+// changed while the box was open (a click, a key, another menu), OK
+// beeps, says so and keeps the box; the next OK uses the new caret
+// (so does asking for the box again). No caret, or one no longer in
+// the document, beeps with its own message. Cancel, Escape and the
+// close icon change nothing; the caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {insertTable, layoutTw} from './TblInsert';
+import {orderedPos} from './EditPos';
+import {MAX_COLS} from './TblCheck';
+
+export const MAX_ROWS_BOX = 1000;
+const MIN_W = 144, MAX_W = 31680;           // 0.1 to 22 inches
+// No field clamps (their ranges are far beyond the limits; a length
+// field's default range would be 22 inches): OK checks.
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;
+const MODES = [{id: 'auto', text: 'Auto'},
+  {id: 'fixed', text: 'Fixed'}];
+const num = (name, label, help, value) => ({kind: 'number', name,
+  label, min: 0, max: FIELD_MAX, decimals: 0, w: 120, help, value});
+const rows = () => [
+  [num('cols', 'Columns', 'How many columns: 1 to 63.', 2),
+    num('rows', 'Rows', 'How many rows: 1 to 1000.', 2)],
+  [{kind: 'popup', name: 'mode', label: 'Column width', choices: MODES,
+    help: 'Auto: the columns fill the width of the text. Fixed: each ' +
+      'column is as wide as the length you give.'},
+  {kind: 'length', name: 'width', min: -FIELD_MAX, max: FIELD_MAX,
+    w: 120,
+    help: 'The width of each column when Fixed: 0.1 to 22 inches.'}],
+  {kind: 'label', name: 'msg', text: '', w: 500},
+];
+const HELP = 'Insert table: a table with the columns and rows you ' +
+  'give, with a border round every cell, at the caret.';
+const MSG = {
+  cols: 'Columns: a whole number from 1 to 63.',
+  rows: 'Rows: a whole number from 1 to 1000.',
+  width: 'Column width: a length from 0.1 to 22 inches.',
+  wide: 'Too wide: the columns together can be at most 22 inches.',
+  here: 'A table cannot go here: tables nest at most 8 deep.',
+  nosel: 'There is no caret in the document: click where the ' +
+    'table should go, then click OK.',
+  gone: 'The caret is no longer in the document: click where the ' +
+    'table should go, then click OK.',
+  changed: 'The document changed while the box was open: look ' +
+    'again, then click OK.',
+};
+const state = new WeakMap();           // api -> {at}
+const wired = new WeakSet();
+
+/** See the header. */
+export function tblInsertBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `tblins:${dw.docKey}`,
+    title: 'Insert table', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 540});
+  box(dw, 'tblins', () => api.win);
+  if (api.isOpen) {
+    state.set(api, {at: where(v)});
+    api.set('msg', '');
+    return api;
+  }
+  if (!wired.has(api)) wire(api, v);
+  api.set('cols', 2);
+  api.set('rows', 2);
+  api.set('mode', 'auto');
+  api.set('width', undefined);
+  api.shade('width', true);
+  api.set('msg', '');
+  state.set(api, {at: where(v)});
+  api.open();
+  return api;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    if (name !== 'mode') return;
+    api.shade('width', value !== 'fixed');
+    if (value === 'fixed' && api.get('width') === undefined) {
+      api.set('width', 1440);
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    const ints = [['cols', MAX_COLS], ['rows', MAX_ROWS_BOX]];
+    for (const [f, hi] of ints) {
+      const n = values[f];
+      if (!Number.isInteger(n) || n < 1 || n > hi) return no(MSG[f], f);
+    }
+    const fixed = values.mode === 'fixed', w = values.width;
+    if (fixed && !(Number.isInteger(w) && w >= MIN_W && w <= MAX_W)) {
+      return no(MSG.width, 'width');
+    }
+    if (fixed && w * values.cols > MAX_W) return no(MSG.wide, 'width');
+    const st = state.get(api);
+    if (!v.sel) return no(MSG.nosel);
+    if (!orderedPos(v.d.doc, v.sel)) return no(MSG.gone);
+    if (st && where(v) !== st.at) {
+      st.at = where(v);
+      return no(MSG.changed);
+    }
+    const opts = {cols: values.cols, rows: values.rows};
+    if (fixed) opts.widthTw = w;
+    else {
+      const tw = layoutTw(v.d.doc, v.L, v.sel.head);
+      if (tw !== undefined) opts.textTw = tw;
+    }
+    const out = v.typing.command(() => insertTable(v.d, v.sel, opts));
+    if (!out) return no(MSG.here);
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

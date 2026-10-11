@@ -126,7 +126,7 @@ try {
   // ---------------------------------------------------- the menu item
   const m = await ev(() => { const r = window.__item('Picture...'), it = r.pop(); return { names: r, shaded: !!(typeof it.shaded === 'function' ? it.shaded() : it.shaded) }; });
   const at = m.names.indexOf('Picture...');
-  ok('Insert > Picture... sits between Section break and Symbol...', at > 0 && m.names[at - 1] === 'Section break' && m.names[at + 1] === 'Symbol...', m.names);
+  ok('Insert > Picture... sits between Tab (after Table...) and Symbol...', at > 0 && m.names[at - 1] === 'Tab' && m.names[at + 1] === 'Symbol...', m.names);
   ok('... live with a selection', m.shaded === false, m);
   const sh = await ev(() => { const v = window.__doc().dw.view, s = v.sel; v.sel = null; const it = window.__item('Picture...').pop(); const r = typeof it.shaded === 'function' ? it.shaded() : it.shaded; v.sel = s; return !!r; });
   ok('... shaded without a selection', sh === true, sh);

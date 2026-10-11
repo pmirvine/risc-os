@@ -1,0 +1,158 @@
+// DocHit - places in a ./DocLayout: a position's caret rectangle, the
+// position at a point, a kept block's box. DocLayout's methods of the
+// same names call these; see its header for what they give.
+//
+//   caretRect(L, pos, aff?)  -> {x, y, h} or null
+//   hitTest(L, x, y)         -> {pos, affinity} or null
+//   boxRect(L, it)           -> {x, y, w, h}
+//   itemIn(items, y)         -> the item of a column's items at y
+//                               (L.itemAtY's rule), or null
+//   leafAt(L, x, y)          -> the item drawn at layout point (x,
+//                               y): the root column's item at y
+//                               (L.itemAtY), in a table the item at y
+//                               of the cell whose box holds x (a
+//                               vMerge: its restart cell), nested
+//                               tables the same way; null when x is
+//                               in no cell of the row at y
+//   cellAtX(it, r, x, exact?) -> the cell of row r of table item it
+//                               at x: its box holds x, else the
+//                               nearest one across (exact: null);
+//                               a vMerge continue cell gives its
+//                               restart cell (what is shown there)
+//
+// Every item is placed at its column's x and w (it.x, it.w:
+// ./DocItems). A table ('tbl', ./TblItems) has the carets of a kept
+// block at its edges (D8): off 0 at its left edge, the first row's
+// height; off 1 at its right edge, the last row's; its box is the
+// table (it.left, it.width in its column). A hit in a table goes
+// into a cell (C3.1): the row at y (./TblLayout rowAtY), the cell
+// at x (outside every cell: the nearest one; in a lower row of a
+// vertical merge: its restart cell, which holds what is shown), then
+// the item of the cell's column at y, as on the page (a nested
+// table the same way). Pure: no desktop services.
+import {BOX} from './DocItems';
+import * as PM from './PositionMap';
+import {itemEnd} from './DocPos';
+import {inBand} from './SectDeco';
+import {boxMark} from './BorderGroups';
+import {rowAtY} from './TblLayout';
+
+const num = (v, d) => (Number.isFinite(v) ? v : d);
+const textTop = (it) => it.y + (it.lines && it.lines.length
+  ? it.lines[0].y : 0);
+
+/** See the header (clamped to the ends; a gap gives the item below
+ *  it; where items overlap, the lower one from its first line). */
+export function itemIn(items, y) {
+  let lo = 0, hi = items.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (items[mid].y + items[mid].h > y) hi = mid; else lo = mid + 1;
+  }
+  // items that overlap (a negative gap: ./DocStack): the one below
+  // once its text has begun (its space before is above that)
+  while (lo + 1 < items.length && textTop(items[lo + 1]) <= y) lo++;
+  return items[lo] || null;
+}
+
+/** See ./DocLayout's header. */
+export function caretRect(L, pos, aff = 'down') {
+  const loc = L.locate(pos);
+  if (!loc) return null;
+  const it = loc.item;
+  if (it.kind === 'tbl') {
+    const rs = it.rows, row = rs[loc.off ? rs.length - 1 : 0];
+    const x = it.x + it.left + (loc.off ? it.width : 0);
+    return row ? {x, y: row.y, h: row.h} : {x, y: it.y, h: it.h};
+  }
+  if (it.kind === 'box') {
+    const r = L.boxRect(it);
+    return {x: r.x + (loc.off ? r.w : 0), y: r.y, h: r.h};
+  }
+  const c = PM.caretRect(it, loc.off, aff);
+  return {x: c.x + it.x, y: c.y, h: c.h};
+}
+
+/** The box drawn for a kept block. */
+export function boxRect(L, it) {
+  if (it.kind === 'tbl') {
+    return {x: it.x + it.left, y: it.y, w: it.width, h: it.h};
+  }
+  return {x: it.x, y: it.y + 6, w: it.w, h: BOX};
+}
+
+/** See ./DocLayout's header. */
+export function hitTest(L, x, y) {
+  const {items} = L;
+  if (!items.length) return null;
+  const last = items[items.length - 1];
+  const D = 'down';
+  if (!(y >= items[0].y)) return {pos: L.docStart(), affinity: D};
+  if (y >= last.y + last.h) return {pos: L.docEnd(), affinity: D};
+  const it = L.itemAtY(y);
+  const up = it.col.items[it.ci - 1];
+  const bm = up && y < it.y ? boxMark(up) : null;
+  if (bm && y < up.y + up.h + bm.padBottom) {
+    // (the bottom border's gap: still the paragraph above)
+    const h = PM.hitTest(up, num(x, 0) - up.x, y);
+    return {pos: {id: up.id, off: h.off}, affinity: h.affinity};
+  }
+  if (up && y < it.y && inBand(up, y)) {
+    return {pos: {id: up.id, off: itemEnd(up)}, affinity: D};
+  }
+  return hitItem(L, it, x, y);
+}
+
+/** The position in item it at (x, y). */
+function hitItem(L, it, x, y) {
+  if (it.kind === 'tbl') return hitCell(L, it, num(x, 0), y);
+  if (it.kind !== 'p') {
+    const r = L.boxRect(it);
+    const off = x < r.x + r.w / 2 ? 0 : 1;
+    return {pos: {id: it.id, off}, affinity: 'down'};
+  }
+  const h = PM.hitTest(it, num(x, 0) - it.x, y);
+  return {pos: {id: it.id, off: h.off}, affinity: h.affinity};
+}
+
+/** In table item it: the cell at (x, y), then its item (header). */
+function hitCell(L, it, x, y) {
+  const c = cellAtX(it, rowAtY(it, y), x);
+  const n = c && itemIn(c.col.items, y);
+  return n ? hitItem(L, n, x, y)
+    : {pos: {id: it.id, off: 0}, affinity: 'down'};
+}
+
+/** See the header. */
+export function leafAt(L, x, y) {
+  let it = L.itemAtY(y);
+  while (it && it.kind === 'tbl') {
+    const c = cellAtX(it, rowAtY(it, y), x, true);
+    it = c ? itemIn(c.col.items, y) : null;
+  }
+  return it;
+}
+
+/** See the header. */
+export function cellAtX(it, r, x, exact = false) {
+  const row = it.rows[r];
+  let c = row ? nearest(row.cells, x, exact) : null;
+  while (c && c.cont && r > 0) {
+    const up = it.rows[--r].cells.find((u) => u.c0 === c.c0);
+    if (!up) break;
+    c = up;
+  }
+  return c;
+}
+
+/** The cell whose box holds x, else the nearest one across (exact:
+ *  null). */
+function nearest(cells, x, exact) {
+  let best = null, d = Infinity;
+  for (const c of cells) {
+    if (x >= c.x && x < c.x + c.w) return c;
+    const e = x < c.x ? c.x - x : x - c.x - c.w;
+    if (e < d) { best = c; d = e; }
+  }
+  return exact ? null : best;
+}

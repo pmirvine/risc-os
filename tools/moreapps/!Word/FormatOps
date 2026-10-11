@@ -1,15 +1,16 @@
 // FormatOps - the paragraphs a selection touches, and the setProps
 // ops (./OpsProps) a formatting command makes for them.
 //
-//   touched(doc, sel) -> [{s, i, p, a, e, para}] | null
-//       every paragraph from the selection's start to its end in
-//       document order (kept blocks, such as tables, left out), with
-//       [a, e) the selected part of its text (all of it but in the
-//       first and last paragraphs) and para whether paragraph
+//   touched(doc, sel) -> [{at, p, a, e, para}] | null
+//       every paragraph the selection touches in flow order, at
+//       any depth (./SelShape paraRanges, D10: a 'cells' rectangle
+//       its cells' paragraphs whole; a 'mixed' range the touched
+//       rows' whole; kept blocks left out), at its path, with [a, e)
+//       the selected part of its text and para whether paragraph
 //       formatting applies to it: to all of them but a last one the
 //       selection only reaches the start of (as in Word). A caret:
 //       its paragraph, a = e = its offset (none on a kept block).
-//       null when a position is not in the document. One pass.
+//       null when a position is not in the document.
 //   caretAt(doc, sel) -> {p, base} | null
 //       the caret's paragraph and the {rPr, rStyle?} text typed there
 //       gets (./OpsText.fmtAt); on a kept block an empty paragraph
@@ -36,6 +37,9 @@
 // (pieces): the file could not hold it, so it would not come back.
 // Pure: no desktop services.
 import {orderedPos, checkPos} from './EditPos';
+import {shapeOf, paraRanges} from './SelShape';
+import {at as walkAt} from './Walk';
+import {samePath} from './Path';
 import {fmtAt} from './OpsText';
 import {deepEqual} from './ModelCheck';
 import {mergeProps} from './OpsProps';
@@ -43,25 +47,19 @@ import {RPR_FIELDS, PPR_FIELDS, withoutRaw} from './PropNames';
 
 /** See the header. */
 export function touched(doc, sel) {
-  const o = orderedPos(doc, sel);
+  const o = sel && orderedPos(doc, sel);
   if (!o) return null;
-  const out = [];
-  const secs = doc.sections;
-  for (let s = o.f.s; s <= o.t.s; s++) {
-    const bs = secs[s].blocks;
-    const i0 = s === o.f.s ? o.f.i : 0;
-    const i1 = s === o.t.s ? o.t.i : bs.length - 1;
-    for (let i = i0; i <= i1; i++) {
-      const p = bs[i];
-      if (p.type !== 'p') continue;
-      const first = s === o.f.s && i === o.f.i;
-      const last = s === o.t.s && i === o.t.i;
-      const a = first ? o.from.off : 0;
-      const e = last ? o.to.off : p.text.length;
-      out.push({s, i, p, a, e, para: first || !last || e > 0});
-    }
-  }
-  return out;
+  const sh = shapeOf(doc, sel), list = paraRanges(doc, sel);
+  // the to-end's paragraph reached only at its start: no paragraph
+  // formatting (in the ends' container; a cell or a row taken whole
+  // is formatted whole)
+  const n = sh.kind === 'mixed' ? sh.tables[0].table.length
+    : o.t.at.length;
+  const endOnly = (en) => o.f.b !== o.t.b && o.to.off === 0 &&
+    sh.kind !== 'cells' && o.t.at.length === n &&
+    samePath(en.at, o.t.at);
+  return list.map((en) => ({at: en.at, p: walkAt(doc, en.at),
+    a: en.from, e: en.to, para: !endOnly(en)}));
 }
 
 const EMPTY_P = {type: 'p', text: '', runs: [], inlines: {},
@@ -81,7 +79,7 @@ export function buildOps(doc, sel, perPara) {
   const ops = [];
   for (const en of list) {
     for (const x of perPara(en) || []) {
-      ops.push({op: 'setProps', block: [en.s, en.i], ...x});
+      ops.push({op: 'setProps', block: en.at, ...x});
     }
   }
   return ops;

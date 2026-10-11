@@ -1,0 +1,154 @@
+// ClipCleanTbl - a typed table's clipboard block made fit to be
+// pasted (Batch C, C1.7, C6.1; D28).
+//
+//   sameTable(block, cleanPara) -> block
+//       for its own document: every cell paragraph (at every depth)
+//       cleaned by cleanPara (./ClipClean's same-document rule,
+//       passed in: plan R8, no import cycle); row and cell attrs
+//       without w14:paraId / w14:textId (./ClipIds keepAttrs, the
+//       keepIds rule); the marks between rows and cells (./Walk
+//       loose: row and cell leads, row and table tails) whose
+//       element is in ./ClipIds UNIQUE dropped (bookmarks, comment
+//       ranges... must stay unique: the source keeps them); an
+//       Opaque cell block holding such an id (./ClipIds hasIds) is
+//       its text (./ClipIds flatten: one or more paragraphs; a cell
+//       left with none gets one empty paragraph), any other loses
+//       its w14 ids (keepIds). Nested tables the same.
+//   crossTable(block, cleanPara, {strict, style}) -> block
+//       for another document (C6.1, D28; R10's text is gone): every
+//       cell paragraph (at every depth) cleaned by cleanPara
+//       (./ClipClean's cross-document rule, passed in: R8); tblPr,
+//       trPr and tcPr as ./ClipProps crossTblPr gives them (fields
+//       kept, tblStyle by style(id) -> the target's id or undefined,
+//       jc spelled for strict, the raw extra cleaned as a pPr's,
+//       w:cnfStyle kept); a row's tblPrEx cleaned the same way
+//       (./NumClean cleanExtra; null when nothing is left); no
+//       attributes on the table, its grid, rows or cells (rsids,
+//       w14 ids: a pasted paragraph gets no extraP either); no marks
+//       between rows and cells (bookmarks, comment ranges... name the
+//       source's; a paragraph's go too); Opaque cell blocks skipped
+//       (their XML can point at the source's parts, as kept blocks
+//       across); a cell left empty, or ending with a table, gets an
+//       empty paragraph at its end (a cell always ends with one).
+//       Nested tables the same.
+//   freshTable(block) -> Table
+//       a pasted table (./ClipPaste): a fresh id (./Model nextId) for
+//       the table, every nested table and every paragraph, extraP []
+//       for each paragraph; the one helper for fresh table ids
+//   freshBlocks(blocks) -> blocks  the same for a list of blocks (a
+//       pasted cell's contents: ./ClipPasteTbl)
+//   apart(blocks) -> blocks  an empty paragraph between two tables
+//       (typed, or kept: ./TblCheck endsCell) next to each other, at
+//       every depth (in cells too): Word joins two w:tbl with no
+//       w:p between them into one table (D27; C6 fix B1: HTML gives
+//       <table></table><table></table>); the same list (and
+//       objects) where nothing touches
+//
+// A clipboard table block is a Table without ids: {type: 'tbl',
+// tblPr, grid, gridAttrs, rows, attrs, tail}, its cells holding
+// clipboard blocks (paragraphs without id and extraP, nested table
+// blocks, Opaque blocks) (./ClipSlice). New objects only where
+// something changed (./Walk mapBlocks); nothing is changed in place.
+// Pure: no desktop services.
+import {nextId} from './Model';
+import {mapBlocks} from './Walk';
+import {UNIQUE, hasIds, keepIds, keepAttrs, flatten, plainPara}
+  from './ClipIds';
+import {crossTblPr} from './ClipProps';
+import {cleanExtra} from './NumClean';
+import {endsCell} from './TblCheck';
+
+const local = (n) => String(n).split(':').pop();
+const arr = (v) => (Array.isArray(v) ? v : []);
+
+/** Marks without the ones whose ids must stay unique. */
+const marks = (list) => (arr(list).some((n) => UNIQUE.has(
+  local(n && n.name))) ? list.filter((n) => !UNIQUE.has(local(
+  n && n.name))) : list);
+
+/** A cell for its own document (blocks already cleaned). */
+const sameCell = (c) => ({...c, attrs: keepAttrs(c.attrs),
+  lead: marks(c.lead), blocks: c.blocks.length ? c.blocks
+    : [plainPara('')]});
+
+/** A table's own parts for its own document (cells done). */
+const ownParts = (t) => ({...t, tail: marks(t.tail),
+  rows: t.rows.map((row) => ({...row, attrs: keepAttrs(row.attrs),
+    lead: marks(row.lead), tail: marks(row.tail),
+    cells: row.cells.map(sameCell)}))});
+
+/** An Opaque cell block for its own document. */
+const sameOpaque = (b) => (hasIds(b.node) ? flatten(b.node)
+  : {type: 'opaque', node: keepIds(b.node)});
+
+/** See the header. */
+export const sameTable = (block, cleanPara) => mapBlocks([block],
+  cleanPara, {opaque: sameOpaque, table: ownParts})[0];
+
+/** Blocks of a cell across: never empty, never ending with a
+ *  table. */
+const ends = (bl) => (!bl.length || bl[bl.length - 1].type === 'tbl'
+  ? [...bl, plainPara('')] : bl);
+
+/** A table's own parts for another document (cells done). */
+function crossParts(t, strict, style) {
+  const pr = (x, kind) => crossTblPr(x, strict, style, kind);
+  const ex = (n) => (n ? cleanExtra([n], strict)[0] || null : null);
+  return {...t, tblPr: pr(t.tblPr, 'tbl'), attrs: [], gridAttrs: [],
+    tail: [], rows: t.rows.map((row) => ({...row,
+      trPr: pr(row.trPr, 'tr'),
+      attrs: [], lead: [], tail: [], tblPrEx: ex(row.tblPrEx),
+      cells: row.cells.map((c) => ({...c, tcPr: pr(c.tcPr, 'tc'),
+        attrs: [], lead: [], blocks: ends(c.blocks)}))}))};
+}
+
+/** See the header. */
+export const crossTable = (block, cleanPara, {strict, style}) =>
+  mapBlocks([block], cleanPara, {opaque: () => [],
+    table: (t) => crossParts(t, !!strict, style)})[0];
+
+/** A pasted paragraph: a fresh id, no extraP. */
+function freshPara(b) {
+  const p = {type: 'p', id: nextId(), text: b.text, runs: b.runs,
+    inlines: b.inlines, pPr: b.pPr};
+  if (b.pStyle !== undefined) p.pStyle = b.pStyle;
+  p.extraP = [];
+  return p;
+}
+
+/** See the header. */
+export const freshBlocks = (blocks) => mapBlocks(blocks, freshPara,
+  {table: (t) => ({...t, id: nextId()})});
+
+/** See the header. */
+export const freshTable = (block) => freshBlocks([block])[0];
+
+/** list with an empty paragraph between touching tables. */
+function sep(list) {
+  let out = null;
+  for (let j = 0; j < list.length; j++) {
+    if (j && endsCell(list[j]) && endsCell(list[j - 1]))
+      (out ||= list.slice(0, j)).push(plainPara(''));
+    if (out) out.push(list[j]);
+  }
+  return out || list;
+}
+
+/** Table t with sep in each cell (copied only where it changed). */
+function sepCells(t) {
+  let rows = null;
+  t.rows.forEach((row, r) => {
+    let cells = null;
+    row.cells.forEach((c, k) => {
+      const bl = sep(c.blocks);
+      if (bl !== c.blocks) (cells ||= row.cells.slice())[k] =
+        {...c, blocks: bl};
+    });
+    if (cells) (rows ||= t.rows.slice())[r] = {...row, cells};
+  });
+  return rows ? {...t, rows} : t;
+}
+
+/** See the header. */
+export const apart = (blocks) => sep(mapBlocks(blocks, (p) => p,
+  {table: sepCells}));

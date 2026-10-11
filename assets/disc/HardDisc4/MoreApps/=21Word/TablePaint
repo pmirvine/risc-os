@@ -1,0 +1,238 @@
+// TablePaint - draws a typed table's item (./TblItems, ./TblLayout)
+// on a canvas 2D context (D21). ./DocPaint calls it for a 'tbl'
+// item; it calls itself for nested tables.
+//
+//   paintTable(L, g, it, rect)  draws the rows of item it meeting
+//     rect {x0, y0, x1, y1} (work-area px; found by a binary search
+//     on its row tops) and records them on it: it.painted = [r0, r1]
+//     (the first and last row drawn)
+//
+// In D21's order: the table's shading (its tblPr shd, else its
+// style's) under those rows across the table; each cell's shading
+// (the cell's own tcPr shd, else its layer's: the style's whole
+// table and conditional) over its box (a cell of a vertical merge
+// shades its own row's part); the cells' columns (their paragraphs
+// with their own border boxes and shading as on the page, ./ItemPaint
+// ./BorderPaint; pictures in their lines; kept blocks as the grey
+// box; nested tables), each clipped to its cell box when the cell is
+// clipped (an exact row, or content taller than the box), a merged
+// cell over all the rows it spans (drawn also when it starts above
+// rect); then the borders resolved by ./TblBorders, drawn with
+// ./BorderResolve edgeOf and ./BorderPaint edge (the paragraph code),
+// centred on the lines, joins square; a diagonal (tl2br, tr2bl) as
+// one line of its width and colour; with cell spacing each cell's
+// own four sides inside its box and the table's outer box round it.
+// A floating table (a w:tblpPr in its tblPr, kept: Batch D places
+// it) has a 1 px dashed outline ([4, 3], #606060) round it, as a
+// floating picture. Themed colours are shown by their literal colour
+// (./TblBorders shown). Draws on the context it is given; imports no
+// desktop services.
+import {rowAtY, bottomOf} from './TblLayout';
+import {edgesOf, shown} from './TblBorders';
+import {shadeCss, edgeOf} from './BorderResolve';
+import {edge, paintFill, paintEdges} from './BorderPaint';
+import {boxMark} from './BorderGroups';
+import {paintPara, paintBox} from './ItemPaint';
+import {wName, isEl} from './Ns';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const get = (o, f) => (isObj(o) ? o[f] : undefined);
+
+/**
+ * Fill a rectangle with css (nothing when null), its edges on whole
+ * pixels: neighbouring cells' fills meet without a seam.
+ */
+function fill(g, css, x, y, w, h) {
+  if (!css || !(w > 0) || !(h > 0)) return;
+  const x0 = Math.round(x), y0 = Math.round(y);
+  g.fillStyle = css;
+  g.fillRect(x0, y0, Math.round(x + w) - x0, Math.round(y + h) - y0);
+}
+
+/** A column's items meeting rect, with their border boxes. */
+function paintColumn(L, g, col, rect) {
+  const {items} = col;
+  const shown = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const top = it.y - Math.max(0, it.gapAbove || 0);
+    if (top >= rect.y1) break;
+    if (it.y + it.h + (it.gapBelow || 0) > rect.y0) shown.push(i);
+  }
+  const boxes = (f) => {
+    for (const i of shown) {
+      const it = items[i], m = boxMark(it);
+      if (m && it.lines) f(g, m, it, items[i - 1], it.x, rect);
+    }
+  };
+  boxes(paintFill);
+  for (const i of shown) {
+    const it = items[i];
+    if (!(it.y < rect.y1 && it.y + it.h > rect.y0)) continue;
+    if (it.kind === 'p') paintPara(L, g, it, rect);
+    else if (it.kind === 'tbl') paintTable(L, g, it, rect);
+    else paintBox(L, g, it);
+  }
+  boxes(paintEdges);
+}
+
+/** The cells whose content shows in rows r0..r1 (merges' tops). */
+function cellsOf(it, r0, r1) {
+  const out = [];
+  const g = it.key.g;
+  for (let r = r0; r <= r1; r++) {
+    for (const c of it.rows[r].cells) {
+      if (!c.cont) out.push(c);
+      else if (r === r0) {
+        const [tr, tk] = g.rows[r].cells[c.k].top;
+        const top = it.rows[tr] && it.rows[tr].cells[tk];
+        if (top && !top.cont && tr < r0) out.push(top);
+      }
+    }
+  }
+  return out;
+}
+
+/** One side as an edge for ./BorderPaint (null: not drawn). */
+function edgeAt(s, side, x, y, w, h) {
+  const e = edgeOf(s);
+  if (!e) return null;
+  const across = side === 'top';
+  return {side, style: e.style, lw: e.lw, colour: e.color,
+    x: x - e.t / 2, y: across ? y - e.t / 2 : y,
+    w: across ? w + e.t : e.t, h: across ? e.t : h};
+}
+
+/** Draw edge e (from edgeAt) if any. */
+const line = (g, e, rect) => e && edge(g, e, rect);
+
+/** Each cell's own four sides inside its box (cell spacing). */
+function ownSides(g, o, c, y, h, rect) {
+  const at = (s, side, x, y0, w, h0) => {
+    const e = edgeOf(s);
+    if (e) {
+      edge(g, {side, style: e.style, lw: e.lw, colour: e.color, x,
+        y: y0, w: w === null ? e.t : w, h: h0 === null ? e.t : h0},
+      rect);
+    }
+    return e ? e.t : 0;
+  };
+  const t = at(o.top, 'top', c.x, y, c.w, null);
+  const b = (edgeOf(o.bottom) || {t: 0}).t;
+  at(o.bottom, 'bottom', c.x, y + h - b, c.w, null);
+  at(o.left, 'left', c.x, y + t, null, h - t - b);
+  const rt = (edgeOf(o.right) || {t: 0}).t;
+  at(o.right, 'right', c.x + c.w - rt, y + t, null, h - t - b);
+}
+
+/** A diagonal of cell box (x, y, w, h). */
+function diagonal(g, s, x0, y0, x1, y1) {
+  const e = edgeOf(s);
+  if (!e) return;
+  g.save();
+  g.strokeStyle = e.color;
+  g.lineWidth = e.lw;
+  g.beginPath();
+  g.moveTo(x0, y0);
+  g.lineTo(x1, y1);
+  g.stroke();
+  g.restore();
+}
+
+/** The resolved borders of rows r0..r1 (see the header). */
+function borders(L, g, it, r0, r1, rect) {
+  const {rows} = it, n = rows.length, X0 = it.x + it.left;
+  const E = edgesOf(it, L.ns, r0, r1);
+  for (let r = r0; r <= r1 + 1; r++) {
+    const Y = r < n ? rows[r].y : rows[n - 1].y + rows[n - 1].h;
+    for (const s of E.h[r]) {
+      line(g, edgeAt(s.side, 'top', X0 + s.x0, Y, s.x1 - s.x0, 0),
+        rect);
+    }
+  }
+  for (let r = r0; r <= r1; r++) {
+    const {y, h, cells} = rows[r];
+    for (const s of E.v[r]) {
+      line(g, edgeAt(s.side, 'left', X0 + s.x, y, 0, h), rect);
+    }
+    for (const o of E.own[r]) ownSides(g, o, cells[o.k], y, h, rect);
+    for (const d of E.diag[r]) {
+      const c = cells[d.k];
+      if (c.cont) continue;
+      const yb = bottomOf(it, c);
+      if (d.tl2br) diagonal(g, d.tl2br, c.x, y, c.x + c.w, yb);
+      if (d.tr2bl) diagonal(g, d.tr2bl, c.x + c.w, y, c.x, yb);
+    }
+  }
+  const B = E.box;
+  if (!B) return;
+  const top = rows[0].y, end = rows[n - 1].y + rows[n - 1].h;
+  const ya = rows[r0].y, yb = rows[r1].y + rows[r1].h;
+  if (r0 === 0 && B.top) {
+    line(g, edgeAt(B.top, 'top', X0, top, it.width, 0), rect);
+  }
+  if (r1 === n - 1 && B.bottom) {
+    line(g, edgeAt(B.bottom, 'top', X0, end, it.width, 0), rect);
+  }
+  if (B.left) line(g, edgeAt(B.left, 'left', X0, ya, 0, yb - ya), rect);
+  if (B.right) {
+    line(g, edgeAt(B.right, 'left', X0 + it.width, ya, 0, yb - ya),
+      rect);
+  }
+}
+
+/** Whether tblPr holds a w:tblpPr (a floating table). */
+function floating(tblPr, map) {
+  const extra = get(tblPr, 'extra');
+  if (!Array.isArray(extra)) return false;
+  return extra.some((n) => isEl(n) && Array.isArray(n.attrs) &&
+    wName(n, map) === 'tblpPr');
+}
+
+/** See the header. */
+export function paintTable(L, g, it, rect) {
+  const {rows} = it, n = rows.length;
+  if (!n) return;
+  const r0 = rowAtY(it, rect.y0);
+  let r1 = rowAtY(it, rect.y1);
+  while (r1 > r0 && rows[r1].y >= rect.y1) r1--;
+  it.painted = [r0, r1];
+  const map = L.ns, t = it.block, view = it.key.view;
+  const X0 = it.x + it.left;
+  const ya = rows[r0].y, yb = rows[r1].y + rows[r1].h;
+  const tp = shown(t.tblPr, 'tblPr', map);
+  fill(g, shadeCss(get(tp, 'shd') ?? get(get(view, 'tblPr'), 'shd')),
+    X0, ya, it.width, yb - ya);
+  for (let r = r0; r <= r1; r++) {
+    const row = rows[r], model = row.geo.row;
+    for (const c of row.cells) {
+      const own = get(shown(model.cells[c.k].tcPr, 'tcPr', map), 'shd');
+      fill(g, shadeCss(own ?? get(c.layer.tcPr, 'shd')), c.x, row.y,
+        c.w, row.h);
+    }
+  }
+  for (const c of cellsOf(it, r0, r1)) {
+    if (!c.clip) {
+      paintColumn(L, g, c.col, rect);
+      continue;
+    }
+    const y = rows[c.r].y;
+    g.save();
+    g.beginPath();
+    g.rect(c.x, y, c.w, bottomOf(it, c) - y);
+    g.clip();
+    paintColumn(L, g, c.col, rect);
+    g.restore();
+  }
+  borders(L, g, it, r0, r1, rect);
+  if (floating(t.tblPr, map)) {
+    const top = rows[0].y, h = rows[n - 1].y + rows[n - 1].h - top;
+    g.save();
+    g.setLineDash([4, 3]);
+    g.strokeStyle = '#606060';
+    g.lineWidth = 1;
+    g.strokeRect(Math.round(X0) - 2.5, Math.round(top) - 2.5,
+      Math.round(it.width) + 5, Math.round(h) + 5);
+    g.restore();
+  }
+}

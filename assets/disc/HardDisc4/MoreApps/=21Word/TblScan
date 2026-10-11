@@ -1,0 +1,214 @@
+// TblScan - the first pass of ./TblRead over one w:tbl: its shape,
+// its properties (./TblProps) and every reason it cannot be typed,
+// before any cell paragraph is read (so a refused table costs no
+// paragraph count). Nested tables are not looked into: ./TblRead
+// reads them one level down. Pure.
+//
+//   scanTable(node, map, found) -> plan: {attrs, tblPr, grid,
+//     gridAttrs, rows: [{attrs, trPr, cells: [{m, attrs, tcPr,
+//     blocks: [node], lead}], lead, tail, tblPrEx}], tail}; adds
+//     each reason found to the Set `found` (trPr / tcPr null when
+//     the file has none; m: the scope inside the w:tc)
+//   MARKS   the marks that may sit between rows and between cells
+//   REASONS the Opaque reasons, the first found in this order wins
+//
+// The reasons (R3): tracked (tblPrChange, trPrChange, tcPrChange,
+// tblGridChange, tblPrExChange, cellIns, cellDel, cellMerge, w:ins /
+// w:del in trPr); wrapped (w:sdt, w:customXml, mc:AlternateContent,
+// w:ins, w:del, w:moveFrom, w:moveTo around rows or cells); hMerge;
+// grid (no or a repeated w:tblGrid, a w:gridCol that is not just
+// w:w = 0..MAX_TW, anything else in it, not 1..MAX_COLS columns);
+// span (gridSpan not 1..MAX_COLS, a vMerge, gridSpan, gridBefore or
+// gridAfter not understood, gridBefore / gridAfter not 0..MAX_COLS,
+// a row wider than MAX_COLS: gridBefore + its cells' gridSpan +
+// gridAfter);
+// sectPr (in a cell paragraph's w:pPr); propAttrs (attributes on
+// tblPr / trPr / tcPr); order (tblPr not first, tblGrid not second,
+// a mark before tblGrid or before a row's tblPrEx / trPr, those not
+// before the first cell, tcPr not first, any of them twice); stray
+// (text, a comment or PI, an unknown element in w:tbl / w:tr, or
+// text / a comment in w:tc, or anything but elements and white space
+// in w:tblPr / w:trPr / w:tcPr); empty (no row, a row with no cell, a
+// cell with no block); ns (w:tbl, w:tblGrid, w:tr, w:tc or a cell's
+// w:p declares the prefix w: ./TblWrite names them w:..., so they
+// must be in the scope around them); tail (a cell whose last block is
+// a w:tbl: Word reads such a file as unreadable, and a paragraph
+// added would change the file: ./TblCheck endsCell, C3 fix wave).
+// The grid and the span checks: ./TblScanGrid.
+//
+// SECURITY: names from the file are only compared with fixed lists
+// and used as Set / Map keys.
+import {scope, wName, isEl, blank} from './Ns';
+import {NS} from './Wml';
+import {readTblPr, readTrPr, readTcPr} from './TblProps';
+import {readGrid, wide, inRange} from './TblScanGrid';
+
+export const MARKS = new Set(['bookmarkStart', 'bookmarkEnd',
+  'commentRangeStart', 'commentRangeEnd', 'permStart', 'permEnd',
+  'proofErr', 'moveFromRangeStart', 'moveFromRangeEnd',
+  'moveToRangeStart', 'moveToRangeEnd']);
+export const REASONS = ['tracked', 'wrapped', 'hMerge', 'grid', 'span',
+  'sectPr', 'propAttrs', 'order', 'stray', 'empty', 'ns', 'tail'];
+const WRAP = new Set(['sdt', 'customXml', 'ins', 'del', 'moveFrom',
+  'moveTo']);
+const TRACKED = {tblPr: ['tblPrChange'], trPr: ['trPrChange', 'ins',
+  'del'], tcPr: ['tcPrChange', 'cellIns', 'cellDel', 'cellMerge'],
+tblPrEx: ['tblPrExChange']};
+
+const inside = (node, map) => node.attrs.length ? scope(map, node)
+  : map;
+const pairs = (node) => node.attrs.map(([n, v]) => [n, v]);
+const local = (name) => name.slice(name.indexOf(':') + 1);
+
+/** ns: `node` declares the prefix w (see the header). */
+function ownW(node, sc) {
+  if (node.attrs.some(([n]) => n === 'xmlns:w')) sc.add('ns');
+}
+
+/** Whether `c` is an mc:AlternateContent (its own xmlns counts). */
+function isAlt(c, m) {
+  const i = c.name.indexOf(':');
+  if (i < 0 || c.name.slice(i + 1) !== 'AlternateContent') return false;
+  const pre = c.name.slice(0, i);
+  return inside(c, m).get(pre) === NS.mc;
+}
+
+/** A child that is no element: only blank text is allowed. */
+function other(c, sc) {
+  if (typeof c !== 'string' || !blank(c)) sc.add('stray');
+}
+
+/** An element out of place directly in w:tbl / w:tr. */
+function misplaced(c, l, m, sc) {
+  sc.add((l !== null && WRAP.has(l)) || isAlt(c, m) ? 'wrapped'
+    : 'stray');
+}
+
+/** Read a property element; flags; {p, names} (extra's names). */
+function props(c, m, read, kind, sc) {
+  if (c.attrs.length) sc.add('propAttrs');
+  for (const x of c.children) if (!isEl(x)) other(x, sc);
+  const p = read(c, m);
+  const pm = inside(c, m);
+  const names = new Set(p.extra.map((e) => wName(e, pm)));
+  if (TRACKED[kind].some((n) => names.has(n))) sc.add('tracked');
+  return {p, names};
+}
+
+/** Whether the w:p has a sectPr in a w:pPr (any prefix: TblCheck). */
+function hasSectPr(p, map) {
+  const m = inside(p, map);
+  return p.children.some((c) => isEl(c) && wName(c, m) === 'pPr' &&
+    c.children.some((k) => isEl(k) && local(k.name) === 'sectPr'));
+}
+
+function scanCell(node, map, sc) {
+  ownW(node, sc);
+  const m = inside(node, map);
+  const cell = {m, attrs: pairs(node), tcPr: null, blocks: []};
+  for (const c of node.children) {
+    if (!isEl(c)) {
+      other(c, sc);
+      continue;
+    }
+    const l = wName(c, m);
+    if (l === 'tcPr') {
+      if (cell.tcPr || cell.blocks.length) sc.add('order');
+      const {p, names} = props(c, m, readTcPr, 'tcPr', sc);
+      if (names.has('hMerge')) sc.add('hMerge');
+      if (names.has('gridSpan') || names.has('vMerge') ||
+        !inRange(p.gridSpan, 1)) sc.add('span');
+      cell.tcPr = p;
+    } else {
+      if (l === 'p' && hasSectPr(c, m)) sc.add('sectPr');
+      if (l === 'p') ownW(c, sc);
+      cell.blocks.push(c);
+    }
+  }
+  const z = cell.blocks[cell.blocks.length - 1];
+  if (!z) sc.add('empty');
+  else if (wName(z, m) === 'tbl') sc.add('tail');
+  return cell;
+}
+
+function scanRow(node, map, sc) {
+  ownW(node, sc);
+  const m = inside(node, map);
+  const row = {attrs: pairs(node), trPr: null, cells: [], lead: [],
+    tail: [], tblPrEx: null};
+  let lead = [], k = 0;
+  for (const c of node.children) {
+    if (!isEl(c)) {
+      other(c, sc);
+      continue;
+    }
+    const l = wName(c, m);
+    if (l === 'tblPrEx') {
+      if (k !== 0) sc.add('order');
+      const cm = inside(c, m);
+      if (c.children.some((x) => isEl(x) &&
+        TRACKED.tblPrEx.includes(wName(x, cm)))) sc.add('tracked');
+      row.tblPrEx = c;
+    } else if (l === 'trPr') {
+      if (row.trPr || k !== (row.tblPrEx ? 1 : 0)) sc.add('order');
+      const {p, names} = props(c, m, readTrPr, 'trPr', sc);
+      if (names.has('gridBefore') || names.has('gridAfter') ||
+        !inRange(p.gridBefore, 0) || !inRange(p.gridAfter, 0)) {
+        sc.add('span');
+      }
+      row.trPr = p;
+    } else if (l === 'tc') {
+      const cell = scanCell(c, m, sc);
+      cell.lead = lead;
+      lead = [];
+      row.cells.push(cell);
+    } else if (l !== null && MARKS.has(l)) lead.push(c);
+    else misplaced(c, l, m, sc);
+    k++;
+  }
+  row.tail = lead;
+  if (!row.cells.length) sc.add('empty');
+  wide(row, sc);
+  return row;
+}
+
+/** See the header. */
+export function scanTable(node, map, sc) {
+  ownW(node, sc);
+  const m = inside(node, map);
+  const t = {attrs: pairs(node), tblPr: null, grid: null,
+    gridAttrs: [], rows: [], tail: []};
+  let lead = [], k = 0;
+  for (const c of node.children) {
+    if (!isEl(c)) {
+      other(c, sc);
+      continue;
+    }
+    const l = wName(c, m);
+    if (l === 'tblPr') {
+      if (k !== 0) sc.add('order');
+      t.tblPr = props(c, m, readTblPr, 'tblPr', sc).p;
+    } else if (l === 'tblGrid') {
+      if (t.grid) sc.add('grid');
+      else if (k !== 1 || !t.tblPr) sc.add('order');
+      ownW(c, sc);
+      t.grid = readGrid(c, m, sc);
+      t.gridAttrs = pairs(c);
+    } else if (l === 'tr') {
+      if (!t.grid) sc.add('order');
+      const row = scanRow(c, m, sc);
+      row.lead = lead;
+      lead = [];
+      t.rows.push(row);
+    } else if (l !== null && MARKS.has(l)) {
+      if (!t.grid) sc.add('order');
+      lead.push(c);
+    } else misplaced(c, l, m, sc);
+    k++;
+  }
+  t.tail = lead;
+  if (!t.tblPr) sc.add('order');
+  if (!t.grid) sc.add('grid');
+  if (!t.rows.length) sc.add('empty');
+  return t;
+}

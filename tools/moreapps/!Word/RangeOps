@@ -1,0 +1,108 @@
+// RangeOps - the ops a deleted range is made of, shared by
+// ./EditRange (top level) and ./RangeTbl (in and around tables,
+// Batch C3.4). Each applies ops to a Document, inside the caller's
+// group; positions are paths (./Path), taken from locations
+// (./EditPos).
+//
+//   cutOut(d, at, a, b)   cut [a, b) out of the paragraph at path at
+//   putPara(d, at) -> {id, off: 0}  a new empty paragraph (fresh id)
+//                         inserted at path at
+//   mergeAt(d, a, b) -> the caret  ./EditRange's merge rule (see
+//                         there): b the block after a
+//   removeTop(d, f, t, lo, hi)  remove the top-level blocks k =
+//                         lo..hi (document order) between the
+//                         locations f and t (their k and top-level
+//                         paths: a location in a cell counts as its
+//                         outermost table), one removeBlocks per
+//                         section (O(blocks), not O(n^2))
+//   fillEmpty(d, s0, s1)  an empty paragraph in each section s0..s1
+//                         left with no block, and at the end of each
+//                         but the document's last left ending with a
+//                         kept block (the paragraph that carries the
+//                         section break)
+//   apart(d, at) -> {id, off: 0} | null  where a range's blocks were
+//                         removed (at the path of the block now after
+//                         them): when the blocks before and at it are
+//                         both tables (typed or Opaque, ./TblCheck
+//                         endsCell), an empty paragraph between them
+//                         (D27: two w:tbl written together are one
+//                         table to Word; C7 fix), else nothing
+// Pure: no desktop services.
+import {newPara, reserveIds} from './Model';
+import {cut} from './OpsUtil';
+import {sibOf} from './EditPos';
+import {isTop, samePath, sib, topOf} from './Path';
+import {at as walkAt} from './Walk';
+import {endsCell} from './TblCheck';
+
+/** See the header. */
+export function cutOut(d, at, a, b) {
+  if (b > a) {
+    d.apply({op: 'replaceText', block: at, at: a, del: b - a,
+      ins: ''});
+  }
+}
+
+/** See the header. */
+export function putPara(d, at) {
+  reserveIds(d.doc);
+  const p = newPara('');
+  d.apply({op: 'insertBlock', at, block: p});
+  return {id: p.id, off: 0};
+}
+
+/**
+ * See the header. a and b are locations (EditPos), read just before
+ * the call: siblings in one container, or (top level only) the last
+ * block of a section and the first of the next.
+ */
+export function mergeAt(d, a, b) {
+  const p = a.b, q = b.b;
+  if (!p.text && q.text) {
+    d.apply({op: 'removeBlock', at: a.at});
+    return {id: q.id, off: 0};
+  }
+  if (samePath(sibOf(a, 1), sibOf(b, 0))) {
+    d.apply({op: 'mergeBlock', block: a.at});
+  } else {
+    if (!isTop(a.at) || !isTop(b.at))
+      throw new RangeError('not siblings');
+    d.apply({op: 'spliceText', block: a.at, at: p.text.length,
+      del: 0, content: cut(q, 0, q.text.length)});
+    d.apply({op: 'removeBlock', at: b.at});
+  }
+  return {id: p.id, off: p.text.length};
+}
+
+/** See the header. */
+export function removeTop(d, f, t, lo, hi) {
+  const secs = d.doc.sections;
+  const pf = topOf(f.at), pt = topOf(t.at);
+  for (let s = pt[0]; s >= pf[0]; s--) {
+    const a = s === pf[0] ? pf[1] + (lo - f.k) : 0;
+    const b = s === pt[0] ? pt[1] - (t.k - hi)
+      : secs[s].blocks.length - 1;
+    if (b >= a) {
+      const at = s === pf[0] ? sib(pf, lo - f.k) : [s, 0];
+      d.apply({op: 'removeBlocks', at, count: b - a + 1});
+    }
+  }
+}
+
+/** See the header. */
+export function fillEmpty(d, s0, s1) {
+  const secs = d.doc.sections;
+  for (let s = s0; s <= s1; s++) {
+    const bs = secs[s].blocks, last = bs[bs.length - 1];
+    if (!last || (last.type !== 'p' && s < secs.length - 1)) {
+      putPara(d, [s, bs.length]);
+    }
+  }
+}
+
+/** See the header. */
+export function apart(d, at) {
+  if (!(at[at.length - 1] > 0)) return null;
+  const a = walkAt(d.doc, sib(at, -1)), b = walkAt(d.doc, at);
+  return a && b && endsCell(a) && endsCell(b) ? putPara(d, at) : null;
+}

@@ -507,6 +507,19 @@ and on `pointercancel` alike, and what it resolves with is the same. !Word's rul
 release, so it commits the indent at the coordinates of the cancel event, where a cancel should leave the paragraph
 alone. Possible fix: add `cancelled: true` to the drop information on `pointercancel` (and on a mid-drag close).
 
+Batch C (tables) found the same for its column and row edge drags (`TblDrag`, like `PicDrag`): a pointer-cancel ends
+the drag like a release and the change is put in (an undoable step). Escape does cancel those drags (it is handled by
+the key handler, not by `wimp.drag`). The same `cancelled` flag would let all three leave the document alone.
+
+## Ctrl-Tab never reaches the page in a real browser — noted by the !Word tables work (!Word)
+**Status:** Open: browsers reserve the key; not changeable by the core.
+
+!Word's `cellTab` key (Ctrl-Tab, a tab character in a table cell, the plain Tab being the next cell) is taken by
+Chrome, Firefox and Safari to switch their own tabs, so the page (and the core's `key` event) never sees it; the
+Playwright suites cannot show this, as they inject the key. No core change is possible (a page cannot stop it; an
+installed or full-screen app might see it). !Word gives the action a menu route instead (Table > Tab and Insert > Tab,
+shaded unless the caret is in a cell) and the user guide says so.
+
 ## The core has no detachPane — noted by the !Word formatting work (!Word)
 **Status:** Open: shared code, not changed by the !Word work.
 

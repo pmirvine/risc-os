@@ -17,6 +17,7 @@ import {sectPrNode, hasProps} from '../../tools/moreapps/!Word/WriteProps';
 import {docScope} from '../../tools/moreapps/!Word/WriteBody';
 import {readSect} from '../../tools/moreapps/!Word/ReadSect';
 import {deepEqual, newPara} from '../../tools/moreapps/!Word/Model';
+import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
 
 // the Default types ./WriteParts gives an extension it adds (its
 // BY_EXT, which it does not export)
@@ -42,10 +43,12 @@ function sortExtra(o, parent) {
 }
 
 /**
- * A copy of `doc` in canonical form: paragraph ids 0, 1, 2...; the
- * extra nodes of pPr/rPr/section props in the order of the
- * documented contract (files from Word already are);
- * [Content_Types].xml first in zipOrder (the writer puts it first).
+ * A copy of `doc` in canonical form: paragraph and table ids 0, 1,
+ * 2... in flow order at every depth (./Walk); the extra nodes of
+ * pPr/rPr/section props, and of the tblPr/trPr/tcPr of typed tables,
+ * in the order of the documented contract (files from Word already
+ * are); [Content_Types].xml first in zipOrder (the writer puts it
+ * first).
  */
 export function canon(doc) {
   const d = structuredClone(doc);
@@ -54,13 +57,21 @@ export function canon(doc) {
     sortExtra(s.props, 'sectPr');
     if (s.raw) s.raw = {...s.raw, children: sortChildren('sectPr',
       s.raw.children)};
-    for (const b of s.blocks) {
-      if (b.type !== 'p') continue;
-      b.id = k++;
-      sortExtra(b.pPr, 'pPr');
-      for (const r of b.runs) sortExtra(r.rPr, 'rPr');
-    }
   }
+  forEachBlock(d, (b) => {
+    if (b.type === 'tbl') {
+      b.id = k++;
+      sortExtra(b.tblPr, 'tblPr');
+      for (const row of b.rows) {
+        sortExtra(row.trPr, 'trPr');
+        for (const c of row.cells) sortExtra(c.tcPr, 'tcPr');
+      }
+    }
+    if (b.type !== 'p') return;
+    b.id = k++;
+    sortExtra(b.pPr, 'pPr');
+    for (const r of b.runs) sortExtra(r.rPr, 'rPr');
+  });
   const z = d.meta.zipOrder;
   if (z) {
     const i = z.indexOf('[Content_Types].xml');
@@ -316,17 +327,16 @@ export function expectedBack(doc) {
   });
   // a br made by editing (no node: a page break) reads back with the
   // <w:br w:type="..."/> the writer wrote for it
-  for (const s of d.sections) {
-    for (const b of s.blocks) {
-      if (b.type !== 'p') continue;
-      for (const x of Object.values(b.inlines)) {
-        if (x.kind === 'br' && (x.node === undefined || x.node === null)) {
-          x.node = {name: 'w:br', attrs: [['w:type', x.brType]],
-            children: []};
-        }
+  // (at every depth: in table cells too)
+  forEachBlock(d, (b) => {
+    if (b.type !== 'p') return;
+    for (const x of Object.values(b.inlines)) {
+      if (x.kind === 'br' && (x.node === undefined || x.node === null)) {
+        x.node = {name: 'w:br', attrs: [['w:type', x.brType]],
+          children: []};
       }
     }
-  }
+  });
   // a known part typed application/xml gets its own type (PartTypes)
   const {defaults, overrides} = d.meta.contentTypes;
   const m = d.meta;

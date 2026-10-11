@@ -339,7 +339,7 @@ try {
       return res;
     });
     ok('a document whose first block is a table: typing at its start puts a paragraph before it; Backspace never deletes into it',
-      t.start.box === 'box' && t.start.off === 0 && t.l1[0] === 'x' && t.l1[1] === null && t.l2[0] === '' && t.l2[1] === null &&
+      t.start.box === 'tbl' && t.start.off === 0 && t.l1[0] === 'x' && t.l1[1] === null && t.l2[0] === '' && t.l2[1] === null &&
       !t.bad && !modelBad(t.json) && t.restored, { ...t, json: undefined });
 
     const e = await ev(async () => {

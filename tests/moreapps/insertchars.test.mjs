@@ -250,11 +250,12 @@ describe('the text of a hyphen inline: one rule for Selection, clipboard and Fin
     const d = mk(['well', 'known']);
     const t = new Typing(d);
     run('nbHyphen', d, t, C(d, 0, 4));
-    const m = search(d.doc, {s: 0, i: 0, off: 0}, '-', {});
-    assert.deepEqual([m.i, m.from, m.to, m.inInline], [0, 4, 5, true]);
-    const w = search(d.doc, {s: 0, i: 0, off: 0}, 'well-', {});
+    const m = search(d.doc, {at: [0, 0], off: 0}, '-', {});
+    assert.deepEqual([m.at, m.from, m.to, m.inInline], [[0, 0], 4, 5,
+      true]);
+    const w = search(d.doc, {at: [0, 0], off: 0}, 'well-', {});
     assert.deepEqual([w.from, w.to, w.inInline], [0, 5, true]);
-    assert.equal(search(d.doc, {s: 0, i: 0, off: 0}, 'wellknown', {}), null);
+    assert.equal(search(d.doc, {at: [0, 0], off: 0}, 'wellknown', {}), null);
     const before = snap(d);
     const r = replaceAll(d, '-', '_', {});
     assert.deepEqual([r.count, r.skipped], [0, 1]);

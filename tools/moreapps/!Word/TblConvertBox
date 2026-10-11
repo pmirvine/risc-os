@@ -1,0 +1,183 @@
+// TblConvertBox - the Convert dialogue box (Batch C6.4, D29, D30;
+// Table > Convert > Text to table... and Table to text...), built by
+// WimpLib Ui/Dialog.
+//
+//   tblConvertBox(dw, mode) -> the box's api, mode 'totable' or
+//       'totext': ONE box per document (key 'tblconv:<docKey>',
+//       kept in dw.boxes as 'tblconv' so ./CloseDoc deletes it with
+//       the document); asked again while it is open the same box
+//       comes to the front (in the other mode it changes to it).
+//       Nothing (null) when the document has no selection, or no
+//       text (./TblConvertCmd textParas) / no table (whyTable) to
+//       convert: a beep and the message in a box is not worth it,
+//       the menu items are shaded then.
+//
+// Text to table: Columns (computed from the selected paragraphs and
+// the separator, ./TblConvert colsFor, and computed again whenever
+// the separator changes; editable, 1 to 63) and Separate at:
+// Paragraphs, Tabs, Commas or Other (one character; the separator
+// the text suggests, ./TblConvert defaultSep, is chosen when the box
+// opens). Table to text: Separate with: Paragraph marks, Tabs,
+// Commas or Other (Columns shaded). OK (or Return) converts (one
+// undo step, the box gone). Nothing is clamped or rounded: columns
+// that are not a whole number 1 to 63, an Other that is not one
+// character, or a conversion the command refuses (a field across a
+// separator, a table of more than 32767 rows, a selection that
+// holds a table...) beeps, says why in the box and keeps it. If the
+// selection or the document changed while the box was open, OK
+// beeps, says so and fills the box again (a text conversion's
+// columns and separator for the new selection); the next OK
+// converts. Cancel, Escape and the close icon change nothing; the
+// caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {textParas, whyText, whyTable, textToTableCmd, tableToTextCmd}
+  from './TblConvertCmd';
+import {defaultSep, colsFor, sepChar} from './TblConvert';
+import {MAX_COLS} from './TblCheck';
+
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;
+const CHOICES = {
+  totable: [['para', 'Paragraphs'], ['tab', 'Tabs'],
+    ['comma', 'Commas'], ['other', 'Other']],
+  totext: [['para', 'Paragraph marks'], ['tab', 'Tabs'],
+    ['comma', 'Commas'], ['other', 'Other']],
+};
+const TITLE = {totable: 'Convert text to table',
+  totext: 'Convert table to text'};
+const HEAD = {totable: 'Separate text at:',
+  totext: 'Separate text with:'};
+const list = (mode) => CHOICES[mode].map(([id, text]) => ({id, text}));
+const rows = () => [
+  {kind: 'label', name: 'head', text: HEAD.totable, w: 400},
+  {kind: 'number', name: 'cols', label: 'Columns', min: 0,
+    max: FIELD_MAX, decimals: 0, w: 120, value: 1,
+    help: 'How many columns the table has: 1 to 63.'},
+  [{kind: 'popup', name: 'sep', label: 'Separate',
+    choices: list('totable'), help: 'What separates the text of one ' +
+      'cell from the next.'},
+  {kind: 'text', name: 'other', label: 'Other', maxLen: 32, w: 120,
+    help: 'The one character that separates, when Other is chosen.'}],
+  {kind: 'label', name: 'msg', text: '', w: 500},
+];
+const HELP = 'Convert: turn the selected paragraphs into a table, or ' +
+  'the table the caret is in into text.';
+const NOSEP = 'Other: type the one character that separates.';
+const state = new WeakMap();           // api -> {mode, at}
+const wired = new WeakSet();
+
+/** The separator the box says: 'para' | 'tab' | 'comma' | the
+ *  character, or undefined when Other is not one character. */
+function sepOf(values) {
+  if (values.sep !== 'other') return values.sep;
+  try {
+    return sepChar(values.other) === null ? undefined : values.other;
+  } catch (e) {
+    if (e instanceof RangeError) return undefined;
+    throw e;
+  }
+}
+
+/** The columns for the text selected and the separator in the box. */
+function suggest(api, v) {
+  const x = textParas(v.d.doc, v.sel);
+  if (x.error) return;
+  const sep = sepOf(api.values());
+  if (sep !== undefined) api.set('cols', colsFor(x.paras, sep));
+}
+
+/** Fill the box for `mode` from the selection. */
+function fill(api, v, mode) {
+  api.win.setTitle(TITLE[mode]);
+  api.set('head', HEAD[mode]);
+  api.choices('sep', list(mode));
+  api.set('other', '');
+  api.shade('other', true);
+  api.shade('cols', mode === 'totext');
+  api.set('msg', '');
+  if (mode === 'totable') {
+    const x = textParas(v.d.doc, v.sel);
+    const sep = x.error ? 'tab' : defaultSep(x.paras);
+    api.set('sep', sep);
+    api.set('cols', x.error ? 1 : colsFor(x.paras, sep));
+  } else api.set('sep', 'tab');
+  state.set(api, {mode, at: where(v)});
+}
+
+/** See the header. */
+export function tblConvertBox(dw, mode) {
+  const v = dw.view;
+  if (!v.sel || !Object.hasOwn(CHOICES, mode)) return null;
+  const bad = mode === 'totable' ? textParas(v.d.doc, v.sel).error
+    : whyTable(v.d.doc, v.sel);
+  if (bad) {
+    wimp.beep();
+    return null;
+  }
+  const api = dialog({task: dw.app.task, key: `tblconv:${dw.docKey}`,
+    title: TITLE[mode], rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 540});
+  box(dw, 'tblconv', () => api.win);
+  const st = state.get(api);
+  if (api.isOpen && st && st.mode === mode) {
+    // another selection: its columns and separator (C6 fix B5)
+    if (where(v) !== st.at) fill(api, v, mode);
+    else api.set('msg', '');
+    return api;
+  }
+  if (!wired.has(api)) wire(api, v);
+  fill(api, v, mode);
+  api.open();
+  return api;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'sep') api.shade('other', value !== 'other');
+    if ((name === 'sep' || name === 'other') && st &&
+      st.mode === 'totable' && v.sel) suggest(api, v);
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    const st = state.get(api);
+    if (!v.sel || !st) return no('There is no selection.');
+    const mode = st.mode;
+    if (where(v) !== st.at) {
+      fill(api, v, mode);
+      return no('The document changed while the box was open: look ' +
+        'again, then click OK.');
+    }
+    const sep = sepOf(values);
+    if (sep === undefined) return no(NOSEP, 'other');
+    let out;
+    if (mode === 'totable') {
+      const n = values.cols;
+      if (!Number.isInteger(n) || n < 1 || n > MAX_COLS) {
+        return no('Columns: a whole number from 1 to 63.', 'cols');
+      }
+      const o = {sep, cols: n};
+      const why = whyText(v.d.doc, v.sel, o);
+      if (why) return no(why);
+      out = v.typing.command(() => textToTableCmd(v.d, v.sel, o));
+    } else {
+      out = v.typing.command(() => tableToTextCmd(v.d, v.sel, {sep}));
+    }
+    if (!out) return no(mode === 'totable' ? 'That cannot be ' +
+      'converted.' : whyTable(v.d.doc, v.sel) || 'That cannot be ' +
+      'converted.');
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

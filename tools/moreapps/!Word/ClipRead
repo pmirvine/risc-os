@@ -5,10 +5,11 @@
 // document) and only walked here: no innerHTML, nothing evaluated,
 // fetched or kept but text and a few checked formats.
 //
-//   readHtml(html, parseHtml) -> {blocks, styleNames} | null
+//   readHtml(html, parseHtml, opts?) -> {blocks, styleNames} | null
 //       null when there is nothing to paste or anything throws: the
-//       caller pastes the plain text instead
-//   readTree(root, limits?) -> {blocks, styleNames}
+//       caller pastes the plain text instead. opts {textTw}: the
+//       text width where the paste goes (./ClipReadTable)
+//   readTree(root, limits?, opts?) -> {blocks, styleNames}
 //       root: a DOM-like node: nodeType (1 element, 3 text, 4 CDATA,
 //       9 document, 11 fragment; others skipped), nodeName,
 //       childNodes, data, getAttribute(name). Entities are decoded
@@ -26,8 +27,16 @@
 // Word's heading sizes (./Fmt.HEADING_PT) with pStyle 'Heading' + n,
 // named 'heading n' in styleNames, so ./ClipClean gives them the
 // target's Heading n style when it has one. br is a line break, hr
-// a paragraph end. Tables are flattened: a row is a paragraph, its
-// cells joined by tabs (blocks in a cell are spaces). b strong i em
+// a paragraph end. A <table> is a table block (./ClipReadTable,
+// Batch C6.3: rows, cells, spans, widths, shading, borders; its cells
+// read by these rules into Builders of their own sharing the text
+// limit; a <caption> a paragraph before it) up to depth
+// ./ClipReadTable LIMITS.depth (8), and while the cells of all its
+// tables stay within LIMITS.cells and its nodes and text within what
+// is left of `nodes` and `text` (counted before it is read, so a
+// table is never cut short); otherwise, or a table it does not read,
+// it is flattened: a row is a paragraph, its cells joined by tabs
+// (blocks in a cell are spaces). b strong i em
 // u ins s strike del sup sub th font and the style attribute
 // (./ClipCss) format text; a is its text only (href never kept or
 // followed). script style iframe object embed img svg link meta head
@@ -40,140 +49,95 @@
 // never read. Google Docs wraps a copy in <b style="font-weight:
 // normal" id="docs-internal-guid-..."> : not bold.
 //
-// White space, line breaks and paragraphs: ./ClipBuild. Pure: no
-// desktop services.
+// The walk: ./ClipWalk. White space, line breaks and paragraphs:
+// ./ClipBuild. Pure: no desktop services.
 import {Builder} from './ClipBuild';
-import {parseStyle, colour, family, fontTagSize} from './ClipCss';
-import {HEADING_PT} from './Fmt';
+import {walk, skipped, cellFmt} from './ClipWalk';
+import {readTable, LIMITS as TL} from './ClipReadTable';
+import {walkBlocks} from './Walk';
 
 export const LIMITS = Object.freeze({depth: 200, nodes: 200000,
   text: 5000000, html: 4000000});
 
-const DROP = new Set(['script', 'style', 'iframe', 'object', 'embed',
-  'img', 'svg', 'link', 'meta', 'head', 'title', 'noscript',
-  'template', 'math', 'canvas', 'video', 'audio', 'picture', 'source',
-  'track', 'select', 'option', 'textarea', 'input', 'frame',
-  'frameset', 'applet', 'param', 'base', 'map', 'area', 'dialog']);
-const BLOCK = new Set(['p', 'div', 'ul', 'ol', 'li', 'pre', 'xmp',
-  'listing', 'blockquote', 'section', 'article', 'header', 'footer',
-  'main', 'nav', 'aside', 'address', 'figure', 'figcaption', 'dl',
-  'dt', 'dd', 'center', 'form', 'fieldset', 'legend', 'details',
-  'summary', 'caption', 'table', 'thead', 'tbody', 'tfoot', 'tr']);
-const FMT = {b: {b: true}, strong: {b: true}, th: {b: true},
-  i: {i: true}, em: {i: true}, cite: {i: true}, dfn: {i: true},
-  u: {u: true}, ins: {u: true}, s: {strike: true},
-  strike: {strike: true}, del: {strike: true},
-  sup: {vert: 'superscript'}, sub: {vert: 'subscript'},
-  pre: {pre: true}, xmp: {pre: true}, listing: {pre: true}};
-const STYLE_KEYS = ['b', 'i', 'u', 'strike', 'vert', 'color', 'sz',
-  'font', 'pre'];
+/** The nodes in el (not itself) when they and their text (an
+ *  element one unit) fit what is left in ctx and b; else -1. */
+function sizeOf(el, ctx, b) {
+  let nodes = ctx.limits.nodes - ctx.nodes;
+  let text = ctx.limits.text - b.tally.total;
+  const room = nodes, st = [[el, 0]];
+  while (st.length) {
+    const top = st[st.length - 1], kids = top[0].childNodes;
+    if (!kids || top[1] >= kids.length) {
+      st.pop();
+      continue;
+    }
+    const c = kids[top[1]++];
+    if (--nodes < 0) return -1;
+    if (!c || typeof c !== 'object') continue;
+    if (c.nodeType === 3 || c.nodeType === 4) {
+      text -= typeof c.data === 'string' ? c.data.length : 0;
+    } else if (c.nodeType === 1) {
+      text--;
+      st.push([c, 0]);
+    }
+    if (text < 0) return -1;
+  }
+  return room - nodes;
+}
 
-const attr = (el, k) => {
-  const v = typeof el.getAttribute === 'function'
-    ? el.getAttribute(k) : null;
-  return typeof v === 'string' ? v : null;
+/** ctx.table for ./ClipWalk: a <table> read by ./ClipReadTable into
+ *  b; false when it is flattened instead. */
+const tableHook = (ctx) => (el, g, b, depth) => {
+  if (ctx.tdepth >= TL.depth) return false;
+  const n0 = ctx.nodes;
+  let size = 0;
+  const f0 = {...g, cell: 0, row: undefined};
+  const inner = (frame, into) => {
+    const base = ctx.base;
+    ctx.base = depth + 2;
+    ctx.tdepth++;
+    walk(frame, into, ctx);
+    ctx.base = base;
+    ctx.tdepth--;
+  };
+  const t = readTable(el, {
+    skip: skipped,
+    fits: (x, cells) => {
+      if (ctx.cells + cells > TL.cells) return false;
+      size = sizeOf(x, ctx, b);
+      if (size < 0) return false;
+      ctx.cells += cells;
+      return true;
+    },
+    cell: (td) => {
+      const cb = new Builder(ctx.limits.text, b.tally);
+      inner({n: td, i: 0, f: cellFmt(td, f0), exit: null}, cb);
+      cb.flush();
+      return cb.blocks;
+    },
+    caption: (c) => {
+      b.flush();
+      inner({n: c, i: 0, f: f0, exit: null}, b);
+      b.flush();
+    },
+  }, {textTw: ctx.opts.textTw, nodes: ctx.limits.nodes - ctx.nodes});
+  if (!t) return false;
+  ctx.nodes = Math.max(ctx.nodes, n0 + size);
+  b.block(t);
+  return true;
 };
 
-/** Format g after the tag `name` of el (changes g). */
-function tagFmt(name, el, g) {
-  const h = /^h([1-6])$/.exec(name);
-  if (h) {
-    g.head = +h[1];
-    g.b = true;
-    g.sz = HEADING_PT[g.head - 1] * 2;
-    return;
-  }
-  if (name === 'b' && /^docs-internal-guid/.test(attr(el, 'id') || ''))
-    return;
-  if (Object.hasOwn(FMT, name)) Object.assign(g, FMT[name]);
-  if (name !== 'font') return;
-  const c = colour(attr(el, 'color') || '');
-  const sz = fontTagSize(attr(el, 'size') || '');
-  const fa = family(attr(el, 'face') || '');
-  if (c) g.color = c;
-  if (sz) g.sz = sz;
-  if (fa) g.font = fa;
-}
-
-/**
- * The frame for element (or document) el under format f, or null
- * to skip it (dropped, hidden, or a br / hr handled here).
- */
-function enter(el, f, b) {
-  if (el.nodeType !== 1) return {n: el, i: 0, f, exit: null};
-  const name = String(el.nodeName || '').toLowerCase();
-  if (DROP.has(name)) return null;
-  const inCell = f.cell > 0;
-  if (name === 'br' || name === 'hr') {
-    if (inCell) b.soft(f);
-    else if (name === 'br') b.br(f);
-    else b.flush();
-    return null;
-  }
-  const g = {...f};
-  tagFmt(name, el, g);
-  const st = parseStyle(attr(el, 'style'), g.sz ? g.sz / 2 : 11);
-  if (st.hidden) return null;
-  for (const k of STYLE_KEYS) if (st[k] !== undefined) g[k] = st[k];
-  const block = BLOCK.has(name) || g.head !== f.head;
-  if (block && st.jc) g.jc = st.jc;
-  if (name === 'tr') g.row = {n: 0};
-  if (name === 'td' || name === 'th') {
-    if (f.row && f.row.n++ > 0) b.tab(g);
-    g.cell = (f.cell || 0) + 1;
-    return {n: el, i: 0, f: g, exit: null};
-  }
-  if (!block) return {n: el, i: 0, f: g, exit: null};
-  const edge = () => (inCell ? b.soft(g) : b.flush());
-  edge();
-  return {n: el, i: 0, f: g, exit: edge};
-}
-
-/**
- * An element nested deeper than LIMITS.depth: unwrapped (its text
- * read in the format around it), unless dropped or hidden.
- */
-function deep(el, f) {
-  if (el.nodeType === 1) {
-    const name = String(el.nodeName || '').toLowerCase();
-    if (DROP.has(name) || parseStyle(attr(el, 'style'), 11).hidden)
-      return null;
-  }
-  return {n: el, i: 0, f, exit: null};
-}
-
 /** See the header. */
-export function readTree(root, limits = LIMITS) {
+export function readTree(root, limits = LIMITS, opts = {}) {
   const b = new Builder(limits.text);
-  const stack = [{n: {childNodes: [root]}, i: 0, f: {cell: 0},
-    exit: null}];
-  let nodes = 0;
-  while (stack.length) {
-    const top = stack[stack.length - 1];
-    const kids = top.n.childNodes;
-    const stop = b.full || nodes >= limits.nodes;
-    if (stop || !kids || top.i >= kids.length) {
-      stack.pop();
-      if (top.exit) top.exit();
-      continue;
-    }
-    const c = kids[top.i++];
-    nodes++;
-    if (!c || typeof c !== 'object') continue;
-    const t = c.nodeType;
-    if (t === 3 || t === 4) {
-      const s = c.data;
-      if (typeof s === 'string' && s) b.text(s, top.f);
-      continue;
-    }
-    if (t !== 1 && t !== 9 && t !== 11) continue;
-    const fr = stack.length > limits.depth ? deep(c, top.f)
-      : enter(c, top.f, b);
-    if (fr) stack.push(fr);
-  }
+  const ctx = {limits, nodes: 0, base: 0, tdepth: 0, cells: 0,
+    opts: opts || {}, table: null};
+  ctx.table = tableHook(ctx);
+  walk({n: {childNodes: [root]}, i: 0, f: {cell: 0}, exit: null}, b,
+    ctx);
   b.flush();
   const heads = new Map();
-  for (const x of b.blocks) {
+  for (const {b: x} of walkBlocks(b.blocks)) {
     if (x.pStyle && !heads.has(x.pStyle)) {
       heads.set(x.pStyle, {name: 'heading ' + x.pStyle.slice(7),
         type: 'paragraph'});
@@ -183,11 +147,11 @@ export function readTree(root, limits = LIMITS) {
 }
 
 /** See the header. */
-export function readHtml(html, parseHtml) {
+export function readHtml(html, parseHtml, opts) {
   if (typeof html !== 'string' || !html || html.length > LIMITS.html ||
     typeof parseHtml !== 'function') return null;
   try {
-    const r = readTree(parseHtml(html));
+    const r = readTree(parseHtml(html), LIMITS, opts);
     return r.blocks.length ? r : null;
   } catch (e) {
     return null;

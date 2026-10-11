@@ -1,0 +1,88 @@
+// TblRead - one w:tbl -> a typed Table of ./Model, or the reason it
+// stays an Opaque block (then nothing of it is in the model: the
+// caller keeps the node, byte for byte). All or nothing per table.
+// Pure.
+//
+//   readTable(node, map, ctx) -> {table} | {opaque: reason}
+//     ctx {depth = 1, count = {paras: 0}, max = Infinity, part = '',
+//     note?}: depth the table's own level (a body table 1); count
+//     the paragraph counter SHARED with ./ReadBody (every w:p read
+//     in a cell counts, as a body w:p does); note(reason), if given,
+//     is called for every table kept Opaque, at any depth
+//   countPara(ctx)  one more paragraph; DocxError 'unsupported'
+//     (part + ': more than ' + max + ' paragraphs') past ctx.max
+//   MARKS, REASONS  (./TblScan, which finds the reasons)
+//
+// The shape typed: w:tbl = w:tblPr, w:tblGrid, then w:tr and MARKS
+// (a row's lead; after the last row the table's tail); w:tr =
+// w:tblPrEx? (kept raw), w:trPr?, then w:tc and MARKS (a cell's
+// lead; after the last cell the row's tail); w:tc = w:tcPr?, then at
+// least one block: a w:p by ./ReadPara (null: an Opaque cell block),
+// a w:tbl read here one level down (kept Opaque in the cell when it
+// does not type, or when it would be deeper than MAX_DEPTH: reason
+// 'depth'), anything else (a w:sdt, a mark...) an Opaque cell block.
+// Attributes of w:tbl, w:tblGrid, w:tr and w:tc are kept in order;
+// white space between elements is dropped. Properties: ./TblProps.
+//
+// The reasons and the shape are checked by ./TblScan for the whole
+// table before any cell paragraph is read: a refused table costs no
+// paragraph count.
+//
+// SECURITY: recursion is at most MAX_DEPTH tables deep.
+import {wName} from './Ns';
+import {readPara} from './ReadPara';
+import {scanTable, REASONS} from './TblScan';
+import {nextId} from './Model';
+import {DocxError} from './DocxError';
+import {MAX_DEPTH} from './TblCheck';
+
+export {MARKS, REASONS} from './TblScan';
+
+/** See the header. */
+export function countPara(ctx) {
+  if (++ctx.count.paras > ctx.max) {
+    throw new DocxError('unsupported', ctx.part + ': more than ' +
+      ctx.max + ' paragraphs', {part: ctx.part, kind: 'paragraphs'});
+  }
+}
+
+const opaque = (node) => ({type: 'opaque', node});
+
+/** One block of a cell (see the header). */
+function block(c, m, ctx) {
+  const l = wName(c, m);
+  if (l === 'p') {
+    countPara(ctx);
+    const got = readPara(c, m);
+    return got ? got.para : opaque(c);
+  }
+  if (l !== 'tbl') return opaque(c);
+  if (ctx.depth >= MAX_DEPTH) {
+    if (ctx.note) ctx.note('depth');
+    return opaque(c);
+  }
+  const got = readTable(c, m, {...ctx, depth: ctx.depth + 1});
+  return got.table || opaque(c);
+}
+
+/** See the header. */
+export function readTable(node, map, ctx = {}) {
+  const c = {depth: ctx.depth ?? 1, count: ctx.count ?? {paras: 0},
+    max: ctx.max ?? Infinity, part: ctx.part ?? '', note: ctx.note};
+  const sc = new Set();
+  const t = scanTable(node, map, sc);
+  const why = REASONS.find((r) => sc.has(r));
+  if (why) {
+    if (c.note) c.note(why);
+    return {opaque: why};
+  }
+  const id = nextId();
+  const rows = t.rows.map((row) => ({trPr: row.trPr || {extra: []},
+    cells: row.cells.map((cell) => ({tcPr: cell.tcPr || {extra: []},
+      blocks: cell.blocks.map((b) => block(b, cell.m, c)),
+      attrs: cell.attrs, lead: cell.lead})),
+    attrs: row.attrs, lead: row.lead, tail: row.tail,
+    tblPrEx: row.tblPrEx}));
+  return {table: {type: 'tbl', id, tblPr: t.tblPr, grid: t.grid,
+    rows, attrs: t.attrs, tail: t.tail, gridAttrs: t.gridAttrs}};
+}

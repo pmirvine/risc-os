@@ -1,0 +1,240 @@
+// TblBorders - a table's cell borders resolved (D22). Pure.
+//
+//   edgesOf(it, map, r0?, r1?) -> {h, v, diag, own, box}  the lines of
+//     the laid-out 'tbl' item it (./TblItems) in its rows r0..r1
+//     (default all; other indexes left empty); map: the document's
+//     scope (./PicRead docMap), for themed sides. x is from the
+//     table's left (px); only drawn sides are listed:
+//       h[r] (r0..r1 + 1)  [{x0, x1, side}] the line at the top of
+//         row r (r = the row count: the bottom of the last)
+//       v[r]  [{x, side}] row r's vertical lines
+//       diag[r]  [{k, tl2br, tr2bl}] cell k's diagonals (or null)
+//       own[r]  [{k, top, left, bottom, right}] a row with cell
+//         spacing: each cell's own sides (h and v hold none of it)
+//       box  the table's outer box {top, left, bottom, right} when
+//         the table has cell spacing, else null
+//     A side is as the readers give it ({val, sz, space, color..}).
+//   sidesOf(it, r, k, map) -> {top, left, bottom, right, tl2br,
+//     tr2bl}  cell k of row r's own sides (a side, nil ones too, or
+//     null)
+//   shown(part, kind, map)  ./TblColor showThemed, memoised per part
+//   weightOf, conflict, PRECEDENCE  ./TblConflict's (re-exported)
+//
+// A cell's side: its tcBorders side; else the table style's tcBorders
+// (the conditional parts, later over earlier in D16's order, then the
+// whole-table tcPr): a part's region is the cells having its
+// condition, so a side between two of them is the part's insideH /
+// insideV and any other its own side; else the table's tblBorders
+// (top / left / bottom / right on the table's outer sides, insideH /
+// insideV inside; direct over the style's). A side given nil / none
+// stops there. Diagonals: the cell's, else its layer's. With cell
+// spacing (the row's trPr, the table's, the style's) every side of a
+// cell is an inside one. Where two cells meet, ./TblConflict decides
+// (the cell above / to the left is `a`). Themed sides
+// are shown by their literal colour; the model keeps them raw. A
+// row's sides, vertical lines and diagonals are memoised on its
+// geometry (geo: kept while the row and the table's key are), a line
+// between rows on the pair.
+import {condsOf} from './TblCond';
+import {showThemed} from './TblColor';
+import {spacingOf, spacedRow} from './TblWidth';
+import {layerCol} from './TblItems';
+import {conflict, norm, weightOf, PRECEDENCE} from './TblConflict';
+
+export {conflict, weightOf, PRECEDENCE};
+
+const INSIDE = {top: 'insideH', bottom: 'insideH', left: 'insideV',
+  right: 'insideV'};
+const SIDES = ['top', 'left', 'bottom', 'right'];
+const NONE = Object.freeze([]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const get = (o, f) => (isObj(o) ? o[f] : undefined);
+
+const shownMemo = new WeakMap();
+
+/** See the header. */
+export function shown(part, kind, map) {
+  if (!isObj(part)) return part;
+  const o = shownMemo.get(part);
+  if (o && o.map === map && o.kind === kind) return o.v;
+  const v = showThemed(part, kind, map);
+  shownMemo.set(part, {map, kind, v});
+  return v;
+}
+
+/** The style's side for a cell (see the header), or undefined. */
+function styleSide(K, at, side, spaced) {
+  const {view} = K;
+  const {r, c, c0, c1} = at;
+  const [nr, nc] = side === 'top' ? [r - 1, c] : side === 'bottom'
+    ? [r + 1, c] : side === 'left' ? [r, c0 - 1] : [r, c1];
+  const inside = nr >= 0 && nr < K.nRows && nc >= 0 && nc < K.nCols;
+  const mine = condsOf(K.look, r, c, K.nRows, K.nCols, K.bands);
+  let theirs = null;
+  for (let i = mine.length - 1; i >= 0; i--) {
+    const part = view.cond ? view.cond.get(mine[i]) : undefined;
+    const b = get(get(part, 'tcPr'), 'tcBorders');
+    if (!isObj(b)) continue;
+    if (!theirs) {
+      theirs = inside ? condsOf(K.look, nr, nc, K.nRows, K.nCols,
+        K.bands) : NONE;
+    }
+    const s = b[spaced || theirs.includes(mine[i]) ? INSIDE[side]
+      : side];
+    if (s !== undefined) return s;
+  }
+  const b = get(get(view, 'tcPr'), 'tcBorders');
+  return isObj(b) ? b[spaced || inside ? INSIDE[side] : side]
+    : undefined;
+}
+
+/** Cell `at`'s side (see the header). */
+function sideOf(K, at, side, map, spaced) {
+  const own = get(get(shown(at.tcPr, 'tcPr', map), 'tcBorders'), side);
+  if (own !== undefined) return own;
+  if (K.view) {
+    const s = styleSide(K, at, side, spaced);
+    if (s !== undefined) return s;
+  }
+  const outer = !spaced && (side === 'top' ? at.r === 0
+    : side === 'bottom' ? at.r === K.nRows - 1
+      : side === 'left' ? at.k === 0 : at.k === at.last);
+  const key = outer ? side : INSIDE[side];
+  return get(get(shown(K.tblPr, 'tblPr', map), 'tblBorders'), key) ??
+    get(get(get(K.view, 'tblPr'), 'tblBorders'), key) ?? null;
+}
+
+const push = (list, o) => o.side && list.push(Object.freeze(o));
+const rowMemo = new WeakMap();
+
+/** Row r's sides, vertical lines, diagonals (memo on its geo). */
+function rowOf(it, r, map) {
+  const {geo} = it.rows[r];
+  const hit = rowMemo.get(geo);
+  if (hit && hit.map === map) return hit;
+  const K = it.key, row = geo.row, last = row.cells.length - 1;
+  const spaced = spacedRow(row.trPr, K.tblPr, get(K.view, 'tblPr'));
+  const gc = geo.cells;
+  const sides = row.cells.map((cell, k) => {
+    const {c0, c1} = gc[k];
+    const at = {r, k, last, c0, c1, c: layerCol(c0, c1, K.nCols),
+      tcPr: cell.tcPr};
+    const o = {};
+    for (const s of SIDES) o[s] = sideOf(K, at, s, map, spaced);
+    const mine = get(shown(cell.tcPr, 'tcPr', map), 'tcBorders');
+    const lay = get(gc[k].layer.tcPr, 'tcBorders');
+    for (const s of ['tl2br', 'tr2bl']) {
+      o[s] = get(mine, s) ?? get(lay, s) ?? null;
+    }
+    return Object.freeze(o);
+  });
+  const v = [], diag = [], own = [];
+  for (let k = 0; k <= last; k++) {
+    const g = gc[k], d = sides[k];
+    if (spaced) {
+      own.push(Object.freeze({k, top: norm(d.top), left: norm(d.left),
+        bottom: norm(d.bottom), right: norm(d.right)}));
+    } else if (k > 0 && gc[k - 1].c1 === g.c0) {
+      push(v, {x: g.x, side: conflict(sides[k - 1].right, d.left)});
+    } else {
+      if (k > 0) {
+        const p = gc[k - 1];
+        push(v, {x: p.x + p.w, side: norm(sides[k - 1].right)});
+      }
+      push(v, {x: g.x, side: norm(d.left)});
+    }
+    const a = norm(d.tl2br), b = norm(d.tr2bl);
+    if (a || b) diag.push(Object.freeze({k, tl2br: a, tr2bl: b}));
+  }
+  if (!spaced && last >= 0) {
+    const g = gc[last];
+    push(v, {x: g.x + g.w, side: norm(sides[last].right)});
+  }
+  const e = {map, spaced, sides, v: Object.freeze(v),
+    diag: Object.freeze(diag), own: Object.freeze(own)};
+  rowMemo.set(geo, e);
+  return e;
+}
+
+/** See the header. */
+export const sidesOf = (it, r, k, map) => rowOf(it, r, map).sides[k];
+
+const xsMemo = new WeakMap();
+
+/** The grid columns' left edges (and the last's right), px. */
+function colXs(cols) {
+  let xs = xsMemo.get(cols);
+  if (!xs) {
+    xs = new Float64Array(cols.length + 1);
+    for (let c = 0; c < cols.length; c++) xs[c + 1] = xs[c] + cols[c];
+    xsMemo.set(cols, xs);
+  }
+  return xs;
+}
+
+/** The cell of grid row gr covering grid column c, or -1. */
+function cellOn(gr, c) {
+  for (let k = 0; k < gr.cells.length; k++) {
+    if (gr.cells[k].c0 <= c && c < gr.cells[k].c1) return k;
+  }
+  return -1;
+}
+
+const hMemo = new WeakMap(), endMemo = new WeakMap();
+
+/** The line at the top of row r (r = rows: the bottom), memoised. */
+function hOf(it, r, map) {
+  const n = it.rows.length, K = it.key;
+  const up = r > 0 ? rowOf(it, r - 1, map) : null;
+  const dn = r < n ? rowOf(it, r, map) : null;
+  const memo = dn ? hMemo : endMemo;
+  const at = (dn ? it.rows[r] : it.rows[r - 1]).geo;
+  const above = dn && up ? it.rows[r - 1].geo : null;
+  const hit = memo.get(at);
+  if (hit && hit.map === map && hit.above === above) return hit.segs;
+  const xs = colXs(K.cols), segs = [];
+  const gu = up && !up.spaced ? K.g.rows[r - 1] : null;
+  const gd = dn && !dn.spaced ? K.g.rows[r] : null;
+  let last = null;
+  for (let c = 0; c < K.nCols && c < K.cols.length; c++) {
+    const ku = gu ? cellOn(gu, c) : -1, kd = gd ? cellOn(gd, c) : -1;
+    const s = kd >= 0 && gd.cells[kd].cont ? null
+      : conflict(ku >= 0 ? up.sides[ku].bottom : null,
+        kd >= 0 ? dn.sides[kd].top : null);
+    if (!s) last = null;
+    else if (last && last.side === s) last.x1 = xs[c + 1];
+    else segs.push(last = {x0: xs[c], x1: xs[c + 1], side: s});
+  }
+  for (const s of segs) Object.freeze(s);
+  memo.set(at, {map, above, segs: Object.freeze(segs)});
+  return segs;
+}
+
+/** The outer box of a table with cell spacing, else null. */
+function boxOf(it, map) {
+  const K = it.key, vt = get(K.view, 'tblPr');
+  if (!(spacingOf(get(K.tblPr, 'tblCellSpacing'),
+    get(vt, 'tblCellSpacing')) > 0)) return null;
+  const own = get(shown(K.tblPr, 'tblPr', map), 'tblBorders');
+  const o = {};
+  for (const s of SIDES) {
+    o[s] = norm(get(own, s) ?? get(get(vt, 'tblBorders'), s));
+  }
+  return Object.freeze(o);
+}
+
+/** See the header. */
+export function edgesOf(it, map, r0 = 0, r1 = Infinity) {
+  const n = it.rows.length;
+  const h = new Array(n + 1), v = new Array(n);
+  const diag = new Array(n), own = new Array(n);
+  const a = Math.max(0, r0), b = Math.min(n - 1, r1);
+  for (let r = a; r <= b; r++) {
+    const e = rowOf(it, r, map);
+    v[r] = e.v;
+    diag[r] = e.diag;
+    own[r] = e.own;
+  }
+  for (let r = a; r <= b + 1 && b >= a; r++) h[r] = hOf(it, r, map);
+  return {h, v, diag, own, box: boxOf(it, map)};
+}

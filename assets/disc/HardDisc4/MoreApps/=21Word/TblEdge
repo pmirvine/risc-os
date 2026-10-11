@@ -1,0 +1,178 @@
+// TblEdge - the borders of a table the mouse can drag (Batch C5.3,
+// D33) and the widths a drag gives. ./TblDrag follows the pointer
+// with these. Pure: no desktop services.
+//
+//   EDGE 3       screen px either side of a border that take it
+//   MIN_PX 9.6   0.1 in: the narrowest a drag makes a column (a drag
+//                limit, not a value clamp: a column already narrower
+//                stays as it is, it cannot shrink)
+//   MAX_PX 2112  ./TblCheck MAX_TW in px: the widest a drag makes one
+//   edgeAt(L, x, y, zoom) -> {table, kind, index} | null  the border
+//       within EDGE screen px (EDGE / zoom layout px) of layout point
+//       (x, y): table the table's item (./TblItems), kind 'col' a
+//       vertical border between two cells of the row at y, index its
+//       grid line (1 .. columns - 1: the border between grid columns
+//       index - 1 and index); 'right' the table's right edge (index
+//       the column count); 'row' the bottom border of row index (x
+//       over the table, not inside a vertically merged cell there).
+//       A vertical border wins where they cross; a table in a cell
+//       before the table round it (innermost first) unless the
+//       border round it is nearer; a line inside a cell spanning
+//       it, the table's left and top edges: none. null without a
+//       typed table, for a point or zoom not finite (zoom > 0)
+//   dragWidths(cols, index, dx, minPx, maxPx = Infinity) -> cols'
+//       the column widths (px) after border `index` (edgeAt's) moved
+//       by dx px: a border between columns: the two beside it change
+//       and their sum stays (Word's plain drag); index cols.length
+//       (the right edge): the last column. Each changed column stays
+//       within minPx..maxPx (or where it was, when outside them). A
+//       new array; the same widths for no such border or dx not
+//       finite
+//   MIN_ROW_PX 1   15 twips (0.01 in): the shortest a drag makes a
+//                row (a val of 0 would be no height at all: the rule
+//                lost); a row shorter already is not made taller
+//   dragHeight(h, dy, maxPx = MAX_PX) -> h'  a row of height h (px)
+//       after its bottom border moved by dy px (C5.4): not under
+//       MIN_ROW_PX (unless it is already), not over maxPx (unless it
+//       is already); h for a dy that is not a finite number, 0 for an
+//       h that is not
+//   dragGrid(cols, next, index) -> {grid, total}  the twips to write
+//       (./TblWidth TW_PX): every column cols' px in twips, rounded;
+//       the changed ones next's, the second of a pair the pair's old
+//       sum less the first (so the table's total stays exactly);
+//       total the grid's sum
+import {rowAtY} from './TblLayout';
+import {itemIn, cellAtX} from './DocHit';
+import {TW_PX} from './TblWidth';
+import {MAX_TW} from './TblCheck';
+
+export const EDGE = 3, MIN_PX = 144 / TW_PX, MAX_PX = MAX_TW / TW_PX;
+export const MIN_ROW_PX = 15 / TW_PX;
+
+const fin = Number.isFinite;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/** See the header. */
+export function dragWidths(cols, index, dx, minPx, maxPx = Infinity) {
+  const out = cols.slice(), n = cols.length;
+  if (!Number.isInteger(index) || index < 1 || index > n || !fin(dx)) {
+    return out;
+  }
+  const lo = (w) => Math.min(minPx, w), hi = (w) => Math.max(maxPx, w);
+  const a = cols[index - 1];
+  if (index === n) {
+    out[n - 1] = clamp(a + dx, lo(a), hi(a));
+    return out;
+  }
+  const b = cols[index];
+  // a grows by d: a + d within lo(a)..hi(a), b - d within lo(b)..hi(b)
+  const d = clamp(dx, Math.max(lo(a) - a, b - hi(b)),
+    Math.min(hi(a) - a, b - lo(b)));
+  out[index - 1] = a + d;
+  out[index] = b - d;
+  return out;
+}
+
+/** See the header. */
+export function dragHeight(h, dy, maxPx = MAX_PX) {
+  if (!fin(h)) return 0;
+  if (typeof dy !== 'number' || !fin(dy)) return h;
+  return clamp(h + dy, Math.min(MIN_ROW_PX, h), Math.max(maxPx, h));
+}
+
+/** See the header. */
+export function dragGrid(cols, next, index) {
+  const base = cols.map((w) => Math.round(w * TW_PX));
+  const grid = base.slice(), n = cols.length;
+  if (index >= 1 && index < n) {
+    grid[index - 1] = Math.round(next[index - 1] * TW_PX);
+    grid[index] = base[index - 1] + base[index] - grid[index - 1];
+  } else if (index === n) {
+    grid[n - 1] = Math.round(next[n - 1] * TW_PX);
+  }
+  return {grid, total: grid.reduce((s, w) => s + w, 0)};
+}
+
+/** The x of every grid line of table item it (0 .. cols). */
+function linesOf(it) {
+  const xs = [it.x + it.left];
+  for (const w of it.key.cols) xs.push(xs[xs.length - 1] + w);
+  return xs;
+}
+
+/** The vertical border of table item it within tol of x in the row
+ *  at y (see the header), or null. */
+function colEdge(it, xs, x, y, tol) {
+  const n = xs.length - 1, row = it.rows[rowAtY(it, y)];
+  let best = null, d = Infinity;
+  for (const c of row ? row.cells : []) {
+    for (const line of [c.c0, c.c1]) {
+      const e = Math.abs(x - xs[line]);
+      if (line > 0 && line <= n && e <= tol && e < d) {
+        best = line;
+        d = e;
+      }
+    }
+  }
+  if (best === null) return null;
+  return {table: it, kind: best === n ? 'right' : 'col', index: best};
+}
+
+/** The row border of table item it within tol of y, or null (none
+ *  inside a vertical merge: the cell at x goes on below row i). */
+function rowEdge(it, xs, x, y, tol) {
+  if (x < xs[0] - tol || x > xs[xs.length - 1] + tol) return null;
+  const r = rowAtY(it, y);
+  for (const i of [r - 1, r]) {
+    const row = it.rows[i];
+    if (!row || Math.abs(y - (row.y + row.h)) > tol) continue;
+    const c = cellAtX(it, i, x, true);
+    if (c && c.r + Math.max(1, c.rowSpan) - 1 > i) return null;
+    return {table: it, kind: 'row', index: i};
+  }
+  return null;
+}
+
+/** How far edge e is from (x, y), layout px. */
+function away(e, x, y) {
+  const it = e.table;
+  if (e.kind !== 'row') return Math.abs(x - linesOf(it)[e.index]);
+  const row = it.rows[e.index];
+  return Math.abs(y - (row.y + row.h));
+}
+
+/** The edge in table item it at (x, y), its nested tables first. */
+function inTable(it, x, y, tol) {
+  if (!it.rows.length || !it.key || y < it.y - tol ||
+    y > it.y + it.h + tol) return null;
+  const inside = y >= it.y && y < it.y + it.h;
+  const c = inside ? cellAtX(it, rowAtY(it, y), x, true) : null;
+  const deep = c ? inColumn(c.col.items, x, y, tol) : null;
+  const xs = linesOf(it);
+  const mine = (inside && colEdge(it, xs, x, y, tol)) ||
+    rowEdge(it, xs, x, y, tol);
+  return deep && !(mine && away(mine, x, y) < away(deep, x, y)) ? deep
+    : mine;
+}
+
+/** The edge among a column's items at (x, y). */
+function inColumn(items, x, y, tol) {
+  if (!items.length) return null;
+  const seen = new Set();
+  for (const dy of [0, -tol, tol]) {
+    const n = itemIn(items, y + dy);
+    if (!n || n.kind !== 'tbl' || seen.has(n)) continue;
+    seen.add(n);
+    const e = inTable(n, x, y, tol);
+    if (e) return e;
+  }
+  return null;
+}
+
+/** See the header. */
+export function edgeAt(L, x, y, zoom) {
+  if (!L || L.flow === L.items || !fin(x) || !fin(y) || !fin(zoom) ||
+    zoom <= 0) return null;
+  // (+ a hair: a point EDGE px away is in, whatever the rounding)
+  return inColumn(L.root.items, x, y, EDGE / zoom + 1e-9);
+}

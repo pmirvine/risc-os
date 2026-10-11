@@ -1,0 +1,211 @@
+// TblStyle - table styles read into views (D15, R7). Pure; read
+// only: nothing here is written (styles keep their raw XML).
+//
+//   viewOf(styles, id, strict?) -> view | null
+//     view {tblPr, trPr, tcPr, pPr, rPr, cond}: the property objects
+//     of table style `id` (./TblProps readTblPr / readTrPr / readTcPr
+//     of the w:tblPr, w:trPr, w:tcPr in style.extra; style.pPr and
+//     style.rPr as ./ReadStyles read them), each {extra, ...fields};
+//     cond: Map(type -> {tblPr, trPr, tcPr, pPr, rPr}) of its
+//     w:tblStylePr elements (COND_TYPES only; the first of a type
+//     counts). basedOn is followed (table styles only, a visited
+//     Set, at most MAX_LINKS styles in the chain), merged from the
+//     root ancestor down, the child over the parent field by field
+//     (mergePart); cond by type, then field. null when `id` is not
+//     a table style. A part element that repeats in a style (two
+//     w:tblPr) is not read. `strict`: a Strict document's names
+//     (w:start / w:end sides; the reader's scope is marked).
+//     Memoised per Style object (WeakMap; its last 4 views); an
+//     entry holds the chain's Style objects and is used only while
+//     the chain is the very same objects (a style table is
+//     replaced, never changed). The view and its parts are frozen.
+//   tableStyleId(styles, table) -> id | null  the table's tblStyle
+//     when it names a table style, else styles.defaults.table when
+//     that is one, else null
+//   mergePart(dst, src) -> dst  table property merge: src's fields
+//     over dst's; borders and margins (tblBorders, tcBorders,
+//     tblCellMar, tcMar) side by side; `extra` concatenated. Values
+//     are shared, never changed. (./TblCond's layers use it too.)
+//
+// A themed border, shading or font colour (w:themeColor,
+// w:themeFill...: Word writes them on every colour of its table
+// styles) is kept raw by the readers, as everywhere, and the style
+// keeps it so; the view shows it by the literal colour written
+// beside the theme (./TblColor showThemed: the theme's tint or
+// shade ignored, an approximation).
+// Names from the file are Map keys or compared with fixed lists.
+import {scope, wName, wAttr, isEl, strictScope, W} from './Ns';
+import {readPPr, readRPr} from './ReadProps';
+import {readTblPr, readTrPr, readTcPr} from './TblProps';
+import {mergeInto} from './StylesMerge';
+import {showThemed} from './TblColor';
+
+export const COND_TYPES = ['wholeTable', 'band1Vert', 'band2Vert',
+  'band1Horz', 'band2Horz', 'firstCol', 'lastCol', 'firstRow',
+  'lastRow', 'neCell', 'nwCell', 'seCell', 'swCell'];
+export const MAX_LINKS = 64;
+export const PARTS = ['tblPr', 'trPr', 'tcPr', 'pPr', 'rPr'];
+const BY_SIDE = ['tblBorders', 'tcBorders', 'tblCellMar', 'tcMar'];
+const TBL_READ = {tblPr: readTblPr, trPr: readTrPr, tcPr: readTcPr};
+
+const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+/** See the header. */
+export function mergePart(dst, src) {
+  if (!isObj(src)) return dst;
+  for (const k of Object.keys(src)) {
+    const v = src[k];
+    if (v === undefined) continue;
+    if (k === 'extra') {
+      if (Array.isArray(v) && v.length) dst.extra = dst.extra.concat(v);
+    } else if (BY_SIDE.includes(k) && isObj(v) && isObj(dst[k])) {
+      dst[k] = {...dst[k], ...v};
+    } else dst[k] = v;
+  }
+  return dst;
+}
+
+const emptyParts = () => ({tblPr: {extra: []}, trPr: {extra: []},
+  tcPr: {extra: []}, pPr: {extra: []}, rPr: {extra: []}});
+
+/** Merge parts `src` into `dst` (pPr / rPr as the style chains). */
+function mergeParts(dst, src) {
+  for (const k of PARTS) {
+    if (!src[k]) continue;
+    if (k === 'pPr' || k === 'rPr') mergeInto(dst[k], src[k]);
+    else mergePart(dst[k], src[k]);
+  }
+  return dst;
+}
+
+/** The single children of `node`'s kids by WML name (Map). */
+function singles(kids, m) {
+  const out = new Map(), seen = new Set();
+  for (const c of kids) {
+    const l = isEl(c) ? wName(c, m) : null;
+    if (l === null || l === 'tblStylePr') continue;
+    if (seen.has(l)) out.delete(l); else out.set(l, c);
+    seen.add(l);
+  }
+  return out;
+}
+
+/** The parts read from element `kids` (tblPr / trPr / tcPr...). */
+function readParts(kids, m, withP) {
+  const out = {};
+  const one = singles(kids, m);
+  for (const k of ['tblPr', 'trPr', 'tcPr']) {
+    const n = one.get(k);
+    if (n) out[k] = showThemed(TBL_READ[k](n, m), k, m);
+  }
+  if (withP) {
+    const p = one.get('pPr'), r = one.get('rPr');
+    if (p) out.pPr = showThemed(readPPr(p, m, false).pPr, 'pPr', m);
+    if (r) out.rPr = showThemed(readRPr(r, m, false).rPr, 'rPr', m);
+  }
+  return out;
+}
+
+/** The scope of a style's children. */
+function styleScope(styles, style, strict) {
+  let m = new Map([['w', W]]);
+  const attrs = Array.isArray(styles.rootAttrs) ? styles.rootAttrs : [];
+  m = scope(m, {attrs});
+  const raw = style.raw;
+  if (raw && Array.isArray(raw.attrs)) m = scope(m, raw);
+  return strict ? strictScope(m) : m;
+}
+
+/** One style's own parts and conditions (no basedOn). */
+function ownOf(styles, style, strict) {
+  const m = styleScope(styles, style, strict);
+  const extra = Array.isArray(style.extra) ? style.extra : [];
+  const parts = readParts(extra, m, false);
+  parts.pPr = showThemed(style.pPr, 'pPr', m);
+  parts.rPr = showThemed(style.rPr, 'rPr', m);
+  const cond = new Map();
+  for (const c of extra) {
+    if (!isEl(c) || wName(c, m) !== 'tblStylePr') continue;
+    const cm = c.attrs.length ? scope(m, c) : m;
+    const type = wAttr(c, cm, 'type');
+    if (!COND_TYPES.includes(type) || cond.has(type)) continue;
+    cond.set(type, readParts(c.children, cm, true));
+  }
+  return {parts, cond};
+}
+
+/** The table style chain of `id`, child first (see the header). */
+function chainOf(styles, id) {
+  const out = [], seen = new Set();
+  let s = typeof id === 'string' ? styles.styles.get(id) : undefined;
+  while (s && s.type === 'table' && !seen.has(s.id) &&
+    out.length < MAX_LINKS) {
+    seen.add(s.id);
+    out.push(s);
+    s = typeof s.basedOn === 'string' ? styles.styles.get(s.basedOn)
+      : undefined;
+  }
+  return out;
+}
+
+const freezeParts = (o) => {
+  for (const k of PARTS) Object.freeze(o[k]);
+  return Object.freeze(o);
+};
+
+/** The view of a chain (child first). */
+function build(styles, chain, strict) {
+  const view = emptyParts();
+  const cond = new Map();
+  for (let k = chain.length - 1; k >= 0; k--) {
+    const own = ownOf(styles, chain[k], strict);
+    mergeParts(view, own.parts);
+    for (const [type, parts] of own.cond) {
+      if (!cond.has(type)) cond.set(type, emptyParts());
+      mergeParts(cond.get(type), parts);
+    }
+  }
+  const sorted = new Map();
+  for (const t of COND_TYPES) {
+    if (cond.has(t)) sorted.set(t, freezeParts(cond.get(t)));
+  }
+  view.cond = sorted;
+  return freezeParts(view);
+}
+
+// per Style object: its last few views (other chains, Strict)
+const memo = new WeakMap();
+const MEMO_PER_STYLE = 4;
+
+/** See the header. */
+export function viewOf(styles, id, strict = false) {
+  if (!styles || !(styles.styles instanceof Map)) return null;
+  const chain = chainOf(styles, id);
+  if (!chain.length) return null;
+  const key = !!strict;
+  let list = memo.get(chain[0]);
+  if (!list) memo.set(chain[0], list = []);
+  const hit = list.find((e) => e.strict === key &&
+    e.rootAttrs === styles.rootAttrs &&
+    e.chain.length === chain.length &&
+    e.chain.every((s, k) => s === chain[k]));
+  if (hit) return hit.view;
+  const view = build(styles, chain, key);
+  list.unshift({chain, strict: key, rootAttrs: styles.rootAttrs, view});
+  if (list.length > MEMO_PER_STYLE) list.pop();
+  return view;
+}
+
+/** See the header. */
+export function tableStyleId(styles, table) {
+  if (!styles || !(styles.styles instanceof Map)) return null;
+  const isTable = (id) => {
+    const s = typeof id === 'string' ? styles.styles.get(id) : null;
+    return !!s && s.type === 'table';
+  };
+  const own = table && table.tblPr && table.tblPr.tblStyle;
+  if (isTable(own)) return own;
+  const d = styles.defaults && styles.defaults.table;
+  return isTable(d) ? d : null;
+}

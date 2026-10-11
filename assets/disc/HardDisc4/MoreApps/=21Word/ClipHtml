@@ -1,6 +1,6 @@
 // ClipHtml - a slice as HTML for other programs (text/html on the
 // clipboard), escaped, with only these tags: p h1-h6 ul ol li b i u
-// s sup sub span br a.
+// s sup sub span br a table tr td.
 //
 //   toHtml(doc, slice, {token, urlOf, max}) -> string | null
 //   MAX_HTML  2,000,000: the default max
@@ -25,7 +25,9 @@
 // pre-wrap (tabs and spaces kept) and text-align for centred,
 // right-aligned and justified text. An empty paragraph, or one
 // ending with a line break, gets one <br> more (a browser shows
-// none for the last). A kept block (a table) is an empty paragraph.
+// none for the last). A typed table is a <table> (./ClipHtmlTable,
+// Batch C6.3), its cells' blocks written by these rules (lists open
+// and close within a cell); a kept block is an empty paragraph.
 // Runs: ./ClipHtmlRun. Pure: no desktop services.
 import {resolver, alignOf} from './FormatEff';
 import {headingLevel} from './Fmt';
@@ -33,6 +35,8 @@ import {labels} from './ListNumbers';
 import {esc, runHtml} from './ClipHtmlRun';
 import {paraPlain} from './ClipSlice';
 import {MARK} from './ClipStore';
+import {forEachIn, walkBlocks} from './Walk';
+import {tableHtml} from './ClipHtmlTable';
 
 export const MAX_HTML = 2000000;
 const TOKEN = /^[0-9a-f]{16}$/;
@@ -56,6 +60,13 @@ class Out {
   }
 }
 
+/** The number of blocks ./Walk walks in block list bs. */
+function walked(bs) {
+  let n = 0;
+  forEachIn(bs, [], () => { n++; });
+  return n;
+}
+
 /** The opening tag and style of paragraph block p. */
 function openTag(tag, pp) {
   let css = 'white-space:pre-wrap';
@@ -73,35 +84,31 @@ function paraHtml(p, tag, pp, res, head, urlOf) {
   return s + '</' + tag + '>';
 }
 
-/** See the header. */
-export function toHtml(doc, slice, opts = {}) {
-  const max = Number.isFinite(opts.max) ? opts.max : MAX_HTML;
-  const blocks = slice.blocks;
-  let n = 0;
-  for (const b of blocks) if (b.type === 'p') n += b.text.length;
-  if (n > max) return null;
-  const res = resolver(doc);
-  const lab = doc.numbering ? labels(doc) : new Map();
-  const ids = Array.isArray(slice.ids) ? slice.ids : [];
-  const urlOf = typeof opts.urlOf === 'function' ? opts.urlOf : null;
-  const out = new Out(max);
-  if (typeof opts.token === 'string' && TOKEN.test(opts.token))
-    out.put(MARK + opts.token + '-->');
+/** Writes blocks (a body's or a cell's) into st.out; st.at.w is
+ *  the index in st.ids (./ClipSlice: walk order) of the next block,
+ *  shared by the cells' writers. */
+function blocksHtml(blocks, st) {
+  const {out, res, lab, ids, urlOf} = st;
   let list = null;
   const close = () => {
     if (list) out.put('</' + list + '>');
     list = null;
   };
   for (let k = 0; k < blocks.length && !out.over; k++) {
-    const b = blocks[k];
+    const b = blocks[k], id = ids[st.at.w++];
+    if (b.type === 'tbl') {
+      close();
+      tblHtml(b, st);
+      continue;
+    }
     if (b.type !== 'p') {
       close();
       out.put(EMPTY);
       continue;
     }
     const pp = res.para(b);
-    const l = ids[k] !== null && ids[k] !== undefined
-      ? lab.get(ids[k]) : undefined;
+    const l = id !== null && id !== undefined ? lab.get(id)
+      : undefined;
     if (l) {
       const want = l.bullet ? 'ul' : 'ol';
       if (list !== want) {
@@ -117,5 +124,38 @@ export function toHtml(doc, slice, opts = {}) {
     out.put(paraHtml(b, hl ? 'h' + hl : 'p', pp, res, hl > 0, urlOf));
   }
   close();
+}
+
+/** Table block t into st.out (its own walk entry already counted). */
+function tblHtml(t, st) {
+  const {out} = st;
+  const room = () => out.max - out.len;
+  const h = tableHtml(t, {styles: st.res.styles, room,
+    skip: (bs) => { st.at.w += walked(bs); },
+    cell: (bs) => {
+      const o = new Out(room());
+      blocksHtml(bs, {...st, out: o});
+      return o.over ? null : o.parts.join('');
+    }});
+  if (h === null) out.over = true;
+  else out.put(h);
+}
+
+/** See the header. */
+export function toHtml(doc, slice, opts = {}) {
+  const max = Number.isFinite(opts.max) ? opts.max : MAX_HTML;
+  const blocks = slice.blocks;
+  let n = 0;
+  for (const {b} of walkBlocks(blocks)) {
+    if (b.type === 'p') n += b.text.length;
+    if (n > max) return null;
+  }
+  const out = new Out(max);
+  if (typeof opts.token === 'string' && TOKEN.test(opts.token))
+    out.put(MARK + opts.token + '-->');
+  blocksHtml(blocks, {out, res: resolver(doc), at: {w: 0},
+    lab: doc.numbering ? labels(doc) : new Map(),
+    ids: Array.isArray(slice.ids) ? slice.ids : [],
+    urlOf: typeof opts.urlOf === 'function' ? opts.urlOf : null});
   return out.over ? null : out.parts.join('');
 }

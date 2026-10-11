@@ -1,0 +1,230 @@
+// TblItems - the item of a typed table in a ./DocLayout (D17): its
+// rows of cells, each cell a COLUMN {x, w, items, styles} holding
+// the items of the cell's blocks, made by ./DocItems (passed in as
+// `make`: no import cycle). ./TblLayout gives them their places.
+//
+//   tableItem(L, it, depth, prev, make, share)  fills `it` (a 'tbl'
+//     item whose block, col, x and w are set; depth: the table's, 1
+//     at top level, R9) with
+//       key    what the rows' geometry depends on (below)
+//       left, width  the table's place in its column and its width
+//              (px, ./TblWidth colsOf at the column's width)
+//       rows   [{y, h, ry, cells, geo, listed}] (y, h, ry:
+//              ./TblLayout; listed: ./TblReuse listedOf its cells)
+//       tops   Float64Array of the row tops (./TblLayout)
+//       st, listed  ./TblReuse's (placement; the rows' listed)
+//     and every cell {x, w, tx, tw, col, rowSpan, cont, r, k, c0, c1,
+//     layer, styles, vAlign, mar, dy, clip, need, laid, ry}: x, w its
+//     box and
+//     tx, tw its text area (work-area px: cellBox from the table's
+//     left), col the cell's column (x tx, w tw, styles: the derived
+//     style table its paragraphs are laid out with, R6), rowSpan /
+//     cont ./TblGrid's, r / k its row and index, c0..c1 its grid
+//     columns, layer ./TblCond layerOf's, mar its margins (px), dy /
+//     clip / need / laid / ry ./TblLayout's. make(b, col, depth) ->
+//     the item of block b in column col (registered in L.byId); its
+//     ci is set here. With share (./DocItems: the same layout-wide
+//     key and decorators), a row whose geometry is kept keeps its
+//     cells too (./TblReuse adoptRow; their rowSpan / cont as the
+//     grid has them now), and in a changed row a cell of the same
+//     object, text width, styles and top / bottom margins keeps its
+//     column (adoptCell): only changed cells are made (and stacked)
+//     again.
+//   minWidth(L, para) -> px  the widest word of para (whitespace and
+//     objects break; each run measured in its format at the page's
+//     styles): the min width of D18 step 2's autofit approximation
+//     (TB7), memoised per paragraph object
+//   layerCol(c0, c1, cols) -> c  the grid column of a cell's layer
+//     (below; ./TblBorders uses the same)
+//
+// A row's geometry (geo, frozen: {row, r, cells, trH}: its cells'
+// boxes from the table's left, c0..c1, margins, layer, derived
+// styles and vAlign; trH the row's trHeight {px (R24 cap), rule} or
+// null) is kept from prev (the older layout's item of this table)
+// when the row is the same object at the same index and the key is
+// the same: the column widths (cw.cols, by value), the tblPr, the
+// style view, the look and band sizes, the row and column counts,
+// doc.styles and the compatibility switch (D20); cell min widths
+// are memoised per cell object (cells are replaced, never changed).
+// A cell's layer is its own row's and its grid column's: c0, or the
+// last column when the cell reaches it (lastCol), the first when it
+// starts there (firstCol wins a cell spanning the whole row). Pure:
+// no desktop services.
+import {gridOf} from './TblGrid';
+import {colsOf, cellBox, marginsOf, spacingOf, twToPx}
+  from './TblWidth';
+import {viewOf, tableStyleId} from './TblStyle';
+import {lookOf, bandsOf, layerOf, compatOf, stylesFor}
+  from './TblCond';
+import {runFmt} from './Fmt';
+import {MAX_LINE} from './ParaSpace';
+import {adoptRow, adoptCell, listedOf, strictOf}
+  from './TblReuse';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export const layerCol = (c0, c1, cols) => (c0 === 0 ? 0
+  : c1 >= cols ? cols - 1 : c0);
+const get = (o, f) => (isObj(o) ? o[f] : undefined);
+const BREAK = /[\s\uFFFC]+/;
+const MAX_WORD = 500;                  // characters of a word measured
+const mins = new WeakMap();
+
+/** See the header. */
+export function minWidth(L, para) {
+  const o = mins.get(para);
+  if (o && o.s === L.styles && o.m === L.metrics) return o.v;
+  let v = 0;
+  for (const run of para.runs || []) {
+    const t = para.text.slice(run.start, run.end);
+    if (!t.trim()) continue;
+    const {css} = runFmt(L.styles, para, run, L.cache);
+    for (const w of t.split(BREAK)) {
+      if (w) {
+        v = Math.max(v, L.metrics.width(w.slice(0, MAX_WORD), css));
+      }
+    }
+  }
+  mins.set(para, {s: L.styles, m: L.metrics, v});
+  return v;
+}
+
+const cellMins = new WeakMap();
+
+/**
+ * The min width of cell (r, k): its widest paragraph's, margins in;
+ * memoised per cell object (cells are replaced, never changed).
+ */
+function cellMin(L, t, view, r, k) {
+  const cell = t.rows[r].cells[k];
+  const o = cellMins.get(cell);
+  if (o && o.s === L.styles && o.m === L.metrics && o.view === view &&
+    o.tblPr === t.tblPr) return o.v;
+  let v = 0;
+  for (const b of cell.blocks) {
+    if (b.type === 'p') v = Math.max(v, minWidth(L, b));
+  }
+  const m = marginsOf(get(cell.tcPr, 'tcMar'),
+    get(t.tblPr, 'tblCellMar'),
+    get(get(view, 'tblPr'), 'tblCellMar'));
+  v += m.left + m.right;
+  cellMins.set(cell, {s: L.styles, m: L.metrics, view, tblPr: t.tblPr,
+    v});
+  return v;
+}
+
+/** The table-wide inputs of its rows' geometry (the key). */
+function keyOf(L, t, col) {
+  const styles = L.styles;
+  const strict = strictOf(L.doc);
+  const view = viewOf(styles, tableStyleId(styles, t), strict);
+  const look = lookOf(t.tblPr), bands = bandsOf(t.tblPr, view);
+  const g = gridOf(t);
+  const cw = colsOf(t, view, col.w,
+    (r, k) => cellMin(L, t, view, r, k), [styles, L.metrics]);
+  const lk = Object.values(look).map(Number).join('') +
+    `/${bands.rows}/${bands.cols}`;
+  return {view, tblPr: t.tblPr, look, bands, lk, nRows: t.rows.length,
+    nCols: g.cols, cols: cw.cols, styles, compat: compatOf(L.doc), g,
+    cw, strict};
+}
+
+/** a and b the same widths (an autofit table recomputes them). */
+function sameCols(a, b) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+const sameKey = (a, b) => a.view === b.view && a.tblPr === b.tblPr &&
+  a.lk === b.lk && a.nRows === b.nRows && a.nCols === b.nCols &&
+  sameCols(a.cols, b.cols) && a.styles === b.styles &&
+  a.compat === b.compat;
+
+/** Row r's geometry (see the header). */
+function geoOf(K, t, r) {
+  const row = t.rows[r], gr = K.g.rows[r];
+  const tbl = t.tblPr, vt = get(K.view, 'tblPr');
+  const spacing = spacingOf(get(row.trPr, 'tblCellSpacing'),
+    get(tbl, 'tblCellSpacing'), get(vt, 'tblCellSpacing'));
+  const cells = row.cells.map((cell, k) => {
+    const {c0, c1} = gr.cells[k];
+    const c = layerCol(c0, c1, K.nCols);
+    const layer = layerOf(K.view, K.look, r, c, K.nRows, K.nCols,
+      K.bands);
+    const mar = Object.freeze(marginsOf(get(cell.tcPr, 'tcMar'),
+      get(layer.tcPr, 'tcMar'), get(tbl, 'tblCellMar'),
+      get(vt, 'tblCellMar')));
+    const box = cellBox(K.cols, c0, c1, mar, spacing);
+    const vAlign = get(cell.tcPr, 'vAlign') ??
+      get(layer.tcPr, 'vAlign') ?? 'top';
+    return Object.freeze({x: box.x, w: box.w, tx: box.tx, tw: box.tw,
+      c0, c1, mar, layer, vAlign,
+      styles: stylesFor(K.styles, layer, K.compat)});
+  });
+  const th = get(row.trPr, 'trHeight') ??
+    get(get(K.view, 'trPr'), 'trHeight');
+  const trH = isObj(th) && Number.isFinite(th.val) && th.val > 0
+    ? Object.freeze({px: Math.min(twToPx(th.val), MAX_LINE),
+      rule: th.hRule === 'exact' || th.hRule === 'auto' ? th.hRule
+        : 'atLeast'}) : null;
+  return Object.freeze({row, r, cells: Object.freeze(cells), trH});
+}
+
+/** See the header. */
+export function tableItem(L, it, depth, prev, make, share) {
+  const t = it.block;
+  const K = keyOf(L, t, it.col);
+  const same = !!prev && !!prev.key && sameKey(prev.key, K);
+  if (same) K.cols = prev.key.cols;
+  const old = same ? prev.rows : null;
+  it.key = K;
+  it.left = K.cw.left;
+  it.width = K.cw.width;
+  it.st = {laid: false, at: NaN, th: 0, cx: it.x};
+  const x0 = it.x + it.left;
+  const rows = new Array(t.rows.length);
+  for (let r = 0; r < rows.length; r++) {
+    const row = t.rows[r], o = old && old[r];
+    const geo = o && o.geo.row === row ? o.geo : geoOf(K, t, r);
+    const gr = K.g.rows[r];
+    if (share && o && o.geo === geo && adoptRow(L, it, prev, r)) {
+      o.cells.forEach((c, k) => {
+        c.rowSpan = gr.cells[k].rowSpan;
+        c.cont = gr.cells[k].cont;
+      });
+      rows[r] = {y: 0, h: 0, ry: 0, cells: o.cells, geo,
+        listed: o.listed};
+      continue;
+    }
+    const cells = new Array(row.cells.length);
+    for (let k = 0; k < cells.length; k++) {
+      const ge = geo.cells[k], gc = gr.cells[k];
+      const kept = share && o &&
+        adoptCell(L, it, o, k, row.cells[k], ge, gc);
+      if (kept) {
+        cells[k] = kept;
+        continue;
+      }
+      const col = {x: x0 + ge.tx, w: ge.tw, items: [],
+        styles: ge.styles};
+      for (const b of row.cells[k].blocks) {
+        const x = make(b, col, depth + 1);
+        x.ci = col.items.length;
+        col.items.push(x);
+      }
+      cells[k] = {x: x0 + ge.x, w: ge.w, tx: col.x, tw: ge.tw, col,
+        rowSpan: gc.rowSpan, cont: gc.cont, r, k, c0: ge.c0, c1: ge.c1,
+        layer: ge.layer, styles: ge.styles, vAlign: ge.vAlign,
+        mar: ge.mar, dy: 0, clip: false, need: 0, laid: false, ry: 0};
+    }
+    rows[r] = {y: 0, h: 0, ry: 0, cells, geo, listed: listedOf(cells)};
+  }
+  it.rows = rows;
+  it.tops = new Float64Array(rows.length);
+  const listed = rows.filter((x) => x.listed.length);
+  it.listed = listed.length ? Object.freeze(listed.flatMap((x) =>
+    x.listed)) : listed;
+}

@@ -1,5 +1,5 @@
-// Writes INDEX.txt: one list of every Batch A and Batch B (pictures)
-// real-Word hand-off file
+// Writes INDEX.txt: one list of every Batch A, Batch B (pictures) and
+// Batch C (tables) real-Word hand-off file
 // (local only, never committed: tests/moreapps/corpus/ is git-ignored).
 // Not a test:
 //
@@ -7,13 +7,15 @@
 //
 // Run the generators first (handoff-spacing, handoff-newlists,
 // handoff-breaks, handoff-tabs, handoff-borders, handoff-links,
-// handoff-pictures, each `node tests/moreapps/<name>.mjs`); this reads what they wrote in
+// handoff-pictures, handoff-tables, each `node tests/moreapps/<name>.mjs`);
+// this reads what they wrote in
 // tests/moreapps/corpus/handoff/ and says, by deliverable, which file
 // to open, which README has its questions, and what to try, in the
 // order for one session in real Word. For every file that exists it
 // gives the size and the word count !Word shows (Edit > Word count,
-// whole document) to compare with Word's, and for the pictures the
-// number of pictures !Word reads in it. A file that is listed but
+// whole document) to compare with Word's, for the pictures the
+// number of pictures !Word reads in it and for the tables the number
+// of tables (at every depth) and of cells. A file that is listed but
 // missing is reported (and left out of the counts); nothing else in
 // the folder is touched. INDEX.txt is written only when its bytes
 // change.
@@ -23,6 +25,8 @@ import {fileURLToPath} from 'node:url';
 import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
 import {count} from '../../tools/moreapps/!Word/WordCount';
 import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
+import {FILES as TB_FILES, Q as TB_Q, PRIORITY as TB_PRIORITY,
+  PRIORITY_LABELS as TB_LABELS} from './handoff-tables-q.mjs';
 
 const DIR = fileURLToPath(new URL('./corpus/handoff/', import.meta.url));
 
@@ -79,7 +83,25 @@ const SETS = [
       ['pic-6-source.docx', 'where the pasted picture came from (PI8)'],
       ['pic-6-pasted.docx', 'duplicate docPr ids kept, pasted pictures with fresh ids, crop and alt text (PI6, PI8, P6)'],
       ['pic-7-deleted.docx', 'a deleted picture\'s media part and relationship left: no repair (PI7)']]},
+  {id: 'C', title: 'Tables', readme: 'tb-README.txt', tables: true,
+    expect: ['!Word expects: no repair prompt for any of these files; each',
+      'table as tb-README.txt lists it under "What !Word wrote" (the',
+      'caption above a table says what was done to it). ' + TB_Q.length,
+      'questions (TB1..TB26, their sub-questions TB3a.., the readings',
+      'TBC4a.., TBC5a.., TBC6a.. and TBX1..), of which ' +
+      TB_Q.filter((q) => !q[1]).length + ' have no file. Order: the',
+      'smoke test, then the ' + TB_PRIORITY.length + ' PRIORITY checks (the ' +
+      'ones that could',
+      'show a repair prompt first), then the rest only if time allows.',
+      'tb-README.txt starts with the PRIORITY',
+      'list and marks every question [PRIORITY] or [if time allows].',
+      'The PRIORITY checks, in order:',
+      ...TB_LABELS.map((l, i) => `  ${String(i + 1).padStart(2)}. ${l} (` +
+        (TB_PRIORITY[i][1].length ? TB_PRIORITY[i][1].length + ' file' +
+        (TB_PRIORITY[i][1].length === 1 ? '' : 's') : 'all files') + ')')],
+    files: TB_FILES.map(([n, what]) => [n, what])},
 ];
+
 
 /** The pictures !Word reads in doc (every paragraph, any kind). */
 function picCount(doc) {
@@ -96,6 +118,19 @@ function picCount(doc) {
   return k;
 }
 
+/** The tables of doc at every depth, and their cells. */
+function tableCount(blocks, out = {tables: 0, cells: 0}) {
+  for (const b of blocks) {
+    if (b.type !== 'tbl') continue;
+    out.tables++;
+    for (const row of b.rows) {
+      out.cells += row.cells.length;
+      for (const c of row.cells) tableCount(c.blocks, out);
+    }
+  }
+  return out;
+}
+
 /** The question ids a README holds, in ranges (BD1..BD10, SY1..SY5). */
 function questions(text) {
   const by = new Map();
@@ -110,8 +145,8 @@ function questions(text) {
 }
 
 const out = [
-  'Batch A and B hand-off for real Word: every file, by deliverable',
-  '=================================================================',
+  'Batch A, B and C hand-off for real Word: every file, by deliverable',
+  '===================================================================',
   '',
   'All of these are made by !Word\'s own commands (the generators are',
   'tests/moreapps/handoff-*.mjs; this list by handoff-index.mjs) and',
@@ -126,7 +161,7 @@ const out = [
   '   whether Word complains (a repair prompt, "unreadable content").',
   '   Any complaint is the most valuable finding: write down the file.',
   '2. Then go deliverable by deliverable (A1 to A6, then B, the',
-  '   pictures), reading the',
+  '   pictures, then C, the tables), reading the',
   '   README first and answering its questions with the files open.',
   '   Questions with "(No file)" are done by making the thing in Word',
   '   and opening the result in !Word, or the reverse.',
@@ -144,8 +179,9 @@ for (const set of SETS) {
   const rp = path.join(DIR, set.readme);
   let qs = '(README missing)';
   if (fs.existsSync(rp)) {
-    qs = questions(fs.readFileSync(rp, 'utf8')) +
-      (set.extra ? ' ' + set.extra : '');
+    qs = set.tables ? `${TB_Q.length} (TB1..TB26 with sub-questions, ` +
+      'TBC4a.., TBC5a.., TBC6a.., TBX1..)' : questions(fs.readFileSync(rp,
+      'utf8')) + (set.extra ? ' ' + set.extra : '');
   } else missing.push(set.readme);
   out.push(`README: ${set.readme}   questions: ${qs}`, '');
   if (set.expect) out.push(...set.expect.map((l) => '  ' + l), '');
@@ -163,7 +199,10 @@ for (const set of SETS) {
       `      try: ${what}`,
       `      !Word counts: ${c.words} words, ${c.charsNoSpaces} characters ` +
       `without spaces, ${c.chars} with, ${c.paras} paragraphs` +
-      (set.pics ? `, ${picCount(doc)} pictures` : ''));
+      (set.pics ? `, ${picCount(doc)} pictures` : '') +
+      (set.tables ? ', ' + (({tables, cells}) => `${tables} table${tables === 1 ? '' : 's'}, ` +
+        `${cells} cells`)(doc.sections.reduce((a, s2) => tableCount(
+          s2.blocks, a), {tables: 0, cells: 0})) : ''));
   }
   out.push('');
 }

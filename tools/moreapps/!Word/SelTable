@@ -1,0 +1,228 @@
+// SelTable - moving and selecting in tables (Batch C3.3, D10): Up and
+// Down by the cells' geometry, Tab and Shift-Tab, the mouse's zones.
+//
+//   vertical(L, it, p, aff, gx, dir) -> {pos, affinity} | null
+//     a line up (dir -1) or down (1) from position p of item it,
+//     keeping goalX gx (work area): in a paragraph, its next line;
+//     past its first or last line, the item beside it in its column
+//     (entered at gx: ./SelVert enter; a table: the cell of its first
+//     or last row that spans gx, then that cell's first or last
+//     item); past a cell's first or last item, the cell above or
+//     below that spans gx (a vertical merge's restart cell; a merge
+//     that spans the cell's own rows too is passed); past the
+//     table's first or last row, out to the item beside the table
+//     (a table with none there: its edge {t, 0 | 1}, D8); past the
+//     root column's first or last item, the document's start or end.
+//     From a table's start edge Down (its end edge Up) goes into it.
+//     null when it is not in the layout. Without a typed table this
+//     is the step of every item as before (L.flow is L.items).
+//   enter(L, n, dir, gx) -> into item n from above (dir 1) or below
+//     (-1) at gx: ./SelVert enter, a table into its cells (above)
+//   cellTabTarget(doc, sel, dir) -> sel | 'last' | null
+//     Tab (dir 1) and Shift-Tab (-1) with sel's head in a cell (the
+//     innermost table's: a nested table's edge counts as its outer
+//     cell's): the next (previous) cell of that table in flow order,
+//     row by row, vMerge continue cells skipped, with its whole
+//     content selected (from its first block's start to its last
+//     block's end); 'last' when there is no cell further that way
+//     (the last cell for Tab, the first for Shift-Tab: nothing in
+//     C3; C4.1 adds a row after the last); null when the head is not
+//     in a cell (or sel is not valid).
+//   inCell(doc, pos) -> whether pos is in a table's cell
+//   zoneAt(L, x, y) -> {kind, table, r?, k?, c?} | null
+//     the mouse's zones at layout point (x, y) (the caller undoes the
+//     zoom), innermost table first: 'cell' {r, k} the first CELL_EDGE
+//     (4) px inside a cell's left edge (a continue cell: its restart
+//     cell); 'row' {r} within ROW_ZONE (24 px, 0.25 in) left of a
+//     row, outside the table; 'column' {c, k} within CELL_EDGE px
+//     above the table's top border, over it: c the grid column (c0)
+//     of row 0's cell k under x. table is the table's item. null
+//     elsewhere and in a layout without a typed table.
+//   zoneSel(L, z) -> the selection of zone z: a cell's content; a
+//     row: from its first cell's start to its last cell's end; a
+//     column: from its cell in row 0 to its cell in the last row
+//     that has one (./SelShape makes them 'cells' rectangles)
+//
+// Pure: no desktop services.
+import * as PM from './PositionMap';
+import {make, at, enter as enterItem} from './SelVert';
+import {blockId} from './DocPos';
+import {cellAtX, itemIn} from './DocHit';
+import {rowAtY} from './TblLayout';
+import {findBlock, endOf} from './EditPos';
+import {at as walkAt} from './Walk';
+import {gridOf, cellAt} from './TblGrid';
+
+export const CELL_EDGE = 4;
+export const ROW_ZONE = 24;
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+const spanEnd = (c) => c.r + Math.max(1, c.rowSpan) - 1;
+
+/** See the header. */
+export function enter(L, n, dir, gx) {
+  if (n.kind !== 'tbl') return enterItem(L, n, dir, gx);
+  const c = cellAtX(n, dir > 0 ? 0 : n.rows.length - 1, gx);
+  return c ? enterCell(L, c, dir, gx) : at(n, dir > 0 ? 0 : 1);
+}
+
+/** Into cell c's first (dir 1) or last item. */
+function enterCell(L, c, dir, gx) {
+  const xs = c.col.items;
+  return enter(L, xs[dir > 0 ? 0 : xs.length - 1], dir, gx);
+}
+
+/** See the header. */
+export function vertical(L, it, p, aff, gx, dir) {
+  if (!it || L.byId.get(it.id) !== it) return null;
+  if (it.kind === 'p') {
+    const r = PM.vertical(it, p.off, aff, dir, gx - it.x);
+    if (r) return at(it, r.off, r.affinity);
+  } else if (it.kind === 'tbl' && (p.off > 0) !== (dir > 0)) {
+    return enter(L, it, dir, gx);
+  }
+  return leave(L, it, dir, gx);
+}
+
+/** Past item it's edge (dir 1: its bottom): see the header. */
+function leave(L, it, dir, gx) {
+  for (let x = it; ;) {
+    const n = x.col.items[x.ci + dir];
+    if (n) return enter(L, n, dir, gx);
+    const h = holder(L, x);
+    if (!h) {
+      return {pos: dir > 0 ? L.docEnd() : L.docStart(),
+        affinity: 'down'};
+    }
+    const c = beside(h.t, h.c, dir, gx);
+    if (c) return enterCell(L, c, dir, gx);
+    if (!h.t.col.items[h.t.ci + dir]) return at(h.t, dir > 0 ? 1 : 0);
+    x = h.t;
+  }
+}
+
+/** {t, c}: the table item and the cell whose column holds item x;
+ *  null in the root column. */
+function holder(L, x) {
+  if (x.col === L.root) return null;
+  const loc = findBlock(L.doc, x.id), cl = loc && loc.cell;
+  const tb = cl ? walkAt(L.doc, cl.table) : null;
+  const t = isTbl(tb) ? L.byId.get(tb.id) : null;
+  const row = t && t.kind === 'tbl' ? t.rows[cl.r] : null;
+  const c = row && row.cells[cl.c];
+  return c && c.col === x.col ? {t, c} : null;
+}
+
+/** The cell above (dir -1) or below cell c of table item t that
+ *  spans gx (header), or null past the table's edge. */
+function beside(t, c, dir, gx) {
+  const r0 = c.r, r1 = c.cont ? c.r : spanEnd(c);
+  const n = t.rows.length;
+  for (let r = dir > 0 ? r1 + 1 : r0 - 1; r >= 0 && r < n;) {
+    const d = cellAtX(t, r, gx);
+    if (!d) return null;
+    if (dir > 0 ? d.r > r1 : spanEnd(d) < r0) return d;
+    r = dir > 0 ? spanEnd(d) + 1 : d.r - 1;
+  }
+  return null;
+}
+
+/** The selection from the start of block a to the end of block b. */
+const range = (a, b) => make({id: blockId(a), off: 0},
+  {id: blockId(b), off: endOf(b)});
+
+/** Cell k of row r of table block t: its whole content. */
+function content(t, r, k) {
+  const bs = t.rows[r].cells[k].blocks;
+  return range(bs[0], bs[bs.length - 1]);
+}
+
+/** The innermost cell of pos: {t (block), r, k}, or null. */
+function cellOfPos(doc, pos) {
+  const loc = pos && typeof pos === 'object' ? findBlock(doc, pos.id)
+    : null;
+  const cl = loc && loc.cell;
+  const t = cl ? walkAt(doc, cl.table) : null;
+  return isTbl(t) ? {t, r: cl.r, k: cl.c} : null;
+}
+
+/** See the header. */
+export const inCell = (doc, pos) => !!cellOfPos(doc, pos);
+
+/** See the header. */
+export function cellTabTarget(doc, sel, dir) {
+  const h = sel && typeof sel === 'object' ? cellOfPos(doc, sel.head)
+    : null;
+  if (!h) return null;
+  const {t} = h, g = gridOf(t);
+  let r = h.r, k = h.k;
+  for (;;) {
+    k += dir;
+    if (k < 0) {
+      if (--r < 0) return 'last';
+      k = t.rows[r].cells.length - 1;
+    } else if (k >= t.rows[r].cells.length) {
+      if (++r >= t.rows.length) return 'last';
+      k = 0;
+    }
+    if (k >= 0 && !g.rows[r].cells[k].cont) return content(t, r, k);
+  }
+}
+
+/** See the header. */
+export function zoneAt(L, x, y) {
+  if (L.flow === L.items || !Number.isFinite(x) || !Number.isFinite(y))
+    return null;
+  return inColumn(L.root.items, x, y);
+}
+
+/** The zone at (x, y) among a column's items. */
+function inColumn(items, x, y) {
+  if (!items.length) return null;
+  const n = itemIn(items, y);
+  if (n.kind === 'tbl') return inTable(n, x, y);
+  const b = itemIn(items, y + CELL_EDGE);
+  return b.kind === 'tbl' ? inTable(b, x, y) : null;
+}
+
+/** The zone at (x, y) of table item t (or of a table in its cell). */
+function inTable(t, x, y) {
+  const x0 = t.x + t.left, x1 = x0 + t.width;
+  if (!t.rows.length || y >= t.y + t.h) return null;
+  if (y < t.y) {
+    if (y < t.y - CELL_EDGE || x < x0 || x >= x1) return null;
+    const c = cellAtX(t, 0, x);
+    return c ? {kind: 'column', table: t, c: c.c0, k: c.k} : null;
+  }
+  if (x < x0) {
+    return x >= x0 - ROW_ZONE ? {kind: 'row', table: t,
+      r: rowAtY(t, y)} : null;
+  }
+  if (x >= x1) return null;
+  const c = cellAtX(t, rowAtY(t, y), x, true);
+  if (!c) return null;
+  if (x - c.x < CELL_EDGE) {
+    return {kind: 'cell', table: t, r: c.r, k: c.k};
+  }
+  return inColumn(c.col.items, x, y);
+}
+
+/** See the header. */
+export function zoneSel(L, z) {
+  const t = z && z.table && z.table.block;
+  if (!isTbl(t)) return null;
+  if (z.kind === 'cell') return content(t, z.r, z.k);
+  if (z.kind === 'row') {
+    const cs = t.rows[z.r].cells, a = cs[0].blocks;
+    const b = cs[cs.length - 1].blocks;
+    return range(a[0], b[b.length - 1]);
+  }
+  const g = gridOf(t);
+  let r = t.rows.length - 1, e = null;
+  while (r >= 0 && !(e = cellAt(g, r, z.c))) r--;
+  const top = cellAt(g, 0, z.c);
+  if (!top || !e) return null;
+  const a = t.rows[top.r].cells[top.k].blocks;
+  const b = t.rows[e.r].cells[e.k].blocks;
+  return range(a[0], b[b.length - 1]);
+}

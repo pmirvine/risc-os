@@ -15,16 +15,33 @@
 //   selectPara(L, pos)  the paragraph at pos (or the kept block)
 //   selectAll(L)        the whole document
 //   text(sel, L)        the selection as plain text: paragraphs
-//                       joined by \n, a kept block as an empty
-//                       line, a tab as \t, a line break as \n, an
-//                       inline wrapper (a link...) as its text and
-//                       other inline items as nothing
+//                       joined by \n (a table's cells' paragraphs
+//                       too, in flow order), a kept block as an
+//                       empty line, a tab as \t, a line break as
+//                       \n, an inline wrapper (a link...) as its text
+//                       and other inline items as nothing
 //   clamp(sel, doc, oldL?) the selection made valid for doc: an
 //                       offset past its paragraph's end is its end;
 //                       a position whose paragraph is gone goes to
 //                       the start of the next block still there in
-//                       the old layout oldL (else the end of the one
-//                       before, else the start of the document)
+//                       the old layout oldL's flow (else the end of
+//                       the one before, else the start of the
+//                       document); when that next one is the END of
+//                       a table (the table's last paragraphs gone),
+//                       the end of the table's last paragraph left
+//                       (./TblPos lastPos), never its start edge;
+//                       a position in a vMerge continue cell (never
+//                       drawn) goes to the start of the merge's
+//                       restart cell (./TblPos); blocks at every
+//                       depth (./Walk; found by ./EditPos findBlock,
+//                       O(top-level blocks); for a position whose
+//                       block is gone, a few more lookups, then a
+//                       map of every block made once)
+//
+// oldL is used up (./DocItems: the layout built from it shares its
+// kept items): clamp reads only ids from oldL.flow (a table's id is
+// there twice: its start and its end place), and the index of the
+// item of a GONE block, which no new layout keeps.
 //
 // L is a ./DocLayout. Pure: no desktop services.
 import {wordBounds} from 'wimplib/Segment';
@@ -32,6 +49,10 @@ import {blockId, itemEnd, clampOff, compare, isWordText}
   from './DocPos';
 import {make, move} from './SelMove';
 import {inlineText} from './InlineText';
+import {scan} from './Walk';
+import {findBlock} from './EditPos';
+import {contOf, cellPos, lastPos, shown} from './TblPos';
+import {at as walkAt} from './Walk';
 
 export {move};
 
@@ -59,7 +80,7 @@ export function selectWord(L, pos) {
   const loc = L.locate(pos);
   if (!loc) return null;
   const it = loc.item, id = it.id;
-  if (it.kind === 'box') return select({id, off: 0}, {id, off: 1});
+  if (it.kind !== 'p') return select({id, off: 0}, {id, off: 1});
   const text = it.block.text;
   if (!text) return caret({id, off: 0});
   let w = wordBounds(text, loc.off);
@@ -105,8 +126,9 @@ export function text(sel, L) {
   if (!f || !t) return '';
   const out = [];
   for (let i = f.index; i <= t.index; i++) {
-    const it = L.items[i];
-    if (it.kind === 'box') {
+    const it = L.flow[i];
+    if (it.kind === 'tbl') continue;
+    if (it.kind !== 'p') {
       if (i !== f.index || i !== t.index) out.push('');
       continue;
     }
@@ -117,44 +139,83 @@ export function text(sel, L) {
   return out.join('\n');
 }
 
-/** Map id -> block of doc, and the blocks in order. */
+/** Map id -> block of doc (every depth), and its first block. */
 function blocksOf(doc) {
-  const map = new Map(), list = [];
-  for (const s of doc.sections) {
-    for (const b of s.blocks) {
-      map.set(blockId(b), b);
-      list.push(b);
-    }
+  const map = new Map();
+  let first = null;
+  scan(doc, (b) => {
+    map.set(blockId(b), b);
+    if (!first) first = b;
+  });
+  return {map, first};
+}
+
+/** Whether the table id at oldL.flow[i] is its END place: its id
+ *  is not met again after i (a table is there twice). */
+function endPlace(flow, i) {
+  const id = flow[i].id;
+  for (let j = i + 1; j < flow.length; j++) {
+    if (flow[j].id === id) return false;
   }
-  return {map, list};
+  return true;
+}
+
+const LOOKS = 8;                       // findBlock calls before a map
+
+/** The block of id in doc, or null: a few by findBlock, then by
+ *  doc's map (blocksOf), made once (a deletion of many blocks). */
+function blockOf(doc, d, id) {
+  if (!d.map && (d.looks = (d.looks || 0) + 1) <= LOOKS) {
+    const loc = findBlock(doc, id);
+    return loc ? loc.b : null;
+  }
+  if (!d.map) Object.assign(d, blocksOf(doc));
+  return d.map.get(id) || null;
+}
+
+/** Where a position whose block is gone goes (see the header). */
+function near(doc, oldL, old, d) {
+  const flow = oldL.flow;
+  for (let i = old.index + 1; i < flow.length; i++) {
+    const x = blockOf(doc, d, flow[i].id);
+    if (!x) continue;
+    if (x.type !== 'tbl' || !endPlace(flow, i)) {
+      return {id: flow[i].id, off: 0};
+    }
+    return lastPos(x) || {id: x.id, off: 1};
+  }
+  for (let i = old.index - 1; i >= 0; i--) {
+    const x = blockOf(doc, d, flow[i].id);
+    if (!x) continue;
+    if (x.type !== 'tbl') {
+      return {id: x.id, off: x.type === 'p' ? x.text.length : 1};
+    }
+    return endPlace(flow, i) ? {id: x.id, off: 1}
+      : lastPos(x) || {id: x.id, off: 0};
+  }
+  return null;
 }
 
 /** One position made valid (see the header). */
-function clampPos(pos, d, oldL) {
-  const b = d.map.get(pos.id);
+function clampPos(pos, doc, d, oldL) {
+  const loc = findBlock(doc, pos.id), b = loc && loc.b;
   if (b) {
+    const c = loc.at.length > 2 && contOf(doc, loc.at);
+    if (c) return cellPos(walkAt(doc, c.tp), c.r, c.k) || pos;
     const it = b.type === 'p' ? {kind: 'p', block: b} : {kind: 'box'};
     return {id: pos.id, off: clampOff(it, pos.off)};
   }
   const old = oldL && oldL.byId.get(pos.id);
-  if (old) {
-    for (let i = old.index + 1; i < oldL.items.length; i++) {
-      const id = oldL.items[i].id;
-      if (d.map.has(id)) return {id, off: 0};
-    }
-    for (let i = old.index - 1; i >= 0; i--) {
-      const id = oldL.items[i].id, x = d.map.get(id);
-      if (x) return {id, off: x.type === 'p' ? x.text.length : 1};
-    }
-  }
-  const first = d.list[0];
-  return first ? {id: blockId(first), off: 0} : pos;
+  const to = old && near(doc, oldL, old, d);
+  if (to) return shown(doc, to);
+  if (!d.map) Object.assign(d, blocksOf(doc));
+  return d.first ? {id: blockId(d.first), off: 0} : pos;
 }
 
 /** See the header. */
 export function clamp(sel, doc, oldL) {
-  const d = blocksOf(doc);
-  const a = clampPos(sel.anchor, d, oldL);
-  const h = clampPos(sel.head, d, oldL);
+  const d = {};
+  const a = clampPos(sel.anchor, doc, d, oldL);
+  const h = clampPos(sel.head, doc, d, oldL);
   return make(a, h, sel.affinity, null);
 }

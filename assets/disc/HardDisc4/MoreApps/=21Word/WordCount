@@ -2,8 +2,10 @@
 //
 //   count(doc, sel?, L?) -> {words, chars, charsNoSpaces, paras,
 //       lines, scope, partial?}
-//       of the selection (a range, not a caret) or, with none, of
-//       the whole document; scope says which ('selection' |
+//       of the selection (a range, not a caret: the blocks it
+//       covers at every depth, ./SelShape covered: a 'cells'
+//       rectangle its cells, a 'mixed' range the rows it touches)
+//       or, with none, of the whole document; scope ('selection' |
 //       'document'). L (a ./DocLayout) gives lines (null without it)
 //   countView(view) -> count of the view's selection and layout
 //
@@ -16,94 +18,28 @@
 // the no-break space), tabs and line breaks included as one each, the
 // optional hyphen as none, paragraph marks not. A paragraph is
 // counted when it has any character. Lines are the layout's lines of
-// the paragraphs (those a selection touches). Text counted: the
-// paragraphs' text and the XML of their inline items (a link, an
-// insertion, a field, a content control...), walked like a table's
-// and other kept blocks': w:t, tabs and breaks, never a field's
-// codes, deleted or moved-away text, ruby text, formulas, drawings or
-// properties; of an mc:AlternateContent only the Choice (else the
-// Fallback). The walks take at most 1,000,000 nodes in all (past
-// that `partial` is true and the rest is left out). A table inside a
-// selection
-// counts when it lies inside it. Pure: no desktop services; linear.
+// the paragraphs (those a selection touches), a typed table's cells'
+// too (C3 fix wave). Text counted: the
+// paragraphs' text, a typed table's through ./Walk (its cells'
+// paragraphs in flow order, nested tables' too: the model, D7), and
+// the XML of inline items (a link, an insertion, a field, a content
+// control...) and of kept blocks (an Opaque table...; a typed
+// table's loose marks, which hold none): w:t, tabs and breaks, never
+// a field's codes, deleted or moved-away text, ruby text, formulas,
+// drawings or properties; of an mc:AlternateContent only the Choice
+// (else the Fallback). The XML walks take at most 1,000,000 nodes in
+// all (past that `partial` is true and the rest is left out). A
+// table inside a selection counts when it lies inside it. The
+// numbers: ./WordTally. Pure: no desktop services; linear.
 import {orderedPos} from './EditPos';
+import {covered} from './SelShape';
 import {collapsed} from './Selection';
 import {localName} from './Kinds';
 import {hyphenText} from './InlineText';
+import {forEachIn, loose} from './Walk';
+import {Tally} from './WordTally';
 
 export const NODE_LIMIT = 1e6;
-
-/** White space: the Unicode White_Space but the no-break ones. */
-function isSpace(c) {
-  if (c < 128) return c === 32 || (c >= 9 && c <= 13);
-  return c === 0x85 || c === 0x1680 || (c >= 0x2000 && c <= 0x200a &&
-    c !== 0x2007) || c === 0x2028 || c === 0x2029 || c === 0x205f ||
-    c === 0x3000;
-}
-
-/** An East Asian character: counted as a word by itself. */
-function isAsian(c) {
-  if (c < 0x1100) return false;
-  return (c >= 0x4e00 && c <= 0x9fff) || (c >= 0x3040 && c <= 0x30ff &&
-    c !== 0x30fb) || (c >= 0xac00 && c <= 0xd7af) ||
-    (c >= 0x3400 && c <= 0x4dbf) || (c >= 0x1100 && c <= 0x11ff) ||
-    (c >= 0x3100 && c <= 0x318f) || (c >= 0x31f0 && c <= 0x31ff) ||
-    (c >= 0xf900 && c <= 0xfaff) || (c >= 0xff66 && c <= 0xffdc) ||
-    (c >= 0x20000 && c <= 0x2fa1f);
-}
-
-/** The running numbers. */
-class Tally {
-  constructor() {
-    this.words = 0;
-    this.chars = 0;
-    this.noSpaces = 0;
-    this.paras = 0;
-    this.here = 0;            // characters in this paragraph
-    this.inWord = false;
-  }
-
-  /** Count the text s of a paragraph. */
-  text(s) {
-    let words = this.words, chars = this.chars, ns = this.noSpaces;
-    let inWord = this.inWord;
-    const n = s.length;
-    for (let i = 0; i < n; i++) {
-      let c = s.charCodeAt(i);
-      if (c >= 0xd800 && c < 0xdc00 && i + 1 < n) {
-        const d = s.charCodeAt(i + 1);
-        if (d >= 0xdc00 && d < 0xe000) {
-          c = (c - 0xd800) * 0x400 + d - 0xdc00 + 0x10000;
-          i++;
-        }
-      }
-      chars++;
-      if (isSpace(c)) { inWord = false; continue; }
-      if (c !== 0xa0 && c !== 0x2007 && c !== 0x202f) ns++;
-      if (isAsian(c)) { words++; inWord = false; continue; }
-      if (!inWord) { words++; inWord = true; }
-    }
-    this.here += chars - this.chars;
-    this.words = words;
-    this.chars = chars;
-    this.noSpaces = ns;
-    this.inWord = inWord;
-  }
-
-  /** A tab or a line break: a character, ends the word. */
-  gap() {
-    this.chars++;
-    this.here++;
-    this.inWord = false;
-  }
-
-  /** The end of a paragraph. */
-  end() {
-    if (this.here > 0) this.paras++;
-    this.here = 0;
-    this.inWord = false;
-  }
-}
 
 /** The text of [a, e) of paragraph p into t (budget: see walk). */
 function para(t, p, a, e, budget) {
@@ -118,8 +54,8 @@ function para(t, p, a, e, budget) {
     if (x.kind === 'tab' || x.kind === 'br') t.gap();
     else if (x.kind === 'raw' && x.level === 'p' && x.node) {
       // (a link, an insertion, a field, a content control...: the
-      // same walk as a table's)
-      if (!walk(t, x.node, budget)) budget.partial = true;
+      // same walk as a kept block's)
+      xml(t, x.node, budget);
     } else {
       const h = hyphenText(x);
       if (h) t.text(h);
@@ -175,6 +111,23 @@ function walk(t, top, budget) {
   return true;
 }
 
+/** The XML of node into t, unless the budget ran out. */
+function xml(t, node, budget) {
+  if (!budget.partial && !walk(t, node, budget)) budget.partial = true;
+}
+
+/** The whole of block b into t: a typed table by ./Walk (see the
+ *  header), a kept block by its XML. */
+function block(t, b, budget) {
+  if (b.type === 'p') return para(t, b, 0, b.text.length, budget);
+  if (b.type === 'opaque') return xml(t, b.node, budget);
+  if (b.type !== 'tbl') return;
+  forEachIn([b], [], (x) => {
+    if (x.type !== 'tbl') block(t, x, budget);
+    else for (const m of loose(x)) xml(t, m.node, budget);
+  });
+}
+
 /** The lines of item it from offset a to e (the whole when all). */
 function linesOf(it, a, e) {
   if (!it || !it.lines) return 0;
@@ -186,34 +139,31 @@ function linesOf(it, a, e) {
 
 /** See the header. */
 export function count(doc, sel, L) {
-  const range = sel && !collapsed(sel) ? orderedPos(doc, sel) : null;
+  const range = sel && !collapsed(sel) && orderedPos(doc, sel);
   const t = new Tally();
   const budget = {left: NODE_LIMIT, partial: false};
   let lines = L ? 0 : null;
-  const secs = doc.sections;
-  const s0 = range ? range.f.s : 0, s1 = range ? range.t.s
-    : secs.length - 1;
-  for (let s = s0; s <= s1; s++) {
-    const bs = secs[s].blocks;
-    const i0 = range && s === range.f.s ? range.f.i : 0;
-    const i1 = range && s === range.t.s ? range.t.i : bs.length - 1;
-    for (let i = i0; i <= i1; i++) {
-      const b = bs[i];
-      const first = range && s === range.f.s && i === range.f.i;
-      const last = range && s === range.t.s && i === range.t.i;
-      if (b.type === 'p') {
-        const a = first ? range.from.off : 0;
-        const e = last ? range.to.off : b.text.length;
-        para(t, b, a, e, budget);
-        if (L) lines += linesOf(L.byId.get(b.id), a, e);
-        continue;
-      }
-      // a kept block counts when the selection holds it
-      if (range && ((first && range.from.off > 0) ||
-        (last && range.to.off < 1))) continue;
-      if (!budget.partial && !walk(t, b.node, budget)) {
-        budget.partial = true;
-      }
+  const add = (b, a, e) => {
+    if (b.type === 'tbl' && L) {
+      // (a typed table's cells' lines, nested tables' too)
+      forEachIn([b], [], (x) => {
+        if (x.type === 'p') {
+          lines += linesOf(L.byId.get(x.id), 0, Infinity);
+        }
+      });
+    }
+    if (b.type !== 'p') return block(t, b, budget);
+    para(t, b, a, e, budget);
+    if (L) lines += linesOf(L.byId.get(b.id), a, e);
+  };
+  if (range) {
+    // the selection's blocks at every depth (./SelShape covered: a
+    // 'cells' rectangle its cells, a 'mixed' range the touched rows)
+    for (const x of covered(doc, sel)) add(x.b, x.from, x.to);
+  } else {
+    for (const sec of doc.sections) {
+      for (const b of sec.blocks) add(b, 0, b.type === 'p'
+        ? b.text.length : 1);
     }
   }
   const out = {words: t.words, chars: t.chars,

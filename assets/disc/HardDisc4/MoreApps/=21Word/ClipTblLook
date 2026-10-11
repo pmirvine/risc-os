@@ -1,0 +1,118 @@
+// ClipTblLook - what ./ClipReadTable reads of a pasted table's and
+// cells' attributes and styles (Batch C6.3, D28): spans, widths,
+// shading, borders. The HTML is untrusted: only these attributes
+// (colspan rowspan width bgcolor border) and style declarations
+// (width, background-color, background, border...) are read, each
+// value checked (./ClipCss decls: url(, expression... ignored whole).
+//
+//   spanOf(v) -> 1..63   a colspan / rowspan attribute: an integer
+//       1..MAX_COLS written as digits (spaces around allowed),
+//       anything else 1 (0, 64, 65535, 1e9, abc...)
+//   lengthTw(v, baseTw, bare?) -> twips 1..MAX_TW | undefined
+//       a CSS length: px (15 twips), pt (20), in (1440), % of baseTw;
+//       bare: a number alone is px (an HTML width attribute)
+//   widthsOf(table, places, cols, textTw?) -> the grid (twips)
+//       places [{el, c, w}] the cells (grid column c, w columns).
+//       A column takes the width of its first one-column cell that
+//       gives one (style width, else the width attribute; % of the
+//       table's width); the others share what is left of the
+//       table's width (style width, else width attribute, else
+//       textTw) equally, at least 360 twips each; scaled down to
+//       MAX_TW in all. textTw: an integer 1..MAX_TW, else TEXT_TW.
+//   lookOf(cell) -> {fill?, border}  fill: the cell's
+//       background-color (or background, Word's: a colour in it; or
+//       a bgcolor attribute) as RRGGBB; border: true when a border
+//       style other than none / hidden (and not 0 wide) is given on
+//       any side (border, border-top..., border-style...; Word's
+//       mso- ones are not read), false when only such none ones
+//       are, undefined without border declarations
+//   tableBorder(table) -> boolean  its border attribute is 1 or more
+//       (or empty, as browsers read it): every cell without border
+//       declarations has borders
+//   TEXT_TW 9026: A4 less 1 inch margins
+// Pure: no desktop services.
+import {decls, colour} from './ClipCss';
+import {attrOf as attr} from './ClipDom';
+import {MAX_COLS, MAX_TW} from './TblCheck';
+
+export const TEXT_TW = 9026;
+
+const UNIT = {px: 15, pt: 20, in: 1440};
+const STYLES = new RegExp('\\b(solid|dashed|dotted|double|groove|' +
+  'ridge|inset|outset)\\b');
+const ZERO = /(^|\s)0(\.0+)?([a-z]+)?(\s|$)/;
+const SIDES = /^border(-(top|right|bottom|left))?(-style)?$/;
+
+
+/** See the header. */
+export function spanOf(v) {
+  if (typeof v !== 'string' || !/^\s*\d{1,2}\s*$/.test(v)) return 1;
+  const n = Number(v);
+  return n >= 1 && n <= MAX_COLS ? n : 1;
+}
+
+/** See the header. */
+export function lengthTw(v, baseTw, bare = false) {
+  if (typeof v !== 'string') return undefined;
+  const m = /^(\d{1,6}(?:\.\d{1,4})?)(px|pt|in|%)?$/.exec(
+    v.trim().toLowerCase());
+  if (!m || (!m[2] && !bare)) return undefined;
+  const n = Number(m[1]);
+  const tw = m[2] === '%' ? baseTw * n / 100 : n * UNIT[m[2] || 'px'];
+  return tw >= 1 ? Math.min(MAX_TW, Math.round(tw)) : undefined;
+}
+
+/** el's width in twips (style, else attribute), or undefined. */
+function widthOf(el, baseTw) {
+  let w;
+  for (const [k, v] of decls(attr(el, 'style'))) {
+    if (k === 'width') w = lengthTw(v, baseTw);
+  }
+  return w !== undefined ? w : lengthTw(attr(el, 'width') || '',
+    baseTw, true);
+}
+
+/** See the header. */
+export function lookOf(el) {
+  let fill = colour(attr(el, 'bgcolor') || ''), border;
+  for (const [k, v] of decls(attr(el, 'style'))) {
+    if (k === 'background-color' || k === 'background') {
+      const c = colour(v) || v.split(/\s+/).map(colour).find(Boolean);
+      if (c) fill = c;
+    } else if (SIDES.test(k)) {
+      const s = v.toLowerCase();
+      const on = STYLES.test(s) && !ZERO.test(s);
+      border = border || on;
+    }
+  }
+  return {fill, border};
+}
+
+/** See the header. */
+export function tableBorder(el) {
+  const v = attr(el, 'border');
+  if (v === null) return false;
+  // trimmed first: two runs of white space round an optional group
+  // backtrack in O(n^2) (C6 fix A1)
+  const s = v.trim();
+  return s === '' || /^[1-9]\d{0,5}$/.test(s);
+}
+
+/** See the header. */
+export function widthsOf(el, places, cols, textTw) {
+  const tw = Number.isInteger(textTw) && textTw >= 1 &&
+    textTw <= MAX_TW ? textTw : TEXT_TW;
+  const base = widthOf(el, tw) || tw;
+  const ws = Array(cols).fill(undefined);
+  for (const x of places) {
+    if (x.w === 1 && ws[x.c] === undefined)
+      ws[x.c] = widthOf(x.el, base);
+  }
+  const known = ws.reduce((a, w) => a + (w || 0), 0);
+  const u = ws.filter((w) => w === undefined).length;
+  const share = u ? Math.max(360, Math.floor((base - known) / u)) : 0;
+  const grid = ws.map((w) => (w === undefined ? share : w));
+  const sum = grid.reduce((a, w) => a + w, 0);
+  return sum <= MAX_TW ? grid
+    : grid.map((w) => Math.max(1, Math.floor(w * MAX_TW / sum)));
+}

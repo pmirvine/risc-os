@@ -1,0 +1,196 @@
+// TblConvert - Convert > Text to table (Batch C6.4, D29), pure: the
+// table made of paragraphs. ./TblConvertCmd puts it in a Document.
+//
+//   sepChar(sep) -> the separator character, or null for 'para'
+//       sep is 'para' (Paragraphs: no separator), 'tab', 'comma' or
+//       Other: ONE code point (a string of one code point; U+FFFC,
+//       the placeholder of pictures and fields, is none, nor is a
+//       control character or a lone surrogate: ./Edit clean's rule,
+//       C6 fix B5); RangeError for anything else (message
+//       'control separator' for those)
+//   defaultSep(paras) -> 'tab' when every paragraph has a tab, else
+//       'comma' when every one has a comma, else 'para' (Word's
+//       rule; no paragraphs: 'para')
+//   colsFor(paras, sep) -> the columns the text makes: 1 for 'para',
+//       else the most pieces a paragraph has (its separators + 1),
+//       1..MAX_COLS
+//   straddles(paras, sep, open?) -> whether a complex field
+//       (w:fldChar begin .. end) would be cut into two cells or
+//       rows: a separator between its begin and end, a paragraph end
+//       (a row or cell boundary for every separator, Paragraphs
+//       too) while one is open, an end with no begin before it in
+//       the paragraphs, or `open` (a field open where they start:
+//       ./TblConvertCmd fieldOpen) (C6 fix B2: a table of contents
+//       selected and Separate at Paragraphs). The conversion is
+//       refused. A hyperlink, a picture, a simple
+//       field or a bookmark is ONE character of text (U+FFFC), so
+//       a separator is never inside it, and a bookmark whose ends
+//       are in two cells stays a pair (Word's own bookmarks cross
+//       cells). Only the separator characters outside fields count.
+//   fldType(inline) -> 'begin' | 'separate' | 'end' | ''  the type of
+//       a w:fldChar inline (any prefix)
+//   textToTable(paras, {sep?, cols?, textTw?, ts?, strict?}) -> table
+//       a NEW typed table of the top-level paragraphs (the given
+//       ones are not changed). sep default defaultSep, cols default
+//       colsFor (RangeError unless a whole number 1..MAX_COLS).
+//       Paragraphs: the paragraphs fill the rows cols at a time (the
+//       last row padded). Any other separator: a paragraph a row,
+//       cut at every separator (./OpsUtil cut: runs and inlines go
+//       with their text), the separators dropped, a piece a cell;
+//       short rows padded with empty cells, a long row's extra
+//       pieces JOINED into the last cell, separators kept in it
+//       (nothing is lost). Each cell paragraph is new (fresh id,
+//       extraP []) with the source paragraph's pPr and pStyle; an
+//       empty piece or a padding cell is ./TblEdit emptyLike of its
+//       row's paragraph (the last one in Paragraphs) without its
+//       numPr (an empty cell shows no list label: C6 fix B5; a
+//       paragraph empty itself in Paragraphs keeps it). The table is
+//       Insert > Table's (./TblInsert build: Table Grid when ts
+//       {id} is given else direct borders, tblW auto, tblLook 04A0;
+//       strict spells for Strict): equal columns of textTw twips
+//       (default 9026) in all. RangeError for no paragraphs, a block
+//       that is not a paragraph, a bad sep or cols, or a field
+//       across a separator.
+// Pure: no desktop services.
+import {newPara, OBJ} from './Model';
+import {cut} from './OpsUtil';
+import {emptyLike} from './TblEdit';
+import {build, widths} from './TblInsert';
+import {localName} from './Kinds';
+import {MAX_COLS, MAX_TW} from './TblCheck';
+
+const fail = (m) => { throw new RangeError(m); };
+const isP = (b) => !!b && typeof b === 'object' && b.type === 'p';
+const NAMED = {tab: '\t', comma: ','};
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** See the header. */
+export function sepChar(sep) {
+  if (sep === 'para') return null;
+  if (typeof sep !== 'string') fail('bad separator');
+  if (Object.hasOwn(NAMED, sep)) return NAMED[sep];
+  if ([...sep].length !== 1 || sep === OBJ) fail('bad separator');
+  if (CONTROL.test(sep) || !sep.isWellFormed())
+    fail('control separator');
+  return sep;
+}
+
+/** See the header. */
+export function defaultSep(paras) {
+  if (!paras.length) return 'para';
+  if (paras.every((p) => p.text.includes('\t'))) return 'tab';
+  return paras.every((p) => p.text.includes(',')) ? 'comma' : 'para';
+}
+
+/** The [a, b) ranges of p's text between the separators ch. */
+function pieces(text, ch) {
+  const out = [];
+  let a = 0;
+  for (let k = text.indexOf(ch); k >= 0; k = text.indexOf(ch, a)) {
+    out.push([a, k]);
+    a = k + ch.length;
+  }
+  out.push([a, text.length]);
+  return out;
+}
+
+/** See the header. */
+export function colsFor(paras, sep) {
+  const ch = sepChar(sep);
+  if (ch === null) return 1;
+  let n = 1;
+  for (const p of paras) {
+    n = Math.max(n, pieces(p.text, ch).length);
+  }
+  return Math.min(n, MAX_COLS);
+}
+
+/** See the header. */
+export function fldType(x) {
+  if (!x || x.kind !== 'raw' || !x.node ||
+    localName(x.node) !== 'fldChar') return '';
+  const attrs = Array.isArray(x.node.attrs) ? x.node.attrs : [];
+  for (const [k, v] of attrs) {
+    if (String(k).split(':').pop() === 'fldCharType') return String(v);
+  }
+  return '';
+}
+
+/** See the header. */
+export function straddles(paras, sep, open = false) {
+  const ch = sepChar(sep);
+  if (open) return true;
+  let depth = 0;
+  for (const p of paras) {
+    for (let k = 0; k < p.text.length; k++) {
+      if (p.text[k] === OBJ) {
+        const t = fldType(p.inlines[k]);
+        if (t === 'begin') depth++;
+        else if (t === 'end' && depth-- === 0) return true;
+      } else if (depth && ch !== null && p.text.startsWith(ch, k)) {
+        return true;
+      }
+    }
+    if (depth) return true;
+  }
+  return false;
+}
+
+/** An empty cell paragraph like p's, in no list. */
+function blank(p) {
+  const e = emptyLike(p);
+  if (!e.pPr || e.pPr.numPr === undefined) return e;
+  const {numPr, ...pPr} = e.pPr;
+  return {...e, pPr};
+}
+
+/** A new paragraph of src's text [a, b): its pPr, pStyle, runs. */
+function cellPara(src, a, b) {
+  if (a >= b) return blank(src);
+  const c = cut(src, a, b);
+  const o = {runs: c.runs, inlines: c.inlines, pPr: src.pPr};
+  if (src.pStyle !== undefined) o.pStyle = src.pStyle;
+  return newPara(c.text, o);
+}
+
+/** The cells (one paragraph each) of row i: a paragraph, cut. */
+function rowOf(p, ch, cols) {
+  let rs = pieces(p.text, ch);
+  if (rs.length > cols) {
+    rs = [...rs.slice(0, cols - 1), [rs[cols - 1][0], p.text.length]];
+  }
+  return Array.from({length: cols}, (_, j) => (rs[j]
+    ? cellPara(p, rs[j][0], rs[j][1]) : blank(p)));
+}
+
+/** See the header. */
+export function textToTable(paras, o = {}) {
+  if (!Array.isArray(paras) || !paras.length || !paras.every(isP)) {
+    fail('no paragraphs');
+  }
+  const sep = o.sep === undefined ? defaultSep(paras) : o.sep;
+  const ch = sepChar(sep);
+  const cols = o.cols === undefined ? colsFor(paras, sep) : o.cols;
+  if (!Number.isInteger(cols) || cols < 1 || cols > MAX_COLS) {
+    fail('bad columns');
+  }
+  if (straddles(paras, sep)) fail('a field runs across a separator');
+  let rows, fill;
+  if (ch === null) {
+    rows = Math.ceil(paras.length / cols);
+    const last = paras[paras.length - 1];
+    fill = (i, j) => {
+      const p = paras[i * cols + j];
+      return [!p ? blank(last) : p.text ? cellPara(p, 0, p.text.length)
+        : emptyLike(p)];
+    };
+  } else {
+    rows = paras.length;
+    const made = paras.map((p) => rowOf(p, ch, cols));
+    fill = (i, j) => [made[i][j]];
+  }
+  const tw = Math.min(Math.max(o.textTw >= 1 ? Math.floor(o.textTw)
+    : 9026, cols), MAX_TW);
+  return build({rows, ws: widths(cols, tw), tpl: null,
+    ts: o.ts || null, strict: !!o.strict, fixed: false, fill});
+}

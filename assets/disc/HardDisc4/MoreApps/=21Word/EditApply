@@ -19,7 +19,11 @@
 //                         forms next to a section break remove it
 //                         first (./SectBreak deleteBreakAt: a step
 //                         of its own; the next press merges the
-//                         paragraphs as before)
+//                         paragraphs as before). The table
+//                         commands (./TblCmdCols TABLE: rows,
+//                         columns, select, distribute, with
+//                         {arg}: {L} the layout) run there: null
+//                         (a beep) where they cannot apply
 //   stepEnd(doc, ops, oldL) -> {id, off} | null: the caret after an
 //                         undo or redo whose 'change' event carried
 //                         ops (./Document); oldL: the layout from
@@ -39,12 +43,27 @@
 //                             differs from what it replaced (the
 //                             block of that id in oldL): undoing
 //                             Enter puts the caret where the
-//                             paragraph was split
+//                             paragraph was split; a table (R18,
+//                             Batch C3.4): the start of the first
+//                             paragraph of its first row that is not
+//                             the very row of oldL's table at that
+//                             index (else row 0), from its first
+//                             cell on (a table command undone: the
+//                             caret in the rows it changed); when
+//                             every row is oldL's but some of its
+//                             last are gone (Tab's new row undone),
+//                             the end of its last paragraph
 //   splitBlock                the start of the new (second) part
 //   insertBlock(s)            the start of the first block put in
+//                             (a typed table: its first paragraph,
+//                             R18's row 0)
 //   removeBlock(s)            the end of the block before the gap
 //                             (the start of the one after when the
-//                             gap is at the section's start)
+//                             gap is at the section's start); a
+//                             typed table there: the end of its last
+//                             paragraph (the start of its first),
+//                             where TB10's Backspace (Delete) put
+//                             the caret, never its edge (C3 fix wave)
 //   mergeBlock, setProps      the start of that paragraph
 //   splitSection, mergeSection  the start of the paragraph at the
 //                             split (the one that ends the first
@@ -61,10 +80,14 @@ import {deleteForward, deleteWordBack, deleteWordForward}
 import {listTab, listShiftTab, listBack, usesShiftTab}
   from './EditList';
 import {blockId} from './DocPos';
+import {at as walkAt} from './Walk';
+import {isPath, sib} from './Path';
 import {collapsed} from './Selection';
 import {afterSpace} from './AutoList';
 import {insert} from './InsertApply';
 import {deleteBreakAt} from './SectBreak';
+import {rowPos, firstPos, lastPos} from './TblPos';
+import {TABLE} from './TblCmdCols';
 
 const COMMANDS = {
   enter: splitPara,
@@ -82,6 +105,8 @@ const SKIP = new Set(['setDocPart', 'setSection']);
 
 /** See the header. */
 export function run(id, d, typing, sel, {autoList = false, arg} = {}) {
+  if (Object.hasOwn(TABLE, id))
+    return typing.command(() => TABLE[id](d, sel, arg));
   const fn = Object.hasOwn(COMMANDS, id) ? COMMANDS[id] : null;
   if (!fn) return insert(id, d, typing, sel, arg);
   if (id === 'shiftTab' && !usesShiftTab(d.doc, sel)) return undefined;
@@ -130,11 +155,10 @@ function mergeEnd(doc, s, oldL) {
   return null;
 }
 
-const blockAt = (doc, at) => {
-  if (!Array.isArray(at)) return null;
-  const s = doc.sections[at[0]];
-  return (s && s.blocks[at[1]]) || null;
-};
+const blockAt = (doc, at) => walkAt(doc, at);
+const isTbl = (b) => b.type === 'tbl' && Array.isArray(b.rows);
+/** The path d blocks on in the same container (null: not a path). */
+const next = (at, d) => (isPath(at) ? sib(at, d) : null);
 const start = (b) => (b ? {id: blockId(b), off: 0} : null);
 const end = (b) => (b ? {id: blockId(b),
   off: b.type === 'p' ? b.text.length : 1} : null);
@@ -148,6 +172,19 @@ function common(a, b) {
   if (i > 0 && i < a.length && (a.charCodeAt(i) & 0xFC00) === 0xDC00)
     i--;
   return i;
+}
+
+/** R18: the first row of t that is not old's row at its index (else
+ *  row 0), its first paragraph (./TblPos rowPos); every row old's
+ *  but old longer: the end of t's last paragraph; t's edge if none. */
+function tableStep(t, old) {
+  const rs = old && old.type === 'tbl' ? old.rows : null;
+  let r = 0;
+  while (rs && r < t.rows.length && t.rows[r] === rs[r]) r++;
+  if (rs && r === t.rows.length && rs.length > r) {
+    return lastPos(t) || start(t);
+  }
+  return rowPos(t, r < t.rows.length ? r : 0) || start(t);
 }
 
 /** See the header. */
@@ -168,16 +205,20 @@ export function stepEnd(doc, ops, oldL) {
       const o = b && oldL && oldL.byId.get(blockId(b));
       if (b && b.type === 'p' && o && o.block.type === 'p')
         return {id: b.id, off: common(o.block.text, b.text)};
+      if (b && b.type === 'tbl') return tableStep(b, o && o.block);
       return start(b);
     }
     case 'splitBlock':
-      return start(blockAt(doc, [op.block[0], op.block[1] + 1]));
-    case 'insertBlock': case 'insertBlocks':
-      return start(blockAt(doc, op.at));
+      return start(blockAt(doc, next(op.block, 1)));
+    case 'insertBlock': case 'insertBlocks': {
+      const b = blockAt(doc, op.at);
+      return (b && isTbl(b) && firstPos(b)) || start(b);
+    }
     case 'removeBlock': case 'removeBlocks': {
-      const [s, i] = op.at || [];
-      return end(blockAt(doc, [s, i - 1])) ||
-        start(blockAt(doc, [s, i]));
+      const b = blockAt(doc, next(op.at, -1));
+      if (b) return (isTbl(b) && lastPos(b)) || end(b);
+      const a = blockAt(doc, op.at);
+      return (a && isTbl(a) && firstPos(a)) || start(a);
     }
     case 'mergeBlock': case 'setProps':
       return start(blockAt(doc, op.block));

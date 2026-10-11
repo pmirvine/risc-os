@@ -1,0 +1,164 @@
+// TblSplit - split a cell (Batch C4.3, D25; split out of ./TblMerge,
+// which re-exports it) as a pure function on a Table, in ./TblEdit's
+// manner: a NEW table and grid array, every row, cell and block not
+// changed shared, no tcPr / trPr object changed in place (fields set
+// with ./TblNorm prWith); g is the table's ./TblGrid gridOf (computed
+// when not given).
+//
+//   splitCell(t, g, {r, k}, {cols, rows}) -> t' | null  cell (r, k)
+//       (a continue cell: its merge) split into cols x rows cells
+//       (D25, TB14). Columns: a span of at least cols is divided
+//       (the remainder to the first ones), the grid unchanged;
+//       otherwise lines at equal widths are added to the grid
+//       (twips rounded; a line already there is used), and every
+//       other cell across the new columns, gridBefore and gridAfter
+//       grow their span. Rows: a cell merged over h rows is divided
+//       into rows parts of h / rows rows each (null unless rows
+//       divides h); a plain cell gets rows - 1 new rows after its
+//       row, their other cells vMerge continue (the row's own cell
+//       made restart unless merged already: the merge grows), trPr
+//       copied (tblHeader only inside a header run). The content
+//       stays in the first new cell; the others get emptyLike
+//       paragraphs of its first (fresh ids: reserve the document's
+//       first); their tcW dxa of their columns if the cell's was
+//       (or was raw: ./TblNorm rawW).
+//       The same table for 1 x 1; null for cols / rows not 1..63 /
+//       1..MAX_ROWS, past ./TblCheck MAX_COLS grid columns or
+//       MAX_ROWS rows (R16); RangeError for no such cell. It starts
+//       from ./TblNorm unstray (a stray continue cell beside the new
+//       rows is written restart, never joined to a merge).
+// Pure: no desktop services.
+import {gridOf} from './TblGrid';
+import {MAX_COLS, MAX_ROWS} from './TblCheck';
+import {emptyLike, firstPara} from './TblEdit';
+import {tcPrWith, trPrWith} from './TblEditCols';
+import {isDxa, sum} from './TblEditDist';
+import {prWith, unstray, rawW} from './TblNorm';
+
+const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const merged = (c) => c.tcPr.vMerge === 'restart' ||
+  c.tcPr.vMerge === 'continue';
+
+/** How the columns C0..C1 (half-open) of grid become n pieces (see
+ *  the header): {grid, B (an old column line -> its new index), P
+ *  (the n + 1 piece lines)}, or null past MAX_COLS. */
+function cuts(grid, C0, C1, n) {
+  const w = C1 - C0;
+  if (w >= n) {
+    const P = [C0];
+    for (let i = 0; i < n; i++) {
+      P.push(P[i] + Math.floor(w / n) + (i < w % n ? 1 : 0));
+    }
+    return {grid: grid.slice(), B: (c) => c, P};
+  }
+  const X = [0];
+  for (const x of grid) X.push(X[X.length - 1] + x);
+  const x0 = X[C0], W = X[C1] - x0, lines = [];
+  for (let c = C0 + 1; c < C1; c++) lines.push({x: X[c], old: c});
+  for (let i = 1; i < n; i++) {
+    const x = x0 + Math.round(i * W / n);
+    const at = lines.find((l) => l.old !== undefined && l.x === x &&
+      !l.cut);
+    if (at) at.cut = true;
+    else lines.push({x, cut: true});
+  }
+  lines.sort((a, b) => a.x - b.x ||
+    (a.old === undefined) - (b.old === undefined));
+  const added = lines.length + 1 - w;
+  if (grid.length + added > MAX_COLS) return null;
+  const subs = [], at = new Map(), P = [C0];
+  let prev = x0;
+  lines.forEach((l, i) => {
+    subs.push(l.x - prev);
+    prev = l.x;
+    if (l.old !== undefined) at.set(l.old, C0 + i + 1);
+    if (l.cut) P.push(C0 + i + 1);
+  });
+  subs.push(X[C1] - prev);
+  P.push(C0 + subs.length);
+  const B = (c) => (c <= C0 ? c : c >= C1 ? c + added : at.get(c));
+  return {grid: [...grid.slice(0, C0), ...subs, ...grid.slice(C1)], B,
+    P};
+}
+
+/** Row row (grid row gr) with its spans, gridBefore and gridAfter
+ *  through B (the same row when none changes). */
+function remap(row, gr, B) {
+  let cells = row.cells, trPr = row.trPr;
+  gr.cells.forEach((x, j) => {
+    const n = B(x.c1) - B(x.c0);
+    if (n === x.c1 - x.c0) return;
+    if (cells === row.cells) cells = cells.slice();
+    cells[j] = {...cells[j], tcPr: tcPrWith(cells[j].tcPr, n)};
+  });
+  const end = gr.cells.length ? gr.cells[gr.cells.length - 1].c1
+    : gr.before;
+  const nb = B(gr.before), na = B(end + gr.after) - B(end);
+  if (nb !== gr.before || na !== gr.after) {
+    trPr = trPrWith(trPr, nb, na);
+  }
+  return cells === row.cells && trPr === row.trPr ? row
+    : {...row, cells, trPr};
+}
+
+const header = (row) => !!row && !!row.trPr &&
+  row.trPr.tblHeader === true;
+
+/** See the header. */
+export function splitCell(t, g, {r, k} = {}, {cols, rows: nr} = {}) {
+  g = g || gridOf(t);
+  const gc = Number.isInteger(r) && r >= 0 && g.rows[r] &&
+    Number.isInteger(k) && k >= 0 ? g.rows[r].cells[k] : undefined;
+  if (!gc) throw new RangeError('no such cell');
+  if (!isInt(cols, 1, MAX_COLS) || !isInt(nr, 1, MAX_ROWS)) return null;
+  if (cols === 1 && nr === 1) return t;
+  t = unstray(t, g);
+  const R0 = gc.top[0], top = g.rows[R0].cells[gc.top[1]];
+  const h = top.rowSpan;
+  if (h > 1 ? h % nr !== 0 : t.rows.length + nr - 1 > MAX_ROWS) {
+    return null;
+  }
+  const cut = cuts(g.grid, top.c0, top.c1, cols);
+  if (!cut) return null;
+  const {grid, B, P} = cut, per = h > 1 ? h / nr : 1;
+  /** The cols pieces of cell c in the i-th row of the merge. */
+  const pieces = (c, i, fresh) => P.slice(1).map((p1, j) => {
+    const p0 = P[j], tcPr = prWith(tcPrWith(c.tcPr, p1 - p0,
+      isDxa(c.tcPr.tcW) || rawW(c.tcPr) ? sum(grid, p0, p1)
+        : undefined), {vMerge:
+      per > 1 ? (i % per ? 'continue' : 'restart') : undefined});
+    return j || fresh ? {tcPr, blocks: [emptyLike(firstPara(c))],
+      attrs: [], lead: []} : {...c, tcPr};
+  });
+  const out = [];
+  t.rows.forEach((row, x) => {
+    const gr = g.rows[x];
+    if (x < R0 || x >= R0 + h) {
+      out.push(remap(row, gr, B));
+      return;
+    }
+    const j = gr.cells.findIndex((y) => y.c0 === top.c0);
+    const base = remap(row, gr, B), cells = base.cells.slice();
+    cells.splice(j, 1, ...pieces(row.cells[j], x - R0, false));
+    if (h > 1 || nr === 1) {
+      out.push({...base, cells});
+      return;
+    }
+    // a plain cell into rows: its neighbours merged over the new rows
+    const own = base.cells.map((c, y) => (y === j || merged(c) ? c
+      : {...c, tcPr: prWith(c.tcPr, {vMerge: 'restart'})}));
+    own.splice(j, 1, ...cells.slice(j, j + cols));
+    out.push({...base, cells: own});
+    const trPr = header(row) && header(t.rows[x + 1]) ? base.trPr
+      : prWith(base.trPr, {tblHeader: undefined});
+    for (let n = 1; n < nr; n++) {
+      const add = base.cells.map((c) => ({tcPr: prWith(c.tcPr,
+        {vMerge: 'continue'}), blocks: [emptyLike(firstPara(c))],
+      attrs: [], lead: []}));
+      add.splice(j, 1, ...pieces(row.cells[j], 0, true));
+      out.push({trPr: {...trPr}, cells: add, attrs: [], lead: [],
+        tail: [], tblPrEx: null});
+    }
+  });
+  return {...t, grid, rows: out};
+}

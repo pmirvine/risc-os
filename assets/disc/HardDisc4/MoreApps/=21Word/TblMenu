@@ -1,0 +1,167 @@
+// TblMenu - the Table submenu of a document's window menu (after
+// Format; Batch C4.4, D30), and the Tab item of it and of Insert:
+//
+//   tblMenu(dw) -> a Menu
+//     Insert table...          the Insert Table box (./TblInsertBox)
+//     Insert >                 Rows above, Rows below, Columns to the
+//                              left, Columns to the right
+//     Delete >                 Rows, Columns, Table
+//     Select >                 Cell, Row, Column, Table
+//     Merge cells              the selected cells become one
+//     Split cells...          the Split cells box (./TblSplitBox)
+//     Split table  Ctrl+Shift+Enter   two tables, a paragraph between
+//     Distribute rows evenly, Distribute columns evenly
+//     Cell alignment >         Top, Centre, Bottom (vertical)
+//     Table properties...      the Table properties box (./TblBox)
+//     Convert >                Text to table... (shaded unless
+//                              paragraphs are selected: ./TblConvertCmd
+//                              textParas), Table to text... (shaded
+//                              outside a table); the Convert box
+//                              (./TblConvertBox)
+//     Tab  Ctrl+Tab            a tab character in the cell
+//   cellTabItem(dw) -> the Tab item (also in ./InsertMenu), for
+//       typing a tab in a cell when the browser keeps Ctrl-Tab for
+//       itself; the key is still Ctrl+Tab (./Keymap cellTab); live
+//       for a caret or text in one cell only (rectOf one)
+//
+// Every item but Insert table... is shaded when the selection is not
+// in a table (the caret in a cell, or a text selection inside one
+// cell, or cells selected: ./TblCmd rectOf), Merge cells also when
+// the selection is one cell or its cells cannot be made one
+// (./TblMerge); Insert table... when there is no selection. Each
+// runs view.run(id) (./EditApply, ./TblCmdCols TABLE: one undo step,
+// a beep when refused) or opens its box. Keys come from
+// ./Keymap labelFor (Word's Alt keys are not ours). Dotted lines
+// after Select >, Split table and Table properties... make four
+// groups: make, cells, sizes, Tab. dw.view is the window's
+// ./EditView.
+import {Menu} from 'riscos';
+import {keymap} from './Keymap';
+import {macLabel} from './MacKeys';
+import {rectOf} from './TblCmd';
+import {mergeCells} from './TblMerge';
+import {gridOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {tblInsertBox} from './TblInsertBox';
+import {tblSplitBox} from './TblSplitBox';
+import {tblBox} from './TblBox';
+import {tblConvertBox} from './TblConvertBox';
+import {textParas} from './TblConvertCmd';
+
+/** What the selection is in, worked out once per change of it. */
+function facts(v) {
+  let key = null, was = null;
+  return () => {
+    const sel = v.sel, st = v.d.stateId;
+    if (was && key.sel === sel && key.st === st) return was;
+    const x = sel ? rectOf(v.d.doc, sel) : null;
+    let merge = false;
+    if (x && !x.one) {
+      const t = walkAt(v.d.doc, x.at);
+      merge = !!t && !!mergeCells(t, gridOf(t), x);
+    }
+    key = {sel, st};
+    // (Tab: a caret or text in one cell; not cells selected, nor a
+    // selection from outside into a table: final-2 M8)
+    was = {table: !!x, merge, cell: !!x && x.one,
+      text: !!sel && !textParas(v.d.doc, sel).error};
+    return was;
+  };
+}
+
+const memo = new WeakMap();            // view -> its facts()
+const factsOf = (v) => {
+  if (!memo.has(v)) memo.set(v, facts(v));
+  return memo.get(v);
+};
+
+/** See the header. */
+export function cellTabItem(dw) {
+  const v = dw.view, f = factsOf(v);
+  return {text: 'Tab', key: macLabel(keymap.labelFor('cellTab'),
+    v.mac) || undefined,
+  shaded: () => !f().cell, action: () => {
+    if (f().cell) v.input('\t');
+  },
+  help: 'Put a tab character in the cell (the TAB key moves to the ' +
+    'next cell).'};
+}
+
+/** See the header. */
+export function tblMenu(dw) {
+  const v = dw.view, f = factsOf(v);
+  const k = (id) => macLabel(keymap.labelFor(id), v.mac) || undefined;
+  const no = () => !f().table;
+  const it = (text, id, help, dotted) => ({text, key: k(id),
+    shaded: no, action: () => v.run(id), help, dotted});
+  const sub = (text, items, help, dotted) => ({text, shaded: no,
+    dotted, submenu: () => new Menu(text, items), help});
+  return new Menu('Table', [
+    {text: 'Insert table...', shaded: () => !v.sel,
+      action: () => { tblInsertBox(dw); },
+      help: 'Put a table in at the caret: you say how many columns ' +
+        'and rows.'},
+    sub('Insert', [
+      it('Rows above', 'rowsAbove', 'Put rows in above the ' +
+        'selected rows: as many as are selected.'),
+      it('Rows below', 'rowsBelow', 'Put rows in below the ' +
+        'selected rows: as many as are selected.'),
+      it('Columns to the left', 'colsLeft', 'Put columns in to the ' +
+        'left of the selected columns: as many as are selected.'),
+      it('Columns to the right', 'colsRight', 'Put columns in to ' +
+        'the right of the selected columns: as many as are selected.'),
+    ], 'Put rows or columns into the table.'),
+    sub('Delete', [
+      it('Rows', 'deleteRows', 'Remove the selected rows, and what ' +
+        'is in them.'),
+      it('Columns', 'deleteCols', 'Remove the selected columns, and ' +
+        'what is in them.'),
+      it('Table', 'deleteTable', 'Remove the whole table, and what ' +
+        'is in it.'),
+    ], 'Remove rows, columns or the whole table.'),
+    sub('Select', [
+      it('Cell', 'selectCell', 'Select what is in this cell.'),
+      it('Row', 'selectRow', 'Select the row the caret is in.'),
+      it('Column', 'selectColumn', 'Select the column the caret ' +
+        'is in.'),
+      it('Table', 'selectTable', 'Select the whole table.'),
+    ], 'Select a cell, a row, a column or the whole table.', true),
+    {text: 'Merge cells', key: k('mergeCells'),
+      shaded: () => !f().merge, action: () => v.run('mergeCells'),
+      help: 'Make the selected cells one cell: what is in them goes ' +
+        'in it, paragraph after paragraph.'},
+    {text: 'Split cells...', shaded: no,
+      action: () => { tblSplitBox(dw); },
+      help: 'Split the cell the caret is in (or the selected cells, ' +
+        'made one first) into columns and rows.'},
+    it('Split table', 'splitTable', 'Make two tables of one, at ' +
+      'the row the caret is in, with a paragraph between them.', true),
+    it('Distribute rows evenly', 'distributeRows', 'Make the ' +
+      'selected rows (or all of them) as tall as the tallest.'),
+    it('Distribute columns evenly', 'distributeCols', 'Make the ' +
+      'selected columns (or all of them) the same width.'),
+    sub('Cell alignment', [
+      it('Top', 'cellTop', 'Put the text at the top of the cell.'),
+      it('Centre', 'cellCenter', 'Put the text in the middle of ' +
+        'the height of the cell.'),
+      it('Bottom', 'cellBottom', 'Put the text at the bottom of ' +
+        'the cell.'),
+    ], 'Where the text sits in the height of the selected cells.'),
+    {text: 'Table properties...', shaded: no,
+      action: () => { tblBox(dw); },
+      help: 'The width, alignment and indent of the table, the ' +
+        'height of rows, the width of columns and cells.'},
+    {text: 'Convert', dotted: true, shaded: () => !f().text && no(),
+      submenu: () => new Menu('Convert', [
+      {text: 'Text to table...', shaded: () => !f().text,
+        action: () => { tblConvertBox(dw, 'totable'); },
+        help: 'Turn the selected paragraphs into a table: you say ' +
+          'what separates the cells.'},
+      {text: 'Table to text...', shaded: no,
+        action: () => { tblConvertBox(dw, 'totext'); },
+        help: 'Turn the table the caret is in into text: you say ' +
+          'what separates the cells.'},
+    ]), help: 'Turn text into a table, or a table into text.'},
+    cellTabItem(dw),
+  ]);
+}

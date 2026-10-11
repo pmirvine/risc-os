@@ -1,0 +1,150 @@
+// ClipPasteTbl - the table rules of a paste (Batch C6.2, D28, TB15),
+// for ./ClipPaste.
+//
+//   fitDepth(blocks, depth) -> blocks  blocks to go into a container
+//       whose blocks are inside `depth` tables (./Path depthOf: 0 at
+//       top level): a table that would be nested deeper than
+//       MAX_DEPTH (./TblCheck: 8) is its text instead (./Walk
+//       flatText: a plain paragraph per row, its cells' text joined
+//       by tabs, as R10), never refused; the rest shared (the same
+//       list when nothing changes)
+//   overShape(doc, sel, blocks) -> shape | null  the cells shape
+//       (./SelShape) a paste of blocks overwrites: sel's shape is
+//       'cells' and blocks are one table block; null otherwise (the
+//       paste replaces the selection as before)
+//   landing(doc, shape, block) -> [{r, k, from}]  the rectangle's
+//       cells (r, k in the target table) the pasted table block
+//       overwrites, each with the pasted cell `from`: the pasted
+//       cell starting at row r - r0, grid column c - c0 (its top-left
+//       on the rectangle's), for each cell of the rectangle that is
+//       not a hidden vMerge continue cell (./TblGrid) and has one;
+//       pasted cells beyond the rectangle are dropped, pasted
+//       continue cells give nothing (the cell keeps its contents)
+//   landed(doc, shape, block) -> block  the table block with only
+//       what lands: the other cells' blocks [] and no tblStyle (the
+//       target table keeps its own), so what a paste makes in the
+//       target (lists, pictures, table styles) is what lands
+//   overwrite(d, shape, block) -> pos | null  those cells' contents
+//       (their blocks) replaced by the pasted cells' blocks with
+//       fresh ids (./ClipCleanTbl freshBlocks), as fitDepth fits
+//       them; no row or column added, each cell's tcPr, the rows and
+//       the grid kept; ONE restoreBlock of the table (after
+//       ./TblNorm unstray, the rule of every command that changes
+//       cells); the caret at the end of the last cell overwritten;
+//       null (nothing done) when no cell is. Bookmarks: the marks of
+//       the paragraphs overwritten whose partner is still in the
+//       document go back at the caret (./BookmarkKeep, the rule of
+//       cells cleared: a pair is never broken), starts at the start
+//       of the first cell overwritten and ends at the end of the
+//       last (./BookmarkKeep putAround: a pair is never reversed)
+// Pure: no desktop services.
+import {reserveIds} from './Model';
+import {shapeOf} from './SelShape';
+import {gridOf} from './TblGrid';
+import {unstray, prWith} from './TblNorm';
+import {MAX_DEPTH} from './TblCheck';
+import {flatText, forEachIn, at as walkAt} from './Walk';
+import {marksIn, stillPaired, putAround} from './BookmarkKeep';
+import {cellPos} from './TblPos';
+import {plainPara} from './ClipIds';
+import {freshBlocks} from './ClipCleanTbl';
+import {depthOf} from './Path';
+
+const isTbl = (b) => b !== null && typeof b === 'object' &&
+  b.type === 'tbl';
+
+/** Table t, at nesting n, its cells' blocks fitted. */
+function fitTable(t, n) {
+  let rows = null;
+  t.rows.forEach((row, r) => {
+    let cells = null;
+    row.cells.forEach((c, k) => {
+      const bl = fitDepth(c.blocks, n);
+      if (bl !== c.blocks) (cells ||= row.cells.slice())[k] =
+        {...c, blocks: bl};
+    });
+    if (cells) (rows ||= t.rows.slice())[r] = {...row, cells};
+  });
+  return rows ? {...t, rows} : t;
+}
+
+/** See the header. */
+export function fitDepth(blocks, depth) {
+  let out = null;
+  blocks.forEach((b, j) => {
+    let nb = b;
+    if (isTbl(b)) {
+      nb = depth + 1 > MAX_DEPTH ? flatText(b).map(plainPara)
+        : fitTable(b, depth + 1);
+    }
+    if (nb !== b && !out) out = blocks.slice(0, j);
+    if (!out) return;
+    if (Array.isArray(nb)) out.push(...nb);
+    else out.push(nb);
+  });
+  return out || blocks;
+}
+
+/** See the header. */
+export function overShape(doc, sel, blocks) {
+  if (blocks.length !== 1 || !isTbl(blocks[0])) return null;
+  const sh = shapeOf(doc, sel);
+  return sh.kind === 'cells' ? sh : null;
+}
+
+/** See the header. */
+export function landing(doc, sh, block) {
+  const T = walkAt(doc, sh.table);
+  if (!isTbl(T)) return [];
+  const gT = gridOf(T), gP = gridOf(block), from = new Map();
+  gP.rows.forEach((row, i) => row.cells.forEach((c, k) => {
+    if (!c.cont) from.set(i + ',' + c.c0, block.rows[i].cells[k]);
+  }));
+  const out = [];
+  for (const {r, k} of sh.cells) {
+    const c = gT.rows[r].cells[k];
+    const f = c.cont ? null : from.get((r - sh.r0) + ',' +
+      (c.c0 - sh.c0));
+    if (f) out.push({r, k, from: f});
+  }
+  return out;
+}
+
+/** See the header. */
+export function landed(doc, sh, block) {
+  const keep = new Set(landing(doc, sh, block).map((x) => x.from));
+  return {...block, tblPr: prWith(block.tblPr, {tblStyle: undefined}),
+    rows: block.rows.map((row) => ({...row, cells: row.cells.map((c) =>
+      (keep.has(c) ? c : {...c, blocks: []}))}))};
+}
+
+/** See the header. */
+export function overwrite(d, sh, block) {
+  const list = landing(d.doc, sh, block);
+  if (!list.length) return null;
+  const T0 = walkAt(d.doc, sh.table), T = unstray(T0);
+  const n = depthOf(sh.table) + 1, got = [];
+  for (const {r, k} of list) {
+    forEachIn(T0.rows[r].cells[k].blocks, [], (b) => {
+      if (b.type === 'p') marksIn(b, 0, b.text.length, got);
+    });
+  }
+  reserveIds(d.doc);
+  const rows = T.rows.slice(), copied = new Set();
+  for (const {r, k, from} of list) {
+    if (!copied.has(r)) {
+      copied.add(r);
+      rows[r] = {...rows[r], cells: rows[r].cells.slice()};
+    }
+    rows[r].cells[k] = {...rows[r].cells[k],
+      blocks: freshBlocks(fitDepth(from.blocks, n))};
+  }
+  const nT = {...T, rows};
+  d.apply({op: 'restoreBlock', block: sh.table, snapshot: nT});
+  const {r, k} = list[list.length - 1];
+  const bl = rows[r].cells[k].blocks, p = bl[bl.length - 1];
+  const pos = {id: p.id, off: p.type === 'p' ? p.text.length : 1};
+  putAround(d, cellPos(nT, list[0].r, list[0].k) || pos, pos,
+    stillPaired(d.doc, got));
+  return pos;
+}

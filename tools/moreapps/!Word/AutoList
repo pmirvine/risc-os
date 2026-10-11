@@ -26,7 +26,9 @@
 //       and the text after the caret stay), numPr {numId, ilvl 0}, List
 //       Paragraph for a paragraph of the default style (as ./ListMake).
 //       The list: the nearest list paragraph before it in the section
-//       whose list has the entry's format (ListGallery.matches; lists
+//       in flow order (a table's cells' paragraphs too, as Word
+//       numbers them) whose list has the entry's format
+//       (ListGallery.matches; lists
 //       of other formats and paragraphs numbered by their style alone
 //       skipped) is continued for a bullet, and for a number when the
 //       label the paragraph would get there is the marker typed ('3.'
@@ -38,6 +40,9 @@
 //       item's text (after the marks); undefined (nothing changed, no
 //       undo step) when it does not apply or NumWrite refuses the
 //       numbering part (RangeError).
+// In a table's cell too (C3.5): the list before it in flow order (its
+// cell's paragraphs before it first). Tab in a cell moves to the next
+// cell (./EditKeys), so only a typed space makes the item there.
 // Callers decide when it may run: a single typed space or Tab at a
 // caret, AutoFormat on, not in overwrite mode, not an input method's
 // commit, never paste, Find / Replace, Symbol, undo or redo.
@@ -48,7 +53,8 @@ import {paraLayers} from './Styles';
 import {layerNumPr} from './StylesNum';
 import {entryOf, matches} from './ListGallery';
 import {ensurePart, addList} from './NumWrite';
-import {partOps, styleOnly} from './ListRestart';
+import {partOps, listBefore} from './ListRestart';
+import {mapBlocks} from './Walk';
 import {usedNumIds} from './ListUsed';
 import {listStyle, plainStyle} from './ListMake';
 import {labels} from './ListNumbers';
@@ -81,24 +87,19 @@ const numbered = (doc, p) => !!listInfo(doc, p) ||
   paraLayers(doc.styles || null, p)
     .some((l) => layerNumPr(l) !== undefined);
 
-/** The nearest list before block i of section s matching e. */
-function previous(doc, s, i, e) {
-  const bs = doc.sections[s].blocks;
-  for (let k = i - 1; k >= 0; k--) {
-    const b = bs[k];
-    if (b.type !== 'p') continue;
-    const f = listInfo(doc, b);
-    if (f && !styleOnly(f, b) && matches(f.num, e.id))
-      return {f, k};
-  }
-  return null;
+/** The nearest list before location `at` in its section, in flow
+ *  order (cells' paragraphs too: ./ListRestart listBefore), matching
+ *  e: {f, k} (k: higher is nearer), or null. */
+function previous(doc, at, e) {
+  const x = listBefore(doc, at.at, (f) => matches(f.num, e.id));
+  return x && {f: x.f, k: x.n};
 }
 
 /** The marker typed (see markerOf and its header note), or null. */
 function pick(doc, at, typed) {
   let best = null, near = -1;
   for (const m of readings(typed)) {
-    const prev = previous(doc, at.s, at.i, entryOf(m.entry));
+    const prev = previous(doc, at, entryOf(m.entry));
     if (prev && prev.k > near &&
       labelIn(doc, at, prev.f.numId) === typed) {
       best = m;
@@ -113,7 +114,7 @@ function labelIn(doc, at, numId) {
   const p = at.b;
   const q = {...p, pPr: {...p.pPr, numPr: {numId, ilvl: 0}}};
   const sections = doc.sections.map((sec, k) => (k !== at.s ? sec
-    : {...sec, blocks: sec.blocks.map((b, j) => (j === at.i ? q
+    : {...sec, blocks: mapBlocks(sec.blocks, (b) => (b === p ? q
       : b))}));
   const l = labels({...doc, sections}).get(p.id);
   return l ? l.text : null;
@@ -121,10 +122,10 @@ function labelIn(doc, at, numId) {
 
 /** The ops making paragraph `at` an item for marker m (see above). */
 function opsFor(doc, at, m, lead, del) {
-  const ops = [{op: 'replaceText', block: [at.s, at.i], at: lead, del,
+  const ops = [{op: 'replaceText', block: at.at, at: lead, del,
     ins: ''}];
   const e = entryOf(m.entry);
-  const found = previous(doc, at.s, at.i, e);
+  const found = previous(doc, at, e);
   const prev = found && found.f;
   const typed = at.b.text.slice(lead, lead + del - 1);
   let numId = prev && (m.kind === 'bullet' ||
@@ -145,7 +146,7 @@ function opsFor(doc, at, m, lead, del) {
     if (lp.styles !== doc.styles)
       ops.push({op: 'setDocPart', key: 'styles', value: lp.styles});
   }
-  ops.push({op: 'setProps', block: [at.s, at.i], ...x});
+  ops.push({op: 'setProps', block: at.at, ...x});
   return ops;
 }
 
@@ -161,7 +162,8 @@ export function afterSpace(d, typing, sel, {typed = ' '} = {}) {
   if (!Number.isInteger(off) || off < 2 ||
     off > MAX_MARKER + 1 + MAX_LEAD) return undefined;
   const at = findBlock(doc, sel.head.id);
-  if (!at || at.b.type !== 'p' || at.b.text[off - 1] !== typed)
+  if (!at || at.b.type !== 'p' ||
+    at.b.text[off - 1] !== typed)
     return undefined;
   const lead = leadOf(at.b);
   const text = at.b.text.slice(lead, off - 1);

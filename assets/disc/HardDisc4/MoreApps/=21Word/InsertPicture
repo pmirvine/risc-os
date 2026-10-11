@@ -1,9 +1,11 @@
 // InsertPicture - a picture put in at the selection, as one undo step
 // (pure; Batch B: the spec's InsertPicture.insert, plan R21).
 //
-//   insert(d, sel, {bytes}) -> sel
+//   insert(d, sel, {bytes, L?}) -> sel
 //       d a ./Document, sel a ./Selection, bytes a Uint8Array (a
-//       file's or a pasted image's). Checked first, nothing changed
+//       file's or a pasted image's), L the window's ./DocLayout (for
+//       a caret in a table's cell: below). Checked first, nothing
+//       changed
 //       when refused (RangeError, plan R13):
 //         'not-image'   not PNG, JPEG or GIF by its magic bytes and
 //                       headers (./PicMedia imageInfo), not bytes
@@ -34,11 +36,15 @@
 //
 // Size (plan R18): pixels / dpi (./PicMedia naturalEmu); when that
 // is out of range (a tiny dpi), the 96 dpi size. Then, wider than
-// the column of the caret's section (page width less the margins,
-// A4 and 1 in by default, divided by w:cols num less the spaces) or
+// the column of the caret's section (./SectWidth columnTw: page
+// width less the margins, A4 and 1 in by default, divided by w:cols
+// num less the spaces) or
 // than 6.5 in, or taller than 9 in, scaled down to fit, proportions
 // kept; refused ('too-large') when the width would fall below 15
-// twips.
+// twips. In a table's cell (Batch C, C3 fix wave), with L: also no
+// wider than the cell's text width (the cell less its margins: the
+// cell's column in L, px x 15 twips; the innermost cell), as Word
+// sizes a picture put in a cell.
 // Prefixes: one bound at the document's root to the right URI is
 // used (./PicRead docMap: Transitional URIs, the writer maps them
 // to Strict for a Strict document); else wp, a, pic or r (or wp1...
@@ -53,11 +59,11 @@ import {usedNumbers, mediaName} from './PicNames';
 import {NS} from './Wml';
 import {docMap, EMU_PX, MAX_EXT} from './PicRead';
 import {imageInfo, decodable, naturalEmu} from './PicMedia';
+import {columnTw} from './SectWidth';
 import {usedDocPrIds, freshDocPrId} from './PicIds';
 
 const IN = 914400, CAP = 6.5 * IN, TW = 635, MAXH = 9 * IN;
 const MIN_EMU = 15 * TW;
-const num = (v, d) => (Number.isFinite(v) ? v : d);
 const n = (name, attrs = [], children = []) => ({name, attrs,
   children});
 const STD = {wp: ['wp', []], a: ['a', []], pic: ['pic', []],
@@ -105,21 +111,26 @@ function prefixes(map) {
   return out;
 }
 
-/** The extent: natural size, fitted to the section (plan R18). */
-function sizeFor(info, props) {
+/** The text width in twips of the cell holding the paragraph of id
+ *  in layout L (its column), or Infinity outside a cell. */
+function cellTw(L, id) {
+  const it = L && L.byId ? L.byId.get(id) : null;
+  if (!it || !it.col || it.col === L.root) return Infinity;
+  const w = Math.floor(it.col.w * 15);
+  return w > 0 ? w : Infinity;
+}
+
+/** The extent: natural size, fitted to the section (plan R18) and
+ *  to a cell's text width cw (twips). */
+function sizeFor(info, props, cw) {
   let e = naturalEmu(info);
   if (!e) {
     e = {cx: info.w * EMU_PX, cy: info.h * EMU_PX};
     if (!(e.cx >= 1 && e.cx <= MAX_EXT && e.cy >= 1 &&
       e.cy <= MAX_EXT)) throw new RangeError('too-large');
   }
-  const sz = (props && props.pgSz) || {}, mar = (props &&
-    props.pgMar) || {}, cols = (props && props.cols) || {};
-  const tw = num(sz.w, 11906) - num(mar.left, 1440) -
-    num(mar.right, 1440);
-  const k = cols.num > 1 ? Math.floor(cols.num) : 1;
-  const colw = tw - (k - 1) * num(cols.space, 720);
-  const maxW = Math.min(CAP, colw > 0 ? colw / k * TW : CAP);
+  const colw = columnTw(props);
+  const maxW = Math.min(CAP, colw > 0 ? colw * TW : CAP, cw * TW);
   const f = Math.min(1, maxW / e.cx, MAXH / e.cy);
   if (f === 1) return e;
   const cx = Math.round(e.cx * f);
@@ -128,7 +139,7 @@ function sizeFor(info, props) {
 }
 
 /** See the header. */
-export function insert(d, sel, {bytes} = {}) {
+export function insert(d, sel, {bytes, L} = {}) {
   const doc = d.doc;
   const o = sel ? orderedPos(doc, sel) : null;
   if (!o) return sel;
@@ -141,7 +152,8 @@ export function insert(d, sel, {bytes} = {}) {
   if (typeof main !== 'string' || !main || !meta.documentRoot)
     throw new RangeError('no-package');
   const sec = doc.sections[findBlock(doc, o.from.id).s];
-  const {cx, cy} = sizeFor(info, sec && sec.props);
+  const {cx, cy} = sizeFor(info, sec && sec.props,
+    cellTw(L, o.from.id));
   const id = freshDocPrId(usedDocPrIds(doc));
   const dir = main.slice(0, main.lastIndexOf('/') + 1);
   const name = mediaName(doc, dir, info.ext, usedNumbers(doc, dir));

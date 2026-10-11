@@ -43,13 +43,20 @@
 // gives a plain <w:br/> (the writer writes it back as one). Typed
 // tabs and line breaks are thus the same model before and after a
 // save (older documents' tab and br inlines still work).
+// Positions are paths: ops go to loc.at (./EditPos), so typing and
+// Enter work in a cell's paragraph as at top level (Enter splits it
+// within its cell). Over a selection of cells (./SelShape 'cells')
+// the cells are cleared and the text, or Enter, goes into the
+// top-left one; over a 'mixed' one its paragraphs and covered rows
+// go first (./EditRange deleteRange, ./RangeTbl: Batch C3.4).
 // Pure: no desktop services.
 import {graphemes} from 'wimplib/Segment';
 import {nextId, reserveIds} from './Model';
 import {cut, join} from './OpsUtil';
 import {caret, collapsed} from './Selection';
 import {nextG} from './DocPos';
-import {orderedPos, findBlock} from './EditPos';
+import {orderedPos, findBlock, sibOf} from './EditPos';
+import {at as walkAt} from './Walk';
 import {fmtAt} from './OpsText';
 import {applyTo} from './Pending';
 import {deleteRange, paraBy} from './EditRange';
@@ -94,8 +101,7 @@ function edit(d, sel, fn, opts, enter = false) {
 
 /** Split the paragraph at loc at the \n of ins (put in at off). */
 function splitLines(d, loc, off, ins) {
-  const {s, i} = loc;
-  const q = d.doc.sections[s].blocks[i];
+  const q = walkAt(d.doc, loc.at);
   const cuts = [];
   for (let j = ins.indexOf('\n'); j >= 0; j = ins.indexOf('\n', j + 1))
     cuts.push(off + j);
@@ -113,9 +119,9 @@ function splitLines(d, loc, off, ins) {
     b.extraP = [];
     return b;
   });
-  d.apply({op: 'restoreBlock', block: [s, i],
+  d.apply({op: 'restoreBlock', block: loc.at,
     snapshot: {...q, ...join(pieces[0])}});
-  d.apply({op: 'insertBlocks', at: [s, i + 1], blocks: rest});
+  d.apply({op: 'insertBlocks', at: sibOf(loc, 1), blocks: rest});
   const last = cuts[cuts.length - 1];
   return {id: rest[rest.length - 1].id,
     off: off + ins.length - last - 1};
@@ -144,7 +150,7 @@ function firstFmt(o) {
  * `lines`: they stay, line breaks); see the header.
  */
 function put(d, loc, off, ins, fmt, del = 0, lines = false) {
-  d.apply({op: 'replaceText', block: [loc.s, loc.i], at: off, del,
+  d.apply({op: 'replaceText', block: loc.at, at: off, del,
     ins, ...fmt});
   if (lines || !ins.includes('\n')) {
     return {id: loc.b.id, off: off + ins.length};

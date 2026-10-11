@@ -1,0 +1,177 @@
+// TblGrid - the resolved grid of a table as a VIEW (D2): merges stay
+// as the file writes them (gridSpan, vMerge on each cell), and this
+// is the one place that resolves them, for the layout, the selection
+// shapes, the table commands and the clipboard. Pure.
+//
+//   gridOf(table) -> {cols, grid, rows, width}   memoised per table
+//     object (a WeakMap of WeakRefs: the grid is held by whoever
+//     uses it, the layout's table items for the tables shown, never
+//     by the table, so the undo history's old tables keep no grid
+//     alive: final-2 I3; one collected is resolved again); frozen.
+//     rows[r] {cells, before, after}: before / after the row's
+//       gridBefore / gridAfter (integers 0..MAX_COLS, else 0 / 63)
+//     cells[k] {c0, c1, rowSpan, top: [r, k], cont}: the half-open
+//       grid columns c0..c1 the cell covers (gridSpan, an integer
+//       1..MAX_COLS, else 1 / 63); `cont` true for a vMerge continue
+//       cell joined to the merge above, `top` the [r, k] of the
+//       merge's first (restart) cell (its own for any other cell);
+//       rowSpan the rows the merge covers on its top cell, 0 on a
+//       continue cell.
+//     A continue cell joins the merge above when the cell of the row
+//       above at its c0 starts at c0, ends at c1 and is merged
+//       (restart or continue): merged cells stay rectangles. Any
+//       other continue cell (the first row, under a plain cell, a
+//       different span) is a restart, as Word reads one with no
+//       restart above. A vMerge other than restart / continue is
+//       none.
+//     cols the widest of the grid and of every row (before + spans +
+//       after); grid the column widths in twips, the file's grid
+//       widened with copies of its last column up to cols (the
+//       file's table is not changed); width their sum.
+//   cellAt(g, r, col) -> {r, k} | null   the cell covering grid
+//     column col in row r; for a continue cell its top. null outside
+//     the rows, in gridBefore / gridAfter or past the row.
+//   spanOf(g, r, k) -> {r0, r1, c0, c1} | null   the rectangle of the
+//     merged cell that (r, k) belongs to (half-open), from its top.
+//
+// A grid depends only on the table's grid array, its rows' trPr and
+// their cells' tcPr: a copy of a table with the very same ones (an
+// edit in a cell copies the table, its row and the cell, but none of
+// these, D5) gets the grid of the table it was copied from, found by
+// its grid array, after an identity check per row (D20: a keystroke
+// in a cell of a 1000-row table does not resolve its grid again).
+import {MAX_COLS} from './TblCheck';
+
+const memo = new WeakMap();            // table -> WeakRef(grid)
+const byGrid = new WeakMap();          // grid array -> {ref, g} refs
+const live = (r) => (r ? r.deref() : undefined);
+
+/** Whether tables a and b have the very same grid, trPr and tcPr. */
+function sameShape(a, b) {
+  if (a.grid !== b.grid || a.rows.length !== b.rows.length)
+    return false;
+  for (let r = 0; r < a.rows.length; r++) {
+    const x = a.rows[r], y = b.rows[r];
+    if (x === y) continue;
+    if (x.trPr !== y.trPr || x.cells.length !== y.cells.length)
+      return false;
+    for (let k = 0; k < x.cells.length; k++)
+      if (x.cells[k].tcPr !== y.cells[k].tcPr) return false;
+  }
+  return true;
+}
+
+/** The grid of the table `table` was copied from (see the header). */
+function copied(table) {
+  const was = Array.isArray(table.grid) && byGrid.get(table.grid);
+  const t = was && was.ref.deref(), g = was && was.g.deref();
+  return t && g && sameShape(t, table) ? g : null;
+}
+
+const count = (v, lo, dflt) => (Number.isInteger(v) && v >= lo
+  ? Math.min(v, MAX_COLS) : (typeof v === 'number' && v > MAX_COLS
+    ? MAX_COLS : dflt));
+
+const spanIn = (tcPr) => count(tcPr && tcPr.gridSpan, 1, 1);
+const merged = (tcPr) => {
+  const v = tcPr && tcPr.vMerge;
+  return v === 'restart' || v === 'continue' ? v : null;
+};
+
+/** The index in `cells` of the cell starting at c0, or -1. */
+function startingAt(cells, c0) {
+  for (let k = 0; k < cells.length; k++) {
+    if (cells[k].c0 === c0) return k;
+    if (cells[k].c0 > c0) break;
+  }
+  return -1;
+}
+
+/** See the header. */
+export function gridOf(table) {
+  const own = live(memo.get(table));
+  if (own) return own;
+  const had = copied(table);
+  if (had) {
+    memo.set(table, new WeakRef(had));
+    return had;
+  }
+  const rows = [], kinds = [], tops = new Map();
+  let cols = Array.isArray(table.grid) ? table.grid.length : 0;
+  for (let r = 0; r < table.rows.length; r++) {
+    const row = table.rows[r], trPr = row.trPr || {};
+    const before = count(trPr.gridBefore, 0, 0);
+    const after = count(trPr.gridAfter, 0, 0);
+    const cells = [], kind = [];
+    const above = r ? rows[r - 1].cells : [], kAbove = kinds[r - 1];
+    let c = before;
+    for (let k = 0; k < row.cells.length; k++) {
+      const tcPr = row.cells[k].tcPr, c0 = c, c1 = c + spanIn(tcPr);
+      const m = merged(tcPr);
+      let top = null;
+      if (m === 'continue' && r) {
+        const j = startingAt(above, c0);
+        if (j >= 0 && above[j].c1 === c1 && kAbove[j]) {
+          top = above[j].top;
+        }
+      }
+      const cont = top !== null;
+      if (cont) tops.get(top).n++;
+      else top = Object.freeze([r, k]);
+      const cell = {c0, c1, rowSpan: cont ? 0 : 1, top, cont};
+      if (!cont) tops.set(top, {cell, n: 1});
+      cells.push(cell);
+      kind.push(m !== null);
+      c = c1;
+    }
+    cols = Math.max(cols, c + after);
+    rows.push({cells, before, after});
+    kinds.push(kind);
+  }
+  for (const {cell, n} of tops.values()) cell.rowSpan = n;
+  for (const row of rows) {
+    for (const cell of row.cells) Object.freeze(cell);
+    Object.freeze(row.cells);
+    Object.freeze(row);
+  }
+  const grid = widen(table.grid, cols);
+  const g = Object.freeze({cols, grid, rows: Object.freeze(rows),
+    width: grid.reduce((a, b) => a + b, 0)});
+  const weak = new WeakRef(g);
+  memo.set(table, weak);
+  if (Array.isArray(table.grid))
+    byGrid.set(table.grid, {ref: new WeakRef(table), g: weak});
+  return g;
+}
+
+/** The file's grid widened to n columns (copies of the last). */
+function widen(file, n) {
+  const g = Array.isArray(file) ? file.map((w) =>
+    (Number.isFinite(w) && w > 0 ? w : 0)) : [];
+  const last = g.length ? g[g.length - 1] : 0;
+  while (g.length < n) g.push(last);
+  return Object.freeze(g);
+}
+
+/** See the header. */
+export function cellAt(g, r, col) {
+  if (!Number.isInteger(r) || !Number.isInteger(col) || r < 0 ||
+    r >= g.rows.length || col < 0) return null;
+  const cells = g.rows[r].cells;
+  for (let k = 0; k < cells.length; k++) {
+    const c = cells[k];
+    if (col < c.c0) return null;
+    if (col < c.c1) return {r: c.top[0], k: c.top[1]};
+  }
+  return null;
+}
+
+/** See the header. */
+export function spanOf(g, r, k) {
+  const row = Number.isInteger(r) && r >= 0 ? g.rows[r] : undefined;
+  const c = row && Number.isInteger(k) && k >= 0 ? row.cells[k]
+    : undefined;
+  if (!c) return null;
+  const t = g.rows[c.top[0]].cells[c.top[1]];
+  return {r0: c.top[0], r1: c.top[0] + t.rowSpan, c0: t.c0, c1: t.c1};
+}

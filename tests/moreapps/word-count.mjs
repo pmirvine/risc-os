@@ -110,11 +110,11 @@ try {
   const d0 = await st();
   await open();
   const a1 = await st();
-  ok('Edit > Word count... opens "Word count" for the whole document (a caret): 13 words, 51 characters, 45 without spaces, 7 paragraphs, 6 lines (the layout\'s: a table has none)',
+  ok('Edit > Word count... opens "Word count" for the whole document (a caret): 13 words, 51 characters, 45 without spaces, 7 paragraphs, 8 lines (the layout\'s, the table\'s two cells\' lines too: C3 fix wave)',
     a1.box?.open && a1.box.title === 'Word count' && /document/.test(a1.box.scope) && a1.box.words === '13' && a1.box.chars === '51'
-    && a1.box.noSpaces === '45' && a1.box.paras === '7' && a1.box.lines === '6' && a1.box.note === '', a1);
+    && a1.box.noSpaces === '45' && a1.box.paras === '7' && a1.box.lines === '8' && a1.box.note === '', a1);
   ok('... table text, link text and a field\'s result in; field codes, deleted text and the empty paragraph out (the hook agrees)',
-    a1.count.words === 13 && a1.count.chars === 51 && a1.count.charsNoSpaces === 45 && a1.count.paras === 7 && a1.count.lines === 6
+    a1.count.words === 13 && a1.count.chars === 51 && a1.count.charsNoSpaces === 45 && a1.count.paras === 7 && a1.count.lines === 8
     && a1.count.scope === 'document', a1.count);
   ok('... the document is untouched: no undo step, not dirty, no beep', a1.depth === d0.depth && !a1.dirty && a1.beeps === d0.beeps, a1);
   await click(await ev(() => window.__icon('button:Close')));

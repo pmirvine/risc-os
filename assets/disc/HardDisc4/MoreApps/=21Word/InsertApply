@@ -5,7 +5,8 @@
 //                         undefined for an id that is not one of
 //                         them (or no selection)
 //   pageBreak(d, sel)  -> the selection after Insert > Page break
-//                         (Ctrl-Enter), in one d.atomic group
+//                         (Ctrl-Enter), in one d.atomic group; null
+//                         (refused) in a table's cell
 //   putIn(d, sel, ins, x?, fmt?) -> a caret after what went in:
 //                         text ins, or one U+FFFC for inline x, put
 //                         in at sel in one d.atomic (the selection
@@ -13,6 +14,10 @@
 //                         block's edge, as for the page break; fmt
 //                         as arg below); sel back when its position
 //                         is not in the document (./InsertPicture)
+//   breakable(doc, sel) -> whether a page or section break can go
+//                         at sel: a valid selection with neither end
+//                         in a table's cell (./InsertMenu shades the
+//                         two items otherwise; C3.5)
 //
 // ids: pageBreak; sectionNext, sectionContinuous (Insert > Section
 // break > Next page / Continuous: ./SectBreak insertSection); nbsp,
@@ -50,10 +55,13 @@
 // heading the next style). So the break always ends its paragraph,
 // and the caret is at the start of the new one. A position that is
 // not in the document changes nothing (sel is returned, no step).
+// In a table's cell (either end of the selection, a nested table's
+// edge too) it is refused: null, nothing changed, the caller beeps
+// (Batch C3.4, D25, TB22; a section break likewise: ./SectBreak).
 // Pure: no desktop services.
 import {OBJ} from './Model';
 import {caret, collapsed} from './Selection';
-import {orderedPos, findBlock} from './EditPos';
+import {orderedPos, findBlock, topOnly} from './EditPos';
 import {deleteRange, paraBy} from './EditRange';
 import {splitAt} from './EditPara';
 import {insertSection} from './SectBreak';
@@ -67,6 +75,7 @@ const PAGE = () => ({kind: 'br', level: 'r', brType: 'page'});
 export function pageBreak(d, sel) {
   const o = sel ? orderedPos(d.doc, sel) : null;
   if (!o) return sel;
+  if (!topOnly(o)) return null;
   let out = null;
   d.atomic(() => {
     let pos = collapsed(sel) ? o.from : deleteRange(d, o);
@@ -75,13 +84,17 @@ export function pageBreak(d, sel) {
       pos = paraBy(d, loc, pos.off);
       loc = findBlock(d.doc, pos.id);
     }
-    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: pos.off,
+    d.apply({op: 'replaceText', block: loc.at, at: pos.off,
       del: 0, ins: OBJ, inlines: {0: PAGE()}});
     loc = findBlock(d.doc, pos.id);
     out = splitAt(d, loc, pos.off + 1);
   });
   return out ? caret(out) : sel;
 }
+
+/** See the header. */
+export const breakable = (doc, sel) => !!sel && !!sel.anchor &&
+  !!sel.head && !!topOnly(orderedPos(doc, sel));
 
 /** The rPr / rStyle for the op: the text before, then fmt on top. */
 function pendingFmt(p, off, fmt) {
@@ -104,7 +117,7 @@ export function putIn(d, sel, ins, x, fmt) {
       pos = paraBy(d, loc, pos.off);
       loc = findBlock(d.doc, pos.id);
     }
-    d.apply({op: 'replaceText', block: [loc.s, loc.i], at: pos.off,
+    d.apply({op: 'replaceText', block: loc.at, at: pos.off,
       del: 0, ins, inlines: x ? {0: x} : undefined,
       ...pendingFmt(loc.b, pos.off, fmt)});
     out = {id: pos.id, off: pos.off + ins.length};

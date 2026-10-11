@@ -1,11 +1,16 @@
 // DocItems - the items of a ./DocLayout, one per block, and which of
 // an older layout's lines may be kept.
 //
-//   buildItems(L, doc, prev?) fills L.items, L.byId, L.labels and
-//                       records L.styles, L.numbering, L.settings
-//                       (doc.styles, doc.numbering, doc.rawSettings)
+//   buildItems(L, doc, prev?) fills L.root, L.items, L.flow, L.byId,
+//                       L.labels and records L.styles, L.numbering,
+//                       L.settings (doc.styles, doc.numbering,
+//                       doc.rawSettings)
+//   moveColumn(col, x)  puts column col (and its items, and the
+//                       columns of the tables in it) at x
+//                       (./TblReuse's)
 //   reuseKey(item)  -> {block, list, mark}: what a paragraph's lines
-//                       depend on besides the layout-wide key
+//                       depend on besides the layout-wide key, its
+//                       column's width and styles
 //   sameKey(a, b)   -> true when two reuse keys (or two items: they
 //                       have the same fields) lay out the same
 //   sameMark(a, b)  -> true when two section-end marks are alike
@@ -13,8 +18,34 @@
 //                       the following section's w:type, as
 //                       ./SectMark has it), or null for the last
 //
-// An item: {id, block, kind: 'p'|'box', index, y, h, gapAbove,
-// gapBelow, marks, lines?, metrics?, para?, list?, mark?, label?}.
+// An item: {id, block, kind: 'p'|'box'|'tbl', index, x, w, col, ci,
+// y, h, gapAbove, gapBelow, marks, lines?, metrics?, para?, list?,
+// mark?, label?}. A kept (Opaque) block is a 'box' (label '[table -
+// preserved, not shown]' and the like). A typed table is ONE 'tbl'
+// item of its column (./TblItems: rows of cells, each cell a column
+// of the items of its blocks: paragraphs 'p', Opaque blocks 'box',
+// nested tables 'tbl'; a table deeper than ./TblCheck MAX_DEPTH a
+// 'box'), its label as a kept block's (./ItemPaint draws it so until
+// C2.5).
+//
+// Columns (D17): a column is {x, w, items, styles}, items stacked
+// one under another (./DocStack); styles the style table its
+// paragraphs are laid out with (a cell's: the table style's layer
+// over doc.styles, R6). The page is the root column L.root {x:
+// L.left, w: L.textW, items: L.items, styles: doc.styles}; an item's
+// x and w are its column's (px), col its column and ci its index
+// there. L.flow holds every item a caret goes into in flow order
+// (D9, C3.1): a table's item at its start, then its cells' items row
+// by row, cell by cell (a vMerge continue cell's too; nested tables
+// the same way), then the table's item AGAIN at its end; an item's
+// index is its (first) place there, a table's endIndex its second
+// (./DocPos placeOf). Without a table L.flow is L.items itself: it
+// is made at the first table (C7 fix: a table-free layout builds no
+// second array, and its paragraphs' items take no table path).
+// L.byId maps every id, at every depth, to its item. Code that
+// places or draws an item reads it.x / it.w, never L.left / L.textW
+// (those stay the page's).
+//
 // gapAbove / gapBelow (px, 0) and marks (drawn only, never text)
 // come from ./DocStack's decorators (deco: their result, carried
 // over under the same reuse key, boxes too: see ./DocStack). An
@@ -28,15 +59,27 @@
 // and doc.rawSettings are the very objects prev saw (they are
 // replaced, never changed, by an edit); and the reuse keys agree:
 // the same paragraph object, the same list label
-// (./LineLabel sameLabel) and the same mark. Pure: no desktop
-// services.
+// (./LineLabel sameLabel) and the same mark; and its column has the
+// same width and styles object (in a cell: the cell's text width and
+// layer, D20). A table's item is kept whole (./TblReuse reuseTable:
+// the same block object, width and styles, labels and decorators),
+// else rebuilt keeping the rows it can (./TblItems); kept items get
+// their places in L.flow (index, endIndex) and L.byId from this
+// layout (./TblReuse register). prev is USED UP by the new layout
+// (prev.spent: its kept items are now this one's): offered again, it
+// gives nothing (no reuse), and it is never laid out or painted
+// again; only ids may be read from it (./Selection clamp). Pure: no
+// desktop services.
 import {sameLabel} from './LineLabel';
 import {labels} from './ListNumbers';
 import {kindOf} from './Info';
 import {blockId} from './DocPos';
 import {markOf} from './SectMark';
+import {tableItem} from './TblItems';
+import {reuseTable, moveColumn} from './TblReuse';
+import {MAX_DEPTH} from './TblCheck';
 
-export {markOf};
+export {markOf, moveColumn};
 
 export const BOX = 28;                 // a kept block's box
 const NONE = Object.freeze([]);
@@ -62,48 +105,99 @@ export function sameKey(a, b) {
 
 /** Whether prev's lines may be kept at all (the header). */
 function keepable(L, doc, prev) {
-  return !!prev && prev.laid && prev.metrics === L.metrics &&
+  return !!prev && !prev.spent && prev.laid &&
+    prev.metrics === L.metrics &&
     prev.doc === doc && prev.textW === L.textW &&
     prev.styles === L.styles && prev.numbering === L.numbering &&
     prev.settings === L.settings && prev.ns === L.ns;
 }
 
+
+/** prev's item o kept for it (lines, decorators: the header). */
+function adopt(ctx, it, o, p) {
+  if (p) { it.lines = o.lines; it.h = o.h; }
+  // (./DocStack's result: the same key, so the same gaps)
+  if (ctx.prev.decorators === ctx.L.decorators) it.deco = o.deco;
+}
+
+/** The item of paragraph b, its ci-th in column col (see itemOf):
+ *  no table code (a table-free layout's every item). */
+function paraItem(ctx, b, col, mark, ci) {
+  const {L} = ctx, flow = L.flow;
+  const it = {id: b.id, block: b, para: b, kind: 'p',
+    index: flow ? flow.length : ci, x: col.x, w: col.w, col, ci,
+    y: 0, h: 0, gapAbove: 0, gapBelow: 0, marks: NONE, deco: null,
+    lines: null, metrics: L.metrics,
+    list: L.labels.get(b.id) || null, mark};
+  if (flow) flow.push(it);
+  const o = ctx.keep ? ctx.prev.byId.get(it.id) : undefined;
+  if (o && o.lines && o.kind === 'p' && sameKey(o, it) &&
+    o.w === it.w && o.col.styles === col.styles) adopt(ctx, it, o, 1);
+  L.byId.set(it.id, it);
+  return it;
+}
+
+/**
+ * The item of block b in column col (depth: the tables around it,
+ * 1 for a top-level table's own; ci its index in col), registered in
+ * L.byId and put in L.flow (a table twice: index, endIndex; L.flow
+ * is made at the first table: the items before it are L.items).
+ * ctx: {L, keep, prev, share, make}.
+ */
+function itemOf(ctx, b, col, depth, mark, ci = 0) {
+  if (b.type === 'p') return paraItem(ctx, b, col, mark, ci);
+  const {L} = ctx;
+  const tbl = b.type === 'tbl' && depth <= MAX_DEPTH;
+  if (tbl && !L.flow) L.flow = L.items.slice();
+  const flow = L.flow;
+  const it = {id: blockId(b), block: b, kind: tbl ? 'tbl' : 'box',
+    index: flow ? flow.length : ci, x: col.x, w: col.w, col, ci,
+    y: 0, h: tbl ? 0 : BOX + 12, gapAbove: 0, gapBelow: 0,
+    marks: NONE, deco: null, mark,
+    label: `[${b.type === 'tbl' ? 'table' : kindOf(b.node)} - ` +
+      'preserved, not shown]'};
+  if (flow) flow.push(it);
+  const o = ctx.keep ? ctx.prev.byId.get(it.id) : undefined;
+  const ot = tbl && o && o.kind === 'tbl' ? o : null;
+  if (tbl && !(ot && ctx.share && reuseTable(L, it, ot, depth))) {
+    tableItem(L, it, depth, ot, ctx.make, ctx.share);
+  }
+  if (tbl) {
+    it.endIndex = flow.length;
+    flow.push(it);
+  }
+  if (o && o.kind === it.kind && sameKey(o, it) && o.w === it.w &&
+    o.col.styles === col.styles) adopt(ctx, it, o, 0);
+  L.byId.set(it.id, it);
+  return it;
+}
+
 /** See the header. */
 export function buildItems(L, doc, prev) {
-  const {metrics} = L;
   L.styles = doc.styles;
   L.numbering = doc.numbering;
   L.settings = doc.rawSettings;
   L.items = [];
+  const col = L.root = {x: L.left, w: L.textW, items: L.items,
+    styles: doc.styles};
+  L.flow = null;
   L.byId = new Map();
   L.labels = labels(doc);
   const keep = keepable(L, doc, prev);
+  if (prev) prev.spent = true;
+  const ctx = {L, keep, prev, make: null,
+    share: keep && prev.decorators === L.decorators};
+  ctx.make = (b, c, depth) => itemOf(ctx, b, c, depth, null);
   const secs = doc.sections;
   for (let s = 0; s < secs.length; s++) {
     const bs = secs[s].blocks;
     const end = bs.length - 1;
     const mark = markOf(doc, s);
     for (let i = 0; i <= end; i++) {
-      const b = bs[i];
-      const it = b.type === 'p'
-        ? {id: b.id, block: b, para: b, kind: 'p', index: 0, y: 0,
-          h: 0, gapAbove: 0, gapBelow: 0, marks: NONE, deco: null,
-          lines: null,
-          metrics, list: L.labels.get(b.id) || null,
-          mark: i === end ? mark : null}
-        : {id: blockId(b), block: b, kind: 'box', index: 0, y: 0,
-          h: BOX + 12, gapAbove: 0, gapBelow: 0, marks: NONE,
-          deco: null, mark: i === end ? mark : null,
-          label: `[${kindOf(b.node)} - preserved, not shown]`};
-      const o = keep && prev.byId.get(it.id);
-      if (o && (b.type !== 'p' || o.lines) && sameKey(o, it)) {
-        if (b.type === 'p') { it.lines = o.lines; it.h = o.h; }
-        // (./DocStack's result: the same key, so the same gaps)
-        if (prev.decorators === L.decorators) it.deco = o.deco;
-      }
-      it.index = L.items.length;
-      L.items.push(it);
-      L.byId.set(it.id, it);
+      L.items.push(itemOf(ctx, bs[i], col, 1, i === end ? mark
+        : null, L.items.length));
     }
   }
+  // (no table: the same items in the same order)
+  if (!L.flow) L.flow = L.items;
 }

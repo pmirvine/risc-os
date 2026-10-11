@@ -1,0 +1,219 @@
+// ClipReadTable - an HTML <table> pasted from another program as a
+// table block (Batch C6.3, D28), for ./ClipRead. The HTML is
+// untrusted: only the few attributes and style declarations below are
+// read, each checked (./ClipCss decls: url(, expression... ignored).
+//
+//   readTable(el, build, opts) -> table block | null
+//       el: the <table> element (DOM-like, as ./ClipRead walks it);
+//       build: {skip(el) -> boolean   an element dropped or hidden,
+//                 ignored here (./ClipRead's rule),
+//               fits(el, cells) -> boolean   the table and `cells`
+//                 more cells are within the reader's budget (nodes,
+//                 text, the cells of all tables): else flattened,
+//               cell(el) -> blocks   a cell's content (a nested
+//                 ./ClipBuild Builder's paragraphs and tables),
+//               caption(el)   a <caption>: paragraphs put before the
+//                 table}
+//       opts: {textTw, nodes}: the text width (twips) widths in %
+//       and columns without a width share (default TEXT_TW); the
+//       nodes the look at rows and cells may take (default 200,000).
+//       null: not a table this reads (flattened by ./ClipRead as
+//       before; nothing is cut): no row or no cell; more than
+//       LIMITS.rows rows or LIMITS.cols grid columns; anything but
+//       white space, comments, <caption>, <colgroup>, <col> and
+//       skipped elements directly in the table, a section (thead,
+//       tbody, tfoot) or a row; past opts.nodes; or past build.fits.
+//   LIMITS {rows: 1000, cols: 63, depth: 8, cells: 63,000}  depth
+//       (./TblCheck MAX_DEPTH) and cells (of all tables in one
+//       paste) are ./ClipRead's to check
+//   TEXT_TW 9026: A4 less 1 inch margins (./ClipTblLook)
+//
+// Rows: the <tr> directly in the table or in its thead / tbody /
+// tfoot, in document order; cells: their <td> / <th>. Each cell takes
+// the first free grid column of its row (rows above may cover some:
+// rowspan), colspan columns and rowspan rows (cut at the last row);
+// where that would overlap a cell placed before, it is made narrower
+// / shorter (browsers overlap them). Grid columns: the widest row.
+// The model: a cell with rowspan > 1 is vMerge restart, the rows
+// below get a continue cell of the same columns (empty, its shading
+// and borders); a grid column no cell covers gets an empty cell
+// (ragged rows filled). Widths, shading and borders: ./ClipTblLook
+// (tcW dxa of its columns, tblW auto). <th> is bold (./ClipWalk).
+// Properties are set with ./TblNorm prWith. No ids: ./ClipPaste
+// gives them. Pure: no desktop services.
+import {prWith} from './TblNorm';
+import {MAX_COLS, MAX_DEPTH} from './TblCheck';
+import {attrOf as attr} from './ClipDom';
+import {spanOf, widthsOf, lookOf, tableBorder} from './ClipTblLook';
+
+export const LIMITS = Object.freeze({rows: 1000, cols: MAX_COLS,
+  depth: MAX_DEPTH, cells: 63000});
+export {TEXT_TW} from './ClipTblLook';
+const SECTION = new Set(['thead', 'tbody', 'tfoot']);
+const IGNORED = new Set(['caption', 'colgroup', 'col']);
+const SIDE = () => ({val: 'single', sz: 4, space: 0, color: 'auto'});
+const EMPTY = () => ({type: 'p', text: '', runs: [], inlines: {},
+  pPr: {extra: []}});
+
+const nameOf = (n) => String(n.nodeName || '').toLowerCase();
+/** fn(kid) for each child of n while fn gives true and the budget
+ *  lasts (each child one node); false when either stopped it. */
+function each(n, budget, fn) {
+  const kids = n.childNodes;
+  const len = kids && Number.isInteger(kids.length) ? kids.length : 0;
+  for (let i = 0; i < len; i++) {
+    if (--budget.n < 0) return false;
+    const c = kids[i];
+    if (c && typeof c === 'object' && !fn(c)) return false;
+  }
+  return true;
+}
+
+/** True for a node that may sit between rows / cells: white space,
+ *  a comment, or a skipped element; false for anything else. */
+function filler(n, build) {
+  if (n.nodeType === 3 || n.nodeType === 4)
+    return !/\S/.test(String(n.data || ''));
+  if (n.nodeType !== 1) return true;
+  return build.skip(n);
+}
+
+/** The cells (td / th, not skipped) of row tr, or null. */
+function cellsOf(tr, build, budget) {
+  const out = [];
+  const ok = each(tr, budget, (n) => {
+    const name = n.nodeType === 1 ? nameOf(n) : '';
+    if ((name === 'td' || name === 'th') && !build.skip(n))
+      return out.push(n) <= LIMITS.cols;
+    return filler(n, build);
+  });
+  return ok ? out : null;
+}
+
+/** {rows: [[cell el]], captions} of table el, or null. */
+function rowsOf(el, build, budget) {
+  const rows = [], captions = [];
+  const addRow = (tr) => {
+    if (build.skip(tr)) return true;
+    const cells = cellsOf(tr, build, budget);
+    return !!cells && rows.push(cells) <= LIMITS.rows;
+  };
+  const ok = each(el, budget, (n) => {
+    const name = n.nodeType === 1 ? nameOf(n) : '';
+    if (name === 'tr') return addRow(n);
+    if (SECTION.has(name) && !build.skip(n)) {
+      return each(n, budget, (m) => (m.nodeType === 1 &&
+        nameOf(m) === 'tr' ? addRow(m) : filler(m, build)));
+    }
+    if (IGNORED.has(name)) {
+      if (name === 'caption' && !build.skip(n)) captions.push(n);
+      return true;
+    }
+    return filler(n, build);
+  });
+  return ok && rows.length ? {rows, captions} : null;
+}
+
+/** Whether rows r0.. r0 + h - 1 are free at columns c..c + w - 1. */
+const free = (occ, r0, h, c, w) => {
+  for (let r = r0; r < r0 + h; r++)
+    for (let j = c; j < c + w; j++) if (occ[r][j]) return false;
+  return true;
+};
+
+/** Each cell placed: {occ, places, cols} or null (too wide). */
+function place(rows) {
+  const occ = rows.map(() => []), places = [];
+  let cols = 0;
+  rows.forEach((cells, r) => {
+    let c = 0;
+    for (const el of cells) {
+      while (occ[r][c]) c++;
+      let w = spanOf(attr(el, 'colspan'));
+      let h = Math.min(spanOf(attr(el, 'rowspan')), rows.length - r);
+      if (c + w > LIMITS.cols) {
+        cols = Infinity;
+        return;
+      }
+      let k = 1;
+      while (k < w && !occ[r][c + k]) k++;
+      w = k;
+      let n = 1;
+      while (n < h && free(occ, r + n, 1, c, w)) n++;
+      h = n;
+      const x = {el, r, c, w, h};
+      places.push(x);
+      for (let i = r; i < r + h; i++)
+        for (let j = c; j < c + w; j++) occ[i][j] = x;
+      c += w;
+      cols = Math.max(cols, c);
+    }
+  });
+  return cols >= 1 && cols <= LIMITS.cols ? {occ, places, cols} : null;
+}
+
+/** A cell's tcPr: width, spans, look. */
+function tcPr(grid, x, vMerge, look) {
+  let w = 0;
+  for (let j = x.c; j < x.c + x.w; j++) w += grid[j];
+  const box = look.border ? {top: SIDE(), left: SIDE(), bottom: SIDE(),
+    right: SIDE()} : undefined;
+  return prWith({extra: []}, {tcW: {w, type: 'dxa'},
+    gridSpan: x.w > 1 ? x.w : undefined, vMerge,
+    tcBorders: box, shd: look.fill ? {val: 'clear', color: 'auto',
+      fill: look.fill} : undefined});
+}
+
+/** Blocks ending in a paragraph (a cell's). */
+function cellBlocks(bs) {
+  const out = Array.isArray(bs) ? bs.slice() : [];
+  if (!out.length || out[out.length - 1].type !== 'p')
+    out.push(EMPTY());
+  return out;
+}
+
+const cellOf = (pr, blocks) => ({tcPr: pr, blocks, attrs: [],
+  lead: []});
+
+/** See the header. */
+export function readTable(el, build, opts = {}) {
+  const budget = {n: Number.isInteger(opts.nodes) ? opts.nodes
+    : 200000};
+  const found = rowsOf(el, build, budget);
+  const p = found && place(found.rows);
+  if (!p) return null;
+  const {occ, cols} = p, n = occ.length;
+  let cells = 0;
+  for (let r = 0; r < n; r++)
+    for (let c = 0; c < cols; c += occ[r][c] ? occ[r][c].w : 1) cells++;
+  if (!build.fits(el, cells)) return null;
+  const grid = widthsOf(el, p.places, cols, opts.textTw);
+  const all = tableBorder(el), looks = new Map();
+  for (const x of p.places) {
+    const l = lookOf(x.el);
+    looks.set(x, {fill: l.fill, border: l.border ?? all});
+  }
+  const rows = [];
+  for (let r = 0; r < n; r++) {
+    const row = [];
+    for (let c = 0; c < cols;) {
+      const x = occ[r][c];
+      if (!x) {
+        row.push(cellOf(tcPr(grid, {c, w: 1}, undefined, {}),
+          [EMPTY()]));
+        c++;
+        continue;
+      }
+      const top = x.r === r;
+      const vm = x.h > 1 ? (top ? 'restart' : 'continue') : undefined;
+      row.push(cellOf(tcPr(grid, x, vm, looks.get(x)), top
+        ? cellBlocks(build.cell(x.el)) : [EMPTY()]));
+      c += x.w;
+    }
+    rows.push({trPr: {extra: []}, cells: row, attrs: [], lead: [],
+      tail: [], tblPrEx: null});
+  }
+  for (const c of found.captions) build.caption(c);
+  return {type: 'tbl', tblPr: prWith({extra: []}, {tblW: {w: 0,
+    type: 'auto'}}), grid, gridAttrs: [], rows, attrs: [], tail: []};
+}

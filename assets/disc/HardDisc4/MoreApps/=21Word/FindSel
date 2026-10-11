@@ -1,0 +1,105 @@
+// FindSel - what Find and Replace do to a document's selection
+// (EditFind's second half): the match selected, the next one found,
+// the replacing. The finding is ./Find's.
+//
+//   st(app) -> {active, box, pane}  the task's find state (EditFind
+//                         makes the box; select shows it)
+//   select(dw, m)         select match m (scrolled into view)
+//   step(dw, n, o, back, at)  find from the selection's end (start),
+//                         or from at; the message
+//   current(dw, n, o)     the match the selection is, or null
+//   replaceStep(dw, n, o, repl)  replace the selection if a match,
+//                         then find the next; the message
+//   all(dw, n, o, repl)   replace all; the message
+import {wimp} from 'riscos';
+import * as S from './Selection';
+import {orderedPos} from './EditPos';
+import {at as walkAt} from './Walk';
+import {samePath} from './Path';
+import {search, replaceOne, replaceAll} from './Find';
+import {dropPending} from './EditFormat';
+import {show} from './FindView';
+
+const states = new WeakMap();          // app -> {active, box, pane}
+export const st = (app) => {
+  let s = states.get(app);
+  if (!s) states.set(app, s = {active: null, box: null, pane: null});
+  return s;
+};
+const END = 'Reached the end: continuing from the top';
+const START = 'Reached the start: continuing from the end';
+
+/** Select match m in dw's document (scrolled into view). */
+export function select(dw, m) {
+  const id = walkAt(dw.view.d.doc, m.at).id;
+  dw.view.setSelection(S.select({id, off: m.from}, {id, off: m.to}));
+  show(dw, st(dw.app).box);
+}
+
+/** Find from the selection's end (start); the message. */
+export function step(dw, n, o, back, at) {
+  const v = dw.view, doc = v.d.doc;
+  let from = at;
+  if (!from) {
+    const p = v.sel && orderedPos(doc, v.sel);
+    from = !p ? null : back
+      ? {at: p.f.at, off: p.from.off}
+      : {at: p.t.at, off: p.to.off};
+  }
+  const m = search(doc, from, n, {...o, backwards: back, wrap: true});
+  if (!m) {
+    wimp.beep();
+    return 'Not found';
+  }
+  select(dw, m);
+  return m.wrapped ? (back ? START : END) : '';
+}
+
+/** The match the selection is, or null. */
+export function current(dw, n, o) {
+  const v = dw.view, doc = v.d.doc;
+  const p = v.sel && !S.collapsed(v.sel) && orderedPos(doc, v.sel);
+  if (!p || p.f.b !== p.t.b) return null;
+  const m = search(doc, {at: p.f.at, off: p.from.off}, n, o);
+  return m && samePath(m.at, p.f.at) &&
+    m.from === p.from.off && m.to === p.to.off ? m : null;
+}
+
+/** Replace the selection if a match, then find the next. */
+export function replaceStep(dw, n, o, repl) {
+  const m = current(dw, n, o);
+  if (!m) return step(dw, n, o, false);
+  if (m.inInline) {
+    const s = step(dw, n, o, false, {at: m.at, off: m.to});
+    return 'Link text is kept. ' + s;
+  }
+  const v = dw.view;
+  v.ensure();
+  dropPending(v);
+  const r = v.typing.command(() => replaceOne(v.d, m, repl));
+  if (!r) return 'Not replaced';
+  const id = walkAt(v.d.doc, r.at).id;
+  v.setSelection(S.caret({id, off: r.to}));
+  const s = step(dw, n, o, false, {at: r.at, off: r.to});
+  return '1 replaced' + (s === 'Not found' ? '; no more found'
+    : s ? '. ' + s : '');
+}
+
+/** Replace all; the message. */
+export function all(dw, n, o, repl) {
+  const v = dw.view;
+  v.ensure();
+  dropPending(v);
+  const r = v.typing.command(() => replaceAll(v.d, n, repl, o));
+  if (!r.count && !r.skipped) {
+    wimp.beep();
+    return 'Not found';
+  }
+  if (r.last) {
+    const id = walkAt(v.d.doc, r.last.at).id;
+    v.edited(S.caret({id, off: r.last.to}));
+  }
+  const k = r.skipped;
+  return `${r.count} replaced` + (k ? `; ${k} in links not ` +
+    'replaced' : '');
+}

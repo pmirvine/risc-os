@@ -101,7 +101,7 @@ describe('addBookmark', () => {
     assert.equal(P(d, 0).text, 'one ' + O + 'two' + O + ' three');
     assert.deepEqual([out.sel.anchor.off, out.sel.head.off], [5, 8]);
     assert.deepEqual(list(d.doc), [{name: 'Two', id: '0',
-      at: {s: 0, i: 0, off: 4}}]);
+      at: {at: [0, 0], off: 4}}]);
   });
   it('at a caret: the start, then the end, at one place', () => {
     const d = mk(['ab']);
@@ -259,7 +259,7 @@ describe('list, goTo, deleteBookmark', () => {
       .map((b) => b.name), ['_Toc9', 'alpha', 'Mid', 'Orphan', 'Zeta']);
     assert.equal(list(d.doc).find((b) => b.name === 'Mid').at, null);
     assert.deepEqual(list(d.doc)[1], {name: 'alpha', id: '2',
-      at: {s: 0, i: 1, off: 0}});
+      at: {at: [0, 1], off: 0}});
   });
   it('goTo selects the bookmarked text; a table: refused with a ' +
     'message; a start without its end: the caret after it', () => {

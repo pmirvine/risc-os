@@ -1,0 +1,100 @@
+// TblPos - caret places in typed tables (Batch C), found in the Doc:
+// the first and last paragraph of a table or of a cell, and the
+// hidden part of a vertical merge. Pure: no desktop services.
+//
+//   firstPos(t), lastPos(t) -> {id, off} | null  the start of t's
+//       first paragraph, the end of its last, in flow order (D9:
+//       rows, cells, blocks; nested tables entered), vMerge continue
+//       cells passed (./TblGrid cont: their content is never drawn)
+//   cellPos(t, r, k) -> {id, off} | null  the start of the first
+//       paragraph of cell (r, k) (any depth in it); a continue cell
+//       gives its merge's restart cell (top)
+//   rowPos(t, r) -> the same for row r (its first shown cell, else
+//       its first cell's restart cell)
+//   contOf(doc, at) -> {tp, r, k} | null  the OUTERMOST vMerge
+//       continue cell the block at path `at` is in (at any depth):
+//       tp its table's path, r / k the merge's restart cell; null when
+//       the block is shown (top level, or in no continue cell)
+//   shown(doc, pos) -> pos, or the start of the restart cell of the
+//       continue cell pos is in (contOf): never a hidden place
+//
+// A continue cell's blocks stay in the flow (D9 ranks) but are never
+// painted or hit (./TablePaint, ./DocHit): no command or key leaves
+// the caret there (C3 fix wave).
+import {gridOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {findBlock} from './EditPos';
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+
+/** The first (dir 1) or last (-1) paragraph position in blocks. */
+function inBlocks(bs, dir) {
+  for (let k = 0; k < bs.length; k++) {
+    const b = bs[dir > 0 ? k : bs.length - 1 - k];
+    if (b.type === 'p') {
+      return {id: b.id, off: dir > 0 ? 0 : b.text.length};
+    }
+    const x = isTbl(b) ? inRows(b, 0, b.rows.length - 1, dir) : null;
+    if (x) return x;
+  }
+  return null;
+}
+
+/** inBlocks over the cells of rows r0..r1 of table t, in flow order
+ *  (or backwards), continue cells passed. */
+function inRows(t, r0, r1, dir) {
+  const g = gridOf(t);
+  for (let i = 0; i <= r1 - r0; i++) {
+    const r = dir > 0 ? r0 + i : r1 - i;
+    const cs = t.rows[r].cells, gs = g.rows[r].cells;
+    for (let j = 0; j < cs.length; j++) {
+      const k = dir > 0 ? j : cs.length - 1 - j;
+      if (gs[k].cont) continue;
+      const x = inBlocks(cs[k].blocks, dir);
+      if (x) return x;
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export const firstPos = (t) => inRows(t, 0, t.rows.length - 1, 1);
+
+/** See the header. */
+export const lastPos = (t) => inRows(t, 0, t.rows.length - 1, -1);
+
+/** See the header. */
+export function cellPos(t, r, k) {
+  const c = t.rows[r] && t.rows[r].cells[k];
+  if (!c) return null;
+  const top = gridOf(t).rows[r].cells[k].top;
+  return inBlocks(t.rows[top[0]].cells[top[1]].blocks, 1);
+}
+
+/** See the header. */
+export const rowPos = (t, r) => (t.rows[r] ? inRows(t, r, r, 1) ||
+  cellPos(t, r, 0) : null);
+
+/** See the header. */
+export function contOf(doc, at) {
+  let bs = null;
+  for (let q = 1; q + 2 < at.length; q += 3) {
+    const tp = at.slice(0, q + 1);
+    const t = bs ? bs[at[q]] : walkAt(doc, tp);
+    if (!isTbl(t)) return null;
+    const r = at[q + 1], k = at[q + 2];
+    const gc = gridOf(t).rows[r] && gridOf(t).rows[r].cells[k];
+    if (!gc) return null;
+    if (gc.cont) return {tp, r: gc.top[0], k: gc.top[1]};
+    bs = t.rows[r].cells[k].blocks;
+  }
+  return null;
+}
+
+/** See the header. */
+export function shown(doc, pos) {
+  const loc = pos && findBlock(doc, pos.id);
+  const c = loc && loc.at.length > 2 ? contOf(doc, loc.at) : null;
+  if (!c) return pos;
+  return cellPos(walkAt(doc, c.tp), c.r, c.k) || pos;
+}

@@ -26,6 +26,7 @@ describe('Keymap.lookup from real key events', () => {
     ['Delete', {ctrl: true}, 'ctrlDelete'],
     ['Tab', {}, 'tab'],
     ['Tab', {shift: true}, 'shiftTab'],
+    ['Tab', {ctrl: true}, 'cellTab'],
     ['Insert', {}, 'insert'],
     ['z', {ctrl: true}, 'undo'],
     ['Z', {ctrl: true}, 'undo'],
@@ -52,9 +53,10 @@ describe('Keymap.lookup from real key events', () => {
     for (const [key, mods] of [['a', {}], ['z', {}], ['F5', {}],
       ['Escape', {}], ['ArrowLeft', {}], ['Home', {}],
       ['PageDown', {}], ['q', {ctrl: true}], ['w', {ctrl: true}],
-      ['Tab', {ctrl: true}], ['Tab', {ctrl: true, shift: true}],
+      ['Tab', {ctrl: true, shift: true}],
       ['Tab', {alt: true}], ['Tab', {alt: true, shift: true}],
-      ['Enter', {ctrl: true, shift: true}], ['Delete', {shift: true}],
+      ['Enter', {ctrl: true, shift: true, alt: true}],
+      ['Delete', {shift: true}],
       ['Insert', {ctrl: true}], ['Insert', {shift: true}],
       ['y', {ctrl: true, shift: true}],
       ['Enter', {alt: true}], ['Backspace', {alt: true}],
@@ -95,11 +97,11 @@ describe('Keymap.lookup from a bare Wimp code', () => {
     assert.equal(L(8, {ctrl: true}), 'ctrlBackspace');
     assert.equal(L(127, {ctrl: true}), 'ctrlDelete');
     assert.equal(L(0x18A + 0x10), 'shiftTab');
-    assert.equal(L(0x18A + 0x20), null);
+    assert.equal(L(0x18A + 0x20), 'cellTab');
     assert.equal(L(0x18A + 0x30), null);
     assert.equal(L(0x18A + 0x10, {alt: true}), null);
     assert.equal(L(9, {shift: true}), 'shiftTab');
-    assert.equal(L(9, {ctrl: true}), null);
+    assert.equal(L(9, {ctrl: true}), 'cellTab');
     assert.equal(L(0x1CD + 0x20), null);
     assert.equal(L(13, {alt: true}), null);
   });
@@ -120,7 +122,7 @@ describe('Keymap.lookup from Wimp_ProcessKey events', () => {
     assert.equal(P(25), 'redo');
     assert.equal(P(0x18A), 'tab');
     assert.equal(P(0x19A), 'shiftTab');
-    assert.equal(P(0x1AA), null);
+    assert.equal(P(0x1AA), 'cellTab');
     assert.equal(P(127), 'delete');
     assert.equal(P(0x1CD), 'insert');
     assert.equal(P(1), 'selectAll');
@@ -130,6 +132,9 @@ describe('Keymap.lookup from Wimp_ProcessKey events', () => {
     assert.equal(P(8, {ctrl: true}), 'ctrlBackspace');
     assert.equal(P(13, {alt: true}), null);
     assert.equal(P(13, {ctrl: true}), 'pageBreak');
+    // (C4.1, R21: Word's split table)
+    assert.equal(P(13, {ctrl: true, shift: true}), 'splitTable');
+    assert.equal(id('Enter', {ctrl: true, shift: true}), 'splitTable');
     assert.equal(id('Enter', {ctrl: true}), 'pageBreak');
     assert.equal(keymap.lookup({code: 13, key: 'Unidentified'}),
       'enter');
@@ -164,6 +169,8 @@ describe('Keymap table', () => {
       'undo', 'redo', 'selectAll']) assert.ok(keymap.row(i), i);
     assert.equal(keymap.labelFor('tab'), 'Tab');
     assert.equal(keymap.labelFor('shiftTab'), 'Shift+Tab');
+    assert.equal(keymap.labelFor('cellTab'), 'Ctrl+Tab');
+    assert.equal(keymap.row('cellTab').menu, undefined);
   });
   it('cut, copy and paste rows (Edit menu labels); no Ctrl+Shift', () => {
     const k = (key, o = {}) => keymap.lookup({key, ctrl: true,
@@ -352,7 +359,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(keymap.lookup({code: 0x1A2}), 'close');
     for (const c of [0x181, 0x185, 0x186, 0x187, 0x192, 0x1A5,
       0x1B2, 0x1CA, 0x1CB, 0x1CC, 0x1DC, 0x1EC, 0x1FC, 0x180,
-      0x18A + 0x20]) assert.equal(P(c), null, c.toString(16));
+      0x18A + 0x30]) assert.equal(P(c), null, c.toString(16));
     assert.equal(P(0x193), 'caseCycle');
     assert.equal(P(0x182, {alt: true}), null);
     assert.equal(P(0x183, {alt: true}), null);

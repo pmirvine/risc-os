@@ -1,9 +1,10 @@
 // ListNumbers - the list labels (numbers and bullets) of a Doc.
 //
 //   labels(doc) -> Map<paraId, Label>, one pass over the paragraphs
-//   of every section in order (kept blocks are skipped: they neither
-//   count nor restart anything); paragraphs with no label are not in
-//   the map.
+//   of every section in flow order (./Walk scan: a typed table's
+//   cells' paragraphs count, nested ones too, as Word numbers them;
+//   kept blocks are skipped: they neither count nor restart
+//   anything); paragraphs with no label are not in the map.
 //   Label {text, level, numId, indent?, suff, jc, rPr, bullet, fmt}
 //     text    what is shown ('' for numFmt none or an empty lvlText)
 //     level   the ilvl 0..8 counted; numId the numbering instance
@@ -39,6 +40,7 @@ import {paraNumPr, paraStyleId} from './Styles';
 import {levelsIn, startOf, overrideStart, restarts, labelMaker,
   levelIndent, styleLevel} from './ListLevel';
 import {fmtOf} from './NumFormat';
+import {scan} from './Walk';
 
 const SUFF = ['tab', 'space', 'nothing'];
 const JC = new Map([['left', 'left'], ['center', 'center'],
@@ -94,29 +96,25 @@ export function labels(doc) {
   const styles = doc.styles || null;
   const states = new Map();
   const shared = new Map();
-  for (const s of doc.sections) {
-    for (const b of s.blocks) {
-      if (b.type !== 'p') continue;
-      const np = paraNumPr(styles, b);
-      if (!np) continue;
-      let st = states.get(np.numId);
-      if (!st) {
-        const num = nums.get(np.numId);
-        if (!isObj(num)) continue;
-        const a = num.abstractNumId;
-        const key = a === undefined || a === null ? null : a;
-        let count = key === null ? undefined : shared.get(key);
-        if (!count) {
-          count = new Array(9);
-          if (key !== null) shared.set(key, count);
-        }
-        st = newState(num, count);
-        states.set(np.numId, st);
+  scan(doc, (b) => {
+    const np = b.type === 'p' && paraNumPr(styles, b);
+    if (!np) return;
+    let st = states.get(np.numId);
+    if (!st) {
+      const num = nums.get(np.numId);
+      if (!isObj(num)) return;
+      const a = num.abstractNumId;
+      const key = a === undefined || a === null ? null : a;
+      let count = key === null ? undefined : shared.get(key);
+      if (!count) {
+        count = new Array(9);
+        if (key !== null) shared.set(key, count);
       }
-      const k = np.ilvlGiven ? np.ilvl : byStyle(st, styles, b);
-      if (!st.levels[k]) continue;
-      out.set(b.id, count(st, np.numId, k));
+      st = newState(num, count);
+      states.set(np.numId, st);
     }
-  }
+    const k = np.ilvlGiven ? np.ilvl : byStyle(st, styles, b);
+    if (st.levels[k]) out.set(b.id, count(st, np.numId, k));
+  });
   return out;
 }

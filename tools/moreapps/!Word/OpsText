@@ -6,10 +6,13 @@
 // undone by splicing the removed content back (so undo history
 // costs about the size of the edit); split and merge are undone by
 // restoring the old paragraph objects, which nothing ever changes.
+// `block` is a ./Path path; in a cell, the tables on the path are
+// copied (./OpsPath own) only once every check has passed.
 import {fail, wellFormed, checkPos, checkInlines, checkContent,
   checkPara} from './ModelCheck';
 import {props, nextId, reserveIds} from './Model';
-import {paraAt, cut, join} from './OpsUtil';
+import {paraAt, own, cut, join} from './OpsUtil';
+import {sib} from './Path';
 import {unseenAt} from './Kinds';
 
 /** An unseen level-'p' inline at offset k of p (see fmtAt). */
@@ -92,7 +95,7 @@ export function replaceText(doc, op) {
  * (runs need not be normalised). The inverse is a spliceText too.
  */
 export function spliceText(doc, op) {
-  const {s, i, blocks, p} = paraAt(doc, op.block);
+  const {i, at: path, p} = paraAt(doc, op.block);
   const {at, del, content} = op;
   checkRegion(p, at, del);
   checkContent(content);
@@ -100,8 +103,8 @@ export function spliceText(doc, op) {
   const q = {...p, ...join(cut(p, 0, at), content,
     cut(p, at + del, p.text.length))};
   checkPara(q);
-  blocks[i] = q;
-  return {op: 'spliceText', block: [s, i], at,
+  own(doc, path)[i] = q;
+  return {op: 'spliceText', block: path, at,
     del: content.text.length, content: old};
 }
 
@@ -114,7 +117,7 @@ export function spliceText(doc, op) {
  * is never duplicated.
  */
 export function splitBlock(doc, op) {
-  const {s, i, blocks, p} = paraAt(doc, op.block);
+  const {i, at, p} = paraAt(doc, op.block);
   checkPos(p.text, op.at, 'at');
   const len = p.text.length;
   const a = {...p, ...join(cut(p, 0, op.at))};
@@ -123,28 +126,29 @@ export function splitBlock(doc, op) {
     pPr: p.pPr};
   if (p.pStyle !== undefined) b.pStyle = p.pStyle;
   b.extraP = [];
-  blocks.splice(i, 1, a, b);
+  own(doc, at).splice(i, 1, a, b);
   return {op: 'compound', ops: [
-    {op: 'removeBlock', at: [s, i + 1]},
-    {op: 'restoreBlock', block: [s, i], snapshot: p},
+    {op: 'removeBlock', at: sib(at, 1)},
+    {op: 'restoreBlock', block: at, snapshot: p},
   ]};
 }
 
 /**
  * {op:'mergeBlock', block}: append the next block of the same
- * section, which must be a paragraph, to this one. The result keeps
- * this paragraph's id, pPr, pStyle and extraP.
+ * container (section or cell: never across cells), which must be a
+ * paragraph, to this one. The result keeps this paragraph's id, pPr,
+ * pStyle and extraP.
  */
 export function mergeBlock(doc, op) {
-  const {s, i, blocks, p} = paraAt(doc, op.block);
+  const {i, at, blocks, p} = paraAt(doc, op.block);
   const n = blocks[i + 1];
   if (!n || n.type !== 'p') fail('next block is not a paragraph');
   const q = {...p, ...join(cut(p, 0, p.text.length),
     cut(n, 0, n.text.length))};
   checkPara(q);
-  blocks.splice(i, 2, q);
+  own(doc, at).splice(i, 2, q);
   return {op: 'compound', ops: [
-    {op: 'restoreBlock', block: [s, i], snapshot: p},
-    {op: 'insertBlock', at: [s, i + 1], block: n},
+    {op: 'restoreBlock', block: at, snapshot: p},
+    {op: 'insertBlock', at: sib(at, 1), block: n},
   ]};
 }

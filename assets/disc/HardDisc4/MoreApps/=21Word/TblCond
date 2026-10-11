@@ -1,0 +1,223 @@
+// TblCond - the conditional formatting of a table cell (D16) and
+// the cell's paragraph layer as a derived style table (R6). Pure.
+//
+//   lookOf(tblPr) -> {firstRow, lastRow, firstColumn, lastColumn,
+//     noHBand, noVBand}  booleans: each the tblLook flag when it is
+//     written, else its bit of the hex w:val (LOOK_BITS), else false
+//     (a table without tblLook: all false); the flags win (TB5)
+//   bandsOf(tblPr, view) -> {rows, cols}  the band sizes: the
+//     table's tblStyleRowBandSize / tblStyleColBandSize over the
+//     style view's; an integer 1..MAX_BAND, else 1 (R24)
+//   condsOf(look, r, c, rows, cols, bands?) -> string[]  the
+//     condition types (./TblStyle COND_TYPES) that apply to the cell
+//     at row r, grid column c of a rows x cols table, in D16's
+//     order: wholeTable; band1Vert / band2Vert (unless noVBand;
+//     bands of bands.cols columns, the first column left out when
+//     firstColumn is on); band1Horz / band2Horz (unless noHBand;
+//     bands.rows rows, the first row left out when firstRow is on);
+//     firstCol, lastCol; firstRow, lastRow; nwCell, neCell, swCell,
+//     seCell (a corner when both its flags are on: nwCell firstRow
+//     and firstColumn...). bands defaults to {rows: 1, cols: 1}
+//   layerOf(view, look, r, c, rows, cols, bands?) -> {tcPr, pPr,
+//     rPr}  the style's whole-table parts, then each condition's
+//     part in condsOf's order, later over earlier (tcPr by
+//     ./TblStyle mergePart, pPr / rPr as the style chains merge);
+//     memoised per view by the conditions' key: the SAME frozen
+//     object for every cell with the same conditions. No view: one
+//     shared empty layer
+//   compatOf(doc) -> boolean  the compatibility switch
+//     overrideTableStyleFontSizeAndJustification in doc.rawSettings'
+//     w:compat: the element (on/off, no w:val = on) or a
+//     w:compatSetting of that w:name whose w:val is on; absent:
+//     false (older documents). Cached per settings root
+//   stylesFor(styles, layer, compat) -> StyleTable  R6: the table
+//     as a cell's paragraphs see it: docDefaults pPr / rPr with the
+//     layer's merged over them; with compat on, the default
+//     paragraph style is a copy without the sz / szCs / jc the layer
+//     gives (the table style wins over Normal; off: Normal's win,
+//     as Word 2010). The other styles are the same objects; a layer
+//     giving nothing -> `styles` itself. Memoised per (styles,
+//     layer, compat). Display only: never written, never changed.
+import {wName, wAttr, isEl, scope, rootScope} from './Ns';
+import {onOffOf} from './ReadPropsMore';
+import {mergeInto} from './StylesMerge';
+import {mergePart, COND_TYPES} from './TblStyle';
+
+export {COND_TYPES};
+
+export const LOOK_BITS = {firstRow: 0x0020, lastRow: 0x0040,
+  firstColumn: 0x0080, lastColumn: 0x0100, noHBand: 0x0200,
+  noVBand: 0x0400};
+const LOOK = Object.keys(LOOK_BITS);
+export const MAX_BAND = 1000;
+const HEX = /^[0-9A-Fa-f]{1,4}$/;
+
+/** See the header. */
+export function lookOf(tblPr) {
+  const t = tblPr && tblPr.tblLook;
+  const hex = t && typeof t.val === 'string' && HEX.test(t.val)
+    ? parseInt(t.val, 16) : 0;
+  const out = {};
+  for (const k of LOOK) {
+    const b = t ? t[k] : undefined;
+    out[k] = typeof b === 'boolean' ? b : (hex & LOOK_BITS[k]) !== 0;
+  }
+  return out;
+}
+
+const band = (v) => Number.isInteger(v) && v >= 1 && v <= MAX_BAND
+  ? v : undefined;
+
+/** See the header. */
+export function bandsOf(tblPr, view) {
+  const s = view && view.tblPr ? view.tblPr : {};
+  const t = tblPr || {};
+  const pick = (k) => band(t[k]) ?? band(s[k]) ?? 1;
+  return {rows: pick('tblStyleRowBandSize'),
+    cols: pick('tblStyleColBandSize')};
+}
+
+const B1 = {rows: 1, cols: 1};
+
+/** See the header. */
+export function condsOf(look, r, c, rows, cols, bands = B1) {
+  const out = ['wholeTable'];
+  const lastR = r === rows - 1, lastC = c === cols - 1;
+  if (!look.noVBand) {
+    const k = c - (look.firstColumn ? 1 : 0);
+    if (k >= 0) {
+      out.push(Math.floor(k / (band(bands.cols) || 1)) % 2
+        ? 'band2Vert' : 'band1Vert');
+    }
+  }
+  if (!look.noHBand) {
+    const k = r - (look.firstRow ? 1 : 0);
+    if (k >= 0) {
+      out.push(Math.floor(k / (band(bands.rows) || 1)) % 2
+        ? 'band2Horz' : 'band1Horz');
+    }
+  }
+  const fc = look.firstColumn && c === 0;
+  const lc = look.lastColumn && lastC;
+  const fr = look.firstRow && r === 0;
+  const lr = look.lastRow && lastR;
+  if (fc) out.push('firstCol');
+  if (lc) out.push('lastCol');
+  if (fr) out.push('firstRow');
+  if (lr) out.push('lastRow');
+  if (fr && fc) out.push('nwCell');
+  if (fr && lc) out.push('neCell');
+  if (lr && fc) out.push('swCell');
+  if (lr && lc) out.push('seCell');
+  return out;
+}
+
+const EMPTY = Object.freeze({tcPr: Object.freeze({extra: []}),
+  pPr: Object.freeze({extra: []}), rPr: Object.freeze({extra: []})});
+const layers = new WeakMap();
+
+/** Merge the parts of one condition (or the view) into `o`. */
+function add(o, parts) {
+  if (!parts) return;
+  mergePart(o.tcPr, parts.tcPr);
+  mergeInto(o.pPr, parts.pPr);
+  mergeInto(o.rPr, parts.rPr);
+}
+
+/** See the header. */
+export function layerOf(view, look, r, c, rows, cols, bands = B1) {
+  if (!view) return EMPTY;
+  const conds = condsOf(look, r, c, rows, cols, bands);
+  const key = conds.join(' ');
+  let byKey = layers.get(view);
+  if (!byKey) layers.set(view, byKey = new Map());
+  const hit = byKey.get(key);
+  if (hit) return hit;
+  const o = {tcPr: {extra: []}, pPr: {extra: []}, rPr: {extra: []}};
+  add(o, view);
+  for (const t of conds) add(o, view.cond && view.cond.get(t));
+  Object.freeze(o.tcPr);
+  Object.freeze(o.pPr);
+  Object.freeze(o.rPr);
+  byKey.set(key, Object.freeze(o));
+  return o;
+}
+
+const NAME = 'overrideTableStyleFontSizeAndJustification';
+const bySettings = new WeakMap();
+const kidsOf = (n) => n && typeof n === 'object' &&
+  Array.isArray(n.children) && Array.isArray(n.attrs) ? n.children
+  : null;
+
+/** The switch from the settings root (see the header). */
+function readCompat(root) {
+  const kids = kidsOf(root);
+  if (!kids) return false;
+  const map = rootScope(root);
+  for (const c of kids) {
+    if (!kidsOf(c) || !isEl(c)) continue;
+    const m = c.attrs.length ? scope(map, c) : map;
+    if (wName(c, m) !== 'compat') continue;
+    for (const d of c.children) {
+      if (!kidsOf(d) || !isEl(d)) continue;
+      const dm = d.attrs.length ? scope(m, d) : m;
+      const l = wName(d, dm);
+      const val = wAttr(d, dm, 'val');
+      if (l === NAME) return val === undefined || onOffOf(val) === true;
+      if (l === 'compatSetting' && wAttr(d, dm, 'name') === NAME) {
+        return onOffOf(val) === true;
+      }
+    }
+  }
+  return false;
+}
+
+/** See the header. */
+export function compatOf(doc) {
+  const root = doc && doc.rawSettings;
+  if (!root || typeof root !== 'object') return false;
+  let v = bySettings.get(root);
+  if (v === undefined) bySettings.set(root, v = readCompat(root));
+  return v;
+}
+
+const given = (o) => !!o && Object.keys(o).some((k) => k !== 'extra' &&
+  o[k] !== undefined) || !!(o && o.extra && o.extra.length);
+
+/** Normal without what the layer gives of sz / szCs / jc. */
+function stripped(styles, layer) {
+  const id = styles.defaults && styles.defaults.paragraph;
+  const n = id ? styles.styles.get(id) : undefined;
+  if (!n) return null;
+  const rDrop = ['sz', 'szCs'].filter((k) => layer.rPr[k] !== undefined
+    && n.rPr && n.rPr[k] !== undefined);
+  const pDrop = layer.pPr.jc !== undefined && n.pPr &&
+    n.pPr.jc !== undefined ? ['jc'] : [];
+  if (!rDrop.length && !pDrop.length) return null;
+  const copy = {...n, rPr: {...n.rPr}, pPr: {...n.pPr}};
+  for (const k of rDrop) delete copy.rPr[k];
+  for (const k of pDrop) delete copy.pPr[k];
+  return new Map(styles.styles).set(id, copy);
+}
+
+const derived = new WeakMap();
+
+/** See the header. */
+export function stylesFor(styles, layer, compat) {
+  if (!styles || !layer || (!given(layer.pPr) && !given(layer.rPr))) {
+    return styles;
+  }
+  let byLayer = derived.get(styles);
+  if (!byLayer) derived.set(styles, byLayer = new WeakMap());
+  let pair = byLayer.get(layer);
+  if (!pair) byLayer.set(layer, pair = [undefined, undefined]);
+  const at = compat ? 1 : 0;
+  if (pair[at]) return pair[at];
+  const dd = styles.docDefaults || {};
+  const out = {...styles, docDefaults: {
+    pPr: mergeInto(mergeInto({extra: []}, dd.pPr), layer.pPr),
+    rPr: mergeInto(mergeInto({extra: []}, dd.rPr), layer.rPr)}};
+  const map = compat ? stripped(styles, layer) : null;
+  if (map) out.styles = map;
+  return (pair[at] = out);
+}

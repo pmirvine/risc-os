@@ -1,0 +1,64 @@
+// TblNorm - the rules every table command follows when it writes a
+// property or changes rows and cells (Batch C4 fix wave), one helper
+// each; ./TblEdit, ./TblEditCols, ./TblEditDist, ./TblMerge and
+// ./TblSplit use nothing else for these.
+//
+//   prWith(pr, patch) -> a copy of the property object pr (a tblPr,
+//       trPr or tcPr; null reads as {}) with each field of patch set,
+//       or removed when its value is undefined. A raw element of the
+//       same name kept in pr.extra (one the reader could not model,
+//       such as a Strict w:tcW w:w="155.80pt") is dropped, as
+//       setProps drops it (./PropNames withoutRaw): the field
+//       replaces it, so no cell is written with two w:tcW. pr is not
+//       changed; extra is the same array when nothing is dropped.
+//       (A table property's field is named as its element.)
+//   unstray(t, g?) -> t'  every vMerge continue cell that the grid
+//       reads as a restart (./TblGrid: no merged cell of the same
+//       columns above it; Word reads it so too) written restart: a
+//       new table (a NEW grid array, the rows and tcPr concerned
+//       copied, the rest shared), or t itself when there is none.
+//       Every command that changes rows or cells starts from it, so
+//       what they put around such a cell never joins it to a merge
+//       (its text would be hidden). g: t's gridOf (computed when not
+//       given).
+//   rawW(pr) -> boolean  pr keeps its width element raw in extra (a
+//       Strict w:tcW w:w="155.80pt"): a command that changes the
+//       cell's columns writes it tcW dxa of them, as it does a dxa
+//       one (C5.3: no stale width is kept beside new columns)
+// Pure: no desktop services.
+import {withoutRaw} from './PropNames';
+import {gridOf} from './TblGrid';
+
+/** See the header. */
+export function prWith(pr, patch) {
+  const o = {...pr}, names = Object.keys(patch);
+  for (const k of names) {
+    if (patch[k] === undefined) delete o[k];
+    else o[k] = patch[k];
+  }
+  if (Array.isArray(o.extra)) o.extra = withoutRaw(o.extra, names);
+  return o;
+}
+
+/** See the header (rawW). */
+export const rawW = (pr) => !!pr && Array.isArray(pr.extra) &&
+  withoutRaw(pr.extra, ['tcW']) !== pr.extra;
+
+/** See the header. */
+export function unstray(t, g = gridOf(t)) {
+  let rows = null;
+  t.rows.forEach((row, r) => {
+    let cells = null;
+    row.cells.forEach((c, k) => {
+      if (c.tcPr.vMerge !== 'continue' || g.rows[r].cells[k].cont) {
+        return;
+      }
+      cells = cells || row.cells.slice();
+      cells[k] = {...c, tcPr: prWith(c.tcPr, {vMerge: 'restart'})};
+    });
+    if (!cells) return;
+    rows = rows || t.rows.slice();
+    rows[r] = {...row, cells};
+  });
+  return rows ? {...t, grid: [...t.grid], rows} : t;
+}

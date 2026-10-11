@@ -1,7 +1,7 @@
 // ClipPaste - Paste and Cut in a document.
 //
-//   pasteBlocks(d, sel, blocks, {sameDoc, styleNames, lists, pics,
-//     picScope}) -> sel
+//   pasteBlocks(d, sel, blocks, {sameDoc, styleNames, styles, lists,
+//     pics, picScope}) -> sel
 //   pastePlain(d, sel, text) -> sel       ./Edit.typeText
 //   cutSelection(d, sel) -> {slice, sel}  ./ClipSlice, then deleted
 //   deleteSelection(d, sel) -> sel        ./EditDel's
@@ -15,34 +15,45 @@
 // step; typing after it starts another).
 //
 // pasteBlocks: blocks (./ClipSlice's shape) first go through
-// ./ClipClean (sameDoc, styleNames, lists: see there), then the
-// selection is deleted (./EditRange) and they go in at the caret, in
-// the same step. At a kept block's edge (a table), as typing does, an
-// empty paragraph is made there first (before it at off 0, after it
-// at 1) and the blocks go into it. Into paragraph P at offset off:
+// ./ClipClean (sameDoc, styleNames, lists, styles: see there), then
+// the selection is deleted (./EditRange) and they go in at the caret,
+// in the same step; tables nested deeper than 8 there are their text
+// (./ClipPasteTbl fitDepth). One table block over a cells shape
+// overwrites the rectangle's cells' contents instead (./ClipPasteTbl
+// overwrite, D28, TB15: nothing deleted, no row or column added).
+// At a kept block's edge (a table), as typing does, an empty
+// paragraph is made there first (before it at off 0, after it at 1)
+// and the blocks go into it. Into paragraph P at offset off:
 //   - one paragraph: its content is spliced in (spliceText): P keeps
 //     its id and properties, the pasted runs their formatting
 //   - several blocks: P's text before off and the first block's
 //     content are P's (its id, extraP; its properties, but the first
 //     block's at off 0, where nothing of P is left before it); the
-//     blocks between go in whole (fresh ids, extraP []); the last
-//     block's content and P's text after off (with its formatting)
-//     make a new paragraph (fresh id) with P's properties: P's
-//     paragraph mark ends it. A first block that is a kept block
+//     blocks between go in whole (fresh ids, extraP []; a table's
+//     at every depth); the last block's content and P's text after
+//     off (with its formatting) make a new paragraph (fresh id)
+//     with P's properties: P's paragraph mark ends it. A first block
+//     that is a table or a kept block
 //     leaves P's head alone, and when that head is empty the blocks
 //     go in before P, which keeps its id and takes the last block's
-//     content; a last kept block leaves the tail on its own. Ops:
-//     restoreBlock and one insertBlocks (linear: 100,000 paragraphs
-//     are one op).
+//     content; a last kept block leaves the tail on its own; a
+//     table going in right after a table (typed or kept: ./TblCheck
+//     endsCell) gets an empty paragraph before it, and pasted tables
+//     next to each other one between them, at every depth
+//     (./ClipCleanTbl apart; D27: tables never touch). Ops:
+//     restoreBlock and one insertBlocks (linear: 100,000
+//     paragraphs are one op).
 // The caret: after the last block's content (at the start of the
 // tail after a kept block).
-// Lists from another document (opts.lists, ./ClipNums): the pasted
+// Lists and table styles from another document: ./ClipCarry.
+// Lists (opts.lists, ./ClipNums): the pasted
 // paragraphs that keep their properties (the first at off 0 and the
 // ones between) and are in a list of opts.lists get that list made
 // anew in the target (./NumCopy: its setDocPart ops first, in the
-// same step) and their numPr names it; every other numPr of the
-// source is dropped, as is one whose list cannot be made (no free
-// id: a plain paragraph).
+// same step) and their numPr names it (the paragraphs in a pasted
+// table's cells too, at every depth: Batch C6.1); every other numPr
+// of the source is dropped, as is one whose list cannot be made (no
+// free id: a plain paragraph).
 //
 // Pictures (Batch B): from another document (opts.pics, picScope:
 // ./ClipSlice), each kept picture's media becomes a new part of the
@@ -53,21 +64,33 @@
 // except a picture whose media an undo took away since the copy:
 // that one is carried as from another document (./ClipPics
 // samePaste). No id or name free: RangeError.
+// Table styles (Batch C6.2): from another document (opts.styles,
+// ./ClipSlice), the table styles the pasted tables name are the
+// target's of the same name or copied into its style table with
+// their basedOn chain (./TblStyleCopy copyStyles: its setDocPart op
+// first, in the same step) and each tblStyle names the target's id.
 //
 // pastePlain: the text typed (\n splits paragraphs, controls go:
-// ./Edit), one undo step of its own.
+// ./Edit), one undo step of its own. Ops go to the caret's path
+// (./EditPos loc.at), in a cell as at top level.
 // Pure: no desktop services.
-import {nextId, reserveIds} from './Model';
+import {nextId, reserveIds, newPara} from './Model';
 import {cut, join} from './OpsUtil';
 import {caret, collapsed} from './Selection';
-import {orderedPos, findBlock} from './EditPos';
+import {orderedPos, findBlock, sibOf} from './EditPos';
 import {deleteRange, paraBy} from './EditRange';
 import {deleteSelection} from './EditDel';
 import {typeText} from './Edit';
 import {clean} from './ClipClean';
 import {slice} from './ClipSlice';
-import {copyNums} from './NumCopy';
 import {copyPics, samePaste} from './ClipPics';
+import {freshTable, apart} from './ClipCleanTbl';
+import {at as walkAt} from './Walk';
+import {endsCell} from './TblCheck';
+import {sib, depthOf} from './Path';
+import {fitDepth, overShape, overwrite, landed}
+  from './ClipPasteTbl';
+import {relist, styled} from './ClipCarry';
 
 export {deleteSelection};
 
@@ -82,17 +105,20 @@ function para(id, c, from, extraP = []) {
   return p;
 }
 
-/** A pasted block, fresh id, for the middle. */
-const whole = (b) => (b.type === 'p'
-  ? para(nextId(), join(content(b)), b) : {type: 'opaque',
-    node: b.node});
+/** A pasted block, fresh ids (a table's at every depth: Batch C,
+ *  ./ClipCleanTbl freshTable), for the middle. */
+function whole(b) {
+  if (b.type === 'p') return para(nextId(), join(content(b)), b);
+  if (b.type === 'tbl') return freshTable(b);
+  return {type: 'opaque', node: b.node};
+}
 
 /** Put list (cleaned, >= 1 block) in at loc/off; the caret. */
 function insert(d, loc, off, list) {
-  const P = loc.b, {s, i} = loc, n = list.length;
+  const P = loc.b, at = loc.at, n = list.length;
   const first = list[0], last = list[n - 1];
   if (n === 1 && first.type === 'p') {
-    d.apply({op: 'spliceText', block: [s, i], at: off, del: 0,
+    d.apply({op: 'spliceText', block: at, at: off, del: 0,
       content: content(first)});
     return {id: P.id, off: off + first.text.length};
   }
@@ -105,16 +131,22 @@ function insert(d, loc, off, list) {
   const mids = list.slice(fp ? 1 : 0, lp ? n - 1 : n).map(whole);
   const end = lp ? last.text.length : 0;
   if (!head.text && !fp) {
-    // nothing of P before: the blocks go in before P
-    d.apply({op: 'insertBlocks', at: [s, i], blocks: mids});
-    d.apply({op: 'restoreBlock', block: [s, i + mids.length],
+    // nothing of P before: the blocks go in before P (not right
+    // after a table: D27)
+    const prev = at[at.length - 1] > 0 ? walkAt(d.doc, sib(at, -1))
+      : null;
+    if (endsCell(mids[0]) && endsCell(prev))
+      mids.unshift(newPara(''));
+    d.apply({op: 'insertBlocks', at, blocks: mids});
+    d.apply({op: 'restoreBlock', block: sibOf(loc, mids.length),
       snapshot: para(P.id, tail, P, P.extraP)});
     return {id: P.id, off: end};
   }
   const t = para(nextId(), tail, P);
-  d.apply({op: 'restoreBlock', block: [s, i], snapshot:
+  d.apply({op: 'restoreBlock', block: at, snapshot:
     para(P.id, head, fp && off === 0 ? first : P, P.extraP)});
-  d.apply({op: 'insertBlocks', at: [s, i + 1], blocks: [...mids, t]});
+  d.apply({op: 'insertBlocks', at: sibOf(loc, 1),
+    blocks: [...mids, t]});
   return {id: t.id, off: end};
 }
 
@@ -129,47 +161,31 @@ function kept(list, off) {
   return out;
 }
 
-/** list with the source's lists made in d (see the header). */
-function relist(d, list, off, lists) {
-  const np = (b) => (b.type === 'p' ? b.pPr.numPr : undefined);
-  const want = kept(list, off).map((i) => np(list[i]))
-    .filter((x) => x && x.numId !== 0).map((x) => x.numId);
-  let got = {ops: [], map: new Map()};
-  if (want.length && lists instanceof Map) {
-    try {
-      got = copyNums(d.doc, lists, want);
-    } catch (e) {
-      // no free id, a numbering !Word cannot extend: no list
-      if (!(e instanceof RangeError)) throw e;
-    }
-  }
-  for (const op of got.ops) d.apply(op);
-  const map = got.map;
-  return list.map((b) => {
-    const x = np(b);
-    if (!x || x.numId === 0) return b;
-    const {numPr, ...rest} = b.pPr;
-    return {...b, pPr: map.has(x.numId) ? {...rest, numPr: {...numPr,
-      numId: map.get(x.numId)}} : rest};
-  });
-}
-
 /** See the header. */
 export function pasteBlocks(d, sel, blocks, opts = {}) {
-  let list = clean(blocks, d.doc, opts);
+  let list = apart(clean(blocks, d.doc, opts));
   if (!list.length) return sel;
   const o = orderedPos(d.doc, sel);
   if (!o) return sel;
+  const over = collapsed(sel) ? null : overShape(d.doc, sel, list);
   let out = null;
   d.atomic(() => {
-    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
-    let loc = findBlock(d.doc, pos.id);
-    if (loc.b.type !== 'p') {
-      pos = paraBy(d, loc, pos.off);
+    let pos = null, loc = null;
+    if (!over) {
+      pos = collapsed(sel) ? o.from : deleteRange(d, o);
       loc = findBlock(d.doc, pos.id);
+      if (loc.b.type !== 'p') {
+        pos = paraBy(d, loc, pos.off);
+        loc = findBlock(d.doc, pos.id);
+      }
     }
+    if (over) list = [landed(d.doc, over, list[0])];
+    list = fitDepth(list, over ? depthOf(over.table) : loc.depth);
     if (!opts.sameDoc) {
-      list = relist(d, list, pos.off, opts.lists);
+      if (opts.styles instanceof Map)
+        list = styled(d, list, opts.styles);
+      list = relist(d, list, over ? [0] : kept(list, pos.off),
+        opts.lists);
       const c = copyPics(d.doc, list, opts.pics, opts.picScope);
       for (const op of c.ops) d.apply(op);
       list = c.blocks;
@@ -178,7 +194,8 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
       for (const op of c.ops) d.apply(op);
       list = c.blocks;
     }
-    out = insert(d, loc, pos.off, list);
+    out = over ? overwrite(d, over, list[0])
+      : insert(d, loc, pos.off, list);
   });
   return out ? caret(out) : sel;
 }

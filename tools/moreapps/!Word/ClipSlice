@@ -1,6 +1,6 @@
 // ClipSlice - a selection as clipboard blocks, for Copy and Cut.
 //
-//   slice(doc, sel) -> {blocks, ids, styleNames, lists, pics,
+//   slice(doc, sel) -> {blocks, ids, styleNames, styles, lists, pics,
 //     picScope, plain} | null
 //   plainOf(blocks) -> the blocks as plain text
 //   paraPlain(block) -> one paragraph block as plain text
@@ -8,28 +8,50 @@
 // blocks (the clipboard's one block shape: ./ClipRead gives it too,
 // ./ClipClean and ./ClipPaste take it):
 //   {type:'p', text, runs, inlines, pPr, pStyle?}  no id, no extraP
+//   {type:'tbl', tblPr, grid, gridAttrs, rows, attrs, tail}
+//                         a typed table (Batch C, D28), its cells
+//                         holding these blocks (no ids at any depth)
 //   {type:'opaque', node}                          a kept block
-// A paragraph block is the selected part of a paragraph: its text
-// from OpsUtil.cut (runs cut at the edges, inlines shifted), with
-// the paragraph's pPr and pStyle. A kept block (a table) is in the
-// slice when the selection covers it (as ./EditRange deletes it).
-// ids: the source paragraph id of each block (null for a kept
-// block), for ./ClipHtml's list labels. styleNames: Map id ->
-// {name, type} of the paragraph and character styles the blocks
-// use, so another document can map them by name (./ClipClean).
+// What a selection gives depends on its shape (./SelShape, D28):
+//   text   the paragraphs between its ends (in one container: the
+//          body or one cell): the selected part of each (its text
+//          from OpsUtil.cut: runs cut at the edges, inlines shifted)
+//          with the paragraph's pPr and pStyle; a kept block when
+//          the selection covers it (as ./EditRange deletes it)
+//   cells  one table block: the rectangle (./ClipCut cutRect: spans
+//          cut at its edges, a continue cell at its top row a
+//          restart, the grid of its columns); the whole table as it
+//          is when the rectangle is all of it
+//   mixed  the text range's paragraphs and kept blocks in the
+//          container of the tables it touches, and for each such
+//          table a table block of the rows covered (./ClipCut
+//          cutRows; a table spanned whole)
+// A table block holds its paragraphs whole (./Walk mapBlocks), nested
+// tables whole.
+// ids: the source id of each block in ./Walk walkBlocks order (a
+// paragraph's id, at every depth; null for a table or a kept block),
+// for ./ClipHtml's list labels. styleNames: Map id -> {name, type}
+// of the paragraph and character styles the paragraphs use and the
+// table styles the tables use (tblStyle), at every depth, so another
+// document can map them by name (./ClipClean). styles: the source's
+// table styles the tables name and those they need (./TblStyleCopy
+// sourceStyles: Map id -> {style, m}, shared), so another document
+// can copy them (Batch C6.2).
 // lists: Map numId -> the numbering definition (the source's w:num
 // and w:abstractNum nodes, shared) of each list the blocks' numPr
-// name (./ClipNums numsOf), so another document can make them
-// (./NumCopy). pics: Map embed -> {bytes, ext} of the pictures the
-// blocks hold (./ClipPics picsOf), picScope the scope they are read
-// in (./PicRead docMap), so another document can take them
-// (./ClipPics copyPics).
+// name, in cells too (./ClipNums numsOf), so another document can
+// make them (./NumCopy). pics: Map embed -> {bytes, ext} of the
+// pictures the blocks hold, in cells too (./ClipPics picsOf),
+// picScope the scope they are read in (./PicRead docMap), so another
+// document can take them (./ClipPics copyPics).
 // null: a collapsed selection, a position not in the document, or
 // nothing in it.
 //
-// plain: paragraphs joined by \n, a kept block an empty line, a tab
-// \t, a line break \n, an inline wrapper (a link...) its text, other
-// inline items nothing (as ./Selection.text).
+// plain: blocks joined by \n: a paragraph's text (a tab \t, a line
+// break \n, an inline wrapper (a link...) its text, other inline
+// items nothing, as ./Selection.text), a typed table its rows, a
+// line each, cells joined by tabs (./ClipHtmlTable tablePlain,
+// Batch C6.3), a kept block an empty line.
 //
 // Nothing is copied: blocks share runs, rPr, pPr, inlines and nodes
 // with the document (model objects never change in place: ./Model).
@@ -37,10 +59,18 @@
 import {cut} from './OpsUtil';
 import {inlineText} from './InlineText';
 import {collapsed} from './Selection';
-import {orderedPos, neighbour} from './EditPos';
+import {orderedPos, neighbour, findBlock} from './EditPos';
+import {shapeOf} from './SelShape';
+import {cutRows, cutRect} from './ClipCut';
 import {numsOf} from './ClipNums';
 import {picsOf} from './ClipPics';
 import {docMap} from './PicRead';
+import {mapBlocks, walkBlocks, forEachIn, at as walkAt}
+  from './Walk';
+import {samePath} from './Path';
+import {tablePlain} from './ClipHtmlTable';
+import {nodeText} from './ClipIds';
+import {sourceStyles, tableStyleIds} from './TblStyleCopy';
 
 /** See the header. */
 export function paraPlain(b) {
@@ -53,7 +83,8 @@ export function paraPlain(b) {
 
 /** See the header. */
 export const plainOf = (blocks) => blocks.map((b) => (b.type === 'p'
-  ? paraPlain(b) : '')).join('\n');
+  ? paraPlain(b) : b.type === 'tbl' ? tablePlain(b, nodeText)
+    : '')).join('\n');
 
 /** The block for [a, e) of paragraph p. */
 function paraBlock(p, a, e) {
@@ -75,7 +106,8 @@ function namesOf(doc, blocks) {
     if (s && typeof s.name === 'string')
       out.set(id, {name: s.name, type: s.type});
   };
-  for (const b of blocks) {
+  for (const {b} of walkBlocks(blocks)) {
+    if (b.type === 'tbl') add(b.tblPr && b.tblPr.tblStyle);
     if (b.type !== 'p') continue;
     add(b.pStyle);
     for (const r of b.runs) add(r.rStyle);
@@ -83,27 +115,64 @@ function namesOf(doc, blocks) {
   return out;
 }
 
+/** Typed table t as a clipboard table block (no ids, no extraP). */
+const tableBlock = (t) => mapBlocks([t], (p) => paraBlock(p, 0,
+  p.text.length), {table: ({id, ...rest}) => rest})[0];
+
+/** Push typed table t (the document's, cut) as a clipboard block
+ *  onto blocks, and its source ids in walk order onto ids. */
+function pushTable(t, blocks, ids) {
+  forEachIn([t], [], (b) => ids.push(b.type === 'p' ? b.id : null));
+  blocks.push(tableBlock(t));
+}
+
+/** The location of the block holding o's end x in the container
+ *  of depth n (path length n): x itself, or its table there. */
+const outer = (doc, x, n) => (x.at.length === n ? x
+  : findBlock(doc, walkAt(doc, x.at.slice(0, n)).id));
+
+/** blocks and ids of a 'text' or 'mixed' shape sh (see the header):
+ *  the container's blocks from o's first end to its last. */
+function range(doc, o, sh, blocks, ids) {
+  const {from, to} = o, lit = sh.kind === 'mixed' ? sh.tables : [];
+  const n = lit.length ? lit[0].table.length : o.f.at.length;
+  const f = outer(doc, o.f, n), t = outer(doc, o.t, n);
+  let m = 0;
+  for (let loc = f; loc && loc.rank <= t.rank;
+    loc = neighbour(doc, loc, 1)) {
+    const b = loc.b;
+    if (b.type === 'p') {
+      blocks.push(paraBlock(b, b === o.f.b ? from.off : 0,
+        b === o.t.b ? to.off : b.text.length));
+      ids.push(b.id);
+    } else if (b.type === 'tbl') {
+      if (m < lit.length && samePath(lit[m].table, loc.at)) {
+        const {r0, r1} = lit[m++];
+        pushTable(cutRows(b, r0, r1), blocks, ids);
+      }
+    } else if ((b !== o.f.b || from.off === 0) &&
+      (b !== o.t.b || to.off === 1)) {
+      blocks.push({type: 'opaque', node: b.node});
+      ids.push(null);
+    }
+  }
+}
+
 /** See the header. */
 export function slice(doc, sel) {
   if (!sel || collapsed(sel)) return null;
   const o = orderedPos(doc, sel);
   if (!o) return null;
-  const {from, to, f, t} = o;
+  const sh = shapeOf(doc, sel);
   const blocks = [], ids = [];
-  for (let loc = f; loc && loc.k <= t.k; loc = neighbour(doc, loc, 1)) {
-    const b = loc.b;
-    const first = loc.k === f.k, last = loc.k === t.k;
-    if (b.type === 'p') {
-      blocks.push(paraBlock(b, first ? from.off : 0,
-        last ? to.off : b.text.length));
-      ids.push(b.id);
-    } else if ((!first || from.off === 0) && (!last || to.off === 1)) {
-      blocks.push({type: 'opaque', node: b.node});
-      ids.push(null);
-    }
-  }
+  if (sh.kind === 'cells') {
+    const t = walkAt(doc, sh.table);
+    const u = sh.whole ? t : cutRect(t, sh);
+    if (u) pushTable(u, blocks, ids);
+  } else range(doc, o, sh, blocks, ids);
   if (!blocks.length) return null;
   return {blocks, ids, styleNames: namesOf(doc, blocks),
+    styles: sourceStyles(doc, tableStyleIds(blocks)),
     lists: numsOf(doc, blocks), pics: picsOf(doc, blocks),
     picScope: docMap(doc), plain: plainOf(blocks)};
 }

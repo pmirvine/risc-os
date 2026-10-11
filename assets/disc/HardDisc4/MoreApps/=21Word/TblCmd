@@ -1,0 +1,250 @@
+// TblCmd - the glue between a table command (./TblEdit) and a
+// Document (Batch C): one restoreBlock of the table, and where the
+// caret goes in it.
+//
+//   onTable(d, at, fn, place?) -> sel | null  fn(table, grid) with
+//       the typed table at path `at` and its resolved grid
+//       (./TblGrid gridOf) -> a new table, the same one or null; a
+//       new one is put in as ONE restoreBlock, inside the caller's
+//       d.atomic (the document's ids reserved first, so the
+//       paragraphs ./TblEdit emptyLike makes are fresh). Returns a
+//       caret at place(newTable) ({id, off}), or without place at
+//       the start of its first paragraph (firstPos); null when
+//       nothing was applied (fn gave the same table or null, or `at`
+//       is no typed table)
+//   firstPos, lastPos, cellPos, rowPos  ./TblPos's (re-exported)
+//
+// The row commands (C4.1, D23, D25). Each runs in ONE d.atomic (one
+// undo step) and returns the selection after it, or null when it is
+// refused (nothing changed, no step; ./EditRun beeps): sel with no
+// table rows (rowsOf null), or past ./TblCheck MAX_ROWS (R16).
+//   rowsOf(doc, sel) -> {at, r0, r1} | null  the rows a command acts
+//       on: a 'cells' shape's rows r0..r1 (./SelShape: INCLUSIVE)
+//       in its table at path `at`; a 'text' selection in one cell:
+//       that cell's row of its innermost table; else null
+//   insertRowsCmd(d, sel, below)  as many rows as rowsOf's above or
+//       below them (./TblEdit insertRows); the selection stays
+//   deleteRowsCmd(d, sel)  rowsOf's rows removed (./TblEdit
+//       deleteRows), the caret in the row after them, else the one
+//       before; every row: the table removed (removeTable)
+//   tabRowCmd(d, sel)  Tab in the last cell (./EditKeys; the head
+//       in the last cell of its innermost table: ./SelTable
+//       cellTabTarget 'last' going forward, else null): a row below
+//       that table's LAST row, the caret in its first cell
+//   splitTableCmd(d, sel)  rows from rowsOf's r0 become a new table
+//       (./TblEdit splitTable) after an empty paragraph, the caret
+//       in it; at row 0 the empty paragraph goes before the table
+//       (Word's Ctrl-Shift-Enter in the first row)
+//   atomic(d, fn) -> fn() run in one d.atomic (its selection)
+//   removeTable(d, at)  ./TblRemove's (re-exported): the table
+//       removed, bookmark pairs across its edge kept
+//   rectOf(doc, sel) -> {at, r0, r1, c0, c1, r, k, one} | null  what
+//       a cell command acts on: a 'cells' shape's rectangle (rows
+//       r0..r1, grid columns c0..c1, INCLUSIVE) in its table at path
+//       at, or for a 'text' selection in one cell that cell's merged
+//       rectangle (./TblGrid spanOf, made inclusive) in its innermost
+//       table (one true); r, k the head's cell in that table (a
+//       table edge: the rectangle's top-left cell); null for a
+//       'mixed' selection or none in a table (./TblCmdCols uses it)
+// Merge and split (C4.3, D25: ./TblMerge), one step each:
+//   mergeCmd(d, sel)  rectOf's rectangle (a 'cells' shape of more
+//       than one cell) merged (mergeCells), the caret at the merged
+//       cell's start; null for one cell or a rectangle that cannot
+//       be made whole
+//   splitCellsCmd(d, sel, {cols, rows})  rectOf's cell split
+//       (splitCell); a 'cells' shape of more than one cell is merged
+//       first, then split (Word's Merge cells before split); the
+//       caret at the start of the first new cell (the content); null
+//       for numbers not 1..63 / 1..MAX_ROWS, past the caps, rows not
+//       dividing a vertical merge, or no change (1 x 1)
+//   splitWhy(doc, sel, cols, rows) -> why splitCellsCmd refused (the
+//       Split cells box's message; past MAX_ROWS rows says rows)
+// Table properties (C5.1, D26: ./TblEditProps setProps), one step:
+//   propsCmd(d, sel, patch)  rectOf's rectangle given patch
+//       (./TblPatch patchOf's); the selection stays; null for no
+//       table or no change; RangeError for a value setProps refuses
+//   alignCmd(d, sel, 'top' | 'center' | 'bottom')  its vAlign
+// ./TblCmdCols has the column commands and TABLE (every table command
+// by ./EditApply id). Undo gives back the very old table object and
+// puts the caret by R18 (./EditApply stepEnd).
+// Pure: no desktop services.
+import {reserveIds, newPara} from './Model';
+import {gridOf, cellAt, spanOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {caret, select} from './Selection';
+import {firstPos, rowPos, cellPos} from './TblPos';
+import {shapeOf} from './SelShape';
+import {findBlock} from './EditPos';
+import {sib} from './Path';
+import {MAX_ROWS} from './TblCheck';
+import {insertRows, deleteRows, splitTable, setProps}
+  from './TblEdit';
+import {cellTabTarget} from './SelTable';
+import {removeTable} from './TblRemove';
+import {mergeCells, splitCell} from './TblMerge';
+
+export {firstPos, lastPos, cellPos, rowPos} from './TblPos';
+export {removeTable} from './TblRemove';
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+
+/** See the header. */
+export function onTable(d, at, fn, place) {
+  const t = walkAt(d.doc, at);
+  if (!isTbl(t)) return null;
+  reserveIds(d.doc);
+  const n = fn(t, gridOf(t));
+  if (!n || n === t) return null;
+  d.apply({op: 'restoreBlock', block: at, snapshot: n});
+  const p = place ? place(n) : firstPos(n);
+  return caret(p || {id: n.id, off: 0});
+}
+
+/** See the header. */
+export function rowsOf(doc, sel) {
+  if (!sel || !sel.anchor || !sel.head) return null;
+  const sh = shapeOf(doc, sel);
+  if (sh.kind === 'cells') return {at: sh.table, r0: sh.r0, r1: sh.r1};
+  if (sh.kind !== 'text') return null;
+  const loc = findBlock(doc, sel.head.id), cl = loc && loc.cell;
+  if (!cl || !isTbl(walkAt(doc, cl.table))) return null;
+  return {at: cl.table, r0: cl.r, r1: cl.r};
+}
+
+/** See the header. */
+export function atomic(d, fn) {
+  let out = null;
+  d.atomic(() => { out = fn(); });
+  return out;
+}
+
+/** Room for n more rows in the table at path at. */
+const room = (d, at, n) => walkAt(d.doc, at).rows.length + n <=
+  MAX_ROWS;
+
+/** See the header. */
+export function insertRowsCmd(d, sel, below) {
+  const x = rowsOf(d.doc, sel);
+  if (!x || !room(d, x.at, x.r1 - x.r0 + 1)) return null;
+  return atomic(d, () => (onTable(d, x.at,
+    (t) => insertRows(t, x.r0, x.r1, !!below)) &&
+    select(sel.anchor, sel.head, sel.affinity)));
+}
+
+/** See the header. */
+export function deleteRowsCmd(d, sel) {
+  const x = rowsOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => onTable(d, x.at,
+    (t) => deleteRows(t, x.r0, x.r1),
+    (n) => rowPos(n, Math.min(x.r0, n.rows.length - 1))) ||
+    removeTable(d, x.at));
+}
+
+/** See the header. */
+export function tabRowCmd(d, sel) {
+  const loc = sel && sel.head ? findBlock(d.doc, sel.head.id) : null;
+  const at = loc && loc.cell && loc.cell.table;
+  const t = at ? walkAt(d.doc, at) : null;
+  if (!isTbl(t) || cellTabTarget(d.doc, sel, 1) !== 'last' ||
+    !room(d, at, 1)) return null;
+  const r = t.rows.length - 1;
+  return atomic(d, () => onTable(d, at,
+    (T) => insertRows(T, r, r, true), (n) => rowPos(n, r + 1)));
+}
+
+/** See the header. */
+export function splitTableCmd(d, sel) {
+  const x = rowsOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => {
+    reserveIds(d.doc);
+    const p = newPara('');
+    if (x.r0 === 0) {
+      d.apply({op: 'insertBlock', at: x.at, block: p});
+      return caret({id: p.id, off: 0});
+    }
+    const [a, b] = splitTable(walkAt(d.doc, x.at), x.r0);
+    d.apply({op: 'restoreBlock', block: x.at, snapshot: a});
+    d.apply({op: 'insertBlocks', at: sib(x.at, 1), blocks: [p, b]});
+    return caret({id: p.id, off: 0});
+  });
+}
+
+/** See the header. */
+export function rectOf(doc, sel) {
+  if (!sel || !sel.anchor || !sel.head) return null;
+  const sh = shapeOf(doc, sel);
+  const loc = findBlock(doc, sel.head.id);
+  if (sh.kind === 'cells') {
+    const n = sh.table.length, t = walkAt(doc, sh.table);
+    const top = (loc && loc.at.length > n + 1 ? {r: loc.at[n],
+      k: loc.at[n + 1]} : cellAt(gridOf(t), sh.r0, sh.c0)) ||
+      {r: sh.r0, k: 0};
+    return {at: sh.table, r0: sh.r0, r1: sh.r1, c0: sh.c0, c1: sh.c1,
+      r: top.r, k: top.k, one: false};
+  }
+  const cl = sh.kind === 'text' && loc && loc.cell;
+  if (!cl || !isTbl(walkAt(doc, cl.table))) return null;
+  const s = spanOf(gridOf(walkAt(doc, cl.table)), cl.r, cl.c);
+  return {at: cl.table, r0: s.r0, r1: s.r1 - 1, c0: s.c0, c1: s.c1 - 1,
+    r: cl.r, k: cl.c, one: true};
+}
+
+/** The caret at the start of the cell over (r, c) in table n. */
+const at0 = (n, r, c) => {
+  const x = cellAt(gridOf(n), r, c);
+  return x && cellPos(n, x.r, x.k);
+};
+
+/** See the header. */
+export function mergeCmd(d, sel) {
+  const x = rectOf(d.doc, sel);
+  if (!x || x.one) return null;
+  return atomic(d, () => onTable(d, x.at, (T, g) => mergeCells(T, g,
+    x), (n) => at0(n, x.r0, x.c0)));
+}
+
+/** See the header. */
+export function splitCellsCmd(d, sel, {cols, rows} = {}) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  const n = {cols, rows};
+  return atomic(d, () => onTable(d, x.at, (T, g) => {
+    const one = cellAt(g, x.r0, x.c0), s = one && spanOf(g, one.r,
+      one.k);
+    if (x.one || (s && s.r1 - 1 === x.r1 && s.c1 - 1 === x.c1)) {
+      return splitCell(T, g, x.one ? x : one, n);
+    }
+    const m = mergeCells(T, g, x), mg = m && gridOf(m);
+    return m && splitCell(m, mg, cellAt(mg, x.r0, x.c0), n);
+  }, (t) => at0(t, x.r0, x.c0)));
+}
+
+/** See the header. */
+export function splitWhy(doc, sel, cols, rows) {
+  const x = sel ? rectOf(doc, sel) : null;
+  if (!x) return 'Put the caret in a table cell first.';
+  if (cols === 1 && rows === 1) return 'One by one: nothing to split.';
+  const h = x.r1 - x.r0 + 1;
+  if (h > 1 && h % rows) {
+    return `Rows must divide ${h}: the cells are merged over ${h}.`;
+  }
+  if (h === 1 && walkAt(doc, x.at).rows.length + rows - 1 > MAX_ROWS) {
+    return `Too many: a table has at most ${MAX_ROWS} rows.`;
+  }
+  return 'Too many: a table has at most 63 columns.';
+}
+
+/** See the header. */
+export function propsCmd(d, sel, patch) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => onTable(d, x.at, (T, g) => setProps(T, g, x,
+    patch)) && select(sel.anchor, sel.head, sel.affinity));
+}
+
+/** See the header. */
+export function alignCmd(d, sel, what) {
+  return propsCmd(d, sel, {cells: {vAlign: what}});
+}

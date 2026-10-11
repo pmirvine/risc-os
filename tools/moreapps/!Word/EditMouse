@@ -1,8 +1,15 @@
 // EditMouse - the mouse in a document's window (./EditView):
 //
-//   Select click       the caret where clicked
+//   Select click       the caret where clicked (in a table: in the
+//                      cell's column, ./DocHit); in a table's zones
+//                      (./SelTable zoneAt, D10): the first 4 px
+//                      inside a cell's left edge select its content,
+//                      within 0.25 in left of a row (outside the
+//                      table) the row, within 4 px above the table's
+//                      top border the column under it
 //   Select drag        selects from where the button went down to the
-//                      pointer; while the pointer is outside the
+//                      pointer (across cells: their rectangle,
+//                      ./SelShape); while the pointer is outside the
 //                      window (or over its toolbar), every 60 ms the
 //                      window scrolls towards it (20 px up or down,
 //                      16 across: ./EditScroll.dragStep) and the
@@ -41,7 +48,11 @@
 //
 // A picture (./PicDrag) is asked first: a click on one selects it, a
 // drag from a handle of the selected one resizes it, a double-click
-// on one selects it and calls v.onPicture.
+// on one selects it and calls v.onPicture. Then a Select drag from
+// within 3 screen px of a table's vertical cell border or right edge,
+// or of a row's bottom border, moves that border (./TblDrag
+// colDragStart / rowDragStart, D33; the click before it does what a
+// click does there).
 //
 // A drag is followed with wimp.drag (Wimp_DragBox, type 'point'), so
 // it ends when the button is released, wherever the pointer is.
@@ -53,6 +64,8 @@ import {linkUnder, linkInfo} from './LinkFind';
 import {toLayout} from './Zoom';
 import {findBookmark} from './BookmarkFind';
 import {picClick, picDragStart, picDouble} from './PicDrag';
+import {colDragStart, rowDragStart} from './TblDrag';
+import {zoneAt, zoneSel} from './SelTable';
 
 const TICK = 60;
 const doubleMs = () => os.input?.config?.doubleClickMs ?? 400;
@@ -72,7 +85,10 @@ export function attachMouse(v) {
     if (ev.button === 'select' && !ev.shift && (ev.ctrl || cmd(v)) &&
       jump(v, ev)) return true;
     let sel;
-    if (ev.button === 'adjust' || ev.shift) {
+    const z = ev.button === 'select' && !ev.shift ? zone(v, ev) : null;
+    if (z) {
+      sel = z;
+    } else if (ev.button === 'adjust' || ev.shift) {
       sel = S.select(v.sel.anchor, h.pos, h.affinity);
     } else if (now() - lastDouble < doubleMs()) {
       sel = S.selectPara(v.L, h.pos);
@@ -101,11 +117,19 @@ export function attachMouse(v) {
   });
   w.on('drag', (ev) => {
     if (!v.sel) return undefined;
-    if (picDragStart(v, ev)) return true;
+    if (picDragStart(v, ev) || colDragStart(v, ev) ||
+      rowDragStart(v, ev)) return true;
     v.onMouseDrag?.();
     follow(v, ev);
     return true;
   });
+}
+
+/** The selection of the table zone clicked (header), or null. */
+function zone(v, ev) {
+  const L = v.L, p = toLayout(ev.x, ev.y, v.zoom, L.top);
+  const z = zoneAt(L, p.x, p.y);
+  return z ? zoneSel(L, z) : null;
 }
 
 /** Cmd held on a Mac (the Wimp's click has no Meta flag). */

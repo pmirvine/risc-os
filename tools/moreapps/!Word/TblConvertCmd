@@ -1,0 +1,195 @@
+// TblConvertCmd - Convert > Text to table... and Table to text...
+// (Batch C6.4, D29) on a Document: one d.atomic each (one undo step,
+// undo exact), the table or the text put in where the other was.
+// The brief's TblCmd had no room (248 lines): these are here, and the
+// boxes (./TblConvertBox) call them through view.typing.command.
+//
+//   textParas(doc, sel) -> {at, paras} | {error}  the paragraphs a
+//       text-to-table conversion takes: the top-level paragraphs the
+//       selection touches, all of them (an end in the middle of a
+//       paragraph takes it whole; a selection that ends at the start
+//       of a later paragraph leaves that paragraph out), from path
+//       `at`; {error} (a message for the box) for no selection, a
+//       caret alone (nothing selected), an end in a table cell, ends
+//       in two sections, or a table or kept block among them
+//   whyText(doc, sel, {sep?, cols?}) -> message | null  why
+//       textToTableCmd would refuse: textParas' errors, a separator
+//       or a number of columns that is not valid (./TblConvert
+//       sepChar, 1..MAX_COLS), a complex field the table would cut
+//       (./TblConvert straddles: across a separator or a paragraph
+//       end, or open where the paragraphs start: fieldOpen), more
+//       than MAX_ROWS rows (R16)
+//   fieldOpen(doc, f) -> whether a complex field is open where the
+//       block at location f starts: the w:fldChar begins and ends of
+//       the paragraphs before it in its container, counted backwards
+//       (a begin with no end after it); linear, done only when the
+//       box asks (not for the menu's shading)
+//   textToTableCmd(d, sel, {sep?, cols?, textTw?}) -> sel | null
+//       the textParas as a table (./TblConvert textToTable: sep
+//       and cols default as it does; textTw the container's text
+//       width in twips, else the section's column or the cell's),
+//       Table Grid as Insert > Table (./TblInsert tableGridStyles:
+//       the styles added in the same step), in place of the
+//       paragraphs: an empty paragraph goes before the table when a
+//       table (typed or Opaque) is there and after it when no
+//       paragraph follows (a table never touches another and is
+//       never last). The caret
+//       is in the first cell. null (nothing changed, no step) when
+//       whyText gives a message
+//   whyTable(doc, sel) -> message | null  no table at the selection
+//   tableToTextCmd(d, sel, {sep}) -> sel | null  the whole table the
+//       selection is in (its innermost one: ./TblCmd rowsOf) as
+//       text (./TblToText tableToText), where it was; the converted
+//       paragraphs are selected. null for no table or a bad sep
+// Pure: no desktop services.
+import {newPara, reserveIds, OBJ} from './Model';
+import {collapsed, caret, select} from './Selection';
+import {orderedPos, neighbour} from './EditPos';
+import {at as walkAt} from './Walk';
+import {sib, samePath} from './Path';
+import {firstPos, rowsOf, atomic} from './TblCmd';
+import {tableGridStyles, widthAt} from './TblInsert';
+import {textToTable, defaultSep, colsFor, sepChar, straddles,
+  fldType} from './TblConvert';
+import {tableToText} from './TblToText';
+import {emptyLike} from './TblEdit';
+import {MAX_COLS, MAX_ROWS, endsCell} from './TblCheck';
+
+const isP = (b) => !!b && b.type === 'p';
+
+/** See the header. */
+export function textParas(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  if (!o) return {error: 'There is no selection in the document.'};
+  if (collapsed(sel)) {
+    return {error: 'Select the paragraphs to convert first.'};
+  }
+  const {f, t} = o;
+  if (f.depth > 0 || t.depth > 0) {
+    return {error: 'Text in a table cell cannot be converted: select ' +
+      'paragraphs outside the table.'};
+  }
+  if (f.s !== t.s) {
+    return {error: 'The selection crosses a section break: select ' +
+      'paragraphs of one section.'};
+  }
+  const paras = [];
+  for (let n = f; n; n = neighbour(doc, n, 1)) {
+    paras.push(n.b);
+    if (samePath(n.at, t.at)) break;
+  }
+  if (paras.length > 1 && o.to.off === 0 && isP(t.b)) paras.pop();
+  if (!paras.every(isP)) {
+    return {error: 'The selection holds a table or a kept item: ' +
+      'select paragraphs only.'};
+  }
+  return {at: f.at, paras, f};
+}
+
+/** See the header. */
+export function fieldOpen(doc, f) {
+  let ends = 0;
+  for (let n = neighbour(doc, f, -1); n; n = neighbour(doc, n, -1)) {
+    const t = isP(n.b) ? n.b.text : '';
+    for (let k = t.lastIndexOf(OBJ); k >= 0;
+      k = k ? t.lastIndexOf(OBJ, k - 1) : -1) {
+      const y = fldType(n.b.inlines[k]);
+      if (y === 'end') ends++;
+      else if (y === 'begin' && ends-- === 0) return true;
+    }
+  }
+  return false;
+}
+
+/** The separator and columns of o for paras: {sep, cols} or an
+ *  error message. */
+function options(paras, o, open) {
+  const sep = o.sep === undefined ? defaultSep(paras) : o.sep;
+  try {
+    const ch = sepChar(sep);
+    const cols = o.cols === undefined ? colsFor(paras, sep) : o.cols;
+    if (!Number.isInteger(cols) || cols < 1 || cols > MAX_COLS) {
+      return 'Columns: a whole number from 1 to 63.';
+    }
+    const rows = ch === null ? Math.ceil(paras.length / cols)
+      : paras.length;
+    if (rows > MAX_ROWS) {
+      return `Too many rows: a table has at most ${MAX_ROWS}.`;
+    }
+    if (straddles(paras, sep, open)) {
+      return 'A field (a table of contents, a page number...) would ' +
+        'be cut into cells: select whole fields within one ' +
+        'paragraph, or take the field out of the text.';
+    }
+    return {sep, cols};
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    return e.message === 'control separator'
+      ? 'Separator: Other cannot be a control character.'
+      : 'Separator: Other takes one character.';
+  }
+}
+
+/** See the header. */
+export function whyText(doc, sel, o = {}) {
+  const x = textParas(doc, sel);
+  if (x.error) return x.error;
+  const r = options(x.paras, o || {}, fieldOpen(doc, x.f));
+  return typeof r === 'string' ? r : null;
+}
+
+/** See the header. */
+export function textToTableCmd(d, sel, o = {}) {
+  const x = textParas(d.doc, sel), r = x.error ? x.error
+    : options(x.paras, o || {}, fieldOpen(d.doc, x.f));
+  if (typeof r === 'string') return null;
+  const {at, paras} = x;
+  return atomic(d, () => {
+    reserveIds(d.doc);
+    const strict = (d.doc.meta || {}).conformance === 'strict';
+    const ts = tableGridStyles(d.doc.styles, {strict});
+    if (ts && ts.styles !== d.doc.styles) {
+      d.apply({op: 'setDocPart', key: 'styles', value: ts.styles});
+    }
+    const tw = o.textTw >= 1 ? o.textTw
+      : widthAt(d.doc, null, {id: paras[0].id});
+    const t = textToTable(paras, {sep: r.sep, cols: r.cols,
+      textTw: tw, ts, strict});
+    const prev = at[at.length - 1] > 0 ? walkAt(d.doc, sib(at, -1))
+      : null;
+    const next = walkAt(d.doc, sib(at, paras.length));
+    const blocks = [t];
+    if (endsCell(prev)) blocks.unshift(newPara(''));
+    if (!isP(next)) blocks.push(emptyLike(paras[paras.length - 1]));
+    d.apply({op: 'insertBlocks', at, blocks});
+    d.apply({op: 'removeBlocks', at: sib(at, blocks.length),
+      count: paras.length});
+    return caret(firstPos(t));
+  });
+}
+
+/** See the header. */
+export function whyTable(doc, sel) {
+  return rowsOf(doc, sel) ? null : 'Put the caret in a table first.';
+}
+
+/** See the header. */
+export function tableToTextCmd(d, sel, {sep} = {}) {
+  const x = rowsOf(d.doc, sel);
+  try {
+    sepChar(sep);
+  } catch (e) {
+    if (e instanceof RangeError) return null;
+    throw e;
+  }
+  if (!x) return null;
+  return atomic(d, () => {
+    reserveIds(d.doc);
+    const blocks = tableToText(walkAt(d.doc, x.at), {sep});
+    d.apply({op: 'insertBlocks', at: x.at, blocks});
+    d.apply({op: 'removeBlock', at: sib(x.at, blocks.length)});
+    const ps = blocks.filter(isP), z = ps[ps.length - 1];
+    return select({id: ps[0].id, off: 0}, {id: z.id,
+      off: z.text.length});
+  });
+}

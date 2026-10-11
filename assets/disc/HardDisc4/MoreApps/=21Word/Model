@@ -11,6 +11,22 @@
 //   Inline  {kind:'raw'|'br'|'tab', level:'p'|'r', node?, text?,
 //            brType?}
 //   Opaque  {type:'opaque', node}
+//   Table   {type:'tbl', id, tblPr, grid, rows, attrs, tail,
+//            gridAttrs}
+//     grid      [twips...] (w:gridCol w:w in order); gridAttrs,
+//               attrs: [[name, value]] of w:tblGrid / w:tbl;
+//               tail: unseen marks after the last row (Xml nodes)
+//   Row     {trPr, cells, attrs, lead, tail, tblPrEx}
+//     lead: marks before the w:tr, tail: after its last cell,
+//     tblPrEx: the w:tblPrEx node kept raw, or null
+//   Cell    {tcPr, blocks, attrs, lead}
+//     blocks: [Para | Table | Opaque], at least one; lead: marks
+//     before the w:tc; tcPr.gridSpan / vMerge keep merges as written
+//
+// Rows and cells have no id; a block in a cell is addressed by a
+// path (./Path), and scanners find every block through ./Walk.
+// tblPr / trPr / tcPr are property objects with `extra`; their fields
+// and the table rules are in ./TblCheck (and the spec, D1).
 //
 // Inline.level says where its node belongs when written: 'p' directly
 // in the w:p (w:hyperlink, w:ins, bookmarks...), 'r' inside a w:r
@@ -26,11 +42,14 @@
 // described by inlines[index]. See ModelCheck for the invariants and
 // Ops for the operations that change a Doc.
 //
-// Paragraph ids come from one counter for the whole program, so they
-// are unique within a Doc; reserveIds(doc) moves the counter past
-// the ids a Doc already holds (Document does this when it is made).
-import {fail, normRuns, checkPara, checkProps}
+// Paragraph and table ids come from one counter for the whole
+// program, so they are unique within a Doc; reserveIds(doc) moves the
+// counter past the ids a Doc already holds at every depth (Document
+// does this when it is made).
+import {fail, normRuns, checkPara, checkProps, checkBlock}
   from './ModelCheck';
+import {checkTable, checkRow, checkCell} from './TblCheck';
+import {forEachId} from './Walk';
 
 export {OBJ, deepEqual, sameFmt, checkPara, checkBlock, normRuns}
   from './ModelCheck';
@@ -44,11 +63,9 @@ export function nextId() {
 
 /** Make sure nextId() never returns an id already used in `doc`. */
 export function reserveIds(doc) {
-  for (const s of doc.sections) {
-    for (const b of s.blocks) {
-      if (b.type === 'p' && b.id > lastId) lastId = b.id;
-    }
-  }
+  forEachId(doc, (id) => {
+    if (id > lastId) lastId = id;
+  });
 }
 
 /** A deep copy (blocks, props, XML nodes). */
@@ -104,3 +121,30 @@ export function emptyDoc() {
     parts: new Map(), rels: [], meta: {}, rawSettings: null};
 }
 
+
+const CK = {block: checkBlock, props: checkProps};
+
+/** A new cell holding `blocks` (shared, not copied). */
+export function newCell(blocks, tcPr = {extra: []}) {
+  const c = {tcPr: props(tcPr), blocks: [...blocks], attrs: [],
+    lead: []};
+  checkCell(c, CK, 1);
+  return c;
+}
+
+/** A new row of `cells` (shared, not copied). */
+export function newRow(cells, trPr = {extra: []}) {
+  const r = {trPr: props(trPr), cells: [...cells], attrs: [],
+    lead: [], tail: [], tblPrEx: null};
+  checkRow(r, CK, 1);
+  return r;
+}
+
+/** A new table with a fresh id; rows shared, grid copied. */
+export function newTable({grid, rows, tblPr = {extra: []}}) {
+  const t = {type: 'tbl', id: nextId(), tblPr: props(tblPr),
+    grid: [...grid], rows: [...rows], attrs: [], tail: [],
+    gridAttrs: []};
+  checkTable(t, CK, 1);
+  return t;
+}

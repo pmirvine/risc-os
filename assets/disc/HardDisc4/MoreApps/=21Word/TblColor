@@ -1,0 +1,132 @@
+// TblColor - themed colours for the screen (C2.2 ruling). Pure.
+//
+// Word writes a theme reference beside a literal colour
+// (<w:top w:val="single" w:sz="4" w:color="45B0E1"
+// w:themeColor="accent1" w:themeTint="99"/>, <w:shd w:fill="..."
+// w:themeFill="..." w:themeFillTint="..."/>, <w:color w:val="FFFFFF"
+// w:themeColor="background1"/>). The readers keep such an element
+// raw in `extra` (it is written back untouched); for DISPLAY the
+// literal colour is used and the theme attributes are ignored: a
+// documented approximation (Word applies the tint or shade to the
+// theme's colour, so a themed colour may look slightly different).
+// 'auto' or no colour stays as it is.
+//
+//   showThemed(part, kind, map) -> part  `part` a property object
+//     (kind 'tblPr' | 'tcPr' | 'pPr' | 'rPr') as the readers give
+//     it, `map` the scope its elements were read in (Strict: w:start
+//     / w:end sides). For each display field the part lacks
+//     (tblPr: tblBorders, shd; tcPr: tcBorders, shd; pPr: pBdr, shd;
+//     rPr: color, shd) whose element is in `extra` exactly once and
+//     carries a theme attribute, the field is read here (every
+//     attribute a known one with a value of the expected form, the
+//     theme ones too). A NEW object with those fields (extra the
+//     same array), or `part` itself when there is none. Never
+//     changes `part`. ./TblStyle uses it for table styles; the
+//     table's and cells' own borders and shading use it too.
+// Names from the file are only compared with fixed lists.
+import {scope, wName, wAttrs, isEl, blank, isStrict} from './Ns';
+import {intOf, onOffOf, NAME, HEX, SIDES, STRICT_SIDE}
+  from './ReadPropsMore';
+import {SIDES6, SIDES8} from './TblNames';
+
+const HEX2 = /^[0-9A-Fa-f]{2}$/;
+const name = (v) => NAME.test(v) ? v : undefined;
+const hex = (v) => HEX.test(v) ? v : undefined;
+const hex2 = (v) => HEX2.test(v) ? v : undefined;
+const uint = (v) => {
+  const n = intOf(v);
+  return n !== undefined && n >= 0 ? n : undefined;
+};
+const THEME = new Map([['themeColor', name], ['themeTint', hex2],
+  ['themeShade', hex2]]);
+const SIDE = new Map([['val', name], ['sz', uint], ['space', uint],
+  ['color', hex], ['shadow', onOffOf], ['frame', onOffOf], ...THEME]);
+const SHD = new Map([['val', name], ['color', hex], ['fill', hex],
+  ...THEME, ['themeFill', name], ['themeFillTint', hex2],
+  ['themeFillShade', hex2]]);
+const COLOR = new Map([['val', hex], ...THEME]);
+
+/**
+ * Attributes `a` read by `spec` -> {value: object without the theme
+ * attributes, themed} or undefined (an unknown or bad attribute, or
+ * `need` missing).
+ */
+function attrs(a, spec, need) {
+  if (!a) return undefined;
+  const o = {};
+  let themed = false;
+  for (const [k, v] of a) {
+    const read = spec.get(k);
+    const x = read ? read(v) : undefined;
+    if (x === undefined) return undefined;
+    if (k.startsWith('theme')) themed = true;
+    else o[k] = x;
+  }
+  return o[need] === undefined ? undefined : {value: o, themed};
+}
+
+const empty = (n) => n.children.length === 0;
+
+/** A side element list (tblBorders...) -> {value, themed}. */
+const sides = (names) => {
+  const t = new Map(names.map((k) => [k, k]));
+  const s = new Map(names.map((k) => [STRICT_SIDE.get(k) || k, k]));
+  return (node, m) => {
+    if (node.attrs.length) return undefined;
+    const of = isStrict(m) ? s : t;
+    const o = {};
+    let themed = false;
+    for (const c of node.children) {
+      if (typeof c === 'string' && blank(c)) continue;
+      const n = isEl(c) ? wName(c, m) : null;
+      const k = n === null ? undefined : of.get(n);
+      if (k === undefined || o[k] !== undefined || !empty(c)) {
+        return undefined;
+      }
+      const r = attrs(wAttrs(c, m), SIDE, 'val');
+      if (!r) return undefined;
+      o[k] = r.value;
+      themed = themed || r.themed;
+    }
+    return {value: o, themed};
+  };
+};
+
+const one = (spec, need) => (node, m) => empty(node)
+  ? attrs(wAttrs(node, m), spec, need) : undefined;
+const shd = one(SHD, 'val');
+const color = (node, m) => {
+  const r = one(COLOR, 'val')(node, m);
+  return r && {value: r.value.val, themed: r.themed};
+};
+
+const FIELDS = {
+  tblPr: [['tblBorders', sides(SIDES6)], ['shd', shd]],
+  tcPr: [['tcBorders', sides(SIDES8)], ['shd', shd]],
+  pPr: [['pBdr', sides(SIDES)], ['shd', shd]],
+  rPr: [['color', color], ['shd', shd]],
+};
+
+/** See the header. */
+export function showThemed(part, kind, map) {
+  const fields = Object.hasOwn(FIELDS, kind) ? FIELDS[kind] : null;
+  const extra = part && Array.isArray(part.extra) ? part.extra : null;
+  if (!fields || !extra || !extra.length) return part;
+  const found = new Map();
+  for (const c of extra) {
+    const l = isEl(c) ? wName(c, map) : null;
+    if (l === null) continue;
+    found.set(l, found.has(l) ? null : c);
+  }
+  let out = null;
+  for (const [field, read] of fields) {
+    const node = found.get(field);
+    if (!node || part[field] !== undefined) continue;
+    const m = node.attrs.length ? scope(map, node) : map;
+    const r = read(node, m);
+    if (!r || !r.themed) continue;
+    if (!out) out = {...part};
+    out[field] = r.value;
+  }
+  return out || part;
+}

@@ -375,3 +375,126 @@ describe('ClipIds.flatten: only text in runs (final review 2)', () => {
     assert.deepEqual(out.map((b) => b.text), ['a b\tc']);
   });
 });
+
+// ------------------------------------------------- typed tables across
+// (Batch C, C6.1, D28: ./ClipCleanTbl crossTable; R10's flattening
+// removed)
+
+describe('ClipClean: a typed table across documents (C6.1)', () => {
+  const W14 = ['w14:paraId', '1A2B3C4D'];
+  const cnf = X('w:cnfStyle', [['w:firstRow', '1']]);
+  const alien = X('x:odd', [['xmlns:x', 'urn:x']]);
+  const w14el = X('w14:conflictMode');
+  const mark = (n) => X('w:' + n, [['w:id', '3']]);
+  const cell = (blocks, extra = []) => ({tcPr: {vAlign: 'center',
+    extra}, attrs: [W14, ['w:rsidR', '00A1']], lead: [mark(
+    'commentRangeStart')], blocks});
+  const opaque = {type: 'opaque', node: X('w:sdt')};
+  const inner = {type: 'tbl', tblPr: {extra: []}, grid: [1000],
+    gridAttrs: [], attrs: [], tail: [], rows: [{trPr: {extra: []},
+      attrs: [W14], lead: [], tail: [], tblPrEx: null,
+      cells: [cell([P('in')])]}]};
+  /** A clipboard table block: a styled paragraph, marks, w14, cnf. */
+  const block = () => ({type: 'tbl', tblPr: {tblStyle: 'SrcGrid',
+    jc: 'left', extra: [X('w:tblCaption', [['w:val', 'c']]), alien,
+      X('w:tblStyle', [['w:val', 'Raw']])]}, grid: [2000, 2000],
+  gridAttrs: [['w14:x', '1']], attrs: [['w:rsidR', '1']],
+  tail: [mark('bookmarkEnd'), X('w:proofErr')],
+  rows: [{trPr: {jc: 'right', extra: [cnf, X('w:divId',
+    [['w:val', '7']]), w14el]}, attrs: [W14, ['w:rsidTr', '00B']],
+  lead: [mark('bookmarkStart')], tail: [mark('permEnd')],
+  tblPrEx: X('w:tblPrEx', [], [X('w:tblBorders', [], [X('w:left',
+    [['w:val', 'single']]), alien]), X('w:tblPrExChange',
+    [['w:id', '4']])]),
+  cells: [cell([P('a', {pStyle: 'SrcHead'})], [cnf, alien, w14el,
+    X('w:headers', [['w:val', 'h']])]),
+  cell([opaque])]},
+  {trPr: {extra: []}, attrs: [], lead: [], tail: [], tblPrEx: null,
+    cells: [cell([P('c')]), cell([P('b'), inner, opaque])]}]});
+  const names = new Map([['SrcHead', {name: 'heading 1',
+    type: 'paragraph'}], ['SrcGrid', {name: 'Table Grid',
+    type: 'table'}]]);
+  const target = () => {
+    const d = mk(['']);
+    addStyle(d.doc.styles, {id: 'TblGridX', type: 'table',
+      name: 'Table Grid'});
+    return d.doc;
+  };
+
+  it('comes as a table: paragraphs as across, styles by name', () => {
+    const [t] = clean([block()], target(), {styleNames: names});
+    assert.equal(t.type, 'tbl');
+    assert.equal(t.tblPr.tblStyle, 'TblGridX', 'mapped by name');
+    const a = t.rows[0].cells[0].blocks[0];
+    assert.equal(a.pStyle, 'Heading1');
+    assert.ok(!('id' in t) && !('id' in a));
+    // nested table the same way
+    const n = t.rows[1].cells[1].blocks[1];
+    assert.equal(n.type, 'tbl');
+    assert.deepEqual(n.rows[0].attrs, []);
+  });
+
+  it('extras cleaned like pPr extra; cnfStyle kept; ids, other ' +
+    'namespaces, divId, marks and attributes go', () => {
+    const [t] = clean([block()], target(), {styleNames: names});
+    assert.deepEqual(t.tblPr.extra.map((e) => e.name), ['w:tblCaption'],
+      'a raw tblStyle names the source: gone');
+    assert.deepEqual(t.rows[0].trPr.extra.map((e) => e.name),
+      ['w:cnfStyle']);
+    assert.equal(t.rows[0].trPr.jc, 'right');
+    assert.deepEqual(t.rows[0].cells[0].tcPr.extra.map((e) => e.name),
+      ['w:cnfStyle', 'w:headers']);
+    assert.deepEqual(t.rows[0].cells[0].tcPr.extra[0].attrs,
+      [['w:firstRow', '1']]);
+    assert.equal(t.rows[0].cells[0].tcPr.vAlign, 'center');
+    for (const x of [t, ...t.rows, ...t.rows.flatMap((r) => r.cells)])
+      assert.deepEqual(x.attrs, [], 'no attributes (as extraP)');
+    assert.deepEqual(t.gridAttrs, []);
+    assert.deepEqual(t.tail, []);
+    for (const row of t.rows) {
+      assert.deepEqual(row.lead, []);
+      assert.deepEqual(row.tail, []);
+      for (const c of row.cells) assert.deepEqual(c.lead, []);
+    }
+    const ex = t.rows[0].tblPrEx;
+    assert.equal(ex.name, 'w:tblPrEx');
+    assert.deepEqual(ex.children.map((c) => c.name), ['w:tblBorders']);
+    assert.deepEqual(ex.children[0].children.map((c) => c.name),
+      ['w:left']);
+    assert.equal(t.rows[1].tblPrEx, null);
+  });
+
+  it('Opaque cell blocks skipped; a cell is never empty nor ends ' +
+    'with a table', () => {
+    const [t] = clean([block()], target(), {styleNames: names});
+    const c1 = t.rows[0].cells[1].blocks;
+    assert.deepEqual(c1.map((b) => b.type), ['p']);
+    assert.equal(c1[0].text, '');
+    const c2 = t.rows[1].cells[1].blocks;
+    assert.deepEqual(c2.map((b) => b.type), ['p', 'tbl', 'p']);
+  });
+
+  it('no table style of that name: tblStyle dropped (C6.2 copies ' +
+    'it); Strict spells jc start / end', () => {
+    const d = mk(['']).doc;
+    const [t] = clean([block()], d, {styleNames: names});
+    assert.equal(t.tblPr.tblStyle, undefined);
+    assert.ok(!('tblStyle' in t.tblPr));
+    assert.equal(t.tblPr.jc, 'left');
+    const strict = {...target(), meta: {conformance: 'strict'}};
+    const [u] = clean([block()], strict, {styleNames: names});
+    assert.equal(u.tblPr.jc, 'start');
+    assert.equal(u.rows[0].trPr.jc, 'end');
+    // (a raw element keeps its sides as written: read back raw, as
+    // the reader keeps the other spelling, R22)
+    const sides = u.rows[0].tblPrEx.children[0].children;
+    assert.deepEqual(sides.map((c) => c.name), ['w:left']);
+  });
+
+  it('the source block is not changed', () => {
+    const b = block();
+    const before = JSON.stringify(b);
+    clean([b], target(), {styleNames: names});
+    assert.equal(JSON.stringify(b), before);
+  });
+});

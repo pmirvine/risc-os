@@ -51,10 +51,17 @@ describe('ClipRead: structure', () => {
     assert.deepEqual(r.blocks.map((b) => b.text), ['one', 'two', 'in']);
     for (const b of r.blocks) assert.deepEqual(b.pPr, {extra: []});
   });
-  it('tables flattened: cells tab-separated, rows paragraphs', () => {
+  it('a table is a table block (C6.3); one it cannot read is ' +
+    'flattened: cells tab-separated, rows paragraphs', () => {
+    const r = read('<table><tr><th>a</th><td><p>b</p><p>c</p>' +
+      '</td></tr><tr><td>d</td><td></td><td>e</td></tr></table>');
+    assert.deepEqual(r.blocks.map((b) => b.type), ['tbl']);
+    assert.deepEqual(r.blocks[0].rows.map((row) => row.cells.map((c) =>
+      c.blocks.map((b) => b.text).join('|'))),
+    [['a', 'b|c', ''], ['d', '', 'e']]);
     assert.deepEqual(texts('<table><tr><th>a</th><td><p>b</p><p>c</p>' +
-      '</td></tr><tr><td>d</td><td></td><td>e</td></tr></table>'),
-    ['a\tb c', 'd\t\te']);
+      '</td>x</tr><tr><td>d</td><td></td><td>e</td></tr></table>'),
+    ['a\tb c x', 'd\t\te']);
   });
   it('text-align gives jc', () => {
     const r = read('<p style="text-align:center">a</p><p align="x">b' +

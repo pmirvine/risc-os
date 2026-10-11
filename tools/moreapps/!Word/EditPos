@@ -1,52 +1,160 @@
 // EditPos - positions for the editing commands (./Edit, ./EditDel),
 // found in the Doc itself: no layout needed.
 //
-//   findBlock(doc, id)    -> {s, i, k, b}: section s, index i, index
-//                            k in document order, block b; or null
-//   neighbour(doc, at, d) -> the block before (d -1) or after (d 1)
-//                            `at` in document order, as findBlock
-//                            gives it, crossing sections; or null
+//   findBlock(doc, id)    -> a location (below) of the block, at any
+//                            depth; or null
+//   neighbour(doc, loc, d) -> the block before (d -1) or after (d 1)
+//                            loc in ITS container: at top level
+//                            crossing sections (as before); in a
+//                            cell, null at the cell's edge
+//   nextInFlow(doc, loc), prevInFlow(doc, loc) -> the block after
+//                            (before) loc in flow order, across
+//                            containers (into and out of cells); or
+//                            null
+//   atIndex(doc, k)       -> the TOP-LEVEL block at index k
+//   atRank(doc, rank)     -> the block whose rank (or a table's
+//                            endRank) is rank; or null
 //   checkPos(doc, pos)    -> findBlock of a valid position {id, off}
 //                            (a paragraph offset on a code point, a
-//                            kept block's 0 or 1), else null
-//   orderedPos(doc, sel)  -> {from, to, f, t} in document order (f,
-//                            t: their findBlock), or null when a
+//                            kept block's or table's 0 or 1), else
+//                            null
+//   orderedPos(doc, sel)  -> {from, to, f, t} in flow order (f, t:
+//                            their findBlock), or null when a
 //                            position is not valid
-//   atIndex(doc, k)       -> the block at index k (document order)
+//   rankOf(loc, off)      -> the flow rank of a position: a table's
+//                            endRank at off 1, else loc.rank
+//   isNested(loc)         -> the location is in a table's cell
+//   topOnly(o)            -> o (orderedPos's) when both ends are at
+//                            top level, else null: the one rule for
+//                            the sites that stay top level (the
+//                            breaks, Insert's, EditRange's own
+//                            path)
+//   pathOf(loc)           -> loc.at; RangeError 'bad position' when
+//                            it is not a path
+//   sibOf(loc, d)         -> the path d places on from loc in its
+//                            container (./Path sib); RangeError 'bad
+//                            position' for a location without a path
 //   posOf(loc, off)       -> the position {id, off} in a block
 //   endOf(b)              -> the last offset of a block
 //
+// A location (Batch C, D6 and ruling R5) is {at, k, rank, endRank?,
+// b, s, i?, depth, cell?}: at its ./Path path; k TODAY's index of
+// the top-level block in document order (a block in a cell: its
+// outermost table's k), so top-level arithmetic on k stays valid;
+// rank the flow rank (D9: a table has a start rank, then its cells'
+// blocks row by row, cell by cell, then its endRank); b the block;
+// s the section; i ONLY at top level (undefined in a cell); depth
+// the number of tables around the block (./Walk's: a top-level table
+// is 0); cell {table, r, c} of the innermost cell (./Path cellOf),
+// only in a cell. A command builds paths from loc.at (sib(loc.at,
+// d)), never from s and i: a location without `at` gives no path,
+// and the op refuses it (RangeError, ./OpsPath locate).
+//
 // Ids are as ./DocPos gives them (a kept block's is negative). A
-// lookup scans the blocks once: O(blocks) per command, no index
-// (deliverable 3 adds one).
+// lookup scans the top-level blocks once (O(blocks)); a table is
+// entered only when it holds the id (./EditRank: kept per row
+// object, so an edit in a cell walks only its row again).
 // Pure: no desktop services.
 import {blockId} from './DocPos';
 import {midPair} from './ModelCheck';
+import {forEachIn, at as walkAt} from './Walk';
+import {idOf, isTbl, sizeOf, holds, rowSize, rowHolds}
+  from './EditRank';
+import {isPath, isTop, sib, cellOf, depthOf} from './Path';
+
+/** The location of block b at path `at` (see the header). */
+function make(at, k, rank, b) {
+  const loc = {at, k, rank, b, s: at[0], depth: depthOf(at)};
+  if (isTop(at)) loc.i = at[1];
+  else loc.cell = cellOf(at);
+  if (isTbl(b)) loc.endRank = rank + sizeOf(b) - 1;
+  return loc;
+}
 
 /** See the header. */
-export function findBlock(doc, id) {
-  if (typeof id !== 'number') return null;
-  let k = 0;
+export function pathOf(loc) {
+  if (!loc || !isPath(loc.at)) throw new RangeError('bad position');
+  return loc.at;
+}
+
+/** In table t (top-level block i of section s): the first block
+ *  want(b, rank, endRank) takes, as a location, in the first row
+ *  inRow(row, rank, n) takes (the others passed whole); or null. */
+function seek(t, s, i, k, rank0, want, inRow) {
+  let r = rank0;
+  for (let ri = 0; ri < t.rows.length; ri++) {
+    const row = t.rows[ri], n = rowSize(row);
+    if (!inRow(row, r + 1, n)) { r += n; continue; }
+    for (let c = 0; c < row.cells.length; c++) {
+      const open = [];
+      let out = null;
+      forEachIn(row.cells[c].blocks, [s, i, ri, c], (b, at, depth) => {
+        while (open.length > depth) { open.pop(); r++; }
+        r++;
+        const m = sizeOf(b);
+        if (m > 1) open.push(b);
+        if (!want(b, r, r + m - 1)) return true;
+        out = make(at.slice(), k, r, b);
+        return false;
+      });
+      if (out) return out;
+      r += open.length;
+    }
+    return null;
+  }
+  return null;
+}
+
+/** The first block want() takes, at any depth (inside(t, rank, n):
+ *  whether to look into table t; inRow: seek's). */
+function scan(doc, want, inside, inRow) {
+  let k = 0, rank = 0;
   const secs = doc.sections;
   for (let s = 0; s < secs.length; s++) {
     const bs = secs[s].blocks;
     for (let i = 0; i < bs.length; i++, k++) {
-      const b = bs[i];
-      if ((b.type === 'p' ? b.id : blockId(b)) === id)
-        return {s, i, k, b};
+      const b = bs[i], n = sizeOf(b);
+      if (want(b, rank, rank + n - 1)) return make([s, i], k, rank, b);
+      if (n > 1 && inside(b, rank, n)) {
+        const loc = seek(b, s, i, k, rank, want, inRow);
+        if (loc) return loc;
+      }
+      rank += n;
     }
   }
   return null;
 }
 
 /** See the header. */
-export function neighbour(doc, at, d) {
+export function findBlock(doc, id) {
+  if (typeof id !== 'number') return null;
+  return scan(doc, (b) => idOf(b) === id, (t) => holds(t, id),
+    (row) => rowHolds(row, id));
+}
+
+/** See the header. */
+export function atRank(doc, rank) {
+  if (!Number.isInteger(rank) || rank < 0) return null;
+  return scan(doc, (b, r, e) => r === rank || e === rank,
+    (t, r, n) => rank > r && rank < r + n - 1,
+    (row, r, n) => rank >= r && rank < r + n);
+}
+
+/** See the header. */
+export function neighbour(doc, loc, d) {
+  const path = pathOf(loc);
+  const next = (b) => (d > 0 ? loc.rank + sizeOf(loc.b)
+    : loc.rank - sizeOf(b));
+  if (!isTop(path)) {
+    const at = sib(path, d), b = walkAt(doc, at);
+    return b ? make(at, loc.k, next(b), b) : null;
+  }
   const secs = doc.sections;
-  let s = at.s, i = at.i + d;
+  let s = path[0], i = path[1] + d;
   while (s >= 0 && s < secs.length) {
     const bs = secs[s].blocks;
     if (i >= 0 && i < bs.length) {
-      return {s, i, k: at.k + d, b: bs[i]};
+      return make([s, i], loc.k + d, next(bs[i]), bs[i]);
     }
     s += d;
     if (s >= 0 && s < secs.length)
@@ -55,15 +163,35 @@ export function neighbour(doc, at, d) {
   return null;
 }
 
-/** The block at index k in document order, as findBlock; or null. */
+/** The block d ranks on from loc in flow order (end ranks passed). */
+function inFlow(doc, loc, d) {
+  pathOf(loc);
+  for (let r = loc.rank + d; r >= 0; r += d) {
+    const n = atRank(doc, r);
+    if (!n || n.rank === r) return n;
+  }
+  return null;
+}
+
+/** See the header. */
+export const nextInFlow = (doc, loc) => inFlow(doc, loc, 1);
+
+/** See the header. */
+export const prevInFlow = (doc, loc) => inFlow(doc, loc, -1);
+
+/** The top-level block at index k in document order; or null. */
 export function atIndex(doc, k) {
-  let base = 0;
+  if (!Number.isInteger(k) || k < 0) return null;
+  let n = 0, rank = 0;
   const secs = doc.sections;
   for (let s = 0; s < secs.length; s++) {
-    const n = secs[s].blocks.length;
-    if (k >= base && k < base + n)
-      return {s, i: k - base, k, b: secs[s].blocks[k - base]};
-    base += n;
+    const bs = secs[s].blocks;
+    if (k < n + bs.length) {
+      for (let i = 0; i < k - n; i++) rank += sizeOf(bs[i]);
+      return make([s, k - n], k, rank, bs[k - n]);
+    }
+    for (const b of bs) rank += sizeOf(b);
+    n += bs.length;
   }
   return null;
 }
@@ -73,6 +201,21 @@ export const endOf = (b) => (b.type === 'p' ? b.text.length : 1);
 
 /** See the header. */
 export const posOf = (loc, off) => ({id: blockId(loc.b), off});
+
+/** See the header. */
+export const rankOf = (loc, off) => (isTbl(loc.b) && off === 1
+  ? loc.endRank : loc.rank);
+
+/** See the header. */
+export const isNested = (loc) => !!loc && Array.isArray(loc.at) &&
+  !isTop(loc.at);
+
+/** See the header. */
+export const topOnly = (o) => (o && !isNested(o.f) && !isNested(o.t)
+  ? o : null);
+
+/** See the header. */
+export const sibOf = (loc, d) => sib(pathOf(loc), d);
 
 /** See the header. */
 export function checkPos(doc, pos) {
@@ -88,8 +231,8 @@ export function orderedPos(doc, sel) {
   const a = checkPos(doc, sel.anchor);
   const h = a && checkPos(doc, sel.head);
   if (!h) return null;
-  const back = h.k < a.k ||
-    (h.k === a.k && sel.head.off < sel.anchor.off);
+  const ra = rankOf(a, sel.anchor.off), rh = rankOf(h, sel.head.off);
+  const back = rh < ra || (rh === ra && sel.head.off < sel.anchor.off);
   return back ? {from: sel.head, to: sel.anchor, f: h, t: a}
     : {from: sel.anchor, to: sel.head, f: a, t: h};
 }

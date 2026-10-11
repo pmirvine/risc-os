@@ -12,7 +12,8 @@
 // full layout's after neighbours change). And with section breaks
 // put in, removed (Delete / Backspace) and their types changed: the
 // section-end mark is in the reuse key, the bands (SectDeco) and the
-// contextual spacing next to them equal a full layout's.
+// contextual spacing next to them equal a full layout's. And with
+// tables: random edits in cells (at the end of the file).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
@@ -23,6 +24,8 @@ import {run} from '../../tools/moreapps/!Word/EditApply';
 import {blockId} from '../../tools/moreapps/!Word/DocPos';
 import {mk, blocks, box, S} from './edit-docs.mjs';
 import {tm, rng} from './word-docs.mjs';
+import {modelTable} from './tbl-fixtures.mjs';
+import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
 
 const WORDS = ['alpha', 'be', 'gamma ray', 'été', '\u{1F600}',
   'x', 'longerword', 'a b c d e f g h i j k l m n o p'];
@@ -537,5 +540,101 @@ describe('DocLayout reuse equals a full layout, borders and shading', () => {
     assert.ok(kept > 500, 'decorations kept: ' + kept);
     assert.ok(boxed > 2000, 'boxes drawn: ' + boxed);
     assert.ok(joined > 300, 'boxes shared: ' + joined);
+  });
+});
+
+// Tables (Batch C2.4, D20): random edits in cells (text typed and
+// deleted, paragraphs split, spacing and alignment set, undo / redo)
+// of a document with a table (a nested table, a vertical merge, an
+// atLeast row in some): the layout made from the previous one equals
+// a full one at every depth: every item of L.byId (ids, kinds, x, y,
+// h, gaps, lines) and every table's rows and cells.
+const deep = (L) => [...L.byId.values()].map((it) => ({id: it.id,
+  kind: it.kind, index: it.index, ci: it.ci, x: it.x, w: it.w, y: it.y,
+  h: it.h, gapAbove: it.gapAbove, gapBelow: it.gapBelow,
+  lines: it.kind === 'p' ? JSON.stringify(it.lines) : null,
+  rows: it.kind === 'tbl' ? JSON.stringify(it.rows.map((r) => [r.y,
+    r.h, r.cells.map((c) => [c.x, c.w, c.tx, c.tw, c.dy, c.clip,
+      c.need, c.rowSpan])])) : null}));
+
+function tableDoc(r) {
+  const words = (n) => {
+    let t = '';
+    for (let j = 0; j < n; j++) t += WORDS[Math.floor(r() * WORDS.length)] + ' ';
+    return t;
+  };
+  const rows = 2 + Math.floor(r() * 3), cols = 2 + Math.floor(r() * 2);
+  const spec = Array.from({length: rows}, () => Array.from({length: cols},
+    () => (r() < 0.3 ? [words(3), words(2)] : words(Math.floor(r() * 6)))));
+  if (r() < 0.4) {
+    spec[0][0] = {blocks: [words(4)], tcPr: {vMerge: 'restart', extra: []}};
+    spec[1][0] = {blocks: [''], tcPr: {vMerge: 'continue', extra: []}};
+  }
+  if (r() < 0.4) {
+    spec[rows - 1][cols - 1] = [words(2),
+      modelTable([[words(2), words(1)], [words(3), '']]), ''];
+  }
+  if (r() < 0.3) spec[0][cols - 1] = {blocks: [words(2)],
+    tcPr: {vAlign: r() < 0.5 ? 'center' : 'bottom', extra: []}};
+  const T = modelTable(spec, {grid: r() < 0.2 ? Array(cols).fill(0)
+    : undefined});
+  return mk([words(3), T, words(2)]);
+}
+
+/** The paths of every paragraph in a cell of d's document. */
+function cellParas(d) {
+  const out = [];
+  forEachBlock(d.doc, (b, at, depth) => {
+    if (b.type === 'p' && depth > 0) out.push({b, at});
+  });
+  return out;
+}
+
+describe('DocLayout reuse equals a full layout, tables', () => {
+  it('200 random cell edits', () => {
+    const m = tm();
+    let reused = 0, edits = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const r = rng(seed * 7919);
+      const d = tableDoc(r);
+      const t = new Typing(d);
+      let L = new DocLayout(d.doc, m);
+      L.layout(800);
+      for (let step = 0; step < 10; step++) {
+        const ps = cellParas(d);
+        const {b, at} = ps[Math.floor(r() * ps.length)];
+        let off = Math.floor(r() * (b.text.length + 1));
+        if (/[\uDC00-\uDFFF]/.test(b.text[off] || '')) off--;
+        const c = Math.floor(r() * 8);
+        const op = c < 3 ? {op: 'replaceText', block: at, at: off, del: 0,
+          ins: TYPED[Math.floor(r() * TYPED.length)]}
+          : c === 3 ? {op: 'replaceText', block: at, at: 0,
+            del: Math.min(3, b.text.length), ins: ''}
+            : c === 4 ? {op: 'splitBlock', block: at, at: off}
+              : c === 5 ? {op: 'setProps', block: at, pPr: {jc: ['center',
+                'right', null][Math.floor(r() * 3)]}}
+                : {op: 'setProps', block: at, pPr: {spacing: {before:
+                  60 * Math.floor(r() * 4), after: 80 * Math.floor(r() * 4)},
+                contextualSpacing: r() < 0.5}};
+        if (r() < 0.15 && d.canUndo) t.command(() => d.undo());
+        else if (r() < 0.05 && d.canRedo) t.command(() => d.redo());
+        else t.command(() => d.atomic(() => d.apply(op)));
+        edits++;
+        const prev = L;
+        L = new DocLayout(d.doc, m, prev);
+        L.layout(800);
+        for (const x of L.byId.values()) {
+          const o = prev.byId.get(x.id);
+          if (x.kind === 'p' && o && o.lines === x.lines) reused++;
+        }
+        const full = new DocLayout(d.doc, m);
+        full.layout(800);
+        assert.deepEqual(deep(L), deep(full),
+          `seed ${seed} step ${step} op ${c}`);
+        assert.equal(L.height, full.height, `height, seed ${seed}`);
+      }
+    }
+    assert.equal(edits, 200);
+    assert.ok(reused > 2000, 'lines were reused: ' + reused);
   });
 });

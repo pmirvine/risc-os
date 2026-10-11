@@ -4,8 +4,16 @@
 //
 // apply(doc, apply(doc, op)) leaves doc deep-equal to how it was
 // before op (paragraph ids included). An op that is refused throws
-// RangeError and leaves doc unchanged. Positions are
-// [sectionIndex, blockIndex]; offsets are UTF-16 code units.
+// RangeError and leaves doc unchanged. Positions are paths
+// (./Path): [s, i] at top level, [s, i, r, c, j, ...] in a cell of a
+// table, with the same meaning inside that cell's blocks (./OpsPath
+// locate; mergeBlock joins blocks of one container only, never
+// across cells; a cell keeps at least one block and never ends with
+// a table: ./TblCheck endsCell, refused before any change). An op in
+// a cell copies the tables on its path first (./OpsPath own): a
+// table, row or cell object is never changed. Section ops refuse a
+// nested path.
+// Offsets are UTF-16 code units.
 //
 //   replaceText  {block, at, del, ins, rPr?, rStyle?, inlines?}
 //   setProps     {block, pPr?, pStyle?, range?, rPr?, rStyle?}
@@ -26,12 +34,21 @@
 // inverse ops in undo history (copy-on-write: an op that changes a
 // part makes new objects for that part only). apply() copies the op
 // it is given, so callers' objects never enter the Doc (except a
-// setDocPart's value: immutable by contract, kept by reference);
-// applyOwn() does not, and is only for ops this module made
-// (Document's undo).
+// setDocPart's value and a restoreBlock's TABLE snapshot: immutable
+// by contract, kept by reference so that a new table shares its
+// unchanged rows with the old one, D4); applyOwn() does not, and is
+// only for ops this module made (Document's undo).
+//
+// Ids: a block put in (and every block inside a table) must have an
+// id used nowhere else in doc (./OpsUtil checkIds); a restoreBlock of
+// a table with the same id checks the table, and against doc only
+// the ids it holds that the old one did not (one scan, none if no
+// new id).
 import {fail, checkBlock} from './ModelCheck';
+import {checkTail} from './TblCheck';
 import {clone} from './Model';
-import {locate, idUsed} from './OpsUtil';
+import {locate, own, checkIds} from './OpsUtil';
+import {blockIds, ids} from './Walk';
 import {replaceText, spliceText, splitBlock, mergeBlock}
   from './OpsText';
 import {setProps} from './OpsProps';
@@ -40,40 +57,64 @@ import {setDocPart} from './OpsDoc';
 import {splitSection, mergeSection, setSection}
   from './OpsSect';
 
-/** Check block `b`; its id must be free in doc (but for `skip`). */
-function check(doc, b, skip) {
-  checkBlock(b);
-  if (b.type === 'p' && idUsed(doc, b.id, skip))
-    fail('paragraph id ' + b.id + ' is already in use');
+/**
+ * Check block `b` inside `around` tables; its ids must be free in
+ * doc (but for those of `old`, the block it replaces).
+ */
+function check(doc, b, old, around) {
+  checkBlock(b, around);
+  checkIds(doc, [b], old ? [old] : []);
   return b;
 }
 
 function insertBlock(doc, op) {
-  const {s, i, blocks} = locate(doc, op.at, true);
-  blocks.splice(i, 0, check(doc, op.block));
-  return {op: 'removeBlock', at: [s, i]};
+  const {i, at, depth, blocks, nested} = locate(doc, op.at, true);
+  const b = check(doc, op.block, null, depth);
+  if (nested && i === blocks.length) checkTail(b);
+  own(doc, at).splice(i, 0, b);
+  return {op: 'removeBlock', at};
 }
 
 function removeBlock(doc, op) {
-  const {s, i, blocks} = locate(doc, op.at);
-  const [b] = blocks.splice(i, 1);
-  return {op: 'insertBlock', at: [s, i], block: b};
+  const {i, at, blocks, nested} = locate(doc, op.at);
+  if (nested && blocks.length === 1)
+    fail('a cell needs at least one block');
+  if (nested && i === blocks.length - 1) checkTail(blocks[i - 1]);
+  const [b] = own(doc, at).splice(i, 1);
+  return {op: 'insertBlock', at, block: b};
+}
+
+/** The ids inside table b that table old does not hold. */
+function newIds(b, old) {
+  const had = new Set(blockIds([old]));
+  return blockIds([b]).filter((id) => !had.has(id));
 }
 
 /**
  * A paragraph that keeps the id of the one it replaces cannot make
  * an id used twice: no scan of the document (undoing a setProps of
- * 50,000 paragraphs stays linear).
+ * 50,000 paragraphs stays linear). A table that keeps its id: only
+ * the ids it holds that the old one did not are looked for.
  */
 function restoreBlock(doc, op) {
-  const {s, i, blocks} = locate(doc, op.block);
+  const {i, at, blocks, depth} = locate(doc, op.block);
   const old = blocks[i];
   const b = op.snapshot;
-  const same = b && b.type === 'p' && old.type === 'p' &&
-    b.id === old.id;
-  if (same) checkBlock(b);
-  blocks[i] = same ? b : check(doc, b, old);
-  return {op: 'restoreBlock', block: [s, i], snapshot: old};
+  const same = b && (b.type === 'p' || b.type === 'tbl') &&
+    old.type === b.type && b.id === old.id;
+  if (!same) check(doc, b, old, depth);
+  else {
+    checkBlock(b, depth);
+    const fresh = b.type === 'tbl' ? newIds(b, old) : [];
+    if (fresh.length) {
+      const used = new Set(ids(doc));
+      for (const id of fresh) {
+        if (used.has(id)) fail('id ' + id + ' is already in use');
+      }
+    }
+  }
+  own(doc, at)[i] = b;
+  return {op: 'restoreBlock', block: at, snapshot: old};
 }
 
 function compound(doc, op) {
@@ -107,13 +148,19 @@ export function apply(doc, op) {
 /**
  * A copy of op for apply(): a setDocPart's value is NOT copied (it
  * is immutable by contract, see ./OpsDoc: a whole numbering or style
- * table copied per apply would cost time and lose the sharing).
+ * table copied per apply would cost time and lose the sharing), nor
+ * a restoreBlock's table snapshot (D4: the new table shares every
+ * unchanged row, cell and paragraph with the old one).
  */
 function copy(op) {
   if (op && op.op === 'setDocPart')
     return {op: 'setDocPart', key: op.key, value: op.value};
   if (op && op.op === 'compound' && Array.isArray(op.ops))
     return {op: 'compound', ops: op.ops.map(copy)};
+  if (op && op.op === 'restoreBlock' && op.snapshot &&
+    op.snapshot.type === 'tbl')
+    return {op: 'restoreBlock', block: clone(op.block),
+      snapshot: op.snapshot};
   return clone(op);
 }
 

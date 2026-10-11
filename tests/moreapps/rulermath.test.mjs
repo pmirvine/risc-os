@@ -4,13 +4,19 @@
 // shows (the selection's first paragraph); FormatPara.dragIndents
 // through FormatApply's 'indentDrag': the dragged marker's value on
 // every selected paragraph, one undo step.
-import {describe, it} from 'node:test';
+import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import * as RM from '../../tools/moreapps/!WimpLib/RulerMath';
 import * as RI from '../../tools/moreapps/!Word/RulerInd';
 import * as FA from '../../tools/moreapps/!Word/FormatApply';
 import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {mk, P, C, SEL, undoable, box} from './edit-docs.mjs';
+import {mk, P, C, SEL, S, undoable, box} from './edit-docs.mjs';
+import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import {newPara} from '../../tools/moreapps/!Word/Model';
+import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
+import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+import {loadStyles, tm} from './word-docs.mjs';
+import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const TW = 9026;                       // A4 less two 1-inch margins
 const ind = (left, first = 0, right = 0) => ({left, first, right});
@@ -260,5 +266,69 @@ describe('FormatApply indentDrag (FormatPara.dragIndents)', () => {
         C(d, 0, 0), arg), RangeError, JSON.stringify(arg));
     }
     assert.equal(d.undoDepth, 0);
+  });
+});
+
+describe('the ruler in a table cell (C5.4, D32)', () => {
+  before(loadStyles);
+  const cell = (t, tcPr = {extra: []}) => ({blocks: [t], tcPr});
+  const sample = () => freeze(modelTable([
+    [cell('a'), cell('b'), cell('c')],
+    [cell('d'), cell('e', {tcW: {w: 2000, type: 'dxa'}, extra: []}),
+      cell('f')],
+  ], {grid: [2000, 3000, 4000]}));
+  const setup = () => {
+    const t = sample(), d = mk(['Before', t, 'After']);
+    const L = new DocLayout(d.doc, tm());
+    L.layout(800);
+    return {d, t, L, it: L.byId.get(t.id)};
+  };
+  const posIn = (t, r, k) => ({id: t.rows[r].cells[k].blocks[0].id,
+    off: 0});
+
+  it('the origin and the text range are the cell\'s text area', () => {
+    const {t, L, it} = setup();
+    for (const [r, k] of [[0, 0], [1, 1], [1, 2]]) {
+      const c = it.rows[r].cells[k], pos = posIn(t, r, k);
+      const s = RI.scaleOf(L, 0, 1, pos);
+      assert.ok(Math.abs(s.origin - c.tx) < 1e-9, `origin ${r},${k}`);
+      assert.ok(Math.abs(s.text[0] - c.tx) < 1e-9);
+      assert.ok(Math.abs(s.text[1] - s.text[0] - c.tw) < 1e-9,
+        `width ${r},${k}`);
+      assert.equal(RI.textTwips(L, pos), Math.round(c.tw * 15));
+      assert.deepEqual(s.page, RI.scaleOf(L, 0, 1).page);
+    }
+  });
+
+  it('at a zoom: the cell\'s px scaled', () => {
+    const {t, L, it} = setup();
+    const c = it.rows[1].cells[1], pos = posIn(t, 1, 1);
+    const s = RI.scaleOf(L, 4, 2, pos), s1 = RI.scaleOf(L, 4, 1, pos);
+    assert.equal(s.origin, s1.origin * 2);
+    assert.deepEqual(s.text, [s1.text[0] * 2, s1.text[1] * 2]);
+    assert.ok(Math.abs(s1.text[1] - s1.text[0] - c.tw) < 1e-9);
+  });
+
+  it('the indents drawn and a dragged marker are the cell\'s', () => {
+    const t = freeze(modelTable([[cell('a'), {blocks: [newPara('e',
+      {pPr: {ind: {left: 360, firstLine: 180}, extra: []}})],
+    tcPr: {extra: []}}]], {grid: [3000, 3000]}));
+    const d = mk(['Before', t, 'After']);
+    const L = new DocLayout(d.doc, tm());
+    L.layout(800);
+    const pos = posIn(t, 0, 1), sel = S.caret(pos);
+    assert.deepEqual(RI.firstIndents(d.doc, sel), ind(360, 180));
+    const tw = RI.textTwips(L, pos);
+    assert.ok(tw > 0 && tw < 3000, String(tw));
+    undoable(d, () => FA.apply('indentDrag', d, new Typing(d), sel,
+      {marker: 'left', at: 720, textW: tw}));
+    assert.deepEqual(walkAt(d.doc, findBlock(d.doc, t.id).at)
+      .rows[0].cells[1].blocks[0].pPr.ind, {left: 720, firstLine: 180});
+    assert.equal(d.undoDepth, 1);
+    // (a right indent past the cell's width is kept inside it)
+    undoable(d, () => FA.apply('indentDrag', d, new Typing(d), sel,
+      {marker: 'right', at: tw + 5000, textW: tw}));
+    assert.equal(walkAt(d.doc, findBlock(d.doc, t.id).at)
+      .rows[0].cells[1].blocks[0].pPr.ind.right, undefined);
   });
 });

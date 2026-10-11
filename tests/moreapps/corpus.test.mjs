@@ -4,27 +4,25 @@
 // resolves (then the document must pass checkBlock, write -> read must
 // give the same model, the second generation must be byte-stable,
 // unparsed parts must come out byte-identical and every XML part must
-// parse) or rejects with a DocxError. The latter is acceptable only for
-// the files listed in corpus-expected.json (name -> DocxError code).
+// parse: ./corpus-check.mjs) or rejects with a DocxError. The latter
+// is acceptable only for the files listed in corpus-expected.json
+// (name -> DocxError code; entries whose value is not a string, such
+// as opaqueTables, are not files).
+// Tables are read typed (the default since Batch C1.7); the tables'
+// own checks (per table equivalence, the Opaque histogram) are in
+// tables-corpus.test.mjs.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {sortChildren} from '../../tools/moreapps/!Word/Order';
-import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {lintPackage} from './lint-package.mjs';
-import {assertSameDoc, entries, xmlEntries, sameBytes, expectedBack}
-  from './docx-compare.mjs';
+import {DocxError} from '../../tools/moreapps/!Word/DocxRead';
+import {checkFile, tablesOf} from './corpus-check.mjs';
 
 const DIR = fileURLToPath(new URL('./corpus/', import.meta.url));
-const EXPECTED = JSON.parse(readFileSync(
-  new URL('./corpus-expected.json', import.meta.url), 'utf8'));
-const DATE = new Date(2024, 4, 6, 7, 8, 10);
-const write = (doc) => writeDocx(doc, {date: DATE});
+const EXPECTED = Object.fromEntries(Object.entries(JSON.parse(
+  readFileSync(new URL('./corpus-expected.json', import.meta.url),
+    'utf8'))).filter(([, v]) => typeof v === 'string'));
 
 function find(dir, out = []) {
   for (const e of readdirSync(dir, {withFileTypes: true})) {
@@ -35,79 +33,21 @@ function find(dir, out = []) {
   return out.sort();
 }
 
-const isEl = (c) => typeof c === 'object' && c.name !== undefined;
-const kids = (n, name) => n.children.filter((c) => isEl(c) &&
-  (name === undefined || c.name === name));
-
-/**
- * The property elements the writer BUILDS (those of the body's own
- * paragraphs, their runs, and the sectPr) must list their children in
- * the order Order.sortChildren gives. Tables and other opaque nodes are
- * written verbatim and are not looked at.
- */
-function checkOrder(prop, what, path) {
-  const want = sortChildren(prop.name, prop.children);
-  prop.children.forEach((c, i) => assert.ok(c === want[i],
-    `${what}: children of ${path} ${prop.name} are out of order at ` +
-    `${i} (${isEl(c) ? c.name : 'text'}, want ` +
-    `${isEl(want[i]) ? want[i].name : 'text'})`));
-  for (const n of ['w:rPr', 'w:sectPr']) {
-    for (const k of kids(prop, n)) checkOrder(k, what, path + '/' + prop.name);
-  }
-}
-
-function checkWrittenOrder(root, what) {
-  const body = kids(root, 'w:body')[0];
-  if (!body) return 0;
-  let n = 0;
-  for (const c of kids(body)) {
-    if (c.name === 'w:sectPr') { checkOrder(c, what, 'body'); n++; }
-    if (c.name !== 'w:p') continue;
-    for (const pPr of kids(c, 'w:pPr')) { checkOrder(pPr, what, 'p'); n++; }
-    for (const r of kids(c, 'w:r')) {
-      for (const rPr of kids(r, 'w:rPr')) { checkOrder(rPr, what, 'r'); n++; }
-    }
-  }
-  return n;
-}
-
-/** Checks one file; returns the number of blocks. */
-async function check(bytes, what) {
-  const a = await readDocx(bytes);
-  let blocks = 0;
-  for (const s of a.sections) {
-    for (const b of s.blocks) {
-      checkBlock(b);
-      blocks++;
-    }
-  }
-  const out1 = await write(a);
-  const b = await readDocx(out1);
-  assertSameDoc(b, expectedBack(a), what);
-  const out2 = await write(b);
-  assert.ok(sameBytes(await write(await readDocx(out2)), out2),
-    what + ': second generation is stable');
-  const z = await entries(out1);
-  for (const [n, v] of a.parts) {
-    assert.ok(sameBytes(z.get(n), v), what + ': part ' + n);
-  }
-  // the package: no error the original did not have (lint-package)
-  const key = (p) => p.rule + ' ' + p.part + ' ' + p.detail;
-  const errs = (zip) => lintPackage(zip).problems
-    .filter((p) => p.level === 'error');
-  const had = new Set(errs(await readZip(bytes)).map(key));
-  const added = errs(z).map(key).filter((k) => !had.has(k));
-  assert.deepEqual(added, [], what + ': package errors added');
-  for (const k of had) if (k.startsWith('ct-generic')) linted.generic++;
-  linted.sourceErrors += had.size;
-  const x = await xmlEntries(out1);
-  assert.ok(x.get(a.meta.mainPart), what + ': main part parses');
-  props += checkWrittenOrder(x.get(a.meta.mainPart).root, what);
-  return blocks;
-}
-
 let props = 0; // property elements whose written order was checked
+let tabled = 0; // files holding a body table
 const linted = {generic: 0, sourceErrors: 0};
+
+/** Checks one file; the blocks. Its time goes into `times`. */
+async function check(bytes, what, times) {
+  const t0 = Date.now();
+  const r = await checkFile(bytes, what);
+  times.push([Date.now() - t0, what]);
+  props += r.props;
+  linted.generic += r.generic;
+  linted.sourceErrors += r.sourceErrors;
+  if (tablesOf(r.doc).length) tabled++;
+  return r.blocks;
+}
 
 const files = existsSync(DIR) ? find(DIR) : [];
 
@@ -124,10 +64,9 @@ describe('corpus of real-world .docx files', {
       const name = relative(DIR, f).split('\\').join('/');
       seen.add(name);
       const want = EXPECTED[name];
-      const t0 = Date.now();
       try {
         const bytes = readFileSync(f);
-        blocks += await check(bytes, name);
+        blocks += await check(bytes, name, times);
         if (want) failures.push(`${name}: expected ${want}, but it read`);
         else ok++;
       } catch (e) {
@@ -139,7 +78,6 @@ describe('corpus of real-world .docx files', {
             String(e.message).split('\n')[0].slice(0, 300));
         }
       }
-      times.push([Date.now() - t0, name]);
     }
     for (const n of Object.keys(EXPECTED)) {
       if (!seen.has(n)) console.log('# note: expected-failure entry ' +
@@ -148,6 +86,7 @@ describe('corpus of real-world .docx files', {
     times.sort((p, q) => q[0] - p[0]);
     console.log(`# corpus: ${files.length} files, ${ok} ok, ${refused} ` +
       `expected-fail, ${failures.length} failures, ${blocks} blocks, ` +
+      `${tabled} with tables, ` +
       `${props} property elements in written order; package errors ` +
       `in the originals: ${linted.sourceErrors} (none added; ` +
       `${linted.generic} generic content types repaired)`);
@@ -155,7 +94,7 @@ describe('corpus of real-world .docx files', {
       .map(([ms, n]) => `${n} ${ms} ms`).join('; '));
     assert.deepEqual(failures, []);
     // (a guard against hangs: the slowest file, a 15 MB styles-heavy
-    // POI document, takes about 5 s with all the checks above)
-    assert.ok(times[0][0] < 20000, 'slowest file under 20 s: ' + times[0]);
+    // POI document, takes about 7 s per pass with all the checks above)
+    assert.ok(times[0][0] < 20000, 'slowest pass under 20 s: ' + times[0]);
   });
 });

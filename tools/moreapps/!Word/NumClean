@@ -29,10 +29,12 @@
 //     left / start, right / end (and their ...Chars), the w:val of
 //     w:jc, w:lvlJc and w:tab, and the side elements of w:pBdr; an
 //     attribute or side the element already has is not repeated.
-//   cleanExtra(extra, strict) -> extra  a pPr or rPr extra list (raw
-//     elements: ./ReadProps) cleaned element by element, in the
-//     scope the writer writes them in (w and r as their prefixes, and
-//     each element's own declarations); a new array.
+//   cleanExtra(extra, strict, keep?) -> extra  a pPr or rPr extra
+//     list (raw elements: ./ReadProps) cleaned element by element, in
+//     the scope the writer writes them in (w and r as their prefixes,
+//     and each element's own declarations); a new array. keep: a Set
+//     of DROP names kept all the same (a table's tblPr / trPr / tcPr
+//     extra keeps w:cnfStyle: ./ClipProps crossTblPr).
 // Pure: no desktop services.
 import {NS} from './Wml';
 import {scope as inScope} from './Ns';
@@ -50,6 +52,7 @@ const BACK = Object.fromEntries(Object.entries(SIDE)
   .map(([a, b]) => [b, a]));
 const SIDES = new Set(['left', 'right', 'start', 'end']);
 const VALS = new Set(['jc', 'lvlJc', 'tab']);
+const NONE = new Set();
 const WRITER = new Map([['w', NS.w], ['r', NS.r], ['mc', NS.mc],
   ['xml', 'http://www.w3.org/XML/1998/namespace']]);
 
@@ -89,14 +92,14 @@ function attrsOf(node, m, local, strict) {
 }
 
 /** The cleaned children of node (scope m inside it). */
-function kidsOf(node, m, strict, depth, local) {
+function kidsOf(node, m, strict, depth, local, keep) {
   const out = [], seen = new Set();
   for (const c of kidList(node)) {
     if (typeof c === 'string') {
       out.push(c);
       continue;
     }
-    for (const k of clean(c, m, strict, depth + 1)) {
+    for (const k of clean(c, m, strict, depth + 1, keep)) {
       if (local === 'pBdr') {
         const l = k.name.slice(2);
         const n = SIDES.has(l) ? side(l, strict) : l;
@@ -114,7 +117,7 @@ const isMc = (c, m) => isEl(c) && (c.attrs.length ? inScope(m, c)
 const kidList = (n) => (Array.isArray(n.children) ? n.children : []);
 
 /** node cleaned: a list of elements (none, one, or a fallback's). */
-function clean(node, around, strict, depth) {
+function clean(node, around, strict, depth, keep) {
   if (!isEl(node) || depth > MAX_DEPTH) return [];
   const m = node.attrs.length ? inScope(around, node) : around;
   const [pre, l] = split(node.name);
@@ -125,27 +128,27 @@ function clean(node, around, strict, depth) {
       split(c.name)[1] === 'Fallback');
     if (!fb) return [];
     const fm = fb.attrs.length ? inScope(m, fb) : m;
-    return kidsOf(fb, fm, strict, depth, null)
+    return kidsOf(fb, fm, strict, depth, null, keep)
       .filter((k) => typeof k !== 'string');
   }
-  if (uri !== NS.w || DROP.has(l)) return [];
+  if (uri !== NS.w || (DROP.has(l) && !keep.has(l))) return [];
   const attrs = attrsOf(node, m, l, strict);
   if (!attrs) return [];
   return [{name: 'w:' + l, attrs,
-    children: kidsOf(node, m, strict, depth, l)}];
+    children: kidsOf(node, m, strict, depth, l, keep)}];
 }
 
 /** See the header. */
 export function cleanEl(node, scope, strict) {
   const got = clean(node, scope instanceof Map ? scope : new Map(),
-    !!strict, 0);
+    !!strict, 0, NONE);
   return got.length ? got[0] : null;
 }
 
 /** See the header. */
-export function cleanExtra(extra, strict) {
+export function cleanExtra(extra, strict, keep = NONE) {
   const out = [];
   for (const n of Array.isArray(extra) ? extra : [])
-    out.push(...clean(n, WRITER, !!strict, 0));
+    out.push(...clean(n, WRITER, !!strict, 0, keep));
   return out;
 }

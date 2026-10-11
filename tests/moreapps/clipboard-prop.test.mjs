@@ -1,8 +1,9 @@
 // Clipboard property test: 200 sequences of a random slice of a
 // random document copied (ClipSlice) and pasted (ClipPaste) at a
 // random place in the same document, against a reference model of
-// block texts; the model stays valid with unique ids, and undoing
-// everything gives back the original exactly.
+// block texts (tables never touch: D27, C6 fix B1); the model stays
+// valid with unique ids, and undoing everything gives back the
+// original exactly.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {slice} from '../../tools/moreapps/!Word/ClipSlice';
@@ -61,8 +62,16 @@ function refSlice(ref, f, t) {
   return out;
 }
 
-/** Paste L at [k, off] of ref (in place); the caret [k, off]. */
-function refPaste(ref, [k, off], L) {
+/** Paste L at [k, off] of ref (in place); the caret [k, off].
+ *  D27 (C6 fix B1): tables (kept w:tbl boxes too) never touch: an
+ *  empty paragraph between two pasted ones, and before the first
+ *  when it goes in right after one. */
+function refPaste(ref, [k, off], L0) {
+  const L = [];
+  for (const x of L0) {
+    if (x === null && L.length && L[L.length - 1] === null) L.push('');
+    L.push(x);
+  }
   if (ref[k] === null) {
     k += off;
     ref.splice(k, 0, '');
@@ -79,6 +88,8 @@ function refPaste(ref, [k, off], L) {
     last === null ? n : n - 1);
   const tail = (last === null ? '' : last) + p.slice(off);
   const drop = !head && first === null;
+  if (drop && mids[0] === null && k > 0 && ref[k - 1] === null)
+    mids.unshift('');
   const rep = [...(drop ? [] : [head]), ...mids, tail];
   ref.splice(k, 1, ...rep);
   const e = k + rep.length - 1;

@@ -110,6 +110,20 @@ describe('Open', () => {
     assert.equal(why(new DocxError('not-docx', 'x'), 'Doc'),
       "'Doc' could not be opened: it is not a Word .docx file.");
     assert.match(why(new Error('boom'), 'D'), /'D' could not be opened: boom/);
+    assert.equal(why(new DocxError('unsupported', 'x'), 'D'), "'D' " +
+      'could not be opened: it is too big, encrypted or uses a kind ' +
+      'of zip file that Word cannot read.');
+  });
+  it('the paragraph cap in cells says so too (C7 fix A4)', async () => {
+    const cell = '<w:tc><w:p/><w:p/></w:tc>';
+    const xml = documentXml('<w:tbl><w:tblPr/><w:tblGrid><w:gridCol ' +
+      'w:w="2000"/></w:tblGrid>' + ('<w:tr>' + cell + '</w:tr>')
+      .repeat(100001) + '</w:tbl><w:p/>');
+    const bytes = await buildDocx({'word/document.xml': xml});
+    const err = await openDocx({readFile: async () => bytes},
+      'HD.$.Cells').then(() => null, (e) => e);
+    assert.equal(err && err.kind, 'paragraphs');
+    assert.match(why(err, 'Cells'), /more than 200,000 paragraphs/);
   });
   it('opens 200,000 paragraphs and refuses one more, quickly',
     async () => {
@@ -122,9 +136,10 @@ describe('Open', () => {
         () => null, (e) => e);
       const took = Date.now() - t0;
       assert.ok(err, 'refused');
-      assert.equal(why(err, 'Big'), "'Big' could not be opened: it is " +
-        'too big, encrypted or uses a kind of zip file that Word ' +
-        'cannot read.');
+      // (C7 fix A4: the paragraph cap says so, not 'too big ...')
+      assert.equal(err.kind, 'paragraphs');
+      assert.equal(why(err, 'Big'), "'Big' could not be opened: it " +
+        'has more than 200,000 paragraphs, the most !Word opens.');
       assert.ok(took < 1000, `refused in ${took} ms`);
       const d = await openDocx(vfsOf(await file(200000)), 'HD.$.Ok');
       assert.equal(paras(d).length, 200000);

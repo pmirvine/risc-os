@@ -1,0 +1,83 @@
+// OpsPath - finding blocks by path for the operations in Ops, and
+// copying a table along a path before an op writes in a cell
+// (Batch C, D4 / D5).
+//
+//   sectionAt(doc, s)        the section, or RangeError
+//   locate(doc, path, end)   {s, i, blocks, at, depth, nested}: the
+//                            container of the path's block, READ
+//                            ONLY (for a nested path never write it:
+//                            call own() first); `end` allows i one
+//                            past the last block (insert positions)
+//   own(doc, path)           the MUTABLE container array of the path
+//                            (see own below); only after every check
+//   paraAt(doc, path)        locate + {p}: a paragraph, or RangeError
+//
+// A path is ./Path's: [s, i] or [s, i, r, c, j, ...]. locate refuses
+// (RangeError, nothing changed): not a path ('bad position'), no
+// section, an index through a non-table ('not a table'), a row
+// ('no row r'), a cell ('no cell c'), a block ('no block j').
+// `depth` is the number of tables around the block (./Path depthOf);
+// `at` is a fresh copy of the path (for inverse ops).
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {isPath} from './Path';
+
+/** The section at index `s`, or RangeError. */
+export function sectionAt(doc, s) {
+  if (!Number.isInteger(s) || s < 0 || s >= doc.sections.length)
+    fail('no section ' + s);
+  return doc.sections[s];
+}
+
+/** See the header. */
+export function locate(doc, path, end = false) {
+  if (!isPath(path)) fail('bad position');
+  const n = path.length;
+  let blocks = sectionAt(doc, path[0]).blocks;
+  for (let k = 1; k < n - 1; k += 3) {
+    const t = blocks[path[k]];
+    if (!t || t.type !== 'tbl') fail('not a table');
+    const row = t.rows[path[k + 1]];
+    if (!row) fail('no row ' + path[k + 1]);
+    const cell = row.cells[path[k + 2]];
+    if (!cell) fail('no cell ' + path[k + 2]);
+    blocks = cell.blocks;
+  }
+  const i = path[n - 1];
+  if (i >= blocks.length + (end ? 1 : 0)) fail('no block ' + i);
+  return {s: path[0], i, blocks, at: path.slice(),
+    depth: (n - 2) / 3, nested: n > 2};
+}
+
+/**
+ * The container of `path` made writable (D5, copy-on-write): each
+ * table on the path is replaced in its parent container by
+ * {...t, rows} with a new rows array, the row on the path by
+ * {...row, cells} with a new cells array, the cell by
+ * {...cell, blocks} with a new blocks array, which is returned. At
+ * top level: the section's own blocks array. Every other row, cell
+ * and block stays shared. The path must have passed locate().
+ */
+export function own(doc, path) {
+  let blocks = doc.sections[path[0]].blocks;
+  for (let k = 1; k < path.length - 1; k += 3) {
+    const j = path[k], r = path[k + 1], c = path[k + 2];
+    const t = blocks[j], row = t.rows[r], cell = row.cells[c];
+    const inner = cell.blocks.slice();
+    const cells = row.cells.slice();
+    cells[c] = {...cell, blocks: inner};
+    const rows = t.rows.slice();
+    rows[r] = {...row, cells};
+    blocks[j] = {...t, rows};
+    blocks = inner;
+  }
+  return blocks;
+}
+
+/** The paragraph at `path`, or RangeError (also for other blocks). */
+export function paraAt(doc, path) {
+  const at = locate(doc, path);
+  const p = at.blocks[at.i];
+  if (!p || p.type !== 'p') fail('block is not a paragraph');
+  return {...at, p};
+}

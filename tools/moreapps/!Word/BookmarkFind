@@ -3,23 +3,33 @@
 // box's popup (./LinkBox) and a Ctrl-click on a link (./EditMouse).
 //
 //   marks(doc) -> [{kind 'start' | 'end', name (start: its w:name,
-//       else null), id (w:id as written, or null), s, i, off, table,
+//       else null), id (w:id as written, or null), at, off, table,
 //       direct}] every w:bookmarkStart and w:bookmarkEnd in document
-//       order: s, i the block; off the offset of its U+FFFC in the
-//       paragraph (a mark inside a kept wrapper, a link or an
-//       insertion, has the wrapper's); table: in a kept block (off
-//       0); direct: the mark is a level-'p' inline itself (so it can
-//       be moved or deleted). marks.complete is false when the walk
-//       stopped at its 1,000,000-node limit
+//       order (./Walk: the model; XML only inside an Opaque block or
+//       an inline; a typed table's loose marks between its rows and
+//       cells in their places): at the block's path; off the offset
+//       of its U+FFFC in the paragraph (a mark inside a kept wrapper,
+//       a link or an insertion, has the wrapper's); in a typed
+//       table's cell the same, at the cell paragraph's path (C3.5); a
+//       loose mark of a typed table at a paragraph's edge: a row's or
+//       a cell's lead at the start of that row's (cell's) first
+//       paragraph, a row's tail at the end of its last cell's last
+//       paragraph, the table's tail at the end of its last cell's;
+//       table: in a kept block (an Opaque table...): at its path, off
+//       0; direct: the mark is a level-'p' inline itself (so it can
+//       be moved or deleted: never a loose or kept one).
+//       marks.complete is false when the walk stopped at its
+//       1,000,000-node limit
 //   pairs(doc) -> [{name, id, start, end}] one per start with a name
 //       (start and end marks; end null when there is none): each end
 //       goes with the earliest start before it with its id that has
 //       none yet. pairs.marks is marks(doc)
 //   findPair(ps, name) -> the pair named name exactly, else the first
 //       one with case ignored (Word's names are unique so), or null
-//   list(doc, {hidden, sort}) -> [{name, id, at: {s, i, off} | null
-//       (in a table)}] one per name (case ignored: the first), hidden
-//       ones (a name starting '_', such as _Toc...) only with hidden;
+//   list(doc, {hidden, sort}) -> [{name, id, at: {at, off} | null
+//       (in a kept block)}] one per name (case ignored: the first),
+//       hidden ones (a name starting '_', such as _Toc...) only with
+//       hidden;
 //       sort 'location' (document order, the default) or 'name'
 //       (case ignored, by UTF-16 code units: the same on every
 //       machine)
@@ -28,15 +38,17 @@
 //       popup): bookmarkNames without the ones ./LinkUrl checkAnchor
 //       refuses (U+FFFC, spaces, controls...)
 //   findBookmark(doc, name) -> {id, off} | null  where it starts: the
-//       offset of its U+FFFC (a wrapper's when inside one); in a kept
-//       block (a table) the block's start {id, off: 0}. id is the
-//       ./DocPos blockId
+//       offset of its U+FFFC (a wrapper's when inside one), in a
+//       typed table's cell too; in a kept block its start {id, off:
+//       0}. id is the ./DocPos blockId
 //
 // Names from files are only compared, never used as object keys (a
 // bookmark may be called __proto__); ids are Map keys. Pure: no
 // desktop services.
 import {OBJ} from './Model';
 import {blockId} from './DocPos';
+import {at as walkAt, forEachBlock, forEachIn, loose} from './Walk';
+import {samePath} from './Path';
 import {localName} from './Kinds';
 import {checkAnchor} from './LinkUrl';
 
@@ -52,6 +64,10 @@ function attr(n, local) {
   return null;
 }
 
+/** Whether loose mark m (./Walk loose) comes before cell (r, c). */
+const before = (m, r, c) => m.r < r || (m.r === r &&
+  (m.where === 'rowLead' || (m.where === 'lead' && m.c <= c)));
+
 /** See the header. */
 export function marks(doc) {
   const out = [];
@@ -66,7 +82,8 @@ export function marks(doc) {
       const kind = KIND[localName(n)];
       if (kind) {
         out.push({kind, name: kind === 'start' ? attr(n, 'name') : null,
-          id: attr(n, 'id'), ...at, direct: n === top && !at.table});
+          id: attr(n, 'id'), at: at.at, off: at.off, table: at.table,
+          direct: n === top && !!at.own});
       }
       const kids = Array.isArray(n.children) ? n.children : [];
       for (let k = kids.length - 1; k >= 0; k--) {
@@ -75,27 +92,66 @@ export function marks(doc) {
     }
     return true;
   };
-  doc.sections.forEach((sec, s) => {
-    sec.blocks.forEach((b, i) => {
-      if (!out.complete) return;
-      if (b.type !== 'p') {
-        out.complete = inNode(b.node, {s, i, off: 0, table: true});
-        return;
-      }
-      if (b.text.indexOf(OBJ) < 0) return;
-      const offs = Object.keys(b.inlines).map(Number)
-        .sort((x, y) => x - y);
-      for (const off of offs) {
-        const x = b.inlines[off];
-        if (x.kind !== 'raw' || x.level !== 'p' || !x.node) continue;
-        if (!inNode(x.node, {s, i, off, table: false})) {
-          out.complete = false;
-          return;
-        }
-      }
-    });
-  });
+  // the typed tables around the walk, outermost first: {at, t, ls
+  // (their loose marks), k (the next one to report)}
+  const open = [];
+  const flush = (o, r, c) => {
+    for (; o.k < o.ls.length; o.k++) {
+      const m = o.ls[o.k];
+      if (r !== undefined && !before(m, r, c)) break;
+      if (!inNode(m.node, placeOf(o, m))) return false;
+    }
+    return true;
+  };
+  const visit = (b, at, depth, cell) => {
+    while (open.length && !(cell &&
+      samePath(open[open.length - 1].at, cell.table))) {
+      if (!flush(open.pop())) return false;
+    }
+    if (cell && !flush(open[open.length - 1], cell.r, cell.c))
+      return false;
+    if (b.type === 'tbl') {
+      open.push({at, t: b, ls: loose(b), k: 0});
+      return true;
+    }
+    if (b.type !== 'p')
+      return inNode(b.node, {at, off: 0, table: true});
+    if (b.text.indexOf(OBJ) < 0) return true;
+    const offs = Object.keys(b.inlines).map(Number)
+      .sort((x, y) => x - y);
+    for (const off of offs) {
+      const x = b.inlines[off];
+      if (x.kind !== 'raw' || x.level !== 'p' || !x.node) continue;
+      if (!inNode(x.node, {at, off, table: false, own: true}))
+        return false;
+    }
+    return true;
+  };
+  // (the tables still open end with the document: innermost first)
+  out.complete = forEachBlock(doc, visit) &&
+    open.reverse().every((o) => flush(o));
   return out;
+}
+
+/** Where loose mark m (./Walk loose) of open table o is put: a row's
+ *  or a cell's lead at the start of the row's (cell's) first
+ *  paragraph, a row's tail at the end of its last cell's last one,
+ *  the table's tail at the end of the last cell's last one (nested
+ *  tables entered; a cell with no paragraph: its first block, kept). */
+function placeOf(o, m) {
+  const {t, at} = o;
+  const last = m.where === 'tail' || m.where === 'rowTail';
+  const r = m.where === 'tail' ? t.rows.length - 1 : m.r;
+  const row = t.rows[r];
+  const c = last ? row.cells.length - 1 : m.where === 'lead' ? m.c : 0;
+  const base = [...at, r, c];
+  let got = null;
+  forEachIn(row.cells[c].blocks, base, (b, p) => {
+    if (b.type !== 'p') return true;
+    got = {at: p, off: last ? b.text.length : 0, table: false};
+    return last;
+  });
+  return got || {at: [...base, 0], off: 0, table: true};
 }
 
 /** See the header. */
@@ -142,7 +198,7 @@ export function list(doc, {hidden = false, sort = 'location'} = {}) {
     if (!hidden && p.name.startsWith('_')) continue;
     const m = p.start;
     out.push({name: p.name, id: p.id, at: m.table ? null
-      : {s: m.s, i: m.i, off: m.off}});
+      : {at: m.at, off: m.off}});
   }
   return sort === 'name' ? out.sort(byName) : out;
 }
@@ -160,5 +216,5 @@ export function findBookmark(doc, name) {
   const p = findPair(pairs(doc), name);
   if (!p) return null;
   const m = p.start;
-  return {id: blockId(doc.sections[m.s].blocks[m.i]), off: m.off};
+  return {id: blockId(walkAt(doc, m.at)), off: m.off};
 }

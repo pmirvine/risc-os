@@ -1,0 +1,151 @@
+// TblLayout - a table's item (./TblItems) laid out (D19): its cells'
+// columns stacked, its rows' heights and tops, vAlign. Pure: no
+// desktop services.
+//
+//   layoutTable(L, it, y0) -> h   lays the table out with its top at
+//     y0 (work area). Its rows are laid out (once: it.st.laid, kept
+//     with the item by ./TblReuse) relative to the table's top, each
+//     cell's column stacked by L.stackColumn (./DocStack: the page's
+//     algorithm, decorators per column) from 0, only when not laid
+//     yet (c.laid: a kept row's cells are not stacked again); a
+//     cell's need = its content + its top and bottom margins. A
+//     row's height = the most its single-row cells need (a vMerge
+//     continue cell's content counts for nothing); a trHeight atLeast
+//     (or no rule) raises it, exact sets it (its cells clipped:
+//     clip), auto is ignored (./TblItems: R24's cap). A vertically
+//     merged cell's need grows the LAST row of its span (not an exact
+//     one: the cell is clipped). Then vAlign center / bottom move a
+//     cell's column down by dy (half or all of its box's height left
+//     over; the box: the rows it spans). Sets every row's ry (from
+//     the table's top) and h, each cell's need, dy, clip and ry (its
+//     column's top: row ry + top margin + dy); h is the rows' sum.
+//     Then, unless it is placed at y0 already (it.st.at), everything
+//     is placed: y = ry + the top it is relative to, so a table that
+//     only moves is placed again with the very values a new layout
+//     gives (rows' y, it.tops, every item's y at every depth).
+//   unlay(it)   its rows and cells to be laid out again (invalidate)
+//   rowAtY(it, y) -> r   the row at y (binary search on it.tops; the
+//     first above the table, the last below it)
+//   bottomOf(it, c) -> y  the bottom of cell c's box: of the last row
+//     its vertical merge spans (./TablePaint, ./DocRects)
+//
+// hidden rows are shown; rows never split (no pagination). Cell
+// spacing insets the cells across only (./TblWidth cellBox).
+const EPS = 1e-9;
+
+/** See the header. */
+export function rowAtY(it, y) {
+  const t = it.tops;
+  let lo = 0, hi = t.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (t[mid] <= y) lo = mid; else hi = mid - 1;
+  }
+  return lo;
+}
+
+/** See the header. */
+export function bottomOf(it, c) {
+  const n = it.rows.length;
+  const last = it.rows[Math.min(n, c.r + Math.max(1, c.rowSpan)) - 1];
+  return last.y + last.h;
+}
+
+/** See the header. */
+export function unlay(it) {
+  it.st.laid = false;
+  for (const row of it.rows) for (const c of row.cells) c.laid = false;
+}
+
+/** Table it placed with its top at y (see the header). */
+function place(it, y) {
+  it.st.at = y;
+  const {rows, tops} = it;
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    row.y = tops[r] = row.ry + y;
+    for (const c of row.cells) placeColumn(c.col, c.ry + y);
+  }
+}
+
+/** Column col's items placed from base (their ry: ./DocStack). */
+function placeColumn(col, base) {
+  for (const x of col.items) {
+    x.y = x.ry + base;
+    if (x.kind === 'tbl') place(x, x.y);
+  }
+}
+
+/** The cells' heights and the rows' (see the header). */
+function heights(L, it) {
+  const {rows} = it, n = rows.length;
+  const ends = new Map();
+  let y = 0;
+  for (let r = 0; r < n; r++) {
+    const row = rows[r], {trH} = row.geo;
+    const exact = !!trH && trH.rule === 'exact';
+    row.ry = y;
+    let h = 0;
+    for (const c of row.cells) {
+      if (!c.laid) {
+        c.need = L.stackColumn(c.col, 0) + c.mar.top + c.mar.bottom;
+        c.laid = true;
+      }
+      if (c.cont) continue;
+      if (c.rowSpan > 1) {
+        const last = Math.min(n, r + c.rowSpan) - 1;
+        if (!ends.has(last)) ends.set(last, []);
+        ends.get(last).push(c);
+      } else if (c.need > h) h = c.need;
+    }
+    if (exact) h = trH.px;
+    else {
+      if (trH && trH.rule !== 'auto' && trH.px > h) h = trH.px;
+      for (const c of ends.get(r) || []) {
+        const need = c.need - (y - rows[c.r].ry);
+        if (need > h) h = need;
+      }
+    }
+    row.h = h;
+    y += h;
+  }
+  return y;
+}
+
+/** The rows laid out relative to the table's top: its height. */
+function relayout(L, it) {
+  const {rows} = it, n = rows.length;
+  if (it.tops.length !== n) it.tops = new Float64Array(n);
+  const h = heights(L, it);
+  for (let r = 0; r < n; r++) {
+    for (const c of rows[r].cells) {
+      c.dy = 0;
+      c.clip = false;
+      if (!c.cont) {
+        const last = rows[Math.min(n, r + Math.max(1, c.rowSpan)) - 1];
+        const box = last.ry + last.h - rows[r].ry;
+        const tr = last.geo.trH;
+        c.clip = (!!tr && tr.rule === 'exact') || c.need > box + EPS;
+        const free = box - c.need;
+        if (free > EPS && (c.vAlign === 'center' ||
+          c.vAlign === 'bottom')) {
+          c.dy = c.vAlign === 'center' ? free / 2 : free;
+        }
+      }
+      c.ry = rows[r].ry + c.mar.top + c.dy;
+    }
+  }
+  return h;
+}
+
+/** See the header. */
+export function layoutTable(L, it, y0) {
+  const {st} = it;
+  if (!st.laid) {
+    st.th = relayout(L, it);
+    st.laid = true;
+    st.at = NaN;
+  }
+  if (st.at !== y0) place(it, y0);
+  return st.th;
+}

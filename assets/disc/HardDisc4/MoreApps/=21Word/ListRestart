@@ -27,6 +27,18 @@
 //   result(sel, pending) -> {sel, pending}: pending kept for a caret
 //   styleOnly(f, p)  whether list f (ParaInd.listInfo) of paragraph
 //       p comes from its style alone (no direct numPr)
+//   sameLabels(doc, numbering, ops) -> whether the setProps numPr
+//       ops (at paths, any depth), with numbering, change no label;
+//       an op whose path names no paragraph gives false (never taken
+//       as no change)
+//   listBefore(doc, at, test) -> {f, p, n} | null  the nearest
+//       paragraph before path `at` in its section, in flow order
+//       (D9: cells' paragraphs too, as Word numbers them), in a list
+//       of its own (numPr: ParaInd listInfo f, not styleOnly) that
+//       test(f) accepts; n counts such paragraphs from the section's
+//       start (a nearness: higher is nearer)
+// The walks go through every paragraph in flow order, cells' too
+// (Batch C3.5: lists in cells, as Word numbers them).
 // Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {collapsed} from './Selection';
@@ -40,6 +52,9 @@ import {layerNumPr} from './StylesNum';
 import {levelsIn} from './ListLevel';
 import {usedNumIds} from './ListUsed';
 import {labels} from './ListNumbers';
+import {at as walkAt, forEachBlock, forEachIn, mapBlocks}
+  from './Walk';
+import {cmpPath, topOf} from './Path';
 
 /** See the header. */
 export function numKind(num) {
@@ -72,31 +87,40 @@ function target(doc, sel) {
   return f ? {en, f} : null;
 }
 
+/** Every paragraph in flow order (cells' too, D9): [{at, p}]. */
+function paras(doc) {
+  const out = [];
+  forEachBlock(doc, (b, at) => {
+    if (b.type === 'p') out.push({at, p: b});
+  });
+  return out;
+}
+
 /** setProps ops: from `at` on, numId `from` -> `to` (level kept). */
 function moveOps(doc, at, from, to) {
   const ops = [];
-  const secs = doc.sections;
-  for (let s = at.en.s; s < secs.length; s++) {
-    const bs = secs[s].blocks;
-    for (let i = s === at.en.s ? at.en.i : 0; i < bs.length; i++) {
-      if (bs[i].type !== 'p') continue;
-      const f = listInfo(doc, bs[i]);
-      if (!f || f.numId !== from) continue;
-      ops.push({op: 'setProps', block: [s, i],
-        pPr: {numPr: {numId: to, ilvl: f.ilvl}}});
-    }
+  for (const x of paras(doc)) {
+    if (cmpPath(x.at, at.en.at) < 0) continue;
+    const f = listInfo(doc, x.p);
+    if (!f || f.numId !== from) continue;
+    ops.push({op: 'setProps', block: x.at,
+      pPr: {numPr: {numId: to, ilvl: f.ilvl}}});
   }
   return ops;
 }
 
-/** Whether numbering and ops (setProps numPr) change no label. */
-function sameLabels(doc, numbering, ops) {
-  const np = new Map(ops.map((o) => [o.block.join(), o.pPr.numPr]));
-  const sections = doc.sections.map((sec, s) => ({...sec, blocks:
-    sec.blocks.map((b, i) => {
-      const x = np.get(s + ',' + i);
-      return x ? {...b, pPr: {...b.pPr, numPr: x}} : b;
-    })}));
+/** See the header. */
+export function sameLabels(doc, numbering, ops) {
+  const np = new Map();
+  for (const o of ops) {
+    const p = walkAt(doc, o.block);
+    if (!p || p.type !== 'p') return false;
+    np.set(p.id, o.pPr.numPr);
+  }
+  const put = (p) => (np.has(p.id) ? {...p, pPr: {...p.pPr,
+    numPr: np.get(p.id)}} : p);
+  const sections = doc.sections.map((sec) => ({...sec,
+    blocks: mapBlocks(sec.blocks, put)}));
   const a = labels(doc);
   const b = labels({...doc, numbering, sections});
   if (a.size !== b.size) return false;
@@ -105,6 +129,21 @@ function sameLabels(doc, numbering, ops) {
     if (!m || m.text !== l.text) return false;
   }
   return true;
+}
+
+/** See the header. */
+export function listBefore(doc, at, test) {
+  let got = null, n = 0;
+  forEachIn(doc.sections[topOf(at)[0]].blocks, [topOf(at)[0]],
+    (b, p) => {
+      if (cmpPath(p, at) >= 0) return false;
+      if (b.type !== 'p' || !layerNumPr(b.pPr)) return true;
+      n++;
+      const f = listInfo(doc, b);
+      if (f && !styleOnly(f, b) && test(f)) got = {f, p: b, n};
+      return true;
+    });
+  return got;
 }
 
 /** See the header. */
@@ -125,15 +164,6 @@ export function restart(d, typing, sel, start = 1, pending) {
   }
   runOps(d, typing, ops);
   return result(sel, pending);
-}
-
-/** Every paragraph's place, in document order: [{s, i, p}]. */
-function paras(doc) {
-  const out = [];
-  doc.sections.forEach((sec, s) => sec.blocks.forEach((p, i) => {
-    if (p.type === 'p') out.push({s, i, p});
-  }));
-  return out;
 }
 
 /** See the header. */
@@ -165,7 +195,7 @@ export function continueList(d, typing, sel, pending) {
     }
     for (let k = a; prev && k <= b; k++) {
       if (f(k) && f(k).numId === old) {
-        ops.push({op: 'setProps', block: [ps[k].s, ps[k].i],
+        ops.push({op: 'setProps', block: ps[k].at,
           pPr: {numPr: {numId: prev.numId, ilvl: f(k).ilvl}}});
       }
     }

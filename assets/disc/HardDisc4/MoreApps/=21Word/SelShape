@@ -1,0 +1,224 @@
+// SelShape - the shape of a selection, DERIVED from the Doc (Batch
+// C, D10): the selection value {anchor, head} does not change; the
+// commands that act differently on tables ask for its shape here.
+//
+//   shapeOf(doc, sel, owner?) -> one of (frozen)
+//     {kind: 'text'}  both ends in one cell (or both outside any
+//       table) with no typed table between them in their container:
+//       a text range as before
+//     {kind: 'cells', table, r0, r1, c0, c1, cells, whole}  the ends
+//       in different cells of one table: the innermost table where
+//       they are in different cells (a nested table's paragraph
+//       counts as its outer cell); table its path; the rectangle of
+//       rows r0..r1 and grid columns c0..c1 (INCLUSIVE) spanning both
+//       cells, grown until no merged cell crosses its edge
+//       (./SelCells); cells [{r, k, at}] every cell in it row by row (a
+//       vMerge continue cell too), at the cell's path: the table's
+//       path + [r, k] (its blocks are at + [j]); whole when every
+//       cell of the table is in it, or the selection is the table's
+//       two edges {t,0}..{t,1}
+//     {kind: 'mixed', tables, from, to}  one end outside a table or
+//       in another one: a text range from..to (in flow order) in
+//       which every typed table of the ends' container it touches is
+//       taken as whole rows [{table, r0, r1}] in flow order: from the
+//       row an end is in to the table's edge toward the other end; a
+//       table spanned (or entered at its start edge) whole; a table
+//       only at its far edge (from at {t,1}, to at {t,0}) untouched
+//     An invalid or stale selection is 'text'. Memoised per (owner,
+//     anchor, head) with owner (an object standing for one Doc
+//     state: the ./DocLayout painted); without it, computed afresh
+//     (the ops change the Doc in place: the Doc itself is no key).
+//   paraRanges(doc, sel, owner?) -> [{at, from, to}]  every paragraph
+//     touched, in flow order: at its path, from..to the offsets
+//     (text: the ends' offsets at the ends, else whole; cells: every
+//     paragraph of each selected cell, nested tables' too, whole;
+//     mixed: the text range's paragraphs and the covered rows'
+//     paragraphs whole); a caret its paragraph (from = to); an
+//     invalid selection []. Memoised like shapeOf.
+//   covered(doc, sel) -> [{b, at, from, to}]  every block the
+//     selection covers, in flow order (not memoised): paraRanges'
+//     paragraphs and the kept blocks (Opaque) among them, a kept
+//     block {from: 0, to: 1} (one at an end only when the range
+//     holds it: from its off 0, to its off 1); tables are entered,
+//     never listed (./WordCount)
+//   cellRect(doc, at)  ./SelCells' (re-exported): one cell's shape
+// Pure: no desktop services.
+import {orderedPos} from './EditPos';
+import {at as walkAt, forEachIn} from './Walk';
+import {samePath} from './Path';
+import {cellsShape, cellRect} from './SelCells';
+
+export {cellRect};
+
+const TEXT = Object.freeze({kind: 'text'});
+const KEEP = 32;
+const memo = new WeakMap();
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+const isObj = (v) => v !== null && typeof v === 'object';
+const valid = (sel) => isObj(sel) && isObj(sel.anchor) &&
+  isObj(sel.head);
+
+/** The cells around the block at path `at`, outermost first. */
+function chain(at) {
+  const out = [];
+  for (let n = 5; n <= at.length; n += 3) {
+    out.push({table: at.slice(0, n - 3), r: at[n - 3], k: at[n - 2]});
+  }
+  return out;
+}
+
+const sameCell = (a, b) => a.r === b.r && a.k === b.k &&
+  samePath(a.table, b.table);
+
+/** fn(b, at) for each block of the container from path bf to bt
+ *  (one container: the same prefix; top level crosses sections). */
+function each(doc, bf, bt, fn) {
+  const n = bf.length;
+  if (n === 2) {
+    for (let s = bf[0]; s <= bt[0]; s++) {
+      const bs = doc.sections[s].blocks;
+      const e = s === bt[0] ? bt[1] : bs.length - 1;
+      for (let i = s === bf[0] ? bf[1] : 0; i <= e; i++)
+        fn(bs[i], s, i);
+    }
+    return;
+  }
+  const t = walkAt(doc, bf.slice(0, n - 3));
+  const bs = t.rows[bf[n - 3]].cells[bf[n - 2]].blocks;
+  for (let j = bf[n - 1]; j <= bt[n - 1]; j++) fn(bs[j], j);
+}
+
+/** The path fn's arguments name in container bf. */
+const pathIn = (bf, a, b) => (bf.length === 2 ? [a, b]
+  : [...bf.slice(0, -1), a]);
+
+/** 'mixed' or 'text' at container depth d (see the header). */
+function across(doc, o, cf, ct, d) {
+  const n = 2 + 3 * d;
+  const bf = o.f.at.slice(0, n), bt = o.t.at.slice(0, n);
+  const tables = [];
+  each(doc, bf, bt, (b, a, i) => {
+    if (!isTbl(b)) return;
+    const at = pathIn(bf, a, i);
+    let r0 = 0, r1 = b.rows.length - 1;
+    if (samePath(at, bf)) {
+      if (cf.length > d) r0 = cf[d].r;
+      else if (o.from.off === 1) return;
+    }
+    if (samePath(at, bt)) {
+      if (ct.length > d) r1 = ct[d].r;
+      else if (o.to.off === 0) return;
+    }
+    tables.push(Object.freeze({table: Object.freeze(at), r0, r1}));
+  });
+  if (!tables.length) return TEXT;
+  return Object.freeze({kind: 'mixed', tables: Object.freeze(tables),
+    from: o.from, to: o.to});
+}
+
+/** orderedPos of a selection whose ends have paths, or null. */
+function ends(doc, sel) {
+  const o = valid(sel) && orderedPos(doc, sel);
+  return o && Array.isArray(o.f.at) && Array.isArray(o.t.at) ? o
+    : null;
+}
+
+function compute(doc, sel) {
+  const o = valid(sel) && (sel.anchor.id !== sel.head.id ||
+    sel.anchor.off !== sel.head.off) && ends(doc, sel);
+  if (!o) return TEXT;
+  if (o.f.b === o.t.b && isTbl(o.f.b)) {
+    return cellsShape(o.f.at, o.f.b, [], true) || TEXT;
+  }
+  const cf = chain(o.f.at), ct = chain(o.t.at);
+  let d = 0;
+  while (d < cf.length && d < ct.length && sameCell(cf[d], ct[d])) d++;
+  if (d < cf.length && d < ct.length &&
+    samePath(cf[d].table, ct[d].table)) {
+    const t = walkAt(doc, cf[d].table);
+    return cellsShape(cf[d].table, t, [[cf[d].r, cf[d].k],
+      [ct[d].r, ct[d].k]], false) || TEXT;
+  }
+  return across(doc, o, cf, ct, d);
+}
+
+/** The memo entry for (owner, sel, kind), or computed by make(). */
+function cached(owner, sel, kind, make) {
+  if (!isObj(owner) || !valid(sel)) return make();
+  let m = memo.get(owner);
+  if (!m) memo.set(owner, m = new Map());
+  const {anchor: a, head: h} = sel;
+  const key = `${kind}|${a.id}|${a.off}|${h.id}|${h.off}`;
+  if (m.has(key)) return m.get(key);
+  if (m.size >= KEEP) m.clear();
+  const v = make();
+  m.set(key, v);
+  return v;
+}
+
+/** See the header. */
+export const shapeOf = (doc, sel, owner) =>
+  cached(owner, sel, 's', () => compute(doc, sel));
+
+/** fn(b, at, from, to) for every block (no table) of cell (r, k) of
+ *  table t at tp, at every depth: whole. */
+function cellBlocks(t, tp, r, k, fn) {
+  const cell = t.rows[r].cells[k];
+  forEachIn(cell.blocks, [...tp, r, k], (b, at) => {
+    if (b.type !== 'tbl') fn(b, at, 0, b.type === 'p' ? b.text.length
+      : 1);
+  });
+}
+
+/** See the header. */
+export const paraRanges = (doc, sel, owner) =>
+  cached(owner, sel, 'p', () => {
+    const out = [];
+    visit(doc, sel, owner, (b, at, from, to) => {
+      if (b.type === 'p') out.push({at, from, to});
+    });
+    return Object.freeze(out);
+  });
+
+/** See the header. */
+export function covered(doc, sel) {
+  const out = [];
+  visit(doc, sel, undefined, (b, at, from, to) =>
+    out.push({b, at, from, to}));
+  return out;
+}
+
+/** fn(b, at, from, to) for each block the selection covers (see
+ *  covered in the header), in flow order. */
+function visit(doc, sel, owner, fn) {
+  const sh = shapeOf(doc, sel, owner);
+  if (sh.kind === 'cells') {
+    const t = walkAt(doc, sh.table);
+    for (const c of sh.cells) cellBlocks(t, sh.table, c.r, c.k, fn);
+    return;
+  }
+  const o = ends(doc, sel);
+  if (!o) return;
+  // the container: the tables' (mixed) or the ends' own (text)
+  const lit = sh.kind === 'mixed' ? sh.tables : [];
+  const n = lit.length ? lit[0].table.length : o.f.at.length;
+  const bf = o.f.at.slice(0, n), bt = o.t.at.slice(0, n);
+  let m = 0;
+  each(doc, bf, bt, (b, a, i) => {
+    const at = pathIn(bf, a, i);
+    if (b.type === 'p') {
+      fn(b, at, b === o.f.b ? o.from.off : 0, b === o.t.b ? o.to.off
+        : b.text.length);
+    } else if (!isTbl(b)) {
+      // a kept block: when the range holds it
+      if ((b !== o.f.b || o.from.off === 0) && (b !== o.t.b ||
+        o.to.off === 1)) fn(b, at, 0, 1);
+    } else if (m < lit.length && samePath(lit[m].table, at)) {
+      const {table: tp, r0, r1} = lit[m++];
+      for (let r = r0; r <= r1; r++) {
+        for (let k = 0; k < b.rows[r].cells.length; k++)
+          cellBlocks(b, tp, r, k, fn);
+      }
+    }
+  });
+}

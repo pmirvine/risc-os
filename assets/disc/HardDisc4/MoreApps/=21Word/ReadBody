@@ -7,14 +7,18 @@
 // {extra: []}. Each section is {props, blocks, raw}: raw is the
 // original w:sectPr node, or null.
 //
-// Blocks are Paras, or Opaque {type: 'opaque', node} for everything
-// else at body level (w:tbl, w:sdt, w:customXml, bookmarks,
+// Blocks are Paras, Tables (a body w:tbl read by ./TblRead), or
+// Opaque {type: 'opaque', node} for everything else at body level
+// (a w:tbl that does not type, w:sdt, w:customXml, bookmarks,
 // mc:AlternateContent, a w:sectPr that is not last, unknown...),
 // in place. Text and comments directly in w:body are dropped.
+// opts.tableNote(reason), if given, hears every table kept Opaque
+// (plan R3). Paragraphs in typed cells count against the same
+// paragraph limit as the body's.
 import {wName, isEl, scope} from './Ns';
 import {readPara} from './ReadPara';
 import {readSect} from './ReadSect';
-import {DocxError} from './DocxError';
+import {readTable, countPara} from './TblRead';
 
 /** Most paragraphs accepted in a body (opts.maxParagraphs). */
 export const MAX_PARAGRAPHS = 1000000;
@@ -30,21 +34,23 @@ const section = (props, blocks, raw) => ({props, blocks, raw});
  *   whether the body ended with its own w:sectPr
  */
 export function readBody(body, map, opts = {}, part = '') {
-  const max = maxParagraphs(opts);
+  const ctx = {count: {paras: 0}, max: maxParagraphs(opts), part,
+    note: opts.tableNote};
   const m = body.attrs.length ? scope(map, body) : map;
   const kids = body.children.filter(isEl);
   const last = kids.length - 1;
   const final = last >= 0 && wName(kids[last], m) === 'sectPr';
   const sections = [];
   let blocks = [];
-  let paras = 0;
   kids.forEach((c, k) => {
     if (final && k === last) return;
     const l = wName(c, m);
-    if (l === 'p' && ++paras > max) {
-      throw new DocxError('unsupported', part +
-        ': more than ' + max + ' paragraphs', {part});
+    if (l === 'tbl') {
+      const t = readTable(c, m, ctx);
+      blocks.push(t.table || {type: 'opaque', node: c});
+      return;
     }
+    if (l === 'p') countPara(ctx);
     const got = l === 'p' ? readPara(c, m) : null;
     if (!got) {
       blocks.push({type: 'opaque', node: c});

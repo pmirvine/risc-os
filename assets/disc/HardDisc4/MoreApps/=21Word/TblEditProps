@@ -1,0 +1,246 @@
+// TblEditProps - the Table properties command as a pure function on
+// a Table (Batch C5.1, D26), in ./TblEdit's manner (re-exported from
+// it): a NEW table with a NEW grid array, every row, cell and block
+// it does not change shared, no property object changed in place, or
+// the same table when nothing changes. Fields are set with ./TblNorm
+// prWith (a raw element of the same name in extra is dropped), and
+// the table starts from ./TblNorm unstray.
+//
+//   cellsOf(g, shape) -> [[r, k]]  the distinct top cells the shape
+//       touches (a merged cell once)
+//   setProps(t, g, shape, patch) -> t'
+//       t the table, g its ./TblGrid gridOf, shape {r0, r1, c0, c1}
+//       (INCLUSIVE: ./TblCmd rectOf), patch ./TblPatch patchOf's:
+//         tblPr {tblW?, jc?, tblInd?}  the table's fields set
+//         rows {trHeight}   rows r0..r1: trHeight {val, hRule}, or
+//                           removed (null)
+//         cols {widthTw}    grid columns c0..c1 that wide; every
+//                           cell over any of them tcW dxa = the sum
+//                           of its columns (as ./TblEditDist
+//                           distributeCols)
+//         cells {tcW?, vAlign?}  the shape's cells (a merged cell
+//                           once, its top cell) and the continue
+//                           cells below it: tcW dxa, vAlign
+//       RangeError for a shape not in t, a width not an integer
+//       1..MAX_TW, a trHeight val not 0..MAX_TW, a vAlign that is not
+//       top / center / bottom.
+//   setBorders(t, patch) -> t'  Borders and shading (C5.2, D31;
+//       ./TblBorderPatch patch's): patch {cells?: Map 'r,k' ->
+//       {tcBorders?, shd?}, tblPr?: {tblBorders?, shd?}}; the sides
+//       given are set over the cell's (table's) own ones, a shd null
+//       removed. Only those fields change (prWith); the grid array
+//       is kept (no width changes), cells with no change shared.
+//       RangeError (nothing changed) for a key or cell not there, a
+//       side or shading Word's schema does not allow (./FormatCheck,
+//       never clamped), or a w:tcBorders, w:tblBorders or w:shd to
+//       change that is kept raw (./BorderExplicit isRawOwn).
+// Pure: no desktop services.
+import {gridOf} from './TblGrid';
+import {MAX_TW} from './TblCheck';
+import {prWith, unstray} from './TblNorm';
+import {withoutRaw} from './PropNames';
+import {dxa, sum, checkCols} from './TblEditDist';
+import {paraPatch} from './FormatCheck';
+import {isRawOwn} from './BorderExplicit';
+import {SIDES6, SIDES8} from './TblNames';
+
+const ok = (n, lo) => Number.isInteger(n) && n >= lo && n <= MAX_TW;
+
+/** The distinct top cells [r, k] that the rectangle (INCLUSIVE rows
+ *  r0..r1, grid columns c0..c1) of grid g touches: a merged cell
+ *  once. */
+export function cellsOf(g, x) {
+  const tops = new Map();
+  for (let r = x.r0; r <= x.r1; r++) {
+    g.rows[r].cells.forEach((c) => {
+      if (c.c1 > x.c0 && c.c0 <= x.c1) tops.set(c.top.join(), c.top);
+    });
+  }
+  return [...tops.values()];
+}
+
+/** pr with patch's fields, or null when it already has them all. */
+function changed(pr, patch) {
+  pr = pr || {};
+  const ex = Array.isArray(pr.extra) ? pr.extra : [];
+  for (const k of Object.keys(patch)) {
+    const was = pr[k], now = patch[k] === null ? undefined : patch[k];
+    if (JSON.stringify(was) !== JSON.stringify(now) ||
+      withoutRaw(ex, [k]) !== ex) {
+      const p = {};
+      for (const f of Object.keys(patch)) p[f] = patch[f] === null
+        ? undefined : patch[f];
+      return prWith(pr, p);
+    }
+  }
+  return null;
+}
+
+/** Columns c0..c1 of t set to w. */
+function setCols(t, g, {c0, c1}, w) {
+  checkCols(g, c0, c1);
+  if (!ok(w, 1)) throw new RangeError('width');
+  const grid = g.grid.slice();
+  for (let c = c0; c <= c1; c++) grid[c] = w;
+  let moved = grid.length !== t.grid.length ||
+    grid.some((x, k) => x !== t.grid[k]);
+  const rows = t.rows.map((row, r) => {
+    const cells = row.cells.map((c, k) => {
+      const gc = g.rows[r].cells[k];
+      if (gc.c1 <= c0 || gc.c0 > c1) return c;
+      const n = sum(grid, gc.c0, gc.c1), was = c.tcPr.tcW;
+      if (was && was.type === 'dxa' && was.w === n) return c;
+      return {...c, tcPr: prWith(c.tcPr, {tcW: dxa(n)})};
+    });
+    if (cells.every((c, k) => c === row.cells[k])) return row;
+    moved = true;
+    return {...row, cells};
+  });
+  return moved ? {...t, grid, rows} : t;
+}
+
+/** The shape's cells (and their continue cells) given patch. */
+function setCells(t, g, shape, patch) {
+  const f = {};
+  if (patch.tcW !== undefined) {
+    if (!ok(patch.tcW, 1)) throw new RangeError('width');
+    f.tcW = dxa(patch.tcW);
+  }
+  if (patch.vAlign !== undefined) {
+    if (!['top', 'center', 'bottom'].includes(patch.vAlign)) {
+      throw new RangeError('vAlign');
+    }
+    f.vAlign = patch.vAlign;
+  }
+  const tops = new Set(cellsOf(g, shape).map((x) => x.join()));
+  let moved = false;
+  const rows = t.rows.map((row, r) => {
+    const cells = row.cells.map((c, k) => {
+      if (!tops.has(g.rows[r].cells[k].top.join())) return c;
+      const pr = changed(c.tcPr, f);
+      return pr ? {...c, tcPr: pr} : c;
+    });
+    if (cells.every((c, k) => c === row.cells[k])) return row;
+    moved = true;
+    return {...row, cells};
+  });
+  return moved ? {...t, rows} : t;
+}
+
+/** Rows r0..r1 given trHeight h (an object, or null for none). */
+function setRows(t, {r0, r1}, h) {
+  if (h !== null && !(h && ok(h.val, 0) && ['atLeast', 'exact',
+    'auto'].includes(h.hRule))) throw new RangeError('height');
+  let moved = false;
+  const rows = t.rows.map((row, r) => {
+    if (r < r0 || r > r1) return row;
+    const pr = changed(row.trPr, {trHeight: h});
+    if (!pr) return row;
+    moved = true;
+    return {...row, trPr: pr};
+  });
+  return moved ? {...t, rows} : t;
+}
+
+const JC = ['left', 'center', 'right', 'start', 'end'];
+const TYPES = ['dxa', 'auto', 'nil'];
+
+/** patch.tblPr checked (only tblW, jc, tblInd), a RangeError else. */
+function checkTbl(p) {
+  for (const k of Object.keys(p)) {
+    const v = p[k];
+    if (k === 'jc' ? !JC.includes(v) : !((k === 'tblW' || k ===
+      'tblInd') && v && typeof v === 'object' && TYPES.includes(
+      v.type) && Number.isInteger(v.w) && Math.abs(v.w) <= MAX_TW)) {
+      throw new RangeError('tblPr ' + k);
+    }
+  }
+}
+
+/** See the header. */
+export function setProps(t, g, shape, patch) {
+  g = g || gridOf(t);
+  const x = shape || {};
+  if (!Number.isInteger(x.r0) || !Number.isInteger(x.r1) || x.r0 < 0 ||
+    x.r1 < x.r0 || x.r1 >= t.rows.length) {
+    throw new RangeError('no such rows');
+  }
+  checkCols(g, x.c0, x.c1);
+  const p = patch || {};
+  let n = unstray(t, g);
+  if (n !== t) g = gridOf(n);
+  const base = n;
+  if (p.tblPr) {
+    checkTbl(p.tblPr);
+    const pr = changed(n.tblPr, p.tblPr);
+    if (pr) n = {...n, tblPr: pr};
+  }
+  if (p.rows) n = setRows(n, x, p.rows.trHeight);
+  if (p.cols) n = setCols(n, g, x, p.cols.widthTw);
+  if (p.cells) n = setCells(n, g, x, p.cells);
+  if (n === base) return t;
+  return n.grid === t.grid ? {...n, grid: [...n.grid]} : n;
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const no = (what) => { throw new RangeError('bad borders: ' + what); };
+
+/** v checked by ./FormatCheck as it is (never clamped). */
+function exact(v, key) {
+  const c = key === 'shd' ? paraPatch({shd: v}).shd
+    : paraPatch({pBdr: {top: v}}).pBdr.top;
+  if (!same(c, v)) no(key);
+  return v;
+}
+
+/** pr with the patch's sides / shd, or null when nothing changes. */
+function bordersOf(pr, patch, name, names) {
+  if (!isObj(patch) || !Object.keys(patch).every((k) => k === name ||
+    k === 'shd')) no('patch');
+  const set = {};
+  if (patch[name] !== undefined) {
+    const b = patch[name];
+    if (!isObj(b) || isRawOwn(pr, name)) no(name);
+    const out = {...(pr && pr[name])};
+    for (const k of Object.keys(b)) {
+      if (!names.includes(k)) no(k);
+      out[k] = exact(b[k], k);
+    }
+    if (!same(out, pr && pr[name])) set[name] = out;
+  }
+  if (patch.shd !== undefined) {
+    if (isRawOwn(pr, 'shd')) no('shd');
+    const v = patch.shd === null ? undefined : exact(patch.shd, 'shd');
+    if (!same(v, pr && pr.shd)) set.shd = v;
+  }
+  return Object.keys(set).length ? prWith(pr, set) : null;
+}
+
+/** See the header. */
+export function setBorders(t, patch) {
+  if (!isObj(patch) || !Object.keys(patch).every((k) => k === 'cells' ||
+    k === 'tblPr')) no('patch');
+  let n = t;
+  if (patch.tblPr !== undefined) {
+    const pr = bordersOf(t.tblPr, patch.tblPr, 'tblBorders', SIDES6);
+    if (pr) n = {...n, tblPr: pr};
+  }
+  if (patch.cells === undefined) return n;
+  if (!(patch.cells instanceof Map)) no('cells');
+  const rows = t.rows.slice();
+  for (const [key, cp] of patch.cells) {
+    const m = /^(\d{1,9}),(\d{1,9})$/.exec(key);
+    const r = m ? +m[1] : -1, k = m ? +m[2] : -1;
+    if (!rows[r] || !rows[r].cells[k]) no('cell ' + key);
+    const c = rows[r].cells[k];
+    const pr = bordersOf(c.tcPr, cp, 'tcBorders', SIDES8);
+    if (!pr) continue;
+    const cells = rows[r] === t.rows[r] ? rows[r].cells.slice()
+      : rows[r].cells;
+    cells[k] = {...c, tcPr: pr};
+    rows[r] = {...rows[r], cells};
+  }
+  return rows.some((row, r) => row !== t.rows[r]) ? {...n, rows} : n;
+}

@@ -1,0 +1,183 @@
+// TblWriteProps - the property objects of a typed table (./TblProps
+// reads them) -> w:tblPr, w:trPr, w:tcPr. Pure.
+//
+//   tblPrNode(tblPr, map)  w:tblPr, always (even empty: a w:tbl
+//                          needs one)
+//   trPrNode(trPr, map)    w:trPr, or null when empty
+//   tcPrNode(tcPr, map)    w:tcPr, or null when empty
+//   writesAs(kind, field, v, node, map)  whether the field is
+//                          written as exactly `node` (see it)
+//
+// Each field is written with the syntax ./TblProps reads, so it reads
+// back equal; then the `extra` nodes, as they are; all children in
+// schema order (./WriteProps ordered: Order.sortChildren with the
+// ./OrderTbl lists). Values: widths {w, type} as w:w then w:type;
+// margins and borders side by side in schema order (in a Strict
+// document's scope, ./Ns isStrict, left / right are named w:start /
+// w:end, R22); tblLook w:val then the flags in Word's order, as
+// "1" / "0"; vMerge 'continue' as <w:vMerge/> (Word's form), 'restart'
+// with w:val; on/off fields as ./Wml onOff (<w:x/>, w:val="0").
+// A field of the wrong type or a key the model does not have is a
+// bad model (./WriteProps badModel: the whole write is refused).
+import {el} from 'wimplib/Xml';
+import {W, onOff} from './Wml';
+import {ordered, fields, badModel} from './WriteProps';
+import {sidesNode, shdNode} from './WritePropsMore';
+import {STRICT_SIDE} from './ReadPropsMore';
+import {isStrict, scope, wName, wAttrs, isEl, blank} from './Ns';
+import {STR, HEX4, MAR, LOOK, SIDES6, SIDES8, WIDTH_PCT, WIDTH_TYPES,
+  H_RULES} from './TblNames';
+import {MAX_TW} from './TblCheck';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const isInt = (v) => Number.isSafeInteger(v);
+const isBool = (v) => typeof v === 'boolean';
+const keysIn = (v, list) => Object.keys(v).every((k) =>
+  list.includes(k));
+
+/** The attribute pairs of a width {w, type}, or null. */
+function widthAttrs(v) {
+  if (!isObj(v) || !keysIn(v, ['w', 'type']) ||
+    !WIDTH_TYPES.includes(v.type)) return null;
+  const ok = isInt(v.w) || (v.type === 'pct' &&
+    typeof v.w === 'string' && WIDTH_PCT.test(v.w));
+  return ok ? [['w:w', v.w], ['w:type', v.type]] : null;
+}
+
+const width = (name) => (v) => {
+  const a = widthAttrs(v);
+  return a && W(name, a);
+};
+
+/** Margins {top?, left?, bottom?, right?} (Strict-aware names). */
+const margins = (name, strict) => (v) => {
+  if (!isObj(v) || !keysIn(v, MAR)) return null;
+  const kids = [];
+  for (const k of MAR) {
+    if (v[k] === undefined) continue;
+    const a = widthAttrs(v[k]);
+    if (!a) return null;
+    kids.push(W(strict ? STRICT_SIDE.get(k) || k : k, a));
+  }
+  return W(name, null, ...kids);
+};
+
+const sides = (name, names, strict) => (v) =>
+  sidesNode(name, names, v, strict);
+
+const tblLook = (v) => {
+  if (!isObj(v) || !keysIn(v, ['val', ...LOOK])) return null;
+  if (v.val !== undefined && !(typeof v.val === 'string' &&
+    HEX4.test(v.val))) return null;
+  if (!LOOK.every((k) => v[k] === undefined || isBool(v[k]))) {
+    return null;
+  }
+  const a = v.val === undefined ? [] : [['w:val', v.val]];
+  for (const k of LOOK) {
+    if (v[k] !== undefined) a.push(['w:' + k, v[k] ? '1' : '0']);
+  }
+  return W('tblLook', a);
+};
+
+const trHeight = (v) => {
+  if (!isObj(v) || !keysIn(v, ['val', 'hRule']) || !isInt(v.val) ||
+    v.val < 0 || v.val > MAX_TW) return null;
+  if (v.hRule === undefined) return W('trHeight', {'w:val': v.val});
+  return H_RULES.includes(v.hRule)
+    ? W('trHeight', [['w:val', v.val], ['w:hRule', v.hRule]]) : null;
+};
+
+const vMerge = (v) => v === 'continue' ? W('vMerge')
+  : v === 'restart' ? W('vMerge', {'w:val': v}) : null;
+
+const bool = (name) => (v) => isBool(v) ? onOff(name, v) : null;
+const int = (name) => (v) => isInt(v) ? W(name, {'w:val': v}) : null;
+const str = (name) => (v) => typeof v === 'string' && STR.test(v)
+  ? W(name, {'w:val': v}) : null;
+const tblLayout = (v) => v === 'fixed' || v === 'autofit'
+  ? W('tblLayout', {'w:type': v}) : null;
+
+const tblTable = (s) => ({
+  tblStyle: str('tblStyle'), tblW: width('tblW'), jc: str('jc'),
+  tblInd: width('tblInd'), tblBorders: sides('tblBorders', SIDES6, s),
+  shd: shdNode, tblLayout, tblCellMar: margins('tblCellMar', s),
+  tblLook, tblCellSpacing: width('tblCellSpacing'),
+  tblStyleRowBandSize: int('tblStyleRowBandSize'),
+  tblStyleColBandSize: int('tblStyleColBandSize'),
+  bidiVisual: bool('bidiVisual'),
+});
+const TR = {
+  trHeight, cantSplit: bool('cantSplit'), tblHeader: bool('tblHeader'),
+  jc: str('jc'), gridBefore: int('gridBefore'),
+  gridAfter: int('gridAfter'), wBefore: width('wBefore'),
+  wAfter: width('wAfter'), hidden: bool('hidden'),
+  tblCellSpacing: width('tblCellSpacing'),
+};
+const tcTable = (s) => ({
+  tcW: width('tcW'), gridSpan: int('gridSpan'), vMerge,
+  tcBorders: sides('tcBorders', SIDES8, s),
+  shd: shdNode, noWrap: bool('noWrap'), tcMar: margins('tcMar', s),
+  textDirection: str('textDirection'), tcFitText: bool('tcFitText'),
+  vAlign: str('vAlign'), hideMark: bool('hideMark'),
+});
+const TBL = [tblTable(false), tblTable(true)];
+const TC = [tcTable(false), tcTable(true)];
+const pick = (pair, map) => pair[isStrict(map) ? 1 : 0];
+const WRITERS = {tblPr: TBL, trPr: [TR, TR], tcPr: TC};
+
+const local = (n) => n.slice(n.indexOf(':') + 1);
+
+/** Whether `node` (scope m) is exactly the element `made`. */
+function same(made, node, m) {
+  if (wName(node, m) !== local(made.name)) return false;
+  const mm = node.attrs.length ? scope(m, node) : m;
+  const a = wAttrs(node, mm);
+  if (!a || a.size !== made.attrs.length) return false;
+  let i = 0;
+  for (const [k, v] of a) {
+    const [n, w] = made.attrs[i++];
+    if (local(n) !== k || String(w) !== v) return false;
+  }
+  const kids = node.children.filter((c) =>
+    !(typeof c === 'string' && blank(c)));
+  return kids.length === made.children.length && kids.every((c, j) =>
+    isEl(c) && same(made.children[j], c, mm));
+}
+
+/**
+ * Whether field `field` of a `kind` ('tblPr' | 'trPr' | 'tcPr') with
+ * value v is written as exactly `node` (scope map): the same names,
+ * the same attributes in the same order and spelling, the same
+ * children (white space between them aside). ./TblProps reads a field
+ * only then, so what types is written back as it was.
+ */
+export function writesAs(kind, field, v, node, map) {
+  const t = pick(WRITERS[kind], map);
+  const made = Object.hasOwn(t, field) ? t[field](v) : null;
+  return !!made && same(made, node, map);
+}
+
+/** The children of a property container, in schema order. */
+function kids(kind, o, table, map) {
+  if (!isObj(o) || !Array.isArray(o.extra)) {
+    throw badModel(kind + ': not a property object');
+  }
+  return ordered(kind, o.extra.concat(fields(o, table, kind)), map);
+}
+
+/** See the header. */
+export const tblPrNode = (tblPr, map) =>
+  el('w:tblPr', null, kids('tblPr', tblPr, pick(TBL, map), map));
+
+/** See the header. */
+export function trPrNode(trPr, map) {
+  const k = kids('trPr', trPr, TR, map);
+  return k.length ? el('w:trPr', null, k) : null;
+}
+
+/** See the header. */
+export function tcPrNode(tcPr, map) {
+  const k = kids('tcPr', tcPr, pick(TC, map), map);
+  return k.length ? el('w:tcPr', null, k) : null;
+}

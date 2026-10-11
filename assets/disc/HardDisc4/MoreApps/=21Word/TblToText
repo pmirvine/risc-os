@@ -1,0 +1,203 @@
+// TblToText - Convert > Table to text (Batch C6.4, D29), pure: the
+// blocks a table becomes. ./TblConvertCmd puts them in a Document.
+//
+//   tableToText(t, {sep}) -> [block]  new paragraphs (and the kept
+//       blocks the table held), in flow order; t is not changed.
+//       sep as ./TblConvert sepChar: 'para' (Paragraph marks),
+//       'tab', 'comma' or Other (one code point); RangeError for
+//       another. The rule (TB16 asks Word's), chosen here so that
+//       the text, and so every bookmark pair, stays in file order
+//       (final fix wave, final-1 M2):
+//     * a ROW is its cells' text joined by the separator (./OpsUtil
+//       join: runs and inlines kept; the separator takes the format
+//       of the text before it); a cell's paragraphs stay together:
+//       its second paragraph starts a new paragraph, which the next
+//       cell's text continues (a1 / a2 | b gives "a1" and "a2<tab>b").
+//       A paragraph made has the pPr, pStyle and extraP of the first
+//       cell paragraph in it. With 'para' every paragraph of every
+//       cell is its own paragraph.
+//     * a NESTED table is converted first, the same way, with the
+//       same separator: its blocks come where the table was, ending
+//       the paragraph before it (a cell whose first block is a table
+//       adds no text there: "a<tab>", the table, then the rest).
+//     * a merged cell counts once: a vMerge continue cell (its
+//       restart cell holds the content) gives no text and no
+//       separator; a cell over several columns is one cell. What
+//       such a hidden cell holds anyway (Word does not show it) is
+//       never dropped (C6 fix B5): its paragraphs of bookmark marks
+//       only go with the row (below), empty paragraphs go, and
+//       every other block (text, pictures, comment ranges, a
+//       nested table converted, a kept block) comes in its place,
+//       as its own block.
+//     * MARKS (bookmarks, comment and permission ranges: a row's or
+//       cell's `lead`, a row's or the table's `tail`) become inlines
+//       of the paragraph they were next to: leads in front of the
+//       text that follows them, tails behind the text before them,
+//       in the order of the file, so a bookmark pair is never
+//       broken; a hidden continue cell's paragraphs that hold only
+//       bookmark marks too.
+//     Every paragraph made has a fresh id (./Model nextId); kept
+//     (Opaque) blocks are kept as they are. A table with no text at
+//     all still gives one paragraph.
+// Pure: no desktop services.
+import {nextId, newPara, OBJ} from './Model';
+import {join, cut} from './OpsUtil';
+import {gridOf} from './TblGrid';
+import {marksIn} from './BookmarkKeep';
+import {sepChar} from './TblConvert';
+
+const isP = (b) => !!b && b.type === 'p';
+const isTbl = (b) => !!b && b.type === 'tbl';
+const PLAIN = () => [{start: 0, end: 1, rPr: {extra: []}}];
+
+/** A piece of one inline (a mark): one U+FFFC. */
+const inlinePiece = (x) => ({text: OBJ, runs: PLAIN(),
+  inlines: {0: x}});
+const nodePiece = (node) => inlinePiece({kind: 'raw', level: 'p', node,
+  text: ''});
+const whole = (p) => cut(p, 0, p.text.length);
+
+/** A paragraph like p holding the joined pieces. */
+function made(p, c) {
+  return {...p, id: nextId(), text: c.text, runs: c.runs,
+    inlines: c.inlines};
+}
+
+/** The joined paragraph of `pieces` (marks, separators, first
+ *  paragraphs) with the properties of `base`. */
+function joined(base, pieces) {
+  return made(base || newPara(''), join(...pieces));
+}
+
+/** The pieces' last format (a separator takes it). */
+function fmtOf(pieces) {
+  for (let k = pieces.length - 1; k >= 0; k--) {
+    const rs = pieces[k].runs;
+    if (rs.length) return rs[rs.length - 1];
+  }
+  return {rPr: {extra: []}};
+}
+
+const sepPiece = (ch, pieces) => {
+  const f = fmtOf(pieces);
+  const run = {start: 0, end: ch.length, rPr: f.rPr};
+  if (f.rStyle !== undefined) run.rStyle = f.rStyle;
+  return {text: ch, runs: [run], inlines: {}};
+};
+
+/** A hidden (continue) cell: paragraphs of marks only into
+ *  pieces, empty ones dropped, every other block to put(b). */
+function hidden(cell, pieces, put) {
+  for (const b of cell.blocks) {
+    if (isP(b)) {
+      const ms = marksIn(b, 0, b.text.length, []);
+      if (ms.length === b.text.length) {
+        for (const m of ms) pieces.push(inlinePiece(m.x));
+        continue;
+      }
+    }
+    put(b);
+  }
+}
+
+/** Marks `pieces` after the last paragraph of out from index lo, or
+ *  (none there) waiting in st.pending for the next one. */
+function behind(out, lo, pieces, st) {
+  for (let k = out.length - 1; k >= lo; k--) {
+    if (isP(out[k])) {
+      out[k] = made(out[k], join(whole(out[k]), ...pieces));
+      return;
+    }
+  }
+  st.pending.push(...pieces);
+}
+
+/** A paragraph of paragraph-mode: the marks waiting go in front. */
+function emit(b, st) {
+  if (!st.pending.length) return {...b, id: nextId()};
+  return joined(b, [...st.pending.splice(0), whole(b)]);
+}
+
+/** Row r of t in paragraph mode, appended to out. */
+function rowParas(t, g, r, st, out) {
+  const row = t.rows[r], lo = out.length;
+  for (const n of row.lead || []) st.pending.push(nodePiece(n));
+  const put = (b) => {
+    if (isTbl(b)) out.push(...convert(b, null));
+    else out.push(isP(b) ? emit(b, st) : b);
+  };
+  row.cells.forEach((cell, k) => {
+    for (const n of cell.lead || []) st.pending.push(nodePiece(n));
+    if (g.rows[r].cells[k].cont) hidden(cell, st.pending, put);
+    else cell.blocks.forEach(put);
+  });
+  behind(out, lo, (row.tail || []).map(nodePiece), st);
+}
+
+/** Row r of t for separator ch, appended to out (the header: file
+ *  order). s.cur: the pieces of the paragraph being made (marks
+ *  only while s.text is false), s.base its first paragraph. */
+function rowSep(t, g, r, ch, st, out) {
+  const row = t.rows[r];
+  const s = {cur: st.pending.splice(0), base: null, text: false};
+  const flush = () => {
+    if (!s.text) return;
+    out.push(joined(s.base, s.cur));
+    Object.assign(s, {cur: [], base: null, text: false});
+  };
+  const para = (p) => {
+    s.cur.push(whole(p));
+    s.base = s.base || p;
+    s.text = true;
+  };
+  // blocks bs in their place: the marks waiting go in front
+  const blocks = (bs) => {
+    flush();
+    if (s.cur.length && isP(bs[0])) {
+      bs = [joined(bs[0], [...s.cur.splice(0), whole(bs[0])]),
+        ...bs.slice(1)];
+    } else if (s.cur.length) out.push(joined(null, s.cur.splice(0)));
+    out.push(...bs);
+  };
+  const put = (b) => blocks(isTbl(b) ? convert(b, ch)
+    : [isP(b) ? {...b, id: nextId()} : b]);
+  for (const n of row.lead || []) s.cur.push(nodePiece(n));
+  let shown = 0;
+  row.cells.forEach((cell, k) => {
+    for (const n of cell.lead || []) s.cur.push(nodePiece(n));
+    if (g.rows[r].cells[k].cont) return hidden(cell, s.cur, put);
+    if (shown++) {
+      s.cur.push(sepPiece(ch, s.cur));
+      s.text = true;
+    }
+    cell.blocks.forEach((b, j) => {
+      if (!isP(b)) return put(b);
+      if (j > 0) flush();
+      para(b);
+    });
+  });
+  for (const n of row.tail || []) s.cur.push(nodePiece(n));
+  if (s.text) flush();
+  else st.pending.push(...s.cur);
+}
+
+/** The blocks of t for separator ch (null: paragraph marks). */
+function convert(t, ch) {
+  const g = gridOf(t), out = [], st = {pending: []};
+  for (let r = 0; r < t.rows.length; r++) {
+    if (ch === null) rowParas(t, g, r, st, out);
+    else rowSep(t, g, r, ch, st, out);
+  }
+  behind(out, 0, (t.tail || []).map(nodePiece), st);
+  if (st.pending.length) behind(out, 0, st.pending.splice(0), st);
+  if (!out.some(isP)) {
+    out.push(joined(null, st.pending.splice(0).concat([{text: '',
+      runs: [], inlines: {}}])));
+  }
+  return out;
+}
+
+/** See the header. */
+export function tableToText(t, {sep} = {}) {
+  return convert(t, sepChar(sep));
+}

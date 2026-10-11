@@ -3,7 +3,19 @@
 // its y, with the gaps and marks its decorators ask for.
 //
 //   stack(L)          lay out L.items from y = L.top + MARGIN; sets
-//                     L.height (L.minHeight of the end + MARGIN)
+//                     L.height (L.minHeight of the end + MARGIN) and
+//                     L.wide (px from L.left: the right edge of the
+//                     widest top-level table, 0 without one; D18
+//                     step 4: ./DocLayout's extent reaches it)
+//   stackColumn(L, col, y0) -> bottom  the same for one column (the
+//                     root, or a cell's, ./DocItems) from y0: its
+//                     paragraphs broken at it.w with col.styles
+//                     (L.cacheFor(col.styles), R6), then each item
+//                     decorated and placed; a 'tbl' item is laid out
+//                     where it stands (./TblLayout layoutTable: h);
+//                     returns the y below its last item and gap; a
+//                     cell's items also get ry (= y: ./TblLayout
+//                     moves them from it), the root's not (C7 fix)
 //   DECORATORS        the decorators every layout uses unless it is
 //                     given others: ./ParaSpace spacingDeco, then
 //                     ./BorderGroups borderDeco (border boxes and
@@ -31,6 +43,10 @@
 // get the document's default tab stop (./TabStops defaultStop:
 // doc.rawSettings, in the reuse key) and L.ns, the scope their
 // pictures are read in (./PicRead docMap).
+// A paragraph is broken at its column's width (it.w, ./DocItems).
+// Decorators run per column, neighbours from the item's column;
+// sectDeco and flowDeco only in the root column (no section or page
+// breaks in cells, D17), the others in cells as on the page.
 // Every paragraph is broken into lines before any item is
 // decorated, so a decorator (and its keyOf) may read the lines of
 // the items on both sides.
@@ -55,6 +71,7 @@ import {spacingDeco} from './ParaSpace';
 import {sectDeco} from './SectDeco';
 import {flowDeco} from './FlowDeco';
 import {borderDeco} from './BorderGroups';
+import {layoutTable} from './TblLayout';
 
 export const MARGIN = 24;
 export const DECORATORS = Object.freeze([spacingDeco, borderDeco,
@@ -118,23 +135,47 @@ function decorate(L, it, decos) {
   Object.freeze(d);
 }
 
+const CELL = new WeakMap();          // decorator list -> cells'
+
+/** The decorators of a cell's column (see the header). */
+function cellDecos(decos) {
+  let d = CELL.get(decos);
+  if (!d) {
+    d = Object.freeze(decos.filter((f) => f !== sectDeco &&
+      f !== flowDeco));
+    CELL.set(decos, d);
+  }
+  return d;
+}
+
 /** See the header. */
 export function stack(L) {
-  const y0 = MARGIN + L.top;
+  L.defPx = defaultStop(L.doc) / 15;
+  L.wide = 0;
+  const y = stackColumn(L, L.root, MARGIN + L.top);
+  L.height = L.minHeight(y + MARGIN);
+  L.laid = true;
+}
+
+/** See the header. */
+export function stackColumn(L, col, y0) {
   let y = y0;
-  const {textW, metrics, cache: fmt} = L;
-  const {styles} = L.doc;
-  const defPx = defaultStop(L.doc) / 15;
-  const decos = L.decorators || DECORATORS;
-  for (const it of L.items) {
+  const {metrics} = L;
+  const styles = col === L.root ? L.doc.styles : col.styles;
+  const fmt = L.cacheFor(styles);
+  const defPx = L.defPx ?? defaultStop(L.doc) / 15;
+  const all = L.decorators || DECORATORS;
+  const decos = col === L.root ? all : cellDecos(all);
+  const {items} = col;
+  for (const it of items) {
     if (it.kind === 'p' && !it.lines) {
-      const l = layoutPara(it.block, styles, textW, metrics, fmt,
+      const l = layoutPara(it.block, styles, it.w, metrics, fmt,
         it.list || undefined, defPx, L.ns);
       it.lines = l.lines;
       it.h = l.h;
     }
   }
-  for (const it of L.items) {
+  for (const it of items) {
     if (decos.length) {
       const keys = keysOf(L, it, decos);
       if (!fresh(it.deco, keys)) decorate(L, it, decos);
@@ -148,8 +189,12 @@ export function stack(L) {
       ? Math.max(it.gapAbove, y0 - y, Math.min(0, 1 - it.h))
       : it.gapAbove;
     it.y = y;
+    if (col !== L.root) it.ry = y;
+    if (it.kind === 'tbl') {
+      it.h = layoutTable(L, it, y);
+      if (col === L.root) L.wide = Math.max(L.wide, it.left + it.width);
+    }
     y += it.h + it.gapBelow;
   }
-  L.height = L.minHeight(y + MARGIN);
-  L.laid = true;
+  return y;
 }

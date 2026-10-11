@@ -1,0 +1,121 @@
+// TblMerge - merge cells (Batch C4.3, D25) as a pure
+// function on a Table, in ./TblEdit's manner: a NEW table and grid
+// array, every row, cell and block not changed shared, no tcPr /
+// trPr object changed in place; g is the table's ./TblGrid gridOf
+// (computed when not given). Rows r0..r1 and grid columns c0..c1 are
+// INCLUSIVE (./SelShape's).
+//
+//   mergeCells(t, g, {r0, r1, c0, c1}) -> t' | null  in each row of
+//       the rectangle its cells become one: the row's first cell's tcPr
+//       with gridSpan the columns' sum and tcW summed (every one dxa:
+//       their sum; else, if it had one or one is raw, dxa of the
+//       columns' widths); across rows the first row's cell vMerge
+//       restart, the rows below continue (one row: no vMerge). The
+//       merged cell holds the SHOWN cells' blocks in flow order, the
+//       very objects moved; a cell that is one empty paragraph adds
+//       nothing (TB13); none at all: the first cell's own. A vMerge
+//       continue cell's blocks (never shown, ./TblPos) stay hidden in
+//       their row's continue cell (none: a ./TblEdit emptyLike
+//       paragraph). The shown cells' leads (marks) go with their
+//       content: in flow order to the front of the first row's merged
+//       cell's lead; a hidden cell's stays in its row; bookmarks in
+//       paragraphs go with them. A pair this leaves end before start
+//       has its start put at the front of that lead (./TblPairs
+//       inOrder): no pair is written reversed. null (refused) when the
+//       rectangle cannot be made whole (a row without cells from c0 to
+//       c1: gridBefore / gridAfter, a short row, a span crossing its
+//       edge; a merge reaching outside it) or is one cell. RangeError
+//       for one not in t.
+//   splitCell  ./TblSplit's (re-exported)
+// It starts from ./TblNorm unstray (a stray continue cell below the
+// rectangle is written restart, never joined to the merge) and sets
+// fields with prWith (no second w:tcW).
+// Pure: no desktop services.
+import {gridOf} from './TblGrid';
+import {emptyLike, firstPara} from './TblEdit';
+import {tcPrWith} from './TblEditCols';
+import {dxa, isDxa, sum} from './TblEditDist';
+import {prWith, unstray, rawW} from './TblNorm';
+import {endIn, inOrder} from './TblPairs';
+
+export {splitCell} from './TblSplit';
+
+const arr = (v) => (Array.isArray(v) ? v : []);
+const lone = (c) => c.blocks.length === 1 && c.blocks[0].type === 'p' &&
+  c.blocks[0].text === '';
+
+/** The cells [k0, k1] of grid row gr covering exactly columns
+ *  c0..c1, or null. */
+function cover(gr, c0, c1) {
+  let k0 = -1, k1 = -1;
+  gr.cells.forEach((gc, k) => {
+    if (gc.c0 === c0) k0 = k;
+    if (gc.c1 === c1 + 1) k1 = k;
+  });
+  return k0 >= 0 && k1 >= k0 ? [k0, k1] : null;
+}
+
+/** The merged cell's tcPr (see the header). */
+function mergedPr(own, n, width, vm) {
+  const o = {vMerge: vm || undefined};
+  if (own.every((c) => isDxa(c.tcPr.tcW))) {
+    o.tcW = dxa(own.reduce((a, c) => a + c.tcPr.tcW.w, 0));
+  } else if ((own.length > 1 && own[0].tcPr.tcW !== undefined) ||
+    own.some((c) => rawW(c.tcPr))) {
+    o.tcW = dxa(width);
+  }
+  return prWith(tcPrWith(own[0].tcPr, n), o);
+}
+
+/** See the header. */
+export function mergeCells(t, g, {r0, r1, c0, c1} = {}) {
+  g = g || gridOf(t);
+  if (![r0, r1, c0, c1].every(Number.isInteger) || r0 < 0 || r1 < r0 ||
+    r1 >= t.rows.length || c0 < 0 || c1 < c0 || c1 >= g.cols) {
+    throw new RangeError('no such cells');
+  }
+  const ks = [];
+  let shown = 0;
+  for (let r = r0; r <= r1; r++) {
+    const s = cover(g.rows[r], c0, c1);
+    if (!s) return null;
+    for (let k = s[0]; k <= s[1]; k++) {
+      const top = g.rows[r].cells[k].top;
+      const h = g.rows[top[0]].cells[top[1]].rowSpan;
+      if (top[0] < r0 || top[0] + h - 1 > r1) return null;
+      if (!g.rows[r].cells[k].cont) shown++;
+    }
+    ks.push(s);
+  }
+  if (shown < 2) return null;
+  t = unstray(t, g);
+  const blocks = [], leads = [], moved = [], rows = t.rows.slice();
+  ks.forEach(([k0, k1], i) => {
+    for (let k = k0; k <= k1; k++) {
+      const c = t.rows[r0 + i].cells[k];
+      if (g.rows[r0 + i].cells[k].cont) continue;
+      leads.push(...arr(c.lead));
+      if (i || k > k0) moved.push(c);
+      if (!lone(c)) blocks.push(...c.blocks);
+    }
+  });
+  const width = sum(g.grid, c0, c1 + 1), many = r1 > r0;
+  ks.forEach(([k0, k1], i) => {
+    const r = r0 + i, row = t.rows[r];
+    const own = row.cells.slice(k0, k1 + 1);
+    let bl = blocks.length ? blocks : own[0].blocks;
+    if (i) {
+      const hid = own.filter((c, j) => g.rows[r].cells[k0 + j].cont &&
+        !lone(c)).flatMap((c) => c.blocks);
+      bl = hid.length ? hid : [emptyLike(firstPara(own[0]))];
+    }
+    const lead = i ? own.filter((c, j) => g.rows[r].cells[k0 + j]
+      .cont).flatMap((c) => arr(c.lead)) : leads;
+    const cell = {...own[0], blocks: bl, lead, tcPr: mergedPr(own,
+      c1 - c0 + 1, width, many ? (i ? 'continue' : 'restart') : null)};
+    rows[r] = {...row, cells: [...row.cells.slice(0, k0), cell,
+      ...row.cells.slice(k1 + 1)]};
+  });
+  const out = {...t, grid: [...t.grid], rows};
+  return endIn(moved) ? inOrder(t, out, r0, ks[0][0]) : out;
+}

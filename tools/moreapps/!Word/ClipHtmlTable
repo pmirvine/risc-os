@@ -1,0 +1,124 @@
+// ClipHtmlTable - a table block as HTML and as plain text for other
+// programs (Batch C6.3, D28), for ./ClipHtml and ./ClipSlice.
+//
+//   tableHtml(t, ctx) -> string | null
+//       t: a table block (./ClipSlice's shape, or a model Table).
+//       ctx: {cell(blocks) -> string | null  the HTML of a cell's
+//               blocks (null: over the cap),
+//             skip(blocks)  a hidden cell's blocks, not written (a
+//               vMerge continue cell: ./ClipHtml keeps its walk
+//               index of slice.ids in step),
+//             styles  the source document's style table or null,
+//             room() -> the units the HTML may still take}
+//       null when the HTML would take more than room() units or a
+//       cell gives null: nothing is cut short.
+//   tablePlain(t, nodeText?) -> string  a line per row, its cells'
+//       text joined by tabs, a cell's paragraphs (nested tables'
+//       too) by spaces: ./Walk flatText, the one rule (Word's
+//       text/plain of a table)
+//
+// The HTML: <table style="border-collapse:collapse;width:Wpt">, a
+// <tr> per row, a <td> per cell (./TblGrid gridOf): colspan its
+// grid columns (gridSpan), rowspan the rows its vMerge covers; a
+// continue cell is not written (the rowspan covers it); a row's
+// gridBefore is an empty <td colspan>. Each <td> has style width
+// (its columns, pt), vertical-align:top, a 1px solid black border
+// when the cell has one (any side of its own tcBorders, else of the
+// table's tblBorders where it is (./TblBorderAt direct), else of the
+// table style's tblBorders / tcBorders (./TblStyle viewOf; its
+// conditional parts are not read); a nil / none side is none; a
+// side kept raw counts as one), and background-color for its shd
+// fill (a 6-digit hex colour, not auto). Every value written is a
+// number or a checked hex colour; the cells' content is ctx's.
+// Pure: no desktop services.
+import {gridOf} from './TblGrid';
+import {direct, UNKNOWN} from './TblBorderAt';
+import {viewOf, tableStyleId} from './TblStyle';
+import {flatText} from './Walk';
+
+const HEX = /^[0-9A-Fa-f]{6}$/;
+const SIDES = ['top', 'left', 'bottom', 'right'];
+const NONE = new Set(['nil', 'none']);
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export const tablePlain = (t, nodeText) =>
+  flatText(t, nodeText).join('\n');
+
+/** Twips as pt, at most one decimal. */
+const pt = (tw) => String(Math.round(tw / 2) / 10);
+
+/** Whether side v (as the readers give it) is drawn. */
+const shows = (v) => v === UNKNOWN || (isObj(v) &&
+  !NONE.has(v.val));
+
+/** Whether any side of a borders object is drawn. */
+const anyOf = (o) => isObj(o) && Object.keys(o).some((k) =>
+  k !== 'extra' && shows(o[k]));
+
+/** The table style's borders: whether it draws any. */
+function styleBorders(styles, t) {
+  const id = tableStyleId(styles, t);
+  const v = id ? viewOf(styles, id) : null;
+  return !!v && (anyOf(v.tblPr && v.tblPr.tblBorders) ||
+    anyOf(v.tcPr && v.tcPr.tcBorders));
+}
+
+/** Whether cell (r, k) has a border (see the header). */
+function bordered(t, g, r, k, style) {
+  let given = false;
+  for (const s of SIDES) {
+    const v = direct(t, g, r, k, s);
+    if (shows(v)) return true;
+    if (v !== null && v !== undefined) given = true;
+  }
+  return !given && style;
+}
+
+/** The style attribute of cell (r, k) over columns c0..c1. */
+function cellCss(t, g, r, k, style) {
+  const c = g.rows[r].cells[k], pr = t.rows[r].cells[k].tcPr;
+  let w = 0;
+  for (let i = c.c0; i < c.c1; i++) w += g.grid[i] || 0;
+  let css = 'width:' + pt(w) + 'pt;vertical-align:top';
+  if (bordered(t, g, r, k, style)) css += ';border:1px solid #000000';
+  const fill = isObj(pr) && isObj(pr.shd) ? pr.shd.fill : null;
+  if (typeof fill === 'string' && HEX.test(fill))
+    css += ';background-color:#' + fill.toUpperCase();
+  return css;
+}
+
+/** See the header. */
+export function tableHtml(t, ctx) {
+  const g = gridOf(t);
+  const style = ctx.styles ? styleBorders(ctx.styles, t) : false;
+  const parts = ['<table style="border-collapse:collapse;width:' +
+    pt(g.width) + 'pt">'];
+  let len = parts[0].length;
+  const put = (s) => {
+    len += s.length;
+    parts.push(s);
+    return len <= ctx.room();
+  };
+  for (let r = 0; r < t.rows.length; r++) {
+    const gr = g.rows[r];
+    if (!put('<tr>')) return null;
+    if (gr.before > 0 && !put('<td colspan="' + gr.before + '"></td>'))
+      return null;
+    for (let k = 0; k < t.rows[r].cells.length; k++) {
+      const c = gr.cells[k], cell = t.rows[r].cells[k];
+      if (c.cont) {
+        ctx.skip(cell.blocks);
+        continue;
+      }
+      let td = '<td';
+      if (c.c1 - c.c0 > 1) td += ' colspan="' + (c.c1 - c.c0) + '"';
+      if (c.rowSpan > 1) td += ' rowspan="' + c.rowSpan + '"';
+      td += ' style="' + cellCss(t, g, r, k, style) + '">';
+      const inner = ctx.cell(cell.blocks);
+      if (inner === null || !put(td + inner + '</td>')) return null;
+    }
+    if (!put('</tr>')) return null;
+  }
+  return put('</table>') ? parts.join('') : null;
+}

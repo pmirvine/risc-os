@@ -1,0 +1,124 @@
+// SelCells - the cell rectangles of ./SelShape's 'cells' shapes
+// (Batch C, D10), through the table's resolved grid (./TblGrid).
+//
+//   cellsShape(tp, t, ends, all) -> the frozen shape {kind: 'cells',
+//     table: tp, r0, r1, c0, c1, cells, whole} of table t (at path
+//     tp): the rectangle of grid rows r0..r1 and columns c0..c1
+//     (INCLUSIVE) spanning the merged rectangles of the cells
+//     ends [[r, k]...] (all: the whole table), grown until no merged
+//     cell (gridSpan, vMerge) crosses its edge (a worklist: each
+//     cell looked at O(1) times, O(cells in the rectangle) in all,
+//     however the merges are staggered); cells [{r, k, at}] every
+//     cell in it row by
+//     row (a vMerge continue cell too; at: tp + [r, k]); whole when
+//     every cell of the table is in it (or all). null when an end is
+//     not a cell of t.
+//   cellRect(doc, at) -> the 'cells' shape of one cell (its merged
+//     rectangle): at the cell's path (table path + [r, k]) or a
+//     block's path in it (its innermost cell); null when there is no
+//     such cell.
+// Pure: no desktop services.
+import {gridOf, spanOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {isPath} from './Path';
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+
+/** The index of the first cell of `cells` ending after column x. */
+function firstAfter(cells, x) {
+  let lo = 0, hi = cells.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (cells[m].c1 > x) hi = m;
+    else lo = m + 1;
+  }
+  return lo;
+}
+
+/**
+ * Rows R0..R1, columns C0..C1 grown until no merge crosses them: a
+ * worklist of rows, each scanning only the columns it has not yet
+ * scanned (a row added: all of them; columns added: those), so every
+ * cell is looked at O(1) times (review C3a I2).
+ */
+function grow(g, R0, R1, C0, C1) {
+  const n = g.rows.length, lo = new Int32Array(n);
+  const hi = new Int32Array(n).fill(-1), queued = new Uint8Array(n);
+  const todo = [];
+  const push = (a, b) => {
+    for (let r = a; r <= b; r++) {
+      if (!queued[r]) { queued[r] = 1; todo.push(r); }
+    }
+  };
+  const scan = (r, x, y) => {
+    const cells = g.rows[r].cells;
+    for (let k = firstAfter(cells, x); k < cells.length &&
+      cells[k].c0 <= y; k++) {
+      const s = spanOf(g, r, k);
+      if (s.r0 < R0) { push(s.r0, R0 - 1); R0 = s.r0; }
+      if (s.r1 - 1 > R1) { push(R1 + 1, s.r1 - 1); R1 = s.r1 - 1; }
+      if (s.c0 < C0 || s.c1 - 1 > C1) {
+        C0 = Math.min(C0, s.c0);
+        C1 = Math.max(C1, s.c1 - 1);
+        push(R0, R1);
+      }
+    }
+  };
+  push(R0, R1);
+  while (todo.length) {
+    const r = todo.pop(), a = C0, b = C1;
+    queued[r] = 0;
+    const was = hi[r] >= lo[r];
+    const [l0, h0] = [lo[r], hi[r]];
+    lo[r] = a;
+    hi[r] = b;
+    if (!was) scan(r, a, b);
+    else {
+      if (a < l0) scan(r, a, l0 - 1);
+      if (b > h0) scan(r, h0 + 1, b);
+    }
+  }
+  return [R0, R1, C0, C1];
+}
+
+/** See the header. */
+export function cellsShape(tp, t, ends, all) {
+  const g = gridOf(t);
+  let R0 = Infinity, R1 = -1, C0 = Infinity, C1 = -1;
+  for (const [r, k] of ends) {
+    const s = spanOf(g, r, k);
+    if (!s) return null;
+    R0 = Math.min(R0, s.r0); R1 = Math.max(R1, s.r1 - 1);
+    C0 = Math.min(C0, s.c0); C1 = Math.max(C1, s.c1 - 1);
+  }
+  if (all) [R0, R1, C0, C1] = [0, g.rows.length - 1, 0, g.cols - 1];
+  [R0, R1, C0, C1] = grow(g, R0, R1, C0, C1);
+  const cells = [];
+  let total = 0;
+  for (let r = 0; r < g.rows.length; r++) {
+    const row = g.rows[r].cells;
+    total += row.length;
+    if (r < R0 || r > R1) continue;
+    for (let k = 0; k < row.length; k++) {
+      if (row[k].c0 > C1 || row[k].c1 - 1 < C0) continue;
+      const at = Object.freeze([...tp, r, k]);
+      cells.push(Object.freeze({r, k, at}));
+    }
+  }
+  return Object.freeze({kind: 'cells', table: Object.freeze(tp),
+    r0: R0, r1: R1, c0: C0, c1: C1, cells: Object.freeze(cells),
+    whole: all || cells.length === total});
+}
+
+/** See the header. */
+export function cellRect(doc, at) {
+  if (!Array.isArray(at)) return null;
+  let p = at;
+  if (at.length % 3 === 1 && at.length >= 4) p = [...at, 0];
+  if (!isPath(p) || p.length < 5) return null;
+  const tp = p.slice(0, -3), t = walkAt(doc, tp);
+  if (!isTbl(t)) return null;
+  const r = p[p.length - 3], k = p[p.length - 2];
+  if (!t.rows[r] || !t.rows[r].cells[k]) return null;
+  return cellsShape(tp, t, [[r, k]], false);
+}

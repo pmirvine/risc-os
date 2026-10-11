@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import {toggleList, restart, continueList, listKindOf, listEntryOf}
   from '../../tools/moreapps/!Word/ListMake';
 import {setList} from '../../tools/moreapps/!Word/FormatList';
+import {sameLabels} from '../../tools/moreapps/!Word/ListRestart';
 import {apply, isFormat} from '../../tools/moreapps/!Word/FormatApply';
 import {query} from '../../tools/moreapps/!Word/Format';
 import {labels} from '../../tools/moreapps/!Word/ListNumbers';
@@ -23,6 +24,7 @@ import {listDocx, item, heading, lvl, STYLES_LIST}
 import {buildDocx, documentXml, numberingXml, stylesXml, relsXml, REL,
   p, r} from './build-docx.mjs';
 import {strictDocx} from './docx-fixtures.mjs';
+import {modelTable} from './tbl-fixtures.mjs';
 import {entryText} from './docx-compare.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
@@ -539,6 +541,33 @@ describe('ListMake: Restart, Start at, Continue', () => {
     step(d, () => continueList(d, T(d), C(d, 0, 0)), {none: true});
     // another kind before: nothing of its kind
     step(d, () => continueList(d, T(d), C(d, 1, 0)), {none: true});
+  });
+  it('sameLabels: ops keyed as looked up; a nested op fails closed',
+    () => {
+      const d = five();
+      const doc = d.doc;
+      const np = P(d, 2).pPr.numPr;
+      const same = {op: 'setProps', block: [0, 2], pPr: {numPr: np}};
+      assert.equal(sameLabels(doc, doc.numbering, [same]), true);
+      const other = {op: 'setProps', block: [0, 0],
+        pPr: {numPr: {numId: np.numId, ilvl: 1}}};
+      assert.equal(sameLabels(doc, doc.numbering, [other]), false);
+      // a path that names no paragraph is never taken as no change
+      const nested = {op: 'setProps', block: [0, 2, 0, 0, 0],
+        pPr: {numPr: np}};
+      assert.equal(sameLabels(doc, doc.numbering, [nested]), false);
+    });
+  it('sameLabels: an op in a table\'s cell is compared (C3.5)', () => {
+    const d = mk(['a', modelTable([['x', 'y']]), 'b']);
+    toggleList(d, T(d), SEL(d, 0, 0, 2, 1), {kind: 'number'}, null);
+    const doc = d.doc, cellP = blocks(d)[1].rows[0].cells[1].blocks[0];
+    const np = cellP.pPr.numPr;
+    assert.ok(np, 'the cells are in the list (flow order)');
+    const op = (numPr) => ({op: 'setProps', block: [0, 1, 0, 1, 0],
+      pPr: {numPr}});
+    assert.equal(sameLabels(doc, doc.numbering, [op(np)]), true);
+    assert.equal(sameLabels(doc, doc.numbering, [op({numId: np.numId,
+      ilvl: 1})]), false);
   });
   it('a restart that changes no label: no step, no new num', () => {
     const d = five();

@@ -5,7 +5,9 @@
 // whole into another document by the exact route (not cut at the
 // 100,000 characters a plain paste brings); a paste of 5 MB of text (cut to the Wimp's
 // 100,000 characters) and of 100,000 paragraphs of HTML; 10,000-deep
-// and script-laden HTML (no script runs, nothing is fetched); a
+// and script-laden HTML (no script runs, nothing is fetched);
+// hostile HTML tables (huge spans, 100,000 cells, 10,000 nested
+// tables, scripts and URLs in cells, unclosed tags, 5 MB); a
 // clipboard holding only files; a paste into a document whose first
 // block is a table; a paste while an input method is composing (a
 // real input method through the DevTools protocol, then a real
@@ -346,6 +348,48 @@ try {
     ok('a clipboard with only files (3, then 9): nothing pasted, a beep and the message each time',
       fo.pv && fo.pv2 && fo.beeps === 2 && fo.msgs.length === 2 && /Only PNG, JPEG and GIF pictures can be pasted/.test(fo.msgs[0]) && fo.same && fo.last === 'files', fo);
     await ev(() => { window.__msgs.length = 0; });
+
+    // C6.3: hostile HTML tables: spans of 65535, 100,000 cells, 10,000 nested tables, scripts and URLs in cells, unclosed
+    // tags, 5 MB; each pasted, checked and undone
+    const treq0 = requests.length;
+    const TABLES = [
+      ['huge spans', '<table><tr><td colspan="65535" rowspan="65535" onclick="window.__pwned=11">a</td><td>b</td></tr></table>'],
+      ['100,000 cells', '<table>' + ('<tr>' + '<td>c</td>'.repeat(50) + '</tr>').repeat(2000) + '</table>'],
+      ['10,000 nested tables', '<table><tr><td>'.repeat(10000) + 'core' + '</td></tr></table>'.repeat(10000)],
+      ['scripts and urls', '<table onload="window.__pwned=12"><tr><td style="background:url(/hostile-t1.png);width:expression(alert(1))" '
+        + 'background="/hostile-t2.png"><script>window.__pwned=13</script><a href="javascript:window.__pwned=14">js</a>'
+        + '<img src="data:image/png;base64,AAAA" onerror="window.__pwned=15"><iframe src="/hostile-t4.html"></iframe></td>'
+        + '<td bgcolor="url(/hostile-t3.png)" style="border:1px solid url(data:x)">ok</td></tr></table>'],
+      ['unclosed', '<table><tr><td>a<td>b<tr><td>c'],
+      ['5 MB', '<table>' + ('<tr>' + '<td>abcdefgh</td>'.repeat(5) + '</tr>').repeat(60000) + '</table>'],
+    ];
+    const tres = {};
+    for (const [name, html] of TABLES) {
+      tres[name] = await ev(async ([html]) => {
+        const dw = window.__dw, before = window.__json(dw), d0 = dw.view.undoDepth, n0 = document.querySelectorAll('*').length;
+        window.__sel(dw, 1, 0);
+        const t0 = performance.now();
+        window.__fire(dw, { text: 'plain', html });
+        dw.view.flush();
+        const ms = performance.now() - t0;
+        const bl = dw.d.doc.sections.flatMap((s) => s.blocks);
+        const r = { ms, steps: dw.view.undoDepth - d0, last: dw.clipboard.last, tables: bl.filter((b) => b.type === 'tbl').length,
+          json: window.__json(dw), bad: window.__bad(dw), pwned: window.__pwned ?? null, added: document.querySelectorAll('*').length - n0,
+          msgs: window.__msgs.length };
+        dw.view.press('undo');
+        dw.view.flush();
+        r.restored = window.__json(dw) === before;
+        return r;
+      }, [html]);
+    }
+    const treq = requests.slice(treq0);
+    const tsum = Object.fromEntries(Object.entries(tres).map(([k, v]) => [k, { ...v, json: undefined, model: modelBad(v.json) }]));
+    ok('C6.3: hostile HTML tables (spans of 65535, 100,000 cells, 10,000 nested tables, scripts and URLs, unclosed tags, 5 MB): '
+      + 'each pasted in one undo step that restores the document, the model valid, quick; no script ran, no request, no error box',
+    Object.values(tsum).every((v) => v.steps === 1 && v.restored && !v.model && !v.bad && v.pwned === null && Math.abs(v.added) <= 2
+      && !v.msgs && v.ms < 5000) && tsum['huge spans'].tables === 1 && tsum['100,000 cells'].tables === 0
+      && tsum['scripts and urls'].tables === 1 && !/hostile|javascript|data:|pwned/.test(tres['scripts and urls'].json)
+      && tsum['5 MB'].last === 'plain' && tsum['10,000 nested tables'].last === 'html' && treq.length === 0, { tsum, treq });
   }
 
   // ---------------------------------------------------- a table first

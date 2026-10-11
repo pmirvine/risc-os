@@ -1,0 +1,208 @@
+// TblInsert - Insert > Table (Batch C4.4, D27, D31): the table Word
+// makes with "Table Grid".
+//
+//   insertTable(d, sel, {cols, rows, widthTw?, textTw?}) -> sel | null
+//       a cols x rows table at the caret, in ONE d.atomic (one undo
+//       step), the caret in its first cell; null (nothing changed,
+//       no step; the caller beeps) for cols or rows that are not
+//       whole numbers 1..MAX_COLS / 1..MAX_ROWS (./TblCheck), a
+//       width past MAX_TW or under 1 twip a column, a selection that
+//       is not in the document, or a caret already inside 8 tables
+//       (MAX_DEPTH). The selection is deleted first (./EditRange, as
+//       typing does). Placement: in an empty paragraph the table goes
+//       before it; at a paragraph's start before it; mid-paragraph
+//       the paragraph is split and the table goes between; at its end
+//       after it. A paragraph after the table is ensured (a table is
+//       never last in its container, and never touches another
+//       table), and one before it when a table (typed or Opaque:
+//       ./TblCheck endsCell) is there. In a cell it is nested.
+//       The table: tblStyle TableGrid, tblW 0 auto, tblLook 04A0 with
+//       Word 2010's booleans (a Strict document: the booleans only);
+//       grid columns of equal width = the container's text width /
+//       cols (integer twips, the remainder to the last column; textTw
+//       twips when the caller knows it from the layout, else the
+//       section's column (./SectWidth columnTw: its page width less
+//       its margins and the spaces of its w:cols), or the cell's
+//       width less its margins), or widthTw twips each (then
+//       tblLayout fixed, as Word's "Fixed column width"); every cell
+//       tcW dxa of its column and one empty paragraph
+//       (./TblEdit emptyLike of the caret paragraph: its pPr and
+//       pStyle; Normal when the caret is not in a paragraph).
+//   widthAt(doc, L, pos) -> twips | undefined  the text width where
+//       a table at pos goes: layoutTw, else the cell's or section
+//       column's as for insertTable (./ClipRoute: tables pasted as
+//       HTML); undefined for a position not in the document
+//   layoutTw(doc, L, pos) -> the text width (twips) of the cell pos
+//       is in, from layout L (./RulerInd textTwips: the cell's real
+//       margins), or undefined outside a cell or without L: what the
+//       Insert table box passes as textTw (outside a cell the
+//       section's column decides: its w:cols, its page size)
+//   build({rows, ws, tpl, ts, fixed, strict, fill}) and widths(n, tw,
+//       each?) the table and its equal columns, also ./TblConvert's
+//       (fill(i, j) -> the blocks of a cell, default one emptyLike)
+//   tableGridStyles(styles, {strict}?) -> {styles, id} | null  the
+//       style table to use and the id of its Table Grid: the
+//       document's own "Table Grid" (by id, else by name) as it is
+//       (never replaced), else Table Grid added once to a NEW table
+//       (./DocParts withStyle; the old styles object is not changed),
+//       as ./StylesBuiltin defines it, based on the document's
+//       Normal Table (a table style, by id or name), else on its
+//       default table style, else on Word's Normal Table, added with
+//       it (the default) only when the document has no default table
+//       style and nothing named so (else no basedOn). null when
+//       there is no style table, or the id TableGrid is no table
+//       style: the table is then written with direct tblBorders
+//       (single, 4, auto) and no tblStyle. The setDocPart styles op
+//       is part of the same step.
+// Pure: no desktop services.
+import {newPara, reserveIds, newTable, newRow, newCell} from './Model';
+import {caret, collapsed} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {deleteRange} from './EditRange';
+import {splitAt} from './EditPara';
+import {emptyLike} from './TblEdit';
+import {firstPos} from './TblPos';
+import {gridOf, spanOf} from './TblGrid';
+import {withStyle, findStyle} from './DocParts';
+import {builtinStyle} from './StylesBuiltin';
+import {sib} from './Path';
+import {at as walkAt} from './Walk';
+import {MAX_COLS, MAX_ROWS, MAX_TW, MAX_DEPTH, endsCell}
+  from './TblCheck';
+import {columnTw} from './SectWidth';
+import {textTwips} from './RulerInd';
+
+const LOOK = {val: '04A0', firstRow: true, lastRow: false,
+  firstColumn: true, lastColumn: false, noHBand: false, noVBand: true};
+const isInt = (n, lo, hi) => Number.isInteger(n) && n >= lo && n <= hi;
+const isTblStyle = (s) => !!s && s.type === 'table';
+
+/** See the header. */
+export function tableGridStyles(styles, {strict = false} = {}) {
+  if (!styles || !(styles.styles instanceof Map)) return null;
+  const have = findStyle(styles, 'TableGrid', 'Table Grid');
+  if (have) return have.type === 'table' ? {id: have.id, styles} : null;
+  if (styles.styles.has('TableGrid')) return null;
+  const normal = findStyle(styles, 'TableNormal', 'Normal Table');
+  const dflt = styles.defaults && styles.defaults.table;
+  let out = styles, base = null;
+  if (isTblStyle(normal)) base = normal.id;
+  else if (dflt) {
+    base = isTblStyle(styles.styles.get(dflt)) ? dflt : null;
+  }
+  else if (!normal) {
+    out = withStyle(out, builtinStyle('TableNormal', {strict}));
+    out = {...out, defaults: {...out.defaults, table: 'TableNormal'}};
+    base = 'TableNormal';
+  }
+  const grid = builtinStyle('TableGrid', {strict});
+  if (base) grid.basedOn = base;
+  else delete grid.basedOn;
+  return {id: 'TableGrid', styles: withStyle(out, grid)};
+}
+
+const SIDE = {val: 'single', sz: 4, space: 0, color: 'auto'};
+const DIRECT = () => Object.fromEntries(['top', 'left', 'bottom',
+  'right', 'insideH', 'insideV'].map((k) => [k, {...SIDE}]));
+
+/** The table's text width in twips at location loc (see header). */
+function containerTw(doc, loc) {
+  if (loc.cell) {
+    const t = walkAt(doc, loc.cell.table), g = t && gridOf(t);
+    const s = g && spanOf(g, loc.cell.r, loc.cell.c);
+    const w = s ? g.grid.slice(s.c0, s.c1).reduce((a, b) => a + b, 0)
+      : 0;
+    return Math.max(1, w - 216);
+  }
+  const sec = doc.sections[loc.s];
+  return Math.max(1, Math.floor(columnTw(sec && sec.props)));
+}
+
+/** See the header. */
+export function layoutTw(doc, L, pos) {
+  const loc = L && pos ? findBlock(doc, pos.id) : null;
+  return loc && loc.cell ? textTwips(L, pos) : undefined;
+}
+
+/** See the header. */
+export function widthAt(doc, L, pos) {
+  const tw = layoutTw(doc, L, pos);
+  if (tw !== undefined) return tw;
+  const loc = pos ? findBlock(doc, pos.id) : null;
+  return loc ? containerTw(doc, loc) : undefined;
+}
+
+/** Column widths: n of them, total tw or each `each` twips. */
+export function widths(n, tw, each) {
+  if (each !== undefined) return Array(n).fill(each);
+  const w = Math.floor(tw / n);
+  const out = Array(n).fill(w);
+  out[n - 1] += tw - w * n;
+  return out;
+}
+
+/** The new table (ids reserved by the caller): rows x ws.length
+ *  cells; fill(i, j) -> the blocks of cell j of row i (default: one
+ *  emptyLike(tpl)). Also ./TblConvert's. */
+export function build({rows, ws, tpl, ts, fixed, strict, fill}) {
+  const look = {...LOOK};
+  if (strict) delete look.val;
+  const tblPr = {tblW: {w: 0, type: 'auto'}, tblLook: look, extra: []};
+  if (ts) tblPr.tblStyle = ts.id;
+  else tblPr.tblBorders = DIRECT();
+  if (fixed) tblPr.tblLayout = 'fixed';
+  const row = (_, i) => newRow(ws.map((w, j) => newCell(fill
+    ? fill(i, j) : [emptyLike(tpl)], {tcW: {w, type: 'dxa'},
+    extra: []})));
+  return newTable({grid: ws, rows: Array.from({length: rows}, row),
+    tblPr});
+}
+
+/** Where the table goes at loc/pos, splitting the paragraph if need
+ *  be: the path it is inserted at. */
+function placeAt(d, loc, pos) {
+  const b = loc.b;
+  if (b.type !== 'p') return pos.off === 0 ? loc.at : sib(loc.at, 1);
+  if (b.text === '' || pos.off === 0) return loc.at;
+  if (pos.off >= b.text.length) return sib(loc.at, 1);
+  splitAt(d, loc, pos.off);
+  return sib(loc.at, 1);
+}
+
+/** See the header. */
+export function insertTable(d, sel, o2 = {}) {
+  const {cols, rows, widthTw, textTw} = o2;
+  const o = sel ? orderedPos(d.doc, sel) : null;
+  if (!o || !isInt(cols, 1, MAX_COLS) || !isInt(rows, 1, MAX_ROWS) ||
+    (widthTw !== undefined && !isInt(widthTw, 1, MAX_TW)) ||
+    (widthTw !== undefined && widthTw * cols > MAX_TW) ||
+    o.f.depth >= MAX_DEPTH) return null;
+  let out = null;
+  d.atomic(() => {
+    const pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    const loc = findBlock(d.doc, pos.id);
+    const strict = (d.doc.meta || {}).conformance === 'strict';
+    const ts = tableGridStyles(d.doc.styles, {strict});
+    if (ts && ts.styles !== d.doc.styles) {
+      d.apply({op: 'setDocPart', key: 'styles', value: ts.styles});
+    }
+    const at = placeAt(d, loc, pos);
+    reserveIds(d.doc);
+    const base = textTw >= 1 ? Math.floor(textTw)
+      : containerTw(d.doc, loc);
+    const ws = widths(cols, Math.min(Math.max(base, cols), MAX_TW),
+      widthTw);
+    const tpl = loc.b.type === 'p' ? loc.b : null;
+    const t = build({rows, ws, tpl, ts, strict,
+      fixed: widthTw !== undefined});
+    const next = walkAt(d.doc, at);
+    const prev = at[at.length - 1] > 0 ? walkAt(d.doc, sib(at, -1))
+      : null;
+    const blocks = [t];
+    if (endsCell(prev)) blocks.unshift(newPara('', {}));
+    if (!next || next.type !== 'p') blocks.push(emptyLike(tpl));
+    d.apply({op: 'insertBlocks', at, blocks});
+    out = caret(firstPos(t));
+  });
+  return out;
+}

@@ -18,8 +18,8 @@
 // step); real Right / Left / Backspace next to the marks (one press
 // per visible character, the marks kept); the popup by location and
 // by name, Go to (the box kept), a bad name and a 41-character one
-// refused with a beep and a message, Go to a bookmark in a table
-// refused, Delete; Insert > Bookmark... (Ctrl+Shift+F5, on a Mac
+// refused with a beep and a message, Go to a bookmark in a table's
+// cell (its text selected there: Batch C3.5), Delete; Insert > Bookmark... (Ctrl+Shift+F5, on a Mac
 // too); the box deleted with its document; 20 cycles leak nothing.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
@@ -435,8 +435,11 @@ try {
   await ev(() => window.__bmBox().set('name', 'InTable'));
   await click(await bmIcon('button:Go to'));
   const qb3 = await bm(1);
-  ok('Go to a bookmark in a table: refused with a beep and a message', qb3.beeps === qb2.beeps + 1 && /table/.test(qb3.box?.msg)
-    && qb3.box.open, qb3.box);
+  const qb3t = await ev(() => { const v = window.__doc().view, s = v.selection, L = v.layout;
+    return [L.byId.get(s.anchor.id).block.text, s.anchor.off, L.byId.get(s.head.id).block.text, s.head.off]; });
+  ok('Go to a bookmark in a table\'s cell (Batch C3.5): its text selected in the cell, no beep, the box kept, nothing changed',
+    qb3.beeps === qb2.beeps && same(qb3t, ['\uFFFCcell\uFFFC', 1, '\uFFFCcell\uFFFC', 5]) && qb3.box.open
+    && qb3.depth === qb2.depth, { box: qb3.box, qb3t });
   await ev(() => window.__bmBox().set('name', 'mine'));
   await click(await bmIcon('button:Delete'));
   const qb4 = await bm(2);

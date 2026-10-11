@@ -431,7 +431,8 @@ describe('BorderGroups: the reuse key', () => {
       const d = mk([P('a', {pBdr: BOX()}), 'b', box()]);
       const L = laid(d);
       const [a, b, c] = L.items;
-      assert.deepEqual(borderDeco.keyOf(a, L), [null, b.lines]);
+      // (and the column's width: a cell's may change, C2.4)
+      assert.deepEqual(borderDeco.keyOf(a, L), [null, b.lines, a.w]);
       assert.equal(borderDeco.keyOf(b, L), null);
       assert.equal(borderDeco.keyOf(c, L), null);
       assert.ok(DECORATORS.includes(borderDeco));

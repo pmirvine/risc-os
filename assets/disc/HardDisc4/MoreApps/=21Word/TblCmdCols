@@ -1,0 +1,242 @@
+// TblCmdCols - the column, select and distribute commands of the
+// Table menu (Batch C4.2, D24, D26) on a Document, through ./TblCmd
+// onTable (one restoreBlock of the new table: one undo step; undo
+// gives back the very old table, the caret by R18), and TABLE, every
+// table command by ./EditApply id.
+//
+//   rectOf(doc, sel)  ./TblCmd's (re-exported): what a command
+//       acts on (a rectangle, or one cell's)
+//   insertColsCmd(d, sel, right, L?)  as many columns as rectOf's
+//       left or right of them (./TblEditCols insertCols), scaled to
+//       the table's container width (TB12) taken from layout L (the
+//       table's column in it, px x ./TblWidth TW_PX); without L (or
+//       a layout of another table object) never scaled. The
+//       selection stays. null past ./TblCheck MAX_COLS (R16)
+//   deleteColsCmd(d, sel)  rectOf's columns removed (deleteCols),
+//       the caret in the cell now at the first of them in the first
+//       row (else the column before); every column: the table
+//       removed, the caret after it (./TblCmd removeTable)
+//   selectCmd(d, sel, what) -> a selection, no change (no step):
+//       'cell' the head's cell's content; 'row' from the start of
+//       row r0's first cell to the end of row r1's last; 'column'
+//       from the first row's cell over c0 to the last row's cell
+//       over c1 (rows with none there passed); 'table' its two
+//       edges {t, 0}..{t, 1} (whole). A continue cell gives its
+//       merge's restart cell; ./SelShape grows the rectangle over
+//       merged cells. null for anything else
+//   deleteTableCmd(d, sel)  the innermost table the selection is in
+//       (rowsOf's: a cells shape or a text selection in one cell)
+//       removed, the caret after it (./TblCmd removeTable)
+//   distributeColsCmd(d, sel)  rectOf's columns equal over their
+//       total (distributeCols); a caret in a cell: every column of
+//       its table (Word). The selection stays
+//   distributeRowsCmd(d, sel, L)  rectOf's rows (a caret: every
+//       row) trHeight atLeast the tallest of their heights in
+//       layout L (distributeRows); null without a layout of that
+//       very table object
+//   bordersCmd(d, sel, patch)  Borders and shading for Apply to Cell
+//       or Table (C5.2, D31): rectOf's table given patch
+//       (./TblBorderPatch patch's, written by ./TblEditProps
+//       setBorders: RangeError for one it refuses); the selection
+//       stays
+//   colDragCmd(d, sel, {table, grid, fitW?, styleW?})  a column edge
+//       dragged
+//       (C5.3, D33: ./TblDrag): the table object dragged (it must
+//       still be in the document, unchanged) given grid's widths
+//       (./TblEditDist withCols, twips); the selection stays; null
+//       when the table is gone or changed, or nothing changes
+//   rowDragCmd(d, sel, {table, row, val, rule})  a row's bottom edge
+//       dragged (C5.4, D19, D33): the table object dragged given row
+//       row's trHeight {val (twips, 0..MAX_TW), hRule rule} ('atLeast'
+//       or 'exact'; the other rows are shared); the selection stays;
+//       null for a table gone or changed, a row or value or rule that
+//       is not valid, or nothing changing
+// Each runs in ONE d.atomic and returns the selection after it, or
+// null when refused or nothing changes (no step; ./EditRun beeps).
+//   TABLE  {id: fn(d, sel, arg)}: tabRow, splitTable, rowsAbove,
+//       rowsBelow, deleteRows, mergeCells (./TblCmd), colsLeft,
+//       colsRight, deleteCols, deleteTable, selectCell, selectRow,
+//       selectColumn,
+//       selectTable, distributeRows, distributeCols, cellTop,
+//       cellCenter, cellBottom (./TblCmd alignCmd); arg {L} the
+//       view's layout (./EditRun passes it), for colsLeft /
+//       colsRight / distributeRows
+// Pure: no desktop services.
+import {gridOf, cellAt} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {select} from './Selection';
+import {endOf, findBlock} from './EditPos';
+import {blockId} from './DocPos';
+import {MAX_COLS, MAX_TW} from './TblCheck';
+import {TW_PX} from './TblWidth';
+import {onTable, atomic, removeTable, cellPos, rowPos, insertRowsCmd,
+  deleteRowsCmd, tabRowCmd, splitTableCmd, rectOf, mergeCmd, rowsOf,
+  alignCmd}
+  from './TblCmd';
+import {insertCols, deleteCols, distributeCols, distributeRows}
+  from './TblEditCols';
+import {setBorders, setProps} from './TblEditProps';
+import {withCols} from './TblEditDist';
+
+export {rectOf} from './TblCmd';
+const same = (sel) => select(sel.anchor, sel.head, sel.affinity);
+
+/** The width (twips) of table t's column in layout L, or Infinity. */
+function widthIn(L, t) {
+  const it = L && L.byId ? L.byId.get(t.id) : null;
+  const w = it && it.block === t && it.col ? it.col.w : NaN;
+  return w > 0 ? Math.round(w * TW_PX) : Infinity;
+}
+
+/** See the header. */
+export function insertColsCmd(d, sel, right, L) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  const t = walkAt(d.doc, x.at), tw = widthIn(L, t);
+  if (gridOf(t).cols + x.c1 - x.c0 + 1 > MAX_COLS) return null;
+  return atomic(d, () => onTable(d, x.at, (T, g) => insertCols(T, g,
+    {c0: x.c0, c1: x.c1, right: !!right}, tw)) && same(sel));
+}
+
+/** The caret after deleteColsCmd in table n (see the header). */
+function after(n, x) {
+  const g = gridOf(n), r = Math.min(x.r0, n.rows.length - 1);
+  const c = cellAt(g, r, Math.min(x.c0, g.cols - 1));
+  return (c && cellPos(n, c.r, c.k)) || rowPos(n, r);
+}
+
+/** See the header. */
+export function deleteColsCmd(d, sel) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => onTable(d, x.at, (T, g) => deleteCols(T, g,
+    x), (n) => after(n, x)) || removeTable(d, x.at));
+}
+
+/** See the header. */
+export function deleteTableCmd(d, sel) {
+  const x = rowsOf(d.doc, sel);
+  return x ? atomic(d, () => removeTable(d, x.at)) : null;
+}
+
+/** The selection from the start of cell a's content to the end of
+ *  cell b's ([r, k] each; a continue cell: its restart cell). */
+function cells(t, a, b) {
+  const g = gridOf(t), top = ([r, k]) => {
+    const s = g.rows[r].cells[k].top;
+    return t.rows[s[0]].cells[s[1]].blocks;
+  };
+  const x = top(a), y = top(b), z = y[y.length - 1];
+  return select({id: blockId(x[0]), off: 0}, {id: blockId(z),
+    off: endOf(z)});
+}
+
+/** The first (dir 1) or last (-1) cell over grid column c. */
+function over(t, g, c, dir) {
+  for (let i = 0; i < t.rows.length; i++) {
+    const x = cellAt(g, dir > 0 ? i : t.rows.length - 1 - i, c);
+    if (x) return [x.r, x.k];
+  }
+  return null;
+}
+
+/** See the header. */
+export function selectCmd(d, sel, what) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  const t = walkAt(d.doc, x.at);
+  if (what === 'cell') return cells(t, [x.r, x.k], [x.r, x.k]);
+  if (what === 'row') {
+    return cells(t, [x.r0, 0], [x.r1, t.rows[x.r1].cells.length - 1]);
+  }
+  if (what === 'column') {
+    const g = gridOf(t), a = over(t, g, x.c0, 1);
+    const b = over(t, g, x.c1, -1);
+    return a && b ? cells(t, a, b) : null;
+  }
+  if (what === 'table') {
+    return select({id: t.id, off: 0}, {id: t.id, off: 1});
+  }
+  return null;
+}
+
+/** See the header. */
+export function distributeColsCmd(d, sel) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  const n = gridOf(walkAt(d.doc, x.at)).cols;
+  const c = x.one ? {c0: 0, c1: n - 1} : {c0: x.c0, c1: x.c1};
+  return atomic(d, () => onTable(d, x.at, (T, g) =>
+    distributeCols(T, g, c)) && same(sel));
+}
+
+/** See the header. */
+export function distributeRowsCmd(d, sel, L) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  const t = walkAt(d.doc, x.at);
+  const r0 = x.one ? 0 : x.r0, r1 = x.one ? t.rows.length - 1 : x.r1;
+  const it = L && L.byId ? L.byId.get(t.id) : null;
+  if (!it || it.block !== t || !Array.isArray(it.rows)) return null;
+  const hs = [];
+  for (let r = r0; r <= r1; r++) {
+    const h = it.rows[r] ? it.rows[r].h : NaN;
+    if (!(Number.isFinite(h) && h >= 0)) return null;
+    hs.push(h);
+  }
+  return atomic(d, () => onTable(d, x.at, (T) => distributeRows(T,
+    {r0, r1}, hs)) && same(sel));
+}
+
+/** See the header. */
+export function bordersCmd(d, sel, patch) {
+  const x = rectOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => onTable(d, x.at, (T) => setBorders(T,
+    patch)) && same(sel));
+}
+
+/** See the header. */
+export function colDragCmd(d, sel, {table, grid, fitW, styleW} = {}) {
+  const loc = table ? findBlock(d.doc, table.id) : null;
+  if (!loc || walkAt(d.doc, loc.at) !== table) return null;
+  return atomic(d, () => onTable(d, loc.at, (T, g) => withCols(T, g,
+    grid, {fitW: !!fitW, styleW})) && same(sel));
+}
+
+/** See the header. */
+export function rowDragCmd(d, sel, {table, row, val, rule} = {}) {
+  const loc = table ? findBlock(d.doc, table.id) : null;
+  if (!loc || walkAt(d.doc, loc.at) !== table ||
+    !Number.isInteger(row) || row < 0 || row >= table.rows.length ||
+    !Number.isInteger(val) || val < 0 || val > MAX_TW ||
+    (rule !== 'atLeast' && rule !== 'exact')) return null;
+  const shape = {r0: row, r1: row, c0: 0, c1: 0};
+  return atomic(d, () => onTable(d, loc.at, (T, g) => setProps(T, g,
+    shape, {rows: {trHeight: {val, hRule: rule}}})) && same(sel));
+}
+
+const layoutOf = (arg) => (arg && arg.L) || null;
+
+/** See the header. */
+export const TABLE = Object.freeze({
+  tabRow: tabRowCmd,
+  splitTable: splitTableCmd,
+  rowsAbove: (d, sel) => insertRowsCmd(d, sel, false),
+  rowsBelow: (d, sel) => insertRowsCmd(d, sel, true),
+  deleteRows: deleteRowsCmd,
+  mergeCells: (d, sel) => mergeCmd(d, sel),
+  colsLeft: (d, sel, a) => insertColsCmd(d, sel, false, layoutOf(a)),
+  colsRight: (d, sel, a) => insertColsCmd(d, sel, true, layoutOf(a)),
+  deleteCols: (d, sel) => deleteColsCmd(d, sel),
+  deleteTable: (d, sel) => deleteTableCmd(d, sel),
+  selectCell: (d, sel) => selectCmd(d, sel, 'cell'),
+  selectRow: (d, sel) => selectCmd(d, sel, 'row'),
+  selectColumn: (d, sel) => selectCmd(d, sel, 'column'),
+  selectTable: (d, sel) => selectCmd(d, sel, 'table'),
+  distributeRows: (d, sel, a) => distributeRowsCmd(d, sel, layoutOf(a)),
+  distributeCols: (d, sel) => distributeColsCmd(d, sel),
+  cellTop: (d, sel) => alignCmd(d, sel, 'top'),
+  cellCenter: (d, sel) => alignCmd(d, sel, 'center'),
+  cellBottom: (d, sel) => alignCmd(d, sel, 'bottom'),
+});

@@ -25,8 +25,20 @@
 // numbering (as ./FormatList's Remove from list). An empty
 // paragraph with numPr but no label (numId 0, an unknown numId)
 // splits as any other.
+// Paths: the ops go to loc.at and the block after it (./EditPos
+// sibOf), so Enter splits a cell's paragraph within its cell.
+// But at offset 0 of the first paragraph of the first cell of a
+// table that is first in its container (the document, or a cell:
+// no block before it, ./EditPos neighbour), Enter puts an empty
+// paragraph before the table instead (D8: Word's way to get a line
+// above a table at the top; ./EditRange paraBy, nested too); the
+// caret stays where it was. (Enter on the table's edge {table, 0}
+// does the same: ./Edit.)
 // Pure: no desktop services.
 import {listOf} from './ParaInd';
+import {sibOf, findBlock, neighbour} from './EditPos';
+import {paraBy} from './EditRange';
+import {at as walkAt} from './Walk';
 
 const HEAD = /^(heading ?[1-9]|title)$/i;
 const isHead = (x) => typeof x === 'string' && HEAD.test(x);
@@ -48,22 +60,40 @@ export function nextStyle(styles, id) {
   return isHead(sid) || isHead(st && st.name) ? null : undefined;
 }
 
+/**
+ * The location of the table whose first cell's first paragraph is
+ * loc, when that table is first in its container; else null.
+ */
+function tableTop(doc, loc) {
+  const c = loc.cell, at = loc.at;
+  if (!c || c.r !== 0 || c.c !== 0 || at[at.length - 1] !== 0)
+    return null;
+  const t = walkAt(doc, c.table);
+  const tl = t && findBlock(doc, t.id);
+  return tl && !neighbour(doc, tl, -1) ? tl : null;
+}
+
 /** See the header. */
 export function splitAt(d, loc, off) {
-  const p = loc.b, {s, i} = loc;
+  const p = loc.b, next = sibOf(loc, 1);
+  const top = off === 0 ? tableTop(d.doc, loc) : null;
+  if (top) {
+    paraBy(d, top, 0);
+    return {id: p.id, off: 0};
+  }
   const li = !p.text && listOf(d.doc, p);
   if (li) {
-    d.apply({op: 'setProps', block: [s, i], pPr: {numPr: li.fromStyle
+    d.apply({op: 'setProps', block: loc.at, pPr: {numPr: li.fromStyle
       ? {numId: 0, ilvl: null} : null}});
     return {id: p.id, off: 0};
   }
-  d.apply({op: 'splitBlock', block: [s, i], at: off});
-  const n = d.doc.sections[s].blocks[i + 1];
+  d.apply({op: 'splitBlock', block: loc.at, at: off});
+  const n = walkAt(d.doc, next);
   if (off === p.text.length) {
     const ns = nextStyle(d.doc.styles, p.pStyle);
     const now = p.pStyle === undefined ? null : p.pStyle;
     if (ns !== undefined && ns !== now) {
-      d.apply({op: 'setProps', block: [s, i + 1], pStyle: ns});
+      d.apply({op: 'setProps', block: next, pStyle: ns});
     }
   }
   return {id: n.id, off: 0};

@@ -1,0 +1,138 @@
+// TblBorderAt - where the Borders and shading box's sides of a table
+// are (Batch C5.2, D31): which cell sides of a shape are its outer
+// edges and which the lines between its cells, the neighbours across
+// its edges, and what is drawn there. ./TblBorderPatch uses it.
+//
+//   SIDES6  the box's sides of a table: top bottom left right
+//       insideH insideV
+//   cellsIn(g, x) -> [[r, k]]  every cell (a merged cell's continue
+//       cells too) of the shape x {r0, r1, c0, c1} (INCLUSIVE, as
+//       ./TblCmd rectOf) in grid g (./TblGrid gridOf)
+//   placesOf(g, x) -> [{r, k, side, cat}]  each side of those cells
+//       and the box's side it belongs to (cat): the shape's top /
+//       bottom / left / right edge, or insideH / insideV between its
+//       cells. A merged cell has no line inside it: a continue cell's
+//       top and the bottom of a cell whose merge goes on are left out
+//   nearOf(g, x, spaced?) -> [{r, k, side, cat}]  the neighbours'
+//       sides across the shape's outer edges (the cells above it:
+//       bottom, cat 'top'; below: top; left: right; right: left):
+//       only a neighbour whose whole edge lies along the shape's
+//       (not one wider than it, or reaching past it), and none in a
+//       row with cell spacing (spaced(r) true: each cell draws its own
+//       sides there, D22)
+//   spacedOf(t, eff?) -> (r) -> boolean  whether row r of table t has
+//       cell spacing (./TblWidth spacedRow; the style's too with eff)
+//   direct(t, g, r, k, side) -> a side, null or UNKNOWN  cell (r,
+//       k)'s side as the file gives it: its own tcBorders side, else
+//       the table's tblBorders (outer or inside by where the cell
+//       is); UNKNOWN when the one to read is kept raw (themed:
+//       ./BorderExplicit isRawOwn)
+//   effOf(L, t) -> {cell(r, k) -> sides, table: {SIDES6},
+//       styleTblPr} | null
+//       what is drawn for table t in layout L (its item: ./TblBorders
+//       sidesOf, a style's sides and themed colours too; the table's
+//       sides its own tblBorders, else its style's); null when L has
+//       no item of that very table
+//   UNKNOWN  the value of a side that cannot be read
+// Pure: no desktop services.
+import {isRawOwn} from './BorderExplicit';
+import {sidesOf as cellSides, shown} from './TblBorders';
+import {spacedRow} from './TblWidth';
+
+export const SIDES6 = Object.freeze(['top', 'bottom', 'left', 'right',
+  'insideH', 'insideV']);
+export const UNKNOWN = Symbol('unknown');
+const isObj = (v) => v !== null && typeof v === 'object';
+const get = (o, f) => (isObj(o) ? o[f] : undefined);
+
+/** See the header. */
+export function cellsIn(g, x) {
+  const out = [];
+  for (let r = x.r0; r <= x.r1; r++) {
+    g.rows[r].cells.forEach((gc, k) => {
+      if (gc.c1 > x.c0 && gc.c0 <= x.c1) out.push([r, k]);
+    });
+  }
+  return out;
+}
+
+/** The cell below (r, k) continuing its vertical merge. */
+const goesOn = (g, r, k) => r + 1 < g.rows.length &&
+  g.rows[r + 1].cells.some((c) => c.cont &&
+    c.top.join() === g.rows[r].cells[k].top.join());
+
+/** See the header. */
+export function placesOf(g, x) {
+  const out = [];
+  for (const [r, k] of cellsIn(g, x)) {
+    const gc = g.rows[r].cells[k];
+    const add = (side, cat) => out.push({r, k, side, cat});
+    if (!gc.cont) add('top', r === x.r0 ? 'top' : 'insideH');
+    if (!goesOn(g, r, k)) {
+      add('bottom', r === x.r1 ? 'bottom' : 'insideH');
+    }
+    add('left', gc.c0 <= x.c0 ? 'left' : 'insideV');
+    add('right', gc.c1 - 1 >= x.c1 ? 'right' : 'insideV');
+  }
+  return out;
+}
+
+/** See the header. */
+export function nearOf(g, x, spaced = () => false) {
+  const out = [];
+  const row = (r, side, cat, at) => {
+    if (r < 0 || r >= g.rows.length || spaced(r) || spaced(at)) return;
+    g.rows[r].cells.forEach((gc, k) => {
+      if (gc.c0 >= x.c0 && gc.c1 - 1 <= x.c1) {
+        out.push({r, k, side, cat});
+      }
+    });
+  };
+  row(x.r0 - 1, 'bottom', 'top', x.r0);
+  row(x.r1 + 1, 'top', 'bottom', x.r1);
+  for (let r = x.r0; r <= x.r1; r++) {
+    if (spaced(r)) continue;
+    g.rows[r].cells.forEach((gc, k) => {
+      // (a vertical merge's cells beside the shape: its rows here only)
+      if (gc.c1 === x.c0) out.push({r, k, side: 'right', cat: 'left'});
+      if (gc.c0 === x.c1 + 1) {
+        out.push({r, k, side: 'left', cat: 'right'});
+      }
+    });
+  }
+  return out;
+}
+
+/** See the header. */
+export function spacedOf(t, eff) {
+  const sty = eff && eff.styleTblPr;
+  return (r) => spacedRow(get(t.rows[r], 'trPr'), t.tblPr, sty);
+}
+
+/** See the header. */
+export function direct(t, g, r, k, side) {
+  const pr = t.rows[r].cells[k].tcPr;
+  if (isRawOwn(pr, 'tcBorders')) return UNKNOWN;
+  const own = get(get(pr, 'tcBorders'), side);
+  if (own !== undefined) return own;
+  if (isRawOwn(t.tblPr, 'tblBorders')) return UNKNOWN;
+  const last = g.rows[r].cells.length - 1;
+  const outer = side === 'top' ? r === 0 : side === 'bottom'
+    ? r === g.rows.length - 1 : side === 'left' ? k === 0 : k === last;
+  const key = outer ? side : side === 'top' || side === 'bottom'
+    ? 'insideH' : 'insideV';
+  return get(get(t.tblPr, 'tblBorders'), key) ?? null;
+}
+
+/** See the header. */
+export function effOf(L, t) {
+  const it = L && L.byId ? L.byId.get(t.id) : null;
+  if (!it || it.block !== t || !Array.isArray(it.rows)) return null;
+  const map = L.ns, own = get(shown(t.tblPr, 'tblPr', map),
+    'tblBorders');
+  const style = get(get(get(it.key, 'view'), 'tblPr'), 'tblBorders');
+  return {cell: (r, k) => cellSides(it, r, k, map),
+    styleTblPr: get(get(it.key, 'view'), 'tblPr'),
+    table: Object.fromEntries(SIDES6.map((k) => [k,
+      get(own, k) ?? get(style, k) ?? null]))};
+}

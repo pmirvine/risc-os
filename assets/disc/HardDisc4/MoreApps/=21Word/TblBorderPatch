@@ -1,0 +1,245 @@
+// TblBorderPatch - the Borders and shading box's values for Apply to
+// Cell and Table (Batch C5.2, D31; ./BorderBox), from a table and the
+// selection's shape, and the patch OK makes (./TblEditProps
+// setBorders writes it). ./BorderPatch's value names, with the sides
+// of a table: top bottom left right insideH insideV.
+//
+//   fill(shape, table, g, apply, eff?) -> values {setting, top,
+//       bottom, left, right, insideH, insideV, between (false), style,
+//       width, colour, fillkind, fill, apply}
+//     apply 'cell': the cells of the shape (./TblCmd rectOf's {r0,
+//       r1, c0, c1}, INCLUSIVE; a merged cell whole): top, bottom,
+//       left and right are its outer edges, insideH / insideV the
+//       lines between its cells (none inside a merged cell); a side
+//       is on when every cell draws it there, off when none does,
+//       undefined (mixed) else; with no line inside, insideH /
+//       insideV are off. Shading: the cells' own tcPr shd.
+//     apply 'table': the table's tblBorders, its tblPr shd.
+//     A cell side is eff.cell(r, k)'s (./TblBorders sidesOf: what
+//     is drawn, the table style's too) when eff is given (effOf),
+//     else the cell's tcBorders side, else the table's tblBorders
+//     (outer or inside by where the cell is); the table's sides
+//     eff.table's, else its tblBorders. A raw w:tcBorders,
+//     w:tblBorders or w:shd (themed: ./BorderExplicit isRawOwn)
+//     without eff is not known: undefined. style, width, colour:
+//     the drawn sides' common one (./BorderPatch STYLES, WIDTHS),
+//     Word's single, 1/2 pt, automatic with none drawn.
+//   settingOf(values) -> 'none' | 'box' (the four outer sides only)
+//       | 'all' (the six) | 'custom';  sidesOf(setting) -> the six
+//       sides for 'none', 'box', 'all'; null for 'custom'
+//   patch(values, q) -> {cells?, tblPr?} | {bad: [names]}
+//       q {shape, table, g, eff?}: what fill had; compared with
+//       fill(..., values.apply), so a field left as shown changes
+//       nothing ({} when nothing does).
+//     A side turned off is {val: 'nil'} (hides a style's or the
+//     table's line); turned on (or on with Style, Width or Colour
+//     changed) {val, sz, space, color}: the values given, else the
+//     side's own (else single, 4, 0, auto). Fill None removes the
+//     shading (null), a colour is {val: 'clear', color: 'auto',
+//     fill}.
+//     cells  Map 'r,k' -> {tcBorders?: {side: s}, shd?}: Cell's sides
+//            on each cell of the shape as fill reads them; an outer
+//            side turned off also nil on the neighbours across that
+//            edge whose edge lies along it (./TblBorderAt nearOf: not
+//            a wider one, whose line may then still be drawn; none
+//            with cell spacing): the line between two cells is the
+//            heavier of their sides. A side turned on is written on
+//            the shape's cells only (it wins over none / nil)
+//     tblPr  {tblBorders?: {side: s}, shd?}: Table's
+//     bad: a value the box does not offer (as ./BorderPatch), 'sides'
+//     (Style, Width or Colour changed with no side known), 'raw' (a
+//     touched cell's or the table's own tcBorders, tblBorders or shd
+//     kept raw: writing it would drop its other sides; the command
+//     refuses it too, as ./BorderExplicit)
+//   SIDES6, effOf  ./TblBorderAt's (re-exported): the six sides; a
+//       layout's drawn sides of a table, for eff
+// Pure: no desktop services.
+import {STYLES, WIDTHS, colourOf, shadeOf} from './BorderPatch';
+import {isRawOwn} from './BorderExplicit';
+import {drawn} from './TblConflict';
+import {SIDES6, UNKNOWN, placesOf, nearOf, cellsIn, direct, spacedOf}
+  from './TblBorderAt';
+
+export {SIDES6, effOf} from './TblBorderAt';
+const OUTER = ['top', 'bottom', 'left', 'right'];
+const NIL = Object.freeze({val: 'nil'});
+const HEX = /^[0-9A-F]{6}$/;
+const isObj = (v) => v !== null && typeof v === 'object';
+const get = (o, f) => (isObj(o) ? o[f] : undefined);
+const common = (xs) => (new Set(xs).size === 1 ? xs[0] : undefined);
+
+/** See the header. */
+export function settingOf(v) {
+  if (SIDES6.every((k) => v[k] === false)) return 'none';
+  if (SIDES6.every((k) => v[k] === true)) return 'all';
+  return OUTER.every((k) => v[k] === true) && v.insideH === false &&
+    v.insideV === false ? 'box' : 'custom';
+}
+
+/** See the header. */
+export function sidesOf(setting) {
+  if (!['none', 'box', 'all'].includes(setting)) return null;
+  return Object.fromEntries(SIDES6.map((k) => [k, setting === 'all' ||
+    (setting === 'box' && OUTER.includes(k))]));
+}
+
+/** {fillkind, fill} of a list of shadings (undefined: none). */
+function shades(list) {
+  if (list.includes(UNKNOWN)) return {};
+  const o = list.map((s) => shadeOf(s === undefined ? 'none' : s));
+  const kind = common(o.map((s) => s.fillkind));
+  const f = common(o.map((s) => s.fill));
+  return kind === 'colour' && f === undefined ? {} : {fillkind: kind,
+    fill: kind === 'colour' ? f : undefined};
+}
+
+/** See the header. */
+export function fill(x, t, g, apply, eff) {
+  const by = Object.fromEntries(SIDES6.map((k) => [k, []]));
+  let sh;
+  if (apply === 'table') {
+    for (const k of SIDES6) {
+      by[k].push(eff ? eff.table[k] ?? null : isRawOwn(t.tblPr,
+        'tblBorders') ? UNKNOWN : get(get(t.tblPr, 'tblBorders'), k) ??
+        null);
+    }
+    sh = shades([isRawOwn(t.tblPr, 'shd') ? UNKNOWN
+      : get(t.tblPr, 'shd')]);
+  } else {
+    for (const p of placesOf(g, x)) {
+      by[p.cat].push(eff ? eff.cell(p.r, p.k)[p.side] ?? null
+        : direct(t, g, p.r, p.k, p.side));
+    }
+    sh = shades(cellsIn(g, x).map(([r, k]) => {
+      const pr = t.rows[r].cells[k].tcPr;
+      return isRawOwn(pr, 'shd') ? UNKNOWN : get(pr, 'shd');
+    }));
+  }
+  const out = {}, all = [];
+  for (const k of SIDES6) {
+    const xs = by[k];
+    for (const x of xs) all.push(x);    // (no spread: 63,000 edges)
+    out[k] = xs.includes(UNKNOWN) ? undefined : xs.every(drawn) &&
+      xs.length ? true : xs.some(drawn) ? undefined : false;
+  }
+  out.between = false;
+  const lines = all.filter(drawn), know = !all.includes(UNKNOWN);
+  const one = (f, def) => (!know ? undefined : lines.length
+    ? common(lines.map(f)) : def);
+  const st = one((s) => s.val, 'single');
+  const w = one((s) => (Number.isInteger(s.sz) ? s.sz : 4), 4);
+  out.style = STYLES.some((s) => s.id === st) ? st : undefined;
+  out.width = WIDTHS.some((s) => s.id === w) ? w : undefined;
+  out.colour = one((s) => colourOf(s.color), 'auto');
+  out.setting = SIDES6.some((k) => out[k] === undefined) ? 'custom'
+    : settingOf(out);
+  out.fillkind = sh.fillkind;
+  out.fill = sh.fill;
+  out.apply = apply;
+  return out;
+}
+
+/** The fields whose values the box does not offer. */
+function badOf(v) {
+  const bad = [];
+  const is = (k, ok) => { if (v[k] !== undefined && !ok) bad.push(k); };
+  is('style', STYLES.some((s) => s.id === v.style));
+  is('width', WIDTHS.some((s) => s.id === v.width));
+  is('colour', v.colour === 'auto' || HEX.test(String(v.colour)));
+  is('fillkind', v.fillkind === 'none' || v.fillkind === 'colour');
+  is('fill', HEX.test(String(v.fill)));
+  for (const k of SIDES6) is(k, typeof v[k] === 'boolean');
+  if (v.fillkind === 'colour' && v.fill === undefined) bad.push('fill');
+  if (v.apply !== 'cell' && v.apply !== 'table') bad.push('apply');
+  return bad;
+}
+
+/** The side to write over cur (see the header). */
+function sideFor(v, cur) {
+  const d = drawn(cur);
+  return {val: v.style ?? (d ? cur.val : 'single'),
+    sz: v.width ?? (d && Number.isInteger(cur.sz) ? cur.sz : 4),
+    space: d && Number.isInteger(cur.space) ? cur.space : 0,
+    color: v.colour ?? (d ? colourOf(cur.color) : 'auto')};
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** See the header. */
+export function patch(v, q) {
+  const bad = badOf(v);
+  if (bad.length) return {bad};
+  const {shape: x, table: t, g, eff} = q, apply = v.apply;
+  const was = fill(x, t, g, apply, eff);
+  const look = ['style', 'width', 'colour'].some((k) =>
+    v[k] !== undefined && v[k] !== was[k]);
+  if (look && SIDES6.every((k) => v[k] === undefined)) {
+    return {bad: ['sides']};
+  }
+  const want = {};
+  for (const k of SIDES6) {
+    if (v[k] === undefined) continue;
+    if (!v[k]) {
+      if (was[k] !== false) want[k] = NIL;
+    } else if (was[k] !== true || look) want[k] = true;
+  }
+  let shd;
+  if (v.fillkind !== undefined && !(v.fillkind === was.fillkind &&
+    (v.fillkind === 'none' || v.fill === was.fill))) {
+    shd = v.fillkind === 'none' ? null
+      : {val: 'clear', color: 'auto', fill: v.fill};
+  }
+  return apply === 'table' ? tablePatch(t, want, shd, v, eff)
+    : cellPatch(t, g, x, want, shd, v, eff);
+}
+
+/** Table's {tblPr} (see the header). */
+function tablePatch(t, want, shd, v, eff) {
+  const pr = {}, b = {};
+  for (const k of Object.keys(want)) {
+    const cur = eff ? eff.table[k] : get(get(t.tblPr, 'tblBorders'), k);
+    b[k] = want[k] === true ? sideFor(v, cur) : want[k];
+  }
+  if (Object.keys(b).length) {
+    if (isRawOwn(t.tblPr, 'tblBorders')) return {bad: ['raw']};
+    pr.tblBorders = b;
+  }
+  if (shd !== undefined) {
+    if (isRawOwn(t.tblPr, 'shd')) return {bad: ['raw']};
+    pr.shd = shd;
+  }
+  return Object.keys(pr).length ? {tblPr: pr} : {};
+}
+
+/** Cell's {cells} (see the header). */
+function cellPatch(t, g, x, want, shd, v, eff) {
+  const cells = new Map();
+  const at = (r, k) => {
+    const key = r + ',' + k;
+    if (!cells.has(key)) cells.set(key, {});
+    return cells.get(key);
+  };
+  const near = nearOf(g, x, spacedOf(t, eff)).map((p) => ({...p,
+    near: true}));
+  for (const p of [...placesOf(g, x), ...near]) {
+    // (a neighbour only to turn a line off: a drawn side wins)
+    if (want[p.cat] === undefined || (p.near && want[p.cat] === true)) {
+      continue;
+    }
+    const pr = t.rows[p.r].cells[p.k].tcPr;
+    const own = get(get(pr, 'tcBorders'), p.side);
+    const cur = eff ? eff.cell(p.r, p.k)[p.side] : own;
+    const s = want[p.cat] === true ? sideFor(v, cur) : want[p.cat];
+    if (same(s, own)) continue;
+    if (isRawOwn(pr, 'tcBorders')) return {bad: ['raw']};
+    const o = at(p.r, p.k);
+    o.tcBorders = {...o.tcBorders, [p.side]: s};
+  }
+  for (const [r, k] of shd === undefined ? [] : cellsIn(g, x)) {
+    const pr = t.rows[r].cells[k].tcPr;
+    if (same(get(pr, 'shd') ?? null, shd)) continue;
+    if (isRawOwn(pr, 'shd')) return {bad: ['raw']};
+    at(r, k).shd = shd;
+  }
+  return cells.size ? {cells} : {};
+}

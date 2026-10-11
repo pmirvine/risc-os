@@ -1,0 +1,62 @@
+// WalkCursor - the engine of ./Walk (Batch C, D7): one cursor over a
+// block list that steps into typed tables, row by row, cell by cell.
+//
+//   new Cursor(list, pre, paths)  pre: the path prefix of the list's
+//       blocks ([s] for a section's); paths false: no paths and no
+//       cells are built (the cheap walk of ./Walk scan)
+//   cur.next() -> false at the end; else true with cur.b (the block),
+//       cur.at (its path), cur.depth (tables around it), cur.cell
+//       ({table: path, r, c} or null)
+//   isObj(v), isTbl(b), arr(v)  the shape tests ./Walk shares
+//
+// An explicit-stack loop: no recursion, no generator. Only ./Walk
+// uses it (every scanner goes through ./Walk). Pure: no desktop
+// services.
+
+export const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+export const isTbl = (b) => isObj(b) && b.type === 'tbl' &&
+  Array.isArray(b.rows);
+export const arr = (v) => (Array.isArray(v) ? v : []);
+
+/** A walk over one block list; next() steps, fields hold the block. */
+export class Cursor {
+  constructor(list, pre, paths) {
+    this.paths = paths;
+    this.st = [{bl: arr(list), j: 0, pre, depth: 0, cell: null}];
+    this.b = this.at = this.cell = null;
+    this.depth = 0;
+  }
+
+  next() {
+    const st = this.st, paths = this.paths;
+    while (st.length) {
+      const f = st[st.length - 1];
+      if (f.t) {
+        const row = f.t.rows[f.r];
+        if (f.r >= f.t.rows.length) st.pop();
+        else if (!isObj(row) || f.c >= arr(row.cells).length) {
+          f.r++;
+          f.c = 0;
+        } else {
+          const c = f.c++, cell = row.cells[c];
+          if (!isObj(cell)) continue;
+          st.push({bl: arr(cell.blocks), j: 0, depth: f.depth,
+            pre: paths ? [...f.at, f.r, c] : null,
+            cell: paths ? {table: f.at, r: f.r, c} : null});
+        }
+        continue;
+      }
+      if (f.j >= f.bl.length && st.pop()) continue;
+      const j = f.j++, b = f.bl[j];
+      const at = paths ? [...f.pre, j] : null;
+      this.b = b;
+      this.at = at;
+      this.depth = f.depth;
+      this.cell = f.cell;
+      if (isTbl(b)) st.push({t: b, r: 0, c: 0, at, depth: f.depth + 1});
+      return true;
+    }
+    return false;
+  }
+}

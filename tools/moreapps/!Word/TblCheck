@@ -1,0 +1,169 @@
+// TblCheck - the invariants of a typed Table (see ./Model) and the
+// table caps, in one place.
+//
+//   checkTable(t, {block, props}, depth)  throws RangeError naming
+//       the broken rule. depth is the table's own nesting level (a
+//       top-level table 1, a table in its cell 2...). block(b) checks
+//       a Para or Opaque cell block, props(o, what) a property object:
+//       ./ModelCheck passes its checkBlock and checkProps, so this
+//       module imports nothing (no import cycle).
+//   checkRow(row, ck, depth, r), checkCell(cell, ck, depth, at)
+//       the same for one row / cell (the builders in ./Model)
+//   checkCellPara(p)  a (valid) paragraph may be a cell block: no
+//       sectPr (the ops, through ./ModelCheck checkBlock)
+//   endsCell(b) -> whether block b may NOT be a cell's last block: a
+//       table (typed, or kept: a w:tbl element). Word reads a w:tc
+//       whose last block is not a w:p as an unreadable file; a cell
+//       ending with another kept block (a content control) is as the
+//       file had it (C3 fix wave: ./Ops refuses to leave one, the
+//       reader keeps such a table Opaque, ./TblScan 'tail')
+//   checkTail(b)  throws (RangeError) when endsCell(b): b would be
+//       a cell's last block
+//
+// The rules: at least one row, each row at least one cell, each cell
+// at least one block, its last not a table (endsCell);
+// tcPr.gridSpan an integer 1..MAX_COLS; trPr.gridBefore / gridAfter
+// integers 0..MAX_COLS; a row at most
+// MAX_COLS grid columns wide (gridBefore + its cells' gridSpan +
+// gridAfter: it may be wider than the grid, D2);
+// tcPr.vMerge 'restart', 'continue' or absent; grid 1..MAX_COLS
+// integers 0..MAX_TW; attrs / gridAttrs arrays of [string, string];
+// lead / tail arrays of element nodes; tblPrEx an element node or
+// null; nesting at most MAX_DEPTH; no sectPr element in a cell
+// paragraph's pPr.extra; 'p' and 'tbl' ids unique within the table.
+// Ragged rows are valid. MAX_ROWS is the cap for COMMANDS (a file
+// with more rows still reads): it is not checked here.
+//
+// The nested check recurses once per table level, never deeper than
+// MAX_DEPTH (refused before going down). Names from the file are
+// only compared, never used as keys. Pure: no desktop services.
+
+export const MAX_COLS = 63, MAX_DEPTH = 8, MAX_TW = 31680,
+  MAX_ROWS = 32767;
+
+function fail(msg) {
+  throw new RangeError(msg);
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const isInt = (v, lo, hi) => Number.isInteger(v) && v >= lo && v <= hi;
+const isEl = (n) => isObj(n) && typeof n.name === 'string' &&
+  Array.isArray(n.attrs) && Array.isArray(n.children);
+const local = (name) => name.slice(name.indexOf(':') + 1);
+
+/** See the header. */
+export const endsCell = (b) => isObj(b) && (b.type === 'tbl' ||
+  (b.type === 'opaque' && isObj(b.node) && typeof b.node.name ===
+    'string' && local(b.node.name) === 'tbl'));
+
+/** See the header. */
+export function checkTail(b, w = 'a cell') {
+  if (endsCell(b)) fail(w + ' must end with a paragraph, not a table');
+}
+
+function pairs(a, what) {
+  if (!Array.isArray(a) || !a.every((x) => Array.isArray(x) &&
+    x.length === 2 && typeof x[0] === 'string' &&
+    typeof x[1] === 'string'))
+    fail(what + ' must be [string, string] pairs');
+}
+
+function nodes(a, what) {
+  if (!Array.isArray(a) || !a.every(isEl))
+    fail(what + ' must be an array of element nodes');
+}
+
+function checkDepth(depth) {
+  if (!Number.isInteger(depth) || depth < 1)
+    fail('table depth must be an integer >= 1');
+  if (depth > MAX_DEPTH)
+    fail('table nested too deep (more than ' + MAX_DEPTH + ')');
+}
+
+function useId(b, seen) {
+  if (seen.has(b.id)) fail('duplicate id ' + b.id + ' in the table');
+  seen.add(b.id);
+}
+
+/** See the header. */
+export function checkTable(t, ck, depth, seen = new Set()) {
+  checkDepth(depth);
+  if (!isObj(t) || t.type !== 'tbl') fail('not a table');
+  if (!Number.isInteger(t.id)) fail('table id must be an integer');
+  useId(t, seen);
+  ck.props(t.tblPr, 'tblPr');
+  if (!Array.isArray(t.grid) || t.grid.length < 1 ||
+    t.grid.length > MAX_COLS)
+    fail('grid must have 1..' + MAX_COLS + ' columns');
+  if (!t.grid.every((w) => isInt(w, 0, MAX_TW)))
+    fail('grid column must be an integer 0..' + MAX_TW);
+  pairs(t.attrs, 'table attrs');
+  pairs(t.gridAttrs, 'gridAttrs');
+  nodes(t.tail, 'table tail');
+  if (!Array.isArray(t.rows) || t.rows.length < 1)
+    fail('table needs at least one row');
+  t.rows.forEach((row, r) => checkRow(row, ck, depth, r, seen));
+}
+
+/** See the header. */
+export function checkRow(row, ck, depth, r = 0, seen = new Set()) {
+  const at = 'row ' + r;
+  if (!isObj(row)) fail(at + ' is not a row');
+  ck.props(row.trPr, 'trPr');
+  pairs(row.attrs, at + ' attrs');
+  nodes(row.lead, at + ' lead');
+  nodes(row.tail, at + ' tail');
+  if (row.tblPrEx !== null && !isEl(row.tblPrEx))
+    fail(at + ' tblPrEx must be an element node or null');
+  if (!Array.isArray(row.cells) || row.cells.length < 1)
+    fail(at + ' needs at least one cell');
+  let n = 0;
+  for (const k of ['gridBefore', 'gridAfter']) {
+    const v = row.trPr[k];
+    if (v !== undefined && !isInt(v, 0, MAX_COLS))
+      fail(at + ' ' + k + ' must be an integer 0..' + MAX_COLS);
+    n += v || 0;
+  }
+  if (n + row.cells.length > MAX_COLS) fail(at + ' too wide');
+  row.cells.forEach((cell, c) =>
+    checkCell(cell, ck, depth, r + ',' + c, seen));
+  for (const cell of row.cells) n += cell.tcPr.gridSpan || 1;
+  if (n > MAX_COLS)
+    fail(at + ' too wide (more than ' + MAX_COLS + ' grid columns)');
+}
+
+/** See the header. */
+export function checkCell(cell, ck, depth, at = '0,0',
+  seen = new Set()) {
+  const w = 'cell (' + at + ')';
+  if (!isObj(cell)) fail(w + ' is not a cell');
+  ck.props(cell.tcPr, 'tcPr');
+  const {gridSpan, vMerge} = cell.tcPr;
+  if (gridSpan !== undefined && !isInt(gridSpan, 1, MAX_COLS))
+    fail(w + ' gridSpan must be an integer 1..' + MAX_COLS);
+  if (vMerge !== undefined && vMerge !== 'restart' &&
+    vMerge !== 'continue')
+    fail(w + ' vMerge must be restart or continue');
+  pairs(cell.attrs, w + ' attrs');
+  nodes(cell.lead, w + ' lead');
+  if (!Array.isArray(cell.blocks) || cell.blocks.length < 1)
+    fail(w + ' needs at least one block');
+  checkTail(cell.blocks[cell.blocks.length - 1], w);
+  for (const b of cell.blocks) {
+    if (isObj(b) && b.type === 'tbl') {
+      checkTable(b, ck, depth + 1, seen);
+      continue;
+    }
+    ck.block(b);
+    if (b.type !== 'p') continue;
+    useId(b, seen);
+    checkCellPara(b, w);
+  }
+}
+
+/** See the header: a valid paragraph `p` may sit in a cell. */
+export function checkCellPara(p, w = 'cell') {
+  if (p.pPr.extra.some((n) => isEl(n) && local(n.name) === 'sectPr'))
+    fail(w + ': a sectPr in a cell paragraph');
+}

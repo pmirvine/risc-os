@@ -1,0 +1,192 @@
+// TblBox - the Table properties dialogue box (Batch C5.1, D26; the
+// Table menu's Table properties...): Table width (Auto or a length),
+// Alignment (Left, Centre, Right), Indent from left; Row height
+// (Auto, At least or Exactly, and a length); Column width; Cell width
+// and Vertical alignment (Top, Centre, Bottom). Built by WimpLib
+// Ui/Dialog; the values and the patch: ./TblPatch; the command:
+// ./TblCmd propsCmd.
+//
+//   tblBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'tblprops:<docKey>'), kept in dw.boxes
+//       ('tblprops') so ./CloseDoc deletes it with the document;
+//       asked again while it is open, the box comes to the front,
+//       filled again from the selection. Nothing (null, and a
+//       beep) when the selection is not in a table.
+//
+// It opens filled from the selection (./TblCmd rectOf: the caret's
+// cell, or the selected cells): the table's width, alignment and
+// indent; the height of the rows the selection is in, the width of
+// its columns, of its cells, and their vertical alignment. Where the
+// selected rows, columns or cells differ, the field is left empty
+// (a popup shows nothing) and stays as it is unless changed. OK (or
+// Return): one command, one undo step, only the fields that changed
+// (none when nothing did); the selection stays. A length that is not
+// a length, a width outside 0.02 to 22 inches, a row height outside
+// 0 to 22 inches, an indent outside -22 to 22 inches, a length with
+// no Auto / At least / Exactly (or the other way) beeps, says so and
+// keeps the box with the caret in the field: never clamped. Where
+// the table's width is one the box cannot show (a percentage), Table
+// width is blank and the width field shaded until Auto or Length is
+// chosen (a width with neither beeps and says so). If the
+// document or the selection changed while the box was open, OK beeps,
+// fills the box again from the new selection and says so (the next
+// OK uses it). Cancel, Escape and the close icon change nothing; the
+// caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {rectOf, propsCmd} from './TblCmd';
+import {gridOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {fill, patchOf, fieldOf} from './TblPatch';
+import {setProps} from './TblEditProps';
+import {MAX_TW} from './TblCheck';
+
+// No length field clamps: OK checks (a length field's own range
+// would turn 23 inches into 22).
+const BIG = Number.MAX_SAFE_INTEGER;
+const len = (name, label, help) => ({kind: 'length', name, label,
+  min: -BIG, max: BIG, w: 120, help});
+const pop = (name, label, choices, help) => ({kind: 'popup', name,
+  label, choices, help});
+const rows = () => [
+  [pop('widthMode', 'Table width', [{id: 'auto', text: 'Auto'},
+    {id: 'length', text: 'Length'}], 'Auto: as wide as the text ' +
+    'needs; Length: the width you give.'),
+  len('width', undefined, 'The width of the table: 0.02 to 22 ' +
+    'inches.')],
+  [pop('align', 'Alignment', [{id: 'left', text: 'Left'},
+    {id: 'center', text: 'Centre'}, {id: 'right', text: 'Right'}],
+  'Where the table sits between the margins.'),
+  len('indent', 'Indent from left', 'How far the table is moved in ' +
+    'from the left margin: -22 to 22 inches.')],
+  [pop('rowMode', 'Row height', [{id: 'auto', text: 'Auto'},
+    {id: 'atLeast', text: 'At least'}, {id: 'exact', text: 'Exactly'}],
+  'Auto: as tall as the text; At least: never shorter; Exactly: ' +
+    'this tall, the text cut off.'),
+  len('rowHeight', undefined, 'The height of the selected rows: 0 to ' +
+    '22 inches.')],
+  [len('colWidth', 'Column width', 'The width of the selected ' +
+    'columns: 0.02 to 22 inches.')],
+  [len('cellWidth', 'Cell width', 'The width of the selected ' +
+    'cells: 0.02 to 22 inches.'),
+  pop('vAlign', 'Vertical alignment', [{id: 'top', text: 'Top'},
+    {id: 'center', text: 'Centre'}, {id: 'bottom', text: 'Bottom'}],
+  'Where the text sits in the height of the cell.')],
+  {kind: 'label', name: 'msg', text: '', w: 600},
+];
+const HELP = 'Table properties: the width, alignment and indent of ' +
+  'the table, the height of the rows, the width of the columns and ' +
+  'cells, and where the text sits in a cell.';
+const MSG = {
+  width: 'Table width: a length from 0.02" to 22".',
+  colWidth: 'Column width: a length from 0.02" to 22".',
+  cellWidth: 'Cell width: a length from 0.02" to 22".',
+  indent: 'Indent from left: a length from -22" to 22".',
+  rowHeight: 'Row height: a length from 0 to 22".',
+  rowMode: 'Row height: choose Auto, At least or Exactly.',
+  widthMode: 'Choose Auto or Length for the table width.',
+  align: 'Alignment: choose Left, Centre or Right.',
+  vAlign: 'Vertical alignment: choose Top, Centre or Bottom.',
+  refused: 'The table cannot take this change.',
+  none: 'Put the caret in a table cell first, then ask again.',
+  changed: 'The selection or the document changed while the box ' +
+    'was open: the box shows the new values; look, then click OK.',
+};
+const FIELDS = ['widthMode', 'width', 'align', 'indent', 'rowMode',
+  'rowHeight', 'colWidth', 'cellWidth', 'vAlign'];
+const state = new WeakMap();           // api -> {at, q, tw, strict}
+const wired = new WeakSet();
+
+/** The shape the selection is in and its table, or null. */
+function shapeOf(v) {
+  const x = v.sel ? rectOf(v.d.doc, v.sel) : null;
+  return x ? {x, t: walkAt(v.d.doc, x.at)} : null;
+}
+
+/** Fill the box from the selection; false when it is in no table. */
+function refill(api, v) {
+  const s = shapeOf(v);
+  if (!s) return false;
+  const g = gridOf(s.t), q = fill(s.x, s.t, g);
+  for (const k of FIELDS) api.set(k, q[k]);
+  api.shade('width', q.widthMode !== 'length');
+  api.shade('rowHeight', q.rowMode === 'auto');
+  api.set('msg', '');
+  state.set(api, {at: where(v), q, tw: Math.min(g.width || 1440,
+    MAX_TW), strict: (v.d.doc.meta || {}).conformance === 'strict'});
+  return true;
+}
+
+/** See the header. */
+export function tblBox(dw) {
+  const v = dw.view;
+  if (!shapeOf(v)) {
+    wimp.beep();
+    return null;
+  }
+  const api = dialog({task: dw.app.task, key: `tblprops:${dw.docKey}`,
+    title: 'Table properties', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 648});
+  box(dw, 'tblprops', () => api.win);
+  if (!wired.has(api)) wire(api, v);
+  if (api.isOpen) {
+    refill(api, v);
+    return api;
+  }
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'widthMode') {
+      api.shade('width', value !== 'length');
+      if (value === 'length' && api.get('width') === undefined) {
+        api.set('width', st ? st.tw : 1440);
+      }
+    } else if (name === 'rowMode') {
+      api.shade('rowHeight', value === 'auto');
+      if (value !== 'auto' && api.get('rowHeight') === undefined) {
+        api.set('rowHeight', 288);
+      }
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    const st = state.get(api);
+    if (!st || !shapeOf(v)) return no(MSG.none);
+    if (where(v) !== st.at) {
+      refill(api, v);
+      return no(MSG.changed);
+    }
+    const patch = patchOf(values, st.q, st.strict);
+    if (patch.error) return no(MSG[patch.field] || MSG.rowMode,
+      patch.field);
+    if (Object.keys(patch).length) {
+      let out;
+      try {
+        out = v.typing.command(() => propsCmd(v.d, v.sel, patch));
+      } catch (e) {
+        if (!(e instanceof RangeError)) throw e;
+        const s = shapeOf(v), f = s ? fieldOf(patch, (p) => setProps(
+          s.t, gridOf(s.t), s.x, p)) : undefined;
+        return no(MSG[f] || MSG.refused, f);
+      }
+      if (out) v.edited(out);
+    }
+    v.focus();
+    return undefined;
+  });
+}

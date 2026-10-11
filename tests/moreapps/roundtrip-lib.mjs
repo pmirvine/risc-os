@@ -26,6 +26,8 @@
 //   and the order of kinds (numPicBullet, abstractNum, num,
 //   numIdMacAtCleanup) kept.
 //
+// {read} is passed to readDocx as its options.
+//
 // Also the corpus sample (tests/moreapps/corpus, git-ignored): one
 // file in ten, chosen by a hash of the name, or every one with
 // WORD_EDIT_CORPUS=1.
@@ -202,10 +204,10 @@ function grownOnly(now, was, what) {
  * else {...stats, blocks, schema}.
  */
 export async function roundTrip(bytes, what, seed, change,
-  {xsd = null, every, keep = []} = {}) {
+  {xsd = null, every, keep = [], read} = {}) {
   let a;
   try {
-    a = await readDocx(bytes);
+    a = await readDocx(bytes, read);
   } catch (e) {
     if (e instanceof DocxError) return {refused: e.code};
     throw e;
@@ -216,7 +218,7 @@ export async function roundTrip(bytes, what, seed, change,
   const st = await change(d, seed, {every});
   // the changed model round-trips
   const out1 = await write(d.doc);
-  const back = await readDocx(out1);
+  const back = await readDocx(out1, read);
   assertSameDoc(back, withNewParts(expectedBack(d.doc), back),
     what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
@@ -278,7 +280,7 @@ export async function roundTrip(bytes, what, seed, change,
     ')');
   const outU = await write(d.doc);
   if (!sameBytes(outU, out0)) {
-    assertSameDoc(await readDocx(outU), await readDocx(out0),
+    assertSameDoc(await readDocx(outU, read), await readDocx(out0, read),
       what + ': undone and written');
     assert.fail(what + ': undone, written: bytes differ');
   }
@@ -306,8 +308,11 @@ function find(dir, out = []) {
   return out.sort();
 }
 
-export const EXPECTED = JSON.parse(readFileSync(join(HERE,
-  'corpus-expected.json'), 'utf8'));
+// (file name -> DocxError code; entries whose value is not a string,
+// such as opaqueTables, are not files: R1)
+export const EXPECTED = Object.fromEntries(Object.entries(JSON.parse(
+  readFileSync(join(HERE, 'corpus-expected.json'), 'utf8')))
+  .filter(([, v]) => typeof v === 'string'));
 export const ALL = process.env.WORD_EDIT_CORPUS === '1';
 /** A file's name in the corpus ('/' separated). */
 export const nameOf = (f) => relative(CORPUS, f).split('\\').join('/');
@@ -323,7 +328,7 @@ export const SKIP_CORPUS = 'tests/moreapps/corpus is missing or ' +
  * capped files and the slowest; asserts no failures.
  */
 export async function corpusRun(files, change, xsd, xsdNote, label,
-  {keep = []} = {}) {
+  {keep = [], read} = {}) {
   const failures = [], times = [], capped = [];
   let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
     keptAsRead = 0, grown = 0;
@@ -333,7 +338,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
     const t0 = Date.now();
     try {
       const res = await roundTrip(readFileSync(f), name, hash(name),
-        change, {xsd, keep});
+        change, {xsd, keep, read});
       if (res.refused) {
         refused++;
         if (EXPECTED[name] !== res.refused) {

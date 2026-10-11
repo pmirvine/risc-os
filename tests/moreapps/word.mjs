@@ -150,8 +150,8 @@ try {
   ok('$.MoreApps exists', r1.moreApps);
   ok('double-click starts Word with the document', r1.tasks === 1 && r1.title === 'Report', r1);
   ok('the heading is in the paragraph text', r1.text?.[0] === 'Quarterly report', r1.text);
-  ok('summary counts paragraphs, the table and the rest',
-    /^7 paragraphs, \d+ preserved items \(/.test(r1.summary ?? '') && /1 table\b/.test(r1.summary)
+  ok('summary counts paragraphs (a table cell\'s too), the table (typed: R12) and the rest',
+    /^8 paragraphs, 1 table, \d+ preserved items \(/.test(r1.summary ?? '')
       && /1 link/.test(r1.summary) && /1 drawing/.test(r1.summary) && /fonts: .*Caladea.*Carlito|fonts: .*Carlito.*Caladea/.test(r1.summary),
     r1.summary);
   ok('no errors opening it', !r1.msgs.length, r1.msgs);
@@ -183,8 +183,8 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Zoom, New, Close',
-    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Zoom","New","Close"]', r2.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Table, Zoom, New, Close',
+    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Table","Zoom","New","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();

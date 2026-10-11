@@ -120,7 +120,7 @@ function timer() {
 
 /** Up to n places spread over item it (ends, line ends, middles). */
 function places(it, n = 12) {
-  if (it.kind === 'box') return [0, 1];
+  if (it.kind !== 'p') return [0, 1];
   const out = new Set([0, itemEnd(it)]);
   for (const ln of it.lines.slice(0, n)) { out.add(ln.from); out.add(ln.to); }
   const len = itemEnd(it);

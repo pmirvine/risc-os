@@ -1,0 +1,62 @@
+// EditRank - what ./EditPos counts flow ranks and finds ids with
+// (Batch C, D9), kept per object (rows and tables are immutable, D5).
+//
+//   idOf(b)          a block's id as ./DocPos gives it (a kept
+//                    block's is negative)
+//   isTbl(b)         a typed table
+//   sizeOf(b)        the ranks block b takes in the flow: 1, or for a
+//                    table its start, every block in its cells (nested
+//                    tables' too, each with its two), its end
+//   holds(t, id)     whether table t holds a block with id at any
+//                    depth (not t itself)
+//   rowSize(row), rowHolds(row, id)  the same for one row: the ranks
+//                    of its cells' blocks; whether it holds id
+//
+// A table's facts are its rows' (each row: the size and ids of its
+// cells' blocks, walked once per row object), so after an edit in a
+// cell, which copies the table and that row only (./OpsPath own),
+// only that row is walked again: a keystroke in a cell of a 1000-row
+// table does not walk the other 999 (D20). Pure: no desktop services.
+import {blockId} from './DocPos';
+import {forEachIn} from './Walk';
+
+const infos = new WeakMap();
+
+/** See the header. */
+export const idOf = (b) => (b.type === 'p' ? b.id : blockId(b));
+
+/** See the header. */
+export const isTbl = (b) => b.type === 'tbl' && Array.isArray(b.rows);
+
+/** A table's {size, has(id)}; a row's {size, ids}. */
+function info(t) {
+  let x = infos.get(t);
+  if (x) return x;
+  if (isTbl(t)) {
+    const rs = t.rows.map(info);
+    x = {size: 2, has: (id) => rs.some((r) => r.ids.has(id))};
+    for (const r of rs) x.size += r.size;
+  } else {
+    x = {size: 0, ids: new Set()};
+    for (const c of t.cells) {
+      forEachIn(c.blocks, [0], (b) => {
+        x.size += isTbl(b) ? 2 : 1;
+        x.ids.add(idOf(b));
+      });
+    }
+  }
+  infos.set(t, x);
+  return x;
+}
+
+/** See the header. */
+export const sizeOf = (b) => (isTbl(b) ? info(b).size : 1);
+
+/** See the header. */
+export const holds = (t, id) => info(t).has(id);
+
+/** See the header. */
+export const rowSize = (row) => info(row).size;
+
+/** See the header. */
+export const rowHolds = (row, id) => info(row).ids.has(id);

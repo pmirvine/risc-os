@@ -29,7 +29,12 @@
 // selected, deletes it. With the caret on a kept block's edge facing
 // a paragraph: an empty paragraph there (or one holding only unseen
 // inlines, such as a bookmark's marks) is removed, otherwise the
-// caret just moves into it.
+// caret just moves into it; the paragraph's bookmark marks whose
+// partner stays go to the caret's place (a pair is never broken), and
+// the last paragraph of a cell is never removed after a table (a cell
+// ends with a paragraph: ./TblCheck endsCell). Nor is the paragraph
+// between two tables, typed or Opaque (D27: written next to each
+// other they are one table to Word; C7 fix): the caret goes into it.
 //
 // Unseen inlines (bookmarks, proofing marks, field codes: ./Kinds
 // unseenAt) are never deleted by these keys: the keys look past the
@@ -38,13 +43,42 @@
 // such inlines between the caret and the paragraph's edge, they join
 // the paragraphs (the inlines kept). A selection deleted takes its
 // inlines with it (bookmarks whole: ./BookmarkKeep).
+// Ops go to the location's path (loc.at, ./EditPos): in a cell's
+// paragraph the keys work inside the cell, and at the cell's edge
+// (Backspace at its first paragraph's start, Delete at its last's
+// end) they do nothing, no beep (EditPos neighbour: none across a
+// cell boundary). By a typed table (Batch C3.4, D10, TB10; a kept
+// (Opaque) block as above): Backspace at the start of the
+// paragraph after it removes that paragraph when it is empty (as
+// above: unseen inlines only) and not the last of its container
+// (its section, or its cell) and no other table follows it, the
+// caret then at the end of the table's last cell; otherwise the
+// caret just goes there. Delete at the end of the paragraph
+// before it removes that paragraph when it is empty and not after
+// another table, the caret then at the start of the first cell;
+// otherwise nothing. On a table's edge {t, 0|1} the keys work as
+// for a kept block (select it, then delete it). Over a selection
+// with an end in a cell, by its shape (./SelShape): Delete (and
+// typing, ./EditRange) clears a 'cells' shape; Backspace removes its
+// rows when it spans every grid column, the table when it is the
+// whole table, else clears it (./RangeTbl backCells); a 'mixed'
+// range goes with the rows it covers (./RangeTbl deleteIn).
 // Pure: no desktop services.
 import {prevWord, nextWord} from 'wimplib/Segment';
 import {caret, select, collapsed} from './Selection';
 import {prevG, nextG} from './DocPos';
-import {checkPos, orderedPos, neighbour, posOf} from './EditPos';
+import {checkPos, orderedPos, neighbour, posOf, topOnly}
+  from './EditPos';
 import {deleteRange, mergeAt} from './EditRange';
 import {unseenAt, onlyUnseen} from './Kinds';
+import {shapeOf} from './SelShape';
+import {backCells} from './RangeTbl';
+import {firstPos, lastPos} from './TblCmd';
+import {at as walkAt} from './Walk';
+import {endsCell} from './TblCheck';
+import {marksIn, stillPaired, putMarks} from './BookmarkKeep';
+
+const isTbl = (b) => b.type === 'tbl' && Array.isArray(b.rows);
 
 /** Run fn in one group; its position (or null: none) as a caret. */
 function run(d, sel, fn) {
@@ -55,11 +89,29 @@ function run(d, sel, fn) {
 
 const boxSel = (loc) => select(posOf(loc, 0), posOf(loc, 1));
 
+/** A table (typed or Opaque) is beside loc on side dir, in its
+ *  section or cell (the paragraph at loc must stay: D27). */
+function tableBy(doc, loc, dir) {
+  const o = neighbour(doc, loc, dir);
+  return !!o && o.s === loc.s && endsCell(o.b);
+}
+
 /** See the header. */
 export function deleteSelection(d, sel) {
   const o = orderedPos(d.doc, sel);
   if (!o || collapsed(sel)) return sel;
   return run(d, sel, () => deleteRange(d, o));
+}
+
+/** Backspace over a selection: a 'cells' shape as the header says,
+ *  anything else as Delete. */
+function backSelection(d, sel) {
+  const o = orderedPos(d.doc, sel);
+  const sh = o && !collapsed(sel) && !topOnly(o) && shapeOf(d.doc, sel);
+  if (!sh || sh.kind !== 'cells') return deleteSelection(d, sel);
+  if (!sh.whole) return run(d, sel, () => backCells(d, sh, o));
+  const id = walkAt(d.doc, sh.table).id;
+  return deleteSelection(d, select({id, off: 0}, {id, off: 1}));
 }
 
 /**
@@ -73,7 +125,7 @@ function cutText(d, sel, loc, a, b, to) {
     for (let k = b - 1; k >= a - 1; k--) {
       if (k >= a && !unseenAt(p, k)) continue;
       if (z > k + 1) {
-        d.apply({op: 'replaceText', block: [loc.s, loc.i], at: k + 1,
+        d.apply({op: 'replaceText', block: loc.at, at: k + 1,
           del: z - k - 1, ins: ''});
       }
       z = k;
@@ -89,24 +141,60 @@ function cutText(d, sel, loc, a, b, to) {
 function atEdge(d, sel, loc, dir) {
   const n = neighbour(d.doc, loc, dir);
   if (!n || n.s !== loc.s) return sel;
+  if (isTbl(n.b) && loc.b.type === 'p') {
+    return byTable(d, sel, loc, n, dir);
+  }
   if (n.b.type !== 'p') return boxSel(n);
   if (loc.b.type !== 'p') {
-    // a kept block's edge facing a paragraph
-    if (!onlyUnseen(n.b)) {
+    // a kept block's edge facing a paragraph (never the last of a
+    // cell after a table: a cell ends with a paragraph)
+    const tail = dir > 0 && loc.cell && endsCell(loc.b) &&
+      !neighbour(d.doc, n, 1);
+    if (!onlyUnseen(n.b) || tail || (endsCell(loc.b) &&
+      tableBy(d.doc, n, dir))) {
       return caret(posOf(n, dir < 0 ? n.b.text.length : 0));
     }
-    return run(d, sel, () => {
-      d.apply({op: 'removeBlock', at: [n.s, n.i]});
-      return sel.head;
-    });
+    return removeEmpty(d, sel, n, sel.head);
   }
   return run(d, sel, () => (dir < 0 ? mergeAt(d, n, loc)
     : mergeAt(d, loc, n)));
 }
 
+/**
+ * TB10: the caret at the start of paragraph loc after typed table n
+ * (Backspace) or at the end of the one before it (Delete).
+ */
+function byTable(d, sel, loc, n, dir) {
+  const back = dir < 0;
+  const to = back ? lastPos(n.b) : firstPos(n.b);
+  if (!to) return boxSel(n);
+  const nx = back && neighbour(d.doc, loc, 1);
+  const last = back && (!nx || nx.s !== loc.s);
+  if (!onlyUnseen(loc.b) || last || tableBy(d.doc, loc, -dir)) {
+    return back ? caret(to) : sel;
+  }
+  return removeEmpty(d, sel, loc, to);
+}
+
+/**
+ * Remove the paragraph at loc that holds only unseen inlines; its
+ * bookmark marks whose partner stays go to `to`, the caret's place
+ * (./BookmarkKeep: a pair is never broken). One undo step.
+ */
+function removeEmpty(d, sel, loc, to) {
+  return run(d, sel, () => {
+    const got = marksIn(loc.b, 0, loc.b.text.length, []);
+    d.apply({op: 'removeBlock', at: loc.at});
+    putMarks(d, to, stillPaired(d.doc, got));
+    return to;
+  });
+}
+
 /** Backspace or Delete (dir -1 or 1), stepping with `step`. */
 function del(d, sel, dir, step) {
-  if (!collapsed(sel)) return deleteSelection(d, sel);
+  if (!collapsed(sel)) {
+    return dir < 0 ? backSelection(d, sel) : deleteSelection(d, sel);
+  }
   const loc = checkPos(d.doc, sel.head);
   if (!loc) return sel;
   const off = sel.head.off;

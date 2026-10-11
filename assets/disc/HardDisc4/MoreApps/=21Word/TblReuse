@@ -1,0 +1,169 @@
+// TblReuse - a table's item, or rows of it, kept from the older
+// layout (D20): a keystroke outside a table keeps the table whole (no
+// cell stacked again: ./TblLayout only places it again when it moved)
+// and one in a cell keeps every row but the cell's. Pure: no desktop
+// services.
+//
+//   reuseTable(L, it, o, depth) -> bool  the new 'tbl' item `it`
+//     (block, col, x and w set, ./DocItems) takes the older layout's
+//     item o of the same table whole when o is of the same block
+//     object, column width and styles, and its list labels still
+//     hold (./DocItems has checked the rest: the same metrics,
+//     styles, numbering, settings and decorators); its items are
+//     registered (below, every depth), and moved to it's x (a
+//     top-level one with the page: L.moved, for ./DocLayout's
+//     moveColumn)
+//   adoptRow(L, it, o, r) -> bool  row r of the older item o (the
+//     same row object and geometry, ./TblItems) kept in it: its
+//     cells, their columns and items, when its list labels hold;
+//     registered and moved to its x like the above
+//   adoptCell(L, it, orow, k, cell, ge, gc) -> cell record | null
+//     cell k of the older row record orow kept in a changed row of
+//     it when it is the same cell object with the same text width,
+//     styles and top / bottom margins (ge: its new ./TblItems
+//     geometry, gc: ./TblGrid's) and its labels hold: its column and
+//     items, registered and moved like the above, its other fields
+//     from ge and gc
+//   listedOf(cells) -> [item]  the items with a list label in cells
+//     (every depth): a label flows in from the paragraphs above the
+//     table, so a kept item's must be checked (./ListNumbers)
+//   moveColumn(col, x)  puts column col and its items at x, and the
+//     cells of the tables in it (not drifting: from the table's left
+//     and its rows' geometry), only those not there yet (st.cx)
+//   strictOf(doc) -> bool  a Strict document (the table style view)
+//
+// Registered: each kept item is put in L.flow at its place in flow
+// order (index; a table's item again after its cells: endIndex,
+// ./DocItems) and in L.byId, in the order a new layout makes them;
+// this is where EVERY field of a kept item that depends on the
+// layout and not on its block is given its new value (C2 re-review
+// rule 2: today index and endIndex; x and y are placed by
+// moveColumn and ./TblLayout).
+//
+// it.st is the placement state the item shares with the items that
+// keep it (./TblLayout): {laid, at, th, cx}: its rows laid out (row
+// tops and cells' places relative to the table's top), the y it is
+// placed at, its height, and the x its cells are placed for. Items
+// kept are shared with the older layout, which is used up (./DocItems
+// prev.spent: never laid out, painted or reused again; ./Selection
+// clamp reads ids from it, and only a gone item's index, never a
+// kept one's).
+import {sameLabel} from './LineLabel';
+
+const NONE = Object.freeze([]);
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export function strictOf(doc) {
+  const meta = doc && doc.meta;
+  return isObj(meta) && meta.conformance === 'strict';
+}
+
+/** Whether the list labels of listed items are L's still. */
+function holds(L, listed) {
+  for (const x of listed) {
+    if (!sameLabel(L.labels.get(x.id) || null, x.list)) return false;
+  }
+  return true;
+}
+
+/** col's items put in L.flow and L.byId (see the header). */
+function register(L, col) {
+  for (const x of col.items) {
+    x.index = L.flow.length;
+    L.flow.push(x);
+    if (x.kind === 'tbl') {
+      for (const row of x.rows) {
+        for (const c of row.cells) register(L, c.col);
+      }
+      x.endIndex = L.flow.length;
+      L.flow.push(x);
+    }
+    L.byId.set(x.id, x);
+  }
+}
+
+/** Table it's cells put at its x (see the header). */
+function placeX(it) {
+  const x0 = it.x + it.left;
+  for (const row of it.rows) placeRow(row, x0);
+  it.st.cx = it.x;
+}
+
+/** A row's cells put at x0, the table's left (work area). */
+function placeRow(row, x0) {
+  const g = row.geo.cells;
+  for (let k = 0; k < row.cells.length; k++) {
+    const c = row.cells[k];
+    c.x = x0 + g[k].x;
+    c.tx = x0 + g[k].tx;
+    moveColumn(c.col, c.tx);
+  }
+}
+
+/** See the header. */
+export function moveColumn(col, x) {
+  col.x = x;
+  for (const it of col.items) {
+    it.x = x;
+    if (it.kind === 'tbl' && it.st.cx !== x) placeX(it);
+  }
+}
+
+/** See the header. */
+export function listedOf(cells) {
+  let out = null;
+  for (const c of cells) {
+    for (const x of c.col.items) {
+      const more = x.kind === 'tbl' ? x.listed : x.list ? [x] : NONE;
+      if (more.length) (out || (out = [])).push(...more);
+    }
+  }
+  return out ? Object.freeze(out) : NONE;
+}
+
+/** See the header. */
+export function reuseTable(L, it, o, depth) {
+  if (o.block !== it.block || o.w !== it.w ||
+    o.col.styles !== it.col.styles || !o.st.laid ||
+    o.key.strict !== strictOf(L.doc) || !holds(L, o.listed)) {
+    return false;
+  }
+  for (const f of ['key', 'left', 'width', 'rows', 'tops', 'listed',
+    'st']) it[f] = o[f];
+  for (const row of it.rows) {
+    for (const c of row.cells) register(L, c.col);
+  }
+  if (it.st.cx !== it.x) {
+    if (depth > 1) placeX(it);
+    else L.moved = true;
+  }
+  return true;
+}
+
+/** See the header. */
+export function adoptRow(L, it, o, r) {
+  const row = o.rows[r];
+  if (!holds(L, row.listed)) return false;
+  for (const c of row.cells) register(L, c.col);
+  const x0 = it.x + it.left;
+  if (o.st.cx + o.left !== x0) placeRow(row, x0);
+  return true;
+}
+
+/** See the header. */
+export function adoptCell(L, it, orow, k, cell, ge, gc) {
+  const c = orow.cells[k], og = orow.geo.cells[k];
+  if (!c || orow.geo.row.cells[k] !== cell || og.tw !== ge.tw ||
+    og.styles !== ge.styles || og.mar.top !== ge.mar.top ||
+    og.mar.bottom !== ge.mar.bottom || !holds(L, listedOf([c]))) {
+    return null;
+  }
+  register(L, c.col);
+  const x0 = it.x + it.left;
+  Object.assign(c, {x: x0 + ge.x, w: ge.w, tx: x0 + ge.tx, c0: ge.c0,
+    c1: ge.c1, layer: ge.layer, vAlign: ge.vAlign, mar: ge.mar,
+    rowSpan: gc.rowSpan, cont: gc.cont});
+  if (c.col.x !== c.tx) moveColumn(c.col, c.tx);
+  return c;
+}

@@ -1,0 +1,164 @@
+// TblProps - lossless readers of w:tblPr, w:trPr and w:tcPr, with
+// ./ReadProps readProps (a field only when understood completely,
+// the only child of its name; anything else kept raw in `extra`, in
+// document order). Pure.
+//
+//   readTblPr(node, map), readTrPr(node, map), readTcPr(node, map)
+//     -> the property object (the fields of the spec's D1, extra)
+//
+// Field values:
+//   width   {w, type}: exactly the attributes w:w and w:type; type
+//           dxa | pct | auto | nil; w an integer, or with pct a
+//           string like "50%" (WIDTH_PCT) as written (tblW, tblInd,
+//           tblCellSpacing, tcW, wBefore, wAfter, margin sides)
+//   margins {top?, left?, bottom?, right?} of widths (tblCellMar,
+//           tcMar; Strict start / end, as ReadPropsMore's sides)
+//   borders ReadPropsMore sides: tblBorders top left bottom right
+//           insideH insideV; tcBorders also tl2br tr2bl
+//   shd     ReadPropsMore shd
+//   tblLook {val?, firstRow?, lastRow?, firstColumn?, lastColumn?,
+//           noHBand?, noVBand?}: val four hex digits, the flags
+//           booleans; only the attributes written
+//   tblLayout 'fixed' | 'autofit' (w:type only)
+//   trHeight  {val, hRule?}: val an integer 0..MAX_TW, hRule auto |
+//           atLeast | exact
+//   gridSpan gridBefore gridAfter tblStyleRowBandSize
+//           tblStyleColBandSize: integers as written (./TblRead
+//           checks the structural ranges, R2; display clamps)
+//   vMerge  'restart' | 'continue' (no w:val: continue)
+//   jc textDirection vAlign tblStyle: strings, 1..253 characters
+//           without control characters
+//   cantSplit tblHeader hidden noWrap tcFitText hideMark bidiVisual:
+//           on/off
+// A field is read only when ./TblWriteProps writes its value back as
+// exactly the element in the file (writesAs: attribute order and
+// spelling, sides in schema order; vMerge aside, R2); otherwise the
+// element stays in extra, so what types writes back as it was.
+// Everything else (cnfStyle, tblpPr, tblOverlap, tblCaption,
+// tblDescription, divId, headers, hMerge, tracked changes, w14...)
+// stays in extra. Names from the file are only Map keys and compared
+// with fixed lists: __proto__ and the like are inert.
+import {readProps, onOff, str, int} from './ReadProps';
+import {intOf, onOffOf, sides, shd, STRICT_SIDE}
+  from './ReadPropsMore';
+import {wName, wAttrs, isEl, blank, isStrict} from './Ns';
+import {MAX_TW} from './TblCheck';
+import {writesAs} from './TblWriteProps';
+import {WIDTH_PCT, WIDTH_TYPES, STR, HEX4, MAR, LOOK, SIDES6, SIDES8,
+  H_RULES} from './TblNames';
+
+export {WIDTH_PCT, WIDTH_TYPES};
+
+const empty = (node) => node.children.length === 0;
+
+/** See the header (width). */
+export const width = (a, node) => {
+  if (!empty(node) || a.size !== 2) return undefined;
+  const type = a.get('type'), s = a.get('w');
+  if (!WIDTH_TYPES.includes(type) || s === undefined) return undefined;
+  const w = intOf(s) ?? (type === 'pct' && WIDTH_PCT.test(s) ? s
+    : undefined);
+  return w === undefined ? undefined : {w, type};
+};
+
+const MAR_T = new Map(MAR.map((k) => [k, k]));
+const MAR_S = new Map(MAR.map((k) => [STRICT_SIDE.get(k) || k, k]));
+
+/** See the header (margins). */
+const margins = (a, node, m) => {
+  if (a.size) return undefined;
+  const of = isStrict(m) ? MAR_S : MAR_T;
+  const o = {};
+  for (const c of node.children) {
+    if (typeof c === 'string' && blank(c)) continue;
+    const n = isEl(c) ? wName(c, m) : null;
+    const k = n === null ? undefined : of.get(n);
+    if (k === undefined || o[k] !== undefined) return undefined;
+    const ca = wAttrs(c, m);
+    const v = ca ? width(ca, c) : undefined;
+    if (!v) return undefined;
+    o[k] = v;
+  }
+  return o;
+};
+
+
+/** See the header (tblLook). */
+const tblLook = (a, node) => {
+  if (!empty(node)) return undefined;
+  const o = {};
+  for (const [k, v] of a) {
+    if (k === 'val' && HEX4.test(v)) o.val = v;
+    else if (LOOK.includes(k) && onOffOf(v) !== undefined) {
+      o[k] = onOffOf(v);
+    } else return undefined;
+  }
+  return o;
+};
+
+const oneOf = (list, key = 'val') => (a, node) => empty(node) &&
+  a.size === 1 && list.includes(a.get(key)) ? a.get(key) : undefined;
+
+/** See the header (trHeight). */
+const trHeight = (a, node) => {
+  if (!empty(node)) return undefined;
+  const val = intOf(a.get('val'));
+  if (val === undefined || val < 0 || val > MAX_TW) return undefined;
+  if (a.size === 1) return {val};
+  const h = a.get('hRule');
+  return a.size === 2 && H_RULES.includes(h)
+    ? {val, hRule: h} : undefined;
+};
+
+/** See the header (vMerge). */
+const vMerge = (a, node) => {
+  if (!empty(node)) return undefined;
+  if (a.size === 0) return 'continue';
+  return oneOf(['restart', 'continue'])(a, node);
+};
+
+/** A string field (jc, tblStyle...): see the header. */
+const name = (a, node) => {
+  const s = str(a, node);
+  return s !== undefined && STR.test(s) ? s : undefined;
+};
+
+// A field only when the writer writes it back as exactly the node
+// (./TblWriteProps writesAs: attribute order and spelling, the order
+// of sides); else it stays raw in extra. vMerge is structural (R2):
+// <w:vMerge w:val="continue"/> is read, and written <w:vMerge/>.
+const exact = (kind, field, read) => (a, node, m) => {
+  const v = read(a, node, m);
+  return v !== undefined && (field === 'vMerge' ||
+    writesAs(kind, field, v, node, m)) ? v : undefined;
+};
+/** The readers of a `kind` from {field: read}. */
+const table = (kind, o) => new Map(Object.entries(o).map(([f, r]) =>
+  [f, {field: f, read: exact(kind, f, r)}]));
+
+const TBL = table('tblPr', {
+  tblStyle: name, tblW: width, jc: name, tblInd: width,
+  tblBorders: sides(SIDES6), shd,
+  tblLayout: oneOf(['fixed', 'autofit'], 'type'), tblCellMar: margins,
+  tblLook, tblCellSpacing: width, tblStyleRowBandSize: int,
+  tblStyleColBandSize: int, bidiVisual: onOff,
+});
+const TR = table('trPr', {
+  trHeight, cantSplit: onOff, tblHeader: onOff, jc: name,
+  gridBefore: int, gridAfter: int, wBefore: width, wAfter: width,
+  hidden: onOff, tblCellSpacing: width,
+});
+const TC = table('tcPr', {
+  tcW: width, gridSpan: int, vMerge, tcBorders: sides(SIDES8), shd,
+  noWrap: onOff, tcMar: margins, textDirection: name,
+  tcFitText: onOff, vAlign: name, hideMark: onOff,
+});
+
+/** A w:tblPr -> tblPr (see the header). */
+export const readTblPr = (node, map) => readProps(node, map, TBL).props;
+
+/** A w:trPr -> trPr (see the header). */
+export const readTrPr = (node, map) => readProps(node, map, TR).props;
+
+/** A w:tcPr -> tcPr (see the header). */
+export const readTcPr = (node, map) => readProps(node, map, TC).props;

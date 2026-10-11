@@ -40,22 +40,14 @@ import {wimp} from 'riscos';
 import {findBox} from 'wimplib/Ui/FindBox';
 import * as S from './Selection';
 import {orderedPos} from './EditPos';
-import {search, replaceOne, replaceAll, prepare, MAX} from './Find';
-import {dropPending} from './EditFormat';
+import {prepare, MAX} from './Find';
+import {st, step, replaceStep, all} from './FindSel';
 import {keymap} from './Keymap';
 import {macKey, isMac} from './MacKeys';
 import {lend, unlend, show} from './FindView';
 
-const states = new WeakMap();          // app -> {active, box, pane}
 const PREFILL = 100;
-const st = (app) => {
-  let s = states.get(app);
-  if (!s) states.set(app, s = {active: null, box: null, pane: null});
-  return s;
-};
 const alive = (dw) => !!dw && !dw.closed && dw.win.isOpen;
-const END = 'Reached the end: continuing from the top';
-const START = 'Reached the start: continuing from the end';
 
 /** See the header. */
 export function attachFind(dw) {
@@ -96,7 +88,7 @@ function boxOf(app) {
 /** The selection's text if short and on one line, else null. */
 function prefill(v) {
   const o = v.sel && !S.collapsed(v.sel) && orderedPos(v.d.doc, v.sel);
-  if (!o || o.f.k !== o.t.k || o.to.off - o.from.off > PREFILL)
+  if (!o || o.f.b !== o.t.b || o.to.off - o.from.off > PREFILL)
     return null;
   const t = v.text();
   return t && t.length <= PREFILL && !/[\n\r]/.test(t) ? t : null;
@@ -126,81 +118,6 @@ export function findStep(dw, back) {
     show(dw, b);
   }
   return true;
-}
-
-/** Select match m in dw's document (scrolled into view). */
-function select(dw, m) {
-  const id = dw.view.d.doc.sections[m.s].blocks[m.i].id;
-  dw.view.setSelection(S.select({id, off: m.from}, {id, off: m.to}));
-  show(dw, boxOf(dw.app));
-}
-
-/** Find from the selection's end (start); the message. */
-function step(dw, n, o, back, at) {
-  const v = dw.view, doc = v.d.doc;
-  let from = at;
-  if (!from) {
-    const p = v.sel && orderedPos(doc, v.sel);
-    from = !p ? {s: 0, i: 0, off: 0} : back
-      ? {s: p.f.s, i: p.f.i, off: p.from.off}
-      : {s: p.t.s, i: p.t.i, off: p.to.off};
-  }
-  const m = search(doc, from, n, {...o, backwards: back, wrap: true});
-  if (!m) {
-    wimp.beep();
-    return 'Not found';
-  }
-  select(dw, m);
-  return m.wrapped ? (back ? START : END) : '';
-}
-
-/** The match the selection is, or null. */
-function current(dw, n, o) {
-  const v = dw.view, doc = v.d.doc;
-  const p = v.sel && !S.collapsed(v.sel) && orderedPos(doc, v.sel);
-  if (!p || p.f.k !== p.t.k) return null;
-  const m = search(doc, {s: p.f.s, i: p.f.i, off: p.from.off}, n, o);
-  return m && m.s === p.f.s && m.i === p.f.i &&
-    m.from === p.from.off && m.to === p.to.off ? m : null;
-}
-
-/** Replace the selection if a match, then find the next. */
-function replaceStep(dw, n, o, repl) {
-  const m = current(dw, n, o);
-  if (!m) return step(dw, n, o, false);
-  if (m.inInline) {
-    const s = step(dw, n, o, false, {s: m.s, i: m.i, off: m.to});
-    return 'Link text is kept. ' + s;
-  }
-  const v = dw.view;
-  v.ensure();
-  dropPending(v);
-  const r = v.typing.command(() => replaceOne(v.d, m, repl));
-  if (!r) return 'Not replaced';
-  const id = v.d.doc.sections[r.s].blocks[r.i].id;
-  v.setSelection(S.caret({id, off: r.to}));
-  const s = step(dw, n, o, false, {s: r.s, i: r.i, off: r.to});
-  return '1 replaced' + (s === 'Not found' ? '; no more found'
-    : s ? '. ' + s : '');
-}
-
-/** Replace all; the message. */
-function all(dw, n, o, repl) {
-  const v = dw.view;
-  v.ensure();
-  dropPending(v);
-  const r = v.typing.command(() => replaceAll(v.d, n, repl, o));
-  if (!r.count && !r.skipped) {
-    wimp.beep();
-    return 'Not found';
-  }
-  if (r.last) {
-    const id = v.d.doc.sections[r.last.s].blocks[r.last.i].id;
-    v.edited(S.caret({id, off: r.last.to}));
-  }
-  const k = r.skipped;
-  return `${r.count} replaced` + (k ? `; ${k} in links not ` +
-    'replaced' : '');
 }
 
 /** A button of the box (or Return, or a key); raw: the text to

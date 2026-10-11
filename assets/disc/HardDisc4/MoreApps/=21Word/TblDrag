@@ -1,0 +1,166 @@
+// TblDrag - a table's column or row edge dragged with the mouse (Batch
+// C5.3 / C5.4, D33). ./EditMouse asks it after ./PicDrag, before a
+// text drag.
+//
+//   colDragStart(v, ev) -> boolean
+//       a Select drag (no Shift, no Ctrl, the format painter off)
+//       that starts within 3 screen px of a vertical cell border or
+//       a table's right edge (./TblEdge edgeAt at v.zoom; a row's
+//       border is taken by rowDragStart) follows the
+//       pointer (wimp.drag, type 'point'): v.tblGhost {x, y, h}
+//       (layout px) is the line where the border would go, drawn
+//       dashed by ./EditPaint; v.tblDrag {cancel()} while it lasts
+//       (./EditKeys: Escape ends it, the line gone, nothing
+//       changed). Between two cells the two columns beside the
+//       border change and the table's width stays (Word's plain
+//       drag); the right edge changes the last column and the
+//       table's width; the line stops where a column would be
+//       narrower than 0.1 in (./TblEdge MIN_PX, a drag limit: a
+//       column narrower already is not widened) or wider than
+//       ./TblCheck MAX_TW. On release the widths go in as the grid
+//       and the tcW dxa of every cell over the columns changed (pct
+//       and auto ones too; a dxa or pct tblW the new total for the
+//       right edge) by v.typing.command(() => ./TblCmdCols
+//       colDragCmd(...)), one undo step, shown by v.edited; none
+//       when the line is back where it began. When the document
+//       changes during the drag (d.stateId, read at the press and at
+//       every move: a key, Ctrl-Z, a command), it ends at once with
+//       a beep and nothing is put in (a window closed during the
+//       drag ends it without one). A dxa or pct width the table
+//       takes from its style becomes the table's own tblW for the
+//       right edge, so the drag shows (./TblEditDist withCols).
+//       A pointer-cancel comes from the core as a release (wimp.drag
+//       has no cancel event): it puts the change in as a release.
+//   rowDragStart(v, ev) -> boolean
+//       the same for a 'row' edge (within 3 screen px of a row's
+//       bottom border, no vertical border near): the ghost is a
+//       dashed horizontal line v.tblGhost {x, y, w} where the border
+//       would go; the row's height follows the pointer (./TblEdge
+//       dragHeight: not under 0.01 in, MIN_ROW_PX, so the rule is
+//       never lost to a 0 height), and on release the row's trHeight
+//       is atLeast the dragged height (an exact row stays exact; auto
+//       becomes atLeast), by ./TblCmdCols rowDragCmd in one undo step;
+//       none when it is back where it began. Escape, stale state and
+//       the single undo step are as for columns.
+// Points are the window's (zoomed): ./Zoom toLayout.
+import {wimp} from 'riscos';
+import {edgeAt, dragWidths, dragGrid, dragHeight, MIN_PX, MAX_PX}
+  from './TblEdge';
+import {colDragCmd, rowDragCmd} from './TblCmdCols';
+import {TW_PX} from './TblWidth';
+import {toLayout} from './Zoom';
+
+/** A Select press the drags may use. */
+const ours = (v, ev) => ev.button === 'select' && !ev.ctrl &&
+  !ev.shift && !v.painter && !!v.sel;
+
+const sum = (a, n) => a.slice(0, n).reduce((s, w) => s + w, 0);
+const get = (o, f) => (o !== null && typeof o === 'object' ? o[f]
+  : undefined);
+/** The tblW the table's style gives (its item's view). */
+const styleW = (it) => get(get(get(it.key, 'view'), 'tblPr'), 'tblW');
+
+/** The drag begun by press ev at layout point p0: spec {line() the
+ *  ghost, move(dx, dy) the pointer's move (layout px), changed() ->
+ *  whether there is anything to put in, cmd(sel, d) the command}. */
+function follow(v, ev, p0, spec) {
+  const w = v.win, state = v.d.stateId, top = v.L.top;
+  let done = false;
+  const end = () => {
+    done = true;
+    v.tblGhost = null;
+    v.tblDrag = null;
+    if (w.isOpen) w.invalidate();
+  };
+  const alive = () => {
+    if (done) return false;
+    if (w.isOpen && v.d.stateId === state) return true;
+    // (a window closed mid-drag: the drag just ends, no beep)
+    if (w.isOpen) wimp.beep();
+    end();
+    return false;
+  };
+  const move = (sx, sy) => {
+    if (!alive()) return;
+    const q = w.screenToWork(sx, sy), p = toLayout(q.x, q.y, v.zoom,
+      top);
+    spec.move(p.x - p0.x, p.y - p0.y);
+    v.tblGhost = spec.line();
+    w.invalidate();
+  };
+  v.tblDrag = {cancel: end};
+  v.tblGhost = spec.line();
+  w.invalidate();
+  wimp.drag({type: 'point', event: ev.pointerEvent,
+    onMove: (s) => move(s.sx, s.sy),
+    onEnd: (d) => {
+      // (the last moves may come together with the release)
+      if (d && Number.isFinite(d.sx)) move(d.sx, d.sy);
+      if (!alive()) return;
+      end();
+      if (spec.changed()) put(v, spec.cmd);
+    }});
+  return true;
+}
+
+/** The edge of kind 'row' (or not) under the press, or null. */
+function edgeOf(v, ev, row) {
+  if (!ours(v, ev) || v.tblDrag || v.picDrag) return null;
+  const L = v.L, p0 = toLayout(ev.x, ev.y, v.zoom, L.top);
+  const e = edgeAt(L, p0.x, p0.y, v.zoom);
+  return e && (e.kind === 'row') === row ? {e, p0} : null;
+}
+
+/** See the header. */
+export function colDragStart(v, ev) {
+  const g = edgeOf(v, ev, false);
+  if (!g) return false;
+  const {e, p0} = g, it = e.table, cols = it.key.cols.slice();
+  const x0 = it.x + it.left;
+  let next = cols;
+  const spec = {
+    line: () => ({x: x0 + sum(next, e.index), y: it.y, h: it.h}),
+    move: (dx) => {
+      next = dragWidths(cols, e.index, dx, MIN_PX, MAX_PX);
+    },
+    changed: () => next.some((x, i) => x !== cols[i]),
+    cmd: (sel, d) => colDragCmd(d, sel, {table: it.block,
+      grid: dragGrid(cols, next, e.index).grid,
+      fitW: e.kind === 'right', styleW: styleW(it)}),
+  };
+  return follow(v, ev, p0, spec);
+}
+
+/** See the header. */
+export function rowDragStart(v, ev) {
+  const g = edgeOf(v, ev, true);
+  if (!g) return false;
+  const {e, p0} = g, it = e.table, row = it.rows[e.index];
+  const h0 = row.h, trH = row.geo && row.geo.trH;
+  const rule = trH && trH.rule === 'exact' ? 'exact' : 'atLeast';
+  let h = h0;
+  const spec = {
+    line: () => ({x: it.x + it.left, y: row.y + h, w: sum(it.key.cols,
+      it.key.cols.length)}),
+    move: (dx, dy) => {
+      h = dragHeight(h0, dy, MAX_PX);
+    },
+    changed: () => Math.round(h * TW_PX) !== Math.round(h0 * TW_PX),
+    cmd: (sel, d) => rowDragCmd(d, sel, {table: it.block, row: e.index,
+      val: Math.round(h * TW_PX), rule}),
+  };
+  return follow(v, ev, p0, spec);
+}
+
+/** The command in (one undo step); a refusal beeps. */
+function put(v, cmd) {
+  let out;
+  try {
+    out = v.typing.command(() => cmd(v.sel, v.d));
+  } catch (err) {
+    if (!(err instanceof RangeError)) throw err;
+    wimp.beep();
+    return;
+  }
+  if (out) v.edited(out);
+}
