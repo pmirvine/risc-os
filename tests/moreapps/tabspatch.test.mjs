@@ -1,4 +1,4 @@
-// !Word TabsPatch: the Tabs dialog's state (the stops shown, Set,
+// !Letters TabsPatch: the Tabs dialog's state (the stops shown, Set,
 // Clear, Clear all, the popup's list, what is to be cleared) and the
 // change OK makes; FormatTabs {edits} and FormatApply 'tabsBox'
 // (TabsCommand) applying it per paragraph in one undo step: a style's
@@ -6,17 +6,17 @@
 // raw w:tabs and more than 64 own stops refused, the default only.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as TP from '../../tools/moreapps/!Word/TabsPatch';
-import * as FT from '../../tools/moreapps/!Word/FormatTabs';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
-import {resolveTabs, defaultStop} from '../../tools/moreapps/!Word/TabStops';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import * as TP from '../../tools/moreapps/!Letters/TabsPatch';
+import * as FT from '../../tools/moreapps/!Letters/FormatTabs';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
+import {resolveTabs, defaultStop} from '../../tools/moreapps/!Letters/TabStops';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {readPPr} from '../../tools/moreapps/!Word/ReadProps';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
+import {readPPr} from '../../tools/moreapps/!Letters/ReadProps';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
 import {mk, P, C, SEL, undoable} from './edit-docs.mjs';
 
 const T = (val, pos, leader) => ({val, pos,

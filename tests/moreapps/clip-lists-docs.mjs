@@ -1,5 +1,5 @@
 // Test-only documents and helpers for lists, borders, shading and
-// tab stops pasted from one !Word document into another (question
+// tab stops pasted from one !Letters document into another (question
 // L6: clip-lists.test.mjs, clip-lists-paste.test.mjs and the real-Word
 // hand-off handoff-cliplists.mjs).
 //
@@ -15,14 +15,14 @@
 //                  ./EditClip does (store, HTML marker, pick)
 //   labelTexts(d) -> [label text or null] per block
 //   state(d)       a deep copy of what a paste can change
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
 import {buildDocx, documentXml, p, r, STRICT_W_NS, STRICT_R_NS}
   from './build-docx.mjs';
 import {NUMBERING, STYLES_LIST, item} from './list-fixtures.mjs';

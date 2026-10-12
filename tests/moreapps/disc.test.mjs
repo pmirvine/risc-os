@@ -68,24 +68,24 @@ describe('disc-moreapps --check', () => {
   it('passes on the real sources', () => {
     const r = run(['--check']);
     assert.equal(r.status, 0, r.stderr);
-    assert.match(r.stdout, /moreapps: !Word \d+ files;/);
+    assert.match(r.stdout, /moreapps: !Letters \d+ files;/);
     assert.doesNotMatch(r.stdout, /WimpLib/);
   });
 
   it('reports a tab, a non-Latin-1 character and a long line', () => {
     const src = fs.mkdtempSync(path.join(os.tmpdir(), 'moreapps-src-'));
     try {
-      fs.mkdirSync(path.join(src, '!Word'));
-      fs.writeFileSync(path.join(src, '!Word/Tabbed'), 'a\tb\n');
-      fs.writeFileSync(path.join(src, '!Word/Wide'), 'x Ā y\n');
-      fs.writeFileSync(path.join(src, '!Word/Long'),
+      fs.mkdirSync(path.join(src, '!Letters'));
+      fs.writeFileSync(path.join(src, '!Letters/Tabbed'), 'a\tb\n');
+      fs.writeFileSync(path.join(src, '!Letters/Wide'), 'x Ā y\n');
+      fs.writeFileSync(path.join(src, '!Letters/Long'),
         'ok\n' + 'x'.repeat(73) + '\n');
-      fs.writeFileSync(path.join(src, '!Word/Fine'), 'x'.repeat(72));
+      fs.writeFileSync(path.join(src, '!Letters/Fine'), 'x'.repeat(72));
       const r = run(['--check'], {MOREAPPS_SRC: src});
       assert.equal(r.status, 1);
-      assert.match(r.stderr, /!Word\/Tabbed: only Latin-1/);
-      assert.match(r.stderr, /!Word\/Wide: only Latin-1/);
-      assert.match(r.stderr, /!Word\/Long:2: longer than 72/);
+      assert.match(r.stderr, /!Letters\/Tabbed: only Latin-1/);
+      assert.match(r.stderr, /!Letters\/Wide: only Latin-1/);
+      assert.match(r.stderr, /!Letters\/Long:2: longer than 72/);
       assert.doesNotMatch(r.stderr, /Fine/);
     } finally { fs.rmSync(src, {recursive: true, force: true}); }
   });
@@ -97,20 +97,25 @@ describe('disc-moreapps on a disc root', () => {
   const mf = () => JSON.parse(
     fs.readFileSync(path.join(tmp, 'manifest.json'), 'utf8'));
   const OLD = 'HardDisc4/MoreApps/WimpLib';
+  const OLD_APP = 'HardDisc4/MoreApps/=21Word';   // !Letters' old name
 
   before(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'moreapps-disc-'));
     // the manifest with only the old MoreApps.WimpLib (where the library
-    // was before it moved to !Boot.Resources), the boot files without
-    // the MoreApps lines
+    // was before it moved to !Boot.Resources) and MoreApps.!Word (what
+    // !Letters was called), the boot files without the MoreApps lines
     const m = JSON.parse(
       fs.readFileSync(path.join(DISC, 'manifest.json'), 'utf8'));
     fs.mkdirSync(path.join(tmp, OLD), {recursive: true});
     fs.writeFileSync(path.join(tmp, OLD, 'Zip'), 'export {};\n');
+    fs.mkdirSync(path.join(tmp, OLD_APP), {recursive: true});
+    fs.writeFileSync(path.join(tmp, OLD_APP, 'Model'), 'export {};\n');
     m.root.children = m.root.children.filter((c) => c.name !== 'MoreApps');
     m.root.children.push({name: 'MoreApps', type: 'dir', children: [
       {name: 'WimpLib', type: 'dir', children: [
-        {name: 'Zip', type: 'f81', size: 11, path: OLD + '/Zip'}]}]});
+        {name: 'Zip', type: 'f81', size: 11, path: OLD + '/Zip'}]},
+      {name: '!Word', type: 'app', children: [
+        {name: 'Model', type: 'f81', size: 11, path: OLD_APP + '/Model'}]}]});
     m.root.children.sort(byName);
     fs.writeFileSync(path.join(tmp, 'manifest.json'), JSON.stringify(m));
     for (const d of BOOT) {
@@ -132,7 +137,7 @@ describe('disc-moreapps on a disc root', () => {
     }
   });
 
-  it('builds MoreApps.!Word and removes the old MoreApps.WimpLib', () => {
+  it('builds MoreApps.!Letters and removes the old MoreApps.WimpLib and !Word', () => {
     const r = run([], {MOREAPPS_DISC: tmp});
     assert.equal(r.status, 0, r.stderr);
     const m = mf();
@@ -141,9 +146,9 @@ describe('disc-moreapps on a disc root', () => {
     const names = m.root.children.map((c) => c.name);
     assert.ok(names.indexOf('Manuals') < names.indexOf('MoreApps'));
     assert.ok(names.indexOf('MoreApps') < names.indexOf('Printing'));
-    const app = node(m, ['MoreApps', '!Word']);
+    const app = node(m, ['MoreApps', '!Letters']);
     assert.equal(app.type, 'app');
-    const type = (n) => node(m, ['MoreApps', '!Word', ...n.split('.')]).type;
+    const type = (n) => node(m, ['MoreApps', '!Letters', ...n.split('.')]).type;
     assert.equal(type('!Run'), 'feb');
     assert.equal(type('!Boot'), 'feb');
     assert.equal(type('!Help'), 'fff');
@@ -154,16 +159,17 @@ describe('disc-moreapps on a disc root', () => {
     assert.equal(type('Fonts.Carlito-Regular'), 'ffd');
     assert.equal(type('Fonts.Licences'), 'fff');
     // the library is not in MoreApps any more (tools/disc-wimplib.mjs)
-    assert.deepEqual(more.children.map((c) => c.name), ['!Word']);
+    assert.deepEqual(more.children.map((c) => c.name), ['!Letters']);
     assert.ok(!fs.existsSync(path.join(tmp, OLD)));
-    // !Word imports the library by name, not as '../WimpLib/...'
+    assert.ok(!fs.existsSync(path.join(tmp, OLD_APP)));
+    // !Letters imports the library by name, not as '../WimpLib/...'
     const pkg = fs.readFileSync(
-      path.join(tmp, 'HardDisc4/MoreApps/=21Word/Package'), 'latin1');
+      path.join(tmp, 'HardDisc4/MoreApps/=21Letters/Package'), 'latin1');
     assert.match(pkg, /from 'wimplib\/Zip'/);
     assert.doesNotMatch(pkg, /\.\.\/WimpLib/);
     assertOnDisc(tmp, more);
     assert.ok(fs.existsSync(
-      path.join(tmp, 'HardDisc4/MoreApps/=21Word/=21RunImage')));
+      path.join(tmp, 'HardDisc4/MoreApps/=21Letters/=21RunImage')));
   });
 
   it('adds exactly one line to each boot file, after its anchor', () => {

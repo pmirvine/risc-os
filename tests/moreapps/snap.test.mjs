@@ -4,7 +4,7 @@
 // many combining marks, conjuncts.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {snap} from '../../tools/moreapps/!Word/PosLine';
+import {snap} from '../../tools/moreapps/!Letters/PosLine';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 
 const flag = (a, b) => String.fromCodePoint(

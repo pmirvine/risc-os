@@ -4,12 +4,12 @@
 // that PicMedia's decodable refuses.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {docMap, pictureOf, EMU_PX}
-  from '../../tools/moreapps/!Word/PicRead';
-import {paintPic, LABEL} from '../../tools/moreapps/!Word/PicPaint';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/PicRead';
+import {paintPic, LABEL} from '../../tools/moreapps/!Letters/PicPaint';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {picDocx, pngBytes, gifBytes} from './pic-fixtures.mjs';
 

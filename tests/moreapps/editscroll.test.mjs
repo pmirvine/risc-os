@@ -4,7 +4,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {visible, scrollToCaret, pageStep, dragStep}
-  from '../../tools/moreapps/!Word/EditScroll';
+  from '../../tools/moreapps/!Letters/EditScroll';
 
 /** A view: a window w x h at (100, 50) scrolled to sx, sy. */
 function view({w = 400, h = 300, sx = 0, sy = 0, inset = 0, caret}) {

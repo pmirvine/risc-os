@@ -12,17 +12,17 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readHtml, readTree, LIMITS}
-  from '../../tools/moreapps/!Word/ClipRead';
-import {LIMITS as TL} from '../../tools/moreapps/!Word/ClipReadTable';
+  from '../../tools/moreapps/!Letters/ClipRead';
+import {LIMITS as TL} from '../../tools/moreapps/!Letters/ClipReadTable';
 import {spanOf, lengthTw, TEXT_TW}
-  from '../../tools/moreapps/!Word/ClipTblLook';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {walkBlocks} from '../../tools/moreapps/!Word/Walk';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {widthAt} from '../../tools/moreapps/!Word/TblInsert';
-import {columnTw} from '../../tools/moreapps/!Word/SectWidth';
+  from '../../tools/moreapps/!Letters/ClipTblLook';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {walkBlocks} from '../../tools/moreapps/!Letters/Walk';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {widthAt} from '../../tools/moreapps/!Letters/TblInsert';
+import {columnTw} from '../../tools/moreapps/!Letters/SectWidth';
 import {parseHtml, mkEl, mkText} from './html-fake.mjs';
 import {modelTable} from './tbl-fixtures.mjs';
 import {mk, C, blocks, undoable} from './edit-docs.mjs';

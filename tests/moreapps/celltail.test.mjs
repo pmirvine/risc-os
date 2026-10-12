@@ -8,11 +8,11 @@
 // is still valid.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {checkTable, endsCell} from '../../tools/moreapps/!Word/TblCheck';
+import {checkTable, endsCell} from '../../tools/moreapps/!Letters/TblCheck';
 import {checkBlock, newPara, newCell, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {mk} from './edit-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';
 

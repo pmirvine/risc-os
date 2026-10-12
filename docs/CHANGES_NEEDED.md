@@ -381,7 +381,7 @@ docs/ASSETS.md §5).
   text) and `border: false`. Keys it doesn't use (other Ctrl-keys, function keys) still go on to the program.
 * The disc app itself (`tools/journal/!Journal`, `tools/disc-journal.mjs`) only uses the public `riscos` module.
 
-## MoreApps ($.MoreApps, !Word, WimpLib) — changes in shared code
+## MoreApps ($.MoreApps, !Letters, WimpLib) — changes in shared code
 **Status:** done. Additive (relative imports and the existing boot unchanged: `node tests/jstutor/jsrun.mjs`,
 `node tests/core/test-persist.mjs`).
 * `src/core/jsrun.js`: the import specifier `'wimplib/<Name>'` (or `'wimplib/<Dir>/<Name>'`) loads a module of
@@ -399,7 +399,7 @@ docs/ASSETS.md §5).
   Pre-existing: circular imports hang, and `import` text inside comments is resolved.
 * `src/main.js`: after `Repeat Filer_Boot <BootResources$Dir>`, start-up runs `Repeat Filer_Boot
   ADFS::HardDisc4.$.MoreApps -Applications -Tasks` when the directory exists (errors are only logged), so the
-  applications' `!Boot` files set their sprites and file types (!Word: &A7E) from a cold boot. This desktop runs
+  applications' `!Boot` files set their sprites and file types (!Letters: &A7E) from a cold boot. This desktop runs
   neither `Choices.Boot.Desktop` nor PreDesktop's `*AddApp`, so the boot is done here.
 * `tools/disc-wimplib.mjs` (new; in `tools/build.mjs` after `disc.mjs`, before `disc-moreapps.mjs`) installs
   `tools/moreapps/!WimpLib` as `$.!Boot.Resources.!WimpLib` (an addition to the system resources: `!Boot`, `!Run`,
@@ -410,24 +410,24 @@ docs/ASSETS.md §5).
   `riscos` outside an import from it. It shares `MOREAPPS_SRC` / `MOREAPPS_DISC` and the `.moreapps-lock` with
   `disc-moreapps.mjs`.
 * `tools/moreapps/package.json` (new): the package `wimplib` with `"exports": {"./*": "./!WimpLib/*"}`, so the
-  `!Word` sources' `'wimplib/<Name>'` imports resolve in Node (package self-reference) for the unit tests.
-* `tools/disc-moreapps.mjs` now installs only `$.MoreApps.!Word`, and removes `MoreApps.WimpLib` (disc and manifest)
+  `!Letters` sources' `'wimplib/<Name>'` imports resolve in Node (package self-reference) for the unit tests.
+* `tools/disc-moreapps.mjs` now installs only `$.MoreApps.!Letters`, and removes `MoreApps.WimpLib` (disc and manifest)
   when present. It (after `disc.mjs` in `tools/build.mjs`) adds one line each to `!Boot`'s and
   `Utilities.!ResetBoot`'s `Choices.Boot.Desktop` (`Filer_Boot` of `Boot:^.MoreApps`) and `PreDesktop` (`AddApp
   Boot:^.MoreApps.!*`), as RISC OS would have them.
 * Tests: `tests/moreapps/disc.test.mjs` (node), `tests/moreapps/jsrun-wimplib.mjs` and `tests/moreapps/boot.mjs`
   (Playwright), in `node --test tests/moreapps/index.mjs`. The application and library are described in
-  `docs/apps/Word.md`; the user guide is `$.Docs.Word`.
+  `docs/apps/Letters.md`; the user guide is `$.Docs.Letters`.
 
-## wimp.drag keeps its pointer listeners after a mid-drag close — noted by the WORD work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## wimp.drag keeps its pointer listeners after a mid-drag close — noted by the WORD work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `src/core/wimp.js` `wimp.drag({type: 'point'})`: if the window that started the drag is closed while the button is
 still down, the drag's pointer listeners stay on the document until the button is released (then `onEnd` runs).
-Nothing is drawn meanwhile; !Word's `EditMouse` stops its own auto-scroll timer on its next tick (within 60 ms).
+Nothing is drawn meanwhile; !Letters' `EditMouse` stops its own auto-scroll timer on its next tick (within 60 ms).
 Possible fix: let `wimp.drag` end the drag when its owner window is deleted or closed.
 
-## Text-input caret (opt-in text-input proxy) — changes in shared code, for !Word typing
+## Text-input caret (opt-in text-input proxy) — changes in shared code, for !Letters typing
 **Status:** Done: documented in CORE_API.md §3.1 (`textinput`, `composition`, `compositionend`) and §3.2
 (text-input caret). Copy/cut events, HTML (rich) paste, caret blinking and click counts followed: see "Clipboard
 events for text carets" below.
@@ -440,7 +440,7 @@ events for text carets" below.
   `beforeinput` is not delivered again: the `_sent` flag). Some browsers end a composition with empty `data` although
   the field holds the committed text: that value is used (after a real cancel the field is empty, so it is a cancel).
   Known limitation: while the field lacks the browser focus (the user clicked a page field outside the desktop),
-  AltGr/Option characters arrive as `key` events with Ctrl+Alt and !Word's printable fallback drops them.
+  AltGr/Option characters arrive as `key` events with Ctrl+Alt and !Letters' printable fallback drops them.
 * `src/core/wimp.js`: `wimp.textInput`; `setCaret(win, icon, index, pos, opts)` — a 5th argument `{text: true}`
   sets `wimp.caret.text = true` (only then; the property is absent otherwise) and focuses the proxy synchronously
   at the caret; any other caret blurs it (no effect when it was never made). `_drawCaret` moves it with the caret.
@@ -455,16 +455,16 @@ events for text carets" below.
   auto-repeat, hot keys, focus/blur) and `tests/core/test-textinput-pure.mjs` (node), both in
   `tests/core/index.mjs`.
 
-## Clipboard events for text carets; caret blink; click count — changes in shared code, for !Word copy and paste
+## Clipboard events for text carets; caret blink; click count — changes in shared code, for !Letters copy and paste
 **Status:** Done: documented in CORE_API.md §3.1 (`click` `count`, `paste`, `copy`, `cut`) and §3.2 (text-input
-caret: keys, options, `exec`, `readClipboard`). Used by !Word's copy, cut, paste and Find (`docs/apps/Word.md`,
+caret: keys, options, `exec`, `readClipboard`). Used by !Letters' copy, cut, paste and Find (`docs/apps/Letters.md`,
 "Clipboard and Find"), which needed no further core change. Open:
 * pictures and other rich types from the asynchronous clipboard (`readClipboard` reads text and HTML only), and
-  pasted `File`s are passed on but never read: !Word refuses a files-only paste with a message;
+  pasted `File`s are passed on but never read: !Letters refuses a files-only paste with a message;
 * the `clipboard: true` placeholder is untested in Safari and Firefox (no WebKit or Firefox to test with: Chrome
-  fires copy / cut with an empty field) and stays off unless asked for; !Word does not ask for it, so copy and cut in
+  fires copy / cut with an empty field) and stays off unless asked for; !Letters does not ask for it, so copy and cut in
   those browsers are unverified (on the owner's hand-off list);
-* the `paste` payload does not carry `sanitizeText`'s `truncated` flag: !Word recomputes it from the raw event in a
+* the `paste` payload does not carry `sanitizeText`'s `truncated` flag: !Letters recomputes it from the raw event in a
   capture listener of its own (`ClipPick.cutShort`), which a paste through `readClipboard` does not have. Possible
   fix: `pastePayload` returns `truncated` and `_textPaste` / `readClipboard` pass it on.
 
@@ -499,11 +499,11 @@ as before (control tests below).
   Ctrl/Cmd keys with clipboard permissions, plain-caret and writable-icon controls, `exec`, `readClipboard`, blink,
   counts) and `tests/core/test-textinput-pure.mjs` (the caps).
 
-## wimp.drag does not say that a pointer drag was cancelled — noted by the !Word formatting work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## wimp.drag does not say that a pointer drag was cancelled — noted by the !Letters formatting work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `wimp.drag({type: 'point'})` (`src/core/wimp.js`, over `startPointerDrag` in `src/core/input.js`) ends on `pointerup`
-and on `pointercancel` alike, and what it resolves with is the same. !Word's ruler (`tools/moreapps/!WimpLib/Ui/Ruler`) cannot tell a cancelled drag from a
+and on `pointercancel` alike, and what it resolves with is the same. !Letters' ruler (`tools/moreapps/!WimpLib/Ui/Ruler`) cannot tell a cancelled drag from a
 release, so it commits the indent at the coordinates of the cancel event, where a cancel should leave the paragraph
 alone. Possible fix: add `cancelled: true` to the drop information on `pointercancel` (and on a mid-drag close).
 
@@ -511,106 +511,106 @@ Batch C (tables) found the same for its column and row edge drags (`TblDrag`, li
 the drag like a release and the change is put in (an undoable step). Escape does cancel those drags (it is handled by
 the key handler, not by `wimp.drag`). The same `cancelled` flag would let all three leave the document alone.
 
-## Ctrl-Tab never reaches the page in a real browser — noted by the !Word tables work (!Word)
+## Ctrl-Tab never reaches the page in a real browser — noted by the !Letters tables work (!Letters)
 **Status:** Open: browsers reserve the key; not changeable by the core.
 
-!Word's `cellTab` key (Ctrl-Tab, a tab character in a table cell, the plain Tab being the next cell) is taken by
+!Letters' `cellTab` key (Ctrl-Tab, a tab character in a table cell, the plain Tab being the next cell) is taken by
 Chrome, Firefox and Safari to switch their own tabs, so the page (and the core's `key` event) never sees it; the
 Playwright suites cannot show this, as they inject the key. No core change is possible (a page cannot stop it; an
-installed or full-screen app might see it). !Word gives the action a menu route instead (Table > Tab and Insert > Tab,
+installed or full-screen app might see it). !Letters gives the action a menu route instead (Table > Tab and Insert > Tab,
 shaded unless the caret is in a cell) and the user guide says so.
 
-## The core has no detachPane — noted by the !Word formatting work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## The core has no detachPane — noted by the !Letters formatting work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
-A pane attached with `attachPane` cannot be detached again. !Word's ruler is hidden by Format > Ruler, so `Ui/Ruler`
+A pane attached with `attachPane` cannot be detached again. !Letters' ruler is hidden by Format > Ruler, so `Ui/Ruler`
 closes the pane again after every `moved` or `opened` event of its parent window (it reopens when shown). It works,
 but each parent move restacks the windows once more. Possible fix: `detachPane(pane)` (or `attachPane` accepting a
 hidden state) in `src/core`.
 
-## The wheel event has no Ctrl flag — noted by the !Word formatting work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## The wheel event has no Ctrl flag — noted by the !Letters formatting work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
-The core's `wheel` event (`src/core/wimp.js` `_wheel`) carries `dx`, `dy` and `shift` but not Ctrl, so !Word's zoom (`ZoomBind`) reads Ctrl from
+The core's `wheel` event (`src/core/wimp.js` `_wheel`) carries `dx`, `dy` and `shift` but not Ctrl, so !Letters' zoom (`ZoomBind`) reads Ctrl from
 `os.input.keysDown` for Ctrl+wheel. A trackpad pinch reaches the browser as a wheel event with `ctrlKey` set but
 nothing in `keysDown`, so a pinch scrolls instead of zooming. Possible fix: add `ctrl` to the `wheel` event
 (the pinch could then zoom).
 
-## The wheel scrolls pane windows that have no scroll bars — noted by the !Word formatting work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## The wheel scrolls pane windows that have no scroll bars — noted by the !Letters formatting work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `src/core/wimp.js` `_wheel` scrolls whatever window is under the pointer, panes included. A toolbar or ruler pane is
 wider than its window (extents 4000 and 8000 px), so a sideways wheel, Shift+wheel or trackpad swipe over it slid its
 contents away for good, and a wheel over it did nothing for its document. Possible fix: skip pane windows (or windows
-with no scroll bars) in `_wheel` and route the wheel to the parent. Worked round in !Word: `Ui/PaneWheel` (used by
+with no scroll bars) in `_wheel` and route the wheel to the parent. Worked round in !Letters: `Ui/PaneWheel` (used by
 `Ui/Toolbar` and `Ui/Ruler`) claims the pane's `wheel` event and forwards it to the parent window.
 
-## The Wimp's query() has two buttons at most — noted by the !Word documents work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## The Wimp's query() has two buttons at most — noted by the !Letters documents work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `query({task, title, message, buttons})` (`src/core/dialogs.js`) lays out and answers two buttons only, so the
-Save / Discard / Cancel box a program shows before it throws changes away cannot be made with it. !Word built its own
+Save / Discard / Cancel box a program shows before it throws changes away cannot be made with it. !Letters built its own
 in WimpLib (`tools/moreapps/!WimpLib/Ui/SaveQuery`: any number of buttons, Return = the first, Escape and the close
 icon = the last, one box per task at a time). Possible fix: let `query()` take three buttons (or more), with the
 same Return / Escape rule; `Ui/SaveQuery` could then become a thin wrapper.
 
-## The Save box's OK needs a full path; doSave carries on after the box is deleted — noted by the !Word documents work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## The Save box's OK needs a full path; doSave carries on after the box is deleted — noted by the !Letters documents work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `saveAs()` (`src/core/dialogs.js`): OK (and Return) only saves when the name contains `.` or `:`; a bare leaf says
-"To save, drag the icon to a directory display". !Word therefore fills its Save as box with a full path (the
+"To save, drag the icon to a directory display". !Letters therefore fills its Save as box with a full path (the
 document's, or a directory and the window's name for an untitled one). Also, `doSave` awaits the program's `save`
 (or `getData`) and then calls `wimp.menus.close()`, `nameI.setText`, `w.close()` and `opts.onSaved` even when the box
-was deleted meanwhile (its owner window closed while the bytes were being made); !Word's `onSaved` and pending-save
+was deleted meanwhile (its owner window closed while the bytes were being made); !Letters' `onSaved` and pending-save
 code cope with a deleted box (`DocSave`: a `gone` set; a skipped write settles nothing). Possible fix: OK with a bare
 leaf could save into a default directory supplied by the program (`opts.dir`), and `doSave` could stop after its
 await if the window has been deleted.
 
-## Shutdown restarted after PreQuit ends in the shutdown, even from Exit — noted by the !Word documents work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## Shutdown restarted after PreQuit ends in the shutdown, even from Exit — noted by the !Letters documents work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
-The PreQuit pattern (`src/apps/Edit/main.js`, followed by !Journal and !Word): when every task is asked
+The PreQuit pattern (`src/apps/Edit/main.js`, followed by !Journal and !Letters): when every task is asked
 (`os.switcher.preQuitAll()`, used by both `shutdown()` and `exitDesktop()`), a program that objected and then got
 Discard restarts the closedown with `wimp.emit('hotkey:CtrlShiftF12')`, which is always the shutdown. So leaving the
-desktop (Task Manager > Exit) with unsaved changes in !Edit or !Word, answered Discard, ends in the shutdown's
+desktop (Task Manager > Exit) with unsaved changes in !Edit or !Letters, answered Discard, ends in the shutdown's
 restart box instead of the command line. The message does not say which closedown sent it. Possible fix: pass the
 closedown's kind in the PreQuit message (`{all: true, exit: true}`) or give the switcher a `restartClosedown()`
 that repeats the last one; programs would call that instead of emitting the hot key.
 
-## Icon bar icons never report a double-click; doubleClickMs is not reachable from 'riscos' — noted by the !Word documents work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## Icon bar icons never report a double-click; doubleClickMs is not reachable from 'riscos' — noted by the !Letters documents work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `wimp.iconbar.add` makes button type 3 icons, and `wimp._workPointerDown` reports every press on them as a `click`
 (only types 5, 8 and 10 produce `double`), so a double-click on an icon bar icon reaches the program as two Select
-clicks. !Word (whose click makes a new document) ignores a click within 500 ms of the one that made a document, a
+clicks. !Letters (whose click makes a new document) ignores a click within 500 ms of the one that made a document, a
 constant: the configured double-click time (`os.input.config.doubleClickMs`, set by !Configure) is not among the
 names the `'riscos'` module gives a disc program. Possible fix: report `kind: 'double'` for the second click of a
 double-click on an icon bar icon, or give programs the configured double-click time (through `'riscos'`).
 
-## HostFS writes complete after the save has returned — noted by the !Word documents work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## HostFS writes complete after the save has returned — noted by the !Letters documents work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `vfs.writeFile` on a HostFS drive (`src/core/hostfs/hostfs.js`) updates the mount's metadata synchronously and writes
 the bytes to the host (File System Access or the server) a moment later. If the host refuses the write (a read-only
 folder, the permission withdrawn, the server gone), the HostFS Filer reports it in an error box, but the program has
-already been told the save succeeded: !Word marks the document saved (no `*`). Possible fix: a `vfs.flush(path)` (or
+already been told the save succeeded: !Letters marks the document saved (no `*`). Possible fix: a `vfs.flush(path)` (or
 `writeFileAsync`) that resolves when the host has the bytes and rejects when it refused, so a program can mark the
 document saved only then.
 
-## A long paste into a writable icon is typed character by character — noted by the !Word Find work (!Word)
-**Status:** Open: shared code, not changed by the !Word work.
+## A long paste into a writable icon is typed character by character — noted by the !Letters Find work (!Letters)
+**Status:** Open: shared code, not changed by the !Letters work.
 
 `wimp._paste` (`src/core/wimp.js`) gives a writable icon with the caret the clipboard's first line one character at a
 time through `_editKey`; past the icon's `maxLen` every further character beeps (`wimp.beep`, VDU 7) and is dropped.
-A 3000-character paste into !Word's Find field (`maxLen` 1000) takes about 50 ms and beeps 2000 times; a 1 MB paste
+A 3000-character paste into !Letters' Find field (`maxLen` 1000) takes about 50 ms and beeps 2000 times; a 1 MB paste
 would run a million `_editKey` calls and beeps. The text is not passed through `sanitizeText` either. Possible fix:
 take the line, cut it to the room left in the icon (`maxLen - text.length`, at a code point), insert it in one
 `set`, and beep once when anything was cut.
 
-Also: Ctrl-V reaches this path in !Word's Find box only because `Ui/FindBox` sets `ev.allowDefault` for it (as the
+Also: Ctrl-V reaches this path in !Letters' Find box only because `Ui/FindBox` sets `ev.allowDefault` for it (as the
 TextArea and !Browse do); writable icons have no selection, so Ctrl-C / Ctrl-X (and Cmd-C / Cmd-X) copy and cut
 nothing from them. Copying from a writable icon would need a selection model in `_editKey` and a plain-caret branch
-in `_copyCut`: not done (no shared-code change in the !Word work).
+in `_copyCut`: not done (no shared-code change in the !Letters work).
 
 ## jsrun: 'gamelib' import specifier (resolveLib); disc-gamelib, disc-pacman; tools/games package — noted by the !Pacman / GameLib work (GameLib)
 **Status:** Resolved: documented in CORE_API.md 11a and 14.

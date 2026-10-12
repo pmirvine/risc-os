@@ -8,14 +8,14 @@
 // inlines written outside any run are skipped.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {pick, paint} from '../../tools/moreapps/!Word/FormatPaint';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {pick, paint} from '../../tools/moreapps/!Letters/FormatPaint';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {P, C, SEL, S, texts, undoable, snap, undoAll, blocks, mk, O}
   from './edit-docs.mjs';
 import {listDoc, li} from './list-docs.mjs';
 import {raw} from './word-docs.mjs';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
 
 const chars = (d, ...ids) => ids.forEach((id) => addStyle(d.doc.styles,
   {id, type: 'character', name: id, rPr: {extra: []}}));

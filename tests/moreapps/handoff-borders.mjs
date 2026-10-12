@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's borders,
+// Generates the real-Word hand-off files for !Letters' borders,
 // shading, symbols, special characters and change case (local only,
 // never committed: tests/moreapps/corpus/ is git-ignored). Not a test:
 //
@@ -17,10 +17,10 @@
 //                        a no-break space, a non-breaking hyphen and
 //                        an optional hyphen
 //   case-1.docx          text for each Change case mode, already
-//                        changed by !Word, and the Shift-F3 cycle
+//                        changed by !Letters, and the Shift-F3 cycle
 //   bdr-README.txt       what Word should show, the open questions
 //                        (BD1.., SY1.., CS1..)
-// Everything is done with !Word's own commands (FormatApply 'borders',
+// Everything is done with !Letters' own commands (FormatApply 'borders',
 // 'paraShade', 'charShade', 'changeCase', 'caseCycle', 'paraBox',
 // InsertApply's nbsp / nbHyphen / softHyphen through EditApply, and
 // typing for symbols) on a Document, as the window makes them. A file
@@ -31,15 +31,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {SETS} from '../../tools/moreapps/!WimpLib/CharSets';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
@@ -141,7 +141,7 @@ async function save(name, doc, about) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: each paragraph',
+    'What !Letters wrote (read back from the saved file: each paragraph',
     'with its sides, shading and shaded characters):',
     ...await describe(bytes));
 }
@@ -200,16 +200,16 @@ const SHD = (fill) => ({val: 'clear', color: 'auto', fill});
   await save('bdr-1-boxes.docx', s.d.doc, [
     'A new document. Lines 2..6 are boxes (Format > Borders and',
     'shading > Box) in each style at 1 1/2 pt; the next nine are',
-    'single boxes from 1/4 pt to 12 pt (!Word accepts up to 12 pt =',
+    'single boxes from 1/4 pt to 12 pt (!Letters accepts up to 12 pt =',
     'sz 96; Word offers up to 6 pt in its box: BD2). "Group A" is',
     'three paragraphs with the same borders and a between line: one',
     'box with a line between them (BD3). "Group B" has the same',
-    'borders but a different left indent: !Word draws a box for B',
+    'borders but a different left indent: !Letters draws a box for B',
     'one, then one for B two and three (BD4). "Side off" has a box',
     'with the bottom side turned off. "Colours" has a different',
     'colour on each side. Word should open it with no repair prompt',
     'and show the same boxes; the line styles are drawn by Word, in',
-    '!Word as solid, double, dotted, dashed and thick lines (BD5).',
+    '!Letters as solid, double, dotted, dashed and thick lines (BD5).',
   ]);
 }
 
@@ -353,12 +353,12 @@ const SHD = (fill) => ({val: 'clear', color: 'auto', fill});
 // ------------------------------------------------------------ README
 
 const README = [
-  'Hand-off files for !Word\'s borders, shading, symbols and change',
+  'Hand-off files for !Letters\' borders, shading, symbols and change',
   'case (Batch A, task A5). Made by',
-  'node tests/moreapps/handoff-borders.mjs with !Word\'s own commands;',
+  'node tests/moreapps/handoff-borders.mjs with !Letters\' own commands;',
   'nothing here is committed. Open each file in real Word and answer',
   'the questions below; the lists under each file name are what',
-  '!Word really wrote.',
+  '!Letters really wrote.',
   '',
   'On screen: Format > Borders and shading... (Paragraph or Text;',
   'None, Box, Custom; the sides; Style, Width, Colour; Fill),',
@@ -367,45 +367,45 @@ const README = [
   '',
   'Questions',
   '---------',
-  'BD1 Paragraphs with shading but no borders: !Word joins them into',
+  'BD1 Paragraphs with shading but no borders: !Letters joins them into',
   '    one block only when the fill is the same (bdr-2, lines 5-7).',
   '    Word: one block whenever the shading is equal, or a separate',
   '    band for each paragraph? What when the fills differ?',
-  'BD2 Widths: !Word offers 1/4, 1/2, 3/4, 1, 1 1/2, 2 1/4 and 3 pt',
+  'BD2 Widths: !Letters offers 1/4, 1/2, 3/4, 1, 1 1/2, 2 1/4 and 3 pt',
   '    and draws what a file has up to 12 pt (sz 96); wider is drawn',
   '    as 12 pt. Word\'s box offers up to 6 pt: does Word draw bdr-1\'s',
   '    6 pt and 12 pt boxes, or complain? Does the 3 pt and 6 pt line',
-  '    look as thick as !Word\'s?',
+  '    look as thick as !Letters\'?',
   'BD3 A group with a between line (bdr-1 Group A): one box with',
   '    the between line drawn between the paragraphs, the left and',
-  '    right sides unbroken. !Word draws the top side on the first',
+  '    right sides unbroken. !Letters draws the top side on the first',
   '    paragraph and the bottom on the last. Word?',
   'BD4 The same borders with different LEFT indents (bdr-1 Group B)',
   '    are not one box. What does Word do when only the right indent',
-  '    or only the first-line indent differs? (!Word: right indent',
+  '    or only the first-line indent differs? (!Letters: right indent',
   '    differing separates, first line does not.)',
-  'BD5 Line styles: !Word draws single and thick as solid lines',
+  'BD5 Line styles: !Letters draws single and thick as solid lines',
   '    (thick is the width as given), double as two lines with a gap',
   '    of one line, dotted and dashed as dots and dashes, all other',
   '    names (wave, triple, 3D...) as single. Word draws each as its',
   '    own style: nothing to fix, but the file must keep them (the',
   '    box shows the name that was there).',
-  'BD6 Shading and the space before / after (bdr-2 line 2): !Word',
+  'BD6 Shading and the space before / after (bdr-2 line 2): !Letters',
   '    does not shade the space before the first paragraph or after',
   '    the last of a box, only between paragraphs of one box. Word?',
   'BD7 Character shading (w:shd in rPr) and a highlight on the same',
-  '    text (bdr-2 line 9): !Word draws the highlight over the',
+  '    text (bdr-2 line 9): !Letters draws the highlight over the',
   '    shading. Word?',
   'BD8 Borders from a style or a theme colour (w:themeColor): the',
   '    box refuses to change them with a beep ("raw" borders). In',
   '    Word they change. (No file: make a paragraph with a themed',
-  '    border in Word, save, open in !Word, try Format > Borders.)',
-  'BD9 Apply to Text at a caret: !Word sets the shading for the next',
+  '    border in Word, save, open in !Letters, try Format > Borders.)',
+  'BD9 Apply to Text at a caret: !Letters sets the shading for the next',
   '    text typed; Word may shade the current word. Text with a',
-  '    border (w:bdr) is not offered in !Word. (No file.)',
+  '    border (w:bdr) is not offered in !Letters. (No file.)',
   'BD10 A box on the first paragraph of a list item: the box takes',
   '    in the label (hanging indent). Word draws the left side at',
-  '    the left of the label? (Make it in Word, open in !Word.)',
+  '    the left of the label? (Make it in Word, open in !Letters.)',
   'SY1 Symbols are plain Unicode text in the current font (sym-1).',
   '    Word\'s Symbol box offers "(normal text)" and a font; a',
   '    character from another font is typed as w:sym there. Does',
@@ -421,18 +421,18 @@ const README = [
   '    Liberation Sans and Liberation Serif). Does Word show all as',
   '    Calibri? (Greek, Cyrillic and shapes are the likely',
   '    fallbacks.)',
-  'SY4 Ctrl+Shift+Space in !Word is a no-break space (U+00A0), and a',
+  'SY4 Ctrl+Shift+Space in !Letters is a no-break space (U+00A0), and a',
   '    no-break space after "1." does NOT start a list. Word?',
   'SY5 Ctrl+Shift+- in Word is the non-breaking hyphen. In a',
-  '    browser it may zoom out: does !Word get the key in Chrome,',
+  '    browser it may zoom out: does !Letters get the key in Chrome,',
   '    Firefox and Safari? A symbol typed in overwrite mode',
-  '    (Insert key) replaces the next character in !Word; Word?',
-  'CS1 Shift-F3 order: !Word cycles CAPITALS -> small -> Title Case',
+  '    (Insert key) replaces the next character in !Letters; Word?',
+  'CS1 Shift-F3 order: !Letters cycles CAPITALS -> small -> Title Case',
   '    from any text (a sentence or any mixture goes to capitals',
   '    first; a step that changes nothing is skipped). Word cycles',
   '    Sentence case -> lowercase -> UPPERCASE (or Title Case first',
   '    when the selection is lowercase?). case-1 lines 7-9.',
-  'CS2 Capitalize Each Word: !Word makes the rest of each word small',
+  'CS2 Capitalize Each Word: !Letters makes the rest of each word small',
   '    ("O\'NEIL" -> "O\'neil"?). Word leaves the other letters alone?',
   '    Apostrophes and hyphens (well-known, O\'Neil\'s): case-1 line 5.',
   'CS3 Lengths never change: "straße" -> "STRAßE" (not "STRASSE"),',
@@ -443,7 +443,7 @@ const README = [
   'CS5 A caret in a word changes that word (Word does); a caret',
   '    between spaces changes nothing (Word may change the next',
   '    word).',
-  'CS6 Shift-F3 on a selection: !Word keeps the selection, one undo',
+  'CS6 Shift-F3 on a selection: !Letters keeps the selection, one undo',
   '    step per press. Word?',
   ...lines,
   '',

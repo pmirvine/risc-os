@@ -7,15 +7,15 @@
 // 2 x 2 touches those four cells only).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {fill, patchOf, fieldOf} from '../../tools/moreapps/!Word/TblPatch';
-import {setProps, cellsOf} from '../../tools/moreapps/!Word/TblEdit';
-import {propsCmd, alignCmd, rectOf} from '../../tools/moreapps/!Word/TblCmd';
-import {TABLE} from '../../tools/moreapps/!Word/TblCmdCols';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {at as walkAt, forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {fill, patchOf, fieldOf} from '../../tools/moreapps/!Letters/TblPatch';
+import {setProps, cellsOf} from '../../tools/moreapps/!Letters/TblEdit';
+import {propsCmd, alignCmd, rectOf} from '../../tools/moreapps/!Letters/TblCmd';
+import {TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {at as walkAt, forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {assertSameDoc, expectedBack} from './docx-compare.mjs';
 import {mk, undoable} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

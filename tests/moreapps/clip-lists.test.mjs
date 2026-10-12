@@ -7,11 +7,11 @@
 // other namespaces).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {numsOf, MAX_NODES} from '../../tools/moreapps/!Word/ClipNums';
-import {cleanEl} from '../../tools/moreapps/!Word/NumClean';
-import {copyNums} from '../../tools/moreapps/!Word/NumCopy';
+import {numsOf, MAX_NODES} from '../../tools/moreapps/!Letters/ClipNums';
+import {cleanEl} from '../../tools/moreapps/!Letters/NumClean';
+import {copyNums} from '../../tools/moreapps/!Letters/NumCopy';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
 import {mk, C, SEL, blocks, texts} from './edit-docs.mjs';
 import {p, r, numberingXml, stylesXml} from './build-docx.mjs';
 import {item, lvl} from './list-fixtures.mjs';
@@ -100,7 +100,7 @@ describe('ClipNums: very wide definitions (review 1)', () => {
       const src = await open(await srcOf(numberingXml(abs(0, lvl(0)) +
         num(1, 0) + num(2, 0, wide)), [2, 1]));
       const {slice} = await import(
-        '../../tools/moreapps/!Word/ClipSlice');
+        '../../tools/moreapps/!Letters/ClipSlice');
       const s = slice(src.doc, SEL(src, 0, 0, 2, 0));
       assert.ok(s, 'copied');
       assert.deepEqual([...s.lists.keys()], [1]);

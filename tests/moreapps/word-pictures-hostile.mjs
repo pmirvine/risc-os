@@ -1,4 +1,4 @@
-// !Word's pictures against hostile input in the real desktop (Batch B,
+// !Letters' pictures against hostile input in the real desktop (Batch B,
 // B8.1): 100 pictures in one paragraph (laid out, only those in view
 // decoded, select-all + Delete + undo); 1000 pictures in 1000
 // paragraphs scrolled end to end (decodes never more than the pictures
@@ -20,7 +20,7 @@ import { picDocx, pngBytes, jpegBytes, gifBytes } from './pic-fixtures.mjs';
 import { buildDocx, documentXml, p, r, REL } from './build-docx.mjs';
 import { drawingXml } from './pic-fixtures.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const IN = 914400, HALF = 457200;
@@ -159,7 +159,7 @@ try {
       tgt.addEventListener = (t, f, o) => { const key = [t, f, !!(o === true || o?.capture)].join('|'); if (!seen.has(f + key)) { seen.add(f + key); window.__net++; } return add(t, f, o); };
       tgt.removeEventListener = (t, f, o) => { const key = [t, f, !!(o === true || o?.capture)].join('|'); if (seen.delete(f + key)) window.__net--; return rem(t, f, o); };
     }
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -168,7 +168,7 @@ try {
     window.__at = (d, x, y) => { const z = d.view.zoom, t = d.view.layout.top; return window.__client(d.win, x * z, t + (y - t) * z); };
     /** Open leaf in Word: its window at a known place, the caret in it. */
     window.__open = async (leaf, h = 700) => {
-      if (!window.__word()?.word) { await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'); for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50); }
+      if (!window.__word()?.word) { await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'); for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50); }
       const t0 = performance.now();
       await os.filer.run('RAM::RamDisc0.$.' + leaf);
       for (let i = 0; i < 400 && !window.__doc(leaf); i++) await window.__sleep(25);

@@ -1,10 +1,10 @@
-// Recent: !Word's list of recent files (pure): newest first, 8 at
+// Recent: !Letters' list of recent files (pure): newest first, 8 at
 // most, no duplicates (case ignored, by the key given: the canonical
 // path), hostile entries dropped; the menu's names.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {MAX, clean, add, fromChoices, shown, labels}
-  from '../../tools/moreapps/!Word/Recent';
+  from '../../tools/moreapps/!Letters/Recent';
 
 const A = 'RAM::RamDisc0.$.A', B = 'RAM::RamDisc0.$.B';
 const C = 'ADFS::HardDisc4.$.Docs.C';

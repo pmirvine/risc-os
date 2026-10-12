@@ -3,9 +3,9 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {formatNumber, fmtOf, LABEL_CAP, capLabel}
-  from '../../tools/moreapps/!Word/NumFormat';
+  from '../../tools/moreapps/!Letters/NumFormat';
 import {glyphFor, bulletText}
-  from '../../tools/moreapps/!Word/BulletGlyph';
+  from '../../tools/moreapps/!Letters/BulletGlyph';
 
 const f = formatNumber;
 

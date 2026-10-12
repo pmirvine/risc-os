@@ -1,5 +1,5 @@
 // $.MoreApps is booted at desktop start (src/main.js): from a cold boot,
-// with no Filer window of $.MoreApps ever opened, !Word's sprites and
+// with no Filer window of $.MoreApps ever opened, !Letters' sprites and
 // .docx file type are known and running a .docx starts Word. A disc
 // without $.MoreApps still boots.
 // The library $.!Boot.Resources.!WimpLib is booted with the rest of
@@ -26,7 +26,7 @@ try {
     res.viewers = [...os.wimp.windows].filter((w) => w.isOpen && /MoreApps/.test(w.title ?? '')).length;
     res.type = os.sysvars.get('File$Type_A7E') ?? null;
     res.alias = os.sysvars.get('Alias$@RunType_A7E') ?? null;
-    res.sprite = os.wimp.sprites.has('!word') && os.wimp.sprites.has('file_a7e');
+    res.sprite = os.wimp.sprites.has('!letters') && os.wimp.sprites.has('file_a7e');
     // the library
     res.anyViewer = [...os.filer.viewers.keys()];
     res.lib = ['Dir', 'Path', 'Version'].map((n) => os.sysvars.get(`WimpLib$${n}`));
@@ -60,8 +60,8 @@ try {
   });
   ok('no Filer window of $.MoreApps', r.viewers === 0, r.viewers);
   ok('File$Type_A7E', r.type === 'MSWordX', r.type);
-  ok('Alias$@RunType_A7E runs !Word', /MoreApps\.!Word\.!Run %\*0$/.test(r.alias ?? ''), r.alias);
-  ok('!word and file_a7e sprites', r.sprite);
+  ok('Alias$@RunType_A7E runs !Letters', /MoreApps\.!Letters\.!Run %\*0$/.test(r.alias ?? ''), r.alias);
+  ok('!letters and file_a7e sprites', r.sprite);
   const LIB = 'ADFS::HardDisc4.$.!Boot.Resources.!WimpLib';
   ok('no Filer directory display open at all', r.anyViewer.length === 0, r.anyViewer);
   ok('WimpLib$Dir, WimpLib$Path, WimpLib$Version from a cold boot', r.lib[0] === LIB && r.lib[1] === LIB + '.' && /^\d+\.\d\d$/.test(r.lib[2] ?? ''), r.lib);
@@ -69,7 +69,7 @@ try {
   ok("a program imports 'wimplib/Crc32' with no Filer window opened", !r.crc.libMsgs.length && r.crc.text === 'cbf43926\n', r.crc);
   const m = r.msgs[0];
   // (four bytes are not a .docx: Word says so, naming the file)
-  ok('running a .docx starts Word', r.msgs.length === 1 && /'Doc' could not be opened: it is not a Word \.docx file/.test(m.m) && m.tasks.includes('Word'), [r.runError, r.msgs]);
+  ok('running a .docx starts Letters', r.msgs.length === 1 && /'Doc' could not be opened: it is not a Word \.docx file/.test(m.m) && m.tasks.includes('Letters'), [r.runError, r.msgs]);
 
   // $.MoreApps's applications boot after the library: one whose !Boot
   // records WimpLib$Dir sees it set

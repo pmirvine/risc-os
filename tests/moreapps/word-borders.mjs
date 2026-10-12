@@ -1,4 +1,4 @@
-// !Word's paragraph borders and shading and character shading as drawn
+// !Letters' paragraph borders and shading and character shading as drawn
 // in the real desktop (Batch A, A5.1), read back from the canvas: a
 // boxed paragraph's four edges in its colour, where the layout puts
 // them (the text column's indent area, space + width above and below
@@ -80,7 +80,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Bd') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     /** The canvas pixel [r, g, b] at work-area (x, y) (layout coordinates). */
     window.__px = (x, y, leaf = 'Bd') => {
@@ -475,7 +475,7 @@ try {
   const oneBox = (x) => JSON.stringify(x.mids) === JSON.stringify([[true, true], [true, true], [true, true]]);
   const none = (x) => JSON.stringify(x.mids) === JSON.stringify([null, null, null]);
   // (the plan's 2 s for opening is not met: the twin with nil borders takes about as long, reading the file and
-  // resolving the style's w:pBdr for every paragraph: docs/apps/Word.md, "Borders and shading on the screen")
+  // resolving the style's w:pBdr for every paragraph: docs/apps/Letters.md, "Borders and shading on the screen")
   ok('50,000 paragraphs with borders and shading from their style: one box; opening them costs at most 0.5 s more '
     + 'than their twin with nil borders (nothing drawn); each frame paints in under 100 ms, drawing only what is in '
     + 'view', B.n === 50000 && Bn.n === 50000 && B.opened - Bn.opened <= 500 && B.frames >= 4 && B.max < 100

@@ -1,4 +1,4 @@
-// !Word's page breaks in the real desktop with real key presses:
+// !Letters' page breaks in the real desktop with real key presses:
 // a Word file's page and column breaks are drawn as grey dotted rules
 // labelled "Page break" / "Column break" (a lastRenderedPageBreak is
 // not); Ctrl-Enter mid-paragraph puts a break there and splits the
@@ -27,7 +27,7 @@
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { xmlEntries } from './docx-compare.mjs';
 
 const O = '￼';
@@ -60,7 +60,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => d.path?.endsWith('.Br'));
     /** Layout -> the window's work area at the document's zoom. */
     window.__ws = (x, y) => {
@@ -97,7 +97,7 @@ try {
       return { lines: v.lines(), depth: v.undoDepth, head: h ? [L.byId.get(h.id).index, h.off] : null,
         anchor: s ? [L.byId.get(s.anchor.id).index, s.anchor.off] : null, msgs: window.__msgs.length };
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Br');
     for (let i = 0; i < 100 && !window.__doc(); i++) await window.__sleep(50);

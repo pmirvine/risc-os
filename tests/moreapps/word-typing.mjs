@@ -1,4 +1,4 @@
-// !Word's typing, deleting and undo in the real desktop: text typed
+// !Letters' typing, deleting and undo in the real desktop: text typed
 // through the Wimp's text-input caret (insertText, key presses, an
 // input method through CDP), Enter, Shift-Enter, Tab, Backspace,
 // Delete, Ctrl-Backspace, Insert (overwrite), typing over a
@@ -14,7 +14,7 @@
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, numberingXml, p, r, REL } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 
 const LINK = '<w:hyperlink r:id="rIdL"><w:r><w:t>link</w:t></w:r></w:hyperlink>';
 const NUMBERING = numberingXml('<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/>' +
@@ -53,7 +53,7 @@ async function start(page) {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Typing') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (d, x, y) => {
       const s = d.win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

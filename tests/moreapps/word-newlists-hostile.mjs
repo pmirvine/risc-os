@@ -1,4 +1,4 @@
-// !Word's new lists against hostile input in the real desktop
+// !Letters' new lists against hostile input in the real desktop
 // (task A2.4: AutoFormat lists as you type; A2.6 adds the list
 // commands): 1000 rapid '* ' + Ctrl-Z + Ctrl-Z cycles with real keys
 // (each conversion undone to the typed '* ', then the typing; the
@@ -24,7 +24,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, numberingXml, relsXml, REL, stylesXml, p, r } from './build-docx.mjs';
 import { lvl, item, listDocx, NUMBERING, STYLES_LIST } from './list-fixtures.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const BIG = 50000, STEP = 500;
 const docx = (body) => buildDocx({ 'word/document.xml': documentXml(body) });
@@ -88,7 +88,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__client = (w, x, y) => {
       const sc = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
       return { x: rc.left + sc.x * k, y: rc.top + sc.y * k };

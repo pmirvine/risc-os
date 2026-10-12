@@ -11,10 +11,10 @@
 // table's top border (the column under it), at their exact limits.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import * as T from '../../tools/moreapps/!Word/SelTable';
-import {make} from '../../tools/moreapps/!Word/SelMove';
-import {shapeOf} from '../../tools/moreapps/!Word/SelShape';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import * as T from '../../tools/moreapps/!Letters/SelTable';
+import {make} from '../../tools/moreapps/!Letters/SelMove';
+import {shapeOf} from '../../tools/moreapps/!Letters/SelShape';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk, S} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
@@ -376,7 +376,7 @@ describe('EditKeys: Ctrl-Tab outside a cell (review C3a m3)', () => {
     alt: false};
   it('goes on (undefined) without running a command: the pending ' +
     'format is not dropped', async () => {
-    const {keyFor} = await import('../../tools/moreapps/!Word/EditKeys');
+    const {keyFor} = await import('../../tools/moreapps/!Letters/EditKeys');
     const {d, pos} = setup(grid3());
     const v = view(d, S.caret(pos('Before', 2)));
     assert.equal(keyFor(v, ctrlTab), undefined);

@@ -3,11 +3,11 @@
 // (each counter found by scanning back to its last restart).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {formatNumber} from '../../tools/moreapps/!Word/NumFormat';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {formatNumber} from '../../tools/moreapps/!Letters/NumFormat';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {newStyleTable, addStyle, setDefault}
-  from '../../tools/moreapps/!Word/Styles';
+  from '../../tools/moreapps/!Letters/Styles';
 
 /** Small seeded generator (mulberry32). */
 function rng(seed) {

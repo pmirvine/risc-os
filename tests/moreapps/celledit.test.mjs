@@ -20,27 +20,27 @@
 // tables within +5 ms of one in the same document without tables.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {emptyLike, clearCells, deleteRows}
-  from '../../tools/moreapps/!Word/TblEdit';
-import {onTable} from '../../tools/moreapps/!Word/TblCmd';
-import {marks} from '../../tools/moreapps/!Word/BookmarkFind';
+  from '../../tools/moreapps/!Letters/TblEdit';
+import {onTable} from '../../tools/moreapps/!Letters/TblCmd';
+import {marks} from '../../tools/moreapps/!Letters/BookmarkFind';
 import {newPara, newSection, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/Model';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
 import {mk, undoable, snap, S, O} from './edit-docs.mjs';
 import {tm, loadStyles, mkDoc, rng} from './word-docs.mjs';
 import {findBlock, atRank, checkPos}
-  from '../../tools/moreapps/!Word/EditPos';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {checkTable} from '../../tools/moreapps/!Word/TblCheck';
-import {Document} from '../../tools/moreapps/!Word/Document';
+  from '../../tools/moreapps/!Letters/EditPos';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {checkTable} from '../../tools/moreapps/!Letters/TblCheck';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 /** The paragraph whose text is t (any depth). */

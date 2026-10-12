@@ -1,12 +1,12 @@
-// Test-only: hostile and odd .docx documents for !Word's view, read
+// Test-only: hostile and odd .docx documents for !Letters' view, read
 // with the real reader and laid out with a measurer whose cost grows
 // with the text (as a canvas's does), and the sweeps that drive the
 // selection over them. hostile-view.test.mjs runs the sweeps in a
 // worker, so that a hang is stopped by a watchdog.
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {itemEnd} from '../../tools/moreapps/!Word/DocPos';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {itemEnd} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';

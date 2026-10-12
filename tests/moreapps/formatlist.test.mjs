@@ -5,14 +5,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {setList, listParas, hasList}
-  from '../../tools/moreapps/!Word/FormatList';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import {apply, isFormat} from '../../tools/moreapps/!Word/FormatApply';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {paraNumPr} from '../../tools/moreapps/!Word/Styles';
-import {paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {effective} from '../../tools/moreapps/!Word/ParaInd';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/FormatList';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import {apply, isFormat} from '../../tools/moreapps/!Letters/FormatApply';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {paraNumPr} from '../../tools/moreapps/!Letters/Styles';
+import {paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {effective} from '../../tools/moreapps/!Letters/ParaInd';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {P, C, SEL, texts, undoable, blocks} from './edit-docs.mjs';
 import {listDoc, li, lv, N} from './list-docs.mjs';
 

@@ -13,11 +13,11 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {ids, scan} from '../../tools/moreapps/!Word/Walk';
-import {MAX_LINE} from '../../tools/moreapps/!Word/ParaSpace';
-import {MARGIN} from '../../tools/moreapps/!Word/DocStack';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {ids, scan} from '../../tools/moreapps/!Letters/Walk';
+import {MAX_LINE} from '../../tools/moreapps/!Letters/ParaSpace';
+import {MARGIN} from '../../tools/moreapps/!Letters/DocStack';
 import {CORPUS, SKIP_CORPUS} from './roundtrip-lib.mjs';
 import {tm} from './word-docs.mjs';
 

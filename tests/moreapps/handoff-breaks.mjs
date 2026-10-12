@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's page and section
+// Generates the real-Word hand-off files for !Letters' page and section
 // breaks (local only, never committed: tests/moreapps/corpus/ is
 // git-ignored). Not a test:
 //
@@ -19,7 +19,7 @@
 //   brk-4-flow.docx         page break before, keep with next chains,
 //                           keep lines, widow control off
 //   brk-README.txt          what Word should show, the open questions
-// Everything is done with !Word's own commands (EditApply ids, what
+// Everything is done with !Letters' own commands (EditApply ids, what
 // Ctrl-Enter, the Insert menu and Backspace / Delete run; FormatApply
 // for the flags) on a Document, as the window makes them. A file is
 // written only when its bytes change, so a file open in Word is left
@@ -29,16 +29,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
@@ -146,7 +146,7 @@ async function save(name, doc, about) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: each section\'s',
+    'What !Letters wrote (read back from the saved file: each section\'s',
     'sectPr, then its paragraphs, [BREAK] a page break):',
     ...await describe(bytes));
 }
@@ -243,7 +243,7 @@ async function sectionsSession() {
   await save('brk-2-sections.docx', s.d.doc, [
     'A document made in the style of Word\'s (built here: one LANDSCAPE',
     'section, a header part, w:pgNumType w:start="5", rsids), opened',
-    'by !Word, with three section breaks inserted: Next page after',
+    'by !Letters, with three section breaks inserted: Next page after',
     '"Third paragraph", Continuous in the middle of "Fourth", and Next',
     'page at the start of "Fifth" (an empty paragraph before it ends',
     'that section; a Next page break at the end of a paragraph or',
@@ -295,7 +295,7 @@ async function sectionsSession() {
     'w:type. What does Word give it? Only the Continuous break is',
     'left between sections, and the empty paragraph before "Fifth".',
     'Select "Third paragraph" to "Fifth paragraph" in Word and press',
-    'Delete in a copy of brk-2 (SB4): is the break removed? (!Word',
+    'Delete in a copy of brk-2 (SB4): is the break removed? (!Letters',
     'keeps the sections when a range is deleted across a break.)',
   ]);
 }
@@ -335,7 +335,7 @@ async function sectionsSession() {
     'Flow options set with the Paragraph box (Format > Paragraph...):',
     'Page break before (first paragraph, in a numbered item, and with',
     'two other flags), a chain of three Keep with next paragraphs,',
-    'Keep lines together, and Widow control turned off. !Word shows',
+    'Keep lines together, and Widow control turned off. !Letters shows',
     'only Page break before (a dotted rule in a 12 px gap above the',
     'paragraph); the others have no effect on its screen until pages',
     'arrive. Word should open it with no repair prompt, show the same',
@@ -349,13 +349,13 @@ async function sectionsSession() {
 // ------------------------------------------------------------ README
 
 const README = [
-  'Hand-off files for !Word\'s page and section breaks (Batch A,',
+  'Hand-off files for !Letters\' page and section breaks (Batch A,',
   'task A3). Made by node tests/moreapps/handoff-breaks.mjs with',
-  '!Word\'s own commands; nothing here is committed. Open each file',
+  '!Letters\' own commands; nothing here is committed. Open each file',
   'in real Word and answer the questions below; the lists under',
-  'each file name are what !Word really wrote.',
+  'each file name are what !Letters really wrote.',
   '',
-  'Keys in !Word: Ctrl-Enter is the page break (Ctrl on a Mac too);',
+  'Keys in !Letters: Ctrl-Enter is the page break (Ctrl on a Mac too);',
   'Insert > Section break > Next page / Continuous (no keys);',
   'Delete at the end of a section\'s last paragraph and Backspace at',
   'the start of the next section\'s first paragraph remove the break.',
@@ -367,7 +367,7 @@ const README = [
   'Questions',
   '---------',
   'PB1 Ctrl-Enter mid-paragraph, at an end, at a start, in an empty',
-  '    paragraph (brk-1). !Word writes the break at the END of its',
+  '    paragraph (brk-1). !Letters writes the break at the END of its',
   '    paragraph and the text after it in a new paragraph (Word',
   '    2013\'s form). Does Word show no empty paragraph at the top of',
   '    the next page?',
@@ -375,7 +375,7 @@ const README = [
   '    (brk-1). The paragraph left with only the break keeps its',
   '    number / heading style (Enter\'s rules). What does Word do?',
   'PB3 A page break pasted into another document stays a page break',
-  '    (no file: copy brk-1\'s first lines into another !Word',
+  '    (no file: copy brk-1\'s first lines into another !Letters',
   '    document and save it).',
   'SB1 Section break in a document with headers (brk-2). The section',
   '    before the break gets a copy of the sectPr with the same',
@@ -387,7 +387,7 @@ const README = [
   'SB3 Delete at a break (brk-3): the merged section takes the',
   '    FOLLOWING section\'s properties with the EARLIER section\'s',
   '    w:type. Does Word do the same?',
-  'SB4 Deleting a range across a break keeps every section in !Word',
+  'SB4 Deleting a range across a break keeps every section in !Letters',
   '    (brk-2, select Third..Fifth and press Delete). Does Word?',
   'SB5 Backspace at the start of a list item that begins a section:',
   '    the break goes first (no file: make one in Word).',
@@ -396,13 +396,13 @@ const README = [
   '    Page)" and the end of section 2 "(Continuous)" the same way?',
   'B1  Page break before (brk-4): a paragraph with the flag starts a',
   '    new page. Does Word also start a page for the flag on the',
-  '    FIRST paragraph of the document (!Word shows the rule there',
+  '    FIRST paragraph of the document (!Letters shows the rule there',
   '    too), and for a numbered item?',
   'B2  Keep with next / keep lines / widow control (brk-4): written',
   '    as w:keepNext, w:keepLines, w:widowControl w:val="0". Does the',
   '    Paragraph box show the same boxes ticked?',
   'B3  A Continuous break between sections of different page size or',
-  '    orientation. !Word keeps the type it was given (and draws it',
+  '    orientation. !Letters keeps the type it was given (and draws it',
   '    "(Continuous)"); Word is believed to start a new page there',
   '    whatever w:type says. No file: change a section\'s page',
   '    setup in Word to landscape and see.',

@@ -6,13 +6,13 @@
 // original exactly.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {midPair} from '../../tools/moreapps/!Word/ModelCheck';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {midPair} from '../../tools/moreapps/!Letters/ModelCheck';
 import {rng} from './word-docs.mjs';
 import {mk, texts, ids, valid, snap, undoAll, at, box, raw, O, S, bold,
   plain} from './edit-docs.mjs';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 
 const PIECES = ['ab', 'c d', '\u{1F600}', 'x\ty', 'l\nm', O, 'hello'];
 

@@ -13,13 +13,13 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertRows, deleteRows, splitTable}
-  from '../../tools/moreapps/!Word/TblEdit';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {checkTable, MAX_ROWS} from '../../tools/moreapps/!Word/TblCheck';
-import {checkBlock, checkProps} from '../../tools/moreapps/!Word/ModelCheck';
+  from '../../tools/moreapps/!Letters/TblEdit';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {checkTable, MAX_ROWS} from '../../tools/moreapps/!Letters/TblCheck';
+import {checkBlock, checkProps} from '../../tools/moreapps/!Letters/ModelCheck';
 import {newPara, reserveIds, OBJ}
-  from '../../tools/moreapps/!Word/Model';
-import {blockIds} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/Model';
+import {blockIds} from '../../tools/moreapps/!Letters/Walk';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const CK = {block: checkBlock, props: checkProps};

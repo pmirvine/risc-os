@@ -1,4 +1,4 @@
-// !Word's copy, paste and Find against hostile input in the real
+// !Letters' copy, paste and Find against hostile input in the real
 // desktop: everything in a 50,000-paragraph document selected and
 // copied (the HTML over 2,000,000 characters left out: only the
 // copy's marker as HTML, the plain text whole, under 3 s) and pasted
@@ -24,7 +24,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r, REL } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' + p(r('a cell')) + '</w:tc></w:tr></w:tbl>';
@@ -84,7 +84,7 @@ try {
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
     window.__frameMs = () => new Promise((res) => { const t = performance.now(); requestAnimationFrame(() => res(performance.now() - t)); });
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
       return { x: rc.left + s.x * k, y: rc.top + s.y * k };
@@ -188,13 +188,13 @@ try {
         return res;
       }, t1);
     };
-    // beyond the HTML cap: !Word pastes the plain text, cut at 100,000 characters, and says so
+    // beyond the HTML cap: !Letters pastes the plain text, cut at 100,000 characters, and says so
     const bp = await pasteIntoPlain();
     timings.push(`paste of the 50,000-paragraph copy (plain): ${bp.ms} ms`);
     ok('... pasted in another document: the plain text, cut at 100,000 characters, one undo step, a message says it was cut',
       bp.last === 'plain' && bp.n > 2000 && bp.n < 2200 && bp.steps === 1 && bp.back === 30 && bp.status === CUT && bp.msgs.length === 1 && bp.msgs[0] === CUT, bp);
     // 30,000 paragraphs: the formatted HTML is over 2,000,000 characters, the plain text is not: the HTML is the
-    // marker and the text in a <pre> (usable by other programs); !Word pastes it whole by the exact route
+    // marker and the text in a <pre> (usable by other programs); !Letters pastes it whole by the exact route
     await ev(async (end) => {
       window.__dw = window.__word().word.docs.find((d) => d.leaf === 'Big');
       window.__dw.dw.view.focus();

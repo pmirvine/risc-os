@@ -1,4 +1,4 @@
-// !Word's tables against hostile input in the real desktop (Batch C, C7.1). Documents: D14f's set
+// !Letters' tables against hostile input in the real desktop (Batch C, C7.1). Documents: D14f's set
 // opened in the window (10,000 rows, 63 and 64 columns, gridSpan 0 / 64 / -1 / 1e9, an empty and a 0-width grid,
 // a vMerge continue first, depth 9, 200 nested tables (refused by the XML depth cap with its message), ragged rows,
 // a row of only marks, `__proto__` property names, a file of 1,000,000 cells and one of 1,000,001 paragraphs in
@@ -22,7 +22,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { tbl, tr, tc, tblDocx, bigTable, nestedTable, TABLE_NORMAL, TABLE_GRID } from './tbl-fixtures.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const ONLY = process.env.SECTIONS ? process.env.SECTIONS.split(',') : null;
 const want = (s) => !ONLY || ONLY.includes(s);
@@ -120,7 +120,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.path.endsWith('.' + leaf));
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -254,7 +254,7 @@ try {
       return window.__screen(s.x, s.y);
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   const open = (leaf, at) => ev(([l, a]) => window.__open(l, a), [leaf, at]);
   /** Forget the messages so far (each section checks its own). */

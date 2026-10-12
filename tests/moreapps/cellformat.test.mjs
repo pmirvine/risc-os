@@ -13,32 +13,32 @@
 // deep-frozen: copy-on-write).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {pick, paint} from '../../tools/moreapps/!Word/FormatPaint';
-import {query} from '../../tools/moreapps/!Word/Format';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {pick, paint} from '../../tools/moreapps/!Letters/FormatPaint';
+import {query} from '../../tools/moreapps/!Letters/Format';
 import {toggleList, restart, continueList}
-  from '../../tools/moreapps/!Word/ListMake';
-import {afterSpace} from '../../tools/moreapps/!Word/AutoList';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
+  from '../../tools/moreapps/!Letters/ListMake';
+import {afterSpace} from '../../tools/moreapps/!Letters/AutoList';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
 import {search, count as findCount, replaceAll, replaceOne}
-  from '../../tools/moreapps/!Word/Find';
+  from '../../tools/moreapps/!Letters/Find';
 import {addBookmark, goTo, findBookmark, list}
-  from '../../tools/moreapps/!Word/Bookmarks';
-import {insertLink} from '../../tools/moreapps/!Word/LinkOps';
-import {linkAt, linkUnder} from '../../tools/moreapps/!Word/LinkFind';
+  from '../../tools/moreapps/!Letters/Bookmarks';
+import {insertLink} from '../../tools/moreapps/!Letters/LinkOps';
+import {linkAt, linkUnder} from '../../tools/moreapps/!Letters/LinkFind';
 import {picAt, selectedPic, handleRects}
-  from '../../tools/moreapps/!Word/PicFind';
-import {setPicture} from '../../tools/moreapps/!Word/PicOps';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
-import {count as words} from '../../tools/moreapps/!Word/WordCount';
-import {breakable} from '../../tools/moreapps/!Word/InsertApply';
-import {firstIndents} from '../../tools/moreapps/!Word/RulerInd';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/PicFind';
+import {setPicture} from '../../tools/moreapps/!Letters/PicOps';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
+import {count as words} from '../../tools/moreapps/!Letters/WordCount';
+import {breakable} from '../../tools/moreapps/!Letters/InsertApply';
+import {firstIndents} from '../../tools/moreapps/!Letters/RulerInd';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {at as walkAt, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/Walk';
 import {mk, undoable, snap, S} from './edit-docs.mjs';
 import {tm, loadStyles} from './word-docs.mjs';
 import {modelTable, freeze, tbl, tr, tc} from './tbl-fixtures.mjs';

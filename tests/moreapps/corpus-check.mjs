@@ -7,10 +7,10 @@
 // part must parse, and the property elements the writer BUILDS must
 // list their children in the order Order.sortChildren gives.
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {sortChildren} from '../../tools/moreapps/!Word/Order';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {sortChildren} from '../../tools/moreapps/!Letters/Order';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {assertSameDoc, entries, xmlEntries, sameBytes, expectedBack}

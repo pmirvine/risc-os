@@ -4,17 +4,17 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {rootScope, strictScope} from '../../tools/moreapps/!Word/Ns';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {rootScope, strictScope} from '../../tools/moreapps/!Letters/Ns';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {tblPrNode, trPrNode, tcPrNode}
-  from '../../tools/moreapps/!Word/TblWriteProps';
-import {tblNode} from '../../tools/moreapps/!Word/TblWrite';
+  from '../../tools/moreapps/!Letters/TblWriteProps';
+import {tblNode} from '../../tools/moreapps/!Letters/TblWrite';
 import {pBdrNode, sidesNode}
-  from '../../tools/moreapps/!Word/WritePropsMore';
-import {SIDES} from '../../tools/moreapps/!Word/ReadPropsMore';
+  from '../../tools/moreapps/!Letters/WritePropsMore';
+import {SIDES} from '../../tools/moreapps/!Letters/ReadPropsMore';
 import {readTblPr, readTrPr, readTcPr}
-  from '../../tools/moreapps/!Word/TblProps';
+  from '../../tools/moreapps/!Letters/TblProps';
 import {buildDocx, documentXml, p, r, W_NS} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, nestedTable, freeze, tableXml}
   from './tbl-fixtures.mjs';

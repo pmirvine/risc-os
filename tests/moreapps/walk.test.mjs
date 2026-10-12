@@ -3,14 +3,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, emptyDoc, nextId, reserveIds, newTable, newRow,
-  newCell} from '../../tools/moreapps/!Word/Model';
+  newCell} from '../../tools/moreapps/!Letters/Model';
 import {isPath, depthOf, isTop, sib, tableOf, cellOf, topOf, samePath,
-  cmpPath} from '../../tools/moreapps/!Word/Path';
+  cmpPath} from '../../tools/moreapps/!Letters/Path';
 import {blocks, forEachBlock, walkBlocks, loose, ids, blockIds, at,
-  mapBlocks, flatText} from '../../tools/moreapps/!Word/Walk';
+  mapBlocks, flatText} from '../../tools/moreapps/!Letters/Walk';
 import {modelTable, freeze, tbl, tr, tc, nestedTable, bigTable,
   TBL_OPAQUE, tblDocx, tableXml} from './tbl-fixtures.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {p, r} from './build-docx.mjs';
 
 const P = (t) => newPara(t);

@@ -1,4 +1,4 @@
-// WimpLib Ui/Dialog in the real desktop, through !Word's test hook
+// WimpLib Ui/Dialog in the real desktop, through !Letters' test hook
 // (task.word.dialog(spec)): every kind of control by its icon name
 // (label, text, length, number, option, radio, popup, colour,
 // button); Tab / Shift-Tab / Down / Up move the caret between the
@@ -49,7 +49,7 @@ try {
     os.vfs.writeFile('RAM::RamDisc0.$.Dlg2', new Uint8Array(bytes), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     await os.filer.run('RAM::RamDisc0.$.Dlg');
     for (let i = 0; i < 200 && !window.__word()?.word.docs.length; i++) await window.__sleep(50);
     window.__beeps = 0;

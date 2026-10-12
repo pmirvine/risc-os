@@ -1,4 +1,4 @@
-// !Word's Insert > Symbol... and Special character in the real desktop
+// !Letters' Insert > Symbol... and Special character in the real desktop
 // (./SymbolBind, WimpLib Ui/CharGrid, ./SpecialChars): the window of
 // characters (16 columns, sets in a popup, a Recently used row, a
 // status line 'U+00E9  Latin-1'), a real click selecting and a
@@ -58,7 +58,7 @@ try {
     os.wimp.beep = () => { window.__beeps++; return beep(); };
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__sy = () => window.__word().word.symbols;
     window.__client = (win, x, y) => {
@@ -106,7 +106,7 @@ try {
       }
       return { dark, blue, white, n: img.data.length / 4 };
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     let x = 10;
     for (const n of ['Alpha', 'Beta']) {

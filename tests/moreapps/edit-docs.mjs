@@ -1,13 +1,13 @@
-// Test-only helpers for the !Word editing command tests (Edit,
+// Test-only helpers for the !Letters editing command tests (Edit,
 // EditDel): Documents built from paragraphs and kept blocks, and
 // what to look at after a command.
 import assert from 'node:assert/strict';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
 import {checkBlock, deepEqual, newPara}
-  from '../../tools/moreapps/!Word/Model';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/Model';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {box, el, raw, O} from './word-docs.mjs';
 
 export {box, el, raw, O, S};

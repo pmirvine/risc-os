@@ -2,9 +2,9 @@
 // sanitising; the same document passes everything).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {clean} from '../../tools/moreapps/!Word/ClipClean';
-import {checkContent} from '../../tools/moreapps/!Word/ModelCheck';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
+import {clean} from '../../tools/moreapps/!Letters/ClipClean';
+import {checkContent} from '../../tools/moreapps/!Letters/ModelCheck';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
 import {mk, raw, O, el} from './edit-docs.mjs';
 
 const R = (o = {}) => ({...o, extra: []});

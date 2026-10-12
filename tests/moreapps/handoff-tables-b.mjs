@@ -1,13 +1,13 @@
 // Hand-off files tb-5 to tb-7 (see handoff-tables.mjs): borders and
 // shading, table styles, the compatibility modes, nested tables.
 import {fill as bfill, patch as bpatch, sidesOf, effOf}
-  from '../../tools/moreapps/!Word/TblBorderPatch';
-import {bordersCmd} from '../../tools/moreapps/!Word/TblCmdCols';
+  from '../../tools/moreapps/!Letters/TblBorderPatch';
+import {bordersCmd} from '../../tools/moreapps/!Letters/TblCmdCols';
 import {tabRowCmd, deleteRowsCmd, rectOf}
-  from '../../tools/moreapps/!Word/TblCmd';
-import {insertTable} from '../../tools/moreapps/!Word/TblInsert';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/TblCmd';
+import {insertTable} from '../../tools/moreapps/!Letters/TblInsert';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
 import {tbl, tr, tc, p, r, docx, open, cap, cell, cellP, W, ONE, gridTbl,
   LOOK, cellCar, cellEnd, cellsSel, allTables, tix, laid, must, save}
   from './handoff-tables-lib.mjs';
@@ -261,7 +261,7 @@ async function nested() {
       p(), 4680)]), tr([cell('O.2.1', 4680), cell('O.2.2', 4680)])],
     {grid: [4680, 4680], tblPr: TG + AUTO + LOOK}),
     cap('Table 1: Insert > Table 2 x 2 with the caret in a cell (made ' +
-      'by !Word)'),
+      'by !Letters)'),
     gridTbl('P', 2, 2, {w: 4680}),
     cap('Table 2: Insert > Table with the cells 1-2 of row 1 selected ' +
       '(TBC4o: they are cleared, the table goes in the first)'),

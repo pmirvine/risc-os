@@ -13,18 +13,18 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertRowsCmd, deleteRowsCmd, tabRowCmd, splitTableCmd}
-  from '../../tools/moreapps/!Word/TblCmd';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
-import {keyFor} from '../../tools/moreapps/!Word/EditKeys';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/TblCmd';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
+import {keyFor} from '../../tools/moreapps/!Letters/EditKeys';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {at as walkAt, ids as allIds, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
-import {checkBlock} from '../../tools/moreapps/!Word/Model';
-import {MAX_ROWS} from '../../tools/moreapps/!Word/TblCheck';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
-import {lastPos} from '../../tools/moreapps/!Word/TblPos';
+  from '../../tools/moreapps/!Letters/Walk';
+import {checkBlock} from '../../tools/moreapps/!Letters/Model';
+import {MAX_ROWS} from '../../tools/moreapps/!Letters/TblCheck';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
+import {lastPos} from '../../tools/moreapps/!Letters/TblPos';
 import {mk, undoable, S} from './edit-docs.mjs';
 import {tm, rng} from './word-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

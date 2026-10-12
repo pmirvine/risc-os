@@ -3,8 +3,8 @@
 // Measured with a fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {layoutPara as oldLayout} from './old-render.mjs';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';

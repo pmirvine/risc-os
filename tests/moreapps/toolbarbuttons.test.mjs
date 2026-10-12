@@ -1,13 +1,13 @@
-// !Word ToolbarButtons: the toolbar's buttons are formatting commands
-// the view knows, with sprites that exist (!Word's own, drawn by
+// !Letters ToolbarButtons: the toolbar's buttons are formatting commands
+// the view knows, with sprites that exist (!Letters' own, drawn by
 // tools/moreapps/icon.mjs, or the Wimp's), help text, and unique
 // names; and the sprites themselves are 20 x 20 and fit the pool.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {BUTTONS, BUTTONS2, ROWS, ROW_BUTTONS, ACTIONS, TOGGLES, ALIGNS, BAR_H,
   LIST_TOGGLES}
-  from '../../tools/moreapps/!Word/ToolbarButtons';
-import {isFormat} from '../../tools/moreapps/!Word/FormatApply';
+  from '../../tools/moreapps/!Letters/ToolbarButtons';
+import {isFormat} from '../../tools/moreapps/!Letters/FormatApply';
 import {barSprites, iconFiles} from '../../tools/moreapps/icon.mjs';
 
 const WIMP = new Set(['up', 'down', 'gright']);
@@ -43,7 +43,7 @@ describe('ToolbarButtons', () => {
   });
 
   it('the toolbar sprites: 20 x 20, names of 12 characters or fewer,' +
-    ' in !Word.!Sprites', () => {
+    ' in !Letters.!Sprites', () => {
     const list = barSprites();
     assert.ok(list.length >= 16);
     for (const [n, rows] of list) {

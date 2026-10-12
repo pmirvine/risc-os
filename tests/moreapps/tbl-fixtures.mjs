@@ -7,9 +7,9 @@ import {existsSync, readdirSync, statSync, readFileSync} from 'node:fs';
 import {join as joinPath} from 'node:path';
 import {xmlEntries, entryText} from './docx-compare.mjs';
 import {newPara, newTable, newRow, newCell}
-  from '../../tools/moreapps/!Word/Model';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/Model';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 const join = (x) => (Array.isArray(x) ? x.join('') : x);

@@ -1,4 +1,4 @@
-// !Word's table edge drags on merged, nested and styled tables (the C5 review's fixes; real mouse drags). A 3 x 3
+// !Letters' table edge drags on merged, nested and styled tables (the C5 review's fixes; real mouse drags). A 3 x 3
 // Table Grid table whose first row has a cell over two columns and whose first column is merged down rows 2 and 3:
 // a real drag of the border between the wide cell and the next by 30 px is one undo step (grid 3000 / 3450 / 2550,
 // the wide cell's tcW the sum of its columns, the cells under the dragged columns too). The border between rows 2
@@ -57,7 +57,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -81,7 +81,7 @@ try {
         rows: it.rows.map((row) => ({ y: row.y, h: row.h })), outerGrid: its[0].block.grid.slice() };
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   for (const leaf of Object.keys(files)) {
     await ev((leaf) => os.filer.run('RAM::RamDisc0.$.' + leaf), leaf);

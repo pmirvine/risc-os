@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's formatting (local
+// Generates the real-Word hand-off files for !Letters' formatting (local
 // only, never committed: tests/moreapps/corpus/ is git-ignored). Not a
 // test:
 //
@@ -10,7 +10,7 @@
 //   fmt-3-rich.docx       formatting edits in a rich document
 //   fmt-4-undo.docx       formats, some of them undone
 //   fmt-README.txt        what Word should show, the open questions
-// Every format is made with !Word's own commands (FormatApply's ids:
+// Every format is made with !Letters' own commands (FormatApply's ids:
 // what the keys, the Format menu, the toolbar and the ruler run) on
 // a Document, as the window makes them. A file is written only when
 // its bytes change (the output is the same every run), so a file open
@@ -21,15 +21,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {setPara} from '../../tools/moreapps/!Word/FormatSet';
-import {forTyping, styleFor} from '../../tools/moreapps/!Word/Pending';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {setPara} from '../../tools/moreapps/!Letters/FormatSet';
+import {forTyping, styleFor} from '../../tools/moreapps/!Letters/Pending';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {richDocx} from './edit-rich.mjs';
 import {lintPackage} from './lint-package.mjs';
@@ -158,7 +158,7 @@ async function save(name, doc, about) {
   const how = put(name, bytes);
   made.push(`${name} (${bytes.length} bytes, ${how})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back: each paragraph, its style and',
+    'What !Letters wrote (read back: each paragraph, its style and',
     'paragraph formatting, then each run with direct formatting;',
     '<obj> is a hyperlink or another object):', ...await describe(bytes));
 }
@@ -220,8 +220,8 @@ function typeParas(s, texts) {
   s.fmt('bold', c);
   s.type(c, ', plain typed.');
   await save('fmt-1-character.docx', s.d.doc, [
-    'A new document (as !Word makes one): nine paragraphs typed, then',
-    'formatted with !Word\'s commands (Ctrl-B / I / U, the toolbar\'s',
+    'A new document (as !Letters makes one): nine paragraphs typed, then',
+    'formatted with !Letters\' commands (Ctrl-B / I / U, the toolbar\'s',
     'S, x2 and x2 buttons, Format > Colour, the colour swatches, the',
     'highlight menu, the size field, the font menu, Ctrl-Shift-> / <).',
     'Word should show, paragraph by paragraph:',
@@ -254,7 +254,7 @@ function typeParas(s, texts) {
 
 const LONG = ' text that is long enough to wrap onto a second and a ' +
   'third line, so that the alignment, the indents and the spacing ' +
-  'show clearly on the page in Word as in !Word.';
+  'show clearly on the page in Word as in !Letters.';
 {
   const s = session(newDoc({date: DATE}));
   const names = ['Left aligned', 'Centred', 'Right aligned', 'Justified',
@@ -327,13 +327,13 @@ const LONG = ' text that is long enough to wrap onto a second and a ' +
   await save('fmt-3-rich.docx', s.d.doc, [
     'The rich document of typed-2 (a heading, bold and italic words, a',
     'hyperlink, a numbered and a bulleted list, a table, two sections),',
-    'formatted with !Word\'s commands, in this order:',
+    'formatted with !Letters\' commands, in this order:',
     ' a. Ctrl-B on the whole Heading 1 "Typing test": it is bold by',
     '    its style, so this UN-bolds it (an explicit b:false);',
     ' b. the four list items made italic (numbers and bullets stay);',
     ' c. the whole "A link: ... and text after it." made bold: the',
     '    words around the link are bold; the LINK\'s own text is left',
-    '    as it was (!Word keeps a hyperlink\'s XML untouched), so in',
+    '    as it was (!Letters keeps a hyperlink\'s XML untouched), so in',
     '    Word it stays blue, underlined and NOT bold;',
     ' d. from "before the table." to "The paragraph after" (across',
     '    the table) underlined and centred: the two paragraphs change,',
@@ -380,62 +380,62 @@ const LONG = ' text that is long enough to wrap onto a second and a ' +
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word formatting hand-off (local only, not committed)',
+  '!Letters formatting hand-off (local only, not committed)',
   '=====================================================',
   '',
   'Made by: node tests/moreapps/handoff-format.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten;',
+  'changing !Letters; files whose bytes are the same are not rewritten;',
   'no other file here is touched). Every file is a document formatted',
-  'with !Word\'s own commands (the ones its keys, Format menu, toolbar',
-  'and ruler run) and saved by !Word. Open each in real Word: note any',
+  'with !Letters\' own commands (the ones its keys, Format menu, toolbar',
+  'and ruler run) and saved by !Letters. Open each in real Word: note any',
   'repair prompt or error, and whether what you see matches the',
-  'description. Then the open questions: there !Word copies what Word',
+  'description. Then the open questions: there !Letters copies what Word',
   'is believed to do, unverified. (handoff.mjs, the older generator in',
   'this folder, no longer removes files it did not make.)',
   '',
   'Open questions (please try each in real Word and note what it does):',
   '',
-  'F1 Toggle rule on a mixed selection. !Word: Ctrl-B (B, I, U, S,',
+  'F1 Toggle rule on a mixed selection. !Letters: Ctrl-B (B, I, U, S,',
   '   x2) on a selection that is partly bold makes ALL of it bold; only',
   '   when every character is bold does it clear (fmt-1 line 8). Word?',
   'F2 Un-bolding a heading. A Heading 1 is bold by its style; Ctrl-B',
   '   on it writes an explicit "not bold" (w:b w:val="0") (fmt-3 a).',
   '   Does Word show it plain, and its Styles pane say "Heading 1 +',
   '   Not Bold"? Ctrl-B again in Word: bold back, w:b removed?',
-  'F3 Clear formatting reach. !Word\'s Ctrl-Space removes the direct',
+  'F3 Clear formatting reach. !Letters\' Ctrl-Space removes the direct',
   '   font, bold, italic, underline, strike, colour, size, highlight,',
   '   super/subscript and character style of the selection; it keeps',
   '   paragraph formatting (alignment, indents) and other run',
   '   properties (caps, spacing). Word\'s Clear All Formatting also',
   '   resets the paragraph to Normal. Which does Word\'s Ctrl-Space',
   '   do (fmt-3 f), and its Clear All Formatting button?',
-  'F4 Superscript size and offset. !Word draws x2 at 0.65 of the size,',
+  'F4 Superscript size and offset. !Letters draws x2 at 0.65 of the size,',
   '   raised by 0.35 of it (subscript lowered by 0.15). Compare fmt-1',
   '   line 2 on screen with Word\'s.',
-  'F5 Highlight colours. !Word maps Word\'s 16 names to fixed colours',
+  'F5 Highlight colours. !Letters maps Word\'s 16 names to fixed colours',
   '   (green is bright 00FF00, darkBlue 000080...). Are fmt-1 line 4\'s',
   '   three colours the same in Word? Does Word turn text on a dark',
   '   highlight white?',
-  'F6 Justified line breaks. !Word breaks lines first, then spreads',
+  'F6 Justified line breaks. !Letters breaks lines first, then spreads',
   '   the space; Word may break differently (its own metrics). Do the',
   '   justified paragraph\'s lines (fmt-2 line 4) end at the same',
   '   words? Is the last line left aligned?',
   'F7 Hanging vs first-line indent. OOXML has one of w:firstLine or',
-  '   w:hanging; !Word writes the one given and removes the other',
+  '   w:hanging; !Letters writes the one given and removes the other',
   '   (fmt-2 lines 7, 8, 13). Same in Word after dragging its ruler\'s',
   '   markers? Does Word keep a 0 first line written over a style\'s',
   '   hanging indent?',
-  'F8 Style application. !Word: a paragraph style replaces the',
+  'F8 Style application. !Letters: a paragraph style replaces the',
   '   paragraph style and keeps the direct formatting; a character',
   '   style replaces the run style (fmt-3 e). Word keeps direct',
   '   formatting too, except where it covers most of the paragraph?',
   'F9 \'auto\' colour. Automatic where the style gives no colour:',
-  '   !Word removes the run\'s w:color (fmt-1 line 3, "automatic");',
+  '   !Letters removes the run\'s w:color (fmt-1 line 3, "automatic");',
   '   over a style that sets a colour it writes w:color w:val="auto"',
   '   (shown black). Does Word\'s Automatic do the same, and show',
   '   black text on a dark highlight?',
   'F10 A first-line drag across paragraphs with different left',
-  '   indents. !Word gives each selected paragraph the SAME first-line',
+  '   indents. !Letters gives each selected paragraph the SAME first-line',
   '   position on the ruler (each its own left indent kept). In Word:',
   '   select two paragraphs indented 0.5 and 1 inch, drag the',
   '   first-line triangle: what does each paragraph get?',
@@ -443,19 +443,19 @@ const README = [
   '   DD0000, "desktop red" in fmt-1 line 3); the toolbar\'s swatches',
   '   use Word\'s standard colours (Red FF0000). Should the menu offer',
   '   Word\'s standard colours instead?',
-  'F12 Ruler snapping. !Word snaps indent markers to 1/16 inch (90',
+  'F12 Ruler snapping. !Letters snaps indent markers to 1/16 inch (90',
   '   twips; Shift: free). Word snaps to 1/16 inch too (Alt: free)?',
   '   fmt-2 lines 12 and 13 were dragged to 1.5 and 0.25 inch.',
-  'F13 A hyperlink in a bold selection (fmt-3 c): !Word leaves the',
+  'F13 A hyperlink in a bold selection (fmt-3 c): !Letters leaves the',
   '   link\'s own text as it is (not bold). Word makes the link\'s text',
   '   bold too. Acceptable for now?',
   'F14 A document with no default size (no w:sz anywhere in its',
-  '   styles): what size does Word show for text with no size? !Word',
+  '   styles): what size does Word show for text with no size? !Letters',
   '   assumes 11 pt (Word is believed to show 10 pt). A size chosen',
   '   there is always written, so 11 pt is saved as w:sz 22.',
   'F15 Bold as a toggle property: a run with a direct w:b, a bold',
   '   character style, inside a bold paragraph style. OOXML says the',
-  '   two style bolds cancel (XOR) and the direct w:b decides; !Word',
+  '   two style bolds cancel (XOR) and the direct w:b decides; !Letters',
   '   treats any b:true as bold and, on a size change, removes a',
   '   direct b that the styles seem to give. Does Word show such a',
   '   run bold, and after a size change?',

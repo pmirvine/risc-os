@@ -1,4 +1,4 @@
-// !Word's list buttons, keys and menus in the real desktop, with real
+// !Letters' list buttons, keys and menus in the real desktop, with real
 // clicks and key presses: the toolbar's row 2 Bullets and Numbering
 // buttons (on a caret paragraph and on a selection; pressed state
 // following the caret; the Numbering popup's gallery; one undo step
@@ -44,7 +44,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Pl') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

@@ -11,19 +11,19 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {markerOf, afterSpace, MAX_MARKER, MAX_START}
-  from '../../tools/moreapps/!Word/AutoList';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {addList} from '../../tools/moreapps/!Word/NumWrite';
+  from '../../tools/moreapps/!Letters/AutoList';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {addList} from '../../tools/moreapps/!Letters/NumWrite';
 import {entryOf, HIDDEN, matches}
-  from '../../tools/moreapps/!Word/ListGallery';
-import {listEntryOf} from '../../tools/moreapps/!Word/ListMake';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {formatNumber} from '../../tools/moreapps/!Word/NumFormat';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {emptyDoc, newPara} from '../../tools/moreapps/!Word/Model';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+  from '../../tools/moreapps/!Letters/ListGallery';
+import {listEntryOf} from '../../tools/moreapps/!Letters/ListMake';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {formatNumber} from '../../tools/moreapps/!Letters/NumFormat';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {emptyDoc, newPara} from '../../tools/moreapps/!Letters/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {P, C, SEL, mk, blocks, S, O, raw} from './edit-docs.mjs';
 import {listDocx, item, heading, lvl, STYLES_LIST}
   from './list-fixtures.mjs';

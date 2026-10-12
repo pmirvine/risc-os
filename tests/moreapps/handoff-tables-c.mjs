@@ -3,16 +3,16 @@
 // hostile but valid, floating / bidi, and Word-made tables read and
 // written untouched.
 import fs from 'node:fs';
-import {insertTable} from '../../tools/moreapps/!Word/TblInsert';
+import {insertTable} from '../../tools/moreapps/!Letters/TblInsert';
 import {insert as insertPicture}
-  from '../../tools/moreapps/!Word/InsertPicture';
+  from '../../tools/moreapps/!Letters/InsertPicture';
 import {insertRowsCmd, deleteRowsCmd, mergeCmd}
-  from '../../tools/moreapps/!Word/TblCmd';
+  from '../../tools/moreapps/!Letters/TblCmd';
 import {deleteColsCmd, deleteTableCmd}
-  from '../../tools/moreapps/!Word/TblCmdCols';
+  from '../../tools/moreapps/!Letters/TblCmdCols';
 import {textToTableCmd, tableToTextCmd, whyText}
-  from '../../tools/moreapps/!Word/TblConvertCmd';
-import {collapsed} from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/TblConvertCmd';
+import {collapsed} from '../../tools/moreapps/!Letters/Selection';
 import {buildDocx, documentXml, stylesXml, numberingXml, STRICT_W_NS,
   STRICT_R_NS} from './build-docx.mjs';
 import {NUMBERING, item} from './list-fixtures.mjs';
@@ -25,7 +25,7 @@ import {tbl, tr, tc, p, r, docx, open, cap, cell, cellP, W, ONE, gridTbl,
   from './handoff-tables-lib.mjs';
 import {corpusFiles, pickTables} from './handoff-tables-corpus.mjs';
 import {notes, props} from './handoff-tables-a.mjs';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 
 const TG = '<w:tblStyle w:val="TableGrid"/>';
 const AUTO = '<w:tblW w:w="0" w:type="auto"/>';
@@ -220,7 +220,7 @@ async function strict(src) {
     'firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>';
   const body = [
     cap('A Strict document. Table 0: authored with start / end ' +
-      'spellings, cells 1-2 merged by !Word'),
+      'spellings, cells 1-2 merged by !Letters'),
     tbl([tr([cell('S.1.1', 3120, '<w:tcBorders>' + sbd('start',
       'FF0000') + sbd('end', '0000FF') + '</w:tcBorders>'),
     cell('S.1.2', 3120), cell('S.1.3', 3120)]), tr([1, 2, 3].map((j) =>
@@ -230,7 +230,7 @@ async function strict(src) {
       sbd('top', '000000') + sbd('start', '000000') + sbd('bottom',
         '000000') + sbd('end', '000000') + '</w:tblBorders>' +
       STRICT_LOOK}),
-    cap('Table 1: Insert > Table 3 x 3 (Table Grid added by !Word):'),
+    cap('Table 1: Insert > Table 3 x 3 (Table Grid added by !Letters):'),
     cap('Table 2: a Transitional table (Source table A) pasted here:'),
     p(), p(r('End.'))].join('');
   const ns = {ns: STRICT_W_NS, rNs: STRICT_R_NS};
@@ -246,12 +246,12 @@ async function strict(src) {
   const d = await open(bytes);
   must('merge', mergeCmd(d, cellsSel(d, 0, 1, 0, 1, 1)));
   must('insert', insertTable(d, end(d, 'Table 1: Insert > Table 3 x ' +
-    '3 (Table Grid added by !Word):'), {cols: 3, rows: 3}));
+    '3 (Table Grid added by !Letters):'), {cols: 3, rows: 3}));
   const T2 = 'Table 2: a Transitional table (Source table A) pasted ' +
     'here:';
   must('paste', copyPaste(src, cellsSel(src, 0, 0, 0, 2, 2), d,
     end(d, T2)));
-  // widths and borders by !Word's own Table properties / Borders
+  // widths and borders by !Letters' own Table properties / Borders
   props(d, cellCar(d, 0, 0, 0), {colWidth: 2000, indent: 360});
   await save('tb-10-strict.docx', d);
 }
@@ -320,12 +320,12 @@ async function bookmarks() {
 // ------------------------------------------------------ tb-12
 async function hostile() {
   const body = [
-    cap('63 columns x 5 rows (the most columns !Word makes)'),
+    cap('63 columns x 5 rows (the most columns !Letters makes)'),
     gridTbl('W', 5, 63, {w: 140, text: (i, j) => (j % 9 === 0 ?
       `${i + 1}/${j + 1}` : 'x')}),
     cap('100 rows x 3 columns'),
     gridTbl('H', 100, 3, {w: 3120}),
-    cap('Nested 8 deep (the deepest !Word shows as tables)'),
+    cap('Nested 8 deep (the deepest !Letters shows as tables)'),
     nestedTable(8),
     p(r('End.'))].join('');
   const d = await open(await docx(body));

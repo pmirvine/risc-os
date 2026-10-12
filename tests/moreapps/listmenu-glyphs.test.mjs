@@ -6,8 +6,8 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 import fs from 'node:fs';
-import {BULLETS} from '../../tools/moreapps/!Word/ListGallery';
-import {MENU_GLYPHS} from '../../tools/moreapps/!Word/BulletGlyph';
+import {BULLETS} from '../../tools/moreapps/!Letters/ListGallery';
+import {MENU_GLYPHS} from '../../tools/moreapps/!Letters/BulletGlyph';
 
 const ot = createRequire(new URL('../../tools/', import.meta.url))('opentype.js');
 const b = fs.readFileSync(new URL('../../assets/fonts/Homerton-Medium.otf', import.meta.url));

@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's pictures (Batch
+// Generates the real-Word hand-off files for !Letters' pictures (Batch
 // B; questions PI1..PI9, PI* and P1..P6, those with no file marked
 // "(No file)"; local only, never committed:
 // tests/moreapps/corpus/ is git-ignored). Not a test:
@@ -29,30 +29,30 @@
 //   pic-6-source.docx    the document that picture came from
 //   pic-7-deleted.docx   two pictures, one deleted: its media part and
 //                        relationship stay
-//   pic-README.txt       the steps in Word, what !Word did, questions
-// Everything is done with !Word's own commands (./InsertPicture,
+//   pic-README.txt       the steps in Word, what !Letters did, questions
+// Everything is done with !Letters' own commands (./InsertPicture,
 // ./PicOps, ./PicSize, ./ClipSlice / ./ClipPick / ./ClipPaste, delete)
 // on a Document; a file is written only when its bytes change, and
 // each is read back and its pictures listed in the README.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {insert} from '../../tools/moreapps/!Word/InsertPicture';
-import {setPicture} from '../../tools/moreapps/!Word/PicOps';
-import {dragSize, pxToEmu} from '../../tools/moreapps/!Word/PicSize';
-import {pictureOf, docMap, EMU_PX} from '../../tools/moreapps/!Word/PicRead';
-import {mediaOf, imageInfo} from '../../tools/moreapps/!Word/PicMedia';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {insert} from '../../tools/moreapps/!Letters/InsertPicture';
+import {setPicture} from '../../tools/moreapps/!Letters/PicOps';
+import {dragSize, pxToEmu} from '../../tools/moreapps/!Letters/PicSize';
+import {pictureOf, docMap, EMU_PX} from '../../tools/moreapps/!Letters/PicRead';
+import {mediaOf, imageInfo} from '../../tools/moreapps/!Letters/PicMedia';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {p, r} from './build-docx.mjs';
@@ -194,7 +194,7 @@ if (real) {
   const s = session(d);
   drag(s, 0, 'se', 48, 48);
   drag(s, 0, 'e', 24, 0);
-  alt(s, 0, 'A Word-made picture resized in !Word');
+  alt(s, 0, 'A Word-made picture resized in !Letters');
   L2b = await save('pic-2b-real.docx', d);
 }
 
@@ -224,7 +224,7 @@ const d5 = await open(real5 || await picDocx({pics: [{kind: 'anchor',
   id: 5, bytes: pngBytes(192, 96, {rgb: BLUE}), cx: 2 * IN, cy: IN}],
 body: p(r('Text the floating picture wraps around. '.repeat(8)))}));
 const s5 = session(d5);
-alt(s5, 0, 'A floating picture with alt text set in !Word');
+alt(s5, 0, 'A floating picture with alt text set in !Letters');
 let refused = 'NOT REFUSED';
 try {
   setPicture(d5, picSel(d5, 0), {cx: 2 * IN});
@@ -255,15 +255,15 @@ const L6 = await save('pic-6-pasted.docx', d6);
 const d7 = await open(await picDocx({pics: [{id: 1, descr: 'Deleted',
   bytes: pngBytes(96, 96, {rgb: RED}), cx: IN, cy: IN},
 {id: 2, descr: 'Kept', ext: 'jpeg', bytes: jpegGray(96, 96), cx: IN,
-  cy: IN}], body: p(r('Two pictures, the first deleted in !Word'))}));
+  cy: IN}], body: p(r('Two pictures, the first deleted in !Letters'))}));
 const s7 = session(d7);
 run('delete', d7, s7.t, picSel(d7, 0));
 const L7 = await save('pic-7-deleted.docx', d7);
 
 const README = [
-  'Pictures in !Word (Batch B)',
+  'Pictures in !Letters (Batch B)',
   '(16 questions: PI1..PI9, PI* and P1..P6; those marked (No file)',
-  'are tried in Word on a document of your own. !Word shows PNG, JPEG',
+  'are tried in Word on a document of your own. !Letters shows PNG, JPEG',
   'and GIF; everything else in a file is kept as it is)',
   '',
   'Files (made by node tests/moreapps/handoff-pictures.mjs):',
@@ -274,7 +274,7 @@ const README = [
   '  pic-3-strict.docx    Strict document, picture inserted and resized',
   '  pic-4-dpi.docx       PNG 300 dpi, JPEG 72 dpi, JPEG dpcm, PNG none',
   '  pic-5-floating.docx  ' + (real5 ? 'a Word-made floating picture'
-    : 'a floating picture (made by !Word\'s test fixtures)') +
+    : 'a floating picture (made by !Letters\' test fixtures)') +
     ', alt text set',
   '  pic-6-source.docx    where the pasted picture came from',
   '  pic-6-pasted.docx    pictures pasted between and within documents',
@@ -290,7 +290,7 @@ const README = [
   '     Height in Word? Alt Text: the texts below? (PI2)',
   '  3. pic-2b-real (' + (L2b ? 'made' : 'not made this time') +
     '): the Word-made picture, resized by a',
-  '     corner then an edge in !Word, alt text set: opens without',
+  '     corner then an edge in !Letters, alt text set: opens without',
   '     repair, Size and Alt Text as listed below? (PI2)',
   '  4. pic-3: opens; Save As .docx (Strict Open XML Document) and look',
   '     at word/document.xml: still Strict? (PI3)',
@@ -307,7 +307,7 @@ const README = [
   '  8. pic-7: opens without repair? Save in Word and unzip: is the',
   '     deleted picture\'s image still in word/media? (PI7)',
   '',
-  'What !Word wrote (read back from each file):',
+  'What !Letters wrote (read back from each file):',
   '  pic-1-inserted.docx', ...L1,
   '  pic-2-resized.docx', ...L2,
   ...(L2b ? ['  pic-2b-real.docx', ...L2b] : []),
@@ -321,7 +321,7 @@ const README = [
   '  pic-6-pasted.docx', ...L6,
   '  pic-7-deleted.docx', ...L7,
   '',
-  'Questions (!Word\'s belief after the dash):',
+  'Questions (!Letters\' belief after the dash):',
   '  PI1 Do the inserted PNG, JPEG and GIF (pic-1) open without a',
   '      repair prompt? - yes',
   '  PI2 After a resize do wp:extent and a:ext agree, and does Word show',
@@ -329,7 +329,7 @@ const README = [
   '  PI3 Does a Strict document with an inserted picture (pic-3) open',
   '      and stay Strict on save? - yes',
   '  PI4 Pictures with 300 dpi, 72 dpi and dpcm density: does Word\'s',
-  '      "original size" equal !Word\'s Reset size (pic-4)? - yes',
+  '      "original size" equal !Letters\' Reset size (pic-4)? - yes',
   '  PI5 Does the floating picture keep its place and wrap after its',
   '      alt text was set (pic-5)? - yes',
   '  PI6 Do duplicate docPr ids in a file (pic-6, id 7 twice) open',
@@ -354,16 +354,16 @@ const README = [
   '      included, scaled, leaving a gap above the picture? - no: the',
   '      extra spacing is for the text part only',
   '  P2 (No file: make it in Word) A picture in a raised or lowered run',
-  '      (w:position, superscript, subscript): does it move? - !Word',
+  '      (w:position, superscript, subscript): does it move? - !Letters',
   '      puts its bottom on the baseline (the shift ignored)',
   '  P3 (No file: a phone photo taken upright) A JPEG with an EXIF',
   '      orientation inserted or opened: does Word turn it, and is its',
-  '      original size the turned one? - !Word draws it turned but',
+  '      original size the turned one? - !Letters draws it turned but',
   '      sizes it unturned (it may look squashed)',
   '  P4 (No file: try it in Word) A resize drag that ends where it',
-  '      began, then Ctrl-Z: is there an undo step? - none in !Word',
+  '      began, then Ctrl-Z: is there an undo step? - none in !Letters',
   '  P5 (No file: try it in Word) An edge drag on a picture wider',
-  '      than the column: the size Word gives it? - !Word scales the',
+  '      than the column: the size Word gives it? - !Letters scales the',
   '      file\'s width by the box\'s change; it shows such a picture',
   '      fitted to the column',
   '  P6 pic-6: the picture pasted within the document keeps its',

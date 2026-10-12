@@ -1,4 +1,4 @@
-// !Word's caret and selection against hostile and odd documents in the
+// !Letters' caret and selection against hostile and odd documents in the
 // real desktop (the documents of hostile-docs.mjs: a 100,000-character
 // word, 50,000 runs, 5000 tabs, absurd indents and page sizes, only
 // inlines, tables first and last, an empty document): each opens and is
@@ -29,7 +29,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
       return { x: rc.left + s.x * k, y: rc.top + s.y * k };

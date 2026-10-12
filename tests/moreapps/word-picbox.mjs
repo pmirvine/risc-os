@@ -1,4 +1,4 @@
-// !Word's Picture dialogue box in the real desktop (Batch B, B6:
+// !Letters' Picture dialogue box in the real desktop (Batch B, B6:
 // ./PicBox, ./PicPatch): a double-click on a picture and Format >
 // Picture... open it filled (2", 1", alt text); the menu item is shaded
 // without a picture selected; Escape and Cancel change nothing; Width 3
@@ -67,7 +67,7 @@ try {
     for (const [k, v] of Object.entries(files)) os.vfs.writeFile('RAM::RamDisc0.$.' + k, new Uint8Array(v), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === 'Pb');
     window.__beeps = 0;
     const beep = os.wimp.beep.bind(os.wimp);
@@ -117,7 +117,7 @@ try {
       return { depth: v.undoDepth, beeps: window.__beeps, dirty: v.dirty, msgs: window.__msgs.slice(), pics: pi, q,
         node: doc.sections[0].blocks.map((b) => b.inlines?.[0]?.node) };
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Pb');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);

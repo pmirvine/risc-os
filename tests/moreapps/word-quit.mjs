@@ -1,8 +1,8 @@
-// !Word's New, Recent and quitting in the real desktop: a click on
+// !Letters' New, Recent and quitting in the real desktop: a click on
 // its icon bar icon makes one new 'Untitled' document with the caret
 // in it (a double-click makes one, not two; Adjust none); the icon bar
 // menu is New, Recent, Info, Quit; files opened and saved are listed
-// under Recent (kept in Choices:Word across runs, missing files
+// under Recent (kept in Choices:Letters across runs, missing files
 // hidden, corrupt or hostile choices ignored, a failing write
 // harmless) and choosing one opens it or brings it to the front.
 // Quit and the Task Manager's / shutdown's PreQuit ask once
@@ -13,7 +13,7 @@
 // tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -57,7 +57,7 @@ try {
     for (const n of ['Plain', 'Other', 'Carry']) os.vfs.writeFile('RAM::RamDisc0.$.' + n, new Uint8Array(a), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__menu = () => { const i = [...window.__word().iconbarIcons][0]; return typeof i.menu === 'function' ? i.menu({}) : i.menu; };
@@ -65,12 +65,12 @@ try {
     window.__closePrompts = () => [...os.wimp.windows].filter((q) => q.isOpen && q.iconByName?.('button:Save') && q.iconByName('button:Discard'));
     window.__text = (w) => w.iconByName('message').text;
     window.__start = async () => {
-      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
       for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
       await window.__word().word.recentReady;
     };
     window.__count = () => ({ windows: os.wimp.windows.size, tasks: os.wimp.tasks.filter((t) => t.alive).length });
-    if (os.vfs.exists('ADFS::HardDisc4.$.!Boot.Choices.Word')) os.vfs.delete('ADFS::HardDisc4.$.!Boot.Choices.Word');
+    if (os.vfs.exists('ADFS::HardDisc4.$.!Boot.Choices.Letters')) os.vfs.delete('ADFS::HardDisc4.$.!Boot.Choices.Letters');
     window.__base = window.__count();
     await window.__start();
     // what the Wimp sends for a click on Word's icon (its onClick, seen)
@@ -139,12 +139,12 @@ try {
     await window.__frames(2);
     const m = window.__menu(), it = m.items.find((i) => i.text === 'Recent');
     const sub = typeof it.submenu === 'function' ? it.submenu() : it.submenu;
-    return { recent: t.word.recent, choices: JSON.parse(await os.vfs.readText('Choices:Word')).recent,
+    return { recent: t.word.recent, choices: JSON.parse(await os.vfs.readText('Choices:Letters')).recent,
       sub: sub.items.map((i) => i.text), shaded: typeof it.shaded === 'function' ? it.shaded() : !!it.shaded };
   });
   ok('opening and saving list the files under Recent, newest first', r1.recent.join() === 'RAM::RamDisc0.$.Saved,RAM::RamDisc0.$.Plain'
     && r1.sub.join() === 'Saved,Plain' && !r1.shaded, r1);
-  ok('the list is kept in Choices:Word', r1.choices.join() === r1.recent.join(), r1);
+  ok('the list is kept in Choices:Letters', r1.choices.join() === r1.recent.join(), r1);
   const r2 = await ev(async () => {
     const t = window.__word();
     const s = window.__by('Saved');
@@ -168,7 +168,7 @@ try {
     os.vfs.delete('RAM::RamDisc0.$.Plain');
     res.sub = sub().items.map((i) => i.text);
     await t.word.open('RAM::RamDisc0.$.Other');
-    res.after = JSON.parse(await os.vfs.readText('Choices:Word')).recent;
+    res.after = JSON.parse(await os.vfs.readText('Choices:Letters')).recent;
     window.__by('Other').dw.close();
     res.msgs = window.__msgs.splice(0);
     return res;
@@ -186,24 +186,24 @@ try {
     res.restarted = window.__word().word.recent;
     // corrupt, then hostile choices
     window.__word().quit();
-    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Word', 'not json {', { filetype: 0xFFF });
+    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Letters', 'not json {', { filetype: 0xFFF });
     await window.__start();
     res.corrupt = window.__word().word.recent;
     res.menu = window.__menu().items.map((i) => i.text).join();
     window.__word().quit();
     const big = [];
     for (let i = 0; i < 10000; i++) big.push(i % 3 ? '__proto__' : i % 5 ? 42 : 'RAM::RamDisc0.$.Saved');
-    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Word', JSON.stringify({ recent: big, __proto__: { x: 1 } }), { filetype: 0xFFF });
+    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Letters', JSON.stringify({ recent: big, __proto__: { x: 1 } }), { filetype: 0xFFF });
     const t0 = performance.now();
     await window.__start();
     res.ms = performance.now() - t0;
     res.hostile = window.__word().word.recent;
     window.__word().quit();
-    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Word', JSON.stringify({ recent: 'nope' }), { filetype: 0xFFF });
+    os.vfs.writeFile('ADFS::HardDisc4.$.!Boot.Choices.Letters', JSON.stringify({ recent: 'nope' }), { filetype: 0xFFF });
     await window.__start();
     res.notList = window.__word().word.recent;
     // a write that fails (locked) does not stop a save
-    os.vfs.setAccess('ADFS::HardDisc4.$.!Boot.Choices.Word', 8 | 3);
+    os.vfs.setAccess('ADFS::HardDisc4.$.!Boot.Choices.Letters', 8 | 3);
     const t = window.__word();
     const u = await t.word.new();
     const d = window.__by(u.leaf);
@@ -212,15 +212,15 @@ try {
     res.dirty = d.view.dirty;
     res.recentAfter = t.word.recent;
     res.msgs = window.__msgs.splice(0);
-    os.vfs.setAccess('ADFS::HardDisc4.$.!Boot.Choices.Word', 3);
+    os.vfs.setAccess('ADFS::HardDisc4.$.!Boot.Choices.Letters', 3);
     d.dw.close();
     return res;
   });
   ok('Recent survives quitting and starting Word again', r3.restarted?.join() === 'RAM::RamDisc0.$.Other,RAM::RamDisc0.$.Saved', r3);
-  ok('corrupt Choices:Word: an empty list, no error', r3.corrupt?.length === 0 && r3.menu === 'New,Recent,Info,Quit', r3);
-  ok('hostile Choices:Word (10,000 entries, __proto__, numbers): a safe list', r3.hostile?.join() === 'RAM::RamDisc0.$.Saved'
+  ok('corrupt Choices:Letters: an empty list, no error', r3.corrupt?.length === 0 && r3.menu === 'New,Recent,Info,Quit', r3);
+  ok('hostile Choices:Letters (10,000 entries, __proto__, numbers): a safe list', r3.hostile?.join() === 'RAM::RamDisc0.$.Saved'
     && Object.prototype.x === undefined && r3.ms < 30000 && r3.notList?.length === 0, r3);
-  ok('a Choices:Word that cannot be written does not stop a save', r3.saved === true && !r3.dirty
+  ok('a Choices:Letters that cannot be written does not stop a save', r3.saved === true && !r3.dirty
     && r3.recentAfter[0] === 'RAM::RamDisc0.$.Locked' && !r3.msgs.length, r3);
 
   // ------------------------------------------------ Quit from the icon bar

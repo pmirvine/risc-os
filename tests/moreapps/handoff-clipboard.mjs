@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's copy, paste and
+// Generates the real-Word hand-off files for !Letters' copy, paste and
 // Find (local only, never committed: tests/moreapps/corpus/ is
 // git-ignored). Not a test:
 //
@@ -17,7 +17,7 @@
 //   find-1-replaceall.docx Replace all and Replace in a rich document
 //   clip-README.txt        what Word should show, the open questions,
 //                          and the checks to make by hand in a browser
-// Every change is made with !Word's own clipboard and Find modules
+// Every change is made with !Letters' own clipboard and Find modules
 // (ClipSlice, ClipStore, ClipHtml, ClipPick, ClipPaste, Find) on a
 // Document, as ./EditClip and ./EditFind run them in the window. The
 // HTML of other programs is parsed by html-fake.mjs (a small HTML
@@ -30,20 +30,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {linkUrl} from '../../tools/moreapps/!Word/ClipLinks';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {linkUrl} from '../../tools/moreapps/!Letters/ClipLinks';
 import {pasteBlocks, pastePlain, deleteSelection}
-  from '../../tools/moreapps/!Word/ClipPaste';
-import * as F from '../../tools/moreapps/!Word/Find';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+  from '../../tools/moreapps/!Letters/ClipPaste';
+import * as F from '../../tools/moreapps/!Letters/Find';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {richDocx} from './edit-rich.mjs';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
@@ -190,7 +190,7 @@ async function save(name, doc, about) {
   const how = put(name, bytes);
   made.push(`${name} (${bytes.length} bytes, ${how})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back: each paragraph, its style, then each',
+    'What !Letters wrote (read back: each paragraph, its style, then each',
     'run with direct formatting; <obj> is a hyperlink or another',
     'object, [table] a table):', ...await describe(bytes));
 }
@@ -358,7 +358,7 @@ const NOTEPAD = 'Plain text\tfrom Notepad\r\nits second line';
   }
   await save('clip-3-html.docx', s.d.doc, [
     'A new document made by pasting what other programs put on the',
-    'clipboard (as HTML, read with !Word\'s whitelist; routes: ' +
+    'clipboard (as HTML, read with !Letters\' whitelist; routes: ' +
       routes.join(', ') + '),',
     'each after a label paragraph. Word should show:',
     ' 1 Word: "Red Cambria bold" bold, dark red (C00000), in Cambria;',
@@ -487,14 +487,14 @@ const NOTEPAD = 'Plain text\tfrom Notepad\r\nits second line';
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word copy, paste and Find hand-off (local only, not committed)',
+  '!Letters copy, paste and Find hand-off (local only, not committed)',
   '===============================================================',
   '',
   'Made by: node tests/moreapps/handoff-clipboard.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten;',
+  'changing !Letters; files whose bytes are the same are not rewritten;',
   'no other file here is touched). Every file is a document changed',
-  'with !Word\'s own clipboard and Find modules, as its window runs',
-  'them, and saved by !Word. Open each in real Word: note any repair',
+  'with !Letters\' own clipboard and Find modules, as its window runs',
+  'them, and saved by !Letters. Open each in real Word: note any repair',
   'prompt or error, and whether what you see matches the description.',
   'Then the questions, and the checks by hand in a browser.',
   '',
@@ -517,7 +517,7 @@ const README = [
   '   without bullets or numbers. Word would make a list: acceptable',
   '   for now?',
   'C5 Tables (clip-3, 4): a pasted HTML table becomes one paragraph',
-  '   per row, the cells separated by tabs. Across !Word documents a',
+  '   per row, the cells separated by tabs. Across !Letters documents a',
   '   table is left out (clip-2); in the same document it is copied',
   '   whole (clip-1 d). Acceptable?',
   'C6 Replace all (find-1): is each result what the list says? Word',
@@ -528,26 +528,26 @@ const README = [
   '   copy as the text "Marked<tab>cell", the plain table\'s copy a',
   '   table. Is flattening such a table acceptable?',
   'C7 A picture copied and pasted in the same document (not in these',
-  '   files: copy one in !Word, paste it, save): Word opens it with',
+  '   files: copy one in !Letters, paste it, save): Word opens it with',
   '   two pictures sharing an id (wp:docPr) without a repair prompt?',
   '',
   'Checks by hand in a browser (Chrome, then Safari or Firefox if',
-  'possible), with !Word running in the desktop:',
+  'possible), with !Letters running in the desktop:',
   '',
-  'H1 Copy in !Word, paste into real Word, Google Docs, a web mail',
+  'H1 Copy in !Letters, paste into real Word, Google Docs, a web mail',
   '   editor and Notepad (TextEdit in plain text): the text, its',
   '   paragraphs, tabs and line breaks arrive; Word and Google Docs',
   '   also get bold, italic, underline, colours, sizes and fonts, and',
   '   a link to a web address as a link.',
   'H2 Copy in Word, Google Docs, a web page and Notepad; Ctrl-V (Cmd-V',
-  '   on a Mac) into !Word: compare with clip-3\'s descriptions.',
-  'H3 Edit menu Copy, Cut and Paste in !Word (not the keys): Paste',
+  '   on a Mac) into !Letters: compare with clip-3\'s descriptions.',
+  'H3 Edit menu Copy, Cut and Paste in !Letters (not the keys): Paste',
   '   may ask for permission to read the clipboard; refused, a',
   '   message says to press Ctrl-V.',
-  'H4 Copy between two !Word windows keeps the formatting exactly',
+  'H4 Copy between two !Letters windows keeps the formatting exactly',
   '   (styles by name); within one window links and list numbers too.',
   'H5 A picture or a file copied in the computer\'s file manager,',
-  '   pasted into !Word: nothing pasted, the bell and a message.',
+  '   pasted into !Letters: nothing pasted, the bell and a message.',
   'H6 Find (Ctrl-F, F4), Find next (Ctrl-G), Replace (Ctrl-H) and',
   '   Replace all in a long document; Cmd-F and Cmd-G on a Mac.',
   'H7 Safari and Firefox: do Ctrl-C / Cmd-C and Ctrl-X copy and cut at',

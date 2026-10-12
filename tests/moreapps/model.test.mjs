@@ -2,15 +2,15 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, newSection, emptyDoc, OBJ, newTable, newRow, newCell,
-  nextId, checkBlock} from '../../tools/moreapps/!Word/Model';
+  nextId, checkBlock} from '../../tools/moreapps/!Letters/Model';
 import {forEachBlock, at as walkAt, mapBlocks}
-  from '../../tools/moreapps/!Word/Walk';
-import {sib, tableOf, isTop} from '../../tools/moreapps/!Word/Path';
+  from '../../tools/moreapps/!Letters/Walk';
+import {sib, tableOf, isTop} from '../../tools/moreapps/!Letters/Path';
 import {freeze} from './tbl-fixtures.mjs';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {addRel, withStyle} from '../../tools/moreapps/!Word/DocParts';
-import {newStyleTable} from '../../tools/moreapps/!Word/Styles';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {addRel, withStyle} from '../../tools/moreapps/!Letters/DocParts';
+import {newStyleTable} from '../../tools/moreapps/!Letters/Styles';
 
 const R = (o = {}) => ({...o, extra: []});
 const X = (name) => ({name, attrs: [['w:val', '1']], children: []});

@@ -1,5 +1,5 @@
-// !Word's toolbar in the real desktop: a pane across the top of a
-// document's window (WimpLib Ui/Toolbar, !Word ToolbarBind) with the
+// !Letters' toolbar in the real desktop: a pane across the top of a
+// document's window (WimpLib Ui/Toolbar, !Letters ToolbarBind) with the
 // style, font and size fields and their popups, B I U S, superscript,
 // subscript, the colour (swatches: Ui/ColourPopup) and highlight
 // popups, the alignment radio buttons, indents and clear formatting.
@@ -52,7 +52,7 @@ async function start(page, at = { x: 60, y: 40, w: 900, h: 500 }) {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'T') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     /** The client point at the centre of toolbar icon name (or its left + dx). */
     window.__icon = (name, leaf = 'T') => {

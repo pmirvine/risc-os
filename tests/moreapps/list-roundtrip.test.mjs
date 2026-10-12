@@ -1,4 +1,4 @@
-// List round trip: documents with lists edited with !Word's real
+// List round trip: documents with lists edited with !Letters' real
 // keys and commands (./EditApply.run: Enter, Tab and Shift-Tab (a
 // level deeper or higher at the start of an item), Backspace (at an
 // item's start: the number taken away, then a join), Delete, the
@@ -28,14 +28,14 @@
 // document.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {setList} from '../../tools/moreapps/!Word/FormatSet';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {listOf} from '../../tools/moreapps/!Word/ParaInd';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {setList} from '../../tools/moreapps/!Letters/FormatSet';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {listOf} from '../../tools/moreapps/!Letters/ParaInd';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {LIST_DOCS} from './list-fixtures.mjs';

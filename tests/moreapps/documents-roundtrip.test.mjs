@@ -1,4 +1,4 @@
-// Documents round trip through !Word's real save path (./DocSave:
+// Documents round trip through !Letters' real save path (./DocSave:
 // save, saveAsTo, writeTo; the Save box's save for an untitled
 // document), not just writeDocx: the desktop services DocSave
 // imports from 'riscos' (vfs, wimp, saveAs, reportError) are
@@ -26,12 +26,12 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 import {readFileSync} from 'node:fs';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {assertSameDoc, expectedBack} from './docx-compare.mjs';
@@ -87,7 +87,7 @@ registerHooks({
   },
 });
 const {save, saveAsTo, saveBox, saving, bytesOf} =
-  await import('../../tools/moreapps/!Word/DocSave');
+  await import('../../tools/moreapps/!Letters/DocSave');
 
 // ------------------------------------------------------------ windows
 

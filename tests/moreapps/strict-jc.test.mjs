@@ -1,15 +1,15 @@
-// Strict documents: w:jc is start / end for the alignments !Word
+// Strict documents: w:jc is start / end for the alignments !Letters
 // makes, a w:jc read is written back as it was, a paste is spelled
 // as its target spells it.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {EMPTY} from '../../tools/moreapps/!Word/Pending';
-import {clean} from '../../tools/moreapps/!Word/ClipClean';
-import {jcName} from '../../tools/moreapps/!Word/JcName';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {alignOf} from '../../tools/moreapps/!Word/FormatEff';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {EMPTY} from '../../tools/moreapps/!Letters/Pending';
+import {clean} from '../../tools/moreapps/!Letters/ClipClean';
+import {jcName} from '../../tools/moreapps/!Letters/JcName';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {alignOf} from '../../tools/moreapps/!Letters/FormatEff';
 import {buildDocx, documentXml, stylesXml, p, r, STRICT_W_NS,
   STRICT_R_NS} from './build-docx.mjs';
 import {mk, P, SEL} from './edit-docs.mjs';

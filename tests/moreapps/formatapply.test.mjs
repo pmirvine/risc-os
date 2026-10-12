@@ -3,17 +3,17 @@
 // font, size, highlight and style lists the menu shows.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as F from '../../tools/moreapps/!Word/Format';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {EMPTY} from '../../tools/moreapps/!Word/Pending';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as F from '../../tools/moreapps/!Letters/Format';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {EMPTY} from '../../tools/moreapps/!Letters/Pending';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
 import {WIMP_COLOURS} from '../../src/core/palette.js';
 import {mk, P, C, SEL, undoable, bold, plain} from './edit-docs.mjs';
 import {write} from './roundtrip-lib.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {setPara} from '../../tools/moreapps/!Word/FormatSet';
+import {setPara} from '../../tools/moreapps/!Letters/FormatSet';
 
 const T = (d) => new Typing(d);
 const all = (d) => SEL(d, 0, 0, 0, P(d, 0).text.length);

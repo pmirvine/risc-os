@@ -1,16 +1,16 @@
 // Hand-off files tb-1 to tb-4 (see handoff-tables.mjs): Insert >
 // Table, rows and columns, merge and split, widths and heights.
 import fs from 'node:fs';
-import {insertTable} from '../../tools/moreapps/!Word/TblInsert';
+import {insertTable} from '../../tools/moreapps/!Letters/TblInsert';
 import {tabRowCmd, insertRowsCmd, deleteRowsCmd, splitTableCmd, mergeCmd,
   splitCellsCmd, alignCmd, propsCmd, rectOf}
-  from '../../tools/moreapps/!Word/TblCmd';
+  from '../../tools/moreapps/!Letters/TblCmd';
 import {insertColsCmd, deleteColsCmd, distributeColsCmd,
   distributeRowsCmd, colDragCmd, rowDragCmd}
-  from '../../tools/moreapps/!Word/TblCmdCols';
-import {fill as shown, patchOf} from '../../tools/moreapps/!Word/TblPatch';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/TblCmdCols';
+import {fill as shown, patchOf} from '../../tools/moreapps/!Letters/TblPatch';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
 import {mk} from './edit-docs.mjs';
 import {tbl, tr, tc, p, r, docx, open, cap, cell, cellP, W, ONE, gridTbl,
   LOOK, car, end, cellCar, cellEnd, cellsSel, allTables, laid, typer, fill,
@@ -195,9 +195,9 @@ async function merges() {
     cap('Table 9: a vertically merged cell centred (TBC5f)'),
     gridTbl('Y', 3, 2, {w: 4680, cellPr: (i, j) => (j === 0 ? vm(i, 2)
       : '')}),
-    cap('Table 10: three cells of one row merged by !Word (gridSpan)'),
+    cap('Table 10: three cells of one row merged by !Letters (gridSpan)'),
     gridTbl('H', 2, 3, {w: 3120}),
-    cap('Table 11: three cells of one column merged by !Word (vMerge)'),
+    cap('Table 11: three cells of one column merged by !Letters (vMerge)'),
     gridTbl('U', 3, 2, {w: 4680}),
     cap('Table 12: authored: a vMerge continue cell under a cell that ' +
       'spans other columns (TB8a)'),

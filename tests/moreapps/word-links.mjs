@@ -1,4 +1,4 @@
-// !Word's hyperlinks in the real desktop (./LinkBox, ./LinkOps):
+// !Letters' hyperlinks in the real desktop (./LinkBox, ./LinkOps):
 // Ctrl-K by a real key with a selection (its text in the box, the
 // address typed, Return: one undo step, an External relationship,
 // the caret after the link), with a caret (the text typed in the
@@ -71,7 +71,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === 'Links');
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -141,7 +141,7 @@ try {
     window.__beeps = 0;
     const beep = os.wimp.beep.bind(os.wimp);
     os.wimp.beep = () => { window.__beeps++; return beep(); };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Links');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);

@@ -16,19 +16,19 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {mergeCells, splitCell}
-  from '../../tools/moreapps/!Word/TblMerge';
+  from '../../tools/moreapps/!Letters/TblMerge';
 import {mergeCmd, splitCellsCmd, rectOf}
-  from '../../tools/moreapps/!Word/TblCmd';
-import {TABLE} from '../../tools/moreapps/!Word/TblCmdCols';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {checkTable, MAX_ROWS} from '../../tools/moreapps/!Word/TblCheck';
-import {checkBlock, checkProps} from '../../tools/moreapps/!Word/ModelCheck';
+  from '../../tools/moreapps/!Letters/TblCmd';
+import {TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {checkTable, MAX_ROWS} from '../../tools/moreapps/!Letters/TblCheck';
+import {checkBlock, checkProps} from '../../tools/moreapps/!Letters/ModelCheck';
 import {newPara, reserveIds, OBJ}
-  from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Model';
 import {at as walkAt, ids as allIds, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/Walk';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, undoable, S} from './edit-docs.mjs';
 import {rng} from './word-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

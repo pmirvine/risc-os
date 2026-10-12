@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {tables} from './handoff-tables-lib.mjs';
 
 export const CORPUS_DIR = fileURLToPath(new URL('./corpus/',

@@ -1,8 +1,8 @@
-// !Word's life: without its font files it still opens and draws
+// !Letters' life: without its font files it still opens and draws
 // documents (in fallback fonts, with no error); three documents
 // opened and closed, then Quit, leave no windows, tasks or page
 // elements behind; 30 windows opened and closed leave no panes (the
-// toolbar rows, the ruler). First, with its fonts: !Word started three
+// toolbar rows, the ruler). First, with its fonts: !Letters started three
 // times adds each font face to the page once.
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
@@ -17,7 +17,7 @@ const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v ? ''
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
-  // with its fonts: each run of !Word reuses the faces the page has
+  // with its fonts: each run of !Letters reuses the faces the page has
   const r2 = await page.evaluate(async (bytes) => {
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     const v = os.vfs;
@@ -26,7 +26,7 @@ try {
     for (let run = 0; run < 3; run++) {
       await os.filer.run('RAM::RamDisc0.$.First');
       let t = null;
-      for (let i = 0; i < 200 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Word'))?.word?.docs.length; i++) await sleep(50);
+      for (let i = 0; i < 200 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Letters'))?.word?.docs.length; i++) await sleep(50);
       await document.fonts.ready;
       await sleep(200);
       faces.push([...document.fonts].filter((f) => /Carlito|Liberation/.test(f.family)).length);
@@ -35,7 +35,7 @@ try {
     }
     return { faces };
   }, Array.from(docs[0]));
-  ok('a run of !Word after Quit adds no font faces again', r2.faces[0] > 0 && r2.faces.every((n) => n === r2.faces[0]), r2.faces);
+  ok('a run of !Letters after Quit adds no font faces again', r2.faces[0] > 0 && r2.faces.every((n) => n === r2.faces[0]), r2.faces);
   // 30 windows opened and closed: no panes (toolbar rows, ruler) left
   const r3 = await page.evaluate(async (bytes) => {
     const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
@@ -45,7 +45,7 @@ try {
     v.writeFile('RAM::RamDisc0.$.Cyc', new Uint8Array(bytes), { filetype: 0xA7E });
     await os.filer.run('RAM::RamDisc0.$.First');
     let t = null;
-    for (let i = 0; i < 200 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Word'))?.word?.docs.length; i++) await sleep(50);
+    for (let i = 0; i < 200 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Letters'))?.word?.docs.length; i++) await sleep(50);
     await frames(3);
     const panes = () => [...os.wimp.windows].filter((w) => w._paneParent).length;
     const count = () => [t.windows.size, os.wimp.windows.size, panes(), document.querySelectorAll('*').length];
@@ -74,7 +74,7 @@ try {
     globalThis.__riscos.reportError = (m) => { msgs.push(String(m)); return Promise.resolve(1); };
     const v = os.vfs;
     // no font files
-    const F = 'ADFS::HardDisc4.$.MoreApps.!Word.Fonts';
+    const F = 'ADFS::HardDisc4.$.MoreApps.!Letters.Fonts';
     for (const e of v.list(F)) if (e.name !== 'Licences') v.delete(`${F}.${e.name}`);
     const res = { left: v.list(F).map((e) => e.name) };
     const names = ['First', 'Second', 'Third'];
@@ -89,7 +89,7 @@ try {
     res.base = count();
     await os.filer.run('RAM::RamDisc0.$.First');
     let t = null;
-    for (let i = 0; i < 100 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Word'))?.word?.docs.length; i++) await sleep(50);
+    for (let i = 0; i < 100 && !(t = os.wimp.tasks.find((x) => x.alive && x.name === 'Letters'))?.word?.docs.length; i++) await sleep(50);
     await t.word.open('RAM::RamDisc0.$.Second');
     await t.word.open('RAM::RamDisc0.$.Third');
     await frames(3);

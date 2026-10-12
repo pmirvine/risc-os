@@ -12,21 +12,21 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {paraBorders, runShade, shadeCss, edgeOf}
-  from '../../tools/moreapps/!Word/BorderResolve';
+  from '../../tools/moreapps/!Letters/BorderResolve';
 import {boxInfo, borderDeco, boxMark}
-  from '../../tools/moreapps/!Word/BorderGroups';
-import {geometry, edge} from '../../tools/moreapps/!Word/BorderPaint';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {DECORATORS} from '../../tools/moreapps/!Word/DocStack';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
-import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {addStyle, newStyleTable} from '../../tools/moreapps/!Word/Styles';
-import {query} from '../../tools/moreapps/!Word/Format';
-import {GAP} from '../../tools/moreapps/!Word/FlowDeco';
-import {BAND} from '../../tools/moreapps/!Word/SectDeco';
-import {W} from '../../tools/moreapps/!Word/Ns';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+  from '../../tools/moreapps/!Letters/BorderGroups';
+import {geometry, edge} from '../../tools/moreapps/!Letters/BorderPaint';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {DECORATORS} from '../../tools/moreapps/!Letters/DocStack';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
+import {runFmt, paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {addStyle, newStyleTable} from '../../tools/moreapps/!Letters/Styles';
+import {query} from '../../tools/moreapps/!Letters/Format';
+import {GAP} from '../../tools/moreapps/!Letters/FlowDeco';
+import {BAND} from '../../tools/moreapps/!Letters/SectDeco';
+import {W} from '../../tools/moreapps/!Letters/Ns';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, p as px, r as rx, STRICT_W_NS,
   STRICT_R_NS} from './build-docx.mjs';

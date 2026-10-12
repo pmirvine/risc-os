@@ -10,17 +10,17 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {list, checkName, addBookmark, deleteBookmark, goTo,
   bookmarkNames, findBookmark, linkNames, NAME_MAX}
-  from '../../tools/moreapps/!Word/Bookmarks';
-import {marks} from '../../tools/moreapps/!Word/BookmarkFind';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {typeText} from '../../tools/moreapps/!Word/Edit';
-import {keymap, WINDOW} from '../../tools/moreapps/!Word/Keymap';
-import {macKey} from '../../tools/moreapps/!Word/MacKeys';
+  from '../../tools/moreapps/!Letters/Bookmarks';
+import {marks} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {typeText} from '../../tools/moreapps/!Letters/Edit';
+import {keymap, WINDOW} from '../../tools/moreapps/!Letters/Keymap';
+import {macKey} from '../../tools/moreapps/!Letters/MacKeys';
 import {mk, P, C, SEL, O, texts, valid} from './edit-docs.mjs';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {strictDocx} from './docx-fixtures.mjs';

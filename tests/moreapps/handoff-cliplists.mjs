@@ -1,5 +1,5 @@
 // Generates the real-Word hand-off files for lists, borders, shading
-// and tab stops pasted from one !Word document into another (question
+// and tab stops pasted from one !Letters document into another (question
 // L6; local only, never committed: tests/moreapps/corpus/ is
 // git-ignored). Not a test:
 //
@@ -7,28 +7,28 @@
 //
 // Writes into tests/moreapps/corpus/handoff/ (made if missing):
 //   cl-1-source.docx    the document to copy FROM, in Word and in
-//                       !Word: a multilevel list, its restarted twin
+//                       !Letters: a multilevel list, its restarted twin
 //                       (at 5), a bordered, shaded paragraph with tab
 //                       stops, a bullet list
-//   cl-2-pasted.docx    a new !Word document: all of cl-1 pasted; then
+//   cl-2-pasted.docx    a new !Letters document: all of cl-1 pasted; then
 //                       a list of its own with cl-1's first items
 //                       pasted after it
 //   cl-2c-last-item-text.docx  "One" to the end of "Two"'s text
 //                       pasted (the last item without its mark)
 //   cl-3-strict.docx    a Strict document (as Word saves "Strict Open
 //                       XML") with all of cl-1 pasted
-//   cl-README.txt       the steps in Word, what !Word did, the questions
-// The pastes are !Word's own (./ClipSlice, ./ClipStore, ./ClipPick,
+//   cl-README.txt       the steps in Word, what !Letters did, the questions
+// The pastes are !Letters' own (./ClipSlice, ./ClipStore, ./ClipPick,
 // ./ClipPaste, as ./EditClip runs them); each file is read back and
 // every paragraph listed with its label. A file is written only when
 // its bytes change; nothing else in the folder is touched.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {p, r} from './build-docx.mjs';
@@ -103,18 +103,18 @@ const listed3 = await save('cl-3-strict.docx', d3);
 
 const README = [
   'Lists, borders, shading and tab stops pasted between documents',
-  '(!Word question L6; the owner ruled: keep them, as Word does)',
+  '(!Letters question L6; the owner ruled: keep them, as Word does)',
   '',
   'Files (made by node tests/moreapps/handoff-cliplists.mjs):',
   '  cl-1-source.docx   the document to copy FROM',
-  '  cl-2-pasted.docx   !Word: all of cl-1 pasted into a new document',
+  '  cl-2-pasted.docx   !Letters: all of cl-1 pasted into a new document',
   '                     (' + own + ' paragraphs)',
-  '  cl-2b-next-to-a-list.docx  !Word: a list of its own ("Own one",',
+  '  cl-2b-next-to-a-list.docx  !Letters: a list of its own ("Own one",',
   '                     "Own two"), cl-1\'s first three items pasted',
   '                     after it',
-  '  cl-2c-last-item-text.docx  !Word: "One" to the end of "Two"\'s',
+  '  cl-2c-last-item-text.docx  !Letters: "One" to the end of "Two"\'s',
   '                     text (not its paragraph mark) pasted',
-  '  cl-3-strict.docx   !Word: all of cl-1 pasted into a Strict document',
+  '  cl-3-strict.docx   !Letters: all of cl-1 pasted into a Strict document',
   '',
   'Steps in Word:',
   '  1. Open cl-1-source.docx. Select from "One" to the start of',
@@ -129,7 +129,7 @@ const README = [
   '     prompt? Are the numbers, bullets, borders, shading and tab',
   '     stops as in cl-1?',
   '',
-  'What !Word shows (label, text, list, formatting) after reading',
+  'What !Letters shows (label, text, list, formatting) after reading',
   'each file back:',
   '  cl-2-pasted.docx', ...listed2,
   '  cl-2b-next-to-a-list.docx', ...listed2b,
@@ -141,11 +141,11 @@ const README = [
   '  L6-2 cl-2: are the labels those of cl-1 (1. a. 2. 5. 6., the',
   '       bullets)? Word gives the pasted items new list definitions',
   '       too (a new w:abstractNum, new w:nsid)?',
-  '  L6-3 cl-2b: !Word starts a NEW list (1. a. 2.) after "Own two".',
+  '  L6-3 cl-2b: !Letters starts a NEW list (1. a. 2.) after "Own two".',
   '       Does Word (step 3) carry on the target list (3. 4.) or',
   '       start a new one?',
   '  L6-4 Items copied from the middle of a list ("Two" alone with',
-  '       its paragraph mark): !Word numbers them from the list\'s',
+  '       its paragraph mark): !Letters numbers them from the list\'s',
   '       start (1.). Does Word keep 2.?',
   '  L6-5 The bordered paragraph: same borders (top single, left',
   '       double red), yellow shading, the two tab stops (left at 2",',
@@ -156,7 +156,7 @@ const README = [
   '       as w:w 150 or on/off may be among them): any repair prompt?',
   '  L6-7 cl-2c: in Word copy "One" to the end of "Two"\'s text (not',
   '       its paragraph mark) and paste into a new document: is "Two"',
-  '       a list item there? !Word: no (it takes the target',
+  '       a list item there? !Letters: no (it takes the target',
   '       paragraph\'s properties; only whole paragraphs bring theirs).',
 ];
 console.log('cl-README.txt: ' + put('cl-README.txt',

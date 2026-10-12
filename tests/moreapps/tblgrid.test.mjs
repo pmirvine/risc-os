@@ -2,8 +2,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, newTable, newRow, newCell}
-  from '../../tools/moreapps/!Word/Model';
-import {gridOf, cellAt, spanOf} from '../../tools/moreapps/!Word/TblGrid';
+  from '../../tools/moreapps/!Letters/Model';
+import {gridOf, cellAt, spanOf} from '../../tools/moreapps/!Letters/TblGrid';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const tc = (tcPr) => ({blocks: ['x'], tcPr: {extra: [], ...tcPr}});

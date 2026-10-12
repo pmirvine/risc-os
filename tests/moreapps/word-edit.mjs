@@ -1,4 +1,4 @@
-// !Word's caret and selection in the real desktop: clicks, drags
+// !Letters' caret and selection in the real desktop: clicks, drags
 // (with auto-scroll), Shift/Adjust clicks, double and triple clicks,
 // the keys (arrows by grapheme, the goal column, Home/End, Ctrl-
 // arrows, Page Down, Shift to extend, Ctrl-A, Escape), the table box
@@ -52,7 +52,7 @@ async function start(page, { h = 300 } = {}) {
     os.vfs.writeFile('RAM::RamDisc0.$.Big', new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (title = 'Edit') => window.__word()?.word.docs.find((d) => d.win.title === title);
     const pos = (it, off) => ({ id: it.id, off });
     /** Client (page) coordinates of work-area point x, y of d's window. */

@@ -1,4 +1,4 @@
-// !Word's Insert > Picture... in the real desktop (Batch B, B4.2:
+// !Letters' Insert > Picture... in the real desktop (Batch B, B4.2:
 // ./PicInsertBox, ./PicLoad): the menu item (between Section break
 // and Symbol..., shaded without a selection); one box per document; a
 // HostFS PNG path typed and Return: the picture at the caret, one undo
@@ -63,7 +63,7 @@ try {
       os.vfs.readFile = async (q) => { window.__started++; await gate; try { return await orig(q); } finally { window.__ended++; } };
     };
     window.__unhold = () => { if (window.__orig) { os.vfs.readFile = window.__orig; window.__orig = null; } window.__go?.(); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === 'Doc');
     window.__beeps = 0;
     const beep = os.wimp.beep.bind(os.wimp);
@@ -110,7 +110,7 @@ try {
         box: w ? { open: w.isOpen, title: w.title, path: w.iconByName('path').text, msg: w.iconByName('msg').text } : null,
         caret: c?.window === d.win ? 'doc' : c?.window && c.window === w ? 'box:' + c.icon?.name : c?.window ? 'other' : null };
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Doc');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);

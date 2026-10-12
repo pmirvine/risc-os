@@ -1,4 +1,4 @@
-// Spacing round trip: documents changed with !Word's paragraph
+// Spacing round trip: documents changed with !Letters' paragraph
 // spacing and flow commands, then written and read back. The commands
 // are those of the keys, the Format menu and the toolbar
 // (./FormatApply: lineSingle, lineDouble, line15, lineSpacing with a
@@ -21,15 +21,15 @@
 // WORD_EDIT_CORPUS=1 for every file). 40 seeded commands per file.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as F from '../../tools/moreapps/!Word/Format';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as F from '../../tools/moreapps/!Letters/Format';
 import {patch as dialogPatch, NAMES, ALIGNS, SPECIALS, LINES}
-  from '../../tools/moreapps/!Word/ParaPatch';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {checkBlock, deepEqual} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/ParaPatch';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {checkBlock, deepEqual} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {LIST_DOCS} from './list-fixtures.mjs';

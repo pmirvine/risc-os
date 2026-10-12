@@ -4,10 +4,10 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope, strictScope} from '../../tools/moreapps/!Word/Ns';
-import {readTblPr, readTcPr} from '../../tools/moreapps/!Word/TblProps';
-import {readRPr, readPPr} from '../../tools/moreapps/!Word/ReadProps';
-import {showThemed} from '../../tools/moreapps/!Word/TblColor';
+import {rootScope, strictScope} from '../../tools/moreapps/!Letters/Ns';
+import {readTblPr, readTcPr} from '../../tools/moreapps/!Letters/TblProps';
+import {readRPr, readPPr} from '../../tools/moreapps/!Letters/ReadProps';
+import {showThemed} from '../../tools/moreapps/!Letters/TblColor';
 import {W_NS} from './build-docx.mjs';
 import {freeze} from './tbl-fixtures.mjs';
 

@@ -3,14 +3,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
-import {readStyles} from '../../tools/moreapps/!Word/ReadStyles';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
+import {readStyles} from '../../tools/moreapps/!Letters/ReadStyles';
 import {resolveRun, resolvePara}
-  from '../../tools/moreapps/!Word/Styles';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {viewOf} from '../../tools/moreapps/!Word/TblStyle';
+  from '../../tools/moreapps/!Letters/Styles';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {viewOf} from '../../tools/moreapps/!Letters/TblStyle';
 import {lookOf, condsOf, bandsOf, layerOf, compatOf, stylesFor,
-  MAX_BAND} from '../../tools/moreapps/!Word/TblCond';
+  MAX_BAND} from '../../tools/moreapps/!Letters/TblCond';
 import {stylesXml, settingsXml} from './build-docx.mjs';
 import {TABLE_NORMAL, GRID_TABLE_4, LIST_TABLE_3}
   from './tbl-fixtures.mjs';

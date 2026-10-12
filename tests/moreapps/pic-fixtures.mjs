@@ -1,4 +1,4 @@
-// Test-only: pictures for the !Word Batch B tests (PicRead, PicMedia,
+// Test-only: pictures for the !Letters Batch B tests (PicRead, PicMedia,
 // layout, commands).
 //
 //   drawingXml(opts)          one <w:drawing> holding a picture

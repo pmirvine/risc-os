@@ -4,10 +4,10 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope, strictScope} from '../../tools/moreapps/!Word/Ns';
+import {rootScope, strictScope} from '../../tools/moreapps/!Letters/Ns';
 import {readTblPr, readTrPr, readTcPr}
-  from '../../tools/moreapps/!Word/TblProps';
-import {sides, pBdr} from '../../tools/moreapps/!Word/ReadPropsMore';
+  from '../../tools/moreapps/!Letters/TblProps';
+import {sides, pBdr} from '../../tools/moreapps/!Letters/ReadPropsMore';
 import {W_NS} from './build-docx.mjs';
 
 const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';

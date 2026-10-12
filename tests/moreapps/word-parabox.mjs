@@ -1,4 +1,4 @@
-// !Word's Paragraph dialogue box in the real desktop (Format >
+// !Letters' Paragraph dialogue box in the real desktop (Format >
 // Paragraph..., Line spacing options... in the Format menu and in
 // the toolbar's line spacing popup), with real clicks and keys: the
 // box shows the values of one paragraph and empty fields / off
@@ -41,7 +41,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Pa') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

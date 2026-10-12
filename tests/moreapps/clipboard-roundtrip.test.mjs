@@ -1,5 +1,5 @@
 // Clipboard and Find round trip: documents changed by random copy,
-// cut and paste (!Word's own route: ./ClipSlice, ./ClipStore,
+// cut and paste (!Letters' own route: ./ClipSlice, ./ClipStore,
 // ./ClipHtml, ./ClipPick, ./ClipPaste as ./EditClip runs them: the
 // exact copy within the document, the same copy pasted as from
 // another document, its HTML read back through ./ClipRead, its
@@ -35,25 +35,25 @@
 // styles (counted: 'styles made').
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {linkUrl} from '../../tools/moreapps/!Word/ClipLinks';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {linkUrl} from '../../tools/moreapps/!Letters/ClipLinks';
 import {pasteBlocks, pastePlain, cutSelection}
-  from '../../tools/moreapps/!Word/ClipPaste';
-import * as F from '../../tools/moreapps/!Word/Find';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blocks as walkAll} from '../../tools/moreapps/!Word/Walk';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {shapeOf} from '../../tools/moreapps/!Word/SelShape';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/ClipPaste';
+import * as F from '../../tools/moreapps/!Letters/Find';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blocks as walkAll} from '../../tools/moreapps/!Letters/Walk';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {shapeOf} from '../../tools/moreapps/!Letters/SelShape';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
-import {toggleList} from '../../tools/moreapps/!Word/ListMake';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import {toggleList} from '../../tools/moreapps/!Letters/ListMake';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';
 import {buildDocx, documentXml, stylesXml, p, r, REL}
@@ -304,7 +304,7 @@ const STYLED = doc(H('The title') +
     '<w:r><w:br/></w:r>' + r('next line'), '<w:jc w:val="center"/>') +
   SECT, true);
 /**
- * A document whose lists were made by !Word (ListMake: the numbering
+ * A document whose lists were made by !Letters (ListMake: the numbering
  * part, relationship and List Paragraph all new): a bullet list, a
  * numbered list, a plain gap and a second list continued after it.
  */
@@ -354,7 +354,7 @@ parts: {'word/styles.xml': stylesXml(TABLE_NORMAL + GRID_TABLE_4)}});
 const MORE = [
   ['tables: merged, nested, Grid Table 4 (C6.2)', TABLES],
   ['pictures (B7)', PICS],
-  ['lists made by !Word (ListMake)', madeLists],
+  ['lists made by !Letters (ListMake)', madeLists],
   ['rich (edit-rich.mjs)', richDocx],
   ['styled: headings, formats, a link, a table', STYLED],
   ['table first', doc(TBL + p(r('after the table')) + TBL)],

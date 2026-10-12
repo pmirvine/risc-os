@@ -5,12 +5,12 @@
 // stops from the margin, the right edge).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {newStyleTable, addStyle, setDefault}
-  from '../../tools/moreapps/!Word/Styles';
+  from '../../tools/moreapps/!Letters/Styles';
 import {resolveTabs, defaultStop, nextStop, barsOf, twipsOf,
-  DEFAULT_TW, MAX_USED} from '../../tools/moreapps/!Word/TabStops';
+  DEFAULT_TW, MAX_USED} from '../../tools/moreapps/!Letters/TabStops';
 import {buildDocx, documentXml, stylesXml, settingsXml, p, r,
   STRICT_W_NS} from './build-docx.mjs';
 

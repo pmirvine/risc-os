@@ -1,4 +1,4 @@
-// !Word: editing in tables in the real desktop (Batch C3). C3.1 part: the caret goes into cells. A real click in
+// !Letters: editing in tables in the real desktop (Batch C3). C3.1 part: the caret goes into cells. A real click in
 // each cell of a 2x2 Table Grid table puts the caret in that cell's paragraph, and the Wimp's caret (what is drawn)
 // is inside the cell's box; real ArrowRight presses from the end of the paragraph before the table go straight to
 // the first cell's start and visit every cell in order (one, two, three, four), then the paragraph after (the
@@ -104,7 +104,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Te') => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -140,7 +140,7 @@ try {
       return !!a && a.x >= p0.x && a.x <= p1.x && a.y >= p0.y && a.y + a.h <= p1.y + 0.01;
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   for (const leaf of ['Te', 'Tf', 'Ts', 'Td', 'Tk', 'Tc', 'Tm', 'Tp', 'Tr', 'Tg']) {
     await ev((leaf) => os.filer.run('RAM::RamDisc0.$.' + leaf), leaf);

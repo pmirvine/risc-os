@@ -2,12 +2,12 @@
 // and the round trip write -> parse -> ClipRead.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {toHtml, MAX_HTML} from '../../tools/moreapps/!Word/ClipHtml';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {readTree} from '../../tools/moreapps/!Word/ClipRead';
+import {toHtml, MAX_HTML} from '../../tools/moreapps/!Letters/ClipHtml';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {readTree} from '../../tools/moreapps/!Letters/ClipRead';
 import {resolver, charOf, alignOf}
-  from '../../tools/moreapps/!Word/FormatEff';
-import {headingLevel} from '../../tools/moreapps/!Word/Fmt';
+  from '../../tools/moreapps/!Letters/FormatEff';
+import {headingLevel} from '../../tools/moreapps/!Letters/Fmt';
 import {mk, SEL, box, raw, O, plain} from './edit-docs.mjs';
 import {lv, N} from './list-docs.mjs';
 import {parseHtml} from './html-fake.mjs';

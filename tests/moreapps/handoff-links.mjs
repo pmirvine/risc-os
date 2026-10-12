@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's hyperlinks,
+// Generates the real-Word hand-off files for !Letters' hyperlinks,
 // bookmarks and format painter (local only, never committed:
 // tests/moreapps/corpus/ is git-ignored). Not a test:
 //
@@ -17,8 +17,8 @@
 //                      item and a character style
 //   lnk-README.txt     what Word should show, the open questions
 //                      (H.., BM.., FP.., W..) and the word counts
-//                      !Word shows for each file
-// Everything is done with !Word's own commands (LinkOps, Bookmarks,
+//                      !Letters shows for each file
+// Everything is done with !Letters' own commands (LinkOps, Bookmarks,
 // FormatPaint through FormatApply for the formats, typing) on a
 // Document, as the window makes them. A file is written only when its
 // bytes change, so a file open in Word is left alone; nothing else in
@@ -28,20 +28,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as LO from '../../tools/moreapps/!Word/LinkOps';
-import * as BM from '../../tools/moreapps/!Word/Bookmarks';
-import * as FP from '../../tools/moreapps/!Word/FormatPaint';
-import {count} from '../../tools/moreapps/!Word/WordCount';
-import {BULLETS} from '../../tools/moreapps/!Word/ListGallery';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as LO from '../../tools/moreapps/!Letters/LinkOps';
+import * as BM from '../../tools/moreapps/!Letters/Bookmarks';
+import * as FP from '../../tools/moreapps/!Letters/FormatPaint';
+import {count} from '../../tools/moreapps/!Letters/WordCount';
+import {BULLETS} from '../../tools/moreapps/!Letters/ListGallery';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, p, r}
   from './build-docx.mjs';
@@ -214,7 +214,7 @@ async function save(name, doc, about) {
     `characters (with spaces) ${String(c.chars).padStart(5)}   ` +
     `paragraphs ${String(c.paras).padStart(3)}`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: each paragraph',
+    'What !Letters wrote (read back from the saved file: each paragraph',
     'with its links, bookmarks and formats):', ...got.out);
 }
 
@@ -232,7 +232,7 @@ function typeParas(s, texts) {
 {
   const s = session(newDoc({date: DATE}));
   typeParas(s, [
-    'Links in !Word: each line has one, made with Ctrl-K',
+    'Links in !Letters: each line has one, made with Ctrl-K',
     'Web link: visit the example site for details',
     'Mail link: write to someone at the example domain',
     'FTP link: download the readme file',
@@ -274,7 +274,7 @@ function typeParas(s, texts) {
     {id: rm.id, off: rm.text.indexOf(O) + 1}));
   await save('lnk-1-links.docx', s.d.doc, [
     'A new document. Lines 2..4 hold a web, a mail and an FTP link.',
-    'Line 5 was typed as www.example.org: !Word writes http:// in',
+    'Line 5 was typed as www.example.org: !Letters writes http:// in',
     'front. Line 6 has a ScreenTip (w:tooltip). Line 7 is a bold',
     'italic phrase made a link (each run keeps its own formatting;',
     'the Hyperlink character style is added). Line 8 has a space and',
@@ -285,7 +285,7 @@ function typeParas(s, texts) {
     '(the relationship stays too). Word should open it with no',
     'repair prompt, show the links blue and underlined (the',
     'Hyperlink style: H3), open the right addresses with',
-    'Ctrl+click (no link is ever opened by !Word) and go to the',
+    'Ctrl+click (no link is ever opened by !Letters) and go to the',
     'bookmark on line 12 from line 9.',
   ]);
 }
@@ -322,7 +322,7 @@ function typeParas(s, texts) {
   s.unmark('Gone');
   await save('bm-1-bookmarks.docx', s.d.doc, [
     'A file made with two hidden bookmarks that came with it (_Toc',
-    'and _GoBack: Word makes both), then bookmarks added by !Word.',
+    'and _GoBack: Word makes both), then bookmarks added by !Letters.',
     'Word1 covers some words of line 1. Span3 runs from line 2 to',
     'line 4 (across paragraphs). AtCaret is a bookmark with no text',
     'at the end of line 5. Outer holds Inner (nested) and Overlap',
@@ -331,9 +331,9 @@ function typeParas(s, texts) {
     'bookmark, moved (names ignore case; the stored name is the new',
     'one). Gone was added and deleted: no trace. Word should open it',
     'with no repair prompt; Insert > Bookmark (Ctrl+Shift+F5 in',
-    '!Word) lists Word1, Span3, AtCaret, Outer, Inner, Overlap and',
+    '!Letters) lists Word1, Span3, AtCaret, Outer, Inner, Overlap and',
     'moved (hidden ones with "Hidden bookmarks" ticked); Go to',
-    'selects the same text as !Word.',
+    'selects the same text as !Letters.',
   ]);
 }
 
@@ -395,12 +395,12 @@ function typeParas(s, texts) {
 // ------------------------------------------------------------ README
 
 const README = [
-  'Hand-off files for !Word\'s hyperlinks, bookmarks, format painter',
+  'Hand-off files for !Letters\' hyperlinks, bookmarks, format painter',
   'and word count (Batch A, task A6). Made by',
-  'node tests/moreapps/handoff-links.mjs with !Word\'s own commands;',
+  'node tests/moreapps/handoff-links.mjs with !Letters\' own commands;',
   'nothing here is committed. Open each file in real Word and answer',
   'the questions below; the lists under each file name are what',
-  '!Word really wrote.',
+  '!Letters really wrote.',
   '',
   'On screen: Insert > Hyperlink... (Ctrl-K; Ctrl-click on a link to',
   'a bookmark moves the caret there; no link is ever opened),',
@@ -408,7 +408,7 @@ const README = [
   '(row 2 of the toolbar; Select = once, Adjust = stays on until',
   'Escape) and Edit > Word count...',
   '',
-  'Word counts !Word shows (Edit > Word count..., the whole document;',
+  'Word counts !Letters shows (Edit > Word count..., the whole document;',
   'Lines depends on the window width and is not listed). Compare',
   'with Word\'s Review > Word Count (W1..W4):',
   ...counts,
@@ -416,15 +416,15 @@ const README = [
   'Questions',
   '---------',
   'H1  Remove link after Insert hyperlink over a run with its own',
-  '    character style (an Emphasis word): !Word gives the link\'s',
+  '    character style (an Emphasis word): !Letters gives the link\'s',
   '    runs the Hyperlink style (one character style per run), so',
   '    Remove link leaves that word with no character style (its',
   '    direct formatting is kept). Word does? (No file: make it in',
-  '    !Word.)',
+  '    !Letters.)',
   'H2  Edit hyperlink with a new address, and Remove link, leave the',
   '    old relationship in the file, unused (lnk-1 lines 10 and 11).',
   '    Word opens it without complaint and does not show it?',
-  'H3  The Hyperlink style !Word adds on first use is Word\'s own',
+  'H3  The Hyperlink style !Letters adds on first use is Word\'s own',
   '    definition (colour 0563C1, single underline, uiPriority 99,',
   '    unhideWhenUsed). Does Word show the links blue and',
   '    underlined, and the style in its Styles pane as usual?',
@@ -432,7 +432,7 @@ const README = [
   '    address with a space is written %20 and & as &amp; (lnk-1',
   '    lines 5 and 8). Does Word open the right addresses with',
   '    Ctrl+click, and show the ScreenTip of line 6 and line 10?',
-  'BM1 A bookmark added by !Word: w:bookmarkStart / w:bookmarkEnd as',
+  'BM1 A bookmark added by !Letters: w:bookmarkStart / w:bookmarkEnd as',
   '    direct children of the paragraph, ids from one more than the',
   '    largest. Opens without a repair prompt; Insert > Bookmark',
   '    lists it; Go To selects the same text (bm-1).',
@@ -440,19 +440,19 @@ const README = [
   '    (AtCaret: start and end together). Word keeps both; the caret',
   '    one is an empty bookmark at that place.',
   'BM3 Deleting the paragraph that holds a bookmark\'s start (its end',
-  '    in a later paragraph): !Word moves the start to where the',
+  '    in a later paragraph): !Letters moves the start to where the',
   '    deletion was (the bookmark shrinks). Word the same? (No file:',
   '    try on Span3 in both programs.)',
   'BM4 Left / Right next to a bookmark: one press per visible',
-  '    character in !Word (the marks never take a press). Word?',
+  '    character in !Letters (the marks never take a press). Word?',
   'BM5 Typed text right after a bookmark\'s end or before its start:',
-  '    !Word types inside only at a caret between the marks. Word',
+  '    !Letters types inside only at a caret between the marks. Word',
   '    extends a bookmark only when typing inside it? (No file.)',
   'BM6 A name Word itself refuses (from a file: 1st, has space,',
-  '    longer than 40 characters): !Word lists, goes to and deletes',
+  '    longer than 40 characters): !Letters lists, goes to and deletes',
   '    it, but never makes one. (No file: rename one in the XML.)',
   'BM7 Typing or pasting over a selection that holds a bookmark\'s',
-  '    start whose end is outside it: !Word puts the start back where',
+  '    start whose end is outside it: !Letters puts the start back where',
   '    the selection was and the new text goes BEFORE it, so the',
   '    typed text lands outside the bookmark. Word keeps it inside?',
   'FP1 A click with the painter on paints the word there and the',
@@ -467,7 +467,7 @@ const README = [
   '    (paint-1 lines 8 and 9). Word?',
   'FP4 The character style (w:rStyle) of the pick is copied; a pick',
   '    without one removes the target\'s style. Word?',
-  'FP5 Raw paragraph children !Word does not model (w:bidi,',
+  'FP5 Raw paragraph children !Letters does not model (w:bidi,',
   '    w:framePr, w:suppressAutoHyphens, w:textAlignment,',
   '    w:textDirection) stay on the target and are not carried from',
   '    the pick; change records and w:id elements are never carried.',
@@ -477,7 +477,7 @@ const README = [
   '    left alone, no error. (No file.)',
   'W1  Each East Asian character counts as a word (and ends the word',
   '    beside it). Word\'s box gives "Asian characters" and',
-  '    "Non-Asian words": the sum is what !Word shows. Kana and',
+  '    "Non-Asian words": the sum is what !Letters shows. Kana and',
   '    Hangul the same? (No file: type some in both.)',
   'W2  Characters are code points (an emoji is 1; Word counts UTF-16',
   '    units?). Compare Characters for a line with an emoji and with',

@@ -3,12 +3,12 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {paraPatch, charPatch, MAX_TABS}
-  from '../../tools/moreapps/!Word/FormatCheck';
-import {pPrNode, rPrNode} from '../../tools/moreapps/!Word/WriteProps';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/FormatCheck';
+import {pPrNode, rPrNode} from '../../tools/moreapps/!Letters/WriteProps';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {mk, P, C} from './edit-docs.mjs';
 
 const MAP = new Map([['w',

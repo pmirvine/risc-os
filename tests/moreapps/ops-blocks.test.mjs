@@ -2,8 +2,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, emptyDoc, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
-import {apply, applyOwn} from '../../tools/moreapps/!Word/Ops';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply, applyOwn} from '../../tools/moreapps/!Letters/Ops';
 
 const docOf = (...blocks) => {
   const d = emptyDoc();

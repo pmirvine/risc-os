@@ -14,22 +14,22 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertCols, deleteCols, distributeCols, distributeRows}
-  from '../../tools/moreapps/!Word/TblEditCols';
+  from '../../tools/moreapps/!Letters/TblEditCols';
 import {insertColsCmd, deleteColsCmd, selectCmd, distributeRowsCmd,
-  distributeColsCmd, TABLE} from '../../tools/moreapps/!Word/TblCmdCols';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {checkTable, MAX_COLS} from '../../tools/moreapps/!Word/TblCheck';
-import {checkBlock, checkProps} from '../../tools/moreapps/!Word/ModelCheck';
+  distributeColsCmd, TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {checkTable, MAX_COLS} from '../../tools/moreapps/!Letters/TblCheck';
+import {checkBlock, checkProps} from '../../tools/moreapps/!Letters/ModelCheck';
 import {newPara, reserveIds, OBJ}
-  from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Model';
 import {blockIds, at as walkAt, ids as allIds, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
-import {shapeOf} from '../../tools/moreapps/!Word/SelShape';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {runView} from '../../tools/moreapps/!Word/EditRun';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+  from '../../tools/moreapps/!Letters/Walk';
+import {shapeOf} from '../../tools/moreapps/!Letters/SelShape';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {runView} from '../../tools/moreapps/!Letters/EditRun';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {mk, undoable, S} from './edit-docs.mjs';
 import {tm, rng} from './word-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

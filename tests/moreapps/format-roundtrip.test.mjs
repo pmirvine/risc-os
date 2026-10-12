@@ -1,4 +1,4 @@
-// Formatting round trip: documents formatted with !Word's real
+// Formatting round trip: documents formatted with !Letters' real
 // formatting commands (./FormatSet and ./FormatPara: the B I U S,
 // superscript and subscript toggles; character sets of bold, italic,
 // underline, size, colour, highlight, font and vertical alignment,
@@ -24,14 +24,14 @@
 // have run and changed a document.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {dragIndents} from '../../tools/moreapps/!Word/FormatPara';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {forTyping, styleFor} from '../../tools/moreapps/!Word/Pending';
-import {checkBlock, deepEqual} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {dragIndents} from '../../tools/moreapps/!Letters/FormatPara';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {forTyping, styleFor} from '../../tools/moreapps/!Letters/Pending';
+import {checkBlock, deepEqual} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';

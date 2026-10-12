@@ -7,11 +7,11 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {flowDeco, breaksBefore, flowMark, flowPaint, GAP}
-  from '../../tools/moreapps/!Word/FlowDeco';
-import {DECORATORS} from '../../tools/moreapps/!Word/DocStack';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
+  from '../../tools/moreapps/!Letters/FlowDeco';
+import {DECORATORS} from '../../tools/moreapps/!Letters/DocStack';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
 import {mk} from './edit-docs.mjs';
 import {tm} from './word-docs.mjs';
 

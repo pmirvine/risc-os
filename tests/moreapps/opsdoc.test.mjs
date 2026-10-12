@@ -2,15 +2,15 @@
 // findStyle): document-level parts replaced, never changed.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {emptyDoc, deepEqual} from '../../tools/moreapps/!Word/Model';
-import {apply, applyOwn} from '../../tools/moreapps/!Word/Ops';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
+import {emptyDoc, deepEqual} from '../../tools/moreapps/!Letters/Model';
+import {apply, applyOwn} from '../../tools/moreapps/!Letters/Ops';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
 import {freshRelId, addRel, withStyle, findStyle}
-  from '../../tools/moreapps/!Word/DocParts';
-import {stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {relKind} from '../../tools/moreapps/!Word/Rels';
+  from '../../tools/moreapps/!Letters/DocParts';
+import {stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {relKind} from '../../tools/moreapps/!Letters/Rels';
 import {serialize} from '../../tools/moreapps/!WimpLib/Xml';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {strictDocx, STYLES} from './docx-fixtures.mjs';

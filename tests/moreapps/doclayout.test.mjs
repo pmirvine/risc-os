@@ -3,10 +3,10 @@
 // Measured with a fake: 8 px per UTF-16 unit.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {selectAll} from '../../tools/moreapps/!Word/Selection';
-import * as PM from '../../tools/moreapps/!Word/PositionMap';
-import {pageRect} from '../../tools/moreapps/!Word/EditPaint';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {selectAll} from '../../tools/moreapps/!Letters/Selection';
+import * as PM from '../../tools/moreapps/!Letters/PositionMap';
+import {pageRect} from '../../tools/moreapps/!Letters/EditPaint';
 import {loadStyles, tm, mkDoc, box} from './word-docs.mjs';
 
 before(loadStyles);

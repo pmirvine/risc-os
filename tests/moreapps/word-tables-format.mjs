@@ -1,4 +1,4 @@
-// !Word's Table properties box and Cell alignment (Batch C5.1, D26; real menu clicks, real keys, pixels). With the caret
+// !Letters' Table properties box and Cell alignment (Batch C5.1, D26; real menu clicks, real keys, pixels). With the caret
 // in a cell of a 2 x 2 table, Table > Table properties... opens the box filled from the cell (Auto width, Left, indent 0,
 // Auto row height, the column's and the cell's width, Top). Row height Exactly with 0.3 in and OK is one undo step: the
 // row is drawn 28.8 px high (the pixels of its two border lines, +-1) and its two-line cell is clipped; Ctrl-Z takes it
@@ -80,7 +80,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -126,7 +126,7 @@ try {
       return window.__word().word.dialog({ key: 'tblprops:' + d.docKey, rows: [] });
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   for (const leaf of ['Tf', 'Tg', 'Tb', 'Td', 'Te', 'Tp', 'Tc']) {
     await ev((leaf) => os.filer.run('RAM::RamDisc0.$.' + leaf), leaf);

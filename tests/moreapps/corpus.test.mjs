@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import {existsSync, readdirSync, readFileSync} from 'node:fs';
 import {join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {DocxError} from '../../tools/moreapps/!Word/DocxRead';
+import {DocxError} from '../../tools/moreapps/!Letters/DocxRead';
 import {checkFile, tablesOf} from './corpus-check.mjs';
 
 const DIR = fileURLToPath(new URL('./corpus/', import.meta.url));

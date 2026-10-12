@@ -5,7 +5,7 @@ Code: `tools/games/!GameLib/` (JSScript modules, no extensions; `!Boot`, `!Run`,
 `disc-wimplib.mjs`); the icon (`!gamelib`, `sm!gamelib`) is drawn by `tools/games/icon.mjs`. User guide:
 `$.Docs.GameLib` (`tools/docs/GameLib`). Tests: `tests/games/`.
 
-GameLib is the game-building half of the desktop's library pair; WimpLib (see [Word.md](Word.md)) is the other. It was
+GameLib is the game-building half of the desktop's library pair; WimpLib (see [Letters.md](Letters.md)) is the other. It was
 made for !Pacman, whose modules and engine are in `docs/apps/Pacman.md`. Programs import a module as
 `import { Loop } from 'gamelib/Loop'`; `src/core/jsrun.js` (`resolveLib`, CORE_API 11a) finds it through the system
 variable `GameLib$Path`, then `GameLib$Dir`. `!Boot` sets `GameLib$Dir`, `GameLib$Path` and `GameLib$Version 1.00` unless

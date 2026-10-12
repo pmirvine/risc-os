@@ -1,4 +1,4 @@
-// !Word's lists in the real desktop, checked against the pixels on
+// !Letters' lists in the real desktop, checked against the pixels on
 // the window's canvas: a bullet list's glyph drawn in the hanging
 // space, a numbered list's '1.' there (the label text from the test
 // hook's labels()), nothing there for a paragraph that is not in a
@@ -72,7 +72,7 @@ async function start(page) {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = window.__leaf || 'L') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     /** Layout -> the window's work area at the document's zoom. */
     window.__ws = (x, y) => {

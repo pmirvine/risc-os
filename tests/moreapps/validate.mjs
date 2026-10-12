@@ -27,9 +27,9 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {FIXTURES} from './docx-fixtures.mjs';
 
 const CACHE = fileURLToPath(new URL('../../tools/moreapps/.cache/',

@@ -5,15 +5,15 @@
 // the plain text a row per line, cells joined by tabs.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
 import {tableHtml, tablePlain}
-  from '../../tools/moreapps/!Word/ClipHtmlTable';
-import {readTree} from '../../tools/moreapps/!Word/ClipRead';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/ClipHtmlTable';
+import {readTree} from '../../tools/moreapps/!Letters/ClipRead';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, modelTable, freeze, TABLE_NORMAL,
   TABLE_GRID} from './tbl-fixtures.mjs';

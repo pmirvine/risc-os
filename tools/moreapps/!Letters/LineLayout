@@ -1,0 +1,225 @@
+// LineLayout - lays out one paragraph for the screen: its text broken
+// into lines that fit a width, run by run in each run's font, every
+// line and item keeping the model offsets it stands for.
+//
+//   layoutPara(para, styles, width, metrics, cache, label?, defPx?,
+//              map?) -> {h, lines}
+//   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
+//   cache:   a Map for the run formats (./Fmt)
+//   label:   the paragraph's list label (./ListNumbers), or none
+//   defPx:   the default tab stop in px (./TabStops defaultStop / 15;
+//            48, half an inch, when not given)
+//   map:     the scope raw inlines are read in (./PicRead docMap)
+//   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
+//          label?, clip?, bars?}
+//          x: where the line's text starts (after indent, a list
+//          label and alignment: the caret at its first offset)
+//          label: on the first line of a list paragraph only,
+//          {x, w, text, f, bullet} (./LineLabel): drawn there, but
+//          no item and in no offsets
+//   item:  {x, w, text, f, kind, from, to, shown, hl, sh, dy, js?,
+//          label?, leader?, pic?}
+//          kind 'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
+//          'pagebreak' (label: its ./BreakMarks label)
+//          pic (kind 'pic'): {...pictureOf, w, h}, w, h its size
+//          in px (= item w); text '', shown, dy 0
+//          hl the highlight colour or null, sh the character
+//          shading's (./Fmt shade) or null, dy the baseline shift
+//          (./Fmt), js the width a justified space gained
+//
+// The rules (offsets, breaking, tabs, breaks, line heights, labels,
+// pictures): docs/apps/Letters.md, "LineLayout: the rules". A picture
+// (./PicLine fitPic: never measured) stands on the baseline and
+// raises the line; it is a group of its own, so a line may break
+// before and after it (as Word's). Pure: no desktop services.
+import {runFmt, paraFmt} from './Fmt';
+import {tokens, PLAIN} from './LineTokens';
+import {fitPic} from './PicLine';
+import {justify, align} from './Justify';
+import {labelLine} from './LineLabel';
+import {lineBox} from './ParaSpace';
+import {ruleFit} from './BreakMarks';
+import {nextStop, barsOf, DEFAULT_TW} from './TabStops';
+import {alignedEnd, close, dotIn} from './TabAlign';
+
+const SCRATCH = ['px', 'real', 'ink', 'up', 'down'];
+
+/** See the header. */
+export function layoutPara(para, styles, width, metrics, cache,
+  label, defPx = DEFAULT_TW / 15, map) {
+  const pf = paraFmt(styles, para, label ? label.indent : undefined);
+  const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
+  const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
+  const lines = [], bars = barsOf(pf.tabs);
+  let line = null, x = 0, pos = 0, pend = null;
+  const closeTab = () => {
+    if (pend) x += close(line, pend, Math.max(pend.x, line.ink));
+    pend = null;
+  };
+  let y = pf.before;
+  const start = (first) => {
+    line = {from: pos, to: pos, x: 0, y: 0, h: 0, base: 0, items: [],
+      wrapped: false, endsWithBreak: false, px: 0, real: false,
+      ink: left, up: 0, down: 0};
+    x = line.x = left + (first ? pf.first : 0);
+  };
+  const finish = (how) => {
+    closeTab();
+    if (bars.length) line.bars = bars;
+    const px = line.px || (base.vert ? base.full : base.px);
+    // (line.up, line.down: raised and lowered text, 0 on most lines)
+    const box = lineBox(pf, px, line.up, line.down);
+    line.h = box.h;
+    line.base = box.base;
+    if (box.clip) line.clip = true;
+    line.y = y;
+    line.to = pos;
+    if (how) line[how] = true;
+    if (how === 'wrapped' && pf.justify) justify(line, maxX);
+    y += line.h;
+    align(line, pf.align, maxX);
+    for (const k of SCRATCH) delete line[k];
+    lines.push(line);
+  };
+  // put token tk, w wide, at x; real: drawn as the stub drew it
+  const place = (tk, w, real = tk.t !== 'z') => {
+    const items = line.items;
+    const last = items[items.length - 1];
+    const f = tk.f;
+    if (real) {
+      // super/subscript: the line is as high as for the full size
+      line.px = Math.max(line.px, f.vert ? f.full : f.px);
+      line.real = true;
+      if (f.dy < 0) line.up = Math.max(line.up, f.px * 0.98 - f.dy);
+      if (f.dy > 0) {
+        line.down = Math.max(line.down, f.px * 0.27 + f.dy);
+      }
+    }
+    if (!pf.justify && last && !last.shown && !tk.shown &&
+      last.f === tk.f && last.kind === tk.kind && last.to === tk.from &&
+      Math.abs(last.x + last.w - x) < 0.01) {
+      last.text += tk.text;
+      last.w += w;
+      last.to = tk.to;
+    } else {
+      items.push({x, w, text: tk.text, f, kind: tk.kind,
+        from: tk.from, to: tk.to, shown: tk.shown,
+        hl: f.highlight ?? null, sh: f.shade ?? null,
+        dy: f.dy || 0});
+    }
+    if (tk.fit) {
+      // a picture: its bottom on the baseline
+      const it = items[items.length - 1];
+      it.pic = {...tk.pic.info, ...tk.fit};
+      it.dy = 0;
+      line.up = Math.max(line.up, tk.fit.h);
+    }
+    if (pend && pend.dot === null) pend.dot = dotIn([[tk, w]], x,
+      metrics);
+    x += w;
+    if (tk.fit || /\S/.test(tk.text)) line.ink = x;
+    pos = tk.to;
+  };
+  let group = [], groupW = 0;
+  const flush = () => {
+    if (!group.length) return;
+    let end = x + groupW;
+    if (pend) {
+      end = alignedEnd(pend, end, pend.dot ?? dotIn(group, x, metrics));
+      if (end === null || end > maxX) { pend = null; end = x + groupW; }
+    }
+    if (line.real && groupW > 0 && end > maxX) {
+      finish('wrapped');
+      start();
+    }
+    for (const [tk, w] of group) place(tk, w);
+    group = []; groupW = 0;
+  };
+  start(true);
+  if (label) {
+    const ll = labelLine(label, para, styles, pf, metrics, cache,
+      defPx, maxX);
+    line.label = ll.label;
+    x = line.x = line.ink = ll.textX;
+    if (ll.label.text) {
+      line.px = Math.max(ll.label.f.px, base.vert ? base.full
+        : base.px);
+    }
+  }
+  const toks = tokens(para, styles, cache, map);
+  // after the last token that is not 'z' (unseen) a break ends the
+  // paragraph: the unseen ones stay on its line
+  let tail = toks.length - 1;
+  while (tail >= 0 && toks[tail].t === 'z') tail--;
+  let how;
+  for (let k = 0; k < toks.length; k++) {
+    let tk = toks[k];
+    // (a picture starting a line: what the line leaves, x on); a
+    // picture is a group alone: a break before and after it
+    if (tk.pic) {
+      flush();
+      tk = {...tk, fit: fitPic(tk.pic, maxX - (line.real ? left : x))};
+      group.push([tk, tk.fit.w]);
+      groupW += tk.fit.w;
+      flush();
+      continue;
+    }
+    if (tk.t === 'w' || tk.t === 'z') {
+      const w = tk.fit ? tk.fit.w : tk.t === 'z' ? 0 : metrics.width(
+        tk.text, tk.f.css) + (tk.kind === 'box' ? 6 : 0);
+      group.push([tk, w]);
+      groupW += w;
+    } else if (tk.t === 's') {
+      flush();
+      if (line.real || !lines.length) {
+        const w = metrics.width(tk.text, tk.f.css);
+        const n = tk.text.length;
+        if (pf.justify && !tk.shown && n > 1) {
+          // one item per space, each to be widened (./Justify)
+          for (let k = 0; k < n; k++) {
+            place({...tk, text: ' ', from: tk.from + k,
+              to: tk.from + k + 1}, w / n);
+          }
+        } else place(tk, w);
+      } else {
+        // after a break: kept for its offsets, not drawn (as before)
+        place({...tk, text: '', shown: true}, 0, false);
+      }
+    } else if (tk.t === 'tab') {
+      flush();
+      closeTab();
+      const st = nextStop(pf.tabs, x, left, defPx, maxX), at = x;
+      const lined = st.val !== 'left';
+      place(tk, lined ? 0 : st.pos - x);
+      const it = line.items[line.items.length - 1];
+      if (st.leader) it.leader = st.leader;
+      if (lined) pend = {...st, it, x: at, dot: null,
+        idx: line.items.length - 1};
+    } else if (tk.t === 'pb') {
+      flush();
+      closeTab();
+      if (ruleFit(x, maxX, line.real).wrap) {
+        finish('wrapped');
+        start();
+      }
+      place(tk, ruleFit(x, maxX, false).w);
+      const it = line.items[line.items.length - 1];
+      it.label = tk.label;
+      it.hl = it.sh = null;
+      line.ink = x;
+      if (k >= tail) how = 'endsWithBreak';
+      else {
+        finish('endsWithBreak');
+        start();
+      }
+    } else {
+      flush();
+      place(tk, 0);
+      finish('endsWithBreak');
+      start();
+    }
+  }
+  flush();
+  finish(how);
+  return {h: y + pf.after, lines};
+}

@@ -3,7 +3,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {ClipStore, tokenIn, LIMITS}
-  from '../../tools/moreapps/!Word/ClipStore';
+  from '../../tools/moreapps/!Letters/ClipStore';
 
 const P = (text) => ({type: 'p', text, runs: [], inlines: {},
   pPr: {extra: []}});

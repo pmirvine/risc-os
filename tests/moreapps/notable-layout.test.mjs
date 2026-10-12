@@ -7,10 +7,10 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {itemEnd, clampOff} from '../../tools/moreapps/!Word/DocPos';
-import * as RI from '../../tools/moreapps/!Word/RulerInd';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {itemEnd, clampOff} from '../../tools/moreapps/!Letters/DocPos';
+import * as RI from '../../tools/moreapps/!Letters/RulerInd';
 import {notableDocs, sample, VIEW_W} from './notable-fixture.mjs';
 import {tm} from './word-docs.mjs';
 

@@ -1,28 +1,28 @@
-// Clipboard and Find with lists made by !Word itself (Bullets /
+// Clipboard and Find with lists made by !Letters itself (Bullets /
 // Numbering, ./ListMake): the numbering definitions are the ones
 // ./NumWrite writes, not a fixture's. Copy and paste within the
 // document keep the items in their list and level (the exact route
 // keeps numPr and List Paragraph); the same copy pasted as from
 // another document drops numPr (question L6, recorded in
-// docs/apps/Word.md: no list is made) but keeps the text; the HTML
+// docs/apps/Letters.md: no list is made) but keeps the text; the HTML
 // copy is <ul> / <ol> and reads back as paragraphs; plain text has no
 // labels; Find neither finds nor replaces a label; Replace all inside
 // items keeps them in their list; a cut and a paste are one undo step
 // each and undo gives the numbering back exactly.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {toggleList} from '../../tools/moreapps/!Word/ListMake';
-import {setList} from '../../tools/moreapps/!Word/FormatList';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {readTree} from '../../tools/moreapps/!Word/ClipRead';
+import {toggleList} from '../../tools/moreapps/!Letters/ListMake';
+import {setList} from '../../tools/moreapps/!Letters/FormatList';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {readTree} from '../../tools/moreapps/!Letters/ClipRead';
 import {pasteBlocks, pastePlain, cutSelection}
-  from '../../tools/moreapps/!Word/ClipPaste';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import * as F from '../../tools/moreapps/!Word/Find';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/ClipPaste';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import * as F from '../../tools/moreapps/!Letters/Find';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {parseHtml} from './html-fake.mjs';
 import {P, C, SEL, mk, blocks, texts} from './edit-docs.mjs';
 

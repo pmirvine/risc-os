@@ -1,4 +1,4 @@
-// !Word's documents against hostile use, in the real desktop: Save as
+// !Letters' documents against hostile use, in the real desktop: Save as
 // onto another open window's file (any case, the Save box's OK too),
 // a locked file, a read-only disc, bad leaf names; 1000 rapid Saves
 // (bounded time, the queue empty after); Save while typing; Save
@@ -7,7 +7,7 @@
 // windows and a shutdown answered Cancel then Discard; the shutdown
 // asked twice restarts the closedown once; a prompt that cannot open
 // (Quit, PreQuit) is reported, not an unhandled rejection; Recent
-// with 10,000 hostile entries and corrupt Choices:Word; Revert of a
+// with 10,000 hostile entries and corrupt Choices:Letters; Revert of a
 // deleted file; Quit while the Save box is open; 500 seeded random
 // actions (new, type, save, save as, revert, close and its answers,
 // reopen, quit and Cancel) with the windows' state checked after
@@ -17,7 +17,7 @@
 // tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { assertSameDoc } from './docx-compare.mjs';
 import { rng } from './word-docs.mjs';
 
@@ -62,7 +62,7 @@ try {
     window.__plain = a;
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
@@ -72,13 +72,13 @@ try {
     window.__closePrompts = () => [...os.wimp.windows].filter((q) => q.isOpen && q.iconByName?.('button:Save') && q.iconByName('button:Discard'));
     window.__press = (w, text) => w.emit('click', { icon: w.iconByName('button:' + text), button: 'select' });
     window.__start = async () => {
-      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
       for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
       await window.__word().word.recentReady;
     };
     window.__count = () => ({ windows: os.wimp.windows.size, open: [...os.wimp.windows].filter((w) => w.isOpen).length,
       tasks: os.wimp.tasks.filter((t) => t.alive).length });
-    if (os.vfs.exists('ADFS::HardDisc4.$.!Boot.Choices.Word')) os.vfs.delete('ADFS::HardDisc4.$.!Boot.Choices.Word');
+    if (os.vfs.exists('ADFS::HardDisc4.$.!Boot.Choices.Letters')) os.vfs.delete('ADFS::HardDisc4.$.!Boot.Choices.Letters');
     window.__base = window.__count();
     await window.__start();
   }, Array.from(plain));
@@ -396,7 +396,7 @@ try {
 
   // ------------------------------------------------ Recent: 10,000 hostile entries, corrupt Choices
   const h1 = await ev(async () => {
-    const C = 'ADFS::HardDisc4.$.!Boot.Choices.Word';
+    const C = 'ADFS::HardDisc4.$.!Boot.Choices.Letters';
     const hostile = [];
     for (let i = 0; i < 10000; i++) {
       hostile.push([i, null, '__proto__', 'constructor', 'RAM::RamDisc0.$.Missing' + i, 'x'.repeat(5000), '\u0000bad', { a: 1 },
@@ -439,7 +439,7 @@ try {
   const hBad = Object.entries(h1).filter(([k, v]) => k !== 'msgs' && (v.recent > 8 || v.shown.length > 2 || v.polluted
     || !Array.isArray(v.written) || v.written[0] !== 'RAM::RamDisc0.$.Other' || v.written.length > 8 || v.menuMs > 2000 || v.startMs > 5000));
   timings.push('Recent with 10,000 hostile entries: start ' + h1['10k'].startMs + ' ms, menu ' + h1['10k'].menuMs + ' ms');
-  ok('Recent: 10,000 hostile entries and corrupt Choices:Word (truncated, binary, null, deep, huge): at most 8, only real files shown, ' +
+  ok('Recent: 10,000 hostile entries and corrupt Choices:Letters (truncated, binary, null, deep, huge): at most 8, only real files shown, ' +
     'no pollution, the menu quick, a clean list written back', !hBad.length && !h1.msgs.length
     && h1['10k'].shown.join() === 'Plain', { hBad, msgs: h1.msgs, k: h1['10k'] });
 

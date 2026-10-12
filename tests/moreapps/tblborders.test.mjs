@@ -11,10 +11,10 @@
 // (TblColor.showThemed) and kept raw in the model.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {edgesOf, sidesOf, weightOf, conflict, PRECEDENCE}
-  from '../../tools/moreapps/!Word/TblBorders';
+  from '../../tools/moreapps/!Letters/TblBorders';
 import {loadStyles, tm} from './word-docs.mjs';
 import {tblDocx, tbl, tr, tc, TABLE_NORMAL, TABLE_GRID, GRID_TABLE_4,
   bigTable} from './tbl-fixtures.mjs';

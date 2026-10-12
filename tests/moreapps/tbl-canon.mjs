@@ -22,10 +22,10 @@
 // every other cell block (an Opaque one: w:sdt...) are compared as
 // they are.
 import {isEl, blank, scope, wName} from
-  '../../tools/moreapps/!Word/Ns';
-import {readPara} from '../../tools/moreapps/!Word/ReadPara';
-import {paraNode} from '../../tools/moreapps/!Word/WritePara';
-import {ordered} from '../../tools/moreapps/!Word/WriteProps';
+  '../../tools/moreapps/!Letters/Ns';
+import {readPara} from '../../tools/moreapps/!Letters/ReadPara';
+import {paraNode} from '../../tools/moreapps/!Letters/WritePara';
+import {ordered} from '../../tools/moreapps/!Letters/WriteProps';
 
 const inside = (node, m) => node.attrs.length ? scope(m, node) : m;
 const pairs = (node) => node.attrs.map(([n, v]) => [n, v]);

@@ -1,4 +1,4 @@
-// !Word's Change case in the real desktop (./ChangeCase): Shift-F3 by
+// !Letters' Change case in the real desktop (./ChangeCase): Shift-F3 by
 // a real key cycles capitals -> small -> Title Case on the word at the
 // caret and on a selection, one undo step each (Ctrl-Z, Ctrl-Y by real
 // keys); plain F3 is still Save as; the Format > Change case menu (five
@@ -29,7 +29,7 @@ try {
     os.vfs.writeFile('RAM::RamDisc0.$.Case', new Uint8Array(f), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed);
     window.__st = () => {
       const d = window.__doc(), v = d.view, L = v.layout, h = v.selection?.head, a = v.selection?.anchor;
@@ -46,7 +46,7 @@ try {
       const d = window.__doc(), L = d.view.layout;
       d.view.setSelection({ id: L.items[i].id, off: o }, { id: L.items[j].id, off: o2 });
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Case');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);

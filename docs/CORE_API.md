@@ -238,8 +238,8 @@ no clipboard access, or a refusal (tell the user to press Ctrl-V). If the caret 
 is sent. Call both inside the user's gesture (the menu item's `click`/selection handler, synchronously for `exec`
 and starting there for `readClipboard`): browsers refuse clipboard access outside one.
 Not included yet: pictures and other rich types from the asynchronous clipboard (`readClipboard` gives text and
-HTML only), writing anything but text/plain, text/html and text/uri-list. The first user is !Word
-(`tools/moreapps/!Word/EditClip`, `docs/apps/Word.md` "Clipboard and Find"): `{text: true, blink: true}`, no
+HTML only), writing anything but text/plain, text/html and text/uri-list. The first user is !Letters
+(`tools/moreapps/!Letters/EditClip`, `docs/apps/Letters.md` "Clipboard and Find"): `{text: true, blink: true}`, no
 `clipboard: true`; it treats `html` as untrusted (an inert `DOMParser` document walked with a whitelist).
 Writable icons edit themselves (←/→, Home, Delete/Backspace, Copy(=End), Ctrl-U, ↑/↓/Tab between writables, `A`
 validation, `bufLen`); Return and unhandled keys reach your `key` handler. A character rejected by an icon's `A`
@@ -482,7 +482,7 @@ case (`'WimpLib/Zip'`), and every segment after it must match
 `/^[A-Za-z0-9_][A-Za-z0-9_-]*$/` (letters, digits, `_` and `-`), so the import stays in the directories searched: `..`,
 `.`, `^`, `$`, `@`, `<Var>`, `:`, `&`, `%`, backslash, wildcards, spaces, dotted names (`'wimplib/Zip.js'`) and
 empty segments are refused with "Can't find '<spec>' (a WimpLib module name is letters, digits, _ and -, with /
-between directories)" (the library is described in docs/apps/Word.md). The specifier `'gamelib/<Name>'` does
+between directories)" (the library is described in docs/apps/Letters.md). The specifier `'gamelib/<Name>'` does
 the same for GameLib, the game library `$.!Boot.Resources.!GameLib` (`resolveLib` in `src/core/jsrun.js` serves both
 prefixes from the `LIBS` table: `GameLib$Path`, `GameLib$Dir` and `GameLib$Version`, set by its `!Boot`): the search is
 the same, and so are the messages with `GameLib` for `WimpLib` ("Can't find 'gamelib/X' (not in GameLib$Path: ...)",
@@ -621,10 +621,10 @@ own entries in `assets/disc/manifest.json` (read, patch and write the manifest i
 import line; run after `disc-lander2`; the other `Diversions` entries stay as they are).
 `disc-wimplib` builds the library `$.!Boot.Resources.!WimpLib` (from `tools/moreapps/!WimpLib`; its manifest node
 inserted among the other `Resources` entries, which stay as they are) and runs before `disc-moreapps`, which builds
-`$.MoreApps` (`!Word`, from `tools/moreapps/`, removing the library's old `MoreApps.WimpLib`; fonts as Data
+`$.MoreApps` (`!Letters`, from `tools/moreapps/`, removing the library's old `MoreApps.WimpLib`; fonts as Data
 &FFD, sprites from `tools/moreapps/icon.mjs`) and adds one line each to `!Boot`'s (and `!ResetBoot`'s)
 `Choices.Boot.Desktop` (`Filer_Boot` of `Boot:^.MoreApps`) and `PreDesktop` (`AddApp Boot:^.MoreApps.!*`); it must
 run after `disc.mjs`, which rewrites those files (the desktop runs neither file: `src/main.js` does the
-same itself, `Repeat Filer_Boot` of `!Boot.Resources` and then of `$.MoreApps` when it exists, so `!Word`'s sprites
-and the .docx type &A7E are known from a cold boot; docs/apps/Word.md). `--check` checks the sources (Latin-1, no tabs or CR, 72 columns;
+same itself, `Repeat Filer_Boot` of `!Boot.Resources` and then of `$.MoreApps` when it exists, so `!Letters`' sprites
+and the .docx type &A7E are known from a cold boot; docs/apps/Letters.md). `--check` checks the sources (Latin-1, no tabs or CR, 72 columns;
 the fonts exempt).

@@ -4,7 +4,7 @@
 // models, which took over a gigabyte for an 18 MB real document).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 import {assertSameDoc, realDocxFiles, realDocxRoots}
   from './docx-compare.mjs';
@@ -79,10 +79,10 @@ describe('realDocxFiles', () => {
 
 describe('withNewParts: only the styles and numbering additions', () => {
   it('takes the new parts\' relationships, nothing else', async () => {
-    const {Document} = await import('../../tools/moreapps/!Word/Document');
-    const {Typing} = await import('../../tools/moreapps/!Word/Typing');
-    const {toggleList} = await import('../../tools/moreapps/!Word/ListMake');
-    const {writeDocx} = await import('../../tools/moreapps/!Word/DocxWrite');
+    const {Document} = await import('../../tools/moreapps/!Letters/Document');
+    const {Typing} = await import('../../tools/moreapps/!Letters/Typing');
+    const {toggleList} = await import('../../tools/moreapps/!Letters/ListMake');
+    const {writeDocx} = await import('../../tools/moreapps/!Letters/DocxWrite');
     const {expectedBack, withNewParts} = await import('./docx-compare.mjs');
     const {C} = await import('./edit-docs.mjs');
     const d = new Document(await readDocx(await buildDocx({

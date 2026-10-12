@@ -6,14 +6,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, emptyDoc, deepEqual, checkBlock, nextId}
-  from '../../tools/moreapps/!Word/Model';
-import {apply, applyOwn} from '../../tools/moreapps/!Word/Ops';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply, applyOwn} from '../../tools/moreapps/!Letters/Ops';
 import {locate, own, paraAt}
-  from '../../tools/moreapps/!Word/OpsPath';
-import * as U from '../../tools/moreapps/!Word/OpsUtil';
+  from '../../tools/moreapps/!Letters/OpsPath';
+import * as U from '../../tools/moreapps/!Letters/OpsUtil';
 import {at as walkAt, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
-import {stepEnd} from '../../tools/moreapps/!Word/EditApply';
+  from '../../tools/moreapps/!Letters/Walk';
+import {stepEnd} from '../../tools/moreapps/!Letters/EditApply';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const P = (t) => newPara(t);

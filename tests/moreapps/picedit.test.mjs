@@ -5,12 +5,12 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {withSize, withDescr, withDocPrIds, withEmbed}
-  from '../../tools/moreapps/!Word/PicEdit';
+  from '../../tools/moreapps/!Letters/PicEdit';
 import {dragSize, pxToEmu, MIN_EMU, MAX_EMU}
-  from '../../tools/moreapps/!Word/PicSize';
+  from '../../tools/moreapps/!Letters/PicSize';
 import {pictureOf, PIC_SCOPE, docMap}
-  from '../../tools/moreapps/!Word/PicRead';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/PicRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
 import {drawingXml, picDocx} from './pic-fixtures.mjs';
 

@@ -1,4 +1,4 @@
-// New-list round trip: documents changed with !Word's list-making
+// New-list round trip: documents changed with !Letters' list-making
 // commands (./FormatApply bullets and numbering with every gallery
 // entry and bad ones, listRestart with starts good and absurd,
 // listContinue; AutoFormat as you type: a marker typed at a

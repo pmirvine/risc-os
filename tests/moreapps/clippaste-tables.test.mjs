@@ -16,24 +16,24 @@
 //   - written: lints, reads back with the style (./TblStyle viewOf)
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
 import {sourceStyles, copyStyles, restyle, tableStyleIds, MAX_COPY}
-  from '../../tools/moreapps/!Word/TblStyleCopy';
-import {fitDepth} from '../../tools/moreapps/!Word/ClipPasteTbl';
+  from '../../tools/moreapps/!Letters/TblStyleCopy';
+import {fitDepth} from '../../tools/moreapps/!Letters/ClipPasteTbl';
 import {ids as allIds, walkBlocks}
-  from '../../tools/moreapps/!Word/Walk';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {usedDocPrIds} from '../../tools/moreapps/!Word/PicIds';
-import {viewOf} from '../../tools/moreapps/!Word/TblStyle';
-import {bookmarkNames} from '../../tools/moreapps/!Word/BookmarkFind';
-import {shapeOf} from '../../tools/moreapps/!Word/SelShape';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Walk';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {usedDocPrIds} from '../../tools/moreapps/!Letters/PicIds';
+import {viewOf} from '../../tools/moreapps/!Letters/TblStyle';
+import {bookmarkNames} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {shapeOf} from '../../tools/moreapps/!Letters/SelShape';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r, stylesXml, STRICT_W_NS} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, modelTable, freeze, nestedTable,
   TABLE_NORMAL, GRID_TABLE_4} from './tbl-fixtures.mjs';
@@ -44,8 +44,8 @@ import {lintPackage} from './lint-package.mjs';
 import {item} from './list-fixtures.mjs';
 import {sourceDocx, copyPaste, strictDocx}
   from './clip-lists-docs.mjs';
-import {readHtml} from '../../tools/moreapps/!Word/ClipRead';
-import {apart} from '../../tools/moreapps/!Word/ClipCleanTbl';
+import {readHtml} from '../../tools/moreapps/!Letters/ClipRead';
+import {apart} from '../../tools/moreapps/!Letters/ClipCleanTbl';
 import {parseHtml} from './html-fake.mjs';
 import {TBL_OPAQUE} from './tbl-fixtures.mjs';
 import {assertSameDoc, expectedBack} from './docx-compare.mjs';
@@ -370,10 +370,10 @@ describe('table styles across documents (TblStyleCopy)', () => {
     assert.ok(viewOf(back.styles, 'GridTable4'));
   });
 
-  it('Table Grid made by !Word (no raw) is copied by its fields',
+  it('Table Grid made by !Letters (no raw) is copied by its fields',
     async () => {
       const {insertTable} = await import(
-        '../../tools/moreapps/!Word/TblInsert');
+        '../../tools/moreapps/!Letters/TblInsert');
       const src = mk(['s', 'e']);
       insertTable(src, caretAt(tops(src)[0], 1), {cols: 2, rows: 1});
       assert.equal(src.doc.styles.styles.get('TableGrid').raw, null);

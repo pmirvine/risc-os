@@ -26,7 +26,7 @@ globalThis.__editPosFake = (l) => (l && forge.on
 
 registerHooks({
   load(url, ctx, next) {
-    if (!/\/(!|%21)Word\/EditPos$/.test(url)) return next(url, ctx);
+    if (!/\/(!|%21)Letters\/EditPos$/.test(url)) return next(url, ctx);
     const real = JSON.stringify(url + '?real');
     return {format: 'module', shortCircuit: true, source: [
       `import * as R from ${real};`,
@@ -42,7 +42,7 @@ registerHooks({
   },
 });
 
-const W = '../../tools/moreapps/!Word/';
+const W = '../../tools/moreapps/!Letters/';
 const EP = await import(W + 'EditPos');
 const {deepEqual, newPara} = await import(W + 'Model');
 const {at: walkAt, forEachBlock} = await import(W + 'Walk');

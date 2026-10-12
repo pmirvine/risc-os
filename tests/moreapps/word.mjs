@@ -1,12 +1,12 @@
-// The !Word stub in the real desktop: a .docx opened as a double-click
-// opens it starts !Word, which shows it and saves a faithful
-// copy (tools/moreapps/!Word). The fixtures are made here with
+// The !Letters stub in the real desktop: a .docx opened as a double-click
+// opens it starts !Letters, which shows it and saves a faithful
+// copy (tools/moreapps/!Letters). The fixtures are made here with
 // build-docx.mjs; the saved copy is checked in Node with readDocx.
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import path from 'node:path';
 import { launch, BASE_URL, SHOTS } from '../core/pw.mjs';
 import { buildDocx, documentXml, stylesXml, p, r, REL } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { assertSameDoc } from './docx-compare.mjs';
 
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
@@ -94,7 +94,7 @@ try {
     v.writeFile('RAM::RamDisc0.$.Big', new Uint8Array(c), { filetype: 0xA7E });
     const junk = new Uint8Array(500).map((_, i) => (i * 7919 + 13) & 255);
     v.writeFile('RAM::RamDisc0.$.Broken', junk, { filetype: 0xA7E });
-    window.__word = () => os.wimp.tasks.filter((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.filter((t) => t.alive && t.name === 'Letters');
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
   }, [Array.from(original), Array.from(second), Array.from(large)]);

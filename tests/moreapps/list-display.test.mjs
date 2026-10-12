@@ -6,16 +6,16 @@
 // fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
-import {paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
+import {paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {newStyleTable, addStyle, setDefault}
-  from '../../tools/moreapps/!Word/Styles';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/Styles';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, blocks} from './edit-docs.mjs';
 import {tm, loadStyles} from './word-docs.mjs';
 

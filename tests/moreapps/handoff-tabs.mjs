@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's tab stops (local
+// Generates the real-Word hand-off files for !Letters' tab stops (local
 // only, never committed: tests/moreapps/corpus/ is git-ignored). Not a
 // test:
 //
@@ -17,7 +17,7 @@
 //                       existing w:defaultTabStop rewritten), and a
 //                       Strict-style value in points
 //   tab-README.txt      what Word should show, the open questions
-// Everything is done with !Word's own commands (FormatApply 'tabs' and
+// Everything is done with !Letters' own commands (FormatApply 'tabs' and
 // 'tabsBox', the ids the ruler and the Tabs dialog run, and typing
 // with Tab) on a Document, as the window makes them. A file is
 // written only when its bytes change, so a file open in Word is left
@@ -27,16 +27,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {defaultStop, resolveTabs} from '../../tools/moreapps/!Word/TabStops';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {defaultStop, resolveTabs} from '../../tools/moreapps/!Letters/TabStops';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, settingsXml, p, r} from './build-docx.mjs';
 import {lintPackage} from './lint-package.mjs';
@@ -128,7 +128,7 @@ async function save(name, doc, about) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: the default tab',
+    'What !Letters wrote (read back from the saved file: the default tab',
     'stop, then each paragraph with > for a Tab, its own stops and',
     'the stops in force when they differ):',
     ...await describe(bytes));
@@ -175,7 +175,7 @@ function typeParas(s, texts) {
     'text at each stop: "left" starting at 1.5", "centre" centred on',
     '3", "right" ending at 4.5", "12.34" with its point at 6"; the',
     'leaders (dots, dashes, line, thick line, middle dots) filling the',
-    'space before the stop. In !Word the heavy leader is drawn twice',
+    'space before the stop. In !Letters the heavy leader is drawn twice',
     'as thick and the others as repeated characters (T9).',
   ]);
 }
@@ -273,7 +273,7 @@ const tabbed = (...parts) => '<w:r>' + parts.map((t, i) => (i ? '<w:tab/>' : '')
   await save('tab-3-ruler.docx', s.d.doc, [
     'A document with a "Price List" style that has a left stop at 1" and a',
     'right stop with dots at 5". Paragraph 2 had the style\'s 1" stop',
-    'removed (dragged off the ruler): !Word writes a clear stop',
+    'removed (dragged off the ruler): !Letters writes a clear stop',
     '(<w:tab w:val="clear" w:pos="1440"/>) in the paragraph\'s own stops,',
     'and the right stop stays (T10). Paragraph 3 added a centre stop at',
     '3" to the style\'s. Paragraphs 4..6 were made with the ruler (a',
@@ -316,11 +316,11 @@ const tabbed = (...parts) => '<w:r>' + parts.map((t, i) => (i ? '<w:tab/>' : '')
 // ------------------------------------------------------------ README
 
 const README = [
-  'Hand-off files for !Word\'s tab stops (Batch A, task A4). Made by',
-  'node tests/moreapps/handoff-tabs.mjs with !Word\'s own commands;',
+  'Hand-off files for !Letters\' tab stops (Batch A, task A4). Made by',
+  'node tests/moreapps/handoff-tabs.mjs with !Letters\' own commands;',
   'nothing here is committed. Open each file in real Word and answer',
   'the questions below; the lists under each file name are what',
-  '!Word really wrote.',
+  '!Letters really wrote.',
   '',
   'Tab positions are counted from the LEFT MARGIN (Word). Default',
   'stops come every <w:defaultTabStop> (0.5" if absent). On screen:',
@@ -333,7 +333,7 @@ const README = [
   '---------',
   'T1  Text after a right / centre / decimal tab that is wider than',
   '    the room between the text before it and the stop (tab-1, tab-2:',
-  '    "99.99" after a very long dish name). !Word: the tab takes no',
+  '    "99.99" after a very long dish name). !Letters: the tab takes no',
   '    width and the text follows the text before it. Word?',
   'T2  A list label that ends exactly at its indent puts the text at',
   '    the indent; a tab in the text that ends exactly at a stop goes',
@@ -353,13 +353,13 @@ const README = [
   '    last two paragraphs). Word?',
   'T7  A new w:defaultTabStop inserted into settings.xml when there',
   '    was none, and one written 72pt where the file had 0.5in (no',
-  '    file: !Word writes the first only when the settings part has',
+  '    file: !Letters writes the first only when the settings part has',
   '    none; tab-4 rewrites an existing one).',
-  'T8  The Paragraph box\'s Tabs... button: !Word opens the Tabs box',
+  'T8  The Paragraph box\'s Tabs... button: !Letters opens the Tabs box',
   '    and LEAVES the Paragraph box open with its own pending values;',
   '    Word applies the Paragraph box first and closes it. (No file.)',
   'T9  Leaders: dots, dashes (hyphen), underscore line, heavy line',
-  '    and middle dots (tab-1). Does each look like Word\'s? !Word',
+  '    and middle dots (tab-1). Does each look like Word\'s? !Letters',
   '    draws dots, hyphens and middle dots as repeated characters on',
   '    a grid counted from the margin, the line leaders as a line',
   '    (heavy twice as thick).',

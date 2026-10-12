@@ -21,14 +21,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
-import {mapNamespaces} from '../../tools/moreapps/!Word/NsMap';
+import {mapNamespaces} from '../../tools/moreapps/!Letters/NsMap';
 import {rootScope, strictScope, scope, wName, isEl}
-  from '../../tools/moreapps/!Word/Ns';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import {REASONS} from '../../tools/moreapps/!Word/TblRead';
+  from '../../tools/moreapps/!Letters/Ns';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {REASONS} from '../../tools/moreapps/!Letters/TblRead';
 import {CORPUS, ALL, hash, nameOf, SKIP_CORPUS} from './roundtrip-lib.mjs';
 import {checkFile, tablesOf, isTable, write} from './corpus-check.mjs';
 import {canonTbl, firstDiff} from './tbl-canon.mjs';

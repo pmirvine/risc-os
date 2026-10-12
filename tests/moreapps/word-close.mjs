@@ -1,4 +1,4 @@
-// !Word's close prompt and Revert in the real desktop: closing a
+// !Letters' close prompt and Revert in the real desktop: closing a
 // clean document closes it at once; a document with changes asks
 // Save / Discard / Cancel (WimpLib Ui/SaveQuery: buttons by icon
 // name, Return = Save, Escape and its close icon = Cancel, one at a
@@ -15,7 +15,7 @@
 // built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -55,7 +55,7 @@ try {
     window.__changed = b;
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
@@ -70,7 +70,7 @@ try {
   }, [Array.from(plain), Array.from(changed)]);
   await ev(async () => {
     window.__base = { windows: os.wimp.windows.size, tasks: os.wimp.tasks.filter((t) => t.alive).length };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
   });
 

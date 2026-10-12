@@ -1,9 +1,9 @@
-// MacKeys: Cmd as Ctrl for !Word's editing and format keys on a Mac
+// MacKeys: Cmd as Ctrl for !Letters' editing and format keys on a Mac
 // (never Cmd-R, Cmd-L, nor the clipboard's Cmd-C, Cmd-X, Cmd-V).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {isMac, macKey, macLabel, CMD} from '../../tools/moreapps/!Word/MacKeys';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
+import {isMac, macKey, macLabel, CMD} from '../../tools/moreapps/!Letters/MacKeys';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
 
 /** A 'key' event as the Wimp gives it for Cmd + key on a Mac. */
 const cmd = (key, o = {}) => ({code: key.codePointAt(0), key,

@@ -1,4 +1,4 @@
-// !Word's page in the real desktop: a new (Untitled) document shows a
+// !Letters' page in the real desktop: a new (Untitled) document shows a
 // whole white page, as Word does, not a page that ends with its text.
 // Opened from the icon bar's New (task.word.newUntitled) at the
 // default window size: the window is as tall as the page where the
@@ -34,7 +34,7 @@ try {
     os.wimp.reportError = rec;
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__d = null;
     /** A new Untitled document (paper 'a4' or 'letter') -> its test view, kept as window.__d. */
     window.__new = async (paper) => {
@@ -96,7 +96,7 @@ try {
       const d = window.__d, w = d.win, c = d.view.caretRect(), t = d.view.layout.top;
       return !!c && c.y >= w.scrollY + t && c.y + c.h <= w.scrollY + w.h;
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await window.__word().word.recentReady;
   });

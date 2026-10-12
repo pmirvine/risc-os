@@ -2,10 +2,10 @@
 // changing the document.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {slice, plainOf} from '../../tools/moreapps/!Word/ClipSlice';
+import {slice, plainOf} from '../../tools/moreapps/!Letters/ClipSlice';
 import {mk, C, SEL, snap, box, raw, O, bold, plain}
   from './edit-docs.mjs';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
 
 const two = ['abcdef', {runs: [{start: 0, end: 3, rPr: plain},
   {start: 3, end: 6, rPr: bold}]}];

@@ -6,10 +6,10 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {fill, patch, NAMES, ALIGNS, SPECIALS, LINES, LIMITS}
-  from '../../tools/moreapps/!Word/ParaPatch';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as F from '../../tools/moreapps/!Word/Format';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/ParaPatch';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as F from '../../tools/moreapps/!Letters/Format';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {parseLength, formatLength, parsePoints, formatPoints}
   from '../../tools/moreapps/!WimpLib/Units';
 import {mk, P, C, SEL, undoable} from './edit-docs.mjs';
@@ -191,7 +191,7 @@ describe('ParaPatch.patch', () => {
   });
   it('the patch is accepted by paraPatch (all its keys)', async () => {
     const {paraPatch} = await import(
-      '../../tools/moreapps/!Word/FormatCheck');
+      '../../tools/moreapps/!Letters/FormatCheck');
     const p = run(Q(), {align: 'right', left: 720, right: 360,
       special: 'hanging', by: 360, before: 120, after: 60,
       spacing: 'exactly', at: 14, noctx: true, widow: false,

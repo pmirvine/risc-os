@@ -10,20 +10,20 @@
 //   MAKE_KINDS  the kinds: bullets, numbering, restart, continue,
 //               autoformat (each also 'changed' / 'refused')
 import assert from 'node:assert/strict';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {setList} from '../../tools/moreapps/!Word/FormatSet';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {listOf} from '../../tools/moreapps/!Word/ParaInd';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {setList} from '../../tools/moreapps/!Letters/FormatSet';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {listOf} from '../../tools/moreapps/!Letters/ParaInd';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {rng} from './word-docs.mjs';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {afterSpace} from '../../tools/moreapps/!Word/AutoList';
-import {ENTRIES} from '../../tools/moreapps/!Word/ListGallery';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {deepEqual} from '../../tools/moreapps/!Word/ModelCheck';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {afterSpace} from '../../tools/moreapps/!Letters/AutoList';
+import {ENTRIES} from '../../tools/moreapps/!Letters/ListGallery';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {deepEqual} from '../../tools/moreapps/!Letters/ModelCheck';
 
 const pick = (rd, a) => a[Math.floor(rd() * a.length)];
 const BULLET_IDS = ENTRIES.filter((e) => e.kind === 'bullet')

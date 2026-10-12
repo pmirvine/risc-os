@@ -3,7 +3,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {TW_PX, MAX_PX, twToPx, widthTw, colsOf, cellBox, alignOf,
-  marginsOf, spacingOf} from '../../tools/moreapps/!Word/TblWidth';
+  marginsOf, spacingOf} from '../../tools/moreapps/!Letters/TblWidth';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const dxa = (w) => ({w, type: 'dxa'});

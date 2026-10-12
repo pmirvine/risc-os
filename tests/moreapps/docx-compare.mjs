@@ -9,15 +9,15 @@ import {tmpdir} from 'node:os';
 import {join, basename} from 'node:path';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {sortChildren} from '../../tools/moreapps/!Word/Order';
-import {NS} from '../../tools/moreapps/!Word/Wml';
-import {repairs} from '../../tools/moreapps/!Word/PartTypes';
-import {findPart} from '../../tools/moreapps/!Word/Rels';
-import {sectPrNode, hasProps} from '../../tools/moreapps/!Word/WriteProps';
-import {docScope} from '../../tools/moreapps/!Word/WriteBody';
-import {readSect} from '../../tools/moreapps/!Word/ReadSect';
-import {deepEqual, newPara} from '../../tools/moreapps/!Word/Model';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
+import {sortChildren} from '../../tools/moreapps/!Letters/Order';
+import {NS} from '../../tools/moreapps/!Letters/Wml';
+import {repairs} from '../../tools/moreapps/!Letters/PartTypes';
+import {findPart} from '../../tools/moreapps/!Letters/Rels';
+import {sectPrNode, hasProps} from '../../tools/moreapps/!Letters/WriteProps';
+import {docScope} from '../../tools/moreapps/!Letters/WriteBody';
+import {readSect} from '../../tools/moreapps/!Letters/ReadSect';
+import {deepEqual, newPara} from '../../tools/moreapps/!Letters/Model';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
 
 // the Default types ./WriteParts gives an extension it adds (its
 // BY_EXT, which it does not export)

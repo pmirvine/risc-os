@@ -1,4 +1,4 @@
-// !Word's borders, shading, symbols and change case against hostile
+// !Letters' borders, shading, symbols and change case against hostile
 // input in the real desktop: 50,000 bordered and shaded paragraphs in
 // one box (opened, painted, a keystroke, one command over all of
 // them and its undo); borders of width 0 and 96 eighths, spaces 0 and
@@ -22,7 +22,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const side = (n, c, v = 'single', sz = 12, space = 4) => `<w:${n} w:val="${v}" w:sz="${sz}" w:space="${space}" w:color="${c}"/>`;
 const box = (c, between) => `<w:pBdr>${side('top', c)}${side('left', c)}${side('bottom', c)}${side('right', c)}${between ? side('between', c) : ''}</w:pBdr>`;
@@ -76,7 +76,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.path.endsWith('.' + leaf));
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

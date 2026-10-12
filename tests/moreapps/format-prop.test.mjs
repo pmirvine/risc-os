@@ -15,17 +15,17 @@
 // Each kind of command is counted (run, and changed the document).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import * as F from '../../tools/moreapps/!Word/Format';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import * as F from '../../tools/moreapps/!Letters/Format';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {resolveRun, resolvePara, addStyle}
-  from '../../tools/moreapps/!Word/Styles';
-import {runFmt, fontName} from '../../tools/moreapps/!Word/Fmt';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Styles';
+import {runFmt, fontName} from '../../tools/moreapps/!Letters/Fmt';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
 import {rng} from './word-docs.mjs';
 import {mk, blocks, valid, snap, box, raw, O, S, plain}
   from './edit-docs.mjs';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 
 const FMTS = [plain, {b: true, extra: []}, {i: true, extra: []},
   {u: 'double', sz: 30, extra: []}, {vertAlign: 'superscript',
@@ -131,7 +131,7 @@ function setField(styles, para, ch, f, v) {
   const was = effOf(styles, para, ch).bold;
   const inh = inhOf(styles, para, ch);
   if (f === 'sz') {
-    // a size the style chain gives is not written (one only !Word's
+    // a size the style chain gives is not written (one only !Letters'
     // display default gives is); a size change keeps the text as
     // bold as it was (b only when needed)
     const szOf = () => ('sz' in ov ? ov.sz : inh.sz);

@@ -10,22 +10,22 @@
 // id is the table's.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {count} from '../../tools/moreapps/!Word/WordCount';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {usedNumIds} from '../../tools/moreapps/!Word/ListUsed';
-import {usedDocPrIds} from '../../tools/moreapps/!Word/PicIds';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {count} from '../../tools/moreapps/!Letters/WordCount';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {usedNumIds} from '../../tools/moreapps/!Letters/ListUsed';
+import {usedDocPrIds} from '../../tools/moreapps/!Letters/PicIds';
 import {marks, pairs, bookmarkNames, findBookmark, list}
-  from '../../tools/moreapps/!Word/BookmarkFind';
-import {goTo} from '../../tools/moreapps/!Word/Bookmarks';
-import {keptMarks} from '../../tools/moreapps/!Word/BookmarkKeep';
-import {orderedPos} from '../../tools/moreapps/!Word/EditPos';
+  from '../../tools/moreapps/!Letters/BookmarkFind';
+import {goTo} from '../../tools/moreapps/!Letters/Bookmarks';
+import {keptMarks} from '../../tools/moreapps/!Letters/BookmarkKeep';
+import {orderedPos} from '../../tools/moreapps/!Letters/EditPos';
 import {facts, summary, infoWindow}
-  from '../../tools/moreapps/!Word/Info';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/Info';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {blocks as walk, ids}
-  from '../../tools/moreapps/!Word/Walk';
-import {select} from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/Walk';
+import {select} from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, nestedTable, readOpaque}
   from './tbl-fixtures.mjs';

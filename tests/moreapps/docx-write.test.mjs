@@ -1,13 +1,13 @@
 // DocxWrite: writing the Model as a .docx that Word opens cleanly.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {newPara, newSection, emptyDoc, OBJ}
-  from '../../tools/moreapps/!Word/Model';
-import {ORDER} from '../../tools/moreapps/!Word/Order';
-import {NS} from '../../tools/moreapps/!Word/Wml';
+  from '../../tools/moreapps/!Letters/Model';
+import {ORDER} from '../../tools/moreapps/!Letters/Order';
+import {NS} from '../../tools/moreapps/!Letters/Wml';
 import {serialize} from '../../tools/moreapps/!WimpLib/Xml';
 import {buildDocx, documentXml, stylesXml, settingsXml, p, r, REL,
   STRICT_W_NS, STRICT_R_NS, W_NS} from './build-docx.mjs';

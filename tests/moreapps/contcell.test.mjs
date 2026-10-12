@@ -8,12 +8,12 @@
 // moves and typing never puts the caret or text in one.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {contOf, shown, firstPos, lastPos, cellPos, rowPos}
-  from '../../tools/moreapps/!Word/TblPos';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/TblPos';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
 import {loadStyles, tm, rng} from './word-docs.mjs';
 import {mk, S} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

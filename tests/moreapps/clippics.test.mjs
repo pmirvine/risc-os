@@ -1,4 +1,4 @@
-// ClipPics (Batch B, B7): pictures pasted between !Word documents
+// ClipPics (Batch B, B7): pictures pasted between !Letters documents
 // carry their media (a new part per source embed, the source's
 // extension, one relationship each, the target's Strict or
 // Transitional type), their r:embed and wp:docPr ids made afresh;
@@ -8,17 +8,17 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {picsOf, copyPics, freshDocPrs, MAX_PICS, MAX_PIC_BYTES}
-  from '../../tools/moreapps/!Word/ClipPics';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
-import {mediaOf} from '../../tools/moreapps/!Word/PicMedia';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {relKind} from '../../tools/moreapps/!Word/Rels';
+  from '../../tools/moreapps/!Letters/ClipPics';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
+import {mediaOf} from '../../tools/moreapps/!Letters/PicMedia';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {relKind} from '../../tools/moreapps/!Letters/Rels';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, p, r, STRICT_W_NS, STRICT_R_NS}
   from './build-docx.mjs';
@@ -556,7 +556,7 @@ describe('ClipPics: final review fixes', () => {
   /** Insert a picture, copy it (store entry), undo the insert. */
   async function insertCopyUndo(bytes) {
     const {insert} = await import(
-      '../../tools/moreapps/!Word/InsertPicture');
+      '../../tools/moreapps/!Letters/InsertPicture');
     const d = await open(await picDocx({pics: [], body: p(r('hello'))}));
     const sel = insert(d, C(d, 0, 5), {bytes});
     const store = new ClipStore();
@@ -601,7 +601,7 @@ describe('ClipPics: final review fixes', () => {
   it('A1: the same document with the media still there: shared, ' +
     'as before', async () => {
     const {insert} = await import(
-      '../../tools/moreapps/!Word/InsertPicture');
+      '../../tools/moreapps/!Letters/InsertPicture');
     const d = await open(await picDocx({pics: [], body: p(r('hello'))}));
     const sel = insert(d, C(d, 0, 5), {bytes: pngBytes(4, 2)});
     const {parts, rels} = d.doc;

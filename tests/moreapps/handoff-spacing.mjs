@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's paragraph
+// Generates the real-Word hand-off files for !Letters' paragraph
 // spacing (local only, never committed: tests/moreapps/corpus/ is
 // git-ignored). Not a test:
 //
@@ -13,7 +13,7 @@
 //   sp-3-flow.docx          keep with next, keep lines together,
 //                           widow control off, page break before
 //   sp-README.txt           what Word should show, the open questions
-// Everything is done with !Word's own commands (FormatApply's ids:
+// Everything is done with !Letters' own commands (FormatApply's ids:
 // what the keys Ctrl-1 / 2 / 5 / 0, the Format menu and the
 // Paragraph box run) on a Document, as the window makes them. A file
 // is written only when its bytes change, so a file open in Word is
@@ -24,14 +24,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {setPara} from '../../tools/moreapps/!Word/FormatSet';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {setPara} from '../../tools/moreapps/!Letters/FormatSet';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {p, r} from './build-docx.mjs';
 import {item, listDocx} from './list-fixtures.mjs';
@@ -123,7 +123,7 @@ async function save(name, doc, about) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: each paragraph,',
+    'What !Letters wrote (read back from the saved file: each paragraph,',
     'its style, and the values in twips (20 per point, 240 = one',
     'line when the rule is auto); "-" = not written, the style or',
     'Word\'s default applies):', ...await describe(bytes));
@@ -140,7 +140,7 @@ function typeParas(s, texts) {
 
 const LONG = ' text long enough to wrap onto a second and a third ' +
   'line, so that the distance between the lines shows clearly on the ' +
-  'page in Word as in !Word; the quick brown fox jumps over the lazy dog.';
+  'page in Word as in !Letters; the quick brown fox jumps over the lazy dog.';
 
 // ------------------------------------------------------------ 1: lines
 
@@ -163,7 +163,7 @@ const LONG = ' text long enough to wrap onto a second and a third ' +
   s.fmt('paraBox', s.caret(names[6]), {spacing: {line: 600,
     lineRule: 'atLeast'}});
   await save('sp-1-linespacing.docx', s.d.doc, [
-    'A new document (as !Word makes one: Calibri 11, 8 pt after,',
+    'A new document (as !Letters makes one: Calibri 11, 8 pt after,',
     '1.08 lines), eight wrapped paragraphs. Word should show, by the',
     'distance from one line to the next:',
     ' 1. single (240); 2. 1.15 (276); 3. one and a half (360);',
@@ -172,9 +172,9 @@ const LONG = ' text long enough to wrap onto a second and a third ' +
     ' 6. exactly 12 pt (240 exact) with the text at 18 pt: the lines',
     '    are 12 pt apart whatever the text size and the tops of the',
     '    letters are cut off (S5: where is the baseline, how much',
-    '    is cut, and does !Word draw the same?);',
+    '    is cut, and does !Letters draw the same?);',
     ' 7. at least 30 pt (600 atLeast): lines 30 pt apart;',
-    ' 8. the document default, which !Word shows as 1.08 lines (a',
+    ' 8. the document default, which !Letters shows as 1.08 lines (a',
     '    259 line? see S6).',
   ]);
 }
@@ -212,19 +212,19 @@ const LONG = ' text long enough to wrap onto a second and a third ' +
   s.fmt('spaceBefore', s.caret('Auto spacing after,'), 240);
   await save('sp-2-before-after.docx', s.d.doc, [
     'A document with the List Paragraph style (contextual spacing:',
-    'no space between two list items), opened and saved by !Word,',
-    'then spaced with !Word\'s commands. Word should show:',
+    'no space between two list items), opened and saved by !Letters,',
+    'then spaced with !Letters\' commands. Word should show:',
     ' - "Plain one": 12 pt before (Ctrl-0); "Plain two": none (Ctrl-0',
     '   twice: on, then off); "Plain three": 24 pt before and after;',
     ' - "Mixed one" got 12 pt before (Ctrl-0), "Mixed two" none; then',
-    '   Ctrl-0 on both: S1. !Word makes it 0 for both (one had',
+    '   Ctrl-0 on both: S1. !Letters makes it 0 for both (one had',
     '   space); is the same true in Word?;',
     ' - "Add space after": 12 pt after (S2: is Word\'s amount 12 pt?);',
     ' - the three list items: no space between them, the usual space',
     '   (8 pt) above the first and below the last (contextual',
     '   spacing);',
     ' - the two autospacing paragraphs came from HTML-made files. S3:',
-    '   !Word draws autospacing as 14 pt and keeps the flags when',
+    '   !Letters draws autospacing as 14 pt and keeps the flags when',
     '   only the line changes (the first, made double: the file shows',
     '   the raw w:spacing with line 480); setting a space before on',
     '   the second (240) removes beforeAutospacing and keeps',
@@ -253,17 +253,17 @@ const LONG = ' text long enough to wrap onto a second and a third ' +
     pageBreakBefore: false, widowControl: true});
   await save('sp-3-flow.docx', s.d.doc, [
     'A new document with eight paragraphs and the flow options of',
-    'the Paragraph box. !Word stores them and shows nothing yet (they',
+    'the Paragraph box. !Letters stores them and shows nothing yet (they',
     'matter when pages arrive). In Word\'s Paragraph dialogue box,',
     'Line and Page Breaks tab, the checkboxes should be:',
     ' 1. Keep with next on;  2. none;  3. Keep lines together on;',
     ' 4. Widow/Orphan control OFF (w:widowControl val 0);',
-    ' 5. as the document has it: S4, !Word treats a missing',
+    ' 5. as the document has it: S4, !Letters treats a missing',
     '    widowControl as ON. Is Widow/Orphan control ticked in Word',
     '    for paragraphs 1, 2 and 5 (nothing written)?',
     ' 6. Page break before on;  7. keep with next, keep lines,',
     '    page break before on and widow control off;',
-    ' 8. all options off again: !Word writes false for the first',
+    ' 8. all options off again: !Letters writes false for the first',
     '    three (w:val 0) and removes widowControl (back to the',
     '    default). Word: all as in 2?',
     'The page breaks (6, 7) should start new pages in Word.',
@@ -273,39 +273,39 @@ const LONG = ' text long enough to wrap onto a second and a third ' +
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word paragraph spacing hand-off (local only, not committed)',
+  '!Letters paragraph spacing hand-off (local only, not committed)',
   '============================================================',
   '',
   'Made by: node tests/moreapps/handoff-spacing.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten;',
+  'changing !Letters; files whose bytes are the same are not rewritten;',
   'no other file here is touched). Every file is a document spaced',
-  'with !Word\'s own commands (the ones Ctrl-1, Ctrl-2, Ctrl-5,',
+  'with !Letters\' own commands (the ones Ctrl-1, Ctrl-2, Ctrl-5,',
   'Ctrl-0, the Format menu and the Paragraph box run) and saved by',
-  '!Word. Open each in real Word: note any repair prompt or error,',
+  '!Letters. Open each in real Word: note any repair prompt or error,',
   'and whether what you see matches the description. Then the open',
-  'questions: there !Word does what Word is believed to do,',
+  'questions: there !Letters does what Word is believed to do,',
   'unverified.',
   '',
   'Open questions (please try each in real Word and note what it does):',
   '',
   'S1 Ctrl-0 on a selection of paragraphs with different space',
-  '   before (sp-2 "Mixed"). !Word: sets 0 unless every paragraph',
+  '   before (sp-2 "Mixed"). !Letters: sets 0 unless every paragraph',
   '   has none, then 12 pt. Word?',
-  'S2 Format > Line spacing > Add space after. !Word writes 12 pt',
+  'S2 Format > Line spacing > Add space after. !Letters writes 12 pt',
   '   (240 twips) after, as for before. Word\'s "Add Space After"',
   '   amount? (sp-2 "Add space after")',
   'S3 beforeAutospacing / afterAutospacing (HTML-made documents).',
-  '   !Word draws Auto as 14 pt, keeps the flags when only the line',
+  '   !Letters draws Auto as 14 pt, keeps the flags when only the line',
   '   spacing changes and removes the flag when a space is set',
   '   (sp-2 last two paragraphs). Word\'s amount and behaviour?',
-  'S4 widowControl absent everywhere. !Word treats it as on (Word\'s',
+  'S4 widowControl absent everywhere. !Letters treats it as on (Word\'s',
   '   default); turning it off writes w:widowControl w:val="0", on',
   '   again removes it (sp-3 paragraphs 4, 5, 8).',
-  'S5 Exact line spacing. !Word puts the baseline at 0.8 of the',
+  'S5 Exact line spacing. !Letters puts the baseline at 0.8 of the',
   '   line and clips the text to the line (sp-1 paragraph 6, 18 pt',
   '   text in 12 pt lines). Where does Word put the baseline and what',
   '   does it cut off? Is "at least 30 pt" (paragraph 7) the same?',
-  'S6 The default line spacing. !Word shows Normal\'s 259 (1.08',
+  'S6 The default line spacing. !Letters shows Normal\'s 259 (1.08',
   '   lines) as "Multiple 1.08" and draws it at that pitch; compare',
   '   sp-1 paragraph 8 with paragraph 1 (single) on the page.',
   ...lines,

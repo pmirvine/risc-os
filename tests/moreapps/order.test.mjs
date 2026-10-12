@@ -2,9 +2,9 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readFileSync} from 'node:fs';
 import {el} from '../../tools/moreapps/!WimpLib/Xml';
-import {ORDER, sortChildren, localName} from '../../tools/moreapps/!Word/Order';
+import {ORDER, sortChildren, localName} from '../../tools/moreapps/!Letters/Order';
 import {W, onOff, NS, STRICT_TO_TRANSITIONAL}
-  from '../../tools/moreapps/!Word/Wml';
+  from '../../tools/moreapps/!Letters/Wml';
 import {sequences, DEFAULT_XSD} from '../../tools/moreapps-xsdorder.mjs';
 
 const names = (kids) => kids.map((k) => (k.name ?? JSON.stringify(k)));

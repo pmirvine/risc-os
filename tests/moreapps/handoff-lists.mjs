@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's lists (local
+// Generates the real-Word hand-off files for !Letters' lists (local
 // only, never committed: tests/moreapps/corpus/ is git-ignored). Not a
 // test:
 //
@@ -8,30 +8,30 @@
 //   list-1-bullets.docx    bullets: Symbol, Courier New, Wingdings
 //   list-2-numbered.docx   number formats, counters, indents, labels
 //   list-3-multilevel.docx multilevel, legal, headings tied to a list
-//   list-4-edits.docx      a list edited with !Word's keys and menus
+//   list-4-edits.docx      a list edited with !Letters' keys and menus
 //   list-README.txt        what Word should show, the open questions
-// !Word cannot make numbering definitions, so files 1 to 3 are made
-// here as .docx (list-fixtures.mjs builders), opened by !Word's
-// reader and saved by its writer; file 4 is edited with !Word's own
+// !Letters cannot make numbering definitions, so files 1 to 3 are made
+// here as .docx (list-fixtures.mjs builders), opened by !Letters'
+// reader and saved by its writer; file 4 is edited with !Letters' own
 // commands (./EditApply.run for Tab, Shift-Tab, Backspace and Enter,
 // ./FormatApply for Format > List and Ctrl-M) as the window runs
 // them. A file is written only when its bytes change, so a file open
 // in Word is left alone; nothing else in the folder is touched or
 // removed. Each saved file is read back and every paragraph listed
-// in the README with the label and indents !Word draws, so the list
+// in the README with the label and indents !Letters draws, so the list
 // is what was really written.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {effective} from '../../tools/moreapps/!Word/ParaInd';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {effective} from '../../tools/moreapps/!Letters/ParaInd';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {numberingXml, p, r} from './build-docx.mjs';
 import {lvl, item, heading, listDocx, NUMBERING, LI} from './list-fixtures.mjs';
@@ -93,11 +93,11 @@ async function save(name, doc, about) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word shows (read back from the saved file: each paragraph,',
+    'What !Letters shows (read back from the saved file: each paragraph,',
     'its label, its numbering and where its text and first line start,',
     'in inches from the left margin):', ...await describe(bytes));
 }
-/** A .docx made here, opened and saved by !Word. */
+/** A .docx made here, opened and saved by !Letters. */
 const roundTrip = async (name, bytes, about) =>
   save(name, (await readDocx(bytes)), about);
 
@@ -126,7 +126,7 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
     'Bullets as Word\'s own lists use them: Symbol U+F0B7, Courier New',
     '"o", Wingdings U+F0A7 (square), and some other Wingdings and',
     'plain characters, one per level, each level 0.5" deeper (left',
-    '0.5" per level, hanging 0.25"). !Word maps the Symbol and',
+    '0.5" per level, hanging 0.25"). !Letters maps the Symbol and',
     'Wingdings private-use characters to Unicode glyphs (G5).',
   ]);
 }
@@ -180,10 +180,10 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
   ];
   await roundTrip('list-2-numbered.docx', await listDocx(paras,
     {numbering: NUM}), [
-    'Number formats and counters, opened and saved by !Word. The',
+    'Number formats and counters, opened and saved by !Letters. The',
     'paragraphs in the list use the List Paragraph style (left 0.5").',
     'The headings a. to k. say what each group tests; the item texts',
-    'are what !Word expects, a "?" where Word is unknown (G1..G9).',
+    'are what !Letters expects, a "?" where Word is unknown (G1..G9).',
   ]);
 }
 
@@ -230,7 +230,7 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
   await roundTrip('list-3-multilevel.docx', await listDocx(paras,
     {numbering: NUMBERING}), [
     'Multilevel lists, legal numbering and numbered headings (the',
-    'numbering of list-fixtures.mjs), opened and saved by !Word.',
+    'numbering of list-fixtures.mjs), opened and saved by !Letters.',
   ]);
 }
 
@@ -238,7 +238,7 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
 
 {
   const bytes = await listDocx([
-    p(r('Edited with !Word\'s keys and menus (see the README).')),
+    p(r('Edited with !Letters\' keys and menus (see the README).')),
     ...['Alpha', 'Bravo', 'Charlie', 'Delta'].map((t) => item(t, 2)),
     // (no style: Remove from list takes Foxtrot back to the margin,
     // Backspace keeps Echo's text at the level's 0.5")
@@ -278,7 +278,7 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
   key('tab', S.select({id: para('plain one').id, off: 0},
     {id: para('Juliet').id, off: 3}));
   await save('list-4-edits.docx', d.doc, [
-    'A list (numId 2: 1. a. i.) edited with !Word, one command each:',
+    'A list (numId 2: 1. a. i.) edited with !Letters, one command each:',
     ' - Tab at the start of "Bravo" (a.), twice at "Charlie" (i.);',
     ' - Tab then Shift-Tab (in the middle of the text) on "Delta":',
     '   back at a.;',
@@ -307,39 +307,39 @@ const BUL = [['', 'Symbol'], ['o', 'Courier New'],
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word lists hand-off (local only, not committed)',
+  '!Letters lists hand-off (local only, not committed)',
   '================================================',
   '',
   'Made by: node tests/moreapps/handoff-lists.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten;',
+  'changing !Letters; files whose bytes are the same are not rewritten;',
   'no other file here is touched). Files 1 to 3 are made by the',
-  'generator (!Word cannot make numbering definitions), opened and',
-  'saved by !Word; file 4 is edited with !Word\'s own commands. Open',
+  'generator (!Letters cannot make numbering definitions), opened and',
+  'saved by !Letters; file 4 is edited with !Letters\' own commands. Open',
   'each in real Word: note any repair prompt or error, and whether',
   'every paragraph shows the label listed below for it, with its',
   'text and first line where listed (Word: the ruler, or Paragraph',
-  'dialogue). Then the open questions: there !Word copies what Word',
+  'dialogue). Then the open questions: there !Letters copies what Word',
   'is believed to do, unverified.',
   '',
   'Open questions (please try each in real Word and note what it does):',
   '',
-  'G1 Letters after z. !Word: a b .. z, then aa bb .. zz, then aaa',
+  'G1 Letters after z. !Letters: a b .. z, then aa bb .. zz, then aaa',
   '   (the letter repeated), list-2 e. Word?',
-  'G2 Restart after a higher level. !Word: a deeper level restarts',
+  'G2 Restart after a higher level. !Letters: a deeper level restarts',
   '   when any higher level appears (list-3 a. and b.). Word?',
-  'G3 lvlRestart 0 (never restart): !Word keeps counting level 1',
+  'G3 lvlRestart 0 (never restart): !Letters keeps counting level 1',
   '   across level-0 items (list-3 b.: "c)"). Word?',
-  'G4 Two numIds sharing one abstractNum. !Word: they share one',
+  'G4 Two numIds sharing one abstractNum. !Letters: they share one',
   '   counter (list-2 b.: four, five); a startOverride restarts the',
   '   count once for that numId (list-2 c.); numId 1 after numId 3',
-  '   (list-2 d.): !Word shows 3. (the shared counter goes on from',
+  '   (list-2 d.): !Letters shows 3. (the shared counter goes on from',
   '   numId 3\'s count). What does Word show in b., c. and d.?',
-  'G5 Bullet glyphs. !Word maps Symbol U+F0B7 to a bullet, Courier',
+  'G5 Bullet glyphs. !Letters maps Symbol U+F0B7 to a bullet, Courier',
   '   New "o" to a white bullet U+25E6, Wingdings U+F0A7 to a small',
   '   square, U+F0D8 an arrow, U+F0FC a check mark, U+F076 a diamond,',
   '   other private-use characters to a bullet (list-1). Do the shapes',
   '   match Word\'s closely enough?',
-  'G6 A label wider than its hanging space (list-2 i.). !Word moves',
+  'G6 A label wider than its hanging space (list-2 i.). !Letters moves',
   '   the text to the next default tab stop, counted from the MARGIN',
   '   (0.5" stops), while tabs typed in text count from the',
   '   paragraph\'s left indent. Where does Word put the text?',
@@ -348,62 +348,62 @@ const README = [
   '   style\'s first-line/hanging; a level with no indent leaves the',
   '   style\'s; a direct indent wins. Same in Word?',
   'G8 Paragraph indents of headings tied to a list (list-3 d.):',
-  '   !Word uses the level\'s indent (left 0.3", 0.4", 0.5", hanging',
+  '   !Letters uses the level\'s indent (left 0.3", 0.4", 0.5", hanging',
   '   as much). Word?',
-  'G9 Right-aligned labels (lvlJc right, list-2 f. and h.). !Word',
+  'G9 Right-aligned labels (lvlJc right, list-2 f. and h.). !Letters',
   '   keeps the label inside the hanging space (right-aligned to the',
   '   text indent); a label wider than that starts at the first-line',
   '   position. Word right-aligns the number AT the indent and may',
   '   let 100. stick out to the left. Which?',
-  'G10 Backspace at the start of an item (list-4 Echo). !Word: the',
+  'G10 Backspace at the start of an item (list-4 Echo). !Letters: the',
   '   number goes, the paragraph stays, and its text stays where it',
   '   was drawn (the level\'s indent written as a direct one, the',
   '   hanging first line made 0) - when the label fitted its space.',
   '   A second Backspace joins it to the paragraph above. Word?',
-  'G11 Remove from list (list-4 Foxtrot): !Word returns the text to',
+  'G11 Remove from list (list-4 Foxtrot): !Letters returns the text to',
   '   its style\'s indent (as Word\'s Numbering button is believed',
   '   to). Word: does the text go back to the margin/style indent?',
-  'G12 Tab and Shift-Tab. !Word: at the start of an item (or on a',
+  'G12 Tab and Shift-Tab. !Letters: at the start of an item (or on a',
   '   selection of items) Tab goes one level deeper - to the next',
   '   level the list DEFINES (list-4 "Tab: to level 2", sparse',
   '   levels); Shift-Tab anywhere in an item goes one level up;',
   '   Shift-Tab on level 1 (the top) does nothing; Tab on level 9',
   '   (the last) does nothing and types no tab. Word?',
   'G13 Tab on a heading numbered by its style (list-4 "Heading two,',
-  '   Tab"). !Word writes a direct level and keeps Heading 2; Word is',
+  '   Tab"). !Letters writes a direct level and keeps Heading 2; Word is',
   '   believed to switch the style to Heading 3 (the level\'s',
   '   pStyle). What does Word do?',
-  'G14 isLgl (legal numbering, list-3 c.): !Word shows every number',
+  'G14 isLgl (legal numbering, list-3 c.): !Letters shows every number',
   '   of a legal level as decimal (Article I. then 1.1). Word?',
-  'G15 ilvl without numId (list-3 f.): !Word shows no number for',
+  'G15 ilvl without numId (list-3 f.): !Letters shows no number for',
   '   the List Paragraph one, and for the Heading 1 one takes numId',
   '   5 from the style with ilvl 1 (2.1-like). Word?',
-  'G16 numPr in a tracked change (list-3 g.): !Word shows the number',
+  'G16 numPr in a tracked change (list-3 g.): !Letters shows the number',
   '   (as if the change were accepted) and writes the change back as',
   '   it was. Word: the number shown with the change marked?',
-  'G17 A start value of 2^31 or a negative start: !Word shows them',
+  'G17 A start value of 2^31 or a negative start: !Letters shows them',
   '   as given (2147483648., -5). Word repairs or refuses such a',
   '   file? (not in these files: the hostile tests make them)',
   'G18 Enter in an empty item of a list numbered by its style',
-  '   (list-4: the empty Heading 1). !Word ends the list: it writes',
+  '   (list-4: the empty Heading 1). !Letters ends the list: it writes',
   '   numId 0 (the style stays) and adds no paragraph. Word: does it',
   '   end the list so, or remove the style, or add an item?',
-  'G19 Shift-Tab in the middle of an item. !Word promotes the item',
+  'G19 Shift-Tab in the middle of an item. !Letters promotes the item',
   '   (anywhere in it). Word: only at the start, or anywhere?',
   'G20 Tab at the start of an item of a single-level list, or on the',
-  '   deepest level. !Word does nothing (no tab typed). Word: does it',
+  '   deepest level. !Letters does nothing (no tab typed). Word: does it',
   '   indent the paragraph, or type a tab?',
   'G21 <w:numPr><w:numId w:val="0"/></w:numPr> with no ilvl, as',
-  '   !Word writes when it takes a style-numbered paragraph out of',
+  '   !Letters writes when it takes a style-numbered paragraph out of',
   '   its list (Enter as in G18, Backspace or Remove from list; the',
   '   empty Heading 1 of list-4). Does Word open it without repair',
   '   and show no number?',
-  'G22 The label\'s font. !Word draws the number in the format of the',
+  'G22 The label\'s font. !Letters draws the number in the format of the',
   '   paragraph\'s first run (the paragraph mark is not modelled) with',
   '   the level\'s own formatting over it. Word uses the paragraph',
   '   mark\'s: compare a list whose first word is bold or large.',
   'G23 Tab with a selection inside one item that starts at its first',
-  '   character. !Word demotes the item. Word: does it replace the',
+  '   character. !Letters demotes the item. Word: does it replace the',
   '   selection with a tab instead?',
   ...lines,
   '',

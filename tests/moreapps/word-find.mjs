@@ -1,4 +1,4 @@
-// !Word's Find and Replace in the real desktop (./EditFind, WimpLib
+// !Letters' Find and Replace in the real desktop (./EditFind, WimpLib
 // Ui/FindBox): Ctrl-F, F4 and Ctrl-H by real key presses open the one
 // Find box (a short one-line selection put in Find); typing and
 // Return find and select the next match, scrolled into view; Find
@@ -54,7 +54,7 @@ async function start(page, platform, open) {
     os.wimp.beep = () => { window.__beeps++; return beep(); };
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__find = () => window.__word().word.find;
     window.__box = () => window.__find().box;

@@ -16,16 +16,16 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {dragWidths, dragGrid, dragHeight, edgeAt, MIN_PX, EDGE,
-  MIN_ROW_PX} from '../../tools/moreapps/!Word/TblEdge';
-import {withCols} from '../../tools/moreapps/!Word/TblEditDist';
-import {colDragCmd, rowDragCmd} from '../../tools/moreapps/!Word/TblCmdCols';
-import {mergeCells, splitCell} from '../../tools/moreapps/!Word/TblMerge';
+  MIN_ROW_PX} from '../../tools/moreapps/!Letters/TblEdge';
+import {withCols} from '../../tools/moreapps/!Letters/TblEditDist';
+import {colDragCmd, rowDragCmd} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {mergeCells, splitCell} from '../../tools/moreapps/!Letters/TblMerge';
 import {insertCols, deleteCols}
-  from '../../tools/moreapps/!Word/TblEditCols';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/TblEditCols';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk, S, undoable} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

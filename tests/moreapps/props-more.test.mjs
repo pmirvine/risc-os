@@ -5,25 +5,25 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
-import {readPPr, readRPr} from '../../tools/moreapps/!Word/ReadProps';
-import {readSect} from '../../tools/moreapps/!Word/ReadSect';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
+import {readPPr, readRPr} from '../../tools/moreapps/!Letters/ReadProps';
+import {readSect} from '../../tools/moreapps/!Letters/ReadSect';
 import {pPrNode, rPrNode, sectPrNode}
-  from '../../tools/moreapps/!Word/WriteProps';
+  from '../../tools/moreapps/!Letters/WriteProps';
 import {PPR_FIELDS, RPR_FIELDS, SECT_FIELDS}
-  from '../../tools/moreapps/!Word/PropNames';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {paraLayers} from '../../tools/moreapps/!Word/Styles';
-import {DocxError} from '../../tools/moreapps/!Word/DocxError';
+  from '../../tools/moreapps/!Letters/PropNames';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {paraLayers} from '../../tools/moreapps/!Letters/Styles';
+import {DocxError} from '../../tools/moreapps/!Letters/DocxError';
 import {buildDocx, documentXml, stylesXml, p, r, W_NS, STRICT_W_NS,
   STRICT_R_NS}
   from './build-docx.mjs';
 import {entries, entryText} from './docx-compare.mjs';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply as fmt} from '../../tools/moreapps/!Word/FormatApply';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply as fmt} from '../../tools/moreapps/!Letters/FormatApply';
 import {C} from './edit-docs.mjs';
 
 const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';

@@ -1,13 +1,13 @@
 // The real-Word questions about tables (Batch C) and the hand-off files
 // they are asked of: one list for tb-README.txt, INDEX.txt and the
-// index in docs/apps/Word.md ("To check in real Word (tables,
+// index in docs/apps/Letters.md ("To check in real Word (tables,
 // consolidated)"). Not a test.
 //
 //   FILES  [name, what to try, [question ids]] in session order
 //   Q      [id, [files] | null, steps in Word]  one row per question;
 //          null: "(No file)": made in Word, or tried on any table
-//   SPEC   TB1..TB26: [id, question, what !Word does] (the spec's)
-// What !Word does for every other id is read from docs/apps/Word.md's
+//   SPEC   TB1..TB26: [id, question, what !Letters does] (the spec's)
+// What !Letters does for every other id is read from docs/apps/Letters.md's
 // detailed rows (beliefOf), so there is one text for each.
 import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
@@ -35,12 +35,12 @@ export const FILES = [
   ['tb-10-strict.docx', 'a Strict document: an authored table, Insert > Table, a merge, a resize, a Transitional table pasted', ['TB24', 'TBC6n']],
   ['tb-11-bookmarks.docx', 'bookmarks between rows, across cells and rows, in merges, over a deleted row, column or whole table', ['TB26', 'TBC4c']],
   ['tb-12-hostile-but-valid.docx', '63 columns, 100 rows and nesting 8: opens and scrolls', []],
-  ['tb-14-floating-bidi.docx', 'a floating table, bidiVisual and a btLr cell, a row with tblPrEx, each edited in !Word', ['TB20', 'TB21', 'TB23']],
+  ['tb-14-floating-bidi.docx', 'a floating table, bidiVisual and a btLr cell, a row with tblPrEx, each edited in !Letters', ['TB20', 'TB21', 'TB23']],
 ];
 
 const t = (n) => `Table ${n}`;
 export const Q = [
-  ['TB1', ['tb-13-roundtrip-merged.docx', 'tb-13-roundtrip-nested.docx', 'tb-13-roundtrip-styled.docx'], 'Open each in Word and in !Word (README: the corpus file each came from); compare the looks'],
+  ['TB1', ['tb-13-roundtrip-merged.docx', 'tb-13-roundtrip-nested.docx', 'tb-13-roundtrip-styled.docx'], 'Open each in Word and in !Letters (README: the corpus file each came from); compare the looks'],
   ['TB2', ['tb-1-insert.docx', 'tb-1b-existing.docx'], 'Open; Table Design and Table Properties show Table Grid, automatic width, equal columns. Make Insert > Table 3 x 4 in Word and compare'],
   ['TB3', ['tb-5-borders-shading.docx'], t(0) + ': which line does Word draw on each edge of the six rows?'],
   ['TB3a', ['tb-6-styles.docx'], 'Tables 7-13 (List Table 3): which conditional part gives each cell side (header, banding, corners)?'],
@@ -72,7 +72,7 @@ export const Q = [
   ['TB14', ['tb-3-merge-split.docx'], t(1) + ' and ' + t(2) + ': in Word split the centre cell into 2 x 2; the merged cell into 2 x 3'],
   ['TB15', ['tb-8-pasted.docx', 'tb-8-source.docx'], 'Copy source table B in Word; paste into a cell, and over 2 x 2 cells (Overwrite cells); compare with Target 2 and 3'],
   ['TB16', ['tb-9-convert.docx'], 'Select each group of lines and Convert Text to Table (commas, tabs, paragraphs); convert the tables back with Convert to Text'],
-  ['TB17', null, 'Copy a table from a browser page (colspan, rowspan) and from Word into !Word; and from !Word into Word (tb-8-source.docx opened in !Word)'],
+  ['TB17', null, 'Copy a table from a browser page (colspan, rowspan) and from Word into !Letters; and from !Letters into Word (tb-8-source.docx opened in !Letters)'],
   ['TB18', ['tb-4-widths.docx'], t(5) + ' and ' + t(7) + ': drag a column border and a row border in Word; look at the widths'],
   ['TB19', ['tb-4-widths.docx'], t(14) + ': an exact row 0.17 in high over three lines of text'],
   ['TB20', ['tb-14-floating-bidi.docx'], t(0) + ': the floating table: same place in Word?'],
@@ -107,17 +107,17 @@ export const Q = [
   ['TBC5c', ['tb-4-widths.docx'], t(11) + ': Table Properties > Column width on a dxa-width autofit table'],
   ['TBC5d', ['tb-4-widths.docx'], t(12) + ': Table Properties > Cell: preferred width 0.69 in'],
   ['TBC5e', ['tb-4-widths.docx'], t(13) + ': Table Properties > Indent from left -0.08 in'],
-  ['TBC5f', ['tb-3-merge-split.docx'], t(9) + ': vertical alignment of a merged cell (set to centre by !Word)'],
-  ['TBC5g', null, 'In !Word give a column a width under 0.02 in: refused; Word\'s own minimum?'],
+  ['TBC5f', ['tb-3-merge-split.docx'], t(9) + ': vertical alignment of a merged cell (set to centre by !Letters)'],
+  ['TBC5g', null, 'In !Letters give a column a width under 0.02 in: refused; Word\'s own minimum?'],
   ['TBC5h', ['tb-5-borders-shading.docx'], t(8) + ': Apply to Cell with None on the centre cell: the neighbours\' lines'],
   ['TBC5i', ['tb-5-borders-shading.docx'], t(8) + ' and ' + t(9) + ': a side turned off over the table\'s line'],
   ['TBC5j', ['tb-5-borders-shading.docx'], t(10) + ': Fill: No Color over a style\'s shading'],
   ['TBC5k', ['tb-5-borders-shading.docx'], t(6) + ': the box round the centre cell: the line\'s spacing'],
   ['TBC5l', ['tb-4-widths.docx'], t(5) + ': drag a column border in Word; compare the file'],
   ['TBC5m', ['tb-4-widths.docx'], t(6) + ': drag the table\'s right edge in Word'],
-  ['TBC5n', null, 'In !Word drag a column border to the left past 0.1 in; in Word try the same'],
+  ['TBC5n', null, 'In !Letters drag a column border to the left past 0.1 in; in Word try the same'],
   ['TBC5o', ['tb-4-widths.docx'], t(21) + ': a table whose grid is wider than its tblW, then a border dragged'],
-  ['TBC5p', null, 'In !Word type a length in Table Properties that differs by under 0.01 in: no change; in Word?'],
+  ['TBC5p', null, 'In !Letters type a length in Table Properties that differs by under 0.01 in: no change; in Word?'],
   ['TBC5q', ['tb-5-borders-shading.docx'], t(11) + ': the line drawn only by cell 2\'s left side; Borders and Shading on cell 1'],
   ['TBC5r', ['tb-5-borders-shading.docx'], t(12) + ': Apply to Table with None over cells that carry their own boxes'],
   ['TBC6a', ['tb-8-pasted.docx'], 'Target 3: table B pasted over 2 x 2 cells; the yellow centre cell'],
@@ -125,8 +125,8 @@ export const Q = [
   ['TBC6c', ['tb-8-pasted.docx'], 'Target 5: table B pasted into the innermost of 8 nested tables'],
   ['TBC6d', ['tb-8b-style-clash.docx'], 'Table A pasted into a document with another style of the same id'],
   ['TBC6e', ['tb-8-pasted.docx'], 'Target 4: table C pasted below a table with no paragraph between'],
-  ['TBC6f', null, 'Copy a table from a browser, Google Docs and Excel and paste it into !Word; then Word to !Word'],
-  ['TBC6g', ['tb-8-source.docx'], 'Open in !Word, copy table A or C, paste into Word (as HTML)'],
+  ['TBC6f', null, 'Copy a table from a browser, Google Docs and Excel and paste it into !Letters; then Word to !Letters'],
+  ['TBC6g', ['tb-8-source.docx'], 'Open in !Letters, copy table A or C, paste into Word (as HTML)'],
   ['TBC6h', ['tb-9-convert.docx'], 'The Y table: table to text with rows 2-3 selected'],
   ['TBC6i', ['tb-9-convert.docx'], 'The R1 lines: five pieces in a line, three columns asked'],
   ['TBC6j', ['tb-9-convert.docx'], 'The F0 paragraph and the field after it: text to table across the field'],
@@ -141,7 +141,7 @@ export const Q = [
 ];
 
 const SPEC = {
-  TB1: ['three Word-made corpus tables (merged cells, nested, styled) read and written by !Word, untouched', 'opens with no repair, looks the same (canonical property order, run rsids dropped)'],
+  TB1: ['three Word-made corpus tables (merged cells, nested, styled) read and written by !Letters, untouched', 'opens with no repair, looks the same (canonical property order, run rsids dropped)'],
   TB2: ['Insert > Table 3x4 in a new and in an existing document', 'Table Grid and TableNormal added once, tblW auto, tcW dxa, tblLook 04A0 + booleans; no repair; Word shows a gridded table of equal columns'],
   TB3: ['neighbours with single 4 / double 6 / thick 12 / dotted 24, colours, nil', 'the ECMA weight rule (D22); does Word draw the same winner per edge?'],
   TB4: ['Word\'s Grid Table 4 / List Table 3 with tblLook combinations (header row, first column, banded rows/columns, last row/column off and on)', 'D16\'s order; same colours and bold cells?'],
@@ -157,11 +157,11 @@ const SPEC = {
   TB14: ['split a plain cell 2x2 and a merged cell 3x1', 'grid/tcW/vMerge as D25'],
   TB15: ['a table pasted into a cell (nested) and over a 2x2 rectangle (overwrite)', 'as D28'],
   TB16: ['text to table by tabs/commas, a table with a two-paragraph cell to text', 'as D29'],
-  TB17: ['an HTML table with colspan/rowspan pasted from a browser, and a Word table copied in Word and pasted into !Word (and back)', 'D28 HTML in; widths, merges, shading'],
+  TB17: ['an HTML table with colspan/rowspan pasted from a browser, and a Word table copied in Word and pasted into !Letters (and back)', 'D28 HTML in; widths, merges, shading'],
   TB18: ['column boundary dragged; row height dragged', 'grid + tcW dxa, trHeight atLeast; same widths in Word?'],
   TB19: ['an exact row height shorter than its text', 'clipped to the cell'],
-  TB20: ['a floating table after !Word edited inside it', 'tblpPr kept: same position in Word'],
-  TB21: ['bidiVisual and textDirection btLr cells after editing', 'kept; shown LTR/horizontal by !Word'],
+  TB20: ['a floating table after !Letters edited inside it', 'tblpPr kept: same position in Word'],
+  TB21: ['bidiVisual and textDirection btLr cells after editing', 'kept; shown LTR/horizontal by !Letters'],
   TB22: ['Ctrl-Enter and a section break asked for in a cell', 'refused (beep); what does Word do?'],
   TB23: ['rows with tblPrEx (row-level borders)', 'kept, ignored in display: how much differs?'],
   TB24: ['Strict document, table inserted and borders set', 'start/end names, Strict namespaces, no repair'],
@@ -169,11 +169,11 @@ const SPEC = {
   TB26: ['a bookmark spanning rows (marks between rows) after a row delete', 'marks moved to the next row, pair kept'],
 };
 
-/** [question, what !Word does] of every id: TB1..TB26 as the spec has
- *  them, the others from docs/apps/Word.md's detailed rows. */
+/** [question, what !Letters does] of every id: TB1..TB26 as the spec has
+ *  them, the others from docs/apps/Letters.md's detailed rows. */
 export function beliefs() {
   const md = fs.readFileSync(fileURLToPath(new URL(
-    '../../docs/apps/Word.md', import.meta.url)), 'utf8');
+    '../../docs/apps/Letters.md', import.meta.url)), 'utf8');
   const from = md.indexOf('### To check in real Word (table styles');
   let to = md.indexOf('### To check in real Word (tables, consolidated)');
   if (to < 0) to = md.indexOf('## Known limitations and deferred items');
@@ -225,7 +225,7 @@ export const PRIORITY = [
     'TB5']],
   ['nil against none in borders and shading: a side turned off, ' +
     'Fill None over a style, Apply to Cell neighbours, cell spacing: ' +
-    'opens without repair and the lines are as !Word shows them.',
+    'opens without repair and the lines are as !Letters shows them.',
   ['tb-5-borders-shading.docx'], ['TBC5h', 'TBC5i', 'TBC5j', 'TBC5r',
     'TB3c']],
   ['Merged-cell structures: authored vMerge / gridSpan / gridBefore ' +
@@ -253,16 +253,16 @@ export const PRIORITY = [
   ['tb-11-bookmarks.docx'], ['TB26', 'TBC4c']],
   ['Rows and columns inserted beside header rows, a merge, a tblPrEx ' +
     'row and a 100% wide table; the Tab row and split table: no ' +
-    'repair, header and widths as !Word wrote them.',
+    'repair, header and widths as !Letters wrote them.',
   ['tb-2-rows-cols.docx'], ['TB9', 'TB12', 'TBC4a', 'TBC4b', 'TBC4l',
     'TBC4m', 'TBC4i']],
   ['Word-made tables read and written untouched (merged, nested, ' +
-    'styled): they must look the same in Word as before !Word saved ' +
+    'styled): they must look the same in Word as before !Letters saved ' +
     'them.', ['tb-13-roundtrip-merged.docx',
     'tb-13-roundtrip-nested.docx', 'tb-13-roundtrip-styled.docx'],
   ['TB1']],
   ['Kept and edited: the floating table, right-to-left table, btLr ' +
-    'cell and the row with its own borders after !Word edited inside ' +
+    'cell and the row with its own borders after !Letters edited inside ' +
     'them: same place and look in Word.',
   ['tb-14-floating-bidi.docx'], ['TB20', 'TB21', 'TB23']],
 ];

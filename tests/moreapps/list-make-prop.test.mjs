@@ -13,12 +13,12 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {toggleList, restart, continueList}
-  from '../../tools/moreapps/!Word/ListMake';
-import {setList} from '../../tools/moreapps/!Word/FormatList';
-import {entryOf} from '../../tools/moreapps/!Word/ListGallery';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {formatNumber} from '../../tools/moreapps/!Word/NumFormat';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+  from '../../tools/moreapps/!Letters/ListMake';
+import {setList} from '../../tools/moreapps/!Letters/FormatList';
+import {entryOf} from '../../tools/moreapps/!Letters/ListGallery';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {formatNumber} from '../../tools/moreapps/!Letters/NumFormat';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, box, blocks, C, SEL} from './edit-docs.mjs';
 
 /** Small seeded generator (mulberry32). */

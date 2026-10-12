@@ -7,12 +7,12 @@
 // nothing changes, 50,000 paragraphs, through FormatApply and Keymap.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {changeCase, caseState, MODES} from '../../tools/moreapps/!Word/ChangeCase';
-import {apply, isFormat} from '../../tools/moreapps/!Word/FormatApply';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import {changeCase, caseState, MODES} from '../../tools/moreapps/!Letters/ChangeCase';
+import {apply, isFormat} from '../../tools/moreapps/!Letters/FormatApply';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, texts, P, C, SEL, undoable, valid, box, O, snap, S} from './edit-docs.mjs';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 
 const bold = {b: true, extra: []}, plain = {extra: []};
 

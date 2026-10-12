@@ -2,8 +2,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {pictureOf, docMap, PIC_SCOPE, EMU_PX, MAX_EXT}
-  from '../../tools/moreapps/!Word/PicRead';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/PicRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {drawingXml, picDocx, URIS} from './pic-fixtures.mjs';
 

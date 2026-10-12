@@ -1,4 +1,4 @@
-// !Word's RISC OS function keys and Ctrl-S / Ctrl-N in the real
+// !Letters' RISC OS function keys and Ctrl-S / Ctrl-N in the real
 // desktop, by real key presses with the caret in a document: F2 and
 // Ctrl-N a new untitled document with the caret; Ctrl-F2 closes the
 // window (asking first when it has changes); F3 the Save as box near
@@ -15,7 +15,7 @@
 // tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v ? '' : ' ' + String(JSON.stringify(detail)).slice(0, 900)}`);
@@ -23,7 +23,7 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const plain = await buildDocx({ 'word/document.xml': documentXml(p(r('First line.')) + p(r('Second line.'))) });
 const texts = async (bytes) => (await readDocx(new Uint8Array(bytes))).sections.flatMap((s) => s.blocks.map((b) => b.text));
 
-/** Boot with navigator.platform = platform, Plain on the RAM disc, !Word running. */
+/** Boot with navigator.platform = platform, Plain on the RAM disc, !Letters running. */
 async function start(page, platform) {
   await page.addInitScript((pf) => { Object.defineProperty(Navigator.prototype, 'platform', { get: () => pf, configurable: true }); }, platform);
   await page.goto(BASE_URL + '?fast=1');
@@ -37,7 +37,7 @@ async function start(page, platform) {
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
     window.__until = async (f, ms = 3000) => { const t0 = performance.now(); while (!f() && performance.now() - t0 < ms) await window.__sleep(20); return !!f(); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__docs = () => window.__word().word.docs.filter((d) => !d.closed);
     window.__by = (leaf) => window.__docs().find((d) => d.leaf === leaf);
     window.__prompts = () => [...os.wimp.windows].filter((q) => q.isOpen && q.iconByName?.('button:Save') && q.iconByName('button:Discard'));
@@ -60,7 +60,7 @@ async function start(page, platform) {
       for (const d of window.__docs()) if (d.leaf !== keep) d.dw.close();
       await window.__frames(2);
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await window.__word().word.open('RAM::RamDisc0.$.Plain');
     await window.__frames(3);

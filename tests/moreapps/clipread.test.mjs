@@ -3,9 +3,9 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readHtml, readTree, LIMITS}
-  from '../../tools/moreapps/!Word/ClipRead';
-import {parseStyle} from '../../tools/moreapps/!Word/ClipCss';
-import {checkContent} from '../../tools/moreapps/!Word/ModelCheck';
+  from '../../tools/moreapps/!Letters/ClipRead';
+import {parseStyle} from '../../tools/moreapps/!Letters/ClipCss';
+import {checkContent} from '../../tools/moreapps/!Letters/ModelCheck';
 import {parseHtml, mkEl, mkText} from './html-fake.mjs';
 
 const read = (h) => readHtml(h, parseHtml);

@@ -9,8 +9,8 @@ import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {readZip, writeZip} from '../../tools/moreapps/!WimpLib/Zip';
 import * as Xml from '../../tools/moreapps/!WimpLib/Xml';
-import {ORDER, sortChildren} from '../../tools/moreapps/!Word/Order';
-import {W} from '../../tools/moreapps/!Word/Wml';
+import {ORDER, sortChildren} from '../../tools/moreapps/!Letters/Order';
+import {W} from '../../tools/moreapps/!Letters/Wml';
 
 describe('disc-style modules import natively', () => {
   // Node >= 22.7 is needed for extensionless ES modules (syntax detection).
@@ -21,8 +21,8 @@ describe('disc-style modules import natively', () => {
     const m = await readZip(await writeZip([['a', new Uint8Array([1])]]));
     assert.deepEqual([...m.get('a')], [1]);
   });
-  it("imports one inside !Word that imports 'wimplib/Xml'", () => {
-    // !Word/Wml imports 'wimplib/Xml'; Order is reached by the same path.
+  it("imports one inside !Letters that imports 'wimplib/Xml'", () => {
+    // !Letters/Wml imports 'wimplib/Xml'; Order is reached by the same path.
     assert.ok(ORDER.pPr.includes('jc'));
     const out = sortChildren('pPr', [W('jc'), W('pStyle')]);
     assert.equal(out[0].name, 'w:pStyle');

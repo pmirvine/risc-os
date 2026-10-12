@@ -1,10 +1,10 @@
-// Generates the real-Word hand-off files for !Word's documents (New,
+// Generates the real-Word hand-off files for !Letters' documents (New,
 // Save, Save as), local only, never committed: tests/moreapps/corpus/
 // is git-ignored. Not a test:
 //
 //   node tests/moreapps/handoff-documents.mjs
 //
-// It runs !Word in the real desktop (Playwright; the static server is
+// It runs !Letters in the real desktop (Playwright; the static server is
 // started if it is not running; needs the disc built by
 // tools/disc-moreapps.mjs) and writes into
 // tests/moreapps/corpus/handoff/ (made if missing):
@@ -14,12 +14,12 @@
 //                       saved from the Save box
 //   saved-1-edited.docx a rich document (edit-rich.mjs: headings,
 //                       lists, a table, a link, two sections) opened
-//                       in !Word, edited with the keyboard, saved with
+//                       in !Letters, edited with the keyboard, saved with
 //                       Save (back to its own file)
 //   saved-2-as.docx     that window edited again, saved with Save as
 //                       under a new name
 //   doc-README.txt      what Word should show, the open questions
-// Every file is the bytes !Word wrote to its disc (read back out of
+// Every file is the bytes !Letters wrote to its disc (read back out of
 // the desktop's filing system), checked here with readDocx and the
 // package linter. A file is written only when its bytes change (the
 // dates inside change on every run); nothing else in the folder is
@@ -29,7 +29,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {launch, BASE_URL} from '../core/pw.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {richDocx} from './edit-rich.mjs';
 import {lintPackage} from './lint-package.mjs';
@@ -68,7 +68,7 @@ try {
     os.vfs.writeFile('RAM::RamDisc0.$.Rich', new Uint8Array(rich), {filetype: 0xA7E});
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (p) => Array.from(await os.vfs.readFile(p));
     window.__box = (d) => d.win.menu({}).items.find((i) => i.text === 'Save as').submenu();
@@ -81,7 +81,7 @@ try {
       box.emit('click', {icon: box.icons[0], button: 'select'});
       return p;
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
   }, Array.from(await richDocx()));
 
@@ -101,7 +101,7 @@ try {
     window.__by(u.leaf).dw.view.focus();
     await window.__frames(2);
   });
-  await page.keyboard.type('A new document typed in !Word.');
+  await page.keyboard.type('A new document typed in !Letters.');
   await page.keyboard.press('Enter');
   await page.keyboard.type('This line has ');
   await page.keyboard.press('Control+b');
@@ -134,7 +134,7 @@ try {
   await page.keyboard.type('Edited: ');
   await page.keyboard.press('End');
   await page.keyboard.press('Enter');
-  await page.keyboard.type('A paragraph added after the title by !Word.');
+  await page.keyboard.type('A paragraph added after the title by !Letters.');
   files['saved-1-edited.docx'] = await ev(async () => {
     const d = window.__by('Rich');
     d.win.menu({}).items.find((i) => i.text === 'Save').action();
@@ -176,7 +176,7 @@ const show = (t) => [...t.replace(/\t/g, '<tab>').replace(/\n/g, '<br>')
   : '<U+' + c.codePointAt(0).toString(16).toUpperCase().padStart(4, '0') +
     '>')).join('');
 
-/** What a saved file holds, as !Word reads it back. */
+/** What a saved file holds, as !Letters reads it back. */
 async function describe(name, about) {
   const bytes = new Uint8Array(files[name]);
   const doc = await readDocx(bytes);
@@ -187,7 +187,7 @@ async function describe(name, about) {
   const s = doc.sections[doc.sections.length - 1];
   const pg = s.props && s.props.pgSz;
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word read back from the saved file (paragraph: style, text;',
+    'What !Letters read back from the saved file (paragraph: style, text;',
     'runs that are bold or italic are marked; <U+XXXX> a character',
     'that is not ASCII):');
   let k = 0;
@@ -210,13 +210,13 @@ async function describe(name, about) {
   }
 }
 
-say('!Word documents hand-off (local only, not committed)',
+say('!Letters documents hand-off (local only, not committed)',
   '====================================================',
   '',
   'Made by: node tests/moreapps/handoff-documents.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten,',
+  'changing !Letters; files whose bytes are the same are not rewritten,',
   'but the dates inside a new document change on every run). Each',
-  'file was written by !Word itself in the desktop (New, typing with',
+  'file was written by !Letters itself in the desktop (New, typing with',
   'the keyboard, Save, the Save box\'s OK, Save as) and copied out of',
   'its filing system. Open each in real Word: note any repair prompt',
   'or error, and whether what you see matches the description. Then',
@@ -238,7 +238,7 @@ await describe('saved-1-edited.docx', [
   'A rich document (made by tests/moreapps/edit-rich.mjs: Heading 1,',
   'bold/italic, a link, a numbered and a bulleted list, a table,',
   'Heading 2, a tab, a line break, accents and an emoji, two sections)',
-  'opened in !Word: "Edited: " typed at the start of the title, End,',
+  'opened in !Letters: "Edited: " typed at the start of the title, End,',
   'Enter, a new paragraph typed, then Save (back to the same file).',
   'Word should show everything the original has (lists numbered,',
   'the table, the link working, the second section on a new page),',
@@ -253,17 +253,17 @@ say('',
   'Open questions (please try each in real Word and write down what',
   'Word does):',
   '',
-  'D1 Repair prompt. Do new-1 and new-2 (documents !Word made from',
+  'D1 Repair prompt. Do new-1 and new-2 (documents !Letters made from',
   '   nothing) open without "Word found unreadable content" or any',
   '   other prompt? And saved-1 / saved-2?',
   'D2 Default look. Is new-1 exactly a blank Word document: Calibri',
   '   (Body) 11, spacing after 8 pt, line spacing 1.08, margins 1"',
   '   (Layout > Margins > "Normal"), paper A4? Style gallery: Normal,',
   '   No Spacing, Heading 1, Heading 2, Title...? Anything different?',
-  'D3 A4 or Letter. !Word\'s New is A4 (the icon bar menu and the',
+  'D3 A4 or Letter. !Letters\' New is A4 (the icon bar menu and the',
   '   window menu); app.newDoc({paper: \'letter\'}) gives Letter.',
   '   Should New follow the locale (Letter in the US)?',
-  'D4 Properties. File > Info: !Word writes no author (dc:creator),',
+  'D4 Properties. File > Info: !Letters writes no author (dc:creator),',
   '   "Last modified by" Word, the created and modified times of New,',
   '   and does NOT update the modified time or "last modified by"',
   '   when it saves an existing document (docProps as read). Does Word',

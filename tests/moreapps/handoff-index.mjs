@@ -12,9 +12,9 @@
 // tests/moreapps/corpus/handoff/ and says, by deliverable, which file
 // to open, which README has its questions, and what to try, in the
 // order for one session in real Word. For every file that exists it
-// gives the size and the word count !Word shows (Edit > Word count,
+// gives the size and the word count !Letters shows (Edit > Word count,
 // whole document) to compare with Word's, for the pictures the
-// number of pictures !Word reads in it and for the tables the number
+// number of pictures !Letters reads in it and for the tables the number
 // of tables (at every depth) and of cells. A file that is listed but
 // missing is reported (and left out of the counts); nothing else in
 // the folder is touched. INDEX.txt is written only when its bytes
@@ -22,9 +22,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {count} from '../../tools/moreapps/!Word/WordCount';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {count} from '../../tools/moreapps/!Letters/WordCount';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
 import {FILES as TB_FILES, Q as TB_Q, PRIORITY as TB_PRIORITY,
   PRIORITY_LABELS as TB_LABELS} from './handoff-tables-q.mjs';
 
@@ -67,25 +67,25 @@ const SETS = [
       ['bm-1-bookmarks.docx', 'bookmarks over words, paragraphs, a caret, nested, overlapping, moved; hidden ones'],
       ['paint-1.docx', 'the format painter: a drag, a replaced format, a paragraph format, a list item']]},
   {id: 'B', title: 'Pictures', readme: 'pic-README.txt', extra: 'PI*',
-    expect: ['!Word expects: no repair prompt for any of these files; each',
+    expect: ['!Letters expects: no repair prompt for any of these files; each',
       'picture at the size, docPr id and alt text pic-README.txt lists',
-      'under "What !Word wrote"; 16 questions (PI1..PI9, PI*, P1..P6),',
+      'under "What !Letters wrote"; 16 questions (PI1..PI9, PI*, P1..P6),',
       'of which PI9, PI* and P1..P5 have no file. Order: steps 1 to 8',
       'of pic-README.txt, the files in the order below.'],
     pics: true,
     files: [
       ['pic-1-inserted.docx', 'PNG, JPEG and GIF from Insert > Picture...: sizes in Size and Position (PI1)'],
       ['pic-2-resized.docx', 'a corner and an edge resize, alt text: Word shows 3 x 1.5 in and 2 x 2 in (PI2)'],
-      ['pic-2b-real.docx', 'a Word-made picture resized and given alt text in !Word (PI2)'],
+      ['pic-2b-real.docx', 'a Word-made picture resized and given alt text in !Letters (PI2)'],
       ['pic-3-strict.docx', 'a Strict document with a picture: opens and stays Strict (PI3)'],
-      ['pic-4-dpi.docx', 'Size > Reset equals !Word\'s natural sizes for 300, 72 dpi and dpcm (PI4)'],
+      ['pic-4-dpi.docx', 'Size > Reset equals !Letters\' natural sizes for 300, 72 dpi and dpcm (PI4)'],
       ['pic-5-floating.docx', 'a floating picture keeps its place and wrap; alt text set (PI5)'],
       ['pic-6-source.docx', 'where the pasted picture came from (PI8)'],
       ['pic-6-pasted.docx', 'duplicate docPr ids kept, pasted pictures with fresh ids, crop and alt text (PI6, PI8, P6)'],
       ['pic-7-deleted.docx', 'a deleted picture\'s media part and relationship left: no repair (PI7)']]},
   {id: 'C', title: 'Tables', readme: 'tb-README.txt', tables: true,
-    expect: ['!Word expects: no repair prompt for any of these files; each',
-      'table as tb-README.txt lists it under "What !Word wrote" (the',
+    expect: ['!Letters expects: no repair prompt for any of these files; each',
+      'table as tb-README.txt lists it under "What !Letters wrote" (the',
       'caption above a table says what was done to it). ' + TB_Q.length,
       'questions (TB1..TB26, their sub-questions TB3a.., the readings',
       'TBC4a.., TBC5a.., TBC6a.. and TBX1..), of which ' +
@@ -103,7 +103,7 @@ const SETS = [
 ];
 
 
-/** The pictures !Word reads in doc (every paragraph, any kind). */
+/** The pictures !Letters reads in doc (every paragraph, any kind). */
 function picCount(doc) {
   const map = docMap(doc);
   let k = 0;
@@ -148,12 +148,12 @@ const out = [
   'Batch A, B and C hand-off for real Word: every file, by deliverable',
   '===================================================================',
   '',
-  'All of these are made by !Word\'s own commands (the generators are',
+  'All of these are made by !Letters\' own commands (the generators are',
   'tests/moreapps/handoff-*.mjs; this list by handoff-index.mjs) and',
   'live only here: this folder is never committed. Open each file in',
   'real Word, note any repair prompt, compare what you see with the',
   'description in its README, and answer the README\'s questions. The',
-  'READMEs also list, paragraph by paragraph, what !Word really wrote.',
+  'READMEs also list, paragraph by paragraph, what !Letters really wrote.',
   '',
   'Suggested order for one session',
   '-------------------------------',
@@ -164,7 +164,7 @@ const out = [
   '   pictures, then C, the tables), reading the',
   '   README first and answering its questions with the files open.',
   '   Questions with "(No file)" are done by making the thing in Word',
-  '   and opening the result in !Word, or the reverse.',
+  '   and opening the result in !Letters, or the reverse.',
   '3. Word counts: for each file Word\'s Review > Word Count should',
   '   match the figures below (words, characters with and without',
   '   spaces, paragraphs). A difference is question W1..W4 of',
@@ -197,7 +197,7 @@ for (const set of SETS) {
     const c = count(doc);
     out.push(`  ${String(++n).padStart(2)}. ${name}   (${bytes.length} bytes)`,
       `      try: ${what}`,
-      `      !Word counts: ${c.words} words, ${c.charsNoSpaces} characters ` +
+      `      !Letters counts: ${c.words} words, ${c.charsNoSpaces} characters ` +
       `without spaces, ${c.chars} with, ${c.paras} paragraphs` +
       (set.pics ? `, ${picCount(doc)} pictures` : '') +
       (set.tables ? ', ' + (({tables, cells}) => `${tables} table${tables === 1 ? '' : 's'}, ` +
@@ -208,7 +208,7 @@ for (const set of SETS) {
 }
 out.push('Not covered by any file: the questions marked "(No file)" in the',
   'READMEs, and everything Word does with a link\'s address when you',
-  'click it (!Word never opens links).', '');
+  'click it (!Letters never opens links).', '');
 const text = Buffer.from(out.join('\n'), 'utf8');
 const f = path.join(DIR, 'INDEX.txt');
 const how = fs.existsSync(f) && fs.readFileSync(f).equals(text) ? 'same' : 'written';

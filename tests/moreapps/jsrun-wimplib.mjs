@@ -71,11 +71,11 @@ try {
       + "  const m = await readZip(z);\n"
       + "  print(new TextDecoder().decode(m.get('a')) + ' '"
       + " + crc32(new TextEncoder().encode('123456789')).toString(16));\n}\n");
-    res.beside = await run('ADFS::HardDisc4.$.MoreApps.!Word.Try', head
+    res.beside = await run('ADFS::HardDisc4.$.MoreApps.!Letters.Try', head
       + "import { crc32 } from 'wimplib/Crc32';\n"
       + "export default function start() {\n"
       + "  print(crc32(new Uint8Array([97])).toString(16));\n}\n");
-    v.delete('ADFS::HardDisc4.$.MoreApps.!Word.Try');
+    v.delete('ADFS::HardDisc4.$.MoreApps.!Letters.Try');
     // relative imports are unaffected: ./Helper (which imports the
     // library itself) beside the program
     v.writeFile(D + 'Helper', "import { crc32 } from 'wimplib/Crc32';\n"
@@ -146,10 +146,10 @@ try {
     // and waits on the icon bar, with nothing to say
     msgs.length = 0;
     globalThis.__riscos.reportError = os.wimp.reportError;
-    await os.filer.run('ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.filer.run('ADFS::HardDisc4.$.MoreApps.!Letters');
     await sleep(1000);
     res.app = [...msgs];
-    const word = os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    const word = os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     res.icon = !!word && word.iconbarIcons.size === 1;
     word?.quit();
     res.type = os.sysvars.get('File$Type_A7E');
@@ -170,7 +170,7 @@ try {
     ok(`'${spec}' is refused`, msgs.length === 1 && msgs[0].includes(want), msgs);
   }
   ok("'WimpLib/Zip' and 'WIMPLIB/CRC32' (any case)", !r.upper.msgs.length && r.upper.text === 'ok cbf43926\n', r.upper);
-  ok("'wimplib/Crc32' from $.MoreApps.!Word", !r.beside.msgs.length && r.beside.text === 'e8b7be43\n', r.beside);
+  ok("'wimplib/Crc32' from $.MoreApps.!Letters", !r.beside.msgs.length && r.beside.text === 'e8b7be43\n', r.beside);
   ok("relative imports are unaffected ('./Helper' imports 'wimplib/Crc32')", !r.relative.msgs.length && r.relative.text === 'e8b7be43\n', r.relative);
   ok('the system Hello, with WimpLib$Path as !Boot sets it', !r.system.msgs.length && r.system.text === 'system e8b7be43\n', r.system);
   ok('a directory first in WimpLib$Path is searched first', r.pathValue === `RAM::RamDisc0.$.MyLib.,${r.keep.dir}.` && !r.mine.msgs.length && r.mine.text === 'mine e8b7be43\n', [r.pathValue, r.mine]);
@@ -187,8 +187,8 @@ try {
   ok('!Boot sets them again', r.restored[0] === LIB && r.restored[1] === LIB + '.', r.restored);
   ok('<WimpLib$Dir>.Zip and WimpLib:Zip name the module', r.cli);
   ok('double-clicking !WimpLib shows its !Help', !r.help.msgs.length && r.help.open, r.help);
-  ok('!Word starts, on the icon bar, without errors', !r.app.length && r.icon, [r.app, r.icon]);
-  ok('!Word knows .docx files', r.type === 'MSWordX' && /MoreApps\.!Word\.!Run %\*0$/.test(r.alias ?? ''), [r.type, r.alias]);
+  ok('!Letters starts, on the icon bar, without errors', !r.app.length && r.icon, [r.app, r.icon]);
+  ok('!Letters knows .docx files', r.type === 'MSWordX' && /MoreApps\.!Letters\.!Run %\*0$/.test(r.alias ?? ''), [r.type, r.alias]);
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }

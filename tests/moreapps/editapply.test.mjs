@@ -3,10 +3,10 @@
 // edit.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {mk, texts, ids, C, SEL, box} from './edit-docs.mjs';
 import {tm} from './word-docs.mjs';
 

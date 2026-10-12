@@ -24,22 +24,22 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {serialize} from '../../tools/moreapps/!WimpLib/Xml';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {insertTable, tableGridStyles, layoutTw}
-  from '../../tools/moreapps/!Word/TblInsert';
-import {columnTw} from '../../tools/moreapps/!Word/SectWidth';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/TblInsert';
+import {columnTw} from '../../tools/moreapps/!Letters/SectWidth';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {tm} from './word-docs.mjs';
 import {deleteTableCmd, TABLE}
-  from '../../tools/moreapps/!Word/TblCmdCols';
-import {builtinStyle} from '../../tools/moreapps/!Word/StylesBuiltin';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+  from '../../tools/moreapps/!Letters/TblCmdCols';
+import {builtinStyle} from '../../tools/moreapps/!Letters/StylesBuiltin';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {ids as allIds, forEachBlock, at as walkAt}
-  from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/Walk';
 import {MAX_COLS, MAX_ROWS, MAX_TW}
-  from '../../tools/moreapps/!Word/TblCheck';
+  from '../../tools/moreapps/!Letters/TblCheck';
 import {mk, undoable, S} from './edit-docs.mjs';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, nestedTable, tableXml, TABLE_NORMAL,
@@ -398,7 +398,7 @@ describe('StylesBuiltin table styles', () => {
   });
   it('ensureBuiltins does not add them', async () => {
     const {ensureBuiltins} = await import(
-      '../../tools/moreapps/!Word/StylesBuiltin');
+      '../../tools/moreapps/!Letters/StylesBuiltin');
     const s = ensureBuiltins({styles: new Map(), defaults: {}});
     assert.ok(!s.styles.has('TableGrid'));
   });

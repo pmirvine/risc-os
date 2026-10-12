@@ -1,4 +1,4 @@
-// !Word's format painter in the real desktop (./PaintBind,
+// !Letters' format painter in the real desktop (./PaintBind,
 // ./FormatPaint), with real clicks, drags and keys: the toolbar's
 // row 2 Format painter button (Select: once, Adjust (Shift-click in
 // this mapping): sticky until Escape or another click on the button),
@@ -61,7 +61,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = () => window.__word()?.word.docs.find((d) => d.path.endsWith('.Pt'));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -98,7 +98,7 @@ try {
     window.__beeps = 0;
     const beep = os.wimp.beep.bind(os.wimp);
     os.wimp.beep = () => { window.__beeps++; return beep(); };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Pt');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);

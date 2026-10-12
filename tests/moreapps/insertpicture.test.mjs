@@ -6,16 +6,16 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insert, pictureXml}
-  from '../../tools/moreapps/!Word/InsertPicture';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
-import {mediaOf} from '../../tools/moreapps/!Word/PicMedia';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {OBJ} from '../../tools/moreapps/!Word/Model';
-import {select, caret} from '../../tools/moreapps/!Word/Selection';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {relKind} from '../../tools/moreapps/!Word/Rels';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+  from '../../tools/moreapps/!Letters/InsertPicture';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
+import {mediaOf} from '../../tools/moreapps/!Letters/PicMedia';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {OBJ} from '../../tools/moreapps/!Letters/Model';
+import {select, caret} from '../../tools/moreapps/!Letters/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {relKind} from '../../tools/moreapps/!Letters/Rels';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, p, r, STRICT_W_NS, STRICT_R_NS}
   from './build-docx.mjs';
@@ -24,9 +24,9 @@ import {drawingXml, picDocx, pngBytes, jpegBytes, gifBytes}
 import {lintPackage} from './lint-package.mjs';
 import {schemaChecker} from './roundtrip-lib.mjs';
 import {tbl, tr, tc} from './tbl-fixtures.mjs';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {loadStyles, tm} from './word-docs.mjs';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 
 const DATE = new Date(Date.UTC(2026, 0, 1));
 const write = (doc) => writeDocx(doc, {date: DATE});

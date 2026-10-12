@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's new lists
+// Generates the real-Word hand-off files for !Letters' new lists
 // (local only, never committed: tests/moreapps/corpus/ is
 // git-ignored). Not a test:
 //
@@ -14,29 +14,29 @@
 //                             part, extended by two new lists
 //   nl-5-autoformat.docx      AutoFormat as you type: the markers
 //   nl-README.txt             what Word should show, the open questions
-// Everything is done with !Word's own commands (FormatApply's ids: what
+// Everything is done with !Letters' own commands (FormatApply's ids: what
 // the Bullets and Numbering buttons, the gallery, the list menu and
 // Ctrl-Shift-L run; ./AutoList for the typed markers) on a Document,
 // as the window makes them. A file is written only when its bytes
 // change, so a file open in Word is left alone; nothing else in the
 // folder is touched or removed. Each file is read back and every
-// paragraph listed in the README with the label !Word shows and the
+// paragraph listed in the README with the label !Letters shows and the
 // list it is in, so the list is what was really written.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {apply} from '../../tools/moreapps/!Word/FormatApply';
-import {afterSpace} from '../../tools/moreapps/!Word/AutoList';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {BULLETS, NUMBERS} from '../../tools/moreapps/!Word/ListGallery';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {apply} from '../../tools/moreapps/!Letters/FormatApply';
+import {afterSpace} from '../../tools/moreapps/!Letters/AutoList';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {BULLETS, NUMBERS} from '../../tools/moreapps/!Letters/ListGallery';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {listDocx, item} from './list-fixtures.mjs';
@@ -157,8 +157,8 @@ async function save(name, doc, about, from = 0) {
   if (problems.length) throw new Error(name + ': ' + JSON.stringify(problems));
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back from the saved file: each paragraph,',
-    'the label !Word shows, its numId and level, and the definitions',
+    'What !Letters wrote (read back from the saved file: each paragraph,',
+    'the label !Letters shows, its numId and level, and the definitions',
     'of the lists):', ...await describe(bytes, from));
 }
 
@@ -189,11 +189,11 @@ function typeParas(s, texts) {
     s.fmt('listIn', s.caret(`${e.name} item, level 2`));
   }
   await save('nl-1-new-bullets.docx', s.d.doc, [
-    'A new document (as !Word makes one) with six bullet lists made',
+    'A new document (as !Letters makes one) with six bullet lists made',
     'from the gallery (the Bullets button\'s drop-down), three items',
     'each, at levels 0, 1 and 2 (the second and third made deeper',
     'with the list buttons). It has no numbering part to start with:',
-    '!Word makes numbering.xml, the relationship and the content',
+    '!Letters makes numbering.xml, the relationship and the content',
     'type, and the List Paragraph style. Word should open it with no',
     'repair prompt, and show per list (L1, L4):',
     ' - Disc: the Symbol dot at level 0, Courier New "o" at level 1,',
@@ -267,7 +267,7 @@ function typeParas(s, texts) {
     'Four lists made and then changed with Format > List (Restart',
     'at 1, Continue numbering). Word should show:',
     ' 1. "Restart A1..A5": 1. 2. then Restart at 1 on A3: 1. 2. 3.',
-    '    for A3, A4, A5. !Word writes a new w:num on the same abstract',
+    '    for A3, A4, A5. !Letters writes a new w:num on the same abstract',
     '    with a startOverride 1 for level 0 (L3). Does Word show the',
     '    same, and does its own Restart at 1 do the same on this',
     '    list (try it on A4)?',
@@ -275,11 +275,11 @@ function typeParas(s, texts) {
     '    (L3). In Word: right click the item, Set Numbering Value,',
     '    5: the same?',
     ' 3. "Gap C1..C4": C1 C2 are A. B.; after a plain paragraph C3 C4',
-    '    were made a numbered list with the same format: !Word',
+    '    were made a numbered list with the same format: !Letters',
     '    continues the list, C. D. (L2: the owner\'s ruling, any gap',
     '    in the section). What does Word do for the same clicks?',
     ' 4. "Run D1..D5" (1)): D3 was restarted (D3 = 1)), and then',
-    '    Continue numbering was used on D4: !Word joins the whole run',
+    '    Continue numbering was used on D4: !Letters joins the whole run',
     '    of the restarted list to the one before, so D1..D5 are',
     '    1) 2) 3) 4) 5) again (L7; two w:nums on one abstract share',
     '    one count). Word\'s Continue Numbering on D4 of a list',
@@ -318,9 +318,9 @@ function typeParas(s, texts) {
   const s = session(doc);
   const lastP = s.all().filter((b) => b.type === 'p').at(-1);
   let c = S.caret({id: lastP.id, off: lastP.text.length});
-  const texts = ['Added by !Word: a bullet list (Check mark):',
+  const texts = ['Added by !Letters: a bullet list (Check mark):',
     'Added bullet one', 'Added bullet two',
-    'Added by !Word: a numbered list (A.):', 'Added number one',
+    'Added by !Letters: a numbered list (A.):', 'Added number one',
     'Added number two'];
   texts.forEach((t) => { c = s.enter(c); c = s.type(c, t); });
   const first = s.all().findIndex((b) => b.text === texts[0]);
@@ -348,7 +348,7 @@ function typeParas(s, texts) {
   await save('nl-4-existing-part.docx', s.d.doc, [
     src ? 'The corpus document ' + WANT + ' (made by Word, with a'
       : 'A stand-in document with a',
-    'numbering part of its own), opened and saved by !Word, with two',
+    'numbering part of its own), opened and saved by !Letters, with two',
     'new lists added at its end: a bullet list (Check mark) and a',
     'numbered list (A.). ' + why,
     'The numbering part ' + name + ' before: ' +
@@ -409,17 +409,17 @@ function typeParas(s, texts) {
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word new lists hand-off (local only, not committed)',
+  '!Letters new lists hand-off (local only, not committed)',
   '====================================================',
   '',
   'Made by: node tests/moreapps/handoff-newlists.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten;',
+  'changing !Letters; files whose bytes are the same are not rewritten;',
   'no other file here is touched). Every file is a document made with',
-  '!Word\'s own list commands (the ones the Bullets and Numbering',
+  '!Letters\' own list commands (the ones the Bullets and Numbering',
   'buttons and their galleries, Format > List, Ctrl-Shift-L and',
-  'AutoFormat as you type run) and saved by !Word. Open each in real',
+  'AutoFormat as you type run) and saved by !Letters. Open each in real',
   'Word: note any repair prompt or error, and whether what you see',
-  'matches the description. Then the open questions: there !Word',
+  'matches the description. Then the open questions: there !Letters',
   'does what Word is believed to do, unverified.',
   '',
   'Open questions (please try each in real Word and note what it does):',
@@ -430,10 +430,10 @@ const README = [
   '   roman numbers right-aligned)? Is the matching gallery entry',
   '   shown as the current one in Word\'s galleries?',
   'L2 Bullets / Numbering after a gap of plain paragraphs (nl-3 C3).',
-  '   !Word continues the nearest earlier list of the same format in',
+  '   !Letters continues the nearest earlier list of the same format in',
   '   the section (the owner\'s ruling); another kind or format',
   '   nearer starts a new list. Word?',
-  'L3 Restart at / Start at (nl-3 A and B). !Word writes a new w:num',
+  'L3 Restart at / Start at (nl-3 A and B). !Letters writes a new w:num',
   '   on the same abstract with one startOverride for the level, and',
   '   moves the item and every later item of its list to it; of the',
   '   old num\'s other overrides only level replacements are copied.',
@@ -448,7 +448,7 @@ const README = [
   '   a list, back to the default style when turned off. Does Word',
   '   do the same (also when the list is turned off with the button',
   '   twice)?',
-  'L6 Pasting list items between !Word documents. The numbering is',
+  'L6 Pasting list items between !Letters documents. The numbering is',
   '   dropped (the items arrive as plain paragraphs); within one',
   '   document they stay in their list. DECISION FOR THE OWNER:',
   '   should a paste across documents make a list in the target? (Word',
@@ -459,12 +459,12 @@ const README = [
   '   1) 2) 3) 4) 5). Two w:nums on one abstract share one count.',
   '   Word?',
   'L8 A bullet sublevel of a numbered list, Numbering or Bullets',
-  '   clicked: !Word counts level 0 as the list\'s kind. Numbering',
+  '   clicked: !Letters counts level 0 as the list\'s kind. Numbering',
   '   takes it out of the list, Bullets gives it a bullet list of',
   '   its own at its level. (No file: make a numbered list with a',
   '   bullet at level 1 in Word and click both.)',
   'L9 A paragraph with a direct indent put into a list or taken out:',
-  '   !Word keeps the direct w:ind both ways (it overrides the',
+  '   !Letters keeps the direct w:ind both ways (it overrides the',
   '   level\'s indent while in the list). Word? (No file.)',
   'AF1 "- " typed at a paragraph\'s start: a bullet list whose level',
   '   0 is an en dash U+2013 in Calibri; "* " the disc, "> " the',
@@ -491,7 +491,7 @@ const README = [
   '',
   'Keys: Ctrl-Shift-L is the bullets toggle, as in Word; Format >',
   'AutoFormat lists turns AutoFormat as you type off and on (the',
-  'choice is kept in Choices:Word).',
+  'choice is kept in Choices:Letters).',
   ...lines,
   '',
 ];

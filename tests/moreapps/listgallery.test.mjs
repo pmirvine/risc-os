@@ -1,14 +1,14 @@
-// ListGallery: the bullet and numbering definitions !Word writes for
+// ListGallery: the bullet and numbering definitions !Letters writes for
 // a new list (Word's defaults), their labels through the real
 // ListNumbers, kindOf and matches.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {BULLETS, NUMBERS, HIDDEN, ENTRIES, entryOf, kindOf, matches}
-  from '../../tools/moreapps/!Word/ListGallery';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {readNumbering} from '../../tools/moreapps/!Word/ReadNumbering';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/ListGallery';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {readNumbering} from '../../tools/moreapps/!Letters/ReadNumbering';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {NUMBERING} from './list-fixtures.mjs';
 

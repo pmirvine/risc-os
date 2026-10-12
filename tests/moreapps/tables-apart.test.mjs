@@ -10,12 +10,12 @@
 // tableMarks), as Delete over its cells does.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {marks} from '../../tools/moreapps/!Word/BookmarkFind';
-import {newPara, newSection} from '../../tools/moreapps/!Word/Model';
-import {endsCell} from '../../tools/moreapps/!Word/TblCheck';
-import {cmpPath} from '../../tools/moreapps/!Word/Path';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {marks} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {newPara, newSection} from '../../tools/moreapps/!Letters/Model';
+import {endsCell} from '../../tools/moreapps/!Letters/TblCheck';
+import {cmpPath} from '../../tools/moreapps/!Letters/Path';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {mk, undoable, box, S, O} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 

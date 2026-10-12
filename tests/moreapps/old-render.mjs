@@ -1,4 +1,4 @@
-// The !Word stub's line breaking (tools/moreapps/!Word/Render before
+// The !Letters stub's line breaking (tools/moreapps/!Letters/Render before
 // LineLayout), kept only so linelayout.test.mjs can check that the
 // new layout breaks lines exactly as it did. One change: alignment
 // leaves out the spaces at the end of a line even when they were
@@ -25,9 +25,9 @@
 // hyphen nothing; anything else is a small grey [...] box.
 // Alignment: left, centre or right (justified is shown left).
 // Pure: no desktop services.
-import {OBJ} from '../../tools/moreapps/!Word/Model';
-import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {UNSEEN, localName} from '../../tools/moreapps/!Word/Kinds';
+import {OBJ} from '../../tools/moreapps/!Letters/Model';
+import {runFmt, paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {UNSEEN, localName} from '../../tools/moreapps/!Letters/Kinds';
 
 const TAB = 48;                        // half an inch at 96 dpi
 const PLAIN = {rPr: {extra: []}};

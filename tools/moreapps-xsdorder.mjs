@@ -1,6 +1,6 @@
 // Dev script (not a disc source): prints the child element order that the
 // ECMA-376 transitional wml.xsd defines for the property containers used
-// by !Word/Order. Usage: node tools/moreapps-xsdorder.mjs [path/to/wml.xsd]
+// by !Letters/Order. Usage: node tools/moreapps-xsdorder.mjs [path/to/wml.xsd]
 // Default path: tools/moreapps/.cache/wml.xsd (git-ignored; fetch it from
 // e.g. python-openxml/python-docx ref/xsd/wml.xsd).
 import {readFileSync, existsSync} from 'node:fs';

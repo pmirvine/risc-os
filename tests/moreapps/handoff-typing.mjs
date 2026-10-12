@@ -1,4 +1,4 @@
-// Generates the real-Word hand-off files for !Word's typing (local only,
+// Generates the real-Word hand-off files for !Letters' typing (local only,
 // never committed: tests/moreapps/corpus/ is git-ignored). Not a test:
 //
 //   node tests/moreapps/handoff-typing.mjs
@@ -9,7 +9,7 @@
 //   typed-3-undo.docx      edits, then some of them undone
 //   typed-4-sections.docx  deletions across section breaks
 //   typed-README.txt       what Word should show, the open questions
-// Every edit is made with !Word's own commands (Edit, EditDel, Typing)
+// Every edit is made with !Letters' own commands (Edit, EditDel, Typing)
 // on a Document, as the window makes them. A file is written only
 // when its bytes change (the output is the same every run), so a
 // file open in Word is left alone; nothing else in the folder is
@@ -18,14 +18,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as X from '../../tools/moreapps/!Word/EditDel';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {richDocx} from './edit-rich.mjs';
 import {lintPackage} from './lint-package.mjs';
@@ -128,7 +128,7 @@ async function save(name, doc, about) {
   const how = put(name, bytes);
   made.push(`${name} (${bytes.length} bytes, ${how})`);
   say('', name, '-'.repeat(name.length), ...about, '',
-    'What !Word wrote (read back; <tab>, <line break>, <hyperlink> as',
+    'What !Letters wrote (read back; <tab>, <line break>, <hyperlink> as',
     'markers; (Heading1) and so on: the paragraph style, list: numbered',
     'or bulleted):', ...await describe(bytes));
 }
@@ -139,7 +139,7 @@ async function save(name, doc, about) {
 {
   const s = session(newDoc({date: DATE}));
   let c = s.caret('', 0);
-  c = s.type(c, 'Typed in !Word: caf\u00e9, na\u00efve, \u00fcber, ' +
+  c = s.type(c, 'Typed in !Letters: caf\u00e9, na\u00efve, \u00fcber, ' +
     'Stra\u00dfe, d\u00e9compos\u00e9 (written with e and a combining ' +
     'accent: de\u0301compose\u0301), an emoji \u{1F600}, and a ' +
     'ZWJ sequence \u{1F469}\u200d\u{1F4BB}.');
@@ -152,7 +152,7 @@ async function save(name, doc, about) {
   c = s.cmd(() => E.insertTab(s.d, c));
   s.type(c, 'a value after a tab.');
   await save('typed-1-basic.docx', s.d.doc, [
-    'A new document (as !Word makes one) with text typed into it:',
+    'A new document (as !Letters makes one) with text typed into it:',
     'accents, accents written as e + U+0301 (combining acute), an emoji',
     'and a ZWJ emoji sequence (woman + technologist), Enter, Shift-Enter',
     '(a line break) and Tab. Word should show three Normal paragraphs',
@@ -230,7 +230,7 @@ async function save(name, doc, about) {
   await save('typed-2-rich.docx', d.doc, [
     'A rich document (a heading, bold and italic words, a hyperlink, a',
     'numbered and a bulleted list, a table, a tab, a line break, two',
-    'sections) edited with !Word\'s commands, in this order:',
+    'sections) edited with !Letters\' commands, in this order:',
     ' a. " and strong" typed after "bold" (inside the bold run) and',
     '    " and slanted" after "italic": both should be bold / italic;',
     ' b. Ctrl-Backspace twice at the end of "...and plain again.";',
@@ -287,7 +287,7 @@ async function save(name, doc, about) {
     'A new document: "First words typed. " typed, a pause, "More',
     'words.", Enter, "A second paragraph that will be undone.", then',
     'five Backspaces ("done." gone). That made ' + steps + ' undo steps in',
-    '!Word: one per typed word with the spaces after it, one for the',
+    '!Letters: one per typed word with the spaces after it, one for the',
     'pause, one for Enter, one per Backspace. Then six undos (the five',
     'Backspaces and the word "undone.") and one redo ("undone." back),',
     'then " (typed after the undos)" typed at the end.',
@@ -350,7 +350,7 @@ async function save(name, doc, about) {
   s.cmd(() => X.deleteSelection(d, c));
   await save('typed-4-sections.docx', d.doc, [
     'Four sections (one portrait page each, section two landscape).',
-    'Two selections were deleted, each across a section break; !Word',
+    'Two selections were deleted, each across a section break; !Letters',
     'cannot delete a section break yet, so it keeps them all:',
     ' 1. from "cut here." in section one to "up to here," in section',
     '    three: the text joins in section one ("...cut here. this',
@@ -371,17 +371,17 @@ async function save(name, doc, about) {
 // ------------------------------------------------------------ README
 
 const README = [
-  '!Word typing hand-off (local only, not committed)',
+  '!Letters typing hand-off (local only, not committed)',
   '=================================================',
   '',
   'Made by: node tests/moreapps/handoff-typing.mjs (re-run it after',
-  'changing !Word; files whose bytes are the same are not rewritten).',
-  'Every file is a document edited with !Word\'s own editing commands',
+  'changing !Letters; files whose bytes are the same are not rewritten).',
+  'Every file is a document edited with !Letters\' own editing commands',
   '(typing, Enter, Shift-Enter, Tab, Backspace, Delete, Ctrl-Backspace,',
-  'deleting a selection, undo and redo) and saved by !Word. Open each',
+  'deleting a selection, undo and redo) and saved by !Letters. Open each',
   'in real Word: note any repair prompt or error, and whether what you',
   'see matches the description. Then the open questions below: they',
-  'are where !Word copies what Word is believed to do, unverified.',
+  'are where !Letters copies what Word is believed to do, unverified.',
   '(handoff.mjs, the older generator in this folder, no longer',
   'removes files it did not make.)',
   '',
@@ -389,7 +389,7 @@ const README = [
   'Word does):',
   '',
   'Q1 Merge rule. Backspace at the start of a paragraph joins it to',
-  '   the one before. !Word: the FIRST paragraph keeps its style and',
+  '   the one before. !Letters: the FIRST paragraph keeps its style and',
   '   properties (typed-2 h: the bullet before survives), except when',
   '   the first is EMPTY and the second is not: then the empty one is',
   '   removed and the second keeps its own (typed-2 j: the empty',
@@ -398,27 +398,27 @@ const README = [
   '   start of the Normal one, Backspace: Heading 1 or Normal? Then',
   '   empty the heading and Backspace again from the Normal one.',
   'Q2 Next style after a heading. Enter at the END of a heading:',
-  '   !Word makes the new paragraph the heading\'s "next" style',
+  '   !Letters makes the new paragraph the heading\'s "next" style',
   '   (Normal: typed-2 d); in the MIDDLE both halves stay headings.',
   '   Is that Word\'s behaviour (also for Title, Heading 2..6)?',
-  'Q3 Ctrl-Backspace reach. !Word deletes back to the start of the',
+  'Q3 Ctrl-Backspace reach. !Letters deletes back to the start of the',
   '   word before the caret, a run of punctuation counting as a word',
   '   (typed-2 b: what the paragraph is left with is listed below).',
   '   In Word: at the end of "and plain again." press Ctrl-Backspace',
   '   twice: what is left?',
   'Q4 Deleting across a section break. Word deletes the section',
-  '   break with the selection (the sections merge); !Word cannot yet',
+  '   break with the selection (the sections merge); !Letters cannot yet',
   '   and keeps every break, leaving an empty paragraph in an emptied',
   '   section and after a table that ended a section (typed-4). Do',
   '   the pages of typed-4 look as described, with no repair prompt?',
-  'Q5 Undo granularity. !Word: one undo step per typed word with the',
+  'Q5 Undo granularity. !Letters: one undo step per typed word with the',
   '   spaces after it; a pause of more than a second, moving the',
   '   caret, Enter, Tab or any other command starts a new step; each',
   '   Backspace is one step. In Word: type "First words typed. ",',
   '   wait, "More words.", Enter, "A second paragraph that will be',
   '   undone.", 5 Backspaces, then press Ctrl-Z once at a time: what',
   '   does each Ctrl-Z take away? (compare typed-3)',
-  'Q6 Typing after a hyperlink. !Word: text typed right after a',
+  'Q6 Typing after a hyperlink. !Letters: text typed right after a',
   '   hyperlink is plain text after it (typed-2 c). In Word: click',
   '   just after a link and type: does the text join the link?',
   'Q7 Enter in an empty list item ends the list (typed-2 f: the',

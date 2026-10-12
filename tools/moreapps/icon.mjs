@@ -1,11 +1,11 @@
-// The !Word sprites, used by tools/disc-moreapps.mjs: the application's icon (a blue document page with a white
-// W on it), '!word' 34 x 34 and 'sm!word' 18 x 18, and the icons of Word documents: .docx (file type &A7E,
+// The !Letters sprites, used by tools/disc-moreapps.mjs: the application's icon (a blue document page with a white
+// W on it), '!letters' 34 x 34 and 'sm!letters' 18 x 18, and the icons of Word documents: .docx (file type &A7E,
 // 'file_a7e' / 'small_a7e': a white page with a blue W in its corner) and the older .doc (&AE6, 'file_ae6' /
 // 'small_ae6': the same page with a dark blue W). The system sprite pools have none of these. They are drawn
 // with simple shapes onto character maps (tools/lib/spritewrite.mjs: one letter per Wimp colour).
 // libIconFiles(): the icon of !WimpLib, the library in !Boot.Resources (tools/disc-wimplib.mjs): books on a
 // shelf, '!wimplib' 34 x 34 and 'sm!wimplib' 18 x 18.
-// barSprites(): the buttons of !Word's toolbar (WimpLib Ui/Toolbar, !Word ToolbarBind), 20 x 20, named wb_* so
+// barSprites(): the buttons of !Letters' toolbar (WimpLib Ui/Toolbar, !Letters ToolbarBind), 20 x 20, named wb_* so
 // that they meet no other sprite in the Wimp's pool: bold, italic, underline, strike, super, sub, the four
 // alignments, indent more / less, colour (an A: the toolbar draws the colour under it), highlight, clear,
 // style and (row 2) line spacing, bullets, numbers and the format painter. (No zoom button: zoom is on the window menu and Ctrl+wheel, the toolbar has no room.) Letters come from the small bitmaps in GLYPHS; the rest are lines and triangles. A pressed button
@@ -223,11 +223,11 @@ export function libIconFiles() {
   return { '!Sprites': spriteFile([sprite('!wimplib', libIcon()), sprite('sm!wimplib', libSmall())]) };
 }
 
-/** The sprite file for !Word.!Sprites. */
+/** The sprite file for !Letters.!Sprites. */
 export function iconFiles() {
   return {
     '!Sprites': spriteFile([
-      sprite('!word', appIcon()), sprite('sm!word', appSmall()),
+      sprite('!letters', appIcon()), sprite('sm!letters', appSmall()),
       sprite('file_a7e', docIcon('L')), sprite('small_a7e', docSmall('L')),
       sprite('file_ae6', docIcon('B')), sprite('small_ae6', docSmall('B')),
       ...barSprites().map(([n, rows]) => sprite(n, rows)),

@@ -4,13 +4,13 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope, scope} from '../../tools/moreapps/!Word/Ns';
+import {rootScope, scope} from '../../tools/moreapps/!Letters/Ns';
 import {readTable, MARKS, countPara}
-  from '../../tools/moreapps/!Word/TblRead';
-import {readBody} from '../../tools/moreapps/!Word/ReadBody';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {DocxError} from '../../tools/moreapps/!Word/DocxError';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
+  from '../../tools/moreapps/!Letters/TblRead';
+import {readBody} from '../../tools/moreapps/!Letters/ReadBody';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {DocxError} from '../../tools/moreapps/!Letters/DocxError';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
 import {p, r, W_NS} from './build-docx.mjs';
 import {tbl, tr, tc, TBL_OPAQUE, tblDocx, bigTable, nestedTable}
   from './tbl-fixtures.mjs';

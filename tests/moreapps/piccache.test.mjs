@@ -4,7 +4,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {createPicCache, picView, CACHE, decodeSize, bucketOf}
-  from '../../tools/moreapps/!Word/PicCache';
+  from '../../tools/moreapps/!Letters/PicCache';
 
 /** A fake bitmap w x h with a close spy. */
 const bitmap = (w = 10, h = 10) => {
@@ -308,7 +308,7 @@ describe('PicCache: a closed document lets go (A6)', () => {
   it('releasePics: the closed document\'s parts, not those an open ' +
     'one shares', async () => {
     const {releasePics} = await import(
-      '../../tools/moreapps/!Word/PicRelease');
+      '../../tools/moreapps/!Letters/PicRelease');
     const m = manual();
     const c = createPicCache({decode: m.decode});
     const [own, shared, other] = bytesN(3);

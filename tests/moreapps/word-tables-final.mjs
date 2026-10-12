@@ -1,4 +1,4 @@
-// !Word's tables, the final whole-branch review's interface fixes (Batch C final fix wave, group 2), in the real
+// !Letters' tables, the final whole-branch review's interface fixes (Batch C final fix wave, group 2), in the real
 // desktop: the Tab item (Table and Insert menus) is live for a caret or text inside one cell and shaded for cells
 // selected (a rectangle) and for a selection running from a paragraph into the table (final-2 M8: with a rectangle it
 // typed a tab in the first cell and emptied the others); the Split cells box opened at one cell, the caret then moved
@@ -36,7 +36,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -67,7 +67,7 @@ try {
       return [sh(sub('Table').items.find((i) => i.text === 'Tab')), sh(sub('Insert').items.find((i) => i.text === 'Tab'))];
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   await ev(() => os.filer.run('RAM::RamDisc0.$.Tz'));
   await page.waitForFunction(() => !!window.__doc('Tz')?.view.layout, null, { timeout: 20000 });

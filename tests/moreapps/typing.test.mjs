@@ -1,9 +1,9 @@
 // Typing: undo coalescing decisions (fake clock).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as D from '../../tools/moreapps/!Word/EditDel';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as D from '../../tools/moreapps/!Letters/EditDel';
 import {mk, texts, C, SEL, S} from './edit-docs.mjs';
 
 function setup(blocks = ['']) {

@@ -1,4 +1,4 @@
-// !Word's tables in the real desktop (Batch C). C1 part: a Word table
+// !Letters' tables in the real desktop (Batch C). C1 part: a Word table
 // is read into the document's model (a typed table, ./TblRead): one
 // 'tbl' item (C2.4); Left / Right go into its cells (C3.1: from the
 // end of the paragraph before to its first cell, from its last cell
@@ -22,7 +22,7 @@
 // (C2 fix wave, D18 step 4). (C3 and later extend this suite.)
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { p, r, buildDocx, documentXml, stylesXml, numberingXml, REL, R_NS } from './build-docx.mjs';
 import { drawingXml, pngBytes, URIS } from './pic-fixtures.mjs';
 import { tbl, tr, tc, tblDocx, bigTable, nestedTable, TABLE_NORMAL, TABLE_GRID, GRID_TABLE_4 } from './tbl-fixtures.mjs';
@@ -103,7 +103,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Tb') => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__beeps = 0;
     const beep = os.wimp.beep.bind(os.wimp);
@@ -132,7 +132,7 @@ try {
         head: v.selection.head, anchor: v.selection.anchor, depth: v.undoDepth, dirty: v.dirty, clip: d.clipboard,
         beeps: window.__beeps, summary: d.summary };
     };
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
     await os.filer.run('RAM::RamDisc0.$.Tb');
     for (let i = 0; i < 200 && !window.__doc(); i++) await window.__sleep(50);
@@ -223,7 +223,7 @@ try {
     await window.__frames(3);
     return { st: window.__st('Tb2'), bytes: Array.from(await window.__doc('Tb2').dw.saveBytes()), msgs: window.__msgs };
   }, bytes1);
-  ok('... opened again in !Word: the table item, and saved, the same bytes', same(r1.st.types, ['p', 'tbl', 'p'])
+  ok('... opened again in !Letters: the table item, and saved, the same bytes', same(r1.st.types, ['p', 'tbl', 'p'])
     && r1.st.items[1].kind === 'tbl' && !r1.msgs.length && (await diff(bytes0, r1.bytes)).length === 0, r1.st);
 
   // ---------------------------------------------------- C6.1: a cell rectangle copied (real Ctrl-C / Ctrl-V)

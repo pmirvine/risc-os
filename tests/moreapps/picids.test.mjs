@@ -5,8 +5,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {usedDocPrIds, freshDocPrId}
-  from '../../tools/moreapps/!Word/PicIds';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/PicIds';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {p} from './build-docx.mjs';
 import {drawingXml, picDocx} from './pic-fixtures.mjs';
 

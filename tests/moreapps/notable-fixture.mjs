@@ -167,8 +167,8 @@ export function sample(L) {
 /** Lay every document out with the modules in `dir` (old or new). */
 export async function sampleAll(dir) {
   const u = (m) => pathToFileURL(dir + '/' + m).href;
-  const {readDocx} = await import(u('!Word/DocxRead'));
-  const {DocLayout} = await import(u('!Word/DocLayout'));
+  const {readDocx} = await import(u('!Letters/DocxRead'));
+  const {DocLayout} = await import(u('!Letters/DocLayout'));
   const {TextMetrics} = await import(u('!WimpLib/TextMetrics'));
   const out = {};
   for (const [name, bytes] of notableDocs()) {

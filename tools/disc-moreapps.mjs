@@ -1,19 +1,20 @@
 // Adds $.MoreApps to the seed hard disc (assets/disc/HardDisc4): a directory beside $.Apps for the larger
-// applications written in JavaScript on the disc, starting with !Word (a word processor for Word documents). The
+// applications written in JavaScript on the disc, starting with !Letters (a word processor for Word documents). The
 // modules they share, WimpLib (imported as 'wimplib/<Name>': src/core/jsrun.js), are a library in
 // !Boot.Resources, put there by tools/disc-wimplib.mjs; this removes the library's old home, MoreApps.WimpLib.
-// The source is tools/moreapps/!Word (no extension = JSScript &F81, !Run / !Boot = Obey, !Help = Text); its
+// The source is tools/moreapps/!Letters (no extension = JSScript &F81, !Run / !Boot = Obey, !Help = Text); its
 // Fonts directory holds font files (Data &FFD) and their Licences (Text); the icons are drawn by
 // tools/moreapps/icon.mjs. The sources must be Latin-1 text with no tabs or CRs, and lines of at most 72
 // characters (they are read in !Edit); the fonts are exempt, and the Licences may have tabs and long lines.
 //
 // It also wires $.MoreApps into the boot sequence, in !Boot's Choices.Boot.Desktop (the Filer boots the
-// applications in it, so !Word's file type is known from start-up) and PreDesktop (they are added to the Apps
+// applications in it, so !Letters' file type is known from start-up) and PreDesktop (they are added to the Apps
 // menu), and the same two files in Utilities.!ResetBoot: one line is added after the one for Utilities / Apps.
 // tools/disc.mjs writes these files afresh, so this must run after it (tools/build.mjs does).
 //
-// Idempotent: it rewrites only MoreApps.!Word, the four boot files and their manifest entries, and removes
-// MoreApps.WimpLib (disc and manifest) if it is there.
+// Idempotent: it rewrites only MoreApps.!Letters, the four boot files and their manifest entries, and removes
+// MoreApps.WimpLib and MoreApps.!Word (the application's name before it was !Letters) from the disc and manifest
+// if they are there.
 // Usage: node tools/disc-moreapps.mjs   (run by tools/build.mjs); --check only checks the sources
 // MOREAPPS_SRC / MOREAPPS_DISC change the source tree / disc root (for tests/moreapps/disc.test.mjs); the lock on
 // the disc root is shared with tools/disc-wimplib.mjs.
@@ -25,7 +26,7 @@ import { iconFiles } from './moreapps/icon.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SRC = path.resolve(process.env.MOREAPPS_SRC ?? path.join(ROOT, 'tools/moreapps'));
 const DISC = path.resolve(process.env.MOREAPPS_DISC ?? path.join(ROOT, 'assets/disc'));
-const PARENT = 'MoreApps', APP = '!Word', OLD_LIB = 'WimpLib';
+const PARENT = 'MoreApps', APP = '!Letters', OLD_LIB = 'WimpLib', OLD_APP = '!Word';
 const encodeName = (n) => n.replace(/[^A-Za-z0-9_-]/g, (c) => '=' + c.charCodeAt(0).toString(16).padStart(2, '0'));
 const byName = (a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
 
@@ -100,7 +101,7 @@ const write = (dir, list) => {
   return nodes.sort(byName);
 };
 const base = path.join(DISC, 'HardDisc4', PARENT);
-for (const n of [APP, OLD_LIB]) fs.rmSync(path.join(base, encodeName(n)), { recursive: true, force: true });
+for (const n of [APP, OLD_LIB, OLD_APP]) fs.rmSync(path.join(base, encodeName(n)), { recursive: true, force: true });
 const nodes = [{ name: APP, type: 'app', children: write(path.join(base, encodeName(APP)), app) }];
 
 const mfPath = path.join(DISC, 'manifest.json');
@@ -111,7 +112,7 @@ if (!parent) {
   const at = mf.root.children.findIndex((c) => byName(c, parent) > 0);
   mf.root.children.splice(at < 0 ? mf.root.children.length : at, 0, parent);
 }
-parent.children = parent.children.filter((c) => c.name !== APP && c.name !== OLD_LIB);
+parent.children = parent.children.filter((c) => ![APP, OLD_LIB, OLD_APP].includes(c.name));
 parent.children.push(...nodes);
 parent.children.sort(byName);
 const find = (names) => names.reduce((n, name) => n?.children?.find((c) => c.name === name), mf.root);

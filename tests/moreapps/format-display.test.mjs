@@ -5,14 +5,14 @@
 // Measured with a fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {runFmt} from '../../tools/moreapps/!Word/Fmt';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {runFmt} from '../../tools/moreapps/!Letters/Fmt';
 import {HIGHLIGHT, highlightCss}
-  from '../../tools/moreapps/!Word/Highlight';
-import {HIGHLIGHTS} from '../../tools/moreapps/!Word/FormatCheck';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
+  from '../../tools/moreapps/!Letters/Highlight';
+import {HIGHLIGHTS} from '../../tools/moreapps/!Letters/FormatCheck';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
 import {caretRect, hitTest, lineOf, selectionRects}
-  from '../../tools/moreapps/!Word/PositionMap';
+  from '../../tools/moreapps/!Letters/PositionMap';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {layoutPara as oldLayout} from './old-render.mjs';

@@ -9,14 +9,14 @@
 // Measured with the fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {startOf, alignedEnd, close, dotIn}
-  from '../../tools/moreapps/!Word/TabAlign';
-import {caretRect, hitTest} from '../../tools/moreapps/!Word/PositionMap';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
+  from '../../tools/moreapps/!Letters/TabAlign';
+import {caretRect, hitTest} from '../../tools/moreapps/!Letters/PositionMap';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {tm, loadStyles, mkDoc, O, raw, rng} from './word-docs.mjs';
 import {buildDocx, documentXml, settingsXml, stylesXml, p, r}

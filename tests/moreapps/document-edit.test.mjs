@@ -1,9 +1,9 @@
 // Document: coalesced undo steps, saved marker, history cap.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {deepEqual, clone} from '../../tools/moreapps/!Word/Model';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {deepEqual, clone} from '../../tools/moreapps/!Letters/Model';
 
 const mk = (text = '') => {
   const d = new Document(newDoc());

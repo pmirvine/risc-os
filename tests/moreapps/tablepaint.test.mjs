@@ -9,10 +9,10 @@
 // rows; DocPaint hands a 'tbl' item to it (no grey box).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {paintTable} from '../../tools/moreapps/!Word/TablePaint';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {paintTable} from '../../tools/moreapps/!Letters/TablePaint';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
 import {loadStyles, tm} from './word-docs.mjs';
 import {tblDocx, tbl, tr, tc, TABLE_NORMAL, GRID_TABLE_4, bigTable,
   nestedTable} from './tbl-fixtures.mjs';

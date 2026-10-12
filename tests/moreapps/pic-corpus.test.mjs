@@ -4,11 +4,11 @@
 import {describe, it} from 'node:test';
 import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
 import {pictureOf, docMap, MAX_EXT}
-  from '../../tools/moreapps/!Word/PicRead';
+  from '../../tools/moreapps/!Letters/PicRead';
 import {mediaOf, imageInfo, decodable}
-  from '../../tools/moreapps/!Word/PicMedia';
+  from '../../tools/moreapps/!Letters/PicMedia';
 import {corpusFiles, nameOf, SKIP_CORPUS, ALL}
   from './roundtrip-lib.mjs';
 

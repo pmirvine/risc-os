@@ -1,4 +1,4 @@
-// WordChoices, RecentFiles and AutoFormatOpt sharing Choices:Word
+// WordChoices, RecentFiles and AutoFormatOpt sharing Choices:Letters
 // ('riscos' replaced by stand-ins: a Map for the disc): each writes
 // only its own key and keeps the others (also keys another writer
 // put in the file meanwhile, and keys it does not know); missing,
@@ -9,7 +9,7 @@ import {registerHooks} from 'node:module';
 
 const disc = new Map();                // path -> text
 let writes = 0, locked = false, inMemory = true;
-const W = 'Choices:Word';
+const W = 'Choices:Letters';
 globalThis.__choiceStub = {
   vfs: {
     exists: (p) => disc.has(p) || /^RAM::/.test(p),
@@ -42,11 +42,11 @@ registerHooks({
   },
 });
 const {loadChoices, choiceOf, setChoice, mergeChoice} =
-  await import('../../tools/moreapps/!Word/WordChoices');
+  await import('../../tools/moreapps/!Letters/WordChoices');
 const {loadRecent, noteRecent} =
-  await import('../../tools/moreapps/!Word/RecentFiles');
+  await import('../../tools/moreapps/!Letters/RecentFiles');
 const {autoListOn, setAutoList, autoListItem} =
-  await import('../../tools/moreapps/!Word/AutoFormatOpt');
+  await import('../../tools/moreapps/!Letters/AutoFormatOpt');
 
 const file = () => JSON.parse(disc.get(W));
 const start = async () => {
@@ -98,7 +98,7 @@ describe('WordChoices', () => {
   });
 });
 
-describe('Recent and AutoFormat lists share Choices:Word', () => {
+describe('Recent and AutoFormat lists share Choices:Letters', () => {
   it('neither overwrites the other; unknown keys kept', async () => {
     disc.set(W, JSON.stringify({recent: ['RAM::R.$.A'], future: {a: 1}}));
     const app = await start();

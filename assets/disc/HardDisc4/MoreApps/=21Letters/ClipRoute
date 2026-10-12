@@ -1,0 +1,88 @@
+// ClipRoute - where a paste goes (EditClip.pasteIn's second half):
+// ./ClipPick chooses the route for the payload, then
+//
+//   routePaste(dw, p, lost) -> true, or undefined (nothing to paste)
+//     dw: the document window (./AppWin); p: {text, html, files};
+//     lost: whether the browser's paste event held more text than
+//     the Wimp passed on (./EditClip)
+//   say(message)    the message box every clip message uses
+//
+// exact and html: the blocks (./ClipPaste pasteBlocks; HTML tables
+// read at the text width where the caret is, ./TblInsert widthAt);
+// plain: the text (pastePlain); picture: put in as a picture
+// (./PicLoad); files: a beep and a message. See ./EditClip for the
+// rules.
+import {wimp, reportError} from 'riscos';
+import {store} from './ClipStore';
+import {pick} from './ClipPick';
+import {parserOf} from './ClipDom';
+import {pasteBlocks, pastePlain} from './ClipPaste';
+import {dropPending} from './EditFormat';
+import {putPicture, MSG} from './PicLoad';
+import {widthAt} from './TblInsert';
+
+const parseHtml = parserOf(globalThis.DOMParser);
+const FILES = 'Only PNG, JPEG and GIF pictures can be pasted: other ' +
+  'files cannot.';
+const CUT = 'Only the first 100,000 characters were pasted: the ' +
+  'clipboard held more.';
+export const say = (m) => reportError(m, {appName: 'Letters'});
+
+/** See the header. */
+export function routePaste(dw, p, lost) {
+  const v = dw.view, st = dw.clip;
+  const textTw = v.sel ? widthAt(v.d.doc, v.L, v.sel.head) : undefined;
+  const r = pick(p, {store, docKey: dw.docKey, parseHtml, textTw});
+  if (!r) {
+    const files = !!(p && p.files && p.files.length);
+    st.last = files ? 'files' : 'none';
+    if (files) {
+      st.status = FILES;
+      wimp.beep();
+      say(FILES);
+    }
+    return files || undefined;
+  }
+  st.last = r.route;
+  if (!v.sel) {
+    wimp.beep();
+    return true;
+  }
+  if (r.route === 'picture') {
+    dropPending(v);
+    if (r.tooBig) {
+      wimp.beep();
+      say(MSG.tooBig);
+      return true;
+    }
+    putPicture(dw, () => r.file.arrayBuffer()
+      .then((b) => new Uint8Array(b)));
+    return true;
+  }
+  v.ensure();
+  dropPending(v);
+  const sel = v.sel, d = v.d;
+  const run = (x) => v.typing.command(() => (x.route === 'plain'
+    ? pastePlain(d, sel, x.text)
+    : pasteBlocks(d, sel, x.blocks, x.opts)));
+  let out = sel;
+  try {
+    out = run(r);
+  } catch (e) {
+    // content the model refuses: the text instead; a bug is thrown
+    if (!(e instanceof RangeError)) throw e;
+    if (r.route !== 'plain' && p.text) {
+      st.last = 'plain';
+      out = run({route: 'plain', text: p.text});
+    } else if (/^(ids|name)$/.test(e.message)) say(MSG.pasteFree);
+  }
+  if (out === sel) wimp.beep();
+  else v.edited(out);
+  // the Wimp cuts a paste's text at MAX_TEXT: say so when it did
+  if (st.last === 'plain' && out !== sel && lost) {
+    st.status = CUT;
+    wimp.beep();
+    say(CUT);
+  }
+  return true;
+}

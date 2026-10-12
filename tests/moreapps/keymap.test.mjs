@@ -1,9 +1,9 @@
 // Keymap: key events -> command ids, labels.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {keymap, Keymap, ROWS, WINDOW} from '../../tools/moreapps/!Word/Keymap';
+import {keymap, Keymap, ROWS, WINDOW} from '../../tools/moreapps/!Letters/Keymap';
 import {keyCode} from '../../src/core/input.js';
-import {command} from '../../tools/moreapps/!Word/Keys';
+import {command} from '../../tools/moreapps/!Letters/Keys';
 
 /** What the desktop gives for a browser key: the lookup event. */
 function ev(key, mods = {}) {

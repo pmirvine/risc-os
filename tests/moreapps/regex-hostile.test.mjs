@@ -6,7 +6,7 @@
 // one hours, with the desktop frozen.
 //
 // 1. The audit: every regular expression literal (and every
-//    `new RegExp`) in !Word and !WimpLib is found by a small
+//    `new RegExp`) in !Letters and !WimpLib is found by a small
 //    tokenizer. One with no unbounded run (* + {n,}), or anchored at
 //    the start with one run, is linear by its shape. Every other one
 //    must be listed in AUDIT below with the reason it is linear (or
@@ -22,19 +22,19 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readHtml} from '../../tools/moreapps/!Word/ClipRead';
-import {attrOf, MAX_ATTR} from '../../tools/moreapps/!Word/ClipDom';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import * as Css from '../../tools/moreapps/!Word/ClipCss';
+import {readHtml} from '../../tools/moreapps/!Letters/ClipRead';
+import {attrOf, MAX_ATTR} from '../../tools/moreapps/!Letters/ClipDom';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import * as Css from '../../tools/moreapps/!Letters/ClipCss';
 import {spanOf, lengthTw, lookOf, tableBorder}
-  from '../../tools/moreapps/!Word/ClipTblLook';
+  from '../../tools/moreapps/!Letters/ClipTblLook';
 import {cleanUrl, parseAddress, checkAnchor}
-  from '../../tools/moreapps/!Word/LinkUrl';
-import {usedNumIds} from '../../tools/moreapps/!Word/ListUsed';
-import {usedDocPrIds} from '../../tools/moreapps/!Word/PicIds';
-import {suggestName, safeLeaf} from '../../tools/moreapps/!Word/SaveState';
-import {twipsOf} from '../../tools/moreapps/!Word/TabStops';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/LinkUrl';
+import {usedNumIds} from '../../tools/moreapps/!Letters/ListUsed';
+import {usedDocPrIds} from '../../tools/moreapps/!Letters/PicIds';
+import {suggestName, safeLeaf} from '../../tools/moreapps/!Letters/SaveState';
+import {twipsOf} from '../../tools/moreapps/!Letters/TabStops';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {validDecl} from '../../tools/moreapps/!WimpLib/XmlText';
 import {parseNumber} from '../../tools/moreapps/!WimpLib/NumberField';
 import {parsePoints} from '../../tools/moreapps/!WimpLib/Units';
@@ -44,7 +44,7 @@ import {mk} from './edit-docs.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)),
   '../../tools/moreapps');
-const DIRS = ['!Word', '!WimpLib'];
+const DIRS = ['!Letters', '!WimpLib'];
 const MB = 1 << 20;
 const LIMIT_MS = 200;
 
@@ -52,47 +52,47 @@ const LIMIT_MS = 200;
 // and `internal` ones are not pumped (their input is capped first, or
 // is never from outside).
 const AUDIT = {
-  '!Word/ClipBuild': [
+  '!Letters/ClipBuild': [
     ['/[ \\t\\n\\r\\f]+/g', 'one run, no suffix: a match consumes it']],
-  '!Word/ClipCss': [
+  '!Letters/ClipCss': [
     ['/url\\s*\\(|expression|javascript|\\\\|\\/\\*|@|[<>{}]/i',
       'the run follows the literal url: scanned once per url'],
     ['/!\\s*important\\s*$/i',
       'each run follows a literal; value <= 4096 (decls)']],
-  '!Word/ClipTblLook': [
+  '!Letters/ClipTblLook': [
     ['/(^|\\s)0(\\.0+)?([a-z]+)?(\\s|$)/',
       'runs follow the literals 0 and .; value <= 200 (decls)'],
     ['/^\\s*\\d{1,2}\\s*$/',
       'anchored; a mandatory digit separates the two runs'],
     ['/\\s+/', 'split: a match consumes its run']],
-  '!Word/Keymap': [
+  '!Letters/Keymap': [
     ['/^((?:(?:Ctrl|Shift)\\+)*)(.+)$/', 'internal: Keymap rows only']],
-  '!Word/LineLabel': [
+  '!Letters/LineLabel': [
     ['/, ([a-z-]+)$/', 'the run follows the literal ", "']],
-  '!Word/LineTokens': [
+  '!Letters/LineTokens': [
     ['/ +|\\t|\\n|[^ \\t\\n]+/g', 'tokens of disjoint classes'],
     ['/ +|\\t|[^ \\t]+/g', 'tokens of disjoint classes']],
-  '!Word/ListMarker': [
+  '!Letters/ListMarker': [
     ['/^(?:([0-9]+)([.)])|\\(([0-9]+)\\))$/',
       'anchored; each alternative one digit run']],
-  '!Word/NsMap': [
+  '!Letters/NsMap': [
     ['/([\'"])([^\'"]*)\\1/g', 'the run stops at a quote']],
-  '!Word/NumScan': [
+  '!Letters/NumScan': [
     ['/^[ \\t\\n\\r]*[+-]?[0-9]+[ \\t\\n\\r]*$/',
       'anchored; runs of disjoint classes']],
-  '!Word/PicIds': [
+  '!Letters/PicIds': [
     ['/<(?:[\\w.-]+:)?docPr\\b([^<>]*)/g', 'the tag ends at < or >'],
     ['/\\s([\\w.:-]+)\\s*=\\s*(?:"([^"]*)"|\'([^\']*)\')/g',
       'runs of disjoint classes between literals; one tag'],
     ['/(^|\\/)(header|footer|footnotes|endnotes|comments)\\d*\\.xml$/i',
       'the digit run follows a literal name']],
-  '!Word/PicNames': [
+  '!Letters/PicNames': [
     ['/^(\\d+)\\.[^./]*$/', 'anchored; a literal . between the runs']],
-  '!Word/TabStops': [
+  '!Letters/TabStops': [
     ['/^(-?[0-9]+(?:\\.[0-9]+)?)(mm|cm|in|pt|pc|pi)?$/',
       'anchored; a literal . between the digit runs']],
-  '!Word/TblItems': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
-  '!Word/WriteParts': [
+  '!Letters/TblItems': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
+  '!Letters/WriteParts': [
     ['/(encoding[ \\t\\n]*=[ \\t\\n]*)(["\'])([^"\']*)\\2/',
       'runs follow literals; our own written declaration']],
   '!WimpLib/DialogValues': [
@@ -110,9 +110,9 @@ const AUDIT = {
 // `new RegExp` sites: file -> [count, why]; each is also run on
 // hostile input below through its module's function.
 const DYNAMIC = {
-  '!Word/ClipCss': [1, 'RGB: anchored; runs split by digits and ,'],
-  '!Word/ClipTblLook': [1, 'STYLES: no unbounded run'],
-  '!Word/ListUsed': [1, 'NUM_ID: the tag ends at the first < or >'],
+  '!Letters/ClipCss': [1, 'RGB: anchored; runs split by digits and ,'],
+  '!Letters/ClipTblLook': [1, 'STYLES: no unbounded run'],
+  '!Letters/ListUsed': [1, 'NUM_ID: the tag ends at the first < or >'],
   '!WimpLib/XmlText': [1, 'validDecl: anchored; runs split by literals'],
 };
 

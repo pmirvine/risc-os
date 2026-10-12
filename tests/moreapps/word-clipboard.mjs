@@ -1,4 +1,4 @@
-// !Word's copy, cut and paste in the real desktop (./EditClip): real
+// !Letters' copy, cut and paste in the real desktop (./EditClip): real
 // Ctrl-C / Cmd-C, Ctrl-X, Ctrl-V through the system clipboard
 // (clipboard permissions granted), pastes of other programs' HTML as
 // synthetic ClipboardEvents, the exact copy between two documents and
@@ -82,7 +82,7 @@ async function start(page, platform, open) {
     os.wimp.beep = () => { window.__beeps++; return beep(); };
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__client = (d, x, y) => {
       const s = d.win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

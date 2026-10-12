@@ -1,4 +1,4 @@
-// Tab stops round trip: documents changed with !Word's tab stop
+// Tab stops round trip: documents changed with !Letters' tab stop
 // commands, the ids the ruler and the Tabs dialog run (./FormatApply
 // 'tabs': add, remove, move, set; 'tabsBox': {edits} and the default
 // tab stop of settings.xml), mixed with typing (tabs included),
@@ -30,15 +30,15 @@ import {LIST_DOCS} from './list-fixtures.mjs';
 import {buildDocx, documentXml, settingsXml, p, r} from './build-docx.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write} from './roundtrip-lib.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {rng} from './word-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {resolveTabs, defaultStop} from '../../tools/moreapps/!Word/TabStops';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {resolveTabs, defaultStop} from '../../tools/moreapps/!Letters/TabStops';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 
 export const STEPS = 40;
@@ -296,7 +296,7 @@ describe('tabs round trip: generated documents', () => {
 
 /** A session on bytes. */
 async function open(bytes) {
-  const {Document} = await import('../../tools/moreapps/!Word/Document');
+  const {Document} = await import('../../tools/moreapps/!Letters/Document');
   const d = new Document(await readDocx(bytes));
   d.clearHistory();
   let now = 0;

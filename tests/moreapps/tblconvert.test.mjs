@@ -20,16 +20,16 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newPara, OBJ, checkBlock}
-  from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Model';
 import {textToTable, defaultSep, colsFor, straddles, sepChar}
-  from '../../tools/moreapps/!Word/TblConvert';
-import {tableToText} from '../../tools/moreapps/!Word/TblToText';
+  from '../../tools/moreapps/!Letters/TblConvert';
+import {tableToText} from '../../tools/moreapps/!Letters/TblToText';
 import {textToTableCmd, tableToTextCmd, whyText, whyTable}
-  from '../../tools/moreapps/!Word/TblConvertCmd';
-import {MAX_ROWS, MAX_COLS} from '../../tools/moreapps/!Word/TblCheck';
+  from '../../tools/moreapps/!Letters/TblConvertCmd';
+import {MAX_ROWS, MAX_COLS} from '../../tools/moreapps/!Letters/TblCheck';
 import {ids as allIds, forEachBlock}
-  from '../../tools/moreapps/!Word/Walk';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+  from '../../tools/moreapps/!Letters/Walk';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {mk, undoable, S, bold, plain, el, raw}
   from './edit-docs.mjs';
 import {modelTable, freeze, tblDocx} from './tbl-fixtures.mjs';

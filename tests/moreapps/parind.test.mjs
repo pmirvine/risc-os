@@ -5,14 +5,14 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {effective, levelInd, listOf}
-  from '../../tools/moreapps/!Word/ParaInd';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {query} from '../../tools/moreapps/!Word/Format';
-import {firstIndents} from '../../tools/moreapps/!Word/RulerInd';
-import {indentBy, dragIndents} from '../../tools/moreapps/!Word/FormatPara';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/ParaInd';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {query} from '../../tools/moreapps/!Letters/Format';
+import {firstIndents} from '../../tools/moreapps/!Letters/RulerInd';
+import {indentBy, dragIndents} from '../../tools/moreapps/!Letters/FormatPara';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {P, C, SEL, undoable, blocks} from './edit-docs.mjs';
 import {tm} from './word-docs.mjs';
 import {listDoc, li, lv, N} from './list-docs.mjs';
@@ -174,8 +174,8 @@ describe('list-aware indents: query, ruler, Ctrl-M, drags', () => {
 describe('LineLabel.sameLabel: a level indent absent or 0', () => {
   it('relays out: absent and {left: 0} lay out differently under a ' +
     'style indent', async () => {
-    const {sameLabel} = await import('../../tools/moreapps/!Word/LineLabel');
-    const {layoutPara} = await import('../../tools/moreapps/!Word/LineLayout');
+    const {sameLabel} = await import('../../tools/moreapps/!Letters/LineLabel');
+    const {layoutPara} = await import('../../tools/moreapps/!Letters/LineLayout');
     const d = listDoc([]);
     const p = newPara('text', {pStyle: 'Indented'});
     const base = {text: '1.', level: 0, numId: 1, suff: 'tab',

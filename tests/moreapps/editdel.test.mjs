@@ -2,16 +2,16 @@
 // (pure commands over a Document, no layout).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {orderedPos} from '../../tools/moreapps/!Word/EditPos';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {orderedPos} from '../../tools/moreapps/!Letters/EditPos';
 import {newPara, newSection, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/Model';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {mk, texts, ids, P, C, SEL, at, undoable, valid, snap, box, S, O}
   from './edit-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 
 /** Sections [ab][cd][ef] (the last one newDoc's, with its page). */
 function three() {
@@ -433,7 +433,7 @@ describe('Backspace and Delete next to unseen inlines (bookmarks)', () => {
     'they are written back', async () => {
     const {buildDocx, documentXml, p, r} = await import(
       './build-docx.mjs');
-    const {Document} = await import('../../tools/moreapps/!Word/Document');
+    const {Document} = await import('../../tools/moreapps/!Letters/Document');
     const doc = await readDocx(await buildDocx({'word/document.xml':
       documentXml(p(r('Hi ') + '<w:proofErr w:type="spellStart"/>' +
         r('wrold') + '<w:proofErr w:type="spellEnd"/>'))}));

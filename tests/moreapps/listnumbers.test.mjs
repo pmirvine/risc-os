@@ -2,10 +2,10 @@
 // in one pass: templates, counters, restarts, overrides, styles.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {newStyleTable, addStyle, setDefault}
-  from '../../tools/moreapps/!Word/Styles';
+  from '../../tools/moreapps/!Letters/Styles';
 
 const lv = (ilvl, o = {}) => ({ilvl, numFmt: 'decimal',
   lvlText: `%${ilvl + 1}.`, start: 1, ...o});

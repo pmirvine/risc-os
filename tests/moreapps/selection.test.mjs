@@ -2,8 +2,8 @@
 // commands over a DocLayout. Measured with a fake: 8 px per unit.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {loadStyles, tm, mkDoc, box, O, raw, el, rng}
   from './word-docs.mjs';
@@ -413,7 +413,7 @@ describe('Selection over unseen inlines (bookmarks, proofing marks)', () => {
   it('a real proofErr document: the marks never cost a press',
     async () => {
       const {readDocx} = await import(
-        '../../tools/moreapps/!Word/DocxRead');
+        '../../tools/moreapps/!Letters/DocxRead');
       const {buildDocx, documentXml, p, r} = await import(
         './build-docx.mjs');
       const doc = await readDocx(await buildDocx({'word/document.xml':

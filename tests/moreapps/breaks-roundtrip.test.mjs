@@ -1,4 +1,4 @@
-// Breaks round trip: documents changed with !Word's page and section
+// Breaks round trip: documents changed with !Letters' page and section
 // break commands (./EditApply Ctrl-Enter, Insert > Section break >
 // Next page / Continuous, ./InsertApply and ./SectBreak) mixed with
 // what undoes them or goes beside them: Backspace, Delete and the
@@ -30,12 +30,12 @@ import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
 import {rng} from './word-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 
 export const STEPS = 40;

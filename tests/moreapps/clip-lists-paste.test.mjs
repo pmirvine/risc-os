@@ -1,4 +1,4 @@
-// Lists, borders, shading and tab stops pasted from one !Word
+// Lists, borders, shading and tab stops pasted from one !Letters
 // document into another (question L6, the owner's ruling: keep them,
 // as Word does): the target gets new numbering definitions copied
 // from the source's (./ClipNums, ./NumCopy) in the paste's one undo
@@ -9,7 +9,7 @@
 // exactly; the written document is valid and reads back the same.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {lintPackage} from './lint-package.mjs';
@@ -42,7 +42,7 @@ async function written(d) {
       assert.deepEqual([...xsd.errors(z.get(n))], [], n + ' schema');
     }
   }
-  const back = new (await import('../../tools/moreapps/!Word/Document'))
+  const back = new (await import('../../tools/moreapps/!Letters/Document'))
     .Document(await readDocx(bytes));
   assert.deepEqual(labelTexts(back), labelTexts(d), 'labels read back');
   assert.deepEqual(texts(back), texts(d));
@@ -210,8 +210,8 @@ describe('L6: the HTML and same-document routes are unchanged', () => {
     const src = await open(await sourceDocx());
     const before = kids(src).length;
     const {pasteBlocks} = await import(
-      '../../tools/moreapps/!Word/ClipPaste');
-    const {slice} = await import('../../tools/moreapps/!Word/ClipSlice');
+      '../../tools/moreapps/!Letters/ClipPaste');
+    const {slice} = await import('../../tools/moreapps/!Letters/ClipSlice');
     pasteBlocks(src, C(src, 8, 0), slice(src.doc, SEL(src, 0, 0, 1, 0))
       .blocks, {sameDoc: true});
     assert.equal(kids(src).length, before);

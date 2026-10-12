@@ -1,5 +1,5 @@
 // Hyperlinks, bookmarks, the format painter and the word count round
-// trip: documents changed with !Word's A6 commands (./LinkOps
+// trip: documents changed with !Letters' A6 commands (./LinkOps
 // insertLink / editLink / removeLink, ./Bookmarks addBookmark /
 // deleteBookmark, ./FormatPaint pick and paint, ./WordCount count),
 // mixed with typing, Enter, deleting, character formats, paragraph
@@ -35,20 +35,20 @@ import {buildDocx, documentXml, stylesXml, p, r, REL, STRICT_REL}
   from './build-docx.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write} from './roundtrip-lib.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {rng} from './word-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as LO from '../../tools/moreapps/!Word/LinkOps';
-import * as BM from '../../tools/moreapps/!Word/Bookmarks';
-import * as FP from '../../tools/moreapps/!Word/FormatPaint';
-import {count} from '../../tools/moreapps/!Word/WordCount';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as LO from '../../tools/moreapps/!Letters/LinkOps';
+import * as BM from '../../tools/moreapps/!Letters/Bookmarks';
+import * as FP from '../../tools/moreapps/!Letters/FormatPaint';
+import {count} from '../../tools/moreapps/!Letters/WordCount';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {lintPackage} from './lint-package.mjs';
 

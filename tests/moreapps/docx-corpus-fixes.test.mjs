@@ -2,9 +2,9 @@
 // in the .docx writer, each with a minimal synthetic package.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {describe as describe_} from '../../tools/moreapps/!Word/Open';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {describe as describe_} from '../../tools/moreapps/!Letters/Open';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {assertSameDoc} from './docx-compare.mjs';
 
@@ -80,6 +80,6 @@ describe('OLE2 files (older .doc, password-protected .docx)', () => {
   it('the error box names the file and the reason', async () => {
     const err = await readDocx(ole()).catch((e) => e);
     assert.equal(describe_(err, 'Old'), "'Old' is an older Word (.doc) " +
-      'or password-protected file; !Word opens .docx files only.');
+      'or password-protected file; !Letters opens .docx files only.');
   });
 });

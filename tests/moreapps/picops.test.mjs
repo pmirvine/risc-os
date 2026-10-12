@@ -5,16 +5,16 @@
 // and its handles at any zoom.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {setPicture, stepSel} from '../../tools/moreapps/!Word/PicOps';
+import {setPicture, stepSel} from '../../tools/moreapps/!Letters/PicOps';
 import {picAt, selectedPic, handleAt, handleRects}
-  from '../../tools/moreapps/!Word/PicFind';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
-import {select, caret} from '../../tools/moreapps/!Word/Selection';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+  from '../../tools/moreapps/!Letters/PicFind';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
+import {select, caret} from '../../tools/moreapps/!Letters/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {p} from './build-docx.mjs';
 import {tm} from './word-docs.mjs';
 import {drawingXml, picDocx} from './pic-fixtures.mjs';

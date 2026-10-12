@@ -2,11 +2,11 @@
 // ModelCheck.checkBlock, Batch C1.1.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {newPara, checkBlock} from '../../tools/moreapps/!Word/Model';
-import {checkProps} from '../../tools/moreapps/!Word/ModelCheck';
+import {newPara, checkBlock} from '../../tools/moreapps/!Letters/Model';
+import {checkProps} from '../../tools/moreapps/!Letters/ModelCheck';
 import {checkTable, MAX_COLS, MAX_DEPTH, MAX_TW, MAX_ROWS}
-  from '../../tools/moreapps/!Word/TblCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+  from '../../tools/moreapps/!Letters/TblCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 
 const CK = {block: checkBlock, props: checkProps};

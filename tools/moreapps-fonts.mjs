@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// Fetches the metric-compatible fonts bundled with !Word (Carlito for
+// Fetches the metric-compatible fonts bundled with !Letters (Carlito for
 // Calibri, Caladea for Cambria, Liberation Sans/Serif/Mono for Arial/
 // Times New Roman/Courier New) and writes them, plus Licences, to
-// tools/moreapps/!Word/Fonts/ (committed; the disc build copies them as
+// tools/moreapps/!Letters/Fonts/ (committed; the disc build copies them as
 // untyped data). The archives are cached in the git-ignored
 // tools/moreapps/.cache and checked against the SHA-256 below, so the
 // output is the same bytes every run. Each family's licence file must
@@ -19,7 +19,7 @@ import {execFileSync} from 'node:child_process';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
 const CACHE = path.join(ROOT, 'tools/moreapps/.cache');
-const OUT = path.join(ROOT, 'tools/moreapps/!Word/Fonts');
+const OUT = path.join(ROOT, 'tools/moreapps/!Letters/Fonts');
 const GH = 'https://github.com/';
 const CL = 'https://codeload.github.com/';
 
@@ -87,11 +87,11 @@ for (const s of SOURCES) {
     `Licence: SIL Open Font License, Version 1.1 (file ${s.lic.split('/').pop()} in the archive)\n${'='.repeat(70)}\n\n${lic.trim()}\n`);
 }
 fs.writeFileSync(path.join(OUT, 'Licences'),
-  'Fonts bundled with !Word. The font files here are unmodified TrueType\n' +
+  'Fonts bundled with !Letters. The font files here are unmodified TrueType\n' +
   'files, named without the .ttf extension. All three families are free\n' +
   'software under the SIL Open Font License 1.1 (full texts below). They\n' +
   'have the same character widths as Calibri, Cambria, Arial, Times New\n' +
   'Roman and Courier New so documents break lines as they do in Word.\n' +
   'Fetched by tools/moreapps-fonts.mjs.\n\n' + notices.join('\n'));
 fs.rmSync(path.join(CACHE, 'x'), {recursive: true, force: true});
-console.log(`${count} fonts, ${total} bytes (${(total / 1048576).toFixed(2)} MB) in tools/moreapps/!Word/Fonts (TTF)`);
+console.log(`${count} fonts, ${total} bytes (${(total / 1048576).toFixed(2)} MB) in tools/moreapps/!Letters/Fonts (TTF)`);

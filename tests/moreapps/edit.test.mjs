@@ -3,11 +3,11 @@
 import {NUMS} from './list-docs.mjs';
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {entryText} from './docx-compare.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {mk, texts, ids, P, C, SEL, at, undoable, valid, box, raw, O, S,
   bold, plain} from './edit-docs.mjs';
 

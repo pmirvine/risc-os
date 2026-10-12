@@ -5,7 +5,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {jpegGray} from './pic-fixtures.mjs';
-import {imageInfo, decodable} from '../../tools/moreapps/!Word/PicMedia';
+import {imageInfo, decodable} from '../../tools/moreapps/!Letters/PicMedia';
 
 describe('jpegGray', () => {
   it('headers: size and density as asked', () => {

@@ -1,4 +1,4 @@
-// !Word's pictures drawn in the real desktop (Batch B, B2.2): a PNG, a
+// !Letters' pictures drawn in the real desktop (Batch B, B2.2): a PNG, a
 // JPEG and a GIF drawn from their bitmaps (PicCache, createImageBitmap),
 // a floating picture outlined dashed, an EMF part and a missing part as
 // labelled boxes; only pictures in view are decoded, each once (the
@@ -45,7 +45,7 @@ async function start() {
     for (const [k, v] of Object.entries(files)) os.vfs.writeFile('RAM::RamDisc0.$.' + k, new Uint8Array(v), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (title) => window.__word()?.word.docs.find((d) => d.win.title === title);
     /** No decode running, and the window drawn after it. */
     window.__settle = async () => {

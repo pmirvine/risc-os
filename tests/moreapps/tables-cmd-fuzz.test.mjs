@@ -23,17 +23,17 @@
 // equal, undone (roundTrip).
 import {it} from 'node:test';
 import assert from 'node:assert/strict';
-import {TABLE} from '../../tools/moreapps/!Word/TblCmdCols';
-import {splitCellsCmd} from '../../tools/moreapps/!Word/TblCmd';
-import {stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {splitCellsCmd} from '../../tools/moreapps/!Letters/TblCmd';
+import {stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {checkBlock, deepEqual, OBJ}
-  from '../../tools/moreapps/!Word/Model';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import {checkPos} from '../../tools/moreapps/!Word/EditPos';
-import {marks} from '../../tools/moreapps/!Word/BookmarkFind';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
+  from '../../tools/moreapps/!Letters/Model';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {checkPos} from '../../tools/moreapps/!Letters/EditPos';
+import {marks} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
 import {p, r} from './build-docx.mjs';
 import {rng} from './word-docs.mjs';
 import {tbl, tr, tc, tblDocx, nestedTable, freeze}

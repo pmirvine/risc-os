@@ -1,7 +1,7 @@
-// Test-only helpers for the !Word layout tests: documents built from
+// Test-only helpers for the !Letters layout tests: documents built from
 // paragraphs and kept blocks, measured with a fixed-width fake.
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 

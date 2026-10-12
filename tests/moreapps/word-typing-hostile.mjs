@@ -1,4 +1,4 @@
-// !Word's typing, deleting and undo against hostile input in the real
+// !Letters' typing, deleting and undo against hostile input in the real
 // desktop: 100,000 characters typed at once (through the Wimp's text
 // field), a storm of 5000 mixed events, everything selected in a
 // 50,000-paragraph document and replaced by one character, storms of
@@ -16,7 +16,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { BODIES } from './hostile-docs.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:tc>' + p(r('a cell')) + '</w:tc></w:tr></w:tbl>';
 const WORDS = 'alpha beta gamma delta epsilon zeta eta theta iota kappa'.split(' ');
@@ -57,7 +57,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
       return { x: rc.left + s.x * k, y: rc.top + s.y * k };

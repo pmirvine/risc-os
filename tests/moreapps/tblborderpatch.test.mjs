@@ -12,15 +12,15 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {fill, patch, settingOf, sidesOf, SIDES6}
-  from '../../tools/moreapps/!Word/TblBorderPatch';
-import {setBorders} from '../../tools/moreapps/!Word/TblEditProps';
-import {bordersCmd} from '../../tools/moreapps/!Word/TblCmdCols';
-import {rectOf} from '../../tools/moreapps/!Word/TblCmd';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {at as walkAt, forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/TblBorderPatch';
+import {setBorders} from '../../tools/moreapps/!Letters/TblEditProps';
+import {bordersCmd} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {rectOf} from '../../tools/moreapps/!Letters/TblCmd';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {at as walkAt, forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {assertSameDoc, expectedBack} from './docx-compare.mjs';
 import {mk, undoable} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

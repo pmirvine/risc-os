@@ -5,13 +5,13 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
-import {tokens} from '../../tools/moreapps/!Word/LineTokens';
-import {picToken, fitPic} from '../../tools/moreapps/!Word/PicLine';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
+import {tokens} from '../../tools/moreapps/!Letters/LineTokens';
+import {picToken, fitPic} from '../../tools/moreapps/!Letters/PicLine';
 import {docMap, pictureOf, EMU_PX}
-  from '../../tools/moreapps/!Word/PicRead';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/PicRead';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {picDocx, pngBytes} from './pic-fixtures.mjs';
 import {nopicDocx, plain, WIDTH} from './nopic-fixture.mjs';

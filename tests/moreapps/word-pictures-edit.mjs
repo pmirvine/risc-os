@@ -1,4 +1,4 @@
-// !Word's pictures selected, resized and deleted in the real desktop
+// !Letters' pictures selected, resized and deleted in the real desktop
 // (Batch B, B3.2: ./PicDrag), with a real mouse and real keys: a click
 // on a picture selects it (its eight handles drawn black), Shift-Right
 // from before it selects it, Delete and Backspace remove it (one undo
@@ -78,7 +78,7 @@ try {
     for (const [k, v] of Object.entries(files)) os.vfs.writeFile('RAM::RamDisc0.$.' + k, new Uint8Array(v), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 3) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__name = 'Ed';
     window.__doc = () => window.__word()?.word.docs.find((d) => d.path?.endsWith('.' + window.__name));
     window.__beeps = 0;

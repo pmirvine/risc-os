@@ -9,10 +9,10 @@
 // them, and a keystroke in a cell of one within +5 ms of it too.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {DECORATORS} from '../../tools/moreapps/!Word/DocStack';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {apply} from '../../tools/moreapps/!Word/Ops';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {DECORATORS} from '../../tools/moreapps/!Letters/DocStack';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
 import {loadStyles, tm, mkDoc} from './word-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';
 

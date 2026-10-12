@@ -1,4 +1,4 @@
-// !Word's untitled documents and its Save / Save as / Save a copy in
+// !Letters' untitled documents and its Save / Save as / Save a copy in
 // the real desktop: a new untitled document (the test hook's
 // newUntitled: the icon bar gets it later), its name and Info; Save
 // on it opens the Save box with a full path ready (OK works) and
@@ -12,7 +12,7 @@
 // tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { assertSameDoc } from './docx-compare.mjs';
 
 const out = [];
@@ -36,7 +36,7 @@ try {
     os.vfs.mkdir('RAM::RamDisc0.$.Sub');
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
@@ -45,7 +45,7 @@ try {
 
   // Word started with no file: just its icon
   await ev(async () => {
-    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+    await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
     for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
   });
 

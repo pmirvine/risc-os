@@ -1,4 +1,4 @@
-// !Word's Insert > Table and the Table menu in the real desktop (Batch C4.4, D27, D30; real menu clicks, real keys,
+// !Letters' Insert > Table and the Table menu in the real desktop (Batch C4.4, D27, D30; real menu clicks, real keys,
 // pixels). The window menu has Table after Format; its items (Insert table..., Insert >, Delete >, Select >, Merge
 // cells, Split cells..., Split table, Distribute rows evenly, Distribute columns evenly, Tab) with Ctrl+Shift+Enter and
 // Ctrl+Tab shown, every one but Insert table... shaded with the caret outside a table, Merge cells also with the caret in
@@ -70,7 +70,7 @@ try {
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === leaf);
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -105,7 +105,7 @@ try {
       else v.setSelection({ id: f(a), off: ao }, { id: f(b), off: bo });
     };
   }, files);
-  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word'));
+  await ev(() => os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters'));
   await page.waitForFunction(() => !!window.__word()?.word, null, { timeout: 20000 });
   for (const leaf of ['Ta', 'Tb', 'Tc', 'Td', 'Te', 'Tf']) {
     await ev((leaf) => os.filer.run('RAM::RamDisc0.$.' + leaf), leaf);

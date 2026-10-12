@@ -8,23 +8,23 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertLink, editLink, removeLink, linkAt, linkInfo, selInfo,
-  isLink} from '../../tools/moreapps/!Word/LinkOps';
+  isLink} from '../../tools/moreapps/!Letters/LinkOps';
 import {cleanUrl, parseAddress, checkAnchor, MAX}
-  from '../../tools/moreapps/!Word/LinkUrl';
+  from '../../tools/moreapps/!Letters/LinkUrl';
 import {bookmarkNames, findBookmark, linkNames}
-  from '../../tools/moreapps/!Word/BookmarkFind';
-import {linkUnder} from '../../tools/moreapps/!Word/LinkFind';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/BookmarkFind';
+import {linkUnder} from '../../tools/moreapps/!Letters/LinkFind';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {tm} from './word-docs.mjs';
-import {hyperlinkStyle} from '../../tools/moreapps/!Word/DocParts';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {linkUrl} from '../../tools/moreapps/!Word/ClipLinks';
-import {keymap, WINDOW} from '../../tools/moreapps/!Word/Keymap';
-import {macKey, macLabel, CMD} from '../../tools/moreapps/!Word/MacKeys';
+import {hyperlinkStyle} from '../../tools/moreapps/!Letters/DocParts';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {linkUrl} from '../../tools/moreapps/!Letters/ClipLinks';
+import {keymap, WINDOW} from '../../tools/moreapps/!Letters/Keymap';
+import {macKey, macLabel, CMD} from '../../tools/moreapps/!Letters/MacKeys';
 import {mk, P, C, SEL, O, box, valid} from './edit-docs.mjs';
 import {buildDocx, documentXml, p, r, REL} from './build-docx.mjs';
 import {strictDocx} from './docx-fixtures.mjs';

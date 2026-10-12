@@ -2,7 +2,7 @@
 // setPicture patch they make (Batch B, B6).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fill, patchOf } from '../../tools/moreapps/!Word/PicPatch';
+import { fill, patchOf } from '../../tools/moreapps/!Letters/PicPatch';
 
 const pic = (o = {}) => ({ cx: 1828800, cy: 914400, alt: 'A cat', floating: false, supported: true, ...o });
 const info = { w: 40, h: 20, dpiX: 96, dpiY: 96 };

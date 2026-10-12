@@ -1,14 +1,14 @@
 // Test-only: a rich, Word-like .docx to edit (the editing round trip,
 // edit-roundtrip.test.mjs, and the real-Word hand-off generator,
 // handoff-typing.mjs). Styles, settings and document properties are
-// those of a new !Word document (newDoc, which real Word opens), plus
+// those of a new !Letters document (newDoc, which real Word opens), plus
 // a numbering part (a numbered and a bulleted list), a hyperlink, a
 // table, bold and italic runs, a tab, a line break, an emoji and
 // accents, and two sections (a section break in a paragraph).
 //
 //   await richDocx() -> Uint8Array
 //   RICH: the paragraph texts, by name, to find them after reading
-import {newDoc, writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {newDoc, writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {buildDocx, documentXml, numberingXml, p, r, REL}
   from './build-docx.mjs';

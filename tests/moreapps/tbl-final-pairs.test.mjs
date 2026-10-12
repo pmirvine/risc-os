@@ -11,24 +11,24 @@
 // step, undo exact.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {TABLE} from '../../tools/moreapps/!Word/TblCmdCols';
-import {deleteSelection} from '../../tools/moreapps/!Word/EditDel';
-import {typeText, splitPara} from '../../tools/moreapps/!Word/Edit';
-import {insertTable} from '../../tools/moreapps/!Word/TblInsert';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {deleteSelection} from '../../tools/moreapps/!Letters/EditDel';
+import {typeText, splitPara} from '../../tools/moreapps/!Letters/Edit';
+import {insertTable} from '../../tools/moreapps/!Letters/TblInsert';
 import {textToTableCmd, tableToTextCmd}
-  from '../../tools/moreapps/!Word/TblConvertCmd';
-import {pairs} from '../../tools/moreapps/!Word/BookmarkFind';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import {endsCell} from '../../tools/moreapps/!Word/TblCheck';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/TblConvertCmd';
+import {pairs} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {endsCell} from '../../tools/moreapps/!Letters/TblCheck';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, TBL_OPAQUE, modelTable, freeze}
   from './tbl-fixtures.mjs';
-import {tableToText} from '../../tools/moreapps/!Word/TblToText';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import {tableToText} from '../../tools/moreapps/!Letters/TblToText';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {undoable} from './edit-docs.mjs';
 
 const BS = (n) => `<w:bookmarkStart w:id="${n}" w:name="b${n}"/>`;

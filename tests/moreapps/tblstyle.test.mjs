@@ -6,12 +6,12 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {rootScope, wName}
-  from '../../tools/moreapps/!Word/Ns';
-import {readStyles} from '../../tools/moreapps/!Word/ReadStyles';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {withStyle} from '../../tools/moreapps/!Word/DocParts';
+  from '../../tools/moreapps/!Letters/Ns';
+import {readStyles} from '../../tools/moreapps/!Letters/ReadStyles';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {withStyle} from '../../tools/moreapps/!Letters/DocParts';
 import {viewOf, tableStyleId, COND_TYPES, MAX_LINKS}
-  from '../../tools/moreapps/!Word/TblStyle';
+  from '../../tools/moreapps/!Letters/TblStyle';
 import {stylesXml, p} from './build-docx.mjs';
 import {TABLE_NORMAL, TABLE_GRID, GRID_TABLE_4, LIST_TABLE_3,
   styleFromCorpus, modelTable, tblDocx, tbl, tr, tc}

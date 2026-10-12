@@ -1,4 +1,4 @@
-// !Word's tab stops against hostile input in the real desktop:
+// !Letters' tab stops against hostile input in the real desktop:
 // a paragraph with 10,000 stops kept raw (64 shown on the ruler, edits
 // refused, layout quick, Tabs typed in it); stops at +-31680 twips and
 // far beyond in a file (laid out sanely) and through the commands
@@ -16,7 +16,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, settingsXml, p, r } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const SETTINGS = settingsXml('<w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/><w:characterSpacingControl w:val="doNotCompress"/>');
 const docx = async (body) => Array.from(await buildDocx({ 'word/document.xml': documentXml(body), 'word/settings.xml': SETTINGS }));
@@ -61,7 +61,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf) => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

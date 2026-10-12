@@ -1,5 +1,5 @@
 // Shared by the round-trip tests (edit-roundtrip.test.mjs,
-// format-roundtrip.test.mjs): open a .docx, change it with !Word's
+// format-roundtrip.test.mjs): open a .docx, change it with !Letters'
 // commands, then check
 //
 // - the model read back equals the changed model (docx-compare's
@@ -38,9 +38,9 @@ import {join, relative} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {lintPackage} from './lint-package.mjs';

@@ -1,4 +1,4 @@
-// !Word's AutoFormat lists as you type, in the real desktop with real
+// !Letters' AutoFormat lists as you type, in the real desktop with real
 // key presses: '* ' then text makes a bullet item; '1. ' then text a
 // numbered one, Enter continues it and Enter on the empty item ends
 // it; '2. ' continues a list, '7. ' starts a new one; a Tab after
@@ -8,7 +8,7 @@
 // input method's commit (a real CDP composition: '1. ' committed
 // whole, and a space committed after '1.' typed), Ctrl-V of '* x',
 // Find / Replace making '1. ', undo / redo; Format > AutoFormat lists
-// ticked, turned off (then nothing converts), kept in Choices:Word
+// ticked, turned off (then nothing converts), kept in Choices:Letters
 // with Recent (neither overwrites the other) across a restart of
 // Word, turned on again; on a Mac, Cmd-Z gives back the marker. No
 // page errors.
@@ -22,7 +22,7 @@ const files = {
   Au: Array.from(await docx([...Array.from({ length: N }, () => p()), p(r('Qtext')), p(r('Last'))].join(''))),
 };
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
-const CHOICES = 'ADFS::HardDisc4.$.!Boot.Choices.Word';
+const CHOICES = 'ADFS::HardDisc4.$.!Boot.Choices.Letters';
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -47,7 +47,7 @@ try {
     if (os.vfs.exists(CHOICES)) os.vfs.delete(CHOICES);
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Au') => window.__word()?.word.docs.find((d) => d.path?.endsWith('.' + leaf));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
@@ -63,7 +63,7 @@ try {
         overwrite: v.overwrite, msgs: window.__msgs.length };
     };
     window.__start = async () => {
-      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Word');
+      await os.cli.run('Run ADFS::HardDisc4.$.MoreApps.!Letters');
       for (let i = 0; i < 100 && !window.__word()?.word; i++) await window.__sleep(50);
       await window.__word().word.recentReady;
     };
@@ -275,7 +275,7 @@ try {
   await ev(() => os.wimp.menus.close());
   await settle();
   const ch1 = await ev(async (C) => JSON.parse(await os.vfs.readText(C)), CHOICES);
-  ok('... chosen: off, kept in Choices:Word beside Recent', ch1.autoList === false && Array.isArray(ch1.recent)
+  ok('... chosen: off, kept in Choices:Letters beside Recent', ch1.autoList === false && Array.isArray(ch1.recent)
     && ch1.recent.some((x) => /RamDisc0\.\$\.Au$/.test(x)), ch1);
   await caretAt(15);
   await type('* off');

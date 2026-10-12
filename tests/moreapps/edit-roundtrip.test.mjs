@@ -1,4 +1,4 @@
-// Editing round trip: documents edited with !Word's real editing
+// Editing round trip: documents edited with !Letters' real editing
 // commands (./Edit, ./EditDel: typing with emoji, accents, combining
 // marks, tabs and line breaks; Enter; Backspace and Delete; their
 // word forms; deleting and typing over selections, also across
@@ -28,11 +28,11 @@
 // files present locally (the real-Word hand-off files in
 // corpus/handoff included).
 import {describe, it} from 'node:test';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as X from '../../tools/moreapps/!Word/EditDel';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {richDocx} from './edit-rich.mjs';

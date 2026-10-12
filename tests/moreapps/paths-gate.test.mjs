@@ -2,7 +2,7 @@
 // position may be built from a location's section and index
 // ([loc.s, loc.i], block: [s, i], [s, i + 1], [s, k]...) or a block
 // read by one (.blocks[m.i]); positions are paths (./Path), taken
-// from loc.at (./EditPos). Every match in a !Word source (comment
+// from loc.at (./EditPos). Every match in a !Letters source (comment
 // lines left out) must be in ALLOW with its exact count: a match not
 // listed fails, and so does an entry whose count is larger than what
 // is found (the list only shrinks: remove an entry, or lower its
@@ -25,7 +25,7 @@ import {readdirSync, readFileSync, statSync} from 'node:fs';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const DIR = fileURLToPath(new URL('../../tools/moreapps/!Word/',
+const DIR = fileURLToPath(new URL('../../tools/moreapps/!Letters/',
   import.meta.url));
 
 export const PATTERNS = {
@@ -97,7 +97,7 @@ export function matchesIn(text) {
   return out;
 }
 
-/** Every source file of !Word (not the Fonts directory). */
+/** Every source file of !Letters (not the Fonts directory). */
 function sources() {
   return readdirSync(DIR).filter((f) => statSync(join(DIR, f))
     .isFile()).map((f) => ({file: f,

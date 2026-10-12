@@ -136,7 +136,7 @@ async function boot() {
     await cli.run('Repeat Filer_Boot <BootResources$Dir> -Applications -Tasks', { out: { write() {}, writeln() {} } });
   } catch (e) { console.warn(e); }
   // ... and those in $.MoreApps (its line in Choices.Boot.Desktop: this desktop runs neither the Desktop file nor
-  // PreDesktop's *AddApp, so it is done here), so that e.g. !Word's file type is known from a cold boot
+  // PreDesktop's *AddApp, so it is done here), so that e.g. !Letters' file type is known from a cold boot
   try {
     if (vfs.exists('ADFS::HardDisc4.$.MoreApps')) await cli.run('Repeat Filer_Boot ADFS::HardDisc4.$.MoreApps -Applications -Tasks', { out: { write() {}, writeln() {} } });
   } catch (e) { console.warn(e); }

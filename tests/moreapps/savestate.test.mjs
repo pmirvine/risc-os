@@ -4,7 +4,7 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {untitledName, safeLeaf, leafOf, dirOf, defaultDir, HOME,
   suggestName}
-  from '../../tools/moreapps/!Word/SaveState';
+  from '../../tools/moreapps/!Letters/SaveState';
 
 describe('untitledName', () => {
   it('Untitled, then Untitled 2, 3...', () => {

@@ -1,4 +1,4 @@
-// !Word's line spacing and space before / after in the real desktop:
+// !Letters' line spacing and space before / after in the real desktop:
 // Word's keys (Ctrl-2 double, Ctrl-5 one and a half, Ctrl-1 single,
 // Ctrl-0 12 pt before on and off) with real key presses, each one
 // undo step with the dirty star; the line pitch drawn on the canvas
@@ -46,7 +46,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Sp') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

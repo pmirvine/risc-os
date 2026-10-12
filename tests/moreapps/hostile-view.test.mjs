@@ -1,4 +1,4 @@
-// !Word's view against hostile and odd documents (hostile-docs.mjs):
+// !Letters' view against hostile and odd documents (hostile-docs.mjs):
 // a 100,000-character word, 50,000 runs, 5000 tabs, absurd indents
 // and page sizes, a paragraph of only inlines, tables first and last,
 // an empty document. The calls stay quick (95 in 100 under 50 ms;
@@ -11,10 +11,10 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {Worker} from 'node:worker_threads';
-import {nextG, prevG, clampOff} from '../../tools/moreapps/!Word/DocPos';
+import {nextG, prevG, clampOff} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {BODIES, laidOut, badSel} from './hostile-docs.mjs';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 
 const HELPER = new URL('./hostile-docs.mjs', import.meta.url).href;
 const WORKER = `

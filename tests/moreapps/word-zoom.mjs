@@ -1,4 +1,4 @@
-// !Word's zoom in the real desktop: the layout stays at 100%, the window shows it scaled (Zoom: screen x = x * z,
+// !Letters' zoom in the real desktop: the layout stays at 100%, the window shows it scaled (Zoom: screen x = x * z,
 // screen y = top + (y - top) * z, top = the toolbar and ruler, not scaled). At 50, 100 and 200%: a click picks the
 // same character, drags, double and triple clicks select as at 100%, the selection is painted where the text is, the
 // Wimp's caret (and the input method's proxy field) are at the zoomed caret, typing places it, the caret is scrolled
@@ -10,7 +10,7 @@
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { zoomScroll } from '../../tools/moreapps/!Word/Zoom';
+import { zoomScroll } from '../../tools/moreapps/!Letters/Zoom';
 
 const PARAS = [
   p(r('First paragraph, indented with a first line.'), '<w:ind w:left="720" w:firstLine="360"/>'),   // 0
@@ -38,7 +38,7 @@ async function start(page) {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'T') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__screen = (sx, sy) => {
       const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

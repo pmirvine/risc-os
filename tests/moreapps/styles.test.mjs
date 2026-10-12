@@ -3,9 +3,9 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newStyleTable, resolvePara, resolveRun, styleOf, addStyle,
   setDefault}
-  from '../../tools/moreapps/!Word/Styles';
-import {ensureBuiltins} from '../../tools/moreapps/!Word/StylesBuiltin';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Styles';
+import {ensureBuiltins} from '../../tools/moreapps/!Letters/StylesBuiltin';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 
 const st = (id, o = {}) => ({id, type: 'paragraph', pPr: {extra: []},
   rPr: {extra: []}, extra: [], raw: null, ...o});

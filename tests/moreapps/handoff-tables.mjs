@@ -15,8 +15,8 @@
 //   tb-13-roundtrip-{merged,nested,styled}.docx (Word-made tables of
 //   the corpus; skipped with a note when the corpus is absent),
 //   tb-14-floating-bidi.docx and tb-README.txt (the steps in Word,
-//   what !Word wrote, every question with its id and file).
-// The files are made with !Word's own commands (Insert > Table, the
+//   what !Letters wrote, every question with its id and file).
+// The files are made with !Letters' own commands (Insert > Table, the
 // row, column, merge, split, distribute, drag, Table properties,
 // Borders and shading, paste and convert commands) on documents built
 // from XML where a fixture is needed; each is written, linted, read
@@ -24,7 +24,7 @@
 // tables are listed in the README. A file is written only when its
 // bytes change; nothing else in the folder is touched except INDEX.txt
 // (run handoff-index.mjs after). --word-md prints the index of
-// docs/apps/Word.md ("To check in real Word (tables, consolidated)").
+// docs/apps/Letters.md ("To check in real Word (tables, consolidated)").
 import {put, wrote} from './handoff-tables-lib.mjs';
 import {makeA, notes} from './handoff-tables-a.mjs';
 import {makeB} from './handoff-tables-b.mjs';
@@ -77,15 +77,15 @@ for (const [f] of FILES) {
 }
 
 const README = [
-  'Tables (!Word Batch C): the real-Word hand-off',
+  'Tables (!Letters Batch C): the real-Word hand-off',
   '(made by node tests/moreapps/handoff-tables.mjs; local only, this',
   'folder is never committed)',
   '',
-  'Every file is made by !Word\'s own commands (Insert > Table, the Table',
+  'Every file is made by !Letters\' own commands (Insert > Table, the Table',
   'menu, Table properties, Borders and shading, column and row drags,',
   'paste between documents, Convert) on a fixture, or is a Word-made',
   'table of the corpus read and written untouched. Each was written,',
-  'checked by the package lint, read back by !Word and every block',
+  'checked by the package lint, read back by !Letters and every block',
   'checked. Table numbers are those in each file\'s captions (the line',
   'above a table says what was done to it and which question it is for).',
   '',
@@ -107,10 +107,10 @@ const README = [
   '     complaint is the most valuable finding: write down the file.',
   '  2. Then the PRIORITY list above, then, if time allows, the rest',
   '     of the questions below in order: open the file, look at',
-  '     the table the caption names, and compare with what !Word',
+  '     the table the caption names, and compare with what !Letters',
   '     believes. "(No file)" questions are done by making the thing in',
-  '     Word, or in !Word, and opening the result in the other.',
-  '  3. Word counts: INDEX.txt lists the word counts !Word shows for each',
+  '     Word, or in !Letters, and opening the result in the other.',
+  '  3. Word counts: INDEX.txt lists the word counts !Letters shows for each',
   '     file; Review > Word Count in Word should match.',
   '',
   'Files, in the order for one session',
@@ -118,7 +118,7 @@ const README = [
   ...FILES.flatMap(([f, what, qs]) => [`  ${f}`, ...wrap(what +
     (qs.length ? '. Questions: ' + qs.join(' ') : ''), '      ')]),
   '',
-  'What !Word wrote (the tables of each file, read back; Table n is the',
+  'What !Letters wrote (the tables of each file, read back; Table n is the',
   'caption\'s number from 0, nested tables are listed under their own',
   'table, 63-column tables with a grid abbreviated)',
   '-------------------------------------------------------------------',
@@ -129,7 +129,7 @@ const README = [
   'Questions',
   '---------',
   'Each has a stable id, the file(s) it is asked of, the steps in Word,',
-  'the question as recorded while !Word was built, and what !Word does',
+  'the question as recorded while !Letters was built, and what !Letters does',
   'now (to compare with Word). Ids that start TB: the spec\'s TB1 to',
   'TB26 and their sub-questions (a, b ...); TBC4, TBC5, TBC6: readings',
   'made while building the Table menu, Table properties / borders /',
@@ -142,7 +142,7 @@ const README = [
       (first.has(id) ? '   [PRIORITY]' : '   [if time allows]'),
       ...wrap('Steps in Word: ' + steps + '.', '    '),
       ...wrap('Question: ' + q, '    '),
-      ...wrap('!Word: ' + say, '    '), ''];
+      ...wrap('!Letters: ' + say, '    '), ''];
   }),
 ];
 const text = latin(README.join('\n')) + '\n';

@@ -6,16 +6,16 @@
 // caret after undo and redo.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {insert, pageBreak} from '../../tools/moreapps/!Word/InsertApply';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {insert, pageBreak} from '../../tools/moreapps/!Letters/InsertApply';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {mk, texts, ids, P, C, SEL, at, undoable, valid, box, O, snap}
   from './edit-docs.mjs';
 import {listDoc, li} from './list-docs.mjs';

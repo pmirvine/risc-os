@@ -4,10 +4,10 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {search, count, replaceOne, replaceAll as replaceAll0, fold,
-  prepare, MAX} from '../../tools/moreapps/!Word/Find';
-import {Document} from '../../tools/moreapps/!Word/Document';
+  prepare, MAX} from '../../tools/moreapps/!Letters/Find';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {newPara, newSection, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Model';
 import {mk, texts, ids, P, undoable, valid, box, raw, O, bold, plain,
   snap} from './edit-docs.mjs';
 import {rng} from './word-docs.mjs';

@@ -1,6 +1,6 @@
 // RulerTabs (WimpLib, pure): the tab stops of a ruler as markers, the
 // tab-type selector's cycle, adding, moving (snapped as the indents,
-// Shift free) and removing a stop; FormatTabs (!Word) through
+// Shift free) and removing a stop; FormatTabs (!Letters) through
 // FormatApply's 'tabs': the stops the ruler shows (direct ones black,
 // a style's grey), and add / remove / move / set applied to each
 // selected paragraph's DIRECT stops (a removed style stop written as
@@ -9,13 +9,13 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import * as RT from '../../tools/moreapps/!WimpLib/RulerTabs';
 import {pickMarker} from '../../tools/moreapps/!WimpLib/RulerPick';
-import * as FT from '../../tools/moreapps/!Word/FormatTabs';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
-import {resolveTabs} from '../../tools/moreapps/!Word/TabStops';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import * as FT from '../../tools/moreapps/!Letters/FormatTabs';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
+import {resolveTabs} from '../../tools/moreapps/!Letters/TabStops';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {mk, P, C, SEL, undoable} from './edit-docs.mjs';
 
@@ -180,7 +180,7 @@ describe('RulerPick.pickMarker (a press on the ruler)', () => {
     });
 });
 
-// ---------------------------------------------------------------- !Word
+// ---------------------------------------------------------------- !Letters
 
 /** A document whose 'Tabbed' style has a left stop at 1440. */
 function doc(paras) {

@@ -5,17 +5,17 @@
 // Measured with a fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
-import {tokens} from '../../tools/moreapps/!Word/LineTokens';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
+import {tokens} from '../../tools/moreapps/!Letters/LineTokens';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {caretRect, hitTest, lineEnd, lineStart, selectionRects}
-  from '../../tools/moreapps/!Word/PositionMap';
+  from '../../tools/moreapps/!Letters/PositionMap';
 import {isPageBreak, breakLabel, ruleFit, rulePaint, ruleLit,
-  MIN_RULE, LIT} from '../../tools/moreapps/!Word/BreakMarks';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  MIN_RULE, LIT} from '../../tools/moreapps/!Letters/BreakMarks';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
 

@@ -6,25 +6,25 @@
 // does and read back, shown as '-' / nothing, no AutoFormat list.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {insert} from '../../tools/moreapps/!Word/InsertApply';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
+import {insert} from '../../tools/moreapps/!Letters/InsertApply';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
 import {mk, texts, P, C, SEL, at, undoable, valid, box, O, snap}
   from './edit-docs.mjs';
 import {tm} from './word-docs.mjs';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {xmlEntries} from './docx-compare.mjs';
-import {text as selText} from '../../tools/moreapps/!Word/Selection';
-import {search, replaceAll} from '../../tools/moreapps/!Word/Find';
-import {paraPlain} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {hyphenText, inlineText} from '../../tools/moreapps/!Word/InlineText';
+import {text as selText} from '../../tools/moreapps/!Letters/Selection';
+import {search, replaceAll} from '../../tools/moreapps/!Letters/Find';
+import {paraPlain} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {hyphenText, inlineText} from '../../tools/moreapps/!Letters/InlineText';
 
 const NB = '\xA0';
 const node = (d, k, off) => P(d, k).inlines[off];

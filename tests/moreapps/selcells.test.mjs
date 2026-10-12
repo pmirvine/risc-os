@@ -6,8 +6,8 @@
 // reference) on random merged grids.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {cellsShape} from '../../tools/moreapps/!Word/SelCells';
-import {gridOf, spanOf} from '../../tools/moreapps/!Word/TblGrid';
+import {cellsShape} from '../../tools/moreapps/!Letters/SelCells';
+import {gridOf, spanOf} from '../../tools/moreapps/!Letters/TblGrid';
 import {modelTable} from './tbl-fixtures.mjs';
 import {rng} from './word-docs.mjs';
 

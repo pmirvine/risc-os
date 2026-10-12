@@ -5,15 +5,15 @@
 // and itemAtY, hitTest, caretRect and selectionRects agree.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {reuseKey, sameKey, sameMark, markOf} from
-  '../../tools/moreapps/!Word/DocItems';
-import {sectDeco} from '../../tools/moreapps/!Word/SectDeco';
-import {flowDeco} from '../../tools/moreapps/!Word/FlowDeco';
-import {borderDeco} from '../../tools/moreapps/!Word/BorderGroups';
-import {DECORATORS} from '../../tools/moreapps/!Word/DocStack';
-import {spacingDeco} from '../../tools/moreapps/!Word/ParaSpace';
-import {selectAll} from '../../tools/moreapps/!Word/Selection';
+  '../../tools/moreapps/!Letters/DocItems';
+import {sectDeco} from '../../tools/moreapps/!Letters/SectDeco';
+import {flowDeco} from '../../tools/moreapps/!Letters/FlowDeco';
+import {borderDeco} from '../../tools/moreapps/!Letters/BorderGroups';
+import {DECORATORS} from '../../tools/moreapps/!Letters/DocStack';
+import {spacingDeco} from '../../tools/moreapps/!Letters/ParaSpace';
+import {selectAll} from '../../tools/moreapps/!Letters/Selection';
 import {loadStyles, tm, mkDoc, para, box} from './word-docs.mjs';
 
 before(loadStyles);

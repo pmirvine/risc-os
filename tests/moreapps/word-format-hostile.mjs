@@ -1,4 +1,4 @@
-// !Word's formatting against hostile input in the real desktop:
+// !Letters' formatting against hostile input in the real desktop:
 // everything selected in a 50,000-paragraph document then Ctrl-B,
 // Ctrl-E, a size (Ctrl-Shift->) and undo, each under 5 s and one undo
 // step; 1000 Ctrl-B in a row (on a selection and at a caret: no
@@ -22,7 +22,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
-import { checkBlock } from '../../tools/moreapps/!Word/ModelCheck';
+import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
 
 const WORDS = 'alpha beta gamma delta epsilon zeta eta theta iota kappa'.split(' ');
 const docx = (body) => buildDocx({ 'word/document.xml': documentXml(body) });
@@ -65,7 +65,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__client = (w, x, y) => {
       const s = w.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
       return { x: rc.left + s.x * k, y: rc.top + s.y * k };

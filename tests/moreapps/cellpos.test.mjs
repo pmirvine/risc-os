@@ -14,13 +14,13 @@
 // cell item's flow index is refreshed (DocRects' band clip mapped).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {compare} from '../../tools/moreapps/!Word/DocPos';
-import {findBlock, orderedPos} from '../../tools/moreapps/!Word/EditPos';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
-import * as E from '../../tools/moreapps/!Word/Edit';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {compare} from '../../tools/moreapps/!Letters/DocPos';
+import {findBlock, orderedPos} from '../../tools/moreapps/!Letters/EditPos';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
+import * as E from '../../tools/moreapps/!Letters/Edit';
 import {loadStyles, tm, rng} from './word-docs.mjs';
 import {mk, undoable, S} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

@@ -3,13 +3,13 @@
 // Measured with a fake: 8 px per UTF-16 unit, 9 px when bold.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {caretRect, hitTest, lineOf, lineStart, lineEnd, vertical,
-  selectionRects} from '../../tools/moreapps/!Word/PositionMap';
+  selectionRects} from '../../tools/moreapps/!Letters/PositionMap';
 import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
 

@@ -2,10 +2,10 @@
 // w14/w15 elements go, and edits that replace raw property elements.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {xmlEntries} from './docx-compare.mjs';
 

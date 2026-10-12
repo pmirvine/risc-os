@@ -1,4 +1,4 @@
-// Zoom: the view transform of a document's window (!Word Zoom): the
+// Zoom: the view transform of a document's window (!Letters Zoom): the
 // layout stays at 100%, the part below the toolbar and ruler (top px,
 // not scaled) is drawn z times as large. Clamping, the menu's steps,
 // the wheel's step, layout <-> screen (work area) round trips with
@@ -6,7 +6,7 @@
 // zoomScroll.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as Z from '../../tools/moreapps/!Word/Zoom';
+import * as Z from '../../tools/moreapps/!Letters/Zoom';
 
 const near = (a, b, e = 1e-9) => assert.ok(Math.abs(a - b) <= e,
   `${a} != ${b}`);

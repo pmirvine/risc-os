@@ -8,10 +8,10 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {count, countView, NODE_LIMIT}
-  from '../../tools/moreapps/!Word/WordCount';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/WordCount';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {mk, C, SEL, blocks as blocksOf, O} from './edit-docs.mjs';
 import {loadStyles, tm, mkDoc, raw, box} from './word-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';

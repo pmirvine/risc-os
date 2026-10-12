@@ -4,8 +4,8 @@ import {it} from 'node:test';
 import assert from 'node:assert/strict';
 import v8 from 'node:v8';
 import vm from 'node:vm';
-import {newPara, emptyDoc} from '../../tools/moreapps/!Word/Model';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {newPara, emptyDoc} from '../../tools/moreapps/!Letters/Model';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 
 v8.setFlagsFromString('--expose-gc');
 const gc = vm.runInNewContext('gc');

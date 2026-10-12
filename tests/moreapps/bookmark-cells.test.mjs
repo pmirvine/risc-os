@@ -7,17 +7,17 @@
 // end in flow order) and in the written document.xml.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
 import {deleteSelection, deleteBack}
-  from '../../tools/moreapps/!Word/EditDel';
-import {marks} from '../../tools/moreapps/!Word/BookmarkFind';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {cmpPath} from '../../tools/moreapps/!Word/Path';
+  from '../../tools/moreapps/!Letters/EditDel';
+import {marks} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {cmpPath} from '../../tools/moreapps/!Letters/Path';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx} from './tbl-fixtures.mjs';
 import {undoable} from './edit-docs.mjs';

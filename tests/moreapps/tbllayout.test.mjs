@@ -11,16 +11,16 @@
 // D20's keystroke budget in a 1000-row table.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {rowAtY} from '../../tools/moreapps/!Word/TblLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {rowAtY} from '../../tools/moreapps/!Letters/TblLayout';
 import {newPara, newTable, newRow, newCell}
-  from '../../tools/moreapps/!Word/Model';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {ids} from '../../tools/moreapps/!Word/Walk';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {ids} from '../../tools/moreapps/!Letters/Walk';
 import {loadStyles, tm, fake, mkDoc} from './word-docs.mjs';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
-import {MARGIN} from '../../tools/moreapps/!Word/DocStack';
+import {MARGIN} from '../../tools/moreapps/!Letters/DocStack';
 import {modelTable, tblDocx, tbl, tr, tc, nestedTable, TABLE_NORMAL,
   GRID_TABLE_4} from './tbl-fixtures.mjs';
 import {p, r} from './build-docx.mjs';

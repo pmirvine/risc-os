@@ -1,4 +1,4 @@
-// !Word's Tabs dialogue box in the real desktop (Format > Tabs..., and
+// !Letters' Tabs dialogue box in the real desktop (Format > Tabs..., and
 // the Tabs... button of the Paragraph box), with real clicks and keys:
 // the box shows the paragraph's stops (a popup) and the document's
 // default stop; changing the default from 0.5" to 1" moves the default
@@ -45,7 +45,7 @@ try {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Ta') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     window.__client = (win, x, y) => {
       const s = win.workToScreen(x, y), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;

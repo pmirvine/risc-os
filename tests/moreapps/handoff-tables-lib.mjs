@@ -1,20 +1,20 @@
 // Shared helpers of the Batch C (tables) real-Word hand-off generator
 // handoff-tables.mjs (not a test; local only: the folder it writes is
 // git-ignored): where the files go, `put` (writes only changed bytes),
-// `save` (lint, read back, check every block, list the tables !Word
+// `save` (lint, read back, check every block, list the tables !Letters
 // wrote), fixtures for tables as XML (documents with styles and the
 // compatibility mode), and the selection helpers the commands need.
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {p, r} from './build-docx.mjs';
@@ -177,7 +177,7 @@ const words = (d) => {
   return n;
 };
 
-/** Every file written: name -> the lines of what !Word wrote. */
+/** Every file written: name -> the lines of what !Letters wrote. */
 export const wrote = new Map();
 
 /** Save d as name; read back; every block checked; lines for README. */

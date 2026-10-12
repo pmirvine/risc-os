@@ -3,11 +3,11 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {pasteBlocks, pastePlain, cutSelection}
-  from '../../tools/moreapps/!Word/ClipPaste';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {newDoc} from '../../tools/moreapps/!Word/NewDoc';
-import {readHtml} from '../../tools/moreapps/!Word/ClipRead';
+  from '../../tools/moreapps/!Letters/ClipPaste';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
+import {readHtml} from '../../tools/moreapps/!Letters/ClipRead';
 import {parseHtml} from './html-fake.mjs';
 import {mk, texts, ids, P, C, SEL, at, undoable, valid, box, raw, O,
   bold, plain, el, S} from './edit-docs.mjs';

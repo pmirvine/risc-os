@@ -18,19 +18,19 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {newPara, nextId, checkBlock}
-  from '../../tools/moreapps/!Word/Model';
+  from '../../tools/moreapps/!Letters/Model';
 import {forEachBlock, at as walkAt}
-  from '../../tools/moreapps/!Word/Walk';
-import {tableOf, sib} from '../../tools/moreapps/!Word/Path';
-import {TABLE, bordersCmd} from '../../tools/moreapps/!Word/TblCmdCols';
-import {splitCellsCmd, propsCmd} from '../../tools/moreapps/!Word/TblCmd';
-import {insertTable} from '../../tools/moreapps/!Word/TblInsert';
+  from '../../tools/moreapps/!Letters/Walk';
+import {tableOf, sib} from '../../tools/moreapps/!Letters/Path';
+import {TABLE, bordersCmd} from '../../tools/moreapps/!Letters/TblCmdCols';
+import {splitCellsCmd, propsCmd} from '../../tools/moreapps/!Letters/TblCmd';
+import {insertTable} from '../../tools/moreapps/!Letters/TblInsert';
 import {textToTableCmd, tableToTextCmd}
-  from '../../tools/moreapps/!Word/TblConvertCmd';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  from '../../tools/moreapps/!Letters/TblConvertCmd';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {p, r} from './build-docx.mjs';
 import {rng} from './word-docs.mjs';

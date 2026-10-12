@@ -8,12 +8,12 @@
 // not hold one grid per version of a big table (final-2 I3).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {fill} from '../../tools/moreapps/!Word/TblBorderPatch';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {splitWhy} from '../../tools/moreapps/!Word/TblCmd';
-import {MAX_ROWS} from '../../tools/moreapps/!Word/TblCheck';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {fill} from '../../tools/moreapps/!Letters/TblBorderPatch';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {splitWhy} from '../../tools/moreapps/!Letters/TblCmd';
+import {MAX_ROWS} from '../../tools/moreapps/!Letters/TblCheck';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {modelTable} from './tbl-fixtures.mjs';
 import {execFileSync} from 'node:child_process';
 
@@ -59,7 +59,7 @@ describe('the undo history keeps no grid alive', () => {
   it('old versions\' grids are collected', () => {
     const url = (p) => new URL(p, import.meta.url).href;
     const src = `
-      import {gridOf} from '${url('../../tools/moreapps/!Word/TblGrid')}';
+      import {gridOf} from '${url('../../tools/moreapps/!Letters/TblGrid')}';
       import {modelTable} from '${url('./tbl-fixtures.mjs')}';
       let freed = 0;
       const reg = new FinalizationRegistry(() => { freed++; });

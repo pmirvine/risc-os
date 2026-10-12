@@ -1,20 +1,20 @@
 // RulerMath (WimpLib, pure): twips <-> px with zoom, snapping,
 // clamping, the ticks of a ruler, indent markers and the drag of each
-// marker as Word does it; RulerInd (!Word): the indents the ruler
+// marker as Word does it; RulerInd (!Letters): the indents the ruler
 // shows (the selection's first paragraph); FormatPara.dragIndents
 // through FormatApply's 'indentDrag': the dragged marker's value on
 // every selected paragraph, one undo step.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import * as RM from '../../tools/moreapps/!WimpLib/RulerMath';
-import * as RI from '../../tools/moreapps/!Word/RulerInd';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import * as RI from '../../tools/moreapps/!Letters/RulerInd';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, P, C, SEL, S, undoable, box} from './edit-docs.mjs';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import {at as walkAt} from '../../tools/moreapps/!Word/Walk';
-import {findBlock} from '../../tools/moreapps/!Word/EditPos';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {at as walkAt} from '../../tools/moreapps/!Letters/Walk';
+import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {loadStyles, tm} from './word-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';
 

@@ -1,7 +1,7 @@
-// Test-only helpers for the !Word list editing tests (FormatList,
+// Test-only helpers for the !Letters list editing tests (FormatList,
 // ParaInd, EditList): Documents with a numbering definition.
 import {mk} from './edit-docs.mjs';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
 
 /**
  * Level ilvl: decimal, lvlText '%1.' / '%1.%2.' / ..., indent left

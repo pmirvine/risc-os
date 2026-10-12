@@ -2,10 +2,10 @@
 // for the next typed text) and typing with a pending format.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as F from '../../tools/moreapps/!Word/Format';
-import * as Pd from '../../tools/moreapps/!Word/Pending';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
+import * as F from '../../tools/moreapps/!Letters/Format';
+import * as Pd from '../../tools/moreapps/!Letters/Pending';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {mk, P, C, SEL, texts, undoable, valid, box, bold, plain}
   from './edit-docs.mjs';
 

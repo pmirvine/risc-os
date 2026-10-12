@@ -4,9 +4,9 @@
 // original exactly (paragraph ids included), redoing the result.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {deepEqual} from '../../tools/moreapps/!Word/Model';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {deepEqual} from '../../tools/moreapps/!Letters/Model';
 import {nextBoundary, prevBoundary, graphemes, nextWord, prevWord}
   from '../../tools/moreapps/!WimpLib/Segment';
 import {rng} from './word-docs.mjs';

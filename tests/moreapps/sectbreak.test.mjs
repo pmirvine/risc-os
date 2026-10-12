@@ -11,21 +11,21 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertSection, deleteBreakAt, markOf, sectLabel}
-  from '../../tools/moreapps/!Word/SectBreak';
+  from '../../tools/moreapps/!Letters/SectBreak';
 import {sectDeco, bandPaint, bandOf, inBand, BAND}
-  from '../../tools/moreapps/!Word/SectDeco';
-import {run, stepEnd} from '../../tools/moreapps/!Word/EditApply';
-import {insert} from '../../tools/moreapps/!Word/InsertApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {keymap} from '../../tools/moreapps/!Word/Keymap';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {paint} from '../../tools/moreapps/!Word/DocPaint';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {Document} from '../../tools/moreapps/!Word/Document';
+  from '../../tools/moreapps/!Letters/SectDeco';
+import {run, stepEnd} from '../../tools/moreapps/!Letters/EditApply';
+import {insert} from '../../tools/moreapps/!Letters/InsertApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {keymap} from '../../tools/moreapps/!Letters/Keymap';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {paint} from '../../tools/moreapps/!Letters/DocPaint';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {newPara, newSection, deepEqual}
-  from '../../tools/moreapps/!Word/Model';
-import {apply} from '../../tools/moreapps/!Word/Ops';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
 import {mk, texts, P, C, SEL, at, undoable, valid, box, S, snap}
   from './edit-docs.mjs';
 import {listDoc, li} from './list-docs.mjs';
@@ -664,13 +664,13 @@ describe('SectBreak: hostile original sectPrs', () => {
     'not import the editing modules', async () => {
     const {readFileSync} = await import('node:fs');
     const src = (n) => readFileSync(new URL(
-      '../../tools/moreapps/!Word/' + n, import.meta.url), 'latin1');
+      '../../tools/moreapps/!Letters/' + n, import.meta.url), 'latin1');
     for (const n of ['DocItems', 'SectDeco', 'SectMark']) {
       const imp = src(n).split('\n').filter((l) => /^import|from '/.test(l))
         .join('\n');
       assert.ok(!/SectBreak|EditRange|EditPara|EditPos/.test(imp), n);
     }
-    const m = await import('../../tools/moreapps/!Word/SectMark');
+    const m = await import('../../tools/moreapps/!Letters/SectMark');
     assert.equal(m.markOf, markOf);
     assert.equal(m.sectLabel, sectLabel);
   });

@@ -1,0 +1,56 @@
+// ClipCarry - what a paste from another document makes in the
+// target for the blocks it carries (./ClipPaste, in its step): their
+// lists and their tables' styles.
+//
+//   relist(d, list, idx, lists) -> list  the paragraphs of
+//       list[i] (i in idx: the blocks that keep their pPr; at every
+//       depth, a table's cells too) in a list of `lists` (./ClipNums)
+//       get that list made anew in d (./NumCopy copyNums: its ops
+//       applied first) and their numPr names it; any other numPr of
+//       the source is dropped, as is one whose list cannot be made
+//       (no free id: a plain paragraph)
+//   styled(d, list, styles) -> list  the table styles list's tables
+//       name made in d (./TblStyleCopy copyStyles: its setDocPart op
+//       applied first), each tblStyle the target's id (restyle)
+// Pure: no desktop services.
+import {copyNums} from './NumCopy';
+import {forEachIn, mapBlocks} from './Walk';
+import {copyStyles, restyle, tableStyleIds} from './TblStyleCopy';
+
+/** See the header. */
+export function relist(d, list, idx, lists) {
+  const np = (b) => (b.type === 'p' ? b.pPr.numPr : undefined);
+  const want = [];
+  for (const i of idx) {
+    forEachIn([list[i]], [], (b) => {
+      const x = np(b);
+      if (x && x.numId !== 0) want.push(x.numId);
+    });
+  }
+  let got = {ops: [], map: new Map()};
+  if (want.length && lists instanceof Map) {
+    try {
+      got = copyNums(d.doc, lists, want);
+    } catch (e) {
+      // no free id, a numbering !Letters cannot extend: no list
+      if (!(e instanceof RangeError)) throw e;
+    }
+  }
+  for (const op of got.ops) d.apply(op);
+  const map = got.map;
+  const fix = (b) => {
+    const x = np(b);
+    if (!x || x.numId === 0) return b;
+    const {numPr, ...rest} = b.pPr;
+    return {...b, pPr: map.has(x.numId) ? {...rest, numPr: {...numPr,
+      numId: map.get(x.numId)}} : rest};
+  };
+  return mapBlocks(list, fix);
+}
+
+/** See the header. */
+export function styled(d, list, styles) {
+  const got = copyStyles(d.doc, styles, tableStyleIds(list));
+  for (const op of got.ops) d.apply(op);
+  return restyle(list, got.map);
+}

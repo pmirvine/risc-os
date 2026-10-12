@@ -5,12 +5,12 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {pick, samePlain, MAX_TEXT, cutShort}
-  from '../../tools/moreapps/!Word/ClipPick';
-import {linkUrl} from '../../tools/moreapps/!Word/ClipLinks';
-import {parserOf} from '../../tools/moreapps/!Word/ClipDom';
-import {ClipStore, MARK} from '../../tools/moreapps/!Word/ClipStore';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
+  from '../../tools/moreapps/!Letters/ClipPick';
+import {linkUrl} from '../../tools/moreapps/!Letters/ClipLinks';
+import {parserOf} from '../../tools/moreapps/!Letters/ClipDom';
+import {ClipStore, MARK} from '../../tools/moreapps/!Letters/ClipStore';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
 import {mk, SEL, O} from './edit-docs.mjs';
 import {parseHtml} from './html-fake.mjs';
 

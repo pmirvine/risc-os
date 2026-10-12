@@ -8,9 +8,9 @@ import {existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync}
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {NS} from '../../tools/moreapps/!Word/Wml';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {NS} from '../../tools/moreapps/!Letters/Wml';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {assertSameDoc, entries, xmlEntries, realDocxFiles, sameBytes}
   from './docx-compare.mjs';

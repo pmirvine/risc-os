@@ -8,18 +8,18 @@
 // the blocks of a 1000 x 63 table at every depth.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {cutRect, cutRows} from '../../tools/moreapps/!Word/ClipCut';
-import {ClipStore, LIMITS} from '../../tools/moreapps/!Word/ClipStore';
-import {walkBlocks, forEachIn} from '../../tools/moreapps/!Word/Walk';
-import {gridOf} from '../../tools/moreapps/!Word/TblGrid';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {newPara} from '../../tools/moreapps/!Word/Model';
-import * as S from '../../tools/moreapps/!Word/Selection';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {cutRect, cutRows} from '../../tools/moreapps/!Letters/ClipCut';
+import {ClipStore, LIMITS} from '../../tools/moreapps/!Letters/ClipStore';
+import {walkBlocks, forEachIn} from '../../tools/moreapps/!Letters/Walk';
+import {gridOf} from '../../tools/moreapps/!Letters/TblGrid';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, modelTable, freeze, TABLE_NORMAL,
   TABLE_GRID} from './tbl-fixtures.mjs';

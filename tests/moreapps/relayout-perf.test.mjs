@@ -5,14 +5,14 @@
 // median of 25, three runs each): 9.7-10.2 ms; after C2 10.8-11.2 ms;
 // after the C7 fix wave (A3) 9.7-10.5 ms against main's 9.2-9.8.
 // The +5 ms budget is checked by hand against the main branch (the
-// numbers are in docs/apps/Word.md); this test fails on a gross
+// numbers are in docs/apps/Letters.md); this test fails on a gross
 // regression only (a fixed ceiling would flake under load), and on
 // the ratio to the same relayout of a 5,000-paragraph document of
 // the same run, which must stay near linear (table-free documents
 // take none of the table paths).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk} from './edit-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';

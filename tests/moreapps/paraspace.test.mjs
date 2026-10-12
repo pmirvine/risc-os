@@ -6,11 +6,11 @@
 // (8 px per character; 11 pt text is 14.67 px).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import * as PS from '../../tools/moreapps/!Word/ParaSpace';
-import {paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import * as PS from '../../tools/moreapps/!Letters/ParaSpace';
+import {paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk} from './edit-docs.mjs';
 

@@ -6,13 +6,13 @@ import {existsSync, mkdtempSync, writeFileSync, readFileSync, rmSync}
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {execFileSync} from 'node:child_process';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
-import {checkBlock, OBJ} from '../../tools/moreapps/!Word/Model';
-import {resolvePara, resolveRun} from '../../tools/moreapps/!Word/Styles';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {checkBlock, OBJ} from '../../tools/moreapps/!Letters/Model';
+import {resolvePara, resolveRun} from '../../tools/moreapps/!Letters/Styles';
 import {writeZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {mapNamespaces, mapNamespacesCopy, NS_PAIRS}
-  from '../../tools/moreapps/!Word/NsMap';
+  from '../../tools/moreapps/!Letters/NsMap';
 import {ZipError} from '../../tools/moreapps/!WimpLib/ZipError';
 import {buildDocx, documentXml, stylesXml, numberingXml, settingsXml,
   p, r, REL, STRICT_W_NS, STRICT_R_NS, W_NS} from './build-docx.mjs';

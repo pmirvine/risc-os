@@ -1,11 +1,11 @@
-// Keys: the Wimp key codes (src/core/input.js keyCode) of !Word's
+// Keys: the Wimp key codes (src/core/input.js keyCode) of !Letters'
 // document window -> caret and selection commands. Shift adds &10 and
 // Ctrl &20 to the arrows and Copy (End); Home is 30 and Page Up/Down
 // &19F/&19E (+&20 with Ctrl) whatever Shift does, so the modifiers
 // held, and the browser's key name, are passed as well.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {command} from '../../tools/moreapps/!Word/Keys';
+import {command} from '../../tools/moreapps/!Letters/Keys';
 
 const LEFT = 0x18C, RIGHT = 0x18D, DOWN = 0x18E, UP = 0x18F;
 const END = 0x18B, HOME = 30, PGDN = 0x19E, PGUP = 0x19F;

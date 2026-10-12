@@ -11,22 +11,22 @@
 // package lints and validates as before.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {slice, plainOf} from '../../tools/moreapps/!Word/ClipSlice';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {clean} from '../../tools/moreapps/!Word/ClipClean';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {slice, plainOf} from '../../tools/moreapps/!Letters/ClipSlice';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {clean} from '../../tools/moreapps/!Letters/ClipClean';
 import {sameTable, freshTable}
-  from '../../tools/moreapps/!Word/ClipCleanTbl';
-import {ClipStore, LIMITS} from '../../tools/moreapps/!Word/ClipStore';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
+  from '../../tools/moreapps/!Letters/ClipCleanTbl';
+import {ClipStore, LIMITS} from '../../tools/moreapps/!Letters/ClipStore';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
 import {ids as allIds, walkBlocks, mapBlocks, forEachIn}
-  from '../../tools/moreapps/!Word/Walk';
-import {bookmarkNames} from '../../tools/moreapps/!Word/BookmarkFind';
-import {usedDocPrIds} from '../../tools/moreapps/!Word/PicIds';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import * as S from '../../tools/moreapps/!Word/Selection';
+  from '../../tools/moreapps/!Letters/Walk';
+import {bookmarkNames} from '../../tools/moreapps/!Letters/BookmarkFind';
+import {usedDocPrIds} from '../../tools/moreapps/!Letters/PicIds';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
 import {p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, TBL_OPAQUE, modelTable, freeze}
   from './tbl-fixtures.mjs';

@@ -1,10 +1,10 @@
 // FontLoad with fake vfs, document and FontFace.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {loadFonts} from '../../tools/moreapps/!Word/FontLoad';
-import {fontsToLoad} from '../../tools/moreapps/!Word/FontMap';
+import {loadFonts} from '../../tools/moreapps/!Letters/FontLoad';
+import {fontsToLoad} from '../../tools/moreapps/!Letters/FontMap';
 
-const MOD = '../../tools/moreapps/!Word/FontLoad';
+const MOD = '../../tools/moreapps/!Letters/FontLoad';
 
 function fakes(missing = []) {
   const added = [], reads = [];
@@ -29,11 +29,11 @@ function fakes(missing = []) {
 describe('FontLoad', () => {
   it('loads a family in four styles with weight and style', async () => {
     const {FF, vfs, doc, added, reads} = fakes();
-    const r = await loadFonts(vfs, 'HD.MoreApps.!Word.Fonts', doc,
+    const r = await loadFonts(vfs, 'HD.MoreApps.!Letters.Fonts', doc,
       ['Carlito'], FF);
     assert.equal(r.loaded.length, 4);
     assert.deepEqual(r.failed, []);
-    assert.ok(reads.includes('HD.MoreApps.!Word.Fonts.Carlito-BoldItalic'));
+    assert.ok(reads.includes('HD.MoreApps.!Letters.Fonts.Carlito-BoldItalic'));
     const bi = added.find((f) => f.desc.weight === 'bold' &&
       f.desc.style === 'italic');
     assert.equal(bi.family, 'Carlito');
@@ -86,7 +86,7 @@ describe('FontLoad', () => {
     assert.deepEqual(r.failed, []);
     assert.equal(added.length, 4);
   });
-  it('a new run of !Word (a fresh module) adds no face twice',
+  it('a new run of !Letters (a fresh module) adds no face twice',
     async () => {
       const {FF, vfs, doc, added, reads} = fakes();
       const one = (await import(MOD + '?run1')).loadFonts;

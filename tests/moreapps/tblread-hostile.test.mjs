@@ -7,13 +7,13 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope, scope} from '../../tools/moreapps/!Word/Ns';
+import {rootScope, scope} from '../../tools/moreapps/!Letters/Ns';
 import {readTable, REASONS}
-  from '../../tools/moreapps/!Word/TblRead';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {MAX_COLS} from '../../tools/moreapps/!Word/TblCheck';
+  from '../../tools/moreapps/!Letters/TblRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {MAX_COLS} from '../../tools/moreapps/!Letters/TblCheck';
 import {p, r, W_NS} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx} from './tbl-fixtures.mjs';
 import {xmlEntries} from './docx-compare.mjs';

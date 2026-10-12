@@ -16,16 +16,16 @@
 // tables: random edits in cells (at the end of the file).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
-import * as E from '../../tools/moreapps/!Word/Edit';
-import * as X from '../../tools/moreapps/!Word/EditDel';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
+import * as E from '../../tools/moreapps/!Letters/Edit';
+import * as X from '../../tools/moreapps/!Letters/EditDel';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {mk, blocks, box, S} from './edit-docs.mjs';
 import {tm, rng} from './word-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';
-import {forEachBlock} from '../../tools/moreapps/!Word/Walk';
+import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
 
 const WORDS = ['alpha', 'be', 'gamma ray', 'été', '\u{1F600}',
   'x', 'longerword', 'a b c d e f g h i j k l m n o p'];

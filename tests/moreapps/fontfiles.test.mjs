@@ -2,9 +2,9 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import {fontFiles} from '../../tools/moreapps/!Word/FontMap';
+import {fontFiles} from '../../tools/moreapps/!Letters/FontMap';
 
-const DIR = new URL('../../tools/moreapps/!Word/Fonts/', import.meta.url);
+const DIR = new URL('../../tools/moreapps/!Letters/Fonts/', import.meta.url);
 
 describe('bundled font files', () => {
   it('exist with valid magic and size', () => {

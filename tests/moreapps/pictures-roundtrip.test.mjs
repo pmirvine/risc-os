@@ -1,4 +1,4 @@
-// Pictures round trip (Batch B, B8.1): documents changed with !Word's
+// Pictures round trip (Batch B, B8.1): documents changed with !Letters'
 // picture commands (./InsertPicture insert, ./PicOps setPicture for
 // the size and alt text, delete, copy and paste within one document
 // and between documents through ./ClipSlice, ./ClipPick and
@@ -30,23 +30,23 @@ import {buildDocx, documentXml, p, r} from './build-docx.mjs';
 import {picDocx, pngBytes, jpegBytes, gifBytes} from './pic-fixtures.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write, nameOf} from './roundtrip-lib.mjs';
-import {readDocx, DocxError} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {rng} from './word-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {insert} from '../../tools/moreapps/!Word/InsertPicture';
-import {setPicture} from '../../tools/moreapps/!Word/PicOps';
-import {pictureOf, docMap} from '../../tools/moreapps/!Word/PicRead';
-import {slice} from '../../tools/moreapps/!Word/ClipSlice';
-import {toHtml} from '../../tools/moreapps/!Word/ClipHtml';
-import {ClipStore} from '../../tools/moreapps/!Word/ClipStore';
-import {pick} from '../../tools/moreapps/!Word/ClipPick';
-import {pasteBlocks} from '../../tools/moreapps/!Word/ClipPaste';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {insert} from '../../tools/moreapps/!Letters/InsertPicture';
+import {setPicture} from '../../tools/moreapps/!Letters/PicOps';
+import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
+import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
+import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
+import {pick} from '../../tools/moreapps/!Letters/ClipPick';
+import {pasteBlocks} from '../../tools/moreapps/!Letters/ClipPaste';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {lintPackage} from './lint-package.mjs';
 import {sameBytes, sameTree} from './docx-compare.mjs';

@@ -1,4 +1,4 @@
-// !Word SettingsEdit: settings.xml's w:defaultTabStop read and changed
+// !Letters SettingsEdit: settings.xml's w:defaultTabStop read and changed
 // (a new root with only that child replaced, or inserted in schema
 // order), and the Tabs dialog's default through FormatApply 'tabsBox'
 // (TabsCommand): only that element differs in the written part, Strict
@@ -7,17 +7,17 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {existsSync, readFileSync} from 'node:fs';
-import * as SE from '../../tools/moreapps/!Word/SettingsEdit';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import {defaultStop} from '../../tools/moreapps/!Word/TabStops';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import * as SE from '../../tools/moreapps/!Letters/SettingsEdit';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import {defaultStop} from '../../tools/moreapps/!Letters/TabStops';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {index, flatten, DEFAULT_XSD}
   from '../../tools/moreapps-xsdorder.mjs';
 import {buildDocx, documentXml, stylesXml, p, r, W_NS, STRICT_W_NS}

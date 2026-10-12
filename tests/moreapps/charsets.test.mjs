@@ -11,10 +11,10 @@ import fs from 'node:fs';
 import {SETS, setById, setOf, codeLabel, statusText}
   from '../../tools/moreapps/!WimpLib/CharSets';
 import {SPECIAL, specialFor}
-  from '../../tools/moreapps/!Word/SpecialChars';
+  from '../../tools/moreapps/!Letters/SpecialChars';
 
 const ot = createRequire(new URL('../../tools/', import.meta.url))('opentype.js');
-const dir = new URL('../../tools/moreapps/!Word/Fonts/', import.meta.url);
+const dir = new URL('../../tools/moreapps/!Letters/Fonts/', import.meta.url);
 const files = fs.readdirSync(dir).filter((f) => /-(Regular|Bold|Italic|BoldItalic)$/.test(f));
 const asked = (f) => /^(Carlito|LiberationSans|LiberationSerif)-/.test(f);
 const load = (f) => {
@@ -75,7 +75,7 @@ describe('CharSets', () => {
     assert.equal(setById(undefined), null);
   });
   it('the source file is Latin-1 (ASCII), 72 columns, 250 lines', () => {
-    for (const p of ['../../tools/moreapps/!WimpLib/CharSets', '../../tools/moreapps/!Word/SpecialChars']) {
+    for (const p of ['../../tools/moreapps/!WimpLib/CharSets', '../../tools/moreapps/!Letters/SpecialChars']) {
       const t = fs.readFileSync(new URL(p, import.meta.url), 'latin1');
       assert.ok(!/[^\n\x20-\x7e]/.test(t), p);
       const lines = t.replace(/\n$/, '').split('\n');

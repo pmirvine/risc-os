@@ -48,7 +48,7 @@ export const plain = (lines) => JSON.parse(JSON.stringify(lines));
 
 /** Lay the paragraphs out with the modules in `dir` (old or new). */
 export async function layAll(dir, map) {
-  const u = (m) => pathToFileURL(dir + '/!Word/' + m).href;
+  const u = (m) => pathToFileURL(dir + '/!Letters/' + m).href;
   const {readDocx} = await import(u('DocxRead'));
   const {layoutPara} = await import(u('LineLayout'));
   const {TextMetrics} = await import(pathToFileURL(dir +

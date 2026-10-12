@@ -1,4 +1,4 @@
-// !Word's formatting in the real desktop, checked against the pixels
+// !Letters' formatting in the real desktop, checked against the pixels
 // drawn on the window's canvas: a yellow highlight behind its text,
 // superscript drawn higher than the text on the baseline, and a
 // justified paragraph reaching the right margin (a left-aligned copy
@@ -16,7 +16,7 @@
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
-import { readDocx } from '../../tools/moreapps/!Word/DocxRead';
+import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 
 const LONG = 'Justified text spreads the free width of every wrapped line over the spaces between its words, ' +
   'so that each line but the last ends at the right margin of the page, as Word shows it on the screen.';
@@ -58,7 +58,7 @@ async function start(page) {
     for (const [n, b] of Object.entries(files)) os.vfs.writeFile(`RAM::RamDisc0.$.${n}`, new Uint8Array(b), { filetype: 0xA7E });
     window.__sleep = (ms) => new Promise((res) => setTimeout(res, ms));
     window.__frames = async (n = 2) => { for (let i = 0; i < n; i++) await new Promise((res) => requestAnimationFrame(res)); };
-    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Word');
+    window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__doc = (leaf = 'Fmt') => window.__word()?.word.docs.find((d) => d.path.endsWith('.' + leaf));
     /** The canvas pixels of a work-area rectangle: {k, w, h, at(x, y) -> [r, g, b]} (x, y in canvas pixels). */
     window.__pixels = (x, y, w, h) => {

@@ -4,13 +4,13 @@
 // paragraph numbering resolved through styles (Styles.resolvePara).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {readNumbering, levelOf}
-  from '../../tools/moreapps/!Word/ReadNumbering';
-import {resolvePara} from '../../tools/moreapps/!Word/Styles';
+  from '../../tools/moreapps/!Letters/ReadNumbering';
+import {resolvePara} from '../../tools/moreapps/!Letters/Styles';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
 import {buildDocx, documentXml, stylesXml, numberingXml, p, r,
   STRICT_W_NS, STRICT_R_NS} from './build-docx.mjs';
 import {entries, sameBytes} from './docx-compare.mjs';

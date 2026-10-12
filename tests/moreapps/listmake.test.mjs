@@ -7,17 +7,17 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {toggleList, restart, continueList, listKindOf, listEntryOf}
-  from '../../tools/moreapps/!Word/ListMake';
-import {setList} from '../../tools/moreapps/!Word/FormatList';
-import {sameLabels} from '../../tools/moreapps/!Word/ListRestart';
-import {apply, isFormat} from '../../tools/moreapps/!Word/FormatApply';
-import {query} from '../../tools/moreapps/!Word/Format';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {Document} from '../../tools/moreapps/!Word/Document';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {relKind} from '../../tools/moreapps/!Word/Rels';
+  from '../../tools/moreapps/!Letters/ListMake';
+import {setList} from '../../tools/moreapps/!Letters/FormatList';
+import {sameLabels} from '../../tools/moreapps/!Letters/ListRestart';
+import {apply, isFormat} from '../../tools/moreapps/!Letters/FormatApply';
+import {query} from '../../tools/moreapps/!Letters/Format';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {relKind} from '../../tools/moreapps/!Letters/Rels';
 import {P, C, SEL, mk, blocks, box} from './edit-docs.mjs';
 import {listDocx, item, heading, lvl, STYLES_LIST}
   from './list-fixtures.mjs';

@@ -6,18 +6,18 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {ensurePart, addList, addRestart}
-  from '../../tools/moreapps/!Word/NumWrite';
-import {entryOf} from '../../tools/moreapps/!Word/ListGallery';
-import {readNumbering} from '../../tools/moreapps/!Word/ReadNumbering';
-import {labels} from '../../tools/moreapps/!Word/ListNumbers';
-import {rootScope} from '../../tools/moreapps/!Word/Ns';
-import {NS} from '../../tools/moreapps/!Word/Wml';
+  from '../../tools/moreapps/!Letters/NumWrite';
+import {entryOf} from '../../tools/moreapps/!Letters/ListGallery';
+import {readNumbering} from '../../tools/moreapps/!Letters/ReadNumbering';
+import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
+import {rootScope} from '../../tools/moreapps/!Letters/Ns';
+import {NS} from '../../tools/moreapps/!Letters/Wml';
 import {emptyDoc, newPara}
-  from '../../tools/moreapps/!Word/Model';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {writeDocx, newDoc} from '../../tools/moreapps/!Word/DocxWrite';
-import {relKind} from '../../tools/moreapps/!Word/Rels';
+  from '../../tools/moreapps/!Letters/Model';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
+import {relKind} from '../../tools/moreapps/!Letters/Rels';
 import {parseXml, serialize} from '../../tools/moreapps/!WimpLib/Xml';
 import {numberingXml, STRICT_W_NS, STRICT_REL, REL, p, r}
   from './build-docx.mjs';

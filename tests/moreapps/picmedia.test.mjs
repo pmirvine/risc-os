@@ -2,8 +2,8 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {mediaOf, imageInfo, decodable, naturalEmu, MAX_BYTES,
-  MAX_SIDE, MAX_PIXELS} from '../../tools/moreapps/!Word/PicMedia';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+  MAX_SIDE, MAX_PIXELS} from '../../tools/moreapps/!Letters/PicMedia';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {picDocx, pngBytes, jpegBytes, gifBytes}
   from './pic-fixtures.mjs';
 

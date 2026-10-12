@@ -2,7 +2,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {substitute, fontFiles, fontFile}
-  from '../../tools/moreapps/!Word/FontMap';
+  from '../../tools/moreapps/!Letters/FontMap';
 
 describe('FontMap.substitute', () => {
   const fam = (n) => substitute(n).family;

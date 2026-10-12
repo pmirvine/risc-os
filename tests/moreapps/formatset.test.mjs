@@ -1,22 +1,22 @@
 // FormatSet: the character and paragraph formatting commands.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import * as FS from '../../tools/moreapps/!Word/FormatSet';
-import * as F from '../../tools/moreapps/!Word/Format';
-import * as Pd from '../../tools/moreapps/!Word/Pending';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import {addStyle} from '../../tools/moreapps/!Word/Styles';
-import {apply} from '../../tools/moreapps/!Word/Ops';
-import {newPara} from '../../tools/moreapps/!Word/Model';
+import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import * as F from '../../tools/moreapps/!Letters/Format';
+import * as Pd from '../../tools/moreapps/!Letters/Pending';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {addStyle} from '../../tools/moreapps/!Letters/Styles';
+import {apply} from '../../tools/moreapps/!Letters/Ops';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {mk, P, C, SEL, texts, undoable, valid, snap, box, raw, O,
   bold, plain} from './edit-docs.mjs';
 import {mkDoc} from './word-docs.mjs';
-import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {writeDocx} from '../../tools/moreapps/!Word/DocxWrite';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {Document} from '../../tools/moreapps/!Word/Document';
+import {runFmt, paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Document} from '../../tools/moreapps/!Letters/Document';
 import {buildDocx, documentXml} from './build-docx.mjs';
-import {changes} from '../../tools/moreapps/!Word/FormatOps';
+import {changes} from '../../tools/moreapps/!Letters/FormatOps';
 
 const two = (t1, t2, r2 = bold) => [t1 + t2, {runs: [
   {start: 0, end: t1.length, rPr: plain},
@@ -518,7 +518,7 @@ describe('FormatSet: a heading bold only by the display rule', () => {
 describe('FormatSet: Task 7 minors', () => {
   it('no default size: back to 11 pt keeps an explicit sz 22', () => {
     // intended (controller ruling, Task 7 fix round 1): with no size
-    // in the style chain Word shows 10 pt where !Word assumes 11 pt,
+    // in the style chain Word shows 10 pt where !Letters assumes 11 pt,
     // so a size chosen there is always written; it is removed only
     // when a style gives that very size
     const d = noSize(mk(['abcd']));

@@ -1,5 +1,5 @@
 // Borders, shading, symbols and change case round trip: documents
-// changed with !Word's A5 commands (./FormatApply 'borders',
+// changed with !Letters' A5 commands (./FormatApply 'borders',
 // 'paraShade', 'charShade', 'changeCase', 'caseCycle', the ids the
 // Borders and shading box and the Format menu run; the nbsp,
 // nbHyphen and softHyphen commands of Insert > Special character;
@@ -31,15 +31,15 @@ import {LIST_DOCS} from './list-fixtures.mjs';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write} from './roundtrip-lib.mjs';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {rng} from './word-docs.mjs';
-import {run} from '../../tools/moreapps/!Word/EditApply';
-import {Typing} from '../../tools/moreapps/!Word/Typing';
-import * as FA from '../../tools/moreapps/!Word/FormatApply';
-import * as S from '../../tools/moreapps/!Word/Selection';
-import {checkBlock} from '../../tools/moreapps/!Word/ModelCheck';
-import {blockId} from '../../tools/moreapps/!Word/DocPos';
-import {MODES} from '../../tools/moreapps/!Word/ChangeCase';
+import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import * as FA from '../../tools/moreapps/!Letters/FormatApply';
+import * as S from '../../tools/moreapps/!Letters/Selection';
+import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {blockId} from '../../tools/moreapps/!Letters/DocPos';
+import {MODES} from '../../tools/moreapps/!Letters/ChangeCase';
 import {graphemes} from '../../tools/moreapps/!WimpLib/Segment';
 import {entryText} from './docx-compare.mjs';
 
@@ -334,7 +334,7 @@ describe('borders round trip: generated documents', () => {
 
 /** A session on bytes. */
 async function open(bytes) {
-  const {Document} = await import('../../tools/moreapps/!Word/Document');
+  const {Document} = await import('../../tools/moreapps/!Letters/Document');
   const d = new Document(await readDocx(bytes));
   d.clearHistory();
   let now = 0;

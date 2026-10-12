@@ -15,8 +15,8 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {shapeOf, paraRanges, cellRect}
-  from '../../tools/moreapps/!Word/SelShape';
-import {DocLayout} from '../../tools/moreapps/!Word/DocLayout';
+  from '../../tools/moreapps/!Letters/SelShape';
+import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk, S} from './edit-docs.mjs';
 import {modelTable, freeze} from './tbl-fixtures.mjs';

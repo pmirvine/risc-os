@@ -1,15 +1,15 @@
-// The pure parts of the !Word stub's window: the info line (Info), the
+// The pure parts of the !Letters stub's window: the info line (Info), the
 // look of runs and paragraphs (Fmt) and line breaking (LineLayout).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {readDocx} from '../../tools/moreapps/!Word/DocxRead';
-import {summary, facts, kindOf} from '../../tools/moreapps/!Word/Info';
-import {runFmt, paraFmt} from '../../tools/moreapps/!Word/Fmt';
-import {layoutPara} from '../../tools/moreapps/!Word/LineLayout';
+import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {summary, facts, kindOf} from '../../tools/moreapps/!Letters/Info';
+import {runFmt, paraFmt} from '../../tools/moreapps/!Letters/Fmt';
+import {layoutPara} from '../../tools/moreapps/!Letters/LineLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {describe as why, openDocx}
-  from '../../tools/moreapps/!Word/Open';
-import {DocxError} from '../../tools/moreapps/!Word/DocxError';
+  from '../../tools/moreapps/!Letters/Open';
+import {DocxError} from '../../tools/moreapps/!Letters/DocxError';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 
 const STYLES = stylesXml(
@@ -112,7 +112,7 @@ describe('Open', () => {
     assert.match(why(new Error('boom'), 'D'), /'D' could not be opened: boom/);
     assert.equal(why(new DocxError('unsupported', 'x'), 'D'), "'D' " +
       'could not be opened: it is too big, encrypted or uses a kind ' +
-      'of zip file that Word cannot read.');
+      'of zip file that Letters cannot read.');
   });
   it('the paragraph cap in cells says so too (C7 fix A4)', async () => {
     const cell = '<w:tc><w:p/><w:p/></w:tc>';
@@ -139,7 +139,7 @@ describe('Open', () => {
       // (C7 fix A4: the paragraph cap says so, not 'too big ...')
       assert.equal(err.kind, 'paragraphs');
       assert.equal(why(err, 'Big'), "'Big' could not be opened: it " +
-        'has more than 200,000 paragraphs, the most !Word opens.');
+        'has more than 200,000 paragraphs, the most !Letters opens.');
       assert.ok(took < 1000, `refused in ${took} ms`);
       const d = await openDocx(vfsOf(await file(200000)), 'HD.$.Ok');
       assert.equal(paras(d).length, 200000);
