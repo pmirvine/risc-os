@@ -1,0 +1,166 @@
+// FieldShow - field results shown computed (Batch D, D18): what a
+// layout draws in place of a field's stored result, and the ranges
+// the caret and the editing keys treat as one atomic unit. The model
+// is never changed: display and save keep the stored result (OD3).
+//
+//   computedIn(doc, p) -> [Show], mayHold(p), work  ./FieldShows'
+//       (re-exported): which fields a paragraph shows computed
+//   fieldText(L, p, off) -> {from, to, text, b, e} | null  the
+//       layout L's text for the show of p at off (./LineTokens draws
+//       [from, to) as ONE token): the value under L.fields (below),
+//       or the stored result when there is none (Draft: no page; no
+//       `now`). Recorded per paragraph in L.fshown (Map id -> {p,
+//       key}: key the paged values joined, '' when none), which
+//       ./FieldPass reads. With L.fields.codes (View > Field
+//       codes): a field shown as its code (./FieldCodes codeAt) is
+//       that code, a field inside one nothing (null), others as
+//       above
+//   keyOf(L, p) -> string  that key for p under L.fields (made and
+//       recorded when not yet); keyFor(doc, p, fx) the same under
+//       fields context fx, not recorded; volFor(doc, p, fx) the
+//       other values (dates, times...) joined, as the record's vol
+//       (./FieldPass relayOf: the clock moved, P9 fix I2)
+//   storyKey(doc, part, fx) -> string  the values key of the story
+//       part on fx's page (./StoryLayout valuesKey): '' when it shows
+//       no page-dependent field, else their texts joined
+//   countsOf(P) -> {list} | null  the pages NUMPAGES and SECTIONPAGES
+//       count: P's once done (./Pages totalsOf), else the last
+//       finished Pages' (D7: the previous count until done); null
+//       when none was finished. Each page as {s}: no Page or Pages
+//   pageOn(pg) -> {num, s, fmt} | null  Page pg's values the page
+//       fields show (frozen, memoised): what a fields context holds
+//       (final fix A C1: a Page kept there keeps its Pages, galley
+//       and DocLayout, whose fields kept the Page before them)
+//
+// L.fields (./DocLayout's option, carried from prev) = {now, page?,
+// pages?, pageOf?, codes?, shade?}: now the Date volatile fields
+// show; a story's layout its page (pageOn) and the counts
+// (countsOf); the body's pageOf (Map paragraph id -> pageOn's
+// values, ./FieldPass) and pages;
+// codes and shade: ./FieldView's. The editing rules
+// for those ranges: ./FieldEdit. Pure: no desktop services.
+import {scan} from './FieldScan';
+import {computedIn, mayHold, showIndex, work} from './FieldShows';
+import {plain} from './FieldMarks';
+import {evaluate} from './Fields';
+import {codeAt, inCode} from './FieldCodes';
+import {versionOf} from './DocVersion';
+import {totalsOf} from './Pages';
+
+export {computedIn, mayHold, work};
+const FRESH = 1024;                    // new records noted one by one
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The text show s of p gives under fields context fx. */
+function textOf(doc, p, s, fx) {
+  work.evals++;
+  let v = null;
+  if (isObj(fx)) {
+    const page = fx.pageOf instanceof Map ? fx.pageOf.get(p.id)
+      : fx.page;
+    v = evaluate({doc, now: fx.now, page: page || undefined,
+      pages: fx.pages || undefined}, s.f);
+  }
+  return v === null ? plain(p, s.from, s.to) : v;
+}
+
+/** p's shows, their texts under fx and the key (the header). */
+function valuesOf(doc, p, fx) {
+  const shows = computedIn(doc, p);
+  const texts = shows.map((s) => textOf(doc, p, s, fx));
+  let key = '', vol = '';
+  texts.forEach((t, k) => {
+    if (shows[k].paged) key += '\u0001' + t;
+    else vol += '\u0001' + t;
+  });
+  return {p, shows, texts, key, vol};
+}
+
+/** See the header. */
+export const keyFor = (doc, p, fx) => valuesOf(doc, p, fx).key;
+
+/** See the header. */
+export const volFor = (doc, p, fx) => valuesOf(doc, p, fx).vol;
+
+/** p's record in L.fshown: its texts and key (made when not yet:
+ *  kept for the same paragraph object of the same doc at the same
+ *  ./DocVersion; L.fshown may be the last layout's, ./FieldPass
+ *  carry); a new one noted for ./FieldPass (L.fwork fresh: at most
+ *  FRESH, then all of them are looked at). */
+function recordOf(L, p) {
+  const m = L.fshown || (L.fshown = new Map());
+  let r = m.get(p.id);
+  const doc = L.doc, ver = versionOf(doc);
+  if (r && r.p === p && r.doc === doc && r.ver === ver) return r;
+  r = {...valuesOf(doc, p, L.fields), doc, ver};
+  m.set(p.id, r);
+  const w = L.fwork || (L.fwork = {fresh: new Set(), all: true,
+    n: -1});
+  if (w.fresh.size < FRESH) w.fresh.add(r);
+  else w.all = true;
+  return r;
+}
+
+const ats = new WeakMap();             // shows -> Map at -> index
+
+/** Map show offset -> its index in shows (memoised). */
+function atOf(shows) {
+  let m = ats.get(shows);
+  if (!m) {
+    m = new Map();
+    shows.forEach((s, k) => { if (!m.has(s.at)) m.set(s.at, k); });
+    ats.set(shows, m);
+  }
+  return m;
+}
+
+/** See the header. */
+export function fieldText(L, p, off) {
+  if (!isObj(L) || !isObj(p)) return null;
+  if (isObj(L.fields) && L.fields.codes) {
+    const c = codeAt(L.doc, p, off);
+    if (c || inCode(L.doc, p, off)) return c;
+  }
+  const r = recordOf(L, p), k = atOf(r.shows).get(off);
+  if (k === undefined) return null;
+  const s = r.shows[k];
+  return {from: s.from, to: s.to, text: r.texts[k], b: s.b, e: s.e};
+}
+
+/** See the header. */
+export const keyOf = (L, p) => recordOf(L, p).key;
+
+/** See the header. */
+export function storyKey(doc, part, fx) {
+  if (!isObj(doc) || typeof part !== 'string') return '';
+  const st = doc.stories instanceof Map ? doc.stories.get(part) : null;
+  if (!st) return '';
+  const m = showIndex(scan(doc, part));
+  if (!m.size) return '';
+  let out = '';
+  for (const b of st.blocks) {
+    const list = b && b.type === 'p' ? m.get(b.id) : null;
+    if (!list) continue;
+    for (const s of list) {
+      if (s.paged) out += '\u0001' + textOf(doc, b, s, fx);
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export const countsOf = (P) => (!isObj(P) ? null : P.done
+  ? totalsOf(P) : P.counts || null);
+
+const ons = new WeakMap();             // Page -> its values
+
+/** See the header. */
+export function pageOn(pg) {
+  if (!isObj(pg)) return null;
+  let v = ons.get(pg);
+  if (!v) {
+    v = Object.freeze({num: pg.num, s: pg.s, fmt: pg.fmt});
+    ons.set(pg, v);
+  }
+  return v;
+}

@@ -1,0 +1,136 @@
+// ItemReuse - which of an older layout's lines ./DocItems may keep,
+// and the keys that decide it (see the header of ./DocItems).
+// ./DocItems re-exports sameMark, reuseKey and sameKey. Pure: no
+// desktop services.
+//
+//   sameMark(a, b)   true when two section-end marks are alike
+//   reuseKey(item)   {block, list, mark, level, marker, first}
+//   sameKey(a, b)    true when two keys (or items) lay out the same
+//                    (level, marker and first, Show first line only:
+//                    Outline view's, P13.2, P13.4, D32; undefined in
+//                    the other views)
+//   keepable(L, doc, prev)  whether prev's lines may be kept at all
+//   sameInputs(ctx, o, it, col)  whether paragraph item it may keep
+//                           the lines of prev's item o, its wrap key
+//                           aside (./DocItems' header)
+//   anchored(ctx, b)        root block b not kept: in L.anchored if
+//                           it may hold a float (./PicLine floatsIn)
+//                           or is a floating table (./TblFloat
+//                           isFloating, P12.7; L.anchored copied
+//                           first, once, ctx.own)
+//   swapAlt(it, o, [key, was]) -> bool  paragraph item it (prev's
+//                           item o of the same inputs) whose wrap key
+//                           is now key, was o's: o's alt {key, lines,
+//                           h} taken when its key is key (true), and
+//                           o's lines kept as it.alt, so a key that
+//                           comes back (a page started again and
+//                           settled the same, ./WrapPass) breaks no
+//                           lines (P12a fix C1)
+//   inpOf(o, same) -> it.inp, a number that stands for an item's
+//                           inputs (all but its wrap: P12a fix C1,
+//                           ./WrapMemo): o's when the same, else new
+//   adopt(ctx, it, o, p)    prev's item o kept for it
+//   track(ctx, ci, a)       root item ci, a the item of prev it
+//                           adopted (null: none), for dirtyEnd
+//   dirtyEnd(ctx)           sets L.dirtyFrom and L.cleanFrom (the
+//                           header of ./DocItems)
+import {sameLabel} from './LineLabel';
+import {floatsIn} from './PicLine';
+import {isFloating} from './TblFloat';
+import {blockId} from './DocPos';
+
+/** See the header. */
+export function sameMark(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.type === b.type;
+}
+
+/** See the header. */
+export function reuseKey(it) {
+  return {block: it.block, list: it.list || null,
+    mark: it.mark || null, level: it.level, marker: it.marker,
+    first: it.first};
+}
+
+/** See the header. */
+export function sameKey(a, b) {
+  return a.block === b.block && sameLabel(a.list, b.list) &&
+    sameMark(a.mark, b.mark) && a.level === b.level &&
+    a.marker === b.marker && a.first === b.first;
+}
+
+/** Whether prev's lines may be kept at all (the header). */
+export function keepable(L, doc, prev) {
+  return !!prev && !prev.spent && prev.laid && !prev.stale &&
+    prev.metrics === L.metrics &&
+    prev.doc === doc && prev.textW === L.textW &&
+    prev.styles === L.styles && prev.numbering === L.numbering &&
+    prev.settings === L.settings && prev.ns === L.ns;
+}
+
+let INP = 0;
+
+/** See the header. */
+export const inpOf = (o, same) => (same && o.inp) || ++INP;
+
+/** See the header. */
+export function sameInputs(ctx, o, it, col) {
+  return !!o && o.kind === 'p' && sameKey(o, it) && o.w === it.w &&
+    o.col.styles === col.styles &&
+    !(ctx.relay && ctx.relay.has(it.id)) &&
+    !(ctx.refloat && floatsIn(it.block));
+}
+
+/** See the header. */
+export function swapAlt(it, o, [key, was]) {
+  const alt = o.alt, back = !!alt && alt.key === key && !!o.lines;
+  if (back) {
+    it.lines = alt.lines;
+    it.h = alt.h;
+  }
+  if (o.lines) it.alt = {key: was, lines: o.lines, h: o.h};
+  return back;
+}
+
+/** See the header. */
+export function anchored(ctx, b) {
+  const L = ctx.L, id = blockId(b);
+  if (!L.floats || L.anchored.has(id) || !(floatsIn(b) ||
+    (b.type === 'tbl' && isFloating(b.tblPr, L.ns)))) return;
+  if (!ctx.own) L.anchored = new Set(L.anchored);
+  ctx.own = true;
+  L.anchored.add(id);
+}
+
+/** prev's item o kept for it (lines, decorators: the header). */
+export function adopt(ctx, it, o, p) {
+  if (p) {
+    it.lines = o.lines;
+    it.h = o.h;
+    if (o.alt) it.alt = o.alt;         // (./ItemReuse swapAlt)
+  }
+  else if (it.kind === 'tbl') it.h = o.h;  // (./DocStack compares)
+  // (./DocStack's result: the same key, so the same gaps)
+  if (ctx.prev.decorators === ctx.L.decorators) it.deco = o.deco;
+}
+
+/** See the header (ctx: ./DocItems buildItems'). */
+export function track(ctx, ci, a) {
+  const pi = a && a.col === ctx.proot ? a.ci : -1;
+  if (pi !== ci && ci < ctx.head) ctx.head = ci;
+  if (pi !== ci - ctx.delta) ctx.bad = ci;
+}
+
+/** See the header. */
+export function dirtyEnd(ctx) {
+  const {L, prev} = ctx;
+  if (!ctx.share || prev.top !== L.top) {
+    L.dirtyFrom = 0;
+    L.cleanFrom = Infinity;
+    return;
+  }
+  const n = Math.min(L.items.length, prev.items.length);
+  L.dirtyFrom = ctx.delta ? Math.min(ctx.head, n) : ctx.head;
+  L.cleanFrom = ctx.bad + 1;
+}

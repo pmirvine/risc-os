@@ -1,0 +1,154 @@
+// WrapCmd - Format > Wrap text > on the selected picture, as one
+// undo step (pure; Batch D P12.4, D28).
+//
+//   KINDS = inline, square, tight, topBottom, behind, inFront
+//   wrapCmd(d, sel, kind, {x, y}?) -> sel | null
+//       d a ./Document (or a story's facade), sel a ./Selection
+//       covering exactly one picture (./PicOps picIn). The
+//       picture's w:drawing made the kind's (./WrapXml):
+//         in line -> an anchor (toAnchor): positionH column
+//           posOffset x (EMU: the picture's x in its column, the
+//           caller's; rounded, kept in -2^31..2^31-1, 0 when not a
+//           finite number), positionV paragraph posOffset y (the
+//           same: its top in its paragraph, P12a fix M3: where it
+//           was, as Word keeps it), relativeHeight maxZ + 1 (at most
+//           4294967295), Word's defaults
+//         an anchor -> in line (toInline): docPr (id, alt),
+//           extent, effectExtent, graphic kept
+//         an anchor -> another wrap (withWrap): only the wrap
+//           element and behindDoc change
+//       then put in by ONE replaceText of its U+FFFC (the run's
+//       format kept, as ./PicOps setPicture), the picture selected
+//       again (anchor at its offset). The same kind: sel back, no
+//       step. null (refused, nothing changed; the menu beeps): a
+//       kind not in KINDS, no picture selected, a floating picture
+//       whose anchor is not understood (./AnchorRead unknown), a
+//       frame holding what ./WrapXml does not keep, or a result
+//       ./PicRead would not read back as the kind.
+//   kindOf(pic) -> a KINDS value, 'through' or null
+//       pic ./PicRead pictureOf's result: inline when not
+//       floating; else by anchor.wrap (none: behind or inFront by
+//       behindDoc; topAndBottom: topBottom); null for no picture or
+//       an anchor not understood
+//   placeOf(f) -> {x, y}  EMU (rounded) where the picture in line
+//       that ./PicFind found (f: picAt / selectedPic) is in its
+//       column and paragraph: its item's x, and its top (its line's
+//       y and baseline less its height): wrapCmd's x and y
+//   maxZ(doc) -> the largest relativeHeight of any wp:anchor in the
+//       body and the stories (any depth: shapes too; decimal
+//       integers 0..4294967295 only), 0 when none. Cached per
+//       block object.
+import {OBJ} from './Model';
+import {select} from './Selection';
+import {picIn} from './PicOps';
+import {pictureOf, EMU_PX} from './PicRead';
+import {scan, scanStories} from './Walk';
+import {scope, isEl} from './Ns';
+import {toAnchor, toInline, withWrap} from './WrapXml';
+import {MAX_UINT, MIN_OFFSET, MAX_OFFSET} from './AnchorParts';
+
+export const KINDS = Object.freeze(['inline', 'square', 'tight',
+  'topBottom', 'behind', 'inFront']);
+const UINT = /^[0-9]{1,10}$/;
+const inside = (m, c) => (c.attrs.length ? scope(m, c) : m);
+
+/** See the header. */
+export function placeOf(f) {
+  const ln = f.line, it = f.item;
+  return {x: Math.round(it.x * EMU_PX), y: Math.round((ln.y + ln.base +
+    (it.dy || 0) - it.pic.h) * EMU_PX)};
+}
+
+/** See the header. */
+export function kindOf(pic) {
+  if (!pic) return null;
+  if (!pic.floating) return 'inline';
+  const a = pic.anchor;
+  if (!a || a.unknown || !a.wrap) return null;
+  switch (a.wrap.kind) {
+    case 'none': return a.behindDoc ? 'behind' : 'inFront';
+    case 'topAndBottom': return 'topBottom';
+    case 'square': case 'tight': case 'through': return a.wrap.kind;
+    default: return null;
+  }
+}
+
+const zs = new WeakMap();
+
+/** The largest relativeHeight in nodes (any depth; no recursion). */
+function nodesZ(nodes) {
+  let z = 0;
+  const todo = [...nodes];
+  while (todo.length) {
+    const c = todo.pop();
+    if (!c || typeof c !== 'object' || typeof c.name !== 'string')
+      continue;
+    if (c.name.slice(c.name.indexOf(':') + 1) === 'anchor' &&
+      Array.isArray(c.attrs)) {
+      const a = c.attrs.find(([k]) => k === 'relativeHeight');
+      const v = a && UINT.test(a[1]) ? Number(a[1]) : 0;
+      if (v <= MAX_UINT && v > z) z = v;
+    }
+    if (Array.isArray(c.children)) todo.push(...c.children);
+  }
+  return z;
+}
+
+/** The largest relativeHeight in block b (cached per object). */
+function blockZ(b) {
+  if (!b || typeof b !== 'object') return 0;
+  let z = zs.get(b);
+  if (z !== undefined) return z;
+  z = b.type === 'p' ? nodesZ(Object.values(b.inlines || {})
+    .map((x) => x && x.node)) : nodesZ([b.node]);
+  zs.set(b, z);
+  return z;
+}
+
+/** See the header. */
+export function maxZ(doc) {
+  let z = 0;
+  // (a typed table's cells are scanned as blocks of their own)
+  const each = (b) => {
+    if (b && b.type !== 'tbl') z = Math.max(z, blockZ(b));
+  };
+  scan(doc, each);
+  scanStories(doc, each);
+  return z;
+}
+
+/** x as a posOffset (see the header). */
+function offset(x) {
+  if (typeof x !== 'number' || !Number.isFinite(x)) return 0;
+  return Math.min(MAX_OFFSET, Math.max(MIN_OFFSET, Math.round(x)));
+}
+
+/** See the header. */
+export function wrapCmd(d, sel, kind, o = {}) {
+  if (!KINDS.includes(kind)) return null;
+  const at = picIn(d.doc, sel);
+  if (!at) return null;
+  const {info, map, x, loc, off} = at;
+  const now = kindOf(info);
+  if (now === null) return null;
+  if (now === kind) return sel;
+  const draw = x.node, dm = inside(map, draw);
+  const fi = draw.children.findIndex((c) => isEl(c) &&
+    Array.isArray(c.attrs));
+  const f = draw.children[fi], fm = inside(dm, f);
+  let g;
+  if (kind === 'inline') g = toInline(f, fm);
+  else if (now === 'inline') {
+    g = toAnchor(f, fm, {kind, x: offset(o && o.x),
+      y: offset(o && o.y), z: Math.min(MAX_UINT, maxZ(d.doc) + 1)});
+  } else g = withWrap(f, fm, kind);
+  if (!g) return null;
+  const children = draw.children.slice();
+  children[fi] = g;
+  const node = {...draw, children};
+  if (kindOf(pictureOf(node, map)) !== kind) return null;
+  d.atomic(() => d.apply({op: 'replaceText', block: loc.at,
+    at: off, del: 1, ins: OBJ, inlines: {0: {...x, node}}}));
+  const id = loc.b.id;
+  return select({id, off}, {id, off: off + 1});
+}

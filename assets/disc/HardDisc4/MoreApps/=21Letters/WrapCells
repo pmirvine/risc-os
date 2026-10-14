@@ -1,0 +1,115 @@
+// WrapCells - the paragraphs in a table's cells wrapped round the
+// floats anchored in the same cell (Batch D P12a fix I5, D27), for
+// ./WrapWant: the parts they want on a page, as root paragraphs'.
+//
+//   cellsAt(L, P, i) -> [{it, top, left, ok, root}]  the paragraphs
+//       with lines in the cells of the tables on page i of ./Pages P
+//       (./AnchorPlace cellsOn: the page y of each one's galley top,
+//       the page x of its column's left, ok(y): its line at page y
+//       shown on the page, root its root table item)
+//   cellWant(L, P, i, cur, keys, ch, after, want)  for each of them
+//       (want: true, else the start of a page) the parts it wants
+//       (cur: the wrap's) put in ch (Map id -> parts | null, those
+//       that change; keys: Map id -> key) and its view (below) in
+//       after: its parts for the pages before i that its table
+//       shows on, and with want those for the pages after (as cur
+//       has them) and one where its lines here meet an exclusion
+//       (./LineShape exclusionsOf) of a float anchored in its own
+//       cell (a paragraph of the same column), in the column's
+//       width: {pk, y0, y1, excls, bot, sig, root} (./WrapWant's
+//       part; y0..y1 the lines shown here when its row is split
+//       across pages, else -Infinity..Infinity; root its table's id)
+//   cellView(L, P, i, cur, out)  each one's VIEW in out: its parts
+//       but those for the pages after i (their own passes give them)
+//
+// Only the floats of a cell wrap its text: a float in a cell never
+// wraps the root paragraphs (./WrapGuess), nor another cell's. No
+// guess top down: a cell settles in plain passes. Pure: no desktop
+// services.
+// cellsAt is used inside this module only (not exported).
+import {exclusionsOf, relExcl, exclSig, r2, EPS} from './LineShape';
+import {keyOf} from './ColMemo';
+import {cellsOn} from './AnchorPlace';
+import {sigOf} from './WrapGuess';
+
+const NONE = Object.freeze([]);
+
+/** See the header. */
+function cellsAt(L, P, i) {
+  const out = [];
+  cellsOn(P, P.list[i], (it, top, left, fr, ok, root) => {
+    if (it.lines && it.lines.length && it.lines.some((ln) =>
+      ok(top + ln.y))) out.push({it, top, left, ok, root});
+  });
+  return out;
+}
+
+/** The keys of the pages before page i and after it that root item
+ *  k goes on to (a table whose rows are split): [before, after]. */
+function around(L, P, i, k) {
+  const was = new Set(), next = new Set();
+  const inside = (c) => c.k === k && !!(c.line || c.dy || c.cuts);
+  for (let a = i; a > 0 && inside(P.list[a].start); a--) {
+    was.add(keyOf(L, P.list[a - 1]));
+  }
+  for (let b = i; inside(P.list[b].end) && P.at(b + 1); b++) {
+    next.add(keyOf(L, P.list[b + 1]));
+  }
+  return [was, next];
+}
+
+/** The exclusions of the floats of page pg anchored in column col's
+ *  paragraphs. */
+function inCell(L, fl, col) {
+  return exclusionsOf(fl.filter((g) => g.cell && g.wrap && g.pic &&
+    L.byId.get(g.id) && L.byId.get(g.id).col === col));
+}
+
+/** Cell paragraph c's part on page pk beside exclusions ex, or
+ *  null. */
+function partOf(pk, c, ex) {
+  const {it, top: T, left, ok, root} = c, ls = it.lines;
+  const vis = ls.filter((ln) => ok(T + ln.y));
+  const cut = vis.length < ls.length, z = vis[vis.length - 1];
+  const lo = cut ? vis[0].y : -Infinity;
+  const hi = cut ? z.y + z.h : Infinity;
+  const a = T + (cut ? lo : 0), b = T + z.y + z.h;
+  const meet = ex.filter((e) => e.x0 < left + it.w && e.x1 > left &&
+    e.y0 < b - EPS && e.y1 > a + EPS);
+  if (!meet.length) return null;
+  const rel = meet.map((e) => relExcl(e, left, T));
+  const w0 = cut ? r2(lo) : -Infinity, w1 = cut ? r2(hi) : Infinity;
+  return Object.freeze({pk, y0: w0, y1: w1, excls: Object.freeze(rel),
+    bot: Infinity, root: root.id, sig: 'c' + (cut ? w0 + ',' + w1
+      : 'all') + '/' + rel.map(exclSig).join(' ')});
+}
+
+/** See the header. */
+export function cellWant(L, P, i, cur, keys, ch, after, want) {
+  const pg = P.list[i], pk = keyOf(L, pg), fl = P.floatsOf(pg);
+  const exs = new Map();
+  for (const c of cellsAt(L, P, i)) {
+    const {it, root} = c, ps = cur.get(it.id) || NONE;
+    const [was, next] = around(L, P, i, root.ci);
+    const list = ps.filter((x) => was.has(x.pk));
+    if (want) {
+      if (!exs.has(it.col)) exs.set(it.col, inCell(L, fl, it.col));
+      const part = partOf(pk, c, exs.get(it.col));
+      if (part) list.push(part);
+    }
+    after.set(it.id, sigOf(list));
+    if (want) list.push(...ps.filter((x) => next.has(x.pk)));
+    if (sigOf(list) !== (keys.get(it.id) || '')) {
+      ch.set(it.id, list.length ? Object.freeze(list) : null);
+    }
+  }
+}
+
+/** See the header. */
+export function cellView(L, P, i, cur, out) {
+  for (const {it, root} of cellsAt(L, P, i)) {
+    const next = around(L, P, i, root.ci)[1];
+    out.set(it.id, sigOf((cur.get(it.id) || NONE).filter((x) =>
+      !next.has(x.pk))));
+  }
+}

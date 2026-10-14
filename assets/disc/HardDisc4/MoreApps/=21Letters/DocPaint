@@ -2,8 +2,14 @@
 // paragraphs' text, their border boxes and shading, a grey box for
 // each kept block, and the section break bands.
 //
-//   paint(L, g, rect)   draw what lies in rect {x0, y0, x1, y1}
-//                       (work-area coordinates)
+//   paint(L, g, rect, opts?)  draw what lies in rect {x0, y0, x1,
+//                       y1} (work-area coordinates)
+//   paintFrags(L, g, frags, rect, opts?)  draw fragments frags (as
+//                       L.place visible gives them, or a page's,
+//                       ./PlacePrint pageFrags) in rect
+//     opts.marks        false: no break is drawn as a rule (Print
+//                       layout without the formatting marks, D5,
+//                       D22); else (Draft) as below
 //
 // The shading of the border boxes (./BorderGroups marks, drawn by
 // ./BorderPaint) of the items in rect is drawn first, under all
@@ -38,51 +44,115 @@
 // labels are ./MarkPaint's. A picture's item (kind 'pic') is
 // ./PicPaint's: its bitmap from L.pics, or a labelled box. A typed
 // table's item (kind 'tbl') is ./TablePaint's: its shading, its
-// cells' items, its resolved borders, only the rows in rect. Draws
+// cells' items, its resolved borders, only the rows in rect. In
+// Outline view a root item's marker (it.marker: + - o) is drawn in
+// the gutter left of it (./OutlineLayout paintMarker). Draws
 // on the context it is given; imports no desktop services. The items
 // drawn are the root column's (L.items, ./DocItems), each at its
 // own x and w.
+//
+// Where (D4): the layout's placement says what a band shows,
+// L.place.visible(y0, y1): fragments {it, l0, l1, dx, dy}, a root
+// item (and, of a paragraph, its lines l0..l1 - 1) moved by dx, dy
+// from the galley. Each fragment is painted in its galley
+// coordinates (./ItemPaint, ./TablePaint, ./MarkPaint,
+// ./BorderPaint) with the context translated by dx, dy and rect
+// moved back by them; a fragment not moved (Draft: every one) is
+// painted with no translation at all, so Draft's calls are exactly
+// what they were. A block or a table is painted when its box meets
+// rect (./PlaceDraft meets, in its galley). A fragment with a clip
+// {y0, y1} (a cut item's part on a page: its frame) is drawn cut to
+// it. A section break's band goes with the fragment that holds its
+// item's end (tail not false), a "Page break before" rule with the
+// one that holds its top (head not false): once each. A table
+// fragment with rows (Print layout: r0, r1, ...) is ./TblPagePaint's
+// (its page's rows, repeated header rows, the parts of a cut row).
+// A paragraph's border box cut by a frame (a fragment first in its
+// frame whose paragraph shares the box above or starts on a page
+// before, or last in its frame and shares the box below or goes on)
+// is closed on that page part (./BorderGroups closedMark, PG38),
+// over the fragment's own lines.
 import {bandOf} from './SectDeco';
 import {flowMark} from './FlowDeco';
 import {paintBand, paintFlow} from './MarkPaint';
-import {boxMark} from './BorderGroups';
+import {boxMark, closedMark} from './BorderGroups';
 import {paintFill, paintEdges} from './BorderPaint';
 import {paintPara, paintBox} from './ItemPaint';
 import {paintTable} from './TablePaint';
+import {paintFrag} from './TblPagePaint';
+import {meets} from './PlaceDraft';
+import {paintMarker} from './OutlineLayout';
 
 /** See the header. */
-export function paint(L, g, rect) {
-  g.textBaseline = 'alphabetic';
-  const first = L.itemAtY(rect.y0);
-  if (!first) return;
-  const {items} = L;
-  let i0 = first.ci, i1 = i0;
-  // (an item above whose gap below, its band, is in rect)
-  while (i0 > 0 && bottom(items[i0 - 1]) > rect.y0) i0--;
-  while (i1 < items.length && top(items[i1]) < rect.y1) i1++;
-  boxes(L, g, i0, i1, rect, paintFill);
-  for (let i = i0; i < i1; i++) {
-    const it = items[i];
-    if (it.y < rect.y1 && it.y + it.h > rect.y0) {
-      if (it.kind === 'p') paintPara(L, g, it, rect);
-      else if (it.kind === 'tbl') paintTable(L, g, it, rect);
-      else paintBox(L, g, it);
-    }
-    const m = bandOf(it);
-    if (m) paintBand(L, g, it, m, rect);
-    const f = flowMark(it);
-    if (f) paintFlow(L, g, it, f, rect);
-  }
-  boxes(L, g, i0, i1, rect, paintEdges);
+export function paint(L, g, rect, opts) {
+  paintFrags(L, g, L.place.visible(rect.y0, rect.y1), rect, opts);
 }
 
-const bottom = (it) => it.y + it.h + it.gapBelow;
-const top = (it) => it.y - Math.max(0, it.gapAbove);
+/** See the header. */
+export function paintFrags(L, g, fs, rect, opts = {}) {
+  g.textBaseline = 'alphabetic';
+  const marks = opts.marks !== false;
+  const each = (draw) => {
+    for (const f of fs) at(g, f, rect, (r) => draw(f, r));
+  };
+  each((f, r) => box(L, g, f, r, paintFill));
+  each((f, r) => item(L, g, f, r, marks));
+  each((f, r) => box(L, g, f, r, paintEdges));
+}
 
-/** The border boxes' shading or edges of items i0..i1 - 1. */
-function boxes(L, g, i0, i1, rect, f) {
-  for (let i = i0; i < i1; i++) {
-    const it = L.items[i], m = boxMark(it);
-    if (m && it.lines) f(g, m, it, L.items[i - 1], it.x, rect);
+/** draw(r) for fragment f: g moved by its dx, dy (and cut to its
+ *  clip), r the rect in its galley (not moved: rect itself, g
+ *  untouched). */
+function at(g, f, rect, draw) {
+  const {dx, dy, clip} = f;
+  if (!dx && !dy && !clip) {
+    draw(rect);
+    return;
   }
+  g.save();
+  if (clip) {
+    g.beginPath();
+    g.rect(rect.x0, clip.y0, rect.x1 - rect.x0, clip.y1 - clip.y0);
+    g.clip();
+  }
+  if (dx || dy) g.translate(dx, dy);
+  draw({x0: rect.x0 - dx, y0: rect.y0 - dy, x1: rect.x1 - dx,
+    y1: rect.y1 - dy});
+  g.restore();
+}
+
+/** Fragment f's item in r (its galley): its lines or its box, then
+ *  the marks under and above it (marks: see the header). */
+function item(L, g, f, r, marks) {
+  const {it} = f;
+  if (it.kind === 'p') paintPara(L, g, it, r, f.l0, f.l1, marks);
+  else if (meets(it, r.y0, r.y1)) {
+    if (it.kind === 'tbl') {
+      if (f.r0 !== undefined) paintFrag(L, g, it, f, r);
+      else paintTable(L, g, it, r);
+    }
+    else paintBox(L, g, it);
+  }
+  const m = marks && f.tail !== false && bandOf(it);
+  if (m) paintBand(L, g, it, m, r);
+  const k = marks && f.head !== false && flowMark(it);
+  if (k) paintFlow(L, g, it, k, r);
+  if (it.marker && f.head !== false) paintMarker(g, it);
+}
+
+/** The border box's shading or edges (f) of fragment fr's item:
+ *  closed where a frame cuts its group (PG38; see the header). */
+function box(L, g, fr, r, f) {
+  const {it} = fr, m = boxMark(it);
+  if (!m || !it.lines) return;
+  if (fr.first === undefined) {        // (Draft: l0, l1 the band's)
+    f(g, m, it, L.items[it.ci - 1], it.x, r);
+    return;
+  }
+  const n = it.lines.length, l0 = fr.l0, l1 = Math.min(fr.l1, n);
+  if (!(l1 > l0)) return;
+  const top = fr.first && (m.joinAbove || l0 > 0);
+  const bot = fr.last && (m.joinBelow || l1 < n);
+  f(g, closedMark(m, top, bot), it, L.items[it.ci - 1], it.x, r, l0,
+    l1);
 }

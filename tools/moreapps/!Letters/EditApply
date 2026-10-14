@@ -23,71 +23,31 @@
 //                         commands (./TblCmdCols TABLE: rows,
 //                         columns, select, distribute, with
 //                         {arg}: {L} the layout) run there: null
-//                         (a beep) where they cannot apply
-//   stepEnd(doc, ops, oldL) -> {id, off} | null: the caret after an
-//                         undo or redo whose 'change' event carried
-//                         ops (./Document); oldL: the layout from
-//                         before it (a ./DocLayout), or null
+//                         (a beep) where they cannot apply. null
+//                         too for an id d.refuses (a header's
+//                         ./StoryFacade: page and section breaks).
+//                         Outline view's commands (./OutlineCmd
+//                         OUTLINE: outlinePromote, outlineDemote,
+//                         outlineUp, outlineDown) run there with
+//                         {arg}: {L}, L.outline the collapse set
+//   stepEnd(doc, ops, oldL) -> the caret after an undo or redo
+//                         (./EditStep, which has the rules)
 //
 // Each command runs through typing.command (./Typing), so it ends
 // the typing's undo step and is one of its own (./Edit, ./EditDel).
 //
-// The caret after an undo or redo is at the end of the last change
-// it made: the last op applied (the last of a compound, in the order
-// applied) decides, read against the document after it:
-//   spliceText, replaceText   after the text put in (at + length):
-//                             so undoing typing leaves the caret
-//                             where the typing began, undoing a
-//                             deletion after the text it puts back
-//   restoreBlock              where the restored paragraph first
-//                             differs from what it replaced (the
-//                             block of that id in oldL): undoing
-//                             Enter puts the caret where the
-//                             paragraph was split; a table (R18,
-//                             Batch C3.4): the start of the first
-//                             paragraph of its first row that is not
-//                             the very row of oldL's table at that
-//                             index (else row 0), from its first
-//                             cell on (a table command undone: the
-//                             caret in the rows it changed); when
-//                             every row is oldL's but some of its
-//                             last are gone (Tab's new row undone),
-//                             the end of its last paragraph
-//   splitBlock                the start of the new (second) part
-//   insertBlock(s)            the start of the first block put in
-//                             (a typed table: its first paragraph,
-//                             R18's row 0)
-//   removeBlock(s)            the end of the block before the gap
-//                             (the start of the one after when the
-//                             gap is at the section's start); a
-//                             typed table there: the end of its last
-//                             paragraph (the start of its first),
-//                             where TB10's Backspace (Delete) put
-//                             the caret, never its edge (C3 fix wave)
-//   mergeBlock, setProps      the start of that paragraph
-//   splitSection, mergeSection  the start of the paragraph at the
-//                             split (the one that ends the first
-//                             section; for a merge found in oldL)
-//   setDocPart, setSection    skipped: the op before it decides;
-//                             only these: null (the selection
-//                             stays)
-// A kept block (a table) gives its edge {id, off: 0} (or 1 at an
-// end). Null when nothing fits (the caller keeps its selection).
 // Pure: no desktop services.
 import {splitPara, lineBreak} from './Edit';
 import {deleteForward, deleteWordBack, deleteWordForward}
   from './EditDel';
 import {listTab, listShiftTab, listBack, usesShiftTab}
   from './EditList';
-import {blockId} from './DocPos';
-import {at as walkAt} from './Walk';
-import {isPath, sib} from './Path';
 import {collapsed} from './Selection';
 import {afterSpace} from './AutoList';
 import {insert} from './InsertApply';
 import {deleteBreakAt} from './SectBreak';
-import {rowPos, firstPos, lastPos} from './TblPos';
 import {TABLE} from './TblCmdCols';
+import {OUTLINE} from './OutlineCmd';
 
 const COMMANDS = {
   enter: splitPara,
@@ -101,12 +61,14 @@ const COMMANDS = {
 };
 const EDGE = new Map([['backspace', -1], ['delete', 1],
   ['ctrlBackspace', -1], ['ctrlDelete', 1]]);
-const SKIP = new Set(['setDocPart', 'setSection']);
 
 /** See the header. */
 export function run(id, d, typing, sel, {autoList = false, arg} = {}) {
+  if (typeof d.refuses === 'function' && d.refuses(id)) return null;
   if (Object.hasOwn(TABLE, id))
     return typing.command(() => TABLE[id](d, sel, arg));
+  if (Object.hasOwn(OUTLINE, id))
+    return typing.command(() => OUTLINE[id](d, sel, arg));
   const fn = Object.hasOwn(COMMANDS, id) ? COMMANDS[id] : null;
   if (!fn) return insert(id, d, typing, sel, arg);
   if (id === 'shiftTab' && !usesShiftTab(d.doc, sel)) return undefined;
@@ -119,117 +81,4 @@ export function run(id, d, typing, sel, {autoList = false, arg} = {}) {
     !collapsed(sel)) return out;
   return afterSpace(d, typing, out, {typed: '\t'}) || out;
 }
-
-/**
- * The last leaf op of ops (compounds opened, in order applied) that
- * is not a setDocPart or a setSection, or null.
- */
-function last(ops) {
-  for (let k = ops.length - 1; k >= 0; k--) {
-    const op = ops[k];
-    if (!op || SKIP.has(op.op)) continue;
-    if (op.op !== 'compound') return op;
-    const r = Array.isArray(op.ops) ? last(op.ops) : null;
-    if (r) return r;
-  }
-  return null;
-}
-
-/**
- * After mergeSection {at: s}: the paragraph that ended section s,
- * from oldL (the first section-end mark from s's first item; the
- * sections before s are as they were).
- */
-function mergeEnd(doc, s, oldL) {
-  const sec = doc.sections[s];
-  if (!sec) return null;
-  let c = 0;
-  for (let k = 0; k < s; k++) c += doc.sections[k].blocks.length;
-  const items = (oldL && oldL.items) || [];
-  for (let j = c; j < items.length && j - c < sec.blocks.length;
-    j++) {
-    if (!items[j].mark) continue;
-    return sec.blocks[j - c] === items[j].block
-      ? start(items[j].block) : null;
-  }
-  return null;
-}
-
-const blockAt = (doc, at) => walkAt(doc, at);
-const isTbl = (b) => b.type === 'tbl' && Array.isArray(b.rows);
-/** The path d blocks on in the same container (null: not a path). */
-const next = (at, d) => (isPath(at) ? sib(at, d) : null);
-const start = (b) => (b ? {id: blockId(b), off: 0} : null);
-const end = (b) => (b ? {id: blockId(b),
-  off: b.type === 'p' ? b.text.length : 1} : null);
-
-/** The length of the common start of a and b. */
-function common(a, b) {
-  const n = Math.min(a.length, b.length);
-  let i = 0;
-  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
-  // (not inside a surrogate pair)
-  if (i > 0 && i < a.length && (a.charCodeAt(i) & 0xFC00) === 0xDC00)
-    i--;
-  return i;
-}
-
-/** R18: the first row of t that is not old's row at its index (else
- *  row 0), its first paragraph (./TblPos rowPos); every row old's
- *  but old longer: the end of t's last paragraph; t's edge if none. */
-function tableStep(t, old) {
-  const rs = old && old.type === 'tbl' ? old.rows : null;
-  let r = 0;
-  while (rs && r < t.rows.length && t.rows[r] === rs[r]) r++;
-  if (rs && r === t.rows.length && rs.length > r) {
-    return lastPos(t) || start(t);
-  }
-  return rowPos(t, r < t.rows.length ? r : 0) || start(t);
-}
-
-/** See the header. */
-export function stepEnd(doc, ops, oldL) {
-  const op = Array.isArray(ops) ? last(ops) : null;
-  if (!op) return null;
-  switch (op.op) {
-    case 'spliceText': case 'replaceText': {
-      const b = blockAt(doc, op.block);
-      if (!b || b.type !== 'p') return start(b);
-      const n = op.op === 'spliceText'
-        ? (op.content && op.content.text || '').length
-        : (op.ins || '').length;
-      return {id: b.id, off: Math.min(op.at + n, b.text.length)};
-    }
-    case 'restoreBlock': {
-      const b = blockAt(doc, op.block);
-      const o = b && oldL && oldL.byId.get(blockId(b));
-      if (b && b.type === 'p' && o && o.block.type === 'p')
-        return {id: b.id, off: common(o.block.text, b.text)};
-      if (b && b.type === 'tbl') return tableStep(b, o && o.block);
-      return start(b);
-    }
-    case 'splitBlock':
-      return start(blockAt(doc, next(op.block, 1)));
-    case 'insertBlock': case 'insertBlocks': {
-      const b = blockAt(doc, op.at);
-      return (b && isTbl(b) && firstPos(b)) || start(b);
-    }
-    case 'removeBlock': case 'removeBlocks': {
-      const b = blockAt(doc, next(op.at, -1));
-      if (b) return (isTbl(b) && lastPos(b)) || end(b);
-      const a = blockAt(doc, op.at);
-      return (a && isTbl(a) && firstPos(a)) || start(a);
-    }
-    case 'mergeBlock': case 'setProps':
-      return start(blockAt(doc, op.block));
-    case 'splitSection':
-      return start(blockAt(doc, op.at));
-    case 'mergeSection': {
-      const sec = doc.sections[op.at];
-      return mergeEnd(doc, op.at, oldL) ||
-        start(sec && sec.blocks[0]);
-    }
-    default:
-      return null;
-  }
-}
+export {stepEnd} from './EditStep';

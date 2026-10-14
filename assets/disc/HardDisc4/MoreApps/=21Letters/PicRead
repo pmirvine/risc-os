@@ -1,7 +1,7 @@
 // PicRead - what a picture's w:drawing says (pure; Batch B).
 //
 //   pictureOf(node, map?) -> {embed, cx, cy, alt, name, docPrId,
-//       floating, srcRect?, supported} | null
+//       floating, srcRect?, supported, anchor?} | null
 //   docMap(doc) -> map      the scope a raw inline of `doc` is read
 //                           in (WriteBody.docScope; cached per root)
 //   PIC_SCOPE               w wp a pic r bound to their URIs (the
@@ -30,13 +30,16 @@
 // (up to 3 decimals, read as 12500; same limits), else shown
 // uncropped. supported: the picture
 // has pic:spPr / a:xfrm / a:ext, so a new size can be written
-// consistently (plan R2).
+// consistently (plan R2). anchor (floating only): what the
+// wp:anchor says (./AnchorRead, D25; `unknown` when not understood).
 //
 // Results are frozen and cached per map, then node (WeakMaps; nodes
 // are never changed in place).
 import {NS} from './Wml';
-import {rootScope, scope, isEl, blank, isStrict} from './Ns';
+import {rootScope, scope, isEl, isStrict} from './Ns';
 import {docScope} from './WriteBody';
+import {is, kids, child, plain, nsAttr} from './DrawNode';
+import {anchorOf} from './AnchorRead';
 
 export const EMU_PX = 9525;
 export const MAX_EXT = 2147483647;
@@ -44,59 +47,6 @@ export const MAX_EXT = 2147483647;
 export const PIC_SCOPE = rootScope({name: 'w:document', attrs: [
   ['xmlns:w', NS.w], ['xmlns:wp', NS.wp], ['xmlns:a', NS.a],
   ['xmlns:pic', NS.pic], ['xmlns:r', NS.r]]});
-
-/** Element `n` (with `m` the scope inside it) is uri:local. */
-function is(n, m, uri, local) {
-  const s = n.name;
-  const i = s.indexOf(':');
-  return s.slice(i + 1) === local &&
-    m.get(i < 0 ? '' : s.slice(0, i)) === uri;
-}
-
-/** [[child, scope]...] of `n`, or null when it holds real text. */
-function kids(n, m) {
-  const out = [];
-  for (const c of n.children) {
-    if (typeof c === 'string') {
-      if (!blank(c)) return null;
-    } else if (isEl(c)) {
-      out.push([c, c.attrs.length ? scope(m, c) : m]);
-    }
-  }
-  return out;
-}
-
-/** The one child uri:local of [n, m] as [node, scope], else null. */
-function child(e, uri, local) {
-  const list = e && kids(e[0], e[1]);
-  if (!list) return null;
-  let hit = null;
-  for (const k of list) {
-    if (!is(k[0], k[1], uri, local)) continue;
-    if (hit) return null;
-    hit = k;
-  }
-  return hit;
-}
-
-/** The unprefixed attribute `local` of `n`, or undefined. */
-function plain(n, local) {
-  for (const [k, v] of n.attrs) if (k === local) return v;
-  return undefined;
-}
-
-/** Attribute uri:local of [n, m]: undefined absent, null repeated. */
-function nsAttr([n, m], uri, local) {
-  let out;
-  for (const [k, v] of n.attrs) {
-    const i = k.indexOf(':');
-    if (i <= 0 || k.slice(i + 1) !== local) continue;
-    if (m.get(k.slice(0, i)) !== uri) continue;
-    if (out !== undefined) return null;
-    out = v;
-  }
-  return out;
-}
 
 const DIGITS = /^[0-9]{1,10}$/;
 
@@ -163,6 +113,7 @@ function read(node, map) {
   const rect = src && rectOf(src[0], isStrict(src[1]));
   if (rect) x.srcRect = rect;
   x.supported = !!child(xfrm, NS.a, 'ext');
+  if (floating) x.anchor = anchorOf(f[0], m);
   return Object.freeze(x);
 }
 

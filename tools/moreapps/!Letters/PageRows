@@ -1,0 +1,240 @@
+// PageRows - a table's rows across pages (Batch D, D8): where a
+// table crossing a frame's bottom is broken, between rows or inside
+// one, for ./PageFill; the same rules for ./PageFrames and
+// ./PageFind.
+//
+//   isTable(it)   a 'tbl' item with rows (./TblItems; a table not
+//       laid out as one, e.g. too deep, is a block)
+//   rowFit(it, r, room, frame = Infinity, from = null) -> {whole,
+//       cuts?}  whether row r (from: the rest of it after the cuts
+//       `from`) fits in room px (whole), else where it would be cut:
+//       cuts[c] the first line of cell c (./TblItems row.cells
+//       order) left for the next frame, each cell's column cut at
+//       its own last line that fits with the cell's bottom margin
+//       under it (review P4 M1), measured as ./TblPieces draws the
+//       part: a first part from the column's top (space before its
+//       first line counted, review P4 I2), a rest from the line it
+//       starts with (a cell that fits: its line count, not cut).
+//       No cuts: the row moves whole: an exact row (trHeight exact)
+//       never splits, a cantSplit row moves unless it is taller
+//       than `frame` (a frame's room for a row: the
+//       frame less the repeated header rows), and none when no cell
+//       would show a line (./PageFill places it all the same at a
+//       frame's top: a line or nested table taller than the room
+//       is shown clipped, Word's way, and the row moves on)
+//   headsOf(it, frameH) -> n  the leading tblHeader rows, repeated
+//       at the top of each continuation frame; 0 when none, when
+//       every row is one, or when they and the row after them do
+//       not fit frameH
+//   restH(it, r, cuts) -> px  the tallest remainder of row r after
+//       cuts: a cell's top margin, its lines from cuts[c] on and its
+//       bottom margin (0 for a cell with none left; a cell with
+//       nothing shown before, cuts[c] 0: from its column's top, its
+//       first line's space before counted, as ./TblPieces draws it)
+//   tableEnd(it, k, start, limit, frameH, keep) -> null | MOVE |
+//       {end, bot}  table it (root item k) on a frame whose galley
+//       bottom is limit: null when the rest fits; MOVE when it all
+//       goes to the next frame (no row fits and it is not first:
+//       ./PageFill's keep chain then; keep: a keepNext table, PG7,
+//       moves whole unless taller than frameH); else the frame's
+//       end cursor (a row start {k, line: r}, a cut {k, line: r,
+//       cuts}) and bot its galley bottom. A row whose content fits
+//       but whose box does not (a trHeight atLeast; review P4 M1)
+//       moves whole when it is not first in the frame and its box
+//       fits one, else ends the frame cut to its content (cuts: every
+//       cell's line count; its rest on the next page is empty).
+//       start: the page's start cursor when the page starts in the
+//       table, else null
+//   adjOf(it, c, frameH) -> px  how far a page starting at cursor c
+//       in table it moves the galley below row c.line down: the
+//       repeated header rows plus the rest of a cut row less the
+//       row's height (0 for any other start; finite always)
+//   rowsOn(it, k, start, end, frameH) -> {r0, r1, from?, cuts?,
+//       heads?}  the rows of root table k on a page: r0..r1-1, from
+//       the cuts row r0 continues after, cuts those row r1-1 is cut
+//       at, heads the header rows repeated above them
+//
+// A cell's lines are ./PageCells units: a nested table (a unit a
+// row) is kept whole on one side of a cut (PG11) unless it is
+// taller than a frame: then it is cut between its rows (review P4
+// M2: before, it waited, the cell empty, for a frame's top and was
+// shown clipped there); a center / bottom cell is cut
+// as if top-aligned (PG8). A vertically merged cell's lines belong
+// to the rows of its span their tops lie in (./PageCells unitsAt,
+// review P4 I3): each row cuts its slice as any cell's lines, and a
+// row whose slice runs past its box needs that much more (needOf).
+// Pure: no desktop services.
+import {cursor} from './PageCursor';
+import {unitsAt, needOf, fin, px} from './PageCells';
+
+export const MOVE = Object.freeze({move: true});
+const NONE = Object.freeze([]);
+const HEADS = new WeakMap();           // rows -> leading header rows
+
+/** See the header. */
+export const isTable = (it) => !!it && it.kind === 'tbl' &&
+  Array.isArray(it.rows) && it.rows.length > 0;
+
+const at = (cuts, c) => (cuts && Number.isInteger(cuts[c]) &&
+  cuts[c] > 0 ? cuts[c] : 0);
+
+/** See the header. */
+export function restH(it, r, cuts) {
+  let h = 0;
+  (it.rows[r] ? it.rows[r].cells : NONE).forEach((c, i) => {
+    const u = unitsAt(it, r, i), f = at(cuts, i), n = u.tops.length;
+    if (f >= n) return;
+    h = Math.max(h, u.top + u.bots[n - 1] - (f > 0 ? u.tops[f] : 0) +
+      u.bottom);
+  });
+  return h;
+}
+
+/** Each cell's cut for room px (from: the cuts before; force: a
+ *  line more in each cell that has one left, if none fits; frame:
+ *  a nested table no taller is kept whole, PG11). */
+function cutsOf(it, r, room, from, force, frame = Infinity) {
+  return Object.freeze(it.rows[r].cells.map((c, i) => {
+    const u = unitsAt(it, r, i), f = at(from, i), n = u.tops.length;
+    const base = f > 0 && f < n ? u.tops[f] : 0, top = u.top + u.bottom;
+    const fits = (q) => top + u.bots[q] - base <= room;
+    let j = f;
+    while (j < n) {
+      const e = u.ends[j];
+      if (e > j + 1 && fits(e - 1)) j = e;
+      else if (e > j + 1 && u.bots[e - 1] - u.tops[j] <= frame) break;
+      else if (fits(j)) j++;
+      else break;
+    }
+    return force && j === f && f < n ? f + 1 : Math.max(j, f);
+  }));
+}
+
+const exact = (row) => !!(row.geo && row.geo.trH &&
+  row.geo.trH.rule === 'exact');
+const trPr = (row) => (row.geo && row.geo.row &&
+  row.geo.row.trPr) || {};
+
+/** See the header. */
+export function rowFit(it, r, room, frame = Infinity, from = null) {
+  const row = it.rows[r];
+  const rest = from ? restH(it, r, from) : needOf(it, r);
+  if (rest <= room) return {whole: true};
+  if (exact(row) || (trPr(row).cantSplit === true && rest <= frame)) {
+    return {whole: false};
+  }
+  const cuts = cutsOf(it, r, room, from, false, frame);
+  return moved(cuts, from) ? {whole: false, cuts} : {whole: false};
+}
+
+/** Whether cuts show a line more than from in some cell. */
+const moved = (cuts, from) => cuts.some((v, i) => v > at(from, i));
+
+/** Whether no cell of row r has a line after cuts. */
+const done = (it, r, cuts) => it.rows[r].cells.every((c, i) =>
+  at(cuts, i) >= unitsAt(it, r, i).tops.length);
+
+/** See the header. */
+export function headsOf(it, frameH) {
+  const rows = it.rows;
+  let n = HEADS.get(rows);
+  if (n === undefined) {
+    n = 0;
+    while (n < rows.length && trPr(rows[n]).tblHeader === true) n++;
+    HEADS.set(rows, n);
+  }
+  if (!n || n >= rows.length) return 0;
+  return rows[n].ry + rows[n].h <= frameH ? n : 0;
+}
+
+const headsH = (it, n) => (n ? px(it.rows[n].ry) : 0);
+const rowOf = (it, c) => Math.min(Math.max(0, c.line | 0),
+  it.rows.length - 1);
+const inside = (c) => c.line > 0 || !!c.cuts;
+
+/** The header rows repeated on a page starting at c. */
+function headsAt(it, c, frameH) {
+  if (!inside(c)) return 0;
+  const n = headsOf(it, frameH);
+  return n && rowOf(it, c) >= n ? n : 0;
+}
+
+/** See the header. */
+export function adjOf(it, c, frameH) {
+  if (!isTable(it) || !c || !inside(c)) return 0;
+  const r = rowOf(it, c);
+  const v = headsH(it, headsAt(it, c, frameH)) + (c.cuts
+    ? restH(it, r, c.cuts) - it.rows[r].h : 0);
+  return fin(v) ? v : 0;
+}
+
+/** The first row from r whose bottom is below limit (n: none). */
+function overAt(rows, r, limit) {
+  let lo = r, hi = rows.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (rows[m].y + rows[m].h <= limit) lo = m + 1;
+    else hi = m;
+  }
+  return lo;
+}
+
+/** Row j crossing the frame's bottom: the frame's end there. */
+function cutAt(it, k, j, room, from, first, frame, limit) {
+  const rows = it.rows, n = rows.length;
+  const end = (r) => (r >= n ? cursor(k + 1, 0) : cursor(k, r));
+  let cuts = rowFit(it, j, room, frame, from).cuts;
+  if (!cuts) {
+    if (!first) return j === 0 ? MOVE : {end: end(j), bot: rows[j].y};
+    if (exact(rows[j])) return {end: end(j + 1), bot: limit};
+    cuts = cutsOf(it, j, room, from, true, frame);
+  }
+  // (its content fits, its box does not: moved when it can be, else
+  // cut to its content, review P4 M1)
+  if (done(it, j, cuts)) {
+    if (!first && !from && rows[j].h <= frame) {
+      return j === 0 ? MOVE : {end: end(j), bot: rows[j].y};
+    }
+    if (!moved(cuts, from)) return {end: end(j + 1), bot: limit};
+  }
+  return {end: cursor(k, j, 0, cuts), bot: limit};
+}
+
+/** See the header. */
+export function tableEnd(it, k, start, limit, frameH, keep) {
+  const rows = it.rows;
+  const frame = frameH - headsH(it, headsOf(it, frameH));
+  let r = start ? rowOf(it, start) : 0, first = !!start;
+  if (start && start.cuts) {
+    const row = rows[r], from = start.cuts;
+    const top = row.y + row.h - restH(it, r, from);
+    if (!rowFit(it, r, limit - top, frame, from).whole) {
+      return cutAt(it, k, r, limit - top, from, true, frame, limit);
+    }
+    r++;
+    first = false;
+  } else if (!start && it.y + it.h <= limit) return null;
+  let j = overAt(rows, r, limit);
+  // (a row whose merged cell's slice runs past its box: I3)
+  while (j > r && rows[j - 1].y + needOf(it, j - 1) > limit) j--;
+  if (j >= rows.length) return null;
+  if (keep && !start && it.h <= frameH) return MOVE;
+  return cutAt(it, k, j, limit - rows[j].y, null, first && j === r,
+    frame, limit);
+}
+
+/** See the header. */
+export function rowsOn(it, k, start, end, frameH) {
+  const o = {r0: 0, r1: it.rows.length};
+  if (k === start.k) {
+    o.r0 = rowOf(it, start);
+    if (start.cuts) o.from = start.cuts;
+    const h = headsAt(it, start, frameH);
+    if (h) o.heads = h;
+  }
+  if (k === end.k && inside(end)) {
+    o.r1 = rowOf(it, end) + (end.cuts ? 1 : 0);
+    if (end.cuts) o.cuts = end.cuts;
+  }
+  return o;
+}

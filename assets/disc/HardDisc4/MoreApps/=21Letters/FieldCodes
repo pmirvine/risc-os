@@ -1,0 +1,140 @@
+// FieldCodes - View > Field codes (Batch D, D18): what a layout
+// draws in place of a field while the codes are shown, `{ PAGE }` for
+// a PAGE field. Display only: the model, the caret rules of results
+// shown computed (./FieldEdit) and the file written are as before.
+//
+//   codesIn(doc, p) -> [Code]  the fields of paragraph p shown as
+//       codes: every field of doc (./FieldScan scan: the body, or a
+//       story seen as a one-section doc) whose begin and end are both
+//       in p and that is not inside another such field (an inner
+//       field shows in its outer field's code). In text order;
+//       frozen, shared
+//   Code {at, from, to, text, b, e}  at: the begin's offset (where
+//       ./LineTokens asks; a fldSimple's own); [from, to) the whole
+//       field, begin to end ([at, at + 1) for a fldSimple), drawn as
+//       ONE token; b, e: the begin and end offsets (./SelMove steps
+//       over [b, e + 1)); text '{' + the code + '}': the instrText
+//       texts from the begin to the separate (or end) as written, an
+//       inner field there as its own '{' code '}' and its result left
+//       out (Word's display); a fldSimple's w:instr. At most MAX_CODE
+//       characters (then '...}')
+//   codeAt(doc, p, off) -> Code | null  the Code of p at offset off
+//   inCode(doc, p, off) -> bool  off lies inside a Code of p (a field
+//       nested in one asks nothing of its own)
+//
+// A field spanning paragraphs shows as it does without the codes.
+// The begin of a field is its first begin mark (./FieldMarks marks)
+// at its offset. Pure: no desktop services.
+import {scan} from './FieldScan';
+import {marks} from './FieldMarks';
+
+export const MAX_CODE = 4096;          // characters of one code shown
+
+const NONE = Object.freeze([]);
+const memo = new WeakMap();            // scan result -> Map id -> []
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The code of complex field f, all in p (see the header). */
+function codeOf(p, f, begins) {
+  const ms = marks(p);
+  let k = begins.get(f.begin.off);
+  if (k === undefined) return '{}';
+  const st = [true];                   // per open field: in its code
+  let out = '';
+  const all = () => st.every(Boolean);
+  for (k++; k < ms.length && st.length && out.length <= MAX_CODE;
+    k++) {
+    const m = ms[k];
+    if (m.t === 'b') {
+      if (all()) out += '{';
+      st.push(true);
+    } else if (m.t === 'i') {
+      if (all()) out += m.text;
+    } else if (m.t === 's') {
+      st[st.length - 1] = false;
+    } else if (m.t === 'e') {
+      st.pop();
+      if (st.length && all()) out += '}';
+    } else if (all()) out += '{' + m.instr + '}';
+  }
+  return out.length > MAX_CODE ? '{' + out.slice(0, MAX_CODE) + '...}'
+    : '{' + out + '}';
+}
+
+/** The Code of field f (in p). */
+function showOf(p, f, begins) {
+  const b = f.begin.off, e = f.end.off;
+  const text = f.simple ? '{' + String(f.instr).slice(0, MAX_CODE) +
+    (f.instr.length > MAX_CODE ? '...}' : '}') : codeOf(p, f, begins);
+  return Object.freeze({at: b, from: b, to: e + 1, text, b, e});
+}
+
+/** Map paragraph id -> the outermost fields in it (memoised). */
+function indexOf(fs) {
+  let m = memo.get(fs);
+  if (m) return m;
+  m = new Map();
+  const inner = new Set();
+  for (const f of fs) {
+    const one = f.begin.id === f.end.id;
+    if (!one || inner.has(f)) continue;
+    const todo = [...f.children];
+    while (todo.length) {
+      const c = todo.pop();
+      inner.add(c);
+      todo.push(...c.children);
+    }
+    const list = m.get(f.begin.id);
+    if (list) list.push(f);
+    else m.set(f.begin.id, [f]);
+  }
+  memo.set(fs, m);
+  return m;
+}
+
+const shown = new WeakMap();           // paragraph -> [Code]
+
+/** See the header. */
+export function codesIn(doc, p) {
+  if (!isObj(doc) || !isObj(p) || typeof p.text !== 'string' ||
+    !marks(p).length) return NONE;
+  const fs = indexOf(scan(doc)).get(p.id);
+  if (!fs) return NONE;
+  const got = shown.get(p);
+  if (got && got.fs === fs) return got.list;
+  const begins = new Map();            // begin offset -> mark index
+  marks(p).forEach((m, k) => {
+    if (m.t === 'b' && !begins.has(m.off)) begins.set(m.off, k);
+  });
+  const list = Object.freeze(fs.map((f) => showOf(p, f, begins))
+    .sort((a, b) => a.from - b.from));
+  shown.set(p, {fs, list});
+  return list;
+}
+
+const byAt = new WeakMap();            // [Code] -> Map at -> Code
+
+/** See the header. */
+export function codeAt(doc, p, off) {
+  const list = codesIn(doc, p);
+  let m = byAt.get(list);
+  if (!m) {
+    m = new Map();
+    for (const c of list) if (!m.has(c.at)) m.set(c.at, c);
+    byAt.set(list, m);
+  }
+  return m.get(off) || null;
+}
+
+/** See the header. The codes are outermost fields: apart, in order
+ *  of from, so the last one starting at or before off is the one. */
+export function inCode(doc, p, off) {
+  const list = codesIn(doc, p);
+  let lo = 0, hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].from <= off) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 && off < list[lo - 1].to;
+}

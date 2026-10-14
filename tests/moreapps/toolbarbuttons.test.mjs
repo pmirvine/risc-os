@@ -115,7 +115,8 @@ describe('ToolbarButtons', () => {
     assert.deepEqual(BUTTONS2.map((b) => [b.name, b.kind]),
       [['lineSpacing', 'action'], ['bullets', 'toggle'],
         ['bulletsMenu', 'popup'], ['numbers', 'toggle'],
-        ['numbersMenu', 'popup'], ['painter', 'toggle']]);
+        ['numbersMenu', 'popup'], ['painter', 'toggle'],
+        ['pageInfo', 'field']]);
     assert.equal(BUTTONS2[1].sprite, 'wb_bullets');
     assert.equal(BUTTONS2[3].sprite, 'wb_numbers');
     assert.ok(BUTTONS2[1].help.includes('Ctrl-Shift-L'));
@@ -132,17 +133,18 @@ describe('ToolbarButtons', () => {
       assert.ok(barSprites().some(([s]) => s === n), n);
     }
     // the room the toolbar needs: both rows fit the first A4 window
-    const fit = (list) => xs(list).at(-1)[1] + 28;
+    const fit = (list) => xs(list).at(-1)[1] + (list.at(-1).w ?? 26)
+      + 2;
     assert.ok(fit(BUTTONS) <= 842, fit(BUTTONS));
     assert.ok(fit(BUTTONS2) <= 842, fit(BUTTONS2));
     assert.deepEqual(xs(BUTTONS2).map((x) => x[0]),
       ['lineSpacing', 'bullets', 'bulletsMenu', 'numbers',
-        'numbersMenu', 'painter']);
+        'numbersMenu', 'painter', 'pageInfo']);
   });
 
   it('row 2: the format painter is a toggle with wb_painter after ' +
     'the lists, run by ./PaintBind (not a FormatApply id)', () => {
-    const b = BUTTONS2.at(-1);
+    const b = BUTTONS2.at(-2);
     assert.equal(b.name, 'painter');
     assert.equal(b.kind, 'toggle');
     assert.equal(b.sprite, 'wb_painter');
@@ -151,6 +153,17 @@ describe('ToolbarButtons', () => {
     assert.ok(!ACTIONS.includes('painter'));
     assert.ok(!LIST_TOGGLES.some((t) => t[0] === 'painter'));
     assert.ok(barSprites().some(([n]) => n === 'wb_painter'));
-    assert.deepEqual(xs(BUTTONS2).at(-1), ['painter', 146]);
+    assert.deepEqual(xs(BUTTONS2).at(-2), ['painter', 146]);
+  });
+
+  it('row 2 ends with the info line (P3.4, D30): a display field, ' +
+    'not writable, after a gap', () => {
+    const b = BUTTONS2.at(-1);
+    assert.equal(b.name, 'pageInfo');
+    assert.equal(b.kind, 'field');
+    assert.ok(!String(b.validation ?? '').startsWith('R7'));
+    assert.ok(b.w >= 200 && b.maxLen >= 40 && b.gap > 2);
+    assert.ok(Object.isFrozen(b) && b.help.includes('page'));
+    assert.ok(!ACTIONS.includes('pageInfo'));
   });
 });

@@ -22,6 +22,7 @@
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const B = '<w:b/>';
 const PARAS = [
@@ -46,6 +47,7 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 async function start(page, at = { x: 60, y: 40, w: 900, h: 500 }) {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   return page.evaluate(async ([files, at]) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -436,9 +438,11 @@ try {
   await page.keyboard.press('ArrowUp');
   await settle();
   const cv = await ev(() => { const d = window.__doc(), c = d.view.caretRect(); return { c, sy: d.win.scrollY }; });
-  // (24 px inside what can be seen: EditScroll's margin)
-  ok('the caret moved up under the toolbar is scrolled back into view below it and the ruler', cv.c.y >= cv.sy + I + 24
-    && cv.c.y <= cv.sy + I + 24 + 1, { hidden, cv });
+  // (24 px inside what can be seen: EditScroll's margin; the scroll
+  // offset is rounded to a whole pixel, so within half a pixel: with
+  // the fonts' own line heights, D35, the caret's y has any fraction)
+  ok('the caret moved up under the toolbar is scrolled back into view below it and the ruler',
+    Math.abs(cv.c.y - (cv.sy + I + 24)) <= 0.5, { hidden, cv });
 
   // ---------------------------------------------------- row 2: Menu, the wheel
   await ev(async () => { const w = window.__doc().win; w.open({ x: 60, y: 40, w: 900, h: 500, behind: 'top', scrollX: 0, scrollY: 0 }); await window.__frames(2); });

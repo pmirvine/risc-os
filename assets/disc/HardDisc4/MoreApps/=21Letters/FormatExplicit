@@ -1,0 +1,107 @@
+// FormatExplicit - the core of ./FormatPara: paraCommand (a patch
+// for each paragraph a selection formats, run as one command) and
+// explicit (a checked patch made explicit against the styles). See
+// the header of ./FormatPara. ./FormatPara re-exports both; the
+// commands of ./FormatIndent use them. Pure: no desktop services.
+//
+//   paraCommand(d, typing, sel, pending, patchFor)
+//   explicit(v, p, res, lvl?) -> {pPr}
+import {jcName, isStrictDoc} from './JcName';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {resolver, alignOf, firstOf} from './FormatEff';
+import {levelInd} from './ParaInd';
+import {buildOps, changes, runOps} from './FormatOps';
+import {spacingNode, rawSpacing, patchSpacing} from './SpacingRaw';
+import {boxExplicit} from './BorderExplicit';
+
+const NONE = {extra: []};
+const DEFAULTS = {spacing: {line: 240, lineRule: 'auto'}};
+
+/** See the header. */
+export function paraCommand(d, typing, sel, pending, patchFor) {
+  const res = resolver(d.doc);
+  const ops = buildOps(d.doc, sel, (en) => {
+    if (!en.para) return null;
+    const x = patchFor(en.p, res);
+    return x && changes(en.p, 'pPr', x, 'pStyle') ? [x] : null;
+  });
+  runOps(d, typing, ops);
+  return {sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY};
+}
+
+/** Sub-object o of a checked patch made explicit against inh. */
+function sub(o, inh, defs) {
+  if (o === null || o === undefined) return o;
+  const out = {};
+  for (const k of Object.keys(o)) {
+    const was = inh && Number.isInteger(inh[k]) ? inh[k]
+      : inh && typeof inh[k] === 'string' ? inh[k] : defs[k] ?? 0;
+    out[k] = o[k] === was ? null : o[k];
+  }
+  return out;
+}
+
+/**
+ * The ind part: as sub(), but firstLine and hanging are one value
+ * (./Styles.resolvePara): the one given is written (the other
+ * deleted), and both are deleted when the style gives that value.
+ * A first line of 0 over a style's hanging is firstLine 0, which
+ * cancels it (as Word writes it).
+ */
+function indent(o, inh) {
+  if (o === null || o === undefined) return o;
+  const {firstLine: f, hanging: h, ...rest} = o;
+  const out = sub(rest, inh, {});
+  if (f === undefined && h === undefined) return out;
+  const v = f != null ? f : h != null ? -h : null;
+  const keep = v !== null && v !== firstOf(inh);
+  out.firstLine = keep && f != null ? f : null;
+  out.hanging = keep && f == null ? h : null;
+  return out;
+}
+
+/** A checked patch v made explicit for paragraph p (see header). */
+export function explicit(v, p, res, lvl) {
+  const l = lvl === undefined ? levelInd(res.doc, p) : lvl || undefined;
+  const inh = res.para({pStyle: p.pStyle, pPr: NONE}, l);
+  const out = {};
+  if (v.jc !== undefined) {
+    out.jc = v.jc !== null && alignOf(v.jc) === alignOf(inh.jc) ? null
+      : v.jc === null ? null : jcName(v.jc, isStrictDoc(res.doc));
+  }
+  if (v.ind !== undefined) out.ind = indent(v.ind, inh.ind);
+  if (v.spacing !== undefined) {
+    Object.assign(out, spacing(v.spacing, p, inh));
+  }
+  if (v.tabs !== undefined) out.tabs = v.tabs;
+  if (v.pBdr !== undefined || v.shd !== undefined) {
+    Object.assign(out, boxExplicit(v, res, p));
+  }
+  for (const k of FLAGS) {
+    if (v[k] === undefined) continue;
+    const was = k === 'widowControl' ? inh[k] !== false
+      : inh[k] === true;
+    out[k] = v[k] === null || v[k] === was ? null : v[k];
+  }
+  return {pPr: out};
+}
+
+const FLAGS = ['keepNext', 'keepLines', 'widowControl',
+  'pageBreakBefore', 'contextualSpacing', 'suppressLineNumbers'];
+
+/** The spacing part: {spacing} or {extra} (see the header). */
+function spacing(o, p, inh) {
+  if (o === null) return {spacing: null};
+  const val = sub(o, inh.spacing, DEFAULTS.spacing);
+  const own = {...rawSpacing(p.pPr), ...((p.pPr || {}).spacing || {})};
+  const st = inh.spacing || {};
+  if (val.line != null && val.lineRule == null) {
+    val.lineRule = o.lineRule ?? own.lineRule ?? st.lineRule ?? 'auto';
+  }
+  if (val.lineRule != null && val.line == null) {
+    val.line = o.line ?? own.line ?? st.line ?? 240;
+  }
+  if (!spacingNode(p.pPr)) return {spacing: val};
+  return patchSpacing(p.pPr, val);
+}

@@ -10,10 +10,21 @@
 //   v.setSelection, v.setLayout, v.edited, v.key, v.input, v.run,
 //   v.format, v.query, v.undo, v.redo, v.caretRect, v.hitAt,
 //   v.addPane, v.destroy, v.hook, v.refused.
+// Header and footer mode (D14, ./HdrEdit, ./HdrMode): v.hdr the mode
+// (null in the body); then v.d is the story's ./StoryFacade and v.L
+// the story's layout on its page (null from the mode: the window
+// leaves it), v.real the Document and v.bodyL the body's layout
+// always; the window drawn by the mode (./HdrPaint).
+// Outline view (D32, P13 fix I1): the caret is never in hidden text.
+// After every layout (an edit, an undo, a view switch: placed) an
+// end of the selection with no item goes to the heading above
+// (./OutlineFold shownSel; with Show first line only, an end in a
+// paragraph's hidden rest to the end of its first line: P13 fix M1);
+// a selection set (Find, Go to: setSelection) first opens the
+// headings over it (v.reveal, ./OutlineView).
 import {wimp} from 'riscos';
 import * as S from './Selection';
 import {keyFor} from './EditKeys';
-import {stepEnd} from './EditApply';
 import {runView, stepView} from './EditRun';
 import {paintView} from './EditPaint';
 import {EMPTY} from './Pending';
@@ -21,15 +32,18 @@ import {hook} from './EditHook';
 import {showCaret, inputView, composeView} from './EditInput';
 import {caretOf, toLayout, layoutRect} from './Zoom';
 import {scrollToCaret} from './EditScroll';
-import {stepSel} from './PicOps';
 import {initFormat, touch, formatQuery, formatRun, stopFormat}
   from './EditFormat';
+import {leaveMode} from './HdrEdit';
+import {afterChange} from './HdrStep';
+import {shownSel} from './OutlineFold';
 
 export class EditView {
   constructor(win, L, d, typing, rebuild) {
     this.win = win;
     this._L = L;
-    this.d = d;
+    this._d = d;
+    this.hdr = null;
     this.typing = typing;
     this._rebuild = rebuild;
     this._stale = false;
@@ -49,7 +63,17 @@ export class EditView {
     this._off = d.on('change', (ev) => this._changed(ev));
   }
 
-  get L() { this.ensure(); return this._L; }
+  get L() {
+    this.ensure();
+    const L = this.hdr && this.hdr.layout();
+    if (!L && this.hdr) leaveMode(this);
+    return L || this._L;
+  }
+
+  /** See the header. */
+  get d() { return this.hdr ? this.hdr.facade : this._d; }
+  get real() { return this._d; }
+  get bodyL() { this.ensure(); return this._L; }
 
   get hasFocus() { return wimp.caret?.window === this.win; }
 
@@ -68,11 +92,8 @@ export class EditView {
 
   /** The document changed: see the header. */
   _changed(ev) {
-    if (ev.kind !== 'apply') {
-      const p = stepEnd(this.d.doc, ev.ops, this._L);
-      if (p) this.sel = stepSel(this.d.doc, ev.ops) || S.caret(p);
-    }
-    this._stale = true;
+    this._stale = true;                // (bodyL: the new layout)
+    afterChange(this, ev);             // (undo, redo: ./HdrStep)
     touch(this);
     if (!this._raf) {
       this._raf = requestAnimationFrame(() => this.flush());
@@ -111,9 +132,11 @@ export class EditView {
     g.translate(0, t);
     g.scale(z, z);
     g.translate(0, -t);
-    paintView(L, g, layoutRect(rect, z, t), this.sel, this.lit,
+    (this.hdr ? this.hdr.paint : paintView)(L, g,
+      layoutRect(rect, z, t), this.sel, this.lit,
       {comp: this.comp, overwrite: this.overwrite, zoom: z,
-        ghost: this.picGhost, line: this.tblGhost});
+        ghost: this.picGhost, line: this.tblGhost,
+        marks: this.marks});
     g.restore();
   }
 
@@ -124,6 +147,8 @@ export class EditView {
       this.zoom, L.top);
   }
 
+  /** Window point (x, y): the zoom undone, then L.hitTest (the
+   *  galley point through L.place, D4). */
   hitAt(x, y) {
     const L = this.L, p = toLayout(x, y, this.zoom, L.top);
     return L.hitTest(p.x, p.y);
@@ -134,9 +159,12 @@ export class EditView {
   /** See the header. */
   setSelection(sel, {scroll = true} = {}) {
     if (!sel) return;
+    if (this.reveal && !this.hdr) this.reveal(sel);
+    const from = this.sel;
     this.typing.reset();
     this.sel = sel;
     this.pending = EMPTY;
+    this._shown(from);
     touch(this);
     this.win.invalidate();
     if (scroll) this.scrollToCaret();
@@ -155,7 +183,9 @@ export class EditView {
   /** See the header. */
   setLayout(L, oldL) {
     this._L = L;
-    if (this.sel) this.sel = S.clamp(this.sel, L.doc, oldL);
+    if (this.hdr) {
+      // (the story's selection follows its layout: ./HdrEdit)
+    } else if (this.sel) this.sel = S.clamp(this.sel, L.doc, oldL);
     else {
       const a = L.docStart();
       this.sel = a ? S.caret(a) : null;
@@ -164,7 +194,21 @@ export class EditView {
     this.win.invalidate();
   }
 
-  placed() { this.showCaret(); }
+  placed() {
+    this._shown();
+    this.showCaret();
+  }
+
+  /** Outline: an end in hidden text moved out (see the header);
+   *  from: the selection before (Show first line only: Right). */
+  _shown(from) {
+    const L = this._L;
+    if (this.hdr || !L.outline || this._stale) return;
+    const s = shownSel(L, this.sel, from);
+    if (s === this.sel) return;
+    this.sel = s;
+    touch(this);
+  }
 
   focus() { this.showCaret(true); }
 

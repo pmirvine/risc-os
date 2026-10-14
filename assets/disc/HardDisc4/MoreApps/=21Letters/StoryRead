@@ -1,0 +1,157 @@
+// StoryRead - header and footer parts read into STORIES (Batch D,
+// D9): their blocks typed as the body's, so that they can be shown
+// and edited; their bytes stay in doc.parts.
+//
+//   readStory(part, bytes, map, relsBytes, opts?) -> Story | null
+//     Story {part, kind: 'hdr'|'ftr', root: {name, attrs}, prolog:
+//            {decl, before, after}, blocks: [Para|Table|Opaque],
+//            rels: Rel[] | null, relsPart: name | null, orig, bytes}
+//     part   the part's name (only ever a key)
+//     map    the main part's scope as DocxRead reads the body: only
+//            its Strict mark (./Ns isStrict) is taken, so a Strict
+//            document's story reads Strict property names; a part
+//            whose own root is in the Strict namespace is marked too
+//     relsBytes  the bytes of the part's .rels, or null (none): read
+//            with ./Rels parseRels into rels; relsPart is
+//            opts.relsPart, else ./Rels relsNameFor(part), or null
+//            without relsBytes
+//     orig   a new array holding the very objects of blocks as read:
+//            a story whose blocks still equal it element by element
+//            is unchanged (written as its bytes, D10)
+//     bytes  the part's bytes object itself (also in doc.parts)
+//     opts   maxXmlBytes, maxElements (./PartXml) and maxParagraphs
+//            (./ReadBody's, counted per part): the body's caps
+//   Null (not a story: the part stays bytes) for bytes that are not
+//   a byte array, bad XML or text encoding, bad .rels XML, a part
+//   over a cap, a w:sectPr anywhere inside, a root that is not
+//   w:hdr / w:ftr or that binds the prefix w to another namespace
+//   (./StoryWrite could not write it back); also, defensively, for
+//   any other error a reader throws (the part was bytes before
+//   Batch D and opened then).
+//   Blocks are read with ./ReadBody's readers and rules: w:p by
+//   ./ReadPara, w:tbl by ./TblRead (Opaque when it does not type),
+//   every other element child an Opaque block in place; text and
+//   comments directly in the root are dropped. Paragraph and table
+//   ids come from ./Model nextId. Strict namespaces are mapped to
+//   transitional ones (./NsMap) as for the main part.
+//   readStories(parts, rels, main, map, opts?) -> Map<part, Story>
+//     every internal header / footer relationship of `rels` (the
+//     main part's), its target resolved against `main` and found in
+//     `parts` (./Rels findPart), read once; at most MAX_STORIES (the
+//     rest stay bytes); the .rels found the same way
+//   notStory(doc, part) -> true unless doc.stories holds `part`
+// Note: ./PicRels bytesOf and ./PicMedia mediaOf resolve a target
+// against the MAIN part, which is right for a story only while the
+// story's part is in the main part's folder (word/).
+// Pure: no desktop services.
+import {parsePart} from './PartXml';
+import {mapNamespaces, STRICT_W} from './NsMap';
+import {rootScope, strictScope, isStrict, scope, wName, isEl, W}
+  from './Ns';
+import {parseRels, relKind, resolvePart, relsNameFor, findPart}
+  from './Rels';
+import {readPara} from './ReadPara';
+import {readTable, countPara} from './TblRead';
+import {maxParagraphs} from './ReadBody';
+
+/** Most header and footer parts read as stories in one document. */
+export const MAX_STORIES = 4096;
+
+const KINDS = new Map([['hdr', 'hdr'], ['ftr', 'ftr']]);
+const REL_KINDS = new Set(['header', 'footer']);
+
+function strictRoot(root) {
+  const i = root.name.indexOf(':');
+  return rootScope(root).get(i < 0 ? '' : root.name.slice(0, i)) ===
+    STRICT_W;
+}
+
+/** True when a WML w:sectPr is anywhere below `root`. */
+function hasSectPr(root, m0) {
+  const stack = [[root, m0]];
+  while (stack.length) {
+    const [n, m1] = stack.pop();
+    const m = n.attrs.length ? scope(m1, n) : m1;
+    for (const c of n.children) {
+      if (!isEl(c)) continue;
+      if (wName(c, m) === 'sectPr') return true;
+      stack.push([c, m]);
+    }
+  }
+  return false;
+}
+
+function readBlocks(root, m, part, opts) {
+  const ctx = {count: {paras: 0}, max: maxParagraphs(opts), part};
+  const out = [];
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'tbl') {
+      out.push(readTable(c, m, ctx).table || {type: 'opaque', node: c});
+      continue;
+    }
+    if (l === 'p') countPara(ctx);
+    const got = l === 'p' ? readPara(c, m) : null;
+    out.push(got ? got.para : {type: 'opaque', node: c});
+  }
+  return out;
+}
+
+function read(part, bytes, map, relsBytes, opts) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return null;
+  const x = parsePart(bytes, part, opts);
+  const strict = strictRoot(x.root);
+  mapNamespaces(x.root, 'toTransitional');
+  const root = x.root;
+  let m = rootScope(root);
+  if (strict || isStrict(map)) m = strictScope(m);
+  const kind = KINDS.get(wName(root, m));
+  if (!kind || hasSectPr(root, m)) return null;
+  const w = rootScope(root).get('w');
+  if (w !== undefined && w !== W) return null;
+  let rels = null;
+  let relsPart = null;
+  if (relsBytes) {
+    if (!(relsBytes instanceof Uint8Array)) return null;
+    relsPart = opts.relsPart ?? relsNameFor(part);
+    rels = parseRels(parsePart(relsBytes, relsPart, opts).root);
+  }
+  const blocks = readBlocks(root, m, part, opts);
+  return {part, kind,
+    root: {name: root.name, attrs: root.attrs.map(([n, v]) => [n, v])},
+    prolog: {decl: x.decl, before: x.before, after: x.after},
+    blocks, rels, relsPart, orig: blocks.slice(), bytes};
+}
+
+/** See the header. */
+export function readStory(part, bytes, map, relsBytes, opts = {}) {
+  try {
+    return read(part, bytes, map, relsBytes, opts || {});
+  } catch (e) {
+    return null;
+  }
+}
+
+/** See the header. */
+export function readStories(parts, rels, main, map, opts = {}) {
+  const out = new Map();
+  const seen = new Set();
+  for (const r of rels || []) {
+    if (out.size >= MAX_STORIES) break;
+    const k = relKind(r.type);
+    if (!k || !REL_KINDS.has(k.kind) || r.mode === 'External') continue;
+    const name = findPart(parts, resolvePart(main, r.target));
+    if (!name || name === main || seen.has(name)) continue;
+    seen.add(name);
+    const relsPart = findPart(parts, relsNameFor(name));
+    const s = readStory(name, parts.get(name), map,
+      relsPart ? parts.get(relsPart) : null, {...opts, relsPart});
+    if (s) out.set(name, s);
+  }
+  return out;
+}
+
+/** See the header. */
+export const notStory = (doc, part) =>
+  !(doc && doc.stories instanceof Map && doc.stories.has(part));

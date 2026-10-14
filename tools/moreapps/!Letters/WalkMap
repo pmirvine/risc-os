@@ -1,0 +1,78 @@
+// WalkMap - ./Walk's two mapping helpers: mapBlocks (a paragraph
+// function over every depth, copying only what changed) and flatText
+// (a table as tab and line separated text). Re-exported by ./Walk.
+// Pure: no desktop services.
+//
+//   mapBlocks(blocks, fn, {opaque, table}?)  see ./Walk
+//   flatText(table, nodeText?)               see ./Walk
+import {MAX_DEPTH} from './TblCheck';
+import {forEachIn, isObj, isTbl} from './WalkCursor';
+
+function mapIn(list, fn, d, o) {
+  let out = null;
+  for (let j = 0; j < list.length; j++) {
+    const b = list[j];
+    let nb = b;
+    if (isObj(b) && b.type === 'p') nb = fn(b);
+    else if (isTbl(b)) nb = mapTable(b, fn, d + 1, o);
+    else if (o.opaque && isObj(b) && b.type === 'opaque')
+      nb = o.opaque(b);
+    if (nb !== b && !out) out = list.slice(0, j);
+    if (!out) continue;
+    if (!Array.isArray(nb)) out.push(nb);
+    else for (const x of nb) out.push(x);
+  }
+  return out || list;
+}
+
+function mapTable(t, fn, d, o) {
+  if (d > MAX_DEPTH) throw new RangeError('table nested too deep');
+  let rows = null;
+  t.rows.forEach((row, r) => {
+    let cells = null;
+    row.cells.forEach((cell, c) => {
+      const bl = mapIn(cell.blocks, fn, d, o);
+      if (bl !== cell.blocks) (cells ||= row.cells.slice())[c] =
+        {...cell, blocks: bl};
+    });
+    if (cells) (rows ||= t.rows.slice())[r] = {...row, cells};
+  });
+  const nt = rows ? {...t, rows} : t;
+  return o.table ? o.table(nt) : nt;
+}
+
+/** See the header. */
+export const mapBlocks = (list, fn, o = {}) => mapIn(list, fn, 0, o);
+
+/** A paragraph's text for flatText: objects by their inline. */
+function paraText(p, nodeText) {
+  if (!/[\t\n\ufffc]/.test(p.text)) return p.text;
+  let s = '';
+  for (let k = 0; k < p.text.length; k++) {
+    const ch = p.text[k], x = p.inlines[k];
+    if (ch === '\t' || ch === '\n') s += ' ';
+    else if (ch !== '\ufffc') s += ch;
+    else if (!x) continue;
+    else if (x.kind === 'tab' || x.kind === 'br') s += ' ';
+    else if (x.node) s += nodeText(x.node);
+  }
+  return s;
+}
+
+function cellText(cell, nodeText) {
+  let s = '';
+  forEachIn(cell.blocks, [], (b) => {
+    if (!isObj(b)) return;
+    if (b.type === 'p') {
+      s += (s ? ' ' : '') + paraText(b, nodeText);
+    } else if (b.type === 'opaque') {
+      const x = nodeText(b.node);
+      if (x) s += (s ? ' ' : '') + x;
+    }
+  });
+  return s;
+}
+
+/** See the header. */
+export const flatText = (t, nodeText = () => '') => t.rows.map((row) =>
+  row.cells.map((cell) => cellText(cell, nodeText)).join('\t'));

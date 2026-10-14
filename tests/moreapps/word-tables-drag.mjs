@@ -12,6 +12,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { p, r } from './build-docx.mjs';
 import { tbl, tr, tc, tblDocx, TABLE_NORMAL, TABLE_GRID } from './tbl-fixtures.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const LOOK = '<w:tblStyle w:val="TableGrid"/><w:tblW w:w="0" w:type="auto"/><w:tblLook w:val="04A0" w:firstRow="1" '
   + 'w:lastRow="0" w:firstColumn="1" w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>';
@@ -52,6 +53,7 @@ const until = (src, arg) => page.waitForFunction(src, arg, { timeout: 8000 }).th
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev((files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -96,9 +98,9 @@ try {
     return window.__msgs;
   }, [leaf, first]);
   const ts = (leaf, n = 0) => ev(([l, n]) => window.__ts(l, n), [leaf, n]);
-  /** The client point of layout point (lx, ly) of a document's window. */
+  /** The client point of galley point (lx, ly) of a document's window (where its view shows it: __g2w, WORD_VIEW=print). */
   const at = (leaf, lx, ly) => ev(([leaf, lx, ly]) => {
-    const d = window.__doc(leaf), v = d.dw.view, z = v.zoom, t = v.L.top, s = d.win.workToScreen(lx * z, t + (ly - t) * z);
+    const d = window.__doc(leaf), v = d.dw.view, z = v.zoom, t = v.L.top, g = window.__g2w(v.L, lx, ly), s = d.win.workToScreen(g.x * z, t + (g.y - t) * z);
     return window.__screen(s.x, s.y);
   }, [leaf, lx, ly]);
   const apart = () => page.waitForFunction(() => !os.wimp._lastClick

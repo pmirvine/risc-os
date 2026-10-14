@@ -1,0 +1,123 @@
+// PlaceDraft - the identity placement (D4) of a ./DocLayout: Draft
+// and Web layout show the galley as it is laid out, so every answer
+// is the galley's own (./Place has the interface).
+//
+//   PlaceDraft(L) -> Place
+//     lineAt(it, k)   {x: it.x, y: it.y + line k's y, page: null}
+//                     (an item without lines, or no line k: it.y)
+//     itemTop(it)     it.y
+//     rects(it, l0, l1) [one box over lines l0..l1 - 1, the item's
+//                     x and w] ([] when l0 >= l1); an item without
+//                     lines: [its box]
+//     hit(x, y)       {it: L.itemAtY(y), k: the line of it at y
+//                     (above its first: 0; below its last: the
+//                     last; a block: 0)}; null with no items
+//     visible(y0, y1) [{it, l0, l1, dx: 0, dy: 0}] the root items
+//                     ./DocPaint draws for the band (the item at y0,
+//                     those above whose gap below reaches into it,
+//                     on to the last whose top above its gap is
+//                     above y1); l0..l1 - 1 the lines of a paragraph
+//                     that meet the band when the item does
+//                     (./ItemPaint's rule), else 0, 0
+//     extent()        {w, h} the work area's: the view width, the
+//                     widest section's page or root item (L.wide,
+//                     D18), and L.height
+//     pageOf()        null (no pages)
+//     band(y0, y1)    {y0, y1}: the galley band is the screen band
+//                     (./DocRects culls a selection to it)
+//   lineTop(it, k)    the galley top of line k (it.y without one):
+//                     the one rule ./Place shiftOf measures against
+//   meets(it, y0, y1) whether item it's box (its gaps left out) meets
+//                     galley band y0..y1: what ./DocPaint paints of a
+//                     fragment, in the fragment's galley
+// Pure: no desktop services.
+import {MARGIN} from './DocStack';
+
+/** See the header. */
+export function lineTop(it, k) {
+  const ln = it.lines && it.lines[k];
+  return ln ? it.y + ln.y : it.y;
+}
+
+/** The line of it at galley y (see the header's hit). */
+function lineIn(it, y) {
+  const ls = it.lines;
+  if (!ls || !ls.length) return 0;
+  let lo = 0, hi = ls.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineTop(it, mid) + ls[mid].h > y) hi = mid; else lo = mid + 1;
+  }
+  return lo;
+}
+
+/** See the header. */
+function rects(it, l0, l1) {
+  const ls = it.lines;
+  if (!ls) return [{x: it.x, y: it.y, w: it.w, h: it.h}];
+  if (!(l0 < l1)) return [];
+  const top = lineTop(it, l0), last = ls[l1 - 1];
+  return [{x: it.x, y: top, w: it.w,
+    h: lineTop(it, l1 - 1) + last.h - top}];
+}
+
+/** See the header. */
+export function meets(it, y0, y1) {
+  return it.y < y1 && it.y + it.h > y0;
+}
+
+const bottom = (it) => it.y + it.h + it.gapBelow;
+const above = (it) => it.y - Math.max(0, it.gapAbove);
+
+/** The lines l0..l1 - 1 of it that meet y0..y1 (see the header). */
+function linesIn(it, y0, y1) {
+  if (it.kind !== 'p' || !meets(it, y0, y1)) {
+    return [0, 0];
+  }
+  const ls = it.lines;
+  let l0 = 0;
+  while (l0 < ls.length && lineTop(it, l0) + ls[l0].h <= y0) l0++;
+  let l1 = l0;
+  while (l1 < ls.length && lineTop(it, l1) < y1) l1++;
+  return l0 < l1 ? [l0, l1] : [0, 0];
+}
+
+/** See the header. */
+function visible(L, y0, y1) {
+  const first = L.itemAtY(y0);
+  if (!first) return [];
+  const {items} = L;
+  let i0 = first.ci, i1 = i0;
+  while (i0 > 0 && bottom(items[i0 - 1]) > y0) i0--;
+  while (i1 < items.length && above(items[i1]) < y1) i1++;
+  const out = [];
+  for (let i = i0; i < i1; i++) {
+    const it = items[i], [l0, l1] = linesIn(it, y0, y1);
+    out.push({it, l0, l1, dx: 0, dy: 0});
+  }
+  return out;
+}
+
+/** See the header (moved from ./DocLayout layout). */
+function extent(L) {
+  const right = Math.max(L.pageLeft + Math.max(L.pageWide,
+    L.marL + L.textWide), L.left + L.wide) + MARGIN;
+  return {w: Math.max(L.width, Math.ceil(right)), h: L.height};
+}
+
+/** See the header. */
+export function PlaceDraft(L) {
+  return Object.freeze({
+    lineAt: (it, k) => ({x: it.x, y: lineTop(it, k), page: null}),
+    itemTop: (it) => it.y,
+    rects,
+    hit(x, y) {
+      const it = L.itemAtY(y);
+      return it ? {it, k: lineIn(it, y)} : null;
+    },
+    visible: (y0, y1) => visible(L, y0, y1),
+    extent: () => extent(L),
+    pageOf: () => null,
+    band: (y0, y1) => ({y0, y1}),
+  });
+}

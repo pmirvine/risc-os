@@ -1,0 +1,220 @@
+// OutlineFold - what Outline view shows and hides (Batch D P13.4,
+// D32): the window's collapse set as a Fold, and the commands that
+// make a new one. None changes the document (the set is the
+// window's, never saved: ./OutlineView setCollapsed). Pure: no desktop
+// services (./OutlineMenu is the menu, ./EditMouse the double-click).
+//
+//   Fold(ids?, cap?, first?)  a Set of heading ids (collapsed:
+//             ./OutlineLayout outlineOf), with cap 1..9 (Show
+//             level: only headings of a level below it, no body
+//             text; 0: none) and first (Show first line only:
+//             ./ItemBreak). A Fold is never changed after it is
+//             made: the layout is keyed by it. A plain Set works as
+//             a Fold with no cap and no first
+//   expandCmd(doc, fold, sel), collapseCmd(doc, fold, sel) -> a new
+//             Fold, or null (nothing changes: a beep). They act on
+//             the headings the selection touches (body text: the
+//             heading above it, whose text it is; a heading without
+//             children cannot collapse). Expand opens a collapsed
+//             heading, Collapse shuts one; with a cap, Expand shows
+//             one level more (All after 9) and Collapse one less
+//             (never under 1)
+//   showLevel(doc, fold, n) -> a new Fold with cap n (1..9; 0: All,
+//             no cap); null for another n and when nothing would be
+//             shown (a document without headings at Show level 1);
+//             the ids and first are kept
+//   showFirst(fold, on) -> a new Fold with first on (a boolean)
+//   toggleId(doc, fold, id) -> a new Fold with heading id's collapse
+//             flipped (its marker + or -), or null (no such
+//             heading or marker o, and a + that the cap makes)
+//   keepVisible(doc, fold, sel, rows?) -> sel, or a new selection
+//             with an end that is in hidden text moved to the end of
+//             the nearest shown paragraph above it (the one below, at
+//             its start, with none above): a caret is never in
+//             text with no item (./DocLayout caretRect is null
+//             there). rows: outlineOf(doc, fold)'s, when known
+//   shownSel(L, sel, from?) -> sel, or keepVisible's (with L.ol's
+//             rows) when an end has no item in Outline layout L: the
+//             one rule the window applies after every layout (an
+//             edit, an undo or redo, a view switch: ./EditView
+//             placed; P13 fix I1) and selection (setSelection);
+//             sel as it is outside Outline. With Show first line
+//             only (P13 fix M1) an end in a paragraph's hidden rest
+//             goes to the end of its first line, or, for a head
+//             one character on from that end (from: the selection
+//             before; Right), to the start of the next paragraph
+//   revealCmd(doc, fold, sel) -> a new Fold that shows both ends of
+//             sel (Find, Replace and Go to: ./OutlineView reveal,
+//             as Word expands the headings over a match): every
+//             collapsed heading over a hidden end opened, and a cap
+//             that hides one raised (a heading of level n: n + 1,
+//             body text: All); null when both are shown already
+//             or sel is not a body selection
+//   markerAt(L, x, y) -> the id of the heading whose + or - marker
+//             (./OutlineLayout paintMarker: the 16 px left of the
+//             text, along its first line) is at the galley point
+//             x, y of Outline layout L; null elsewhere
+import {orderedPos, checkPos} from './EditPos';
+import {outlineOf, BODY} from './OutlineLayout';
+import {select} from './Selection';
+import {blockId} from './DocPos';
+
+export class Fold extends Set {
+  constructor(ids = [], cap = 0, first = false) {
+    super(ids);
+    this.cap = Number.isInteger(cap) && cap >= 1 && cap <= BODY ? cap
+      : 0;
+    this.first = !!first;
+  }
+}
+
+const same = (f) => (f instanceof Fold ? f : new Fold(f));
+const flat = (doc) => doc.sections.flatMap((s) => s.blocks);
+
+/** The block indexes the selection's headings are (see the header). */
+function targets(doc, sel, rows) {
+  const o = sel && orderedPos(doc, sel);
+  if (!o) return [];
+  const out = new Set();
+  let j = o.f.k;                       // (the heading above: once)
+  while (j >= 0 && rows[j].level === BODY) j--;
+  for (let k = o.f.k; k <= o.t.k; k++) {
+    if (rows[k].level !== BODY) j = k;
+    if (j >= 0) out.add(j);
+  }
+  return [...out];
+}
+
+/** See the header. */
+export function collapseCmd(doc, fold, sel) {
+  const f = same(fold);
+  if (f.cap) return f.cap > 1 ? new Fold(f, f.cap - 1, f.first) : null;
+  const {rows} = outlineOf(doc, f), bs = flat(doc);
+  const ids = targets(doc, sel, rows)
+    .filter((k) => rows[k].marker === '-').map((k) => bs[k].id);
+  return ids.length ? new Fold([...f, ...ids], 0, f.first) : null;
+}
+
+/** See the header. */
+export function expandCmd(doc, fold, sel) {
+  const f = same(fold);
+  if (f.cap) return new Fold(f, f.cap < BODY ? f.cap + 1 : 0, f.first);
+  const {rows} = outlineOf(doc, f), bs = flat(doc);
+  const ids = new Set(targets(doc, sel, rows).map((k) => bs[k].id)
+    .filter((id) => f.has(id)));
+  if (!ids.size) return null;
+  return new Fold([...f].filter((id) => !ids.has(id)), 0, f.first);
+}
+
+/** See the header. */
+export function showLevel(doc, fold, n) {
+  if (!Number.isInteger(n) || n < 0 || n > BODY) return null;
+  const f = same(fold), g = new Fold(f, n, f.first);
+  return n && !outlineOf(doc, g).shown ? null : g;
+}
+
+/** See the header. */
+export const showFirst = (fold, on) => {
+  const f = same(fold);
+  return new Fold(f, f.cap, !!on);
+};
+
+/** See the header. */
+export function toggleId(doc, fold, id) {
+  const f = same(fold), {rows} = outlineOf(doc, f);
+  const k = flat(doc).findIndex((b) => b.id === id);
+  if (k < 0 || rows[k].hidden) return null;
+  if (f.has(id)) {
+    return new Fold([...f].filter((x) => x !== id), f.cap, f.first);
+  }
+  return rows[k].marker === '-' ? new Fold([...f, id], f.cap, f.first)
+    : null;
+}
+
+/** An end of a selection in hidden text, moved (see the header). */
+function moved(bs, rows, loc, pos) {
+  if (!rows[loc.k].hidden) return pos;
+  let j = loc.k;
+  while (j >= 0 && rows[j].hidden) j--;
+  if (j >= 0) {
+    const b = bs[j];
+    return {id: blockId(b), off: b.type === 'p' ? b.text.length : 0};
+  }
+  j = loc.k;
+  while (j < rows.length && rows[j].hidden) j++;
+  return j < rows.length ? {id: blockId(bs[j]), off: 0} : pos;
+}
+
+/** See the header. */
+export function keepVisible(doc, fold, sel, rows) {
+  const a = sel && checkPos(doc, sel.anchor);
+  const h = a && checkPos(doc, sel.head);
+  if (!h) return sel;
+  rows ||= outlineOf(doc, fold).rows;
+  const bs = flat(doc);
+  const pa = moved(bs, rows, a, sel.anchor);
+  const ph = moved(bs, rows, h, sel.head);
+  return pa === sel.anchor && ph === sel.head ? sel
+    : select(pa, ph, sel.affinity);
+}
+
+/** See the header. */
+export function shownSel(L, sel, from) {
+  if (!L || !L.outline || !sel) return sel;
+  const by = L.byId;
+  const s = by.has(sel.anchor.id) && by.has(sel.head.id) ? sel
+    : keepVisible(L.doc, L.outline, sel, L.ol && L.ol.rows);
+  if (!L.outline.first) return s;
+  const a = firstOnly(L, s.anchor), h = firstOnly(L, s.head,
+    from && from.head);
+  return a === s.anchor && h === s.head ? s : select(a, h, s.affinity);
+}
+
+/** Position pos out of a paragraph's hidden rest (shownSel). */
+function firstOnly(L, pos, from) {
+  const it = L.byId.get(pos.id);
+  const ln = it && it.kind === 'p' && it.lines && it.lines[0];
+  if (!ln || it.lines.length !== 1 || pos.off <= ln.to) return pos;
+  if (from && from.id === pos.id && from.off === ln.to &&
+    pos.off - ln.to <= 2) {           // (Right: one character on)
+    const nx = it.col === L.root && L.nextItem(it);
+    if (nx && nx.kind === 'p') return {id: nx.id, off: 0};
+  }
+  return {id: pos.id, off: ln.to};
+}
+
+/** See the header. */
+export function revealCmd(doc, fold, sel) {
+  const a = sel && checkPos(doc, sel.anchor);
+  const h = a && checkPos(doc, sel.head);
+  if (!h) return null;
+  const f = same(fold), {rows} = outlineOf(doc, f), bs = flat(doc);
+  const ks = [a.k, h.k].filter((k) => rows[k] && rows[k].hidden);
+  if (!ks.length) return null;
+  const open = new Set();
+  let need = f.cap;
+  for (const k of ks) {
+    let lv = rows[k].level;           // (the headings over k)
+    for (let j = k - 1; j >= 0 && lv > 0; j--) {
+      if (rows[j].level < lv) {
+        lv = rows[j].level;
+        open.add(bs[j].id);
+      }
+    }
+    const n = rows[k].level;
+    if (need && n >= need) need = n >= BODY ? 0 : n + 1;
+  }
+  return new Fold([...f].filter((id) => !open.has(id)),
+    need, f.first);
+}
+
+/** See the header. */
+export function markerAt(L, x, y) {
+  if (!L || !L.outline) return null;
+  const it = L.itemAtY(y);
+  if (!it || (it.marker !== '+' && it.marker !== '-')) return null;
+  const ln = it.kind === 'p' && it.lines && it.lines[0];
+  const {x: px, y: py} = L.place.lineAt(it, 0), h = ln ? ln.h : 16;
+  if (y < py || y >= py + h) return null;
+  return x >= px - 20 && x < px - 4 ? it.id : null;
+}

@@ -2,30 +2,14 @@
 // into lines that fit a width, run by run in each run's font, every
 // line and item keeping the model offsets it stands for.
 //
-//   layoutPara(para, styles, width, metrics, cache, label?, defPx?,
-//              map?) -> {h, lines}
-//   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
-//   cache:   a Map for the run formats (./Fmt)
-//   label:   the paragraph's list label (./ListNumbers), or none
-//   defPx:   the default tab stop in px (./TabStops defaultStop / 15;
-//            48, half an inch, when not given)
-//   map:     the scope raw inlines are read in (./PicRead docMap)
-//   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
-//          label?, clip?, bars?}
-//          x: where the line's text starts (after indent, a list
-//          label and alignment: the caret at its first offset)
-//          label: on the first line of a list paragraph only,
-//          {x, w, text, f, bullet} (./LineLabel): drawn there, but
-//          no item and in no offsets
-//   item:  {x, w, text, f, kind, from, to, shown, hl, sh, dy, js?,
-//          label?, leader?, pic?}
-//          kind 'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
-//          'pagebreak' (label: its ./BreakMarks label)
-//          pic (kind 'pic'): {...pictureOf, w, h}, w, h its size
-//          in px (= item w); text '', shown, dy 0
-//          hl the highlight colour or null, sh the character
-//          shading's (./Fmt shade) or null, dy the baseline shift
-//          (./Fmt), js the width a justified space gained
+//   layoutPara(para, styles, width, metrics, cache, label?,
+//              defPx?, map?, fieldText?, floats?, shape?) -> {h,
+//   lines}. The whole API (the arguments, line and item fields):
+//   docs/apps/Letters.md, "LineLayout: the API" (fieldText, floats:
+//   ./LineTokens'; the item of a field result shown computed has its
+//   `field`, a zero-width floating picture's its `anchor`; shape,
+//   P12.3: each line where ./LineShape spanAt puts it, at its own
+//   height: ./LineFit fitLines, P12a fix C1).
 //
 // The rules (offsets, breaking, tabs, breaks, line heights, labels,
 // pictures): docs/apps/Letters.md, "LineLayout: the rules". A picture
@@ -37,19 +21,31 @@ import {tokens, PLAIN} from './LineTokens';
 import {fitPic} from './PicLine';
 import {justify, align} from './Justify';
 import {labelLine} from './LineLabel';
-import {lineBox} from './ParaSpace';
+import {lineBox, NAT_M} from './ParaSpace';
 import {ruleFit} from './BreakMarks';
+import {lineM, growLine, tryAt, fitLines} from './LineFit';
 import {nextStop, barsOf, DEFAULT_TW} from './TabStops';
 import {alignedEnd, close, dotIn} from './TabAlign';
 
-const SCRATCH = ['px', 'real', 'ink', 'up', 'down'];
+const SCRATCH = ['px', 'm', 'asc', 'dsc', 'real', 'ink', 'up',
+  'down'];
 
 /** See the header. */
 export function layoutPara(para, styles, width, metrics, cache,
-  label, defPx = DEFAULT_TW / 15, map) {
+  label, defPx = DEFAULT_TW / 15, map, fieldText, floats, shape) {
+  const run = (hint, tried) => breakPara(para, styles, width, metrics,
+    cache, label, defPx, map, fieldText, floats, shape, hint, tried);
+  return shape ? fitLines(run, shape) : run();
+}
+
+/** layoutPara's lines, each line tried at its hint's height (the
+ *  line starting at that offset), the tries kept in tried. */
+function breakPara(para, styles, width, metrics, cache, label, defPx,
+  map, fieldText, floats, shape, hint, tried) {
   const pf = paraFmt(styles, para, label ? label.indent : undefined);
   const base = runFmt(styles, para, para.runs[0] || PLAIN, cache);
-  const left = pf.left, maxX = Math.max(left + 40, width - pf.right);
+  const left = pf.left, maxW = Math.max(left + 40, width - pf.right);
+  let maxX = maxW, estH = 0;
   const lines = [], bars = barsOf(pf.tabs);
   let line = null, x = 0, pos = 0, pend = null;
   const closeTab = () => {
@@ -60,15 +56,28 @@ export function layoutPara(para, styles, width, metrics, cache,
   const start = (first) => {
     line = {from: pos, to: pos, x: 0, y: 0, h: 0, base: 0, items: [],
       wrapped: false, endsWithBreak: false, px: 0, real: false,
-      ink: left, up: 0, down: 0};
-    x = line.x = left + (first ? pf.first : 0);
+      ink: left, up: 0, down: 0, m: null, asc: 0, dsc: 0};
+    x = left + (first ? pf.first : 0);
+    if (shape) {
+      estH ||= lineBox(pf, base.vert ? base.full : base.px, 0, 0,
+        base.fm).h;
+      const s = tryAt(shape, tried, y, (hint && hint.get(pos)) || estH,
+        left, maxW, first);
+      if (s.y > y) line.push = s.y - y;    // (./LineFit beforeOf)
+      y = s.y;
+      maxX = s.x1;
+      if (s.x0 > left) x = line.ink = Math.max(x, s.x0);
+    }
+    line.x = x;
   };
+  const grow = (px, fm) => growLine(line, px, fm);
   const finish = (how) => {
     closeTab();
     if (bars.length) line.bars = bars;
     const px = line.px || (base.vert ? base.full : base.px);
     // (line.up, line.down: raised and lowered text, 0 on most lines)
-    const box = lineBox(pf, px, line.up, line.down);
+    const box = lineBox(pf, px, line.up, line.down,
+      line.px ? lineM(line) : base.fm);
     line.h = box.h;
     line.base = box.base;
     if (box.clip) line.clip = true;
@@ -88,11 +97,14 @@ export function layoutPara(para, styles, width, metrics, cache,
     const f = tk.f;
     if (real) {
       // super/subscript: the line is as high as for the full size
-      line.px = Math.max(line.px, f.vert ? f.full : f.px);
+      const m = f.fm || NAT_M;
+      grow(f.vert ? f.full : f.px, m);
       line.real = true;
-      if (f.dy < 0) line.up = Math.max(line.up, f.px * 0.98 - f.dy);
+      if (f.dy < 0) {
+        line.up = Math.max(line.up, f.px * (m.nat - m.desc) - f.dy);
+      }
       if (f.dy > 0) {
-        line.down = Math.max(line.down, f.px * 0.27 + f.dy);
+        line.down = Math.max(line.down, f.px * m.desc + f.dy);
       }
     }
     if (!pf.justify && last && !last.shown && !tk.shown &&
@@ -105,7 +117,8 @@ export function layoutPara(para, styles, width, metrics, cache,
       items.push({x, w, text: tk.text, f, kind: tk.kind,
         from: tk.from, to: tk.to, shown: tk.shown,
         hl: f.highlight ?? null, sh: f.shade ?? null,
-        dy: f.dy || 0});
+        dy: f.dy || 0, ...(tk.field ? {field: tk.field} : null),
+        ...(tk.anchor ? {anchor: tk.anchor} : null)});
     }
     if (tk.fit) {
       // a picture: its bottom on the baseline
@@ -142,11 +155,11 @@ export function layoutPara(para, styles, width, metrics, cache,
     line.label = ll.label;
     x = line.x = line.ink = ll.textX;
     if (ll.label.text) {
-      line.px = Math.max(ll.label.f.px, base.vert ? base.full
-        : base.px);
+      grow(ll.label.f.px, ll.label.f.fm);
+      grow(base.vert ? base.full : base.px, base.fm);
     }
   }
-  const toks = tokens(para, styles, cache, map);
+  const toks = tokens(para, styles, cache, map, fieldText, floats);
   // after the last token that is not 'z' (unseen) a break ends the
   // paragraph: the unseen ones stay on its line
   let tail = toks.length - 1;

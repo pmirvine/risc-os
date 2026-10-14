@@ -3,6 +3,9 @@
 //
 //   move(sel, L, cmd, extend, pageH) -> a new selection
 //   make(anchor, head, affinity, goalX) -> a frozen selection
+//   pageCmd(L, cmd) -> cmd, or pageDown / pageUp for nextPage /
+//     prevPage where L.place has no pages (Draft): the one rule,
+//     which ./EditKeys asks too
 //
 // Commands: left right (a grapheme of the paragraph's whole text;
 // past an end, to the next item's start or the item before's end),
@@ -15,7 +18,10 @@
 // WimpLib/Segment; at a paragraph's edge, as left and right),
 // paraStart paraEnd (this paragraph's start or end, or the next
 // one's when already there), docHome docEnd, pageUp pageDown (pageH
-// px up or down at goalX, default 400). A kept block is atomic: its
+// px up or down at goalX, default 400), nextPage prevPage (Ctrl+Page
+// Down / Up: the next / previous page's first line in Print layout,
+// ./SelPage toPage, D33; where L.place has no pages they are
+// pageDown and pageUp). A kept block is atomic: its
 // two positions are off 0 and 1 and left/right step over it; going
 // into it by up/down gives the edge nearer goalX. Every item
 // boundary is one step, like a paragraph mark: from the end of a
@@ -42,11 +48,18 @@
 // over them together with the character next to them (in
 // 'a[bookmark]b', right from 0 gives 1, then 3; at a paragraph's
 // edge, with its paragraph mark), so every press moves the caret on
-// the screen. Unknown commands give sel back unchanged.
+// the screen. A field result shown computed (./FieldShow, D18: its
+// layout item has `field` {b, e}) is one atomic range: no caret
+// inside it; a move that would end inside it (or at its end, going
+// forward) goes past it, to after its end fldChar (e + 1), going
+// back to before its begin (b; its result's start when the begin is
+// in another paragraph): one press steps over it. Unknown commands
+// give sel back unchanged.
 // Pure: no desktop services.
 import * as PM from './PositionMap';
 import {make, at, withAff, page, step} from './SelVert';
 import {vertical} from './SelTable';
+import {toPage} from './SelPage';
 import {nextWord, prevWord} from 'wimplib/Segment';
 import {itemEnd, nextG, prevG, compare} from './DocPos';
 import {unseenAt} from './Kinds';
@@ -116,12 +129,41 @@ const CMDS = {
   down: (L, it, p, aff, gx) => vertical(L, it, p, aff, gx, 1),
   pageUp: (L, it, p, aff, gx, h) => page(L, p, aff, gx, -1, h),
   pageDown: (L, it, p, aff, gx, h) => page(L, p, aff, gx, 1, h),
+  nextPage: (L, it, p, aff) => toPage(L, it, p, aff, 1),
+  prevPage: (L, it, p, aff) => toPage(L, it, p, aff, -1),
 };
+// (where there are no pages: Page Down and Page Up)
+const NOPAGES = new Map([['nextPage', 'pageDown'],
+  ['prevPage', 'pageUp']]);
+
+/** See the header. */
+export const pageCmd = (L, cmd) => (NOPAGES.has(cmd) &&
+  !(L && L.place && L.place.pages) ? NOPAGES.get(cmd) : cmd);
 const KEEP = new Set(['up', 'down', 'pageUp', 'pageDown']);
-const EDGE = new Set(['left', 'right', ...KEEP]);
+const EDGE = new Set(['left', 'right', ...KEEP, 'nextPage',
+  'prevPage']);
+
+/** pos moved past the computed field result it is in (from p:
+ *  the direction; see the header). */
+function pastField(L, pos, p) {
+  const it = L.byId.get(pos.id), off = pos.off;
+  if (!it || it.kind !== 'p' || !it.lines) return pos;
+  const fwd = compare(L, pos, p) > 0;
+  for (const ln of it.lines) {
+    if (off < ln.from || off > ln.to) continue;
+    for (const x of ln.items) {
+      if (!x.field || !(fwd ? x.from < off && off <= x.to
+        : x.from <= off && off < x.to)) continue;
+      const b = x.field.b ?? x.from;
+      return {id: pos.id, off: fwd ? x.field.e + 1 : b};
+    }
+  }
+  return pos;
+}
 
 /** See the header. */
 export function move(sel, L, cmd, extend = false, pageH) {
+  cmd = pageCmd(L, cmd);
   const fn = Object.hasOwn(CMDS, cmd) ? CMDS[cmd] : null;
   if (!fn || !sel) return sel;
   const ha = L.locate(sel.head), an = L.locate(sel.anchor);
@@ -131,7 +173,8 @@ export function move(sel, L, cmd, extend = false, pageH) {
   let it = ha.item, off = ha.off, aff = sel.affinity;
   if (!extend && !same && EDGE.has(cmd)) {
     // left/right: to that edge; up/down: from it
-    const first = cmd === 'left' || cmd === 'up' || cmd === 'pageUp';
+    const first = cmd === 'left' || cmd === 'up' ||
+      cmd === 'pageUp' || cmd === 'prevPage';
     const edge = first === back ? ha : an;
     if (edge !== ha) aff = 'down';
     if (cmd === 'left' || cmd === 'right') {
@@ -146,7 +189,7 @@ export function move(sel, L, cmd, extend = false, pageH) {
   const gx = keep ? sel.goalX ?? L.caretRect(p, aff).x : null;
   const r = fn(L, it, p, aff, gx, pageH);
   if (!r || !r.pos) return sel;
-  const goal = keep ? gx : null;
-  return extend ? make(sel.anchor, r.pos, r.affinity, goal)
-    : make(r.pos, r.pos, r.affinity, goal);
+  const goal = keep ? gx : null, to = pastField(L, r.pos, p);
+  return extend ? make(sel.anchor, to, r.affinity, goal)
+    : make(to, to, r.affinity, goal);
 }

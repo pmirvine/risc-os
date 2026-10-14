@@ -7,11 +7,12 @@
 // costs about the size of the edit); split and merge are undone by
 // restoring the old paragraph objects, which nothing ever changes.
 // `block` is a ./Path path; in a cell, the tables on the path are
-// copied (./OpsPath own) only once every check has passed.
+// copied (./OpsPath own) only once every check has passed. In story
+// `story` (D12): the path is in that story, and so is the inverse.
 import {fail, wellFormed, checkPos, checkInlines, checkContent,
   checkPara} from './ModelCheck';
 import {props, nextId, reserveIds} from './Model';
-import {paraAt, own, cut, join} from './OpsUtil';
+import {paraAt, own, cut, join, inStory} from './OpsUtil';
 import {sib} from './Path';
 import {unseenAt} from './Kinds';
 
@@ -76,7 +77,7 @@ function checkRegion(p, at, del) {
  * (see Model and ModelCheck.checkInlines).
  */
 export function replaceText(doc, op) {
-  const {p} = paraAt(doc, op.block);
+  const {p} = paraAt(doc, op.block, op.story);
   if (typeof op.ins !== 'string' || !wellFormed(op.ins))
     fail('bad ins');
   checkRegion(p, op.at, op.del);
@@ -86,7 +87,8 @@ export function replaceText(doc, op) {
   const runs = ins
     ? [{start: 0, end: ins.length, ...fmtFor(p, op)}] : [];
   return spliceText(doc, {op: 'spliceText', block: op.block,
-    at: op.at, del: op.del, content: {text: ins, runs, inlines: add}});
+    at: op.at, del: op.del, content: {text: ins, runs, inlines: add},
+    story: op.story});
 }
 
 /**
@@ -95,7 +97,7 @@ export function replaceText(doc, op) {
  * (runs need not be normalised). The inverse is a spliceText too.
  */
 export function spliceText(doc, op) {
-  const {i, at: path, p} = paraAt(doc, op.block);
+  const {i, at: path, p} = paraAt(doc, op.block, op.story);
   const {at, del, content} = op;
   checkRegion(p, at, del);
   checkContent(content);
@@ -103,9 +105,9 @@ export function spliceText(doc, op) {
   const q = {...p, ...join(cut(p, 0, at), content,
     cut(p, at + del, p.text.length))};
   checkPara(q);
-  own(doc, path)[i] = q;
-  return {op: 'spliceText', block: path, at,
-    del: content.text.length, content: old};
+  own(doc, path, op.story)[i] = q;
+  return inStory({op: 'spliceText', block: path, at,
+    del: content.text.length, content: old}, op.story);
 }
 
 /**
@@ -117,7 +119,7 @@ export function spliceText(doc, op) {
  * is never duplicated.
  */
 export function splitBlock(doc, op) {
-  const {i, at, p} = paraAt(doc, op.block);
+  const {i, at, p} = paraAt(doc, op.block, op.story);
   checkPos(p.text, op.at, 'at');
   const len = p.text.length;
   const a = {...p, ...join(cut(p, 0, op.at))};
@@ -126,11 +128,11 @@ export function splitBlock(doc, op) {
     pPr: p.pPr};
   if (p.pStyle !== undefined) b.pStyle = p.pStyle;
   b.extraP = [];
-  own(doc, at).splice(i, 1, a, b);
-  return {op: 'compound', ops: [
+  own(doc, at, op.story).splice(i, 1, a, b);
+  return inStory({op: 'compound', ops: [
     {op: 'removeBlock', at: sib(at, 1)},
     {op: 'restoreBlock', block: at, snapshot: p},
-  ]};
+  ]}, op.story);
 }
 
 /**
@@ -140,15 +142,15 @@ export function splitBlock(doc, op) {
  * pStyle and extraP.
  */
 export function mergeBlock(doc, op) {
-  const {i, at, blocks, p} = paraAt(doc, op.block);
+  const {i, at, blocks, p} = paraAt(doc, op.block, op.story);
   const n = blocks[i + 1];
   if (!n || n.type !== 'p') fail('next block is not a paragraph');
   const q = {...p, ...join(cut(p, 0, p.text.length),
     cut(n, 0, n.text.length))};
   checkPara(q);
-  own(doc, at).splice(i, 2, q);
-  return {op: 'compound', ops: [
+  own(doc, at, op.story).splice(i, 2, q);
+  return inStory({op: 'compound', ops: [
     {op: 'restoreBlock', block: at, snapshot: p},
     {op: 'insertBlock', at: sib(at, 1), block: n},
-  ]};
+  ]}, op.story);
 }

@@ -27,6 +27,7 @@ import { p, r, buildDocx, documentXml, stylesXml, numberingXml, REL, R_NS } from
 import { drawingXml, pngBytes, URIS } from './pic-fixtures.mjs';
 import { tbl, tr, tc, tblDocx, bigTable, nestedTable, TABLE_NORMAL, TABLE_GRID, GRID_TABLE_4 } from './tbl-fixtures.mjs';
 import { entries } from './docx-compare.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const bs = (id, name) => `<w:bookmarkStart w:id="${id}" w:name="${name}"/>`;
@@ -96,6 +97,7 @@ async function diff(a, b) {
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(BASE_URL).origin });
   const s0 = await ev(async (files) => {
     window.__msgs = [];

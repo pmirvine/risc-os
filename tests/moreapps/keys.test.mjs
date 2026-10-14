@@ -21,8 +21,8 @@ describe('Keys.command: from the browser key (as the Wimp sends)', () => {
     ['ArrowDown', DOWN, 'down', 'paraEnd'],
     ['Home', HOME, 'home', 'docHome'],
     ['End', END, 'end', 'docEnd'],
-    ['PageUp', PGUP, 'pageUp', 'pageUp'],
-    ['PageDown', PGDN, 'pageDown', 'pageDown'],
+    ['PageUp', PGUP, 'pageUp', 'prevPage'],
+    ['PageDown', PGDN, 'pageDown', 'nextPage'],
   ];
   // the codes keyCode() gives with Shift and Ctrl
   const code = (key, base, shift, ctrl) => {
@@ -71,7 +71,7 @@ describe('Keys.command: from the code alone (Wimp_ProcessKey)', () => {
     assert.deepEqual(command(UP + C), c('paraStart'));
     assert.deepEqual(command(DOWN + C), c('paraEnd'));
     // (&1BF is Ctrl-Page Up too: without a key name, the page)
-    assert.deepEqual(command(UP + S + C), c('pageUp'));
+    assert.deepEqual(command(UP + S + C), c('prevPage'));
     assert.deepEqual(command(LEFT + S + C, {shift: true, ctrl: true}),
       c('wordLeft', true));
     assert.deepEqual(command(END), c('end'));
@@ -83,8 +83,8 @@ describe('Keys.command: from the code alone (Wimp_ProcessKey)', () => {
     () => {
       assert.deepEqual(command(PGDN), c('pageDown'));
       assert.deepEqual(command(PGUP), c('pageUp'));
-      assert.deepEqual(command(PGDN + C), c('pageDown'));
-      assert.deepEqual(command(PGUP + C), c('pageUp'));
+      assert.deepEqual(command(PGDN + C), c('nextPage'));
+      assert.deepEqual(command(PGUP + C), c('prevPage'));
       assert.deepEqual(command(PGDN, {shift: true}), c('pageDown', true));
     });
   it('Home takes Shift and Ctrl from the flags', () => {

@@ -13,6 +13,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { pngBytes } from './pic-fixtures.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const RED = [220, 20, 30];
 const files = {
@@ -46,6 +47,7 @@ const enter = async () => { await press('Enter'); await wait(150); await settle(
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   const s0 = await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

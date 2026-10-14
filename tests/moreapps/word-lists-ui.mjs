@@ -15,6 +15,7 @@
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const NAMES = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta'];
 const docx = (body) => buildDocx({ 'word/document.xml': documentXml(body) });
@@ -38,6 +39,7 @@ const click = async (q, opts) => { await page.mouse.click(q.x, q.y, opts); await
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   const s0 = await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -124,7 +126,7 @@ try {
     return res;
   });
   ok('both toolbar rows show every button at the A4 window\'s first width', fit.rows.every((x) => x.max <= fit.w && x.need <= fit.w)
-    && same(fit.names2, ['lineSpacing', 'bullets', 'bulletsMenu', 'numbers', 'numbersMenu', 'painter']), fit);
+    && same(fit.names2, ['lineSpacing', 'bullets', 'bulletsMenu', 'numbers', 'numbersMenu', 'painter', 'pageInfo']), fit);
 
   // ---------------------------------------------------- Bullets: a caret paragraph, pressed state
   await caretAt(0, 2);

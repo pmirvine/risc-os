@@ -24,7 +24,8 @@ describe('Format.query', () => {
       indentRight: 0, spaceBefore: 0, spaceAfter: 160,
       lineSpacing: {line: 259, rule: 'auto'}, style: 'Normal',
       contextual: false, keepNext: false, keepLines: false,
-      widowControl: true, pageBreakBefore: false, listKind: null,
+      widowControl: true, pageBreakBefore: false,
+      suppressLineNumbers: false, listKind: null,
       listEntry: null, charShade: 'none', paraShade: 'none',
       borders: {}});
   });

@@ -15,6 +15,7 @@ import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {picDocx, pngBytes} from './pic-fixtures.mjs';
 import {nopicDocx, plain, WIDTH} from './nopic-fixture.mjs';
+import {NAT_M} from '../../tools/moreapps/!Letters/ParaSpace';
 import {corpusFiles, SKIP_CORPUS} from './roundtrip-lib.mjs';
 
 const O = '￼';
@@ -243,6 +244,16 @@ describe('no pictures, same lines', () => {
       const m = i === bs.length - 1 ? new Map() : docMap(d);
       const got = plain(layoutPara(b, d.styles, WIDTH, tm(), new Map(),
         undefined, 48, m));
+      // a run format's fm (its font's ratios, Batch D D35) came after
+      // the fixture: no font is registered here, so it is NAT_M
+      // everywhere and the heights are the fixture's
+      const fms = [];
+      for (const ln of got.lines) {
+        for (const x of [...ln.items, ln.label || {}]) {
+          if (x.f) { fms.push(x.f.fm); delete x.f.fm; }
+        }
+      }
+      for (const fm of fms) assert.deepEqual(fm, NAT_M);
       assert.deepEqual(got, want[i], 'paragraph ' + i);
     });
   });

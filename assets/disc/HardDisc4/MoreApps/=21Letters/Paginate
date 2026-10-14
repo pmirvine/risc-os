@@ -1,0 +1,178 @@
+// Paginate - the galley cut into pages (Batch D, D5): one page at a
+// time, as cursors into the galley; ./Pages keeps them.
+//
+//   nextPage(G, from, prev) -> {start, end, s, blank, first, num,
+//       why, top, w, h, bodyTop, frameH, y0, used, vShift, seen}
+//       | null
+//     G     the galley: {items, geom(s), sect?(s), facts?(k),
+//           typeOf?(s, first, num), hdrH?(s, type), ftrH?(s, type),
+//           refOf?(s, type, kind), reserve?(frame, refs)}
+//           (./PageGalley's for a ./DocLayout, with ./PageHF's
+//           headers and footers; tests build fakes)
+//     from  the cursor the page starts at ({k: 0, line: 0} for the
+//           first); prev the page before it (null for the first)
+//     null  when prev ended the galley (the first page always is;
+//           a page ended by a page break on the galley's last line
+//           has one more, empty, after it: Word's, P2.4)
+//   cursor, sameCursor  ./PageCursor's (re-exported)
+//   endsGalley(pg, n) -> whether page pg (of a galley of n items) is
+//       the last: no page comes after it
+//   numberOf(G, s, first, prev), topOf(prev), startY(items, from,
+//       prev) (./PageCols'), firstAt(items, from, prev)  a page's
+//       num, top, y0 and first as nextPage gives them (./PageReuse
+//       works them out again for the pages it takes)
+//   typeAt(G, s, first, num) -> 'first'|'even'|'default'  the type
+//       of header and footer a page shows: G.typeOf's (./HdrPick
+//       typeOf: titlePg, evenAndOddHeaders), else 'first' on the
+//       section's first page, 'even' on an even number
+//   frameOf(G, s, first, num) -> {type, bodyTop, frameH}  a page's
+//       body top and frame (the one rule; ./PageReuse checks the
+//       pages it keeps with it): hdrH / ftrH of section s and type
+//   shiftOf(G, s, why) -> the share of the frame left over that a
+//       page of section s ended by why is moved down by (vShift,
+//       PG6): 0.5 or 1, else 0
+//   PAGE_GAP           16 px of desk between pages (R6)
+//   MIN_FRAME          48 px (720 twips, half an inch): the least
+//                      frame height (P2 fix wave, review I3)
+//
+// The page: s its section (the section of its first item; a blank
+// page's the section before), first (its section's first page: the
+// document's first page, or one starting at the section's first
+// item; a continuous section starting part way down a page has none:
+// that page is the section before's, the next one starts inside it;
+// hand-off question HFX1), num (prev's + 1, or the section's
+// pgNumType start on its first page, so not for such a section),
+// top (R6: the sum of the earlier pages' h + PAGE_GAP each; a blank
+// page takes no room), w and h (px, the section's page), bodyTop
+// (max of mar.top and mar.header + the height of the header the page
+// shows, G.hdrH(s, typeAt); exactTop: mar.top), frameH (the page
+// less bodyTop and the bottom, likewise (G.ftrH); at least
+// MIN_FRAME, and MIN_FRAME when not finite: margins at or
+// over the page height leave a frame of two body lines, not a page
+// per px of text), y0 (the galley y at the frame's top), used (px of
+// content, the gaps of breaks left out), vShift (px the content is
+// moved down: vAlign center / bottom on a page that ends its section
+// or the document, PG6; 0 else), why the page ended ('full', 'break'
+// a page or column break, 'before' page break before, 'section', 'cut'
+// an item taller than the frame, 'end', 'blank'), seen (the last
+// item index the page's breaks depend on: an item after it changed
+// leaves the page as it is; ./Pages reuse, D7), cols (only for a
+// page with two columns or more, D23: ./PageBands fillPage, its
+// columns filled left to right, band by band when a continuous
+// section changes them, P10.2; end, why, used, seen and y0 then
+// say the page's: its last column's end and why, the content's
+// height, the furthest seen, the first column's y0).
+//
+// The rules (D5: frames, forced breaks, section starts, blank pages
+// for parity, space before at a page top, bands of breaks not
+// placed, cuts, the reserve hook; D6: the keep rules, ./PageKeep's,
+// asked about the item crossing the bottom only; D23: columns,
+// ./PageCols, a column break ends a column; D8: a table broken
+// between rows or inside one, ./PageRows, P4.1: a page starting in
+// a table starts at a row, {k, line: r, cuts?}, its y0 the row's
+// galley top; P12.6, R5: a floating table placed on its page takes
+// no height in the flow and is never split, ./PageFill floatSpan):
+// docs/apps/Letters.md,
+// "Pages (Batch D): the rules". The frame fill is ./PageFill's. A
+// frame always takes something (a line, an item, or a cut of one),
+// so every page moves on. Pure: no desktop services.
+import {cursor, sameCursor} from './PageCursor';
+import {geomAt, sectOf, typeOf, fin, px} from './PageFill';
+import {startY} from './PageCols';
+import {fillPage} from './PageBands';
+
+export {cursor, sameCursor, startY};
+
+export const PAGE_GAP = 16;
+export const MIN_FRAME = 48;
+const WANT = new Map([['oddPage', 1], ['evenPage', 0]]);
+const SHIFT = new Map([['center', 0.5], ['bottom', 1]]);
+const NONE = Object.freeze({});
+
+/** The page number of a page of section s. */
+export function numberOf(G, s, first, prev) {
+  const st = (sectOf(G, s).pgNumType || NONE).start;
+  if (first && Number.isSafeInteger(st)) return st;
+  return prev ? prev.num + 1 : 1;
+}
+
+/** The top of the page after prev (R6). */
+export const topOf = (prev) => (prev ? prev.top + (prev.blank ? 0
+  : prev.h + PAGE_GAP) : 0);
+
+/** See the header. */
+export function firstAt(items, from, prev) {
+  if (!prev) return true;
+  const k = from.k, it = items[k];
+  return !!it && k > 0 && !from.line && !from.dy && !from.cuts &&
+    it.s !== items[k - 1].s;
+}
+
+/** See the header. */
+export const shiftOf = (G, s, why) => (why === 'section' ||
+  why === 'end' ? SHIFT.get(sectOf(G, s).vAlign) || 0 : 0);
+
+/** See the header. */
+export function typeAt(G, s, first, num) {
+  if (G.typeOf) return G.typeOf(s, first, num);
+  return first ? 'first' : num % 2 === 0 ? 'even' : 'default';
+}
+
+/** See the header. */
+export function frameOf(G, s, first, num) {
+  const g = geomAt(G, s), m = g.mar;
+  const type = typeAt(G, s, first, num);
+  const hh = G.hdrH ? px(G.hdrH(s, type)) : 0;
+  const fh = G.ftrH ? px(G.ftrH(s, type)) : 0;
+  const bodyTop = g.exactTop ? m.top : Math.max(m.top, m.header + hh);
+  const bodyBot = g.exactBottom ? m.bottom
+    : Math.max(m.bottom, m.footer + fh);
+  const fh0 = g.size.h - bodyTop - bodyBot;
+  return {type, bodyTop,
+    frameH: fin(fh0) ? Math.max(MIN_FRAME, fh0) : MIN_FRAME};
+}
+
+/** See the header. */
+export const endsGalley = (pg, n) => !pg.blank && pg.end.k >= n &&
+  pg.why !== 'break';
+
+/** A blank page after prev (parity, PG3). */
+function blank(from, prev, top) {
+  return {start: from, end: from, s: prev.s, blank: true,
+    first: false, num: prev.num + 1, why: 'blank', top, w: prev.w,
+    h: prev.h, bodyTop: prev.bodyTop, frameH: prev.frameH, y0: 0,
+    used: 0, vShift: 0, seen: from.k};
+}
+
+/** See the header. */
+export function nextPage(G, from, prev) {
+  const items = G.items, n = items.length;
+  const k0 = from ? from.k : 0;
+  if (prev && k0 >= n && endsGalley(prev, n)) return null;
+  const it0 = items[k0] || null;
+  const s = it0 && fin(it0.s) ? it0.s : prev ? prev.s : 0;
+  const line0 = (from && from.line) || 0, dy0 = (from && from.dy) || 0;
+  const cuts = (from && from.cuts) || undefined;
+  const secStart = !!it0 && k0 > 0 && !line0 && !dy0 && !cuts &&
+    it0.s !== items[k0 - 1].s;
+  const top = topOf(prev);
+  const start = cursor(k0, line0, dy0, cuts);
+  const first = firstAt(items, start, prev);
+  const num = numberOf(G, s, first, prev);
+  if (secStart && prev && !prev.blank) {
+    const want = WANT.get(typeOf(G, s));
+    if (want !== undefined && Math.abs(num % 2) !== want) {
+      return blank(start, prev, top);
+    }
+  }
+  const g = geomAt(G, s);
+  const {bodyTop, frameH} = frameOf(G, s, first, num);
+  const y0 = startY(items, start, prev);
+  const out = {start, end: null, s, blank: false, first, num,
+    why: 'end', top, w: g.size.w, h: g.size.h, bodyTop, frameH, y0,
+    used: 0, vShift: 0, seen: k0};
+  fillPage(G, out, y0);
+  const how = shiftOf(G, s, out.why);
+  if (how) out.vShift = Math.max(0, frameH - out.used) * how;
+  return out;
+}

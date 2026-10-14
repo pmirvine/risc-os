@@ -1,0 +1,160 @@
+// FieldFormat - a field's general and numeric switches (Batch D,
+// D17): the text ./Fields shows for a value.
+//
+//   formatGeneral(value, switches) -> string | null
+//     value     text or a number (anything else: null)
+//     switches  ./FieldParse's [{sw, arg}]: each '\*' in order (the
+//               rest are not looked at; a plain string is taken as
+//               a '\*' argument). Number formats (the value must be
+//               a whole number, or text holding one, else null; a
+//               number is rounded): Arabic, Ordinal (1st 2nd ...),
+//               roman / ROMAN, alphabetic / ALPHABETIC (an argument
+//               all in capitals gives capitals), through
+//               ./NumFormat formatNumber. Text formats: Upper, Lower,
+//               Caps (each word's first letter a capital), FirstCap
+//               (the first word's). MERGEFORMAT and CHARFORMAT change
+//               no text (D19 keeps the formatting). Names other than
+//               roman and alphabetic are matched in any case. Any
+//               other argument (CardText, Hex... not in Batch D), or
+//               none: null (the stored result is shown)
+//   formatNumeric(n, picture) -> string | null   '\#': n (a finite
+//     number under 1e21) shown by picture: 0 a digit always, # a
+//     digit or, when there is none, a space (Word's: '$###' of 22
+//     is '$ 22'), ',' in the whole part groups thousands, '.' the
+//     decimal point (n rounded to the places after it). The 0 # , .
+//     run holds the number; text before and after it is literal, so
+//     is anything in 'single quotes'. Anything else is null: no 0
+//     or #, 0 # . outside the run, two points, ',' after the point,
+//     x ; ` + - (not in Batch D), an unclosed quote, more than
+//     MAX_DECIMALS places. A negative number shows '-' before its
+//     digits (none when it rounds to 0)
+//   MAX_PICTURE   256: a longer picture (\# or \@) is null at once
+//   MAX_DECIMALS  20
+//   hasNumberFormat(switches) -> whether a '\*' number format is
+//     among them (./Fields: PAGE then formats its number, not the
+//     section's text)
+// Pure: no desktop services; linear in the picture and the text.
+import {formatNumber} from './NumFormat';
+
+export const MAX_PICTURE = 256;
+export const MAX_DECIMALS = 20;
+
+const NUMBERS = new Map([['arabic', 'decimal'],
+  ['ordinal', 'ordinal'], ['roman', 'lowerRoman'],
+  ['alphabetic', 'lowerLetter']]);
+const UPPER = new Map([['lowerRoman', 'upperRoman'],
+  ['lowerLetter', 'upperLetter']]);
+const TEXTS = new Set(['upper', 'lower', 'caps', 'firstcap',
+  'mergeformat', 'charformat']);
+const RESERVED = 'x;`+-';
+
+const argsOf = (switches) => (Array.isArray(switches) ? switches : [])
+  .map((s) => (typeof s === 'string' ? s
+    : s && s.sw === '\\*' ? s.arg : undefined))
+  .filter((a) => a !== undefined);
+
+/** The number format of argument a ('decimal'...), or null. */
+function numFmtOf(a) {
+  if (typeof a !== 'string' || a.length > 16) return null;
+  const f = NUMBERS.get(a.toLowerCase());
+  if (!f) return null;
+  return UPPER.has(f) && a === a.toUpperCase() ? UPPER.get(f) : f;
+}
+
+/** See the header. */
+export const hasNumberFormat = (switches) =>
+  argsOf(switches).some((a) => numFmtOf(a) !== null);
+
+/** The whole number of value, or null. */
+function wholeOf(v) {
+  if (typeof v === 'string') {
+    if (!/^\s*-?\d{1,15}\s*$/.test(v)) return null;
+    v = Number(v);
+  }
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  const n = Math.round(v);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+const upFirst = (w) => w.charAt(0).toUpperCase() + w.slice(1);
+
+/** See the header. */
+export function formatGeneral(value, switches) {
+  let cur = value;
+  if (typeof cur === 'number' ? !Number.isFinite(cur)
+    : typeof cur !== 'string') return null;
+  for (const a of argsOf(switches)) {
+    const f = numFmtOf(a);
+    if (f) {
+      const n = wholeOf(cur);
+      if (n === null) return null;
+      cur = formatNumber(n, f);
+      continue;
+    }
+    const t = typeof a === 'string' && a.length <= 16
+      ? a.toLowerCase() : '';
+    if (!TEXTS.has(t)) return null;
+    let s = String(cur);
+    if (t === 'upper') s = s.toUpperCase();
+    else if (t === 'lower') s = s.toLowerCase();
+    else if (t === 'caps') s = s.replace(/\S+/g, upFirst);
+    else if (t === 'firstcap') s = s.replace(/\S+/, upFirst);
+    cur = s;
+  }
+  return String(cur);
+}
+
+/** picture's tokens: [{lit} | {ch}], or null (unclosed quote). */
+function tokens(pic) {
+  const out = [];
+  for (let i = 0; i < pic.length; i++) {
+    if (pic[i] !== "'") {
+      out.push({ch: pic[i]});
+      continue;
+    }
+    const j = pic.indexOf("'", i + 1);
+    if (j < 0) return null;
+    out.push({lit: pic.slice(i + 1, j)});
+    i = j;
+  }
+  return out;
+}
+
+const isRun = (t) => t.ch !== undefined && '0#,.'.includes(t.ch);
+const isPlace = (t) => t.ch === '0' || t.ch === '#';
+const textOf = (ts) => ts.map((t) => (t.lit ?? t.ch)).join('');
+
+/** Digits d grouped by thousands. */
+const grouped = (d) => d.replace(/\B(?=(\d{3})+$)/g, ',');
+
+/** See the header. */
+export function formatNumeric(n, picture) {
+  if (typeof n !== 'number' || !Number.isFinite(n) ||
+    Math.abs(n) >= 1e21 || typeof picture !== 'string' ||
+    picture.length > MAX_PICTURE) return null;
+  const ts = tokens(picture);
+  if (!ts || ts.some((t) => t.ch && RESERVED.includes(t.ch)))
+    return null;
+  const first = ts.findIndex(isPlace);
+  if (first < 0) return null;
+  let a = first, b = first;
+  while (a > 0 && isRun(ts[a - 1])) a--;
+  while (b + 1 < ts.length && isRun(ts[b + 1])) b++;
+  const run = textOf(ts.slice(a, b + 1));
+  const rest = ts.slice(0, a).concat(ts.slice(b + 1));
+  if (rest.some((t) => t.ch && '0#.'.includes(t.ch))) return null;
+  const [ip, fp = null, more] = run.split('.');
+  if (more !== undefined || (fp && fp.includes(','))) return null;
+  const places = fp ? fp.length : 0;
+  if (places > MAX_DECIMALS) return null;
+  const [is, fs] = Math.abs(n).toFixed(places).split('.');
+  const iph = ip.replace(/,/g, '');
+  let d = is === '0' && !iph.includes('0') ? '' : is;
+  d = d.padStart((iph.match(/0/g) || []).length, '0');
+  if (ip.includes(',')) d = grouped(d);
+  const pad = Math.max(0, iph.length - d.replace(/,/g, '').length);
+  const zero = !/[1-9]/.test(is + (fs || ''));
+  const num = ' '.repeat(pad) + (n < 0 && !zero ? '-' : '') + d +
+    (fp !== null ? '.' + (fs || '') : '');
+  return textOf(ts.slice(0, a)) + num + textOf(ts.slice(b + 1));
+}

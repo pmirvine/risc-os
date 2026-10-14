@@ -1,0 +1,73 @@
+// OutlineEdit - Enter, Backspace and Delete next to hidden text in
+// Outline view (Batch D P13 fix I1, D32: the caret never enters text
+// that is not shown, and no edit pulls hidden text into view).
+//
+//   editId(doc, sel, collapsed, id) -> 'outlineEnter', 'outlineStop'
+//       or null (the key as everywhere else), for ./OutlineCmd
+//       outlineId; collapsed the layout's collapse set. At a caret
+//       in a top-level paragraph: enter at the end of a heading
+//       whose children are hidden (marker +, ./OutlineLayout
+//       outlineOf: collapsed, or by Show level) outlineEnter;
+//       backspace and ctrlBackspace at the start of one whose block
+//       above is hidden, delete and ctrlDelete at the end of one
+//       whose block below is hidden: outlineStop (refused: it would
+//       merge it with text that is not shown)
+//   enterCmd(d, sel, collapsed) -> the caret in a new empty paragraph
+//       of the heading's paragraph properties and style put after
+//       the block hidden under it (Word: a heading of its level,
+//       shown), one d.atomic; null where editId gives no
+//       outlineEnter
+//   stopCmd() -> null (the caller beeps; nothing changes)
+//
+// Pure: no desktop services.
+import {checkPos, atIndex, sibOf} from './EditPos';
+import {isTop} from './Path';
+import {outlineOf} from './OutlineLayout';
+import {collapsed as isCaret, caret} from './Selection';
+import {newPara} from './Model';
+
+const BACK = new Set(['backspace', 'ctrlBackspace']);
+const FORTH = new Set(['delete', 'ctrlDelete']);
+
+/** The caret's top-level paragraph, at its end (or start), and
+ *  the rows; null. */
+function at(doc, sel, set, end) {
+  if (!doc || !sel || !isCaret(sel) || !(set instanceof Set))
+    return null;
+  const loc = checkPos(doc, sel.head);
+  if (!loc || !isTop(loc.at) || loc.b.type !== 'p' ||
+    sel.head.off !== (end ? loc.b.text.length : 0)) return null;
+  return {loc, rows: outlineOf(doc, set).rows};
+}
+
+const hid = (rows, k) => !!rows[k] && rows[k].hidden;
+
+/** See the header. */
+export function editId(doc, sel, set, id) {
+  const back = BACK.has(id), forth = FORTH.has(id);
+  if (!back && !forth && id !== 'enter') return null;
+  const o = at(doc, sel, set, !back);
+  if (!o) return null;
+  const {loc: {k}, rows} = o;
+  if (back) return hid(rows, k - 1) ? 'outlineStop' : null;
+  if (forth) return hid(rows, k + 1) ? 'outlineStop' : null;
+  return rows[k].marker === '+' && !rows[k].hidden ? 'outlineEnter'
+    : null;
+}
+
+/** See the header. */
+export function enterCmd(d, sel, set) {
+  const doc = d.doc;
+  if (editId(doc, sel, set, 'enter') !== 'outlineEnter') return null;
+  const {loc, rows} = at(doc, sel, set, true), p = loc.b;
+  let e = loc.k + 1;
+  while (e < rows.length && rows[e].hidden) e++;
+  const last = atIndex(doc, e - 1);
+  const q = newPara('', {pPr: p.pPr, pStyle: p.pStyle});
+  d.atomic(() => d.apply({op: 'insertBlocks', at: sibOf(last, 1),
+    blocks: [q]}));
+  return caret({id: q.id, off: 0});
+}
+
+/** See the header. */
+export const stopCmd = () => null;

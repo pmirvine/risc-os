@@ -1,5 +1,5 @@
 // The !Letters sprites, used by tools/disc-moreapps.mjs: the application's icon (a blue document page with a white
-// W on it), '!letters' 34 x 34 and 'sm!letters' 18 x 18, and the icons of Word documents: .docx (file type &A7E,
+// L on it), '!letters' 34 x 34 and 'sm!letters' 18 x 18, and the icons of Word documents: .docx (file type &A7E,
 // 'file_a7e' / 'small_a7e': a white page with a blue W in its corner) and the older .doc (&AE6, 'file_ae6' /
 // 'small_ae6': the same page with a dark blue W). The system sprite pools have none of these. They are drawn
 // with simple shapes onto character maps (tools/lib/spritewrite.mjs: one letter per Wimp colour).
@@ -53,17 +53,23 @@ function letterW(c, x0, y0, x1, y1, col, w) {
   c.line(xs[3], y1, xs[4], y0, col, w);
 }
 
+// an L from (x0, y0) to (x1, y1), strokes w wide
+function letterL(c, x0, y0, x1, y1, col, w) {
+  c.rect(x0, y0, x0 + w - 1, y1, col);
+  c.rect(x0, y1 - w + 1, x1, y1, col);
+}
+
 function appIcon() {
   const c = canvas(34);
   page(c, 5, 1, 28, 32, 6, 'B');
-  letterW(c, 8, 11, 23, 25, 'W', 3);
+  letterL(c, 10, 10, 22, 26, 'W', 4);
   return c.rows();
 }
 
 function appSmall() {
   const c = canvas(18);
   page(c, 2, 0, 15, 17, 3, 'B');
-  letterW(c, 4, 6, 12, 13, 'W', 2);
+  letterL(c, 5, 5, 11, 13, 'W', 2);
   return c.rows();
 }
 

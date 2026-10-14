@@ -1,0 +1,177 @@
+// PageCells - the lines of a table cell as pagination counts them
+// (Batch D, D8), for ./PageRows, ./TblPieces and ./PageCellAt.
+//
+//   unitsOf(c) -> {tops, bots, ends}  cell c's units, px from its
+//       column's top (./TblItems cell: col.items, each with its ry
+//       in the column): each line of a paragraph, each row of a
+//       nested table (rowsOf; review P4 M2), one for any other item
+//       (a block); none for a vertically merged cell's continue
+//       (cont). ends[u] the end (one past the last unit) of the
+//       nested table starting at unit u, 0 at any other unit
+//       (./PageRows keeps a nested table whole on one side of a cut
+//       unless it is taller than a frame, PG11). A value that is not
+//       a finite number counts as 0
+//   rowsOf(x) -> rows | null  item x's rows when it is a table laid
+//       out in rows
+//   unitsAt(it, r, i) -> {tops, bots, ends, top, bottom, y0, from0,
+//       col, lo}  the units of cell i of row r of table it as its row
+//       holds them, galley y = y0 + tops[u]; top and bottom the
+//       margins a part of it keeps; col the column drawn for it, lo
+//       the index of its first unit in that column's (unitsOf). A
+//       plain cell: unitsOf, its margins, y0 its column's top. A
+//       vertically merged cell (review P4 I3): its units belong to
+//       the row of its span their top lies in, so each row of the
+//       span (the merge's first, or a continue cell) holds a slice
+//       of the merged column (col the first cell's): the first row
+//       as a plain cell (no bottom margin unless the span ends
+//       there), a later row from its own top (y0 the row's galley
+//       top, no top margin, the bottom one in the span's last row;
+//       from0 how far the slice before it reaches into the row: its
+//       part shows nothing above). An empty slice: no units
+//   needOf(it, r) -> px  the height row r's content needs: its box,
+//       or more where a merged cell's slice in it runs past its
+//       bottom (a line whose top is in the row)
+//   mergeCut(it, c, a, b) -> {y0, y1} | null  the galley span of
+//       merged cell c (a merge's first cell) shown beside whole rows
+//       a..b: from the top of row a (or the bottom of the slice
+//       before it) to the bottom of row b (or of its slice); null
+//       when the merge lies within a..b (or c is no merge)
+//   topOf(it, r, i) -> {r, i} | null  the merged cell a continue
+//       cell (cell i of row r) continues: the grid's top (./TblGrid),
+//       else the cell above at its x; null for any other cell
+//   fin(v), px(v)  a finite number; a positive one else 0
+//
+// Pure: no desktop services.
+const NONE = Object.freeze([]);
+const EMPTY = Object.freeze({tops: NONE, bots: NONE, ends: NONE,
+  top: 0, bottom: 0, y0: 0, from0: 0, col: null, lo: 0});
+
+export const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+export const px = (v) => (fin(v) && v > 0 ? v : 0);
+
+/** Whether x is a nested table laid out in rows (./TblItems). */
+export const rowsOf = (x) => (x.kind === 'tbl' && Array.isArray(x.rows)
+  && x.rows.length ? x.rows : null);
+
+/** See the header. */
+export function unitsOf(c) {
+  const tops = [], bots = [], ends = [];
+  if (c.cont || !c.col) return {tops, bots, ends};
+  for (const x of c.col.items || NONE) {
+    const ry = px(x.ry), rows = rowsOf(x);
+    if (x.kind === 'p' && x.lines && x.lines.length) {
+      for (const l of x.lines) {
+        tops.push(ry + px(l.y));
+        bots.push(ry + px(l.y) + px(l.h));
+        ends.push(0);
+      }
+    } else if (rows) {
+      const j = tops.length;
+      for (const row of rows) {
+        tops.push(ry + px(row.ry));
+        bots.push(ry + px(row.ry) + px(row.h));
+        ends.push(0);
+      }
+      if (rows.length > 1) ends[j] = j + rows.length;
+    } else {
+      tops.push(ry);
+      bots.push(ry + px(x.h));
+      ends.push(0);
+    }
+  }
+  return {tops, bots, ends};
+}
+
+/** See the header. */
+export function topOf(it, r, i) {
+  const row = it.rows[r], c = row && row.cells[i];
+  if (!c || !c.cont) return null;
+  const g = it.key && it.key.g && it.key.g.rows[r];
+  const t = g && g.cells[c.k] && g.cells[c.k].top;
+  if (t) {
+    const s = it.rows[t[0]], j = s ? s.cells.findIndex((x) =>
+      x.k === t[1]) : -1;
+    if (j >= 0 && !s.cells[j].cont) return {r: t[0], i: j};
+  }
+  for (let q = r - 1; q >= 0; q--) {   // (no grid: the cell above)
+    const j = it.rows[q].cells.findIndex((x) => x.x === c.x);
+    if (j < 0) return null;
+    if (!it.rows[q].cells[j].cont) return {r: q, i: j};
+  }
+  return null;
+}
+
+/** The first unit of g (from galley Y) whose top is at or below
+ *  galley y. */
+function firstAt(g, Y, y) {
+  let lo = 0, hi = g.tops.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (Y + g.tops[m] >= y) hi = m;
+    else lo = m + 1;
+  }
+  return lo;
+}
+
+/** The last row of merged cell c starting at row s. */
+const lastOf = (it, s, c) => Math.min(it.rows.length,
+  s + Math.max(1, c.rowSpan | 0)) - 1;
+const mar = (c) => c.mar || {top: 0, bottom: 0};
+
+/** See the header. */
+export function unitsAt(it, r, i) {
+  const row = it.rows[r], c = row && row.cells[i];
+  if (!c) return EMPTY;
+  const q = c.cont ? topOf(it, r, i) : {r, i};
+  if (!q) return EMPTY;
+  const S = it.rows[q.r].cells[q.i], s = q.r, last = lastOf(it, s, S);
+  if (!S.col || r > last) return EMPTY;
+  const g = unitsOf(S), Y = it.y + px(S.ry), m = mar(S);
+  const bottom = r === last ? px(m.bottom) : 0;
+  const o = {top: px(m.top), bottom, y0: Y, from0: 0, col: S.col,
+    lo: 0};
+  if (s === last) return {...g, ...o};
+  const lo = r === s ? 0 : firstAt(g, Y, row.y);
+  const hi = r === last ? g.tops.length : firstAt(g, Y,
+    it.rows[r + 1].y);
+  const ends = g.ends.slice(lo, hi).map((e) => (e ? Math.min(e, hi) -
+    lo : 0));
+  if (r === s) {
+    return {tops: g.tops.slice(0, hi), bots: g.bots.slice(0, hi), ends,
+      ...o};
+  }
+  const d = Y - row.y, sh = (v) => v + d;
+  return {tops: g.tops.slice(lo, hi).map(sh), ends,
+    bots: g.bots.slice(lo, hi).map(sh), top: 0, bottom, y0: row.y,
+    from0: lo > 0 ? Math.max(0, g.bots[lo - 1] + d) : 0, col: S.col,
+    lo};
+}
+
+/** See the header. */
+export function needOf(it, r) {
+  const row = it.rows[r];
+  let h = row.h;
+  row.cells.forEach((c, i) => {
+    if (!c.cont && !(c.rowSpan > 1)) return;
+    const u = unitsAt(it, r, i), n = u.tops.length;
+    if (n) h = Math.max(h, u.top + u.bots[n - 1] + u.bottom);
+  });
+  return h;
+}
+
+/** See the header. */
+export function mergeCut(it, c, a, b) {
+  const rows = it.rows, s = c.r;
+  if (!(c.rowSpan > 1) || !rows[s] || !rows[s].cells.includes(c)) {
+    return null;
+  }
+  const last = lastOf(it, s, c);
+  if (s >= a && last <= b) return null;
+  const g = unitsOf(c), Y = it.y + px(c.ry);
+  const edge = (r) => {
+    const j = firstAt(g, Y, rows[r].y);
+    return j > 0 ? Math.max(rows[r].y, Y + g.bots[j - 1]) : rows[r].y;
+  };
+  return {y0: s < a ? edge(a) : -Infinity,
+    y1: last > b && rows[b + 1] ? edge(b + 1) : Infinity};
+}

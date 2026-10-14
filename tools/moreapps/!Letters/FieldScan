@@ -1,0 +1,204 @@
+// FieldScan - the fields of the body or of a story, found in the
+// model (Batch D, D15): the one rule for field spans. A pure VIEW:
+// the reader keeps every field code as it was (./ReadPara: a
+// w:fldChar or w:instrText is a level 'r' raw inline, a w:fldSimple a
+// level 'p' one; a result is ordinary text) and nothing here changes
+// the Doc.
+//
+//   scan(doc, story?) -> [Field]  every field of the body (story
+//       absent) or of the story of that part name ([] when there is
+//       none), in flow order of their starts (a nested field after
+//       the field around it)
+//   fieldAt(doc, pos, story?) -> Field | null  the innermost field
+//       holding position pos {id, off} of that body or story: from
+//       the caret just before its begin to the caret just before its
+//       end (a fldSimple: just before it); null when none
+//   paraFields(p) -> [Field] | null  the fields of paragraph p alone
+//       when every mark it holds belongs to a field that begins and
+//       ends in it (as scan would find them; marks' at null), null
+//       when one belongs to a field crossing paragraphs (a begin with
+//       no end in p; a separate, end or instrText with no begin in
+//       p: only scan can tell). Memoised per paragraph object (final
+//       fix A F2-I2: ./FieldShow shows a keystroke's paragraph from
+//       it, no walk of the body)
+//   work  ./FieldMarks' count of paragraphs looked at (tests)
+//
+// Field {begin, sep, end, instr, children, lock, dirty, simple?}
+//   begin, sep, end  marks {at, off, id}: the ./Path path of the
+//       paragraph (a story's [0, i, ...], R8), the offset of the
+//       fldChar's U+FFFC in its text, the paragraph's id; sep null
+//       when the field has no separate fldChar (no result)
+//   instr   the instrText texts from begin to separate (or end)
+//       joined; a nested field there gives its CURRENT result text
+//       (as Word: IF { PAGE } = 1 reads 'IF 1 = 1' when the PAGE
+//       field shows 1), paragraphs in it joined by '\r'
+//   children  the fields directly inside (in its code or result)
+//   lock, dirty  w:fldLock and w:dirty of the begin fldChar (or the
+//       fldSimple) are on
+//   simple  {node}: a w:fldSimple (its w:instr is instr, its result
+//       inside node; begin and end are the mark of its U+FFFC, sep
+//       null, children [])
+//
+// Complex fields nest by a stack and may span paragraphs and cells
+// (the walk is ./Walk's flow order). A field whose begin has no end,
+// a separate or end with no begin, is no field (left as it is); the
+// complete fields inside one still are. A w:r kept whole (a level 'p'
+// inline) gives its fldChars and instrTexts at its offset; nothing
+// is looked for inside other kept nodes (w:hyperlink, w:ins...).
+//
+// Memoised per paragraph object (its field marks, ./FieldMarks: a
+// paragraph without U+FFFC costs one indexOf) and per block list: a
+// story's blocks (copy-on-write, so the same list is the same
+// fields), or doc.sections at doc's ./DocVersion (the ops change the
+// body's section and block arrays in place, so the version tells a
+// body edit), so a body edit is always seen. Results are shared:
+// read only. Pure: no desktop services.
+import {forEachBlock, forEachIn, blocksOf} from './Walk';
+import {findBlock} from './EditPos';
+import {cmpPath} from './Path';
+import {marks, plain, work, NONE} from './FieldMarks';
+import {versionOf} from './DocVersion';
+
+export {work};
+
+const scanMemo = new WeakMap();
+const paraMemo = new WeakMap();        // paragraph -> paraFields
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** One walk: the stack of open fields and the fields found. */
+class Walker {
+  constructor() {
+    this.stack = [];
+    this.order = [];
+    this.stray = false;                // (a mark of no field begun)
+  }
+
+  /** Whether text here reaches a result read by an instruction. */
+  get feeding() {
+    const top = this.stack[this.stack.length - 1];
+    return !!top && !top.code && top.feed;
+  }
+
+  /** A finished field: into its parent's children and instr. */
+  done(f, text) {
+    const top = this.stack[this.stack.length - 1];
+    if (!top) return;
+    top.f.children.push(f);
+    if (top.code) top.f.instr += text;
+    else if (top.feed) top.text += text;
+  }
+
+  mark(e, at, id) {
+    const st = this.stack, top = st[st.length - 1];
+    const m = {at, off: e.off, id};
+    if (e.t === 'b') {
+      const f = {begin: m, sep: null, end: null, instr: '',
+        children: [], lock: e.lock, dirty: e.dirty};
+      this.order.push(f);
+      st.push({f, code: true, text: '',
+        feed: !!top && (top.code || top.feed)});
+    } else if (e.t === 'i') {
+      if (top && top.code) top.f.instr += e.text;
+      if (!top) this.stray = true;
+    } else if (e.t === 's') {
+      if (top && top.code) {
+        top.code = false;
+        top.f.sep = m;
+      }
+      if (!top) this.stray = true;
+    } else if (e.t === 'e') {
+      if (!top) {
+        this.stray = true;
+        return;
+      }
+      st.pop();
+      top.f.end = m;
+      this.done(top.f, top.text);
+    } else {
+      const f = {begin: m, sep: null, end: m, instr: e.instr,
+        children: [], lock: e.lock, dirty: e.dirty,
+        simple: {node: e.node}};
+      this.order.push(f);
+      this.done(f, e.text);
+    }
+  }
+
+  para(p, at) {
+    const ms = marks(p);
+    if (!ms.length && !this.stack.length) return;
+    let k = 0;
+    for (const e of ms) {
+      this.feed(p, k, e.off);
+      this.mark(e, at, p.id);
+      k = Math.max(k, e.off + 1);
+    }
+    this.feed(p, k, p.text.length);
+    if (this.feeding) this.stack[this.stack.length - 1].text += '\r';
+  }
+
+  /** p's text from..to into the open field's result, if read. */
+  feed(p, from, to) {
+    if (to > from && this.feeding) {
+      this.stack[this.stack.length - 1].text += plain(p, from, to);
+    }
+  }
+
+  /** fn for ./Walk: paragraphs only (tables are walked into). */
+  get fn() {
+    return (b, at) => {
+      if (isObj(b) && b.type === 'p' && typeof b.text === 'string') {
+        this.para(b, at);
+      }
+      return true;
+    };
+  }
+
+  get fields() {
+    return this.order.filter((f) => f.end !== null);
+  }
+}
+
+/** See the header. */
+export function scan(doc, story) {
+  const body = story === undefined || story === null;
+  const key = body ? (isObj(doc) && Array.isArray(doc.sections)
+    ? doc.sections : null) : blocksOf(doc, story);
+  if (!key) return NONE;
+  const memo = scanMemo.get(key), v = body ? versionOf(doc) : 0;
+  if (memo && memo.v === v) return memo.fs;
+  const w = new Walker();
+  if (body) forEachBlock(doc, w.fn);
+  else forEachIn(key, [0], w.fn);
+  const fs = w.fields;
+  scanMemo.set(key, {fs, v});
+  return fs;
+}
+
+/** See the header. */
+export function paraFields(p) {
+  if (!isObj(p) || typeof p.text !== 'string') return NONE;
+  let fs = paraMemo.get(p);
+  if (fs !== undefined) return fs;
+  const w = new Walker();
+  w.para(p, null);
+  fs = w.stray || w.stack.length ? null : w.fields;
+  paraMemo.set(p, fs);
+  return fs;
+}
+
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** See the header. */
+export function fieldAt(doc, pos, story) {
+  if (!isObj(pos) || !Number.isInteger(pos.off)) return null;
+  const fs = scan(doc, story);
+  if (!fs.length) return null;
+  const loc = findBlock(doc, pos.id);
+  if (!loc || (loc.story || null) !== (story || null)) return null;
+  const here = {at: loc.at, off: pos.off};
+  for (let i = fs.length - 1; i >= 0; i--) {
+    const f = fs[i];
+    if (cmp(f.begin, here) <= 0 && cmp(here, f.end) <= 0) return f;
+  }
+  return null;
+}

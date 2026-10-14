@@ -5,12 +5,13 @@
 //   stack(L)          lay out L.items from y = L.top + MARGIN; sets
 //                     L.height (L.minHeight of the end + MARGIN) and
 //                     L.wide (px from L.left: the right edge of the
-//                     widest top-level table, 0 without one; D18
-//                     step 4: ./DocLayout's extent reaches it)
+//                     widest root item, a later section's wider
+//                     page too, or top-level table; D18 step 4:
+//                     ./DocLayout's extent reaches it)
 //   stackColumn(L, col, y0) -> bottom  the same for one column (the
 //                     root, or a cell's, ./DocItems) from y0: its
 //                     paragraphs broken at it.w with col.styles
-//                     (L.cacheFor(col.styles), R6), then each item
+//                     (./ItemBreak breakItem, R6), then each item
 //                     decorated and placed; a 'tbl' item is laid out
 //                     where it stands (./TblLayout layoutTable: h);
 //                     returns the y below its last item and gap; a
@@ -24,6 +25,8 @@
 //                     ./FlowDeco flowDeco (page break before, above
 //                     the top border)
 //   MARGIN            24 px above the first item and below the last
+//   PAGE_TOP          8 px of desk above and below a page (Draft's
+//                     one, ./EditPaint; Print layout's, ./PageSheet)
 //
 // A decorator is a function (item, L, acc) -> {gapAbove?, gapBelow?,
 // marks?} or null, called in the order of L.decorators for every
@@ -43,7 +46,9 @@
 // get the document's default tab stop (./TabStops defaultStop:
 // doc.rawSettings, in the reuse key) and L.ns, the scope their
 // pictures are read in (./PicRead docMap).
-// A paragraph is broken at its column's width (it.w, ./DocItems).
+// A paragraph is broken at its column's width (it.w, ./DocItems); one
+// beside floats with its shape (L.wrap: ./WrapPass shapeIn; in a
+// cell too, P12a fix I5).
 // Decorators run per column, neighbours from the item's column;
 // sectDeco and flowDeco only in the root column (no section or page
 // breaks in cells, D17), the others in cells as on the page.
@@ -63,17 +68,21 @@
 // every decorator is asked again for that item. keyOf may read
 // item.deco (the result in hand: ./BorderGroups gives null for an
 // item whose result has no box); the keys kept with a new result
-// are worked out again once it is in item.deco. Pure: no desktop
-// services.
-import {layoutPara} from './LineLayout';
+// are worked out again once it is in item.deco. A root item whose
+// gaps come out other than its kept result's, or a root table whose
+// height changes, moves L.dirtyFrom / L.cleanFrom (./DocItems). Pure:
+// no desktop services.
+import {breakItem} from './ItemBreak';
 import {defaultStop} from './TabStops';
 import {spacingDeco} from './ParaSpace';
 import {sectDeco} from './SectDeco';
 import {flowDeco} from './FlowDeco';
 import {borderDeco} from './BorderGroups';
 import {layoutTable} from './TblLayout';
+import {shapeIn} from './WrapPass';
 
 export const MARGIN = 24;
+export const PAGE_TOP = 8;             // desk above and below a page
 export const DECORATORS = Object.freeze([spacingDeco, borderDeco,
   sectDeco, flowDeco]);
 const NONE = Object.freeze([]);
@@ -148,6 +157,12 @@ function cellDecos(decos) {
   return d;
 }
 
+/** Root item k's height or gaps changed (L.dirtyFrom, ./DocItems). */
+function dirty(L, k) {
+  if (k < L.dirtyFrom) L.dirtyFrom = k;
+  if (k >= L.cleanFrom) L.cleanFrom = k + 1;
+}
+
 /** See the header. */
 export function stack(L) {
   L.defPx = defaultStop(L.doc) / 15;
@@ -160,25 +175,26 @@ export function stack(L) {
 /** See the header. */
 export function stackColumn(L, col, y0) {
   let y = y0;
-  const {metrics} = L;
   const styles = col === L.root ? L.doc.styles : col.styles;
-  const fmt = L.cacheFor(styles);
-  const defPx = L.defPx ?? defaultStop(L.doc) / 15;
   const all = L.decorators || DECORATORS;
   const decos = col === L.root ? all : cellDecos(all);
   const {items} = col;
   for (const it of items) {
     if (it.kind === 'p' && !it.lines) {
-      const l = layoutPara(it.block, styles, it.w, metrics, fmt,
-        it.list || undefined, defPx, L.ns);
+      const l = breakItem(L, it, styles, L.wrap ? shapeIn(L, it.id)
+        : undefined);
       it.lines = l.lines;
       it.h = l.h;
     }
   }
   for (const it of items) {
     if (decos.length) {
-      const keys = keysOf(L, it, decos);
-      if (!fresh(it.deco, keys)) decorate(L, it, decos);
+      const keys = keysOf(L, it, decos), o = it.deco;
+      if (!fresh(o, keys)) {
+        decorate(L, it, decos);
+        if (col === L.root && !(o && o.gapAbove === it.deco.gapAbove
+          && o.gapBelow === it.deco.gapBelow)) dirty(L, it.ci);
+      }
       const d = it.deco;
       it.gapAbove = d.gapAbove;
       it.gapBelow = d.gapBelow;
@@ -191,9 +207,14 @@ export function stackColumn(L, col, y0) {
     it.y = y;
     if (col !== L.root) it.ry = y;
     if (it.kind === 'tbl') {
+      const h0 = it.h;
       it.h = layoutTable(L, it, y);
-      if (col === L.root) L.wide = Math.max(L.wide, it.left + it.width);
+      if (col === L.root) {
+        L.wide = Math.max(L.wide, it.left + it.width);
+        if (it.h !== h0) dirty(L, it.ci);
+      }
     }
+    if (col === L.root) L.wide = Math.max(L.wide, it.x - col.x + it.w);
     y += it.h + it.gapBelow;
   }
   return y;

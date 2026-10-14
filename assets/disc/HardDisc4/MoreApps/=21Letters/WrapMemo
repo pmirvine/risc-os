@@ -1,0 +1,125 @@
+// WrapMemo - what ./WrapPass remembers of the pages it settles (Batch
+// D P12a fix C1): a record for each page start, and whether a page's
+// inputs are still the ones its record was made from.
+//
+//   memoOf(old, ver) -> {known, ver, total}  of wrap old: known
+//       (Map page key -> record, ./ColMemo keyOf) kept, shared by the
+//       wraps that follow (as ./ColMemo's memos); total the passes
+//       made in ./DocVersion ver (0 for a first pass in it)
+//   recFor(L, pg, memo, view) -> record | null  Page pg's record
+//       when its inputs are the ones the record was made from: its
+//       start, the offset of its first line when it starts inside a
+//       paragraph, its parity, body top, frame height, shift and
+//       size, its section's props object, the inputs (./ItemReuse
+//       inp: all but the wrap) of every item it has held since the
+//       record was made, and of the item after its end each time
+//       (the one that did not fit: it decides where the page ends;
+//       P12b fix wave), and the view (./WrapWant viewOf: Map id ->
+//       key) of its paragraphs now where the record expects one (the
+//       view its last pass left: a part changed by another page's
+//       pass starts it again); else null
+//   newRec(L, P, pg, memo) -> a new record for pg (known pruned as
+//       ./ColMemo pruned does), n 0, st 'busy'
+//     record {sig, toks, n, st: 'busy' | 'done' | 'fall', expect,
+//       end, k, cut, seen, ends, cuts, pinned, kept}: n its passes,
+//       expect (Map id -> key), end the page's end when done
+//       (endKey; k its root index, cut whether inside an item), seen
+//       the page states its passes made (a state seen again: a
+//       cycle), ends and cuts its ends and its columns' cut items a
+//       pass, pinned and kept its pins made (./WrapPage); and
+//       (P12b fix) tys: the tables it may hold (Map id -> {pk, y}),
+//       held: those it holds (a Map) or undefined
+//   grow(rec, L, pg)   the inputs of the items pg holds now, and of
+//       the item after its end, added
+//   heldSame(L, pg, rec) -> whether the items record rec of page pg
+//       held past pg's last item in its passes (a page's passes may
+//       hold more than it ends with) have their inputs still (P12b
+//       fix I1: ./WrapPage's settled page, whose own items are the
+//       same while its Page object is, is no longer settled when one
+//       of them changed)
+//   endKey(L, pg) -> where page pg ends, as text
+//
+// Pure: no desktop services.
+import {keyOf, pruned} from './ColMemo';
+
+let SER = 0;
+const SERIAL = new WeakMap();          // object -> number
+
+/** A number for object o (0 for none). */
+function ser(o) {
+  if (!o || typeof o !== 'object') return 0;
+  let n = SERIAL.get(o);
+  if (!n) SERIAL.set(o, n = ++SER);
+  return n;
+}
+
+const inside = (c) => !!(c.line || c.dy || c.cuts);
+const lastOf = (pg) => (inside(pg.end) ? pg.end.k : pg.end.k - 1);
+const inp = (L, k) => (L.items[k] ? L.items[k].inp : -1);
+
+/** See the header. */
+export function memoOf(old, ver) {
+  const ok = !!old && old.known instanceof Map;
+  return {known: ok ? old.known : new Map(), ver,
+    total: ok && old.ver === ver ? old.total : 0};
+}
+
+/** Page pg's inputs but its items' (see the header). */
+function sigOf(L, pg) {
+  const c = pg.start, it = L.items[c.k];
+  const ln = inside(c) && it && it.lines ? it.lines[c.line] : null;
+  return [keyOf(L, pg), (c.cuts || []).join(','), ln ? ln.from : -1,
+    pg.parity, pg.bodyTop, pg.frameH, pg.vShift, pg.w, pg.h,
+    ser(L.sectProps[pg.s])].join('/');
+}
+
+/** See the header. */
+export function recFor(L, pg, memo, view) {
+  const rec = memo.known.get(keyOf(L, pg));
+  if (!rec || rec.sig !== sigOf(L, pg)) return null;
+  const k0 = pg.start.k;
+  for (let j = 0; j < rec.toks.length; j++) {
+    if (inp(L, k0 + j) !== rec.toks[j]) return null;
+  }
+  for (const [id, k] of view) {
+    const e = rec.expect.get(id);
+    if (e !== undefined && e !== k) return null;
+  }
+  return rec;
+}
+
+/** See the header. */
+export function newRec(L, P, pg, memo) {
+  const rec = {sig: sigOf(L, pg), toks: [], n: 0, st: 'busy',
+    expect: new Map(), end: '', k: -1, cut: false, seen: new Set(),
+    ends: [], cuts: [], pinned: false, kept: false};
+  grow(rec, L, pg);
+  pruned(L, P, memo.known).set(keyOf(L, pg), rec);
+  return rec;
+}
+
+/** See the header. */
+export function grow(rec, L, pg) {
+  const k0 = pg.start.k;
+  const end = Math.min(lastOf(pg) + 1, L.items.length - 1);
+  for (let k = k0 + rec.toks.length; k <= end; k++) {
+    rec.toks.push(inp(L, k));
+  }
+}
+
+/** See the header. */
+export function heldSame(L, pg, rec) {
+  const k0 = pg.start.k;
+  for (let j = Math.max(0, lastOf(pg) + 1 - k0); j < rec.toks.length;
+    j++) {
+    if (inp(L, k0 + j) !== rec.toks[j]) return false;
+  }
+  return true;
+}
+
+/** See the header. */
+export function endKey(L, pg) {
+  const c = pg.end, it = L.items[c.k];
+  return [it ? it.id : '', c.line || 0, c.dy || 0,
+    (c.cuts || []).join(',')].join('/');
+}

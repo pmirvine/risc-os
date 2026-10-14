@@ -1,0 +1,202 @@
+// Pages - a document's pages (Batch D, D2 + R6): the cursor pass of
+// ./Paginate over a galley, page by page as they are asked for.
+//
+//   new Pages(G, prev?)  G: ./Paginate's galley (./PageGalley
+//                        galleyOf(L)); prev: the Pages of the
+//                        layout L was made from (reused: D7, below)
+//   P.count              pages worked out so far (all once done)
+//   P.done               every page worked out
+//   P.at(i)    -> Page | null   (works out pages through i first)
+//   P.ensure(i) -> the same: page i worked out at once (the pages
+//                        in and just past the view)
+//   P.step(ms = 2) -> P.done  works out pages for at most ms (one at
+//                        least; a slice of the lazy completion)
+//   P.num(i)   -> string: page i's number as shown ('' for no i)
+//   P.finish() -> P      works out every page
+//   P.kept               pages taken from prev, not worked out
+//   P.list               the Pages worked out so far (read only)
+//   P.version            a number no other Pages object has
+//   P.ofPos(pos, aff = 'down') -> i  the page position pos ({id,
+//                        off}) is on (its caret's line, affinity
+//                        aff), working out pages as far as needed;
+//                        -1 for a position not in the galley
+//   P.atScreen(x, y) -> {i, x, y} | null  the page at sheet point
+//                        (x, y) (R6: tops; x from the page's left
+//                        edge) and the point on it; null in a gap
+//   P.framesOf(pg)       Page pg's frames, built once by this Pages
+//                        (pg.frames asks the Pages holding it)
+//   P.floatsOf(pg)       Page pg's floats (./AnchorPlace
+//                        floatsOn, P12.2), placed once by this
+//                        Pages when first asked for (pg.floats)
+//   P.fragsBuilt         how many pages' frames this Pages built
+//                        (the cursor pass builds none: D7)
+//   totalsOf(P) -> {list}  done Pages P's pages as {s} each
+//                        (memoised per P; the same shape as counts)
+//   P.counts             {list}: the pages of the last Pages before
+//                        it that was done (prev, or prev's counts),
+//                        null when none: what NUMPAGES shows while P
+//                        is not done (D7, ./FieldShow countsOf); each
+//                        page as {s} only (shared, frozen): a Page
+//                        kept would keep its Pages (./PageFrames) and
+//                        through its counts every one before it
+//
+// Page (frozen): {i, s, num, fmt, parity: 'odd'|'even', first,
+// blank, size: {w, h} twips, mar: {top, right, bottom, left, header,
+// footer, gutter} twips (G.geomTw(s): ./SectGeom geomOf's; else the
+// px geometry times 15), start, end (Cursors: ./PageCursor's; in a
+// table a row and the cuts of a split one, ./PageRows, P4.1; reuse
+// compares them by value), top, w, h (px, R6),
+// bodyTop, frameH, y0, vShift, why} (./Paginate's), and pg.frames
+// and pg.floats (not own fields: built when first asked for,
+// ./PageFrames).
+// num counts on from the page before, restarting at the section's
+// pgNumType start on its first page; fmt is the section's pgNumType
+// fmt when it is decimal, upperRoman, lowerRoman, upperLetter or
+// lowerLetter, else 'decimal' (thaiNumbers and the rest: PG16), and
+// num(i) is ./NumFormat formatNumber(num, fmt). A blank page (PG3)
+// has a number (used up) but is not shown: top does not move past
+// it.
+//
+// The Page of a record: ./PageRecord. Reuse of prev (D7):
+// ./PageReuse; frames ./PageFrames; ofPos and atScreen ./PageFind.
+// Pure: no desktop services.
+import {nextPage, cursor, endsGalley} from './Paginate';
+import {own, framesOf} from './PageFrames';
+import {placeOf, pageOfPlace, atScreen} from './PageFind';
+import {reuse, converge} from './PageReuse';
+import {pageOf} from './PageRecord';
+import {formatNumber} from './NumFormat';
+import {inherit} from './LineNumbers';
+import {floatsOn} from './AnchorPlace';
+
+let VERSION = 0;
+const SECT = [];                       // s -> {s}, shared
+const TOTALS = new WeakMap();          // done Pages -> its totals
+
+/** See the header (P.counts too). */
+export function totalsOf(P) {
+  let t = TOTALS.get(P);
+  if (t) return t;
+  const list = P.list.map((pg) => SECT[pg.s] ||
+    (SECT[pg.s] = Object.freeze({s: pg.s})));
+  t = Object.freeze({list: Object.freeze(list)});
+  TOTALS.set(P, t);
+  return t;
+}
+
+const now = () => (typeof performance === 'object'
+  ? performance.now() : Date.now());
+
+export class Pages {
+  constructor(G, prev) {
+    this.G = G;
+    this.list = [];
+    this.seen = [];                  // ./Paginate seen, per page
+    this.last = null;                // the last Page
+    this.from = cursor(0, 0);
+    this.done = false;
+    this.kept = 0;
+    this.old = null;                 // prev's, until converged
+    this.version = ++VERSION;
+    this.framed = new WeakMap();     // Page -> its frames, built
+    this.floated = new WeakMap();    // Page -> its floats, placed
+    this.fragsBuilt = 0;
+    this.counts = prev && prev.list ? (prev.done ? totalsOf(prev)
+      : prev.counts || null) : null;
+    if (prev && prev.list) {
+      reuse(this, prev);
+      inherit(this, prev, this.kept);    // (./LineNumbers' counts)
+    }
+  }
+
+  get count() { return this.list.length; }
+
+  /** Page pg (seen: ./Paginate's) as the next (./PageReuse too). */
+  push(pg, seen) {
+    this.list.push(pg);
+    own(this, pg);
+    this.seen.push(seen);
+    this.last = pg;
+    this.from = pg.end;
+  }
+
+  /** Work out one more page; false when there is none. */
+  more() {
+    if (this.done) return false;
+    const G = this.G;
+    const r = nextPage(G, this.from, this.last);
+    if (!r) {
+      this.done = true;
+      this.old = null;
+      return false;
+    }
+    const pg = pageOf(G, r, this.list.length);
+    if (this.old && converge(this, pg, r.seen)) return true;
+    this.push(pg, r.seen);
+    if (endsGalley(pg, G.items.length)) {
+      this.done = true;
+      this.old = null;
+    }
+    return true;
+  }
+
+  /** See the header. */
+  at(i) {
+    if (!Number.isInteger(i) || i < 0) return null;
+    while (i >= this.list.length && this.more());
+    return this.list[i] || null;
+  }
+
+  /** See the header. */
+  ensure(i) { return this.at(i); }
+
+  /** See the header. */
+  step(ms = 2) {
+    const lim = Number.isFinite(ms) && ms > 0 ? ms : 0;
+    const t0 = now();
+    while (this.more() && now() - t0 < lim);
+    return this.done;
+  }
+
+  /** See the header. */
+  num(i) {
+    const pg = this.at(i);
+    return pg ? formatNumber(pg.num, pg.fmt) : '';
+  }
+
+  /** See the header. */
+  framesOf(pg) {
+    let f = this.framed.get(pg);
+    if (!f) {
+      f = framesOf(this.G, pg);
+      this.framed.set(pg, f);
+      this.fragsBuilt++;
+    }
+    return f;
+  }
+
+  /** See the header. */
+  floatsOf(pg) {
+    let f = this.floated.get(pg);
+    if (!f) {
+      f = floatsOn(this, pg);
+      this.floated.set(pg, f);
+    }
+    return f;
+  }
+
+  /** See the header. */
+  ofPos(pos, aff = 'down') {
+    const c = placeOf(this.G, pos, aff);
+    return c ? pageOfPlace(this, c) : -1;
+  }
+
+  /** See the header. */
+  atScreen(x, y) { return atScreen(this, x, y); }
+
+  /** See the header. */
+  finish() {
+    while (this.more());
+    return this;
+  }
+}

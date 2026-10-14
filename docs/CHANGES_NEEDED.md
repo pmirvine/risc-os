@@ -520,6 +520,10 @@ Playwright suites cannot show this, as they inject the key. No core change is po
 installed or full-screen app might see it). !Letters gives the action a menu route instead (Table > Tab and Insert > Tab,
 shaded unless the caret is in a cell) and the user guide says so.
 
+Batch D's Print layout meets the same with Ctrl-Page Down and Ctrl-Page Up (the next and previous page): Chrome and
+Firefox keep them for their next and previous tab. !Letters gives them Edit > Next page and Edit > Previous page, and
+its guide and `!Help` say a browser may keep the keys.
+
 ## The core has no detachPane — noted by the !Letters formatting work (!Letters)
 **Status:** Open: shared code, not changed by the !Letters work.
 

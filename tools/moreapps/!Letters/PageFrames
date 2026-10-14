@@ -1,0 +1,110 @@
+// PageFrames - a page's frames and fragments (Batch D, D2), built
+// only when asked for (D7: painting, hit testing, a later batch).
+//
+//   asPage(fields) -> the frozen Page of those fields, with
+//       `frames` and `floats` getters (not own enumerable fields: a
+//       Page compares, copies and spreads without them): the frames
+//       (and the floats, ./AnchorPlace, P12.2) of the Page in the
+//       ./Pages that holds it (own(P, pg): the newest one that took
+//       it), built by that Pages and cached there
+//   own(P, pg)     Pages P holds Page pg (./Pages push)
+//   framesOf(G, pg) -> [Frame] (frozen): no frame for a blank page;
+//       a page with columns (pg.cols, ./PageCols, D23): one per
+//       column filled, its x and w, start and end, y bodyTop + its
+//       top and h its h (a band below a continuous break, P10.2:
+//       ./PageBands); else one of the section's first column
+//       (G.geom: x, w), start and end the page's, y bodyTop, h
+//       frameH:
+//     Frame {x, y, w, h, start, end, frags: [Frag]}
+//     Frag  {id, l0, l1, x, y}  root item id's lines l0..l1-1 (a
+//       block without lines: 0, 0; a table also has its rows, P4.1:
+//       {r0, r1, from?, cuts?, heads?}, ./PageRows rowsOn; a floating
+//       table placed on the page, P12.6: float true, y its place in
+//       the flow, every row, the items after it moved up by its
+//       ./PageFill floatSpan as by a band), x the
+//       frame's, y the page y (px from the page's top edge) the
+//       item's galley top falls at: line j is at y + lines[j].y, a
+//       block's top at y. The item is G.items[k] for the place
+//       (./DocLayout L.byId by id: a page kept from an older layout
+//       still finds the new item object)
+//
+// The y rule: bodyTop + vShift + the column's top + (item y - the
+// frame's y0: the page's, or its column's), less the
+// bands of continuous section breaks between the page's first item
+// and this one (./PageFill's rule: a break's band is never placed on
+// a page), plus ./PageRows adjOf for a page that starts inside a
+// table (its repeated header rows and the rest of a cut row come
+// first: the rows after them, and every item below, move by it). A
+// page that starts inside an item (a cut, a split paragraph) has
+// that item's top above the frame; a cut line or block is in the
+// frags of every page it shows on (clipped by the frame), every
+// other line in exactly one. Pure: no desktop services.
+import {geomAt, factsOf, px, floatSpan} from './PageFill';
+import {isTable, adjOf, rowsOn} from './PageRows';
+
+const OWNER = new WeakMap();           // Page -> the Pages holding it
+const NO_FRAMES = Object.freeze([]);
+
+/** See the header. */
+export function own(P, pg) { OWNER.set(pg, P); }
+
+/** See the header. */
+export function asPage(o) {
+  Object.defineProperty(o, 'frames', {enumerable: false,
+    get() {
+      const P = OWNER.get(this);
+      return P ? P.framesOf(this) : null;
+    }});
+  Object.defineProperty(o, 'floats', {enumerable: false,
+    get() {
+      const P = OWNER.get(this);
+      return P ? P.floatsOf(this) : null;
+    }});
+  return Object.freeze(o);
+}
+
+/** The frags of frame fr ({start, end, y0}) of page pg at x (see
+ *  the header). */
+function fragsOf(G, pg, fr, x) {
+  const items = G.items, {start, end} = fr, out = [];
+  const h = fr.h === undefined ? pg.frameH : fr.h;
+  const top = pg.bodyTop + pg.vShift + (fr.top || 0) - fr.y0 +
+    adjOf(items[start.k], start, h);
+  const stop = Math.min(end.k, items.length - 1);
+  let skip = 0;
+  for (let k = start.k; k <= stop; k++) {
+    const last = k === end.k;
+    if (last && !end.line && !end.dy && !end.cuts) break;
+    const it = items[k];
+    if (k > start.k && it.s !== items[k - 1].s) {
+      skip += px(factsOf(G, k - 1).band);
+    }
+    const n = it.lines ? it.lines.length : 0;
+    const l0 = n && k === start.k ? start.line : 0;
+    const l1 = !n ? 0 : last ? end.line + (end.dy ? 1 : 0) : n;
+    const f = {id: it.id, l0, l1, x, y: top + it.y - skip};
+    if (isTable(it)) {
+      Object.assign(f, rowsOn(it, k, start, end, h));
+    }
+    const sp = floatSpan(G, k, h);
+    if (sp !== null) {               // (placed: ./AnchorPlace, P12.6)
+      f.float = true;
+      skip += sp;
+    }
+    out.push(Object.freeze(f));
+  }
+  return Object.freeze(out);
+}
+
+/** See the header. */
+export function framesOf(G, pg) {
+  if (pg.blank) return NO_FRAMES;
+  const g = geomAt(G, pg.s);
+  const col = (g.cols && g.cols[0]) || {x: g.mar.left, w: g.textW};
+  const cs = pg.cols || [{x: col.x, w: col.w, start: pg.start,
+    end: pg.end, y0: pg.y0}];
+  return Object.freeze(cs.map((c) => Object.freeze({x: c.x,
+    y: pg.bodyTop + (c.top || 0), w: c.w,
+    h: c.h === undefined ? pg.frameH : c.h, start: c.start,
+    end: c.end, frags: fragsOf(G, pg, c, c.x)})));
+}

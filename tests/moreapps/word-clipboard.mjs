@@ -22,6 +22,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, numberingXml, stylesXml, p, r, REL } from './build-docx.mjs';
 import { tbl, tr, tc, TABLE_NORMAL, GRID_TABLE_4 } from './tbl-fixtures.mjs';
 import { picDocx, pngBytes } from './pic-fixtures.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const RICH = '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/><w:b/><w:i/><w:color w:val="C00000"/><w:sz w:val="32"/>';
@@ -72,6 +73,7 @@ async function start(page, platform, open) {
   await page.addInitScript((pf) => { Object.defineProperty(Navigator.prototype, 'platform', { get: () => pf, configurable: true }); }, platform);
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: new URL(BASE_URL).origin });
   return page.evaluate(async ([files, open]) => {
     window.__msgs = [];
@@ -461,13 +463,14 @@ try {
     window.__sel('Beta', 0, 0, 0, 6);
     return { caret, sel: look() };
   });
-  ok('Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Word count... with their keys (none for the count)',
+  ok('Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Next page, Previous page, Update field, Update all fields, Word count... with their keys (none for the updates and the count)',
     same(em.caret.map((x) => x.slice(0, 2)), [['Undo', 'Ctrl+Z'], ['Redo', 'Ctrl+Y'], ['Cut', 'Ctrl+X'], ['Copy', 'Ctrl+C'],
       ['Paste', 'Ctrl+V'], ['Select all', 'Ctrl+A'], ['Find...', 'Ctrl+F'], ['Find next', 'Ctrl+G'],
-      ['Find previous', 'Ctrl+Shift+G'], ['Replace...', 'Ctrl+H'], ['Word count...', '']]), em);
-  ok('... Cut and Copy shaded at a caret, not with a selection; Paste and the Find items never',
-    same(em.caret.map((x) => x[2]).slice(2), [true, true, false, false, false, false, false, false, false])
-    && same(em.sel.map((x) => x[2]).slice(2), [false, false, false, false, false, false, false, false, false]), em);
+      ['Find previous', 'Ctrl+Shift+G'], ['Replace...', 'Ctrl+H'], ['Next page', 'Ctrl+PgDn'], ['Previous page', 'Ctrl+PgUp'],
+      ['Update field', ''], ['Update all fields', ''], ['Word count...', '']]), em);
+  ok('... Cut and Copy shaded at a caret, not with a selection; Paste, the Find items and the page items never',
+    same(em.caret.map((x) => x[2]).slice(2), [true, true, false, false, false, false, false, false, false, false, false, false, false])
+    && same(em.sel.map((x) => x[2]).slice(2), [false, false, false, false, false, false, false, false, false, false, false, false, false]), em);
   const menuAt = async (leaf) => {
     const pt = await ev((l) => window.__point(l, 1, 2), leaf);
     await page.mouse.click(pt.x, pt.y, { button: 'middle' });

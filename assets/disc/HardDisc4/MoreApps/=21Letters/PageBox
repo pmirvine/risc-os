@@ -1,0 +1,225 @@
+// PageBox - the Page setup dialogue box (Format > Page setup...;
+// Batch D P4.3, D21): Paper (A4, A5, A3, Letter, Legal, Executive,
+// B5 (JIS), Custom), Width and Height, Orientation (Portrait,
+// Landscape), the Top, Bottom, Left, Right and Gutter margins,
+// Gutter position (Left, Top: the whole document's) and Apply to
+// (This section, This point forward, Whole document). Built by
+// WimpLib Ui/Dialog, at least 3.8 inches (684 px) wide.
+//
+//   pageBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'page:<docKey>'), kept in dw.boxes ('page') so
+//       ./CloseDoc deletes it with the document; asked again while
+//       it is open, the same box comes to the front. Nothing (null)
+//       when the document has no selection.
+//
+// It opens with the values of the sections in scope (./SectSetup
+// valuesOf): a value they do not share is blank (no radio chosen)
+// and stays as each section has it. Apply to starts as This section
+// when the document has more than one section, else Whole document;
+// picking another scope shows that scope's values in the fields not
+// changed yet. Picking a paper puts its size in (the orientation
+// chosen); typing a size shows its paper (to the hundredth of an
+// inch the box shows: ./PageValues paperOf), or Custom; Landscape and
+// Portrait swap the width and height shown. The Gutter position is
+// shaded in a document with no settings part.
+//
+// OK (or Return) sends only what was changed from what the box
+// showed (a length shown to a hundredth of an inch and not touched
+// keeps its exact value) to ./SectSetup setupCmd: one undo step, the
+// box gone. A field that is not a length, a value out of range (the
+// page 1 to 22 inches, margins 0 to 22, top and bottom -22 to 22),
+// or margins that leave a section less than 0.1 inch of text, or
+// This point forward from a table's cell, is not rounded or clamped:
+// OK beeps, says why in the box and keeps it. If the selection or
+// the document changed while the box was open (./TabsBox where), OK
+// beeps, fills the box again from the new selection, says so and
+// keeps it. Cancel, Escape and the close icon change nothing; the
+// caret goes back to the document.
+// In the header and footer mode (the box left open as it was
+// entered) OK beeps and says to leave it first (./TabsBox
+// IN_HDR), the box kept (final fix A F3-I1).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where, IN_HDR} from './TabsBox';
+import {PAPERS, paperOf, valuesOf, whyNot, setupWhy, setupCmd}
+  from './SectSetup';
+
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;   // OK checks, never clamps
+const LENS = ['w', 'h', 'top', 'bottom', 'left', 'right', 'gutter'];
+const SHOWN = [...LENS, 'orient', 'gpos'];
+const idOf = (name) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
+const PAPER_IDS = [...PAPERS.map((p) => ({id: idOf(p.name),
+  text: p.name})), {id: 'custom', text: 'Custom'}];
+const SCOPE_IDS = [{id: 'section', text: 'This section'},
+  {id: 'forward', text: 'This point forward'},
+  {id: 'all', text: 'Whole document'}];
+const len = (name, label, help) => ({kind: 'length', name, label,
+  min: -FIELD_MAX, max: FIELD_MAX, w: 120, help});
+const radio = (name, group, text, help, label) => ({kind: 'radio',
+  name, group, value: name.replace(/^g/, ''), text, help, label});
+const rows = () => [
+  {kind: 'popup', name: 'paper', label: 'Paper', choices: PAPER_IDS,
+    help: 'The size of the paper; Custom: the width and height ' +
+      'given.'},
+  [len('w', 'Width', 'The width of the page: 1 to 22 inches.'),
+    len('h', 'Height', 'The height of the page: 1 to 22 inches.')],
+  [radio('portrait', 'orient', 'Portrait', 'Taller than wide.',
+    'Orientation'),
+  radio('landscape', 'orient', 'Landscape', 'Wider than tall.')],
+  {kind: 'label', text: 'Margins'},
+  [len('top', 'Top', 'The top margin: 0 to 22 inches (a minus ' +
+    'sign: exactly that, even under a tall header).'),
+  len('bottom', 'Bottom', 'The bottom margin: 0 to 22 inches.')],
+  [len('left', 'Left', 'The left margin: 0 to 22 inches.'),
+    len('right', 'Right', 'The right margin: 0 to 22 inches.')],
+  [len('gutter', 'Gutter', 'Extra margin for binding: 0 to 22 ' +
+    'inches.'),
+  radio('gleft', 'gpos', 'Left', 'The gutter at the left edge.',
+    'Gutter position'),
+  radio('gtop', 'gpos', 'Top', 'The gutter at the top (the whole ' +
+    'document).')],
+  {kind: 'popup', name: 'scope', label: 'Apply to', choices: SCOPE_IDS,
+    help: 'The sections that take these values. This point forward ' +
+      'starts a new section at the caret.'},
+  {kind: 'label', name: 'msg', text: '', w: 640},
+];
+const HELP = 'Page setup: the paper, orientation and margins of the ' +
+  'sections.';
+const CHANGED = 'The document changed while the box was open: it ' +
+  'shows the values now. Look again, then click OK.';
+// api -> {at, shown: what the fields read when filled, exact: field
+// -> {read, tw}: a length put in, as it reads and as it is, orient}
+const state = new WeakMap();
+const wired = new WeakSet();
+
+const nul = (x) => (x === null ? undefined : x);
+const paperId = (w, h) => {
+  const n = paperOf(w ?? null, h ?? null);
+  return n === null ? undefined : idOf(n);
+};
+
+/** See the header. */
+export function pageBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `page:${dw.docKey}`,
+    title: 'Page setup', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 684});
+  box(dw, 'page', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, v);
+  api.set('scope', v.d.doc.sections.length > 1 ? 'section' : 'all');
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Show the values of the scope picked; only the fields still as
+ *  shown when `keep` (a change of scope). */
+function refill(api, v, keep) {
+  const st = state.get(api) || {};
+  const q = valuesOf(v.d.doc, v.sel, api.get('scope')) || {};
+  const now = {...q, gpos: q.gutterTop ? 'top' : 'left'};
+  const exact = keep ? st.exact : {};
+  // (a field changed by hand keeps its value and what it was)
+  const shown = keep ? {...st.shown} : {};
+  const base = keep ? {...st.base} : {};
+  for (const k of SHOWN) {
+    if (keep && api.get(k) !== st.shown[k]) continue;
+    if (LENS.includes(k)) put(api, exact, k, nul(now[k]));
+    else api.set(k, nul(now[k]));
+    shown[k] = api.get(k);
+    base[k] = nul(now[k]);
+  }
+  const doc = v.d.doc, has = !!(doc.rawSettings && doc.meta &&
+    doc.meta.settingsPart);
+  api.shade('gleft', !has);
+  api.shade('gtop', !has);
+  api.set('paper', paperId(api.get('w'), api.get('h')));
+  api.set('msg', '');
+  state.set(api, {at: where(v), shown, base, exact,
+    orient: api.get('orient')});
+}
+
+/** Put twips tw in length field k, remembering it exactly. */
+function put(api, exact, k, tw) {
+  api.set(k, tw);
+  exact[k] = {read: api.get(k), tw};
+}
+
+/** The twips field k means when it reads `read` (a value put in and
+ *  not changed since: the exact one). */
+const twOf = (exact, k, read) => (exact[k] && exact[k].read === read
+  ? exact[k].tw : read);
+
+/** The values for setupCmd: what changed from what was shown. */
+function changes(values, st) {
+  const out = {}, shown = st.shown;
+  for (const k of LENS) {
+    const tw = twOf(st.exact, k, values[k]);
+    out[k] = tw === undefined || tw === st.base[k] ? null : tw;
+  }
+  out.orient = values.orient === shown.orient ? null
+    : nul(values.orient) ?? null;
+  out.gutterTop = values.gpos === shown.gpos || !values.gpos ? null
+    : values.gpos === 'top';
+  return out;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'scope') refill(api, v, true);
+    else if (name === 'paper') {
+      const p = PAPERS.find((x) => idOf(x.name) === value);
+      if (!p) return;
+      const wide = api.get('orient') === 'landscape';
+      put(api, st.exact, 'w', wide ? p.h : p.w);
+      put(api, st.exact, 'h', wide ? p.w : p.h);
+    } else if (name === 'orient') {
+      if (value === st.orient) return;
+      st.orient = value;
+      const w = twOf(st.exact, 'w', api.get('w'));
+      put(api, st.exact, 'w', nul(twOf(st.exact, 'h', api.get('h'))));
+      put(api, st.exact, 'h', nul(w));
+      api.set('paper', paperId(api.get('h'), api.get('w')));
+    } else if (name === 'w' || name === 'h') {
+      api.set('paper', paperId(api.get('w'), api.get('h')));
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (v.hdr) return no(IN_HDR);      // (the section's: F3-I1)
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v);
+      return no(CHANGED);
+    }
+    for (const k of LENS) {
+      if (values[k] === null) return no(whyNot({[k]: NaN}), k);
+    }
+    const cmd = changes(values, st);
+    for (const k of LENS) {
+      const why = whyNot({[k]: cmd[k]});
+      if (why) return no(why, k);
+    }
+    const scope = values.scope;
+    const why = setupWhy(v.d.doc, v.sel, cmd, scope);
+    if (why) return no(why);
+    const out = v.typing.command(() => setupCmd(v.d, v.sel, cmd,
+      scope));
+    if (!out) return no(setupWhy(v.d.doc, v.sel, cmd, scope) || '');
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

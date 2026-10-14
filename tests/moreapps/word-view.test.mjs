@@ -60,6 +60,24 @@ describe('Info', () => {
     assert.equal(summary(await doc(p(r('a')))),
       '1 paragraph, no preserved items, fonts: Carlito');
   });
+  it('lists the fonts of stories (headers, footers) too', async () => {
+    const d = await doc(p(r('body')));
+    const hdr = await doc(p(r('head', '<w:rFonts w:ascii="Cambria" ' +
+      'w:hAnsi="Cambria"/>')) + TBL);
+    const story = {part: 'word/header1.xml', kind: 'hdr',
+      blocks: hdr.sections[0].blocks};
+    const withStories = {...d,
+      stories: new Map([['word/header1.xml', story]])};
+    const f = facts(withStories);
+    assert.deepEqual(f.fonts, ['Caladea', 'Carlito']);
+    // only fonts: paragraphs and kept items stay the body's
+    assert.equal(f.paragraphs, 1);
+    assert.equal(f.preserved, 0);
+    // an empty Map (or none) changes nothing
+    assert.deepEqual(facts({...d, stories: new Map()}).fonts,
+      ['Carlito']);
+    assert.deepEqual(facts(d).fonts, ['Carlito']);
+  });
   it('names kinds', () => {
     assert.equal(kindOf({name: 'w:sdt', attrs: [], children: []}),
       'content control');

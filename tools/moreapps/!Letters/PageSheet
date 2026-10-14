@@ -1,0 +1,108 @@
+// PageSheet - where Print layout's pages lie in the work area (Batch
+// D, D30 + R6): stacked down from PAGE_TOP below L.top, with
+// PAGE_GAP of desk between them (./Paginate: Page.top), each centred
+// in the view (L.width; MARGIN at least from the left edge), on
+// whole pixels. A blank page (PG3) is not shown: it takes no room.
+//
+//   sheetOf(L, P) -> S   (P: L's ./Pages)
+//     S.rect(pg)   -> {x, y, w, h}  page pg's rectangle in the work
+//                     area (its edges rounded to whole px)
+//     S.pagesIn(y0, y1) -> [i]  the shown pages that meet band
+//                     y0..y1, in order; pages are worked out as far
+//                     as y1 (cursors only: no frames are built)
+//     S.near(y)    -> i | -1  the shown page at y; in the desk
+//                     between two, the nearer (the upper on a tie);
+//                     above the first, the first; past the last, the
+//                     last; -1 for no page or y not finite
+//     S.extent()   -> {w, h}  the work area's: as far down as the
+//                     pages worked out so far reach, and PAGE_TOP
+//                     more (D34: it grows as they are); as wide as
+//                     the view, or as the widest section's page (or
+//                     L.wide, the widest item, from its column)
+//                     centred, and MARGIN more
+//
+// Pure: no desktop services.
+import {MARGIN, PAGE_TOP} from './DocStack';
+
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** See the header. */
+export function sheetOf(L, P) {
+  const top0 = () => (L.top || 0) + PAGE_TOP;
+  const left = (w) => Math.round(Math.max(MARGIN,
+    ((L.width || 0) - w) / 2));
+  const rect = (pg) => {
+    const t = top0(), y = t + Math.round(pg.top);
+    return {x: left(pg.w), y, w: Math.round(pg.w),
+      h: t + Math.round(pg.top + pg.h) - y};
+  };
+  /** Pages worked out until a shown one starts past y (or all). */
+  const reach = (y) => {
+    for (;;) {
+      const l = P.last;
+      if (P.done || (l && !l.blank && rect(l).y > y)) return;
+      if (!P.more()) return;
+    }
+  };
+  /** The last page whose top is at or above y (-1: none). */
+  const upTo = (y) => {
+    const ps = P.list;
+    let lo = 0, hi = ps.length - 1, r = -1;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      if (rect(ps[m]).y <= y) {
+        r = m;
+        lo = m + 1;
+      } else hi = m - 1;
+    }
+    return r;
+  };
+  return Object.freeze({
+    rect,
+    pagesIn(y0, y1) {
+      if (!(y0 < y1)) return [];
+      reach(y1);
+      const ps = P.list, out = [];
+      for (let i = Math.max(0, upTo(y0)); i < ps.length; i++) {
+        if (ps[i].blank) continue;
+        const r = rect(ps[i]);
+        if (r.y >= y1) break;
+        if (r.y + r.h > y0) out.push(i);
+      }
+      return out;
+    },
+    near(y) {
+      if (!fin(y)) return -1;
+      reach(y);
+      const ps = P.list;
+      let i = upTo(y);
+      while (i >= 0 && ps[i].blank) i--;
+      let n = i + 1;
+      while (n < ps.length && ps[n].blank) n++;
+      if (i < 0) return n < ps.length ? n : -1;
+      const a = rect(ps[i]), bot = a.y + a.h;
+      if (y < bot || n >= ps.length) return i;
+      return y - bot <= rect(ps[n]).y - y ? i : n;
+    },
+    extent() {
+      if (!P.count) P.at(0);
+      let h = top0() + PAGE_TOP;
+      for (let i = P.count - 1; i >= 0; i--) {
+        const pg = P.list[i];
+        if (pg.blank) continue;
+        const r = rect(pg);
+        h = r.y + r.h + PAGE_TOP;
+        break;
+      }
+      let right = 0;
+      for (let s = 0, g; (g = L.geom(s)); s++) {
+        const w = g.size.w;
+        const cx = g.cols && g.cols[0] ? g.cols[0].x : g.mar.left;
+        right = Math.max(right, left(w) + Math.max(w,
+          cx + (L.wide || 0)));
+      }
+      return {w: Math.max(L.width || 0, Math.ceil(right + MARGIN)),
+        h: Math.ceil(h)};
+    },
+  });
+}

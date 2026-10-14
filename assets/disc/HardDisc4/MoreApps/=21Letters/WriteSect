@@ -1,0 +1,110 @@
+// WriteSect - the field elements of a section's props (./ReadSect),
+// for ./WriteProps sectPrNode.
+//
+//   sectFields(props) -> [node]  one element per field (not extra or
+//       units), unordered (the caller orders them: ./OrderSect);
+//       DocxError 'bad-model' for a field of the wrong type, a key
+//       the model does not have, or units not of the form below
+//
+// Each field is written with the value syntax ./ReadSect reads, so
+// it reads back equal; attributes in the order Word writes them,
+// booleans as "1" / "0". units {pgSz?, pgMar?, lnNumType?: {key:
+// string}, cols?: {space?, col?: [{w?, space?}]}}: a w:pgSz or
+// w:pgMar value, the w:lnNumType distance, or a w:cols w:space or
+// w:col w / w:space (P10 fix I3, by index), is written as the
+// string read (with its unit) while ./TabStops twipsOf of that
+// string is still the value; a value a command changed is written
+// in twips.
+// Pure: no desktop services.
+import {W, onOff} from './Wml';
+import {DocxError} from './DocxError';
+import {typeNode} from './WritePropsMore';
+import {twipsOf} from './TabStops';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const isInt = (v) => Number.isSafeInteger(v);
+const isStr = (v) => typeof v === 'string';
+const isBool = (v) => typeof v === 'boolean';
+const bad = (k) => new DocxError('bad-model', 'section: bad ' + k);
+
+/** v's attributes in the order of `kinds` (key -> type test), as
+ *  [w:key, value] pairs; null when v is not such an object. */
+function pairs(v, kinds, units) {
+  if (!isObj(v)) return null;
+  for (const k of Object.keys(v)) {
+    if (!Object.hasOwn(kinds, k) || !kinds[k](v[k])) return null;
+  }
+  return Object.keys(kinds).filter((k) => v[k] !== undefined)
+    .map((k) => {
+      const u = units && Object.hasOwn(units, k) ? units[k] : null;
+      const x = isBool(v[k]) ? (v[k] ? 1 : 0) : v[k];
+      return ['w:' + k, u !== null && twipsOf(u) === x ? u : x];
+    });
+}
+
+const attrs = (name, kinds) => (v, units) => {
+  const a = pairs(v, kinds, units);
+  return a && W(name, a);
+};
+
+const MAR = Object.fromEntries(['top', 'right', 'bottom', 'left',
+  'header', 'footer', 'gutter'].map((k) => [k, isInt]));
+const COL = {w: isInt, space: isInt};
+const COLS = {num: isInt, sep: isBool, space: isInt,
+  equalWidth: isBool};
+
+const cols = (v, units) => {
+  if (!isObj(v)) return null;
+  const {col, ...rest} = v, us = units && units.col;
+  const a = pairs(rest, COLS, units);
+  if (!a || (col !== undefined && !Array.isArray(col))) return null;
+  const kids = (col || []).map((c, i) => pairs(c, COL, us && us[i]));
+  if (kids.includes(null)) return null;
+  return W('cols', a, ...kids.map((c) => W('col', c)));
+};
+
+const WRITE = {
+  pgSz: attrs('pgSz', {w: isInt, h: isInt, orient: isStr,
+    code: isInt}),
+  pgMar: attrs('pgMar', MAR),
+  cols,
+  pgNumType: attrs('pgNumType', {fmt: isStr, start: isInt,
+    chapStyle: isInt, chapSep: isStr}),
+  lnNumType: attrs('lnNumType', {countBy: isInt, start: isInt,
+    distance: isInt, restart: isStr}),
+  vAlign: (v) => isStr(v) ? W('vAlign', {'w:val': v}) : null,
+  titlePg: (v) => isBool(v) ? onOff('titlePg', v) : null,
+  type: typeNode,
+};
+const UNITS = ['pgSz', 'pgMar', 'lnNumType', 'cols'];
+const strs = (u) => isObj(u) && Object.values(u).every(isStr);
+
+/** Throw unless units is absent or {pgSz?, pgMar?, lnNumType?: {k:
+ *  string}, cols?: {space?: string, col?: [{w?, space?: string}]}}. */
+function checkUnits(units) {
+  if (units === undefined) return;
+  if (!isObj(units)) throw bad('units');
+  for (const [f, u] of Object.entries(units)) {
+    const {col, ...rest} = f === 'cols' && isObj(u) ? u : {u};
+    if (!UNITS.includes(f) || !strs(f === 'cols' ? rest : u) ||
+      (col !== undefined && !(Array.isArray(col) && col.every(strs))))
+      throw bad('units');
+  }
+}
+
+/** See the header. */
+export function sectFields(props) {
+  checkUnits(props.units);
+  const out = [];
+  for (const k of Object.keys(props)) {
+    if (k === 'extra' || k === 'units' || props[k] === undefined)
+      continue;
+    const make = Object.hasOwn(WRITE, k) ? WRITE[k] : null;
+    const node = make && make(props[k], props.units &&
+      props.units[k]);
+    if (!node) throw bad(k);
+    out.push(node);
+  }
+  return out;
+}

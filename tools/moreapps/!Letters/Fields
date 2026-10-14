@@ -1,0 +1,220 @@
+// Fields - the field evaluators (Batch D, D17): the one registry of
+// what a field shows when computed (D18) or updated (D19).
+//
+//   REGISTRY  Map name -> {eval(ctx, f) -> string | null,
+//             pageDependent, volatile}  (frozen entries), Batch D's:
+//     PAGE          ctx.page's number (./Pages: pg.num in the
+//                   section's pgNumType fmt, ./NumFormat)
+//     NUMPAGES      the pages worked out (ctx.pages.count; blank
+//                   pages of odd and even breaks counted)
+//     SECTIONPAGES  the pages of ctx.page's section
+//     SECTION       ctx.page's section + 1 (no page: ctx.section +
+//                   1)
+//     DATE, TIME    ctx.now (./FieldDates DATE_PICTURE and
+//                   TIME_PICTURE without \@)
+//     CREATEDATE, SAVEDATE, PRINTDATE  core.xml created, modified,
+//                   lastPrinted (STAMP_PICTURE without \@; null when
+//                   missing: the stored result stays)
+//     AUTHOR, TITLE, SUBJECT, KEYWORDS, LASTSAVEDBY  core.xml
+//                   creator, title, subject, keywords,
+//                   lastModifiedBy ('' when missing); null with
+//                   an argument (Word would SET the property) or
+//                   with neither ctx.doc nor ctx.meta
+//     FILENAME      the leaf of ctx.path (after its last '.' or
+//                   ':'); \p: ctx.path, the RISC OS path; null when
+//                   the document has none
+//     NUMWORDS      ./WordCount count(ctx.doc).words (memoised
+//                   per doc.sections at its ./DocVersion)
+//     pageDependent: PAGE NUMPAGES SECTIONPAGES SECTION; volatile:
+//     DATE TIME. The page fields need ctx.page (NUMPAGES ctx.pages)
+//     and are null without (Draft: no pages).
+//   evaluate(ctx, f) -> string | null   the text field f (./FieldScan
+//     Field: its instr and lock) shows: null for a locked field, a
+//     name with no evaluator (PAGEREF, TOC, REF, MERGEFIELD, IF, =,
+//     INCLUDETEXT, INCLUDEPICTURE, DDE ...: never evaluated, nothing
+//     fetched or run), an instruction ./FieldParse cannot read, or
+//     a switch that cannot be applied
+//   entryOf(f) -> the REGISTRY entry of field f's name, or null
+//     (also for a field that is not an object or has no instr)
+//   ctx = {doc, pages?, page?, section?, now, meta?, path?}
+//     now   a Date given by the caller (the clock is never read)
+//     meta  core properties in place of ./FieldDates coreOf(doc)
+//     path  the document's RISC OS path, or none (never saved)
+// An instruction is parsed once per text (frozen, shared; at most
+// MAX_TEXTS 4096 kept, then the memo starts again).
+// Switches: \# (./FieldFormat formatNumeric) on a number, \@
+// (./FieldDates formatDate) on a date, then every \* (formatGeneral)
+// in order. Pure: no desktop services.
+import {parse} from './FieldParse';
+import {formatGeneral, formatNumeric, hasNumberFormat}
+  from './FieldFormat';
+import {formatDate, coreOf, DATE_PICTURE, TIME_PICTURE,
+  STAMP_PICTURE} from './FieldDates';
+import {formatNumber} from './NumFormat';
+import {count} from './WordCount';
+import {versionOf} from './DocVersion';
+
+const parsed = new WeakMap();
+const words = new WeakMap();
+const texts = new Map();               // instruction -> parsed, frozen
+export const MAX_TEXTS = 4096;         // (then the memo starts again)
+
+/** p and its arrays and switches frozen (shared by every field of
+ *  that instruction). */
+function frozen(p) {
+  for (const s of p.switches) Object.freeze(s);
+  Object.freeze(p.args);
+  Object.freeze(p.switches);
+  return Object.freeze(p);
+}
+
+/** f's instruction parsed (memoised per field object and per
+ *  instruction text: a keystroke's new field objects of the same
+ *  instructions parse nothing again; final fix A F2-I2). */
+function parsedOf(f) {
+  let p = parsed.get(f);
+  if (!p) {
+    p = texts.get(f.instr);
+    if (!p) {
+      if (texts.size >= MAX_TEXTS) texts.clear();
+      texts.set(f.instr, p = frozen(parse(f.instr)));
+    }
+    parsed.set(f, p);
+  }
+  return p;
+}
+
+/** The argument of p's first switch sw, or undefined. */
+function argOf(p, sw) {
+  const s = p.switches.find((x) => x.sw === sw);
+  return s ? s.arg : undefined;
+}
+
+/** The text of number n (default text def) under p's switches. */
+function numberOut(n, def, p) {
+  if (!Number.isFinite(n)) return null;
+  const pic = argOf(p, '\\#');
+  if (typeof pic === 'string') {
+    const s = formatNumeric(n, pic);
+    return s === null ? null : formatGeneral(s, p.switches);
+  }
+  return formatGeneral(hasNumberFormat(p.switches) ? n : def,
+    p.switches);
+}
+
+/** The text of date d (default picture def) under p's switches. */
+function dateOut(d, def, p) {
+  const pic = argOf(p, '\\@');
+  const s = formatDate(d, typeof pic === 'string' ? pic : def);
+  return s === null ? null : formatGeneral(s, p.switches);
+}
+
+const pageOf = (ctx) => (ctx.page && Number.isSafeInteger(ctx.page.num)
+  ? ctx.page : null);
+const pagesOf = (ctx) => (ctx.pages && Array.isArray(ctx.pages.list)
+  ? ctx.pages : null);
+const metaOf = (ctx) => (ctx.meta && typeof ctx.meta === 'object'
+  ? ctx.meta : ctx.doc ? coreOf(ctx.doc) : null);
+const isDate = (d) => d instanceof Date && !Number.isNaN(d.getTime());
+
+function page(ctx, p) {
+  const pg = pageOf(ctx);
+  return pg ? numberOut(pg.num, formatNumber(pg.num, pg.fmt), p)
+    : null;
+}
+
+function numPages(ctx, p) {
+  const P = pagesOf(ctx);
+  return P ? numberOut(P.list.length, String(P.list.length), p) : null;
+}
+
+function sectionPages(ctx, p) {
+  const P = pagesOf(ctx), pg = pageOf(ctx);
+  if (!P || !pg) return null;
+  let n = 0;
+  for (const x of P.list) if (x.s === pg.s) n++;
+  return numberOut(n, String(n), p);
+}
+
+function section(ctx, p) {
+  const pg = pageOf(ctx);
+  const s = pg ? pg.s : ctx.section;
+  return Number.isSafeInteger(s) && s >= 0
+    ? numberOut(s + 1, String(s + 1), p) : null;
+}
+
+const now = (pic) => (ctx, p) => (isDate(ctx.now)
+  ? dateOut(ctx.now, pic, p) : null);
+
+const stamp = (key) => (ctx, p) => {
+  const m = metaOf(ctx), d = m && m[key];
+  return isDate(d) ? dateOut(d, STAMP_PICTURE, p) : null;
+};
+
+const prop = (key) => (ctx, p) => {
+  const m = metaOf(ctx);
+  if (!m || p.args.length) return null;
+  const v = m[key];
+  return formatGeneral(typeof v === 'string' ? v : '', p.switches);
+};
+
+function filename(ctx, p) {
+  const path = ctx.path;
+  if (typeof path !== 'string' || !path) return null;
+  const full = p.switches.some((x) => x.sw === '\\p');
+  const leaf = path.slice(Math.max(path.lastIndexOf('.'),
+    path.lastIndexOf(':')) + 1);
+  return formatGeneral(full ? path : leaf, p.switches);
+}
+
+function numWords(ctx, p) {
+  const doc = ctx.doc;
+  if (!doc || !Array.isArray(doc.sections)) return null;
+  const v = versionOf(doc), m = words.get(doc.sections);
+  let n = m && m.v === v ? m.n : undefined;
+  if (n === undefined) {
+    n = count(doc).words;
+    words.set(doc.sections, {n, v});
+  }
+  return numberOut(n, String(n), p);
+}
+
+const entry = (fn, pageDependent = false, volatile = false) =>
+  Object.freeze({eval: (ctx, f) => fn(ctx, parsedOf(f)),
+    pageDependent, volatile});
+
+export const REGISTRY = new Map([
+  ['PAGE', entry(page, true)],
+  ['NUMPAGES', entry(numPages, true)],
+  ['SECTIONPAGES', entry(sectionPages, true)],
+  ['SECTION', entry(section, true)],
+  ['DATE', entry(now(DATE_PICTURE), false, true)],
+  ['TIME', entry(now(TIME_PICTURE), false, true)],
+  ['CREATEDATE', entry(stamp('created'))],
+  ['SAVEDATE', entry(stamp('modified'))],
+  ['PRINTDATE', entry(stamp('lastPrinted'))],
+  ['FILENAME', entry(filename)],
+  ['AUTHOR', entry(prop('creator'))],
+  ['TITLE', entry(prop('title'))],
+  ['SUBJECT', entry(prop('subject'))],
+  ['KEYWORDS', entry(prop('keywords'))],
+  ['LASTSAVEDBY', entry(prop('lastModifiedBy'))],
+  ['NUMWORDS', entry(numWords)],
+]);
+
+/** See the header. */
+export function entryOf(f) {
+  if (!f || typeof f !== 'object' || typeof f.instr !== 'string')
+    return null;
+  return REGISTRY.get(parsedOf(f).name) || null;
+}
+
+/** See the header. */
+export function evaluate(ctx, f) {
+  if (!ctx || typeof ctx !== 'object' || !f || typeof f !== 'object' ||
+    f.lock || typeof f.instr !== 'string') return null;
+  const e = REGISTRY.get(parsedOf(f).name);
+  if (!e) return null;
+  const s = e.eval(ctx, f);
+  return typeof s === 'string' ? s : null;
+}

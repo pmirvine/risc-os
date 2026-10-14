@@ -24,6 +24,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { tbl, tr, tc, tblDocx, TABLE_NORMAL, TABLE_GRID } from './tbl-fixtures.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const LOOK = '<w:tblW w:w="0" w:type="auto"/><w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" '
   + 'w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>';
@@ -65,6 +66,7 @@ const press = async (k) => { await page.keyboard.press(k); await settle(); };
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev((files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -181,7 +183,7 @@ try {
   await closeMenu();
   ok('the window menu has Table after Format; its items in order, Insert table... live, all the others shaded outside a '
     + 'table; Split table shows Ctrl+Shift+Enter, Tab Ctrl+Tab',
-  same(top.slice(6, 10), ['Insert', 'Format', 'Table', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
+  same(top.slice(6, 12), ['Insert', 'View', 'Outline', 'Format', 'Table', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
     && same(tm0.map((x) => x[1]), SHOWN.map((t) => t !== 'Insert table...'))
     && tm0.find((x) => x[0] === 'Split table')[2] === 'Ctrl+Shift+Enter' && tm0.find((x) => x[0] === 'Tab')[2] === 'Ctrl+Tab'
     && same(sub0.map((x) => x[0]), ['Rows above', 'Rows below', 'Columns to the left', 'Columns to the right'])

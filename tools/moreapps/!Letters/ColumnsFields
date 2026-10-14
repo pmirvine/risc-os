@@ -1,0 +1,163 @@
+// ColumnsFields - the fields of the Columns box (./ColumnsBox; Batch
+// D P10.4, D23), split from it (P10 fix): the widths and spacings
+// shown, the preset they are, and what OK sends.
+//
+//   W, S                the width and spacing fields of rows 1-3
+//   state               WeakMap api -> {at, q: ./SectSetup colsOf's,
+//                       shown: {num, equal, sep}, exact: field ->
+//                       {read, tw}, touched: widths or spacings put
+//                       in since filled}
+//   put(api, k, tw), twOf(api, k)  a length field set to twips tw
+//                       (remembered exactly) and read back (the
+//                       exact twips while not changed)
+//   showCols(api, col, n)  columns col (n) shown, what cannot be
+//                       changed shaded, the preset marked
+//   colsShown(api, n)   the columns shown [{w, space}] (past the
+//                       third the document's own), null for a blank
+//   markPreset(api)     the preset radio the values shown are
+//   spaceNow(api)       the spacing equal columns take
+//   evenly(api, n)      n columns shown as Equal column width asks
+//   changes(api, values) -> the values for columnsCmd: what changed
+//                       from what was shown
+//   fillState(api, q, at)  the box filled with q (./SectSetup colsOf's;
+//                       null: all blank) for the selection at
+//   blankWhy(api, values) -> the field OK refuses as blank, or null:
+//                       Number of columns or a Width or Spacing not
+//                       shaded that is blank now but was not when
+//                       shown; one shown blank (a value the
+//                       sections in scope do not share) and left
+//                       blank keeps each section's own (P10 fix M3)
+//
+// Pure: the dialog api is handed in; no desktop services.
+// colsShown is used inside this module only (not exported).
+import {PRESETS, presetOf, evenCols} from './SectSetup';
+
+export const ROWS = 3;                       // columns shown
+export const W = ['w1', 'w2', 'w3'], S = ['s1', 's2', 's3'];
+export const state = new WeakMap();
+
+/** Put twips tw in length field k, remembering it exactly. */
+export function put(api, k, tw) {
+  const st = state.get(api);
+  api.set(k, tw);
+  st.exact[k] = {read: api.get(k), tw};
+}
+
+/** The twips length field k means (a value put in, not changed since:
+ *  the exact one). */
+export function twOf(api, k) {
+  const read = api.get(k), x = state.get(api).exact[k];
+  return x && x.read === read ? x.tw : read;
+}
+
+/** Show columns col (n of them) and shade what cannot be changed. */
+export function showCols(api, col, n) {
+  const equal = api.get('equal') !== false;
+  for (let i = 0; i < ROWS; i++) {
+    const c = col && i < n ? col[i] : null;
+    put(api, W[i], c ? c.w : undefined);
+    put(api, S[i], c && i < n - 1 ? c.space : undefined);
+    api.shade(W[i], equal || i >= n);
+    api.shade(S[i], i >= n - 1 || (equal && i > 0));
+  }
+  api.shade('equal', !(n >= 2 && n <= ROWS) && equal);
+  state.get(api).touched = true;
+  markPreset(api);
+}
+
+/** The columns shown [{w, space}] (n of them; past the third the
+ *  document's own), or null when a field is blank. */
+function colsShown(api, n) {
+  const st = state.get(api), out = [];
+  for (let i = 0; i < n; i++) {
+    if (i >= ROWS) {
+      const c = st.q.col && st.q.col[i];
+      if (!c) return null;
+      out.push(c);
+      continue;
+    }
+    const w = twOf(api, W[i]), s = i < n - 1 ? twOf(api, S[i]) : 0;
+    if (typeof w !== 'number' || typeof s !== 'number') return null;
+    out.push({w, space: s});
+  }
+  return out;
+}
+
+/** Choose the preset radio the values shown are. */
+export function markPreset(api) {
+  const st = state.get(api), n = api.get('num');
+  const equal = api.get('equal') !== false, col = colsShown(api, n);
+  let on;
+  for (const id of PRESETS) {
+    const p = col && col.length && presetOf(id, st.q.textW,
+      col[0].space);
+    if (p && p.num === n && p.equal === equal && (equal ||
+      p.col.every((c, i) => c.w === col[i].w))) on = id;
+  }
+  api.set('preset', on);
+}
+
+/** The spacing equal columns take: the first Spacing, or the
+ *  document's (0.5 inch when none). */
+export function spaceNow(api) {
+  const s = twOf(api, 's1'), q = state.get(api).q;
+  return typeof s === 'number' && s >= 0 ? s : q.space ?? 720;
+}
+
+/** Show n columns as `equal` asks (even widths, typed when not). */
+export function evenly(api, n) {
+  const tw = state.get(api).q.textW;
+  if (!Number.isSafeInteger(n) || n < 1 || n > 45 || !tw) return;
+  if (n === 1 || n > ROWS) api.set('equal', true);
+  showCols(api, evenCols(n, spaceNow(api), tw), n);
+}
+
+/** The values for columnsCmd: what changed from what was shown. */
+export function changes(api, values) {
+  const st = state.get(api), sh = st.shown, out = {};
+  for (const k of ['num', 'equal', 'sep']) {
+    out[k] = values[k] === sh[k] || values[k] === undefined ? null
+      : values[k];
+  }
+  const n = values.num, equal = values.equal !== false;
+  out.space = null;
+  out.col = null;
+  if (!st.touched && out.num === null && out.equal === null) return out;
+  if (equal) {
+    const s = twOf(api, 's1');
+    if (n > 1 && s !== (st.q.col ? st.q.col[0].space : null))
+      out.space = s;
+  } else out.col = colsShown(api, n) ?? [];
+  return out;
+}
+
+const nul = (x) => (x === null ? undefined : x);
+
+/** See the header. */
+export function fillState(api, q0, at) {
+  const q = q0 || {num: null, equal: null, space: null, col: null,
+    sep: null};
+  const st = {at, q, exact: {}, touched: false};
+  api.set('num', nul(q.num));
+  api.set('equal', nul(q.equal));
+  api.set('sep', nul(q.sep));
+  st.shown = {num: api.get('num'), equal: api.get('equal'),
+    sep: api.get('sep')};
+  state.set(api, st);
+  showCols(api, q.col, q.num ?? 0);
+  st.touched = false;
+  api.set('msg', '');
+}
+
+/** See the header. */
+export function blankWhy(api, values) {
+  const st = state.get(api), num = values.num;
+  if (num === null ? st.shown.num !== null : !Number.isSafeInteger(num))
+    return 'num';
+  for (const k of [...W, ...S]) {
+    const ic = api.win.iconByName(k), x = st.exact[k];
+    if (values[k] === null && !(ic && ic.shaded) &&
+      !(x && x.tw === undefined)) return k;
+  }
+  return null;
+}

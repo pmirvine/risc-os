@@ -3,11 +3,24 @@
 //
 //   picAt(L, x, y) -> {pos: {id, off}, item, line, pi, rect} | null
 //       the picture shown at layout point x, y of ./DocLayout L
-//       (./Zoom toLayout of a window point): item its line item
+//       (./Zoom toLayout of a window point; found at the galley
+//       point ./Place toGalley gives): item its line item
 //       (kind 'pic'), line its line, pi its paragraph's L.items
 //       entry, pos where it is (off: the picture's U+FFFC), rect
-//       {x, y, w, h} its box in layout coordinates (as ./PicPaint
-//       draws it: standing on the baseline)
+//       {x, y, w, h} its box in layout coordinates, where the
+//       layout's placement puts its line (L.place lineAt, D4; as
+//       ./PicPaint draws it: standing on the baseline). In Print
+//       layout a floating picture placed on its page (P12.2,
+//       ./AnchorPlace: its line holds a zero-width 'anchor' item)
+//       is found where it is drawn: rect its box on the page, item
+//       its anchor item as kind 'pic' with pic (the float's, with
+//       floating true), float its ./AnchorPlace Float (P12.5); the
+//       floats in front first, the top one first, then the
+//       pictures in lines, then those behind text where the point
+//       is on no text of a line (Word's: a click on text over a
+//       picture behind it puts the caret there; P12a fix I2: the
+//       picture is selected where there is no text, or from the
+//       keyboard, its anchor selected: selectedPic)
 //   selectedPic(L, sel) -> the same | null
 //       when sel (./Selection, either way round) covers exactly
 //       [off, off + 1] of a picture in one paragraph
@@ -25,27 +38,71 @@
 // cell's item under the point; its x is the cell's column's, so the
 // rect and the handles are where the cell shows the picture).
 import {leafAt} from './DocHit';
+import {toGalley} from './Place';
+import {lineTop} from './PlaceDraft';
 const SIDE = 7, AROUND = 5;
 const NAMES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 const FX = [0, 0.5, 1, 1, 1, 0.5, 0, 0];
 const FY = [0, 0, 0, 0.5, 1, 1, 1, 0.5];
 
-/** The box of picture item `item` of line `line` in item pi. */
-function rectOf(L, pi, line, item) {
-  const base = pi.y + line.y + line.base + (item.dy || 0);
-  return {x: pi.x + item.x, y: base - item.pic.h, w: item.pic.w,
+/** The box of picture item `item` of line k of item pi, where
+ *  L.place puts the line. */
+function rectOf(L, pi, k, item) {
+  const {x, y} = L.place.lineAt(pi, k);
+  const base = y + pi.lines[k].base + (item.dy || 0);
+  return {x: x + item.x, y: base - item.pic.h, w: item.pic.w,
     h: item.pic.h};
 }
 
-const found = (L, pi, line, item) => ({pos: {id: pi.id,
-  off: item.from}, item, line, pi, rect: rectOf(L, pi, line, item)});
+const found = (L, pi, k, item) => ({pos: {id: pi.id,
+  off: item.from}, item, line: pi.lines[k], pi,
+  rect: rectOf(L, pi, k, item)});
 
-/** Index of the first line of pi for which key(line) > v. */
+/** The placed float of anchor item `item` (line k of pi), as
+ *  found gives it, or null (not Print layout, not placed). */
+function floatOf(L, pi, k, item) {
+  const Pl = L.place, i = Pl.pages ? Pl.pageOf(pi, k) : null;
+  const pg = Number.isInteger(i) ? Pl.pages.at(i) : null;
+  const f = pg && (pg.floats || []).find((x) => x.id === pi.id &&
+    x.off === item.from);
+  if (!f) return null;
+  const o = Pl.sheet.rect(pg);
+  return {pos: {id: pi.id, off: item.from}, item: {...item,
+    kind: 'pic', pic: {...f.pic, floating: true}}, line: pi.lines[k],
+  pi, float: f, rect: {x: o.x + f.x, y: o.y + f.y, w: f.w,
+    h: f.h}};
+}
+
+/** The placed float at layout point x, y (behind: those behind the
+ *  text, else those in front), the top one; null for none. */
+function floatAt(L, x, y, behind) {
+  const Pl = L.place;
+  if (!Pl.pages || !Pl.sheet) return null;
+  for (const i of Pl.sheet.pagesIn(y, y + 1)) {
+    const pg = Pl.pages.at(i), o = Pl.sheet.rect(pg);
+    const fs = (pg && pg.floats) || [];
+    for (let n = fs.length - 1; n >= 0; n--) {
+      const f = fs[n], fx = x - o.x, fy = y - o.y;
+      if (f.behind !== behind || fx < f.x || fx >= f.x + f.w ||
+        fy < f.y || fy >= f.y + f.h) continue;
+      const pi = L.byId.get(f.id);
+      if (!pi || !pi.lines || !pi.lines.length) continue;
+      const k = lineBy(pi.lines, (j) => pi.lines[j].to, f.off);
+      const it = pi.lines[k].items.find((t) => t.kind === 'anchor' &&
+        t.from === f.off);
+      const r = it && floatOf(L, pi, k, it);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+/** Index of the first line k of pi for which key(k) > v. */
 function lineBy(lines, key, v) {
   let lo = 0, hi = lines.length - 1;
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
-    if (key(lines[mid]) > v) hi = mid; else lo = mid + 1;
+    if (key(mid) > v) hi = mid; else lo = mid + 1;
   }
   return lo;
 }
@@ -54,19 +111,32 @@ function lineBy(lines, key, v) {
 export function picAt(L, x, y) {
   if (!L || !L.items || !L.items.length) return null;
   if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-  const pi = leafAt(L, x, y);
+  const front = floatAt(L, x, y, false);
+  if (front) return front;
+  const p = toGalley(L.place, x, y);
+  const pi = leafAt(L, p.x, p.y);
   if (!pi || pi.kind !== 'p' || !pi.lines || !pi.lines.length) {
-    return null;
+    return floatAt(L, x, y, true);
   }
-  const line = pi.lines[lineBy(pi.lines, (l) => pi.y + l.y + l.h, y)];
-  for (const item of line.items) {
+  const ls = pi.lines;
+  const k = lineBy(ls, (j) => lineTop(pi, j) + ls[j].h, p.y);
+  for (const item of ls[k].items) {
     if (item.kind !== 'pic' || !item.pic) continue;
-    const r = rectOf(L, pi, line, item);
+    const r = rectOf(L, pi, k, item);
     if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
-      return found(L, pi, line, item);
+      return found(L, pi, k, item);
     }
   }
-  return null;
+  return onText(L, pi, k, x, y) ? null : floatAt(L, x, y, true);
+}
+
+/** Layout point x, y is on the text of line k of pi (an item drawn
+ *  there: a word or a space; P12a fix I2). */
+function onText(L, pi, k, x, y) {
+  const at = L.place.lineAt(pi, k), ln = pi.lines[k];
+  if (y < at.y || y >= at.y + ln.h) return false;
+  return ln.items.some((t) => t.w > 0 && x >= at.x + t.x &&
+    x < at.x + t.x + t.w);
 }
 
 /** See the header. */
@@ -80,10 +150,11 @@ export function selectedPic(L, sel) {
   if (!pi || pi.kind !== 'p' || !pi.lines || !pi.lines.length) {
     return null;
   }
-  const line = pi.lines[lineBy(pi.lines, (l) => l.to, off)];
-  const item = line.items.find((t) => t.kind === 'pic' && t.pic &&
-    t.from === off);
-  return item ? found(L, pi, line, item) : null;
+  const k = lineBy(pi.lines, (j) => pi.lines[j].to, off);
+  const item = pi.lines[k].items.find((t) => (t.kind === 'pic' &&
+    t.pic || t.kind === 'anchor') && t.from === off);
+  if (item && item.kind === 'anchor') return floatOf(L, pi, k, item);
+  return item ? found(L, pi, k, item) : null;
 }
 
 const zoomOf = (z) => (Number.isFinite(z) && z > 0 ? z : 1);

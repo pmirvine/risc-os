@@ -1,0 +1,86 @@
+// FieldShade - View > Field shading (Batch D, D18): a light grey
+// SHADE behind a field's result, never, when the selection is in the
+// field (Word's default) or always. Display only.
+//
+//   MODES ['never', 'selected', 'always'], DEFAULT 'selected'
+//   modeOf(v) -> v when one of MODES, else DEFAULT (a choice read
+//       from Choices:Letters: anything else counts as none)
+//   shadeOf(L, p) -> [{from, to}]  the ranges of paragraph p to shade
+//       in layout L under L.fields.shade = {mode, sel} (./FieldView:
+//       the app's choice and the window's selection, read when
+//       painted; none: DEFAULT, no selection): for each field of p
+//       (./FieldScan scan of L.doc) with its begin and end in p, its
+//       result (separate + 1 to end; a fldSimple its own offset), or
+//       with View > Field codes (L.fields.codes) each field shown as
+//       code (./FieldCodes codesIn: begin to end + 1); a field with no
+//       result is not shaded, nor one spanning paragraphs. 'selected':
+//       only a field the selection touches: its head or anchor in p
+//       from the field's begin to just after its end (the caret just
+//       before or after a result shown computed counts: it never goes
+//       inside), or a range in p overlapping it
+//
+// ./ItemPaint fills the line's items in a range (their full line
+// height) before their character shading and text. A paragraph
+// without a field mark costs one test (./FieldShow mayHold). Pure: no
+// desktop services.
+import {scan} from './FieldScan';
+import {mayHold} from './FieldShow';
+import {codesIn} from './FieldCodes';
+
+export const MODES = Object.freeze(['never', 'selected', 'always']);
+export const DEFAULT = 'selected';
+export const SHADE = '#d8d8d8';
+
+const NONE = Object.freeze([]);
+const memo = new WeakMap();            // scan result -> Map id -> []
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export const modeOf = (v) => (MODES.includes(v) ? v : DEFAULT);
+
+/** Map paragraph id -> [{from, to, b, e}] of fs's results. */
+function indexOf(fs) {
+  let m = memo.get(fs);
+  if (m) return m;
+  m = new Map();
+  for (const f of fs) {
+    if (f.begin.id !== f.end.id) continue;
+    const b = f.begin.off, e = f.end.off;
+    const r = f.simple ? {from: b, to: b + 1, b, e}
+      : f.sep && f.sep.id === f.end.id
+        ? {from: f.sep.off + 1, to: e, b, e} : null;
+    if (!r) continue;
+    const list = m.get(f.begin.id);
+    if (list) list.push(r);
+    else m.set(f.begin.id, [r]);
+  }
+  memo.set(fs, m);
+  return m;
+}
+
+/** Whether selection sel touches field range r of paragraph p. */
+function touches(sel, p, r) {
+  if (!isObj(sel) || !isObj(sel.head) || !isObj(sel.anchor)) {
+    return false;
+  }
+  const a = sel.anchor, h = sel.head;
+  const near = (q) => q.id === p.id && q.off >= r.b && q.off <= r.e + 1;
+  if (near(a) || near(h)) return true;
+  if (a.id !== p.id || h.id !== p.id) return false;
+  const lo = Math.min(a.off, h.off), hi = Math.max(a.off, h.off);
+  return lo < r.e + 1 && hi > r.b;
+}
+
+/** See the header. */
+export function shadeOf(L, p) {
+  if (!isObj(L) || !mayHold(p)) return NONE;
+  const fx = isObj(L.fields) ? L.fields : {};
+  const sh = isObj(fx.shade) ? fx.shade : {};
+  const mode = modeOf(sh.mode);
+  if (mode === 'never') return NONE;
+  const list = fx.codes ? codesIn(L.doc, p)
+    : indexOf(scan(L.doc)).get(p.id) || NONE;
+  if (mode === 'always' || !list.length) return list;
+  const sel = sh.sel;
+  return list.filter((r) => touches(sel, p, r));
+}

@@ -51,6 +51,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { p, r } from './build-docx.mjs';
 import { tbl, tr, tc, tblDocx, bigTable, TABLE_NORMAL, TABLE_GRID } from './tbl-fixtures.mjs';
 import { pngBytes } from './pic-fixtures.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const LOOK = '<w:tblW w:w="0" w:type="auto"/><w:tblLook w:val="04A0" w:firstRow="1" w:lastRow="0" w:firstColumn="1" '
   + 'w:lastColumn="0" w:noHBand="0" w:noVBand="1"/>';
@@ -99,6 +100,7 @@ const head = (leaf) => ev((leaf) => window.__head(leaf), leaf);
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev((files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -111,9 +113,11 @@ try {
       return { x: rc.left + sx * k, y: rc.top + sy * k };
     };
     window.__client = (win, x, y) => { const s = win.workToScreen(x, y); return window.__screen(s.x, s.y); };
-    /** Layout -> the window's work area at the document's zoom. */
-    window.__ws = (x, y, leaf = 'Te') => {
-      const d = window.__doc(leaf), z = d.zoom / 100, t = d.view.layout.top;
+    /** Layout -> the window's work area at the document's zoom; a galley point (placed false) first where the view
+     *  shows it (word-draft.mjs __g2w: Print layout's page; Draft: itself). */
+    window.__ws = (x, y, leaf = 'Te', placed = false) => {
+      const d = window.__doc(leaf), z = d.zoom / 100, L = d.view.layout, t = L.top;
+      if (!placed) ({ x, y } = window.__g2w(L, x, y));
       return { x: x * z, y: t + (y - t) * z };
     };
     window.__head = (leaf = 'Te') => {
@@ -128,8 +132,9 @@ try {
         id: cl.col.items[0].id };
     };
     /** The canvas pixel [r, g, b] at layout (x, y) of leaf's window (zoom 100%). */
-    window.__px = (x, y, leaf = 'Te') => {
+    window.__px = (x, y, leaf = 'Te', placed = false) => {
       const d = window.__doc(leaf), win = d.win, cv = win._canvas, k = cv.width / win.w;
+      if (!placed) ({ x, y } = window.__g2w(d.view.layout, x, y));
       const a = cv.getContext('2d').getImageData(Math.floor((x - win.scrollX) * k), Math.floor((y - win.scrollY) * k),
         1, 1).data;
       return [a[0], a[1], a[2]];
@@ -577,10 +582,10 @@ try {
     const look = (r, c) => ev(([r, c]) => {
       const d = window.__doc('Tc'), L = d.view.layout, it = L.items.find((x) => x.kind === 'tbl');
       const row = it.rows[r], cl = row.cells[c], pi = cl.col.items[0], ln = pi.lines[0];
-      // (one read of the canvas over the line's band, the pixel rule of __px)
-      const win = d.win, cv = win._canvas, k = cv.width / win.w;
-      const x0 = Math.floor((cl.x + 1 - win.scrollX) * k), x1 = Math.floor((cl.x + cl.w - 2 - win.scrollX) * k);
-      const y0 = Math.ceil((pi.y + ln.y + 2 - win.scrollY) * k), y1 = Math.floor((pi.y + ln.y + ln.h - 2 - win.scrollY) * k);
+      // (one read of the canvas over the line's band, the pixel rule of __px; the band where the view shows it)
+      const win = d.win, cv = win._canvas, k = cv.width / win.w, g = window.__g2w(L, cl.x, pi.y + ln.y);
+      const x0 = Math.floor((g.x + 1 - win.scrollX) * k), x1 = Math.floor((g.x + cl.w - 2 - win.scrollX) * k);
+      const y0 = Math.ceil((g.y + 2 - win.scrollY) * k), y1 = Math.floor((g.y + ln.h - 2 - win.scrollY) * k);
       const img = cv.getContext('2d').getImageData(x0, y0, x1 - x0, y1 - y0), w = x1 - x0;
       let right = -1, ink = 0;
       for (let i = 0; i < img.data.length; i += 4) {
@@ -628,7 +633,7 @@ try {
       await window.__frames(3);
       const v = window.__doc('Tc').view, s = v.selection, L = v.layout, it = L.byId.get(id);
       const rs = L.selectionRects(s).map((q) => ({ x: q.x, y: q.y, w: q.w, h: q.h }));
-      const q = rs[0], lit = q ? window.__px(Math.floor(q.x + 2), Math.floor(q.y + q.h - 3), 'Tc') : null;
+      const q = rs[0], lit = q ? window.__px(Math.floor(q.x + 2), Math.floor(q.y + q.h - 3), 'Tc', true) : null;
       return { msg, sel: [s.anchor.id === id, s.anchor.off, s.head.id === id, s.head.off], rs, lit,
         cell: { x: it.x, y: it.y, w: it.w, h: it.h } };
     }, before['11'].id);
@@ -692,8 +697,8 @@ try {
     const pd0 = await ev(() => window.__doc('Tp').view.undoDepth);
     await ev(() => {
       const d = window.__doc('Tp'), L = d.view.layout, t = L.items.find((x) => x.kind === 'tbl');
-      const it = t.rows[0].cells[0].col.items[0];
-      os.wimp.dataLoad({ window: d.win, x: it.x + 4, y: it.y + 5, sx: 0, sy: 0 },
+      const it = t.rows[0].cells[0].col.items[0], g = window.__g2w(L, it.x + 4, it.y + 5);
+      os.wimp.dataLoad({ window: d.win, x: g.x, y: g.y, sx: 0, sy: 0 },
         [{ path: 'RAM::RamDisc0.$.Pic', filetype: 0xB60, size: 10, name: 'Pic', type: 'file' }]);
     });
     await page.waitForFunction(() => window.__doc('Tp').view.layout.flow.some((x) => x.kind === 'p'
@@ -714,7 +719,7 @@ try {
     const hd = await ev(() => {
       const d = window.__doc('Tp'), q = d.view.pic(), h = q && q.handles.find((x) => x.name === 'se');
       if (!h) return null;
-      const m = window.__ws(h.x + h.w / 2, h.y + h.h / 2, 'Tp');
+      const m = window.__ws(h.x + h.w / 2, h.y + h.h / 2, 'Tp', true);
       return { at: window.__client(d.win, m.x, m.y), cx: q.cx, cy: q.cy };
     });
     if (hd) {

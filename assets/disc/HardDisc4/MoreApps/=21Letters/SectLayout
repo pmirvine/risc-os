@@ -1,0 +1,183 @@
+// SectLayout - the commands of Format > Layout... (Batch D P4.4,
+// D21 "Layout"; ./LayoutBox is the box, ./SectSetup re-exports
+// these): how the CURRENT section (the one at the selection's start)
+// starts, its first-page header, its header and footer distances
+// from the page's edge, its vertical alignment, and the document's
+// different odd and even headers.
+//
+//   layoutOf(doc, sel) -> {type, titlePg, evenOdd, header, footer,
+//            vAlign} of the current section, or null (no valid
+//            selection): type one of SECT_TYPES ('nextPage' when
+//            there is no w:type), titlePg a boolean, header and
+//            footer twips (w:pgMar's, ./SectGeom givenOf: 720 when
+//            not given), vAlign 'top' (none), 'center', 'both' or
+//            'bottom', evenOdd the document's evenAndOddHeaders
+//            (./SettingsRead). A value the reader kept raw (not
+//            understood: a w:type "odd", a w:pgMar with an attribute
+//            it does not know) is null: the box shows it blank and
+//            leaves it as it is
+//   layoutWhy(doc, sel, values) -> why layoutCmd would refuse (a
+//            message), or null: no selection; a type or vAlign not
+//            in the lists; titlePg or evenOdd not a boolean; a
+//            header or footer distance not whole twips 0 to 22
+//            inches (MAX_TW) or not less than the page's height;
+//            evenOdd turned on in a document with no settings part
+//   layoutCmd(d, sel, values) -> the new selection (sel); sel when
+//            nothing changes (no step); null when layoutWhy refuses
+//            (nothing changed). One d.atomic, called in
+//            typing.command (one undo step): a setSection for the
+//            current section, and setDocPart settings (./SettingsEdit
+//            withOnOff evenAndOddHeaders, document-wide as Word's)
+//   sectionCmd(d, s, values) -> true (one step made) | false (nothing
+//            changes, no step) | null (refused, nothing changed: s
+//            not a section index, or layoutWhy's reasons)
+//            layoutCmd's change for section s itself (./HdrCmd:
+//            Different first page, Different odd and even pages)
+//
+// values: those of layoutOf; null (or undefined) leaves a value as
+// it is. type is written as w:type (nextPage too) and a raw w:type
+// dropped (./PropNames withoutRaw); titlePg off and vAlign top drop
+// theirs (Word's defaults). A header or footer distance goes in a
+// typed w:pgMar (./PageValues setPart: the other values keep their
+// unit strings; a new pgMar gets all seven values); a raw w:pgMar
+// keeps every attribute and has only the distance changed in it
+// (written in twips; the same rule as Page setup's, review P4 M3).
+// Pure: no desktop services.
+import {orderedPos} from './EditPos';
+import {withoutRaw} from './PropNames';
+import {deepEqual} from './Model';
+import {givenOf} from './SectGeom';
+import {onOffOf} from './SettingsRead';
+import {withOnOff} from './SettingsEdit';
+import {docMap} from './PicRead';
+import {SECT_TYPES} from './ReadPropsMore';
+import {given, setPart, rawOf, MAX_TW} from './PageValues';
+
+const VALIGNS = ['top', 'center', 'both', 'bottom'];
+const DIST = ['header', 'footer'];
+const FIELDS = ['type', 'titlePg', 'evenOdd', ...DIST, 'vAlign'];
+const MSG = {
+  nosel: 'There is no caret in the document.',
+  type: 'Section start: pick one.',
+  vAlign: 'Vertical alignment: pick one.',
+  flag: 'Different odd and even, different first page: on or off.',
+  dist: (k) => `${k === 'header' ? 'Header' : 'Footer'}: from 0 to ` +
+    '22 inches, less than the height of the page.',
+  settings: 'This document has no settings part: different odd and ' +
+    'even pages cannot be set.',
+};
+
+/** The current section's index, or -1. */
+function current(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  return o ? o.f.s : -1;
+}
+
+/** Section s's values (layoutOf's). */
+function valuesAt(doc, s) {
+  const sec = doc.sections[s], pr = sec.props || {}, map = docMap(doc);
+  const {mar} = givenOf(sec, doc.sections[0]);
+  const raw = (name) => !!rawOf(pr, name, map);
+  const marRaw = !pr.pgMar && raw('pgMar');
+  return {
+    type: pr.type ?? (raw('type') ? null : 'nextPage'),
+    titlePg: pr.titlePg ?? (raw('titlePg') ? null : false),
+    evenOdd: onOffOf(doc, 'evenAndOddHeaders'),
+    header: marRaw ? null : mar.header,
+    footer: marRaw ? null : mar.footer,
+    vAlign: pr.vAlign ?? (raw('vAlign') ? null : 'top'),
+  };
+}
+
+/** See the header. */
+export function layoutOf(doc, sel) {
+  const s = current(doc, sel);
+  return s < 0 ? null : valuesAt(doc, s);
+}
+
+/** {s, props: new props or null, root: settings or undefined} or
+ *  {why}, for section s (-1: no selection). */
+function plan(doc, s, v) {
+  if (!Number.isInteger(s) || s < 0 || s >= doc.sections.length)
+    return {why: MSG.nosel};
+  if (given(v.type) && !SECT_TYPES.includes(v.type))
+    return {why: MSG.type};
+  if (given(v.vAlign) && !VALIGNS.includes(v.vAlign))
+    return {why: MSG.vAlign};
+  for (const k of ['titlePg', 'evenOdd']) {
+    if (given(v[k]) && typeof v[k] !== 'boolean')
+      return {why: MSG.flag};
+  }
+  const sec = doc.sections[s], {size} = givenOf(sec, doc.sections[0]);
+  for (const k of DIST) {
+    const x = v[k];
+    if (given(x) && !(Number.isSafeInteger(x) && x >= 0 &&
+      x <= MAX_TW && x < size.h)) return {why: MSG.dist(k)};
+  }
+  let root;
+  if (given(v.evenOdd) && v.evenOdd !== onOffOf(doc,
+    'evenAndOddHeaders')) {
+    if (!doc.rawSettings || !(doc.meta && doc.meta.settingsPart))
+      return {why: MSG.settings};
+    root = withOnOff(doc.rawSettings, 'evenAndOddHeaders', v.evenOdd);
+  }
+  return {s, props: propsFor(doc, s, v), root};
+}
+
+/** pr (a copy) with field k set to x, or deleted when x is `none`;
+ *  a raw element of that name dropped. */
+function setField(pr, k, x, none) {
+  if (x === none) delete pr[k];
+  else pr[k] = x;
+  pr.extra = withoutRaw(pr.extra || [], [k]);
+}
+
+/** Section s's props with the values, or null when they are its own. */
+function propsFor(doc, s, v) {
+  const sec = doc.sections[s], now = valuesAt(doc, s);
+  const pr = {...sec.props};
+  if (given(v.type) && v.type !== now.type)
+    setField(pr, 'type', v.type);
+  if (given(v.titlePg) && v.titlePg !== now.titlePg)
+    setField(pr, 'titlePg', v.titlePg, false);
+  if (given(v.vAlign) && v.vAlign !== now.vAlign)
+    setField(pr, 'vAlign', v.vAlign, 'top');
+  const m = {};
+  for (const k of DIST) if (given(v[k]) && v[k] !== now[k]) m[k] = v[k];
+  if (Object.keys(m).length) {
+    const {mar} = givenOf(sec, doc.sections[0]);
+    setPart(pr, 'pgMar', {...mar, ...pr.pgMar, ...m}, docMap(doc), mar);
+  }
+  return deepEqual(pr, sec.props) ? null : pr;
+}
+
+/** See the header. */
+export function layoutWhy(doc, sel, values) {
+  return plan(doc, current(doc, sel), values || {}).why || null;
+}
+
+/** See the header. */
+export function layoutCmd(d, sel, values) {
+  const done = sectionCmd(d, current(d.doc, sel), values);
+  return done === null ? null : sel;
+}
+
+/** See the header. */
+export function sectionCmd(d, s, values) {
+  const v = {};
+  for (const k of FIELDS) v[k] = values ? values[k] : undefined;
+  const pl = plan(d.doc, s, v);
+  if (pl.why) return null;
+  if (!pl.props && pl.root === undefined) return false;
+  d.atomic(() => {
+    if (pl.props) {
+      const sec = d.doc.sections[pl.s];
+      const op = {op: 'setSection', at: pl.s, props: pl.props};
+      if (sec.raw !== undefined) op.raw = sec.raw;
+      d.apply(op);
+    }
+    if (pl.root !== undefined)
+      d.apply({op: 'setDocPart', key: 'settings', value: pl.root});
+  });
+  return true;
+}

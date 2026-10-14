@@ -1,0 +1,210 @@
+// AnchorParts - the parts of a wp:anchor (pure; Batch D P12.1:
+// split from ./AnchorRead, which holds the rules in its header).
+//
+//   Reader                  a reading: int, uint, coord, bool, only,
+//                           text; fail() sets `bad`
+//   posOf(r, [n, m], hv)    {from, align?, offset?, pct?}
+//   altPos(r, [n, m])       [hv, pos] of an mc:AlternateContent
+//   wrapOf(r, [n, m], anchor)  {kind, text, dist, polygon?}
+//   extentOf(r, n)          {l, t, r, b} of a wp:effectExtent
+//   WRAPS                   wrap element -> [kind, attributes]
+//   H_FROM, V_FROM, H_ALIGN, V_ALIGN, WRAP_TEXT  the values read
+//   caps: MAX_POINTS = 4096 polygon points; posOffset MIN_OFFSET..
+//   MAX_OFFSET (signed 32-bit); MAX_UINT = 4294967295 (dist*,
+//   relativeHeight); coordinates a:ST_Coordinate's range
+//   WP14                    the wp14 namespace URI
+import {NS} from './Wml';
+import {isEl} from './Ns';
+import {is, kids, plain} from './DrawNode';
+
+export const H_FROM = Object.freeze(['character', 'column',
+  'margin', 'page', 'insideMargin', 'outsideMargin', 'leftMargin',
+  'rightMargin']);
+export const V_FROM = Object.freeze(['line', 'paragraph', 'margin',
+  'page', 'topMargin', 'bottomMargin']);
+export const H_ALIGN = Object.freeze(['left', 'center', 'right',
+  'inside', 'outside']);
+export const V_ALIGN = Object.freeze(['top', 'center', 'bottom',
+  'inside', 'outside']);
+export const WRAP_TEXT = Object.freeze(['bothSides', 'left',
+  'right', 'largest']);
+export const MAX_POINTS = 4096;
+export const MAX_OFFSET = 2147483647;
+export const MIN_OFFSET = -2147483648;
+export const MAX_UINT = 4294967295;
+// a:ST_Coordinate
+const MIN_COORD = -27273042329600;
+const MAX_COORD = 27273042316900;
+
+export const WP14 = 'http://schemas.microsoft.com/office/word/' +
+  '2010/wordprocessingDrawing';
+const WP = NS.wp;
+export const WRAPS = new Map([['wrapNone', ['none', []]],
+  ['wrapSquare', ['square', ['wrapText', 'distT', 'distB', 'distL',
+    'distR']]],
+  ['wrapTight', ['tight', ['wrapText', 'distL', 'distR']]],
+  ['wrapThrough', ['through', ['wrapText', 'distL', 'distR']]],
+  ['wrapTopAndBottom', ['topAndBottom', ['distT', 'distB']]]]);
+const SIDES = [['t', 'distT'], ['b', 'distB'], ['l', 'distL'],
+  ['r', 'distR']];
+
+export const xmlns = (k) => k === 'xmlns' ||
+  k.startsWith('xmlns:');
+
+/** A reading: `bad` set by anything not understood. */
+export class Reader {
+  constructor() {
+    this.bad = false;
+  }
+
+  fail() {
+    this.bad = true;
+    return null;
+  }
+
+  /** An integer attribute value lo..hi; `def` when absent. */
+  int(v, lo, hi, def = null) {
+    if (v === undefined && def !== null) return def;
+    if (typeof v !== 'string' || !/^-?[0-9]{1,14}$/.test(v)) {
+      return this.fail();
+    }
+    const n = Number(v);
+    if (n < lo || n > hi) return this.fail();
+    return n === 0 ? 0 : n;
+  }
+
+  uint(v) {
+    return this.int(v, 0, MAX_UINT, 0);
+  }
+
+  coord(v) {
+    return this.int(v, MIN_COORD, MAX_COORD);
+  }
+
+  /** xsd:boolean; absent false. */
+  bool(v) {
+    if (v === undefined || v === '0' || v === 'false') return false;
+    if (v === '1' || v === 'true') return true;
+    this.fail();
+    return false;
+  }
+
+  /** Only the unprefixed attributes in `names` (and xmlns). */
+  only(n, names) {
+    for (const [k] of n.attrs) {
+      if (!xmlns(k) && !names.includes(k)) this.fail();
+    }
+  }
+
+  /** The text of an element holding text only. */
+  text(n) {
+    if (!n.children.every((c) => typeof c === 'string' || !isEl(c))) {
+      return this.fail();
+    }
+    return n.children.filter((c) => typeof c === 'string').join('');
+  }
+}
+
+/** {from, align?, offset?, pct?} of positionH/V [n, m]. */
+export function posOf(r, [n, m], hv) {
+  const from = plain(n, 'relativeFrom');
+  r.only(n, ['relativeFrom']);
+  const out = {from: from === undefined ? null : from};
+  if (!(hv === 'H' ? H_FROM : V_FROM).includes(from)) r.fail();
+  const list = kids(n, m) || (r.fail() || []);
+  for (const [c, cm] of list) {
+    if (is(c, cm, WP, 'align') || is(c, cm, WP, 'posOffset')) {
+      if ('align' in out || 'offset' in out) r.fail();
+      const t = r.text(c);
+      if (is(c, cm, WP, 'align')) {
+        out.align = t;
+        if (!(hv === 'H' ? H_ALIGN : V_ALIGN).includes(t)) r.fail();
+      } else out.offset = r.int(t, MIN_OFFSET, MAX_OFFSET);
+    } else if (is(c, cm, WP14, `pctPos${hv}Offset`) &&
+      !('pct' in out)) {
+      out.pct = r.text(c);
+    } else r.fail();
+  }
+  if (!('align' in out) && !('offset' in out)) r.fail();
+  return out;
+}
+
+/** [hv, pos] of an mc:AlternateContent holding a positionH/V. */
+export function altPos(r, [n, m]) {
+  let use = null;
+  let hv = null;
+  let pct;
+  for (const [c, cm] of kids(n, m) || []) {
+    const fb = is(c, cm, NS.mc, 'Fallback');
+    if (!fb && !is(c, cm, NS.mc, 'Choice')) return r.fail();
+    const list = kids(c, cm) || [];
+    const e = list.length === 1 && list[0];
+    const k = e && ['H', 'V'].find((x) =>
+      is(e[0], e[1], WP, 'position' + x));
+    if (!k || (hv && hv !== k)) return r.fail();
+    hv = k;
+    const one = new Reader();
+    const p = posOf(one, e, k);
+    if (p.pct !== undefined) pct = p.pct;
+    if (!one.bad && (fb || !use)) use = p;
+  }
+  if (!hv) return r.fail();
+  if (!use) r.fail();
+  const p = use || {from: null};
+  if (pct !== undefined && p.pct === undefined) p.pct = pct;
+  return [hv, p];
+}
+
+/** The wrap of wrap element [n, m] with the anchor's distances. */
+export function wrapOf(r, [n, m], anchor) {
+  const local = n.name.slice(n.name.indexOf(':') + 1);
+  const [kind, names] = WRAPS.get(local);
+  r.only(n, names);
+  const dist = {};
+  for (const [side, a] of SIDES) {
+    const own = names.includes(a) ? plain(n, a) : undefined;
+    dist[side] = r.uint(own === undefined ? plain(anchor, a) : own);
+  }
+  let text = null;
+  if (names.includes('wrapText')) {
+    text = plain(n, 'wrapText');
+    if (!WRAP_TEXT.includes(text)) r.fail();
+    if (text === undefined) text = null;
+  }
+  const out = {kind, text, dist: Object.freeze(dist)};
+  const list = kids(n, m) || (r.fail() || []);
+  const tight = kind === 'tight' || kind === 'through';
+  if (tight && list.length !== 1) r.fail();
+  for (const [c, cm] of list) {
+    if (tight && is(c, cm, WP, 'wrapPolygon')) {
+      out.polygon = polygonOf(r, c, cm);
+    } else if (!tight && kind !== 'none' && list.length === 1 &&
+      is(c, cm, WP, 'effectExtent')) {
+      extentOf(r, c);
+    } else r.fail();
+  }
+  return Object.freeze(out);
+}
+
+function polygonOf(r, n, m) {
+  r.only(n, ['edited']);
+  const edited = r.bool(plain(n, 'edited'));
+  const list = kids(n, m) || (r.fail() || []);
+  if (list.length < 3 || list.length > MAX_POINTS) r.fail();
+  const points = [];
+  for (let i = 0; i < list.length && i < MAX_POINTS; i++) {
+    const [c, cm] = list[i];
+    if (!is(c, cm, WP, i ? 'lineTo' : 'start')) r.fail();
+    r.only(c, ['x', 'y']);
+    points.push(Object.freeze([r.coord(plain(c, 'x')),
+      r.coord(plain(c, 'y'))]));
+  }
+  return Object.freeze({edited, points: Object.freeze(points)});
+}
+
+export function extentOf(r, n) {
+  r.only(n, ['l', 't', 'r', 'b']);
+  return Object.freeze({l: r.coord(plain(n, 'l')),
+    t: r.coord(plain(n, 't')), r: r.coord(plain(n, 'r')),
+    b: r.coord(plain(n, 'b'))});
+}

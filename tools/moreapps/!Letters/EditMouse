@@ -22,6 +22,11 @@
 //   Adjust drag        likewise, following the pointer
 //   double-click       the word there (not the spaces after it), or a
 //                      kept block (a table) whole
+//   double-click on an Outline marker (Outline view, ./OutlineFold
+//                      markerAt): the heading collapsed or expanded
+//                      (view.toggleMarker, ./OutlineView applyFold: a
+//                      beep when a Show level hides it); the click
+//                      before it has put the caret there
 //   triple-click       a Select click within the double-click time of
 //                      a double-click (the Wimp reports no third
 //                      click; the rule of !Edit): the paragraph
@@ -31,11 +36,22 @@
 //                      pointer: ./LinkFind linkUnder): the caret goes
 //                      to the bookmark (./BookmarkFind findBookmark),
 //                      scrolled into view; a beep when there is no
-//                      such bookmark. On a link to an address it is
-//                      a plain click: links are never opened
+//                      such bookmark (or it is in a header or
+//                      footer, D11: the caret cannot go there
+//                      yet). On a link to an address it is a
+//                      plain click: links are never opened
 //   Menu               opens the window's menu and leaves the
 //                      selection as it is, wherever the click is (as
 //                      in !Edit)
+//   Print layout (D33) a click on a page hits that page's nearest
+//                      line (in its margins: the line at that edge;
+//                      in the desk between pages: the nearer page's
+//                      edge line: ./Place toGalley); a click, drag or
+//                      double-click in a page's header or footer
+//                      area, and any in the header and footer mode,
+//                      go to v.hdrClick(ev, 'click' | 'double' |
+//                      'drag') first (./HdrMode: a double-click
+//                      there enters the header, D14; true: used)
 //
 //   attachMouse(view)  the window must be made with workButton
 //                      'clickdragdouble' (Wimp button type 10: clicks,
@@ -56,7 +72,10 @@
 //
 // A drag is followed with wimp.drag (Wimp_DragBox, type 'point'), so
 // it ends when the button is released, wherever the pointer is.
-// Points are the window's (zoomed): view.hitAt finds the place.
+// Points are the window's (zoomed): view.hitAt finds the place
+// (L.hitTest); the finders (./PicFind, ./LinkFind, ./SelTable
+// zoneAt, ./TblEdge) map a point to the galley through the layout's
+// placement (./Place toGalley, D4): none works it out here.
 import {wimp, os} from 'riscos';
 import * as S from './Selection';
 import {dragStep} from './EditScroll';
@@ -66,6 +85,7 @@ import {findBookmark} from './BookmarkFind';
 import {picClick, picDragStart, picDouble} from './PicDrag';
 import {colDragStart, rowDragStart} from './TblDrag';
 import {zoneAt, zoneSel} from './SelTable';
+import {markerAt} from './OutlineFold';
 
 const TICK = 60;
 const doubleMs = () => os.input?.config?.doubleClickMs ?? 400;
@@ -80,6 +100,7 @@ export function attachMouse(v) {
     // (the Wimp reports Menu as a click: passed on, the menu opens)
     if (ev.button === 'menu') return undefined;
     if (picClick(v, ev)) return true;
+    if (hdrFtr(v, ev, 'click')) return true;
     const h = hit(ev);
     if (!h || !v.sel) return true;
     if (ev.button === 'select' && !ev.shift && (ev.ctrl || cmd(v)) &&
@@ -102,7 +123,9 @@ export function attachMouse(v) {
     return true;
   });
   w.on('doubleclick', (ev) => {
+    if (marker(v, ev)) return true;
     if (picDouble(v, ev)) return true;
+    if (hdrFtr(v, ev, 'double')) return true;
     const h = hit(ev);
     if (!h || !v.sel) return true;
     if (ev.button !== 'select' || ev.shift) {
@@ -119,10 +142,26 @@ export function attachMouse(v) {
     if (!v.sel) return undefined;
     if (picDragStart(v, ev) || colDragStart(v, ev) ||
       rowDragStart(v, ev)) return true;
+    if (hdrFtr(v, ev, 'drag')) return true;
     v.onMouseDrag?.();
     follow(v, ev);
     return true;
   });
+}
+
+/**
+ * ev is a double-click on an Outline marker (see the header): the
+ * heading collapsed or expanded.
+ */
+function marker(v, ev) {
+  const L = v.L;
+  if (!L.outline || !v.toggleMarker || ev.button !== 'select' ||
+    ev.shift) return false;
+  const p = toLayout(ev.x, ev.y, v.zoom, L.top);
+  const id = markerAt(L, p.x, p.y);
+  if (!id) return false;
+  v.toggleMarker(id);
+  return true;
 }
 
 /** The selection of the table zone clicked (header), or null. */
@@ -131,6 +170,9 @@ function zone(v, ev) {
   const z = zoneAt(L, p.x, p.y);
   return z ? zoneSel(L, z) : null;
 }
+
+/** ./HdrMode used ev (see the header). */
+const hdrFtr = (v, ev, what) => !!v.hdrClick && v.hdrClick(ev, what);
 
 /** Cmd held on a Mac (the Wimp's click has no Meta flag). */
 const cmd = (v) => !!v.mac && !!os.input &&
@@ -147,7 +189,7 @@ function jump(v, ev) {
   const a = at ? linkInfo(doc, at.x).address : '';
   if (!a.startsWith('#')) return false;
   const to = findBookmark(doc, a.slice(1));
-  if (!to) {
+  if (!to || to.story) {
     wimp.beep();
     return true;
   }

@@ -17,7 +17,16 @@
 // silently (they are not reported in `failed`). `doc` and
 // `FontFaceCtor` default to the browser's globals and can be faked
 // in tests.
+//
+// Each face read is registered with ./FontMetrics (its line
+// metrics, D35, parsed from the bytes already read) once it has
+// loaded. A job keeps the parsed metrics (not the bytes), and every
+// call registers them again, so a new run of !Letters (a fresh
+// ./FontMetrics) has them without reading the file. A face the page
+// had before any job (not read here) is not registered: its lines
+// keep ./ParaSpace's NAT_M.
 import {bundledFamilies, fontFile} from './FontMap';
+import {parseMetrics, put} from './FontMetrics';
 
 const KEY = Symbol.for('word.fontjobs');
 
@@ -56,16 +65,20 @@ function loadOne(vfs, dir, fonts, family, bold, italic, Ctor, leaf) {
     const had = present(fonts, family, bold, italic);
     if (had) {
       if (had.status === 'loading' && had.loaded) await had.loaded;
-      return true;
+      return null;
     }
     const bytes = await vfs.readFile(`${dir}.${leaf}`);
+    // (read before the FontFace has the bytes; registered once it
+    // has loaded)
+    const m = parseMetrics(bytes);
     const face = new Ctor(family, bytes, {
       weight: bold ? 'bold' : 'normal',
       style: italic ? 'italic' : 'normal',
     });
     await face.load();
     fonts.add(face);
-    return true;
+    if (m) put(family, bold, italic, m);
+    return m;
   })();
 }
 
@@ -86,8 +99,10 @@ export async function loadFonts(vfs, dir, doc = globalThis.document,
           map.set(leaf, p);
           p.catch(() => { if (map.get(leaf) === p) map.delete(leaf); });
         }
-        work.push(map.get(leaf).then(
-          () => loaded.push(leaf), () => failed.push(leaf)));
+        work.push(map.get(leaf).then((m) => {
+          if (m) put(family, bold, italic, m);
+          loaded.push(leaf);
+        }, () => failed.push(leaf)));
       }
     }
   }

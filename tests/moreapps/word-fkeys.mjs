@@ -309,7 +309,7 @@ try {
       return { top, ed };
     });
     ok('the window menu shows Ctrl+S, F3, F2 and Ctrl+F2', same(m.top, [['Save', 'Ctrl+S'], ['Save as', 'F3'], ['Revert', ''],
-      ['Save a copy', ''], ['Info', ''], ['Edit', ''], ['Insert', ''], ['Format', ''], ['Table', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
+      ['Save a copy', ''], ['Info', ''], ['Edit', ''], ['Insert', ''], ['View', ''], ['Outline', ''], ['Format', ''], ['Table', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
     ok('the Edit menu shows Ctrl+Z, Ctrl+Y and Ctrl+F for Find... (F4 named in its help)', m.ed[0][1] === 'Ctrl+Z'
       && m.ed[1][1] === 'Ctrl+Y' && same(m.ed.find((x) => x[0] === 'Find...'), ['Find...', 'Ctrl+F']), m.ed);
     const tb = await ev(() => { const d = window.__by('Plain'); return { toolbar: !!d.toolbar, ruler: d.rulerOn, zoom: d.zoom }; });

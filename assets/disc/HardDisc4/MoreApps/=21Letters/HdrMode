@@ -1,0 +1,108 @@
+// HdrMode - a document window's header and footer mode (Batch D,
+// D14): the clicks, the keys and the View menu's item around
+// ./HdrEdit, which holds the mode itself. Desktop-bound (the beep):
+// it imports the desktop in its import line only.
+//
+//   attachHdr(dw)  from ./AppWin: view.hdrClick (./EditMouse asks it
+//       first: true when it used the click) and view.leaveHdr
+//       (Escape: ./EditKeys; another view: ./ViewMode setView)
+//   enter(dw, i, kind, ev?) -> bool  the mode for page i's header
+//       ('hdr') or footer ('ftr'): Print layout shown first; the
+//       caret where ev (a window point) is in the story, else at
+//       its start (a page showing none of that kind: one not made
+//       yet, made on the first edit: ./HdrEdit). A beep and false
+//       where ./HdrEdit enterMode refuses (a part kept as bytes, D9;
+//       a reference reaching no story)
+//   leave(dw)  back to the body, the caret where it was (or at the
+//       body's point ev was: a double-click in the body)
+//   toggle(dw)  View > Header and footer: leave, or enter the header
+//       of the caret's page
+//
+// Clicks (dw.view.hdrClick(ev, what), what 'click' | 'double' |
+// 'drag'; ev's point at the zoom: ./Zoom toLayout, ./HdrView hdrAt):
+//   not in the mode: in a page's header or footer area (./PlacePrint
+//     area: not the margin beyond it) a double-click enters it; a click
+//     or a drag there does nothing (D33); elsewhere: not used
+//   in the mode: in an area that shows the same story (the page
+//     entered or any other: the caret's page follows) not used, so
+//     the click, drag or double-click works in the story as in the
+//     body; in another header or footer, a click or double-click
+//     enters that one; a double-click in the body leaves the mode,
+//     the caret where it was clicked; anything else does nothing
+//     (the caret stays in the story)
+import {wimp} from 'riscos';
+import * as S from './Selection';
+import {enterMode, leaveMode} from './HdrEdit';
+import {hdrAt} from './HdrView';
+import {toLayout} from './Zoom';
+import {setView} from './ViewMode';
+
+/** See the header. */
+export function enter(dw, i, kind, ev) {
+  const v = dw.view;
+  if (dw.viewName !== 'print') setView(dw, 'print');
+  if (v.hdr) leaveMode(v);
+  if (!enterMode(v, {kind, i})) {
+    wimp.beep();
+    return false;
+  }
+  const h = ev ? v.hitAt(ev.x, ev.y) : null;
+  const a = h ? null : v.L.docStart();
+  v.setSelection(h ? S.caret(h.pos, h.affinity) : S.caret(a));
+  v.focus();
+  return true;
+}
+
+/** See the header. */
+export function leave(dw, ev) {
+  const v = dw.view;
+  if (!v.hdr) return;
+  leaveMode(v);
+  const h = ev ? v.hitAt(ev.x, ev.y) : null;
+  v.setSelection(h ? S.caret(h.pos, h.affinity) : v.sel);
+  if (v.hasFocus) v.focus();
+}
+
+/** See the header. */
+export function toggle(dw) {
+  const v = dw.view;
+  if (v.hdr) {
+    leave(dw);
+    return;
+  }
+  if (dw.viewName !== 'print') setView(dw, 'print');
+  const P = v.bodyL.place.pages;
+  const i = P && v.sel ? Math.max(0, P.ofPos(v.sel.head,
+    v.sel.affinity)) : 0;
+  enter(dw, i, 'hdr');
+}
+
+/** The click (see the header): true when used here. */
+function click(dw, ev, what) {
+  const v = dw.view, B = v.bodyL, m = v.hdr;
+  const p = toLayout(ev.x, ev.y, v.zoom, B.top);
+  const a = hdrAt(B, p.x, p.y);
+  if (!m) {
+    if (!a || !a.kind) return false;
+    if (what === 'double') enter(dw, a.i, a.kind, ev);
+    return true;
+  }
+  if (a && a.kind) {
+    const pg = B.place.pages.at(a.i);
+    const ref = a.kind === 'hdr' ? pg.header : pg.footer;
+    if (a.kind === m.kind && ref && ref.part === m.part) {
+      m.setPage(a.i);
+      return false;
+    }
+    if (what !== 'drag') enter(dw, a.i, a.kind, ev);
+    return true;
+  }
+  if (what === 'double' && a && a.area === 'body') leave(dw, ev);
+  return true;
+}
+
+/** See the header. */
+export function attachHdr(dw) {
+  dw.view.hdrClick = (ev, what) => click(dw, ev, what);
+  dw.view.leaveHdr = () => leave(dw);
+}

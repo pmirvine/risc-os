@@ -9,6 +9,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { picDocx, pngBytes, jpegBytes, gifBytes } from './pic-fixtures.mjs';
 import { p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const RED = [220, 20, 30];
 const EMF = new Uint8Array([1, 0, 0, 0, 0x6c, 0, 0, 0, ...new Array(80).fill(0)]);
@@ -39,6 +40,7 @@ const ev = (fn, arg) => page.evaluate(fn, arg);
 async function start() {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev((files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

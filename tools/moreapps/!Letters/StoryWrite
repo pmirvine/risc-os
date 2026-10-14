@@ -1,0 +1,175 @@
+// StoryWrite - header and footer STORIES (./StoryRead) written back
+// (Batch D, D10).
+//
+//   writeStory(story, map) -> Uint8Array
+//     story.bytes itself when it is a byte array and story.blocks
+//     still holds story.orig's objects element by element, or
+//     blocks deep-equal to them (./DeepEqual: an edit undone gives
+//     new paragraph objects, D12) (an untouched story: its part
+//     byte-identical); else the part
+//     written from the model by the body's writers (./WritePara
+//     paraNode, ./TblWrite tblNode, an Opaque block's node as it is;
+//     the body's normalisations, ./DocxWrite; empty blocks: one
+//     empty w:p, as CT_HdrFtr needs a block and Word writes) inside
+//     the root's name
+//     and attributes (namespace declarations included; xmlns:w added
+//     when missing, a w bound to another URI refused: DocxError
+//     'unsupported'), with story.prolog (none: the standard
+//     declaration, ./WriteParts declOf). `map` is the main part's
+//     scope (./WriteBody docScope): when it is Strict the part is
+//     written Strict (./NsMap mapNamespacesCopy 'toStrict').
+//   relsOut(story, parts) -> [name, bytes] | null
+//     the story's .rels to write: null when story.rels is null or
+//     holds the same relationships as the .rels in `parts` (that
+//     part is then written as its bytes); else story.relsPart (or
+//     ./Rels relsNameFor(part)) written from story.rels. A relsPart
+//     that is not part's own .rels (./Rels isRelsOf: a story copied
+//     {...old, part}) is ignored: the new part's own .rels is
+//     written. A story with no relationships and no .rels gets
+//     none.
+//   storiesOut(doc, rels, map) -> {parts, drop, rels}
+//     parts  Map name -> bytes of every story in doc.stories and of
+//            the .rels relsOut gives
+//     drop   Set of names not to write: every part of
+//            doc.meta.storyParts (the parts read as stories) that
+//            doc.stories no longer holds (a removed story, D10),
+//            and that part's .rels
+//     rels   `rels` (the main part's) without the internal header
+//            and footer relationships reaching a dropped part: the
+//            same array when nothing is dropped. Media a removed
+//            story alone used are kept (D10)
+//   freeName(doc, kind) -> 'word/headerN.xml' | 'word/footerN.xml'
+//     kind 'hdr'/'header' or 'ftr'/'footer' (else RangeError); in
+//     the main part's folder; N one past the highest N of a part of
+//     that kind in doc.parts, doc.stories, meta.zipOrder or
+//     meta.storyParts (names compared ignoring case; numbers of more
+//     than MAX_DIGITS digits are not counted, and a name that is
+//     taken all the same is stepped past)
+// Pure: no desktop services.
+import {NS} from './Wml';
+import {rootScope, strictScope, isStrict} from './Ns';
+import {mapNamespacesCopy} from './NsMap';
+import {paraNode} from './WritePara';
+import {tblNode} from './TblWrite';
+import {xmlBytes, relsTree} from './WriteParts';
+import {parsePart} from './PartXml';
+import {parseRels, relKind, resolvePart, relsNameFor, findPart,
+  isRelsOf} from './Rels';
+import {DocxError} from './DocxError';
+import {deepEqual} from './DeepEqual';
+
+/** Most digits of a part number freeName counts. */
+export const MAX_DIGITS = 9;
+
+/** True when `a` holds the objects of `b` (or deep-equal ones),
+ *  element by element. */
+const same = (a, b) => Array.isArray(a) && Array.isArray(b) &&
+  a.length === b.length &&
+  a.every((x, i) => x === b[i] || deepEqual(x, b[i]));
+
+/** See the header. */
+export function writeStory(story, map) {
+  if (story.bytes instanceof Uint8Array &&
+    same(story.blocks, story.orig)) return story.bytes;
+  const attrs = story.root.attrs.map(([n, v]) => [n, v]);
+  const w = attrs.find(([n]) => n === 'xmlns:w');
+  if (!w) attrs.push(['xmlns:w', NS.w]);
+  else if (w[1] !== NS.w) {
+    throw new DocxError('unsupported', 'the prefix w is bound to ' +
+      w[1] + ', not WordprocessingML', {part: story.part});
+  }
+  const strict = isStrict(map);
+  let m = rootScope({name: story.root.name, attrs});
+  if (strict) m = strictScope(m);
+  const children = story.blocks.map((b) => b.type === 'p'
+    ? paraNode(b, null, m) : b.type === 'tbl' ? tblNode(b, m)
+      : b.node);
+  if (!children.length)
+    children.push({name: 'w:p', attrs: [], children: []});
+  const tree = {name: story.root.name, attrs, children};
+  return xmlBytes(strict ? mapNamespacesCopy(tree, 'toStrict') : tree,
+    story.prolog || undefined);
+}
+
+const relKey = (r) => JSON.stringify([r.id, r.type, r.target,
+  r.mode || null, r.attrs || null]);
+
+/** True when `bytes` (a .rels) holds exactly the relationships. */
+function sameRels(bytes, name, rels) {
+  try {
+    const was = parseRels(parsePart(bytes, name).root);
+    return was.length === rels.length &&
+      was.every((r, i) => relKey(r) === relKey(rels[i]));
+  } catch (e) {
+    return false;
+  }
+}
+
+/** See the header. */
+export function relsOut(story, parts) {
+  if (!Array.isArray(story.rels)) return null;
+  const want = isRelsOf(story.part, story.relsPart) ? story.relsPart
+    : relsNameFor(story.part);
+  const name = findPart(parts, want);
+  if (name && sameRels(parts.get(name), name, story.rels)) return null;
+  if (!name && !story.rels.length) return null;
+  return [name || want, xmlBytes(relsTree(story.rels))];
+}
+
+const HF = new Set(['header', 'footer']);
+
+/** See the header. */
+export function storiesOut(doc, rels, map) {
+  const out = new Map();
+  const drop = new Set();
+  const stories = doc.stories instanceof Map ? doc.stories : new Map();
+  for (const [name, s] of stories) {
+    out.set(name, writeStory(s, map));
+    const r = relsOut(s, doc.parts);
+    if (r) out.set(r[0], r[1]);
+  }
+  for (const name of doc.meta.storyParts || []) {
+    if (stories.has(name)) continue;
+    drop.add(name);
+    const rn = findPart(doc.parts, relsNameFor(name));
+    if (rn && !out.has(rn)) drop.add(rn);
+  }
+  if (!drop.size) return {parts: out, drop, rels};
+  const gone = new Map([...drop].map((n) => [n, true]));
+  const main = doc.meta.mainPart;
+  const reaches = (r) => {
+    const k = relKind(r.type);
+    if (!k || !HF.has(k.kind) || r.mode === 'External') return false;
+    const to = resolvePart(main, r.target);
+    return !!to && !!findPart(gone, to);
+  };
+  return {parts: out, drop, rels: rels.filter((r) => !reaches(r))};
+}
+
+const WORDS = new Map([['hdr', 'header'], ['header', 'header'],
+  ['ftr', 'footer'], ['footer', 'footer']]);
+
+/** See the header. */
+export function freeName(doc, kind) {
+  const word = typeof kind === 'string' ? WORDS.get(kind) : undefined;
+  if (!word) throw new RangeError('bad story kind');
+  const meta = doc.meta || {};
+  const main = meta.mainPart || 'word/document.xml';
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  const names = [...(doc.parts ? doc.parts.keys() : []),
+    ...(doc.stories ? doc.stories.keys() : []),
+    ...(meta.zipOrder || []), ...(meta.storyParts || [])]
+    .map((n) => String(n).toLowerCase());
+  const taken = new Set(names);
+  const pre = (dir + word).toLowerCase();
+  let max = 0;
+  for (const n of names) {
+    if (!n.startsWith(pre) || !n.endsWith('.xml')) continue;
+    const d = n.slice(pre.length, -4);
+    if (/^[0-9]+$/.test(d) && d.length <= MAX_DIGITS)
+      max = Math.max(max, Number(d));
+  }
+  let k = max + 1;
+  while (taken.has(pre + k + '.xml')) k++;
+  return dir + word + k + '.xml';
+}

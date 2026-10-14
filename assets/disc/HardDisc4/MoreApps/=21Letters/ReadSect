@@ -2,33 +2,189 @@
 //
 //   props {pgSz?: {w, h, orient?, code?},
 //          pgMar?: {top, right, bottom, left, header, footer, gutter},
-//          cols?: {num?, space?}, titlePg?: boolean,
+//          cols?: {num?, sep?, space?, equalWidth?,
+//                  col?: [{w?, space?}]},
+//          pgNumType?: {fmt?, start?, chapStyle?, chapSep?},
+//          lnNumType?: {countBy?, start?, distance?, restart?},
+//          vAlign?: 'top' | 'center' | 'both' | 'bottom',
+//          titlePg?: boolean,
 //          type?: 'nextPage' | 'continuous' | 'evenPage' |
-//                 'oddPage' | 'nextColumn', extra}
+//                 'oddPage' | 'nextColumn',
+//          units?: {pgSz?, pgMar?, lnNumType?: {key: string},
+//                   cols?: {space?, col?: [{w?, space?}]}},
+//          extra}
 //
-// Twips stay twips. As everywhere in the reader, an element that is
-// not fully understood (w:cols with w:col children, w:pgSz with
-// another attribute...) is kept whole in extra, as are header and
-// footer references, w:pgNumType, w:docGrid and the rest.
+// Twips stay twips. A w:pgSz or w:pgMar value written with a unit
+// ("612pt", "8.5in", "21cm", "2.5mm", "12pc", "1pi": ST_TwipsMeasure,
+// and for pgMar's top and bottom ST_SignedTwipsMeasure, which may be
+// negative) is read as whole twips (./TabStops twipsOf) and the
+// string as written is kept in units[field][key], so ./WriteProps
+// writes it back as read while the twips still say the same; so is
+// a w:lnNumType distance (ST_TwipsMeasure too: Strict files write
+// "0.25in"; P11.1) and a w:cols w:space or a w:col's w or w:space
+// (P10 fix I3: units.cols {space, col: [{w, space}] by index}).
+// A negative value of an unsigned measure (pgSz w, h, code; pgMar
+// right, left, header, footer, gutter), with or without a unit, is
+// not understood: the element stays raw (P1 fix M6). orient is kept
+// as written; ./SectGeom goes by w and h only.
+// As everywhere in the reader, an element that is not fully
+// understood (an unknown attribute, a value out of range, unknown
+// content) is kept whole in extra, as are header and footer
+// references, w:docGrid, w:pgBorders and the rest.
+// Caps: MAX_COLS 45 columns (w:cols num and w:col children: Word's
+// limit, PG27), MAX_INT 2147483647 for start and chapStyle 1..9,
+// MAX_COUNT_BY 100 (Word's: what the Line numbers box takes; a
+// lnNumType countBy read is typed 1..MAX_INT, P11 fix M1).
 // The attributes of w:sectPr itself (rsids) live only in the
 // original node, which the caller keeps as section.raw.
-import {readProps, onOff, attrsObj} from './ReadProps';
-import {sectType} from './ReadPropsMore';
+// SECURITY: values become model values only after a check against
+// a fixed list or a number pattern; names are Map keys only.
+import {readProps, onOff, str} from './ReadProps';
+import {sectType, intOf, onOffOf} from './ReadPropsMore';
+import {wName, wAttrs, blank} from './Ns';
+import {twipsOf} from './TabStops';
+import {NUM_FMTS} from './NumFormat';
+
+export const MAX_COLS = 45, MAX_INT = 2147483647, MAX_COUNT_BY = 100;
 
 const MAR = ['top', 'right', 'bottom', 'left', 'header', 'footer',
   'gutter'];
+const SIGNED = ['top', 'bottom'];
+const CHAP_SEPS = ['hyphen', 'period', 'colon', 'emDash', 'enDash'];
+const RESTARTS = ['newPage', 'newSection', 'continuous'];
+const VALIGNS = ['top', 'center', 'both', 'bottom'];
+const UNITS = ['mm', 'cm', 'in', 'pt', 'pc', 'pi'];
+
+const empty = (node) => node.children.length === 0;
+const inRange = (lo, hi) => (s) => {
+  const n = intOf(s);
+  return n !== undefined && n >= lo && n <= hi ? n : undefined;
+};
+const uint = inRange(0, Number.MAX_SAFE_INTEGER);
+const oneOf = (list) => (s) => list.includes(s) ? s : undefined;
+
+/**
+ * Attributes `a` read by `kinds` (key -> reader of the string, which
+ * gives undefined for a value not understood) -> object, or
+ * undefined when one is not understood or unknown.
+ */
+function attrsOf(a, kinds) {
+  const o = {};
+  for (const [k, v] of a) {
+    const read = Object.hasOwn(kinds, k) ? kinds[k] : null;
+    const x = read ? read(v) : undefined;
+    if (x === undefined) return undefined;
+    o[k] = x;
+  }
+  return o;
+}
+
+const typed = (kinds) => (a, node) =>
+  empty(node) ? attrsOf(a, kinds) : undefined;
+
+const PGNUM = {fmt: oneOf(NUM_FMTS), start: inRange(0, MAX_INT),
+  chapStyle: inRange(1, 9), chapSep: oneOf(CHAP_SEPS)};
+const LNNUM = {countBy: inRange(1, MAX_INT),
+  start: inRange(0, MAX_INT), restart: oneOf(RESTARTS)};
+const COLS = {num: inRange(1, MAX_COLS), sep: onOffOf,
+  equalWidth: onOffOf};
+
+/** A reader of an unsigned measure: a plain whole number, or one
+ *  with a unit (never negative), whose string goes in units[k]. */
+const measure = (units, k) => (s) => {
+  if (!UNITS.includes(s.slice(-2))) return uint(s);
+  const v = unitTw(s, false);
+  if (v !== undefined) units[k] = s;
+  return v;
+};
+
+/** w:lnNumType -> {v, units}: distance a measure. */
+const lnNum = (a, node) => {
+  const units = {};
+  const v = empty(node) && attrsOf(a, {...LNNUM,
+    distance: measure(units, 'distance')});
+  return v ? {v, units} : undefined;
+};
+
+/** w:cols, with its w:col children (only those) as col -> {v,
+ *  units}: w:space and a w:col's w and w:space measures (P10 fix
+ *  I3: Strict files write "18pt"), units {space?, col?: [{w?,
+ *  space?}]} (col only when one has a unit). */
+const cols = (a, node, m) => {
+  const units = {}, us = [];
+  const o = attrsOf(a, {...COLS, space: measure(units, 'space')});
+  if (!o) return undefined;
+  const col = [];
+  for (const c of node.children) {
+    if (typeof c === 'string' && blank(c)) continue;
+    if (wName(c, m) !== 'col' || col.length === MAX_COLS)
+      return undefined;
+    const ca = wAttrs(c, m), u = {};
+    const x = ca && c.children.length === 0 ? attrsOf(ca,
+      {w: measure(u, 'w'), space: measure(u, 'space')}) : undefined;
+    if (!x) return undefined;
+    col.push(x);
+    us.push(u);
+  }
+  if (col.length) o.col = col;
+  if (us.some((u) => Object.keys(u).length)) units.col = us;
+  return {v: o, units};
+};
+
+/** A value with a unit: whole twips (negative only if signed). */
+const unitTw = (s, signed) => {
+  const n = twipsOf(s);
+  return (signed || s[0] !== '-') && Number.isSafeInteger(n) ? n
+    : undefined;
+};
+
+/** n, unless it is negative where no sign is allowed (P1 fix M6). */
+const unsignedOk = (n, signed) => (signed || !(n < 0) ? n
+  : undefined);
+
+/**
+ * An element of measures (`keys`; `signed` may be negative; the rest
+ * integers, as before units) -> {v, units} with the unit strings.
+ */
+const measured = (keys, signed, ints) => (a, node) => {
+  if (!empty(node)) return undefined;
+  const v = {}, units = {};
+  for (const [k, s] of a) {
+    if (!keys.includes(k)) return undefined;
+    const unit = ints.includes(k) && UNITS.includes(s.slice(-2));
+    const x = !ints.includes(k) ? s
+      : unit ? unitTw(s, signed.includes(k))
+        : unsignedOk(intOf(s), signed.includes(k));
+    if (x === undefined) return undefined;
+    v[k] = x;
+    if (unit) units[k] = s;
+  }
+  return {v, units};
+};
 
 const SECT = new Map([
-  ['pgSz', {field: 'pgSz',
-    read: attrsObj(['w', 'h', 'orient', 'code'], ['w', 'h', 'code'])}],
-  ['pgMar', {field: 'pgMar', read: attrsObj(MAR, MAR)}],
-  ['cols', {field: 'cols',
-    read: attrsObj(['num', 'space'], ['num', 'space'])}],
+  ['pgSz', {field: 'pgSz', read: measured(['w', 'h', 'orient',
+    'code'], [], ['w', 'h', 'code'])}],
+  ['pgMar', {field: 'pgMar', read: measured(MAR, SIGNED, MAR)}],
+  ['cols', {field: 'cols', read: cols}],
+  ['pgNumType', {field: 'pgNumType', read: typed(PGNUM)}],
+  ['lnNumType', {field: 'lnNumType', read: lnNum}],
+  ['vAlign', {field: 'vAlign', read: (a, node) =>
+    oneOf(VALIGNS)(str(a, node))}],
   ['titlePg', {field: 'titlePg', read: onOff}],
   ['type', {field: 'type', read: sectType}],
 ]);
 
 /** The section properties of a w:sectPr node. */
 export function readSect(node, map) {
-  return readProps(node, map, SECT).props;
+  const props = readProps(node, map, SECT).props;
+  let units;
+  for (const f of ['pgSz', 'pgMar', 'lnNumType', 'cols']) {
+    if (!props[f]) continue;
+    const {v, units: u} = props[f];
+    props[f] = v;
+    if (Object.keys(u).length) (units ||= {})[f] = u;
+  }
+  if (units) props.units = units;
+  return props;
 }

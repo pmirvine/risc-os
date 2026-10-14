@@ -23,6 +23,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
 import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
+import { asDraft } from './word-draft.mjs';
 
 const WORDS = 'alpha beta gamma delta epsilon zeta eta theta iota kappa'.split(' ');
 const docx = (body) => buildDocx({ 'word/document.xml': documentXml(body) });
@@ -59,6 +60,7 @@ const modelBad = (json) => {
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

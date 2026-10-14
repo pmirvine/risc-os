@@ -1,0 +1,132 @@
+// AnchorMove - a floating picture moved by dragging, as one undo
+// step (pure; Batch D P12.5, D27).
+//
+//   moveAnchor(d, sel, {dx, dy, from}) -> sel | null
+//       d a ./Document (or a story's facade), sel a ./Selection
+//       covering exactly one picture (./PicOps picIn) with an
+//       understood wp:anchor (./AnchorRead). dx, dy: how far it
+//       moved (layout px, finite numbers); each becomes
+//       round(px x 9525) EMU. On an axis that moved, its posOffset
+//       (wp:positionH / V, relativeFrom kept) becomes the old
+//       offset + that, kept in -2^31..2^31-1; an align there is
+//       replaced by the posOffset that puts the picture where it
+//       was shown plus the move: from {x, y, bx, by} (the placed
+//       float's top left and its box's, px, ./AnchorPlace Float;
+//       null for no from: refused). An axis that did not move
+//       (0 EMU) is left as it is. P12a fix I4: with from, the
+//       offset is ALWAYS where the float is shown plus the move,
+//       round((from.x - from.bx + dx) x 9525) (a float kept on the
+//       page, PG30, moves from where it is seen); offsets that come
+//       out as they were: sel back, no step. Only the position
+//       elements change: the rest of the picture is the same
+//       objects. Put in
+//       by ONE replaceText of its U+FFFC (the run's format kept),
+//       the picture selected again.
+//       No move (both 0 EMU): sel back, no step. null (refused,
+//       nothing changed): no picture, an anchor not understood, a
+//       position not a direct child of the anchor (inside
+//       mc:AlternateContent), a move that is not a number, or a
+//       result ./PicRead would not read back as moved.
+//   canMove(d, sel) -> bool  sel covers a floating picture
+//       moveAnchor can move: an understood anchor whose positionH
+//       and positionV are its own children (not in an
+//       mc:AlternateContent): ./PicDrag asks at the press, so a drag
+//       of one it cannot move beeps there (P12a fix M4)
+import {OBJ} from './Model';
+import {select} from './Selection';
+import {picIn} from './PicOps';
+import {pictureOf} from './PicRead';
+import {scope, isEl} from './Ns';
+import {NS} from './Wml';
+import {is} from './DrawNode';
+import {MIN_OFFSET, MAX_OFFSET} from './AnchorParts';
+
+const WP = NS.wp;
+const EMU_PX = 9525;
+const inside = (m, c) => (c.attrs.length ? scope(m, c) : m);
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const lim = (v) => Math.min(MAX_OFFSET, Math.max(MIN_OFFSET, v));
+
+/** Position element `local` of frame f with its offset set to v
+ *  (EMU): its one align / posOffset child replaced; null for
+ *  anything else in it. */
+function setPos(f, fm, local, v) {
+  const i = f.children.findIndex((c) => isEl(c) &&
+    Array.isArray(c.attrs) && is(c, inside(fm, c), WP, local));
+  if (i < 0) return null;
+  const pos = f.children[i], pm = inside(fm, pos);
+  const k = pos.children.findIndex((c) => isEl(c) &&
+    Array.isArray(c.attrs) && (is(c, inside(pm, c), WP, 'align') ||
+      is(c, inside(pm, c), WP, 'posOffset')));
+  if (k < 0) return null;
+  const old = pos.children[k], name = old.name.slice(0,
+    old.name.indexOf(':') + 1) + 'posOffset';
+  const kids = pos.children.slice();
+  kids[k] = {name, attrs: is(old, inside(pm, old), WP, 'posOffset')
+    ? old.attrs : [], children: [String(v)]};
+  const children = f.children.slice();
+  children[i] = {...pos, children: kids};
+  return {...f, children};
+}
+
+/** The new offset of axis a ('H' or 'V') moved by d px, or null:
+ *  from where it is shown (from), else its offset plus the move. */
+function offsetOf(an, a, d, from) {
+  const pos = an['pos' + a], emu = Math.round(d * EMU_PX);
+  const [p, b] = a === 'H' ? ['x', 'bx'] : ['y', 'by'];
+  if (from && fin(from[p]) && fin(from[b])) {
+    return lim(Math.round((from[p] - from[b] + d) * EMU_PX));
+  }
+  return Number.isInteger(pos.offset) ? lim(pos.offset + emu) : null;
+}
+
+/** See the header. */
+export function canMove(d, sel) {
+  const at = sel && picIn(d.doc, sel);
+  const an = at && at.info.floating && at.info.anchor;
+  if (!an || an.unknown) return false;
+  const draw = at.x.node, f = draw.children.find((c) => isEl(c) &&
+    Array.isArray(c.attrs));
+  const fm = inside(inside(at.map, draw), f);
+  return !!setPos(f, fm, 'positionH', 0) &&
+    !!setPos(f, fm, 'positionV', 0);
+}
+
+/** See the header. */
+export function moveAnchor(d, sel, {dx, dy, from} = {}) {
+  if (!fin(dx) || !fin(dy)) return null;
+  const at = picIn(d.doc, sel);
+  if (!at) return null;
+  const {info, map, x, loc, off} = at;
+  const an = info.floating && info.anchor;
+  if (!an || an.unknown) return null;
+  const hx = Math.round(dx * EMU_PX), vy = Math.round(dy * EMU_PX);
+  if (!hx && !vy) return sel;
+  const draw = x.node, fi = draw.children.findIndex((c) => isEl(c) &&
+    Array.isArray(c.attrs));
+  let f = draw.children[fi];
+  const fm = inside(inside(map, draw), f);
+  const want = {};
+  let moved = false;
+  for (const [a, v] of [['H', hx], ['V', vy]]) {
+    if (!v) continue;
+    const o = offsetOf(an, a, a === 'H' ? dx : dy, from);
+    if (o === null) return null;
+    f = setPos(f, fm, 'position' + a, o);
+    if (!f) return null;
+    want[a] = o;
+    moved ||= o !== an['pos' + a].offset;
+  }
+  if (!moved) return sel;              // (the offsets as they were)
+  const children = draw.children.slice();
+  children[fi] = f;
+  const node = {...draw, children};
+  const now = pictureOf(node, map), na = now && now.anchor;
+  if (!na || na.unknown || (want.H !== undefined &&
+    na.posH.offset !== want.H) || (want.V !== undefined &&
+    na.posV.offset !== want.V)) return null;
+  d.atomic(() => d.apply({op: 'replaceText', block: loc.at,
+    at: off, del: 1, ins: OBJ, inlines: {0: {...x, node}}}));
+  const id = loc.b.id;
+  return select({id, off}, {id, off: off + 1});
+}

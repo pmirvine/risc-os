@@ -1,0 +1,165 @@
+// HdrPick - which header or footer a page shows (Batch D, D13): the
+// one rule for it.
+//
+//   pick(doc, s, firstOfSection, num, kind) -> {part, type, s'} |
+//       null   for a page of section s; kind 'hdr' | 'ftr'.
+//       type (typeOf): 'first' when the section's titlePg is on and
+//       the page is its first; else 'even' when settings
+//       evenAndOddHeaders is on and the page's DISPLAYED number num
+//       is even (Word goes by the number, not the place: PG12); else
+//       'default'. The story is section s's reference of that type,
+//       else the nearest earlier section's ("linked to previous"),
+//       s' the section whose reference it is; part its part name in
+//       doc.stories (./SectRefs storyOfRef).
+//       No reference of the type anywhere: 'first' and 'even' give
+//       {part: null, type, s} - an EMPTY header ("different first
+//       page" even when nothing is in it); 'default' gives null, no
+//       header. The reference that counts reaching no story (its
+//       relationship or part missing, not a header or footer):
+//       null, no header; the reference is kept (nothing changes).
+//   typeOf(doc, s, firstOfSection, num) -> 'first'|'even'|'default'
+//       the type above (./Paginate asks hdrH / ftrH by it)
+//   refOf(doc, s, type, kind) -> StoryRef | null   the story of that
+//       type a page of section s shows, as pick finds it, except
+//       that a reference reaching a part that is there but no story
+//       (./SectRefs partOfRef: kept as bytes, D9) gives {part: null,
+//       type, s', kept: its part name} (a page shows it as a grey
+//       "preserved" band: ./PageHF); pick gives null for it.
+//       RangeError also for a type not in ./SectRefs TYPES
+//   chainOf(doc, type, kind) -> (s) -> StoryRef | null  refOf's
+//       answers for every section, resolved section by section from
+//       0 (a section's own reference, else the one before it's) as
+//       far as asked, each once: linear in the sections where refOf
+//       for each walks back to the nearest reference (a document of
+//       many sections linked to the first: pagination asking every
+//       page was O(sections^2); final fix A F2-I1). Each answer
+//       frozen, the same object each time. For one doc state
+//       (./PageHF: one per layout). RangeError as refOf
+//   work  {refs}: sections' references looked at (tests: linear)
+//
+// num is the page's number (./Pages Page.num) or a decimal string;
+// anything else (NaN, 'ii') counts as odd. firstOfSection is true
+// only when it is the value true. RangeError: s not a section index
+// of doc, kind not 'hdr' or 'ftr'.
+// References are read by ./SectRefs refsOf (the one rule: a
+// reference without w:type is a default one) in the document's
+// scope (./PicRead docMap: ./WriteBody docScope's map), memoised
+// per section props object (replaced, never changed, by an edit).
+// Pure: no desktop services.
+import {refsOf, storyOfRef, partOfRef, TYPES} from './SectRefs';
+import {onOffOf} from './SettingsRead';
+import {docMap} from './PicRead';
+
+const KINDS = ['hdr', 'ftr'];
+const DECIMAL = /^-?\d{1,15}$/;
+const memo = new WeakMap();            // props -> {map, refs}
+export const work = {refs: 0};
+
+/** The page number num as an integer, or null. */
+function numOf(num) {
+  if (typeof num === 'number') return Number.isInteger(num) ? num
+    : null;
+  return typeof num === 'string' && DECIMAL.test(num) ? +num : null;
+}
+
+/** Section s of doc, or RangeError. */
+function sectionOf(doc, s) {
+  const secs = doc && Array.isArray(doc.sections) ? doc.sections
+    : [];
+  if (!Number.isInteger(s) || s < 0 || s >= secs.length)
+    throw new RangeError('no section ' + String(s));
+  return secs[s];
+}
+
+/** refsOf(section, map), memoised per props object. */
+function refs(sec, map) {
+  work.refs++;
+  const pr = sec && sec.props;
+  if (!pr || typeof pr !== 'object') return refsOf({props: {}}, map);
+  const got = memo.get(pr);
+  if (got && got.map === map) return got.refs;
+  const r = refsOf(sec, map);
+  memo.set(pr, {map, refs: r});
+  return r;
+}
+
+/** See the header. */
+export function typeOf(doc, s, firstOfSection, num) {
+  const sec = sectionOf(doc, s);
+  if (firstOfSection === true && sec.props && sec.props.titlePg ===
+    true) return 'first';
+  const n = numOf(num);
+  if (n !== null && n % 2 === 0 &&
+    onOffOf(doc, 'evenAndOddHeaders')) return 'even';
+  return 'default';
+}
+
+/** kind and type checked (RangeError). */
+function checked(type, kind) {
+  if (!KINDS.includes(kind))
+    throw new RangeError('bad kind ' + String(kind));
+  if (!TYPES.includes(type))
+    throw new RangeError('bad type ' + String(type));
+}
+
+/** What r:id rId reaches: {part} a story, {kept} a part kept as
+ *  bytes, null nothing (see the header). */
+function reach(doc, rId) {
+  const part = storyOfRef(doc, rId);
+  if (part) return {part};
+  const kept = partOfRef(doc, rId);
+  return kept ? {kept} : null;
+}
+
+/** What section t's own reference gives, x its reach. */
+const resolved = (x, type, t) => (!x ? null : x.part
+  ? {part: x.part, type, s: t} : {part: null, type, s: t,
+    kept: x.kept});
+
+/** No reference of the type in sections 0..s (see the header). */
+const none = (type, s) => (type === 'default' ? null
+  : {part: null, type, s});
+
+/** See the header. */
+export function refOf(doc, s, type, kind) {
+  checked(type, kind);
+  sectionOf(doc, s);
+  const map = docMap(doc);
+  const secs = doc.sections;
+  for (let t = s; t >= 0; t--) {
+    const rId = refs(secs[t], map)[kind][type];
+    if (rId !== undefined) return resolved(reach(doc, rId), type, t);
+  }
+  return none(type, s);
+}
+
+/** See the header. */
+export function chainOf(doc, type, kind) {
+  checked(type, kind);
+  const map = docMap(doc), res = [], freeze = Object.freeze;
+  const reaches = new Map();           // r:id -> reach (one each)
+  let last;                            // (undefined: no reference yet)
+  return (s) => {
+    if (!(Number.isInteger(s) && s >= 0 && s < res.length)) {
+      sectionOf(doc, s);
+      const secs = doc.sections;
+      while (res.length <= s) {
+        const t = res.length, rId = refs(secs[t], map)[kind][type];
+        if (rId !== undefined) {
+          if (!reaches.has(rId)) reaches.set(rId, reach(doc, rId));
+          last = freeze(resolved(reaches.get(rId), type, t));
+        }
+        res.push(last === undefined ? freeze(none(type, t)) : last);
+      }
+    }
+    return res[s];
+  };
+}
+
+/** See the header. */
+export function pick(doc, s, firstOfSection, num, kind) {
+  if (!KINDS.includes(kind))
+    throw new RangeError('bad kind ' + String(kind));
+  const r = refOf(doc, s, typeOf(doc, s, firstOfSection, num), kind);
+  return r && r.kept ? null : r;
+}

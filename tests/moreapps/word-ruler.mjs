@@ -8,7 +8,7 @@
 // right indent; every selected paragraph gets the value, one undo
 // step on release, nothing changed while dragging; snapping to 1/16
 // inch and Shift for free; drags past the window's edge and absurd
-// values clamp; the ruler follows horizontal scrolling; Format > Ruler
+// values clamp; the ruler follows horizontal scrolling; View > Ruler
 // hides and shows it with the page moving (clicks, Page Down and the
 // caret consistent); the caret stays in the document; hover help; the
 // window closing in the middle of a drag; a drag ending with no place
@@ -258,13 +258,13 @@ try {
   ok('no repaint while idle, nor for caret moves in the same paragraph', cost.idle === 0 && cost.moves === 0, cost);
   await ev(async () => { const w = window.__doc().win; w.open({ x: 60, y: 40, w: 900, h: 500, behind: 'top', scrollX: 0, scrollY: 0 }); await window.__frames(2); });
 
-  // ---------------------------------------------------- Format > Ruler hides and shows it
+  // ---------------------------------------------------- View > Ruler hides and shows it
   await sel(0, 1);
   const pickRuler = async () => {
     const at = await ev(() => { const w = window.__doc().win; return window.__screen(w.x + 300, w.y + 300); });
     await page.mouse.click(at.x, at.y, { button: 'middle' });
     await wait(250);
-    const f = page.locator('.menu').nth(0).locator('.mitem', { hasText: /^Format/ }).first();
+    const f = page.locator('.menu').nth(0).locator('.mitem', { hasText: /^View/ }).first();
     const b = await f.boundingBox();
     await page.mouse.move(b.x + 20, b.y + b.height / 2, { steps: 2 });
     await page.mouse.move(b.x + b.width - 6, b.y + b.height / 2, { steps: 3 });
@@ -292,7 +292,7 @@ try {
     await window.__frames(2);
     return res;
   });
-  ok('Format > Ruler (ticked) hides it: the page moves up (L.top = the rows), the caret and focus stay in the document',
+  ok('View > Ruler (ticked) hides it: the page moves up (L.top = the rows), the caret and focus stay in the document',
     tick1 === true && !off.on && !off.open && off.top === BAR && off.first === 24 + BAR && off.caret && off.focused, { tick1, off });
   ok('... and it stays hidden when the window moves', off.moved === false, off);
   const clickBelow = async (y) => {
@@ -318,7 +318,7 @@ try {
     const d = window.__doc(), w = d.win, L = d.view.layout, c = d.view.caretRect(), pane = d.ruler.pane;
     return { on: d.rulerOn, open: pane.isOpen, y: pane.y - w.y, top: L.top, caretY: c.y, sy: w.scrollY, h: w.h, marks: window.__marks() };
   });
-  ok('Format > Ruler (not ticked) shows it again under the toolbar, the page below it, the caret in view under it',
+  ok('View > Ruler (not ticked) shows it again under the toolbar, the page below it, the caret in view under it',
     tick2 === false && on.on && on.open && on.y === BAR && on.top === BAR + RUL && on.caretY >= on.sy + BAR + RUL
     && on.caretY < on.sy + on.h && on.marks.left === 0, { tick2, on });
   await ev(async () => { window.__doc().win.scrollTo(0, 0); await window.__frames(2); });

@@ -1,0 +1,171 @@
+// LayoutBox - the Layout dialogue box (Format > Layout...; Batch D
+// P4.4, D21 "Layout"): Section start (New page, Continuous, Even
+// page, Odd page, New column), Headers and footers: Different odd
+// and even (the whole document's), Different first page, From edge
+// Header and Footer, Vertical alignment (Top, Centre, Justified,
+// Bottom), and a Line numbers... button (P11.2: it opens the Line
+// numbers box, ./LineNumBox, for the same section; an OK there does
+// not make this box stale). Built by WimpLib Ui/Dialog, at least 3.6
+// inches (648 px) wide.
+//
+//   layoutBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'layout:<docKey>'), kept in dw.boxes
+//       ('layout') so ./CloseDoc deletes it with the document; asked
+//       again while it is open, the same box comes to the front.
+//       Nothing (null) when the document has no selection.
+//
+// It opens with the values of the CURRENT section, the one at the
+// selection's start (./SectSetup layoutOf): a value the reader kept
+// as it was written (not understood) is blank and stays as it is.
+// Different odd and even is shaded in a document with no settings
+// part. OK (or Return) sends what was changed from what the box
+// showed (a distance shown to a hundredth of an inch and not touched
+// keeps its exact value) to ./SectSetup layoutCmd: one undo step,
+// the box gone. A distance that is not a length, or not 0 to 22
+// inches and less than the page's height, is not rounded or clamped:
+// OK beeps, says why in the box and keeps it. If the selection or the
+// document changed while the box was open (./TabsBox where), OK
+// beeps, fills the box again, says so and keeps it. Cancel, Escape
+// and the close icon change nothing.
+// In the header and footer mode (the box left open as it was
+// entered) OK beeps and says to leave it first (./TabsBox
+// IN_HDR), the box kept (final fix A F3-I1).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where, IN_HDR} from './TabsBox';
+import {layoutOf, layoutWhy, layoutCmd} from './SectSetup';
+import {lineNumBox} from './LineNumBox';
+
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;   // OK checks, never clamps
+const DIST = ['header', 'footer'];
+// box control -> layoutOf's value
+const NAMES = {start: 'type', evenodd: 'evenOdd', titlepg: 'titlePg',
+  header: 'header', footer: 'footer', valign: 'vAlign'};
+const STARTS = [{id: 'nextPage', text: 'New page'},
+  {id: 'continuous', text: 'Continuous'},
+  {id: 'evenPage', text: 'Even page'},
+  {id: 'oddPage', text: 'Odd page'},
+  {id: 'nextColumn', text: 'New column'}];
+const VALIGNS = [{id: 'top', text: 'Top'},
+  {id: 'center', text: 'Centre'}, {id: 'both', text: 'Justified'},
+  {id: 'bottom', text: 'Bottom'}];
+const len = (name, label, help) => ({kind: 'length', name, label,
+  min: -FIELD_MAX, max: FIELD_MAX, w: 120, help});
+const rows = () => [
+  {kind: 'popup', name: 'start', label: 'Section start',
+    choices: STARTS, help: 'Where this section starts: on a new ' +
+      'page, on the same page, on the next even or odd page, or in ' +
+      'the next column.'},
+  {kind: 'label', text: 'Headers and footers'},
+  {kind: 'option', name: 'evenodd', text: 'Different odd and even',
+    help: 'Odd and even pages have headers and footers of their own ' +
+      '(the whole document).'},
+  {kind: 'option', name: 'titlepg', text: 'Different first page',
+    help: 'The first page of this section has a header and footer ' +
+      'of its own.'},
+  [len('header', 'From edge: header', 'How far the header is from ' +
+    'the top of the page: 0 to 22 inches.'),
+  len('footer', 'Footer', 'How far the footer is from the bottom ' +
+    'of the page: 0 to 22 inches.')],
+  {kind: 'popup', name: 'valign', label: 'Vertical alignment',
+    choices: VALIGNS, help: 'Where the text goes down the page when ' +
+      'it does not fill it.'},
+  {kind: 'button', name: 'linenums', text: 'Line numbers...',
+    help: 'Number the lines of this section in the left margin.'},
+  {kind: 'label', name: 'msg', text: '', w: 600},
+];
+const HELP = 'Layout: how the section starts, its headers and ' +
+  'footers, and where its text goes down the page.';
+const CHANGED = 'The document changed while the box was open: it ' +
+  'shows the values now. Look again, then click OK.';
+// api -> {at, shown: {control: value shown}, exact: {field: {read,
+// tw}}: a distance put in, as it reads and as it is}
+const state = new WeakMap();
+const wired = new WeakSet();
+const nul = (x) => (x === null ? undefined : x);
+
+/** See the header. */
+export function layoutBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `layout:${dw.docKey}`,
+    title: 'Layout', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 648});
+  box(dw, 'layout', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, v, dw);
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Show the current section's values. */
+function refill(api, v) {
+  const q = layoutOf(v.d.doc, v.sel) || {};
+  const shown = {}, exact = {};
+  for (const [k, f] of Object.entries(NAMES)) {
+    api.set(k, nul(q[f]));
+    shown[k] = api.get(k);
+    if (DIST.includes(k)) exact[k] = {read: shown[k], tw: nul(q[f])};
+  }
+  const doc = v.d.doc;
+  api.shade('evenodd', !(doc.rawSettings && doc.meta &&
+    doc.meta.settingsPart));
+  api.set('msg', '');
+  state.set(api, {at: where(v), shown, exact});
+}
+
+/** The values for layoutCmd: what changed from what was shown. */
+function changes(values, st) {
+  const out = {};
+  for (const [k, f] of Object.entries(NAMES)) {
+    const was = st.shown[k];
+    if (values[k] === was || values[k] === undefined) out[f] = null;
+    else if (DIST.includes(k) && st.exact[k].read === values[k])
+      out[f] = null;
+    else out[f] = values[k];
+  }
+  return out;
+}
+
+/** The handlers of a new box. */
+function wire(api, v, dw) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('button', ({name, values}) => {
+    if (name === 'linenums') {
+      if (v.hdr) return no(IN_HDR);
+      lineNumBox(dw, () => {
+        const st = state.get(api);
+        if (st && api.isOpen) st.at = where(v);
+      });
+      return undefined;
+    }
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (v.hdr) return no(IN_HDR);      // (the section's: F3-I1)
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v);
+      return no(CHANGED);
+    }
+    const cmd = changes(values, st);
+    for (const k of DIST) {
+      const why = values[k] === null ? layoutWhy(v.d.doc, v.sel,
+        {[k]: NaN}) : layoutWhy(v.d.doc, v.sel, {[k]: cmd[k]});
+      if (why) return no(why, k);
+    }
+    const why = layoutWhy(v.d.doc, v.sel, cmd);
+    if (why) return no(why);
+    const out = v.typing.command(() => layoutCmd(v.d, v.sel, cmd));
+    if (!out) return no(layoutWhy(v.d.doc, v.sel, cmd) || '');
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

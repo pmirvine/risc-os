@@ -1,0 +1,178 @@
+// FieldPass - page-dependent fields in body text laid out again once
+// pagination knows their pages (Batch D, D18, PG20): the galley lays
+// a paragraph out with the values it knows (the stored result, or the
+// page it was on before); after pagination a paragraph whose value
+// differs is laid out again with it (its reuse key holds the values),
+// at most once per paragraph per edit: a third difference is left
+// (Word repaginates the same way).
+//
+//   passOf(L, P) -> fields | null  for layout L (./DocLayout) and its
+//       Pages P: the fields context (./FieldShow, L.fields) of one
+//       more layout, or null when none is due. Looks at the root
+//       paragraphs L.fshown records with page-dependent values, each
+//       on a page already worked out (P.done, or its place before
+//       the last page's end: no page is worked out for it), and not
+//       looked at for that page number and count already; a value
+//       that differs from what its lines show puts the page in
+//       pageOf. Which records (P8 fix M1, D37): those made since the
+//       last look (L.fwork fresh, ./FieldShow; one whose page is not
+//       worked out yet stays there) and those of the root items on
+//       pages that are new objects (a Page kept by identity or taken
+//       whole, ./PageReuse, was looked at for this count: SEEN); all
+//       of them when the count changed, or the first time, or after
+//       more than ./FieldShow FRESH new ones (L.fwork all). So a
+//       keystroke elsewhere looks at the records of the pages it
+//       changed, not at every one.
+//       fields = {...L.fields, pageOf, pages: ./FieldShow
+//       countsOf(P), tries, ver}: pageOf holds ./FieldShow pageOn's
+//       plain values, never a Page (final fix A C1: a Page keeps its
+//       Pages, galley and layout); tries counts per paragraph id the
+//       layouts made for it since the edit (ver: the ./DocVersion
+//       of the doc they are for; another edit starts again: a
+//       paragraph an edit moves to another page gets its pass; one
+//       left at a third difference, looked at for that page and
+//       count already, stays as it is until they change)
+//   relayOf(L, doc, prev) -> Set | null  the ids of prev's paragraphs
+//       whose values differ under L.fields (./DocItems lays them out
+//       again: not adopted); null when L.fields is prev's. Dates and
+//       times (FieldShow volFor) are looked at only when the clock
+//       (now) is not prev's (P9 fix I2: ./FieldUpdate sets it)
+//   carry(L, prev)  prev's records for L: with the same L.fields
+//       prev's very map, shared (no walk: a keystroke elsewhere runs
+//       no field code, D37; a record is kept for the same paragraph
+//       object at the same ./DocVersion only, ./FieldShow), else
+//       (a pass's layout) the records of the paragraphs whose lines
+//       L adopted, so a later pass still sees them; L.fwork shared
+//   work  {carried, looked}: records walked by carry and passOf
+//       (tests)
+//
+// Pure: no desktop services.
+import {keyFor, volFor, countsOf, pageOn} from './FieldShow';
+import {placeOf, pageOfPlace} from './PageFind';
+import {versionOf} from './DocVersion';
+
+export const work = {carried: 0, looked: 0};
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The page of Pages P holding the field of record r, or null. */
+function pageFor(P, id, r) {
+  const s = r.shows.find((x) => x.paged);
+  const c = s && placeOf(P.G, {id, off: s.from});
+  if (!c || !(P.done || (P.from && c.k < P.from.k))) return null;
+  return P.list[pageOfPlace(P, c)] || null;
+}
+
+const count = (c) => (c && c.list ? c.list.length : -1);
+const checked = new WeakMap();         // record -> what it was for
+
+/** Record r was looked at for page pg and these counts already (no
+ *  field work again: the same values); remembered when not. */
+function seen(r, pg, pages) {
+  const w = checked.get(r), n = count(pages);
+  if (w && w.num === pg.num && w.s === pg.s && w.fmt === pg.fmt &&
+    w.n === n) return true;
+  checked.set(r, {num: pg.num, s: pg.s, fmt: pg.fmt, n});
+  return false;
+}
+
+const SEEN = new WeakMap();             // Page -> the count looked at
+
+/** The records passOf looks at now (see the header): [[id, r]]. */
+function due(L, P, n, w) {
+  const m = L.fshown, out = new Map();
+  if (w.all || w.n !== n) {
+    for (const [id, r] of m) out.set(r, id);
+    for (const pg of P.list) out.set(pg, null);
+    w.all = false;
+    w.n = n;
+    return out;
+  }
+  for (const r of w.fresh) out.set(r, r.p.id);
+  const items = P.G.items;
+  for (const pg of P.list) {
+    if (SEEN.get(pg) === n) continue;
+    const k1 = Math.min(pg.end.k, items.length - 1);
+    for (let k = pg.start.k; k <= k1; k++) {
+      const it = items[k], r = it && m.get(it.id);
+      if (r) out.set(r, it.id);
+    }
+    out.set(pg, null);
+  }
+  return out;
+}
+
+/** See the header. */
+export function passOf(L, P) {
+  const fx = isObj(L) ? L.fields : null, m = fx && L.fshown;
+  if (!m || !isObj(P) || !P.G) return null;
+  const ver = versionOf(L.doc);
+  const old = fx.ver === ver && fx.tries instanceof Map ? fx.tries
+    : null;
+  const pages = countsOf(P), n = count(pages);
+  const w = L.fwork || (L.fwork = {fresh: new Set(), all: true,
+    n: -1});
+  let pageOf = null, tries = null, left = false;
+  const todo = due(L, P, n, w);
+  for (const [r, id] of todo) {
+    if (id === null) continue;        // (a page)
+    work.looked++;
+    w.fresh.delete(r);
+    const it = r.key && m.get(id) === r && L.byId.get(id);
+    if (!it || it.block !== r.p || it.col !== L.root) continue;
+    const pg = pageFor(P, id, r);
+    if (!pg) {
+      w.fresh.add(r);                 // (its page not worked out yet)
+      left = true;
+      continue;
+    }
+    if (seen(r, pg, pages) || (old && old.get(id) >= 1)) continue;
+    const fy = {now: fx.now, page: pg, pages};
+    if (keyFor(L.doc, r.p, fy) === r.key) continue;
+    if (!pageOf) {
+      pageOf = new Map(fx.pageOf instanceof Map ? fx.pageOf : []);
+      tries = new Map(old || []);
+    }
+    pageOf.set(id, pageOn(pg));
+    tries.set(id, (tries.get(id) || 0) + 1);
+  }
+  for (const [pg, id] of todo) {
+    if (id === null && (!left || P.done)) SEEN.set(pg, n);
+  }
+  return pageOf ? {...fx, pageOf, pages, tries, ver} : null;
+}
+
+/** See the header. */
+export function relayOf(L, doc, prev) {
+  const m = prev && prev.fshown;
+  if (!m || L.fields === prev.fields) return null;
+  const fx = L.fields, px = prev.fields;
+  const clock = !isObj(fx) || !isObj(px) || fx.now !== px.now;
+  let out = null;
+  for (const [id, r] of m) {
+    if ((r.key && keyFor(doc, r.p, fx) !== r.key) ||
+      (clock && r.vol && volFor(doc, r.p, fx) !== r.vol)) {
+      (out || (out = new Set())).add(id);
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function carry(L, prev) {
+  const m = prev && prev.fshown;
+  if (!m) return;
+  L.fwork = prev.fwork || null;
+  if (L.fields === prev.fields) {     // (the same values: shared)
+    if (L.fshown) for (const [id, r] of L.fshown) m.set(id, r);
+    L.fshown = m;
+    return;
+  }
+  for (const [id, r] of m) {
+    work.carried++;
+    const it = L.byId.get(id), o = prev.byId.get(id);
+    if (!it || !o || it.block !== r.p || !it.lines ||
+      it.lines !== o.lines) continue;
+    const n = L.fshown || (L.fshown = new Map());
+    if (!n.has(id)) n.set(id, r);
+  }
+}

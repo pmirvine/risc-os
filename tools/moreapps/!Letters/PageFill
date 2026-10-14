@@ -1,0 +1,189 @@
+// PageFill - one page's frame filled from the galley (Batch D, D5,
+// D6): the loop ./Paginate's nextPage runs, and the section helpers
+// both use.
+//
+//   fill(G, out, k0, line0, y0)  fills page out (nextPage's record:
+//       frameH, start, s) from item k0, line line0 at galley y y0:
+//       sets out.end, out.why, out.used (and out.y0 when the space
+//       before kept at the top leaves the first line no room: it is
+//       dropped and the item fitted again), out.seen (the last
+//       item it looked at: n when it reached the galley's end). A
+//       cut's dy is the dy it started with plus the frame's room,
+//       never a difference of galley y's: the same wherever the
+//       galley puts the item (./PageReuse takes such pages). The
+//       one rule for values that are not finite (px): a cut ends
+//       once its dy reaches the px height of the block or line, so
+//       one whose height or place is NaN or infinite ends at once
+//       or after its height, and every page moves on; used is px.
+//       A table (./PageRows isTable) crossing the bottom is broken
+//       between rows or inside one (./PageRows tableEnd, D8); a
+//       page starting inside one moves the galley below its first
+//       row by ./PageRows adjOf (repeated header rows, the rest of
+//       a cut row): the frame's galley bottom is that much higher
+//       One placed from its flow place (vertAnchor text) whose
+//       bottom there (its tblpY too, twips / 15) would pass the
+//       frame starts the next page (P12b fix, review M3: never over
+//       the bottom margin, nor over the text above it moved up);
+//       such tables in a row are stacked there (./AnchorTbl): their
+//       stacked bottoms the same (P12b fix I4)
+//   geomAt, sectOf, typeOf, factsOf, fin, px, floatSpan, contStart
+//       ./PageGeom's (split from here: P12b fix wave), re-exported
+//
+// The rules: ./Paginate's header and docs/apps/Letters.md, "Pages
+// (Batch D): the rules". Pure: no desktop services.
+import {cursor, breakFrom, lastFit} from './PageCursor';
+import {linesHere, chainStart} from './PageKeep';
+import {isTable, tableEnd, adjOf, MOVE} from './PageRows';
+import {geomAt, sectOf, typeOf, factsOf, fin, px, floatSpan, contStart,
+  startsPage} from './PageGeom';
+
+export {geomAt, sectOf, typeOf, factsOf, fin, px, floatSpan, contStart};
+
+/** Galley y of the bottom of item it's line j (-1: its last). */
+function bottomOf(it, j) {
+  const ls = it.lines;
+  if (!ls || !ls.length) return it.y + it.h;
+  const l = ls[j < 0 ? ls.length - 1 : j];
+  return it.y + l.y + l.h;
+}
+
+/** D6 widow, orphan, keepLines: lines of item it placed here. */
+function keepLines(G, it, f, line, fit, br, frameH) {
+  const ls = it.lines, top = it.y + ls[line].y;
+  const all = lastFit(it, ls, line, top + frameH) - line + 1;
+  return linesHere({from: line, count: br >= 0 ? br + 1 : ls.length,
+    keepLines: !!f.keepLines, widow: f.widow !== false}, fit, all);
+}
+
+/** Fill page out's frame from item k0, line line0 (see the header). */
+export function fill(G, out, k0, line0, y0) {
+  const items = G.items, n = items.length;
+  const d = out.start.dy || 0;
+  const adj = adjOf(items[k0], out.start, out.frameH);
+  let room = out.frameH, limit = y0 + room - adj, bot = y0, skip = 0;
+  let run = 0;                         // (a stack of tables: I4)
+  let k = k0, line = line0, end = null, why = 'end';
+  for (; k < n; k++, line = 0) {
+    const it = items[k], f = factsOf(G, k);
+    if (k > k0) {
+      if (startsPage(G, k)) { why = 'section'; break; }
+      if (contStart(G, k)) { why = 'cont'; break; }
+      if (f.breakBefore) { why = 'before'; break; }
+      if (it.s !== items[k - 1].s) {
+        const b = px(factsOf(G, k - 1).band);
+        room += b;
+        limit = y0 + room - adj;
+        skip += b;
+      }
+    }
+    if (f.refs && f.refs.length && G.reserve) {
+      const r = px(G.reserve({s: out.s, y0, frameH: out.frameH,
+        limit}, f.refs));
+      room = Math.max(room - r, 1);
+      limit = y0 + room - adj;
+    }
+    const ls = it.lines && it.lines.length ? it.lines : null;
+    const sp = floatSpan(G, k, out.frameH);
+    const tx = sp !== null && f.tfloat.vert === 'text';
+    if (sp === null) run = 0;
+    if (sp !== null) {
+      const dy = tx && !f.tfloat.ySpec ? (f.tfloat.y || 0) / 15 : 0;
+      if (k === k0 || (tx ? it.y + dy + px(it.h) <= limit - run
+        : it.y <= limit)) {            // (else: on the next page)
+        if (tx) run += sp;
+        bot = Math.max(bot, it.y - px(it.gapAbove) + sp);
+        room += sp;
+        skip += sp;
+        limit = y0 + room - adj;
+        continue;
+      }
+    } else if (isTable(it)) {
+      const t = tableEnd(it, k, k === k0 ? out.start : null, limit,
+        out.frameH, !!f.keepNext);
+      if (!t) {
+        bot = Math.max(bot, it.y + it.h);
+        continue;
+      }
+      if (t !== MOVE) {
+        bot = Math.max(bot, t.bot);
+        end = t.end;
+        why = 'full';
+        break;
+      }
+    } else if (!ls) {
+      if (it.y + it.h <= limit) {
+        bot = Math.max(bot, it.y + it.h);
+        continue;
+      }
+      if (k === k0) {
+        const dy = d + room;           // (y0: its top + d)
+        end = dy < px(it.h) ? cursor(k, 0, dy) : cursor(k + 1, 0);
+        why = end.dy ? 'cut' : 'full';
+        bot = limit;
+        break;
+      }
+    } else {
+      const br = breakFrom(f.brPage, line);
+      const last = ls[ls.length - 1];
+      if (br < 0 && it.y + it.h <= limit) {
+        bot = Math.max(bot, it.y + last.y + last.h);
+        continue;
+      }
+      const fit = lastFit(it, ls, line, limit) - line + 1;
+      if (fit > 0 && br >= 0 && br < line + fit) {
+        bot = Math.max(bot, bottomOf(it, br));
+        why = 'break';
+        end = br + 1 < ls.length ? cursor(k, br + 1)
+          : cursor(k + 1, 0);
+        break;
+      }
+      if (fit === ls.length - line) {
+        bot = Math.max(bot, bottomOf(it, ls.length - 1));
+        continue;
+      }
+      let here = fit > 0 ? keepLines(G, it, f, line, fit, br,
+        out.frameH) : 0;
+      if (!here && k === k0) here = fit;
+      if (here > 0) {
+        bot = Math.max(bot, bottomOf(it, line + here - 1));
+        why = 'full';
+        end = cursor(k, line + here);
+        break;
+      }
+      if (k === k0) {
+        const lt = it.y + ls[line].y;
+        if (y0 < lt + d) {
+          // (the space before kept at the top leaves the line no
+          // room: dropped, and the item fitted again; review I1)
+          out.y0 = bot = y0 = lt + d;
+          room = out.frameH;
+          limit = y0 + room;
+          k--;
+          continue;
+        }
+        const dy = d + room;           // (y0 is lt + d)
+        end = dy < px(ls[line].h) ? cursor(k, line, dy)
+          : line + 1 < ls.length ? cursor(k, line + 1)
+            : cursor(k + 1, 0);
+        why = end.dy ? 'cut' : br === line ? 'break' : 'full';
+        bot = limit;
+        break;
+      }
+    }
+    why = 'full';
+    out.seen = k;
+    const c = chainStart(G, k, out.frameH, k0);
+    if (c === k) break;
+    for (; k > c; k--) {
+      if (items[k].s !== items[k - 1].s) {
+        skip -= px(factsOf(G, k - 1).band);
+      }
+    }
+    bot = bottomOf(items[k - 1], -1);
+    break;
+  }
+  out.end = end || cursor(k, 0);
+  out.why = why;
+  out.seen = Math.max(out.seen, k);
+  out.used = px(bot - y0 - skip + adj);
+}

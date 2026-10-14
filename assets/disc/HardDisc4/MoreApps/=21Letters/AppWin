@@ -9,9 +9,8 @@
 // toolbar rows across its top show and change the formatting, a
 // ruler under them the indents (./WinPanes); the page starts below
 // them: dw.inset() px, given to the layout and the view. Shown at
-// dw.zoom percent (./ZoomBind: the window's menu, Ctrl+wheel): the
-// layout stays at 100%, laid out for the window's width / zoom, the
-// extent and everything under the bars scaled (./Zoom).
+// dw.zoom percent (./ZoomBind): the layout stays at 100%, laid out
+// for the window's width / zoom (./WinFit), the extent scaled.
 //
 //   const dw = new DocWindow(app, path, doc)   path null: untitled
 //   dw.show()          open it (or to the front), with the focus
@@ -24,10 +23,17 @@
 //   dw.view            its ./EditView;  dw.bar, dw.bar2  its toolbar
 //                      rows (./ToolbarBind);  dw.inset()  (./WinPanes)
 //   dw.rb, dw.rulerOn  its ./RulerBind; whether the ruler is shown
-//   dw.setRuler(on)    show or hide it (Format > Ruler): the page
+//   dw.setRuler(on)    show or hide it (View > Ruler): the page
 //                      moves up or down, the caret kept in view
 //   dw.zoom, dw.setZoom(pct)  the zoom (percent, per window)
+//   dw.viewName        'print' or 'draft' (./ViewMode: View menu,
+//                      ./ViewMenu); dw.pages  Print layout's ./Pages
+//   dw.fitExtent()     the extent from the placement (./WinFit)
 //   dw.text            the paragraphs' texts, as they are now
+//   dw.fields          {now, shade, codes?}: what its layouts show
+//                      fields with (./FieldShow; now: when it was
+//                      opened; shade: ./FieldView shadeFor; codes:
+//                      View > Field codes, ./FieldView setCodes)
 //   dw.pics            its view of the pictures (./PicCache picView:
 //                      a picture decoded redraws the window if open)
 //   dw.summary         the Info line, as the document was opened
@@ -36,7 +42,6 @@
 //   dw.close()         close it without asking; dw.closed
 // app (!RunImage): {task, docs (Map key -> DocWindow), keyOf(path),
 // rekey(dw), recent, noteRecent(path), closed(dw), open, newDoc}.
-//
 // A new window is as wide as the page and its grey edges (at most
 // the screen's width less 40 px; it scrolls across when narrower),
 // as tall as a whole page under the bars where the screen has room
@@ -46,7 +51,6 @@
 // changes that are not saved (Document.dirty; a save calls retitle;
 // saving a copy does not count).
 import {wimp, vfs} from 'riscos';
-import {TextMetrics} from 'wimplib/TextMetrics';
 import {DocLayout, PAGE_TOP} from './DocLayout';
 import {EditView} from './EditView';
 import {attachMouse} from './EditMouse';
@@ -56,7 +60,9 @@ import {attachKeys} from './DocKeys';
 import {windowMenu} from './WinMenu';
 import {makePanes, inset, setRuler} from './WinPanes';
 import {bindZoom} from './ZoomBind';
-import {extentOf} from './Zoom';
+import {metricsOf, newLayout, fit, fitExtent} from './WinFit';
+import {initView} from './ViewMode';
+import {attachHdr} from './HdrMode';
 import {Document} from './Document';
 import {Typing} from './Typing';
 import {dropFiles} from './PicDrop';
@@ -65,10 +71,10 @@ import {untitledName} from './SaveState';
 import {save, saveAsTo, bytesOf} from './DocSave';
 import {requestClose, revert, destroy} from './CloseDoc';
 import {picView} from './PicCache';
+import {shadeFor} from './FieldView';
 
 const H0 = 560, EDGE = 48, BELOW = 92;  // (icon bar, scroll bar)
 let count = 0;                         // (to place windows in turn)
-let scratch = null;                    // (a context to measure with)
 
 export class DocWindow {
   constructor(app, path, doc) {
@@ -86,8 +92,9 @@ export class DocWindow {
     this.pics = picView(() => {        // (a picture decoded)
       if (this.win.isOpen) this.win.invalidate();
     });
+    this.fields = {now: new Date(), shade: shadeFor(this)};
     const L = this.L = new DocLayout(doc, this.metrics(), null,
-      {top: this.inset(), pics: this.pics});
+      {top: this.inset(), pics: this.pics, fields: this.fields});
     const W = Math.max(240, Math.min(wimp.width - 40,
       Math.ceil(Math.max(L.pageW, L.marL + L.textW) + EDGE)));
     const n = count++ % 8, y = 70 + n * 28;
@@ -118,6 +125,8 @@ export class DocWindow {
     attachKeys(this);
     makePanes(this);
     this.zb = bindZoom(this);
+    initView(this);                    // (Print layout or Draft)
+    attachHdr(this);                   // (headers: ./HdrMode)
     this.d.on('change', () => this.retitle());
     this.fit();
     w.on('moved', () => {
@@ -137,32 +146,10 @@ export class DocWindow {
       .filter((b) => b.type === 'p').map((b) => b.text));
   }
 
-  /** Text widths, measured on the window's canvas (a scratch one
-   *  until it is made: a table's layout may measure while the
-   *  document is being opened). */
-  metrics() {
-    return new TextMetrics((text, css) => {
-      const g = this.ctx || (scratch ||= document.createElement(
-        'canvas').getContext('2d'));
-      g.font = css;
-      return g.measureText(text).width;
-    });
-  }
-
-  /** Place the column for the window's width; the extent (header). */
-  fit() {
-    // (after an edit: the new layout first; it fits itself). Inside
-    // a redraw (EditView.paint -> L -> rebuild) setExtent only asks
-    // for another redraw (with the new extent and scroll offsets)
-    if (this.view) this.view.ensure();
-    const w = this.win, L = this.L;
-    const r = extentOf(L.layout(this.viewW()), this.view.zoom, L.top);
-    w.setExtent({w: Math.max(r.w, wimp.width),
-      h: Math.max(r.h, 64)});
-    this.view.placed();
-    this.rb.refresh();
-    w.invalidate();
-  }
+  /** Text widths, on the window's canvas; fit: the extent. */
+  metrics() { return metricsOf(this); }
+  fit() { fit(this); }
+  fitExtent() { fitExtent(this); }
 
   /** The width to lay out for: the window's, at 100%. */
   viewW() { return Math.round(this.win.w) / this.view.zoom; }
@@ -180,19 +167,15 @@ export class DocWindow {
     if (this.win.title !== t) this.win.setTitle(t);
   }
 
-  /** After an edit: a new layout keeping the unchanged lines. */
+  /** After an edit: a new layout keeping unchanged lines. */
   rebuild() { this.newLayout(this.L.metrics, this.L); }
 
   /** See the header: new widths, so a new layout. */
   relayout() { this.newLayout(this.metrics(), null); }
 
-  /** A new layout, inset() px down; prev: one to keep lines of. */
-  newLayout(metrics, prev) {
-    const old = this.L;
-    this.L = new DocLayout(this.doc, metrics, prev,
-      {top: this.inset(), pics: this.pics});
-    this.view.setLayout(this.L, old);
-    this.fit();                        // (lays it out)
+  /** A new layout (./WinFit). */
+  newLayout(metrics, prev, fields) {
+    newLayout(this, metrics, prev, fields);
   }
 
   paint(g, rect) {

@@ -1,0 +1,104 @@
+// HdrView - where a header or footer is on Print layout's pages, for
+// editing it in the window's header and footer mode (Batch D, D14).
+//
+//   PlaceShift(L, dx, dy, page) -> Place  (./Place has the
+//       interface) the identity placement of a story's own layout L
+//       (./StoryLayout editLayout) moved by whole px (dx, dy) to
+//       where page `page` shows it: every screen answer of L (the
+//       caret, hits, selection rects, the finders through ./Place
+//       toGalley) is then on that page. view 'story'; no pages
+//   hdrAt(L, x, y) -> {i, area, kind} | null  the page of body
+//       layout L (Print layout: L.place a ./PlacePrint) at layout
+//       point (x, y), the nearest one (./PageSheet near), and the
+//       part of it there (./PlacePrint area): kind 'hdr' in its
+//       header area, 'ftr' in its footer area, else null (the body,
+//       the margins beyond those: D33's clicks, the desk); null
+//       without pages
+//   refAt(L, i, kind) -> StoryRef | null  page i's header or footer
+//       (./Pages Page.header / footer: {part, type, s'}; part null
+//       for an empty one, kept for a part that is no story)
+//   boxAt(L, i, kind) -> box | null  where page i shows it (./PageHF
+//       boxesOf), null when it shows none
+//   labelOf(doc, pg, kind) -> {text, linked}  the mode's tab on page
+//       pg: 'First page header', 'Even page footer', 'Odd page
+//       header' (default, evenAndOddHeaders on), else 'Header' /
+//       'Footer'; ' - Section n' after it when the document has more
+//       than one section (Word: "First page header - Section 2");
+//       linked: 'Same as previous' when a later section has no
+//       reference of its own of that kind and type (./SectRefs
+//       refsOf; the one rule ./HdrMenu's Link to previous ticks by,
+//       an EMPTY first or even header too: M2)
+// Pure: no desktop services.
+import {lineTop, PlaceDraft} from './PlaceDraft';
+import {boxesOf} from './PageHF';
+import {typeOf} from './HdrPick';
+import {onOffOf} from './SettingsRead';
+import {refsOf} from './SectRefs';
+import {docMap} from './PicRead';
+
+const NAMES = {first: 'First page ', even: 'Even page ',
+  odd: 'Odd page '};
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export function PlaceShift(L, dx, dy, page) {
+  const base = PlaceDraft(L);
+  const move = (r) => ({...r, x: r.x + dx, y: r.y + dy});
+  return Object.freeze({view: 'story',
+    lineAt: (it, k) => ({x: it.x + dx, y: lineTop(it, k) + dy, page}),
+    itemTop: (it) => it.y + dy,
+    rects: (it, l0, l1) => base.rects(it, l0, l1).map(move),
+    hit: (x, y) => base.hit(x - dx, y - dy),
+    visible: (y0, y1) => base.visible(y0 - dy, y1 - dy).map((v) =>
+      ({...v, dx, dy})),
+    extent: () => base.extent(),
+    pageOf: () => page,
+    band: (y0, y1) => ({y0: y0 - dy, y1: y1 - dy})});
+}
+
+/** See the header. */
+export function hdrAt(L, x, y) {
+  const Pl = L && L.place, P = Pl && Pl.pages;
+  if (!P || !Pl.sheet || !Pl.area) return null;
+  const i = Pl.sheet.near(y), area = Pl.area(x, y);
+  const pg = i >= 0 ? P.at(i) : null;
+  if (!pg || !area || area === 'desk') return null;
+  if (area === 'header' || area === 'footer') {
+    return {i, area, kind: area === 'header' ? 'hdr' : 'ftr'};
+  }
+  return {i, area, kind: null};
+}
+
+/** See the header. */
+export function refAt(L, i, kind) {
+  const P = L && L.place && L.place.pages;
+  const pg = P ? P.at(i) : null;
+  if (!pg || pg.blank) return null;
+  return (kind === 'hdr' ? pg.header : pg.footer) || null;
+}
+
+/** See the header. */
+export function boxAt(L, i, kind) {
+  const P = L && L.place && L.place.pages;
+  const pg = P ? P.at(i) : null;
+  if (!pg) return null;
+  return boxesOf(P.G, pg, P).find((b) => b.kind === kind && b.lay) ||
+    null;
+}
+
+/** See the header. */
+export function labelOf(doc, pg, kind) {
+  const ref = isObj(pg) ? (kind === 'hdr' ? pg.header : pg.footer)
+    : null;
+  const t = ref ? ref.type : typeOf(doc, pg.s, pg.first, pg.num);
+  const linked = pg.s > 0 && refsOf(doc.sections[pg.s],
+    docMap(doc))[kind][t] === undefined;
+  let type = t;
+  if (type === 'default' && onOffOf(doc, 'evenAndOddHeaders'))
+    type = 'odd';
+  const word = kind === 'hdr' ? 'header' : 'footer';
+  let text = NAMES[type] ? NAMES[type] + word
+    : word[0].toUpperCase() + word.slice(1);
+  if (doc.sections.length > 1) text += ' - Section ' + (pg.s + 1);
+  return {text, linked};
+}

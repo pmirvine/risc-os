@@ -348,4 +348,19 @@ describe('Xml', () => {
     assert.equal(serialize(el('a', {v: '\u{1F600}\t'}, 'ok\t\n')),
       '<a v="\u{1F600}&#9;">ok\t\n</a>');
   });
+
+  it('a self-closed element keeps the white space before its /> ' +
+    '(P12b fix wave: raw elements written back as read); the tree ' +
+    'is the same as one without', () => {
+    const src = '<a><b x="1" /><c/><d y="2"\n  /><e>t</e></a>';
+    const {root} = parseXml(src);
+    assert.equal(serialize(root), src);
+    assert.deepEqual(root, parseXml(
+      '<a><b x="1"/><c/><d y="2"/><e>t</e></a>').root);
+    assert.equal(JSON.stringify(root).includes('sp'), false);
+    // a copy made by spreading is written plainly; one built is too
+    assert.equal(serialize({...root.children[0]}), '<b x="1"/>');
+    assert.equal(serialize(el('b', {x: '1'})), '<b x="1"/>');
+  });
 });
+

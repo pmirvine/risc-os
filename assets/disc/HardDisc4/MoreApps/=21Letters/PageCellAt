@@ -1,0 +1,123 @@
+// PageCellAt - where a line of a table's cell is among its row's
+// units, and the reverse (Batch D, D8; split from ./PageCells in the
+// P4 fix wave), for ./PageFind, ./PlacePrint and ./SelPage.
+//
+//   cellPlace(it, x, j = 0) -> {line: r, cell?, cl?}  the place in
+//       table it of line j of item x (in one of its cells, at any
+//       depth; j 0 for an item with no lines): an item of a cell's
+//       own column is found by identity (review P4 I1: galley y
+//       values summed in another order differ by an ulp at a cut):
+//       the row and cell whose column holds it, cl the units of the
+//       items before it (x.ci) plus j; in a merged cell (I3) the row
+//       of its span holding that unit (./PageCells unitsAt), the
+//       cell there (a continue cell) and the unit in its slice. An
+//       item deeper (in a nested table): row r the last whose top is
+//       at or above the line's galley y, the cell at x's x, cl its
+//       last unit whose top is at or above that y (both within 1e-6
+//       px). No cell when none is found
+//   unitAt(it, r, i, u) -> {x, line} | null  the item and its line
+//       (a nested table: its row; 0 for any other item with no
+//       lines) of unit u of cell i of row r (./PageCells unitsAt: a
+//       merged cell's slice), null for none
+//
+// Pure: no desktop services.
+import {unitsAt, unitsOf, topOf, rowsOf, px} from './PageCells';
+
+const NONE = Object.freeze([]);
+const EPS = 1e-6;                      // px: the same galley y
+
+/** The units item y counts (./PageCells unitsOf). */
+function unitsIn(y) {
+  if (y.kind === 'p' && y.lines && y.lines.length) {
+    return y.lines.length;
+  }
+  const rows = rowsOf(y);
+  return rows ? rows.length : 1;
+}
+
+/** The index in row's cells of the cell (not a continue cell) whose
+ *  column is col, -1 for none. */
+const byCol = (row, col) => (row ? row.cells.findIndex((c) =>
+  !c.cont && c.col === col) : -1);
+
+/** The index of the cell of row holding galley x gx (a continue
+ *  cell only when cont), -1 for none. */
+const cellAtX = (row, gx, cont) => row.cells.findIndex((c) =>
+  !c.cont === !cont && gx >= c.x && gx < c.x + c.w);
+
+/** The unit of line k of item x in column col (x one of its items,
+ *  x.ci its index there), -1 when x is not. */
+function unitIn(col, x, k) {
+  const xs = col.items || NONE;
+  if (!Number.isInteger(x.ci) || xs[x.ci] !== x) return -1;
+  let u = 0;
+  for (let i = 0; i < x.ci; i++) u += unitsIn(xs[i]);
+  return u + k;
+}
+
+/** Unit u of cell i of row s (a merge's first cell): the row of its
+ *  span whose slice holds it, the cell there and u in that slice. */
+function sliceOf(it, s, i, u) {
+  const S = it.rows[s].cells[i];
+  if (!(S.rowSpan > 1)) return {line: s, cell: i, cl: u};
+  const g = unitsOf(S), y = it.y + px(S.ry) + (g.tops[u] || 0);
+  const last = Math.min(it.rows.length, s + S.rowSpan) - 1;
+  let r = s;
+  while (r < last && it.rows[r + 1].y <= y) r++;
+  if (r === s) return {line: s, cell: i, cl: u};
+  const j = it.rows[r].cells.findIndex((c, k) => {
+    const q = c.cont && topOf(it, r, k);
+    return !!q && q.r === s && q.i === i;
+  });
+  if (j < 0) return {line: s, cell: i, cl: u};
+  return {line: r, cell: j, cl: u - unitsAt(it, r, j).lo};
+}
+
+/** See the header. */
+export function cellPlace(it, x, j = 0) {
+  const rows = it.rows, ls = x.lines, n = ls ? ls.length : 0;
+  const k = n && Number.isInteger(j) && j > 0 ? Math.min(j, n - 1) : 0;
+  const y = x.y + (n ? ls[k].y : 0);
+  let lo = 0, hi = rows.length - 1;
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (rows[m].y <= y + EPS) lo = m;
+    else hi = m - 1;
+  }
+  // (x in a cell of its own: that cell, found by its column in row
+  // lo or next to it, or the merged cell over row lo at x's x)
+  const at = [lo + 1, lo, lo - 1].map((r) => [r,
+    byCol(rows[r], x.col)]);
+  const m = topOf(it, lo, cellAtX(rows[lo], x.x, true));
+  if (m) at.push([m.r, m.i]);
+  for (const [r, i] of at) {
+    const u = i >= 0 ? unitIn(rows[r].cells[i].col, x, k) : -1;
+    if (u >= 0) return sliceOf(it, r, i, u);
+  }
+  // (x deeper, in a nested table: the cell at its x, the unit at y)
+  const out = {line: lo};
+  let i = cellAtX(rows[lo], x.x, false);
+  if (i < 0) i = cellAtX(rows[lo], x.x, true);
+  if (i < 0) return out;
+  const u = unitsAt(it, lo, i);
+  let cl = 0;
+  while (cl + 1 < u.tops.length && u.y0 + u.tops[cl + 1] <= y + EPS) {
+    cl++;
+  }
+  out.cell = i;
+  out.cl = cl;
+  return out;
+}
+
+/** See the header. */
+export function unitAt(it, r, i, u) {
+  const v = unitsAt(it, r, i);
+  if (!v.col || !(u >= 0 && u < v.tops.length)) return null;
+  let g = v.lo + u;
+  for (const x of v.col.items || NONE) {
+    const k = unitsIn(x);
+    if (g < k) return {x, line: g};
+    g -= k;
+  }
+  return null;
+}

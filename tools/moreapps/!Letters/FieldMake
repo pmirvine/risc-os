@@ -1,0 +1,165 @@
+// FieldMake - the pieces of a field put in or of a field code
+// changed (Batch D, D19, PG23), for ./FieldCmd insertFieldCmd and
+// editCodeCmd.
+//
+//   CODE_MAX  the longest field code taken (characters, the spaces
+//       round it not counted)
+//   codeText(code) -> ' CODE ' | null  the instrText text of a code
+//       typed or built: trimmed, with one space each side (Word's);
+//       null (refused) when empty, longer than CODE_MAX, or holding
+//       a control character (a tab, a line end...) or U+FFFC
+//   codeWhy(code) -> string  why codeText refuses code, as the
+//       Field box says it: '' when it does not (empty; longer than
+//       CODE_MAX; a control character or U+FFFC: P9 fix M3)
+//   fieldInlines(text) -> {ins, inlines}  a new complex field with
+//       an empty result, for one replaceText: begin, ONE instrText
+//       of text (xml:space="preserve"), separate, end (four U+FFFC,
+//       level 'r' raw inlines, w: names), all taking the format of
+//       the text before them (./OpsText: the caret's run format)
+//   fieldFor(doc, sel) -> Field | null  the innermost ./FieldScan
+//       field the selection is on: a caret in its code (as inCode:
+//       after its begin, up to its separate, or its end when it has
+//       none), or a range exactly from its begin to just after its
+//       end (the whole field selected); a fldSimple only when
+//       selected whole. A caret in its result, or a range inside
+//       the field that is not all of it: null (P9 fix M1: a new
+//       field goes there, as Insert > Page number puts one)
+//   inCode(doc, pos) -> bool  pos is inside a field's code (after
+//       its begin, up to its separate, or its end when it has none):
+//       a field put there would be nested in a code (refused)
+//   codePlan(doc, f, text) -> {at, op} | null  the op that makes
+//       field f's code text: a complex field's instrText inlines,
+//       from just after its begin to its separate (or end), all
+//       level 'r' raw w:instrText inlines in the begin's paragraph,
+//       replaced by one (a spliceText: the first one's name and
+//       attributes, its run's format; xml:space="preserve"
+//       added); a fldSimple (a replaceText) a new
+//       node with w:instr changed. null (refused) when the code
+//       holds another field (nested: PG23) or anything but
+//       instrText inlines, or spans paragraphs. op null when the
+//       code is that already
+//
+// Pure: no desktop services.
+import {scan} from './FieldScan';
+import {findBlock} from './EditPos';
+import {cmpPath} from './Path';
+import {at as blockAt} from './Walk';
+import {W} from './Wml';
+
+export const CODE_MAX = 1024;
+const OBJ = '\ufffc';
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => (isObj(n) && typeof n.name === 'string'
+  ? n.name.slice(n.name.indexOf(':') + 1) : '');
+const SPACE = ['xml:space', 'preserve'];
+
+/** See the header. */
+export function codeText(code) {
+  if (typeof code !== 'string') return null;
+  const t = code.trim();
+  if (!t || t.length > CODE_MAX ||
+    /[\u0000-\u001f\u007f-\u009f\ufffc]/.test(t)) return null;
+  return ' ' + t + ' ';
+}
+
+/** See the header. */
+export function codeWhy(code) {
+  if (codeText(code)) return '';
+  const t = typeof code === 'string' ? code.trim() : '';
+  if (!t) return 'Type a field code, or choose a field name: PAGE, ' +
+    'DATE...';
+  if (t.length > CODE_MAX) return 'A field code can be at most ' +
+    `${CODE_MAX} characters long.`;
+  return 'A field code cannot hold a tab, a line end or a picture.';
+}
+
+const raw = (node) => ({kind: 'raw', level: 'r', node});
+const char = (type) => raw(W('fldChar', {'w:fldCharType': type}));
+
+/** See the header. */
+export function fieldInlines(text) {
+  return {ins: OBJ.repeat(4), inlines: {0: char('begin'),
+    1: raw(W('instrText', [SPACE], text)), 2: char('separate'),
+    3: char('end')}};
+}
+
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** {at, off} of position pos of doc, or null. */
+function where(doc, pos) {
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  return loc && Number.isInteger(pos.off) && !loc.story
+    ? {at: loc.at, off: pos.off} : null;
+}
+
+/** See the header. */
+export function fieldFor(doc, sel) {
+  if (!isObj(doc) || !isObj(sel)) return null;
+  const a = where(doc, sel.anchor), h = where(doc, sel.head);
+  if (!a || !h) return null;
+  const [lo, hi] = cmp(a, h) <= 0 ? [a, h] : [h, a];
+  const caret = cmp(lo, hi) === 0, fs = scan(doc);
+  for (let i = fs.length - 1; i >= 0; i--) {
+    const f = fs[i], after = {at: f.end.at, off: f.end.off + 1};
+    if (caret ? !f.simple && cmp(f.begin, lo) < 0 &&
+        cmp(lo, f.sep || f.end) <= 0
+      : cmp(f.begin, lo) === 0 && cmp(hi, after) === 0) return f;
+  }
+  return null;
+}
+
+/** See the header. */
+export function inCode(doc, pos) {
+  const p = where(doc, pos);
+  if (!p) return false;
+  return scan(doc).some((f) => !f.simple && cmp(f.begin, p) < 0 &&
+    cmp(p, f.sep || f.end) <= 0);
+}
+
+/** A fldSimple's plan: a new node with w:instr text. */
+function simplePlan(doc, f, text) {
+  const q = blockAt(doc, f.begin.at), k = f.begin.off;
+  const x = q && q.type === 'p' && isObj(q.inlines) ? q.inlines[k]
+    : null;
+  if (!isObj(x) || x.node !== f.simple.node) return null;
+  const node = x.node, attrs = node.attrs.map((a) =>
+    (local({name: a[0]}) === 'instr' ? [a[0], text] : a));
+  const same = f.instr === text;
+  return {at: f.begin.at, op: same ? null : {op: 'replaceText',
+    block: f.begin.at, at: k, del: 1, ins: OBJ,
+    inlines: {0: {...x, node: {...node, attrs}}}}};
+}
+
+/** See the header. */
+export function codePlan(doc, f, text) {
+  if (!isObj(f) || typeof text !== 'string') return null;
+  if (f.simple) return simplePlan(doc, f, text);
+  const stop = f.sep || f.end;
+  if (cmpPath(f.begin.at, stop.at) !== 0) return null;
+  if (f.children.some((c) => cmp(c.begin, stop) < 0)) return null;
+  const q = blockAt(doc, f.begin.at);
+  if (!q || q.type !== 'p') return null;
+  const a = f.begin.off + 1, n = stop.off - a;
+  const xs = [];
+  for (let k = a; k < stop.off; k++) {
+    const x = q.text[k] === OBJ && isObj(q.inlines) ? q.inlines[k]
+      : null;
+    if (!isObj(x) || x.level !== 'r' || local(x.node) !== 'instrText')
+      return null;
+    xs.push(x);
+  }
+  const first = xs[0] ? xs[0].node : null;
+  if (xs.length === 1 && f.instr === text) return {at: f.begin.at,
+    op: null};
+  const attrs = first ? first.attrs.filter((x) => x[0] !==
+    'xml:space') : [];
+  const node = {name: first ? first.name : 'w:instrText',
+    attrs: [SPACE, ...attrs], children: [text]};
+  const k = n ? a : a - 1;
+  const r = q.runs.find((x) => x.start <= k && k < x.end);
+  const fmt = r.rStyle === undefined ? {rPr: r.rPr}
+    : {rPr: r.rPr, rStyle: r.rStyle};
+  return {at: f.begin.at, op: {op: 'spliceText', block: f.begin.at,
+    at: a, del: n, content: {text: OBJ, runs: [{start: 0, end: 1,
+      ...fmt}], inlines: {0: raw(node)}}}};
+}

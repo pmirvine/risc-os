@@ -71,12 +71,18 @@ function checkDoc(d) {
   for (const s of d.sections) {
     for (const b of s.blocks) if (b.type === 'tbl') checkBlock(b);
   }
-  forEachBlock(d, (b, at) => {
+  const see = (b, at) => {
     if (b.type !== 'p' && b.type !== 'tbl') return;
     if (b.type === 'p') checkPara(b, at.join('/'));
     assert.ok(!ids.has(b.id), 'duplicate id ' + b.id);
     ids.add(b.id);
-  });
+  };
+  forEachBlock(d, see);
+  // the stories' blocks (D11: ids unique across the body and them)
+  for (const st of (d.stories || new Map()).values()) {
+    for (const b of st.blocks) if (b.type === 'tbl') checkBlock(b);
+    forEachBlock({sections: [{blocks: st.blocks}]}, see);
+  }
 }
 
 // ---- factories ---------------------------------------------------------
@@ -911,7 +917,9 @@ function mulberry32(seed) {
   };
 }
 
-function gen(rnd, {tables = false} = {}) {
+const HDR = 'word/header1.xml';
+
+function gen(rnd, {tables = false, stories = false} = {}) {
   const int = (n) => Math.floor(rnd() * n);
   const pick = (a) => a[int(a.length)];
   const rPrs = [R(), R({b: true}), R({i: true}), R({b: true, i: true}),
@@ -982,7 +990,28 @@ function gen(rnd, {tables = false} = {}) {
     const d = tables ? tableDoc() : plainDoc();
     // (tables are immutable: frozen, an op writing one would throw)
     if (tables) forEachBlock(d, (b) => void (b.type === 'tbl' && freeze(b)));
+    if (stories) d.stories = storiesOf();
     return d;
+  };
+  // a header story (frozen: an op must replace it, D12) and a footer
+  const story = (part, kind, blocks, bytes = null) => freeze({part,
+    kind, root: {name: 'w:' + kind, attrs: []}, rels: null, blocks,
+    orig: blocks.slice(), bytes});
+  // a story ends with a paragraph (P6 fix I3: the ops keep it so),
+  // or was read ending with a table (bytes: it may stay so)
+  const storiesOf = () => {
+    const bs = [];
+    for (let k = 1 + int(4); k > 0; k--) {
+      bs.push(tables && rnd() < 0.3 ? mkTable() : mkPara());
+    }
+    let bytes = null;
+    if (bs[bs.length - 1].type === 'tbl') {
+      if (rnd() < 0.5) bs.push(mkPara());
+      else bytes = new Uint8Array(0);
+    }
+    return new Map([[HDR, story(HDR, 'hdr', bs, bytes)],
+      ['word/footer1.xml', story('word/footer1.xml', 'ftr',
+        [mkPara()])]]);
   };
   const tableDoc = () => {
     const d = plainDoc();
@@ -1096,7 +1125,20 @@ function gen(rnd, {tables = false} = {}) {
     'sset'];
   const TKINDS = ['rt', 'rt', 'sp', 'split', 'merge', 'ins', 'ins',
     'rm', 'insT', 'insN', 'rmN', 'tres', 'tres', 'pres', 'ssplit'];
-  const op = (d) => {
+  // an op in the header (R8: [0, i, ...] in its blocks; sometimes
+  // section 1, a section op or an unknown story: refused)
+  const storyOp = (d) => {
+    const view = {sections: [{props: {extra: []},
+      blocks: d.stories.get(HDR).blocks}]};
+    const o = bodyOp(view, (tables ? TKINDS : KINDS)
+      .filter((k) => k !== 'part'));
+    o.story = rnd() < 0.03 ? 'word/header9.xml' : HDR;
+    const path = o.block || o.at;
+    if (Array.isArray(path) && rnd() < 0.03) path[0] = 1;
+    return o;
+  };
+  const op = (d) => (stories && rnd() < 0.5 ? storyOp(d) : bodyOp(d));
+  const bodyOp = (d, kinds = null) => {
     const s = int(d.sections.length);
     const blocks = d.sections[s].blocks;
     // mostly valid positions; some out of range on purpose
@@ -1109,7 +1151,7 @@ function gen(rnd, {tables = false} = {}) {
     const len = b && b.type === 'p' ? b.text.length : 0;
     const pos = () => (rnd() < 0.9 ? int(len + 1)
       : int(len + 2) - (rnd() < 0.3 ? 1 : 0));
-    const kind = pick(deep ? TKINDS : KINDS);
+    const kind = pick(deep ? TKINDS : kinds || KINDS);
     if (kind === 'insT') {
       return {op: 'insertBlock', at: path, block: mkTable(2)};
     }
@@ -1182,8 +1224,8 @@ function gen(rnd, {tables = false} = {}) {
 
 const applied = new Map();   // op kind -> times applied (not refused)
 
-function runSequence(seed, grouped, tables = false) {
-  const g = gen(mulberry32(seed), {tables});
+function runSequence(seed, grouped, tables = false, stories = false) {
+  const g = gen(mulberry32(seed), {tables, stories});
   const doc = new Document(g.doc());
   checkDoc(doc.doc);
   const initial = clone(doc.doc);
@@ -1197,10 +1239,15 @@ function runSequence(seed, grouped, tables = false) {
       const op = g.op(doc.doc);
       log.push(op);
       const before = clone(doc.doc);
+      const m0 = doc.doc.stories, v0 = [...m0.values()];
       try {
         doc.apply(op);
         ok++;
         applied.set(op.op, (applied.get(op.op) || 0) + 1);
+        if (op.story)
+          applied.set('story', (applied.get('story') || 0) + 1);
+        if (!op.story) assert.equal(doc.doc.stories, m0, 'Map kept');
+        else assert.notEqual(doc.doc.stories, m0, 'a new Map');
         if (op.key === 'parts')
           applied.set('parts', (applied.get('parts') || 0) + 1);
         const path = op.block || op.at;
@@ -1209,7 +1256,11 @@ function runSequence(seed, grouped, tables = false) {
       } catch (e) {
         if (!(e instanceof RangeError)) throw e;
         assert.deepEqual(doc.doc, before, 'failed op changed the doc');
+        assert.equal(doc.doc.stories, m0, 'refused: Map kept');
       }
+      // copy-on-write: the Map an op replaced is as it was
+      assert.ok([...m0.values()].every((v, i) => v === v0[i]) &&
+        m0.size === v0.length, 'a stories Map changed in place');
       checkDoc(doc.doc);
       if (depth && g.rnd() < 0.3) { doc.groupEnd(); depth--; }
     }
@@ -1223,7 +1274,8 @@ function runSequence(seed, grouped, tables = false) {
     assert.deepEqual(doc.doc, initial, 'undo all again');
   } catch (e) {
     e.message = 'seed ' + seed + (grouped ? ' (grouped)' : '') +
-      (tables ? ' (tables)' : '') + ': ' +
+      (tables ? ' (tables)' : '') +
+      (stories ? ' (stories)' : '') + ': ' +
       e.message + '\nops: ' + JSON.stringify(log);
     throw e;
   }
@@ -1266,5 +1318,16 @@ describe('property: random ops then undo/redo', () => {
     }
     assert.ok(applied.get('nested') >= 1500, 'at nested paths: ' +
       applied.get('nested'));
+  });
+  it('500 sequences in a header story and the body (D12)', () => {
+    applied.clear();
+    let ok = 0;
+    for (let k = 0; k < 500; k++) {
+      ok += runSequence(BASE + 300000 + k, k % 2 === 1, k % 4 > 1,
+        true);
+    }
+    assert.ok(ok > 2000, 'enough ops succeeded: ' + ok);
+    assert.ok(applied.get('story') >= 1500, 'in the header: ' +
+      applied.get('story'));
   });
 });

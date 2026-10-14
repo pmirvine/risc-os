@@ -1,0 +1,152 @@
+// PageGalley - a ./DocLayout's root column as the galley ./Paginate
+// cuts into pages (Batch D, D5).
+//
+//   galleyOf(L, hooks?) -> G = {items, geom(s), geomTw(s), sect(s),
+//       facts(k), hdrH(s, type), ftrH(s, type), reserve(frame, refs)
+//       (, typeOf, refOf, layoutOf: hooks')}
+//     items    L.items, read when asked (a getter, as dirtyFrom:
+//              a G made before L.layout, or an L laid out again in
+//              place, sees L's items now; review M3)
+//     geom(s)  L.geom(s): px; geomTw(s) ./SectGeom geomOf's twips
+//              (./LayoutGeom geomTwAt: shared as L.geom's)
+//     sect(s)  {type, pgNumType, vAlign, sep, lnNumType}: the w:type
+//              section s starts with (./SectMark markOf: the
+//              section before's mark; the first section's own
+//              type), its typed fields (sep: its w:cols sep is on,
+//              P10.2; lnNumType or null, P11.1)
+//     facts(k) {brPage, brCol, breakBefore, band, refs, tfloat,
+//              held, keepNext, keepLines, widow} of item k:
+//              brPage  the indices of its lines that end in a page or
+//                      column break (./BreakMarks pbToken's kind
+//                      'pagebreak'), null when none; worked out once
+//                      per lines array
+//              brCol   those of brPage that end in a column break
+//                      (the item's label ./BreakMarks COLUMN_LABEL;
+//                      P10.1, ./PageCols), null when none
+//              breakBefore  page break before is in force (the
+//                      ./FlowDeco mark when L uses flowDeco, else
+//                      FlowDeco breaksBefore), or the item is pinned
+//                      to start a page by the wrap (L.wrap.pins,
+//                      ./WrapPage: P12a fix C1)
+//              band    px of its gapBelow that is a section break's
+//                      band (./SectDeco bandOf: BAND), else 0
+//              refs    null (footnote references: Batch E)
+//              tfloat  a root table's ./TblFloat floatOf when L
+//                      lays out floats (Print layout, L.floats) and
+//                      it is understood (unknown false), else null:
+//                      ./PageFill floatSpan places it (P12.6, R5)
+//              held    such a table's {pk, y} when the wrap holds
+//                      its flow place (L.wrap.tys, ./WrapPage: P12b
+//                      fix C1), else null
+//              keepNext, keepLines, widow  a paragraph's keep flags
+//                      (./PageKeep keepOf, with the styles it is
+//                      laid out with, ./FlowDeco stylesOf; keepLines
+//                      also when the wrap keeps it whole: a pin
+//                      'k:', ./WrapPage, P12a fix I3); a
+//                      table's keepNext ./PageKeep keepTable; else
+//                      off (widow on)
+//     hooks    {hdrH, ftrH, reserve}: 0 when not given; typeOf,
+//              refOf, layoutOf: on G only when given (headers and
+//              footers: ./PageHF hfHooks, printGalley; footnotes:
+//              Batch E)
+//     dirtyFrom, cleanFrom  L's (./DocItems; read when asked, so
+//              after L.layout): what ./Pages may reuse (D7)
+//     byId     L.byId (every item by id, at every depth: ./Pages
+//              ofPos)
+//
+// Pure: no desktop services.
+import {geomTwAt} from './LayoutGeom';
+import {markOf} from './SectMark';
+import {bandOf} from './SectDeco';
+import {flowDeco, flowMark, breaksBefore, stylesOf}
+  from './FlowDeco';
+import {keepOf, keepTable} from './PageKeep';
+import {COLUMN_LABEL} from './BreakMarks';
+import {floatOf} from './TblFloat';
+
+const zero = () => 0;
+const pinOf = (L, it) => (L.wrap && L.wrap.pins &&
+  L.wrap.pins.get(it.id)) || '';
+const BREAKS = new WeakMap();          // lines -> {page, col}
+const NO_BR = Object.freeze({page: null, col: null});
+
+/** The lines of a paragraph that end in a page or column break
+ *  (page: either; col: a column break). */
+function breaksOf(lines) {
+  if (!Array.isArray(lines)) return NO_BR;
+  if (BREAKS.has(lines)) return BREAKS.get(lines);
+  let page = null, col = null;
+  lines.forEach((ln, j) => {
+    const b = (ln.items || []).find((x) => x.kind === 'pagebreak');
+    if (!b) return;
+    (page || (page = [])).push(j);
+    if (b.label === COLUMN_LABEL) (col || (col = [])).push(j);
+  });
+  const out = page ? Object.freeze({page: Object.freeze(page),
+    col: col && Object.freeze(col)}) : NO_BR;
+  BREAKS.set(lines, out);
+  return out;
+}
+
+/** See the header. */
+export function galleyOf(L, hooks = {}) {
+  const doc = L.doc, secs = doc.sections || [];
+  const marks = (L.decorators || []).includes(flowDeco);
+  const facts = new WeakMap(), sects = new Map();
+  const G = {
+    get items() { return L.items; },
+    geom: (s) => L.geom(s),
+    geomTw: (s) => geomTwAt(L, s),
+    sect(s) {
+      const sec = secs[s];
+      if (!sec) return null;
+      let x = sects.get(s);
+      if (!x) {
+        const p = sec.props || {};
+        const m = s > 0 ? markOf(doc, s - 1) : null;
+        x = Object.freeze({type: m ? m.type
+          : typeof p.type === 'string' ? p.type : 'nextPage',
+        pgNumType: p.pgNumType || null, vAlign: p.vAlign || null,
+        sep: !!(p.cols && p.cols.sep === true),
+        lnNumType: p.lnNumType || null});
+        sects.set(s, x);
+      }
+      return x;
+    },
+    facts(k) {
+      const it = L.items[k];
+      if (!it) return null;
+      let f = facts.get(it);
+      if (!f) {
+        const p = it.kind === 'p';
+        const m = bandOf(it);
+        const kp = p ? keepOf(stylesOf(it, L), it.block)
+          : {keepNext: keepTable(it), keepLines: false, widow: true};
+        const br = p ? breaksOf(it.lines) : NO_BR;
+        const tf = !p && L.floats && it.kind === 'tbl' && it.block
+          ? floatOf(it.block.tblPr, L.ns) : null;
+        f = Object.freeze({brPage: br.page, brCol: br.col,
+          breakBefore: p && (marks ? !!flowMark(it)
+            : breaksBefore(doc.styles, it.block)) ||
+            /^[^k]/.test(pinOf(L, it)),
+          band: m ? m.h : 0, refs: null,
+          tfloat: tf && !tf.unknown ? tf : null,
+          held: (tf && L.wrap && L.wrap.tys &&
+            L.wrap.tys.get(it.id)) || null, ...kp,
+          keepLines: kp.keepLines || pinOf(L, it).startsWith('k:')});
+        facts.set(it, f);
+      }
+      return f;
+    },
+    hdrH: hooks.hdrH || zero,
+    ftrH: hooks.ftrH || zero,
+    reserve: hooks.reserve || zero,
+    ...(hooks.typeOf ? {typeOf: hooks.typeOf} : {}),
+    ...(hooks.refOf ? {refOf: hooks.refOf} : {}),
+    ...(hooks.layoutOf ? {layoutOf: hooks.layoutOf} : {}),
+    get dirtyFrom() { return L.dirtyFrom; },
+    get cleanFrom() { return L.cleanFrom; },
+    get byId() { return L.byId; },
+  };
+  return G;
+}

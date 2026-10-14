@@ -5,6 +5,9 @@
 //   caretRect(L, pos, aff?)  -> {x, y, h} or null
 //   hitTest(L, x, y)         -> {pos, affinity} or null
 //   boxRect(L, it)           -> {x, y, w, h}
+//   boxAt(it, x, y)          -> {x, y, w, h}  that box for item it
+//                               whose line 0 is at (x, y) (boxRect at
+//                               its place; ./ItemPaint at its galley)
 //   itemIn(items, y)         -> the item of a column's items at y
 //                               (L.itemAtY's rule), or null
 //   leafAt(L, x, y)          -> the item drawn at layout point (x,
@@ -29,13 +32,18 @@
 // at x (outside every cell: the nearest one; in a lower row of a
 // vertical merge: its restart cell, which holds what is shown), then
 // the item of the cell's column at y, as on the page (a nested
-// table the same way). Pure: no desktop services.
+// table the same way). Screen positions are asked of the layout's
+// placement, L.place (./Place, D4): a caret at its line's place, a
+// box at its item's, a point mapped to the galley (./Place toGalley)
+// before the galley rules above. Pure: no desktop
+// services.
 import {BOX} from './DocItems';
 import * as PM from './PositionMap';
 import {itemEnd} from './DocPos';
 import {inBand} from './SectDeco';
 import {boxMark} from './BorderGroups';
 import {rowAtY} from './TblLayout';
+import {shiftOf, toGalley} from './Place';
 
 const num = (v, d) => (Number.isFinite(v) ? v : d);
 const textTop = (it) => it.y + (it.lines && it.lines.length
@@ -61,30 +69,50 @@ export function caretRect(L, pos, aff = 'down') {
   if (!loc) return null;
   const it = loc.item;
   if (it.kind === 'tbl') {
-    const rs = it.rows, row = rs[loc.off ? rs.length - 1 : 0];
-    const x = it.x + it.left + (loc.off ? it.width : 0);
-    return row ? {x, y: row.y, h: row.h} : {x, y: it.y, h: it.h};
+    const rs = it.rows, r = loc.off ? rs.length - 1 : 0, row = rs[r];
+    const p = L.place.lineAt(it, 0), {dy} = shiftOf(L.place, it, 0);
+    const x = p.x + it.left + (loc.off ? it.width : 0);
+    // (Print layout: the row on its own page, P4.2)
+    const ps = row && L.place.rowParts ? L.place.rowParts(it, r) : [];
+    const q = ps[loc.off ? ps.length - 1 : 0];
+    if (q) return {x: x - p.x + it.x + q.dx, y: q.y, h: q.h};
+    return row ? {x, y: row.y + dy, h: row.h} : {x, y: p.y, h: it.h};
   }
   if (it.kind === 'box') {
     const r = L.boxRect(it);
     return {x: r.x + (loc.off ? r.w : 0), y: r.y, h: r.h};
   }
   const c = PM.caretRect(it, loc.off, aff);
-  return {x: c.x + it.x, y: c.y, h: c.h};
+  const p = L.place.lineAt(it, c.line);
+  return {x: c.x + p.x, y: p.y, h: c.h};
 }
 
 /** The box drawn for a kept block. */
 export function boxRect(L, it) {
+  const p = L.place.lineAt(it, 0);
+  return boxAt(it, p.x, p.y);
+}
+
+/** See the header. */
+export function boxAt(it, x, y) {
   if (it.kind === 'tbl') {
-    return {x: it.x + it.left, y: it.y, w: it.width, h: it.h};
+    return {x: x + it.left, y, w: it.width, h: it.h};
   }
-  return {x: it.x, y: it.y + 6, w: it.w, h: BOX};
+  return {x, y: y + 6, w: it.w, h: BOX};
 }
 
 /** See ./DocLayout's header. */
 export function hitTest(L, x, y) {
   const {items} = L;
   if (!items.length) return null;
+  // (the galley point: in Draft x and y themselves, exactly)
+  const p = toGalley(L.place, x, y);
+  return p.it ? hitGalley(L, p.x, p.y) : null;
+}
+
+/** hitTest at the galley point (x, y). */
+function hitGalley(L, x, y) {
+  const {items} = L;
   const last = items[items.length - 1];
   const D = 'down';
   if (!(y >= items[0].y)) return {pos: L.docStart(), affinity: D};

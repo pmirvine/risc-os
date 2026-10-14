@@ -1,0 +1,101 @@
+// PageBands - a page filled band by band (Batch D, D23, P10.2): a
+// continuous section whose columns differ from the ones above it
+// starts on the same page, below them.
+//
+//   fillPage(G, out, y0)  fills page out (./Paginate nextPage's
+//       record: start, s, frameH, seen) from its start, at galley
+//       y y0. A band is the columns of one
+//       section (./PageCols colsAt: one or more), filled by
+//       ./PageCols fillCols (./PageFill fill for one column) with
+//       the room left on the page as its frame. A band that ends
+//       before a continuous section (why 'cont', ./PageFill
+//       contStart) is balanced when it has two columns or more
+//       (./PageCols balance: filled again at the least height that
+//       holds it), and the next band starts below its tallest
+//       column (its used), at the galley y ./PageCols startY gives,
+//       in the room left. A band after the first that takes
+//       nothing whole in its first column (no room for its first
+//       line: only a cut, which the columns after it would go on
+//       cutting) is not placed: the page ends before it (why
+//       'full'), as it does when no room is left.
+//     Sets out.end, out.why (the last band's), out.used (px from
+//       the frame's top to the last band's content end), out.seen
+//       (the furthest), out.y0 (the first band's) and, for a page
+//       with two columns or more in any band, out.cols: every
+//       band's columns in order (frozen [{x, w, start, end, y0,
+//       used, why, top, h}], top px below the body top, h the
+//       band's frame); a page of one band of one column has none
+//       (as before columns)
+//
+// Pure: no desktop services.
+import {fill} from './PageFill';
+import {colsAt, fillCols, balance, startY} from './PageCols';
+
+/** Band record b filled with columns cs from its start. */
+function run(G, b, cs) {
+  const k = b.start.k, line = b.start.line || 0;
+  if (cs.length > 1) {
+    fillCols(G, b, cs, k, line, b.y0);
+    return;
+  }
+  fill(G, b, k, line, b.y0);
+  b.cols = Object.freeze([Object.freeze({x: cs[0].x, w: cs[0].w,
+    start: b.start, end: b.end, y0: b.y0, used: b.used, why: b.why,
+    top: b.top, h: b.frameH})]);
+}
+
+const band = (from, s, room, y, top) => ({start: from, end: null, s,
+  frameH: room, y0: y, used: 0, why: 'end', seen: from.k, top});
+
+/** Whether band b took something whole after its start: its first
+ *  column (a cut going on in the columns after it is no line whole:
+ *  P10 fix I1, a line is never drawn cut across a band's columns). */
+const took = (b) => {
+  const c = b.cols ? b.cols[0] : b;
+  return c.end.k > c.start.k || c.end.line > (c.start.line || 0);
+};
+
+/** See the header. */
+export function fillPage(G, out, y0) {
+  const items = G.items, list = [];
+  let from = out.start, s = out.s, y = y0, top = 0, wide = false;
+  let seen = out.seen, end = null, why = 'end', used = 0;
+  for (;;) {
+    const room = out.frameH - top, cs = colsAt(G, s);
+    let b = band(from, s, room, y, top);
+    run(G, b, cs);
+    if (cs.length > 1 && b.why === 'cont') {
+      const h = balance(G, from, b);
+      if (h < room) {
+        b = band(from, s, h, y, top);
+        run(G, b, cs);
+      }
+    }
+    if (top > 0 && !took(b)) {
+      end = from;
+      why = 'full';
+      break;
+    }
+    if (!list.length) out.y0 = b.y0;
+    if (cs.length > 1) wide = true;
+    list.push(...b.cols);
+    seen = Math.max(seen, b.seen);
+    end = b.end;
+    why = b.why;
+    used = top + b.used;
+    if (why !== 'cont') break;
+    top += b.used;
+    from = b.end;
+    if (out.frameH - top < 1 || !items[from.k]) {
+      why = 'full';
+      break;
+    }
+    s = items[from.k].s;
+    y = startY(items, from, list[list.length - 1]);
+  }
+  out.end = end;
+  out.why = why;
+  out.used = used;
+  out.seen = Math.max(seen, end.k);
+  if (wide) out.cols = Object.freeze(list);
+}

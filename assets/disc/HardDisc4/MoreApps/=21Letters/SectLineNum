@@ -1,0 +1,188 @@
+// SectLineNum - the commands of the Line numbers box (Batch D P11.2,
+// D24; ./LineNumBox is the box, opened from Format > Layout...'s
+// Line numbers... button; ./SectSetup re-exports these): the line
+// numbering (w:lnNumType) of the CURRENT section, the one at the
+// selection's start.
+//
+//   lineNumOf(doc, sel) -> {on, countBy, start, distance, restart}
+//            of the current section, or null (no valid selection):
+//            on a boolean (a w:lnNumType there, typed or raw);
+//            countBy (1 when absent), start (1 when absent: ./Line-
+//            Numbers reads it as written, PG28), distance twips or
+//            'auto' (none written: Word's Auto, 0.25 in), restart
+//            'newPage' (when absent), 'newSection' or 'continuous'.
+//            A w:lnNumType the reader kept raw (not understood) is
+//            on with every other value null: shown blank, kept
+//   lineNumWhy(doc, sel, values) -> why lineNumCmd would refuse (a
+//            message), or null: no selection; on not a boolean;
+//            countBy not whole 1..MAX_COUNT_BY (100, ./ReadSect's:
+//            "Count by 0" is refused); start not whole 1..MAX_START
+//            (32767, Word's); distance not 'auto' or whole twips
+//            0..MAX_TW (22 in); restart not one of RESTARTS; a value
+//            given for a raw w:lnNumType that stays on
+//   lineNumCmd(d, sel, values) -> the new selection (sel); sel when
+//            nothing changes (no step); null when lineNumWhy refuses
+//            (nothing changed). One d.atomic, called in
+//            typing.command (one undo step): a setSection for the
+//            current section, and a setDocPart styles adding the
+//            "Line Number" character style when numbering is on and
+//            the document has none (once: found by id LineNumber or
+//            the name "line number", ./DocParts findStyle)
+//   RESTARTS, MAX_START
+//
+// values: those of lineNumOf; null (or undefined) leaves a value as
+// it is. on false removes w:lnNumType (a raw one too); the other
+// values are taken only when numbering is (or is turned) on, a
+// section turned on taking the defaults for those not given. It is
+// written as Word writes it: w:countBy always, w:start when not 1,
+// w:distance unless Auto, w:restart unless newPage (./WriteSect: a
+// distance with a unit kept as read while it is not changed). The
+// style is Word's: based on the default character style, uiPriority
+// 99, semiHidden, unhideWhenUsed. Pure: no desktop services.
+import {orderedPos} from './EditPos';
+import {withoutRaw} from './PropNames';
+import {deepEqual} from './Model';
+import {docMap} from './PicRead';
+import {findStyle, withStyle} from './DocParts';
+import {MAX_COUNT_BY} from './ReadSect';
+import {given, rawOf, MAX_TW} from './PageValues';
+
+export const RESTARTS = Object.freeze(['newPage', 'newSection',
+  'continuous']);
+export const MAX_START = 32767;
+const FIELDS = ['on', 'countBy', 'start', 'distance', 'restart'];
+const MSG = {
+  nosel: 'There is no caret in the document.',
+  on: 'Add line numbering: on or off.',
+  countBy: `Count by: 1 to ${MAX_COUNT_BY}.`,
+  start: `Start at: 1 to ${MAX_START}.`,
+  distance: 'From text: Auto, or 0 to 22 inches.',
+  restart: 'Numbering: pick one.',
+  raw: 'These line numbers cannot be changed here: they can only ' +
+    'be turned off.',
+};
+const whole = (x, lo, hi) => Number.isSafeInteger(x) && x >= lo &&
+  x <= hi;
+
+/** The current section's index, or -1. */
+function current(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  return o ? o.f.s : -1;
+}
+
+/** Section s's values (lineNumOf's). */
+function valuesAt(doc, s) {
+  const pr = doc.sections[s].props || {}, t = pr.lnNumType;
+  if (!t) {
+    const raw = !!rawOf(pr, 'lnNumType', docMap(doc));
+    return raw ? {on: true, countBy: null, start: null, distance: null,
+      restart: null} : {on: false, countBy: 1, start: 1,
+      distance: 'auto', restart: 'newPage'};
+  }
+  return {on: true, countBy: t.countBy ?? 1, start: t.start ?? 1,
+    distance: t.distance ?? 'auto', restart: t.restart ?? 'newPage'};
+}
+
+/** See the header. */
+export function lineNumOf(doc, sel) {
+  const s = current(doc, sel);
+  return s < 0 ? null : valuesAt(doc, s);
+}
+
+/** The message for a value not allowed, or null. */
+function badValue(v) {
+  if (given(v.on) && typeof v.on !== 'boolean') return MSG.on;
+  if (given(v.countBy) && !whole(v.countBy, 1, MAX_COUNT_BY))
+    return MSG.countBy;
+  if (given(v.start) && !whole(v.start, 1, MAX_START)) return MSG.start;
+  if (given(v.distance) && v.distance !== 'auto' &&
+    !whole(v.distance, 0, MAX_TW)) return MSG.distance;
+  if (given(v.restart) && !RESTARTS.includes(v.restart))
+    return MSG.restart;
+  return null;
+}
+
+/** The w:lnNumType for values v over now's (typed), as Word writes
+ *  it. */
+function typedOf(now, v) {
+  const pick = (k, dflt) => given(v[k]) ? v[k]
+    : now.on && given(now[k]) ? now[k] : dflt;
+  const t = {countBy: pick('countBy', 1)};
+  const start = pick('start', 1), dist = pick('distance', 'auto');
+  const restart = pick('restart', 'newPage');
+  if (start !== 1) t.start = start;
+  if (dist !== 'auto') t.distance = dist;
+  if (restart !== 'newPage') t.restart = restart;
+  return t;
+}
+
+/** {s, props: new props or null, styles: new table or undefined} or
+ *  {why}, for section s (-1: no selection). */
+function plan(doc, s, v) {
+  if (!Number.isInteger(s) || s < 0 || s >= doc.sections.length)
+    return {why: MSG.nosel};
+  const why = badValue(v);
+  if (why) return {why};
+  const sec = doc.sections[s], now = valuesAt(doc, s);
+  const on = given(v.on) ? v.on : now.on;
+  const pr = {...sec.props};
+  const others = FIELDS.slice(1).some((k) => given(v[k]));
+  if (!on) {
+    delete pr.lnNumType;
+  } else if (now.on && now.countBy === null) {
+    if (others) return {why: MSG.raw};     // (raw: kept whole)
+  } else {
+    pr.lnNumType = typedOf(now, v);
+  }
+  if (!on || pr.lnNumType) {
+    pr.extra = withoutRaw(pr.extra || [], ['lnNumType']);
+    const t = pr.lnNumType, u = pr.units;
+    if (u && u.lnNumType && !(t && sec.props.lnNumType &&
+      t.distance === sec.props.lnNumType.distance)) {
+      const {lnNumType, ...rest} = u;
+      if (Object.keys(rest).length) pr.units = rest;
+      else delete pr.units;
+    }
+  }
+  if (deepEqual(pr, sec.props)) return {s, props: null};
+  return {s, props: pr, styles: on && pr.lnNumType
+    ? styleFor(doc.styles) : undefined};
+}
+
+/** A new style table with Word's "Line Number" style, or undefined
+ *  when it has one (or there is no table). */
+function styleFor(styles) {
+  if (!styles || !(styles.styles instanceof Map)) return undefined;
+  if (findStyle(styles, 'LineNumber', 'line number')) return undefined;
+  const style = {id: 'LineNumber', name: 'line number',
+    type: 'character', uiPriority: 99, semiHidden: true,
+    unhideWhenUsed: true, pPr: {extra: []}, rPr: {extra: []},
+    extra: []};
+  const base = styles.defaults && styles.defaults.character;
+  if (typeof base === 'string' && styles.styles.has(base))
+    style.basedOn = base;
+  return withStyle(styles, style);
+}
+
+/** See the header. */
+export function lineNumWhy(doc, sel, values) {
+  return plan(doc, current(doc, sel), values || {}).why || null;
+}
+
+/** See the header. */
+export function lineNumCmd(d, sel, values) {
+  const v = {};
+  for (const k of FIELDS) v[k] = values ? values[k] : undefined;
+  const pl = plan(d.doc, current(d.doc, sel), v);
+  if (pl.why) return null;
+  if (!pl.props) return sel;
+  d.atomic(() => {
+    const sec = d.doc.sections[pl.s];
+    const op = {op: 'setSection', at: pl.s, props: pl.props};
+    if (sec.raw !== undefined) op.raw = sec.raw;
+    d.apply(op);
+    if (pl.styles)
+      d.apply({op: 'setDocPart', key: 'styles', value: pl.styles});
+  });
+  return sel;
+}

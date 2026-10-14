@@ -1,0 +1,92 @@
+// WrapGuess - the guesses ./WrapWant makes top down a page (split
+// from it, Batch D P12a fix C1).
+//
+//   guessed(fl, pgH, dyOf, shift, tops) -> [Excl]  ./LineShape
+//       exclusionsOf the floats fl of a page pgH high (./AnchorPlace;
+//       those that wrap text, not in a cell) as they will be once
+//       the paragraphs above them have the heights guessed: a float
+//       with a paragraph or line position moved by its paragraph's
+//       shift (dyOf: id -> px; not looked at yet: shift) and kept on
+//       the page (PG30), and a floating table placed from its place
+//       in the flow (vertAnchor text, P12.7) by the shift there
+//       (dyOf: its id; not one the wrap holds, P12b fix C1); one
+//       whose paragraph's first line there
+//       (tops: id -> {y, bot}, its page y and its frame's bottom) is
+//       moved past its frame left out (it goes to the next page)
+//   guess(L, it, list, keep, later, mine, ex) -> {list, r}  paragraph
+//       item it broken (./ItemBreak) with the parts list (its parts
+//       for the pages before and after, keep and later, and its own
+//       mine(lines, exclusions)) until the parts its lines meet are
+//       those it was broken with, at most MAX_GUESS times (ex(dh):
+//       the exclusions with it dh px taller); no fixed point: the
+//       parts with the most exclusions tried (no text under a
+//       float). r: its last lines {h, lines}
+//   sigOf(parts) -> key: the parts' sigs (memoised per frozen list)
+//   NO_DY (an empty Map), MAX_GUESS 3
+//
+// Pure: no desktop services.
+import {exclusionsOf, shapeOf} from './LineShape';
+import {breakItem} from './ItemBreak';
+
+export const MAX_GUESS = 3;
+export const NO_DY = new Map();
+const MOVES = new Set(['paragraph', 'line']);
+const count = (ps) => ps.reduce((n, x) => n + x.excls.length, 0);
+const SIGS = new WeakMap();            // frozen parts -> key
+
+/** See the header. */
+export function sigOf(ps) {
+  let k = SIGS.get(ps);
+  if (k === undefined) {
+    k = ps.map((x) => x.sig).join(';');
+    if (Object.isFrozen(ps)) SIGS.set(ps, k);
+  }
+  return k;
+}
+
+/** The exclusions of floats fl (a page pgH high), those that move
+ *  with their paragraph moved by its guessed shift (dyOf; not seen
+ *  yet: shift), those whose paragraph's first line there (tops: id
+ *  -> {y, bot}, the page y and its frame's bottom) is moved past its
+ *  frame left out (they go to the next page with it). */
+export function guessed(fl, pgH, dyOf, shift, tops) {
+  const out = [];
+  for (const g of fl) {
+    const tbl = g.tbl !== undefined && !g.pic;
+    if (g.cell || !(tbl ? g.tfloat : g.wrap && g.pic)) continue;
+    const an = !tbl && g.pic.anchor, id = tbl ? g.tbl : g.id;
+    const from = tbl ? g.tfloat.vert : an && an.posV && an.posV.from;
+    const d = dyOf.has(id) ? dyOf.get(id) : shift;
+    const t = tops.get(id);
+    const dy = (tbl ? from === 'text' && !g.held : MOVES.has(from))
+      ? d : 0;
+    if (t && d > 0 && t.y + d >= t.bot) continue;
+    out.push(dy ? {...g, y: Math.max(0, Math.min(g.y + dy,
+      pgH - g.h))} : g);
+  }
+  return exclusionsOf(out);
+}
+
+/** Paragraph it broken with parts list (its parts for other pages
+ *  keep and later, its own mine(lines, exclusions) on the page) until
+ *  the parts its lines meet are those it was broken with, at most
+ *  MAX_GUESS times (ex(dh): the exclusions with it dh px higher);
+ *  no fixed point: the parts with the most exclusions tried. */
+export function guess(L, it, list, keep, later, mine, ex) {
+  let r = null, most = list;
+  for (let n = 0; n < MAX_GUESS; n++) {
+    r = breakItem(L, it, L.doc.styles, shapeOf(list));
+    const l2 = [...keep, ...mine(r.lines, ex(r.h - it.h)), ...later];
+    if (sigOf(l2) === sigOf(list)) {
+      most = list;
+      break;
+    }
+    list = l2;
+    if (count(list) > count(most)) most = list;
+  }
+  if (most !== list) {                 // (no text under a float)
+    list = most;
+    r = breakItem(L, it, L.doc.styles, shapeOf(list));
+  }
+  return {list, r};
+}

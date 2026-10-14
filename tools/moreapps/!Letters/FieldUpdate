@@ -1,0 +1,102 @@
+// FieldUpdate - Edit > Update field and Edit > Update all fields in
+// a document's window (Batch D, D19, R2: menu items with no key; F9
+// stays Redo): ./FieldCmd run on the window's document, as one
+// command (one undo step), with what it needs from the window.
+//
+//   updateCtx(dw) -> ctx  ./FieldCmd's: now (the clock when the
+//       command runs), path (dw.path: FILENAME), pages {finish()}:
+//       the body's pages all worked out first (D7: page fields wait
+//       for the last page): Print layout's (the body layout's
+//       ./Pages), in Draft made for the asking from the same galley
+//       (./PageHF printGalley); in the header and footer mode page:
+//       the mode's page (its story's fields show that page's values)
+//   updateField(dw) -> bool  the fields at the caret or in the
+//       selection; in the header and footer mode those of its story
+//   updateAll(dw) -> bool  every field of the body; nothing in the
+//       mode (./EditMenu shades the item there)
+//   insertField(dw, code) -> bool  Insert > Page number, Number of
+//       pages, Date, Time and the Field box's OK: ./FieldCmd
+//       insertFieldCmd at the selection (in the mode: in its story)
+//   editCode(dw, code) -> bool  the Field box's OK on a field:
+//       ./FieldCmd editCodeCmd
+//   All: false and a beep (view.refused) when refused (no field
+//   could be updated, a bad code...); the caret and the selection
+//   move with the text (the selection shown when laid out:
+//   view.edited; the mode left while the command's layout was made:
+//   the body's selection, the story's dropped). Done (P9 fix I2):
+//   the window's clock (dw.fields
+//   now, what its dates and times show) set to the command's now,
+//   the document laid out with it (./WinFit), so a date or time
+//   shows what was stored, even when nothing changed.
+// Imports no desktop services.
+// updateCtx is used inside this module only (not exported).
+import {updateCmd, updateAllCmd, insertFieldCmd, editCodeCmd}
+  from './FieldCmd';
+import {Pages} from './Pages';
+import {printGalley} from './PageHF';
+import {dropPending} from './EditFormat';
+
+/** See the header. */
+function updateCtx(dw) {
+  const v = dw.view;
+  let P = null;
+  const pages = () => {
+    if (!P) {
+      const B = v.bodyL;
+      P = B.place && B.place.pages ? B.place.pages
+        : new Pages(printGalley(B));
+      P.finish();
+    }
+    return P;
+  };
+  return {
+    now: new Date(),
+    path: dw.path || undefined,
+    pages: {finish: pages},
+    get page() { return v.hdr ? pages().at(v.hdr.i) : undefined; },
+  };
+}
+
+/** fn(d, sel, ctx) run as a command of dw's view: see the header. */
+function run(dw, fn) {
+  const v = dw.view;
+  if (!v.sel) return false;
+  v.ensure();
+  dropPending(v);
+  const ctx = updateCtx(dw);
+  const out = v.typing.command(() => fn(v.d, v.sel, ctx));
+  if (out === null) {
+    v.refused();
+    return false;
+  }
+  const m = v.hdr;
+  stamp(dw, ctx.now);
+  // (the mode left as the pages were laid out: the body's selection,
+  // never the story's: final fix A F1-I1)
+  v.edited(out === true || (m && v.hdr !== m) ? v.sel : out);
+  return true;
+}
+
+/** The window's clock set to now, its layout made with it. */
+function stamp(dw, now) {
+  if (!dw.fields || !(now instanceof Date)) return;
+  dw.fields = {...dw.fields, now};
+  dw.view.ensure();                    // (an edit: laid out with now)
+  const fx = dw.L && dw.L.fields;
+  if (fx && fx.now !== now) dw.rebuild();
+}
+
+/** See the header. */
+export const updateField = (dw) => run(dw, updateCmd);
+
+/** See the header. */
+export const updateAll = (dw) => (dw.view.hdr ? false
+  : run(dw, (d, sel, ctx) => updateAllCmd(d, ctx, sel)));
+
+/** See the header. */
+export const insertField = (dw, code) => run(dw,
+  (d, sel, ctx) => insertFieldCmd(d, sel, code, ctx));
+
+/** See the header. */
+export const editCode = (dw, code) => run(dw,
+  (d, sel, ctx) => editCodeCmd(d, sel, code, ctx));

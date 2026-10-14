@@ -1,0 +1,231 @@
+// HdrCmd - the header and footer commands (Batch D P7.4, D14; the
+// menu: ./HdrMenu). d is the real ./Document (never a ./StoryFacade:
+// the facade refuses section ops), s a section index, kind 'hdr' or
+// 'ftr', type 'default', 'first' or 'even' (./SectRefs TYPES; a bad
+// kind or type: RangeError). Each command is one d.atomic, run in
+// typing.command: one undo step; it returns true (a step made),
+// false (nothing to change: no step) or null (refused: s not a
+// section index; nothing changed).
+//
+//   firstPageCmd(d, s, on)  Different first page: section s's
+//       titlePg (./SectLayout sectionCmd, the Layout box's rule)
+//   oddEvenCmd(d, on)  Different odd and even pages: settings
+//       evenAndOddHeaders, document-wide as Word's (the same rule;
+//       null in a document with no settings part)
+//   linkCmd(d, s, kind, type, on)  Link to previous (null for
+//       section 0, which has no previous). on: section s's
+//       reference of that type removed (./SectRefs withRef null);
+//       its story, when no section references it any more, removed
+//       too (setStory null) with its relationship in the main rels
+//       (./StoryWrite then drops the part, its .rels and its content
+//       type: PG17); false when s has no reference of its own. off:
+//       the story s shows by inheritance (./HdrPick refOf) copied to
+//       a new part (./StoryCopy copyStory: fresh ids, its
+//       relationships in its own new .rels), else (nothing to
+//       inherit, or a part kept as bytes) a blank one (blankStory),
+//       given a relationship and s's reference; false when s has its
+//       own
+//   removeCmd(d, part)  Remove header / footer: the story emptied to
+//       one empty paragraph with the Header / Footer style (added
+//       when missing), Word's way; the part, its relationships and
+//       the references stay. false when it is that already; null
+//       when part is no story
+//   createOnEdit(d, s, kind, type, pending?) -> part  a header or
+//       footer made on the FIRST edit of a page of section s that
+//       shows none (./StoryFacade calls it inside the edit's own
+//       d.atomic: one undo step): pending.story (blankStory's, which
+//       the window's mode showed and the edit addresses) or a new
+//       blank one, a relationship (./DocParts addRel; Strict types
+//       in a Strict document) and the reference, and the style when
+//       the document lacks it (styleFor, at the time of the edit).
+//       s is linked to previous, so the reference goes to the
+//       section that owns s's chain (chainStart: Word edits every
+//       linked section) and every section of it shows the story.
+//       RangeError (nothing changed): s not a section index, or s
+//       has its own reference of that type
+//   chainStart(doc, s, kind, type) -> t  the earliest section of
+//       the chain section s is linked into: back from s while the
+//       section before has no reference of its own of that type (0
+//       when none has one)
+//   blankStory(doc, kind, part?) -> {story, styles}  a new Story
+//       (part: ./StoryWrite freeName by default) of one empty
+//       paragraph with the Header / Footer style, root w:hdr /
+//       w:ftr declaring w and r; styles as styleFor gives them
+//   styleFor(doc, kind) -> {id, styles}  the paragraph style a new
+//       or emptied story's paragraph takes: the document's own
+//       (./DocParts findStyle: id Header / Footer, else the name
+//       header / footer) with styles null, else Word's
+//       (./StylesBuiltin builtinStyle, based on the document's
+//       default paragraph style) added to a NEW table (./DocParts
+//       withStyle; added once); id null (no style) when the one
+//       found is not a paragraph style
+//   ownRef(doc, s, kind, type) -> rId | undefined  section s's own
+//       reference (./SectRefs refsOf in the document's scope)
+// Pure: no desktop services.
+import {refsOf, withRef, storyOfRef, TYPES} from './SectRefs';
+import {docMap} from './PicRead';
+import {refOf} from './HdrPick';
+import {freeName} from './StoryWrite';
+import {addRel, withStyle, findStyle} from './DocParts';
+import {builtinStyle} from './StylesBuiltin';
+import {sectionCmd} from './SectLayout';
+import {copyStory} from './StoryCopy';
+import {newPara} from './Model';
+import {NS} from './Wml';
+
+const NAMES = {hdr: ['Header', 'header', 'header'],
+  ftr: ['Footer', 'footer', 'footer']};
+const KINDS = ['hdr', 'ftr'];
+
+function check(kind, type) {
+  if (!KINDS.includes(kind)) throw new RangeError('bad kind ' + kind);
+  if (type !== undefined && !TYPES.includes(type))
+    throw new RangeError('bad type ' + type);
+}
+
+const isSection = (doc, s) => Number.isInteger(s) && s >= 0 &&
+  s < doc.sections.length;
+
+/** See the header. */
+export function ownRef(doc, s, kind, type) {
+  check(kind, type);
+  return refsOf(doc.sections[s], docMap(doc))[kind][type];
+}
+
+/** See the header. */
+export function styleFor(doc, kind) {
+  check(kind);
+  const [id, name] = NAMES[kind], st = doc.styles;
+  if (!st || !(st.styles instanceof Map)) return {id: null,
+    styles: null};
+  const own = findStyle(st, id, name);
+  if (own) return {id: own.type === 'paragraph' ? own.id : null,
+    styles: null};
+  const s = builtinStyle(id), base = st.defaults &&
+    st.defaults.paragraph;
+  if (typeof base === 'string' && st.styles.has(base)) s.basedOn = base;
+  else delete s.basedOn;
+  return {id, styles: withStyle(st, s)};
+}
+
+/** See the header. */
+export function blankStory(doc, kind, part = freeName(doc, kind)) {
+  const {id, styles} = styleFor(doc, kind);
+  const story = {part, kind, root: {name: 'w:' + kind, attrs: [
+    ['xmlns:w', NS.w], ['xmlns:r', NS.r]]}, prolog: null,
+  blocks: [newPara('', id ? {pStyle: id} : {})], rels: null,
+  relsPart: null, orig: [], bytes: null};
+  return {story, styles};
+}
+
+/** Section s's reference of kind and type set to rId (null: none). */
+function setRef(d, s, kind, type, rId) {
+  const sec = d.doc.sections[s];
+  const op = {op: 'setSection', at: s, props: withRef(sec.props, kind,
+    type, rId, docMap(d.doc))};
+  if (sec.raw !== undefined) op.raw = sec.raw;
+  d.apply(op);
+}
+
+/** story added with its relationship and s's reference (styles: a
+ *  new style table first, or null). */
+function addStory(d, s, kind, type, story, styles) {
+  if (styles) d.apply({op: 'setDocPart', key: 'styles', value: styles});
+  d.apply({op: 'setStory', part: story.part, story});
+  const doc = d.doc, main = doc.meta.mainPart || 'word/document.xml';
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  const {rels, id} = addRel(doc.rels, {kind: NAMES[kind][2],
+    target: story.part.slice(dir.length),
+    strict: doc.meta.conformance === 'strict'});
+  d.apply({op: 'setDocPart', key: 'rels', value: rels});
+  setRef(d, s, kind, type, id);
+}
+
+/** Whether a section references part. */
+function used(doc, part) {
+  const map = docMap(doc);
+  return doc.sections.some((sec) => {
+    const r = refsOf(sec, map);
+    return KINDS.some((k) => TYPES.some((t) => r[k][t] !== undefined &&
+      storyOfRef(doc, r[k][t]) === part));
+  });
+}
+
+/** See the header. */
+export const firstPageCmd = (d, s, on) => sectionCmd(d, s,
+  {titlePg: !!on});
+
+/** See the header. */
+export const oddEvenCmd = (d, on) => sectionCmd(d, 0, {evenOdd: !!on});
+
+/** See the header. */
+export function linkCmd(d, s, kind, type, on) {
+  check(kind, type);
+  const doc = d.doc;
+  if (!isSection(doc, s) || s === 0) return null;
+  const own = ownRef(doc, s, kind, type);
+  if (on) {
+    if (own === undefined) return false;
+    const part = storyOfRef(doc, own);
+    d.atomic(() => {
+      setRef(d, s, kind, type, null);
+      const now = d.doc;
+      if (!part || used(now, part)) return;
+      const rels = now.rels.filter((x) =>
+        storyOfRef(now, x.id) !== part);
+      d.apply({op: 'setStory', part, story: null});
+      d.apply({op: 'setDocPart', key: 'rels', value: rels});
+    });
+    return true;
+  }
+  if (own !== undefined) return false;
+  const from = refOf(doc, s, type, kind);
+  const src = from && from.part && doc.stories.get(from.part);
+  const part = freeName(doc, kind);
+  const made = src ? {story: copyStory(doc, src, part), styles: null}
+    : blankStory(doc, kind, part);
+  d.atomic(() => addStory(d, s, kind, type, made.story, made.styles));
+  return true;
+}
+
+/** See the header. */
+export function removeCmd(d, part) {
+  const doc = d.doc, m = doc.stories;
+  const st = typeof part === 'string' && m instanceof Map ? m.get(part)
+    : null;
+  if (!st || !Array.isArray(st.blocks)) return null;
+  const {id, styles} = styleFor(doc, st.kind), b = st.blocks;
+  if (b.length === 1 && b[0].type === 'p' && b[0].text === '' &&
+    (b[0].pStyle ?? null) === id && !styles) return false;
+  d.atomic(() => {
+    if (styles) d.apply({op: 'setDocPart', key: 'styles',
+      value: styles});
+    d.apply({op: 'setStory', part, story: {...st,
+      blocks: [newPara('', id ? {pStyle: id} : {})]}});
+  });
+  return true;
+}
+
+/** See the header. */
+export function chainStart(doc, s, kind, type) {
+  let t = s;
+  while (t > 0 && ownRef(doc, t - 1, kind, type) === undefined) t--;
+  return t;
+}
+
+/** See the header. */
+export function createOnEdit(d, s, kind, type, pending) {
+  check(kind, type);
+  const doc = d.doc;
+  if (!isSection(doc, s)) throw new RangeError('no section ' + s);
+  if (ownRef(doc, s, kind, type) !== undefined)
+    throw new RangeError('section ' + s + ' has its own ' + type);
+  const story = pending && pending.story ? pending.story
+    : blankStory(doc, kind).story;
+  const {id, styles} = styleFor(doc, kind);
+  const p0 = story.blocks[0];
+  const t = chainStart(doc, s, kind, type);
+  d.atomic(() => addStory(d, t, kind, type, story, styles && p0 &&
+    p0.pStyle === id ? styles : null));
+  return story.part;
+}

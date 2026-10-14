@@ -68,6 +68,25 @@ describe('ParaSpace.lineBox', () => {
     assert.equal(PS.lineBox(pf('exact', 0), 16).clip, true);
     assert.equal(PS.MIN_LINE, 2);
   });
+  it('a font\'s own ratios (D35): h and base from m', () => {
+    const m = {nat: 1.15, desc: 0.21};
+    const b = PS.lineBox(pf('auto', 240), 16, 0, 0, m);
+    near(b.h, 18.4, 'h');
+    near(b.base, 18.4 - 3.36, 'base');
+    near(PS.lineBox(pf('auto', 480, 2), 16, 0, 0, m).h, 36.8, 'x2');
+    near(PS.lineBox(pf('atLeast', 60), 16, 0, 0, m).h, 18.4, 'least');
+    // the default is NAT_M, the old constants
+    assert.deepEqual(PS.NAT_M, {nat: 1.25, desc: 0.27});
+    assert.deepEqual(PS.lineBox(pf('auto', 240), 16),
+      PS.lineBox(pf('auto', 240), 16, 0, 0, PS.NAT_M));
+    // exact: unchanged whatever the font
+    for (const tw of [480, 200]) {
+      const e = PS.lineBox(pf('exact', tw), 16, 0, 0, m);
+      const o = PS.lineBox(pf('exact', tw), 16);
+      near(e.h, o.h, 'exact h');
+      near(e.base, o.base, 'exact base');
+    }
+  });
   it('at least: never below the natural height; extra goes above', () => {
     const small = PS.lineBox(pf('atLeast', 60), 16);
     near(small.h, 20, 'natural kept');

@@ -1,0 +1,222 @@
+// PageValues - the values of the Page setup box (Batch D P4.3, D21:
+// ./PageBox, ./SectSetup): papers, the sections in scope, their
+// values, and the values that cannot be.
+//
+//   PAPERS   [{name, w, h}] twips, portrait: A4, A5, A3, Letter,
+//            Legal, Executive, B5 (JIS)
+//   paperOf(w, h) -> the name of the paper w x h (either way round),
+//            each within NEAR_TW of it; 'Custom', or null when w or h
+//            is null. NEAR_TW 7 twips: half a hundredth of an inch,
+//            so a size the box shows (to 1/100 inch) and reads back
+//            is still its paper, untouched or typed (review P5 I1)
+//   scopeOf(doc, sel, scope) -> [first, last] section indexes, or
+//            null (no valid selection, or a scope not in SCOPES):
+//            'section' the sections the selection touches, 'forward'
+//            the caret's (the selection's start) and every later
+//            one, 'all' every section
+//   valuesOf(doc, sel, scope) -> {paper, w, h, orient, top, bottom,
+//            left, right, gutter, gutterTop} of the sections in
+//            scope (./SectGeom givenOf: the defaults filled in); a
+//            value they do not share is null (the box shows it
+//            blank); orient 'landscape' or 'portrait' (w:orient, or
+//            w > h when there is none); gutterTop the document's
+//            (./SettingsRead); null when scopeOf is
+//   whyNot(values) -> why the values cannot be (a message), or null:
+//            w and h 1 to 22 inches, left, right and gutter 0 to 22,
+//            top and bottom -22 to 22 (negative: exact, Word's),
+//            whole twips; orient and gutterTop as above; when every
+//            value is given, a text width or height (./SectGeom
+//            geomOf, the gutter at the top when gutterTop) under 0.1
+//            inch (MIN_TEXT_TW). A null value is not checked
+//   oneOf(doc, s) -> {w, h, orient, top, bottom, left, right,
+//            gutter} of section s (valuesOf's, for one section)
+//   tooSmall(section, gutterTop, map?, first?) -> MSG wide or high
+//            when ./SectGeom geomOf leaves the section's text less
+//            than MIN_TEXT_TW across or down, else null
+//   setPart(pr, part, next, map?, was?)  props pr (a copy the caller
+//            made, changed in place) with pgSz or pgMar `part` given
+//            next's values (undefined ones dropped): the one rule of
+//            both boxes (review P4 M3). A typed part: its raw element
+//            dropped (./PropNames withoutRaw) and the units of the
+//            values that changed (they are written in twips; the rest
+//            keep their unit strings: review P1 M7); nothing when they
+//            are its own. A part the reader kept raw (no typed one;
+//            map the document's prefixes): the raw element keeps every
+//            attribute it has, and only the values of next that differ
+//            from was (all of next without was) are set in it, in
+//            twips, an undefined one removed (withAttrs)
+//   rawOf(pr, name, map) -> node | null  the raw element w:<name> in
+//            pr.extra
+//   withAttrs(n, m) -> n'  raw node n with attributes m (local name
+//            -> value, in n's prefix; undefined removes it) set, the
+//            others kept as they are
+//   MARS     the margin fields; given(v): v neither null nor
+//            undefined
+//   SCOPES   'section', 'forward', 'all'; caps MIN_TW 1440 and
+//            MAX_TW 31680 (1 and 22 inches), MIN_TEXT_TW 144 (0.1),
+//            NEAR_TW 7
+// Pure: no desktop services.
+// withAttrs is used inside this module only (not exported).
+import {orderedPos} from './EditPos';
+import {geomOf, givenOf} from './SectGeom';
+import {onOffOf} from './SettingsRead';
+import {deepEqual} from './Model';
+import {withoutRaw} from './PropNames';
+import {wName} from './Ns';
+
+export const PAPERS = Object.freeze([['A4', 11906, 16838],
+  ['A5', 8391, 11906], ['A3', 16838, 23811], ['Letter', 12240, 15840],
+  ['Legal', 12240, 20160], ['Executive', 10440, 15120],
+  ['B5 (JIS)', 10319, 14571]].map(([name, w, h]) =>
+  Object.freeze({name, w, h})));
+export const SCOPES = Object.freeze(['section', 'forward', 'all']);
+export const MIN_TW = 1440, MAX_TW = 31680, MIN_TEXT_TW = 144;
+export const NEAR_TW = 7;
+const SIZE = ['w', 'h'];
+export const MARS = ['top', 'bottom', 'left', 'right', 'gutter'];
+const SIGNED = ['top', 'bottom'];
+const ORIENTS = ['portrait', 'landscape'];
+const NAMES = {w: 'Width', h: 'Height', top: 'Top', bottom: 'Bottom',
+  left: 'Left', right: 'Right', gutter: 'Gutter'};
+const MSG = {
+  wide: 'The margins leave less than 0.1 inch for the text across ' +
+    'the page.',
+  high: 'The top and bottom margins leave less than 0.1 inch for ' +
+    'the text down the page.',
+  bad: 'Orientation and gutter position: pick one.',
+};
+
+export const given = (v) => v !== null && v !== undefined;
+const int = (v, lo, hi) => Number.isSafeInteger(v) && v >= lo &&
+  v <= hi;
+
+/** See the header. */
+export function paperOf(w, h) {
+  if (!given(w) || !given(h)) return null;
+  const near = (a, b) => Math.abs(a - b) <= NEAR_TW;
+  const p = PAPERS.find((x) => (near(x.w, w) && near(x.h, h)) ||
+    (near(x.w, h) && near(x.h, w)));
+  return p ? p.name : 'Custom';
+}
+
+/** See the header. */
+export function scopeOf(doc, sel, scope) {
+  if (!SCOPES.includes(scope) || !sel) return null;
+  const o = orderedPos(doc, sel);
+  if (!o) return null;
+  const last = doc.sections.length - 1;
+  if (scope === 'all') return [0, last];
+  return [o.f.s, scope === 'forward' ? last : o.t.s];
+}
+
+const orientOf = (pr, size) => {
+  const o = pr.pgSz && pr.pgSz.orient;
+  return ORIENTS.includes(o) ? o : size.w > size.h ? 'landscape'
+    : 'portrait';
+};
+
+/** One section's values (no paper, no gutterTop). */
+export function oneOf(doc, s) {
+  const sec = doc.sections[s], {size, mar} = givenOf(sec,
+    doc.sections[0]);
+  const v = {w: size.w, h: size.h,
+    orient: orientOf(sec.props || {}, size)};
+  for (const k of MARS) v[k] = mar[k];
+  return v;
+}
+
+/** See the header. */
+export function valuesOf(doc, sel, scope) {
+  const r = scopeOf(doc, sel, scope);
+  if (!r) return null;
+  const v = oneOf(doc, r[0]);
+  for (let s = r[0] + 1; s <= r[1]; s++) {
+    const u = oneOf(doc, s);
+    for (const k of Object.keys(v)) if (v[k] !== u[k]) v[k] = null;
+  }
+  return {paper: paperOf(v.w, v.h), ...v,
+    gutterTop: onOffOf(doc, 'gutterAtTop')};
+}
+
+/** Why a section of these props is too small, or null. */
+export function tooSmall(section, gutterTop, map, first) {
+  const g = geomOf(section, {gutterAtTop: gutterTop === true, map},
+    first);
+  if (g.textW < MIN_TEXT_TW) return MSG.wide;
+  return g.size.h - g.mar.top - g.mar.bottom < MIN_TEXT_TW ? MSG.high
+    : null;
+}
+
+/** See the header. */
+export function whyNot(values) {
+  const v = values || {};
+  for (const k of [...SIZE, ...MARS]) {
+    if (!given(v[k])) continue;
+    const lo = SIZE.includes(k) ? MIN_TW : SIGNED.includes(k) ? -MAX_TW
+      : 0;
+    if (!int(v[k], lo, MAX_TW)) return `${NAMES[k]}: from ` +
+      `${lo / 1440} to 22 inches.`;
+  }
+  if ((given(v.orient) && !ORIENTS.includes(v.orient)) ||
+    (given(v.gutterTop) && typeof v.gutterTop !== 'boolean'))
+    return MSG.bad;
+  if (![...SIZE, ...MARS].every((k) => given(v[k]))) return null;
+  const pgMar = {header: 720, footer: 720};
+  for (const k of MARS) pgMar[k] = v[k];
+  return tooSmall({props: {pgSz: {w: v.w, h: v.h}, pgMar, extra: []}},
+    v.gutterTop);
+}
+
+/** See the header. */
+export function rawOf(pr, name, map) {
+  const extra = Array.isArray(pr.extra) ? pr.extra : [];
+  return extra.find((n) => wName(n, map) === name) || null;
+}
+
+/** See the header. */
+function withAttrs(n, m) {
+  const i = n.name.indexOf(':');
+  const pre = i < 0 ? '' : n.name.slice(0, i + 1);
+  const attrs = n.attrs.map((a) => [...a]);
+  for (const [k, x] of Object.entries(m)) {
+    const j = attrs.findIndex((y) => y[0] === pre + k);
+    if (x === undefined) {
+      if (j >= 0) attrs.splice(j, 1);
+    } else if (j >= 0) attrs[j][1] = String(x);
+    else attrs.push([pre + k, String(x)]);
+  }
+  return {...n, attrs};
+}
+
+/** See the header. */
+export function setPart(pr, part, next, map, was) {
+  const node = !pr[part] && map ? rawOf(pr, part, map) : null;
+  if (node) {
+    const m = {};
+    for (const k of Object.keys(next)) {
+      if (!was || next[k] !== was[k]) m[k] = next[k];
+    }
+    if (Object.keys(m).length) {
+      pr.extra = pr.extra.map((n) => (n === node ? withAttrs(n, m)
+        : n));
+    }
+    return;
+  }
+  const cur = pr[part] || {};
+  const out = {...cur, ...next};
+  for (const k of Object.keys(out)) {
+    if (out[k] === undefined) delete out[k];
+  }
+  if (pr[part] && deepEqual(out, cur)) return;
+  pr[part] = out;
+  pr.extra = withoutRaw(pr.extra || [], [part]);
+  const u = pr.units && pr.units[part];
+  if (!u) return;
+  const kept = {};
+  for (const k of Object.keys(u)) if (out[k] === cur[k]) kept[k] = u[k];
+  const units = {...pr.units};
+  if (Object.keys(kept).length) units[part] = kept;
+  else delete units[part];
+  if (Object.keys(units).length) pr.units = units;
+  else delete pr.units;
+}

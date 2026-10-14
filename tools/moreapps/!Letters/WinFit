@@ -1,0 +1,108 @@
+// WinFit - the layout work of a document's window (./AppWin), split
+// from it (Batch D, P0.2): measuring, laying out for the window's
+// width and placing the extent. Desktop-bound: it imports the
+// desktop (the screen's width) in its import line only.
+//
+//   metricsOf(dw)          -> a TextMetrics measuring on the window's
+//                             canvas (a scratch one until it is
+//                             made: a table's layout may measure
+//                             while the document is being opened)
+//   newLayout(dw, metrics, prev, fields?)  a new ./DocLayout,
+//                             inset() px down, keeping lines of
+//                             prev; then fit. fields: its L.fields
+//                             (./FieldPass); else prev's, or
+//                             dw.fields (the window's: {now});
+//                             dw.fields too when its now is not
+//                             prev's (the clock set: P9 fix I2,
+//                             ./FieldUpdate)
+//                             its colW dw.colW (./ViewMode, Print
+//                             layout's column widths), else none;
+//                             floats in Print layout only (P12.2),
+//                             its wrap dw.wrap (./WrapPass, P12.3);
+//                             Web layout's width and, on a resize,
+//                             the band to break at once (./WebView
+//                             webOpts, D31, OD8); Outline's
+//                             collapse set (./OutlineView outlineOpt,
+//                             D32)
+//   fit(dw)                -> place the column for the window's
+//                             width (a layout whose floats, Web
+//                             layout width or Outline collapse set
+//                             are not the view's, a
+//                             view switch: a new one first; a Web
+//                             layout's resize at most once per 200
+//                             ms: ./WebView throttled), the view's
+//                             placement on it (./ViewMode placeView:
+//                             Print layout's pages) and set the
+//                             extent
+//   fitExtent(dw)          the extent set again from the placement
+//                             (L.place extent, at the zoom): Print
+//                             layout's grows as its pages are worked
+//                             out (D34)
+import {wimp} from 'riscos';
+import {TextMetrics} from 'wimplib/TextMetrics';
+import {DocLayout} from './DocLayout';
+import {extentOf} from './Zoom';
+import {placeView} from './ViewMode';
+import {outlineOpt} from './OutlineView';
+import {webOpts, built, throttled, webOf, keepTop} from './WebView';
+
+let scratch = null;                    // (a context to measure with)
+
+/** See the header. */
+export function metricsOf(dw) {
+  return new TextMetrics((text, css) => {
+    const g = dw.ctx || (scratch ||= document.createElement(
+      'canvas').getContext('2d'));
+    g.font = css;
+    return g.measureText(text).width;
+  });
+}
+
+/** The window's clock is not the one prev shows fields with. */
+const moved = (dw, prev) => !!dw.fields && !!prev.fields &&
+  prev.fields.now !== dw.fields.now;
+
+/** See the header. */
+export function newLayout(dw, metrics, prev, fields) {
+  const old = dw.L;
+  const web = webOpts(dw, prev || old);
+  if (web.web) built(dw);
+  dw.L = new DocLayout(dw.doc, metrics, prev,
+    {top: dw.inset(), pics: dw.pics, ...web,
+      fields: fields || (prev && !moved(dw, prev) ? undefined
+        : dw.fields),
+      colW: dw.colW || null, floats: dw.viewName === 'print',
+      outline: outlineOpt(dw),
+      wrap: dw.wrap || null});
+  dw.view.setLayout(dw.L, old);
+  fit(dw);                             // (lays it out)
+}
+
+/** See the header. */
+export function fit(dw) {
+  // (after an edit: the new layout first; it fits itself). Inside
+  // a redraw (EditView.paint -> L -> rebuild) setExtent only asks
+  // for another redraw (with the new extent and scroll offsets)
+  if (dw.view) dw.view.ensure();
+  if (dw.L.floats !== (dw.viewName === 'print') ||
+    (dw.L.web || null) !== webOf(dw) ||
+    dw.L.outline !== outlineOpt(dw)) {
+    if (throttled(dw)) return;
+    newLayout(dw, dw.L.metrics, dw.L);     // (it fits itself)
+    return;
+  }
+  dw.L.layout(dw.viewW());
+  placeView(dw);
+  fitExtent(dw);
+  keepTop(dw);                         // (a Web layout resize)
+  dw.view.placed();
+  dw.rb.refresh();
+  dw.win.invalidate();
+}
+
+/** See the header. */
+export function fitExtent(dw) {
+  const L = dw.L, r = extentOf(L.place.extent(), dw.view.zoom, L.top);
+  dw.win.setExtent({w: Math.max(r.w, wimp.width),
+    h: Math.max(r.h, 64)});
+}

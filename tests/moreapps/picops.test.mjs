@@ -84,9 +84,13 @@ describe('PicOps', () => {
     assert.equal(d.undoDepth, 0);
   });
 
-  it('floating: alt text yes, size refused', async () => {
-    await refused(1, {cx: 19050}, 'floating');
+  it('floating: alt text yes, size too (P12.5: an understood ' +
+    'anchor; one not understood is refused in picdrag.test)',
+  async () => {
     const d = await load();
+    setPicture(d, picSel(d, 1), {cx: 19050});
+    assert.equal(info(d, 1).cx, 19050);
+    d.undo();
     setPicture(d, picSel(d, 1), {descr: 'float'});
     assert.equal(info(d, 1).alt, 'float');
   });

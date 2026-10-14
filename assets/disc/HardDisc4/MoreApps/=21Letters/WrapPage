@@ -1,0 +1,206 @@
+// WrapPage - one page's step of ./WrapPass (split from it, Batch D
+// P12a fix C1): what page i asks for, as ./WrapPass's header says.
+//
+//   pageStep(L, P, i, memo, pins, tys) -> {ch, pins?, tys?} | null
+//       the changes page i of ./Pages P asks for (ch: Map id ->
+//       parts | null; pins, tys: the new ones, undefined: the
+//       same), or none: settled or laid out ignoring wrap. memo:
+//       ./WrapMemo memoOf's; pins L.wrap's: Map id -> the key of the
+//       page that pinned it, the item to start a page; 'k:' and the
+//       key, the paragraph to be kept whole, a column whose end
+//       moved back and forth (I3: a paragraph its wrap split across
+//       two columns and its unwrap not; once a page, before a page
+//       pin); tys L.wrap's: Map table id -> {pk, y}, a floating
+//       table placed from its flow place (vertAnchor text) HELD at
+//       page y on the page of key pk (P12b fix C1, below)
+//   livePins (./WrapPins's)
+//   MAX_PASSES 16
+//
+// A table placed from its flow place moves with the lines above it:
+// when they wrap round it they grow and move it, and it may leave
+// them, a cycle (P12b fix C1: a small negative tblpY). On a cycle
+// the page's such tables are first HELD where the page's first pass
+// had them (its start: the lines above unwrapped there), so only
+// those tables leave their flow place; the page then settles again
+// (before a column or page pin, and before laying it out ignoring
+// wrap).
+//
+// A page settled or laid out ignoring wrap is remembered by its Page
+// object with its paragraphs' parts: while those are the very ones,
+// a later pass looks at nothing more there (a long document's pages
+// before the one settling cost no work a pass). Pure: no desktop
+// services.
+import {keyOf} from './ColMemo';
+import {recFor, newRec, grow, endKey, heldSame} from './WrapMemo';
+import {onPage, viewOf, canonOn, wantOn} from './WrapWant';
+import {cutsOf, flips, unpin, livePins, heldOf} from './WrapPins';
+
+export {livePins};
+
+export const MAX_PASSES = 16;
+const NO_MAP = new Map();
+const OK = new WeakMap();              // Page -> {rec, ids, ps}
+
+/** The changes page i asks for, {ch, pins} (pins: the new pins,
+ *  undefined: the same), or null (see the header). */
+export function pageStep(L, P, i, memo, pins, tys) {
+  const pg = P.list[i], pk = keyOf(L, pg), w = L.wrap;
+  const cur = w ? w.parts : NO_MAP, keys = w ? w.keys : NO_MAP;
+  if (settled(L, pg, pk, memo, cur)) return null;
+  const view = viewOf(L, P, i, cur, onPage(L, P, i));
+  let rec = recFor(L, pg, memo, view);
+  if (rec && rec.st === 'busy' && rec.last !== (w && w.id)) rec = null;
+  if (!rec) {
+    rec = newRec(L, P, pg, memo);
+    const {ch, after} = canonOn(L, P, i, cur);
+    rec.expect = after;
+    stash(L, pg, cur, ch, rec);
+    const np = unpin(pins, pk), nt = unpin(tys, pk);
+    if (ch.size || np !== pins || nt !== tys) {
+      return {ch, pins: np, tys: nt};
+    }
+  } else if (rec.st !== 'busy') {
+    const lost = lostOf(rec, pins, tys, heldOf(P, pg, pk));
+    if (lost) return lost;
+    if (rec.st === 'fall') {
+      const {ch, after} = canonOn(L, P, i, cur);
+      rec.expect = after;
+      if (ch.size) return {ch};
+    }
+    const back = restore(L, pg, cur, rec);
+    if (back) return {ch: back};
+    if (rec.st === 'fall' || rec.end === endKey(L, pg)) {
+      return keep(pg, pk, rec, view, cur);
+    }
+    const y = !rec.cut && later(pg.end, rec.k) && L.items[rec.k];
+    if (y) return {ch: NO_MAP, pins: new Map(pins).set(y.id, pk)};
+  }
+  grow(rec, L, pg);
+  if (!rec.tys) rec.tys = heldOf(P, pg, pk);
+  rec.ends.push(pinAt(pg.end));
+  rec.cuts.push(cutsOf(P, pg));
+  const {ch, after} = wantOn(L, P, i, cur, keys);
+  rec.expect = after;
+  if (!ch.size) {
+    rec.st = 'done';
+    rec.end = endKey(L, pg);
+    rec.k = pg.end.k;
+    rec.cut = !!(pg.end.line || pg.end.dy || pg.end.cuts);
+    const back = restore(L, pg, cur, rec);
+    return back ? {ch: back} : null;
+  }
+  const state = [...after].join('|');
+  if (rec.n >= MAX_PASSES || rec.seen.has(state)) {
+    const now = !rec.held && heldOf(P, pg, pk);
+    const hold = now && [...rec.tys].filter(([id]) => now.has(id));
+    if (hold && hold.length) {         // (its tables held first)
+      rec.held = new Map(hold);
+      rec.n = 0;
+      rec.seen.clear();
+      rec.expect = view;
+      return {ch: NO_MAP, tys: new Map([...tys, ...hold])};
+    }
+    const z = !rec.kept && flips(rec.cuts), kz = z && L.items[z];
+    if (kz) {                          // (a column's end moved: the
+      rec.kept = true;                 // paragraph kept whole)
+      rec.n = 0;
+      rec.seen.clear();
+      rec.expect = view;
+      return {ch: NO_MAP, pins: new Map(pins).set(kz.id, 'k:' + pk)};
+    }
+    const k = Math.min(...rec.ends);
+    const y = !rec.pinned && k > pg.start.k &&
+      Math.max(...rec.ends) > k && L.items[k];
+    if (y) {                           // (its end moved: kept at the
+      rec.pinned = true;               // first, as Word keeps a page)
+      rec.n = 0;
+      rec.seen.clear();
+      rec.expect = view;
+      return {ch: NO_MAP, pins: new Map(pins).set(y.id, pk)};
+    }
+    rec.st = 'fall';
+    const c = canonOn(L, P, i, cur);
+    rec.expect = c.after;
+    return c.ch.size ? {ch: c.ch} : null;
+  }
+  rec.n++;
+  rec.seen.add(state);
+  rec.st = 'busy';
+  return {ch};
+}
+
+/** The tables record rec held that are on its page now (now:
+ *  ./WrapPins heldOf's) and no longer held there (./WrapPins
+ *  livePins drops them while their page is away; the page back, its
+ *  record valid, holds them again, as when it made it: P12b fix
+ *  I1), as a step's result; or null. */
+function lostOf(rec, pins, tys, now) {
+  const lost = rec.held ? [...rec.held].filter(([id, v]) =>
+    now.has(id) && tys.get(id) !== v) : [];
+  return lost.length ? {ch: NO_MAP, tys: new Map([...tys, ...lost])}
+    : null;
+}
+
+/** Page pg (key pk) settled when last looked at, its paragraphs'
+ *  parts (cur) the very ones and the items its passes held after it
+ *  the same: nothing to look at. */
+function settled(L, pg, pk, memo, cur) {
+  const ok = OK.get(pg);
+  return !!ok && ok.rec === memo.known.get(pk) && !ok.rec.stash &&
+    ok.ids.every((id, j) => cur.get(id) === ok.ps[j]) &&
+    heldSame(L, pg, ok.rec);
+}
+
+/** null, page pg remembered as settled (see settled). */
+function keep(pg, pk, rec, view, cur) {
+  const ids = [...view.keys()];
+  OK.set(pg, {rec, ids, ps: ids.map((id) => cur.get(id))});
+  return null;
+}
+
+/** The parts of the paragraphs after page pg (cur; in a cell: its
+ *  table after it) dropped (in ch) and kept in rec.stash: a page
+ *  starts again with none after it, as on a first layout. */
+function stash(L, pg, cur, ch, rec) {
+  const last = lastOf(pg);
+  rec.stash = new Map();
+  for (const [id, ps] of cur) {
+    if (!(rootAt(L, id, ps) > last) || ch.has(id)) continue;
+    rec.stash.set(id, ps);
+    ch.set(id, null);
+  }
+}
+
+/** The root index of paragraph id (parts ps): its own, or its
+ *  table's when it is in a cell (part.root, ./WrapCells); -1. */
+function rootAt(L, id, ps) {
+  const it = L.byId.get(id);
+  if (it && it.col === L.root) return it.ci;
+  const t = it && ps[0] && ps[0].root && L.byId.get(ps[0].root);
+  return t && t.col === L.root ? t.ci : -1;
+}
+
+/** rec.stash's parts given back (settled, or laid out ignoring
+ *  wrap) to the paragraphs still after page pg and still without
+ *  parts: the pages after it, settled from them before, need not be
+ *  settled again when they are the same (their records); or null. */
+function restore(L, pg, cur, rec) {
+  const st = rec.stash, last = lastOf(pg);
+  rec.stash = null;
+  if (!st || !st.size) return null;
+  const out = new Map();
+  for (const [id, ps] of st) {
+    if (rootAt(L, id, ps) > last && !cur.has(id)) out.set(id, ps);
+  }
+  return out.size ? out : null;
+}
+
+const lastOf = (pg) => (pg.end.line || pg.end.dy || pg.end.cuts
+  ? pg.end.k : pg.end.k - 1);
+
+/** The root index of the first item starting after cursor c. */
+const pinAt = (c) => (c.line || c.dy || c.cuts ? c.k + 1 : c.k);
+
+/** Cursor c is after the start of root item k. */
+const later = (c, k) => c.k > k || (c.k === k && !!(c.line || c.dy ||
+  c.cuts));

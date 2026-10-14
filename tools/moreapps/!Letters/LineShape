@@ -1,0 +1,177 @@
+// LineShape - the room a page's floating pictures leave a line of
+// text (Batch D P12.3, D27): the one rule for wrap exclusions.
+//
+//   exclusionsOf(floats) -> [Excl] (./LineExcl's, re-exported: the
+//       exclusions of a page's floats; POLY, MIN_POINTS, MAX_POINTS
+//       too)
+//   shapeFor(excls, top, left = 0, win?) -> shape: the shape of a
+//       paragraph whose y 0 is at page y top and x 0 at page x left
+//     shape(y, h, lo = -Infinity, hi = Infinity) -> [x0, x1] | null
+//       the room of a line y..y + h (paragraph px) between lo and
+//       hi: [lo, hi] when no exclusion meets the band (y overlap and
+//       x overlap); else the widest gap that the exclusions leave
+//       (a polygon: its x extent over the band, plus distL/R; 'none'
+//       blocks the whole line, 'left' everything right of its x0,
+//       'right' everything left of its x1); null when the widest is
+//       under MIN_FREE (the line moves below the band)
+//     shape.next(y, h) -> the paragraph y below the exclusions the
+//       band meets (a polygon: at most h further), NaN for none
+//     win {y0, y1}: the ys the shape is for (page ys, or the
+//       paragraph's when top is 0): a line starting outside them
+//       has [lo, hi], no next
+//   shapeOf(parts) -> shape | undefined  one shape of the parts
+//       [{y0, y1, excls, bot?}] of a paragraph on the frames it
+//       shows on (./WrapPass, P12a fix: relative): each line the
+//       part whose window y0..y1 (paragraph ys) holds its top, the
+//       exclusions relative to the paragraph's top and the frame's
+//       left
+//   relExcl(e, x, y) -> e relative to the point (x, y), each value
+//       to 1/100 px (r2), frozen; exclSig(e) -> its text (a key)
+//   r2(v) -> v to 1/100 px (a small bias keeps a value such as
+//       155.325, reached by two sums, from rounding both ways)
+//   spanAt(shape, y, h, lo, hi, first?) -> {y, x0, x1}  where a line
+//       goes (./LineLayout): moved down (shape.next) past bands
+//       without room, at most MAX_SKIP times (then lo..hi); a
+//       paragraph's first line (first) that this would move below
+//       its part's bot (the frame's bottom, paragraph ys: the
+//       paragraph starts its frame, so the line could go on no other
+//       page; ./WrapWant) stays at y, lo..hi (P12a fix C1)
+//   MIN_FREE 48 px (half an inch), POLY 21600, MAX_SKIP 64,
+//   MIN_POINTS 3, MAX_POINTS 4096, EPS 0.01 px: a band that only
+//   touches an exclusion (within EPS) does not meet it (P12a fix C1)
+//
+// Pure: no desktop services.
+
+export {exclusionsOf, POLY, MIN_POINTS, MAX_POINTS} from './LineExcl';
+export const MIN_FREE = 48, MAX_SKIP = 64, EPS = 0.01;
+const NONE = Object.freeze([]);
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** Polygon pts' x extent over the band a..b (page y), or null. */
+function polySpan(pts, a, b) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[(i + 1) % pts.length];
+    if (Math.max(y1, y2) < a || Math.min(y1, y2) > b) continue;
+    if (y1 === y2) {
+      lo = Math.min(lo, x1, x2);
+      hi = Math.max(hi, x1, x2);
+      continue;
+    }
+    for (const yy of [Math.max(a, Math.min(y1, y2)),
+      Math.min(b, Math.max(y1, y2))]) {
+      const x = x1 + (x2 - x1) * (yy - y1) / (y2 - y1);
+      lo = Math.min(lo, x);
+      hi = Math.max(hi, x);
+    }
+  }
+  return lo <= hi ? [lo, hi] : null;
+}
+
+/** The x-range exclusion e blocks on the band a..b, or null. */
+function blockOf(e, a, b) {
+  if (e.y1 <= a + EPS || e.y0 >= b - EPS) return null;
+  if (!e.poly) return [e.x0, e.x1];
+  const s = polySpan(e.poly, a, b);
+  return s ? [s[0] - e.dl, s[1] + e.dr] : null;
+}
+
+/** See the header. */
+export function shapeFor(excls, top, left = 0, win = null) {
+  const ex = Array.isArray(excls) ? excls : NONE;
+  const T = fin(top) ? top : 0, X = fin(left) ? left : 0;
+  const out = win && fin(win.y0) && fin(win.y1);
+  const shape = (y, h, lo = -Infinity, hi = Infinity) => {
+    const a = T + y, b = a + Math.max(h, 0), L0 = X + lo, H0 = X + hi;
+    if (out && (a < win.y0 || a >= win.y1)) return [lo, hi];
+    let blocked = null;
+    for (const e of ex) {
+      const s = blockOf(e, a, b);
+      if (!s || s[1] <= L0 || s[0] >= H0) continue;
+      if (e.side === 'none') return null;
+      if (e.side === 'left') s[1] = Infinity;
+      if (e.side === 'right') s[0] = -Infinity;
+      (blocked || (blocked = [])).push(s);
+    }
+    if (!blocked) return [lo, hi];
+    blocked.sort((p, q) => p[0] - q[0]);
+    let best = null, at = L0;
+    for (const [s0, s1] of [...blocked, [H0, H0]]) {
+      const g1 = Math.min(s0, H0);
+      if (g1 > at && (!best || g1 - at > best[1] - best[0])) {
+        best = [at, g1];
+      }
+      at = Math.max(at, s1);
+    }
+    if (!best || best[1] - best[0] < MIN_FREE) return null;
+    return [best[0] - X, best[1] - X];
+  };
+  shape.next = (y, h) => {
+    const a = T + y, b = a + Math.max(h, 1);
+    if (out && (a < win.y0 || a >= win.y1)) return NaN;
+    let n = Infinity;
+    for (const e of ex) {
+      if (e.y1 <= a + EPS || e.y0 >= b - EPS) continue;
+      n = Math.min(n, e.poly ? Math.min(e.y1, b) : e.y1);
+    }
+    return n < Infinity ? n - T : NaN;
+  };
+  return shape;
+}
+
+/** See the header. */
+export const r2 = (v) => Math.round(v * 100 + 1e-4) / 100;
+
+/** See the header. */
+export function relExcl(e, x, y) {
+  return Object.freeze({x0: r2(e.x0 - x), x1: r2(e.x1 - x),
+    y0: r2(e.y0 - y), y1: r2(e.y1 - y), dl: r2(e.dl), dr: r2(e.dr),
+    side: e.side, poly: e.poly ? Object.freeze(e.poly.map((q) =>
+      Object.freeze([r2(q[0] - x), r2(q[1] - y)]))) : null});
+}
+
+/** See the header. */
+export const exclSig = (e) => [e.x0, e.x1, e.y0, e.y1, e.dl, e.dr]
+  .join(',') + e.side + (e.poly ? e.poly.join(';') : '');
+
+/** See the header. */
+export function shapeOf(parts) {
+  if (!Array.isArray(parts) || !parts.length) return undefined;
+  const ss = parts.map((pt) => [pt, shapeFor(pt.excls, 0, 0,
+    Number.isFinite(pt.y0) ? pt : null)]);
+  const find = (y) => {
+    for (const [pt, s] of ss) {
+      if (y >= pt.y0 && y < pt.y1) return s;
+    }
+    return null;
+  };
+  const shape = (y, h, lo = -Infinity, hi = Infinity) => {
+    const s = find(y);
+    return s ? s(y, h, lo, hi) : [lo, hi];
+  };
+  shape.next = (y, h) => {
+    const s = find(y);
+    return s ? s.next(y, h) : NaN;
+  };
+  shape.bot = (y) => {
+    const pt = ss.find(([p]) => y >= p.y0 && y < p.y1);
+    return pt && Number.isFinite(pt[0].bot) ? pt[0].bot : Infinity;
+  };
+  return shape;
+}
+
+/** See the header. */
+export function spanAt(shape, y, h, lo, hi, first = false) {
+  const hh = h > 1 ? h : 1, y0 = y;
+  const bot = first && shape.bot ? shape.bot(y) : Infinity;
+  let out = null;
+  for (let n = 0; n < MAX_SKIP && !out; n++) {
+    const s = shape(y, hh, lo, hi);
+    if (s) out = {y, x0: Math.max(lo, s[0]), x1: Math.min(hi, s[1])};
+    const ny = s ? y : shape.next(y, hh);
+    if (!(ny > y)) break;
+    y = ny;
+  }
+  if (y > y0 && y + hh > bot) return {y: y0, x0: lo, x1: hi};
+  return out || {y, x0: lo, x1: hi};
+}

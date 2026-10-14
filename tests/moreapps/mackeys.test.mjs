@@ -70,7 +70,8 @@ describe('MacKeys', () => {
     assert.equal(keymap.labelFor('pageBreak'), 'Ctrl+Enter');
     assert.equal(macLabel(keymap.labelFor('pageBreak'), true),
       'Ctrl+Enter');
-    for (const id of ['sectionNext', 'sectionContinuous']) {
+    for (const id of ['sectionNext', 'sectionContinuous', 'sectionEven',
+      'sectionOdd']) {
       assert.equal(macLabel(keymap.labelFor(id), true), '');
     }
     // Ctrl+K: hyperlink (Cmd+K on a Mac); Ctrl+Shift+F5 bookmark

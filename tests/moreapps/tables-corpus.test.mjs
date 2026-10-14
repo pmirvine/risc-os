@@ -11,7 +11,9 @@
 //     (./tbl-canon.mjs canonTbl); a difference fails naming the file,
 //     the table's model path and the place in it;
 // (c) the reasons of the tables kept Opaque (TblRead's tableNote, at
-//     every depth) equal corpus-expected.json's opaqueTables (R1),
+//     every depth; not counted for the files in corpus/handoff, which
+//     our generators wrote: the pin is hermetic, P5.3) equal
+//     corpus-expected.json's opaqueTables (R1),
 //     which names every reason (R3's and depth), 0 for those the
 //     corpus has none of (stray, ns, span... : the C1 fix wave);
 // (d) every Opaque table (top level, or a cell block of a typed one)
@@ -170,7 +172,9 @@ describe('corpus tables (typed): equivalence, histogram, Opaque bytes', {
       const tops = tablesOf(doc);
       if (!tops.length) continue;
       n.files++;
-      for (const why of notes) hist[why] = (hist[why] || 0) + 1;
+      if (!name.startsWith('handoff/')) {
+        for (const why of notes) hist[why] = (hist[why] || 0) + 1;
+      }
       try {
         if (ALL || hash(name) % 10 === 0) {
           await checkFile(bytes, name);

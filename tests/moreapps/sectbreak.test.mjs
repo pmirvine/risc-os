@@ -49,7 +49,8 @@ function cmd(id, d, sel, t = new Typing(d)) {
 describe('SectBreak: the commands and their labels', () => {
   it('Keymap rows of menu Insert, no keys', () => {
     for (const [id, label] of [['sectionNext', 'Next page'],
-      ['sectionContinuous', 'Continuous']]) {
+      ['sectionContinuous', 'Continuous'], ['sectionEven', 'Even page'],
+      ['sectionOdd', 'Odd page']]) {
       const row = keymap.row(id);
       assert.equal(row.menu, 'Insert');
       assert.equal(row.label, label);
@@ -99,6 +100,15 @@ describe('SectBreak: inserting', () => {
       assert.ok(deepEqual(a.raw, old.raw) && deepEqual(b.raw, old.raw));
       valid(d);
     });
+  it('Even page and Odd page (P4.4): the next section\'s type', () => {
+    const d = mk(['abcdef', 'g']);
+    cmd('sectionOdd', d, C(d, 0, 3));
+    assert.deepEqual(secTexts(d), [['abc'], ['def', 'g']]);
+    assert.deepEqual(types(d), [undefined, 'oddPage']);
+    const e = mk(['abcdef', 'g']);
+    cmd('sectionEven', e, C(e, 1, 0));
+    assert.deepEqual(types(e), [undefined, 'evenPage']);
+  });
   it('at the end: the paragraph ends the section, caret in the new ' +
     'empty one', () => {
     const d = mk(['abc', 'xyz']);

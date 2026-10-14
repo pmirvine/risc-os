@@ -18,7 +18,7 @@ const Q = (o = {}) => ({align: 'left', indentLeft: 0, indentRight: 0,
   indentFirst: 0, spaceBefore: 0, spaceAfter: 160,
   lineSpacing: {line: 240, rule: 'auto'}, contextual: false,
   keepNext: false, keepLines: false, widowControl: true,
-  pageBreakBefore: false, ...o});
+  pageBreakBefore: false, suppressLineNumbers: false, ...o});
 /** The dialog as untouched, then with changes. */
 const run = (q, over = {}) => patch({...fill(q), ...over}, q);
 
@@ -30,7 +30,8 @@ describe('ParaPatch.fill', () => {
     assert.deepEqual(v, {align: 'both', left: 720, right: 360,
       special: 'hanging', by: 360, before: 240, after: 160,
       spacing: 'double', at: undefined, noctx: true, widow: true,
-      keepnext: true, keeplines: false, pagebreak: false});
+      keepnext: true, keeplines: false, pagebreak: false,
+      nolines: false});
     assert.deepEqual(Object.keys(v).sort(), [...NAMES].sort());
   });
   it('first line, none, multiple, at least, exactly', () => {

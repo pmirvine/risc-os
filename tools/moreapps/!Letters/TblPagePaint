@@ -1,0 +1,95 @@
+// TblPagePaint - a table's fragment on a page of Print layout drawn
+// (Batch D, D8, P4.2). ./DocPaint calls it for a table fragment with
+// rows (./PrintFrags: r0, r1, from?, cuts?, heads?).
+//
+//   paintFrag(L, g, it, f, rect)  in the fragment's coordinates
+//     (./DocPaint has moved g by f's dx, dy and cut it to the frame;
+//     rect {x0, y0, x1, y1} in those coordinates): the pieces of f
+//     (./TblPieces piecesOf) meeting rect, in order:
+//     - the repeated header rows at the frame's top, drawn from the
+//       same row layout (g moved by their sh; no new item, PG10);
+//     - runs of whole rows as ./TablePaint paintRows draws them, a
+//       merged cell reaching past the run shown only beside it
+//       (./PageCells mergeCut, review P4 I3);
+//     - each part of a row cut across pages: its cells' shading on
+//       the part's box, each cell's content (a continue cell: its
+//       merge's slice) moved by its own shift and cut to what the
+//       part shows (top-aligned: a vAlign
+//       center or bottom cell too, PG8), then the row's borders on
+//       the part's box (./TablePaint frameRow): the cut edge is the
+//       row's bottom border on the first part and its top border on
+//       the next (PG9); an empty rest (a row cut to its content,
+//       ./PageRows) is not drawn
+//     Records it.painted = [r0, r1 - 1] (the page's own rows). A
+//     floating table not placed (./TblFloat isFloating, the frag not
+//     float: in the flow, P12.6) gets ./TablePaint's dashed outline
+//     round its pieces on the page; a placed one none.
+//
+// Draws on the context it is given; imports no desktop services.
+import {piecesOf} from './TblPieces';
+import {paintRows, paintTable, frameRow, outline} from './TablePaint';
+import {isFloating} from './TblFloat';
+import {paintColumn} from './TblCellPaint';
+import {mergeCut} from './PageCells';
+
+const moved = (r, d) => (d ? {x0: r.x0, y0: r.y0 - d, x1: r.x1,
+  y1: r.y1 - d} : r);
+const meets = (p, r) => p.y < r.y1 && p.y + p.h > r.y0;
+
+/** Rows a..b (whole), moved down by sh. */
+function run(L, g, it, a, b, sh, rect) {
+  const cut = (c) => mergeCut(it, c, a, b);
+  if (!sh) {
+    paintRows(L, g, it, a, b, rect, cut);
+    return;
+  }
+  g.save();
+  g.translate(0, sh);
+  paintRows(L, g, it, a, b, moved(rect, sh), cut);
+  g.restore();
+}
+
+/** A part p of a cut row (see the header). */
+function part(L, g, it, p, rect) {
+  frameRow(L, g, it, p.r, rect, p.y, p.h, 'shade');
+  const cells = it.rows[p.r].cells;
+  cells.forEach((c, i) => {
+    const q = p.cells[i];
+    if (!q || !(q.y1 > q.y0)) return;
+    g.save();
+    g.beginPath();
+    g.rect(c.x, q.y0, c.w, q.y1 - q.y0);
+    g.clip();
+    if (q.sh) g.translate(0, q.sh);
+    paintColumn(L, g, q.col, moved(rect, q.sh), paintTable);
+    g.restore();
+  });
+  frameRow(L, g, it, p.r, rect, p.y, p.h, 'edges');
+}
+
+/** See the header. */
+export function paintFrag(L, g, it, f, rect) {
+  const ps = piecesOf(it, f);
+  for (let i = 0; i < ps.length;) {
+    const p = ps[i];
+    if (p.cells) {
+      if (p.h > 0 && meets(p, rect)) part(L, g, it, p, rect);
+      i++;
+      continue;
+    }
+    let j = i;
+    while (j + 1 < ps.length && !ps[j + 1].cells &&
+      !ps[j + 1].rep === !p.rep && ps[j + 1].r === ps[j].r + 1) j++;
+    let a = i, b = j;
+    while (a <= b && !meets(ps[a], rect)) a++;
+    while (b >= a && !meets(ps[b], rect)) b--;
+    if (a <= b) run(L, g, it, ps[a].r, ps[b].r, p.sh, rect);
+    i = j + 1;
+  }
+  const own = ps.filter((p) => !p.rep);
+  if (own.length) it.painted = [own[0].r, own[own.length - 1].r];
+  if (ps.length && !f.float && isFloating(it.block.tblPr, L.ns)) {
+    const top = Math.min(...ps.map((p) => p.y));
+    outline(g, it, top, Math.max(...ps.map((p) => p.y + p.h)) - top);
+  }
+}

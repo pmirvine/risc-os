@@ -1,0 +1,106 @@
+// FieldPair - pasted blocks keep only whole fields (Batch D P8 fix
+// I3): a copy may take half a complex field (Copy does not make a
+// selection whole: ./FieldEdit whole), and its marks would be left
+// without a partner in the document pasted into.
+//
+//   paired(blocks) -> blocks  blocks (./ClipSlice's shape: tables at
+//       any depth) without the w:fldChar marks that have no partner
+//       among them: a separate or end with no begin open before it,
+//       a second separate, a begin never ended (and its separate and
+//       w:instrText); the same array when nothing is dropped, else
+//       new paragraphs (copy-on-write, tables too). A U+FFFC holding
+//       several marks (a w:r kept whole) is dropped only when all of
+//       them are; a w:fldSimple is whole by itself
+//
+// The marks: ./FieldMarks; flow order: ./Walk forEachIn. Pure: no
+// desktop services.
+import {marks} from './FieldMarks';
+import {forEachIn} from './Walk';
+import {cut, join} from './OpsUtil';
+
+/** Map paragraph -> the offsets of its marks without a partner. */
+function orphans(blocks) {
+  const st = [], bad = new Map(), keep = new Map();
+  const note = (m, ok) => {
+    const k = ok ? keep : bad;
+    if (!k.has(m.p)) k.set(m.p, new Set());
+    k.get(m.p).add(m.off);
+  };
+  const ok = (fr) => [fr.b, fr.s, ...fr.i].filter(Boolean)
+    .forEach((m) => note(m, true));
+  forEachIn(blocks, [], (b) => {
+    if (!b || b.type !== 'p') return true;
+    for (const m of marks(b)) {
+      const x = {p: b, off: m.off}, top = st[st.length - 1];
+      if (m.t === 'b') st.push({b: x, s: null, i: []});
+      else if (m.t === 'i' && top && !top.s) top.i.push(x);
+      else if (m.t === 's' && top && !top.s) top.s = x;
+      else if (m.t === 'e' && top) {
+        ok(st.pop());
+        note(x, true);
+      } else if (m.t === 's' || m.t === 'e') note(x, false);
+    }
+    return true;
+  });
+  for (const fr of st) {
+    [fr.b, fr.s, ...fr.i].filter(Boolean).forEach((m) => note(m,
+      false));
+  }
+  for (const [p, offs] of bad) {
+    const k = keep.get(p);
+    if (k) for (const o of k) offs.delete(o);
+    if (!offs.size) bad.delete(p);
+  }
+  return bad;
+}
+
+/** p without the characters at offs. */
+function without(p, offs) {
+  const at = [...offs].sort((a, b) => a - b), pieces = [];
+  let a = 0;
+  for (const k of at) {
+    pieces.push(cut(p, a, k));
+    a = k + 1;
+  }
+  pieces.push(cut(p, a, p.text.length));
+  return {...p, ...join(...pieces)};
+}
+
+/** blocks with the paragraphs of `by` replaced (copy-on-write). */
+function swap(blocks, by) {
+  let out = blocks;
+  blocks.forEach((b, j) => {
+    let n = b;
+    if (b && b.type === 'p' && by.has(b)) n = by.get(b);
+    else if (b && b.type === 'tbl' && Array.isArray(b.rows)) {
+      let rows = b.rows;
+      b.rows.forEach((row, r) => {
+        let cells = row.cells;
+        row.cells.forEach((c, k) => {
+          const bs = swap(c.blocks, by);
+          if (bs === c.blocks) return;
+          if (cells === row.cells) cells = [...cells];
+          cells[k] = {...c, blocks: bs};
+        });
+        if (cells === row.cells) return;
+        if (rows === b.rows) rows = [...rows];
+        rows[r] = {...row, cells};
+      });
+      if (rows !== b.rows) n = {...b, rows};
+    }
+    if (n === b) return;
+    if (out === blocks) out = [...blocks];
+    out[j] = n;
+  });
+  return out;
+}
+
+/** See the header. */
+export function paired(blocks) {
+  if (!Array.isArray(blocks) || !blocks.length) return blocks;
+  const bad = orphans(blocks);
+  if (!bad.size) return blocks;
+  const by = new Map();
+  for (const [p, offs] of bad) by.set(p, without(p, offs));
+  return swap(blocks, by);
+}

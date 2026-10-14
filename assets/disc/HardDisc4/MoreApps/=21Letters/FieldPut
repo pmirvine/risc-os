@@ -1,0 +1,232 @@
+// FieldPut - how one field's stored result is replaced by a value
+// (Batch D, D19, PG22): the plan of the change, its ops and where a
+// position goes. ./FieldCmd chooses the fields and their values.
+//
+//   planOf(doc, f, value) -> Plan | null  for ./FieldScan Field f of
+//       doc (a body, or a ./StoryFacade view: paths [0, i, ...]),
+//       null when its result cannot be replaced without losing what
+//       is not understood (left as it is):
+//       a complex field: its separate and end fldChars level 'r'
+//         inlines of their own, both in paragraphs of one container
+//         (a section or a cell) with only paragraphs between, and no
+//         U+FFFC in the result (another field, a bookmark, a picture,
+//         a kept node...). The value goes in the result's first run's
+//         format (an empty result: the separate's); with
+//         \* MERGEFORMAT (any case) per character: character k in the
+//         format of the old result's character k, the last one's past
+//         its end (Word's approximation, PG22). A result across
+//         paragraphs becomes one: the paragraphs merged into the
+//         separate's (its id, pPr kept). A field with no separate
+//         gets one (a new w:fldChar, the end's names and format)
+//         and the value before its end
+//       a fldSimple: a new node, its name, attributes, w:instr and
+//         every child but its w:r kept; the w:rs (only w:rPr and w:t
+//         in each, else null) replaced by runs of the value in the
+//         first one's w:rPr (MERGEFORMAT: per character, as above)
+//   Plan {at, off, same, ops (the ops of the change in order: path
+//       at), map(pos) -> pos}  same: the value is what is stored
+//       already (nothing to do); off: where the result starts (the
+//       order the plans are applied in: the last first, so each one's
+//       paths and offsets hold when it is applied)
+//
+// The value is plain text: control characters and U+FFFC dropped,
+// tabs and line ends spaces. Pure: no desktop services.
+import {at as blockAt} from './Walk';
+import {parse} from './FieldParse';
+import {midPair} from './ModelCheck';
+
+const OBJ = '\ufffc';
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => (isObj(n) && typeof n.name === 'string'
+  ? n.name.slice(n.name.indexOf(':') + 1) : '');
+const prefix = (n) => n.name.slice(0, n.name.indexOf(':') + 1);
+
+/** The value as result text (see the header). */
+function plainValue(s) {
+  const t = String(s).replace(/[\t\n\r]/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\ufffc]/g, '');
+  return t.toWellFormed ? t.toWellFormed() : t;
+}
+
+/** f's instruction has \* MERGEFORMAT. */
+const mergeOf = (f) => parse(f.instr).switches.some((x) =>
+  x.sw === '\\*' && typeof x.arg === 'string' &&
+  x.arg.toUpperCase() === 'MERGEFORMAT');
+
+/** Runs [{start, end, fmt}] of value from segments [{len, fmt}] (the
+ *  first's for all, or per character with merge); fallback fmt when
+ *  there are none. */
+export function spread(segs, value, merge, fallback) {
+  const n = value.length;
+  if (!n) return [];
+  const live = segs.filter((s) => s.len > 0);
+  if (!live.length) return [{start: 0, end: n, fmt: fallback}];
+  if (!merge) return [{start: 0, end: n, fmt: live[0].fmt}];
+  const out = [];
+  let k = 0;
+  live.forEach((s, j) => {
+    if (k >= n) return;
+    let e = j === live.length - 1 ? n : Math.min(n, k + s.len);
+    if (e < n && midPair(value, e)) e++;
+    if (e > k) out.push({start: k, end: e, fmt: s.fmt});
+    k = e;
+  });
+  return out;
+}
+
+const fmtOf = (r) => (r.rStyle === undefined ? {rPr: r.rPr}
+  : {rPr: r.rPr, rStyle: r.rStyle});
+const runAt = (q, k) => q.runs.find((x) => x.start <= k && k < x.end);
+/** p's inline at k is a level 'r' w:fldChar of its own. */
+const ownChar = (q, k) => {
+  const x = isObj(q.inlines) ? q.inlines[k] : null;
+  return isObj(x) && x.level === 'r' && local(x.node) === 'fldChar';
+};
+
+/** Segments of q's text [a, b): [{len, fmt}], or null on a U+FFFC. */
+function segsOf(q, a, b, out) {
+  if (q.text.slice(a, b).includes(OBJ)) return null;
+  for (const x of q.runs) {
+    const s = Math.max(a, x.start), e = Math.min(b, x.end);
+    if (e > s) out.push({len: e - s, fmt: fmtOf(x)});
+  }
+  return out;
+}
+
+/** The paragraphs from path a to path b of one container, or null. */
+function parasOf(doc, a, b) {
+  const n = a.length;
+  if (b.length !== n || b[n - 1] < a[n - 1]) return null;
+  for (let k = 0; k < n - 1; k++) if (a[k] !== b[k]) return null;
+  const out = [];
+  for (let i = a[n - 1]; i <= b[n - 1]; i++) {
+    const q = blockAt(doc, [...a.slice(0, -1), i]);
+    if (!q || q.type !== 'p') return null;
+    out.push(q);
+  }
+  return out;
+}
+
+/** A position map for [a in ids[0], c in the last id) replaced by n
+ *  characters (ids: the paragraphs merged, in order). */
+const mover = (ids, a, c, n) => (pos) => {
+  if (!isObj(pos)) return pos;
+  const k = ids.indexOf(pos.id), last = ids.length - 1;
+  if (k < 0 || (k === 0 && pos.off < a)) return pos;
+  if (k === last && pos.off >= c)
+    return {...pos, id: ids[0], off: a + n + pos.off - c};
+  return {...pos, id: ids[0], off: a + n};
+};
+
+/** The plan of a complex field with a separate (see the header). */
+function complex(doc, f, value) {
+  const qs = parasOf(doc, f.sep.at, f.end.at);
+  if (!qs || !ownChar(qs[0], f.sep.off) ||
+    !ownChar(qs[qs.length - 1], f.end.off)) return null;
+  const a = f.sep.off + 1, c = f.end.off, last = qs.length - 1;
+  const segs = [];
+  let old = '', del = 0;
+  for (let k = 0; k <= last; k++) {
+    const q = qs[k], s = k ? 0 : a, e = k === last ? c : q.text.length;
+    if (!segsOf(q, s, e, segs)) return null;
+    old += (k ? '\r' : '') + q.text.slice(s, e);
+    del += e - s;
+  }
+  const at = f.sep.at;
+  const sepFmt = fmtOf(runAt(qs[0], a - 1));
+  const runs = spread(segs, value, mergeOf(f), sepFmt)
+    .map(({start, end, fmt}) => ({start, end, ...fmt}));
+  const ops = [];
+  for (let k = 0; k < last; k++) {
+    ops.push({op: 'mergeBlock', block: at});
+  }
+  ops.push({op: 'spliceText', block: at, at: a, del,
+    content: {text: value, runs, inlines: {}}});
+  return {at, off: a, same: old === value, ops,
+    map: mover(qs.map((q) => q.id), a, c, value.length)};
+}
+
+/** The plan of a complex field with no separate: one put in. */
+function noSep(doc, f, value) {
+  const q = blockAt(doc, f.end.at);
+  if (!q || q.type !== 'p' || !ownChar(q, f.end.off)) return null;
+  const e = q.inlines[f.end.off].node, pre = prefix(e);
+  const type = e.attrs.find((x) => typeof x[0] === 'string' &&
+    x[0].slice(x[0].indexOf(':') + 1) === 'fldCharType');
+  const node = {name: pre + 'fldChar',
+    attrs: [[type ? type[0] : pre + 'fldCharType', 'separate']],
+    children: []};
+  const text = OBJ + value, c = f.end.off;
+  const content = {text, runs: [{start: 0, end: text.length,
+    ...fmtOf(runAt(q, c))}], inlines: {0: {kind: 'raw', level: 'r',
+    node}}};
+  return {at: f.end.at, off: c, same: false,
+    ops: [{op: 'spliceText', block: f.end.at, at: c, del: 0, content}],
+    map: mover([q.id], c, c, text.length)};
+}
+
+/** The new w:fldSimple node holding value, or null. */
+function simpleNode(f, value) {
+  const node = f.simple.node, kids = node.children || [];
+  const rs = kids.filter((x) => local(x) === 'r');
+  let tName = null;
+  const segs = [];
+  for (const r of rs) {
+    let len = 0, rPr = null;
+    for (const c of r.children || []) {
+      if (typeof c === 'string' && !c.trim()) continue;
+      const l = local(c);
+      if (l === 'rPr' && !rPr) rPr = c;
+      else if (l === 't') {
+        tName = tName || c.name;
+        for (const s of c.children || []) {
+          if (typeof s !== 'string') return null;
+          len += s.length;
+        }
+      } else return null;
+    }
+    segs.push({len, fmt: {r, rPr}});
+  }
+  const first = rs[0] ? {r: rs[0], rPr: segs[0].fmt.rPr}
+    : {r: null, rPr: null};
+  const pre = prefix(first.r || node);
+  const runs = spread(segs, value, mergeOf(f), first).map(({start,
+    end, fmt}) => {
+    const s = value.slice(start, end);
+    const t = {name: tName || pre + 't', attrs: /^\s|\s$/.test(s)
+      ? [['xml:space', 'preserve']] : [], children: [s]};
+    return {name: fmt.r ? fmt.r.name : pre + 'r',
+      attrs: fmt.r ? fmt.r.attrs : [],
+      children: fmt.rPr ? [fmt.rPr, t] : [t]};
+  });
+  const children = [];
+  let put = false;
+  for (const c of kids) {
+    if (local(c) !== 'r') children.push(c);
+    else if (!put) children.push(...runs), put = true;
+  }
+  if (!put) children.push(...runs);
+  return {name: node.name, attrs: node.attrs, children};
+}
+
+/** The plan of a fldSimple (see the header). */
+function simple(doc, f, value) {
+  const q = blockAt(doc, f.begin.at), k = f.begin.off;
+  const x = q && q.type === 'p' && isObj(q.inlines) ? q.inlines[k]
+    : null;
+  if (!isObj(x) || x.node !== f.simple.node) return null;
+  const node = simpleNode(f, value);
+  if (!node) return null;
+  return {at: f.begin.at, off: k, same: x.text === value,
+    ops: [{op: 'replaceText', block: f.begin.at, at: k, del: 1,
+      ins: OBJ, inlines: {0: {...x, node, text: value}}}],
+    map: (pos) => pos};
+}
+
+/** See the header. */
+export function planOf(doc, f, value) {
+  if (!isObj(f) || typeof value !== 'string') return null;
+  const v = plainValue(value);
+  if (f.simple) return simple(doc, f, v);
+  return f.sep ? complex(doc, f, v) : noSep(doc, f, v);
+}

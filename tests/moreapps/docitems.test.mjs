@@ -108,11 +108,16 @@ describe('DocItems reuse key', () => {
   it('reuseKey / sameKey / sameMark', () => {
     const L = laid(mkDoc(TEXTS));
     const it0 = L.items[0], k = reuseKey(it0);
-    assert.deepEqual(Object.keys(k), ['block', 'list', 'mark']);
+    assert.deepEqual(Object.keys(k), ['block', 'list', 'mark', 'level',
+      'marker', 'first']);
     assert.equal(k.block, it0.block);
+    assert.equal(k.level, undefined, 'Outline\'s only (P13.2)');
     assert.ok(sameKey(k, reuseKey(it0)));
     assert.ok(!sameKey(k, reuseKey(L.items[1])));
     assert.ok(!sameKey(k, {...k, mark: {type: 'nextPage'}}));
+    assert.ok(!sameKey(k, {...k, level: 9}));
+    assert.ok(!sameKey({...k, marker: '+'}, {...k, marker: '-'}));
+    assert.ok(!sameKey({...k, first: true}, {...k, first: false}));
     assert.ok(sameMark(null, null));
     assert.ok(sameMark({type: 'x'}, {type: 'x'}));
     assert.ok(!sameMark({type: 'x'}, null));

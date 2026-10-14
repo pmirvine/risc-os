@@ -12,7 +12,11 @@
 // after it, a caret (affinity 'down', no goalX) after what was put
 // in, and makes one undo step (one d.atomic group: a command that
 // fails changes nothing): a selection is deleted first (./EditRange)
-// in the same step; section breaks are kept (see there). Nothing to
+// in the same step; section breaks are kept (see there). A field
+// result shown computed (./FieldEdit guard, D18, PG21): text typed
+// at its edge goes before or after the field; into it, or over a
+// selection that takes part of it, is refused: typeText gives sel
+// back (the window beeps), Enter, line break and tab null. Nothing to
 // do (no text left, a position not in the document, a document with
 // no blocks at all): sel is returned and nothing changes.
 //
@@ -61,6 +65,7 @@ import {fmtAt} from './OpsText';
 import {applyTo} from './Pending';
 import {deleteRange, paraBy} from './EditRange';
 import {splitAt} from './EditPara';
+import {guard} from './FieldEdit';
 
 const CTRL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\ufffc]/g;
 const STOP = /[\t\n\ufffc]/;
@@ -81,8 +86,11 @@ export function clean(text) {
  * block's off 0 the caret stays there.
  */
 function edit(d, sel, fn, opts, enter = false) {
-  const o = orderedPos(d.doc, sel);
+  let o = orderedPos(d.doc, sel);
   if (!o) return sel;
+  const g = guard(d.doc, sel, o);
+  if (!g) return null;
+  if (g !== sel) o = orderedPos(d.doc, sel = g);
   const fmt = collapsed(sel) ? null : firstFmt(o);
   let out = null;
   d.atomic(() => {
@@ -163,7 +171,7 @@ export function typeText(d, sel, text, opts) {
   opts = opts || {};
   const t = clean(text);
   if (!t) return sel;
-  if (t === '\n') return splitPara(d, sel);
+  if (t === '\n') return splitPara(d, sel) || sel;
   const over = !!opts.overwrite && collapsed(sel) && !t.includes('\n');
   const n = over ? graphemes(t).length - 1 : 0;
   const keyed = opts.key !== undefined && opts.key !== null &&
@@ -172,7 +180,7 @@ export function typeText(d, sel, text, opts) {
     const del = over ? overSpan(loc.b.text, off, n) : 0;
     return put(d, loc, off, t, withFmt(opts, fmt, loc.b, off, del),
       del);
-  }, keyed ? {coalesce: opts.key} : undefined);
+  }, keyed ? {coalesce: opts.key} : undefined) || sel;
 }
 
 /**

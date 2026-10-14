@@ -1,0 +1,226 @@
+// AnchorPlace - floating pictures placed on their pages (Batch D
+// P12.2, D26): the one rule for where a float goes (pictures, and
+// floating tables, R5, P12.6, by the same boxes: ./AnchorTbl).
+//
+//   placeFloats(P, i) -> [Float] (frozen; [] for no page i, a blank
+//       page or none): page i of ./Pages P, after its frames
+//       (P.framesOf: ./PageFrames), every understood anchor (a
+//       Print layout galley's item of kind 'anchor', ./PicLine
+//       picToken; DocLayout opts.floats) on a line of the page:
+//     Float {pic, id, off, x, y, w, h, behind, z, wrap, cell, bx, by}
+//       pic    ./PicRead pictureOf's result with w, h and floating
+//              false (./PicPaint draws it so: no dashed outline)
+//       id, off  the anchor's paragraph and offset
+//       x, y   its top left in px from the page's top left edge
+//       w, h   its extent in px (never fitted to the column)
+//       behind behindDoc; z its relativeHeight; wrap anchor.wrap
+//       cell   the anchor is in a table's cell
+//       bx, by the top left of its box (relativeFrom), px as x, y:
+//              offset = (x - bx) x 9525 (P12.5, ./AnchorMove)
+//     in drawing order: the behind ones, then the others, each by z
+//     (equal z: in document order).
+//     and each floating table placed on the page (P12.6, R5: a frag
+//     with float true, ./PageFrames), Float {tbl, x, y, w, h,
+//     behind, z, cell, tfloat, bx, by} (./AnchorTbl's rules), z -1
+//     (text wraps round it: ./LineShape, P12.7); the pictures in its
+//     cells are placed as in any table's, moved with it.
+//   floatsOn(P, pg) -> the same for Page pg of P (./Pages floatsOf:
+//       Page.floats, cached per Page)
+//   cellsOn(P, pg, visit)  each paragraph in a cell of a table on
+//       Page pg, where the page shows it, given to visit(x, top,
+//       left, fr, ok, root) (P12a fix I5, ./WrapWant): its item, the
+//       page y of its galley top and page x of its column's left,
+//       the frame, ok(y): its line at page y is shown on the page
+//       (a row split: the part here), root the root table item
+//
+// A line is the page's when the page's frame holds it (a cut line
+// continued at a frame's top is its first page's). Horizontal box
+// (relativeFrom): character the anchor's place in its line (w 0);
+// column the frame (the column) holding the line; margin the text
+// area (left margin .. page width less the right); page the page;
+// leftMargin / rightMargin the margin; insideMargin the left margin
+// on an odd page, the right on an even one, outsideMargin the
+// reverse. align left / center / right in the box; inside: left on
+// an odd page, right on an even one; outside the reverse; else
+// box's x + posOffset (EMU / 9525). Vertical box: paragraph the
+// anchor paragraph's top on the page (its item's top; a paragraph
+// begun on an earlier page or column: the top of its first line
+// here; h 0); line the anchor's line; margin top margin .. page
+// height less the bottom margin; page; topMargin; bottomMargin.
+// align top / center / bottom (inside as top, outside as bottom:
+// own reading); else box's y + posOffset. Kept on the page (PG30):
+// a float below the page bottom moves up to end there, then one
+// above the top down to it (taller than the page: its top at 0);
+// x is not moved. layoutInCell in a table's cell: every horizontal
+// box but character and page, and every vertical one but
+// paragraph, line and page, is the cell's text area (own reading
+// of "positioned in the cell"; a nested table's: the innermost
+// cell). Margins are the section's (./SectGeom px: the body is not
+// moved by a header for this). The boxes are ./AnchorBox's. Pure:
+// no desktop services.
+import {geomAt, factsOf} from './PageFill';
+import {hBox, vBox, along, fin} from './AnchorBox';
+import {tblFloat} from './AnchorTbl';
+import {isTable} from './PageRows';
+import {pieceOf} from './TblPieces';
+import {keyOf} from './ColMemo';
+
+const NONE = Object.freeze([]);
+
+const V_ALIGN = {inside: 'top', outside: 'bottom'};
+
+/** The float of anchor item a (at: where its line is) on page c. */
+function place(c, a, at) {
+  const info = a.anchor.info, an = info.anchor;
+  const w = a.anchor.w, h = a.anchor.h;
+  const inCell = at.cell && an.layoutInCell ? at
+    : {...at, cell: null, cellV: null};
+  const hb = hBox(c, an.posH.from, inCell);
+  const vb = vBox(c, an.posV.from, inCell);
+  if (!hb || !vb) return;
+  const ha = an.posH.align, va = an.posV.align;
+  const x = ha === 'inside' || ha === 'outside'
+    ? ((ha === 'inside') === c.odd ? hb.x : hb.x + hb.w - w)
+    : along(an.posH, hb, 'x', w, 'left', 'right');
+  let y = along({...an.posV, align: V_ALIGN[va] || va}, vb, 'y', h,
+    'top', 'bottom');
+  if (y + h > c.pg.h) y = c.pg.h - h;
+  if (y < 0) y = 0;
+  if (!fin(x) || !fin(y)) return;
+  c.out.push(Object.freeze({pic: Object.freeze({...info, w, h,
+    floating: false}), id: at.id, off: a.from, x, y, w, h,
+  behind: !!an.behindDoc, z: an.relativeHeight || 0, wrap: an.wrap,
+  cell: !!at.inCell, bx: hb.x, by: vb.y}));
+}
+
+/** The anchors of paragraph item it's lines l0..l1 - 1, line j's
+ *  top on the page at y0 + lines[j].y (para: its paragraph top;
+ *  ok(j, y): the line is the page's). */
+function lines(c, it, l0, l1, y0, para, fr, more, ok) {
+  const ls = it.lines || NONE;
+  for (let j = l0; j < Math.min(l1, ls.length); j++) {
+    const ln = ls[j];
+    if (!ln.items.some((x) => x.kind === 'anchor')) continue;
+    const top = y0 + ln.y;
+    if (ok && !ok(top)) continue;
+    for (const a of ln.items) {
+      if (a.kind !== 'anchor' || !a.anchor) continue;
+      place(c, a, {id: it.id, fr, x: fr.x + a.x, line: top,
+        lineH: ln.h, para, ...more});
+    }
+  }
+}
+
+/** The anchors in column items xs of a cell (dy: galley y to page
+ *  y; cell, cellV: its boxes), nested tables too. */
+function cellItems(c, xs, dy, dx, box, fr, ok, depth) {
+  for (const x of xs || NONE) {
+    if (x.kind === 'p') {
+      const top = x.y + dy;
+      if (c.visit) c.visit(x, top, x.x + dx, fr, ok, c.root);
+      lines(c, x, 0, Infinity, top, top, fr, {inCell: true,
+        ...box}, ok);
+    } else if (depth < 64 && isTable(x)) {
+      for (const row of x.rows) {
+        for (const cl of row.cells) {
+          if (cl.cont || !cl.col) continue;
+          const b = cellBox(cl, dx, box.cellV);
+          cellItems(c, cl.col.items, dy, dx, b, fr, ok, depth + 1);
+        }
+      }
+    }
+  }
+}
+
+/** Cell cl's text area on the page (dx: galley x to page x). */
+function cellBox(cl, dx, cellV) {
+  const x = fin(cl.tx) ? cl.tx : cl.x, w = fin(cl.tw) ? cl.tw : cl.w;
+  return {cell: {x: x + dx, w}, cellV};
+}
+
+/** The anchors of table it's fragment f (rows r0..r1 - 1) in frame
+ *  fr: each cell's lines that the page shows. */
+function table(c, it, f, fr) {
+  const dy = f.y - it.y, dx = f.x - it.x;
+  const inFrame = (y) => y >= fr.y - 0.5 && y < fr.y + fr.h;
+  for (let r = f.r0; r < f.r1; r++) {
+    const pc = pieceOf(it, f, r), row = it.rows[r];
+    if (!pc || !row) continue;
+    const cellV = {y: pc.y + dy, h: pc.h};
+    row.cells.forEach((cl, k) => {
+      if (cl.cont || !cl.col) return;
+      const part = pc.cells ? pc.cells[k] : null;
+      if (pc.cells && !part) return;
+      const sh = part ? part.sh : pc.sh;
+      const ok = (y) => inFrame(y) && (!part ||
+        (y - dy >= part.y0 - 0.5 && y - dy < part.y1));
+      cellItems(c, cl.col.items, dy + sh, dx, cellBox(cl, dx, cellV),
+        fr, ok, 0);
+    });
+  }
+}
+
+/** Floating table it (frag f, P12.6): placed (./AnchorTbl), then
+ *  the pictures in its cells as in any table, moved with it. */
+function floating(c, G, it, f, fr) {
+  const {tfloat: tf, held} = factsOf(G, it.ci);
+  const hy = held && held.pk === keyOf(G, c.pg) ? held.y : null;
+  const F = tf && tblFloat(c, it, f, fr, tf, c.tbls, hy);
+  if (!F) return;
+  c.tbls.push(F);
+  c.out.push(F);
+  const dx = F.x - f.x - it.left, dy = F.y - f.y;
+  table(c, it, {...f, x: f.x + dx, y: F.y}, {...fr, x: fr.x + dx,
+    y: fr.y + dy, h: Math.max(fr.h, F.h + 1)});
+}
+
+/** See the header. */
+export function placeFloats(P, i) {
+  return floatsOn(P, P && Number.isInteger(i) && i >= 0 ? P.at(i)
+    : null);
+}
+
+/** See the header. */
+export function floatsOn(P, pg) {
+  if (!pg || pg.blank) return NONE;
+  const c = walk(P, pg, null);
+  if (!c.out.length) return NONE;
+  const out = c.out.map((x, n) => [x, n]).sort(([a, m], [b, n]) =>
+    (a.behind === b.behind ? 0 : a.behind ? -1 : 1) || a.z - b.z ||
+    m - n).map(([x]) => x);
+  return Object.freeze(out);
+}
+
+/** See the header. */
+export function cellsOn(P, pg, visit) {
+  if (pg && !pg.blank) walk(P, pg, visit);
+}
+
+/** Page pg's frames walked: the floats placed in c.out, and each
+ *  cell paragraph given to visit (see the header). */
+function walk(P, pg, visit) {
+  const G = P.G, items = G.items;
+  const c = {pg, geo: geomAt(G, pg.s), odd: pg.parity !== 'even',
+    out: [], tbls: [], visit, root: null};
+  for (const fr of P.framesOf(pg)) {
+    fr.frags.forEach((f, j) => {
+      const k = fr.start.k + j;
+      let it = items[k];
+      if (!it || it.id !== f.id) it = G.byId && G.byId.get(f.id);
+      if (!it) return;
+      if (isTable(it)) {
+        c.root = it;
+        if (f.float) floating(c, G, it, f, fr);
+        else if (f.r0 !== undefined) table(c, it, f, fr);
+        return;
+      }
+      if (!it.lines || !(f.l0 < f.l1)) return;
+      // (a cut line continued here is the page before's)
+      const cont = k === fr.start.k && fr.start.dy > 0;
+      const l0 = f.l0 + (cont ? 1 : 0);
+      const para = f.l0 === 0 ? f.y : f.y + it.lines[f.l0].y;
+      lines(c, it, l0, f.l1, f.y, para, fr, {});
+    });
+  }
+  return c;
+}

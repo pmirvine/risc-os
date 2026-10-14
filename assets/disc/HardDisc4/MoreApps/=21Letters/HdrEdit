@@ -1,0 +1,201 @@
+// HdrEdit - a document window's header and footer mode, the part
+// that needs no desktop (Batch D, D14; the clicks, keys and menu are
+// ./HdrMode's). v is the window's ./EditView.
+//
+//   enterMode(v, {kind, i}) -> mode | null  for the story page i of
+//       the body's Print layout (v.bodyL) shows as its kind ('hdr'
+//       or 'ftr'; an inherited one: the section's it is, D14):
+//       v.hdr = the mode, so v.d is the story's facade
+//       (./StoryFacade facadeOf, s the page's section) and v.L the
+//       story's layout on that page (every command and key then
+//       works in the story, the caret confined to it), and v.typing
+//       types through the facade; the body's selection is kept
+//       (mode.bodySel). Nothing changes in the document (an entry
+//       and a leave make no undo step). A page that shows none of
+//       that kind (none, or an empty first or even one: D13) gets a
+//       story not made yet (./StoryFacade pendingFacade: one empty
+//       paragraph with the Header / Footer style, at the header
+//       distance from the page's top, the footer's bottom at the
+//       footer distance from its bottom) that the first edit makes
+//       for the page's section and type (./HdrCmd createOnEdit: in
+//       the section owning its linked chain; the mode's part is the
+//       part it takes). null (nothing done): no
+//       such page, a part kept as bytes (D9), or a reference of the
+//       page's section that reaches no story
+//   leaveMode(v)  back to the body: v.hdr null, v.typing on the real
+//       Document, the body's selection as kept (./Selection clamp
+//       to the body as it is now; its start when there was none).
+//       The caller lays out and shows the caret (v.edited)
+//   showing(B, m, i, busy?) -> page | -1  the first page of body
+//       layout B from i (then from 0) that shows m's story ({part,
+//       kind, facade}), -1 for none (while B's pages are still being
+//       made, or busy: being put right, i). After an undo or a redo:
+//       ./HdrStep afterChange
+//   settling(v) -> bool  the window's pages are being put right
+//       (v.settling(): ./ViewMode, column or wrap passes due or
+//       running; final fix A F1-I1): they may show the story on no
+//       page for now, so the mode stays on its page
+//   mode {part, kind, type (the page's: first, even, default), i,
+//     facade, bodySel,
+//     layout() -> the story's editing layout (./StoryLayout
+//         editLayout at the page's section's text width, L.top the
+//         body's, placed by ./HdrView PlaceShift where page i shows
+//         it) or null (the mode must be left: no pages, the story
+//         gone or shown on no page). Made again when the body's
+//         layout, the story, the width or its fields' values on the
+//         page (./FieldShow storyKey: page i's) changed (the selection
+//         clamped to it), placed again when the body's placement or
+//         the page did; a page that no longer shows the story gives
+//         way to the first that does (mode.i follows; while the
+//         pages are still being made or put right, page i stays:
+//         ./Pages done, settling)
+//     setPage(i)  the caret's page (a click in another page's area
+//         showing the same story)
+//     paint(L, g, rect, sel, active, more)  ./HdrPaint paintHdr
+//     info() -> 'Page 3 of 12 - Header'  the info line (./ViewMode)
+//     label() -> ./HdrView labelOf's text for page i}
+// Pure: no desktop services.
+import * as S from './Selection';
+import {facadeOf, pendingFacade} from './StoryFacade';
+import {editLayout} from './StoryLayout';
+import {PlaceShift, refAt, boxAt, labelOf} from './HdrView';
+import {paintHdr} from './HdrPaint';
+import {EMPTY} from './Pending';
+import {touch} from './EditFormat';
+import {typeOf} from './HdrPick';
+import {ownRef} from './HdrCmd';
+import {storyKey, countsOf, pageOn} from './FieldShow';
+
+/** The type of m.kind page pg shows (r: its StoryRef or null). */
+const typeAt = (doc, pg, r) => (r ? r.type : typeOf(doc, pg.s,
+  pg.first, pg.num));
+
+/** Page i shows m's story (one not made yet: none of m's kind, in
+ *  m's section, of m's type). */
+function shows(B, i, m) {
+  const r = refAt(B, i, m.kind);
+  if (!m.facade.pending) return !!r && r.part === m.part &&
+    !!boxAt(B, i, m.kind);
+  const pg = B.place.pages.at(i);
+  return !!pg && !pg.blank && pg.s === m.facade.pending.s &&
+    !(r && (r.part || r.kept)) && typeAt(B.doc, pg, r) === m.type;
+}
+
+/** Where page i shows m's story, h px high (one not made yet, or
+ *  not on the pages yet: at the header or footer distance). */
+function boxOf(B, i, m, h) {
+  const b = boxAt(B, i, m.kind);
+  if (b && !m.facade.pending) return b;
+  const pg = B.place.pages.at(i), mar = B.geom(pg.s).mar;
+  return {x: mar.left, y: m.kind === 'hdr' ? mar.header
+    : pg.h - mar.footer - h};
+}
+
+/** See the header. */
+export function showing(B, m, i, busy = false) {
+  const P = B.place.pages;
+  if (P.at(i) && shows(B, i, m)) return i;
+  for (let k = 0; P.at(k); k++) if (shows(B, k, m)) return k;
+  return (!P.done || busy) && P.at(i) ? i : -1;
+}
+
+/** See the header. */
+export const settling = (v) => typeof v.settling === 'function' &&
+  !!v.settling();
+
+const ctxOf = (B, m, pg) => {
+  const p = m.facade.pending, P = B.place.pages;
+  const ctx = {doc: p && p.styles ? {...B.doc, styles: p.styles}
+    : B.doc, metrics: B.metrics, fields: B.fields, page: pageOn(pg),
+    pages: countsOf(P)};
+  if (B.decorators) ctx.decorators = B.decorators;
+  if (B.pics) ctx.pics = B.pics;
+  return ctx;
+};
+
+/** See the header (mode.layout). */
+function layout(v, m) {
+  const B = v.bodyL, st = m.facade.story;
+  if (!st || !B.place.pages) return null;
+  const i = showing(B, m, m.i, settling(v));
+  if (i < 0) return null;
+  m.i = i;
+  const pg = B.place.pages.at(i), w = B.geom(pg.s).textW;
+  m.facade.s = pg.s;
+  const k = m.key || [], old = m.ed && m.ed.L;
+  const vk = storyKey(B.doc, m.part, {now: B.fields && B.fields.now,
+    page: pageOn(pg), pages: countsOf(B.place.pages)});
+  if (k[0] !== B || k[1] !== st || k[2] !== w || k[3] !== vk) {
+    m.ed = editLayout(st, w, ctxOf(B, m, pg), B.top);
+    m.key = [B, st, w, vk];
+    m.placed = null;
+    if (old && v.sel) v.sel = S.clamp(v.sel, m.ed.L.doc, old);
+  }
+  if (!m.placed || m.placed.Pl !== B.place || m.placed.i !== i) {
+    const r = B.place.sheet.rect(pg), b = boxOf(B, i, m, m.ed.h);
+    m.ed.L.place = PlaceShift(m.ed.L, r.x + Math.round(b.x) - m.ed.x,
+      r.y + Math.round(b.y) - m.ed.y, i);
+    m.placed = {Pl: B.place, i};
+  }
+  return m.ed.L;
+}
+
+/** See the header. */
+export function enterMode(v, {kind, i}) {
+  const B = v.bodyL, P = B.place.pages, pg = P ? P.at(i) : null;
+  if (!pg || pg.blank || (kind !== 'hdr' && kind !== 'ftr'))
+    return null;
+  const r = refAt(B, i, kind), doc = v.real.doc;
+  const type = typeAt(doc, pg, r);
+  let facade;
+  if (r && typeof r.part === 'string') {
+    if (!boxAt(B, i, kind)) return null;
+    facade = facadeOf(v.real, r.part, pg.s);
+  } else if (r && r.kept) return null;
+  else if (ownRef(doc, pg.s, kind, type) !== undefined) return null;
+  else facade = pendingFacade(v.real, {s: pg.s, kind, type});
+  const m = {part: facade.part, kind, type, i, bodySel: v.sel,
+    key: null, placed: null, ed: null, facade};
+  m.layout = () => layout(v, m);
+  m.setPage = (k) => { m.i = k; };
+  m.paint = (L, g, rect, sel, active, more) =>
+    paintHdr(v.bodyL, L, g, rect, sel, active, more);
+  m.label = () => {
+    const P = v.bodyL.place.pages, pg = P && P.at(m.i);
+    return pg ? labelOf(v.real.doc, pg, m.kind).text : '';
+  };
+  m.info = () => {
+    const P = v.bodyL.place.pages;
+    return P ? 'Page ' + (m.i + 1) + ' of ' + P.count + (P.done ? ''
+      : '...') + ' - ' + m.label() : '';
+  };
+  v.hdr = m;
+  v.typing.d = m.facade;
+  v.typing.reset();
+  if (!m.layout()) {
+    leaveMode(v);
+    return null;
+  }
+  v.pending = EMPTY;
+  touch(v);
+  return m;
+}
+
+/** See the header. */
+export function leaveMode(v) {
+  const m = v.hdr;
+  if (!m) return;
+  v.hdr = null;
+  v.typing.d = v.real;
+  v.typing.reset();
+  const kept = m.bodySel;
+  v.sel = kept;                        // (before a layout clamps it)
+  const L = v.bodyL;
+  v.sel = kept ? S.clamp(kept, L.doc, null) : null;
+  if (!v.sel) {
+    const a = L.docStart();
+    v.sel = a ? S.caret(a) : null;
+  }
+  v.pending = EMPTY;
+  touch(v);
+}

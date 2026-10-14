@@ -11,6 +11,7 @@
 // Needs the disc built by tools/disc-moreapps.mjs (assets/disc).
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r, REL } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const LINK = '<w:hyperlink r:id="rIdL"><w:r><w:t>link text</w:t></w:r></w:hyperlink>';
 const LONG = 'This paragraph is long enough to be wrapped onto several lines ' +
@@ -45,6 +46,7 @@ const bigBytes = Array.from(await big());
 async function start(page, { h = 300 } = {}) {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   return page.evaluate(async ([a, b, h]) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -61,8 +63,15 @@ async function start(page, { h = 300 } = {}) {
       return { x: rc.left + s.x * k, y: rc.top + s.y * k };
     };
     /** Client point just inside the caret place of (item i, off). */
+    /** d's window scrolled to show work-area y when it does not (Print layout's pages put the text lower than
+     *  Draft's: word-draft.mjs WORD_VIEW; in Draft every point used shows already). */
+    window.__into = (d, y) => {
+      const w = d.win;
+      if (y < w.scrollY + 8 || y > w.scrollY + w.h - 8) w.scrollTo(w.scrollX, Math.max(0, Math.round(y - w.h / 2)));
+    };
     window.__point = (i, off, dx = 1) => {
       const d = window.__doc(), L = d.view.layout, c = L.caretRect(pos(L.items[i], off));
+      window.__into(d, c.y + c.h / 2);
       return window.__client(d, c.x + dx, c.y + c.h / 2);
     };
     window.__set = (i, off, j = i, off2 = off) => {
@@ -193,6 +202,8 @@ try {
     await page.mouse.move(a.x + 20, a.y + 20, { steps: 3 });
     await page.mouse.move(box.x, box.y, { steps: 4 });
     await page.waitForTimeout(500);
+    // (Print layout's text starts lower: the head needs a little longer to pass item 8)
+    await page.waitForFunction(() => window.__sel().h[0] > 8, null, { timeout: 10000 }).catch(() => {});
     const mid = await ev(() => ({ y: window.__doc().win.scrollY, s: window.__sel() }));
     await page.mouse.up();
     const y1 = await ev(() => window.__doc().win.scrollY);
@@ -244,7 +255,11 @@ try {
     const u = await sel();
     ok('a later click is a click', same(u.a, u.h) && u.a[0] === 1, u);
     // double-click on the table box: the whole box
-    const tb = await ev(() => { const d = window.__doc(), L = d.view.layout, b = L.boxRect(L.items[6]); return window.__client(d, b.x + 40, b.y + b.h / 2); });
+    const tb = await ev(() => {
+      const d = window.__doc(), L = d.view.layout, b = L.boxRect(L.items[6]);
+      window.__into(d, b.y + b.h / 2);
+      return window.__client(d, b.x + 40, b.y + b.h / 2);
+    });
     await page.waitForTimeout(450);
     await page.mouse.dblclick(tb.x, tb.y);
     const v = await sel();
@@ -314,7 +329,7 @@ try {
     const h1 = await sel();
     await press('End');
     const h2 = await ev(() => ({ s: window.__sel(), y: window.__doc().view.caretRect().y }));
-    const ly = await ev(() => { const L = window.__doc().view.layout, it = L.items[7]; return it.y + it.lines[1].y; });
+    const ly = await ev(() => { const L = window.__doc().view.layout; return L.place.lineAt(L.items[7], 1).y; });
     ok('Home goes to the start of the line', same(h1.h, [7, lines[1][0]]), [lines, h1]);
     ok('End goes to its end (on the same line)', h2.s.h[0] === 7 && h2.s.h[1] > lines[1][0] && h2.s.h[1] <= lines[2][0] && Math.abs(h2.y - ly) < 2, [lines, h2, ly]);
 

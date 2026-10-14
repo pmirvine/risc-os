@@ -16,22 +16,28 @@
 // Parts written: [Content_Types].xml (the original entries plus
 // what the written parts need; a part of a known kind (footnotes,
 // core properties...) typed only application/xml gets its own type,
-// see ./PartTypes), _rels/.rels, the main part and its
-// .rels, styles, numbering and settings (raw, verbatim) and every
-// entry of doc.parts byte-identical. XML parts are UTF-8. Zip order:
-// [Content_Types].xml, the original order, then new parts. With
-// opts.date the output is the same bytes every time.
+// reached from the package, the main part or a story: see
+// ./PartTypes; a header or footer part the file did not have: an
+// Override with its own type, whatever the xml Default says, final
+// fix A F1-I2), _rels/.rels, the main part and its
+// .rels, styles, numbering and settings (raw, verbatim), the header
+// and footer stories (./StoryWrite: an untouched one as its bytes, a
+// removed one dropped with its relationship and .rels) and every
+// other entry of doc.parts byte-identical. XML parts are UTF-8.
+// Zip order: [Content_Types].xml, the original order, then new
+// parts. With opts.date the output is the same bytes every time.
 // A Strict document (meta.conformance 'strict') is written Strict:
 // every tree is mapped back with mapNamespacesCopy(.., 'toStrict').
 import {writeZip} from 'wimplib/Zip';
 import {XmlError} from 'wimplib/Xml';
-import {checkBlock} from './ModelCheck';
+import {checkBlock, checkStory} from './ModelCheck';
 import {DocxError} from './DocxError';
 import {mapNamespacesCopy} from './NsMap';
 import {firstOfKind, resolvePart, relsNameFor, findPart}
   from './Rels';
 import {repairs} from './PartTypes';
-import {documentTree} from './WriteBody';
+import {documentTree, docScope} from './WriteBody';
+import {storiesOut} from './StoryWrite';
 import {stylesTree} from './WriteStyles';
 import {xmlBytes, contentTypes, relsTree, relType, zipOrder, CT}
   from './WriteParts';
@@ -58,6 +64,14 @@ function check(doc) {
       }
     });
   });
+  for (const [n, st] of doc.stories || []) {
+    try {
+      checkStory(st);
+    } catch (e) {
+      throw new DocxError('bad-model', 'story ' + n + ': ' +
+        e.message, {cause: e});
+    }
+  }
 }
 
 /** `doc` with the package data of a new document filled in. */
@@ -100,6 +114,34 @@ function stylesName(doc, rels, strict) {
   return name;
 }
 
+/** The index without the Overrides of the dropped parts. */
+function keptTypes(ct, drop) {
+  if (!drop.size) return ct;
+  const gone = new Set([...drop].map((n) => '/' + n.toLowerCase()));
+  return {...ct, overrides: ct.overrides.filter(([p]) =>
+    !gone.has(String(p).toLowerCase()))};
+}
+
+/** [[part, rels]] of every story with relationships: the parts
+ *  they reach typed too (./PartTypes repairs). */
+const storyRels = (doc) => (doc.stories instanceof Map
+  ? [...doc.stories.values()] : [])
+  .filter((s) => Array.isArray(s.rels) && s.rels.length)
+  .map((s) => [s.part, s.rels]);
+
+/** Each story part the file did not have (made on a first edit, by
+ *  Link to previous off) typed as a header or footer in known: else
+ *  a package whose Default for xml is a specific type (the main
+ *  document's) would type it so (final fix A F1-I2). */
+function newStories(doc, known) {
+  const had = new Set((doc.meta.storyParts || []).map((n) =>
+    String(n).toLowerCase()));
+  for (const [n, s] of doc.stories || []) {
+    if (had.has(n.toLowerCase())) continue;
+    known.set(n, s.kind === 'ftr' ? CT.footer : CT.header);
+  }
+}
+
 /** Map name -> bytes of every part; see the header. */
 function buildParts(doc) {
   const {meta} = doc;
@@ -112,8 +154,9 @@ function buildParts(doc) {
     if (type) known.set(name, type);
   };
   const main = meta.mainPart;
-  const rels = doc.rels.slice();
   put(main, documentTree(doc), CT.main);
+  const st = storiesOut(doc, doc.rels.slice(), docScope(doc).map);
+  const rels = st.rels;
   const sName = doc.styles ? stylesName(doc, rels, strict) : null;
   const mainRels = relsNameFor(main);
   if (rels.length || meta.zipOrder.includes(mainRels))
@@ -123,13 +166,17 @@ function buildParts(doc) {
     put(meta.numberingPart, doc.numbering.raw, CT.numbering);
   if (doc.rawSettings && meta.settingsPart)
     put(meta.settingsPart, doc.rawSettings, CT.settings);
-  for (const [n, b] of doc.parts) if (!out.has(n)) out.set(n, b);
+  for (const [n, b] of st.parts) out.set(n, b);
+  newStories(doc, known);
+  for (const [n, b] of doc.parts)
+    if (!out.has(n) && !st.drop.has(n)) out.set(n, b);
   const names = ['_rels/.rels', ...out.keys()];
   out.set('_rels/.rels', xmlBytes(relsTree(meta.packageRels)));
-  const fix = repairs(meta.contentTypes, [['', meta.packageRels],
-    [main, rels]], (n) => findPart(out, n));
+  const ct = keptTypes(meta.contentTypes, st.drop);
+  const fix = repairs(ct, [['', meta.packageRels], [main, rels],
+    ...storyRels(doc)], (n) => findPart(out, n));
   out.set('[Content_Types].xml', xmlBytes(contentTypes(
-    meta.contentTypes, names, known, fix)));
+    ct, names, known, fix)));
   return out;
 }
 

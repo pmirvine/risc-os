@@ -50,133 +50,15 @@
 // last column when the cell reaches it (lastCol), the first when it
 // starts there (firstCol wins a cell spanning the whole row). Pure:
 // no desktop services.
-import {gridOf} from './TblGrid';
-import {colsOf, cellBox, marginsOf, spacingOf, twToPx}
-  from './TblWidth';
-import {viewOf, tableStyleId} from './TblStyle';
-import {lookOf, bandsOf, layerOf, compatOf, stylesFor}
-  from './TblCond';
-import {runFmt} from './Fmt';
-import {MAX_LINE} from './ParaSpace';
-import {adoptRow, adoptCell, listedOf, strictOf}
-  from './TblReuse';
+import {adoptRow, adoptCell, listedOf} from './TblReuse';
+import {keyOf, sameKey, geoOf} from './TblGeo';
 
-const isObj = (v) => v !== null && typeof v === 'object';
-
-/** See the header. */
-export const layerCol = (c0, c1, cols) => (c0 === 0 ? 0
-  : c1 >= cols ? cols - 1 : c0);
-const get = (o, f) => (isObj(o) ? o[f] : undefined);
-const BREAK = /[\s\uFFFC]+/;
-const MAX_WORD = 500;                  // characters of a word measured
-const mins = new WeakMap();
-
-/** See the header. */
-export function minWidth(L, para) {
-  const o = mins.get(para);
-  if (o && o.s === L.styles && o.m === L.metrics) return o.v;
-  let v = 0;
-  for (const run of para.runs || []) {
-    const t = para.text.slice(run.start, run.end);
-    if (!t.trim()) continue;
-    const {css} = runFmt(L.styles, para, run, L.cache);
-    for (const w of t.split(BREAK)) {
-      if (w) {
-        v = Math.max(v, L.metrics.width(w.slice(0, MAX_WORD), css));
-      }
-    }
-  }
-  mins.set(para, {s: L.styles, m: L.metrics, v});
-  return v;
-}
-
-const cellMins = new WeakMap();
-
-/**
- * The min width of cell (r, k): its widest paragraph's, margins in;
- * memoised per cell object (cells are replaced, never changed).
- */
-function cellMin(L, t, view, r, k) {
-  const cell = t.rows[r].cells[k];
-  const o = cellMins.get(cell);
-  if (o && o.s === L.styles && o.m === L.metrics && o.view === view &&
-    o.tblPr === t.tblPr) return o.v;
-  let v = 0;
-  for (const b of cell.blocks) {
-    if (b.type === 'p') v = Math.max(v, minWidth(L, b));
-  }
-  const m = marginsOf(get(cell.tcPr, 'tcMar'),
-    get(t.tblPr, 'tblCellMar'),
-    get(get(view, 'tblPr'), 'tblCellMar'));
-  v += m.left + m.right;
-  cellMins.set(cell, {s: L.styles, m: L.metrics, view, tblPr: t.tblPr,
-    v});
-  return v;
-}
-
-/** The table-wide inputs of its rows' geometry (the key). */
-function keyOf(L, t, col) {
-  const styles = L.styles;
-  const strict = strictOf(L.doc);
-  const view = viewOf(styles, tableStyleId(styles, t), strict);
-  const look = lookOf(t.tblPr), bands = bandsOf(t.tblPr, view);
-  const g = gridOf(t);
-  const cw = colsOf(t, view, col.w,
-    (r, k) => cellMin(L, t, view, r, k), [styles, L.metrics]);
-  const lk = Object.values(look).map(Number).join('') +
-    `/${bands.rows}/${bands.cols}`;
-  return {view, tblPr: t.tblPr, look, bands, lk, nRows: t.rows.length,
-    nCols: g.cols, cols: cw.cols, styles, compat: compatOf(L.doc), g,
-    cw, strict};
-}
-
-/** a and b the same widths (an autofit table recomputes them). */
-function sameCols(a, b) {
-  if (a === b) return true;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
-  return true;
-}
-
-const sameKey = (a, b) => a.view === b.view && a.tblPr === b.tblPr &&
-  a.lk === b.lk && a.nRows === b.nRows && a.nCols === b.nCols &&
-  sameCols(a.cols, b.cols) && a.styles === b.styles &&
-  a.compat === b.compat;
-
-/** Row r's geometry (see the header). */
-function geoOf(K, t, r) {
-  const row = t.rows[r], gr = K.g.rows[r];
-  const tbl = t.tblPr, vt = get(K.view, 'tblPr');
-  const spacing = spacingOf(get(row.trPr, 'tblCellSpacing'),
-    get(tbl, 'tblCellSpacing'), get(vt, 'tblCellSpacing'));
-  const cells = row.cells.map((cell, k) => {
-    const {c0, c1} = gr.cells[k];
-    const c = layerCol(c0, c1, K.nCols);
-    const layer = layerOf(K.view, K.look, r, c, K.nRows, K.nCols,
-      K.bands);
-    const mar = Object.freeze(marginsOf(get(cell.tcPr, 'tcMar'),
-      get(layer.tcPr, 'tcMar'), get(tbl, 'tblCellMar'),
-      get(vt, 'tblCellMar')));
-    const box = cellBox(K.cols, c0, c1, mar, spacing);
-    const vAlign = get(cell.tcPr, 'vAlign') ??
-      get(layer.tcPr, 'vAlign') ?? 'top';
-    return Object.freeze({x: box.x, w: box.w, tx: box.tx, tw: box.tw,
-      c0, c1, mar, layer, vAlign,
-      styles: stylesFor(K.styles, layer, K.compat)});
-  });
-  const th = get(row.trPr, 'trHeight') ??
-    get(get(K.view, 'trPr'), 'trHeight');
-  const trH = isObj(th) && Number.isFinite(th.val) && th.val > 0
-    ? Object.freeze({px: Math.min(twToPx(th.val), MAX_LINE),
-      rule: th.hRule === 'exact' || th.hRule === 'auto' ? th.hRule
-        : 'atLeast'}) : null;
-  return Object.freeze({row, r, cells: Object.freeze(cells), trH});
-}
+export {layerCol, minWidth} from './TblGeo';
 
 /** See the header. */
 export function tableItem(L, it, depth, prev, make, share) {
   const t = it.block;
-  const K = keyOf(L, t, it.col);
+  const K = keyOf(L, t, it);
   const same = !!prev && !!prev.key && sameKey(prev.key, K);
   if (same) K.cols = prev.key.cols;
   const old = same ? prev.rows : null;

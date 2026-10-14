@@ -1,0 +1,190 @@
+// PrintHit - Print layout's hit test (./PlacePrint hit, split from
+// it).
+//
+//   hitOn(Pl, x, y) -> {it, k, edge, dx?, dy?, gy0?, gy1?, float?}
+//       | null
+//       Pl: the ./PlacePrint (its L, pages, sheet and pageFrags).
+//       The page at y (./PageSheet near: in the desk between pages,
+//       the nearer),
+//       then its line whose bottom is below y (above the first: the
+//       first; past the last: the last; a block: k 0); a page with
+//       nothing on it (after a page break that ends the document):
+//       the last line before it. edge: true when the point is above
+//       the page's first line or below its last (its margins, the
+//       desk: ./Place toGalley keeps such a point on the line found,
+//       D33), but not above the document's first line or below its
+//       last (its start and end there, as in Draft). null for x or y
+//       not finite, or no page. In a table's fragment with rows
+//       (P4.2): the table, k 0, and the shift of the piece at y
+//       (./TblPieces; a repeated header row: its original row's,
+//       PG10; a part of a cut row: the cell's at x) as dx, dy, with
+//       gy0..gy1 the galley span the point is kept in (the row, or
+//       what the cell shows on that page: ./Place toGalley)
+//   floatNear(Pl, x, y, tol) -> {it, dx, dy} | null  the placed
+//       floating table (the last drawn first) whose box as drawn,
+//       widened by tol px, holds (x, y) on the page at y: (x - dx,
+//       y - dy) is the point in its galley (P12b fix I2: its edges,
+//       ./TblEdge, are found where it is drawn)
+//   areaOn(Pl, x, y) -> the part of a page at (x, y) (./PlacePrint
+//       area): 'body' (the page between bodyTop and the frame's
+//       bottom, its side margins too), 'header' (from mar.header down
+//       to bodyTop), 'footer' (from the frame's bottom down to the
+//       page's height less mar.footer), 'margin' (the page's edges
+//       beyond those), 'desk' (off the page ./PageSheet near gives),
+//       null (x or y not finite, no page). A click in a header or
+//       footer area does nothing (./EditMouse, D33)
+//
+// A placed floating table (P12.6, R5: a fragment with float) is hit
+// where it is drawn, before the flow (the last drawn first): such a
+// hit has float true; the flow's search leaves its fragments out.
+// With columns (D23: a page's cols) a hit is in the column at (x, y)
+// (its frame holds the point, else the nearest with something in
+// it: first by y, so a band below a continuous break, P10.2, is
+// chosen by height, then by x), its lines as above. Pure: no
+// desktop services.
+import {lineTop} from './PlaceDraft';
+import {piecesOf, cellOf} from './TblPieces';
+
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const nLines = (it) => (it.lines ? it.lines.length : 0);
+const bottom = (it, j) => lineTop(it, j) + it.lines[j].h;
+const NONE = Object.freeze([]);
+const IN = 0.5;                        // px inside a bottom
+
+/** Hit h in table fragment f (pieces ps) of page i at x, page y py:
+ *  the shift of the piece (a cut part: of the cell at x) there and
+ *  the galley span its point is kept in (see the header). */
+function inTable(Pl, i, f, ps, h, x, py) {
+  const o = Pl.sheet.rect(Pl.pages.list[i]), fy = py - f.dy;
+  const it = h.it;
+  let p = ps[0];
+  for (const q of ps) if (q.y <= fy) p = q;
+  let sh = p.sh, y0 = p.y, y1 = p.y + p.h;
+  if (p.cells) {
+    const c = cellOf(it, it.rows[p.r], x - o.x - f.dx);
+    const q = c >= 0 ? p.cells[c] : null;
+    if (q) ({sh, y0, y1} = q);
+  }
+  return {...h, dx: o.x + f.dx, dy: o.y + f.dy + sh, gy0: y0 - sh,
+    gy1: Math.max(y0, y1 - IN) - sh};
+}
+
+/** How far v is outside a..a + n (0: inside). */
+const off = (v, a, n) => (v < a ? a - v : v >= a + n ? v - a - n : 0);
+
+/** The fragments fs of the column at page point px, py of page pg's
+ *  columns (its frame holds it, else the nearest with fragments,
+ *  by y then x). */
+function inColumn(fs, pg, px, py) {
+  const cs = pg.cols;
+  let best = -1, gy = Infinity, gx = Infinity;
+  for (const f of fs) {
+    const c = cs[f.col];
+    if (!c || f.col === best) continue;
+    const t = pg.bodyTop + pg.vShift + (c.top || 0);
+    const dy = off(py, t, c.h === undefined ? pg.frameH : c.h);
+    const dx = off(px, c.x, c.w);
+    if (dy < gy || (dy === gy && dx < gx)) {
+      [best, gy, gx] = [f.col, dy, dx];
+    }
+  }
+  return best < 0 ? fs : fs.filter((f) => f.col === best);
+}
+
+/** A hit in a placed floating table's fragment of page i (P12.6:
+ *  where it is drawn, over the flow), or null. */
+function floatHit(Pl, i, fs, x, py) {
+  const px = x - Pl.sheet.rect(Pl.pages.list[i]).x;
+  for (let n = fs.length - 1; n >= 0; n--) {
+    const f = fs[n], it = f.it;
+    if (!f.float) continue;
+    const x0 = it.x + it.left + f.dx, y0 = it.y + f.dy;
+    if (px < x0 || px >= x0 + it.width || py < y0 || py >= y0 + it.h) {
+      continue;
+    }
+    const ps = piecesOf(it, f);
+    if (ps.length) {
+      return inTable(Pl, i, f, ps, {it, k: 0, edge: false,
+        float: true}, x, py);
+    }
+  }
+  return null;
+}
+
+/** See the header. */
+export function floatNear(Pl, x, y, tol) {
+  if (!fin(x) || !fin(y) || !fin(tol)) return null;
+  const i = Pl.sheet.near(y), pg = Pl.pages.list[i];
+  if (!pg) return null;
+  const o = Pl.sheet.rect(pg), fs = Pl.pageFrags(i);
+  for (let n = fs.length - 1; n >= 0; n--) {
+    const f = fs[n], it = f.it;
+    if (!f.float) continue;
+    const dx = o.x + f.dx, dy = o.y + f.dy, x0 = it.x + it.left + dx;
+    const y0 = it.y + dy;
+    if (x >= x0 - tol && x <= x0 + it.width + tol && y >= y0 - tol &&
+      y <= y0 + it.h + tol) return {it, dx, dy};
+  }
+  return null;
+}
+
+/** See the header. */
+export function hitOn(Pl, x, y) {
+  if (!fin(x) || !fin(y)) return null;
+  const {L, pages: Q, sheet: S, pageFrags} = Pl;
+  const i0 = S.near(y);
+  if (i0 < 0) return null;
+  let i = i0, fs = pageFrags(i);
+  while (!fs.length && i > 0) fs = pageFrags(--i);
+  if (!fs.length) return null;
+  const pg = Q.list[i], o = S.rect(pg), py = y - o.y;
+  if (i === i0) {
+    const h = floatHit(Pl, i, fs, x, py);
+    if (h) return h;
+  }
+  const flow = fs.filter((f) => !f.float);
+  if (flow.length) fs = flow;
+  if (pg.cols && i === i0) fs = inColumn(fs, pg, x - o.x, py);
+  const f0 = fs[0];
+  // (above the page's first line: its edge; not the document's)
+  const top = f0.it.ci === 0 && f0.l0 === 0 ? -Infinity
+    : f0.dy + lineTop(f0.it, f0.l0);
+  for (const f of fs) {
+    const it = f.it, n = nLines(it);
+    if (!n) {
+      const ps = f.r0 !== undefined ? piecesOf(it, f) : NONE;
+      const b = ps.length ? ps[ps.length - 1].y + ps[ps.length - 1].h
+        : it.y + it.h;
+      if (b + f.dy > py) {
+        const h = {it, k: 0, edge: f === f0 && py < top};
+        return ps.length ? inTable(Pl, i, f, ps, h, x, py) : h;
+      }
+      continue;
+    }
+    for (let j = f.l0; j < f.l1; j++) {
+      if (bottom(it, j) + f.dy > py) {
+        return {it, k: j, edge: f === f0 && py < top};
+      }
+    }
+  }
+  const f = fs[fs.length - 1], n = nLines(f.it);
+  const end = f.it.ci === L.items.length - 1 && f.l1 >= n;
+  const h = {it: f.it, k: n ? Math.max(f.l0, f.l1 - 1) : 0,
+    edge: !end};
+  const ps = !n && f.r0 !== undefined ? piecesOf(f.it, f) : NONE;
+  return ps.length ? inTable(Pl, i, f, ps, h, x, py) : h;
+}
+
+/** See the header. */
+export function areaOn(Pl, x, y) {
+  if (!fin(x) || !fin(y)) return null;
+  const S = Pl.sheet, i = S.near(y);
+  if (i < 0) return null;
+  const pg = Pl.pages.list[i], r = S.rect(pg), py = y - r.y;
+  if (x < r.x || x >= r.x + r.w || py < 0 || py >= r.h) return 'desk';
+  const m = pg.mar || {}, bot = pg.bodyTop + pg.frameH;
+  if (py < pg.bodyTop) return py >= (m.header || 0) / 15 ? 'header'
+    : 'margin';
+  if (py < bot) return 'body';
+  return py < pg.h - (m.footer || 0) / 15 ? 'footer' : 'margin';
+}

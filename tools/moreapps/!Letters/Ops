@@ -8,11 +8,20 @@
 // (./Path): [s, i] at top level, [s, i, r, c, j, ...] in a cell of a
 // table, with the same meaning inside that cell's blocks (./OpsPath
 // locate; mergeBlock joins blocks of one container only, never
-// across cells; a cell keeps at least one block and never ends with
-// a table: ./TblCheck endsCell, refused before any change). An op in
+// across cells; a cell, and a story, keeps at least one block and
+// never ends with a table: ./TblCheck endsCell, refused before any
+// change; ./OpsPath locate's tail, which spares a story read from
+// the file empty or ending with a table). An op in
 // a cell copies the tables on its path first (./OpsPath own): a
 // table, row or cell object is never changed. Section ops refuse a
 // nested path.
+// Every op but a compound, a setDocPart, a setStory and the section
+// ops takes `story` (Batch D, D12, R8): a header or footer part name
+// of doc.stories, whose blocks the path [0, i, ...] is in (absent or
+// null: the body). Its inverse has the same story; doc.stories is
+// replaced by a new Map holding a new Story, never changed in place
+// (./OpsPath). The others refuse a story (a compound's ops each
+// carry their own; a setStory's `story` is the Story it sets).
 // Offsets are UTF-16 code units.
 //
 //   replaceText  {block, at, del, ins, rPr?, rStyle?, inlines?}
@@ -28,14 +37,18 @@
 //                                    settings, numberingPart: ./OpsDoc)
 //   splitSection {at, props, raw}    mergeSection {at, keep?}
 //   setSection   {at, props, raw}    (./OpsSect)
+//   setStory     {part, story, at?}  (a whole story added, replaced
+//                                    or removed: ./OpsStory; its
+//                                    `story` is the Story or null)
 //
 // NEVER CHANGE A MODEL OBJECT IN PLACE. Blocks, runs, rPr, pPr,
 // inlines and Xml nodes are shared between the live Doc and the
 // inverse ops in undo history (copy-on-write: an op that changes a
 // part makes new objects for that part only). apply() copies the op
 // it is given, so callers' objects never enter the Doc (except a
-// setDocPart's value and a restoreBlock's TABLE snapshot: immutable
-// by contract, kept by reference so that a new table shares its
+// setDocPart's value, a setStory's Story and a restoreBlock's TABLE
+// snapshot: immutable by contract, kept by reference so that a
+// new table shares its
 // unchanged rows with the old one, D4); applyOwn() does not, and is
 // only for ops this module made (Document's undo).
 //
@@ -44,10 +57,10 @@
 // a table with the same id checks the table, and against doc only
 // the ids it holds that the old one did not (one scan, none if no
 // new id).
-import {fail, checkBlock} from './ModelCheck';
-import {checkTail} from './TblCheck';
+import {fail, checkBlock, opStory} from './ModelCheck';
+import {checkTail, endsCell} from './TblCheck';
 import {clone} from './Model';
-import {locate, own, checkIds} from './OpsUtil';
+import {locate, own, checkIds, inStory} from './OpsUtil';
 import {blockIds, ids} from './Walk';
 import {replaceText, spliceText, splitBlock, mergeBlock}
   from './OpsText';
@@ -56,6 +69,8 @@ import {removeBlocks, insertBlocks} from './OpsBlocks';
 import {setDocPart} from './OpsDoc';
 import {splitSection, mergeSection, setSection}
   from './OpsSect';
+import {setStory} from './OpsStory';
+import {bump} from './DocVersion';
 
 /**
  * Check block `b` inside `around` tables; its ids must be free in
@@ -68,20 +83,21 @@ function check(doc, b, old, around) {
 }
 
 function insertBlock(doc, op) {
-  const {i, at, depth, blocks, nested} = locate(doc, op.at, true);
+  const {i, at, depth, blocks, tail} = locate(doc, op.at, true,
+    op.story);
   const b = check(doc, op.block, null, depth);
-  if (nested && i === blocks.length) checkTail(b);
-  own(doc, at).splice(i, 0, b);
-  return {op: 'removeBlock', at};
+  if (tail && i === blocks.length) checkTail(b, tail);
+  own(doc, at, op.story).splice(i, 0, b);
+  return inStory({op: 'removeBlock', at}, op.story);
 }
 
 function removeBlock(doc, op) {
-  const {i, at, blocks, nested} = locate(doc, op.at);
-  if (nested && blocks.length === 1)
-    fail('a cell needs at least one block');
-  if (nested && i === blocks.length - 1) checkTail(blocks[i - 1]);
-  const [b] = own(doc, at).splice(i, 1);
-  return {op: 'insertBlock', at, block: b};
+  const {i, at, blocks, tail} = locate(doc, op.at, false, op.story);
+  if (tail && blocks.length === 1)
+    fail(tail + ' needs at least one block');
+  if (tail && i === blocks.length - 1) checkTail(blocks[i - 1], tail);
+  const [b] = own(doc, at, op.story).splice(i, 1);
+  return inStory({op: 'insertBlock', at, block: b}, op.story);
 }
 
 /** The ids inside table b that table old does not hold. */
@@ -97,9 +113,12 @@ function newIds(b, old) {
  * the ids it holds that the old one did not are looked for.
  */
 function restoreBlock(doc, op) {
-  const {i, at, blocks, depth} = locate(doc, op.block);
+  const {i, at, blocks, depth, tail} = locate(doc, op.block, false,
+    op.story);
   const old = blocks[i];
   const b = op.snapshot;
+  if (tail && i === blocks.length - 1 && !endsCell(old))
+    checkTail(b, tail);
   const same = b && (b.type === 'p' || b.type === 'tbl') &&
     old.type === b.type && b.id === old.id;
   if (!same) check(doc, b, old, depth);
@@ -113,17 +132,21 @@ function restoreBlock(doc, op) {
       }
     }
   }
-  own(doc, at)[i] = b;
-  return {op: 'restoreBlock', block: at, snapshot: old};
+  own(doc, at, op.story)[i] = b;
+  return inStory({op: 'restoreBlock', block: at, snapshot: old},
+    op.story);
 }
 
 function compound(doc, op) {
   if (!Array.isArray(op.ops)) fail('compound needs ops');
   const done = [];
+  const m = doc.stories;
   try {
     for (const o of op.ops) done.push(applyOwn(doc, o));
   } catch (e) {
     for (let k = done.length - 1; k >= 0; k--) applyOwn(doc, done[k]);
+    // (undone: the stories as they were, so the very Map again)
+    if (doc.stories !== m) doc.stories = m;
     throw e;
   }
   return {op: 'compound', ops: done.reverse()};
@@ -132,7 +155,11 @@ function compound(doc, op) {
 const KINDS = {replaceText, spliceText, setProps, splitBlock,
   mergeBlock, insertBlock, removeBlock, restoreBlock, compound,
   removeBlocks, insertBlocks, setDocPart, splitSection,
-  mergeSection, setSection};
+  mergeSection, setSection, setStory};
+
+/** The ops that refuse a story (D12). */
+const BODY_ONLY = new Set(['compound', 'setDocPart', 'splitSection',
+  'mergeSection', 'setSection']);
 
 /**
  * Apply `op` to `doc` and return the op that undoes it. The op is
@@ -150,28 +177,45 @@ export function apply(doc, op) {
  * is immutable by contract, see ./OpsDoc: a whole numbering or style
  * table copied per apply would cost time and lose the sharing), nor
  * a restoreBlock's table snapshot (D4: the new table shares every
- * unchanged row, cell and paragraph with the old one).
+ * unchanged row, cell and paragraph with the old one), nor a
+ * setStory's Story (./OpsStory: its bytes and orig must stay the
+ * objects read, for ./StoryWrite).
  */
 function copy(op) {
   if (op && op.op === 'setDocPart')
-    return {op: 'setDocPart', key: op.key, value: op.value};
+    return keep(op, {op: 'setDocPart', key: op.key, value: op.value});
+  if (op && op.op === 'setStory') {
+    const o = {op: 'setStory', part: clone(op.part), story: op.story};
+    if (op.at !== undefined) o.at = clone(op.at);
+    return o;
+  }
   if (op && op.op === 'compound' && Array.isArray(op.ops))
-    return {op: 'compound', ops: op.ops.map(copy)};
+    return keep(op, {op: 'compound', ops: op.ops.map(copy)});
   if (op && op.op === 'restoreBlock' && op.snapshot &&
     op.snapshot.type === 'tbl')
-    return {op: 'restoreBlock', block: clone(op.block),
-      snapshot: op.snapshot};
+    return keep(op, {op: 'restoreBlock', block: clone(op.block),
+      snapshot: op.snapshot});
   return clone(op);
 }
+
+/** o with op's story, when op has one (so that it is checked). */
+const keep = (op, o) => (op.story === undefined ? o
+  : {...o, story: clone(op.story)});
 
 /**
  * apply() without the copy: `op` and everything in it may become
  * part of doc, so it must be an op nobody will change, such as an
- * inverse returned by apply() or applyOwn().
+ * inverse returned by apply() or applyOwn(). Every op that did not
+ * throw moves doc's ./DocVersion on (memos of the body read it).
  */
 export function applyOwn(doc, op) {
   const kind = op && typeof op.op === 'string' &&
     Object.hasOwn(KINDS, op.op) ? KINDS[op.op] : null;
   if (!kind) fail('unknown op ' + (op && op.op));
-  return kind(doc, op);
+  if (op.op !== 'setStory' && opStory(op) !== undefined &&
+    BODY_ONLY.has(op.op))
+    fail(op.op + ' takes no story');
+  const inv = kind(doc, op);
+  bump(doc);
+  return inv;
 }

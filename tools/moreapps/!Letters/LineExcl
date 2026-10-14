@@ -1,0 +1,100 @@
+// LineExcl - the exclusions of a page's floats (split from
+// ./LineShape, Batch D P12.7: ./LineShape re-exports exclusionsOf
+// and its caps; together they are the one rule for wrap exclusions).
+//
+//   exclusionsOf(floats) -> [Excl] (frozen): one for each float
+//       (./AnchorPlace Float: {x, y, w, h, wrap}, page px) whose wrap
+//       is square, tight, through or topAndBottom (none: never; an
+//       absurd box, a value not an object: none)
+//     Excl {x0, x1, y0, y1, dl, dr, side, poly}  page px
+//       square         the box plus wrap.dist (EMU / 9525) each way
+//       topAndBottom   the box plus dist; side 'none': no text beside
+//                      it on its lines (the full frame width)
+//       tight, through the polygon (wrap.polygon: 21600 units across
+//                      the extent, MIN_POINTS..MAX_POINTS points) as
+//                      poly [[x, y]...]; x0..x1 its width plus distL
+//                      and distR, y0..y1 its height (no distT/B, as
+//                      the schema); no usable polygon: the box
+//       side           wrapText: 'left' (text on its left only),
+//                      'right', else 'both' (bothSides, largest:
+//                      one interval a line, the larger side, PG31)
+//     a placed floating table (./AnchorTbl Float {tbl, x, y, w, h,
+//       tfloat}, P12.7, owner ruling R5): square, side 'both' (one
+//       interval a line, the larger side, OD9), its box widened by
+//       tfloat.dist's fromText distances (twips / 15): each the room
+//       kept between the table's edge and the nearest text that side
+//   MIN_POINTS 3, MAX_POINTS 4096, POLY 21600
+//
+// Pure: no desktop services.
+
+export const POLY = 21600, MIN_POINTS = 3, MAX_POINTS = 4096;
+const EMU_PX = 9525;
+const NONE = Object.freeze([]);
+const KINDS = new Set(['square', 'tight', 'through', 'topAndBottom']);
+const SIDE = {left: 'left', right: 'right'};
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const d = (dist, k) => (dist && fin(dist[k]) && dist[k] > 0
+  ? dist[k] / EMU_PX : 0);
+const TW_EMU = 635;                    // EMU per twip
+
+/** Floating table Float f's wrap: Square, both sides, its fromText
+ *  distances in EMU (P12.7). */
+function tblWrap(f) {
+  const t = f.tfloat && f.tfloat.dist;
+  if (!t || typeof t !== 'object') return null;
+  const e = (k) => (fin(t[k]) ? t[k] * TW_EMU : 0);
+  return {kind: 'square', text: 'bothSides',
+    dist: {t: e('t'), b: e('b'), l: e('l'), r: e('r')}};
+}
+
+/** Float f's polygon in page px, or null. */
+function polyOf(f, pg) {
+  const pts = pg && Array.isArray(pg.points) ? pg.points : NONE;
+  if (pts.length < MIN_POINTS || pts.length > MAX_POINTS) return null;
+  const out = [];
+  for (const pt of pts) {
+    const x = f.x + (pt && pt[0]) * f.w / POLY;
+    const y = f.y + (pt && pt[1]) * f.h / POLY;
+    if (!fin(x) || !fin(y)) return null;
+    out.push(Object.freeze([x, y]));
+  }
+  return Object.freeze(out);
+}
+
+/** The exclusion of float f, or null. */
+function exclOf(f) {
+  if (!f || typeof f !== 'object') return null;
+  const wrap = f.tbl !== undefined ? tblWrap(f) : f.wrap;
+  if (!wrap) return null;
+  const {kind, text, dist, polygon} = wrap;
+  if (!KINDS.has(kind)) return null;
+  if (![f.x, f.y, f.w, f.h].every(fin) || f.w < 0 || f.h < 0) {
+    return null;
+  }
+  const tight = kind === 'tight' || kind === 'through';
+  const poly = tight ? polyOf(f, polygon) : null;
+  let x0 = f.x, x1 = f.x + f.w, y0 = f.y, y1 = f.y + f.h;
+  if (poly) {
+    const xs = poly.map((q) => q[0]), ys = poly.map((q) => q[1]);
+    x0 = Math.min(...xs); x1 = Math.max(...xs);
+    y0 = Math.min(...ys); y1 = Math.max(...ys);
+  }
+  if (!tight) {
+    y0 -= d(dist, 't');
+    y1 += d(dist, 'b');
+  }
+  return Object.freeze({x0: x0 - d(dist, 'l'), x1: x1 + d(dist, 'r'),
+    y0, y1, dl: d(dist, 'l'), dr: d(dist, 'r'), poly,
+    side: kind === 'topAndBottom' ? 'none' : SIDE[text] || 'both'});
+}
+
+/** See the header. */
+export function exclusionsOf(floats) {
+  if (!Array.isArray(floats)) return NONE;
+  const out = [];
+  for (const f of floats) {
+    const e = exclOf(f);
+    if (e) out.push(e);
+  }
+  return out.length ? Object.freeze(out) : NONE;
+}

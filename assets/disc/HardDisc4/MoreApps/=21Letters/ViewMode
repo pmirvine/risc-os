@@ -1,0 +1,216 @@
+// ViewMode - the view of a document's window (Batch D, D29, D30,
+// D31, D32, D34, OD2): 'print' (Print layout: pages), 'web' (Web
+// layout: the galley at the window's width, ./WebView), 'outline'
+// (Outline: Draft's galley by outline level, ./OutlineLayout) or
+// 'draft' (the galley on one tall page, as before Batch D). Per
+// window (dw.viewName), remembered for the next window.
+//
+//   VIEWS                 the views a window can show now
+//   openingView(app, doc) -> the view a window opens in: the file's
+//                         w:view (./SettingsRead viewOf: OD2, read
+//                         only, never written), else the one chosen
+//                         last (./WordChoices 'view'), else 'print'
+//                         (a view not in VIEWS counts as none)
+//   initView(dw)          dw.viewName (dw.L.floats: Print layout's,
+//                         P12.2), no pages yet; the info line
+//                         (toolbar row 2's 'pageInfo': ./PageInfo)
+//                         kept up to date as the selection changes
+//                         (view.formatListeners: once a frame);
+//                         view.refit (./EditScroll: dw.fitExtent);
+//                         view.settling() (./HdrEdit settling: column
+//                         or wrap passes due or running);
+//                         Outline's collapse set (./OutlineView
+//                         initOutline: outlineOpt, setCollapsed and
+//                         applyFold are there)
+//   placeView(dw)         after dw.L.layout (./WinFit fit): L.place
+//                         for the view. Print layout: a ./Pages for
+//                         each new layout (from the last one's,
+//                         reused: D7), dw.pages, a new ./PlacePrint
+//                         on every fit (its shifts are the column's
+//                         x now; ./PageHF printGalley: headers
+//                         and footers) and the slices started; when
+//                         the new pages give a body paragraph's
+//                         page fields other values (./FieldPass
+//                         passOf, D18, PG20) one more layout first
+//                         (dw.newLayout with those fields), and
+//                         again when the pages are all worked out
+//                         by then (the info line's count: a short
+//                         document, no slice to look); likewise when
+//                         paragraphs land in a column of another
+//                         width (./ColPass colPass, D23: dw.colW,
+//                         the layout's colW, ./WinFit): on the
+//                         pages up to the caret's, pass after pass
+//                         for at most SYNC_MS (40) ms, the rest in
+//                         the slices (P10 fix I2); Draft:
+//                         ./PlaceDraft, no pages, no slices, one
+//                         column (laid out again without dw.colW
+//                         when L had one); the info line set
+//                         (showInfo)
+//   setView(dw, view) -> bool   show view (false: not in VIEWS, or
+//                         shown already; the header and footer mode
+//                         left first: view.leaveHdr, ./HdrMode):
+//                         remembered, laid out again
+//                         (dw.fit), and scrolled so that the caret's
+//                         line is where it was in the window
+//   setMarks(dw, on)      View > Formatting marks (view.marks,
+//                         ./EditPaint marks; per window, not kept)
+//   showInfo(dw)          the info line set from the caret now (in
+//                         the header and footer mode: view.hdr info,
+//                         'Page 2 of 9 - Header', ./HdrEdit)
+//   stopView(dw)          no more slices (./CloseDoc destroy)
+//
+// The passes (page fields, column widths, wrap round floats:
+// ./WrapPass, P12.3, dw.wrap, as dw.colW): ./ViewPass.
+//
+// The slices (D7, D34): while dw.pages is not done, once an
+// animation frame P.step(STEP_MS) works out pages for STEP_MS ms;
+// when the count has changed the extent is set again (dw.fitExtent:
+// it grows, nothing above moves, the scroll stays) and the info line
+// with it; then the column widths due on the pages worked out are
+// laid out (./ColPass: the first page not settled, passes for at
+// most TICK_MS, 8 ms, so a long document of unequal columns
+// settles page by page as the slices go on: P10 fix I2), and the
+// slices go on until a tick has looked at every page of the layout
+// for them (./ViewPass unchecked: final fix A F3-I2); when
+// done, the window is drawn again (NUMPAGES and
+// SECTIONPAGES show the new count: ./FieldShow countsOf, D7) and
+// the body's page fields looked at (passOf, as above). A frame is
+// one short slice, so keys and edits go between them; a new layout
+// gives new Pages, whose slices go on the same way (an edit not yet
+// laid out is laid out by the slice first, view.ensure: the old
+// Pages' galley would read the edited document's sections, which
+// may be fewer: ./HdrPick RangeError); a window closed
+// stops them (stopView, and a tick finding it closed). Uses
+// requestAnimationFrame; imports no desktop services itself.
+import {PlaceDraft, PlacePrint} from './Place';
+import {Pages} from './Pages';
+import {printGalley} from './PageHF';
+import {viewOf} from './SettingsRead';
+import {choiceOf, setChoice} from './WordChoices';
+import {pageInfo} from './PageInfo';
+import {pass, fieldPass, colStep, wrapStep, unchecked}
+  from './ViewPass';
+import {webSlices} from './WebView';
+import {initOutline} from './OutlineView';
+
+export const VIEWS = Object.freeze(['print', 'web', 'outline',
+  'draft']);
+const STEP_MS = 2, TICK_MS = 8;
+
+/** See the header. */
+export function openingView(app, doc) {
+  const own = viewOf(doc), last = choiceOf(app, 'view');
+  if (VIEWS.includes(own)) return own;
+  return VIEWS.includes(last) ? last : 'print';
+}
+
+/** See the header. */
+export function initView(dw) {
+  dw.viewName = openingView(dw.app, dw.doc);
+  dw.L.floats = dw.viewName === 'print';  // (not laid out yet)
+  dw.pages = null;
+  dw.pagesL = null;                    // (the layout dw.pages is of)
+  dw.view.marks = false;
+  dw.view.refit = () => dw.fitExtent();   // (./EditScroll)
+  dw.view.settling = () => !!(dw.colDue || dw.wrapDue || dw.colEnd);
+  initOutline(dw);                     // (Outline: D32)
+  dw.view.formatListeners.push(() => showInfo(dw));
+}
+
+/** See the header. */
+export function placeView(dw) {
+  const L = dw.L;
+  if (dw.viewName !== 'print') {
+    stopView(dw);
+    dw.pages = dw.pagesL = null;
+    dw.colW = dw.wrap = null;          // (one column: D23; no wrap)
+    if (L.colW) {
+      dw.newLayout(L.metrics, L);
+      return;
+    }
+    if (L.place.pages) L.place = PlaceDraft(L);
+    showInfo(dw);
+    if (dw.viewName === 'web') webSlices(dw);   // (OD8: ./WebView)
+    return;
+  }
+  if (dw.pagesL !== L) {
+    dw.pages = new Pages(printGalley(L), dw.pages);
+    dw.pagesL = L;
+    if (pass(dw)) return;
+  }
+  L.place = PlacePrint(L, dw.pages);
+  dw.fitN = -1;
+  showInfo(dw);
+  if (dw.pages.done && pass(dw)) return;   // (done already: no tick)
+  slices(dw);
+}
+
+/** Pages still to be worked out: one slice at the next frame. */
+function slices(dw) {
+  if (dw.raf || !dw.pages || dw.closed) return;
+  if (dw.pages.done && !dw.colDue && !dw.wrapDue && !unchecked(dw))
+    return;
+  dw.raf = requestAnimationFrame(() => tick(dw));
+}
+
+/** One slice (see the header). */
+function tick(dw) {
+  dw.raf = 0;
+  if (dw.closed) return;
+  dw.view.ensure();                    // (an edit first: new Pages)
+  const P = dw.pages;
+  if (!P) return;
+  P.step(STEP_MS);
+  if (P.count !== dw.fitN || P.done) {
+    dw.fitN = P.count;
+    dw.fitExtent();
+    showInfo(dw);
+  }
+  const all = P.done;                  // (the passes see every page)
+  if (colStep(dw, TICK_MS, true) ||
+    wrapStep(dw, TICK_MS, true)) return;   // (their own slices)
+  if (all && dw.pages === P) dw.checked = dw.L;
+  if (P.done && !fieldPass(dw)) dw.win.invalidate();
+  slices(dw);
+}
+
+/** See the header. */
+export function stopView(dw) {
+  if (dw.raf) cancelAnimationFrame(dw.raf);
+  dw.raf = 0;
+}
+
+/** See the header. */
+export function showInfo(dw) {
+  const tb = dw.bar2 && dw.bar2.tb, v = dw.view;
+  if (!tb || dw.closed) return;
+  tb.setText('pageInfo', v.hdr ? v.hdr.info()
+    : pageInfo(v.L, v.sel));
+}
+
+/** See the header. */
+export function setView(dw, view) {
+  if (!VIEWS.includes(view) || view === dw.viewName) return false;
+  const v = dw.view, w = dw.win;
+  if (v.hdr && v.leaveHdr) v.leaveHdr();   // (pages only: ./HdrMode)
+  const c0 = v.caretRect(), y0 = c0 ? c0.y - w.scrollY : null;
+  dw.viewName = view;
+  setChoice(dw.app, 'view', view);
+  dw.fit();
+  const c1 = v.caretRect();            // (may work out more pages)
+  dw.fitExtent();
+  if (c1 && y0 !== null) {
+    w.scrollTo(w.scrollX, Math.max(0, Math.round(c1.y - y0)));
+  }
+  v.scrollToCaret();
+  showInfo(dw);
+  if (v.hasFocus) v.focus();           // (after a menu)
+  return true;
+}
+
+/** See the header. */
+export function setMarks(dw, on) {
+  if (!!on === !!dw.view.marks) return;
+  dw.view.marks = !!on;
+  dw.win.invalidate();
+}

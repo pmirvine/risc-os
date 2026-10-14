@@ -13,8 +13,12 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {paraBorders, runShade, shadeCss, edgeOf}
   from '../../tools/moreapps/!Letters/BorderResolve';
-import {boxInfo, borderDeco, boxMark}
+import {boxInfo, borderDeco, boxMark, closedMark}
   from '../../tools/moreapps/!Letters/BorderGroups';
+import {Pages} from '../../tools/moreapps/!Letters/Pages';
+import {galleyOf} from '../../tools/moreapps/!Letters/PageGalley';
+import {PlacePrint} from '../../tools/moreapps/!Letters/PlacePrint';
+import {paintPage} from '../../tools/moreapps/!Letters/PagePaint';
 import {geometry, edge} from '../../tools/moreapps/!Letters/BorderPaint';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {DECORATORS} from '../../tools/moreapps/!Letters/DocStack';
@@ -676,5 +680,111 @@ describe('BorderGroups: clicks in a bottom border\'s gap', () => {
     const inBand = L.hitTest(L.left + 10, end + m.padBottom + 2);
     assert.deepEqual(inBand.pos, {id: a.id, off: 3});
     assert.equal(L.hitTest(L.left + 10, b.y + 2).pos.id, b.id);
+  });
+});
+
+describe('BorderGroups: a box cut by a page (Batch D P4.2, PG38)', () => {
+  const RED = S('single', 4, 1, 'FF0000'), BLUE = S('single', 4, 1,
+    '0000FF'), GREY = S('single', 4, 1, '888888');
+  const BX = {pBdr: BOX({top: RED, bottom: BLUE, between: GREY})};
+  const WORDS = 'alpha beta gamma delta epsilon zeta eta theta'.split(' ');
+  const long = (i, n = 30) => Array.from({length: n}, (_, j) =>
+    WORDS[(i + j) % 8]).join(' ');
+  const g0 = () => {
+    const g = {ops: [], font: '', fillStyle: '', strokeStyle: '',
+      lineWidth: 1, textBaseline: '',
+      fillRect(x, y, w, h) { g.ops.push(['rect', g.fillStyle, x, y, w, h]); },
+      fillText(t) { g.ops.push(['text', g.fillStyle, t]); },
+      strokeRect() {}, measureText: (t) => ({width: t.length * 6}),
+      save() {}, restore() {}, beginPath() {}, rect() {}, clip() {},
+      translate() {}, setLineDash() {}, moveTo() {}, lineTo() {},
+      stroke() {}, fill() {}};
+    return g;
+  };
+  const count = (g, c) => g.ops.filter((o) => o[0] === 'rect' &&
+    o[1] === c && o[5] < 3).length;
+
+  it('closedMark: the box closed at a page part\'s top and bottom',
+    () => {
+      const d = mk([P('one', BX), P('two', BX), P('three', BX)]);
+      const [m0, m1, m2] = marks(laid(d));
+      assert.equal(closedMark(m1, false, false), m1);
+      const a = closedMark(m1, false, true);
+      assert.ok(a.bottom && !a.joinBelow && a.between && a.joinAbove);
+      assert.equal(a.bottom, m2.bottom);
+      assert.equal(a.padBottom, m2.padBottom);
+      const b = closedMark(m2, true, false);
+      assert.ok(b.top && !b.between && !b.joinAbove && b.bottom);
+      assert.equal(b.top, m0.top);
+      assert.equal(closedMark(m1, false, true), a, 'kept');
+      assert.equal(closedMark(null, true, true), null);
+    });
+
+  /** doc laid out in Print layout: {L, P, Pl}. */
+  const printed = (doc) => {
+    const L = new DocLayout(doc, M);
+    L.layout(900);
+    const Pg = new Pages(galleyOf(L));
+    L.place = PlacePrint(L, Pg);
+    L.layout(900);
+    Pg.finish();
+    return {L, P: Pg, Pl: L.place};
+  };
+  const pageOfText = (Pl, t) => {
+    for (let i = 0; Pl.pages.at(i); i++) {
+      if (Pl.pageFrags(i).some((f) => f.it.para &&
+        f.it.para.text === t)) return i;
+    }
+    return -1;
+  };
+
+  it('a 3-paragraph group split 2/1: two closed boxes', () => {
+    let found = null;
+    for (let n = 20; n < 90 && !found; n++) {
+      const fill = Array.from({length: n}, (_, i) => P('f' + i));
+      const d = mk([...fill, P('one', BX), P('two', BX),
+        P('three', BX)]);
+      const S2 = printed(d.doc);
+      const a = pageOfText(S2.Pl, 'two'), b = pageOfText(S2.Pl, 'three');
+      if (a >= 0 && b === a + 1 && pageOfText(S2.Pl, 'one') === a) {
+        found = {...S2, a, b};
+      }
+    }
+    assert.ok(found, 'a split 2/1 found');
+    const pa = g0(), pb = g0();
+    paintPage(found.P, found.a, pa, {place: found.Pl});
+    paintPage(found.P, found.b, pb, {place: found.Pl});
+    assert.equal(count(pa, '#ff0000'), 1, 'page 1: the top');
+    assert.equal(count(pa, '#0000ff'), 1, 'page 1: closed at the bottom');
+    assert.equal(count(pa, '#888888'), 1, 'page 1: between');
+    assert.equal(count(pb, '#ff0000'), 1, 'page 2: closed at the top');
+    assert.equal(count(pb, '#0000ff'), 1, 'page 2: the bottom');
+    assert.equal(count(pb, '#888888'), 0, 'page 2: no between');
+  });
+
+  it('one bordered paragraph split across pages: closed on each',
+    () => {
+      const d = mk([P('a ' + long(0)), P(long(1, 1600), BX)]);
+      const S2 = printed(d.doc), it = S2.L.items[1];
+      const ps = [];
+      for (let i = 0; S2.P.at(i); i++) {
+        if (S2.Pl.pageFrags(i).some((f) => f.it === it)) ps.push(i);
+      }
+      assert.ok(ps.length >= 2, `${ps.length} pages`);
+      for (const i of ps) {
+        const g = g0();
+        paintPage(S2.P, i, g, {place: S2.Pl});
+        assert.equal(count(g, '#ff0000'), 1, `page ${i} top`);
+        assert.equal(count(g, '#0000ff'), 1, `page ${i} bottom`);
+      }
+    });
+
+  it('Draft: one box as before', () => {
+    const d = mk([P('one', BX), P('two', BX), P('three', BX)]);
+    const g = g0();
+    paint(laid(d), g, {x0: 0, y0: 0, x1: 2000, y1: 5000});
+    assert.equal(count(g, '#ff0000'), 1);
+    assert.equal(count(g, '#0000ff'), 1);
+    assert.equal(count(g, '#888888'), 2);
   });
 });

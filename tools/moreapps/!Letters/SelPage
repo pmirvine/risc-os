@@ -1,0 +1,114 @@
+// SelPage - Ctrl+PageDown and Ctrl+PageUp (Batch D P3.5, D33): the
+// caret to the first line of the next or previous page of Print
+// layout (Word's "browse by page").
+//
+//   toPage(L, it, p, aff, dir) -> {pos, affinity} | null
+//     the first caret place of the page after (dir 1) or before
+//     (-1) the page position p of item it is on (./Place pageOf of
+//     its line), blank pages (PG3) passed: its first fragment's
+//     first line (a paragraph cut from the page before: the line
+//     the page starts with); a table there: its first cell, entered
+//     from above (./SelTable enter); a kept block: its start. The
+//     rest of a table started on a page before (head false, P4.2:
+//     its rows from r0 on, or the rest of row r0 after its cuts)
+//     is entered at row r0's first cell with a line on that page
+//     (./PageCellAt unitAt: a merged cell's slice, a nested table's
+//     row); the rest of a kept block has no caret place of its own
+//     there: the fragment after it is taken, and a page with nothing
+//     else is passed like a blank one, so each press moves on. A
+//     place found is taken only when it is on that page (./Place
+//     pageOf; review P4 M2: a nested table taller than a frame made
+//     Next page skip pages and Previous page stick). Before the
+//     first page: the first page's first place; past the last
+//     page: null (nothing moves). null too where L.place has no pages
+//     (./SelMove makes the commands Page Down and Page Up there:
+//     its pageCmd) or p's line has no page.
+//
+// The pages are asked of L.place (./PlacePrint: pageOf, pages,
+// pageFrags), which works out the cursors as far as needed (D7).
+// Pure: no desktop services.
+import {lineOf} from './PositionMap';
+import {at} from './SelVert';
+import {enter} from './SelTable';
+import {unitAt} from './PageCellAt';
+import {rowsOf} from './PageCells';
+
+/** The caret place of unit p (./PageCellAt unitAt): a paragraph's
+ *  line, a nested table's row (its first cell), a block. */
+function placeOf(L, p) {
+  const x = p.x;
+  if (x.kind === 'p') {
+    const ln = x.lines && x.lines[p.line];
+    return at(x, ln ? ln.from : 0);
+  }
+  const row = rowsOf(x) && x.rows[p.line];
+  const c = row && row.cells.find((y) => !y.cont && y.col &&
+    y.col.items.length);
+  const y = c ? c.col.items[0] : x;
+  return enter(L, y, 1, y.x);
+}
+
+/** The first caret place on page i (on) of table t's own rows on
+ *  fragment f: the first cell with a unit there of row r0 (after the
+ *  cuts f.from; a continue cell's merged slice too), else of the
+ *  rows after it (a rest with nothing left, M1). */
+function rowStart(L, t, f, on) {
+  for (let r = f.r0; r < f.r1 && t.rows[r]; r++) {
+    const from = r === f.r0 ? f.from : null;
+    for (let c = 0; c < t.rows[r].cells.length; c++) {
+      const u = from && Number.isInteger(from[c]) && from[c] > 0
+        ? from[c] : 0;
+      const p = unitAt(t, r, c, u), q = p && placeOf(L, p);
+      if (on(q)) return q;
+    }
+  }
+  return null;
+}
+
+/** The first caret place on page i of place Pl (see the header):
+ *  null when the page holds no caret place of its own (only the
+ *  rest of a table or block whose start is on a page before). */
+function firstOn(L, Pl, i) {
+  const on = (c) => !!c && pageAt(L, Pl, c) === i;
+  for (const f of Pl.pageFrags(i)) {
+    const n = f.it;
+    let c = null;
+    if (n.kind === 'p') {
+      const ln = n.lines[f.l0] || n.lines[0];
+      c = at(n, ln ? ln.from : 0);
+    } else if (f.head) {
+      c = n.kind === 'tbl' ? enter(L, n, 1, Pl.lineAt(n, 0).x)
+        : at(n, 0);
+    }
+    if (!on(c) && n.kind === 'tbl' && f.r0 !== undefined) {
+      c = rowStart(L, n, f, on);
+    }
+    if (on(c)) return c;
+  }
+  return null;
+}
+
+/** The page caret place c is on (./Place pageOf), or null. */
+function pageAt(L, Pl, c) {
+  const it = L.byId.get(c.pos.id);
+  if (!it) return null;
+  const k = it.kind === 'p' && it.lines && it.lines.length
+    ? lineOf(it, c.pos.off, c.affinity) : 0;
+  return Pl.pageOf(it, k);
+}
+
+/** See the header. */
+export function toPage(L, it, p, aff, dir) {
+  const Pl = L.place, P = Pl && Pl.pages;
+  if (!P || !it) return null;
+  const k = it.kind === 'p' && it.lines ? lineOf(it, p.off, aff) : 0;
+  const i0 = Pl.pageOf(it, k);
+  if (i0 === null || i0 === undefined) return null;
+  const d = dir > 0 ? 1 : -1;
+  for (let i = Math.max(0, i0 + d); P.at(i); i += d) {
+    const r = P.at(i).blank ? null : firstOn(L, Pl, i);
+    if (r) return r;
+    if (i === 0) break;
+  }
+  return null;
+}

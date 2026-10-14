@@ -1,0 +1,196 @@
+// PagePaint - Print layout's pages drawn (Batch D, D30, D36).
+//
+//   paintPages(L, g, rect, {marks}?)  the pages of L.place (a
+//       ./PlacePrint) that meet rect {x0, y0, x1, y1} (work area):
+//       each a white sheet with a 1 px border and the shadow
+//       (paintSheet), grey corner marks at its text area's corners
+//       (MARK px long, MARK_COLOUR, just outside the area: Word's
+//       crop marks; the text area is the section's margins and the
+//       page's frame, bodyTop..bodyTop + frameH), then its content
+//       by paintPage at the page's place, cut to the page's height
+//       (a part of an item past its page is not drawn on the desk)
+//   paintPage(P, i, g, {place, rect?, marks?})  page i of Pages P at
+//       the page's origin (D36: the whole contract for printing and
+//       PDF, Batch G; g a 2D context): the fragments of its frames
+//       (place: the ./PlacePrint of P; its pageFrags) by ./DocPaint
+//       paintFrags; rect the part to draw in the page's coordinates
+//       (default the page); marks: the breaks drawn as rules (off:
+//       none, D5, D22); then its header and footer (./PageHF
+//       boxesOf, its fields computed for the page: each story's
+//       layout drawn as the body is, in full
+//       colour, PG2, moved by whole px to its box; a part that is
+//       no story: a BAND_COLOUR band with BAND_TEXT in 11 px grey);
+//       and, for each band of columns (D23: pg.cols, the columns
+//       sharing a top) whose section has w:sep on (P.G.sect(s).sep,
+//       s the section of its first column's first item), a line
+//       between each two columns filled (separators): SEP_W (0.75
+//       pt, 1 px) black, in the middle of the space between them,
+//       from the band's top as long as its tallest column (the
+//       most used, PG25); and the line numbers (P11.1, D24:
+//       ./LineNumbers numbersOf, each right aligned at its x on its
+//       baseline, in ./LineNumbers numberFont of the document's
+//       styles: font and colour).
+//       The floats (P12.2, D26: pg.floats, ./AnchorPlace) by
+//       ./PicPaint at their places, cut to rect: the behindDoc
+//       ones first, under the text, the others last, over the text
+//       and the header and footer, each in z order (a floating
+//       table's Float, P12.6, is not drawn here: its fragment is,
+//       with the text, at the float's place). A blank page draws
+//       nothing
+//   paintSheet(g, {x, y, w, h})  a page's white sheet, its border
+//       and shadow (Draft's one tall page too: ./EditPaint)
+//   MARK, MARK_COLOUR   12 px, '#a0a0a0'
+//   SEP_W, SEP_COLOUR   1 px, '#000000'
+//
+// The desk under the pages is ./EditPaint's. The page gap (PAGE_GAP,
+// R6) and every size scale with the view's zoom (g is scaled).
+// Fragments are drawn moved by whole pixels (./PlacePrint), so table
+// fills and borders stay on the pixel grid. Draws on the context it
+// is given; imports no desktop services.
+import {paint, paintFrags} from './DocPaint';
+import {boxesOf, BAND_H, BAND_TEXT} from './PageHF';
+import {numbersOf, numberFont} from './LineNumbers';
+import {paintPic} from './PicPaint';
+
+export const MARK = 12, MARK_COLOUR = '#a0a0a0';
+export const BAND_COLOUR = '#e4e4e4';
+export const SEP_W = 1, SEP_COLOUR = '#000000';
+const SHADOW = 3;
+
+/** See the header. */
+export function paintSheet(g, p) {
+  g.fillStyle = '#555555';
+  g.fillRect(p.x + SHADOW, p.y + SHADOW, p.w, p.h);
+  g.fillStyle = '#ffffff';
+  g.fillRect(p.x, p.y, p.w, p.h);
+  g.strokeStyle = '#444444';
+  g.lineWidth = 1;
+  g.strokeRect(p.x - 0.5, p.y - 0.5, p.w + 1, p.h + 1);
+}
+
+/** The corner marks of page pg drawn at r (see the header). */
+function corners(L, g, pg, r) {
+  const geo = L.geom(pg.s);
+  if (!geo) return;
+  const x0 = Math.round(r.x + geo.mar.left);
+  const x1 = Math.round(r.x + geo.mar.left + geo.textW);
+  const y0 = Math.round(r.y + pg.bodyTop);
+  const y1 = Math.round(r.y + pg.bodyTop + pg.frameH);
+  const M = MARK;
+  g.fillStyle = MARK_COLOUR;
+  for (const [x, y, before, above] of [[x0, y0, true, true],
+    [x1, y0, false, true], [x0, y1, true, false],
+    [x1, y1, false, false]]) {
+    g.fillRect(before ? x - M : x, above ? y - 1 : y, M, 1);
+    g.fillRect(before ? x - 1 : x, above ? y - M : y, 1, M);
+  }
+}
+
+/** See the header. */
+export function paintPages(L, g, rect, opts = {}) {
+  const Pl = L.place, S = Pl.sheet, P = Pl.pages;
+  const shown = S.pagesIn(rect.y0, rect.y1);
+  for (const i of shown) {
+    const pg = P.list[i], r = S.rect(pg);
+    paintSheet(g, r);
+    corners(L, g, pg, r);
+  }
+  for (const i of shown) {
+    const r = S.rect(P.list[i]);
+    g.save();
+    g.beginPath();
+    g.rect(rect.x0, r.y, rect.x1 - rect.x0, r.h);
+    g.clip();
+    g.translate(r.x, r.y);
+    paintPage(P, i, g, {place: Pl, marks: !!opts.marks,
+      rect: {x0: rect.x0 - r.x, y0: rect.y0 - r.y,
+        x1: rect.x1 - r.x, y1: rect.y1 - r.y}});
+    g.restore();
+  }
+}
+
+/** See the header. */
+export function paintPage(P, i, g, opts = {}) {
+  const Pl = opts.place;
+  if (!Pl || Pl.pages !== P) {
+    throw new TypeError('paintPage: opts.place, the Print layout ' +
+      'placement of these pages, is needed');
+  }
+  const pg = P.at(i);
+  if (!pg || pg.blank) return;
+  const rect = opts.rect || {x0: 0, y0: 0, x1: pg.w, y1: pg.h};
+  const fl = pg.floats || [];
+  floats(Pl.L, g, fl, rect, true);
+  paintFrags(Pl.L, g, Pl.pageFrags(i), rect, {marks: !!opts.marks});
+  if (pg.cols) separators(P.G, pg, g);
+  const ns = numbersOf(P, i);
+  if (ns.length) numbers(g, ns, numberFont(Pl.L.doc.styles), rect);
+  for (const b of boxesOf(P.G, pg, P)) {
+    story(g, b, rect, !!opts.marks);
+  }
+  floats(Pl.L, g, fl, rect, false);
+}
+
+/** The floats fl (behind: those, else the others) that meet rect. */
+function floats(L, g, fl, rect, behind) {
+  for (const f of fl) {
+    if (!f.pic || f.behind !== behind || f.x > rect.x1 ||
+      f.x + f.w < rect.x0 || f.y > rect.y1 || f.y + f.h < rect.y0) {
+      continue;
+    }
+    paintPic(L, g, f, f.x, f.y + f.h);
+  }
+}
+
+/** The lines between the columns of page pg (see the header). */
+function separators(G, pg, g) {
+  const cs = pg.cols, items = G.items;
+  for (let a = 0, b; a < cs.length; a = b) {
+    for (b = a + 1; b < cs.length && cs[b].top === cs[a].top;) b++;
+    const it = items[cs[a].start.k];
+    const sc = b - a > 1 && G.sect ? G.sect(it ? it.s : pg.s) : null;
+    if (!sc || !sc.sep) continue;
+    let h = 0;
+    for (let c = a; c < b; c++) h = Math.max(h, cs[c].used);
+    const y = Math.round(pg.bodyTop + pg.vShift + (cs[a].top || 0));
+    g.fillStyle = SEP_COLOUR;
+    for (let c = a; c + 1 < b; c++) {
+      const l = cs[c], r = cs[c + 1];
+      g.fillRect(Math.round((l.x + l.w + r.x) / 2), y, SEP_W,
+        Math.round(h));
+    }
+  }
+}
+
+/** Line numbers ns drawn in font f, those near rect only. */
+function numbers(g, ns, f, rect) {
+  g.save();
+  g.font = f.css;
+  g.fillStyle = f.colour;
+  g.textAlign = 'right';
+  for (const n of ns) {
+    if (n.y < rect.y0 - 100 || n.y > rect.y1 + 300) continue;
+    g.fillText(n.text, n.x, n.y);
+  }
+  g.restore();
+}
+
+/** Header or footer box b (./PageHF boxesOf) drawn in rect. */
+function story(g, b, rect, marks) {
+  const x = Math.round(b.x), y = Math.round(b.y);
+  if (!b.lay) {
+    if (y > rect.y1 || y + BAND_H < rect.y0) return;
+    g.fillStyle = BAND_COLOUR;
+    g.fillRect(x, y, Math.round(b.w), BAND_H);
+    g.fillStyle = '#606060';
+    g.font = '11px "Liberation Sans", sans-serif';
+    g.fillText(BAND_TEXT[b.kind], x + 4, y + 12);
+    return;
+  }
+  const {L} = b.lay, dx = x - b.lay.x, dy = y - b.lay.y;
+  g.save();
+  g.translate(dx, dy);
+  paint(L, g, {x0: rect.x0 - dx, y0: rect.y0 - dy, x1: rect.x1 - dx,
+    y1: rect.y1 - dy}, {marks});
+  g.restore();
+}

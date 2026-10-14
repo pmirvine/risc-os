@@ -204,7 +204,8 @@ describe('ids, flow and the caret (C3.1: into the cells)', () => {
     const doc = await readDocx(await tblDocx(p(r('a')) +
       nestedTable(3) + p(r('z'))));
     const L = lay(doc);
-    for (const id of ids(doc)) assert.ok(L.byId.has(id), id);
+    for (const id of ids({sections: doc.sections}))
+      assert.ok(L.byId.has(id), id);
     assert.deepEqual(L.items.map((x) => x.kind), ['p', 'tbl', 'p']);
     L.items.forEach((x, i) => {
       assert.equal(x.ci, i);

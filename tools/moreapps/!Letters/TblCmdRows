@@ -1,0 +1,135 @@
+// TblCmdRows - the glue under the table commands and the row
+// commands (C4.1, D23, D25), split from ./TblCmd (which re-exports
+// every name here). Each row command runs in ONE d.atomic (one undo
+// step) and returns the selection after it, or null when it is
+// refused (nothing changed, no step; ./EditRun beeps): sel with no
+// table rows (rowsOf null), or past ./TblCheck MAX_ROWS (R16).
+//
+//   onTable(d, at, fn, place?) -> sel | null  as ./TblCmd's header
+//       (fn(table, grid) -> a new table put in as ONE restoreBlock;
+//       the caret at place(newTable), else the start of its first
+//       paragraph; null when nothing was applied)
+//   atomic(d, fn) -> fn() run in one d.atomic (its selection)
+//   rowsOf(doc, sel) -> {at, r0, r1} | null  the rows a command acts
+//       on: a 'cells' shape's rows r0..r1 (./SelShape: INCLUSIVE)
+//       in its table at path `at`; a 'text' selection in one cell:
+//       that cell's row of its innermost table; else null
+//   insertRowsCmd(d, sel, below)  as many rows as rowsOf's above or
+//       below them (./TblEdit insertRows); the selection stays
+//   deleteRowsCmd(d, sel)  rowsOf's rows removed (./TblEdit
+//       deleteRows), the caret in the row after them, else the one
+//       before; every row: the table removed (removeTable)
+//   tabRowCmd(d, sel)  Tab in the last cell (./EditKeys; the head
+//       in the last cell of its innermost table: ./SelTable
+//       cellTabTarget 'last' going forward, else null): a row below
+//       that table's LAST row, the caret in its first cell
+//   splitTableCmd(d, sel)  rows from rowsOf's r0 become a new table
+//       (./TblEdit splitTable) after an empty paragraph, the caret
+//       in it; at row 0 the empty paragraph goes before the table
+//       (Word's Ctrl-Shift-Enter in the first row); a floating
+//       table's new part never overlaps it (./TblFloat apart: P12b
+//       fix I4, the halves never coincide)
+// onTable and atomic live here (not in ./TblCmd) so that ./TblCmd
+// can re-export this module without an import cycle.
+// Pure: no desktop services.
+import {reserveIds, newPara} from './Model';
+import {gridOf} from './TblGrid';
+import {at as walkAt} from './Walk';
+import {caret, select} from './Selection';
+import {firstPos, rowPos} from './TblPos';
+import {shapeOf} from './SelShape';
+import {findBlock} from './EditPos';
+import {sib} from './Path';
+import {MAX_ROWS} from './TblCheck';
+import {insertRows, deleteRows, splitTable} from './TblEdit';
+import {cellTabTarget} from './SelTable';
+import {removeTable} from './TblRemove';
+import {apart} from './TblFloat';
+import {docMap} from './PicRead';
+
+
+const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
+
+/** See the header. */
+export function onTable(d, at, fn, place) {
+  const t = walkAt(d.doc, at);
+  if (!isTbl(t)) return null;
+  reserveIds(d.doc);
+  const n = fn(t, gridOf(t));
+  if (!n || n === t) return null;
+  d.apply({op: 'restoreBlock', block: at, snapshot: n});
+  const p = place ? place(n) : firstPos(n);
+  return caret(p || {id: n.id, off: 0});
+}
+
+/** See the header. */
+export function rowsOf(doc, sel) {
+  if (!sel || !sel.anchor || !sel.head) return null;
+  const sh = shapeOf(doc, sel);
+  if (sh.kind === 'cells') return {at: sh.table, r0: sh.r0, r1: sh.r1};
+  if (sh.kind !== 'text') return null;
+  const loc = findBlock(doc, sel.head.id), cl = loc && loc.cell;
+  if (!cl || !isTbl(walkAt(doc, cl.table))) return null;
+  return {at: cl.table, r0: cl.r, r1: cl.r};
+}
+
+/** See the header. */
+export function atomic(d, fn) {
+  let out = null;
+  d.atomic(() => { out = fn(); });
+  return out;
+}
+
+/** Room for n more rows in the table at path at. */
+const room = (d, at, n) => walkAt(d.doc, at).rows.length + n <=
+  MAX_ROWS;
+
+/** See the header. */
+export function insertRowsCmd(d, sel, below) {
+  const x = rowsOf(d.doc, sel);
+  if (!x || !room(d, x.at, x.r1 - x.r0 + 1)) return null;
+  return atomic(d, () => (onTable(d, x.at,
+    (t) => insertRows(t, x.r0, x.r1, !!below)) &&
+    select(sel.anchor, sel.head, sel.affinity)));
+}
+
+/** See the header. */
+export function deleteRowsCmd(d, sel) {
+  const x = rowsOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => onTable(d, x.at,
+    (t) => deleteRows(t, x.r0, x.r1),
+    (n) => rowPos(n, Math.min(x.r0, n.rows.length - 1))) ||
+    removeTable(d, x.at));
+}
+
+/** See the header. */
+export function tabRowCmd(d, sel) {
+  const loc = sel && sel.head ? findBlock(d.doc, sel.head.id) : null;
+  const at = loc && loc.cell && loc.cell.table;
+  const t = at ? walkAt(d.doc, at) : null;
+  if (!isTbl(t) || cellTabTarget(d.doc, sel, 1) !== 'last' ||
+    !room(d, at, 1)) return null;
+  const r = t.rows.length - 1;
+  return atomic(d, () => onTable(d, at,
+    (T) => insertRows(T, r, r, true), (n) => rowPos(n, r + 1)));
+}
+
+/** See the header. */
+export function splitTableCmd(d, sel) {
+  const x = rowsOf(d.doc, sel);
+  if (!x) return null;
+  return atomic(d, () => {
+    reserveIds(d.doc);
+    const p = newPara('');
+    if (x.r0 === 0) {
+      d.apply({op: 'insertBlock', at: x.at, block: p});
+      return caret({id: p.id, off: 0});
+    }
+    const [a, b] = splitTable(walkAt(d.doc, x.at), x.r0);
+    d.apply({op: 'restoreBlock', block: x.at, snapshot: a});
+    d.apply({op: 'insertBlocks', at: sib(x.at, 1), blocks: [p,
+      {...b, tblPr: apart(b.tblPr, docMap(d.doc))}]});
+    return caret({id: p.id, off: 0});
+  });
+}

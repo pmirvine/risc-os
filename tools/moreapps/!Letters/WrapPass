@@ -1,0 +1,186 @@
+// WrapPass - root paragraphs broken again round the floats of their
+// pages (Batch D P12.3, D27; settled page by page: P12a fix C1),
+// pass after pass as ./ColPass does for column widths: one more
+// layout a pass, the paragraphs re-broken only when their wrap key
+// changes.
+//
+//   wrapPass(L, P, upTo = Infinity) -> wrap | null  for Print layout
+//       L (./DocLayout, L.floats) and its Pages P: the wrap of one
+//       more layout (DocLayout opts.wrap), or null when none is due
+//       on pages 0..upTo worked out. Pages are settled in order: the
+//       FIRST page not settled is given a pass (./WrapPage
+//       pageStep):
+//       - a page whose inputs are not those of its record (./WrapMemo
+//         recFor: none yet, an edit, the pages before moved its
+//         start, or another page's pass changed its paragraphs'
+//         parts) gets a new record and STARTS AGAIN from the same
+//         place whatever came before (./WrapWant canonOn: its
+//         paragraphs keep only their parts for the pages before it;
+//         the paragraphs after it keep none, theirs kept aside and
+//         given back once it settles, so the pages after it, the
+//         same, need not settle again);
+//       - its paragraphs are then given the parts they want
+//         (./WrapWant wantOn, guessed top down), a pass each time;
+//         none to give: settled ('done');
+//       - a settled page whose end moves later (a paragraph that
+//         went to the next page comes back) keeps the end it settled
+//         with: the item after it is PINNED to start a page
+//         (./PageGalley breakBefore), as Word keeps a page laid out;
+//       - a page that comes back to a state it had (a cycle) or has
+//         not settled after MAX_PASSES passes: when its end has
+//         moved, pinned at the first end it had (once); else laid out
+//         ignoring wrap ('fall': its paragraphs keep only their parts
+//         for the pages before; text may run under a float there)
+//         until its inputs change.
+//       So a page's lines depend only on its inputs, never on the
+//       edits made before (edited == fresh). Only pages holding a
+//       root item that may hold a float (L.anchored, ./DocItems) or
+//       a paragraph with parts, or in the middle of their passes,
+//       are looked at. At most MAX_PASSES x 4 (pages + 1) passes in
+//       one ./DocVersion (a guard).
+//     wrap {parts: Map id -> [part] (./WrapWant), keys: Map id ->
+//       key, pins: Map id -> page key, tys: Map table id -> {pk, y}
+//       (./WrapPage: a table held), known (./WrapMemo), ver, total,
+//       id}; the ids of paragraphs no longer in L dropped
+//   wrapKey(L, id) -> its key in L.wrap (undefined: none; pinned:
+//       '|pin' or '|keep' after it; a table held: '|y' and where)
+//   cellKey(L, id) -> the keys of the paragraphs in root table id's
+//       cells that have parts (P12a fix I5), or undefined: ./DocItems
+//       keeps no table whole when it changed
+//   shapeIn(L, id) -> ./LineShape shapeOf of its parts (memoised per
+//       parts) | undefined: what ./DocStack breaks it with (a cell's
+//       paragraph too, P12a fix I5)
+//   mayWrap(L) -> whether a pass can be due for L (Print layout with
+//       a float, or with parts)
+//   MAX_PASSES 16 (./WrapPage's)
+//
+// The window runs the passes (./ViewPass wrapStep), as for columns.
+// Root paragraphs are wrapped round the page's floats, and a cell's
+// paragraphs round the floats in that cell (./WrapCells, P12a fix
+// I5); a table or a kept block stays as it is beside a float. Floats
+// in headers and footers are not placed (./AnchorPlace: the body
+// only) and never wrap the body (D13). Pure: no desktop services.
+import {shapeOf} from './LineShape';
+import {versionOf} from './DocVersion';
+import {keyOf, live} from './ColMemo';
+import {memoOf} from './WrapMemo';
+import {sigOf} from './WrapWant';
+import {pageStep, livePins, MAX_PASSES} from './WrapPage';
+
+export {MAX_PASSES};
+const NO_MAP = new Map(), NO_SET = new Set();
+const SHAPES = new WeakMap();          // parts -> shape
+const CELLS = new WeakMap();           // wrap -> cellKeys
+let WRAPS = 0;                         // (a wrap's id)
+
+/** See the header. */
+export function wrapKey(L, id) {
+  const w = L && L.wrap;
+  if (!w) return undefined;
+  const k = w.keys.get(id), pin = w.pins && w.pins.get(id);
+  const ty = w.tys && w.tys.get(id);
+  if (ty) return (k || '') + '|y' + ty.pk + '@' + ty.y;
+  if (!pin) return k;
+  return (k || '') + (pin.startsWith('k:') ? '|keep' : '|pin');
+}
+
+/** See the header. */
+export function shapeIn(L, id) {
+  const parts = L.wrap && L.wrap.parts.get(id);
+  if (!parts) return undefined;
+  let s = SHAPES.get(parts);
+  if (!s) SHAPES.set(parts, s = shapeOf(parts));
+  return s;
+}
+
+/** See the header. */
+export const mayWrap = (L) => !!(L && L.floats &&
+  ((L.anchored && L.anchored.size) || (L.wrap && L.wrap.parts.size)));
+
+/** Whether page pg holds a root item of L that may hold a float or
+ *  has parts (or a table with a cell's paragraph that has some). */
+function holds(L, pg) {
+  const its = L.items, a = L.anchored || NO_SET;
+  const ps = L.wrap ? L.wrap.parts : NO_MAP, t = cellKeys(L.wrap);
+  for (let k = pg.start.k; k <= pg.end.k && k < its.length; k++) {
+    const id = its[k].id;
+    if (a.has(id) || ps.has(id) || t.has(id)) return true;
+  }
+  return false;
+}
+
+/** wrap's Map root table id -> the keys of its cells' paragraphs
+ *  (memoised per wrap). */
+function cellKeys(w) {
+  if (!w) return NO_MAP;
+  let m = CELLS.get(w);
+  if (m) return m;
+  m = new Map();
+  for (const [id, ps] of w.parts) {
+    const t = ps[0] && ps[0].root;
+    if (t) m.set(t, (m.get(t) || '') + id + '=' + w.keys.get(id) + ';');
+  }
+  CELLS.set(w, m);
+  return m;
+}
+
+/** See the header. */
+export const cellKey = (L, id) => cellKeys(L && L.wrap).get(id);
+
+/** Page key pk's record is busy (a page in the middle of its
+ *  passes is looked at until it settles, candidates or none). */
+const busy = (memo, pk) => {
+  const rec = memo.known.get(pk);
+  return !!rec && rec.st === 'busy';
+};
+
+/** See the header. */
+export function wrapPass(L, P, upTo = Infinity) {
+  if (!P || !P.list || !mayWrap(L)) return null;
+  const memo = memoOf(L.wrap, versionOf(L.doc));
+  if (memo.total >= MAX_PASSES * 4 * (P.list.length + 1)) return null;
+  const had = (L.wrap && L.wrap.pins) || NO_MAP;
+  const held = (L.wrap && L.wrap.tys) || NO_MAP;
+  const pins = livePins(L, P, memo, had);
+  const tys = livePins(L, P, memo, held);
+  if (pins !== had || tys !== held) {
+    return next(L, NO_MAP, pins, memo, tys);
+  }
+  const last = Math.min(P.list.length - 1, upTo);
+  for (let i = 0; i <= last; i++) {
+    const pg = P.list[i];
+    if (pg.blank || (!holds(L, pg) && !busy(memo, keyOf(L, pg)))) {
+      continue;
+    }
+    const r = pageStep(L, P, i, memo, pins, tys);
+    if (!r) continue;
+    const w = next(L, r.ch, r.pins || pins, memo, r.tys || tys);
+    memo.known.get(keyOf(L, pg)).last = w.id;
+    return w;
+  }
+  return null;
+}
+
+/** The wrap after L's with changes ch, pins and tys (see the
+ *  header). */
+function next(L, ch, pins, memo, tys) {
+  const old = L.wrap, parts = new Map(old && old.parts);
+  const keys = new Map(old && old.keys);
+  const drop = (id) => {
+    parts.delete(id);
+    keys.delete(id);
+  };
+  if (old && old.ver !== memo.ver) {   // (an edit: ids gone dropped)
+    for (const id of [...parts.keys()]) if (!L.byId.has(id)) drop(id);
+  }
+  for (const [id, ps] of ch) {
+    if (!ps) drop(id);
+    else {
+      parts.set(id, ps);
+      keys.set(id, sigOf(ps));
+    }
+  }
+  return {parts, keys, pins: live(L, pins, true),
+    tys: live(L, tys, true), known: memo.known,
+    ver: memo.ver, total: memo.total + 1, id: ++WRAPS};
+}

@@ -1,0 +1,235 @@
+// StoryFacade - a header or footer story edited by every existing
+// command (Batch D, D14): an object shaped like the ./Document the
+// edit layer uses, whose doc is the story seen as a one-section
+// document and whose apply / atomic / group forward to the real
+// Document with the op's story set (D12, R8).
+//
+//   facadeOf(d, part, s) -> Facade  for Document d and story part
+//       (a part name of d.doc.stories), memoised per (d, part): the
+//       same object each time; s (the section of the page the story
+//       is edited on: its props are the view's) is set on it.
+//       RangeError: d not a Document, part not a string
+//   Facade
+//     doc        the view (rebuilt when the real Doc's state changes,
+//                its ./DocVersion too: the body's arrays change in
+//                place, final fix A F1-I3; the same object while
+//                nothing has): {...the real
+//                doc, sections: [{...section s, blocks: the story's
+//                blocks}], rels: the story's own ([] when none),
+//                meta: {...meta, mainPart: part, documentRoot: the
+//                story's root} (./PicRels partDoc's: targets are
+//                relative to the story's part, new nodes take its
+//                prefixes), stories: the OTHER stories and the body
+//                as one more, BODY_KIND, under the main part's name
+//                (the scanners that must see the whole document:
+//                ids, ./PicIds, ./ListUsed, bookmarks, fonts)}.
+//                Paths in it are [0, i, ...] as ops address a story
+//                (R8); ./EditPos findBlock finds a story position as
+//                a body one (story null), so no command builds a
+//                body path from it. A story gone: the view with no
+//                blocks
+//     part, s, real (the Document), story (the Story now or null)
+//     gone       the story is no longer in d.doc.stories (undo of
+//                its creation): the window leaves the mode
+//     pending    a story not made yet (pendingFacade), else null
+//     apply(op, opts)  the real d.apply of op with story: part (a
+//                compound: each op in it); setDocPart rels becomes
+//                setStory with the story's rels replaced (its
+//                relationships are its own .rels part); every other
+//                setDocPart (parts, styles, numbering, settings) is
+//                the document's, as it is. RangeError (nothing
+//                changed): a section op (splitSection, mergeSection,
+//                setSection), an op naming another story, a story
+//                gone
+//     atomic, group, groupStart, groupEnd, undo, redo, canUndo,
+//     canRedo, dirty, undoDepth, stateId, breakCoalesce, on,
+//     markSaved, clearHistory  the real Document's (one history:
+//                undo in the body can undo a header edit)
+//     refuses(id) -> true for REFUSED: ./EditApply run gives null
+//                for it (the window beeps), nothing changed
+//   pendingFacade(d, {s, kind, type}) -> Facade  NOT memoised: for a
+//       page that shows no header (or footer) of that kind: its story
+//       is ./HdrCmd blankStory's (one empty paragraph, the Header /
+//       Footer style: the view's styles hold it when the document
+//       lacks it), part the free name it takes, gone false; nothing
+//       is in the document (entering and leaving changes nothing).
+//       The FIRST apply makes it (./HdrCmd createOnEdit: story,
+//       relationship, section s's reference of that type, the
+//       style) and applies the op, in one d.atomic (one undo step,
+//       opts' coalesce key on it); pending is then null and the
+//       facade is the story's like any other (gone once undone)
+//   REFUSED    the commands a story cannot take: page, column and
+//              section breaks, footnotes and endnotes, a table of
+//              contents (the last ones for later batches)
+//   BODY_KIND  'body'
+// Where an undo or redo step leaves the window (its story, or the
+// body): ./EditStep stepTo, read by ./HdrStep.
+// Pure: no desktop services.
+import {blankStory, createOnEdit} from './HdrCmd';
+import {versionOf} from './DocVersion';
+
+export const REFUSED = Object.freeze(new Set(['pageBreak',
+  'columnBreak', 'sectionNext', 'sectionContinuous', 'sectionEven',
+  'sectionOdd', 'footnote', 'endnote', 'toc']));
+export const BODY_KIND = 'body';
+
+const SECTION_OPS = new Set(['splitSection', 'mergeSection',
+  'setSection']);
+const NONE = Object.freeze([]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const memo = new WeakMap();            // Document -> Map part -> Facade
+const bodies = new WeakMap();          // sections -> {blocks, story}
+
+/** The body as one story (memoised per sections array and the
+ *  doc's ./DocVersion: the ops change the arrays in place); its
+ *  blocks joined when first read (a keystroke in a header joins
+ *  none). */
+function bodyStory(doc, part) {
+  const secs = doc.sections, got = bodies.get(secs);
+  const ver = versionOf(doc);
+  if (got && got.part === part && got.ver === ver &&
+    got.lists.length === secs.length &&
+    got.lists.every((b, i) => b === secs[i].blocks)) return got.story;
+  const lists = secs.map((s) => s.blocks);
+  let flat = null;
+  const story = Object.freeze({part, kind: BODY_KIND,
+    get blocks() {
+      return flat || (flat = Object.freeze(lists.flat()));
+    }});
+  bodies.set(secs, {part, lists, story, ver});
+  return story;
+}
+
+class Facade {
+  constructor(d, part) {
+    this.real = d;
+    this.part = part;
+    this.s = 0;
+    this._vals = null;
+    this._doc = null;
+    this.pending = null;
+  }
+
+  /** The story in the real document, or null. */
+  get made() {
+    const m = this.real.doc.stories;
+    const st = m instanceof Map ? m.get(this.part) : null;
+    return isObj(st) && Array.isArray(st.blocks) ? st : null;
+  }
+
+  get story() {
+    const p = this.pending;
+    return this.made || (p ? p.story : null);
+  }
+
+  get gone() { return !this.story; }
+
+  get doc() {
+    const doc = this.real.doc, st = this.story;
+    const vals = [st, this.s, this.pending, versionOf(doc),
+      ...Object.keys(doc), ...Object.values(doc)];
+    const old = this._vals;
+    if (old && old.length === vals.length &&
+      old.every((v, i) => v === vals[i])) return this._doc;
+    this._vals = vals;
+    return (this._doc = this._view(doc, st));
+  }
+
+  _view(doc, st) {
+    const secs = doc.sections, sec = secs[Math.min(this.s,
+      secs.length - 1)];
+    const meta = {...(doc.meta || {}), mainPart: this.part};
+    if (st && st.root) meta.documentRoot = st.root;
+    const main = (doc.meta && doc.meta.mainPart) || 'word/document.xml';
+    const stories = new Map();
+    if (doc.stories instanceof Map) {
+      for (const [k, v] of doc.stories) if (k !== this.part)
+        stories.set(k, v);
+    }
+    stories.set(main, bodyStory(doc, main));
+    const p = !this.made && this.pending;
+    if (p && p.styles) doc = {...doc, styles: p.styles};
+    return {...doc, meta, stories,
+      rels: st && Array.isArray(st.rels) ? st.rels : NONE,
+      sections: [{...sec, blocks: st ? st.blocks : []}]};
+  }
+
+  /** op as the real Document applies it (see the header). */
+  tag(op) {
+    if (!isObj(op)) return op;
+    if (SECTION_OPS.has(op.op)) {
+      throw new RangeError(op.op + ': not in a header or footer');
+    }
+    if (op.op === 'compound') {
+      return Array.isArray(op.ops)
+        ? {...op, ops: op.ops.map((o) => this.tag(o))} : op;
+    }
+    if (op.op === 'setStory') return op;
+    const st = this.story;
+    if (!st) throw new RangeError('the story is gone: ' + this.part);
+    if (op.op === 'setDocPart') {
+      if (op.key !== 'rels') return op;
+      return {op: 'setStory', part: this.part,
+        story: {...st, rels: op.value}};
+    }
+    if (op.story !== undefined && op.story !== null &&
+      op.story !== this.part) {
+      throw new RangeError('another story: ' + op.story);
+    }
+    return {...op, story: this.part};
+  }
+
+  apply(op, opts) {
+    const p = this.pending;
+    if (!p || this.made) {
+      this.real.apply(this.tag(op), opts);
+      return;
+    }
+    if (isObj(op) && SECTION_OPS.has(op.op)) this.tag(op);
+    this.real.atomic(() => {
+      createOnEdit(this.real, p.s, p.kind, p.type, p);
+      this.real.apply(this.tag(op));
+    }, opts);
+    this.pending = null;
+  }
+  atomic(fn, opts) { return this.real.atomic(fn, opts); }
+  group(fn, opts) { return this.real.group(fn, opts); }
+  groupStart(opts) { this.real.groupStart(opts); }
+  groupEnd() { this.real.groupEnd(); }
+  undo() { return this.real.undo(); }
+  redo() { return this.real.redo(); }
+  get canUndo() { return this.real.canUndo; }
+  get canRedo() { return this.real.canRedo; }
+  get dirty() { return this.real.dirty; }
+  get undoDepth() { return this.real.undoDepth; }
+  get stateId() { return this.real.stateId; }
+  breakCoalesce() { this.real.breakCoalesce(); }
+  on(name, fn) { return this.real.on(name, fn); }
+  markSaved() { this.real.markSaved(); }
+  clearHistory() { this.real.clearHistory(); }
+  refuses(id) { return REFUSED.has(id); }
+}
+
+/** See the header. */
+export function facadeOf(d, part, s = 0) {
+  if (!isObj(d) || typeof d.apply !== 'function' || !isObj(d.doc))
+    throw new RangeError('not a Document');
+  if (typeof part !== 'string') throw new RangeError('bad part');
+  let m = memo.get(d);
+  if (!m) memo.set(d, m = new Map());
+  let f = m.get(part);
+  if (!f) m.set(part, f = new Facade(d, part));
+  f.s = Number.isInteger(s) && s >= 0 ? s : 0;
+  return f;
+}
+
+/** See the header. */
+export function pendingFacade(d, {s, kind, type}) {
+  if (!isObj(d) || typeof d.apply !== 'function' || !isObj(d.doc))
+    throw new RangeError('not a Document');
+  const {story, styles} = blankStory(d.doc, kind);
+  const f = new Facade(d, story.part);
+  f.s = s;
+  f.pending = {s, kind, type, story, styles};
+  return f;
+}

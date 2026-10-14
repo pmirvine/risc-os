@@ -43,152 +43,20 @@
 // pBdr and shd: ./BorderExplicit boxExplicit (whole sides and
 // shading against what the styles give; a raw own one refused).
 // Pure: no desktop services.
-import {jcName, isStrictDoc} from './JcName';
-import {fail} from './ModelCheck';
-import {collapsed} from './Selection';
-import {EMPTY} from './Pending';
-import {resolver, paraOf, alignOf, firstOf} from './FormatEff';
-import {levelInd, effPara} from './ParaInd';
-import {buildOps, changes, runOps, touched} from './FormatOps';
+import {resolver, paraOf} from './FormatEff';
+import {effPara} from './ParaInd';
+import {touched} from './FormatOps';
 import {paraPatch} from './FormatCheck';
-import {dragIndent} from 'wimplib/RulerMath';
-import {spacingNode, rawSpacing, patchSpacing} from './SpacingRaw';
-import {boxExplicit} from './BorderExplicit';
+import {paraCommand, explicit} from './FormatExplicit';
 
-const NONE = {extra: []};
-const DEFAULTS = {spacing: {line: 240, lineRule: 'auto'}};
-
-/** See the header. */
-export function paraCommand(d, typing, sel, pending, patchFor) {
-  const res = resolver(d.doc);
-  const ops = buildOps(d.doc, sel, (en) => {
-    if (!en.para) return null;
-    const x = patchFor(en.p, res);
-    return x && changes(en.p, 'pPr', x, 'pStyle') ? [x] : null;
-  });
-  runOps(d, typing, ops);
-  return {sel, pending: collapsed(sel) ? pending || EMPTY : EMPTY};
-}
-
-/** Sub-object o of a checked patch made explicit against inh. */
-function sub(o, inh, defs) {
-  if (o === null || o === undefined) return o;
-  const out = {};
-  for (const k of Object.keys(o)) {
-    const was = inh && Number.isInteger(inh[k]) ? inh[k]
-      : inh && typeof inh[k] === 'string' ? inh[k] : defs[k] ?? 0;
-    out[k] = o[k] === was ? null : o[k];
-  }
-  return out;
-}
-
-/**
- * The ind part: as sub(), but firstLine and hanging are one value
- * (./Styles.resolvePara): the one given is written (the other
- * deleted), and both are deleted when the style gives that value.
- * A first line of 0 over a style's hanging is firstLine 0, which
- * cancels it (as Word writes it).
- */
-function indent(o, inh) {
-  if (o === null || o === undefined) return o;
-  const {firstLine: f, hanging: h, ...rest} = o;
-  const out = sub(rest, inh, {});
-  if (f === undefined && h === undefined) return out;
-  const v = f != null ? f : h != null ? -h : null;
-  const keep = v !== null && v !== firstOf(inh);
-  out.firstLine = keep && f != null ? f : null;
-  out.hanging = keep && f == null ? h : null;
-  return out;
-}
-
-/** A checked patch v made explicit for paragraph p (see header). */
-export function explicit(v, p, res, lvl) {
-  const l = lvl === undefined ? levelInd(res.doc, p) : lvl || undefined;
-  const inh = res.para({pStyle: p.pStyle, pPr: NONE}, l);
-  const out = {};
-  if (v.jc !== undefined) {
-    out.jc = v.jc !== null && alignOf(v.jc) === alignOf(inh.jc) ? null
-      : v.jc === null ? null : jcName(v.jc, isStrictDoc(res.doc));
-  }
-  if (v.ind !== undefined) out.ind = indent(v.ind, inh.ind);
-  if (v.spacing !== undefined) {
-    Object.assign(out, spacing(v.spacing, p, inh));
-  }
-  if (v.tabs !== undefined) out.tabs = v.tabs;
-  if (v.pBdr !== undefined || v.shd !== undefined) {
-    Object.assign(out, boxExplicit(v, res, p));
-  }
-  for (const k of FLAGS) {
-    if (v[k] === undefined) continue;
-    const was = k === 'widowControl' ? inh[k] !== false
-      : inh[k] === true;
-    out[k] = v[k] === null || v[k] === was ? null : v[k];
-  }
-  return {pPr: out};
-}
-
-const FLAGS = ['keepNext', 'keepLines', 'widowControl',
-  'pageBreakBefore', 'contextualSpacing'];
-
-/** The spacing part: {spacing} or {extra} (see the header). */
-function spacing(o, p, inh) {
-  if (o === null) return {spacing: null};
-  const val = sub(o, inh.spacing, DEFAULTS.spacing);
-  const own = {...rawSpacing(p.pPr), ...((p.pPr || {}).spacing || {})};
-  const st = inh.spacing || {};
-  if (val.line != null && val.lineRule == null) {
-    val.lineRule = o.lineRule ?? own.lineRule ?? st.lineRule ?? 'auto';
-  }
-  if (val.lineRule != null && val.line == null) {
-    val.line = o.line ?? own.line ?? st.line ?? 240;
-  }
-  if (!spacingNode(p.pPr)) return {spacing: val};
-  return patchSpacing(p.pPr, val);
-}
+export {paraCommand, explicit};
+export {indentBy, dragIndents} from './FormatIndent';
 
 /** See the header. */
 export function setPara(d, typing, sel, patch, pending) {
   const v = paraPatch(patch);
   return paraCommand(d, typing, sel, pending,
     (p, res) => explicit(v, p, res));
-}
-
-/** See the header. */
-export function indentBy(d, typing, sel, delta, pending) {
-  if (typeof delta !== 'number' || !Number.isFinite(delta) ||
-    Math.round(delta) === 0) fail('bad indent step');
-  const st = Math.abs(Math.round(delta));
-  return paraCommand(d, typing, sel, pending, (p, res) => {
-    const cur = paraOf(effPara(res, d.doc, p), p, res).indentLeft;
-    const n = delta > 0 ? Math.floor(cur / st) * st + st
-      : Math.ceil(cur / st) * st - st;
-    const left = Math.min(Math.max(n, 0), 31680);
-    return explicit({ind: {left}}, p, res);
-  });
-}
-
-const MARKERS = ['left', 'first', 'hanging', 'right'];
-
-/** See the header. */
-export function dragIndents(d, typing, sel, arg, pending) {
-  const {marker, at, textW, free} = arg || {};
-  if (!MARKERS.includes(marker) || typeof at !== 'number' ||
-    Number.isNaN(at) || typeof textW !== 'number' ||
-    !Number.isFinite(textW) || textW <= 0) fail('bad indent drag');
-  return paraCommand(d, typing, sel, pending, (p, res) => {
-    const q = paraOf(effPara(res, d.doc, p), p, res);
-    const was = {left: q.indentLeft, first: q.indentFirst,
-      right: q.indentRight};
-    const n = dragIndent(marker, at, was, textW, !!free);
-    const ind = {};
-    if (n.left !== was.left) ind.left = n.left;
-    if (n.right !== was.right) ind.right = n.right;
-    if (n.first !== was.first) {
-      if (n.first < 0) ind.hanging = -n.first;
-      else ind.firstLine = n.first;
-    }
-    return Object.keys(ind).length ? explicit({ind}, p, res) : null;
-  });
 }
 
 const CLEAR = {pPr: {jc: null, ind: null, spacing: null}};

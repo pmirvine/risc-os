@@ -1,7 +1,11 @@
 // DocRects - the rectangles that show a selection in a ./DocLayout.
 //
 //   selectionRects(L, sel, y0, y1) -> [{x, y, w, h}] in work-area
-//   coordinates, for the items that meet the band y0..y1 only
+//   coordinates, for what the screen band y0..y1 shows only: the
+//   band (both ends finite) is first made the galley span of what it
+//   shows (L.place band: Draft the band itself, Print layout the
+//   lines of the pages in it, D33), and the culling below is on the
+//   galley (none: nothing lit)
 //
 // sel is a ./Selection ({anchor, head}); its ends are put in order.
 // Text is lit line by line (./PositionMap). A paragraph whose end is
@@ -22,13 +26,15 @@
 // taken from L.flow (by place, ./DocPos placeOf: cells' items too;
 // the band's ends mapped from the root column's items, a table's to
 // its end place), each at its column's x and w (./DocItems); an
-// item in a cell outside the band is passed. Pure: no desktop
-// services.
+// item in a cell outside the band is passed. Every box is placed by
+// the layout's L.place (./Place, D4): a line's by its rects, a
+// table's moved as its place moves it. Pure: no desktop services.
 import * as PM from './PositionMap';
 import {compare} from './DocPos';
 import {shapeOf} from './SelShape';
 import {rowAtY, bottomOf} from './TblLayout';
 import {at as walkAt} from './Walk';
+import {shiftOf} from './Place';
 
 const STUB = 6;
 const TEXT = {kind: 'text'};
@@ -45,6 +51,14 @@ function lineAt(it, y) {
   return lo;
 }
 
+/** Line k of paragraph item it lit from x to x + w (x in the line's
+ *  coordinates; h the line's height): on screen where L.place puts
+ *  the line (its rects). */
+function onLine(L, it, k, x, w, h) {
+  const b = L.place.rects(it, k, k + 1)[0];
+  return {x: x + b.x, y: b.y, w, h};
+}
+
 /** The layout item of the table at path tp, or null. */
 function tableItem(L, tp) {
   const t = walkAt(L.doc, tp);
@@ -52,15 +66,45 @@ function tableItem(L, tp) {
   return it && it.kind === 'tbl' ? it : null;
 }
 
+/** r moved by d ({dx, dy}: ./Place shiftOf; Draft: r itself). */
+const moved = (r, d) => (d.dx || d.dy
+  ? {...r, x: r.x + d.dx, y: r.y + d.dy} : r);
+
 /** One box over rows r0..r1 of table item it, in the band. */
-function rowsBox(it, r0, r1, y0, y1, out) {
+function rowsBox(L, it, r0, r1, y0, y1, out) {
   const {rows} = it, n = rows.length;
   const a = Math.max(r0, rowAtY(it, y0));
   const b = Math.min(r1, rowAtY(it, y1));
   if (a > b) return;
+  if (L.place.rowParts) {
+    // (Print layout: one box per page the rows show on)
+    let cur = null;
+    for (let r = a; r <= b; r++) {
+      for (const p of L.place.rowParts(it, r)) {
+        if (cur && cur.page === p.page) cur.h = p.y + p.h - cur.y;
+        else {
+          cur = {page: p.page, x: it.x + it.left + p.dx, y: p.y,
+            w: it.width, h: p.h};
+          out.push(cur);
+        }
+      }
+    }
+    for (const o of out) delete o.page;
+    return;
+  }
   const top = a === 0 ? it.y : rows[a].y;
   const end = b === n - 1 ? it.y + it.h : rows[b].y + rows[b].h;
-  out.push({x: it.x + it.left, y: top, w: it.width, h: end - top});
+  out.push(moved({x: it.x + it.left, y: top, w: it.width,
+    h: end - top}, shiftOf(L.place, it, 0)));
+}
+
+/** Row r of table it on screen: [{dx, dy, y, h}] (./Place rowParts
+ *  in Print layout: a box on each page; else the row moved by the
+ *  table's shift). */
+function partsOf(L, it, r) {
+  if (L.place.rowParts) return L.place.rowParts(it, r);
+  const d = shiftOf(L.place, it, 0), row = it.rows[r];
+  return [{dx: d.dx, dy: d.dy, y: row.y + d.dy, h: row.h}];
 }
 
 /** The box x0..x1, y0..y1 on whole pixels: neighbouring cells'
@@ -75,7 +119,7 @@ function cellRects(L, sh, y0, y1) {
   const out = [], it = tableItem(L, sh.table);
   if (!it || !it.rows.length) return out;
   if (sh.whole) {
-    rowsBox(it, 0, it.rows.length - 1, y0, y1, out);
+    rowsBox(L, it, 0, it.rows.length - 1, y0, y1, out);
     return out;
   }
   const a = Math.max(sh.r0, rowAtY(it, y0));
@@ -90,8 +134,10 @@ function cellRects(L, sh, y0, y1) {
         if (r !== a || tr >= r) continue;
         c = it.rows[tr].cells[tk];
       }
-      out.push(onPixels(c.x, it.rows[c.r].y, c.x + c.w,
-        bottomOf(it, c)));
+      for (const d of partsOf(L, it, c.r)) {
+        const end = c.rowSpan > 1 ? bottomOf(it, c) + d.dy : d.y + d.h;
+        out.push(onPixels(c.x + d.dx, d.y, c.x + c.w + d.dx, end));
+      }
     }
   }
   return out;
@@ -101,6 +147,11 @@ function cellRects(L, sh, y0, y1) {
 export function selectionRects(L, sel, y0, y1) {
   const out = [];
   if (!sel) return out;
+  if (Number.isFinite(y0) && Number.isFinite(y1) && L.place.band) {
+    const b = L.place.band(y0, y1);
+    if (!b) return out;
+    ({y0, y1} = b);
+  }
   // (no typed table: L.flow is L.items, the shape is text)
   const sh = L.flow === L.items ? TEXT : shapeOf(L.doc, sel, L);
   if (sh.kind === 'cells') return cellRects(L, sh, y0, y1);
@@ -126,7 +177,7 @@ export function selectionRects(L, sel, y0, y1) {
     const it = L.flow[i];
     const x = it.kind === 'tbl' && i === it.index && lit.get(it);
     if (x) {
-      rowsBox(it, x.r0, x.r1, y0, y1, out);
+      rowsBox(L, it, x.r0, x.r1, y0, y1, out);
       i = it.endIndex;
       continue;
     }
@@ -156,7 +207,7 @@ export function selectionRects(L, sel, y0, y1) {
     }
     if (a < b) {
       for (const r of PM.selectionRects(it, a, b)) {
-        out.push({x: r.x + it.x, y: r.y, w: r.w, h: r.h});
+        out.push(onLine(L, it, r.line, r.x, r.w, r.h));
       }
     }
     if (i < t.index) {
@@ -164,7 +215,7 @@ export function selectionRects(L, sel, y0, y1) {
       // after a page break's rule: inside the column
       const x = lines[lines.length - 1].endsWithBreak
         ? Math.min(c.x, it.w - STUB) : c.x;
-      out.push({x: x + it.x, y: c.y, w: STUB, h: c.h});
+      out.push(onLine(L, it, c.line, x, STUB, c.h));
     }
   }
   return out;

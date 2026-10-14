@@ -7,24 +7,34 @@
 //   pageBreak(d, sel)  -> the selection after Insert > Page break
 //                         (Ctrl-Enter), in one d.atomic group; null
 //                         (refused) in a table's cell
+//   columnBreak(d, sel) -> the same for Insert > Column break
+//                         (Ctrl-Shift-Enter outside a table:
+//                         ./EditKeys), brType 'column'
 //   putIn(d, sel, ins, x?, fmt?) -> a caret after what went in:
-//                         text ins, or one U+FFFC for inline x, put
+//                         text ins, or one U+FFFC for inline x (or
+//                         several: x a map offset -> inline, as an
+//                         op's inlines), put
 //                         in at sel in one d.atomic (the selection
 //                         deleted, a paragraph made at a kept
 //                         block's edge, as for the page break; fmt
 //                         as arg below); sel back when its position
-//                         is not in the document (./InsertPicture)
-//   breakable(doc, sel) -> whether a page or section break can go
-//                         at sel: a valid selection with neither end
-//                         in a table's cell (./InsertMenu shades the
-//                         two items otherwise; C3.5)
+//                         is not in the document (./InsertPicture);
+//                         at a computed field result's edge before
+//                         or after the field, null (refused) into it
+//                         (./FieldEdit guard)
+//   breakable(doc, sel) -> whether a page, column or section break
+//                         can go at sel: a valid selection with
+//                         neither end in a table's cell
+//                         (./InsertMenu shades the items otherwise;
+//                         C3.5)
 //
-// ids: pageBreak; sectionNext, sectionContinuous (Insert > Section
-// break > Next page / Continuous: ./SectBreak insertSection); nbsp,
-// nbHyphen, softHyphen (Insert > Special character, below). Each
-// runs through typing.command (./Typing), so it ends the typing's
-// undo step and is one of its own; arg is the command's argument
-// (none yet).
+// ids: pageBreak, columnBreak; sectionNext, sectionContinuous,
+// sectionEven, sectionOdd (Insert > Section break > Next page /
+// Continuous / Even page / Odd page: ./SectBreak insertSection);
+// nbsp, nbHyphen, softHyphen (Insert > Special character, below).
+// Each runs through typing.command (./Typing), so it ends the
+// typing's undo step and is one of its own; arg is the command's
+// argument (none yet).
 //
 // nbsp (Ctrl-Shift-Space) puts a no-break space, U+00A0, in as text
 // at the caret (the selection is deleted first, as for the page
@@ -58,21 +68,29 @@
 // In a table's cell (either end of the selection, a nested table's
 // edge too) it is refused: null, nothing changed, the caller beeps
 // (Batch C3.4, D25, TB22; a section break likewise: ./SectBreak).
+// A column break (Batch D P10.3, D22) is put in by the same rules,
+// with brType 'column' (written <w:br w:type="column"/>): in Print
+// layout the text after it starts the next column (./PageCols).
 // Pure: no desktop services.
 import {OBJ} from './Model';
 import {caret, collapsed} from './Selection';
 import {orderedPos, findBlock, topOnly} from './EditPos';
 import {deleteRange, paraBy} from './EditRange';
+import {guard} from './FieldEdit';
 import {splitAt} from './EditPara';
 import {insertSection} from './SectBreak';
 import {W} from './Wml';
 import {fmtAt} from './OpsText';
 import {applyTo} from './Pending';
 
-const PAGE = () => ({kind: 'br', level: 'r', brType: 'page'});
+/** See the header. */
+export const pageBreak = (d, sel) => putBreak(d, sel, 'page');
 
 /** See the header. */
-export function pageBreak(d, sel) {
+export const columnBreak = (d, sel) => putBreak(d, sel, 'column');
+
+/** A break of brType at sel, the paragraph split after it. */
+function putBreak(d, sel, brType) {
   const o = sel ? orderedPos(d.doc, sel) : null;
   if (!o) return sel;
   if (!topOnly(o)) return null;
@@ -85,7 +103,8 @@ export function pageBreak(d, sel) {
       loc = findBlock(d.doc, pos.id);
     }
     d.apply({op: 'replaceText', block: loc.at, at: pos.off,
-      del: 0, ins: OBJ, inlines: {0: PAGE()}});
+      del: 0, ins: OBJ,
+      inlines: {0: {kind: 'br', level: 'r', brType}}});
     loc = findBlock(d.doc, pos.id);
     out = splitAt(d, loc, pos.off + 1);
   });
@@ -107,8 +126,11 @@ function pendingFmt(p, off, fmt) {
 
 /** Put `ins` (text, or one U+FFFC for inline `x`) at the caret. */
 export function putIn(d, sel, ins, x, fmt) {
-  const o = sel ? orderedPos(d.doc, sel) : null;
+  let o = sel ? orderedPos(d.doc, sel) : null;
   if (!o) return sel;
+  const g = guard(d.doc, sel, o);
+  if (!g) return null;                 // (./FieldEdit: a field)
+  if (g !== sel) o = orderedPos(d.doc, sel = g);
   let out = null;
   d.atomic(() => {
     let pos = collapsed(sel) ? o.from : deleteRange(d, o);
@@ -118,7 +140,7 @@ export function putIn(d, sel, ins, x, fmt) {
       loc = findBlock(d.doc, pos.id);
     }
     d.apply({op: 'replaceText', block: loc.at, at: pos.off,
-      del: 0, ins, inlines: x ? {0: x} : undefined,
+      del: 0, ins, inlines: !x ? undefined : x.kind ? {0: x} : x,
       ...pendingFmt(loc.b, pos.off, fmt)});
     out = {id: pos.id, off: pos.off + ins.length};
   });
@@ -130,6 +152,8 @@ const hyphen = raw('noBreakHyphen'), soft = raw('softHyphen');
 
 const COMMANDS = new Map([
   ['pageBreak', (d, t, sel) => t.command(() => pageBreak(d, sel))],
+  ['columnBreak',
+    (d, t, sel) => t.command(() => columnBreak(d, sel))],
   ['nbsp', (d, t, sel) => t.command(() => putIn(d, sel, '\xA0'))],
   ['nbHyphen',
     (d, t, sel, a) => t.command(() => putIn(d, sel, OBJ, hyphen(), a))],
@@ -138,6 +162,8 @@ const COMMANDS = new Map([
   ['sectionNext', (d, t, sel) => insertSection(d, t, sel, 'nextPage')],
   ['sectionContinuous',
     (d, t, sel) => insertSection(d, t, sel, 'continuous')],
+  ['sectionEven', (d, t, sel) => insertSection(d, t, sel, 'evenPage')],
+  ['sectionOdd', (d, t, sel) => insertSection(d, t, sel, 'oddPage')],
 ]);
 
 /** See the header. */

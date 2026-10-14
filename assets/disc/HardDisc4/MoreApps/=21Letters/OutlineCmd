@@ -1,0 +1,238 @@
+// OutlineCmd - Outline view's commands (Batch D P13.3, D32): Promote,
+// Demote, Move up and Move down. Each returns the selection after it,
+// or null (refused: the caller beeps; nothing changed, no undo
+// step); one d.atomic (the caller runs it in typing.command: one
+// undo step).
+//
+//   promoteCmd(d, sel, collapsed?), demoteCmd(d, sel, collapsed?)
+//       (collapsed: the collapse set, as moveCmd's: a touched heading
+//       that is collapsed takes the headings hidden under it one
+//       level too, as Word does; body text under it stays): every
+//       top-level paragraph the selection formats (./FormatOps
+//       touched: not a last one it only reaches the start of; in a
+//       table's cell: none) one outline level higher (promote) or
+//       lower: its pStyle is the heading
+//       style of the new level and a direct outlineLvl goes (so the
+//       style gives the level: ./OutlineLayout levelOf). Body text
+//       promoted is Heading 1, Heading 9 demoted is body text (the
+//       default paragraph style: pStyle removed), as Word (PG33);
+//       Heading 1 promoted and body text demoted stay. The style is
+//       the document's (by id HeadingN, else by name heading N, case
+//       ignored: ./DocParts findStyle; a style of another type there
+//       leaves the paragraph as it is), else the built-in one
+//       (./StylesBuiltin builtinStyle; based on, and followed by, the
+//       document's default paragraph style when it has one) added
+//       once, by a setDocPart before the setProps. The selection is
+//       sel (the text does not move); null when no paragraph changes
+//       or there is no style table
+//   moveCmd(d, sel, dir, collapsed) -> a new selection at the same
+//       positions; dir -1 up, 1 down; collapsed Outline's collapse
+//       set (./ViewMode; null or not a Set: none). The unit moved is
+//       the top-level blocks from the selection's first to its last
+//       (a position in a cell: its table), with the children hidden
+//       under them (./OutlineLayout outlineOf: the rows hidden after
+//       the last); it goes past the shown block above (with the
+//       hidden ones after that, so past a collapsed heading whole) or
+//       below (with its hidden children): one removeBlocks and one
+//       insertBlocks (./OpsBlocks) of the later run, put before the
+//       earlier one, at paths from ./EditPos atIndex (top level by
+//       definition, as D32 says). null at the top or the bottom,
+//       and when the unit and the block it passes are not all in one
+//       section (a section break is never crossed: PG34). The unit
+//       is first widened to both ends of every field, bookmark and
+//       comment range with one end in it (./MovePairs widen, P13
+//       fix I2; null when it cannot be, or starts in hidden rows)
+//   outlineId(doc, sel, outline, id) -> the ./Keymap id a key runs
+//       in Outline view, or null (the key as everywhere else).
+//       outline: the layout's L.outline (null: not Outline view).
+//       outlineUp and outlineDown (Ctrl-Shift-Up / Down) themselves;
+//       tab and shiftTab at a caret at the start of a top-level
+//       heading outlineDemote and outlinePromote; shiftTab at the
+//       start of body text outlinePromote, unless the paragraph is a
+//       list item (./EditList usesShiftTab: its level changes);
+//       enter, backspace and delete next to hidden text
+//       outlineEnter and outlineStop (./OutlineEdit editId, P13 fix
+//       I1)
+//   OUTLINE  {outlinePromote, outlineDemote, outlineUp, outlineDown,
+//       outlineEnter (./OutlineEdit enterCmd), outlineStop (null)}
+//       -> fn(d, sel, {L}) (./EditApply: L the view's layout, its
+//       outline the collapse set)
+// Pure: no desktop services.
+import {orderedPos, checkPos, atIndex} from './EditPos';
+import {touched} from './FormatOps';
+import {isTop} from './Path';
+import {levelOf, outlineOf, BODY} from './OutlineLayout';
+import {findStyle, withStyle} from './DocParts';
+import {builtinStyle} from './StylesBuiltin';
+import {collapsed as isCaret, select} from './Selection';
+import {usesShiftTab} from './EditList';
+import {editId, enterCmd, stopCmd} from './OutlineEdit';
+import {widen} from './MovePairs';
+import {forEachBlock} from './Walk';
+
+/** {id, styles} of heading level lv (0..8) in table st; null. */
+function headStyle(st, lv) {
+  const n = lv + 1, own = findStyle(st, 'Heading' + n, 'heading ' + n);
+  if (own) return own.type === 'paragraph' ? {id: own.id, styles: st}
+    : null;
+  const s = builtinStyle('Heading' + n);
+  const base = st.defaults && st.defaults.paragraph;
+  if (typeof base === 'string' && st.styles.has(base)) {
+    s.basedOn = base;
+    s.next = base;
+  } else {
+    delete s.basedOn;
+    delete s.next;
+  }
+  return {id: s.id, styles: withStyle(st, s)};
+}
+
+/**
+ * The paragraphs to shift: those the selection touches, and the
+ * headings hidden under a collapsed one of them (body text under it
+ * stays as it is; not under a Heading 1 promoted: it stays).
+ */
+function parts(doc, sel, collapsed, by) {
+  const list = (touched(doc, sel) || []).filter((x) => x.para &&
+    isTop(x.at));
+  if (!(collapsed instanceof Set) || !collapsed.size &&
+    !(collapsed.cap > 0)) return list;   // (cap: Show level, M2)
+  const {rows} = outlineOf(doc, collapsed), bs = flatten(doc);
+  const ix = new Map(bs.map((b, k) => [b, k]));   // (M3: no indexOf)
+  const seen = new Set(list.map((x) => x.p));
+  let tops = null;                     // (top-level paths, once)
+  for (const {p} of [...list]) {
+    const k0 = ix.get(p);
+    if (!rows[k0] || rows[k0].marker !== '+' ||
+      by < 0 && rows[k0].level === 0) continue;
+    for (let k = k0 + 1; k < bs.length && rows[k].hidden; k++) {
+      const b = bs[k];
+      if (b.type !== 'p' || seen.has(b) || rows[k].level >= BODY)
+        continue;
+      seen.add(b);
+      tops ||= topPaths(doc);
+      list.push({at: tops[k], p: b, para: true});
+    }
+  }
+  return list;
+}
+
+/** The path of every top-level block, in order (./Walk). */
+function topPaths(doc) {
+  const out = [];
+  forEachBlock(doc, (b, at, depth) => {
+    if (!depth) out.push(at);
+    return true;
+  });
+  return out;
+}
+
+const flatten = (doc) => doc.sections.flatMap((s) => s.blocks);
+
+/** Promote (by -1) or demote (by 1): see the header. */
+function shift(d, sel, by, collapsed) {
+  const doc = d.doc;
+  if (!doc.styles || !(doc.styles.styles instanceof Map)) return null;
+  const ops = [];
+  let st = doc.styles;
+  for (const {at, p} of parts(doc, sel, collapsed, by)) {
+    const lv = levelOf(doc.styles, p);
+    const to = lv === BODY ? (by < 0 ? 0 : BODY) : lv + by;
+    if (to < 0 || to === lv) continue;
+    let id = null;
+    if (to < BODY) {
+      const h = headStyle(st, to);
+      if (!h) continue;
+      ({id, styles: st} = h);
+    }
+    const op = {op: 'setProps', block: at, pStyle: id};
+    if (p.pPr && p.pPr.outlineLvl !== undefined)
+      op.pPr = {outlineLvl: null};
+    ops.push(op);
+  }
+  if (!ops.length) return null;
+  d.atomic(() => {
+    if (st !== doc.styles)
+      d.apply({op: 'setDocPart', key: 'styles', value: st});
+    for (const op of ops) d.apply(op);
+  });
+  return sel;
+}
+
+/** See the header. */
+export const promoteCmd = (d, sel, collapsed) =>
+  shift(d, sel, -1, collapsed);
+/** See the header. */
+export const demoteCmd = (d, sel, collapsed) =>
+  shift(d, sel, 1, collapsed);
+
+/** See the header. */
+export function moveCmd(d, sel, dir, collapsed) {
+  const doc = d.doc, o = orderedPos(doc, sel);
+  if (!o || (dir !== -1 && dir !== 1)) return null;
+  const rows = outlineOf(doc, collapsed instanceof Set ? collapsed
+    : null).rows;
+  const n = rows.length, bl = flatten(doc);
+  let a = o.f.k, b = o.t.k + 1;        // the unit [a, b)
+  for (;;) {                           // (paired marks: ./MovePairs)
+    while (b < n && rows[b].hidden) b++;
+    const w = widen(bl, a, b);
+    if (!w || rows[w[0]].hidden) return null;
+    if (w[0] === a && w[1] === b) break;
+    a = w[0];
+    b = w[1];
+  }
+  let lo, hi;                          // what it passes: [lo, hi)
+  if (dir < 0) {
+    lo = a - 1;
+    while (lo >= 0 && rows[lo].hidden) lo--;
+    hi = a;
+  } else {
+    lo = b;
+    hi = b + 1;
+    while (hi < n && rows[hi].hidden) hi++;
+  }
+  if (lo < 0 || lo >= n) return null;
+  // the later of the two runs goes before the earlier one
+  const [x0, x1, y] = dir < 0 ? [a, b, lo] : [lo, hi, a];
+  const first = atIndex(doc, y), last = atIndex(doc, x1 - 1);
+  if (!first || !last || first.s !== last.s) return null;
+  const from = atIndex(doc, x0);
+  const blocks = bl.slice(x0, x1);
+  d.atomic(() => {
+    d.apply({op: 'removeBlocks', at: from.at, count: x1 - x0});
+    d.apply({op: 'insertBlocks', at: first.at, blocks});
+  });
+  return select(sel.anchor, sel.head, sel.affinity);
+}
+
+const KEYS = {outlineUp: 'outlineUp', outlineDown: 'outlineDown'};
+
+/** See the header. */
+export function outlineId(doc, sel, outline, id) {
+  if (!outline || !doc || !sel) return null;
+  if (Object.hasOwn(KEYS, id)) return KEYS[id];
+  const ed = editId(doc, sel, outline, id);
+  if (ed) return ed;
+  if ((id !== 'tab' && id !== 'shiftTab') || !isCaret(sel) ||
+    sel.head.off !== 0) return null;
+  const loc = checkPos(doc, sel.head);
+  if (!loc || loc.i === undefined || loc.b.type !== 'p') return null;
+  if (levelOf(doc.styles, loc.b) < BODY) {
+    return id === 'tab' ? 'outlineDemote' : 'outlinePromote';
+  }
+  return id === 'shiftTab' && !usesShiftTab(doc, sel)
+    ? 'outlinePromote' : null;
+}
+
+const set = (arg) => (arg && arg.L ? arg.L.outline : null);
+
+/** See the header. */
+export const OUTLINE = {
+  outlinePromote: (d, sel, arg) => promoteCmd(d, sel, set(arg)),
+  outlineDemote: (d, sel, arg) => demoteCmd(d, sel, set(arg)),
+  outlineUp: (d, sel, arg) => moveCmd(d, sel, -1, set(arg)),
+  outlineDown: (d, sel, arg) => moveCmd(d, sel, 1, set(arg)),
+  outlineEnter: (d, sel, arg) => enterCmd(d, sel, set(arg)),
+  outlineStop: stopCmd,
+};

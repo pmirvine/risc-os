@@ -1,0 +1,223 @@
+// PageCols - a page's newspaper columns (Batch D, D23, P10.1): the
+// frames of a page of a section with two columns or more, filled
+// left to right (./PageFill fill for each), for ./Paginate nextPage.
+//
+//   colsAt(G, s) -> [{x, w}]  section s's text columns (px, ./PageFill
+//       geomAt's cols, x from the page's left edge); one, the text
+//       width at the left margin, when it gives none
+//   fillCols(G, out, cs, k0, line0, y0)  fills page out (nextPage's
+//       record, from item k0, line line0 at galley y y0) column by
+//       column, cs the page's columns: column c's frame from where
+//       column c - 1 ended, at its own galley y (startY, with the
+//       column before as the page before), each out.frameH high.
+//       Sets out.cols, the columns filled (frozen [{x, w, start,
+//       end, y0, used, why, top, h}], the first at least; top
+//       out.top, px below the page's body top, or 0, h out.frameH:
+//       the frame they share), out.end and out.why (the last's),
+//       out.used (the most any used), out.seen (the furthest) and
+//       out.y0 (the first's). A column goes on to the next unless it
+//       is the last, or it ended otherwise than full ('full', 'cut':
+//       the rest goes on), by a column break (colBreak) or before a
+//       section that starts nextColumn with the same page size: a
+//       page break, page break before, another section start
+//       ('cont': a continuous one, ./PageFill) or the galley's end
+//       end them
+//   balance(G, from, frames) -> frameH  the least frame height the
+//       columns of section frames.s hold the content of frames
+//       (fillCols' record, filled from cursor from) in, when they
+//       end before a continuous section (why 'cont'; else
+//       frames.frameH: not at the document's end, PG26): a binary
+//       search between the content's height (the columns' used) /
+//       their number and frames.frameH, at most BALANCE_STEPS
+//       fills of the columns, each a cursor-only fill (D23); the
+//       content fits when the fill ends where frames did, and cuts
+//       no item a column could not hold whole (no column ends
+//       'cut' unless one of frames did: P10 fix I1, a line is never
+//       drawn half in one column and half in the next)
+//   BALANCE_STEPS  12
+//   colBreak(G, end) -> whether the break a frame ended by (why
+//       'break', its end cursor end) is a column break: the line
+//       before end (end.line - 1 of item end.k; at a line 0, the
+//       last line of the item before) is in its facts' brCol
+//   startY(items, from, prev) -> the galley y a frame from cursor
+//       from starts at: a cut's line top plus its dy; a table's row
+//       top; else the item's top, plus its space before after a
+//       natural break (prev's why not forced, not a section's start;
+//       ./LineFit beforeOf: not what a float's band moved it down)
+//   sameCols(a, b) -> two column lists (or none each) with the same
+//       fields (cursors by value; px values, a cut's dy too, within
+//       NEAR, 1e-9 px: the same record worked out incrementally or
+//       afresh may differ by float noise, P10 fix M1)
+//   colsAlike(a, b, d) -> b's cursors are a's moved by d items, and
+//       x, w, why, top and h the same (within NEAR; ./PageReuse
+//       converge)
+//   moveCols(G, old, cols, d, y0) -> cols moved by d items for G
+//       (./PageReuse take): starts and ends moved, y0 worked out
+//       again (the first column's: y0, the page's); null when a
+//       column's y0 came out of its fill (old: the items cols was
+//       worked out on), undefined for no cols
+//
+// Each column's frame is the page's frame (bodyTop, frameH): the
+// header and footer are the page's. A paragraph that goes on from
+// one column to the next keeps the lines it was laid out with (at
+// the width of the column it starts in, ./ColPass). Pure: no
+// desktop services.
+import {fill, geomAt, typeOf, factsOf, px} from './PageFill';
+import {beforeOf} from './LineFit';
+import {cursor, sameCursor} from './PageCursor';
+import {isTable} from './PageRows';
+
+export const BALANCE_STEPS = 12, NEAR = 1e-9;
+const FORCED = new Set(['break', 'before', 'section', 'blank']);
+const GO_ON = new Set(['full', 'cut']);
+
+const spaceBefore = (it) => (it.kind === 'p' ? px(beforeOf(it.lines))
+  : 0);
+const lineTop = (it, j) => it.y + (it.lines && it.lines[j]
+  ? it.lines[j].y : 0);
+const moved = (c, d) => (d ? cursor(c.k + d, c.line, c.dy, c.cuts)
+  : c);
+
+/** See the header. */
+export function startY(items, from, prev) {
+  const k0 = from.k, it0 = items[k0];
+  if (!it0) return 0;
+  const line0 = from.line || 0, dy0 = from.dy || 0;
+  if (isTable(it0) && (line0 || from.cuts)) {
+    const row = it0.rows[line0];
+    return row ? row.y : it0.y;
+  }
+  if (line0 || dy0) return lineTop(it0, line0) + dy0;
+  const sec = k0 > 0 && it0.s !== items[k0 - 1].s;
+  const natural = prev && !sec && !FORCED.has(prev.why);
+  return it0.y + (natural ? spaceBefore(it0) : 0);
+}
+
+/** See the header. */
+export function colsAt(G, s) {
+  const g = geomAt(G, s);
+  return g.cols && g.cols.length ? g.cols
+    : [{x: g.mar.left, w: g.textW}];
+}
+
+/** See the header. */
+export function colBreak(G, end) {
+  const k = end.line ? end.k : end.k - 1, it = G.items[k];
+  if (!it) return false;
+  const j = end.line ? end.line - 1
+    : (it.lines ? it.lines.length : 0) - 1;
+  const b = factsOf(G, k).brCol;
+  return !!b && b.includes(j);
+}
+
+/** Whether the next column takes over from frame r (the header). */
+function goesOn(G, r) {
+  const items = G.items, e = r.end, it = items[e.k];
+  if (r.why === 'break') return colBreak(G, e);
+  if (!it) return false;
+  if (GO_ON.has(r.why)) return true;
+  if (r.why !== 'section' || typeOf(G, it.s) !== 'nextColumn') {
+    return false;
+  }
+  const a = geomAt(G, items[e.k - 1].s).size, b = geomAt(G, it.s).size;
+  return a.w === b.w && a.h === b.h;
+}
+
+const colOf = (c, r, top) => Object.freeze({x: c.x, w: c.w,
+  start: r.start, end: r.end, y0: r.y0, used: r.used, why: r.why,
+  top, h: r.frameH});
+
+/** See the header. */
+export function fillCols(G, out, cs, k0, line0, y0) {
+  fill(G, out, k0, line0, y0);
+  const top = out.top || 0, list = [colOf(cs[0], out, top)];
+  let r = out, used = out.used, seen = out.seen;
+  for (let c = 1; c < cs.length && goesOn(G, r); c++) {
+    const start = r.end, y = startY(G.items, start, r);
+    const q = {start, end: null, s: out.s, frameH: out.frameH, y0: y,
+      used: 0, why: 'end', seen: start.k};
+    fill(G, q, start.k, start.line || 0, y);
+    list.push(colOf(cs[c], q, top));
+    used = Math.max(used, q.used);
+    seen = Math.max(seen, q.seen);
+    r = q;
+  }
+  out.cols = Object.freeze(list);
+  out.end = r.end;
+  out.why = r.why;
+  out.used = used;
+  out.seen = seen;
+}
+
+/** See the header. */
+export function balance(G, from, frames) {
+  const cs = colsAt(G, frames.s), H = frames.frameH;
+  const end = frames.end;
+  if (frames.why !== 'cont' || cs.length < 2) return H;
+  let all = 0, cut = false;
+  for (const c of frames.cols || []) {
+    all += c.used;
+    cut ||= c.why === 'cut';
+  }
+  const fits = (h) => {
+    const q = {start: from, end: null, s: frames.s, frameH: h,
+      y0: frames.y0, used: 0, why: 'end', seen: from.k};
+    fillCols(G, q, cs, from.k, from.line || 0, frames.y0);
+    return q.why === 'cont' && sameCursor(q.end, end) &&
+      (cut || !q.cols.some((c) => c.why === 'cut'));
+  };
+  let lo = Math.ceil(all / cs.length) - 1, hi = H;
+  for (let n = 0; n < BALANCE_STEPS && hi - lo > 1; n++) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (mid <= lo) break;
+    if (fits(mid)) hi = mid;
+    else lo = mid;
+  }
+  return hi;
+}
+
+/** Two px values the same within NEAR (M1: float noise). */
+const near = (a, b) => a === b || Math.abs(a - b) <= NEAR;
+const nearCur = (a, b) => sameCursor({...a, dy: 0}, {...b, dy: 0}) &&
+  near(a.dy || 0, b.dy || 0);
+
+/** See the header. */
+export function sameCols(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    return x.x === y.x && x.w === y.w && x.why === y.why &&
+      near(x.y0, y.y0) && near(x.used, y.used) && near(x.top, y.top) &&
+      near(x.h, y.h) && nearCur(x.start, y.start) &&
+      nearCur(x.end, y.end);
+  });
+}
+
+/** See the header. */
+export function colsAlike(a, b, d) {
+  if (!a || !b) return !a && !b;
+  return a.length === b.length && a.every((x, i) => {
+    const y = b[i];
+    return x.x === y.x && x.w === y.w && x.why === y.why &&
+      near(x.top, y.top) && near(x.h, y.h) &&
+      nearCur(moved(x.start, d), y.start) &&
+      nearCur(moved(x.end, d), y.end);
+  });
+}
+
+/** See the header. */
+export function moveCols(G, old, cols, d, y0) {
+  if (!cols) return undefined;
+  const out = [];
+  for (let c = 0; c < cols.length; c++) {
+    const x = cols[c], start = moved(x.start, d);
+    let y = y0;
+    if (c > 0) {
+      if (x.y0 !== startY(old, x.start, cols[c - 1])) return null;
+      y = startY(G.items, start, cols[c - 1]);
+    }
+    out.push(Object.freeze({...x, start, end: moved(x.end, d), y0: y}));
+  }
+  return Object.freeze(out);
+}

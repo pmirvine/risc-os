@@ -11,6 +11,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { zoomScroll } from '../../tools/moreapps/!Letters/Zoom';
+import { asDraft } from './word-draft.mjs';
 
 const PARAS = [
   p(r('First paragraph, indented with a first line.'), '<w:ind w:left="720" w:firstLine="360"/>'),   // 0
@@ -32,6 +33,7 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 async function start(page) {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   return page.evaluate(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

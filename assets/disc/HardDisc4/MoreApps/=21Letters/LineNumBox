@@ -1,0 +1,186 @@
+// LineNumBox - the Line numbers dialogue box (Batch D P11.2, D24),
+// opened by the Line numbers... button of the Layout box
+// (./LayoutBox): Add line numbering, Start at, From text (Auto or a
+// length), Count by, and Numbering (Restart each page, Restart each
+// section, Continuous) of the CURRENT section. WimpLib Ui/Dialog, at
+// least 3 inches (540 px) wide.
+//
+//   lineNumBox(dw, done?) -> the box's api, one per document (key
+//       'linenums:<docKey>', dw.boxes 'linenums': ./CloseDoc
+//       deletes it); asked again while open, the same box to the
+//       front; null when the document has no selection. done() is
+//       called after an OK that changed the document (the Layout
+//       box takes the change as its own: it does not go stale)
+//   changes(values, {shown}) -> lineNumCmd's values from the box's
+//       (OK's; exported for the tests), or {bad: field} refused
+//
+// It opens with the current section's values (./SectSetup
+// lineNumOf): with Add line numbering off the other controls are
+// shaded; Auto on shades the From text field and leaves it empty,
+// off puts 0.25 inch in it. A value the reader kept as written (not
+// understood) is blank and stays as it is. OK (or Return) sends what
+// changed from what was shown (a distance shown to a hundredth of an
+// inch and not touched keeps its exact twips; Add line numbering off
+// sends only that) to lineNumCmd: one undo step, the box gone.
+// Count by not 1 to 100 (0 too), Start at not 1 to 32767, From text
+// not a length 0 to 22 inches, a field left empty or holding text
+// that is not a value ("1.2.3", "5-"): OK beeps, says why and keeps
+// the box, nothing applied (nothing rounded or clamped). The selection
+// or document changed since it was filled (./TabsBox where): OK
+// beeps, fills it again, says so and keeps it. Cancel, Escape and
+// the close icon change nothing.
+// In the header and footer mode (the box left open as it was
+// entered) OK beeps and says to leave it first (./TabsBox
+// IN_HDR), the box kept (final fix A F3-I1).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where, IN_HDR} from './TabsBox';
+import {lineNumOf, lineNumWhy, lineNumCmd} from './SectSetup';
+
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;   // OK checks, never clamps
+const AUTO_TW = 360;                         // what Auto is: 0.25 in
+const FIELDS = ['start', 'countby', 'dist', 'auto', 'restart'];
+const RADIOS = [['rpage', 'newPage', 'Restart each page'],
+  ['rsect', 'newSection', 'Restart each section'],
+  ['rcont', 'continuous', 'Continuous']];
+const num = (name, label, help) => ({kind: 'number', name, label,
+  min: -FIELD_MAX, max: FIELD_MAX, decimals: 0, w: 80, help});
+const rows = () => [
+  {kind: 'option', name: 'on', text: 'Add line numbering',
+    help: 'Number the lines of this section in the left margin ' +
+      '(Print layout).'},
+  [num('start', 'Start at', 'The first number: 1 to 32767.'),
+    num('countby', 'Count by', 'Show every line\'s number (1), ' +
+      'every fifth (5) and so on: 1 to 100.')],
+  [{kind: 'length', name: 'dist', label: 'From text', min: -FIELD_MAX,
+    max: FIELD_MAX, w: 100, help: 'How far the numbers are from ' +
+      'the text: 0 to 22 inches.'},
+  {kind: 'option', name: 'auto', text: 'Auto',
+    help: 'Word\'s distance: 0.25 inch.'}],
+  {kind: 'label', text: 'Numbering'},
+  ...RADIOS.map(([name, value, text]) => ({kind: 'radio', name,
+    group: 'restart', value, text, help: `${text}.`})),
+  {kind: 'label', name: 'msg', text: '', w: 500},
+];
+const HELP = 'Line numbers: numbers down the left margin of this ' +
+  'section.';
+const CHANGED = 'The document changed while the box was open: it ' +
+  'shows the values now. Look again, then click OK.';
+const state = new WeakMap();           // api -> {at, shown, done}
+const wired = new WeakSet();
+const nul = (x) => (x === null ? undefined : x);
+
+/** See the header. */
+export function lineNumBox(dw, done) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `linenums:${dw.docKey}`,
+    title: 'Line numbers', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 540});
+  box(dw, 'linenums', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, v);
+  refill(api, v, done);
+  api.open();
+  return api;
+}
+
+/** Shade what Add line numbering and Auto leave out. */
+function shading(api) {
+  const off = api.get('on') !== true;
+  for (const k of ['start', 'countby', 'auto', ...RADIOS.map((r) =>
+    r[0])]) api.shade(k, off);
+  api.shade('dist', off || api.get('auto') === true);
+}
+
+/** Show the current section's values. */
+function refill(api, v, done) {
+  const q = lineNumOf(v.d.doc, v.sel) || {};
+  api.set('on', nul(q.on));
+  api.set('start', nul(q.start));
+  api.set('countby', nul(q.countBy));
+  const auto = q.distance === null ? undefined : q.distance === 'auto';
+  api.set('auto', auto);
+  api.set('dist', auto === false ? q.distance : undefined);
+  api.set('restart', nul(q.restart));
+  api.set('msg', '');
+  const shown = {on: api.get('on')};
+  for (const k of FIELDS) shown[k] = api.get(k);
+  const was = state.get(api);
+  state.set(api, {at: where(v), shown,
+    done: done || (was && was.done)});
+  shading(api);
+}
+
+/** The values for lineNumCmd: what changed from what was shown;
+ *  {bad: field, value: NaN} for a field refused: one whose text is
+ *  not a value (null), or left empty when it had one. */
+export function changes(values, st) {
+  const sh = st.shown;
+  if (values.on === false) return sh.on === false ? {} : {on: false};
+  const out = {on: values.on === sh.on ? null : values.on};
+  for (const [k, f] of [['start', 'start'], ['countby', 'countBy']]) {
+    if (values[k] === null ||
+      (values[k] === undefined && sh[k] !== undefined))
+      return {bad: k, [f]: NaN};
+    out[f] = values[k] === sh[k] ? null : values[k];
+  }
+  out.restart = values.restart === sh.restart ? null : values.restart;
+  if (values.auto === true) {
+    out.distance = sh.auto === true ? null : 'auto';
+  } else if (values.auto === false) {
+    if (values.dist === undefined || values.dist === null)
+      return {bad: 'dist', distance: NaN};
+    out.distance = sh.auto === false && values.dist === sh.dist
+      ? null : values.dist;
+  }
+  for (const k of Object.keys(out))
+    if (out[k] === undefined) out[k] = null;
+  return out;
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name}) => {
+    if (name === 'auto' && api.get('auto') === false &&
+      api.get('dist') === undefined) api.set('dist', AUTO_TW);
+    if (name === 'auto' && api.get('auto') === true)
+      api.set('dist', undefined);
+    if (name === 'on' || name === 'auto') shading(api);
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (v.hdr) return no(IN_HDR);      // (the section's: F3-I1)
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v);
+      return no(CHANGED);
+    }
+    const cmd = changes(values, st);
+    const field = cmd.bad || null;
+    delete cmd.bad;
+    const why = lineNumWhy(v.d.doc, v.sel, cmd);
+    if (why) return no(why, field || fieldOf(why));
+    const was = v.d.undoDepth;
+    const out = v.typing.command(() => lineNumCmd(v.d, v.sel, cmd));
+    if (!out) return no(lineNumWhy(v.d.doc, v.sel, cmd) || '');
+    v.edited(out);
+    if (v.d.undoDepth !== was && st.done) st.done();
+    v.focus();
+    return undefined;
+  });
+}
+
+/** The field a message is about. */
+function fieldOf(why) {
+  return /^Count/.test(why) ? 'countby' : /^Start/.test(why) ? 'start'
+    : /^From/.test(why) ? 'dist' : null;
+}

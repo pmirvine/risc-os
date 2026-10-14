@@ -1,0 +1,180 @@
+// SectCols - the commands of Format > Columns... (Batch D P10.4,
+// D23; ./ColumnsBox is the box, ./SectSetup re-exports these): the
+// newspaper columns (w:cols) of the sections in scope.
+//
+//   PRESETS, presetOf, evenCols, colsOf, MIN_COL_TW  (./ColsVals,
+//            re-exported)
+//   columnsWhy(doc, sel, values, scope) -> a message or null: no
+//            selection, a bad scope, 'forward' from a table's cell;
+//            num not whole 1..MAX_COLS (45, Word's: PG27); equal or
+//            sep not boolean; space or col not whole twips 0..MAX_TW;
+//            for each section that would change, col not num
+//            columns, and when its columns are changed (num, equal,
+//            space or col given: not Line between alone, P10 fix
+//            M4, so a document's own narrow columns can take a
+//            line) a column under MIN_COL_TW (0.5 inch) or widths
+//            and spacings wider than its text; a section in
+//            scope whose w:cols is still not understood (raw: kept
+//            whole, ./ReadSect) when a value is given (P10 fix I3:
+//            'These columns cannot be changed here.')
+//   columnsCmd(d, sel, values, scope) -> the new selection; sel when
+//            nothing changes (no step); null when columnsWhy refuses.
+//            One d.atomic (one undo step in typing.command):
+//            'forward' first splits the section at the caret with a
+//            CONTINUOUS break, as Word does for columns (./SectBreak
+//            insertSection; none at its section's start), then a
+//            setSection for each section whose columns change
+//
+// values {num, equal, space, col, sep}: null or undefined keeps each
+// section's own. One column is always equal; unequal columns with no
+// col keep the section's widths for the same number, else are split
+// evenly. Written as Word does: w:num (none for one), w:sep when on,
+// w:space, and when unequal w:equalWidth="0" and a w:col each (the
+// last without w:space); a value with a unit as read (units.cols,
+// ./WriteSect) while it is the same. Caps MAX_COLS 45
+// (./ReadSect's), MIN_COL_TW 720, SPACE_TW 720 (Word's default).
+// Pure: no desktop services.
+import {caret} from './Selection';
+import {orderedPos, isNested} from './EditPos';
+import {insertSection} from './SectBreak';
+import {withoutRaw} from './PropNames';
+import {deepEqual} from './Model';
+import {docMap} from './PicRead';
+import {MAX_COLS} from './ReadSect';
+import {SCOPES, scopeOf, given, rawOf, MAX_TW} from './PageValues';
+import {PRESETS, MIN_COL_TW, SHARED, evenCols, presetOf, textWOf,
+  ownOf, colsOf} from './ColsVals';
+
+export {PRESETS, MIN_COL_TW, evenCols, presetOf, colsOf};
+
+const MSG = {
+  nosel: 'There is no caret in the document.',
+  scope: 'Apply to: pick one.',
+  cell: 'This point forward: put the caret outside the table.',
+  num: `Number of columns: 1 to ${MAX_COLS}.`,
+  flag: 'Equal column width and Line between: on or off.',
+  space: 'Spacing: from 0 to 22 inches.',
+  col: 'Width and spacing: a width and a spacing for each column.',
+  narrow: 'A column cannot be less than 0.5 inch wide.',
+  wide: 'The columns and spacings are wider than the text.',
+  raw: 'These columns cannot be changed here.',
+};
+const SHAPE = ['num', 'equal', 'space', 'col'];
+const isTw = (x) => Number.isSafeInteger(x) && x >= 0 && x <= MAX_TW;
+
+/** Section s's columns with values v, as compared (col null when
+ *  equal), or a message. */
+function nextOf(doc, s, v) {
+  const raw = !doc.sections[s].props.cols &&
+    rawOf(doc.sections[s].props, 'cols', docMap(doc));
+  const asked = SHARED.some((k) => given(v[k]));
+  if (raw && asked) return MSG.raw;    // (P10 fix I3: kept)
+  const own = ownOf(doc, s), tw = textWOf(doc, s);
+  const num = given(v.num) ? v.num : own.num;
+  const equal = num === 1 || (given(v.equal) ? v.equal : own.equal);
+  const space = given(v.space) ? v.space : own.space;
+  const sep = given(v.sep) ? v.sep : own.sep;
+  const shaped = SHAPE.some((k) => given(v[k]));   // (M4)
+  let col = null;
+  if (!equal) {
+    col = given(v.col) ? v.col : !own.equal && own.col.length === num
+      ? own.col : evenCols(num, space, tw);
+    if (col.length !== num) return MSG.col;
+    col = col.map((x, i) => ({w: x.w, space: i < num - 1 ? x.space
+      : 0}));
+    let all = 0;
+    for (let i = 0; i < num && shaped; i++) {
+      if (col[i].w < MIN_COL_TW) return MSG.narrow;
+      all += col[i].w + (i < num - 1 ? col[i].space : 0);
+    }
+    if (all > tw) return MSG.wide;
+  } else if (shaped && (tw - (num - 1) * space) / num < MIN_COL_TW) {
+    return MSG.narrow;
+  }
+  const next = {num, equal, space, sep, col};
+  const was = {...own, col: own.equal ? null : own.col};
+  return deepEqual(next, was) ? null : next;
+}
+
+/** The w:cols field (./ReadSect's shape) of columns c. */
+function colsField(c) {
+  const out = {};
+  if (c.num > 1) out.num = c.num;
+  if (c.sep) out.sep = true;
+  out.space = c.space;
+  if (!c.equal) {
+    out.equalWidth = false;
+    out.col = c.col.map((x, i) => (i < c.num - 1
+      ? {w: x.w, space: x.space} : {w: x.w}));
+  }
+  return out;
+}
+
+/** Why the values cannot be, whatever the section, or null. */
+function badValue(v) {
+  if (given(v.num) && !(Number.isSafeInteger(v.num) && v.num >= 1 &&
+    v.num <= MAX_COLS)) return MSG.num;
+  for (const k of ['equal', 'sep']) {
+    if (given(v[k]) && typeof v[k] !== 'boolean') return MSG.flag;
+  }
+  if (given(v.space) && !isTw(v.space)) return MSG.space;
+  if (given(v.col) && !(Array.isArray(v.col) && v.col.length >= 1 &&
+    v.col.length <= MAX_COLS && v.col.every((c) => c !== null &&
+    typeof c === 'object' && isTw(c.w) && isTw(c.space))))
+    return MSG.col;
+  return null;
+}
+
+/** {changes: [[s, cols]], from, split} or {why}. */
+function plan(doc, sel, v, scope) {
+  const bad = badValue(v);
+  if (bad) return {why: bad};
+  if (!sel) return {why: MSG.nosel};
+  const r = scopeOf(doc, sel, scope);
+  if (!r) return {why: SCOPES.includes(scope) ? MSG.nosel : MSG.scope};
+  const o = orderedPos(doc, sel);
+  const split = scope === 'forward' && !(o.from.off === 0 &&
+    o.f.b === doc.sections[o.f.s].blocks[0]);
+  if (split && isNested(o.f)) return {why: MSG.cell};
+  const changes = [];
+  for (let s = r[0]; s <= r[1]; s++) {
+    const next = nextOf(doc, s, v);
+    if (typeof next === 'string') return {why: next};
+    if (next) changes.push([s, colsField(next)]);
+  }
+  return {changes, from: o.from,
+    split: split && changes.length > 0 && changes[0][0] === r[0]};
+}
+
+/** See the header. */
+export function columnsWhy(doc, sel, values, scope) {
+  return plan(doc, sel, values || {}, scope).why || null;
+}
+
+/** See the header. */
+export function columnsCmd(d, sel, values, scope) {
+  const v = {};
+  for (const k of SHARED) v[k] = values ? values[k] : undefined;
+  const pl = plan(d.doc, sel, v, scope);
+  if (pl.why) return null;
+  if (!pl.changes.length) return sel;
+  let out = sel;
+  d.atomic(() => {
+    let shift = 0;
+    if (pl.split) {
+      const now = {command: (fn) => fn()};
+      out = insertSection(d, now, caret(pl.from), 'continuous');
+      if (!out) throw new RangeError('the section cannot be split');
+      shift = 1;
+    }
+    for (const [s, cols] of pl.changes) {
+      const at = s + shift, sec = d.doc.sections[at];
+      const props = {...sec.props, cols};
+      props.extra = withoutRaw(props.extra || [], ['cols']);
+      const op = {op: 'setSection', at, props};
+      if (sec.raw !== undefined) op.raw = sec.raw;
+      d.apply(op);
+    }
+  });
+  return out;
+}

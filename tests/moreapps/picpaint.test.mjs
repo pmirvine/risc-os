@@ -12,6 +12,7 @@ import {paint} from '../../tools/moreapps/!Letters/DocPaint';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {picDocx, pngBytes, gifBytes} from './pic-fixtures.mjs';
+import {shifted} from './place-fixture.mjs';
 
 /** A fake 2D context: every call and property set, in order. */
 function fakeG() {
@@ -20,7 +21,7 @@ function fakeG() {
   const g = {calls};
   for (const k of ['drawImage', 'strokeRect', 'fillRect', 'fillText',
     'setLineDash', 'save', 'restore', 'beginPath', 'rect', 'clip',
-    'measureText']) g[k] = rec(k);
+    'measureText', 'translate']) g[k] = rec(k);
   g.measureText = (t) => ({width: 6 * t.length});
   for (const k of ['strokeStyle', 'fillStyle', 'font', 'lineWidth']) {
     let v;
@@ -255,5 +256,29 @@ describe('PicPaint', () => {
     const base = L.items[0].y + ln.y + ln.base;
     assert.deepEqual(d[0].slice(6), [L.left + it.x, base - 100, 200,
       100]);
+  });
+
+  it('a moved place (D4): the bitmap drawn at its galley place, ' +
+    'the context translated by the place\'s dx, dy', async () => {
+    const doc = await readDocx(await picDocx({pics: [{cx: 1905000,
+      cy: 952500}]}));
+    const pics = fakePics({state: 'ready', bitmap: {width: 4,
+      height: 2}});
+    const L = new DocLayout(doc, new TextMetrics((t) => 8 * t.length),
+      null, {pics});
+    L.layout(900);
+    L.place = shifted(L, 30, 500);
+    const g = fakeG();
+    paint(L, g, {x0: 30, y0: 500, x1: 2030, y1: 4500});
+    const i = g.calls.findIndex((c) => c[0] === 'drawImage');
+    const t = g.calls.findLastIndex((c, k) => k < i &&
+      c[0] === 'translate');
+    assert.ok(t >= 0 && i > t);
+    assert.deepEqual(g.calls[t], ['translate', 30, 500]);
+    const ln = L.items[0].lines[0];
+    const it = ln.items.find((x) => x.kind === 'pic');
+    const base = L.items[0].y + ln.y + ln.base;
+    assert.deepEqual(g.calls[i].slice(6), [L.left + it.x, base - 100,
+      200, 100]);
   });
 });

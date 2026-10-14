@@ -17,6 +17,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
+import { asDraft } from './word-draft.mjs';
 
 const LONG = 'Justified text spreads the free width of every wrapped line over the spaces between its words, ' +
   'so that each line but the last ends at the right margin of the page, as Word shows it on the screen.';
@@ -52,6 +53,7 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 async function start(page) {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   return page.evaluate(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -385,7 +387,7 @@ try {
   const top = await levelItems(0);
   await pick(0, 'Format', { hover: true });
   const fm = await levelItems(1);
-  ok('the window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Table, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'Format', 'Table', 'Zoom', 'New', 'Close']), top);
+  ok('the window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'View', 'Outline', 'Format', 'Table', 'Zoom', 'New', 'Close']), top);
   const tick = (list, t) => list?.find((x) => x[0] === t)?.[1];
   ok('the Format menu opens; Bold is ticked in a bold selection, Italic not', fm && tick(fm, 'Bold') === true && tick(fm, 'Italic') === false
     && ['Bold', 'Italic', 'Underline', 'Strikethrough', 'Superscript', 'Subscript', 'Font', 'Size', 'Colour', 'Highlight', 'Align', 'Indent',
@@ -402,10 +404,11 @@ try {
     return { items: sub.items.map((i) => [i.text, i.key]), mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
   });
   const K = em.mac ? 'Cmd+' : 'Ctrl+';   // (on a Mac the labels are Cmd+: MacKeys.macLabel)
-  ok('the Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Word count... (no format items)',
+  ok('the Edit menu: Undo, Redo, Cut, Copy, Paste, Select all, Find..., Find next, Find previous, Replace..., Next page, Previous page, Update field, Update all fields, Word count... (no format items)',
     same(em.items, [['Undo', K + 'Z'], ['Redo', K + 'Y'], ['Cut', K + 'X'], ['Copy', K + 'C'], ['Paste', K + 'V'],
       ['Select all', K + 'A'], ['Find...', K + 'F'], ['Find next', K + 'G'], ['Find previous', K + 'Shift+G'],
-      ['Replace...', 'Ctrl+H'], ['Word count...', undefined]]), em);
+      ['Replace...', 'Ctrl+H'], ['Next page', 'Ctrl+PgDn'], ['Previous page', 'Ctrl+PgUp'],
+      ['Update field', undefined], ['Update all fields', undefined], ['Word count...', undefined]]), em);
 
   /** Select paragraph i whole, then Format > sub > item from the menu. */
   const choose = async (i, sub, item) => {

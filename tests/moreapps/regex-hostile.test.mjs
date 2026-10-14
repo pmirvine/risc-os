@@ -91,7 +91,14 @@ const AUDIT = {
   '!Letters/TabStops': [
     ['/^(-?[0-9]+(?:\\.[0-9]+)?)(mm|cm|in|pt|pc|pi)?$/',
       'anchored; a literal . between the digit runs']],
-  '!Letters/TblItems': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
+  '!Letters/TblGeo': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
+  '!Letters/FieldFormat': [
+    ['/^\\s*-?\\d{1,15}\\s*$/',
+      'anchored; the runs are split by digits'],
+    ['/\\S+/g', 'one run, no suffix'],
+    ['/\\S+/', 'one run, no suffix'],
+    ['/\\B(?=(\\d{3})+$)/g',
+      'bounded: only toFixed() whole digits (< 22 chars)']],
   '!Letters/WriteParts': [
     ['/(encoding[ \\t\\n]*=[ \\t\\n]*)(["\'])([^"\']*)\\2/',
       'runs follow literals; our own written declaration']],
@@ -112,6 +119,7 @@ const AUDIT = {
 const DYNAMIC = {
   '!Letters/ClipCss': [1, 'RGB: anchored; runs split by digits and ,'],
   '!Letters/ClipTblLook': [1, 'STYLES: no unbounded run'],
+  '!Letters/FieldDates': [1, 'W3C: no unbounded run; <= 64 chars'],
   '!Letters/ListUsed': [1, 'NUM_ID: the tag ends at the first < or >'],
   '!WimpLib/XmlText': [1, 'validDecl: anchored; runs split by literals'],
 };

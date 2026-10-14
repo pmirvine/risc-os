@@ -1,0 +1,123 @@
+// WebView - a window's Web layout (Batch D P13.1, D31, OD8), the
+// window side of ./WebLayout: which width to lay out for, the
+// throttle of a resize, the paragraphs broken at once and the rest
+// in slices. Imports no desktop services (it uses
+// requestAnimationFrame and setTimeout).
+//
+//   webOf(dw) -> the text width of the window's Web layout (./WebLayout
+//                webWidth of dw.viewW()), or null in another view
+//   webOpts(dw, prev) -> {web, lazy?}: the options of the window's
+//                next layout: its web, and on a resize of Web layout
+//                (prev's web another one) the lazy band
+//                (./WebLayout bandOf: prev's items on the screen and
+//                the caret's); the item at the window's top noted
+//                (dw.webTop) to be kept there (keepTop)
+//   throttled(dw) -> bool  a resize of Web layout (the window's web
+//                is not the layout's) too soon after the last
+//                relayout (THROTTLE_MS): one fit at the end of the
+//                wait is asked for (setTimeout), true
+//   built(dw)    a Web layout was made (dw.webAt now, dw.webRuns + 1)
+//   keepTop(dw)  the item noted by webOpts (dw.webTop) back where it
+//                was in the window, once (scrolled: the layout's
+//                heights changed)
+//   webSlices(dw) the stale paragraphs of dw.L broken, one slice
+//                (STEP_MS) per animation frame (dw.raf); when the
+//                last is done the extent is set again, the top item
+//                kept and the window drawn; an edit not yet laid
+//                out is laid out first (dw.view.ensure)
+import {webWidth, THROTTLE_MS, bandOf, stepWeb} from './WebLayout';
+import {toScreen, toLayout} from './Zoom';
+
+const STEP_MS = 2;
+const now = () => Date.now();
+
+/** See the header. */
+export function webOf(dw) {
+  return dw.viewName === 'web' ? webWidth(dw.viewW()) : null;
+}
+
+/** The root item at the window's top, with the px it is below it. */
+function topOf(dw, prev) {
+  const w = dw.win, z = dw.view.zoom, t = prev.top;
+  const y = toLayout(0, w.scrollY + dw.inset(), z, t).y;
+  const it = prev.itemAtY(y);
+  if (!it) return null;
+  const sy = toScreen(0, prev.place.itemTop(it), z, t).y;
+  return {id: it.id, dy: sy - w.scrollY};
+}
+
+/** See the header. */
+export function webOpts(dw, prev) {
+  const web = webOf(dw);
+  dw.webTop = null;
+  if (!web) return {web: null};
+  if (!prev || !prev.web || prev.web === web || !prev.items.length) {
+    return {web};
+  }
+  const w = dw.win, z = dw.view.zoom, t = prev.top, sel = dw.view.sel;
+  const y0 = toLayout(0, w.scrollY, z, t).y;
+  const y1 = toLayout(0, w.scrollY + w.h, z, t).y;
+  dw.webTop = topOf(dw, prev);         // (keepTop: ./WinFit fit)
+  const id = sel && sel.head ? sel.head.id : null;
+  return {web, lazy: bandOf(prev, y0, y1, id)};
+}
+
+/** See the header. */
+export function built(dw) {
+  dw.webAt = now();
+  dw.webRuns = (dw.webRuns || 0) + 1;
+}
+
+/** See the header. */
+export function throttled(dw) {
+  const L = dw.L;
+  if (dw.viewName !== 'web' || !L.web || L.web === webOf(dw)) {
+    return false;
+  }
+  const wait = (dw.webAt || 0) + THROTTLE_MS - now();
+  if (wait <= 0) return false;
+  if (!dw.webTimer) {
+    dw.webTimer = setTimeout(() => {
+      dw.webTimer = 0;
+      if (!dw.closed) dw.fit();
+    }, wait);
+  }
+  return true;
+}
+
+/** See the header. */
+export function keepTop(dw) {
+  const top = dw.webTop, w = dw.win;
+  dw.webTop = null;                    // (once)
+  if (!top) return;
+  const it = dw.L.byId.get(top.id);
+  if (!it) return;
+  const y = Math.max(0, Math.round(
+    toScreen(0, dw.L.place.itemTop(it), dw.view.zoom,
+      dw.L.top).y - top.dy));
+  if (y !== w.scrollY) w.scrollTo(w.scrollX, y);
+}
+
+/** See the header. */
+export function webSlices(dw) {
+  if (dw.raf || dw.closed || !dw.L.stale) return;
+  dw.raf = requestAnimationFrame(() => tick(dw));
+}
+
+/** One slice (see the header). */
+function tick(dw) {
+  dw.raf = 0;
+  if (dw.closed) return;
+  dw.view.ensure();                    // (an edit first: new layout)
+  const L = dw.L;
+  if (!L.stale) return;
+  const top = topOf(dw, L);
+  if (stepWeb(L, STEP_MS)) {
+    dw.webTop = top;
+    dw.fitExtent();
+    keepTop(dw);
+    dw.win.invalidate();
+    return;
+  }
+  webSlices(dw);
+}

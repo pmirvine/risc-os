@@ -3,7 +3,10 @@
 //
 //   insertMenu(dw) -> a Menu
 //     Page break   Ctrl+Enter   the break at the caret (./InsertApply)
-//     Section break >           Next page, Continuous (./SectBreak)
+//     Column break Ctrl+Shift+Enter  a column break there (Batch D
+//                               P10.3: the key outside a table)
+//     Section break >           Next page, Continuous, Even page,
+//                               Odd page (./SectBreak)
 //     Table...                  the Insert Table box (./TblInsertBox)
 //     Tab                       a tab in a table's cell (./TblMenu
 //                               cellTabItem; Ctrl+Tab)
@@ -13,22 +16,35 @@
 //                               (./SpecialChars, ./SymbolBind)
 //     Hyperlink...  Ctrl+K      the Hyperlink box (./LinkBox)
 //     Bookmark...   Ctrl+Shift+F5  the Bookmark box (./BookmarkBox)
+//     Page number               a PAGE field at the caret
+//     Number of pages           a NUMPAGES field
+//     Date, Time                a DATE, TIME field (the pictures
+//                               dd/MM/yyyy and HH:mm written out)
+//     Field...                  the Field box (./FieldBox)
 //   sectionMenu(view) -> its Section break submenu
 //
 // Page break shows its key from ./Keymap ('Ctrl+Enter': Ctrl on a
-// Mac too, ./MacKeys macLabel leaves it); the section breaks have no
+// Mac too, ./MacKeys macLabel leaves it), Column break splitTable's
+// key (./EditKeys runs columnBreak for it outside a table's cell);
+// the section breaks have no
 // key; the special characters show theirs (Ctrl+Shift+Space, Ctrl+
 // Shift+-), Hyperlink its (Ctrl+K; Cmd+K on a Mac), Bookmark its
 // (Ctrl+Shift+F5, on a Mac too). Every item is shaded when there is
 // no selection (Tab: unless the caret is in a table's cell); Page
-// break and Section break also with an end of the
+// break, Column break and Section break also with an end of the
 // selection in a table's cell (./InsertApply breakable: Word has no
-// break there); Picture, Symbol, Hyperlink and Bookmark work in
-// cells;
+// break there), and in the header and footer mode (view.hdr: a story
+// takes no page, column or section break, D14; their keys beep);
+// Picture, Symbol, Hyperlink and Bookmark work in cells;
 // each runs view.run(id) or types (./SymbolBind), so it is one undo
 // step (./InsertApply, ./EditApply); Hyperlink and Bookmark open
-// their boxes, whose OK and Add are one step. Everything of the
-// window's: dw.view is its ./EditView.
+// their boxes, whose OK and Add are one step. The four fields
+// (Batch D, D19: ./FieldNames CODES, ./FieldUpdate insertField) are
+// one step each, their results filled at once; they and Field...
+// work in cells and in the header and footer mode (on its story:
+// Page number in a footer shows each page's number), shaded only
+// with no selection; a refused one beeps (in another field's code).
+// Everything of the window's: dw.view is its ./EditView.
 import {Menu} from 'riscos';
 import {keymap} from './Keymap';
 import {macLabel} from './MacKeys';
@@ -40,10 +56,13 @@ import {picInsertBox} from './PicInsertBox';
 import {breakable} from './InsertApply';
 import {tblInsertBox} from './TblInsertBox';
 import {cellTabItem} from './TblMenu';
+import {CODES} from './FieldNames';
+import {insertField} from './FieldUpdate';
+import {fieldBox} from './FieldBox';
 
 /** See the header. */
 export function sectionMenu(v) {
-  const none = () => !breakable(v.d.doc, v.sel);
+  const none = () => !!v.hdr || !breakable(v.d.doc, v.sel);
   const it = (text, id, help) => ({text, key: keymap.labelFor(id) ||
     undefined, shaded: none, action: () => v.run(id), help});
   return new Menu('Section break', [
@@ -51,6 +70,10 @@ export function sectionMenu(v) {
       'it starts a new section, on a new page.'),
     it('Continuous', 'sectionContinuous', 'A section break: the ' +
       'text after it starts a new section, on the same page.'),
+    it('Even page', 'sectionEven', 'A section break: the text after ' +
+      'it starts a new section, on the next even-numbered page.'),
+    it('Odd page', 'sectionOdd', 'A section break: the text after ' +
+      'it starts a new section, on the next odd-numbered page.'),
   ]);
 }
 
@@ -67,20 +90,49 @@ function specialMenu(dw) {
   return new Menu('Special character', items);
 }
 
+/** Page number, Number of pages, Date, Time and Field... */
+function fieldItems(dw) {
+  const v = dw.view;
+  const it = (text, code, help) => ({text, shaded: () => !v.sel,
+    action: () => { insertField(dw, code); }, help});
+  return [
+    it('Page number', CODES.page, 'Put in the number of the page ' +
+      'it is on: in a header or footer, each page shows its own.'),
+    it('Number of pages', CODES.pages, 'Put in the number of pages ' +
+      'in the document.'),
+    it('Date', CODES.date, 'Put in today\'s date as a field. It ' +
+      'shows the date the window was opened, or when a field was ' +
+      'last put in or updated there.'),
+    it('Time', CODES.time, 'Put in the time now as a field. It ' +
+      'shows the time the window was opened, or when a field was ' +
+      'last put in or updated there.'),
+    {text: 'Field...', shaded: () => !v.sel,
+      action: () => { fieldBox(dw); },
+      help: 'Put in a field (a page number, a date, the file name, ' +
+        'the author...) chosen from a box; on a field, change its ' +
+        'code.'},
+  ];
+}
+
 /** See the header. */
 export function insertMenu(dw) {
   const v = dw.view;
   const k = (id) => macLabel(keymap.labelFor(id), v.mac);
-  const noBreak = () => !breakable(v.d.doc, v.sel);
+  const noBreak = () => !!v.hdr || !breakable(v.d.doc, v.sel);
   return new Menu('Insert', [
     {text: 'Page break', key: k('pageBreak') || undefined,
       shaded: noBreak, action: () => v.run('pageBreak'),
       help: 'Start a new page here: a page break at the caret (the ' +
         'rest of the paragraph goes after it).'},
+    {text: 'Column break', key: k('splitTable') || undefined,
+      shaded: noBreak, action: () => v.run('columnBreak'),
+      help: 'Start a new column here, in a page of newspaper ' +
+        'columns: the rest of the paragraph goes to the top of the ' +
+        'next column (with one column, to the next page).'},
     {text: 'Section break', submenu: () => sectionMenu(v),
       shaded: noBreak, dotted: true,
-      help: 'Start a new section here, on a new page or on the ' +
-        'same page.'},
+      help: 'Start a new section here: on a new page, on the same ' +
+        'page, or on the next even or odd page.'},
     {text: 'Table...', shaded: () => !v.sel,
       action: () => { tblInsertBox(dw); },
       help: 'Put a table in at the caret: you say how many columns ' +
@@ -104,7 +156,9 @@ export function insertMenu(dw) {
         'address, or to a bookmark; on a link, change or remove it.'},
     {text: 'Bookmark...', key: k('bookmark') || undefined,
       shaded: () => !v.sel, action: () => { bookmarkBox(dw); },
+      dotted: true,
       help: 'Name a place or the selected text, so you can go back ' +
         'to it or link to it; delete or go to a bookmark.'},
+    ...fieldItems(dw),
   ]);
 }

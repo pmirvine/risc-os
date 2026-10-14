@@ -3,18 +3,33 @@
 // block. The rules of what a line looks like are in ./DocPaint's
 // header.
 //
-//   paintPara(L, g, it, rect)  the lines of paragraph item it that lie
-//                              in rect {x0, y0, x1, y1}
+//   paintPara(L, g, it, rect, l0?, l1?, rules?)  the lines of
+//                              paragraph item it that lie in rect
+//                              {x0, y0, x1, y1}, of lines l0..l1 - 1
+//                              only (a fragment's, ./Place visible;
+//                              default all); rules false: a page or
+//                              column break's rule is not drawn
+//                              (Print layout without the marks: D5)
 //   paintBox(L, g, it)         the grey box of a kept block's item
 //
-// An item is drawn at its column's x (it.x, ./DocItems). Draws on
-// the context it is given; imports no desktop services.
+// An item is drawn in its galley coordinates: at its column's x
+// (it.x, ./DocItems), a line at its galley top (./PlaceDraft
+// lineTop); ./DocPaint moves a fragment to where the layout's
+// placement puts it (D4). Field shading (View > Field shading, D18):
+// the items of a line in a range of ./FieldShade shadeOf get its
+// grey the full height of the line, under the character shading.
+// Draws on the context it is given; imports no desktop services.
 import {paintRule} from './MarkPaint';
 import {paintPic} from './PicPaint';
+import {lineTop} from './PlaceDraft';
+import {boxAt} from './DocHit';
+import {shadeOf, SHADE} from './FieldShade';
 
-export function paintPara(L, g, it, rect) {
-  for (const ln of it.lines) {
-    const top = it.y + ln.y;
+export function paintPara(L, g, it, rect, l0 = 0,
+  l1 = it.lines.length, rules = true) {
+  const fs = shadeOf(L, it.block || it.para);
+  for (let k = l0; k < l1; k++) {
+    const ln = it.lines[k], top = lineTop(it, k);
     if (top >= rect.y1) break;
     if (top + ln.h <= rect.y0) continue;
     if (ln.clip) {
@@ -24,19 +39,21 @@ export function paintPara(L, g, it, rect) {
       g.rect(rect.x0, top, rect.x1 - rect.x0, ln.h);
       g.clip();
     }
-    paintLine(L, g, ln, top, it.x);
+    if (fs.length) fieldShade(g, ln, top, it.x, fs);
+    paintLine(L, g, ln, top, it.x, rules);
     if (ln.clip) g.restore();
   }
 }
 
-/** Line ln of a paragraph, its top at top, its column at X. */
-function paintLine(L, g, ln, top, X) {
+/** Line ln of a paragraph, its top at top, its column at X (rules:
+ *  its break's rule drawn). */
+function paintLine(L, g, ln, top, X, rules) {
   highlights(g, ln, top, X);
   if (ln.label && ln.label.text) paintLabel(g, ln, top, X);
   if (ln.bars) paintBars(g, ln, top, X);
   for (const x of ln.items) {
     if (x.kind === 'pagebreak') {
-      paintRule(g, x, X, top, ln.h);
+      if (rules) paintRule(g, x, X, top, ln.h);
       continue;
     }
     if (x.leader && x.w > 0) paintLeader(g, x, X, top + ln.base);
@@ -107,6 +124,19 @@ function paintLabel(g, ln, top, X) {
   g.fillText(text, X + x, top + ln.base);
 }
 
+/** The field shading of line ln (at top; X its column's x): its
+ *  items in a range of fs, and a field's own token (its end). */
+function fieldShade(g, ln, top, X, fs) {
+  const y0 = Math.round(top), y1 = Math.round(top + ln.h);
+  g.fillStyle = SHADE;
+  for (const x of ln.items) {
+    if (!(x.w > 0) || !fs.some((r) => (x.from >= r.from &&
+      x.to <= r.to) || (x.field && x.field.e === r.e))) continue;
+    const a = Math.floor(X + x.x);
+    g.fillRect(a, y0, Math.ceil(X + x.x + x.w) - a, y1 - y0);
+  }
+}
+
 /** The shading, then highlight, rectangles of line ln (at top). */
 function highlights(g, ln, top, X) {
   const y0 = Math.round(top), y1 = Math.round(top + ln.h);
@@ -123,7 +153,7 @@ function highlights(g, ln, top, X) {
 }
 
 export function paintBox(L, g, it) {
-  const {x, y, w, h} = L.boxRect(it);
+  const {x, y, w, h} = boxAt(it, it.x, lineTop(it, 0));
   g.fillStyle = '#eeeeee';
   g.fillRect(x, y, w, h);
   g.strokeStyle = '#888888';

@@ -1,0 +1,74 @@
+// StoryPos - which story a block is in (Batch D, D11): the id map
+// doc -> id -> story that ./EditPos findBlock looks a position up in
+// when the body does not hold it.
+//
+//   storyIds(doc) -> Map<id, part>  every block of every story of
+//       doc.stories, at every depth (a typed table's cells' blocks,
+//       nested tables'), by its ./EditRank idOf id (a kept block's is
+//       ./DocPos's negative one); the first story wins an id two
+//       stories hold (ids are unique in a Doc: ./Walk forEachId)
+//   storyOf(doc, id) -> the part name of the story holding id, or
+//       null (the body is not looked at)
+//   storyDoc(doc, part) -> {sections: [{blocks}]}: the story as a
+//       one-section document, so paths in it are [0, i, ...] as ops
+//       address a story (ruling R8); null when there is no such story
+//
+// The map is memoised per Doc state: per doc.stories Map (stories
+// are copy-on-write: an op on a story replaces the Story object and
+// the Map, never changes them in place), checked against the Map's
+// Story objects (a Map changed in place all the same is seen).
+// Pure: no desktop services.
+import {forEachIn} from './Walk';
+import {idOf} from './EditRank';
+
+const memo = new WeakMap();
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The stories Map of doc, or null. */
+const mapOf = (doc) => (isObj(doc) && doc.stories instanceof Map
+  ? doc.stories : null);
+
+/** The id map of stories Map m. */
+function build(m) {
+  const ids = new Map();
+  for (const [part, st] of m) {
+    if (!isObj(st)) continue;
+    forEachIn(st.blocks, [0], (b) => {
+      if (!isObj(b)) return true;
+      const id = idOf(b);
+      if (!ids.has(id)) ids.set(id, part);
+      return true;
+    });
+  }
+  return ids;
+}
+
+/** See the header. */
+export function storyIds(doc) {
+  const m = mapOf(doc);
+  if (!m) return new Map();
+  const vals = [...m.values()];
+  const got = memo.get(m);
+  if (got && got.vals.length === vals.length &&
+    got.vals.every((v, i) => v === vals[i] && isObj(v) &&
+      v.blocks === got.blocks[i])) return got.ids;
+  const ids = build(m);
+  memo.set(m, {vals, blocks: vals.map((v) => isObj(v) ? v.blocks
+    : null), ids});
+  return ids;
+}
+
+/** See the header. */
+export function storyOf(doc, id) {
+  if (typeof id !== 'number') return null;
+  const part = storyIds(doc).get(id);
+  return part === undefined ? null : part;
+}
+
+/** See the header. */
+export function storyDoc(doc, part) {
+  const m = mapOf(doc);
+  const st = m ? m.get(part) : null;
+  if (!isObj(st) || !Array.isArray(st.blocks)) return null;
+  return {sections: [{blocks: st.blocks}]};
+}

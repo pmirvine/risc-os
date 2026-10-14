@@ -1,0 +1,131 @@
+// AnchorRead - what a floating picture's wp:anchor says (pure;
+// Batch D P12.1, D25). Part of ./PicRead's result as `anchor`.
+//
+//   anchorOf(node, map?) -> {simplePos: {on, x, y},
+//       posH: {from, align?, offset?, pct?}, posV: (the same),
+//       wrap: {kind, text, dist: {t, b, l, r}, polygon?},
+//       behindDoc, allowOverlap, layoutInCell, locked,
+//       relativeHeight, effectExtent: {l, t, r, b}, unknown}
+//   H_FROM, V_FROM, H_ALIGN, V_ALIGN, WRAP_TEXT   the values read
+//   MAX_POINTS = 4096        the most wrapPolygon points read
+//   MIN_OFFSET, MAX_OFFSET   posOffset range (EMU, signed 32-bit)
+//   MAX_UINT = 4294967295    dist*, relativeHeight
+//
+// `node` is the wp:anchor, `map` the scope around it (./Ns). Offsets,
+// distances and coordinates are EMU integers. posH/posV hold `align`
+// or `offset` (wp:posOffset); a wp14:pctPosH/VOffset is kept as its
+// text in `pct`, not used: Word's mc:AlternateContent (a wp14 Choice,
+// a Fallback with the offset) gives the Fallback's position. wrap
+// kind: none, square, tight, through, topAndBottom; text: wrapText
+// (null for none and topAndBottom); dist: the wrap element's distT..
+// where given, else the anchor's, else 0; polygon {edited, points:
+// [[x, y]...]} for tight and through (start, then 2 or more lineTo).
+// Flags absent are false, relativeHeight and effectExtent absent 0.
+//
+// unknown is true when anything is not understood: a value out of
+// range or not a plain integer, a relativeFrom, align or wrapText
+// not listed, a wrap missing or repeated, simplePos="1" (not
+// placed), hidden="1", an unknown attribute or child, real text.
+// The fields read are still filled (null when not read at all).
+// Results are frozen and cached per map, then node.
+import {NS} from './Wml';
+import {scope, isEl} from './Ns';
+import {is, kids, plain} from './DrawNode';
+import {Reader, posOf, altPos, wrapOf, extentOf, xmlns, WRAPS, WP14}
+  from './AnchorParts';
+
+const WP = NS.wp;
+
+const ANCHOR_ATTRS = new Set(['distT', 'distB', 'distL', 'distR',
+  'simplePos', 'relativeHeight', 'behindDoc', 'locked',
+  'layoutInCell', 'allowOverlap', 'hidden']);
+const KEPT = ['extent', 'docPr', 'cNvGraphicFramePr'];
+
+export {H_FROM, V_FROM, H_ALIGN, V_ALIGN, WRAP_TEXT, MAX_POINTS,
+  MAX_OFFSET, MIN_OFFSET, MAX_UINT} from './AnchorParts';
+
+/** Anchor attributes other than xmlns: known or wp14 ids. */
+function attrsKnown(r, n, m) {
+  for (const [k] of n.attrs) {
+    if (xmlns(k)) continue;
+    const i = k.indexOf(':');
+    if (i < 0 ? ANCHOR_ATTRS.has(k) : m.get(k.slice(0, i)) === WP14 &&
+      ['anchorId', 'editId'].includes(k.slice(i + 1))) continue;
+    r.fail();
+  }
+}
+
+const ZERO = Object.freeze({l: 0, t: 0, r: 0, b: 0});
+const NONE = Object.freeze({simplePos: null, posH: null, posV: null,
+  wrap: null, behindDoc: false, allowOverlap: false,
+  layoutInCell: false, locked: false, relativeHeight: 0,
+  effectExtent: null, unknown: true});
+const kept = (c, m) => KEPT.some((k) => is(c, m, WP, k)) ||
+  is(c, m, NS.a, 'graphic') || is(c, m, WP14, 'sizeRelH') ||
+  is(c, m, WP14, 'sizeRelV');
+
+function read(node, map) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  if (!is(node, m, WP, 'anchor')) return NONE;
+  const r = new Reader();
+  attrsKnown(r, node, m);
+  const at = (k) => plain(node, k);
+  const on = r.bool(at('simplePos'));
+  if (on || r.bool(at('hidden'))) r.fail();
+  const x = {simplePos: {on, x: 0, y: 0}, posH: null, posV: null,
+    wrap: null, behindDoc: r.bool(at('behindDoc')),
+    allowOverlap: r.bool(at('allowOverlap')),
+    layoutInCell: r.bool(at('layoutInCell')),
+    locked: r.bool(at('locked')),
+    relativeHeight: r.uint(at('relativeHeight')),
+    effectExtent: ZERO, unknown: false};
+  const seen = new Set();
+  const once = (k) => (seen.has(k) ? r.fail() : seen.add(k));
+  for (const e of kids(node, m) || (r.fail() || [])) {
+    const [c, cm] = e;
+    const local = c.name.slice(c.name.indexOf(':') + 1);
+    if (is(c, cm, WP, 'simplePos')) {
+      once(local);
+      r.only(c, ['x', 'y']);
+      x.simplePos = {on, x: r.coord(plain(c, 'x')),
+        y: r.coord(plain(c, 'y'))};
+    } else if (is(c, cm, WP, 'positionH') ||
+      is(c, cm, WP, 'positionV')) {
+      const hv = local.slice(-1);
+      once(hv);
+      x['pos' + hv] = Object.freeze(posOf(r, e, hv));
+    } else if (is(c, cm, NS.mc, 'AlternateContent')) {
+      const a = altPos(r, e);
+      if (a) {
+        once(a[0]);
+        x['pos' + a[0]] = Object.freeze(a[1]);
+      }
+    } else if (is(c, cm, WP, 'effectExtent')) {
+      once(local);
+      x.effectExtent = extentOf(r, c);
+    } else if (WRAPS.has(local) && is(c, cm, WP, local)) {
+      once('wrap');
+      x.wrap = wrapOf(r, e, node);
+    } else if (!kept(c, cm)) r.fail();
+  }
+  if (!x.posH || !x.posV || !x.wrap) r.fail();
+  x.simplePos = Object.freeze(x.simplePos);
+  x.unknown = r.bad;
+  return Object.freeze(x);
+}
+
+const EMPTY = new Map();
+const caches = new WeakMap();
+
+/** What wp:anchor `node` says (D25); never throws. */
+export function anchorOf(node, map = EMPTY) {
+  if (!node || typeof node !== 'object' || !isEl(node) ||
+    !Array.isArray(node.attrs) || !Array.isArray(node.children) ||
+    !(map instanceof Map)) return NONE;
+  let cache = caches.get(map);
+  if (!cache) caches.set(map, cache = new WeakMap());
+  if (cache.has(node)) return cache.get(node);
+  const x = read(node, map);
+  cache.set(node, x);
+  return x;
+}

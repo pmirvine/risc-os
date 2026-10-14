@@ -10,36 +10,40 @@
 // the path's depth), and that no paragraph or table id, at any
 // depth, is used twice (among the new blocks or in the document):
 // one pass over the document, not one per block (./OpsUtil
-// checkIds). A cell keeps at least one block, and never ends with a
-// table (./TblCheck endsCell): refused before any change.
+// checkIds). A cell, and a story, keeps at least one block, and
+// never ends with a table (./TblCheck endsCell; ./OpsPath locate's
+// tail): refused before any change. `story` (D12): the container is
+// in that story (./OpsPath).
 import {fail, checkBlock} from './ModelCheck';
 import {checkTail} from './TblCheck';
-import {locate, own, checkIds} from './OpsUtil';
+import {locate, own, checkIds, inStory} from './OpsUtil';
 
 /** {op:'removeBlocks', at, count}: count >= 1 blocks from at. */
 export function removeBlocks(doc, op) {
-  const {i, at, blocks, nested} = locate(doc, op.at);
+  const {i, at, blocks, tail} = locate(doc, op.at, false, op.story);
   const n = op.count;
   if (!Number.isInteger(n) || n < 1 || i + n > blocks.length)
     fail('bad count ' + n);
-  if (nested && n === blocks.length)
-    fail('a cell needs at least one block');
-  if (nested && i + n === blocks.length) checkTail(blocks[i - 1]);
-  const gone = own(doc, at).splice(i, n);
-  return {op: 'insertBlocks', at, blocks: gone};
+  if (tail && n === blocks.length)
+    fail(tail + ' needs at least one block');
+  if (tail && i + n === blocks.length) checkTail(blocks[i - 1], tail);
+  const gone = own(doc, at, op.story).splice(i, n);
+  return inStory({op: 'insertBlocks', at, blocks: gone}, op.story);
 }
 
 /** {op:'insertBlocks', at, blocks}: blocks (>= 1) put before at. */
 export function insertBlocks(doc, op) {
-  const {i, at, depth, blocks: bs, nested} = locate(doc, op.at, true);
+  const {i, at, depth, blocks: bs, tail: rule} = locate(doc, op.at,
+    true, op.story);
   const add = op.blocks;
   if (!Array.isArray(add) || !add.length) fail('no blocks to insert');
-  if (nested && i === bs.length) checkTail(add[add.length - 1]);
+  if (rule && i === bs.length) checkTail(add[add.length - 1], rule);
   for (const b of add) checkBlock(b, depth);
   checkIds(doc, add);
-  const blocks = own(doc, at);
+  const blocks = own(doc, at, op.story);
   const tail = blocks.splice(i);
   for (const b of add) blocks.push(b);
   for (const b of tail) blocks.push(b);
-  return {op: 'removeBlocks', at, count: add.length};
+  return inStory({op: 'removeBlocks', at, count: add.length},
+    op.story);
 }

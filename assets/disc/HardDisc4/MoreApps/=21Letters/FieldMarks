@@ -1,0 +1,102 @@
+// FieldMarks - the field marks of one paragraph (Batch D, D15), for
+// ./FieldScan, which nests them into fields.
+//
+//   marks(p) -> [{off, t, ...}]  in text order, memoised per paragraph
+//       object (a paragraph without U+FFFC costs one indexOf; one
+//       without marks gives the same frozen empty array):
+//       t 'b' begin, 's' separate, 'e' end: a w:fldChar ({lock,
+//         dirty}: w:fldLock, w:dirty on), from its fldCharType
+//         (another type: no mark)
+//       t 'i' a w:instrText ({text}: its text)
+//       t 'f' a w:fldSimple ({node, instr: its w:instr, text: its
+//         result as read, lock, dirty})
+//     at off, the offset of the inline's U+FFFC; a w:r kept whole (a
+//     level 'p' inline) gives the marks of its children, all at its
+//     offset. Elements are matched by local name.
+//   plain(p, from, to) -> the text of p in that range as a result
+//       reads it: characters, a level 'p' kept node's text, other
+//       inlines nothing
+//   work  {paras}: paragraphs looked at so far (tests: the memo)
+//   NONE  the frozen empty array
+//
+// Pure: no desktop services.
+export const work = {paras: 0};
+
+const OBJ = '\ufffc';
+export const NONE = Object.freeze([]);
+const marksMemo = new WeakMap();
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => (isObj(n) && typeof n.name === 'string'
+  ? n.name.slice(n.name.indexOf(':') + 1) : '');
+const ON = new Set(['true', '1', 'on']);
+
+/** The value of the attribute with local name `name`, or undefined. */
+function attr(node, name) {
+  if (!Array.isArray(node.attrs)) return undefined;
+  for (const a of node.attrs) {
+    if (Array.isArray(a) && typeof a[0] === 'string' &&
+      a[0].slice(a[0].indexOf(':') + 1) === name) return String(a[1]);
+  }
+  return undefined;
+}
+const on = (node, name) => ON.has(attr(node, name));
+const TYPES = {begin: 'b', separate: 's', end: 'e'};
+
+/** The text children of an element. */
+const textOf = (node) => (Array.isArray(node.children)
+  ? node.children.filter((c) => typeof c === 'string').join('') : '');
+
+/** The mark of element `node` at offset k pushed on out, if any. */
+function markOf(node, k, out) {
+  const l = local(node);
+  if (l === 'fldChar') {
+    const t = TYPES[attr(node, 'fldCharType')];
+    if (t) out.push({off: k, t, lock: on(node, 'fldLock'),
+      dirty: on(node, 'dirty')});
+  } else if (l === 'instrText') {
+    out.push({off: k, t: 'i', text: textOf(node)});
+  }
+}
+
+/** The field marks of paragraph p, in order (memoised). */
+export function marks(p) {
+  let m = marksMemo.get(p);
+  if (m) return m;
+  work.paras++;
+  m = NONE;
+  const s = p.text;
+  for (let k = s.indexOf(OBJ); k >= 0; k = s.indexOf(OBJ, k + 1)) {
+    const x = isObj(p.inlines) ? p.inlines[k] : null;
+    const node = isObj(x) ? x.node : null;
+    if (!isObj(node)) continue;
+    const out = m === NONE ? [] : m;
+    const l = local(node);
+    if (l === 'fldSimple') {
+      out.push({off: k, t: 'f', node, instr: attr(node, 'instr') || '',
+        text: typeof x.text === 'string' ? x.text : '',
+        lock: on(node, 'fldLock'), dirty: on(node, 'dirty')});
+    } else if (l === 'r' && Array.isArray(node.children)) {
+      for (const c of node.children) if (isObj(c)) markOf(c, k, out);
+    } else markOf(node, k, out);
+    if (out.length) m = out;
+  }
+  marksMemo.set(p, m);
+  return m;
+}
+
+/** The text of p from `from` to `to` as a result reads it. */
+export function plain(p, from, to) {
+  let out = '';
+  for (let k = from; k < to; k++) {
+    const c = p.text[k];
+    if (c !== OBJ) {
+      out += c;
+      continue;
+    }
+    const x = isObj(p.inlines) ? p.inlines[k] : null;
+    if (isObj(x) && x.level === 'p' && typeof x.text === 'string') {
+      out += x.text;
+    }
+  }
+  return out;
+}

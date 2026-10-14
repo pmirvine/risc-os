@@ -27,6 +27,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, numberingXml, p, r } from './build-docx.mjs';
 import { listDocx, heading } from './list-fixtures.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const lvl = (fmt, text, rPr = '') => `<w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="${fmt}"/>`
   + `<w:lvlText w:val="${text}"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>${rPr}</w:lvl>`;
@@ -66,6 +67,7 @@ const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 async function start(page) {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   return page.evaluate(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

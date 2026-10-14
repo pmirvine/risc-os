@@ -1,0 +1,164 @@
+// SectGeom - a section's page geometry: the one rule for it (Batch
+// D, D3). In twips it is what the model says (nothing clamped: a
+// text width may be 0 or less); pxOf gives the px a layout shows,
+// clamped for display only.
+//
+//   geomOf(section, settings?, first?) -> {size: {w, h}, mar: {top,
+//       right, bottom, left, header, footer, gutter}, exactTop,
+//       exactBottom, cols: [{x, w}], textW}   twips
+//     size   w:pgSz w and h; when the section has none, first's
+//            (the document's first section), else A4 portrait
+//            (11906 x 16838); orient is only a label (Word uses w
+//            and h: a landscape page has w > h), whatever it says
+//     mar    w:pgMar, each side 1440 and header / footer 720 when
+//            not given, gutter 0; a negative top or bottom is its
+//            absolute value with exactTop / exactBottom true (Word:
+//            the body is not pushed down by a tall header); the
+//            gutter is ADDED to the left margin (a w:rtlGutter in
+//            the section's extra that is on: the right; settings
+//            gutterAtTop: the top), mar.gutter still saying how much
+//            (a negative gutter is none: 0)
+//     textW  size.w less the left and right margins
+//     cols   the text columns, x from the page's left edge: w:cols
+//            num equal columns (1 when not given, at most MAX_COLS)
+//            with space between (720 when not given), or, unless
+//            equalWidth is on, its w:col children (w, then space
+//            after; the last one's space unused)
+//   givenOf(section, first?) -> {size: {w, h}, mar}  twips: the
+//            values as the section gives them, with the defaults
+//            above (size and mar as geomOf's before its rules: top
+//            and bottom signed, the gutter not added; ./SectSetup)
+//   settings  {gutterAtTop?: boolean, map?: the scope the section's
+//            extra is read in (./PicRead docMap; w: the main
+//            namespace when not given)}
+//   pxOf(g) -> the same shape in px (1 px = 15 twips), clamped as
+//       DocLayout always was: textW and every column's w MIN_TEXT ..
+//       MAX_TEXT, the page MIN_PAGE_H .. MAX_PAGE_H high and at least
+//       MIN_TEXT wide (at most its margins and text), margins 0 ..
+//       MAX_MAR; a column's x its left edge after the clamps (the
+//       spaces between kept, never negative); columns that then run
+//       off the page (45 of MIN_TEXT on Letter; w:col widths wider
+//       than the page) have their x fitted into it, widths kept, so
+//       nothing is drawn off the sheet (P10 fix M5: the model and
+//       the widths lines are broken at are untouched)
+//   MIN_TEXT 80, MAX_TEXT 4000, MIN_PAGE_H 200, MAX_PAGE_H 20000,
+//   MAX_MAR 1000 (px); MAX_COLS 45 (./ReadSect's, Word's)
+//
+// A number that is not finite (or not a number) is not given.
+// mirrorMargins is not honoured (PG14). Pure: no desktop services.
+import {W, wName} from './Ns';
+import {isOn} from './SettingsRead';
+import {MAX_COLS} from './ReadSect';
+
+export {MAX_COLS};
+export const MIN_TEXT = 80, MAX_TEXT = 4000, MIN_PAGE_H = 200,
+  MAX_PAGE_H = 20000, MAX_MAR = 1000;
+const TW = 15;
+const A4 = Object.freeze({w: 11906, h: 16838});
+const MAR = Object.freeze({top: 1440, right: 1440, bottom: 1440,
+  left: 1440, header: 720, footer: 720, gutter: 0});
+const W_MAP = new Map([['w', W]]);
+
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const num = (v, d) => (fin(v) ? v : d);
+const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+const obj = (v) => (v && typeof v === 'object' ? v : {});
+const propsOf = (s) => obj(s && s.props);
+
+/** Whether the section's extra holds a w:rtlGutter that is on. */
+function rtlGutter(pr, map) {
+  const extra = Array.isArray(pr.extra) ? pr.extra : [];
+  for (const n of extra) {
+    if (wName(n, map) === 'rtlGutter') return isOn(n, map);
+  }
+  return false;
+}
+
+/** The columns (twips, x from the page's left) of text left..+tw. */
+function colsOf(c, left, tw) {
+  const typed = c.equalWidth !== true && Array.isArray(c.col) &&
+    c.col.length > 0;
+  if (typed) {
+    const out = [];
+    let x = left;
+    for (const k of c.col.slice(0, MAX_COLS)) {
+      const o = obj(k), w = num(o.w, 0);
+      out.push({x, w});
+      x += w + Math.max(0, num(o.space, 0));
+    }
+    return out;
+  }
+  const n = fin(c.num) && c.num >= 2
+    ? Math.min(Math.floor(c.num), MAX_COLS) : 1;
+  const space = n > 1 ? Math.max(0, num(c.space, 720)) : 0;
+  const w = (tw - (n - 1) * space) / n;
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) out[i] = {x: left + i * (w + space), w};
+  return out;
+}
+
+/** See the header. */
+export function givenOf(section, first) {
+  const pr = propsOf(section);
+  const sz = obj(pr.pgSz), fz = obj(propsOf(first).pgSz);
+  const m = obj(pr.pgMar);
+  const size = {w: num(sz.w, num(fz.w, A4.w)),
+    h: num(sz.h, num(fz.h, A4.h))};
+  const mar = {};
+  for (const k of Object.keys(MAR)) mar[k] = num(m[k], MAR[k]);
+  return {size, mar};
+}
+
+/** See the header. */
+export function geomOf(section, settings, first) {
+  const pr = propsOf(section), st = obj(settings);
+  const {size, mar} = givenOf(section, first);
+  const exactTop = mar.top < 0, exactBottom = mar.bottom < 0;
+  mar.top = Math.abs(mar.top);
+  mar.bottom = Math.abs(mar.bottom);
+  const gut = mar.gutter = Math.max(0, mar.gutter);
+  if (st.gutterAtTop === true) mar.top += gut;
+  else if (rtlGutter(pr, st.map instanceof Map ? st.map : W_MAP))
+    mar.right += gut;
+  else mar.left += gut;
+  const textW = size.w - mar.left - mar.right;
+  return {size, mar, exactTop, exactBottom,
+    cols: colsOf(obj(pr.cols), mar.left, textW), textW};
+}
+
+const text = (tw) => clamp(tw / TW, MIN_TEXT, MAX_TEXT);
+
+/** See the header. */
+export function pxOf(g) {
+  const mar = {};
+  for (const k of Object.keys(g.mar))
+    mar[k] = clamp(g.mar[k] / TW, 0, MAX_MAR);
+  const textW = text(g.textW);
+  const size = {w: clamp(g.size.w / TW, MIN_TEXT,
+    mar.left + textW + mar.right),
+  h: clamp(g.size.h / TW, MIN_PAGE_H, MAX_PAGE_H)};
+  const cols = [];
+  let x = mar.left;
+  g.cols.forEach((c, i) => {
+    const w = text(c.w);
+    cols.push({x, w});
+    const nx = g.cols[i + 1];
+    if (nx) x += w + Math.max(0, nx.x - c.x - c.w) / TW;
+  });
+  fitIn(cols, mar.left, size.w);
+  return {size, mar, exactTop: g.exactTop, exactBottom: g.exactBottom,
+    cols, textW};
+}
+
+/** Columns running off a page `right` px wide (hostile: clamped
+ *  widths and spaces wider than it) moved in: their left edges
+ *  spread from the left margin so the last ends at the page's right
+ *  edge (at the left margin when it is wider than that); widths kept
+ *  (P10 fix M5). */
+function fitIn(cols, left, right) {
+  const last = cols[cols.length - 1];
+  if (!last || last.x + last.w <= right + 1e-9) return;
+  const k = last.x > left ? Math.max(0, (right - left - last.w) /
+    (last.x - left)) : 0;
+  for (const c of cols) c.x = left + (c.x - left) * k;
+}

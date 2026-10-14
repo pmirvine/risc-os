@@ -23,6 +23,7 @@ import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { rng } from './word-docs.mjs';
 import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
+import { asDraft } from './word-draft.mjs';
 
 const side = (n, c, v = 'single', sz = 12, space = 4) => `<w:${n} w:val="${v}" w:sz="${sz}" w:space="${space}" w:color="${c}"/>`;
 const box = (c, between) => `<w:pBdr>${side('top', c)}${side('left', c)}${side('bottom', c)}${side('right', c)}${between ? side('between', c) : ''}</w:pBdr>`;
@@ -70,6 +71,7 @@ const modelBad = (json) => {
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

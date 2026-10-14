@@ -1,0 +1,214 @@
+// WrapWant - what the paragraphs of a page want of the wrap (Batch D
+// P12a fix C1, for ./WrapPass): their parts there, guessed top down,
+// and the start every pass of a page is made from.
+//
+//   onPage(L, P, i) -> [{it, fs: [{fr, f}]}]  the root paragraphs
+//       with lines on page i of ./Pages P, in flow order, each with
+//       its fragments there (one a frame: two for a paragraph going
+//       on into the next column)
+//   pagesOf(P, i, k) -> [a, b]  the pages root item k shows on,
+//       around page i
+//   canonOn(L, P, i, cur) -> {ch, after}  the start of page i: each
+//       of its paragraphs keeps only the parts (cur: the wrap's Map
+//       id -> parts) for the pages before i that it shows on (ch:
+//       Map id -> parts | null, those that change; after: Map id ->
+//       key, each one's view after it, below)
+//   viewOf(L, P, i, cur, ps) -> Map id -> key  the VIEW page i has of
+//       its paragraphs ps (onPage's): each one's parts but those for
+//       the pages after i (which their own passes give); and of the
+//       paragraphs in its tables' cells (./WrapCells, P12a fix I5:
+//       canonOn and wantOn do the same for them)
+//   wantOn(L, P, i, cur, keys) -> {ch, after}  the same for the
+//       parts the page's paragraphs want (keys: the wrap's Map id ->
+//       key): those for the pages before i and after it (as cur has
+//       them), and one for each frame of page i where its lines meet
+//       an exclusion (./LineShape exclusionsOf of the page's floats,
+//       ./AnchorPlace, that wrap text and are not in a cell) in the
+//       frame's width:
+//     part {pk, y0, y1, excls, bot, sig} (frozen): pk the page's key
+//       (./ColMemo keyOf); y0..y1 the paragraph ys of the lines it
+//       is for (the frame's, relative to its galley top, when the
+//       paragraph shows in more than one frame; else -Infinity..
+//       Infinity); excls the exclusions that meet those lines
+//       (only those: a float moved elsewhere on the page changes no
+//       key, P12a fix M2), relative to its top and the frame's left
+//       (./LineShape relExcl); bot, when the paragraph's first line
+//       starts the frame, the frame's bottom in its ys (./LineShape
+//       spanAt: that line is not moved below it), else Infinity; sig
+//       its text. A key: the parts' sigs.
+//     Guessed top down (in each frame, ./WrapGuess): a paragraph
+//       whose key changes is broken with its new parts, and the
+//       paragraphs below it, and the floats anchored in them with a
+//       paragraph or line position, are taken as moved by the
+//       heights it gained (a floating table placed from its flow
+//       place, P12.7, by the shift where it is), so a cascade of
+//       floats down a page settles in a pass or two
+//   sigOf(parts) -> key (./WrapGuess's)
+//
+// Pure: no desktop services.
+import {relExcl, exclSig, r2, EPS} from './LineShape';
+import {keyOf} from './ColMemo';
+import {guessed, guess, sigOf, NO_DY} from './WrapGuess';
+import {cellWant, cellView} from './WrapCells';
+
+export {sigOf};
+
+const NONE = Object.freeze([]);
+const NO_KEYS = new Map();
+
+/** The item of fragment f (index j) of frame fr. */
+function itemOf(L, fr, f, j) {
+  const it = L.items[fr.start.k + j];
+  return it && it.id === f.id ? it : L.byId.get(f.id);
+}
+
+/** See the header. */
+export function onPage(L, P, i) {
+  const out = [], at = new Map();
+  for (const fr of P.framesOf(P.list[i])) {
+    fr.frags.forEach((f, j) => {
+      const it = itemOf(L, fr, f, j);
+      if (!it || it.kind !== 'p' || it.col !== L.root || !it.lines ||
+        !it.lines.length || !(f.l0 < f.l1)) return;
+      let e = at.get(it.id);
+      if (!e) {
+        e = {it, fs: []};
+        at.set(it.id, e);
+        out.push(e);
+      }
+      e.fs.push({fr, f});
+    });
+  }
+  return out;
+}
+
+/** See the header. */
+export function pagesOf(P, i, k) {
+  let a = i, b = i;
+  for (let pg = P.list[a]; a > 0 && pg.start.k === k &&
+    (pg.start.line || pg.start.dy); pg = P.list[--a]);
+  for (let pg = P.list[b]; pg && pg.end.k === k &&
+    (pg.end.line || pg.end.dy); pg = P.at(++b));
+  return [a, Math.max(a, P.at(b) ? b : b - 1)];
+}
+
+/** The keys of pages a..b of P. */
+function keysIn(L, P, a, b) {
+  const s = new Set();
+  for (let p = a; p <= b; p++) {
+    const pg = P.at(p);
+    if (pg) s.add(keyOf(L, pg));
+  }
+  return s;
+}
+
+/** Paragraph it's parts (cur) for the pages before page i and for
+ *  those after it, of the pages a..b it shows on: [keep, later]. */
+function split(L, P, i, it, cur, a, b) {
+  const ps = cur.get(it.id) || NONE;
+  if (!ps.length) return [NONE, NONE];
+  const was = keysIn(L, P, a, i - 1), next = keysIn(L, P, i + 1, b);
+  return [ps.filter((x) => was.has(x.pk)),
+    ps.filter((x) => next.has(x.pk))];
+}
+
+/** See the header. */
+export function viewOf(L, P, i, cur, ps) {
+  const out = new Map();
+  for (const {it} of ps) {
+    const all = cur.get(it.id) || NONE;
+    const [a, b] = pagesOf(P, i, it.ci);
+    const later = b > i ? split(L, P, i, it, cur, a, b)[1] : NONE;
+    out.set(it.id, sigOf(all.filter((x) => !later.includes(x))));
+  }
+  cellView(L, P, i, cur, out);
+  return out;
+}
+
+/** See the header. */
+export function canonOn(L, P, i, cur) {
+  const ch = new Map(), after = new Map();
+  for (const {it} of onPage(L, P, i)) {
+    const ps = cur.get(it.id) || NONE;
+    const [a, b] = pagesOf(P, i, it.ci);
+    const [keep] = split(L, P, i, it, cur, a, b);
+    if (keep.length !== ps.length) {
+      ch.set(it.id, keep.length ? Object.freeze(keep) : null);
+    }
+    after.set(it.id, sigOf(keep));
+  }
+  cellWant(L, P, i, cur, NO_KEYS, ch, after, false);
+  return {ch, after};
+}
+
+/** The part of lines ls in frame fr (page key pk), the paragraph's
+ *  galley top at page y T, beside exclusions ex, or null: those that
+ *  meet its ys there (from its top, or the window's, to its last
+ *  line's bottom). */
+function partOn(pk, ls, fr, T, cut, ex, top) {
+  const lo = cut ? fr.y - T : -Infinity;
+  const hi = cut ? fr.y + fr.h - T : Infinity;
+  let y1 = -Infinity;
+  for (const ln of ls) {
+    if (ln.y >= lo && ln.y < hi) y1 = Math.max(y1, ln.y + ln.h);
+  }
+  const y0 = Math.max(lo, 0);          // (lines moved past a band
+  if (!(y1 > y0)) return null;         // start there)
+  const a = T + y0, b = T + y1, x0 = fr.x, x1 = fr.x + fr.w;
+  const meet = ex.filter((e) => e.x0 < x1 && e.x1 > x0 &&
+    e.y0 < b - EPS && e.y1 > a + EPS);
+  if (!meet.length) return null;
+  const rel = meet.map((e) => relExcl(e, x0, T));
+  const w0 = cut ? r2(lo) : -Infinity, w1 = cut ? r2(hi) : Infinity;
+  const bot = top ? r2(fr.y + fr.h - T) : Infinity;
+  return Object.freeze({pk, y0: w0, y1: w1, excls: Object.freeze(rel),
+    bot, sig: (cut ? w0 + ',' + w1 : 'all') + (top ? '/b' + bot : '') +
+      '/' + rel.map(exclSig).join(' ')});
+}
+
+/** See the header. */
+export function wantOn(L, P, i, cur, keys) {
+  const pg = P.list[i], pk = keyOf(L, pg), fl = P.floatsOf(pg);
+  const ps = onPage(L, P, i), tops = new Map(), dyOf = new Map();
+  for (const {it, fs: [{fr, f}]} of ps) {
+    tops.set(it.id, {y: f.y + it.lines[f.l0].y, bot: fr.y + fr.h});
+  }
+  const base = guessed(fl, pg.h, NO_DY, 0, tops);
+  const ch = new Map(), after = new Map();
+  let shift = 0, fr0 = null, moved = false, k0 = pg.start.k - 1;
+  for (const {it, fs} of ps) {
+    if (fs[0].fr !== fr0) {
+      fr0 = fs[0].fr;
+      shift = 0;
+    }
+    // (a floating table's flow place before it moves as it does)
+    for (let k = k0 + 1; k < it.ci; k++) {
+      if (L.items[k].kind === 'tbl') dyOf.set(L.items[k].id, shift);
+    }
+    k0 = it.ci;
+    dyOf.set(it.id, shift);
+    const ex = moved ? guessed(fl, pg.h, dyOf, shift, tops) : base;
+    const [a, b] = pagesOf(P, i, it.ci);
+    const [keep, later] = split(L, P, i, it, cur, a, b);
+    const cut = a < b || fs.length > 1, key = keys.get(it.id) || '';
+    const mine = (ls, x) => fs.map(({fr, f}) => partOn(pk, ls, fr,
+      f.y + (fr === fr0 ? shift : 0), cut, x, f === fr.frags[0] &&
+      f.l0 === 0)).filter(Boolean);
+    let list = [...keep, ...mine(it.lines, ex), ...later];
+    if (sigOf(list) !== key) {
+      const g = guess(L, it, list, keep, later, mine, (dh) => dh ||
+        moved ? guessed(fl, pg.h, dyOf, shift + dh, tops) : ex);
+      list = g.list;
+      if (g.r.h !== it.h) {
+        shift += g.r.h - it.h;
+        moved = true;
+      }
+    }
+    if (sigOf(list) !== key) {
+      ch.set(it.id, list.length ? Object.freeze(list) : null);
+    }
+    after.set(it.id, sigOf(list.filter((x) => !later.includes(x))));
+  }
+  cellWant(L, P, i, cur, keys, ch, after, true);
+  return {ch, after};
+}

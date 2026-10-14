@@ -1,5 +1,8 @@
-// Writes INDEX.txt: one list of every Batch A, Batch B (pictures) and
-// Batch C (tables) real-Word hand-off file
+// Writes INDEX.txt: one list of every Batch A, Batch B (pictures),
+// Batch C (tables) and Batch D (pages, headers, footers, fields,
+// columns, line numbers, text wrap, floating tables, views: the pg,
+// hf and cl files of handoff-pages.mjs, one README) real-Word
+// hand-off file
 // (local only, never committed: tests/moreapps/corpus/ is git-ignored).
 // Not a test:
 //
@@ -7,7 +10,8 @@
 //
 // Run the generators first (handoff-spacing, handoff-newlists,
 // handoff-breaks, handoff-tabs, handoff-borders, handoff-links,
-// handoff-pictures, handoff-tables, each `node tests/moreapps/<name>.mjs`);
+// handoff-pictures, handoff-tables, handoff-pages, each
+// `node tests/moreapps/<name>.mjs`);
 // this reads what they wrote in
 // tests/moreapps/corpus/handoff/ and says, by deliverable, which file
 // to open, which README has its questions, and what to try, in the
@@ -15,7 +19,8 @@
 // gives the size and the word count !Letters shows (Edit > Word count,
 // whole document) to compare with Word's, for the pictures the
 // number of pictures !Letters reads in it and for the tables the number
-// of tables (at every depth) and of cells. A file that is listed but
+// of tables (at every depth) and of cells, for the pages the number of
+// sections. A file that is listed but
 // missing is reported (and left out of the counts); nothing else in
 // the folder is touched. INDEX.txt is written only when its bytes
 // change.
@@ -27,6 +32,8 @@ import {count} from '../../tools/moreapps/!Letters/WordCount';
 import {pictureOf, docMap} from '../../tools/moreapps/!Letters/PicRead';
 import {FILES as TB_FILES, Q as TB_Q, PRIORITY as TB_PRIORITY,
   PRIORITY_LABELS as TB_LABELS} from './handoff-tables-q.mjs';
+import {FILES as PG_FILES, Q as PG_Q, PRIORITY as PG_PRIORITY,
+  PRIORITY_LABELS as PG_LABELS} from './handoff-pages-q.mjs';
 
 const DIR = fileURLToPath(new URL('./corpus/handoff/', import.meta.url));
 
@@ -100,6 +107,30 @@ const SETS = [
         (TB_PRIORITY[i][1].length ? TB_PRIORITY[i][1].length + ' file' +
         (TB_PRIORITY[i][1].length === 1 ? '' : 's') : 'all files') + ')')],
     files: TB_FILES.map(([n, what]) => [n, what])},
+  {id: 'D', title: 'Pages, headers, footers, fields, columns, line ' +
+    'numbers, wrap, floating tables, views (Batch D)',
+    readme: 'pg-README.txt',
+    pages: true,
+    expect: ['!Letters expects: no repair prompt for any of these files; each',
+      'section as pg-README.txt lists it under "What !Letters wrote" (for',
+      'the cl files also where each column starts and each float is,',
+      'page by page). One README for the batch: ' + PG_Q.length,
+      'questions by prefix: PG (the spec\'s PG1..PG11, PG14, PG24,',
+      'PG35..PG39 with sub-questions PG1a.., PG40), HF (HF1..HF11, the',
+      'spec\'s PG12, PG13, PG15..PG23), CL (CL1..CL10, the spec\'s',
+      'PG25..PG34; CL11, CL12, the owner\'s ruling R5 on floating',
+      'tables); PGX1.., HFX1.. and CLX1.. recorded while Batch D was',
+      'built. The cl files here are Batch D\'s; cl-1-source ..',
+      'cl-3-strict are Batch A\'s clipboard files (cl-README.txt).',
+      'Order: the smoke test, then the ' +
+      PG_PRIORITY.length + ' PRIORITY', 'checks (the files that could ' +
+      'show a repair prompt first: pg-setup,', 'hf-3-new, hf-5-unlink, ' +
+      'cl-wrap, cl-columns, cl-11-floattable), then', 'the rest only if ' +
+      'time allows. The PRIORITY checks, in order:',
+      ...PG_LABELS.map((l, i) => `  ${String(i + 1).padStart(2)}. ${l} (` +
+        (PG_PRIORITY[i][1].length ? PG_PRIORITY[i][1].length + ' file' +
+        (PG_PRIORITY[i][1].length === 1 ? '' : 's') : 'all files') + ')')],
+    files: PG_FILES.map(([n, what]) => [n, what])},
 ];
 
 
@@ -145,8 +176,8 @@ function questions(text) {
 }
 
 const out = [
-  'Batch A, B and C hand-off for real Word: every file, by deliverable',
-  '===================================================================',
+  'Batch A, B, C and D hand-off for real Word: every file, by deliverable',
+  '=======================================================================',
   '',
   'All of these are made by !Letters\' own commands (the generators are',
   'tests/moreapps/handoff-*.mjs; this list by handoff-index.mjs) and',
@@ -161,8 +192,10 @@ const out = [
   '   whether Word complains (a repair prompt, "unreadable content").',
   '   Any complaint is the most valuable finding: write down the file.',
   '2. Then go deliverable by deliverable (A1 to A6, then B, the',
-  '   pictures, then C, the tables), reading the',
-  '   README first and answering its questions with the files open.',
+  '   pictures, C, the tables, then D: pages, headers, footers,',
+  '   fields, columns, line numbers, wrap, floating tables and',
+  '   views, one README), reading the README first and answering its',
+  '   questions with the files open.',
   '   Questions with "(No file)" are done by making the thing in Word',
   '   and opening the result in !Letters, or the reverse.',
   '3. Word counts: for each file Word\'s Review > Word Count should',
@@ -180,7 +213,9 @@ for (const set of SETS) {
   let qs = '(README missing)';
   if (fs.existsSync(rp)) {
     qs = set.tables ? `${TB_Q.length} (TB1..TB26 with sub-questions, ` +
-      'TBC4a.., TBC5a.., TBC6a.., TBX1..)' : questions(fs.readFileSync(rp,
+      'TBC4a.., TBC5a.., TBC6a.., TBX1..)' : set.pages ? `${PG_Q.length} ` +
+      '(PG1..PG40 with sub-questions, PGX1.., HF1..HF11, HFX1.., ' +
+      'CL1..CL12, CLX1..)' : questions(fs.readFileSync(rp,
       'utf8')) + (set.extra ? ' ' + set.extra : '');
   } else missing.push(set.readme);
   out.push(`README: ${set.readme}   questions: ${qs}`, '');
@@ -200,6 +235,8 @@ for (const set of SETS) {
       `      !Letters counts: ${c.words} words, ${c.charsNoSpaces} characters ` +
       `without spaces, ${c.chars} with, ${c.paras} paragraphs` +
       (set.pics ? `, ${picCount(doc)} pictures` : '') +
+      (set.pages ? `, ${doc.sections.length} section` +
+        (doc.sections.length === 1 ? '' : 's') : '') +
       (set.tables ? ', ' + (({tables, cells}) => `${tables} table${tables === 1 ? '' : 's'}, ` +
         `${cells} cells`)(doc.sections.reduce((a, s2) => tableCount(
           s2.blocks, a), {tables: 0, cells: 0})) : ''));

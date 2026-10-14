@@ -4,17 +4,19 @@
 // the work area.
 //
 //   const L = new DocLayout(doc, metrics, prev?, {top, decorators,
-//              pics}?)
+//              pics, fields, colW, floats, wrap}?)
 //              metrics: WimpLib/TextMetrics; prev: an older layout
-//              of doc whose lines may be kept (./DocItems); top: px
-//              above everything (the panes), 0..1000; decorators:
-//              ./DocStack's (DECORATORS); pics: a ./PicCache view
-//              (picView), ./PicPaint's L.pics (none: boxes); each
-//              prev's when not given
+//              of doc whose lines may be kept (./DocItems); the
+//              options (L.top, L.decorators, L.pics, L.fields,
+//              L.colW, L.floats, L.wrap): ./LayoutOpts optsOf.
+//              L.anchored: ./DocItems. L.fieldText(p,
+//              off) is ./FieldShow fieldText on L (./LineTokens),
+//              L.fshown its record
 //   L.layout(viewWidth) -> {w, h}: the work area's extent (the
-//             page's, or as far as the widest table: L.wide, D18)
+//             widest section's page, or as far as the widest root
+//             item or table: L.wide, D18)
 //   L.items  [{id, block, kind: 'p'|'box'|'tbl', index, x, w, col,
-//             ci, y, h, gapAbove, gapBelow, marks, lines?, list?,
+//             ci, s, y, h, gapAbove, gapBelow, marks, lines?, list?,
 //             mark?, label?}] (./DocItems) in document order: the
 //             root column's; a 'p' item is also the pl ({para, y, h,
 //             lines, metrics}) of ./PositionMap; a 'tbl' item holds
@@ -32,8 +34,28 @@
 //                              one more Map per derived one (R6)
 //   L.stackColumn(col, y0)  -> ./DocStack stackColumn(L, col, y0)
 //   L.left, L.textW, L.pageLeft, L.pageW: the column (px); L.top
+//   L.pageWide, L.textWide  the widest section's page and first
+//             column (px; L.pageW, L.textW at least): the white page
+//             (./EditPaint pageRect) and the extent reach them
+//   L.geom(s)  -> section s's geometry in px (./SectGeom pxOf of
+//             geomOf, settings gutterAtTop: ./SettingsRead;
+//             ./LayoutGeom), one object per section object for
+//             this layout; null for
+//             no section s. A root item is as wide as its section's
+//             first column (it.w, it.s: ./DocItems)
+//   L.web    Web layout's text width (px: ./WebLayout, D31): every
+//             section as one column that wide, no pages; L.stale the
+//             paragraphs waiting at the old width (OD8: ./WebLayout
+//             carry and stepWeb), L.lazy opts' band of the rest
+//   L.outline  Outline view's collapse set (./OutlineLayout, D32), or
+//             null: L.ol its rows; root items indented (dx), with a
+//             level and marker; children of collapsed headings get
+//             no item (L.items, L.flow, L.byId leave them out)
 //   L.ns     the scope raw inlines are read in (./PicRead docMap)
 //   L.pageH  the page's height (px); L.height  the extent's (layout)
+//   L.place  the view's placement (./Place, D4): every screen
+//             position below is asked of it; a new layout's is
+//             ./PlaceDraft (the identity), a view may set another
 //   L.itemAtY(y)            -> the root column's item at y (./DocHit
 //                              itemIn: clamped to the ends; a gap
 //                              gives the item below it; where items
@@ -59,50 +81,61 @@
 //                              (a table's: the table)
 //   L.invalidate()          lay all the lines out (and ask the
 //                           decorators) again on next layout
+//                           (L.dirtyFrom 0: no page kept)
+//   L.dirtyFrom, L.cleanFrom  what changed since prev (./DocItems;
+//                           ./Pages reuse, D7)
 //
-// The page geometry (text width from the first section, the page
-// centred, a whole page high at least), kept blocks and hits outside
-// the items: docs/apps/Letters.md, DocLayout. Pure: no desktop
-// services.
+// The page geometry (L.geom(0): text width, margin and page size
+// from the first section, the page centred, a whole page high at
+// least), kept blocks and hits outside the items:
+// docs/apps/Letters.md, DocLayout. Pure: no desktop services.
 import {buildItems, moveColumn, BOX} from './DocItems';
-import {stack, stackColumn, MARGIN, DECORATORS} from './DocStack';
+import {stack, stackColumn, MARGIN, PAGE_TOP} from './DocStack';
+import {optsOf} from './LayoutOpts';
 import {itemEnd, clampOff, placeOf} from './DocPos';
 import {selectionRects} from './DocRects';
 import {caretRect, boxRect, hitTest, itemIn} from './DocHit';
 import {docMap} from './PicRead';
 import {unlay} from './TblLayout';
+import {geomOf, pxOf} from './SectGeom';
+import {PlaceDraft} from './PlaceDraft';
+import {fieldText} from './FieldShow';
+import {carry} from './WebLayout';
+import {geomInit, geomAt} from './LayoutGeom';
 
-export {BOX};
-export const PAGE_TOP = 8;             // desk above and below the page
+export {BOX, PAGE_TOP};               // (desk above and below a page)
 const num = (v, d) => (Number.isFinite(v) ? v : d);
-const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
 export class DocLayout {
   constructor(doc, metrics, prev, opts = {}) {
     this.doc = doc;
     this.ns = docMap(doc);             // pictures (./PicRead)
-    const top = opts.top === undefined && prev ? prev.top : opts.top;
-    this.top = clamp(num(top, 0), 0, 1000);
-    this.decorators = opts.decorators ||
-      (prev && prev.decorators) || DECORATORS;
-    this.pics = opts.pics || (prev && prev.pics) || null;
+    optsOf(this, prev, opts);
+    this.fshown = null;                // (./FieldShow)
+    this.fieldText = (p, off) => fieldText(this, p, off);
     this.metrics = metrics;
+    this.place = PlaceDraft(this);     // (D4: a view may set another)
     this.cache = new Map();            // run formats (./Fmt)
     this.caches = null;                // per derived style table
     this.laid = false; this.width = 0; this.wide = 0;
     this.moved = false;
-    const sp = (doc.sections[0] && doc.sections[0].props) || {};
-    const sz = sp.pgSz || {}, mar = sp.pgMar || {};
-    this.pageH = clamp(num(sz.h, 16838) / 15, 200, 20000);
+    this.stale = 0; this.webAt = 0;    // (Web layout: ./WebLayout)
+    geomInit(this, prev);              // (gset, geoms: ./LayoutGeom)
+    const g = this.geom(0) || pxOf(geomOf(null, this.gset));
+    this.pageH = g.size.h;
     this.height = this.minHeight(2 * MARGIN + this.top);
-    const pw = num(sz.w, 11906);
-    const ml = num(mar.left, 1440), mr = num(mar.right, 1440);
-    this.textW = clamp((pw - ml - mr) / 15, 80, 4000);
-    this.marL = clamp(ml / 15, 0, 1000);
-    const marR = clamp(mr / 15, 0, 1000);
-    this.pageW = clamp(pw / 15, 80, this.marL + this.textW + marR);
+    this.textW = g.textW;
+    this.marL = g.mar.left;
+    this.pageW = g.size.w;
     this.pageLeft = MARGIN; this.left = MARGIN + this.marL;
     buildItems(this, doc, prev);
+    if (this.web) carry(this, prev, this.lazy);
+    this.pageWide = this.pageW; this.textWide = this.textW;
+    for (let s = 1; s < doc.sections.length; s++) {
+      const gs = this.geom(s);         // (a wider later section)
+      this.pageWide = Math.max(this.pageWide, gs.size.w);
+      this.textWide = Math.max(this.textWide, gs.cols[0].w);
+    }
   }
 
   /** See the header. */
@@ -116,10 +149,11 @@ export class DocLayout {
       this.moved = false;
     }
     if (!this.laid) this.stack();
-    const right = Math.max(this.pageLeft + Math.max(this.pageW,
-      this.marL + this.textW), this.left + this.wide) + MARGIN;
-    return {w: Math.max(vw, Math.ceil(right)), h: this.height};
+    return this.place.extent();
   }
+
+  /** See the header. */
+  geom(s) { return geomAt(this, s); }
 
   /** Break every paragraph and stack the items (./DocStack). */
   stack() { stack(this); }
@@ -154,6 +188,8 @@ export class DocLayout {
       }
     }
     this.laid = false;
+    this.dirtyFrom = 0;                // (pages: none kept)
+    this.cleanFrom = Infinity;
   }
 
   itemAtY(y) { return itemIn(this.items, y); }

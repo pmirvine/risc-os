@@ -8,6 +8,7 @@ import { launch, BASE_URL, SHOTS } from '../core/pw.mjs';
 import { buildDocx, documentXml, stylesXml, p, r, REL } from './build-docx.mjs';
 import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { assertSameDoc } from './docx-compare.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const WP = 'http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing';
 const CORE = 'http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties';
@@ -84,6 +85,7 @@ const D = 'RAM::RamDisc0.$.';
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   // the error boxes of Word ('riscos' reportError) are recorded, not shown
   await page.evaluate(([a, b, c]) => {
     window.__msgs = [];
@@ -183,8 +185,8 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, Format, Table, Zoom, New, Close',
-    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","Format","Table","Zoom","New","Close"]', r2.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Zoom, New, Close',
+    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","View","Outline","Format","Table","Zoom","New","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();

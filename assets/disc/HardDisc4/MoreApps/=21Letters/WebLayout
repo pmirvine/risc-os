@@ -1,0 +1,141 @@
+// WebLayout - Web layout's galley (Batch D P13.1, D31, OD8): the
+// text at the window's width less 0.25 in each side, no pages, one
+// column, and the lazy resize of a long document. Pure: no desktop
+// services (./DocLayout and ./ViewMode use it).
+//
+//   WEB_SIDE        24: px (0.25 in) kept clear each side
+//   WEB_PAD         8: px between the white area's edges and the
+//                   text (final fix B, review 2 M5: not against it)
+//   THROTTLE_MS     200: a resize relays the window out once per
+//                   this (./WebView)
+//   webWidth(viewW) -> the text width for a window viewW px wide
+//                   (layout px): viewW - 2 * (WEB_SIDE + WEB_PAD), 80
+//                   at least, 4000 at most; not a number: 80
+//   webGeom(g, w)   -> section geometry g (./SectGeom pxOf) as Web
+//                   layout has it: one column w px wide, WEB_PAD side
+//                   margins (the page's height and top and bottom
+//                   margins kept: a window shows a page high at
+//                   least, as Draft does)
+//   bandOf(L, y0, y1, id?) -> {c0, c1, also}: the root items to
+//                   break at once on a resize: those of layout L
+//                   (its y0..y1 band, a screen) and PAD (10) either
+//                   side, and also[] the index of item id's (the
+//                   caret's) when outside them
+//   carry(L, prev, lazy)  after ./DocItems buildItems of web layout
+//                   L from web layout prev (not adopted: another
+//                   width, or prev not worked out): a paragraph of
+//                   the same block, list label and mark takes prev's
+//                   lines when they are right (the same width, not
+//                   stale), else - outside lazy (bandOf's), when
+//                   there is one - prev's lines as they are, marked
+//                   it.stale (broken at another width: shown until
+//                   its turn); L.stale counts them. Nothing is
+//                   carried when anything else the lines depend on
+//                   (metrics, styles, numbering, settings, the
+//                   field context, floats) is not prev's. Without
+//                   lazy while prev is still being broken (an edit
+//                   during the slices, P13 fix I3) the band is the
+//                   items prev has no lines for (an edited
+//                   paragraph) and those beside them: the rest
+//                   stays stale, for the slices
+//   stepWeb(L, ms, now?) -> bool  breaks stale paragraphs top down
+//                   for ms ms; when none is left the items are
+//                   stacked again (their heights, y, L.height) and
+//                   true is given; false: more to do (L.stale)
+import {breakItem} from './ItemBreak';
+import {sameKey} from './ItemReuse';
+
+export const WEB_SIDE = 24, WEB_PAD = 8, THROTTLE_MS = 200;
+const MIN_W = 80, MAX_W = 4000, PAD = 10;
+const clock = () => (typeof performance === 'object'
+  ? performance.now() : Date.now());
+
+/** See the header. */
+export function webWidth(viewW) {
+  const w = Number.isFinite(viewW) ? viewW - 2 * (WEB_SIDE + WEB_PAD)
+    : MIN_W;
+  return Math.min(Math.max(w, MIN_W), MAX_W);
+}
+
+/** See the header. */
+export function webGeom(g, w) {
+  return {...g, size: {w: w + 2 * WEB_PAD, h: g.size.h}, textW: w,
+    mar: {...g.mar, left: WEB_PAD, right: WEB_PAD},
+    cols: [{x: WEB_PAD, w}]};
+}
+
+/** See the header. */
+export function bandOf(L, y0, y1, id) {
+  const n = L.items.length;
+  if (!n) return {c0: 0, c1: -1, also: []};
+  const at = (y) => (Number.isFinite(y) ? L.itemAtY(y).ci : 0);
+  const c0 = Math.max(0, at(y0) - PAD);
+  const c1 = Math.min(n - 1, at(y1) + PAD);
+  const it = id === undefined || id === null ? null : L.byId.get(id);
+  const ci = it && it.col === L.root ? it.ci : -1;
+  return {c0, c1, also: ci >= 0 && (ci < c0 || ci > c1) ? [ci] : []};
+}
+
+/** prev's lines may be taken at all (see carry). */
+const alike = (L, prev) => prev.laid && prev.metrics === L.metrics &&
+  prev.doc === L.doc && prev.styles === L.styles &&
+  prev.numbering === L.numbering && prev.settings === L.settings &&
+  prev.ns === L.ns && prev.fields === L.fields &&
+  prev.floats === L.floats && prev.decorators === L.decorators;
+
+/** See the header. */
+export function carry(L, prev, lazy) {
+  if (!prev || !prev.web || !alike(L, prev)) return;
+  const band = lazy || (prev.stale ? edits(L, prev) : null);
+  const also = new Set(band ? band.also : []);
+  const near = (ci) => !band || (ci >= band.c0 && ci <= band.c1) ||
+    also.has(ci);
+  for (const it of L.items) {
+    const o = it.lines ? null : prev.byId.get(it.id);
+    if (!o || o.kind !== 'p' || !o.lines || o.block !== it.block ||
+      !sameKey(o, it) || o.col.styles !== it.col.styles) continue;
+    const stale = o.stale || o.w !== it.w;
+    if (stale && near(it.ci)) continue;     // (broken now)
+    it.lines = o.lines;
+    it.h = o.h;
+    it.deco = o.deco;
+    if (stale) {
+      it.stale = true;
+      L.stale++;
+    }
+  }
+}
+
+/** The band of an edit while prev is still being broken (carry). */
+function edits(L, prev) {
+  const also = [];
+  for (const it of L.items) {
+    const o = prev.byId.get(it.id);
+    if (!o || o.block !== it.block)
+      also.push(it.ci - 1, it.ci, it.ci + 1);
+  }
+  return {c0: 0, c1: -1, also};
+}
+
+/** See the header. */
+export function stepWeb(L, ms, now = clock) {
+  if (!L.stale) return true;
+  const t0 = now(), {items} = L;
+  let c = L.webAt;
+  for (; c < items.length && L.stale; c++) {
+    const it = items[c];
+    if (!it.stale) continue;
+    const l = breakItem(L, it, L.doc.styles);
+    it.lines = l.lines;
+    it.h = l.h;
+    it.deco = null;
+    it.stale = false;
+    L.stale--;
+    if (now() - t0 >= ms) { c++; break; }
+  }
+  L.webAt = c;
+  if (L.stale) return false;
+  L.laid = false;
+  L.stack();
+  return true;
+}

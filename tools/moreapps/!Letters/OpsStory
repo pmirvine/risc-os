@@ -1,0 +1,101 @@
+// OpsStory - setStory: add, replace or remove a whole header or
+// footer story of doc.stories (Batch D, D12).
+//
+//   setStory {part, story, at?} -> setStory {part, story: the old
+//       one or null, at?}
+//
+//   story   a Story (./ModelCheck checkStory) whose `part` is `part`:
+//           added (at the end, or at index `at`) or put in place of
+//           the one there; null: the story removed, the inverse
+//           carrying its index as `at`, so undo puts it back in its
+//           place (sameStories compares the order: ./DeepEqual).
+//   at      only for an add: an integer 0..size; refused when it is
+//           given and is not one (also on a replace or remove).
+//
+// doc.stories is replaced by a new Map (never changed in place; a Doc
+// without one is read as empty). The Story is kept by reference, not
+// copied (./Ops apply): IMMUTABLE BY CONTRACT, as a setDocPart's
+// value. Its blocks' ids must be free in doc but for those of the
+// story it replaces (./OpsUtil checkIds).
+// A part name added must be a story the file had (meta.storyParts:
+// its bytes are still in doc.parts, and ./StoryWrite drops a removed
+// one) or a new part name ./OpsParts newPartFree takes, and no other
+// story's (case ignored). The commands of D14 pair it in one
+// d.atomic with setDocPart rels (the relationship), setSection (the
+// reference: ./SectRefs withRef) and setDocPart settings.
+// Refused (RangeError, doc unchanged): a part that is not a string,
+// a story that is not one or names another part, a relsPart that is
+// not null nor part's own .rels (./Rels isRelsOf: a copy
+// {...old, part} would share the old .rels and lose its own), no
+// block or a table last (./OpsPath tailOf: the rule the ops keep;
+// a Story read from the file so, put back by undo, is accepted), a
+// remove of a story not there, a bad `at`, a name taken, ids used
+// elsewhere.
+// A remove (story null) on its own leaves the sections' references
+// to the part dangling (lint rid-unresolved): BY DESIGN, the D14
+// commands remove them (./SectRefs withRef null) in the same
+// d.atomic.
+// Pure: no desktop services.
+import {fail, checkStory} from './ModelCheck';
+import {checkIds, tailOf} from './OpsUtil';
+import {checkTail} from './TblCheck';
+import {isRelsOf} from './Rels';
+import {newPartFree} from './OpsParts';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/** Throw unless `part` may be added as a new story's name. */
+function checkName(doc, m, part) {
+  const lc = part.toLowerCase();
+  for (const k of m.keys()) {
+    if (k.toLowerCase() === lc) fail('part ' + part + ' is a story');
+  }
+  const read = isObj(doc.meta) && Array.isArray(doc.meta.storyParts)
+    ? doc.meta.storyParts : [];
+  if (!read.includes(part) && !newPartFree(doc, part))
+    fail('part name ' + part + ' not free');
+}
+
+/** A copy of map m with `part` set to st at index `at` (or in its
+ *  place, or at the end), or removed (st null). */
+function mapWith(m, part, st, at) {
+  const out = new Map();
+  let k = 0;
+  for (const [n, v] of m) {
+    if (k++ === at) out.set(part, st);
+    if (n !== part) out.set(n, v);
+    else if (st) out.set(n, st);
+  }
+  if (st && !out.has(part)) out.set(part, st);
+  return out;
+}
+
+/** See the header. */
+export function setStory(doc, op) {
+  const {part, story} = op;
+  if (typeof part !== 'string' || !part) fail('bad story part');
+  const m = doc.stories instanceof Map ? doc.stories : new Map();
+  const old = m.has(part) ? m.get(part) : null;
+  if (story === null) {
+    if (!old) fail('no story ' + part);
+  } else {
+    checkStory(story);
+    if (story.part !== part) fail('the story is not ' + part);
+    if (story.relsPart != null && !isRelsOf(part, story.relsPart))
+      fail('the .rels ' + story.relsPart + ' is not ' + part + '\'s');
+    const tail = tailOf(story);
+    const bs = story.blocks;
+    if (tail && !bs.length) fail(tail + ' needs at least one block');
+    if (tail) checkTail(bs[bs.length - 1], tail);
+  }
+  const add = story !== null && !old;
+  if (op.at !== undefined && (!add || !Number.isInteger(op.at) ||
+    op.at < 0 || op.at > m.size)) fail('bad story place');
+  if (add) checkName(doc, m, part);
+  if (story) checkIds(doc, story.blocks, old ? old.blocks : []);
+  doc.stories = mapWith(m, part, story, add ? op.at : undefined);
+  const inv = {op: 'setStory', part, story: old};
+  if (!story) inv.at = [...m.keys()].indexOf(part);
+  return inv;
+}

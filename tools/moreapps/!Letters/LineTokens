@@ -2,16 +2,27 @@
 // lines, each with the model offsets (UTF-16 indices into Para.text)
 // it stands for.
 //
-//   tokens(para, styles, cache, map?) -> [{t, text, f, kind, from,
-//                                          to, shown, pic?}]
+//   tokens(para, styles, cache, map?, fieldText?, floats?) -> [{t,
+//                    text, f, kind, from, to, shown, pic?, field?,
+//                    anchor?}]
 //   t     'w' a word or a piece of one (no break inside), 's' spaces,
 //         'tab', 'nl' (a line break), 'pb' (a page or column break:
 //         ./BreakMarks, with its label), 'z' (an unseen inline: drawn
 //         as nothing, zero width; it sticks to the word next to it)
 //   kind  'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
-//         'pagebreak'
+//         'pagebreak' | 'anchor'
 //   shown true when text is not the model text of [from, to)
 //   map   the scope raw inlines are read in (./PicRead docMap)
+//   floats  Print layout's (P12.2, D26): an understood floating
+//         picture is a 'z' token of kind 'anchor' (./PicLine
+//         picToken), zero width; else (Draft, Web) as before
+//   fieldText  (para, off) -> {from, to, text, b, e} | null: a
+//         field result shown computed (./FieldShow, D18), asked at
+//         each w:fldChar and w:fldSimple inline (a paragraph without
+//         one asks nothing): [from, to) is drawn as ONE 'w' token,
+//         shown, of that text, in the format of the result's first
+//         run (an empty result: the separate fldChar's run); field
+//         {b, e} on it (the begin and end offsets: ./SelMove)
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
 // in blue, underlined; other wrappers with text (an insertion, a
@@ -89,7 +100,7 @@ function shownWords(text, i, f, kind, out) {
 }
 
 /** The tokens of the inline x at offset i, in format f. */
-function inline(x, i, f, out, map) {
+function inline(x, i, f, out, map, floats) {
   const one = (t, text, g, kind, shown = true) => out.push({t, text,
     f: g, kind, from: i, to: i + 1, shown});
   const l = localName(x.node), bare = bareT(x);
@@ -104,14 +115,52 @@ function inline(x, i, f, out, map) {
     shownWords(x.text, i, linkFmt(f), 'link', out);
   } else if (x.text) shownWords(x.text, i, f, 'text', out);
   else {
-    const pic = picToken(x, i, f, map);
+    const pic = picToken(x, i, f, map, floats);
     if (pic) out.push(pic);
     else one('w', '[...]', boxFmt(f), 'box');
   }
 }
 
+/** The computed results of para, from fieldText (the header). */
+function shows(para, ft) {
+  const out = [], s = para.text, xs = para.inlines || {};
+  for (let k = s.indexOf(OBJ); k >= 0; k = s.indexOf(OBJ, k + 1)) {
+    const l = localName((xs[k] || {}).node);
+    const v = (l === 'fldChar' || l === 'fldSimple') && ft(para, k);
+    if (v) out.push(v);
+  }
+  return out;
+}
+
+/** toks with each computed result v of vs as one token: one merge
+ *  pass (toks and vs in offset order; a v overlapping one before it,
+ *  a field nested in a result shown, is left out). The token takes
+ *  the format of the first token of the result, else of the token
+ *  before (an empty result); with neither v is left out. */
+function atomic(toks, vs) {
+  const out = [], n = toks.length;
+  const sorted = vs.every((v, k) => !k || vs[k - 1].from <= v.from)
+    ? vs : [...vs].sort((a, b) => a.from - b.from);
+  let j = 0, end = -Infinity;
+  const inside = (t, v) => t.from >= v.from && t.to <= v.to;
+  for (const v of sorted) {
+    if (v.from < end) continue;
+    while (j < n && toks[j].from < v.from) out.push(toks[j++]);
+    const t0 = j < n && inside(toks[j], v) ? toks[j]
+      : out[out.length - 1];
+    if (!t0 || !t0.f) continue;
+    while (j < n && inside(toks[j], v)) j++;
+    out.push({t: 'w', text: v.text, f: t0.f, kind: 'text',
+      from: v.from, to: v.to, shown: true, field: {b: v.b, e: v.e}});
+    end = v.to;
+  }
+  while (j < n) out.push(toks[j++]);
+  return out;
+}
+
 /** See the header. */
-export function tokens(para, styles, cache, map) {
+export function tokens(para, styles, cache, map, fieldText,
+  floats) {
   const out = [];
   const text = para.text, n = text.length;
   const runs = para.runs.length ? para.runs
@@ -130,7 +179,7 @@ export function tokens(para, styles, cache, map) {
     for (let i = from; i <= to; i++) {
       if (i < to && text[i] !== OBJ) continue;
       if (i > k) words(text.slice(k, i), k, f, out);
-      if (i < to) inline(para.inlines[i] || {}, i, f, out, map);
+      if (i < to) inline(para.inlines[i] || {}, i, f, out, map, floats);
       k = i + 1;
     }
   };
@@ -143,5 +192,6 @@ export function tokens(para, styles, cache, map) {
     at = e;
   }
   piece(at, n, PLAIN);
-  return out;
+  const vs = fieldText ? shows(para, fieldText) : null;
+  return vs && vs.length ? atomic(out, vs) : out;
 }

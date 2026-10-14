@@ -3,6 +3,8 @@ import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {loadFonts} from '../../tools/moreapps/!Letters/FontLoad';
 import {fontsToLoad} from '../../tools/moreapps/!Letters/FontMap';
+import {ratiosOf, NAT_M} from '../../tools/moreapps/!Letters/FontMetrics';
+import {readFileSync} from 'node:fs';
 
 const MOD = '../../tools/moreapps/!Letters/FontLoad';
 
@@ -126,6 +128,32 @@ describe('FontLoad', () => {
     await loadFonts(vfs, 'd', doc, ['Carlito'], FF);
     assert.equal(reads.length, 4);
     assert.equal(added.length, 5);
+  });
+});
+
+describe('FontLoad and FontMetrics (D35)', () => {
+  it('each face read is registered with its own metrics', async () => {
+    const {FF, doc} = fakes();
+    const dir = new URL('../../tools/moreapps/!Letters/Fonts/',
+      import.meta.url);
+    const vfs = {async readFile(p) {
+      const leaf = p.split('.').pop();
+      if (leaf !== 'LiberationMono-Bold') throw new Error('nf');
+      return new Uint8Array(readFileSync(new URL(leaf, dir)));
+    }};
+    assert.equal(ratiosOf('Liberation Mono', true, false), NAT_M);
+    const r = await loadFonts(vfs, 'd', doc, ['Liberation Mono'], FF);
+    assert.deepEqual(r.loaded, ['LiberationMono-Bold']);
+    const m = ratiosOf('Liberation Mono', true, false);
+    assert.ok(Math.abs(m.nat - (1705 + 615) / 2048) < 1e-9, m.nat);
+    // the regular face failed: not registered, so NAT_M
+    assert.equal(ratiosOf('Liberation Mono', false, false), NAT_M);
+  });
+  it('bytes that are not a font: loaded, nothing registered', async () => {
+    const {FF, vfs, doc} = fakes();
+    const r = await loadFonts(vfs, 'd', doc, ['Caladea'], FF);
+    assert.equal(r.loaded.length, 4);
+    assert.equal(ratiosOf('Caladea', false, false), NAT_M);
   });
 });
 

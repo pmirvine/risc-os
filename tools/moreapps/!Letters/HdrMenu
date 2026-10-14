@@ -1,0 +1,120 @@
+// HdrMenu - the header and footer mode's menu (Batch D P7.4, D14):
+// View > Header and footer options (./ViewMenu), and the window
+// menu's Header (or Footer) item while the window is in the mode
+// (./WinMenu: the mode's own menu, as Word's context menu there).
+// Desktop-bound (Menu, the beep): it imports the desktop in its
+// import line only.
+//
+//   hdrMenu(dw) -> a Menu, every item shaded outside the mode,
+//       titled Header, or Footer in a footer
+//     Different first page   ticked when the page's section has
+//                            titlePg (./HdrCmd firstPageCmd)
+//     Different odd and even pages  ticked when the document has
+//                            evenAndOddHeaders (./HdrCmd oddEvenCmd:
+//                            a beep in a document with no settings
+//                            part)
+//     Link to previous       ticked when the page's section has no
+//                            reference of its own of the mode's kind
+//                            and type (it shows the one before's, or
+//                            none); shaded in the first section
+//                            (./HdrCmd linkCmd: on removes the
+//                            section's own, off copies the inherited)
+//     Go to footer / Go to header   the other one of the same page
+//     Previous section / Next section   the same kind on the first
+//                            page of the section before / after;
+//                            shaded when there is none
+//     Remove header / Remove footer  the story emptied to one empty
+//                            paragraph (./HdrCmd removeCmd); shaded
+//                            for a story not made yet
+// A command is one undo step (typing.command, on the real Document:
+// a story's facade takes no section op); the mode is then entered
+// again on the same page (./HdrMode enter), for whatever story that
+// page now shows (one not made yet: on its first edit). Refused
+// (null): a beep, nothing changed.
+import {Menu, wimp} from 'riscos';
+import {firstPageCmd, oddEvenCmd, linkCmd, removeCmd, ownRef}
+  from './HdrCmd';
+import {onOffOf} from './SettingsRead';
+import {enter} from './HdrMode';
+
+const WORD = {hdr: 'header', ftr: 'footer'};
+
+/** {v, m, pg, P} of the mode, or null outside it. */
+function at(dw) {
+  const v = dw.view, m = v.hdr;
+  if (!m) return null;
+  const P = v.bodyL.place.pages, pg = P && P.at(m.i);
+  return pg ? {v, m, pg, P} : null;
+}
+
+/** The first page of section s, or -1. */
+function firstOf(P, s) {
+  for (let k = 0; P.at(k); k++) if (P.at(k).s === s) return k;
+  return -1;
+}
+
+/** cmd(real Document) as one step, then the mode again. */
+function run(dw, cmd) {
+  const a = at(dw);
+  if (!a) return;
+  const {v, m} = a;
+  const done = v.typing.command(() => cmd(v.real, a));
+  if (done === null) {
+    wimp.beep();
+    return;
+  }
+  enter(dw, m.i, m.kind);
+}
+
+/** See the header. */
+export function hdrMenu(dw) {
+  const a = () => at(dw);
+  const kind = dw.view.hdr ? dw.view.hdr.kind : 'hdr';
+  const other = kind === 'hdr' ? 'ftr' : 'hdr';
+  const sec = (d) => {
+    const x = a();
+    return x ? firstOf(x.P, x.pg.s + d) : -1;
+  };
+  return new Menu(kind === 'ftr' ? 'Footer' : 'Header', [
+    {text: 'Different first page', shaded: () => !a(),
+      ticked: () => !!a() && a().pg.s >= 0 &&
+        dw.view.real.doc.sections[a().pg.s].props.titlePg === true,
+      action: () => run(dw, (d, x) => firstPageCmd(d, x.pg.s,
+        d.doc.sections[x.pg.s].props.titlePg !== true)),
+      help: 'A header and footer of their own on the first page of ' +
+        'this section.'},
+    {text: 'Different odd and even pages', shaded: () => !a(),
+      ticked: () => onOffOf(dw.view.real.doc, 'evenAndOddHeaders'),
+      action: () => run(dw, (d) => oddEvenCmd(d,
+        !onOffOf(d.doc, 'evenAndOddHeaders'))),
+      help: 'Even pages get headers and footers of their own, in ' +
+        'the whole document.'},
+    {text: 'Link to previous', shaded: () => !a() || a().pg.s === 0,
+      ticked: () => !!a() && a().pg.s > 0 && ownRef(dw.view.real.doc,
+        a().pg.s, kind, a().m.type) === undefined,
+      action: () => run(dw, (d, x) => linkCmd(d, x.pg.s, kind,
+        x.m.type, ownRef(d.doc, x.pg.s, kind, x.m.type) !== undefined)),
+      help: 'Use the previous section\'s ' + WORD[kind] +
+        ' (ticked), or give this section one of its own, a copy to ' +
+        'change.',
+      dotted: true},
+    {text: 'Go to ' + WORD[other], shaded: () => !a(),
+      action: () => {
+        const x = a();
+        if (x) enter(dw, x.m.i, other);
+      },
+      help: 'Edit the ' + WORD[other] + ' of this page.'},
+    {text: 'Previous section', shaded: () => sec(-1) < 0,
+      action: () => { if (sec(-1) >= 0) enter(dw, sec(-1), kind); },
+      help: 'The ' + WORD[kind] + ' of the section before.'},
+    {text: 'Next section', shaded: () => sec(1) < 0,
+      action: () => { if (sec(1) >= 0) enter(dw, sec(1), kind); },
+      help: 'The ' + WORD[kind] + ' of the section after.',
+      dotted: true},
+    {text: 'Remove ' + WORD[kind],
+      shaded: () => !a() || !!a().m.facade.pending,
+      action: () => run(dw, (d, x) => removeCmd(d, x.m.part)),
+      help: 'Empty this ' + WORD[kind] + ' (in every section that ' +
+        'shows it).'},
+  ]);
+}

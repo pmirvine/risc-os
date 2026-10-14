@@ -1,0 +1,169 @@
+// PageReuse - a ./Pages taking what it can of the Pages of an older
+// layout (Batch D, D7).
+//
+//   reuse(P, prev)     P (new, empty) keeps prev's pages before
+//                      G.dirtyFrom and remembers prev for converge
+//   converge(P, pg, seen) -> true when new page pg (seen: ./Paginate
+//                      seen) converged: pg is P's next page and
+//                      prev's pages after it are now P's (as far as
+//                      they can be taken)
+//
+// G.dirtyFrom (./DocItems L.dirtyFrom: the first root item whose
+// galley place or height may differ from prev's; not a number:
+// nothing reused) keeps prev's pages whose breaks looked at items
+// before it only (./Paginate seen) by identity, up to the first
+// whose header, footer or frame G now gives otherwise (./PageRecord
+// hfAlike: a header edited moves no body item), and pagination
+// resumes after them. Each page worked out from there is checked
+// against prev's: when its start is the same place (item k of G,
+// item k - delta of prev's galley, delta the change in item count,
+// the same line and cut: dy, a table row's cuts by value),
+// k >= G.cleanFrom (every item from there
+// on is prev's under the same reuse key, so the galley moved by a
+// constant), and it is alike (every field but i, num, top and y0:
+// blank, first, parity, section, fmt, size, mar, page and frame,
+// end moved by delta, why, its columns' cursors moved by delta
+// (./PageCols colsAlike); and its y0 moved as its item did),
+// pagination has CONVERGED: pg, the page just worked out, is P's
+// (prev's own when every field is the same), and prev's pages after
+// it are taken: each one as ./PageRecord pageOf makes it from its
+// fields with cursors moved by delta and i, num, first, top and y0
+// worked out again by ./Paginate's rules (numberOf, topOf, startY,
+// firstAt; its columns by ./PageCols moveCols)
+// and fmt, size and mar from G (prev's own Page when nothing
+// differs; a page whose header, footer or frame would differ, by
+// ./PageRecord hfAlike with its new number, is not taken). A blank
+// page is worked out again (nextPage: it is
+// decided before any fill), since it carries the section before
+// its start. Never by adding a difference, so what is taken is
+// exactly what a fresh pagination gives. A page whose y0 or vShift
+// came out of its fill (y0: the space before dropped at the top;
+// vShift: a vAlign section's last page, from the px it used) or
+// whose first changed is not taken: pagination works it out and
+// converges again just after it. prev is only read, never changed;
+// what P keeps of it (P.old) is let go once prev is used up or P is
+// done. Pure: no desktop services.
+import {cursor, sameCursor, numberOf, topOf, startY, endsGalley,
+  shiftOf, nextPage, firstAt} from './Paginate';
+import {cutOrder} from './PageCursor';
+import {colsAlike, moveCols, sameCols} from './PageCols';
+import {pageOf, samePage, sectAlike, sameRef, hfAlike}
+  from './PageRecord';
+
+const shift = (c, d) => (d ? cursor(c.k + d, c.line, c.dy, c.cuts)
+  : c);
+
+/** Whether old page op starts before place {k, line, dy, cuts}
+ *  (blank: the page there is blank; a blank page starts where the
+ *  next does). */
+function before(op, k, c, blank) {
+  const a = op.start;
+  if (a.k !== k) return a.k < k;
+  if (a.line !== c.line) return a.line < c.line;
+  const d = cutOrder(a, c);
+  return d ? d < 0 : op.blank && !blank;
+}
+
+/** New page pg and old page op alike (the header). */
+const alike = (pg, op, d) => op.blank === pg.blank &&
+  op.first === pg.first && op.parity === pg.parity &&
+  op.s === pg.s && op.fmt === pg.fmt && op.w === pg.w &&
+  op.h === pg.h && op.frameH === pg.frameH &&
+  op.bodyTop === pg.bodyTop && op.why === pg.why &&
+  sameRef(op.header, pg.header) && sameRef(op.footer, pg.footer) &&
+  samePage(op.size, pg.size) && samePage(op.mar, pg.mar) &&
+  sameCursor(shift(op.end, d), pg.end) && colsAlike(op.cols, pg.cols,
+  d);
+
+/** See the header. */
+export function reuse(P, prev) {
+  const G = P.G, d = G.dirtyFrom, ps = prev.list, ss = prev.seen;
+  if (typeof d !== 'number' || !(d >= 0) || !ss) return;
+  let j = 0;
+  while (j < ps.length && ss[j] < d && hfAlike(G, ps[j])) j++;
+  for (let i = 0; i < j; i++) P.push(ps[i], ss[i]);
+  P.kept = j;
+  const n = G.items.length, l = P.last;
+  if (j === ps.length && (prev.done || (l && endsGalley(l, n)))) {
+    P.done = true;
+    return;
+  }
+  const c = G.cleanFrom, items = prev.G && prev.G.items;
+  if (j < ps.length && typeof c === 'number' && c < Infinity &&
+    items) {
+    P.old = {ps, ss, items, done: prev.done, q: j, clean: c,
+      delta: n - items.length};
+  }
+}
+
+/** See the header. */
+export function converge(P, pg, seen) {
+  const o = P.old, items = P.G.items, c = pg.start;
+  const k = c.k, t = k - o.delta, ps = o.ps;
+  if (k < o.clean || k >= items.length || t < 0) return false;
+  let q = o.q;
+  while (q < ps.length && before(ps[q], t, c, pg.blank)) q++;
+  o.q = q;
+  if (q >= ps.length) {
+    P.old = null;                    // (prev ran out: no more tries)
+    return false;
+  }
+  const op = ps[q];
+  if (op.start.k !== t || !sameCursor(shift(op.start, o.delta), c) ||
+    !alike(pg, op, o.delta) || pg.y0 - op.y0 !==
+    items[k].y - o.items[t].y) return false;
+  if (put(P, pg, op, seen)) P.kept++;
+  P.old = null;
+  if (endsGalley(pg, items.length)) {
+    P.done = true;
+    return true;
+  }
+  for (q++; q < ps.length; q++) {
+    if (!take(P, o, q)) {
+      o.q = q;                         // (converge again after it)
+      P.old = o;
+      return true;
+    }
+  }
+  if (o.done) P.done = true;
+  return true;
+}
+
+/** pg as P's next page (seen), or old page op when the same
+ *  (true). */
+function put(P, pg, op, seen) {
+  const same = samePage(pg, op);
+  P.push(same ? op : pg, seen);
+  return same;
+}
+
+/** prev's page q taken as P's next page (false: it is not). */
+function take(P, o, q) {
+  const op = o.ps[q], prev = P.last, G = P.G;
+  const start = shift(op.start, o.delta), seen = o.ss[q] + o.delta;
+  if (op.blank) {
+    const r = nextPage(G, start, prev);
+    if (!r || !r.blank) return false;
+    put(P, pageOf(G, r, P.list.length), op, seen);
+    P.kept++;
+    return true;
+  }
+  const first = firstAt(G.items, start, prev);
+  if (first !== op.first || shiftOf(G, op.s, op.why) ||
+    op.y0 !== startY(o.items, op.start, o.ps[q - 1] || null)) {
+    return false;
+  }
+  const i = P.list.length, num = numberOf(G, op.s, first, prev);
+  const top = topOf(prev), y0 = startY(G.items, start, prev);
+  const hf = num === op.num ? op : {...op, num};
+  if (!hfAlike(G, hf)) return false;
+  const cols = moveCols(G, o.items, op.cols, o.delta, y0);
+  if (cols === null) return false;
+  P.push(!o.delta && i === op.i && num === op.num && top === op.top &&
+    y0 === op.y0 && !op.vShift && sectAlike(G, op) &&
+    sameCols(cols, op.cols) ? op
+    : pageOf(G, {...op, start, end: shift(op.end, o.delta), num, top,
+      y0, vShift: 0, cols}, i), seen);
+  P.kept++;
+  return true;
+}

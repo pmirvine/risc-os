@@ -1,0 +1,132 @@
+// PageRecord - the frozen Page of one of ./Paginate's page records
+// (Batch D, D2; split out of ./Pages in the P2 fix wave so that
+// ./PageReuse builds the pages it takes by the same rule).
+//
+//   pageOf(G, r, i) -> Page  r: nextPage's record (or a page taken
+//       from an older Pages, its fields worked out again); i its
+//       index. fmt, parity, size and mar come from G here, never
+//       from r: ./Pages' header has the shape; so do header and
+//       footer (refsOf); cols (./PageCols) only when r has them
+//   refsOf(G, s, first, num) -> {header, footer}  the StoryRefs a
+//       page of section s shows (G.refOf(s, type, kind), type
+//       ./Paginate typeAt; null each without G.refOf)
+//   sameRef(a, b)   two StoryRefs (or nulls) alike, by value
+//   hfAlike(G, pg)  -> whether Page pg's header, footer, bodyTop and
+//       frameH are what G gives a page of its section, first and
+//       num now (a blank page: always): a header or footer edited
+//       or relinked, with nothing in the body moved, changes them
+//       (./PageReuse keeps a page only when it holds)
+//   parityOf(num)   -> 'odd' | 'even'
+//   sectAlike(G, pg) -> whether Page pg's fmt, size and mar are what
+//       G gives for its section now (nothing made: the reuse fast
+//       path)
+//   samePage(a, b)  -> whether Pages a and b have the same fields
+//       (their size, mar and cursors by value, a cursor's cuts too;
+//       columns, ./PageCols sameCols; frames not looked
+//       at): b may then stand for a (./PageReuse keeps an older
+//       Page by identity)
+//
+// Pure: no desktop services.
+// parityOf is used inside this module only (not exported).
+import {asPage} from './PageFrames';
+import {sameCuts} from './PageCursor';
+import {typeAt, frameOf} from './Paginate';
+import {sameCols} from './PageCols';
+
+const FMTS = new Set(['decimal', 'upperRoman', 'lowerRoman',
+  'upperLetter', 'lowerLetter']);
+const NONE = Object.freeze({});
+const MAR = ['top', 'right', 'bottom', 'left', 'header', 'footer',
+  'gutter'];
+
+/** See the header. */
+const parityOf = (num) => (Math.abs(num % 2) === 1 ? 'odd'
+  : 'even');
+
+/** The page number format of section s (./Pages' header). */
+function fmtOf(G, s) {
+  const x = (G.sect && G.sect(s)) || NONE;
+  const f = (x.pgNumType || NONE).fmt;
+  return FMTS.has(f) ? f : 'decimal';
+}
+
+/** size and mar in twips for section s of page r. */
+function twipsOf(G, r) {
+  const t = G.geomTw && G.geomTw(r.s);
+  if (t) {
+    return {size: Object.freeze({w: t.size.w, h: t.size.h}),
+      mar: Object.freeze({...t.mar})};
+  }
+  const g = G.geom(r.s) || G.geom(0);
+  const m = g ? g.mar : NONE, mar = {};
+  for (const k of MAR) mar[k] = Math.round((m[k] || 0) * 15);
+  return {size: Object.freeze({w: Math.round(r.w * 15),
+    h: Math.round(r.h * 15)}), mar: Object.freeze(mar)};
+}
+
+/** See the header. */
+export function refsOf(G, s, first, num) {
+  if (!G.refOf) return {header: null, footer: null};
+  const type = typeAt(G, s, first, num);
+  return {header: G.refOf(s, type, 'hdr') || null,
+    footer: G.refOf(s, type, 'ftr') || null};
+}
+
+const BLANK = Object.freeze({header: null, footer: null});
+
+/** See the header. */
+export function pageOf(G, r, i) {
+  const {size, mar} = twipsOf(G, r);
+  const {header, footer} = r.blank ? BLANK
+    : refsOf(G, r.s, r.first, r.num);
+  return asPage({i, s: r.s, num: r.num, fmt: fmtOf(G, r.s),
+    parity: parityOf(r.num),
+    first: r.first, blank: r.blank, size, mar, start: r.start,
+    end: r.end, top: r.top, w: r.w, h: r.h, bodyTop: r.bodyTop,
+    frameH: r.frameH, y0: r.y0, vShift: r.vShift, why: r.why,
+    header, footer, ...(r.cols ? {cols: r.cols} : {})});
+}
+
+/** See the header. */
+export const sameRef = (a, b) => a === b || (!!a && !!b &&
+  flat(a, b));
+
+/** See the header. */
+export function hfAlike(G, pg) {
+  if (pg.blank) return true;
+  const f = frameOf(G, pg.s, pg.first, pg.num);
+  if (f.bodyTop !== pg.bodyTop || f.frameH !== pg.frameH) return false;
+  const r = refsOf(G, pg.s, pg.first, pg.num);
+  return sameRef(r.header, pg.header) && sameRef(r.footer, pg.footer);
+}
+
+/** See the header. */
+export function sectAlike(G, pg) {
+  if (fmtOf(G, pg.s) !== pg.fmt) return false;
+  const t = (G.geomTw && G.geomTw(pg.s)) || twipsOf(G, pg);
+  const m = t.mar, a = pg.mar;
+  if (t.size.w !== pg.size.w || t.size.h !== pg.size.h) return false;
+  for (const k of MAR) if (m[k] !== a[k]) return false;
+  return true;                         // (mar has MAR's keys only)
+}
+
+/** Two flat objects with the same keys and values. */
+function flat(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+    return false;
+  }
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => a[k] === b[k] || (Array.isArray(a[k]) &&
+    sameCuts(a[k], b[k])));
+}
+
+/** See the header. */
+export function samePage(a, b) {
+  if (a === b) return true;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => (k === 'cols' ? sameCols(a[k], b[k])
+    : flat(a[k], b[k])));
+}

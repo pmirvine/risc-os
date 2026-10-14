@@ -1,0 +1,154 @@
+// TblFloat - what a floating table's w:tblpPr (and w:tblOverlap)
+// says, typed for layout only (pure; Batch D P12.6, owner ruling
+// R5). ./TblProps keeps both elements raw in tblPr.extra and they are
+// written back byte for byte: nothing here moves or changes them.
+//
+//   floatOf(tblPr, map) -> TFloat | null (no w:tblpPr in its extra)
+//     TFloat {horz, vert, xSpec?, x?, ySpec?, y?, dist: {t, b, l, r},
+//             overlap, unknown} (frozen; cached per tblPr and map)
+//       horz, vert  'text' | 'margin' | 'page' (horzAnchor,
+//                   vertAnchor)
+//       xSpec   'left' | 'center' | 'right' | 'inside' | 'outside'
+//               (tblpXSpec); x the tblpX twips (signed)
+//       ySpec   'inline' | 'top' | 'center' | 'bottom' | 'inside' |
+//               'outside' (tblpYSpec); y the tblpY twips (signed)
+//       dist    topFromText, bottomFromText, leftFromText,
+//               rightFromText in twips
+//       overlap false only for <w:tblOverlap w:val="never"/>
+//       unknown true when anything is not understood: an attribute
+//               not listed (or not in the WML namespace), a value not
+//               a plain integer or out of its cap, a spec or anchor
+//               not listed, content in the element, either element
+//               twice, a tblOverlap not exactly w:val never/overlap.
+//               Such a table is not placed: it stays in the flow,
+//               dashed, as before (R5)
+//   isFloating(tblPr, map) -> whether its extra holds a w:tblpPr
+//   apart(tblPr, map) -> tblPr'  a COPY of a floating table (the
+//       second part of a Split Table, one pasted in its own
+//       document: P12b fix I4) kept off the tables before it: its
+//       extra with one <w:tblOverlap w:val="never"/> (the tblpPr's
+//       prefix) after its w:tblpPr, in place of any tblOverlap
+//       there; tblPr itself when not floating. The original's
+//       elements are never changed
+//   MAX_POS  31680 twips (22 in, Word's largest page side): |tblpX|,
+//            |tblpY| at most this
+//   MAX_DIST 31680 twips: each fromText distance 0..this
+//
+// Absent attributes (ECMA-376 Part 1, 17.4.58 tblpPr, the "If this
+// attribute is omitted" sentence of each): the four fromText
+// distances 0, tblpX and tblpY 0, no spec; horzAnchor and vertAnchor
+// are read as Word and LibreOffice read an omitted one: horzAnchor
+// text (the column), vertAnchor margin. A spec given wins over the
+// offset (17.4.58: tblpX "shall be ignored" when tblpXSpec is
+// present; likewise tblpY). Absent tblOverlap (17.4.56): overlap
+// allowed. Names from the file are only Map keys compared with the
+// fixed lists here: __proto__ and the like are unknown, never set.
+// A universal measure (ISO 29500 transitional ST_SignedTwipsMeasure:
+// "1in", "-2.5cm") is not read: unknown, the table stays in the flow
+// (safe; review P12b M4).
+import {wName, wAttrs, isEl, blank} from './Ns';
+import {intOf} from './ReadPropsMore';
+
+export const MAX_POS = 31680;
+export const MAX_DIST = 31680;
+const ANCHORS = ['text', 'margin', 'page'];
+const X_SPECS = ['left', 'center', 'right', 'inside', 'outside'];
+const Y_SPECS = ['inline', 'top', 'center', 'bottom', 'inside',
+  'outside'];
+const DIST = [['topFromText', 't'], ['bottomFromText', 'b'],
+  ['leftFromText', 'l'], ['rightFromText', 'r']];
+const NAMES = new Set(['horzAnchor', 'vertAnchor', 'tblpXSpec',
+  'tblpX', 'tblpYSpec', 'tblpY', ...DIST.map(([n]) => n)]);
+const CACHE = new WeakMap();           // tblPr -> Map(map -> TFloat)
+
+/** The w:tblpPr and w:tblOverlap nodes of tblPr's extra. */
+function nodesOf(tblPr, map) {
+  const extra = tblPr && typeof tblPr === 'object' ? tblPr.extra
+    : null;
+  const o = {pr: [], ov: []};
+  if (!Array.isArray(extra)) return o;
+  for (const n of extra) {
+    if (!isEl(n) || !Array.isArray(n.attrs)) continue;
+    const w = wName(n, map);
+    if (w === 'tblpPr') o.pr.push(n);
+    else if (w === 'tblOverlap') o.ov.push(n);
+  }
+  return o;
+}
+
+/** See the header. */
+export const isFloating = (tblPr, map) =>
+  nodesOf(tblPr, map).pr.length > 0;
+
+/** See the header. */
+export function apart(tblPr, map) {
+  const {pr, ov} = nodesOf(tblPr, map);
+  if (!pr.length) return tblPr;
+  const i = pr[0].name.indexOf(':');
+  const never = {name: pr[0].name.slice(0, i + 1) + 'tblOverlap',
+    attrs: [[pr[0].name.slice(0, i + 1) + 'val', 'never']],
+    children: []};
+  const extra = tblPr.extra.filter((n) => !ov.includes(n));
+  extra.splice(extra.indexOf(pr[0]) + 1, 0, never);
+  return {...tblPr, extra};
+}
+
+/** Node n has no content but white space. */
+const bare = (n) => !Array.isArray(n.children) || n.children.every(
+  (c) => typeof c === 'string' && blank(c));
+
+/** An integer attribute value within -cap..cap (lo: the least). */
+function num(v, lo, cap) {
+  const n = intOf(v);
+  return n !== undefined && n >= lo && n <= cap ? n : undefined;
+}
+
+/** The TFloat of tblpPr node n and tblOverlap nodes ov. */
+function typed(n, ov, map, more) {
+  const o = {horz: 'text', vert: 'margin',
+    dist: {t: 0, b: 0, l: 0, r: 0}, overlap: true, unknown: more};
+  const a = wAttrs(n, map);
+  if (!a || !bare(n)) o.unknown = true;
+  for (const [k, v] of a || []) {
+    if (!NAMES.has(k)) { o.unknown = true; continue; }
+    const d = DIST.find(([name]) => name === k);
+    if (d) {
+      const x = num(v, 0, MAX_DIST);
+      if (x === undefined) o.unknown = true;
+      else o.dist[d[1]] = x;
+    } else if (k === 'horzAnchor' || k === 'vertAnchor') {
+      if (!ANCHORS.includes(v)) o.unknown = true;
+      else o[k === 'horzAnchor' ? 'horz' : 'vert'] = v;
+    } else if (k === 'tblpXSpec' || k === 'tblpYSpec') {
+      if (!(k === 'tblpXSpec' ? X_SPECS : Y_SPECS).includes(v)) {
+        o.unknown = true;
+      } else o[k === 'tblpXSpec' ? 'xSpec' : 'ySpec'] = v;
+    } else {
+      const x = num(v, -MAX_POS, MAX_POS);
+      if (x === undefined) o.unknown = true;
+      else o[k === 'tblpX' ? 'x' : 'y'] = x;
+    }
+  }
+  if (ov.length > 1) o.unknown = true;
+  else if (ov.length) {
+    const b = wAttrs(ov[0], map);
+    const val = b && b.size === 1 ? b.get('val') : undefined;
+    if (!bare(ov[0]) || (val !== 'never' && val !== 'overlap')) {
+      o.unknown = true;
+    } else o.overlap = val !== 'never';
+  }
+  Object.freeze(o.dist);
+  return Object.freeze(o);
+}
+
+/** See the header. */
+export function floatOf(tblPr, map) {
+  if (!tblPr || typeof tblPr !== 'object') return null;
+  let byMap = CACHE.get(tblPr);
+  if (byMap && byMap.has(map)) return byMap.get(map);
+  const {pr, ov} = nodesOf(tblPr, map);
+  const out = pr.length ? typed(pr[0], ov, map, pr.length > 1) : null;
+  if (!byMap) CACHE.set(tblPr, byMap = new Map());
+  byMap.set(map, out);
+  return out;
+}

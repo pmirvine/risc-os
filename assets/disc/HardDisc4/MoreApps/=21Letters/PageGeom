@@ -1,0 +1,80 @@
+// PageGeom - the section and item facts ./PageFill's loop and the
+// modules around it read (split from ./PageFill, Batch D P12b fix
+// wave; ./PageFill re-exports all but startsPage).
+//
+//   geomAt(G, s)   section s's px geometry (A4's when G has none)
+//   sectOf(G, s)   G.sect(s) or {}; typeOf(G, s) its w:type
+//       ('nextPage' when not a string)
+//   factsOf(G, k)  item k's facts (G.facts(k), else the item)
+//   fin(v), px(v)  a finite number; a positive one else 0
+//   floatSpan(G, k, frameH) -> px | null  root item k a floating
+//       table placed on its page (P12.6, R5: its facts' tfloat, not
+//       unknown, a table no taller than frameH): the px of the
+//       galley it holds no place of in the flow (its height and
+//       gaps, a section band aside); null: in the flow as any table.
+//       A placed one is never split (./PageRows never sees it): it
+//       goes whole on the page its place falls on (the page the
+//       items before it end on), and the items after it go on as
+//       if it were not there (the band rule's skip); ./PageFrames
+//       gives its frag float: true, ./AnchorPlace places it
+//   contStart(G, k) -> item k starts a continuous section on the
+//       same page whose columns or the columns before it are two
+//       or more (P10.2)
+//   startsPage(G, k) -> the section starting at item k starts a page
+//       (not continuous, or another page size)
+//
+// Pure: no desktop services.
+import {geomOf, pxOf} from './SectGeom';
+import {isTable} from './PageRows';
+
+const NONE = Object.freeze({});
+let fallback = null;
+
+export const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+export const px = (v) => (fin(v) && v > 0 ? v : 0);
+
+export const factsOf = (G, k) => (G.facts ? G.facts(k)
+  : G.items[k]) || NONE;
+export const sectOf = (G, s) => (G.sect && G.sect(s)) || NONE;
+export const typeOf = (G, s) => {
+  const t = sectOf(G, s).type;
+  return typeof t === 'string' ? t : 'nextPage';
+};
+
+/** Section s's px geometry (A4's when G has none). */
+export function geomAt(G, s) {
+  const g = G.geom(s) || G.geom(0);
+  if (g) return g;
+  if (!fallback) fallback = pxOf(geomOf(null));
+  return fallback;
+}
+
+/** Whether the section starting at item k starts a page. */
+export function startsPage(G, k) {
+  const it = G.items[k], pr = G.items[k - 1];
+  if (!pr || it.s === pr.s) return false;
+  if (typeOf(G, it.s) !== 'continuous') return true;
+  const a = geomAt(G, pr.s).size, b = geomAt(G, it.s).size;
+  return a.w !== b.w || a.h !== b.h;
+}
+
+const nCols = (G, s) => {
+  const c = geomAt(G, s).cols;
+  return c && c.length ? c.length : 1;
+};
+
+/** See the header. */
+export function contStart(G, k) {
+  const it = G.items[k], pr = G.items[k - 1];
+  if (!pr || !it || it.s === pr.s || startsPage(G, k)) return false;
+  return nCols(G, pr.s) > 1 || nCols(G, it.s) > 1;
+}
+
+/** See the header. */
+export function floatSpan(G, k, frameH) {
+  const it = G.items[k], tf = factsOf(G, k).tfloat;
+  if (!tf || tf.unknown || !isTable(it) || !fin(it.h) ||
+    !(it.h <= frameH)) return null;
+  return Math.max(0, px(it.h) + px(it.gapAbove) + px(it.gapBelow) -
+    px(factsOf(G, k).band));
+}

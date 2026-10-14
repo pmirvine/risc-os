@@ -1,0 +1,83 @@
+// SettingsRead - the document-wide settings the page layout reads
+// from settings.xml (doc.rawSettings), never changing it
+// (./SettingsEdit is the writer).
+//
+//   onOffOf(doc, name) -> boolean  name one of FLAGS: the first
+//       WordprocessingML child of that name is there and its w:val
+//       is not false / 0 / off (absent: false). Another name:
+//       RangeError
+//   viewOf(doc) -> 'print' | 'web' | 'outline' | 'draft' | null
+//       w:view w:val: print, web, outline, masterPages -> outline,
+//       normal -> draft; none, absent or unknown -> null
+//   settingsOf(doc) -> frozen {evenAndOddHeaders, gutterAtTop,
+//       mirrorMargins, updateFields, view}, one object per root
+//       (cached by the root object: setDocPart replaces it, never
+//       changes it; ./TabStops defaultStop's rule)
+//   isOn(node, map) -> boolean  the on/off rule above for one
+//       element (map: the scope around it)
+//   FLAGS   the flag names
+//
+// mirrorMargins is read but not honoured (D20); gutterAtTop and
+// evenAndOddHeaders are the Page Setup box's (D21).
+// Pure: no desktop services.
+import {rootScope, scope, wName, wAttr} from './Ns';
+
+export const FLAGS = Object.freeze(['evenAndOddHeaders',
+  'gutterAtTop', 'mirrorMargins', 'updateFields']);
+const OFF = ['0', 'false', 'off'];
+const VIEWS = new Map([['print', 'print'], ['web', 'web'],
+  ['outline', 'outline'], ['masterPages', 'outline'],
+  ['normal', 'draft']]);
+const NONE = Object.freeze({evenAndOddHeaders: false,
+  gutterAtTop: false, mirrorMargins: false, updateFields: false,
+  view: null});
+const byRoot = new WeakMap();
+
+const isNode = (n) => !!n && typeof n === 'object' &&
+  Array.isArray(n.attrs) && Array.isArray(n.children);
+
+/** See the header. */
+export function isOn(node, map) {
+  const m = node.attrs.length ? scope(map, node) : map;
+  return !OFF.includes(wAttr(node, m, 'val'));
+}
+
+/** The record of a settings root (see settingsOf). */
+function read(root) {
+  const map = rootScope(root);
+  const o = {...NONE};
+  const seen = new Set();
+  for (const c of root.children) {
+    if (!isNode(c)) continue;
+    const n = wName(c, map);
+    if (n === null || seen.has(n)) continue;
+    seen.add(n);
+    if (FLAGS.includes(n)) o[n] = isOn(c, map);
+    else if (n === 'view') {
+      const v = wAttr(c, c.attrs.length ? scope(map, c) : map, 'val');
+      o.view = VIEWS.get(v) ?? null;
+    }
+  }
+  return Object.freeze(o);
+}
+
+/** See the header. */
+export function settingsOf(doc) {
+  const root = doc && doc.rawSettings;
+  if (!isNode(root)) return NONE;
+  let o = byRoot.get(root);
+  if (!o) byRoot.set(root, o = read(root));
+  return o;
+}
+
+/** See the header. */
+export function onOffOf(doc, name) {
+  if (!FLAGS.includes(name)) throw new RangeError('not a flag: ' +
+    String(name));
+  return settingsOf(doc)[name];
+}
+
+/** See the header. */
+export function viewOf(doc) {
+  return settingsOf(doc).view;
+}

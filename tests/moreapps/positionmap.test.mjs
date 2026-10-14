@@ -257,7 +257,8 @@ describe('PositionMap selectionRects', () => {
     const pl = lay('aaaa bbbb cccc dddd eeee ffff', 100);
     const rs = selectionRects(pl, 2, 25);
     assert.deepEqual(rs, pl.lines.map((l, i) => ({
-      x: [16, 0, 0][i], y: PY + l.y, w: [64, 80, 40][i], h: l.h})));
+      x: [16, 0, 0][i], y: PY + l.y, w: [64, 80, 40][i], h: l.h,
+      line: i})));
   });
   it('an unseen inline adds no width', () => {
     const pl = lay(`a${O}b`, 400, {inlines: {1: raw('bookmarkStart')}});

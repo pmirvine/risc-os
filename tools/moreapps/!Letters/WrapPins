@@ -1,0 +1,86 @@
+// WrapPins - the pins of ./WrapPage (split from it, Batch D P12b
+// fix wave): which pins are still in force, and what a page's
+// passes remember of its columns' ends.
+//
+//   cutsOf(P, pg) -> the root indices of the items page pg's frames
+//       cut (a paragraph going on into the next column, or the next
+//       page: P12b fix I1, a paragraph only), as text
+//   flips(cuts) -> the first root index cut by a frame in some of a
+//       page's passes (cuts: cutsOf's) and not in all, or 0
+//   unpin(pins, pk) -> pins (or tys) without page key pk's (pins
+//       itself when none)
+//   heldOf(P, pg, pk) -> Map id -> {pk, y}: the floating tables
+//       placed from their flow place (vertAnchor text) on page pg
+//       of key pk, y that place (./WrapPage's tys, P12b fix C1)
+//   livePins(L, P, memo, pins) -> pins (L.wrap's, or its tys) without
+//       those no
+//       longer in force: the item gone, no record of their page key,
+//       or every page worked out and none of that key (pins itself
+//       when all are)
+//
+// Pure: no desktop services.
+import {keyOf} from './ColMemo';
+
+/** See the header. */
+export function cutsOf(P, pg) {
+  const fs = P.framesOf(pg), last = fs[fs.length - 1];
+  const para = (k) => !!P.G.items[k] && P.G.items[k].kind === 'p';
+  return fs.filter((fr) => (fr.end.line || fr.end.dy) &&
+    (fr !== last || para(fr.end.k))).map((fr) => fr.end.k).join(',');
+}
+
+/** The first root index cut by a frame in some of the passes of a
+ *  page (cuts: cutsOf's) and not in all, or 0. */
+export function flips(cuts) {
+  const sets = cuts.map((c) => new Set(c ? c.split(',') : []));
+  const all = new Set(sets.flatMap((x) => [...x]).map(Number));
+  const odd = [...all].filter((k) => !sets.every((x) => x.has(k + '')));
+  return odd.length ? Math.min(...odd) : 0;
+}
+
+/** See the header. */
+export function heldOf(P, pg, pk) {
+  const out = new Map();
+  for (const fr of P.framesOf(pg)) {
+    fr.frags.forEach((f, j) => {
+      const k = fr.start.k + j, it = P.G.items[k];
+      const tf = f.float && it && it.id === f.id && P.G.facts(k).tfloat;
+      if (tf && tf.vert === 'text') {
+        out.set(f.id, Object.freeze({pk, y: f.y}));
+      }
+    });
+  }
+  return out;
+}
+
+/** The page key of pin v (a pin, or a held table's {pk, y}). */
+const keyIn = (v) => (typeof v === 'string' ? v.replace(/^k:/, '')
+  : v.pk);
+
+/** See the header. */
+export function unpin(pins, pk) {
+  let out = pins;
+  for (const [id, p] of pins) {
+    if (keyIn(p) !== pk) continue;
+    if (out === pins) out = new Map(pins);
+    out.delete(id);
+  }
+  return out;
+}
+
+/** L's pins without those no longer in force: the item gone, or
+ *  no record of their key, or every page worked out and none of
+ *  their key. */
+export function livePins(L, P, memo, pins) {
+  let out = pins, on = null;
+  for (const [id, v] of pins) {
+    const it = L.byId.get(id), pk = keyIn(v);
+    if (it && it.col === L.root && memo.known.has(pk) && (!P.done ||
+      (on ||= new Set(P.list.map((g) => keyOf(L, g)))).has(pk))) {
+      continue;
+    }
+    if (out === pins) out = new Map(pins);
+    out.delete(id);
+  }
+  return out;
+}

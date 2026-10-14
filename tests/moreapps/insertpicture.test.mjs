@@ -17,6 +17,8 @@ import {writeDocx, newDoc} from '../../tools/moreapps/!Letters/DocxWrite';
 import {relKind} from '../../tools/moreapps/!Letters/Rels';
 import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
+import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
+import {W} from '../../tools/moreapps/!Letters/Ns';
 import {buildDocx, documentXml, p, r, STRICT_W_NS, STRICT_R_NS}
   from './build-docx.mjs';
 import {drawingXml, picDocx, pngBytes, jpegBytes, gifBytes}
@@ -182,6 +184,21 @@ describe('InsertPicture', () => {
       const {info} = picAt(d);
       assert.equal(info.cx, Math.round((11520 - 2880 - 720) / 2 * 635));
     });
+
+  it('a gutter: taken off the column, unless gutterAtTop puts it at ' +
+    'the top (P1 fix M1)', async () => {
+    const gut = sect(11520).replace('w:gutter="0"', 'w:gutter="720"');
+    for (const [top, want] of [[false, 11520 - 2880 - 720],
+      [true, 11520 - 2880]]) {
+      const doc = await readDocx(await picDocx({pics: [],
+        body: p(r('x')) + gut}));
+      if (top) doc.rawSettings = parseXml(`<w:settings xmlns:w="${W}">` +
+        '<w:gutterAtTop/></w:settings>').root;
+      const d = new Document(doc);
+      insert(d, at(d), {bytes: pngBytes(4000, 1000)});
+      assert.equal(picAt(d).info.cx, want * 635, String(top));
+    }
+  });
 
   it('at most 9 in tall: both sides shrink together', async () => {
     const d = await open();

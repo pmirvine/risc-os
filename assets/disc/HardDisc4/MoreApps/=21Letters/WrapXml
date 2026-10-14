@@ -1,0 +1,163 @@
+// WrapXml - a picture's wp:inline made a wp:anchor and back, and an
+// anchor's wrap changed (pure; Batch D P12.4, D28). ./WrapCmd's
+// nodes.
+//
+//   toAnchor(frame, m, {kind, x, y?, z}) -> node | null
+//       the wp:inline `frame` (m: the scope inside it) as a
+//       wp:anchor with Word's defaults: distT/B 0, distL/R 114300,
+//       simplePos 0, relativeHeight z, behindDoc 1 for 'behind'
+//       (else 0), locked 0, layoutInCell 1, allowOverlap 1;
+//       children in schema order: simplePos 0 0, positionH column
+//       posOffset x (EMU), positionV paragraph posOffset y (0 when
+//       not given), the
+//       inline's extent and effectExtent, the wrap of kind, then
+//       its docPr, cNvGraphicFramePr and a:graphic (the same
+//       objects). Its xmlns and wp14:anchorId / editId attributes
+//       are kept, first and last.
+//   toInline(frame, m) -> node | null
+//       the wp:anchor as a wp:inline (dist* 0): extent,
+//       effectExtent, docPr, cNvGraphicFramePr and a:graphic kept
+//       (the same objects); position, wrap and wp14:sizeRelH/V
+//       dropped; xmlns and wp14 ids kept.
+//   withWrap(frame, m, kind) -> node | null
+//       the wp:anchor with only its wrap element made the kind's
+//       (in its place) and behindDoc set ('1' for behind, '0'
+//       for the others when it is there or behind); the other
+//       children are the same objects.
+// Wrap elements: square wrapSquare, tight wrapTight with a
+// wrapPolygon (edited 0, the extent's rectangle in 21600 units:
+// start 0 0, lineTo 0 21600, 21600 21600, 21600 0, 0 0; a tight or
+// through wrap's own polygon kept), topBottom wrapTopAndBottom,
+// behind and inFront wrapNone. wrapText: the old wrap's when it
+// had one, else bothSides. Elements made take the frame's prefix.
+// null: a frame holding something else (an attribute or element
+// not listed, a kept element twice, a wrap not one child): nothing
+// not understood is dropped (fidelity).
+import {NS} from './Wml';
+import {scope, isEl} from './Ns';
+import {is} from './DrawNode';
+import {WP14, xmlns, WRAPS, WRAP_TEXT} from './AnchorParts';
+
+const WP = NS.wp;
+const KEEP = [[WP, 'extent'], [WP, 'effectExtent'], [WP, 'docPr'],
+  [WP, 'cNvGraphicFramePr'], [NS.a, 'graphic']];
+const ANCHOR_DROP = [[WP, 'simplePos'], [WP, 'positionH'],
+  [WP, 'positionV'], [NS.mc, 'AlternateContent'],
+  [WP14, 'sizeRelH'], [WP14, 'sizeRelV'],
+  ...[...WRAPS.keys()].map((k) => [WP, k])];
+const DIST = ['distT', 'distB', 'distL', 'distR'];
+const ANCHOR_ATTRS = [...DIST, 'simplePos', 'relativeHeight',
+  'behindDoc', 'locked', 'layoutInCell', 'allowOverlap', 'hidden'];
+const EL = {square: 'wrapSquare', tight: 'wrapTight',
+  topBottom: 'wrapTopAndBottom', behind: 'wrapNone',
+  inFront: 'wrapNone'};
+
+const n = (name, attrs = [], children = []) => ({name, attrs,
+  children});
+const inside = (m, c) => (c.attrs.length ? scope(m, c) : m);
+const preOf = (f) => f.name.slice(0, f.name.indexOf(':') + 1);
+const isOf = (c, m, list) => list.findIndex(([u, l]) =>
+  is(c, inside(m, c), u, l));
+
+/** {decl, ids} of frame's attributes, or null for one not in
+ *  known (xmlns and wp14 anchorId / editId apart). */
+function attrsOf(f, m, known) {
+  const decl = [], ids = [];
+  for (const a of f.attrs) {
+    const [k] = a, i = k.indexOf(':');
+    if (xmlns(k)) decl.push(a);
+    else if (i > 0 && m.get(k.slice(0, i)) === WP14 &&
+      ['anchorId', 'editId'].includes(k.slice(i + 1))) ids.push(a);
+    else if (i >= 0 || !known.includes(k)) return null;
+  }
+  return {decl, ids};
+}
+
+/** frame's KEEP children by index ([] where absent), or null for a
+ *  child neither kept nor in drop, or a kept one twice. */
+function keptOf(f, m, drop) {
+  const out = KEEP.map(() => null);
+  for (const c of f.children) {
+    if (typeof c === 'string') continue;
+    if (!isEl(c) || !Array.isArray(c.attrs)) return null;
+    const k = isOf(c, m, KEEP);
+    if (k >= 0) {
+      if (out[k]) return null;
+      out[k] = c;
+    } else if (isOf(c, m, drop) < 0) return null;
+  }
+  return out[0] && out[2] && out[4] ? out : null;
+}
+
+const pt = (P, k, x, y) => n(P + k, [['x', String(x)],
+  ['y', String(y)]]);
+
+/** The wrap element of kind (old: the wrap it replaces, or null). */
+function wrapEl(P, kind, old, m) {
+  const name = P + EL[kind];
+  if (kind === 'topBottom' || EL[kind] === 'wrapNone') return n(name);
+  let text = 'bothSides';
+  const t = old && old.attrs.find(([k]) => k === 'wrapText');
+  if (t && WRAP_TEXT.includes(t[1])) text = t[1];
+  const attrs = [['wrapText', text]];
+  if (kind === 'square') return n(name, attrs);
+  const poly = old && !old.attrs.some(([k]) => xmlns(k)) &&
+    old.children.find((c) => isEl(c) && Array.isArray(c.attrs) &&
+      is(c, inside(m, c), WP, 'wrapPolygon'));
+  return n(name, attrs, [poly || n(P + 'wrapPolygon',
+    [['edited', '0']], [pt(P, 'start', 0, 0),
+      pt(P, 'lineTo', 0, 21600), pt(P, 'lineTo', 21600, 21600),
+      pt(P, 'lineTo', 21600, 0), pt(P, 'lineTo', 0, 0)])]);
+}
+
+/** See the header. */
+export function toAnchor(f, m, {kind, x, y = 0, z}) {
+  if (!EL[kind] || !is(f, m, WP, 'inline')) return null;
+  const at = attrsOf(f, m, DIST), kept = keptOf(f, m, []);
+  if (!at || !kept) return null;
+  const P = preOf(f), [ext, eff, docPr, frPr, graphic] = kept;
+  const pos = (hv, from, v) => n(P + 'position' + hv,
+    [['relativeFrom', from]], [n(P + 'posOffset', [], [String(v)])]);
+  return n(P + 'anchor', [...at.decl, ['distT', '0'], ['distB', '0'],
+    ['distL', '114300'], ['distR', '114300'], ['simplePos', '0'],
+    ['relativeHeight', String(z)],
+    ['behindDoc', kind === 'behind' ? '1' : '0'], ['locked', '0'],
+    ['layoutInCell', '1'], ['allowOverlap', '1'], ...at.ids], [
+    pt(P, 'simplePos', 0, 0), pos('H', 'column', x),
+    pos('V', 'paragraph', y), ext, ...(eff ? [eff] : []),
+    wrapEl(P, kind, null, m), docPr, ...(frPr ? [frPr] : []),
+    graphic]);
+}
+
+/** See the header. */
+export function toInline(f, m) {
+  if (!is(f, m, WP, 'anchor')) return null;
+  const at = attrsOf(f, m, ANCHOR_ATTRS);
+  const kept = keptOf(f, m, ANCHOR_DROP);
+  if (!at || !kept) return null;
+  return n(preOf(f) + 'inline', [...at.decl, ...DIST.map((k) =>
+    [k, '0']), ...at.ids], kept.filter(Boolean));
+}
+
+/** See the header. */
+export function withWrap(f, m, kind) {
+  if (!EL[kind] || !is(f, m, WP, 'anchor')) return null;
+  const wraps = [...WRAPS.keys()].map((k) => [WP, k]);
+  let at = -1;
+  for (let i = 0; i < f.children.length; i++) {
+    const c = f.children[i];
+    if (!isEl(c) || !Array.isArray(c.attrs)) continue;
+    if (isOf(c, m, wraps) < 0) continue;
+    if (at >= 0) return null;
+    at = i;
+  }
+  if (at < 0) return null;
+  const children = f.children.slice();
+  children[at] = wrapEl(preOf(f), kind, f.children[at], m);
+  const b = kind === 'behind' ? '1' : '0';
+  const has = f.attrs.some(([k]) => k === 'behindDoc');
+  const attrs = has ? f.attrs.map((a) => (a[0] === 'behindDoc'
+    ? [a[0], b] : a)) : b === '1' ? [...f.attrs, ['behindDoc', b]]
+    : f.attrs;
+  return {...f, attrs, children};
+}

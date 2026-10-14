@@ -1,0 +1,130 @@
+// OutlineLayout - Outline view's galley (Batch D P13.2, D32): Draft's
+// galley with each top-level block indented by its outline level,
+// a marker in the gutter, and the children of collapsed headings
+// left out. Pure: no desktop services (./DocItems lays it out,
+// ./DocPaint draws the markers, ./ViewMode keeps the collapse set).
+//
+//   STEP      24: px (0.25 in) more indent per level
+//   BODY      9: body text's level
+//   MIN_W     72: px (0.75 in) of text an indent always leaves
+//   levelOf(styles, b) -> 0..9  block b's outline level: a paragraph's
+//             resolved outlineLvl, the direct one first, then the
+//             style chain's (./Styles paraLayers, docDefaults last);
+//             a style named heading 1..9 with none in its chain is
+//             0..8 (Word's built-in headings); 0..9 only (another
+//             value is not one); else, and for a table or a kept
+//             block, BODY. Per style table and style: a WeakMap
+//   outlineOf(doc, collapsed) -> {rows, shown}: a row per top-level
+//             block, sections in order, {level, depth, marker,
+//             hidden}; shown the rows not hidden. A heading's
+//             children are the blocks after it up to the next one of
+//             its level or lower (a smaller number); depth a
+//             heading's level, body text's one more than the heading
+//             above it (0 with none: Word's indent); marker '+' a
+//             heading in collapsed (a Set of block ids) with
+//             children, '-' one with children shown, 'o' a heading
+//             without children or body text (drawn small); hidden:
+//             a child of a collapsed heading, at any depth (ids in
+//             collapsed that are no heading with children change
+//             nothing). A collapse set with a cap (./OutlineFold Fold:
+//             1..9, Show level) also hides every row of level cap or
+//             more (body text always), and a heading whose next row
+//             is one of them is +
+//   indentOf(row, w) -> px: row.depth * STEP, at most w - MIN_W, 0 at
+//             least (w: the section's text width)
+//   paintMarker(g, it)  item it's marker (it.marker, it.level) drawn
+//             in the gutter left of its first line, MARK #606060
+//
+// A layout with opts.outline (./LayoutOpts: the collapse set) holds
+// L.ol = outlineOf(doc, L.outline); its root items have dx (the
+// indent: x is the column's x + dx, w the section's width less dx),
+// level and marker, both in the reuse key (./ItemReuse sameKey).
+import {paraLayers, paraStyleId} from './Styles';
+import {lineTop} from './PlaceDraft';
+
+export const STEP = 24, BODY = 9, MIN_W = 72;
+const MARK = '#606060';
+const NAMED = /^heading ([1-9])$/i;
+const LEVELS = new WeakMap();          // styles -> Map pStyle -> lvl
+
+const lvl = (v) => (Number.isInteger(v) && v >= 0 && v <= BODY ? v
+  : -1);
+
+/** The level a paragraph's styles give it (-1: none). */
+function styleLevel(styles, p) {
+  const ls = paraLayers(styles, {pStyle: p.pStyle});
+  for (let i = ls.length - 2; i >= 0; i--) {
+    const v = lvl(ls[i] && ls[i].outlineLvl);
+    if (v >= 0) return v;
+  }
+  const id = paraStyleId(styles, p);
+  const s = id === null ? null : styles.styles.get(id);
+  const m = s && typeof s.name === 'string' ? NAMED.exec(s.name) : null;
+  return m ? m[1] - 1 : -1;
+}
+
+/** See the header. */
+export function levelOf(styles, b) {
+  if (!b || b.type !== 'p') return BODY;
+  const own = lvl(b.pPr && b.pPr.outlineLvl);
+  if (own >= 0) return own;
+  if (!styles || !styles.styles) return BODY;
+  let m = LEVELS.get(styles);
+  if (!m) LEVELS.set(styles, m = new Map());
+  const key = b.pStyle === undefined ? null : b.pStyle;
+  let v = m.get(key);
+  if (v === undefined) m.set(key, v = styleLevel(styles, b));
+  return v >= 0 ? v : BODY;
+}
+
+/** See the header. */
+export function outlineOf(doc, collapsed) {
+  const set = collapsed instanceof Set ? collapsed : null;
+  const cap = set && set.cap > 0 ? set.cap : 0;
+  const blocks = [];
+  for (const sec of doc.sections) {
+    for (const b of sec.blocks) blocks.push(b);
+  }
+  const lv = blocks.map((b) => levelOf(doc.styles, b));
+  const rows = new Array(blocks.length);
+  let head = -1, hideAt = -1, shown = 0;
+  for (let i = 0; i < blocks.length; i++) {
+    const level = lv[i], body = level === BODY;
+    const hidden = hideAt >= 0 && level > hideAt || cap > 0 &&
+      level >= cap;
+    if (!hidden) hideAt = -1;
+    const kids = !body && i + 1 < blocks.length && lv[i + 1] > level;
+    const own = kids && !!set && set.has(blocks[i].id);
+    const shut = own || kids && cap > 0 && lv[i + 1] >= cap;
+    if (own && !hidden) hideAt = level;
+    rows[i] = {level, depth: body ? head + 1 : level, hidden,
+      marker: shut ? '+' : kids ? '-' : 'o'};
+    if (!body) head = level;
+    if (!hidden) shown++;
+  }
+  return {rows, shown};
+}
+
+/** See the header. */
+export function indentOf(row, w) {
+  return Math.max(0, Math.min(row.depth * STEP, w - MIN_W));
+}
+
+/** See the header. */
+export function paintMarker(g, it) {
+  const ln = it.kind === 'p' && it.lines && it.lines[0];
+  const cx = Math.round(it.x) - 12;
+  const cy = Math.round(ln ? lineTop(it, 0) + ln.h / 2 : it.y + 8);
+  g.fillStyle = MARK;
+  g.strokeStyle = MARK;
+  if (it.marker === 'o') {
+    g.lineWidth = 1;
+    g.beginPath();
+    g.arc(cx + 0.5, cy + 0.5, it.level === BODY ? 2 : 3.5, 0,
+      2 * Math.PI);
+    g.stroke();
+    return;
+  }
+  g.fillRect(cx - 4, cy, 9, 1);
+  if (it.marker === '+') g.fillRect(cx, cy - 4, 1, 9);
+}

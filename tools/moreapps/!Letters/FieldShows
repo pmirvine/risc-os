@@ -1,0 +1,112 @@
+// FieldShows - which fields a paragraph shows computed (split from
+// ./FieldShow, Batch D final fix A; D18): the Shows ./FieldShow
+// draws.
+//
+//   computedIn(doc, p) -> [Show]  the fields of doc (./FieldScan
+//       scan: the body, or a story seen as a one-section doc) whose
+//       result in paragraph p is shown computed: an evaluator that is
+//       page-dependent or volatile (./Fields entryOf), not locked,
+//       and its result in p (a complex field's separate and end in
+//       p; a fldSimple's own U+FFFC). In text order; frozen, shared.
+//       Found in p alone (./FieldScan paraFields) when every field
+//       mark p holds is of a field that begins and ends in it: a
+//       keystroke there walks no other paragraph (final fix A F2-I2,
+//       D37); else from scan's list (a field crossing paragraphs)
+//   Show {at, from, to, b, e, f, paged}  at: the offset LineTokens
+//       asks at (the separate fldChar's; a fldSimple's own); [from,
+//       to) the result's range (a fldSimple: [at, at + 1)); b the
+//       field's begin offset when the begin is in p, else null; e
+//       the end fldChar's offset (a fldSimple: at); f the Field;
+//       paged: its value depends on the page
+//   showIndex(fs) -> Map paragraph id -> [Show]  for the fields fs
+//       (./FieldScan scan's: memoised per list)
+//   mayHold(p) -> bool  p holds a w:fldChar or w:fldSimple inline
+//       (no field code is run for a paragraph without: D37)
+//   work  {lists, evals}: Show lists made, values worked out
+//       (./FieldShow counts evals; tests)
+//
+// Pure: no desktop services.
+import {scan, paraFields} from './FieldScan';
+import {entryOf} from './Fields';
+
+export const work = {lists: 0, evals: 0};
+
+const OBJ = '\ufffc';
+const NONE = Object.freeze([]);
+const index = new WeakMap();           // scan result -> Map id -> []
+const owns = new WeakMap();            // paraFields' -> its Shows
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => (isObj(n) && typeof n.name === 'string'
+  ? n.name.slice(n.name.indexOf(':') + 1) : '');
+
+/** See the header. */
+export function mayHold(p) {
+  const s = isObj(p) ? p.text : null;
+  if (typeof s !== 'string' || !isObj(p.inlines)) return false;
+  for (let k = s.indexOf(OBJ); k >= 0; k = s.indexOf(OBJ, k + 1)) {
+    const x = p.inlines[k], l = local(isObj(x) ? x.node : null);
+    if (l === 'fldChar' || l === 'fldSimple') return true;
+  }
+  return false;
+}
+
+/** The Show of field f, or null (see the header). */
+function showOf(f) {
+  if (f.lock) return null;
+  const e = entryOf(f);
+  if (!e || !(e.pageDependent || e.volatile)) return null;
+  const paged = !!e.pageDependent;
+  if (f.simple) {
+    const at = f.begin.off;
+    return {id: f.begin.id, at, from: at, to: at + 1, b: at, e: at,
+      f, paged};
+  }
+  if (!f.sep || f.sep.id !== f.end.id) return null;
+  return {id: f.sep.id, at: f.sep.off, from: f.sep.off + 1,
+    to: f.end.off, b: f.begin.id === f.sep.id ? f.begin.off : null,
+    e: f.end.off, f, paged};
+}
+
+/** See the header. */
+export function showIndex(fs) {
+  let m = index.get(fs);
+  if (m) return m;
+  work.lists++;
+  m = new Map();
+  for (const f of fs) {
+    const s = showOf(f);
+    if (!s) continue;
+    const list = m.get(s.id);
+    if (list) list.push(Object.freeze(s));
+    else m.set(s.id, [Object.freeze(s)]);
+  }
+  for (const list of m.values()) {
+    list.sort((a, b) => a.from - b.from);
+    Object.freeze(list);
+  }
+  index.set(fs, m);
+  return m;
+}
+
+/** The Shows of paragraph p's own fields fs (memoised). */
+function ownShows(p, fs) {
+  let list = owns.get(fs);
+  if (!list) {
+    const out = [];
+    for (const f of fs) {
+      const s = showOf(f);
+      if (s && s.id === p.id) out.push(Object.freeze(s));
+    }
+    out.sort((a, b) => a.from - b.from);
+    owns.set(fs, list = out.length ? Object.freeze(out) : NONE);
+  }
+  return list;
+}
+
+/** See the header. */
+export function computedIn(doc, p) {
+  if (!isObj(doc) || !mayHold(p)) return NONE;
+  const own = paraFields(p);
+  if (own) return ownShows(p, own);
+  return showIndex(scan(doc)).get(p.id) || NONE;
+}

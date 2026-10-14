@@ -1,0 +1,102 @@
+// ColsVals - the values of Format > Columns... (Batch D P10.4,
+// D23), split from ./SectCols (P10 fix): the presets and the
+// columns a section has. ./SectCols re-exports what it shows.
+//
+//   PRESETS  'one', 'two', 'three', 'left', 'right'
+//   presetOf(name, textW, space) -> {num, equal, space, col} of a
+//            preset for text textW twips wide, columns space apart;
+//            null for a name not in PRESETS. Left and Right as Word
+//            makes them (Columns-Right.docx, columns1.docx): two
+//            unequal columns, the narrow one (text - 2 spacings) / 3
+//            cut down to the twip (so the two and the spacing never
+//            pass the text: P14.1, A4 with 1 in margins), the wide
+//            one 2 narrow + a spacing
+//   evenCols(n, space, textW) -> n equal columns [{w, space}] (w
+//            rounded to the twip, the last space 0)
+//   textWOf(doc, s) -> section s's text width (twips, ./SectGeom)
+//   ownOf(doc, s) -> section s's columns {num, equal, space, col,
+//            sep} as ./ReadSect typed them (a raw w:cols: one
+//            column)
+//   colsOf(doc, sel, scope) -> {num, equal, space, col, sep, textW,
+//            preset} of the first section in scope (./PageValues
+//            scopeOf), or null (no valid selection or scope); col
+//            [{w, space}] each column (the last space 0), worked out
+//            for equal ones; a value the sections in scope do not
+//            share is null (shown blank); textW and preset (or null)
+//            the first section's
+//   SHARED   the values compared: num, equal, space, sep, col
+//   MIN_COL_TW 720, SPACE_TW 720 (Word's default spacing)
+//
+// Pure: no desktop services.
+import {deepEqual} from './Model';
+import {geomOf} from './SectGeom';
+import {onOffOf} from './SettingsRead';
+import {docMap} from './PicRead';
+import {scopeOf} from './PageValues';
+
+export const PRESETS = Object.freeze(['one', 'two', 'three', 'left',
+  'right']);
+export const MIN_COL_TW = 720, SPACE_TW = 720;
+export const SHARED = ['num', 'equal', 'space', 'sep', 'col'];
+
+/** See the header. */
+export function evenCols(n, space, tw) {
+  const w = Math.round((tw - (n - 1) * space) / n);
+  return Array.from({length: n}, (_, i) => ({w,
+    space: i < n - 1 ? space : 0}));
+}
+
+/** See the header. */
+export function presetOf(name, tw, space) {
+  const k = PRESETS.indexOf(name);
+  if (k < 0) return null;
+  if (k < 3) return {num: k + 1, equal: true, space,
+    col: evenCols(k + 1, space, tw)};
+  const narrow = Math.floor((tw - 2 * space) / 3);
+  const col = [{w: narrow, space}, {w: 2 * narrow + space, space: 0}];
+  if (name === 'right') [col[0].w, col[1].w] = [col[1].w, col[0].w];
+  return {num: 2, equal: false, space, col};
+}
+
+/** See the header. */
+export const textWOf = (doc, s) => geomOf(doc.sections[s],
+  {gutterAtTop: onOffOf(doc, 'gutterAtTop'), map: docMap(doc)},
+  doc.sections[0]).textW;
+
+/** See the header. */
+export function ownOf(doc, s) {
+  const c = doc.sections[s].props.cols || {};
+  const space = Number.isSafeInteger(c.space) ? c.space : SPACE_TW;
+  const sep = c.sep === true;
+  if (c.equalWidth !== true && Array.isArray(c.col) && c.col.length) {
+    const n = c.col.length;
+    return {num: n, equal: false, space, sep, col: c.col.map((x, i) =>
+      ({w: x.w ?? 0, space: i < n - 1 ? x.space ?? 0 : 0}))};
+  }
+  const num = Number.isSafeInteger(c.num) && c.num > 1 ? c.num : 1;
+  return {num, equal: true, space, sep,
+    col: evenCols(num, space, textWOf(doc, s))};
+}
+
+/** The preset cols c are for text tw, or null. */
+function presetName(c, tw) {
+  for (const name of PRESETS) {
+    const p = presetOf(name, tw, c.space);
+    if (p.num === c.num && p.equal === c.equal &&
+      (c.equal || deepEqual(p.col, c.col))) return name;
+  }
+  return null;
+}
+
+/** See the header. */
+export function colsOf(doc, sel, scope) {
+  const r = scopeOf(doc, sel, scope);
+  if (!r) return null;
+  const v = ownOf(doc, r[0]), tw = textWOf(doc, r[0]);
+  const preset = presetName(v, tw);
+  for (let s = r[0] + 1; s <= r[1]; s++) {
+    const u = ownOf(doc, s);
+    for (const k of SHARED) if (!deepEqual(v[k], u[k])) v[k] = null;
+  }
+  return {...v, textW: tw, preset: v.num === null ? null : preset};
+}

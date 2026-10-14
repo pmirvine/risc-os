@@ -1,6 +1,7 @@
-// SettingsEdit - the default tab stop of a document's settings part
-// (w:defaultTabStop in settings.xml: doc.rawSettings), read and
-// changed without touching anything else in it.
+// SettingsEdit - the default tab stop and the on/off flags of a
+// document's settings part (settings.xml: doc.rawSettings), changed
+// without touching anything else in it (./SettingsRead reads the
+// flags and the view).
 //
 //   defaultTabOf(root, map?) -> twips of the first w:defaultTabStop
 //       child of root, or null (none, or a value that is not a
@@ -10,8 +11,16 @@
 //       w:defaultTabStop has w:val twips; root itself when it has
 //       that value already. twips a whole number MIN_TW..MAX_TW
 //       (./TabStops), else RangeError
-//   BEFORE   the CT_Settings children that come before
-//            w:defaultTabStop (ECMA-376 wml.xsd), in order
+//   withOnOff(root, name, on, map?) -> a NEW root with flag `name`
+//       (./SettingsRead FLAGS) on or off; root itself when the flag
+//       is that already (./SettingsRead isOn). On: a flag written off
+//       loses its w:val (its other attributes kept), else a new
+//       empty one goes in schema order (as below, after the last
+//       child named in ORDER before it). Off: every copy is taken
+//       out. Another name, or on not a boolean: RangeError
+//   ORDER    the CT_Settings children (ECMA-376 wml.xsd), in order,
+//            up to w:updateFields
+//   BEFORE   those that come before w:defaultTabStop
 //
 // The new root has every attribute and every other child of the old
 // one, the same objects (setDocPart values are immutable and kept by
@@ -27,8 +36,9 @@
 import {rootScope, scope, wName, wAttr, isEl, W} from './Ns';
 import {twipsOf, MIN_TW, MAX_TW} from './TabStops';
 import {fail} from './ModelCheck';
+import {FLAGS, isOn} from './SettingsRead';
 
-export const BEFORE = Object.freeze(['writeProtection', 'view',
+export const ORDER = Object.freeze(['writeProtection', 'view',
   'zoom', 'removePersonalInformation', 'removeDateAndTime',
   'doNotDisplayPageBoundaries', 'displayBackgroundShape',
   'printPostScriptOverText', 'printFractionalCharacterWidth',
@@ -41,22 +51,41 @@ export const BEFORE = Object.freeze(['writeProtection', 'view',
   'stylePaneFormatFilter', 'stylePaneSortMethod', 'documentType',
   'mailMerge', 'revisionView', 'trackRevisions', 'doNotTrackMoves',
   'doNotTrackFormatting', 'documentProtection', 'autoFormatOverride',
-  'styleLockTheme', 'styleLockQFSet']);
-const BEFORE_SET = new Set(BEFORE);
+  'styleLockTheme', 'styleLockQFSet', 'defaultTabStop',
+  'autoHyphenation', 'consecutiveHyphenLimit', 'hyphenationZone',
+  'doNotHyphenateCaps', 'showEnvelope', 'summaryLength',
+  'clickAndTypeStyle', 'defaultTableStyle', 'evenAndOddHeaders',
+  'bookFoldRevPrinting', 'bookFoldPrinting', 'bookFoldPrintingSheets',
+  'drawingGridHorizontalSpacing', 'drawingGridVerticalSpacing',
+  'displayHorizontalDrawingGridEvery',
+  'displayVerticalDrawingGridEvery',
+  'doNotUseMarginsForDrawingGridOrigin', 'drawingGridHorizontalOrigin',
+  'drawingGridVerticalOrigin', 'doNotShadeFormData',
+  'noPunctuationKerning', 'characterSpacingControl', 'printTwoOnOne',
+  'strictFirstAndLastChars', 'noLineBreaksAfter',
+  'noLineBreaksBefore', 'savePreviewPicture',
+  'doNotValidateAgainstSchema', 'saveInvalidXml',
+  'ignoreMixedContent', 'alwaysShowPlaceholderText',
+  'doNotDemarcateInvalidXml', 'saveXmlDataOnly', 'useXSLTWhenSaving',
+  'saveThroughXslt', 'showXMLTags', 'alwaysMergeEmptyNamespace',
+  'updateFields']);
 const NAME = 'defaultTabStop';
+export const BEFORE = Object.freeze(ORDER.slice(0,
+  ORDER.indexOf(NAME)));
 const UNIT = /[a-z]$/;
 
 const isRoot = (r) => !!r && typeof r === 'object' &&
   Array.isArray(r.attrs) && Array.isArray(r.children);
 
-/** [index of the first w:defaultTabStop or -1, insert index]. */
-function places(root, map) {
+/** [index of the first w:<name> or -1, insert index]. */
+function places(root, map, name = NAME) {
+  const before = ORDER.slice(0, ORDER.indexOf(name));
   let found = -1, after = 0;
   root.children.forEach((c, i) => {
     if (!isEl(c) || !Array.isArray(c.attrs)) return;
     const n = wName(c, map);
-    if (n === NAME && found < 0) found = i;
-    if (BEFORE_SET.has(n)) after = i + 1;
+    if (n === name && found < 0) found = i;
+    if (before.includes(n)) after = i + 1;
   });
   return [found, after];
 }
@@ -87,16 +116,17 @@ function prefixOf(map) {
   return dflt;
 }
 
-/** A new w:defaultTabStop for a root whose scope is map. */
-function fresh(map, val) {
+/** A new w:<name> (w:val val unless undefined) for a root whose
+ *  scope is map. */
+function fresh(map, val, name = NAME) {
   const p = prefixOf(map);
-  if (p) return {name: `${p}:${NAME}`, attrs: [[`${p}:val`, val]],
-    children: []};
+  const v = (q) => (val === undefined ? [] : [[`${q}:val`, val]]);
+  if (p) return {name: `${p}:${name}`, attrs: v(p), children: []};
   // no prefix for WordprocessingML: declare one on the element
   let q = 'w';
   for (let k = 0; map.has(q); k++) q = 'w' + k;
-  return {name: `${q}:${NAME}`, attrs: [[`xmlns:${q}`, W],
-    [`${q}:val`, val]], children: []};
+  return {name: `${q}:${name}`, attrs: [[`xmlns:${q}`, W], ...v(q)],
+    children: []};
 }
 
 /** See the header. */
@@ -134,5 +164,34 @@ export function withDefaultTab(root, twips, map) {
     }
   }
   kids[i] = {...old, attrs};
+  return {...root, children: kids};
+}
+
+/** Whether attribute k of an element (scope cm) is its w:val. */
+const isVal = (k, cm) => {
+  const c = k.indexOf(':');
+  return c > 0 && k.slice(c + 1) === 'val' &&
+    cm.get(k.slice(0, c)) === W;
+};
+
+/** See the header. */
+export function withOnOff(root, name, on, map) {
+  if (!isRoot(root)) fail('settings must be a node');
+  if (!FLAGS.includes(name)) fail('not a settings flag');
+  if (typeof on !== 'boolean') fail('on must be a boolean');
+  const m = map || rootScope(root);
+  const [i, at] = places(root, m, name);
+  const was = i >= 0 && isOn(root.children[i], m);
+  if (was === on) return root;
+  if (!on) {
+    return {...root, children: root.children.filter((c) =>
+      !isEl(c) || !Array.isArray(c.attrs) || wName(c, m) !== name)};
+  }
+  const kids = root.children.slice();
+  if (i < 0) kids.splice(at, 0, fresh(m, undefined, name));
+  else {
+    const old = kids[i], cm = scope(m, old);
+    kids[i] = {...old, attrs: old.attrs.filter(([k]) => !isVal(k, cm))};
+  }
   return {...root, children: kids};
 }

@@ -1,0 +1,101 @@
+// Place - one answer to "where on screen" (D4). A document's layout
+// (./DocLayout) is a galley: one continuous column. A view shows it
+// through a Place, and every screen position (the caret, hits,
+// selection rects, kept blocks' boxes, Up and Down, the ruler's
+// column, scrolling, the extent) is asked of the layout's L.place,
+// never worked out from it.y and ln.y in the consumer (the gate:
+// tests/moreapps/place-gate.test.mjs).
+//
+//   Place {
+//     lineAt(it, k)    -> {x, y, page}  line k of item it (a block or
+//                         a table: k 0, the whole item): its column's
+//                         left and its top on screen; page its page's
+//                         index (null: no pages)
+//     itemTop(it)      -> y  the item's galley top on screen
+//     rects(it, l0, l1) -> [{x, y, w, h}]  lines l0..l1 - 1 of it,
+//                         one box per fragment (a page's part), never
+//                         over a gap
+//     hit(x, y)        -> {it, k, edge?, dx?, dy?, gy0?, gy1?} | null
+//                         the root item and
+//                         line at screen (x, y); null where nothing
+//                         is; edge true: (x, y) is off the lines of
+//                         the page (its margins, the desk: D33), so
+//                         the line found is the one meant
+//     visible(y0, y1)  -> [{it, l0, l1, dx, dy}]  the root items (and
+//                         lines) shown in the band, each moved by
+//                         dx, dy from the galley
+//     extent()         -> {w, h}  the work area's (L.layout gives it)
+//     pageOf(it, k)    -> i | null  the page line k is on
+//     band(y0, y1)     -> {y0, y1} | null  the galley span of what
+//                         the screen band y0..y1 shows (Draft: the
+//                         band itself): ./DocRects culls to it
+//     area?(x, y)      Print layout's only (./PlacePrint): the part
+//                         of a page at (x, y)
+//     rowParts?(it, r) -> [{page, dx, dy, y, h}]  Print layout's
+//                         only: row r of root table it on each page
+//                         it shows on (its box y, h; dx, dy its
+//                         content's shift): ./DocRects, ./DocHit
+//   }
+//   placeOf(view, L, P) -> the Place for a view of layout L (P its
+//                         ./Pages): 'draft' and 'web', the identity
+//                         (./PlaceDraft); 'print', the pages
+//                         (./PlacePrint: P, or pages made for L); any
+//                         other view a RangeError
+//   shiftOf(Pl, it, k)  -> {dx, dy}  how far Pl moves line k of it
+//                         from the galley ({0, 0} in Draft, exactly):
+//                         a galley rectangle of that line plus dx, dy
+//                         is where it is on screen; a screen point
+//                         less dx, dy is the galley point
+//   toGalley(Pl, x, y)  -> {x, y, it}  screen point (x, y) as a
+//                         galley point: less the shiftOf of the line
+//                         Pl.hit finds there (it, its item; none
+//                         found: it null; none found or no shift: x
+//                         and y themselves, untouched); a hit on the
+//                         edge (a page's margin, the desk) keeps y
+//                         on that line (its galley top to its
+//                         bottom), so the galley point never falls
+//                         on a line of another page (D33); a hit that
+//                         gives its own dx, dy (a table's piece on a
+//                         page, ./PrintHit) moves by them, its galley
+//                         y kept in gy0..gy1. The one way
+//                         in for whatever finds things at the
+//                         pointer (./DocHit hitTest, ./PicFind,
+//                         ./LinkFind, ./SelTable zones, ./TblEdge)
+// Pure: no desktop services.
+import {PlaceDraft, lineTop} from './PlaceDraft';
+import {PlacePrint} from './PlacePrint';
+
+export {PlaceDraft, PlacePrint};
+
+const IN = 0.5;                        // px inside a line's bottom
+
+/** See the header. */
+export function placeOf(view, L, P) {
+  if (view === 'draft' || view === 'web') return PlaceDraft(L);
+  if (view === 'print') return PlacePrint(L, P || undefined);
+  throw new RangeError('Place: no placement for view ' + view +
+    (P ? ' (pages given)' : ''));
+}
+
+/** See the header. */
+export function shiftOf(Pl, it, k) {
+  const p = Pl.lineAt(it, k);
+  return {dx: p.x - it.x, dy: p.y - lineTop(it, k)};
+}
+
+/** See the header. */
+export function toGalley(Pl, x, y) {
+  const h = Pl.hit(x, y);
+  if (!h) return {x, y, it: null};
+  const {dx, dy} = h.dy !== undefined ? h : shiftOf(Pl, h.it, h.k);
+  let gy = dy ? y - dy : y;
+  if (h.gy0 !== undefined) {
+    gy = Math.min(Math.max(gy, h.gy0), Math.max(h.gy0, h.gy1));
+  }
+  if (h.edge) {
+    const it = h.it, t = lineTop(it, h.k), ln = it.lines &&
+      it.lines[h.k], b = t + (ln ? ln.h : it.h);
+    gy = Math.min(Math.max(gy, t), Math.max(t, b - IN));
+  }
+  return {x: dx ? x - dx : x, y: gy, it: h.it};
+}

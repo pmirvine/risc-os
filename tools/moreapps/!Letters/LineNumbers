@@ -1,0 +1,224 @@
+// LineNumbers - the line numbers of a page in Print layout (Batch D
+// P11.1, D24), worked out from the page's fragments.
+//
+//   numbersOf(P, i) -> [{x, y, text}]  the numbers shown on page i of
+//       Pages P (frozen; [] for no such page, a blank page, or a
+//       document no section of which has a typed lnNumType): x the
+//       number's right edge (px from the page's left edge: its
+//       column's left edge less the section's distance), y its
+//       baseline (the line's, on the page as ./PrintFrags places
+//       the fragment: moved by whole px), text the decimal number
+//   numberFont(styles) -> {css, colour}  how the numbers are drawn:
+//       the run format (./Fmt runFmt) of a run in the "Line Number"
+//       character style (style id LineNumber, else a character style
+//       named "line number", Word's), else of a plain run in the
+//       default paragraph style (Normal's font); once per styles
+//   DISTANCE  360 twips (0.25 in): the distance when lnNumType has
+//       none (Word's "Auto")
+//   MAX_SHOWN 999999999: a number above it (9 digits) is counted
+//       but not drawn (a hostile start: P11 fix M2)
+//   inherit(P, prev, front)  new Pages P (./Pages, made from prev)
+//       takes prev's counts before each of its first front + 1
+//       pages: P's first front pages are prev's (./PageReuse kept
+//       them), so the counts are the same (P11 fix I2)
+//
+// The rules. Each body line of a section with a typed lnNumType
+// (./PageGalley sect(s).lnNumType; one kept raw numbers nothing) is
+// counted, in galley order: the lines of every paragraph, empty
+// ones too (PG29), but not the lines in a table (or a kept block),
+// nor those of a paragraph with suppressLineNumbers in force
+// (./FlowDeco flagOf over its style layers and its own pPr), nor
+// any in a header or footer (they are not in the body's frames). A
+// line cut across two pages or columns counts once, where its top
+// is (a frame starting with dy > 0 carries it on). The count starts
+// at lnNumType start as written (PG28; 1 when absent) on the first
+// counted line of a section, and again on the first of each page
+// when restart is newPage (the default); newSection goes on across
+// the section's pages; continuous goes on from the last section
+// counted (a section between with no lnNumType counts nothing). A
+// number n is shown when 1 <= n <= MAX_SHOWN and n is a multiple
+// of countBy (1 when absent: every line; any value read: above
+// Word's 100 too). Columns: every column's numbers at its
+// own left edge, the count going on column after column.
+// Cost: for a document with only newPage restarts, the page's
+// fragments alone; with newSection or continuous, the lines of the
+// pages before are counted once per Pages object (by their cursors,
+// no frames built: D7) and kept per page, those of the pages kept
+// from the last Pages taken over (inherit). With no continuous
+// restart the count before a page is walked from its section's
+// first page only (the pages before cannot reach it). Placement:
+// the page's fragments as ./PrintFrags fragsOf gives them (Print
+// layout's own rule: moved by whole px). Pure: no desktop services.
+import {flagOf} from './FlowDeco';
+import {runFmt} from './Fmt';
+import {fragsOf} from './PrintFrags';
+
+export const DISTANCE = 360, MAX_SHOWN = 999999999;
+const NONE = Object.freeze([]);
+const FRESH = Object.freeze({s: -1, n: 1, has: false, pg: -1});
+const MEMO = new WeakMap();   // Pages -> {any, carry, cont, states,
+                             //   at}
+const SEED = new WeakMap();   // Pages -> {states, at} (inherit)
+const SUPPRESSED = new WeakMap();      // item -> boolean
+const FONTS = new WeakMap();           // styles -> {css, colour}
+
+/** The sections' line numbering: any numbered, any carrying on. */
+function memoOf(P) {
+  let m = MEMO.get(P);
+  if (m) return m;
+  const G = P.G, items = G.items, last = items[items.length - 1];
+  const n = last && Number.isInteger(last.s) ? last.s : 0;
+  let any = false, carry = false, cont = false;
+  for (let s = 0; s <= n; s++) {
+    const x = G.sect ? G.sect(s) : null, ln = x && x.lnNumType;
+    if (!ln) continue;
+    any = true;
+    if (ln.restart === 'newSection' || ln.restart === 'continuous') {
+      carry = true;
+    }
+    if (ln.restart === 'continuous') cont = true;
+  }
+  const seed = SEED.get(P);
+  SEED.delete(P);
+  m = {any, carry, cont, states: seed ? seed.states : [FRESH],
+    at: seed ? seed.at : new Map()};
+  MEMO.set(P, m);
+  return m;
+}
+
+/** See the header. */
+export function inherit(P, prev, front) {
+  const was = prev && (MEMO.get(prev) || SEED.get(prev));
+  if (!was || !(front > 0)) return;
+  const states = was.states.slice(0, front + 1), at = new Map();
+  for (const [i, st] of was.at) if (i <= front) at.set(i, st);
+  SEED.set(P, {states, at});
+}
+
+/** Item it's lnNumType when its lines are counted, else null. */
+function countedBy(G, it) {
+  if (!it || it.kind !== 'p' || !Array.isArray(it.lines) ||
+    !Number.isInteger(it.s)) return null;
+  const x = G.sect ? G.sect(it.s) : null, ln = x && x.lnNumType;
+  if (!ln) return null;
+  let sup = SUPPRESSED.get(it);
+  if (sup === undefined) {
+    const st = it.col && it.col.styles !== undefined ? it.col.styles
+      : null;
+    sup = !!it.block && flagOf(st, it.block, 'suppressLineNumbers');
+    SUPPRESSED.set(it, sup);
+  }
+  return sup ? null : ln;
+}
+
+/** The first number of `count` lines of section s on page i (see
+ *  the header), the state st moved past them. */
+function take(st, ln, s, i, count) {
+  const restart = ln.restart || 'newPage';
+  const start = Number.isInteger(ln.start) ? ln.start : 1;
+  if (s !== st.s) {
+    if (restart !== 'continuous' || !st.has) st.n = start;
+    st.s = s;
+  } else if (restart === 'newPage' && st.pg !== i) st.n = start;
+  st.pg = i;
+  st.has = true;
+  const n = st.n;
+  st.n += count;
+  return n;
+}
+
+/** The lines of page pg (index j) counted into st, by its cursors
+ *  (./PageFrames fragsOf's walk, without the frames). */
+function walkPage(G, pg, j, st) {
+  if (!pg || pg.blank) return;
+  const items = G.items, {start, end} = pg;
+  const stop = Math.min(end.k, items.length - 1);
+  for (let k = start.k; k <= stop; k++) {
+    const last = k === end.k;
+    if (last && !end.line && !end.dy && !end.cuts) break;
+    const it = items[k], ln = countedBy(G, it);
+    if (!ln) continue;
+    const l0 = k === start.k ? start.line + (start.dy ? 1 : 0) : 0;
+    const l1 = last ? end.line + (end.dy ? 1 : 0) : it.lines.length;
+    if (l1 > l0) take(st, ln, it.s, j, l1 - l0);
+  }
+}
+
+/** The count's state before page i: walked from its section's first
+ *  page (or the page before, where the section may start) when no
+ *  section goes on from the one before (FRESH there is the same). */
+function stateAt(P, m, i) {
+  if (!m.carry) return FRESH;
+  const ss = m.states;
+  if (ss.length <= i && !m.cont) {
+    let st = m.at.get(i);
+    if (st) return st;
+    const ps = P.list, s0 = ps[i].s;
+    let j = i;
+    while (j > 0 && ps[j - 1].s >= s0) j--;
+    j = Math.max(j - 1, 0);
+    if (j <= ss.length - 1) j = ss.length - 1;
+    st = {...(j === ss.length - 1 ? ss[j] : FRESH)};
+    for (; j < i; j++) walkPage(P.G, ps[j], j, st);
+    st = Object.freeze(st);
+    m.at.set(i, st);
+    return st;
+  }
+  while (ss.length <= i) {
+    const j = ss.length - 1, st = {...ss[j]};
+    walkPage(P.G, P.list[j], j, st);
+    ss.push(Object.freeze(st));
+  }
+  return ss[i];
+}
+
+/** See the header. */
+export function numbersOf(P, i) {
+  if (!Number.isInteger(i) || i < 0) return NONE;
+  const pg = P.at(i);
+  if (!pg || pg.blank) return NONE;
+  const m = memoOf(P);
+  if (!m.any) return NONE;
+  const G = P.G, st = {...stateAt(P, m, i)}, out = [];
+  const frames = pg.frames || NONE;
+  for (const o of fragsOf(G, pg)) {
+    const {it} = o, ln = countedBy(G, it), fr = frames[o.col];
+    if (!ln || !fr) continue;
+    const by = ln.countBy || 1;
+    const x = fr.x - (Number.isInteger(ln.distance) ? ln.distance
+      : DISTANCE) / 15;
+    // the line a frame starts inside of was counted where its top is
+    const l0 = o.l0 + (o.first && fr.start.dy > 0 ? 1 : 0);
+    for (let l = l0; l < o.l1; l++) {
+      const n = take(st, ln, it.s, i, 1), line = it.lines[l];
+      if (n < 1 || n > MAX_SHOWN || n % by !== 0 || !line) continue;
+      out.push(Object.freeze({x, y: it.y + o.dy + line.y + line.base,
+        text: String(n)}));
+    }
+  }
+  return Object.freeze(out);
+}
+
+/** The id of the Line Number character style, or undefined. */
+function styleId(styles) {
+  const all = styles && styles.styles;
+  if (!(all instanceof Map)) return undefined;
+  const own = all.get('LineNumber');
+  if (own && own.type === 'character') return 'LineNumber';
+  for (const [id, s] of all) {
+    if (s && s.type === 'character' && typeof s.name === 'string' &&
+      s.name.toLowerCase() === 'line number') return id;
+  }
+  return undefined;
+}
+
+/** See the header. */
+export function numberFont(styles) {
+  let f = styles && FONTS.get(styles);
+  if (f) return f;
+  const id = styleId(styles);
+  const r = runFmt(styles, {}, id === undefined ? {} : {rStyle: id});
+  f = Object.freeze({css: r.css, colour: r.colour});
+  if (styles) FONTS.set(styles, f);
+  return f;
+}

@@ -1,0 +1,201 @@
+// FieldCmd - Edit > Update field and Edit > Update all fields (Batch
+// D, D19, R2: menu items with no key; F9 stays Redo): a field's
+// stored result replaced by its computed value. Only here is a
+// stored result ever changed (display and save never do: OD3).
+//
+//   updateCmd(d, sel, ctx) -> sel | null  the fields at the caret (a
+//       field holds it from just before its begin to just after its
+//       end) or touching the selection, with every field inside
+//       them; in a header or footer (d a ./StoryFacade) every field
+//       of its story
+//   updateAllCmd(d, ctx, sel?) -> sel | true | null  every field of
+//       d.doc: the body (a facade's: its story); sel (when given)
+//       moved, else true
+//   insertFieldCmd(d, sel, code, ctx) -> sel | null  Insert > Page
+//       number, Date... and the Field box (./FieldBox): a complex
+//       field of code (./FieldMake codeText: ' CODE ', Word's
+//       spaces) put in at sel (the selection replaced, as typing
+//       does: ./InsertApply putIn): begin, one instrText, separate,
+//       end in the caret's run format, then its result filled at
+//       once as Update fills it (a name with no evaluator, or no
+//       value: an empty result); one step; the caret after the
+//       field. null (refused) for an empty or bad code, a caret in
+//       another field's code (a nested field), or where putIn
+//       refuses (a computed result)
+//   editCodeCmd(d, sel, code, ctx) -> sel | null  the Field box with
+//       the selection in a field (./FieldMake fieldFor): its code
+//       made code (FieldMake codePlan: the instrText inlines
+//       replaced by one; a fldSimple's w:instr), then its result
+//       updated as above when it can be (else kept as stored); one
+//       step (none when nothing changed); the caret after the
+//       field. null (refused) for a bad code, no field, or a code
+//       holding another field (PG23)
+//
+// Each field with an evaluator (./Fields) that gives a value, no
+// fldLock, and a result ./FieldPut can replace without loss gets its
+// value (FieldPut planOf: the result's first run's format, or
+// MERGEFORMAT per character, PG22); the others (no evaluator,
+// locked, a page field with no page, a result holding a kept inline,
+// spread across cells...) are left exactly as read, and so is every
+// field inside a kept node (./FieldScan does not see them). The
+// changes are applied the last first, in one d.atomic: one undo step
+// (none when every value is stored already: sel back). null (the
+// window beeps), nothing changed, when no field could be updated.
+// The selection comes back moved with the text (FieldPut map).
+//
+// ctx = {now, path?, meta?, pages?, page?}: now (a Date) and path
+// as ./Fields has them; pages {finish() -> ./Pages}: asked only when
+// a page field is to be updated, its pages all worked out first (D7:
+// page fields wait for the last page); a body field's page is the
+// page its begin is on (Pages ofPos); page, the Page a story's
+// fields are on (the header and footer mode's page). Pure: no
+// desktop services.
+import {scan} from './FieldScan';
+import {entryOf, evaluate} from './Fields';
+import {findBlock} from './EditPos';
+import {cmpPath, topOf} from './Path';
+import {planOf} from './FieldPut';
+import {putIn} from './InsertApply';
+import {caret} from './Selection';
+import {codeText, fieldInlines, fieldFor, inCode, codePlan}
+  from './FieldMake';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+
+/** The value each field gets: a function of the field (null: none). */
+function valuer(d, ctx) {
+  let P;
+  const pages = () => {
+    if (P === undefined) {
+      const x = isObj(ctx.pages) && typeof ctx.pages.finish ===
+        'function' ? ctx.pages.finish() : null;
+      P = isObj(x) && Array.isArray(x.list) ? x : null;
+    }
+    return P;
+  };
+  const story = isStory(d);
+  const doc = story ? d.real.doc : d.doc;
+  return (f) => {
+    const e = entryOf(f);
+    if (!e || f.lock) return null;
+    const c = {doc, now: ctx.now, path: ctx.path, meta: ctx.meta,
+      section: story ? d.s : topOf(f.begin.at)[0]};
+    if (e.pageDependent) {
+      const Q = pages();
+      if (Q) {
+        c.pages = Q;
+        const i = story || typeof Q.ofPos !== 'function' ? -1
+          : Q.ofPos({id: f.begin.id, off: f.begin.off});
+        c.page = story ? ctx.page : Q.list[i];
+      }
+    }
+    return evaluate(c, f);
+  };
+}
+
+/** Fields fs updated (see the header): the selection, or null. */
+function update(d, fs, ctx, sel) {
+  if (!isObj(ctx) || !fs.length) return null;
+  const value = valuer(d, ctx), plans = [];
+  for (const f of fs) {
+    const v = value(f);
+    const plan = typeof v === 'string' ? planOf(d.doc, f, v) : null;
+    if (plan) plans.push(plan);
+  }
+  if (!plans.length) return null;
+  const due = plans.filter((x) => !x.same);
+  if (!due.length) return isObj(sel) ? sel : true;
+  due.sort((a, b) => cmpPath(b.at, a.at) || b.off - a.off);
+  d.atomic(() => {
+    for (const x of due) for (const op of x.ops) d.apply(op);
+  });
+  if (!isObj(sel)) return true;
+  let {anchor, head} = sel;
+  for (const x of due) {
+    anchor = x.map(anchor);
+    head = x.map(head);
+  }
+  return {...sel, anchor, head};
+}
+
+/** Every field of fs inside one of `top` (and those). */
+function within(fs, top) {
+  const out = new Set();
+  const add = (f) => {
+    if (out.has(f)) return;
+    out.add(f);
+    f.children.forEach(add);
+  };
+  top.forEach(add);
+  return fs.filter((f) => out.has(f));
+}
+
+/** {at, off} of position pos of doc, or null. */
+function where(doc, pos) {
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  return loc && Number.isInteger(pos.off) && !loc.story
+    ? {at: loc.at, off: pos.off} : null;
+}
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** See the header. */
+export function updateCmd(d, sel, ctx) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(sel)) return null;
+  const fs = scan(d.doc);
+  if (isStory(d)) return update(d, fs, ctx, sel);
+  const a = where(d.doc, sel.anchor), h = where(d.doc, sel.head);
+  if (!a || !h) return null;
+  const [lo, hi] = cmp(a, h) <= 0 ? [a, h] : [h, a];
+  const caret = cmp(lo, hi) === 0;
+  const top = fs.filter((f) => {
+    const after = {at: f.end.at, off: f.end.off + 1};
+    return caret ? cmp(f.begin, lo) <= 0 && cmp(lo, after) <= 0
+      : cmp(f.begin, hi) < 0 && cmp(lo, after) < 0;
+  });
+  return update(d, within(fs, top), ctx, sel);
+}
+
+/** See the header. */
+export function updateAllCmd(d, ctx, sel) {
+  if (!isObj(d) || !isObj(d.doc)) return null;
+  return update(d, scan(d.doc), ctx, sel);
+}
+
+/** The field of d whose begin is at pos, then updated (see the
+ *  header): the selection after it. */
+function fill(d, pos, ctx, sel) {
+  const f = scan(d.doc).find((x) => x.begin.id === pos.id &&
+    x.begin.off === pos.off);
+  return (f && update(d, [f], ctx, sel)) || sel;
+}
+
+/** See the header. */
+export function insertFieldCmd(d, sel, code, ctx) {
+  const text = codeText(code);
+  if (!text || !isObj(d) || !isObj(d.doc) || !isObj(sel) ||
+    inCode(d.doc, sel.anchor) || inCode(d.doc, sel.head)) return null;
+  const {ins, inlines} = fieldInlines(text);
+  return d.atomic(() => {
+    const c = putIn(d, sel, ins, inlines);
+    if (!c || c === sel) return null;
+    const h = c.head;
+    return fill(d, {id: h.id, off: h.off - ins.length}, ctx, c);
+  });
+}
+
+/** See the header. */
+export function editCodeCmd(d, sel, code, ctx) {
+  const text = codeText(code);
+  if (!text || !isObj(d) || !isObj(d.doc)) return null;
+  const f = fieldFor(d.doc, sel);
+  const plan = f && codePlan(d.doc, f, text);
+  if (!plan) return null;
+  const n = plan.op && !f.simple ? plan.op.del - 1 : 0;
+  const e = f.end, k = e.id === f.begin.id ? n : 0;
+  const after = caret({id: e.id, off: e.off - k + 1});
+  return d.atomic(() => {
+    if (plan.op) d.apply(plan.op);
+    return fill(d, {id: f.begin.id, off: f.begin.off}, ctx, after);
+  });
+}

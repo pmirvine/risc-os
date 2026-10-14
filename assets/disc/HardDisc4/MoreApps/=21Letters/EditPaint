@@ -17,10 +17,19 @@
 //     line  {x, y, h} (vertical) or {x, y, w} (horizontal): where a
 //           table's border goes while it is dragged (./TblDrag), or
 //           null
+//     marks  Print layout: the breaks drawn as rules (View >
+//           Formatting marks; off: none, D5, D22). Draft draws them
+//           always
+//   paintSel(L, g, rect, sel, active, more?)  only what paintView
+//     draws over the text: the selection, the overwrite shade, the
+//     picture's handles and ghost, the composition (./HdrPaint: a
+//     header's selection over the pages drawn by paintView)
 //   pageRect(L) -> {x, y, w, h}, the white page (work area), below
 //                  L.top: PAGE_TOP (./DocLayout) px inside the
 //                  extent at the top and the bottom, at least
-//                  L.pageH high (a whole page)
+//                  L.pageH high (a whole page), as wide as the
+//                  widest section's page and text (L.pageWide,
+//                  L.textWide: a landscape section's)
 //
 // The selection is lit after the text, multiplied into what is
 // there, so the text stays black on it and a kept block's grey box
@@ -41,20 +50,29 @@
 // 1 px border (./PicFind handleRects); the ghost is outlined in 1 px
 // dashes of #000000 (sizes divided by zoom: screen px); the line 1
 // px wide in the same dashes, from the table's top to its bottom.
+// Where (D4): the text through ./DocPaint (L.place visible), the
+// selection through L.selectionRects, the caret through
+// L.caretRect, the handles through ./PicFind (L.place lineAt); the
+// ghost and the line are the drags' (placed already). pageRect is
+// window geometry: Draft's one tall page. In Print layout (L.place a
+// ./PlacePrint: its pages) the pages in rect are ./PagePaint's
+// instead of the one page and ./DocPaint; ./DocRects culls the
+// selection to the galley span of the lines shown (L.place band).
 // Draws on the context it is given; imports no desktop services.
 import {paint} from './DocPaint';
 import {nextG} from './DocPos';
 import {collapsed} from './Selection';
 import {PAGE_TOP as TOP} from './DocLayout';
 import {selectedPic, handleRects} from './PicFind';
+import {paintSheet, paintPages} from './PagePaint';
 
 export const DESK = '#888888', SEL = '#b3d4fc', SEL_OFF = '#d4d4d4';
 export const COMP = '#0050c8', OVER = '#a0a0a0';
-const SHADOW = 3;
 
 /** See the header. */
 export function pageRect(L) {
-  const w = Math.max(L.pageW, L.marL + L.textW);
+  const w = Math.max(L.pageWide ?? L.pageW,
+    L.marL + (L.textWide ?? L.textW));
   const top = L.top || 0;
   return {x: Math.round(L.pageLeft), y: top + TOP, w: Math.round(w),
     h: Math.max(0, Math.round(L.height - top - 2 * TOP))};
@@ -64,15 +82,17 @@ export function pageRect(L) {
 export function paintView(L, g, rect, sel, active, more = {}) {
   g.fillStyle = DESK;
   g.fillRect(rect.x0, rect.y0, rect.x1 - rect.x0, rect.y1 - rect.y0);
-  const p = pageRect(L);
-  g.fillStyle = '#555555';
-  g.fillRect(p.x + SHADOW, p.y + SHADOW, p.w, p.h);
-  g.fillStyle = '#ffffff';
-  g.fillRect(p.x, p.y, p.w, p.h);
-  g.strokeStyle = '#444444';
-  g.lineWidth = 1;
-  g.strokeRect(p.x - 0.5, p.y - 0.5, p.w + 1, p.h + 1);
-  paint(L, g, rect);
+  if (L.place.pages) {
+    paintPages(L, g, rect, {marks: !!more.marks});
+  } else {
+    paintSheet(g, pageRect(L));
+    paint(L, g, rect);
+  }
+  paintSel(L, g, rect, sel, active, more);
+}
+
+/** See the header. */
+export function paintSel(L, g, rect, sel, active, more = {}) {
   if (!sel) return;
   const rects = L.selectionRects(sel, rect.y0, rect.y1);
   g.save();

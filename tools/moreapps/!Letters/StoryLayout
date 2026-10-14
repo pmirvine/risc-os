@@ -1,0 +1,147 @@
+// StoryLayout - a header or footer story laid out at a width (Batch
+// D, D13): by the galley code itself (./DocLayout, ./DocItems,
+// ./DocStack) on a one-section view of the story, its one column
+// `width` px wide.
+//
+//   layoutStory(story, width, ctx, valuesKey = '') -> {h, L, x, y}
+//       story  a Story of doc.stories (./StoryRead: its blocks)
+//       width  px: the section's text width (./SectGeom pxOf
+//              textW); clamped to MIN_TEXT .. MAX_TEXT as a page's
+//              (not a number: MIN_TEXT)
+//       ctx    {doc, metrics, decorators?, pics?, fields?, page?,
+//              pages?}: the document (its styles, numbering,
+//              settings, scope), ./DocLayout's options, and what its
+//              fields are shown computed with (./FieldShow, D18):
+//              fields {now, codes?, shade?} (the body's L.fields:
+//              View > Field codes and the shading, ./FieldView),
+//              the Page and the counts (./FieldShow countsOf) of
+//              the page it is for
+//       valuesKey  a string: the field values the story shows on
+//              the page (./FieldShow storyKey: '' when it shows no
+//              page-dependent field)
+//       L      the ./DocLayout of the view (L.items, L.flow,
+//              L.byId: paint and hit it as the body's); its doc is
+//              ./PicRels partDoc's: the story's own relationships
+//              and root, so its pictures are found through them
+//       h      px from the top of the first item (its space before)
+//              to the end of the last (its space after); 0 when the
+//              story is empty
+//       x, y   where in L that top-left corner is (L's own margin):
+//              a page places the story by moving it by (-x, -y)
+//   editLayout(story, width, ctx, top = 0) -> {h, L, x, y}  the same
+//       layout made afresh, not memoised, its L.top top (the
+//       window's: ./HdrEdit edits the story on it, its own place
+//       set; the page still draws the shared one, pixel for pixel
+//       the same but moved by top)
+//   stats  {laid}: layouts made so far (tests count them)
+//   MAX_KEYS  layouts kept per story (the oldest dropped first)
+//
+// Memoised: a story object (copy-on-write: an edit gives a new one)
+// keeps a layout per (width, valuesKey), used again while the doc's
+// styles, numbering and settings, the metrics, decorators, pics and
+// fields' now are the very objects it was made with and the codes
+// are shown or not as they were (the page and
+// counts are not compared: the key says what they show). Pages that
+// share a story
+// and its field values share one layout: a 1,500-page document lays
+// out a handful.
+// RangeError: a story without a blocks array, ctx without doc or
+// metrics, a valuesKey that is not a string.
+// Pure: no desktop services.
+import {DocLayout} from './DocLayout';
+import {MIN_TEXT, MAX_TEXT} from './SectGeom';
+import {partDoc} from './PicRels';
+
+export const MAX_KEYS = 64;
+export const stats = {laid: 0};
+
+const memo = new WeakMap();            // story -> Map key -> entry
+const geoms = new WeakMap();           // view doc -> px geometry
+const ZERO = Object.freeze({top: 0, right: 0, bottom: 0, left: 0,
+  header: 0, footer: 0, gutter: 0});
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** A DocLayout whose one section is `width` wide, margins 0. */
+class StoryDocLayout extends DocLayout {
+  geom(s) { return s === 0 ? geoms.get(this.doc) || null : null; }
+}
+
+/** width as a column's width (px). */
+function widthOf(width) {
+  const w = typeof width === 'number' && !Number.isNaN(width)
+    ? width : MIN_TEXT;
+  return Math.min(Math.max(w, MIN_TEXT), MAX_TEXT);
+}
+
+/** The px geometry (./SectGeom pxOf's shape) of a w-wide view. */
+const geomOf = (w) => Object.freeze({size: Object.freeze({w, h: 0}),
+  mar: ZERO, exactTop: false, exactBottom: false,
+  cols: Object.freeze([Object.freeze({x: 0, w})]), textW: w});
+
+/** The things an entry was made with (ctx's), to compare. */
+function depsOf(ctx) {
+  const d = ctx.doc;
+  return [d.styles, d.numbering, d.rawSettings, d.meta, ctx.metrics,
+    ctx.decorators, ctx.pics, isObj(ctx.fields) ? ctx.fields.now
+      : undefined, isObj(ctx.fields) && !!ctx.fields.codes];
+}
+
+const same = (a, b) => a.every((v, i) => v === b[i]);
+
+/** Lay story out (see the header); top: L.top (editLayout). */
+function make(story, w, ctx, top) {
+  const {doc} = ctx;
+  const view = {...partDoc(doc, story), sections: [{props: {extra:
+    []}, blocks: story.blocks, raw: null}]};
+  geoms.set(view, geomOf(w));
+  const opts = {top};
+  if (isObj(ctx.fields) || ctx.page) {
+    const fx = isObj(ctx.fields) ? ctx.fields : {};
+    opts.fields = {now: fx.now, page: ctx.page, pages: ctx.pages,
+      codes: !!fx.codes, shade: fx.shade};
+  }
+  if (ctx.decorators) opts.decorators = ctx.decorators;
+  if (ctx.pics) opts.pics = ctx.pics;
+  const L = new StoryDocLayout(view, ctx.metrics, undefined, opts);
+  L.layout(0);
+  stats.laid++;
+  const its = L.items, a = its[0], b = its[its.length - 1];
+  const y = a ? a.y - a.gapAbove : L.top;
+  const h = b ? Math.max(0, b.y + b.h + b.gapBelow - y) : 0;
+  return {h, L, x: L.left, y};
+}
+
+/** See the header. */
+export function editLayout(story, width, ctx, top = 0) {
+  if (!isObj(story) || !Array.isArray(story.blocks))
+    throw new RangeError('not a story');
+  if (!isObj(ctx) || !isObj(ctx.doc) || !isObj(ctx.metrics))
+    throw new RangeError('bad context');
+  return make(story, widthOf(width), ctx, top);
+}
+
+/** See the header. */
+export function layoutStory(story, width, ctx, valuesKey = '') {
+  if (!isObj(story) || !Array.isArray(story.blocks))
+    throw new RangeError('not a story');
+  if (!isObj(ctx) || !isObj(ctx.doc) || !isObj(ctx.metrics))
+    throw new RangeError('bad context');
+  if (typeof valuesKey !== 'string')
+    throw new RangeError('bad values key');
+  const w = widthOf(width);
+  const key = w + '\u0000' + valuesKey;
+  let m = memo.get(story);
+  if (!m) memo.set(story, m = new Map());
+  const deps = depsOf(ctx);
+  const got = m.get(key);
+  if (got && same(got.deps, deps)) {
+    m.delete(key);                     // (most recently used last)
+    m.set(key, got);
+    return got.out;
+  }
+  const out = make(story, w, ctx);
+  m.delete(key);
+  m.set(key, {deps, out});
+  while (m.size > MAX_KEYS) m.delete(m.keys().next().value);
+  return out;
+}

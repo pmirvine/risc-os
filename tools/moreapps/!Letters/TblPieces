@@ -1,0 +1,140 @@
+// TblPieces - what a table's fragment on a page shows, row by row
+// (Batch D, D8, P4.2): the one geometry ./TblPagePaint draws and
+// ./PlacePrint and ./PrintHit place the caret and hits by.
+//
+//   piecesOf(it, f) -> [Piece]  table item it's fragment f (a page's,
+//       ./PrintFrags: rows r0..r1 - 1, from? the cuts row r0
+//       continues after, cuts? those row r1 - 1 is cut at, heads? the
+//       header rows repeated above them, ./PageRows rowsOn); cached
+//       per f. In the fragment's coordinates (the table's galley
+//       ones as the fragment moves them: a whole row r at rows[r].y):
+//     Piece {r, y, h, sh, rep?, cells?}  row r's box y..y + h; sh
+//       how far its content moves from where the galley has it; rep
+//       true for a repeated header row (drawn from the same row
+//       layout at the frame's top, above the rows: PG10's original
+//       row is r itself). A part of a cut row (the rest of row r0
+//       after from, the first part of row r1 - 1 up to cuts, or a
+//       middle part with both) has cells: by row.cells index, null
+//       for a cell with no column, else {sh, y0, y1, col}: col the
+//       column drawn (a merged cell's for a continue cell, review P4
+//       I3), its content moved by sh, shown from y0 to y1 (the units
+//       of ./PageCells unitsAt from from[c] to cuts[c]: a merged
+//       cell's slice in its row; a cell with nothing left: y1 = y0).
+//       Each part is top-aligned (PG8: a center or bottom cell's dy
+//       is dropped); the rest's box is the tallest
+//       remainder (./PageRows restH, so the rows below it are where
+//       ./PageFrames puts them); a first part's box ends under its
+//       tallest kept content plus the cell's bottom margin
+//   pieceOf(it, f, r) -> Piece | null  row r's own piece (not a
+//       repeated header) on f
+//   cellOf(it, row, gx) -> i  the index in row.cells of the cell at
+//       galley x gx (a continue cell too: its part shows its merge's
+//       slice; the nearest when none holds gx), -1 for none
+//   shiftAt(it, f, r, c) -> px  how far f moves the content of cell
+//       c (index) of row r beyond f's own dy (0: not on f)
+//
+// Pure: no desktop services.
+import {unitsAt, fin, px} from './PageCells';
+import {restH} from './PageRows';
+
+const CACHE = new WeakMap();
+const NONE = Object.freeze([]);
+
+const at = (cuts, c) => (cuts && Number.isInteger(cuts[c]) &&
+  cuts[c] > 0 ? cuts[c] : 0);
+const clampR = (it, r) => Math.min(Math.max(0, r | 0),
+  it.rows.length);
+
+/** A part of cut row r at top (see the header). */
+function part(it, r, from, cuts, top) {
+  const row = it.rows[r];
+  let tall = 0;
+  const cells = row.cells.map((c, i) => {
+    const u = unitsAt(it, r, i);
+    if (!u.col) return null;
+    const n = u.tops.length, s = Math.min(at(from, i), n);
+    const e = cuts ? Math.min(n, Math.max(s, at(cuts, i))) : n;
+    const base = u.y0;
+    const src = !s ? base : s < n ? base + u.tops[s]
+      : base + u.bots[n - 1];
+    const sh = top + u.top - src;
+    const h = e > s ? u.bots[e - 1] - (s > 0 ? u.tops[s] : 0) : 0;
+    tall = Math.max(tall, u.top + h + u.bottom);
+    const y0 = top + (s ? 0 : u.from0);
+    const y1 = e < n ? base + u.tops[e] + sh : Infinity;
+    return Object.freeze({sh, y0, y1: e > s ? y1 : y0, col: u.col});
+  });
+  const h = cuts ? tall : restH(it, r, from);
+  const fit = (c) => (c && c.y1 === Infinity
+    ? Object.freeze({...c, y1: top + h}) : c);
+  return Object.freeze({r, y: top, h, sh: top - row.y,
+    cells: Object.freeze(cells.map(fit))});
+}
+
+/** The pieces of fragment f of table it (see the header). */
+function build(it, f) {
+  const rows = it.rows, out = [];
+  const r0 = clampR(it, f.r0), r1 = clampR(it, f.r1);
+  if (!(r0 < r1)) return NONE;
+  const from = f.from || null, cuts = f.cuts || null;
+  const top = from
+    ? rows[r0].y + rows[r0].h - restH(it, r0, from) : rows[r0].y;
+  const H = Math.min(Math.max(0, f.heads | 0), r0);
+  if (H) {
+    const y0 = top - px(rows[H].ry);
+    for (let r = 0; r < H; r++) {
+      const y = y0 + px(rows[r].ry);
+      out.push(Object.freeze({r, y, h: rows[r].h, sh: y - rows[r].y,
+        rep: true}));
+    }
+  }
+  for (let r = r0; r < r1; r++) {
+    const a = r === r0 ? from : null, b = r === r1 - 1 ? cuts : null;
+    if (a || b) out.push(part(it, r, a, b, r === r0 ? top : rows[r].y));
+    else {
+      out.push(Object.freeze({r, y: rows[r].y, h: rows[r].h, sh: 0}));
+    }
+  }
+  return Object.freeze(out);
+}
+
+/** See the header. */
+export function piecesOf(it, f) {
+  if (!f || !it || !Array.isArray(it.rows)) return NONE;
+  let v = CACHE.get(f);
+  if (!v || v.it !== it) CACHE.set(f, v = {it, ps: build(it, f)});
+  return v.ps;
+}
+
+/** See the header. */
+export function pieceOf(it, f, r) {
+  const ps = piecesOf(it, f), H = ps.length && ps[0].rep
+    ? Math.min(Math.max(0, f.heads | 0), clampR(it, f.r0)) : 0;
+  const p = ps[H + (r - clampR(it, f.r0))];
+  return p && p.r === r && !p.rep ? p : null;
+}
+
+/** See the header. */
+export function cellOf(it, row, gx) {
+  const cs = row ? row.cells : NONE;
+  let best = -1, d = Infinity;
+  for (let i = 0; i < cs.length; i++) {
+    const c = cs[i];
+    if (!fin(c.x) || !fin(c.w)) continue;
+    if (gx >= c.x && gx < c.x + c.w) return i;
+    const e = Math.min(Math.abs(gx - c.x), Math.abs(gx - c.x - c.w));
+    if (e < d) {
+      d = e;
+      best = i;
+    }
+  }
+  return best;
+}
+
+/** See the header. */
+export function shiftAt(it, f, r, c) {
+  const p = pieceOf(it, f, r);
+  if (!p) return 0;
+  const cl = p.cells && Number.isInteger(c) ? p.cells[c] : null;
+  return cl ? cl.sh : p.sh;
+}

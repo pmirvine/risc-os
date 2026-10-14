@@ -13,6 +13,7 @@
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const LONG = 'Line spacing moves the lines of a paragraph further apart or closer together, and Word ' +
   'measures it from one baseline to the next, so a paragraph set double takes twice the room on the page.';
@@ -40,6 +41,7 @@ const press = async (k, n = 1) => { for (let i = 0; i < n; i++) await page.keybo
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   const s0 = await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };

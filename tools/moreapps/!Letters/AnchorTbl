@@ -1,0 +1,118 @@
+// AnchorTbl - a floating table placed on its page (Batch D P12.6,
+// owner ruling R5): ./AnchorPlace's, with the boxes pictures use
+// (./AnchorBox); only AnchorPlace calls it.
+//
+//   tblFloat(c, it, f, fr, tf, tbls, hy) -> Float | null
+//       root table item it, its frag f (./PageFrames: float true,
+//       y its place in the flow) in frame fr of page c
+//       (AnchorPlace's {pg, geo, odd}), tf its ./TblFloat floatOf;
+//       tbls the floating tables placed before it on the page; hy
+//       null, or the page y the wrap holds its flow place at
+//       (./WrapPage, P12b fix C1: vertAnchor text only):
+//     Float {tbl, x, y, w, h, behind, z, cell, tfloat, bx, by,
+//       held?}
+//       tbl    the table item's id (pictures' Floats have pic and
+//              id instead)
+//       x, y   the top left of the table's box (its left edge as
+//              drawn, it.x + it.left, and its top) from the page's
+//              top left; w, h its width and height (px)
+//       behind false; z -1: under every picture float drawn over
+//              the text (those behind the text stay under it);
+//              cell false; tfloat tf; bx, by its boxes' top left;
+//              held true when placed from hy (./WrapGuess does
+//              not move it with the lines above)
+//       the wrap round it is ./LineShape exclusionsOf's (the box
+//       widened by tfloat's fromText distances, P12.7)
+//
+// Horizontal box (horz): text the frame (the column) holding the
+// table, margin the page's text area, page the page; xSpec left /
+// center / right in it, inside the left on an odd page and the right
+// on an even one, outside the reverse; else box's x + tblpX (twips /
+// 15). Vertical box (vert): text the table's own place in the flow
+// (frag y), margin, page as pictures' (./AnchorBox vBox); ySpec top
+// / center / bottom, inside as top, outside as bottom (pictures'
+// own reading), inline the box's top (own reading); else box's y +
+// tblpY. With vertAnchor text the box has no height: any ySpec is
+// its top (P12b fix, review M6: center, bottom and outside would
+// put it over the text before it; Word writes none of them), and
+// the table ends at its frame's bottom at most (review M3: not over
+// the bottom margin and footer). A spec wins over the offset
+// (./TblFloat). The table's tblInd and jc do not move it (own
+// reading: its position says where it is). Kept on the page
+// (PG30) as pictures: below the bottom it moves up to end there,
+// then above the top down to it;
+// and across (P12b fix I5: a table holds text to edit), where
+// pictures are not: its x at least 0 and at most the page's width
+// less its first column's (its left cell is on the sheet; the
+// drawing only: tblpPr unchanged).
+// A table that would overlap a floating table placed before it on
+// the page moves down below it, again until none is in its way,
+// then is kept on the page (PG30 wins: with no room below it may
+// overlap; own reading), when either of the two has tblOverlap
+// never (ECMA-376 17.4.56: whether OTHER floating tables may
+// overlap this one; P12b fix I3), or when its top left is the
+// other's (it would be hidden under it: tables in a row at one flow
+// place, a split or pasted copy; P12b fix I4). Pure: no desktop
+// services.
+import {hBox, vBox, along, fin} from './AnchorBox';
+
+const TW_EMU = 635;                    // EMU per twip
+const H_FROM = {text: 'column', margin: 'margin', page: 'page'};
+const Y_SPEC = {inside: 'top', outside: 'bottom', inline: null};
+
+/** PG30: y kept on page c for a height h. */
+function kept(c, y, h) {
+  let v = y;
+  if (v + h > c.pg.h) v = c.pg.h - h;
+  return v < 0 ? 0 : v;
+}
+
+/** a and b within half a px. */
+const near = (a, b) => Math.abs(a - b) < 0.5;
+
+/** Box a and b (x, y, w, h) overlap. */
+const meets = (a, b) => a.x < b.x + b.w && b.x < a.x + a.w &&
+  a.y < b.y + b.h && b.y < a.y + a.h;
+
+/** See the header. */
+export function tblFloat(c, it, f, fr, tf, tbls, hy = null) {
+  const w = it.width, h = it.h;
+  if (!fin(w) || !fin(h)) return null;
+  const at = {fr};
+  const hb = hBox(c, H_FROM[tf.horz], at);
+  const held = tf.vert === 'text' && fin(hy);
+  const vb = tf.vert === 'text' ? {y: held ? hy : f.y, h: 0}
+    : vBox(c, tf.vert, at);
+  if (!hb || !vb) return null;
+  const xs = tf.xSpec;
+  let x = xs === 'inside' || xs === 'outside'
+    ? ((xs === 'inside') === c.odd ? hb.x : hb.x + hb.w - w)
+    : along({align: xs, offset: xs ? 0 : (tf.x || 0) * TW_EMU}, hb,
+      'x', w, 'left', 'right');
+  const c0 = it.key && fin(it.key.cols[0]) ? Math.min(w, it.key.cols[0])
+    : w;
+  x = Math.max(0, Math.min(x, c.pg.w - c0));
+  const ys = tf.ySpec && tf.vert === 'text' ? null
+    : tf.ySpec in Y_SPEC ? Y_SPEC[tf.ySpec] : tf.ySpec;
+  let y = ys === null ? vb.y : along({align: ys,
+    offset: ys ? 0 : (tf.y || 0) * TW_EMU}, vb, 'y', h, 'top',
+  'bottom');
+  if (tf.vert === 'text' && y + h > fr.y + fr.h) {
+    y = Math.max(fr.y, fr.y + fr.h - h);
+  }
+  y = kept(c, y, h);
+  const away = (o) => (tf.overlap === false || o.tfloat.overlap ===
+    false ? meets(o, {x, y, w, h}) : near(o.x, x) && near(o.y, y));
+  if (tbls.some(away)) {
+    for (let n = 0; n <= tbls.length; n++) {
+      const e = tbls.find(away);
+      if (!e) break;
+      y = e.y + e.h;
+    }
+    y = kept(c, y, h);
+  }
+  if (!fin(x) || !fin(y)) return null;
+  return Object.freeze({tbl: it.id, x, y, w, h, behind: false, z: -1,
+    cell: false, tfloat: tf, bx: hb.x, by: vb.y,
+    ...(held ? {held: true} : {})});
+}

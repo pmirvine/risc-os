@@ -9,7 +9,11 @@
 //   MAX_PX 2112  ./TblCheck MAX_TW in px: the widest a drag makes one
 //   edgeAt(L, x, y, zoom) -> {table, kind, index} | null  the border
 //       within EDGE screen px (EDGE / zoom layout px) of layout point
-//       (x, y): table the table's item (./TblItems), kind 'col' a
+//       (x, y) (found at the galley point ./Place toGalley gives; a
+//       floating table placed on its page, Print layout, P12b fix
+//       I2: where it is drawn, first, ./PlacePrint floatAt, and
+//       never at its place in the flow, placed):
+//       table the table's item (./TblItems), kind 'col' a
 //       vertical border between two cells of the row at y, index its
 //       grid line (1 .. columns - 1: the border between grid columns
 //       index - 1 and index); 'right' the table's right edge (index
@@ -43,6 +47,7 @@
 //       total the grid's sum
 import {rowAtY} from './TblLayout';
 import {itemIn, cellAtX} from './DocHit';
+import {toGalley} from './Place';
 import {TW_PX} from './TblWidth';
 import {MAX_TW} from './TblCheck';
 
@@ -155,13 +160,16 @@ function inTable(it, x, y, tol) {
     : mine;
 }
 
-/** The edge among a column's items at (x, y). */
-function inColumn(items, x, y, tol) {
+/** The edge among a column's items at (x, y) (skip(item): a table
+ *  not looked at). */
+function inColumn(items, x, y, tol, skip) {
   if (!items.length) return null;
   const seen = new Set();
   for (const dy of [0, -tol, tol]) {
     const n = itemIn(items, y + dy);
-    if (!n || n.kind !== 'tbl' || seen.has(n)) continue;
+    if (!n || n.kind !== 'tbl' || seen.has(n) || (skip && skip(n))) {
+      continue;
+    }
     seen.add(n);
     const e = inTable(n, x, y, tol);
     if (e) return e;
@@ -174,5 +182,10 @@ export function edgeAt(L, x, y, zoom) {
   if (!L || L.flow === L.items || !fin(x) || !fin(y) || !fin(zoom) ||
     zoom <= 0) return null;
   // (+ a hair: a point EDGE px away is in, whatever the rounding)
-  return inColumn(L.root.items, x, y, EDGE / zoom + 1e-9);
+  const tol = EDGE / zoom + 1e-9, {floatAt, placed} = L.place;
+  const fl = floatAt ? floatAt(x, y, tol) : null;
+  const e = fl && inTable(fl.it, x - fl.dx, y - fl.dy, tol);
+  if (e) return e;
+  const p = toGalley(L.place, x, y);
+  return inColumn(L.root.items, p.x, p.y, tol, placed);
 }

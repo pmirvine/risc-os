@@ -1,0 +1,157 @@
+// BookmarkMarks - the bookmark marks of a document, in the order
+// they come: the walk under ./BookmarkFind (which re-exports both
+// names and documents its lookups). Split from ./BookmarkFind in
+// Batch D P6.3.
+//
+//   marks(doc) -> [{kind 'start' | 'end', name (start: its w:name,
+//       else null), id (w:id as written, or null), at, off, table,
+//       direct}] every w:bookmarkStart and w:bookmarkEnd in document
+//       order (./Walk: the model; XML only inside an Opaque block or
+//       an inline; a typed table's loose marks between its rows and
+//       cells in their places): at the block's path; off the offset
+//       of its U+FFFC in the paragraph (a mark inside a kept wrapper,
+//       a link or an insertion, has the wrapper's); in a typed
+//       table's cell the same, at the cell paragraph's path (C3.5); a
+//       loose mark of a typed table at a paragraph's edge: a row's or
+//       a cell's lead at the start of that row's (cell's) first
+//       paragraph, a row's tail at the end of its last cell's last
+//       paragraph, the table's tail at the end of its last cell's;
+//       table: in a kept block (an Opaque table...): at its path, off
+//       0; direct: the mark is a level-'p' inline itself (so it can
+//       be moved or deleted: never a loose or kept one).
+//       marks.complete is false when the walk stopped at its
+//       1,000,000-node limit
+//   storyMarks(doc) -> the same for every story of doc.stories
+//       (headers and footers, D11: bookmarks there are legal), story
+//       by story in its order, each mark with `story` (its part
+//       name) and its `at` a path in that story's blocks ([0, i,
+//       ...], as ops address a story: ruling R8); complete false
+//       when a story's walk stopped at the limit (each story has its
+//       own). marks(doc) stays the body's: the commands that move
+//       and delete marks (./Bookmarks, ./BookmarkKeep, ./RangeTbl)
+//       pair marks by id within one part
+//
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {forEachBlock, forEachIn, loose} from './Walk';
+import {samePath} from './Path';
+import {localName} from './Kinds';
+
+const LIMIT = 1e6;
+const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end'};
+
+/** The value of the attribute with local name `local`, or null. */
+function attr(n, local) {
+  if (!Array.isArray(n.attrs)) return null;
+  for (const [k, v] of n.attrs) {
+    if (String(k).split(':').pop() === local) return String(v);
+  }
+  return null;
+}
+
+/** Whether loose mark m (./Walk loose) comes before cell (r, c). */
+const before = (m, r, c) => m.r < r || (m.r === r &&
+  (m.where === 'rowLead' || (m.where === 'lead' && m.c <= c)));
+
+/** The marks walk(visit) visits (see the header). */
+function marksOver(walk) {
+  const out = [];
+  let seen = 0;
+  out.complete = true;
+  const inNode = (top, at) => {
+    const stack = [top];
+    while (stack.length) {
+      const n = stack.pop();
+      if (++seen > LIMIT) return false;
+      if (!n || typeof n !== 'object') continue;
+      const kind = KIND[localName(n)];
+      if (kind) {
+        out.push({kind, name: kind === 'start' ? attr(n, 'name') : null,
+          id: attr(n, 'id'), at: at.at, off: at.off, table: at.table,
+          direct: n === top && !!at.own});
+      }
+      const kids = Array.isArray(n.children) ? n.children : [];
+      for (let k = kids.length - 1; k >= 0; k--) {
+        if (kids[k] && typeof kids[k] === 'object') stack.push(kids[k]);
+      }
+    }
+    return true;
+  };
+  // the typed tables around the walk, outermost first: {at, t, ls
+  // (their loose marks), k (the next one to report)}
+  const open = [];
+  const flush = (o, r, c) => {
+    for (; o.k < o.ls.length; o.k++) {
+      const m = o.ls[o.k];
+      if (r !== undefined && !before(m, r, c)) break;
+      if (!inNode(m.node, placeOf(o, m))) return false;
+    }
+    return true;
+  };
+  const visit = (b, at, depth, cell) => {
+    while (open.length && !(cell &&
+      samePath(open[open.length - 1].at, cell.table))) {
+      if (!flush(open.pop())) return false;
+    }
+    if (cell && !flush(open[open.length - 1], cell.r, cell.c))
+      return false;
+    if (b.type === 'tbl') {
+      open.push({at, t: b, ls: loose(b), k: 0});
+      return true;
+    }
+    if (b.type !== 'p')
+      return inNode(b.node, {at, off: 0, table: true});
+    if (b.text.indexOf(OBJ) < 0) return true;
+    const offs = Object.keys(b.inlines).map(Number)
+      .sort((x, y) => x - y);
+    for (const off of offs) {
+      const x = b.inlines[off];
+      if (x.kind !== 'raw' || x.level !== 'p' || !x.node) continue;
+      if (!inNode(x.node, {at, off, table: false, own: true}))
+        return false;
+    }
+    return true;
+  };
+  // (the tables still open end with the document: innermost first)
+  out.complete = walk(visit) &&
+    open.reverse().every((o) => flush(o));
+  return out;
+}
+
+/** Where loose mark m (./Walk loose) of open table o is put: a row's
+ *  or a cell's lead at the start of the row's (cell's) first
+ *  paragraph, a row's tail at the end of its last cell's last one,
+ *  the table's tail at the end of the last cell's last one (nested
+ *  tables entered; a cell with no paragraph: its first block, kept). */
+function placeOf(o, m) {
+  const {t, at} = o;
+  const last = m.where === 'tail' || m.where === 'rowTail';
+  const r = m.where === 'tail' ? t.rows.length - 1 : m.r;
+  const row = t.rows[r];
+  const c = last ? row.cells.length - 1 : m.where === 'lead' ? m.c : 0;
+  const base = [...at, r, c];
+  let got = null;
+  forEachIn(row.cells[c].blocks, base, (b, p) => {
+    if (b.type !== 'p') return true;
+    got = {at: p, off: last ? b.text.length : 0, table: false};
+    return last;
+  });
+  return got || {at: [...base, 0], off: 0, table: true};
+}
+
+/** See the header. */
+export const marks = (doc) => marksOver((v) => forEachBlock(doc, v));
+
+/** See the header. */
+export function storyMarks(doc) {
+  const out = [];
+  out.complete = true;
+  const m = doc && doc.stories instanceof Map ? doc.stories : null;
+  for (const [story, st] of m || []) {
+    if (!st || typeof st !== 'object') continue;
+    const ms = marksOver((v) => forEachIn(st.blocks, [0], v));
+    if (!ms.complete) out.complete = false;
+    for (const x of ms) out.push({...x, story});
+  }
+  return out;
+}

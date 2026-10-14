@@ -1,0 +1,135 @@
+// MovePairs - Outline's Move up and Move down keep paired marks whole
+// (Batch D P13 fix I2): the top-level blocks a move takes are widened
+// to both ends of every complex field (w:fldChar begin .. end, nested
+// fields counted: ./FieldMarks) and every range (w:bookmarkStart /
+// End, w:commentRangeStart / End, w:permStart / End and the move
+// ranges, paired by kind and w:id) with one end among them, so that
+// reordering never puts an end before its start (Word's "unreadable
+// content", a lost field: the cardinal rule).
+//
+//   widen(bl, a, b) -> [a, b]  the unit [a, b) of the top-level block
+//       list bl (every section's blocks, in order) widened until no
+//       field or range has one end in it and the other outside;
+//       null when a field's other end is in no block (half a field
+//       already: the move is refused). A range whose partner is in
+//       no block is left as it is (it cannot be put out of order).
+//   NODE_CAP  100000: the XML nodes looked at per block (a block
+//       with more: the rest is not looked at)
+//
+// What a block holds is worked out once per block object (a WeakMap:
+// blocks are never changed in place): its paragraphs at every depth
+// (./Walk forEachIn), their raw inlines' XML, a kept block's XML and
+// a table's loose marks (./Walk loose). Pure: no desktop services.
+import {marks} from './FieldMarks';
+import {forEachIn, loose} from './Walk';
+import {localName} from './Kinds';
+
+export const NODE_CAP = 100000;
+const PAIRS = {bookmarkStart: ['b', 1], bookmarkEnd: ['b', -1],
+  commentRangeStart: ['c', 1], commentRangeEnd: ['c', -1],
+  permStart: ['p', 1], permEnd: ['p', -1],
+  moveFromRangeStart: ['f', 1], moveFromRangeEnd: ['f', -1],
+  moveToRangeStart: ['t', 1], moveToRangeEnd: ['t', -1]};
+const memo = new WeakMap();
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The value of attribute w:id of node n, or ''. */
+function idOf(n) {
+  for (const a of Array.isArray(n.attrs) ? n.attrs : []) {
+    if (Array.isArray(a) && String(a[0]).split(':').pop() === 'id')
+      return String(a[1]);
+  }
+  return '';
+}
+
+/** The range marks under node top into ids (key -> net). */
+function inNode(top, ids, seen) {
+  const stack = [top];
+  while (stack.length && seen.n < NODE_CAP) {
+    const n = stack.pop();
+    if (!isObj(n)) continue;
+    seen.n++;
+    const pr = PAIRS[localName(n)];
+    if (pr) {
+      const k = pr[0] + ':' + idOf(n);
+      ids.set(k, (ids.get(k) || 0) + pr[1]);
+    }
+    const kids = Array.isArray(n.children) ? n.children : [];
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+  }
+}
+
+/** {open, close, ids} of block b (see the header). */
+function sum(b) {
+  let s = isObj(b) && memo.get(b);
+  if (s) return s;
+  s = {open: 0, close: 0, ids: new Map()};
+  const seen = {n: 0};
+  forEachIn([b], [0], (x) => {
+    if (x.type === 'tbl') {
+      for (const m of loose(x)) inNode(m.node, s.ids, seen);
+    } else if (x.type !== 'p') inNode(x.node, s.ids, seen);
+    else {
+      for (const m of marks(x)) {
+        if (m.t === 'b') s.open++;
+        else if (m.t === 'e' && s.open) s.open--;
+        else if (m.t === 'e') s.close++;
+      }
+      for (const v of Object.values(x.inlines || {})) {
+        if (isObj(v) && v.kind === 'raw') inNode(v.node, s.ids, seen);
+      }
+    }
+    return true;
+  });
+  for (const [k, v] of s.ids) if (!v) s.ids.delete(k);
+  if (isObj(b)) memo.set(b, s);
+  return s;
+}
+
+/** x then y: their fields' brackets matched. */
+function join(x, y) {
+  const m = Math.min(x.open, y.close);
+  return {open: x.open - m + y.open, close: x.close + y.close - m};
+}
+
+/** The block from k by step whose net for key has the sign; -1. */
+function partner(bl, k, step, key, sign) {
+  for (; k >= 0 && k < bl.length; k += step) {
+    const v = sum(bl[k]).ids.get(key);
+    if (v && Math.sign(v) === sign) return k;
+  }
+  return -1;
+}
+
+/** See the header. */
+export function widen(bl, a, b) {
+  for (;;) {
+    let f = {open: 0, close: 0};
+    const ids = new Map();
+    for (let k = a; k < b; k++) {
+      const s = sum(bl[k]);
+      f = join(f, s);
+      for (const [key, v] of s.ids)
+        ids.set(key, (ids.get(key) || 0) + v);
+    }
+    let a1 = a, b1 = b;
+    while (f.close) {                  // a begin above it
+      if (--a1 < 0) return null;
+      f = join(sum(bl[a1]), f);
+    }
+    while (f.open) {                   // an end below it
+      if (b1 >= bl.length) return null;
+      f = join(f, sum(bl[b1++]));
+    }
+    for (const [key, v] of ids) {
+      if (!v) continue;
+      const j = v > 0 ? partner(bl, b, 1, key, -1)
+        : partner(bl, a - 1, -1, key, 1);
+      if (j >= b) b1 = Math.max(b1, j + 1);
+      else if (j >= 0) a1 = Math.min(a1, j);
+    }
+    if (a1 === a && b1 === b) return [a, b];
+    a = a1;
+    b = b1;
+  }
+}

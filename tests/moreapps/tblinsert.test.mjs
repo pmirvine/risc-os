@@ -449,6 +449,22 @@ describe('C4 fix wave: widths, Strict, caps, styles, lists', () => {
     assert.ok(insertTable(d, car(d, 'two', 3), {cols: 3, rows: 1}));
     assert.equal(sum(tableIn(d).grid), 13958);
   });
+  it('a gutter at the top (settings gutterAtTop): not taken off the ' +
+    'width, as the galley shows it (P1 fix M1)', async () => {
+    const GUT = COLS2.replace(/<w:cols[^>]*>/, '')
+      .replace('w:gutter="0"', 'w:gutter="720"');
+    for (const [settings, want] of [['<w:gutterAtTop/>', 9026],
+      ['<w:gutterAtTop w:val="0"/>', 9026 - 720], [undefined,
+        9026 - 720]]) {
+      const d = new Document(await readDocx(await tblDocx(p(r('a')) +
+        GUT, {settings})), {});
+      const L = new DocLayout(d.doc, tm());
+      L.layout(1000);
+      assert.ok(insertTable(d, car(d, 'a', 1), {cols: 2, rows: 1}));
+      assert.equal(sum(tableIn(d).grid), want, String(settings));
+      assert.equal(Math.round(L.items[0].w * 15), want);
+    }
+  });
   it('in a cell layoutTw is the layout\'s cell text width', async () => {
     const d = new Document(await readDocx(await tblDocx(p(r('x')) +
       tbl([tr([tc(p(r('in cell'))), tc(p(r('b')))])]) + p()), {}));

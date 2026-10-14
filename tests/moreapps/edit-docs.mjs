@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
-import {checkBlock, deepEqual, newPara}
+import {checkBlock, deepEqual, newPara, sameStories}
   from '../../tools/moreapps/!Letters/Model';
 import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import * as S from '../../tools/moreapps/!Letters/Selection';
@@ -49,28 +49,35 @@ export function at(d, sel) {
   return [ids(d).indexOf(sel.head.id), sel.head.off];
 }
 export const snap = (d) => structuredClone(d.doc.sections);
+/** A copy of the stories (headers and footers: Batch D, D9). */
+export const snapStories = (d) => structuredClone(d.doc.stories);
 /** Every block valid. */
 export function valid(d) {
   for (const b of blocks(d)) checkBlock(b);
 }
-/** Undo everything and compare with a snapshot. */
-export function undoAll(d, before) {
+/** Undo everything and compare with a snapshot (and, given one,
+ *  with snapStories' copy: ModelCheck sameStories). */
+export function undoAll(d, before, stories) {
   while (d.undo());
   assert.ok(deepEqual(d.doc.sections, before), 'undo restores all');
+  if (stories !== undefined)
+    assert.ok(sameStories(d.doc.stories, stories), 'stories restored');
 }
 /** Run cmd, check one undo step (or none), undo restores exactly. */
 export function undoable(d, cmd) {
-  const before = snap(d);
+  const before = snap(d), sb = snapStories(d);
   const n = d.undoDepth;
   const out = cmd();
   valid(d);
-  const after = snap(d);
+  const after = snap(d), sa = snapStories(d);
   if (d.undoDepth > n) {
     assert.equal(d.undoDepth, n + 1, 'one undo step');
     d.undo();
     assert.ok(deepEqual(d.doc.sections, before), 'undo exact');
+    assert.ok(sameStories(d.doc.stories, sb), 'undo: stories exact');
     d.redo();
     assert.ok(deepEqual(d.doc.sections, after), 'redo exact');
+    assert.ok(sameStories(d.doc.stories, sa), 'redo: stories exact');
   }
   return out;
 }

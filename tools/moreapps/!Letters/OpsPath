@@ -3,14 +3,36 @@
 // (Batch C, D4 / D5).
 //
 //   sectionAt(doc, s)        the section, or RangeError
-//   locate(doc, path, end)   {s, i, blocks, at, depth, nested}: the
+//   locate(doc, path, end, story)
+//                            {s, i, blocks, at, depth, nested,
+//                            tail}: the
 //                            container of the path's block, READ
 //                            ONLY (for a nested path never write it:
 //                            call own() first); `end` allows i one
 //                            past the last block (insert positions)
-//   own(doc, path)           the MUTABLE container array of the path
+//   own(doc, path, story)    the MUTABLE container array of the path
 //                            (see own below); only after every check
-//   paraAt(doc, path)        locate + {p}: a paragraph, or RangeError
+//   paraAt(doc, path, story) locate + {p}: a paragraph, or RangeError
+//   inStory(inv, story)      inv given `story` when it is a part
+//                            name (a compound: each of its ops, as
+//                            a compound takes no story)
+//   tailOf(story)            'a story' when story (a Story) must
+//                            keep a block and end with a paragraph;
+//                            null for one read from the file empty
+//                            or ending with a table (it may stay so:
+//                            undo gives that shape back)
+//
+// `tail` (P6 fix wave): the container whose rule the ops keep, at
+// least one block and the last not a table (./TblCheck checkTail):
+// 'a cell' in a cell, tailOf(the story) at a story's top level,
+// null in the body. CT_HdrFtr needs a block, as CT_Tc does.
+//
+// story (Batch D, D12, R8): undefined or null, the body; else the
+// part name of a story of doc.stories (./StoryRead), whose blocks are
+// section 0 of a one-section document: the path is [0, i, ...], with
+// the body's rules, nesting and copy-on-write. RangeError: a story
+// that is not a string ('bad story'), not in doc.stories ('no
+// story'), or a section index other than 0 in it.
 //
 // A path is ./Path's: [s, i] or [s, i, r, c, j, ...]. locate refuses
 // (RangeError, nothing changed): not a path ('bad position'), no
@@ -19,8 +41,17 @@
 // `depth` is the number of tables around the block (./Path depthOf);
 // `at` is a fresh copy of the path (for inverse ops).
 // Pure: no desktop services.
-import {fail} from './ModelCheck';
+import {fail, opStory} from './ModelCheck';
 import {isPath} from './Path';
+import {endsCell} from './TblCheck';
+
+/** See the header. */
+export function tailOf(st) {
+  const o = st.orig;
+  const read = st.bytes instanceof Uint8Array && Array.isArray(o) &&
+    (!o.length || endsCell(o[o.length - 1]));
+  return read ? null : 'a story';
+}
 
 /** The section at index `s`, or RangeError. */
 export function sectionAt(doc, s) {
@@ -29,11 +60,48 @@ export function sectionAt(doc, s) {
   return doc.sections[s];
 }
 
+/** The Story of part name `part`, or RangeError. */
+function storyAt(doc, part) {
+  const m = doc.stories;
+  const st = m instanceof Map ? m.get(part) : undefined;
+  if (!st || !Array.isArray(st.blocks)) fail('no story ' + part);
+  return st;
+}
+
+/** The top-level blocks of section s of the body or of a story. */
+function topOf(doc, s, story) {
+  const part = opStory({story});
+  if (part === undefined) return sectionAt(doc, s).blocks;
+  const st = storyAt(doc, part);
+  if (s !== 0) fail('no section ' + s + ' in story ' + part);
+  return st.blocks;
+}
+
+/**
+ * The blocks of story `part` made writable: a new array in a new
+ * Story ({...story, blocks}) in a new Map (same order) that
+ * replaces doc.stories. The old Map and Story are not changed: undo
+ * history, and the writer's orig test (./StoryWrite), hold them.
+ */
+function ownStory(doc, part) {
+  const st = doc.stories.get(part);
+  const blocks = st.blocks.slice();
+  const m = new Map();
+  for (const [k, v] of doc.stories) {
+    m.set(k, k === part ? {...st, blocks} : v);
+  }
+  doc.stories = m;
+  return blocks;
+}
+
 /** See the header. */
-export function locate(doc, path, end = false) {
+export function locate(doc, path, end = false, story = undefined) {
   if (!isPath(path)) fail('bad position');
   const n = path.length;
-  let blocks = sectionAt(doc, path[0]).blocks;
+  let blocks = topOf(doc, path[0], story);
+  const part = opStory({story});
+  let tail = part === undefined ? null
+    : tailOf(doc.stories.get(part));
   for (let k = 1; k < n - 1; k += 3) {
     const t = blocks[path[k]];
     if (!t || t.type !== 'tbl') fail('not a table');
@@ -42,11 +110,12 @@ export function locate(doc, path, end = false) {
     const cell = row.cells[path[k + 2]];
     if (!cell) fail('no cell ' + path[k + 2]);
     blocks = cell.blocks;
+    tail = 'a cell';
   }
   const i = path[n - 1];
   if (i >= blocks.length + (end ? 1 : 0)) fail('no block ' + i);
   return {s: path[0], i, blocks, at: path.slice(),
-    depth: (n - 2) / 3, nested: n > 2};
+    depth: (n - 2) / 3, nested: n > 2, tail};
 }
 
 /**
@@ -57,9 +126,12 @@ export function locate(doc, path, end = false) {
  * {...cell, blocks} with a new blocks array, which is returned. At
  * top level: the section's own blocks array. Every other row, cell
  * and block stays shared. The path must have passed locate().
+ * In a story: a new blocks array in a new Story and Map (ownStory).
  */
-export function own(doc, path) {
-  let blocks = doc.sections[path[0]].blocks;
+export function own(doc, path, story = undefined) {
+  const part = opStory({story});
+  let blocks = part === undefined ? doc.sections[path[0]].blocks
+    : ownStory(doc, part);
   for (let k = 1; k < path.length - 1; k += 3) {
     const j = path[k], r = path[k + 1], c = path[k + 2];
     const t = blocks[j], row = t.rows[r], cell = row.cells[c];
@@ -75,9 +147,18 @@ export function own(doc, path) {
 }
 
 /** The paragraph at `path`, or RangeError (also for other blocks). */
-export function paraAt(doc, path) {
-  const at = locate(doc, path);
+export function paraAt(doc, path, story = undefined) {
+  const at = locate(doc, path, false, story);
   const p = at.blocks[at.i];
   if (!p || p.type !== 'p') fail('block is not a paragraph');
   return {...at, p};
+}
+
+/** See the header. */
+export function inStory(inv, story) {
+  const part = opStory({story});
+  if (part === undefined) return inv;
+  if (inv.op === 'compound') for (const o of inv.ops) inStory(o, part);
+  else inv.story = part;
+  return inv;
 }

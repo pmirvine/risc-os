@@ -1,0 +1,70 @@
+// ColAhead - the first pass of ./ColPass on a page: the widths its
+// paragraphs will likely take, guessed ahead (Batch D, D23, P10 fix
+// I2). A paragraph laid out at a wider column's width is shorter, so
+// the column takes more of the paragraphs after it, which land in it
+// at the width they had and need one more pass, and so on: about one
+// pass a page more for each. Guessing the heights ahead settles most
+// pages in one or two passes.
+//
+//   ahead(L, pg, cs, k1, give) -> whether a width was given
+//       for page pg of layout L (cs its columns, ./ColPass colsOf):
+//       fills the columns in order with the root items from the
+//       page's start up to item k1 (not past it: the paragraphs
+//       ./ColPass has looked at), each at a guess of its height in
+//       the column (a paragraph's text poured into lines the
+//       column's width, each of its average line height; another
+//       item's as it is), and calls give(item, column width) for each
+//       paragraph that starts in a column. A paragraph that does not
+//       fit starts in the column and goes on in the next one. Only
+//       a page of one band (its columns share a top) of one section
+//       is guessed (none else: false).
+//
+// The guesses are worked out from the galley as it is, so a page
+// reached from the same widths gets the same guesses (./ColPass:
+// edited == fresh). The passes after it put right what was guessed
+// wrong. Pure: no desktop services.
+
+const advance = (items, k) => {
+  const it = items[k], nx = items[k + 1];
+  const a = nx ? nx.y - it.y : it.h;
+  return Number.isFinite(a) && a > 0 ? a : 0;
+};
+
+/** A guess of paragraph it's advance laid out at width v: its lines'
+ *  text (the right edge of each line's last piece) poured into lines
+ *  v wide, each as high as its lines are on average. */
+function guessAt(items, k, v) {
+  const it = items[k], a = advance(items, k), ls = it.lines;
+  if (it.kind !== 'p' || !ls || !ls.length || v === it.w) return a;
+  let text = 0, lh = 0;
+  for (const ln of ls) {
+    const e = ln.items && ln.items[ln.items.length - 1];
+    text += e && e.x + e.w > 0 ? e.x + e.w : 0;
+    lh += ln.h > 0 ? ln.h : 0;
+  }
+  const n = Math.max(1, Math.ceil(text / v));
+  const h = a + (n - ls.length) * lh / ls.length;
+  return Number.isFinite(h) && h > 0 ? h : a;
+}
+
+/** See the header. */
+export function ahead(L, pg, cs, k1, give) {
+  const items = L.items, a = pg.start;
+  if (!cs.length || cs.some((c) => c.top !== cs[0].top ||
+    !(c.h > 0) || !(c.w > 0))) return false;
+  let k = a.k, c = 0, room = cs[0].h, gave = false;
+  const it0 = items[k];
+  if (it0 && (a.line || a.dy) && it0.lines && it0.lines[a.line]) {
+    room -= advance(items, k) - it0.lines[a.line].y - (a.dy || 0);
+    k++;                               // (the rest of one cut)
+  }
+  for (; k < k1 && c < cs.length; k++) {
+    const it = items[k];
+    if (it.s !== pg.s) break;
+    const cw = cs[c].w, h = guessAt(items, k, cw);
+    if (it.kind === 'p') gave = give(it, cw) || gave;
+    room -= h;
+    while (room < 0 && ++c < cs.length) room += cs[c].h;
+  }
+  return gave;
+}

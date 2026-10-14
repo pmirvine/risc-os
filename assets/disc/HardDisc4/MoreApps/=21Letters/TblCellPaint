@@ -1,0 +1,72 @@
+// TblCellPaint - the cell-content painting of ./TablePaint, split
+// from it: fill, paintColumn and cellsOf.
+//
+//   fill(g, css, x, y, w, h)  fill a rectangle (nothing when css is
+//     null) with its edges on whole pixels
+//   paintColumn(L, g, col, rect, table)  a column's items meeting
+//     rect with their border boxes and shading (./ItemPaint,
+//     ./BorderPaint); table(L, g, it, rect) is ./TablePaint
+//     paintTable, passed in for a nested table (no import cycle)
+//   cellsOf(it, r0, r1)  the cells whose content shows in rows
+//     r0..r1 (merges' tops)
+// In the table's galley coordinates (./TablePaint). Draws on the
+// context it is given; imports no desktop services.
+import {paintFill, paintEdges} from './BorderPaint';
+import {boxMark} from './BorderGroups';
+import {paintPara, paintBox} from './ItemPaint';
+
+/**
+ * Fill a rectangle with css (nothing when null), its edges on whole
+ * pixels: neighbouring cells' fills meet without a seam.
+ */
+export function fill(g, css, x, y, w, h) {
+  if (!css || !(w > 0) || !(h > 0)) return;
+  const x0 = Math.round(x), y0 = Math.round(y);
+  g.fillStyle = css;
+  g.fillRect(x0, y0, Math.round(x + w) - x0, Math.round(y + h) - y0);
+}
+
+/** A column's items meeting rect, with their border boxes; table
+ *  is ./TablePaint paintTable (passed in: no import cycle). */
+export function paintColumn(L, g, col, rect, table) {
+  const {items} = col;
+  const shown = [];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const top = it.y - Math.max(0, it.gapAbove || 0);
+    if (top >= rect.y1) break;
+    if (it.y + it.h + (it.gapBelow || 0) > rect.y0) shown.push(i);
+  }
+  const boxes = (f) => {
+    for (const i of shown) {
+      const it = items[i], m = boxMark(it);
+      if (m && it.lines) f(g, m, it, items[i - 1], it.x, rect);
+    }
+  };
+  boxes(paintFill);
+  for (const i of shown) {
+    const it = items[i];
+    if (!(it.y < rect.y1 && it.y + it.h > rect.y0)) continue;
+    if (it.kind === 'p') paintPara(L, g, it, rect);
+    else if (it.kind === 'tbl') table(L, g, it, rect);
+    else paintBox(L, g, it);
+  }
+  boxes(paintEdges);
+}
+
+/** The cells whose content shows in rows r0..r1 (merges' tops). */
+export function cellsOf(it, r0, r1) {
+  const out = [];
+  const g = it.key.g;
+  for (let r = r0; r <= r1; r++) {
+    for (const c of it.rows[r].cells) {
+      if (!c.cont) out.push(c);
+      else if (r === r0) {
+        const [tr, tk] = g.rows[r].cells[c.k].top;
+        const top = it.rows[tr] && it.rows[tr].cells[tk];
+        if (top && !top.cont && tr < r0) out.push(top);
+      }
+    }
+  }
+  return out;
+}

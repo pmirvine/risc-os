@@ -5,7 +5,7 @@
 // gives it back); the SE handle dragged keeps the proportions, the e
 // handle changes the width only, Shift frees a corner; Escape during a
 // drag ends it (ghost gone, nothing changed, no undo step); a floating
-// picture's handle beeps; Ctrl-Z after a resize gives back the old size
+// picture (understood anchor, P12.5) is resized like one in line; Ctrl-Z after a resize gives back the old size
 // with the picture selected; at 50% and 200% the drawn handle is the
 // one that resizes; a double-click calls view.onPicture; 30 select /
 // resize / undo cycles leak no listeners, windows or elements; a drag
@@ -16,6 +16,7 @@
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { picDocx, pngBytes } from './pic-fixtures.mjs';
 import { p, r } from './build-docx.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const RED = [220, 20, 30];
 const files = {
@@ -72,6 +73,7 @@ const ratioOk = (s, cx, cy) => Math.abs(s.cx - s.cy * cx / cy) <= 1 && Math.abs(
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   const s0 = await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -101,13 +103,22 @@ try {
     /** Work-area point of layout point x, y. */
     window.__work = (d, x, y) => { const z = d.view.zoom, t = d.view.layout.top; return { x: x * z, y: t + (y - t) * z }; };
     window.__at = (d, x, y) => { const q = window.__work(d, x, y); return window.__client(d.win, q.x, q.y); };
-    /** The pictures' boxes (layout px), in order. */
+    /** The pictures' boxes (layout px, where the view shows them: word-draft.mjs __g2w), in order. */
     window.__pics = (d) => {
       const L = d.view.layout, res = [];
-      for (const it of L.items) for (const ln of it.lines || []) for (const x of ln.items) {
+      for (const it of L.items) for (const [k, ln] of (it.lines || []).entries()) for (const x of ln.items) {
+        if (x.kind === 'anchor') {
+          // (Print layout, P12.2: placed on its page, where it is drawn)
+          const Pl = L.place, pg = Pl.pages.at(Pl.pageOf(it, k)), o = Pl.sheet.rect(pg);
+          const f = pg.floats.find((q) => q.id === it.id && q.off === x.from);
+          res.push({ x: o.x + f.x, y: o.y + f.y, w: f.w, h: f.h });
+          continue;
+        }
         if (x.kind !== 'pic') continue;
         const base = it.y + ln.y + ln.base + (x.dy || 0);
-        res.push({ x: L.left + x.x, y: base - x.pic.h, w: x.pic.w, h: x.pic.h });
+        // (shifted as the picture's line is)
+        const g = window.__g2w(L, L.left + x.x, it.y + ln.y), dy = g.y - (it.y + ln.y);
+        res.push({ x: g.x, y: base - x.pic.h + dy, w: x.pic.w, h: x.pic.h });
       }
       return res;
     };
@@ -150,8 +161,9 @@ try {
   });
   ok('a click on a picture selects it', a1.pic && a1.pic.index === 0 && a1.pic.off === 0 && a1.pic.cx === 1828800, a1);
   ok('its eight handles are drawn black', black && black.length === 8 && black.every((c) => c[0] < 40 && c[1] < 40 && c[2] < 40), black);
-  // a click in the text: the handles go
-  await click(await ev(() => { const d = window.__doc(), L = d.view.layout, c = L.caretRect({ id: L.items[2].id, off: 3 }); return window.__at(d, c.x + 1, c.y + c.h / 2); }));
+  // a click in the text: the handles go (at the line's end: in Print layout the floating picture, placed at
+  // its paragraph's top with no wrap yet, P12.2, lies over the start of this line)
+  await click(await ev(() => { const d = window.__doc(), L = d.view.layout, c = L.caretRect({ id: L.items[2].id, off: 22 }); return window.__at(d, c.x + 1, c.y + c.h / 2); }));
   const a2 = await st();
   const white = await ev(() => { const d = window.__doc(), b = window.__pics(d)[0]; return window.__px(d, b.x + b.w, b.y + b.h); });
   ok('a click in the text: nothing selected, no handles', a2.pic === null && white[0] > 150, [a2.pic, white]);
@@ -226,8 +238,13 @@ try {
   const h1 = await st();
   const same1 = await ev(() => window.__doc().d.doc.sections[0].blocks[1].inlines[0].node === window.__node1);
   ok('a floating picture is selected by a click', h0.pic && h0.pic.index === 1 && h0.pic.floating, h0);
-  ok('a drag on its handle beeps and changes nothing', h1.beeps === h0.beeps + 1 && h1.depth === h0.depth && same1
-    && h1.ghost === null && h1.pic && h1.pic.index === 1, h1);
+  // (P12.5, D27: an understood floating picture is resized like a picture in line; its place is kept)
+  ok('a drag on its SE handle resizes it: one undo step, no beep, still floating, the proportions kept', h1.beeps === h0.beeps
+    && h1.depth === h0.depth + 1 && !same1 && h1.pic && h1.pic.index === 1 && h1.pic.floating && h1.pic.cx > h0.pic.cx
+    && ratioOk(h1.pic, h0.pic.cx, h0.pic.cy) && h1.ghost === null, [h0.pic, h1.pic]);
+  await press('Control+z');
+  const h2 = await st();
+  ok('... and Ctrl-Z gives it back', h2.depth === h0.depth && h2.pic && h2.pic.cx === h0.pic.cx && h2.pic.cy === h0.pic.cy, h2);
 
   // ---------------------------------------------------- zoom
   for (const Z of [50, 200]) {

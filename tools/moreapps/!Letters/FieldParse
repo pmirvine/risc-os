@@ -1,0 +1,116 @@
+// FieldParse - a field's instruction read into its parts (Batch D,
+// D16): the one parser of field codes (./FieldScan gives the text).
+//
+//   parse(instr) -> {name, args, switches: [{sw, arg}], raw}
+//     raw       instr itself, never rewritten: a field is written
+//               exactly as read (D19); '' for a value that is not a
+//               string
+//     name      the first token upper-cased ('PAGE', 'DATE'...); a
+//               formula's '=' alone ('=SUM(ABOVE)': name '=', arg
+//               'SUM(ABOVE)')
+//     args      the words and quoted strings that are not a
+//               switch's argument, in order (quotes taken off)
+//     switches  each switch as written (sw '\*', '\@', '\#', '\!',
+//               '\h'...: a backslash and ONE character, so
+//               '\*MERGEFORMAT' is '\*' then 'MERGEFORMAT') with its
+//               argument: the next word or quoted string, or null
+//               when a switch or the end follows; '\!' never takes
+//               one
+//
+// Tokens are separated by white space (space, tab, CR, LF, FF, VT).
+// A token starting with '"' is a quoted string to the next '"' not
+// escaped: inside, '\"' is '"' and '\\' is '\', any other backslash
+// is itself. Any other token is a word up to the next white space or
+// backslash; a quote inside a word is a character of it.
+//
+// Limits: more than MAX_TOKENS tokens or MAX_CHARS characters (UTF-16
+// units) of instruction give name 'UNKNOWN' (nothing else read).
+// Odd input gives name '' with what was read: an empty instruction,
+// a first token that is not a word, an unterminated quoted string, a
+// backslash with nothing after it. parse never throws. Pure: no
+// desktop services.
+
+export const MAX_TOKENS = 1024;
+export const MAX_CHARS = 32 * 1024;
+
+const WS = ' \t\r\n\f\v';
+const isWs = (c) => WS.includes(c);
+const result = (name, args, switches, raw) =>
+  ({name, args, switches, raw});
+
+/** A quoted string from s[i] = '"': [text, next index] or null. */
+function quoted(s, i) {
+  let out = '';
+  for (let k = i + 1; k < s.length; k++) {
+    const c = s[k];
+    if (c === '"') return [out, k + 1];
+    if (c === '\\' && (s[k + 1] === '"' || s[k + 1] === '\\')) {
+      out += s[k + 1];
+      k++;
+    } else out += c;
+  }
+  return null;
+}
+
+/**
+ * The tokens of s: [{kind: 'word'|'str'|'sw', text}], or 'odd', or
+ * 'many' past MAX_TOKENS.
+ */
+function tokens(s) {
+  const out = [];
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (isWs(c)) {
+      i++;
+      continue;
+    }
+    if (out.length >= MAX_TOKENS) return 'many';
+    if (c === '"') {
+      const q = quoted(s, i);
+      if (!q) return 'odd';
+      out.push({kind: 'str', text: q[0]});
+      i = q[1];
+    } else if (c === '\\') {
+      const x = s[i + 1];
+      if (x === undefined || isWs(x)) return 'odd';
+      out.push({kind: 'sw', text: '\\' + x});
+      i += 2;
+    } else {
+      let k = i + 1;
+      while (k < s.length && !isWs(s[k]) && s[k] !== '\\') k++;
+      out.push({kind: 'word', text: s.slice(i, k)});
+      i = k;
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function parse(instr) {
+  const raw = typeof instr === 'string' ? instr : '';
+  if (raw.length > MAX_CHARS) return result('UNKNOWN', [], [], raw);
+  const ts = tokens(raw);
+  if (ts === 'many') return result('UNKNOWN', [], [], raw);
+  if (ts === 'odd' || !ts.length || ts[0].kind !== 'word') {
+    return result('', [], [], raw);
+  }
+  const args = [], switches = [];
+  let name = ts[0].text;
+  if (name[0] === '=') {
+    if (name.length > 1) args.push(name.slice(1));
+    name = '=';
+  }
+  for (let k = 1; k < ts.length; k++) {
+    const t = ts[k];
+    if (t.kind !== 'sw') {
+      args.push(t.text);
+      continue;
+    }
+    const next = ts[k + 1];
+    const takes = t.text !== '\\!' && next && next.kind !== 'sw';
+    switches.push({sw: t.text, arg: takes ? next.text : null});
+    if (takes) k++;
+  }
+  return result(name.toUpperCase(), args, switches, raw);
+}

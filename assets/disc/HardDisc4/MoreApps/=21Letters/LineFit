@@ -1,0 +1,99 @@
+// LineFit - the height of a line of ./LineLayout (split from it,
+// Batch D P12a fix prep), and each line beside floats tried at its
+// own height (P12a fix C1, M8).
+//
+//   lineM(line) -> {nat, desc}  the ratios for line's largest text
+//       px (line.px, line.m: its own font's; when another run
+//       reaches higher or lower (mixed fonts, P1 fix M2) the line's
+//       largest ascent and descent over all its runs (line.asc,
+//       line.dsc) as one m)
+//   growLine(line, px, fm = NAT_M)  a run of px in a font of ratios
+//       fm (./FontMetrics) on line: its largest text and that font's
+//       ratios (of equal sizes, the taller font's), and the largest
+//       ascent and descent of any run (Word's line: max ascent + max
+//       descent)
+//   tryAt(shape, tried, y, h, lo, hi, first) -> ./LineShape
+//       spanAt(shape, y, h, lo, hi, first), the try kept in tried
+//   fitLines(run, shape) -> {h, lines}  run(hint, tried) breaks a
+//       paragraph with ./LineShape shape, each line tried at the
+//       height hint gives the offset it starts at (hint: a Map
+//       from -> px, or null: the first font's line), its tries
+//       kept in tried (the list, one a line). A line whose height
+//       is not the one it was tried at, where spanAt at its height
+//       puts it elsewhere or gives it another room (a taller line
+//       reaching into a band, a shorter one moved past a band it
+//       does not reach), is tried again at its height: run again
+//       with those hints, at most MAX_FITS runs (then the last)
+//   MAX_FITS 3
+//   beforeOf(lines) -> the space before a paragraph's first line
+//       (its y less line.push, the px a band without room moved it
+//       down: ./LineLayout; P12a fix C1): what a page's top drops
+//       (./PageCols startY) and contextual spacing takes back
+//       (./ParaSpace)
+//
+// Pure: no desktop services.
+import {spanAt, EPS} from './LineShape';
+import {NAT_M} from './FontMetrics';
+
+export const MAX_FITS = 3;
+const near = (a, b) => Math.abs(a - b) <= EPS;
+
+/** See the header. */
+export function lineM(line) {
+  const {px, m} = line;
+  if (line.asc <= px * (m.nat - m.desc) && line.dsc <= px * m.desc)
+    return m;
+  return {nat: (line.asc + line.dsc) / px, desc: line.dsc / px};
+}
+
+/** See the header. */
+export function growLine(line, px, fm = NAT_M) {
+  if (px > 0) {
+    line.asc = Math.max(line.asc, px * (fm.nat - fm.desc));
+    line.dsc = Math.max(line.dsc, px * fm.desc);
+  }
+  if (px > line.px || (px === line.px && line.m &&
+    fm.nat > line.m.nat)) {
+    line.px = px;
+    line.m = fm;
+  }
+}
+
+/** See the header. */
+export function tryAt(shape, tried, y, h, lo, hi, first) {
+  const s = spanAt(shape, y, h, lo, hi, first);
+  tried.push({y, h, lo, hi, first, s});
+  return s;
+}
+
+/** The hints (hint and the lines tried at another height than
+ *  theirs where it matters), or null when every line fits. */
+function misfits(lines, tried, shape, hint) {
+  let bad = null;
+  lines.forEach((ln, i) => {
+    const t = tried[i];
+    if (!t || near(ln.h, t.h)) return;
+    const s = spanAt(shape, t.y, ln.h, t.lo, t.hi, t.first);
+    if (near(s.y, t.s.y) && near(s.x0, t.s.x0) && near(s.x1, t.s.x1)) {
+      return;
+    }
+    (bad ||= new Map(hint || [])).set(ln.from, ln.h);
+  });
+  return bad;
+}
+
+/** See the header. */
+export function fitLines(run, shape) {
+  let hint = null, r = null;
+  for (let n = 0; n < MAX_FITS; n++) {
+    const tried = [];
+    r = run(hint, tried);
+    hint = misfits(r.lines, tried, shape, hint);
+    if (!hint) break;
+  }
+  return r;
+}
+
+/** See the header. */
+export const beforeOf = (ls) => (ls && ls.length ? ls[0].y -
+  (ls[0].push || 0) : 0);

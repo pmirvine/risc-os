@@ -275,7 +275,8 @@ describe('DocLayout reuse equals a full layout, styles and ' +
   });
 });
 
-const SECT_IDS = ['sectionNext', 'sectionContinuous'];
+const SECT_IDS = ['sectionNext', 'sectionContinuous', 'sectionEven',
+  'sectionOdd'];
 const full = (L) => L.items.map((i) => ({id: i.id, y: i.y, h: i.h,
   gapAbove: i.gapAbove, gapBelow: i.gapBelow,
   mark: i.mark ? i.mark.type : null,
@@ -297,7 +298,7 @@ describe('DocLayout reuse equals a full layout, section breaks', () => {
           : S.caret(pick(d, r));
         const n0 = d.doc.sections.length;
         if (c < 3) {
-          sel = run(SECT_IDS[Math.floor(r() * 2)], d, t, sel);
+          sel = run(SECT_IDS[Math.floor(r() * SECT_IDS.length)], d, t, sel);
         } else if (c < 5) {
           // at a section edge when there is one: Delete / Backspace
           const secs = d.doc.sections;
@@ -508,7 +509,7 @@ describe('DocLayout reuse equals a full layout, borders and shading', () => {
         else if (c === 5) set({shd: pickOf(r, SHDS)});
         else if (c === 6) set({ind: r() < 0.5 ? null : {left: 720}});
         else if (c === 7) set({pageBreakBefore: r() < 0.5 ? true : null});
-        else if (c === 8) sel = run(SECT_IDS[Math.floor(r() * 2)], d, t, sel);
+        else if (c === 8) sel = run(SECT_IDS[Math.floor(r() * SECT_IDS.length)], d, t, sel);
         else if (c === 9) {
           const st = d.doc.styles;
           d.doc.styles = {...st, docDefaults: {...st.docDefaults,
@@ -636,5 +637,77 @@ describe('DocLayout reuse equals a full layout, tables', () => {
     }
     assert.equal(edits, 200);
     assert.ok(reused > 2000, 'lines were reused: ' + reused);
+  });
+});
+
+// Per-section widths (Batch D P1.3, D3): sections made with section
+// breaks and given another page size, margins or two columns
+// (setSection), with typing and Enter: the layout made from the
+// previous one equals a full one, each item as wide as its section's
+// first column and carrying its section index (it.s, R12).
+const GEOMS = [{}, {pgSz: {w: 16838, h: 11906, orient: 'landscape'}},
+  {pgSz: {w: 12240, h: 15840}, pgMar: {left: 1800, right: 1800,
+    top: 1440, bottom: 1440}}, {cols: {num: 2, space: 720}},
+  {pgMar: {left: 1440, right: 1440, top: 1440, bottom: 1440,
+    gutter: 720}}];
+const geomShape = (L) => L.items.map((i) => ({id: i.id, s: i.s,
+  w: i.w, x: i.x, y: i.y, h: i.h, lines: i.kind === 'p'
+    ? JSON.stringify(i.lines) : null}));
+
+describe('DocLayout reuse equals a full layout, section geometry', () => {
+  it('80 random sequences with sections of other widths', () => {
+    const m = tm();
+    let reused = 0, wider = 0, regeom = 0;
+    for (let seed = 1; seed <= 80; seed++) {
+      const r = rng(seed * 7919);
+      const d = listDoc(r);
+      const t = new Typing(d);
+      let L = new DocLayout(d.doc, m);
+      L.layout(800);
+      for (let step = 0; step < 20; step++) {
+        const c = Math.floor(r() * 8);
+        let sel = S.caret(pick(d, r));
+        if (c < 2) {
+          sel = run(SECT_IDS[Math.floor(r() * SECT_IDS.length)], d, t, sel);
+        } else if (c < 4) {
+          const secs = d.doc.sections;
+          const s = Math.floor(r() * secs.length);
+          const {type, extra} = secs[s].props;
+          const props = {extra: extra || [],
+            ...GEOMS[Math.floor(r() * GEOMS.length)]};
+          if (type) props.type = type;
+          t.command(() => d.atomic(() => d.apply({op: 'setSection',
+            at: s, props, raw: secs[s].raw})));
+          regeom++;
+        } else if (c < 6) {
+          sel = t.type(sel, TYPED[Math.floor(r() * TYPED.length)]);
+        } else if (c === 6) sel = t.command(() => E.splitPara(d, sel));
+        else if (d.canUndo) t.command(() => d.undo());
+        const prev = L;
+        L = new DocLayout(d.doc, m, prev);
+        L.layout(800);
+        for (const i of L.items) {
+          const o = prev.byId.get(i.id);
+          if (i.kind === 'p' && o && o.lines === i.lines) reused++;
+          if (i.w !== L.textW) wider++;
+        }
+        const f = new DocLayout(d.doc, m);
+        f.layout(800);
+        const where = `seed ${seed} step ${step} command ${c}`;
+        assert.deepEqual(geomShape(L), geomShape(f), where);
+        assert.equal(L.height, f.height, where);
+        let k = 0;
+        d.doc.sections.forEach((sec, s) => {
+          const w = L.geom(s).cols[0].w;
+          for (let j = 0; j < sec.blocks.length; j++, k++) {
+            assert.equal(L.items[k].s, s, where);
+            assert.equal(L.items[k].w, w, where);
+          }
+        });
+      }
+    }
+    assert.ok(reused > 500, 'lines were reused: ' + reused);
+    assert.ok(wider > 200, 'items of another width: ' + wider);
+    assert.ok(regeom > 300, 'geometries changed: ' + regeom);
   });
 });

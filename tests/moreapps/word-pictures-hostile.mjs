@@ -21,6 +21,7 @@ import { buildDocx, documentXml, p, r, REL } from './build-docx.mjs';
 import { drawingXml } from './pic-fixtures.mjs';
 import { rng } from './word-docs.mjs';
 import { checkBlock } from '../../tools/moreapps/!Letters/ModelCheck';
+import { asDraft } from './word-draft.mjs';
 
 const MOD = process.platform === 'darwin' ? 'Meta' : 'Control';
 const IN = 914400, HALF = 457200;
@@ -132,6 +133,7 @@ try {
   await page.addInitScript(() => { Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'Linux x86_64', configurable: true }); });
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
   await ev(async (files) => {
     window.__msgs = [];

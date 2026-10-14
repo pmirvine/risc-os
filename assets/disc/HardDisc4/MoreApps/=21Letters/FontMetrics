@@ -1,0 +1,132 @@
+// FontMetrics - the line metrics of the bundled fonts, read from
+// their own TrueType bytes (Batch D, D35): Word sets a line's natural
+// height from its font's ascent and descent, not a fixed 1.25.
+//
+//   parseMetrics(bytes) -> {upm, winAsc, winDesc, hheaAsc, hheaDesc,
+//       lineGap} | null  from the head (unitsPerEm), hhea (ascender,
+//       descender, lineGap) and OS/2 (usWinAscent, usWinDescent)
+//       tables. bytes: an ArrayBuffer or a typed array. null for
+//       anything else, and when a cap fails: at most MAX_TABLES
+//       (64) tables, every table record and the fields read inside
+//       the buffer, upm 16..16384, usWinAscent + usWinDescent > 0.
+//       Never throws
+//   register(family, bold, italic, bytes) -> the parsed metrics, or
+//       null (nothing is registered); ./FontLoad calls it with the
+//       bytes it reads for a face
+//   put(family, bold, italic, metrics)  registers metrics already
+//       parsed (./FontLoad: a face a previous run of !Letters read)
+//   ratiosOf(family, bold, italic) -> {nat, desc}  nat = (usWinAscent
+//       + usWinDescent + lineGap) / upm, the line's height per px of
+//       text (the hhea lineGap, when positive, is the external
+//       leading Word on Windows adds: Arial and Times New Roman
+//       1.15); desc = usWinDescent / upm, the baseline's height above
+//       the line's bottom (PG36: the usWin values). For a family in
+//       WORD_NAT, that nat instead, desc scaled with it. A face not
+//       registered: the family's regular face; a family with no
+//       regular face registered: NAT_M (./ParaSpace's 1.25 / 0.27).
+//       The same frozen object for a face each time
+//   NAT_M  {nat: 1.25, desc: 0.27} (re-exported by ./ParaSpace)
+//   WORD_NAT  family -> Word's nat for the font it stands in for,
+//       where the stand-in's own vertical metrics differ (it copies
+//       the widths only): Caladea 1.17 (Cambria; Caladea's file
+//       gives 1.30). D35's aim is Word's line heights
+//
+// family: the bundled family's name as ./FontMap gives it ('Carlito',
+// 'Liberation Sans'), the one ./Fmt's run format carries. The faces
+// are kept in a Map by name, so '__proto__' is just unknown. Pure:
+// no desktop services.
+
+export const NAT_M = Object.freeze({nat: 1.25, desc: 0.27});
+export const MAX_TABLES = 64;
+const MIN_UPM = 16, MAX_UPM = 16384;
+export const WORD_NAT = new Map([['Caladea', 1.17]]);
+
+const faces = new Map();               // key -> frozen {nat, desc}
+
+/** A DataView over bytes, or null. */
+function viewOf(bytes) {
+  try {
+    if (bytes instanceof ArrayBuffer) return new DataView(bytes);
+    if (ArrayBuffer.isView(bytes)) {
+      return new DataView(bytes.buffer, bytes.byteOffset,
+        bytes.byteLength);
+    }
+  } catch (e) { /* a detached buffer */ }
+  return null;
+}
+
+/** {offset, length} of each table that lies inside the buffer. */
+function tablesOf(v) {
+  if (v.byteLength < 12) return null;
+  const n = v.getUint16(4);
+  if (n > MAX_TABLES || 12 + 16 * n > v.byteLength) return null;
+  const t = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = 12 + 16 * i;
+    const tag = String.fromCharCode(v.getUint8(r), v.getUint8(r + 1),
+      v.getUint8(r + 2), v.getUint8(r + 3));
+    const off = v.getUint32(r + 8), len = v.getUint32(r + 12);
+    if (off + len > v.byteLength) return null;
+    if (!t.has(tag)) t.set(tag, {off, len});
+  }
+  return t;
+}
+
+/** The table `tag` if it holds `need` bytes, else null. */
+function table(t, tag, need) {
+  const e = t.get(tag);
+  return e && e.len >= need ? e.off : null;
+}
+
+/** See the header. */
+export function parseMetrics(bytes) {
+  const v = viewOf(bytes);
+  if (!v) return null;
+  const t = tablesOf(v);
+  if (!t) return null;
+  const head = table(t, 'head', 20), hhea = table(t, 'hhea', 10);
+  const os2 = table(t, 'OS/2', 78);
+  if (head === null || hhea === null || os2 === null) return null;
+  const upm = v.getUint16(head + 18);
+  if (upm < MIN_UPM || upm > MAX_UPM) return null;
+  const m = {upm, winAsc: v.getUint16(os2 + 74),
+    winDesc: v.getUint16(os2 + 76), hheaAsc: v.getInt16(hhea + 4),
+    hheaDesc: v.getInt16(hhea + 6), lineGap: v.getInt16(hhea + 8)};
+  return m.winAsc + m.winDesc > 0 ? m : null;
+}
+
+const keyOf = (family, bold, italic) =>
+  `${family}\u0000${bold === true ? 'b' : ''}${italic === true
+    ? 'i' : ''}`;
+
+/** See the header. */
+export function put(family, bold, italic, m) {
+  if (typeof family !== 'string' || !m) return;
+  const {upm, winAsc, winDesc} = m;
+  if (![upm, winAsc, winDesc].every(Number.isInteger)) return;
+  if (upm < MIN_UPM || upm > MAX_UPM || winAsc < 0 || winDesc < 0 ||
+    winAsc + winDesc <= 0) return;
+  const gap = Number.isInteger(m.lineGap) && m.lineGap > 0
+    ? m.lineGap : 0;
+  let nat = (winAsc + winDesc + gap) / upm, desc = winDesc / upm;
+  const word = WORD_NAT.get(family);
+  if (word) {
+    desc *= word / nat;
+    nat = word;
+  }
+  faces.set(keyOf(family, bold, italic), Object.freeze({nat, desc}));
+}
+
+/** See the header. */
+export function register(family, bold, italic, bytes) {
+  const m = parseMetrics(bytes);
+  if (m) put(family, bold, italic, m);
+  return m;
+}
+
+/** See the header. */
+export function ratiosOf(family, bold, italic) {
+  if (typeof family !== 'string') return NAT_M;
+  return faces.get(keyOf(family, bold, italic)) ||
+    faces.get(keyOf(family, false, false)) || NAT_M;
+}

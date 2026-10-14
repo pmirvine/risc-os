@@ -9,8 +9,18 @@
 //       picture (./PicFind picAt) selects it (its U+FFFC)
 //   picDragStart(v, ev) -> boolean
 //       a Select drag (no Ctrl) starting on a handle of the selected
-//       picture. A floating or unsupported one (./PicRead floating,
-//       !supported: plan R2, R12) beeps: no drag. Else the pointer
+//       picture, or (P12.5, D27) on the body of a selected floating
+//       one (./PicFind selectedPic float): the picture is MOVED, the
+//       ghost its box shifted by the pointer's move, and on release
+//       v.typing.command(() => ./AnchorMove moveAnchor(...)) (the
+//       posOffsets + the move; one step; null: a beep). A handle
+//       resizes (below), also a floating picture whose anchor is
+//       understood (./AnchorRead). An unsupported one (!supported:
+//       R2), an anchor not understood, a move of one whose position
+//       ./AnchorMove cannot set (canMove: in an mc:AlternateContent;
+//       P12a fix M4: at the press), or a move of one in line (its
+//       body: not used) beeps or is left to the text: no drag.
+//       Else the pointer
 //       is followed (wimp.drag, type 'point'): v.picGhost {x, y, w,
 //       h} (layout px) is the box it would get (./PicSize dragSize;
 //       Shift, read live from os.input.keysDown, frees a corner),
@@ -39,11 +49,14 @@
 // None of them acts while the format painter is on (v.painter:
 // ./PaintBind) or there is no selection: the mouse then works as it
 // does on text. Points are the window's (zoomed): ./Zoom toLayout.
+// The picture's box, its handles and the ghost are where the
+// layout's placement puts its line (./PicFind: L.place, D4).
 import {wimp, os} from 'riscos';
 import * as S from './Selection';
 import {picAt, selectedPic, handleAt} from './PicFind';
 import {dragSize, MIN_EMU, MAX_EMU} from './PicSize';
 import {setPicture} from './PicOps';
+import {moveAnchor, canMove} from './AnchorMove';
 import {toLayout} from './Zoom';
 
 const SIGNS = {nw: [-1, -1], n: [0, -1], ne: [1, -1], e: [1, 0],
@@ -61,6 +74,20 @@ function onHandle(v, p) {
   const name = s && handleAt(s.rect, p.x, p.y, v.zoom);
   return name ? {s, name} : null;
 }
+
+/** {s, name: null}: the selected floating picture's box at p. */
+function onFloat(v, p) {
+  const s = selectedPic(v.L, v.sel), r = s && s.float && s.rect;
+  const dx = r && p.x - r.x, dy = r && p.y - r.y;
+  return r && dx >= 0 && dx < r.w && dy >= 0 && dy < r.h ?
+    {s, name: null} : null;
+}
+
+/** An anchor ./AnchorRead understands (R12: others are not moved
+ *  or resized). */
+const placed = (i) => !i.floating || !!i.anchor && !i.anchor.unknown;
+const resizable = (i) => i.supported && placed(i);
+const movable = (i) => i.floating && placed(i);
 
 /** Select the picture found (./PicFind). */
 function choose(v, f) {
@@ -130,14 +157,17 @@ function extentFor(info, name, start, size, free) {
 /** See the header. */
 export function picDragStart(v, ev) {
   if (!ours(v, ev) || v.picDrag) return false;
-  const p0 = pointOf(v, ev.x, ev.y), hit = onHandle(v, p0);
+  const p0 = pointOf(v, ev.x, ev.y);
+  const hit = onHandle(v, p0) || onFloat(v, p0);
   if (!hit) return false;
   const info = hit.s.item.pic, name = hit.name, pos = hit.s.pos;
-  if (info.floating || !info.supported) {
-    wimp.beep();
+  if (!name ? !movable(info) || !canMove(v.d, v.sel)
+    : !resizable(info)) {
+    wimp.beep();                       // (at the press: P12a fix M4)
     return true;
   }
   const w = v.win, r = hit.s.rect, start = {w: r.w, h: r.h};
+  let move = {dx: 0, dy: 0};
   const sel = v.sel, state = v.d.stateId;
   let ext = info, free = false, done = false;
   const end = () => {
@@ -163,6 +193,12 @@ export function picDragStart(v, ev) {
     if (!alive()) return;
     const q = w.screenToWork(sx, sy), p = pointOf(v, q.x, q.y);
     free = shiftDown();
+    if (!name) {
+      move = {dx: p.x - p0.x, dy: p.y - p0.y};
+      v.picGhost = {...r, x: move.dx + r.x, y: move.dy + r.y};
+      w.invalidate();
+      return;
+    }
     const size = dragSize(start, name, p.x - p0.x, p.y - p0.y,
       {free});
     ext = extentFor(info, name, start, size, free);
@@ -180,23 +216,28 @@ export function picDragStart(v, ev) {
       if (d && Number.isFinite(d.sx)) follow(d.sx, d.sy);
       if (!alive()) return;
       end();
-      if (!ext) wimp.beep();
+      if (!name) put(v, () => moveAnchor(v.d, sel, {...move,
+        from: {x: hit.s.float.x, y: hit.s.float.y, bx: hit.s.float.bx,
+          by: hit.s.float.by}}));
+      else if (!ext) wimp.beep();
       else if (ext.cx !== info.cx || ext.cy !== info.cy) {
-        resize(v, sel, ext);
+        put(v, () => setPicture(v.d, sel, ext));
       }
     }});
   return true;
 }
 
-/** Put the new extent in (one undo step); a refusal beeps. */
-function resize(v, sel, ext) {
+/** Run cmd (a command returning the selection, or null: a beep)
+ *  as one undo step; a RangeError beeps. */
+function put(v, cmd) {
   let out;
   try {
-    out = v.typing.command(() => setPicture(v.d, sel, ext));
+    out = v.typing.command(cmd);
   } catch (e) {
     if (!(e instanceof RangeError)) throw e;
     wimp.beep();
     return;
   }
-  v.edited(out);
+  if (out === null) wimp.beep();
+  else v.edited(out);
 }

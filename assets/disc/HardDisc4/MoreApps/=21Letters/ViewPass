@@ -1,0 +1,112 @@
+// ViewPass - the passes of a window's Print layout (split from
+// ./ViewMode, Batch D P12.3): one more layout when the pages just
+// worked out ask for one (see ./ViewMode's header).
+//
+//   pass(dw) -> bool      one more layout when page fields, column
+//                         widths or wrap are due one (true: made)
+//   fieldPass(dw) -> bool  one more layout when page fields are due
+//                         one (./FieldPass passOf; true: made)
+//   colStep(dw, ms, all?) -> bool  one more layout when column
+//                         widths (./ColPass colPass) are due on the
+//                         pages up to the caret's (all: every page
+//                         worked out); the passes it leads to (the
+//                         new layout's placeView) go on while ms
+//                         have not run out since the first; dw.colDue
+//                         set when more may be due (true: one made)
+//   wrapStep(dw, ms, all?) -> bool  the same for the paragraphs
+//                         beside floats (./WrapPass wrapPass, P12.3:
+//                         dw.wrap, the layout's wrap, ./WinFit), with
+//                         the same time budget; dw.wrapDue (also when
+//                         the budget is spent: P12a fix M6)
+//   SYNC_MS               40: the passes after an edit, at once
+//   unchecked(dw) -> bool  dw.L may still be due a column or wrap
+//                         pass that no slice has looked for on every
+//                         page (./ViewMode's slices go on until one
+//                         has: dw.checked, set by its tick once the
+//                         pages are done and neither pass made a
+//                         layout; final fix A F3-I2: a layout made
+//                         by a nested pass out of time left the
+//                         flags clear and the pages unsettled)
+//   clock {now}           the passes' clock (performance.now; tests
+//                         put a slow one in)
+//
+// Imports no desktop services.
+import {passOf} from './FieldPass';
+import {colPass, mayPass} from './ColPass';
+import {wrapPass, mayWrap} from './WrapPass';
+
+export const SYNC_MS = 40;
+export const clock = {now: () => (typeof performance === 'object'
+  ? performance.now() : Date.now())};
+const now = () => clock.now();
+
+/** See the header. */
+export const unchecked = (dw) => dw.checked !== dw.L &&
+  (mayPass(dw.L) || mayWrap(dw.L));
+
+/** One more layout when page fields or column widths are due one
+ *  (true: made). */
+export function pass(dw) {
+  return fieldPass(dw) || colStep(dw, SYNC_MS) ||
+    wrapStep(dw, SYNC_MS);
+}
+
+/** One more layout when page fields are due one (true: made). */
+export function fieldPass(dw) {
+  const fx = passOf(dw.L, dw.pages);
+  if (fx) dw.newLayout(dw.L.metrics, dw.L, fx);
+  return !!fx;
+}
+
+/** The caret's page (worked out), or the last worked out. */
+function caretPage(dw) {
+  const P = dw.pages, sel = dw.view.sel;
+  const i = sel && !dw.view.hdr ? P.ofPos(sel.head, sel.affinity)
+    : -1;
+  return i >= 0 ? i : P.count - 1;
+}
+
+/** One more layout when column widths are due on the pages up to
+ *  the caret's (all: every page worked out): the passes it leads to
+ *  (the new layout's placeView) go on while ms have not run out
+ *  since the first (true: one made). */
+export function colStep(dw, ms, all) {
+  return step(dw, ms, all, 'colDue', (upTo) => {
+    const cw = colPass(dw.L, dw.pages, upTo);
+    dw.colDue = !!cw ||                // (pages after the caret's)
+      (!dw.colAll && mayPass(dw.L));
+    if (cw) dw.colW = cw;
+    return !!cw;
+  });
+}
+
+/** See the header: colStep's, for wrap. */
+export function wrapStep(dw, ms, all) {
+  return step(dw, ms, all, 'wrapDue', (upTo) => {
+    const w = wrapPass(dw.L, dw.pages, upTo);
+    dw.wrapDue = !!w || (!dw.colAll && mayWrap(dw.L));
+    if (w) dw.wrap = w;
+    return !!w;
+  });
+}
+
+/** One pass of run(upTo) (true: a new layout is due) within the
+ *  time budget (dw.colEnd, shared by the passes it leads to); out
+ *  of time: dw[due] set (its own kind's: P12a fix M6). */
+function step(dw, ms, all, due, run) {
+  const top = !dw.colEnd;
+  if (top) {
+    dw.colEnd = now() + ms;
+    dw.colAll = !!all;
+  } else if (now() > dw.colEnd) {
+    dw[due] = true;                    // (the slices go on)
+    return false;
+  }
+  try {
+    const made = run(dw.colAll ? Infinity : caretPage(dw));
+    if (made) dw.newLayout(dw.L.metrics, dw.L);
+    return made;
+  } finally {
+    if (top) dw.colEnd = 0;
+  }
+}

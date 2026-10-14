@@ -22,13 +22,16 @@
 // character, Hyperlink and Bookmark items (live; Bookmark with
 // Ctrl+Shift+F5, on a Mac too); both run from the menu.
 // Page break before: a 12 px gap and a dotted rule labelled "Page
-// break before", a click in it the paragraph's start. No page
-// errors.
+// break before", a click in it the paragraph's start. A landscape
+// section after a portrait one (P1 fix C1): the white page and the
+// extent reach its widest line. No page errors.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
 import { buildDocx, documentXml, p, r } from './build-docx.mjs';
 import { readDocx } from '../../tools/moreapps/!Letters/DocxRead';
 import { xmlEntries } from './docx-compare.mjs';
+import { draftDocs } from './draft-fixture.mjs';
+import { asDraft } from './word-draft.mjs';
 
 const O = '￼';
 const body = [
@@ -39,7 +42,9 @@ const body = [
   p('<w:r><w:t>Col</w:t><w:br w:type="column"/><w:t>umn</w:t></w:r>'),
   p(r('Last one')),
 ].join('');
-const files = { Br: Array.from(await buildDocx({ 'word/document.xml': documentXml(body) })) };
+const land = await new Map(draftDocs()).get('landscape');
+const files = { Br: Array.from(await buildDocx({ 'word/document.xml': documentXml(body) })),
+  Land: Array.from(land) };
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -54,6 +59,7 @@ const press = async (k, n = 1) => { for (let i = 0; i < n; i++) await page.keybo
 try {
   await page.goto(BASE_URL + '?fast=1');
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
+  await asDraft(page);                 // (written for Draft: word-draft.mjs)
   const s0 = await ev(async (files) => {
     window.__msgs = [];
     globalThis.__riscos.reportError = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
@@ -331,16 +337,19 @@ try {
     return out;
   });
   const row = (n) => mn.rows.find((x) => x.text === n);
-  ok('the window menu has Insert after Edit', same(mn.top.slice(5, 8), ['Edit', 'Insert', 'Format']), mn.top);
-  ok('Insert: Page break, Section break >, Table..., Tab, Picture..., Symbol..., Special character, Hyperlink..., Bookmark...',
-    same(mn.rows.map((x) => x.text), ['Page break', 'Section break', 'Table...', 'Tab', 'Picture...', 'Symbol...', 'Special character', 'Hyperlink...', 'Bookmark...'])
-    && mn.rows.every((x) => x.help), mn.rows);
+  ok('the window menu has Insert after Edit (then View, Format)', same(mn.top.slice(5, 10), ['Edit', 'Insert', 'View', 'Outline', 'Format']), mn.top);
+  ok('Insert: Page break, Column break (P10.3), Section break >, Table..., Tab, Picture..., Symbol..., Special character, Hyperlink..., Bookmark...,'
+    + ' then (P9.2) Page number, Number of pages, Date, Time, Field... (no keys, live)',
+    same(mn.rows.map((x) => x.text), ['Page break', 'Column break', 'Section break', 'Table...', 'Tab', 'Picture...', 'Symbol...', 'Special character', 'Hyperlink...', 'Bookmark...',
+      'Page number', 'Number of pages', 'Date', 'Time', 'Field...'])
+    && mn.rows.every((x) => x.help) && mn.rows.slice(10).every((x) => !x.key && !x.shaded), mn.rows);
   ok('Page break shows Ctrl+Enter (also on a Mac: Ctrl, as Cmd-Enter stays Enter); Symbol... and Special character > are live (word-symbols.mjs); Hyperlink... is live with Ctrl+K (Cmd+K on a Mac: word-links.mjs); Bookmark... is live with Ctrl+Shift+F5 (also on a Mac)',
     row('Page break').key === 'Ctrl+Enter' && mn.mac[0] === 'Ctrl+Enter' && row('Page break').shaded === false
+    && row('Column break').key === 'Ctrl+Shift+Enter' && mn.mac[1] === 'Ctrl+Shift+Enter' && row('Column break').shaded === false
     && ['Symbol...', 'Special character'].every((n) => !row(n).shaded && !row(n).key)
-    && !row('Hyperlink...').shaded && row('Hyperlink...').key === 'Ctrl+K' && mn.mac[7] === 'Cmd+K'
-    && !row('Bookmark...').shaded && row('Bookmark...').key === 'Ctrl+Shift+F5' && mn.mac[8] === 'Ctrl+Shift+F5', mn);
-  ok('Section break > Next page, Continuous: no keys, not shaded', same(mn.sec.map((x) => x.text), ['Next page', 'Continuous'])
+    && !row('Hyperlink...').shaded && row('Hyperlink...').key === 'Ctrl+K' && mn.mac[8] === 'Cmd+K'
+    && !row('Bookmark...').shaded && row('Bookmark...').key === 'Ctrl+Shift+F5' && mn.mac[9] === 'Ctrl+Shift+F5', mn);
+  ok('Section break > Next page, Continuous, Even page, Odd page (P4.4): no keys, not shaded', same(mn.sec.map((x) => x.text), ['Next page', 'Continuous', 'Even page', 'Odd page'])
     && mn.sec.every((x) => !x.key && !x.shaded) && row('Section break').sub, mn.sec);
   const viaMenu = await ev(async () => {
     const d = window.__doc(), v = d.view, L = v.layout;
@@ -391,6 +400,27 @@ try {
   await press('Control+z');
   const pbu = await ev(() => window.__doc().view.layout.items.every((i) => i.gapAbove === 0));
   ok('Ctrl-Z takes the flag (and the gap) away', pbu);
+
+  // (P1 fix C1) a landscape section after a portrait one: the white
+  // page and the extent reach its text, so it can be scrolled to
+  const ld = await ev(async () => {
+    const find = () => window.__word().word.docs.find((d) => d.path?.endsWith('.Land'));
+    await os.filer.run('RAM::RamDisc0.$.Land');
+    for (let i = 0; i < 100 && !find(); i++) await window.__sleep(50);
+    const d = find();
+    d.win.open({ x: 60, y: 40, w: 800, h: 500, behind: 'top', scrollX: 0, scrollY: 0 });
+    await window.__frames(3);
+    const L = d.view.layout, z = d.zoom / 100, e = d.win.extent;
+    const right = Math.max(...L.items.map((it) => it.x + it.w));
+    const ink = Math.max(...L.items.flatMap((it) => (it.lines || []).map((ln) =>
+      it.x + Math.max(0, ...ln.items.map((x) => x.x + x.w)))));
+    const p = L.pageWide ?? L.pageW;
+    return { extent: e.x1 - e.x0, right: right * z, ink: ink * z, pageR: (L.pageLeft + p) * z,
+      pageW0: L.pageW, sections: [...new Set(L.items.map((it) => it.s))] };
+  });
+  ok('a landscape later section: extent and page reach its widest line',
+    ld.sections.length === 2 && ld.extent >= ld.right && ld.extent >= ld.ink && ld.pageR >= ld.right
+      && ld.right > (24 + ld.pageW0), ld);
 
   const msgs = await ev(() => window.__msgs);
   ok('no error messages', !msgs.length, msgs);

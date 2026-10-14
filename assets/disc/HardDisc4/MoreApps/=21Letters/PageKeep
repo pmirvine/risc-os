@@ -1,0 +1,95 @@
+// PageKeep - Word's keep rules at a page's end (Batch D, D6):
+// widow and orphan control, keep lines together, keep with next.
+// ./Paginate asks them about the item crossing the frame's bottom
+// only, so their cost is bounded per page.
+//
+//   linesHere(it, fit, frameLines) -> n  how many lines of a
+//       paragraph crossing the bottom stay on this page (0: it all
+//       moves to the next one). it = {from, count, keepLines,
+//       widow}: the page holds its lines from `from` on, `count` of
+//       them in all (to its end, or to a line ending in a page
+//       break); fit lines from `from` fit; a whole frame would hold
+//       frameLines of them. keepLines: 0 unless the rest is taller
+//       than a frame (then as if off). Widow control: never one
+//       line at the bottom (the first, from 0) nor one at the top
+//       (the last): a 2-line paragraph moves whole; one line more
+//       moves when only one would go over, and when that leaves the
+//       first line alone the paragraph moves whole (a 3-line one).
+//       Lines of exact height count the same. The caller places
+//       fit lines all the same when n is 0 and the paragraph is
+//       first on its page (a frame always takes something).
+//   chainStart(G, k, frameH, floor?) -> k0  the first item of the
+//       keep-with-next chain ending before item k (items k0..k-1
+//       all keepNext): they go to the next page with k. k when the
+//       item before k has no keepNext, when the chain reaches back
+//       to item `floor` (the page's first: the chain fills the
+//       page, Word ignores the rule) or is taller than frameH (a
+//       chain longer than a frame: broken at the frame bottom).
+//       The scan stops there: at most one frame of items + 1 are
+//       looked at.
+//   keepTable(it) -> boolean  a table item ('tbl', ./TblItems)
+//       whose every row's paragraphs keep with next (each cell's
+//       paragraphs with the cell's derived styles, R6), so it is
+//       kept with the next block (Word's way to keep a table
+//       together, PG7); a row with no paragraph does not break it;
+//       nested tables and kept blocks are not looked into
+//   keepOf(styles, para) -> {keepNext, keepLines, widow}  the flags
+//       in force for para, through ./FlowDeco flagOf (the last
+//       layer that says): keepNext and keepLines off, widowControl
+//       on (as Word's Normal has it) when no layer says
+//
+// G is ./Paginate's galley: facts(k) when it has it, else the items
+// carry their flags (keepNext, keepLines, widow). Pure: no desktop
+// services.
+import {flagOf} from './FlowDeco';
+
+const NONE = Object.freeze({});
+const factsOf = (G, k) => (G.facts ? G.facts(k) : G.items[k]) || NONE;
+
+/** See the header. */
+export function linesHere(it, fit, frameLines) {
+  const rest = it.count - it.from;
+  if (fit >= rest) return rest;
+  if (fit <= 0) return 0;
+  if (it.keepLines && rest <= frameLines) return 0;
+  if (it.widow === false) return fit;
+  let n = rest - fit === 1 ? fit - 1 : fit;
+  if (n === 1 && it.from === 0) n = 0;
+  return n;
+}
+
+/** See the header. */
+export function chainStart(G, k, frameH, floor = 0) {
+  const items = G.items, top = items[k].y;
+  let j = k;
+  while (j > floor) {
+    if (!factsOf(G, j - 1).keepNext) return j;
+    j--;
+    if (top - items[j].y > frameH) return k;
+  }
+  return k;
+}
+
+/** See the header. */
+export function keepTable(it) {
+  if (!it || it.kind !== 'tbl' || !Array.isArray(it.rows)) return false;
+  let any = false;
+  for (const row of it.rows) {
+    for (const c of row.cells || []) {
+      const col = c.col;
+      if (!col || !col.items) continue;
+      for (const x of col.items) {
+        if (x.kind !== 'p' || !x.block) continue;
+        if (!flagOf(col.styles, x.block, 'keepNext')) return false;
+        any = true;
+      }
+    }
+  }
+  return any;
+}
+
+/** See the header. */
+export const keepOf = (styles, para) => ({
+  keepNext: flagOf(styles, para, 'keepNext'),
+  keepLines: flagOf(styles, para, 'keepLines'),
+  widow: flagOf(styles, para, 'widowControl', true)});

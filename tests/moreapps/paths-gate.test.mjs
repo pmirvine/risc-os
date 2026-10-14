@@ -46,7 +46,7 @@ const C35 = 'C3.5', C34 = 'C3.4', KEEP = '-';
 
 /** {file, pattern, count, why, until}: until '-' is for good. */
 export const ALLOW = [
-  {file: 'EditPos', pattern: 'sLetter', count: 2, until: KEEP,
+  {file: 'EditFlow', pattern: 'sLetter', count: 2, until: KEEP,
     why: 'the one place a top-level location is made (scan, ' +
       'neighbour across sections)'},
   {file: 'FormatOps', pattern: 'sLetter', count: 2, until: KEEP,
@@ -65,7 +65,7 @@ export const ALLOW = [
       'insertSection refuses a cell first (null, a beep)'},
   {file: 'SectBreak', pattern: 'sLetter', count: 1, until: KEEP,
     why: 'the same site'},
-  {file: 'EditPos', pattern: 'atIndex', count: 2, until: KEEP,
+  {file: 'EditFlow', pattern: 'atIndex', count: 2, until: KEEP,
     why: 'findBlock fills a location\'s s (and i at top level) from ' +
       'its path'},
   {file: 'Path', pattern: 'atIndex', count: 2, until: KEEP,
@@ -76,6 +76,9 @@ export const ALLOW = [
     why: 'section ops are top level by definition'},
   {file: 'ClipBuild', pattern: 'rangeFI', count: 1, until: KEEP,
     why: 'f.i is a format\'s italic flag: not a position'},
+  {file: 'PageFind', pattern: 'kLoop', count: 1, until: KEEP,
+    why: 'galley page cursors {k, line}: k a root layout item ' +
+      'index, not a model position'},
 ];
 
 /** The entries C3.4 / C3.5 must remove: [{file, pattern, count}]. */

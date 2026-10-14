@@ -1,0 +1,117 @@
+// PageFind - the page a document position or a point of the sheet is
+// on (Batch D, D2 + R6), for ./Pages ofPos and atScreen.
+//
+//   placeOf(G, pos, aff = 'down') -> {k, line, cell?, cl?} | null
+//       the galley place of position pos ({id, off}, ./DocPos): k
+//       the root item holding it (a cell's paragraph: its table's;
+//       G.byId, the layout's L.byId, finds the item at any depth),
+//       line the line of a root paragraph its caret is on
+//       (./PositionMap lineOf, affinity aff); in a table (./PageRows
+//       isTable) its row, the cell and the cell's line its caret's
+//       line is on (./PageCellAt cellPlace, P4.1); else 0; null for
+//       an id not in the galley or no G.byId
+//   after(a, c) -> whether cursor a starts after place c (a cut's
+//       rest: after it; ./PlacePrint, the column of a place)
+//   rootOf(G, it) -> k   the root item index of item it (a cell's
+//       item: its table's, by flow index), -1 when not in G
+//   pageOfPlace(P, c) -> i   the page of Pages P holding place c: the
+//       last page whose start is at or before c (a page that starts
+//       with the rest of a cut line or block comes after the line's
+//       own place, one with the rest of a cut row after the cell
+//       lines its cuts leave before it; a blank page is never it),
+//       pages worked out until
+//       one starts past c or all are
+//   atScreen(P, x, y) -> {i, x, y} | null  the page whose sheet
+//       rectangle (R6: y from top to top + h, x from 0, the page's
+//       left edge, to w) holds the point, and the point on that page;
+//       null in the gap between pages, beside or past them, or for a
+//       point not finite. A blank page takes no room: never hit.
+//       Pages are worked out until one reaches past y or all are.
+//
+// Each is a binary search over the pages worked out (start cursors,
+// tops) and one over the item's lines. Pure: no desktop services.
+import {lineOf} from './PositionMap';
+import {isTable} from './PageRows';
+import {cellPlace} from './PageCellAt';
+
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+
+/** See the header. */
+export function rootOf(G, it) {
+  const items = G.items;
+  if (Number.isInteger(it.ci) && items[it.ci] === it) return it.ci;
+  if (!fin(it.index)) return -1;
+  let lo = 0, hi = items.length - 1, r = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (items[m].index <= it.index) {
+      r = m;
+      lo = m + 1;
+    } else hi = m - 1;
+  }
+  return r;
+}
+
+/** See the header. */
+export function placeOf(G, pos, aff = 'down') {
+  if (!pos || typeof pos !== 'object' || !G.byId) return null;
+  const it = G.byId.get(pos.id);
+  if (!it || typeof it !== 'object') return null;
+  const k = rootOf(G, it);
+  if (k < 0) return null;
+  const ls = it.lines, root = G.items[k];
+  const p = it.kind === 'p' && it.para && ls && ls.length &&
+    fin(pos.off);
+  const line = p ? lineOf(it, pos.off, aff) : 0;
+  if (root !== it && isTable(root)) {
+    return {k, ...cellPlace(root, it, p ? line : 0)};
+  }
+  return {k, line: k === it.ci ? line : 0};
+}
+
+/** See the header. */
+export function after(a, c) {
+  if (a.k !== c.k) return a.k > c.k;
+  if (a.line !== c.line) return a.line > c.line;
+  if (a.cuts) return !(a.cuts[c.cell] <= c.cl);
+  return (a.dy || 0) > 0;
+}
+
+/** See the header. */
+export function pageOfPlace(P, c) {
+  while (!P.done && !(P.last && after(P.last.start, c)) && P.more());
+  const ps = P.list;
+  let lo = 0, hi = ps.length - 1, r = 0;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (!after(ps[m].start, c)) {
+      r = m;
+      lo = m + 1;
+    } else hi = m - 1;
+  }
+  while (r > 0 && ps[r].blank) r--;
+  return r;
+}
+
+/** See the header. */
+export function atScreen(P, x, y) {
+  if (!fin(x) || !fin(y) || y < 0 || x < 0) return null;
+  const reach = () => {
+    const l = P.last;
+    return l && !l.blank && l.top + l.h > y;
+  };
+  while (!P.done && !reach() && P.more());
+  const ps = P.list;
+  let lo = 0, hi = ps.length - 1, r = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (ps[m].top <= y) {
+      r = m;
+      lo = m + 1;
+    } else hi = m - 1;
+  }
+  while (r >= 0 && ps[r].blank) r--;
+  const pg = ps[r];
+  if (!pg || y >= pg.top + pg.h || x >= pg.w) return null;
+  return {i: r, x, y: y - pg.top};
+}

@@ -17,6 +17,7 @@ import {loadStyles, tm} from './word-docs.mjs';
 import {tblDocx, tbl, tr, tc, TABLE_NORMAL, GRID_TABLE_4, bigTable,
   nestedTable} from './tbl-fixtures.mjs';
 import {p, r} from './build-docx.mjs';
+import {shifted} from './place-fixture.mjs';
 
 before(loadStyles);
 
@@ -27,7 +28,7 @@ function fakeG() {
   const g = {calls};
   for (const k of ['strokeRect', 'fillRect', 'fillText', 'setLineDash',
     'save', 'restore', 'beginPath', 'rect', 'clip', 'moveTo', 'lineTo',
-    'stroke']) g[k] = rec(k);
+    'stroke', 'translate']) g[k] = rec(k);
   g.measureText = (t) => ({width: 6 * t.length});
   for (const k of ['strokeStyle', 'fillStyle', 'font', 'lineWidth',
     'textBaseline']) {
@@ -273,4 +274,25 @@ describe('only the rows in the rect (D20)', () => {
       assert.deepEqual(t, ['before', 'in', 'after']);
       assert.ok(!fills(g).some((x) => x.style === '#eeeeee'));
     });
+  it('a moved place (D4): the table painted in its galley, the ' +
+    'context translated by the place\'s dx, dy', async () => {
+    const body = p(r('before')) + tbl([tr([cell('one'), cell('two')]),
+      tr([cell('three', '<w:shd w:val="clear" w:fill="FF0000"/>'),
+        cell('four')])], {tblPr: GT4}) + p(r('after'));
+    const a = (await laid(body)).L, b = (await laid(body)).L;
+    b.place = shifted(b, 40, 700);
+    const ga = fakeG(), gb = fakeG();
+    paint(a, ga, ALL);
+    paint(b, gb, {x0: ALL.x0 + 40, y0: ALL.y0 + 700, x1: ALL.x1 + 40,
+      y1: ALL.y1 + 700});
+    const moves = new Set(['save', 'translate', 'restore']);
+    const drawn = (g) => g.calls.filter((c) => !moves.has(c[0]));
+    assert.ok(named(gb, 'translate').every((c) => c[1] === 40 &&
+      c[2] === 700) && named(gb, 'translate').length > 0);
+    assert.equal(named(ga, 'translate').length, 0);
+    assert.deepEqual(drawn(gb), drawn(ga).filter((c) =>
+      !moves.has(c[0])));
+    assert.deepEqual(b.items.find((x) => x.kind === 'tbl').painted,
+      a.items.find((x) => x.kind === 'tbl').painted);
+  });
 });

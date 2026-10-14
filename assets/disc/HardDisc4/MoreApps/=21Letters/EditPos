@@ -2,7 +2,11 @@
 // found in the Doc itself: no layout needed.
 //
 //   findBlock(doc, id)    -> a location (below) of the block, at any
-//                            depth; or null
+//                            depth, with `story`: null in the body,
+//                            else the part name of the story that
+//                            holds it (./StoryPos, D11), its path
+//                            then [0, i, ...] in the story's blocks
+//                            as ops address a story (R8); or null
 //   neighbour(doc, loc, d) -> the block before (d -1) or after (d 1)
 //                            loc in ITS container: at top level
 //                            crossing sections (as before); in a
@@ -16,8 +20,11 @@
 //                            endRank) is rank; or null
 //   checkPos(doc, pos)    -> findBlock of a valid position {id, off}
 //                            (a paragraph offset on a code point, a
-//                            kept block's or table's 0 or 1), else
-//                            null
+//                            kept block's or table's 0 or 1) in the
+//                            BODY, else null: a position in a story
+//                            is none for the commands, which edit
+//                            the body's paths (a story is edited
+//                            through its own facade, D14)
 //   orderedPos(doc, sel)  -> {from, to, f, t} in flow order (f, t:
 //                            their findBlock), or null when a
 //                            position is not valid
@@ -38,9 +45,10 @@
 //   endOf(b)              -> the last offset of a block
 //
 // A location (Batch C, D6 and ruling R5) is {at, k, rank, endRank?,
-// b, s, i?, depth, cell?}: at its ./Path path; k TODAY's index of
-// the top-level block in document order (a block in a cell: its
-// outermost table's k), so top-level arithmetic on k stays valid;
+// b, s, i?, depth, cell?, story?} (story: findBlock's): at its
+// ./Path path; k TODAY's index of the top-level block in document
+// order (a block in a cell: its outermost table's k), so top-level
+// arithmetic on k stays valid;
 // rank the flow rank (D9: a table has a start rank, then its cells'
 // blocks row by row, cell by cell, then its endRank); b the block;
 // s the section; i ONLY at top level (undefined in a cell); depth
@@ -57,143 +65,27 @@
 // Pure: no desktop services.
 import {blockId} from './DocPos';
 import {midPair} from './ModelCheck';
-import {forEachIn, at as walkAt} from './Walk';
-import {idOf, isTbl, sizeOf, holds, rowSize, rowHolds}
-  from './EditRank';
-import {isPath, isTop, sib, cellOf, depthOf} from './Path';
+import {idOf, isTbl, holds, rowHolds} from './EditRank';
+import {isTop, sib} from './Path';
+import {pathOf, scan, atRank, neighbour, nextInFlow,
+  prevInFlow, atIndex} from './EditFlow';
+import {storyOf, storyDoc} from './StoryPos';
 
-/** The location of block b at path `at` (see the header). */
-function make(at, k, rank, b) {
-  const loc = {at, k, rank, b, s: at[0], depth: depthOf(at)};
-  if (isTop(at)) loc.i = at[1];
-  else loc.cell = cellOf(at);
-  if (isTbl(b)) loc.endRank = rank + sizeOf(b) - 1;
-  return loc;
-}
-
-/** See the header. */
-export function pathOf(loc) {
-  if (!loc || !isPath(loc.at)) throw new RangeError('bad position');
-  return loc.at;
-}
-
-/** In table t (top-level block i of section s): the first block
- *  want(b, rank, endRank) takes, as a location, in the first row
- *  inRow(row, rank, n) takes (the others passed whole); or null. */
-function seek(t, s, i, k, rank0, want, inRow) {
-  let r = rank0;
-  for (let ri = 0; ri < t.rows.length; ri++) {
-    const row = t.rows[ri], n = rowSize(row);
-    if (!inRow(row, r + 1, n)) { r += n; continue; }
-    for (let c = 0; c < row.cells.length; c++) {
-      const open = [];
-      let out = null;
-      forEachIn(row.cells[c].blocks, [s, i, ri, c], (b, at, depth) => {
-        while (open.length > depth) { open.pop(); r++; }
-        r++;
-        const m = sizeOf(b);
-        if (m > 1) open.push(b);
-        if (!want(b, r, r + m - 1)) return true;
-        out = make(at.slice(), k, r, b);
-        return false;
-      });
-      if (out) return out;
-      r += open.length;
-    }
-    return null;
-  }
-  return null;
-}
-
-/** The first block want() takes, at any depth (inside(t, rank, n):
- *  whether to look into table t; inRow: seek's). */
-function scan(doc, want, inside, inRow) {
-  let k = 0, rank = 0;
-  const secs = doc.sections;
-  for (let s = 0; s < secs.length; s++) {
-    const bs = secs[s].blocks;
-    for (let i = 0; i < bs.length; i++, k++) {
-      const b = bs[i], n = sizeOf(b);
-      if (want(b, rank, rank + n - 1)) return make([s, i], k, rank, b);
-      if (n > 1 && inside(b, rank, n)) {
-        const loc = seek(b, s, i, k, rank, want, inRow);
-        if (loc) return loc;
-      }
-      rank += n;
-    }
-  }
-  return null;
-}
+export {pathOf, atRank, neighbour, nextInFlow, prevInFlow, atIndex};
 
 /** See the header. */
 export function findBlock(doc, id) {
   if (typeof id !== 'number') return null;
-  return scan(doc, (b) => idOf(b) === id, (t) => holds(t, id),
-    (row) => rowHolds(row, id));
-}
-
-/** See the header. */
-export function atRank(doc, rank) {
-  if (!Number.isInteger(rank) || rank < 0) return null;
-  return scan(doc, (b, r, e) => r === rank || e === rank,
-    (t, r, n) => rank > r && rank < r + n - 1,
-    (row, r, n) => rank >= r && rank < r + n);
-}
-
-/** See the header. */
-export function neighbour(doc, loc, d) {
-  const path = pathOf(loc);
-  const next = (b) => (d > 0 ? loc.rank + sizeOf(loc.b)
-    : loc.rank - sizeOf(b));
-  if (!isTop(path)) {
-    const at = sib(path, d), b = walkAt(doc, at);
-    return b ? make(at, loc.k, next(b), b) : null;
+  const seek = (d) => scan(d, (b) => idOf(b) === id,
+    (t) => holds(t, id), (row) => rowHolds(row, id));
+  let loc = seek(doc), story = null;
+  if (!loc) {
+    story = storyOf(doc, id);
+    const sd = story === null ? null : storyDoc(doc, story);
+    loc = sd && seek(sd);
   }
-  const secs = doc.sections;
-  let s = path[0], i = path[1] + d;
-  while (s >= 0 && s < secs.length) {
-    const bs = secs[s].blocks;
-    if (i >= 0 && i < bs.length) {
-      return make([s, i], loc.k + d, next(bs[i]), bs[i]);
-    }
-    s += d;
-    if (s >= 0 && s < secs.length)
-      i = d > 0 ? 0 : secs[s].blocks.length - 1;
-  }
-  return null;
-}
-
-/** The block d ranks on from loc in flow order (end ranks passed). */
-function inFlow(doc, loc, d) {
-  pathOf(loc);
-  for (let r = loc.rank + d; r >= 0; r += d) {
-    const n = atRank(doc, r);
-    if (!n || n.rank === r) return n;
-  }
-  return null;
-}
-
-/** See the header. */
-export const nextInFlow = (doc, loc) => inFlow(doc, loc, 1);
-
-/** See the header. */
-export const prevInFlow = (doc, loc) => inFlow(doc, loc, -1);
-
-/** The top-level block at index k in document order; or null. */
-export function atIndex(doc, k) {
-  if (!Number.isInteger(k) || k < 0) return null;
-  let n = 0, rank = 0;
-  const secs = doc.sections;
-  for (let s = 0; s < secs.length; s++) {
-    const bs = secs[s].blocks;
-    if (k < n + bs.length) {
-      for (let i = 0; i < k - n; i++) rank += sizeOf(bs[i]);
-      return make([s, k - n], k, rank, bs[k - n]);
-    }
-    for (const b of bs) rank += sizeOf(b);
-    n += bs.length;
-  }
-  return null;
+  if (loc) loc.story = story;
+  return loc;
 }
 
 /** See the header. */
@@ -221,7 +113,8 @@ export const sibOf = (loc, d) => sib(pathOf(loc), d);
 export function checkPos(doc, pos) {
   if (!pos || !Number.isInteger(pos.off) || pos.off < 0) return null;
   const loc = findBlock(doc, pos.id);
-  if (!loc || pos.off > endOf(loc.b)) return null;
+  if (!loc || loc.story !== null || pos.off > endOf(loc.b))
+    return null;
   if (loc.b.type === 'p' && midPair(loc.b.text, pos.off)) return null;
   return loc;
 }

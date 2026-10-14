@@ -1,0 +1,224 @@
+// ColPass - paragraphs laid out at the width of the column they land
+// in (Batch D, D23, P10.1; settled page by page: P10 fix I2). The
+// galley lays a section's paragraphs out at its first column's width
+// (./DocItems, D3); when its columns are not all of one width (w:col
+// children), pagination puts some in a column of another width
+// (./PageCols), and those are laid out again at that width by one
+// more layout: an item's width is in its reuse key, so a paragraph
+// is re-broken only when its width changes (keyed by width).
+//
+//   colPass(L, P, upTo = Infinity) -> colW | null  for layout L
+//       (./DocLayout) and its Pages P: the colW of one more layout
+//       (DocLayout opts.colW), or null when none is due on pages
+//       0..upTo worked out. A page's paragraphs are the root ones
+//       starting in its columns (a page without cols: its section's
+//       first column, looked at only when L.colW has widths). It is
+//       SETTLED when each is at its column's width (it.w) and none
+//       has a width it was not given here. A pass works on the
+//       FIRST page not settled (those before stay as they are):
+//       - stale widths first: a paragraph of the page or of the
+//         page after it whose width was given neither by this
+//         page's settling nor (not as a guess) by the page before's
+//         goes back to its section's first column's width, so a
+//         page is settled from the same widths however the
+//         document was reached (opened, or edited: edited ==
+//         fresh, P10 fix I2);
+//       - then, on the page's first pass, the widths guessed ahead
+//         (./ColAhead: its columns filled with guessed heights, up
+//         to the end of the page after it), else each paragraph
+//         not at its column's width gets that width; one going back
+//         to a width it had here gets the narrower of the two
+//         (never wider than a column it was seen in, as
+//         ./FieldPass leaves a page field that would move its page
+//         on and back), at most MAX_TRIES widths a paragraph;
+//       - a page not settled after MAX_PAGE_PASSES (in one
+//         ./DocVersion of L.doc), or where nothing more can be
+//         tried, is left as it is (its layout may then depend on
+//         the edits made) and the next one looked at.
+//       A page settled or left is remembered (colW.known) by its
+//       start, its columns' cursors and widths and the paragraphs
+//       it left at another width, and counts as settled while they
+//       are the same: an edit that moves no column break costs no
+//       pass. colW = {w: Map id -> px, known: Map page key ->
+//       {sig, left, serial}, giver: Map id -> serial of the
+//       settling that gave its width (negative: guessed), pages:
+//       Map key -> {serial, n, tries, had} (this version's
+//       settlings), ver, total: passes in this version, at most
+//       2 MAX_PAGE_PASSES a page worked out}; known and giver are
+//       memos shared by the colW that follow; the ids of paragraphs
+//       no longer in L are dropped from w and giver (P10 fix M6)
+//   widthOf(L, id, w) -> the width root paragraph id is laid out at
+//       in layout L: L.colW's for it (a number MIN_TEXT..MAX_TEXT,
+//       ./SectGeom), else w
+//   mayPass(L) -> whether colPass can ever be due for L (a section
+//       of two columns or more, or widths in L.colW)
+//   MAX_TRIES 4, MAX_PAGE_PASSES 6
+//
+// The window (./ViewMode) runs the passes: after an edit those due
+// on the pages up to the caret's at once within a time budget, the
+// rest in its slices, page after page (no cap on the pages: a long
+// document of unequal columns settles as the slices go on, about
+// one and a half passes a page). Only paragraphs are laid out
+// again: a table or a kept block keeps its section's first column's
+// width. A paragraph going on from one column into another of
+// another width keeps the lines of the column it starts in
+// (hand-off question). Draft and Web layout show one column: no
+// colW (./ViewMode). Cost: no walk when no section has two columns
+// or more and L.colW has no width; else a look at the cursors and
+// root items of each page worked out. Pure: no desktop services.
+import {versionOf} from './DocVersion';
+import {MIN_TEXT, MAX_TEXT} from './SectGeom';
+import {ahead} from './ColAhead';
+import {keyOf, curOf, pruned, memosOf, live} from './ColMemo';
+
+export const MAX_TRIES = 4, MAX_PAGE_PASSES = 6;
+const NO_MAP = new Map(), NONE = Object.freeze([]);
+let SERIAL = 0;                         // (a page's settling)
+
+/** See the header. */
+export function widthOf(L, id, w) {
+  const m = L.colW && L.colW.w;
+  const v = m instanceof Map ? m.get(id) : undefined;
+  return typeof v === 'number' && v >= MIN_TEXT && v <= MAX_TEXT ? v
+    : w;
+}
+
+/** See the header. */
+export const mayPass = (L) => !!(L && L.colW && L.colW.w instanceof
+  Map && L.colW.w.size) || hasCols(L);
+
+/** Whether a section of L has two columns or more. */
+function hasCols(L) {
+  const n = L.doc.sections.length;
+  for (let s = 0; s < n; s++) {
+    const g = L.geom(s);
+    if (g && g.cols.length > 1) return true;
+  }
+  return false;
+}
+
+/** The root item indices starting in column c (cursors start, end). */
+function landing(c, n) {
+  const a = c.start, b = c.end;
+  const k0 = a.line || a.dy || a.cuts ? a.k + 1 : a.k;
+  const k1 = b.line || b.dy || b.cuts ? b.k + 1 : b.k;
+  return [k0, Math.min(k1, n)];
+}
+
+/** Page pg's columns [{start, end, w}] (none: []). */
+function colsOf(L, pg, old) {
+  if (pg.blank || (!pg.cols && !old.size)) return NONE;
+  if (pg.cols) return pg.cols;
+  const g = L.geom(pg.s);
+  return [{start: pg.start, end: pg.end, w: g ? g.cols[0].w : NaN}];
+}
+
+/** The root index after the last item starting in columns cs. */
+const endOf = (L, cs) => landing(cs[cs.length - 1], L.items.length)[1];
+
+/** [[item, column width]] of the paragraphs of a page (cs). */
+function paras(L, cs) {
+  const items = L.items, out = [];
+  for (const c of cs) {
+    const [k0, k1] = landing(c, items.length);
+    for (let k = k0; k < k1; k++) {
+      if (items[k].kind === 'p') out.push([items[k], c.w]);
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function colPass(L, P, upTo = Infinity) {
+  const cw = L && L.colW, old = cw && cw.w instanceof Map ? cw.w
+    : NO_MAP;
+  if (!P || !P.list || (!old.size && !hasCols(L))) return null;
+  const ver = versionOf(L.doc), m = memosOf(cw, ver);
+  const {known, giver, pages} = m;
+  const last = Math.min(P.list.length - 1, upTo);
+  if (m.total >= 2 * MAX_PAGE_PASSES * (P.list.length + 1)) return null;
+  let prev = 0;                        // (the page before's serial)
+  for (let i = 0; i <= last; i++) {
+    const pg = P.list[i], cs = colsOf(L, pg, old);
+    if (!cs.length) {
+      prev = 0;
+      continue;
+    }
+    const key = keyOf(L, pg), sig = curOf(L, cs), list = paras(L, cs);
+    const bad = list.filter(([it, w]) => it.w !== w);
+    const k = known.get(key), left = bad.map(([it]) => it.id).join();
+    if (k && k.sig === sig && k.left === left) {
+      prev = k.serial;
+      continue;
+    }
+    let on = pages.get(key);
+    const mine = (id) => {             // (a guess: its own page's)
+      const g = giver.get(id);
+      return g !== undefined && (g === prev ||
+        (on !== undefined && Math.abs(g) === on.serial));
+    };
+    P.at(i + 1);                       // (the page after: looked at)
+    const nx = P.list[i + 1], ncs = nx ? colsOf(L, nx, old) : NONE;
+    const more = paras(L, ncs), k1 = endOf(L, ncs.length ? ncs : cs);
+    const stale = [...list, ...more].filter(([it]) => old.has(it.id) &&
+      !mine(it.id));
+    if ((!stale.length && !bad.length) ||
+      (on && on.n >= MAX_PAGE_PASSES)) {
+      known.set(key, {sig, left, serial: on ? on.serial : ++SERIAL});
+      prev = known.get(key).serial;    // (settled, or left)
+      continue;
+    }
+    if (!on) pages.set(key, on = {serial: ++SERIAL, n: 0,
+      tries: new Map(), had: new Map()});
+    const w = live(L, old, true);
+    if (stale.length) {
+      for (const [it] of stale) w.delete(it.id);
+    } else if (!(!on.n && guess(L, w, on, giver, pg, cs, k1)) &&
+      !settle(L, w, on, giver, bad)) {
+      on.n = MAX_PAGE_PASSES;          // (nothing more to try)
+      i--;
+      continue;
+    }
+    return {w, known: pruned(L, P, known), giver: live(L, giver),
+      pages, ver, total: m.total + 1};
+  }
+  return null;
+}
+
+/** Paragraph it given width v on page `on` (true: changed); the
+ *  width it had remembered unless guessed. */
+function give(L, w, on, giver, it, v, guessed) {
+  const gs = L.geom(it.s);
+  if (!gs || v === it.w) return false;
+  if (v === gs.cols[0].w) w.delete(it.id);
+  else w.set(it.id, v);
+  giver.set(it.id, guessed ? -on.serial : on.serial);
+  if (guessed) return true;
+  const was = on.had.get(it.id) || NONE;
+  on.had.set(it.id, Object.freeze([...was, it.w]));
+  return true;
+}
+
+/** A page's first pass: its widths guessed ahead (./ColAhead, up to
+ *  item k1), else as settle; true when one changed. */
+function guess(L, w, on, giver, pg, cs, k1) {
+  on.n++;
+  return ahead(L, pg, cs, k1, (it, v) => give(L, w, on, giver, it, v,
+    true));
+}
+
+/** Each paragraph of `bad` given its column's width (the header) on
+ *  page `on`; true when one changed. */
+function settle(L, w, on, giver, bad) {
+  let changed = false;
+  on.n++;
+  for (const [it, cw] of bad) {
+    const t = on.tries.get(it.id) || 0;
+    const was = on.had.get(it.id) || NONE;
+    const v = was.includes(cw) ? Math.min(it.w, cw) : cw;
+    if (t >= MAX_TRIES || !give(L, w, on, giver, it, v)) continue;
+    on.tries.set(it.id, t + 1);
+    changed = true;
+  }
+  return changed;
+}

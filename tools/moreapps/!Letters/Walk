@@ -21,9 +21,18 @@
 //                        where 'rowLead' (r: before row r), 'lead'
 //                        (r, c: before cell c), 'rowTail' (r: after
 //                        its last cell), 'tail' (after the last row)
-//   ids(doc)             every 'p' and 'tbl' id, every depth (array)
+//   ids(doc)             every 'p' and 'tbl' id, every depth (array):
+//                        the body's, then every story's (D11)
 //   blockIds(blocks)     the same over a block list
 //   forEachId(doc, fn)   fn(id) for each of ids(doc), no array
+//   stories(doc)         the Story objects of doc.stories in its
+//                        order ([] without; Batch D, D9)
+//   blocksOf(doc, part)  the blocks of the story of that part name,
+//                        or null when there is none
+//   scanStories(doc, fn) scan's fn(b, part) over every story's blocks
+//                        (the scanners that must see headers and
+//                        footers, D11; scan stays the body's: Word
+//                        counts, finds and numbers the body alone)
 //   at(doc, path)        the block at a ./Path path or null; no throw
 //   mapBlocks(blocks, fn, {opaque, table}?)  fn(p) -> p' for every
 //                        paragraph at every depth; copies a table, row
@@ -48,16 +57,9 @@
 // and refuses more than MAX_DEPTH (./TblCheck). Pure: no desktop
 // services.
 import {isPath} from './Path';
-import {MAX_DEPTH} from './TblCheck';
-import {Cursor, isObj, isTbl, arr} from './WalkCursor';
+import {Cursor, isObj, isTbl, arr, forEachIn} from './WalkCursor';
 
-/** See the header. */
-export function forEachIn(list, at0, fn) {
-  const cur = new Cursor(list, at0, true);
-  while (cur.next())
-    if (fn(cur.b, cur.at, cur.depth, cur.cell) === false) return false;
-  return true;
-}
+export {forEachIn};
 
 /** See the header. */
 export function forEachBlock(doc, fn) {
@@ -98,11 +100,36 @@ export function scan(doc, fn) {
   for (const s of arr(doc && doc.sections)) scanIn(s && s.blocks, fn);
 }
 
+/** See the header. */
+export function stories(doc) {
+  const m = isObj(doc) ? doc.stories : null;
+  return m instanceof Map ? [...m.values()].filter(isObj) : [];
+}
+
+/** See the header. */
+export function blocksOf(doc, part) {
+  const m = isObj(doc) ? doc.stories : null;
+  const st = m instanceof Map ? m.get(part) : null;
+  return isObj(st) && Array.isArray(st.blocks) ? st.blocks : null;
+}
+
+/** See the header. */
+export function scanStories(doc, fn) {
+  const m = isObj(doc) ? doc.stories : null;
+  if (!(m instanceof Map)) return;
+  for (const [part, st] of m) {
+    if (isObj(st)) scanIn(st.blocks, (b) => fn(b, part));
+  }
+}
+
 const idOf = (fn) => (b) => {
   if (isObj(b) && (b.type === 'p' || b.type === 'tbl')) fn(b.id);
 };
 /** See the header. */
-export const forEachId = (doc, fn) => scan(doc, idOf(fn));
+export function forEachId(doc, fn) {
+  scan(doc, idOf(fn));
+  scanStories(doc, idOf(fn));
+}
 const idsIn = (list, fn) => scanIn(list, idOf(fn));
 
 function collect(walk, x) {
@@ -146,71 +173,4 @@ export function at(doc, path) {
   return isObj(b) ? b : null;
 }
 
-function mapIn(list, fn, d, o) {
-  let out = null;
-  for (let j = 0; j < list.length; j++) {
-    const b = list[j];
-    let nb = b;
-    if (isObj(b) && b.type === 'p') nb = fn(b);
-    else if (isTbl(b)) nb = mapTable(b, fn, d + 1, o);
-    else if (o.opaque && isObj(b) && b.type === 'opaque')
-      nb = o.opaque(b);
-    if (nb !== b && !out) out = list.slice(0, j);
-    if (!out) continue;
-    if (!Array.isArray(nb)) out.push(nb);
-    else for (const x of nb) out.push(x);
-  }
-  return out || list;
-}
-
-function mapTable(t, fn, d, o) {
-  if (d > MAX_DEPTH) throw new RangeError('table nested too deep');
-  let rows = null;
-  t.rows.forEach((row, r) => {
-    let cells = null;
-    row.cells.forEach((cell, c) => {
-      const bl = mapIn(cell.blocks, fn, d, o);
-      if (bl !== cell.blocks) (cells ||= row.cells.slice())[c] =
-        {...cell, blocks: bl};
-    });
-    if (cells) (rows ||= t.rows.slice())[r] = {...row, cells};
-  });
-  const nt = rows ? {...t, rows} : t;
-  return o.table ? o.table(nt) : nt;
-}
-
-/** See the header. */
-export const mapBlocks = (list, fn, o = {}) => mapIn(list, fn, 0, o);
-
-/** A paragraph's text for flatText: objects by their inline. */
-function paraText(p, nodeText) {
-  if (!/[\t\n\ufffc]/.test(p.text)) return p.text;
-  let s = '';
-  for (let k = 0; k < p.text.length; k++) {
-    const ch = p.text[k], x = p.inlines[k];
-    if (ch === '\t' || ch === '\n') s += ' ';
-    else if (ch !== '\ufffc') s += ch;
-    else if (!x) continue;
-    else if (x.kind === 'tab' || x.kind === 'br') s += ' ';
-    else if (x.node) s += nodeText(x.node);
-  }
-  return s;
-}
-
-function cellText(cell, nodeText) {
-  let s = '';
-  forEachIn(cell.blocks, [], (b) => {
-    if (!isObj(b)) return;
-    if (b.type === 'p') {
-      s += (s ? ' ' : '') + paraText(b, nodeText);
-    } else if (b.type === 'opaque') {
-      const x = nodeText(b.node);
-      if (x) s += (s ? ' ' : '') + x;
-    }
-  });
-  return s;
-}
-
-/** See the header. */
-export const flatText = (t, nodeText = () => '') => t.rows.map((row) =>
-  row.cells.map((cell) => cellText(cell, nodeText)).join('\t'));
+export {mapBlocks, flatText} from './WalkMap';

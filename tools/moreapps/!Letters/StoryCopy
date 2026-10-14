@@ -1,0 +1,156 @@
+// StoryCopy - a header or footer story copied to a new part of the
+// same document with fresh ids (Batch D P7.4, D14 "Link to previous:
+// off", D10).
+//
+//   copyStory(doc, story, part) -> Story  a NEW story for part name
+//       `part` (./StoryWrite freeName) of the same kind, root and
+//       prolog as `story`, its relationships the same (a new .rels
+//       of the new part is written from them: relsPart null), no
+//       bytes and no orig (written from the model); its blocks:
+//     - paragraphs and typed tables as a paste in the same document
+//       makes them (./ClipClean clean sameDoc: a raw inline whose XML
+//       holds an id that must stay unique, a bookmark, a comment
+//       mark, becomes its text or nothing; ./ClipCleanTbl
+//       freshBlocks: a fresh model id for every paragraph and table,
+//       no w14 ids), every wp:docPr id in a raw inline fresh
+//       (./ClipPics freshDocPrs);
+//     - an Opaque block (a content control holding a PAGE field,
+//       Word's page-number footers) kept, not flattened: its
+//       bookmark, comment and permission marks dropped (their
+//       content stays), w14:paraId / textId dropped (./ClipIds
+//       keepIds), every wp:docPr id fresh (./PicEdit withDocPrIds)
+//       and every content control id (w:sdtPr/w:id) fresh;
+//     - the content control ids in raw inlines fresh too;
+//     - a copy that would be empty or end with a table gets an empty
+//       paragraph at its end (CT_HdrFtr; ./OpsStory refuses it
+//       otherwise).
+//     docPr ids count on from the document's (./PicIds); content
+//     control ids from 1 up, past every one the document uses
+//     (usedSdtIds). Revision marks (w:ins, w:del...) keep their ids
+//     (they wrap content; Word tolerates repeated revision ids).
+//   usedSdtIds(doc) -> Set of numbers  every w:sdtPr/w:id w:val in
+//       the body's and the stories' raw XML (Opaque blocks and raw
+//       inlines, ./Walk scan and scanStories)
+// The XML is read in the story's own scope (./PicRels partDoc,
+// ./PicRead docMap). Pure: no desktop services.
+// usedSdtIds is used inside this module only (not exported).
+import {clean} from './ClipClean';
+import {freshBlocks} from './ClipCleanTbl';
+import {freshDocPrs} from './ClipPics';
+import {keepIds} from './ClipIds';
+import {withDocPrIds} from './PicEdit';
+import {usedDocPrIds, freshDocPrId} from './PicIds';
+import {partDoc} from './PicRels';
+import {docMap} from './PicRead';
+import {scan, scanStories, mapBlocks} from './Walk';
+import {newPara} from './Model';
+
+const DROP = new Set(['bookmarkStart', 'bookmarkEnd',
+  'commentRangeStart', 'commentRangeEnd', 'commentReference',
+  'permStart', 'permEnd']);
+const MAX_SDT = 2147483647;
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => String(n).slice(String(n).indexOf(':') + 1);
+const kids = (n) => (Array.isArray(n.children) ? n.children : []);
+const valOf = (n) => (Array.isArray(n.attrs) ? n.attrs : [])
+  .find(([k]) => local(k) === 'val');
+
+/** fn(node) for every raw XML node of block b (not deeper). */
+function rawOf(b, fn) {
+  if (!isObj(b)) return;
+  if (b.type === 'opaque' && isObj(b.node)) fn(b.node);
+  if (b.type === 'p' && isObj(b.inlines)) {
+    for (const x of Object.values(b.inlines))
+      if (isObj(x) && isObj(x.node)) fn(x.node);
+  }
+}
+
+/** See the header. */
+function usedSdtIds(doc) {
+  const out = new Set();
+  const look = (root) => {
+    const stack = [[root, null]];
+    while (stack.length) {
+      const [n, up] = stack.pop();
+      if (!isObj(n)) continue;
+      if (up === 'sdtPr' && local(n.name) === 'id') {
+        const v = valOf(n);
+        if (v && /^-?\d{1,11}$/.test(v[1])) out.add(Number(v[1]));
+      }
+      const me = local(n.name);
+      for (const c of kids(n)) stack.push([c, me]);
+    }
+  };
+  const each = (b) => rawOf(b, look);
+  scan(doc, each);
+  scanStories(doc, each);
+  return out;
+}
+
+/** A content control id counter: from 1, past those used. */
+function sdtIds(doc) {
+  let used = null, k = 0;
+  return () => {
+    if (!used) used = usedSdtIds(doc);
+    do k++; while (used.has(k) && k < MAX_SDT);
+    used.add(k);
+    return k;
+  };
+}
+
+/** n without the marks of DROP, its sdt ids fresh (copied only
+ *  where something changed). */
+function strip(n, sdt) {
+  if (!isObj(n) || !Array.isArray(n.children)) return n;
+  const me = local(n.name);
+  let out = null;
+  n.children.forEach((c, k) => {
+    let d = c;
+    if (isObj(c) && DROP.has(local(c.name))) d = null;
+    else if (isObj(c) && me === 'sdtPr' && local(c.name) === 'id' &&
+      valOf(c)) {
+      const at = valOf(c)[0];
+      d = {...c, attrs: c.attrs.map(([a, v]) => [a, a === at
+        ? String(sdt()) : v])};
+    } else d = strip(c, sdt);
+    if (d !== c && !out) out = n.children.slice(0, k);
+    if (out && d) out.push(d);
+  });
+  return out ? {...n, children: out} : n;
+}
+
+/** Paragraph b with its raw inlines' sdt ids fresh. */
+function sdtInlines(b, sdt) {
+  let inl = null;
+  for (const k of Object.keys(b.inlines)) {
+    const x = b.inlines[k];
+    if (!isObj(x) || !isObj(x.node)) continue;
+    const n = strip(keepIds(x.node), () => sdt());
+    if (n === x.node) continue;
+    (inl ||= {...b.inlines})[k] = {...x, node: n};
+  }
+  return inl ? {...b, inlines: inl} : b;
+}
+
+/** See the header. */
+export function copyStory(doc, story, part) {
+  const view = partDoc(doc, story), map = docMap(view);
+  const used = usedDocPrIds(doc);
+  const next = () => (used.max = freshDocPrId(used));
+  const sdt = sdtIds(doc);
+  let list = [];
+  for (const b of story.blocks) {
+    if (isObj(b) && b.type === 'opaque') {
+      list.push({type: 'opaque', node: withDocPrIds(strip(
+        keepIds(b.node), sdt), map, next)});
+    } else list.push(...clean([b], view, {sameDoc: true}));
+  }
+  list = freshDocPrs(view, mapBlocks(freshBlocks(list),
+    (b) => sdtInlines(b, sdt)), next);
+  const last = list[list.length - 1];
+  if (!last || last.type === 'tbl') list.push(newPara(''));
+  return {part, kind: story.kind, root: story.root,
+    prolog: story.prolog ?? null, blocks: list,
+    rels: Array.isArray(story.rels) ? story.rels.slice() : null,
+    relsPart: null, orig: [], bytes: null};
+}

@@ -1,0 +1,111 @@
+// ItemMake - one item of a ./DocLayout for a block (split from
+// ./DocItems, Batch D P13.2 prep): its fields, and prev's lines or
+// table kept for it when ./ItemReuse allows (see the header of
+// ./DocItems: the item, the reuse rules, L.flow and L.byId).
+//
+//   BOX          28: a kept block's box (px; the item is 12 more)
+//   itemOf(ctx, b, col, depth, mark, ci?) -> the item of block b, the
+//                ci-th in column col (depth: the tables round it, 1
+//                for a top-level block), registered in L.byId and
+//                put in L.flow; ctx: ./DocItems buildItems' {L,
+//                keep, prev, share, make, w, s, row, dx, ...} (row:
+//                the block's ./OutlineLayout row in Outline view,
+//                dx its indent: x moved by it; else null)
+//
+// Pure: no desktop services.
+import {kindOf} from './Info';
+import {blockId} from './DocPos';
+import {tableItem} from './TblItems';
+import {reuseTable} from './TblReuse';
+import {MAX_DEPTH} from './TblCheck';
+import {sameKey, adopt, track, sameInputs, inpOf, anchored, swapAlt}
+  from './ItemReuse';
+import {widthOf} from './ColPass';
+import {floatsIn} from './PicLine';
+import {wrapKey, cellKey} from './WrapPass';
+
+/** Root item it in Outline view (ctx.row: ./OutlineLayout's row):
+ *  its indent dx, level and marker. */
+function outlined(ctx, it) {
+  const r = ctx.row;
+  it.dx = ctx.dx;
+  it.x += ctx.dx;
+  it.level = r.level;
+  it.marker = r.marker;
+  it.first = !!ctx.L.outline.first;
+}
+
+export const BOX = 28;                 // a kept block's box
+const NONE = Object.freeze([]);
+
+/** The item of paragraph b, its ci-th in column col (see itemOf):
+ *  no table code (a table-free layout's every item). */
+function paraItem(ctx, b, col, mark, ci) {
+  const {L} = ctx, flow = L.flow, root = col === L.root;
+  const it = {id: b.id, block: b, para: b, kind: 'p',
+    index: flow ? flow.length : ci, x: col.x,
+    w: root ? widthOf(L, b.id, ctx.w) : col.w, col, ci,
+    s: root ? ctx.s : null,
+    y: 0, h: 0, gapAbove: 0, gapBelow: 0, marks: NONE, deco: null,
+    lines: null, metrics: L.metrics,
+    list: L.labels.get(b.id) || null, mark};
+  if (root && ctx.row) outlined(ctx, it);
+  if (flow) flow.push(it);
+  const o = ctx.keep ? ctx.prev.byId.get(it.id) : undefined;
+  const same = sameInputs(ctx, o, it, col);
+  it.inp = inpOf(o, same);
+  const wk = ctx.wrap ? [wrapKey(L, it.id), wrapKey(ctx.prev, it.id)]
+    : null;
+  const a = same && o.lines && !(wk && wk[0] !== wk[1]) ? o : null;
+  if (a) adopt(ctx, it, o, 1);
+  else if (!(same && wk && swapAlt(it, o, wk)) && root) {
+    anchored(ctx, b);
+  }
+  if (root) track(ctx, ci, a);
+  L.byId.set(it.id, it);
+  return it;
+}
+
+/**
+ * The item of block b in column col (depth: the tables around it,
+ * 1 for a top-level table's own; ci its index in col), registered in
+ * L.byId and put in L.flow (a table twice: index, endIndex; L.flow
+ * is made at the first table: the items before it are L.items).
+ * ctx: {L, keep, prev, share, make}.
+ */
+export function itemOf(ctx, b, col, depth, mark, ci = 0) {
+  if (b.type === 'p') return paraItem(ctx, b, col, mark, ci);
+  const {L} = ctx;
+  const tbl = b.type === 'tbl' && depth <= MAX_DEPTH;
+  if (tbl && !L.flow) L.flow = L.items.slice();
+  const flow = L.flow, root = col === L.root;
+  const it = {id: blockId(b), block: b, kind: tbl ? 'tbl' : 'box',
+    index: flow ? flow.length : ci, x: col.x,
+    w: root ? ctx.w : col.w, col, ci, s: root ? ctx.s : null,
+    y: 0, h: tbl ? 0 : BOX + 12, gapAbove: 0, gapBelow: 0,
+    marks: NONE, deco: null, mark,
+    label: `[${b.type === 'tbl' ? 'table' : kindOf(b.node)} - ` +
+      'preserved, not shown]'};
+  if (root && ctx.row) outlined(ctx, it);
+  if (flow) flow.push(it);
+  const o = ctx.keep ? ctx.prev.byId.get(it.id) : undefined;
+  const ot = tbl && o && o.kind === 'tbl' &&
+    !(ctx.refloat && floatsIn(b)) && !(ctx.wrap &&
+      cellKey(L, it.id) !== cellKey(ctx.prev, it.id)) ? o : null;
+  if (tbl && !(ot && ctx.share && reuseTable(L, it, ot, depth))) {
+    tableItem(L, it, depth, ot, ctx.make, ctx.share);
+  }
+  if (tbl) {
+    it.endIndex = flow.length;
+    flow.push(it);
+  }
+  const a = o && o.kind === it.kind && sameKey(o, it) &&
+    o.w === it.w && o.col.styles === col.styles ? o : null;
+  it.inp = inpOf(a, !!a);
+  if (a) adopt(ctx, it, o, 0);
+  if (root && tbl && (!a || ctx.refloat)) anchored(ctx, b);
+  if (root) track(ctx, ci, ctx.wrap && wrapKey(L, it.id) !==
+    wrapKey(ctx.prev, it.id) ? null : a);   // (pinned: ./WrapPass)
+  L.byId.set(it.id, it);
+  return it;
+}

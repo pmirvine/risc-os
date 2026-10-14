@@ -1,0 +1,123 @@
+// PageHF - the headers and footers of a document's pages (Batch D,
+// D5, D13): the hooks ./Paginate asks of the galley, and where a page
+// shows them.
+//
+//   hfHooks(L) -> {typeOf(s, first, num), refOf(s, type, kind),
+//       hdrH(s, type), ftrH(s, type), layoutOf(ref, s)}  for the
+//       ./DocLayout L (its doc, metrics, decorators and pics)
+//     typeOf    ./HdrPick typeOf: 'first' (titlePg, the section's
+//               first page), 'even' (evenAndOddHeaders, an even
+//               number), else 'default'
+//     refOf     ./HdrPick refOf's answer (chainOf: each section's
+//               resolved once, linear; final fix A F2-I1): the
+//               StoryRef {part, type, s'} a
+//               page of section s shows; {part: null, type, s} an
+//               empty one; {part: null, ..., kept} a part that is no
+//               story; null none. Memoised per (kind, s, type): the
+//               same object each time (pages compare it by value)
+//     hdrH, ftrH  px: the height of that story laid out by
+//               layoutOf (0: none, an empty one, or a kept part: its
+//               height is not known, so it pushes nothing)
+//     layoutOf(ref, s, pg?, P?) -> {h, L, x, y} | null  ref's story
+//               laid out at section s's text width (./StoryLayout
+//               layoutStory: shared by every page that shows it);
+//               with Page pg of Pages P, its fields shown computed
+//               for that page (D18: ./FieldShow storyKey the values
+//               key, L.fields' now, countsOf(P) the counts: one
+//               layout per distinct value); without, the stored
+//               results of the page fields (the heights)
+//   printGalley(L) -> ./PageGalley galleyOf(L, hfHooks(L)): the
+//       galley Print layout paginates (headers push the body: D5)
+//   boxesOf(G, pg, P?) -> [{kind, ref, x, y, w, h, lay}]  where Page
+//       pg (of ./Pages P: its fields computed for it, layoutOf) shows
+//       its header and footer, in px from the page's
+//       top-left corner: x the left margin (gutter in), w the text
+//       width, the header's top at mar.header, the footer's bottom
+//       at mar.footer above the page's bottom (Word's places); lay
+//       the story's layout, or null for a kept part: a BAND_H band
+//       ./PagePaint draws grey with BAND_TEXT. No box for an empty
+//       header or none, a blank page, or a G without layoutOf
+//   BAND_H      16 px
+//   BAND_TEXT   {hdr: '[header - preserved, not shown]', ftr: ...}
+//
+// Pure: no desktop services.
+import {galleyOf} from './PageGalley';
+import {typeOf, chainOf} from './HdrPick';
+import {layoutStory} from './StoryLayout';
+import {storyKey, countsOf, pageOn} from './FieldShow';
+
+export const BAND_H = 16;
+export const BAND_TEXT = Object.freeze({
+  hdr: '[header - preserved, not shown]',
+  ftr: '[footer - preserved, not shown]'});
+
+const KINDS = ['hdr', 'ftr'];
+
+/** See the header. */
+export function hfHooks(L) {
+  const doc = L.doc;
+  const chains = {hdr: new Map(), ftr: new Map()};  // type -> chain
+  const hs = {hdr: new Map(), ftr: new Map()};  // type -> [s] -> px
+  const plain = new Map();             // story -> width -> layout
+  const ctx = {doc, metrics: L.metrics, fields: L.fields};
+  if (L.decorators) ctx.decorators = L.decorators;
+  if (L.pics) ctx.pics = L.pics;
+  const ref = (s, type, kind) => {
+    const by = kind === 'hdr' || kind === 'ftr' ? chains[kind] : null;
+    let c = by && by.get(type);
+    if (!c) {
+      c = chainOf(doc, type, kind);    // (RangeError: a bad one)
+      by.set(type, c);
+    }
+    return c(s);
+  };
+  const layoutOf = (r, s, pg, P) => {
+    const st = r && r.part && doc.stories instanceof Map
+      ? doc.stories.get(r.part) : null;
+    const g = st && L.geom(s);
+    if (!g) return null;
+    if (!pg) {                         // (many sections, one each)
+      let m = plain.get(st);
+      if (!m) plain.set(st, m = new Map());
+      let lay = m.get(g.textW);
+      if (!lay) m.set(g.textW, lay = layoutStory(st, g.textW, ctx));
+      return lay;
+    }
+    const pages = countsOf(P), now = L.fields ? L.fields.now
+      : undefined, page = pageOn(pg);   // (no Page kept: C1)
+    const key = storyKey(doc, r.part, {now, page, pages});
+    return layoutStory(st, g.textW, {...ctx, page, pages}, key);
+  };
+  const height = (kind) => (s, type) => {
+    const by = hs[kind];
+    let h = by.get(type);
+    if (!h) by.set(type, h = []);
+    if (h[s] === undefined) {
+      const lay = layoutOf(ref(s, type, kind), s);
+      h[s] = lay ? lay.h : 0;
+    }
+    return h[s];
+  };
+  return {typeOf: (s, first, num) => typeOf(doc, s, first, num),
+    refOf: ref, hdrH: height('hdr'), ftrH: height('ftr'), layoutOf};
+}
+
+/** See the header. */
+export const printGalley = (L) => galleyOf(L, hfHooks(L));
+
+/** See the header. */
+export function boxesOf(G, pg, P) {
+  const g = !pg.blank && G.layoutOf && G.geom(pg.s);
+  if (!g) return [];
+  const out = [], m = g.mar;
+  for (const kind of KINDS) {
+    const ref = kind === 'hdr' ? pg.header : pg.footer;
+    if (!ref || (!ref.part && !ref.kept)) continue;
+    const lay = ref.kept ? null : G.layoutOf(ref, pg.s, pg, P);
+    if (!ref.kept && !lay) continue;
+    const h = lay ? lay.h : BAND_H;
+    out.push({kind, ref, x: m.left, y: kind === 'hdr' ? m.header
+      : pg.h - m.footer - h, w: g.textW, h, lay});
+  }
+  return out;
+}

@@ -1,0 +1,209 @@
+// EditStep - where the caret goes after an undo or a redo: the
+// last leaf op decides. Split from ./EditApply (Batch D, P0.2),
+// which re-exports stepEnd.
+//
+//   stepEnd(doc, ops, oldL) -> {id, off} | null: the caret after an
+//                         undo or redo whose 'change' event carried
+//                         ops (./Document); oldL: the layout from
+//                         before it (a ./DocLayout), or null
+//   lastLeaf(ops) -> op | null  the op that decides: the last leaf
+//                         (compounds opened) that is not a
+//                         setDocPart, setSection or setStory
+//   stepTo(doc, ops, oldL) -> {story, gone, doc, sel} | null  where
+//                         the step leaves the window (P7.5, D14:
+//                         Word's undo goes to the story it changes):
+//                         story the decider's (op.story: a part
+//                         name; null for the body), doc the doc its
+//                         paths are read in (the body: doc; a story:
+//                         doc with the story's blocks as its one
+//                         section's, R8 [0, i, ...]), sel the caret
+//                         stepEnd gives there (a picture put back:
+//                         it selected, ./PicOps stepSel) or null;
+//                         gone (sel and doc null) when doc has no
+//                         such story (the undo of the step that made
+//                         it). null: no op decides (a setSection, a
+//                         setStory alone): the selection stays
+//
+// The caret after an undo or redo is at the end of the last change
+// it made: the last op applied (the last of a compound, in the order
+// applied) decides, read against the document after it:
+//   spliceText, replaceText   after the text put in (at + length):
+//                             so undoing typing leaves the caret
+//                             where the typing began, undoing a
+//                             deletion after the text it puts back
+//   restoreBlock              where the restored paragraph first
+//                             differs from what it replaced (the
+//                             block of that id in oldL): undoing
+//                             Enter puts the caret where the
+//                             paragraph was split; a table (R18,
+//                             Batch C3.4): the start of the first
+//                             paragraph of its first row that is not
+//                             the very row of oldL's table at that
+//                             index (else row 0), from its first
+//                             cell on (a table command undone: the
+//                             caret in the rows it changed); when
+//                             every row is oldL's but some of its
+//                             last are gone (Tab's new row undone),
+//                             the end of its last paragraph
+//   splitBlock                the start of the new (second) part
+//   insertBlock(s)            the start of the first block put in
+//                             (a typed table: its first paragraph,
+//                             R18's row 0)
+//   removeBlock(s)            the end of the block before the gap
+//                             (the start of the one after when the
+//                             gap is at the section's start); a
+//                             typed table there: the end of its last
+//                             paragraph (the start of its first),
+//                             where TB10's Backspace (Delete) put
+//                             the caret, never its edge (C3 fix wave)
+//   mergeBlock, setProps      the start of that paragraph
+//   splitSection, mergeSection  the start of the paragraph at the
+//                             split (the one that ends the first
+//                             section; for a merge found in oldL)
+//   setDocPart, setSection,   skipped: the op before it decides;
+//   setStory                  only these: null (the selection
+//                             stays)
+// A kept block (a table) gives its edge {id, off: 0} (or 1 at an
+// end). Null when nothing fits (the caller keeps its selection).
+// Pure: no desktop services.
+import {blockId} from './DocPos';
+import {at as walkAt} from './Walk';
+import {isPath, sib} from './Path';
+import {rowPos, firstPos, lastPos} from './TblPos';
+import {caret} from './Selection';
+import {stepSel} from './PicOps';
+
+const SKIP = new Set(['setDocPart', 'setSection', 'setStory']);
+
+/**
+ * The last leaf op of ops (compounds opened, in order applied) that
+ * is not a setDocPart, a setSection or a setStory, or null.
+ */
+export function lastLeaf(ops) {
+  for (let k = ops.length - 1; k >= 0; k--) {
+    const op = ops[k];
+    if (!op || SKIP.has(op.op)) continue;
+    if (op.op !== 'compound') return op;
+    const r = Array.isArray(op.ops) ? lastLeaf(op.ops) : null;
+    if (r) return r;
+  }
+  return null;
+}
+
+/**
+ * After mergeSection {at: s}: the paragraph that ended section s,
+ * from oldL (the first section-end mark from s's first item; the
+ * sections before s are as they were).
+ */
+function mergeEnd(doc, s, oldL) {
+  const sec = doc.sections[s];
+  if (!sec) return null;
+  let c = 0;
+  for (let k = 0; k < s; k++) c += doc.sections[k].blocks.length;
+  const items = (oldL && oldL.items) || [];
+  for (let j = c; j < items.length && j - c < sec.blocks.length;
+    j++) {
+    if (!items[j].mark) continue;
+    return sec.blocks[j - c] === items[j].block
+      ? start(items[j].block) : null;
+  }
+  return null;
+}
+
+const blockAt = (doc, at) => walkAt(doc, at);
+const isTbl = (b) => b.type === 'tbl' && Array.isArray(b.rows);
+/** The path d blocks on in the same container (null: not a path). */
+const next = (at, d) => (isPath(at) ? sib(at, d) : null);
+const start = (b) => (b ? {id: blockId(b), off: 0} : null);
+const end = (b) => (b ? {id: blockId(b),
+  off: b.type === 'p' ? b.text.length : 1} : null);
+
+/** The length of the common start of a and b. */
+function common(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+  // (not inside a surrogate pair)
+  if (i > 0 && i < a.length && (a.charCodeAt(i) & 0xFC00) === 0xDC00)
+    i--;
+  return i;
+}
+
+/** R18: the first row of t that is not old's row at its index (else
+ *  row 0), its first paragraph (./TblPos rowPos); every row old's
+ *  but old longer: the end of t's last paragraph; t's edge if none. */
+function tableStep(t, old) {
+  const rs = old && old.type === 'tbl' ? old.rows : null;
+  let r = 0;
+  while (rs && r < t.rows.length && t.rows[r] === rs[r]) r++;
+  if (rs && r === t.rows.length && rs.length > r) {
+    return lastPos(t) || start(t);
+  }
+  return rowPos(t, r < t.rows.length ? r : 0) || start(t);
+}
+
+/** See the header. */
+export function stepEnd(doc, ops, oldL) {
+  const op = Array.isArray(ops) ? lastLeaf(ops) : null;
+  if (!op) return null;
+  switch (op.op) {
+    case 'spliceText': case 'replaceText': {
+      const b = blockAt(doc, op.block);
+      if (!b || b.type !== 'p') return start(b);
+      const n = op.op === 'spliceText'
+        ? (op.content && op.content.text || '').length
+        : (op.ins || '').length;
+      return {id: b.id, off: Math.min(op.at + n, b.text.length)};
+    }
+    case 'restoreBlock': {
+      const b = blockAt(doc, op.block);
+      const o = b && oldL && oldL.byId.get(blockId(b));
+      if (b && b.type === 'p' && o && o.block.type === 'p')
+        return {id: b.id, off: common(o.block.text, b.text)};
+      if (b && b.type === 'tbl') return tableStep(b, o && o.block);
+      return start(b);
+    }
+    case 'splitBlock':
+      return start(blockAt(doc, next(op.block, 1)));
+    case 'insertBlock': case 'insertBlocks': {
+      const b = blockAt(doc, op.at);
+      return (b && isTbl(b) && firstPos(b)) || start(b);
+    }
+    case 'removeBlock': case 'removeBlocks': {
+      const b = blockAt(doc, next(op.at, -1));
+      if (b) return (isTbl(b) && lastPos(b)) || end(b);
+      const a = blockAt(doc, op.at);
+      return (a && isTbl(a) && firstPos(a)) || start(a);
+    }
+    case 'mergeBlock': case 'setProps':
+      return start(blockAt(doc, op.block));
+    case 'splitSection':
+      return start(blockAt(doc, op.at));
+    case 'mergeSection': {
+      const sec = doc.sections[op.at];
+      return mergeEnd(doc, op.at, oldL) ||
+        start(sec && sec.blocks[0]);
+    }
+    default:
+      return null;
+  }
+}
+
+/** See the header. */
+export function stepTo(doc, ops, oldL) {
+  const op = Array.isArray(ops) ? lastLeaf(ops) : null;
+  if (!op) return null;
+  const story = op.story === undefined || op.story === null ? null
+    : op.story;
+  let d = doc;
+  if (story !== null) {
+    const m = doc.stories, st = m instanceof Map ? m.get(story) : null;
+    if (!st || !Array.isArray(st.blocks)) {
+      return {story, gone: true, doc: null, sel: null};
+    }
+    d = {...doc, sections: [{...doc.sections[0], blocks: st.blocks}]};
+  }
+  const p = stepEnd(d, ops, oldL);
+  return {story, gone: false, doc: d,
+    sel: p ? stepSel(d, ops) || caret(p) : null};
+}

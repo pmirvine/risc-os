@@ -1,0 +1,144 @@
+// ColumnsBox - the Columns dialogue box (Format > Columns...; Batch D
+// P10.4, D23): Presets (One, Two, Three, Left, Right), Number of
+// columns, Equal column width, Width and Spacing of up to three
+// columns, Line between, Apply to (This section, This point forward,
+// Whole document). WimpLib Ui/Dialog, at least 3.4 in (612 px) wide.
+//
+//   columnsBox(dw) -> the box's api, one per document (key
+//       'columns:<docKey>', dw.boxes 'columns': ./CloseDoc deletes
+//       it); asked again while open, the same box to the front;
+//       null when the document has no selection.
+//
+// It opens with the columns of the sections in scope (./SectSetup
+// colsOf; Apply to This section when there are two sections or more,
+// else Whole document); a value they do not share is blank and kept.
+// A preset puts its values in (./SectCols presetOf); the preset the
+// values are is shown chosen. Equal column width on: only the first
+// Spacing can be changed, the widths follow it; off: each column's
+// Width and Spacing (not the last's). More than three columns are
+// equal only (a document's unequal ones past the third are kept).
+// OK (Return) sends what changed from what was shown (a length not
+// touched keeps its exact twips; a value shown blank and left blank
+// keeps each section's own: P10 fix M3) to columnsCmd: one undo
+// step, the box gone. A number not 1 to 45, a field not a length, a
+// column under 0.5 inch, columns wider than the text: OK beeps, says
+// why and keeps the box (nothing rounded or clamped). The selection or
+// document changed since it was filled (./TabsBox where): OK beeps,
+// fills it again, says so and keeps it. Cancel, Escape and the close
+// icon change nothing.
+// In the header and footer mode (the box left open as it was
+// entered) OK beeps and says to leave it first (./TabsBox
+// IN_HDR), the box kept (final fix A F3-I1).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where, IN_HDR} from './TabsBox';
+import {PRESETS, presetOf, colsOf, columnsWhy, columnsCmd}
+  from './SectSetup';
+import {W, S, state, showCols, markPreset, spaceNow, evenly, changes,
+  fillState, blankWhy} from './ColumnsFields';
+
+const FIELD_MAX = Number.MAX_SAFE_INTEGER;   // OK checks, never clamps
+const NAMES = ['One', 'Two', 'Three', 'Left', 'Right'];
+const SCOPE_IDS = [{id: 'section', text: 'This section'},
+  {id: 'forward', text: 'This point forward'},
+  {id: 'all', text: 'Whole document'}];
+const len = (name, label, help) => ({kind: 'length', name, label,
+  min: -FIELD_MAX, max: FIELD_MAX, w: 110, help});
+const rows = () => [
+  PRESETS.map((id, i) => ({kind: 'radio', name: id, group: 'preset',
+    value: id, text: NAMES[i], label: i ? undefined : 'Presets',
+    help: `${NAMES[i]}: ${i < 3 ? 'equal columns' : 'two columns, ' +
+      'the narrow one on the ' + id}.`})),
+  [{kind: 'number', name: 'num', label: 'Number of columns',
+    min: -FIELD_MAX, max: FIELD_MAX, decimals: 0, w: 80,
+    help: 'How many columns: 1 to 45.'},
+  {kind: 'option', name: 'equal', text: 'Equal column width',
+    help: 'Every column the same width.'}],
+  ...[0, 1, 2].map((i) => [len(W[i], `Column ${i + 1}: width`,
+    'The width of the column: at least 0.5 inch.'),
+  len(S[i], 'Spacing', 'The space after the column.')]),
+  {kind: 'option', name: 'sep', text: 'Line between',
+    help: 'A line down the middle of the space between columns.'},
+  {kind: 'popup', name: 'scope', label: 'Apply to', choices: SCOPE_IDS,
+    help: 'The sections that take these columns. This point forward ' +
+      'starts a new section at the caret.'},
+  {kind: 'label', name: 'msg', text: '', w: 560},
+];
+const HELP = 'Columns: how many newspaper columns, how wide.';
+const CHANGED = 'The document changed while the box was open: it ' +
+  'shows the values now. Look again, then click OK.';
+const wired = new WeakSet();
+
+/** See the header. */
+export function columnsBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `columns:${dw.docKey}`,
+    title: 'Columns', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 612});
+  box(dw, 'columns', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, v);
+  api.set('scope', v.d.doc.sections.length > 1 ? 'section' : 'all');
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Show the columns of the scope picked. */
+function refill(api, v) {
+  fillState(api, colsOf(v.d.doc, v.sel, api.get('scope')), where(v));
+}
+
+/** The handlers of a new box. */
+function wire(api, v) {
+  wired.add(api);
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'preset') {
+      const p = presetOf(value, st.q.textW, spaceNow(api));
+      if (!p) return;
+      api.set('num', p.num);
+      api.set('equal', p.equal);
+      showCols(api, p.col, p.num);
+    } else if (name === 'num' || name === 'equal') {
+      evenly(api, api.get('num'));
+    } else if (name === 's1' && api.get('equal') !== false) {
+      evenly(api, api.get('num'));
+    } else if (W.includes(name) || S.includes(name)) {
+      st.touched = true;
+      markPreset(api);
+    }
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') { v.focus(); return undefined; }
+    if (v.hdr) return no(IN_HDR);      // (the section's: F3-I1)
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v);
+      return no(CHANGED);
+    }
+    const scope = values.scope, doc = v.d.doc;
+    const blank = blankWhy(api, values);
+    if (blank) {
+      return no(columnsWhy(doc, v.sel, blank === 'num' ? {num: NaN}
+        : {space: NaN}, scope), blank);
+    }
+    const cmd = changes(api, values);
+    const why = columnsWhy(doc, v.sel, cmd, scope);
+    if (why) return no(why);
+    const out = v.typing.command(() => columnsCmd(v.d, v.sel, cmd,
+      scope));
+    if (!out) return no(columnsWhy(doc, v.sel, cmd, scope) || '');
+    v.edited(out);
+    v.focus();
+    return undefined;
+  });
+}

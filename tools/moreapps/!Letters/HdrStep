@@ -1,0 +1,133 @@
+// HdrStep - where the window goes after an undo or a redo, the body
+// or a header or footer story (Batch D P7.5, D14: Word's undo goes
+// to the story it changes; Review Focus 2: no stale facade). Split
+// from ./HdrEdit, whose mode it enters and leaves. v is the
+// window's ./EditView.
+//
+//   afterChange(v, ev)  every 'change' of the real Document
+//       (./EditView _changed, the layout marked stale first: v.bodyL
+//       is the document's now when asked for, v._L the one before):
+//     an apply      the mode is left when its story is gone
+//     undo, redo    ./EditStep stepTo (its oldL: the body's layout
+//                   before, or the mode's story layout before) says
+//                   where the step was, and the window goes there:
+//       no place (a setSection, a setStory alone: a header
+//                   command, ./HdrCmd)  in the body nothing moves.
+//                   In the mode (M1, Word shows what the step
+//                   changed): to the header or footer story the step
+//                   put back or changed (its last setStory whose
+//                   story is there) when that is not the mode's,
+//                   from the mode's page (as below, the caret at its
+//                   start); else the mode stays while its page still
+//                   shows its story; else (Different first page,
+//                   odd and even, a link undone: the page shows
+//                   another, or its story is gone) the mode again on
+//                   the same page for what it shows now (one not
+//                   made yet too), the caret at its start; left when
+//                   there is none
+//       a story gone (the undo of the step that made it)  the mode,
+//                   whichever story it is on, is left: the body's
+//                   selection back
+//       the body    the mode left; the caret at stepTo's sel
+//       the mode's story  the caret at stepTo's sel, in it
+//       another story  the mode (if any) left; the mode entered
+//                   (./HdrEdit enterMode) on the first page from the
+//                   mode's page (else the body caret's: ./Pages
+//                   ofPos) that shows that story (./HdrEdit
+//                   showing), the caret at stepTo's sel; no page
+//                   shows it, or no pages (Draft, Web layout): the
+//                   window stays in the body, the selection kept
+//       a story not made yet (the mode's pending facade) is never
+//       the step's: a redo making a story of the same name enters it
+//       afresh
+// Pure: no desktop services.
+import {stepTo, lastLeaf} from './EditStep';
+import {enterMode, leaveMode, showing, settling} from './HdrEdit';
+import {caret} from './Selection';
+
+const isHf = (st) => !!st && (st.kind === 'hdr' || st.kind === 'ftr');
+
+/** The layout the step's paths were laid out in before, or null. */
+function before(m, ops, oldB) {
+  const op = Array.isArray(ops) ? lastLeaf(ops) : null;
+  if (!op) return null;
+  if (op.story === undefined || op.story === null) return oldB;
+  return m && m.part === op.story && m.ed ? m.ed.L : null;
+}
+
+/** Into story t.story on a page that shows it (see the header). */
+function goTo(v, t) {
+  const m = v.hdr, from = m ? m.i : -1;
+  if (m) leaveMode(v);
+  const B = v.bodyL, P = B.place && B.place.pages;
+  const st = v.real.doc.stories.get(t.story);
+  if (!P || !st || (st.kind !== 'hdr' && st.kind !== 'ftr')) return;
+  const sel = v.sel;
+  const i0 = from >= 0 ? from : sel ? Math.max(0,
+    P.ofPos(sel.head, sel.affinity)) : 0;
+  const i = showing(B, {part: t.story, kind: st.kind,
+    facade: {pending: null}}, i0);
+  if (i < 0) return;
+  const m2 = enterMode(v, {kind: st.kind, i});
+  if (m2 && m2.part === t.story) v.sel = t.sel || atStart(v);
+}
+
+/** The caret at the start of the mode's story. */
+const atStart = (v) => caret(v.L.docStart());
+
+/** The header or footer story ops last set that is in doc, or null
+ *  (compounds opened). */
+function changed(doc, ops) {
+  for (let k = ops.length - 1; k >= 0; k--) {
+    const op = ops[k];
+    if (op && op.op === 'compound' && Array.isArray(op.ops)) {
+      const r = changed(doc, op.ops);
+      if (r) return r;
+    } else if (op && op.op === 'setStory' && isHf(doc.stories.get(
+      op.part))) return op.part;
+  }
+  return null;
+}
+
+/** A step naming no place, the window in mode m (see the header). */
+function noPlace(v, m, ops) {
+  const part = Array.isArray(ops) ? changed(v.real.doc, ops) : null;
+  if (part && (part !== m.part || m.facade.pending)) {
+    goTo(v, {story: part, sel: null});
+    return;
+  }
+  const B = v.bodyL, P = B.place && B.place.pages;
+  if (!m.facade.gone && P && showing(B, m, m.i, settling(v)) === m.i)
+    return;
+  const {i, kind} = m;
+  leaveMode(v);
+  if (P && P.at(i) && enterMode(v, {kind, i})) v.sel = atStart(v);
+}
+
+/** See the header. */
+export function afterChange(v, ev) {
+  const m = v.hdr, oldB = v._L;        // (before it: not relaid yet)
+  if (ev.kind === 'apply') {
+    if (m && m.facade.gone) leaveMode(v);
+    return;
+  }
+  const t = stepTo(v.real.doc, ev.ops, before(m, ev.ops, oldB));
+  if (!t && m) {
+    noPlace(v, m, ev.ops);
+    return;
+  }
+  if (!t || t.gone) {
+    if (m && (t || m.facade.gone)) leaveMode(v);
+    return;
+  }
+  if (t.story === null) {
+    if (m) leaveMode(v);
+    if (t.sel) v.sel = t.sel;
+    return;
+  }
+  if (m && !m.facade.pending && m.part === t.story) {
+    if (t.sel) v.sel = t.sel;
+    return;
+  }
+  goTo(v, t);
+}

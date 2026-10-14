@@ -1,0 +1,183 @@
+// FieldBox - the Field dialogue box (Insert > Field..., Batch D,
+// D19): a popup of the field names Letters works out (./FieldNames
+// NAMES), a Format popup (number formats, date pictures, text cases
+// by example: FieldNames formatsOf), and a Field code text field
+// showing the code they build ('PAGE \* roman \* MERGEFORMAT'),
+// editable: any code, an unknown name too (put in with an empty
+// result). Two message lines, Cancel and OK. 3.6 inches wide (minW
+// 648). Built by WimpLib Ui/Dialog; what OK does: ./FieldUpdate.
+//
+//   fieldBox(dw) -> the box's api, one per document (key
+//       'field:<docKey>', kept in dw.boxes 'field' so ./CloseDoc
+//       deletes it with the document); asked again while it is
+//       open, the same box brought to the front and filled again.
+//       null when the document has no selection.
+//
+// With the selection on a field (./FieldMake fieldFor: the caret in
+// its code, or the field selected whole) the box edits
+// that field: titled Edit field, its code in the field, its name
+// chosen when it is one of the list; OK makes that its code and
+// updates its result (FieldUpdate editCode). A field whose code
+// holds another field cannot be changed (PG23): said at once, with
+// a beep; OK beeps again and keeps the box. Elsewhere (a caret in a
+// field's result, part of a field selected too) OK puts the
+// field in at the caret (the selection replaced) and fills its
+// result (FieldUpdate insertField). OK and Return: one command, one
+// undo step. Refused with a beep, a message and the box kept (never
+// changed to something else): an empty code, one longer than the
+// field (./FieldMake CODE_MAX), each with its own message (FieldMake
+// codeWhy: P9 fix M3), a place a field cannot go (in another
+// field's code, inside a page number shown worked out; a field whose
+// code cannot be changed, said as such when editing), and
+// a document or selection that changed while the box was open (the
+// box is filled again for the new selection; the code typed is kept
+// when the box still puts a field in, or still changes a field: P9
+// fix M2). Cancel, Escape and the close icon change
+// nothing; the caret goes back to the document. Works in the header
+// and footer mode too (on its story: dw.view.d).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {NAMES, formatsOf, codeOf} from './FieldNames';
+import {codeWhy, fieldFor, codePlan, CODE_MAX} from './FieldMake';
+import {parse} from './FieldParse';
+import {insertField, editCode} from './FieldUpdate';
+
+const LINE = 70;
+const rows = () => [
+  [{kind: 'popup', name: 'name', label: 'Field name', w: 150,
+    choices: NAMES.map((n) => ({id: n, text: n})),
+    help: 'The field: what Letters works out and shows in it.'},
+  {kind: 'popup', name: 'fmt', label: 'Format', w: 210,
+    choices: formatsOf('PAGE'),
+    help: 'How the field shows its value.'}],
+  {kind: 'text', name: 'code', label: 'Field code', maxLen: CODE_MAX,
+    w: 470, help: 'The field code: a field name, then switches. ' +
+      'You can type any code; Word works out the ones Letters ' +
+      'does not.'},
+  {kind: 'label', name: 'msg', text: '', w: 560},
+  {kind: 'label', name: 'msg2', text: '', w: 560},
+];
+const HELP = 'Field: put in a page number, a date, the file name ' +
+  'and so on, worked out by Letters; or change a field\'s code.';
+
+const state = new WeakMap();        // api -> {at, edit, nested}
+
+/** Where the document and its selection are (stale check). */
+const where = (v) => JSON.stringify([v.sel.anchor, v.sel.head,
+  v.d.stateId, !!v.hdr]);
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim().slice(0, LINE);
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+/** See the header. */
+export function fieldBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `field:${dw.docKey}`,
+    title: 'Field', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 648});
+  box(dw, 'field', () => api.win);
+  if (!state.has(api)) wire(api, dw);
+  refill(api, v);
+  if (!api.isOpen) api.open();
+  api.focus('code');
+  return api;
+}
+
+/** The name and format popups set to name (format: none). */
+function choose(api, name) {
+  const ok = NAMES.includes(name);
+  api.set('name', ok ? name : undefined);
+  api.choices('fmt', formatsOf(ok ? name : ''));
+  api.set('fmt', ok ? 'none' : undefined);
+}
+
+/** Fill the box from the document and its selection; keep: a
+ *  stale OK's (the code typed kept when the box still inserts, or
+ *  still edits a field it can change: P9 fix M2). */
+function refill(api, v, keep = false) {
+  const f = fieldFor(v.d.doc, v.sel);
+  const x = {at: where(v), edit: !!f, nested: false};
+  const old = state.get(api);
+  if (f) x.nested = !codePlan(v.d.doc, f, ' ' + f.instr.trim() + ' ');
+  if (keep && old && old.edit === x.edit && !old.nested &&
+    !x.nested) {
+    state.set(api, x);
+    return;
+  }
+  let why = '';
+  if (f) {
+    const code = f.instr.trim();
+    choose(api, parse(f.instr).name);
+    api.set('code', code.length > CODE_MAX ? undefined : code);
+    api.win.setTitle('Edit field');
+    if (x.nested) why = 'This field\'s code holds another field (or ' +
+      'spans lines): it cannot be changed here.';
+  } else {
+    const name = old && !old.edit &&
+      NAMES.includes(api.get('name')) ? api.get('name') : 'PAGE';
+    choose(api, name);
+    api.set('code', codeOf(name, 'none'));
+    api.win.setTitle('Field');
+  }
+  api.shade('code', x.nested);
+  api.shade('name', x.nested);
+  api.shade('fmt', x.nested);
+  state.set(api, x);
+  say(api, why);
+  if (why) wimp.beep();
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  const v = dw.view;
+  const no = (why) => {
+    wimp.beep();
+    say(api, why);
+    api.focus('code');
+    return false;
+  };
+  api.on('change', ({name, value}) => {
+    if (name === 'name' && value) {
+      choose(api, value);
+      api.set('code', codeOf(value, 'none'));
+    } else if (name === 'fmt' && value && api.get('name')) {
+      api.set('code', codeOf(api.get('name'), value));
+    }
+  });
+  api.on('button', ({name, values}) => {
+    const x = state.get(api);
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (!v.sel || where(v) !== x.at) {
+      if (v.sel) refill(api, v, true);
+      return no('The document changed while the box was open: ' +
+        'look again, then click OK.');
+    }
+    if (x.nested) {
+      return no('This field\'s code holds another field: it ' +
+        'cannot be changed here.');
+    }
+    const code = values.code ?? '', bad = codeWhy(code);
+    if (bad) return no(bad);
+    if (!(x.edit ? editCode : insertField)(dw, code)) {
+      say(api, x.edit ? 'This field\'s code cannot be changed here.'
+        : 'A field cannot go here: not in another field\'s code, ' +
+        'nor inside a page number worked out.');
+      api.focus('code');
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}

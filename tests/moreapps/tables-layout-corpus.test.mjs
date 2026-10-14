@@ -106,7 +106,8 @@ describe('every corpus table laid out (D20)', {skip: files.length ? false
       const ms = performance.now() - t0;
       if (ms > slowest) { slowest = ms; slowName = f; }
       const name = f.slice(CORPUS.length + 1);
-      for (const id of ids(doc)) assert.ok(L.byId.has(id), `${name} ${id}`);
+      for (const id of ids({sections: doc.sections}))
+        assert.ok(L.byId.has(id), `${name} ${id}`);
       for (const it of tblItems(L)) {
         tablesN++;
         rows += it.rows.length;

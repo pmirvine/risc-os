@@ -17,7 +17,7 @@ import {sectPrNode, hasProps} from '../../tools/moreapps/!Letters/WriteProps';
 import {docScope} from '../../tools/moreapps/!Letters/WriteBody';
 import {readSect} from '../../tools/moreapps/!Letters/ReadSect';
 import {deepEqual, newPara} from '../../tools/moreapps/!Letters/Model';
-import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {forEachBlock, forEachIn} from '../../tools/moreapps/!Letters/Walk';
 
 // the Default types ./WriteParts gives an extension it adds (its
 // BY_EXT, which it does not export)
@@ -44,7 +44,8 @@ function sortExtra(o, parent) {
 
 /**
  * A copy of `doc` in canonical form: paragraph and table ids 0, 1,
- * 2... in flow order at every depth (./Walk); the extra nodes of
+ * 2... in flow order at every depth (./Walk), then on through the
+ * stories' blocks; the extra nodes of
  * pPr/rPr/section props, and of the tblPr/trPr/tcPr of typed tables,
  * in the order of the documented contract (files from Word already
  * are); [Content_Types].xml first in zipOrder (the writer puts it
@@ -58,7 +59,7 @@ export function canon(doc) {
     if (s.raw) s.raw = {...s.raw, children: sortChildren('sectPr',
       s.raw.children)};
   }
-  forEachBlock(d, (b) => {
+  const each = (b) => {
     if (b.type === 'tbl') {
       b.id = k++;
       sortExtra(b.tblPr, 'tblPr');
@@ -71,7 +72,14 @@ export function canon(doc) {
     b.id = k++;
     sortExtra(b.pPr, 'pPr');
     for (const r of b.runs) sortExtra(r.rPr, 'rPr');
-  });
+  };
+  forEachBlock(d, each);
+  // stories (Batch D, D9) after the body, in their Map's order; orig
+  // shares the blocks' objects (structuredClone keeps that), so it
+  // follows
+  for (const s of (d.stories || new Map()).values()) {
+    forEachIn(s.blocks, [0], each);
+  }
   const z = d.meta.zipOrder;
   if (z) {
     const i = z.indexOf('[Content_Types].xml');

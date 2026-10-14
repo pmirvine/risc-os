@@ -13,6 +13,9 @@
 // {type:'tbl'...}, whose rules are in ./TblCheck (given checkBlock and
 // checkProps, so it imports nothing from here).
 import {checkTable, checkCellPara} from './TblCheck';
+import {deepEqual} from './DeepEqual';
+
+export {deepEqual, sameStories} from './DeepEqual';
 
 export const OBJ = '\ufffc';
 
@@ -23,30 +26,6 @@ export function fail(msg) {
 
 const isObj = (v) => v !== null && typeof v === 'object' &&
   !Array.isArray(v);
-
-/**
- * Deep equality of plain data (objects, arrays, Xml nodes,
- * primitives); key order does not matter. Same object: true at once.
- */
-export function deepEqual(a, b) {
-  if (a === b) return true;
-  if (typeof a !== 'object' || typeof b !== 'object' ||
-    a === null || b === null) return false;
-  if (Array.isArray(a)) {
-    if (!Array.isArray(b) || a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) {
-      if (!deepEqual(a[i], b[i])) return false;
-    }
-    return true;
-  }
-  if (Array.isArray(b)) return false;
-  const ka = Object.keys(a);
-  if (ka.length !== Object.keys(b).length) return false;
-  for (const k of ka) {
-    if (!Object.hasOwn(b, k) || !deepEqual(a[k], b[k])) return false;
-  }
-  return true;
-}
 
 /** True when two runs have the same formatting (rPr and rStyle). */
 export function sameFmt(a, b) {
@@ -200,3 +179,52 @@ export function checkBlock(b, around = 0) {
 }
 
 const CK = {block: (b) => checkBlock(b), props: checkProps};
+
+/**
+ * The story op addresses (Batch D, D12, R8): its `story`, a part
+ * name; undefined for the body (absent or null). RangeError for any
+ * other value. Whether doc holds that story: ./OpsPath.
+ */
+export function opStory(op) {
+  const s = op.story;
+  if (s === undefined || s === null) return undefined;
+  if (typeof s !== 'string') fail('bad story');
+  return s;
+}
+
+const STORY_KINDS = ['hdr', 'ftr'];
+
+const none = (v) => v === null || v === undefined;
+
+/**
+ * Throw unless `s` is a Story (./StoryRead, D9): part a string,
+ * kind 'hdr' or 'ftr' and the root's local name the same, root
+ * {name, attrs}, rels an array or null, relsPart a string or none,
+ * bytes a byte array or none, prolog none or {before, after} arrays,
+ * blocks and orig arrays, every block valid (checkBlock), every
+ * orig entry a block object (shallow: orig is what was read).
+ */
+export function checkStory(s) {
+  if (!isObj(s) || typeof s.part !== 'string') fail('not a story');
+  if (!STORY_KINDS.includes(s.kind)) fail('bad story kind');
+  if (!isObj(s.root) || typeof s.root.name !== 'string' ||
+    !Array.isArray(s.root.attrs)) fail('story needs its root');
+  if (s.root.name.slice(s.root.name.indexOf(':') + 1) !== s.kind)
+    fail('story kind is not its root');
+  if (s.rels !== null && !Array.isArray(s.rels))
+    fail('story rels must be an array or null');
+  if (!none(s.relsPart) && typeof s.relsPart !== 'string')
+    fail('story relsPart must be a name or null');
+  if (!none(s.bytes) && !(s.bytes instanceof Uint8Array))
+    fail('story bytes must be bytes or null');
+  if (!none(s.prolog) && !(isObj(s.prolog) &&
+    Array.isArray(s.prolog.before) && Array.isArray(s.prolog.after)))
+    fail('bad story prolog');
+  if (!Array.isArray(s.blocks) || !Array.isArray(s.orig))
+    fail('story blocks and orig must be arrays');
+  for (const b of s.orig) {
+    if (!isObj(b) || typeof b.type !== 'string')
+      fail('story orig must hold blocks');
+  }
+  for (const b of s.blocks) checkBlock(b);
+}

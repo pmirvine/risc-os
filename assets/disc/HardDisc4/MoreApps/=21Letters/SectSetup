@@ -1,0 +1,165 @@
+// SectSetup - the commands of Format > Page setup... (Batch D P4.3,
+// D21; ./PageBox is the box): paper size, orientation, margins and
+// the gutter of the sections in scope, and the gutter's position.
+//
+//   PAPERS, SCOPES, paperOf, scopeOf, valuesOf, whyNot: ./PageValues
+//            (re-exported)
+//   layoutOf, layoutWhy, layoutCmd: ./SectLayout (re-exported: the
+//            Layout box's, ./LayoutBox)
+//   PRESETS, presetOf, evenCols, colsOf, columnsWhy, columnsCmd,
+//            MIN_COL_TW: ./SectCols
+//            (re-exported: the Columns box's, ./ColumnsBox, P10.4)
+//   lineNumOf, lineNumWhy, lineNumCmd, RESTARTS, MAX_START:
+//            ./SectLineNum (re-exported: the Line numbers box's,
+//            ./LineNumBox, P11.2)
+//   setupWhy(doc, sel, values, scope) -> whyNot, or why setupCmd
+//            would refuse: no selection, a bad scope, 'forward' from
+//            a table's cell, the gutter position in a document with
+//            no settings part, or a section in scope (every section
+//            when the gutter position changes) that would be left
+//            too little text width or height
+//   setupCmd(d, sel, values, scope) -> the new selection; sel when
+//            nothing changes (no step); null when setupWhy refuses
+//            (nothing changed). One d.atomic, called in
+//            typing.command (one undo step): 'forward' first splits
+//            the section at the caret with a next-page break
+//            (./SectBreak insertSection; none when the caret is at
+//            the start of its section) and goes on from the new
+//            one; then a setSection for each section in scope that
+//            changes, and setDocPart settings (./SettingsEdit
+//            withOnOff) when gutterTop changes
+//
+// values: the fields of valuesOf; null (or undefined) leaves a value
+// as each section has it (paper is not read: w and h say it). A
+// changed orient with neither w nor h given swaps each section's w
+// and h; Landscape writes w:orient="landscape", Portrait drops it.
+// w:pgSz and w:pgMar are replaced field by field (./PageValues
+// setPart, the one rule with the Layout box): a typed one field by
+// field, a new pgMar given every value (Word needs all seven); one
+// the reader kept raw (an attribute it does not know) keeps every
+// attribute, the changed values set in it (review P4 M3; its values
+// are not read: the box shows the defaults). A value changed is
+// written in twips (its units entry dropped); one not changed keeps
+// its unit string (review P1 M7: Strict files). Pure.
+import {caret} from './Selection';
+import {orderedPos, isNested} from './EditPos';
+import {insertSection} from './SectBreak';
+import {deepEqual} from './Model';
+import {givenOf} from './SectGeom';
+import {onOffOf} from './SettingsRead';
+import {withOnOff} from './SettingsEdit';
+import {docMap} from './PicRead';
+import {SCOPES, MARS, given, scopeOf, oneOf, tooSmall, whyNot,
+  setPart} from './PageValues';
+
+export {PAPERS, SCOPES, paperOf, scopeOf, valuesOf, whyNot}
+  from './PageValues';
+export {layoutOf, layoutWhy, layoutCmd} from './SectLayout';
+export {PRESETS, presetOf, evenCols, colsOf, columnsWhy,
+  columnsCmd, MIN_COL_TW} from './SectCols';
+export {lineNumOf, lineNumWhy, lineNumCmd, RESTARTS, MAX_START}
+  from './SectLineNum';
+
+const FIELDS = ['w', 'h', 'orient', ...MARS, 'gutterTop'];
+const MSG = {
+  nosel: 'There is no caret in the document.',
+  scope: 'Apply to: this section, this point forward or the whole ' +
+    'document.',
+  cell: 'This point forward cannot start a section in a table: put ' +
+    'the caret outside the table.',
+  settings: 'This document has no settings part: the gutter ' +
+    'position cannot be changed.',
+};
+
+
+/** Section s's props with the values, or null when they are its own. */
+function propsFor(doc, s, v) {
+  const sec = doc.sections[s], was = oneOf(doc, s);
+  const {size, mar} = givenOf(sec, doc.sections[0]);
+  let w = given(v.w) ? v.w : was.w, h = given(v.h) ? v.h : was.h;
+  const turn = given(v.orient) && v.orient !== was.orient;
+  if (turn && !given(v.w) && !given(v.h)) [w, h] = [h, w];
+  const pr = {...sec.props}, map = docMap(doc);
+  if (w !== was.w || h !== was.h || turn) {
+    const next = {w, h};
+    if (turn) next.orient = v.orient === 'landscape' ? 'landscape'
+      : undefined;
+    setPart(pr, 'pgSz', next, map, {w: was.w, h: was.h});
+  }
+  const m = {};
+  for (const k of MARS) if (given(v[k]) && v[k] !== was[k]) m[k] = v[k];
+  if (Object.keys(m).length)
+    setPart(pr, 'pgMar', {...mar, ...pr.pgMar, ...m}, map, mar);
+  return deepEqual(pr, sec.props) ? null : pr;
+}
+
+/** {range, props: [[s, props]], root?, split} or {why}. */
+function plan(doc, sel, v, scope) {
+  const why = whyNot(v);
+  if (why) return {why};
+  if (!sel) return {why: MSG.nosel};
+  const r = scopeOf(doc, sel, scope);
+  if (!r) return {why: SCOPES.includes(scope) ? MSG.nosel : MSG.scope};
+  const o = orderedPos(doc, sel);
+  // (the caret at the start of its section's first block: no break)
+  const split = scope === 'forward' && !(o.from.off === 0 &&
+    o.f.b === doc.sections[o.f.s].blocks[0]);
+  if (split && isNested(o.f)) return {why: MSG.cell};
+  let root;
+  const gt = onOffOf(doc, 'gutterAtTop');
+  if (given(v.gutterTop) && v.gutterTop !== gt) {
+    if (!doc.rawSettings || !(doc.meta && doc.meta.settingsPart))
+      return {why: MSG.settings};
+    root = withOnOff(doc.rawSettings, 'gutterAtTop', v.gutterTop);
+  }
+  const top = given(v.gutterTop) ? v.gutterTop : gt, map = docMap(doc);
+  const props = [];
+  let first = doc.sections[0];
+  for (let s = 0; s < doc.sections.length; s++) {
+    const pr = s >= r[0] && s <= r[1] ? propsFor(doc, s, v) : null;
+    if (pr) props.push([s, pr]);
+    if (pr && !s) first = {props: pr};
+    if (!pr && root === undefined) continue;
+    const bad = tooSmall(pr ? {props: pr} : doc.sections[s], top, map,
+      first);
+    if (bad) return {why: bad};
+  }
+  // (no break when the caret's own section does not change)
+  return {props, root, from: o.from,
+    split: split && props.length > 0 && props[0][0] === r[0]};
+}
+
+/** See the header. */
+export function setupWhy(doc, sel, values, scope) {
+  return plan(doc, sel, values || {}, scope).why || null;
+}
+
+/** See the header. */
+export function setupCmd(d, sel, values, scope) {
+  const v = {};
+  for (const k of FIELDS) v[k] = values ? values[k] : undefined;
+  const pl = plan(d.doc, sel, v, scope);
+  if (pl.why) return null;
+  if (!pl.props.length && pl.root === undefined) return sel;
+  let out = sel;
+  d.atomic(() => {
+    let shift = 0;
+    if (pl.split) {
+      const now = {command: (fn) => fn()};
+      out = insertSection(d, now, caret(pl.from), 'nextPage');
+      if (!out) throw new RangeError('the section cannot be split');
+      shift = 1;
+    }
+    for (const [s] of pl.props) {
+      const at = s + shift, sec = d.doc.sections[at];
+      const pr = propsFor(d.doc, at, v);
+      if (!pr) continue;
+      const op = {op: 'setSection', at, props: pr};
+      if (sec.raw !== undefined) op.raw = sec.raw;
+      d.apply(op);
+    }
+    if (pl.root !== undefined)
+      d.apply({op: 'setDocPart', key: 'settings', value: pl.root});
+  });
+  return out;
+}

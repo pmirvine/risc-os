@@ -1,0 +1,189 @@
+// FieldEdit - the editing rules of a field result shown computed
+// (Batch D, D18, PG21): one atomic unit, never edited in place (Word
+// lets you, then replaces it at the next update; here the keys refuse
+// it). The ranges are ./FieldShow computedIn's.
+//
+//   typingAt(doc, pos) -> pos | null  where text typed at pos goes:
+//       pos, or before the field (its begin) when pos is at the
+//       start of a computed result, after it (its end + 1) when
+//       inside or at its end; null when it cannot (a begin in
+//       another paragraph)
+//   cuts(doc, o) -> bool  deleting or replacing ./EditPos orderedPos
+//       range o would change a computed result without removing the
+//       whole field (begin to end): refused (PG21). The end
+//       paragraphs of o are looked at
+//   resultIn(doc, p, a, b) -> Show | null  the computed result of p
+//       that [a, b) of p takes a character of (./EditDel: Backspace
+//       and Delete select it first)
+//   whole(doc, sel) -> sel  a range that takes some of a complex
+//       field's marks (begin, separate, end) and not the others
+//       extended to the whole field, begin to end, for every field
+//       (./FieldScan scan: computed or not, across paragraphs), as
+//       often as that takes more; same direction; sel itself when
+//       none is cut (Word's rule: a selection crossing a field's
+//       boundary takes the whole field; P8 fix I3). The marks taken
+//       are the ones the deletion takes: a range from outside a
+//       table into it takes whole rows (./SelShape 'mixed',
+//       ./RangeTbl), a 'cells' shape its cells (P9 fix I1)
+//   guard(doc, sel, o) -> sel | null  the selection an edit at sel
+//       (o: its orderedPos) goes to: a caret moved by typingAt, a
+//       range made whole; null when refused (typingAt null, cuts,
+//       or a field whole cannot take whole: its marks in cells of
+//       one table, some in the cells shape and some not)
+//
+// Pure: no desktop services.
+// typingAt is used inside this module only (not exported).
+import {computedIn} from './FieldShow';
+import {findBlock, orderedPos} from './EditPos';
+import {cmpPath, sib, samePath} from './Path';
+import {scan} from './FieldScan';
+import {shapeOf} from './SelShape';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The paragraph at pos and its Shows, or null. */
+function showsAt(doc, id) {
+  const loc = findBlock(doc, id);
+  const p = loc && loc.b;
+  if (!p || p.type !== 'p') return null;
+  const shows = computedIn(doc, p);
+  return shows.length ? {loc, p, shows} : null;
+}
+
+/** See the header. */
+function typingAt(doc, pos) {
+  const at = isObj(pos) ? showsAt(doc, pos.id) : null;
+  if (!at) return pos;
+  for (const s of at.shows) {
+    if (s.f.simple || pos.off < s.from || pos.off > s.to) continue;
+    if (pos.off > s.from || s.from === s.to)
+      return {id: pos.id, off: s.e + 1};
+    return s.b === null ? null : {id: pos.id, off: s.b};
+  }
+  return pos;
+}
+
+/** See the header. */
+export function resultIn(doc, p, a, b) {
+  return computedIn(doc, p).find((s) => s.from < s.to &&
+    a < s.to && b > s.from) || null;
+}
+
+/** A range end of orderedPos o as a field mark compares: {at, off}
+ *  (a table's off 1: before the block after it). */
+function edge(loc, off) {
+  if (loc.b.type === 'p') return {at: loc.at, off};
+  return off ? {at: sib(loc.at, 1), off: -1} : {at: loc.at, off: -1};
+}
+
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+const after = (m) => ({at: m.at, off: m.off + 1});
+
+/** What deleting [from, to) of o takes (./SelShape shapeOf, as
+ *  ./RangeTbl deletes it): the flow range lo..hi widened to the
+ *  rows of each table an end is in, to its edge toward the other end
+ *  (P9 fix I1); for a 'cells' shape the cells cleared (lo..hi then
+ *  only bounds them). */
+function region(doc, o) {
+  const sh = shapeOf(doc, {anchor: o.from, head: o.to});
+  let lo = edge(o.f, o.from.off), hi = edge(o.t, o.to.off);
+  const rows = sh.kind === 'cells' ? [sh] : sh.tables || [];
+  for (const x of rows) {
+    const a = {at: [...x.table, x.r0], off: -1};
+    const b = {at: [...x.table, x.r1 + 1], off: -1};
+    if (cmp(a, lo) < 0) lo = a;
+    if (cmp(b, hi) > 0) hi = b;
+  }
+  const cells = sh.kind === 'cells' ? sh.cells.map((c) => c.at) : null;
+  return {lo, hi, cells};
+}
+
+const under = (at, c) => at.length > c.length &&
+  samePath(at.slice(0, c.length), c);
+
+/** Region g takes mark m. */
+const takes = (g, m) => (g.cells ? g.cells.some((c) => under(m.at, c))
+  : cmp(g.lo, m) <= 0 && cmp(after(m), g.hi) <= 0);
+
+/** whole's work: {sel, ok}; ok false when a field stays cut that no
+ *  widening can take whole (marks across cells of one rectangle). */
+function widen(doc, sel) {
+  let o = isObj(sel) && orderedPos(doc, sel);
+  if (!o || (o.from.id === o.to.id && o.from.off === o.to.off))
+    return {sel, ok: true};
+  const o0 = o, fs = scan(doc).filter((f) => !f.simple);
+  let from = o.from, to = o.to;
+  for (;;) {
+    const g = region(doc, o);
+    let lo = g.lo, hi = g.hi, cut = false;
+    for (const f of fs) {
+      if (cmp(f.begin, g.hi) >= 0 || cmp(after(f.end), g.lo) <= 0)
+        continue;
+      const ms = f.sep ? [f.begin, f.sep, f.end] : [f.begin, f.end];
+      const n = ms.filter((m) => takes(g, m)).length;
+      if (!n || n === ms.length) continue;
+      cut = true;
+      if (cmp(f.begin, lo) < 0) {
+        lo = f.begin;
+        from = {id: f.begin.id, off: f.begin.off};
+      }
+      if (cmp(after(f.end), hi) > 0) {
+        hi = after(f.end);
+        to = {id: f.end.id, off: f.end.off + 1};
+      }
+    }
+    if (lo === g.lo && hi === g.hi) {
+      if (from === o0.from && to === o0.to) return {sel, ok: !cut};
+      const back = o0.from === sel.head;
+      return {sel: {...sel, anchor: back ? to : from,
+        head: back ? from : to}, ok: !cut};
+    }
+    o = orderedPos(doc, {anchor: from, head: to});
+    if (!o) return {sel, ok: false};
+  }
+}
+
+/** See the header. */
+export const whole = (doc, sel) => widen(doc, sel).sel;
+
+/** See the header. */
+export function guard(doc, sel, o) {
+  const h = sel.head, a = sel.anchor;
+  if (a.id !== h.id || a.off !== h.off) {
+    const {sel: w, ok} = widen(doc, sel);
+    if (!ok) return null;
+    const ow = w === sel ? o : orderedPos(doc, w);
+    return !ow || cuts(doc, ow) ? null : w;
+  }
+  const to = typingAt(doc, h);
+  if (!to) return null;
+  return to === h ? sel : {...sel, anchor: to, head: to};
+}
+
+/** Range [a, b) of paragraph `at` changes show s without the whole
+ *  field (its begin from `start`, the range's first position). */
+function cutIn(s, a, b, at, start) {
+  if (!(a < s.to && b > s.from)) return false;
+  if (b <= s.e) return true;
+  const B = s.f.begin;
+  if (B.id === at.p.id) return a > B.off;
+  const c = cmpPath(start.f.at, B.at);
+  return c > 0 || (c === 0 && start.from.off > B.off);
+}
+
+/** See the header. */
+export function cuts(doc, o) {
+  if (!isObj(o) || !o.f || !o.t) return false;
+  const one = o.f.b === o.t.b;
+  const ends = [[o.from.id, o.from.off, one ? o.to.off : Infinity]];
+  if (!one) ends.push([o.to.id, 0, o.to.off]);
+  for (const [id, a, b] of ends) {
+    const at = showsAt(doc, id);
+    if (!at) continue;
+    const start = {f: o.f, from: o.from};
+    for (const s of at.shows) {
+      if (cutIn(s, a, b, at, start)) return true;
+    }
+  }
+  return false;
+}

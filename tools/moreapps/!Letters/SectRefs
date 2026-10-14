@@ -1,0 +1,203 @@
+// SectRefs - a section's header and footer REFERENCES (Batch D,
+// D12): the one rule that reads and sets them.
+//
+//   refsOf(section, map) -> {hdr: {default?, first?, even?},
+//                             ftr: {default?, first?, even?}}
+//       the r:id of each reference in section.props.extra (they
+//       stay raw nodes there: ./ReadSect)
+//   withRef(props, kind, type, rId | null, map) -> props'
+//       kind 'hdr' | 'ftr', type 'default' | 'first' | 'even':
+//       new props whose extra has that reference's r:id set (the
+//       node replaced, its other attributes kept), a new node added
+//       in schema order, or (null) every node of that type removed;
+//       every other node and field shared; props itself when
+//       nothing changes. RangeError for a bad kind, type or rId.
+//   storyOfRef(doc, rId) -> part name | null
+//       the story (doc.stories) a reference's r:id reaches: an
+//       internal header or footer relationship of doc.rels, its
+//       target resolved against meta.mainPart; null when the
+//       relationship or the part is missing or not a story
+//   partOfRef(doc, rId) -> part name | null   the same relationship
+//       found in doc.parts instead: a part that is there but no
+//       story (kept as bytes: shown as preserved, D9) has a name
+//
+// Nodes are recognised by namespace, never by prefix: an element
+// w:headerReference / w:footerReference in WML, w:type a WML
+// attribute, r:id an attribute in the relationships namespace,
+// transitional or Strict (a Strict document's are mapped on read:
+// ./NsMap; ./WriteBody writes them back Strict). `map` is the scope
+// around the sectPr (./WriteBody docScope(doc).map), REQUIRED
+// (RangeError when it is not a Map): a default would write an r:
+// the document may not declare, and miss a reference whose prefix
+// is not r. A new node takes the prefixes map binds (r declared on
+// the node when none is: ./Ns prefixFor).
+// A reference with no w:type is a default one; a type not in TYPES
+// ("odd", which Word does not write) is ignored and kept untouched;
+// of repeated references of one type the first with an id counts.
+// Caps: MAX_REFS 64 reference nodes looked at (the schema allows
+// 6), MAX_ID 255 characters, an id an XML NCName.
+// SECURITY: types are matched against a fixed list; result objects
+// only get keys from it.
+// Pure: no desktop services.
+import {NS, STRICT_TO_TRANSITIONAL} from './Wml';
+import {scope, wName, wAttr, prefixFor, W} from './Ns';
+import {relKind, resolvePart, findPart} from './Rels';
+import {fail} from './ModelCheck';
+
+export const MAX_REFS = 64, MAX_ID = 255;
+export const TYPES = ['default', 'first', 'even'];
+
+const ELS = {hdr: 'headerReference', ftr: 'footerReference'};
+const R_STRICT = Object.keys(STRICT_TO_TRANSITIONAL)
+  .find((k) => STRICT_TO_TRANSITIONAL[k] === NS.r);
+const NCNAME = /^[A-Za-z_][\w.\-]*$/;
+
+/** The kind of reference node n is ('hdr' | 'ftr'), or null. */
+function kindOf(n, m) {
+  const l = wName(n, m);
+  return l === ELS.hdr ? 'hdr' : l === ELS.ftr ? 'ftr' : null;
+}
+
+/** The type a reference node says (missing: default). */
+function typeOf(n, m) {
+  const t = wAttr(n, m, 'type');
+  return t === undefined ? 'default' : t;
+}
+
+/** Index in n.attrs of its r:id, or -1. */
+function idAt(n, m) {
+  return n.attrs.findIndex(([k]) => {
+    const i = k.indexOf(':');
+    if (i < 1 || k.slice(i + 1) !== 'id') return false;
+    const u = m.get(k.slice(0, i));
+    return u === NS.r || u === R_STRICT;
+  });
+}
+
+/** [{n, k, kind, type}] for every reference node of extra. */
+function refNodes(extra, map) {
+  if (!(map instanceof Map)) fail('a namespace scope is required');
+  const out = [];
+  if (!Array.isArray(extra)) return out;
+  let seen = 0;
+  extra.forEach((n, k) => {
+    if (!n || typeof n !== 'object' || !Array.isArray(n.attrs)) return;
+    const m = n.attrs.length ? scope(map, n) : map;
+    const kind = kindOf(n, m);
+    if (!kind || ++seen > MAX_REFS) return;
+    out.push({n, k, m, kind, type: typeOf(n, m)});
+  });
+  return out;
+}
+
+/** See the header. */
+export function refsOf(section, map) {
+  const out = {hdr: {}, ftr: {}};
+  const props = section && section.props;
+  const refs = refNodes(props && props.extra, map);
+  for (const x of refs) {
+    if (!TYPES.includes(x.type) || Object.hasOwn(out[x.kind], x.type))
+      continue;
+    const i = idAt(x.n, x.m);
+    const id = i < 0 ? '' : x.n.attrs[i][1];
+    if (id) out[x.kind][x.type] = id;
+  }
+  return out;
+}
+
+function checkArgs(props, kind, type, rId) {
+  if (!props || typeof props !== 'object' ||
+    !Array.isArray(props.extra)) fail('bad section props');
+  if (!Object.hasOwn(ELS, kind)) fail('bad reference kind ' + kind);
+  if (!TYPES.includes(type)) fail('bad reference type ' + type);
+  if (rId !== null && (typeof rId !== 'string' ||
+    rId.length > MAX_ID || !NCNAME.test(rId)))
+    fail('bad relationship id');
+}
+
+/** A new reference node with the prefixes `map` binds. */
+function newNode(kind, type, rId, map) {
+  const w = prefixFor(map, W, 'w');
+  const r = prefixFor(map, NS.r, 'r');
+  return {name: w.p + ':' + ELS[kind],
+    attrs: [...w.decl, [w.p + ':type', type], [r.p + ':id', rId],
+      ...r.decl],
+    children: []};
+}
+
+/** n with its r:id (at index i, or added) set to rId. */
+function withId(n, i, rId, map) {
+  if (i >= 0) {
+    if (n.attrs[i][1] === rId) return n;
+    const attrs = n.attrs.slice();
+    attrs[i] = [attrs[i][0], rId];
+    return {...n, attrs};
+  }
+  const r = prefixFor(map, NS.r, 'r');
+  return {...n, attrs: [...n.attrs, [r.p + ':id', rId], ...r.decl]};
+}
+
+/** Where a new reference of `kind` goes in extra (schema order:
+ *  references first, a header after the headers, a footer after
+ *  every reference). */
+function placeFor(refs, kind) {
+  const last = (want) => refs.reduce((a, x) =>
+    (want(x) ? x.k + 1 : a), -1);
+  const hdr = last((x) => x.kind === 'hdr');
+  if (kind === 'ftr') return Math.max(0, last(() => true));
+  if (hdr >= 0) return hdr;
+  const ftr = refs.find((x) => x.kind === 'ftr');
+  return ftr ? ftr.k : 0;
+}
+
+/** See the header. */
+export function withRef(props, kind, type, rId, map) {
+  checkArgs(props, kind, type, rId);
+  const refs = refNodes(props.extra, map);
+  const mine = refs.filter((x) => x.kind === kind && x.type === type);
+  if (rId === null) {
+    if (!mine.length) return props;
+    const gone = new Set(mine.map((x) => x.k));
+    return {...props, extra: props.extra.filter((n, k) =>
+      !gone.has(k))};
+  }
+  const extra = props.extra.slice();
+  if (mine.length) {
+    const x = mine[0];
+    const n = withId(x.n, idAt(x.n, x.m), rId, x.m);
+    if (n === x.n) return props;
+    extra[x.k] = n;
+  } else {
+    extra.splice(placeFor(refs, kind), 0, newNode(kind, type, rId,
+      map));
+  }
+  return {...props, extra};
+}
+
+/** The part name doc's header or footer relationship rId names
+ *  (resolved, not looked up), or null. */
+function targetOf(doc, rId) {
+  if (typeof rId !== 'string' || !rId || !doc ||
+    !Array.isArray(doc.rels)) return null;
+  const rel = doc.rels.find((x) => x && x.id === rId);
+  const k = rel && typeof rel.type === 'string' ? relKind(rel.type)
+    : null;
+  if (!k || (k.kind !== 'header' && k.kind !== 'footer') ||
+    rel.mode === 'External') return null;
+  const main = doc.meta && doc.meta.mainPart;
+  if (typeof main !== 'string' || typeof rel.target !== 'string')
+    return null;
+  return resolvePart(main, rel.target);
+}
+
+/** See the header. */
+export function storyOfRef(doc, rId) {
+  if (!doc || !(doc.stories instanceof Map)) return null;
+  return findPart(doc.stories, targetOf(doc, rId));
+}
+
+/** See the header. */
+export function partOfRef(doc, rId) {
+  if (!doc || !(doc.parts instanceof Map)) return null;
+  return findPart(doc.parts, targetOf(doc, rId));
+}

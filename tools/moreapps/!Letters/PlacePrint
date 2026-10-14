@@ -1,0 +1,247 @@
+// PlacePrint - Print layout's placement (D4, D30): a galley line is
+// shown on its page, at its fragment's place in the page's frame
+// (./PageFrames). ./Place has the interface; here:
+//
+//   PlacePrint(L, P?) -> Place   P: L's ./Pages (none: made here)
+//     lineAt(it, k)   the page holding line k of it (./PageFind
+//                     pageOfPlace: a binary search over the pages'
+//                     start cursors; a cut line: the page it starts
+//                     on; with columns, D23: the column whose start
+//                     is the last at or before it), at it.x + dx,
+//                     its galley top + dy, where
+//                     dx, dy (whole px) move its fragment's item to
+//                     the fragment's x, y on that page and the page
+//                     to its place on the sheet (./PageSheet). An
+//                     item in a table's cell: the page of its row
+//                     and cell line (./PageCellAt cellPlace), moved
+//                     with the table's fragment there and its row's
+//                     piece (./TblPieces shiftAt: the rest of a cut
+//                     row at the frame's top, P4.2);
+//                     page: the page's index. An item not in the
+//                     galley: where Draft has it, page null
+//     itemTop(it)     its galley top moved as its line 0 is
+//     rects(it, l0, l1)  one box per page (and column) over the
+//                     lines of l0..l1 - 1 on it (a block: its box on
+//                     each page it shows on), cut to the frame where
+//                     the item is
+//                     cut (a line or block taller than the room);
+//                     never over the desk between pages; in a cell,
+//                     one per run of lines on a page
+//     rowParts(it, r) -> [{page, dx, dy, y, h}]  row r of root table
+//                     it: its box on each page (and column) it shows
+//                     on
+//     hit(x, y)       ./PrintHit hitOn: the page at y, its line
+//                     there; edge: off the page's lines (D33)
+//     floatAt(x, y, tol) ./PrintHit floatNear: the placed floating
+//                     table drawn within tol px of (x, y), {it, dx,
+//                     dy} (a point less dx, dy is its galley point),
+//                     or null (P12b fix I2, ./TblEdge)
+//     placed(it)      whether root item it is a floating table
+//                     placed on its page (drawn there, not in the
+//                     flow: ./PrintFrags float)
+//     area(x, y)      ./PrintHit areaOn: 'body', 'header',
+//                     'footer', 'margin', 'desk' or null (D33)
+//     visible(y0, y1) the fragments of the pages meeting the band
+//                     (pageFrags moved to the page's place)
+//     extent()        ./PageSheet's
+//     pageOf(it, k)   lineAt's page (null: not in the galley)
+//   and, for ./PagePaint and ./EditPaint:
+//     view 'print', pages P, sheet (./PageSheet), L
+//     pageFrags(i) -> [{it, l0, l1, dx, dy, head, tail, clip}] page
+//                     i's fragments from the page's own origin
+//                     (./PrintFrags fragsOf).
+//                     Built once per page, when first asked for: only
+//                     the pages asked about build frames (D7, D37)
+//     band(y0, y1) -> {y0, y1} | null  the galley span of the lines
+//                     shown in screen band y0..y1 (./DocRects culls
+//                     a selection to it); null when none is
+// Pure: no desktop services.
+import {lineTop} from './PlaceDraft';
+import {rootOf, pageOfPlace, after} from './PageFind';
+import {isTable} from './PageRows';
+import {cellPlace} from './PageCellAt';
+import {pieceOf, shiftAt} from './TblPieces';
+import {sheetOf} from './PageSheet';
+import {Pages} from './Pages';
+import {galleyOf} from './PageGalley';
+import {fragsOf} from './PrintFrags';
+import {hitOn, areaOn, floatNear} from './PrintHit';
+
+const NONE = Object.freeze([]);
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const nLines = (it) => (it.lines ? it.lines.length : 0);
+const bottom = (it, j) => lineTop(it, j) + it.lines[j].h;
+
+/** See the header. */
+export function PlacePrint(L, P) {
+  const Q = P || new Pages(galleyOf(L));
+  const S = sheetOf(L, Q), framed = new WeakMap();
+
+  function pageFrags(i) {
+    const pg = Q.at(i);
+    if (!pg) return NONE;
+    let fs = framed.get(pg);
+    if (!fs) framed.set(pg, fs = fragsOf(L, pg));
+    return fs;
+  }
+
+  /** Root item root's fragment on page i (with columns: the one
+   *  in the column holding place c, when given). */
+  function fragOn(i, root, c) {
+    const fs = pageFrags(i), pg = Q.list[i];
+    if (!pg.cols) {
+      const f = fs[root.ci - pg.start.k];
+      return f && f.it === root ? f : fs.find((x) => x.it === root);
+    }
+    let col = 0;
+    if (c) while (col + 1 < pg.cols.length &&
+      !after(pg.cols[col + 1].start, c)) col++;
+    return fs.find((x) => x.it === root && x.col === col) ||
+      fs.find((x) => x.it === root);
+  }
+
+  /** Root item root's fragments on page i (one per column). */
+  const fragsIn = (i, root) => pageFrags(i).filter((x) =>
+    x.it === root);
+
+  /** The page, fragment and the row's (cell's) own shift sh of line
+   *  k of it ({i, f, sh}), or null. */
+  function placeIn(it, k) {
+    if (!it || typeof it !== 'object') return null;
+    const r = rootOf(Q.G, it);
+    if (r < 0) return null;
+    const root = L.items[r], n = nLines(it);
+    const j = n && Number.isInteger(k) && k > 0 ? Math.min(k, n - 1)
+      : 0;
+    if (root !== it && isTable(root)) {      // (its row's page: P4.2)
+      const c = {k: r, ...cellPlace(root, it, j)};
+      const i = pageOfPlace(Q, c), f = fragOn(i, root, c);
+      return f ? {i, f, sh: shiftAt(root, f, c.line, c.cell)} : null;
+    }
+    const c = {k: r, line: root === it ? j : 0};
+    const i = pageOfPlace(Q, c), f = fragOn(i, root, c);
+    return f ? {i, f, sh: 0} : null;
+  }
+
+  /** The boxes of lines l0..l1 - 1 of item it in a cell: one per
+   *  run of lines on one page moved alike. */
+  function cellRects(it, l0, l1) {
+    const out = [], n = nLines(it);
+    let cur = null;
+    const flush = () => cur && out.push(box(it, cur.c0, cur.c1, cur));
+    for (let j = n ? Math.max(0, l0) : 0; j < (n ? Math.min(l1, n)
+      : 1); j++) {
+      const a = placeIn(it, j);
+      if (!a) continue;
+      const s = onSheet(a.i, a.f), dy = s.dy + a.sh;
+      if (cur && cur.i === a.i && cur.dy === dy) cur.c1 = j + 1;
+      else {
+        flush();
+        cur = {i: a.i, dx: s.dx, dy, clip: null, c0: n ? j : 0,
+          c1: n ? j + 1 : 0};
+      }
+    }
+    flush();
+    return out;
+  }
+
+  /** Row r of root table it: its box on each page it shows on. */
+  function rowParts(it, r) {
+    const k = rootOf(Q.G, it), out = [];
+    if (k < 0 || L.items[k] !== it || !isTable(it)) return out;
+    for (let i = pageOfPlace(Q, {k, line: r}); Q.at(i);) {
+      for (const f of fragsIn(i, it)) {
+        const p = pieceOf(it, f, r);
+        if (!p) continue;
+        const s = onSheet(i, f);
+        out.push({page: i, dx: s.dx, dy: s.dy + p.sh, y: s.dy + p.y,
+          h: p.h});
+      }
+      const e = Q.list[i].end;
+      if (!(e.k === k && e.line === r && e.cuts)) break;
+      do i++; while (Q.at(i) && Q.at(i).blank);
+    }
+    return out;
+  }
+
+  /** f (page i's) moved to the page's place on the sheet. */
+  function onSheet(i, f) {
+    const o = S.rect(Q.list[i]), c = f.clip;
+    return {...f, dx: f.dx + o.x, dy: f.dy + o.y,
+      clip: c && {y0: c.y0 + o.y, y1: c.y1 + o.y}};
+  }
+
+  function lineAt(it, k) {
+    const a = placeIn(it, k);
+    if (!a) return {x: it.x, y: lineTop(it, k), page: null};
+    const s = onSheet(a.i, a.f);
+    return {x: it.x + s.dx, y: lineTop(it, k) + s.dy + a.sh,
+      page: a.i};
+  }
+
+  /** The box of lines c0..c1 - 1 of it (none: its box) by f. */
+  function box(it, c0, c1, f) {
+    const y = c1 > c0 ? lineTop(it, c0) + f.dy : it.y + f.dy;
+    const h = c1 > c0 ? bottom(it, c1 - 1) - lineTop(it, c0) : it.h;
+    const c = f.clip, y0 = c ? Math.max(y, c.y0) : y;
+    const y1 = c ? Math.min(y + h, c.y1) : y + h;
+    return {x: it.x + f.dx, y: y0, w: it.w, h: Math.max(0, y1 - y0)};
+  }
+
+  function rects(it, l0, l1) {
+    const n = nLines(it);
+    if (n && !(l0 < l1)) return [];
+    const a = placeIn(it, n ? Math.max(0, l0) : 0);
+    if (!a) return [];
+    if (a.f.it !== it) return cellRects(it, l0, l1);
+    const b = n ? Math.min(l1, n) : 0, out = [];
+    for (let i = a.i; ;) {
+      const pg = Q.list[i];
+      for (const f of fragsIn(i, it)) {
+        const c0 = Math.max(l0, f.l0), c1 = Math.min(b, f.l1);
+        if (!n) out.push(box(it, 0, 0, onSheet(i, f)));
+        else if (c0 < c1) out.push(box(it, c0, c1, onSheet(i, f)));
+      }
+      if (pg.end.k !== it.ci || (n && pg.end.line >= b)) break;
+      do i++; while (Q.at(i) && Q.at(i).blank);
+      if (!Q.at(i)) break;
+    }
+    return out;
+  }
+
+  function visible(y0, y1) {
+    const out = [];
+    for (const i of S.pagesIn(y0, y1)) {
+      for (const f of pageFrags(i)) out.push(onSheet(i, f));
+    }
+    return out;
+  }
+
+  function band(y0, y1) {
+    let a = Infinity, b = -Infinity;
+    for (const {it, l0, l1} of visible(y0, y1)) {
+      const n = nLines(it), c1 = Math.min(l1, n);
+      a = Math.min(a, n && l0 < c1 ? lineTop(it, l0) : it.y);
+      b = Math.max(b, n && l0 < c1 ? bottom(it, c1 - 1)
+        : it.y + it.h);
+    }
+    return a <= b ? {y0: a, y1: b} : null;
+  }
+
+  const self = Object.freeze({view: 'print', pages: Q, sheet: S, L,
+    lineAt, rects, visible, band, pageFrags, rowParts,
+    hit: (x, y) => hitOn(self, x, y),
+    floatAt: (x, y, tol) => floatNear(self, x, y, tol),
+    placed: (it) => {
+      const a = placeIn(it, 0);
+      return !!a && pageFrags(a.i).some((f) => f.it === it && f.float);
+    },
+    area: (x, y) => areaOn(self, x, y),
+    itemTop: (it) => lineAt(it, 0).y - lineTop(it, 0) + it.y,
+    extent: () => S.extent(),
+    pageOf: (it, k) => {
+      const a = placeIn(it, k);
+      return a ? a.i : null;
+    }});
+  return self;
+}

@@ -1,12 +1,22 @@
 // PicLine - a picture as a ./LineTokens token, and the size it is
 // shown at (pure; Batch B).
 //
-//   picToken(x, i, f, map?) -> token | null
+//   picToken(x, i, f, map?, floats?) -> token | null
 //       the token of the inline x at offset i (format f) when
 //       ./PicRead pictureOf understands its node in scope map:
 //       {t: 'w', text: '', f, kind: 'pic', from: i, to: i + 1,
 //        shown: true, pic: {info, w, h}}  (info: pictureOf's result;
-//       w, h: its extent in px, EMU / EMU_PX); else null
+//       w, h: its extent in px, EMU / EMU_PX); else null. floats
+//       (Print layout, P12.2, D26): a floating picture whose anchor
+//       is understood (info.anchor.unknown false) is instead
+//       {t: 'z', text: '', f, kind: 'anchor', from: i, to: i + 1,
+//        shown: true, anchor: {info, w, h}}: zero width in its
+//       line, the picture placed on its page (./AnchorPlace)
+//   floatsIn(block) -> whether a paragraph or table (in any cell)
+//       may hold a floating picture: an inline whose node has a
+//       wp:anchor (any element named anchor) inside; memoised per
+//       block object (./DocItems: those re-broken when a layout's
+//       floats differ from the one it keeps lines of)
 //   fitPic(pic, maxW) -> {w, h}
 //       the display size (plan R3): {w, h} scaled down, keeping its
 //       proportions, to at most maxW wide, then to at most
@@ -18,14 +28,49 @@
 // on its item pic: {...info, w, h}.
 import {pictureOf, EMU_PX} from './PicRead';
 import {MAX_LINE} from './ParaSpace';
+import {OBJ} from './Model';
 
 /** See the header. */
-export function picToken(x, i, f, map) {
+export function picToken(x, i, f, map, floats) {
   if (!x || x.kind !== 'raw' || !x.node) return null;
   const info = pictureOf(x.node, map);
   if (!info) return null;
+  const size = {info, w: info.cx / EMU_PX, h: info.cy / EMU_PX};
+  if (floats && info.anchor && !info.anchor.unknown) {
+    return {t: 'z', text: '', f, kind: 'anchor', from: i, to: i + 1,
+      shown: true, anchor: size};
+  }
   return {t: 'w', text: '', f, kind: 'pic', from: i, to: i + 1,
-    shown: true, pic: {info, w: info.cx / EMU_PX, h: info.cy / EMU_PX}};
+    shown: true, pic: size};
+}
+
+const SEEN = new WeakMap();            // block -> floatsIn
+
+/** Whether XML node n has an element named anchor in it. */
+function hasAnchor(n, depth = 0) {
+  if (!n || typeof n !== 'object' || depth > 64) return false;
+  if (typeof n.name === 'string' &&
+    n.name.slice(n.name.indexOf(':') + 1) === 'anchor') return true;
+  return Array.isArray(n.children) &&
+    n.children.some((c) => hasAnchor(c, depth + 1));
+}
+
+/** See the header. */
+export function floatsIn(b) {
+  if (!b || typeof b !== 'object') return false;
+  let v = SEEN.get(b);
+  if (v !== undefined) return v;
+  v = false;
+  if (b.type === 'p' && typeof b.text === 'string') {
+    const xs = b.inlines || {};
+    for (let k = b.text.indexOf(OBJ); k >= 0 && !v;
+      k = b.text.indexOf(OBJ, k + 1)) v = hasAnchor((xs[k] || {}).node);
+  } else if (b.type === 'tbl' && Array.isArray(b.rows)) {
+    v = b.rows.some((row) => (row.cells || []).some((c) =>
+      (c.blocks || []).some(floatsIn)));
+  }
+  SEEN.set(b, v);
+  return v;
 }
 
 /** See the header. */

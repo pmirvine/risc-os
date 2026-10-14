@@ -1,0 +1,178 @@
+// TblEditRows - the row commands of ./TblEdit and the helpers they
+// share (Batch C, D23, D25), split from it; ./TblEdit re-exports every
+// name here. Pure functions on a Table, copy-on-write as ./TblEdit's
+// header says; the semantics are described there:
+//   deleteRows(t, r0, r1), insertRows(t, r0, r1, below),
+//   splitTable(t, r)
+// and the helpers, here so that ./TblEdit can re-export this module
+// without an import cycle: emptyLike(p), firstPara(cell),
+// cellMarks(cell, out), unpaired(got), nodesOf(got). Private:
+// looseOf, checkRows, restartAt, header, rowLike.
+// Pure: no desktop services.
+import {newPara, nextId} from './Model';
+import {gridOf} from './TblGrid';
+import {forEachIn} from './Walk';
+import {MAX_ROWS} from './TblCheck';
+import {marksIn} from './BookmarkKeep';
+import {prWith, unstray} from './TblNorm';
+
+const isP = (b) => !!b && b.type === 'p';
+const arr = (v) => (Array.isArray(v) ? v : []);
+
+/** See the header. */
+export function emptyLike(p) {
+  if (!isP(p)) return newPara('');
+  const opts = {pPr: p.pPr};
+  if (p.pStyle !== undefined) opts.pStyle = p.pStyle;
+  return newPara('', opts);
+}
+
+/** See the header. */
+export function firstPara(cell) {
+  if (isP(cell.blocks[0])) return cell.blocks[0];
+  let out;
+  forEachIn(cell.blocks, [], (b) => {
+    if (!isP(b)) return true;
+    out = b;
+    return false;
+  });
+  return out;
+}
+
+/** The bookmark marks of a cell's paragraphs (any depth). */
+function inner(cell, out) {
+  forEachIn(cell.blocks, [], (b) => {
+    if (isP(b)) marksIn(b, 0, b.text.length, out);
+  });
+  return out;
+}
+
+/** See the header (cellMarks). */
+export function cellMarks(cell, out) {
+  out.push(...arr(cell.lead));
+  return inner(cell, out);
+}
+
+/** See the header (unpaired). */
+export function unpaired(got) {
+  const has = new Set(got.filter((m) => m.kind).map((m) => m.kind +
+    ' ' + m.id));
+  const other = {start: 'end', end: 'start'};
+  return got.filter((m) => !m.kind || m.id === null ||
+    !has.has(other[m.kind] + ' ' + m.id));
+}
+
+/** See the header (nodesOf). */
+export const nodesOf = (got) => got.map((m) => (m.kind ? m.x.node
+  : m));
+
+/** The marks of rows r0..r1 that move (see the header), in order:
+ *  between rows and cells all, in paragraphs those unpaired there. */
+function looseOf(t, r0, r1) {
+  const got = [];
+  for (let r = r0; r <= r1; r++) {
+    const row = t.rows[r];
+    got.push(...arr(row.lead));
+    for (const c of row.cells) cellMarks(c, got);
+    got.push(...arr(row.tail));
+  }
+  return nodesOf(unpaired(got));
+}
+
+/** Rows r0..r1 of t, or a RangeError. */
+function checkRows(t, r0, r1) {
+  if (!Number.isInteger(r0) || !Number.isInteger(r1) || r0 < 0 ||
+    r1 < r0 || r1 >= t.rows.length) {
+    throw new RangeError('no such rows');
+  }
+}
+
+/** cells with each continue cell of grid row gr whose merge started
+ *  at row lo or later made a restart (a copy; the same array if
+ *  none). */
+function restartAt(cells, gr, lo) {
+  let out = cells;
+  gr.cells.forEach((c, k) => {
+    if (!c.cont || c.top[0] < lo) return;
+    if (out === cells) out = cells.slice();
+    out[k] = {...out[k], tcPr: prWith(out[k].tcPr,
+      {vMerge: 'restart'})};
+  });
+  return out;
+}
+
+/** See the header. */
+export function deleteRows(t, r0, r1) {
+  checkRows(t, r0, r1);
+  t = unstray(t);
+  const n = t.rows.length;
+  if (r0 === 0 && r1 === n - 1) return null;
+  const marks = looseOf(t, r0, r1);
+  const rows = [...t.rows.slice(0, r0), ...t.rows.slice(r1 + 1)];
+  const grid = [...t.grid];
+  if (r1 + 1 === n) {
+    return marks.length ? {...t, grid, rows, tail: [...marks,
+      ...arr(t.tail)]} : {...t, grid, rows};
+  }
+  const nx = t.rows[r1 + 1];
+  const cells = restartAt(nx.cells, gridOf(t).rows[r1 + 1], r0);
+  if (cells !== nx.cells || marks.length) {
+    rows[r0] = {...nx, cells, lead: [...marks, ...arr(nx.lead)]};
+  }
+  return {...t, grid, rows};
+}
+
+const header = (row) => !!row && !!row.trPr &&
+  row.trPr.tblHeader === true;
+
+/** A new row like row r of t (grid g), see the header: below r, a
+ *  cell continues only a merge that goes on below r (A4 ruling). */
+function rowLike(row, g, r, below, head) {
+  const trPr = head ? {...row.trPr} : prWith(row.trPr,
+    {tblHeader: undefined});
+  const cells = row.cells.map((c, k) => {
+    const x = g.rows[r].cells[k], top = x.top;
+    const inMerge = below ? top[0] + g.rows[top[0]].cells[top[1]]
+      .rowSpan - 1 > r : x.cont;
+    const tcPr = prWith(c.tcPr, {vMerge: inMerge ? 'continue'
+      : undefined});
+    return {tcPr, blocks: [emptyLike(firstPara(c))], attrs: [],
+      lead: []};
+  });
+  return {trPr, cells, attrs: [], lead: [], tail: [], tblPrEx: null};
+}
+
+/** See the header. */
+export function insertRows(t, r0, r1, below) {
+  checkRows(t, r0, r1);
+  const n = r1 - r0 + 1;
+  if (t.rows.length + n > MAX_ROWS) {
+    throw new RangeError('rows: at most ' + MAX_ROWS);
+  }
+  t = unstray(t);
+  const r = below ? r1 : r0, g = gridOf(t);
+  const head = below ? header(t.rows[r1]) && header(t.rows[r1 + 1])
+    : header(t.rows[r0]);
+  const add = [];
+  for (let k = 0; k < n; k++) {
+    add.push(rowLike(t.rows[r], g, r, below, head));
+  }
+  const at = below ? r1 + 1 : r0;
+  return {...t, grid: [...t.grid], rows: [...t.rows.slice(0, at),
+    ...add, ...t.rows.slice(at)]};
+}
+
+/** See the header. */
+export function splitTable(t, r) {
+  if (!Number.isInteger(r) || r < 1 || r >= t.rows.length) {
+    throw new RangeError('no such row');
+  }
+  t = unstray(t);
+  const first = t.rows[r];
+  const cells = restartAt(first.cells, gridOf(t).rows[r], 0);
+  const rows = t.rows.slice(r);
+  if (cells !== first.cells) rows[0] = {...first, cells};
+  const a = {...t, grid: [...t.grid], rows: t.rows.slice(0, r),
+    tail: []};
+  return [a, {...t, id: nextId(), grid: [...t.grid], rows}];
+}
