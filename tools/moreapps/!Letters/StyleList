@@ -1,0 +1,121 @@
+// StyleList - the styles to offer in the gallery and the full list,
+// with a preview of each (Batch E1). Pure: no desktop services.
+//
+//   gallery(doc) -> Entry[]  styles with qFormat, by uiPriority
+//       (missing: 99) then name, case-insensitive
+//   all(doc, {hidden?: false}) -> Entry[]  the gallery, then the
+//       rest by the same order; a semiHidden style only when it is
+//       in use (or hidden: true). Table and numbering styles are
+//       never listed
+//   Entry {id, name, type, linked, preview}
+//       name is as Word shows it (./StyleName display: 'Heading 1'
+//       for the stored 'heading 1'), falling back to the id;
+//       a paragraph style whose link names an existing
+//       character style (that names it back or not) is ONE entry
+//       with it, linked: true, type 'paragraph';
+//       that character half is not listed on its own. The pairing is
+//       decided from the paragraph side only: a character style
+//       whose link is dangling, of the wrong type, one-sided (the
+//       paragraph does not link to it) or in a cycle is listed on
+//       its own, linked: false, so every style appears once
+//       preview {font, sizePt, bold, italic, underline, color}:
+//       from the style on a dummy paragraph (a character style: a
+//       dummy run in the default paragraph style), the theme
+//       applied; color 'RRGGBB' or 'auto'; size 11 / font Calibri
+//       when nothing gives one
+// Built-ins Word's gallery offers that the document lacks (./
+// StylesBuiltin galleryIds; ./StyleCmd ensureBuiltin says which)
+// are listed too, latent: true, previewed as if in the table, in
+// both lists; the document is not changed (applying one adds it,
+// ./StyleApply). A style the document has is never also latent.
+// A qFormat style is listed even when semiHidden and unused (the
+// gallery is qFormat-driven, as Word's).
+// The document is walked once per call for what uses the styles.
+import {resolveRun, newStyleTable} from './Styles';
+import {charOf, resolver} from './FormatEff';
+import {usedAll} from './StyleDoc';
+import {display} from './StyleName';
+import {ensureBuiltin} from './StyleCmd';
+import {galleryIds} from './StylesBuiltin';
+
+const EMPTY = newStyleTable();
+const prio = (s) => Number.isFinite(s.uiPriority) ? s.uiPriority : 99;
+const nameOf = display;
+
+function preview(res, s) {
+  const styles = res.styles;
+  const para = s.type === 'paragraph'
+    ? {pStyle: s.id, pPr: {extra: []}, runs: []}
+    : {pPr: {extra: []}, runs: []};
+  const run = s.type === 'character' ? {rStyle: s.id, rPr: {extra: []}}
+    : {rPr: {extra: []}};
+  const c = charOf(resolveRun(styles, para, run), para, res);
+  return {font: c.family, sizePt: c.size, bold: c.bold,
+    italic: c.italic, underline: c.underline, color: c.color};
+}
+
+function entries(doc, includeRest, hidden) {
+  const have = (doc.styles || EMPTY).styles;
+  let styles = doc.styles || EMPTY;
+  const strict = (doc.meta || {}).conformance === 'strict';
+  const lacking = new Set();
+  if (doc.styles) {
+    for (const id of galleryIds()) {
+      const t = ensureBuiltin(styles, id, {strict});
+      if (!t) continue;
+      lacking.add(id);
+      styles = t;
+    }
+  }
+  const res = resolver(lacking.size ? {...doc, styles} : doc);
+  const used = includeRest ? usedAll(doc) : null;
+  const out = [];
+  // the character half of each pair, found from the paragraph side
+  const pairOf = (s) => {
+    const o = s.type === 'paragraph' && typeof s.link === 'string'
+      ? styles.styles.get(s.link) : undefined;
+    return o && o.type === 'character' ? o : null;
+  };
+  const taken = new Set();
+  for (const s of styles.styles.values()) {
+    const o = pairOf(s);
+    if (o) taken.add(o.id);
+  }
+  for (const s of styles.styles.values()) {
+    if (s.type !== 'paragraph' && s.type !== 'character') continue;
+    if (!have.has(s.id) && !lacking.has(s.id)) continue;
+    if (s.type === 'character' && taken.has(s.id)) continue;
+    const pair = pairOf(s);
+    const q = s.qFormat === true || (pair && pair.qFormat === true);
+    if (!q) {
+      if (!includeRest) continue;
+      const inUse = (used.get(s.id) || 0) > 0 ||
+        (pair && (used.get(pair.id) || 0) > 0);
+      if (s.semiHidden === true && !hidden && !inUse) continue;
+    }
+    const entry = {id: s.id, name: nameOf(s), type: s.type,
+      linked: !!pair, preview: preview(res, s)};
+    if (lacking.has(s.id) && !have.has(s.id))
+      entry.latent = true;
+    out.push({s, q, entry});
+  }
+  out.sort((a, b) => (a.q === b.q ? 0 : a.q ? -1 : 1) ||
+    prio(a.s) - prio(b.s) || cmp(a.entry.name, b.entry.name) ||
+    cmp(a.s.id, b.s.id));
+  return out.map((o) => o.entry);
+}
+
+const cmp = (a, b) => {
+  const x = a.toLowerCase(), y = b.toLowerCase();
+  return x < y ? -1 : x > y ? 1 : 0;
+};
+
+/** See the header. */
+export function gallery(doc) {
+  return entries(doc, false, false);
+}
+
+/** See the header. */
+export function all(doc, opts = {}) {
+  return entries(doc, true, !!(opts && opts.hidden));
+}

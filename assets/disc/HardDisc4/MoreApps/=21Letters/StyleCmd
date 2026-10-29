@@ -1,0 +1,266 @@
+// StyleCmd - commands that change a style table (pure).
+//
+// Every command takes a StyleTable (./Styles) and returns a NEW
+// table, or null when it refuses (bad id, bad or duplicate name, a
+// basedOn that is missing or would make a cycle, a built-in that may
+// not go, nothing to change). The table given is never changed: the
+// styles Map is copied, only the styles that change are cloned, and
+// the rest is shared. A changed or created style has raw: null so
+// ./WriteStyles rebuilds it from its fields and `extra` (unknown
+// children are kept there); a created style has custom: true.
+//
+//   createStyle(table, {name, type: 'paragraph'|'character',
+//     basedOn?, next?, pPr?, rPr?, qFormat?, link?})
+//       -> {table, id} | null. `link: true` on a paragraph style
+//       also makes the linked character style 'name Char' (id +
+//       'Char'), holding the same rPr; the two link to each other.
+//   modifyStyle(table, id, patch) -> table | null; patch is any of
+//       {name, basedOn, next, pPr, rPr, qFormat, uiPriority}. pPr
+//       and rPr merge key by key, null removes a key; basedOn or
+//       next null removes the link. A field set or removed also
+//       drops a raw element of the same name from extra (a themed
+//       w:color), as ./OpsProps setProps does. Of a linked pair
+//       the rPr change goes to both halves, pPr to the paragraph
+//       half only.
+//   renameStyle(table, id, name) -> modifyStyle with {name}. A
+//       built-in is never renamed (Word knows it by its name).
+//   deleteStyle(table, id) -> table | null (not a built-in):
+//       children are re-based on the parent, next / link / default
+//       references to the style are cleared.
+//   resetBuiltin(table, id) -> table | null: the built-in style
+//       `id` as ./StylesBuiltin defines it.
+//   ensureBuiltin(table, id, {strict}?) -> table | null: the table
+//       with built-in `id` added, and the built-ins its Based on /
+//       Next / Link name when missing (./StylesBuiltin defines
+//       them; strict: Strict-safe definitions). null when the table
+//       has the id or a style of that name already, or `id` is not
+//       a built-in. Latent styles: Word writes a built-in into a
+//       document on first use
+// Hostile files (basedOn cycles, missing targets) never loop or
+// throw: the walks keep a seen-set.
+import {idFor, nameOk} from './StyleId';
+import {builtinStyle, isBuiltinStyle} from './StylesBuiltin';
+import {RPR_FIELDS, PPR_FIELDS, withoutRaw} from './PropNames';
+
+const TYPES = ['paragraph', 'character'];
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+function same(a, b) {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object')
+    return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  return ka.every((k) => has(b, k) && same(a[k], b[k]));
+}
+
+/** Properties `patch` merged over `base`; null removes a key. */
+function mergeProps(base, patch) {
+  const out = {...(base || {extra: []})};
+  if (!patch || typeof patch !== 'object') return out;
+  for (const k of Object.keys(patch)) {
+    if (k === '__proto__' || k === 'extra') continue;
+    if (patch[k] === null || patch[k] === undefined) delete out[k];
+    else out[k] = structuredClone(patch[k]);
+  }
+  if (!out.extra) out.extra = [];
+  return out;
+}
+
+/** props without the raw elements the fields set or removed by
+ *  patch replace (a themed w:color goes when color is set). */
+function replaceRaw(props, patch, fields) {
+  const names = Object.keys(patch || {}).filter((k) =>
+    fields.has(k) && patch[k] !== undefined).map((k) => fields.get(k));
+  const extra = withoutRaw(props.extra || [], names);
+  return extra === props.extra ? props : {...props, extra};
+}
+
+const copyOf = (table, styles) => ({...table, styles,
+  defaults: {...table.defaults}});
+
+/** Does walking basedOn from `from` reach `target`? Never loops. */
+function reaches(table, from, target) {
+  const seen = new Set();
+  for (let id = from; id != null && !seen.has(id);) {
+    if (id === target) return true;
+    seen.add(id);
+    id = table.styles.get(id)?.basedOn;
+  }
+  return false;
+}
+
+/** See the header. */
+export function createStyle(table, spec) {
+  if (!spec || !TYPES.includes(spec.type)) return null;
+  if (!nameOk(table, spec.name)) return null;
+  const name = spec.name.trim();
+  const {basedOn, next} = spec;
+  if (basedOn != null) {
+    if (table.styles.get(basedOn)?.type !== spec.type) return null;
+  }
+  if (next != null && table.styles.get(next)?.type !== 'paragraph')
+    return null;
+  const id = idFor(table, name);
+  const s = {id, type: spec.type, name, pPr: mergeProps(null,
+    spec.type === 'paragraph' ? spec.pPr : null),
+  rPr: mergeProps(null, spec.rPr), extra: [], raw: null,
+  custom: true};
+  if (basedOn != null) s.basedOn = basedOn;
+  if (next != null) s.next = next;
+  if (spec.qFormat) s.qFormat = true;
+  const styles = new Map(table.styles);
+  styles.set(id, s);
+  if (spec.link && spec.type === 'paragraph') {
+    const cname = name + ' Char';
+    if (!nameOk({styles}, cname)) return null;
+    const cid = idFor({styles}, cname);
+    s.link = cid;
+    styles.set(cid, {id: cid, type: 'character', name: cname,
+      link: id, pPr: {extra: []}, rPr: structuredClone(s.rPr),
+      extra: [], raw: null, custom: true});
+  }
+  return {table: copyOf(table, styles), id};
+}
+
+/** See the header. */
+export function modifyStyle(table, id, patch) {
+  const old = table.styles.get(id);
+  if (!old || !TYPES.includes(old.type) || !patch) return null;
+  const s = structuredClone(old);
+  let name = null;
+  if (has(patch, 'name')) {
+    if (isBuiltinStyle(old) && String(patch.name).trim() !== old.name)
+      return null;
+    if (!nameOk(table, patch.name, id)) return null;
+    name = patch.name.trim();
+    s.name = name;
+  }
+  if (has(patch, 'basedOn')) {
+    const b = patch.basedOn;
+    if (b == null) delete s.basedOn;
+    else {
+      if (table.styles.get(b)?.type !== s.type) return null;
+      if (reaches(table, b, id)) return null;
+      s.basedOn = b;
+    }
+  }
+  if (has(patch, 'next')) {
+    const n = patch.next;
+    if (n == null) delete s.next;
+    else {
+      if (table.styles.get(n)?.type !== 'paragraph') return null;
+      s.next = n;
+    }
+  }
+  if (has(patch, 'pPr')) {
+    s.pPr = replaceRaw(mergeProps(s.pPr, patch.pPr), patch.pPr,
+      PPR_FIELDS);
+  }
+  if (has(patch, 'rPr')) {
+    s.rPr = replaceRaw(mergeProps(s.rPr, patch.rPr), patch.rPr,
+      RPR_FIELDS);
+  }
+  if (has(patch, 'qFormat')) {
+    if (patch.qFormat) s.qFormat = true;
+    else delete s.qFormat;
+  }
+  if (has(patch, 'uiPriority')) {
+    if (patch.uiPriority == null) delete s.uiPriority;
+    else s.uiPriority = patch.uiPriority;
+  }
+  if (same({...s, raw: null}, {...old, raw: null})) return null;
+  s.raw = null;
+  const styles = new Map(table.styles);
+  styles.set(id, s);
+  const mate = s.link != null ? table.styles.get(s.link) : null;
+  if (mate && mate.link === id && has(patch, 'rPr')) {
+    const m = structuredClone(mate);
+    m.rPr = replaceRaw(mergeProps(m.rPr, patch.rPr), patch.rPr,
+      RPR_FIELDS);
+    m.raw = null;
+    styles.set(m.id, m);
+  }
+  return copyOf(table, styles);
+}
+
+/** See the header. */
+export function renameStyle(table, id, name) {
+  return modifyStyle(table, id, {name});
+}
+
+/** See the header. */
+export function deleteStyle(table, id) {
+  const old = table.styles.get(id);
+  if (!old || isBuiltinStyle(old)) return null;
+  // the default style of its type is never deleted
+  if (table.defaults[old.type] === id) return null;
+  const styles = new Map(table.styles);
+  styles.delete(id);
+  for (const [k, c] of table.styles) {
+    if (k === id) continue;
+    const hit = c.basedOn === id || c.next === id || c.link === id;
+    if (!hit) continue;
+    const n = structuredClone(c);
+    if (c.basedOn === id) {
+      if (old.basedOn != null && old.basedOn !== k &&
+        !reaches(table, old.basedOn, k)) n.basedOn = old.basedOn;
+      else delete n.basedOn;
+    }
+    if (c.next === id) delete n.next;
+    if (c.link === id) delete n.link;
+    n.raw = null;
+    styles.set(k, n);
+  }
+  const out = copyOf(table, styles);
+  for (const t of Object.keys(out.defaults))
+    if (out.defaults[t] === id) out.defaults[t] = null;
+  return out;
+}
+
+/** See the header. */
+export function resetBuiltin(table, id) {
+  const b = typeof id === 'string' ? builtinStyle(id) : null;
+  if (!b) return null;
+  const styles = new Map(table.styles);
+  styles.set(id, b);
+  return copyOf(table, styles);
+}
+
+const nameKey = (s) => String(s.name).toLowerCase();
+
+/** See the header. */
+export function ensureBuiltin(table, id, opts = {}) {
+  const b = typeof id === 'string' ? builtinStyle(id, opts) : null;
+  if (!b || table.styles.has(id)) return null;
+  const names = new Set([...table.styles.values()].map(nameKey));
+  if (names.has(nameKey(b))) return null;
+  const styles = new Map(table.styles);
+  const add = (s) => {
+    // only one default per type: the table's own stays the one
+    if (table.defaults[s.type]) delete s.isDefault;
+    styles.set(s.id, s);
+    names.add(nameKey(s));
+    for (const k of ['basedOn', 'next', 'link']) {
+      const t = s[k];
+      if (typeof t !== 'string' || styles.has(t)) continue;
+      const o = builtinStyle(t, opts);
+      if (!o) continue;
+      // the same name under another id: refer to that style
+      const same = [...styles.values()].find((x) =>
+        nameKey(x) === nameKey(o) && x.type === o.type);
+      if (same) s[k] = same.id;
+      else if (names.has(nameKey(o))) delete s[k];
+      else add(o);
+    }
+  };
+  add(b);
+  const out = copyOf(table, styles);
+  // a default built-in (Normal) added makes the type's default
+  for (const s of styles.values()) {
+    if (s.isDefault && !table.styles.has(s.id) &&
+      !out.defaults[s.type]) out.defaults[s.type] = s.id;
+  }
+  return out;
+}

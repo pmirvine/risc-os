@@ -27,7 +27,7 @@ describe('Format.query', () => {
       widowControl: true, pageBreakBefore: false,
       suppressLineNumbers: false, listKind: null,
       listEntry: null, charShade: 'none', paraShade: 'none',
-      borders: {}});
+      borders: {}, charStyle: ''});
   });
   it('the paragraph flags: resolved through the style, mixed', () => {
     // (widowControl: on unless turned off, Word's default)
@@ -46,6 +46,27 @@ describe('Format.query', () => {
     // through a style: List Paragraph's contextualSpacing
     const e = mk([['x', {pStyle: 'ListParagraph'}]]);
     assert.equal(F.query(e.doc, SEL(e, 0, 0, 0, 1)).contextual, true);
+  });
+  it('charStyle: the runs\' character style, mixed is null', () => {
+    const d = mk([['abcd', {runs: [
+      {start: 0, end: 2, rPr: plain, rStyle: 'Strong'},
+      {start: 2, end: 4, rPr: plain}]}]]);
+    const cs = (a, b) => F.query(d.doc, SEL(d, 0, a, 0, b)).charStyle;
+    assert.equal(cs(0, 2), 'Strong');
+    assert.equal(cs(2, 4), '');
+    assert.equal(cs(1, 3), null);
+    assert.equal(F.query(d.doc, C(d, 0, 1)).charStyle, 'Strong');
+    assert.equal(F.query(d.doc, C(d, 0, 4)).charStyle, '');
+  });
+  it('charStyle: at a boundary, and in an empty paragraph', () => {
+    const d = mk([['abcd', {runs: [
+      {start: 0, end: 2, rPr: plain, rStyle: 'Strong'},
+      {start: 2, end: 4, rPr: plain}]}], '']);
+    // (the character before the caret gives the format)
+    assert.equal(F.query(d.doc, C(d, 0, 2)).charStyle, 'Strong');
+    assert.equal(F.query(d.doc, C(d, 0, 3)).charStyle, '');
+    assert.equal(F.query(d.doc, C(d, 0, 0)).charStyle, 'Strong');
+    assert.equal(F.query(d.doc, C(d, 1, 0)).charStyle, '');
   });
   it('a bold run, and mixed across runs (null)', () => {
     const d = mk([two('ab', 'cd')]);

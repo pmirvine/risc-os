@@ -1,9 +1,12 @@
 // Styles - the style table of a document and style resolution.
 //
 //   StyleTable {docDefaults: {rPr, pPr}, styles: Map<id, Style>,
-//               defaults: {paragraph, character, table}, latent}
+//               defaults: {paragraph, character, table}, latent,
+//               theme?}  (theme: ./ThemeRead, set by ./DocxRead)
 //   Style      {id, type: 'paragraph'|'character'|'table'|'numbering',
 //               name?, basedOn?, next?, link?, pPr, rPr, extra, raw,
+//               attrs? ([[name, value]]: the other attributes of
+//               the w:style element, kept by ./WriteStyles),
 //               isDefault?, custom?, uiPriority?, qFormat?,
 //               semiHidden?, unhideWhenUsed?, locked?}
 //   raw is the original XML node when the style was read from a
@@ -13,6 +16,8 @@
 // holds outlineLvl?: number, 0 for Heading1 and so on, and numPr?:
 // {numId, ilvl?}; resolvePara's numPr is {numId, ilvl, ilvlGiven}
 // or null: see ./StylesNum).
+// The Based on chain followed is at most MAX_CHAIN (100) styles
+// deep, cycles cut: a longer chain loses its farthest ancestors.
 // resolvePara and resolveRun return NEW objects; the table is never
 // changed by them.
 // (Like Model objects, styles of a live Doc must not be changed in
@@ -22,6 +27,11 @@ import {numberingOf} from './StylesNum';
 import {rawSpacing} from './SpacingRaw';
 
 export {ensureBuiltins} from './StylesBuiltin';
+
+/** The deepest Based on chain that is followed: a longer one is cut
+ *  there (real documents nest a handful of levels; a hostile file
+ *  with thousands would make every resolve quadratic). */
+export const MAX_CHAIN = 100;
 
 /** An empty style table. */
 export function newStyleTable() {
@@ -46,13 +56,15 @@ export function styleOf(styles, id, type) {
   return ds && ds.type === type ? ds : null;
 }
 
-/** Styles from the root ancestor down to `id`; cycle-safe. */
+/** Styles from the root ancestor down to `id`; cycle-safe, and cut
+ *  at MAX_CHAIN levels (the farthest ancestors are ignored). */
 function chain(styles, id, type) {
   const out = [];
   const seen = new Set();
   let s = id === undefined || id === null ? undefined
     : styles.styles.get(id);
-  while (s && s.type === type && !seen.has(s.id)) {
+  while (s && s.type === type && !seen.has(s.id) &&
+    out.length < MAX_CHAIN) {
     seen.add(s.id);
     out.push(s);
     s = s.basedOn === undefined ? undefined

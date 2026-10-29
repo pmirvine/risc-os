@@ -2,7 +2,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {newStyleTable, resolvePara, resolveRun, styleOf, addStyle,
-  setDefault}
+  setDefault, MAX_CHAIN}
   from '../../tools/moreapps/!Letters/Styles';
 import {ensureBuiltins} from '../../tools/moreapps/!Letters/StylesBuiltin';
 import {newPara} from '../../tools/moreapps/!Letters/Model';
@@ -383,5 +383,58 @@ describe('addStyle and setDefault', () => {
     for (let n = 1; n <= 6; n++)
       assert.equal(t.styles.get('Heading' + n).pPr.outlineLvl, n - 1);
     assert.equal(t.styles.get('Normal').raw, null);
+  });
+});
+
+describe('Styles Based on chain cap', () => {
+  // s0 is the paragraph's own style, s(i+1) is s(i)'s Based on.
+  // Markers: s0 jc; s98 widowControl (99th style, 98th ancestor);
+  // s99 keepLines (the 100th style: the last one followed); s100
+  // keepNext (the 101st: cut).
+  const build = (n) => {
+    const t = newStyleTable();
+    for (let i = 0; i < n; i++) {
+      const pPr = rp({});
+      if (i === 0) pPr.jc = 'center';
+      if (i === 98) pPr.widowControl = false;
+      if (i === 99) pPr.keepLines = true;
+      if (i === 100) pPr.keepNext = true;
+      add(t, st('s' + i, {pPr,
+        basedOn: i + 1 < n ? 's' + (i + 1) : undefined}));
+    }
+    return t;
+  };
+  const para = () => ({...newPara('x'), pStyle: 's0'});
+
+  it('exports MAX_CHAIN = 100', () => {
+    assert.equal(MAX_CHAIN, 100);
+  });
+
+  it('a chain longer than the cap keeps the style and 99 ancestors', () => {
+    const r = resolvePara(build(150), para());
+    assert.equal(r.jc, 'center');          // the style itself
+    assert.equal(r.widowControl, false);   // 99th style
+    assert.equal(r.keepLines, true);       // 100th style: in
+    assert.equal(r.keepNext, undefined);   // 101st style: out
+  });
+
+  it('a chain of exactly MAX_CHAIN is unchanged', () => {
+    const r = resolvePara(build(100), para());
+    assert.equal(r.jc, 'center');
+    assert.equal(r.keepLines, true);
+    assert.equal(r.keepNext, undefined);
+  });
+
+  it('a chain of MAX_CHAIN + 1 loses only the farthest', () => {
+    const r = resolvePara(build(101), para());
+    assert.equal(r.keepLines, true);
+    assert.equal(r.keepNext, undefined);
+  });
+
+  it('a chain shorter than the cap is unchanged', () => {
+    const r = resolvePara(build(5), para());
+    assert.equal(r.jc, 'center');
+    assert.equal(r.keepLines, undefined);
+    assert.equal(r.keepNext, undefined);
   });
 });

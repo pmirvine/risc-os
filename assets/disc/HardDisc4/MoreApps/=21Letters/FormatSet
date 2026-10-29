@@ -31,8 +31,12 @@
 //       the paragraphs, a character style on the selected runs (the
 //       default style of the type: the key removed); an id that is
 //       not a paragraph or character style: RangeError
+//   updateToMatch(d, typing, sel, pending)  ./StyleApply: the caret
+//       paragraph's direct formatting into its style
 //   setPara, indentBy, clearParaFormat  ./FormatPara
 //   setList, listParas  ./FormatList (list levels, out of a list)
+//   explicit(values, p, r, res) -> {rPr}  a checked charPatch made
+//       explicit for run r of p (as below; ./StylePatch uses it)
 //   charCommand(d, typing, sel, pending, patchFor)  patchFor(p, run,
 //       res) -> {rPr?, rStyle?} | null over the selected runs, or
 //       over the caret's format into pending (./BorderCommand)
@@ -45,36 +49,16 @@
 // Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {collapsed} from './Selection';
-import {EMPTY, merge, onRun} from './Pending';
+import {EMPTY, onRun} from './Pending';
 import {resolver, charOf, canon, look} from './FormatEff';
-import {touched, caretAt, buildOps, charOps, runOps, pieces}
-  from './FormatOps';
+import {touched, caretAt, pieces} from './FormatOps';
 import {charPatch} from './FormatCheck';
-import {paraStyle} from './FormatPara';
+import {charCommand} from './FormatChar';
 
 export {setPara, indentBy, clearParaFormat} from './FormatPara';
 export {setList, listParas} from './FormatList';
-
-/**
- * Run patchFor(p, run, res) -> {rPr?, rStyle?} | null over the
- * selected runs, or over the caret's format into pending.
- */
-export function charCommand(d, typing, sel, pending, patchFor) {
-  const res = resolver(d.doc);
-  if (collapsed(sel)) {
-    if (typing) typing.command(() => {});
-    const at = caretAt(d.doc, sel);
-    if (!at) return {sel, pending: pending || EMPTY};
-    const patch = patchFor(at.p, onRun(at.base, pending), res) || {};
-    const flat = {...(patch.rPr || {})};
-    if (patch.rStyle !== undefined) flat.rStyle = patch.rStyle;
-    return {sel, pending: merge(pending, flat, at.base)};
-  }
-  const ops = buildOps(d.doc, sel,
-    (en) => charOps(en, (r) => patchFor(en.p, r, res)));
-  runOps(d, typing, ops);
-  return {sel, pending: EMPTY};
-}
+export {charCommand};
+export {applyStyle, updateToMatch} from './StyleApply';
 
 /**
  * values (field -> value) made explicit for run r of p. Bold is the
@@ -86,7 +70,7 @@ export function charCommand(d, typing, sel, pending, patchFor) {
  * no style gives one it is always written (Word shows 10 pt there,
  * !Letters 11 pt: the file says what was chosen).
  */
-function explicit(values, p, r, res) {
+export function explicit(values, p, r, res) {
   const rr = res.run(p, r.rPr, r.rStyle);
   const inh = res.base(p, r.rStyle);
   const out = {};
@@ -207,15 +191,3 @@ const CLEAR = {rPr: {rFonts: null, b: null, i: null, strike: null,
 /** See the header. */
 export const clearFormat = (d, typing, sel, pending) =>
   charCommand(d, typing, sel, pending, () => CLEAR);
-
-/** See the header. */
-export function applyStyle(d, typing, sel, id, pending) {
-  const st = d.doc.styles;
-  const s = typeof id === 'string' && st ? st.styles.get(id) : null;
-  if (!s || (s.type !== 'paragraph' && s.type !== 'character'))
-    fail('no such style: ' + id);
-  const v = id === st.defaults[s.type] ? null : id;
-  if (s.type === 'paragraph')
-    return paraStyle(d, typing, sel, v, pending);
-  return charCommand(d, typing, sel, pending, () => ({rStyle: v}));
-}

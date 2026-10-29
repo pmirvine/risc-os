@@ -1,0 +1,141 @@
+// ThemeRead - the document's theme (word/theme/theme1.xml): its fonts
+// and colours, for the screen. Pure; the theme part is only read, it
+// is never written (it stays in doc.parts byte for byte).
+//
+//   parse(xmlText | bytes | null) -> Theme
+//     Theme {major, minor: font names, colors: Map<name, 'RRGGBB'>}
+//     with the Office defaults (Calibri Light, Calibri, the Office
+//     colour scheme) for anything missing; empty, non-XML or hostile
+//     input gives the defaults and never throws.
+//   fontOf(theme, rFonts) -> string | null
+//     the font name of an rFonts ({ascii?, hAnsi?, asciiTheme?,
+//     hAnsiTheme?}): a theme attribute (majorHAnsi, minorAscii...)
+//     overrides ascii and hAnsi; null when it names no font.
+//   colorOf(theme, {color?, themeColor?, themeTint?, themeShade?})
+//     -> 'RRGGBB'
+//     Word's rule: themeColor overrides the literal color; then
+//     tint t = themeTint / 255 lightens each channel (c * t + 255 *
+//     (1 - t)) and shade s = themeShade / 255 darkens it (c * s).
+//     An unknown themeColor falls back to the literal color, else
+//     black. themeTint and themeShade: two hex digits or a number.
+import {parseXml} from 'wimplib/Xml';
+
+const DEFAULT_COLORS = [['dk1', '000000'], ['lt1', 'FFFFFF'],
+  ['dk2', '44546A'], ['lt2', 'E7E6E6'], ['accent1', '4472C4'],
+  ['accent2', 'ED7D31'], ['accent3', 'A5A5A5'], ['accent4', 'FFC000'],
+  ['accent5', '5B9BD5'], ['accent6', '70AD47'], ['hlink', '0563C1'],
+  ['folHlink', '954F72']];
+// the names a document uses -> the theme's slots
+const SLOT = new Map([['dark1', 'dk1'], ['light1', 'lt1'],
+  ['dark2', 'dk2'], ['light2', 'lt2'], ['text1', 'dk1'],
+  ['text2', 'dk2'], ['background1', 'lt1'], ['background2', 'lt2'],
+  ['hyperlink', 'hlink'], ['followedHyperlink', 'folHlink']]);
+const HEX6 = /^[0-9A-Fa-f]{6}$/;
+const FONT = /^[^\x00-\x1f<>&"]{1,64}$/;
+const local = (n) => String(n).split(':').pop();
+const kids = (node, name) => node.children.filter((c) =>
+  typeof c === 'object' && c.name !== undefined &&
+  local(c.name) === name);
+const attrOf = (node, name) => {
+  for (const [k, v] of node.attrs) if (local(k) === name) return v;
+  return undefined;
+};
+
+function defaults() {
+  return {major: 'Calibri Light', minor: 'Calibri',
+    colors: new Map(DEFAULT_COLORS)};
+}
+
+function latin(scheme, which, out) {
+  const f = kids(scheme, which)[0];
+  const l = f && kids(f, 'latin')[0];
+  const t = l && attrOf(l, 'typeface');
+  if (typeof t === 'string' && FONT.test(t)) {
+    out[which === 'majorFont' ? 'major' : 'minor'] = t;
+  }
+}
+
+function readTheme(root, out) {
+  const els = kids(root, 'themeElements')[0];
+  if (!els) return;
+  const fonts = kids(els, 'fontScheme')[0];
+  if (fonts) {
+    latin(fonts, 'majorFont', out);
+    latin(fonts, 'minorFont', out);
+  }
+  const clr = kids(els, 'clrScheme')[0];
+  if (!clr) return;
+  for (const [slot] of DEFAULT_COLORS) {
+    const e = kids(clr, slot)[0];
+    const c = e && e.children.find((x) => typeof x === 'object');
+    if (!c) continue;
+    const v = local(c.name) === 'srgbClr' ? attrOf(c, 'val')
+      : local(c.name) === 'sysClr' ? attrOf(c, 'lastClr') : undefined;
+    if (typeof v === 'string' && HEX6.test(v)) {
+      out.colors.set(slot, v.toUpperCase());
+    }
+  }
+}
+
+/** See the header. */
+export function parse(xml) {
+  const out = defaults();
+  try {
+    const text = typeof xml === 'string' ? xml
+      : xml instanceof Uint8Array ? new TextDecoder().decode(xml)
+        : '';
+    if (!text.trim()) return out;
+    const root = parseXml(text).root;
+    if (root && local(root.name) === 'theme') readTheme(root, out);
+  } catch (e) {
+    return defaults();
+  }
+  return out;
+}
+
+const THEME_FONT = /^(major|minor)(HAnsi|Ascii|EastAsia|Bidi)$/;
+
+/** See the header. */
+export function fontOf(theme, rFonts) {
+  if (!rFonts || typeof rFonts !== 'object') return null;
+  const t = theme || defaults();
+  for (const k of ['asciiTheme', 'hAnsiTheme']) {
+    const m = typeof rFonts[k] === 'string'
+      ? THEME_FONT.exec(rFonts[k]) : null;
+    if (m) return m[1] === 'major' ? t.major : t.minor;
+  }
+  for (const k of ['ascii', 'hAnsi']) {
+    if (typeof rFonts[k] === 'string' && rFonts[k]) return rFonts[k];
+  }
+  return null;
+}
+
+const level = (v) => {
+  const n = typeof v === 'number' ? v
+    : typeof v === 'string' && /^[0-9A-Fa-f]{2}$/.test(v)
+      ? parseInt(v, 16) : NaN;
+  return Number.isInteger(n) && n >= 0 && n <= 255 ? n / 255 : null;
+};
+const hex2 = (n) => Math.max(0, Math.min(255, Math.round(n)))
+  .toString(16).toUpperCase().padStart(2, '0');
+
+/** See the header. */
+export function colorOf(theme, c) {
+  const t = theme || defaults();
+  const lit = c && typeof c.color === 'string' && HEX6.test(c.color)
+    ? c.color.toUpperCase() : null;
+  const name = c && typeof c.themeColor === 'string'
+    ? (SLOT.get(c.themeColor) || c.themeColor) : null;
+  const base = name !== null && t.colors.has(name)
+    ? t.colors.get(name) : null;
+  if (base === null) return lit || '000000';
+  const tint = level(c.themeTint), shade = level(c.themeShade);
+  let out = '';
+  for (let i = 0; i < 6; i += 2) {
+    let v = parseInt(base.slice(i, i + 2), 16);
+    if (tint !== null) v = v * tint + 255 * (1 - tint);
+    if (shade !== null) v = v * shade;
+    out += hex2(v);
+  }
+  return out;
+}

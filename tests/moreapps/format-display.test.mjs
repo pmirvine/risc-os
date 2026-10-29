@@ -100,7 +100,7 @@ describe('Fmt: highlight, super/subscript, colour', () => {
     assert.equal(f.px, 17.34);           // 26.67 * 0.65
     assert.equal(f.dy, -9.33);           // 26.67 * 0.35
   });
-  it('auto, theme and bad colours are black; 6 hex as given', () => {
+  it('auto and bad colours are black; 6 hex as given; theme from the theme', () => {
     assert.equal(fmt({color: 'auto'}).colour, '#000000');
     assert.equal(fmt({color: 'red'}).colour, '#000000');
     assert.equal(fmt({color: 'FF00'}).colour, '#000000');
@@ -110,7 +110,7 @@ describe('Fmt: highlight, super/subscript, colour', () => {
       [['w:val', '1F3864'], ['w:themeColor', 'accent1']],
     children: []}]};
     assert.equal(runFmt(styles, mk('x'), {start: 0, end: 1,
-      rPr: theme}, new Map()).colour, '#000000');
+      rPr: theme}, new Map()).colour, '#4472C4');  // Office accent1 (./ThemeRead)
   });
   it('the format cache tells the new properties apart', () => {
     const cache = new Map(), pa = mk('x');

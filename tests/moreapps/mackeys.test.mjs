@@ -123,9 +123,10 @@ describe('MacKeys', () => {
       assert.equal(keymap.lookup(macKey(cmd(k), false)), null, k);
     }
     assert.ok(CMD.has('s') && CMD.has('n'));
-    // Cmd-Shift-S, Cmd-Alt-S: no row
+    // Cmd-Shift-S is the style list (Word's Apply Styles), Cmd-Alt-S
+    // has no row
     assert.equal(keymap.lookup(macKey(cmd('s', {shift: true}), true)),
-      null);
+      'styleList');
     assert.equal(keymap.lookup(macKey(cmd('s', {alt: true}), true)),
       null);
     assert.equal(macLabel(keymap.labelFor('save'), true), 'Cmd+S');

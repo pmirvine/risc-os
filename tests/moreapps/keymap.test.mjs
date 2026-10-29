@@ -328,13 +328,15 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
       ['F12', {ctrl: true}], ['F12', {shift: true}],
       ['F2', {alt: true}], ['F3', {alt: true}],
       ['F2', {ctrl: true, alt: true}], ['s', {alt: true}],
-      ['s', {ctrl: true, alt: true}], ['s', {ctrl: true, shift: true}],
+      ['s', {ctrl: true, alt: true}],
       ['n', {ctrl: true, shift: true}], ['s', {}], ['n', {}],
       ['f', {}], ['g', {}], ['h', {}], ['f', {ctrl: true, alt: true}],
       ['h', {ctrl: true, shift: true}], ['F4', {shift: true}],
       ['F4', {ctrl: true}]]) {
       assert.equal(id(key, mods), null, key + JSON.stringify(mods));
     }
+    // (Ctrl+Shift+S is the style list: ./DocKeys)
+    assert.equal(id('s', {ctrl: true, shift: true}), 'styleList');
     // (Shift-F3 is Change case: ./ChangeCase)
     assert.equal(id('F3', {shift: true}), 'caseCycle');
   });
@@ -390,7 +392,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
   it('WINDOW lists the window commands', () => {
     assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
       'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
-      'saveBox', 'sendToBack', 'fieldCodes'].sort());
+      'saveBox', 'sendToBack', 'fieldCodes', 'styleList'].sort());
   });
   it('function key names bind: F1..F12 with Ctrl and Shift', () => {
     const k = new Keymap().bind([{id: 'a', keys: ['F1']},

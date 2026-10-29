@@ -1,0 +1,369 @@
+// StylePatch - the Modify / New Style box's values (./StyleBox) from
+// a style, and the patch they make for ./StyleCmd (Batch E1). Pure:
+// no desktop services. table is a ./Styles StyleTable (never changed).
+//
+//   fill(table, id | null) -> values | null
+//       the box's values for style `id` (null: a New style, a
+//       paragraph style based on the default one). The font fields
+//       are what the style RESOLVES to (docDefaults and the Based-on
+//       chain applied, the document's theme read: a theme colour is
+//       shown as its RGB, a theme font as its family), as ./StyleList
+//       previews it; a built-in the document lacks (latent) is filled
+//       as if it were in the table (latent: true). null for an id the
+//       table (and ./StylesBuiltin) lacks
+//   patch(table, id | null, values, more?) -> {patch, latent?, bad?}
+//       | {error, bad?}
+//       patch  what ./StyleCmd modifyStyle takes (id) or createStyle
+//              (id null; with type and, for a Linked style, link:
+//              true); {} when nothing changed. Only what the user
+//              CHANGED against fill() is written, and a value that
+//              the Based-on chain (the NEW Based on) already gives is
+//              not written: it is removed (null) when the style has
+//              it of its own, as the formatting commands keep direct
+//              formatting minimal (./FormatExplicit explicit and
+//              ./FormatSet explicit do the comparing). pPr / rPr
+//              hold whole property objects (ind, spacing, rFonts),
+//              as modifyStyle merges key by key. A colour is written
+//              (as RGB, replacing a themed one) only when edited
+//       latent true: the style is a built-in the table lacks; add it
+//              (./StyleCmd ensureBuiltin) in the same change
+//       error  text for the box: an empty, too long or duplicate
+//              name, renaming a built-in, a Based on that would make
+//              a cycle or is of the wrong type, a Next that is not a
+//              paragraph style, a value that is not one. bad: the
+//              field names for the caret
+//       more   {pPr?, rPr?}: checked-form patches from outside the
+//              box (./FormatCheck paraPatch / charPatch: a Tabs,
+//              Borders or Numbering box, ./StyleTarget)
+//              joined to the box's own before they are made
+//              explicit; its tabs are the style's own stops over its
+//              base as they are to be (./FormatTabs tabsFor); its
+//              numPr ({numId, ilvl?} or null) is written as it is
+//              when the style's own differs (other keys ignored)
+//   values  as fill() gives (name, type, basedOn, next, qFormat, font,
+//       size, bold, italic, underline, colour, then ./ParaPatch's
+//       align left right special by before after spacing at). type
+//       is 'paragraph' | 'character' | 'linked' (New only; an
+//       existing paragraph style that links a character style is
+//       shown 'linked'). basedOn and next are style ids, '' for none
+//       (next '' is the style itself). A field left undefined
+//       changes nothing
+//   basedChoices(table, type, exceptId?, keep?) -> [{id, text}]
+//       Based on: '' (no style), then the styles of that type (a
+//       'linked' style is a paragraph one) except the style and what
+//       is based on it; hidden styles left out, except keep
+//   nextChoices(table, keep?) -> [{id, text}]  '' (the same style),
+//       then the paragraph styles (hidden ones except keep left out)
+//   TYPES  the Style type choices
+import {resolver, paraOf, charOf} from './FormatEff';
+import {ensureBuiltin} from './StyleCmd';
+import {nameOk} from './StyleId';
+import {display} from './StyleName';
+import {MAX_CHAIN} from './Styles';
+import {isBuiltinStyle} from './StylesBuiltin';
+import {fill as paraFill, patch as paraDiff} from './ParaPatch';
+import {paraPatch, charPatch} from './FormatCheck';
+import {explicit as explicitPara} from './FormatExplicit';
+import {explicit as explicitChar} from './FormatSet';
+import {mergeProps} from './OpsProps';
+
+export const TYPES = Object.freeze([
+  {id: 'paragraph', text: 'Paragraph'},
+  {id: 'character', text: 'Character'},
+  {id: 'linked', text: 'Linked (paragraph and character)'}]);
+
+const PARA = ['align', 'left', 'right', 'special', 'by', 'before',
+  'after', 'spacing', 'at'];
+const LABEL = {size: 'Size', font: 'Font', left: 'Left',
+  right: 'Right', by: 'By', before: 'Before', after: 'After',
+  at: 'At', colour: 'Colour'};
+const SHADOW = '$base';
+const NONE = {extra: []};
+const MSG = {
+  empty: 'Type a name for the style.',
+  long: 'The name is too long: 100 characters at most.',
+  control: 'The name has a character that cannot be used.',
+  dup: 'There is already a style with that name.',
+  builtin: 'A built-in style cannot be renamed.',
+  cycle: 'A style cannot be based on itself, or on a style that ' +
+    'is based on it.',
+  basedType: 'Based on must be a style of the same kind.',
+  next: 'The style for the following paragraph must be a ' +
+    'paragraph style.',
+  gone: 'There is no such style.',
+};
+
+/** The table with built-in `id` added when it lacks it. */
+function withLatent(table, id) {
+  if (id === null || id === undefined || table.styles.has(id))
+    return table;
+  return ensureBuiltin(table, id) || table;
+}
+
+/** {c, q}: char values and paragraph query of style s in t. */
+function shown(t, s) {
+  const res = resolver({styles: t});
+  const isP = s.type === 'paragraph';
+  const p = isP ? {pStyle: s.id, pPr: {extra: []}, runs: []}
+    : {pPr: {extra: []}, runs: []};
+  const rStyle = isP ? undefined : s.id;
+  const c = charOf(res.run(p, {extra: []}, rStyle), p, res);
+  return {c, q: isP ? paraOf(res.para(p), p, res) : null};
+}
+
+const typeOf = (s) => (s.type === 'paragraph' && t_link(s)
+  ? 'linked' : s.type);
+const t_link = (s) => typeof s.link === 'string';
+
+/** See the header. */
+export function fill(table, id) {
+  const t = withLatent(table, id);
+  const isNew = id === null || id === undefined;
+  const s = isNew ? null : t.styles.get(id);
+  if (!isNew && !s) return null;
+  const base = isNew ? {id: SHADOW, type: 'paragraph',
+    basedOn: t.defaults.paragraph || undefined, pPr: NONE, rPr: NONE}
+    : s;
+  const t2 = isNew ? {...t, styles: new Map(t.styles).set(SHADOW,
+    base)} : t;
+  const {c, q} = shown(t2, base);
+  const v = {name: isNew ? '' : display(s),
+    type: isNew ? 'paragraph' : typeOf(s),
+    basedOn: base.basedOn ?? '', next: s?.next ?? '',
+    qFormat: s?.qFormat === true, font: c.family, size: c.size,
+    bold: c.bold, italic: c.italic, underline: c.underline,
+    colour: c.color};
+  if (q) Object.assign(v, paraFill(q));
+  else for (const k of PARA) v[k] = undefined;
+  if (!isNew && !table.styles.has(id)) v.latent = true;
+  return v;
+}
+
+/** Does walking basedOn from `from` reach `target`? */
+function reaches(t, from, target, cap = Infinity) {
+  const seen = new Set();
+  for (let id = from; id != null && !seen.has(id) &&
+    seen.size < cap;) {
+    if (id === target) return true;
+    seen.add(id);
+    id = t.styles.get(id)?.basedOn;
+  }
+  return false;
+}
+
+const nameError = (t, name, except) => {
+  const n = String(name ?? '');
+  if (n.trim() === '') return MSG.empty;
+  if (n.length > 100) return MSG.long;
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(n)) return MSG.control;
+  return nameOk(t, n, except) ? null : MSG.dup;
+};
+
+const sameNum = (a, b) => Math.abs(a - b) < 0.001;
+
+/** The checked char patch of the box's changed font fields. */
+function charChanges(v, was) {
+  const o = {};
+  if (v.font !== undefined && v.font !== was.font) o.rFonts = v.font;
+  if (v.size !== undefined && v.size !== null &&
+    !sameNum(v.size, was.size)) o.sz = v.size * 2;
+  for (const [k, f] of [['bold', 'b'], ['italic', 'i'],
+    ['underline', 'u']]) {
+    if (v[k] !== undefined && !!v[k] !== was[k]) o[f] = !!v[k];
+  }
+  if (v.colour !== undefined && v.colour !== was.colour)
+    o.color = v.colour;
+  return o;
+}
+
+/** props merged with ex, as the patch of whole top-level objects. */
+function whole(own, ex) {
+  const merged = mergeProps(own, ex);
+  const out = {};
+  for (const k of Object.keys(ex)) {
+    const was = own[k], now = merged[k];
+    // (a key written again as it is, or removed when not there, is
+    // no change)
+    if (JSON.stringify(was) === JSON.stringify(now)) continue;
+    out[k] = now ?? null;
+  }
+  return out;
+}
+
+/** The face of a base-only table: res, a dummy paragraph p. */
+function baseOf(t, type, basedOn, own) {
+  const sh = {id: SHADOW, type, pPr: NONE, rPr: NONE, extra: [],
+    raw: null};
+  if (basedOn) sh.basedOn = basedOn;
+  const t2 = {...t, styles: new Map(t.styles).set(SHADOW, sh)};
+  const res = resolver({styles: t2});
+  const isP = type === 'paragraph';
+  const p = isP ? {pStyle: SHADOW, pPr: NONE, runs: []}
+    : {pPr: NONE, runs: []};
+  return {res, p, r: isP ? {rPr: own.rPr}
+    : {rPr: own.rPr, rStyle: SHADOW}};
+}
+
+/** See the header. */
+export function patch(table, id, values, more = {}) {
+  const isNew = id === null || id === undefined;
+  const t = withLatent(table, id);
+  const old = isNew ? null : t.styles.get(id);
+  if (!isNew && !old) return {error: MSG.gone};
+  const was = fill(table, id);
+  const v = {...was, ...Object.fromEntries(Object.entries(values)
+    .filter(([, x]) => x !== undefined))};
+  const linked = isNew && v.type === 'linked';
+  const type = isNew ? (v.type === 'character' ? 'character'
+    : 'paragraph') : old.type;
+  const out = {};
+
+  // name
+  const name = String(v.name ?? '');
+  if (isNew || name !== was.name) {
+    if (!isNew && isBuiltinStyle(old)) return {error: MSG.builtin,
+      bad: ['name']};
+    let e = nameError(t, name, id);
+    if (!e && linked) e = nameError(t, name.trim() + ' Char');
+    if (e) return {error: e, bad: ['name']};
+    out.name = name.trim();
+  }
+  // based on, next, gallery
+  const bo = v.basedOn || null;
+  if (isNew || (bo ?? '') !== was.basedOn) {
+    if (bo !== null) {
+      const b = t.styles.get(bo);
+      if (!b || b.type !== type) return {error: MSG.basedType,
+        bad: ['basedOn']};
+      if (!isNew && reaches(t, bo, id)) return {error: MSG.cycle,
+        bad: ['basedOn']};
+    }
+    if (bo !== null || !isNew) out.basedOn = bo;
+  }
+  const next = type === 'paragraph' ? v.next || null : null;
+  if (type === 'paragraph' && (next ?? '') !== was.next) {
+    if (next !== null && t.styles.get(next)?.type !== 'paragraph')
+      return {error: MSG.next, bad: ['next']};
+    if (next !== null || !isNew) out.next = next;
+  }
+  if (isNew ? v.qFormat : v.qFormat !== was.qFormat)
+    out.qFormat = !!v.qFormat;
+
+  // the formatting
+  const bad = ['size', 'font'].filter((k) => values[k] === null);
+  if (typeof values.font === 'string' && !values.font.trim())
+    bad.push('font');
+  const pcheck = type === 'paragraph' ? paraRows(v, was, t, id) : null;
+  if (pcheck && pcheck.bad.length) bad.push(...pcheck.bad);
+  if (bad.length) return {error: 'Check the ' + bad.map((k) =>
+    LABEL[k] || k).join(', ') + ' value' + (bad.length > 1 ? 's' : '') +
+    '.', bad};
+  const own = old || {pPr: NONE, rPr: NONE};
+  const b = baseOf(t, type, bo, own);
+  try {
+    if (type === 'paragraph') {
+      const {numPr, ...mp} = more.pPr || {};
+      let pp = paraPatch(pcheck.patch);
+      if (more.pPr) pp = {...pp, ...paraPatch(mp)};
+      if (Object.keys(pp).length) {
+        const ex = explicitPara(pp, b.p, b.res, null).pPr;
+        const w = whole(own.pPr || NONE, ex);
+        if (Object.keys(w).length) out.pPr = w;
+      }
+      const n = numPatch(own.pPr || NONE, numPr);
+      if (n) out.pPr = {...out.pPr, ...n};
+    }
+    let cp = charPatch(charChanges(v, was));
+    if (more.rPr) cp = {...cp, ...charPatch(more.rPr)};
+    if (Object.keys(cp).length) {
+      const ex = explicitChar(cp, b.p, b.r, b.res).rPr;
+      if (cp.rFonts) Object.assign(ex, fontPatch(cp, b));
+      const w = whole(own.rPr || NONE, ex);
+      if (Object.keys(w).length) out.rPr = w;
+    }
+  } catch (e) {
+    if (e instanceof RangeError) return {error: 'A value is out ' +
+      'of range.'};
+    throw e;
+  }
+  if (isNew) {
+    out.type = type;
+    if (linked) out.link = true;
+    if (!out.pPr) delete out.pPr;
+  }
+  const r = {patch: out};
+  if (was.latent) r.latent = true;
+  return r;
+}
+
+const isInt = (v, hi) => Number.isInteger(v) && v >= 0 && v <= hi;
+
+/** {numPr} when numPr (see more in the header) changes the style's
+ *  own; RangeError for one that is not a numPr. */
+function numPatch(own, numPr) {
+  if (numPr === undefined) return null;
+  if (numPr !== null && (typeof numPr !== 'object' ||
+    !isInt(numPr.numId, 0x7fffffff) || !Object.keys(numPr).every((k) =>
+    k === 'numId' || k === 'ilvl') ||
+    (numPr.ilvl !== undefined && !isInt(numPr.ilvl, 8))))
+    throw new RangeError('bad numPr');
+  if (JSON.stringify(own.numPr ?? null) === JSON.stringify(numPr))
+    return null;
+  if (numPr === null && own.numPr === undefined) return null;
+  return {numPr: numPr && {...numPr}};
+}
+
+/** The rFonts patch: the family set (the theme's attributes go), or
+ *  all of it removed when the base gives that family already. */
+function fontPatch(cp, b) {
+  const base = charOf(b.res.base(b.p, b.r.rStyle), b.p, b.res).family;
+  const gone = {asciiTheme: null, hAnsiTheme: null};
+  if (cp.rFonts.ascii === base) {
+    return {rFonts: {ascii: null, hAnsi: null, ...gone}};
+  }
+  return {rFonts: {...cp.rFonts, ...gone}};
+}
+
+/** ./ParaPatch against the style's own query: {patch, bad}. */
+function paraRows(v, was, t, id) {
+  const base = id === null ? {id: SHADOW, type: 'paragraph',
+    pPr: NONE, rPr: NONE} : t.styles.get(id);
+  const t2 = id === null ? {...t, styles: new Map(t.styles)
+    .set(SHADOW, base)} : t;
+  const {q} = shown(t2, base);
+  const pv = {};
+  for (const k of PARA) pv[k] = v[k];
+  return paraDiff(pv, q);
+}
+
+/** See the header. */
+export function basedChoices(table, type, exceptId, keep) {
+  const want = type === 'character' ? 'character' : 'paragraph';
+  const out = [];
+  for (const s of table.styles.values()) {
+    if (s.type !== want || s.id === exceptId) continue;
+    if (exceptId && reaches(table, s.id, exceptId,
+      MAX_CHAIN)) continue;
+    if (s.semiHidden === true && s.qFormat !== true && s.id !== keep)
+      continue;
+    out.push({id: s.id, text: display(s)});
+  }
+  return [{id: '', text: '(no style)'}, ...sorted(out)];
+}
+
+/** See the header. */
+export function nextChoices(table, keep) {
+  const out = [];
+  for (const s of table.styles.values()) {
+    if (s.type !== 'paragraph') continue;
+    if (s.semiHidden === true && s.qFormat !== true && s.id !== keep)
+      continue;
+    out.push({id: s.id, text: display(s)});
+  }
+  return [{id: '', text: '(same style)'}, ...sorted(out)];
+}
+
+const sorted = (l) => l.sort((a, b) => {
+  const x = a.text.toLowerCase(), y = b.text.toLowerCase();
+  return x < y ? -1 : x > y ? 1 : 0;
+});

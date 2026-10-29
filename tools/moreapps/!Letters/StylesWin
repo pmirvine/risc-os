@@ -1,0 +1,321 @@
+// StylesWin - the Styles window (Format > Styles..., More styles...
+// in the toolbar's style popup): every style of the document in a
+// list, each drawn in its own look, with buttons to apply, make,
+// change, rename and delete (Batch E1). Built on a canvas in the
+// work area, as WimpLib Ui/CharGrid is (WimpLib has no list widget).
+//
+//   stylesWin(dw, {newStyle, modify, rename}?) -> the window's api;
+//       one window per document, kept in dw.boxes ('styles') so
+//       ./CloseDoc deletes it with the document; asked again while
+//       open, the same window is refreshed and brought to the front.
+//       The options are the callbacks that make the other buttons
+//       work (./StyleBox): newStyle() for New..., modify(id)
+//       for Modify..., rename(id) for Rename. Without one its button
+//       is shaded. They may be given on any call.
+//   api.win (win.api too, for the tests), api.isOpen, api.gone,
+//   api.open(), api.close()
+//   api.entries         the styles listed now (./StyleList Entry[])
+//   api.selected        the chosen style id (or null)
+//   api.select(id) -> bool, api.setFilter('gallery' | 'all')
+//   api.apply()         as Apply: the chosen style on the document's
+//                       selection (view.format('style', id): one undo
+//                       step; a latent built-in is added by it)
+//   api.remove() -> Promise<bool>  as Delete (see below)
+//   api.where(id) -> {x, y, w, h} of its row in the work area (null
+//       when not shown), for tests; api.refresh()
+//
+// Each row shows the style's name in its own font family, bold,
+// italic, underline and colour (./StyleList preview), the size capped
+// at 20 px so a big heading does not swallow the list; the chosen row
+// is drawn white on blue. At the right a mark: a paragraph style, a
+// character style a, a linked pair both; a built-in not yet in the
+// document (latent) is drawn grey in italics, a pale mark.
+// Show: Gallery (the quick styles) or All styles, from a menu.
+// Apply, Return or a double-click apply the chosen style; Apply is
+// shaded when the document has no selection. Up / Down / the wheel
+// move and scroll; Escape and Close hide the window and give the
+// caret back to the document.
+// Delete: ./StyleDoc remove, one undo step, the paragraphs and runs
+// that used the style go back to the default. A style that is used
+// asks first (WimpLib's query box: Delete / Cancel). Built-in styles
+// (Normal, Heading 1...) cannot be deleted, as Word's, so Delete is
+// shaded for them and for latent ones. The list follows every
+// change of the document (typing, undo, redo, apply, delete), at
+// most once a frame, and stops following when the window is deleted.
+import {wimp, Menu, query} from 'riscos';
+import {box} from './Boxes';
+import {usedBy, remove} from './StyleDoc';
+import {FILTERS, newState, listFor, reconcile, setFilter, selectId,
+  step, scrollBy, rowAt, buttons, deleteQuestion}
+  from './StylesState';
+
+const ROWS = 10, RH = 30, PAD = 12, SB = 14, LISTW = 310, LY = 48;
+const BW = 104, BH = 36, GAP = 8, MAXPX = 20;
+const B1 = LY + ROWS * RH + 12, B2 = B1 + BH + GAP;
+const W = 2 * PAD + LISTW + 4 + SB, H = B2 + BH + PAD;
+const apis = new WeakMap();            // window -> api
+
+const btn = (text, col, row, v) => ({x: PAD + col * (BW + GAP),
+  y: row ? B2 : B1, w: BW, h: BH, text, name: `button:${text}`,
+  border: true, filled: true, hcentre: true, button: 'click',
+  validation: v});
+const icons = () => [
+  {x: PAD, y: 10, w: 44, h: 28, text: 'Show', name: 'label'},
+  {x: PAD + 48, y: 10, w: 200, h: 28, text: '', name: 'show',
+    border: true, filled: true, bg: 0, button: 'click',
+    validation: 'R2', help: 'Click to show the gallery or all styles.'},
+  {x: PAD + 252, y: 10, w: 28, h: 28, sprite: 'gright',
+    name: 'arrow', button: 'click',
+    help: 'Show the gallery or all styles.'},
+  btn('Apply', 0, 0, 'R6,3'), btn('New...', 1, 0, 'R5,3'),
+  btn('Modify...', 2, 0, 'R5,3'), btn('Rename', 0, 1, 'R5,3'),
+  btn('Delete', 1, 1, 'R5,3'), btn('Close', 2, 1, 'R5,3'),
+];
+
+/** The mark at the right of a row. */
+const mark = (e) => (e.linked ? '¶a' :
+  e.type === 'character' ? 'a' : '¶');
+
+/** The list on the canvas g (work coordinates). */
+function paint(g, s, es) {
+  g.fillStyle = '#ffffff';
+  g.fillRect(PAD, LY, LISTW, ROWS * RH);
+  g.textBaseline = 'middle';
+  for (let r = 0; r < ROWS; r++) {
+    const e = es[s.top + r];
+    if (!e) break;
+    const y = LY + r * RH, on = e.id === s.sel, p = e.preview;
+    const px = Math.max(10, Math.min(MAXPX, Math.round(p.sizePt *
+      96 / 72)));
+    if (on) {
+      g.fillStyle = '#2a4f9a';
+      g.fillRect(PAD, y, LISTW, RH);
+    }
+    const fam = `"${String(p.font).replace(/"/g, '')}", sans-serif`;
+    g.font = `${p.italic || e.latent ? 'italic ' : ''}` +
+      `${p.bold ? 'bold ' : ''}${px}px ${fam}`;
+    const col = e.latent ? '#777777' : /^[0-9A-Fa-f]{6}$/.test(
+      p.color) ? '#' + p.color : '#000000';
+    g.fillStyle = on ? '#ffffff' : col;
+    g.textAlign = 'left';
+    const tx = PAD + 8, ty = y + RH / 2 + 1;
+    g.fillText(e.name, tx, ty, LISTW - 56);
+    if (p.underline) {
+      const w = Math.min(LISTW - 56, g.measureText(e.name).width);
+      g.fillRect(tx, ty + px / 2, w, 1);
+    }
+    g.font = '14px sans-serif';
+    g.textAlign = 'right';
+    g.fillStyle = on ? '#ffffff' : e.latent ? '#aaaaaa' : '#555555';
+    g.fillText(mark(e), PAD + LISTW - 8, ty);
+  }
+  g.strokeStyle = '#888888';
+  g.lineWidth = 1;
+  g.strokeRect(PAD + 0.5, LY + 0.5, LISTW, ROWS * RH);
+  const total = es.length;
+  if (total <= ROWS) return;
+  const x = PAD + LISTW + 4, h = ROWS * RH;
+  g.fillStyle = '#bbbbbb';
+  g.fillRect(x, LY, SB, h);
+  const th = Math.max(16, h * ROWS / total);
+  g.fillStyle = '#555555';
+  g.fillRect(x, LY + (h - th) * s.top / (total - ROWS), SB, th);
+}
+
+/** See the header. */
+export function stylesWin(dw, opts = {}) {
+  const win = box(dw, 'styles', () => make(dw).win);
+  const api = apis.get(win);
+  Object.assign(api.opts, opts);
+  api.open();
+  return api;
+}
+
+/** A new window and its api. */
+function make(dw) {
+  const task = dw.app.task, v = dw.view;
+  const s = newState(), b = {gone: false, placed: false, raf: 0};
+  const o = {};
+  const off = new Set();             // the shaded buttons
+  let es = [];
+  const win = task.createWindow({title: 'Styles', w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'clickdragdouble',
+    help: 'Click a style, then Apply (or double-click it). The ' +
+      'Delete button removes a style you made.'});
+  const I = (n) => win.iconByName(n);
+  const cur = () => es.find((e) => e.id === s.sel) || null;
+  const doc = () => v.d.doc;
+  const shade = () => {
+    const bs = buttons(doc(), cur(), {canApply: !!v.sel,
+      newStyle: !!o.newStyle, modify: !!o.modify, rename: !!o.rename});
+    const set = {Apply: bs.apply, 'New...': bs.newStyle,
+      'Modify...': bs.modify, Rename: bs.rename, Delete: bs.del,
+      Close: true};
+    for (const [n, on] of Object.entries(set)) {
+      if (on) off.delete(n);
+      else off.add(n);
+      I(`button:${n}`).setState({shaded: !on});
+    }
+  };
+  const refresh = () => {
+    es = listFor(doc(), s.filter);
+    reconcile(s, es, ROWS);
+    I('show').setText(FILTERS.find((f) => f.id === s.filter).text);
+    shade();
+    win.invalidate();
+  };
+  const later = () => {
+    if (b.raf || b.gone || !win.isOpen) return;
+    b.raf = requestAnimationFrame(() => {
+      b.raf = 0;
+      if (!b.gone && win.isOpen) refresh();
+    });
+  };
+  const offChange = v.d.on('change', later);
+  const choose = (id) => {
+    if (id !== null) selectId(s, es, id, ROWS);
+    else s.sel = null;
+    shade();
+    win.invalidate();
+  };
+  const hide = () => {
+    if (!win.isOpen) return;
+    win.close();
+    v.focus();
+  };
+  const apply = () => {
+    const e = cur();
+    if (!e || !v.sel) { wimp.beep(); return false; }
+    v.format('style', e.id);
+    return true;
+  };
+  const del = async () => {
+    const e = cur();
+    if (!e || !buttons(doc(), e, {}).del) { wimp.beep(); return false; }
+    const q = deleteQuestion(e, usedBy(doc(), e.id));
+    if (q) {
+      const r = await query({task, title: 'Styles', message: q,
+        buttons: ['Delete', 'Cancel']});
+      if (r !== 'Delete' || b.gone || dw.closed) return false;
+      if (!cur() || cur().id !== e.id) return false;
+    }
+    const done = remove(v.d, v.typing, e.id);
+    if (!done) wimp.beep();
+    refresh();
+    return done;
+  };
+  const filterMenu = () => {
+    const a = I('show').bbox, p = win.workToScreen(a.x0, a.y1);
+    wimp.menus.open(new Menu('Show', FILTERS.map((f) => ({text: f.text,
+      ticked: () => f.id === s.filter, action: () => pick(f.id)}))),
+    p.x, p.y, {task});
+  };
+  const pick = (id) => {
+    setFilter(s, id, listFor(doc(), id), ROWS);
+    refresh();
+  };
+  const call = (name) => {
+    const e = cur();
+    if (name === 'Apply') apply();
+    else if (name === 'New...') { if (o.newStyle) o.newStyle(); }
+    else if (name === 'Modify...') {
+      if (o.modify && e) o.modify(e.id);
+    }
+    else if (name === 'Rename') { if (o.rename && e) o.rename(e.id); }
+    else if (name === 'Delete') del();
+    else if (name === 'Close') hide();
+  };
+  const listY = (ev) => ev.y - LY;
+  win.useCanvas((g) => paint(g, s, es), {hiDPI: true});
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    const n = ev.icon ? ev.icon.name : '';
+    if (n.startsWith('button:')) {
+      if (!off.has(n.slice(7))) call(n.slice(7));
+    } else if (n === 'show' || n === 'arrow') filterMenu();
+    else if (!ev.icon) {
+      wimp.setCaret(win);
+      if (ev.x >= PAD + LISTW) {
+        if (listY(ev) >= 0 && listY(ev) < ROWS * RH) {
+          scrollBy(s, es, listY(ev) < (ROWS * RH) / 2 ? -ROWS + 1 :
+            ROWS - 1, ROWS);
+          win.invalidate();
+        }
+      } else if (ev.x >= PAD) {
+        const e = rowAt(s, es, listY(ev), RH, ROWS);
+        if (e) choose(e.id);
+      }
+    }
+    return true;
+  });
+  win.on('doubleclick', (ev) => {
+    if (ev.icon || ev.x < PAD || ev.x >= PAD + LISTW) return true;
+    const e = rowAt(s, es, listY(ev), RH, ROWS);
+    if (e) { choose(e.id); apply(); }
+    return true;
+  });
+  win.on('wheel', (ev) => {
+    scrollBy(s, es, Math.sign(ev.dy), ROWS);
+    win.invalidate();
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  win.on('key', (ev) => {
+    const k = ev.key;
+    if (ev.code === 13) apply();
+    else if (ev.code === 27) hide();
+    else if (k === 'ArrowDown' || ev.code === 0x18E) move(1);
+    else if (k === 'ArrowUp' || ev.code === 0x18F) move(-1);
+    else if (k === 'PageDown' || ev.code === 0x19E) move(ROWS);
+    else if (k === 'PageUp' || ev.code === 0x19F) move(-ROWS);
+    else return undefined;
+    return true;
+  });
+  const move = (n) => {
+    step(s, es, n, ROWS);
+    shade();
+    win.invalidate();
+  };
+  win.on('deleted', () => {
+    b.gone = true;
+    offChange();
+    if (b.raf) cancelAnimationFrame(b.raf);
+  });
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(() => { if (!b.gone) win.invalidate(); });
+  }
+  const api = {
+    win, opts: o,
+    get isOpen() { return win.isOpen; },
+    get gone() { return b.gone; },
+    get entries() { return es.slice(); },
+    get selected() { return s.sel; },
+    get filter() { return s.filter; },
+    select(id) {
+      const ok = es.some((e) => e.id === id);
+      if (ok) choose(id);
+      return ok;
+    },
+    setFilter: pick, apply, remove: del, refresh,
+    where(id) {
+      const i = es.findIndex((e) => e.id === id) - s.top;
+      if (i < 0 || i >= ROWS) return null;
+      return {x: PAD, y: LY + i * RH, w: LISTW, h: RH};
+    },
+    open() {
+      if (b.gone) return;
+      refresh();
+      const p = b.placed ? {} : {x: Math.round((wimp.width - W) / 2),
+        y: Math.round((wimp.height - H) / 2)};
+      b.placed = true;
+      win.open({...p, behind: 'top'});
+      wimp.setCaret(win);
+    },
+    close: hide,
+  };
+  apis.set(win, api);
+  win.api = api;                     // (for the tests)
+  return api;
+}

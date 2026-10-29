@@ -12,6 +12,9 @@
 // does is not a change "while the box was open", below). Built by
 // WimpLib Ui/Dialog.
 //
+//   coreRows(), paraChange(api, ev, st), adapt(api, special,
+//       spacing), kindOf, WRITABLE: the alignment to line spacing
+//       rows and what they do, shared with ./StyleBox
 //   paraBox(dw) -> the box's api (WimpLib Ui/Dialog), opened
 //       one box per document (key 'para:<docKey>'), kept in
 //       dw.boxes ('para') so ./CloseDoc deletes it with the
@@ -42,7 +45,9 @@ import {fill, patch, NAMES, ALIGNS, SPECIALS, LINES}
   from './ParaPatch';
 
 const lab = (label, c) => ({label, ...c});
-const rows = () => [
+/** The rows of alignment, indents, spacing and line spacing (the
+ *  Modify Style box, ./StyleBox, has them too). */
+export const coreRows = () => [
   [lab('Alignment', {kind: 'popup', name: 'align', choices: ALIGNS})],
   [lab('Left', {kind: 'length', name: 'left'}),
     lab('Right', {kind: 'length', name: 'right'})],
@@ -55,6 +60,9 @@ const rows = () => [
     choices: LINES}),
   lab('At', {kind: 'number', name: 'at', min: 0, max: 100000}),
   {kind: 'label', name: 'atunit', text: 'lines'}],
+];
+const rows = () => [
+  ...coreRows(),
   {kind: 'option', name: 'noctx', text: 'Don\'t add space between ' +
     'paragraphs of the same style'},
   {kind: 'label', text: 'Line and page breaks'},
@@ -68,10 +76,13 @@ const rows = () => [
 
 const HELP = 'Paragraph: alignment, indents, spacing and the ' +
   'line and page breaks of the selected paragraphs.';
-const WRITABLE = ['left', 'right', 'by', 'before', 'after', 'at'];
+/** The length and number fields that can hold bad text. */
+export const WRITABLE = ['left', 'right', 'by', 'before', 'after',
+  'at'];
 const FIXED = ['single', '1.5', 'double'];
-const kindOf = (s) => (s === 'multiple' ? 'lines' : s === 'atleast' ||
-  s === 'exactly' ? 'pt' : '');
+/** The unit of At for line spacing s: 'lines', 'pt' or ''. */
+export const kindOf = (s) => (s === 'multiple' ? 'lines' :
+  s === 'atleast' || s === 'exactly' ? 'pt' : '');
 
 const state = new WeakMap();           // api -> {q, mode}
 
@@ -99,31 +110,37 @@ function refill(api, v) {
 }
 
 /** Shade By and At, and say At's unit. */
-function adapt(api, special, spacing) {
+export function adapt(api, special, spacing) {
   api.shade('by', special === 'none');
   api.shade('at', FIXED.includes(spacing));
   api.set('atunit', kindOf(spacing) || '');
 }
 
+/**
+ * The change of Special or Line spacing in a box with those rows:
+ * By and At follow (ev {name, value}; st {mode}, the unit At shows,
+ * updated).
+ */
+export function paraChange(api, {name, value}, st) {
+  if (name === 'special') {
+    if (value === 'none') api.set('by', undefined);
+    else if (api.get('by') === undefined) api.set('by', 720);
+    api.shade('by', value === 'none');
+  } else if (name === 'spacing') {
+    const now = kindOf(value);
+    if (now !== st.mode) {
+      api.set('at', now === 'lines' ? 3 : now === 'pt' ? 12
+        : undefined);
+    }
+    st.mode = now;
+    adapt(api, api.get('special'), value);
+  }
+}
+
 /** The handlers of a new box. */
 function wire(api, v, dw) {
   state.set(api, {q: null, mode: ''});
-  api.on('change', ({name, value}) => {
-    const st = state.get(api);
-    if (name === 'special') {
-      if (value === 'none') api.set('by', undefined);
-      else if (api.get('by') === undefined) api.set('by', 720);
-      api.shade('by', value === 'none');
-    } else if (name === 'spacing') {
-      const now = kindOf(value);
-      if (now !== st.mode) {
-        api.set('at', now === 'lines' ? 3 : now === 'pt' ? 12
-          : undefined);
-      }
-      st.mode = now;
-      adapt(api, api.get('special'), value);
-    }
-  });
+  api.on('change', (ev) => paraChange(api, ev, state.get(api)));
   api.on('button', ({name, values}) => {
     if (name === 'tabs') {
       // its own Tabs box's OK, from the state this box shows: fresh

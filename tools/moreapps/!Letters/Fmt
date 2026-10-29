@@ -23,7 +23,8 @@
 // A run with no size is 11 point; headings (outline level 0 to 5 or
 // a style called Heading1..6) with no size of their own get Word's
 // heading sizes, bold. colour is '#rrggbb' for six hex digits, else
-// black (automatic and theme colours); highlight a CSS colour
+// black (automatic; a theme colour is looked up in styles.theme,
+// ./ThemeRead); highlight a CSS colour
 // (./Highlight) or null; shade the character shading's CSS colour
 // (./BorderResolve runShade, shadeCss) or null. Superscript and
 // subscript (vert 'sup' or 'sub') are drawn at 0.65 of the run's size,
@@ -40,6 +41,7 @@ import {substitute} from './FontMap';
 import {ratiosOf} from './FontMetrics';
 import {highlightCss} from './Highlight';
 import {resolveTabs} from './TabStops';
+import {fontOf, colorOf} from './ThemeRead';
 import {runShade, shadeCss} from './BorderResolve';
 
 const VERT = {superscript: 'sup', subscript: 'sub'};
@@ -49,24 +51,41 @@ const r100 = (v) => Math.round(v * 100) / 100;
 /** Word's heading sizes (points), levels 1 to 6. */
 export const HEADING_PT = [16, 13, 12, 11, 11, 11];
 
-/** The run's font name: rFonts, else a theme font, else Calibri. */
-export function fontName(rPr) {
-  const f = rPr.rFonts;
-  if (f && (f.ascii || f.hAnsi)) return f.ascii || f.hAnsi;
-  // theme fonts (w:asciiTheme...) are kept as raw rFonts elements:
-  // Word's default themes use Calibri (Calibri Light for headings)
+/** The raw w:<name> element of an rPr's extra as {attr: value}. */
+function rawOf(rPr, name) {
   for (const n of rPr.extra || []) {
     if (!n || typeof n.name !== 'string') continue;
-    if (n.name.split(':').pop() !== 'rFonts') continue;
-    for (const [k, v] of n.attrs || []) {
-      const l = k.split(':').pop();
-      if (l === 'ascii' || l === 'hAnsi') return v;
-      if (l === 'asciiTheme') {
-        return /^major/.test(v) ? 'Calibri Light' : 'Calibri';
-      }
-    }
+    if (n.name.split(':').pop() !== name) continue;
+    const o = {};
+    for (const [k, v] of n.attrs || []) o[k.split(':').pop()] = v;
+    return o;
   }
-  return 'Calibri';
+  return null;
+}
+
+/**
+ * The run's font name: rFonts (a theme attribute wins, ./ThemeRead
+ * fontOf, with `theme`: the document's, else Office's), else
+ * Calibri.
+ */
+export function fontName(rPr, theme) {
+  return fontOf(theme, rPr.rFonts) ||
+    fontOf(theme, rawOf(rPr, 'rFonts')) || 'Calibri';
+}
+
+/** The run's colour '#rrggbb' (a theme colour from `theme`). */
+function colourOf(rPr, theme) {
+  if (typeof rPr.color === 'string' &&
+      /^[0-9a-f]{6}$/i.test(rPr.color)) {
+    return '#' + rPr.color;
+  }
+  const c = rawOf(rPr, 'color');
+  if (c && typeof c.themeColor === 'string') {
+    return '#' + colorOf(theme, {color: c.val,
+      themeColor: c.themeColor, themeTint: c.themeTint,
+      themeShade: c.themeShade});
+  }
+  return '#000000';
 }
 
 /** The heading level 1..6 of a paragraph, or 0. */
@@ -113,9 +132,8 @@ export function runFmt(styles, para, run, cache) {
   const dy = vert === 'sup' ? -r100(full * UP)
     : vert === 'sub' ? r100(full * DOWN) : 0;
   const italic = rPr.i === true;
-  const sub = substitute(fontName(rPr));
-  const c = typeof rPr.color === 'string' &&
-    /^[0-9a-f]{6}$/i.test(rPr.color) ? '#' + rPr.color : '#000000';
+  const sub = substitute(fontName(rPr, styles.theme));
+  const c = colourOf(rPr, styles.theme);
   const f = {
     css: `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}` +
       `${px}px ${sub.css}`,

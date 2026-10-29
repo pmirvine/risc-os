@@ -1,0 +1,142 @@
+// StylesState - the list model of the Styles window (./StylesWin,
+// Batch E1): which styles are listed, which is chosen, how far the
+// list is scrolled, and what the buttons may do. Pure: no desktop
+// services, and the document's style table is only read.
+//
+//   FILTERS          [{id: 'gallery', text: 'Gallery'},
+//                    {id: 'all', text: 'All styles'}]
+//   newState() -> {filter: 'gallery', sel: null, top: 0}
+//       sel is a style id, top the first row shown. Every function
+//       below changes the state it is given (never the document)
+//   listFor(doc, filter) -> Entry[]  ./StyleList gallery or all
+//   reconcile(s, entries, rows)  after the list was made again: the
+//       choice is kept if its style is still listed (else none) and
+//       top is brought into range for rows visible rows
+//   setFilter(s, filter, entries, rows)  an unknown filter is
+//       ignored; the choice is kept only if still in the new list;
+//       the list goes back to the top
+//   selectId(s, entries, id, rows) -> bool  choose a listed style,
+//       scrolled into view; false (nothing changes) when not listed
+//   step(s, entries, delta, rows)  move the choice by delta rows,
+//       stopping at the ends; nothing chosen: the first (delta > 0)
+//       or the last
+//   scrollBy(s, entries, n, rows)  scroll n rows, stopping at the ends
+//   rowAt(s, entries, y, rowH, rows) -> Entry | null  the style in
+//       the list at y pixels from its top
+//   buttons(doc, entry, {canApply, newStyle, modify, rename}) ->
+//       {apply, newStyle, modify, rename, del}  which buttons work.
+//       apply needs a style chosen and canApply (the document has a
+//       selection); modify and rename need a chosen style and their
+//       option (the callback exists: the Modify Style box gives
+//       them); newStyle
+//       needs only its option; del needs a style the document can
+//       delete (./StyleCmd deleteStyle: not a built-in, not a latent
+//       one the document does not have)
+//   deleteQuestion(entry, used) -> string | null  the confirmation
+//       text for ./StyleDoc usedBy's {paragraphs, runs}; null when
+//       the style is not used (no question)
+import {gallery, all} from './StyleList';
+import {deleteStyle} from './StyleCmd';
+import {isBuiltinStyle} from './StylesBuiltin';
+
+export const FILTERS = [{id: 'gallery', text: 'Gallery'},
+  {id: 'all', text: 'All styles'}];
+
+/** See the header. */
+export function newState() {
+  return {filter: 'gallery', sel: null, top: 0};
+}
+
+/** See the header. */
+export function listFor(doc, filter) {
+  return filter === 'all' ? all(doc) : gallery(doc);
+}
+
+const maxTop = (n, rows) => Math.max(0, n - rows);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const indexOf = (s, es) => es.findIndex((e) => e.id === s.sel);
+
+/** See the header. */
+export function reconcile(s, entries, rows) {
+  if (s.sel !== null && indexOf(s, entries) < 0) s.sel = null;
+  s.top = clamp(s.top, 0, maxTop(entries.length, rows));
+}
+
+/** See the header. */
+export function setFilter(s, filter, entries, rows) {
+  if (!FILTERS.some((f) => f.id === filter)) return;
+  s.filter = filter;
+  s.top = 0;
+  reconcile(s, entries, rows);
+  const i = indexOf(s, entries);
+  if (i >= rows) s.top = clamp(i - rows + 1, 0, maxTop(entries.length,
+    rows));
+}
+
+/** Scroll so that row i shows. */
+function show(s, i, n, rows) {
+  if (i < s.top) s.top = i;
+  else if (i >= s.top + rows) s.top = i - rows + 1;
+  s.top = clamp(s.top, 0, maxTop(n, rows));
+}
+
+/** See the header. */
+export function selectId(s, entries, id, rows) {
+  const i = entries.findIndex((e) => e.id === id);
+  if (i < 0) return false;
+  s.sel = id;
+  show(s, i, entries.length, rows);
+  return true;
+}
+
+/** See the header. */
+export function step(s, entries, delta, rows) {
+  const n = entries.length;
+  if (!n) { s.sel = null; return; }
+  const at = indexOf(s, entries);
+  const to = at < 0 ? (delta > 0 ? 0 : n - 1)
+    : clamp(at + delta, 0, n - 1);
+  s.sel = entries[to].id;
+  show(s, to, n, rows);
+}
+
+/** See the header. */
+export function scrollBy(s, entries, n, rows) {
+  s.top = clamp(s.top + n, 0, maxTop(entries.length, rows));
+}
+
+/** See the header. */
+export function rowAt(s, entries, y, rowH, rows) {
+  if (y < 0) return null;
+  const r = Math.floor(y / rowH);
+  if (r >= rows) return null;
+  return entries[s.top + r] || null;
+}
+
+/** See the header. */
+export function buttons(doc, entry, o = {}) {
+  const has = !!entry;
+  return {
+    apply: has && !!o.canApply,
+    newStyle: !!o.newStyle,
+    modify: has && !!o.modify,
+    rename: has && !entry.latent && !!o.rename &&
+      !isBuiltinStyle(doc.styles && doc.styles.styles.get(entry.id)),
+    del: has && !entry.latent &&
+      !!doc.styles && deleteStyle(doc.styles, entry.id) !== null,
+  };
+}
+
+const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/** See the header. */
+export function deleteQuestion(entry, used) {
+  const parts = [];
+  if (used.paragraphs) parts.push(count(used.paragraphs, 'paragraph',
+    'paragraphs'));
+  if (used.runs) parts.push(count(used.runs, 'text range',
+    'text ranges'));
+  if (!parts.length) return null;
+  return `Delete '${entry.name}'? It is used by ` +
+    `${parts.join(' and ')}.`;
+}

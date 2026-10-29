@@ -1,0 +1,129 @@
+// StyleApply - applying a style to the selection, and updating a
+// style to match the formatting at the caret (Batch E1). d is the
+// real ./Document, typing its ./Typing (or null); each command is
+// one undo step (none when nothing changes), as ./FormatSet's.
+//
+//   applyStyle(d, typing, sel, id, pending) -> {sel, pending}
+//       a paragraph style on the paragraphs, a character style on the
+//       selected runs (at a caret: into pending, so the text typed
+//       next has it); the default style of the type: the key
+//       removed; an id that is not a paragraph or character style:
+//       RangeError. A built-in the table lacks (a latent style, as
+//       ./StyleList offers it) is added first (./StyleCmd
+//       ensureBuiltin, Strict-safe for a Strict document), in the
+//       same undo step. A style with a link (a paragraph style and its
+//       'name Char' character style, either id given) takes Word's
+//       rule: at a caret, or when the selection holds every
+//       character of each paragraph it touches, the paragraph half;
+//       otherwise the character half
+//   updateToMatch(d, typing, sel, pending) -> {sel, pending}
+//       the caret paragraph's direct paragraph properties (not
+//       numPr) and its runs' direct character properties are written
+//       into its paragraph style (./StyleCmd modifyStyle through
+//       ./StyleDoc run) and removed from the paragraph and its runs:
+//       one step. Nothing when the runs' properties disagree,
+//       or there is no direct formatting, or the paragraph's
+//       style is not a paragraph style. A style that holds the
+//       values already is left as it is (the table is the same
+//       object) and the direct ones are still removed
+// Pure: no desktop services.
+import {fail, deepEqual} from './ModelCheck';
+import {collapsed} from './Selection';
+import {EMPTY} from './Pending';
+import {touched} from './FormatOps';
+import {checkPos} from './EditPos';
+import {paraStyle} from './FormatPara';
+import {charCommand} from './FormatChar';
+import {mergeProps} from './OpsProps';
+import {modifyStyle, ensureBuiltin} from './StyleCmd';
+import {builtinStyle} from './StylesBuiltin';
+import {run as styleRun} from './StyleDoc';
+
+/** The half of a linked style to use: the style id. */
+function half(d, sel, s) {
+  const mate = d.doc.styles.styles.get(s.link);
+  if (s.link == null || !mate || mate.type === s.type ||
+    mate.link !== s.id) return s;
+  const para = s.type === 'paragraph' ? s : mate;
+  const chr = s.type === 'paragraph' ? mate : s;
+  if (collapsed(sel)) return para;
+  const list = (touched(d.doc, sel) || []).filter((en) => en.para);
+  const whole = list.length > 0 && list.every((en) =>
+    en.a === 0 && en.e === en.p.text.length);
+  return whole ? para : chr;
+}
+
+/** Style `id` applied after the table t (with it) is set: one step. */
+function latent(d, typing, sel, id, pending, t) {
+  let out;
+  const go = () => d.atomic(() => {
+    styleRun(d, null, () => ({table: t}));
+    out = applyStyle(d, null, sel, id, pending);
+  });
+  if (typing) typing.command(go);
+  else go();
+  return out;
+}
+
+/** See the header. */
+export function applyStyle(d, typing, sel, id, pending) {
+  const st = d.doc.styles;
+  const b = typeof id === 'string' && st && !st.styles.has(id)
+    ? builtinStyle(id) : null;
+  if (b && (b.type === 'paragraph' || b.type === 'character')) {
+    const strict = (d.doc.meta || {}).conformance === 'strict';
+    const t = ensureBuiltin(st, id, {strict});
+    if (t) return latent(d, typing, sel, id, pending, t);
+  }
+  let s = typeof id === 'string' && st ? st.styles.get(id) : null;
+  if (!s || (s.type !== 'paragraph' && s.type !== 'character'))
+    fail('no such style: ' + id);
+  s = half(d, sel, s);
+  const v = s.id === st.defaults[s.type] ? null : s.id;
+  if (s.type === 'paragraph')
+    return paraStyle(d, typing, sel, v, pending);
+  return charCommand(d, typing, sel, pending, () => ({rStyle: v}));
+}
+
+const without = (o, ...skip) => Object.fromEntries(
+  Object.entries(o || {}).filter(([k]) => k !== 'extra' &&
+    !skip.includes(k)));
+const nulls = (o) => Object.fromEntries(
+  Object.keys(o).map((k) => [k, null]));
+
+/** Whether style s has the values of pPr and rPr already. */
+const holds = (s, pPr, rPr) =>
+  deepEqual(mergeProps(s.pPr, pPr), s.pPr) &&
+  deepEqual(mergeProps(s.rPr, rPr), s.rPr);
+
+/** See the header. */
+export function updateToMatch(d, typing, sel, pending) {
+  const out = {sel, pending: pending || EMPTY};
+  const loc = checkPos(d.doc, sel.head);
+  const en = loc && loc.b.type === 'p' &&
+    (touched(d.doc, sel) || []).find((e) => e.p === loc.b);
+  const st = d.doc.styles;
+  const id = en && (en.p.pStyle ?? st?.defaults.paragraph);
+  if (id && !st) fail('no such style: ' + id);
+  const s = id && st.styles.get(id);
+  const go = () => {
+    if (!s || s.type !== 'paragraph') return;
+    const p = en.p, runs = p.runs || [];
+    const first = runs.length ? runs[0].rPr : null;
+    if (!runs.every((r) => deepEqual(r.rPr, first))) return;
+    const pPr = without(p.pPr, 'numPr'), rPr = without(first);
+    if (!Object.keys(pPr).length && !Object.keys(rPr).length) return;
+    d.atomic(() => {
+      const t = modifyStyle(d.doc.styles, id, {pPr, rPr});
+      // null: the style holds the values already (the table stays),
+      // or modifyStyle failed (nothing is moved, nothing cleared)
+      if (t) styleRun(d, null, () => ({table: t}));
+      else if (!holds(s, pPr, rPr)) return;
+      d.apply({op: 'setProps', block: en.at, pPr: nulls(pPr),
+        rPr: nulls(rPr)});
+    });
+  };
+  if (typing) typing.command(go);
+  else go();
+  return out;
+}

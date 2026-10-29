@@ -1,0 +1,251 @@
+// StyleTarget - a paragraph style as the target of the Format boxes
+// (./TabsBox, ./BorderBox, the bullet and number galleries of
+// ./ListMenu): the Tabs..., Borders... and Numbering... buttons of
+// the Modify Style box (./StyleBox; Batch E1). What those boxes
+// change goes into the Modify Style box's pending `more` patch
+// ({pPr}, ./StylePatch patch's fourth argument), not into the
+// document: the style box's own OK writes it all in one undo step,
+// its Cancel drops it.
+//
+//   viewOf(doc, id, more?) -> {doc, sel, p} | null  a one-paragraph
+//       document whose paragraph p has style id and nothing of its
+//       own, and a caret in it: what the boxes read (./Format query,
+//       ./FormatTabs rulerStops, ./ListMake listFacts) is the style's
+//       resolved formatting with `more` applied (preview). Its table
+//       is doc's (a latent built-in added, ./StyleCmd ensureBuiltin),
+//       its numbering the one `more` makes, its settings doc's (the
+//       default tab stop shown) but no settings part (the field is
+//       shaded: a document setting is not a style's). The same
+//       object while doc's styles, numbering, rels and settings and
+//       `more` stay the same (the boxes' stale check: they fill again
+//       when it changes). null for a style the table and the
+//       built-ins lack, or one that is not a paragraph style
+//   preview(table, id, more?) -> the table with `more` written into
+//       style id (./StylePatch patch, ./StyleCmd modifyStyle); table
+//       itself when that changes nothing
+//   change(doc, id, more, cmd, arg) -> more'  what a box's
+//       view.format(cmd, arg) does to the style: a new `more`, or
+//       `more` itself when nothing changes. cmd:
+//     'tabsBox'  arg {tabs} (./TabsCommand's, without defaultTab: a
+//                document setting, refused): the style's own stops
+//                over its base made what the edits say, as a
+//                paragraph's over its style (./FormatTabs tabsFor: a
+//                base's stop to go is a clear stop, one the same as
+//                the base's is not written); pPr.tabs the whole list
+//     'borders'  arg {pBdr?, shd?} (./BorderCommand's): checked
+//                (./FormatCheck paraPatch); sides joined to those of
+//                an earlier Borders OK, made explicit against the
+//                base by ./StylePatch (./BorderExplicit)
+//     'bullets' | 'numbering'  arg a ./ListGallery entry id of that
+//                kind: as ./ListMake toggleList on one paragraph: the
+//                style taken out of its list when the entry is the
+//                one it has, else given the list ./ListMake listFor
+//                makes (an unused num of that definition, else a NEW
+//                abstractNum and num; never another list's): pPr.numPr
+//                {numId, ilvl} (its level kept), and the numbering
+//                part's ops kept in more.numOps
+//     'listOff'  out of its list: numPr null, or {numId: 0} over a
+//                list its base gives
+//       Refused (RangeError): another cmd (the text's shading), a bad
+//       arg, a style whose own w:tabs / w:pBdr / w:shd is kept raw
+//       (as the paragraph commands refuse), a style that is gone
+//   numOps(doc, more) -> the setDocPart ops of the numbering a
+//       pending list needs ([] none), for ./StyleDoc run's
+//       result.ops; RangeError when stale
+//   stale(doc, more) -> whether the numbering, rels or numbering
+//       part those ops were made from changed since (an undo...)
+//   of(dw, id, {more, put, focus}) -> a view-like adapter for those
+//       boxes: sel, d ({doc, stateId}), selRev, query(), format(cmd,
+//       arg) -> true | false (refused), focus(), isStyle true. more()
+//       gives the pending more, put(m) keeps a changed one, focus()
+//       gives the caret back to the style box
+// Pure apart from `of`'s use of dw.view: no desktop services.
+import {fail} from './ModelCheck';
+import {caret} from './Selection';
+import {query} from './Format';
+import {paraNumPr} from './Styles';
+import {patch} from './StylePatch';
+import {modifyStyle, ensureBuiltin} from './StyleCmd';
+import {tabsFor} from './FormatTabs';
+import {paraPatch} from './FormatCheck';
+import {isRawOwn} from './BorderExplicit';
+import {listFacts, listFor} from './ListMake';
+import {entryOf} from './ListGallery';
+
+const PID = 1;
+const SHADOW = '$base';
+const NONE = Object.freeze({extra: Object.freeze([])});
+const EMPTY = Object.freeze({});
+const LIST = {bullets: 'bullet', numbering: 'number'};
+
+/** See the header. */
+export function preview(table, id, more) {
+  if (!more || (!more.pPr && !more.rPr)) return table;
+  const r = patch(table, id, {}, more);
+  if (r.error || !Object.keys(r.patch).length) return table;
+  const base = r.latent ? ensureBuiltin(table, id) || table : table;
+  return modifyStyle(base, id, r.patch) || table;
+}
+
+const cache = new WeakMap();      // more -> {key..., out}
+
+/** The pending numbering of more, or undefined. */
+const numOf = (more) => (more.numOps || []).find((o) =>
+  o.key === 'numbering');
+
+/** See the header. */
+export function viewOf(doc, id, more = EMPTY) {
+  const m = more || EMPTY;
+  const key = [doc.styles, doc.numbering, doc.rels, doc.rawSettings,
+    doc.meta, id];
+  const got = cache.get(m);
+  if (got && got.key.every((k, i) => k === key[i])) return got.out;
+  const out = make(doc, id, m);
+  cache.set(m, {key, out});
+  return out;
+}
+
+/** viewOf, made. */
+function make(doc, id, more) {
+  const t0 = doc.styles;
+  if (!t0 || !(t0.styles instanceof Map)) return null;
+  let t = preview(t0, id, more);
+  if (!t.styles.has(id)) t = ensureBuiltin(t0, id) || t0;
+  const s = t.styles.get(id);
+  if (!s || s.type !== 'paragraph') return null;
+  const p = {type: 'p', id: PID, text: '', runs: [], inlines: {},
+    pPr: {extra: []}, pStyle: id, extraP: []};
+  const {settingsPart, ...meta} = doc.meta || {};
+  const n = numOf(more), part = (more.numOps || []).find((o) =>
+    o.key === 'numberingPart'), rels = (more.numOps || []).find((o) =>
+    o.key === 'rels');
+  if (part) meta.numberingPart = part.value;
+  const fake = {sections: [{props: {extra: []}, blocks: [p],
+    raw: null}], styles: t, numbering: n ? n.value : doc.numbering,
+  parts: new Map(), rels: rels ? rels.value : doc.rels, meta,
+  rawSettings: doc.rawSettings, stories: new Map()};
+  return {doc: fake, sel: caret({id: PID, off: 0}), p};
+}
+
+/** The style s seen over its base: {t, p} with p a paragraph of a
+ *  shadow style (s's Based on, nothing of its own) holding s's pPr. */
+function shadow(t, s) {
+  const sh = {id: SHADOW, type: 'paragraph', pPr: NONE, rPr: NONE,
+    extra: [], raw: null};
+  if (s.basedOn) sh.basedOn = s.basedOn;
+  const t2 = {...t, styles: new Map(t.styles).set(SHADOW, sh)};
+  return {t: t2, p: {pStyle: SHADOW, pPr: s.pPr || NONE}};
+}
+
+/** more with pPr patch add joined (pBdr side by side). */
+function join(more, add) {
+  const pPr = {...(more.pPr || {})};
+  for (const k of Object.keys(add)) {
+    if (k === 'pBdr' && add.pBdr && pPr.pBdr) {
+      pPr.pBdr = {...pPr.pBdr, ...add.pBdr};
+    } else pPr[k] = add[k];
+  }
+  return {...more, pPr};
+}
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const only = (a, keys, what) => {
+  if (!isObj(a) || !Object.keys(a).every((k) => keys.includes(k)))
+    fail('bad ' + what);
+};
+
+/** See the header. */
+export function change(doc, id, more, cmd, arg) {
+  const m = more || EMPTY;
+  const v = viewOf(doc, id, m);
+  if (!v) fail('no such style');
+  const s = v.doc.styles.styles.get(id);
+  const own = s.pPr || NONE;
+  if (cmd === 'tabsBox') {
+    only(arg, ['tabs'], 'tabs box change');
+    if (arg.tabs === undefined) return m;
+    const sh = shadow(v.doc.styles, s);
+    const tabs = tabsFor({styles: sh.t, meta: doc.meta || {}}, sh.p,
+      arg.tabs);
+    return tabs === undefined ? m : join(m, {tabs});
+  }
+  if (cmd === 'borders') {
+    only(arg, ['pBdr', 'shd'], 'borders change');
+    for (const k of ['pBdr', 'shd']) {
+      if (arg[k] !== undefined && isRawOwn(own, k))
+        fail('the style\'s ' + k + ' is raw');
+    }
+    const c = paraPatch(arg);
+    return Object.keys(c).length ? join(m, c) : m;
+  }
+  if (LIST[cmd] || cmd === 'listOff') return listChange(doc, v, s, m,
+    cmd, arg);
+  return fail('not a style change: ' + cmd);
+}
+
+/** change() for the list commands. */
+function listChange(doc, v, s, m, cmd, arg) {
+  const f = listFacts(v.doc, v.p);
+  let e = null;
+  if (cmd !== 'listOff') {
+    e = typeof arg === 'string' ? entryOf(arg) : null;
+    if (!e || e.kind !== LIST[cmd]) fail('bad list entry');
+  }
+  const off = e === null || (f.listKind === e.kind &&
+    f.listEntry === e.id);
+  const {numOps, numBase, ...rest} = m;
+  if (off) {
+    if (!paraNumPr(v.doc.styles, v.p)) return m;
+    const sh = shadow(v.doc.styles, s);
+    const base = paraNumPr(sh.t, {pStyle: SHADOW, pPr: NONE});
+    return join(rest, {numPr: base ? {numId: 0} : null});
+  }
+  const n = listFor(doc, e);
+  const now = paraNumPr(v.doc.styles, v.p);
+  const out = join(rest, {numPr: {numId: n.numId,
+    ilvl: now ? now.ilvl : 0}});
+  // a reused numbering (no ops) is guarded as well: it may vanish
+  if (n.ops.length) out.numOps = n.ops;
+  out.numBase = {numbering: doc.numbering, rels: doc.rels,
+    part: (doc.meta || {}).numberingPart};
+  return out;
+}
+
+/** See the header. */
+export function stale(doc, more) {
+  const b = more && more.numBase;
+  return !!b && (b.numbering !== doc.numbering || b.rels !== doc.rels ||
+    b.part !== (doc.meta || {}).numberingPart);
+}
+
+/** See the header. */
+export function numOps(doc, more) {
+  if (stale(doc, more)) fail('the numbering changed');
+  return (more && more.numOps) || [];
+}
+
+/** See the header. */
+export function of(dw, id, {more, put, focus}) {
+  const doc = () => dw.view.d.doc;
+  const cur = () => viewOf(doc(), id, more());
+  return {
+    isStyle: true, hdr: null, typing: null,
+    get sel() { const c = cur(); return c ? c.sel : null; },
+    get d() { const c = cur(); return {doc: c && c.doc, stateId: 0}; },
+    get selRev() { const c = cur(); return c && c.doc; },
+    query() { const c = cur(); return query(c.doc, c.sel); },
+    format(cmd, arg) {
+      const m = more();
+      try {
+        const n = change(doc(), id, m, cmd, arg);
+        if (n !== m) put(n);
+        return true;
+      } catch (e) {
+        if (e instanceof RangeError) return false;
+        throw e;
+      }
+    },
+    focus() { if (focus) focus(); },
+  };
+}

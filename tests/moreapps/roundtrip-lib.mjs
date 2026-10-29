@@ -26,7 +26,10 @@
 //   and the order of kinds (numPicBullet, abstractNum, num,
 //   numIdMacAtCleanup) kept.
 //
-// {read} is passed to readDocx as its options.
+// {read} is passed to readDocx as its options. {stories: true} lets
+// the bytes of a header / footer part differ from the model's when
+// the commands changed that story (the model read back is compared
+// all the same: its blocks are part of the document).
 //
 // Also the corpus sample (tests/moreapps/corpus, git-ignored): one
 // file in ten, chosen by a hash of the name, or every one with
@@ -204,7 +207,7 @@ function grownOnly(now, was, what) {
  * else {...stats, blocks, schema}.
  */
 export async function roundTrip(bytes, what, seed, change,
-  {xsd = null, every, keep = [], read} = {}) {
+  {xsd = null, every, keep = [], read, stories = false} = {}) {
   let a;
   try {
     a = await readDocx(bytes, read);
@@ -219,8 +222,18 @@ export async function roundTrip(bytes, what, seed, change,
   // the changed model round-trips
   const out1 = await write(d.doc);
   const back = await readDocx(out1, read);
-  assertSameDoc(back, withNewParts(expectedBack(d.doc), back),
-    what + ' (changed, seed ' + seed + ')');
+  const want = withNewParts(expectedBack(d.doc), back);
+  // (a changed story is checked through its blocks, compared in full
+  // below; the XML written for it is pinned by the callers' own tests)
+  if (stories && want.stories instanceof Map) {
+    for (const [n, st] of want.stories) {
+      if (back.parts.has(n)) want.parts.set(n, back.parts.get(n));
+      const b = back.stories instanceof Map ? back.stories.get(n) : null;
+      if (b && 'bytes' in st) st.bytes = b.bytes;
+      if (b && 'orig' in st) st.orig = st.blocks;
+    }
+  }
+  assertSameDoc(back, want, what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);
   const zin = await readZip(bytes);
@@ -328,7 +341,7 @@ export const SKIP_CORPUS = 'tests/moreapps/corpus is missing or ' +
  * capped files and the slowest; asserts no failures.
  */
 export async function corpusRun(files, change, xsd, xsdNote, label,
-  {keep = [], read} = {}) {
+  {keep = [], read, stories = false} = {}) {
   const failures = [], times = [], capped = [];
   let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
     keptAsRead = 0, grown = 0;
@@ -338,7 +351,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
     const t0 = Date.now();
     try {
       const res = await roundTrip(readFileSync(f), name, hash(name),
-        change, {xsd, keep, read});
+        change, {xsd, keep, read, stories});
       if (res.refused) {
         refused++;
         if (EXPECTED[name] !== res.refused) {

@@ -1,0 +1,272 @@
+// StyleBox - the Modify Style, New Style and Rename boxes of the
+// Styles window (./StylesWin: its Modify..., New... and Rename
+// buttons; Batch E1). Built by WimpLib Ui/Dialog on ./ParaBox's rows.
+//
+//   styleBox(dw, id | null, mode?) -> the box's api, or null
+//       id null: a New Style box (mode 'new'); else Modify Style for
+//       style `id` (a built-in the document lacks, shown by the
+//       Styles window as latent, is added when OK changes it). mode
+//       'rename' opens the same box with only the Name field live
+//       (the rest shaded, shown as it is). One box per document and
+//       mode (key 'style:<mode>:<docKey>'), kept in dw.boxes
+//       ('style-<mode>') so ./CloseDoc deletes it with the document;
+//       asked again while open it is filled again for the new style
+//       and brought to the front
+//   stylesWindow(dw) -> the Styles window with its New..., Modify...
+//       and Rename buttons wired to this box (WinMenu, WinPanes)
+//
+// The box: Name; Style type (Paragraph, Character, Linked: only for
+// New; a Linked style is a paragraph style with a character style
+// 'name Char' of the same font); Based on (the styles of that kind,
+// or (no style)); Style for following paragraph (paragraph styles;
+// (same style)); Add to gallery; Font, Size, Bold, Italic, Underline,
+// Colour; Alignment, Left, Right, Special / By, Before, After, Line
+// spacing / At (./ParaBox coreRows, in inches and points). A
+// character style has no paragraph part and no following style.
+// The fields are filled from ./StylePatch fill: what the style
+// RESOLVES to, its Based on chain and the document's defaults
+// applied. Changing Based on does not change the values shown: what
+// the style does not set of its own follows the new base.
+// OK (or Return): ./StylePatch patch of the values against those
+// shown, made into one ./StyleDoc run (modifyStyle or createStyle),
+// one undo step, none when nothing changed. Text that is not a
+// value, an empty, duplicate or long name, a cycle in Based on, or
+// renaming a built-in beeps, shows the reason in the box (the line
+// at its foot) and keeps it, with the caret in the field. If the
+// styles changed while the box was open (an undo, another box), OK
+// beeps, fills the box again and keeps it. Cancel, Escape and the
+// close icon change nothing. The caret goes back to the document.
+// After a New style the Styles window selects it.
+//
+// Tabs..., Borders... and Numbering... (the row before the message
+// line; Modify of a paragraph style only, shaded otherwise) open
+// ./TabsBox, ./BorderBox and a menu of the bullet and number
+// galleries (./ListMenu bulletMenu, numberMenu) on the style: a
+// ./StyleTarget of adapter. Their OK (a gallery pick) changes
+// nothing in the document: it is kept in this box's pending patch
+// (`more`, ./StylePatch patch's fourth argument; the line at the foot
+// says so), which this box's OK writes with the rest in the same
+// undo step (a new list's numbering part too: ./StyleTarget numOps,
+// ./StyleDoc run's ops) and its Cancel drops. Those boxes close
+// with this one, and when it is filled again (for another style,
+// or after the styles changed: the pending patch is dropped then);
+// OK is refused as stale too when the numbering a pending list was
+// made from changed.
+import {wimp, Menu} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {stylesWin} from './StylesWin';
+import {run} from './StyleDoc';
+import {createStyle, modifyStyle, ensureBuiltin} from './StyleCmd';
+import {fill, patch, basedChoices, nextChoices, TYPES}
+  from './StylePatch';
+import {coreRows, paraChange, adapt, kindOf} from './ParaBox';
+import {of as targetOf, numOps, stale} from './StyleTarget';
+import {tabsBox} from './TabsBox';
+import {borderBox} from './BorderBox';
+import {bulletMenu, numberMenu} from './ListMenu';
+
+const PARA = ['align', 'left', 'right', 'special', 'by', 'before',
+  'after', 'spacing', 'at'];
+const VALUES = ['name', 'type', 'basedOn', 'next', 'qFormat', 'font',
+  'size', 'bold', 'italic', 'underline', 'colour', ...PARA];
+const TITLES = {new: 'New Style', modify: 'Modify Style',
+  rename: 'Rename Style'};
+const HELP = 'A style: its name, what it is based on and its font, ' +
+  'size, colour, alignment, indents and spacing.';
+const FORMAT = ['tabs', 'borders', 'numbering'];
+const KIDS = ['tabs-style', 'borders-style'];
+const KEPT = 'Kept for the style: OK applies it with the rest.';
+
+const rows = () => [
+  {kind: 'text', name: 'name', label: 'Name', maxLen: 100, w: 260},
+  [{kind: 'popup', name: 'type', label: 'Style type',
+    choices: TYPES},
+  {kind: 'popup', name: 'basedOn', label: 'Based on', choices: []}],
+  [{kind: 'popup', name: 'next', label: 'Following paragraph',
+    choices: []},
+  {kind: 'option', name: 'qFormat', text: 'Add to gallery'}],
+  {kind: 'label', text: 'Font'},
+  [{kind: 'text', name: 'font', label: 'Font', maxLen: 64, w: 180},
+    {kind: 'number', name: 'size', label: 'Size', min: 1, max: 400,
+      step: 0.5, decimals: 1, unit: 'pt'}],
+  [{kind: 'option', name: 'bold', text: 'Bold'},
+    {kind: 'option', name: 'italic', text: 'Italic'},
+    {kind: 'option', name: 'underline', text: 'Underline'},
+    {kind: 'colour', name: 'colour', label: 'Colour',
+      allowAuto: true}],
+  {kind: 'label', text: 'Paragraph'},
+  ...coreRows(),
+  [{kind: 'button', name: 'tabs', text: 'Tabs...'},
+    {kind: 'button', name: 'borders', text: 'Borders...'},
+    {kind: 'button', name: 'numbering', text: 'Numbering...'}],
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+
+const state = new WeakMap();      // api -> {id, mode, table, was, ...}
+const wired = new WeakSet();
+
+/** See the header. */
+export function styleBox(dw, id, mode) {
+  const v = dw.view;
+  const m = id === null || id === undefined ? 'new'
+    : mode === 'rename' ? 'rename' : 'modify';
+  if (!v.d.doc.styles) { wimp.beep(); return null; }
+  const api = dialog({task: dw.app.task, key: `style:${m}:${dw.docKey}`,
+    title: TITLES[m], rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK']});
+  box(dw, `style-${m}`, () => api.win);
+  if (!wired.has(api)) wire(api, v, dw);
+  if (!refill(api, v, dw, m === 'new' ? null : id, m)) {
+    if (!api.isOpen) api.delete();
+    return null;
+  }
+  if (!api.isOpen) api.open();
+  if (m === 'rename') api.focus('name');
+  return api;
+}
+
+/** See the header. */
+export function stylesWindow(dw) {
+  return stylesWin(dw, {newStyle: () => styleBox(dw, null),
+    modify: (id) => styleBox(dw, id),
+    rename: (id) => styleBox(dw, id, 'rename')});
+}
+
+/** Fill the box for style id; false when there is no such style. */
+function refill(api, v, dw, id, mode) {
+  const table = v.d.doc.styles, vals = fill(table, id);
+  if (!vals) { wimp.beep(); return false; }
+  const kind = vals.type === 'character' ? 'character' : 'paragraph';
+  api.choices('basedOn', basedChoices(table, kind, id, vals.basedOn));
+  api.choices('next', nextChoices(table, vals.next));
+  for (const k of VALUES) api.set(k, vals[k]);
+  if (mode === 'modify') shut(dw);
+  state.set(api, {id, mode, table, was: vals,
+    at: {mode: kindOf(vals.spacing)}, more: {}});
+  api.set('msg', '');
+  shades(api, mode, vals.type);
+  return true;
+}
+
+/** Shade what the mode or the style's kind does not use. */
+function shades(api, mode, type) {
+  const rename = mode === 'rename', chr = type === 'character';
+  for (const k of VALUES) {
+    if (k !== 'name') api.shade(k, rename);
+  }
+  api.shade('type', rename || mode !== 'new');
+  for (const k of FORMAT) api.shade(k, mode !== 'modify' || chr);
+  if (rename) return;
+  api.shade('next', chr);
+  for (const k of PARA) api.shade(k, chr);
+  if (!chr) adapt(api, api.get('special'), api.get('spacing'));
+}
+
+/** The handlers of a new box. */
+function wire(api, v, dw) {
+  wired.add(api);
+  api.on('change', (ev) => {
+    const st = state.get(api);
+    if (!st) return;
+    if (ev.name === 'type') retype(api, st, ev.value);
+    else paraChange(api, ev, st.at);
+  });
+  api.on('button', ({name, values}) => {
+    if (FORMAT.includes(name)) return format(api, dw, name);
+    if (name !== 'OK') { v.focus(); return undefined; }
+    return ok(api, v, dw, values);
+  });
+  api.on('close', () => {
+    if (state.get(api)?.mode === 'modify') shut(dw);
+  });
+}
+
+/** Delete the Format boxes opened on a style (see the header). */
+function shut(dw) {
+  for (const k of KIDS) {
+    const w = dw.boxes.get(k);
+    if (w) w.delete();
+  }
+}
+
+/** Tabs..., Borders... or Numbering...: its box on the style. */
+function format(api, dw, name) {
+  const st = state.get(api);
+  if (!st || st.mode !== 'modify') return false;
+  const t = targetOf(dw, st.id, {more: () => st.more,
+    put: (m) => {
+      st.more = m;
+      api.set('msg', KEPT);
+    },
+    focus: () => api.focus('name')});
+  if (!t.sel) { wimp.beep(); return false; }
+  if (name === 'tabs') tabsBox(dw, {target: t});
+  else if (name === 'borders') borderBox(dw, {target: t});
+  else {
+    const at = api.win.iconByName(name).bbox;
+    const p = api.win.workToScreen(at.x1, at.y1);
+    wimp.menus.open(new Menu('Numbering', [
+      {text: 'Bullets', submenu: () => bulletMenu(t),
+        help: 'A bullet for the paragraphs of this style.'},
+      {text: 'Numbering', submenu: () => numberMenu(t),
+        help: 'A numbering for the paragraphs of this style.'}]),
+    p.x, p.y, {task: dw.app.task});
+  }
+  return false;
+}
+
+/** New: the type changed, so Based on and Next follow. */
+function retype(api, st, type) {
+  const chr = type === 'character';
+  const table = st.table;
+  api.choices('basedOn', basedChoices(table, chr ? 'character'
+    : 'paragraph', null));
+  api.set('basedOn', chr ? '' : table.defaults.paragraph || '');
+  api.set('next', '');
+  shades(api, st.mode, type);
+}
+
+/** Refuse: beep, say why, the caret to the field. */
+function refuse(api, text, bad) {
+  wimp.beep();
+  api.set('msg', text);
+  if (bad && bad.length) api.focus(bad[0]);
+  return false;
+}
+
+/** OK: see the header. */
+function ok(api, v, dw, values) {
+  const st = state.get(api), id = st.id;
+  if (v.d.doc.styles !== st.table || stale(v.d.doc, st.more)) {
+    const again = refill(api, v, dw, id, st.mode);
+    if (again) api.set('msg', 'The styles changed: look, then click ' +
+      'OK.');
+    return false;
+  }
+  const vals = st.mode === 'rename' ? {...st.was, name: values.name}
+    : values;
+  const r = patch(st.table, id, vals, st.mode === 'modify' ? st.more
+    : {});
+  if (r.error) return refuse(api, r.error, r.bad);
+  if (!Object.keys(r.patch).length) { v.focus(); return undefined; }
+  const done = run(v.d, v.typing, (t) => {
+    if (id === null) return createStyle(t, r.patch);
+    const base = r.latent ? ensureBuiltin(t, id) || t : t;
+    const out = modifyStyle(base, id, r.patch);
+    return out && {table: out, ops: numOps(v.d.doc, st.more)};
+  });
+  if (!done) return refuse(api, 'The style could not be changed.');
+  if (id === null) show(dw, done.id);
+  v.focus();
+  return undefined;
+}
+
+/** The Styles window (if there is one) chooses style id. */
+function show(dw, id) {
+  const sw = dw.boxes.get('styles');
+  const a = sw && sw.api;
+  if (!a || a.gone) return;
+  a.refresh();
+  if (!a.select(id)) { a.setFilter('all'); a.select(id); }
+}

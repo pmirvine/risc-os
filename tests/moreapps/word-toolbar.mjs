@@ -21,7 +21,7 @@
 // inset is taken from the window (dw.inset()), never written here.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
-import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { buildDocx, documentXml, stylesXml, p, r } from './build-docx.mjs';
 import { asDraft } from './word-draft.mjs';
 
 const B = '<w:b/>';
@@ -33,7 +33,13 @@ const PARAS = [
   p(r('Style target.')),                                       // 4
   ...Array.from({ length: 80 }, (_, i) => p(r(`Filler ${i} with a few words in it.`))),
 ];
-const docx = () => buildDocx({ 'word/document.xml': documentXml(PARAS.join('')) });
+const LOUD = '<w:style w:type="character" w:styleId="Loud"><w:name w:val="Loud words"/><w:basedOn w:val="DefaultParagraphFont"/><w:uiPriority w:val="2"/><w:qFormat/><w:rPr><w:b/></w:rPr></w:style>';
+// (a styles.xml of its own, so Word's Normal and Heading 1 are given: Loud words is a character style of the gallery)
+const BASE = '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>'
+  + '<w:style w:type="character" w:default="1" w:styleId="DefaultParagraphFont"><w:name w:val="Default Paragraph Font"/><w:uiPriority w:val="1"/><w:semiHidden/></w:style>'
+  + '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/>'
+  + '<w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="60"/><w:outlineLvl w:val="0"/></w:pPr><w:rPr><w:b/><w:sz w:val="32"/><w:szCs w:val="32"/></w:rPr></w:style>';
+const docx = () => buildDocx({ 'word/document.xml': documentXml(PARAS.join('')), 'word/styles.xml': stylesXml(BASE + LOUD) });
 const big = () => buildDocx({ 'word/document.xml': documentXml(Array.from({ length: 5000 }, (_, i) =>
   p(r(`${i}: some words in a paragraph of the big document`))).join('')) });
 const files = { T: Array.from(await docx()), Big: Array.from(await big()) };
@@ -330,12 +336,51 @@ try {
   await clickAt(4, 1);
   await clickIcon('styleMenu');
   const st = await levelTexts(0);
+  const hItem = await page.locator('.menu').nth(0).locator('.mitem').allTextContents();
+  ok('the menu item text is exactly Heading 1', hItem.some((t) => t.trim() === 'Heading 1') && !hItem.some((t) => t.trim() === 'heading 1'), hItem);
   await pick(0, 'Heading 1');
   const p4 = await para(4), bs = await bar();
-  ok('the style arrow lists the document\'s paragraph styles; Heading 1 applies it; the field shows it', st?.some((t) => /heading 1/i.test(t))
-    && p4.pStyle === 'Heading1' && /heading 1/i.test(bs.style), { st, p4, bs });
+  ok('the style arrow lists the document\'s paragraph styles; Heading 1 applies it; the field shows it', st?.includes('Heading 1')
+    && p4.pStyle === 'Heading1' && bs.style === 'Heading 1', { st, p4, bs });
   await clickAt(1, 1);
   ok('... a Normal paragraph shows Normal', /normal/i.test((await bar()).style), await bar());
+  // (Batch E1) the popup lists character styles, ends with a shaded More styles...; a character style applies to the selection
+  await ev(() => window.__sel(4, 0, 4, 5));
+  await clickIcon('styleMenu');
+  const st2 = await ev(() => os.wimp.menus.levels[0]?.rows?.map((r) => [String(r.item.text), !!(typeof r.item.shaded === 'function' ? r.item.shaded() : r.item.shaded)]));
+  await pick(0, 'Loud words');
+  const p4c = await ev(() => { const b = window.__doc().doc.sections[0].blocks[4]; return { pStyle: b.pStyle ?? null, runs: b.runs.map((x) => [b.text.slice(x.start, x.end), x.rStyle ?? null]) }; });
+  const bcs = await bar();
+  ok('the popup lists a character style and More styles... (shaded for now); picking it styles the selected text only',
+    st2?.some(([t]) => t === 'Loud words') && st2.at(-1)[0] === 'More styles...' && st2.at(-1)[1] === true
+    && p4c.runs[0][1] === 'Loud' && p4c.pStyle === 'Heading1' && p4c.runs.slice(1).every(([, s]) => !s), { st2, p4c });
+  ok('... the field shows the character style while the selection is wholly in it', bcs.style === 'Loud words', bcs);
+  await ev(() => window.__sel(4, 0, 4, 8));
+  await settle();
+  ok('... and the paragraph style when the selection is not', (await bar()).style === 'Heading 1', await bar());
+  await ev(() => window.__doc().view.setSelection({ id: window.__doc().view.layout.items[4].id, off: 2 }));
+  await settle();
+  ok('... a caret in the styled text shows it too', (await bar()).style === 'Loud words', await bar());
+  await ev(() => window.__sel(4, 0, 4, 5));
+  await page.keyboard.press('Control+Z');
+  await settle();
+  await clickAt(1, 1);
+  // Format menu: Style > and Styles... (shaded until the Styles window exists)
+  const fmt = await ev(() => { const m = window.__doc().dw.menu(); const f = m.items.find((i) => i.text === 'Format'); const fm = f.submenu();
+    const sty = fm.items.find((i) => i.text === 'Style').submenu();
+    const ss = fm.items.find((i) => i.text === 'Styles...');
+    return { styles: !!ss, shaded: ss && (typeof ss.shaded === 'function' ? ss.shaded() : ss.shaded), sub: sty.items.map((i) => i.text) }; });
+  ok('Format has Style > (with the character style) and Styles... (shaded for now)', fmt.styles && fmt.shaded === true
+    && fmt.sub.includes('Loud words') && fmt.sub.at(-1) === 'More styles...', fmt);
+  // Ctrl+Shift+S opens the style list under the field
+  await clickAt(4, 1);
+  await page.keyboard.press('Control+Shift+S');
+  await wait(120);
+  const ks = await levelTexts(0);
+  ok('Ctrl+Shift+S opens the toolbar\'s style list', ks?.includes('Heading 1') && ks.at(-1) === 'More styles...', ks);
+  await page.keyboard.press('Escape');
+  await page.mouse.click(...(Object.values(await ev(() => { const c = window.__point(10, 3); return { x: c.x, y: c.y }; }))));
+  await settle();
 
   // ---------------------------------------------------- popups close on an outside click
   await clickIcon('sizeMenu');
