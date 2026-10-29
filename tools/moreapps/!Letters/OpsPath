@@ -14,8 +14,10 @@
 //                            (see own below); only after every check
 //   paraAt(doc, path, story) locate + {p}: a paragraph, or RangeError
 //   inStory(inv, story)      inv given `story` when it is a part
-//                            name (a compound: each of its ops, as
-//                            a compound takes no story)
+//                            name or a note's key (a fresh copy; a
+//                            compound: each of its ops, as a
+//                            compound takes no story)
+//   noteTail(note)           the same for a Note: 'a note' or null
 //   tailOf(story)            'a story' when story (a Story) must
 //                            keep a block and end with a paragraph;
 //                            null for one read from the file empty
@@ -33,6 +35,14 @@
 // the body's rules, nesting and copy-on-write. RangeError: a story
 // that is not a string ('bad story'), not in doc.stories ('no
 // story'), or a section index other than 0 in it.
+// A note (Batch E2): story {note: {kind, id}} (./ModelCheck
+// noteKeyOf) addresses the blocks of that Note of doc.notes the same
+// way ('no note' when it is not there); own() then puts a new Note
+// ({...note, blocks}) in a new Map of its kind in a new doc.notes
+// (order, raw, read shared): the old Note, Map and notes are never
+// changed. Its tail (noteTail): 'a note' (at least one block, not
+// ending with a table) but for a note read from the file empty or
+// ending with a table (its node kept, orig so).
 //
 // A path is ./Path's: [s, i] or [s, i, r, c, j, ...]. locate refuses
 // (RangeError, nothing changed): not a path ('bad position'), no
@@ -41,7 +51,7 @@
 // `depth` is the number of tables around the block (./Path depthOf);
 // `at` is a fresh copy of the path (for inverse ops).
 // Pure: no desktop services.
-import {fail, opStory} from './ModelCheck';
+import {fail, opStory, noteKeyOf} from './ModelCheck';
 import {isPath} from './Path';
 import {endsCell} from './TblCheck';
 
@@ -60,8 +70,36 @@ export function sectionAt(doc, s) {
   return doc.sections[s];
 }
 
-/** The Story of part name `part`, or RangeError. */
+/** See the header. */
+export function noteTail(n) {
+  const o = n.orig;
+  const read = !!n.node && Array.isArray(o) &&
+    (!o.length || endsCell(o[o.length - 1]));
+  return read ? null : 'a note';
+}
+
+const SLOT = {footnote: 'footnotes', endnote: 'endnotes'};
+
+/** The Map of the notes of kind k, or null. */
+function noteMap(doc, kind) {
+  const n = doc.notes;
+  const m = n !== null && typeof n === 'object' ? n[SLOT[kind]] : null;
+  return m instanceof Map ? m : null;
+}
+
+/** The Note of key k ({kind, id}), or RangeError. */
+function noteAt(doc, k) {
+  const m = noteMap(doc, k.kind);
+  const n = m ? m.get(k.id) : undefined;
+  if (!n || !Array.isArray(n.blocks))
+    fail('no note ' + k.kind + ' ' + k.id);
+  return n;
+}
+
+/** The Story of part name `part` (or the Note of a note's key), or
+ *  RangeError. */
 function storyAt(doc, part) {
+  if (typeof part !== 'string') return noteAt(doc, noteKeyOf(part));
   const m = doc.stories;
   const st = m instanceof Map ? m.get(part) : undefined;
   if (!st || !Array.isArray(st.blocks)) fail('no story ' + part);
@@ -73,8 +111,20 @@ function topOf(doc, s, story) {
   const part = opStory({story});
   if (part === undefined) return sectionAt(doc, s).blocks;
   const st = storyAt(doc, part);
-  if (s !== 0) fail('no section ' + s + ' in story ' + part);
+  if (s !== 0) fail('no section ' + s + ' in a story');
   return st.blocks;
+}
+
+/** The blocks of the note of key `part` made writable (see the
+ *  header). */
+function ownNote(doc, part) {
+  const k = noteKeyOf(part), slot = SLOT[k.kind];
+  const m0 = noteMap(doc, k.kind), n = m0.get(k.id);
+  const blocks = n.blocks.slice();
+  const m = new Map(m0);
+  m.set(k.id, {...n, blocks});
+  doc.notes = {...doc.notes, [slot]: m};
+  return blocks;
 }
 
 /**
@@ -84,6 +134,7 @@ function topOf(doc, s, story) {
  * history, and the writer's orig test (./StoryWrite), hold them.
  */
 function ownStory(doc, part) {
+  if (typeof part !== 'string') return ownNote(doc, part);
   const st = doc.stories.get(part);
   const blocks = st.blocks.slice();
   const m = new Map();
@@ -101,7 +152,8 @@ export function locate(doc, path, end = false, story = undefined) {
   let blocks = topOf(doc, path[0], story);
   const part = opStory({story});
   let tail = part === undefined ? null
-    : tailOf(doc.stories.get(part));
+    : typeof part === 'string' ? tailOf(doc.stories.get(part))
+      : noteTail(storyAt(doc, part));
   for (let k = 1; k < n - 1; k += 3) {
     const t = blocks[path[k]];
     if (!t || t.type !== 'tbl') fail('not a table');
@@ -159,6 +211,7 @@ export function inStory(inv, story) {
   const part = opStory({story});
   if (part === undefined) return inv;
   if (inv.op === 'compound') for (const o of inv.ops) inStory(o, part);
-  else inv.story = part;
+  else inv.story = typeof part === 'string' ? part
+    : {note: noteKeyOf(part)};
   return inv;
 }

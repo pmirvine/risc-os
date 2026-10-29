@@ -25,9 +25,9 @@
 //                  vAlign?, exactTop?, cols?: [{x, w}] px (one
 //                  column, the text width, when not given)}] by
 //                  section index (the type comes from sectStart)
-//     spec.hdrH, spec.ftrH, spec.reserve: G's hooks (0 when not
+//     spec.hdrH, spec.ftrH: G's hooks (0 when not
 //                  given)
-//   G = {items, geom(s), geomTw(s), sect(s), hdrH, ftrH, reserve}
+//   G = {items, geom(s), geomTw(s), sect(s), hdrH, ftrH}
 //     (the items carry their facts: brPage, brCol, breakBefore, band,
 //     refs, keepNext, keepLines, widow: Paginate reads them when G
 //     has no facts(k))
@@ -163,8 +163,7 @@ export function galley(spec = {}) {
           .map(([k, v]) => [k, v * 15]))};
     },
     sect: (i) => secs[i] || null,
-    hdrH: spec.hdrH || zero, ftrH: spec.ftrH || zero,
-    reserve: spec.reserve || zero};
+    hdrH: spec.hdrH || zero, ftrH: spec.ftrH || zero};
 }
 
 /** See the header. */

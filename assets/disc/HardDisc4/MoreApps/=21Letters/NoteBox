@@ -1,0 +1,336 @@
+// NoteBox - the Footnote and Endnote dialogue box (Insert >
+// Footnote and Endnote...; Batch E2): how the notes are placed and
+// numbered, as Word's. Built by WimpLib Ui/Dialog.
+//
+//   noteBox(dw) -> the box's api (WimpLib Ui/Dialog), one box per
+//       document (key 'notes:<docKey>'), kept in dw.boxes ('notes')
+//       so ./CloseDoc deletes it with the document; asked again while
+//       it is open, the same box comes to the front, filled again
+//       from the caret. Nothing (null) when the document has no
+//       selection.
+//
+// Word shows the footnote group and the endnote group side by side;
+// this box has one group of fields and a switch above them, Show:
+// Footnotes | Endnotes, which says which kind the fields hold (what
+// was typed for one kind stays while the other is shown, and both
+// are applied together):
+//   Location        Footnotes: Bottom of page, Below text; Endnotes:
+//                   End of section, End of document
+//   Number format   1, 2, 3 / a, b, c / A, B, C / i, ii, iii / I, II,
+//                   III / the symbols * dagger double dagger section
+//   Start at        a whole number from 1 to 16383
+//   Numbering       Continuous, Restart each section, and for
+//                   footnotes only, Restart each page
+//   Apply changes to  This section (the section with the caret: its
+//                   own w:footnotePr / w:endnotePr) or Whole document
+//                   (the document's; a section's own copy of an
+//                   option changed is taken away), ./NotePatch
+//   Custom mark     the text the mark of the note by the caret (or
+//                   the note being edited, in the notes mode) shows
+//                   instead of its number, at most ./NoteCustom
+//                   MARK_MAX characters: Set puts it in the text and
+//                   in the note, Clear gives the number back (each
+//                   one undo step, at once; the box stays)
+//   Convert...      the Convert Notes box (./NoteConvBox): this note,
+//                   all footnotes, all endnotes, or swap
+// Buttons: Apply (makes the changes and closes), Insert (the same,
+// then a note of the kind shown at the caret, with the Custom mark
+// field's text as its mark when the field holds any (refused, with
+// nothing changed, when that text is: ./NoteCustom validText), and
+// the notes mode on it: one undo step with the changes) and
+// Cancel. A value in the
+// file that the box has no choice for (a footnote at the end of the
+// document, a format such as 1st) is shown as the first choice and
+// left alone unless that field is changed.
+//
+// Apply and Insert write only what was changed, in one undo step,
+// and none when nothing changed. A Start at that is not a whole
+// number from 1 to 16383, an Insert that cannot put a note here
+// (./NoteMode refusal), or a document without a settings part and
+// Whole document beeps, says why in the box and keeps it. If the
+// selection or the document changed while the box was open (./TabsBox
+// where), the button beeps, fills the box again, says so and keeps
+// it. In the header and footer mode and the notes mode the buttons
+// beep and say to leave it first (./NotePatch modeWhy), the box kept
+// (Set, Clear and Convert... work in the notes mode; Set and Clear
+// beep and say why when there is no mark by the caret or the text
+// is refused, ./NoteCustom customWhy; like Apply, they beep and fill
+// the box again when the caret or the document changed since it was
+// filled, so the text shown for one note never goes to another).
+// After a conversion in the Convert Notes box this box fills itself
+// again (fields the user changed kept).
+// Cancel, Escape and the close icon change nothing; the caret goes
+// back to the document however the box closes. Whole document is
+// shaded in a document with no settings part.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {POS, NUM_FMTS, RESTARTS, fill, patch, modeWhy, insertRun}
+  from './NotePatch';
+import {insertNote, noteNear, customMark, MARK_MAX}
+  from './NoteCmd';
+import {customOf, customForInsert} from './NoteCustom';
+import {enter, refusal} from './NoteMode';
+import {isNote} from './NoteEdit';
+import {convBox} from './NoteConvBox';
+import * as S from './Selection';
+
+const FIELDS = ['pos', 'numFmt', 'numStart', 'numRestart'];
+const KINDS = ['footnote', 'endnote'];
+const SCOPES = [{id: 'section', text: 'This section'},
+  {id: 'all', text: 'Whole document'}];
+const radio = (kind, text, label) => ({kind: 'radio',
+  name: 'show' + kind, group: 'show', value: kind, text, label,
+  help: 'Which notes the fields below are for.'});
+const rows = () => [
+  [radio('footnote', 'Footnotes', 'Show'),
+    radio('endnote', 'Endnotes')],
+  {kind: 'popup', name: 'pos', label: 'Location', choices: POS.footnote,
+    help: 'Where the notes of the kind shown go.'},
+  {kind: 'popup', name: 'numFmt', label: 'Number format',
+    choices: NUM_FMTS, help: 'How the notes are numbered.'},
+  {kind: 'number', name: 'numStart', label: 'Start at', min: -99999999,
+    max: 99999999, decimals: 0, w: 88,
+    help: 'The number of the first note: 1 to 16383.'},
+  {kind: 'popup', name: 'numRestart', label: 'Numbering',
+    choices: RESTARTS.footnote, help: 'Whether the numbers start ' +
+      'again in each section or on each page.'},
+  {kind: 'popup', name: 'scope', label: 'Apply changes to',
+    choices: SCOPES, help: 'This section: the section with the ' +
+      'caret. Whole document: every section.'},
+  [{kind: 'text', name: 'custom', label: 'Custom mark',
+    maxLen: MARK_MAX, w: 100, help: 'Text the mark of the note by ' +
+      'the caret shows instead of its number, such as *.'},
+  {kind: 'button', name: 'setMark', text: 'Set',
+    help: 'Give the note by the caret this custom mark.'},
+  {kind: 'button', name: 'clearMark', text: 'Clear',
+    help: 'Number the note by the caret again.'}],
+  {kind: 'button', name: 'convert', text: 'Convert...',
+    help: 'Change footnotes to endnotes and back.'},
+  {kind: 'label', name: 'msg', text: '', w: 500},
+];
+const HELP = 'Footnote and Endnote: where the notes go and how they ' +
+  'are numbered.';
+const CHANGED = 'The document changed while the box was open: it ' +
+  'shows the values now. Look again, then click a button.';
+// api -> {at, kind, base: {kind: fill}, cur: {kind: values}, shown:
+// what the fields read when last filled}
+const state = new WeakMap();
+const wired = new WeakSet();
+
+/** See the header. */
+export function noteBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `notes:${dw.docKey}`,
+    title: 'Footnote and Endnote', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Apply', 'Insert'], enter: 'Apply',
+    minW: 520});
+  box(dw, 'notes', () => api.win);
+  if (api.isOpen) {
+    refill(api, v);
+    return api;
+  }
+  if (!wired.has(api)) wire(api, dw);
+  api.choices('scope', scopes(v.d.doc));
+  api.set('scope', startScope(v.d.doc));
+  api.set('show', 'footnote');
+  refill(api, v);
+  api.open();
+  return api;
+}
+
+/** Whether doc has a settings part (Whole document needs one). */
+const settled = (doc) => !!(doc.rawSettings && doc.meta &&
+  doc.meta.settingsPart);
+
+/** The scope choices: Whole document shaded with no settings part. */
+const scopes = (doc) => SCOPES.map((c) => (c.id === 'all' &&
+  !settled(doc) ? {...c, shaded: true} : c));
+
+/** Whole document when there is one section and a settings part. */
+function startScope(doc) {
+  return doc.sections.length === 1 && settled(doc) ? 'all'
+    : 'section';
+}
+
+/** The fields show kind's values (st.cur). */
+function showKind(api, st, kind) {
+  st.kind = kind;
+  api.set('show', kind);
+  api.choices('pos', POS[kind]);
+  api.choices('numRestart', RESTARTS[kind]);
+  const cur = st.cur[kind];
+  st.shown = {};
+  for (const f of FIELDS) {
+    api.set(f, cur[f]);
+    st.shown[f] = api.get(f);
+  }
+}
+
+/** What the fields hold now goes in st.cur (fields touched only). */
+function save(api, st) {
+  const cur = st.cur[st.kind];
+  for (const f of FIELDS) {
+    let x = api.get(f);
+    if (x === st.shown[f]) continue;
+    if (f === 'numStart' && typeof x !== 'number') x = NaN;
+    cur[f] = x;
+    st.shown[f] = x;
+  }
+}
+
+/** Fill from the caret; keep: only what is still as filled. */
+function refill(api, v, keep) {
+  const old = state.get(api);
+  const scope = api.get('scope');
+  const base = {}, cur = {};
+  for (const k of KINDS) {
+    base[k] = fill(v.d.doc, v.sel, k, scope);
+    cur[k] = {...base[k]};
+    if (!keep) continue;
+    for (const f of FIELDS) {
+      if (old.cur[k][f] !== old.base[k][f]) cur[k][f] = old.cur[k][f];
+    }
+  }
+  const st = {at: where(v), base, cur, kind: 'footnote', shown: {}};
+  state.set(api, st);
+  showKind(api, st, keep && old ? old.kind : 'footnote');
+  const k = target(v);
+  const text = (k && customOf(v.real.doc, k.kind, k.id)) || '';
+  st.prefill = text;
+  api.set('custom', text);
+  api.set('msg', '');
+}
+
+/** The note Set and Clear act on: the notes mode's, else the one of
+ *  the mark by the caret (./NoteConvert noteNear), or null. */
+function target(v) {
+  if (isNote(v.hdr)) return v.hdr.note;
+  return v.hdr || !v.sel ? null : noteNear(v.d.doc, v.sel);
+}
+
+/** sel with the offsets after the note's own mark moved (./NoteCustom
+ *  own: a caret in the note being edited). */
+function shifted(sel, own) {
+  const by = own.now - own.was;
+  const f = (p) => (p.id === own.id && p.off > own.at
+    ? {...p, off: Math.max(own.at, p.off + by)} : p);
+  return S.select(f(sel.anchor), f(sel.head), sel.affinity);
+}
+
+/** Set (text) or Clear (null) the custom mark. */
+function custom(api, v, text, no) {
+  if (v.hdr && !isNote(v.hdr)) return no(modeWhy(v.hdr));
+  const st = state.get(api);
+  if (!v.sel || where(v) !== st.at) {
+    // (the field was filled for the note by the caret then)
+    save(api, st);
+    if (v.sel) refill(api, v, true);
+    return no(CHANGED);
+  }
+  const k = target(v);
+  if (!k) return no('Put the caret by a footnote or endnote mark ' +
+    'first.');
+  const r = customMark(v.d, v.typing, k.kind, k.id, text);
+  if (r.error) return no(r.error, 'custom');
+  if (r.changed) v.edited(r.own && isNote(v.hdr) && v.sel
+    ? shifted(v.sel, r.own) : v.sel);
+  save(api, st);
+  refill(api, v, true);
+  api.set('msg', !r.changed ? 'The mark shows that already.'
+    : text === null ? 'The note is numbered again.'
+      : 'Custom mark set.');
+  return undefined;
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  // (Escape and the close icon too: every way out gives the caret
+  // back to the document, unless the document is closing)
+  api.on('close', () => {
+    if (!dw.closed) v.focus();
+  });
+  api.on('change', ({name, value}) => {
+    const st = state.get(api);
+    if (name === 'show') {
+      save(api, st);
+      showKind(api, st, value);
+    } else if (name === 'scope') {
+      save(api, st);
+      refill(api, v, true);
+    }
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (name === 'convert') {
+      convBox(dw, () => {
+        if (api.isOpen) refill(api, v, true);
+      });
+      return undefined;
+    }
+    if (name === 'setMark')
+      return custom(api, v, api.get('custom'), no);
+    if (name === 'clearMark') return custom(api, v, null, no);
+    const why = modeWhy(v.hdr);
+    if (why) return no(why);
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v);
+      return no(CHANGED);
+    }
+    save(api, st);
+    const vals = {scope: api.get('scope'), footnote: st.cur.footnote,
+      endnote: st.cur.endnote};
+    const r = patch(v.d.doc, v.sel, vals);
+    if (r.error) return no(r.error, /^Start/.test(r.error)
+      ? 'numStart' : undefined);
+    if (name === 'Apply') return apply(v, vals);
+    return insert(dw, st, vals, no,
+      customForInsert(api.get('custom'), st.prefill));
+  });
+}
+
+/** Apply: one step, or none. */
+function apply(v, vals) {
+  const out = v.typing.command(() => {
+    const r = patch(v.d.doc, v.sel, vals);
+    if (!r.ops.length) return null;
+    v.d.atomic(() => {
+      for (const op of r.ops) v.d.apply(op);
+    });
+    return v.sel;
+  });
+  if (out) v.edited(out);
+  v.focus();
+  return undefined;
+}
+
+/** Insert: the changes and a note of the kind shown, one step; the
+ *  Custom mark field's text, when there is any, its mark. */
+function insert(dw, st, vals, no, mark) {
+  const v = dw.view, kind = st.kind;
+  const why = refusal(dw, kind);
+  if (why !== null) return no(why);
+  const out = v.typing.command(() => insertRun(v.d, v.sel, vals, kind,
+    mark));
+  if (out && out.error) return no(out.error, 'custom');
+  if (!out) return no('The note could not be put in here.');
+  v.edited(out.sel);
+  enter(dw, out.note);
+  const p = mark ? v.d.doc.sections[0].blocks[0] : null;
+  if (p && p.type === 'p' && p.text.startsWith(mark)) {
+    const off = mark.length + (p.text[mark.length] === ' ' ? 1 : 0);
+    v.setSelection(S.caret({id: p.id, off}));
+  }
+  return undefined;
+}

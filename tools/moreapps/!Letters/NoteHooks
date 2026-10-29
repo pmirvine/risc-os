@@ -1,0 +1,231 @@
+// NoteHooks - the footnotes of a ./DocLayout for the galley Print
+// layout paginates (Batch E2): what ./NotePlace asks of G.notes, the
+// marks of each root item, and the numbers that restart on each
+// page once the pages are known.
+//
+//   noteHooks(L) -> {notes, refsOf} | {}  for ./PageGalley galleyOf
+//       (./PageHF printGalley); {} for a document with no footnote
+//       marked in its body (its pages are made as before, at no cost)
+//     notes   G.notes: note(id, s) the normal footnote id laid out
+//             at section s's text width (./NoteLayout layoutNote,
+//             the layout's decorators, pictures and fields; null for
+//             no such note), sep(type, s) (./NoteLayout sepOf),
+//             pos(s) the section's footnote position (./NoteOpts
+//             forSection: beneathText, else pageBottom)
+//     refsOf(G, it) -> [{line, id}] | null  the marks on root item
+//             it: each footnote mark (custom ones too, not a note's
+//             own) that is the FIRST mark of its note in the body, in
+//             a section whose footnotes go at the foot of the page
+//             (pos pageBottom or beneathText; sectEnd and docEnd are
+//             placed with the endnotes, ./EndnoteLayout), with the
+//             line its caret is on (a table's: the row, at any
+//             depth: ./PageFind placeOf)
+//   firstMarks(doc) -> Map id -> {pid, off}  the first footnote mark
+//       of each note in the body (sections, tables in row order),
+//       memoised per Doc state (./DocVersion, the sections)
+//   notePass(L, P, fx?) -> fields | null  the fields context of one
+//       more layout when the numbers a mark shows depend on its page
+//       (footnotes' numRestart eachPage, ./NoteOpts; endnotes'
+//       is continuous, ./NoteNumbers) and differ from what L
+//       shows: fields (fx, else L.fields) with noteNums
+//       (./NoteNumbers numbersByPage over P, done: each mark's page
+//       its ./Pages ofPos) and noteTries; null when none is due, P
+//       is not done, or MAX_PASSES were made for this ./DocVersion
+//       (numbers that change a page break are not chased further:
+//       Word repaginates the same way). noteNums is dropped (null)
+//       when no section restarts on each page any more
+//       A document with no note modelled and no notes part (and no
+//       noteNums to drop) is passed over at once; which sections
+//       restart on each page is read from the settings once per
+//       ./DocVersion
+//   MAX_PASSES  2
+//   stats  {hooks, refs, paged}: hooks made, refsOf asked, restart
+//       settings read (tests)
+//
+// Pure: no desktop services.
+import {layoutNote, sepOf} from './NoteLayout';
+import {marks, numbersByPage, numbers, numsOf} from './NoteNumbers';
+import {forSection} from './NoteOpts';
+import {placeOf} from './PageFind';
+import {versionOf} from './DocVersion';
+import {firstOfKind} from './Rels';
+
+export const MAX_PASSES = 2;
+export const stats = {hooks: 0, refs: 0, paged: 0};
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = Object.freeze([]);
+const MAX_DEPTH = 64;                  // (tables in tables: a guard)
+const FOOT = new Set(['pageBottom', 'beneathText']);
+
+/** Visit the paragraphs of blocks in order, tables included. */
+function walk(blocks, f, depth) {
+  if (!Array.isArray(blocks)) return;
+  for (const b of blocks) {
+    if (!isObj(b)) continue;
+    if (b.type === 'p') f(b);
+    else if (b.type === 'tbl' && depth < MAX_DEPTH &&
+      Array.isArray(b.rows)) {
+      for (const r of b.rows) {
+        for (const c of isObj(r) && Array.isArray(r.cells)
+          ? r.cells : NONE) walk(c && c.blocks, f, depth + 1);
+      }
+    }
+  }
+}
+
+const memo = new WeakMap();            // doc -> {ver, secs, map}
+
+/** See the header. */
+export function firstMarks(doc) {
+  const secs = isObj(doc) && Array.isArray(doc.sections)
+    ? doc.sections : NONE;
+  const ver = versionOf(doc), m = memo.get(doc);
+  if (m && m.ver === ver && m.secs.length === secs.length &&
+    m.secs.every((x, i) => x === secs[i])) return m.map;
+  const map = new Map();
+  for (const sec of secs) {
+    walk(sec && sec.blocks, (p) => {
+      for (const {x, off} of marks(p)) {
+        if (x.note === 'footnote' && !map.has(x.id)) {
+          map.set(x.id, {pid: p.id, off});
+        }
+      }
+    }, 0);
+  }
+  if (isObj(doc)) memo.set(doc, {ver, secs: [...secs], map});
+  return map;
+}
+
+/** Whether doc has a normal footnote at all (a quick look). */
+function anyNote(doc) {
+  const m = isObj(doc) && isObj(doc.notes) ? doc.notes.footnotes
+    : null;
+  if (!(m instanceof Map)) return false;
+  for (const n of m.values()) if (n && n.type === 'normal') return true;
+  return false;
+}
+
+/** See the header. */
+export function noteHooks(L) {
+  const doc = L.doc;
+  if (!anyNote(doc)) return {};
+  const firsts = firstMarks(doc), fn = doc.notes.footnotes;
+  if (!firsts.size) return {};
+  stats.hooks++;
+  const ctx = {decorators: L.decorators, pics: L.pics,
+    fields: L.fields};
+  const lays = [], seps = new Map(), opts = [], ws = [];
+  const optsOf = (s) => opts[s] || (opts[s] = forSection(doc,
+    doc.sections[s]).footnotes);
+  const widthOf = (s) => {
+    if (ws[s] === undefined) {
+      const g = L.geom(s) || L.geom(0);
+      ws[s] = g ? g.textW : L.textW;
+    }
+    return ws[s];
+  };
+  const note = (id, s) => {
+    const m = lays[s] || (lays[s] = new Map());
+    let lay = m.get(id);
+    if (lay === undefined) {
+      const n = fn.get(id);
+      lay = n && n.type === 'normal'
+        ? layoutNote(doc, n, widthOf(s), L.metrics, ctx) : null;
+      m.set(id, lay);
+    }
+    return lay;
+  };
+  const sep = (type, s) => {
+    const w = widthOf(s), key = type + ':' + w;
+    if (!seps.has(key)) {
+      seps.set(key, sepOf(doc, 'footnote', type, w, L.metrics, ctx));
+    }
+    return seps.get(key);
+  };
+  const pos = (s) => (optsOf(s).pos === 'beneathText' ? 'beneathText'
+    : 'pageBottom');
+  const refsOf = (G, it) => {
+    stats.refs++;
+    if (!it || !it.block || !FOOT.has(optsOf(it.s || 0).pos)) {
+      return null;
+    }
+    let out = null;
+    const look = (p) => {
+      for (const {x, off} of marks(p)) {
+        const f = x.note === 'footnote' ? firsts.get(x.id) : null;
+        if (!f || f.pid !== p.id || f.off !== off) continue;
+        const c = placeOf(G, {id: p.id, off});
+        if (c) (out || (out = [])).push(Object.freeze({line: c.line,
+          id: x.id}));
+      }
+    };
+    if (it.kind === 'p') look(it.block);
+    else if (it.kind === 'tbl') walk([it.block], look, 0);
+    return out && Object.freeze(out);
+  };
+  return {notes: {note, sep, pos}, refsOf};
+}
+
+/** Whether doc may have notes at all: a note modelled, or a notes
+ *  part the main part relates to (a quick look, no walk). */
+function noted(doc) {
+  const n = isObj(doc) ? doc.notes : null;
+  if (isObj(n) && ((n.footnotes instanceof Map && n.footnotes.size) ||
+    (n.endnotes instanceof Map && n.endnotes.size))) return true;
+  const rels = isObj(doc) && Array.isArray(doc.rels) ? doc.rels : NONE;
+  return !!(firstOfKind(rels, 'footnotes') ||
+    firstOfKind(rels, 'endnotes'));
+}
+
+const pagedMemo = new WeakMap();       // doc -> {ver, set, secs, on}
+
+/** Whether a section of doc restarts its numbers on each page
+ *  (memoised per ./DocVersion, settings and sections). */
+function paged(doc) {
+  const secs = isObj(doc) && Array.isArray(doc.sections)
+    ? doc.sections : NONE;
+  const ver = versionOf(doc), m = pagedMemo.get(doc);
+  if (m && m.ver === ver && m.set === doc.rawSettings &&
+    m.secs.length === secs.length &&
+    m.secs.every((x, i) => x === secs[i])) return m.on;
+  stats.paged++;
+  const on = secs.some((sec) => {
+    return forSection(doc, sec).footnotes.numRestart === 'eachPage';
+  });
+  if (isObj(doc)) {
+    pagedMemo.set(doc, {ver, set: doc.rawSettings, secs: [...secs],
+      on});
+  }
+  return on;
+}
+
+/** Two numbers results alike. */
+function sameNums(a, b) {
+  for (const k of ['footnotes', 'endnotes']) {
+    const x = a[k], y = b[k];
+    if (x.size !== y.size) return false;
+    for (const [id, v] of x) if (y.get(id) !== v) return false;
+  }
+  return true;
+}
+
+/** See the header. */
+export function notePass(L, P, fx) {
+  const f = fx || (isObj(L) ? L.fields : null);
+  if (!isObj(L) || !isObj(P) || !P.done) return null;
+  const doc = L.doc, was0 = isObj(f) && f.noteNums;
+  if (!was0 && !noted(doc)) return null;     // (no settings read)
+  if (!paged(doc)) {
+    return isObj(f) && f.noteNums ? {...f, noteNums: null} : null;
+  }
+  const nums = numbersByPage(doc, (r) => P.ofPos({id: r.pid,
+    off: r.off}));
+  const was = (isObj(f) && isObj(f.noteNums) ? f.noteNums : null) ||
+    numsOf(L) || numbers(doc);
+  if (sameNums(nums, was)) return null;
+  const ver = versionOf(doc), t = isObj(f) ? f.noteTries : null;
+  const n = isObj(t) && t.ver === ver ? t.n : 0;
+  if (n >= MAX_PASSES) return null;
+  return {...(isObj(f) ? f : {}), noteNums: nums,
+    noteTries: {ver, n: n + 1}};
+}

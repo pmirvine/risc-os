@@ -19,7 +19,8 @@ import {PlacePrint} from '../../tools/moreapps/!Letters/PlacePrint';
 import {colPass, MAX_TRIES}
   from '../../tools/moreapps/!Letters/ColPass';
 import {galley} from './page-fixtures.mjs';
-import {balance, fillCols, BALANCE_STEPS, sameCols, colsAlike}
+import {balance, fillCols, BALANCE_STEPS, sameCols, colsAlike,
+  stats as colStats}
   from '../../tools/moreapps/!Letters/PageCols';
 import {cursor} from '../../tools/moreapps/!Letters/PageCursor';
 import {buildDocx, documentXml, p, r} from './build-docx.mjs';
@@ -405,19 +406,15 @@ describe('Balancing before a continuous break (P10.2, D23, PG26)', () => {
     assert.equal(P.at(1).cols, undefined);
   });
 
-  it('balancing takes at most 12 fills (a spy on the frames tried)',
+  it('balancing takes at most 12 fills (its count of frames tried)',
     () => {
-      const tried = new Set();
-      const reserve = (fr) => {
-        tried.add(fr.frameH);
-        return 0;
-      };
-      const items = Array.from({length: 61}, (_, i) => ({h: 7 + i % 6,
-        refs: ['r']}));
-      const P = pagesOf({frame: 100000, reserve, items: [...items,
-        cont(0), 10], sections: [{cols: TWO}, {}]});
-      tried.delete(100000);
-      assert.ok(tried.size >= 1 && tried.size <= 12, `${tried.size}`);
+      const items = Array.from({length: 61},
+        (_, i) => ({h: 7 + i % 6}));
+      const t0 = colStats.tried;
+      const P = pagesOf({frame: 100000, items: [...items, cont(0), 10],
+        sections: [{cols: TWO}, {}]});
+      const tried = colStats.tried - t0;
+      assert.ok(tried >= 1 && tried <= 12, `${tried}`);
       const pg = P.at(0);
       assert.equal(P.count, 1);
       assert.deepEqual(cur(pg.cols[2].start), [61, 0]);

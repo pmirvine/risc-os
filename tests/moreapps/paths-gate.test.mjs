@@ -79,6 +79,9 @@ export const ALLOW = [
   {file: 'PageFind', pattern: 'kLoop', count: 1, until: KEEP,
     why: 'galley page cursors {k, line}: k a root layout item ' +
       'index, not a model position'},
+  {file: 'NotePlace', pattern: 'kLoop', count: 1, until: KEEP,
+    why: 'galley page cursors {k, line} ordered (a page\'s notes, ' +
+      'Batch E2): k a root layout item index, not a model position'},
 ];
 
 /** The entries C3.4 / C3.5 must remove: [{file, pattern, count}]. */

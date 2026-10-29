@@ -1,0 +1,565 @@
+// OpsNotes - the ops on footnotes and endnotes (Batch E2), each
+// returning its inverse (./Ops apply: undo, redo, atomic as every
+// op). kind is 'footnote' | 'endnote' (the slot of doc.notes:
+// 'footnotes' | 'endnotes'); id an integer of up to 9 digits
+// (./ModelCheck isNoteId: -1 and 0 are Word's separators).
+//
+//   addNote {kind, id, note, at?, raw?} -> removeNote {kind, id, raw?}
+//       note (a Note: ./ModelCheck checkNotes' rules, its kind and
+//       id these) put in doc.notes[kind] and its id in order at
+//       index `at` (default the end): before the note that was at
+//       `at`, after the odd nodes (raw) there. Its blocks' ids must
+//       be free in doc (./OpsUtil checkIds), it must keep a block
+//       and end with a paragraph (./OpsPath noteTail) and its rels
+//       be the part's (partRels: one rels array a part; setNoteRels)
+//       when the kind has notes
+//   removeNote {kind, id, raw?} -> addNote {kind, id, note: the one
+//       removed, at: its index in order, raw?}
+//   removeNotes {kind, ids, raw?} -> addNotes {kind, notes: the
+//       ones removed (in order's order), order: the old order,
+//       raw?}  many notes at once (ids distinct, each there), in
+//       time linear in the notes: the notes of the marks a deletion
+//       took (./NoteKeep); raw entries keep their places as
+//       removeNote leaves them
+//   addNotes {kind, notes, order, raw?} -> removeNotes {kind, ids,
+//       raw?}  notes (Notes as addNote takes them, ids distinct and
+//       not there) put in; order is the kind's order with their ids
+//       put in (the others in their order), the Map follows it. An
+//       odd node stays right after the note it was after (before
+//       the new notes there, as addNote leaves it)
+//   setNote {kind, id, patch} -> setNote {kind, id, note: the old
+//       Note}  patch {blocks?, type?} (at least one): a NEW Note
+//       {...note, ...patch} in its place (id, node and orig kept:
+//       ./NoteWrite writes it from its blocks while they differ from
+//       orig). Its relationships are the part's: setNoteRels.
+//       setNote {kind, id, note} puts that very Note (its kind, id
+//       and node the old one's) in place: the inverse, so that undo
+//       gives back the object the layout and writer knew
+//   setNoteRels {kind, rels} -> setNoteRels {kind, rels: the old}
+//       the rels (an array of Rel, ./OpsDoc checkRels, or null) of
+//       EVERY note of the kind: the notes part has one .rels part,
+//       which ./NoteWrite writes from its first note's rels (a
+//       hyperlink or picture in a note is related from the part).
+//       Refused when the kind has no note, or its notes do not
+//       share one rels value
+//   setNoteOpts {level, kind, value} -> setDocPart settings (level
+//       'doc') | setSection (level a section index) giving the old
+//       settings root or section props back; value a ./NoteOpts
+//       patch: the document's w:footnotePr / w:endnotePr in
+//       doc.rawSettings (patchDoc; refused in a document with no
+//       settings part), or the section's (patchSection); every
+//       other child kept
+//   setNotesPart {kind, value} -> setNotesPart {kind, value: the old
+//       one or null}  value {part, root, prolog, notes: Map, order,
+//       raw} makes the notes part of a kind that has none (noteState
+//       'missing': no part, no relationship; part a free name):
+//       meta.noteParts[kind] and the kind's Map, order, raw, root
+//       and prolog (./NoteParts ensure makes Word's separators with
+//       it, the relationship and the settings in one d.atomic);
+//       null takes away a part made so (never one read from the
+//       file: notes.read[kind] set), once no relationship of that
+//       kind is left
+//
+// The odd nodes (raw, ./NoteRead) keep their places: an entry before
+// the note at index k moves with that note (addNote / removeNote
+// shift `at`); the inverse carries the raw array as it was (raw:
+// the very entries, checked to hold the same nodes) so that undo
+// gives it back exactly. COPY-ON-WRITE: doc.notes is replaced by a
+// new object holding a new Map (in order's order), order and raw
+// for the kind changed; the other kind, every other Note, root,
+// prolog and the read snapshot are shared, never changed, so
+// ./NoteWrite tells an untouched note by its identity and a layout
+// reuses the notes that are the same objects. The Note, patch
+// values, rels, value and raw given are kept by reference (./Ops
+// copy): IMMUTABLE BY CONTRACT.
+// A kind whose part could not be modelled (bytes only:
+// ./NoteNumbers noteState 'unknown') takes no note: adding one would
+// turn every mark of the kind into [?] and the writer would lose the
+// bytes. A kind with no part takes none either until setNotesPart
+// made it (the writer writes the parts of meta.noteParts only).
+// Refused (RangeError, doc unchanged): a bad kind or id (__proto__,
+// '1', 1.5, NaN...), a missing note, an id there already, a bad
+// note, place, patch or value.
+//
+//   nextNoteId(doc, kind) -> id  one more than the largest id of
+//       the kind's notes, odd nodes and marks (body, headers and
+//       footers: a broken mark [?] must not find a new note),
+//       at least 1; RangeError 'no free note id' past ./ModelCheck
+//       MAX_NOTE_ID (999,999,999: w:id's 9 digits; a mark's id past
+//       it names no note and is not counted). Ids are not remembered
+//       past what exists: after
+//       the undo of an add the same id is taken again (that note is
+//       gone; its redo is dropped by the new edit). Word renumbers
+//       ids itself when it saves
+//   newNote(doc, kind, id, blocks) -> a Note: type normal, the
+//       part's rels, no node (written from its blocks)
+//   noteOf(doc, kind, id) -> the Note or null
+//   partRels(doc, kind) -> the rels the kind's notes share (null
+//       when none has any)
+//   nameFree(doc, name) -> true when setNotesPart takes name for a
+//       new part: ./OpsDoc newPartFree, and no story's, part read,
+//       zip entry's or notes part's (case ignored)
+//   SLOTS  {footnote: 'footnotes', endnote: 'endnotes'}
+// Pure: no desktop services.
+import {fail, checkBlock, checkNotes, isNoteId, NOTE_TYPES,
+  MAX_NOTE_ID} from './ModelCheck';
+import {checkIds, sectionAt} from './OpsUtil';
+import {noteTail} from './OpsPath';
+import {checkTail} from './TblCheck';
+import {checkRels, newPartFree} from './OpsDoc';
+import {noteState, marks} from './NoteNumbers';
+import {patchDoc, patchSection, checkPatch} from './NoteOpts';
+import {firstOfKind} from './Rels';
+import {scan, stories, forEachIn} from './Walk';
+import {emptyNotes} from './Model';
+
+export const SLOTS = Object.freeze({footnote: 'footnotes',
+  endnote: 'endnotes'});
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const none = (v) => v === null || v === undefined;
+
+/** The slot of kind, or RangeError. */
+function slotOf(kind) {
+  if (typeof kind !== 'string' || !Object.hasOwn(SLOTS, kind))
+    fail('bad note kind ' + String(kind));
+  return SLOTS[kind];
+}
+
+function idOf(id) {
+  if (!isNoteId(id)) fail('bad note id ' + String(id));
+  return id;
+}
+
+const notesOf = (doc) => (isObj(doc.notes) ? doc.notes : emptyNotes());
+const mapOf = (n, slot) => (n[slot] instanceof Map ? n[slot]
+  : new Map());
+const orderOf = (n, slot) => (isObj(n.order) &&
+  Array.isArray(n.order[slot]) ? n.order[slot] : []);
+const rawOf = (n, slot) => (isObj(n.raw) &&
+  Array.isArray(n.raw[slot]) ? n.raw[slot] : []);
+const namesOf = (doc) => (isObj(doc.meta) &&
+  isObj(doc.meta.noteParts) ? doc.meta.noteParts : {});
+
+/** doc.notes with the slot's Map, order and raw replaced. */
+function put(doc, slot, map, order, raw) {
+  const n = notesOf(doc);
+  const out = {...n, [slot]: map};
+  if (order) out.order = {...n.order, [slot]: order};
+  if (raw) out.raw = {...n.raw, [slot]: raw};
+  doc.notes = out;
+}
+
+/** A Map of the notes of order (old's, id given note). */
+function mapIn(order, old, id, note) {
+  if (note && order[order.length - 1] === id)
+    return new Map(old).set(id, note);
+  const m = new Map();
+  for (const k of order) m.set(k, k === id ? note : old.get(k));
+  return m;
+}
+
+/** raw with every entry after index `at` moved by d (the same array
+ *  when none moves). */
+function shift(raw, at, d) {
+  if (!raw.some((x) => x.at > at)) return raw;
+  return raw.map((x) => (x.at > at ? {...x, at: x.at + d} : x));
+}
+
+/** raw0 given back: op.raw must hold its nodes, places in range. */
+function rawBack(given, raw0, size) {
+  if (!Array.isArray(given) || given.length !== raw0.length)
+    fail('bad raw');
+  given.forEach((x, k) => {
+    if (!isObj(x) || x.node !== raw0[k].node ||
+      !Number.isInteger(x.at) || x.at < 0 || x.at > size ||
+      (k && x.at < given[k - 1].at)) fail('bad raw');
+  });
+  return given;
+}
+
+/** See the header. */
+export function partRels(doc, kind) {
+  const m = mapOf(notesOf(doc), slotOf(kind));
+  for (const n of m.values()) return n.rels ?? null;
+  return null;
+}
+
+function relsPartOf(doc, kind) {
+  const m = mapOf(notesOf(doc), slotOf(kind));
+  for (const n of m.values()) return n.relsPart ?? null;
+  return null;
+}
+
+/** See the header. */
+export function noteOf(doc, kind, id) {
+  const m = mapOf(notesOf(doc), slotOf(kind));
+  return isNoteId(id) ? m.get(id) || null : null;
+}
+
+/** See the header. */
+export function newNote(doc, kind, id, blocks) {
+  slotOf(kind);
+  return {kind, id: idOf(id), type: 'normal', blocks,
+    rels: partRels(doc, kind), relsPart: relsPartOf(doc, kind),
+    orig: [], node: null};
+}
+
+/** The integer w:id of an odd node, or null. */
+function rawId(node) {
+  const a = isObj(node) && Array.isArray(node.attrs)
+    ? node.attrs.find(([k]) => /(^|:)id$/.test(k)) : null;
+  return a && /^-?[0-9]{1,9}$/.test(a[1]) ? Number(a[1]) : null;
+}
+
+/** See the header. */
+export function nextNoteId(doc, kind) {
+  const slot = slotOf(kind), n = notesOf(doc);
+  let max = 0;
+  for (const id of mapOf(n, slot).keys()) if (id > max) max = id;
+  for (const x of rawOf(n, slot)) {
+    const id = rawId(x.node);
+    if (id !== null && id > max) max = id;
+  }
+  const each = (b) => {
+    if (!b || b.type !== 'p') return;
+    for (const {x} of marks(b)) {
+      if (x.note === kind && x.id > max && x.id <= MAX_NOTE_ID)
+        max = x.id;
+    }
+  };
+  scan(doc, each);
+  for (const st of stories(doc)) forEachIn(st.blocks, [0], each);
+  if (max >= MAX_NOTE_ID) fail('no free note id');
+  return max + 1;
+}
+
+/** Throw unless note is a Note of kind and id (see the header). */
+function checkNote(note, kind, id) {
+  if (!isObj(note) || note.kind !== kind || note.id !== id)
+    fail('a note must hold its kind and id');
+  if (!NOTE_TYPES.includes(note.type)) fail('bad note type');
+  if (!Array.isArray(note.blocks) || !Array.isArray(note.orig))
+    fail('note blocks and orig must be arrays');
+  if (!none(note.rels)) checkRels(note.rels);
+  if (!none(note.relsPart) && typeof note.relsPart !== 'string')
+    fail('note relsPart must be a name or null');
+  if (!none(note.node) && !isObj(note.node)) fail('bad note node');
+  for (const b of note.blocks) checkBlock(b);
+  checkBlocksTail(note, note.blocks);
+}
+
+function checkBlocksTail(note, bs) {
+  const tail = noteTail(note);
+  if (!tail) return;
+  if (!bs.length) fail(tail + ' needs at least one block');
+  checkTail(bs[bs.length - 1], tail);
+}
+
+/** The Map of a kind that may take a note (see the header). */
+function partMap(doc, slot) {
+  const n = notesOf(doc);
+  if (typeof namesOf(doc)[slot] !== 'string' ||
+    !(n[slot] instanceof Map)) {
+    fail(noteState(doc, slot) === 'unknown'
+      ? 'the ' + slot + ' part could not be read: it is kept as it ' +
+        'is and takes no new note'
+      : 'no ' + slot + ' part (./NoteParts ensure makes one)');
+  }
+  return n[slot];
+}
+
+/** See the header. */
+export function addNote(doc, op) {
+  const slot = slotOf(op.kind), id = idOf(op.id);
+  const map = partMap(doc, slot), n = notesOf(doc);
+  if (map.has(id)) fail('note ' + id + ' is there already');
+  const note = op.note;
+  checkNote(note, op.kind, id);
+  const order = orderOf(n, slot);
+  const at = op.at === undefined ? order.length : op.at;
+  if (!Number.isInteger(at) || at < 0 || at > order.length)
+    fail('bad note place');
+  if (map.size && (note.rels ?? null) !== partRels(doc, op.kind))
+    fail('a note takes the rels of its part');
+  checkIds(doc, note.blocks);
+  const raw0 = rawOf(n, slot);
+  const next = order.slice();
+  next.splice(at, 0, id);
+  const raw = op.raw === undefined ? shift(raw0, at, 1)
+    : rawBack(op.raw, raw0, next.length);
+  put(doc, slot, mapIn(next, map, id, note), next, raw);
+  const inv = {op: 'removeNote', kind: op.kind, id};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+/** See the header. */
+export function removeNote(doc, op) {
+  const slot = slotOf(op.kind), id = idOf(op.id);
+  const n = notesOf(doc), map = mapOf(n, slot);
+  if (!map.has(id)) fail('no note ' + op.kind + ' ' + id);
+  const order = orderOf(n, slot);
+  const at = order.indexOf(id);
+  if (at < 0) fail('note ' + id + ' is not in order');
+  const raw0 = rawOf(n, slot);
+  const next = order.slice();
+  next.splice(at, 1);
+  const raw = op.raw === undefined ? shift(raw0, at, -1)
+    : rawBack(op.raw, raw0, next.length);
+  put(doc, slot, mapIn(next, map), next, raw);
+  const inv = {op: 'addNote', kind: op.kind, id, note: map.get(id),
+    at};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+/** A Map holding order's notes, from old and the notes added. */
+function mapOver(order, old, add) {
+  const m = new Map();
+  for (const k of order) m.set(k, add && add.has(k) ? add.get(k)
+    : old.get(k));
+  return m;
+}
+
+/** See the header. */
+export function removeNotes(doc, op) {
+  const slot = slotOf(op.kind);
+  const n = notesOf(doc), map = mapOf(n, slot);
+  if (!Array.isArray(op.ids) || !op.ids.length) fail('bad note ids');
+  const gone = new Set();
+  for (const x of op.ids) {
+    const id = idOf(x);
+    if (!map.has(id)) fail('no note ' + op.kind + ' ' + id);
+    if (gone.has(id)) fail('note ' + id + ' named twice');
+    gone.add(id);
+  }
+  const order = orderOf(n, slot), next = [], before = [];
+  for (const k of order) {
+    before.push(next.length);
+    if (!gone.has(k)) next.push(k);
+  }
+  before.push(next.length);
+  if (order.length - next.length !== gone.size)
+    fail('a note is not in order');
+  const raw0 = rawOf(n, slot);
+  let raw = raw0;
+  if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
+  else if (raw0.some((x) => before[x.at] !== x.at)) {
+    raw = raw0.map((x) => (before[x.at] === x.at ? x
+      : {...x, at: before[x.at]}));
+  }
+  put(doc, slot, mapOver(next, map), next, raw);
+  const inv = {op: 'addNotes', kind: op.kind,
+    notes: order.filter((k) => gone.has(k)).map((k) => map.get(k)),
+    order};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+/** See the header. */
+export function addNotes(doc, op) {
+  const slot = slotOf(op.kind);
+  const map = partMap(doc, slot), n = notesOf(doc);
+  if (!Array.isArray(op.notes) || !op.notes.length ||
+    !Array.isArray(op.order)) fail('bad notes');
+  const add = new Map(), rels = map.size ? partRels(doc, op.kind)
+    : undefined, bs = [];
+  let r = rels;
+  for (const note of op.notes) {
+    const id = idOf(isObj(note) ? note.id : undefined);
+    if (map.has(id) || add.has(id))
+      fail('note ' + id + ' is there already');
+    checkNote(note, op.kind, id);
+    if (r !== undefined && (note.rels ?? null) !== r)
+      fail('a note takes the rels of its part');
+    r = note.rels ?? null;
+    add.set(id, note);
+    for (const b of note.blocks) bs.push(b);
+  }
+  const order = orderOf(n, slot), next = op.order;
+  const seen = new Set(), at = new Map();
+  let j = 0;
+  next.forEach((k, i) => {
+    if (seen.has(k)) fail('bad note order');
+    seen.add(k);
+    if (add.has(k)) return;
+    if (order[j] !== k) fail('bad note order');
+    at.set(j++, i);
+  });
+  if (j !== order.length || seen.size !== order.length + add.size)
+    fail('bad note order');
+  checkIds(doc, bs);
+  const raw0 = rawOf(n, slot);
+  let raw = raw0;
+  // (an odd node before note j goes right after note j - 1)
+  const placed = (a) => (a === 0 ? 0 : at.get(a - 1) + 1);
+  if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
+  else if (raw0.some((x) => placed(x.at) !== x.at)) {
+    raw = raw0.map((x) => (placed(x.at) === x.at ? x
+      : {...x, at: placed(x.at)}));
+  }
+  put(doc, slot, mapOver(next, map, add), next.slice(), raw);
+  const inv = {op: 'removeNotes', kind: op.kind, ids: [...add.keys()]};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+const FIELDS = ['blocks', 'type'];
+
+/** See the header. */
+export function setNote(doc, op) {
+  const slot = slotOf(op.kind), id = idOf(op.id);
+  const n = notesOf(doc), map = mapOf(n, slot);
+  const old = map.get(id);
+  if (!old) fail('no note ' + op.kind + ' ' + id);
+  if (op.note !== undefined) return putNote(doc, op, slot, map, old);
+  const patch = op.patch;
+  if (!isObj(patch)) fail('a note patch must be an object');
+  const keys = Object.keys(patch);
+  if (!keys.length) fail('nothing to set in the note');
+  const next = {...old}, back = {};
+  for (const k of keys) {
+    if (!FIELDS.includes(k)) fail('bad note field ' + k);
+    next[k] = patch[k];
+    back[k] = old[k];
+  }
+  if (!NOTE_TYPES.includes(next.type)) fail('bad note type');
+  if (Object.hasOwn(patch, 'blocks')) {
+    const bs = next.blocks;
+    if (!Array.isArray(bs)) fail('note blocks must be an array');
+    for (const b of bs) checkBlock(b);
+    checkBlocksTail(next, bs);
+    checkIds(doc, bs, old.blocks);
+  }
+  const m = new Map(map);
+  m.set(id, next);
+  put(doc, slot, m);
+  return {op: 'setNote', kind: op.kind, id, note: old};
+}
+
+/** setNote with a whole Note (see the header). */
+function putNote(doc, op, slot, map, old) {
+  const note = op.note;
+  if (op.patch !== undefined) fail('a patch or a note, not both');
+  checkNote(note, op.kind, op.id);
+  if (note.node !== old.node) fail('a note keeps its node');
+  checkIds(doc, note.blocks, old.blocks);
+  const m = new Map(map);
+  m.set(op.id, note);
+  put(doc, slot, m);
+  return {op: 'setNote', kind: op.kind, id: op.id, note: old};
+}
+
+/** See the header. */
+export function setNoteRels(doc, op) {
+  const slot = slotOf(op.kind);
+  const map = mapOf(notesOf(doc), slot);
+  if (!map.size) fail('no ' + slot + ' to hold relationships');
+  const rels = op.rels ?? null;
+  if (rels !== null) checkRels(rels);
+  const old = partRels(doc, op.kind);
+  const m = new Map();
+  for (const [k, x] of map) {
+    if ((x.rels ?? null) !== old)
+      fail('the ' + slot + ' do not share one rels');
+    m.set(k, x.rels === rels ? x : {...x, rels});
+  }
+  put(doc, slot, m);
+  return {op: 'setNoteRels', kind: op.kind, rels: old};
+}
+
+/** See the header. */
+export function setNoteOpts(doc, op) {
+  slotOf(op.kind);
+  checkPatch(op.kind, op.value);
+  if (op.level === 'doc') {
+    const meta = isObj(doc.meta) ? doc.meta : {};
+    if (!doc.rawSettings || !meta.settingsPart)
+      fail('the document has no settings part');
+    const old = doc.rawSettings;
+    doc.rawSettings = patchDoc(old, op.kind, op.value);
+    return {op: 'setDocPart', key: 'settings', value: old};
+  }
+  if (!Number.isInteger(op.level)) fail('bad level');
+  const sec = sectionAt(doc, op.level);
+  doc.sections[op.level] = patchSection(sec, op.kind, op.value);
+  const inv = {op: 'setSection', at: op.level, props: sec.props};
+  if (sec.raw !== undefined) inv.raw = sec.raw;
+  return inv;
+}
+
+/** See the header. */
+export function nameFree(doc, name) {
+  if (typeof name !== 'string' || !newPartFree(doc, name)) return false;
+  const lc = name.toLowerCase();
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  const taken = [...(doc.stories instanceof Map ? doc.stories.keys()
+    : []), ...(meta.storyParts || []), ...(meta.zipOrder || []),
+  ...Object.values(namesOf(doc))];
+  return !taken.some((x) => String(x).toLowerCase() === lc);
+}
+
+/** Throw unless v is a part value for kind (see the header). */
+function checkPart(doc, kind, slot, v) {
+  if (!isObj(v)) fail('bad notes part');
+  const {part, root, prolog, notes, order, raw} = v;
+  if (!nameFree(doc, part)) fail('part name ' + part + ' not free');
+  if (!isObj(root) || typeof root.name !== 'string' ||
+    !Array.isArray(root.attrs) ||
+    root.name.slice(root.name.indexOf(':') + 1) !== slot)
+    fail('bad notes root');
+  if (!none(prolog) && !isObj(prolog)) fail('bad notes prolog');
+  if (!(notes instanceof Map) || !Array.isArray(order) ||
+    !Array.isArray(raw)) fail('bad notes part');
+  const two = (x, y) => (slot === 'footnotes' ? {footnotes: x,
+    endnotes: y} : {footnotes: y, endnotes: x});
+  checkNotes({...two(notes, new Map()), order: two(order, []),
+    raw: two(raw, [])});
+  rawBack(raw, raw, order.length);
+  const bs = [];
+  let rels;
+  for (const x of notes.values()) {
+    checkNote(x, kind, x.id);
+    if (rels !== undefined && (x.rels ?? null) !== rels)
+      fail('the ' + slot + ' do not share one rels');
+    rels = x.rels ?? null;
+    bs.push(...x.blocks);
+  }
+  checkIds(doc, bs);
+}
+
+/** See the header. */
+export function setNotesPart(doc, op) {
+  const kind = op.kind, slot = slotOf(kind);
+  const names = namesOf(doc), cur = names[slot];
+  const n = notesOf(doc), v = op.value;
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  if (v === null) {
+    if (typeof cur !== 'string') fail('no ' + slot + ' part');
+    if (isObj(n.read) && n.read[slot])
+      fail('the ' + slot + ' part was read from the file');
+    if (firstOfKind(Array.isArray(doc.rels) ? doc.rels : [], slot))
+      fail('the ' + slot + ' relationship is still there');
+    const inv = {op: 'setNotesPart', kind, value: {part: cur,
+      root: n.root[slot], prolog: n.prolog[slot], notes: mapOf(n, slot),
+      order: orderOf(n, slot), raw: rawOf(n, slot)}};
+    const rest = {...names};
+    delete rest[slot];
+    doc.notes = {...n, [slot]: new Map(), order: {...n.order,
+      [slot]: []}, raw: {...n.raw, [slot]: []}, root: {...n.root,
+      [slot]: null}, prolog: {...n.prolog, [slot]: null}};
+    doc.meta = {...meta, noteParts: rest};
+    return inv;
+  }
+  if (typeof cur === 'string' || noteState(doc, slot) !== 'missing')
+    fail('the document has a ' + slot + ' part');
+  checkPart(doc, kind, slot, v);
+  doc.notes = {...n, [slot]: v.notes, order: {...n.order,
+    [slot]: v.order}, raw: {...n.raw, [slot]: v.raw},
+  root: {...n.root, [slot]: v.root},
+  prolog: {...n.prolog, [slot]: v.prolog ?? null}};
+  doc.meta = {...meta, noteParts: {...names, [slot]: v.part}};
+  return {op: 'setNotesPart', kind, value: null};
+}

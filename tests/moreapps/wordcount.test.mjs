@@ -15,6 +15,12 @@ import * as S from '../../tools/moreapps/!Letters/Selection';
 import {mk, C, SEL, blocks as blocksOf, O} from './edit-docs.mjs';
 import {loadStyles, tm, mkDoc, raw, box} from './word-docs.mjs';
 import {modelTable} from './tbl-fixtures.mjs';
+import {noteDoc, noteP, mark, emark, enoteP} from './note-fixtures.mjs';
+import {p, r} from './build-docx.mjs';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {Typing} from '../../tools/moreapps/!Letters/Typing';
+import {customMark, convertNote}
+  from '../../tools/moreapps/!Letters/NoteCmd';
 
 before(loadStyles);
 
@@ -350,5 +356,242 @@ describe('WordCount: a selection in a typed table (C3.5)', () => {
     const all = S.select({id: p0.id, off: 0}, {id: p2.id, off: 1});
     assert.equal(count(d.doc, all, L).lines, want);
     assert.equal(count(d.doc, null, L).words, 3 + 40 + 3);
+  });
+});
+
+describe('WordCount: footnotes and endnotes', () => {
+  const X = {notes: true};
+  const bp = (d, i) => d.sections[0].blocks[i];
+  /** body: "one two" + footnote 1 (3 words), "three" + endnote 1
+   *  (2 words), "four". */
+  const base = () => noteDoc(
+    p(r('one two') + mark(1)) + p(r('three') + emark(1)) +
+    p(r('four')),
+    {1: noteP('alpha beta gamma')},
+    {endnotes: {1: enoteP('delta epsilon')}});
+  it('off: the numbers of a document without notes', async () => {
+    const d = await base();
+    assert.deepEqual(nums(count(d)), [4, 16, 15, 3]);
+    assert.deepEqual(count(d, null, null, {notes: false}), count(d));
+    assert.deepEqual(count(d, null, null, {}), count(d));
+  });
+  it('on: the footnote and the endnote text too', async () => {
+    const d = await base();
+    // ' alpha beta gamma' = 17 (14 without spaces), ' delta
+    // epsilon' = 14 (12): the space after the mark is text
+    const c = count(d, null, null, X);
+    assert.deepEqual(nums(c), [9, 16 + 17 + 14, 15 + 14 + 12, 5]);
+    assert.equal(c.scope, 'document');
+    assert.equal(c.lines, null);
+  });
+  it('the notes\' own marks are no words or characters', async () => {
+    const d = await noteDoc(p(r('a') + mark(1)), {1: noteP('b')});
+    // "a" + " b": the mark gives nothing, the space is a character
+    assert.deepEqual(nums(count(d, null, null, X)), [2, 3, 2, 2]);
+  });
+  it('a custom mark\'s text is not counted', async () => {
+    const cm = '<w:r><w:footnoteReference w:customMarkFollows="1" ' +
+      'w:id="1"/><w:t>***</w:t></w:r>';
+    const d = await noteDoc(p(r('a') + cm), {1: noteP('b')});
+    assert.equal(Object.values(bp(d, 0).inlines)[0].custom, '***');
+    assert.deepEqual(nums(count(d, null, null, X)), [2, 3, 2, 2]);
+  });
+  it('a selection counts the notes whose marks it holds', async () => {
+    const d = await noteDoc(
+      p(r('one') + mark(1) + r(' two') + mark(2)),
+      {1: noteP('aa bb'), 2: noteP('cc dd ee')});
+    const id = bp(d, 0).id;
+    const sel = (a, e) => S.select({id, off: a}, {id, off: e});
+    // "one" + mark 1 only
+    assert.equal(count(d, sel(0, 2), null, X).words, 1);
+    assert.equal(count(d, sel(0, 4), null, X).words, 3);
+    assert.equal(count(d, sel(1, 4), null, X).words, 3);
+    // " two" and mark 2
+    assert.equal(count(d, sel(4, 9), null, X).words, 1 + 3);
+    assert.equal(count(d, sel(4, 9)).words, 1);
+    // all
+    assert.equal(count(d, sel(0, 9), null, X).words, 1 + 1 + 2 + 3);
+    assert.equal(count(d, null, null, X).words, 7);
+    // three different marks, three note paragraphs
+    assert.equal(count(d, sel(0, 9), null, X).paras, 3);
+  });
+  it('two marks to one note in a selection count it once',
+    async () => {
+      const d = await noteDoc(p(r('x') + mark(1) + r('y') + mark(1)),
+        {1: noteP('aa bb')});
+      const id = bp(d, 0).id;
+      const c = count(d, S.select({id, off: 0}, {id, off: 4}), null, X);
+      assert.deepEqual([c.words, c.paras], [3, 2]);
+      assert.equal(count(d, null, null, X).words, 3);
+    });
+  it('an orphan note, a missing note and the separators count ' +
+    'nothing', async () => {
+    const d = await noteDoc(p(r('a') + mark(1) + mark(9)),
+      {1: noteP('b'), 2: noteP('orphan words here')});
+    assert.equal(count(d, null, null, X).words, 2);
+    const f = await noteDoc(p(r('a') + mark(1)), {});
+    assert.deepEqual(count(f, null, null, X), count(f));
+  });
+  it('a table in a note counts its paragraphs', async () => {
+    const t = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/>' +
+      '</w:tblGrid><w:tr><w:tc>' + p(r('c1 c2')) +
+      '</w:tc></w:tr></w:tbl>';
+    const d = await noteDoc(p(r('a') + mark(1)),
+      {1: noteP('b') + t});
+    const c = count(d, null, null, X);
+    assert.deepEqual([c.words, c.paras], [4, 3]);
+  });
+  it('a notes mode (a story) counts its own text only', async () => {
+    const d = await noteDoc(p(r('a') + mark(1)), {1: noteP('b c')});
+    const story = {...d, sections: [{...d.sections[0],
+      blocks: d.notes.footnotes.get(1).blocks}]};
+    assert.equal(count(story, null, null, X).words, 2);
+    const v = {d: {doc: story}, hdr: {}, sel: null, L: null};
+    assert.equal(countView(v, X).words, 2);
+    assert.equal(countView({d: {doc: d}, sel: null, L: null}, X)
+      .words, 3);
+  });
+  it('the 1,000,000 node cap holds in a note too', async () => {
+    const d = await noteDoc(p(r('a') + mark(1)), {1: noteP('b')});
+    const kids = Array.from({length: NODE_LIMIT + 10}, () =>
+      wr(wt('w')));
+    d.notes.footnotes.get(1).blocks.push({type: 'opaque',
+      node: {name: 'w:p', attrs: [], children: kids}});
+    const c = count(d, null, null, X);
+    assert.equal(c.partial, true);
+    assert.equal(count(d).partial, undefined);
+  });
+  it('10,000 notes: near the cost of the body alone (WORD_PERF=1 ' +
+    'for the time)', async () => {
+    const N = 10000;
+    const notes = {};
+    let body = '';
+    for (let i = 1; i <= N; i++) {
+      body += p(r('w ') + mark(i));
+      notes[i] = noteP('some note words');
+    }
+    const d = await noteDoc(body, notes);
+    const best = (o) => {
+      let b = Infinity;
+      for (let k = 0; k < 5; k++) {
+        const t0 = performance.now();
+        count(d, null, null, o);
+        b = Math.min(b, performance.now() - t0);
+      }
+      return b;
+    };
+    const off = best({}), on = best(X);
+    assert.equal(count(d, null, null, X).words, N * 4);
+    console.log(`# 10,000 notes: ${on.toFixed(1)} ms, without ` +
+      `${off.toFixed(1)} ms`);
+    assert.ok(on / off < 30, 'ratio ' + (on / off).toFixed(1));
+    if (process.env.WORD_PERF) assert.ok(on < 1000, on + ' ms');
+  });
+});
+
+describe('WordCount: a custom mark in the note', () => {
+  const X = {notes: true};
+  const setup = async (doc) => {
+    const d = new Document(await doc);
+    return {d, t: new Typing(d)};
+  };
+  const EM = '\u{1F600}'.repeat(10);       // 10 code points, 20 units
+  const fixture = () => noteDoc(p(r('a') + mark(1) + emark(1)),
+    {1: noteP('b')}, {endnotes: {1: enoteP('c')}});
+  it('footnote and endnote: the mark text is not counted, the ' +
+    'space after it is, as after the automatic mark', async () => {
+    const {d, t} = await setup(fixture());
+    const auto = count(d.doc, null, null, X);
+    assert.deepEqual(nums(auto), [3, 5, 3, 3]);
+    for (const kind of ['footnote', 'endnote']) {
+      for (const m of ['***', EM, '\u2020']) {
+        assert.equal(customMark(d, t, kind, 1, m).changed, true);
+        assert.deepEqual(count(d.doc, null, null, X), auto, kind + m);
+        const a = bodyBlock(d);
+        const sel = S.select({id: a.id, off: 0},
+          {id: a.id, off: a.text.length});
+        assert.deepEqual(nums(count(d.doc, sel, null, X)),
+          nums(auto), 'selection ' + kind + m);
+        customMark(d, t, kind, 1, null);
+        assert.deepEqual(count(d.doc, null, null, X), auto);
+      }
+    }
+  });
+  const bodyBlock = (d) => d.doc.sections[0].blocks[0];
+  it('both notes custom at once, then cleared', async () => {
+    const {d, t} = await setup(fixture());
+    const auto = count(d.doc, null, null, X);
+    customMark(d, t, 'footnote', 1, EM);
+    customMark(d, t, 'endnote', 1, '*');
+    assert.deepEqual(count(d.doc, null, null, X), auto);
+    customMark(d, t, 'footnote', 1, null);
+    customMark(d, t, 'endnote', 1, null);
+    assert.deepEqual(count(d.doc, null, null, X), auto);
+  });
+  it('converting the note keeps the numbers', async () => {
+    const {d, t} = await setup(fixture());
+    const auto = count(d.doc, null, null, X);
+    customMark(d, t, 'footnote', 1, '***');
+    const out = convertNote(d, t, null, 'allFootnotes');
+    assert.ok(out.changed !== false, JSON.stringify(out));
+    assert.deepEqual(count(d.doc, null, null, X), auto);
+  });
+  it('the body-side custom mark stays out too', async () => {
+    const cm = '<w:r><w:footnoteReference w:customMarkFollows="1" ' +
+      'w:id="1"/><w:t>***</w:t></w:r>';
+    const d = await noteDoc(p(r('a') + cm), {1: noteP('b')});
+    assert.deepEqual(nums(count(d, null, null, X)), [2, 3, 2, 2]);
+  });
+  it('a note-free document is not scanned', async () => {
+    const d = await noteDoc(p(r('a b')) + p(r('c')), {});
+    let reads = 0;
+    const blocks = d.sections[0].blocks.map((b) => {
+      const o = Object.create(b);
+      Object.defineProperty(o, 'text', {get() { reads++; return b.text; }});
+      return o;
+    });
+    const dd = {...d, sections: [{...d.sections[0], blocks}]};
+    dd.notes = {...d.notes, footnotes: new Map(), endnotes: new Map()};
+    count(dd, null, null, {});
+    const off = reads;
+    reads = 0;
+    count(dd, null, null, X);
+    assert.equal(reads, off);
+    assert.deepEqual(count(dd, null, null, X), count(dd));
+  });
+  it('custom-mark notes: linear in their number (WORD_PERF=1 for ' +
+    'the time)', async () => {
+    const build = (N) => {
+      const notes = {};
+      let body = '';
+      for (let i = 1; i <= N; i++) {
+        body += p(r('w ') + '<w:r><w:footnoteReference ' +
+          'w:customMarkFollows="1" w:id="' + i + '"/><w:t>***</w:t>' +
+          '</w:r>');
+        notes[i] = p(r('*** some note words'));
+      }
+      return noteDoc(body, notes);
+    };
+    const best = (d) => {
+      let b = Infinity;
+      for (let k = 0; k < 3; k++) {
+        const t0 = performance.now();
+        count(d, null, null, X);
+        b = Math.min(b, performance.now() - t0);
+      }
+      return b;
+    };
+    const small = await build(1000), big = await build(4000);
+    assert.equal(count(small, null, null, X).words, 1000 * 4);
+    const a = best(small), b = best(big);
+    console.log(`# custom notes: 1,000 ${a.toFixed(1)} ms, 4,000 ` +
+      `${b.toFixed(1)} ms, ratio ${(b / a).toFixed(1)}`);
+    // (4 times the notes: about 4 times the time; quadratic is 16)
+    assert.ok(b / a < 9, 'ratio ' + (b / a).toFixed(1));
+    const ten = await build(10000);
+    assert.equal(count(ten, null, null, X).words, 40000);
+    const c = best(ten);
+    console.log(`# custom notes: 10,000 ${c.toFixed(1)} ms`);
+    if (process.env.WORD_PERF) assert.ok(c < 1000, c + ' ms');
   });
 });

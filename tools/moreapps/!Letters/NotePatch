@@ -1,0 +1,224 @@
+// NotePatch - the Footnote and Endnote box's values (./NoteBox)
+// from a document, and the ops they make (Batch E2). Pure: no
+// desktop services; nothing is changed but by run().
+//
+//   fill(doc, sel, kind, scope) -> {pos, numFmt, numStart,
+//       numRestart}  what the box shows for kind 'footnote' |
+//       'endnote' where scope is 'section' (the section holding the
+//       caret: its own settings over the document's, ./NoteOpts
+//       forSection) or 'all' (the document's, NoteOpts read).
+//       Hostile stored values are as NoteOpts reads them (Word's
+//       defaults); an endnote's numRestart eachPage is shown
+//       continuous (Word has no such choice and ./NoteNumbers counts
+//       it so)
+//   patch(doc, sel, values) -> {ops} | {error}
+//       values {scope: 'section' | 'all', footnote?: F, endnote?: F}
+//       F = {pos?, numFmt?, numStart?, numRestart?}: a field left
+//       out, or equal to what fill() gives, is not written. ops are
+//       ./OpsNotes setNoteOpts, in the order to apply them:
+//         section  the caret section's w:footnotePr / w:endnotePr
+//                  only (the changed children; other children and
+//                  the settings are not touched)
+//         all      the settings' w:footnotePr / w:endnotePr with the
+//                  changed children, and every section that gave
+//                  the same child of its own has it removed, so the
+//                  document is the same everywhere (Word's Whole
+//                  document)
+//       {ops: []} when nothing changed. error: text for the box (a
+//       start that is not a whole number from 1 to 16383, a value
+//       the kind has no such choice for, an endnote numbering by
+//       page, no caret, a document with no settings part for Whole
+//       document)
+//   run(d, sel, values) -> {changed} | {error}  patch, then the ops
+//       in one d.atomic (the caller makes it one undo step); no
+//       step when nothing changed
+//   insertRun(d, sel, values, kind, mark) -> {sel, note} | {error}
+//       | null  the box's Insert: patch's ops, a new note of kind at
+//       sel (./NoteCmd insertNote) and, when mark is text (not ''),
+//       that custom mark on it (./NoteCustom customMark), all in one
+//       d.atomic (the caller makes it one undo step). error (nothing
+//       changed): patch's, or why the mark is refused (./NoteCustom
+//       validText); null (nothing changed) when no note could be put
+//       in
+//   modeWhy(hdr) -> string | null  the refusal while view.hdr is set
+//       (the header and footer mode, the notes mode)
+//   POS, NUM_FMTS, RESTARTS  the choices [{id, text}] per kind
+//       (POS, RESTARTS) and for the number format
+import {orderedPos} from './EditPos';
+import * as NO from './NoteOpts';
+import {insertNote} from './NoteCmd';
+import {customMark, validText} from './NoteCustom';
+import {W, wName, isEl} from './Ns';
+
+const FIELDS = ['pos', 'numFmt', 'numStart', 'numRestart'];
+const SLOT = {footnote: 'footnotes', endnote: 'endnotes'};
+
+export const POS = Object.freeze({
+  footnote: Object.freeze([{id: 'pageBottom', text: 'Bottom of page'},
+    {id: 'beneathText', text: 'Below text'}]),
+  endnote: Object.freeze([{id: 'sectEnd', text: 'End of section'},
+    {id: 'docEnd', text: 'End of document'}]),
+});
+export const NUM_FMTS = Object.freeze([
+  {id: 'decimal', text: '1, 2, 3'},
+  {id: 'lowerLetter', text: 'a, b, c'},
+  {id: 'upperLetter', text: 'A, B, C'},
+  {id: 'lowerRoman', text: 'i, ii, iii'},
+  {id: 'upperRoman', text: 'I, II, III'},
+  {id: 'chicago', text: '*, dagger, double dagger, section'}]);
+export const RESTARTS = Object.freeze({
+  footnote: Object.freeze([{id: 'continuous', text: 'Continuous'},
+    {id: 'eachSect', text: 'Restart each section'},
+    {id: 'eachPage', text: 'Restart each page'}]),
+  endnote: Object.freeze([{id: 'continuous', text: 'Continuous'},
+    {id: 'eachSect', text: 'Restart each section'}]),
+});
+
+const MSG = {
+  hdr: 'Leave the header or footer, or the note, first (Escape): ' +
+    'this box sets how the notes are numbered and placed.',
+  nosel: 'There is no caret in the document.',
+  scope: 'Apply changes to: This section or Whole document.',
+  start: 'Start at: a whole number from 1 to ' + NO.MAX_START + '.',
+  settings: 'This document has no settings part: the options of ' +
+    'the whole document cannot be changed. Choose This section.',
+  page: 'Endnotes cannot restart on each page.',
+};
+
+/** See the header. */
+export function modeWhy(hdr) {
+  return hdr ? MSG.hdr : null;
+}
+
+const slotOf = (kind) => (Object.hasOwn(SLOT, kind) ? SLOT[kind]
+  : null);
+
+/** The section index of the caret, or -1. */
+function sectionOf(doc, sel) {
+  const o = sel ? orderedPos(doc, sel) : null;
+  return o && Number.isInteger(o.f.s) ? o.f.s : -1;
+}
+
+/** See the header. */
+export function fill(doc, sel, kind, scope = 'section') {
+  const slot = slotOf(kind);
+  if (!slot) throw new RangeError('bad note kind');
+  let o;
+  if (scope === 'all') o = NO.read(doc);
+  else {
+    const s = sectionOf(doc, sel);
+    o = NO.forSection(doc, doc.sections[s < 0 ? 0 : s]);
+  }
+  const out = {...o[slot]};
+  if (kind === 'endnote' && out.numRestart === 'eachPage')
+    out.numRestart = 'continuous';
+  return out;
+}
+
+/** Whether the section holds a child `name` of its w:<kind>Pr. */
+function owns(sec, kind, name) {
+  const extra = sec && sec.props && Array.isArray(sec.props.extra)
+    ? sec.props.extra : [];
+  const m = new Map([['w', W]]);
+  const pr = extra.find((c) => isEl(c) && wName(c, m) === kind + 'Pr');
+  return !!pr && pr.children.some((c) => isEl(c) &&
+    wName(c, m) === name);
+}
+
+/** The fields of v that differ from now, or {error}. */
+function changed(kind, v, now) {
+  const out = {};
+  if (v === undefined || v === null) return out;
+  for (const f of FIELDS) {
+    if (v[f] === undefined || v[f] === now[f]) continue;
+    if (f === 'numStart' && !(Number.isInteger(v[f]) && v[f] >= 1 &&
+      v[f] <= NO.MAX_START)) return {error: MSG.start};
+    if (f === 'numRestart' && kind === 'endnote' &&
+      v[f] === 'eachPage') return {error: MSG.page};
+    if (f === 'pos' && !POS[kind].some((x) => x.id === v[f]))
+      return {error: 'Not an option of ' + kind + 's: location ' +
+        String(v[f]) + '.'};
+    out[f] = v[f];
+  }
+  try {
+    if (Object.keys(out).length) NO.checkPatch(kind, out);
+  } catch (e) {
+    return {error: 'Not an option of ' + kind + 's: ' + e.message +
+      '.'};
+  }
+  return out;
+}
+
+/** See the header. */
+export function patch(doc, sel, values) {
+  const v = values || {};
+  const s = sectionOf(doc, sel);
+  if (s < 0) return {error: MSG.nosel};
+  if (v.scope !== 'section' && v.scope !== 'all')
+    return {error: MSG.scope};
+  const all = v.scope === 'all';
+  // (a start out of range is refused even when it equals nothing)
+  const plan = [];
+  for (const kind of ['footnote', 'endnote']) {
+    const c = changed(kind, v[kind], fill(doc, sel, kind, v.scope));
+    if (c.error) return c;
+    if (Object.keys(c).length) plan.push([kind, c]);
+  }
+  const ops = [];
+  for (const [kind, c] of plan) {
+    if (!all) {
+      ops.push({op: 'setNoteOpts', level: s, kind, value: c});
+      continue;
+    }
+    if (!doc.rawSettings || !(doc.meta && doc.meta.settingsPart))
+      return {error: MSG.settings};
+    ops.push({op: 'setNoteOpts', level: 'doc', kind, value: c});
+    doc.sections.forEach((sec, i) => {
+      const clear = {};
+      for (const f of Object.keys(c)) if (owns(sec, kind, f))
+        clear[f] = null;
+      if (Object.keys(clear).length)
+        ops.push({op: 'setNoteOpts', level: i, kind, value: clear});
+    });
+  }
+  return {ops};
+}
+
+/** See the header. */
+export function run(d, sel, values) {
+  const r = patch(d.doc, sel, values);
+  if (r.error) return r;
+  if (!r.ops.length) return {changed: false};
+  d.atomic(() => {
+    for (const op of r.ops) d.apply(op);
+  });
+  return {changed: true};
+}
+
+/** See the header. */
+export function insertRun(d, sel, values, kind, mark) {
+  const text = typeof mark === 'string' && mark !== '' ? mark : null;
+  const why = text === null ? null : validText(text);
+  if (why) return {error: why};
+  const r = patch(d.doc, sel, values);
+  if (r.error) return r;
+  const stop = {};
+  let res = null, err = null;
+  try {
+    d.atomic(() => {
+      for (const op of r.ops) d.apply(op);
+      res = insertNote(d, null, sel, kind);
+      if (!res) throw stop;
+      if (text === null) return;
+      const c = customMark(d, null, kind, res.note.id, text);
+      if (c.error) {
+        err = c.error;
+        throw stop;
+      }
+    });
+  } catch (e) {
+    if (e !== stop) throw e;
+    return err === null ? null : {error: err};
+  }
+  return res;
+}

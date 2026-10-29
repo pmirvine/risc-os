@@ -1,0 +1,258 @@
+// EndnoteLayout - the notes that flow after the text (Batch E2):
+// endnotes at the end of the document (pos docEnd) or of their
+// section (sectEnd), and footnotes whose position is one of those,
+// laid out as ordinary flowing items of the galley Print layout
+// paginates (./EndGalley joins them to it).
+//
+//   planOf(doc) -> Map s -> {fn: [id], en: [id]}  the notes shown
+//       after the text of section s (keys ascending; frozen; an
+//       empty Map when none): each note once, at its FIRST mark in
+//       the body (sections, tables in row order; a custom mark
+//       counts, a note's own mark does not), in the marks' order;
+//       a note shown is a normal note of doc.notes (a mark whose
+//       note is not there shows [?], ./NoteNumbers, and has none
+//       here; a note no mark refers to is kept in the file, not
+//       shown). Where: the mark's section's ./NoteOpts forSection
+//       pos: sectEnd that section, docEnd the last. Footnotes only
+//       when that pos is sectEnd or docEnd (Word's UI offers Bottom
+//       of page and Below text; the file may hold the others: they
+//       are placed as endnotes are, under the footnote separator;
+//       to check in real Word). Memoised per Doc state
+//       (./DocVersion, the sections, doc.notes, the settings); a
+//       document with footnotes only, none placed at the end, is not
+//       walked (its sections' settings read once per state)
+//   items(doc, s, opts) -> [Item] (frozen)  the run after section
+//       s's text: for footnotes, then endnotes (a kind with none
+//       placed there gives nothing): its separator (./NoteLayout
+//       sepOf 'separator': a block item), then each note's items
+//       (./NoteLayout layoutNote at opts.width: a paragraph with its
+//       lines, anything else a block never split), stacked from
+//       galley y opts.y0 as the body's are (a note's own gaps; its
+//       first item's space before, its last's space after).
+//     opts  {metrics, width (px), ctx? (./NoteLayout's: decorators,
+//           pics, fields), y0 = 0, index = -0.5 (each item's index:
+//           between the root items around it, ./PageFind rootOf),
+//           tail?: {band, y, gapAbove} the item after the run in the
+//           galley (the next section's first; none at the end): the
+//           band of the break before it (moved to the run's end) and
+//           where it is}
+//     Item  {kind: 'p' | 'box', id ('\u0003' and a key: never a
+//           body id), y, h, gapAbove, gapBelow, lines (a 'p'), s,
+//           index, ci: -1, x, w, block, en}
+//     en    {kind 'footnote' | 'endnote', id (null: a separator),
+//           first (the note's first item), sep (sepOf's, for a
+//           separator), lay (the note's layout, the separator's or
+//           null), src (the item of lay.L it stands for), facts}
+//     facts ./PageGalley facts' shape: no breaks, no refs; keepNext,
+//           keepLines, widow the note paragraph's (./PageKeep
+//           keepOf); a separator keeps with the next; the last
+//           item: band (the tail's) and jump (px, may be negative:
+//           the galley y the next item is moved by, as a band's,
+//           ./PageFill: it stands below the run, after its space)
+//   endHooks(L) -> {ends} | {}  for ./PageGalley galleyOf
+//       (./PageHF printGalley); {} when planOf is empty (a document
+//       with no endnote shown and no footnote placed at the end: its
+//       galley is the body's own, at no cost)
+//     ends  {plan, run(s, y0, index, tail) -> items(...) at section
+//           s's first column's width, with L's metrics and context}
+//
+// Known differences from Word (to check in real Word): no
+// continuation separator nor notice above notes continued on the
+// next page (they flow as text does); in a section of unequal
+// columns the notes are laid out at the FIRST column's width (one
+// width for the run: in a narrower column they may run over its
+// edge); the notes do not wrap round floating pictures or tables
+// (nor are they placed under one: the body's floats are where the
+// body's text puts them). Draft and Web layout show no notes (no
+// pages).
+// Pure: no desktop services; nothing is changed.
+import {layoutNote, sepOf} from './NoteLayout';
+import {marks} from './NoteNumbers';
+import {forSection} from './NoteOpts';
+import {keepOf} from './PageKeep';
+import {versionOf} from './DocVersion';
+
+const KEYS = {footnote: 'footnotes', endnote: 'endnotes'};
+const AT_END = new Set(['sectEnd', 'docEnd']);
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = Object.freeze([]);
+const EMPTY = Object.freeze(new Map());
+const MAX_DEPTH = 64;                  // (tables in tables: a guard)
+
+/** Visit the paragraphs of blocks in order, tables included. */
+function walk(blocks, f, depth) {
+  if (!Array.isArray(blocks)) return;
+  for (const b of blocks) {
+    if (!isObj(b)) continue;
+    if (b.type === 'p') f(b);
+    else if (b.type === 'tbl' && depth < MAX_DEPTH &&
+      Array.isArray(b.rows)) {
+      for (const r of b.rows) {
+        for (const c of isObj(r) && Array.isArray(r.cells)
+          ? r.cells : NONE) walk(c && c.blocks, f, depth + 1);
+      }
+    }
+  }
+}
+
+/** The normal notes of key in doc (a Map), or null for none. */
+function normals(doc, key) {
+  const m = isObj(doc) && isObj(doc.notes) ? doc.notes[key] : null;
+  if (!(m instanceof Map)) return null;
+  for (const n of m.values()) if (n && n.type === 'normal') return m;
+  return null;
+}
+
+/** The plan, worked out (see the header). */
+function work(doc) {
+  const fns = normals(doc, 'footnotes'), ens = normals(doc, 'endnotes');
+  if (!fns && !ens) return EMPTY;
+  const secs = doc.sections, last = secs.length - 1;
+  if (!ens && !secs.some((sec) => AT_END.has(forSection(doc, sec)
+    .footnotes.pos))) return EMPTY;    // (no walk: ./NoteHooks has one)
+  const seen = {footnote: new Set(), endnote: new Set()};
+  const runs = new Map(), opts = [];
+  secs.forEach((sec, s) => {
+    walk(sec && sec.blocks, (p) => {
+      for (const {x} of marks(p)) {
+        const kind = x.note, got = seen[kind];
+        if (got.has(x.id)) continue;
+        got.add(x.id);
+        const m = kind === 'footnote' ? fns : ens;
+        const n = m && m.get(x.id);
+        if (!n || n.type !== 'normal') continue;
+        const o = (opts[s] || (opts[s] = forSection(doc, sec)))[
+          KEYS[kind]];
+        if (!AT_END.has(o.pos)) continue;
+        const at = o.pos === 'sectEnd' ? s : last;
+        let r = runs.get(at);
+        if (!r) runs.set(at, r = {fn: [], en: []});
+        r[kind === 'footnote' ? 'fn' : 'en'].push(x.id);
+      }
+    }, 0);
+  });
+  if (!runs.size) return EMPTY;
+  const out = new Map();
+  for (const s of [...runs.keys()].sort((a, b) => a - b)) {
+    const r = runs.get(s);
+    out.set(s, Object.freeze({fn: Object.freeze(r.fn),
+      en: Object.freeze(r.en)}));
+  }
+  return Object.freeze(out);
+}
+
+const memo = new WeakMap();            // doc -> {ver, secs, ..., plan}
+
+/** See the header. */
+export function planOf(doc) {
+  if (!isObj(doc) || !Array.isArray(doc.sections)) return EMPTY;
+  if (!normals(doc, 'footnotes') && !normals(doc, 'endnotes')) {
+    return EMPTY;                      // (no walk, no settings read)
+  }
+  const ver = versionOf(doc), m = memo.get(doc), secs = doc.sections;
+  if (m && m.ver === ver && m.notes === doc.notes &&
+    m.set === doc.rawSettings && m.secs.length === secs.length &&
+    m.secs.every((x, i) => x === secs[i])) return m.plan;
+  const plan = work(doc);
+  memo.set(doc, {ver, notes: doc.notes, set: doc.rawSettings,
+    secs: [...secs], plan});
+  return plan;
+}
+
+const FACTS = new WeakMap();           // note item -> its facts
+const facts = (keep, band = 0, jump = 0) => Object.freeze({
+  brPage: null, brCol: null, breakBefore: false, band, jump,
+  refs: null, tfloat: null, held: null, keepNext: !!keep.keepNext,
+  keepLines: !!keep.keepLines, widow: keep.widow !== false});
+const SEP_FACTS = facts({keepNext: true});
+
+/** The facts of note item src (laid out with doc's styles). */
+function factsOf(doc, src) {
+  let f = FACTS.get(src);
+  if (!f) {
+    f = src.kind === 'p' && src.block ? facts(keepOf(doc.styles,
+      src.block)) : facts({});
+    FACTS.set(src, f);
+  }
+  return f;
+}
+
+const num = (v) => (Number.isFinite(v) ? v : 0);
+
+/** See the header. */
+export function items(doc, s, opts) {
+  const plan = planOf(doc).get(s);
+  if (!plan) return NONE;
+  const {metrics, width, ctx} = opts;
+  const index = Number.isFinite(opts.index) ? opts.index : -0.5;
+  const out = [];
+  let y = num(opts.y0), bot = y;
+  const put = (o) => {
+    out.push(o);
+    bot = o.y + o.h;
+  };
+  for (const [kind, ids] of [['footnote', plan.fn],
+    ['endnote', plan.en]]) {
+    if (!ids.length) continue;
+    const m = doc.notes[KEYS[kind]];
+    const sep = sepOf(doc, kind, 'separator', width, metrics, ctx);
+    put({kind: 'box', id: '\u0003' + kind + ':sep:' + s, y,
+      h: num(sep.h), gapAbove: 0, gapBelow: 0, lines: null, s, index,
+      ci: -1, x: 0, w: width, block: null, en: {kind, id: null,
+        first: false, sep, lay: sep.lay, src: null, facts: SEP_FACTS}});
+    y = bot;
+    for (const id of ids) {
+      const lay = layoutNote(doc, m.get(id), width, metrics, ctx);
+      const its = lay.L.items;
+      if (!its.length) continue;
+      const top = Math.max(bot, y + num(its[0].gapAbove));
+      its.forEach((src, j) => {
+        const p = src.kind === 'p' && Array.isArray(src.lines) &&
+          src.lines.length > 0;
+        put({kind: p ? 'p' : 'box', id: '\u0003' + kind + ':' + id +
+          ':' + j, y: top + num(src.y) - num(its[0].y), h: num(src.h),
+        gapAbove: num(src.gapAbove), gapBelow: num(src.gapBelow),
+        lines: p ? src.lines : null, s, index, ci: -1, x: src.x,
+        w: src.w, block: src.block || null, en: {kind, id,
+          first: j === 0, sep: null, lay, src,
+          facts: factsOf(doc, src)}});
+      });
+      const e = out[out.length - 1];
+      y = e.y + e.h + Math.max(0, e.gapBelow);
+    }
+  }
+  const t = opts.tail;
+  if (out.length && isObj(t)) {
+    const e = out[out.length - 1], band = Math.max(0, num(t.band));
+    const at = e.y + e.h + Math.max(0, e.gapBelow) +
+      Math.max(0, num(t.gapAbove));
+    const f = e.en.facts;
+    out[out.length - 1] = {...e, en: {...e.en, facts: facts(f,
+      band, num(t.y) - at - band)}};
+  }
+  for (const o of out) {
+    Object.freeze(o.en);
+    Object.freeze(o);
+  }
+  return Object.freeze(out);
+}
+
+/** See the header. */
+export function endHooks(L) {
+  const doc = L.doc, plan = planOf(doc);
+  if (!plan.size) return {};
+  const ctx = {decorators: L.decorators, pics: L.pics,
+    fields: L.fields};
+  const ws = [];
+  const widthOf = (s) => {
+    if (ws[s] === undefined) {
+      const g = L.geom(s) || L.geom(0);
+      ws[s] = !g ? L.textW : g.cols && g.cols[0] ? g.cols[0].w
+        : g.textW;
+    }
+    return ws[s];
+  };
+  const run = (s, y0, index, tail) => items(doc, s, {metrics:
+    L.metrics, width: widthOf(s), ctx, y0, index, tail});
+  return {ends: {plan, run}};
+}

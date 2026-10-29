@@ -1,0 +1,148 @@
+// NoteView - where a footnote or endnote is on Print layout's pages,
+// for editing it in the window's notes mode (Batch E2, ./NoteEdit).
+//
+//   spotOf(B, {kind, id}, i?) -> {i, x, y, s, lay} | null  where body
+//       layout B's pages (B.place a ./PlacePrint) show the note's
+//       start: the page i and the point (page px) its layout's
+//       top-left corner (lay.x, lay.y: ./NoteLayout layoutNote's) is
+//       drawn at, its section s and that layout. A footnote at the
+//       foot of a page: its first piece (from line 0) in pg.notes
+//       (./NotePlace), drawn at the left margin (./PagePaint feet);
+//       a note in a run after the text (endnotes, footnotes placed
+//       at the end: ./EndnoteLayout) its first item's fragment
+//       (./PagePaint ends). Pages are looked at from page i (else
+//       the page of the note's first mark, ./NotePick markOf), then
+//       from the first; null when no page shows it (no mark, no
+//       pages, a Draft or Web layout)
+//   noteAt(B, x, y) -> {kind, id, i} | null  the note shown at
+//       layout point (x, y) of B (Print layout), on the page there
+//       (./PageSheet near): a footnote's piece (the text width, the
+//       piece's lines), a run's note fragment (its frame's width,
+//       its lines); separators and the continuation notice are none
+//   bandsOf(B, i) -> [{x, y, w, h}]  the parts of page i (page px)
+//       that show notes: the foot (pg.notes) and each run fragment
+//       (./HdrPaint's dimming leaves them clear: ./NoteEdit paint)
+// A note cut over pages (a footnote continued, an endnote's run
+// going on) is edited where it starts: its later pieces show as
+// laid out, the caret on them is drawn below the first.
+// Pure: no desktop services; nothing is changed.
+import {markOf} from './NotePick';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = Object.freeze([]);
+
+/** The run fragments of page pg: [{f, fr, it}] of note items. */
+function runFrags(P, pg) {
+  const out = [], items = P.G && P.G.items;
+  if (!items) return out;
+  for (const fr of pg.frames || NONE) {
+    fr.frags.forEach((f, j) => {
+      const it = f.en ? items[fr.start.k + j] : null;
+      if (it && it.en) out.push({f, fr, it});
+    });
+  }
+  return out;
+}
+
+/** The page y span of fragment f of item it ([y0, y1)), in fr. */
+function fragSpan(f, fr, it) {
+  const ls = it.lines;
+  let y0 = f.y, y1 = f.y + it.h;
+  if (ls && f.l1 > f.l0) {
+    y0 = f.y + ls[f.l0].y;
+    y1 = f.y + ls[f.l1 - 1].y + ls[f.l1 - 1].h;
+  }
+  return [Math.max(y0, fr.y), Math.min(y1, fr.y + fr.h)];
+}
+
+/** Where page i shows note key's start, or null. */
+function onPage(P, i, key) {
+  const pg = P.at(i);
+  if (!pg || pg.blank) return null;
+  const G = P.G, f = pg.notes;
+  if (key.kind === 'footnote' && f && G.notes) {
+    const geo = G.geom(pg.s);
+    for (const pc of f.pieces) {
+      if (pc.id !== key.id || pc.from !== 0) continue;
+      const lay = G.notes.note(pc.id, pc.s);
+      if (!lay || !geo) continue;
+      return {i, x: Math.round(geo.mar.left), y: Math.round(pg.bodyTop +
+        f.y) + Math.round(pc.y), s: pc.s, lay};
+    }
+  }
+  for (const {f: fg, it} of runFrags(P, pg)) {
+    const x = it.en;
+    if (!x.first || x.kind !== key.kind || x.id !== key.id || !x.lay ||
+      !x.src) continue;
+    return {i, x: x.lay.x + Math.round(fg.x - x.src.x),
+      y: x.lay.y + Math.round(fg.y - x.src.y), s: it.s || 0,
+      lay: x.lay};
+  }
+  return null;
+}
+
+/** See the header. */
+export function spotOf(B, key, i0) {
+  const P = B && B.place && B.place.pages;
+  if (!P || !isObj(key)) return null;
+  const tried = new Set();
+  const look = (from) => {
+    for (let k = Math.max(0, from); P.at(k); k++) {
+      if (tried.has(k)) return null;
+      tried.add(k);
+      const s = onPage(P, k, key);
+      if (s) return s;
+    }
+    return null;
+  };
+  if (Number.isInteger(i0) && i0 >= 0) {
+    const s = P.at(i0) ? onPage(P, i0, key) : null;
+    if (s) return s;
+  }
+  const m = markOf(B.doc, key);
+  const at = m ? P.ofPos(m) : 0;
+  return look(at >= 0 ? at : 0) || look(0);
+}
+
+/** See the header. */
+export function noteAt(B, x, y) {
+  const Pl = B && B.place, P = Pl && Pl.pages;
+  if (!P || !Pl.sheet || !Number.isFinite(x) || !Number.isFinite(y))
+    return null;
+  const i = Pl.sheet.near(y), pg = i >= 0 ? P.list[i] : null;
+  if (!pg || pg.blank) return null;
+  const r = Pl.sheet.rect(pg), px = x - r.x, py = y - r.y;
+  const f = pg.notes, geo = P.G.geom(pg.s);
+  if (f && geo) {
+    const x0 = geo.mar.left, y0 = Math.round(pg.bodyTop + f.y);
+    for (const pc of f.pieces) {
+      const a = y0 + Math.round(pc.y);
+      if (px >= x0 && px <= x0 + geo.textW && py >= a &&
+        py < a + pc.h) return {kind: 'footnote', id: pc.id, i};
+    }
+  }
+  for (const {f: fg, fr, it} of runFrags(P, pg)) {
+    if (it.en.id === null || it.en.id === undefined) continue;
+    const [a, b] = fragSpan(fg, fr, it);
+    if (px >= fr.x && px <= fr.x + fr.w && py >= a && py < b)
+      return {kind: it.en.kind, id: it.en.id, i};
+  }
+  return null;
+}
+
+/** See the header. */
+export function bandsOf(B, i) {
+  const P = B && B.place && B.place.pages;
+  const pg = P ? P.list[i] : null;
+  if (!pg || pg.blank) return [];
+  const out = [], f = pg.notes;
+  if (f && f.pieces.length) {
+    out.push({x: 0, y: Math.round(pg.bodyTop + f.y), w: pg.w,
+      h: Math.ceil(f.h)});
+  }
+  for (const {f: fg, fr, it} of runFrags(P, pg)) {
+    const [a, b] = fragSpan(fg, fr, it);
+    if (b > a) out.push({x: fr.x, y: a, w: fr.w, h: b - a});
+  }
+  return out;
+}

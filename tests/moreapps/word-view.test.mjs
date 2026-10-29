@@ -218,12 +218,17 @@ describe('formatting on the screen', () => {
   });
   it('other kept items still show a box', async () => {
     for (const el of ['<w:r><w:drawing/></w:r>', '<w:r><w:pict/></w:r>',
-      '<w:r><w:footnoteReference w:id="1"/></w:r>',
       '<w:r><w:commentReference w:id="1"/></w:r>',
       '<w:r><w:sym w:font="Wingdings" w:char="F04A"/></w:r>']) {
       const it = lay(await doc(p(r('a') + el))).lines[0].items;
       assert.deepEqual(it.map((x) => x.kind), ['text', 'box'], el);
     }
+  });
+  it('a footnote mark is plain text (# without a layout), not a box', async () => {
+    const it = lay(await doc(p(r('a') +
+      '<w:r><w:footnoteReference w:id="1"/></w:r>'))).lines[0].items;
+    assert.deepEqual(it.map((x) => [x.kind, x.text]),
+      [['text', 'a'], ['text', '#']]);
   });
   it('only hyperlinks are links; other wrappers are plain text',
     async () => {

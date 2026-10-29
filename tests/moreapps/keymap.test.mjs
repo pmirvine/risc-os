@@ -275,7 +275,7 @@ describe('Keymap: formatting rows', () => {
     assert.equal(k.lookup({code: 45, key: '-', ctrl: true}), 'm');
     assert.equal(k.lookup({code: 48, key: '0', ctrl: true}), 'z');
     assert.equal(k.lookup({code: 32, key: ' ', shift: true}), 's');
-    for (const bad of ['Ctrl+', 'Ctrl+Space+', 'Alt+B', 'Ctrl+F13',
+    for (const bad of ['Ctrl+', 'Ctrl+Space+', 'Meta+B', 'Ctrl+F13',
       'F0', 'F13', 'Ctrl+é'])
       assert.throws(() => new Keymap().bind([{id: 'x', keys: [bad]}]),
         bad);
@@ -330,7 +330,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
       ['F2', {ctrl: true, alt: true}], ['s', {alt: true}],
       ['s', {ctrl: true, alt: true}],
       ['n', {ctrl: true, shift: true}], ['s', {}], ['n', {}],
-      ['f', {}], ['g', {}], ['h', {}], ['f', {ctrl: true, alt: true}],
+      ['f', {}], ['g', {}], ['h', {}], ['g', {ctrl: true, alt: true}],
       ['h', {ctrl: true, shift: true}], ['F4', {shift: true}],
       ['F4', {ctrl: true}]]) {
       assert.equal(id(key, mods), null, key + JSON.stringify(mods));
@@ -392,7 +392,25 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
   it('WINDOW lists the window commands', () => {
     assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
       'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
-      'saveBox', 'sendToBack', 'fieldCodes', 'styleList'].sort());
+      'saveBox', 'sendToBack', 'fieldCodes', 'styleList', 'footnote',
+      'endnote', 'nextNote', 'prevNote'].sort());
+  });
+  it('Alt rows: Ctrl+Alt+F and D, Alt+Down and Up, by the key\'s ' +
+    'place when the browser gives it (Batch E2)', () => {
+    const k = (key, mods, code) => keymap.lookup({code: key.length === 1
+      ? key.charCodeAt(0) : 0, key, ...mods,
+    domEvent: code ? {code} : undefined});
+    assert.equal(k('f', {ctrl: true, alt: true}), 'footnote');
+    assert.equal(k('d', {ctrl: true, alt: true}), 'endnote');
+    // (a Mac's Option makes another character: the place decides)
+    assert.equal(k('\u0192', {ctrl: true, alt: true}, 'KeyF'),
+      'footnote');
+    assert.equal(k('ArrowDown', {alt: true}), 'nextNote');
+    assert.equal(k('ArrowUp', {alt: true}, 'ArrowUp'), 'prevNote');
+    assert.equal(k('f', {alt: true}), null);
+    assert.equal(k('ArrowDown', {}), null, 'Down is a move: ./Keys');
+    assert.equal(keymap.labelFor('footnote'), 'Ctrl+Alt+F');
+    assert.equal(keymap.row('nextNote').menu, 'Window');
   });
   it('function key names bind: F1..F12 with Ctrl and Shift', () => {
     const k = new Keymap().bind([{id: 'a', keys: ['F1']},

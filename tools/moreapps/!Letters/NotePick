@@ -1,0 +1,117 @@
+// NotePick - which footnote or endnote (Batch E2): the notes in the
+// order of their marks, a note's mark, the mark under a point, for
+// the notes mode (./NoteEdit, ./NoteMode).
+//
+//   noteList(doc) -> [{kind, id, pid, off, custom}]  every normal
+//       note of doc.notes that a mark in the body names, once, at its
+//       FIRST mark (sections, tables in row order; a custom mark
+//       counts, a note's own does not: ./NoteNumbers marks);
+//       custom: the text of the first mark of the note that has some
+//       (./NoteCustom customOf's answer), else null. Footnotes and
+//       endnotes together in the order of their marks: Word's
+//       Next / Previous footnote order. Memoised per Doc state
+//       (./DocVersion, the sections, doc.notes)
+//   markOf(doc, {kind, id}) -> {id, off} | null  the body position
+//       of that note's first mark (pid, off: the mark is the
+//       character at off), null when no mark names it
+//   stepFrom(doc, {kind, id}, d) -> {kind, id} | null  the note
+//       after (d 1) or before (d -1) it in noteList; null at either
+//       end (no wrapping: Word's Next footnote stops at the last).
+//       A note not in the list: the first (d 1) or last (d -1)
+//   markAt(L, pos, x) -> {kind, id} | null  the mark whose character
+//       holds layout x, at or before position pos of the body (a hit
+//       test's: ./DocLayout hitTest pos), whose note is a normal note
+//       of L.doc: the character at pos.off or the one before it, x
+//       between its caret edges (L.caretRect)
+// Pure: no desktop services; nothing is changed.
+import {marks} from './NoteNumbers';
+import {scan} from './Walk';
+import {versionOf} from './DocVersion';
+import {OBJ} from './Model';
+import {findBlock} from './EditPos';
+
+const SLOTS = {footnote: 'footnotes', endnote: 'endnotes'};
+const isObj = (v) => v !== null && typeof v === 'object';
+const memo = new WeakMap();           // doc -> {ver, secs, notes, list}
+const NONE = Object.freeze([]);
+
+/** The normal note kind/id of doc, or null. */
+function noteIn(doc, kind, id) {
+  const n = isObj(doc) && isObj(doc.notes) &&
+    Object.hasOwn(SLOTS, kind) ? doc.notes[SLOTS[kind]] : null;
+  const x = n instanceof Map ? n.get(id) : null;
+  return isObj(x) && x.type === 'normal' ? x : null;
+}
+
+/** See the header. */
+export function noteList(doc) {
+  const secs = isObj(doc) && Array.isArray(doc.sections)
+    ? doc.sections : NONE;
+  const ver = versionOf(doc), m = memo.get(doc);
+  if (m && m.ver === ver && m.notes === doc.notes &&
+    m.secs.length === secs.length &&
+    m.secs.every((x, i) => x === secs[i])) return m.list;
+  const list = [], seen = new Map();
+  scan(doc, (b) => {
+    if (!isObj(b) || b.type !== 'p') return;
+    for (const {x, off} of marks(b)) {
+      const k = x.note + ':' + x.id;
+      let e = seen.get(k);
+      if (e === undefined) {
+        if (!noteIn(doc, x.note, x.id)) continue;
+        e = {kind: x.note, id: x.id, pid: b.id, off, custom: null};
+        seen.set(k, e);
+        list.push(e);
+      }
+      if (e.custom === null && typeof x.custom === 'string') {
+        e.custom = x.custom;
+      }
+    }
+  });
+  for (const e of list) Object.freeze(e);
+  Object.freeze(list);
+  if (isObj(doc)) memo.set(doc, {ver, secs: [...secs],
+    notes: doc.notes, list});
+  return list;
+}
+
+const same = (a, k) => a.kind === k.kind && a.id === k.id;
+
+/** See the header. */
+export function markOf(doc, key) {
+  const x = isObj(key) ? noteList(doc).find((a) => same(a, key))
+    : null;
+  return x ? {id: x.pid, off: x.off} : null;
+}
+
+/** See the header. */
+export function stepFrom(doc, key, d) {
+  const list = noteList(doc);
+  if (!list.length) return null;
+  const i = isObj(key) ? list.findIndex((a) => same(a, key)) : -1;
+  const j = i < 0 ? (d > 0 ? 0 : list.length - 1) : i + (d > 0 ? 1
+    : -1);
+  const x = list[j];
+  return x ? {kind: x.kind, id: x.id} : null;
+}
+
+/** See the header. */
+export function markAt(L, pos, x) {
+  const doc = L && L.doc;
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  if (!loc || loc.story || loc.b.type !== 'p') return null;
+  const p = loc.b;
+  for (const off of [pos.off, pos.off - 1]) {
+    if (off < 0 || off >= p.text.length || p.text[off] !== OBJ)
+      continue;
+    const m = p.inlines[off];
+    if (!isObj(m) || m.kind !== 'noteRef' || m.self ||
+      !noteIn(doc, m.note, m.id)) continue;
+    const a = L.caretRect({id: p.id, off}, 'down');
+    const b = L.caretRect({id: p.id, off: off + 1}, 'up');
+    if (!a || !b) continue;
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+    if (x >= x0 - 1 && x <= x1 + 1) return {kind: m.note, id: m.id};
+  }
+  return null;
+}

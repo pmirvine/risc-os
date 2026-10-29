@@ -7,7 +7,7 @@
 //       its fragments there (one a frame: two for a paragraph going
 //       on into the next column)
 //   pagesOf(P, i, k) -> [a, b]  the pages root item k shows on,
-//       around page i
+//       around page i (k P.G's index: ./EndGalley rootK of its ci)
 //   canonOn(L, P, i, cur) -> {ch, after}  the start of page i: each
 //       of its paragraphs keeps only the parts (cur: the wrap's Map
 //       id -> parts) for the pages before i that it shows on (ch:
@@ -48,6 +48,7 @@
 // Pure: no desktop services.
 import {relExcl, exclSig, r2, EPS} from './LineShape';
 import {keyOf} from './ColMemo';
+import {rootK, runsOf} from './EndGalley';
 import {guessed, guess, sigOf, NO_DY} from './WrapGuess';
 import {cellWant, cellView} from './WrapCells';
 
@@ -57,8 +58,8 @@ const NONE = Object.freeze([]);
 const NO_KEYS = new Map();
 
 /** The item of fragment f (index j) of frame fr. */
-function itemOf(L, fr, f, j) {
-  const it = L.items[fr.start.k + j];
+function itemOf(L, P, fr, f, j) {
+  const it = P.G.items[fr.start.k + j];
   return it && it.id === f.id ? it : L.byId.get(f.id);
 }
 
@@ -67,7 +68,7 @@ export function onPage(L, P, i) {
   const out = [], at = new Map();
   for (const fr of P.framesOf(P.list[i])) {
     fr.frags.forEach((f, j) => {
-      const it = itemOf(L, fr, f, j);
+      const it = itemOf(L, P, fr, f, j);
       if (!it || it.kind !== 'p' || it.col !== L.root || !it.lines ||
         !it.lines.length || !(f.l0 < f.l1)) return;
       let e = at.get(it.id);
@@ -97,7 +98,7 @@ function keysIn(L, P, a, b) {
   const s = new Set();
   for (let p = a; p <= b; p++) {
     const pg = P.at(p);
-    if (pg) s.add(keyOf(L, pg));
+    if (pg) s.add(keyOf(P.G, pg));
   }
   return s;
 }
@@ -114,10 +115,10 @@ function split(L, P, i, it, cur, a, b) {
 
 /** See the header. */
 export function viewOf(L, P, i, cur, ps) {
-  const out = new Map();
+  const out = new Map(), runs = runsOf(P.G);
   for (const {it} of ps) {
     const all = cur.get(it.id) || NONE;
-    const [a, b] = pagesOf(P, i, it.ci);
+    const [a, b] = pagesOf(P, i, rootK(runs, it.ci));
     const later = b > i ? split(L, P, i, it, cur, a, b)[1] : NONE;
     out.set(it.id, sigOf(all.filter((x) => !later.includes(x))));
   }
@@ -127,10 +128,10 @@ export function viewOf(L, P, i, cur, ps) {
 
 /** See the header. */
 export function canonOn(L, P, i, cur) {
-  const ch = new Map(), after = new Map();
+  const ch = new Map(), after = new Map(), runs = runsOf(P.G);
   for (const {it} of onPage(L, P, i)) {
     const ps = cur.get(it.id) || NONE;
-    const [a, b] = pagesOf(P, i, it.ci);
+    const [a, b] = pagesOf(P, i, rootK(runs, it.ci));
     const [keep] = split(L, P, i, it, cur, a, b);
     if (keep.length !== ps.length) {
       ch.set(it.id, keep.length ? Object.freeze(keep) : null);
@@ -168,7 +169,7 @@ function partOn(pk, ls, fr, T, cut, ex, top) {
 
 /** See the header. */
 export function wantOn(L, P, i, cur, keys) {
-  const pg = P.list[i], pk = keyOf(L, pg), fl = P.floatsOf(pg);
+  const pg = P.list[i], pk = keyOf(P.G, pg), fl = P.floatsOf(pg);
   const ps = onPage(L, P, i), tops = new Map(), dyOf = new Map();
   for (const {it, fs: [{fr, f}]} of ps) {
     tops.set(it.id, {y: f.y + it.lines[f.l0].y, bot: fr.y + fr.h});
@@ -176,19 +177,21 @@ export function wantOn(L, P, i, cur, keys) {
   const base = guessed(fl, pg.h, NO_DY, 0, tops);
   const ch = new Map(), after = new Map();
   let shift = 0, fr0 = null, moved = false, k0 = pg.start.k - 1;
+  const G = P.G, runs = runsOf(G);
   for (const {it, fs} of ps) {
     if (fs[0].fr !== fr0) {
       fr0 = fs[0].fr;
       shift = 0;
     }
     // (a floating table's flow place before it moves as it does)
-    for (let k = k0 + 1; k < it.ci; k++) {
-      if (L.items[k].kind === 'tbl') dyOf.set(L.items[k].id, shift);
+    const kg = rootK(runs, it.ci);
+    for (let k = k0 + 1; k < kg; k++) {
+      if (G.items[k].kind === 'tbl') dyOf.set(G.items[k].id, shift);
     }
-    k0 = it.ci;
+    k0 = kg;
     dyOf.set(it.id, shift);
     const ex = moved ? guessed(fl, pg.h, dyOf, shift, tops) : base;
-    const [a, b] = pagesOf(P, i, it.ci);
+    const [a, b] = pagesOf(P, i, rootK(runs, it.ci));
     const [keep, later] = split(L, P, i, it, cur, a, b);
     const cut = a < b || fs.length > 1, key = keys.get(it.id) || '';
     const mine = (ls, x) => fs.map(({fr, f}) => partOn(pk, ls, fr,

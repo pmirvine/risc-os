@@ -2,11 +2,15 @@
 // cuts into pages (Batch D, D5).
 //
 //   galleyOf(L, hooks?) -> G = {items, geom(s), geomTw(s), sect(s),
-//       facts(k), hdrH(s, type), ftrH(s, type), reserve(frame, refs)
-//       (, typeOf, refOf, layoutOf: hooks')}
+//       facts(k), hdrH(s, type), ftrH(s, type) (, typeOf, refOf,
+//       layoutOf, notes: hooks'; runs)}
 //     items    L.items, read when asked (a getter, as dirtyFrom:
 //              a G made before L.layout, or an L laid out again in
-//              place, sees L's items now; review M3)
+//              place, sees L's items now; review M3); with hooks'
+//              ends (./EndnoteLayout endHooks: notes that flow after
+//              the text) L.items and the runs of those notes,
+//              ./EndGalley mergeOf (G.runs its runs): an index of
+//              G is then L's only before the first run
 //     geom(s)  L.geom(s): px; geomTw(s) ./SectGeom geomOf's twips
 //              (./LayoutGeom geomTwAt: shared as L.geom's)
 //     sect(s)  {type, pgNumType, vAlign, sep, lnNumType}: the w:type
@@ -30,7 +34,9 @@
 //                      ./WrapPage: P12a fix C1)
 //              band    px of its gapBelow that is a section break's
 //                      band (./SectDeco bandOf: BAND), else 0
-//              refs    null (footnote references: Batch E)
+//              refs    the footnote marks on its lines, hooks'
+//                      refsOf(G, it) ([{line, id}], ./NoteHooks),
+//                      else null
 //              tfloat  a root table's ./TblFloat floatOf when L
 //                      lays out floats (Print layout, L.floats) and
 //                      it is understood (unknown false), else null:
@@ -45,10 +51,18 @@
 //                      'k:', ./WrapPage, P12a fix I3); a
 //                      table's keepNext ./PageKeep keepTable; else
 //                      off (widow on)
-//     hooks    {hdrH, ftrH, reserve}: 0 when not given; typeOf,
-//              refOf, layoutOf: on G only when given (headers and
-//              footers: ./PageHF hfHooks, printGalley; footnotes:
-//              Batch E)
+//     hooks    {hdrH, ftrH}: 0 when not given; typeOf, refOf,
+//              layoutOf, notes: on G only when given (headers and
+//              footers: ./PageHF hfHooks, printGalley; footnotes
+//              ./NoteHooks noteHooks: notes, ./NotePlace's G.notes,
+//              which pages a galley with notes by its own fills,
+//              and refsOf, read by facts). Batch D's per-item
+//              reserve hook (D36) is gone: the room footnotes take
+//              is the page's, ./NotePlace settle; ends (the notes
+//              after the text, ./EndnoteLayout endHooks): items. A
+//              run's item's facts are its own (en.facts: jump, the
+//              signed px the galley moves by after a run that a
+//              section follows, as a band, ./PageFill)
 //     dirtyFrom, cleanFrom  L's (./DocItems; read when asked, so
 //              after L.layout): what ./Pages may reuse (D7)
 //     byId     L.byId (every item by id, at every depth: ./Pages
@@ -63,6 +77,7 @@ import {flowDeco, flowMark, breaksBefore, stylesOf}
 import {keepOf, keepTable} from './PageKeep';
 import {COLUMN_LABEL} from './BreakMarks';
 import {floatOf} from './TblFloat';
+import {mergeOf} from './EndGalley';
 
 const zero = () => 0;
 const pinOf = (L, it) => (L.wrap && L.wrap.pins &&
@@ -93,8 +108,15 @@ export function galleyOf(L, hooks = {}) {
   const doc = L.doc, secs = doc.sections || [];
   const marks = (L.decorators || []).includes(flowDeco);
   const facts = new WeakMap(), sects = new Map();
+  const refsOf = hooks.refsOf || null;
+  const ends = hooks.ends || null;
+  const merged = () => mergeOf(L, ends, (k) => {
+    const m = bandOf(L.items[k]);
+    return m ? m.h : 0;
+  });
+  const itemsOf = ends ? () => merged().items : () => L.items;
   const G = {
-    get items() { return L.items; },
+    get items() { return itemsOf(); },
     geom: (s) => L.geom(s),
     geomTw: (s) => geomTwAt(L, s),
     sect(s) {
@@ -114,8 +136,9 @@ export function galleyOf(L, hooks = {}) {
       return x;
     },
     facts(k) {
-      const it = L.items[k];
+      const it = itemsOf()[k];
       if (!it) return null;
+      if (it.en) return it.en.facts;
       let f = facts.get(it);
       if (!f) {
         const p = it.kind === 'p';
@@ -129,7 +152,7 @@ export function galleyOf(L, hooks = {}) {
           breakBefore: p && (marks ? !!flowMark(it)
             : breaksBefore(doc.styles, it.block)) ||
             /^[^k]/.test(pinOf(L, it)),
-          band: m ? m.h : 0, refs: null,
+          band: m ? m.h : 0, refs: refsOf ? refsOf(G, it) : null,
           tfloat: tf && !tf.unknown ? tf : null,
           held: (tf && L.wrap && L.wrap.tys &&
             L.wrap.tys.get(it.id)) || null, ...kp,
@@ -140,10 +163,11 @@ export function galleyOf(L, hooks = {}) {
     },
     hdrH: hooks.hdrH || zero,
     ftrH: hooks.ftrH || zero,
-    reserve: hooks.reserve || zero,
     ...(hooks.typeOf ? {typeOf: hooks.typeOf} : {}),
     ...(hooks.refOf ? {refOf: hooks.refOf} : {}),
     ...(hooks.layoutOf ? {layoutOf: hooks.layoutOf} : {}),
+    ...(hooks.notes ? {notes: hooks.notes} : {}),
+    ...(ends ? {get runs() { return merged().runs; }} : {}),
     get dirtyFrom() { return L.dirtyFrom; },
     get cleanFrom() { return L.cleanFrom; },
     get byId() { return L.byId; },

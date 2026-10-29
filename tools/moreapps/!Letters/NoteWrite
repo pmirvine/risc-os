@@ -1,0 +1,192 @@
+// NoteWrite - the footnotes and endnotes NOTES (./NoteRead) written
+// back.
+//
+//   notesTree(doc, kind) -> element | null
+//     kind 'footnotes' or 'endnotes' (else RangeError). The part's
+//     root (doc.notes.root[kind]: its name and attributes,
+//     namespace declarations included; xmlns:w added when missing,
+//     a w bound to another URI refused: DocxError 'unsupported')
+//     around the notes in doc.notes.order[kind], with the nodes of
+//     doc.notes.raw[kind] put back at their places. A note whose
+//     blocks still equal its orig (element by element, or deep-
+//     equal: an edit undone gives new objects) and whose id and type
+//     are the ones read is written as its node, verbatim; any other
+//     is written from its blocks by the body's writers (./WritePara
+//     paraNode, ./TblWrite tblNode, an Opaque block's node as it
+//     is; an empty note gets one empty w:p, which CT_FtnEdn needs)
+//     inside its node's name and attributes (unknown ones kept; w:id
+//     and w:type set only when they differ from the model; a note
+//     with no node: w:footnote / w:endnote with just those). Null
+//     when the part is not modelled (no doc.notes[kind]).
+//   notesOut(doc, map) -> {parts: Map name -> bytes}
+//     every notes part (doc.meta.noteParts) that doc.notes models:
+//     the very bytes read when the notes are untouched (same order,
+//     same notes, same raw nodes, same root and prolog; the check
+//     is per note, then per part), else notesTree written; plus the
+//     part's .rels when the notes' rels changed (./StoryWrite
+//     relsOut). A part the reader could not model is not in the
+//     result: it stays in doc.parts as bytes. `map` is the main
+//     part's scope (./WriteBody docScope): Strict is written Strict.
+//   readNotesOf(doc) -> the Doc's notes, or ./Model emptyNotes()
+//     when a Doc made elsewhere leaves it out
+// Pure: no desktop services.
+import {NS} from './Wml';
+import {rootScope, strictScope, isStrict, scope, wAttr, W} from './Ns';
+import {mapNamespacesCopy} from './NsMap';
+import {paraNode} from './WritePara';
+import {tblNode} from './TblWrite';
+import {xmlBytes} from './WriteParts';
+import {relsOut} from './StoryWrite';
+import {DocxError} from './DocxError';
+import {deepEqual} from './DeepEqual';
+import {emptyNotes} from './Model';
+import {noteId, noteType} from './NoteRead';
+
+const KINDS = new Map([['footnotes', 'footnote'],
+  ['endnotes', 'endnote']]);
+
+/** See the header. */
+export const readNotesOf = (doc) => doc && doc.notes &&
+  typeof doc.notes === 'object' ? doc.notes : emptyNotes();
+
+const same = (a, b) => Array.isArray(a) && Array.isArray(b) &&
+  a.length === b.length &&
+  a.every((x, i) => x === b[i] || deepEqual(x, b[i]));
+
+/** The index of WML attribute `local` of `attrs` in scope `m`. */
+function attrAt(attrs, m, local) {
+  return attrs.findIndex(([n]) => {
+    const i = n.indexOf(':');
+    return i > 0 && n.slice(i + 1) === local &&
+      m.get(n.slice(0, i)) === W;
+  });
+}
+
+function setAttr(attrs, m, pre, local, value) {
+  const i = attrAt(attrs, m, local);
+  if (i >= 0) {
+    if (value === null) attrs.splice(i, 1);
+    else attrs[i] = [attrs[i][0], value];
+  } else if (value !== null) attrs.push([pre + local, value]);
+}
+
+/** True when `n` is written as its node: it is `was` (the note as
+ *  read) or has its id, type, node and blocks. */
+function untouched(n, was) {
+  if (!was || !n.node) return false;
+  if (n === was) return true;
+  return n.id === was.id && n.type === was.type &&
+    n.node === was.node && same(n.blocks, was.orig);
+}
+
+function noteNode(n, m) {
+  const node = n.node;
+  const name = node ? node.name : 'w:' + n.kind;
+  const pre = name.slice(0, name.indexOf(':') + 1);
+  const attrs = node ? node.attrs.map(([a, v]) => [a, v]) : [];
+  const m1 = scope(m, {attrs});
+  if (noteId(wAttr({attrs}, m1, 'id')) !== n.id)
+    setAttr(attrs, m1, pre, 'id', String(n.id));
+  if (noteType(wAttr({attrs}, m1, 'type')) !== n.type) {
+    setAttr(attrs, m1, pre, 'type',
+      n.type === 'normal' ? null : n.type);
+  }
+  const children = n.blocks.map((b) => b.type === 'p'
+    ? paraNode(b, null, m1) : b.type === 'tbl' ? tblNode(b, m1)
+      : b.node);
+  if (!children.length)
+    children.push({name: pre + 'p', attrs: [], children: []});
+  return {name, attrs, children};
+}
+
+/** The root of the part and the scope inside it. */
+function rootOf(notes, slot, strict) {
+  const r = notes.root && notes.root[slot];
+  const root = r ? {name: r.name, attrs: r.attrs.map(([a, v]) =>
+    [a, v])} : {name: 'w:' + slot, attrs: []};
+  const w = root.attrs.find(([a]) => a === 'xmlns:w');
+  if (!w) root.attrs.push(['xmlns:w', NS.w]);
+  else if (w[1] !== NS.w) {
+    throw new DocxError('unsupported', 'the prefix w is bound to ' +
+      w[1] + ', not WordprocessingML');
+  }
+  let m = rootScope(root);
+  if (strict) m = strictScope(m);
+  return {root, m};
+}
+
+function build(notes, slot, strict) {
+  const {root, m} = rootOf(notes, slot, strict);
+  const was = notes.read && notes.read[slot];
+  const wasNotes = was ? was.notes : new Map();
+  const map = notes[slot];
+  const order = (notes.order && notes.order[slot]) || [];
+  const raw = (notes.raw && notes.raw[slot]) || [];
+  const children = [];
+  let k = 0;
+  const flush = (upTo) => {
+    while (k < raw.length && raw[k].at <= upTo)
+      children.push(raw[k++].node);
+  };
+  order.forEach((id, i) => {
+    flush(i);
+    const n = map.get(id);
+    if (n) children.push(untouched(n, wasNotes.get(id)) ? n.node
+      : noteNode(n, m));
+  });
+  flush(Infinity);
+  return {name: root.name, attrs: root.attrs, children};
+}
+
+/** See the header. */
+export function notesTree(doc, kind) {
+  if (!KINDS.has(kind)) throw new RangeError('bad notes kind');
+  const notes = readNotesOf(doc);
+  if (!(notes[kind] instanceof Map)) return null;
+  return build(notes, kind, false);
+}
+
+/** True when the notes of `slot` are exactly as read. */
+function pristine(notes, slot) {
+  const was = notes.read && notes.read[slot];
+  if (!was || !(was.bytes instanceof Uint8Array)) return false;
+  const order = notes.order && notes.order[slot];
+  const raw = (notes.raw && notes.raw[slot]) || [];
+  const root = notes.root && notes.root[slot];
+  const prolog = notes.prolog && notes.prolog[slot];
+  if (!same(order, was.order) || !same(raw, was.raw) ||
+    !deepEqual(root, was.root) || !deepEqual(prolog, was.prolog))
+    return false;
+  const map = notes[slot];
+  if (map.size !== was.notes.size) return false;
+  return order.every((id) => map.has(id) &&
+    untouched(map.get(id), was.notes.get(id)));
+}
+
+/** See the header. */
+export function notesOut(doc, map) {
+  const out = new Map();
+  const notes = readNotesOf(doc);
+  const names = (doc.meta && doc.meta.noteParts) || {};
+  const strict = isStrict(map);
+  for (const slot of KINDS.keys()) {
+    const part = names[slot];
+    if (!part || !(notes[slot] instanceof Map)) continue;
+    const was = notes.read && notes.read[slot];
+    if (pristine(notes, slot)) out.set(part, was.bytes);
+    else {
+      const tree = build(notes, slot, strict);
+      out.set(part, xmlBytes(strict ? mapNamespacesCopy(tree,
+        'toStrict') : tree, notes.prolog && notes.prolog[slot] ||
+        undefined));
+    }
+    const first = [...notes[slot].values()].find((n) =>
+      Array.isArray(n.rels));
+    const rels = first ? first.rels : was && was.rels;
+    const r = relsOut({rels, part,
+      relsPart: first ? first.relsPart : was && was.relsPart},
+    doc.parts);
+    if (r) out.set(r[0], r[1]);
+  }
+  return {parts: out};
+}

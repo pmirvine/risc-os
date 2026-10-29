@@ -1,7 +1,7 @@
 // ClipPaste - Paste and Cut in a document.
 //
 //   pasteBlocks(d, sel, blocks, {sameDoc, styleNames, styles, lists,
-//     pics, picScope}) -> sel
+//     pics, picScope, notes, report}) -> sel
 //   pastePlain(d, sel, text) -> sel       ./Edit.typeText
 //   cutSelection(d, sel) -> {slice, sel}  ./ClipSlice, then deleted
 //                                (a range cutting a field made whole
@@ -73,6 +73,18 @@
 // their basedOn chain (./TblStyleCopy copyStyles: its setDocPart op
 // first, in the same step) and each tblStyle names the target's id.
 //
+// Footnotes and endnotes (Batch E2, ./ClipNotes): every mark the
+// copy carried a note for (opts.notes, ./ClipSlice) gets a new note,
+// a copy, under an id taken now (nextNoteId), in the same step; from
+// another document the notes' styles by Word's name first
+// (styleUp). A mark is dropped (its text around kept) in a note, a
+// header or footer, a kind kept as bytes, with no id free, and
+// when its note did not come: report.marks then says why ('note',
+// 'unknown', 'free'; ./ClipRoute beeps). A note's own mark (its
+// number) is kept only pasted into a note of the same document
+// (./ClipClean toNote). The deleted selection's
+// marks take their notes with them at the step's end (./NoteKeep).
+//
 // pastePlain: the text typed (\n splits paragraphs, controls go:
 // ./Edit), one undo step of its own. Ops go to the caret's path
 // (./EditPos loc.at), in a cell as at top level.
@@ -96,6 +108,7 @@ import {sib, depthOf} from './Path';
 import {fitDepth, overShape, overwrite, landed}
   from './ClipPasteTbl';
 import {relist, styled} from './ClipCarry';
+import {carry, styleUp} from './ClipNotes';
 
 export {deleteSelection};
 
@@ -168,7 +181,10 @@ function kept(list, off) {
 
 /** See the header. */
 export function pasteBlocks(d, sel, blocks, opts = {}) {
-  let list = apart(paired(clean(blocks, d.doc, opts)));
+  const how = {...opts, toNote: d.note !== null && typeof d.note ===
+    'object'};
+  const fit = () => apart(paired(clean(blocks, d.doc, how)));
+  let list = fit();
   if (!list.length) return sel;
   let o = orderedPos(d.doc, sel);
   if (!o) return sel;
@@ -178,6 +194,8 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
   const over = collapsed(sel) ? null : overShape(d.doc, sel, list);
   let out = null;
   d.atomic(() => {
+    // (a style made by name: the blocks mapped to it)
+    if (!opts.sameDoc && styleUp(d, opts)) list = fit();
     let pos = null, loc = null;
     if (!over) {
       pos = collapsed(sel) ? o.from : deleteRange(d, o);
@@ -189,6 +207,7 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
     }
     if (over) list = [landed(d.doc, over, list[0])];
     list = fitDepth(list, over ? depthOf(over.table) : loc.depth);
+    list = carry(d, list, opts);
     if (!opts.sameDoc) {
       if (opts.styles instanceof Map)
         list = styled(d, list, opts.styles);

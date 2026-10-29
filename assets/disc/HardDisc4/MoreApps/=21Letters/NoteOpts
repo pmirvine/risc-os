@@ -1,0 +1,326 @@
+// NoteOpts - how footnotes and endnotes are placed and numbered:
+// the w:footnotePr / w:endnotePr of the settings part (the whole
+// document) and of a section's w:sectPr (that section): read, and
+// the new nodes for an edit (./OpsNotes setNoteOpts).
+//
+//   read(doc) -> {footnotes: Opts, endnotes: Opts}   document level
+//   forSection(doc, s) -> {footnotes: Opts, endnotes: Opts}
+//       the section's own settings laid over the document's: a
+//       field the section does not give stays the document's
+//   Opts {pos, numFmt, numStart, numRestart}
+//   DEFAULTS   Word's: footnotes pageBottom, endnotes docEnd,
+//       decimal, 1, continuous (frozen)
+//
+// pos: footnotes pageBottom | beneathText | sectEnd | docEnd;
+// endnotes sectEnd | docEnd. numFmt: any ./NumFormat NUM_FMTS value.
+// numStart: a whole number 1..16383 (Word's limit). numRestart:
+// continuous | eachSect | eachPage. A value that is not one of
+// these (a bad word, a huge or negative number, nothing) is as if
+// absent: the default, or for a section the document's. The first
+// element of each name counts. Other children of w:footnotePr (the
+// w:footnote separator references...) are never looked at here; an
+// editor of these settings must copy them over as they are.
+// The section's w:footnotePr is in section.props.extra, kept whole.
+//
+// Edits (new objects; the old ones are never changed). kind
+// 'footnote' | 'endnote'; patch {pos?, numFmt?, numStart?,
+// numRestart?}: each a valid value (above) or null (that field
+// removed, every copy of it, so that no later one counts):
+//   checkPatch(kind, patch)  RangeError unless patch is one (own
+//       keys only; at least one)
+//   patchPr(node, kind, patch, map?) -> node | null  the w:<kind>Pr
+//       node (null: none yet) with the patch: a field there takes
+//       the new w:val on its first element (its other attributes
+//       kept), a new one goes in schema order (pos, numFmt,
+//       numStart, numRestart: after the last of those before it,
+//       else first); every other child and attribute kept (the
+//       w:footnote separator references, extensions). Null when
+//       nothing is left (no child, no attribute). map: the scope
+//       around node (default w = WordprocessingML); new elements
+//       take node's prefix
+//   patchDoc(root, kind, patch) -> a new settings root with its
+//       first w:<kind>Pr patched (removed when patchPr gives null),
+//       or a new one put in schema order (CT_Settings: after
+//       w:hdrShapeDefaults and what comes before it, w:endnotePr
+//       after w:footnotePr; else first)
+//   patchSection(section, kind, patch) -> a new section whose
+//       props.extra holds the patched w:<kind>Pr (in place of its
+//       first one, or added at the end: the writer orders a sectPr)
+//   withSeparators(root, kind) -> a new settings root whose
+//       w:<kind>Pr lists the separator notes Word writes there
+//       (<w:footnote w:id="-1"/><w:footnote w:id="0"/>), made when
+//       missing; root itself when it lists any already
+// Pure: no desktop services; nothing is changed.
+import {W, rootScope, scope, wName, wAttr, isEl} from './Ns';
+import {NUM_FMTS} from './NumFormat';
+import {ORDER} from './SettingsEdit';
+
+export const MAX_START = 16383;
+
+const POS = {footnote: ['pageBottom', 'beneathText', 'sectEnd',
+  'docEnd'], endnote: ['sectEnd', 'docEnd']};
+const RESTARTS = ['continuous', 'eachSect', 'eachPage'];
+const KINDS = [['footnotes', 'footnote'], ['endnotes', 'endnote']];
+
+export const DEFAULTS = Object.freeze({
+  footnotes: Object.freeze({pos: 'pageBottom', numFmt: 'decimal',
+    numStart: 1, numRestart: 'continuous'}),
+  endnotes: Object.freeze({pos: 'docEnd', numFmt: 'decimal',
+    numStart: 1, numRestart: 'continuous'}),
+});
+
+const BASE = new Map([['w', W]]);
+
+/** The value of one child `name` of a w:footnotePr, or undefined. */
+function field(note, name, m) {
+  const mm = note.attrs.length ? scope(m, note) : m;
+  const v = wAttr(note, mm, 'val');
+  if (v === undefined) return undefined;
+  if (name === 'numFmt') return NUM_FMTS.includes(v) ? v : undefined;
+  if (name === 'numRestart') return RESTARTS.includes(v) ? v
+    : undefined;
+  if (name === 'numStart') {
+    if (!/^[0-9]{1,6}$/.test(v)) return undefined;
+    const n = +v;
+    return n >= 1 && n <= MAX_START ? n : undefined;
+  }
+  return v;
+}
+
+/** The valid fields of the w:footnotePr / w:endnotePr `node`. */
+function readPr(node, kind, m) {
+  const out = {};
+  const mm = node.attrs.length ? scope(m, node) : m;
+  for (const c of node.children) {
+    if (!isEl(c)) continue;
+    const n = wName(c, mm);
+    if (!['pos', 'numFmt', 'numStart', 'numRestart'].includes(n) ||
+      n in out) continue;
+    let v = field(c, n, mm);
+    if (n === 'pos' && v !== undefined && !POS[kind].includes(v))
+      v = undefined;
+    // the first element counts even when its value is unusable
+    out[n] = v;
+  }
+  for (const k of Object.keys(out)) if (out[k] === undefined)
+    delete out[k];
+  return out;
+}
+
+/** The property element `name` among `nodes`, or null. */
+function findPr(nodes, name, m) {
+  for (const c of nodes || []) {
+    if (isEl(c) && wName(c, m) === name) return c;
+  }
+  return null;
+}
+
+function build(prs) {
+  const out = {};
+  for (const [key] of KINDS) {
+    out[key] = {...DEFAULTS[key]};
+    for (const pr of prs) Object.assign(out[key], pr[key] || {});
+  }
+  return out;
+}
+
+function docLevel(doc) {
+  const root = doc && doc.rawSettings;
+  const res = {};
+  if (!root || !isEl(root)) return res;
+  const m = rootScope(root);
+  for (const [key, kind] of KINDS) {
+    const node = findPr(root.children, kind + 'Pr', m);
+    if (node) res[key] = readPr(node, kind, m);
+  }
+  return res;
+}
+
+/** See the header. */
+export function read(doc) {
+  return build([docLevel(doc)]);
+}
+
+/** See the header. */
+export function forSection(doc, s) {
+  const own = {};
+  const extra = s && s.props && Array.isArray(s.props.extra)
+    ? s.props.extra : [];
+  for (const [key, kind] of KINDS) {
+    const node = findPr(extra, kind + 'Pr', BASE);
+    if (node) own[key] = readPr(node, kind, BASE);
+  }
+  return build([docLevel(doc), own]);
+}
+
+const FIELDS = ['pos', 'numFmt', 'numStart', 'numRestart'];
+const KIND_OF = new Map(KINDS.map(([, kind]) => [kind, kind]));
+const bad = (msg) => {
+  throw new RangeError(msg);
+};
+const isNode = (v) => v !== null && typeof v === 'object' &&
+  typeof v.name === 'string' && Array.isArray(v.attrs) &&
+  Array.isArray(v.children);
+
+/** See the header. */
+export function checkPatch(kind, patch) {
+  if (typeof kind !== 'string' || !KIND_OF.has(kind))
+    bad('bad note kind');
+  if (patch === null || typeof patch !== 'object' ||
+    Array.isArray(patch)) bad('note options must be an object');
+  const keys = Object.keys(patch);
+  if (!keys.length) bad('no note option to set');
+  for (const k of keys) {
+    if (!FIELDS.includes(k)) bad('bad note option ' + k);
+    const v = patch[k];
+    if (v === null) continue;
+    const ok = k === 'pos' ? POS[kind].includes(v)
+      : k === 'numFmt' ? NUM_FMTS.includes(v)
+        : k === 'numRestart' ? RESTARTS.includes(v)
+          : Number.isInteger(v) && v >= 1 && v <= MAX_START;
+    if (!ok) bad('bad ' + k + ' ' + String(v));
+  }
+}
+
+/** The prefix (with its colon) of element name n. */
+const preOf = (n) => n.slice(0, n.indexOf(':') + 1);
+
+/** attrs with the WordprocessingML val (in scope m) set to v. */
+function withVal(attrs, m, pre, v) {
+  let done = false;
+  const out = attrs.map(([k, x]) => {
+    const c = k.indexOf(':');
+    if (done || c < 0 || k.slice(c + 1) !== 'val' ||
+      m.get(k.slice(0, c)) !== W) return [k, x];
+    done = true;
+    return [k, v];
+  });
+  if (!done) out.push([pre + 'val', v]);
+  return out;
+}
+
+/** See the header. */
+export function patchPr(node, kind, patch, map = BASE) {
+  checkPatch(kind, patch);
+  const n = node || {name: 'w:' + kind + 'Pr', attrs: [],
+    children: []};
+  const m = n.attrs.length ? scope(map, n) : map;
+  const pre = preOf(n.name);
+  let kids = n.children.slice();
+  const nameAt = (c) => (isEl(c) ? wName(c, m) : null);
+  for (const f of FIELDS) {
+    if (!Object.hasOwn(patch, f)) continue;
+    const v = patch[f];
+    if (v === null) {
+      kids = kids.filter((c) => nameAt(c) !== f);
+      continue;
+    }
+    const i = kids.findIndex((c) => nameAt(c) === f);
+    if (i >= 0) {
+      const c = kids[i];
+      const cm = c.attrs.length ? scope(m, c) : m;
+      kids[i] = {...c, attrs: withVal(c.attrs, cm, preOf(c.name),
+        String(v))};
+      continue;
+    }
+    const before = FIELDS.slice(0, FIELDS.indexOf(f));
+    let at = 0;
+    kids.forEach((c, k) => {
+      if (before.includes(nameAt(c))) at = k + 1;
+    });
+    kids.splice(at, 0, {name: pre + f, attrs: [[pre + 'val',
+      String(v)]], children: []});
+  }
+  if (!kids.length && !n.attrs.length) return null;
+  return {...n, children: kids};
+}
+
+/** [index of root's first w:<name>, index a new one goes at]. */
+function placeIn(root, m, name) {
+  const after = [...ORDER, 'hdrShapeDefaults'];
+  if (name === 'endnotePr') after.push('footnotePr');
+  let found = -1, at = 0;
+  root.children.forEach((c, i) => {
+    if (!isEl(c) || !Array.isArray(c.attrs)) return;
+    const n = wName(c, m);
+    if (n === name && found < 0) found = i;
+    if (after.includes(n)) at = i + 1;
+  });
+  return [found, at];
+}
+
+/** The prefix bound to WordprocessingML in m, or null. */
+function wPrefix(m) {
+  for (const [k, v] of m) if (k && v === W) return k;
+  return null;
+}
+
+/** root with its w:<kind>Pr given by fn(old node | null, scope,
+ *  prefix) -> node | null. */
+function editDoc(root, kind, fn) {
+  if (!isNode(root)) bad('settings must be a node');
+  const m = rootScope(root);
+  const name = kind + 'Pr';
+  const [i, at] = placeIn(root, m, name);
+  const old = i >= 0 ? root.children[i] : null;
+  let q = wPrefix(m);
+  const decl = q === null;
+  if (decl) for (let k = 0, w = 'w'; ; w = 'w' + ++k) {
+    if (!m.has(w)) {
+      q = w;
+      break;
+    }
+  }
+  const blank = {name: q + ':' + name,
+    attrs: decl ? [['xmlns:' + q, W]] : [], children: []};
+  const next = fn(old, m, blank);
+  if (next === old) return root;
+  const kids = root.children.slice();
+  if (i >= 0) {
+    if (next) kids[i] = next;
+    else kids.splice(i, 1);
+  } else if (next) kids.splice(at, 0, next);
+  return {...root, children: kids};
+}
+
+/** See the header. */
+export function patchDoc(root, kind, patch) {
+  checkPatch(kind, patch);
+  return editDoc(root, kind, (old, m, blank) => {
+    const out = patchPr(old || blank, kind, patch, m);
+    // a new node holding only its xmlns declaration is nothing
+    return !old && out && !out.children.length ? null : out;
+  });
+}
+
+/** See the header. */
+export function patchSection(section, kind, patch) {
+  checkPatch(kind, patch);
+  const props = section && section.props;
+  if (!props || !Array.isArray(props.extra)) bad('not a section');
+  const extra = props.extra.slice();
+  const i = extra.findIndex((c) => isEl(c) &&
+    wName(c, BASE) === kind + 'Pr');
+  const next = patchPr(i >= 0 ? extra[i] : null, kind, patch);
+  if (i >= 0) {
+    if (next) extra[i] = next;
+    else extra.splice(i, 1);
+  } else if (next) extra.push(next);
+  return {...section, props: {...props, extra}};
+}
+
+/** See the header. */
+export function withSeparators(root, kind) {
+  if (typeof kind !== 'string' || !KIND_OF.has(kind))
+    bad('bad note kind');
+  return editDoc(root, kind, (old, m, blank) => {
+    const n = old || blank;
+    const nm = n.attrs.length ? scope(m, n) : m;
+    if (n.children.some((c) => isEl(c) && wName(c, nm) === kind))
+      return old;
+    const pre = preOf(n.name);
+    const ref = (id) => ({name: pre + kind, attrs: [[pre + 'id', id]],
+      children: []});
+    return {...n, children: [...n.children, ref('-1'), ref('0')]};
+  });
+}

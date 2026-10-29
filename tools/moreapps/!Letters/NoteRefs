@@ -1,0 +1,74 @@
+// NoteRefs - the footnote and endnote references the model does not
+// hold as body marks (Batch E2): those in content kept as it was
+// read (a hyperlink, a tracked insertion, a content control, a text
+// box, a raw table...) and every mark in a story (a header's, a
+// note's). Shared by ./NoteConvert (such a note is not converted:
+// its reference could not be renamed with it) and ./NoteKeep (such
+// a note is not removed: a reference still names it).
+//
+//   blockRefs(b, out, all)  the opaque references of block b into
+//       out (a Set of 'kind:id' keys); modelled marks too when all
+//       (a story's blocks: not the body's)
+//   opaqueRefs(doc) -> Set  every such reference of doc: one walk of
+//       the body and of every story (stats.walks counts them)
+//   stats  {walks}
+// Pure: no desktop services.
+import {scan, scanStories} from './Walk';
+
+export const stats = {walks: 0};
+
+const REFS = {footnoteReference: 'footnote',
+  endnoteReference: 'endnote'};
+const KINDS = {footnote: true, endnote: true};
+const MAX_DEPTH = 256;
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const keyOf = (kind, id) => kind + ':' + id;
+const isMark = (x) => isObj(x) && x.kind === 'noteRef' && !x.self &&
+  Object.hasOwn(KINDS, x.note) && Number.isInteger(x.id);
+const localOf = (name) => (typeof name === 'string'
+  ? name.slice(name.indexOf(':') + 1) : '');
+
+/** The note references inside Xml node into out (key set). */
+function refsIn(node, out) {
+  const stack = [[node, 0]];
+  while (stack.length) {
+    const [n, depth] = stack.pop();
+    if (!isObj(n) || typeof n.name !== 'string') continue;
+    const kind = REFS[localOf(n.name)];
+    if (kind && Array.isArray(n.attrs)) {
+      const a = n.attrs.find((e) => Array.isArray(e) &&
+        /(^|:)id$/.test(e[0]));
+      if (a && /^[0-9]{1,10}$/.test(a[1])) out.add(keyOf(kind, +a[1]));
+    }
+    if (Array.isArray(n.children) && depth < MAX_DEPTH) {
+      for (const c of n.children) stack.push([c, depth + 1]);
+    }
+  }
+}
+
+/** See the header. */
+export function blockRefs(b, out, all) {
+  if (!isObj(b)) return;
+  if (b.type !== 'p') {
+    if (b.type !== 'tbl') refsIn(b.node, out);
+    return;
+  }
+  const xs = isObj(b.inlines) ? b.inlines : {};
+  for (const k of Object.keys(xs)) {
+    const x = xs[k];
+    if (!isObj(x)) continue;
+    if (x.kind === 'noteRef') {
+      if (all && isMark(x)) out.add(keyOf(x.note, x.id));
+    } else refsIn(x.node, out);
+  }
+}
+
+/** See the header. */
+export function opaqueRefs(doc) {
+  stats.walks++;
+  const out = new Set();
+  scan(doc, (b) => blockRefs(b, out, false));
+  scanStories(doc, (b) => blockRefs(b, out, true));
+  return out;
+}

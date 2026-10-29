@@ -10,7 +10,8 @@
 // 20 open / close cycles leak nothing.
 // Needs the disc built by tools/disc-wimplib.mjs and disc-moreapps.mjs.
 import { launch, BASE_URL } from '../core/pw.mjs';
-import { buildDocx, documentXml, p, r } from './build-docx.mjs';
+import { buildDocx, documentXml, p, r, REL, W_NS, R_NS } from './build-docx.mjs';
+import { mark, noteP, emark, enoteP, SEPS } from './note-fixtures.mjs';
 
 const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="2000"/></w:tblGrid><w:tr>'
   + '<w:tc><w:p><w:r><w:t>cell one</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>cell two</w:t></w:r></w:p></w:tc></w:tr></w:tbl>';
@@ -25,6 +26,18 @@ const files = {
     p('<w:del w:id="1" w:author="a"><w:r><w:delText>gone words</w:delText></w:r></w:del>' + r('kept')),
   ].join('')) })),
 };
+
+const DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
+const en = (attrs, body) => `<w:endnote ${attrs}>${body}</w:endnote>`;
+const EN_SEPS = en('w:type="separator" w:id="-1"', p('<w:r><w:separator/></w:r>'))
+  + en('w:type="continuationSeparator" w:id="0"', p('<w:r><w:continuationSeparator/></w:r>'));
+files.Cn2 = Array.from(await buildDocx({
+  'word/document.xml': documentXml(p(r('Alpha beta') + mark(1)) + p(r('Last words') + emark(1))),
+  'word/footnotes.xml': DECL + `<w:footnotes xmlns:w="${W_NS}" xmlns:r="${R_NS}">` + SEPS
+    + `<w:footnote w:id="1">${noteP('Old note')}</w:footnote></w:footnotes>`,
+  'word/endnotes.xml': DECL + `<w:endnotes xmlns:w="${W_NS}" xmlns:r="${R_NS}">` + EN_SEPS
+    + en('w:id="1"', enoteP('Old endnote')) + '</w:endnotes>',
+}, { docRels: [['rIdN1', REL('footnotes'), 'footnotes.xml'], ['rIdN2', REL('endnotes'), 'endnotes.xml']] }));
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -155,6 +168,36 @@ try {
   ok('after typing " again now" the count is 15 words', c1.box?.words === '15' && c1.count.words === 15, c1);
   await press('Escape');
   await press('Control+z');
+
+  // ---------------------------------------------------- footnotes and endnotes
+  await ev(async () => {
+    await window.__word().word.open('RAM::RamDisc0.$.Cn2');
+    await window.__frames(3);
+    window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === 'Cn2');
+    window.__doc().win.open({ x: 40, y: 40, w: 640, h: 330, behind: 'top', scrollX: 0, scrollY: 0 });
+    await window.__frames(3);
+  });
+  await sel(0, 0);
+  await open();
+  const n1 = await st();
+  const optOn = () => ev(() => window.__box().get('notes'));
+  ok('a document with a footnote and an endnote: the box counts their text (8 words: 4 + "Old note" + "Old endnote"; 4 paragraphs), the option ticked',
+    n1.box?.words === '8' && n1.box.paras === '4' && (await optOn()) === true, n1);
+  await click(await ev(() => window.__icon('notes')));
+  const n2 = await st();
+  ok('clicking the option off counts the body only (4 words, 2 paragraphs, 20 characters) at once',
+    n2.box?.words === '4' && n2.box.paras === '2' && (await optOn()) === false, n2);
+  await press('Escape');
+  await open();
+  const n3 = await st();
+  ok('asked again: the option is still off (kept), the notes out', n3.box?.words === '4' && (await optOn()) === false, n3);
+  await click(await ev(() => window.__icon('notes')));
+  const n4 = await st();
+  ok('ticked again: the notes are in (8 words)', n4.box?.words === '8' && (await optOn()) === true, n4);
+  ok('... no undo step, not dirty', n4.depth === n1.depth && !n4.dirty, n4);
+  await press('Escape');
+  await ev(async () => { window.__doc().requestClose(); await window.__frames(3); });
+  await ev(() => { window.__doc = () => window.__word()?.word.docs.find((d) => !d.closed && d.leaf === 'Cnt'); });
 
   // ---------------------------------------------------- leaks, and deleted with the document
   const counts = () => ev(() => {

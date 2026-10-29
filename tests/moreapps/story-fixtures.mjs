@@ -13,7 +13,8 @@
 //     relationships rIdH1, rIdF1... in the main rels. titlePg puts
 //     w:titlePg in the sectPr, evenAndOdd w:evenAndOddHeaders in
 //     settings.xml; strict writes every part in the Strict namespaces
-//     (and Strict relationship types); parts: more package parts
+//     (and Strict relationship types); parts: more package parts;
+//     docRels: more main relationships [[id, type, target]]
 //   freeze(x) -> x deep-frozen (objects, arrays, Map values; byte
 //     arrays, which cannot be frozen, are skipped)
 import {buildDocx, documentXml, settingsXml, REL, STRICT_REL, W_NS,
@@ -41,7 +42,7 @@ export function withHeaders(body, hdrs = {}, opts = {}) {
   const ns = strict ? {ns: STRICT_W_NS, rNs: STRICT_R_NS} : {};
   const rel = strict ? STRICT_REL : REL;
   const parts = {...(opts.parts || {})};
-  const docRels = [];
+  const docRels = [...(opts.docRels || [])];
   let refs = '';
   let nh = 0, nf = 0;
   for (const type of TYPES) {

@@ -1,0 +1,184 @@
+// NoteLayout - a footnote or endnote laid out at a width (Batch E2):
+// its blocks laid out by the galley code itself, as a header's story
+// is (./StoryLayout), and the lines a page may cut it between.
+//
+//   layoutNote(doc, note, widthPx, metrics, ctx?) -> {lines, h, L,
+//       x, y}
+//     note   a Note of doc.notes (./NoteRead: its blocks, rels)
+//     ctx    {decorators?, pics?, fields?}: the body layout's
+//            (./StoryLayout ctx); fields.noteNums the numbers by
+//            page (./NoteHooks notePass)
+//     lines  frozen: the bottom of each line of the note (px from
+//            the note's top, the space before its first paragraph
+//            included), in order: a paragraph gives one per line,
+//            a table or a kept block one (never cut)
+//     h      px: the whole note (./StoryLayout's h: from the first
+//            item's space before to the last item's space after)
+//     L, x, y  ./StoryLayout's: the layout to paint, and where in
+//            it the note's top-left corner is
+//     The note's own mark (a self noteRef in its first paragraph)
+//     shows the number of the note's mark in the body (labelOf),
+//     which is part of the memo key. Memoised per note object
+//     (copy-on-write: an edited note is a new one), width and that
+//     label, by ./StoryLayout layoutStory (the same object while
+//     those and the document's styles... are the same)
+//   pieceH(lay, from, to) -> px  lines from..to-1 of a note's
+//       layout: from the bottom of line from - 1 (its top: 0) to the
+//       bottom of line to - 1, or to h when to is the last
+//   labelOf(doc, note, nums?) -> string  the text the note's own mark
+//       shows: nums' number for it (./NoteNumbers numbersByPage),
+//       else ./NoteNumbers labelFor, else ''
+//   sepOf(doc, kind, type, widthPx, metrics, ctx?) -> {h, rule, lay}
+//       | null  the note of that type ('separator',
+//       'continuationSeparator', 'continuationNotice') of kind
+//       'footnote' | 'endnote': the first of doc.notes' of the type
+//     h      its layout's h
+//     rule   px: a separator note holding only the w:separator (or
+//            w:continuationSeparator) mark draws a rule that long
+//            in place of it: RULE_W, or widthPx for the continuation
+//            one (Word's); 0 for any other note (drawn as laid out)
+//     lay    the layout (layoutNote's), null for the default
+//     A missing separator or continuation separator: the default,
+//     {h: SEP_H, rule, lay: null}; a missing notice, or one with no
+//     text (Word's files hold an empty one): null, nothing drawn
+//   RULE_W  192 px (2 inches, Word's separator)
+//   SEP_H   16 px: a default separator's height
+//
+// Assumption, to check in real Word: the rule is drawn 1 px high in
+// the middle of the separator paragraph's height.
+// Pure: no desktop services; nothing is changed.
+import {layoutStory} from './StoryLayout';
+import {labelFor} from './NoteNumbers';
+import {OBJ} from './Model';
+
+export {pieceH} from './NotePlace';  // (the one rule, used there)
+
+export const RULE_W = 192, SEP_H = 16;
+const KEYS = {footnote: 'footnotes', endnote: 'endnotes'};
+const isObj = (v) => v !== null && typeof v === 'object';
+const views = new WeakMap();           // note -> its story view
+const lines = new WeakMap();           // layout -> its lines
+const NONE = Object.freeze([]);
+
+/** Note n as a story (./StoryLayout), one object per note. */
+function viewOf(doc, n) {
+  let v = views.get(n);
+  if (!v) {
+    const parts = isObj(doc.meta) && isObj(doc.meta.noteParts)
+      ? doc.meta.noteParts : {};
+    v = {blocks: Array.isArray(n.blocks) ? n.blocks : NONE,
+      rels: Array.isArray(n.rels) ? n.rels : NONE,
+      part: parts[KEYS[n.kind]] || undefined};
+    views.set(n, v);
+  }
+  return v;
+}
+
+/** The bottoms of the lines of layout out (see the header). */
+function linesOf(out) {
+  let ls = lines.get(out);
+  if (ls) return ls;
+  const a = [];
+  for (const it of out.L.items) {
+    if (it.kind === 'p' && it.lines && it.lines.length) {
+      for (const l of it.lines) a.push(it.y + l.y + l.h - out.y);
+    } else a.push(it.y + it.h - out.y);
+  }
+  for (let i = 1; i < a.length; i++) a[i] = Math.max(a[i], a[i - 1]);
+  if (a.length) a[a.length - 1] = Math.min(a[a.length - 1], out.h);
+  ls = Object.freeze(a);
+  lines.set(out, ls);
+  return ls;
+}
+
+/** See the header. */
+export function labelOf(doc, note, nums) {
+  const key = KEYS[note.kind] || 'footnotes';
+  const m = isObj(nums) && nums[key] instanceof Map ? nums[key] : null;
+  return (m && m.get(note.id)) ??
+    labelFor(doc, note.kind || 'footnote', note.id) ?? '';
+}
+
+/** The ./StoryLayout context of a note's layout. */
+function ctxOf(doc, metrics, ctx, n, label) {
+  const c = {doc, metrics, noteId: n.id, noteLabel: label};
+  if (isObj(ctx)) {
+    if (ctx.decorators) c.decorators = ctx.decorators;
+    if (ctx.pics) c.pics = ctx.pics;
+    if (isObj(ctx.fields)) c.fields = ctx.fields;
+  }
+  return c;
+}
+
+/** See the header. */
+export function layoutNote(doc, note, widthPx, metrics, ctx) {
+  const fx = isObj(ctx) && isObj(ctx.fields) ? ctx.fields : null;
+  const label = labelOf(doc, note, fx && fx.noteNums);
+  const out = layoutStory(viewOf(doc, note), widthPx,
+    ctxOf(doc, metrics, ctx, note, label), '\u0002' + label);
+  return memoOf(out, linesOf(out));
+}
+
+const outs = new WeakMap();            // layout -> its answer
+
+/** One answer object per layout (so it compares by identity). */
+function memoOf(out, ls) {
+  let o = outs.get(out);
+  if (!o) {
+    o = Object.freeze({lines: ls, h: out.h, L: out.L, x: out.x,
+      y: out.y});
+    outs.set(out, o);
+  }
+  return o;
+}
+
+
+const MARKS = new Set(['separator', 'continuationSeparator']);
+
+/** The separator mark note n holds alone, or null. */
+function ruleOf(n) {
+  const bs = n.blocks;
+  if (!Array.isArray(bs) || !bs.length) return null;
+  let got = null;
+  for (const b of bs) {
+    if (!isObj(b) || b.type !== 'p' || typeof b.text !== 'string') {
+      return null;
+    }
+    for (let k = 0; k < b.text.length; k++) {
+      if (b.text[k] !== OBJ) return null;
+      const x = isObj(b.inlines) ? b.inlines[k] : null;
+      const nm = x && x.kind === 'raw' && x.node &&
+        typeof x.node.name === 'string'
+        ? x.node.name.slice(x.node.name.indexOf(':') + 1) : '';
+      if (!MARKS.has(nm)) return null;
+      got = nm;
+    }
+  }
+  return got;
+}
+
+/** Whether note n holds no text at all. */
+const empty = (n) => !Array.isArray(n.blocks) || n.blocks.every((b) =>
+  isObj(b) && b.type === 'p' && !b.text);
+
+/** The first note of kind and type in doc, or null. */
+function find(doc, kind, type) {
+  const m = isObj(doc) && isObj(doc.notes) ? doc.notes[KEYS[kind]]
+    : null;
+  if (!(m instanceof Map)) return null;
+  for (const n of m.values()) if (n && n.type === type) return n;
+  return null;
+}
+
+/** See the header. */
+export function sepOf(doc, kind, type, widthPx, metrics, ctx) {
+  const n = find(doc, kind, type);
+  const long = type === 'continuationSeparator' ? widthPx : RULE_W;
+  if (type === 'continuationNotice') {
+    if (!n || empty(n)) return null;
+  } else if (!n) return {h: SEP_H, rule: long, lay: null};
+  const lay = layoutNote(doc, n, widthPx, metrics, ctx);
+  const r = ruleOf(n);
+  return {h: lay.h, rule: r ? (r === 'separator' ? RULE_W : widthPx)
+    : 0, lay};
+}

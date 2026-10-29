@@ -1,0 +1,118 @@
+// NoteParts - the footnotes or endnotes part of a document that has
+// none, made before its first note (Batch E2).
+//
+//   ensure(d, kind) -> true | false  for ./Document d and kind
+//       'footnote' | 'endnote': true when it made the part, in one
+//       d.atomic (in the caller's, when there is one: the first note
+//       and its mark go in the same undo step): ./OpsNotes
+//       setNotesPart (the skeleton below), the main part's
+//       relationship to it (./DocParts addRel; the Strict type in a
+//       Strict document) and, in a document with a settings part,
+//       the separator references in its w:footnotePr / w:endnotePr
+//       (./NoteOpts withSeparators). false when the kind has its
+//       part already. RangeError (nothing changed): a bad kind, or a
+//       kind whose part could not be read (./NoteNumbers noteState
+//       'unknown': bytes only; ./OpsNotes refuses its notes)
+//   skeleton(doc, kind) -> {part, root, prolog, notes, order, raw}
+//       the value setNotesPart takes: part word/footnotes.xml
+//       (endnotes.xml) beside the main part, or the first free
+//       footnotes2.xml, footnotes3.xml...; the notes Word writes in
+//       a new part, read as ./NoteRead reads a file:
+//         <w:footnote w:type="separator" w:id="-1"><w:p><w:pPr>
+//         <w:spacing w:after="0" w:line="240" w:lineRule="auto"/>
+//         </w:pPr><w:r><w:separator/></w:r></w:p></w:footnote>
+//       and the same with w:type="continuationSeparator" w:id="0"
+//       and <w:continuationSeparator/>, in a root declaring w and r
+//
+// What the writer then writes (./DocxWrite): the part (./NoteWrite,
+// from these notes), its content type Override (footnotes+xml or
+// endnotes+xml, whatever the xml Default says) and nothing else.
+// Assumptions, to check in real Word: a part with only w and r
+// declared (Word's own declare many more, all ignorable) opens
+// without a repair prompt; the settings references are what Word
+// writes (it opens files without them too).
+// Pure: no desktop services.
+import {SLOTS, nameFree} from './OpsNotes';
+import {noteState} from './NoteNumbers';
+import {readNotes} from './NoteRead';
+import {addRel} from './DocParts';
+import {withSeparators} from './NoteOpts';
+import {NS} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const utf8 = new TextEncoder();
+const MAX_TRIES = 1000;
+
+/** The slot of kind, or RangeError. */
+function slotOf(kind) {
+  if (typeof kind !== 'string' || !Object.hasOwn(SLOTS, kind))
+    throw new RangeError('bad note kind ' + String(kind));
+  return SLOTS[kind];
+}
+
+/** The XML of a separator note of kind (see the header). */
+const sep = (kind, type, id, mark) => `<w:${kind} w:type="${type}" ` +
+  `w:id="${id}"><w:p><w:pPr><w:spacing w:after="0" w:line="240" ` +
+  `w:lineRule="auto"/></w:pPr><w:r><w:${mark}/></w:r></w:p>` +
+  `</w:${kind}>`;
+
+/** The main part's folder ('word/'). */
+function dirOf(doc) {
+  const main = (isObj(doc.meta) && doc.meta.mainPart) ||
+    'word/document.xml';
+  return main.slice(0, main.lastIndexOf('/') + 1);
+}
+
+/** The first free name for the part of slot. */
+function nameFor(doc, slot) {
+  const dir = dirOf(doc);
+  for (let k = 1; k <= MAX_TRIES; k++) {
+    const n = dir + slot + (k > 1 ? k : '') + '.xml';
+    if (nameFree(doc, n)) return n;
+  }
+  throw new RangeError('no free name for the ' + slot + ' part');
+}
+
+/** See the header. */
+export function skeleton(doc, kind) {
+  const slot = slotOf(kind);
+  const part = nameFor(doc, slot);
+  const xml = '<?xml version="1.0" encoding="UTF-8" ' +
+    'standalone="yes"?>\r\n' +
+    `<w:${slot} xmlns:w="${NS.w}" xmlns:r="${NS.r}">` +
+    sep(kind, 'separator', -1, 'separator') +
+    sep(kind, 'continuationSeparator', 0, 'continuationSeparator') +
+    `</w:${slot}>`;
+  const got = readNotes(part, utf8.encode(xml), new Map(), null);
+  if (!got) throw new RangeError('the ' + slot + ' skeleton');
+  return {part, root: got.root, prolog: got.prolog, notes: got.notes,
+    order: got.order, raw: got.raw};
+}
+
+/** See the header. */
+export function ensure(d, kind) {
+  const slot = slotOf(kind);
+  const doc = d.doc;
+  const names = isObj(doc.meta) && isObj(doc.meta.noteParts)
+    ? doc.meta.noteParts : {};
+  if (typeof names[slot] === 'string') return false;
+  if (noteState(doc, slot) === 'unknown') {
+    throw new RangeError('the ' + slot + ' part could not be read: ' +
+      'it is kept as it is and takes no new note');
+  }
+  const value = skeleton(doc, kind);
+  d.atomic(() => {
+    d.apply({op: 'setNotesPart', kind, value});
+    const now = d.doc;
+    const {rels} = addRel(now.rels, {kind: slot,
+      target: value.part.slice(dirOf(now).length),
+      strict: now.meta.conformance === 'strict'});
+    d.apply({op: 'setDocPart', key: 'rels', value: rels});
+    if (now.rawSettings && now.meta.settingsPart) {
+      const set = withSeparators(now.rawSettings, kind);
+      if (set !== now.rawSettings)
+        d.apply({op: 'setDocPart', key: 'settings', value: set});
+    }
+  });
+  return true;
+}

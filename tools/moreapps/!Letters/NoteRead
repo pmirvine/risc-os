@@ -1,0 +1,149 @@
+// NoteRead - the footnotes and endnotes parts read into NOTES: each
+// note's blocks typed as the body's, so that they can be shown and
+// edited; the part's bytes stay in doc.parts.
+//
+//   readNotes(part, bytes, map, relsBytes, opts?) -> Result | null
+//     Result {kind: 'footnote'|'endnote', root: {name, attrs},
+//             prolog: {decl, before, after}, notes: Map<id, Note>,
+//             order: id[], raw: [{at, node}], rels, relsPart, bytes}
+//     Note   {kind, id, type: 'normal'|'separator'|
+//             'continuationSeparator'|'continuationNotice', blocks:
+//             [Para|Table|Opaque], rels, relsPart, orig, node}
+//     part, map, relsBytes, opts  as ./StoryRead readStory (the
+//            part's .rels is read once; every note of the part holds
+//            that one rels array, relsPart is opts.relsPart, else
+//            ./Rels relsNameFor(part))
+//     id     the integer of w:id (an optional minus sign and up to 9
+//            digits: -1 and 0 are the separators Word writes)
+//     type   w:type; a missing or unknown one is 'normal'
+//     orig   a new array holding the very objects of blocks as
+//            read: a note whose blocks still equal it element by
+//            element is unchanged (./NoteWrite writes its node as it
+//            is)
+//     node   the note's original element (Xml node): its attributes
+//            and name are the ones a changed note is written with
+//     order  the ids of the notes in the file's order
+//     raw    every root child that is not a note of this part's kind
+//            with a fresh integer id, kept as it is: a repeated id
+//            (the first one wins), a missing or non-integer id, any
+//            other element. at = how many notes of `order` come
+//            before it, so that the writer puts it back in place.
+//            Text and comments directly in the root are dropped
+//   Null (not notes: the part stays bytes) in every case readStory
+//   gives null (bytes that are not a byte array, bad XML, over a
+//   cap, a w:sectPr anywhere inside, a bad .rels...) and for a root
+//   that is not w:footnotes / w:endnotes, or that binds w elsewhere.
+//   Maps are keyed by the integer only; nothing is ever keyed by
+//   text from the file.
+//   readAllNotes(parts, rels, main, map, opts?) -> {notes, noteParts}
+//     the Doc's notes (./Model emptyNotes) and meta.noteParts
+//     {footnotes?: part, endnotes?: part}: the part the main part's
+//     first footnotes / endnotes relationship reaches, when it reads
+//     as notes. notes.read keeps what was read, so that ./NoteWrite
+//     can tell an untouched part (its bytes) from a changed one.
+// Pure: no desktop services.
+import {parsePart} from './PartXml';
+import {mapNamespaces} from './NsMap';
+import {rootScope, strictScope, isStrict, scope, wName, wAttr, isEl,
+  W} from './Ns';
+import {parseRels, relKind, resolvePart, relsNameFor, findPart}
+  from './Rels';
+import {strictRoot, hasSectPr, readBlocks} from './StoryRead';
+import {maxParagraphs} from './ReadBody';
+import {emptyNotes} from './Model';
+
+const ROOTS = new Map([['footnotes', 'footnote'],
+  ['endnotes', 'endnote']]);
+const TYPES = new Set(['normal', 'separator', 'continuationSeparator',
+  'continuationNotice']);
+
+/** The id a w:id value stands for, or null. */
+export function noteId(v) {
+  if (typeof v !== 'string' || !/^-?[0-9]{1,9}$/.test(v)) return null;
+  return Number(v) + 0;
+}
+
+/** The type a w:type value stands for. */
+export const noteType = (v) => TYPES.has(v) ? v : 'normal';
+
+function read(part, bytes, map, relsBytes, opts) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return null;
+  const x = parsePart(bytes, part, opts);
+  const strict = strictRoot(x.root);
+  mapNamespaces(x.root, 'toTransitional');
+  const root = x.root;
+  let m = rootScope(root);
+  if (strict || isStrict(map)) m = strictScope(m);
+  const kind = ROOTS.get(wName(root, m));
+  if (!kind || hasSectPr(root, m)) return null;
+  const w = rootScope(root).get('w');
+  if (w !== undefined && w !== W) return null;
+  let rels = null;
+  let relsPart = null;
+  if (relsBytes) {
+    if (!(relsBytes instanceof Uint8Array)) return null;
+    relsPart = opts.relsPart ?? relsNameFor(part);
+    rels = parseRels(parsePart(relsBytes, relsPart, opts).root);
+  }
+  const ctx = {count: {paras: 0}, max: maxParagraphs(opts), part,
+    notes: opts.noteMarks !== false};
+  const notes = new Map();
+  const order = [];
+  const raw = [];
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const m1 = c.attrs.length ? scope(m, c) : m;
+    const id = wName(c, m) === kind ? noteId(wAttr(c, m1, 'id')) : null;
+    if (id === null || notes.has(id)) {
+      raw.push({at: order.length, node: c});
+      continue;
+    }
+    const blocks = readBlocks(c, m1, part, opts, ctx);
+    notes.set(id, {kind, id, type: noteType(wAttr(c, m1, 'type')),
+      blocks, rels, relsPart, orig: blocks.slice(), node: c});
+    order.push(id);
+  }
+  return {kind, notes, order, raw, rels, relsPart, bytes,
+    root: {name: root.name, attrs: root.attrs.map(([n, v]) => [n, v])},
+    prolog: {decl: x.decl, before: x.before, after: x.after}};
+}
+
+/** See the header. */
+export function readNotes(part, bytes, map, relsBytes, opts = {}) {
+  try {
+    return read(part, bytes, map, relsBytes, opts || {});
+  } catch (e) {
+    return null;
+  }
+}
+
+/** See the header. */
+export function readAllNotes(parts, rels, main, map, opts = {}) {
+  const notes = emptyNotes();
+  const noteParts = {};
+  const done = new Set();
+  for (const r of rels || []) {
+    const k = relKind(r.type);
+    if (!k || r.mode === 'External') continue;
+    const slot = k.kind;
+    if (!ROOTS.has(slot) || done.has(slot)) continue;
+    const name = findPart(parts, resolvePart(main, r.target));
+    if (!name || name === main) continue;
+    done.add(slot);
+    const relsPart = findPart(parts, relsNameFor(name));
+    const got = readNotes(name, parts.get(name), map,
+      relsPart ? parts.get(relsPart) : null, {...opts, relsPart});
+    if (!got || got.kind !== ROOTS.get(slot)) continue;
+    notes[slot] = got.notes;
+    notes.root[slot] = got.root;
+    notes.prolog[slot] = got.prolog;
+    notes.order[slot] = got.order;
+    notes.raw[slot] = got.raw;
+    notes.read[slot] = {part: name, bytes: got.bytes,
+      notes: new Map(got.notes), order: got.order.slice(),
+      raw: got.raw, root: got.root, prolog: got.prolog,
+      rels: got.rels, relsPart: got.relsPart};
+    noteParts[slot] = name;
+  }
+  return {notes, noteParts};
+}

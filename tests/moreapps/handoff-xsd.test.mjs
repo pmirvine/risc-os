@@ -1,5 +1,6 @@
-// The hand-off files of Batch C (tb-*.docx, handoff-tables.mjs) and
-// Batch D (pg-*, hf-*, cl-*.docx; R11: pg-* from handoff-pages.mjs),
+// The hand-off files of Batch C (tb-*.docx, handoff-tables.mjs),
+// Batch D (pg-*, hf-*, cl-*.docx; R11: pg-* from handoff-pages.mjs)
+// and Batch E2 (en-*.docx, handoff-notes.mjs),
 // in the git-ignored corpus/handoff, give no xmllint message at all
 // in any part xmllint can check (the document, styles, numbering,
 // settings, font table, web settings, notes, comments, headers and
@@ -22,7 +23,8 @@ import {schema} from './roundtrip-lib.mjs';
 
 const DIR = join(import.meta.dirname, 'corpus', 'handoff');
 const files = existsSync(DIR)
-  ? readdirSync(DIR).filter((f) => /^(tb|pg|hf|cl)-.*\.docx$/.test(f)) : [];
+  ? readdirSync(DIR).filter((f) =>
+    /^(tb|pg|hf|cl|en)-.*\.docx$/.test(f)) : [];
 const {xsd, note} = schema();
 const PART = new RegExp('^word/(document|styles|numbering|settings|' +
   'fontTable|webSettings|comments|footnotes|endnotes|header\\d*|' +

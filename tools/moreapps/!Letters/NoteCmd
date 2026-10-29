@@ -1,0 +1,132 @@
+// NoteCmd - a footnote or endnote put in at the caret (Batch E2).
+//
+//   insertNote(d, typing, sel, kind) -> {sel, note: {kind, id}} |
+//       null  kind 'footnote' | 'endnote'. One undo step
+//       (typing.command, d.atomic): the kind's notes part made when
+//       the document has none (./NoteParts ensure), the styles on
+//       first use (below), a new normal note (./OpsNotes addNote,
+//       id nextNoteId) of one paragraph in the Footnote Text (Endnote
+//       Text) style holding its own mark (a self noteRef, w:footnoteRef
+//       / w:endnoteRef, in the Footnote Reference style) and a space,
+//       as Word makes it; then the mark (a noteRef inline,
+//       w:footnoteReference / w:endnoteReference w:id, a run of its
+//       own in the reference style, no other format) at the end of
+//       sel: a range keeps its text and the mark goes after it (as
+//       Word puts the mark at the selection's end; to check in real
+//       Word). sel: a caret right after the mark (the body's); note:
+//       the new note's key (./NoteMode enters it, the caret after its
+//       own mark and the space). null (nothing changed) when whyNot
+//       gives a reason. Numbers are never stored: the marks show
+//       theirs by their order (./NoteNumbers)
+//   whyNot(d, sel, kind) -> string | null  why insertNote refuses,
+//       in words for the user, or null when it does not:
+//         a bad kind; no selection, or one not in the document;
+//         in a note (d a note's ./StoryFacade: Word puts no note in
+//         a note) or in a header or footer (d a header's facade:
+//         d.refuses, ./StoryFacade REFUSED); the selection's end on
+//         a table's or a kept block's edge (a text box, raw content:
+//         not in text); inside a field's code or computed result
+//         (./FieldEdit guard); the kind's notes part kept as bytes
+//         (./NoteNumbers noteState 'unknown': it takes no new note);
+//         no free note id (./OpsNotes nextNoteId)
+//   noteStyle(d, id, name, type) -> id | null  ./NoteStyle's: the
+//       style found, or Word's built-in made on first use
+//   convertNote, convertWhy, convertPlan, noteNear, SCOPES:
+//       ./NoteConvert's, footnotes made endnotes and back
+//   customMark, customWhy, MARK_MAX  ./NoteCustom's: the text a mark
+//       shows instead of its number
+// d is a ./Document (or a facade), sel a ./Selection. Pure: no
+// desktop services.
+import {OBJ, newPara} from './Model';
+import {caret} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {guard} from './FieldEdit';
+import {ensure} from './NoteParts';
+import {nextNoteId, newNote, SLOTS} from './OpsNotes';
+import {noteState} from './NoteNumbers';
+import {noteStyle} from './NoteStyle';
+import {W} from './Wml';
+
+export {noteStyle};
+export {convertNote, convertWhy, convertPlan, noteNear, SCOPES}
+  from './NoteConvert';
+export {customMark, customWhy, MARK_MAX} from './NoteCustom';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const CAP = {footnote: 'Footnote', endnote: 'Endnote'};
+
+/** The end of sel as a caret position, or null. */
+function endOf(doc, sel) {
+  const o = sel && sel.anchor && sel.head ? orderedPos(doc, sel)
+    : null;
+  return o ? o.to : null;
+}
+
+/** See the header. */
+export function whyNot(d, sel, kind) {
+  if (typeof kind !== 'string' || !Object.hasOwn(SLOTS, kind))
+    return 'Not a kind of note: ' + String(kind) + '.';
+  if (isObj(d.note)) return 'A note cannot hold a note.';
+  if (typeof d.refuses === 'function' && d.refuses(kind))
+    return 'No ' + kind + ' in a header or footer.';
+  const doc = d.doc, to = endOf(doc, sel);
+  if (!to) return 'There is no caret in the text.';
+  const loc = findBlock(doc, to.id);
+  if (!loc || loc.b.type !== 'p')
+    return 'Put the caret in text first (not by a table or box).';
+  const c = caret(to);
+  if (guard(doc, c, orderedPos(doc, c)) !== c)
+    return 'Not inside a field.';
+  const slot = SLOTS[kind];
+  if (noteState(doc, slot) === 'unknown') {
+    return 'The ' + slot + ' of this document could not be read: ' +
+      'they are kept as they are and take no new note.';
+  }
+  try {
+    nextNoteId(doc, kind);
+  } catch (e) {
+    return 'There is no free ' + kind + ' number left.';
+  }
+  return null;
+}
+
+const NONE = () => ({extra: []});
+
+/** The new note's one paragraph (see the header). */
+function notePara(kind, text, ref) {
+  const r0 = {start: 0, end: 1, rPr: NONE()};
+  if (ref) r0.rStyle = ref;
+  const self = {kind: 'noteRef', level: 'r', note: kind, id: null,
+    self: true, node: W(kind + 'Ref')};
+  const o = {runs: [r0, {start: 1, end: 2, rPr: NONE()}],
+    inlines: {0: self}};
+  if (text) o.pStyle = text;
+  return newPara(OBJ + ' ', o);
+}
+
+/** See the header. */
+export function insertNote(d, typing, sel, kind) {
+  if (whyNot(d, sel, kind) !== null) return null;
+  const to = endOf(d.doc, sel), cap = CAP[kind];
+  let out = null;
+  const go = () => d.atomic(() => {
+    ensure(d, kind);
+    const ref = noteStyle(d, cap + 'Reference', kind + ' reference',
+      'character');
+    const text = noteStyle(d, cap + 'Text', kind + ' text',
+      'paragraph');
+    const id = nextNoteId(d.doc, kind);
+    const note = newNote(d.doc, kind, id, [notePara(kind, text, ref)]);
+    d.apply({op: 'addNote', kind, id, note});
+    const loc = findBlock(d.doc, to.id);
+    const x = {kind: 'noteRef', level: 'r', note: kind, id,
+      node: W(kind + 'Reference', {'w:id': id})};
+    d.apply({op: 'replaceText', block: loc.at, at: to.off, del: 0,
+      ins: OBJ, inlines: {0: x}, rPr: NONE(), rStyle: ref || null});
+    out = {sel: caret({id: to.id, off: to.off + 1}),
+      note: {kind, id}};
+  });
+  if (typing) typing.command(go);
+  else go();
+  return out;
+}

@@ -66,7 +66,8 @@ const AUDIT = {
       'anchored; a mandatory digit separates the two runs'],
     ['/\\s+/', 'split: a match consumes its run']],
   '!Letters/Keymap': [
-    ['/^((?:(?:Ctrl|Shift)\\+)*)(.+)$/', 'internal: Keymap rows only']],
+    ['/^((?:(?:Ctrl|Alt|Shift)\\+)*)(.+)$/',
+      'internal: Keymap rows only']],
   '!Letters/LineLabel': [
     ['/, ([a-z-]+)$/', 'the run follows the literal ", "']],
   '!Letters/LineTokens': [

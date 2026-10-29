@@ -1,0 +1,211 @@
+// NoteCustom - a footnote's or endnote's custom mark (Batch E2): text
+// its mark shows instead of a number, such as * or a dagger;
+// re-exported by ./NoteCmd.
+//
+//   customMark(d, typing, kind, id, text) -> {changed, own?} |
+//       {changed: false, error}  kind 'footnote' | 'endnote', id the
+//       note's; text the mark's text, or null for none (the number
+//       again). One undo step (typing.command, d.atomic; typing may
+//       be null), none when every mark already shows that. d may be
+//       a note's ./StoryFacade (the notes mode): the document's
+//       note changes the same way.
+//       In the body every mark of the note (w:footnoteReference /
+//       w:endnoteReference) takes w:customMarkFollows="1" and the
+//       text, written after it in its run as a w:t (./WritePara), or
+//       loses both (the inline's custom and customNode, the w:t as
+//       read, go together: ./ModelCheck). In the note, its own mark
+//       (Word's w:footnoteRef, which shows the number) becomes the
+//       text, in the same run and style; the text given before (at
+//       the note's start, where Word writes it) becomes the new
+//       text, or the own mark again when cleared. A note whose first
+//       paragraph has neither keeps its text (own undefined). own:
+//       {id, at, was, now} the note paragraph changed (its id), where
+//       and how long the own mark was and is, for a caret in it.
+//       A note with a custom mark has no number and does not count
+//       in the numbering (./NoteNumbers); a note converted to the
+//       other kind keeps it (./NoteConvert).
+//   customWhy(d, kind, id, text) -> string | null  why customMark
+//       refuses, in words: a header or footer's facade; a bad kind;
+//       the kind's notes kept as bytes or missing; no normal note of
+//       that id; no mark in the body for it (also a mark kept as
+//       read: a text box...); text that is not null and not 1 to
+//       MARK_MAX characters (code points: an emoji is one), all
+//       white space, holding a control character, < > & or an
+//       object character, or anything XML cannot hold (WimpLib
+//       XmlText badCharAt, the writer's own test: U+FFFE, U+FFFF, a
+//       surrogate not in a pair): validText, so whatever is taken
+//       can be written
+//   customOf(doc, kind, id) -> string | null  the custom text the
+//       note's marks in the body show (the first that has one), or
+//       null (a number, or no such note or mark)
+//   validText(text) -> string | null  why text is no custom mark
+//       (above), or null; null itself is valid (no custom mark)
+//   MARK_MAX  10, the longest custom mark Word's box takes (to check
+//       in real Word)
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {SLOTS} from './OpsNotes';
+import {noteState, marks} from './NoteNumbers';
+import {blocks} from './Walk';
+import {W} from './Wml';
+import {badCharAt} from 'wimplib/XmlText';
+
+export const MARK_MAX = 10;
+const BAD = /[\u0000-\u001f\u007f-\u009f<>&\ufffc\ufeff]/;
+const FLAG = /(^|:)customMarkFollows$/;
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The real document of d, or null (a header's facade). */
+function realOf(d) {
+  if (isObj(d.note) && isObj(d.real)) return d.real;
+  return typeof d.refuses === 'function' ? null : d;
+}
+
+/** See the header. */
+export function validText(text) {
+  if (text === null) return null;
+  if (typeof text !== 'string' || !text.trim())
+    return 'Type the mark first.';
+  if (badCharAt(text) >= 0)
+    return 'A custom mark cannot hold that character.';
+  if ([...text].length > MARK_MAX)
+    return 'A custom mark is at most ' + MARK_MAX + ' characters.';
+  if (BAD.test(text))
+    return 'A custom mark cannot hold < > & or control characters.';
+  return null;
+}
+
+/** The body's marks of the note: [{at (path), p, off, x}]. */
+function marksOf(doc, kind, id) {
+  const out = [];
+  for (const {b, at} of blocks(doc)) {
+    if (!isObj(b) || b.type !== 'p') continue;
+    for (const {x, off} of marks(b)) {
+      if (x.note === kind && x.id === id) out.push({at, p: b, off, x});
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+/** The text Insert gives the new note as its custom mark: the
+ *  Custom mark field only when the user changed it from the text
+ *  the box pre-filled (the mark of the note by the caret, for Set
+ *  and Clear); else '' (a numbered note). */
+export function customForInsert(field, prefill) {
+  return field === prefill ? '' : field;
+}
+
+export function customOf(doc, kind, id) {
+  if (typeof kind !== 'string' || !Object.hasOwn(SLOTS, kind))
+    return null;
+  for (const {x} of marksOf(doc, kind, id)) {
+    if (typeof x.custom === 'string') return x.custom;
+  }
+  return null;
+}
+
+/** See the header. */
+export function customWhy(d, kind, id, text) {
+  const real = realOf(d);
+  if (!real) return 'No footnote or endnote in a header or footer.';
+  if (typeof kind !== 'string' || !Object.hasOwn(SLOTS, kind))
+    return 'Not a kind of note: ' + String(kind) + '.';
+  const doc = real.doc, slot = SLOTS[kind];
+  if (noteState(doc, slot) === 'unknown') {
+    return 'The ' + slot + ' of this document could not be read: ' +
+      'they are kept as they are and cannot be changed.';
+  }
+  const m = isObj(doc.notes) ? doc.notes[slot] : null;
+  const n = m instanceof Map && Number.isInteger(id) ? m.get(id) : null;
+  if (!isObj(n) || n.type !== 'normal')
+    return 'That ' + kind + ' is not there.';
+  if (!marksOf(doc, kind, id).length)
+    return 'That ' + kind + ' has no mark in the text.';
+  return validText(text);
+}
+
+/** Mark x showing text (null: its number). */
+function marked(x, text) {
+  const y = {...x};
+  delete y.customNode;
+  delete y.custom;
+  const n = isObj(x.node) ? x.node : W(x.note + 'Reference',
+    {'w:id': x.id});
+  const name = typeof n.name === 'string' ? n.name
+    : 'w:' + x.note + 'Reference';
+  const all = (Array.isArray(n.attrs) ? n.attrs : []).filter((e) =>
+    Array.isArray(e) && typeof e[0] === 'string');
+  let attrs = all.filter(([k]) => !FLAG.test(k));
+  if (text !== null) {
+    y.custom = text;
+    const pre = name.slice(0, name.indexOf(':') + 1);
+    const was = all.some(([k]) => FLAG.test(k));
+    attrs = all.map(([k, v]) => (FLAG.test(k) ? [k, '1'] : [k, v]));
+    // (first, as Word writes it)
+    if (!was) attrs.unshift([pre + 'customMarkFollows', '1']);
+  }
+  y.node = {...n, name, attrs};
+  return y;
+}
+
+/** The note's own mark: {j (block index), p, at, len, self}, or
+ *  null (see the header). */
+function ownOf(note, old) {
+  const j = note.blocks.findIndex((b) => isObj(b) && b.type === 'p');
+  if (j < 0) return null;
+  const p = note.blocks[j];
+  for (let k = p.text.indexOf(OBJ); k >= 0; k = p.text.indexOf(OBJ,
+    k + 1)) {
+    const x = p.inlines[k];
+    if (isObj(x) && x.kind === 'noteRef' && x.self === true)
+      return {j, p, at: k, len: 1, self: true};
+  }
+  if (typeof old === 'string' && old && p.text.startsWith(old))
+    return {j, p, at: 0, len: old.length, self: false};
+  return null;
+}
+
+/** See the header. */
+export function customMark(d, typing, kind, id, text) {
+  const why = customWhy(d, kind, id, text);
+  if (why !== null) return {changed: false, error: why};
+  const real = realOf(d), doc = real.doc;
+  const ms = marksOf(doc, kind, id);
+  const old = ms.map((m) => m.x.custom).find((c) => typeof c ===
+    'string');
+  const note = doc.notes[SLOTS[kind]].get(id);
+  const own = ownOf(note, old);
+  const want = text === null ? undefined : text;
+  const marksOk = ms.every((m) => m.x.custom === want);
+  const ownOk = !own || (text === null ? own.self
+    : !own.self && own.p.text.slice(0, own.len) === text);
+  if (marksOk && ownOk) return {changed: false};
+  let res = null;
+  const go = () => real.atomic(() => {
+    for (const m of ms) {
+      if (m.x.custom === want) continue;
+      real.apply({op: 'replaceText', block: m.at, at: m.off, del: 1,
+        ins: OBJ, inlines: {0: marked(m.x, text)}});
+    }
+    if (own && !ownOk) res = ownTo(real, kind, id, own, text);
+  });
+  if (typing) typing.command(go);
+  else go();
+  return res ? {changed: true, own: res} : {changed: true};
+}
+
+/** The note's own mark made `text` (null: the own mark). */
+function ownTo(real, kind, id, own, text) {
+  const story = {note: {kind, id}};
+  const op = {op: 'replaceText', story, block: [0, own.j], at: own.at,
+    del: own.len};
+  if (text === null) {
+    op.ins = OBJ;
+    op.inlines = {0: {kind: 'noteRef', level: 'r', note: kind,
+      id: null, self: true, node: W(kind + 'Ref')}};
+  } else op.ins = text;
+  real.apply(op);
+  return {id: own.p.id, at: own.at, was: own.len, now: op.ins.length};
+}

@@ -8,7 +8,12 @@
 // entry points at a U+FFFC. Offsets are UTF-16 code units and never
 // fall inside a surrogate pair. An inline is one the writer can
 // write: a raw inline has its node, a br its node or a brType (the
-// writer makes <w:br w:type=.../>), a tab needs neither.
+// writer makes <w:br w:type=.../>), a tab needs neither. A noteRef
+// (a footnote or endnote mark: ./ReadPara) is level 'r' with its
+// node, note 'footnote' | 'endnote' and an integer id (null with
+// self: true, the note's own mark); custom is the text of a custom
+// mark; customNode is its w:t as read, so whoever changes custom
+// must drop customNode (the writer then makes a new w:t).
 // A block is a Para, an Opaque {type:'opaque', node} or a Table
 // {type:'tbl'...}, whose rules are in ./TblCheck (given checkBlock and
 // checkProps, so it imports nothing from here).
@@ -128,8 +133,28 @@ function nestedExtra(o, what) {
   }
 }
 
-const KINDS = ['raw', 'br', 'tab'];
+const KINDS = ['raw', 'br', 'tab', 'noteRef'];
 const LEVELS = ['p', 'r'];
+
+/** Throw unless noteRef `x` (at i) is well formed. */
+function checkNoteRef(x, i, none) {
+  const at = 'noteRef at ' + i;
+  if (x.level !== 'r') fail(at + ' must be at level r');
+  if (none) fail(at + ' has no node');
+  if (x.note !== 'footnote' && x.note !== 'endnote')
+    fail(at + ' has a bad note ' + x.note);
+  if (x.self !== undefined && x.self !== true)
+    fail(at + ': self must be true');
+  if (x.self === true ? x.id !== null : !Number.isInteger(x.id) ||
+    x.id < 0 || x.id > 2147483647) fail(at + ' has a bad id');
+  if (x.custom !== undefined && typeof x.custom !== 'string')
+    fail(at + ': custom must be a string');
+  // whoever edits custom must clear customNode (the w:t as read)
+  const t = x.customNode;
+  if (t !== undefined && x.custom !== undefined && (!isObj(t) ||
+    !Array.isArray(t.children) || t.children.join('') !== x.custom))
+    fail(at + ': customNode does not hold custom');
+}
 
 /** Throw unless `x` is a valid Inline (kind, level and node). */
 function checkInline(x, i) {
@@ -145,6 +170,7 @@ function checkInline(x, i) {
   if (none && x.kind === 'raw') {
     fail('raw inline at ' + i + ' has no node');
   }
+  if (x.kind === 'noteRef') checkNoteRef(x, i, none);
   if (none && x.kind === 'br' && typeof x.brType !== 'string')
     fail('br inline at ' + i + ' needs a node or a brType');
 }
@@ -182,14 +208,36 @@ const CK = {block: (b) => checkBlock(b), props: checkProps};
 
 /**
  * The story op addresses (Batch D, D12, R8): its `story`, a part
- * name; undefined for the body (absent or null). RangeError for any
- * other value. Whether doc holds that story: ./OpsPath.
+ * name, or a note's key {note: {kind, id}} (Batch E2: noteKeyOf);
+ * undefined for the body (absent or null). RangeError for any other
+ * value. Whether doc holds that story: ./OpsPath.
  */
 export function opStory(op) {
   const s = op.story;
   if (s === undefined || s === null) return undefined;
-  if (typeof s !== 'string') fail('bad story');
+  if (typeof s !== 'string' && !noteKeyOf(s)) fail('bad story');
   return s;
+}
+
+/** The largest note id (w:id: up to 9 digits, ./NoteRead noteId). */
+export const MAX_NOTE_ID = 999999999;
+
+/** True for a note id: an integer of up to 9 digits, either sign. */
+export const isNoteId = (id) => Number.isInteger(id) &&
+  id >= -MAX_NOTE_ID && id <= MAX_NOTE_ID;
+
+/**
+ * {kind, id} of a note's story key {note: {kind: 'footnote' |
+ * 'endnote', id}} (own properties only), else null.
+ */
+export function noteKeyOf(s) {
+  if (!isObj(s) || Array.isArray(s) || !Object.hasOwn(s, 'note'))
+    return null;
+  const k = s.note;
+  if (!isObj(k) || !Object.hasOwn(k, 'kind') ||
+    !Object.hasOwn(k, 'id') || !NOTE_KINDS.includes(k.kind) ||
+    !isNoteId(k.id)) return null;
+  return {kind: k.kind, id: k.id};
 }
 
 const STORY_KINDS = ['hdr', 'ftr'];
@@ -227,4 +275,54 @@ export function checkStory(s) {
       fail('story orig must hold blocks');
   }
   for (const b of s.blocks) checkBlock(b);
+}
+
+export const NOTE_KINDS = Object.freeze(['footnote', 'endnote']);
+export const NOTE_TYPES = Object.freeze(['normal', 'separator',
+  'continuationSeparator', 'continuationNotice']);
+/**
+ * Throw unless `n` (a Doc's notes, ./NoteRead; none = fine) is
+ * well formed: footnotes / endnotes Maps keyed by integer ids,
+ * every Note's kind, id, type, blocks (checkBlock), orig, rels and
+ * relsPart valid, order and raw arrays; order (when there) holds
+ * each id of its Map exactly once and no other (Batch E2 ops).
+ */
+export function checkNotes(n) {
+  if (n === undefined || n === null) return;
+  if (!isObj(n)) fail('notes must be an object');
+  for (const [slot, kind] of [['footnotes', NOTE_KINDS[0]],
+    ['endnotes', NOTE_KINDS[1]]]) {
+    const map = n[slot];
+    if (!(map instanceof Map)) fail(slot + ' must be a Map');
+    for (const [id, note] of map) {
+      if (!Number.isInteger(id)) fail('a note id must be an integer');
+      if (!isObj(note) || note.kind !== kind || note.id !== id)
+        fail('a note must hold its kind and id');
+      if (!NOTE_TYPES.includes(note.type)) fail('bad note type');
+      if (note.rels !== null && note.rels !== undefined &&
+        !Array.isArray(note.rels)) fail('note rels must be an array');
+      if (!none(note.relsPart) && typeof note.relsPart !== 'string')
+        fail('note relsPart must be a name or null');
+      if (!Array.isArray(note.blocks) || !Array.isArray(note.orig))
+        fail('note blocks and orig must be arrays');
+      for (const b of note.blocks) checkBlock(b);
+    }
+    for (const part of ['order', 'raw']) {
+      const v = n[part];
+      if (v !== undefined && !(isObj(v) && Array.isArray(v[slot])))
+        fail('notes ' + part + ' must hold an array');
+    }
+    if (n.order !== undefined) checkOrder(n.order[slot], map, slot);
+  }
+}
+
+/** Throw unless order holds each id of map once, and nothing else. */
+function checkOrder(order, map, slot) {
+  if (order.length !== map.size) fail(slot + ': order is not the Map');
+  const seen = new Set();
+  for (const id of order) {
+    if (seen.has(id)) fail(slot + ': id ' + id + ' twice in order');
+    if (!map.has(id)) fail(slot + ': id ' + id + ' in order only');
+    seen.add(id);
+  }
 }

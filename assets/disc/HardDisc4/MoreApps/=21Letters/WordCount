@@ -7,7 +7,11 @@
 //       rectangle its cells, a 'mixed' range the rows it touches)
 //       or, with none, of the whole document; scope ('selection' |
 //       'document'). L (a ./DocLayout) gives lines (null without it)
-//   countView(view) -> count of the view's selection and layout
+//   countView(view, opts?) -> count of the view's selection and
+//       layout; opts as count's
+//   opts {notes: true} also counts the text of the footnotes and
+//       endnotes (below); off (the default here: the box passes its
+//       choice) the numbers are those of a document without notes
 //
 // Words are the runs of non-white-space characters: a no-break space
 // (U+00A0) and a no-break hyphen join; every other space (the Unicode
@@ -28,7 +32,21 @@
 // a field's codes, deleted or moved-away text, ruby text, formulas,
 // drawings or properties; of an mc:AlternateContent only the Choice
 // (else the Fallback). The XML walks take at most 1,000,000 nodes in
-// all (past that `partial` is true and the rest is left out). A
+// all (past that `partial` is true and the rest is left out). With
+// opts.notes the notes' text is counted after the body's, by the same
+// rules (a note's blocks: paragraphs, tables, kept blocks; a note's
+// own mark, or the custom mark's text that stands in its place at
+// the start of the note, is no text of the note; the space after it
+// is): the whole document the notes a mark in
+// the body names (./NotePick noteList: each once, in the order of
+// their marks), a selection those whose marks lie inside it
+// (tables in it too). An orphan note, a separator, a mark whose note
+// is missing, a notes part kept as bytes and a mark inside a kept
+// block or inside a note count nothing. Notes add no lines (as
+// tables, they have none in the body's layout); in a header, footer
+// or notes mode (countView) they are not counted. The NUMWORDS field
+// (./Fields) and the test hook count without notes (assumption, to
+// check in real Word: its NUMWORDS field counts body text only). A
 // table inside a selection counts when it lies inside it. The
 // numbers: ./WordTally. Pure: no desktop services; linear.
 import {orderedPos} from './EditPos';
@@ -37,6 +55,8 @@ import {localName} from './Kinds';
 import {hyphenText} from './InlineText';
 import {forEachIn, loose} from './Walk';
 import {Tally} from './WordTally';
+import {marks} from './NoteNumbers';
+import {noteList} from './NotePick';
 
 export const NODE_LIMIT = 1e6;
 
@@ -136,8 +156,60 @@ function linesOf(it, a, e) {
   return n;
 }
 
+const SLOTS = {footnote: 'footnotes', endnote: 'endnotes'};
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The normal note kind/id of doc, or null. */
+function noteOf(doc, kind, id) {
+  const m = isObj(doc.notes) && Object.hasOwn(SLOTS, kind)
+    ? doc.notes[SLOTS[kind]] : null;
+  const n = m instanceof Map ? m.get(id) : null;
+  return isObj(n) && n.type === 'normal' &&
+    Array.isArray(n.blocks) ? n : null;
+}
+
+/** The notes marked in [a, e) of paragraph p, once each, into out
+ *  (seen: their kind:id). */
+function marked(doc, p, a, e, out, seen) {
+  for (const {x, off} of marks(p)) {
+    if (off < a || off >= e) continue;
+    const k = x.note + ':' + x.id;
+    const n = seen.has(k) ? null : noteOf(doc, x.note, x.id);
+    if (!n) continue;
+    seen.add(k);
+    out.push(n);
+  }
+}
+
+/** The note's blocks from the start of the custom mark text
+ *  (./NotePick noteList's custom: the text ./NoteCustom customOf
+ *  gives, worked out once for all notes), when the note has one (it
+ *  writes it as plain text at the start
+ *  of its first paragraph, where the own mark was): the first
+ *  paragraph then counts from after it. */
+function noteText(n, custom, t, budget) {
+  const b = n.blocks[0];
+  let from = 0;
+  if (isObj(b) && b.type === 'p' && typeof b.text === 'string' &&
+    !Object.values(b.inlines || {}).some((x) => isObj(x) &&
+      x.kind === 'noteRef' && x.self)) {
+    if (custom && b.text.startsWith(custom)) from = custom.length;
+  }
+  for (let i = 0; i < n.blocks.length; i++) {
+    if (budget.partial) break;
+    const x = n.blocks[i];
+    if (i === 0 && from) para(t, x, from, x.text.length, budget);
+    else block(t, x, budget);
+  }
+}
+
+/** Whether doc has any note of its own to count. */
+const hasNotes = (doc) => isObj(doc.notes) &&
+  [doc.notes.footnotes, doc.notes.endnotes].some((m) =>
+    m instanceof Map && m.size > 0);
+
 /** See the header. */
-export function count(doc, sel, L) {
+export function count(doc, sel, L, opts) {
   // (a caret counts the whole: no ./Selection import, which would
   // close a cycle through ./Fields NUMWORDS)
   const o = sel && orderedPos(doc, sel);
@@ -146,6 +218,8 @@ export function count(doc, sel, L) {
   const t = new Tally();
   const budget = {left: NODE_LIMIT, partial: false};
   let lines = L ? 0 : null;
+  const notes = [], seen = new Set();
+  const withNotes = !!(opts && opts.notes) && hasNotes(doc);
   const add = (b, a, e) => {
     if (b.type === 'tbl' && L) {
       // (a typed table's cells' lines, nested tables' too)
@@ -154,6 +228,14 @@ export function count(doc, sel, L) {
           lines += linesOf(L.byId.get(x.id), 0, Infinity);
         }
       });
+    }
+    if (withNotes && range) {
+      if (b.type === 'p') marked(doc, b, a, e, notes, seen);
+      else if (b.type === 'tbl') {
+        forEachIn([b], [], (x) => {
+          if (x.type === 'p') marked(doc, x, 0, Infinity, notes, seen);
+        });
+      }
     }
     if (b.type !== 'p') return block(t, b, budget);
     para(t, b, a, e, budget);
@@ -169,6 +251,20 @@ export function count(doc, sel, L) {
         ? b.text.length : 1);
     }
   }
+  if (withNotes) {
+    // (one pass over the body's marks gives every note's custom text)
+    const list = noteList(doc), custom = new Map();
+    for (const r of list) custom.set(r.kind + ':' + r.id, r.custom);
+    if (!range) {
+      for (const r of list) {
+        const n = noteOf(doc, r.kind, r.id);
+        if (n) notes.push(n);
+      }
+    }
+    for (const n of notes) {
+      noteText(n, custom.get(n.kind + ':' + n.id), t, budget);
+    }
+  }
   const out = {words: t.words, chars: t.chars,
     charsNoSpaces: t.noSpaces, paras: t.paras, lines,
     scope: range ? 'selection' : 'document'};
@@ -177,6 +273,7 @@ export function count(doc, sel, L) {
 }
 
 /** See the header. */
-export function countView(v) {
-  return count(v.d.doc, v.sel, v.L);
+export function countView(v, opts) {
+  // (the story of a header, footer or note is counted as a document)
+  return count(v.d.doc, v.sel, v.L, v.hdr ? undefined : opts);
 }

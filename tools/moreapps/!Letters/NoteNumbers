@@ -1,0 +1,274 @@
+// NoteNumbers - the numbers footnote and endnote marks show, worked
+// out from the order of the marks in the body (Batch E2).
+//
+//   numbers(doc) -> {footnotes, endnotes}  Map note id -> the text
+//       its mark shows, each kind numbered by itself; memoised per
+//       Doc state (below). Pure: nothing is changed
+//   numbersByPage(doc, pageOf) -> {footnotes, endnotes}  the same
+//       with numRestart eachPage honoured: pageOf(ref) -> a page
+//       number (anything comparable with ===) for ref {note, id,
+//       pid, off, s}: the mark's kind, note id, paragraph id,
+//       offset and section index. The caller (a layout) knows the
+//       pages; this module needs none. Not memoised
+//   labelFor(doc, kind, id) -> string | null  what the mark of the
+//       note `id` (kind 'footnote' | 'endnote') shows: its number,
+//       or the custom text of a custom mark; null when no mark in
+//       the body is for it (an orphan note). The note's own mark
+//       (a self mark, in its first paragraph) shows this too
+//   markText(doc, x, selfId?, nums?) -> string | null  what inline x
+//       (a noteRef) shows: custom text when it has some; a self
+//       mark the labelFor of selfId (null when not given); else the
+//       number of its note, or [?] when the note is not there.
+//       nums: numbers / numbersByPage's result to use before
+//       numbers(doc) (an id it does not hold: numbers(doc)'s; a
+//       pass's numbers stay in use after an edit until the next)
+//   noteKey(doc, p, nums?) -> string  the texts the marks of
+//       paragraph p show (under nums, as markText) joined ('' for
+//       none; each mark adds a \u0001 first, so a mark with no text
+//       is still a key): the layout's reuse key (./ItemReuse): a
+//       paragraph whose marks show other texts is laid out again
+//   marks(p) -> [{x, off}]  the noteRefs of paragraph p that are
+//       no self marks, in text order (x the inline, off its offset;
+//       memoised per paragraph object; frozen [] for none)
+//   noteState(doc, key) -> 'known' | 'unknown' | 'missing'  for key
+//       'footnotes' | 'endnotes' (below; ./OpsNotes refuses a note
+//       for a kind 'unknown': its part is bytes only)
+//   numsOf(L) -> nums | undefined  layout L's numbers by page
+//       (L.fields.noteNums, ./NoteHooks notePass), for noteKey
+//
+// Which marks count: the noteRefs of the body in document order
+// (sections, tables and nested tables in row order), the ones in
+// notes, headers and footers not. A self mark and a mark with
+// custom text (isCustom: x.custom is a string) are not counted (the
+// latter shows its text); a note with no mark in the body is not
+// counted either. A note id marked twice: the second mark shows the
+// number of the first and uses none.
+// A mark whose note is not there shows [?] and is not counted (later
+// numbers are not shifted by it). "There" depends on what is known
+// of the notes of its kind (footnotes / endnotes), by noteState:
+//   known    the part was modelled (doc.notes.read[kind] is set) or
+//            notes were made in the editor (doc.notes[kind] is not
+//            empty): the id must be in doc.notes[kind]
+//   unknown  not modelled but the main part has a relationship of
+//            that kind (the part stays bytes, unreadable to us): the
+//            ids cannot be checked, so every mark is counted and
+//            shows its number
+//   missing  neither: no notes part, a mark points at nothing: [?]
+// A Doc made elsewhere may leave doc.notes out: all missing.
+// Each kind has its own count. A section's own numFmt, numStart and
+// numRestart (./NoteOpts forSection) apply to the marks in it: the
+// count starts at numStart at the first mark, and again at the first
+// mark of a section whose numRestart is eachSect, or (numbersByPage)
+// at the first mark on a page when it is eachPage. Without a page
+// rule (numbers) eachPage counts as continuous: a layout that knows
+// the pages shows the page numbers once it is done. Endnotes'
+// eachPage is continuous always (Word offers it for footnotes only:
+// endnotes are not on their marks' pages).
+// Formats: ./NumFormat formatNumber (decimal, the letters a..z then
+// aa, bb..., Roman, ...; anything it does not know is decimal), and
+// chicago (./NumFormat chicago: * dagger double-dagger section sign,
+// then doubled, tripled...) and numberInDash ("- 3 -").
+// Assumption, to check in real Word: the symbol sequence of chicago
+// is those four symbols repeated doubled, as Word's footnotes do.
+//
+// Memo: per Doc, kept while the version (./DocVersion), doc.sections
+// (and each section), doc.notes and doc.rawSettings are the same
+// objects (an op bumps the version: it changes blocks in place).
+// The marks of each paragraph object are found once (paragraphs are
+// never changed in place), so a recount after a keystroke walks the
+// blocks only.
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {versionOf} from './DocVersion';
+import {forSection} from './NoteOpts';
+import {formatNumber, chicago} from './NumFormat';
+import {firstOfKind} from './Rels';
+
+const KEYS = {footnote: 'footnotes', endnote: 'endnotes'};
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = Object.freeze([]);
+const MAX_DEPTH = 64;                  // (tables in tables: a guard)
+
+const marksOf = new WeakMap();         // Para -> its marks
+
+/** See the header. */
+export function marks(p) {
+  let m = marksOf.get(p);
+  if (m) return m;
+  const s = typeof p.text === 'string' ? p.text : '';
+  const xs = isObj(p.inlines) ? p.inlines : {};
+  const out = [];
+  for (let k = s.indexOf(OBJ); k >= 0; k = s.indexOf(OBJ, k + 1)) {
+    const x = xs[k];
+    if (isObj(x) && x.kind === 'noteRef' && !x.self &&
+      KEYS[x.note]) out.push({x, off: k});
+  }
+  marksOf.set(p, m = out.length ? out : NONE);
+  return m;
+}
+
+/** Visit the paragraphs of blocks in order, tables included. */
+function walk(blocks, f, depth) {
+  if (!Array.isArray(blocks)) return;
+  for (const b of blocks) {
+    if (!isObj(b)) continue;
+    if (b.type === 'p') f(b);
+    else if (b.type === 'tbl' && depth < MAX_DEPTH &&
+      Array.isArray(b.rows)) {
+      for (const r of b.rows) {
+        for (const c of isObj(r) && Array.isArray(r.cells)
+          ? r.cells : NONE) walk(c && c.blocks, f, depth + 1);
+      }
+    }
+  }
+}
+
+/** Whether mark x shows its own text (a string, even empty). */
+export const isCustom = (x) => isObj(x) && typeof x.custom === 'string';
+
+const BROKEN = '[?]';
+
+/** 'known' | 'unknown' | 'missing' for the notes of `key` (header). */
+/** What is known of the notes of kind key ('footnotes' | 'endnotes'):
+ *  'known', 'unknown' or 'missing' (see the header). */
+export function noteState(doc, key) {
+  const n = isObj(doc) ? doc.notes : null;
+  const m = isObj(n) ? n[key] : null;
+  if (isObj(n) && ((isObj(n.read) && n.read[key]) ||
+    (m instanceof Map && m.size))) return 'known';
+  const rels = isObj(doc) && Array.isArray(doc.rels) ? doc.rels : [];
+  return firstOfKind(rels, key) ? 'unknown' : 'missing';
+}
+
+/** Whether the note of mark x is not there (see the header). */
+function broken(doc, x, state) {
+  const key = KEYS[x.note];
+  if (state[key] === undefined) state[key] = noteState(doc, key);
+  if (state[key] === 'unknown') return false;
+  if (state[key] === 'missing') return true;
+  return !(doc.notes[key] instanceof Map && doc.notes[key].has(x.id));
+}
+
+/** The text of count n in format fmt. */
+function show(n, fmt) {
+  if (fmt === 'chicago') return chicago(n);
+  if (fmt === 'numberInDash') return '- ' + n + ' -';
+  return formatNumber(n, fmt);
+}
+
+/** The numbers and the custom texts (see the header). */
+function work(doc, pageOf) {
+  const out = {footnotes: new Map(), endnotes: new Map()};
+  const custom = {footnotes: new Map(), endnotes: new Map()};
+  const secs = isObj(doc) && Array.isArray(doc.sections)
+    ? doc.sections : NONE;
+  const opts = [], state = {};
+  const st = {footnotes: {n: 0, on: false, s: -1, page: undefined},
+    endnotes: {n: 0, on: false, s: -1, page: undefined}};
+  secs.forEach((sec, s) => {
+    walk(sec && sec.blocks, (p) => {
+      for (const {x, off} of marks(p)) {
+        const key = KEYS[x.note];
+        if (isCustom(x)) {
+          if (!custom[key].has(x.id)) custom[key].set(x.id, x.custom);
+          continue;
+        }
+        if (out[key].has(x.id) || broken(doc, x, state)) continue;
+        const o = (opts[s] || (opts[s] = forSection(doc, sec)))[key];
+        const t = st[key];
+        const each = o.numRestart === 'eachPage' &&
+          key === 'footnotes';
+        let page;
+        if (each && pageOf) {
+          page = pageOf({note: x.note, id: x.id, pid: p.id, off, s});
+        }
+        if (!t.on) t.n = o.numStart;
+        else if (o.numRestart === 'eachSect' && t.s !== s) {
+          t.n = o.numStart;
+        } else if (each && pageOf && t.page !== page) {
+          t.n = o.numStart;
+        }
+        else t.n++;
+        t.on = true;
+        t.s = s;
+        t.page = page;
+        if (!out[key].has(x.id)) {
+          out[key].set(x.id, show(t.n, o.numFmt));
+        }
+      }
+    }, 0);
+  });
+  return {out, custom};
+}
+
+const memo = new WeakMap();            // doc -> {ver, sections, ...}
+
+/** Whether the sections now are those kept (the same objects). */
+function sameSecs(was, now) {
+  return Array.isArray(now) && was.length === now.length &&
+    was.every((x, k) => x === now[k]);
+}
+
+/** The memoised work of doc. */
+function memoOf(doc) {
+  if (!isObj(doc)) return work(doc);
+  const ver = versionOf(doc), m = memo.get(doc);
+  if (m && m.ver === ver && m.sections === doc.sections &&
+    m.notes === doc.notes && m.settings === doc.rawSettings &&
+    sameSecs(m.secs, doc.sections)) return m;
+  const w = work(doc);
+  const n = {ver, sections: doc.sections, secs: [...doc.sections],
+    notes: doc.notes,
+    settings: doc.rawSettings, out: w.out, custom: w.custom};
+  memo.set(doc, n);
+  return n;
+}
+
+/** See the header. */
+export const numbers = (doc) => memoOf(doc).out;
+
+/** See the header. */
+export function numbersByPage(doc, pageOf) {
+  return work(doc, typeof pageOf === 'function' ? pageOf : null).out;
+}
+
+/** See the header. */
+export function labelFor(doc, kind, id) {
+  const key = KEYS[kind];
+  if (!key) return null;
+  const m = memoOf(doc);
+  return m.out[key].get(id) ?? m.custom[key].get(id) ?? null;
+}
+
+/** See the header. */
+export function markText(doc, x, selfId, nums) {
+  if (!isObj(x) || x.kind !== 'noteRef' || !KEYS[x.note]) return null;
+  if (isCustom(x)) return x.custom;
+  const key = KEYS[x.note];
+  const by = isObj(nums) && nums[key] instanceof Map ? nums[key]
+    : null;
+  if (x.self) {
+    return selfId === undefined || selfId === null ? null
+      : (by && by.get(selfId)) ?? labelFor(doc, x.note, selfId);
+  }
+  const v = (by && by.get(x.id)) ?? numbers(doc)[key].get(x.id);
+  if (v !== undefined) return v;
+  return broken(doc, x, {}) ? BROKEN : null;
+}
+
+/** See the header. */
+export const numsOf = (L) => (isObj(L) && isObj(L.fields) &&
+  isObj(L.fields.noteNums) ? L.fields.noteNums : undefined);
+
+/** See the header. */
+export function noteKey(doc, p, nums) {
+  if (!isObj(p) || typeof p.text !== 'string') return '';
+  const ms = marks(p);
+  if (!ms.length) return '';
+  let key = '';
+  for (const {x} of ms) {
+    const t = markText(doc, x, undefined, nums);
+    key += '\u0001' + (t === null ? '' : t);
+  }
+  return key;
+}

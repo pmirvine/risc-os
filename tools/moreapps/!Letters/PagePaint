@@ -20,6 +20,18 @@
 //       layout drawn as the body is, in full
 //       colour, PG2, moved by whole px to its box; a part that is
 //       no story: a BAND_COLOUR band with BAND_TEXT in 11 px grey);
+//       the footnotes at its foot (pg.notes, ./NotePlace: at the
+//       left margin, from bodyTop + notes.y: the separator, a
+//       SEP_W rule as long as its note's rule (./NoteLayout sepOf),
+//       else that note as laid out; each piece of a note, its
+//       layout (P.G.notes.note) moved so the piece's first line
+//       is at its place, cut to the piece; the continuation notice
+//       at the foot's bottom); the notes that flow after the text
+//       (./EndnoteLayout, P.G.runs: the page's frags marked en,
+//       ./PageFrames): a separator as the foot's is (its rule
+//       across the middle of its height, else its note), each note
+//       item by ./DocPaint paintFrags with its note's layout (lay.L)
+//       at the fragment's place, cut to the frame as the body's;
 //       and, for each band of columns (D23: pg.cols, the columns
 //       sharing a top) whose section has w:sep on (P.G.sect(s).sep,
 //       s the section of its first column's first item), a line
@@ -122,9 +134,11 @@ export function paintPage(P, i, g, opts = {}) {
   const fl = pg.floats || [];
   floats(Pl.L, g, fl, rect, true);
   paintFrags(Pl.L, g, Pl.pageFrags(i), rect, {marks: !!opts.marks});
+  if (P.G.runs) ends(P, pg, g, rect, !!opts.marks);
   if (pg.cols) separators(P.G, pg, g);
   const ns = numbersOf(P, i);
   if (ns.length) numbers(g, ns, numberFont(Pl.L.doc.styles), rect);
+  if (pg.notes) feet(P.G, pg, g, rect, !!opts.marks);
   for (const b of boxesOf(P.G, pg, P)) {
     story(g, b, rect, !!opts.marks);
   }
@@ -173,6 +187,95 @@ function numbers(g, ns, f, rect) {
     g.fillText(n.text, n.x, n.y);
   }
   g.restore();
+}
+
+/** Layout lay ({L, x, y}) drawn with its point (lay.x, lay.y +
+ *  top) at (x, y), cut to h px from y (Infinity: not cut). */
+function laid(g, lay, x, y, top, h, rect, marks) {
+  if (y > rect.y1 || y + h < rect.y0) return;
+  const dx = x - lay.x, dy = y - lay.y - top;
+  g.save();
+  if (h !== Infinity) {
+    g.beginPath();
+    g.rect(rect.x0, y, rect.x1 - rect.x0, h);
+    g.clip();
+  }
+  g.translate(dx, dy);
+  paint(lay.L, g, {x0: rect.x0 - dx, y0: Math.max(rect.y0, y) - dy,
+    x1: rect.x1 - dx, y1: Math.min(rect.y1, y + h) - dy}, {marks});
+  g.restore();
+}
+
+/** The footnotes at the foot of page pg (./NotePlace) in rect. */
+function feet(G, pg, g, rect, marks) {
+  const f = pg.notes, geo = G.notes && G.geom(pg.s);
+  if (!geo || !f.pieces.length) return;
+  const x = Math.round(geo.mar.left);
+  const y0 = Math.round(pg.bodyTop + f.y);
+  const sep = G.notes.sep(f.sep, pg.s);
+  if (sep && sep.rule) {
+    g.fillStyle = SEP_COLOUR;
+    g.fillRect(x, y0 + Math.round(f.sepH / 2), Math.round(sep.rule),
+      SEP_W);
+  } else if (sep && sep.lay) {
+    laid(g, sep.lay, x, y0, 0, f.sepH, rect, marks);
+  }
+  for (const pc of f.pieces) {
+    const lay = G.notes.note(pc.id, pc.s);
+    if (!lay) continue;
+    const top = pc.from > 0 ? lay.lines[pc.from - 1] : 0;
+    laid(g, lay, x, y0 + Math.round(pc.y), top, pc.h, rect, marks);
+  }
+  const nt = f.notice ? G.notes.sep('continuationNotice', pg.s) : null;
+  if (nt && nt.lay) {
+    laid(g, nt.lay, x, y0 + Math.round(f.h - f.notice), 0, f.notice,
+      rect, marks);
+  }
+}
+
+/** The items of the runs of notes after the text on page pg
+ *  (./EndnoteLayout: frags en, ./PageFrames) drawn in rect. */
+function ends(P, pg, g, rect, marks) {
+  const items = P.G.items;
+  for (const fr of pg.frames) {
+    const {start, end} = fr, n = fr.frags.length;
+    fr.frags.forEach((f, j) => {
+      if (!f.en) return;
+      const k = start.k + j, it = items[k], x = it && it.en;
+      if (!x) return;
+      const tail = !(j === n - 1 && end.k === k);
+      const cut = (j === 0 && start.dy > 0) || (!tail && end.dy > 0);
+      const clip = cut ? {y0: fr.y, y1: fr.y + fr.h} : null;
+      if (x.sep) {
+        sepAt(g, x, f, clip, rect, marks);
+        return;
+      }
+      paintFrags(x.lay.L, g, [{it: x.src, l0: f.l0, l1: f.l1,
+        dx: Math.round(f.x - x.src.x), dy: Math.round(f.y - x.src.y),
+        head: !(j === 0 && (start.line > 0 || start.dy > 0)), tail,
+        clip, first: j === 0, last: j === n - 1, col: 0}], rect,
+      {marks});
+    });
+  }
+}
+
+/** A run's separator x (frag f) drawn: its rule, else its note. */
+function sepAt(g, x, f, clip, rect, marks) {
+  const s = x.sep, y = Math.round(f.y);
+  if (s.rule) {
+    const ry = y + Math.round(s.h / 2);
+    if (clip && (ry < clip.y0 || ry >= clip.y1)) return;
+    g.fillStyle = SEP_COLOUR;
+    g.fillRect(Math.round(f.x), ry, Math.round(s.rule), SEP_W);
+  } else if (s.lay) {
+    const y0 = clip ? Math.max(y, clip.y0) : y;
+    const y1 = clip ? Math.min(y + s.h, clip.y1) : y + s.h;
+    if (y1 > y0) {
+      laid(g, s.lay, Math.round(f.x), y, 0, s.h, {...rect,
+        y0: Math.max(rect.y0, y0), y1: Math.min(rect.y1, y1)},
+      marks);
+    }
+  }
 }
 
 /** Header or footer box b (./PageHF boxesOf) drawn in rect. */

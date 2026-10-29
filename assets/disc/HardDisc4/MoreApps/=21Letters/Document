@@ -36,11 +36,19 @@
 // half reverted) and fn's error is thrown, with the rollback's error
 // as its cause. The editing
 // commands (./Edit, ./EditDel) run in it.
+//
+// A footnote or endnote goes with its mark (Batch E2): when a step
+// (the outermost group, or an op outside one) took the last mark of
+// a note from the body, the note is removed in that same step
+// (./NoteKeep dropped: one more op at its end, so undo brings both
+// back). Should that removal be refused, the step stands and the
+// note stays (an orphan note is harmless; the edit is never lost).
 
 import {apply, applyOwn} from './Ops';
 import {reserveIds} from './Model';
 import {DocEvents} from './DocEvents';
 import {DocHistory} from './DocHistory';
+import {dropped} from './NoteKeep';
 
 export class Document {
   /** @param {object} doc a Doc (see Model) */
@@ -92,13 +100,13 @@ export class Document {
   /** Apply op; inside a group opts is ignored (the group's key rules).
    * (throws RangeError, changing nothing, if refused). */
   apply(op, opts) {
-    const inv = apply(this.doc, op);
-    if (this._depth) {
-      this._group.ops.push(op);
-      this._group.inv.push(inv);
+    if (!this._depth) {
+      this.group(() => this.apply(op), opts);
       return;
     }
-    this._record([op], [inv], opts && opts.coalesce);
+    const inv = apply(this.doc, op);
+    this._group.ops.push(op);
+    this._group.inv.push(inv);
   }
 
   groupStart(opts) {
@@ -109,6 +117,7 @@ export class Document {
 
   groupEnd() {
     if (!this._depth) throw new Error('groupEnd without groupStart');
+    if (this._depth === 1) this._notes(this._group);
     if (--this._depth) return;
     const g = this._group;
     this._group = null;
@@ -148,6 +157,21 @@ export class Document {
       throw e;
     } finally {
       this.groupEnd();
+    }
+  }
+
+  /** The notes whose marks group g took, removed in it (header). */
+  _notes(g) {
+    if (!g.ops.length) return;
+    let op = null;
+    try {
+      op = dropped(this.doc, g.inv);
+      if (op) {
+        g.inv.push(apply(this.doc, op));
+        g.ops.push(op);
+      }
+    } catch (e) {
+      // (refused: nothing changed by it; the step stands)
     }
   }
 

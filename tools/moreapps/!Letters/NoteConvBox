@@ -1,0 +1,124 @@
+// NoteConvBox - the Convert Notes box (Batch E2), from the Convert...
+// button of the Footnote and Endnote box (./NoteBox), as Word's.
+// Built by WimpLib Ui/Dialog.
+//
+//   convBox(dw, done?) -> the box's api (WimpLib Ui/Dialog), one box
+//       per document (key 'noteconv:<docKey>'), kept in dw.boxes
+//       ('noteconv') so ./CloseDoc deletes it with the document;
+//       done() is called after each conversion (./NoteBox fills
+//       itself again)
+//
+// One choice of four (./NoteConvert SCOPES):
+//   This note                        the note of the mark by the
+//                                    caret, or the note being edited
+//   All footnotes to endnotes
+//   All endnotes to footnotes
+//   Swap footnotes and endnotes
+// Convert makes the change (one undo step) and closes the box. In
+// the notes mode the conversion is worked out first (./NoteConvert
+// convertPlan) and the mode left only when it will run: the caret
+// goes back after the note's mark (that note is the one 'This note'
+// converts, and it is no longer a note of the kind being edited). A
+// refusal (no mark by the caret, notes kept as bytes...; in the
+// header and footer mode, ./NotePatch modeWhy), or nothing to
+// convert, beeps, says why in the box and keeps it (and the mode).
+// Notes left as they were (their marks in a text box or a header,
+// links of their part, no mark at all) are counted and named by the
+// numbers they show (the first five) in the box, which stays.
+// Cancel, Escape and the close icon change nothing.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {modeWhy} from './NotePatch';
+import {convertNote, convertPlan} from './NoteConvert';
+import {labelFor} from './NoteNumbers';
+import {isNote} from './NoteEdit';
+import {leave} from './NoteMode';
+
+const radio = (value, text, label) => ({kind: 'radio', name: value,
+  group: 'what', value, text, label,
+  help: 'Which notes are changed to the other kind.'});
+const rows = () => [
+  radio('this', 'This note', 'Convert'),
+  radio('allFootnotes', 'All footnotes to endnotes'),
+  radio('allEndnotes', 'All endnotes to footnotes'),
+  radio('swap', 'Swap footnotes and endnotes'),
+  {kind: 'label', name: 'msg', text: '', w: 420},
+];
+const HELP = 'Convert Notes: footnotes made endnotes, endnotes ' +
+  'made footnotes.';
+const LEFT = {opaque: 'a mark in a text box, a header or a link',
+  rels: 'a link or picture of its part', orphan: 'no mark'};
+const wired = new WeakSet();
+const dones = new WeakMap();
+const SHOWN = 5;
+
+/** See the header. */
+export function convBox(dw, done) {
+  const api = dialog({task: dw.app.task, key: `noteconv:${dw.docKey}`,
+    title: 'Convert Notes', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Convert'], enter: 'Convert', minW: 420});
+  box(dw, 'noteconv', () => api.win);
+  dones.set(api, done);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, dw);
+  api.set('what', 'this');
+  api.set('msg', '');
+  api.open();
+  return api;
+}
+
+/** A skipped note by what it shows: 'footnote 3', or by its kind
+ *  alone when nothing shows it. */
+function nameOf(doc, x) {
+  const l = labelFor(doc, x.kind, x.id);
+  return l === null ? 'a ' + x.kind + ' with no mark'
+    : x.kind + ' ' + l;
+}
+
+/** The words for notes left as they were. */
+function leftOf(doc, skipped) {
+  const n = skipped.length;
+  const why = [...new Set(skipped.map((x) => LEFT[x.why]))];
+  const names = skipped.slice(0, SHOWN).map((x) => nameOf(doc, x));
+  if (n > SHOWN) names.push('and ' + (n - SHOWN) + ' more');
+  return n + (n === 1 ? ' note was' : ' notes were') + ' left as ' +
+    (n === 1 ? 'it was' : 'they were') + ': ' + names.join(', ') +
+    ' (' + why.join('; ') + ').';
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg) => {
+    wimp.beep();
+    api.set('msg', msg);
+    return false;
+  };
+  api.on('button', ({name}) => {
+    if (name !== 'Convert') { v.focus(); return undefined; }
+    if (v.hdr && !isNote(v.hdr)) return no(modeWhy(v.hdr));
+    if (!v.sel) return no('There is no caret in the text.');
+    const what = api.get('what'), doc = v.real.doc;
+    const plan = convertPlan(v.d, v.sel, what);
+    if (plan.error) return no(plan.error);
+    if (!plan.changed) {
+      return no(plan.skipped.length ? 'Nothing converted: ' +
+        leftOf(doc, plan.skipped) : 'There is no note of that kind.');
+    }
+    if (isNote(v.hdr)) leave(dw);
+    const r = convertNote(v.d, v.typing, v.sel, what);
+    if (r.error) return no(r.error);
+    v.edited(r.sel);
+    const done = dones.get(api);
+    if (done) done();
+    if (r.skipped.length) {
+      api.set('msg', r.changed + ' converted; ' +
+        leftOf(v.real.doc, r.skipped));
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}

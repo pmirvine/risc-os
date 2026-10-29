@@ -1,0 +1,114 @@
+// NoteKeep - a footnote or endnote goes with its mark (Batch E2):
+// the notes whose last mark in the body an edit took away, for
+// ./Document, which removes them in the same undo step.
+//
+//   dropped(doc, invs) -> op | null  after the ops of one step (one
+//       group, or one op outside a group) whose inverses are invs,
+//       applied to doc: a removeNotes op (./OpsNotes; a compound of
+//       two for both kinds) for the notes of every mark that the
+//       step took from the body and that no longer has a mark there
+//       (a mark moved, cut and put back in the same step, or a
+//       paragraph only reformatted, keeps its note); null when
+//       there is none. What a step took is read from its inverses:
+//       what they would put back (spliceText's content, a
+//       restoreBlock's snapshot, insertBlock(s)' blocks, a
+//       compound's ops), in the body only (story null: a header's
+//       or a note's marks are not modelled marks, ./ReadPara). A
+//       note is removed only when it is there and normal (a
+//       separator never; a kind kept as bytes, ./NoteNumbers
+//       noteState 'unknown', has none modelled); a note no mark
+//       ever named (an orphan) is never touched; nor is one that a
+//       reference not modelled as a body mark still names (in a
+//       hyperlink, a tracked insertion, a content control, a text
+//       box, a raw table, a header: ./NoteRefs, as ./NoteConvert
+//       skips it). Cost: nothing for a document with no note;
+//       otherwise the size of what was taken, one walk of the
+//       body's marks (memoised per paragraph, ./NoteNumbers marks)
+//       only when a mark was taken, and one walk of the opaque
+//       references (./NoteRefs opaqueRefs) only when a note would
+//       be removed
+//
+// The one place every deleting command reaches: Backspace, Delete,
+// a selection deleted, typed over, cut or pasted over, Enter over a
+// selection, a table row, column or table deleted, text converted,
+// Find and Replace (which never replaces across a mark), Outline's
+// moves (a mark moved stays). Undo puts the notes back with their
+// marks (the step's inverse); numbers follow (./NoteNumbers).
+// Pure: no desktop services.
+import {marks} from './NoteNumbers';
+import {scan} from './Walk';
+import {opaqueRefs} from './NoteRefs';
+
+const SLOTS = {footnote: 'footnotes', endnote: 'endnotes'};
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** Whether doc has a note of either kind (a quick look). */
+function noted(doc) {
+  const n = isObj(doc) ? doc.notes : null;
+  return isObj(n) && ((n.footnotes instanceof Map &&
+    n.footnotes.size > 0) || (n.endnotes instanceof Map &&
+    n.endnotes.size > 0));
+}
+
+const keyOf = (x) => x.note + ':' + x.id;
+
+/** The marks of paragraph p (not its own: self) into out. */
+function take(p, out) {
+  if (!isObj(p) || p.type !== 'p') return;
+  for (const {x} of marks(p)) {
+    if (SLOTS[x.note] && Number.isInteger(x.id)) out.set(keyOf(x), x);
+  }
+}
+
+/** The marks the blocks hold, tables in them too. */
+function inBlocks(bs, out) {
+  if (!Array.isArray(bs)) return;
+  scan({sections: [{blocks: bs}]}, (b) => take(b, out));
+}
+
+/** The marks inverse op `op` would put back into the body. */
+function putBack(op, out) {
+  if (!isObj(op)) return;
+  if (op.op === 'compound') {
+    if (Array.isArray(op.ops)) for (const o of op.ops) putBack(o, out);
+    return;
+  }
+  if (op.story !== undefined && op.story !== null) return;
+  if (op.op === 'spliceText') {
+    const xs = isObj(op.content) && isObj(op.content.inlines)
+      ? op.content.inlines : null;
+    for (const x of xs ? Object.values(xs) : []) {
+      if (isObj(x) && x.kind === 'noteRef' && !x.self &&
+        SLOTS[x.note] && Number.isInteger(x.id)) out.set(keyOf(x), x);
+    }
+  } else if (op.op === 'restoreBlock') inBlocks([op.snapshot], out);
+  else if (op.op === 'insertBlock') inBlocks([op.block], out);
+  else if (op.op === 'insertBlocks') inBlocks(op.blocks, out);
+}
+
+/** See the header. */
+export function dropped(doc, invs) {
+  if (!noted(doc) || !Array.isArray(invs)) return null;
+  const was = new Map();
+  for (const op of invs) putBack(op, was);
+  if (!was.size) return null;
+  const now = new Map();
+  scan(doc, (b) => take(b, now));
+  const ids = {footnote: [], endnote: []};
+  const parts = isObj(doc.meta) && isObj(doc.meta.noteParts)
+    ? doc.meta.noteParts : {};
+  let opaque = null;
+  for (const [k, x] of was) {
+    if (now.has(k)) continue;
+    const slot = SLOTS[x.note], m = doc.notes[slot];
+    const n = m instanceof Map ? m.get(x.id) : null;
+    if (typeof parts[slot] !== 'string' || !isObj(n) ||
+      n.type !== 'normal') continue;
+    if (!opaque) opaque = opaqueRefs(doc);
+    if (!opaque.has(k)) ids[x.note].push(x.id);
+  }
+  const ops = Object.keys(ids).filter((k) => ids[k].length)
+    .map((kind) => ({op: 'removeNotes', kind, ids: ids[kind]}));
+  if (!ops.length) return null;
+  return ops.length === 1 ? ops[0] : {op: 'compound', ops};
+}

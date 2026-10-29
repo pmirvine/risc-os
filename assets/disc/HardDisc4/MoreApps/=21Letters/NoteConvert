@@ -1,0 +1,418 @@
+// NoteConvert - footnotes made endnotes and endnotes footnotes
+// (Batch E2: Word's Convert Notes), re-exported by ./NoteCmd.
+//
+//   convertNote(d, typing, sel, scope) -> {changed, skipped, sel} |
+//       {changed: 0, skipped: [], error}  scope (SCOPES):
+//         'this'          the note of the mark at the caret (noteNear)
+//                         or, d a note's ./StoryFacade (the notes
+//                         mode), the note being edited
+//         'allFootnotes'  every footnote becomes an endnote
+//         'allEndnotes'   every endnote becomes a footnote
+//         'swap'          both at once
+//       One undo step (typing.command, d.atomic; typing may be
+//       null), none when no note moves (changed 0). A note that
+//       moves leaves its kind's Map (./OpsNotes removeNotes) and goes
+//       into the other's (addNotes) under a new id there: nextNoteId
+//       and one more for each, given in the order of the notes'
+//       first marks in the body, so the notes keep their order (the
+//       numbers come from the marks: ./NoteNumbers). Its type stays
+//       normal; its blocks are kept but for its own mark
+//       (w:footnoteRef becomes w:endnoteRef) and Word's note styles:
+//       a paragraph in Footnote Text goes to Endnote Text, a run in
+//       Footnote Reference to Endnote Reference (and back), the
+//       styles made on first use (./NoteStyle); any other style is
+//       kept. Every mark of it in the body (tables too) is rewritten:
+//       its kind, id and element (w:footnoteReference w:id becomes
+//       w:endnoteReference with the new id, other attributes kept: a
+//       custom mark stays custom), its run's Footnote Reference style
+//       the Endnote one; one restoreBlock a top-level block that
+//       changed (a paragraph keeps its id: no id scan), so 10,000
+//       notes cost one walk. The other kind's part is made when the
+//       document has none (./NoteParts ensure). The step's end
+//       (./NoteKeep) takes nothing: the marks are there, renamed.
+//       sel comes back as given (no text moved).
+//       Left as they are and listed in skipped [{kind, id, why}]:
+//         'opaque'  a reference to it sits in content kept as it was
+//                   read (a text box, a header, a hyperlink...: not
+//                   modelled, so it could not be renamed with it)
+//         'rels'    its content uses a relationship of its notes
+//                   part (a link, a picture): the other part has
+//                   not got it
+//         'orphan'  no mark in the body names it (nothing shows it)
+//       error (nothing changed): convertWhy's reason; for 'this', a
+//       note that would be skipped (the reason in words); no free id
+//   convertWhy(d, sel, scope) -> string | null  why convertNote
+//       refuses, in words (its error): a bad scope; d a header or
+//       footer's facade; 'this' with no mark at the caret, a mark
+//       naming no note, or a note that would be skipped; a kind
+//       involved (moved from or to) kept as bytes (./NoteNumbers
+//       noteState 'unknown': the part could not be read, its notes
+//       cannot be changed); no free id. One walk of the document
+//   convertPlan(d, sel, scope) -> {changed, skipped, error?}  what
+//       convertNote would do, nothing changed (./NoteConvBox asks
+//       before it leaves the notes mode)
+//   noteNear(doc, sel) -> {kind, id} | null  the note of the mark
+//       right before a caret, else right after it; for a range in
+//       one paragraph, its first mark. Body marks only
+//   SCOPES  the scopes, in the order a box offers them
+// Pure: no desktop services.
+import {MAX_NOTE_ID, normRuns} from './ModelCheck';
+import {orderedPos, findBlock} from './EditPos';
+import {ensure} from './NoteParts';
+import {nextNoteId, newNote, partRels, SLOTS} from './OpsNotes';
+import {noteState, marks} from './NoteNumbers';
+import {noteStyle, styleIds} from './NoteStyle';
+import {scan, scanStories, mapBlocks, blocks} from './Walk';
+import {blockRefs} from './NoteRefs';
+import {W} from './Wml';
+
+export const SCOPES = Object.freeze(['this', 'allFootnotes',
+  'allEndnotes', 'swap']);
+const FROM = {allFootnotes: ['footnote'], allEndnotes: ['endnote'],
+  swap: ['footnote', 'endnote']};
+const OTHER = {footnote: 'endnote', endnote: 'footnote'};
+const CAP = {footnote: 'Footnote', endnote: 'Endnote'};
+const MAX_DEPTH = 256;
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const keyOf = (kind, id) => kind + ':' + id;
+const isMark = (x) => isObj(x) && x.kind === 'noteRef' && !x.self &&
+  Object.hasOwn(SLOTS, x.note) && Number.isInteger(x.id);
+
+/** The real document of d and the note a notes mode edits. */
+function realOf(d) {
+  if (isObj(d.note) && isObj(d.real)) return {real: d.real, k: d.note};
+  if (typeof d.refuses === 'function') return null;
+  return {real: d, k: null};
+}
+
+/** See the header. */
+export function noteNear(doc, sel) {
+  const o = sel && sel.anchor && sel.head ? orderedPos(doc, sel)
+    : null;
+  if (!o) return null;
+  const loc = findBlock(doc, o.to.id);
+  if (!loc || loc.story !== null || loc.b.type !== 'p') return null;
+  const p = loc.b, xs = p.inlines;
+  const near = (k) => (isMark(xs[k]) ? {kind: xs[k].note,
+    id: xs[k].id} : null);
+  if (o.from.id === o.to.id && o.from.off < o.to.off) {
+    for (let k = o.from.off; k < o.to.off; k++) if (near(k))
+      return near(k);
+    return null;
+  }
+  return near(o.to.off - 1) || near(o.to.off);
+}
+
+/** The kinds scope moves notes from, and the note of 'this'. */
+function sourcesOf(real, k, sel, scope) {
+  if (scope !== 'this') return {kinds: FROM[scope], one: null};
+  const one = k || noteNear(real.doc, sel);
+  return one ? {kinds: [one.kind], one} : null;
+}
+
+/** The refusals that need no walk (convertWhy's first part). */
+function quickWhy(d, sel, scope) {
+  if (typeof scope !== 'string' || !SCOPES.includes(scope))
+    return 'Not a kind of conversion: ' + String(scope) + '.';
+  const r = realOf(d);
+  if (!r) return 'No footnote or endnote in a header or footer.';
+  const src = sourcesOf(r.real, r.k, sel, scope);
+  if (!src) return 'Put the caret by a footnote or endnote mark first.';
+  const doc = r.real.doc;
+  for (const kind of src.kinds) {
+    for (const k of [kind, OTHER[kind]]) {
+      if (noteState(doc, SLOTS[k]) === 'unknown') {
+        return 'The ' + SLOTS[k] + ' of this document could not be ' +
+          'read: they are kept as they are and cannot be changed.';
+      }
+    }
+  }
+  if (src.one) {
+    const m = doc.notes && doc.notes[SLOTS[src.one.kind]];
+    const n = m instanceof Map ? m.get(src.one.id) : null;
+    if (!isObj(n) || n.type !== 'normal')
+      return 'The note of that mark is not there.';
+  }
+  return null;
+}
+
+/** One walk: the first mark of each note in the body (key -> rank)
+ *  and every reference not modelled as a body mark (key set). */
+function survey(doc) {
+  const first = new Map(), opaque = new Set();
+  scan(doc, (b) => {
+    if (isObj(b) && b.type === 'p') {
+      for (const {x} of marks(b)) {
+        const key = keyOf(x.note, x.id);
+        if (!first.has(key)) first.set(key, first.size);
+      }
+    }
+    blockRefs(b, opaque, false);
+  });
+  scanStories(doc, (b) => blockRefs(b, opaque, true));
+  return {first, opaque};
+}
+
+/** Whether the blocks use a relationship id of `ids` (an attribute
+ *  value of a node in them). */
+function usesRels(blocks, ids) {
+  const stack = [[blocks, 0]];
+  while (stack.length) {
+    const [v, depth] = stack.pop();
+    if (!isObj(v) || depth > MAX_DEPTH) continue;
+    if (Array.isArray(v)) {
+      for (const x of v) if (isObj(x)) stack.push([x, depth + 1]);
+      continue;
+    }
+    if (Array.isArray(v.attrs) && v.attrs.some((e) =>
+      Array.isArray(e) && ids.has(e[1]))) return true;
+    for (const k of Object.keys(v)) {
+      if (isObj(v[k])) stack.push([v[k], depth + 1]);
+    }
+  }
+  return false;
+}
+
+/** The notes of kind that move (in first-mark order) and those
+ *  left, for scope. */
+function pick(doc, kind, one, sv) {
+  const m = doc.notes && doc.notes[SLOTS[kind]];
+  const move = [], skipped = [];
+  if (!(m instanceof Map)) return {move, skipped};
+  const rels = partRels(doc, kind);
+  const relIds = new Set(Array.isArray(rels) ? rels.map((x) => x.id)
+    : []);
+  for (const [id, n] of m) {
+    if (!isObj(n) || n.type !== 'normal') continue;
+    if (one && id !== one.id) continue;
+    const key = keyOf(kind, id);
+    let why = null;
+    if (sv.opaque.has(key)) why = 'opaque';
+    else if (!sv.first.has(key)) why = 'orphan';
+    else if (relIds.size && usesRels(n.blocks, relIds)) why = 'rels';
+    if (why) skipped.push({kind, id, why});
+    else move.push(n);
+  }
+  move.sort((a, b) => sv.first.get(keyOf(kind, a.id)) -
+    sv.first.get(keyOf(kind, b.id)));
+  return {move, skipped};
+}
+
+const WHY = {
+  opaque: 'Its mark is also in content kept as it was read (a text ' +
+    'box, a header or a link): it is left as it is.',
+  rels: 'It holds a link or a picture of its notes part: it is ' +
+    'left as it is.',
+  orphan: 'No mark in the text names it.',
+};
+
+/** node renamed to `local` (its prefix kept), w:id set to id when
+ *  given; a new w: element when there is no node. */
+function renamed(node, local, id) {
+  if (!isObj(node) || typeof node.name !== 'string')
+    return W(local, id === undefined ? {} : {'w:id': id});
+  const name = node.name, pre = name.slice(0, name.indexOf(':') + 1);
+  const attrs = (Array.isArray(node.attrs) ? node.attrs : []).map(
+    ([k, v]) => (id !== undefined && /(^|:)id$/.test(k)
+      ? [k, String(id)] : [k, v]));
+  return {...node, name: pre + local, attrs};
+}
+
+/** The style map of a conversion from kind: lazily made targets. */
+function styleMap(d, kind) {
+  const to = OTHER[kind], cap = CAP[to], from = styleIds(d.doc, kind);
+  let text, ref;
+  return {
+    text: (s) => (from.text.has(s) ? (text === undefined ? (text =
+      noteStyle(d, cap + 'Text', to + ' text', 'paragraph')) : text)
+      : null),
+    ref: (s) => (from.ref.has(s) ? (ref === undefined ? (ref =
+      noteStyle(d, cap + 'Reference', to + ' reference',
+        'character')) : ref) : null),
+  };
+}
+
+/** runs with the reference style switched by sm: of every run (at
+ *  null), or of the marks at offsets `at` only (a run holding more
+ *  than the mark is split around it: two marks of one note kind in
+ *  one run, one of them moved). Not merged: the caller normalises
+ *  once, after every mark is switched (a run merged early would be
+ *  switched again with the next mark's). */
+function restyled(runs, at, sm) {
+  let out = null;
+  runs.forEach((u, j) => {
+    if (typeof u.rStyle !== 'string') return;
+    const ks = at ? at.filter((k) => u.start <= k && k < u.end)
+      .sort((x, y) => x - y) : null;
+    if (ks && !ks.length) return;
+    const s = sm.ref(u.rStyle);
+    if (!s) return;
+    out ||= runs.map((v) => [v]);
+    if (!ks) {
+      out[j] = [{...u, rStyle: s}];
+      return;
+    }
+    const parts = [];
+    let from = u.start;
+    for (const k of ks) {
+      if (k > from) parts.push({...u, start: from, end: k});
+      parts.push({...u, start: k, end: k + 1, rStyle: s});
+      from = k + 1;
+    }
+    if (from < u.end) parts.push({...u, start: from, end: u.end});
+    out[j] = parts;
+  });
+  return out ? out.flat() : runs;
+}
+
+/** A moved note's blocks (see the header). */
+function noteBlocks(blocks, kind, sm) {
+  const to = OTHER[kind];
+  return mapBlocks(blocks, (p) => {
+    let inl = null;
+    for (const k of Object.keys(p.inlines)) {
+      const x = p.inlines[k];
+      if (isObj(x) && x.kind === 'noteRef' && x.self === true &&
+        x.note === kind) {
+        (inl ||= {...p.inlines})[k] = {...x, note: to,
+          node: renamed(x.node, to + 'Ref')};
+      }
+    }
+    const ps = typeof p.pStyle === 'string' ? sm[kind].text(p.pStyle)
+      : null;
+    const r0 = restyled(p.runs, null, sm[kind]);
+    const runs = r0 === p.runs ? r0 : normRuns(r0);
+    if (!inl && !ps && runs === p.runs) return p;
+    const np = {...p, runs};
+    if (inl) np.inlines = inl;
+    if (ps) np.pStyle = ps;
+    return np;
+  });
+}
+
+/** A body paragraph with its moved marks rewritten (remap: key ->
+ *  {kind, id}). */
+function bodyPara(p, remap, sm) {
+  const ms = marks(p);
+  if (!ms.length) return p;
+  let inl = null;
+  const at = [], kinds = [];
+  for (const {x, off} of ms) {
+    const to = remap.get(keyOf(x.note, x.id));
+    if (!to) continue;
+    (inl ||= {...p.inlines})[off] = {...x, note: to.kind, id: to.id,
+      node: renamed(x.node, to.kind + 'Reference', to.id)};
+    at.push(off);
+    kinds.push(x.note);
+  }
+  if (!inl) return p;
+  let runs = p.runs;
+  at.forEach((k, j) => {
+    runs = restyled(runs, [k], sm[kinds[j]]);
+  });
+  // (merged with a neighbour of the same format, once: a mark next
+  // to one of the other kind)
+  if (runs !== p.runs) runs = normRuns(runs);
+  return {...p, inlines: inl, runs};
+}
+
+/** The conversion in d's step (see the header). */
+function run(d, plan, sel) {
+  const sm = {footnote: styleMap(d, 'footnote'),
+    endnote: styleMap(d, 'endnote')};
+  const remap = new Map(), made = {};
+  for (const {kind, move, base} of plan) {
+    const to = OTHER[kind];
+    ensure(d, to);
+    made[to] = move.map((n, j) => {
+      const id = base + j;
+      remap.set(keyOf(kind, n.id), {kind: to, id});
+      return {n, id};
+    });
+  }
+  const notes = {};
+  for (const {kind} of plan) {
+    const to = OTHER[kind];
+    notes[to] = made[to].map(({n, id}) => ({...newNote(d.doc, to, id,
+      noteBlocks(n.blocks, kind, sm)), node: n.node
+      ? renamed(n.node, to) : null}));
+  }
+  for (const {kind, move} of plan) {
+    d.apply({op: 'removeNotes', kind, ids: move.map((n) => n.id)});
+  }
+  for (const to of Object.keys(notes)) {
+    const order = d.doc.notes.order[SLOTS[to]] || [];
+    d.apply({op: 'addNotes', kind: to, notes: notes[to],
+      order: [...order, ...notes[to].map((x) => x.id)]});
+  }
+  const puts = [];
+  for (const {b, at, depth} of blocks(d.doc)) {
+    if (depth) continue;
+    const [nb] = mapBlocks([b], (p) => bodyPara(p, remap, sm));
+    if (nb !== b) puts.push({op: 'restoreBlock', block: at,
+      snapshot: nb});
+  }
+  for (const op of puts) d.apply(op);
+  return sel;
+}
+
+/** The conversion worked out, nothing changed: {error} or {real,
+ *  plan, skipped, changed}. */
+function prepare(d, sel, scope) {
+  const why = quickWhy(d, sel, scope);
+  if (why !== null) return {error: why};
+  const {real, k} = realOf(d);
+  const src = sourcesOf(real, k, sel, scope);
+  const doc = real.doc, sv = survey(doc);
+  const plan = [], skipped = [];
+  for (const kind of src.kinds) {
+    const got = pick(doc, kind, src.one, sv);
+    skipped.push(...got.skipped);
+    if (got.move.length) plan.push({kind, move: got.move});
+  }
+  if (src.one && skipped.length) return {error: WHY[skipped[0].why]};
+  let changed = 0;
+  for (const x of plan) {
+    const none = {error: 'There is no free ' + OTHER[x.kind] +
+      ' number left.'};
+    try {
+      x.base = nextNoteId(doc, OTHER[x.kind]);
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      return none;
+    }
+    if (x.base + x.move.length - 1 > MAX_NOTE_ID) return none;
+    changed += x.move.length;
+  }
+  return {real, plan, skipped, changed};
+}
+
+/** See the header. */
+export function convertPlan(d, sel, scope) {
+  const p = prepare(d, sel, scope);
+  return p.error !== undefined ? {changed: 0, skipped: [],
+    error: p.error} : {changed: p.changed, skipped: p.skipped};
+}
+
+/** See the header. */
+export function convertWhy(d, sel, scope) {
+  const p = prepare(d, sel, scope);
+  return p.error !== undefined ? p.error : null;
+}
+
+/** See the header. */
+export function convertNote(d, typing, sel, scope) {
+  const p = prepare(d, sel, scope);
+  if (p.error !== undefined)
+    return {changed: 0, skipped: [], error: p.error};
+  const {real, plan, skipped, changed} = p;
+  if (!changed) return {changed: 0, skipped, sel};
+  let out = sel;
+  const go = () => real.atomic(() => {
+    out = run(real, plan, sel);
+  });
+  if (typing) typing.command(go);
+  else go();
+  return {changed, skipped, sel: out};
+}

@@ -19,8 +19,10 @@
 // reached from the package, the main part or a story: see
 // ./PartTypes; a header or footer part the file did not have: an
 // Override with its own type, whatever the xml Default says, final
-// fix A F1-I2), _rels/.rels, the main part and its
+// fix A F1-I2; a notes part made in the editor, ./NoteParts: the
+// same with its own type), _rels/.rels, the main part and its
 // .rels, styles, numbering and settings (raw, verbatim), the header
+// notes (./NoteWrite: untouched = their bytes), the header
 // and footer stories (./StoryWrite: an untouched one as its bytes, a
 // removed one dropped with its relationship and .rels) and every
 // other entry of doc.parts byte-identical. XML parts are UTF-8.
@@ -38,6 +40,8 @@ import {firstOfKind, resolvePart, relsNameFor, findPart}
 import {repairs} from './PartTypes';
 import {documentTree, docScope} from './WriteBody';
 import {storiesOut} from './StoryWrite';
+import {notesOut} from './NoteWrite';
+import {checkNotes} from './ModelCheck';
 import {stylesTree} from './WriteStyles';
 import {xmlBytes, contentTypes, relsTree, relType, zipOrder, CT}
   from './WriteParts';
@@ -64,6 +68,12 @@ function check(doc) {
       }
     });
   });
+  try {
+    checkNotes(doc.notes);
+  } catch (e) {
+    throw new DocxError('bad-model', 'notes: ' + e.message,
+      {cause: e});
+  }
   for (const [n, st] of doc.stories || []) {
     try {
       checkStory(st);
@@ -142,6 +152,17 @@ function newStories(doc, known) {
   }
 }
 
+/** Each notes part the file did not have (./NoteParts) typed as
+ *  footnotes or endnotes in known, as newStories does. */
+function newNotes(doc, known) {
+  const names = doc.meta.noteParts || {};
+  for (const slot of ['footnotes', 'endnotes']) {
+    const n = names[slot];
+    if (typeof n === 'string' && !findPart(doc.parts, n))
+      known.set(n, CT[slot]);
+  }
+}
+
 /** Map name -> bytes of every part; see the header. */
 function buildParts(doc) {
   const {meta} = doc;
@@ -167,7 +188,10 @@ function buildParts(doc) {
   if (doc.rawSettings && meta.settingsPart)
     put(meta.settingsPart, doc.rawSettings, CT.settings);
   for (const [n, b] of st.parts) out.set(n, b);
+  for (const [n, b] of notesOut(doc, docScope(doc).map).parts)
+    out.set(n, b);
   newStories(doc, known);
+  newNotes(doc, known);
   for (const [n, b] of doc.parts)
     if (!out.has(n) && !st.drop.has(n)) out.set(n, b);
   const names = ['_rels/.rels', ...out.keys()];

@@ -2,7 +2,11 @@
 // ./ClipPaste.
 //
 //   clean(blocks, doc, {sameDoc, styleNames, styles, lists, pics,
-//     picScope}) -> blocks
+//     picScope, inNote, toNote}) -> blocks
+//   rebuild(c, swap, fmt) -> content  c ({text, runs, inlines})
+//     rebuilt run by run: each U+FFFC's inline x stays when swap(x)
+//     is null, else becomes the text swap(x) gives; fmt(r) is a
+//     run's new {rPr, rStyle?}
 //
 // blocks: ./ClipSlice's shape (from a copy, or ./ClipRead); the
 // result has the same shape (no ids: ./ClipPaste gives fresh ones;
@@ -26,6 +30,14 @@
 // control's w:id, a change record's w:id) is pasted as text
 // instead (./ClipIds.flatten: a paragraph per table row, cells
 // joined by tabs); a kept one loses its w14:paraId / w14:textId.
+// A footnote or endnote mark (a noteRef inline, Batch E2) is kept,
+// in the same document and across: ./ClipPaste then gives it a new
+// note of its own or drops it (./ClipNotes carry); a note's own
+// mark (self) is kept only in the same document and pasted into a
+// note (opts.toNote: ./ClipPaste, d a note's ./StoryFacade): in the
+// body or a header Word never writes one. With opts.inNote
+// (the blocks of a note the paste carries) the other way round: a
+// note's own mark is kept, any other mark goes (no note in a note).
 // A typed table (Batch C) comes whole: ./ClipCleanTbl sameTable
 // (its paragraphs as these, its marks with unique ids dropped); a
 // floating one never overlaps the tables before it (./TblFloat
@@ -133,12 +145,8 @@ function inlineText(x) {
   return '';
 }
 
-/**
- * The content c rebuilt run by run: each U+FFFC's inline x stays when
- * swap(x) is null, else becomes the text swap(x) gives; fmt(r) is a
- * run's new {rPr, rStyle?}.
- */
-function rebuild(c, swap, fmt) {
+/** See the header. */
+export function rebuild(c, swap, fmt) {
   let text = '';
   const runs = [], inlines = {};
   for (const r of c.runs) {
@@ -172,9 +180,12 @@ function cross(b, map, strict, opts, doc) {
     const rs = map(r.rStyle, 'character');
     return rs === undefined ? {rPr} : {rPr, rStyle: rs};
   };
-  const {pics, picScope} = opts;
-  const swap = (x) => (picKept(x, pics, picScope, doc) ? null
-    : inlineText(x));
+  const {pics, picScope} = opts, keep = markKept(opts.inNote, false);
+  const swap = (x) => {
+    const m = keep(x);
+    if (m !== undefined) return m;
+    return picKept(x, pics, picScope, doc) ? null : inlineText(x);
+  };
   const c = rebuild(contentOf(b), swap, fmt);
   for (const k of Object.keys(c.inlines)) {
     const x = c.inlines[k];
@@ -194,20 +205,36 @@ function cross(b, map, strict, opts, doc) {
   return out;
 }
 
-/** Same document: the text an inline becomes, or null (kept). */
-const sameSwap = (x) => (isObj(x) && x.kind === 'raw' &&
-  hasUnique(x.node) ? (typeof x.text === 'string'
-    ? cleanText(x.text) : '') : null);
+const isMark = (x) => isObj(x) && x.kind === 'noteRef';
 
-/** Paragraph block b for its own document. */
-function same(b) {
-  const c = contentOf(b);
+/** What a footnote or endnote mark becomes (see the header): null
+ *  kept, '' dropped; undefined for any other inline. self: whether
+ *  a note's own mark stays (pasted into a note). */
+const markKept = (inNote, self) => (x) => {
+  if (!isMark(x)) return undefined;
+  if (x.self === true) return inNote || self ? null : '';
+  return inNote ? '' : null;
+};
+
+/** Same document: the text an inline becomes, or null (kept). */
+const sameSwap = (inNote, toNote) => {
+  const keep = markKept(inNote, toNote);
+  return (x) => {
+    const m = keep(x);
+    if (m !== undefined) return m;
+    return isObj(x) && x.kind === 'raw' && hasUnique(x.node)
+      ? (typeof x.text === 'string' ? cleanText(x.text) : '') : null;
+  };
+};
+
+/** Paragraph block b for its own document, doc. */
+function same(b, inNote, toNote) {
+  const c = contentOf(b), sw = sameSwap(inNote, toNote);
   if (!isObj(b.pPr) || !Array.isArray(b.pPr.extra)) fail('bad pPr');
-  const swap = Object.values(c.inlines).some((x) => sameSwap(x) !==
-    null);
+  const swap = Object.values(c.inlines).some((x) => sw(x) !== null);
   const fmt = (r) => (r.rStyle === undefined ? {rPr: dropIds(r.rPr)}
     : {rPr: dropIds(r.rPr), rStyle: r.rStyle});
-  const body = swap ? rebuild(c, sameSwap, fmt)
+  const body = swap ? rebuild(c, sw, fmt)
     : {text: c.text, runs: normRuns(c.runs.map((r) => ({...r,
       ...fmt(r)}))), inlines: c.inlines};
   const out = {type: 'p', ...body, pPr: dropIds(b.pPr)};
@@ -217,7 +244,8 @@ function same(b) {
 
 /** See the header. */
 export function clean(blocks, doc, opts = {}) {
-  const sameDoc = !!opts.sameDoc;
+  const sameDoc = !!opts.sameDoc, inNote = !!opts.inNote;
+  const toNote = opts.toNote === true;
   const map = mapper(doc, opts.styleNames);
   const strict = isStrictDoc(doc);
   const crossP = (b) => cross(b, map, strict, opts, doc);
@@ -232,11 +260,11 @@ export function clean(blocks, doc, opts = {}) {
       else out.push({type: 'opaque', node: keepIds(b.node)});
     } else if (b.type === 'tbl') {
       if (sameDoc) {
-        const t = sameTable(b, same);
+        const t = sameTable(b, (x) => same(x, inNote, toNote));
         out.push({...t, tblPr: apart(t.tblPr, docMap(doc))});
       } else out.push(crossTable(b, crossP, {strict, style}));
     } else if (b.type === 'p') {
-      out.push(sameDoc ? same(b) : crossP(b));
+      out.push(sameDoc ? same(b, inNote, toNote) : crossP(b));
     }
   }
   return out;

@@ -1,0 +1,145 @@
+// NoteMode - a document window's notes mode (Batch E2): the clicks,
+// the keys and the commands around ./NoteEdit, which holds the mode
+// itself (in view.hdr, where the header and footer mode is: one at a
+// time). Desktop-bound (the beep): it imports the desktop in its
+// import line only.
+//
+//   attachNotes(dw)  from ./AppWin, after ./HdrMode attachHdr: the
+//       view's hdrClick asks the notes first (below), then the header
+//       and footer mode's; Escape (view.leaveHdr) and another view
+//       leave the notes mode as they leave a header (./HdrMode leave)
+//   insert(dw, kind) -> bool  Insert > Footnote (Ctrl+Alt+F) and
+//       Endnote (Ctrl+Alt+D): ./NoteCmd insertNote at the body's
+//       selection (one undo step), then the mode entered on the new
+//       note, the caret after its own mark and the space. A beep and
+//       false when refused (./NoteCmd whyNot: in a header, footer or
+//       note, by a table, in a field, a kind kept as bytes)
+//   refusal(dw, kind) -> string | null  whyNot for the window now
+//       (./NoteMenu shades the items by it)
+//   enter(dw, {kind, id}, ev?) -> bool  the mode on that note: Print
+//       layout shown first (as the header mode: notes are shown on
+//       pages only); the caret where ev (a window point) is in the
+//       note, else after its own mark and the space. A beep and
+//       false when no page shows the note (./NoteEdit enterNote)
+//   step(dw, d) -> bool  Next note (d 1: Alt+Down) / Previous note
+//       (d -1: Alt+Up) in the mode: the note of the next (previous)
+//       mark in the body, footnotes and endnotes together
+//       (./NotePick stepFrom); at the last (first) a beep, the mode
+//       stays. false outside the mode (the key goes on)
+//   leave(dw, ev?)  back to the body: the caret after the note's
+//       mark (or at the body's point ev was: a double-click there)
+//
+// Clicks (view.hdrClick(ev, what), what 'click' | 'double' | 'drag'):
+//   not in the notes mode: a double-click on a note's text at a
+//     page's foot or in a run after the text (./NoteView noteAt), or
+//     on a footnote or endnote mark in the body (./NotePick markAt;
+//     in any view), enters that note; anything else goes to the
+//     header and footer mode's (a single click in a note's text puts
+//     the caret in the body there, as before: Word's notes are
+//     edited in the mode only here)
+//   in the notes mode: in the note's own text not used (the click,
+//     drag or double-click works in it as in the body); in another
+//     note, a click or double-click enters that one; in a header or
+//     footer a double-click enters it (./HdrMode enter); a
+//     double-click in the body leaves, the caret where it was
+//     clicked; anything else does nothing (the caret stays)
+import {wimp} from 'riscos';
+import * as S from './Selection';
+import {enterNote, atStart, isNote} from './NoteEdit';
+import {noteAt} from './NoteView';
+import {markAt, stepFrom} from './NotePick';
+import {insertNote, whyNot} from './NoteCmd';
+import {hdrAt} from './HdrView';
+import {enter as enterHdr, leave as leaveHdr} from './HdrMode';
+import {toLayout} from './Zoom';
+import {setView} from './ViewMode';
+
+/** See the header. */
+export function enter(dw, key, ev) {
+  const v = dw.view;
+  if (dw.viewName !== 'print') setView(dw, 'print');
+  if (!enterNote(v, key)) {
+    wimp.beep();
+    return false;
+  }
+  const h = ev ? v.hitAt(ev.x, ev.y) : null;
+  v.setSelection(h ? S.caret(h.pos, h.affinity) : atStart(v));
+  v.focus();
+  return true;
+}
+
+/** See the header. */
+export const leave = (dw, ev) => leaveHdr(dw, ev);
+
+/** See the header. */
+export const refusal = (dw, kind) => whyNot(dw.view.d, dw.view.sel,
+  kind);
+
+/** See the header. */
+export function insert(dw, kind) {
+  const v = dw.view;
+  if (refusal(dw, kind) !== null) {
+    wimp.beep();
+    return false;
+  }
+  const out = insertNote(v.d, v.typing, v.sel, kind);
+  if (!out) {
+    wimp.beep();
+    return false;
+  }
+  v.edited(out.sel);
+  return enter(dw, out.note);
+}
+
+/** See the header. */
+export function step(dw, d) {
+  const v = dw.view, m = v.hdr;
+  if (!isNote(m)) return false;
+  const k = stepFrom(v.real.doc, m.note, d);
+  if (!k) wimp.beep();
+  else enter(dw, k);
+  return true;
+}
+
+/** The note of the mark under ev in the body, or null. */
+function markUnder(v, ev) {
+  const h = v.hitAt(ev.x, ev.y), L = v.L;
+  if (!h) return null;
+  return markAt(L, h.pos, toLayout(ev.x, ev.y, v.zoom, L.top).x);
+}
+
+/** The click (see the header): true when used here. */
+function click(dw, ev, what, hdr) {
+  const v = dw.view, m = v.hdr, B = v.bodyL;
+  const pages = !!(B.place && B.place.pages);
+  const p = toLayout(ev.x, ev.y, v.zoom, B.top);
+  const a = pages ? noteAt(B, p.x, p.y) : null;
+  if (!isNote(m)) {
+    if (what === 'double' && ev.button === 'select') {
+      const k = a || (!m ? markUnder(v, ev) : null);
+      if (k) {
+        enter(dw, {kind: k.kind, id: k.id}, a ? ev : undefined);
+        return true;
+      }
+    }
+    return !!hdr && hdr(ev, what);
+  }
+  if (a && a.kind === m.note.kind && a.id === m.note.id) return false;
+  if (a) {
+    if (what !== 'drag') enter(dw, {kind: a.kind, id: a.id}, ev);
+    return true;
+  }
+  const h = pages ? hdrAt(B, p.x, p.y) : null;
+  if (h && h.kind) {
+    if (what === 'double') enterHdr(dw, h.i, h.kind, ev);
+    return true;
+  }
+  if (what === 'double' && h && h.area === 'body') leave(dw, ev);
+  return true;
+}
+
+/** See the header. */
+export function attachNotes(dw) {
+  const v = dw.view, hdr = v.hdrClick;
+  v.hdrClick = (ev, what) => click(dw, ev, what, hdr);
+}

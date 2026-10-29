@@ -8,15 +8,19 @@
 //                         before it (a ./DocLayout), or null
 //   lastLeaf(ops) -> op | null  the op that decides: the last leaf
 //                         (compounds opened) that is not a
-//                         setDocPart, setSection or setStory
+//                         setDocPart, setSection, setStory or a
+//                         notes op (./OpsNotes: a note added or
+//                         removed with its mark, the mark decides)
 //   stepTo(doc, ops, oldL) -> {story, gone, doc, sel} | null  where
 //                         the step leaves the window (P7.5, D14:
 //                         Word's undo goes to the story it changes):
 //                         story the decider's (op.story: a part
-//                         name; null for the body), doc the doc its
+//                         name, a note's key {note: {kind, id}},
+//                         Batch E2; null for the body), doc the doc its
 //                         paths are read in (the body: doc; a story:
 //                         doc with the story's blocks as its one
-//                         section's, R8 [0, i, ...]), sel the caret
+//                         section's, R8 [0, i, ...]; a note: its
+//                         blocks so), sel the caret
 //                         stepEnd gives there (a picture put back:
 //                         it selected, ./PicOps stepSel) or null;
 //                         gone (sel and doc null) when doc has no
@@ -61,7 +65,7 @@
 //                             split (the one that ends the first
 //                             section; for a merge found in oldL)
 //   setDocPart, setSection,   skipped: the op before it decides;
-//   setStory                  only these: null (the selection
+//   setStory, the notes ops   only these: null (the selection
 //                             stays)
 // A kept block (a table) gives its edge {id, off: 0} (or 1 at an
 // end). Null when nothing fits (the caller keeps its selection).
@@ -73,7 +77,23 @@ import {rowPos, firstPos, lastPos} from './TblPos';
 import {caret} from './Selection';
 import {stepSel} from './PicOps';
 
-const SKIP = new Set(['setDocPart', 'setSection', 'setStory']);
+const SKIP = new Set(['setDocPart', 'setSection', 'setStory',
+  'addNote', 'removeNote', 'addNotes', 'removeNotes', 'setNote',
+  'setNoteRels', 'setNoteOpts', 'setNotesPart']);
+const SLOTS = {footnote: 'footnotes', endnote: 'endnotes'};
+
+/** The blocks of the story key names in doc, or null (gone). */
+function storyBlocks(doc, story) {
+  const k = story && typeof story === 'object' ? story.note : null;
+  if (k && typeof k === 'object') {
+    const n = doc.notes && Object.hasOwn(SLOTS, k.kind)
+      ? doc.notes[SLOTS[k.kind]] : null;
+    const x = n instanceof Map ? n.get(k.id) : null;
+    return x && Array.isArray(x.blocks) ? x.blocks : null;
+  }
+  const m = doc.stories, st = m instanceof Map ? m.get(story) : null;
+  return st && Array.isArray(st.blocks) ? st.blocks : null;
+}
 
 /**
  * The last leaf op of ops (compounds opened, in order applied) that
@@ -197,11 +217,9 @@ export function stepTo(doc, ops, oldL) {
     : op.story;
   let d = doc;
   if (story !== null) {
-    const m = doc.stories, st = m instanceof Map ? m.get(story) : null;
-    if (!st || !Array.isArray(st.blocks)) {
-      return {story, gone: true, doc: null, sel: null};
-    }
-    d = {...doc, sections: [{...doc.sections[0], blocks: st.blocks}]};
+    const bs = storyBlocks(doc, story);
+    if (!bs) return {story, gone: true, doc: null, sel: null};
+    d = {...doc, sections: [{...doc.sections[0], blocks: bs}]};
   }
   const p = stepEnd(d, ops, oldL);
   return {story, gone: false, doc: d,

@@ -1,0 +1,136 @@
+// EndGalley - a ./DocLayout's root items with the runs of notes that
+// flow after the text (./EndnoteLayout) between them: the items of
+// the galley Print layout paginates (./PageGalley galleyOf with
+// ./EndnoteLayout endHooks), and what ./PageReuse may keep of an
+// older one (Batch E2).
+//
+//   mergeOf(L, ends, bandAt) -> {items, runs}  L's root items (L.items)
+//       with ends' runs (./EndnoteLayout endHooks): the run of
+//       section s after the last root item of section s (the first
+//       of a later section, or the end, follows it), its items from
+//       the galley y below that item (its space after, less the band
+//       of a section break: bandAt(k) px, the break now after the
+//       run); runs [{s, at, n, after}] (frozen): the run's first
+//       index and count in items, after the index in L.items of the
+//       item after it. items is L.items itself when no run has an
+//       item (nothing allocated). Memoised per ends while L.items
+//       and its stacking (L.stacks, ./DocStack) are the same
+//   rootK(runs, k) -> the galley index of L.items[k] (k not finite:
+//       as it is)
+//   bodyK(runs, k) -> the index in L.items of the galley's item k,
+//       -1 for an item of a run (k not finite: as it is)
+//   runsOf(G) -> G.runs, or [] for a galley without runs
+//   The one pair of translations between L's indices (it.ci, an
+//   anchor's or a float's item) and a galley's (./Paginate's page
+//   cursors pg.start.k, pg.end.k): a module that crosses between them
+//   goes through rootK and bodyK, or reads the galley's own items
+//   (G.items) at a cursor; without runs both are the identity
+//   reuseRange(G, prevG) -> {dirty, clean}  G.dirtyFrom and
+//       G.cleanFrom (./DocItems: L's indices) as galley indices,
+//       and moved for the runs that are not prev's: dirty no later
+//       than the first item of a run whose note, height or place
+//       differs (prev's at the same index), clean after the last
+//       item of a run that differs (the runs compared from their
+//       ends: the note items the same objects, ./NoteLayout's
+//       memo); a run added, gone or of another section: dirty there
+//       and nothing converges (clean Infinity). Neither galley with
+//       runs: G's own, nothing looked at
+//
+// Pure: no desktop services; nothing is changed.
+
+const NONE = Object.freeze([]);
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const num = (v) => (fin(v) ? v : 0);
+const memo = new WeakMap();            // ends -> {items, stacks, out}
+
+/** See the header. */
+export function mergeOf(L, ends, bandAt) {
+  const its = L.items, m = memo.get(ends);
+  if (m && m.items === its && m.stacks === L.stacks) return m.out;
+  const N = its.length, out = [], runs = [];
+  let k = 0, copied = 0;
+  for (const s of ends.plan.keys()) {
+    while (k < N && !(its[k].s > s)) k++;
+    const a = its[k - 1] || null, c = its[k] || null;
+    const band = a ? Math.max(0, num(bandAt(k - 1))) : 0;
+    const y0 = a ? a.y + a.h + num(a.gapBelow) - band
+      : c ? c.y - Math.max(0, num(c.gapAbove)) : 0;
+    const ix = a ? (fin(a.endIndex) ? a.endIndex : a.index) : -1;
+    const run = ends.run(s, y0, num(ix) + 0.5, c ? {band, y: c.y,
+      gapAbove: c.gapAbove} : null);
+    if (!run.length) continue;
+    for (; copied < k; copied++) out.push(its[copied]);
+    runs.push(Object.freeze({s, at: out.length, n: run.length,
+      after: k}));
+    for (const x of run) out.push(x);
+  }
+  for (; runs.length && copied < N; copied++) out.push(its[copied]);
+  const res = runs.length ? {items: out, runs: Object.freeze(runs)}
+    : {items: its, runs: NONE};
+  memo.set(ends, {items: its, stacks: L.stacks, out: res});
+  return res;
+}
+
+/** See the header. */
+export function rootK(runs, k) {
+  if (!fin(k)) return k;
+  let add = 0;
+  for (const r of runs) if (r.after <= k) add += r.n;
+  return k + add;
+}
+
+/** See the header. */
+export function bodyK(runs, k) {
+  if (!fin(k)) return k;
+  let sub = 0;
+  for (const r of runs) {
+    if (k < r.at) break;
+    if (k < r.at + r.n) return -1;
+    sub += r.n;
+  }
+  return k - sub;
+}
+
+/** See the header. */
+export const runsOf = (G) => (G && G.runs) || NONE;
+
+/** Two run items alike: the same note item (or separator) and
+ *  height, and (at) the same galley place. */
+function same(u, v, at) {
+  if (!u || !v || !u.en || !v.en) return false;
+  const a = u.en, b = v.en;
+  if (a.src !== b.src || a.kind !== b.kind || a.id !== b.id ||
+    u.h !== v.h) return false;
+  if (a.sep && (a.sep.h !== b.sep.h || a.sep.rule !== b.sep.rule ||
+    a.sep.lay !== b.sep.lay)) return false;
+  return !at || (u.y === v.y && a.facts.jump === b.facts.jump &&
+    a.facts.band === b.facts.band);
+}
+
+/** See the header. */
+export function reuseRange(G, prevG) {
+  const a = G.runs || NONE, b = (prevG && prevG.runs) || NONE;
+  let dirty = G.dirtyFrom, clean = G.cleanFrom;
+  if (!a.length && !b.length) return {dirty, clean};
+  if (!fin(dirty) && dirty !== Infinity) return {dirty, clean};
+  dirty = rootK(a, dirty);
+  clean = rootK(a, clean);
+  const xs = G.items, ys = prevG.items;
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i], y = b[i];
+    if (!x || !y || x.s !== y.s) {
+      dirty = Math.min(dirty, x ? x.at : Infinity, y ? y.at : Infinity);
+      clean = Infinity;
+      break;
+    }
+    const n = Math.min(x.n, y.n);
+    let j = 0;
+    while (j < n && same(xs[x.at + j], ys[y.at + j], true)) j++;
+    if (j < x.n || j < y.n) dirty = Math.min(dirty, x.at + j);
+    let e = 0;
+    while (e < n && same(xs[x.at + x.n - 1 - e], ys[y.at + y.n - 1 -
+      e], false)) e++;
+    if (e < x.n || e < y.n) clean = Math.max(clean, x.at + x.n - e);
+  }
+  return {dirty, clean};
+}

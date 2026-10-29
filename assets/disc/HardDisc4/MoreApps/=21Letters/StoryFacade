@@ -4,11 +4,12 @@
 // document and whose apply / atomic / group forward to the real
 // Document with the op's story set (D12, R8).
 //
-//   facadeOf(d, part, s) -> Facade  for Document d and story part
-//       (a part name of d.doc.stories), memoised per (d, part): the
-//       same object each time; s (the section of the page the story
-//       is edited on: its props are the view's) is set on it.
-//       RangeError: d not a Document, part not a string
+//   facadeOf(d, key, s) -> Facade  for Document d and story key: a
+//       part name of d.doc.stories, or a note's {note: {kind, id}}
+//       (Batch E2, below), memoised per (d, key): the same object
+//       each time; s (the section of the page the story is edited
+//       on: its props are the view's) is set on it.
+//       RangeError: d not a Document, key neither
 //   Facade
 //     doc        the view (rebuilt when the real Doc's state changes,
 //                its ./DocVersion too: the body's arrays change in
@@ -35,12 +36,20 @@
 //     apply(op, opts)  the real d.apply of op with story: part (a
 //                compound: each op in it); setDocPart rels becomes
 //                setStory with the story's rels replaced (its
-//                relationships are its own .rels part); every other
+//                relationships are its own .rels part), but for the
+//                relationships it adds of a DOCUMENT kind (DOC_KINDS
+//                below): those go to the main part's rels (a
+//                setDocPart rels of the real document, in a compound
+//                with the story's change), where Word looks for
+//                them (nothing, no step, when the main part has
+//                them all and the story's own are as they were);
+//                every other
 //                setDocPart (parts, styles, numbering, settings) is
 //                the document's, as it is. RangeError (nothing
 //                changed): a section op (splitSection, mergeSection,
 //                setSection), an op naming another story, a story
-//                gone
+//                gone. setStory and the notes ops (./OpsNotes) are
+//                the document's: applied as they are
 //     atomic, group, groupStart, groupEnd, undo, redo, canUndo,
 //     canRedo, dirty, undoDepth, stateId, breakCoalesce, on,
 //     markSaved, clearHistory  the real Document's (one history:
@@ -62,11 +71,46 @@
 //              section breaks, footnotes and endnotes, a table of
 //              contents (the last ones for later batches)
 //   BODY_KIND  'body'
+//   DOC_KINDS  the relationship kinds (./Rels relKind: Transitional
+//              or Strict) of the document package: parts Word finds
+//              by the type of the MAIN part's relationship, never by
+//              an r:id in a story's XML (ECMA-376 Part 1, 11.3: the
+//              styles, numbering, settings, web settings, font
+//              table, theme, footnotes, endnotes, comments, glossary
+//              parts and custom XML are targets of the main
+//              document's relationships). A story's relationship of
+//              such a kind (./NumWrite ensurePart's numbering one,
+//              made on the first list in a header or note) is moved
+//              there: re-made with ./DocParts addRel (a fresh id;
+//              first among those of its kind, as ensurePart does,
+//              so that it wins), its target the same part seen from
+//              the main part; none when the main part has one of
+//              that kind to that part. Every other kind (image,
+//              hyperlink, oleObject, chart, diagram..., referenced
+//              by r:id from the story) and every unknown type stays
+//              in the story's own .rels (as before Batch E2)
+//
+// A note's facade (Batch E2; a footnote or endnote of d.doc.notes,
+// ./OpsNotes): the same shape, for that Note. part is its key
+// (frozen {note: {kind, id}}), note {kind, id}, story the Note now
+// (null: gone, e.g. the undo of its insertion), never pending. Its
+// doc: sections [{...section s, blocks: the note's blocks}], rels
+// the note's (the notes part's: [] when none), meta mainPart the
+// notes part's name (meta.noteParts) and documentRoot its root,
+// stories every story and the body as one more (as above: ids,
+// pictures, lists, bookmarks stay unique across the document; the
+// notes are seen by ./Walk scanStories through doc.notes too). apply
+// sets story: {note: {kind, id}}; setDocPart rels becomes
+// setNoteRels (the part has one .rels: every note of it takes the
+// new rels); refused as for a header (REFUSED: a note in a note).
 // Where an undo or redo step leaves the window (its story, or the
 // body): ./EditStep stepTo, read by ./HdrStep.
 // Pure: no desktop services.
 import {blankStory, createOnEdit} from './HdrCmd';
 import {versionOf} from './DocVersion';
+import {noteKeyOf} from './ModelCheck';
+import {relKind, resolvePart, firstOfKind} from './Rels';
+import {addRel} from './DocParts';
 
 export const REFUSED = Object.freeze(new Set(['pageBreak',
   'columnBreak', 'sectionNext', 'sectionContinuous', 'sectionEven',
@@ -75,8 +119,51 @@ export const BODY_KIND = 'body';
 
 const SECTION_OPS = new Set(['splitSection', 'mergeSection',
   'setSection']);
+/** The document's own ops, applied as they are (see the header). */
+const DOC_OPS = new Set(['setStory', 'addNote', 'removeNote',
+  'addNotes', 'removeNotes',
+  'setNote', 'setNoteRels', 'setNoteOpts', 'setNotesPart']);
+const SLOT = {footnote: 'footnotes', endnote: 'endnotes'};
 const NONE = Object.freeze([]);
 const isObj = (v) => v !== null && typeof v === 'object';
+
+export const DOC_KINDS = Object.freeze(new Set(['styles',
+  'stylesWithEffects', 'numbering', 'settings', 'webSettings',
+  'fontTable', 'theme', 'footnotes', 'endnotes', 'comments',
+  'glossaryDocument', 'customXml']));
+
+/** relKind of internal Rel r when its kind is a document's, else
+ *  null. */
+function docKind(r) {
+  if (typeof r.type !== 'string' || r.mode === 'External') return null;
+  const k = relKind(r.type);
+  return k && DOC_KINDS.has(k.kind) ? k : null;
+}
+
+/** The main part's rels with each Rel of `up` (a story's, relative
+ *  to part `from`) added, or null when it has them all. */
+function toMain(doc, from, up) {
+  const main = (doc.meta && doc.meta.mainPart) || 'word/document.xml';
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  let rels = Array.isArray(doc.rels) ? doc.rels : [];
+  const start = rels;
+  for (const r of up) {
+    const k = docKind(r);
+    const at = resolvePart(from, r.target);
+    if (at === null) continue;
+    const same = rels.some((x) => {
+      const xk = docKind(x);
+      return xk && xk.kind === k.kind &&
+        resolvePart(main, x.target) === at;
+    });
+    if (same) continue;
+    const old = firstOfKind(rels, k.kind);
+    const add = addRel(rels, {kind: k.kind, strict: k.strict,
+      target: at.startsWith(dir) ? at.slice(dir.length) : '/' + at});
+    rels = old ? [add.rels.at(-1), ...rels] : add.rels;
+  }
+  return rels === start ? null : rels;
+}
 const memo = new WeakMap();            // Document -> Map part -> Facade
 const bodies = new WeakMap();          // sections -> {blocks, story}
 
@@ -162,15 +249,16 @@ class Facade {
     }
     if (op.op === 'compound') {
       return Array.isArray(op.ops)
-        ? {...op, ops: op.ops.map((o) => this.tag(o))} : op;
+        ? {...op, ops: op.ops.map((o) => this.tag(o)).filter((o) =>
+          o !== null)} : op;
     }
-    if (op.op === 'setStory') return op;
+    if (DOC_OPS.has(op.op)) return op;
     const st = this.story;
     if (!st) throw new RangeError('the story is gone: ' + this.part);
     if (op.op === 'setDocPart') {
       if (op.key !== 'rels') return op;
-      return {op: 'setStory', part: this.part,
-        story: {...st, rels: op.value}};
+      return this.relsOp(op.value, st.rels, this.part, (rels) =>
+        ({op: 'setStory', part: this.part, story: {...st, rels}}));
     }
     if (op.story !== undefined && op.story !== null &&
       op.story !== this.part) {
@@ -179,16 +267,38 @@ class Facade {
     return {...op, story: this.part};
   }
 
+  /** The op for the story's new rels `value` (its own now: cur;
+   *  its part's name: from), mk(rels) the op of its own (see
+   *  DOC_KINDS in the header); null when nothing changes (the main
+   *  part has them all already and its own are as they were). */
+  relsOp(value, cur, from, mk) {
+    const had = new Set(Array.isArray(cur) ? cur : []);
+    const up = Array.isArray(value) ? value.filter((r) => !had.has(r) &&
+      isObj(r) && docKind(r)) : [];
+    if (!up.length) return mk(value);
+    const rest = value.filter((r) => !up.includes(r));
+    const ops = [];
+    const main = toMain(this.real.doc, from, up);
+    if (main) ops.push({op: 'setDocPart', key: 'rels', value: main});
+    const old = Array.isArray(cur) ? cur : [];
+    if (rest.length !== old.length || rest.some((r, i) => r !== old[i]))
+      ops.push(mk(rest));
+    if (!ops.length) return null;
+    return ops.length === 1 ? ops[0] : {op: 'compound', ops};
+  }
+
   apply(op, opts) {
     const p = this.pending;
     if (!p || this.made) {
-      this.real.apply(this.tag(op), opts);
+      const t = this.tag(op);
+      if (t !== null) this.real.apply(t, opts);
       return;
     }
     if (isObj(op) && SECTION_OPS.has(op.op)) this.tag(op);
     this.real.atomic(() => {
       createOnEdit(this.real, p.s, p.kind, p.type, p);
-      this.real.apply(this.tag(op));
+      const t = this.tag(op);
+      if (t !== null) this.real.apply(t);
     }, opts);
     this.pending = null;
   }
@@ -210,15 +320,85 @@ class Facade {
   refuses(id) { return REFUSED.has(id); }
 }
 
+/** A footnote's or endnote's facade (see the header). */
+class NoteFacade extends Facade {
+  constructor(d, k) {
+    super(d, Object.freeze({note: Object.freeze(k)}));
+    this.note = this.part.note;
+  }
+
+  /** The Note in the real document, or null. */
+  get made() {
+    const n = this.real.doc.notes;
+    const m = isObj(n) ? n[SLOT[this.note.kind]] : null;
+    const x = m instanceof Map ? m.get(this.note.id) : null;
+    return isObj(x) && Array.isArray(x.blocks) ? x : null;
+  }
+
+  _view(doc, n) {
+    const secs = doc.sections, sec = secs[Math.min(this.s,
+      secs.length - 1)];
+    const slot = SLOT[this.note.kind];
+    const names = isObj(doc.meta) && isObj(doc.meta.noteParts)
+      ? doc.meta.noteParts : {};
+    const part = typeof names[slot] === 'string' ? names[slot]
+      : 'word/' + slot + '.xml';
+    const meta = {...(doc.meta || {}), mainPart: part};
+    const root = isObj(doc.notes) && isObj(doc.notes.root)
+      ? doc.notes.root[slot] : null;
+    if (root) meta.documentRoot = root;
+    const main = (doc.meta && doc.meta.mainPart) || 'word/document.xml';
+    const stories = new Map(doc.stories instanceof Map ? doc.stories
+      : []);
+    stories.set(main, bodyStory(doc, main));
+    return {...doc, meta, stories,
+      rels: n && Array.isArray(n.rels) ? n.rels : NONE,
+      sections: [{...sec, blocks: n ? n.blocks : []}]};
+  }
+
+  /** op as the real Document applies it (see the header). */
+  tag(op) {
+    if (!isObj(op)) return op;
+    if (SECTION_OPS.has(op.op))
+      throw new RangeError(op.op + ': not in a note');
+    if (op.op === 'compound') {
+      return Array.isArray(op.ops)
+        ? {...op, ops: op.ops.map((o) => this.tag(o)).filter((o) =>
+          o !== null)} : op;
+    }
+    if (DOC_OPS.has(op.op)) return op;
+    const k = this.note;
+    if (!this.made) {
+      throw new RangeError('the note is gone: ' + k.kind + ' ' + k.id);
+    }
+    if (op.op === 'setDocPart') {
+      if (op.key !== 'rels') return op;
+      const n = this.made;
+      return this.relsOp(op.value, n.rels, this.doc.meta.mainPart,
+        (rels) => ({op: 'setNoteRels', kind: k.kind, rels}));
+    }
+    const o = op.story;
+    if (o !== undefined && o !== null) {
+      const ok = noteKeyOf(o);
+      if (!ok || ok.kind !== k.kind || ok.id !== k.id)
+        throw new RangeError('another story');
+    }
+    return {...op, story: {note: {kind: k.kind, id: k.id}}};
+  }
+}
+
 /** See the header. */
-export function facadeOf(d, part, s = 0) {
+export function facadeOf(d, key, s = 0) {
   if (!isObj(d) || typeof d.apply !== 'function' || !isObj(d.doc))
     throw new RangeError('not a Document');
-  if (typeof part !== 'string') throw new RangeError('bad part');
+  const k = typeof key === 'string' ? null : noteKeyOf(key);
+  if (typeof key !== 'string' && !k) throw new RangeError('bad part');
   let m = memo.get(d);
   if (!m) memo.set(d, m = new Map());
-  let f = m.get(part);
-  if (!f) m.set(part, f = new Facade(d, part));
+  // (a note's memo key cannot be a part name: no NUL in those)
+  const id = k ? '\u0000' + k.kind + '\u0000' + k.id : key;
+  let f = m.get(id);
+  if (!f) m.set(id, f = k ? new NoteFacade(d, k) : new Facade(d, key));
   f.s = Number.isInteger(s) && s >= 0 ? s : 0;
   return f;
 }

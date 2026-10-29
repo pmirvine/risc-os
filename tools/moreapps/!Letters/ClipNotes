@@ -1,0 +1,350 @@
+// ClipNotes - footnotes and endnotes on the clipboard (Batch E2): the
+// notes a copy carries with its marks, and the notes a paste makes
+// for them.
+//
+//   notesOf(doc, blocks) -> [{kind, id, note}]  for ./ClipSlice: the
+//       note of each footnote or endnote mark in clipboard blocks
+//       (at every depth, a note's own mark not counted), once per
+//       note, in mark order: kind 'footnote' | 'endnote', id the
+//       mark's (only a key: the paste gives new ones), note the
+//       Note itself (by value: a model object, never changed in
+//       place, so the copy keeps it after a cut took it from the
+//       document). A mark whose note doc does not have as a normal
+//       note (a note kept as bytes, a missing or separator note) is
+//       not carried: [] when no mark has one
+//   blocksOf(notes) -> blocks  the carried notes' blocks, one list
+//       (for the styles, lists and table styles a slice names)
+//   styleUp(d, opts) -> boolean  for a paste from another document
+//       (in its step, before ./ClipClean maps styles by name): the
+//       footnote and endnote styles the carried notes use by Word's
+//       name (footnote reference, footnote text, endnote reference,
+//       endnote text: opts.styleNames) and d lacks are made (Word's
+//       built-ins: ./NoteCmd noteStyle); true when one was
+//   carry(d, list, opts) -> list  in the paste's step (./ClipPaste,
+//       d.atomic), the cleaned blocks before they go in: each mark
+//       of list (at every depth, in order) that opts.notes carries
+//       gets a NEW note, a copy of the carried one, under a new id:
+//       the kind's nextNoteId (./OpsNotes) taken now, against the
+//       document as it is, then one more for each further mark, so
+//       a pasted mark never names a note the document has (one an
+//       id freed by a cut and taken again by a new note, the copied
+//       note itself); two marks of one note each get a copy. The
+//       notes go in with one addNotes op a kind (after the kind's
+//       others in order: numbers follow the marks, ./NoteNumbers),
+//       the kind's part made first when the document has none
+//       (./NoteParts ensure). Marks are dropped (the text around
+//       kept) and opts.report.marks says why (the first reason;
+//       report an object the caller passes):
+//         'note'     d is a note or a header or footer (./StoryFacade
+//                    refuses: Word puts no note in a note): every
+//                    mark
+//         'unknown'  the kind's notes were kept as bytes (./NoteNumbers
+//                    noteState): they take no new note
+//         'free'     no note id left for it
+//       and silently: a mark whose note the copy did not carry (a
+//       missing note, HTML, a stash of blocks). Only the kinds whose
+//       marks are pasted have their part made. From another
+//       document, a carried note that held a picture or a link (an
+//       r: relationship attribute, which the paste cannot carry: see
+//       below) sets opts.report.lost (./ClipRoute says so, once)
+//
+// A carried note's blocks, as a body paste's (./ClipClean with
+// inNote: its own mark kept, any other mark dropped; ./FieldPair;
+// tables apart; fresh block ids, ./ClipCleanTbl freshBlocks):
+//   - the same document: everything kept but ids that must stay
+//     unique (bookmarks...: their text); every wp:docPr id fresh, one
+//     counter for all the copies (./ClipPics docPrIds); the
+//     relationships the kind's part has (a picture's or link's r:id
+//     points into them), or the carried note's when the kind has no
+//     note at all (not even a separator)
+//   - another document: styles mapped by name, lists and table
+//     styles made in d (./ClipCarry), pictures and links their text
+//     or nothing (a note's media is not carried: its part's
+//     relationships are not the main part's)
+// A note left with no block, or ending with a table, gets an empty
+// paragraph at its end. The mark: its id the new one; in the same
+// document its node keeps its attributes (w:id the new one), from
+// another a new w:footnoteReference / w:endnoteReference (a custom
+// mark's w:customMarkFollows kept, its text written anew).
+// Hostile opts.notes (not an array, entries that are not
+// {kind, id, note} with an own kind of SLOTS, an integer id and a
+// note with blocks) are ignored. Pure: no desktop services.
+import {reserveIds} from './Model';
+import {MAX_NOTE_ID, normRuns} from './ModelCheck';
+import {nextNoteId, newNote, noteOf, SLOTS} from './OpsNotes';
+import {noteState} from './NoteNumbers';
+import {ensure} from './NoteParts';
+import {noteStyle} from './NoteCmd';
+import {clean} from './ClipClean';
+import {paired} from './FieldPair';
+import {apart, freshBlocks} from './ClipCleanTbl';
+import {freshDocPrs, docPrIds} from './ClipPics';
+import {relist, styled} from './ClipCarry';
+import {walkBlocks, mapBlocks} from './Walk';
+import {W} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const CAP = {footnote: 'Footnote', endnote: 'Endnote'};
+const NONE = new Map();
+
+/** Whether inline x is a footnote or endnote mark (not a note's
+ *  own). */
+const isMark = (x) => isObj(x) && x.kind === 'noteRef' &&
+  x.self !== true && typeof x.note === 'string' &&
+  Object.hasOwn(SLOTS, x.note) && Number.isInteger(x.id);
+
+const keyOf = (kind, id) => kind + ':' + id;
+
+/** Each mark of the blocks, in order: fn(x). */
+function eachMark(blocks, fn) {
+  for (const {b} of walkBlocks(blocks)) {
+    if (!isObj(b) || b.type !== 'p' || !isObj(b.inlines)) continue;
+    for (const k of Object.keys(b.inlines)) {
+      if (isMark(b.inlines[k])) fn(b.inlines[k]);
+    }
+  }
+}
+
+/** See the header. */
+export function notesOf(doc, blocks) {
+  const out = [], seen = new Set();
+  eachMark(blocks, (x) => {
+    const k = keyOf(x.note, x.id);
+    if (seen.has(k)) return;
+    seen.add(k);
+    const note = noteOf(doc, x.note, x.id);
+    if (isObj(note) && note.type === 'normal' &&
+      Array.isArray(note.blocks))
+      out.push({kind: x.note, id: x.id, note});
+  });
+  return out;
+}
+
+/** See the header. */
+export const blocksOf = (notes) => notes.flatMap((n) => n.note.blocks);
+
+/** Map key -> {kind, note} of the valid entries of notes. */
+function carried(notes) {
+  const out = new Map();
+  if (!Array.isArray(notes)) return out;
+  for (const e of notes) {
+    if (!isObj(e) || typeof e.kind !== 'string' ||
+      !Object.hasOwn(SLOTS, e.kind) || !Number.isInteger(e.id) ||
+      !isObj(e.note) || !Array.isArray(e.note.blocks)) continue;
+    const k = keyOf(e.kind, e.id);
+    if (!out.has(k)) out.set(k, {kind: e.kind, note: e.note});
+  }
+  return out;
+}
+
+/** Whether d refuses notes (a note's or a header's facade). */
+const refused = (d) => isObj(d.note) ||
+  (typeof d.refuses === 'function' && d.refuses('footnote'));
+
+/** The kinds of the carried notes. */
+const kindsOf = (got) => new Set([...got.values()].map((e) => e.kind));
+
+const MAX_DEPTH = 256;
+
+/** Whether the blocks use a relationship (an r: attribute). */
+function relUse(blocks) {
+  const stack = [[blocks, 0]];
+  while (stack.length) {
+    const [v, depth] = stack.pop();
+    if (v === null || typeof v !== 'object' || depth > MAX_DEPTH)
+      continue;
+    if (Array.isArray(v)) {
+      for (const x of v) if (x && typeof x === 'object')
+        stack.push([x, depth + 1]);
+      continue;
+    }
+    if (Array.isArray(v.attrs) && v.attrs.some((e) =>
+      Array.isArray(e) && /^r:/.test(e[0]))) return true;
+    for (const k of Object.keys(v)) {
+      const x = v[k];
+      if (x && typeof x === 'object') stack.push([x, depth + 1]);
+    }
+  }
+  return false;
+}
+
+/** See the header. */
+export function styleUp(d, opts = {}) {
+  const got = carried(opts.notes), names = opts.styleNames;
+  if (!got.size || refused(d) || !(names instanceof Map)) return false;
+  const used = new Set();
+  for (const v of names.values()) {
+    if (isObj(v) && typeof v.name === 'string')
+      used.add(v.type + '|' + v.name.toLowerCase());
+  }
+  const st = d.doc.styles;
+  for (const kind of kindsOf(got)) {
+    if (noteState(d.doc, SLOTS[kind]) === 'unknown') continue;
+    for (const [id, what, type] of [['Reference', 'reference',
+      'character'], ['Text', 'text', 'paragraph']]) {
+      const name = kind + ' ' + what;
+      if (used.has(type + '|' + name))
+        noteStyle(d, CAP[kind] + id, name, type);
+    }
+  }
+  return d.doc.styles !== st;
+}
+
+/** Paragraph b without the characters at the offsets of `drop`. */
+function without(b, drop) {
+  const at = [...drop].sort((x, y) => x - y);
+  const less = (o) => {
+    let n = 0;
+    while (n < at.length && at[n] < o) n++;
+    return n;
+  };
+  let text = '';
+  const inlines = {};
+  let j = 0;
+  for (let i = 0; i < b.text.length; i++) {
+    if (j < at.length && at[j] === i) {
+      j++;
+      continue;
+    }
+    if (Object.hasOwn(b.inlines, i)) inlines[text.length] =
+      b.inlines[i];
+    text += b.text[i];
+  }
+  const runs = [];
+  for (const r of b.runs) {
+    const s = r.start - less(r.start), e = r.end - less(r.end);
+    if (e > s) runs.push({...r, start: s, end: e});
+  }
+  return {...b, text, runs: normRuns(runs), inlines};
+}
+
+/** Mark x under its new id (see the header). */
+function withId(x, id, sameDoc) {
+  const n = x.node;
+  const has = isObj(n) && Array.isArray(n.attrs) &&
+    n.attrs.some(([k]) => /(^|:)id$/.test(k));
+  if (sameDoc && has) {
+    return {...x, id, node: {...n, attrs: n.attrs.map(([k, v]) =>
+      (/(^|:)id$/.test(k) ? [k, String(id)] : [k, v]))}};
+  }
+  const y = {...x};
+  delete y.customNode;
+  return {...y, id, node: W(x.note + 'Reference', x.custom !== undefined
+    ? {'w:customMarkFollows': '1', 'w:id': id} : {'w:id': id})};
+}
+
+/** The carried note's blocks cleaned for d (see the header). */
+function prepare(d, note, kind, opts) {
+  let bs;
+  if (opts.sameDoc) {
+    bs = apart(paired(clean(note.blocks, d.doc, {sameDoc: true,
+      inNote: true})));
+  } else {
+    bs = apart(paired(clean(note.blocks, d.doc, {styleNames:
+      opts.styleNames, lists: opts.lists, styles: opts.styles,
+      pics: NONE, picScope: null, inNote: true})));
+    if (opts.styles instanceof Map) bs = styled(d, bs, opts.styles);
+    bs = relist(d, bs, bs.map((b, i) => i), opts.lists);
+    // (a note's own mark: a node of this document)
+    bs = mapBlocks(bs, (b) => {
+      let inl = null;
+      for (const k of Object.keys(b.inlines)) {
+        const x = b.inlines[k];
+        if (isObj(x) && x.kind === 'noteRef' && x.self === true)
+          (inl ||= {...b.inlines})[k] = {...x, node: W(kind + 'Ref')};
+      }
+      return inl ? {...b, inlines: inl} : b;
+    });
+  }
+  const last = bs[bs.length - 1];
+  if (!last || last.type !== 'p') {
+    bs = [...bs, {type: 'p', text: '', runs: [], inlines: {},
+      pPr: {extra: []}}];
+  }
+  return bs;
+}
+
+/** See the header. */
+export function carry(d, list, opts = {}) {
+  let any = false;
+  eachMark(list, () => { any = true; });
+  if (!any) return list;
+  const why = (w) => {
+    const r = opts.report;
+    if (isObj(r) && !r.marks) r.marks = w;
+  };
+  const no = refused(d);
+  if (no) why('note');
+  const got = no ? NONE : carried(opts.notes);
+  const base = {}, kinds = new Set();
+  eachMark(list, (x) => {
+    if (got.has(keyOf(x.note, x.id))) kinds.add(x.note);
+  });
+  for (const kind of kinds) {
+    if (noteState(d.doc, SLOTS[kind]) === 'unknown') {
+      why('unknown');
+      continue;
+    }
+    ensure(d, kind);
+    try {
+      base[kind] = nextNoteId(d.doc, kind);
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+      why('free');
+    }
+  }
+  reserveIds(d.doc);
+  const ready = new Map(), made = {footnote: [], endnote: []};
+  const pics = opts.sameDoc ? docPrIds(d.doc) : null;
+  const relsOf = {};
+  const copy = (k, e, id) => {
+    let bs = ready.get(k);
+    if (!bs) {
+      ready.set(k, bs = prepare(d, e.note, e.kind, opts));
+      if (!opts.sameDoc && isObj(opts.report) &&
+        relUse(e.note.blocks)) opts.report.lost = true;
+    }
+    if (pics) bs = freshDocPrs(d.doc, bs, pics);
+    const n = newNote(d.doc, e.kind, id, freshBlocks(bs));
+    // (a kind with no note at all, not even a separator: the part's
+    // relationships are the carried note's, in the same document)
+    if (!Object.hasOwn(relsOf, e.kind)) {
+      const m = d.doc.notes[SLOTS[e.kind]];
+      relsOf[e.kind] = opts.sameDoc && (!(m instanceof Map) ||
+        !m.size) ? e.note : n;
+    }
+    const r = relsOf[e.kind];
+    return {...n, rels: r.rels ?? null, relsPart: r.relsPart ?? null};
+  };
+  const out = mapBlocks(list, (b) => {
+    let inl = null, drop = null;
+    for (const k of Object.keys(b.inlines)) {
+      const x = b.inlines[k];
+      if (!isMark(x)) continue;
+      const key = keyOf(x.note, x.id), e = got.get(key);
+      const id = e ? base[x.note] : undefined;
+      if (id === undefined || id > MAX_NOTE_ID) {
+        if (id !== undefined) why('free');
+        (drop ||= new Set()).add(+k);
+        continue;
+      }
+      base[x.note] = id + 1;
+      made[x.note].push(copy(key, e, id));
+      (inl ||= {...b.inlines})[k] = withId(x, id, !!opts.sameDoc);
+    }
+    if (!inl && !drop) return b;
+    const nb = inl ? {...b, inlines: inl} : b;
+    return drop ? without(nb, drop) : nb;
+  });
+  for (const kind of Object.keys(made)) {
+    const notes = made[kind];
+    if (!notes.length) continue;
+    const slot = SLOTS[kind], n = d.doc.notes;
+    const order = isObj(n.order) && Array.isArray(n.order[slot])
+      ? n.order[slot] : [];
+    d.apply({op: 'addNotes', kind, notes,
+      order: [...order, ...notes.map((x) => x.id)]});
+  }
+  return out;
+}

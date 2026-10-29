@@ -6,7 +6,7 @@
 //       | null
 //     G     the galley: {items, geom(s), sect?(s), facts?(k),
 //           typeOf?(s, first, num), hdrH?(s, type), ftrH?(s, type),
-//           refOf?(s, type, kind), reserve?(frame, refs)}
+//           refOf?(s, type, kind), notes?}
 //           (./PageGalley's for a ./DocLayout, with ./PageHF's
 //           headers and footers; tests build fakes)
 //     from  the cursor the page starts at ({k: 0, line: 0} for the
@@ -16,7 +16,8 @@
 //           has one more, empty, after it: Word's, P2.4)
 //   cursor, sameCursor  ./PageCursor's (re-exported)
 //   endsGalley(pg, n) -> whether page pg (of a galley of n items) is
-//       the last: no page comes after it
+//       the last: no page comes after it (nor do notes go on from
+//       it: pg.notes left, ./NotePlace)
 //   numberOf(G, s, first, prev), topOf(prev), startY(items, from,
 //       prev) (./PageCols'), firstAt(items, from, prev)  a page's
 //       num, top, y0 and first as nextPage gives them (./PageReuse
@@ -61,25 +62,32 @@
 // columns filled left to right, band by band when a continuous
 // section changes them, P10.2; end, why, used, seen and y0 then
 // say the page's: its last column's end and why, the content's
-// height, the furthest seen, the first column's y0).
+// height, the furthest seen, the first column's y0), notes (only
+// for a page that shows footnotes or passes some on, when G has
+// notes: the foot, ./NotePlace settle, which fills such a galley's
+// pages; the body's frame is then frameH less the foot's room,
+// notes.bodyH; vShift leaves the foot out). A blank page shows no
+// notes: the notes its page before passes on go over it to the page
+// after it (its notes: ./NotePlace passOn).
 //
 // The rules (D5: frames, forced breaks, section starts, blank pages
 // for parity, space before at a page top, bands of breaks not
-// placed, cuts, the reserve hook; D6: the keep rules, ./PageKeep's,
-// asked about the item crossing the bottom only; D23: columns,
-// ./PageCols, a column break ends a column; D8: a table broken
-// between rows or inside one, ./PageRows, P4.1: a page starting in
-// a table starts at a row, {k, line: r, cuts?}, its y0 the row's
-// galley top; P12.6, R5: a floating table placed on its page takes
-// no height in the flow and is never split, ./PageFill floatSpan):
-// docs/apps/Letters.md,
-// "Pages (Batch D): the rules". The frame fill is ./PageFill's. A
-// frame always takes something (a line, an item, or a cut of one),
-// so every page moves on. Pure: no desktop services.
+// placed, cuts; footnotes, ./NotePlace; D6: the keep rules,
+// ./PageKeep's, asked about the item crossing the bottom only; D23:
+// columns, ./PageCols, a column break ends a column; D8: a table
+// broken between rows or inside one, ./PageRows, P4.1: a page
+// starting in a table starts at a row, {k, line: r, cuts?}, its y0
+// the row's galley top; P12.6, R5: a floating table placed on its
+// page takes no height in the flow and is never split, ./PageFill
+// floatSpan): docs/apps/Letters.md, "Pages (Batch D): the rules".
+// The frame fill is ./PageFill's. A frame always takes something (a
+// line, an item, or a cut of one), so every page moves on. Pure:
+// no desktop services.
 import {cursor, sameCursor} from './PageCursor';
 import {geomAt, sectOf, typeOf, fin, px} from './PageFill';
 import {startY} from './PageCols';
 import {fillPage} from './PageBands';
+import {settle, passOn} from './NotePlace';
 
 export {cursor, sameCursor, startY};
 
@@ -134,14 +142,20 @@ export function frameOf(G, s, first, num) {
 
 /** See the header. */
 export const endsGalley = (pg, n) => !pg.blank && pg.end.k >= n &&
-  pg.why !== 'break';
+  pg.why !== 'break' && !(pg.notes && pg.notes.left.length);
 
 /** A blank page after prev (parity, PG3). */
 function blank(from, prev, top) {
   return {start: from, end: from, s: prev.s, blank: true,
     first: false, num: prev.num + 1, why: 'blank', top, w: prev.w,
     h: prev.h, bodyTop: prev.bodyTop, frameH: prev.frameH, y0: 0,
-    used: 0, vShift: 0, seen: from.k};
+    used: 0, vShift: 0, seen: from.k, ...notesOver(prev)};
+}
+
+/** The notes prev passes on, carried over a blank page. */
+function notesOver(prev) {
+  const f = passOn(prev);
+  return f ? {notes: f} : {};
 }
 
 /** See the header. */
@@ -171,8 +185,10 @@ export function nextPage(G, from, prev) {
   const out = {start, end: null, s, blank: false, first, num,
     why: 'end', top, w: g.size.w, h: g.size.h, bodyTop, frameH, y0,
     used: 0, vShift: 0, seen: k0};
-  fillPage(G, out, y0);
+  if (G.notes) settle(G, out, y0, prev);
+  else fillPage(G, out, y0);
   const how = shiftOf(G, s, out.why);
-  if (how) out.vShift = Math.max(0, frameH - out.used) * how;
+  const foot = out.notes ? out.notes.h : 0;
+  if (how) out.vShift = Math.max(0, frameH - foot - out.used) * how;
   return out;
 }

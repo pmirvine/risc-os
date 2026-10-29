@@ -80,6 +80,22 @@ export const ALLOW = [
   {file: 'OutlineLayout', count: 2, until: KEEP, why: FRAG + ' (an ' +
     'Outline marker beside its item: P13.2)'},
   {file: 'PageCells', count: 4, until: KEEP, why: GALLEY},
+  {file: 'EndGalley', count: 1, until: KEEP, why: GALLEY + ' (where ' +
+    'a run of notes starts in the galley: below the item before it, ' +
+    'Batch E2)'},
+  {file: 'EndnoteLayout', count: 3, until: KEEP, why: GALLEY + ' (the ' +
+    'notes after the text stacked as galley items, Batch E2)'},
+  {file: 'NoteLayout', count: 5, until: KEEP, why: GALLEY + ' (the ' +
+    'bottoms of a note\'s lines in its own layout, Batch E2)'},
+  {file: 'NotePlace', count: 9, until: KEEP, why: GALLEY + ' (the ' +
+    'lines of the marks on a page, its foot: Batch E2)'},
+  {file: 'NoteView', count: 6, until: KEEP, why: 'the Print layout ' +
+    'placement of the notes: where a page draws a footnote\'s piece or ' +
+    'a run\'s fragment, page coordinates as ./PagePaint feet and ends ' +
+    'draw them (Batch E2)'},
+  {file: 'NoteEdit', count: 2, until: KEEP, why: ANSWERED + ' (the ' +
+    'notes mode: a note placed on its page\'s rect, ./PageSheet; the ' +
+    'page dimmed but its note bands: Batch E2)'},
   {file: 'PageCols', count: 3, until: KEEP, why: GALLEY + ' (startY, ' +
     'moved from ./Paginate: P10.1)'},
   {file: 'PageCellAt', count: 3, until: KEEP, why: GALLEY},
@@ -90,9 +106,11 @@ export const ALLOW = [
   {file: 'PageFrames', count: 1, until: KEEP, why: GALLEY},
   {file: 'PageRows', count: 5, until: KEEP, why: GALLEY},
   {file: 'ParaSpace', count: 1, until: KEEP, why: GALLEY},
-  {file: 'PagePaint', count: 5, until: KEEP, why: ANSWERED + ' (a ' +
+  {file: 'PagePaint', count: 6, until: KEEP, why: ANSWERED + ' (a ' +
     'page\'s rect from ./PageSheet: its corner marks, its place; a ' +
-    'float\'s box, ./AnchorPlace: page coordinates, P12.2)'},
+    'float\'s box, ./AnchorPlace: page coordinates, P12.2; a note ' +
+    'after the text drawn at its fragment\'s page place, ./PageFrames, ' +
+    'from its own layout: Batch E2)'},
   {file: 'PageSheet', count: 3, until: KEEP, why: 'the Print ' +
     'layout placement: where each page lies on the sheet'},
   {file: 'PicDrag', count: 1, until: KEEP, why: ANSWERED + ' (the ' +

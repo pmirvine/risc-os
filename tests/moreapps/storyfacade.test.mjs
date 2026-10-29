@@ -14,7 +14,9 @@
 // takes the window out of the mode (no stale facade); a story step
 // undone from the body takes the window into that story (P7.5,
 // ./HdrStep: more in hdrcmd.test.mjs); the mode's labels (./HdrView
-// labelOf).
+// labelOf). A note (Batch E2): facadeOf(d, {note: {kind, id}}) is
+// the same for one footnote or endnote, typing, bold, a list, find,
+// a picture and undo running on it unchanged.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {facadeOf, REFUSED}
@@ -40,7 +42,8 @@ import {newPara, deepEqual, sameStories}
   from '../../tools/moreapps/!Letters/Model';
 import * as S from '../../tools/moreapps/!Letters/Selection';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {p, r} from './build-docx.mjs';
+import {p, r, REL} from './build-docx.mjs';
+import {MAX_NOTE_ID} from '../../tools/moreapps/!Letters/ModelCheck';
 import {withHeaders, freeze} from './story-fixtures.mjs';
 import {pngBytes} from './pic-fixtures.mjs';
 import {lintAfter} from './lint-after.mjs';
@@ -57,6 +60,14 @@ import {enterMode, leaveMode}
 import {afterChange} from '../../tools/moreapps/!Letters/HdrStep';
 import {PlaceShift, labelOf, hdrAt}
   from '../../tools/moreapps/!Letters/HdrView';
+import {toggle} from '../../tools/moreapps/!Letters/FormatSet';
+import {toggleList} from '../../tools/moreapps/!Letters/ListMake';
+import {search} from '../../tools/moreapps/!Letters/Find';
+import {ids} from '../../tools/moreapps/!Letters/Walk';
+import {noteDoc, noteP, mark} from './note-fixtures.mjs';
+import {addBookmark} from '../../tools/moreapps/!Letters/Bookmarks';
+import {nextNoteId, newNote}
+  from '../../tools/moreapps/!Letters/OpsNotes';
 
 const H = 'word/header1.xml', F = 'word/footer1.xml';
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
@@ -83,7 +94,7 @@ const caretIn = (d, k, off) => S.caret({id: hdr(d).blocks[k].id, off});
 /** Run cmd(f, typing) on a fresh document's header facade; check
  *  that only the header changed, then undo it through the real
  *  Document back to the document as opened (bytes too). */
-async function onlyStory(cmd, check) {
+async function onlyStory(cmd, check, opts = {}) {
   const d = fresh(), f = facadeOf(d, H, 0), t = new Typing(f);
   const body = d.doc.sections, rels = d.doc.rels;
   const foot = d.doc.stories.get(F);
@@ -93,7 +104,12 @@ async function onlyStory(cmd, check) {
   assert.ok(deepEqual(d.doc.sections, opened.sections), 'body as read');
   assert.equal(d.doc.stories.get(F), foot, 'the footer shared');
   assert.notEqual(hdr(d), opened.stories.get(H), 'a new header');
-  assert.equal(d.doc.rels, rels, 'the main relationships kept');
+  if (opts.mainRels) {
+    // (a document-level relationship goes to the main part: the
+    // numbering one of a first list, Batch E2 fix)
+    assert.ok(rels.every((x) => d.doc.rels.includes(x)), 'kept');
+    assert.ok(d.doc.rels.some((x) => /numbering$/.test(x.type)));
+  } else assert.equal(d.doc.rels, rels, 'the main relationships kept');
   if (check) await check(d, f, out);
   await lintAfter(d.doc, 'after the command');
   while (d.canUndo) d.undo();
@@ -167,7 +183,7 @@ describe('every command, through the facade, changes only the story',
       assert.ok(d.doc.numbering, 'its numbering in the document');
       const xml = dec((await readZip(await write(d.doc))).get(H));
       assert.match(xml, /<w:numId w:val="\d+"\/>/);
-    }));
+    }, {mainRels: true}));
 
     it('Insert > Table, at the last paragraph: one is kept after it',
       () => onlyStory((f, t, d) => insertTable(f, caretIn(d, 1, 8),
@@ -505,4 +521,430 @@ describe('the mode\'s geometry and labels (./HdrView)', () => {
     {text: 'First page header - Section 2', linked: false},
     'its own reference (a part kept as bytes): not linked');
   });
+});
+
+describe('a note through the facade (Batch E2)', () => {
+  const PIC = p('<w:r><w:drawing><wp:inline xmlns:wp="http://schemas.' +
+    'openxmlformats.org/drawingml/2006/wordprocessingDrawing">' +
+    '<wp:extent cx="1" cy="1"/><wp:docPr id="70" name="P"/>' +
+    '</wp:inline></w:drawing></w:r>');
+  let nd, nbytes;
+  before(async () => {
+    nd = freeze(await noteDoc(p(r('body one') + mark(1)) +
+      p(r('body two') + mark(2)) + PIC,
+    {1: noteP('first note'), 2: noteP('second') + p(r('more'))}));
+    nbytes = await write(nd);
+  });
+  const K1 = {note: {kind: 'footnote', id: 1}};
+  const K2 = {note: {kind: 'footnote', id: 2}};
+  const nfresh = () => new Document({...nd, sections:
+    nd.sections.map((s) => ({...s, blocks: s.blocks.slice()}))});
+  const note = (d, id = 1) => d.doc.notes.footnotes.get(id);
+  const at = (d, k, off, id = 1) => S.caret({id: note(d, id).blocks[k].id,
+    off});
+
+  /** Run cmd on note 1's facade; only that note changed; undo back to
+   *  the document as read (bytes too). */
+  async function onlyNote(cmd, check, opts = {}) {
+    const d = nfresh(), f = facadeOf(d, K1, 0), t = new Typing(f);
+    const body = d.doc.sections, two = note(d, 2), n1 = note(d);
+    const read = d.doc.notes.read, stories = d.doc.stories;
+    const out = cmd(f, t, d);
+    assert.ok(out !== null && out !== false, 'the command did something');
+    assert.ok(deepEqual(d.doc.sections, nd.sections), 'body as read');
+    assert.equal(d.doc.sections, body);
+    if (opts.rels) {
+      assert.equal(note(d, 2).blocks, two.blocks, 'only its rels');
+    } else assert.equal(note(d, 2), two, 'the other note shared');
+    assert.notEqual(note(d), n1, 'a new Note');
+    assert.equal(d.doc.notes.read, read, 'the snapshot untouched');
+    assert.equal(d.doc.stories, stories);
+    if (check) await check(d, f, out);
+    await lintAfter(d.doc, 'after the command');
+    while (d.canUndo) d.undo();
+    assert.ok(deepEqual(d.doc.notes, nd.notes), 'undone');
+    assert.deepEqual(await write(d.doc), nbytes, 'bytes as read');
+    return d;
+  }
+
+  it('is memoised per (Document, note); its doc is the note', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    assert.equal(facadeOf(d, {note: {kind: 'footnote', id: 1}}, 0), f);
+    assert.notEqual(facadeOf(d, K2, 0), f);
+    assert.notEqual(facadeOf(d, {note: {kind: 'endnote', id: 1}}), f);
+    assert.notEqual(facadeOf(d, 'word/footnotes.xml'), f,
+      'a part name is a story, not a note');
+    const v = f.doc;
+    assert.equal(f.doc, v);
+    assert.equal(v.sections.length, 1);
+    assert.equal(v.sections[0].blocks, note(d).blocks);
+    assert.equal(v.sections[0].props, d.doc.sections[0].props);
+    assert.equal(v.meta.mainPart, 'word/footnotes.xml');
+    assert.equal(v.meta.documentRoot, d.doc.notes.root.footnotes);
+    assert.equal(v.styles, d.doc.styles);
+    assert.deepEqual(v.rels, []);
+    const body = v.stories.get(d.doc.meta.mainPart);
+    assert.deepEqual(body.blocks, d.doc.sections[0].blocks,
+      'the body seen by the scanners as a story');
+    assert.equal(f.gone, false);
+    assert.equal(f.story, note(d));
+    assert.deepEqual(findBlock(v, note(d).blocks[0].id).at, [0, 0]);
+    assert.equal(findBlock(v, note(d).blocks[0].id).story, null);
+    for (const bad of [{note: {kind: '__proto__', id: 1}},
+      {note: {kind: 'footnote', id: '1'}}, {note: null},
+      {note: {kind: 'footnote', id: 1.5}}, [], {},
+      JSON.parse('{"__proto__": {"kind": "footnote", "id": 1}}')])
+      assert.throws(() => facadeOf(d, bad, 0), RangeError);
+  });
+
+  it('typing', () => onlyNote((f, t, d) =>
+    t.type(at(d, 0, 2), 'X'), (d) => {
+    assert.equal(note(d).blocks[0].text, '\ufffc Xfirst note');
+    assert.equal(d.undoDepth, 1);
+  }));
+
+  it('Enter', () => onlyNote((f, t, d) =>
+    run('enter', f, t, at(d, 0, 7)), (d) => {
+    assert.deepEqual(note(d).blocks.map((b) => b.text),
+      ['\ufffc first', ' note']);
+  }));
+
+  it('bold (FormatSet toggle)', () => onlyNote((f, t, d) => toggle(f, t,
+    S.select({id: note(d).blocks[0].id, off: 2},
+      {id: note(d).blocks[0].id, off: 7}), 'bold', EMPTY), (d) => {
+    assert.ok(note(d).blocks[0].runs.some((x) => x.rPr.b === true &&
+      x.start === 2 && x.end === 7));
+  }));
+
+  it('a list (ListMake)', () => onlyNote((f, t, d) => toggleList(f, t,
+    at(d, 0, 3), {kind: 'bullet'}, EMPTY), async (d) => {
+    assert.ok(note(d).blocks[0].pPr.numPr, 'a list item');
+    assert.ok(d.doc.numbering, 'its numbering in the document');
+    const z = await readZip(await write(d.doc));
+    assert.match(dec(z.get('word/footnotes.xml')),
+      /<w:numId w:val="\d+"\/>/);
+  }, {rels: true}));
+
+  it('a picture and a numbering relationship in ONE setDocPart: each ' +
+    'to its place; one undo takes both back', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    const docRels = d.doc.rels, cur = f.doc.rels, depth = d.undoDepth;
+    const img = {id: 'rId90', type: REL('image'),
+      target: 'media/image9.png'};
+    const num = {id: 'rId91', type: REL('numbering'),
+      target: 'numbering.xml'};
+    f.apply({op: 'setDocPart', key: 'rels', value: [...cur, img, num]});
+    assert.equal(d.undoDepth, depth + 1, 'one step');
+    assert.ok(note(d).rels.includes(img), 'the picture: the part\'s');
+    assert.ok(!note(d).rels.some((x) => /numbering$/.test(x.type)));
+    assert.ok(d.doc.rels.some((x) => /numbering$/.test(x.type) &&
+      x.target === 'numbering.xml'), 'the numbering: the main part\'s');
+    assert.ok(!d.doc.rels.some((x) => /image$/.test(x.type)));
+    d.undo();
+    assert.equal(d.doc.rels, docRels);
+    assert.deepEqual(note(d).rels ?? [], cur);
+  });
+
+  it('a document-level relationship the main part has: no op, no ' +
+    'step', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    const has = d.doc.rels.find((x) => /footnotes$/.test(x.type));
+    assert.ok(has);
+    const depth = d.undoDepth, notes = d.doc.notes, rels = d.doc.rels;
+    f.apply({op: 'setDocPart', key: 'rels', value: [...f.doc.rels,
+      {id: 'rId77', type: has.type, target: has.target}]});
+    assert.equal(d.undoDepth, depth, 'no empty step');
+    assert.equal(d.doc.notes, notes);
+    assert.equal(d.doc.rels, rels);
+  });
+
+  it('a relationship id the part and the document both use: the ' +
+    'document-level one gets an id free in document.xml.rels',
+  async () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    const link = {id: 'rId5', type: REL('hyperlink'),
+      target: 'http://example.com/', mode: 'External'};
+    d.apply({op: 'setNoteRels', kind: 'footnote', rels: [link]});
+    const extra = [1, 2, 3, 4, 5].map((k) => ({id: 'rId' + k,
+      type: REL('customXml'),
+      target: '../customXml/item' + k + '.xml'}))
+      .filter((x) => !d.doc.rels.some((y) => y.id === x.id));
+    d.apply({op: 'setDocPart', key: 'rels', value: [...d.doc.rels,
+      ...extra]});
+    const before = new Set(d.doc.rels.map((x) => x.id));
+    assert.ok(before.has('rId5'));
+    f.apply({op: 'setDocPart', key: 'rels', value: [link,
+      {id: 'rId6', type: REL('numbering'), target: 'numbering.xml'}]});
+    const got = d.doc.rels.find((x) => /numbering$/.test(x.type));
+    assert.ok(got && !before.has(got.id), got && got.id);
+    assert.equal(new Set(d.doc.rels.map((x) => x.id)).size,
+      d.doc.rels.length, 'no id twice');
+    assert.deepEqual(note(d).rels, [link]);
+  });
+
+  it('find looks in the note only', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    const m = search(f.doc, null, 'note');
+    assert.deepEqual(m.at, [0, 0]);
+    assert.equal(search(f.doc, null, 'body'), null);
+    assert.equal(search(f.doc, null, 'more'), null, 'not note 2');
+  });
+
+  it('a picture: related from the notes part, for every note; its ' +
+    'docPr id past the body\'s', () => onlyNote((f, t, d) => insertPic(
+    f, at(d, 0, 0), {bytes: pngBytes(4, 2)}), async (d) => {
+    const rels = note(d).rels;
+    const rel = rels.find((x) => /image$/.test(x.type));
+    assert.equal(rel.target, 'media/image1.png');
+    for (const n of d.doc.notes.footnotes.values())
+      assert.equal(n.rels, rels, 'one rels for the part');
+    assert.ok(!d.doc.rels.some((x) => /image$/.test(x.type)));
+    assert.ok(usedDocPrIds(d.doc).ids.has(71), 'seen from the body');
+    const z = await readZip(await write(d.doc));
+    assert.match(dec(z.get('word/_rels/footnotes.xml.rels')),
+      /Target="media\/image1.png"/);
+    assert.match(dec(z.get('word/footnotes.xml')), /docPr id="71"/);
+  }, {rels: true}));
+
+  it('undo and redo are the real Document\'s; ids unique across the ' +
+    'body and the notes', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0), t = new Typing(f);
+    t.type(at(d, 0, 2), 'A');
+    run('enter', f, t, at(d, 0, 3));
+    const all = ids(d.doc);
+    assert.equal(new Set(all).size, all.length, 'no id twice');
+    for (const b of note(d).blocks) assert.ok(all.includes(b.id),
+      'the scanners see the note');
+    assert.equal(d.undoDepth, 2);
+    f.undo();
+    assert.equal(note(d).blocks[0].text, '\ufffc Afirst note');
+    d.undo();
+    assert.ok(deepEqual(note(d), nd.notes.footnotes.get(1)));
+    f.redo();
+    assert.equal(note(d).blocks[0].text, '\ufffc Afirst note');
+    const used = new Set(ids(d.doc));
+    d.apply({op: 'insertBlock', at: [0, 0], block: newPara('x')});
+    assert.ok(!used.has(d.doc.sections[0].blocks[0].id));
+  });
+
+  it('refused: section ops, a note in a note, another story; a note ' +
+    'gone', () => {
+    const d = nfresh(), f = facadeOf(d, K1, 0);
+    const s = d.doc.sections[0];
+    for (const op of [{op: 'splitSection', at: [0, 1]},
+      {op: 'mergeSection', at: 0},
+      {op: 'setSection', at: 0, raw: s.raw, props: s.props}]) {
+      assert.throws(() => f.apply(op), RangeError, op.op);
+      assert.throws(() => f.apply({op: 'compound', ops: [op]}),
+        RangeError);
+    }
+    for (const id of ['footnote', 'endnote', 'pageBreak',
+      'sectionNext']) {
+      assert.equal(f.refuses(id), true, id);
+      assert.equal(run(id, f, new Typing(f), at(d, 0, 2)), null, id);
+    }
+    for (const story of [K2, 'word/footnotes.xml',
+      {note: {kind: 'endnote', id: 1}}])
+      assert.throws(() => f.apply({op: 'replaceText', story,
+        block: [0, 0], at: 0, del: 0, ins: 'x'}), RangeError);
+    assert.equal(d.undoDepth, 0);
+    assert.ok(deepEqual(d.doc.notes, nd.notes));
+    d.apply({op: 'removeNote', kind: 'footnote', id: 1});
+    assert.equal(f.gone, true);
+    assert.deepEqual(f.doc.sections[0].blocks, [], 'an empty view');
+    assert.throws(() => f.apply({op: 'replaceText', block: [0, 0],
+      at: 0, del: 0, ins: 'y'}), RangeError);
+    d.undo();
+    assert.equal(f.gone, false);
+  });
+});
+
+describe('ids chosen in a story or a note are the document\'s ' +
+  '(Batch E2)', () => {
+  const FN = (id) => ({note: {kind: 'footnote', id}});
+  /** A body, a header and three footnotes (note 3 an endnote too). */
+  async function many() {
+    const doc = await noteDoc(p(r('body one') + mark(1)) +
+      p(r('body two') + mark(2)) + p(r('body three') + mark(3)),
+    {1: noteP('first note'), 2: noteP('second note'),
+      3: noteP('third note')});
+    return new Document(doc);
+  }
+  const first = (v) => v.doc.sections[0].blocks[0].id;
+  /** Every bookmarkStart id in the document (body, stories, notes). */
+  function bmIds(d) {
+    const out = [];
+    const look = (bs) => {
+      for (const b of bs) for (const x of Object.values(b.inlines ||
+        {})) {
+        if (x && x.node && /bookmarkStart$/.test(x.node.name))
+          out.push(x.node.attrs.find(([k]) => k === 'w:id')[1]);
+      }
+    };
+    for (const s of d.doc.sections) look(s.blocks);
+    for (const st of d.doc.stories.values()) look(st.blocks);
+    for (const m of [d.doc.notes.footnotes, d.doc.notes.endnotes])
+      for (const n of m.values()) look(n.blocks);
+    return out;
+  }
+  const bm = (v, name) => {
+    const res = addBookmark(v, new Typing(v), S.caret({id: first(v),
+      off: 2}), name);
+    assert.ok(!res.error, name + ': ' + res.error);
+  };
+
+  it('bookmarks: note to note, body after a note, a note after the ' +
+    'body: no id twice', async () => {
+    const d = await many();
+    bm(facadeOf(d, FN(1)), 'InNote1');
+    bm(facadeOf(d, FN(2)), 'InNote2');
+    bm(d, 'InBody');
+    bm(facadeOf(d, FN(3)), 'InNote3');
+    const got = bmIds(d);
+    assert.equal(got.length, 4);
+    assert.equal(new Set(got).size, 4, got.join());
+  });
+
+  it('bookmarks: a header and a note; each facade sees the body\'s, ' +
+    'the headers\' and the other notes\'', async () => {
+    const doc = await readDocx(await withHeaders(p(r('body') +
+      mark(1)), {default: p(r('Head one'))}, {parts: {
+      'word/footnotes.xml': '<?xml version="1.0"?><w:footnotes ' +
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/' +
+        '2006/main">' + '<w:footnote w:id="1">' + noteP('n1') +
+        '</w:footnote><w:footnote w:id="2">' + noteP('n2') +
+        '</w:footnote></w:footnotes>'}, docRels: [['rIdN1',
+      'http://schemas.openxmlformats.org/officeDocument/2006/' +
+      'relationships/footnotes', 'footnotes.xml']]}));
+    const d = new Document(doc);
+    assert.equal(d.doc.notes.footnotes.size, 2);
+    bm(facadeOf(d, H, 0), 'InHead');
+    bm(facadeOf(d, FN(1)), 'InNote1');
+    bm(facadeOf(d, H, 0), 'InHead2');
+    bm(facadeOf(d, FN(2)), 'InNote2');
+    bm(d, 'InBody');
+    const got = bmIds(d);
+    assert.equal(got.length, 5);
+    assert.equal(new Set(got).size, 5, got.join());
+  });
+
+  it('pictures: note 1, note 2 and the body take three docPr ids',
+    async () => {
+      const d = await many();
+      const pic = (v) => insertPic(v, S.caret({id: first(v), off: 0}),
+        {bytes: pngBytes(4, 2)});
+      pic(facadeOf(d, FN(1)));
+      pic(facadeOf(d, FN(2)));
+      pic(d);
+      pic(facadeOf(d, FN(3)));
+      const z = dec((await readZip(await write(d.doc)))
+        .get('word/footnotes.xml')) + dec((await readZip(
+        await write(d.doc))).get('word/document.xml'));
+      const got = [...z.matchAll(/docPr id="(\d+)"/g)].map((m) => m[1]);
+      assert.equal(got.length, 4);
+      assert.equal(new Set(got).size, 4, got.join());
+      await lintAfter(d.doc, 'pictures in notes');
+    });
+
+  it('a mark with an absurd id (past MAX_NOTE_ID) is passed over',
+    async () => {
+      const big = String(MAX_NOTE_ID + 5);
+      const doc = await noteDoc(p(r('a') + mark(1) + r('b') +
+        mark(big)), {1: noteP('one')});
+      const x = Object.values(doc.sections[0].blocks[0].inlines)
+        .filter((y) => y.kind === 'noteRef');
+      assert.equal(x.length, 2, 'both read as marks');
+      assert.equal(x[1].id, +big);
+      assert.equal(nextNoteId(doc, 'footnote'), 2);
+    });
+
+  it('a bookmark in a table nested in a table in a note: the body\'s ' +
+    'next bookmark takes a higher id', async () => {
+    const tc = (x) => '<w:tc>' + x + '</w:tc>';
+    const tbl = (x) => '<w:tbl><w:tblPr><w:tblW w:w="0" ' +
+      'w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol ' +
+      'w:w="2000"/></w:tblGrid>' +
+      '<w:tr>' + tc(x) + '</w:tr></w:tbl>';
+    const deep = p(r('in') + '<w:bookmarkStart w:id="41" ' +
+      'w:name="Deep"/><w:bookmarkEnd w:id="41"/>');
+    const doc = await noteDoc(p(r('body') + mark(1)), {1: noteP('n') +
+      tbl(tbl(deep) + p(r('c'))) + p(r('after'))});
+    const d = new Document(doc);
+    assert.equal(d.doc.notes.footnotes.get(1).blocks[1].type, 'tbl');
+    bm(d, 'InBody');
+    const got = bmIds(d);
+    assert.ok(got.includes('42'), got.join());
+    const n = d.doc.notes.footnotes.get(1);
+    const inner = n.blocks[1].rows[0].cells[0].blocks[0];
+    assert.equal(inner.type, 'tbl', 'nested');
+  });
+
+  it('a note id at the 9-digit limit: no id past it', async () => {
+    const d = await many();
+    const MAX = 999999999;
+    d.apply({op: 'addNote', kind: 'footnote', id: MAX,
+      note: newNote(d.doc, 'footnote', MAX, [newPara('x')])});
+    assert.throws(() => nextNoteId(d.doc, 'footnote'), RangeError);
+    assert.equal(nextNoteId(d.doc, 'endnote'), 1);
+  });
+});
+
+describe('a story\'s or note\'s document-level relationships go to ' +
+  'the main part (Batch E2 fix)', () => {
+  /** A list made through facade f of Document d (no numbering part):
+   *  written, read back, the relationship in document.xml.rels. */
+  async function listIn(d, f, part, b0, bytes0) {
+    const p0 = f.doc.sections[0].blocks[0];
+    toggleList(f, new Typing(f), S.caret({id: p0.id, off: 1}),
+      {kind: 'bullet'}, EMPTY);
+    const bytes = await write(d.doc);
+    const z = await readZip(bytes);
+    const docRels = dec(z.get('word/_rels/document.xml.rels'));
+    assert.match(docRels, /relationships\/numbering"/);
+    const own = z.get(part.replace('word/', 'word/_rels/') + '.rels');
+    assert.ok(!own || !/numbering/.test(dec(own)),
+      'not in the part\'s own .rels');
+    const back = await readDocx(bytes);
+    assert.ok(back.numbering, 'numbering read back');
+    assert.ok(back.meta.numberingPart);
+    const num = b0(back).pPr.numPr;
+    assert.ok(num && Number.isInteger(num.numId) && num.numId > 0,
+      JSON.stringify(num));
+    assert.ok(back.numbering.nums.has(num.numId), 'its numId defined');
+    await lintAfter(d.doc, 'a list in ' + part);
+    while (d.canUndo) d.undo();
+    assert.deepEqual(await write(d.doc), bytes0, 'undo: as before');
+  }
+
+  it('a header: write, read back, the list is numbered', async () => {
+    const d = fresh();
+    await listIn(d, facadeOf(d, H, 0), H,
+      (back) => back.stories.get(H).blocks[0], bytes0);
+  });
+
+  it('a footnote: the same', async () => {
+    const doc = await noteDoc(p(r('body') + mark(1)),
+      {1: noteP('first note')});
+    const d = new Document(doc), b = await write(doc);
+    await listIn(d, facadeOf(d, {note: {kind: 'footnote', id: 1}}),
+      'word/footnotes.xml',
+      (back) => back.notes.footnotes.get(1).blocks[0], b);
+  });
+
+  it('a document with numbering already: no second relationship',
+    async () => {
+      const d = fresh();
+      toggleList(d, new Typing(d), S.caret({id: d.doc.sections[0]
+        .blocks[0].id, off: 1}), {kind: 'bullet'}, EMPTY);
+      const n0 = d.doc.rels.length, num0 = d.doc.meta.numberingPart;
+      const f = facadeOf(d, H, 0);
+      toggleList(f, new Typing(f), caretIn(d, 0, 1),
+        {kind: 'number'}, EMPTY);
+      assert.equal(d.doc.rels.length, n0);
+      assert.equal(d.doc.meta.numberingPart, num0);
+      assert.ok(!(hdr(d).rels || []).some((x) =>
+        /numbering$/.test(x.type)));
+      const back = await readDocx(await write(d.doc));
+      assert.ok(back.stories.get(H).blocks[0].pPr.numPr);
+    });
 });

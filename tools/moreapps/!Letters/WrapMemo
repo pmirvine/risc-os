@@ -6,7 +6,7 @@
 //       (Map page key -> record, ./ColMemo keyOf) kept, shared by the
 //       wraps that follow (as ./ColMemo's memos); total the passes
 //       made in ./DocVersion ver (0 for a first pass in it)
-//   recFor(L, pg, memo, view) -> record | null  Page pg's record
+//   recFor(L, P, pg, memo, view) -> record | null  Page pg's record
 //       when its inputs are the ones the record was made from: its
 //       start, the offset of its first line when it starts inside a
 //       paragraph, its parity, body top, frame height, shift and
@@ -29,16 +29,18 @@
 //       pass, pinned and kept its pins made (./WrapPage); and
 //       (P12b fix) tys: the tables it may hold (Map id -> {pk, y}),
 //       held: those it holds (a Map) or undefined
-//   grow(rec, L, pg)   the inputs of the items pg holds now, and of
+//   grow(rec, P, pg)   the inputs of the items pg holds now, and of
 //       the item after its end, added
-//   heldSame(L, pg, rec) -> whether the items record rec of page pg
+//   heldSame(P, pg, rec) -> whether the items record rec of page pg
 //       held past pg's last item in its passes (a page's passes may
 //       hold more than it ends with) have their inputs still (P12b
 //       fix I1: ./WrapPage's settled page, whose own items are the
 //       same while its Page object is, is no longer settled when one
 //       of them changed)
-//   endKey(L, pg) -> where page pg ends, as text
+//   endKey(P, pg) -> where page pg ends, as text
 //
+// Pages are read by their cursors in the galley of ./Pages P (P.G:
+// its items, notes after the text too, ./EndGalley), never in L.
 // Pure: no desktop services.
 import {keyOf, pruned} from './ColMemo';
 
@@ -55,7 +57,12 @@ function ser(o) {
 
 const inside = (c) => !!(c.line || c.dy || c.cuts);
 const lastOf = (pg) => (inside(pg.end) ? pg.end.k : pg.end.k - 1);
-const inp = (L, k) => (L.items[k] ? L.items[k].inp : -1);
+/** The input of galley G's item k (./ItemReuse inp; a run of
+ *  notes' item: its note item, ./EndnoteLayout), -1 for none. */
+const inp = (G, k) => {
+  const it = G.items[k];
+  return !it ? -1 : it.en ? it.en.src : it.inp;
+};
 
 /** See the header. */
 export function memoOf(old, ver) {
@@ -65,21 +72,21 @@ export function memoOf(old, ver) {
 }
 
 /** Page pg's inputs but its items' (see the header). */
-function sigOf(L, pg) {
-  const c = pg.start, it = L.items[c.k];
+function sigOf(L, G, pg) {
+  const c = pg.start, it = G.items[c.k];
   const ln = inside(c) && it && it.lines ? it.lines[c.line] : null;
-  return [keyOf(L, pg), (c.cuts || []).join(','), ln ? ln.from : -1,
+  return [keyOf(G, pg), (c.cuts || []).join(','), ln ? ln.from : -1,
     pg.parity, pg.bodyTop, pg.frameH, pg.vShift, pg.w, pg.h,
     ser(L.sectProps[pg.s])].join('/');
 }
 
 /** See the header. */
-export function recFor(L, pg, memo, view) {
-  const rec = memo.known.get(keyOf(L, pg));
-  if (!rec || rec.sig !== sigOf(L, pg)) return null;
+export function recFor(L, P, pg, memo, view) {
+  const G = P.G, rec = memo.known.get(keyOf(G, pg));
+  if (!rec || rec.sig !== sigOf(L, G, pg)) return null;
   const k0 = pg.start.k;
   for (let j = 0; j < rec.toks.length; j++) {
-    if (inp(L, k0 + j) !== rec.toks[j]) return null;
+    if (inp(G, k0 + j) !== rec.toks[j]) return null;
   }
   for (const [id, k] of view) {
     const e = rec.expect.get(id);
@@ -90,36 +97,36 @@ export function recFor(L, pg, memo, view) {
 
 /** See the header. */
 export function newRec(L, P, pg, memo) {
-  const rec = {sig: sigOf(L, pg), toks: [], n: 0, st: 'busy',
+  const rec = {sig: sigOf(L, P.G, pg), toks: [], n: 0, st: 'busy',
     expect: new Map(), end: '', k: -1, cut: false, seen: new Set(),
     ends: [], cuts: [], pinned: false, kept: false};
-  grow(rec, L, pg);
-  pruned(L, P, memo.known).set(keyOf(L, pg), rec);
+  grow(rec, P, pg);
+  pruned(L, P, memo.known).set(keyOf(P.G, pg), rec);
   return rec;
 }
 
 /** See the header. */
-export function grow(rec, L, pg) {
-  const k0 = pg.start.k;
-  const end = Math.min(lastOf(pg) + 1, L.items.length - 1);
+export function grow(rec, P, pg) {
+  const G = P.G, k0 = pg.start.k;
+  const end = Math.min(lastOf(pg) + 1, G.items.length - 1);
   for (let k = k0 + rec.toks.length; k <= end; k++) {
-    rec.toks.push(inp(L, k));
+    rec.toks.push(inp(G, k));
   }
 }
 
 /** See the header. */
-export function heldSame(L, pg, rec) {
+export function heldSame(P, pg, rec) {
   const k0 = pg.start.k;
   for (let j = Math.max(0, lastOf(pg) + 1 - k0); j < rec.toks.length;
     j++) {
-    if (inp(L, k0 + j) !== rec.toks[j]) return false;
+    if (inp(P.G, k0 + j) !== rec.toks[j]) return false;
   }
   return true;
 }
 
 /** See the header. */
-export function endKey(L, pg) {
-  const c = pg.end, it = L.items[c.k];
+export function endKey(P, pg) {
+  const c = pg.end, it = P.G.items[c.k];
   return [it ? it.id : '', c.line || 0, c.dy || 0,
     (c.cuts || []).join(',')].join('/');
 }

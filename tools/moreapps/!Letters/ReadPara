@@ -9,6 +9,20 @@
 // raw inline holding a w:t with just that character, so text never
 // gains a meaning the file did not give it.
 //
+// In a body paragraph, a table cell or a note (readPara's `notes`
+// option, set by ./ReadBody, ./TblRead and ./NoteRead) a
+// w:footnoteReference or w:endnoteReference is instead U+FFFC with
+// {kind:'noteRef', note:'footnote'|'endnote', id, level:'r', node,
+// custom?, customNode?}, and the note's own w:footnoteRef /
+// w:endnoteRef one with {note, id: null, self: true}: id the integer
+// w:id (a w:id that is not a whole number 0..2147483647 keeps the
+// raw inline, as does any mark outside those paragraphs: headers,
+// footers, text boxes). A reference with w:customMarkFollows is
+// tied to the w:t that follows it in the run (custom: its text,
+// customNode: that element, written back as it was); with no such
+// plain text after it, it stays a raw inline. node is written back
+// unchanged.
+//
 // Every other child of w:p (w:hyperlink, w:fldSimple, w:ins, w:del,
 // w:sdt, w:smartTag, bookmarks, w:proofErr, m:oMath, unknown...) is
 // one U+FFFC with {kind:'raw', level:'p', node, text}: text (for
@@ -109,7 +123,48 @@ function readT(t, m, b, fmt) {
   b.text(s.slice(from), fmt);
 }
 
-function readRun(r, map, b) {
+const NOTE_MARKS = {footnoteReference: ['footnote', false],
+  endnoteReference: ['endnote', false], footnoteRef: ['footnote', true],
+  endnoteRef: ['endnote', true]};
+
+/** The custom-mark flag of a reference: true, false, or null (not
+ *  understood). */
+function customFlag(c, m) {
+  const v = wAttr(c, c.attrs.length ? scope(m, c) : m,
+    'customMarkFollows');
+  if (v === undefined) return false;
+  if (['1', 'true', 'on'].includes(v)) return true;
+  return ['0', 'false', 'off'].includes(v) ? false : null;
+}
+
+/** The noteRef inline for mark `c`, or null to keep it raw. `next`
+ *  is the element after it in the run. */
+function noteRef(c, l, m, next) {
+  const [note, self] = NOTE_MARKS[l];
+  const mm = c.attrs.length ? scope(m, c) : m;
+  const x = {kind: 'noteRef', note, id: null, level: 'r', node: c};
+  if (self) {
+    if (c.attrs.length || c.children.length) return null;
+    x.self = true;
+    return x;
+  }
+  const id = wAttr(c, mm, 'id');
+  if (id === undefined || !/^[0-9]{1,10}$/.test(id) ||
+    +id > 2147483647 || c.children.length) return null;
+  x.id = +id;
+  const flag = customFlag(c, m);
+  if (flag === null) return null;
+  if (flag) {
+    const t = next && isEl(next) && wName(next, m) === 't' &&
+      tText(next, m);
+    if (!t || /[\t\n\ufffc]/.test(t)) return null;
+    x.custom = t;
+    x.customNode = next;
+  }
+  return x;
+}
+
+function readRun(r, map, b, notes) {
   const m = r.attrs.length ? scope(map, r) : map;
   if (awkward(r, m)) {
     b.pRaw(r, map);
@@ -119,10 +174,20 @@ function readRun(r, map, b) {
   for (const c of r.children) {
     if (isEl(c) && wName(c, m) === 'rPr') fmt = readRPr(c, m, true);
   }
-  for (const c of r.children) {
-    if (!isEl(c)) continue;
+  const kids = r.children.filter(isEl);
+  let skip = null;
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i];
+    if (c === skip) continue;
     const l = wName(c, m);
     if (l === 'rPr') continue;
+    const ref = notes && NOTE_MARKS[l] ? noteRef(c, l, m, kids[i + 1])
+      : null;
+    if (ref) {
+      if (ref.customNode) skip = ref.customNode;
+      b.inline(ref, fmt);
+      continue;
+    }
     const bare = !c.attrs.length && !c.children.length;
     if (l === 't') readT(c, m, b, fmt);
     else if (l === 'tab' && bare) b.text('\t', fmt);
@@ -137,10 +202,11 @@ function readRun(r, map, b) {
 }
 
 /**
- * Read a w:p. Returns {para, sectPr} (sectPr: the w:pPr/w:sectPr
+ * Read a w:p (flags.notes: model note marks: see the header).
+ * Returns {para, sectPr} (sectPr: the w:pPr/w:sectPr
  * node or null), or null when the paragraph must stay raw.
  */
-export function readPara(node, map) {
+export function readPara(node, map, flags = {}) {
   const m = node.attrs.length ? scope(map, node) : map;
   const b = new Builder();
   let pp = {pPr: {extra: []}};
@@ -155,7 +221,7 @@ export function readPara(node, map) {
     if (l === 'pPr' && first) {
       if (c.attrs.length) return null;
       pp = readPPr(c, m, true);
-    } else if (l === 'r') readRun(c, m, b);
+    } else if (l === 'r') readRun(c, m, b, !!flags.notes);
     else b.pRaw(c, m);
     first = false;
   }

@@ -80,6 +80,12 @@ export function canon(doc) {
   for (const s of (d.stories || new Map()).values()) {
     forEachIn(s.blocks, [0], each);
   }
+  // notes (Batch E2) after the stories, footnotes then endnotes
+  for (const k of ['footnotes', 'endnotes']) {
+    for (const n of ((d.notes || {})[k] || new Map()).values()) {
+      forEachIn(n.blocks, [0], each);
+    }
+  }
   const z = d.meta.zipOrder;
   if (z) {
     const i = z.indexOf('[Content_Types].xml');
@@ -343,6 +349,14 @@ export function expectedBack(doc) {
         x.node = {name: 'w:br', attrs: [['w:type', x.brType]],
           children: []};
       }
+      // a custom note mark set by a command (no w:t as read) reads
+      // back with the w:t the writer wrote for its text
+      if (x.kind === 'noteRef' && typeof x.custom === 'string' &&
+        !x.customNode) {
+        x.customNode = {name: 'w:t', attrs: /^[ \t\n\r]|[ \t\n\r]$/
+          .test(x.custom) ? [['xml:space', 'preserve']] : [],
+        children: [x.custom]};
+      }
     }
   });
   // a known part typed application/xml gets its own type (PartTypes)
@@ -402,8 +416,11 @@ export function withNewParts(want, got) {
   const main = w.mainPart;
   const relsName = main.slice(0, main.lastIndexOf('/') + 1) + '_rels/' +
     main.slice(main.lastIndexOf('/') + 1) + '.rels';
-  const allowed = [g.stylesPart, g.numberingPart, relsName]
-    .filter(Boolean);
+  // (a notes part made by a command, the first footnote or endnote
+  // of a document that had none: its relationship is in the model,
+  // its Override is the writer's)
+  const allowed = [g.stylesPart, g.numberingPart, relsName,
+    ...Object.values(g.noteParts || {})].filter(Boolean);
   // (a part the model holds that the file had not: a picture's media
   // put in by a command, Batch B)
   const held = (n) => want.parts instanceof Map && want.parts.has(n);
@@ -419,8 +436,10 @@ export function withNewParts(want, got) {
   const o = out.meta;
   const zip = g.zipOrder.filter((n) => n !== skip);
   if (inOrder(wz, zip)) o.zipOrder = zip;
+  // (the skipped styles part's Override stays when the file had one)
+  const had = (n) => w.contentTypes.overrides.some(([m]) => m === n);
   const ov = g.contentTypes.overrides
-    .filter(([n]) => !skip || n !== '/' + skip);
+    .filter(([n]) => !skip || n !== '/' + skip || had(n));
   if (inOrder(w.contentTypes.overrides, ov)) {
     o.contentTypes.overrides = structuredClone(ov);
   }

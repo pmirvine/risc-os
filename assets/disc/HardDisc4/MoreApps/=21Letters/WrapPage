@@ -34,6 +34,7 @@ import {keyOf} from './ColMemo';
 import {recFor, newRec, grow, endKey, heldSame} from './WrapMemo';
 import {onPage, viewOf, canonOn, wantOn} from './WrapWant';
 import {cutsOf, flips, unpin, livePins, heldOf} from './WrapPins';
+import {rootK, runsOf} from './EndGalley';
 
 export {livePins};
 
@@ -44,17 +45,17 @@ const OK = new WeakMap();              // Page -> {rec, ids, ps}
 /** The changes page i asks for, {ch, pins} (pins: the new pins,
  *  undefined: the same), or null (see the header). */
 export function pageStep(L, P, i, memo, pins, tys) {
-  const pg = P.list[i], pk = keyOf(L, pg), w = L.wrap;
+  const pg = P.list[i], pk = keyOf(P.G, pg), w = L.wrap;
   const cur = w ? w.parts : NO_MAP, keys = w ? w.keys : NO_MAP;
-  if (settled(L, pg, pk, memo, cur)) return null;
+  if (settled(P, pg, pk, memo, cur)) return null;
   const view = viewOf(L, P, i, cur, onPage(L, P, i));
-  let rec = recFor(L, pg, memo, view);
+  let rec = recFor(L, P, pg, memo, view);
   if (rec && rec.st === 'busy' && rec.last !== (w && w.id)) rec = null;
   if (!rec) {
     rec = newRec(L, P, pg, memo);
     const {ch, after} = canonOn(L, P, i, cur);
     rec.expect = after;
-    stash(L, pg, cur, ch, rec);
+    stash(L, P, pg, cur, ch, rec);
     const np = unpin(pins, pk), nt = unpin(tys, pk);
     if (ch.size || np !== pins || nt !== tys) {
       return {ch, pins: np, tys: nt};
@@ -67,15 +68,15 @@ export function pageStep(L, P, i, memo, pins, tys) {
       rec.expect = after;
       if (ch.size) return {ch};
     }
-    const back = restore(L, pg, cur, rec);
+    const back = restore(L, P, pg, cur, rec);
     if (back) return {ch: back};
-    if (rec.st === 'fall' || rec.end === endKey(L, pg)) {
+    if (rec.st === 'fall' || rec.end === endKey(P, pg)) {
       return keep(pg, pk, rec, view, cur);
     }
-    const y = !rec.cut && later(pg.end, rec.k) && L.items[rec.k];
+    const y = !rec.cut && later(pg.end, rec.k) && rootIt(P, rec.k);
     if (y) return {ch: NO_MAP, pins: new Map(pins).set(y.id, pk)};
   }
-  grow(rec, L, pg);
+  grow(rec, P, pg);
   if (!rec.tys) rec.tys = heldOf(P, pg, pk);
   rec.ends.push(pinAt(pg.end));
   rec.cuts.push(cutsOf(P, pg));
@@ -83,10 +84,10 @@ export function pageStep(L, P, i, memo, pins, tys) {
   rec.expect = after;
   if (!ch.size) {
     rec.st = 'done';
-    rec.end = endKey(L, pg);
+    rec.end = endKey(P, pg);
     rec.k = pg.end.k;
     rec.cut = !!(pg.end.line || pg.end.dy || pg.end.cuts);
-    const back = restore(L, pg, cur, rec);
+    const back = restore(L, P, pg, cur, rec);
     return back ? {ch: back} : null;
   }
   const state = [...after].join('|');
@@ -100,7 +101,7 @@ export function pageStep(L, P, i, memo, pins, tys) {
       rec.expect = view;
       return {ch: NO_MAP, tys: new Map([...tys, ...hold])};
     }
-    const z = !rec.kept && flips(rec.cuts), kz = z && L.items[z];
+    const z = !rec.kept && flips(rec.cuts), kz = z && rootIt(P, z);
     if (kz) {                          // (a column's end moved: the
       rec.kept = true;                 // paragraph kept whole)
       rec.n = 0;
@@ -110,7 +111,7 @@ export function pageStep(L, P, i, memo, pins, tys) {
     }
     const k = Math.min(...rec.ends);
     const y = !rec.pinned && k > pg.start.k &&
-      Math.max(...rec.ends) > k && L.items[k];
+      Math.max(...rec.ends) > k && rootIt(P, k);
     if (y) {                           // (its end moved: kept at the
       rec.pinned = true;               // first, as Word keeps a page)
       rec.n = 0;
@@ -144,11 +145,11 @@ function lostOf(rec, pins, tys, now) {
 /** Page pg (key pk) settled when last looked at, its paragraphs'
  *  parts (cur) the very ones and the items its passes held after it
  *  the same: nothing to look at. */
-function settled(L, pg, pk, memo, cur) {
+function settled(P, pg, pk, memo, cur) {
   const ok = OK.get(pg);
   return !!ok && ok.rec === memo.known.get(pk) && !ok.rec.stash &&
     ok.ids.every((id, j) => cur.get(id) === ok.ps[j]) &&
-    heldSame(L, pg, ok.rec);
+    heldSame(P, pg, ok.rec);
 }
 
 /** null, page pg remembered as settled (see settled). */
@@ -161,36 +162,44 @@ function keep(pg, pk, rec, view, cur) {
 /** The parts of the paragraphs after page pg (cur; in a cell: its
  *  table after it) dropped (in ch) and kept in rec.stash: a page
  *  starts again with none after it, as on a first layout. */
-function stash(L, pg, cur, ch, rec) {
+function stash(L, P, pg, cur, ch, rec) {
   const last = lastOf(pg);
   rec.stash = new Map();
   for (const [id, ps] of cur) {
-    if (!(rootAt(L, id, ps) > last) || ch.has(id)) continue;
+    if (!(rootAt(L, P, id, ps) > last) || ch.has(id)) continue;
     rec.stash.set(id, ps);
     ch.set(id, null);
   }
 }
 
-/** The root index of paragraph id (parts ps): its own, or its
- *  table's when it is in a cell (part.root, ./WrapCells); -1. */
-function rootAt(L, id, ps) {
+/** The galley's item k of Pages P when it is a root item of the
+ *  body (not a note after the text, ./EndnoteLayout), else null. */
+const rootIt = (P, k) => {
+  const it = P.G.items[k];
+  return it && !it.en ? it : null;
+};
+
+/** The galley index (P.G's, ./EndGalley rootK) of paragraph id's
+ *  root item (parts ps): its own, or its table's when it is in a
+ *  cell (part.root, ./WrapCells); -1. */
+function rootAt(L, P, id, ps) {
   const it = L.byId.get(id);
-  if (it && it.col === L.root) return it.ci;
-  const t = it && ps[0] && ps[0].root && L.byId.get(ps[0].root);
-  return t && t.col === L.root ? t.ci : -1;
+  const t = it && it.col === L.root ? it : it && ps[0] && ps[0].root
+    && L.byId.get(ps[0].root);
+  return t && t.col === L.root ? rootK(runsOf(P.G), t.ci) : -1;
 }
 
 /** rec.stash's parts given back (settled, or laid out ignoring
  *  wrap) to the paragraphs still after page pg and still without
  *  parts: the pages after it, settled from them before, need not be
  *  settled again when they are the same (their records); or null. */
-function restore(L, pg, cur, rec) {
+function restore(L, P, pg, cur, rec) {
   const st = rec.stash, last = lastOf(pg);
   rec.stash = null;
   if (!st || !st.size) return null;
   const out = new Map();
   for (const [id, ps] of st) {
-    if (rootAt(L, id, ps) > last && !cur.has(id)) out.set(id, ps);
+    if (rootAt(L, P, id, ps) > last && !cur.has(id)) out.set(id, ps);
   }
   return out.size ? out : null;
 }

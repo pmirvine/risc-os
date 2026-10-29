@@ -71,19 +71,15 @@ describe('Paginate: frames', () => {
     assert.equal(ex.count, 3);
   });
 
-  it('the footnote hook: a non-zero reserve shortens the frame',
-    () => {
-      const items = tens(30);
-      items[0] = {h: 10, refs: ['n1']};
-      const seen = [];
-      const P = pagesOf({items, reserve: (frame, refs) => {
-        seen.push(refs);
-        return 30;
-      }});
-      assert.deepEqual(ks(P), [0, 7, 17, 27]);
-      assert.deepEqual(seen, [['n1']]);
-      assert.equal(pagesOf({items}).count, 3);
-    });
+  it('no per-item reserve hook: marks on items change nothing ' +
+    'without notes (footnotes: ./NotePlace, with G.notes)',
+  () => {
+    const items = tens(30);
+    items[0] = {h: 10, refs: [{line: 0, id: 1}]};
+    const G = galley({items});
+    assert.equal('reserve' in G, false);
+    assert.deepEqual(ks(new Pages(G).finish()), [0, 10, 20]);
+  });
 });
 
 describe('Paginate: forced breaks', () => {

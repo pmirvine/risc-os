@@ -1,0 +1,215 @@
+// NoteEdit - a document window's notes mode, the part that needs no
+// desktop (Batch E2; the clicks, keys and menus are ./NoteMode's and
+// ./NoteMenu's). v is the window's ./EditView. The mode is held where
+// the header and footer mode is (v.hdr, ./HdrEdit: one story mode at
+// a time), its kind 'note', so every command, key, Find, undo and
+// the clipboard work in the note through its facade as they do in a
+// header, and everything that leaves the header mode (Escape,
+// another view, an undo elsewhere: ./HdrEdit leaveMode) leaves it.
+//
+//   enterNote(v, {kind, id}) -> mode | null  the mode for that note
+//       of v.real (a normal note that the body's Print layout v.bodyL
+//       shows: ./NoteView spotOf): v.hdr = the mode, v.d the note's
+//       ./StoryFacade (facadeOf(d, {note: {kind, id}})), v.L the
+//       note's own layout placed where its page shows it, v.typing
+//       typing through the facade. The body's selection kept for
+//       leaving (mode.bodySel) is a caret right after the note's
+//       first mark (Word: Escape goes back to the mark), else v.sel.
+//       The caret is not set (the caller does: atStart, a click).
+//       Nothing changes in the document. null (nothing done): no
+//       such note, no pages (Draft, Web layout: the caller shows
+//       Print layout first), no page showing it
+//   isNote(m) -> bool  m (v.hdr) is a notes mode
+//   atStart(v) -> Selection  in the mode: a caret after the note's
+//       own mark and the space after it (where Word puts the caret
+//       in a new note), else at its start
+//   goNote(v, t)  after an undo or a redo whose step decides in a
+//       note (./EditStep stepTo: t.story {note: {kind, id}}, t.sel):
+//       already in that note, the caret at t.sel; else the mode
+//       (any) left and that note's entered, the caret at t.sel
+//       (else atStart); no page showing it, or no pages: the window
+//       stays in the body (./HdrStep calls it)
+//   mode {kind: 'note', note {kind, id}, part (the facade's key),
+//     i (the page showing the note's start), facade, bodySel,
+//     layout() -> the note's editing layout (./StoryLayout
+//         editLayout of the note's blocks at the width its page lays
+//         it out at, its own mark showing its number; L.top the
+//         body's), placed (./HdrView PlaceShift) where page i draws
+//         it, or null (the mode must be left: the note gone or shown
+//         on no page). Made again when the body's layout, the note,
+//         the width or its number changed (the selection clamped);
+//         placed again when the body's placement did: while the
+//         pages are still being made or put right and the note is
+//         not found, the last place is kept
+//     owns(story) -> whether an op's story key is this note
+//     setPage(i)  (the note's own page: kept)
+//     paint(L, g, rect, sel, active, more)  the pages, then every
+//         page dimmed but where it shows notes (./NoteView bandsOf),
+//         then the selection and caret in the note
+//     label() -> 'Footnote 3' / 'Endnote ii'  (./NoteNumbers
+//         labelFor; a custom mark's text)
+//     info() -> 'Page 3 of 12 - Footnote 3'  the info line}
+// Pure: no desktop services.
+import * as S from './Selection';
+import {facadeOf} from './StoryFacade';
+import {editLayout} from './StoryLayout';
+import {PlaceShift} from './HdrView';
+import {leaveMode, settling} from './HdrEdit';
+import {DIM} from './HdrPaint';
+import {paintView, paintSel} from './EditPaint';
+import {EMPTY} from './Pending';
+import {touch} from './EditFormat';
+import {spotOf, bandsOf} from './NoteView';
+import {markOf} from './NotePick';
+import {labelFor} from './NoteNumbers';
+import {labelOf} from './NoteLayout';
+import {noteOf, SLOTS} from './OpsNotes';
+import {OBJ} from './Model';
+
+const NAMES = {footnote: 'Footnote', endnote: 'Endnote'};
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export const isNote = (m) => !!m && m.kind === 'note';
+
+/** The note as a story for ./StoryLayout (blocks, rels, part). */
+function viewOf(doc, n) {
+  const parts = isObj(doc.meta) && isObj(doc.meta.noteParts)
+    ? doc.meta.noteParts : {};
+  return {blocks: n.blocks, rels: Array.isArray(n.rels) ? n.rels : [],
+    part: parts[SLOTS[n.kind]] || undefined};
+}
+
+/** The width (px) layout lay was made at. */
+const widthOf = (B, sp) => {
+  const g = sp.lay.L.geom ? sp.lay.L.geom(0) : null;
+  return g ? g.textW : B.geom(sp.s).textW;
+};
+
+/** See the header (mode.layout). */
+function layout(v, m) {
+  const B = v.bodyL, n = m.facade.story, P = B.place.pages;
+  if (!n || !P) return null;
+  if (!m.spot || m.spot.Pl !== B.place) {
+    const sp = spotOf(B, m.note, m.i);
+    if (!sp) {
+      if (m.ed && (!P.done || settling(v))) return m.ed.L;
+      return null;
+    }
+    m.spot = {...sp, Pl: B.place};
+    m.i = sp.i;
+    m.facade.s = sp.s;
+  }
+  const sp = m.spot, w = widthOf(B, sp);
+  const nums = isObj(B.fields) ? B.fields.noteNums : null;
+  const label = labelOf(B.doc, n, nums);
+  const k = m.key || [], old = m.ed && m.ed.L;
+  if (k[0] !== B || k[1] !== n || k[2] !== w || k[3] !== label) {
+    const ctx = {doc: B.doc, metrics: B.metrics, noteId: n.id,
+      noteLabel: label};
+    if (B.decorators) ctx.decorators = B.decorators;
+    if (B.pics) ctx.pics = B.pics;
+    if (isObj(B.fields)) ctx.fields = B.fields;
+    m.ed = editLayout(viewOf(B.doc, n), w, ctx, B.top);
+    m.key = [B, n, w, label];
+    m.placed = null;
+    if (old && v.sel) v.sel = S.clamp(v.sel, m.ed.L.doc, old);
+  }
+  if (!m.placed || m.placed.Pl !== B.place) {
+    const r = B.place.sheet.rect(P.at(sp.i));
+    m.ed.L.place = PlaceShift(m.ed.L, r.x + sp.x - m.ed.x,
+      r.y + sp.y - m.ed.y, sp.i);
+    m.placed = {Pl: B.place};
+  }
+  return m.ed.L;
+}
+
+/** The pages with every page dimmed but its notes (see the header). */
+function paintNote(B, L, g, rect, sel, active, more = {}) {
+  paintView(B, g, rect, null, active, more);
+  const Pl = B.place, Sh = Pl.sheet, P = Pl.pages;
+  for (const i of Sh.pagesIn(rect.y0, rect.y1)) {
+    const pg = P.list[i];
+    if (!pg || pg.blank) continue;
+    const r = Sh.rect(pg);
+    g.save();
+    g.beginPath();
+    g.rect(r.x, r.y, r.w, r.h);
+    for (const b of bandsOf(B, i)) {
+      g.rect(r.x + b.x, r.y + b.y, b.w, b.h);
+    }
+    g.clip('evenodd');
+    g.fillStyle = DIM;
+    g.fillRect(r.x, r.y, r.w, r.h);
+    g.restore();
+  }
+  paintSel(L, g, rect, sel, active, more);
+}
+
+/** The caret right after note key's first mark in the body. */
+function afterMark(doc, key) {
+  const at = markOf(doc, key);
+  return at ? S.caret({id: at.id, off: at.off + 1}) : null;
+}
+
+/** See the header. */
+export function enterNote(v, key) {
+  const B = v.bodyL, doc = v.real.doc;
+  if (!isObj(key) || !B.place || !B.place.pages) return null;
+  const n = noteOf(doc, key.kind, key.id);
+  if (!n || n.type !== 'normal') return null;
+  if (v.hdr) leaveMode(v);             // (v.sel the body's again)
+  const note = {kind: key.kind, id: key.id};
+  const facade = facadeOf(v.real, {note});
+  const m = {kind: 'note', note, part: facade.part, i: -1,
+    bodySel: afterMark(doc, note) || v.sel, facade, key: null,
+    placed: null, ed: null, spot: null};
+  m.layout = () => layout(v, m);
+  m.owns = (st) => isObj(st) && isObj(st.note) &&
+    st.note.kind === note.kind && st.note.id === note.id;
+  m.setPage = () => {};
+  m.paint = (L, g, rect, sel, active, more) =>
+    paintNote(v.bodyL, L, g, rect, sel, active, more);
+  m.label = () => {
+    const t = labelFor(v.real.doc, note.kind, note.id);
+    return NAMES[note.kind] + (t ? ' ' + t : '');
+  };
+  m.info = () => {
+    const P = v.bodyL.place.pages;
+    return P ? 'Page ' + (m.i + 1) + ' of ' + P.count + (P.done ? ''
+      : '...') + ' - ' + m.label() : '';
+  };
+  v.hdr = m;
+  v.typing.d = m.facade;
+  v.typing.reset();
+  if (!m.layout()) {
+    leaveMode(v);
+    return null;
+  }
+  v.pending = EMPTY;
+  touch(v);
+  return m;
+}
+
+/** See the header. */
+export function atStart(v) {
+  const L = v.L, a = L.docStart();
+  const p = v.d.doc.sections[0].blocks[0];
+  if (a && p && p.type === 'p' && p.id === a.id &&
+    p.text[0] === OBJ && p.inlines[0] && p.inlines[0].self) {
+    return S.caret({id: p.id, off: p.text[1] === ' ' ? 2 : 1});
+  }
+  return a ? S.caret(a) : null;
+}
+
+/** See the header. */
+export function goNote(v, t) {
+  const m = v.hdr, k = t.story.note;
+  if (isNote(m) && m.owns(t.story)) {
+    if (t.sel) v.sel = t.sel;
+    return;
+  }
+  if (m) leaveMode(v);
+  if (!v.bodyL.place || !v.bodyL.place.pages) return;
+  if (enterNote(v, k)) v.sel = t.sel || atStart(v);
+}

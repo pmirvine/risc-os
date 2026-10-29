@@ -8,7 +8,8 @@
 //   keymap                           the one bound to ROWS
 //
 // Key names: 'Ctrl+Shift+Z', 'Shift+Enter', 'Ctrl++', 'Ctrl+F2':
-// optional 'Ctrl+' and 'Shift+', then Enter Backspace Delete Tab
+// optional 'Ctrl+', 'Alt+' and 'Shift+' (in that order: 'Ctrl+Alt+F',
+// Batch E2), then Enter Backspace Delete Tab
 // Insert Space Up Down, a function key F1..F12, or one printable ASCII
 // character (a letter, digit or symbol such as = > < + - . ,).
 // Labels are Word's ('Ctrl+Z', 'Ctrl+F2'), not RISC OS's ('^Z',
@@ -28,12 +29,17 @@
 // stay Backspace, Tab and Enter: Ctrl-H, Ctrl-I (italic) and Ctrl-M
 // (indentMore) work only with a key name). A key that is ''
 // (Wimp_ProcessKey gives the char there, '' below 32) or no single
-// character or known name counts as no name. Alt gives null, and so
-// does any key without a row: the handler then returns undefined and
-// the key goes on. Movement keys are ./Keys's, not ours (it also
-// decides Ctrl-A, selectAll). tab and shiftTab depend on where the
-// caret is: in a table's cell they go to the next or previous cell
-// (./EditKeys, ./SelTable), in a list item they change its level
+// character or known name counts as no name. With Alt held only a
+// row naming Alt matches (Ctrl+Alt+F, Alt+Down: the notes' keys,
+// ./KeymapMore); its letter is the key's place on the keyboard when
+// the browser says it (domEvent.code KeyF: Alt makes another
+// character of it on a Mac, AltGr on some keyboards), and Alt with
+// no such row gives null, as does any key without a row: the
+// handler then returns undefined and the key goes on. Movement
+// keys are ./Keys's, not ours (it also decides Ctrl-A, selectAll).
+// tab and shiftTab depend on where the caret is: in a table's cell
+// they go to the next or previous cell (./EditKeys, ./SelTable), in
+// a list item they change its level
 // (./EditList), elsewhere Tab types a tab and Shift-Tab goes on.
 // cellTab (Ctrl+Tab, Word's) types a tab in a cell (./EditKeys);
 // elsewhere it goes on. Ctrl+Shift+Tab and Alt-Tab are never ours.
@@ -123,22 +129,26 @@ const known = (k) => NAMES.includes(k) || FKEY.test(k);
 
 /** 'Ctrl+Shift+Z' -> the canonical form, or throws. */
 function canon(name) {
-  const m = /^((?:(?:Ctrl|Shift)\+)*)(.+)$/.exec(String(name));
+  const m = /^((?:(?:Ctrl|Alt|Shift)\+)*)(.+)$/.exec(String(name));
   const k = m ? m[2] : '';
   const mods = new Set(m ? m[1].split('+') : []);
   if (!known(k) && !/^[!-~]$/.test(k))
     throw new Error('Keymap: bad key ' + name);
   return form(k.length === 1 ? k.toUpperCase() : k,
-    mods.has('Ctrl'), mods.has('Shift'));
+    mods.has('Ctrl'), mods.has('Shift'), mods.has('Alt'));
 }
 
-const form = (k, ctrl, shift) => (ctrl ? 'Ctrl+' : '') +
-  (shift ? 'Shift+' : '') + k;
+const form = (k, ctrl, shift, alt = false) => (ctrl ? 'Ctrl+' : '') +
+  (alt ? 'Alt+' : '') + (shift ? 'Shift+' : '') + k;
+const CODE = /^Key([A-Z])$|^Digit([0-9])$|^Arrow(Up|Down)$/;
 
 /** The canonical key name of the event, or null (unknown key). */
 function nameOf(ev) {
   const {code} = ev;
   let k = typeof ev.key === 'string' ? ev.key : null;
+  const dc = ev.alt && ev.domEvent ? CODE.exec(ev.domEvent.code || '')
+    : null;
+  if (dc) k = dc[1] || dc[2] || 'Arrow' + dc[3];
   if (k === ' ') k = 'Space';
   else if (Object.hasOwn(ARROW, k || '')) k = ARROW[k];
   // no name: '' (Wimp_ProcessKey, codes < 32), or not a name we know
@@ -163,7 +173,7 @@ function nameOf(ev) {
       ctrl = ctrl || (code & 0x20) !== 0;
     }
   } else if (k.length === 1) k = k.toUpperCase();
-  return form(k, ctrl, shift);
+  return form(k, ctrl, shift, !!ev.alt);
 }
 
 export class Keymap {
@@ -194,9 +204,9 @@ export class Keymap {
 
   /** See the header. */
   lookup(ev) {
-    if (!ev || typeof ev !== 'object' || ev.alt) return null;
-    const a = command(ev.code, {shift: ev.shift, ctrl: ev.ctrl,
-      key: ev.key});
+    if (!ev || typeof ev !== 'object') return null;
+    const a = ev.alt ? null : command(ev.code, {shift: ev.shift,
+      ctrl: ev.ctrl, key: ev.key});
     if (a && a.cmd === 'selectAll') return 'selectAll';
     const n = nameOf(ev);
     return n === null ? null : this._keys.get(n) || null;

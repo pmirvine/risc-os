@@ -36,7 +36,8 @@ import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {lintPackage} from './lint-package.mjs';
 import {assertSameDoc, expectedBack} from './docx-compare.mjs';
 import {rng} from './word-docs.mjs';
-import {schema, hash, corpusFiles, nameOf, EXPECTED, ALL, SKIP_CORPUS}
+import {schema, hash, corpusFiles, nameOf, EXPECTED, ALL, SKIP_CORPUS,
+  notesBack}
   from './roundtrip-lib.mjs';
 
 // ------------------------------------------------------------ 'riscos'
@@ -143,14 +144,17 @@ const errs = async (bytes) => lintPackage(await readZip(bytes)).problems
 
 /** The saved file of dw: read back equal, lint and schema clean
  *  (beyond what the original had). */
-async function check(dw, what, original = null) {
+async function check(dw, what, original = null, notes0 = null) {
   const f = disc.get(dw.path);
   assert.ok(f, what + ': no file');
   assert.equal(f.filetype, 0xA7E, what + ': file type');
   assert.equal(dw.d.dirty, false, what + ': still dirty');
   assert.equal(dw.title, dw.leaf, what + ': title');
   assert.equal(saving(dw), false, what + ': still saving');
-  assertSameDoc(await readDocx(f.bytes), expectedBack(dw.doc), what);
+  const back = await readDocx(f.bytes), want = expectedBack(dw.doc);
+  // (a mark deleted took its note: that notes part is written anew)
+  if (notes0) notesBack(want, back, dw.doc, notes0, what);
+  assertSameDoc(back, want, what);
   const had = new Set(original ? await errs(original) : []);
   assert.deepEqual((await errs(f.bytes)).filter((k) => !had.has(k)),
     [], what + ': package errors');
@@ -225,10 +229,11 @@ describe('documents round trip: the corpus, saved by DocSave', {
       try {
         const path = 'RAM::RamDisc0.$.C' + hash(name);
         disc.set(path, {bytes, filetype: 0xA7E});
+        const notes0 = doc.notes;      // (as opened: ops replace it)
         const dw = windowFor(doc, path);
         edit(dw.d, hash(name), 8);
         assert.equal(await save(dw), true, name + ': Save');
-        if (await check(dw, name, bytes)) schemaChecked++;
+        if (await check(dw, name, bytes, notes0)) schemaChecked++;
         disc.delete(path);
         ok++;
       } catch (e) {

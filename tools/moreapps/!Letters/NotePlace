@@ -1,0 +1,458 @@
+// NotePlace - the footnotes at the foot of a page (Batch E2): how
+// much of a page's frame they take, so the body is filled around
+// them, and which of their lines are on it.
+//
+//   settle(G, out, y0, prev)  fills page out (./Paginate nextPage's
+//       record, from its start at galley y y0; prev the page before
+//       or null) as ./PageBands fillPage does, the body's frame made
+//       shorter by the room its notes take, and sets out.notes, the
+//       foot (below), when the page shows notes or passes some on.
+//       G.notes (./NoteHooks noteHooks; tests: fakes) = {note(id,
+//       s) -> {lines, h} | null (./NoteLayout layoutNote's: the
+//       bottoms of its lines; null: no such note, not placed),
+//       sep(type, s) -> {h, rule?} | null ('separator',
+//       'continuationSeparator', 'continuationNotice': ./NoteLayout
+//       sepOf), pos(s) -> 'pageBottom' | 'beneathText'}; the marks
+//       are G.facts(k).refs: [{line, id}] (line: of a paragraph, a
+//       table's row) or null
+//   The foot (frozen) {y, h, sep, sepH, pieces, notice, left, bodyH}
+//       y      px below the page's body top where it starts: the
+//              frame's foot (pos pageBottom: frameH - h) or right
+//              below the body (beneathText: out.used)
+//       h      px: sepH + the pieces + notice
+//       sep    'separator', or 'continuationSeparator' when the
+//              first piece goes on from the page before
+//       pieces [{id, from, to, y, h, s}] frozen: lines from..to-1
+//              of note id, y px below the foot's top, laid out for
+//              section s (its mark's: a note goes on at the width it
+//              was cut at)
+//       notice px of the continuationNotice drawn at the bottom of
+//              a foot whose last note goes on (0: none)
+//       left   [{id, from, s}]: notes (from their line from, laid
+//              out for section s) passed on to the next page, in
+//              order
+//       bodyH  the body's frame (px): frameH less the room kept
+//       A page whose fills looked at notes but shows none and
+//       passes none on has a foot all the same (h 0, no pieces):
+//       it records what its break depended on (footAlike)
+//   passOn(prev) -> foot | null  the foot of a blank page after
+//       page prev (./Paginate: parity, PG3): nothing shown, prev's
+//       left passed on over it (a page put in for parity stays
+//       empty; the notes go on on the next page with text)
+//   refsOn(G, start, end) -> [id]  the notes of the marks on the
+//       lines from cursor start to cursor end (a line cut by start,
+//       or a row split by it, is the page before's; one cut by end
+//       this page's), in galley order, each once, notes G.notes
+//       gives only
+//   sameFoot(a, b)  two feet (or none) with the same values
+//   footAlike(G, pg) -> whether every note page pg's fills looked
+//       at (those it shows, and those of marks it pushed to the next
+//       page) is laid out now as it was (the same layout object: an
+//       edited note is a new one; none still none), its separators
+//       the same height and its position the same (./PageReuse keeps
+//       a page only then); true for a page with no foot
+//   pieceH(lay, from, to)  ./NoteLayout's (defined here)
+//   MAX_TRIES   5: the most fills a page takes
+//   stats       {fills}: fills made (tests)
+//
+// The rules: the foot holds, in order, the notes passed on from the
+// page before, then the notes of the marks on this page's lines,
+// under the separator (the continuation separator when it goes on
+// with a note cut on the page before). A note is cut between lines
+// (a table or a kept block in a note is never cut) when it does not
+// fit, and the rest goes on to the next page, before that page's own
+// notes. A mark's line and at least the first line of its note are
+// on the same page: when they cannot be (and the line is not the
+// page's first), the line moves to the next page with what follows
+// (the keep rules then as ever: ./PageFill). Notes passed on take
+// the room they need first, but the body keeps at least its first
+// line. The page's foot is found by filling the body with a shorter
+// frame: a fill whose notes do not fit gives a shorter one (the
+// room they need, or the frame ending just above the line of its
+// last mark, whichever is less); one whose notes fit leaves room a
+// longer one may use. At most MAX_TRIES fills; the page keeps the
+// longest body whose notes fit (none fit: the last fill, its notes
+// cut where the foot ends and the rest passed on). A note is never
+// lost or placed twice: what a page does not show goes on to the
+// next, and pages go on after the galley's end while notes are left
+// (./Paginate endsGalley); a page with no body left shows at least
+// one line of them. A page with no notes and none passed on is
+// filled once, exactly as without notes.
+// Rounding: ./PageFill compares px with no epsilon; the frames
+// worked out here (F less the notes' room) get KEEP (1e-6 px) of
+// slack, and the room left is compared with it, so the body beside
+// the notes is not lost to rounding (fillAt).
+// Assumptions, to check in real Word: the notes passed on take
+// their room before the body (but its first line); a page's notes
+// across the page's text width below its columns.
+// Pure: no desktop services.
+import {fillPage} from './PageBands';
+import {factsOf, px} from './PageFill';
+import {cutOrder} from './PageCursor';
+import {isTable} from './PageRows';
+
+export const MAX_TRIES = 5;
+export const stats = {fills: 0};
+const NONE = Object.freeze([]);
+const LAYS = new WeakMap();            // foot -> what it was made of
+let TAP = null;                        // (settle: what it looks at)
+
+/** Note id of section s (G.notes.note), noted in TAP. */
+function noteAt(G, id, s) {
+  const lay = G.notes.note(id, s);
+  if (TAP) TAP.notes.set(id + ' ' + s, [id, s, lay]);
+  return lay;
+}
+
+/** See ./NoteLayout's header (re-exported there). */
+export function pieceH(lay, from, to) {
+  const ls = lay.lines, n = ls.length;
+  const top = from > 0 ? ls[Math.min(from, n) - 1] : 0;
+  if (to <= from) return 0;
+  return (to >= n ? lay.h : ls[to - 1]) - top;
+}
+
+/** Whether cursor a is after cursor b. */
+const after = (a, b) => a.k !== b.k ? a.k > b.k
+  : a.line !== b.line ? a.line > b.line : cutOrder(a, b) > 0;
+
+const part = (c) => !!(c.dy || c.cuts);
+
+/** Whether line (or row) `line` of item k is from start to end. */
+function onPage(k, line, start, end) {
+  if (k < start.k || k > end.k) return false;
+  if (k === start.k && (line < start.line ||
+    (line === start.line && part(start)))) return false;
+  if (k === end.k && (line > end.line ||
+    (line === end.line && !part(end)))) return false;
+  return true;
+}
+
+/** The marks of the page from start to end: [{k, line, id}]. */
+function marksOn(G, start, end) {
+  const items = G.items, out = [];
+  const k1 = Math.min(end.k, items.length - 1);
+  for (let k = start.k; k <= k1; k++) {
+    const rs = factsOf(G, k).refs;
+    if (!rs || !rs.length) continue;
+    for (const r of rs) {
+      if (onPage(k, r.line, start, end)) {
+        out.push({k, line: r.line, id: r.id});
+      }
+    }
+  }
+  return out;
+}
+
+/** The new notes of marks ms ([{k, line, id}]), each once. */
+function idsOf(G, ms, s, skip) {
+  if (!ms.length) return NONE;
+  const out = [], seen = new Set(skip);
+  for (const m of ms) {
+    if (seen.has(m.id) || !noteAt(G, m.id, s)) continue;
+    seen.add(m.id);
+    out.push(m.id);
+  }
+  return out;
+}
+
+/** See the header. */
+export function refsOn(G, start, end) {
+  const s = (G.items[start.k] || {}).s || 0;
+  return idsOf(G, marksOn(G, start, end), s, NONE);
+}
+
+/** Px of the separator note of type (0: none), noted in TAP. */
+function sepH(G, type, s) {
+  const x = G.notes.sep(type, s), h = x ? px(x.h) : 0;
+  if (TAP) TAP.seps.set(type + ' ' + s, [type, s, h]);
+  return h;
+}
+
+/** Px the notes passed on (q) need, with their separator. */
+function carryH(G, s, q) {
+  if (!q.length) return 0;
+  let h = sepH(G, q[0].from > 0 ? 'continuationSeparator'
+    : 'separator', s);
+  for (const x of q) {
+    const lay = noteAt(G, x.id, x.s);
+    if (lay) h += px(pieceH(lay, x.from, lay.lines.length));
+  }
+  return h;
+}
+
+/** The room the notes q (passed on) and ids (this page's) need:
+ *  every one whole (cut: but the last, its first line and the
+ *  notice, when that is less). */
+function needOf(G, s, q, ids, q0, cut) {
+  if (!ids.length) return q0;
+  let h = q.length ? carryH(G, s, q) : sepH(G, 'separator', s);
+  for (let i = 0; i < ids.length; i++) {
+    const lay = noteAt(G, ids[i], s), all = px(lay.h);
+    if (!cut || i < ids.length - 1) h += all;
+    else {
+      const one = px(pieceH(lay, 0, Math.min(1, lay.lines.length)));
+      h += Math.min(all, one + sepH(G, 'continuationNotice', s));
+    }
+  }
+  return h;
+}
+
+/** Px from the body's top to the bottom of the line at cursor c. */
+function firstH(G, c, y0) {
+  const it = G.items[c.k];
+  if (!it) return 0;
+  let bot = it.y + px(it.h);
+  if (isTable(it) && it.rows[c.line]) {
+    const row = it.rows[c.line];
+    bot = row.y + px(row.h);
+  } else if (it.lines && it.lines[c.line]) {
+    const l = it.lines[c.line];
+    bot = it.y + l.y + px(l.h);
+  }
+  return Math.max(0, bot - y0);
+}
+
+/** Px from the body's top to the top and the bottom of mark m's
+ *  line in rec (in its column). */
+function markAt(G, rec, m) {
+  const it = G.items[m.k];
+  let top = it.y, bot = it.y + px(it.h);
+  if (isTable(it) && it.rows[m.line]) {
+    top = it.rows[m.line].y;
+    bot = top + px(it.rows[m.line].h);
+  } else if (it.lines && it.lines[m.line]) {
+    top += it.lines[m.line].y;
+    bot = top + px(it.lines[m.line].h);
+  }
+  const c = (rec.cols || NONE).find((x) =>
+    onPage(m.k, m.line, x.start, x.end));
+  const d = c ? (c.top || 0) - c.y0 : -rec.y0;
+  return {top: top + d, bot: bot + d};
+}
+
+/** Whether rec's body ends with mark m's line. */
+function endsAt(G, rec, m) {
+  const it = G.items[m.k], e = rec.end;
+  const n = isTable(it) ? it.rows.length : it.lines ? it.lines.length
+    : 1;
+  return m.line + 1 < n ? e.k === m.k && e.line === m.line + 1 &&
+    !part(e) : e.k === m.k + 1 && !e.line && !part(e);
+}
+
+/** The first mark of each of ids among marks ms, in order. */
+function firstOf(ms, ids) {
+  const out = [], seen = new Set();
+  for (const m of ms) {
+    if (seen.has(m.id) || !ids.includes(m.id)) continue;
+    seen.add(m.id);
+    out.push(m);
+  }
+  return out;
+}
+
+/** The longest body frame (px) rec's marks ms (firsts, in order)
+ *  allow, by their places in rec: the notes of marks 0..i whole and
+ *  the frame up to mark i + 1's line, or 0..i-1 whole, mark i's cut
+ *  and the body ending with its line; else the frame above the
+ *  first mark's line. An estimate: the next fill checks it. */
+function frameOf(G, rec, ms, q, s, F) {
+  let h = q.length ? carryH(G, s, q) : sepH(G, 'separator', s);
+  const nh = sepH(G, 'continuationNotice', s);
+  const ats = ms.map((m) => markAt(G, rec, m));
+  let frame = -1;
+  for (let i = 0; i < ms.length; i++) {
+    const lay = noteAt(G, ms[i].id, s), at = ats[i];
+    const all = px(lay.h);
+    const one = px(pieceH(lay, 0, Math.min(1, lay.lines.length)));
+    if (at.bot + h + Math.min(all, one + nh) <= F) {
+      frame = Math.max(frame, at.bot);
+    }
+    h += all;
+    if (at.bot + h > F) break;
+    const top = i + 1 < ms.length ? ats[i + 1].top : F;
+    frame = Math.max(frame, Math.min(F - h, top));
+  }
+  return frame >= 0 ? frame : Math.max(0, ats[0].top);
+}
+
+// (a frame worked out here is a difference of px, F less the room
+// the notes take: it can come out a hair short of the line bottom it
+// was worked out from, and a page's first line that does not fit is
+// cut at its foot, ./PageFill: the next page would start inside it
+// with nothing of it left. The fill is given KEEP px more, which
+// keeps that line whole (no line is that thin); the record and its
+// columns are given back the frame as worked out.)
+const KEEP = 1e-6;
+
+/** Page base (unfilled) filled with a body frame of h px. */
+function fillAt(G, base, h, y0) {
+  const rec = {...base, frameH: h + KEEP};
+  stats.fills++;
+  fillPage(G, rec, y0);
+  rec.frameH = h;
+  if (rec.cols) {
+    rec.cols = rec.cols.map((c) => (c.h === h + KEEP
+      ? Object.freeze({...c, h}) : c));
+  }
+  return rec;
+}
+
+/** See the header. */
+export function settle(G, out, y0, prev) {
+  const was = TAP;
+  TAP = {notes: new Map(), seps: new Map()};
+  try {
+    place(G, out, y0, prev);
+  } finally {
+    TAP = was;
+  }
+}
+
+/** settle's work (TAP set). */
+function place(G, out, y0, prev) {
+  const F = out.frameH, s = out.s;
+  const q = prev && prev.notes ? prev.notes.left : NONE;
+  const base = {...out};
+  const cap = Math.max(0, F - firstH(G, out.start, y0));
+  const q0 = Math.min(carryH(G, s, q), cap);
+  const skip = q.map((x) => x.id);
+  let R = q0, bad = -1, best = null, last = null;
+  const keep = (x) => {
+    if (!best || after(x.rec.end, best.rec.end)) best = x;
+  };
+  for (let t = 0; t < MAX_TRIES; t++) {
+    const rec = fillAt(G, base, F - R, y0);
+    const ms = marksOn(G, rec.start, rec.end);
+    const ids = idsOf(G, ms, s, skip);
+    const need = needOf(G, s, q, ids, q0, false);
+    const avail = F - rec.used + KEEP;  // (the fill's KEEP)
+    last = {rec, ids, R};
+    let next;
+    if (need <= avail) {               // (every note whole)
+      keep(last);
+      next = Math.max(need, bad + 1);
+      if (next >= R) break;
+    } else {
+      bad = R;
+      const firsts = firstOf(ms, ids);
+      if (!firsts.length) break;
+      const m = firsts[firsts.length - 1];
+      if (endsAt(G, rec, m) &&         // (the last note cut)
+        needOf(G, s, q, ids, q0, true) <= avail) {
+        keep(last);
+        break;
+      }
+      next = Math.min(cap, F - frameOf(G, rec, firsts, q, s, F));
+      if (next <= R) break;
+      bad = Math.max(bad, next - 1);   // (more body: more notes)
+    }
+    R = next;
+  }
+  const pick = best || last, rec = pick.rec;
+  out.end = rec.end;
+  out.why = rec.why;
+  out.used = rec.used;
+  out.seen = rec.seen;
+  out.y0 = rec.y0;
+  if (rec.cols) out.cols = rec.cols;
+  const moved = after(rec.end, rec.start);
+  const foot = footOf(G, s, q, pick.ids, F - rec.used + KEEP,
+    !moved) ||
+    (TAP.notes.size ? EMPTY : null);
+  if (!foot) return;
+  const bodyH = F - pick.R;
+  const pos = G.notes.pos(s) === 'beneathText' ? rec.used
+    : F - foot.h;
+  out.notes = Object.freeze({y: pos, h: foot.h, sep: foot.sep,
+    sepH: foot.sepH, pieces: foot.pieces, notice: foot.notice,
+    left: foot.left, bodyH});
+  LAYS.set(out.notes, {notes: [...TAP.notes.values()],
+    seps: [...TAP.seps.values()], pos: [s, G.notes.pos(s)]});
+}
+
+const EMPTY = Object.freeze({sep: 'separator', sepH: 0, pieces: NONE,
+  notice: 0, left: NONE, h: 0});
+
+/** See the header. */
+export function passOn(prev) {
+  const f = prev && prev.notes;
+  if (!f || !f.left.length) return null;
+  const out = Object.freeze({y: 0, h: 0, sep: 'separator', sepH: 0,
+    pieces: NONE, notice: 0, left: f.left, bodyH: prev.frameH});
+  LAYS.set(out, {notes: NONE, seps: NONE, pos: null});
+  return out;
+}
+
+/** The foot of notes q (passed on) and ids in avail px (force: at
+ *  least one line when any is due); null when there are none. */
+function footOf(G, s, q0, ids, avail, force) {
+  const q = [...q0, ...ids.map((id) => ({id, from: 0, s}))];
+  if (!q.length) return null;
+  const sep = q[0].from > 0 ? 'continuationSeparator' : 'separator';
+  const sh = sepH(G, sep, s), nh = sepH(G, 'continuationNotice', s);
+  const pieces = [], left = [];
+  let y = sh, room = avail - sh, cut = false;
+  for (const x of q) {
+    const lay = noteAt(G, x.id, x.s);
+    if (!lay) continue;                // (gone: nothing to show)
+    if (cut) {
+      left.push(x);
+      continue;
+    }
+    const n = lay.lines.length, all = px(pieceH(lay, x.from, n));
+    let to = n;
+    if (all > room) {
+      cut = true;
+      to = x.from;
+      while (to < n && px(pieceH(lay, x.from, to + 1)) <= room - nh) {
+        to++;
+      }
+      if (to === x.from && force && !pieces.length) to++;
+    }
+    if (to > x.from || (!n && !cut)) {
+      const h = px(pieceH(lay, x.from, to));
+      pieces.push(Object.freeze({id: x.id, from: x.from, to, y, h,
+        s: x.s}));
+      y += h;
+      room -= h;
+    }
+    if (to < n) left.push(Object.freeze({id: x.id, from: to, s: x.s}));
+  }
+  const shown = pieces.length > 0;
+  const notice = shown && left.length ? nh : 0;
+  return {sep, sepH: shown ? sh : 0, pieces: Object.freeze(pieces),
+    notice, left: Object.freeze(left),
+    h: shown ? y + notice : 0};
+}
+
+const samePiece = (a, b) => a.id === b.id && a.from === b.from &&
+  a.to === b.to && a.y === b.y && a.h === b.h && a.s === b.s;
+const sameLeft = (a, b) => a.id === b.id && a.from === b.from &&
+  a.s === b.s;
+const sameList = (a, b, f) => a.length === b.length &&
+  a.every((x, i) => f(x, b[i]));
+
+/** See the header. */
+export function sameFoot(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return a.y === b.y && a.h === b.h && a.sep === b.sep &&
+    a.sepH === b.sepH && a.notice === b.notice &&
+    a.bodyH === b.bodyH && sameList(a.pieces, b.pieces, samePiece) &&
+    sameList(a.left, b.left, sameLeft);
+}
+
+/** See the header. */
+export function footAlike(G, pg) {
+  const f = pg.notes;
+  if (!f) return true;
+  const d = LAYS.get(f);
+  if (!d || !G.notes) return false;
+  if (d.pos && G.notes.pos(d.pos[0]) !== d.pos[1]) return false;
+  return d.notes.every(([id, s, lay]) => G.notes.note(id, s) === lay) &&
+    d.seps.every(([type, s, h]) => {
+      const x = G.notes.sep(type, s);
+      return (x ? px(x.h) : 0) === h;
+    });
+}

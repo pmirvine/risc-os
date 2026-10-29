@@ -109,7 +109,8 @@ describe('DocItems reuse key', () => {
     const L = laid(mkDoc(TEXTS));
     const it0 = L.items[0], k = reuseKey(it0);
     assert.deepEqual(Object.keys(k), ['block', 'list', 'mark', 'level',
-      'marker', 'first']);
+      'marker', 'first', 'nk']);
+    assert.equal(k.nk, '', 'no note marks');
     assert.equal(k.block, it0.block);
     assert.equal(k.level, undefined, 'Outline\'s only (P13.2)');
     assert.ok(sameKey(k, reuseKey(it0)));

@@ -29,7 +29,11 @@
 // {read} is passed to readDocx as its options. {stories: true} lets
 // the bytes of a header / footer part differ from the model's when
 // the commands changed that story (the model read back is compared
-// all the same: its blocks are part of the document).
+// all the same: its blocks are part of the document). {notes: true}
+// (off by default) lets a note that was edited, moved to the other
+// kind or renumbered come back with the element it was written as
+// (its children are its blocks, compared; its attributes but w:id
+// must be the ones it was read with).
 //
 // Also the corpus sample (tests/moreapps/corpus, git-ignored): one
 // file in ten, chosen by a hash of the name, or every one with
@@ -202,12 +206,58 @@ function grownOnly(now, was, what) {
 }
 
 /**
+ * want (expectedBack of the changed Doc doc, opened with notes0) made
+ * comparable with back, the file read back, for the notes parts the
+ * changes rewrote (see roundTrip's header; notes: its option).
+ */
+export function notesBack(want, back, doc, notes0, what,
+  notes = false) {
+  // (a deletion that took a footnote's or endnote's mark took the
+  // note too, ./NoteKeep: that notes part is written anew, its notes
+  // compared through the model)
+  const np = (doc.meta && doc.meta.noteParts) || {};
+  for (const k of ['footnotes', 'endnotes']) {
+    const n = np[k], was = notes0 ? notes0[k] : undefined;
+    if (typeof n !== 'string' || !doc.notes || doc.notes[k] === was
+      || !back.parts.has(n)) continue;
+    want.parts.set(n, back.parts.get(n));
+    // (a note made in the editor, a paste's copy: ./ClipNotes, has
+    // no node and no orig until written: the ones read back)
+    const wm = want.notes[k], bm = back.notes[k];
+    for (const [id, x] of wm instanceof Map ? wm : []) {
+      const y = bm instanceof Map ? bm.get(id) : null;
+      if (x.node === null && y) {
+        x.node = y.node;
+        x.orig = x.blocks;
+      } else if (notes && y && x.node && y.node) {
+        // ({notes: true}: a note edited, moved to the other kind or
+        // given another id keeps the element it was read as for its
+        // name and attributes; its children are its blocks, compared
+        // in full: the attributes but w:id must be kept)
+        const own = (n) => n.attrs.filter(([a]) => a !== 'w:id');
+        assert.deepEqual(own(y.node), own(x.node), what + ': ' + k +
+          ' ' + id + ' keeps its attributes');
+        x.node = y.node;
+        x.orig = x.blocks;
+      }
+    }
+    // (the snapshot of the part as read is the new file's: not
+    // compared)
+    if (want.notes.read && back.notes.read) {
+      want.notes.read = {...want.notes.read, [k]: null};
+      back.notes.read = {...back.notes.read, [k]: null};
+    }
+  }
+}
+
+/**
  * Open bytes, change(d, seed, {every}) -> stats, check (see the
  * header). Returns {refused: code} when the reader refuses the file,
  * else {...stats, blocks, schema}.
  */
 export async function roundTrip(bytes, what, seed, change,
-  {xsd = null, every, keep = [], read, stories = false} = {}) {
+  {xsd = null, every, keep = [], read, stories = false, notes = false}
+  = {}) {
   let a;
   try {
     a = await readDocx(bytes, read);
@@ -217,6 +267,7 @@ export async function roundTrip(bytes, what, seed, change,
   }
   const out0 = await write(a);
   const before = structuredClone(a.sections);
+  const notes0 = a.notes;
   const d = new Document(a);
   const st = await change(d, seed, {every});
   // the changed model round-trips
@@ -233,6 +284,7 @@ export async function roundTrip(bytes, what, seed, change,
       if (b && 'orig' in st) st.orig = st.blocks;
     }
   }
+  notesBack(want, back, d.doc, notes0, what, notes);
   assertSameDoc(back, want, what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);
@@ -341,7 +393,7 @@ export const SKIP_CORPUS = 'tests/moreapps/corpus is missing or ' +
  * capped files and the slowest; asserts no failures.
  */
 export async function corpusRun(files, change, xsd, xsdNote, label,
-  {keep = [], read, stories = false} = {}) {
+  {keep = [], read, stories = false, notes = false} = {}) {
   const failures = [], times = [], capped = [];
   let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
     keptAsRead = 0, grown = 0;
@@ -351,7 +403,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
     const t0 = Date.now();
     try {
       const res = await roundTrip(readFileSync(f), name, hash(name),
-        change, {xsd, keep, read, stories});
+        change, {xsd, keep, read, stories, notes});
       if (res.refused) {
         refused++;
         if (EXPECTED[name] !== res.refused) {
