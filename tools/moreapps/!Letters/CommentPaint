@@ -1,0 +1,283 @@
+// CommentPaint - the comments shown in the text (Batch F1): the range
+// between a comment's start and end lit in its author's colour, a
+// point comment's small marker at its reference. Display only: the
+// lines, the pages and the layout's caches are not touched; the boxes
+// are the layout's own (L.selectionRects, L.caretRect), so they are
+// right in Draft, Print layout, Outline and Web alike.
+//
+//   rects(doc, ctx) -> [{id, author, resolved, selected, point, fill,
+//       rects: [{x, y, w, h}]}]  in work-area coordinates, in the
+//       order the marks come in the document; NONE (frozen, shared)
+//       when there is nothing. ctx {L, y0?, y1?, sel?}: L the
+//       document's ./DocLayout (its place the view's), y0..y1 the
+//       screen band drawn (both finite: only the comments and lines
+//       it shows, as ./DocRects culls a selection), sel the selected
+//       comment's id (dw.comment, ./AppWin) or null
+//   paintComments(L, g, rect, sel)  fills them in rect, multiplied
+//       into what is there (as the selection is: the text stays
+//       black on them); nothing at all (no save) when there are none
+//   colourOf(author) -> 0..5  the palette entry for an author's name
+//       (FNV-1a of its UTF-16 units, the same on every run)
+//   fillOf(author, resolved, selected, point?) -> '#rrggbb'  a
+//       range's: soft, light when resolved, strong when selected; a
+//       point marker's one step up, to be seen at its small size
+//       (strong; soft when resolved)
+//   PALETTE  six frozen {soft, light, strong}: soft a comment's
+//       colour, light a resolved one's, strong the selected one's
+//   MARK_W, MARK_H  the point marker's size (px)
+//   NONE  the frozen [] for nothing
+//   stats  {built}: entry lists worked out (a cost check)
+//
+// What is drawn: a comment of doc.comments with modelled marks in the
+// body (./CommentMarks marks; marks in headers, footers, notes, text
+// boxes or kept XML are opaque and not there). Its start and end
+// both there with something seen between them (./Kinds unseenAt):
+// the range, lit as a selection from start to end would be (a
+// paragraph mark crossed gets its stub). Start and end with only
+// unseen marks between, or neither, with a reference (else the
+// start): a point comment, a MARK_W x MARK_H box centred on the
+// reference's caret at the top of its line. One of start and end
+// only (the other opaque): nothing.
+// A reply (./CommentRead parentsOf) is drawn with its thread: not
+// itself when its parent is drawn (one colour per thread, the
+// first comment's); selected when sel is any comment of its thread.
+// Resolved: the drawn comment's own done. An end with no item now
+// (Outline: hidden under a collapsed heading) draws nothing.
+//
+// Colours: the page is always white paper in this app (on its grey
+// desk, whatever the desktop around it), and these are pale tints
+// multiplied into it like the selection's
+// (./EditPaint SEL): they show on white, on a highlight or shading
+// under them, and under the selection.
+//
+// Cost: a Doc with no comments costs one look at doc.comments (no
+// marks scanned, nothing allocated). Otherwise the entries (positions
+// of each drawn comment) are worked out once per ./CommentMarks marks
+// map and doc.comments (memoised per Doc), and located once per
+// layout (two L.locate each, sorted by place); a paint finds the ones
+// in the band by a binary search (and a look back over the longest
+// comment's span of items: one comment over the whole document makes
+// that look a numeric scan of every entry) and asks the layout for
+// boxes only for those. Pure: no desktop services.
+import {marks} from './CommentMarks';
+import {parentsOf} from './CommentRead';
+import {at} from './Walk';
+import {unseenAt} from './Kinds';
+
+export const NONE = Object.freeze([]);
+export const MARK_W = 7, MARK_H = 5;
+export const stats = {built: 0};
+
+const tint = (soft, light, strong) => Object.freeze({soft, light,
+  strong});
+export const PALETTE = Object.freeze([
+  tint('#fbe7a1', '#fdf4d4', '#f2cc45'),   // yellow
+  tint('#cbe8c1', '#e7f4e2', '#8ccb7b'),   // green
+  tint('#f6cbd7', '#fbe7ed', '#e98ba7'),   // pink
+  tint('#c8dcf4', '#e5eefa', '#83afe6'),   // blue
+  tint('#e0cff1', '#f0e7f8', '#b693de'),   // violet
+  tint('#f8d4b3', '#fcebdc', '#ef9f5f'),   // orange
+]);
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const memo = new WeakMap();            // Doc -> {m, comments, list}
+const byItems = new WeakMap();         // L.items -> placesOf
+
+/** See the header. */
+export function colourOf(author) {
+  const s = typeof author === 'string' ? author : '';
+  let h = 0x811c9dc5;
+  for (let k = 0; k < s.length; k++) {
+    h ^= s.charCodeAt(k);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h % PALETTE.length;
+}
+
+/** See the header. */
+export function fillOf(author, resolved, selected, point) {
+  const e = PALETTE[colourOf(author)];
+  if (point) return resolved && !selected ? e.soft : e.strong;
+  return selected ? e.strong : resolved ? e.light : e.soft;
+}
+
+/** {id, off} of mark place q ({path, off}) in doc, or null. */
+function posOf(doc, q) {
+  const b = q && at(doc, q.path);
+  return b && b.type === 'p' ? {id: b.id, off: q.off} : null;
+}
+
+/** Whether the range s..t of marks entry e holds nothing seen (one
+ *  paragraph, only unseen marks between: a point comment). */
+function empty(doc, e, s, t) {
+  if (s.id !== t.id) return false;
+  const b = at(doc, e.start.path);
+  const a = Math.min(s.off, t.off), z = Math.max(s.off, t.off);
+  for (let k = a + 1; k < z; k++) {
+    if (!unseenAt(b, k)) return false;
+  }
+  return true;
+}
+
+/** What marks entry e draws: {point: false, s, t} (a range),
+ *  {point: true, where} or null (see the header). */
+function shapeOf(doc, e) {
+  if (!e) return null;
+  const s = posOf(doc, e.start), t = posOf(doc, e.end);
+  if (s && t && !empty(doc, e, s, t)) {
+    return {point: false, s, t, where: null};
+  }
+  if (!!e.start !== !!e.end || (e.start && !(s && t))) return null;
+  const where = posOf(doc, e.ref) || s;
+  return where ? {point: true, s: null, t: null, where} : null;
+}
+
+/** The entries of doc (see the header: worked out once per marks). */
+function entriesOf(doc, cmap) {
+  const m = marks(doc), old = memo.get(doc);
+  if (old && old.m === m && old.comments === doc.comments) {
+    return old;
+  }
+  stats.built++;
+  let parents = null;
+  const list = [];
+  const shown = (id) => cmap.has(id) && !!shapeOf(doc, m.get(id));
+  for (const [id, e] of m) {
+    const c = cmap.get(id), x = isObj(c) && shapeOf(doc, e);
+    if (!x) continue;
+    if (c.parent !== null && c.parent !== undefined) {
+      if (!parents) parents = parentsOf(doc);
+      const p = parents.get(id);
+      if (p !== undefined && shown(p)) continue;
+    }
+    list.push({id, author: c.author, done: !!c.done, ...x});
+  }
+  const out = {m, comments: doc.comments, list, parents};
+  memo.set(doc, out);
+  return out;
+}
+
+/** The thread root of comment id under parents (cycles broken). */
+function rootOf(parents, id) {
+  if (!parents) return id;
+  const seen = new Set();
+  let x = id;
+  while (parents.has(x) && !seen.has(x)) {
+    seen.add(x);
+    x = parents.get(x);
+  }
+  return x;
+}
+
+/** The root items' flow indices the band y0..y1 shows: [i0, i1], or
+ *  null (nothing shown), as ./DocRects works them out. */
+function bandOf(L, y0, y1) {
+  if (!(Number.isFinite(y0) && Number.isFinite(y1))) {
+    return [-Infinity, Infinity];
+  }
+  if (L.place && L.place.band) {
+    const b = L.place.band(y0, y1);
+    if (!b) return null;
+    ({y0, y1} = b);
+  }
+  const a = L.itemAtY(y0), e = L.itemAtY(y1);
+  if (!a || !e) return null;
+  return [a.index, e.kind === 'tbl' ? e.endIndex : e.index];
+}
+
+/** The point marker of entry x in the band, or null. */
+function marker(L, x, y0, y1) {
+  const c = L.caretRect(x.where, 'down');
+  if (!c || !Number.isFinite(c.x) || !Number.isFinite(c.y)) return null;
+  if (c.y + c.h < y0 || c.y > y1) return null;
+  return {x: Math.round(c.x - MARK_W / 2), y: Math.round(c.y),
+    w: MARK_W, h: MARK_H};
+}
+
+/** The entries of E located in L: {ents (by lo), los, span}, each
+ *  {x, k (its place in E.list), lo, hi} (flow indices of its ends);
+ *  memoised per L.items (a new array on every layout) and E. */
+function placesOf(L, E) {
+  const old = byItems.get(L.items);
+  if (old && old.E === E) return old;
+  const ents = [];
+  let span = 0;
+  E.list.forEach((x, k) => {
+    const f = L.locate(x.point ? x.where : x.s);
+    const t = x.point ? f : L.locate(x.t);
+    if (!f || !t) return;               // (not shown: Outline)
+    const lo = Math.min(f.index, t.index);
+    const hi = Math.max(f.index, t.index);
+    span = Math.max(span, hi - lo);
+    ents.push({x, k, lo, hi});
+  });
+  ents.sort((a, b) => a.lo - b.lo || a.k - b.k);
+  const out = {E, ents, los: ents.map((e) => e.lo), span};
+  if (L.items) byItems.set(L.items, out);
+  return out;
+}
+
+/** The entries of P whose ends' span meets i0..i1, in E's order. */
+function inBand(P, i0, i1) {
+  const {ents, los} = P;
+  let lo = 0, hi = los.length;         // (the first with lo > i1)
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (los[m] > i1) hi = m;
+    else lo = m + 1;
+  }
+  const out = [];
+  for (let j = lo - 1; j >= 0 && los[j] >= i0 - P.span; j--) {
+    if (ents[j].hi >= i0) out.push(ents[j]);
+  }
+  return out.sort((a, b) => a.k - b.k);
+}
+
+/** See the header. */
+export function rects(doc, ctx) {
+  const cs = isObj(doc) && isObj(doc.comments) ? doc.comments.map
+    : null;
+  if (!(cs instanceof Map) || !cs.size || !isObj(ctx) || !ctx.L) {
+    return NONE;
+  }
+  const {L} = ctx;
+  const y0 = Number.isFinite(ctx.y0) ? ctx.y0 : -Infinity;
+  const y1 = Number.isFinite(ctx.y1) ? ctx.y1 : Infinity;
+  const E = entriesOf(doc, cs);
+  if (!E.list.length) return NONE;
+  const band = bandOf(L, y0, y1);
+  if (!band) return NONE;
+  const sel = Number.isInteger(ctx.sel) && cs.has(ctx.sel)
+    ? rootOf(E.parents, ctx.sel) : null;
+  let out = null;
+  for (const {x} of inBand(placesOf(L, E), band[0], band[1])) {
+    let rs;
+    if (x.point) {
+      const k = marker(L, x, y0, y1);
+      if (!k) continue;
+      rs = [k];
+    } else {
+      rs = L.selectionRects({anchor: x.s, head: x.t}, y0, y1);
+      if (!rs.length) continue;
+    }
+    const selected = sel !== null && rootOf(E.parents, x.id) === sel;
+    (out || (out = [])).push({id: x.id, author: x.author,
+      resolved: x.done, selected, point: x.point,
+      fill: fillOf(x.author, x.done, selected, x.point), rects: rs});
+  }
+  return out || NONE;
+}
+
+/** See the header. */
+export function paintComments(L, g, rect, sel) {
+  const list = L ? rects(L.doc, {L, y0: rect.y0, y1: rect.y1, sel})
+    : NONE;
+  if (!list.length) return;
+  g.save();
+  g.globalCompositeOperation = 'multiply';
+  for (const c of list) {
+    g.fillStyle = c.fill;
+    for (const r of c.rects) g.fillRect(r.x, r.y, r.w, r.h);
+  }
+  g.restore();
+}

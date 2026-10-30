@@ -339,10 +339,13 @@ try {
   const row = (n) => mn.rows.find((x) => x.text === n);
   ok('the window menu has Insert after Edit (then View, Format)', same(mn.top.slice(5, 10), ['Edit', 'Insert', 'View', 'Outline', 'Format']), mn.top);
   ok('Insert: Page break, Column break (P10.3), Section break >, Table..., Tab, Picture..., Symbol..., Special character, Hyperlink..., Bookmark...,'
+    + ' Comment... (F1), Footnote, Endnote, Footnote and Endnote... (E2), Table of Contents..., Caption..., Table of Figures..., Cross-reference... (E3),'
     + ' then (P9.2) Page number, Number of pages, Date, Time, Field... (no keys, live)',
     same(mn.rows.map((x) => x.text), ['Page break', 'Column break', 'Section break', 'Table...', 'Tab', 'Picture...', 'Symbol...', 'Special character', 'Hyperlink...', 'Bookmark...',
+      'Comment...', 'Footnote', 'Endnote', 'Footnote and Endnote...', 'Table of Contents...', 'Caption...', 'Table of Figures...', 'Cross-reference...',
       'Page number', 'Number of pages', 'Date', 'Time', 'Field...'])
-    && mn.rows.every((x) => x.help) && mn.rows.slice(10).every((x) => !x.key && !x.shaded), mn.rows);
+    && mn.rows.every((x) => x.help) && mn.rows.slice(-5).every((x) => !x.key && !x.shaded)
+    && mn.rows[10].key === 'Ctrl+Alt+M', mn.rows);
   ok('Page break shows Ctrl+Enter (also on a Mac: Ctrl, as Cmd-Enter stays Enter); Symbol... and Special character > are live (word-symbols.mjs); Hyperlink... is live with Ctrl+K (Cmd+K on a Mac: word-links.mjs); Bookmark... is live with Ctrl+Shift+F5 (also on a Mac)',
     row('Page break').key === 'Ctrl+Enter' && mn.mac[0] === 'Ctrl+Enter' && row('Page break').shaded === false
     && row('Column break').key === 'Ctrl+Shift+Enter' && mn.mac[1] === 'Ctrl+Shift+Enter' && row('Column break').shaded === false

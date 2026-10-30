@@ -1,0 +1,103 @@
+// AuthorBox - the User name and initials box (Tools > User name and
+// initials...; Batch F1): the name and initials new comments are
+// written with, kept for every document of Letters in
+// Choices:Letters (./CommentOpts). Built by WimpLib Ui/Dialog.
+//
+//   authorBox(dw, {ask, then, pane}?) -> the box's api; one per
+//       document
+//       (key 'author:<docKey>', kept in dw.boxes ('author') so
+//       ./CloseDoc deletes it with the document); asked again while
+//       open, the same box filled again from the choices and brought
+//       to the front. ask: opened because a comment needs them (the
+//       box says so). then(): called once the choices are written
+//       after OK (Insert > Comment... goes on to the Comments pane).
+//       pane: opened from the Comments pane, so closing it leaves the
+//       caret to the pane (not the document)
+//
+// The fields: User name and Initials, each one line of at most
+// ./CommentOpts MAX characters (cleaned as kept: spaces collapsed).
+// OK (or Return) writes both, then closes the box; either empty
+// beeps, says why in the box and keeps it, and so does a write that
+// fails (the box kept, the reason shown). Cancel, Escape and the
+// close icon change nothing (then is not called); the caret goes
+// back to the document (to the pane when opened from it). Comments
+// read from a file keep their own author.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {read, write, MAX} from './CommentOpts';
+import {cleanName} from './CommentCmd';
+
+const ASK = 'New comments are signed with your name and initials: ' +
+  'type them, then OK.';
+const rows = () => [
+  {kind: 'text', name: 'name', label: 'User name', maxLen: MAX,
+    w: 260, help: 'Your name: new comments show it as their author.'},
+  {kind: 'text', name: 'initials', label: 'Initials', maxLen: MAX,
+    w: 80, help: 'Your initials, shown with your comments.'},
+  {kind: 'label', name: 'msg', text: '', w: 400},
+];
+const state = new WeakMap();           // api -> {then, pane, busy}
+const wired = new WeakSet();
+
+/** See the header. */
+export function authorBox(dw, {ask = false, then = null,
+  pane = false} = {}) {
+  const api = dialog({task: dw.app.task, key: `author:${dw.docKey}`,
+    title: 'User name and initials', rows: rows(),
+    help: 'User name and initials: the author new comments are ' +
+      'written with.', buttons: ['Cancel', 'OK'], enter: 'OK',
+    minW: 420});
+  box(dw, 'author', () => api.win);
+  if (!wired.has(api)) wire(api, dw);
+  state.set(api, {then: typeof then === 'function' ? then : null,
+    pane: !!pane, busy: false});
+  const o = read(dw.app);
+  api.set('name', o.name);
+  api.set('initials', o.initials);
+  api.set('msg', ask ? ASK : '');
+  if (!api.isOpen) api.open();
+  api.focus(o.name ? 'initials' : 'name');
+  return api;
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg, field) => {
+    wimp.beep();
+    api.set('msg', msg);
+    api.focus(field);
+    return false;
+  };
+  api.on('close', () => {
+    const st = state.get(api);
+    if (!dw.closed && !(st && st.pane)) v.focus();
+  });
+  api.on('button', ({name}) => {
+    if (name !== 'OK') return undefined;
+    const n = cleanName(api.get('name'));
+    const i = cleanName(api.get('initials'));
+    if (!n) return no('Type your name.', 'name');
+    if (!i) return no('Type your initials.', 'initials');
+    const st = state.get(api);
+    if (st.busy) return false;
+    st.busy = true;
+    // (kept open until the choices are written: a write that fails
+    // leaves the box, with the reason)
+    Promise.resolve().then(() => write(dw.app, {name: n, initials: i}))
+      .then(() => {
+        st.busy = false;
+        const then = st.then;
+        st.then = null;
+        if (!api.gone) api.delete();
+        if (then && !dw.closed) then();
+      }, (e) => {
+        st.busy = false;
+        if (!api.gone) no('Your name and initials could not be ' +
+          'kept: ' + String(e && e.message || e) + '.', 'name');
+      });
+    return false;
+  });
+}

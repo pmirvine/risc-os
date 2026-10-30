@@ -1,11 +1,12 @@
 // Kinds - the kept elements a paragraph holds that are not seen: they
 // are drawn as nothing on the screen (./LineTokens) and are not counted
-// as preserved items (./Info). One list, so the two agree.
+// as preserved items (./Info; but a comment reference). One list, so
+// the two agree.
 //
 //   UNSEEN  Set of element local names: proofing marks, bookmarks,
-//           comment and permission ranges, Word's last page break
-//           mark, a field's codes (its result is ordinary text) and
-//           deleted text
+//           comment ranges and references, permission ranges,
+//           Word's last page break mark, a field's codes (its
+//           result is ordinary text) and deleted text
 //   BLANK   the other inlines drawn as nothing (counted by ./Info):
 //           deletions (tracked changes) and a soft hyphen
 //   localName(node) -> 'proofErr' for a w:proofErr element, else ''
@@ -23,9 +24,26 @@
 //                      delete the character next to it (./EditDel)
 //   onlyUnseen(p)   -> whether every offset of p is unseenAt (so
 //                      the keys count p as empty)
+//   COMMENT_MARKS   {cmtStart, cmtEnd, cmtRef} -> the element each
+//                   modelled comment mark is (Batch F1, ./ReadPara):
+//                   w:commentRangeStart, w:commentRangeEnd (level
+//                   'p') and w:commentReference (level 'r')
+//   isCommentMark(x) -> whether inline x is one of them
+//   nameOf(x)       -> the local name of inline x's element: its
+//                      node's, else (a comment mark) its kind's
+//   markId(node)    -> the id of a comment mark element: its one
+//                      attribute named id (any prefix) when that is a
+//                      whole number 0..2147483647 written plainly (no
+//                      sign, no leading zero), else null
+//
+// A modelled comment mark is drawn and keyed exactly as the raw
+// element it was read from (by its element's name): range marks and
+// the reference are all unseen (Batch F1: Word draws no box for a
+// reference; ./Info still counts a reference as a 'comment').
 
 export const UNSEEN = new Set(['proofErr', 'bookmarkStart',
-  'bookmarkEnd', 'commentRangeStart', 'commentRangeEnd', 'permStart',
+  'bookmarkEnd', 'commentRangeStart', 'commentRangeEnd',
+  'commentReference', 'permStart',
   'permEnd', 'lastRenderedPageBreak', 'instrText', 'delText',
   'fldChar']);
 
@@ -37,10 +55,39 @@ export function localName(node) {
   return node.name.split(':').pop();
 }
 
+export const COMMENT_MARKS = Object.freeze({
+  cmtStart: 'commentRangeStart', cmtEnd: 'commentRangeEnd',
+  cmtRef: 'commentReference'});
+
+/** See the header. */
+export const isCommentMark = (x) => !!x && typeof x === 'object' &&
+  typeof x.kind === 'string' && Object.hasOwn(COMMENT_MARKS, x.kind);
+
+/** See the header. */
+export function nameOf(x) {
+  if (!x || typeof x !== 'object') return '';
+  const l = localName(x.node);
+  return l || (isCommentMark(x) ? COMMENT_MARKS[x.kind] : '');
+}
+
+/** See the header. */
+export function markId(node) {
+  if (!node || !Array.isArray(node.attrs)) return null;
+  let v = null;
+  for (const a of node.attrs) {
+    if (!Array.isArray(a) || String(a[0]).split(':').pop() !== 'id')
+      continue;
+    if (v !== null) return null;
+    v = String(a[1]);
+  }
+  return v !== null && /^(0|[1-9][0-9]{0,9})$/.test(v) &&
+    +v <= 2147483647 ? +v : null;
+}
+
 /** See the header. */
 export function unseen(x) {
   if (!x || typeof x !== 'object') return false;
-  const l = localName(x.node);
+  const l = nameOf(x);
   return UNSEEN.has(l) || BLANK.has(l);
 }
 

@@ -393,7 +393,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
       'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
       'saveBox', 'sendToBack', 'fieldCodes', 'styleList', 'footnote',
-      'endnote', 'nextNote', 'prevNote'].sort());
+      'endnote', 'comment', 'nextNote', 'prevNote'].sort());
   });
   it('Alt rows: Ctrl+Alt+F and D, Alt+Down and Up, by the key\'s ' +
     'place when the browser gives it (Batch E2)', () => {
@@ -410,6 +410,13 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(k('f', {alt: true}), null);
     assert.equal(k('ArrowDown', {}), null, 'Down is a move: ./Keys');
     assert.equal(keymap.labelFor('footnote'), 'Ctrl+Alt+F');
+    assert.equal(k('m', {ctrl: true, alt: true}), 'comment');
+    assert.equal(k('\u00b5', {ctrl: true, alt: true}, 'KeyM'),
+      'comment');
+    assert.equal(k('c', {ctrl: true, alt: true}), null,
+      'Ctrl+Alt+C is AltGr+C on some keyboards: not bound');
+    assert.equal(k('c', {ctrl: true}), 'copy', 'Ctrl+C stays copy');
+    assert.equal(keymap.labelFor('comment'), 'Ctrl+Alt+M');
     assert.equal(keymap.row('nextNote').menu, 'Window');
   });
   it('function key names bind: F1..F12 with Ctrl and Shift', () => {

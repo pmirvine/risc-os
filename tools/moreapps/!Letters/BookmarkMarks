@@ -4,9 +4,10 @@
 // Batch D P6.3.
 //
 //   marks(doc) -> [{kind 'start' | 'end', name (start: its w:name,
-//       else null), id (w:id as written, or null), at, off, table,
-//       direct}] every w:bookmarkStart and w:bookmarkEnd in document
-//       order (./Walk: the model; XML only inside an Opaque block or
+//       else null), id (w:id as written, or null), ns 'b', at, off,
+//       table, direct}] every w:bookmarkStart and w:bookmarkEnd in
+//       document order
+//       (./Walk: the model; XML only inside an Opaque block or
 //       an inline; a typed table's loose marks between its rows and
 //       cells in their places): at the block's path; off the offset
 //       of its U+FFFC in the paragraph (a mark inside a kept wrapper,
@@ -21,6 +22,11 @@
 //       be moved or deleted: never a loose or kept one).
 //       marks.complete is false when the walk stopped at its
 //       1,000,000-node limit
+//   rangeMarks(doc) -> the same with every comment range mark too
+//       (w:commentRangeStart / End, raw or a modelled cmtStart /
+//       cmtEnd: ./ReadPara, Batch F1), those with ns 'c': the marks
+//       ./BookmarkKeep keeps paired (a bookmark's and a comment's
+//       ids are told apart by ns)
 //   storyMarks(doc) -> the same for every story of doc.stories
 //       (headers and footers, D11: bookmarks there are legal), story
 //       by story in its order, each mark with `story` (its part
@@ -41,10 +47,13 @@
 import {OBJ} from './Model';
 import {forEachBlock, forEachIn, loose} from './Walk';
 import {samePath} from './Path';
-import {localName} from './Kinds';
+import {localName, isCommentMark} from './Kinds';
 
 const LIMIT = 1e6;
 const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end'};
+const RANGES = {...KIND, commentRangeStart: 'start',
+  commentRangeEnd: 'end'};
+const NS = {commentRangeStart: 'c', commentRangeEnd: 'c'};
 
 /** The value of the attribute with local name `local`, or null. */
 function attr(n, local) {
@@ -59,8 +68,10 @@ function attr(n, local) {
 const before = (m, r, c) => m.r < r || (m.r === r &&
   (m.where === 'rowLead' || (m.where === 'lead' && m.c <= c)));
 
-/** The marks walk(visit) visits (see the header). */
-function marksOver(walk) {
+/** The marks walk(visit) visits (see the header); kinds: KIND or
+ *  RANGES. */
+function marksOver(walk, kinds = KIND) {
+  const cmts = kinds === RANGES;
   const out = [];
   let seen = 0;
   out.complete = true;
@@ -70,11 +81,14 @@ function marksOver(walk) {
       const n = stack.pop();
       if (++seen > LIMIT) return false;
       if (!n || typeof n !== 'object') continue;
-      const kind = KIND[localName(n)];
+      const l = localName(n);
+      const kind = Object.hasOwn(kinds, l) ? kinds[l] : undefined;
       if (kind) {
-        out.push({kind, name: kind === 'start' ? attr(n, 'name') : null,
-          id: attr(n, 'id'), at: at.at, off: at.off, table: at.table,
-          direct: n === top && !!at.own});
+        const ns = NS[l] || 'b';
+        const name = kind === 'start' && ns === 'b' ? attr(n, 'name')
+          : null;
+        out.push({kind, name, id: attr(n, 'id'), ns, at: at.at,
+          off: at.off, table: at.table, direct: n === top && !!at.own});
       }
       const kids = Array.isArray(n.children) ? n.children : [];
       for (let k = kids.length - 1; k >= 0; k--) {
@@ -112,7 +126,8 @@ function marksOver(walk) {
       .sort((x, y) => x - y);
     for (const off of offs) {
       const x = b.inlines[off];
-      if (x.kind !== 'raw' || x.level !== 'p' || !x.node) continue;
+      if ((x.kind !== 'raw' && !(cmts && isCommentMark(x))) ||
+        x.level !== 'p' || !x.node) continue;
       if (!inNode(x.node, {at, off, table: false, own: true}))
         return false;
     }
@@ -147,6 +162,10 @@ function placeOf(o, m) {
 
 /** See the header. */
 export const marks = (doc) => marksOver((v) => forEachBlock(doc, v));
+
+/** See the header. */
+export const rangeMarks = (doc) => marksOver((v) =>
+  forEachBlock(doc, v), RANGES);
 
 /** See the header. */
 export function noteMarks(doc) {

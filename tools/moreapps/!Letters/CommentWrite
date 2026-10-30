@@ -1,0 +1,296 @@
+// CommentWrite - the COMMENTS (./CommentRead) written back: the
+// comments part and its companions (./CommentExt).
+//
+//   commentsTree(doc) -> element | null
+//     the comments part's root (doc.comments.root: its name and
+//     attributes; xmlns:w added when missing, a w bound to another
+//     URI refused: DocxError 'unsupported') around the comments in
+//     doc.comments.order, with the nodes of doc.comments.raw.comments
+//     put back at their places. A comment whose blocks still equal
+//     its orig (element by element, or deep-equal) and whose id,
+//     author, initials, date and paraId are the ones read is
+//     written as its node, verbatim; any other is written from its
+//     blocks by the body's writers (as ./NoteWrite: an empty one
+//     gets one empty w:p) inside its node's name and attributes
+//     (unknown ones kept; w:id, w:author, w:initials and w:date set
+//     only when they differ from the model, a null date removed; a
+//     comment with no node: w:comment with just those), its paraId
+//     set as the w14:paraId of its last w:p and removed from any
+//     other w:p in it that has it (and any paraId repeated inside
+//     the comment kept on its first w:p only). Null when the Doc
+//     has no comments part modelled.
+//   partsOf(doc, map?) -> {comments, extended, ids, extensible,
+//     people}  each the very bytes read (the part is untouched:
+//     same order, comments, raw nodes, root and prolog; a companion
+//     whose entries ./CommentExt extItems keeps as read), a tree to
+//     write, or null (not modelled: the part stays in doc.parts as
+//     its bytes). map (./WriteBody docScope) or else
+//     doc.meta.conformance says Strict: the comments tree is built
+//     with Strict property names (not yet mapped to Strict URIs)
+//   commentsOut(doc, map) -> {parts: Map name -> bytes}  partsOf
+//     written: trees as UTF-8 XML with the part's prolog (the
+//     comments part mapped to Strict in a Strict document; the
+//     companions as they are), plus the comments part's .rels when
+//     its rels changed (./StoryWrite relsOut)
+//   readCommentsOf(doc) -> the Doc's comments, or ./Model
+//     emptyComments() when a Doc made elsewhere leaves them out
+// Pure: no desktop services.
+import {NS} from './Wml';
+import {rootScope, strictScope, isStrict, scope, wAttr, prefixFor, W,
+  isEl} from './Ns';
+import {mapNamespacesCopy} from './NsMap';
+import {paraNode} from './WritePara';
+import {tblNode} from './TblWrite';
+import {xmlBytes} from './WriteParts';
+import {relsOut} from './StoryWrite';
+import {DocxError} from './DocxError';
+import {deepEqual} from './DeepEqual';
+import {emptyComments} from './Model';
+import {noteId} from './NoteRead';
+import {parentsOf} from './CommentRead';
+import {extItems, extTree, extAttr, EXT_KINDS} from './CommentExt';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** See the header. */
+export const readCommentsOf = (doc) => isObj(doc) &&
+  isObj(doc.comments) && doc.comments.map instanceof Map
+  ? doc.comments : emptyComments();
+
+const same = (a, b) => Array.isArray(a) && Array.isArray(b) &&
+  a.length === b.length &&
+  a.every((x, i) => x === b[i] || deepEqual(x, b[i]));
+
+/** True when `c` is written as its node (see the header). */
+function untouched(c, was) {
+  if (!was || !c.node) return false;
+  if (c === was) return true;
+  return c.id === was.id && c.author === was.author &&
+    c.initials === was.initials && c.date === was.date &&
+    c.paraId === was.paraId && c.node === was.node &&
+    same(c.blocks, was.orig);
+}
+
+/** The index of WML attribute `local` of `attrs` in scope `m`. */
+function attrAt(attrs, m, local) {
+  return attrs.findIndex(([n]) => {
+    const i = n.indexOf(':');
+    return i > 0 && n.slice(i + 1) === local &&
+      m.get(n.slice(0, i)) === W;
+  });
+}
+
+function setAttr(attrs, m, pre, local, value) {
+  const i = attrAt(attrs, m, local);
+  if (i >= 0) {
+    if (value === null) attrs.splice(i, 1);
+    else attrs[i] = [attrs[i][0], value];
+  } else if (value !== null) attrs.push([pre + local, value]);
+}
+
+/** `p` (a w:p element) without its w14:paraId. */
+function withoutParaId(p, m) {
+  const m1 = scope(m, p);
+  return {...p, attrs: p.attrs.filter(([n]) => {
+    const i = n.indexOf(':');
+    return !(i > 0 && n.slice(i + 1) === 'paraId' &&
+      m1.get(n.slice(0, i)) === NS.w14);
+  })};
+}
+
+/** `p` (a w:p element) with w14:paraId `id`. */
+function withParaId(p, m, id) {
+  if (extAttr(p, m, NS.w14, 'paraId') === id) return p;
+  const q = withoutParaId(p, m);
+  const {p: pre, decl} = prefixFor(scope(m, q), NS.w14, 'w14');
+  return {...q, attrs: [...q.attrs, ...decl, [pre + ':paraId', id]]};
+}
+
+/** True when `n` is a WML w:p (m the scope around it). */
+function isP(n, m) {
+  if (!isEl(n)) return false;
+  const mc = n.attrs.length ? scope(m, n) : m;
+  const i = n.name.indexOf(':');
+  return mc.get(i < 0 ? '' : n.name.slice(0, i)) === W &&
+    n.name.slice(i + 1) === 'p';
+}
+
+/** `n` with the w14:paraId of every w:p in it (itself included)
+ *  that is already in `seen` removed, the others added to seen:
+ *  a comment holds each paraId once. Copies only what changes. */
+function unique(n, m, seen) {
+  if (!isEl(n)) return n;
+  let out = n;
+  if (isP(n, m)) {
+    const id = extAttr(n, m, NS.w14, 'paraId');
+    if (typeof id === 'string') {
+      if (seen.has(id)) out = withoutParaId(n, m);
+      else seen.add(id);
+    }
+  }
+  const mc = n.attrs.length ? scope(m, n) : m;
+  let kids = null;
+  n.children.forEach((ch, k) => {
+    const got = unique(ch, mc, seen);
+    if (got !== ch) {
+      kids = kids || n.children.slice();
+      kids[k] = got;
+    }
+  });
+  return kids ? {...out, children: kids} : out;
+}
+
+function commentNode(c, m) {
+  const node = c.node;
+  const name = node ? node.name : 'w:comment';
+  const pre = name.slice(0, name.indexOf(':') + 1);
+  const attrs = node ? node.attrs.map(([a, v]) => [a, v]) : [];
+  const m1 = scope(m, {attrs});
+  const a = {attrs};
+  if (noteId(wAttr(a, m1, 'id')) !== c.id)
+    setAttr(attrs, m1, pre, 'id', String(c.id));
+  for (const k of ['author', 'initials']) {
+    if ((wAttr(a, m1, k) ?? '') !== c[k])
+      setAttr(attrs, m1, pre, k, c[k] === '' ? null : c[k]);
+  }
+  if ((wAttr(a, m1, 'date') ?? null) !== (c.date ?? null))
+    setAttr(attrs, m1, pre, 'date', c.date ?? null);
+  const children = c.blocks.map((b) => b.type === 'p'
+    ? paraNode(b, null, m1) : b.type === 'tbl' ? tblNode(b, m1)
+      : b.node);
+  if (!children.length)
+    children.push({name: pre + 'p', attrs: [], children: []});
+  let last = -1;
+  if (typeof c.paraId === 'string') {
+    for (let k = children.length - 1; k >= 0 && last < 0; k--) {
+      if (isP(children[k], m1)) last = k;
+    }
+    if (last >= 0) children[last] = withParaId(children[last], m1,
+      c.paraId);
+  }
+  const seen = new Set(last >= 0 ? [c.paraId] : []);
+  for (let k = 0; k < children.length; k++) {
+    if (k !== last) children[k] = unique(children[k], m1, seen);
+  }
+  return {name, attrs, children};
+}
+
+/** The root of the part and the scope inside it. */
+function rootOf(cm, strict) {
+  const r = cm.root;
+  const root = r ? {name: r.name, attrs: r.attrs.map(([a, v]) =>
+    [a, v])} : {name: 'w:comments', attrs: []};
+  const w = root.attrs.find(([a]) => a === 'xmlns:w');
+  if (!w) root.attrs.push(['xmlns:w', NS.w]);
+  else if (w[1] !== NS.w) {
+    throw new DocxError('unsupported', 'the prefix w is bound to ' +
+      w[1] + ', not WordprocessingML');
+  }
+  let m = rootScope(root);
+  if (strict) m = strictScope(m);
+  return {root, m};
+}
+
+function build(cm, strict) {
+  const {root, m} = rootOf(cm, strict);
+  const was = cm.read && cm.read.map instanceof Map ? cm.read.map
+    : new Map();
+  const raw = (cm.raw && cm.raw.comments) || [];
+  const children = [];
+  let k = 0;
+  const flush = (upTo) => {
+    while (k < raw.length && raw[k].at <= upTo)
+      children.push(raw[k++].node);
+  };
+  (cm.order || []).forEach((id, i) => {
+    flush(i);
+    const c = cm.map.get(id);
+    if (c) children.push(untouched(c, was.get(id)) ? c.node
+      : commentNode(c, m));
+  });
+  flush(Infinity);
+  return {name: root.name, attrs: root.attrs, children};
+}
+
+/** True when the comments part is exactly as read. */
+function pristine(cm) {
+  const was = cm.read;
+  if (!was || !(was.bytes instanceof Uint8Array)) return false;
+  const raw = (cm.raw && cm.raw.comments) || [];
+  if (!same(cm.order, was.order) || !same(raw, was.raw) ||
+    !deepEqual(cm.root, was.root) || !deepEqual(cm.prolog, was.prolog))
+    return false;
+  if (cm.map.size !== was.map.size) return false;
+  return cm.order.every((id) => cm.map.has(id) &&
+    untouched(cm.map.get(id), was.map.get(id)));
+}
+
+const modelled = (doc, cm) => isObj(doc) && isObj(doc.meta) &&
+  isObj(doc.meta.commentParts) &&
+  typeof doc.meta.commentParts.comments === 'string' && !!cm.root;
+
+/** See the header. */
+export function commentsTree(doc) {
+  const cm = readCommentsOf(doc);
+  if (!modelled(doc, cm)) return null;
+  return build(cm, false);
+}
+
+/** id -> the paraId of its parent comment, or null: the parents
+ *  resolved once (./CommentRead parentsOf, linear). */
+function parentPara(cm) {
+  const ps = parentsOf({comments: cm});
+  return (id) => {
+    const p = ps.get(id);
+    const x = p === undefined ? null : cm.map.get(p);
+    return x && typeof x.paraId === 'string' ? x.paraId : null;
+  };
+}
+
+/** See the header. */
+export function partsOf(doc, map) {
+  const out = {comments: null, extended: null, ids: null,
+    extensible: null, people: null};
+  const cm = readCommentsOf(doc);
+  if (!modelled(doc, cm)) return out;
+  const strict = map ? isStrict(map)
+    : doc.meta.conformance === 'strict';
+  out.comments = pristine(cm) ? cm.read.bytes : build(cm, strict);
+  const names = doc.meta.commentParts;
+  const read = (cm.read && cm.read.ext) || {};
+  const pp = parentPara(cm);
+  for (const k of EXT_KINDS) {
+    const ext = cm.raw && cm.raw[k];
+    if (!ext || typeof names[k] !== 'string') continue;
+    const items = extItems(cm, k, pp);
+    out[k] = items === read[k] && ext.bytes instanceof Uint8Array
+      ? ext.bytes : extTree(ext, items);
+  }
+  return out;
+}
+
+/** See the header. */
+export function commentsOut(doc, map) {
+  const out = new Map();
+  const cm = readCommentsOf(doc);
+  if (!modelled(doc, cm)) return {parts: out};
+  const strict = map ? isStrict(map)
+    : doc.meta.conformance === 'strict';
+  const got = partsOf(doc, map);
+  const names = doc.meta.commentParts;
+  for (const k of ['comments', ...EXT_KINDS]) {
+    const v = got[k];
+    if (!v) continue;
+    const prolog = k === 'comments' ? cm.prolog : cm.raw[k].prolog;
+    out.set(names[k], v instanceof Uint8Array ? v
+      : xmlBytes(strict && k === 'comments'
+        ? mapNamespacesCopy(v, 'toStrict') : v, prolog || undefined));
+  }
+  const first = [...cm.map.values()].find((c) =>
+    Array.isArray(c.rels));
+  const rels = first ? first.rels : cm.rels;
+  const r = relsOut({rels, part: names.comments,
+    relsPart: first ? first.relsPart : cm.relsPart}, doc.parts);
+  if (r) out.set(r[0], r[1]);
+  return {parts: out};
+}

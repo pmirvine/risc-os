@@ -1,0 +1,119 @@
+// CommentMarks - where the comments are marked in the body (Batch
+// F1): the modelled marks (./ReadPara cmtStart, cmtEnd, cmtRef) of
+// the body's paragraphs, in tables and nested tables too. Marks in
+// headers, footers, notes, text boxes, content controls or any other
+// kept XML are not modelled marks and are not here (./CommentKeep
+// opaqueIds finds those).
+//
+//   marks(doc) -> Map<id, {start, end, ref}>  one entry for every id
+//       a modelled mark names (also one naming no comment: the
+//       caller asks doc.comments), in the order first seen; start,
+//       end and ref each the FIRST such mark of the id in document
+//       order (sections, then tables row by row, cell by cell), as
+//       {path, off} (the paragraph's ./Path path, the mark's
+//       offset), or null. Memoised per Doc while its ./DocVersion
+//       and its sections are the same objects; READ ONLY
+//   paraMarks(p) -> [{kind, id, off}]  the comment marks of
+//       paragraph p in text order (memoised per paragraph object:
+//       paragraphs are never changed in place; frozen [] for none)
+//   rawMarks(sections) -> sections  every modelled mark made the raw
+//       inline it was read from (level 'p': {kind: 'raw', level: 'p',
+//       node, text: ''}; level 'r': {kind: 'raw', level: 'r', node}),
+//       as ./ReadPara reads it without its comments option: for
+//       ./DocxRead when the comments part is not modelled (none, or
+//       one kept as bytes: its marks stay opaque). New paragraph
+//       objects (ids kept) only where a mark was; the same sections
+//       when there is none
+//   stats  {paras}: paragraphs scanned for marks (a cost check)
+//
+// Cost: a document with no comment mark costs one look at each
+// paragraph's text for U+FFFC; after an edit only the paragraphs
+// that are new objects are scanned again. Pure: no desktop services.
+import {OBJ} from './Model';
+import {versionOf} from './DocVersion';
+import {forEachBlock, mapBlocks} from './Walk';
+import {isCommentMark} from './Kinds';
+
+export const stats = {paras: 0};
+
+const NONE = Object.freeze([]);
+const SLOT = {cmtStart: 'start', cmtEnd: 'end', cmtRef: 'ref'};
+const isObj = (v) => v !== null && typeof v === 'object';
+const byPara = new WeakMap();
+const memo = new WeakMap();
+
+/** See the header. */
+export function paraMarks(p) {
+  let m = byPara.get(p);
+  if (m) return m;
+  const s = typeof p.text === 'string' ? p.text : '';
+  const xs = isObj(p.inlines) ? p.inlines : {};
+  const out = [];
+  if (s.indexOf(OBJ) >= 0) {
+    stats.paras++;
+    for (let k = s.indexOf(OBJ); k >= 0; k = s.indexOf(OBJ, k + 1)) {
+      const x = xs[k];
+      if (isCommentMark(x) && Number.isInteger(x.id))
+        out.push({kind: x.kind, id: x.id, off: k});
+    }
+  }
+  m = out.length ? Object.freeze(out) : NONE;
+  byPara.set(p, m);
+  return m;
+}
+
+/** The marks of doc, worked out (see the header). */
+function work(doc) {
+  const out = new Map();
+  forEachBlock(doc, (b, at) => {
+    if (!isObj(b) || b.type !== 'p') return true;
+    for (const m of paraMarks(b)) {
+      let e = out.get(m.id);
+      if (!e) out.set(m.id, e = {start: null, end: null, ref: null});
+      const k = SLOT[m.kind];
+      if (!e[k]) e[k] = {path: at, off: m.off};
+    }
+    return true;
+  });
+  return out;
+}
+
+const same = (a, b) => Array.isArray(b) && a.length === b.length &&
+  a.every((x, k) => x === b[k]);
+
+/** See the header. */
+export function marks(doc) {
+  if (!isObj(doc) || !Array.isArray(doc.sections)) return new Map();
+  const ver = versionOf(doc), m = memo.get(doc);
+  if (m && m.ver === ver && m.sections === doc.sections &&
+    same(m.secs, doc.sections)) return m.out;
+  const out = work(doc);
+  memo.set(doc, {ver, sections: doc.sections, secs: [...doc.sections],
+    out});
+  return out;
+}
+
+/** Paragraph p with its comment marks raw (see rawMarks). */
+function unmodel(p) {
+  const inlines = {...p.inlines};
+  for (const m of paraMarks(p)) {
+    const x = inlines[m.off];
+    inlines[m.off] = x.level === 'p'
+      ? {kind: 'raw', level: 'p', node: x.node, text: ''}
+      : {kind: 'raw', level: 'r', node: x.node};
+  }
+  return {...p, inlines};
+}
+
+/** See the header. */
+export function rawMarks(sections) {
+  let out = sections;
+  sections.forEach((s, k) => {
+    const blocks = mapBlocks(s.blocks, (p) => (paraMarks(p).length
+      ? unmodel(p) : p));
+    if (blocks === s.blocks) return;
+    if (out === sections) out = sections.slice();
+    out[k] = {...s, blocks};
+  });
+  return out;
+}

@@ -251,6 +251,58 @@ export function notesBack(want, back, doc, notes0, what,
 }
 
 /**
+ * The comments as a step that removed some writes them (a deletion
+ * took their marks: ./CommentKeep, Batch F1): their parts, written
+ * anew, are the new file's, compared through the model (the comments
+ * that stay are the very ones read); the snapshot of the parts as
+ * read and the companions' entries are the new file's. So this
+ * does not check the comment parts' bytes: that fidelity rests on
+ * comment-roundtrip.test.mjs.
+ */
+export function commentsBack(want, back, doc, comments0) {
+  if (!doc.comments || doc.comments === comments0) return;
+  const cp = (doc.meta && doc.meta.commentParts) || {};
+  for (const n of Object.values(cp)) {
+    if (typeof n === 'string' && back.parts.has(n))
+      want.parts.set(n, back.parts.get(n));
+  }
+  if (want.comments && back.comments) {
+    want.comments.read = back.comments.read = null;
+    want.comments.raw = back.comments.raw;
+    // (a comments part made by a command, ./CommentParts, has no
+    // prolog until written)
+    if (!comments0 || !comments0.root)
+      want.comments.prolog = back.comments.prolog;
+    // (a comment made or changed by a command, ./CommentCmd, is
+    // written from its fields and blocks: it reads back with its
+    // node, its w14:paraId on its last paragraph and none of the
+    // fields only the companions keep (durableId, dateUtc): compared
+    // by what it says, then taken as read back)
+    const wm = want.comments.map, bm = back.comments.map;
+    const now = doc.comments.map;
+    const was = comments0 && comments0.map instanceof Map
+      ? comments0.map : new Map();
+    // (each paragraph's text, style, pPr, runs with their rPr and
+    // character style, and the kinds of its inlines; extraP holds
+    // the written w14:paraId, so it is left out)
+    const para = (b) => (b.type !== 'p' ? b.type : {text: b.text,
+      pStyle: b.pStyle ?? null, pPr: b.pPr, runs: b.runs.map((u) =>
+        [u.start, u.end, u.rPr, u.rStyle ?? null]),
+      kinds: Object.entries(b.inlines).map(([k, x]) => [k, x.kind,
+        x.level, x.node ? x.node.name : null])});
+    const say = (c) => [c.author, c.initials, c.date, c.paraId,
+      c.parent, c.done, c.blocks.map(para)];
+    for (const [id, x] of wm instanceof Map ? wm : []) {
+      const y = bm instanceof Map ? bm.get(id) : null;
+      if (!y || (now instanceof Map && now.get(id) === was.get(id)))
+        continue;
+      assert.deepEqual(say(y), say(x), 'comment ' + id + ' read back');
+      wm.set(id, y);
+    }
+  }
+}
+
+/**
  * Open bytes, change(d, seed, {every}) -> stats, check (see the
  * header). Returns {refused: code} when the reader refuses the file,
  * else {...stats, blocks, schema}.
@@ -267,7 +319,7 @@ export async function roundTrip(bytes, what, seed, change,
   }
   const out0 = await write(a);
   const before = structuredClone(a.sections);
-  const notes0 = a.notes;
+  const notes0 = a.notes, comments0 = a.comments;
   const d = new Document(a);
   const st = await change(d, seed, {every});
   // the changed model round-trips
@@ -285,6 +337,7 @@ export async function roundTrip(bytes, what, seed, change,
     }
   }
   notesBack(want, back, d.doc, notes0, what, notes);
+  commentsBack(want, back, d.doc, comments0);
   assertSameDoc(back, want, what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);

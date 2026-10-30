@@ -1,0 +1,454 @@
+// ClipComments - comments on the clipboard (Batch F1): the comments a
+// copy carries with its marks, and the comments a paste makes for
+// them (as ./ClipNotes does for footnotes and endnotes).
+//
+//   commentsOf(doc, blocks) -> [{id, comment}]  for ./ClipSlice: the
+//       comments of doc.comments whose marks clipboard blocks hold
+//       WHOLE (at every depth, ./CommentMarks paraMarks): its
+//       reference and both range marks, or its reference alone for
+//       a comment with no range mark in the body, each once (marks
+//       of an id met twice, a file's duplicate ids: not carried);
+//       then every reply
+//       (at every depth) of a carried comment that has no modelled
+//       mark in the body at all (it goes where its parent goes,
+//       ./CommentKeep). In doc.comments.order; comment the Comment
+//       itself (by value: model objects never change in place, so
+//       the copy keeps it after a cut took it from the document).
+//       [] when none: a range holding only a half of a comment
+//       carries nothing (its marks are dropped on paste)
+//   lostIn(doc, blocks) -> 'dup' | null  for ./ClipSlice: 'dup' when
+//       blocks hold marks of a comment of doc that commentsOf cannot
+//       carry although no mark of it is left out (a mark of the id
+//       met more than once: a file giving two comments one id), so
+//       a cut loses it (./CommentKeep; undo puts it back) and a copy
+//       goes without it: ./EditClip says so (./ClipRoute COMMENTS).
+//       A range holding a half only (start without end or
+//       reference) is no loss: null
+//   blocksOf(list) -> blocks  the carried comments' blocks, one list
+//       (for the styles, lists and table styles a slice names)
+//   styleUp(d, opts) -> boolean  for a paste from another document
+//       (in its step, before ./ClipClean maps styles by name): the
+//       comment styles the slice uses by Word's name (annotation
+//       text, annotation reference: opts.styleNames) and d lacks
+//       are made (Word's built-ins CommentText and CommentReference:
+//       ./NoteStyle noteStyle), when opts.comments carries one; true
+//       when one was
+//   carry(d, list, opts) -> list  in the paste's step (./ClipPaste,
+//       d.atomic), the cleaned blocks before they go in: the
+//       comments of opts.comments whose marks list holds whole (one
+//       reference, and one start and one end or neither) get a NEW
+//       comment each, a copy of the carried one (author, initials,
+//       date, done, its text blocks with their formatting) under a
+//       new id: ./CommentParts nextCommentId taken now, then one
+//       more for each further comment, all claimed (never reused in
+//       the session, even after an undo; in the same document the
+//       copied comments' own ids are claimed first, so a cut and
+//       paste never gives the cut one's id again), and a fresh
+//       w14:paraId and
+//       durableId (./CommentParts freshParaId, against every part).
+//       Its mark-less replies come with it (as commentsOf). A reply
+//       keeps its parent when that came too (the new id), else it
+//       is top level; a parent link that would make a cycle is
+//       dropped. The comments go in with one addComments op at the
+//       end of the order, the comments part made first when the
+//       document has none (./CommentParts ensure; commentsExtended
+//       too when a reply or a resolved comment needs it and it is
+//       not kept as bytes), all in the caller's step. Every other
+//       comment mark of list is dropped (the text around kept), so
+//       ./CommentKeep and the pairing rule never see a half or a
+//       mark naming no comment, and opts.report.comments says why
+//       (the first reason; report an object the caller passes):
+//         'story'    d is a header's, footer's or note's facade
+//                    (./StoryFacade: comments are not made there in
+//                    F1): every mark
+//         'unknown'  the comments part is kept as bytes, or no part
+//                    name is free: every mark
+//         'free'     no comment id left for it
+//       and silently: a mark whose comment the copy did not carry
+//       (a partial range, HTML, a stash of blocks, an entry that is
+//       not sound)
+//   MAX_NAME  255: the most code points of a carried author or
+//       initials (cut there, never in a surrogate pair)
+//
+// A carried comment's blocks, as a body paste's (./ClipClean with
+// inComment: its w:annotationRef mark kept, every note and comment
+// mark dropped; ./FieldPair; tables apart; fresh block ids, no w14
+// ids: the writer puts the comment's paraId on its last w:p):
+//   - the same document: everything kept but ids that must stay
+//     unique (bookmarks...: their text); every wp:docPr id fresh
+//     (./ClipPics docPrIds); the comments part's relationships
+//   - another document: styles mapped by name, lists and table
+//     styles made in d (./ClipCarry), pictures and links their text
+//     or nothing (a comment's media is not carried: its part's
+//     relationships are not the main part's: one that held a
+//     picture or a link, an r: relationship attribute, sets
+//     opts.report.lost, as ./ClipNotes does), the annotationRef
+//     written anew
+// A comment left with no block, or ending with a table, gets an
+// empty paragraph at its end. Its w:comment element is made anew
+// (w:id, w:author, w:date, w:initials). A mark: its id the new one;
+// in the same document its node keeps its other attributes, from
+// another a new w:commentRangeStart / End / w:commentReference.
+// Hostile opts.comments (not an array, entries that are not {id,
+// comment} with an integer comment id and a Comment-like object:
+// author and initials strings, date a string or null, done a
+// boolean, blocks an array; the first entry of an id wins) are
+// ignored; blocks the model refuses (./ModelCheck) make that
+// comment not carried; the cost is linear in the entries, and only
+// the marked ones are cleaned. Pure: no desktop services.
+import {reserveIds} from './Model';
+import {isCommentMark, COMMENT_MARKS} from './Kinds';
+import {paraMarks, marks} from './CommentMarks';
+import {parentsOf} from './CommentRead';
+import {isCommentId, newComment} from './OpsComments';
+import {ensure, partState, freshParaId, takenIds, nextCommentId,
+  claim, Refused} from './CommentParts';
+import {noteStyle} from './NoteStyle';
+import {clean} from './ClipClean';
+import {paired} from './FieldPair';
+import {apart, freshBlocks} from './ClipCleanTbl';
+import {freshDocPrs, docPrIds} from './ClipPics';
+import {relist, styled} from './ClipCarry';
+import {without, relUse} from './ClipNotes';
+import {walkBlocks, mapBlocks} from './Walk';
+import {W} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const NONE = new Map();
+const SLOT = {cmtStart: 'start', cmtEnd: 'end', cmtRef: 'ref'};
+const MAX_DATE = 64;
+export const MAX_NAME = 255;
+
+/** s cut at MAX_NAME code points (never in a surrogate pair). */
+function capName(s) {
+  if (s.length <= MAX_NAME) return s;
+  let k = 0;
+  for (let n = 0; n < MAX_NAME && k < s.length; n++) {
+    const c = s.charCodeAt(k);
+    const d = s.charCodeAt(k + 1);
+    k += c >= 0xd800 && c <= 0xdbff && d >= 0xdc00 && d <= 0xdfff
+      ? 2 : 1;
+  }
+  return s.slice(0, k);
+}
+
+/** Each comment mark of the blocks, in order: fn(x, b, k). */
+function eachMark(blocks, fn) {
+  for (const {b} of walkBlocks(blocks)) {
+    if (!isObj(b) || b.type !== 'p' || !isObj(b.inlines)) continue;
+    for (const k of Object.keys(b.inlines)) {
+      const x = b.inlines[k];
+      if (isCommentMark(x) && Number.isInteger(x.id)) fn(x);
+    }
+  }
+}
+
+/** Map id -> {start, end, ref} counts of the marks of blocks. */
+function counts(blocks) {
+  const out = new Map();
+  eachMark(blocks, (x) => {
+    let e = out.get(x.id);
+    if (!e) out.set(x.id, e = {start: 0, end: 0, ref: 0});
+    e[SLOT[x.kind]]++;
+  });
+  return out;
+}
+
+/** Whether counts e are one comment's marks: one reference, and one
+ *  start and one end or neither. */
+const once = (e) => e.ref === 1 && e.start === e.end && e.start <= 1;
+
+/** Map parent -> [ids] of the pairs (id, parent). */
+function kidsOf(pairs) {
+  const out = new Map();
+  for (const [id, parent] of pairs) {
+    if (!out.has(parent)) out.set(parent, []);
+    out.get(parent).push(id);
+  }
+  return out;
+}
+
+/** ids, with every id kids reaches from them that ok(id) allows. */
+function down(ids, kids, ok) {
+  const todo = [...ids];
+  while (todo.length) {
+    for (const k of kids.get(todo.pop()) || []) {
+      if (ids.has(k) || !ok(k)) continue;
+      ids.add(k);
+      todo.push(k);
+    }
+  }
+  return ids;
+}
+
+/** See the header. */
+export function commentsOf(doc, blocks) {
+  const map = isObj(doc.comments) && doc.comments.map instanceof Map
+    ? doc.comments.map : null;
+  if (!map || !map.size) return [];
+  const n = counts(blocks);
+  if (!n.size) return [];
+  const all = marks(doc), ids = new Set();
+  for (const [id, e] of n) {
+    const c = map.get(id);
+    if (!isObj(c) || !Array.isArray(c.blocks) || !once(e)) continue;
+    const m = all.get(id);
+    const range = !!(m && (m.start || m.end));
+    if (range ? e.start === 1 : !e.start) ids.add(id);
+  }
+  if (!ids.size) return [];
+  down(ids, kidsOf(parentsOf(doc)), (k) => map.has(k) && !all.has(k));
+  const order = Array.isArray(doc.comments.order)
+    ? doc.comments.order : [...map.keys()];
+  return order.filter((id) => ids.has(id))
+    .map((id) => ({id, comment: map.get(id)}));
+}
+
+/** See the header. */
+export function lostIn(doc, blocks) {
+  const map = isObj(doc.comments) && doc.comments.map instanceof Map
+    ? doc.comments.map : null;
+  if (!map || !map.size) return null;
+  for (const [id, e] of counts(blocks)) {
+    if (map.has(id) && e.ref && !once(e)) return 'dup';
+  }
+  return null;
+}
+
+/** See the header. */
+export const blocksOf = (list) => list.flatMap((e) =>
+  e.comment.blocks);
+
+const optStr = (v) => v === null || v === undefined ||
+  (typeof v === 'string' && v.length <= MAX_DATE);
+
+/** Map id -> Comment of the sound entries of list (first wins). */
+function carried(list) {
+  const out = new Map();
+  if (!Array.isArray(list)) return out;
+  for (const e of list) {
+    if (!isObj(e) || !isCommentId(e.id) || out.has(e.id)) continue;
+    const c = e.comment;
+    if (!isObj(c) || !Array.isArray(c.blocks) ||
+      typeof c.author !== 'string' || typeof c.initials !== 'string' ||
+      !optStr(c.date) || !(c.done === undefined ||
+      typeof c.done === 'boolean')) continue;
+    const a = capName(c.author), i = capName(c.initials);
+    out.set(e.id, a === c.author && i === c.initials ? c
+      : {...c, author: a, initials: i});
+  }
+  return out;
+}
+
+/** Whether d is a story's facade (a header, footer or note). */
+const refused = (d) => isObj(d.note) || isObj(d.real) ||
+  typeof d.refuses === 'function';
+
+/** See the header. */
+export function styleUp(d, opts = {}) {
+  const names = opts.styleNames;
+  if (!carried(opts.comments).size || refused(d) ||
+    !(names instanceof Map) ||
+    partState(d.doc, 'comments') === 'unknown') return false;
+  const used = new Set();
+  for (const v of names.values()) {
+    if (isObj(v) && typeof v.name === 'string')
+      used.add(v.type + '|' + v.name.toLowerCase());
+  }
+  const st = d.doc.styles;
+  if (used.has('paragraph|annotation text'))
+    noteStyle(d, 'CommentText', 'annotation text', 'paragraph');
+  if (used.has('character|annotation reference')) {
+    noteStyle(d, 'CommentReference', 'annotation reference',
+      'character');
+  }
+  return d.doc.styles !== st;
+}
+
+/** The carried comment's blocks cleaned for d (see the header). */
+function prepare(d, c, opts) {
+  let bs;
+  if (opts.sameDoc) {
+    bs = apart(paired(clean(c.blocks, d.doc, {sameDoc: true,
+      inComment: true})));
+  } else {
+    bs = apart(paired(clean(c.blocks, d.doc, {styleNames:
+      opts.styleNames, lists: opts.lists, styles: opts.styles,
+      pics: NONE, picScope: null, inComment: true})));
+    if (opts.styles instanceof Map) bs = styled(d, bs, opts.styles);
+    bs = relist(d, bs, bs.map((b, i) => i), opts.lists);
+    // (the comment's own mark: a node of this document)
+    bs = mapBlocks(bs, (b) => {
+      let inl = null;
+      for (const k of Object.keys(b.inlines)) {
+        const x = b.inlines[k];
+        if (isObj(x) && x.kind === 'raw' && isObj(x.node) &&
+          /(^|:)annotationRef$/.test(String(x.node.name)))
+          (inl ||= {...b.inlines})[k] = {...x,
+            node: W('annotationRef')};
+      }
+      return inl ? {...b, inlines: inl} : b;
+    });
+  }
+  const last = bs[bs.length - 1];
+  if (!last || last.type !== 'p') {
+    bs = [...bs, {type: 'p', text: '', runs: [], inlines: {},
+      pPr: {extra: []}}];
+  }
+  return bs;
+}
+
+/** Mark x under its new id (see the header). */
+function withId(x, id, sameDoc) {
+  const n = x.node;
+  if (sameDoc && isObj(n) && Array.isArray(n.attrs) &&
+    n.attrs.some((a) => Array.isArray(a) && /(^|:)id$/.test(a[0]))) {
+    return {...x, id, node: {...n, attrs: n.attrs.map(([k, v]) =>
+      (/(^|:)id$/.test(k) ? [k, String(id)] : [k, v]))}};
+  }
+  return {...x, id, node: W(COMMENT_MARKS[x.kind],
+    {'w:id': String(id)})};
+}
+
+/** list with every comment mark of an id not in `to` dropped and
+ *  the others under their new id. */
+function remap(list, to, sameDoc) {
+  return mapBlocks(list, (b) => {
+    let inl = null, drop = null;
+    for (const k of Object.keys(b.inlines)) {
+      const x = b.inlines[k];
+      if (!isCommentMark(x)) continue;
+      const id = Number.isInteger(x.id) ? to.get(x.id) : undefined;
+      if (id === undefined) (drop ||= new Set()).add(+k);
+      else (inl ||= {...b.inlines})[k] = withId(x, id, sameDoc);
+    }
+    if (!inl && !drop) return b;
+    const nb = inl ? {...b, inlines: inl} : b;
+    return drop ? without(nb, drop) : nb;
+  });
+}
+
+/** Map new id -> new parent id or null, cycles broken. */
+function parents(ids, to, got) {
+  const out = new Map();
+  for (const old of ids) {
+    const p = got.get(old).parent;
+    out.set(to.get(old), isCommentId(p) && p !== old && to.has(p)
+      ? to.get(p) : null);
+  }
+  // (a chain met again while walked: its link cut)
+  const state = new Map();
+  for (const start of out.keys()) {
+    const path = [];
+    let x = start;
+    while (x !== null && !state.has(x)) {
+      state.set(x, 1);
+      path.push(x);
+      x = out.get(x);
+    }
+    if (x !== null && state.get(x) === 1) out.set(path[path.length - 1],
+      null);
+    for (const y of path) state.set(y, 2);
+  }
+  return out;
+}
+
+/** See the header. */
+export function carry(d, list, opts = {}) {
+  const n = counts(list);
+  if (!n.size) return list;
+  const why = (w) => {
+    const r = opts.report;
+    if (isObj(r) && !r.comments) r.comments = w;
+  };
+  const sameDoc = !!opts.sameDoc;
+  const none = (w) => {
+    if (w) why(w);
+    return remap(list, NONE, sameDoc);
+  };
+  if (refused(d)) return none('story');
+  const got = carried(opts.comments);
+  const ids = new Set();
+  for (const [id, e] of n) {
+    if (got.has(id) && once(e)) ids.add(id);
+  }
+  if (!ids.size) return none();
+  const pairs = [];
+  for (const [id, c] of got) {
+    if (isCommentId(c.parent)) pairs.push([id, c.parent]);
+  }
+  down(ids, kidsOf(pairs), (k) => !n.has(k));
+  if (partState(d.doc, 'comments') === 'unknown')
+    return none('unknown');
+  // the blocks, cleaned (a comment the model refuses: not carried)
+  reserveIds(d.doc);
+  const ready = new Map();
+  for (const id of ids) {
+    try {
+      ready.set(id, d.atomic(() => prepare(d, got.get(id), opts)));
+    } catch (e) {
+      if (!(e instanceof RangeError)) throw e;
+    }
+  }
+  if (!ready.size) return none();
+  const ext = [...ready.keys()].some((id) => {
+    const c = got.get(id);
+    return c.done === true || ready.has(c.parent);
+  }) && partState(d.doc, 'extended') !== 'unknown';
+  let base;
+  try {
+    ensure(d, ext ? ['comments', 'extended'] : ['comments']);
+    // (the same document: the copied ones' ids are never given
+    // again, even once a cut took them away)
+    if (sameDoc) for (const id of ready.keys()) claim(d, id);
+    base = nextCommentId(d);
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return none('unknown');
+  }
+  if (base === null) return none('free');
+  const to = new Map();
+  for (const id of ready.keys()) {
+    if (!isCommentId(base)) {
+      why('free');
+      break;
+    }
+    to.set(id, base++);
+  }
+  if (!to.size) return none('free');
+  claim(d, base - 1);
+  const ps = parents(to.keys(), to, got);
+  const taken = takenIds(d.doc);
+  const fresh = () => {
+    const v = freshParaId(d.doc, {taken});
+    taken.add(v);
+    return v;
+  };
+  const pics = sameDoc ? docPrIds(d.doc) : null;
+  const made = [];
+  for (const [old, nid] of to) {
+    const c = got.get(old);
+    if (!sameDoc && isObj(opts.report) && relUse(c.blocks))
+      opts.report.lost = true;
+    let bs = freshBlocks(ready.get(old));
+    if (pics) bs = freshDocPrs(d.doc, bs, pics);
+    const date = typeof c.date === 'string' ? c.date : null;
+    const x = newComment(d.doc, nid, bs, {author: c.author,
+      initials: c.initials, date, paraId: fresh(),
+      parent: ps.get(nid), done: c.done === true});
+    const attrs = [['w:id', String(nid)], ['w:author', c.author]];
+    if (date !== null) attrs.push(['w:date', date]);
+    attrs.push(['w:initials', c.initials]);
+    const y = {...x, node: {name: 'w:comment', attrs, children: []},
+      durableId: fresh()};
+    if (typeof c.dateUtc === 'string' && c.dateUtc.length <= MAX_DATE)
+      y.dateUtc = c.dateUtc;
+    made.push(y);
+  }
+  const order = Array.isArray(d.doc.comments.order)
+    ? d.doc.comments.order : [];
+  d.apply({op: 'addComments', comments: made,
+    order: [...order, ...made.map((x) => x.id)]});
+  return remap(list, to, sameDoc);
+}

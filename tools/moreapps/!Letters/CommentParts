@@ -1,0 +1,391 @@
+// CommentParts - the comments part and its companions of a document
+// that has none, made before the first comment that needs them, and
+// the fresh ids a new comment takes (Batch F1).
+//
+//   partState(doc, kind) -> 'known' | 'missing' | 'unknown'  kind
+//       'comments' or a ./CommentExt EXT_KINDS kind: known when
+//       doc.meta.commentParts names its part (modelled); unknown
+//       when the main part has a relationship of the kind but the
+//       part is not modelled (kept as bytes: ./CommentRead could not
+//       read it, or the comments part could not be read and its
+//       companions were not read either); else missing
+//   ensure(d, kinds) -> true | false  for ./Document d and kinds
+//       (['comments'], ['comments', 'extended']...): each kind that
+//       is missing made, in one d.atomic (in the caller's, when
+//       there is one: the first comment and its part are one undo
+//       step), the comments part first (a companion needs it):
+//       ./OpsComments setCommentsPart (skeleton below) and the main
+//       part's relationship to it (./DocParts addRel for comments,
+//       the Strict type in a Strict document; the Microsoft type URI
+//       of ./CommentExt EXT_RELS for a companion, the same in Strict
+//       documents, as Word writes it). true when it made one.
+//       RangeError (nothing changed): a bad kind; Refused (nothing
+//       changed): a kind 'unknown', no free part name (MAX_TRIES)
+//   skeleton(doc, kind) -> the value setCommentsPart takes: part
+//       word/comments.xml (commentsExtended.xml, commentsIds.xml,
+//       commentsExtensible.xml, people.xml) beside the main part, or
+//       the first free comments2.xml, comments3.xml...; the comments
+//       root declares w, r, w14 and mc with mc:Ignorable="w14" (w14
+//       for the paragraphs' w14:paraId); a companion's root declares
+//       mc and its own prefix (w15, w16cid, w16cex) with
+//       mc:Ignorable naming it, as Word writes them, and holds no
+//       entry (./CommentExt adds them as the comments are written)
+//   takenIds(doc) -> Set  every 8-digit hexadecimal value (upper
+//       case) a w14:paraId, w14:textId, w15:paraIdParent or
+//       durableId of the Doc has: the paragraphs and kept XML of
+//       the body, every story, note and comment (attributes,
+//       extraP), the comments' paraId and durableId fields, the
+//       companions' entries, and the text of every XML part kept as
+//       bytes (memoised per bytes object)
+//   freshParaId(doc, {rand, taken}?) -> string  8 hex digits (upper
+//       case) from 00000001 to 7FFFFFFF (Word wants a w14:paraId
+//       below 80000000) that takenIds (or `taken`) does not hold;
+//       rand () -> [0, 1) (default Math.random); a durableId is
+//       chosen the same way. Refused when none is free
+//   Refused  the error class of a command that cannot be done:
+//       ./CommentCmd gives null for it (and only for it)
+//   nextCommentId(d) -> id | null  one more than the largest comment
+//       id the Doc has (the comments, the odd nodes kept raw, every
+//       modelled mark, every mark element in kept XML, stories,
+//       notes, comments and parts kept as bytes) and than every id
+//       this ./Document gave before (claim): never reused in a
+//       session, even after an undo; null past 2147483647, and
+//       null (no id can be known free) when a part kept as bytes
+//       has more than MAX_MARKS (1,000,000) comment mark tags or one
+//       longer than TAG_MAX (4096) characters: the scan of a part is
+//       linear, each tag looked at only up to its end
+//   claim(d, id)  id given out by d (nextCommentId goes past it)
+//
+// What the writer then writes (./DocxWrite): the parts (./CommentWrite
+// from doc.comments), their content type Overrides (comments+xml,
+// commentsExtended+xml... whatever the xml Default says) and nothing
+// else. Assumptions, to check in real Word: a comments part with
+// only w, r, w14 and mc declared opens without a repair prompt; a
+// commentsExtended part made for a reply or a resolve alone (no
+// commentsIds, commentsExtensible or people.xml made) is enough for
+// Word to show the thread and the resolved state.
+// Pure: no desktop services.
+import {nameFree} from './OpsNotes';
+import {relKind} from './Rels';
+import {addRel, freshRelId} from './DocParts';
+import {EXT_KINDS, EXT_NS, EXT_RELS} from './CommentExt';
+import {marks} from './CommentMarks';
+import {opaqueIds} from './CommentKeep';
+import {markId} from './Kinds';
+import {NS} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const MAX_TRIES = 1000;
+const MAX_ID = 2147483647;
+const KINDS = ['comments', ...EXT_KINDS];
+const FILE = {comments: 'comments', extended: 'commentsExtended',
+  ids: 'commentsIds', extensible: 'commentsExtensible',
+  people: 'people'};
+const ROOT = {extended: ['w15', 'commentsEx'],
+  ids: ['w16cid', 'commentsIds'],
+  extensible: ['w16cex', 'commentsExtensible'],
+  people: ['w15', 'people']};
+const TYPE = new Map([...EXT_RELS].map(([uri, k]) => [k, uri]));
+
+const namesOf = (doc) => (isObj(doc.meta) &&
+  isObj(doc.meta.commentParts) ? doc.meta.commentParts : {});
+
+/** The kind of a main-part relationship, or null. */
+function relKindOf(r) {
+  if (!isObj(r) || r.mode === 'External' || typeof r.type !== 'string')
+    return null;
+  if (EXT_RELS.has(r.type)) return EXT_RELS.get(r.type);
+  const k = relKind(r.type);
+  return k && k.kind === 'comments' ? 'comments' : null;
+}
+
+/** See the header. */
+export function partState(doc, kind) {
+  if (typeof namesOf(doc)[kind] === 'string') return 'known';
+  const rels = Array.isArray(doc.rels) ? doc.rels : [];
+  return rels.some((r) => relKindOf(r) === kind) ? 'unknown'
+    : 'missing';
+}
+
+/** The main part's folder ('word/'). */
+function dirOf(doc) {
+  const main = (isObj(doc.meta) && doc.meta.mainPart) ||
+    'word/document.xml';
+  return main.slice(0, main.lastIndexOf('/') + 1);
+}
+
+/** The first free name for a part of kind. */
+function nameFor(doc, kind) {
+  const dir = dirOf(doc);
+  const taken = new Set(Object.values(namesOf(doc)).map((n) =>
+    String(n).toLowerCase()));
+  for (let k = 1; k <= MAX_TRIES; k++) {
+    const n = dir + FILE[kind] + (k > 1 ? k : '') + '.xml';
+    if (nameFree(doc, n) && !taken.has(n.toLowerCase())) return n;
+  }
+  throw new Refused('no free name for the ' + kind + ' part');
+}
+
+/** See the header. */
+export function skeleton(doc, kind) {
+  if (!KINDS.includes(kind))
+    throw new RangeError('bad comment part kind ' + String(kind));
+  const part = nameFor(doc, kind);
+  if (kind === 'comments') {
+    return {part, prolog: null, root: {name: 'w:comments', attrs: [
+      ['xmlns:mc', NS.mc], ['xmlns:r', NS.r], ['xmlns:w', NS.w],
+      ['xmlns:w14', NS.w14], ['mc:Ignorable', 'w14']]}};
+  }
+  const [pre, local] = ROOT[kind];
+  return {part, ext: {kind, part, ns: EXT_NS[kind], items: [],
+    bytes: null, prolog: null, root: {name: pre + ':' + local,
+      attrs: [['xmlns:mc', NS.mc], ['xmlns:' + pre, EXT_NS[kind]],
+        ['mc:Ignorable', pre]]}}};
+}
+
+/** See the header. */
+export function ensure(d, kinds) {
+  if (!Array.isArray(kinds) || !kinds.every((k) => KINDS.includes(k)))
+    throw new RangeError('bad comment part kinds');
+  const want = KINDS.filter((k) => kinds.includes(k) ||
+    (k === 'comments' && kinds.length));
+  const todo = [];
+  for (const k of want) {
+    const s = partState(d.doc, k);
+    if (s === 'unknown') {
+      throw new Refused('the ' + FILE[k] + ' part could not be ' +
+        'read: it is kept as it is and takes no new comment');
+    }
+    if (s === 'missing') todo.push(k);
+  }
+  if (!todo.length) return false;
+  d.atomic(() => {
+    for (const k of todo) {
+      const value = skeleton(d.doc, k);
+      d.apply({op: 'setCommentsPart', kind: k, value});
+      const now = d.doc;
+      const target = value.part.slice(dirOf(now).length);
+      let rels;
+      if (k === 'comments') {
+        rels = addRel(now.rels, {kind: 'comments', target,
+          strict: now.meta.conformance === 'strict'}).rels;
+      } else {
+        const id = freshRelId(now.rels), type = TYPE.get(k);
+        rels = now.rels.concat([{id, type, target, attrs: [['Id', id],
+          ['Type', type], ['Target', target]]}]);
+      }
+      d.apply({op: 'setDocPart', key: 'rels', value: rels});
+    }
+  });
+  return true;
+}
+
+// ------------------------------------------------------------ ids
+
+const HEX = /^[0-9A-Fa-f]{8}$/;
+const ID_ATTRS = new Set(['paraId', 'textId', 'paraIdParent',
+  'durableId']);
+const localOf = (n) => n.slice(n.indexOf(':') + 1);
+const byBytes = new WeakMap();
+const ATTRS = ['paraId="', 'textId="', 'paraIdParent="',
+  'durableId="'];
+const MARKS = [':commentRangeStart', ':commentRangeEnd',
+  ':commentReference'];
+const isHexAt = (s, k) => {
+  for (let j = k; j < k + 8; j++) {
+    if (!/[0-9A-Fa-f]/.test(s[j] || '')) return false;
+  }
+  return s[k + 8] === '"';
+};
+const isDigit = (c) => c >= '0' && c <= '9';
+const TAG_MAX = 4096;
+const MAX_MARKS = 1000000;
+
+/** Refused: a command cannot be done (nothing is changed); the
+ *  commands give null for it. Other errors are not refusals. A
+ *  RangeError, as the refusals were before. */
+export class Refused extends RangeError {}
+
+/** The value of an id attribute at e of s (after its opening
+ *  quote), up to stop: {next, id} (id null: ignored) or null when
+ *  it cannot be read (see markIdAt). */
+function idValue(s, e, stop) {
+  let j = e;
+  while (j < stop && s[j] !== '"' && s[j] !== '>') j++;
+  if (j >= stop || s[j] !== '"') return null;
+  const v = s.slice(e, j);
+  // ignored on purpose (never a comment id the reader or Word could
+  // take for one of ours): a value with no digit in it, and a
+  // negative one ('-1')
+  if (!/[0-9]/.test(v) || v[0] === '-') return {next: j + 1, id: null};
+  let i = v[0] === '+' ? 1 : 0;
+  while (i < v.length && v[i] === '0') i++;
+  const sig = v.slice(i);
+  for (const c of sig) if (!isDigit(c)) return null;
+  if (sig.length > 10) return null;
+  return {next: j + 1, id: Number(sig || '0')};
+}
+
+/** The ids of the comment mark tag whose name ends at k of s, by
+ *  hand within the tag only (it ends at its '>', and a '<' or
+ *  TAG_MAX characters end the look): add(id) for EVERY id
+ *  attribute, its value read with leading zeros and a '+' skipped
+ *  (so the ids ./ReadPara keeps raw, '007' or '+7', still count
+ *  as taken). True (the caller is conservative: no new id) when the
+ *  tag could not be read to its end, or an id value cannot be read:
+ *  no closing quote, a character that is not a digit after its
+ *  digits begin, more than 10 significant digits */
+function markIdAt(s, k, add) {
+  const stop = Math.min(s.length, k + TAG_MAX);
+  let j = k;
+  while (j < stop && s[j] !== '>' && s[j] !== '<') {
+    if (s[j] === ':' && s.startsWith(':id="', j)) {
+      const got = idValue(s, j + 5, stop);
+      if (!got) return true;
+      if (got.id !== null) add(got.id);
+      j = got.next;
+      continue;
+    }
+    j++;
+  }
+  return j >= stop && stop < s.length;
+}
+
+/** The ids and comment mark ids in the text of bytes (memoised):
+ *  {hex, marks, capped}; capped when more than MAX_MARKS mark tags
+ *  were met or a tag ran past TAG_MAX characters: its mark ids are
+ *  then not all known (./CommentParts nextCommentId refuses) */
+function bytesIds(b) {
+  let got = byBytes.get(b);
+  if (got) return got;
+  got = {hex: new Set(), marks: new Set(), capped: false};
+  let s = '';
+  for (let k = 0; k < b.length; k += 8192)
+    s += String.fromCharCode(...b.subarray(k, k + 8192));
+  // (plain scans, no regular expression over the part's text; each
+  // look is bounded, so a part costs time linear in its size)
+  for (const a of ATTRS) {
+    for (let k = s.indexOf(a); k >= 0; k = s.indexOf(a, k + 1)) {
+      const v = k + a.length;
+      if (isHexAt(s, v)) got.hex.add(s.slice(v, v + 8).toUpperCase());
+    }
+  }
+  let n = 0;
+  for (const m of MARKS) {
+    for (let k = s.indexOf(m); k >= 0 && !got.capped;
+      k = s.indexOf(m, k + 1)) {
+      if (++n > MAX_MARKS ||
+        markIdAt(s, k + m.length, (x) => got.marks.add(x)))
+        got.capped = true;
+    }
+  }
+  byBytes.set(b, got);
+  return got;
+}
+
+/** The XML parts kept as bytes. */
+function xmlBytes(doc) {
+  const out = [];
+  if (!(doc.parts instanceof Map)) return out;
+  for (const [n, b] of doc.parts) {
+    if (b instanceof Uint8Array && /\.xml$/i.test(n)) out.push(b);
+  }
+  return out;
+}
+
+/** Every value under the model's text parts (see takenIds). */
+function walkIds(roots, add) {
+  const seen = new WeakSet();
+  const stack = [...roots];
+  while (stack.length) {
+    const v = stack.pop();
+    if (!isObj(v) || seen.has(v) || v instanceof Uint8Array) continue;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      if (v.length === 2 && typeof v[0] === 'string' &&
+        typeof v[1] === 'string') {
+        if (ID_ATTRS.has(localOf(v[0])) && HEX.test(v[1])) add(v[1]);
+        continue;
+      }
+      for (const x of v) stack.push(x);
+      continue;
+    }
+    if (v instanceof Map) {
+      for (const x of v.values()) stack.push(x);
+      continue;
+    }
+    for (const k of Object.keys(v)) {
+      const x = v[k];
+      if ((k === 'paraId' || k === 'durableId') &&
+        typeof x === 'string' && HEX.test(x)) add(x);
+      else if (isObj(x)) stack.push(x);
+    }
+  }
+}
+
+/** The model's text: body, stories, notes, comments. */
+function roots(doc) {
+  const c = isObj(doc.comments) ? doc.comments : {};
+  const n = isObj(doc.notes) ? doc.notes : {};
+  return [doc.sections, doc.stories, n.footnotes, n.endnotes,
+    c.map, c.raw];
+}
+
+/** See the header. */
+export function takenIds(doc) {
+  const out = new Set();
+  walkIds(roots(doc), (v) => out.add(v.toUpperCase()));
+  for (const b of xmlBytes(doc)) {
+    for (const v of bytesIds(b).hex) out.add(v);
+  }
+  return out;
+}
+
+const hex8 = (v) => v.toString(16).toUpperCase().padStart(8, '0');
+
+/** See the header. */
+export function freshParaId(doc, {rand = Math.random, taken} = {}) {
+  const t = taken || takenIds(doc);
+  for (let k = 0; k < 10000; k++) {
+    const v = Math.floor(rand() * 0x100000000);
+    if (!(v > 0 && v < 0x80000000)) continue;
+    const h = hex8(v);
+    if (!t.has(h)) return h;
+  }
+  for (let v = 1; v < 0x80000000; v++) {
+    if (!t.has(hex8(v))) return hex8(v);
+  }
+  throw new Refused('no free paragraph id');
+}
+
+const issued = new WeakMap();
+const keyOf = (d) => (isObj(d.real) ? d.real : d);
+
+/** See the header. */
+export function claim(d, id) {
+  const k = keyOf(d);
+  if (!(issued.get(k) >= id)) issued.set(k, id);
+}
+
+/** See the header. */
+export function nextCommentId(d) {
+  const doc = d.doc;
+  let max = issued.has(keyOf(d)) ? issued.get(keyOf(d)) : -1;
+  const see = (v) => {
+    if (Number.isInteger(v) && v >= 0 && v <= MAX_ID && v > max)
+      max = v;
+  };
+  const c = isObj(doc.comments) ? doc.comments : {};
+  if (c.map instanceof Map) for (const id of c.map.keys()) see(id);
+  const raw = isObj(c.raw) && Array.isArray(c.raw.comments)
+    ? c.raw.comments : [];
+  for (const x of raw) see(markId(x && x.node));
+  for (const id of marks(doc).keys()) see(id);
+  for (const id of opaqueIds(doc)) see(id);
+  for (const b of xmlBytes(doc)) {
+    const got = bytesIds(b);
+    if (got.capped) return null;
+    for (const id of got.marks) see(id);
+  }
+  return max < MAX_ID ? max + 1 : null;
+}

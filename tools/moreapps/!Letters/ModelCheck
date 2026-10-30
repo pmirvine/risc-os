@@ -14,11 +14,17 @@
 // self: true, the note's own mark); custom is the text of a custom
 // mark; customNode is its w:t as read, so whoever changes custom
 // must drop customNode (the writer then makes a new w:t).
+// A comment mark (./ReadPara, Batch F1) is cmtStart or cmtEnd at
+// level 'p', cmtRef at level 'r', with an integer id 0..2147483647
+// and its node: the element of its kind (./Kinds COMMENT_MARKS)
+// whose one w:id is that id (./Kinds markId), written as it is.
 // A block is a Para, an Opaque {type:'opaque', node} or a Table
 // {type:'tbl'...}, whose rules are in ./TblCheck (given checkBlock and
 // checkProps, so it imports nothing from here).
 import {checkTable, checkCellPara} from './TblCheck';
 import {deepEqual} from './DeepEqual';
+import {COMMENT_MARKS, isCommentMark, localName, markId}
+  from './Kinds';
 
 export {deepEqual, sameStories} from './DeepEqual';
 
@@ -133,7 +139,8 @@ function nestedExtra(o, what) {
   }
 }
 
-const KINDS = ['raw', 'br', 'tab', 'noteRef'];
+const KINDS = ['raw', 'br', 'tab', 'noteRef', 'cmtStart', 'cmtEnd',
+  'cmtRef'];
 const LEVELS = ['p', 'r'];
 
 /** Throw unless noteRef `x` (at i) is well formed. */
@@ -156,6 +163,17 @@ function checkNoteRef(x, i, none) {
     fail(at + ': customNode does not hold custom');
 }
 
+/** Throw unless comment mark `x` (at i) is well formed. */
+function checkCommentMark(x, i) {
+  const at = x.kind + ' at ' + i;
+  if (x.level !== (x.kind === 'cmtRef' ? 'r' : 'p'))
+    fail(at + ' has a bad level');
+  if (!Number.isInteger(x.id) || x.id < 0 || x.id > 2147483647)
+    fail(at + ' has a bad id');
+  if (!isObj(x.node) || localName(x.node) !== COMMENT_MARKS[x.kind] ||
+    markId(x.node) !== x.id) fail(at + ' needs its element, its id');
+}
+
 /** Throw unless `x` is a valid Inline (kind, level and node). */
 function checkInline(x, i) {
   if (!isObj(x)) fail('U+FFFC at ' + i + ' has no inline');
@@ -163,6 +181,10 @@ function checkInline(x, i) {
   if (x.level === undefined && x.kind === 'tab') return;
   if (!LEVELS.includes(x.level))
     fail('inline at ' + i + ' needs level p or r');
+  if (isCommentMark(x)) {
+    checkCommentMark(x, i);
+    return;
+  }
   if (x.level === 'p' && x.kind !== 'raw')
     fail('a ' + x.kind + ' inline must be at level r');
   // what the writer writes: the node, or for a br its w:type
@@ -325,4 +347,39 @@ function checkOrder(order, map, slot) {
     if (!map.has(id)) fail(slot + ': id ' + id + ' in order only');
     seen.add(id);
   }
+}
+
+const optStr = (v) => none(v) || typeof v === 'string';
+/**
+ * Throw unless `c` (a Doc's comments, ./CommentRead; none = fine) is
+ * well formed: map a Map keyed by integer ids, every Comment's id,
+ * author and initials (strings), date and paraId (string or null),
+ * parent (an integer or null), done (boolean), blocks (checkBlock),
+ * orig, rels and relsPart valid; order holds each id of the Map
+ * exactly once and no other (Batch F1).
+ */
+export function checkComments(c) {
+  if (none(c)) return;
+  if (!isObj(c) || !(c.map instanceof Map))
+    fail('comments must hold a Map');
+  for (const [id, x] of c.map) {
+    if (!Number.isInteger(id)) fail('a comment id must be an integer');
+    if (!isObj(x) || x.id !== id) fail('a comment must hold its id');
+    if (typeof x.author !== 'string' || typeof x.initials !== 'string')
+      fail('comment author and initials must be strings');
+    if (!optStr(x.date) || !optStr(x.paraId))
+      fail('comment date and paraId must be strings or null');
+    if (!none(x.parent) && !Number.isInteger(x.parent))
+      fail('a comment parent must be an id or null');
+    if (typeof x.done !== 'boolean') fail('comment done: a boolean');
+    if (!none(x.rels) && !Array.isArray(x.rels))
+      fail('comment rels must be an array');
+    if (!optStr(x.relsPart))
+      fail('comment relsPart must be a name or null');
+    if (!Array.isArray(x.blocks) || !Array.isArray(x.orig))
+      fail('comment blocks and orig must be arrays');
+    for (const b of x.blocks) checkBlock(b);
+  }
+  if (!Array.isArray(c.order)) fail('comments order: an array');
+  checkOrder(c.order, c.map, 'comments');
 }

@@ -1,0 +1,294 @@
+// CommentRead - the comments part and its companions read into
+// COMMENTS (Batch F1): each comment's blocks typed as the body's, so
+// that they can be shown and edited; the parts' bytes stay in
+// doc.parts. The marks in the body stay as they were read.
+//
+//   readComments(parts, map, relsBytes, opts?) -> Comments | null
+//     parts  {comments, extended?, ids?, extensible?, people?}: each
+//            {part, bytes} (the part's name and bytes) or null
+//     Comments {map: Map<id, Comment>, root: {name, attrs}, prolog:
+//            {decl, before, after}, order: id[], raw: {comments:
+//            [{at, node}], extended, ids, extensible, people}, rels,
+//            relsPart, read}
+//     Comment {id, author, initials, date, blocks: [Para|Table|
+//            Opaque], rels, relsPart, paraId, parent, done, orig,
+//            node}
+//     map, relsBytes, opts  as ./NoteRead readNotes (the comments
+//            part's .rels is read once and every comment holds that
+//            one rels array; relsPart is opts.relsPart, else ./Rels
+//            relsNameFor(part))
+//     id     the integer of w:id (./NoteRead noteId's rule)
+//     author, initials  w:author, w:initials, '' when missing
+//     date   w:date as written, or null
+//     paraId the w14:paraId of the comment's last w:p child (what
+//            the companions refer to), or null; a comment ending in a
+//            table (Word always ends one with a paragraph) gives the
+//            last w:p before it, not one in the table
+//     parent the id of the comment whose paraId the commentsExtended
+//            entry for this paraId names as paraIdParent, or null:
+//            a missing parent, the comment itself, and the first
+//            comment of a cycle (in order) read as top level
+//     done   that entry's done is "1" or "true"
+//     orig, node  as ./NoteRead's: a comment whose blocks still
+//            equal orig is unchanged (./CommentWrite writes node)
+//     order  the ids in the file's order
+//     raw.comments  every root child that is not a w:comment with a
+//            fresh integer id, kept as it is (./NoteRead raw: a
+//            repeated id, the first one wins; a missing or
+//            non-integer id; any other element)
+//     raw.extended ... raw.people  ./CommentExt readExt of each
+//            companion given, or null (none, or one that cannot be
+//            read: it stays bytes; without commentsExtended every
+//            comment is top level and not done)
+//     read   what was read (map, order, raw, root, prolog, bytes,
+//            ext: the items of each companion): ./CommentWrite's
+//            test for an untouched part
+//   Null (not comments: every part stays bytes, the marks opaque) in
+//   every case ./NoteRead readNotes gives null for the comments part
+//   (bad bytes or XML, over a cap, a w:sectPr inside, a bad .rels,
+//   any error) and for a root that is not w:comments or that binds
+//   w elsewhere. Maps are keyed by the integer id or the paraId
+//   text only, never an object.
+//   readAllComments(parts, rels, main, map, opts?) -> {comments,
+//     commentParts}  the Doc's comments (./Model emptyComments when
+//     none read) and meta.commentParts {comments?, extended?, ids?,
+//     extensible?, people?}: the parts the main part's first
+//     relationship of each kind reaches, when the comments part reads
+//   parentOf(doc, id) -> id | null  the parent of comment id when it
+//     is a comment of doc and not the comment itself nor (by its
+//     parents) above it in a cycle; null otherwise. Never throws,
+//     never loops
+//   parentsOf(doc) -> Map id -> parent id  every comment's parent at
+//     once, in time linear in the number of comments (the writer's):
+//     a missing or self parent left out, each cycle broken where the
+//     walk from its first member in order (then in the Map's order)
+//     first reaches it, as the reader breaks them
+// Pure: no desktop services.
+import {parsePart} from './PartXml';
+import {mapNamespaces} from './NsMap';
+import {rootScope, strictScope, isStrict, scope, wName, wAttr, isEl,
+  W} from './Ns';
+import {parseRels, relKind, resolvePart, relsNameFor, findPart}
+  from './Rels';
+import {strictRoot, hasSectPr, readBlocks} from './StoryRead';
+import {maxParagraphs} from './ReadBody';
+import {emptyComments} from './Model';
+import {noteId} from './NoteRead';
+import {readExt, extAttr, EXT_KINDS, EXT_RELS}
+  from './CommentExt';
+import {NS} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const str = (v) => typeof v === 'string' ? v : null;
+
+/** The w14:paraId of the last w:p child of comment node `c`. */
+function lastParaId(c, m) {
+  for (let k = c.children.length - 1; k >= 0; k--) {
+    const p = c.children[k];
+    if (!isEl(p)) continue;
+    const m1 = p.attrs.length ? scope(m, p) : m;
+    if (wName(p, m1) !== 'p') continue;
+    return str(extAttr(p, m, NS.w14, 'paraId'));
+  }
+  return null;
+}
+
+/** paraId -> {parent: paraId|null, done} of commentsExtended. */
+function threads(ext) {
+  const out = new Map();
+  if (!ext) return out;
+  const m = rootScope(ext.root);
+  const w15 = ext.ns;
+  for (const it of ext.items) {
+    if (it.key === null || out.has(it.key)) continue;
+    const done = extAttr(it.node, m, w15, 'done');
+    out.set(it.key, {parent: str(extAttr(it.node, m, w15,
+      'paraIdParent')), done: done === '1' || done === 'true'});
+  }
+  return out;
+}
+
+/** `want` (Map id -> parent id) with each cycle broken where the
+ *  walk from the first of `ids` in it first reaches it; linear. */
+function breakCycles(want, ids) {
+  // absent unseen, 1 on the walk now, 2 settled
+  const state = new Map();
+  for (const id of ids) {
+    const path = [];
+    let x = id;
+    while (x !== undefined && !state.has(x)) {
+      state.set(x, 1);
+      path.push(x);
+      x = want.get(x);
+    }
+    if (x !== undefined && state.get(x) === 1) want.delete(x);
+    for (const y of path) state.set(y, 2);
+  }
+  return want;
+}
+
+/** Each comment's parent id from its thread entry, cycles broken
+ *  (see the header); linear in the number of comments. */
+function link(map, order, ext) {
+  const th = threads(ext);
+  const byPara = new Map();
+  for (const id of order) {
+    const p = map.get(id).paraId;
+    if (p !== null && !byPara.has(p)) byPara.set(p, id);
+  }
+  const want = new Map();
+  for (const id of order) {
+    const c = map.get(id);
+    const t = c.paraId === null ? null : th.get(c.paraId);
+    if (t) c.done = t.done;
+    const p = t && t.parent !== null ? byPara.get(t.parent) : undefined;
+    if (p !== undefined && p !== id) want.set(id, p);
+  }
+  breakCycles(want, order);
+  for (const [id, p] of want) map.get(id).parent = p;
+}
+
+function readPart(name, bytes, map, relsBytes, opts) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return null;
+  const x = parsePart(bytes, name, opts);
+  const strict = strictRoot(x.root);
+  mapNamespaces(x.root, 'toTransitional');
+  const root = x.root;
+  let m = rootScope(root);
+  if (strict || isStrict(map)) m = strictScope(m);
+  if (wName(root, m) !== 'comments' || hasSectPr(root, m)) return null;
+  const w = rootScope(root).get('w');
+  if (w !== undefined && w !== W) return null;
+  let rels = null;
+  let relsPart = null;
+  if (relsBytes) {
+    if (!(relsBytes instanceof Uint8Array)) return null;
+    relsPart = opts.relsPart ?? relsNameFor(name);
+    rels = parseRels(parsePart(relsBytes, relsPart, opts).root);
+  }
+  const ctx = {count: {paras: 0}, max: maxParagraphs(opts),
+    part: name, notes: false};
+  const out = new Map();
+  const order = [];
+  const raw = [];
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const m1 = c.attrs.length ? scope(m, c) : m;
+    const id = wName(c, m) === 'comment' ? noteId(wAttr(c, m1, 'id'))
+      : null;
+    if (id === null || out.has(id)) {
+      raw.push({at: order.length, node: c});
+      continue;
+    }
+    const blocks = readBlocks(c, m1, name, opts, ctx);
+    out.set(id, {id, author: wAttr(c, m1, 'author') ?? '',
+      initials: wAttr(c, m1, 'initials') ?? '',
+      date: str(wAttr(c, m1, 'date')), blocks, rels, relsPart,
+      paraId: lastParaId(c, m1), parent: null, done: false,
+      orig: blocks.slice(), node: c});
+    order.push(id);
+  }
+  return {map: out, order, raw, rels, relsPart, bytes,
+    root: {name: root.name, attrs: root.attrs.map(([n, v]) => [n, v])},
+    prolog: {decl: x.decl, before: x.before, after: x.after}};
+}
+
+function read(parts, map, relsBytes, opts) {
+  const cp = isObj(parts) ? parts.comments : null;
+  if (!isObj(cp) || typeof cp.part !== 'string') return null;
+  const got = readPart(cp.part, cp.bytes, map, relsBytes, opts);
+  if (!got) return null;
+  const raw = {comments: got.raw};
+  for (const k of EXT_KINDS) {
+    const e = parts[k];
+    raw[k] = isObj(e) && typeof e.part === 'string'
+      ? readExt(k, e.part, e.bytes, opts) : null;
+  }
+  link(got.map, got.order, raw.extended);
+  const ext = {};
+  for (const k of EXT_KINDS) ext[k] = raw[k] ? raw[k].items : null;
+  return {map: got.map, root: got.root, prolog: got.prolog,
+    order: got.order, raw, rels: got.rels, relsPart: got.relsPart,
+    read: {part: cp.part, bytes: got.bytes, map: new Map(got.map),
+      order: got.order.slice(), raw: got.raw, root: got.root,
+      prolog: got.prolog, rels: got.rels, relsPart: got.relsPart,
+      ext}};
+}
+
+/** See the header. */
+export function readComments(parts, map, relsBytes, opts = {}) {
+  try {
+    return read(parts, map, relsBytes, opts || {});
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The kind of a main-part relationship: 'comments', a companion
+ *  kind, or null. */
+function kindOf(r) {
+  if (EXT_RELS.has(r.type)) return EXT_RELS.get(r.type);
+  const k = relKind(r.type);
+  return k && k.kind === 'comments' ? 'comments' : null;
+}
+
+/** See the header. */
+export function readAllComments(parts, rels, main, map, opts = {}) {
+  const found = {};
+  for (const r of rels || []) {
+    if (r.mode === 'External') continue;
+    const k = kindOf(r);
+    if (!k || found[k]) continue;
+    const name = findPart(parts, resolvePart(main, r.target));
+    if (!name || name === main) continue;
+    found[k] = {part: name, bytes: parts.get(name)};
+  }
+  if (!found.comments) return {comments: emptyComments(),
+    commentParts: {}};
+  const name = found.comments.part;
+  const relsPart = findPart(parts, relsNameFor(name));
+  const got = readComments(found, map,
+    relsPart ? parts.get(relsPart) : null, {...opts, relsPart});
+  if (!got) return {comments: emptyComments(), commentParts: {}};
+  const commentParts = {comments: name};
+  for (const k of EXT_KINDS)
+    if (got.raw[k]) commentParts[k] = found[k].part;
+  return {comments: got, commentParts};
+}
+
+/** See the header. */
+export function parentsOf(doc) {
+  const c = isObj(doc) && isObj(doc.comments) ? doc.comments.map
+    : null;
+  if (!(c instanceof Map)) return new Map();
+  const want = new Map();
+  for (const [id, x] of c) {
+    const p = isObj(x) ? x.parent : null;
+    if (p !== null && p !== undefined && p !== id && c.has(p))
+      want.set(id, p);
+  }
+  const order = Array.isArray(doc.comments.order)
+    ? doc.comments.order : [];
+  return breakCycles(want, [...order, ...c.keys()]);
+}
+
+/** See the header. */
+export function parentOf(doc, id) {
+  const c = isObj(doc) && isObj(doc.comments) ? doc.comments.map
+    : null;
+  if (!(c instanceof Map)) return null;
+  const x = c.get(id);
+  const p = isObj(x) ? x.parent : null;
+  if (p === null || p === undefined || p === id || !c.has(p))
+    return null;
+  const seen = new Set([id]);
+  let y = p;
+  while (y !== null && y !== undefined) {
+    if (y === id) return null;
+    if (seen.has(y)) return p;
+    seen.add(y);
+    const z = c.get(y);
+    y = isObj(z) ? z.parent : null;
+  }
+  return p;
+}

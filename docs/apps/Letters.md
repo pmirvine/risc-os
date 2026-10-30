@@ -3831,6 +3831,62 @@ XrefCmd, XrefBox`). This section is the rules that cut across them. User guide: 
   with words ('Chapter 1') for chapter numbers; `_Toc`/`_Ref` naming (9 digits from 100000001) and reuse; TOC 4-9 and
   Table of Figures indents; hidden text in entries; the `w:dirty` clearing.
 
+## Comments (Batch F1): what changed
+
+User guide: `$.Docs.Letters` part 26. Comments are modelled, drawn, edited and carried; the comments part and its
+companions are written back from the model, and unchanged comments byte for byte.
+
+| Module | What it is |
+|---|---|
+| `CommentRead` | pure: `readComments(parts, map, relsBytes, opts?) -> Comments \| null`: the comments part and its companions read into `doc.comments`; each comment's blocks typed as the body's; `parentsOf` (one pass, cycles broken, missing or self parents top level) |
+| `CommentWrite` | pure: `commentsTree`, `partsOf`, `commentsOut`: the comments part written back, a comment whose blocks still equal `orig` as its node verbatim; any other from its blocks; parts not modelled stay bytes |
+| `CommentExt` | pure: the companions `commentsExtended` (`paraId`, `paraIdParent`, `done`), `commentsIds` (`paraId`, `durableId`), `commentsExtensible` (`durableId`, `dateUtc`) and `people` read as lists of entries (`readExt`, `extItems`, `EXT_KINDS`); an entry for a comment read is kept as it is |
+| `OpsComments` | pure ops, each returning its inverse: `addComment`, `addComments`, `removeComments`, `setComment` (author, initials, date, paraId, parent, done, blocks), `setCommentsPart` (and the companions' parts) |
+| `CommentMarks` | pure: `marks(doc) -> Map<id, {start, end, ref}>` (the first modelled mark of each id in document order, memoised per `DocVersion`), `paraMarks(p)`, `rawMarks(sections)` (the marks as raw inlines when the comments part is not modelled) |
+| `CommentKeep` | pure: `dropped(doc, invs) -> op \| null`, the hook `Document` calls after every step (as `NoteKeep`): the comments whose last body mark the step took, and their replies (the marks of a reply the step left are deleted in a compound op first); never a comment a mark outside the body still names (`opaqueIds`: header, footer, note, text box, content control, kept XML) |
+| `CommentCmd` | pure: `addComment`, `editComment` (`{lossy: true}` before text with fields, links, pictures or formatting is rewritten; `confirmed: true` does it), `replyTo`, `setResolved`, `deleteComment`, `deleteAllIn` (a selection takes a comment whose range text lies inside it; a point comment when its marks have the selection on both sides; a caret inside a range takes it), `whyNot`, `commandWhy(d, id, cmd)` (the reason a button is shaded), `textOf`, `cleanName` |
+| `CommentParts` | pure: `partState`, `ensure(d, kinds)` (the comments part and companions made, with the relationship, in the caller's step), `skeleton`, `nextCommentId` (never reused in a session; the largest id 2147483647 leaves none), `freshParaId`, `takenIds` |
+| `CommentOpts` | the user name and initials kept in Choices (`userName`, `userInitials` through `WordChoices`): `read(app)`, `write(app, {name, initials})`, `MAX` 255 |
+| `CommentPaint` | display only: `rects(doc, ctx)`, `paintComments(L, g, rect, sel)`: the range between a comment's marks lit in its author's colour (`PALETTE` of six: soft, light when resolved, strong when selected), a point comment's marker; the boxes are the layout's own selection rectangles; `colourOf(author)` is FNV-1a |
+| `CommentPatch` | pure: the pane's `rows(doc, filter)` (threads in body order of their first mark, replies flattened at depth 1, linear: never `parentOf` per comment), `FILTERS` (All, Unresolved), `shortDate`, `patch(values, row)`, `buttons(d, row)` (in step with `commandWhy`), `liveId`, `rangeOf`, `holdSel` |
+| `CommentBox` | desktop-bound: `commentBox(dw)` (the Comments pane in `dw.boxes` 'comments', a canvas list like `StylesWin` with a core `TextArea`), `insertComment`, `commentsShown`, `toggleComments`, `deleteInSelection`; the Edit Comment choice (`dw.boxes` 'cmtlossy'); the draft kept when hidden; a stale Post refills and keeps the text |
+| `AuthorBox` | desktop-bound (WimpLib `Ui/Dialog`): `authorBox(dw, {ask, then, pane}?)`, the User name and initials box (key `author:<docKey>`, `dw.boxes` 'author') |
+| `ToolsMenu` | `toolsMenu(dw)`: Show Comments (ticked while open), Delete comments in selection (shaded with a caret and in a story), User name and initials...; the window menu's Tools item sits between Table and Zoom |
+| `ClipComments` | pure, as `ClipNotes`: `commentsOf(doc, blocks)` (a comment is carried when its marks are all there, once each; its mark-less replies come too), `styleUp`, `carry(d, list, opts)` (a new comment per carried one, fresh id from `nextCommentId`, fresh `paraId` and `durableId`, parents remapped only within the paste, one `addComments` op); the slice's `comments` key, passed on by `ClipStore` and `ClipPick`; `ClipClean` keeps marks only with `opts.cmtMarks` |
+
+* **The model.** `doc.comments` is `{map: Map<id, Comment>, root, prolog, order, raw, rels, relsPart, read}`; a `Comment` is
+  `{id, author, initials, date, blocks, rels, relsPart, paraId, parent, done, orig, node}`. Its part is modelled, or kept
+  as bytes in `doc.parts` (a part that cannot be read: its marks are then raw inlines, `CommentMarks.rawMarks`).
+* **Mark inlines.** The paragraph reader (`ReadPara`) reads `w:commentRangeStart` / `End` as the level-`p` inlines `cmtStart`
+  and `cmtEnd` and `w:commentReference` as the level-`r` inline `cmtRef` (the run's formatting kept), when the document
+  has a modelled comments part. All three draw nothing and are not counted (`Kinds.COMMENT_MARKS`, unseen); the grey
+  `[...]` box a reference had is gone, which is why the pages agree better with Word (the `pages-corpus` pin stays at
+  328 of 1387). Marks in headers, footers, notes, text boxes, content controls and kept XML stay opaque.
+* **The hook.** `Document` calls `CommentKeep.dropped` after every step and adds its op to the same undo step, so a
+  comment goes with its last body mark and comes back with undo.
+* **One pairing rule.** `BookmarkKeep` pairs every range mark: `bookmarkStart/End` and `commentRangeStart/End` (raw or
+  modelled), by kind and `w:id` within its own kind. A deletion that covers one mark of a pair keeps it and puts it back.
+* **The window.** `dw.comment` is the selected comment's id (or null), `dw.setComment(id)` sets it (display only: not the
+  caret, not an undo step); `CommentPaint` draws the selected one stronger. `AppWin` and `CloseDoc` need nothing else:
+  the boxes are registered in `dw.boxes`.
+* **Keys and menus.** Insert > Comment... is `KeymapMore` row `comment`, Ctrl+Alt+M (not Ctrl+Alt+C, which is AltGr+C on
+  Polish and Czech keyboards), a window command in `DocKeys`.
+* **Limits.** Comments with a mark outside the body are not editable and their whole thread is refused by every command;
+  no balloons; comment text is not searched or counted; a duplicate id keeps the first (the later one raw; a cut of
+  it loses it, undo restores); ids read from a file are not reserved once they go; a cut of a reference alone leaves
+  the range; a reply anchored outside its parent's range goes with the parent; pasted comments are appended to the
+  end of `comments.xml`.
+* **To check in real Word.** Reply threading (the `commentsExtended` entry) and placement of the reply's marks (its
+  reference in the parent's run and the order 0, 2, 1); the `w14:paraId` per paragraph (declared on the paragraph when
+  the part lacks `w14`); `done` and the reopen rule; the date (local with Z, `dateUtc` in the companion) and the zone;
+  the minimal parts and styles (`CommentText`, `CommentReference`); a range with no reference; a reply anchored
+  outside its parent's range; the result of a lossy edit; Ctrl+Alt+M. Hand-off files `cm-*` from
+  `node tests/moreapps/handoff-comments.mjs` (local, git-ignored, not yet opened in real Word).
+* **Tests.** `comment-roundtrip`, `comment-oracle`, `commentmarks`, `commentkeep`, `commentcmd`, `commentpaint`,
+  `commentpatch`, `commentclip`, `comment-roundtrip-corpus` (all `*.test.mjs` under `tests/moreapps/`; the last
+  with `WORD_EDIT_CORPUS=1` over the corpus, with seeded 40-command bursts and a 10,000-comment ratio check) and the
+  browser script `word-comments.mjs`.
+
 ## The data model
 
 Header of `!Letters/Model` is the reference. In short:
@@ -4257,7 +4313,7 @@ after (`fontmetrics.test.mjs` pins both the file's and the used value):
   whole) as plain text in the format at that position; nothing for `Kinds.UNSEEN`, `w:del`, `w:moveFrom` and
   `w:softHyphen`; `-` for `w:noBreakHyphen`; a page or column break (`w:br w:type="page"` / `"column"`) as a grey
   dotted rule labelled "Page break" / "Column break" that ends its line (`BreakMarks`; any other `w:br` with
-  attributes is a line break); a grey `[...]` box for the rest (drawings, pictures, objects, comment references, `w:sym`...; a body footnote or
+  attributes is a line break); a grey `[...]` box for the rest (drawings, pictures, objects, `w:sym`...; a body footnote or
   endnote reference is a `noteRef` inline showing its number since Batch E2). `Info` counts the same way: the `UNSEEN` kinds are not preserved
   items, so a field made of `fldChar`s is not counted (its result is shown as text).
 * Not shown yet (and not in the way of typing): caps/small caps, automatic-colour text on a dark highlight (drawn black; Word draws it white), table contents, a word

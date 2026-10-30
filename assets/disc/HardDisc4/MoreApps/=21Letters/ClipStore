@@ -4,7 +4,7 @@
 //   new ClipStore({rand, max = 4})
 //   s.put(slice, docKey) -> token | null
 //   s.get(token) -> {blocks, styleNames, styles, lists, pics,
-//     picScope, plain, notes, docKey} | null
+//     picScope, plain, notes, comments, docKey} | null
 //   s.clear()
 //   store            the one store of the program (all windows)
 //   tokenIn(html)    the token of a marker comment in html, or null
@@ -14,13 +14,16 @@
 //                    all entries' pics hold together
 //
 // slice is a ./ClipSlice slice ({blocks, styleNames, styles, lists,
-// pics, picScope, plain, notes?}: notes the footnotes and endnotes
-// it carries, kept as they are, else undefined)
+// pics, picScope, plain, notes?, comments?}: notes the footnotes and
+// endnotes it carries, comments its comments (./ClipComments), kept
+// as they are, else undefined)
 // or an array of blocks; docKey says which document it came from (the
 // caller's key: same key, same document). put refuses (null) an
 // empty slice, one over LIMITS.blocks blocks or LIMITS.text units of
 // paragraph text (counted at every depth: a table, its cells'
-// blocks: ./Walk walkBlocks); only the last `max` entries are
+// blocks: ./Walk walkBlocks; the blocks of the comments it carries,
+// slice.comments[].comment.blocks, counted with them, one cap for
+// all); only the last `max` entries are
 // kept. A token is
 // 16 lower-case hex digits from 8 random bytes: rand() -> 8 values
 // 0..255 (default crypto.getRandomValues, else Math.random); a token
@@ -65,15 +68,30 @@ export function tokenIn(html) {
   return m ? m[1] : null;
 }
 
-/** Whether blocks are within LIMITS. */
-function fits(blocks) {
+/** The block lists of the comments a slice carries. */
+function commentBlocks(slice) {
+  const list = slice && !Array.isArray(slice) ? slice.comments : null;
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const e of list) {
+    const c = e && e.comment;
+    if (c && Array.isArray(c.blocks)) out.push(c.blocks);
+  }
+  return out;
+}
+
+/** Whether blocks (and the lists of more) are within LIMITS. */
+function fits(blocks, more = []) {
   if (!Array.isArray(blocks) || !blocks.length ||
     blocks.length > LIMITS.blocks) return false;
   let n = 0, k = 0;
-  for (const {b} of walkBlocks(blocks)) {
-    if (++k > LIMITS.blocks) return false;
-    if (b && typeof b.text === 'string') n += b.text.length;
-    if (n > LIMITS.text) return false;
+  for (const list of [blocks, ...more]) {
+    if (list.length > LIMITS.blocks) return false;
+    for (const {b} of walkBlocks(list)) {
+      if (++k > LIMITS.blocks) return false;
+      if (b && typeof b.text === 'string') n += b.text.length;
+      if (n > LIMITS.text) return false;
+    }
   }
   return true;
 }
@@ -100,7 +118,7 @@ export class ClipStore {
   put(slice, docKey) {
     const blocks = Array.isArray(slice) ? slice
       : slice && slice.blocks;
-    if (!fits(blocks)) return null;
+    if (!fits(blocks, commentBlocks(slice))) return null;
     let token = hex(this._rand());
     for (let k = 0; this._m.has(token) || !TOKEN.test(token); k++) {
       if (k > 16) return null;
@@ -120,8 +138,10 @@ export class ClipStore {
       ? slice.picScope : null;
     const notes = slice && Array.isArray(slice.notes) ? slice.notes
       : undefined;
+    const comments = slice && Array.isArray(slice.comments)
+      ? slice.comments : undefined;
     this._m.set(token, {blocks, styleNames: names, styles, lists,
-      pics, picScope, plain, notes, docKey});
+      pics, picScope, plain, notes, comments, docKey});
     while (this._m.size > this._max || (this._m.size > 1 &&
       picBytes(this._m) > MAX_PIC_STORE)) {
       this._m.delete(this._m.keys().next().value);

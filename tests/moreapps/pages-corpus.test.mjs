@@ -15,7 +15,9 @@
 // Word's starts counted once a galley line (a table counts a line a
 // row, and a position in a cell is on its row's line, P4.1), each
 // matched by one of ours within one line. The totals must EQUAL the
-// pin in corpus-expected.json (pageStarts: {matched, total, files};
+// pin in corpus-expected.json (Batch F1: matched 325 -> 328, a
+// comment reference draws nothing, as in Word, reviewed) (pageStarts:
+// {matched, total, files};
 // R10; P10 fix M2: and ourCount, how many starts of ours were
 // scored, as the score never counts against extra starts of ours;
 // how many of them match none and the score of page starts alone

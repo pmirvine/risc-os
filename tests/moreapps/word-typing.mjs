@@ -407,7 +407,7 @@ try {
       dw.close();
       return { fresh, edited, undone, mac: /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform) };
     });
-    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'View', 'Outline', 'Format', 'Table', 'Zoom', 'New', 'Close']), shades.fresh);
+    ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Tools, Zoom, New, Close', same(shades.fresh.top, ['Save', 'Save as', 'Revert', 'Save a copy', 'Info', 'Edit', 'Insert', 'View', 'Outline', 'Format', 'Table', 'Tools', 'Zoom', 'New', 'Close']), shades.fresh);
     // (Cut and Copy shaded at the caret; Paste never; the Find items never: word-clipboard.mjs, word-find.mjs)
     // (on a Mac the labels are Cmd+: MacKeys.macLabel)
     const K = shades.mac ? 'Cmd+' : 'Ctrl+';

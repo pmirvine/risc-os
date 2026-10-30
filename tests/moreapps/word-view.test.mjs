@@ -218,7 +218,7 @@ describe('formatting on the screen', () => {
   });
   it('other kept items still show a box', async () => {
     for (const el of ['<w:r><w:drawing/></w:r>', '<w:r><w:pict/></w:r>',
-      '<w:r><w:commentReference w:id="1"/></w:r>',
+      '<w:r><w:ruby/></w:r>',
       '<w:r><w:sym w:font="Wingdings" w:char="F04A"/></w:r>']) {
       const it = lay(await doc(p(r('a') + el))).lines[0].items;
       assert.deepEqual(it.map((x) => x.kind), ['text', 'box'], el);

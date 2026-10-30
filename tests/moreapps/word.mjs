@@ -185,8 +185,8 @@ try {
     await window.__frames(3);
     return res;
   });
-  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Zoom, New, Close',
-    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","View","Outline","Format","Table","Zoom","New","Close"]', r2.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Info, Edit, Insert, View, Outline, Format, Table, Tools, Zoom, New, Close',
+    JSON.stringify(r2.items) === '["Save","Save as","Revert","Save a copy","Info","Edit","Insert","View","Outline","Format","Table","Tools","Zoom","New","Close"]', r2.items);
   await shot('word-menu.png');
   const r3 = await page.evaluate(async () => {
     os.wimp.menus.close();

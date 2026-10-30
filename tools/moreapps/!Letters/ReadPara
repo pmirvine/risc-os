@@ -23,6 +23,17 @@
 // plain text after it, it stays a raw inline. node is written back
 // unchanged.
 //
+// With the `comments` option (body paragraphs and their tables at
+// every depth: ./ReadBody, ./TblRead; never a header, footer, note,
+// text box or content control, whose marks stay raw) a
+// w:commentRangeStart or w:commentRangeEnd directly in w:p is U+FFFC
+// with {kind: 'cmtStart' | 'cmtEnd', level: 'p', id, node} in a
+// plain run (as a raw one), and a w:commentReference in a run
+// {kind: 'cmtRef', level: 'r', id, node} with the run's formatting
+// (Batch F1): id the integer of its one w:id (./Kinds markId: a
+// plain whole number 0..2147483647); any other id, or children,
+// keep the raw inline. node is written back unchanged.
+//
 // Every other child of w:p (w:hyperlink, w:fldSimple, w:ins, w:del,
 // w:sdt, w:smartTag, bookmarks, w:proofErr, m:oMath, unknown...) is
 // one U+FFFC with {kind:'raw', level:'p', node, text}: text (for
@@ -39,6 +50,7 @@ import {newPara, OBJ} from './Model';
 import {scope, wName, wAttrs, wAttr, isEl, blank, plainText}
   from './Ns';
 import {readRPr, readPPr} from './ReadProps';
+import {markId} from './Kinds';
 
 const RSIDS = ['rsidR', 'rsidRPr', 'rsidDel'];
 const plain = () => ({rPr: {extra: []}});
@@ -164,7 +176,18 @@ function noteRef(c, l, m, next) {
   return x;
 }
 
-function readRun(r, map, b, notes) {
+const RANGE = {commentRangeStart: 'cmtStart',
+  commentRangeEnd: 'cmtEnd'};
+
+/** The comment mark inline of element c (local name l), or null to
+ *  keep it raw (see the header). */
+function cmtMark(c, kind, level) {
+  if (c.children.length) return null;
+  const id = markId(c);
+  return id === null ? null : {kind, level, id, node: c};
+}
+
+function readRun(r, map, b, notes, comments) {
   const m = r.attrs.length ? scope(map, r) : map;
   if (awkward(r, m)) {
     b.pRaw(r, map);
@@ -188,6 +211,12 @@ function readRun(r, map, b, notes) {
       b.inline(ref, fmt);
       continue;
     }
+    const cm = comments && l === 'commentReference'
+      ? cmtMark(c, 'cmtRef', 'r') : null;
+    if (cm) {
+      b.inline(cm, fmt);
+      continue;
+    }
     const bare = !c.attrs.length && !c.children.length;
     if (l === 't') readT(c, m, b, fmt);
     else if (l === 'tab' && bare) b.text('\t', fmt);
@@ -202,7 +231,8 @@ function readRun(r, map, b, notes) {
 }
 
 /**
- * Read a w:p (flags.notes: model note marks: see the header).
+ * Read a w:p (flags.notes: model note marks, flags.comments: comment
+ * marks: see the header).
  * Returns {para, sectPr} (sectPr: the w:pPr/w:sectPr
  * node or null), or null when the paragraph must stay raw.
  */
@@ -221,8 +251,14 @@ export function readPara(node, map, flags = {}) {
     if (l === 'pPr' && first) {
       if (c.attrs.length) return null;
       pp = readPPr(c, m, true);
-    } else if (l === 'r') readRun(c, m, b, !!flags.notes);
-    else b.pRaw(c, m);
+    } else if (l === 'r') {
+      readRun(c, m, b, !!flags.notes, !!flags.comments);
+    } else {
+      const cm = flags.comments && Object.hasOwn(RANGE, l)
+        ? cmtMark(c, RANGE[l], 'p') : null;
+      if (cm) b.inline(cm, plain());
+      else b.pRaw(c, m);
+    }
     first = false;
   }
   const opts = {runs: b.runs, inlines: b.inlines, pPr: pp.pPr,

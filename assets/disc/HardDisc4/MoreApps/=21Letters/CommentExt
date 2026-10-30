@@ -1,0 +1,357 @@
+// CommentExt - the companions of the comments part (Batch F1):
+// commentsExtended (w15: paraId, paraIdParent, done), commentsIds
+// (w16cid: paraId, durableId), commentsExtensible (w16cex:
+// durableId, dateUtc) and people (w15: author, presenceInfo), read
+// as lists of entries and written back from ./CommentRead's
+// comments.
+//
+//   EXT_KINDS  ['extended', 'ids', 'extensible', 'people']
+//   EXT_NS     the namespace URI of each kind (as Word writes it)
+//   EXT_RELS   Map relationship type URI -> kind
+//   readExt(kind, part, bytes, opts?) -> Ext | null
+//     Ext {kind, part, ns, root: {name, attrs}, prolog: {decl,
+//          before, after}, items: [{key, node}], bytes}
+//     ns     the namespace URI of the root (w15 has two: Word 2013's
+//            and its previews'); the entries' attributes are in it
+//     items  every element child of the root in order, kept as it
+//            is; key the entry's paraId (extended, ids), durableId
+//            (extensible) or author (people) as written, or null
+//            (none). Text and comments directly in the root are
+//            dropped when the part is written from its items
+//     opts   maxXmlBytes, maxElements (./PartXml)
+//   Null (the part stays bytes) for bytes that are not a byte
+//   array, bad XML, a part over a cap, a root that is not the
+//   kind's (w15:commentsEx, w16cid:commentsIds,
+//   w16cex:commentsExtensible, w15:people, by namespace URI), and
+//   for any other error. Namespaces are not mapped: these parts are
+//   the same in Strict documents.
+//   extAttr(node, m, uri, local) -> the value of attribute `local`
+//     in namespace `uri` of `node` (m the scope around it), or
+//     undefined
+//   extItems(c, kind, parentPara) -> items  the entries to write
+//     for comments `c` (a Doc's comments): the very array read when
+//     nothing they record changed. extended and ids: the entry of a
+//     comment that was read (its paraId as read) is kept as it is
+//     while the comment's paraId (extended: and done, and its
+//     parent's paraId, parentPara(id), the one it read with) are the
+//     ones read; rewritten (paraId, paraIdParent: parentPara(id),
+//     done "1" / "0"; other attributes and children kept) when they
+//     changed (a reply whose parent changed its paraId or went away
+//     is rewritten: a gone parent leaves no paraIdParent, the reply
+//     is top level, nothing dangles); dropped when the comment is
+//     gone or has no paraId any more.
+//     extended also gets a new entry, at its end, for each comment
+//     with a paraId and no entry that is new or whose parent / done
+//     changed; ids one (paraId, durableId) for each comment not read
+//     (made in the editor, ./CommentCmd) with a paraId and a
+//     durableId (Comment.durableId, 8 hex digits). extensible: the
+//     entries of the durableIds the ids part gave removed comments
+//     are dropped, and one (durableId, dateUtc) added for each
+//     comment not read with a durableId and a dateUtc
+//     (Comment.dateUtc) the part lacks. people: as read, and a
+//     w15:person (author; w15:presenceInfo providerId "None",
+//     userId the author, as Word writes a local user) for each
+//     author of a comment not read that it lacks. New entries go at
+//     the end, in the comments' order; the new optional Comment
+//     fields durableId and dateUtc are written nowhere else.
+//     Entries for comments we do not know are always kept.
+//   extTree(ext, items) -> element  the part's root around items
+// Maps only; nothing is ever keyed on an object by text from the
+// file. Pure: no desktop services.
+import {parsePart} from './PartXml';
+import {rootScope, scope, isEl} from './Ns';
+
+const W15 = 'http://schemas.microsoft.com/office/word/2012/wordml';
+/** The w15 URI of Word 2013's previews (seen in the corpus). */
+const W15_OLD = 'http://schemas.microsoft.com/office/word/2010/11/' +
+  'wordml';
+const W16CID = 'http://schemas.microsoft.com/office/word/2016/' +
+  'wordml/cid';
+const W16CEX = 'http://schemas.microsoft.com/office/word/2018/' +
+  'wordml/cex';
+const MS = 'http://schemas.microsoft.com/office/';
+
+export const EXT_KINDS = Object.freeze(['extended', 'ids',
+  'extensible', 'people']);
+
+/** kind -> {ns: URIs, root, item, key}: local names. */
+const SHAPE = new Map([
+  ['extended', {ns: [W15, W15_OLD], root: 'commentsEx',
+    item: 'commentEx', key: 'paraId'}],
+  ['ids', {ns: [W16CID], root: 'commentsIds', item: 'commentId',
+    key: 'paraId'}],
+  ['extensible', {ns: [W16CEX], root: 'commentsExtensible',
+    item: 'commentExtensible', key: 'durableId'}],
+  ['people', {ns: [W15, W15_OLD], root: 'people', item: 'person',
+    key: 'author'}],
+]);
+
+export const EXT_NS = Object.freeze(Object.fromEntries(
+  [...SHAPE].map(([k, s]) => [k, s.ns[0]])));
+
+export const EXT_RELS = new Map([
+  [MS + '2011/relationships/commentsExtended', 'extended'],
+  [MS + '2016/09/relationships/commentsIds', 'ids'],
+  [MS + '2018/08/relationships/commentsExtensible', 'extensible'],
+  [MS + '2011/relationships/people', 'people'],
+]);
+
+/** The namespace URI and local name of element `n` in scope `m`. */
+function nameOf(n, m) {
+  const i = n.name.indexOf(':');
+  return {uri: m.get(i < 0 ? '' : n.name.slice(0, i)),
+    local: n.name.slice(i + 1)};
+}
+
+/** See the header. */
+export function extAttr(node, m, uri, local) {
+  const m1 = node.attrs.length ? scope(m, node) : m;
+  for (const [n, v] of node.attrs) {
+    const i = n.indexOf(':');
+    if (i > 0 && n.slice(i + 1) === local && m1.get(n.slice(0, i)) ===
+      uri) return v;
+  }
+  return undefined;
+}
+
+function read(kind, part, bytes, opts) {
+  const sh = SHAPE.get(kind);
+  if (!sh || !(bytes instanceof Uint8Array) || !bytes.length)
+    return null;
+  const x = parsePart(bytes, part, opts);
+  const root = x.root;
+  const m = rootScope(root);
+  const nm = nameOf(root, m);
+  if (!sh.ns.includes(nm.uri) || nm.local !== sh.root) return null;
+  const ns = nm.uri;
+  const items = [];
+  for (const c of root.children) {
+    if (!isEl(c)) continue;
+    const ci = nameOf(c, c.attrs.length ? scope(m, c) : m);
+    const k = ci.uri === ns && ci.local === sh.item
+      ? extAttr(c, m, ns, sh.key) : undefined;
+    items.push({key: typeof k === 'string' ? k : null, node: c});
+  }
+  return {kind, part, ns, items, bytes,
+    root: {name: root.name, attrs: root.attrs.map(([n, v]) => [n, v])},
+    prolog: {decl: x.decl, before: x.before, after: x.after}};
+}
+
+/** See the header. */
+export function readExt(kind, part, bytes, opts = {}) {
+  try {
+    return read(kind, part, bytes, opts || {});
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The prefix of the root's own name (its kind's namespace). */
+const preOf = (ext) => {
+  const n = ext.root.name;
+  const i = n.indexOf(':');
+  return i < 0 ? '' : n.slice(0, i + 1);
+};
+
+/** A copy of `node` with attributes `set` ([[local, value or
+ *  null]...], in the order Word writes them) in namespace `uri`; a
+ *  new one is written with prefix `pre` after the one before it. */
+function withAttrs(node, m, uri, pre, set) {
+  const attrs = node.attrs.map(([a, v]) => [a, v]);
+  const m1 = scope(m, node);
+  let after = -1;
+  for (const [local, value] of set) {
+    const i = attrs.findIndex(([n]) => {
+      const j = n.indexOf(':');
+      return j > 0 && n.slice(j + 1) === local &&
+        m1.get(n.slice(0, j)) === uri;
+    });
+    if (i >= 0) {
+      if (value === null) attrs.splice(i, 1);
+      else {
+        attrs[i] = [attrs[i][0], value];
+        after = i;
+      }
+    } else if (value !== null) {
+      after = after < 0 ? attrs.length : after + 1;
+      attrs.splice(after, 0, [pre + local, value]);
+    }
+  }
+  return {name: node.name, attrs, children: node.children};
+}
+
+/** The paraId of the parent comment `w` (as read) had, or null. */
+function readParent(was, w) {
+  const p = w.parent === null ? undefined : was.get(w.parent);
+  return p && typeof p.paraId === 'string' ? p.paraId : null;
+}
+
+/** Map paraId as read -> comment id, of the comments read. */
+function readParas(c) {
+  const out = new Map();
+  const was = c.read && c.read.map instanceof Map ? c.read.map
+    : new Map();
+  for (const [id, x] of was) {
+    if (x && typeof x.paraId === 'string' && !out.has(x.paraId))
+      out.set(x.paraId, id);
+  }
+  return out;
+}
+
+/** The entries of an extended or ids part (see the header). */
+function byPara(c, ext, kind, parentPara) {
+  const sh = SHAPE.get(kind);
+  const m = rootScope(ext.root);
+  const pre = preOf(ext);
+  const ns = ext.ns;
+  const paras = readParas(c);
+  const was = c.read && c.read.map instanceof Map ? c.read.map
+    : new Map();
+  const done = new Set();
+  const out = [];
+  let changed = false;
+  // what the entry records is as read: its paraId; for extended
+  // also done and the parent's paraId (the parent's own paraId may
+  // have changed, or the parent be gone)
+  const same = (x, w) => x.paraId === w.paraId &&
+    (kind !== 'extended' || (x.done === w.done &&
+      parentPara(x.id) === readParent(was, w)));
+  const fields = (x) => {
+    const f = [['paraId', x.paraId]];
+    if (kind === 'extended') {
+      f.push(['paraIdParent', parentPara(x.id)],
+        ['done', x.done ? '1' : '0']);
+    }
+    return f;
+  };
+  for (const it of ext.items) {
+    const id = it.key === null ? undefined : paras.get(it.key);
+    if (id === undefined || done.has(id)) {
+      out.push(it);
+      continue;
+    }
+    done.add(id);
+    const x = c.map.get(id);
+    if (!x || typeof x.paraId !== 'string') {
+      changed = true;
+      continue;
+    }
+    if (same(x, was.get(id))) out.push(it);
+    else {
+      changed = true;
+      out.push({key: x.paraId, node: withAttrs(it.node, m, ns, pre,
+        fields(x))});
+    }
+  }
+  const keys = new Set(out.map((it) => it.key));
+  for (const id of c.order) {
+    const x = c.map.get(id);
+    if (!x || done.has(id) || typeof x.paraId !== 'string') continue;
+    const w = was.get(id);
+    if (kind === 'extended' ? w && same(x, w)
+      : w || !isDurable(x.durableId)) continue;
+    if (keys.has(x.paraId)) continue;
+    keys.add(x.paraId);
+    changed = true;
+    const f = kind === 'extended' ? fields(x)
+      : [['paraId', x.paraId], ['durableId', x.durableId]];
+    out.push({key: x.paraId, node: withAttrs({name: pre + sh.item,
+      attrs: [], children: []}, m, ns, pre, f)});
+  }
+  return changed ? out : ext.items;
+}
+
+/** The durableIds the ids part read gives comments now gone. */
+function goneDurables(c) {
+  const out = new Set();
+  const ids = c.raw && c.raw.ids;
+  if (!ids) return out;
+  const paras = readParas(c);
+  const m = rootScope(ids.root);
+  for (const it of ids.items) {
+    const id = it.key === null ? undefined : paras.get(it.key);
+    if (id === undefined) continue;
+    const x = c.map.get(id);
+    if (x && typeof x.paraId === 'string') continue;
+    const d = extAttr(it.node, m, ids.ns, 'durableId');
+    if (typeof d === 'string') out.add(d);
+  }
+  return out;
+}
+
+const isDurable = (v) => typeof v === 'string' && v !== '';
+
+/** The comments not read (made in the editor), in order. */
+function made(c) {
+  const was = c.read && c.read.map instanceof Map ? c.read.map
+    : new Map();
+  const out = [];
+  for (const id of c.order || []) {
+    const x = c.map.get(id);
+    if (x && !was.has(id)) out.push(x);
+  }
+  return out;
+}
+
+/** A new entry `item` of ext with attributes set, children kids. */
+function entry(ext, item, set, kids = []) {
+  const pre = preOf(ext);
+  const n = withAttrs({name: pre + item, attrs: [], children: []},
+    rootScope(ext.root), ext.ns, pre, set);
+  return {...n, children: kids};
+}
+
+/** The extensible entries (see the header). */
+function extensible(c, ext) {
+  const gone = goneDurables(c);
+  let out = gone.size ? ext.items.filter((it) => it.key === null ||
+    !gone.has(it.key)) : ext.items;
+  if (out.length === ext.items.length) out = ext.items;
+  const keys = new Set(out.map((it) => it.key));
+  const add = [];
+  for (const x of made(c)) {
+    const d = x.durableId;
+    if (!isDurable(d) || typeof x.dateUtc !== 'string' || keys.has(d))
+      continue;
+    keys.add(d);
+    add.push({key: d, node: entry(ext, 'commentExtensible',
+      [['durableId', d], ['dateUtc', x.dateUtc]])});
+  }
+  return add.length ? [...out, ...add] : out;
+}
+
+/** The people entries: one more for each new author (see the
+ *  header). */
+function people(c, ext) {
+  const keys = new Set(ext.items.map((it) => it.key));
+  const add = [];
+  for (const x of made(c)) {
+    const a = x.author;
+    if (typeof a !== 'string' || !a || keys.has(a)) continue;
+    keys.add(a);
+    const pre = preOf(ext);
+    const info = withAttrs({name: pre + 'presenceInfo', attrs: [],
+      children: []}, rootScope(ext.root), ext.ns, pre,
+    [['providerId', 'None'], ['userId', a]]);
+    add.push({key: a, node: entry(ext, 'person', [['author', a]],
+      [info])});
+  }
+  return add.length ? [...ext.items, ...add] : ext.items;
+}
+
+/** See the header. */
+export function extItems(c, kind, parentPara) {
+  const ext = c.raw && c.raw[kind];
+  if (!ext) return null;
+  if (kind === 'extended' || kind === 'ids')
+    return byPara(c, ext, kind, parentPara);
+  if (kind === 'extensible') return extensible(c, ext);
+  if (kind === 'people') return people(c, ext);
+  return ext.items;
+}
+
+/** See the header. */
+export function extTree(ext, items) {
+  return {name: ext.root.name, attrs: ext.root.attrs.map(([a, v]) =>
+    [a, v]), children: items.map((it) => it.node)};
+}

@@ -1,6 +1,12 @@
-// BookmarkKeep - a deleted range keeps bookmarks whole: the rule
-// ./EditRange deleteRange follows (so Backspace or Delete over a
-// selection, typing over it, a cut, a paste over it...).
+// BookmarkKeep - a deleted range keeps bookmarks and comment ranges
+// whole: the rule ./EditRange deleteRange follows (so Backspace or
+// Delete over a selection, typing over it, a cut, a paste over
+// it...). The pairing rule for every range mark there is: a
+// w:bookmarkStart / End and a w:commentRangeStart / End (raw, or a
+// modelled cmtStart / cmtEnd inline: ./ReadPara, Batch F1), each
+// paired by kind and w:id within its own kind (ns 'b' bookmarks, 'c'
+// comments: a bookmark and a comment with one id are not partners).
+// "Bookmark mark" below means either.
 //
 //   keptMarks(doc, o) -> [inline]  o from EditPos.orderedPos: the
 //       bookmark marks (w:bookmarkStart / w:bookmarkEnd level-'p'
@@ -26,15 +32,22 @@
 //       rectangle does not cover). first comes before last in flow
 //       order (the later one is filled first: first's offset stays)
 //   marksIn(p, a, z, out) -> out  the bookmark marks of paragraph p
-//       in [a, z) pushed as {kind, id, x} (the one reader of a
-//       range's marks)
+//       in [a, z) pushed as {kind, id, ns, x} (the one reader of a
+//       range's marks; level-'p' inlines: a raw one, a modelled
+//       comment range mark)
 //   tableMarks(t, out) -> out  every bookmark mark of typed table t
 //       at every depth (its cells' paragraphs' and its loose ones,
-//       nested tables' too: a loose node as a level-'p' raw inline,
-//       so it can be put back in a paragraph) pushed as marksIn's:
-//       a table a deletion takes whole (C7 fix A2)
-//   markOf(node) -> {kind: 'start' | 'end', id} | null  a mark node's
-//       (a table's lead or tail holds the nodes themselves)
+//       nested tables' too: a loose node as asInline makes it, so it
+//       can be put back in a paragraph) pushed as marksIn's: a table
+//       a deletion takes whole (C7 fix A2)
+//   markOf(node) -> {kind: 'start' | 'end', id, ns} | null  a mark
+//       node's (a table's lead or tail holds the nodes themselves)
+//   asInline(node) -> the level-'p' inline a mark node becomes in a
+//       paragraph: a comment range mark with a plain id the modelled
+//       cmtStart / cmtEnd (as ./ReadPara would read it), any other
+//       a raw inline
+//   keyOf(m, kind?) -> string  the key a mark ({kind, id, ns}) is
+//       paired by (kind: the partner's, to look it up)
 //   stillPaired(doc, got) -> [inline]  for a deletion in a table
 //       (Batch C3.4, ./RangeTbl): got (marksIn's, collected before
 //       the deletion) read against doc AFTER it: the marks gone
@@ -53,13 +66,20 @@
 // ./BookmarkFind) go with that item; an end with no start anywhere
 // (or a start with no end) is not kept. Pure: no desktop services.
 import {OBJ} from './Model';
-import {localName} from './Kinds';
+import {localName, markId} from './Kinds';
 import {findBlock, neighbour, topOnly} from './EditPos';
 import {cmpPath, samePath} from './Path';
-import {marks} from './BookmarkFind';
+import {rangeMarks as marks} from './BookmarkMarks';
 import {forEachIn, loose} from './Walk';
 
-const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end'};
+const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end',
+  commentRangeStart: 'start', commentRangeEnd: 'end'};
+const NS = {commentRangeStart: 'c', commentRangeEnd: 'c'};
+const CMT = {commentRangeStart: 'cmtStart', commentRangeEnd: 'cmtEnd'};
+
+/** See the header. */
+export const keyOf = (m, kind = m.kind) => (m.ns || 'b') + ' ' + kind +
+  ' ' + m.id;
 
 /** The id of a mark node (any prefix), or null. */
 function idOf(n) {
@@ -95,8 +115,7 @@ export function tableMarks(t, out) {
     if (b.type !== 'tbl' || !Array.isArray(b.rows)) return;
     for (const {node} of loose(b)) {
       const m = markOf(node);
-      if (m) out.push({kind: m.kind, id: m.id, x: {kind: 'raw',
-        level: 'p', node, text: ''}});
+      if (m) out.push({...m, x: asInline(node)});
     }
   });
   return out;
@@ -105,7 +124,17 @@ export function tableMarks(t, out) {
 /** See the header. */
 export function markOf(n) {
   const k = n && typeof n === 'object' ? localName(n) : '';
-  return Object.hasOwn(KIND, k) ? {kind: KIND[k], id: idOf(n)} : null;
+  return Object.hasOwn(KIND, k) ? {kind: KIND[k], id: idOf(n),
+    ns: NS[k] || 'b'} : null;
+}
+
+/** See the header. */
+export function asInline(node) {
+  const k = localName(node), id = Object.hasOwn(CMT, k) &&
+    !(Array.isArray(node.children) && node.children.length)
+    ? markId(node) : null;
+  return id === null ? {kind: 'raw', level: 'p', node, text: ''}
+    : {kind: CMT[k], level: 'p', id, node};
 }
 
 /** See the header. */
@@ -113,18 +142,18 @@ export function marksIn(b, a, z, out) {
   for (let k = b.text.indexOf(OBJ, a); k >= 0 && k < z;
     k = b.text.indexOf(OBJ, k + 1)) {
     const x = b.inlines[k];
-    const m = x && x.kind === 'raw' && x.level === 'p' &&
-      markOf(x.node);
-    if (m) out.push({kind: m.kind, id: m.id, x});
+    const m = x && (x.kind === 'raw' || x.kind === 'cmtStart' ||
+      x.kind === 'cmtEnd') && x.level === 'p' && markOf(x.node);
+    if (m) out.push({...m, x});
   }
   return out;
 }
 
-/** The marks of xs ({kind, id}) by `kind id`: Map key -> count. */
+/** The marks of xs by keyOf: Map key -> count. */
 function count(xs) {
   const c = new Map();
   for (const m of xs) {
-    const k = m.kind + ' ' + m.id;
+    const k = keyOf(m);
     c.set(k, (c.get(k) || 0) + 1);
   }
   return c;
@@ -133,7 +162,7 @@ function count(xs) {
 /** got's marks whose partner is in doc: their ends, then starts. */
 const partnered = (got, has) => {
   const keep = (kind, other) => got.filter((m) => m.kind === kind &&
-    m.id !== null && has(other, m.id)).map((m) => m.x);
+    m.id !== null && has(keyOf(m, other))).map((m) => m.x);
   return [...keep('end', 'start'), ...keep('start', 'end')];
 };
 
@@ -141,8 +170,8 @@ const partnered = (got, has) => {
 export function stillPaired(doc, got) {
   if (!got.length) return [];
   const all = count(marks(doc));
-  const gone = got.filter((m) => !all.has(m.kind + ' ' + m.id));
-  return partnered(gone, (kind, id) => all.has(kind + ' ' + id));
+  const gone = got.filter((m) => !all.has(keyOf(m)));
+  return partnered(gone, (k) => all.has(k));
 }
 
 /** Block path `at` before (<0), at (0) or after (>0) location b. */
@@ -153,7 +182,7 @@ const inside = (at, b) => at.length > b.at.length &&
   samePath(at.slice(0, b.at.length), b.at);
 
 /**
- * Mark m (./BookmarkFind marks) is deleted with the range: in a
+ * Mark m (./BookmarkMarks rangeMarks) is deleted with the range: in a
  * paragraph within it (inside a wrapper: the wrapper's offset), in a
  * kept block the range covers, or in a typed table the range covers
  * (one at an end: from its start edge, to its end edge).
@@ -175,10 +204,8 @@ export function keptMarks(doc, o) {
   if (!got.length) return [];
   const ms = marks(doc);
   const all = count(ms), here = count(ms.filter((m) => covered(m, o)));
-  return partnered(got, (kind, id) => {
-    const k = kind + ' ' + id;
-    return (all.get(k) || 0) - (here.get(k) || 0) > 0;
-  });
+  return partnered(got, (k) => (all.get(k) || 0) -
+    (here.get(k) || 0) > 0);
 }
 
 /** The paragraph nearest kept block loc among its container's

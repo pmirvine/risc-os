@@ -19,10 +19,13 @@
 // reached from the package, the main part or a story: see
 // ./PartTypes; a header or footer part the file did not have: an
 // Override with its own type, whatever the xml Default says, final
-// fix A F1-I2; a notes part made in the editor, ./NoteParts: the
-// same with its own type), _rels/.rels, the main part and its
+// fix A F1-I2; a notes part made in the editor, ./NoteParts, and a
+// comment part, ./CommentParts: the same with its own type),
+// _rels/.rels, the main part and its
 // .rels, styles, numbering and settings (raw, verbatim), the header
-// notes (./NoteWrite: untouched = their bytes), the header
+// notes (./NoteWrite: untouched = their bytes), the comments part
+// and its companions (./CommentWrite: untouched = their bytes;
+// entries of comments it does not know kept), the header
 // and footer stories (./StoryWrite: an untouched one as its bytes, a
 // removed one dropped with its relationship and .rels) and every
 // other entry of doc.parts byte-identical. XML parts are UTF-8.
@@ -41,7 +44,8 @@ import {repairs} from './PartTypes';
 import {documentTree, docScope} from './WriteBody';
 import {storiesOut} from './StoryWrite';
 import {notesOut} from './NoteWrite';
-import {checkNotes} from './ModelCheck';
+import {commentsOut} from './CommentWrite';
+import {checkNotes, checkComments} from './ModelCheck';
 import {stylesTree} from './WriteStyles';
 import {xmlBytes, contentTypes, relsTree, relType, zipOrder, CT}
   from './WriteParts';
@@ -72,6 +76,12 @@ function check(doc) {
     checkNotes(doc.notes);
   } catch (e) {
     throw new DocxError('bad-model', 'notes: ' + e.message,
+      {cause: e});
+  }
+  try {
+    checkComments(doc.comments);
+  } catch (e) {
+    throw new DocxError('bad-model', 'comments: ' + e.message,
       {cause: e});
   }
   for (const [n, st] of doc.stories || []) {
@@ -163,6 +173,24 @@ function newNotes(doc, known) {
   }
 }
 
+const WML = 'application/vnd.openxmlformats-officedocument.' +
+  'wordprocessingml.';
+const CMT_TYPES = {comments: WML + 'comments+xml',
+  extended: WML + 'commentsExtended+xml', ids: WML + 'commentsIds+xml',
+  extensible: WML + 'commentsExtensible+xml', people: WML +
+    'people+xml'};
+
+/** Each comment part the file did not have (./CommentParts) typed
+ *  as its kind in known, as newNotes does. */
+function newComments(doc, known) {
+  const names = doc.meta.commentParts || {};
+  for (const [k, t] of Object.entries(CMT_TYPES)) {
+    const n = names[k];
+    if (typeof n === 'string' && !findPart(doc.parts, n))
+      known.set(n, t);
+  }
+}
+
 /** Map name -> bytes of every part; see the header. */
 function buildParts(doc) {
   const {meta} = doc;
@@ -176,7 +204,8 @@ function buildParts(doc) {
   };
   const main = meta.mainPart;
   put(main, documentTree(doc), CT.main);
-  const st = storiesOut(doc, doc.rels.slice(), docScope(doc).map);
+  const scopeMap = docScope(doc).map;
+  const st = storiesOut(doc, doc.rels.slice(), scopeMap);
   const rels = st.rels;
   const sName = doc.styles ? stylesName(doc, rels, strict) : null;
   const mainRels = relsNameFor(main);
@@ -188,10 +217,13 @@ function buildParts(doc) {
   if (doc.rawSettings && meta.settingsPart)
     put(meta.settingsPart, doc.rawSettings, CT.settings);
   for (const [n, b] of st.parts) out.set(n, b);
-  for (const [n, b] of notesOut(doc, docScope(doc).map).parts)
+  for (const [n, b] of notesOut(doc, scopeMap).parts)
+    out.set(n, b);
+  for (const [n, b] of commentsOut(doc, scopeMap).parts)
     out.set(n, b);
   newStories(doc, known);
   newNotes(doc, known);
+  newComments(doc, known);
   for (const [n, b] of doc.parts)
     if (!out.has(n) && !st.drop.has(n)) out.set(n, b);
   const names = ['_rels/.rels', ...out.keys()];

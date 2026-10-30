@@ -1,7 +1,7 @@
 // ClipPaste - Paste and Cut in a document.
 //
 //   pasteBlocks(d, sel, blocks, {sameDoc, styleNames, styles, lists,
-//     pics, picScope, notes, report}) -> sel
+//     pics, picScope, notes, comments, report}) -> sel
 //   pastePlain(d, sel, text) -> sel       ./Edit.typeText
 //   cutSelection(d, sel) -> {slice, sel}  ./ClipSlice, then deleted
 //                                (a range cutting a field made whole
@@ -85,6 +85,21 @@
 // (./ClipClean toNote). The deleted selection's
 // marks take their notes with them at the step's end (./NoteKeep).
 //
+// Comments (Batch F1, ./ClipComments): the comment marks are kept by
+// ./ClipClean (cmtMarks) and every comment the copy carried whole
+// (opts.comments, ./ClipSlice) gets a new comment, a copy, under an
+// id taken now (nextCommentId, claimed) with a fresh w14:paraId, in
+// the same step, its comments part made when the document has none;
+// a reply under the new parent. From another document the comment
+// styles by Word's name first (styleUp). Every other comment mark
+// is dropped (its text around kept): one whose comment did not
+// come (half a range, HTML), and every one in a header, footer or
+// note, a comments part kept as bytes, with no id free:
+// report.comments then says why ('story', 'unknown', 'free';
+// ./ClipRoute). The deleted selection's marks take their comments
+// with them at the step's end (./CommentKeep), so a cut and a paste
+// is a move: the comment comes back under a new id.
+//
 // pastePlain: the text typed (\n splits paragraphs, controls go:
 // ./Edit), one undo step of its own. Ops go to the caret's path
 // (./EditPos loc.at), in a cell as at top level.
@@ -109,6 +124,8 @@ import {fitDepth, overShape, overwrite, landed}
   from './ClipPasteTbl';
 import {relist, styled} from './ClipCarry';
 import {carry, styleUp} from './ClipNotes';
+import {carry as carryComments, styleUp as commentStyles}
+  from './ClipComments';
 
 export {deleteSelection};
 
@@ -182,7 +199,7 @@ function kept(list, off) {
 /** See the header. */
 export function pasteBlocks(d, sel, blocks, opts = {}) {
   const how = {...opts, toNote: d.note !== null && typeof d.note ===
-    'object'};
+    'object', cmtMarks: true};
   const fit = () => apart(paired(clean(blocks, d.doc, how)));
   let list = fit();
   if (!list.length) return sel;
@@ -195,7 +212,10 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
   let out = null;
   d.atomic(() => {
     // (a style made by name: the blocks mapped to it)
-    if (!opts.sameDoc && styleUp(d, opts)) list = fit();
+    if (!opts.sameDoc) {
+      const a = styleUp(d, opts), b = commentStyles(d, opts);
+      if (a || b) list = fit();
+    }
     let pos = null, loc = null;
     if (!over) {
       pos = collapsed(sel) ? o.from : deleteRange(d, o);
@@ -207,7 +227,7 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
     }
     if (over) list = [landed(d.doc, over, list[0])];
     list = fitDepth(list, over ? depthOf(over.table) : loc.depth);
-    list = carry(d, list, opts);
+    list = carryComments(d, carry(d, list, opts), opts);
     if (!opts.sameDoc) {
       if (opts.styles instanceof Map)
         list = styled(d, list, opts.styles);

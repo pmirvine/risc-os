@@ -16,10 +16,11 @@
 // table, row or cell object is never changed. Section ops refuse a
 // nested path.
 // Every op but a compound, a setDocPart, a setStory, the section
-// ops and the notes ops takes `story` (Batch D, D12, R8): a header
-// or footer part name of doc.stories, or a note's key {note: {kind,
-// id}} (Batch E2), whose blocks the path [0, i, ...] is in (absent
-// or null: the body). Its inverse has the same story; doc.stories
+// ops, the notes ops and the comments ops takes `story` (Batch D,
+// D12, R8): a header or footer part name of doc.stories, or a
+// note's key {note: {kind, id}} (Batch E2), whose blocks the path
+// [0, i, ...] is in (absent or null: the body). Its inverse has the
+// same story; doc.stories
 // (doc.notes) is replaced by a new Map holding a new Story (Note),
 // never changed in place (./OpsPath). The others refuse a story (a
 // compound's ops each carry their own; a setStory's `story` is the
@@ -48,6 +49,9 @@
 //   setNoteOpts  {level, kind, value}
 //   setNotesPart {kind, value}       (footnotes and endnotes:
 //                                    ./OpsNotes)
+//   addComment   {id, comment, at?}  removeComments {ids}
+//   addComments  {comments, order}   setComment {id, ...fields}
+//   setCommentsPart {kind, value}    (comments: ./OpsComments)
 //
 // NEVER CHANGE A MODEL OBJECT IN PLACE. Blocks, runs, rPr, pPr,
 // inlines and Xml nodes are shared between the live Doc and the
@@ -55,11 +59,11 @@
 // part makes new objects for that part only). apply() copies the op
 // it is given, so callers' objects never enter the Doc (except a
 // setDocPart's value, a setStory's Story, the Notes, patch values,
-// rels, raw and part value of the notes ops, and a restoreBlock's
-// TABLE snapshot: immutable by contract, kept by reference so that a
-// new table shares its
-// unchanged rows with the old one, D4); applyOwn() does not, and is
-// only for ops this module made (Document's undo).
+// rels, raw and part value of the notes ops, the Comments, blocks
+// and raw of the comments ops, and a restoreBlock's TABLE snapshot:
+// immutable by contract, kept by reference so that a new table
+// shares its unchanged rows with the old one, D4); applyOwn() does
+// not, and is only for ops this module made (Document's undo).
 //
 // Ids: a block put in (and every block inside a table) must have an
 // id used nowhere else in doc (./OpsUtil checkIds); a restoreBlock of
@@ -81,6 +85,8 @@ import {splitSection, mergeSection, setSection}
 import {setStory} from './OpsStory';
 import {addNote, removeNote, setNote, setNoteRels, setNoteOpts,
   setNotesPart, addNotes, removeNotes} from './OpsNotes';
+import {addComment, addComments, removeComments, setComment,
+  setCommentsPart} from './OpsComments';
 import {bump} from './DocVersion';
 
 /**
@@ -151,15 +157,16 @@ function restoreBlock(doc, op) {
 function compound(doc, op) {
   if (!Array.isArray(op.ops)) fail('compound needs ops');
   const done = [];
-  const m = doc.stories, n = doc.notes;
+  const m = doc.stories, n = doc.notes, cm = doc.comments;
   try {
     for (const o of op.ops) done.push(applyOwn(doc, o));
   } catch (e) {
     for (let k = done.length - 1; k >= 0; k--) applyOwn(doc, done[k]);
-    // (undone: the stories and notes as they were, so the very
-    // objects again)
+    // (undone: the stories, notes and comments as they were, so the
+    // very objects again)
     if (doc.stories !== m) doc.stories = m;
     if (doc.notes !== n) doc.notes = n;
+    if (doc.comments !== cm) doc.comments = cm;
     throw e;
   }
   return {op: 'compound', ops: done.reverse()};
@@ -169,13 +176,16 @@ const KINDS = {replaceText, spliceText, setProps, splitBlock,
   mergeBlock, insertBlock, removeBlock, restoreBlock, compound,
   removeBlocks, insertBlocks, setDocPart, splitSection,
   mergeSection, setSection, setStory, addNote, removeNote, setNote,
-  setNoteRels, setNoteOpts, setNotesPart, addNotes, removeNotes};
+  setNoteRels, setNoteOpts, setNotesPart, addNotes, removeNotes,
+  addComment, addComments, removeComments, setComment,
+  setCommentsPart};
 
 /** The ops that refuse a story (D12). */
 const BODY_ONLY = new Set(['compound', 'setDocPart', 'splitSection',
   'mergeSection', 'setSection', 'addNote', 'removeNote', 'setNote',
   'setNoteRels', 'setNoteOpts', 'setNotesPart', 'addNotes',
-  'removeNotes']);
+  'removeNotes', 'addComment', 'addComments', 'removeComments',
+  'setComment', 'setCommentsPart']);
 
 /** The notes ops' fields: [kept by reference (see copy), copied]. */
 const BY_REF = {addNote: [['note', 'raw'], ['kind', 'id', 'at']],
@@ -184,7 +194,21 @@ const BY_REF = {addNote: [['note', 'raw'], ['kind', 'id', 'at']],
   removeNotes: [['raw'], ['kind', 'ids']],
   setNote: [['note'], ['kind', 'id', 'patch']],
   setNoteRels: [['rels'], ['kind']],
-  setNotesPart: [['value'], ['kind']]};
+  setNotesPart: [['value'], ['kind']],
+  addComment: [['comment', 'raw'], ['id', 'at']],
+  addComments: [['comments', 'order', 'raw'], []],
+  removeComments: [['raw'], ['ids']],
+  setCommentsPart: [['value'], ['kind']]};
+
+/** A setComment copied: every field of it, the Comment and blocks
+ *  kept by reference (see copy). */
+function copySetComment(op) {
+  const o = {};
+  for (const k of Object.keys(op)) {
+    o[k] = k === 'comment' || k === 'blocks' ? op[k] : clone(op[k]);
+  }
+  return o;
+}
 
 /**
  * Apply `op` to `doc` and return the op that undoes it. The op is
@@ -206,11 +230,13 @@ export function apply(doc, op) {
  * setStory's Story (./OpsStory: its bytes and orig must stay the
  * objects read, for ./StoryWrite), nor the Notes, patch values,
  * rels, raw and part value of the notes ops (./OpsNotes: the very
- * objects, so that ./NoteWrite and a layout know them again).
+ * objects, so that ./NoteWrite and a layout know them again), nor
+ * the Comments, blocks and raw of the comments ops (./OpsComments).
  */
 function copy(op) {
   if (op && typeof op.op === 'string' && Object.hasOwn(BY_REF, op.op))
     return copyNoteOp(op);
+  if (op && op.op === 'setComment') return copySetComment(op);
   if (op && op.op === 'setDocPart')
     return keep(op, {op: 'setDocPart', key: op.key, value: op.value});
   if (op && op.op === 'setStory') {
@@ -227,9 +253,9 @@ function copy(op) {
   return clone(op);
 }
 
-/** A notes op copied: its own fields only, the by-reference ones
- *  kept (see copy); a setNote's patch a new object holding the
- *  very values. */
+/** A notes or comments op copied: its own fields only, the
+ *  by-reference ones kept (see copy); a setNote's patch a new
+ *  object holding the very values. */
 function copyNoteOp(op) {
   const [ref, own] = BY_REF[op.op];
   const o = {op: op.op};

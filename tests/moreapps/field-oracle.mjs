@@ -44,7 +44,9 @@
 //   same(a, b)  the comparison above
 //   oracleFiles()  corpusFiles() without the hand-off files of Batch
 //     E3 (corpus/handoff/en3-*: made and updated by !Letters, so
-//     their stored results are ours, not Word's)
+//     their stored results are ours, not Word's) and of Batch F1
+//     (corpus/handoff/cm-*: made by !Letters, some from corpus
+//     files, which would then be counted twice)
 //   resultsOf(doc, story?) -> [{instr, stored}]  every field of the
 //     body (story: that header's or footer's part) with its stored
 //     result as fieldOracle reads it (null: none)
@@ -63,7 +65,7 @@ export const CAPS = {fields: 2000, bytes: 30e6};
 
 /** See the header. */
 export const oracleFiles = () => corpusFiles().filter((f) =>
-  !/(^|[\\/])handoff[\\/]en3-/.test(f));
+  !/(^|[\\/])handoff[\\/](en3|cm)-/.test(f));
 
 /** Compare two results: white space collapsed, ends trimmed. */
 export const same = (a, b) => norm(a) === norm(b);

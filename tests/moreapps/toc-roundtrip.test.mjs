@@ -681,10 +681,11 @@ describe('fields: the consolidated oracle (Word\'s stored results)',
         }
       });
 
-    it('the pages-corpus pin is unchanged (325 of 1387)', () => {
+    it('the pages-corpus pin is unchanged (328 of 1387)', () => {
       const pin = JSON.parse(readFileSync(new URL(
         './corpus-expected.json', import.meta.url), 'utf8')).pageStarts;
-      assert.equal(pin.matched, 325);
+      // (325 -> 328 in Batch F1: a comment reference draws nothing)
+      assert.equal(pin.matched, 328);
       assert.equal(pin.ourCount, 1387);
     });
   });

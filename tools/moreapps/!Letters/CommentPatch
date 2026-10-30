@@ -1,0 +1,305 @@
+// CommentPatch - the Comments pane's rows, what its buttons may do
+// and the options its text field gives the commands (./CommentBox,
+// Batch F1). Pure: no desktop services; the document is only read.
+//
+//   rows(doc, filter) -> Row[]  (frozen) every comment of doc, a
+//       thread at a time: the threads in the order their first
+//       comment's marks come in the body (./CommentMarks marks: the
+//       first mark of each in document order), then those with no
+//       mark there (orphans, a thread kept in a header...) in the
+//       file's order; under each thread's first comment its replies
+//       at every depth, in the file's order, indented once (Word's
+//       threads are flat: a reply to a reply answers the thread).
+//       Parents as ./CommentRead parentsOf gives them (one pass;
+//       cycles broken, missing or self parents top level); each
+//       thread found once, so the cost is linear in the comments
+//       (never parentOf per comment, which walks the thread).
+//       filter 'unresolved': the comments not done (anything else:
+//       'all'); a reply shown whose thread's first comment is not
+//       is at depth 0. Cached per Doc while doc.comments and the marks
+//       (both replaced on every change) are the same objects
+//     Row {id, root (its thread's first comment), depth (0 | 1),
+//       author, initials, date (shortDate of w:date), lines (the
+//       first LINES lines of its text that have something, each cut
+//       at CHARS characters with '...'), resolved (done), marked
+//       (a mark of its thread's first comment is in the body)}
+//   FILTERS  [{id: 'all', text: 'All'}, {id: 'unresolved', text:
+//       'Unresolved'}]
+//   emptyText(filter) -> what the pane says when there is no row
+//   shortDate(w:date) -> 'dd/MM/yyyy HH:mm' as written (Word writes
+//       the local time, with a Z), '' when it is not a date
+//   patch(values, row) -> {opts} | {needsAuthor: true} | {error}
+//       values {mode, text, name?, initials?}: mode 'add' (a new
+//       comment on the selection: opts {text, author, initials} for
+//       ./CommentCmd addComment), 'reply' (the same for replyTo on
+//       row's comment) or 'edit' (opts {text} for editComment).
+//       error, for the pane's message line: a text with nothing in
+//       it or not a string (Word posts no empty comment), no row
+//       for reply or edit, a bad mode. needsAuthor: add or reply
+//       with no name or initials (./CommentCmd cleanName's)
+//   buttons(d, row) -> {edit, reply, resolve, del, resolveText,
+//       why: {edit, reply, resolve, del}}  which of the pane's
+//       buttons work on row (null: none chosen): each exactly when
+//       its command would (./CommentCmd commandWhy, null), the
+//       reason in why otherwise; resolveText 'Reopen' for a
+//       resolved row, else 'Resolve'. d the view's Document (a
+//       ./StoryFacade in the header and footer or notes mode: all
+//       refused)
+//   liveId(doc, id) -> id | null  id while it names a comment of doc
+//       (the pane checks the chosen comment and dw.comment so after
+//       every change: an undo, a redo, a delete)
+//   rangeOf(doc, id) -> Selection | null  what choosing a row
+//       selects: the comment's range in the body (from just after
+//       its start mark to its end mark), a caret at the reference of
+//       a point comment (else at its start); a comment with no
+//       marks of its own: its thread's first comment's; null with
+//       none in the body
+//   holdSel(doc, sel) -> (after) -> Selection | null  sel kept across
+//       a command that removes comments (and their marks): each end
+//       moved back over the marks before it, in its paragraph, of
+//       comments doc had and after has not; null when sel is not
+//       one, or an end's paragraph is gone
+//   LINES 2, CHARS 80
+import {OBJ} from './Model';
+import * as S from './Selection';
+import {at as blockAt} from './Walk';
+import {findBlock} from './EditPos';
+import {marks, paraMarks} from './CommentMarks';
+import {parentsOf} from './CommentRead';
+import {commentOf, isCommentId} from './OpsComments';
+import {commandWhy, cleanName} from './CommentCmd';
+import {clean} from './Edit';
+
+export const LINES = 2, CHARS = 80;
+export const FILTERS = Object.freeze([
+  Object.freeze({id: 'all', text: 'All'}),
+  Object.freeze({id: 'unresolved', text: 'Unresolved'})]);
+const NONE = Object.freeze([]);
+const isObj = (v) => v !== null && typeof v === 'object';
+// doc.comments -> {marks, all, unresolved}
+const memo = new WeakMap();
+
+/** See the header. */
+export function emptyText(filter) {
+  return filter === 'unresolved' ? 'There are no unresolved ' +
+    'comments.' : 'There are no comments in this document.';
+}
+
+/** See the header. */
+export function shortDate(v) {
+  if (typeof v !== 'string' || v.length < 16) return '';
+  const n = (a, b) => {
+    const s = v.slice(a, b);
+    for (const c of s) if (c < '0' || c > '9') return -1;
+    return Number(s);
+  };
+  if (v[4] !== '-' || v[7] !== '-' || v[10] !== 'T' || v[13] !== ':')
+    return '';
+  const y = n(0, 4), mo = n(5, 7), dd = n(8, 10), h = n(11, 13),
+    mi = n(14, 16);
+  if (y < 0 || mo < 1 || mo > 12 || dd < 1 || dd > 31 || h < 0 ||
+    h > 23 || mi < 0 || mi > 59) return '';
+  return v.slice(8, 10) + '/' + v.slice(5, 7) + '/' + v.slice(0, 4) +
+    ' ' + v.slice(11, 16);
+}
+
+/** The first lines of comment c (see the header). */
+function linesOf(c) {
+  const out = [];
+  const bs = isObj(c) && Array.isArray(c.blocks) ? c.blocks : NONE;
+  for (const b of bs) {
+    if (out.length >= LINES) break;
+    if (!isObj(b) || b.type !== 'p' || typeof b.text !== 'string')
+      continue;
+    // (a long paragraph: only its start is looked at)
+    const look = b.text.slice(0, 4 * CHARS);
+    const s = look.split(OBJ).join('').split(/\s/).filter(Boolean)
+      .join(' ');
+    if (!s) continue;
+    const cut = s.length > CHARS || look.length < b.text.length;
+    out.push(cut ? s.slice(0, CHARS) + '...' : s);
+  }
+  return Object.freeze(out);
+}
+
+/** The thread root of each comment: Map id -> root (linear). */
+function rootsOf(ps) {
+  const root = new Map();
+  for (const id of ps.keys()) {
+    if (root.has(id)) continue;
+    const path = [];
+    let x = id;
+    // (parentsOf has broken every cycle: the walk ends)
+    while (ps.has(x) && !root.has(x)) {
+      path.push(x);
+      x = ps.get(x);
+    }
+    const r = root.has(x) ? root.get(x) : x;
+    for (const y of path) root.set(y, r);
+  }
+  return root;
+}
+
+/** Both lists of doc's rows, worked out once. */
+function work(doc) {
+  const c = doc.comments, map = c.map;
+  const order = [];
+  const seen = new Set();
+  for (const id of [...(Array.isArray(c.order) ? c.order : NONE),
+    ...map.keys()]) {
+    if (map.has(id) && !seen.has(id)) {
+      seen.add(id);
+      order.push(id);
+    }
+  }
+  const root = rootsOf(parentsOf(doc));
+  const rootOf = (id) => (root.has(id) ? root.get(id) : id);
+  const kids = new Map();
+  for (const id of order) {
+    const r = rootOf(id);
+    if (r === id) continue;
+    if (!kids.has(r)) kids.set(r, []);
+    kids.get(r).push(id);
+  }
+  const ms = marks(doc), tops = [], placed = new Set();
+  for (const id of ms.keys()) {
+    if (map.has(id) && rootOf(id) === id && !placed.has(id)) {
+      placed.add(id);
+      tops.push(id);
+    }
+  }
+  for (const id of order) {
+    if (rootOf(id) === id && !placed.has(id)) {
+      placed.add(id);
+      tops.push(id);
+    }
+  }
+  const all = [];
+  const row = (id, r, depth) => {
+    const x = map.get(id);
+    all.push(Object.freeze({id, root: r, depth,
+      author: typeof x.author === 'string' ? x.author : '',
+      initials: typeof x.initials === 'string' ? x.initials : '',
+      date: shortDate(x.date), lines: linesOf(x),
+      resolved: x.done === true, marked: ms.has(r)}));
+  };
+  for (const r of tops) {
+    row(r, r, 0);
+    for (const k of kids.get(r) || NONE) row(k, r, 1);
+  }
+  // (a reply whose thread's first comment is left out: not indented
+  // under another thread)
+  const shown = all.filter((x) => !x.resolved).map((x) => (x.depth &&
+    map.get(x.root).done === true ? Object.freeze({...x, depth: 0})
+    : x));
+  return {all: Object.freeze(all), unresolved: Object.freeze(shown)};
+}
+
+/** See the header. */
+export function rows(doc, filter) {
+  const c = isObj(doc) && isObj(doc.comments) ? doc.comments : null;
+  if (!c || !(c.map instanceof Map) || !c.map.size) return NONE;
+  const ms = marks(doc);
+  let m = memo.get(c);
+  if (!m || m.marks !== ms) {
+    m = {marks: ms, ...work(doc)};
+    memo.set(c, m);
+  }
+  return filter === 'unresolved' ? m.unresolved : m.all;
+}
+
+const MODES = new Set(['add', 'reply', 'edit']);
+
+/** See the header. */
+export function patch(values, row) {
+  const v = isObj(values) ? values : {};
+  if (!MODES.has(v.mode)) return {error: 'Choose Insert > ' +
+    'Comment..., Reply or Edit first.'};
+  if (v.mode !== 'add' && !isObj(row))
+    return {error: 'Choose a comment first.'};
+  if (typeof v.text !== 'string' || !clean(v.text).trim())
+    return {error: 'Type the comment first.'};
+  if (v.mode === 'edit') return {opts: {text: v.text}};
+  const author = cleanName(v.name), initials = cleanName(v.initials);
+  if (!author || !initials) return {needsAuthor: true};
+  return {opts: {text: v.text, author, initials}};
+}
+
+const BUTTONS = {edit: 'edit', reply: 'reply', resolve: 'resolve',
+  del: 'delete'};
+
+/** See the header. */
+export function buttons(d, row) {
+  const out = {why: {}};
+  const id = isObj(row) ? row.id : null;
+  for (const [k, cmd] of Object.entries(BUTTONS)) {
+    const why = id === null ? 'Choose a comment first.'
+      : commandWhy(d, id, cmd);
+    out[k] = why === null;
+    out.why[k] = why;
+  }
+  out.resolveText = isObj(row) && row.resolved ? 'Reopen' : 'Resolve';
+  return out;
+}
+
+/** See the header. */
+export function liveId(doc, id) {
+  return isCommentId(id) && isObj(doc) && commentOf(doc, id) ? id
+    : null;
+}
+
+/** The {id, off} of a mark {path, off} in the body, or null. */
+function posOf(doc, m) {
+  const b = m ? blockAt(doc, m.path) : null;
+  return b && b.type === 'p' ? {id: b.id, off: m.off} : null;
+}
+
+/** The selection of comment id's own marks, or null. */
+function own(doc, id) {
+  const m = marks(doc).get(id);
+  if (!m) return null;
+  if (m.start && m.end) {
+    const a = posOf(doc, m.start), z = posOf(doc, m.end);
+    if (a && z) {
+      const from = {id: a.id, off: a.off + 1};
+      const empty = a.id === z.id && z.off <= from.off;
+      if (!empty) return S.select(from, z);
+    }
+  }
+  const p = posOf(doc, m.ref || m.start || m.end);
+  return p ? S.caret(p) : null;
+}
+
+/** See the header. */
+export function rangeOf(doc, id) {
+  if (!liveId(doc, id)) return null;
+  const s = own(doc, id);
+  if (s) return s;
+  const r = rows(doc, 'all').find((x) => x.id === id);
+  return r && r.root !== id ? own(doc, r.root) : null;
+}
+
+/** See the header. */
+export function holdSel(doc, sel) {
+  if (!isObj(sel) || !sel.anchor || !sel.head) return () => null;
+  const grab = (pos) => {
+    const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+    const b = loc && loc.b.type === 'p' ? loc.b : null;
+    return b ? {pos, ms: paraMarks(b).filter((m) => m.off < pos.off &&
+      commentOf(doc, m.id))} : null;
+  };
+  const a = grab(sel.anchor), h = grab(sel.head);
+  return (after) => {
+    const move = (g) => {
+      if (!g) return null;
+      const loc = findBlock(after, g.pos.id);
+      if (!loc || loc.b.type !== 'p') return null;
+      const n = g.ms.filter((m) => !commentOf(after, m.id)).length;
+      const off = Math.max(0, Math.min(loc.b.text.length,
+        g.pos.off - n));
+      return {id: g.pos.id, off};
+    };
+    const x = move(a), y = move(h);
+    return x && y ? S.select(x, y, sel.affinity) : null;
+  };
+}

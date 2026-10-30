@@ -183,7 +183,7 @@ try {
   await closeMenu();
   ok('the window menu has Table after Format; its items in order, Insert table... live, all the others shaded outside a '
     + 'table; Split table shows Ctrl+Shift+Enter, Tab Ctrl+Tab',
-  same(top.slice(6, 12), ['Insert', 'View', 'Outline', 'Format', 'Table', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
+  same(top.slice(6, 13), ['Insert', 'View', 'Outline', 'Format', 'Table', 'Tools', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
     && same(tm0.map((x) => x[1]), SHOWN.map((t) => t !== 'Insert table...'))
     && tm0.find((x) => x[0] === 'Split table')[2] === 'Ctrl+Shift+Enter' && tm0.find((x) => x[0] === 'Tab')[2] === 'Ctrl+Tab'
     && same(sub0.map((x) => x[0]), ['Rows above', 'Rows below', 'Columns to the left', 'Columns to the right'])

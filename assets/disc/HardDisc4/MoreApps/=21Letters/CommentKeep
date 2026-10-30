@@ -1,0 +1,209 @@
+// CommentKeep - a comment goes with its marks (Batch F1): the
+// comments whose last mark in the body an edit took away, for
+// ./Document, which removes them in the same undo step (as
+// ./NoteKeep does for notes).
+//
+//   dropped(doc, invs) -> op | null  after the ops of one step (one
+//       group, or one op outside a group) whose inverses are invs,
+//       applied to doc: a removeComments op (./OpsComments) for every
+//       comment of doc.comments that the step took a modelled mark
+//       of (cmtStart, cmtEnd, cmtRef: ./ReadPara) from the body and
+//       that has none of its three marks there now (./CommentMarks
+//       marks), and for the replies of those (a reply goes with its
+//       parent, ./CommentRead parentsOf, at every depth: the marks
+//       of such a reply the step left in the body are deleted with
+//       it, in a compound op before the removeComments, so no mark
+//       is left naming a removed comment); null when there is
+//       none. What a step took is read from its inverses: what
+//       they would put back (spliceText's content, a
+//       restoreBlock's snapshot, insertBlock(s)' blocks, a
+//       compound's ops), in the body only (story null). A mark moved,
+//       cut and put back in the same step, or a paragraph only
+//       reformatted, keeps its comment. Never removed: a comment a
+//       mark not modelled as a body mark still names (opaqueIds: in
+//       a header, footer, note, text box, content control, link,
+//       tracked change, a table's own marks, a kept block, a
+//       comment's text: there it is not editable in F1, and its
+//       range is not ours to judge), nor one no mark ever named (an
+//       orphan: no mark of it was taken). A mark naming no comment is
+//       nothing to remove. Cost: nothing for a document with no
+//       comment; otherwise the size of what was taken, the body's
+//       marks (memoised per paragraph) only when a mark was taken,
+//       one walk of the opaque marks only when a comment would go,
+//       and the comments' parents (linear) only then
+//   opaqueIds(doc) -> Set of ids  every comment id a mark element
+//       (w:commentRangeStart / End, w:commentReference, with a
+//       whole-number w:id) names that is not a modelled body mark:
+//       inside raw inlines and kept blocks of the body, the body's
+//       tables' loose marks, every story and note (./Walk
+//       scanStories), and the comments' own blocks
+//   stats  {walks}: opaqueIds walks (a cost check)
+//
+// Range halves are not this module's: a deletion keeps a pair whole
+// by ./BookmarkKeep's rule (so a comment loses both range marks or
+// neither). Undo puts the comments back with their marks (the
+// step's inverse). Pure: no desktop services.
+import {marks, paraMarks} from './CommentMarks';
+import {scan, scanStories, forEachIn, forEachBlock, loose}
+  from './Walk';
+import {cmpPath} from './Path';
+import {parentsOf} from './CommentRead';
+import {isCommentMark, COMMENT_MARKS} from './Kinds';
+
+export const stats = {walks: 0};
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const NAMES = new Set(Object.values(COMMENT_MARKS));
+const MAX_DEPTH = 256;
+const localOf = (name) => (typeof name === 'string'
+  ? name.slice(name.indexOf(':') + 1) : '');
+
+/** The comments' Map when doc has a comment (a quick look). */
+function mapOf(doc) {
+  const c = isObj(doc) && isObj(doc.comments) ? doc.comments.map : null;
+  return c instanceof Map && c.size ? c : null;
+}
+
+/** The ids of the marks of paragraph p into out. */
+function take(p, out) {
+  if (!isObj(p) || p.type !== 'p') return;
+  for (const m of paraMarks(p)) out.add(m.id);
+}
+
+/** The ids of the marks the blocks hold, tables in them too. */
+function inBlocks(bs, out) {
+  if (!Array.isArray(bs)) return;
+  forEachIn(bs, [0], (b) => {
+    take(b, out);
+    return true;
+  });
+}
+
+/** The ids of the marks inverse op `op` would put back. */
+function putBack(op, out) {
+  if (!isObj(op)) return;
+  if (op.op === 'compound') {
+    if (Array.isArray(op.ops)) for (const o of op.ops) putBack(o, out);
+    return;
+  }
+  if (op.story !== undefined && op.story !== null) return;
+  if (op.op === 'spliceText') {
+    const xs = isObj(op.content) && isObj(op.content.inlines)
+      ? op.content.inlines : null;
+    for (const x of xs ? Object.values(xs) : []) {
+      if (isCommentMark(x) && Number.isInteger(x.id)) out.add(x.id);
+    }
+  } else if (op.op === 'restoreBlock') inBlocks([op.snapshot], out);
+  else if (op.op === 'insertBlock') inBlocks([op.block], out);
+  else if (op.op === 'insertBlocks') inBlocks(op.blocks, out);
+}
+
+/** The comment ids named under Xml node into out. */
+function idsIn(node, out) {
+  const stack = [[node, 0]];
+  while (stack.length) {
+    const [n, depth] = stack.pop();
+    if (!isObj(n) || typeof n.name !== 'string') continue;
+    if (NAMES.has(localOf(n.name)) && Array.isArray(n.attrs)) {
+      const a = n.attrs.find((e) => Array.isArray(e) &&
+        /(^|:)id$/.test(e[0]));
+      if (a && /^[0-9]{1,10}$/.test(a[1])) out.add(+a[1]);
+    }
+    if (Array.isArray(n.children) && depth < MAX_DEPTH) {
+      for (const c of n.children) stack.push([c, depth + 1]);
+    }
+  }
+}
+
+/** The opaque marks of block b into out (all: modelled ones too). */
+function blockIds(b, out, all) {
+  if (!isObj(b)) return;
+  if (b.type === 'tbl') {
+    for (const m of loose(b)) idsIn(m.node, out);
+    return;
+  }
+  if (b.type !== 'p') {
+    idsIn(b.node, out);
+    return;
+  }
+  const xs = isObj(b.inlines) ? b.inlines : {};
+  for (const k of Object.keys(xs)) {
+    const x = xs[k];
+    if (!isObj(x)) continue;
+    if (!isCommentMark(x) || all) idsIn(x.node, out);
+  }
+}
+
+/** See the header. */
+export function opaqueIds(doc) {
+  stats.walks++;
+  const out = new Set();
+  scan(doc, (b) => blockIds(b, out, false));
+  scanStories(doc, (b) => blockIds(b, out, true));
+  const m = isObj(doc) && isObj(doc.comments) ? doc.comments.map : null;
+  for (const c of m instanceof Map ? m.values() : []) {
+    if (!isObj(c) || !Array.isArray(c.blocks)) continue;
+    forEachIn(c.blocks, [0], (b) => {
+      blockIds(b, out, true);
+      return true;
+    });
+  }
+  return out;
+}
+
+/** gone with every reply under it (not one an opaque mark names). */
+function withReplies(doc, map, gone, opaque) {
+  const kids = new Map();
+  for (const [id, parent] of parentsOf(doc)) {
+    if (!kids.has(parent)) kids.set(parent, []);
+    kids.get(parent).push(id);
+  }
+  const todo = [...gone];
+  while (todo.length) {
+    for (const k of kids.get(todo.pop()) || []) {
+      if (gone.has(k) || opaque.has(k) || !map.has(k)) continue;
+      gone.add(k);
+      todo.push(k);
+    }
+  }
+  return gone;
+}
+
+/** See the header. */
+export function dropped(doc, invs) {
+  const map = mapOf(doc);
+  if (!map || !Array.isArray(invs)) return null;
+  const was = new Set();
+  for (const op of invs) putBack(op, was);
+  if (!was.size) return null;
+  const now = marks(doc);
+  const lost = [...was].filter((id) => !now.has(id) && map.has(id));
+  if (!lost.length) return null;
+  const opaque = opaqueIds(doc);
+  const gone = new Set(lost.filter((id) => !opaque.has(id)));
+  if (!gone.size) return null;
+  withReplies(doc, map, gone, opaque);
+  const order = Array.isArray(doc.comments.order)
+    ? doc.comments.order : [...map.keys()];
+  const rm = {op: 'removeComments',
+    ids: order.filter((id) => gone.has(id))};
+  // (a reply goes with its parent: its marks the step left go too)
+  const left = [...gone].filter((id) => now.has(id));
+  if (!left.length) return rm;
+  return {op: 'compound', ops: [...unmark(doc, new Set(left)), rm]};
+}
+
+/** replaceText ops deleting every modelled mark of ids in the body,
+ *  the last first (so each offset holds while they apply). */
+function unmark(doc, ids) {
+  const at = [];
+  forEachBlock(doc, (b, path) => {
+    if (!isObj(b) || b.type !== 'p') return true;
+    for (const m of paraMarks(b))
+      if (ids.has(m.id)) at.push({path, off: m.off});
+    return true;
+  });
+  at.sort((a, b) => cmpPath(b.path, a.path) || b.off - a.off);
+  return at.map((x) => ({op: 'replaceText', block: x.path, at: x.off,
+    del: 1, ins: ''}));
+}

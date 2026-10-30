@@ -344,15 +344,15 @@ try {
     && p4.pStyle === 'Heading1' && bs.style === 'Heading 1', { st, p4, bs });
   await clickAt(1, 1);
   ok('... a Normal paragraph shows Normal', /normal/i.test((await bar()).style), await bar());
-  // (Batch E1) the popup lists character styles, ends with a shaded More styles...; a character style applies to the selection
+  // (Batch E1) the popup lists character styles, ends with a live More styles... (it opens the Styles window); a character style applies to the selection
   await ev(() => window.__sel(4, 0, 4, 5));
   await clickIcon('styleMenu');
   const st2 = await ev(() => os.wimp.menus.levels[0]?.rows?.map((r) => [String(r.item.text), !!(typeof r.item.shaded === 'function' ? r.item.shaded() : r.item.shaded)]));
   await pick(0, 'Loud words');
   const p4c = await ev(() => { const b = window.__doc().doc.sections[0].blocks[4]; return { pStyle: b.pStyle ?? null, runs: b.runs.map((x) => [b.text.slice(x.start, x.end), x.rStyle ?? null]) }; });
   const bcs = await bar();
-  ok('the popup lists a character style and More styles... (shaded for now); picking it styles the selected text only',
-    st2?.some(([t]) => t === 'Loud words') && st2.at(-1)[0] === 'More styles...' && st2.at(-1)[1] === true
+  ok('the popup lists a character style and a live More styles...; picking Loud words styles the selected text only',
+    st2?.some(([t]) => t === 'Loud words') && st2.at(-1)[0] === 'More styles...' && st2.at(-1)[1] === false
     && p4c.runs[0][1] === 'Loud' && p4c.pStyle === 'Heading1' && p4c.runs.slice(1).every(([, s]) => !s), { st2, p4c });
   ok('... the field shows the character style while the selection is wholly in it', bcs.style === 'Loud words', bcs);
   await ev(() => window.__sel(4, 0, 4, 8));
@@ -365,13 +365,17 @@ try {
   await page.keyboard.press('Control+Z');
   await settle();
   await clickAt(1, 1);
-  // Format menu: Style > and Styles... (shaded until the Styles window exists)
+  // Format menu: Style > and Styles... (live: it opens the Styles window)
   const fmt = await ev(() => { const m = window.__doc().dw.menu(); const f = m.items.find((i) => i.text === 'Format'); const fm = f.submenu();
     const sty = fm.items.find((i) => i.text === 'Style').submenu();
     const ss = fm.items.find((i) => i.text === 'Styles...');
-    return { styles: !!ss, shaded: ss && (typeof ss.shaded === 'function' ? ss.shaded() : ss.shaded), sub: sty.items.map((i) => i.text) }; });
-  ok('Format has Style > (with the character style) and Styles... (shaded for now)', fmt.styles && fmt.shaded === true
-    && fmt.sub.includes('Loud words') && fmt.sub.at(-1) === 'More styles...', fmt);
+    return { styles: !!ss, shaded: ss && (typeof ss.shaded === 'function' ? ss.shaded() : ss.shaded), sub: sty.items.map((i) => i.text), more: (() => { const m = sty.items.at(-1); return (typeof m.shaded === 'function' ? m.shaded() : m.shaded) ? 'shaded' : 'live'; })() }; });
+  ok('Format has Style > (with the character style, and a live More styles...) and a live Styles...', fmt.styles && fmt.shaded === false
+    && fmt.sub.includes('Loud words') && fmt.sub.at(-1) === 'More styles...' && fmt.more === 'live', fmt);
+  const stw = await ev(() => { const w = window.__doc(); const m = w.dw.menu(); const fm = m.items.find((i) => i.text === 'Format').submenu();
+    const before = !!w.dw.boxes.get('styles')?.api?.isOpen; fm.items.find((i) => i.text === 'Styles...').action();
+    const a = w.dw.boxes.get('styles')?.api; const open = !!a?.isOpen; if (a?.close) a.close(); return { before, open }; });
+  ok('... Styles... opens the Styles window', stw.before === false && stw.open === true, stw);
   // Ctrl+Shift+S opens the style list under the field
   await clickAt(4, 1);
   await page.keyboard.press('Control+Shift+S');

@@ -46,6 +46,8 @@ export const ALLOW = [
   {file: 'ColAhead', count: 1, until: KEEP, why: GALLEY + ' (a ' +
     'paragraph\'s advance in the galley, guessing column widths: ' +
     'P10 fix I2)'},
+  {file: 'CommentPaint', count: 1, until: KEEP, why: ANSWERED +
+    ' (the point marker against the band: L.caretRect\'s rect)'},
   {file: 'DocHit', count: 8, until: KEEP, why: 'galley: the point ' +
     'is mapped by ./Place toGalley first (items, bands, border ' +
     'gaps); a table row moved by shiftOf'},

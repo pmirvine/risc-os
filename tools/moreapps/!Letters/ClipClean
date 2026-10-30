@@ -2,7 +2,7 @@
 // ./ClipPaste.
 //
 //   clean(blocks, doc, {sameDoc, styleNames, styles, lists, pics,
-//     picScope, inNote, toNote}) -> blocks
+//     picScope, inNote, toNote, inComment, cmtMarks}) -> blocks
 //   rebuild(c, swap, fmt) -> content  c ({text, runs, inlines})
 //     rebuilt run by run: each U+FFFC's inline x stays when swap(x)
 //     is null, else becomes the text swap(x) gives; fmt(r) is a
@@ -23,13 +23,19 @@
 // endnoteReference, permStart/End, the moveFrom/moveTo range marks
 // and the customXml*Range marks, at any depth): each becomes its
 // display text (a w:ins its inserted text, a w:del nothing), or
-// nothing. Pictures and other drawings are kept: ./ClipPaste then
-// gives every wp:docPr id in them afresh (./ClipPics freshDocPrs,
-// plan R14). A kept block whose XML holds any id that must stay
-// unique (./ClipIds.hasIds: those elements, a wp:docPr, a content
-// control's w:id, a change record's w:id) is pasted as text
-// instead (./ClipIds.flatten: a paragraph per table row, cells
-// joined by tabs); a kept one loses its w14:paraId / w14:textId.
+// nothing. A modelled comment mark (cmtStart, cmtEnd, cmtRef:
+// ./ReadPara, Batch F1) is kept, in the same document and across,
+// only with opts.cmtMarks (./ClipPaste: ./ClipComments carry then
+// gives it a new comment of its own or drops it), else it goes as
+// the raw one does (a header's copy, ./StoryCopy); with inNote or
+// inComment always. Pictures and
+// other drawings are kept: ./ClipPaste then gives every wp:docPr id
+// in them afresh (./ClipPics freshDocPrs, plan R14). A kept block
+// whose XML holds any id that must stay unique (./ClipIds.hasIds:
+// those elements, a wp:docPr, a content control's w:id, a change
+// record's w:id) is pasted as text instead (./ClipIds.flatten: a
+// paragraph per table row, cells joined by tabs); a kept one loses
+// its w14:paraId / w14:textId.
 // A footnote or endnote mark (a noteRef inline, Batch E2) is kept,
 // in the same document and across: ./ClipPaste then gives it a new
 // note of its own or drops it (./ClipNotes carry); a note's own
@@ -38,6 +44,10 @@
 // body or a header Word never writes one. With opts.inNote
 // (the blocks of a note the paste carries) the other way round: a
 // note's own mark is kept, any other mark goes (no note in a note).
+// With opts.inComment (the blocks of a comment the paste carries,
+// ./ClipComments) every note and comment mark goes and the
+// comment's own mark (a bare w:annotationRef) is kept, across
+// documents too.
 // A typed table (Batch C) comes whole: ./ClipCleanTbl sameTable
 // (its paragraphs as these, its marks with unique ids dropped); a
 // floating one never overlaps the tables before it (./TblFloat
@@ -89,6 +99,7 @@ import {picKept} from './ClipPics';
 import {sameTable, crossTable} from './ClipCleanTbl';
 import {apart} from './TblFloat';
 import {docMap} from './PicRead';
+import {isCommentMark} from './Kinds';
 
 const OBJ = '\ufffc';
 const isObj = (v) => v !== null && typeof v === 'object' &&
@@ -180,10 +191,14 @@ function cross(b, map, strict, opts, doc) {
     const rs = map(r.rStyle, 'character');
     return rs === undefined ? {rPr} : {rPr, rStyle: rs};
   };
-  const {pics, picScope} = opts, keep = markKept(opts.inNote, false);
+  const {pics, picScope} = opts;
+  const keep = markKept(opts.inNote, false, opts.inComment);
+  const cmt = cmtKept(opts);
   const swap = (x) => {
     const m = keep(x);
     if (m !== undefined) return m;
+    if (isCommentMark(x)) return cmt ? null : '';
+    if (opts.inComment && isAnnot(x)) return null;
     return picKept(x, pics, picScope, doc) ? null : inlineText(x);
   };
   const c = rebuild(contentOf(b), swap, fmt);
@@ -210,26 +225,36 @@ const isMark = (x) => isObj(x) && x.kind === 'noteRef';
 /** What a footnote or endnote mark becomes (see the header): null
  *  kept, '' dropped; undefined for any other inline. self: whether
  *  a note's own mark stays (pasted into a note). */
-const markKept = (inNote, self) => (x) => {
+const markKept = (inNote, self, none) => (x) => {
   if (!isMark(x)) return undefined;
+  if (none) return '';
   if (x.self === true) return inNote || self ? null : '';
   return inNote ? '' : null;
 };
 
+/** Whether comment marks are kept (see the header). */
+const cmtKept = (opts) => opts.cmtMarks === true && !opts.inNote &&
+  !opts.inComment;
+
+/** Whether x is a comment's own mark, a bare w:annotationRef. */
+const isAnnot = (x) => isObj(x) && x.kind === 'raw' && isObj(x.node) &&
+  /(^|:)annotationRef$/.test(String(x.node.name)) && !kids(x.node);
+
 /** Same document: the text an inline becomes, or null (kept). */
-const sameSwap = (inNote, toNote) => {
-  const keep = markKept(inNote, toNote);
+const sameSwap = (inNote, toNote, cmt, inCmt) => {
+  const keep = markKept(inNote, toNote, inCmt);
   return (x) => {
     const m = keep(x);
     if (m !== undefined) return m;
+    if (isCommentMark(x)) return cmt ? null : '';
     return isObj(x) && x.kind === 'raw' && hasUnique(x.node)
       ? (typeof x.text === 'string' ? cleanText(x.text) : '') : null;
   };
 };
 
 /** Paragraph block b for its own document, doc. */
-function same(b, inNote, toNote) {
-  const c = contentOf(b), sw = sameSwap(inNote, toNote);
+function same(b, inNote, toNote, cmt, inCmt) {
+  const c = contentOf(b), sw = sameSwap(inNote, toNote, cmt, inCmt);
   if (!isObj(b.pPr) || !Array.isArray(b.pPr.extra)) fail('bad pPr');
   const swap = Object.values(c.inlines).some((x) => sw(x) !== null);
   const fmt = (r) => (r.rStyle === undefined ? {rPr: dropIds(r.rPr)}
@@ -244,7 +269,9 @@ function same(b, inNote, toNote) {
 
 /** See the header. */
 export function clean(blocks, doc, opts = {}) {
-  const sameDoc = !!opts.sameDoc, inNote = !!opts.inNote;
+  const sameDoc = !!opts.sameDoc;
+  const inNote = !!opts.inNote, inCmt = !!opts.inComment;
+  const cmt = cmtKept(opts);
   const toNote = opts.toNote === true;
   const map = mapper(doc, opts.styleNames);
   const strict = isStrictDoc(doc);
@@ -260,11 +287,13 @@ export function clean(blocks, doc, opts = {}) {
       else out.push({type: 'opaque', node: keepIds(b.node)});
     } else if (b.type === 'tbl') {
       if (sameDoc) {
-        const t = sameTable(b, (x) => same(x, inNote, toNote));
+        const t = sameTable(b, (x) => same(x, inNote, toNote, cmt,
+          inCmt));
         out.push({...t, tblPr: apart(t.tblPr, docMap(doc))});
       } else out.push(crossTable(b, crossP, {strict, style}));
     } else if (b.type === 'p') {
-      out.push(sameDoc ? same(b, inNote, toNote) : crossP(b));
+      out.push(sameDoc ? same(b, inNote, toNote, cmt, inCmt)
+        : crossP(b));
     }
   }
   return out;

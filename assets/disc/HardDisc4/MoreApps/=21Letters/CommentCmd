@@ -1,0 +1,640 @@
+// CommentCmd - comments put in, edited, answered, resolved and
+// deleted (Batch F1). Each command is one undo step (typing.command,
+// d.atomic) and none when nothing changes; a refusal is null and
+// changes nothing.
+//
+//   addComment(d, typing, sel, {text, author, initials, date?})
+//       -> {id, sel} | {needsAuthor: true} | null  a new comment on
+//       sel: its comments part made first when the document has
+//       none (./CommentParts ensure), the styles on first use
+//       (Word's CommentText and CommentReference: ./NoteStyle
+//       noteStyle), the comment (./OpsComments addComment: id
+//       ./CommentParts nextCommentId, never reused in a session;
+//       author and initials as given, cleaned; date `date`, a Date
+//       (default now) written local as Word writes w:date
+//       (localDate) or a string (not '') kept as it is; a fresh
+//       w14:paraId and durableId (./CommentParts freshParaId: the
+//       companions that exist get their entries, ./CommentExt);
+//       not done, no parent), then its marks: w:commentRangeStart
+//       before sel, w:commentRangeEnd after it and
+//       w:commentReference (a run of its own in the
+//       CommentReference style) right after the end,
+//       as Word writes them (a caret: the three together). sel: the
+//       text between the range marks (a caret after the reference).
+//       {needsAuthor: true} (nothing changed) when author or
+//       initials is not a string with something in it: the window
+//       asks for them (Tools > User name and initials...)
+//   editComment(d, typing, id, {text, confirmed?}) -> true |
+//       {lossy: true} | null  the comment's text replaced by text
+//       (plain: a paragraph per line, tabs kept; the first paragraph
+//       starts with the comment's mark, w:annotationRef, as Word's
+//       do; a paragraph keeps the paragraph properties of the one it
+//       replaces while the number of paragraphs is the same, else
+//       each is in the CommentText style). {lossy: true}, nothing
+//       written, when the comment holds what plain text would lose
+//       (isLossy) and confirmed is not true. true and no step when
+//       the text is the same
+//   replyTo(d, typing, id, {text, author, initials, date?}) ->
+//       {id} | {needsAuthor: true} | null  a reply to the thread of
+//       comment id (a reply to a reply answers its thread's first
+//       comment, as Word threads them): a new comment as
+//       addComment's whose parent is that comment, its range marks
+//       just inside the parent's (start right after the parent's
+//       start, end right before the parent's end; none when the
+//       parent has no range) and its reference right after the
+//       parent's; commentsExtended made when the document has none,
+//       and a paraId given to a parent read without one. Placed in
+//       comments.xml after the thread's last comment
+//   setResolved(d, typing, id, done) -> true | null  done (a
+//       boolean) set: resolving a comment resolves its replies (at
+//       every depth, as Word does); reopening reopens that comment
+//       only; resolving a reply alone sets its own. commentsExtended
+//       made when the document has none; a comment with no paraId
+//       gets one. true and no step when every one is already so
+//   deleteComment(d, typing, id) -> true | null  the comment and
+//       its replies (at every depth) removed with every modelled
+//       mark of theirs in the body; the text stays
+//   deleteAllIn(d, typing, sel) -> count  every comment in sel,
+//       with its replies: for a caret, each whose modelled marks
+//       (from its first to its last) meet it (a caret inside a
+//       range); for a selection, each whose range's text (after its
+//       start mark, before its end mark) lies inside it, or, for a
+//       point comment (no text in its range), whose marks have
+//       something of the selection on both sides: a comment that
+//       only touches the selection's edges (one ending just where it
+//       starts) is not in it (a thread under the one rule below left
+//       whole), deleted
+//       as deleteComment does, in one step; the number of comments
+//       removed (0: nothing changed, no step)
+//   whyNot(d, sel) -> string | null  why addComment refuses sel, in
+//       words for the user, or null when it does not (below)
+//   commandWhy(d, id, cmd) -> string | null  why the command cmd
+//       ('edit', 'reply', 'resolve' or 'delete') refuses comment id
+//       for a reason of the document (the rules below: a story's
+//       facade, no such comment, the one rule for a thread, a
+//       commentsExtended kept as bytes, a reply to a comment with no
+//       reference in the body, no free id), in words; null when it
+//       does not (the Comments pane shades its buttons by it)
+//   isLossy(comment) -> boolean  the comment holds more than plain
+//       text: a block that is not a paragraph (a table, kept XML),
+//       an inline other than its w:annotationRef mark (a field, a
+//       link, a picture, a break...), or a run with formatting (an
+//       rPr property, a character style other than on its mark)
+//   textOf(comment) -> string  its plain text: paragraphs joined by
+//       '\n', kept items left out (the pane's field shows it)
+//   localDate(date) -> string  a Date as Word writes w:date: the
+//       local time, minutes, with a Z ('2026-10-30T10:20:00Z')
+//   cleanName(v) -> string  an author or initials as kept (here and
+//       in ./CommentOpts): a string cleaned as typed (./Edit clean),
+//       tabs and line ends spaces, runs of spaces one, trimmed, at
+//       most MAX_NAME (255) code points (never half a surrogate
+//       pair); '' for anything else
+//
+// Refused (null; deleteAllIn 0), nothing changed: in a header,
+// footer or note (d a ./StoryFacade facade: comments there are kept
+// and listed, not made or edited in F1); no selection or one not in
+// the document; a selection starting or ending on a table's or a
+// kept block's edge (a text box, a content control or other raw
+// content: not in text); either end inside a field's code (after
+// its begin, up to its separate) or computed result (./FieldEdit
+// guard); a comments part kept as bytes (./CommentParts partState
+// 'unknown': it takes no new comment); no free comment id. For the
+// commands on a comment: an id that is not a comment of the Doc
+// (-1, '0', 1.5, 2^31, '__proto__'...); ONE RULE for a thread
+// (a comment, its thread's first comment and every reply): when
+// any comment of it is named by a mark outside the body's modelled
+// marks (./CommentKeep opaqueIds: in a header, footer, note, text
+// box, content control, link or tracked change: kept, not editable
+// in F1), every command that would change any of it refuses
+// (editComment, replyTo, setResolved, deleteComment) and
+// deleteAllIn leaves the whole thread (never a parent or a reply
+// alone); a reply or resolve when commentsExtended is kept as
+// bytes; a reply to a comment with no reference in the body; a bad
+// text or done. Only ./CommentParts Refused errors are refusals:
+// any other error (a ./ModelCheck failure) is thrown, after
+// d.atomic has undone what the command did.
+// A range may cross paragraphs and tables or start or end in a
+// cell (the marks are inlines of the paragraphs at its ends: the
+// range halves stay paired, ./BookmarkKeep).
+// d is a ./Document (or a facade), sel a ./Selection. Pure: no
+// desktop services.
+import {OBJ, newPara} from './Model';
+import {caret, select} from './Selection';
+import {orderedPos, findBlock, pathOf} from './EditPos';
+import {cmpPath, samePath} from './Path';
+import {guard} from './FieldEdit';
+import {scan as fieldScan} from './FieldScan';
+import {forEachBlock} from './Walk';
+import {clean} from './Edit';
+import {noteStyle} from './NoteStyle';
+import {marks, paraMarks} from './CommentMarks';
+import {opaqueIds} from './CommentKeep';
+import {parentsOf} from './CommentRead';
+import {commentOf, newComment, isCommentId} from './OpsComments';
+import {ensure, partState, freshParaId, takenIds, nextCommentId,
+  claim, Refused} from './CommentParts';
+import {localName} from './Kinds';
+import {W} from './Wml';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = () => ({extra: []});
+export const MAX_NAME = 255;
+
+// ------------------------------------------------------- refusals
+
+/** The reason d is a story's facade, or null. */
+function storyWhy(d) {
+  if (isObj(d.note)) return 'A comment cannot go in a note.';
+  if (isObj(d.real) || typeof d.refuses === 'function')
+    return 'A comment cannot go in a header or footer.';
+  return null;
+}
+
+/** a against b: {at, off} positions in document order. */
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** Whether caret position pos is in a field's code or result. */
+function inField(doc, pos) {
+  const c = caret(pos);
+  if (guard(doc, c, orderedPos(doc, c)) !== c) return true;
+  const loc = findBlock(doc, pos.id);
+  const here = {at: pathOf(loc), off: pos.off};
+  for (const f of fieldScan(doc)) {
+    if (f.simple || !f.begin) continue;
+    const z = f.sep || f.end;
+    if (!z) continue;
+    if (cmp(here, {at: f.begin.at, off: f.begin.off + 1}) >= 0 &&
+      cmp(here, {at: z.at, off: z.off}) <= 0) return true;
+  }
+  return false;
+}
+
+/** See the header. */
+export function whyNot(d, sel) {
+  const s = storyWhy(d);
+  if (s) return s;
+  const doc = d.doc;
+  const o = isObj(sel) && sel.anchor && sel.head ? orderedPos(doc, sel)
+    : null;
+  if (!o) return 'There is no caret in the text.';
+  if (o.f.b.type !== 'p' || o.t.b.type !== 'p')
+    return 'Put the caret in text, or select text (not by a table ' +
+      'or box).';
+  if (inField(doc, o.from) || inField(doc, o.to))
+    return 'A comment cannot start or end inside a field.';
+  if (partState(doc, 'comments') === 'unknown') {
+    return 'The comments of this document could not be read: they ' +
+      'are kept as they are and take no new comment.';
+  }
+  if (nextCommentId(d) === null)
+    return 'There is no free comment number left.';
+  return null;
+}
+
+/** The comment id names, when the commands may change it: not
+ *  when any comment of its whole thread has an opaque mark (the one
+ *  rule of every command, see the header). */
+function editable(d, id, ext = false) {
+  if (storyWhy(d) || !isCommentId(id)) return null;
+  const c = commentOf(d.doc, id);
+  if (!c) return null;
+  if (ext && partState(d.doc, 'extended') === 'unknown') return null;
+  const doc = d.doc;
+  if (opaque(doc, thread(doc, rootOf(doc, id)))) return null;
+  return c;
+}
+
+const WHY = {
+  gone: 'That comment is no longer in the document.',
+  ext: 'The replies and resolved marks of this document could not ' +
+    'be read: they are kept as they are.',
+  kept: 'This comment (or one of its thread) is also marked in a ' +
+    'header, footer, note or other kept part: it is kept as it is.',
+  orphan: 'This comment has no mark in the text: it cannot be ' +
+    'answered.',
+  full: 'There is no free comment number left.',
+};
+const CMDS = new Set(['edit', 'reply', 'resolve', 'delete']);
+
+/** See the header. */
+export function commandWhy(d, id, cmd) {
+  if (!CMDS.has(cmd)) throw new RangeError('bad command');
+  const s = storyWhy(d);
+  if (s) return s.replace('go in', 'be changed in');
+  if (!isCommentId(id) || !commentOf(d.doc, id)) return WHY.gone;
+  const doc = d.doc;
+  const ext = cmd === 'reply' || cmd === 'resolve';
+  if (ext && partState(doc, 'extended') === 'unknown') return WHY.ext;
+  const root = rootOf(doc, id);
+  if (opaque(doc, thread(doc, root))) return WHY.kept;
+  if (cmd !== 'reply') return null;
+  const pm = marks(doc).get(root);
+  if (!pm || !pm.ref) return WHY.orphan;
+  return nextCommentId(d) === null ? WHY.full : null;
+}
+
+/** Map id -> its replies' ids (linear: ./CommentRead parentsOf). */
+function kidsOf(doc) {
+  const kids = new Map();
+  for (const [k, p] of parentsOf(doc)) {
+    if (!kids.has(p)) kids.set(p, []);
+    kids.get(p).push(k);
+  }
+  return kids;
+}
+
+/** The comment and its replies at every depth (ids, id first). */
+function thread(doc, id, kids = kidsOf(doc)) {
+  const out = [id], seen = new Set(out);
+  for (let i = 0; i < out.length; i++) {
+    for (const k of kids.get(out[i]) || []) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(k);
+      }
+    }
+  }
+  return out;
+}
+
+/** Whether any of ids has a mark that is not a modelled body one. */
+const opaque = (doc, ids) => {
+  const o = opaqueIds(doc);
+  return ids.some((x) => o.has(x));
+};
+
+// ---------------------------------------------------------- text
+
+/** See the header. */
+export function localDate(date) {
+  const z = (n, w = 2) => String(n).padStart(w, '0');
+  return z(date.getFullYear(), 4) + '-' + z(date.getMonth() + 1) +
+    '-' + z(date.getDate()) + 'T' + z(date.getHours()) + ':' +
+    z(date.getMinutes()) + ':00Z';
+}
+
+/** The UTC time of date as commentsExtensible's dateUtc. */
+function utcDate(date) {
+  const z = (n, w = 2) => String(n).padStart(w, '0');
+  return z(date.getUTCFullYear(), 4) + '-' +
+    z(date.getUTCMonth() + 1) + '-' + z(date.getUTCDate()) + 'T' +
+    z(date.getUTCHours()) + ':' + z(date.getUTCMinutes()) + ':00Z';
+}
+
+/** {date, dateUtc} for the date option (see the header). */
+function datesOf(v) {
+  if (typeof v === 'string' && v)
+    return {date: clean(v), dateUtc: null};
+  const dt = v instanceof Date && !Number.isNaN(v.getTime()) ? v
+    : new Date();
+  return {date: localDate(dt), dateUtc: utcDate(dt)};
+}
+
+/** See the header. */
+export const cleanName = (v) => (typeof v === 'string'
+  ? Array.from(clean(v).replace(/[\t\n]/g, ' ').split(' ')
+    .filter(Boolean).join(' ')).slice(0, MAX_NAME).join('').trim()
+  : '');
+const nameOf = cleanName;
+
+/** {author, initials} of opts, or null when one is missing. */
+function who(opts) {
+  const author = nameOf(opts.author), initials = nameOf(opts.initials);
+  return author && initials ? {author, initials} : null;
+}
+
+const isMark = (x) => isObj(x) && x.kind === 'raw' &&
+  localName(x.node) === 'annotationRef';
+
+/** See the header. */
+export function textOf(c) {
+  const bs = isObj(c) && Array.isArray(c.blocks) ? c.blocks : [];
+  return bs.filter((b) => b.type === 'p')
+    .map((b) => b.text.split(OBJ).join('')).join('\n');
+}
+
+const plainRPr = (r) => !isObj(r) || Object.keys(r).every((k) =>
+  (k === 'extra' ? !r.extra || !r.extra.length : r[k] === undefined));
+
+/** See the header. */
+export function isLossy(c) {
+  for (const b of c.blocks) {
+    if (b.type !== 'p') return true;
+    for (const [k, x] of Object.entries(b.inlines || {})) {
+      if (!isMark(x) && !(x.kind === 'tab' && b.text[k] === OBJ))
+        return true;
+    }
+    for (const r of b.runs) {
+      if (!plainRPr(r.rPr)) return true;
+      const mark = r.end - r.start === 1 && isMark(b.inlines[r.start]);
+      if (r.rStyle !== undefined && r.rStyle !== null && !mark)
+        return true;
+    }
+  }
+  return false;
+}
+
+/** The comment styles' ids, made on first use (null: none). */
+const stylesOf = (d) => ({
+  text: noteStyle(d, 'CommentText', 'annotation text', 'paragraph'),
+  ref: noteStyle(d, 'CommentReference', 'annotation reference',
+    'character')});
+
+/** The paragraphs of plain text (see the header); keep: the old
+ *  paragraphs whose properties they keep, or null. */
+function blocksOf(text, st, keep) {
+  const lines = clean(text).split('\n');
+  const same = keep && keep.length === lines.length &&
+    keep.every((b) => b.type === 'p');
+  return lines.map((line, i) => {
+    const runs = [];
+    const inlines = {};
+    let s = '';
+    if (i === 0) {
+      s = OBJ;
+      const r0 = {start: 0, end: 1, rPr: NONE()};
+      if (st.ref) r0.rStyle = st.ref;
+      runs.push(r0);
+      inlines[0] = {kind: 'raw', level: 'r', node: W('annotationRef')};
+    }
+    if (line) runs.push({start: s.length, end: s.length + line.length,
+      rPr: NONE()});
+    const o = {runs, inlines};
+    if (same) {
+      const b = keep[i];
+      o.pPr = b.pPr;
+      if (b.pStyle !== undefined) o.pStyle = b.pStyle;
+      o.extraP = b.extraP;
+    } else if (st.text) o.pStyle = st.text;
+    return newPara(s + line, o);
+  });
+}
+
+// --------------------------------------------------------- marks
+
+const rangeX = (kind, id) => ({kind, level: 'p', id,
+  node: W(kind === 'cmtStart' ? 'commentRangeStart'
+    : 'commentRangeEnd', {'w:id': String(id)})});
+const refX = (id) => ({kind: 'cmtRef', level: 'r', id,
+  node: W('commentReference', {'w:id': String(id)})});
+
+/** Put inline x at {at, off} (a run of its own; rStyle or none). */
+function put(d, {at, off}, x, rStyle) {
+  const run = {start: 0, end: 1, rPr: NONE()};
+  if (rStyle) run.rStyle = rStyle;
+  d.apply({op: 'spliceText', block: at, at: off, del: 0,
+    content: {text: OBJ, inlines: {0: x}, runs: [run]}});
+}
+
+/** Run fn as the command: one step (see the header); null when it
+ *  could not be done (nothing changed). */
+function run(d, typing, fn) {
+  let out = null;
+  const go = () => d.atomic(() => {
+    out = fn();
+  });
+  try {
+    if (typing) typing.command(go);
+    else go();
+  } catch (e) {
+    if (e instanceof Refused) return null;
+    throw e;
+  }
+  return out;
+}
+
+/** A new Comment of the command (see addComment). */
+function made(d, id, blocks, w, opts, extra = {}) {
+  const taken = takenIds(d.doc);
+  const paraId = freshParaId(d.doc, {taken});
+  taken.add(paraId);
+  const durableId = freshParaId(d.doc, {taken});
+  const {date, dateUtc} = datesOf(opts.date);
+  const c = newComment(d.doc, id, blocks, {author: w.author,
+    initials: w.initials, date, paraId, ...extra});
+  const attrs = [['w:id', String(id)], ['w:author', w.author]];
+  if (date !== null) attrs.push(['w:date', date]);
+  attrs.push(['w:initials', w.initials]);
+  return {...c, node: {name: 'w:comment', attrs, children: []},
+    durableId, dateUtc};
+}
+
+const textOk = (opts) => isObj(opts) && (opts.text === undefined ||
+  opts.text === null || typeof opts.text === 'string');
+
+/** See the header. */
+export function addComment(d, typing, sel, opts) {
+  if (whyNot(d, sel) !== null || !textOk(opts)) return null;
+  const w = who(opts);
+  if (!w) return {needsAuthor: true};
+  const o = orderedPos(d.doc, sel);
+  const from = {at: pathOf(o.f), off: o.from.off};
+  const to = {at: pathOf(o.t), off: o.to.off};
+  const one = samePath(from.at, to.at);
+  const pa = o.from, pz = o.to;
+  return run(d, typing, () => {
+    ensure(d, ['comments']);
+    const st = stylesOf(d);
+    const id = nextCommentId(d);
+    if (id === null) throw new Refused('no free comment id');
+    claim(d, id);
+    const c = made(d, id, blocksOf(opts.text ?? '', st, null), w,
+      opts);
+    d.apply({op: 'addComment', id, comment: c});
+    put(d, to, refX(id), st.ref);
+    put(d, to, rangeX('cmtEnd', id));
+    put(d, from, rangeX('cmtStart', id));
+    const a = {id: pa.id, off: pa.off + 1};
+    const sel1 = pa.id === pz.id && pa.off === pz.off
+      ? caret({id: pa.id, off: pa.off + 3})
+      : select(a, {id: pz.id, off: pz.off + (one ? 1 : 0)});
+    return {id, sel: sel1};
+  });
+}
+
+/** See the header. */
+export function editComment(d, typing, id, opts) {
+  const c = editable(d, id);
+  if (!c || !isObj(opts) || typeof opts.text !== 'string') return null;
+  if (textOf(c) === clean(opts.text)) return true;
+  if (isLossy(c) && opts.confirmed !== true) return {lossy: true};
+  return run(d, typing, () => {
+    const st = stylesOf(d);
+    d.apply({op: 'setComment', id, blocks: blocksOf(opts.text, st,
+      c.blocks)});
+    return true;
+  });
+}
+
+/** The thread's first comment of id (bounded). */
+function rootOf(doc, id) {
+  const ps = parentsOf(doc);
+  let x = id;
+  for (let k = 0; k <= ps.size && ps.has(x); k++) x = ps.get(x);
+  return x;
+}
+
+/** setComment of a paraId for comment x when it has none. */
+function withParaId(d, x) {
+  const c = commentOf(d.doc, x);
+  if (c && c.paraId === null)
+    d.apply({op: 'setComment', id: x, paraId: freshParaId(d.doc)});
+}
+
+/** See the header. */
+export function replyTo(d, typing, id, opts) {
+  if (!editable(d, id, true) || !textOk(opts)) return null;
+  const doc = d.doc, root = rootOf(doc, id);
+  const ids = thread(doc, root);
+  const pm = marks(doc).get(root);
+  if (!pm || !pm.ref) return null;
+  const w = who(opts);
+  if (!w) return {needsAuthor: true};
+  if (nextCommentId(d) === null) return null;
+  const inThread = new Set(ids);
+  let last = -1;
+  doc.comments.order.forEach((k, i) => {
+    if (inThread.has(k)) last = i;
+  });
+  return run(d, typing, () => {
+    ensure(d, ['comments', 'extended']);
+    withParaId(d, root);
+    const st = stylesOf(d);
+    const nid = nextCommentId(d);
+    if (nid === null) throw new Refused('no free comment id');
+    claim(d, nid);
+    const c = made(d, nid, blocksOf(opts.text ?? '', st, null), w,
+      opts, {parent: root});
+    d.apply({op: 'addComment', id: nid, comment: c, at: last + 1});
+    const edits = [{at: pm.ref.path, off: pm.ref.off + 1, x: refX(nid),
+      style: st.ref, rank: 0}];
+    if (pm.start && pm.end) {
+      edits.push({at: pm.end.path, off: pm.end.off,
+        x: rangeX('cmtEnd', nid), rank: 1});
+      edits.push({at: pm.start.path, off: pm.start.off + 1,
+        x: rangeX('cmtStart', nid), rank: 2});
+    }
+    edits.sort((a, b) => -cmp(a, b) || a.rank - b.rank);
+    for (const e of edits) put(d, e, e.x, e.style);
+    return {id: nid};
+  });
+}
+
+/** See the header. */
+export function setResolved(d, typing, id, done) {
+  if (!editable(d, id, true) || typeof done !== 'boolean') return null;
+  const doc = d.doc;
+  const ids = done ? thread(doc, id) : [id];
+  const todo = ids.filter((k) => commentOf(doc, k).done !== done);
+  if (!todo.length) return true;
+  return run(d, typing, () => {
+    ensure(d, ['comments', 'extended']);
+    const taken = takenIds(d.doc);
+    for (const k of todo) {
+      const op = {op: 'setComment', id: k, done};
+      if (commentOf(d.doc, k).paraId === null) {
+        op.paraId = freshParaId(d.doc, {taken});
+        taken.add(op.paraId);
+      }
+      d.apply(op);
+    }
+    return true;
+  });
+}
+
+/** Every modelled mark of ids in the body: [{at, off}]. */
+function marksOf(doc, ids) {
+  const want = new Set(ids), out = [];
+  forEachBlock(doc, (b, at) => {
+    if (b.type !== 'p') return;
+    for (const m of paraMarks(b)) {
+      if (want.has(m.id)) out.push({at, off: m.off});
+    }
+  });
+  return out;
+}
+
+/** The comments ids (and their marks) removed in one step. */
+function removeAll(d, typing, ids) {
+  const edits = marksOf(d.doc, ids).sort((a, b) => -cmp(a, b));
+  return run(d, typing, () => {
+    for (const e of edits) {
+      d.apply({op: 'replaceText', block: e.at, at: e.off, del: 1,
+        ins: ''});
+    }
+    const left = ids.filter((k) => commentOf(d.doc, k));
+    if (left.length) d.apply({op: 'removeComments', ids: left});
+    return true;
+  });
+}
+
+/** See the header. */
+export function deleteComment(d, typing, id) {
+  if (!editable(d, id)) return null;
+  const ids = thread(d.doc, id);
+  return removeAll(d, typing, ids);
+}
+
+const posAt = (x) => (x ? {at: x.path, off: x.off} : null);
+
+/** A caret meets marks m: from the first to the last of them. */
+function meets(m, a, z) {
+  const ps = [m.start, m.end, m.ref].filter(Boolean).map(posAt)
+    .sort(cmp);
+  return cmp(ps[0], z) <= 0 && cmp(ps[ps.length - 1], a) >= 0;
+}
+
+/** Marks m lie inside the selection [a, z) (touching an edge is
+ *  not enough): a range with text, its text (after its start mark,
+ *  before its end) within it; else (a point: an empty range or a
+ *  reference alone) its marks with something of the selection before
+ *  and after them. */
+function inside(m, a, z) {
+  const s = posAt(m.start), e = posAt(m.end);
+  if (s && e) {
+    const from = {at: s.at, off: s.off + 1};
+    if (cmp(from, e) < 0) return cmp(from, a) >= 0 && cmp(e, z) <= 0;
+  }
+  const ps = [m.start, m.end, m.ref].filter(Boolean).map(posAt)
+    .sort(cmp);
+  const last = ps[ps.length - 1];
+  return cmp(ps[0], a) > 0 &&
+    cmp({at: last.at, off: last.off + 1}, z) < 0;
+}
+
+/** See the header. */
+export function deleteAllIn(d, typing, sel) {
+  if (storyWhy(d) || !isObj(sel) || !sel.anchor || !sel.head) return 0;
+  const doc = d.doc, o = orderedPos(doc, sel);
+  if (!o) return 0;
+  const a = {at: pathOf(o.f), off: o.from.off};
+  const z = {at: pathOf(o.t), off: o.to.off};
+  const caretOnly = cmp(a, z) === 0;
+  const op = opaqueIds(doc), hit = new Set(), kids = kidsOf(doc);
+  const ps0 = parentsOf(doc), whole = new Map();
+  // (a thread with an opaque mark anywhere is skipped whole)
+  const shut = (id) => {
+    let r = id;
+    for (let k = 0; k <= ps0.size && ps0.has(r); k++) r = ps0.get(r);
+    if (!whole.has(r))
+      whole.set(r, thread(doc, r, kids).some((x) => op.has(x)));
+    return whole.get(r);
+  };
+  for (const [id, m] of marks(doc)) {
+    if (!commentOf(doc, id) || shut(id)) continue;
+    if (caretOnly ? meets(m, a, z) : inside(m, a, z)) hit.add(id);
+  }
+  if (!hit.size) return 0;
+  const ids = [];
+  const seen = new Set();
+  for (const id of hit) {
+    if (seen.has(id)) continue;
+    for (const k of thread(doc, id, kids)) {
+      if (!seen.has(k)) {
+        seen.add(k);
+        ids.push(k);
+      }
+    }
+  }
+  return removeAll(d, typing, ids) ? ids.length : 0;
+}

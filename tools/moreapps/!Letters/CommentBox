@@ -1,0 +1,710 @@
+// CommentBox - the Comments pane (Tools > Show Comments, Insert >
+// Comment..., Ctrl+Alt+M; Batch F1): the document's comments in a
+// list, a field to type a comment, a reply or an edit in, and the
+// buttons that answer, resolve, edit and delete them. A side window
+// like the Styles window (./StylesWin: a list drawn on a canvas in
+// the work area, WimpLib has no list widget), the text field a
+// TextArea (several lines: Return starts a new paragraph).
+//
+//   commentBox(dw) -> the pane's api; one per document, kept in
+//       dw.boxes ('comments') so ./CloseDoc deletes it with the
+//       document; asked again, the same pane filled again and
+//       brought to the front
+//   insertComment(dw) -> bool  Insert > Comment... and Ctrl+Alt+M:
+//       refused (a beep, false) where ./CommentCmd whyNot refuses
+//       the selection (the header and footer mode, the notes mode,
+//       an end in a field's code or result, by a table...); with no
+//       user name or initials (./CommentOpts) the User name and
+//       initials box first (./AuthorBox), then the pane; the pane
+//       for a new comment on the selection (or at the caret), the
+//       caret in its field
+//   commentsShown(dw) -> bool, toggleComments(dw)  Tools > Show
+//       Comments (ticked while the pane is open)
+//   deleteInSelection(dw) -> number  Tools > Delete comments in
+//       selection: ./CommentCmd deleteAllIn on a selection that is
+//       not a caret (a beep and 0 for a caret, in a story, or when
+//       none was there): the comments whose text the selection
+//       holds whole (a point comment: its reference inside it), not one
+//       that only partly overlaps it or touches its edge
+//   api.win (win.api too, for the tests), isOpen, gone, open(),
+//   close(), refresh(), rows (./CommentPatch rows shown), selected
+//   (the chosen comment's id), filter, mode (null | 'add' | 'reply'
+//   | 'edit'), text (the field's), setText(t), select(id) -> bool
+//   (as a click on its row), setFilter(id), startAdd(), press(name)
+//   (a button by its text: Reply, Resolve, Edit, Delete, Post,
+//   Cancel, Close), where(id) -> its row's rectangle (null when not
+//   shown), message (the line at the foot)
+//
+// Each row: the author and initials, the date (local, short) and the
+// comment's first lines (./CommentPatch rows); a reply indented
+// under its thread, a resolved one grey, the chosen one white on
+// blue, a mark of the author's colour (./CommentPaint) at its left.
+// Show: All or Unresolved, from a menu. With none, the list says so.
+// A click on a row chooses it: dw.setComment(id) (its range drawn
+// stronger) and the range selected in the document and scrolled to
+// (./CommentPatch rangeOf; in the header and footer mode, the notes
+// mode, only chosen). A double-click is Edit. Up and Down move the
+// choice; the wheel scrolls.
+// Reply, Edit: the field for the answer or the comment's text (its
+// plain text: ./CommentCmd textOf); Post (Ctrl+Return in the field,
+// Return elsewhere in the pane) makes it, one undo step: addComment,
+// replyTo or editComment. Editing a comment that holds more than
+// plain text (formatting, a field, a link, a picture) first asks in
+// a small choice box (key 'cmtlossy:<docKey>', dw.boxes
+// 'cmtlossy'): Edit loses them, Cancel keeps it as it is. Resolve
+// (Reopen on a resolved comment) and Delete act at once, one undo
+// step each. The field's Cancel leaves it and changes nothing.
+// Buttons are shaded exactly when their command would refuse
+// (./CommentPatch buttons; again when the header and footer or notes
+// mode is entered or left); a click on a shaded one beeps and says
+// why at the foot; refused anyway (the document changed
+// meanwhile, no name and initials, the header and footer mode),
+// the pane beeps, says why at its foot and keeps what was typed. If
+// the document changed while a comment was being typed, Post beeps,
+// fills the pane again, says so and keeps the text (the next Post
+// makes it: on the selection as it is then). A new comment with no
+// user name or initials opens the User name and initials box.
+// The pane follows every change of the document (typing, undo,
+// redo, the commands; at most once a frame): a chosen comment that
+// has gone is chosen no more, and dw.comment is cleared when it
+// names no comment. Escape and Close hide the pane (dw.comment
+// cleared) and give the caret back to the document; what was typed
+// in the field stays for when it is shown again. Reply, Edit or a
+// new comment while the field holds a draft for another comment
+// beeps and says so (Post it or Cancel it first); for the same one
+// the draft is kept. The pane first opens to the right of the
+// document's window when there is room, else to its left, else at
+// the screen's left edge; then where it was left.
+import {wimp, Menu, TextArea} from 'riscos';
+import {box} from './Boxes';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {newState, reconcile, selectId, step, scrollBy, rowAt}
+  from './StylesState';
+import {rows as rowsOf, FILTERS, emptyText, patch, buttons, liveId,
+  rangeOf, holdSel} from './CommentPatch';
+import {addComment, editComment, replyTo, setResolved, deleteComment,
+  deleteAllIn, whyNot, textOf, commandWhy} from './CommentCmd';
+import {commentOf} from './OpsComments';
+import {read as readOpts} from './CommentOpts';
+import {colourOf, PALETTE} from './CommentPaint';
+import {authorBox} from './AuthorBox';
+import * as S from './Selection';
+
+const ROWS = 6, RH = 56, PAD = 12, SB = 14, LISTW = 400, LY = 48;
+const BW = 94, BH = 36, GAP = 8, IND = 22, LINE = 54;
+const B1 = LY + ROWS * RH + 10, MY = B1 + BH + 8, TY = MY + 30;
+const TH = 84, B2 = TY + TH + 8, MSG = B2 + BH + 6;
+const W = 2 * PAD + LISTW + 4 + SB, H = MSG + 2 * 26 + PAD;
+const apis = new WeakMap();            // window -> api
+const MSGS = {
+  hdr: 'Leave the header or footer, or the note, first (Escape): ' +
+    'comments are made and changed in the body text.',
+  changed: 'The document changed while you typed: look again, then ' +
+    'click Post.',
+  author: 'Type your name and initials first (Tools > User name and ' +
+    'initials...), then click Post.',
+  failed: 'The comment could not be made here.',
+};
+
+const btn = (text, col, y, v, help) => ({x: PAD + col * (BW + GAP),
+  y, w: BW, h: BH, text, name: `button:${text}`, border: true,
+  filled: true, hcentre: true, button: 'click', validation: v, help});
+const icons = () => [
+  {x: PAD, y: 10, w: 44, h: 28, text: 'Show', name: 'label'},
+  {x: PAD + 48, y: 10, w: 160, h: 28, text: 'All', name: 'show',
+    border: true, filled: true, bg: 0, button: 'click',
+    validation: 'R2', help: 'Click to show all the comments or only ' +
+      'those not resolved.'},
+  {x: PAD + 212, y: 10, w: 28, h: 28, sprite: 'gright',
+    name: 'arrow', button: 'click',
+    help: 'Show all the comments or only those not resolved.'},
+  btn('Reply', 0, B1, 'R5,3', 'Answer the chosen comment: type the ' +
+    'answer below, then Post.'),
+  btn('Resolve', 1, B1, 'R5,3', 'Mark the chosen comment (and its ' +
+    'replies) resolved; on a resolved one, Reopen.'),
+  btn('Edit', 2, B1, 'R5,3', 'Change the chosen comment\'s text ' +
+    'below, then Post.'),
+  btn('Delete', 3, B1, 'R5,3', 'Delete the chosen comment and its ' +
+    'replies (the text it was on stays).'),
+  {x: PAD, y: MY, w: W - 2 * PAD, h: 28, text: '', name: 'mode'},
+  btn('Post', 0, B2, 'R6,3', 'Make the comment, the reply or the ' +
+    'change typed above (Ctrl+Return).'),
+  btn('Cancel', 1, B2, 'R5,3', 'Leave the field: nothing is changed.'),
+  btn('Close', 3, B2, 'R5,3', 'Hide the Comments pane.'),
+  {x: PAD, y: MSG, w: W - 2 * PAD, h: 26, text: '', name: 'msg'},
+  {x: PAD, y: MSG + 26, w: W - 2 * PAD, h: 26, text: '',
+    name: 'msg2'},
+];
+
+/** s cut to fit w px on g (with '...'). */
+function fit(g, s, w) {
+  if (g.measureText(s).width <= w) return s;
+  let lo = 0, hi = Math.min(s.length, 200);
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (g.measureText(s.slice(0, m) + '...').width <= w) lo = m;
+    else hi = m - 1;
+  }
+  return s.slice(0, lo) + '...';
+}
+
+/** The list on the canvas g (work coordinates). */
+function paint(g, s, rs) {
+  g.fillStyle = '#ffffff';
+  g.fillRect(PAD, LY, LISTW, ROWS * RH);
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  if (!rs.length) {
+    g.font = 'italic 13px sans-serif';
+    g.fillStyle = '#777777';
+    g.fillText(emptyText(s.filter), PAD + 12, LY + RH / 2);
+  }
+  for (let k = 0; k < ROWS; k++) {
+    const e = rs[s.top + k];
+    if (!e) break;
+    const y = LY + k * RH, on = e.id === s.sel;
+    const x = PAD + 8 + e.depth * IND, w = PAD + LISTW - 8 - x;
+    if (on) {
+      g.fillStyle = '#2a4f9a';
+      g.fillRect(PAD, y, LISTW, RH);
+    }
+    g.fillStyle = PALETTE[colourOf(e.author)].strong;
+    g.fillRect(x - 6, y + 6, 3, RH - 12);
+    const ink = on ? (e.resolved ? '#d8d8d8' : '#ffffff')
+      : e.resolved ? '#999999' : '#000000';
+    g.font = '12px sans-serif';
+    const dw = e.date ? g.measureText(e.date).width + 8 : 0;
+    g.fillStyle = on ? '#dddddd' : '#666666';
+    g.textAlign = 'right';
+    if (e.date) g.fillText(e.date, PAD + LISTW - 8, y + 14);
+    g.textAlign = 'left';
+    g.font = 'bold 13px sans-serif';
+    g.fillStyle = ink;
+    const who = (e.author || '(no name)') + (e.initials ? ' (' +
+      e.initials + ')' : '') + (e.resolved ? ' - resolved' : '');
+    g.fillText(fit(g, who, w - dw), x, y + 14);
+    g.font = '13px sans-serif';
+    e.lines.forEach((t, j) => {
+      g.fillText(fit(g, t, w), x, y + 32 + 16 * j);
+    });
+  }
+  g.strokeStyle = '#888888';
+  g.lineWidth = 1;
+  g.strokeRect(PAD + 0.5, LY + 0.5, LISTW, ROWS * RH);
+  if (rs.length <= ROWS) return;
+  const sx = PAD + LISTW + 4, h = ROWS * RH;
+  g.fillStyle = '#bbbbbb';
+  g.fillRect(sx, LY, SB, h);
+  const th = Math.max(16, h * ROWS / rs.length);
+  g.fillStyle = '#555555';
+  g.fillRect(sx, LY + (h - th) * s.top / (rs.length - ROWS), SB, th);
+}
+
+/** Where the pane first opens: to the right of the document's
+ *  window when there is room, else to its left, else at the
+ *  screen's left edge (over the document only when it must). */
+function place(w) {
+  const GAPX = 8, y = Math.max(8, Math.round(w.y));
+  if (w.x + w.w + GAPX + W <= wimp.width - 8)
+    return {x: Math.round(w.x + w.w + GAPX), y};
+  if (w.x - GAPX - W >= 8) return {x: Math.round(w.x - GAPX - W), y};
+  return {x: 8, y};
+}
+
+/** See the header. */
+export function commentBox(dw) {
+  const win = box(dw, 'comments', () => make(dw).win);
+  const api = apis.get(win);
+  api.open();
+  return api;
+}
+
+/** See the header. */
+export function commentsShown(dw) {
+  const w = dw.boxes.get('comments');
+  return !!w && w.isOpen;
+}
+
+/** See the header. */
+export function toggleComments(dw) {
+  const w = dw.boxes.get('comments');
+  if (w && w.isOpen) apis.get(w).close();
+  else commentBox(dw);
+}
+
+/** See the header. */
+export function insertComment(dw, asked = false) {
+  const v = dw.view;
+  if (!v.sel || whyNot(v.d, v.sel) !== null) {
+    wimp.beep();
+    return false;
+  }
+  const o = readOpts(dw.app);
+  if (!asked && (!o.name || !o.initials)) {
+    authorBox(dw, {ask: true, then: () => insertComment(dw, true)});
+    return true;
+  }
+  commentBox(dw).startAdd();
+  return true;
+}
+
+/** See the header. */
+export function deleteInSelection(dw) {
+  const v = dw.view;
+  if (v.hdr || !v.sel || S.collapsed(v.sel)) {
+    wimp.beep();
+    return 0;
+  }
+  const hold = holdSel(v.d.doc, v.sel);
+  const n = deleteAllIn(v.d, v.typing, v.sel);
+  if (!n) {
+    wimp.beep();
+    return 0;
+  }
+  v.edited(hold(v.d.doc) || v.sel);
+  return n;
+}
+
+/** A new pane and its api. */
+function make(dw) {
+  const task = dw.app.task, v = dw.view;
+  const s = newState();
+  s.filter = 'all';
+  const b = {gone: false, placed: false, raf: 0};
+  // the field's mode: {mode, id, author, at (stateId), sel}
+  let f = null;
+  let rs = [];
+  const off = new Set();
+  const win = task.createWindow({title: 'Comments', w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'clickdragdouble',
+    help: 'The comments of the document. Click one to go to it; ' +
+      'Reply, Resolve, Edit or Delete it with the buttons.'});
+  const I = (n) => win.iconByName(n);
+  const doc = () => dw.d.doc;
+  const cur = () => rs.find((e) => e.id === s.sel) || null;
+  win.useCanvas((g) => paint(g, s, rs), {hiDPI: true});
+  const area = new TextArea(win, {x: PAD, y: TY, w: W - 2 * PAD,
+    h: TH, text: ''});
+  area.readOnly = true;
+  const say = (text = '') => {
+    let a = text, c = '';
+    if (a.length > LINE) {
+      const k = a.lastIndexOf(' ', LINE);
+      const at = k > 0 ? k : LINE;
+      c = a.slice(at).trim();
+      a = a.slice(0, at);
+    }
+    I('msg').setText(a);
+    I('msg2').setText(c);
+  };
+  const no = (msg) => {
+    wimp.beep();
+    say(msg);
+    return false;
+  };
+  const label = () => {
+    const name = (x) => String(x || 'no name').slice(0, 30);
+    I('mode').setText(!f ? 'Choose a comment, or Insert > ' +
+      'Comment... (Ctrl+Alt+M).'
+      : f.mode === 'add' ? (f.sel && !S.collapsed(f.sel)
+        ? 'New comment on the selected text:'
+        : 'New comment at the caret:')
+        : f.mode === 'reply' ? `Reply to ${name(f.author)}:`
+          : `Edit ${name(f.author)}'s comment:`);
+  };
+  let why = {};                      // a shaded button -> its reason
+  const shade = () => {
+    const bs = buttons(v.d, cur());
+    const pick1 = 'Choose Insert > Comment..., Reply or Edit first.';
+    why = {Reply: bs.why.reply, Resolve: bs.why.resolve,
+      Edit: bs.why.edit, Delete: bs.why.del, Post: pick1,
+      Cancel: pick1};
+    const set = {Reply: bs.reply, Resolve: bs.resolve, Edit: bs.edit,
+      Delete: bs.del, Post: !!f, Cancel: !!f, Close: true};
+    for (const [n, on] of Object.entries(set)) {
+      if (on) off.delete(n);
+      else off.add(n);
+      I(`button:${n}`).setState({shaded: !on});
+    }
+    I('button:Resolve').setText(bs.resolveText);
+  };
+  const refresh = () => {
+    const d0 = doc();
+    rs = rowsOf(d0, s.filter);
+    reconcile(s, rs, ROWS);
+    if (dw.comment !== null && !liveId(d0, dw.comment))
+      dw.setComment(null);
+    if (f && f.mode !== 'add' && !liveId(d0, f.id)) {
+      leave();
+      say('That comment is no longer in the document.');
+    }
+    I('show').setText(FILTERS.find((x) => x.id === s.filter).text);
+    label();
+    shade();
+    win.invalidate();
+  };
+  const later = () => {
+    if (b.raf || b.gone || !win.isOpen) return;
+    b.raf = requestAnimationFrame(() => {
+      b.raf = 0;
+      if (!b.gone && win.isOpen) refresh();
+    });
+  };
+  const offChange = dw.d.on('change', later);
+  // (the header and footer or notes mode entered or left: the
+  // buttons shaded again; ./EditFormat calls these once a frame)
+  let inMode = !!v.hdr;
+  const onSel = () => {
+    if (!!v.hdr === inMode) return;
+    inMode = !!v.hdr;
+    if (!b.gone && win.isOpen) refresh();
+  };
+  v.formatListeners.push(onSel);
+  /** The field left: no mode, empty, read only. */
+  const leave = () => {
+    f = null;
+    area.text = '';
+    area.readOnly = true;
+    label();
+  };
+  const begin = (o, text = '') => {
+    if (f && area.text.trim()) {
+      const same = f.mode === o.mode && (o.mode === 'add' ||
+        f.id === o.id);
+      if (!same) {
+        no('The field holds ' + (f.mode === 'add' ? 'a new comment'
+          : f.mode === 'reply' ? 'a reply' : 'an edit') + ' not ' +
+          'posted: Post it, or Cancel it first.');
+        area.focus();
+        return false;
+      }
+      // (the same: the draft kept; a new comment goes on the
+      // selection as it is now)
+      f = {...f, ...o, at: v.d.stateId};
+      say('');
+      label();
+      shade();
+      area.focus();
+      return true;
+    }
+    f = {...o, at: v.d.stateId};
+    area.readOnly = false;
+    area.text = text;
+    area.select(text.length);
+    say('');
+    label();
+    shade();
+    area.focus();
+    return true;
+  };
+  const choose = (id, go = true) => {
+    if (id !== null) selectId(s, rs, id, ROWS);
+    else s.sel = null;
+    dw.setComment(id);
+    if (go && id !== null) {
+      if (v.hdr) say('Leave the header or footer, or the note, to go ' +
+        'to the comment in the text.');
+      else {
+        const sel = rangeOf(doc(), id);
+        if (sel) v.setSelection(sel);
+      }
+    }
+    shade();
+    win.invalidate();
+  };
+  const hide = () => {
+    if (!win.isOpen) return;
+    say('');
+    dw.setComment(null);
+    win.close();
+    if (!dw.closed) v.focus();
+  };
+  const startAdd = () => {
+    begin({mode: 'add', sel: v.sel});
+  };
+  /** After a command: the document laid out, the pane filled. */
+  const done = (sel, id) => {
+    v.edited(sel || v.sel);
+    leave();
+    refresh();
+    if (id !== undefined && id !== null) choose(id, false);
+    say('');
+  };
+  const needAuthor = () => {
+    authorBox(dw, {ask: true, pane: true, then: () => {
+      if (!b.gone && win.isOpen) area.focus();
+    }});
+    return no(MSGS.author);
+  };
+  const post = () => {
+    if (!f) return no('Choose Insert > Comment..., Reply or Edit ' +
+      'first.');
+    if (v.hdr) return no(MSGS.hdr);
+    if (v.d.stateId !== f.at) {
+      refresh();
+      if (!f) return no('That comment is no longer in the document.');
+      f.at = v.d.stateId;
+      if (f.mode === 'add') f.sel = v.sel;
+      label();
+      return no(MSGS.changed);
+    }
+    const o = readOpts(dw.app);
+    const row = f.mode === 'add' ? null : {id: f.id};
+    const pt = patch({mode: f.mode, text: area.text, name: o.name,
+      initials: o.initials}, row);
+    if (pt.error) return no(pt.error);
+    if (pt.needsAuthor) return needAuthor();
+    if (f.mode === 'add') {
+      const r = addComment(v.d, v.typing, f.sel, pt.opts);
+      if (r && r.needsAuthor) return needAuthor();
+      if (!r) return no(whyNot(v.d, f.sel) || MSGS.failed);
+      done(r.sel, r.id);
+      return true;
+    }
+    if (f.mode === 'reply') {
+      const r = replyTo(v.d, v.typing, f.id, pt.opts);
+      if (r && r.needsAuthor) return needAuthor();
+      if (!r) return no(commandWhy(v.d, f.id, 'reply') || MSGS.failed);
+      const hold = v.sel;
+      done(rangeOf(doc(), r.id) || hold, r.id);
+      return true;
+    }
+    const r = editComment(v.d, v.typing, f.id, pt.opts);
+    if (r && r.lossy) {
+      lossyBox(dw, {id: f.id, text: area.text, at: f.at,
+        done: (id) => {
+          // (only the field still on that edit is left: a Reply
+          // begun meanwhile is kept)
+          if (f && f.mode === 'edit' && f.id === id) done(v.sel, id);
+          else {
+            v.edited(v.sel);
+            refresh();
+          }
+        },
+        back: () => { if (!b.gone && win.isOpen) area.focus(); }});
+      return true;
+    }
+    if (!r) return no(commandWhy(v.d, f.id, 'edit') || MSGS.failed);
+    done(v.sel, f.id);
+    return true;
+  };
+  const call = (name) => {
+    const e = cur();
+    if (name === 'Close') return hide();
+    if (name === 'Post') return post();
+    if (name === 'Cancel') {
+      leave();
+      say('');
+      shade();
+      return true;
+    }
+    if (!e) return no('Choose a comment first.');
+    if (v.hdr) return no(MSGS.hdr);
+    const c = commentOf(doc(), e.id);
+    if (name === 'Reply') {
+      const why = commandWhy(v.d, e.id, 'reply');
+      if (why) return no(why);
+      begin({mode: 'reply', id: e.id, author: c.author});
+      return true;
+    }
+    if (name === 'Edit') {
+      const why = commandWhy(v.d, e.id, 'edit');
+      if (why) return no(why);
+      begin({mode: 'edit', id: e.id, author: c.author}, textOf(c));
+      return true;
+    }
+    if (name === 'Resolve') {
+      const r = setResolved(v.d, v.typing, e.id, !c.done);
+      if (!r) return no(commandWhy(v.d, e.id, 'resolve') ||
+        MSGS.failed);
+      done(v.sel, e.id);
+      return true;
+    }
+    if (name === 'Delete') {
+      const hold = holdSel(doc(), v.sel);
+      const r = deleteComment(v.d, v.typing, e.id);
+      if (!r) return no(commandWhy(v.d, e.id, 'delete') ||
+        MSGS.failed);
+      dw.setComment(null);
+      done(hold(doc()), null);
+      return true;
+    }
+    return false;
+  };
+  const filterMenu = () => {
+    const a = I('show').bbox, p = win.workToScreen(a.x0, a.y1);
+    wimp.menus.open(new Menu('Show', FILTERS.map((x) => ({text: x.text,
+      ticked: () => x.id === s.filter, action: () => pick(x.id)}))),
+    p.x, p.y, {task});
+  };
+  const pick = (id) => {
+    if (!FILTERS.some((x) => x.id === id)) return;
+    s.filter = id;
+    s.top = 0;
+    refresh();
+    const i = rs.findIndex((e) => e.id === s.sel);
+    if (i >= 0) selectId(s, rs, s.sel, ROWS);
+    win.invalidate();
+  };
+  const listY = (ev) => ev.y - LY;
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    const n = ev.icon ? ev.icon.name : '';
+    if (n.startsWith('button:')) {
+      if (!off.has(n.slice(7))) call(n.slice(7));
+      else no(why[n.slice(7)] || '');
+    } else if (n === 'show' || n === 'arrow') filterMenu();
+    else if (!ev.icon) {
+      wimp.setCaret(win);
+      const y = listY(ev);
+      if (y < 0 || y >= ROWS * RH) return true;
+      if (ev.x >= PAD + LISTW) {
+        scrollBy(s, rs, y < (ROWS * RH) / 2 ? -ROWS + 1 : ROWS - 1,
+          ROWS);
+        win.invalidate();
+      } else if (ev.x >= PAD) {
+        const e = rowAt(s, rs, y, RH, ROWS);
+        if (e) choose(e.id);
+      }
+    }
+    return true;
+  });
+  win.on('doubleclick', (ev) => {
+    if (ev.icon || ev.x < PAD || ev.x >= PAD + LISTW) return undefined;
+    const e = rowAt(s, rs, listY(ev), RH, ROWS);
+    if (e) {
+      choose(e.id);
+      if (!off.has('Edit')) call('Edit');
+    }
+    return true;
+  });
+  win.on('wheel', (ev) => {
+    scrollBy(s, rs, Math.sign(ev.dy), ROWS);
+    win.invalidate();
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  // (before the field's own keys: Ctrl+Return posts from it)
+  win.on('key', (ev) => {
+    if (ev.code === 13 && ev.ctrl && area.focused) {
+      post();
+      return true;
+    }
+    return undefined;
+  }, {first: true});
+  win.on('key', (ev) => {
+    const k = ev.key;
+    if (ev.code === 27) hide();
+    else if (ev.code === 13) {
+      if (f) post();
+      else if (s.sel !== null) choose(s.sel);
+    } else if (k === 'ArrowDown' || ev.code === 0x18E) move(1);
+    else if (k === 'ArrowUp' || ev.code === 0x18F) move(-1);
+    else return undefined;
+    return true;
+  });
+  const move = (n) => {
+    step(s, rs, n, ROWS);
+    choose(s.sel);
+  };
+  win.on('deleted', () => {
+    b.gone = true;
+    offChange();
+    const k = v.formatListeners.indexOf(onSel);
+    if (k >= 0) v.formatListeners.splice(k, 1);
+    area.remove();
+    if (b.raf) cancelAnimationFrame(b.raf);
+  });
+  const api = {
+    win,
+    get isOpen() { return win.isOpen; },
+    get gone() { return b.gone; },
+    get rows() { return rs.slice(); },
+    get selected() { return s.sel; },
+    get filter() { return s.filter; },
+    get mode() { return f ? f.mode : null; },
+    get text() { return area.text; },
+    get message() {
+      return (I('msg').text + ' ' + I('msg2').text).trim();
+    },
+    setText(t) { area.text = String(t); },
+    select(id) {
+      const ok = rs.some((e) => e.id === id);
+      if (ok) choose(id);
+      return ok;
+    },
+    setFilter: pick, startAdd, refresh,
+    press: (name) => (off.has(name) ? no(why[name] || '')
+      : call(name)),
+    where(id) {
+      const i = rs.findIndex((e) => e.id === id) - s.top;
+      if (i < 0 || i >= ROWS) return null;
+      return {x: PAD, y: LY + i * RH, w: LISTW, h: RH};
+    },
+    open() {
+      if (b.gone) return;
+      refresh();
+      const p = b.placed ? {} : place(dw.win);
+      b.placed = true;
+      win.open({...p, behind: 'top'});
+      wimp.setCaret(win);
+    },
+    close: hide,
+  };
+  apis.set(win, api);
+  win.api = api;                     // (for the tests)
+  return api;
+}
+
+// --- the choice before a lossy edit ----------------------------
+
+const lossState = new WeakMap();      // api -> {id, text, at, ...}
+const lossWired = new WeakSet();
+
+/** The Edit Comment choice: formatting will be lost (see the
+ *  header). o {id, text, at, done(), back()}. */
+function lossyBox(dw, o) {
+  const api = dialog({task: dw.app.task, key: `cmtlossy:${dw.docKey}`,
+    title: 'Edit Comment', rows: [
+      {kind: 'label', text: 'This comment holds formatting, a field, ' +
+        'a link or a', w: 440},
+      {kind: 'label', text: 'picture that the text field cannot ' +
+        'keep: Edit loses them.', w: 440},
+      {kind: 'label', name: 'msg', text: '', w: 440}],
+    help: 'Edit Comment: the comment\'s text replaced by what you ' +
+      'typed, its formatting lost; Cancel keeps it as it is.',
+    buttons: ['Cancel', 'Edit'], enter: 'Edit', minW: 460});
+  box(dw, 'cmtlossy', () => api.win);
+  lossState.set(api, o);
+  if (!lossWired.has(api)) {
+    lossWired.add(api);
+    const v = dw.view;
+    const no = (msg) => {
+      wimp.beep();
+      api.set('msg', msg);
+      return false;
+    };
+    api.on('close', () => {
+      const st = lossState.get(api);
+      if (!dw.closed && st) st.back();
+    });
+    api.on('button', ({name}) => {
+      const st = lossState.get(api);
+      if (name !== 'Edit') return undefined;
+      if (v.hdr) return no(MSGS.hdr);
+      if (v.d.stateId !== st.at || !commentOf(v.d.doc, st.id))
+        return no('The document changed: Cancel, then Post again.');
+      const r = editComment(v.d, v.typing, st.id, {text: st.text,
+        confirmed: true});
+      if (r !== true) return no(commandWhy(v.d, st.id, 'edit') ||
+        MSGS.failed);
+      st.done(st.id);
+      return undefined;
+    });
+  }
+  api.set('msg', '');
+  if (!api.isOpen) api.open();
+  return api;
+}

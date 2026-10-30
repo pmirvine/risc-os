@@ -45,7 +45,7 @@ function sortExtra(o, parent) {
 /**
  * A copy of `doc` in canonical form: paragraph and table ids 0, 1,
  * 2... in flow order at every depth (./Walk), then on through the
- * stories' blocks; the extra nodes of
+ * stories', notes' and comments' blocks; the extra nodes of
  * pPr/rPr/section props, and of the tblPr/trPr/tcPr of typed tables,
  * in the order of the documented contract (files from Word already
  * are); [Content_Types].xml first in zipOrder (the writer puts it
@@ -85,6 +85,11 @@ export function canon(doc) {
     for (const n of ((d.notes || {})[k] || new Map()).values()) {
       forEachIn(n.blocks, [0], each);
     }
+  }
+  // comments (Batch F1) after the notes, in their Map's order
+  const cm = d.comments && d.comments.map;
+  for (const c of (cm instanceof Map ? cm : new Map()).values()) {
+    forEachIn(c.blocks, [0], each);
   }
   const z = d.meta.zipOrder;
   if (z) {
@@ -419,8 +424,10 @@ export function withNewParts(want, got) {
   // (a notes part made by a command, the first footnote or endnote
   // of a document that had none: its relationship is in the model,
   // its Override is the writer's)
+  // (and the comment parts made by a command, ./CommentParts)
   const allowed = [g.stylesPart, g.numberingPart, relsName,
-    ...Object.values(g.noteParts || {})].filter(Boolean);
+    ...Object.values(g.noteParts || {}),
+    ...Object.values(g.commentParts || {})].filter(Boolean);
   // (a part the model holds that the file had not: a picture's media
   // put in by a command, Batch B)
   const held = (n) => want.parts instanceof Map && want.parts.has(n);

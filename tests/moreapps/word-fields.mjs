@@ -511,7 +511,8 @@ try {
     tm.b0.shown === '14:05' && tm.b.shown === tm.b.stored && tm.b.shown !== '14:05', tm);
   await ev(() => { os.wimp.beep = window.__beepReal; const d = window.__doc('Ins'); d.d.markSaved(); d.dw.close(); });
   const msgs = await ev(() => window.__msgs);
-  ok('nothing reported', !msgs.length, msgs);
+  ok('Update all fields reports what it did (E3): 2 updated, the locked PAGE kept as stored',
+    msgs.length === 1 && msgs[0] === '2 fields updated. 1 field kept as stored: PAGE: locked.', msgs);
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }

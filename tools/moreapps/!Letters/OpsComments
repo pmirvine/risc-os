@@ -1,0 +1,444 @@
+// OpsComments - the ops on comments (Batch F1), each returning its
+// inverse (./Ops apply: undo, redo, atomic as every op). id is a
+// comment's w:id: an integer 0..2147483647; a Comment as
+// ./CommentRead reads it (./ModelCheck checkComments' rules).
+//
+//   addComment {id, comment, at?, raw?} -> removeComments {ids: [id],
+//       raw?}  comment (its id this one, not there yet) put in
+//       doc.comments.map and its id in order at index `at` (default
+//       the end): before the comment that was at `at`, after the odd
+//       nodes (raw.comments) there. Its blocks' ids must be free in
+//       doc (./OpsUtil checkIds) and its rels be the part's
+//       (partRels: one rels array a part). Refused when the
+//       comments part is not modelled (doc.meta.commentParts has no
+//       comments part: none, or one kept as bytes): the writer would
+//       not write it (making the part is ./CommentParts', Task 4)
+//   removeComments {ids, raw?} -> addComments {comments: the ones
+//       removed (in order's order), order: the old order, raw?}
+//       many comments at once (ids distinct, each there), in time
+//       linear in the comments: those of the marks a step took
+//       (./CommentKeep). Their marks are not touched
+//   addComments {comments, order, raw?} -> removeComments {ids,
+//       raw?}  comments (as addComment takes them, ids distinct and
+//       not there) put in; order is the old order with their ids put
+//       in (the others in their order); the Map follows it. An odd
+//       node stays right after the comment it was after
+//   setComment {id, ...fields} -> setComment {id, comment: the old}
+//       fields (at least one): author, initials (strings), date,
+//       paraId (a string or null), parent (an id other than id, or
+//       null), done (a boolean), blocks (an array of blocks whose ids
+//       are free in doc but for the comment's own): a NEW Comment
+//       {...old, ...fields} in its place (node and orig kept:
+//       ./CommentWrite rewrites it from its fields and blocks while
+//       they differ from what was read). setComment {id, comment}
+//       puts that very Comment (its id and node the old one's) in
+//       place: the inverse, so that undo gives back the object the
+//       writer knew
+//   setCommentsPart {kind, value} -> setCommentsPart {kind, value:
+//       null}  makes a part the document has none of (Task 4,
+//       ./CommentParts ensure: with its relationship in one
+//       d.atomic). kind 'comments': value {part, root, prolog}, a
+//       free part name (./OpsNotes nameFree, and no comment part's)
+//       and the root w:comments ({name, attrs}); allowed when
+//       meta.commentParts names no comments part and the main part
+//       has no comments relationship (none read, none kept as
+//       bytes). doc.comments becomes an empty, modelled Comments
+//       (no read snapshot) and meta.commentParts {comments: part}.
+//       kind 'extended' | 'ids' | 'extensible' | 'people': value
+//       {part, ext} (ext a ./CommentExt Ext with no bytes) put in
+//       raw[kind] and meta.commentParts[kind], allowed when the
+//       comments part is modelled and the kind has no part, no
+//       relationship and nothing read. value null takes away a part
+//       made so (never one read from the file), once no
+//       relationship of its kind is left; the comments part only
+//       when it holds no comment and no companion is named
+//
+// The odd nodes (raw.comments, ./CommentRead) keep their places: an
+// entry before the comment at index k moves with that comment; the
+// inverse carries the raw array as it was (raw: the very entries,
+// checked to hold the same nodes) so that undo gives it back
+// exactly. The companions' entries (raw.extended...) are the
+// writer's business (./CommentExt: dropped for a comment gone).
+// COPY-ON-WRITE: doc.comments is replaced by a new object holding a
+// new Map (in order's order), order and raw; every other Comment,
+// root, prolog and the read snapshot are shared, never changed. The
+// Comments, field values, rels and raw given are kept by reference
+// (./Ops copy): IMMUTABLE BY CONTRACT. Refused (RangeError, doc
+// unchanged): a bad id (-1, '1', 1.5, 2^31...), a missing comment,
+// an id there already, a bad comment, place, field or value, a
+// story.
+//
+//   newComment(doc, id, blocks, fields?) -> a Comment: author and
+//       initials '' (or fields'), date null, paraId null, parent
+//       null, done false (or fields'), the part's rels and relsPart,
+//       orig [] and no node (written from its blocks)
+//   commentOf(doc, id) -> the Comment or null
+//   partRels(doc) -> the rels the part's comments share (the part's
+//       own when it has none yet), or null
+//   isCommentId(v) -> whether v is a comment id
+// Pure: no desktop services.
+import {fail, checkBlock} from './ModelCheck';
+import {checkIds} from './OpsUtil';
+import {checkRels} from './OpsDoc';
+import {emptyComments} from './Model';
+import {nameFree} from './OpsNotes';
+import {relKind} from './Rels';
+import {EXT_KINDS, EXT_RELS} from './CommentExt';
+
+const isObj = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+const none = (v) => v === null || v === undefined;
+const optStr = (v) => none(v) || typeof v === 'string';
+
+/** See the header. */
+export const isCommentId = (v) => Number.isInteger(v) && v >= 0 &&
+  v <= 2147483647;
+
+function idOf(id) {
+  if (!isCommentId(id)) fail('bad comment id ' + String(id));
+  return id;
+}
+
+const commentsOf = (doc) => (isObj(doc.comments) &&
+  doc.comments.map instanceof Map ? doc.comments : emptyComments());
+const orderOf = (c) => (Array.isArray(c.order) ? c.order : []);
+const rawOf = (c) => (isObj(c.raw) && Array.isArray(c.raw.comments)
+  ? c.raw.comments : []);
+
+/** doc.comments with its Map, order and raw replaced. */
+function put(doc, map, order, raw) {
+  const c = commentsOf(doc);
+  const out = {...c, map};
+  if (order) out.order = order;
+  if (raw) out.raw = {...c.raw, comments: raw};
+  doc.comments = out;
+}
+
+/** A Map of order's comments: from old, and those of add. */
+function mapOver(order, old, add) {
+  const m = new Map();
+  for (const k of order) m.set(k, add && add.has(k) ? add.get(k)
+    : old.get(k));
+  return m;
+}
+
+/** raw0 given back: op.raw must hold its nodes, places in range. */
+function rawBack(given, raw0, size) {
+  if (!Array.isArray(given) || given.length !== raw0.length)
+    fail('bad raw');
+  given.forEach((x, k) => {
+    if (!isObj(x) || x.node !== raw0[k].node ||
+      !Number.isInteger(x.at) || x.at < 0 || x.at > size ||
+      (k && x.at < given[k - 1].at)) fail('bad raw');
+  });
+  return given;
+}
+
+/** See the header. */
+export function partRels(doc) {
+  const c = commentsOf(doc);
+  for (const x of c.map.values()) return x.rels ?? null;
+  return c.rels ?? null;
+}
+
+function relsPartOf(doc) {
+  const c = commentsOf(doc);
+  for (const x of c.map.values()) return x.relsPart ?? null;
+  return c.relsPart ?? null;
+}
+
+/** See the header. */
+export function commentOf(doc, id) {
+  return isCommentId(id) ? commentsOf(doc).map.get(id) || null : null;
+}
+
+/** See the header. */
+export function newComment(doc, id, blocks, fields = {}) {
+  return {id: idOf(id), author: fields.author ?? '',
+    initials: fields.initials ?? '', date: fields.date ?? null,
+    blocks, rels: partRels(doc), relsPart: relsPartOf(doc),
+    paraId: fields.paraId ?? null, parent: fields.parent ?? null,
+    done: fields.done ?? false, orig: [], node: null};
+}
+
+/** Throw unless c's own fields are a Comment's (see the header). */
+function checkFields(c, id) {
+  if (typeof c.author !== 'string' || typeof c.initials !== 'string')
+    fail('comment author and initials must be strings');
+  if (!optStr(c.date) || !optStr(c.paraId))
+    fail('comment date and paraId must be strings or null');
+  if (!none(c.parent) && (!isCommentId(c.parent) || c.parent === id))
+    fail('a comment parent must be another id or null');
+  if (typeof c.done !== 'boolean') fail('comment done: a boolean');
+  if (!Array.isArray(c.blocks)) fail('comment blocks: an array');
+  for (const b of c.blocks) checkBlock(b);
+}
+
+/** Throw unless c is a Comment with id `id`. */
+function checkComment(c, id) {
+  if (!isObj(c) || c.id !== id) fail('a comment must hold its id');
+  checkFields(c, id);
+  if (!none(c.rels)) checkRels(c.rels);
+  if (!optStr(c.relsPart)) fail('comment relsPart: a name or null');
+  if (!Array.isArray(c.orig)) fail('comment orig: an array');
+  if (!none(c.node) && !isObj(c.node)) fail('bad comment node');
+}
+
+/** The Map that may take a comment (see the header). */
+function partMap(doc) {
+  const c = commentsOf(doc);
+  const m = isObj(doc.meta) ? doc.meta.commentParts : null;
+  if (!isObj(m) || typeof m.comments !== 'string' || !c.root)
+    fail('no comments part modelled: it is kept as it is (or there ' +
+      'is none) and takes no new comment');
+  return c.map;
+}
+
+/** See the header. */
+export function addComment(doc, op) {
+  const id = idOf(op.id), map = partMap(doc), c = commentsOf(doc);
+  if (map.has(id)) fail('comment ' + id + ' is there already');
+  checkComment(op.comment, id);
+  if ((op.comment.rels ?? null) !== partRels(doc))
+    fail('a comment takes the rels of its part');
+  const order = orderOf(c);
+  const at = op.at === undefined ? order.length : op.at;
+  if (!Number.isInteger(at) || at < 0 || at > order.length)
+    fail('bad comment place');
+  checkIds(doc, op.comment.blocks);
+  const raw0 = rawOf(c), next = order.slice();
+  next.splice(at, 0, id);
+  let raw = raw0;
+  if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
+  else if (raw0.some((x) => x.at > at)) {
+    raw = raw0.map((x) => (x.at > at ? {...x, at: x.at + 1} : x));
+  }
+  put(doc, mapOver(next, map, new Map([[id, op.comment]])), next, raw);
+  const inv = {op: 'removeComments', ids: [id]};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+/** See the header. */
+export function removeComments(doc, op) {
+  const c = commentsOf(doc), map = c.map;
+  if (!Array.isArray(op.ids) || !op.ids.length) fail('bad comment ids');
+  const gone = new Set();
+  for (const x of op.ids) {
+    const id = idOf(x);
+    if (!map.has(id)) fail('no comment ' + id);
+    if (gone.has(id)) fail('comment ' + id + ' named twice');
+    gone.add(id);
+  }
+  const order = orderOf(c), next = [], before = [];
+  for (const k of order) {
+    before.push(next.length);
+    if (!gone.has(k)) next.push(k);
+  }
+  before.push(next.length);
+  if (order.length - next.length !== gone.size)
+    fail('a comment is not in order');
+  const raw0 = rawOf(c);
+  let raw = raw0;
+  if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
+  else if (raw0.some((x) => before[x.at] !== x.at)) {
+    raw = raw0.map((x) => (before[x.at] === x.at ? x
+      : {...x, at: before[x.at]}));
+  }
+  put(doc, mapOver(next, map), next, raw);
+  const inv = {op: 'addComments',
+    comments: order.filter((k) => gone.has(k)).map((k) => map.get(k)),
+    order};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+/** See the header. */
+export function addComments(doc, op) {
+  const map = partMap(doc), c = commentsOf(doc);
+  if (!Array.isArray(op.comments) || !op.comments.length ||
+    !Array.isArray(op.order)) fail('bad comments');
+  const add = new Map(), bs = [], rels = partRels(doc);
+  for (const x of op.comments) {
+    const id = idOf(isObj(x) ? x.id : undefined);
+    if (map.has(id) || add.has(id))
+      fail('comment ' + id + ' is there already');
+    checkComment(x, id);
+    if ((x.rels ?? null) !== rels)
+      fail('a comment takes the rels of its part');
+    add.set(id, x);
+    for (const b of x.blocks) bs.push(b);
+  }
+  const order = orderOf(c), next = op.order;
+  const seen = new Set(), at = new Map();
+  let j = 0;
+  next.forEach((k, i) => {
+    if (seen.has(k)) fail('bad comment order');
+    seen.add(k);
+    if (add.has(k)) return;
+    if (order[j] !== k) fail('bad comment order');
+    at.set(j++, i);
+  });
+  if (j !== order.length || seen.size !== order.length + add.size)
+    fail('bad comment order');
+  checkIds(doc, bs);
+  const raw0 = rawOf(c);
+  let raw = raw0;
+  // (an odd node before comment j goes right after comment j - 1)
+  const placed = (a) => (a === 0 ? 0 : at.get(a - 1) + 1);
+  if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
+  else if (raw0.some((x) => placed(x.at) !== x.at)) {
+    raw = raw0.map((x) => (placed(x.at) === x.at ? x
+      : {...x, at: placed(x.at)}));
+  }
+  put(doc, mapOver(next, map, add), next.slice(), raw);
+  const inv = {op: 'removeComments', ids: [...add.keys()]};
+  if (raw !== raw0) inv.raw = raw0;
+  return inv;
+}
+
+export const FIELDS = Object.freeze(['author', 'initials', 'date',
+  'paraId', 'parent', 'done', 'blocks']);
+const OWN = new Set(['op', 'id', 'story', 'comment', ...FIELDS]);
+
+/** See the header. */
+export function setComment(doc, op) {
+  const id = idOf(op.id), map = commentsOf(doc).map;
+  const old = map.get(id);
+  if (!old) fail('no comment ' + id);
+  for (const k of Object.keys(op)) {
+    if (!OWN.has(k)) fail('bad comment field ' + k);
+  }
+  let next;
+  if (op.comment !== undefined) {
+    if (FIELDS.some((k) => Object.hasOwn(op, k)))
+      fail('fields or a comment, not both');
+    next = op.comment;
+    checkComment(next, id);
+    if (next.node !== old.node) fail('a comment keeps its node');
+  } else {
+    const keys = FIELDS.filter((k) => Object.hasOwn(op, k));
+    if (!keys.length) fail('nothing to set in the comment');
+    next = {...old};
+    for (const k of keys) next[k] = op[k];
+    checkFields(next, id);
+  }
+  if (next.blocks !== old.blocks)
+    checkIds(doc, next.blocks, old.blocks);
+  put(doc, new Map(map).set(id, next));
+  return {op: 'setComment', id, comment: old};
+}
+
+const KINDS = new Set(['comments', ...EXT_KINDS]);
+
+/** Whether the main part has a relationship to a part of kind. */
+function hasRel(doc, kind) {
+  for (const r of Array.isArray(doc.rels) ? doc.rels : []) {
+    if (!isObj(r) || r.mode === 'External' ||
+      typeof r.type !== 'string') continue;
+    const k = EXT_RELS.has(r.type) ? EXT_RELS.get(r.type)
+      : (relKind(r.type) || {}).kind;
+    if (k === kind) return true;
+  }
+  return false;
+}
+
+const namesOf = (doc) => (isObj(doc.meta) &&
+  isObj(doc.meta.commentParts) ? doc.meta.commentParts : {});
+
+/** Throw unless name is free for a new comment part. */
+function freeName(doc, name) {
+  const lc = typeof name === 'string' ? name.toLowerCase() : null;
+  if (!lc || !nameFree(doc, name) || Object.values(namesOf(doc))
+    .some((n) => String(n).toLowerCase() === lc))
+    fail('part name ' + String(name) + ' not free');
+}
+
+/** Throw unless v is a root {name, attrs} of local name `local`. */
+function checkRoot(v, local) {
+  if (!isObj(v) || typeof v.name !== 'string' ||
+    !Array.isArray(v.attrs) ||
+    v.name.slice(v.name.indexOf(':') + 1) !== local ||
+    !v.attrs.every((a) => Array.isArray(a) && a.length === 2 &&
+      typeof a[0] === 'string' && typeof a[1] === 'string'))
+    fail('bad ' + local + ' root');
+}
+
+/** The comments part made or taken away (see the header). */
+function commentsPart(doc, op) {
+  const names = namesOf(doc), c = commentsOf(doc), v = op.value;
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  if (v === null) {
+    if (typeof names.comments !== 'string') fail('no comments part');
+    if (c.read) fail('the comments part was read from the file');
+    if (c.map.size || Object.keys(names).length > 1)
+      fail('the comments part is in use');
+    if (hasRel(doc, 'comments'))
+      fail('the comments relationship is still there');
+    doc.comments = emptyComments();
+    const rest = {...names};
+    delete rest.comments;
+    doc.meta = {...meta, commentParts: rest};
+    return {op: 'setCommentsPart', kind: 'comments', value: {
+      part: names.comments, root: c.root, prolog: c.prolog}};
+  }
+  if (typeof names.comments === 'string' || hasRel(doc, 'comments'))
+    fail('the document has a comments part');
+  if (!isObj(v)) fail('bad comments part');
+  freeName(doc, v.part);
+  checkRoot(v.root, 'comments');
+  if (!none(v.prolog) && !isObj(v.prolog)) fail('bad comments prolog');
+  const raw = {comments: []};
+  for (const k of EXT_KINDS) raw[k] = null;
+  doc.comments = {...emptyComments(), root: v.root,
+    prolog: v.prolog ?? null, raw, rels: null, relsPart: null,
+    read: null};
+  doc.meta = {...meta, commentParts: {comments: v.part}};
+  return {op: 'setCommentsPart', kind: 'comments', value: null};
+}
+
+/** A companion made or taken away (see the header). */
+function extPart(doc, op, kind) {
+  const names = namesOf(doc), c = commentsOf(doc), v = op.value;
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  const raw = isObj(c.raw) ? c.raw : {};
+  const read = isObj(c.read) && isObj(c.read.ext) ? c.read.ext : {};
+  if (v === null) {
+    if (typeof names[kind] !== 'string') fail('no ' + kind + ' part');
+    if (read[kind]) fail('the ' + kind + ' part was read');
+    if (hasRel(doc, kind))
+      fail('the ' + kind + ' relationship is still there');
+    const inv = {op: 'setCommentsPart', kind, value: {
+      part: names[kind], ext: raw[kind]}};
+    const rest = {...names};
+    delete rest[kind];
+    doc.comments = {...c, raw: {...raw, [kind]: null}};
+    doc.meta = {...meta, commentParts: rest};
+    return inv;
+  }
+  if (typeof names.comments !== 'string' || !c.root)
+    fail('no comments part modelled');
+  if (typeof names[kind] === 'string' || raw[kind] || read[kind] ||
+    hasRel(doc, kind)) fail('the document has a ' + kind + ' part');
+  if (!isObj(v) || !isObj(v.ext) || v.ext.kind !== kind ||
+    !Array.isArray(v.ext.items) || v.ext.items.length ||
+    typeof v.ext.ns !== 'string' || v.ext.part !== v.part)
+    fail('bad ' + kind + ' part');
+  checkRoot(v.ext.root, v.ext.root && typeof v.ext.root.name ===
+    'string' ? v.ext.root.name.slice(v.ext.root.name.indexOf(':') + 1)
+    : '');
+  freeName(doc, v.part);
+  doc.comments = {...c, raw: {...raw, [kind]: v.ext}};
+  doc.meta = {...meta, commentParts: {...names, [kind]: v.part}};
+  return {op: 'setCommentsPart', kind, value: null};
+}
+
+/** See the header. */
+export function setCommentsPart(doc, op) {
+  const kind = op.kind;
+  if (typeof kind !== 'string' || !KINDS.has(kind))
+    fail('bad comment part kind ' + String(kind));
+  if (op.value === undefined) fail('setCommentsPart needs a value');
+  return kind === 'comments' ? commentsPart(doc, op)
+    : extPart(doc, op, kind);
+}
