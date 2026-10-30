@@ -1,0 +1,216 @@
+// TocPatch - the Table of Contents box's values (./TocBox) from a
+// document, and the options they make for ./TocCmd (Batch E3).
+// Pure: no desktop services.
+//
+//   fill(doc, sel) -> Values  from the table of contents holding the
+//       caret (./TocCmd tocAt: its instruction read by ./TocSwitches
+//       parse, the leader from its entries' right tab), else
+//       DEFAULTS (editing false)
+//   patch(values, field?) -> {opts} | {error}
+//       opts for ./TocCmd insertToc / editToc: {levels, hyperlinks,
+//       pageNumbers, rightAlign, leader ('none' | 'dot' | 'hyphen' |
+//       'underscore'), outline, extraStyles, seqId?, includeLabel?,
+//       instr} (seqId, includeLabel: a table of figures, values
+//       seqId a SEQ identifier: levels, outline and extra styles not
+//       used, ./TocCmd instrOf's figures form). instr:
+//       the instruction (./TocCmd instrOf, Word's order: TOC \o
+//       "1-3" \h \z \u for the defaults). With field (the table
+//       being edited): instr null when the values are the ones its
+//       instruction shows (fill), or ask for what it asks already
+//       (its code is kept as it is, even for a leader change, which
+//       is not in the code); an error
+//       when they ask for something else and its instruction has
+//       switches the box cannot show (\b, \w, \x, \o not from 1, a
+//       \n or \p of other levels or text...: never dropped
+//       silently). error: text for the box (levels not a whole
+//       number from 1 to 9, a leader not in LEADERS, a style with no
+//       name, a quote or backslash in it, a level not 1 to 9, a
+//       style named twice)
+//   styleChoices(doc, extra?) -> [{id, text}]  the styles the
+//       Options box offers: the document's paragraph styles by the
+//       names Word shows (./StyleName display), but Heading 1 to 9
+//       (\o has them) and TOC 1 to 9 (the entries' own), with the
+//       names of extra [{style}] the document lacks; id = text,
+//       sorted with case ignored
+//   DEFAULTS  the values of a new table: 3 levels, page numbers
+//       right aligned with dots, hyperlinks, outline levels, no
+//       extra styles
+//   LEADERS  the Tab leader choices [{id, text}]: none, dots,
+//       dashes, line
+//
+// Values {editing, levels (1..9), pageNumbers, rightAlign, leader
+//   ('none' | 'dots' | 'dashes' | 'line'), hyperlinks, outline,
+//   extraStyles [{style, level}] (\t: the style's name), seqId (a
+//   table of figures' \c or \a identifier; else null), includeLabel
+//   (false for \a: the captions without label and number), exact
+//   (the instruction says no more than these values: instrOf of
+//   them reads back the same), why (./TocUpdate tocWhy: why the
+//   table cannot be made again, or null)}
+import {tocAt, instrOf} from './TocCmd';
+import {parse} from './TocSwitches';
+import {tocWhy, entriesOf} from './TocUpdate';
+import {findBlock} from './EditPos';
+import {display} from './StyleName';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+export const LEADERS = Object.freeze([
+  Object.freeze({id: 'none', text: 'None'}),
+  Object.freeze({id: 'dots', text: '.......'}),
+  Object.freeze({id: 'dashes', text: '-------'}),
+  Object.freeze({id: 'line', text: '_______'})]);
+const TO_CMD = {none: 'none', dots: 'dot', dashes: 'hyphen',
+  line: 'underscore'};
+const FROM_TAB = {dot: 'dots', hyphen: 'dashes', underscore: 'line',
+  none: 'none', middleDot: 'dots', heavy: 'line'};
+
+export const DEFAULTS = Object.freeze({editing: false, levels: 3,
+  pageNumbers: true, rightAlign: true, leader: 'dots',
+  hyperlinks: true, outline: true, extraStyles: Object.freeze([]),
+  seqId: null, includeLabel: true, exact: true, why: null});
+
+/** The values a parsed instruction sw asks for (no leader). */
+function valuesOf(sw) {
+  return {levels: sw.levels ? sw.levels[1] : 3,
+    pageNumbers: sw.noPageLevels === null,
+    rightAlign: sw.separator === null,
+    hyperlinks: sw.hyperlinks, outline: sw.outline,
+    extraStyles: sw.styles.map((s) => ({style: s.style,
+      level: s.level})),
+    seqId: sw.seqId ?? sw.captionsOnly,
+    includeLabel: sw.captionsOnly === null};
+}
+
+/** The switches of two parsed instructions ask for the same. */
+function same(a, b) {
+  const st = (s) => s.styles.map((x) => x.style.toLowerCase() + ',' +
+    x.level).join(';');
+  const j = (x) => JSON.stringify(x);
+  return a.valid === b.valid && j(a.levels) === j(b.levels) &&
+    a.outline === b.outline && st(a) === st(b) &&
+    a.hyperlinks === b.hyperlinks && a.hidePages === b.hidePages &&
+    j(a.noPageLevels) === j(b.noPageLevels) &&
+    a.separator === b.separator && a.bookmark === b.bookmark &&
+    a.seqId === b.seqId && a.captionsOnly === b.captionsOnly &&
+    a.keepTabs === b.keepTabs && a.keepBreaks === b.keepBreaks &&
+    a.tcEntries === b.tcEntries && j(a.unknown) === j(b.unknown);
+}
+
+/** opts ask for the values was (valuesOf) shows. */
+function asked(opts, was) {
+  if (typeof opts.seqId === 'string' || was.seqId !== null) {
+    return (opts.seqId ?? null) === was.seqId &&
+      (opts.includeLabel !== false) === was.includeLabel &&
+      opts.pageNumbers === was.pageNumbers &&
+      opts.rightAlign === was.rightAlign &&
+      opts.hyperlinks === was.hyperlinks;
+  }
+  const st = (xs) => xs.map((x) => x.style.toLowerCase() + ',' +
+    x.level).join(';');
+  return opts.levels === was.levels &&
+    opts.pageNumbers === was.pageNumbers &&
+    opts.rightAlign === was.rightAlign &&
+    opts.hyperlinks === was.hyperlinks &&
+    opts.outline === was.outline &&
+    st(opts.extraStyles) === st(was.extraStyles) &&
+    (opts.seqId ?? null) === was.seqId;
+}
+
+/** The leader of f's entries' right tab, or 'dots'. */
+function leaderOf(doc, f) {
+  for (const e of entriesOf(doc, f)) {
+    const loc = findBlock(doc, e.para);
+    const pPr = loc && isObj(loc.b.pPr) ? loc.b.pPr : null;
+    const tabs = pPr && Array.isArray(pPr.tabs) ? pPr.tabs : [];
+    const t = tabs.find((x) => isObj(x) && x.val === 'right');
+    if (t) return FROM_TAB[t.leader || 'none'] || 'dots';
+  }
+  return 'dots';
+}
+
+/** See the header. */
+export function fill(doc, sel) {
+  const f = isObj(doc) && isObj(sel) ? tocAt(doc, sel) : null;
+  if (!f) return {...DEFAULTS, extraStyles: []};
+  const sw = parse(f.instr), v = valuesOf(sw);
+  return {editing: true, ...v, leader: leaderOf(doc, f),
+    exact: same(parse(instrOf(v)), sw), why: tocWhy(doc, f)};
+}
+
+const BAD_NAME = /["\\]|[\u0000-\u001f]/;
+
+/** The extra styles checked: [{style, level}] or {error}. */
+function stylesOf(xs) {
+  if (!Array.isArray(xs)) return {error: 'The extra styles are not ' +
+    'a list.'};
+  const out = [], seen = new Set();
+  for (const x of xs) {
+    const name = isObj(x) && typeof x.style === 'string'
+      ? x.style.trim() : '';
+    if (!name) return {error: 'A style in the list has no name.'};
+    if (BAD_NAME.test(name) || /[,;]/.test(name))
+      return {error: `The style ${name} cannot be named in a table ` +
+        'of contents (a quote, comma or backslash in its name).'};
+    if (!(Number.isInteger(x.level) && x.level >= 1 && x.level <= 9))
+      return {error: `The level of ${name}: a whole number from 1 ` +
+        'to 9.'};
+    if (seen.has(name.toLowerCase()))
+      return {error: `The style ${name} is in the list twice.`};
+    seen.add(name.toLowerCase());
+    out.push({style: name, level: x.level});
+  }
+  return out;
+}
+
+/** See the header. */
+export function patch(values, field) {
+  if (!isObj(values)) return {error: 'Nothing to put in.'};
+  const v = values;
+  if (!(Number.isInteger(v.levels) && v.levels >= 1 && v.levels <= 9))
+    return {error: 'Show levels: a whole number from 1 to 9.'};
+  if (!Object.hasOwn(TO_CMD, String(v.leader)))
+    return {error: 'Tab leader: none, dots, dashes or a line.'};
+  const xs = stylesOf(v.extraStyles ?? []);
+  if (!Array.isArray(xs)) return xs;
+  const opts = {levels: v.levels, hyperlinks: v.hyperlinks !== false,
+    pageNumbers: v.pageNumbers !== false,
+    rightAlign: v.rightAlign !== false, leader: TO_CMD[v.leader],
+    outline: v.outline !== false, extraStyles: xs};
+  if (typeof v.seqId === 'string' && v.seqId) {
+    opts.seqId = v.seqId;
+    opts.includeLabel = v.includeLabel !== false;
+  }
+  opts.instr = instrOf(opts);
+  if (!isObj(field) || typeof field.instr !== 'string')
+    return {opts};
+  const now = parse(field.instr), was = valuesOf(now);
+  if (asked(opts, was) || same(parse(opts.instr), now))
+    return {opts: {...opts, instr: null}};
+  if (!same(parse(instrOf(was)), now)) {
+    return {error: 'This table\'s code has switches this box does ' +
+      'not show: change it in the Field box (Insert > Field...).'};
+  }
+  return {opts};
+}
+
+const SKIP = /^(heading|toc) [1-9]$/i;
+
+/** See the header. */
+export function styleChoices(doc, extra = []) {
+  const st = isObj(doc) && isObj(doc.styles) &&
+    doc.styles.styles instanceof Map ? doc.styles.styles : new Map();
+  const names = new Map();
+  const add = (n) => {
+    const t = String(n).trim();
+    if (t && !SKIP.test(t) && !names.has(t.toLowerCase()))
+      names.set(t.toLowerCase(), t);
+  };
+  for (const s of st.values()) {
+    if (isObj(s) && s.type === 'paragraph') add(display(s));
+  }
+  for (const x of Array.isArray(extra) ? extra : []) {
+    if (isObj(x) && typeof x.style === 'string') add(x.style);
+  }
+  return [...names.entries()].sort((a, b) => (a[0] < b[0] ? -1
+    : a[0] > b[0] ? 1 : 0)).map(([, t]) => ({id: t, text: t}));
+}

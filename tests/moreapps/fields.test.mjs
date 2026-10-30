@@ -67,22 +67,29 @@ describe('Fields: the registry (D17)', () => {
   it('holds Batch D\'s names with their flags', () => {
     assert.deepEqual([...REGISTRY.keys()].sort(), ['AUTHOR',
       'CREATEDATE', 'DATE', 'FILENAME', 'KEYWORDS', 'LASTSAVEDBY',
-      'NUMPAGES', 'NUMWORDS', 'PAGE', 'PRINTDATE', 'SAVEDATE',
-      'SECTION', 'SECTIONPAGES', 'SUBJECT', 'TIME', 'TITLE']);
-    const page = ['PAGE', 'NUMPAGES', 'SECTIONPAGES', 'SECTION'];
+      'NOTEREF', 'NUMPAGES', 'NUMWORDS', 'PAGE', 'PAGEREF',
+      'PRINTDATE', 'REF',
+      'SAVEDATE', 'SECTION', 'SECTIONPAGES', 'SEQ', 'STYLEREF',
+      'SUBJECT', 'TIME', 'TITLE', 'TOC']);
+    const page = ['PAGE', 'NUMPAGES', 'SECTIONPAGES', 'SECTION',
+      'STYLEREF', 'PAGEREF'];
     for (const [name, e] of REGISTRY) {
       assert.equal(typeof e.eval, 'function', name);
       assert.equal(e.pageDependent, page.includes(name), name);
       assert.equal(e.volatile, ['DATE', 'TIME'].includes(name), name);
     }
+    // TOC: its result is made as a whole (./TocUpdate), never eval
+    assert.equal(REGISTRY.get('TOC').block, true);
+    assert.equal(REGISTRY.get('TOC').shown, false);
   });
 
-  it('no evaluator, never evaluated: PAGEREF TOC MERGEFIELD ' +
-    'INCLUDETEXT DDE and the rest give null', () => {
+  it('no evaluator, never evaluated: TOC MERGEFIELD INCLUDETEXT ' +
+    'DDE and the rest give null (PAGEREF: no pages, no bookmark)',
+  () => {
     const ctx = {doc: mkDoc([para('x')]), now: NOW, path: 'a.b'};
     for (const instr of [' PAGEREF _Toc1 \\h ', ' TOC \\o "1-3" ',
       ' MERGEFIELD Name ', ' INCLUDETEXT "c:\\\\x.doc" ',
-      ' DDE Excel "S" ', ' DDEAUTO a b ', ' REF x ', ' SEQ Fig ',
+      ' DDE Excel "S" ', ' DDEAUTO a b ',
       ' IF 1 = 1 "a" "b" ', ' = 1 + 2 ', ' HYPERLINK "x" ',
       ' INCLUDEPICTURE "x" ', ' MACROBUTTON x ', ' __proto__ ',
       ' constructor ', ' toString ', '', '   ', ' "PAGE" ']) {

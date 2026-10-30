@@ -1,0 +1,133 @@
+// TocSwitches - a TOC field's instruction read into what it asks
+// for (Batch E3): which paragraphs make the entries and how the
+// entry paragraphs are laid out. Pure: no desktop services.
+//
+//   parse(instr) -> Switches  never throws, whatever instr is
+//   canRebuild(sw) -> bool  the field's result may be rebuilt from
+//       the document: the instruction is a TOC one, every switch is
+//       one this build understands (unknown is empty) and it asks for
+//       no TC entries (tcEntries false). Otherwise the stored result
+//       is kept, as it is
+//   isFigures(sw) -> bool  a table of figures or of captions (\c or
+//       \a): its entries come from SEQ fields, not headings
+//
+// Switches {name, valid, levels, outline, styles, hyperlinks,
+//   hidePages, noPageLevels, separator, bookmark, seqId,
+//   captionsOnly, keepTabs, keepBreaks, tcEntries, unknown}
+//   valid         the field is a TOC one with no word but switches
+//   levels        \o "a-b": the heading styles Heading a to
+//                 Heading b: [a, b], each clamped to 1..9; null for
+//                 no \o. A bare \o is [1, 9]
+//   outline       \u: paragraphs with an outline level
+//   styles        \t "Style,level,Style2,level2": [{style, level}],
+//                 the list separated by ',' or ';' (Word's list
+//                 separator follows the locale); at most MAX_STYLES
+//   hyperlinks    \h: entries are links
+//   hidePages     \z: hide the tab and page numbers in Web layout
+//                 (the stored entries are the same)
+//   noPageLevels  \n "a-b": no page numbers for those levels, [a, b]
+//                 (a bare \n: [1, 9]); null for no \n
+//   separator     \p "sep": the text between an entry and its page
+//                 number in place of the tab and leader; null for none
+//   bookmark      \b name: only the entries inside that bookmark
+//   seqId         \c "id": a table of figures of SEQ id fields
+//   captionsOnly  \a "id": the same without the label and number
+//   keepTabs      \w: tabs in an entry kept
+//   keepBreaks    \x: line breaks in an entry kept
+//   tcEntries     \f or \l is present: TC fields make entries (not
+//                 built here)
+//   unknown       the switches (and extra words) not understood, as
+//                 written: \d, \s, a switch with a bad or missing
+//                 argument (\o "9-1", \t "A", \b with no name), any
+//                 switch not listed; empty when all are known
+// A switch given twice: the last one counts. Numbers outside 1..9
+// are clamped to 1..9; a range that runs backwards, or is not
+// numbers, is unknown. \* (a format switch) is read and ignored.
+// Switch letters are compared with case ignored.
+import {parse as parseField} from './FieldParse';
+
+export const MAX_STYLES = 1000;
+const isStr = (v) => typeof v === 'string';
+const clamp = (n) => Math.min(9, Math.max(1, n));
+const NUM = /^\d{1,9}$/;
+
+/** [a, b] from "a-b" (or "a"), clamped; null when not a range. */
+function range(s) {
+  if (!isStr(s) || s.length > 64) return null;
+  const parts = s.trim().split(/[-\u2013]/).map((x) => x.trim());
+  if (parts.length > 2 || !parts.every((x) => NUM.test(x))) return null;
+  const a = Number(parts[0]), b = Number(parts[parts.length - 1]);
+  return a > b ? null : [clamp(a), clamp(b)];
+}
+
+/** [{style, level}] from "S,1,T,2" (',' or ';'), or null. */
+function styleList(s) {
+  if (!isStr(s)) return null;
+  const parts = s.split(/[,;]/).map((x) => x.trim());
+  if (parts.length < 2 || parts.length % 2 ||
+    parts.length > 2 * MAX_STYLES) return null;
+  const out = [];
+  for (let k = 0; k < parts.length; k += 2) {
+    if (!parts[k] || !/^\d{1,9}$/.test(parts[k + 1])) return null;
+    out.push({style: parts[k], level: clamp(Number(parts[k + 1]))});
+  }
+  return out;
+}
+
+/** See the header. */
+export function parse(instr) {
+  const f = parseField(instr);
+  const out = {name: f.name, valid: f.name === 'TOC' &&
+    f.args.length === 0, levels: null, outline: false, styles: [],
+  hyperlinks: false, hidePages: false, noPageLevels: null,
+  separator: null, bookmark: null, seqId: null, captionsOnly: null,
+  keepTabs: false, keepBreaks: false, tcEntries: false, unknown: []};
+  if (f.name === 'TOC' && f.args.length) {
+    for (const a of f.args.slice(0, 16)) out.unknown.push(String(a));
+  }
+  for (const {sw, arg} of f.switches) {
+    const k = sw.toLowerCase(), bad = () => out.unknown.push(sw +
+      (isStr(arg) ? ' ' + arg : ''));
+    if (k === '\\o') {
+      const r = arg === null ? [1, 9] : range(arg);
+      if (r) out.levels = r;
+      else bad();
+    } else if (k === '\\u') out.outline = true;
+    else if (k === '\\t') {
+      const l = styleList(arg);
+      if (l) out.styles = l;
+      else bad();
+    } else if (k === '\\h') out.hyperlinks = true;
+    else if (k === '\\z') out.hidePages = true;
+    else if (k === '\\n') {
+      const r = arg === null ? [1, 9] : range(arg);
+      if (r) out.noPageLevels = r;
+      else bad();
+    } else if (k === '\\p') {
+      if (isStr(arg)) out.separator = arg;
+      else bad();
+    } else if (k === '\\b') {
+      if (isStr(arg) && arg) out.bookmark = arg;
+      else bad();
+    } else if (k === '\\c') {
+      if (isStr(arg) && arg.trim()) out.seqId = arg.trim();
+      else bad();
+    } else if (k === '\\a') {
+      if (isStr(arg) && arg.trim()) out.captionsOnly = arg.trim();
+      else bad();
+    } else if (k === '\\w') out.keepTabs = true;
+    else if (k === '\\x') out.keepBreaks = true;
+    else if (k === '\\f' || k === '\\l') out.tcEntries = true;
+    else if (k !== '\\*') bad();
+  }
+  if (out.unknown.length > 64) out.unknown.length = 64;
+  return out;
+}
+
+/** See the header. */
+export const canRebuild = (sw) => !!sw && sw.valid &&
+  sw.unknown.length === 0 && !sw.tcEntries;
+
+/** See the header. */
+export const isFigures = (sw) => !!sw &&
+  (sw.seqId !== null || sw.captionsOnly !== null);

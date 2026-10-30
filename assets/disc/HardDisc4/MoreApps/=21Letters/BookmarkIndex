@@ -1,0 +1,303 @@
+// BookmarkIndex - the bookmarks of a document with their text: what
+// REF and the cross-reference commands need to know about a name.
+//
+//   of(doc) -> Index  memoised per document state (./DocVersion; the
+//       story and note block lists are compared too, they are
+//       copy-on-write). Results are shared: read only.
+//   Index.list    every bookmark whose start and end marks pair up,
+//       in document order: the body first, then the headers and
+//       footers in the order of doc.stories, then the notes
+//       (footnotes, then endnotes, each in its note order; Batch
+//       E2). A name used twice is listed twice
+//   Index.byName  Map name -> the FIRST such entry in that order
+//       (names compared exactly; a Map, so '__proto__' is just a
+//       name)
+//   Index.find(name) -> entry | undefined  the same with case
+//       ignored (Word compares bookmark names so), still the first
+//
+// Entry {name, story, note, inNote, para, start, end, runs, plain,
+//   hasNonText}
+//   story     the part name of the header or footer it is in, else
+//             null; note {kind, id} for a bookmark in a note (inNote
+//             true), else null
+//   para      the id of the paragraph holding the start mark
+//   start, end  {id, off}: the paragraph id and the offset of the
+//             first and the one past the last character inside (a
+//             direct mark takes one character of its own: the text
+//             starts after the start mark and stops before the end
+//             mark; a mark inside a kept wrapper, a link or an
+//             insertion, counts the whole wrapper as inside); equal
+//             for a caret. A bookmark in a kept block (an Opaque
+//             table) has the id of that block (when it has one) and
+//             offset 0 at both ends, no text and hasNonText true
+//   runs      the text between the marks as pieces, in order, with
+//             their formats: [{text, rPr, rStyle?, para}] (para: the
+//             id of the paragraph; pieces never cross runs or
+//             paragraphs; no piece for a paragraph break)
+//   plain     the same text as one string: paragraphs joined by
+//             '\n' (a paragraph mark; REF turns it into Word's);
+//             a tab '\t', a line break '\n', a no-break hyphen '-',
+//             a link's or field simple's shown text; other inlines
+//             nothing
+//   hasNonText  anything but text lies inside: a picture or drawing,
+//             a field mark (a field in the range), a footnote or
+//             endnote mark, a table (or other kept block) between
+//             the paragraphs, or an inline of an unknown kind. Tabs,
+//             line breaks, hyphens, links' text and other bookmarks'
+//             marks are text
+//
+//   inlineKind(x) -> 'text' | 'ignore' | 'non'  how the inline x
+//       of a paragraph counts in a bookmark's text: text (a tab, a
+//       line break, a hyphen, a link's text...), nothing at all (a
+//       mark: another bookmark's, a proofing mark...) or not text
+//       (what makes hasNonText: a picture, a field mark, a note
+//       mark...). ./FieldRef reads a caption's bookmark with it
+//
+// A bookmarkStart with no bookmarkEnd of its id in the same part
+// (body, header or footer, note), and an end that comes before its
+// start, give no entry; a start with a null id gives none. A second
+// start of an id already open is ignored. Marks are found by
+// ./BookmarkMarks. Pure: no desktop services.
+import {OBJ} from './Model';
+import {forEachBlock, forEachIn} from './Walk';
+import {marks, storyMarks, noteMarks} from './BookmarkMarks';
+import {versionOf} from './DocVersion';
+import {inlineText, hyphenText} from './InlineText';
+import {localName} from './Kinds';
+
+const memo = new WeakMap();
+const isObj = (v) => v !== null && typeof v === 'object';
+const arr = (v) => (Array.isArray(v) ? v : []);
+const key = (at) => at.join(',');
+
+// kept nodes that carry no text and are not content
+const IGNORE = new Set(['bookmarkStart', 'bookmarkEnd', 'proofErr',
+  'lastRenderedPageBreak', 'permStart', 'permEnd', 'noProof',
+  'commentRangeStart', 'commentRangeEnd']);
+// kept nodes that are not text
+const NON = new Set(['drawing', 'pict', 'object', 'fldChar',
+  'instrText', 'fldSimple', 'footnoteReference', 'endnoteReference',
+  'sym', 'ptab', 'AlternateContent']);
+
+/** 'text', 'ignore' or 'non' for the raw inline x. */
+function rawKind(x) {
+  if (hyphenText(x) !== null) return 'text';
+  const top = isObj(x.node) ? localName(x.node) : '';
+  if (IGNORE.has(top)) return 'ignore';
+  const stack = [x.node];
+  let seen = 0;
+  while (stack.length && seen++ < 10000) {
+    const n = stack.pop();
+    if (!isObj(n)) continue;
+    if (NON.has(localName(n))) return 'non';
+    for (const c of arr(n.children)) stack.push(c);
+  }
+  return x.level === 'p' ? 'text' : 'non';
+}
+
+/** See the header. */
+export function inlineKind(x) {
+  if (!isObj(x)) return 'ignore';
+  if (x.kind === 'tab' || x.kind === 'br') return 'text';
+  if (x.kind === 'noteRef') return 'non';
+  return rawKind(x);
+}
+
+/** The text of the inline at k of p; sets st.non when not text. */
+function inlineOf(p, k, st) {
+  const x = isObj(p.inlines) ? p.inlines[k] : null;
+  if (!isObj(x)) return '';
+  if (x.kind === 'tab' || x.kind === 'br') return inlineText(x);
+  if (x.kind === 'noteRef') {
+    st.non = true;
+    return '';
+  }
+  const t = rawKind(x);
+  if (t === 'non') st.non = true;
+  return t === 'text' ? inlineText(x) : '';
+}
+
+/** Text of p from..to as runs pushed on out; sets st.non. */
+function slice(p, from, to, out, st) {
+  for (const r of arr(p.runs)) {
+    const a = Math.max(r.start, from), z = Math.min(r.end, to);
+    if (z <= a) continue;
+    let text = '';
+    for (let k = a; k < z; k++) {
+      const c = p.text[k];
+      text += c === OBJ ? inlineOf(p, k, st) : c;
+    }
+    const piece = {text, rPr: r.rPr, para: p.id};
+    if (r.rStyle !== undefined) piece.rStyle = r.rStyle;
+    out.push(piece);
+  }
+}
+
+/** A part: its flow of blocks and the marks in it, paired. */
+class Part {
+  constructor(story, note, build) {
+    this.story = story;
+    this.note = note;
+    this.build = build;
+    this.marks = [];
+    this.flow = null;
+    this.at = null;
+  }
+
+  /** The flow list [{b}] and the index of its paragraph paths. */
+  load() {
+    if (this.flow) return;
+    this.flow = [];
+    this.at = new Map();
+    this.build((b, at) => {
+      this.at.set(key(at), this.flow.length);
+      this.flow.push(b);
+      return true;
+    });
+  }
+
+  /** The entries of the start/end pairs of this part's marks. */
+  entries(out) {
+    const open = new Map();
+    for (const m of this.marks) {
+      if (m.id === null) continue;
+      if (m.kind === 'start') {
+        if (m.name !== null && !open.has(m.id)) open.set(m.id, m);
+      } else {
+        const s = open.get(m.id);
+        if (!s) continue;
+        open.delete(m.id);
+        const e = this.entry(s, m);
+        if (e) out.push(e);
+      }
+    }
+  }
+
+  /** The entry of marks s and e, or null (a block not found). */
+  entry(s, e) {
+    this.load();
+    const i = this.at.get(key(s.at)), j = this.at.get(key(e.at));
+    if (i === undefined || j === undefined || j < i) return null;
+    const note = this.note ? {...this.note} : null;
+    const base = {name: s.name, story: this.story, note,
+      inNote: !!note};
+    if (s.table || e.table) {
+      const id = this.flow[i].id;
+      const at = {id: id === undefined ? null : id, off: 0};
+      return {...base, para: at.id, start: at, end: {...at},
+        runs: [], plain: '', hasNonText: true};
+    }
+    const a = this.flow[i], z = this.flow[j];
+    const from = s.direct ? s.off + 1 : s.off;
+    const to = e.direct ? e.off : e.off + 1;
+    const st = {non: false}, runs = [], texts = [];
+    for (let k = i; k <= j; k++) {
+      const b = this.flow[k];
+      if (b.type !== 'p') {
+        st.non = true;
+        continue;
+      }
+      const lo = k === i ? Math.min(from, b.text.length) : 0;
+      let hi = k === j ? Math.min(to, b.text.length) : b.text.length;
+      if (k === j && i === j) hi = Math.max(lo, hi);
+      const mine = [];
+      slice(b, lo, hi, mine, st);
+      for (const r of mine) runs.push(r);
+      texts.push(mine.map((r) => r.text).join(''));
+    }
+    const off = (b, v) => Math.min(v, b.text.length);
+    return {...base, para: a.id,
+      start: {id: a.id, off: off(a, from)},
+      end: {id: z.id, off: i === j ? Math.max(off(z, from),
+        off(z, to)) : off(z, to)},
+      runs, plain: texts.join('\n'), hasNonText: st.non};
+  }
+}
+
+/** The parts of doc in order, with their marks grouped. */
+function parts(doc) {
+  const out = [];
+  const body = new Part(null, null, (fn) => forEachBlock(doc, fn));
+  body.marks = marks(doc);
+  out.push(body);
+  const stories = doc.stories instanceof Map ? doc.stories : null;
+  const byStory = new Map();
+  for (const m of storyMarks(doc)) {
+    if (!byStory.has(m.story)) byStory.set(m.story, []);
+    byStory.get(m.story).push(m);
+  }
+  for (const [name, st] of stories || []) {
+    if (!isObj(st) || !byStory.has(name)) continue;
+    const p = new Part(name, null, (fn) => forEachIn(st.blocks,
+      [0], fn));
+    p.marks = byStory.get(name);
+    out.push(p);
+  }
+  const byNote = new Map();
+  for (const m of noteMarks(doc)) {
+    const k = m.note.kind + ':' + m.note.id;
+    if (!byNote.has(k)) byNote.set(k, []);
+    byNote.get(k).push(m);
+  }
+  const n = isObj(doc.notes) ? doc.notes : null;
+  for (const slot of ['footnotes', 'endnotes']) {
+    const mp = n && n[slot];
+    for (const note of mp instanceof Map ? mp.values() : []) {
+      if (!isObj(note)) continue;
+      const ms = byNote.get(note.kind + ':' + note.id);
+      if (!ms) continue;
+      const p = new Part(null, {kind: note.kind, id: note.id},
+        (fn) => forEachIn(note.blocks, [0], fn));
+      p.marks = ms;
+      out.push(p);
+    }
+  }
+  return out;
+}
+
+/** The block lists of the stories and notes of doc. */
+function listsOf(doc) {
+  const out = [];
+  for (const st of doc.stories instanceof Map ? doc.stories.values()
+    : []) out.push(isObj(st) ? st.blocks : null);
+  const n = isObj(doc.notes) ? doc.notes : null;
+  for (const slot of ['footnotes', 'endnotes']) {
+    const mp = n && n[slot];
+    for (const note of mp instanceof Map ? mp.values() : [])
+      out.push(isObj(note) ? note.blocks : null);
+  }
+  return out;
+}
+
+const same = (a, b) => a.length === b.length &&
+  a.every((x, k) => x === b[k]);
+
+/** The index of doc (not memoised). */
+function build(doc) {
+  const list = [];
+  for (const p of parts(doc)) p.entries(list);
+  const byName = new Map(), lower = new Map();
+  for (const e of list) {
+    if (!byName.has(e.name)) byName.set(e.name, e);
+    const l = e.name.toLowerCase();
+    if (!lower.has(l)) lower.set(l, e);
+  }
+  return {list, byName, find: (name) => (typeof name === 'string'
+    ? lower.get(name.toLowerCase()) : undefined)};
+}
+
+/** See the header. */
+export function of(doc) {
+  if (!isObj(doc)) return build({});
+  const ver = versionOf(doc), m = memo.get(doc);
+  const lists = listsOf(doc);
+  if (m && m.ver === ver && m.sections === doc.sections &&
+    m.stories === doc.stories && m.notes === doc.notes &&
+    same(m.secs, arr(doc.sections)) && same(m.lists, lists))
+    return m.index;
+  const index = build(doc);
+  memo.set(doc, {ver, sections: doc.sections, secs:
+    [...arr(doc.sections)], stories: doc.stories, notes: doc.notes,
+    lists, index});
+  return index;
+}

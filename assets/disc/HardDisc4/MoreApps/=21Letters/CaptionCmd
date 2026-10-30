@@ -1,0 +1,382 @@
+// CaptionCmd - Insert > Caption... (Batch E3): a caption paragraph
+// as Word makes one, 'Figure ' + {SEQ Figure \* ARABIC} + the text,
+// put above or below what is selected, every caption of the document
+// numbered again in the same step.
+//
+//   LABELS  Word's labels: Figure, Table, Equation
+//   FORMATS  the number formats: ARABIC (1, 2, 3), alphabetic,
+//       ALPHABETIC, roman, ROMAN (./FieldSeq's \* formats)
+//   labelWhy(label) -> string | null  why a label is refused, in
+//       words for the user: not text or only spaces, longer than 40
+//       characters (Word's limit for a SEQ identifier), a quote or a
+//       backslash (they would end or switch the field code), a
+//       control character (a tab, a line end) or U+FFFC
+//   seqIdOf(label) -> string  the SEQ identifier of a label: trimmed,
+//       each run of spaces one '_' ('My Plate' -> My_Plate: Word's,
+//       to check in real Word)
+//   codesOf(opts) -> {seq, chapter}  the field codes (no spaces round
+//       them): seq 'SEQ id \* FORMAT' (+ ' \s n' with a chapter),
+//       chapter 'STYLEREF n \s' or null. An unknown format is ARABIC
+//   labelsIn(doc) -> [label]  the identifiers of the SEQ fields of
+//       doc (body, then headers and footers; not those inside a table
+//       of contents' result), in order, each once (case ignored), '_'
+//       shown as a space; ones labelWhy refuses left out
+//   captionWhy(d, sel) -> string | null  why insertCaption refuses
+//       sel: in a header, footer or note (d a ./StoryFacade); no
+//       caret in text; an end of sel inside a field's code or result
+//       (just before a field is fine)
+//   targetOf(doc, sel) -> {kind, before, after} | null  what sel
+//       captions. kind: 'picture' (sel is one picture, or lies in one
+//       paragraph that holds a picture: that paragraph, in a table's
+//       cell too), 'empty' (a caret in an empty paragraph: the
+//       caption is put there), 'table' (an end of sel in a table's
+//       cell: the innermost table, the caption outside it), else
+//       'para' (the paragraphs of sel). before: the path of the
+//       block a caption above goes before; after: the one a caption
+//       below follows (./Path)
+//   clip(text) -> string  caption text made safe: control
+//       characters, U+FFFC and lone surrogates taken out, then cut
+//       to TEXT_MAX (1024) UTF-16 units on a character boundary
+//   insertCaption(d, typing, sel, opts, report?) -> {sel, para} |
+//       null
+//       the caption put in, ONE undo step (typing.command, one
+//       d.atomic through ./FieldPasses run): the paragraph in the
+//       document's caption style (found by its name 'caption',
+//       ./TocBuild styleIdByName; the latent built-in Caption added
+//       first when there is none, ./StyleCmd ensureBuiltin), above
+//       the target (with keep with next: Word's, to check) or below
+//       it (default: a table above, anything else below), or the
+//       empty paragraph itself. Then every SEQ field of the document
+//       is numbered again (./FieldPasses' seq step: later captions
+//       follow), the new caption's STYLEREF worked out, and each REF
+//       to a caption's bookmark (./FieldRef: a bookmark holding a
+//       SEQ) made again with its new number.
+//     opts {label, text = '', position: 'above' | 'below' (else the
+//       default), excludeLabel = false (no 'Label '), chapter:
+//       {level 1..9, separator} | null (STYLEREF level \s, then the
+//       separator text, before the number; the SEQ restarts at each
+//       heading of that level: \s level), format}
+//     text: clip's, put in as it is (after the number: give its
+//       space or colon). sel: a caret at the end of the caption;
+//       para: its paragraph. null, nothing changed: captionWhy or
+//       labelWhy refuses, opts not an object, a chapter level not 1
+//       to 9, or the chapter number cannot be worked out; then
+//       report (an object, when given) gets reason: 'chapter' (no
+//       heading of that level with a list number before the
+//       caption) or 'words' (the heading's number holds words,
+//       'Chapter 1': ./FieldStyleRef hasWords). Any other error is
+//       not caught (rolled back by d.atomic, then thrown)
+// d is a ./Document (or a facade), sel a ./Selection. Pure: no
+// desktop services.
+import {newPara} from './Model';
+import {caret} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {cmpPath, sib} from './Path';
+import {scan} from './FieldScan';
+import {parse} from './FieldParse';
+import {codeText, fieldInlines} from './FieldMake';
+import {run, STEPS, planFields, applyPlans} from './FieldPasses';
+import {of as bookmarks} from './BookmarkIndex';
+import {styleIdByName} from './TocBuild';
+import {ensureBuiltin} from './StyleCmd';
+import {picIn} from './PicOps';
+import {pictureOf, docMap} from './PicRead';
+
+export const LABELS = Object.freeze(['Figure', 'Table', 'Equation']);
+export const FORMATS = Object.freeze(['ARABIC', 'alphabetic',
+  'ALPHABETIC', 'roman', 'ROMAN']);
+export const TEXT_MAX = 1024;
+const LABEL_MAX = 40, SEP_MAX = 8;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f\ufffc]/;
+const CONTROLS = /[\u0000-\u001f\u007f-\u009f\ufffc]/g;
+const isObj = (v) => v !== null && typeof v === 'object';
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+const nameOf = (f) => parse(f.instr).name;
+const TOC = /^\s*toc(\s|\\|$)/i;
+
+/** See the header. */
+export function labelWhy(label) {
+  const t = typeof label === 'string' ? label.trim() : '';
+  if (!t) return 'Type a label: Figure, Table or a word of your own.';
+  if (t.length > LABEL_MAX) return 'A label can be at most ' +
+    `${LABEL_MAX} characters long.`;
+  if (t.includes('"')) return 'A label cannot hold a quote (").';
+  if (t.includes('\\')) return 'A label cannot hold a backslash (\\).';
+  if (CONTROL.test(t)) return 'A label cannot hold a tab, a line ' +
+    'end or a picture.';
+  return null;
+}
+
+/** See the header. */
+export const seqIdOf = (label) => String(label).trim().split(/\s/)
+  .filter((x) => x).join('_');
+
+/** The chapter of opts: {level, separator} | null | false (bad). */
+function chapterOf(opts) {
+  const c = isObj(opts) ? opts.chapter : null;
+  if (c === null || c === undefined || c === false) return null;
+  if (!isObj(c) || !Number.isInteger(c.level) || c.level < 1 ||
+    c.level > 9) return false;
+  const s = typeof c.separator === 'string' ? c.separator
+    .replace(CONTROLS, '').slice(0, SEP_MAX) : '-';
+  return {level: c.level, separator: s};
+}
+
+/** See the header. */
+export function codesOf(opts) {
+  const o = isObj(opts) ? opts : {};
+  const fmt = FORMATS.includes(o.format) ? o.format : 'ARABIC';
+  const ch = chapterOf(o) || null;
+  let seq = `SEQ ${seqIdOf(o.label ?? '')} \\* ${fmt}`;
+  if (ch) seq += ` \\s ${ch.level}`;
+  return {seq, chapter: ch ? `STYLEREF ${ch.level} \\s` : null};
+}
+
+/** The fields inside a table of contents' result among fs. */
+function inToc(fs) {
+  const out = new Set(), stack = [];
+  for (const f of fs) if (TOC.test(f.instr)) stack.push(...f.children);
+  while (stack.length) {
+    const f = stack.pop();
+    if (out.has(f)) continue;
+    out.add(f);
+    stack.push(...f.children);
+  }
+  return out;
+}
+
+/** See the header. */
+export function labelsIn(doc) {
+  if (!isObj(doc)) return [];
+  const lists = [scan(doc)];
+  if (doc.stories instanceof Map) {
+    for (const name of doc.stories.keys()) lists.push(scan(doc, name));
+  }
+  const out = [], seen = new Set();
+  for (const fs of lists) {
+    const skip = inToc(fs);
+    for (const f of fs) {
+      if (skip.has(f) || !/^\s*seq\b/i.test(f.instr)) continue;
+      const p = parse(f.instr);
+      if (p.name !== 'SEQ' || !p.args.length) continue;
+      const label = String(p.args[0]).replace(/_/g, ' ').trim();
+      const k = label.toLowerCase();
+      if (seen.has(k) || labelWhy(label)) continue;
+      seen.add(k);
+      out.push(label);
+    }
+  }
+  return out;
+}
+
+/** {at, off} of position pos of doc, or null. */
+function where(doc, pos) {
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  return loc && !loc.story && Number.isInteger(pos.off)
+    ? {at: loc.at, off: pos.off} : null;
+}
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** Whether place w lies inside a field (after its begin, up to its
+ *  end mark). */
+function inField(doc, w) {
+  for (const f of scan(doc)) {
+    if (!f.simple && cmp(f.begin, w) < 0 && cmp(w, f.end) <= 0)
+      return true;
+  }
+  return false;
+}
+
+/** See the header. */
+export function captionWhy(d, sel) {
+  if (!isObj(d) || !isObj(d.doc)) return 'There is no document.';
+  if (isStory(d) || isObj(d.note) || (typeof d.refuses === 'function'
+    && d.refuses('caption')))
+    return 'A caption cannot go in a header, footer or note.';
+  const o = isObj(sel) && sel.anchor && sel.head
+    ? orderedPos(d.doc, sel) : null;
+  if (!o) return 'There is no caret in the text.';
+  for (const pos of [o.from, o.to]) {
+    const loc = findBlock(d.doc, pos.id);
+    if (!loc || loc.story || loc.b.type !== 'p')
+      return 'Put the caret in text first (not by a table or box).';
+    if (inField(d.doc, {at: loc.at, off: pos.off}))
+      return 'Not inside a field: put the caret before or after it.';
+  }
+  return null;
+}
+
+/** Whether paragraph b holds a picture. */
+function holdsPicture(doc, b) {
+  const xs = isObj(b.inlines) ? b.inlines : {};
+  let map = null;
+  for (const k of Object.keys(xs)) {
+    const x = xs[k];
+    if (!isObj(x) || x.kind !== 'raw') continue;
+    if (!map) map = docMap(doc);
+    if (pictureOf(x.node, map)) return true;
+  }
+  return false;
+}
+
+/** See the header. */
+export function targetOf(doc, sel) {
+  const o = isObj(doc) && isObj(sel) && sel.anchor && sel.head
+    ? orderedPos(doc, sel) : null;
+  if (!o) return null;
+  const f = findBlock(doc, o.from.id), t = findBlock(doc, o.to.id);
+  if (!f || !t || f.story || f.b.type !== 'p' || t.b.type !== 'p')
+    return null;
+  const one = f.b.id === t.b.id;
+  if (picIn(doc, sel) || (one && holdsPicture(doc, f.b)))
+    return {kind: 'picture', before: f.at, after: f.at};
+  if (one && o.from.off === o.to.off && f.b.text === '')
+    return {kind: 'empty', before: f.at, after: f.at};
+  if (f.at.length > 2) {
+    const tb = f.at.slice(0, -3);
+    return {kind: 'table', before: tb, after: tb};
+  }
+  const sameBox = t.at.length === f.at.length &&
+    cmpPath(t.at.slice(0, -1), f.at.slice(0, -1)) === 0;
+  return {kind: 'para', before: f.at, after: sameBox ? t.at : f.at};
+}
+
+/** The caption style's id in doc, adding the built-in when needed
+ *  (ops through dd). */
+function styleFor(dd) {
+  const named = () => styleIdByName(dd.doc, 'caption', 'paragraph');
+  let id = named();
+  const st = dd.doc.styles;
+  if (id || !isObj(st) || !(st.styles instanceof Map)) return id;
+  if (st.styles.has('Caption')) return 'Caption';
+  const strict = isObj(dd.doc.meta) &&
+    dd.doc.meta.conformance === 'strict';
+  const t = ensureBuiltin(st, 'Caption', {strict});
+  if (t) dd.apply({op: 'setDocPart', key: 'styles', value: t});
+  id = named();
+  return id || null;
+}
+
+/** The caption's text and inlines for opts. */
+function contentOf(opts, ch) {
+  const codes = codesOf(opts);
+  let text = '';
+  const inlines = {};
+  const field = (code) => {
+    const f = fieldInlines(codeText(code));
+    for (const k of Object.keys(f.inlines))
+      inlines[text.length + Number(k)] = f.inlines[k];
+    text += f.ins;
+  };
+  if (!opts.excludeLabel) text += String(opts.label).trim() + ' ';
+  if (ch) {
+    field(codes.chapter);
+    text += ch.separator;
+  }
+  field(codes.seq);
+  text += typeof opts.text === 'string' ? clip(opts.text) : '';
+  return {text, inlines};
+}
+
+const WORDS = 'heading number holds words';
+
+/** The chapter step's refusal (nothing else is caught). */
+class Refused extends Error {
+  constructor(reason) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
+const isLone = (c) => c.length === 1 && c >= '\ud800' &&
+  c <= '\udfff';
+
+/** See the header. */
+export function clip(text) {
+  let out = '';
+  for (const c of String(text).replace(CONTROLS, '')) {
+    if (isLone(c)) continue;
+    if (out.length + c.length > TEXT_MAX) break;
+    out += c;
+  }
+  return out;
+}
+
+/** A step of FieldPasses run: the fields of fs(d) planned with the
+ *  pass's ctx and applied; strict: a field left throws. */
+const fieldsStep = (name, fs, strict) => ({name, paged: false,
+  run(dd, c, s) {
+    const list = fs(dd);
+    if (!list.length) return {found: 0, changed: false, messages: []};
+    const {plans, left} = planFields(dd, list, c);
+    if (strict && left.length) throw new Refused(left[0].reason ===
+      WORDS ? 'words' : 'chapter');
+    const due = plans.filter((x) => !x.same);
+    const out = due.length ? applyPlans(dd, due, s) : s;
+    return {found: plans.length, changed: due.length > 0, sel: out,
+      messages: []};
+  }});
+
+/** Whether REF field f points at a bookmark holding more than text
+ *  (a caption's SEQ...). */
+function refsCaption(doc, f) {
+  const p = parse(f.instr);
+  if (p.name !== 'REF' || p.args.length !== 1) return false;
+  const e = bookmarks(doc).find(p.args[0]);
+  return !!e && e.hasNonText;
+}
+
+/** See the header. */
+export function insertCaption(d, typing, sel, opts, report) {
+  if (!isObj(opts) || captionWhy(d, sel) !== null ||
+    labelWhy(opts.label) !== null) return null;
+  const ch = chapterOf(opts);
+  if (ch === false) return null;
+  const target = targetOf(d.doc, sel);
+  if (!target) return null;
+  const above = opts.position === 'above' || (opts.position !==
+    'below' && target.kind === 'table');
+  const {text, inlines} = contentOf(opts, ch);
+  let id = null;
+  const put = {name: 'caption', paged: false, run(dd) {
+    const pStyle = styleFor(dd);
+    if (target.kind === 'empty') {
+      const loc = findBlock(dd.doc, sel.head.id);
+      dd.apply({op: 'replaceText', block: loc.at, at: 0, del: 0,
+        ins: text, inlines, rPr: {extra: []}});
+      if (pStyle) dd.apply({op: 'setProps', block: loc.at, pStyle});
+      id = loc.b.id;
+    } else {
+      const o = {inlines};
+      if (pStyle) o.pStyle = pStyle;
+      if (above) o.pPr = {keepNext: true, extra: []};
+      const b = newPara(text, o);
+      dd.apply({op: 'insertBlock', at: above ? target.before
+        : sib(target.after, 1), block: b});
+      id = b.id;
+    }
+    return {found: 1, changed: true, messages: []};
+  }};
+  const seq = STEPS.find((s) => s.name === 'seq');
+  const chapter = fieldsStep('chapter', (dd) => scan(dd.doc)
+    .filter((f) => f.begin.id === id && nameOf(f) === 'STYLEREF'),
+  true);
+  const refs = fieldsStep('captionRefs', (dd) => scan(dd.doc)
+    .filter((f) => /^\s*ref\b/i.test(f.instr) &&
+      refsCaption(dd.doc, f)), false);
+  let res = null;
+  const go = () => run(d, {}, null, {steps: [put, seq, chapter,
+    refs]});
+  try {
+    res = typing && typeof typing.command === 'function'
+      ? typing.command(go) : go();
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    if (isObj(report)) report.reason = e.reason;
+    return null;                       // (rolled back: nothing changed)
+  }
+  const loc = res && res.ok && id !== null ? findBlock(d.doc, id)
+    : null;
+  if (!loc) return null;
+  return {sel: caret({id, off: loc.b.text.length}), para: loc.b};
+}

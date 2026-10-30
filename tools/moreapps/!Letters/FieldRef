@@ -1,0 +1,241 @@
+// FieldRef - the REF and NOTEREF fields: what a cross-reference to a
+// bookmark shows (Batch E3).
+//
+//   REF.eval(ctx, f, p) -> string | null
+//   NOTEREF.eval(ctx, f, p) -> string | null
+//       ctx = {doc, ...} as ./Fields; f a ./FieldScan Field; p the
+//       parse of its instruction (./FieldParse). Null: the stored
+//       result stays
+//   REF.why, NOTEREF.why (ctx, f, p) -> string | null  why eval
+//       gives null ('bad instruction', 'unsupported switch',
+//       'missing bookmark', 'bookmark holds a field' (a caption's
+//       SEQ...), 'bookmark holds more than text', 'not worked
+//       out'), else null
+//   MAX_REF_DEPTH   0: how many levels of nested field text a
+//       result follows. A bookmark with a field inside (./BookmarkIndex
+//       hasNonText) gives null, except a caption's (below), so a REF
+//       can never reach another REF's result and a REF inside its own
+//       bookmark (a cycle) keeps its stored result: nothing recurses
+//
+// A caption's bookmark (Batch E3): one body paragraph whose only
+// content besides text is whole SEQ and STYLEREF fields (begin,
+// code, separate, result and end all inside, none nested, none a
+// fldSimple), as Word's cross-reference to 'Figure {STYLEREF 1 \s}-
+// {SEQ Figure}' makes: REF gives the text shown, the fields' results
+// as they stand (Word's REF copies the shown text). ./FieldPasses
+// runs SEQ, then STYLEREF, before REF, so an Update reads the new
+// numbers in the same run.
+//
+// REF name [\h] [\n | \r | \w] [\p] [\f] [\d sep] [\t] [\* format]
+//   name   the bookmark (./BookmarkIndex find: case ignored; hidden
+//          names such as _Ref123 work; the first of a name used
+//          twice), in the body, a header or footer, or a note
+//   (none) its text: the paragraphs joined by '\r' (a paragraph
+//          break), a line break '\n', a tab '\t'. Paragraphs with no
+//          text of their own run together (their break is not kept)
+//   \n \r \w  the list number of the paragraph holding the start of
+//          the bookmark, ./FieldParas numberText 'n' (the label
+//          without trailing periods), 'r' (relative to the
+//          paragraph holding the field) or 'w' (full context); null
+//          (Word shows 0) for a paragraph with no number, with \t
+//          (strips the label's text) or \d (Word's separator): not
+//          applied. 'r' and 'w' need ancestors already in the label
+//          (see ./FieldParas); else null
+//   \p     'above' or 'below': the bookmark's start before (or at)
+//          the field's place, or after it, the body only. With
+//          \n \r \w Word adds it to the number: not applied (null)
+//   \h \f \d \t  read: \h only makes the field a link and \f \d \t
+//          concern formatting and sub-documents; the result text is
+//          the same
+//   \*     the formats ./FieldFormat formatGeneral knows
+// A collapsed bookmark (no text) and one that takes in the paragraph
+// mark at its end give null: Word's result is not known.
+// Null as well when: the bookmark is not there, has anything but
+// text inside (picture, field but a caption's, note mark, table), a
+// switch is not one of these, there is not exactly one name, or the
+// format cannot be applied. Known limit: the result is plain text
+// in the format of the field's result run; Word copies the
+// bookmark's character formatting into the result.
+//
+// NOTEREF name [\f] [\h] [\p] [\* format]
+//   name   a bookmark that holds a footnote or endnote reference
+//          mark of the body (the first one in it); the result is
+//          what that mark shows: its number (./NoteNumbers labelFor,
+//          so it follows the notes as they are now) or the text of a
+//          custom mark. \p as REF's: 'above' or 'below'. \f (keep
+//          the reference mark's formatting) does not change the
+//          text. Null when the bookmark holds no such mark, the
+//          mark is in a note, header or footer, or its note is not
+//          there. Pure: no desktop services.
+import {of as bookmarks} from './BookmarkIndex';
+import {of as parasOf, numberText, pos} from './FieldParas';
+import {formatGeneral} from './FieldFormat';
+import {marks, labelFor, isCustom} from './NoteNumbers';
+import {localName} from './Kinds';
+import {paraFields} from './FieldScan';
+import {parse} from './FieldParse';
+import {inlineKind} from './BookmarkIndex';
+
+export const MAX_REF_DEPTH = 0;
+
+const NUMBER = new Map([['\\n', 'n'], ['\\r', 'r'], ['\\w', 'w']]);
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The switches of p read: {mode, above, ok} (ok false: one is not
+ *  known; keep: the switches formatGeneral gets). */
+function readSwitches(p, allowed) {
+  const out = {mode: null, pos: false, ok: true, fmt: [], t: false,
+    d: false};
+  for (const s of p.switches) {
+    if (s.sw === '\\*') out.fmt.push(s);
+    else if (!allowed.includes(s.sw)) out.ok = false;
+    else if (NUMBER.has(s.sw)) {
+      const m = NUMBER.get(s.sw);
+      if (out.mode && out.mode !== m) out.ok = false;
+      out.mode = m;
+    } else if (s.sw === '\\p') out.pos = true;
+    else if (s.sw === '\\t') out.t = true;
+    else if (s.sw === '\\d') out.d = true;
+  }
+  return out;
+}
+
+/** The bookmark entry of p's one name, or null. */
+function entryOf(ctx, p) {
+  if (p.args.length !== 1 || !isObj(ctx.doc)) return null;
+  return bookmarks(ctx.doc).find(p.args[0]) || null;
+}
+
+/** 'above' or 'below' for bookmark entry e against field f. */
+function where(ctx, e, f) {
+  if (e.story !== null || e.inNote || !f.begin) return null;
+  return pos(parasOf(ctx.doc), e.start.id, e.start.off, f.begin);
+}
+
+/** The text of entry e: paragraphs joined by '\r'. */
+function textOf(e) {
+  let out = '', last;
+  for (const r of e.runs) {
+    if (last !== undefined && r.para !== last) out += '\r';
+    last = r.para;
+    out += r.text;
+  }
+  return out;
+}
+
+/** Whether bookmark e ends at the start of a later paragraph (the
+ *  paragraph mark before it is inside). */
+const endsInMark = (e) => e.end.id !== e.start.id && e.end.off === 0;
+
+const REF_SW = ['\\h', '\\n', '\\r', '\\w', '\\p', '\\f', '\\d',
+  '\\t'];
+const NOTEREF_SW = ['\\f', '\\h', '\\p'];
+
+function ref(ctx, f, p) {
+  const sw = readSwitches(p, REF_SW);
+  if (!sw.ok) return null;
+  const e = entryOf(ctx, p);
+  if (!e || (e.hasNonText && !captionLike(ctx.doc, e))) return null;
+  if (!sw.mode && (e.runs.length === 0 || endsInMark(e))) return null;
+  let v;
+  if (sw.mode) {
+    if (sw.pos || sw.t || sw.d || e.story !== null || e.inNote)
+      return null;
+    const paras = parasOf(ctx.doc);
+    v = numberText(paras, e.para, sw.mode, f.begin && f.begin.id);
+  } else v = sw.pos ? where(ctx, e, f) : textOf(e);
+  return v === null || v === undefined ? null
+    : formatGeneral(v, sw.fmt);
+}
+
+function noteref(ctx, f, p) {
+  const sw = readSwitches(p, NOTEREF_SW);
+  if (!sw.ok) return null;
+  const e = entryOf(ctx, p);
+  if (!e || e.story !== null || e.inNote) return null;
+  const paras = parasOf(ctx.doc);
+  const a = paras.index.get(e.start.id), z = paras.index.get(e.end.id);
+  if (a === undefined || z === undefined || z < a) return null;
+  let x = null;
+  for (let n = a; n <= z && !x; n++) {
+    const q = paras.list[n];
+    for (const m of marks(q)) {
+      if ((n === a && m.off < e.start.off) ||
+        (n === z && m.off >= e.end.off)) continue;
+      x = m.x;
+      break;
+    }
+  }
+  if (!x) return null;
+  const v = sw.pos ? where(ctx, e, f) : isCustom(x) ? x.custom
+    : labelFor(ctx.doc, x.note, x.id);
+  return typeof v === 'string' ? formatGeneral(v, sw.fmt) : null;
+}
+
+/** Why fn (ref or noteref, switches allowed) gives null for f. */
+const whyOf = (fn, allowed) => (ctx, f, p) => {
+  if (fn(ctx, f, p) !== null) return null;
+  if (p.args.length !== 1) return 'bad instruction';
+  if (!readSwitches(p, allowed).ok) return 'unsupported switch';
+  const e = isObj(ctx.doc) ? entryOf(ctx, p) : null;
+  if (!e) return 'missing bookmark';
+  if (e.hasNonText && !captionLike(ctx.doc, e)) {
+    return holdsField(ctx.doc, e) ? 'bookmark holds a field'
+      : 'bookmark holds more than text';
+  }
+  return 'not worked out';
+};
+
+const FIELD_MARKS = new Set(['fldChar', 'fldSimple']);
+const INNER = new Set(['SEQ', 'STYLEREF']);
+
+/** Whether body bookmark e lies in one paragraph and holds, besides
+ *  text, only whole SEQ and STYLEREF fields (see the header). */
+function captionLike(doc, e) {
+  if (e.story !== null || e.inNote || e.start.id !== e.end.id)
+    return false;
+  const paras = parasOf(doc), n = paras.index.get(e.start.id);
+  if (n === undefined) return false;
+  const q = paras.list[n], a = e.start.off, z = e.end.off;
+  const fs = paraFields(q);
+  if (!fs) return false;
+  const inside = (m) => !!m && m.off >= a && m.off < z;
+  const own = new Set();               // offsets of the fields' parts
+  for (const f of fs) {
+    const marks = [f.begin, f.sep, f.end];
+    if (!marks.some(inside)) continue;
+    if (f.simple || !marks.every(inside) || f.children.length ||
+      !INNER.has(parse(f.instr).name)) return false;
+    for (let k = f.begin.off; k <= f.sep.off; k++) own.add(k);
+    own.add(f.end.off);
+  }
+  const xs = isObj(q.inlines) ? q.inlines : {};
+  for (const k of Object.keys(xs)) {
+    const off = Number(k);
+    if (off < a || off >= z || own.has(off)) continue;
+    if (inlineKind(xs[k]) === 'non') return false;
+  }
+  return true;
+}
+
+/** Whether body bookmark e has a field mark inside. */
+function holdsField(doc, e) {
+  const paras = parasOf(doc);
+  const a = paras.index.get(e.start.id), z = paras.index.get(e.end.id);
+  if (a === undefined || z === undefined) return false;
+  for (let n = a; n <= z; n++) {
+    const q = paras.list[n], xs = isObj(q.inlines) ? q.inlines : {};
+    for (const k of Object.keys(xs)) {
+      const off = Number(k), x = xs[k];
+      if ((n === a && off < e.start.off) || (n === z &&
+        off >= e.end.off)) continue;
+      if (isObj(x) && FIELD_MARKS.has(localName(x.node))) return true;
+    }
+  }
+  return false;
+}
+
+const frozen = (fn, allowed) => Object.freeze({eval: fn,
+  why: whyOf(fn, allowed)});
+export const REF = frozen(ref, REF_SW);
+export const NOTEREF = frozen(noteref, NOTEREF_SW);

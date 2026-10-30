@@ -8,9 +8,21 @@
 //       end) or touching the selection, with every field inside
 //       them; in a header or footer (d a ./StoryFacade) every field
 //       of its story
+//   updateRangeCmd(d, sel, ctx) -> sel | null  Update field with a
+//       range selected (the window's, ./TocBox updateFieldAt): what
+//       updateCmd updates, and every table of contents the range
+//       touches made again entire, as Update all fields makes them
+//       (./TocUpdate rebuild, the last first, on ctx.pages as they
+//       are: one pass, the document not laid out again); one step.
+//       A table that cannot be made again (locked...) is left. With
+//       no table in the range, or in a header or footer: updateCmd.
+//       null when nothing could be updated
 //   updateAllCmd(d, ctx, sel?) -> sel | true | null  every field of
-//       d.doc: the body (a facade's: its story); sel (when given)
-//       moved, else true
+//       d.doc: the body (a facade's: its story), by ./FieldPasses run
+//       (in its order, every table of contents made again, the page
+//       fields and tables again on the document laid out again when
+//       ctx can lay it out, at most MAX_PASSES; one step); sel (when
+//       given) moved, else true
 //   insertFieldCmd(d, sel, code, ctx) -> sel | null  Insert > Page
 //       number, Date... and the Field box (./FieldBox): a complex
 //       field of code (./FieldMake codeText: ' CODE ', Word's
@@ -30,10 +42,19 @@
 //       step (none when nothing changed); the caret after the
 //       field. null (refused) for a bad code, no field, or a code
 //       holding another field (PG23)
+//   updateWithBlocks(d, f, blocks, opts?, sel?) -> sel | true | null
+//       field f of d.doc (./FieldScan) given blocks as its whole
+//       result (./FieldPut planBlocks, opts its first / last): one
+//       step (none when the blocks are there already), or part of
+//       the step of an atomic already open (the table of contents,
+//       ./FieldPasses); sel (when given) moved (planBlocks map),
+//       else true; null (nothing changed) where planBlocks refuses
+//       or an op refuses the change (the atomic rolled back)
 //
 // Each field with an evaluator (./Fields) that gives a value, no
 // fldLock, and a result ./FieldPut can replace without loss gets its
-// value (FieldPut planOf: the result's first run's format, or
+// value (./FieldPasses planFields, applyPlans; FieldPut planOf: the
+// result's first run's format, or
 // MERGEFORMAT per character, PG22); the others (no evaluator,
 // locked, a page field with no page, a result holding a kept inline,
 // spread across cells...) are left exactly as read, and so is every
@@ -42,8 +63,15 @@
 // (none when every value is stored already: sel back). null (the
 // window beeps), nothing changed, when no field could be updated.
 // The selection comes back moved with the text (FieldPut map).
+// A table of contents (TOC: ./Fields' block entry, no value) is made
+// again only by ./TocCmd and the TOC step of Update all fields
+// (./TocUpdate); Update field at one updates only the fields of its
+// result that scan sees (an entry's PAGEREF when it has no link); the
+// window's Edit > Update field asks which update there instead
+// (./TocBox updateFieldAt).
 //
-// ctx = {now, path?, meta?, pages?, page?}: now (a Date) and path
+// ctx = {now, path?, meta?, pages?, page?, layout?, relayout?}
+// (layout, relayout: ./FieldPasses'): now (a Date) and path
 // as ./Fields has them; pages {finish() -> ./Pages}: asked only when
 // a page field is to be updated, its pages all worked out first (D7:
 // page fields wait for the last page); a body field's page is the
@@ -51,10 +79,11 @@
 // fields are on (the header and footer mode's page). Pure: no
 // desktop services.
 import {scan} from './FieldScan';
-import {entryOf, evaluate} from './Fields';
 import {findBlock} from './EditPos';
-import {cmpPath, topOf} from './Path';
-import {planOf} from './FieldPut';
+import {cmpPath} from './Path';
+import {planFields, applyPlans, run} from './FieldPasses';
+import {planBlocks} from './FieldPut';
+import {tocFields, rebuild} from './TocUpdate';
 import {putIn} from './InsertApply';
 import {caret} from './Selection';
 import {codeText, fieldInlines, fieldFor, inCode, codePlan}
@@ -63,60 +92,14 @@ import {codeText, fieldInlines, fieldFor, inCode, codePlan}
 const isObj = (v) => v !== null && typeof v === 'object';
 const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
 
-/** The value each field gets: a function of the field (null: none). */
-function valuer(d, ctx) {
-  let P;
-  const pages = () => {
-    if (P === undefined) {
-      const x = isObj(ctx.pages) && typeof ctx.pages.finish ===
-        'function' ? ctx.pages.finish() : null;
-      P = isObj(x) && Array.isArray(x.list) ? x : null;
-    }
-    return P;
-  };
-  const story = isStory(d);
-  const doc = story ? d.real.doc : d.doc;
-  return (f) => {
-    const e = entryOf(f);
-    if (!e || f.lock) return null;
-    const c = {doc, now: ctx.now, path: ctx.path, meta: ctx.meta,
-      section: story ? d.s : topOf(f.begin.at)[0]};
-    if (e.pageDependent) {
-      const Q = pages();
-      if (Q) {
-        c.pages = Q;
-        const i = story || typeof Q.ofPos !== 'function' ? -1
-          : Q.ofPos({id: f.begin.id, off: f.begin.off});
-        c.page = story ? ctx.page : Q.list[i];
-      }
-    }
-    return evaluate(c, f);
-  };
-}
-
 /** Fields fs updated (see the header): the selection, or null. */
 function update(d, fs, ctx, sel) {
   if (!isObj(ctx) || !fs.length) return null;
-  const value = valuer(d, ctx), plans = [];
-  for (const f of fs) {
-    const v = value(f);
-    const plan = typeof v === 'string' ? planOf(d.doc, f, v) : null;
-    if (plan) plans.push(plan);
-  }
+  const {plans} = planFields(d, fs, ctx);
   if (!plans.length) return null;
   const due = plans.filter((x) => !x.same);
   if (!due.length) return isObj(sel) ? sel : true;
-  due.sort((a, b) => cmpPath(b.at, a.at) || b.off - a.off);
-  d.atomic(() => {
-    for (const x of due) for (const op of x.ops) d.apply(op);
-  });
-  if (!isObj(sel)) return true;
-  let {anchor, head} = sel;
-  for (const x of due) {
-    anchor = x.map(anchor);
-    head = x.map(head);
-  }
-  return {...sel, anchor, head};
+  return d.atomic(() => applyPlans(d, due, sel));
 }
 
 /** Every field of fs inside one of `top` (and those). */
@@ -157,9 +140,62 @@ export function updateCmd(d, sel, ctx) {
 }
 
 /** See the header. */
-export function updateAllCmd(d, ctx, sel) {
+export function updateRangeCmd(d, sel, ctx) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(sel) || !isObj(ctx) ||
+    isStory(d)) return updateCmd(d, sel, ctx);
+  const a = where(d.doc, sel.anchor), h = where(d.doc, sel.head);
+  if (!a || !h) return null;
+  const [lo, hi] = cmp(a, h) <= 0 ? [a, h] : [h, a];
+  const all = tocFields(d.doc), ks = [];
+  all.forEach((f, k) => {
+    const after = {at: f.end.at, off: f.end.off + 1};
+    if (cmp(f.begin, hi) < 0 && cmp(lo, after) < 0) ks.push(k);
+  });
+  if (!ks.length) return updateCmd(d, sel, ctx);
+  return d.atomic(() => {
+    let s = sel, any = false, P;
+    const u = updateCmd(d, s, ctx);
+    if (u) {
+      any = true;
+      if (isObj(u)) s = u;
+    }
+    const pages = () => {
+      if (P === undefined) {
+        P = isObj(ctx.pages) && typeof ctx.pages.finish === 'function'
+          ? ctx.pages.finish() : null;
+      }
+      return P;
+    };
+    for (const k of ks.reverse()) {
+      const f = tocFields(d.doc)[k];
+      const r = f ? rebuild(d, f, pages(), s) : null;
+      if (!r || !r.ok) continue;
+      any = true;
+      if (isObj(r.sel)) s = r.sel;
+    }
+    return any ? s : null;
+  });
+}
+
+/** See the header. */
+export function updateWithBlocks(d, f, blocks, opts, sel) {
   if (!isObj(d) || !isObj(d.doc)) return null;
-  return update(d, scan(d.doc), ctx, sel);
+  const plan = planBlocks(d.doc, f, blocks, opts);
+  if (!plan) return null;
+  const s = isObj(sel) ? sel : undefined;
+  if (plan.same) return s || true;
+  try {
+    return d.atomic(() => applyPlans(d, [plan], s));
+  } catch (e) {
+    return null;                       // (the atomic rolled back)
+  }
+}
+
+/** See the header. */
+export function updateAllCmd(d, ctx, sel) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(ctx)) return null;
+  const r = run(d, ctx, sel);
+  return r.ok ? r.sel : null;
 }
 
 /** The field of d whose begin is at pos, then updated (see the

@@ -1,0 +1,691 @@
+// TocUpdate - a table of contents' result made again from the
+// document (Batch E3): the entire table, or its page numbers only;
+// the TOC step of Edit > Update all fields (./FieldPasses). Each
+// change is one d.atomic (rolled back whole when refused), part of
+// the caller's step when one is open (./TocCmd, ./FieldPasses run).
+// Pure: no desktop services.
+//
+//   tocFields(doc) -> [Field]  the TOC fields of the body (./FieldScan
+//       scan; not a w:fldSimple, not one inside another TOC's code
+//       or result), in document order. A TOC inside a content
+//       control (w:sdt: kept whole by the reader) is not seen: kept
+//       as stored (known limit of Batch E3)
+//   isToc(f) -> bool  field f's instruction is a TOC one
+//   tocWhy(doc, f) -> string | null  why f's entries cannot be made
+//       again: 'locked', 'TC entries' (\f, \l), 'unsupported switch',
+//       'result cannot be replaced' (no separate, a fldSimple);
+//       null when they can
+//   entriesOf(doc, f) -> [Stored]  the entries f's result holds now,
+//       as read back: one per paragraph of the result with text or
+//       a page number, in order:
+//     Stored {para, level, text, page, anchor}
+//       level   n of the paragraph's style 'toc n' (by name; read
+//               back, LibreOffice's 'Contents n' too), 1 for 'table
+//               of figures', 0 for any other
+//       text    the visible text outside the PAGEREF field (a link's
+//               text included, the list label too), tabs and runs of
+//               white space one space, trimmed
+//       page    the PAGEREF field's result text (with none: a number
+//               after the text's last tab, as LibreOffice writes
+//               it), or null
+//       anchor  the PAGEREF's bookmark (else the link's w:anchor),
+//               or null
+//   rebuild(d, f, P, sel?, lay?) -> {ok, changed, reason?, sel}
+//       f's whole result made again (./TocBuild entries and blocks,
+//       ./FieldBlocks planBlocks: first 'take', last 'keep'), the
+//       page numbers from ./Pages P; with no P (null) the page an
+//       entry had (by its bookmark) is kept, so nothing is lost
+//       where there are no pages. Before the blocks go in, in the
+//       same step: the styles the blocks name and the document
+//       lacks (./StyleCmd ensureBuiltin: TOC 1..9, Hyperlink, Table
+//       of Figures), and a hidden '_Toc' bookmark round each new
+//       entry's heading (below). ok false (nothing changed) with the
+//       reason: tocWhy's, 'missing bookmark' (\b names one that is
+//       not in the body), 'no bookmark number free', 'too large for
+//       bookmarks' (the bookmark marks' walk stopped at its limit).
+//       A w:dirty on f's begin is taken off in the same step.
+//       lay {tabPos?, leader?} for the entries' right tab; default:
+//       the right tab the result's entries have now, else the
+//       section's text width with dots
+//   repage(d, f, P, sel?) -> {ok, changed, differs, reason?, sel}
+//       'page numbers only': each PAGEREF in f's result (a plain one,
+//       ./FieldPut planOf; or inside an entry's link, the w:hyperlink
+//       node made again with only its result run replaced) given its
+//       page number from P; the entries' text and format stay as
+//       they are; a w:dirty on f's begin taken off. differs: the
+//       entries the headings make now are not the ones there (by
+//       their bookmarks, in order: a heading added, removed or
+//       moved). ok false: no P ('needs Print
+//       layout'), tocWhy's 'locked' or 'result cannot be replaced'
+//   tocRun(d, c, sel?, pick?) -> {found, changed, messages, sel}
+//       ./FieldPasses' TOC step: every TOC of d.doc rebuilt (the last
+//       first; pick(k) false leaves the k-th out), the pages from
+//       c.pages.finish() (asked once, and only when a TOC shows page
+//       numbers). messages [{instr, reason, at, off}] for each one
+//       left as stored. In a header, footer or note (d a
+//       ./StoryFacade) every TOC is left: 'in a header, footer or
+//       note'
+//
+// The hidden bookmarks: <w:bookmarkStart w:id w:name="_Toc..."/> and
+// its end as direct marks (./Bookmarks' form) round the heading's
+// text outside any TOC field (a heading that holds a TOC's end mark:
+// from just after it), ids from ./Bookmarks nextBookmarkId (the
+// shared chooser, unique over body, headers and notes); the names
+// fail ./Bookmarks checkName on purpose (Word's hidden names), so
+// they are put in directly.
+// Known limit: a heading paragraph with text BEFORE a TOC's begin
+// (the begin inside the heading) is the paragraph that holds the
+// separate, so rebuild makes it the first entry paragraph: it takes
+// the entry's style (the heading style is lost) and its bookmark is
+// added again by the next update; the table settles after two
+// updates. ./TocCmd insertToc never makes this shape (it splits the
+// paragraph first); none in the corpus.
+import {OBJ} from './Model';
+import {scan} from './FieldScan';
+import {at as blockAt, forEachBlock} from './Walk';
+import {cmpPath, topOf} from './Path';
+import {cut} from './OpsUtil';
+import {parse, canRebuild} from './TocSwitches';
+import {entries, blocks as tocBlocks, TAB_DEFAULT, TAB_MAX}
+  from './TocBuild';
+import {parse as parseField} from './FieldParse';
+import {planBlocks} from './FieldBlocks';
+import {planOf, undirtyOp} from './FieldPut';
+import {evaluate} from './Fields';
+import {ensureBuiltin} from './StyleCmd';
+import {nextBookmarkId, MAX_ID} from './Bookmarks';
+import {marks} from './BookmarkMarks';
+import {geomOf} from './SectGeom';
+import {localName} from './Kinds';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+const lower = (s) => String(s).toLowerCase();
+const TOCSTYLE = /^toc ([1-9])$/i;
+
+/** See the header. */
+export const isToc = (f) => isObj(f) && typeof f.instr === 'string' &&
+  parseField(f.instr).name === 'TOC';
+
+/** See the header. */
+export function tocFields(doc) {
+  const all = scan(doc).filter((f) => isToc(f) && !f.simple);
+  const inner = new Set();
+  const down = (f) => {
+    for (const c of f.children) {
+      if (inner.has(c)) continue;
+      inner.add(c);
+      down(c);
+    }
+  };
+  all.forEach(down);
+  return all.filter((f) => !inner.has(f));
+}
+
+/** See the header. */
+export function tocWhy(doc, f) {
+  if (!isObj(f) || !isToc(f)) return 'not a table of contents';
+  if (f.lock) return 'locked';
+  if (f.simple || !f.sep) return 'result cannot be replaced';
+  const sw = parse(f.instr);
+  if (sw.tcEntries) return 'TC entries';
+  if (!canRebuild(sw)) return 'unsupported switch';
+  return null;
+}
+
+// --- reading the result back ----------------------------------
+
+/** The paragraphs of f's result: [{b, at, from, to}] (one container),
+ *  or null. */
+function resultParas(doc, f) {
+  if (!f.sep) return null;
+  const a = f.sep.at, z = f.end.at;
+  if (a.length !== z.length) return null;
+  for (let k = 0; k < a.length - 1; k++) if (a[k] !== z[k]) return null;
+  const base = a.slice(0, -1), ia = a[a.length - 1];
+  const ie = z[z.length - 1];
+  if (ie < ia) return null;
+  const out = [];
+  for (let k = ia; k <= ie; k++) {
+    const at = [...base, k], b = blockAt(doc, at);
+    if (!isObj(b) || b.type !== 'p') continue;
+    out.push({b, at, from: k === ia ? f.sep.off + 1 : 0,
+      to: k === ie ? f.end.off : b.text.length});
+  }
+  return out;
+}
+
+const kidsOf = (n) => (isObj(n) && Array.isArray(n.children)
+  ? n.children : []);
+
+/** The value of n's attribute of local name `local`, or null. */
+function attrOf(n, local) {
+  const as = isObj(n) ? n.attrs : null;
+  if (Array.isArray(as)) {
+    for (const [k, v] of as) {
+      if (String(k).split(':').pop() === local) return String(v);
+    }
+  } else if (isObj(as)) {
+    for (const k of Object.keys(as)) {
+      if (k.split(':').pop() === local) return String(as[k]);
+    }
+  }
+  return null;
+}
+
+const textIn = (n) => kidsOf(n).filter((c) => typeof c === 'string')
+  .join('');
+
+/** The events of an XML node: text, field marks, codes. */
+function nodeEvents(n, out) {
+  const stack = [n];
+  while (stack.length) {
+    const x = stack.pop();
+    if (typeof x === 'string' || !isObj(x)) continue;
+    const name = localName(x);
+    if (name === 't') out.push({t: textIn(x)});
+    else if (name === 'tab' || name === 'ptab') out.push({t: '\t'});
+    else if (name === 'br' || name === 'cr') out.push({t: ' '});
+    else if (name === 'fldChar') {
+      out.push({fld: attrOf(x, 'fldCharType')});
+    } else if (name === 'instrText') out.push({code: textIn(x)});
+    else if (name !== 'rPr' && name !== 'pPr' && name !== 'del' &&
+      name !== 'delText') {
+      const ks = kidsOf(x);
+      for (let k = ks.length - 1; k >= 0; k--) stack.push(ks[k]);
+    }
+  }
+}
+
+/** The events of paragraph p from..to. */
+function paraEvents(p, from, to) {
+  const out = [];
+  for (let k = from; k < to; k++) {
+    const c = p.text[k];
+    if (c !== OBJ) {
+      out.push({t: c === '\n' || c === '\r' ? ' ' : c});
+      continue;
+    }
+    const x = isObj(p.inlines) ? p.inlines[k] : null;
+    if (!isObj(x)) continue;
+    if (x.kind === 'tab') out.push({t: '\t'});
+    else if (x.kind === 'br') out.push({t: ' '});
+    else if (x.kind === 'raw' && isObj(x.node)) {
+      const name = localName(x.node);
+      if (name === 'hyperlink') {
+        out.push({link: attrOf(x.node, 'anchor')});
+        nodeEvents(x.node, out);
+      } else if (name === 'fldChar' || name === 'instrText' ||
+        name === 'r') nodeEvents(x.node, out);
+      else if (x.level === 'p' && typeof x.text === 'string')
+        out.push({t: x.text});
+    }
+  }
+  return out;
+}
+
+const norm = (s) => s.replace(/\s+/g, ' ').trim();
+
+/** One entry paragraph read back: {text, page, anchor}. */
+function readEntry(evs) {
+  const st = [];
+  let text = '', page = null, anchor = null, link = null;
+  for (const e of evs) {
+    if (e.link !== undefined) {
+      if (link === null && e.link) link = e.link;
+    } else if (e.fld === 'begin') st.push({code: '', res: false});
+    else if (e.fld === 'separate') {
+      if (st.length) st[st.length - 1].res = true;
+    } else if (e.fld === 'end') st.pop();
+    else if (e.code !== undefined) {
+      if (st.length && !st[st.length - 1].res)
+        st[st.length - 1].code += e.code;
+    } else if (typeof e.t === 'string') {
+      const top = st[st.length - 1];
+      if (!top) text += e.t;
+      else if (!top.res) continue;
+      else if (st.length === 1 && isPageRef(top.code)) {
+        page = (page || '') + e.t;
+        const q = parseField(top.code);
+        if (anchor === null && q.args.length) anchor = q.args[0];
+      } else if (st.every((x) => x.res)) text += e.t;
+    }
+  }
+  // no PAGEREF (LibreOffice writes the number as text): the number
+  // after the last tab
+  const tab = page === null ? text.lastIndexOf('\t') : -1;
+  const m = tab > 0 ? NUMBER.exec(text.slice(tab + 1, tab + 40)) : null;
+  if (m && tab + 1 + m[0].length === text.length &&
+    text.slice(0, tab).trim()) {
+    page = m[1];
+    text = text.slice(0, tab);
+  }
+  return {text: norm(text), page, anchor: anchor || link};
+}
+const NUMBER = /^\s*([0-9]{1,6}|[ivxlcdm]{1,12}|[IVXLCDM]{1,12})\s*$/;
+
+const isPageRef = (code) => parseField(code).name === 'PAGEREF';
+
+/** The level a paragraph style gives an entry (see the header). */
+function levelOf(doc, id) {
+  const st = isObj(doc.styles) && doc.styles.styles instanceof Map
+    ? doc.styles.styles.get(id) : undefined;
+  const name = st && typeof st.name === 'string' ? st.name.trim() : '';
+  const m = TOCSTYLE.exec(name) || /^toc([1-9])$/i.exec(id || '') ||
+    /^contents ([1-9])$/i.exec(name);
+  if (m) return Number(m[1]);
+  return lower(name) === 'table of figures' ? 1 : 0;
+}
+
+/** See the header. */
+export function entriesOf(doc, f) {
+  const ps = isObj(doc) && isObj(f) ? resultParas(doc, f) : null;
+  if (!ps) return [];
+  const out = [];
+  for (const {b, from, to} of ps) {
+    const e = readEntry(paraEvents(b, from, to));
+    if (!e.text && e.page === null) continue;
+    out.push({para: b.id, level: levelOf(doc, b.pStyle), ...e});
+  }
+  return out;
+}
+
+// --- making it again ------------------------------------------
+
+/** The right tab of the entries now, else the text width. */
+function layoutOf(doc, f) {
+  for (const {b} of resultParas(doc, f) || []) {
+    const tabs = isObj(b.pPr) && Array.isArray(b.pPr.tabs)
+      ? b.pPr.tabs : [];
+    const t = tabs.find((x) => isObj(x) && x.val === 'right' &&
+      Number.isInteger(x.pos) && x.pos > 0);
+    if (t) return {tabPos: t.pos, leader: t.leader || 'none'};
+  }
+  let tabPos = TAB_DEFAULT;
+  try {
+    const secs = doc.sections, sec = secs[topOf(f.begin.at)[0]];
+    const w = Math.round(geomOf(sec, {}, secs[0]).textW);
+    if (Number.isInteger(w) && w > 0) tabPos = Math.min(w, TAB_MAX);
+  } catch (e) {
+    // (no geometry: Word's A4 default)
+  }
+  return {tabPos, leader: 'dot'};
+}
+
+/** The offsets of p inside a TOC field (code or result): [lo, hi]
+ *  inclusive, sorted. */
+function tocCuts(tocs, loc) {
+  const out = [], p = loc.b;
+  for (const f of tocs) {
+    const a = cmpPath(f.begin.at, loc.at);
+    const z = cmpPath(loc.at, f.end.at);
+    if (a > 0 || z > 0) continue;
+    out.push([a === 0 ? f.begin.off : 0, z === 0 ? f.end.off
+      : p.text.length]);
+  }
+  return out.sort((x, y) => x[0] - y[0]);
+}
+
+/** Where a heading's bookmark goes: [start, end] offsets, or null. */
+function spanOf(tocs, loc) {
+  const p = loc.b, cuts = tocCuts(tocs, loc);
+  const inCut = (k) => cuts.some(([lo, hi]) => k >= lo && k <= hi);
+  let a = -1, z = -1;
+  for (let k = 0; k < p.text.length; k++) {
+    if (inCut(k)) continue;
+    if (a < 0) a = k;
+    z = k + 1;
+  }
+  if (a < 0) return null;
+  // (a mark right after a TOC's end, or at the paragraph's start)
+  return [a, z];
+}
+
+const mark = (local, attrs) => ({kind: 'raw', level: 'p', text: '',
+  node: {name: 'w:' + local, attrs, children: []}});
+const markOp = (at, off, x) => ({op: 'spliceText', block: at, at: off,
+  del: 0, content: {text: OBJ, inlines: {0: x},
+    runs: [{start: 0, end: 1, rPr: {extra: []}}]}});
+
+const TOO_LARGE = 'too large for bookmarks';
+const NO_ID = 'no bookmark number free';
+
+/** The hidden bookmarks of list [{paraId, name}] put in: null, or
+ *  why not (nothing changed): the marks' walk stopped at its limit
+ *  (as ./Bookmarks addBookmark refuses), no ids free. The moves of
+ *  the positions [{id, off}] they shift, for sel. */
+function addHidden(d, list, moves) {
+  if (!list.length) return null;
+  const body = marks(d.doc);
+  if (!body.complete) return TOO_LARGE;
+  const id0 = nextBookmarkId(d.doc, body);
+  if (id0 === null || id0 + list.length - 1 > MAX_ID) return NO_ID;
+  let id = id0;
+  // (the TOC fields' marks as they are before any bookmark goes in:
+  // each paragraph takes its two marks once, at offsets read before)
+  const tocs = scan(d.doc).filter((f) => isToc(f) && !f.simple);
+  // (the paths of the headings, found in one walk: no block moves)
+  const want = new Set(list.map((x) => x.paraId)), paths = new Map();
+  forEachBlock(d.doc, (b, at) => {
+    if (b.type === 'p' && want.has(b.id)) paths.set(b.id, [...at]);
+    return paths.size < want.size;
+  });
+  for (const {paraId, name} of list) {
+    const at = paths.get(paraId), b = at ? blockAt(d.doc, at) : null;
+    if (!isObj(b) || b.type !== 'p' || b.id !== paraId) continue;
+    const loc = {at, b};
+    const sp = spanOf(tocs, loc);
+    if (!sp) continue;
+    const n = String(id++);
+    d.apply(markOp(loc.at, sp[1], mark('bookmarkEnd', [['w:id', n]])));
+    d.apply(markOp(loc.at, sp[0], mark('bookmarkStart',
+      [['w:id', n], ['w:name', name]])));
+    moves.push({id: paraId, off: sp[1]}, {id: paraId, off: sp[0]});
+  }
+  return null;
+}
+
+/** pos moved for the marks put in (moves: later ones first). */
+function shifted(pos, moves) {
+  if (!isObj(pos)) return pos;
+  let off = pos.off;
+  for (let k = moves.length - 1; k >= 0; k--) {
+    const m = moves[k];
+    if (m.id === pos.id && off > m.off) off++;
+  }
+  return off === pos.off ? pos : {...pos, off};
+}
+
+/** The styles of ids put in (Word's built-ins). */
+function addStyles(d, ids) {
+  for (const id of ids) {
+    const st = d.doc.styles;
+    if (!isObj(st) || !(st.styles instanceof Map)) return;
+    const strict = isObj(d.doc.meta) &&
+      d.doc.meta.conformance === 'strict';
+    const t = ensureBuiltin(st, id, {strict});
+    if (t) d.apply({op: 'setDocPart', key: 'styles', value: t});
+  }
+}
+
+const isPages = (P) => isObj(P) && Array.isArray(P.list) &&
+  typeof P.ofPos === 'function';
+
+/** The k of f in tocFields(doc), or -1. */
+function indexOf(doc, f) {
+  return tocFields(doc).findIndex((g) => g.begin.id === f.begin.id &&
+    g.begin.off === f.begin.off);
+}
+
+/** Apply a plan (./FieldPut's) and map sel. */
+function applyPlan(d, plan, sel) {
+  for (const op of plan.ops) d.apply(op);
+  if (!isObj(sel)) return sel;
+  return {...sel, anchor: plan.map(sel.anchor),
+    head: plan.map(sel.head)};
+}
+
+/** See the header. */
+export function rebuild(d, f, P, sel, lay) {
+  const no = (reason) => ({ok: false, changed: false, reason, sel});
+  const why = tocWhy(d.doc, f);
+  if (why) return no(why);
+  const sw = parse(f.instr), pages = isPages(P) ? P : null;
+  const es = entries(d.doc, sw, {pages});
+  if (es === null) return no('missing bookmark');
+  if (!pages) {
+    // no pages: each entry keeps the page it shows now
+    const had = new Map();
+    for (const e of entriesOf(d.doc, f)) {
+      if (e.anchor && e.page !== null) had.set(lower(e.anchor), e.page);
+    }
+    for (const e of es) {
+      if (e.bookmark) e.page = had.get(lower(e.bookmark)) ?? null;
+    }
+  }
+  const o = {...layoutOf(d.doc, f), ...(isObj(lay) ? lay : {})};
+  const out = tocBlocks(d.doc, es, sw, o);
+  const probe = planBlocks(d.doc, f, out.blocks);
+  if (!probe) return no('result cannot be replaced');
+  if (probe.same && !out.stylesNeeded.length && !f.dirty &&
+    !out.bookmarksToAdd.length) return {ok: true, changed: false, sel};
+  const k = indexOf(d.doc, f);
+  if (k < 0) return no('result cannot be replaced');
+  let s = sel;
+  const go = () => {
+    addStyles(d, out.stylesNeeded);
+    const moves = [];
+    const bad = addHidden(d, out.bookmarksToAdd, moves);
+    if (bad) throw new RangeError(bad);
+    if (isObj(s)) {
+      s = {...s, anchor: shifted(s.anchor, moves),
+        head: shifted(s.head, moves)};
+    }
+    const g = tocFields(d.doc)[k];
+    const plan = g && planBlocks(d.doc, g, out.blocks);
+    if (!plan) throw new RangeError('result cannot be replaced');
+    if (!plan.same) s = applyPlan(d, plan, s);
+    // (w:dirty off the begin: found again, the result in place)
+    const h = f.dirty ? tocFields(d.doc)[k] : null;
+    const op = h && h.dirty ? undirtyOp(d.doc, h) : null;
+    if (op) d.apply(op);
+  };
+  try {
+    d.atomic(go);
+  } catch (e) {
+    const m = e && e.message;
+    return no(m === TOO_LARGE || m === NO_ID ? m
+      : 'result cannot be replaced');
+  }
+  return {ok: true, changed: true, sel: s};
+}
+
+// --- page numbers only ----------------------------------------
+
+/** The run of an event: 'begin' | 'separate' | 'end' | {code} for a
+ *  w:r holding one field mark or code (with its rPr), null for
+ *  another node, 'odd' for a run mixing them with anything. */
+function runEvent(n) {
+  if (!isObj(n) || localName(n) !== 'r') return null;
+  const ks = kidsOf(n).filter((c) => isObj(c) &&
+    localName(c) !== 'rPr');
+  const marks = ks.filter((c) => ['fldChar', 'instrText']
+    .includes(localName(c)));
+  if (!marks.length) return null;
+  if (ks.length !== 1) return 'odd';
+  const c = ks[0];
+  return localName(c) === 'fldChar' ? attrOf(c, 'fldCharType')
+    : {code: textIn(c)};
+}
+
+/** The run that shows value, formatted as run t (a w:r). */
+function valueRun(t, value) {
+  const name = String(t.name), pre = name.slice(0, name.indexOf(':')
+    + 1);
+  const rPr = kidsOf(t).find((c) => isObj(c) && localName(c) === 'rPr');
+  const kids = rPr ? [rPr] : [];
+  if (value) {
+    const sp = value !== value.trim() ? [['xml:space', 'preserve']]
+      : [];
+    kids.push({name: pre + 't', attrs: sp, children: [value]});
+  }
+  return {name, attrs: [], children: kids};
+}
+
+/** Link node n with each PAGEREF result made value(code) (null:
+ *  kept): the new node, or n itself. */
+function relink(n, value) {
+  const ks = kidsOf(n), out = [];
+  let depth = 0, code = '', sep = -1, plain = true, changed = false;
+  let from = 0;
+  for (let k = 0; k < ks.length; k++) {
+    const ev = runEvent(ks[k]);
+    if (ev === 'odd') return n;
+    if (ev === 'begin') {
+      if (depth++ === 0) {
+        code = '';
+        sep = -1;
+        plain = true;
+      } else plain = false;
+    } else if (ev === 'separate') {
+      if (depth === 1) sep = k;
+    } else if (ev === 'end') {
+      if (depth === 0) return n;
+      if (--depth === 0 && sep >= 0 && plain && isPageRef(code)) {
+        const v = value(code);
+        if (typeof v === 'string') {
+          const tmpl = ks.slice(sep + 1, k).find((c) => isObj(c) &&
+            localName(c) === 'r') || ks[sep];
+          const run = valueRun(tmpl, v);
+          const old = ks.slice(sep + 1, k);
+          if (!(old.length === 1 && sameNode(old[0], run))) {
+            out.push(...ks.slice(from, sep + 1), run);
+            from = k;
+            changed = true;
+          }
+        }
+      }
+    } else if (isObj(ev) && depth === 1 && sep < 0) code += ev.code;
+  }
+  if (!changed) return n;
+  out.push(...ks.slice(from));
+  return {...n, children: out};
+}
+
+/** Two runs alike: their w:t texts and rPr nodes. */
+function sameNode(a, b) {
+  const t = (x) => kidsOf(x).filter((c) => isObj(c) &&
+    localName(c) === 't').map(textIn).join('');
+  const rp = (x) => JSON.stringify(kidsOf(x).find((c) => isObj(c) &&
+    localName(c) === 'rPr') || null);
+  return t(a) === t(b) && rp(a) === rp(b);
+}
+
+/** The shown text of a link node: its w:t texts. */
+function linkText(n) {
+  const evs = [];
+  nodeEvents(n, evs);
+  return evs.filter((e) => typeof e.t === 'string' && e.t !== '\t' &&
+    e.t !== ' ').map((e) => e.t).join('');
+}
+
+/** Whether the headings would give other entries than f has. */
+function differs(doc, f) {
+  const sw = parse(f.instr);
+  if (!canRebuild(sw)) return false;
+  const es = entries(doc, sw, {});
+  if (es === null) return true;
+  const have = entriesOf(doc, f);
+  if (have.length !== es.length) return true;
+  return es.some((e, k) => {
+    const a = have[k].anchor;
+    return a !== null && (!e.bookmark ||
+      lower(e.bookmark) !== lower(a));
+  });
+}
+
+/** See the header. */
+export function repage(d, f, P, sel) {
+  const no = (reason) => ({ok: false, changed: false, differs: false,
+    reason, sel});
+  if (!isObj(f) || !isToc(f)) return no('not a table of contents');
+  if (f.lock) return no('locked');
+  if (!isPages(P)) return no('needs Print layout');
+  const doc = d.doc, ps = resultParas(doc, f);
+  if (!ps) return no('result cannot be replaced');
+  const val = (fl) => evaluate({doc, pages: P}, fl);
+  const plans = [];
+  // the plain PAGEREF fields of the result (scan sees them)
+  const inner = [];
+  const down = (g) => g.children.forEach((c) => {
+    inner.push(c);
+    down(c);
+  });
+  down(f);
+  for (const g of inner) {
+    if (g.simple || !g.sep || !isPageRef(g.instr) || g.children.length)
+      continue;
+    const v = val(g), plan = typeof v === 'string'
+      ? planOf(doc, g, v) : null;
+    if (plan && !plan.same) plans.push({at: g.sep.at, off: g.sep.off,
+      plan});
+  }
+  // the links' own PAGEREF fields
+  for (const {b, at, from, to} of ps) {
+    for (let k = from; k < to; k++) {
+      const x = b.text[k] === OBJ && isObj(b.inlines) ? b.inlines[k]
+        : null;
+      if (!isObj(x) || x.kind !== 'raw' || !isObj(x.node) ||
+        localName(x.node) !== 'hyperlink') continue;
+      const node = relink(x.node, (code) => val({instr: code,
+        lock: false}));
+      if (node === x.node) continue;
+      const c = cut(b, k, k + 1);
+      c.inlines = {0: {...x, node, text: linkText(node)}};
+      plans.push({at, off: k, plan: {ops: [{op: 'spliceText',
+        block: at, at: k, del: 1, content: c}], map: (pos) => pos}});
+    }
+  }
+  const clear = f.dirty ? undirtyOp(doc, f) : null;
+  if (clear) {
+    plans.push({at: f.begin.at, off: f.begin.off, plan: {ops: [clear],
+      map: (pos) => pos}});
+  }
+  const diff = differs(doc, f);
+  if (!plans.length) return {ok: true, changed: false, differs: diff,
+    sel};
+  plans.sort((a, b) => cmpPath(b.at, a.at) || b.off - a.off);
+  let s = sel;
+  d.atomic(() => {
+    for (const {plan} of plans) s = applyPlan(d, plan, s);
+  });
+  return {ok: true, changed: true, differs: diff, sel: s};
+}
+
+// --- the step of Update all fields -----------------------------
+
+/** Every level of sw shows no page number. */
+const noPages = (sw) => Array.isArray(sw.noPageLevels) &&
+  sw.noPageLevels[0] <= 1 && sw.noPageLevels[1] >= 9;
+
+/** See the header. */
+export function tocRun(d, c, sel, pick) {
+  const list = tocFields(d.doc);
+  const msg = (f, reason) => ({instr: f.instr.trim(), reason,
+    at: f.begin.at, off: f.begin.off});
+  if (!list.length) return {found: 0, changed: false, messages: []};
+  if (isStory(d) || isObj(d.note)) {
+    return {found: 0, changed: false, messages: list.map((f) =>
+      msg(f, 'in a header, footer or note'))};
+  }
+  let P;
+  const pages = () => {
+    if (P === undefined) {
+      const x = isObj(c) && isObj(c.pages) &&
+        typeof c.pages.finish === 'function' ? c.pages.finish() : null;
+      P = isPages(x) ? x : null;
+    }
+    return P;
+  };
+  const messages = [];
+  let found = 0, changed = false, s = sel;
+  for (let k = list.length - 1; k >= 0; k--) {
+    if (typeof pick === 'function' && !pick(k)) continue;
+    const f = tocFields(d.doc)[k];
+    if (!f) continue;
+    const sw = parse(f.instr);
+    const r = rebuild(d, f, noPages(sw) || tocWhy(d.doc, f) ? null
+      : pages(), s);
+    if (!r.ok) {
+      messages.push(msg(f, r.reason));
+      continue;
+    }
+    found++;
+    if (r.changed) {
+      changed = true;
+      s = r.sel;
+    }
+  }
+  return {found, changed, messages, sel: s};
+}
+

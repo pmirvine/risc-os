@@ -1,0 +1,358 @@
+// TocCmd - a table of contents (or of figures) put in at the caret,
+// updated and removed (Batch E3): Word's TOC field with its entries
+// as its result (./TocBuild, ./TocUpdate). One undo step each
+// (typing.command, d.atomic); none when nothing changes.
+//
+//   instrOf(opts) -> string  the instruction for opts, Word's order
+//       (to check in real Word): TOC \o "1-n" [\n "1-n" | \p " "]
+//       [\h \z] [\t "Style,level,..."] [\u]; a table of figures:
+//       TOC [\n | \p " "] [\h \z] \c "id" (\a "id" with
+//       includeLabel false: the captions without their label and
+//       number)
+//     opts {levels = 3 (1..9), hyperlinks = true, pageNumbers = true,
+//       rightAlign = true (false: \p " ", the number after a space:
+//       an assumption, to check in real Word), leader = 'dot'
+//       ('dot' | 'hyphen' | 'underscore' | 'none'; 'dots', 'dashes',
+//       'line' too: the entries' right tab, not in the
+//       instruction), outline = true (\u), extraStyles
+//       [{style, level}] (\t), seqId (a table of figures of SEQ seqId
+//       captions: \c; levels, outline and extraStyles not used),
+//       includeLabel = true (a table of figures': false \a)}
+//   insertWhy(d, sel) -> string | null  why insertToc refuses, in
+//       words for the user: in a header, footer or note (d a
+//       ./StoryFacade, d.refuses('toc')); no caret in text; the caret
+//       inside a field's code or result (a table of contents' too;
+//       just before a field is fine)
+//   insertToc(d, typing, sel, opts?, ctx?) -> {sel, field} | null
+//       the field put in at the start of sel (a range keeps its
+//       text, after the table): a caret inside a paragraph splits it
+//       there, so the table starts a paragraph; the text after the
+//       caret follows the field's end in the paragraph that holds
+//       it. Its result is made at once (./TocUpdate rebuild: the
+//       hidden _Toc bookmarks on the headings, the styles, the
+//       entries), the page numbers from ctx's pages (./FieldCmd's
+//       ctx: pages, layout, relayout; the document laid out again
+//       and the numbers made again while they change, at most
+//       ./FieldPasses MAX_PASSES; no ctx: no page numbers until an
+//       update). sel: a caret after the field; field: the new TOC
+//       (./FieldScan). null when insertWhy refuses or the result
+//       cannot be made (nothing changed)
+//   updateToc(d, typing, field, mode = 'entire', ctx?, sel?) ->
+//       {changed, passes, message, sel} | null  field (a TOC of d.doc,
+//       found again by its begin) made again: 'entire' every entry
+//       (./TocUpdate rebuild), 'pages' only the page numbers
+//       (./TocUpdate repage: the entries' text and format kept);
+//       laid out again and done again while numbers change, at most
+//       MAX_PASSES. message: 'headings changed: update the entire
+//       table' when 'pages' found the headings no longer the entries
+//       (the numbers are still updated), else null. null (nothing
+//       changed): not a TOC, tocWhy's reasons for 'entire', no pages
+//       for 'pages'. sel: sel (given) moved with the text, else true
+//   editToc(d, typing, field, opts, ctx?) -> {sel, field, changed}
+//       | null  the Table of Contents box's Update (./TocPatch patch's
+//       opts): field's code made opts.instr (./FieldMake codePlan;
+//       opts.instr null: the code kept), then the entire table made
+//       again with the entries' right tab given opts.leader (none:
+//       the leader the entries have), laid out again as insertToc
+//       is; one step, none when nothing changed. sel: a caret just
+//       before the field; field: the table now. null (nothing
+//       changed): not a TOC, tocWhy's reasons, a code that cannot be
+//       changed
+//   removeToc(d, typing, field) -> {sel} | null  the whole field (its
+//       marks, code and every entry paragraph) taken out; the hidden
+//       _Toc bookmarks stay (Word keeps them); the paragraph that
+//       held the end keeps its format and its text after the end (a
+//       heading there stays a heading). sel: a caret where the field
+//       began. null for no such TOC (a w:fldSimple or one with no
+//       separate is left)
+//   tocAt(doc, pos) -> Field | null  the TOC (./TocUpdate tocFields)
+//       holding position pos {id, off} or a selection's head: from
+//       its begin to its end mark
+// d is a ./Document (or a facade), sel a ./Selection. Pure: no
+// desktop services.
+import {newPara} from './Model';
+import {caret} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {at as blockAt} from './Walk';
+import {cmpPath} from './Path';
+import {scan} from './FieldScan';
+import {codeText, fieldInlines, codePlan} from './FieldMake';
+import {planBlocks} from './FieldBlocks';
+import {run} from './FieldPasses';
+import {tocFields, tocWhy, rebuild, repage} from './TocUpdate';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** The commands' own refusal (rolled back whole): the only error
+ *  they turn into null; any other error is a bug and goes on. */
+class Refused extends Error {}
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+const LEADERS = {dot: 'dot', dots: 'dot', hyphen: 'hyphen',
+  dashes: 'hyphen', underscore: 'underscore', line: 'underscore',
+  none: 'none'};
+const BAD = /["\\\u0000-\u001f\u007f-\u009f\ufffc]/g;
+const clean = (s) => String(s).replace(BAD, '').trim().slice(0, 255);
+const level = (n) => (Number.isInteger(n) ? Math.min(9, Math.max(1, n))
+  : 3);
+
+/** See the header. */
+export function instrOf(opts = {}) {
+  const o = isObj(opts) ? opts : {};
+  const out = ['TOC'], links = o.hyperlinks !== false;
+  if (typeof o.seqId === 'string' && clean(o.seqId)) {
+    if (o.pageNumbers === false) out.push('\\n');
+    else if (o.rightAlign === false) out.push('\\p " "');
+    if (links) out.push('\\h', '\\z');
+    out.push(`\\${o.includeLabel === false ? 'a' : 'c'} ` +
+      `"${clean(o.seqId)}"`);
+    return out.join(' ');
+  }
+  const n = level(o.levels);
+  out.push(`\\o "1-${n}"`);
+  if (o.pageNumbers === false) out.push(`\\n "1-${n}"`);
+  else if (o.rightAlign === false) out.push('\\p " "');
+  if (links) out.push('\\h', '\\z');
+  const ts = (Array.isArray(o.extraStyles) ? o.extraStyles : [])
+    .filter((t) => isObj(t) && typeof t.style === 'string' &&
+      clean(t.style)).map((t) => clean(t.style).replace(/[,;]/g, '') +
+      ',' + level(t.level));
+  if (ts.length) out.push(`\\t "${ts.join(',')}"`);
+  if (o.outline !== false) out.push('\\u');
+  return out.join(' ');
+}
+
+/** {at, off} of position pos of doc, or null. */
+function where(doc, pos) {
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  return loc && !loc.story && Number.isInteger(pos.off)
+    ? {at: loc.at, off: pos.off} : null;
+}
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** The innermost field strictly holding place w (after its begin,
+ *  up to its end mark), or null. */
+function fieldIn(doc, w) {
+  let got = null;
+  for (const f of scan(doc)) {
+    if (f.simple) continue;
+    if (cmp(f.begin, w) < 0 && cmp(w, f.end) <= 0) got = f;
+  }
+  return got;
+}
+
+/** See the header. */
+export function insertWhy(d, sel) {
+  if (!isObj(d) || !isObj(d.doc)) return 'There is no document.';
+  if ((typeof d.refuses === 'function' && d.refuses('toc')) ||
+    isStory(d) || isObj(d.note))
+    return 'A table of contents cannot go in a header, footer or note.';
+  const o = isObj(sel) && sel.anchor && sel.head
+    ? orderedPos(d.doc, sel) : null;
+  if (!o) return 'There is no caret in the text.';
+  const loc = findBlock(d.doc, o.from.id);
+  if (!loc || loc.story || loc.b.type !== 'p')
+    return 'Put the caret in text first (not by a table or box).';
+  const f = fieldIn(d.doc, {at: loc.at, off: o.from.off});
+  if (f) {
+    return /^\s*TOC\b/i.test(f.instr)
+      ? 'Not inside a table of contents: put the caret before or ' +
+        'after it.'
+      : 'Not inside a field: put the caret before or after it.';
+  }
+  return null;
+}
+
+/** The leader opts asks for, or undefined (the default). */
+const leaderOf = (o) => (isObj(o) && Object.hasOwn(LEADERS,
+  String(o.leader)) ? LEADERS[o.leader] : undefined);
+
+/** Run fn as one command (typing.command when there is one). */
+const command = (typing, fn) => (typing && typeof typing.command ===
+  'function' ? typing.command(fn) : fn());
+
+/** The field of doc whose begin is at pos, as tocFields has it. */
+const tocBy = (doc, pos) => tocFields(doc).find((g) =>
+  g.begin.id === pos.id && g.begin.off === pos.off) || null;
+
+/** See the header. */
+export function insertToc(d, typing, sel, opts = {}, ctx) {
+  if (insertWhy(d, sel) !== null) return null;
+  const text = codeText(instrOf(opts));
+  if (!text) return null;
+  const from = orderedPos(d.doc, sel).from;
+  const lead = leaderOf(opts);
+  let begin = null, k = -1;
+  const put = {name: 'insert', paged: false, run(dd) {
+    let loc = findBlock(dd.doc, from.id), off = from.off;
+    if (off > 0) {
+      dd.apply({op: 'splitBlock', block: loc.at, at: off});
+      const n = loc.at.length - 1;
+      const at = [...loc.at.slice(0, -1), loc.at[n] + 1];
+      loc = {at, b: blockAt(dd.doc, at)};
+      off = 0;
+    }
+    const {ins, inlines} = fieldInlines(text);
+    dd.apply({op: 'replaceText', block: loc.at, at: off, del: 0, ins,
+      inlines, rPr: {extra: []}});
+    begin = {id: loc.b.id, off};
+    k = tocFields(dd.doc).findIndex((g) => g.begin.id === begin.id &&
+      g.begin.off === off);
+    if (k < 0) throw new Refused('no field');
+    return {found: 1, changed: true, messages: []};
+  }};
+  let first = true;
+  const build = {name: 'toc', paged: true, run(dd, c, s) {
+    const f = tocFields(dd.doc)[k];
+    const x = isObj(c.pages) ? c.pages.finish() : null;
+    const lay = first && lead !== undefined ? {leader: lead}
+      : undefined;
+    first = false;
+    const r = rebuild(dd, f, x, s, lay);
+    if (!r.ok) throw new Refused(r.reason);
+    return {found: 1, changed: r.changed, messages: [], sel: r.sel};
+  }};
+  let res = null;
+  try {
+    res = command(typing, () => run(d, isObj(ctx) ? ctx : {}, null,
+      {steps: [put, build]}));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return null;                       // (rolled back: nothing changed)
+  }
+  if (!res || !res.ok || !begin) return null;
+  const f = tocFields(d.doc)[k];
+  if (!f) return null;
+  return {sel: caret({id: f.end.id, off: f.end.off + 1}), field: f};
+}
+
+/** See the header. */
+export function updateToc(d, typing, field, mode = 'entire', ctx,
+  sel) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(field) || !field.begin)
+    return null;
+  const pos = {id: field.begin.id, off: field.begin.off};
+  const f0 = tocBy(d.doc, pos);
+  if (!f0) return null;
+  const k = tocFields(d.doc).indexOf(f0);
+  const pages = mode === 'pages';
+  if (!pages && tocWhy(d.doc, f0)) return null;
+  const c0 = isObj(ctx) ? ctx : {};
+  if (pages && !(isObj(c0.pages) || typeof c0.relayout === 'function'))
+    return null;
+  let refused = false, differs = false, first = true;
+  const step = {name: 'toc', paged: true, run(dd, c, s) {
+    const f = tocFields(dd.doc)[k];
+    const P = isObj(c.pages) ? c.pages.finish() : null;
+    const r = !f ? {ok: false} : pages ? repage(dd, f, P, s)
+      : rebuild(dd, f, P, s);
+    if (first) {
+      first = false;
+      refused = !r.ok;
+      differs = !!r.differs;
+    }
+    if (!r.ok) return {found: 0, changed: false, messages: []};
+    return {found: 1, changed: r.changed, messages: [], sel: r.sel};
+  }};
+  const res = command(typing, () => run(d, c0, isObj(sel) ? sel : null,
+    {steps: [step]}));
+  if (refused || !res.ok) return null;
+  return {changed: res.changed, passes: res.passes,
+    message: differs ? 'headings changed: update the entire table'
+      : null, sel: res.sel};
+}
+
+/** See the header. */
+export function editToc(d, typing, field, opts, ctx) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(field) || !field.begin ||
+    !isObj(opts)) return null;
+  const pos = {id: field.begin.id, off: field.begin.off};
+  const f0 = tocBy(d.doc, pos);
+  if (!f0 || tocWhy(d.doc, f0)) return null;
+  const k = tocFields(d.doc).indexOf(f0);
+  const text = typeof opts.instr === 'string' ? codeText(opts.instr)
+    : null;
+  if (opts.instr !== null && opts.instr !== undefined && !text)
+    return null;
+  const lead = leaderOf(opts);
+  const put = {name: 'code', paged: false, run(dd) {
+    const f = tocFields(dd.doc)[k];
+    const plan = text && f ? codePlan(dd.doc, f, text) : null;
+    if (text && !plan) throw new Refused('code');
+    if (!plan || !plan.op) return {found: 1, changed: false,
+      messages: []};
+    dd.apply(plan.op);
+    return {found: 1, changed: true, messages: []};
+  }};
+  const build = {name: 'toc', paged: true, run(dd, c, s) {
+    const f = tocFields(dd.doc)[k];
+    if (!f) throw new Refused('no field');
+    const x = isObj(c.pages) ? c.pages.finish() : null;
+    const r = rebuild(dd, f, x, s, lead !== undefined ? {leader: lead}
+      : undefined);
+    if (!r.ok) throw new Refused(r.reason);
+    return {found: 1, changed: r.changed, messages: [], sel: r.sel};
+  }};
+  let res = null;
+  try {
+    res = command(typing, () => run(d, isObj(ctx) ? ctx : {}, null,
+      {steps: [put, build]}));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return null;                       // (rolled back: nothing changed)
+  }
+  const f = res && res.ok ? tocFields(d.doc)[k] : null;
+  if (!f) return null;
+  return {sel: caret({id: f.begin.id, off: f.begin.off}), field: f,
+    changed: res.changed};
+}
+
+/** See the header. */
+export function removeToc(d, typing, field) {
+  if (!isObj(d) || !isObj(d.doc) || !isObj(field) || !field.begin)
+    return null;
+  const f = tocBy(d.doc, {id: field.begin.id, off: field.begin.off});
+  if (!f || !f.sep) return null;
+  const B = findBlock(d.doc, f.end.id);
+  if (!B || B.b.type !== 'p') return null;
+  const o = {};
+  if (B.b.pStyle !== undefined) o.pStyle = B.b.pStyle;
+  if (B.b.pPr !== undefined) o.pPr = B.b.pPr;
+  const plan = planBlocks(d.doc, {...f, lock: false}, [newPara('', o)],
+    {last: 'take'});
+  if (!plan) return null;
+  const at = {id: f.begin.id, off: f.begin.off};
+  let out = null;
+  try {
+    command(typing, () => d.atomic(() => {
+      for (const op of plan.ops) d.apply(op);
+      const g = scan(d.doc).find((x) => x.begin.id === at.id &&
+        x.begin.off === at.off);
+      if (!g || g.end.id !== at.id) throw new Refused('not joined');
+      const loc = findBlock(d.doc, at.id);
+      d.apply({op: 'replaceText', block: loc.at, at: at.off,
+        del: g.end.off + 1 - at.off, ins: ''});
+      // text before the field and after it: two paragraphs again
+      const p = findBlock(d.doc, at.id);
+      if (at.off > 0 && p.b.text.slice(at.off).replace(/\ufffc/g, '') &&
+        p.b.text.slice(0, at.off).replace(/\ufffc/g, ''))
+        d.apply({op: 'splitBlock', block: p.at, at: at.off});
+      out = {sel: caret(at)};
+    }));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return null;
+  }
+  return out;
+}
+
+/** See the header. */
+export function tocAt(doc, pos) {
+  const p = isObj(pos) && isObj(pos.head) ? pos.head : pos;
+  const w = isObj(doc) ? where(doc, p) : null;
+  if (!w) return null;
+  for (const f of tocFields(doc)) {
+    if (cmp(f.begin, w) <= 0 && cmp(w, f.end) <= 0) return f;
+  }
+  return null;
+}
+

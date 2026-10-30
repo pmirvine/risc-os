@@ -150,7 +150,11 @@ describe('Page fields keep no earlier layouts (final fix A C1)', () => {
     assert.ok(s.L.fields.pageOf instanceof Map, 'a pass was made');
     assert.equal(pagesIn(s.L.fields).length, 0, 'a Page or Pages');
     for (const v of s.L.fields.pageOf.values()) {
-      assert.deepEqual(Object.keys(v).sort(), ['fmt', 'num', 's']);
+      assert.deepEqual(Object.keys(v).sort(), ['fmt', 'num', 's',
+        'span']);
+      // (the span: two paragraph ids, never a Page or a block)
+      assert.ok(v.span === null || Object.keys(v.span).every((k) =>
+        typeof v.span[k] !== 'object'), JSON.stringify(v.span));
     }
   });
 

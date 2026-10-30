@@ -1,0 +1,344 @@
+// XrefCmd - Insert > Cross-reference... (Batch E3): a REF, PAGEREF or
+// NOTEREF field to a heading, a numbered paragraph, a bookmark, a
+// footnote or endnote, or a caption (./XrefTargets), as Word makes
+// one: a hidden '_Ref' bookmark round the target and the field
+// pointing at it, its result filled at once.
+//
+//   xrefWhy(d, sel) -> string | null  why insertXref refuses sel, in
+//       words for the user: no document; no caret in text; an end of
+//       sel inside a field's code or result (just before a field is
+//       fine). A reference is an ordinary field: the body, a table's
+//       cell, a header or footer and a note's text (d a
+//       ./StoryFacade) take one
+//   codeOf({type, name, what, hyperlink = true, above = false}) ->
+//       string | null  the instruction (no spaces round it), Word's
+//       switches in this order (to check in real Word): page:
+//       PAGEREF name; noteNumber, noteNumberFormatted (\f) and a
+//       note's above: NOTEREF name; every other what: REF name, with
+//       \r (number), \n (numberNoContext), \w (numberFullContext);
+//       then \p (what above, or above true: "Include above/below"),
+//       then \h (hyperlink). null: what not one of these, a name
+//       that is not one word (a space, quote or backslash in it)
+//   insertXref(d, typing, sel, opts, ctx?, report?) -> {sel, field}
+//       | null
+//       ONE undo step (typing.command; ./FieldPasses run: one
+//       d.atomic): the field put in at sel (the selection replaced,
+//       as typing does: ./InsertApply putIn), the target's bookmark
+//       (below), then the field's result worked out as Update does
+//       (./Fields evaluate on the whole document; the page fields
+//       on the pages of the document laid out again, ctx as
+//       ./FieldCmd's: pages, layout, relayout, page) and put in
+//       (./FieldPut planOf); laid out again while it changes the
+//       pages, at most ./FieldPasses MAX_PASSES. sel: a caret after
+//       the field; field: it (./FieldScan, in d.doc).
+//     opts {type, target, what, hyperlink = true, above = false}:
+//       type and target as ./XrefTargets list has them (target its
+//       id), what one of ./XrefTargets whatsOf(type); above only
+//       with what in ABOVE_OK (page: 'above' or 'on page N'; with a
+//       number Word adds the words to the number, which ./FieldRef
+//       does not make, and NOTEREF \p would show only the words:
+//       refused, 'what')
+//   ABOVE_OK  (frozen Set) the whats "Include above/below" goes with
+//     The bookmark: for a bookmark target its own name (nothing
+//       added); else a hidden one, '_Ref' + 9 digits (./TocBuild
+//       nextRefName), round the target in the body: a heading's or a
+//       numbered paragraph's text (from its first character that is
+//       not a mark to its last; the paragraph mark left out), a
+//       note's reference mark in the body (Word's: NOTEREF shows what
+//       it shows), and of a caption: the whole paragraph (caption),
+//       its label and number (labelNumber, page, above: up to the end
+//       of its SEQ field, the chapter number included), or its text
+//       after the number (captionText: the spaces and ': . - ' after
+//       the SEQ left out). An existing bookmark with a '_Ref' name
+//       that spans exactly that (only marks besides) is used again;
+//       a new one takes its id from ./Bookmarks nextBookmarkId (the
+//       shared chooser) and is put in directly (its name fails
+//       ./Bookmarks checkName on purpose, as ./TocUpdate's _Toc
+//       ones)
+//     null, nothing changed, with report.reason (report an object, when
+//       given): 'where' (xrefWhy), 'what' (opts not an object, a what
+//       not of the type, above with a what not in ABOVE_OK), 'target'
+//       (no such target, or no text to mark), 'bookmarks' (the bookmark
+//       marks' walk stopped at its limit, or no id free), 'value' (the
+//       result cannot be worked out: a number asked of a paragraph with
+//       none, above or below in a header or footer, a page with no
+//       pages, a bookmark that would hold the reference itself or
+//       another field: report.why the evaluator's reason). Any other
+//       error is not caught (rolled back by d.atomic, then thrown)
+// d is a ./Document (or a facade), sel a ./Selection. Pure: no
+// desktop services.
+import {OBJ} from './Model';
+import {caret} from './Selection';
+import {orderedPos, findBlock} from './EditPos';
+import {cmpPath, topOf} from './Path';
+import {scan} from './FieldScan';
+import {parse} from './FieldParse';
+import {codeText, fieldInlines} from './FieldMake';
+import {putIn} from './InsertApply';
+import {run} from './FieldPasses';
+import {entryOf, evaluate} from './Fields';
+import {planOf} from './FieldPut';
+import {of as bookmarks, inlineKind} from './BookmarkIndex';
+import {marks as bodyMarks} from './BookmarkMarks';
+import {nextBookmarkId} from './Bookmarks';
+import {nextRefName} from './TocBuild';
+import {find as findTarget, whatsOf} from './XrefTargets';
+import {marks as noteMarks} from './NoteNumbers';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+const realOf = (d) => (isObj(d.real) && typeof d.real.apply ===
+  'function' ? d.real : d);
+const NUMBER = {number: '\\r', numberNoContext: '\\n',
+  numberFullContext: '\\w'};
+const REF_WHATS = new Set(['text', 'caption', 'labelNumber',
+  'captionText', 'above', ...Object.keys(NUMBER)]);
+const NAME = /^[^\s"\\\u0000-\u001f\ufffc]{1,255}$/;
+// what follows a caption's number before its text
+const SEP = new Set([' ', '\u00a0', ':', '.', '-', '\u2013', '\u2014']);
+const isNote = (type) => type === 'footnote' || type === 'endnote';
+export const ABOVE_OK = Object.freeze(new Set(['page']));
+
+/** {at, off} of position pos of doc, or null. */
+function where(doc, pos) {
+  const loc = isObj(pos) ? findBlock(doc, pos.id) : null;
+  return loc && Number.isInteger(pos.off) ? {at: loc.at, off: pos.off}
+    : null;
+}
+const cmp = (a, b) => cmpPath(a.at, b.at) || a.off - b.off;
+
+/** Whether place w lies inside a field (after its begin, up to its
+ *  end mark). */
+function inField(doc, w) {
+  return scan(doc).some((f) => !f.simple && cmp(f.begin, w) < 0 &&
+    cmp(w, f.end) <= 0);
+}
+
+/** See the header. */
+export function xrefWhy(d, sel) {
+  if (!isObj(d) || !isObj(d.doc)) return 'There is no document.';
+  const o = isObj(sel) && sel.anchor && sel.head
+    ? orderedPos(d.doc, sel) : null;
+  if (!o) return 'There is no caret in the text.';
+  for (const pos of [o.from, o.to]) {
+    const loc = findBlock(d.doc, pos.id);
+    if (!loc || loc.b.type !== 'p')
+      return 'Put the caret in text first (not by a table or box).';
+    if (inField(d.doc, {at: loc.at, off: pos.off}))
+      return 'Not inside a field: put the caret before or after it.';
+  }
+  return null;
+}
+
+/** See the header. */
+export function codeOf(o) {
+  if (!isObj(o) || typeof o.name !== 'string' || !NAME.test(o.name))
+    return null;
+  const {what} = o;
+  let kind;
+  if (what === 'page') kind = 'PAGEREF';
+  else if (what === 'noteNumber' || what === 'noteNumberFormatted' ||
+    (what === 'above' && isNote(o.type))) kind = 'NOTEREF';
+  else if (REF_WHATS.has(what)) kind = 'REF';
+  else return null;
+  const out = [kind, o.name];
+  if (Object.hasOwn(NUMBER, what)) out.push(NUMBER[what]);
+  if (what === 'noteNumberFormatted') out.push('\\f');
+  if (what === 'above' || o.above === true) out.push('\\p');
+  if (o.hyperlink !== false) out.push('\\h');
+  return out.join(' ');
+}
+
+/** The inline at k of p is a mark (nothing of the text). */
+const isMark = (p, k) => p.text[k] === OBJ && inlineKind(isObj(
+  p.inlines) ? p.inlines[k] : null) === 'ignore';
+
+/** [first, last] offsets of p that are not marks, or null. */
+function contentOf(p) {
+  let a = -1, z = -1;
+  for (let k = 0; k < p.text.length; k++) {
+    if (isMark(p, k)) continue;
+    if (a < 0) a = k;
+    z = k;
+  }
+  return a < 0 ? null : [a, z];
+}
+
+/** The SEQ field of identifier id in paragraph p of doc. */
+function seqIn(doc, p, id) {
+  const want = id.toLowerCase();
+  return scan(doc).find((f) => !f.simple && f.begin.id === p.id &&
+    f.end.id === p.id && /^\s*seq\b/i.test(f.instr) && (() => {
+    const q = parse(f.instr);
+    return q.name === 'SEQ' && q.args.length > 0 &&
+      String(q.args[0]).toLowerCase() === want;
+  })()) || null;
+}
+
+/** The span [a, z) the bookmark of target t (what) takes in doc, as
+ *  {p, at, a, z}; null when there is none. */
+function spanOf(doc, t, type, what) {
+  const loc = findBlock(doc, t.para);
+  if (!loc || loc.story || loc.b.type !== 'p') return null;
+  const p = loc.b, base = {p, at: loc.at};
+  if (isNote(type)) {
+    const m = noteMarks(p).find(({x}) => x.note === t.note.kind &&
+      x.id === t.note.id);
+    return m ? {...base, a: m.off, z: m.off + 1} : null;
+  }
+  const c = contentOf(p);
+  if (!c) return null;
+  if (!type.startsWith('seq:') || what === 'caption')
+    return {...base, a: c[0], z: c[1] + 1};
+  const f = seqIn(doc, p, type.slice(4));
+  if (!f) return null;
+  if (what !== 'captionText') {
+    return {...base, a: c[0], z: Math.max(c[0] + 1, f.end.off + 1)};
+  }
+  let k = f.end.off + 1;
+  while (k <= c[1] && (SEP.has(p.text[k]) || isMark(p, k))) k++;
+  return k > c[1] ? null : {...base, a: k, z: c[1] + 1};
+}
+
+/** The name of a '_Ref' bookmark spanning exactly sp, or null. */
+function reusable(doc, sp) {
+  const idx = bookmarks(doc), {p, a, z} = sp;
+  const only = (lo, hi) => {
+    for (let k = lo; k < hi; k++) if (!isMark(p, k)) return false;
+    return true;
+  };
+  for (const e of idx.list) {
+    if (!/^_ref/i.test(e.name) || e.story !== null || e.inNote ||
+      e.start.id !== p.id || e.end.id !== p.id ||
+      idx.find(e.name) !== e) continue;
+    if (e.start.off <= a && e.end.off >= z && only(e.start.off, a) &&
+      only(z, e.end.off)) return e.name;
+  }
+  return null;
+}
+
+const mark = (local, attrs) => ({kind: 'raw', level: 'p', text: '',
+  node: {name: 'w:' + local, attrs, children: []}});
+const markOp = (at, off, x) => ({op: 'spliceText', block: at, at: off,
+  del: 0, content: {text: OBJ, inlines: {0: x},
+    runs: [{start: 0, end: 1, rPr: {extra: []}}]}});
+
+/** The command's own refusal (nothing else is caught). */
+class Refused extends Error {
+  constructor(reason, why) {
+    super(reason);
+    this.reason = reason;
+    this.why = why || null;
+  }
+}
+
+/** The ctx ./Fields evaluate gets for field f of d (c: the pass's). */
+function evalCtx(d, R, f, e, c) {
+  const story = isStory(d), note = !story && R !== d;
+  const out = {doc: R.doc, now: c.now, path: c.path, meta: c.meta,
+    section: story || note ? d.s : topOf(f.begin.at)[0]};
+  if (e.pageDependent) {
+    const Q = isObj(c.pages) ? c.pages.finish() : null;
+    if (isObj(Q) && Array.isArray(Q.list)) {
+      out.pages = Q;
+      if (story) out.page = c.page;
+      else if (!note && typeof Q.ofPos === 'function') {
+        out.page = Q.list[Q.ofPos({id: f.begin.id, off: f.begin.off})];
+      }
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function insertXref(d, typing, sel, opts, ctx, report) {
+  const no = (reason, why) => {
+    if (isObj(report)) {
+      report.reason = reason;
+      if (why) report.why = why;
+    }
+    return null;
+  };
+  if (!isObj(d) || !isObj(d.doc)) return no('where');
+  if (!isObj(opts)) return no('what');
+  if (xrefWhy(d, sel) !== null) return no('where');
+  const {type, what} = opts;
+  if (!whatsOf(type).some((x) => x.id === what) ||
+    (opts.above === true && !ABOVE_OK.has(what))) return no('what');
+  const R = realOf(d);
+  const t = findTarget(R.doc, type, opts.target);
+  if (!t) return no('target');
+  let name = null, fresh = false;
+  if (type === 'bookmark') name = t.bookmark;
+  else {
+    const sp = spanOf(R.doc, t, type, what);
+    if (!sp) return no('target');
+    name = reusable(R.doc, sp);
+    if (!name) {
+      name = nextRefName(R.doc);
+      fresh = true;
+    }
+  }
+  const code = codeOf({type, name, what, hyperlink: opts.hyperlink,
+    above: opts.above});
+  const text = code && codeText(code);
+  if (!text) return no('target');
+  let begin = null;
+  const put = {name: 'xref', paged: false, run() {
+    const {ins, inlines} = fieldInlines(text);
+    const c = putIn(d, sel, ins, inlines);
+    if (!c || c === sel) throw new Refused('where');
+    begin = {id: c.head.id, off: c.head.off - ins.length};
+    if (fresh) addMarks();
+    return {found: 1, changed: true, messages: []};
+  }};
+  /** The hidden bookmark put in (the document as it is now). */
+  const addMarks = () => {
+    const sp = spanOf(R.doc, t, type, what);
+    if (!sp) throw new Refused('target');
+    const body = bodyMarks(R.doc);
+    if (!body.complete) throw new Refused('bookmarks');
+    const id = nextBookmarkId(R.doc, body);
+    if (id === null) throw new Refused('bookmarks');
+    const n = String(id);
+    R.apply(markOp(sp.at, sp.z, mark('bookmarkEnd', [['w:id', n]])));
+    R.apply(markOp(sp.at, sp.a, mark('bookmarkStart', [['w:id', n],
+      ['w:name', name]])));
+    if (begin.id === sp.p.id) {
+      const k = (begin.off >= sp.a ? 1 : 0) + (begin.off >= sp.z ? 1
+        : 0);
+      begin = {id: begin.id, off: begin.off + k};
+    }
+  };
+  const fieldNow = () => scan(d.doc).find((g) => g.begin.id ===
+    begin.id && g.begin.off === begin.off) || null;
+  const fill = {name: 'xrefFill', paged: true, run(dd, c) {
+    const f = fieldNow();
+    const e = f && entryOf(f);
+    if (!e) throw new Refused('value');
+    const ec = evalCtx(d, R, f, e, c);
+    const v = evaluate(ec, f);
+    if (typeof v !== 'string') {
+      const why = typeof e.why === 'function' ? e.why(ec, f) : null;
+      throw new Refused('value', why);
+    }
+    const plan = planOf(d.doc, f, v);
+    if (!plan) throw new Refused('value', 'result cannot be replaced');
+    if (plan.same) return {found: 1, changed: false, messages: []};
+    for (const op of plan.ops) d.apply(op);
+    return {found: 1, changed: true, messages: []};
+  }};
+  const c0 = isObj(ctx) ? ctx : {};
+  const go = () => run(R, c0, null, {steps: [put, fill]});
+  let res = null;
+  try {
+    res = typing && typeof typing.command === 'function'
+      ? typing.command(go) : go();
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return no(e.reason, e.why);       // (rolled back: nothing changed)
+  }
+  const f = res && res.ok && begin ? fieldNow() : null;
+  if (!f) return no('value');
+  return {sel: caret({id: f.end.id, off: f.end.off + 1}), field: f};
+}

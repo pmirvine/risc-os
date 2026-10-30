@@ -9,7 +9,12 @@
 //       layout L's text for the show of p at off (./LineTokens draws
 //       [from, to) as ONE token): the value under L.fields (below),
 //       or the stored result when there is none (Draft: no page; no
-//       `now`). Recorded per paragraph in L.fshown (Map id -> {p,
+//       `now`) as one token; a keep show (./FieldShows: STYLEREF in
+//       a header or footer) only on a page with its span (L.fields
+//       page, not a body's pageOf) and evaluated in the story view's
+//       host document (./FieldShows hostOf), null with no value (its
+//       stored result drawn as read: a header's height as
+//       before). Recorded per paragraph in L.fshown (Map id -> {p,
 //       key}: key the paged values joined, '' when none), which
 //       ./FieldPass reads. With L.fields.codes (View > Field
 //       codes): a field shown as its code (./FieldCodes codeAt) is
@@ -35,10 +40,18 @@
 //       count: P's once done (./Pages totalsOf), else the last
 //       finished Pages' (D7: the previous count until done); null
 //       when none was finished. Each page as {s}: no Page or Pages
-//   pageOn(pg) -> {num, s, fmt} | null  Page pg's values the page
-//       fields show (frozen, memoised): what a fields context holds
-//       (final fix A C1: a Page kept there keeps its Pages, galley
-//       and DocLayout, whose fields kept the Page before them)
+//   pageOn(pg) -> {num, s, fmt, span} | null  Page pg's values the
+//       page fields show (frozen, memoised): what a fields context
+//       holds (final fix A C1: a Page kept there keeps its Pages,
+//       galley and DocLayout, whose fields kept the Page before
+//       them). span {first, last} (frozen): the ids of the first and
+//       last body paragraph on the page (a paragraph continued from
+//       the page before counts; a table's first and last paragraph
+//       at any depth; notes placed after the text are not body), from
+//       the galley of the ./Pages holding pg (./PageFrames ownerOf)
+//       as it is when first asked; null for a blank page, a page of
+//       no Pages or with no paragraph. A header's or footer's
+//       STYLEREF needs it (./FieldStyleRef)
 //
 // L.fields (./DocLayout's option, carried from prev) = {now, page?,
 // pages?, pageOf?, codes?, shade?}: now the Date volatile fields
@@ -48,12 +61,14 @@
 // codes and shade: ./FieldView's. The editing rules
 // for those ranges: ./FieldEdit. Pure: no desktop services.
 import {scan} from './FieldScan';
-import {computedIn, mayHold, showIndex, work} from './FieldShows';
+import {computedIn, mayHold, showIndex, work, hostOf}
+  from './FieldShows';
 import {plain} from './FieldMarks';
 import {evaluate} from './Fields';
 import {codeAt, inCode} from './FieldCodes';
 import {versionOf} from './DocVersion';
 import {totalsOf} from './Pages';
+import {ownerOf} from './PageFrames';
 import {markText} from './NoteNumbers';
 import {OBJ} from './Model';
 
@@ -61,10 +76,18 @@ export {computedIn, mayHold, work};
 const FRESH = 1024;                    // new records noted one by one
 const isObj = (v) => v !== null && typeof v === 'object';
 
-/** The text show s of p gives under fields context fx. */
+/** The text show s of p gives under fields context fx (null: a keep
+ *  show with no value, its stored result drawn as read). */
 function textOf(doc, p, s, fx) {
   work.evals++;
   let v = null;
+  if (s.keep) {                        // (a story's STYLEREF)
+    const page = isObj(fx) && !(fx.pageOf instanceof Map) ? fx.page
+      : null;
+    return isObj(page) && isObj(page.span) ? evaluate({doc:
+      hostOf(doc) || doc, now: fx.now, page, pages: fx.pages ||
+      undefined}, s.f) : null;
+  }
   if (isObj(fx)) {
     const page = fx.pageOf instanceof Map ? fx.pageOf.get(p.id)
       : fx.page;
@@ -80,8 +103,9 @@ function valuesOf(doc, p, fx) {
   const texts = shows.map((s) => textOf(doc, p, s, fx));
   let key = '', vol = '';
   texts.forEach((t, k) => {
-    if (shows[k].paged) key += '\u0001' + t;
-    else vol += '\u0001' + t;
+    const x = t === null ? '\u0002' : t;
+    if (shows[k].paged) key += '\u0001' + x;
+    else vol += '\u0001' + x;
   });
   return {p, shows, texts, key, vol};
 }
@@ -142,7 +166,8 @@ export function fieldText(L, p, off) {
   const r = recordOf(L, p), k = atOf(r.shows).get(off);
   if (k === undefined) return null;
   const s = r.shows[k];
-  return {from: s.from, to: s.to, text: r.texts[k], b: s.b, e: s.e};
+  return r.texts[k] === null ? null : {from: s.from, to: s.to,
+    text: r.texts[k], b: s.b, e: s.e};
 }
 
 /** See the header. */
@@ -153,14 +178,15 @@ export function storyKey(doc, part, fx) {
   if (!isObj(doc) || typeof part !== 'string') return '';
   const st = doc.stories instanceof Map ? doc.stories.get(part) : null;
   if (!st) return '';
-  const m = showIndex(scan(doc, part));
+  const m = showIndex(scan(doc, part), true);
   if (!m.size) return '';
   let out = '';
   for (const b of st.blocks) {
     const list = b && b.type === 'p' ? m.get(b.id) : null;
     if (!list) continue;
     for (const s of list) {
-      if (s.paged) out += '\u0001' + textOf(doc, b, s, fx);
+      const t = s.paged ? textOf(doc, b, s, fx) : '';
+      if (s.paged) out += '\u0001' + (t === null ? '\u0002' : t);
     }
   }
   return out;
@@ -172,12 +198,56 @@ export const countsOf = (P) => (!isObj(P) ? null : P.done
 
 const ons = new WeakMap();             // Page -> its values
 
+/** a in order, or (back) last first; [] for no array. */
+const ordered = (a, back) => (!Array.isArray(a) ? []
+  : back ? a.slice().reverse() : a);
+
+/** The id of the first (back: last) paragraph in block b, at any
+ *  depth of a table, or null. */
+function paraIn(b, back) {
+  if (!isObj(b)) return null;
+  if (b.type === 'p') return b.id === undefined ? null : b.id;
+  if (b.type !== 'tbl') return null;
+  for (const row of ordered(b.rows, back)) {
+    for (const cell of ordered(isObj(row) ? row.cells : null, back)) {
+      for (const x of ordered(isObj(cell) ? cell.blocks : null,
+        back)) {
+        const id = paraIn(x, back);
+        if (id !== null) return id;
+      }
+    }
+  }
+  return null;
+}
+
+/** The id of a body paragraph of galley item it (not a note's). */
+const idOf = (it, back) => (isObj(it) && !it.en
+  ? paraIn(it.block, back) : null);
+
+/** Page pg's span (see the header), or null. */
+function spanOf(pg) {
+  const P = ownerOf(pg), G = isObj(P) ? P.G : null;
+  const a = pg.start, z = pg.end;
+  if (!isObj(G) || pg.blank || !isObj(a) || !isObj(z)) return null;
+  const items = G.items;
+  const k1 = Math.min(z.line > 0 || z.dy > 0 ? z.k : z.k - 1,
+    items.length - 1);
+  let first = null, last = null;
+  for (let k = a.k; k <= k1 && first === null; k++)
+    first = idOf(items[k], false);
+  for (let k = k1; k >= a.k && last === null; k--)
+    last = idOf(items[k], true);
+  return first === null || last === null ? null
+    : Object.freeze({first, last});
+}
+
 /** See the header. */
 export function pageOn(pg) {
   if (!isObj(pg)) return null;
   let v = ons.get(pg);
   if (!v) {
-    v = Object.freeze({num: pg.num, s: pg.s, fmt: pg.fmt});
+    v = Object.freeze({num: pg.num, s: pg.s, fmt: pg.fmt,
+      span: spanOf(pg)});
     ons.set(pg, v);
   }
   return v;

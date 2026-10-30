@@ -5,21 +5,30 @@
 //   computedIn(doc, p) -> [Show]  the fields of doc (./FieldScan
 //       scan: the body, or a story seen as a one-section doc) whose
 //       result in paragraph p is shown computed: an evaluator that is
-//       page-dependent or volatile (./Fields entryOf), not locked,
+//       page-dependent or volatile (./Fields entryOf; not one with
+//       shown false: PAGEREF; one with shown 'story', STYLEREF, only
+//       when doc is a story's view: hostOf), not locked,
 //       and its result in p (a complex field's separate and end in
 //       p; a fldSimple's own U+FFFC). In text order; frozen, shared.
 //       Found in p alone (./FieldScan paraFields) when every field
 //       mark p holds is of a field that begins and ends in it: a
 //       keystroke there walks no other paragraph (final fix A F2-I2,
 //       D37); else from scan's list (a field crossing paragraphs)
-//   Show {at, from, to, b, e, f, paged}  at: the offset LineTokens
-//       asks at (the separate fldChar's; a fldSimple's own); [from,
-//       to) the result's range (a fldSimple: [at, at + 1)); b the
-//       field's begin offset when the begin is in p, else null; e
+//   Show {at, from, to, b, e, f, paged, keep}  at: the offset
+//       ./LineTokens asks at (the separate fldChar's; a fldSimple's
+//       own); [from, to) the result's range (a fldSimple: [at,
+//       at + 1)); b the field's begin offset when the begin is in p,
+//       else null; e
 //       the end fldChar's offset (a fldSimple: at); f the Field;
-//       paged: its value depends on the page
-//   showIndex(fs) -> Map paragraph id -> [Show]  for the fields fs
-//       (./FieldScan scan's: memoised per list)
+//       paged: its value depends on the page; keep: a 'story' entry
+//       (./FieldShow: computed only on a page with its span, and
+//       with no value its stored result drawn as read)
+//   showIndex(fs, story = false) -> Map paragraph id -> [Show]  for
+//       the fields fs (./FieldScan scan's: memoised per list; story:
+//       they are a header's or footer's)
+//   hostOf(doc) -> the document a story's view doc shows a story of
+//       (doc.storyHost: ./StoryLayout's and ./StoryFacade's views),
+//       or null for any other doc
 //   mayHold(p) -> bool  p holds a w:fldChar or w:fldSimple inline
 //       (no field code is run for a paragraph without: D37)
 //   work  {lists, evals}: Show lists made, values worked out
@@ -33,8 +42,9 @@ export const work = {lists: 0, evals: 0};
 
 const OBJ = '\ufffc';
 const NONE = Object.freeze([]);
-const index = new WeakMap();           // scan result -> Map id -> []
-const owns = new WeakMap();            // paraFields' -> its Shows
+// scan result -> Map id -> [], per story flag
+const index = [new WeakMap(), new WeakMap()];
+const owns = [new WeakMap(), new WeakMap()];  // paraFields' -> Shows
 const isObj = (v) => v !== null && typeof v === 'object';
 const local = (n) => (isObj(n) && typeof n.name === 'string'
   ? n.name.slice(n.name.indexOf(':') + 1) : '');
@@ -50,31 +60,38 @@ export function mayHold(p) {
   return false;
 }
 
-/** The Show of field f, or null (see the header). */
-function showOf(f) {
+/** See the header. */
+export const hostOf = (doc) => (isObj(doc) && isObj(doc.storyHost)
+  ? doc.storyHost : null);
+
+/** The Show of field f, or null (see the header); story: f is in a
+ *  header or footer. */
+function showOf(f, story) {
   if (f.lock) return null;
   const e = entryOf(f);
-  if (!e || !(e.pageDependent || e.volatile)) return null;
-  const paged = !!e.pageDependent;
+  if (!e || e.shown === false || (e.shown === 'story' && !story) ||
+    !(e.pageDependent || e.volatile)) return null;
+  const paged = !!e.pageDependent, keep = e.shown === 'story';
   if (f.simple) {
     const at = f.begin.off;
     return {id: f.begin.id, at, from: at, to: at + 1, b: at, e: at,
-      f, paged};
+      f, paged, keep};
   }
   if (!f.sep || f.sep.id !== f.end.id) return null;
   return {id: f.sep.id, at: f.sep.off, from: f.sep.off + 1,
     to: f.end.off, b: f.begin.id === f.sep.id ? f.begin.off : null,
-    e: f.end.off, f, paged};
+    e: f.end.off, f, paged, keep};
 }
 
 /** See the header. */
-export function showIndex(fs) {
-  let m = index.get(fs);
+export function showIndex(fs, story = false) {
+  const memo = index[story ? 1 : 0];
+  let m = memo.get(fs);
   if (m) return m;
   work.lists++;
   m = new Map();
   for (const f of fs) {
-    const s = showOf(f);
+    const s = showOf(f, story);
     if (!s) continue;
     const list = m.get(s.id);
     if (list) list.push(Object.freeze(s));
@@ -84,21 +101,22 @@ export function showIndex(fs) {
     list.sort((a, b) => a.from - b.from);
     Object.freeze(list);
   }
-  index.set(fs, m);
+  memo.set(fs, m);
   return m;
 }
 
 /** The Shows of paragraph p's own fields fs (memoised). */
-function ownShows(p, fs) {
-  let list = owns.get(fs);
+function ownShows(p, fs, story) {
+  const memo = owns[story ? 1 : 0];
+  let list = memo.get(fs);
   if (!list) {
     const out = [];
     for (const f of fs) {
-      const s = showOf(f);
+      const s = showOf(f, story);
       if (s && s.id === p.id) out.push(Object.freeze(s));
     }
     out.sort((a, b) => a.from - b.from);
-    owns.set(fs, list = out.length ? Object.freeze(out) : NONE);
+    memo.set(fs, list = out.length ? Object.freeze(out) : NONE);
   }
   return list;
 }
@@ -106,7 +124,7 @@ function ownShows(p, fs) {
 /** See the header. */
 export function computedIn(doc, p) {
   if (!isObj(doc) || !mayHold(p)) return NONE;
-  const own = paraFields(p);
-  if (own) return ownShows(p, own);
-  return showIndex(scan(doc)).get(p.id) || NONE;
+  const story = hostOf(doc) !== null, own = paraFields(p);
+  if (own) return ownShows(p, own, story);
+  return showIndex(scan(doc), story).get(p.id) || NONE;
 }

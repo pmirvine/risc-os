@@ -1,0 +1,244 @@
+// HeadingOutline - the headings of the body, in document order: what
+// a table of contents is made of.
+//
+//   of(doc) -> [Heading]  memoised per document state (./DocVersion,
+//       with the styles and numbering of doc). Shared: read only.
+//   levelOf(styles, p) -> 1..9 | 0  the heading level of paragraph p
+//       (0: body text), as of() takes it
+//   paraText(p) -> string  the text of paragraph p as a heading's
+//       `text` is taken (below), for any paragraph
+//   shownText(p, {from?, hidden?}) -> string  the same text from
+//       offset `from` (default 0) on, and with hidden: false (the
+//       default is true: hidden text is kept, as paraText) the
+//       characters of runs with a direct w:vanish left out; cut
+//       [[lo, hi]...] (sorted, offsets inclusive): those characters
+//       left out too
+//   describe(doc) -> (p) => {label, bookmark}  for any paragraph p
+//       of the body (not only a heading): its list number text and
+//       its spanning bookmark, as a Heading has them. Built once
+//       per call (one pass over the bookmarks)
+//
+// Heading {para, path, level, text, label, style, outlineLvl,
+//   bookmark}
+//   para      the paragraph's id; path its ./Path path
+//   level     1..9: Word's outline level + 1. The paragraph's own
+//             outlineLvl wins (0..8 a heading, 9 body text); else
+//             the style chain, the paragraph's style first: a style's
+//             outlineLvl (the same rule), else a style that is
+//             Heading n (its id Heading1..9 or its name 'heading n',
+//             any case: also for translated ids when the name is
+//             English) is level n. A paragraph whose style is not in
+//             the table counts by its id alone. Body text (no level,
+//             or outlineLvl 9) is left out
+//   text      the paragraph's text: a tab or line break as one
+//             space, a link's or simple field's shown text, a
+//             complex field's result as it stands; other inlines
+//             (marks, pictures, field codes) nothing. Headings whose
+//             text is only white space are left out (Word skips
+//             them)
+//   label     the list number text of a numbered heading
+//             (./ListNumbers), '' for none
+//   style     the paragraph's style id (null for none)
+//   outlineLvl  the paragraph's own outlineLvl (null when absent)
+//   bookmark  the name of a bookmark (./BookmarkIndex; the one its
+//             name resolves to) inside this paragraph alone that
+//             holds the whole of the heading's text, a name starting
+//             '_Toc' preferred, else the first; null for none
+//
+// Tables' cell paragraphs are included (Word lists them). Text
+// boxes, headers, footers and notes are not looked at. Pure: no
+// desktop services.
+import {OBJ} from './Model';
+import {forEachBlock} from './Walk';
+import {versionOf} from './DocVersion';
+import {labels} from './ListNumbers';
+import {of as bookmarks} from './BookmarkIndex';
+import {MAX_CHAIN} from './Styles';
+import {inlineText} from './InlineText';
+
+const memo = new WeakMap();
+const levels = new WeakMap();          // styles -> Map pStyle -> lvl
+const NAMED = /^heading ([1-9])$/i;
+const IDENT = /^heading([1-9])$/i;
+const isObj = (v) => v !== null && typeof v === 'object';
+const outline = (v) => (Number.isInteger(v) && v >= 0 && v <= 9
+  ? v : -1);
+
+/** The level (0..9, 9 body) a style gives, or -1. */
+function byStyle(styles, id) {
+  let s = styles && styles.styles instanceof Map &&
+    typeof id === 'string' ? styles.styles.get(id) : undefined;
+  if (!s || s.type !== 'paragraph') {
+    const d = styles && styles.defaults && styles.defaults.paragraph;
+    const m = typeof id === 'string' ? IDENT.exec(id) : null;
+    if (m) return m[1] - 1;
+    s = typeof d === 'string' && styles.styles instanceof Map
+      ? styles.styles.get(d) : undefined;
+  }
+  const seen = new Set();
+  for (let n = 0; s && s.type === 'paragraph' && !seen.has(s.id) &&
+    n < MAX_CHAIN; n++) {
+    seen.add(s.id);
+    const v = outline(s.pPr && s.pPr.outlineLvl);
+    if (v >= 0) return v;
+    const m = NAMED.exec(String(s.name ?? '')) ||
+      IDENT.exec(String(s.id));
+    if (m) return m[1] - 1;
+    s = s.basedOn === undefined || !(styles.styles instanceof Map)
+      ? undefined : styles.styles.get(s.basedOn);
+  }
+  return -1;
+}
+
+/** See the header. */
+export function levelOf(styles, p) {
+  if (!isObj(p) || p.type !== 'p') return 0;
+  const own = outline(p.pPr && p.pPr.outlineLvl);
+  let v = own;
+  if (v < 0) {
+    let m = isObj(styles) ? levels.get(styles) : undefined;
+    if (isObj(styles) && !m) levels.set(styles, m = new Map());
+    const k = p.pStyle === undefined ? null : p.pStyle;
+    v = m ? m.get(k) : undefined;
+    if (v === undefined) {
+      v = byStyle(styles, p.pStyle);
+      if (m) m.set(k, v);
+    }
+  }
+  return v >= 0 && v < 9 ? v + 1 : 0;
+}
+
+/** The run formatting r is w:vanish (direct, not set off). */
+function vanishes(rPr) {
+  for (const n of isObj(rPr) && Array.isArray(rPr.extra)
+    ? rPr.extra : []) {
+    if (!isObj(n) || typeof n.name !== 'string' ||
+      n.name.slice(n.name.indexOf(':') + 1) !== 'vanish') continue;
+    const a = Array.isArray(n.attrs) ? n.attrs.find((x) =>
+      String(x[0]).split(':').pop() === 'val') : null;
+    return !a || !/^(0|false|off)$/i.test(String(a[1]));
+  }
+  return false;
+}
+
+/** The text of p, with the first and last visible offsets (from
+ *  offset `from`; with `skip` the characters of hidden runs are
+ *  left out; `cut` [[lo, hi]...] sorted: those offsets left
+ *  out). */
+function textOf(p, from = 0, skip = false, cut = null) {
+  let out = '', first = -1, last = -1, ri = 0, ci = 0;
+  for (let k = from; k < p.text.length; k++) {
+    if (cut) {
+      while (ci < cut.length && cut[ci][1] < k) ci++;
+      if (ci < cut.length && cut[ci][0] <= k) continue;
+    }
+    if (skip && Array.isArray(p.runs)) {
+      while (ri < p.runs.length && p.runs[ri].end <= k) ri++;
+      if (ri < p.runs.length && vanishes(p.runs[ri].rPr)) continue;
+    }
+    const c = p.text[k];
+    let t = c === '\t' || c === '\n' || c === '\r' ? ' ' : c;
+    if (c === OBJ) {
+      const x = isObj(p.inlines) ? p.inlines[k] : null;
+      if (!isObj(x)) t = '';
+      else if (x.kind === 'tab' || x.kind === 'br') t = ' ';
+      else if (x.kind === 'raw' && x.level === 'p') t = inlineText(x);
+      else t = '';
+    }
+    if (t === '') continue;
+    if (first < 0) first = k;
+    last = k;
+    out += t;
+  }
+  return {text: out, first, last};
+}
+
+/** See the header. */
+export const paraText = (p) => textOf(p).text;
+
+/** See the header. */
+export function shownText(p, {from = 0, hidden = true, cut = null}
+  = {}) {
+  if (!isObj(p) || p.type !== 'p' || typeof p.text !== 'string')
+    return '';
+  const f = Number.isInteger(from) && from > 0 ? from : 0;
+  return textOf(p, f, !hidden, Array.isArray(cut) ? cut : null).text;
+}
+
+/** The bookmarks of the body by paragraph id (those starting in it
+ *  and ending in it, the first of their name). */
+function byPara(doc) {
+  const idx = bookmarks(doc), out = new Map();
+  for (const e of idx.list) {
+    if (e.story !== null || e.inNote || e.end.id !== e.start.id ||
+      idx.byName.get(e.name) !== e) continue;
+    const a = out.get(e.start.id);
+    if (a) a.push(e);
+    else out.set(e.start.id, [e]);
+  }
+  return out;
+}
+
+/** The bookmark name spanning text of p from first to last. */
+function spanning(list, first, last) {
+  let best = null;
+  for (const e of list || []) {
+    if (e.start.off > first || e.end.off <= last) continue;
+    if (e.name.startsWith('_Toc')) return e.name;
+    if (best === null) best = e.name;
+  }
+  return best;
+}
+
+/** The headings of doc (not memoised). */
+function build(doc) {
+  const out = [];
+  const ls = doc.numbering ? labels(doc) : new Map();
+  const bm = byPara(doc);
+  forEachBlock(doc, (b, at) => {
+    if (b.type !== 'p') return true;
+    const level = levelOf(doc.styles, b);
+    if (!level) return true;
+    const {text, first, last} = textOf(b);
+    if (!text.trim()) return true;
+    const lab = ls.get(b.id);
+    out.push({para: b.id, path: [...at], level, text,
+      label: lab && typeof lab.text === 'string' ? lab.text : '',
+      style: b.pStyle === undefined ? null : b.pStyle,
+      outlineLvl: b.pPr && Number.isInteger(b.pPr.outlineLvl)
+        ? b.pPr.outlineLvl : null,
+      bookmark: spanning(bm.get(b.id), first, last)});
+    return true;
+  });
+  return out;
+}
+
+/** See the header. */
+export function describe(doc) {
+  const ls = isObj(doc) && doc.numbering ? labels(doc) : new Map();
+  const bm = byPara(doc);
+  return (p) => {
+    const lab = ls.get(p.id);
+    const {first, last} = textOf(p);
+    return {label: lab && typeof lab.text === 'string' ? lab.text : '',
+      bookmark: first < 0 ? null : spanning(bm.get(p.id), first, last)};
+  };
+}
+
+const same = (a, b) => a.length === b.length &&
+  a.every((x, k) => x === b[k]);
+
+/** See the header. */
+export function of(doc) {
+  if (!isObj(doc) || !Array.isArray(doc.sections)) return [];
+  const ver = versionOf(doc), m = memo.get(doc);
+  if (m && m.ver === ver && m.sections === doc.sections &&
+    m.styles === doc.styles && m.numbering === doc.numbering &&
+    m.stories === doc.stories && m.notes === doc.notes &&
+    same(m.secs, doc.sections)) return m.out;
+  const out = build(doc);
+  memo.set(doc, {ver, sections: doc.sections, styles: doc.styles,
+    numbering: doc.numbering, stories: doc.stories,
+    notes: doc.notes, secs: [...doc.sections], out});
+  return out;
+}

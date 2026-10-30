@@ -31,12 +31,37 @@
 //                         flags clear and the pages unsettled)
 //   clock {now}           the passes' clock (performance.now; tests
 //                         put a slow one in)
+//   nextOf(L, P) -> {fields} | {colW} | {wrap} | null  the next
+//                         layout these passes make for L and its
+//                         Pages P (on every page), in pass's order:
+//                         page fields or footnote numbers (fieldsDue),
+//                         column widths (colPass), wrap (wrapPass);
+//                         null: settled. The passes' own guards
+//                         bound how many they ask for
+//   fieldsDue(L, P) -> fields | null  ./FieldPass passOf, else
+//                         ./NoteHooks notePass (fieldPass's)
+//   settle(doc, base, max = SETTLE_MAX) -> {L, P, n}  doc laid out
+//                         from base {L, P?} (a ./DocLayout from base.L:
+//                         its metrics, width and options, its fields a
+//                         copy; P's pages reused) and paginated as
+//                         Print layout does (./PageHF printGalley,
+//                         all worked out), then nextOf's layouts made
+//                         until none is due (n of them, at most max):
+//                         the pages the window shows once settled,
+//                         worked out at once (./FieldPasses: Update
+//                         all fields reads them). base is only read
+//                         (each layout's field bookkeeping, L.fwork,
+//                         is its own)
+//   SETTLE_MAX            5000: a guard over the passes' own
 //
 // Imports no desktop services.
 import {passOf} from './FieldPass';
 import {notePass} from './NoteHooks';
 import {colPass, mayPass} from './ColPass';
 import {wrapPass, mayWrap} from './WrapPass';
+import {DocLayout} from './DocLayout';
+import {Pages} from './Pages';
+import {printGalley} from './PageHF';
 
 export const SYNC_MS = 40;
 export const clock = {now: () => (typeof performance === 'object'
@@ -54,9 +79,45 @@ export function pass(dw) {
     wrapStep(dw, SYNC_MS);
 }
 
+export const SETTLE_MAX = 5000;
+
+/** See the header. */
+export const fieldsDue = (L, P) => passOf(L, P) || notePass(L, P);
+
+/** See the header. */
+export function nextOf(L, P) {
+  const fields = fieldsDue(L, P);
+  if (fields) return {fields};
+  const colW = colPass(L, P, Infinity);
+  if (colW) return {colW};
+  const wrap = wrapPass(L, P, Infinity);
+  return wrap ? {wrap} : null;
+}
+
+/** See the header. */
+export function settle(doc, base, max = SETTLE_MAX) {
+  const B = base.L, w = B.width;
+  const lay = (prev, opts, Q) => {
+    const L = new DocLayout(doc, B.metrics, prev, opts);
+    L.layout(w);
+    L.fwork = {fresh: new Set(), all: true, n: -1};
+    return {L, P: new Pages(printGalley(L), Q).finish()};
+  };
+  const fx = B.fields && typeof B.fields === 'object'
+    ? {...B.fields} : undefined;
+  let o = lay(B, {fields: fx}, base.P && base.P.G ? base.P
+    : undefined), n = 0;
+  for (; n < max; n++) {
+    const next = nextOf(o.L, o.P);
+    if (!next) break;
+    o = lay(o.L, next, o.P);
+  }
+  return {L: o.L, P: o.P, n};
+}
+
 /** One more layout when page fields are due one (true: made). */
 export function fieldPass(dw) {
-  const fx = passOf(dw.L, dw.pages) || notePass(dw.L, dw.pages);
+  const fx = fieldsDue(dw.L, dw.pages);
   if (fx) dw.newLayout(dw.L.metrics, dw.L, fx);
   return !!fx;
 }

@@ -23,17 +23,32 @@
 //         every child but its w:r kept; the w:rs (only w:rPr and w:t
 //         in each, else null) replaced by runs of the value in the
 //         first one's w:rPr (MERGEFORMAT: per character, as above)
+//     A field with w:dirty on (Word's "update this field") has it
+//     taken off its begin fldChar (or its fldSimple) by the same
+//     plan, so same is false while it is on (cleared on update; it
+//     is only read, never acted on, otherwise)
 //   Plan {at, off, same, ops (the ops of the change in order: path
 //       at), map(pos) -> pos}  same: the value is what is stored
 //       already (nothing to do); off: where the result starts (the
 //       order the plans are applied in: the last first, so each one's
 //       paths and offsets hold when it is applied)
 //
+//   planBlocks(doc, f, blocks, opts?) -> Plan | null  the whole
+//       result of a complex field replaced by blocks (paragraphs,
+//       tables), from ./FieldBlocks (a table of contents)
+//   undirty(doc, f, plan) -> Plan  plan (of field f of doc) that also
+//       takes f's w:dirty off its begin fldChar (a complex field;
+//       ./TocUpdate's plans)
+//   undirtyOp(doc, f) -> op | null  the op that takes w:dirty off
+//       complex field f's begin fldChar (null: no begin inline)
+//
 // The value is plain text: control characters and U+FFFC dropped,
 // tabs and line ends spaces. Pure: no desktop services.
 import {at as blockAt} from './Walk';
 import {parse} from './FieldParse';
 import {midPair} from './ModelCheck';
+
+export {planBlocks} from './FieldBlocks';
 
 const OBJ = '\ufffc';
 const isObj = (v) => v !== null && typeof v === 'object';
@@ -209,6 +224,31 @@ function simpleNode(f, value) {
   return {name: node.name, attrs: node.attrs, children};
 }
 
+/** node's attributes less w:dirty. */
+const clean = (node) => (node.attrs || []).filter((a) =>
+  !(Array.isArray(a) && typeof a[0] === 'string' &&
+    a[0].slice(a[0].indexOf(':') + 1) === 'dirty'));
+
+/** node (a w:fldChar, or a w:r holding one) with w:dirty off. */
+function undirtied(node) {
+  if (local(node) === 'fldChar') return {...node, attrs: clean(node)};
+  return {...node, children: node.children.map((c) =>
+    (local(c) === 'fldChar' ? {...c, attrs: clean(c)} : c))};
+}
+
+/** See the header. */
+export function undirtyOp(doc, f) {
+  const q = blockAt(doc, f.begin.at), k = f.begin.off;
+  const x = q && q.type === 'p' && isObj(q.inlines) ? q.inlines[k]
+    : null;
+  if (!isObj(x) || !isObj(x.node)) return null;
+  const run = runAt(q, k);
+  if (!run) return null;
+  return {op: 'spliceText', block: f.begin.at, at: k, del: 1,
+    content: {text: OBJ, runs: [{start: 0, end: 1, ...fmtOf(run)}],
+      inlines: {0: {...x, node: undirtied(x.node)}}}};
+}
+
 /** The plan of a fldSimple (see the header). */
 function simple(doc, f, value) {
   const q = blockAt(doc, f.begin.at), k = f.begin.off;
@@ -217,7 +257,8 @@ function simple(doc, f, value) {
   if (!isObj(x) || x.node !== f.simple.node) return null;
   const node = simpleNode(f, value);
   if (!node) return null;
-  return {at: f.begin.at, off: k, same: x.text === value,
+  if (f.dirty) node.attrs = clean(node);
+  return {at: f.begin.at, off: k, same: x.text === value && !f.dirty,
     ops: [{op: 'replaceText', block: f.begin.at, at: k, del: 1,
       ins: OBJ, inlines: {0: {...x, node, text: value}}}],
     map: (pos) => pos};
@@ -228,5 +269,14 @@ export function planOf(doc, f, value) {
   if (!isObj(f) || typeof value !== 'string') return null;
   const v = plainValue(value);
   if (f.simple) return simple(doc, f, v);
-  return f.sep ? complex(doc, f, v) : noSep(doc, f, v);
+  const plan = f.sep ? complex(doc, f, v) : noSep(doc, f, v);
+  return plan && f.dirty ? undirty(doc, f, plan) : plan;
+}
+
+/** plan with f's w:dirty taken off its begin too (see the header):
+ *  the begin is before the result and the op keeps its length, so
+ *  the plan's other ops, offsets and map hold. */
+export function undirty(doc, f, plan) {
+  const op = undirtyOp(doc, f);
+  return op ? {...plan, same: false, ops: [...plan.ops, op]} : plan;
 }

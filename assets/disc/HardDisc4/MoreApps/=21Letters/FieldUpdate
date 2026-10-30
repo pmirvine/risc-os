@@ -9,16 +9,37 @@
 //       for the last page): Print layout's (the body layout's
 //       ./Pages), in Draft made for the asking from the same galley
 //       (./PageHF printGalley); in the header and footer mode page:
-//       the mode's page (its story's fields show that page's values)
+//       the mode's page (its story's fields show that page's
+//       values: ./FieldShow pageOn's, with its span); relayout(doc)
+//       -> Pages: doc laid out from the body layout (the last
+//       relayout's after the first) and settled as the window
+//       settles Print layout (./ViewPass settle: the same passes),
+//       for ./FieldPasses; asked only when a page field is to be
+//       worked out again after a change. Nothing here works out the
+//       pages before a page field asks (a document with none never
+//       finishes them). In Outline and Web layout (dw.viewName
+//       'outline', 'web': a galley of other widths, collapsed
+//       headings left out) no pages and no relayout: the page
+//       fields keep their stored results, the tables of contents
+//       their page numbers ('needs Print layout')
 //   updateField(dw) -> bool  the fields at the caret or in the
 //       selection; in the header and footer mode those of its story
-//   updateAll(dw) -> bool  every field of the body; nothing in the
-//       mode (./EditMenu shades the item there)
+//   updateAll(dw) -> bool  every field of the body (./FieldPasses
+//       run: the passes, one step); dw.fieldUpdate {passes, changed,
+//       updated, messages, text} what it did (messages: the fields
+//       left as stored and why; text the one message for the user,
+//       ./FieldPasses summaryText, which ./WinMenu shows, refused
+//       too), else null; nothing in the mode (./EditMenu shades the
+//       item there)
 //   insertField(dw, code) -> bool  Insert > Page number, Number of
 //       pages, Date, Time and the Field box's OK: ./FieldCmd
 //       insertFieldCmd at the selection (in the mode: in its story)
 //   editCode(dw, code) -> bool  the Field box's OK on a field:
 //       ./FieldCmd editCodeCmd
+//   tocCommand(dw, fn) -> bool  fn(d, sel, ctx) -> sel | true |
+//       null run as the commands here are (one command, ctx as for
+//       Update field): the Table of Contents boxes' Insert, Update
+//       and Remove (./TocBox, ./TocCmd with typing null)
 //   All: false and a beep (view.refused) when refused (no field
 //   could be updated, a bad code...); the caret and the selection
 //   move with the text (the selection shown when laid out:
@@ -30,8 +51,11 @@
 //   shows what was stored, even when nothing changed.
 // Imports no desktop services.
 // updateCtx is used inside this module only (not exported).
-import {updateCmd, updateAllCmd, insertFieldCmd, editCodeCmd}
-  from './FieldCmd';
+import {updateCmd, insertFieldCmd, editCodeCmd} from './FieldCmd';
+import {run as passes, summaryText} from './FieldPasses';
+import {tocFields} from './TocUpdate';
+import {pageOn} from './FieldShow';
+import {settle} from './ViewPass';
 import {Pages} from './Pages';
 import {printGalley} from './PageHF';
 import {dropPending} from './EditFormat';
@@ -39,7 +63,11 @@ import {dropPending} from './EditFormat';
 /** See the header. */
 function updateCtx(dw) {
   const v = dw.view;
-  let P = null;
+  if (!paged(dw)) {
+    return {now: new Date(), path: dw.path || undefined,
+      pages: {finish: () => null}, page: undefined};
+  }
+  let P = null, last = null;
   const pages = () => {
     if (!P) {
       const B = v.bodyL;
@@ -53,9 +81,24 @@ function updateCtx(dw) {
     now: new Date(),
     path: dw.path || undefined,
     pages: {finish: pages},
-    get page() { return v.hdr ? pages().at(v.hdr.i) : undefined; },
+    get page() {
+      return v.hdr ? pageOn(pages().at(v.hdr.i)) : undefined;
+    },
+    relayout(doc) {                    // (asked only when due)
+      if (!last) {
+        const B = v.bodyL;
+        last = {L: B, P: B.place && B.place.pages ? B.place.pages
+          : null};
+      }
+      last = settle(doc, last);
+      return last.P;
+    },
   };
 }
+
+/** dw's view can give the pages (Print layout and Draft). */
+const paged = (dw) => dw.viewName !== 'outline' &&
+  dw.viewName !== 'web';
 
 /** fn(d, sel, ctx) run as a command of dw's view: see the header. */
 function run(dw, fn) {
@@ -90,8 +133,21 @@ function stamp(dw, now) {
 export const updateField = (dw) => run(dw, updateCmd);
 
 /** See the header. */
-export const updateAll = (dw) => (dw.view.hdr ? false
-  : run(dw, (d, sel, ctx) => updateAllCmd(d, ctx, sel)));
+export function updateAll(dw) {
+  dw.fieldUpdate = null;
+  if (dw.view.hdr) return false;
+  return run(dw, (d, sel, ctx) => {
+    const r = passes(d, ctx, sel);
+    const noPages = !paged(dw) && tocFields(d.doc).length > 0;
+    dw.fieldUpdate = {passes: r.passes, changed: r.changed,
+      updated: r.updated, messages: r.messages,
+      text: summaryText({...r, noPages})};
+    return r.ok ? r.sel : null;
+  });
+}
+
+/** See the header. */
+export const tocCommand = (dw, fn) => run(dw, fn);
 
 /** See the header. */
 export const insertField = (dw, code) => run(dw,

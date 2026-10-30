@@ -1,0 +1,334 @@
+// CaptionBox - the Caption box (Insert > Caption..., Batch E3), its
+// New Label box and its Numbering box, as Word's. Built by WimpLib
+// Ui/Dialog.
+//
+//   captionBox(dw) -> the box's api, one per document (key
+//       'caption:<docKey>', kept in dw.boxes ('caption') so
+//       ./CloseDoc deletes it with the document); asked again while
+//       it is open, the same box comes to the front, filled again
+//       from the caret. null when the document has no selection
+//
+// The box (./CaptionPatch fill: Word's defaults for what is
+// selected): Label (Figure, Table, Equation, the labels of the
+// document's captions, the labels made before, kept in
+// Choices:Letters: ./CaptionPatch KEY), New Label... (a small box,
+// key 'caplabel:<docKey>', dw.boxes 'caplabel': a label typed,
+// checked (./CaptionCmd labelWhy: the reason in the box and a beep),
+// kept in the choices and chosen in the Label popup; Cancel changes
+// nothing), Position (Above or Below the selected item:
+// a table above, anything else below at first), Exclude label from
+// caption, Numbering... (a second box, key 'capnum:<docKey>',
+// dw.boxes 'capnum': the format, Include chapter number, the
+// heading level the chapter starts with, the separator; its OK keeps
+// them in this box until OK, its Cancel drops the change; it closes
+// with this box and is refused when this box was filled again since
+// it opened), Caption text (after the number: one that starts with a
+// letter or a digit gets a space in front), two message lines.
+// Buttons Cancel and OK. OK puts the caption in (./CaptionCmd
+// insertCaption through ./FieldUpdate tocCommand: one undo step,
+// the later captions numbered again). Refused with a beep, the
+// reason in the box and the box kept: the header and footer mode or
+// the notes mode, a caret where a caption cannot be made
+// (./CaptionCmd captionWhy: inside a field), values ./CaptionPatch
+// patch refuses (no label, a bad label), a chapter
+// number that cannot be worked out (no numbered heading of that
+// level before). If the selection or the document changed while the
+// box was open (./TabsBox where), OK beeps, fills the box again (the
+// fields the user changed kept), says so and keeps it. Cancel,
+// Escape and the close icon change nothing; the caret goes back to
+// the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {fill, patch, labelChoices, savedLabels, addLabel, KEY,
+  FORMATS, SEPARATORS} from './CaptionPatch';
+import {insertCaption, captionWhy, labelWhy} from './CaptionCmd';
+import {tocCommand} from './FieldUpdate';
+import {choiceOf, setChoice} from './WordChoices';
+
+const LINE = 62;
+const FIELDS = ['label', 'position', 'exclude', 'text'];
+const NUM = ['format', 'chapter', 'level', 'separator'];
+const MSG = Object.freeze({
+  hdr: 'Leave the header or footer, or the note, first (Escape): a ' +
+    'caption goes in the body text.',
+  changed: 'The document changed while the box was open: it shows ' +
+    'the values now. Look again, then click OK.',
+  failed: 'The caption could not be made here.',
+  chapter: 'No chapter number: a heading of that level with a list ' +
+    'number must come before the caption.',
+  words: 'No chapter number: the heading\'s number holds words ' +
+    '(such as "Chapter 1"); use a plain number for chapters.',
+  stale: 'The Caption box was filled again: open Numbering... ' +
+    'again.',
+});
+
+const rows = (choices) => [
+  [{kind: 'popup', name: 'label', label: 'Label', w: 220, choices,
+    help: 'The word before the number: Figure, Table, Equation, or ' +
+      'one of your own (New Label...).'},
+  {kind: 'button', name: 'newLabel', text: 'New Label...',
+    help: 'Make a label of your own, such as Plate or Map.'}],
+  {kind: 'radio', name: 'above', group: 'position', value: 'above',
+    text: 'Above selected item', label: 'Position',
+    help: 'The caption goes before the table, picture or paragraph.'},
+  {kind: 'radio', name: 'below', group: 'position', value: 'below',
+    text: 'Below selected item',
+    help: 'The caption goes after the table, picture or paragraph.'},
+  {kind: 'option', name: 'exclude', text: 'Exclude label from ' +
+    'caption', help: 'Only the number, without the label\'s word.'},
+  {kind: 'button', name: 'numbering', text: 'Numbering...',
+    help: 'The numbers\' format, and a chapter number in front.'},
+  {kind: 'text', name: 'text', label: 'Caption text', maxLen: 1024,
+    w: 360, help: 'What follows the number, such as ": A cat".'},
+  {kind: 'label', name: 'msg', text: '', w: 520},
+  {kind: 'label', name: 'msg2', text: '', w: 520},
+];
+const HELP = 'Caption: a numbered caption such as "Figure 1" for the ' +
+  'selected table, picture or paragraph.';
+
+// api -> {at, base, num, numChanged, shown}
+const state = new WeakMap();
+const wired = new WeakSet();
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim();
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+const saved = (dw) => savedLabels(choiceOf(dw.app, KEY));
+const choicesOf = (dw, list = saved(dw)) =>
+  labelChoices(dw.view.d.doc, list);
+
+/** See the header. */
+export function captionBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const choices = choicesOf(dw);
+  const api = dialog({task: dw.app.task, key: `caption:${dw.docKey}`,
+    title: 'Caption', rows: rows(choices), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 560});
+  box(dw, 'caption', () => api.win);
+  if (!wired.has(api)) wire(api, dw);
+  api.choices('label', choices);
+  refill(api, v);
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** Fill from the caret; keep: the fields the user changed kept. */
+function refill(api, v, keep) {
+  const old = state.get(api);
+  const base = fill(v.d.doc, v.hdr ? null : v.sel);
+  const cur = {...base};
+  if (keep && old) {
+    for (const f of FIELDS) {
+      const x = api.get(f);
+      if (x !== old.shown[f]) cur[f] = x;
+    }
+  }
+  const num = {};
+  for (const k of NUM) num[k] = keep && old && old.numChanged
+    ? old.num[k] : base[k];
+  const st = {at: where(v), base, num, shown: {},
+    numChanged: !!(keep && old && old.numChanged)};
+  for (const f of FIELDS) {
+    api.set(f, cur[f]);
+    st.shown[f] = base[f];
+  }
+  state.set(api, st);
+  say(api, '');
+  closeSmall(api);
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg, field) => {
+    wimp.beep();
+    say(api, msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('close', () => {
+    closeSmall(api);
+    if (!dw.closed) v.focus();
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (name === 'numbering') {
+      numberingBox(dw, api);
+      return undefined;
+    }
+    if (name === 'newLabel') {
+      labelBox(dw, api);
+      return undefined;
+    }
+    if (v.hdr) return no(MSG.hdr);
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v, true);
+      return no(MSG.changed);
+    }
+    const why = captionWhy(v.d, v.sel);
+    if (why) return no(why);
+    const values = {...st.num};
+    for (const f of FIELDS) values[f] = api.get(f);
+    const r = patch(values);
+    if (r.error) return no(r.error);
+    const report = {};
+    const done = tocCommand(dw, (d, sel) => {
+      const x = insertCaption(d, null, sel, r.opts, report);
+      return x ? x.sel : null;
+    });
+    if (!done) {                       // (tocCommand beeped once)
+      say(api, report.reason === 'words' ? MSG.words
+        : report.reason === 'chapter' ? MSG.chapter : MSG.failed);
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}
+
+// --- the small boxes ---------------------------------------------
+
+const small = new WeakMap();           // caption api -> [apis]
+
+/** The small boxes of api closed (with it, or when it refills). */
+function closeSmall(api) {
+  for (const o of small.get(api) || []) {
+    if (!o.gone && o.isOpen) o.close();
+  }
+}
+
+/** Keep o as one of parent's small boxes. */
+function own(parent, o) {
+  const list = small.get(parent) || [];
+  if (!list.includes(o)) list.push(o);
+  small.set(parent, list);
+}
+
+const labState = new WeakMap();        // api -> {parent}
+
+/** The New Label box of the Caption box parent. */
+function labelBox(dw, parent) {
+  const api = dialog({task: dw.app.task, key: `caplabel:${dw.docKey}`,
+    title: 'New Label', rows: [
+      {kind: 'text', name: 'name', label: 'Label', maxLen: 40, w: 240,
+        help: 'A word for your captions, such as Plate or Map.'},
+      {kind: 'label', name: 'msg', text: '', w: 360}],
+    help: 'New Label: a label of your own for captions, kept for ' +
+      'next time.', buttons: ['Cancel', 'OK'], enter: 'OK',
+    minW: 380});
+  box(dw, 'caplabel', () => api.win);
+  own(parent, api);
+  if (!labState.has(api)) labWire(api, dw);
+  labState.set(api, {parent});
+  api.set('name', '');
+  api.set('msg', '');
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The handlers of a new New Label box. */
+function labWire(api, dw) {
+  api.on('button', ({name}) => {
+    const o = labState.get(api);
+    if (name === 'Cancel') return undefined;
+    const text = String(api.get('name') ?? '');
+    const why = labelWhy(text);
+    if (why) {
+      wimp.beep();
+      api.set('msg', why);
+      return false;
+    }
+    const list = addLabel(saved(dw), text);
+    setChoice(dw.app, KEY, list);
+    const p = o.parent;
+    if (!p.gone) {
+      const choices = choicesOf(dw, list);
+      p.choices('label', choices);
+      const k = text.trim().toLowerCase();
+      const hit = choices.find((c) => c.text.toLowerCase() === k);
+      if (hit) p.set('label', hit.id);
+    }
+    return undefined;
+  });
+}
+
+const numState = new WeakMap();        // api -> {parent, st}
+const LEVELS = Array.from({length: 9}, (_, k) => ({id: String(k + 1),
+  text: 'Heading ' + (k + 1)}));
+
+/** The Numbering box of the Caption box parent. */
+function numberingBox(dw, parent) {
+  const st = state.get(parent);
+  const api = dialog({task: dw.app.task, key: `capnum:${dw.docKey}`,
+    title: 'Caption Numbering', rows: [
+      {kind: 'popup', name: 'format', label: 'Format', w: 160,
+        choices: FORMATS, help: 'How the numbers are written.'},
+      {kind: 'option', name: 'chapter', text: 'Include chapter number',
+        help: 'The number of the heading before, then a separator: ' +
+          '"Figure 1-1". The headings must have list numbers.'},
+      {kind: 'popup', name: 'level', label: 'Chapter starts with ' +
+        'style', w: 160, choices: LEVELS,
+      help: 'The heading level that starts a chapter.'},
+      {kind: 'popup', name: 'separator', label: 'Use separator',
+        w: 160, choices: SEPARATORS,
+        help: 'What goes between the chapter number and the number.'},
+      {kind: 'label', name: 'msg', text: '', w: 400},
+    ], help: 'Caption Numbering: the format of caption numbers.',
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 420});
+  box(dw, 'capnum', () => api.win);
+  own(parent, api);
+  if (!numState.has(api)) numWire(api);
+  numState.set(api, {parent, st});
+  api.set('format', st.num.format);
+  api.set('chapter', st.num.chapter);
+  api.set('level', String(st.num.level));
+  api.set('separator', st.num.separator);
+  api.set('msg', '');
+  shadeNum(api);
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The chapter's popups shaded without a chapter number. */
+function shadeNum(api) {
+  const on = api.get('chapter') === true;
+  api.shade('level', !on);
+  api.shade('separator', !on);
+}
+
+/** The handlers of a new Numbering box. */
+function numWire(api) {
+  api.on('change', ({name}) => {
+    if (name === 'chapter') shadeNum(api);
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') return undefined;
+    const o = numState.get(api), p = o.parent;
+    if (p.gone || !p.isOpen || state.get(p) !== o.st) {
+      wimp.beep();
+      api.set('msg', MSG.stale);
+      return false;
+    }
+    o.st.num = {format: api.get('format'),
+      chapter: api.get('chapter') === true,
+      level: Number(api.get('level')) || 1,
+      separator: api.get('separator')};
+    o.st.numChanged = true;
+    return undefined;
+  });
+}

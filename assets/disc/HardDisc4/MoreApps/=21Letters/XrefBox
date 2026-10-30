@@ -1,0 +1,206 @@
+// XrefBox - the Cross-reference box (Insert > Cross-reference...,
+// Batch E3), as Word's. Built by WimpLib Ui/Dialog.
+//
+//   xrefBox(dw) -> the box's api, one per document (key
+//       'xref:<docKey>', kept in dw.boxes ('xref') so ./CloseDoc
+//       deletes it with the document); asked again while it is open,
+//       the same box comes to the front, filled again. null when the
+//       document has no selection
+//
+// The box: Reference type (./XrefTargets typesOf: Numbered item,
+// Heading, Bookmark, Footnote, Endnote, then each caption label),
+// Insert reference to (./XrefTargets whatsOf of the type; the first one
+// at first, as Word: Heading text for a heading...), For which (the
+// targets of the type, ./XrefTargets list, each shown by its label, at
+// most MAX_SHOWN), Insert as hyperlink (on at first), Include
+// above/below (only for a page number, ./XrefCmd ABOVE_OK: shaded and
+// off otherwise), two message lines. Changing the type fills the other
+// two popups again. Buttons Cancel and Insert. Insert puts the
+// reference in at the caret (./XrefCmd insertXref through ./FieldUpdate
+// tocCommand: one undo step) and closes the box; in the header and
+// footer mode and the notes mode it goes in that story (a reference is
+// an ordinary field). Refused with a beep, the reason in the box and
+// the box kept: a caret where a field cannot go (./XrefCmd xrefWhy:
+// inside a field), no target of the type, a value that cannot be worked
+// out (a number of a paragraph that has none...). If the selection or
+// the document changed while the box was open (./TabsBox where), Insert
+// beeps, fills the box again (the type, what and target kept when they
+// are still there), says so (that the item is no longer there when the
+// target went) and keeps it. Cancel, Escape and the close icon change
+// nothing; the caret goes back to the document.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {typesOf, whatsOf, list} from './XrefTargets';
+import {insertXref, xrefWhy, ABOVE_OK} from './XrefCmd';
+import {tocCommand} from './FieldUpdate';
+
+const LINE = 62, TEXT_MAX = 60;
+export const MAX_SHOWN = 300;
+const MSG = Object.freeze({
+  changed: 'The document changed while the box was open: it shows ' +
+    'the targets now. Look again, then click Insert.',
+  none: 'There is nothing of this type to refer to.',
+  failed: 'The cross-reference could not be made here.',
+  value: 'That cannot be shown for this item (a number of a ' +
+    'paragraph with none, or above/below here): choose another.',
+  where: 'Not inside a field: put the caret before or after it.',
+  bookmarks: 'No bookmark can be added to this document.',
+  target: 'That item is no longer there: choose another.',
+  what: 'That choice is not available for this item.',
+});
+const NONE = Object.freeze([Object.freeze({id: '', text: '(none)',
+  shaded: true})]);
+
+const rows = () => [
+  [{kind: 'popup', name: 'type', label: 'Reference type', w: 200,
+    choices: NONE, help: 'What the reference points at: a heading, ' +
+      'a numbered paragraph, a bookmark, a note or a caption.'},
+  {kind: 'popup', name: 'what', label: 'Insert reference to', w: 260,
+    choices: NONE, help: 'What the reference shows: the text, the ' +
+      'page number, the number...'}],
+  {kind: 'popup', name: 'target', label: 'For which', w: 460,
+    choices: NONE, help: 'The item the reference points at.'},
+  {kind: 'option', name: 'hyperlink', text: 'Insert as hyperlink',
+    help: 'Clicking the reference goes to the item.'},
+  {kind: 'option', name: 'above', text: 'Include above/below',
+    help: 'After the page or number: "above" or "below", where the ' +
+      'item is from the reference.'},
+  {kind: 'label', name: 'msg', text: '', w: 520},
+  {kind: 'label', name: 'msg2', text: '', w: 520},
+];
+const HELP = 'Cross-reference: a field showing the text, number or ' +
+  'page of a heading, caption, note or bookmark; Update all fields ' +
+  'keeps it right.';
+
+// api -> {at}
+const state = new WeakMap();
+const wired = new WeakSet();
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim();
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+/** The document the targets are in (a mode's: the real one). */
+const docOf = (v) => (v.d.real ? v.d.real.doc : v.d.doc);
+
+/** A label cut for a menu. */
+const cut = (s) => (s.length > TEXT_MAX ? s.slice(0, TEXT_MAX - 3) +
+  '...' : s);
+
+/** The For which choices of type in doc. */
+function targetChoices(doc, type) {
+  const xs = list(doc, type).slice(0, MAX_SHOWN);
+  if (!xs.length) return NONE;
+  const pad = (x) => '  '.repeat(Math.max(0, (x.level || 1) - 1));
+  return xs.map((x) => ({id: x.id,
+    text: cut((pad(x) + x.label).trimEnd() || '(empty)')}));
+}
+
+/** See the header. */
+export function xrefBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `xref:${dw.docKey}`,
+    title: 'Cross-reference', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Insert'], enter: 'Insert', minW: 560});
+  box(dw, 'xref', () => api.win);
+  if (!wired.has(api)) wire(api, dw);
+  refill(api, v, !!state.get(api));
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The what and target popups for the type chosen (keep: their
+ *  values kept when still offered). */
+function fillType(api, v, keep) {
+  const type = api.get('type');
+  const ws = whatsOf(type);
+  const was = api.get('what'), tw = api.get('target');
+  api.choices('what', ws.length ? ws : NONE);
+  api.set('what', keep && ws.some((x) => x.id === was) ? was
+    : ws.length ? ws[0].id : '');
+  const ts = targetChoices(docOf(v), type);
+  api.choices('target', ts);
+  api.set('target', keep && ts.some((x) => x.id === tw) ? tw
+    : ts[0].id);
+  shade(api);
+}
+
+/** Include above/below only for a page or a number. */
+function shade(api) {
+  const ok = ABOVE_OK.has(api.get('what'));
+  api.shade('above', !ok);
+  if (!ok) api.set('above', false);
+}
+
+/** Fill from the document; keep: the choices made kept. */
+function refill(api, v, keep) {
+  const types = typesOf(docOf(v));
+  const t = api.get('type');
+  api.choices('type', types);
+  if (!keep || !types.some((x) => x.id === t)) {
+    api.set('type', 'heading');
+    api.set('hyperlink', true);
+    api.set('above', false);
+  }
+  fillType(api, v, keep);
+  state.set(api, {at: where(v)});
+  say(api, '');
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg) => {
+    wimp.beep();
+    say(api, msg);
+    return false;
+  };
+  api.on('close', () => {
+    if (!dw.closed) v.focus();
+  });
+  api.on('change', ({name}) => {
+    if (name === 'type') fillType(api, v, false);
+    else if (name === 'what') shade(api);
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      const was = api.get('target');
+      if (v.sel) refill(api, v, true);
+      return no(was && api.get('target') !== was ? MSG.target
+        : MSG.changed);
+    }
+    const why = xrefWhy(v.d, v.sel);
+    if (why) return no(why);
+    const target = api.get('target');
+    if (!target) return no(MSG.none);
+    const opts = {type: api.get('type'), what: api.get('what'), target,
+      hyperlink: api.get('hyperlink') !== false,
+      above: api.get('above') === true};
+    const report = {};
+    const done = tocCommand(dw, (d, sel, ctx) => {
+      const x = insertXref(d, null, sel, opts, ctx, report);
+      return x ? x.sel : null;
+    });
+    if (!done) {                       // (tocCommand beeped once)
+      say(api, MSG[report.reason] || MSG.failed);
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}

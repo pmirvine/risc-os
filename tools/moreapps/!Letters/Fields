@@ -2,7 +2,10 @@
 // what a field shows when computed (D18) or updated (D19).
 //
 //   REGISTRY  Map name -> {eval(ctx, f) -> string | null,
-//             pageDependent, volatile}  (frozen entries), Batch D's:
+//             pageDependent, volatile, shown?, why?}  (frozen
+//             entries; why(ctx, f) -> string | null, when there:
+//             the reason eval gives null, ./FieldPasses messages),
+//             Batch D's:
 //     PAGE          ctx.page's number (./Pages: pg.num in the
 //                   section's pgNumType fmt, ./NumFormat)
 //     NUMPAGES      the pages worked out (ctx.pages.count; blank
@@ -25,12 +28,40 @@
 //                   the document has none
 //     NUMWORDS      ./WordCount count(ctx.doc).words (memoised
 //                   per doc.sections at its ./DocVersion)
-//     pageDependent: PAGE NUMPAGES SECTIONPAGES SECTION; volatile:
-//     DATE TIME. The page fields need ctx.page (NUMPAGES ctx.pages)
-//     and are null without (Draft: no pages).
+//     SEQ           ./FieldSeq counters(ctx.doc) for f's begin mark
+//                   (f must be a field of ./FieldScan scan of ctx.doc
+//                   as it now is; null otherwise or when ctx.doc is
+//                   missing: the stored result stays)
+//     REF, NOTEREF  ./FieldRef: the text (or list number) of a
+//                   bookmark; the number of the note mark in one
+//     STYLEREF      ./FieldStyleRef: the text (or number) of the
+//                   nearest paragraph in a style; in a header or
+//                   footer the one on ctx.page (ctx.page.span:
+//                   the first and last body paragraph ids on it,
+//                   ./FieldShow pageOn). Entry property shown:
+//                   ./FieldShows draws a registered field computed
+//                   only when it is page-dependent or volatile and
+//                   shown is not false; shown 'story': only in a
+//                   header or footer, on a page with its span
+//                   (Word refreshes those as it lays out the
+//                   pages). A body STYLEREF changes only on Update
+//                   (nothing recomputes on open)
+//     PAGEREF       ./PageOfBookmark: the number of the page of a
+//                   bookmark's start (ctx.pages, a ./Pages with its
+//                   galley); shown: false (Update only: Word does
+//                   not refresh it on open)
+//     TOC           a table of contents: its whole result is made
+//                   by ./TocUpdate (the TOC step of ./FieldPasses,
+//                   ./TocCmd), never by eval (null); entry property
+//                   block: true (a result of paragraphs: the field
+//                   steps leave it), shown false
+//     pageDependent: PAGE NUMPAGES SECTIONPAGES SECTION STYLEREF
+//     PAGEREF;
+//     volatile: DATE TIME. The page fields need ctx.page (NUMPAGES
+//     ctx.pages) and are null without (Draft: no pages).
 //   evaluate(ctx, f) -> string | null   the text field f (./FieldScan
 //     Field: its instr and lock) shows: null for a locked field, a
-//     name with no evaluator (PAGEREF, TOC, REF, MERGEFIELD, IF, =,
+//     name with no evaluator (TOC, MERGEFIELD, IF, =,
 //     INCLUDETEXT, INCLUDEPICTURE, DDE ...: never evaluated, nothing
 //     fetched or run), an instruction ./FieldParse cannot read, or
 //     a switch that cannot be applied
@@ -42,17 +73,20 @@
 //     path  the document's RISC OS path, or none (never saved)
 // An instruction is parsed once per text (frozen, shared; at most
 // MAX_TEXTS 4096 kept, then the memo starts again).
-// Switches: \# (./FieldFormat formatNumeric) on a number, \@
+// Switches: \# (./FieldFormat numberText) on a number, \@
 // (./FieldDates formatDate) on a date, then every \* (formatGeneral)
 // in order. Pure: no desktop services.
 import {parse} from './FieldParse';
-import {formatGeneral, formatNumeric, hasNumberFormat}
-  from './FieldFormat';
+import {formatGeneral, numberText} from './FieldFormat';
 import {formatDate, coreOf, DATE_PICTURE, TIME_PICTURE,
   STAMP_PICTURE} from './FieldDates';
 import {formatNumber} from './NumFormat';
 import {count} from './WordCount';
 import {versionOf} from './DocVersion';
+import {counters} from './FieldSeq';
+import {REF, NOTEREF} from './FieldRef';
+import {STYLEREF} from './FieldStyleRef';
+import {PAGEREF} from './PageOfBookmark';
 
 const parsed = new WeakMap();
 const words = new WeakMap();
@@ -91,16 +125,7 @@ function argOf(p, sw) {
 }
 
 /** The text of number n (default text def) under p's switches. */
-function numberOut(n, def, p) {
-  if (!Number.isFinite(n)) return null;
-  const pic = argOf(p, '\\#');
-  if (typeof pic === 'string') {
-    const s = formatNumeric(n, pic);
-    return s === null ? null : formatGeneral(s, p.switches);
-  }
-  return formatGeneral(hasNumberFormat(p.switches) ? n : def,
-    p.switches);
-}
+const numberOut = (n, def, p) => numberText(n, def, p.switches);
 
 /** The text of date d (default picture def) under p's switches. */
 function dateOut(d, def, p) {
@@ -179,9 +204,23 @@ function numWords(ctx, p) {
   return numberOut(n, String(n), p);
 }
 
+/** The text of SEQ field f from ./FieldSeq, or null. */
+function seq(ctx, f) {
+  if (!ctx.doc || !f.begin) return null;
+  const s = counters(ctx.doc).get(f.begin);
+  return typeof s === 'string' ? s : null;
+}
+
 const entry = (fn, pageDependent = false, volatile = false) =>
   Object.freeze({eval: (ctx, f) => fn(ctx, parsedOf(f)),
     pageDependent, volatile});
+
+/** An entry whose evaluator takes the field and its parse. */
+const onField = (m, pageDependent = false, shown = true) =>
+  Object.freeze({eval: (ctx, f) => m.eval(ctx, f, parsedOf(f)),
+    why: typeof m.why === 'function'
+      ? (ctx, f) => m.why(ctx, f, parsedOf(f)) : undefined,
+    pageDependent, volatile: false, shown});
 
 export const REGISTRY = new Map([
   ['PAGE', entry(page, true)],
@@ -200,6 +239,15 @@ export const REGISTRY = new Map([
   ['KEYWORDS', entry(prop('keywords'))],
   ['LASTSAVEDBY', entry(prop('lastModifiedBy'))],
   ['NUMWORDS', entry(numWords)],
+  ['SEQ', Object.freeze({eval: seq, pageDependent: false,
+    volatile: false})],
+  ['REF', onField(REF)],
+  ['NOTEREF', onField(NOTEREF)],
+  ['STYLEREF', onField(STYLEREF, true, 'story')],
+  ['PAGEREF', onField(PAGEREF, true, false)],
+  ['TOC', Object.freeze({eval: () => null, why: () => 'a table of ' +
+    'contents is updated as a whole', pageDependent: false,
+  volatile: false, shown: false, block: true})],
 ]);
 
 /** See the header. */

@@ -93,6 +93,10 @@ const AUDIT = {
     ['/^(-?[0-9]+(?:\\.[0-9]+)?)(mm|cm|in|pt|pc|pi)?$/',
       'anchored; a literal . between the digit runs']],
   '!Letters/TblGeo': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
+  '!Letters/TocUpdate': [
+    ['/\\s+/g', 'one run, no suffix: a match consumes it'],
+    ['/^\\s*([0-9]{1,6}|[ivxlcdm]{1,12}|[IVXLCDM]{1,12})\\s*$/',
+      'bounded: at most 40 characters (after an entry\'s last tab)']],
   '!Letters/FieldFormat': [
     ['/^\\s*-?\\d{1,15}\\s*$/',
       'anchored; the runs are split by digits'],

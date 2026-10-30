@@ -406,8 +406,8 @@ try {
     await window.__frames(3);
     return { mode: m && m.kind, shaded, a, b: window.__st(d), items: d.win.menu({}).items.find((i) => i.text === 'Insert').submenu().items.map((i) => i.text) };
   });
-  ok('Insert menu: Page number, Number of pages, Date, Time, Field... after Bookmark...',
-    JSON.stringify(i1.items.slice(-6)) === JSON.stringify(['Bookmark...', 'Page number', 'Number of pages', 'Date', 'Time', 'Field...']), i1.items);
+  ok('Insert menu: Page number, Number of pages, Date, Time, Field... after Table of Contents..., Caption..., Table of Figures..., Cross-reference...',
+    JSON.stringify(i1.items.slice(-9)) === JSON.stringify(['Table of Contents...', 'Caption...', 'Table of Figures...', 'Cross-reference...', 'Page number', 'Number of pages', 'Date', 'Time', 'Field...']), i1.items);
   ok('in the footer mode, Insert > Page number (not shaded) puts a PAGE field after "Foot " in one undo step, the body unchanged',
     i1.mode === 'ftr' && !i1.shaded && i1.b.foot === 'Foot ###1#' && i1.b.depth === i1.a.depth + 1
       && JSON.stringify(i1.b.body) === JSON.stringify(i1.a.body), i1);

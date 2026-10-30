@@ -1,0 +1,193 @@
+// FieldSeq - the numbers of the SEQ fields of a document (Batch E3):
+// what Word shows in 'Figure 1', 'Table 2' captions.
+//
+//   counters(doc) -> Map<begin mark, string>  the text every SEQ
+//       field shows, found in ONE pass in document order and
+//       memoised per document state (./DocVersion; the block lists
+//       of the stories are compared too). Shared: read only.
+//       The key is the begin mark object ({at, off, id}) of the
+//       field as ./FieldScan scan returns it for that state (the
+//       field's own `begin`), so look a field up with
+//       counters(doc).get(f.begin) for a field of scan(doc) or
+//       scan(doc, story) of the same state. A field of no entry
+//       (a switch or format that cannot be applied, no identifier,
+//       a number out of range, a field inside a TOC result) keeps
+//       its stored result
+//
+// SEQ id [bookmark] [switches]: the identifier is the first
+// argument (compared with case ignored, '__proto__' is just a name),
+// each identifier has a counter that starts at 0. A second
+// argument (a bookmark name) is not looked at. Switches:
+//   \n    the next number (the default): the counter plus 1
+//   \c    the counter as it stands (no increment; 0 when the
+//         identifier has not been used before)
+//   \r n  the counter becomes n (0..2^53-1) and this field shows it
+//   \s n  the counter is 0 first if a heading of level n or a
+//         higher-ranked one (a smaller number) lies between the
+//         previous field of this identifier and this one
+//         (./HeadingOutline levels; a heading in the same
+//         paragraph before the field counts)
+//   \h    shows nothing (the empty string) but counts
+//   \* f  ARABIC (the default), ROMAN, roman, ALPHABETIC,
+//         alphabetic (./FieldFormat formatGeneral); other formats
+//         (CardText, Hex ...) and roman or alphabetic in mixed case
+//         (Roman, Alphabetic: Word has been seen to show capitals,
+//         FieldFormat gives lower case, so nothing is guessed), in
+//         any of the field's \* switches, give no entry (the stored
+//         result stays); the field still counts
+// Any other switch gives no entry and no count (the field is left
+// alone). A counter that would pass 2^53-1 gives no entry and
+// starts again at 0. Switch arguments for \c, \n, \h are not looked at.
+//
+// Parts: the body is counted first, headings and all, then each
+// header and footer of doc.stories in its order on its own (as Word
+// counts each part on its own: counters start again at 0 and no
+// heading resets them). Notes are not reached by ./FieldScan, so
+// their SEQ fields are not in the map (stored results stay). Every
+// SEQ field is counted, locked or not (a locked field's stored
+// result is kept by ./Fields), EXCEPT those inside the result of a
+// TOC field: a table of contents is regenerated, so its copies
+// number nothing. Known limit: ./FieldScan sees only the fields of
+// the body's modelled paragraphs and of doc.stories, so a SEQ field
+// inside a w:hyperlink, w:sdt or other kept container, or in a
+// footnote or endnote, is not counted and keeps its stored result;
+// a caption wrapped in such a container therefore throws off the
+// later numbers on Update (Word counts it). Linear in the fields.
+// Pure: no desktop services.
+import {scan} from './FieldScan';
+import {parse} from './FieldParse';
+import {formatGeneral} from './FieldFormat';
+import {of as outline} from './HeadingOutline';
+import {cmpPath} from './Path';
+import {versionOf} from './DocVersion';
+
+const memo = new WeakMap();
+const SEQ = /^\s*seq(\s|\\|$)/i;
+// roman or alphabetic in mixed case (Alphabetic): Word shows capitals
+// but ./FieldFormat takes it as lower case, so no value is computed
+const NAMED = /^(roman|alphabetic)$/i;
+const mixedCase = (a) => NAMED.test(a) && a !== a.toLowerCase() &&
+  a !== a.toUpperCase();
+const TOC = /^\s*toc(\s|\\|$)/i;
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/** Counter state for one part: counters by identifier. */
+class Part {
+  constructor() {
+    this.by = new Map();               // id -> {n, seen}
+    this.tick = 0;                     // headings passed
+    this.last = new Array(10).fill(0); // level -> tick of the last
+  }
+
+  heading(level) {
+    this.last[level] = ++this.tick;
+  }
+
+  /** The text of the field with these arguments, or null. */
+  field(p) {
+    const id = String(p.args[0]).toLowerCase();
+    let mode = 'n', arg = 0, reset = 0, hide = false, mixed = false;
+    for (const s of p.switches) {
+      if (s.sw === '\\*') {
+        mixed = mixed || mixedCase(String(s.arg));
+        continue;
+      }
+      if (s.sw === '\\n') continue;
+      if (s.sw === '\\c') mode = 'c';
+      else if (s.sw === '\\h') hide = true;
+      else if (s.sw === '\\r' || s.sw === '\\s') {
+        const k = Number(s.arg);
+        if (typeof s.arg !== 'string' || !/^\d{1,16}$/.test(s.arg) ||
+          !Number.isSafeInteger(k)) return null;
+        if (s.sw === '\\r') {
+          mode = 'r';
+          arg = k;
+        } else if (k >= 1 && k <= 9) reset = k;
+        else return null;
+      } else return null;
+    }
+    let c = this.by.get(id);
+    if (!c) this.by.set(id, c = {n: 0, seen: 0});
+    if (reset) {
+      let t = 0;
+      for (let l = 1; l <= reset; l++) t = Math.max(t, this.last[l]);
+      if (t > c.seen) c.n = 0;
+    }
+    c.seen = this.tick;
+    if (mode === 'r') c.n = arg;
+    else if (mode === 'n') c.n++;
+    if (!Number.isSafeInteger(c.n)) {
+      c.n = 0;
+      return null;
+    }
+    if (hide) return '';
+    if (mixed) return null;
+    return formatGeneral(c.n, p.switches);
+  }
+}
+
+const parsed = new Map();
+
+/** The parse of instruction text, kept for repeats. */
+function parsedOf(instr) {
+  let p = parsed.get(instr);
+  if (!p) {
+    if (parsed.size >= 4096) parsed.clear();
+    parsed.set(instr, p = parse(instr));
+  }
+  return p;
+}
+
+/** The descendants of every TOC field in fs, as a Set. */
+function inToc(fs) {
+  const out = new Set();
+  const stack = [];
+  for (const f of fs) if (TOC.test(f.instr)) stack.push(...f.children);
+  while (stack.length) {
+    const f = stack.pop();
+    if (out.has(f)) continue;
+    out.add(f);
+    stack.push(...f.children);
+  }
+  return out;
+}
+
+/** Number the SEQ fields of fs (headings hs, in order, or none). */
+function number(fs, hs, out) {
+  const part = new Part();
+  const skip = inToc(fs);
+  let h = 0;
+  for (const f of fs) {
+    while (h < hs.length && cmpPath(hs[h].path, f.begin.at) <= 0)
+      part.heading(hs[h++].level);
+    if (!SEQ.test(f.instr) || skip.has(f)) continue;
+    const p = parsedOf(f.instr);
+    if (p.name !== 'SEQ' || !p.args.length) continue;
+    const s = part.field(p);
+    if (s !== null) out.set(f.begin, s);
+  }
+}
+
+/** The part lists of doc: [fields, headings] pairs. */
+function partsOf(doc) {
+  const out = [[scan(doc), outline(doc)]];
+  if (doc.stories instanceof Map) {
+    for (const name of doc.stories.keys())
+      out.push([scan(doc, name), []]);
+  }
+  return out;
+}
+
+/** See the header. */
+export function counters(doc) {
+  if (!isObj(doc)) return new Map();
+  const v = versionOf(doc), m = memo.get(doc);
+  const parts = partsOf(doc);
+  if (m && m.v === v && m.parts.length === parts.length &&
+    m.parts.every((x, k) => x[0] === parts[k][0] &&
+      x[1] === parts[k][1])) return m.map;
+  const map = new Map();
+  for (const [fs, hs] of parts) number(fs, hs, map);
+  memo.set(doc, {v, parts, map});
+  return map;
+}

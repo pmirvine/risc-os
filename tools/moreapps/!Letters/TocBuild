@@ -1,0 +1,500 @@
+// TocBuild - the entries of a table of contents (or of figures) and
+// the paragraphs that show them (Batch E3). Pure: no desktop
+// services; the document is only read, the blocks are new.
+//
+//   entries(doc, sw, ctx) -> [Entry] | null  the paragraphs sw (a
+//       ./TocSwitches parse) asks for, in document order; ctx
+//       {pages} gives the page numbers (./PageOfBookmark; without
+//       pages every page is null). null: sw names a bookmark (\b)
+//       that is not in the body (the stored result is kept)
+//   blocks(doc, entries, sw, opts?) -> {blocks, bookmarksToAdd,
+//       stylesNeeded}  one paragraph per entry, as Word writes
+//       them, or ONE plain paragraph 'No table of contents entries
+//       found.' ('No table of figures entries found.' for \c and
+//       \a) when there are none: never an empty list
+//   nextTocName(doc, taken?) -> '_Toc' + 9 digits  a name no bookmark
+//       of doc (body, headers, footers, notes: case ignored) and no
+//       name of the Set `taken` has
+//   nextRefName(doc, taken?) -> '_Ref' + 9 digits  the same for the
+//       hidden bookmarks of cross-references (./XrefCmd)
+//
+// Entry {level, text, label, bookmark, para, page}
+//   level     1..9: the heading's level; 1 for a caption
+//   text      the heading's text: tabs and line breaks one space,
+//             pictures and field codes nothing, a link's or field's
+//             result as shown, hidden text (a direct w:vanish)
+//             left out (Word leaves it out: to check in real Word);
+//             of a caption the whole paragraph, or with \a what
+//             follows the SEQ field. Entries with no text are left
+//             out
+//   label     the list number text of a numbered heading, else ''
+//   bookmark  the name of a bookmark holding the whole text, or null
+//   para      the paragraph's id
+//   page      the page number text in its page's format (the page of
+//             the bookmark, else of the paragraph's first line), null
+//             without pages
+// Which paragraphs: with \o the paragraphs whose style is Heading n
+// (the style's own name or id, not its parents) for n in the range;
+// \u the ones with an outline level in the range (the paragraph's
+// own, else its style's: ./HeadingOutline levelOf); \t the ones of
+// the styles named, at the levels given (names compared with case
+// ignored; the style's id or its name); none of the three: Heading 1
+// to 9. \c / \a: the paragraphs with a SEQ field of that identifier
+// (case ignored) in the body. \b: only paragraphs from the bookmark's
+// first to its last paragraph. A paragraph inside a TOC field's
+// result (from the paragraph with its separate to the one with its
+// end) is never an entry.
+//
+// Blocks: for Entry e, in TOC n (TableofFigures for \c and \a), as
+// Word 2013 writes it (corpus: the real TOCs of Complex01.docx,
+// complex2005_12rtm.docx, bookmark.docx):
+//
+//   w:pPr  pStyle TOCn; tabs: a left stop at 440 twips a level when
+//          the entry is numbered, a right stop at opts.tabPos with
+//          opts.leader ('dot' default, 'hyphen', 'underscore',
+//          'none') when it shows a page number; the mark's w:rPr
+//          has w:noProof
+//   with \h one level-'p' raw inline, a w:hyperlink w:anchor="_Toc"
+//   w:history="1" holding runs, text OBJ + the hyperlink:
+//     [label run, tab run,] text run   rStyle Hyperlink, noProof
+//     tab run                          noProof, webHidden
+//     fldChar begin, instrText " PAGEREF _Toc... \h ", an empty run,
+//     fldChar separate, the page number, fldChar end
+//                                      each run noProof, webHidden
+//   without \h the same runs directly in the paragraph (a tab is a
+//   tab character, the four field marks level 'r' raw inlines): Word
+//   writes the PAGEREF with its \h either way (corpus: a TOC with no
+//   \h in bookmark.docx). \p replaces the tab by the separator text;
+//   no page number (\n, by level): no tab, no PAGEREF; \z changes
+//   nothing stored. The page number is the entry's page, nothing
+//   when null (the update of PAGEREF fields fills it in).
+// opts {tabPos (twips, default 9026), leader}. stylesNeeded: the
+// standard ids of the styles the document LACKS, for ./StyleCmd
+// ensureBuiltin ('TOC1'..., 'Hyperlink' with \h, 'TableofFigures').
+// The styles are found by NAME (styleIdByName: 'toc 1', 'table of
+// figures', 'Hyperlink'; case ignored), so a document that calls them
+// by other ids (10, a3...) has its own used in pStyle and rStyle and
+// nothing needed; 'Contents 1' (LibreOffice) is not 'toc 1' to Word
+// and counts as missing. When a style of a different name has the
+// standard id, that id is used and {id, name} is put in `conflicts`.
+// bookmarksToAdd [{paraId, name}]: a
+// heading with no spanning '_Toc' bookmark gets a new name here for
+// the caller to put round its text; a heading that has one keeps it.
+//
+// bookmarksToAdd carries {paraId, name} only: the command adds them as
+// HIDDEN bookmarks (the names fail ./Bookmarks checkName's leading-
+// letter rule, so they do not go through it), ids from the shared
+// bookmark-id chooser. entries returns null when \b names a bookmark
+// that is not in the body: the stored result is kept.
+//
+// The caller's contract (./FieldBlocks planBlocks, first 'take'):
+// the field's begin, code and separate stay in the paragraph that
+// holds them; blocks[0] is joined after the separate (its pPr and
+// style become that paragraph's), the rest follow, the end stays in
+// its paragraph. The blocks are valid ./ModelCheck checkBlock blocks.
+import {OBJ, newPara} from './Model';
+import {forEachBlock} from './Walk';
+import {scan} from './FieldScan';
+import {parse as parseField} from './FieldParse';
+import {of as bookmarksOf} from './BookmarkIndex';
+import {marks, storyMarks, noteMarks} from './BookmarkMarks';
+import {levelOf, shownText, describe} from './HeadingOutline';
+import {pageOf} from './PageOfBookmark';
+import {formatNumber} from './NumFormat';
+import {display} from './StyleName';
+import {W} from './Wml';
+
+export const BASE = 100000000, TAB_DEFAULT = 9026, TAB_MAX = 31680;
+const isObj = (v) => v !== null && typeof v === 'object';
+const NAMED = /^heading ([1-9])$/i;
+const IDENT = /^heading([1-9])$/i;
+const lower = (s) => String(s).toLowerCase();
+const clamp9 = (n) => (Number.isFinite(n)
+  ? Math.min(9, Math.max(1, Math.trunc(n))) : 1);
+
+// --- names ------------------------------------------------------
+
+/** The generator of fresh names prefix + 9 digits ('_Toc', '_Ref')
+ *  for doc (see the header). */
+function namer(doc, taken, prefix = '_Toc') {
+  const have = new Set(), low = lower(prefix);
+  let max = 0;
+  const see = (n) => {
+    if (typeof n !== 'string') return;
+    have.add(lower(n));
+    const l = lower(n);
+    const m = l.startsWith(low) ? /^(\d{1,9})$/.exec(l.slice(
+      low.length)) : null;
+    if (m && Number(m[1]) > max) max = Number(m[1]);
+  };
+  if (isObj(doc) && Array.isArray(doc.sections)) {
+    for (const e of bookmarksOf(doc).list) see(e.name);
+    for (const list of [marks(doc), storyMarks(doc), noteMarks(doc)]) {
+      for (const m of list) if (m.kind === 'start') see(m.name);
+    }
+  }
+  if (taken && typeof taken[Symbol.iterator] === 'function')
+    for (const n of taken) see(n);
+  let last = max;
+  return {next() {
+    let n = last + 1;
+    if (n < BASE + 1 || n > 999999999) n = BASE + 1;
+    while (have.has(low + n)) n = n >= 999999999 ? BASE + 1 : n + 1;
+    last = n;
+    have.add(low + n);
+    return prefix + n;
+  }};
+}
+
+/** See the header. */
+export const nextTocName = (doc, taken) => namer(doc, taken).next();
+
+/** See the header. */
+export const nextRefName = (doc, taken) => namer(doc, taken, '_Ref')
+  .next();
+
+// --- entries ----------------------------------------------------
+
+/** The Heading n level a paragraph style id is (its own name or
+ *  id), else 0. */
+function headingLevel(styles, id) {
+  if (typeof id !== 'string') return 0;
+  const s = isObj(styles) && styles.styles instanceof Map
+    ? styles.styles.get(id) : undefined;
+  const m = s && s.type === 'paragraph'
+    ? NAMED.exec(String(s.name ?? '')) || IDENT.exec(id)
+    : IDENT.exec(id);
+  return m ? Number(m[1]) : 0;
+}
+
+const tableOf = (doc) => (isObj(doc) && isObj(doc.styles) &&
+  doc.styles.styles instanceof Map ? doc.styles.styles : new Map());
+
+/** The id of the style of doc called `name` (trimmed, case ignored:
+ *  Word knows its built-ins by name, a document in another language
+ *  or a converted one gives them other ids), of `type` when given
+ *  ('paragraph', 'character'); null for none. */
+export function styleIdByName(doc, name, type) {
+  const want = lower(String(name).trim());
+  for (const s of tableOf(doc).values()) {
+    if (isObj(s) && (!type || s.type === type) &&
+      typeof s.name === 'string' && lower(s.name.trim()) === want)
+      return s.id;
+  }
+  return null;
+}
+
+/** The lower-case keys a paragraph style is called by. */
+function keysOf(styles, id) {
+  const out = [lower(id)];
+  const s = isObj(styles) && styles.styles instanceof Map
+    ? styles.styles.get(id) : undefined;
+  if (s && typeof s.name === 'string') {
+    out.push(lower(s.name), lower(display(s)));
+  }
+  return out;
+}
+
+const within = (r, n) => !!r && n >= r[0] && n <= r[1];
+
+/** The field code starts with the word `name` (case ignored). */
+function isCode(instr, name) {
+  const t = String(instr).trimStart();
+  return t.slice(0, name.length).toUpperCase() === name &&
+    !/\w/.test(t.charAt(name.length));
+}
+
+/** Paragraph id -> the begin (+1) and end (-1) marks of TOC fields
+ *  in it, [{off, d}] by offset. */
+function tocSpans(doc) {
+  const out = new Map();
+  const add = (m, d) => {
+    const a = out.get(m.id);
+    if (a) a.push({off: m.off, d});
+    else out.set(m.id, [{off: m.off, d}]);
+  };
+  for (const f of scan(doc)) {
+    if (!isCode(f.instr, 'TOC') || f.simple) continue;
+    add(f.begin, 1);
+    add(f.end, -1);
+  }
+  for (const a of out.values()) a.sort((x, y) => x.off - y.off);
+  return out;
+}
+
+/** Paragraph id -> where its first SEQ id field ends (offset). */
+function seqParas(doc, id) {
+  const out = new Map(), want = lower(id);
+  for (const f of scan(doc)) {
+    if (!isCode(f.instr, 'SEQ')) continue;
+    const q = parseField(f.instr);
+    if (q.name !== 'SEQ' || !q.args.length ||
+      lower(q.args[0]) !== want) continue;
+    if (!out.has(f.begin.id))
+      out.set(f.begin.id, f.end.id === f.begin.id ? f.end.off + 1 : -1);
+  }
+  return out;
+}
+
+const isPages = (P) => isObj(P) && Array.isArray(P.list) &&
+  typeof P.ofPos === 'function';
+
+/** The page number text of entry e, or null. */
+function pageText(doc, P, e) {
+  try {
+    let at = null;
+    if (e.bookmark !== null) at = pageOf({doc, pages: P}, e.bookmark);
+    if (!at) {
+      const pg = P.list[P.ofPos({id: e.para, off: 0})];
+      at = isObj(pg) ? pg : null;
+    }
+    return at ? formatNumber(at.num, at.fmt) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+/** See the header. */
+export function entries(doc, sw, ctx) {
+  if (!isObj(doc) || !Array.isArray(doc.sections) || !isObj(sw))
+    return [];
+  const styles = doc.styles;
+  const capOnly = typeof sw.captionsOnly === 'string';
+  const figId = capOnly ? sw.captionsOnly : sw.seqId;
+  const figures = typeof figId === 'string';
+  const seqs = figures ? seqParas(doc, figId) : null;
+  const tmap = new Map();
+  for (const t of Array.isArray(sw.styles) ? sw.styles : []) {
+    if (!tmap.has(lower(t.style))) tmap.set(lower(t.style), t.level);
+  }
+  const useO = sw.levels !== null || (!sw.outline && !tmap.size);
+  const range = sw.levels || [1, 9];
+  const spans = tocSpans(doc);
+  const info = describe(doc);
+  let bm = null, i0 = -1, i1 = -1;
+  if (typeof sw.bookmark === 'string') {
+    bm = bookmarksOf(doc).find(sw.bookmark);
+    if (!bm || bm.story !== null || bm.inNote) return null;
+  }
+  const out = [];
+  let depth = 0, idx = 0;
+  forEachBlock(doc, (b) => {
+    if (b.type !== 'p') return true;
+    const k = idx++;
+    if (bm) {
+      if (b.id === bm.start.id && i0 < 0) i0 = k;
+      if (b.id === bm.end.id && i1 < 0) i1 = k;
+    }
+    // the characters inside a TOC field (code and result): the
+    // text outside it is the body's, a heading there is an entry
+    let cut = null;
+    const ev = spans.get(b.id);
+    if (depth > 0 || ev) {
+      cut = [];
+      let from = depth > 0 ? 0 : -1;
+      for (const e of ev || []) {
+        if (e.d > 0) {
+          if (depth === 0) from = e.off;
+          depth++;
+        } else if (depth > 0 && --depth === 0) {
+          cut.push([from, e.off]);
+          from = -1;
+        }
+      }
+      if (depth > 0) cut.push([from, b.text.length]);
+    }
+    let level = 0, from = 0;
+    if (figures) {
+      if (!seqs.has(b.id)) return true;
+      level = 1;
+      if (capOnly) {
+        from = seqs.get(b.id);
+        if (from < 0) return true;
+      }
+    } else {
+      if (tmap.size && typeof b.pStyle === 'string') {
+        for (const key of keysOf(styles, b.pStyle)) {
+          if (tmap.has(key)) {
+            level = tmap.get(key);
+            break;
+          }
+        }
+      }
+      if (!level && useO) {
+        const n = headingLevel(styles, b.pStyle);
+        if (within(range, n)) level = n;
+      }
+      if (!level && sw.outline) {
+        const n = levelOf(styles, b);
+        if (within(range, n)) level = n;
+      }
+    }
+    if (!level) return true;
+    const text = shownText(b, {from, hidden: false, cut}).trim();
+    if (!text) return true;
+    const x = info(b);
+    out.push({level, text, label: figures ? '' : x.label,
+      bookmark: x.bookmark, para: b.id, page: null, k});
+    return true;
+  });
+  let list = out;
+  if (bm) {
+    if (i0 < 0 || i1 < 0) return null;
+    list = out.filter((e) => e.k >= i0 && e.k <= i1);
+  }
+  const P = ctx && isPages(ctx.pages) ? ctx.pages : null;
+  for (const e of list) {
+    delete e.k;
+    if (P) e.page = pageText(doc, P, e);
+  }
+  return list;
+}
+
+// --- blocks -----------------------------------------------------
+
+const SPACE = [['xml:space', 'preserve']];
+const BAD = /[\u0000-\u001f\u007f-\u009f]/g;
+const ODD = /[\ufffc\u2028\u2029\ufffe\uffff]/g;
+
+/** Text made safe for a w:t and the model. */
+function safe(s) {
+  const t = typeof s === 'string'
+    ? s.replace(BAD, ' ').replace(ODD, ' ') : '';
+  return t.isWellFormed ? t.toWellFormed() : t;
+}
+
+const needsSpace = (s) => s !== s.trim() || s.includes('  ');
+const tNode = (s) => W('t', needsSpace(s) ? SPACE : null, s);
+const rPr = (link, hidden) => W('rPr', null,
+  link ? W('rStyle', {'w:val': link}) : null, W('noProof'),
+  hidden ? W('webHidden') : null);
+const run = (link, hidden, ...kids) => W('r', null,
+  rPr(link, hidden), ...kids);
+const mark = (type) => W('fldChar', {'w:fldCharType': type});
+const raw = (node) => ({kind: 'raw', level: 'r', node});
+
+/** True when entry e is usable. */
+const usable = (e) => isObj(e) && typeof e.text === 'string' &&
+  safe(e.text).trim() !== '';
+
+/** The paragraph of entry e (all strings already made safe). */
+function entryPara(e, sw, o, anchor, style) {
+  const level = clamp9(e.level);
+  const label = safe(e.label), text = safe(e.text).trim();
+  const page = e.page === null || e.page === undefined ? ''
+    : safe(String(e.page));
+  const pages = !(sw.noPageLevels && within(sw.noPageLevels, level));
+  const sep = pages && typeof sw.separator === 'string'
+    ? safe(sw.separator) : null;
+  const tabs = [];
+  if (label && 440 * level < o.tabPos)
+    tabs.push({val: 'left', pos: 440 * level});
+  if (pages && sep === null) {
+    tabs.push(o.leader ? {val: 'right', pos: o.tabPos,
+      leader: o.leader} : {val: 'right', pos: o.tabPos});
+  }
+  const pPr = {extra: [W('rPr', null, W('noProof'))]};
+  if (tabs.length) pPr.tabs = tabs;
+  const instr = W('instrText', SPACE, ` PAGEREF ${anchor} \\h `);
+  const opts = {pStyle: style, pPr};
+  if (sw.hyperlinks) {
+    const kids = [];
+    if (label) kids.push(run(o.link, false, tNode(label)),
+      run(false, false, W('tab')));
+    kids.push(run(o.link, false, tNode(text)));
+    if (pages) {
+      if (sep === null) kids.push(run(false, true, W('tab')));
+      else if (sep) kids.push(run(false, true, tNode(sep)));
+      kids.push(run(false, true, mark('begin')),
+        run(false, true, instr), run(false, true),
+        run(false, true, mark('separate')));
+      if (page) kids.push(run(false, true, tNode(page)));
+      kids.push(run(false, true, mark('end')));
+    }
+    const node = W('hyperlink', [['w:anchor', anchor],
+      ['w:history', '1']], ...kids);
+    const shown = label + text + (pages ? (sep || '') + page : '');
+    return newPara(OBJ, {...opts, inlines: {0: {kind: 'raw',
+      level: 'p', node, text: shown}}});
+  }
+  // the same runs directly in the paragraph
+  let s = (label ? label + '\t' : '') + text;
+  const inlines = {}, hid = [];
+  const at = s.length;
+  if (pages) {
+    if (sep === null) s += '\t';
+    else s += sep;
+    const field = [mark('begin'), instr, mark('separate')];
+    for (const n of field) {
+      inlines[s.length] = raw(n);
+      s += OBJ;
+    }
+    s += page;
+    inlines[s.length] = raw(mark('end'));
+    s += OBJ;
+    hid.push(at);
+  }
+  const runs = [{start: 0, end: at, rPr: {extra: [W('noProof')]}}];
+  if (hid.length) runs.push({start: at, end: s.length,
+    rPr: {extra: [W('noProof'), W('webHidden')]}});
+  return newPara(s, {...opts, runs, inlines});
+}
+
+/** See the header. */
+export function blocks(doc, list, sw, opts) {
+  const es = (Array.isArray(list) ? list : []).filter(usable);
+  const fig = isObj(sw) && (typeof sw.seqId === 'string' ||
+    typeof sw.captionsOnly === 'string');
+  if (!isObj(sw)) sw = {};
+  if (!es.length) {
+    return {blocks: [newPara(`No table of ${fig ? 'figures'
+      : 'contents'} entries found.`)], bookmarksToAdd: [],
+    stylesNeeded: []};
+  }
+  const op = isObj(opts) ? opts : {};
+  const tabPos = Number.isInteger(op.tabPos) && op.tabPos > 0
+    ? Math.min(op.tabPos, TAB_MAX) : TAB_DEFAULT;
+  const leader = op.leader === 'none' ? null
+    : ['hyphen', 'underscore'].includes(op.leader) ? op.leader : 'dot';
+  const o = {tabPos, leader, link: null};
+  const names = namer(doc, null), add = [], made = new Map();
+  const needStyles = [], conflicts = [], ids = new Map();
+  // a style by its NAME (whatever its id), else the standard id:
+  // listed as needed when nothing has that id, a conflict when
+  // another style has it
+  const style = (id, name, type) => {
+    if (ids.has(id)) return ids.get(id);
+    let got = styleIdByName(doc, name, type);
+    if (got === null) {
+      got = id;
+      if (tableOf(doc).has(id)) conflicts.push({id, name});
+      else needStyles.push(id);
+    }
+    ids.set(id, got);
+    return got;
+  };
+  if (sw.hyperlinks) o.link = style('Hyperlink', 'Hyperlink',
+    'character');
+  const out = [];
+  for (const e of es) {
+    const level = clamp9(e.level);
+    const pStyle = fig ? style('TableofFigures', 'table of figures',
+      'paragraph') : style('TOC' + level, 'toc ' + level, 'paragraph');
+    const linked = sw.hyperlinks === true ||
+      !(sw.noPageLevels && within(sw.noPageLevels, level));
+    let anchor = typeof e.bookmark === 'string' &&
+      e.bookmark.toLowerCase().startsWith('_toc') ? e.bookmark
+      : made.get(e.para);
+    if (anchor === undefined && !linked) anchor = '';
+    else if (anchor === undefined) {
+      anchor = names.next();
+      made.set(e.para, anchor);
+      add.push({paraId: e.para, name: anchor});
+    }
+    out.push(entryPara(e, sw, o, anchor, pStyle));
+  }
+  const k = needStyles.indexOf('Hyperlink');
+  if (k >= 0) needStyles.push(...needStyles.splice(k, 1));
+  return {blocks: out, bookmarksToAdd: add, stylesNeeded: needStyles,
+    conflicts};
+}

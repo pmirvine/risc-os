@@ -1,0 +1,156 @@
+// FieldParas - the body's paragraphs in order, with their list
+// numbers: what the cross-reference fields (REF, NOTEREF, STYLEREF)
+// look paragraphs up in.
+//
+//   of(doc) -> Paras  memoised per document state (./DocVersion, with
+//       the styles and numbering of doc, as ./HeadingOutline). Shared:
+//       read only
+//   Paras.list     every paragraph of the body (tables' cell
+//                  paragraphs too) in flow order
+//   Paras.index    Map paragraph id -> its place in list
+//   Paras.matching(key, test) -> [n]  the places of the paragraphs
+//                  for which test(p) holds, in order; kept under
+//                  `key` (a string) for the state of the document
+//   Paras.chain(id) -> [{id, text}]  the list labels of paragraph
+//                  id and of its ancestors (the nearest paragraphs
+//                  of the same list at each lower level), outermost
+//                  first, the paragraph's own last; [] for a
+//                  paragraph with no label (./ListNumbers)
+//   numberText(paras, id, mode, from?) -> string | null  the number
+//       text of paragraph id as REF's \n, \r, \w give it, or null
+//       for a paragraph with no number:
+//     'n'  the paragraph's own label without its trailing periods
+//          (and white space): no context beyond what the label
+//          itself shows ('1.2.3' for a legal label)
+//     'w'  full context: only when the label already starts with
+//          its nearest ancestor's ('1.2.3' under '1.2'). An
+//          ancestor that would have to be put in front ('1.' 'a.'
+//          'i.': Word's separators are not known) gives null
+//     'r'  relative context: as 'w' but the ancestors that the
+//          paragraph `from` (the field's own) has too are left out
+//          ('(i)' beside '(ii)' of the same parents)
+//   pos(paras, id, off, at) -> 'above' | 'below' | null  whether
+//       position {id, off} lies before (above) or after the place
+//       `at` {id, off} (a place equal counts as above); null when
+//       either paragraph is not in the body
+//
+// Labels of notes, headers and footers are not looked at. Pure: no
+// desktop services.
+import {forEachBlock} from './Walk';
+import {versionOf} from './DocVersion';
+import {labels} from './ListNumbers';
+
+const memo = new WeakMap();
+const isObj = (v) => v !== null && typeof v === 'object';
+const ALNUM = /[0-9A-Za-z]/;
+
+/** The text of label t without its trailing periods and blanks. */
+function bare(t) {
+  const s = String(t);
+  let n = s.length;
+  while (n > 0 && (s[n - 1] === '.' || s[n - 1].trim() === '')) n--;
+  return s.slice(0, n);
+}
+
+class Paras {
+  constructor(doc) {
+    this.doc = doc;
+    this.list = [];
+    this.index = new Map();
+    forEachBlock(doc, (b) => {
+      if (isObj(b) && b.type === 'p') {
+        if (!this.index.has(b.id))
+          this.index.set(b.id, this.list.length);
+        this.list.push(b);
+      }
+      return true;
+    });
+    this.by = new Map();
+    this.chains = null;
+  }
+
+  matching(key, test) {
+    let a = this.by.get(key);
+    if (!a) {
+      a = [];
+      this.list.forEach((p, n) => {
+        if (test(p)) a.push(n);
+      });
+      this.by.set(key, a);
+    }
+    return a;
+  }
+
+  /** The chains of every labelled paragraph, in one pass. */
+  build() {
+    this.chains = new Map();
+    const ls = this.doc.numbering ? labels(this.doc) : new Map();
+    const open = new Map();            // numId -> level -> {id, text}
+    for (const [id, l] of ls) {
+      let cur = open.get(l.numId);
+      if (!cur) open.set(l.numId, cur = []);
+      const k = Number.isInteger(l.level) ? l.level : 0;
+      cur.length = k;
+      cur[k] = {id, text: typeof l.text === 'string' ? l.text : ''};
+      this.chains.set(id, cur.filter((x) => x));
+    }
+  }
+
+  chain(id) {
+    if (!this.chains) this.build();
+    return this.chains.get(id) || [];
+  }
+}
+
+const same = (a, b) => a.length === b.length &&
+  a.every((x, k) => x === b[k]);
+
+/** See the header. */
+export function of(doc) {
+  if (!isObj(doc)) return new Paras({});
+  const ver = versionOf(doc), m = memo.get(doc);
+  const secs = Array.isArray(doc.sections) ? doc.sections : [];
+  if (m && m.ver === ver && m.sections === doc.sections &&
+    m.styles === doc.styles && m.numbering === doc.numbering &&
+    same(m.secs, secs)) return m.out;
+  const out = new Paras(doc);
+  memo.set(doc, {ver, sections: doc.sections, styles: doc.styles,
+    numbering: doc.numbering, secs: [...secs], out});
+  return out;
+}
+
+/** Whether text acc already starts with ancestor label anc. */
+function starts(acc, anc) {
+  return acc.startsWith(anc) &&
+    (acc.length === anc.length || !ALNUM.test(acc[anc.length]));
+}
+
+/** See the header. */
+export function numberText(paras, id, mode, from) {
+  const ch = paras.chain(id);
+  if (!ch.length) return null;
+  const self = ch[ch.length - 1];
+  let acc = bare(self.text);
+  if (mode === 'n') return acc;
+  let skip = 0;
+  if (mode === 'r' && from !== undefined) {
+    const mine = paras.chain(from);
+    while (skip < ch.length - 1 && skip < mine.length &&
+      mine[skip].id === ch[skip].id) skip++;
+  }
+  for (let j = ch.length - 2; j >= skip; j--) {
+    const anc = bare(ch[j].text);
+    if (anc === '') continue;
+    if (starts(acc, anc)) break;
+    return null;                       // (no evidence how Word joins)
+  }
+  return acc;
+}
+
+/** See the header. */
+export function pos(paras, id, off, at) {
+  const a = paras.index.get(id), b = paras.index.get(at.id);
+  if (a === undefined || b === undefined) return null;
+  const c = a !== b ? a - b : off - at.off;
+  return c <= 0 ? 'above' : 'below';
+}

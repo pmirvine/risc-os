@@ -1,0 +1,134 @@
+// CaptionPatch - the Caption box's values (Batch E3): what it shows
+// for the selection, the labels it offers, and the options of
+// ./CaptionCmd insertCaption its OK gives. Pure.
+//
+//   KEY  'captionLabels': the labels the user made (New label...),
+//       kept in Choices:Letters (./WordChoices) as [label, ...],
+//       oldest first, MAX_SAVED (32) at most
+//   savedLabels(v) -> [label]  the stored value cleaned: not an
+//       array, or entries that are not text or that ./CaptionCmd
+//       labelWhy refuses, give nothing; trimmed; each once (case
+//       ignored); Word's own labels left out; MAX_SAVED at most
+//       (the newest)
+//   addLabel(list, label) -> [label] | null  list with label added
+//       at the end (trimmed; already there, case ignored, or one of
+//       Word's: list as it was; the oldest dropped past MAX_SAVED).
+//       null when labelWhy refuses label
+//   labelChoices(doc, saved) -> [{id, text}]  the Label popup: Word's
+//       labels (Figure, Table, Equation), the document's (./CaptionCmd
+//       labelsIn), the saved ones, each once (case ignored). A
+//       label's id is 'label:' + its text
+//   FORMATS  [{id, text}] the Numbering box's formats: ARABIC
+//       '1, 2, 3', alphabetic 'a, b, c', ALPHABETIC 'A, B, C', roman
+//       'i, ii, iii', ROMAN 'I, II, III'
+//   SEPARATORS  [{id, text, ch}] what goes between the chapter number
+//       and the number: hyphen '-', period '.', colon ':', emdash
+//       U+2014, endash U+2013 (Word's five)
+//   fill(doc, sel) -> values  Word's defaults for what sel captions
+//       (./CaptionCmd targetOf): {label 'label:Table' for a table,
+//       else 'label:Figure'; position 'above' for a table, else
+//       'below'; exclude false; format 'ARABIC'; chapter false;
+//       level 1; separator 'hyphen'; text ''; kind (targetOf's, or
+//       null)}
+//   patch(values) -> {opts} | {error}  the box's values as
+//       insertCaption's opts: {label, position, excludeLabel, format,
+//       chapter: {level, separator: SEPARATORS' ch} | null, text}.
+//       text: '' stays ''; one that starts with a letter or a digit
+//       gets a space in front ('Figure 1 A cat'), else it is kept as
+//       typed (': A cat'); then ./CaptionCmd clip (TEXT_MAX with
+//       the space counted). An unknown format is ARABIC. error, in
+//       words for the user: no label chosen, labelWhy's reason, a
+//       chapter level not 1 to 9
+import {LABELS, labelWhy, labelsIn, targetOf, clip}
+  from './CaptionCmd';
+
+export const KEY = 'captionLabels';
+export const MAX_SAVED = 32;
+export const FORMATS = Object.freeze([
+  {id: 'ARABIC', text: '1, 2, 3'}, {id: 'alphabetic', text: 'a, b, c'},
+  {id: 'ALPHABETIC', text: 'A, B, C'},
+  {id: 'roman', text: 'i, ii, iii'},
+  {id: 'ROMAN', text: 'I, II, III'}].map(Object.freeze));
+export const SEPARATORS = Object.freeze([
+  {id: 'hyphen', text: '- (hyphen)', ch: '-'},
+  {id: 'period', text: '. (period)', ch: '.'},
+  {id: 'colon', text: ': (colon)', ch: ':'},
+  {id: 'emdash', text: '\u2014 (em dash)', ch: '\u2014'},
+  {id: 'endash', text: '\u2013 (en dash)', ch: '\u2013'},
+].map(Object.freeze));
+const WORDS = new Set(LABELS.map((x) => x.toLowerCase()));
+const PREFIX = 'label:';
+
+/** See the header. */
+export function savedLabels(v) {
+  if (!Array.isArray(v)) return [];
+  let out = [];
+  for (const x of v.slice(-4 * MAX_SAVED)) {
+    if (typeof x !== 'string') continue;
+    out = addLabel(out, x) || out;
+  }
+  return out;
+}
+
+/** See the header. */
+export function addLabel(list, label) {
+  if (labelWhy(label)) return null;
+  const t = label.trim(), k = t.toLowerCase();
+  const xs = Array.isArray(list) ? list.slice() : [];
+  if (WORDS.has(k) || xs.some((x) => String(x).toLowerCase() === k))
+    return xs;
+  xs.push(t);
+  return xs.slice(-MAX_SAVED);
+}
+
+/** See the header. */
+export function labelChoices(doc, saved) {
+  const out = [], seen = new Set();
+  const add = (t) => {
+    const k = t.toLowerCase();
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({id: PREFIX + t, text: t});
+  };
+  for (const t of LABELS) add(t);
+  for (const t of labelsIn(doc)) add(t);
+  for (const t of savedLabels(saved)) add(t);
+  return out;
+}
+
+/** See the header. */
+export function fill(doc, sel) {
+  const t = targetOf(doc, sel);
+  const kind = t ? t.kind : null;
+  return {label: PREFIX + (kind === 'table' ? 'Table' : 'Figure'),
+    position: kind === 'table' ? 'above' : 'below', exclude: false,
+    format: 'ARABIC', chapter: false, level: 1, separator: 'hyphen',
+    text: '', kind};
+}
+
+/** See the header. */
+export function patch(values) {
+  const v = values !== null && typeof values === 'object' ? values
+    : {};
+  const id = String(v.label ?? '');
+  if (!id.startsWith(PREFIX))
+    return {error: 'Choose a label, or make one with New Label...'};
+  const label = id.slice(PREFIX.length);
+  const why = labelWhy(label);
+  if (why) return {error: why};
+  let chapter = null;
+  if (v.chapter === true) {
+    if (!(Number.isInteger(v.level) && v.level >= 1 && v.level <= 9))
+      return {error: 'Chapter starts with Heading 1 to 9.'};
+    const s = SEPARATORS.find((x) => x.id === v.separator) ||
+      SEPARATORS[0];
+    chapter = {level: v.level, separator: s.ch};
+  }
+  const raw = typeof v.text === 'string' ? v.text : '';
+  const text = clip(/^[\p{L}\p{N}]/u.test(raw) ? ' ' + raw : raw);
+  return {opts: {label: label.trim(),
+    position: v.position === 'above' ? 'above' : 'below',
+    excludeLabel: v.exclude === true,
+    format: FORMATS.some((f) => f.id === v.format) ? v.format
+      : 'ARABIC', chapter, text}};
+}

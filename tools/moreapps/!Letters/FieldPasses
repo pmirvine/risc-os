@@ -1,0 +1,416 @@
+// FieldPasses - Edit > Update all fields as a bounded series of passes
+// (Batch E3): the fields updated in a fixed order, the document laid
+// out again while the page fields it shows still change, all of it
+// one undo step.
+//
+//   run(d, ctx, sel?, opts?) -> {ok, changed, updated, passes,
+//       messages, sel}
+//       every field of d.doc (./FieldScan scan: the body; a facade's
+//       story, ./StoryFacade: a header's, a footer's or a note's;
+//       Update all fields from the body is the body only, as Word's
+//       Ctrl+A F9 is the main text only: the fields of headers,
+//       footers and notes are updated in their own mode) updated as
+//       ./FieldCmd updates one (an
+//       evaluator, ./Fields, that gives a value; no fldLock; a result
+//       ./FieldPut can replace), step by step in STEPS' order, each
+//       step's fields worked out on the document the steps before it
+//       left (the paged steps: on the pages of the document as the
+//       steps before them left it, laid out again when one of those
+//       changed it; the paged steps of one pass read the same
+//       pages). Then, while a paged step changed a result, the
+//       document is laid out again (relayout below) and the paged
+//       steps run again: at most opts.bound (MAX_PASSES) passes in
+//       all; when the last one still changed a result it stays, and
+//       a message says the pages may not be settled. Everything in
+//       ONE d.atomic: one undo step, none when nothing changed (a
+//       second run changes nothing: no step).
+//     ok       some field could be updated (false: nothing changed;
+//              ./FieldCmd updateAllCmd gives null, the window beeps)
+//     changed  some result changed
+//     updated  how many fields were worked out (their value written
+//              or already there; each step's last pass counted)
+//     passes   how many times the paged steps ran (1 when none had
+//              to run again)
+//     messages [{instr, reason}] the registered fields left as
+//              stored, in document order: 'locked', 'needs Print
+//              layout' (a page field with no pages), 'missing
+//              bookmark', 'unsupported switch' and the like (the
+//              entry's why, ./Fields), 'not worked out' (no reason
+//              known), 'result cannot be replaced' (FieldPut
+//              refused: a kept inline in it, spread over cells...);
+//              and {instr: '', reason: 'pages not settled after N
+//              passes'} when the bound was reached. Fields with no
+//              evaluator (MERGEFIELD, HYPERLINK...) are not listed
+//     sel      sel moved with the text (sel given), else true
+//     ctx      ./FieldCmd's {now, path?, meta?, pages?, page?} and
+//              relayout?(doc) -> ./Pages | null (the pages of doc
+//              laid out again and settled, all worked out:
+//              ./FieldUpdate's), else layout?: {L, P?} (a body
+//              layout and its pages: layoutPages lays out from
+//              them); read only once a page field needs pages again
+//              after a change. Neither: no pass is
+//              made again (and pages that the steps before the page
+//              fields changed are used as they were). A facade's
+//              story is never laid out again (its page is ctx.page)
+//     opts     {bound = MAX_PASSES, steps = STEPS}
+//   messageText({instr, reason}) -> string  a message of run's as a
+//       line for the user: 'source not found: ' + instr for a field
+//       whose bookmark is not there (reason 'missing bookmark': a
+//       cross-reference whose target was deleted; Word shows "Error!
+//       Reference source not found." on update, the stored result is
+//       kept here), else instr + ': ' + reason (the reason alone when
+//       there is no instr)
+//   summaryText({updated, messages, noPages?}) -> string  Update all
+//       fields' one message: 'N fields updated.' (1: 'field'), then
+//       the fields kept as stored, 'K fields kept as stored: ' and
+//       their messageText lines joined by '; ', at most SHOWN (5)
+//       of them, then ' and M more'; the page fields kept for want
+//       of pages ('needs Print layout') not named but counted:
+//       'Page numbers need Print layout: J page fields kept as
+//       stored.' (noPages with none: 'Page numbers need Print
+//       layout: kept as they were.', the tables of contents' page
+//       numbers kept in Outline and Web layout, ./FieldUpdate);
+//       a message with no instr (the pages not settled) last, as a
+//       sentence. Nothing updated and nothing kept: 'There are no
+//       fields to update.'
+//   SHOWN  5
+//   MAX_PASSES  3: the most passes of the page fields (a page number
+//       that changes a page break is not chased further: the last
+//       result stays, as Word does)
+//   STEPS  (frozen) the order: facts (./BookmarkIndex and
+//       ./HeadingOutline built for the document, once, when a field
+//       that reads them is there), seq (SEQ), chapters (STYLEREF:
+//       a caption's chapter number, before the REFs that read a
+//       caption's text, ./FieldRef; a STYLEREF of a heading that
+//       holds a REF reads that REF's text as it was, as when both
+//       were one step, planned before any was applied), refs (REF,
+//       NOTEREF), fields
+//       (every other field that does not depend on the page and is
+//       not a block result),
+//       toc (every table of contents made again, entries and page
+//       numbers: ./TocUpdate tocRun; paged, so a table that moves
+//       its own headings is made again on the pages laid out
+//       again), pages (the page fields: PAGE, NUMPAGES,
+//       SECTIONPAGES, SECTION, PAGEREF: after the tables, which
+//       move what they point at). A step {name, paged, take?(name,
+//       entry) -> bool,
+//       run?(d, c, sel) -> {found, changed, messages, sel}}: take
+//       (a field step) claims the registered fields of those names
+//       not claimed by a step before it; run (any other step, e.g.
+//       a table of contents) does its own work in the open d.atomic
+//       with c, the pass's ctx (c.pages.finish() the pages of the
+//       document as it now is), and gives what it found and changed.
+//       paged: run again after the document is laid out again
+//   planFields(d, fs, ctx) -> {plans, left}  ./FieldCmd's: the plan
+//       (./FieldPut planOf) of each field of fs that gets a value,
+//       and the others with an evaluator as [{f, reason}]
+//   applyPlans(d, due, sel?) -> sel | true  plans due applied the
+//       last first (d.apply: inside the caller's d.atomic), sel
+//       moved
+//   layoutPages(doc, base) -> {L, P}  doc laid out from base {L, P?}
+//       and settled as the window settles Print layout (./ViewPass
+//       settle: page fields, footnote numbers, column widths, wrap
+//       round floats, each bounded by its own guard): the pages
+//       Print layout shows. base is only read (its field records may
+//       gain entries, as the window's chain of layouts shares them)
+//
+// A field of a facade (header, footer or note) is worked out on the
+// whole document (d.real.doc: the body's bookmarks, headings and
+// notes), the section d.s; a header's or footer's page fields on
+// ctx.page, a note's with no page of its own.
+// Cost: a document without page fields is never laid out here; the
+// pages are asked for only when a page field is worked out; a
+// document with no field at all walks nothing more than scan. Pure:
+// no desktop services.
+import {scan} from './FieldScan';
+import {entryOf, evaluate} from './Fields';
+import {planOf} from './FieldPut';
+import {cmpPath, topOf} from './Path';
+import {of as bookmarks} from './BookmarkIndex';
+import {of as outline} from './HeadingOutline';
+import {DocLayout} from './DocLayout';
+import {settle} from './ViewPass';
+import {parse} from './FieldParse';
+import {tocRun} from './TocUpdate';
+
+export const MAX_PASSES = 3;
+export const SHOWN = 5;
+const isObj = (v) => v !== null && typeof v === 'object';
+const isStory = (d) => typeof d.part === 'string' && isObj(d.real);
+const nameOf = (f) => (typeof f.instr === 'string'
+  ? parse(f.instr).name : '');
+const NAMES = (...ns) => (name) => ns.includes(name);
+// the fields that read the bookmarks or the headings
+const FACTS = new Set(['SEQ', 'REF', 'NOTEREF', 'STYLEREF', 'PAGEREF',
+  'TOC']);
+
+export const STEPS = Object.freeze([
+  Object.freeze({name: 'facts', paged: false, run(d) {
+    if (scan(d.doc).some((f) => FACTS.has(nameOf(f)))) {
+      bookmarks(d.doc);
+      outline(d.doc);
+    }
+    return {found: 0, changed: false, messages: []};
+  }}),
+  Object.freeze({name: 'seq', paged: false, take: NAMES('SEQ')}),
+  Object.freeze({name: 'chapters', paged: false,
+    take: NAMES('STYLEREF')}),
+  Object.freeze({name: 'refs', paged: false,
+    take: NAMES('REF', 'NOTEREF')}),
+  Object.freeze({name: 'fields', paged: false,
+    take: (n, e) => !e.pageDependent && !e.block}),
+  Object.freeze({name: 'toc', paged: true, run: tocRun}),
+  Object.freeze({name: 'pages', paged: true,
+    take: (n, e) => !!e.pageDependent}),
+]);
+
+/** The value each field gets under ctx: f -> {v, c} (see FieldCmd). */
+function valuer(d, ctx) {
+  let P;
+  const pages = () => {
+    if (P === undefined) {
+      const x = isObj(ctx.pages) && typeof ctx.pages.finish ===
+        'function' ? ctx.pages.finish() : null;
+      P = isObj(x) && Array.isArray(x.list) ? x : null;
+    }
+    return P;
+  };
+  const story = isStory(d);
+  // (any facade, a note's too, works on the whole document: the
+  // bookmarks and headings are the body's)
+  const facade = isObj(d.real) && isObj(d.real.doc);
+  const note = facade && !story;
+  const doc = facade ? d.real.doc : d.doc;
+  return (f, e) => {
+    const c = {doc, now: ctx.now, path: ctx.path, meta: ctx.meta,
+      section: facade ? d.s : topOf(f.begin.at)[0]};
+    if (e.pageDependent) {
+      const Q = pages();
+      if (Q) {
+        c.pages = Q;
+        const i = facade || typeof Q.ofPos !== 'function' ? -1
+          : Q.ofPos({id: f.begin.id, off: f.begin.off});
+        // (a note's field: no page of its own here)
+        c.page = story ? ctx.page : note ? undefined : Q.list[i];
+      }
+    }
+    return {v: evaluate(c, f), c};
+  };
+}
+
+/** Why field f with entry e kept its stored result. */
+function reasonOf(f, e, c) {
+  if (f.lock) return 'locked';
+  const w = typeof e.why === 'function' ? e.why(c, f) : null;
+  if (typeof w === 'string' && w !== 'needs Print layout') return w;
+  if (e.pageDependent && !c.pages) return 'needs Print layout';
+  return w || 'not worked out';
+}
+
+/** See the header. */
+export function planFields(d, fs, ctx) {
+  const value = valuer(d, ctx), plans = [], left = [];
+  for (const f of fs) {
+    const e = entryOf(f);
+    if (!e) continue;
+    const {v, c} = f.lock ? {v: null, c: {}} : value(f, e);
+    const plan = typeof v === 'string' ? planOf(d.doc, f, v) : null;
+    if (plan) plans.push(plan);
+    else {
+      left.push({f, reason: typeof v === 'string'
+        ? 'result cannot be replaced' : reasonOf(f, e, c)});
+    }
+  }
+  return {plans, left};
+}
+
+/** See the header. */
+export function applyPlans(d, due, sel) {
+  const list = due.slice().sort((a, b) => cmpPath(b.at, a.at) ||
+    b.off - a.off);
+  for (const x of list) for (const op of x.ops) d.apply(op);
+  if (!isObj(sel)) return true;
+  let {anchor, head} = sel;
+  for (const x of list) {
+    anchor = x.map(anchor);
+    head = x.map(head);
+  }
+  return {...sel, anchor, head};
+}
+
+/** A field step's run: the fields it takes, planned and applied. */
+function fieldRun(step, taken) {
+  return (d, c, sel) => {
+    const fs = scan(d.doc).filter((f) => {
+      const e = entryOf(f);
+      if (!e) return false;
+      return claimant(taken, nameOf(f), e) === step;
+    });
+    if (!fs.length) return {found: 0, changed: false, messages: []};
+    const {plans, left} = planFields(d, fs, c);
+    const due = plans.filter((x) => !x.same);
+    const out = due.length ? applyPlans(d, due, sel) : sel;
+    return {found: plans.length, changed: due.length > 0,
+      sel: out, messages: left.map(({f, reason}) => ({instr:
+        f.instr.trim(), reason, at: f.begin.at, off: f.begin.off}))};
+  };
+}
+
+/** The step of steps that takes a field of name n (entry e). */
+function claimant(steps, n, e) {
+  for (const s of steps) {
+    if (typeof s.take === 'function' && s.take(n, e)) return s;
+  }
+  return null;
+}
+
+/** The pages of doc laid out again under ctx, as a function (or
+ *  null: none can be made). */
+function relayoutOf(d, ctx) {
+  if (isStory(d)) return null;
+  if (typeof ctx.relayout === 'function') return ctx.relayout;
+  if (!isObj(ctx.layout)) return null;
+  let last = null;
+  return (doc) => {
+    if (!last) {                       // (read when first needed)
+      const L = ctx.layout.L;
+      if (!(L instanceof DocLayout)) return null;
+      last = {L, P: ctx.layout.P || null};
+    }
+    last = layoutPages(doc, last);
+    return last.P;
+  };
+}
+
+/** See the header. */
+export function messageText(m) {
+  const instr = isObj(m) && typeof m.instr === 'string' ? m.instr : '';
+  const reason = isObj(m) && typeof m.reason === 'string' ? m.reason
+    : '';
+  if (reason === 'missing bookmark')
+    return 'source not found: ' + instr;
+  return instr ? instr + ': ' + reason : reason;
+}
+
+const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+const PAGES = 'needs Print layout';
+
+/** See the header. */
+export function summaryText(res) {
+  const o = isObj(res) ? res : {};
+  const n = Number.isInteger(o.updated) && o.updated > 0 ? o.updated
+    : 0;
+  const ms = Array.isArray(o.messages) ? o.messages.filter(isObj)
+    : [];
+  const kept = ms.filter((m) => m.instr && m.reason !== PAGES);
+  const paged = ms.filter((m) => m.instr && m.reason === PAGES);
+  const notes = ms.filter((m) => !m.instr && m.reason);
+  if (!n && !kept.length && !paged.length && !notes.length &&
+    !o.noPages) return 'There are no fields to update.';
+  let t = plural(n, 'field') + ' updated.';
+  if (kept.length) {
+    const more = kept.length - SHOWN;
+    t += ' ' + plural(kept.length, 'field') + ' kept as stored: ' +
+      kept.slice(0, SHOWN).map(messageText).join('; ') +
+      (more > 0 ? ' and ' + more + ' more' : '') + '.';
+  }
+  if (paged.length || o.noPages) {
+    t += ' Page numbers need Print layout: ' + (paged.length
+      ? plural(paged.length, 'page field') + ' kept as stored.'
+      : 'kept as they were.');
+  }
+  for (const m of notes) {
+    t += ' ' + m.reason[0].toUpperCase() + m.reason.slice(1) + '.';
+  }
+  return t;
+}
+
+/** See the header. */
+export const layoutPages = (doc, base) => settle(doc, base);
+
+/** Messages in document order; one with no place last; else in
+ *  the order given ({m, k}: total and stable). */
+function byMsg(a, b) {
+  const x = a.m, y = b.m, px = Array.isArray(x.at), py = Array.isArray(
+    y.at);
+  if (px && py) {
+    const c = cmpPath(x.at, y.at) || (x.off || 0) - (y.off || 0);
+    if (c) return c;
+  } else if (px !== py) return px ? -1 : 1;
+  return a.k - b.k;
+}
+
+/** See the header. */
+export function run(d, ctx, sel, opts = {}) {
+  const none = {ok: false, changed: false, updated: 0, passes: 0,
+    messages: [], sel: isObj(sel) ? sel : true};
+  if (!isObj(d) || !isObj(d.doc) || !isObj(ctx)) return none;
+  const steps = Array.isArray(opts.steps) ? opts.steps : STEPS;
+  const bound = Number.isInteger(opts.bound) && opts.bound > 0
+    ? opts.bound : MAX_PASSES;
+  const relayout = relayoutOf(d, ctx);
+  const runs = new Map(steps.map((s) => [s, typeof s.run ===
+    'function' ? s.run : fieldRun(s, steps)]));
+  const msgs = new Map();              // step -> its last messages
+  const counts = new Map();            // step -> its last found
+  let found = 0, changed = false, passes = 0, s = sel, settled = true;
+  let P, stale = false;
+  const pagesNow = () => {
+    if (stale && relayout) {
+      P = relayout(d.doc);
+      stale = false;
+    } else if (P === undefined) {
+      P = isObj(ctx.pages) && typeof ctx.pages.finish === 'function'
+        ? ctx.pages.finish() : null;
+    }
+    return P;
+  };
+  const c = {now: ctx.now, path: ctx.path, meta: ctx.meta,
+    pages: {finish: pagesNow}, get page() { return ctx.page; }};
+  /** The steps of list run once: whether a paged one changed. */
+  const pass = (list) => {
+    let any = false;
+    for (const step of list) {
+      const r = runs.get(step)(d, c, s) || {};
+      found += r.found || 0;
+      counts.set(step, r.found || 0);
+      if (r.changed) {
+        changed = true;
+        // (a paged step's change waits for the next pass's layout:
+        // the paged steps of one pass read the same pages)
+        if (step.paged) any = true;
+        else stale = true;
+        if (r.sel !== undefined) s = r.sel;
+      }
+      msgs.set(step, Array.isArray(r.messages) ? r.messages : []);
+    }
+    return any;
+  };
+  const paged = steps.filter((x) => x.paged);
+  d.atomic(() => {
+    passes = 1;
+    let again = pass(steps) && !!relayout;
+    while (again) {
+      if (passes >= bound) {
+        settled = false;
+        break;
+      }
+      P = relayout(d.doc);             // (the pages of the doc now)
+      stale = false;
+      passes++;
+      again = pass(paged);
+    }
+  });
+  const messages = [].concat(...msgs.values()).map((m, k) =>
+    ({m, k})).sort((a, b) => byMsg(a, b)).map(({m}) =>
+    ({instr: m.instr, reason: m.reason}));
+  if (!settled) {
+    messages.push({instr: '', reason: 'pages not settled after ' +
+      passes + ' passes'});
+  }
+  const ok = found > 0 || changed;
+  let updated = 0;
+  for (const k of counts.values()) updated += k;
+  return {ok, changed, updated, passes, messages, sel: ok ? (isObj(s)
+    ? s : true) : none.sel};
+}

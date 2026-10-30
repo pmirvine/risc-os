@@ -1,0 +1,334 @@
+// FieldBlocks - a complex field's whole result replaced by blocks
+// (Batch E3): a table of contents' entries, many paragraphs, put
+// where its old result was. ./FieldPut re-exports planBlocks; the
+// command is ./FieldCmd updateWithBlocks.
+//
+//   planBlocks(doc, f, blocks, opts?) -> Plan | null  for ./FieldScan
+//       Field f of doc (a body, or a ./StoryFacade view: [0, i, ...])
+//       and blocks (Paras and Tables made by the caller, maybe none;
+//       never changed: copied, each given a new id at every depth).
+//       Paragraph A holds the separate, B the end (A may be B).
+//       Everything after the separate in A, every block between A
+//       and B, and everything before the end in B (other fields,
+//       links, bookmarks, pictures, note marks) is removed; kept:
+//       A up to the separate (with the begin and the code), B from
+//       the end on (other fields after it too), the field's marks,
+//       A's and B's ids and extraP. Word's table of contents:
+//
+//         A  [head] {begin} code {separate} Entry 1   (TOC 1)
+//            Entry 2 ... Entry n-1                    (TOC 2...)
+//         B  {end} [tail]                             (B's pPr)
+//
+//       opts.first 'take' (the default): a first block that is a
+//         paragraph is joined to A after the separate, and A takes
+//         its pPr and pStyle (A's id and extraP stay); 'keep': A
+//         keeps its pPr and every block follows it
+//       opts.last 'keep' (the default): B (from the end on) stays a
+//         paragraph of its own with its pPr; 'take': a last block
+//         that is a paragraph is joined to B before the end, and B
+//         takes its pPr and pStyle. With A = B the paragraph is split:
+//         the part from the end on is a new paragraph (a new id,
+//         extraP []) with the paragraph's pPr, unless taken.
+//         One block taken by both: one paragraph, A's id
+//       no blocks: the result emptied; A (to the separate) and B
+//         (from the end) stay two paragraphs, each with its id, pPr
+//         and extraP; joined into one (A's) only with last 'take';
+//         with A = B the field's paragraph with an empty result.
+//         The caller's contract for a table of contents: its
+//         result always has at least one block (Word writes "No
+//         table of contents entries found.")
+//     Bookmarks (./BookmarkKeep's rule: a pair is never broken): the
+//       w:bookmarkStart and w:bookmarkEnd marks in the removed range
+//       (direct, inside a removed kept inline such as a w:hyperlink,
+//       in a removed table at any depth or a removed kept block),
+//       paired by w:id: both halves there go with it; one whose
+//       partner is outside (somewhere in doc) is kept, as a direct
+//       mark at the edge on its partner's side: an end just after
+//       the separate, a start just before the end mark (the
+//       bookmark keeps what lies outside the result); one with no
+//       partner anywhere goes. Other range marks (comment, perm,
+//       move ranges) go with the result as they lie. A note mark
+//       removed takes its note out at the end of the step
+//       (./Document, ./NoteKeep).
+//     null (refused): no field, a fldSimple (no separate), no
+//       separate, w:fldLock, marks not in order (begin, separate,
+//       end) or not the paragraphs and fldChars they name, begin,
+//       separate and end not in one container (a section, a cell or
+//       a story), blocks not an array of valid blocks for that
+//       container (./ModelCheck checkBlock: runs, inlines, extraP,
+//       rows, cells, nesting depth...)
+//     Known limit: a field inside a content control (w:sdt: a kept
+//       block or inline) is not seen by ./FieldScan, so a table of
+//       contents in Word's gallery control is kept as stored
+//   Plan {at, off, same, ops, map(pos)} as ./FieldPut planOf's: at
+//       A's path, off just after the separate; ops in order
+//       (restoreBlock, removeBlocks, insertBlocks: undo puts the
+//       very paragraph objects back); same: the blocks are what is
+//       there already (ids of the new blocks aside: no change);
+//       map: a position in the removed range (in a removed table
+//       too) goes to just after the separate, one in B from the
+//       end on stays at its place (the new paragraph when A = B),
+//       every other is unchanged
+//
+// Must be applied to the doc it was planned from. Cost: the size of
+// the range removed (its XML too) and the blocks put in, one walk of
+// the document's ids (the new ids), and one of its bookmark marks
+// only when a half of one is kept. Pure: no desktop services.
+import {at as blockAt, forEachIn, blockIds} from './Walk';
+import {cut, join} from './OpsUtil';
+import {nextId, reserveIds, deepEqual, OBJ} from './Model';
+import {checkBlock} from './ModelCheck';
+import {marksIn, tableMarks, markOf} from './BookmarkKeep';
+import {marks as allMarks} from './BookmarkFind';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const local = (n) => (isObj(n) && typeof n.name === 'string'
+  ? n.name.slice(n.name.indexOf(':') + 1) : '');
+/** The value of node's attribute of local name k, or null. */
+const attr = (node, k) => {
+  const a = Array.isArray(node.attrs) ? node.attrs.find((x) =>
+    typeof x[0] === 'string' && x[0].split(':').pop() === k) : null;
+  return a ? String(a[1]) : null;
+};
+const isPara = (b) => isObj(b) && b.type === 'p' &&
+  typeof b.text === 'string';
+const EMPTY = {text: '', runs: [], inlines: {}};
+
+/** q's inline at k is a level 'r' w:fldChar of that type. */
+function fldChar(q, k, type) {
+  const x = isObj(q.inlines) ? q.inlines[k] : null;
+  return isObj(x) && x.level === 'r' && local(x.node) === 'fldChar' &&
+    attr(x.node, 'fldCharType') === type;
+}
+
+/** Mark m is a paragraph of doc and an offset in it: the paragraph. */
+function paraOf(doc, m) {
+  if (!isObj(m) || !Array.isArray(m.at) || !Number.isInteger(m.off))
+    return null;
+  const q = blockAt(doc, m.at);
+  return isPara(q) && q.id === m.id && m.off >= 0 &&
+    m.off < q.text.length ? q : null;
+}
+
+/** {A, B, base, ia, ie} of f's result in doc, or null. */
+function spanOf(doc, f) {
+  const {begin: b, sep: s, end: e} = f;
+  const P = paraOf(doc, b), A = paraOf(doc, s), B = paraOf(doc, e);
+  if (!P || !A || !B || !fldChar(A, s.off, 'separate') ||
+    !fldChar(B, e.off, 'end')) return null;
+  const n = s.at.length;
+  if (b.at.length !== n || e.at.length !== n) return null;
+  for (let k = 0; k < n - 1; k++) {
+    if (b.at[k] !== s.at[k] || e.at[k] !== s.at[k]) return null;
+  }
+  const ib = b.at[n - 1], ia = s.at[n - 1], ie = e.at[n - 1];
+  if (ib > ia || ia > ie || (ib === ia && b.off >= s.off) ||
+    (ia === ie && s.off >= e.off)) return null;
+  return {A, B, base: s.at.slice(0, -1), ia, ie};
+}
+
+/** A mark node as a direct inline (as read). */
+const asInline = (node) => ({kind: 'raw', level: 'p', node, text: ''});
+
+/** The bookmark marks inside XML node n (not n) pushed on out. */
+function deep(n, out) {
+  const todo = [n];
+  while (todo.length) {
+    const x = todo.pop();
+    const kids = isObj(x) && Array.isArray(x.children) ? x.children
+      : [];
+    for (let k = kids.length - 1; k >= 0; k--) {
+      const c = kids[k], m = isObj(c) ? markOf(c) : null;
+      if (m) out.push({kind: m.kind, id: m.id, x: asInline(c)});
+      else if (isObj(c)) todo.push(c);
+    }
+  }
+}
+
+/** The marks inside q's kept inlines in [a, z) pushed on out. */
+function wrapped(q, a, z, out) {
+  for (let k = q.text.indexOf(OBJ, a); k >= 0 && k < z;
+    k = q.text.indexOf(OBJ, k + 1)) {
+    const x = q.inlines[k];
+    if (isObj(x) && isObj(x.node) && !markOf(x.node)) deep(x.node, out);
+  }
+}
+
+/** Every bookmark mark of q's [a, z) pushed on out. */
+function paraMarks(q, a, z, out) {
+  marksIn(q, a, z, out);
+  wrapped(q, a, z, out);
+}
+
+/** A kept block's marks (it may be one itself) pushed on out. */
+function opaqueMarks(b, out) {
+  const m = markOf(b.node);
+  if (m) out.push({kind: m.kind, id: m.id, x: asInline(b.node)});
+  else deep(b.node, out);
+}
+
+/** Every bookmark mark of removed block b pushed on out. */
+function blockMarks(b, out) {
+  if (isPara(b)) paraMarks(b, 0, b.text.length, out);
+  else if (isObj(b) && b.type === 'opaque') opaqueMarks(b, out);
+  else if (isObj(b) && b.type === 'tbl' && Array.isArray(b.rows)) {
+    tableMarks(b, out);
+    forEachIn([b], [], (c) => {
+      if (isPara(c)) wrapped(c, 0, c.text.length, out);
+      else if (isObj(c) && c.type === 'opaque') opaqueMarks(c, out);
+    });
+  }
+}
+
+/** Inlines xs as content: one plain run. */
+function marksContent(xs) {
+  if (!xs.length) return EMPTY;
+  const inlines = {};
+  xs.forEach((x, k) => { inlines[k] = x; });
+  return {text: OBJ.repeat(xs.length), inlines,
+    runs: [{start: 0, end: xs.length, rPr: {extra: []}}]};
+}
+
+const OTHER = {start: 'end', end: 'start'};
+
+/** The kept halves of the removed marks ms: {ends, starts}. */
+function halves(doc, ms) {
+  const here = new Set(ms.map((m) => m.kind + ' ' + m.id));
+  const lone = ms.filter((m) => m.id !== null &&
+    !here.has(OTHER[m.kind] + ' ' + m.id));
+  if (!lone.length) return {ends: EMPTY, starts: EMPTY};
+  const all = new Set(allMarks(doc).map((m) => m.kind + ' ' + m.id));
+  const keep = (kind) => marksContent(lone.filter((m) =>
+    m.kind === kind && all.has(OTHER[kind] + ' ' + m.id))
+    .map((m) => m.x));
+  return {ends: keep('end'), starts: keep('start')};
+}
+
+/** Block b with ids idf() at every depth (shallow copies). */
+function reId(b, idf) {
+  if (b.type === 'p') return {...b, id: idf()};
+  if (b.type !== 'tbl') return b;
+  const cell = (c) => ({...c, blocks: c.blocks.map((x) =>
+    reId(x, idf))});
+  return {...b, id: idf(), rows: b.rows.map((r) => ({...r,
+    cells: r.cells.map(cell)}))};
+}
+/** Block b with new ids. */
+const fresh = (b) => reId(b, nextId);
+/** Block b with no ids (for `same`). */
+const bare = (b) => reId(b, () => 0);
+
+/** A paragraph like base with content, src's pPr/pStyle, id, x. */
+function para(base, content, src, id, extraP) {
+  const q = {...base, ...content, id, pPr: src.pPr, extraP};
+  if (src.pStyle === undefined) delete q.pStyle;
+  else q.pStyle = src.pStyle;
+  return q;
+}
+const whole = (q) => cut(q, 0, q.text.length);
+
+/** blocks are valid blocks inside `around` tables. */
+function okBlocks(bs, around) {
+  if (!Array.isArray(bs)) return false;
+  try {
+    for (const b of bs) checkBlock(b, around);
+  } catch (e) {
+    return false;
+  }
+  return true;
+}
+
+/** The new blocks for A..B and where B's end lands: {out, tail}. */
+function shape(sp, s, e, blocks, opts, cuts) {
+  const {A, B} = sp, {ends, starts} = cuts;
+  const head = cut(A, 0, s), rest = cut(B, e, B.text.length);
+  const bs = blocks.slice();
+  const first = opts.first !== 'keep' && isPara(bs[0])
+    ? bs.shift() : null;
+  const take = opts.last === 'take';
+  if ((!blocks.length && (A === B || take)) ||
+    (first && take && !bs.length)) {
+    const mid = first ? whole(first) : EMPTY;
+    const pre = join(head, ends, mid, starts);
+    return {out: [para(A, join(pre, rest), first || A, A.id,
+      A.extraP)], tail: {id: A.id, off: pre.text.length}};
+  }
+  const last = take && isPara(bs[bs.length - 1]) ? bs.pop() : null;
+  const a = para(A, join(head, ends, first ? whole(first) : EMPTY),
+    first || A, A.id, A.extraP);
+  const two = A !== B;
+  const id = two ? B.id : nextId();
+  const pre = join(last ? whole(last) : EMPTY, starts);
+  const b = para(B, join(pre, rest), last || B, id,
+    two ? B.extraP : []);
+  return {out: [a, ...bs.map(fresh), b], tail: {id,
+    off: pre.text.length}};
+}
+
+/** The ops putting out in place of blocks ia..ie under base. */
+function opsOf(base, ia, ie, out, keepB) {
+  const P = (k) => [...base, k], ops = [];
+  if (keepB) {
+    if (ie - ia > 1) {
+      ops.push({op: 'removeBlocks', at: P(ia + 1), count: ie - ia - 1});
+    }
+    ops.push({op: 'restoreBlock', block: P(ia + 1),
+      snapshot: out[out.length - 1]});
+    ops.push({op: 'restoreBlock', block: P(ia), snapshot: out[0]});
+    if (out.length > 2) {
+      ops.push({op: 'insertBlocks', at: P(ia + 1),
+        blocks: out.slice(1, -1)});
+    }
+    return ops;
+  }
+  if (ie > ia) {
+    ops.push({op: 'removeBlocks', at: P(ia + 1), count: ie - ia});
+  }
+  ops.push({op: 'restoreBlock', block: P(ia), snapshot: out[0]});
+  if (out.length > 1) {
+    ops.push({op: 'insertBlocks', at: P(ia + 1), blocks: out.slice(1)});
+  }
+  return ops;
+}
+
+/** See the header. */
+export function planBlocks(doc, f, blocks, opts = {}) {
+  if (!isObj(doc) || !isObj(f) || f.simple || !f.sep || f.lock)
+    return null;
+  const sp = spanOf(doc, f);
+  if (!sp || !okBlocks(blocks, (f.sep.at.length - 2) / 3)) return null;
+  const {A, B, base, ia, ie} = sp;
+  const s = f.sep.off + 1, e = f.end.off, two = A !== B;
+  const ms = [], gone = new Set(), old = [A];
+  paraMarks(A, s, two ? A.text.length : e, ms);
+  for (let k = ia + 1; k < ie; k++) {
+    const q = blockAt(doc, [...base, k]);
+    old.push(q);
+    for (const id of blockIds([q])) gone.add(id);
+    blockMarks(q, ms);
+  }
+  if (two) {
+    paraMarks(B, 0, e, ms);
+    old.push(B);
+  }
+  reserveIds(doc);
+  const {out, tail} = shape(sp, s, e, blocks, isObj(opts) ? opts : {},
+    halves(doc, ms));
+  const same = out.length === old.length && out.every((b, k) =>
+    deepEqual(bare(b), bare(old[k])));
+  const keepB = two && out[out.length - 1].id === B.id;
+  const map = (pos) => {
+    if (!isObj(pos)) return pos;
+    const inA = pos.id === A.id, inB = pos.id === B.id;
+    if (inB && pos.off >= e) {
+      return {...pos, id: tail.id, off: tail.off + pos.off - e};
+    }
+    if (inA && pos.off <= s) return pos;
+    if (inA || inB || gone.has(pos.id)) {
+      return {...pos, id: A.id, off: s};
+    }
+    return pos;
+  };
+  return {at: f.sep.at, off: s, same,
+    ops: opsOf(base, ia, ie, out, keepB), map};
+}

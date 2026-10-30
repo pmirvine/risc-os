@@ -1,0 +1,631 @@
+// TocBox - the Table of Contents box (Insert > Table of Contents...,
+// Batch E3), its Options box, and the Update Table of Contents
+// choice of Edit > Update field on a table, as Word's. Built by
+// WimpLib Ui/Dialog.
+//
+//   tocBox(dw) -> the box's api, one per document (key
+//       'toc:<docKey>', kept in dw.boxes ('toc') so ./CloseDoc
+//       deletes it with the document); asked again while it is open,
+//       the same box comes to the front, filled again from the caret.
+//       null when the document has no selection
+//   tocUpdateBox(dw, {begin, mode, coded}?) -> the choice's api (key
+//       'tocupdate:<docKey>', dw.boxes 'tocupdate'): the table of
+//       contents at the caret (or the one whose begin is at begin)
+//       updated: Update page numbers only (mode 'pages', the first
+//       choice, Word's) or Update entire table ('entire'). null when
+//       there is no such table. coded: opened by the Field box's OK,
+//       which changed the table's code already: the first Cancel
+//       keeps the box and says the code was changed and the entries
+//       are as they were (a second Cancel, or Escape again, closes)
+//   figuresBox(dw) -> the Table of Figures box's api (Insert > Table
+//       of Figures...; key 'tof:<docKey>', dw.boxes 'tof'): the same
+//       box for a table of the captions of one label (TOC \c "id",
+//       ./TocCmd instrOf's figures form). tocBox opens it instead
+//       when the caret is in a table of figures. null when the
+//       document has no selection
+//   updateFieldAt(dw) -> bool  Edit > Update field: in the body, a
+//       caret in a table of contents, or a range wholly inside one,
+//       the choice above; a range reaching outside a table that
+//       touches one (Select all): the fields as updateField updates
+//       them and each table touched made again entire, as Update all
+//       fields does (./FieldCmd updateRangeCmd, one step); elsewhere
+//       ./FieldUpdate updateField
+//
+// The box (./TocPatch fill: from the table at the caret, else
+// Word's defaults): Show page numbers, Right align page numbers,
+// Tab leader (None, dots, dashes, a line; shaded without right
+// aligned page numbers, Right align without page numbers), Show
+// levels (1 to 9), Use hyperlinks, Use outline levels, Options...
+// (the extra styles: a second box, key 'tocopts:<docKey>',
+// dw.boxes 'tocopts': a style of the document, its TOC level, Set
+// and Clear, the list; its OK keeps the list in this box until
+// Insert or Update, its Cancel drops the change; it closes with
+// this box and is refused when this box was filled again since it
+// opened). Buttons Cancel, Remove and Insert; with the caret in a
+// table of contents, Insert reads Update and edits that table (the
+// code ./TocPatch patch makes, kept when the values ask for what it
+// asks: ./TocCmd editToc), Remove takes it out (./TocCmd removeToc;
+// shaded elsewhere). Insert puts a table in at the caret (./TocCmd
+// insertToc). Each one undo step (./FieldUpdate tocCommand: laid
+// out, the page numbers made). Refused with a beep, the reason in
+// the box and the box kept: the header and footer mode or the notes
+// mode, a caret where a table cannot go (./TocCmd insertWhy: in a
+// field's result, by a table...), a table that cannot be made again
+// (./TocUpdate tocWhy: locked, TC entries, a switch Letters does not
+// make), values patch refuses (Show levels not 1 to 9, switches the
+// box cannot show). If the selection or the document changed while
+// the box was open (./TabsBox where), the button beeps, fills the
+// box again (the fields the user changed kept), says so and keeps
+// it. Cancel, Escape and the close icon change nothing; the caret
+// goes back to the document.
+//
+// The Table of Figures box (the same rules): Caption label (Figure,
+// Table, Equation, the document's labels and the saved ones:
+// ./CaptionPatch labelChoices), Include label and number (off: \a,
+// the captions' text only), Show page numbers, Right align page
+// numbers, Tab leader, Use hyperlinks; Cancel, Remove and Insert
+// (Update, with the caret in a table of figures: that table's label
+// and values, its code made again only when they change).
+//
+// The choice: OK makes the update chosen, one undo step (none when
+// nothing changed). Page numbers only when the headings are no
+// longer the entries: the numbers are updated, the box stays with
+// Update entire table chosen and says so. Refused as the box is
+// (the mode, stale, a table gone, tocWhy for the entire table).
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {where} from './TabsBox';
+import {fill, patch, LEADERS, styleChoices} from './TocPatch';
+import {insertToc, editToc, updateToc, removeToc, insertWhy, tocAt}
+  from './TocCmd';
+import {tocWhy, tocFields} from './TocUpdate';
+import {tocCommand, updateField} from './FieldUpdate';
+import {updateRangeCmd} from './FieldCmd';
+import {labelChoices, savedLabels, KEY as LABELS_KEY}
+  from './CaptionPatch';
+import {seqIdOf} from './CaptionCmd';
+import {choiceOf} from './WordChoices';
+
+const LINE = 62;
+const FIELDS = ['pageNumbers', 'rightAlign', 'leader', 'levels',
+  'hyperlinks', 'outline'];
+const MSG = {
+  hdr: 'Leave the header or footer, or the note, first (Escape): a ' +
+    'table of contents goes in the body text.',
+  changed: 'The document changed while the box was open: it shows ' +
+    'the values now. Look again, then click a button.',
+  none: 'There is no table of contents at the caret.',
+  coded: 'The code was changed; the entries are as they were. ' +
+    'Cancel again to keep them so, or OK to update them.',
+  failed: 'The table of contents could not be made here.',
+  stale: 'The Table of Contents box was filled again: open ' +
+    'Options... again.',
+};
+const WHY = {
+  'locked': 'This table of contents is locked: it is kept as it is.',
+  'TC entries': 'This table is made from TC fields, which Letters ' +
+    'does not make: it is kept as it is.',
+  'unsupported switch': 'This table\'s code has a switch Letters ' +
+    'does not make: it is kept as it is.',
+  'result cannot be replaced': 'This table cannot be made again ' +
+    'here: its result holds something kept as it is.',
+};
+const whyText = (why) => WHY[why] || 'This table of contents ' +
+  'cannot be made again: ' + why + '.';
+
+const rows = () => [
+  {kind: 'option', name: 'pageNumbers', text: 'Show page numbers',
+    help: 'Each entry shows the number of its heading\'s page.'},
+  {kind: 'option', name: 'rightAlign', text: 'Right align page ' +
+    'numbers', help: 'The page numbers at the right margin, after ' +
+    'a tab; off: just after the entry\'s text.'},
+  {kind: 'popup', name: 'leader', label: 'Tab leader', w: 120,
+    choices: LEADERS, help: 'What fills the space before a page ' +
+      'number.'},
+  {kind: 'number', name: 'levels', label: 'Show levels', min: -99,
+    max: 99, decimals: 0, w: 60, help: 'Headings 1 to this level ' +
+      'make entries: 1 to 9.'},
+  {kind: 'option', name: 'hyperlinks', text: 'Use hyperlinks',
+    help: 'Each entry is a link: clicking it goes to its heading.'},
+  {kind: 'option', name: 'outline', text: 'Use outline levels',
+    help: 'Paragraphs given an outline level make entries too.'},
+  {kind: 'button', name: 'options', text: 'Options...',
+    help: 'Other styles that make entries, each at a level.'},
+  {kind: 'label', name: 'msg', text: '', w: 520},
+  {kind: 'label', name: 'msg2', text: '', w: 520},
+];
+const HELP = 'Table of Contents: a list of the headings with their ' +
+  'page numbers, put in at the caret, or the table at the caret ' +
+  'changed.';
+
+// api -> {at, base, editing, extra, begin}
+const state = new WeakMap();
+const wired = new WeakSet();
+
+/** A message in the two lines (split at a space). */
+function say(api, text = '') {
+  let a = text, b = '';
+  if (a.length > LINE) {
+    const k = a.lastIndexOf(' ', LINE);
+    const at = k > 0 ? k : LINE;
+    b = a.slice(at).trim();
+    a = a.slice(0, at);
+  }
+  api.set('msg', a);
+  api.set('msg2', b);
+}
+
+/** The extra styles in words. */
+const listText = (xs) => (xs.length ? xs.map((x) => x.style + ' ' +
+  x.level).join(', ') : 'none');
+
+/** See the header. */
+export function tocBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  if (!v.hdr && fill(v.d.doc, v.sel).seqId !== null)
+    return figuresBox(dw);
+  const api = dialog({task: dw.app.task, key: `toc:${dw.docKey}`,
+    title: 'Table of Contents', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Remove', 'Insert'], enter: 'Insert',
+    minW: 560});
+  box(dw, 'toc', () => api.win);
+  if (!wired.has(api)) wire(api, dw);
+  refill(api, v);
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The fields shaded as the values say. */
+function shadeFields(api) {
+  const pages = api.get('pageNumbers') !== false;
+  api.shade('rightAlign', !pages);
+  api.shade('leader', !pages || api.get('rightAlign') === false);
+}
+
+/** Fill from the caret; keep: the fields the user changed kept. */
+function refill(api, v, keep) {
+  const old = state.get(api);
+  const base = fill(v.d.doc, v.hdr ? null : v.sel);
+  const cur = {...base};
+  if (keep && old) {
+    for (const f of FIELDS) {
+      const x = api.get(f);
+      if (x !== old.shown[f]) cur[f] = x;
+    }
+    if (old.extraChanged) cur.extraStyles = old.extra;
+  }
+  const f = base.editing ? tocAt(v.d.doc, v.sel) : null;
+  const st = {at: where(v), base, editing: base.editing,
+    extra: cur.extraStyles.map((x) => ({...x})),
+    extraChanged: !!(keep && old && old.extraChanged),
+    begin: f ? {id: f.begin.id, off: f.begin.off} : null, shown: {}};
+  for (const k of FIELDS) {
+    api.set(k, cur[k]);
+    st.shown[k] = base[k];
+  }
+  state.set(api, st);
+  shadeFields(api);
+  api.shade('Remove', !st.editing);
+  const b = api.win.iconByName('button:Insert');
+  if (b) b.setText(st.editing ? 'Update' : 'Insert');
+  api.win.setTitle(st.editing ? 'Table of Contents (edit)'
+    : 'Table of Contents');
+  say(api, st.editing && base.why ? whyText(base.why)
+    : st.extraChanged ? 'Extra styles: ' + listText(st.extra) : '');
+  closeOptions(api);
+}
+
+/** The box's values for ./TocPatch patch. */
+function valuesOf(api, st) {
+  const out = {...st.base, extraStyles: st.extra};
+  for (const f of FIELDS) out[f] = api.get(f);
+  if (typeof out.levels !== 'number') out.levels = NaN;
+  return out;
+}
+
+/** The table st was filled for, found again by its begin. */
+const fieldOf = (doc, begin) => (begin ? tocFields(doc).find((g) =>
+  g.begin.id === begin.id && g.begin.off === begin.off) || null
+  : null);
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  const v = dw.view;
+  const no = (msg, field) => {
+    wimp.beep();
+    say(api, msg);
+    if (field) api.focus(field);
+    return false;
+  };
+  api.on('close', () => {
+    closeOptions(api);
+    if (!dw.closed) v.focus();
+  });
+  api.on('change', ({name}) => {
+    if (name === 'pageNumbers' || name === 'rightAlign')
+      shadeFields(api);
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (name === 'options') {
+      optionsBox(dw, api);
+      return undefined;
+    }
+    if (v.hdr) return no(MSG.hdr);
+    const st = state.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) refill(api, v, true);
+      return no(MSG.changed);
+    }
+    const f = st.editing ? fieldOf(v.d.doc, st.begin) : null;
+    if (st.editing && !f) {
+      refill(api, v, true);
+      return no(MSG.changed);
+    }
+    if (name === 'Remove') {
+      if (!f) return no(MSG.none);
+      if (!tocCommand(dw, (d) => {
+        const r = removeToc(d, null, f);
+        return r ? r.sel : null;
+      })) { say(api, MSG.failed); return false; }
+      v.focus();
+      return undefined;
+    }
+    if (f && st.base.why) return no(whyText(st.base.why));
+    if (!f) {
+      const why = insertWhy(v.d, v.sel);
+      if (why) return no(why);
+    }
+    const r = patch(valuesOf(api, st), f || undefined);
+    if (r.error) return no(r.error, /^Show levels/.test(r.error)
+      ? 'levels' : undefined);
+    const done = tocCommand(dw, (d, sel, ctx) => {
+      const x = f ? editToc(d, null, f, r.opts, ctx)
+        : insertToc(d, null, sel, r.opts, ctx);
+      return x ? x.sel : null;
+    });
+    if (!done) { say(api, MSG.failed); return false; }
+    v.focus();
+    return undefined;
+  });
+}
+
+// --- the Options box -------------------------------------------
+
+const optRows = (choices) => [
+  [{kind: 'popup', name: 'style', label: 'Style', w: 220, choices,
+    help: 'A style of the document.'},
+  {kind: 'number', name: 'level', label: 'TOC level', min: -99,
+    max: 99, decimals: 0, w: 60,
+    help: 'The level of the entries this style makes: 1 to 9.'}],
+  [{kind: 'button', name: 'set', text: 'Set',
+    help: 'Paragraphs in the style make entries at this level.'},
+  {kind: 'button', name: 'clear', text: 'Clear',
+    help: 'The style makes no entries.'}],
+  {kind: 'label', name: 'list', text: '', w: 440},
+  {kind: 'label', name: 'msg', text: '', w: 440},
+];
+const optState = new WeakMap();   // api -> {parent, st, list}
+const optOf = new WeakMap();         // toc api -> options api
+
+/** The Options box of the Table of Contents box api. */
+function optionsBox(dw, parent) {
+  const st = state.get(parent);
+  const list = st.extra.map((x) => ({...x}));
+  const choices = styleChoices(dw.view.d.doc, list);
+  const api = dialog({task: dw.app.task, key: `tocopts:${dw.docKey}`,
+    title: 'Table of Contents Options', rows: optRows(choices),
+    help: 'Table of Contents Options: other styles whose paragraphs ' +
+      'make entries.', buttons: ['Cancel', 'OK'], enter: 'OK',
+    minW: 460});
+  box(dw, 'tocopts', () => api.win);
+  optOf.set(parent, api);
+  if (!optState.has(api)) optWire(api, dw);
+  api.choices('style', choices);
+  optState.set(api, {parent, st, list});
+  api.set('style', choices.length ? choices[0].id : undefined);
+  showLevel(api);
+  api.set('msg', '');
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The level field shows the chosen style's level (or nothing). */
+function showLevel(api) {
+  const o = optState.get(api), s = String(api.get('style') ?? '');
+  const x = o.list.find((y) => y.style.toLowerCase() ===
+    s.toLowerCase());
+  api.set('level', x ? x.level : undefined);
+  api.set('list', 'Extra styles: ' + listText(o.list));
+}
+
+/** The Options box of api closed (with it, or when it refills). */
+function closeOptions(api) {
+  const o = optOf.get(api);
+  if (o && !o.gone && o.isOpen) o.close();
+}
+
+/** The handlers of a new Options box. */
+function optWire(api, dw) {
+  const no = (msg) => {
+    wimp.beep();
+    api.set('msg', msg);
+    return false;
+  };
+  api.on('change', ({name}) => {
+    if (name === 'style') showLevel(api);
+  });
+  api.on('button', ({name}) => {
+    const o = optState.get(api);
+    if (name === 'Cancel') return undefined;
+    const s = String(api.get('style') ?? '');
+    if (name === 'set' || name === 'clear') {
+      if (!s) return no('Choose a style first.');
+      o.list = o.list.filter((y) => y.style.toLowerCase() !==
+        s.toLowerCase());
+      if (name === 'set') {
+        const n = api.get('level');
+        if (!(Number.isInteger(n) && n >= 1 && n <= 9))
+          return no('TOC level: a whole number from 1 to 9.');
+        o.list.push({style: s, level: n});
+      }
+      showLevel(api);
+      api.set('msg', '');
+      return undefined;
+    }
+    const p = o.parent;
+    if (p.gone || !p.isOpen || state.get(p) !== o.st)
+      return no(MSG.stale);
+    o.st.extra = o.list.map((x) => ({...x}));
+    o.st.extraChanged = true;
+    say(p, 'Extra styles: ' + listText(o.st.extra));
+    return undefined;
+  });
+}
+
+// --- Update Table of Contents ----------------------------------
+
+const updRows = () => [
+  {kind: 'radio', name: 'pages', group: 'what', value: 'pages',
+    text: 'Update page numbers only', label: 'Update',
+    help: 'Only the page numbers change: the entries as they are.'},
+  {kind: 'radio', name: 'entire', group: 'what', value: 'entire',
+    text: 'Update entire table',
+    help: 'The entries made again from the headings, with their ' +
+      'page numbers.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+  {kind: 'label', name: 'msg2', text: '', w: 460},
+];
+const updState = new WeakMap();  // api -> {at, begin, coded}
+
+/** See the header. */
+export function tocUpdateBox(dw, {begin, mode, coded} = {}) {
+  const v = dw.view;
+  if (!v.sel || v.hdr) return null;
+  const f = begin ? fieldOf(v.d.doc, begin) : tocAt(v.d.doc, v.sel);
+  if (!f) return null;
+  const api = dialog({task: dw.app.task, key: `tocupdate:${dw.docKey}`,
+    title: 'Update Table of Contents', rows: updRows(),
+    help: 'Update Table of Contents: its page numbers only, or the ' +
+      'whole table.', buttons: ['Cancel', 'OK'], enter: 'OK',
+    minW: 480});
+  box(dw, 'tocupdate', () => api.win);
+  if (!updState.has(api)) updWire(api, dw);
+  updState.set(api, {at: where(v), begin: {id: f.begin.id,
+    off: f.begin.off}, coded: !!coded});
+  api.set('what', mode === 'entire' ? 'entire' : 'pages');
+  say(api, '');
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** The handlers of a new choice. */
+function updWire(api, dw) {
+  const v = dw.view;
+  const no = (msg) => {
+    wimp.beep();
+    say(api, msg);
+    return false;
+  };
+  api.on('close', () => {
+    if (!dw.closed) v.focus();
+  });
+  api.on('button', ({name}) => {
+    const st = updState.get(api);
+    if (name === 'Cancel') {
+      if (st && st.coded) {
+        st.coded = false;
+        say(api, MSG.coded);
+        return false;
+      }
+      v.focus();
+      return undefined;
+    }
+    if (v.hdr) return no(MSG.hdr);
+    const f = v.sel ? fieldOf(v.d.doc, st.begin) : null;
+    if (!v.sel || where(v) !== st.at || !f) {
+      if (f) st.at = where(v);
+      return no(f ? MSG.changed : MSG.none);
+    }
+    const mode = api.get('what') === 'entire' ? 'entire' : 'pages';
+    const why = tocWhy(v.d.doc, f);
+    if (why && (mode === 'entire' || why === 'locked'))
+      return no(whyText(why));
+    let message = null;
+    const done = tocCommand(dw, (d, sel, ctx) => {
+      const u = updateToc(d, null, f, mode, ctx, sel);
+      message = u && u.message;
+      return u ? u.sel : null;
+    });
+    if (!done) {
+      say(api, 'The table of contents could not be updated.');
+      return false;
+    }
+    if (message) {
+      st.at = where(v);
+      api.set('what', 'entire');
+      say(api, 'Page numbers updated, but the headings are no ' +
+        'longer the entries: choose Update entire table.');
+      return false;
+    }
+    v.focus();
+    return undefined;
+  });
+}
+
+/** See the header. */
+export function updateFieldAt(dw) {
+  const v = dw.view;
+  if (!v.sel || v.hdr) return updateField(dw);
+  const doc = v.d.doc;
+  const a = tocAt(doc, v.sel.anchor), h = tocAt(doc, v.sel.head);
+  if (h && a && a.begin.id === h.begin.id &&
+    a.begin.off === h.begin.off) return !!tocUpdateBox(dw);
+  return tocCommand(dw, (d, sel, ctx) => updateRangeCmd(d, sel, ctx));
+}
+
+// --- the Table of Figures box ----------------------------------
+
+const FIG = ['label', 'includeLabel', 'pageNumbers', 'rightAlign',
+  'leader', 'hyperlinks'];
+const figRows = (choices) => [
+  {kind: 'popup', name: 'label', label: 'Caption label', w: 220,
+    choices, help: 'The captions listed: those of this label.'},
+  {kind: 'option', name: 'includeLabel', text: 'Include label and ' +
+    'number', help: 'Each entry starts with the caption\'s label ' +
+    'and number ("Figure 1"); off: only the caption\'s text.'},
+  ...rows().slice(0, 3),
+  rows()[4],
+  {kind: 'label', name: 'msg', text: '', w: 520},
+  {kind: 'label', name: 'msg2', text: '', w: 520},
+];
+const figState = new WeakMap();
+const figWired = new WeakSet();
+
+/** The label choices, with seqId's when it is not among them. */
+function figChoices(dw, seqId) {
+  const xs = labelChoices(dw.view.d.doc, savedLabels(choiceOf(dw.app,
+    LABELS_KEY)));
+  if (seqId && !xs.some((c) => seqIdOf(c.text).toLowerCase() ===
+    seqId.toLowerCase())) {
+    const t = seqId.replace(/_/g, ' ');
+    xs.push({id: 'label:' + t, text: t});
+  }
+  return xs;
+}
+
+/** See the header. */
+export function figuresBox(dw) {
+  const v = dw.view;
+  if (!v.sel) return null;
+  const api = dialog({task: dw.app.task, key: `tof:${dw.docKey}`,
+    title: 'Table of Figures', rows: figRows(figChoices(dw, null)),
+    help: 'Table of Figures: a list of the captions of one label ' +
+      'with their page numbers, put in at the caret, or the table ' +
+      'at the caret changed.', buttons: ['Cancel', 'Remove', 'Insert'],
+    enter: 'Insert', minW: 560});
+  box(dw, 'tof', () => api.win);
+  if (!figWired.has(api)) figWire(api, dw);
+  figRefill(api, dw);
+  if (!api.isOpen) api.open();
+  return api;
+}
+
+/** Fill from the caret; keep: the fields the user changed kept. */
+function figRefill(api, dw, keep) {
+  const v = dw.view, old = figState.get(api);
+  const got = fill(v.d.doc, v.hdr ? null : v.sel);
+  const base = got.seqId !== null ? got : {...got, editing: false,
+    seqId: 'Figure', includeLabel: true, why: null};
+  const choices = figChoices(dw, base.seqId);
+  api.choices('label', choices);
+  const hit = choices.find((c) => seqIdOf(c.text).toLowerCase() ===
+    base.seqId.toLowerCase());
+  const shown = {...base, label: hit ? hit.id : choices[0].id};
+  const cur = {...shown};
+  if (keep && old) {
+    for (const f of FIG) {
+      const x = api.get(f);
+      if (x !== old.shown[f]) cur[f] = x;
+    }
+  }
+  const f = base.editing ? tocAt(v.d.doc, v.sel) : null;
+  const st = {at: where(v), base, editing: base.editing, shown: {},
+    begin: f ? {id: f.begin.id, off: f.begin.off} : null};
+  for (const k of FIG) {
+    api.set(k, cur[k]);
+    st.shown[k] = shown[k];
+  }
+  figState.set(api, st);
+  shadeFields(api);
+  api.shade('Remove', !st.editing);
+  const b = api.win.iconByName('button:Insert');
+  if (b) b.setText(st.editing ? 'Update' : 'Insert');
+  api.win.setTitle(st.editing ? 'Table of Figures (edit)'
+    : 'Table of Figures');
+  say(api, st.editing && base.why ? whyText(base.why) : '');
+}
+
+/** The handlers of a new Table of Figures box. */
+function figWire(api, dw) {
+  figWired.add(api);
+  const v = dw.view;
+  const no = (msg) => {
+    wimp.beep();
+    say(api, msg);
+    return false;
+  };
+  api.on('close', () => {
+    if (!dw.closed) v.focus();
+  });
+  api.on('change', ({name}) => {
+    if (name === 'pageNumbers' || name === 'rightAlign')
+      shadeFields(api);
+  });
+  api.on('button', ({name}) => {
+    if (name === 'Cancel') { v.focus(); return undefined; }
+    if (v.hdr) return no(MSG.hdr);
+    const st = figState.get(api);
+    if (!v.sel || where(v) !== st.at) {
+      if (v.sel) figRefill(api, dw, true);
+      return no(MSG.changed);
+    }
+    const f = st.editing ? fieldOf(v.d.doc, st.begin) : null;
+    if (st.editing && !f) {
+      figRefill(api, dw, true);
+      return no(MSG.changed);
+    }
+    if (name === 'Remove') {
+      if (!f) return no(MSG.none);
+      if (!tocCommand(dw, (d) => {
+        const r = removeToc(d, null, f);
+        return r ? r.sel : null;
+      })) { say(api, MSG.failed); return false; }
+      v.focus();
+      return undefined;
+    }
+    if (f && st.base.why) return no(whyText(st.base.why));
+    if (!f) {
+      const why = insertWhy(v.d, v.sel);
+      if (why) return no(why);
+    }
+    const label = String(api.get('label') ?? '').replace(/^label:/, '');
+    const values = {...st.base, extraStyles: [],
+      seqId: seqIdOf(label)};
+    for (const k of FIG.slice(1)) values[k] = api.get(k);
+    if (!values.seqId) return no('Choose a caption label.');
+    const r = patch(values, f || undefined);
+    if (r.error) return no(r.error);
+    const done = tocCommand(dw, (d, sel, ctx) => {
+      const x = f ? editToc(d, null, f, r.opts, ctx)
+        : insertToc(d, null, sel, r.opts, ctx);
+      return x ? x.sel : null;
+    });
+    if (!done) { say(api, MSG.failed); return false; }
+    v.focus();
+    return undefined;
+  });
+}

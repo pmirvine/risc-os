@@ -1,0 +1,240 @@
+// XrefTargets - what Insert > Cross-reference... can point at (Batch
+// E3): the reference types, what each can show, and the targets of
+// each in a document. Pure: no desktop services.
+//
+//   TYPES  (frozen) Word's five: numbered (Numbered item), heading
+//       (Heading), bookmark (Bookmark), footnote (Footnote), endnote
+//       (Endnote): [{id, text}]
+//   typesOf(doc) -> [{id, text}]  TYPES, then a caption type
+//       'seq:' + identifier for Word's labels (Figure, Table,
+//       Equation) and the labels of the document's captions
+//       (./CaptionCmd labelsIn; the identifier ./CaptionCmd seqIdOf:
+//       'seq:My_Plate', text 'My Plate'), each once
+//   whatsOf(type) -> [{id, text}]  what a reference of type can show
+//       (Word's 'Insert reference to', in Word's order):
+//     heading   text, page, number, numberNoContext,
+//               numberFullContext, above
+//     numbered  page, number, numberNoContext, numberFullContext,
+//               text, above (a bookmark: as heading)
+//     footnote, endnote  noteNumber, page, above, noteNumberFormatted
+//     seq:...   caption (entire caption), labelNumber (only label and
+//               number), captionText (only caption text), page, above
+//     [] for any other type
+//   list(doc, type) -> [Target]  the targets of type in doc, in
+//       document order (bookmarks by name):
+//     heading   the body's headings (./HeadingOutline of)
+//     numbered  the body's paragraphs with a list number holding a
+//               letter or digit (./ListNumbers; bullets left out)
+//     bookmark  the bookmarks whose names do not start with '_'
+//               (hidden ones are Word's own), the first of each name
+//               (./BookmarkIndex), anywhere
+//     footnote, endnote  the marks of the body (./NoteNumbers marks)
+//               of notes that are there, each note once
+//     seq:id    the body's paragraphs holding a SEQ id field (case
+//               ignored; not those inside a table of contents'
+//               result)
+//     [] for doc not a document or a type not one of these
+//   find(doc, type, id) -> Target | null  the target of list(doc,
+//       type) with that id
+//
+// Target {id, label, text, para, level?, bookmark?, note?}
+//   id      'p:' + the paragraph id (heading, numbered item, caption),
+//           'b:' + the name (bookmark), 'n:' + kind + ':' + note id
+//   label   what the box lists: a numbered paragraph's number and
+//           text ('1. Intro'), a bookmark's name, a note's number and
+//           first words ('1 First words'), a caption's text
+//   text    the target's text (a heading's or paragraph's text, a
+//           bookmark's plain text, a note's first words, a caption's
+//           whole text)
+//   para    the id of the body paragraph holding it (a bookmark's
+//           start; a note's mark)
+//   level   a heading's level; bookmark a bookmark's name; note
+//           {kind, id}
+import {of as outline, paraText, shownText} from './HeadingOutline';
+import {of as bookmarksOf} from './BookmarkIndex';
+import {of as parasOf} from './FieldParas';
+import {labels} from './ListNumbers';
+import {marks, labelFor} from './NoteNumbers';
+import {LABELS, labelsIn, seqIdOf} from './CaptionCmd';
+import {scan} from './FieldScan';
+import {parse} from './FieldParse';
+import {forEachBlock} from './Walk';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const isDoc = (doc) => isObj(doc) && Array.isArray(doc.sections);
+const it = (id, text) => Object.freeze({id, text});
+const freezeAll = (xs) => Object.freeze(xs.map((x) => it(...x)));
+const ALNUM = /[0-9A-Za-z]/;
+const WORDS_MAX = 40;
+const TOC = /^\s*toc(\s|\\|$)/i;
+
+export const TYPES = freezeAll([['numbered', 'Numbered item'],
+  ['heading', 'Heading'], ['bookmark', 'Bookmark'],
+  ['footnote', 'Footnote'], ['endnote', 'Endnote']]);
+
+const NUMBERS = [['number', 'Paragraph number'],
+  ['numberNoContext', 'Paragraph number (no context)'],
+  ['numberFullContext', 'Paragraph number (full context)']];
+const WHATS = {
+  heading: freezeAll([['text', 'Heading text'], ['page', 'Page number'],
+    ['number', 'Heading number'],
+    ['numberNoContext', 'Heading number (no context)'],
+    ['numberFullContext', 'Heading number (full context)'],
+    ['above', 'Above/below']]),
+  numbered: freezeAll([['page', 'Page number'], ...NUMBERS,
+    ['text', 'Paragraph text'], ['above', 'Above/below']]),
+  bookmark: freezeAll([['text', 'Bookmark text'], ['page', 'Page ' +
+    'number'], ...NUMBERS, ['above', 'Above/below']]),
+  note: freezeAll([['noteNumber', 'Note number'], ['page', 'Page ' +
+    'number'], ['above', 'Above/below'], ['noteNumberFormatted',
+    'Note number (formatted)']]),
+  seq: freezeAll([['caption', 'Entire caption'], ['labelNumber',
+    'Only label and number'], ['captionText', 'Only caption text'],
+  ['page', 'Page number'], ['above', 'Above/below']]),
+};
+
+/** See the header. */
+export function typesOf(doc) {
+  const out = [...TYPES], seen = new Set();
+  const add = (label) => {
+    const id = seqIdOf(label), k = id.toLowerCase();
+    if (!id || seen.has(k)) return;
+    seen.add(k);
+    out.push(it('seq:' + id, id.replace(/_/g, ' ')));
+  };
+  LABELS.forEach(add);
+  if (isDoc(doc)) labelsIn(doc).forEach(add);
+  return out;
+}
+
+/** See the header. */
+export function whatsOf(type) {
+  if (type === 'footnote' || type === 'endnote') return WHATS.note;
+  if (typeof type === 'string' && type.startsWith('seq:') &&
+    type.length > 4) return WHATS.seq;
+  return Object.hasOwn(WHATS, type) && type !== 'note' &&
+    type !== 'seq' ? WHATS[type] : [];
+}
+
+const squash = (s) => String(s).split(/\s/).filter((x) => x)
+  .join(' ');
+
+/** The first words of text, at most WORDS_MAX characters. */
+function firstWords(text) {
+  const t = squash(text);
+  if (t.length <= WORDS_MAX) return t;
+  const k = t.lastIndexOf(' ', WORDS_MAX);
+  return t.slice(0, k > 0 ? k : WORDS_MAX);
+}
+
+/** The headings. */
+function headings(doc) {
+  return outline(doc).map((h) => ({id: 'p:' + h.para,
+    label: (h.label ? h.label + ' ' : '') + h.text, text: h.text,
+    para: h.para, level: h.level}));
+}
+
+/** The numbered paragraphs. */
+function numbered(doc) {
+  const ls = doc.numbering ? labels(doc) : new Map(), out = [];
+  if (!ls.size) return out;
+  for (const b of parasOf(doc).list) {
+    const lab = ls.get(b.id);
+    const t = lab && typeof lab.text === 'string' ? lab.text : '';
+    if (!ALNUM.test(t)) continue;
+    const text = squash(paraText(b));
+    out.push({id: 'p:' + b.id, label: t + ' ' + text, text,
+      para: b.id});
+  }
+  return out;
+}
+
+/** The visible bookmarks, by name. */
+function shownBookmarks(doc) {
+  const idx = bookmarksOf(doc), out = [];
+  for (const e of idx.list) {
+    if (e.name.startsWith('_') || idx.find(e.name) !== e) continue;
+    out.push({id: 'b:' + e.name, label: e.name,
+      text: squash(e.plain), para: e.para, bookmark: e.name});
+  }
+  const low = (x) => x.label.toLowerCase();
+  return out.sort((a, b) => (low(a) < low(b) ? -1 : low(a) > low(b)
+    ? 1 : 0));
+}
+
+/** The notes of kind marked in the body. */
+function notes(doc, kind) {
+  const slot = kind === 'footnote' ? 'footnotes' : 'endnotes';
+  const mp = isObj(doc.notes) && doc.notes[slot] instanceof Map
+    ? doc.notes[slot] : null;
+  const out = [], seen = new Set();
+  if (!mp) return out;
+  forEachBlock(doc, (b) => {
+    if (b.type !== 'p') return true;
+    for (const {x} of marks(b)) {
+      if (x.note !== kind || seen.has(x.id) || !mp.has(x.id)) continue;
+      seen.add(x.id);
+      const num = labelFor(doc, kind, x.id);
+      const n = mp.get(x.id);
+      const text = firstWords((isObj(n) && Array.isArray(n.blocks)
+        ? n.blocks : []).filter((q) => isObj(q) && q.type === 'p')
+        .map(paraText).join(' '));
+      out.push({id: 'n:' + kind + ':' + x.id, label: (num ?? '') +
+        ' ' + text, text, para: b.id, note: {kind, id: x.id}});
+    }
+    return true;
+  });
+  return out;
+}
+
+/** The fields inside a table of contents' result among fs. */
+function inToc(fs) {
+  const out = new Set(), stack = [];
+  for (const f of fs) if (TOC.test(f.instr)) stack.push(...f.children);
+  while (stack.length) {
+    const f = stack.pop();
+    if (out.has(f)) continue;
+    out.add(f);
+    stack.push(...f.children);
+  }
+  return out;
+}
+
+/** The captions of SEQ identifier id. */
+function captions(doc, id) {
+  const fs = scan(doc), skip = inToc(fs), want = id.toLowerCase();
+  const out = [], seen = new Set(), paras = parasOf(doc);
+  for (const f of fs) {
+    if (skip.has(f) || f.simple || !/^\s*seq\b/i.test(f.instr) ||
+      seen.has(f.begin.id)) continue;
+    const p = parse(f.instr);
+    if (p.name !== 'SEQ' || !p.args.length ||
+      String(p.args[0]).toLowerCase() !== want) continue;
+    const n = paras.index.get(f.begin.id);
+    if (n === undefined) continue;
+    seen.add(f.begin.id);
+    const text = squash(shownText(paras.list[n]));
+    out.push({id: 'p:' + f.begin.id, label: text, text,
+      para: f.begin.id});
+  }
+  return out;
+}
+
+/** See the header. */
+export function list(doc, type) {
+  if (!isDoc(doc) || typeof type !== 'string') return [];
+  if (type === 'heading') return headings(doc);
+  if (type === 'numbered') return numbered(doc);
+  if (type === 'bookmark') return shownBookmarks(doc);
+  if (type === 'footnote' || type === 'endnote')
+    return notes(doc, type);
+  if (type.startsWith('seq:') && type.length > 4)
+    return captions(doc, type.slice(4));
+  return [];
+}
+
+/** See the header. */
+export function find(doc, type, id) {
+  if (typeof id !== 'string') return null;
+  return list(doc, type).find((x) => x.id === id) || null;
+}

@@ -1,0 +1,140 @@
+// PageOfBookmark - the page a bookmark is on, from the pagination
+// (Batch E3): what PAGEREF shows.
+//
+//   pageOf(ctx, name) -> {num, fmt, page, i} | null
+//       ctx = {doc, pages} as ./Fields has them (pages a ./Pages,
+//       with its galley G and ofPos; the counts a layout shows
+//       NUMPAGES with are not enough): the page holding the START
+//       of bookmark name (./BookmarkIndex find: case ignored, the
+//       first of a name used twice): the page of the line its start
+//       offset is on (./Pages ofPos, ./PageFind placeOf: in a table
+//       cell its row's; in a paragraph split over pages the line
+//       holding the offset); in a footnote the page whose foot shows
+//       the note's first line (./NotePlace pieces); in a note placed
+//       after the text (an endnote, or a footnote placed at the end
+//       of a section or of the document: ./EndGalley runs) the page
+//       of the note's first item. num and fmt: the page's number
+//       and format as PAGE has them (./Pages: the section's
+//       pgNumType start and fmt); page: the Page; i: its index.
+//       null: no pages (Draft before any are made), no doc, no such
+//       bookmark, a bookmark in a header or footer (on no one
+//       page), or one the pages do not hold
+//   PAGEREF.eval(ctx, f, p) -> string | null  (./Fields' entry; p
+//       the parse of f's instruction)
+//   PAGEREF.why(ctx, f, p) -> string | null  why eval gives null:
+//       'locked', 'bad instruction', 'unsupported switch', 'needs
+//       Print layout', 'missing bookmark', 'bookmark in a header or
+//       footer', 'page not known' (./FieldPasses messages)
+//   SWITCHES  the switches PAGEREF takes
+//
+// PAGEREF name [\h] [\p] [\# picture] [\* format]
+//   The number of the page of name's start in that page's format;
+//   \# and \* as PAGE has them (./FieldFormat numberText). \h makes
+//   the field a link (the text is the same). \p: 'above' or 'below'
+//   when the bookmark is on the field's own page (ctx.page, a Page
+//   of ctx.pages; the body only: ./FieldParas pos), else 'on page '
+//   and the number (Word's English text; to check in real Word).
+//   Null: not exactly one name, a switch not one of these, no page;
+//   \p where the field's own page or place is not known (a header
+//   or footer: ctx.page is not a Page of the pages; a note).
+// The pages of the notes are found once per Pages (all worked out:
+// a Map note -> page index). Pure: no desktop services; nothing in
+// the document is changed (the Pages work out their pages).
+import {of as bookmarks} from './BookmarkIndex';
+import {of as parasOf, pos} from './FieldParas';
+import {numberText} from './FieldFormat';
+import {formatNumber} from './NumFormat';
+import {runsOf} from './EndGalley';
+import {pageOfPlace} from './PageFind';
+
+export const SWITCHES = Object.freeze(['\\h', '\\p', '\\#', '\\*']);
+const isObj = (v) => v !== null && typeof v === 'object';
+const isPages = (P) => isObj(P) && Array.isArray(P.list) &&
+  isObj(P.G) && typeof P.ofPos === 'function';
+const keyOf = (kind, id) => kind + ':' + String(id);
+const notes = new WeakMap();           // Pages -> Map key -> index
+
+/** Map note key -> the index of the page its text starts on. */
+function notePages(P) {
+  let m = notes.get(P);
+  if (m) return m;
+  if (!P.done && typeof P.finish === 'function') P.finish();
+  m = new Map();
+  P.list.forEach((pg, i) => {
+    const ps = isObj(pg.notes) ? pg.notes.pieces : null;
+    for (const x of Array.isArray(ps) ? ps : []) {
+      const k = keyOf('footnote', x.id);
+      if (x.from === 0 && !m.has(k)) m.set(k, i);
+    }
+  });
+  const items = P.G.items;
+  for (const run of runsOf(P.G)) {
+    for (let k = run.at; k < run.at + run.n; k++) {
+      const en = isObj(items[k]) ? items[k].en : null;
+      if (!isObj(en) || en.id === null || en.id === undefined) continue;
+      const key = keyOf(en.kind, en.id);
+      if (!m.has(key)) m.set(key, pageOfPlace(P, {k, line: 0}));
+    }
+  }
+  notes.set(P, m);
+  return m;
+}
+
+/** The bookmark entry of name in ctx.doc, or null. */
+function entryOf(ctx, name) {
+  if (!isObj(ctx) || !isObj(ctx.doc) || typeof name !== 'string')
+    return null;
+  return bookmarks(ctx.doc).find(name) || null;
+}
+
+/** The page of entry e in Pages P (see the header), or null. */
+function placeOf(P, e) {
+  if (e.story !== null) return null;
+  let i = -1;
+  if (e.inNote) {
+    const v = isObj(e.note) ? notePages(P).get(keyOf(e.note.kind,
+      e.note.id)) : undefined;
+    if (v !== undefined) i = v;
+  } else i = P.ofPos(e.start);
+  const pg = i >= 0 ? P.list[i] : null;
+  return pg ? {num: pg.num, fmt: pg.fmt, page: pg, i} : null;
+}
+
+/** See the header. */
+export function pageOf(ctx, name) {
+  if (!isObj(ctx) || !isPages(ctx.pages)) return null;
+  const e = entryOf(ctx, name);
+  return e ? placeOf(ctx.pages, e) : null;
+}
+
+const known = (p) => p.switches.every((s) => SWITCHES.includes(s.sw));
+
+function pageref(ctx, f, p) {
+  if (p.args.length !== 1 || !known(p) || !isPages(ctx.pages))
+    return null;
+  const e = entryOf(ctx, p.args[0]);
+  const at = e && placeOf(ctx.pages, e);
+  if (!at) return null;
+  const n = numberText(at.num, formatNumber(at.num, at.fmt),
+    p.switches);
+  if (n === null || !p.switches.some((s) => s.sw === '\\p')) return n;
+  const own = ctx.page;
+  if (!isObj(own) || ctx.pages.list[own.i] !== own) return null;
+  if (own.i !== at.i) return 'on page ' + n;
+  if (e.inNote || !isObj(f.begin)) return null;
+  return pos(parasOf(ctx.doc), e.start.id, e.start.off, f.begin);
+}
+
+function why(ctx, f, p) {
+  if (f.lock) return 'locked';
+  if (pageref(ctx, f, p) !== null) return null;
+  if (p.args.length !== 1) return 'bad instruction';
+  if (!known(p)) return 'unsupported switch';
+  if (!isPages(ctx.pages)) return 'needs Print layout';
+  const e = entryOf(ctx, p.args[0]);
+  if (!e) return 'missing bookmark';
+  if (e.story !== null) return 'bookmark in a header or footer';
+  return 'page not known';
+}
+
+export const PAGEREF = Object.freeze({eval: pageref, why});

@@ -1,0 +1,220 @@
+// FieldStyleRef - the STYLEREF field: the text (or number) of the
+// nearest paragraph in a style (Batch E3).
+//
+//   STYLEREF.eval(ctx, f, p) -> string | null
+//   STYLEREF.why(ctx, f, p) -> string | null  'heading number holds
+//       words' when \s met such a number (above), else null
+//       ctx = {doc, page?, ...} as ./Fields; f a ./FieldScan Field;
+//       p the parse of its instruction (./FieldParse). Null: the
+//       stored result stays
+//
+// STYLEREF style [\n | \r | \w | \s] [\p] [\l] [\t] [\* format]
+//   style  exactly one argument: a style name ('Heading 1', quoted
+//          or not), a style id, or a number n (1..9) for Heading n.
+//          Names are compared with case and white space ignored, an
+//          id with the name's ASCII letters and digits ('Heading 1'
+//          is the id Heading1, the German name with U-umlaut
+//          'berschrift 1' the id berschrift1: how Word makes
+//          ids). A name 'Name,alias' is also taken as its parts.
+//          A paragraph matches when its own
+//          style is one of those (the paragraph without a style: the
+//          default paragraph style); a style that is only BASED on
+//          the style does not match. A style whose id is localized
+//          but whose name is 'heading 1' matches 'Heading 1' (not
+//          its translation into the language of the Word that wrote
+//          the file, when the id gives no hint)
+//   (none) the paragraph's text: ./HeadingOutline paraText (a tab
+//          or line break one space, field marks and pictures
+//          nothing, results as they stand)
+//   \n \r \w  the paragraph's list number as ./FieldParas
+//          numberText ('r' relative to the field's own paragraph);
+//          \s the same as \n (the number of the heading: Word's
+//          chapter number in a caption), except that a number with
+//          words in it ('Chapter 1': a run of two or more letters
+//          that is not a roman numeral or one letter repeated,
+//          hasWords) gives null: Word's \s drops such text and what
+//          it keeps is not known (never write a number Word may
+//          not; why: 'heading number holds words'); null for a
+//          paragraph with no number, or with \t
+//   hasWords(v) -> bool  that test, exported
+//   \p     'above' or 'below' (the body only): the match against
+//          the field; not with the number switches (null)
+//   \l     in a header or footer: the last match on the page, not
+//          the first; ignored in the body
+//   \t     read; applying it to a number is not done (null)
+//   \*     the formats ./FieldFormat formatGeneral knows
+// A paragraph with no text (only white space) is never the match
+// (Word skips it: the corpus has a Product Head paragraph that is
+// empty, with the result taken from the next).
+// Which paragraph: a field in the body takes the nearest match
+// before it, in its own paragraph too, else the nearest after. A
+// field elsewhere (a header or footer) needs ctx.page.span, the body
+// paragraphs on the page, {first, last} (ids): the first match on
+// the page (\l: the last), else the nearest one before the page
+// (what Word does: the search goes back), else the nearest after.
+// A paragraph with a tab or line break gives null (Word probably
+// keeps them; here they would become spaces). The text of a
+// paragraph that holds the field itself is not taken
+// (it would contain the field's own result): the stored result
+// stays. Null as well when: no paragraph is in that style, no page (or
+// span) for a field of a header or footer, a switch is not one of
+// these, there is not exactly one argument. (Word shows 'Error! No
+// text of specified style in document.' for no match: not
+// produced.) Pure: no desktop services.
+import {of as parasOf, numberText, pos} from './FieldParas';
+import {paraText} from './HeadingOutline';
+import {formatGeneral} from './FieldFormat';
+
+const NUMBER = new Map([['\\n', 'n'], ['\\s', 'n'], ['\\r', 'r'],
+  ['\\w', 'w']]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const squash = (s) => [...String(s).toLowerCase()]
+  .filter((c) => c.trim() !== '').join('');
+
+/** The spellings style argument `arg` may have: the number n as
+ *  'heading n', else the whole text and each part split at commas
+ *  (Word writes 'Name,alias'), white space left out, case ignored;
+ *  each with its form as a style id (ASCII letters and digits). */
+function wanted(arg) {
+  const parts = /^[1-9]$/.test(arg) ? ['heading' + arg]
+    : [arg, ...arg.split(',')].map(squash).filter((x) => x);
+  return {names: new Set(parts), ids: new Set(parts.map(
+    (x) => x.replace(/[^a-z0-9]/g, '')))};
+}
+
+/** The places of the paragraphs in the style `arg` names. */
+function placesOf(paras, doc, arg) {
+  const {names, ids} = wanted(arg);
+  const m = isObj(doc.styles) && doc.styles.styles instanceof Map
+    ? doc.styles.styles : new Map();
+  const hit = new Set();
+  for (const [id, s] of m) {
+    if (isObj(s) && s.type === 'paragraph' && (ids.has(squash(id)) ||
+      names.has(squash(s.name ?? '')))) hit.add(id);
+  }
+  const dflt = isObj(doc.styles) && isObj(doc.styles.defaults)
+    ? doc.styles.defaults.paragraph : null;
+  const test = (p) => {
+    const id = p.pStyle === undefined || p.pStyle === null ? dflt
+      : p.pStyle;
+    return typeof id === 'string' && (hit.has(id) ||
+      (!m.has(id) && ids.has(squash(id)))) &&
+      paraText(p).trim() !== '';
+  };
+  return paras.matching('style:' + arg, test);
+}
+
+/** The index of the first element of a >= v (a sorted). */
+function lower(a, v) {
+  let lo = 0, hi = a.length;
+  while (lo < hi) {
+    const m = (lo + hi) >> 1;
+    if (a[m] < v) lo = m + 1;
+    else hi = m;
+  }
+  return lo;
+}
+
+/** The place of the match for field f, or undefined. */
+function pick(ctx, paras, f, places, last) {
+  const n = f.begin ? paras.index.get(f.begin.id) : undefined;
+  let a = n, z = n;
+  if (n === undefined) {
+    const span = ctx.page && ctx.page.span;
+    if (!isObj(span)) return undefined;
+    a = paras.index.get(span.first);
+    z = paras.index.get(span.last);
+    if (a === undefined || z === undefined || z < a) return undefined;
+    const i = lower(places, a);
+    if (i < places.length && places[i] <= z) {
+      if (!last) return places[i];
+      return places[lower(places, z + 1) - 1];
+    }
+  } else {
+    const j = lower(places, n + 1);
+    if (j > 0) return places[j - 1];
+    return places.length ? places[0] : undefined;
+  }
+  const i = lower(places, a);
+  if (i > 0) return places[i - 1];
+  const j = lower(places, z + 1);
+  return j < places.length ? places[j] : undefined;
+}
+
+/** Whether p holds a tab or a line break (shown as spaces here). */
+function hasBreak(p) {
+  if (/[\t\n\r]/.test(p.text)) return true;
+  const xs = isObj(p.inlines) ? Object.values(p.inlines) : [];
+  return xs.some((x) => isObj(x) && (x.kind === 'tab' ||
+    x.kind === 'br'));
+}
+
+const ROMAN = new Set([...'ivxlcdm']);
+const isLetter = (c) => c.toLowerCase() !== c.toUpperCase();
+
+/** Whether number text v holds a word: a run of two or more letters
+ *  that is neither a roman numeral nor one letter repeated (AA). */
+export function hasWords(v) {
+  const s = String(v);
+  let run = '';
+  const word = () => {
+    const lo = run.toLowerCase();
+    const roman = [...lo].every((c) => ROMAN.has(c));
+    const same = [...lo].every((c) => c === lo[0]);
+    return run.length >= 2 && !roman && !same;
+  };
+  for (const c of s + ' ') {
+    if (isLetter(c)) {
+      run += c;
+      continue;
+    }
+    if (word()) return true;
+    run = '';
+  }
+  return false;
+}
+
+/** The result of field f, and whether \s met a number with words. */
+function compute(ctx, f, p) {
+  const no = {v: null, words: false};
+  if (p.args.length !== 1 || !isObj(ctx.doc)) return no;
+  let mode = null, above = false, last = false, t = false, s1 = false;
+  const fmt = [];
+  for (const s of p.switches) {
+    if (s.sw === '\\*') fmt.push(s);
+    else if (NUMBER.has(s.sw)) {
+      if (s.sw === '\\s') s1 = true;
+      const m = NUMBER.get(s.sw);
+      if (mode && mode !== m) return no;
+      mode = m;
+    } else if (s.sw === '\\p') above = true;
+    else if (s.sw === '\\l') last = true;
+    else if (s.sw === '\\t') t = true;
+    else return no;
+  }
+  const paras = parasOf(ctx.doc);
+  const places = placesOf(paras, ctx.doc, p.args[0]);
+  const at = pick(ctx, paras, f, places, last);
+  if (at === undefined) return no;
+  const para = paras.list[at];
+  if (!mode && !above && f.begin && para.id === f.begin.id) return no;
+  let v;
+  if (mode) {
+    if (above || t) return no;
+    v = numberText(paras, para.id, mode, f.begin && f.begin.id);
+    if (s1 && v !== null && hasWords(v)) return {v: null, words: true};
+  } else if (above) {
+    v = f.begin && paras.index.has(f.begin.id)
+      ? pos(paras, para.id, 0, f.begin) : null;
+  } else {
+    if (hasBreak(para)) return no;
+    v = paraText(para);
+  }
+  return {v: v === null ? null : formatGeneral(v, fmt), words: false};
+}
+
+const styleref = (ctx, f, p) => compute(ctx, f, p).v;
+const why = (ctx, f, p) => (compute(ctx, f, p).words
+  ? 'heading number holds words' : null);
+
+export const STYLEREF = Object.freeze({eval: styleref, why});
