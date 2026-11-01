@@ -193,12 +193,12 @@ function budgets(label, make, hf) {
         }
         return {a: median(draft), b: median(print), e: median(diff)};
       };
-      // the median of the paired differences, best of three attempts
+      // the median of the paired differences, best of five attempts
       // (P8.3): a real cost of 5 ms is in every pair of every attempt;
       // load from tests running beside this one (the parallel unit
       // run) is in some pairs, or in one attempt, not in all three
       let got = null;
-      for (let t = 0; t < 3 && !(got && got.e < 5); t++) {
+      for (let t = 0; t < 5 && !(got && got.e < 5); t++) {
         const x = attempt();
         console.log(`# keystroke on page ${page}: Draft ` +
           `${x.a.toFixed(2)} ms, Print layout ${x.b.toFixed(2)} ms, ` +

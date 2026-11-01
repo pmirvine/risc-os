@@ -267,6 +267,19 @@ export function notesBack(want, back, doc, notes0, what,
 }
 
 /**
+ * want.parts in the order back.parts has them, when both hold the
+ * same names: a notes or comments part a command made is written in
+ * the zip's place for it (before the pictures), where notesBack and
+ * commentsBack, which only set it, put it last.
+ */
+export function partsLike(want, back) {
+  const a = want.parts, b = back.parts;
+  if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size ||
+    ![...a.keys()].every((n) => b.has(n))) return;
+  want.parts = new Map([...b.keys()].map((n) => [n, a.get(n)]));
+}
+
+/**
  * The comments as a step that removed some writes them (a deletion
  * took their marks: ./CommentKeep, Batch F1): their parts, written
  * anew, are the new file's, compared through the model (the comments
@@ -376,6 +389,7 @@ export async function roundTrip(bytes, what, seed, change,
   }
   notesBack(want, back, d.doc, notes0, what, notes);
   commentsBack(want, back, d.doc, comments0);
+  partsLike(want, back);
   assertSameDoc(back, want, what + ' (changed, seed ' + seed + ')');
   // no package error the original did not have
   const z = await readZip(out1);

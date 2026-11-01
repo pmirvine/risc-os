@@ -40,14 +40,15 @@ import {parseHtml} from './html-fake.mjs';
 import {rng} from './word-docs.mjs';
 import {assertSameDoc, expectedBack, withNewParts}
   from './docx-compare.mjs';
-import {roundTrip, write, schema, corpusFiles, hash, ALL}
-  from './roundtrip-lib.mjs';
+import {roundTrip, write, schema, corpusFiles, hash, ALL, notesBack,
+  commentsBack, partsLike} from './roundtrip-lib.mjs';
 import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 import {tbl, tr, tc, tblDocx, nestedTable, TABLE_NORMAL, GRID_TABLE_4}
   from './tbl-fixtures.mjs';
 import {strictDocx} from './clip-lists-docs.mjs';
 
 const KEY = 1, OTHER = 2;
+const opened = new WeakMap();
 const STEPS = ALL ? 25 : 40;
 const done = {pastes: 0, over: 0, html: 0, cross: 0, same: 0};
 const pickOf = (rd, a) => a[Math.floor(rd() * a.length)];
@@ -183,6 +184,9 @@ async function step(rd, d, srcs, store, bad, tag0) {
   if (!tsel) return;
   const tag = `${tag0} ${fromSelf ? 'same' : html ? 'html' : 'cross'}`;
   const before = state(d), depth0 = d.undoDepth;
+  // (notes and comments as the document was opened: the first paste's)
+  if (!opened.has(d)) opened.set(d, [d.doc.notes, d.doc.comments]);
+  const [notes0, comments0] = opened.get(d);
   const bm0 = bmProblems(d.doc), sr0 = badStyleRefs(d.doc);
   const tc0 = topConts(d.doc), to0 = touching(d.doc);
   let out;
@@ -212,7 +216,12 @@ async function step(rd, d, srcs, store, bad, tag0) {
   const after = state(d);
   const back = await readDocx(await write(d.doc));
   try {
-    assertSameDoc(back, withNewParts(expectedBack(d.doc), back), tag);
+    const want = withNewParts(expectedBack(d.doc), back);
+    // (a paste that copied a note or a comment writes that part anew)
+    notesBack(want, back, d.doc, notes0, tag);
+    commentsBack(want, back, d.doc, comments0);
+    partsLike(want, back);
+    assertSameDoc(back, want, tag);
   } catch (e) {
     bad.push('read back differs ' + tag + ': ' + e.message.slice(0, 300));
   }

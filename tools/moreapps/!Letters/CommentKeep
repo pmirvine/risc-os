@@ -9,7 +9,10 @@
 //       comment of doc.comments that the step took a modelled mark
 //       of (cmtStart, cmtEnd, cmtRef: ./ReadPara) from the body and
 //       that has none of its three marks there now (./CommentMarks
-//       marks), and for the replies of those (a reply goes with its
+//       marks) or whose reference mark the step took and has no
+//       reference there now (its range marks the step left go too,
+//       in a compound op before the removeComments), and for the
+//       replies of those (a reply goes with its
 //       parent, ./CommentRead parentsOf, at every depth: the marks
 //       of such a reply the step left in the body are deleted with
 //       it, in a compound op before the removeComments, so no mark
@@ -65,25 +68,29 @@ function mapOf(doc) {
 }
 
 /** The ids of the marks of paragraph p into out. */
-function take(p, out) {
+function take(p, out, refs) {
   if (!isObj(p) || p.type !== 'p') return;
-  for (const m of paraMarks(p)) out.add(m.id);
+  for (const m of paraMarks(p)) {
+    out.add(m.id);
+    if (m.kind === 'cmtRef') refs.add(m.id);
+  }
 }
 
 /** The ids of the marks the blocks hold, tables in them too. */
-function inBlocks(bs, out) {
+function inBlocks(bs, out, refs) {
   if (!Array.isArray(bs)) return;
   forEachIn(bs, [0], (b) => {
-    take(b, out);
+    take(b, out, refs);
     return true;
   });
 }
 
 /** The ids of the marks inverse op `op` would put back. */
-function putBack(op, out) {
+function putBack(op, out, refs) {
   if (!isObj(op)) return;
   if (op.op === 'compound') {
-    if (Array.isArray(op.ops)) for (const o of op.ops) putBack(o, out);
+    if (Array.isArray(op.ops))
+      for (const o of op.ops) putBack(o, out, refs);
     return;
   }
   if (op.story !== undefined && op.story !== null) return;
@@ -91,11 +98,14 @@ function putBack(op, out) {
     const xs = isObj(op.content) && isObj(op.content.inlines)
       ? op.content.inlines : null;
     for (const x of xs ? Object.values(xs) : []) {
-      if (isCommentMark(x) && Number.isInteger(x.id)) out.add(x.id);
+      if (!isCommentMark(x) || !Number.isInteger(x.id)) continue;
+      out.add(x.id);
+      if (x.kind === 'cmtRef') refs.add(x.id);
     }
-  } else if (op.op === 'restoreBlock') inBlocks([op.snapshot], out);
-  else if (op.op === 'insertBlock') inBlocks([op.block], out);
-  else if (op.op === 'insertBlocks') inBlocks(op.blocks, out);
+  } else if (op.op === 'restoreBlock')
+    inBlocks([op.snapshot], out, refs);
+  else if (op.op === 'insertBlock') inBlocks([op.block], out, refs);
+  else if (op.op === 'insertBlocks') inBlocks(op.blocks, out, refs);
 }
 
 /** The comment ids named under Xml node into out. */
@@ -173,11 +183,15 @@ function withReplies(doc, map, gone, opaque) {
 export function dropped(doc, invs) {
   const map = mapOf(doc);
   if (!map || !Array.isArray(invs)) return null;
-  const was = new Set();
-  for (const op of invs) putBack(op, was);
+  const was = new Set(), refs = new Set();
+  for (const op of invs) putBack(op, was, refs);
   if (!was.size) return null;
   const now = marks(doc);
-  const lost = [...was].filter((id) => !now.has(id) && map.has(id));
+  // (the reference taken, and none left, ends the comment as well as
+  // its last mark: Word's comment is its reference; the range marks
+  // the step left go with it, as a reply's do)
+  const lost = [...was].filter((id) => map.has(id) && (!now.has(id) ||
+    (refs.has(id) && !now.get(id).ref)));
   if (!lost.length) return null;
   const opaque = opaqueIds(doc);
   const gone = new Set(lost.filter((id) => !opaque.has(id)));

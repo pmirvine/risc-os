@@ -31,7 +31,7 @@ import {styleIdByName} from '../../tools/moreapps/!Letters/TocBuild';
 import {loadStyles, tm} from './word-docs.mjs';
 import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
-import {fld} from './field-fixtures.mjs';
+import {fld, begin, instr, sep, end} from './field-fixtures.mjs';
 import {lintAfter} from './lint-after.mjs';
 import {withHeaders} from './story-fixtures.mjs';
 import {noteDoc, noteP, mark} from './note-fixtures.mjs';
@@ -407,6 +407,22 @@ describe('updateToc', () => {
       d.undo();
       assert.ok(same(d.doc, s0), 'undo');
     });
+
+  it('an entry\'s link: text deleted or moved away inside it is ' +
+    'not the entry\'s text', async () => {
+    const when = ' w:author="A" w:date="2024-01-02T03:04:05Z"';
+    const DEL = `<w:del w:id="91"${when}><w:r><w:delText>gone` +
+      '</w:delText></w:r></w:del>';
+    const MV = (tag, id, t) => `<w:${tag} w:id="${id}"${when}><w:r>` +
+      `<w:t>${t}</w:t></w:r></w:${tag}>`;
+    const link = '<w:hyperlink w:anchor="x">' + r('Ke') + DEL +
+      MV('moveFrom', 92, 'away') + MV('moveTo', 93, 'pt') +
+      '</w:hyperlink>';
+    const doc = await read(p(begin() + instr(' TOC \\o "1-3" ') +
+      sep()) + p(link) + p(end()) + H(1, 'Kept'));
+    const es = entriesOf(doc, tocOf(doc));
+    assert.deepEqual(es.map((e) => e.text), ['Kept']);
+  });
 
   it('pages: the entry text kept as it is, numbers rewritten; a ' +
     'heading added is reported', async () => {

@@ -21,6 +21,7 @@ import {run} from '../../tools/moreapps/!Letters/EditApply';
 import {deleteSelection} from '../../tools/moreapps/!Letters/EditDel';
 import {replaceOne, replaceAll}
   from '../../tools/moreapps/!Letters/Find';
+import {tableToTextCmd} from '../../tools/moreapps/!Letters/TblConvertCmd';
 import {TABLE} from '../../tools/moreapps/!Letters/TblCmdCols';
 import {moveCmd} from '../../tools/moreapps/!Letters/OutlineCmd';
 import {updateWithBlocks} from '../../tools/moreapps/!Letters/FieldCmd';
@@ -312,6 +313,27 @@ describe('deleting marks takes their comments in the same step', () => {
     whole(d, [2]);
   });
 
+  it('a selection deleting only the reference takes the comment, ' +
+    'its range marks and its replies; undo brings them back',
+  async () => {
+    const {d} = await setup(p(r('ab') + range(1, r('cd')) + r('ef')) +
+      p(range(2, r('x'))), {1: 'one', 2: {text: 'reply', parent: 1}});
+    const off = marks(d.doc).get(1).ref.off;
+    const b = para(d);
+    const depth = d.undoDepth;
+    assert.ok(deleteSelection(d, span(at(b, off), at(b, off + 1))));
+    assert.equal(d.undoDepth, depth + 1, 'one step');
+    assert.ok(!has(d, 1), 'the comment went');
+    assert.ok(!has(d, 2), 'with its reply');
+    assert.ok(!marks(d.doc).has(1), 'no range mark of it is left');
+    assert.equal(para(d).text, 'abcdef');
+    whole(d, [1, 2]);
+    d.undo();
+    assert.ok(has(d, 1, 2));
+    assert.equal(marks(d.doc).get(1).ref.off, off);
+    whole(d, [1, 2]);
+  });
+
   it('Find and Replace never replaces across a mark; Outline moves ' +
     'keep ranges whole', async () => {
     const {d} = await setup(p(r('a') + cs(1) + r('a')) + p(r('b')) +
@@ -346,6 +368,29 @@ describe('deleting marks takes their comments in the same step', () => {
     whole(d, [1, 2]);
     d.undo();
     assert.ok(has(d, 1, 2));
+  });
+});
+
+describe('a table\'s own comment marks, converted to text', () => {
+  it('Table to text makes them modelled marks, as the file reads ' +
+    'them back', async () => {
+    const tab = '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>' +
+      '</w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol ' +
+      'w:w="2000"/></w:tblGrid><w:tr>' + cs(1) +
+      `<w:tc>${p(r('a'))}</w:tc><w:tc>${p(r('b') + ce(1) + cr(1))}` +
+      '</w:tc></w:tr></w:tbl>';
+    const {d} = await setup(tab + p(r('end')), {1: 'one'});
+    const a = d.doc.sections[0].blocks[0].rows[0].cells[0].blocks[0];
+    assert.ok(tableToTextCmd(d, S.caret({id: a.id, off: 0}),
+      {sep: 'tab'}));
+    const m = marks(d.doc).get(1);
+    assert.ok(m && m.start && m.end && m.ref, 'all three are modelled');
+    const back = await readDocx(await writeDocx(d.doc, {date: DATE}));
+    const w = marks(back).get(1);
+    assert.deepEqual([w.start.off, w.end.off, w.ref.off],
+      [m.start.off, m.end.off, m.ref.off]);
+    assert.deepEqual(back.sections[0].blocks.map((b) => b.inlines),
+      d.doc.sections[0].blocks.map((b) => b.inlines));
   });
 });
 
@@ -391,6 +436,36 @@ describe('what keeps a comment', () => {
       at: 0, del: 0, content: {text: 'x', runs: [], inlines: {}}}]),
     null);
     assert.equal(dropped({sections: []}, [{op: 'compound'}]), null);
+  });
+});
+
+describe('a second comment with the same id (corpus Comment040)', () => {
+  const DUP = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '\n<w:comments xmlns:w="http://schemas.openxmlformats.org/' +
+    'wordprocessingml/2006/main">' + ['one', 'two'].map((t) =>
+    `<w:comment w:id="1" w:author="Ann" w:initials="A"><w:p><w:r>` +
+    `<w:t>${t}</w:t></w:r></w:p></w:comment>`).join('') + '</w:comments>';
+  const dup = () => setup(p(r('a') + range(1, r('b')) + r('c')), {},
+    {parts: {'word/comments.xml': DUP}});
+
+  it('the second is kept raw; removing the first takes it too, so ' +
+    'the file does not read it back as comment 1', async () => {
+    const {d} = await dup();
+    assert.equal(cmap(d).size, 1);
+    assert.equal(d.doc.comments.raw.comments.length, 1);
+    const b = para(d);
+    deleteSelection(d, span(at(b, 0), at(b, b.text.length)));
+    assert.ok(!has(d, 1));
+    const back = await readDocx(await writeDocx(d.doc, {date: DATE}));
+    assert.equal(back.comments.map.size, 0, 'no comment 1 back');
+    d.undo();
+    assert.ok(has(d, 1));
+    assert.equal(d.doc.comments.raw.comments.length, 1, 'raw back');
+    const again = await readDocx(await writeDocx(d.doc, {date: DATE}));
+    assert.equal(again.comments.map.size, 1);
+    assert.equal(again.comments.raw.comments.length, 1);
+    d.redo();
+    assert.equal(d.doc.comments.raw.comments.length, 0);
   });
 });
 
@@ -449,7 +524,13 @@ describe('hostile', () => {
       return ms;
     };
     await time(200);
-    const a = await time(1000), b = await time(10000);
-    assert.ok(b / Math.max(a, 1) < 20, 'ratio ' + (b / a).toFixed(1));
+    // (up to three tries: a loaded machine can slow one; quadratic
+    // is about 100 times slower in every try)
+    let ratio = Infinity;
+    for (let k = 0; k < 3 && ratio >= 20; k++) {
+      const a = await time(1000), b = await time(10000);
+      ratio = Math.min(ratio, b / Math.max(a, 1));
+    }
+    assert.ok(ratio < 20, 'ratio ' + ratio.toFixed(1));
   });
 });

@@ -335,7 +335,15 @@ describe('StylePatch: built-in by name', () => {
         }
         return b;
       };
-      const small = best(make(1000)), big = best(make(10000));
+      // (up to three tries: a loaded machine can slow one try; a
+      // quadratic one is about 100 times slower in every try)
+      const t1 = make(1000), t2 = make(10000);
+      let small = 0, big = Infinity;
+      for (let k = 0; k < 3; k++) {
+        const a = best(t1), b = best(t2);
+        if (b < big) [small, big] = [a, b];
+        if (b < Math.max(a, 1) * 30) break;
+      }
       console.log('# basedChoices 10000: ' + big.toFixed(1) +
         ' ms (1000: ' + small.toFixed(1) + ' ms)');
       if (process.env.WORD_PERF) assert.ok(big < 200, 'took ' + big);

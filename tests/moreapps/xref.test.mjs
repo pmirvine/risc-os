@@ -44,6 +44,7 @@ import {loadStyles, tm} from './word-docs.mjs';
 import {buildDocx, documentXml, stylesXml, numberingXml, p, r}
   from './build-docx.mjs';
 import {fld} from './field-fixtures.mjs';
+import {commentBytes, range} from './comment-fixtures.mjs';
 import {tbl, tr, tc} from './tbl-fixtures.mjs';
 import {lintAfter} from './lint-after.mjs';
 import {withHeaders} from './story-fixtures.mjs';
@@ -342,6 +343,23 @@ describe('insertXref: bookmarks', () => {
       ms.length);
     assert.equal(ms.length, 6, 'Mine and five _Ref');
     await lintAfter(o.d.doc, 'xref ids');
+  });
+
+  it('a reference put over a comment\'s reference mark: the comment ' +
+    'goes with it and the field is still found', async () => {
+    const bytes = await commentBytes(H(1, 'Head') +
+      p(r('See ') + range(1, r('x'))), {1: 'one'}, {parts: {
+      'word/styles.xml': stylesXml(STYLES)}});
+    const o = opened(await readDocx(bytes));
+    const h = target(o.d.doc, 'heading', 'Head');
+    const b = blocks(o.d)[1];
+    const off = b.text.length - 1;      // (the comment's reference)
+    const res = insertXref(o.d, o.t, select({id: b.id, off},
+      {id: b.id, off: off + 1}), {type: 'heading', target: h.id,
+      what: 'text'}, o.ctx);
+    assert.ok(res, 'done, not refused');
+    assert.equal(o.d.doc.comments.map.size, 0, 'the comment went');
+    assert.ok(res.field && res.field.begin.id === b.id);
   });
 
   it('an existing _Ref round the heading is reused', async () => {
