@@ -6,6 +6,13 @@
 //   assertSameDoc after expectedBack, as the corpus test compares);
 // - the package linter (lint-package.mjs) finds no error the
 //   original did not have;
+// - no range mark (bookmark, comment range, permission range, a
+//   move's ranges) of any part under word/ is left without its
+//   partner that had one in the original (range-pairs.mjs: Word
+//   reports such a file as unreadable content);
+// - no part under word/ has more w:delText outside a w:del, or w:t
+//   inside one, than the original (text-context.mjs: Word will not
+//   open a w:moveFrom holding w:delText);
 // - xmllint against wml.xsd (tools/moreapps/.cache, as validate.mjs)
 //   finds no schema error in the main part the original did not have
 //   (skipped when xmllint or the schemas are missing);
@@ -26,10 +33,16 @@
 //   and the order of kinds (numPicBullet, abstractNum, num,
 //   numIdMacAtCleanup) kept.
 //
-// {read} is passed to readDocx as its options. {stories: true} lets
-// the bytes of a header / footer part differ from the model's when
-// the commands changed that story (the model read back is compared
-// all the same: its blocks are part of the document). {notes: true}
+// {read} is passed to readDocx as its options. {pairs: false} turns
+// the range-mark check off, for a change made of raw model ops (a
+// test applying replaceText or removeBlock itself, as
+// tables-roundtrip's tableEdits does): those bypass the commands,
+// which are what keeps the marks paired (./BookmarkKeep), so the
+// check cannot hold there; it stays on for everything else.
+// {stories: true} lets the bytes of a header / footer part differ
+// from the model's when the commands changed that story (the model
+// read back is compared all the same: its blocks are part of the
+// document). {notes: true}
 // (off by default) lets a note that was edited, moved to the other
 // kind or renumbered come back with the element it was written as
 // (its children are its blocks, compared; its attributes but w:id
@@ -51,6 +64,8 @@ import {Document} from '../../tools/moreapps/!Letters/Document';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {lintPackage} from './lint-package.mjs';
+import {partsUnpaired} from './range-pairs.mjs';
+import {partsMisplaced} from './text-context.mjs';
 import {assertSameDoc, expectedBack, withNewParts, sameBytes, sameTree}
   from './docx-compare.mjs';
 
@@ -266,6 +281,26 @@ export function commentsBack(want, back, doc, comments0) {
     if (typeof n === 'string' && back.parts.has(n))
       want.parts.set(n, back.parts.get(n));
   }
+  // (a document with no comments part that gets one, and already had
+  // a companion (people.xml beside no comments.xml): the companion is
+  // kept as bytes, ./CommentParts partState 'unknown', so a new
+  // author is not added to it, and opening the file again reads it
+  // as that companion: the very bytes it had, compared here)
+  if (!comments0 || !comments0.root) {
+    const bcp = (back.meta && back.meta.commentParts) || {};
+    for (const [k, n] of Object.entries(bcp)) {
+      if (k === 'comments' || typeof cp[k] === 'string') continue;
+      const kept = doc.parts instanceof Map ? doc.parts.get(n) : null;
+      const raw = back.comments && back.comments.raw &&
+        back.comments.raw[k];
+      assert.ok(kept && raw && sameBytes(raw.bytes, kept), 'the ' + k +
+        ' part ' + n + ' read back as it was kept');
+      want.meta = {...want.meta, commentParts: {...want.meta
+        .commentParts, [k]: n}};
+      if (back.parts.has(n)) want.parts.set(n, back.parts.get(n));
+      else want.parts.delete(n);
+    }
+  }
   if (want.comments && back.comments) {
     want.comments.read = back.comments.read = null;
     want.comments.raw = back.comments.raw;
@@ -308,8 +343,8 @@ export function commentsBack(want, back, doc, comments0) {
  * else {...stats, blocks, schema}.
  */
 export async function roundTrip(bytes, what, seed, change,
-  {xsd = null, every, keep = [], read, stories = false, notes = false}
-  = {}) {
+  {xsd = null, every, keep = [], read, stories = false, notes = false,
+    pairs = true} = {}) {
   let a;
   try {
     a = await readDocx(bytes, read);
@@ -372,6 +407,16 @@ export async function roundTrip(bytes, what, seed, change,
   const had = new Set(errs(zin));
   assert.deepEqual(errs(z).filter((k) => !had.has(k)), [],
     what + ': package errors added');
+  // no range left half (start without end, or end without start)
+  if (pairs) {
+    assert.deepEqual(partsUnpaired(z, zin).slice(0, 5), [],
+      what + ': range marks unpaired (seed ' + seed + ')');
+  }
+  // no w:delText outside a w:del, no w:t inside one (text-context.mjs:
+  // Word will not open a w:moveFrom holding w:delText), but for those
+  // the original had
+  assert.deepEqual(partsMisplaced(z, zin).slice(0, 5), [],
+    what + ': text elements out of place (seed ' + seed + ')');
   // no schema error in the main part the original did not have
   let schemaDone = 'skipped';
   const main = d.doc.meta.mainPart;
@@ -446,7 +491,8 @@ export const SKIP_CORPUS = 'tests/moreapps/corpus is missing or ' +
  * capped files and the slowest; asserts no failures.
  */
 export async function corpusRun(files, change, xsd, xsdNote, label,
-  {keep = [], read, stories = false, notes = false} = {}) {
+  {keep = [], read, stories = false, notes = false, pairs = true}
+  = {}) {
   const failures = [], times = [], capped = [];
   let ok = 0, refused = 0, blocks = 0, checked = 0, kept = 0,
     keptAsRead = 0, grown = 0;
@@ -456,7 +502,7 @@ export async function corpusRun(files, change, xsd, xsdNote, label,
     const t0 = Date.now();
     try {
       const res = await roundTrip(readFileSync(f), name, hash(name),
-        change, {xsd, keep, read, stories, notes});
+        change, {xsd, keep, read, stories, notes, pairs});
       if (res.refused) {
         refused++;
         if (EXPECTED[name] !== res.refused) {

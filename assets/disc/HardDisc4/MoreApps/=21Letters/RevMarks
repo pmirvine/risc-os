@@ -1,0 +1,618 @@
+// RevMarks - the tracked changes of a document in document order
+// (Batch F2): the stretches of runs tagged with a revision (run.rev,
+// ./RevRead) and the revision elements kept raw, with the halves of
+// each move paired; the revision at a place; the next free id.
+//
+//   list(doc) -> [entry]  every revision, in document order: the body
+//       (sections, then tables row by row, cell by cell), then every
+//       header and footer (doc.stories' order), then the footnotes
+//       and the endnotes (their Maps' order). An entry is
+//         {id, kind, author, date, where: {block, from, to, story?},
+//          text, editable, move?, rev?, node?}
+//       id the integer w:id (null for a raw element whose w:id is
+//       not one), kind 'ins' | 'del' | 'mvFrom' | 'mvTo', author the
+//       tag's (or the element's) w:author, 'Unknown author' when it
+//       has none (the tag itself is not changed), date its w:date
+//       or null, where the paragraph's ./Path path, story as in the
+//       ops (absent in the body: a part name, a note's key {note:
+//       {kind, id}}) and the offsets [from, to) of the stretch (a
+//       raw element: its one U+FFFC; one inside a kept block: [0,
+//       0)), text what it reads (a tab '\t', a break '\n', marks
+//       nothing), editable true for a tagged stretch in the body
+//       (what ./OpsRevs setRev and the commands may change), false
+//       for the rest (a raw element anywhere, every revision of a
+//       header, footer or note: shown, not changed in F2), move the
+//       id of the first revision of the other half of its move (see
+//       below; absent when it has none), rev the tag (tagged) or
+//       node the element (raw). A stretch is the longest run of runs
+//       of one tag (./Kinds sameRev) in one paragraph: a revision
+//       across paragraphs is an entry in each. Memoised per Doc
+//       while its ./DocVersion, its sections, stories and notes are
+//       the same (and each paragraph's part of it per paragraph
+//       object: after an edit only new paragraphs are read again);
+//       READ ONLY
+//   at(doc, pos) -> entry | null  the entry of list(doc) in paragraph
+//       pos.block (of story pos.story) holding offset pos.off (from
+//       <= off < to), else the one ending there, else null
+//   nextId(doc) -> id | null  one more than the largest revision id
+//       the Doc has, 0 for none: every tag, and the w:id of every
+//       element of the revision family (insertions, deletions,
+//       moves and their ranges, formatting, table and numbering
+//       changes: ID_NAMES below) in kept XML anywhere
+//       (raw inlines, kept blocks, properties' extra, every story,
+//       note and comment, the styles and the numbering) and in the
+//       XML parts kept as bytes (the value in double or single
+//       quotes); an id is read with leading zeros and a '+'
+//       skipped, as Word may.
+//       null (no id can be known free: the caller records nothing)
+//       past 2147483647, when an id value cannot be read (digits
+//       mixed with other characters, more than 10 digits), when the
+//       model holds more than MAX_NODES objects, or a part kept as
+//       bytes more than MAX_TAGS such tags or one longer than
+//       TAG_MAX characters. Memoised as list. Never reusing an id
+//       within a session (after an undo) is the caller's: it keeps
+//       the largest it gave
+//   stats  {paras, lists}: paragraphs read and lists made (cost
+//       checks)
+//
+// Move pairing. The reader sets no move name on a tag: a move's
+// halves are paired by the move range marks (w:moveFromRangeStart /
+// End, w:moveToRangeStart / End, ./MovePairs moveRange) around them,
+// read where they lie, as raw inlines, in a table's own marks or in
+// kept XML. Walking each story in document order, a moveFrom half
+// (tagged or raw) takes the name of the innermost moveFrom range
+// open there (opened by its start, closed by the end of the same
+// w:id), a moveTo half that of the innermost moveTo range. The
+// halves of one name in one story are one move: each half's move is
+// the id of the first half of the other kind with its name. A half
+// in no named range, or whose name the other kind lacks, has none
+// (a moveFrom with no moveTo: shown as a move, paired with nothing).
+// The rule follows the marks, so it holds through edits that keep
+// them, and ./RevKeep reads it before and after a step.
+//
+// Cost: linear in the document; a raw node is looked at up to
+// NODE_CAP nodes. Never throws on any Doc. Pure: no desktop services.
+import {OBJ} from './Model';
+import {versionOf} from './DocVersion';
+import {moveRange} from './MovePairs';
+import {REV_KINDS, sameRev, localName, markId} from './Kinds';
+import {W, scope} from './Ns';
+import {STRICT_W} from './NsMap';
+
+export const stats = {paras: 0, lists: 0};
+export const NODE_CAP = 100000;
+export const MAX_NODES = 50000000;
+export const MAX_TAGS = 1000000;
+export const TAG_MAX = 4096;
+const MAX_ID = 2147483647;
+const MAX_DEPTH = 300;
+const TEXT_CAP = 10000;
+const UNKNOWN = 'Unknown author';
+
+/** The elements whose w:id is a revision id (nextId). */
+export const ID_NAMES = new Set(['ins', 'del', 'moveFrom', 'moveTo',
+  'moveFromRangeStart', 'moveFromRangeEnd', 'moveToRangeStart',
+  'moveToRangeEnd', 'rPrChange', 'pPrChange', 'sectPrChange',
+  'tblPrChange', 'trPrChange', 'tcPrChange', 'tblGridChange',
+  'tblPrExChange', 'numberingChange', 'cellIns', 'cellDel',
+  'cellMerge', 'customXmlInsRangeStart', 'customXmlInsRangeEnd',
+  'customXmlDelRangeStart', 'customXmlDelRangeEnd',
+  'customXmlMoveFromRangeStart', 'customXmlMoveFromRangeEnd',
+  'customXmlMoveToRangeStart', 'customXmlMoveToRangeEnd']);
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const arr = (v) => (Array.isArray(v) ? v : []);
+const byPara = new WeakMap();
+const byNode = new WeakMap();
+const memo = new WeakMap();
+const idMemo = new WeakMap();
+const byBytes = new WeakMap();
+
+/** The value of n's first attribute of local name l, or undefined. */
+function attr(n, l) {
+  for (const a of arr(n.attrs)) {
+    if (Array.isArray(a) && String(a[0]).split(':').pop() === l)
+      return String(a[1]);
+  }
+  return undefined;
+}
+
+/** Whether uri is the WordprocessingML namespace (either form). */
+const isW = (uri) => uri === W || uri === STRICT_W;
+
+/** The local name of element n (scope m: its own xmlns counted) when
+ *  it is a WordprocessingML one, else null (a:moveTo of a drawing's
+ *  path is no move). */
+function wl(n, m) {
+  if (!isObj(n) || typeof n.name !== 'string') return null;
+  const i = n.name.indexOf(':');
+  const pre = i < 0 ? '' : n.name.slice(0, i);
+  return isW(m.get(pre)) ? n.name.slice(i + 1) : null;
+}
+
+/** The scope inside n, given the scope m around it. */
+const inside = (m, n) => (Array.isArray(n.attrs) && n.attrs.length
+  ? scope(m, n) : m);
+
+const DEFAULT = new Map([['w', W]]);
+const byRoot = new WeakMap();
+
+/** The scope inside a part's root element {name, attrs} (and the
+ *  body element's attributes `more`): w bound to WordprocessingML
+ *  when the root says nothing of it (a Doc made in code). */
+function rootMap(root, more) {
+  if (!isObj(root) || !Array.isArray(root.attrs)) return DEFAULT;
+  let m = byRoot.get(root);
+  if (m && m.more === more) return m.map;
+  let map = scope(new Map(), root);
+  if (Array.isArray(more)) map = scope(map, {attrs: more});
+  if (![...map.values()].some(isW)) map = new Map([...map, ...DEFAULT]);
+  byRoot.set(root, m = {more, map});
+  return map;
+}
+
+/** The text of the w:t, w:delText, w:tab and w:br under node n
+ *  (scope m around it). */
+function rawText(n, m) {
+  let out = '', seen = 0;
+  const stack = [[n, m]];
+  while (stack.length && seen++ < NODE_CAP && out.length < TEXT_CAP) {
+    const [x, m0] = stack.pop();
+    if (!isObj(x)) continue;
+    const mm = inside(m0, x);
+    const l = wl(x, mm);
+    if (l === 't' || l === 'delText') {
+      for (const c of arr(x.children))
+        if (typeof c === 'string') out += c;
+      continue;
+    }
+    if (l === 'tab') out += '\t';
+    else if (l === 'br' || l === 'cr') out += '\n';
+    const kids = arr(x.children);
+    for (let i = kids.length - 1; i >= 0; i--)
+      stack.push([kids[i], mm]);
+  }
+  return out.slice(0, TEXT_CAP);
+}
+
+/** The events of XML node top (scope map around it), in order
+ *  (memoised per node and scope): move range marks {t: 'range',
+ *  side, start, id, name} and revision elements {t: 'raw', node,
+ *  map} (not looked inside). */
+function nodeEvents(top, map) {
+  if (!isObj(top)) return [];
+  const got = byNode.get(top);
+  if (got && got.map === map) return got.out;
+  const out = [];
+  const stack = [[top, map]];
+  let seen = 0;
+  while (stack.length && seen++ < NODE_CAP) {
+    const [n, m0] = stack.pop();
+    if (!isObj(n) || typeof n.name !== 'string') continue;
+    const m = inside(m0, n);
+    const l = wl(n, m);
+    const mr = l ? moveRange(n) : null;
+    if (mr) {
+      out.push({t: 'range', ...mr});
+      continue;
+    }
+    if (l && Object.hasOwn(REV_KINDS, l)) {
+      out.push({t: 'raw', node: n, map: m0});
+      continue;
+    }
+    const kids = arr(n.children);
+    for (let i = kids.length - 1; i >= 0; i--) stack.push([kids[i], m]);
+  }
+  byNode.set(top, {map, out});
+  return out;
+}
+
+/** The text of [a, b) of p as an entry shows it. */
+function shown(p, a, b) {
+  let out = '';
+  const s = typeof p.text === 'string' ? p.text : '';
+  for (let k = a; k < b && k < s.length; k++) {
+    const c = s[k];
+    if (c !== OBJ) {
+      out += c;
+      continue;
+    }
+    const x = isObj(p.inlines) ? p.inlines[k] : null;
+    if (x && x.kind === 'tab') out += '\t';
+    else if (x && x.kind === 'br') out += '\n';
+  }
+  return out;
+}
+
+/** The items of paragraph p (scope map) in text order (memoised per
+ *  paragraph and scope): {t: 'tag', from, to, rev, text}, and at a
+ *  raw inline's offset its nodeEvents (with off). */
+function paraItems(p, map) {
+  const got = byPara.get(p);
+  if (got && got.map === map) return got.out;
+  stats.paras++;
+  const tags = [];
+  for (const r of arr(p.runs)) {
+    if (!isObj(r) || !isObj(r.rev)) continue;
+    const q = tags[tags.length - 1];
+    if (q && q.to === r.start && sameRev(q.rev, r.rev)) q.to = r.end;
+    else tags.push({t: 'tag', from: r.start, to: r.end, rev: r.rev});
+  }
+  const evs = [];
+  const xs = isObj(p.inlines) ? p.inlines : {};
+  if (typeof p.text === 'string' && p.text.indexOf(OBJ) >= 0) {
+    for (const k of Object.keys(xs)) {
+      const x = xs[k];
+      if (!isObj(x) || x.kind !== 'raw') continue;
+      for (const e of nodeEvents(x.node, map))
+        evs.push({...e, off: +k});
+    }
+  }
+  const out = [];
+  let i = 0, j = 0;
+  while (i < evs.length || j < tags.length) {
+    if (j >= tags.length || (i < evs.length && evs[i].off <=
+      tags[j].from)) out.push(evs[i++]);
+    else {
+      const t = tags[j++];
+      t.text = shown(p, t.from, t.to);
+      out.push(t);
+    }
+  }
+  byPara.set(p, {map, out});
+  return out;
+}
+
+/** The walk of one story: open ranges, entries and their names. */
+class Story {
+  constructor(story, editable, map) {
+    this.story = story;
+    this.editable = editable;
+    this.map = map;
+    this.open = {from: [], to: []};
+    this.entries = [];
+    this.names = [];
+  }
+
+  range(e) {
+    const st = this.open[e.side];
+    if (e.start) {
+      st.push(e);
+      return;
+    }
+    for (let k = st.length - 1; k >= 0; k--) {
+      if (st[k].id === e.id) {
+        st.splice(k, 1);
+        return;
+      }
+    }
+  }
+
+  /** The name of the range a half of kind lies in, or ''. */
+  nameFor(kind) {
+    const st = kind === 'mvFrom' ? this.open.from
+      : kind === 'mvTo' ? this.open.to : null;
+    return st && st.length ? st[st.length - 1].name : '';
+  }
+
+  add(entry) {
+    if (this.story !== undefined) entry.where.story = this.story;
+    this.entries.push(entry);
+    this.names.push(this.nameFor(entry.kind));
+  }
+
+  tag(t, path) {
+    const rev = t.rev;
+    this.add({id: rev.id, kind: rev.kind,
+      author: typeof rev.author === 'string' ? rev.author : UNKNOWN,
+      date: typeof rev.date === 'string' ? rev.date : null,
+      where: {block: path, from: t.from, to: t.to}, text: t.text,
+      editable: this.editable, rev});
+  }
+
+  raw(e, path, from, to) {
+    const n = e.node;
+    const author = attr(n, 'author'), date = attr(n, 'date');
+    this.add({id: markId(n), kind: REV_KINDS[localName(n)],
+      author: author === undefined ? UNKNOWN : author,
+      date: date === undefined ? null : date,
+      where: {block: path, from, to}, text: rawText(n, e.map),
+      editable: false, node: n});
+  }
+
+  para(p, path) {
+    for (const it of paraItems(p, this.map)) {
+      if (it.t === 'range') this.range(it);
+      else if (it.t === 'raw') this.raw(it, path, it.off, it.off + 1);
+      else this.tag(it, path);
+    }
+  }
+
+  node(n, path) {
+    for (const e of nodeEvents(n, this.map)) {
+      if (e.t === 'range') this.range(e);
+      else this.raw(e, path, 0, 0);
+    }
+  }
+
+  blocks(bs, base, depth) {
+    if (depth > MAX_DEPTH) return;
+    arr(bs).forEach((b, j) => {
+      if (!isObj(b)) return;
+      const path = [...base, j];
+      if (b.type === 'p') this.para(b, path);
+      else if (b.type === 'tbl') this.table(b, path, depth);
+      else this.node(b.node, path);
+    });
+  }
+
+  table(t, path, depth) {
+    const loose = (list) => {
+      for (const n of arr(list)) this.node(n, path);
+    };
+    arr(t.rows).forEach((row, r) => {
+      if (!isObj(row)) return;
+      loose(row.lead);
+      arr(row.cells).forEach((cell, c) => {
+        if (!isObj(cell)) return;
+        loose(cell.lead);
+        this.blocks(cell.blocks, [...path, r, c], depth + 1);
+      });
+      loose(row.tail);
+    });
+    loose(t.tail);
+  }
+
+  /** Each entry's move (see the header). */
+  pair() {
+    const groups = new Map();
+    this.entries.forEach((e, k) => {
+      const name = this.names[k];
+      if (!name) return;
+      let g = groups.get(name);
+      if (!g) groups.set(name, g = {mvFrom: [], mvTo: []});
+      g[e.kind].push(e);
+    });
+    this.entries.forEach((e, k) => {
+      const g = this.names[k] && groups.get(this.names[k]);
+      const other = g && g[e.kind === 'mvFrom' ? 'mvTo' : 'mvFrom'];
+      if (other && other.length && other[0].id !== null)
+        e.move = other[0].id;
+    });
+    return this.entries;
+  }
+}
+
+/** The list of doc, worked out (see the header). */
+function work(doc) {
+  stats.lists++;
+  const out = [];
+  const meta = isObj(doc.meta) ? doc.meta : {};
+  const body = new Story(undefined, true,
+    rootMap(meta.documentRoot, meta.bodyAttrs));
+  arr(doc.sections).forEach((s, k) => {
+    if (isObj(s)) body.blocks(s.blocks, [k], 0);
+  });
+  out.push(...body.pair());
+  if (doc.stories instanceof Map) {
+    for (const [part, st] of doc.stories) {
+      if (!isObj(st)) continue;
+      const w = new Story(part, false, rootMap(st.root));
+      w.blocks(st.blocks, [0], 0);
+      out.push(...w.pair());
+    }
+  }
+  const notes = isObj(doc.notes) ? doc.notes : {};
+  for (const kind of ['footnote', 'endnote']) {
+    const m = notes[kind + 's'];
+    if (!(m instanceof Map)) continue;
+    const roots = isObj(notes.root) ? notes.root : {};
+    const map = rootMap(roots[kind + 's']);
+    for (const [id, n] of m) {
+      if (!isObj(n)) continue;
+      const w = new Story({note: {kind, id}}, false, map);
+      w.blocks(n.blocks, [0], 0);
+      out.push(...w.pair());
+    }
+  }
+  return out;
+}
+
+const same = (a, b) => Array.isArray(b) && a.length === b.length &&
+  a.every((x, k) => x === b[k]);
+
+/** The memo of doc in map, when it is still good. */
+function fresh(map, doc) {
+  const m = map.get(doc);
+  return m && m.ver === versionOf(doc) && m.sections === doc.sections &&
+    same(m.secs, doc.sections) && m.stories === doc.stories &&
+    m.notes === doc.notes && m.comments === doc.comments ? m : null;
+}
+
+/** A memo of doc holding value. */
+const keep = (map, doc, value) => map.set(doc, {ver: versionOf(doc),
+  sections: doc.sections, secs: [...doc.sections],
+  stories: doc.stories, notes: doc.notes, comments: doc.comments,
+  value});
+
+const okDoc = (doc) => isObj(doc) && Array.isArray(doc.sections);
+
+/** See the header. */
+export function list(doc) {
+  if (!okDoc(doc)) return [];
+  const m = fresh(memo, doc);
+  if (m) return m.value.out;
+  const out = work(doc);
+  const index = new Map();
+  for (const e of out) {
+    const k = keyOf(e.where.story, e.where.block);
+    if (!index.has(k)) index.set(k, []);
+    index.get(k).push(e);
+  }
+  keep(memo, doc, {out, index});
+  return out;
+}
+
+/** The index key of a paragraph of a story. */
+function keyOf(story, block) {
+  const s = story === undefined || story === null ? ''
+    : typeof story === 'string' ? 's' + story
+      : isObj(story) && isObj(story.note)
+        ? 'n' + story.note.kind + ':' + story.note.id : '?';
+  return s + '|' + (Array.isArray(block) ? block.join(',') : '');
+}
+
+/** See the header. */
+export function at(doc, pos) {
+  if (!okDoc(doc) || !isObj(pos)) return null;
+  list(doc);
+  const m = fresh(memo, doc);
+  const es = m ? m.value.index.get(keyOf(pos.story, pos.block)) : null;
+  if (!es || !Number.isInteger(pos.off)) return null;
+  const off = pos.off;
+  return es.find((e) => e.where.from <= off && off < e.where.to) ||
+    es.find((e) => e.where.to === off) || null;
+}
+
+const isDigit = (c) => c >= '0' && c <= '9';
+
+/** An id value read as Word may: {id} (id null: not an id), or
+ *  null when it cannot be read (see the header). */
+function idValue(v) {
+  if (!/[0-9]/.test(v) || v[0] === '-') return {id: null};
+  let i = v[0] === '+' ? 1 : 0;
+  while (i < v.length && v[i] === '0') i++;
+  const sig = v.slice(i);
+  for (const c of sig) if (!isDigit(c)) return null;
+  if (sig.length > 10) return null;
+  return {id: Number(sig || '0')};
+}
+
+/** The largest revision id under the model's text, or null when
+ *  one cannot be read or the model is too big (see the header). */
+function modelMax(doc) {
+  const c = isObj(doc.comments) ? doc.comments : {};
+  const n = isObj(doc.notes) ? doc.notes : {};
+  const stack = [doc.sections, doc.stories, n.footnotes, n.endnotes,
+    c.map, c.raw, doc.styles, doc.numbering];
+  const seen = new WeakSet();
+  let max = -1, count = 0;
+  while (stack.length) {
+    const v = stack.pop();
+    if (!isObj(v) || seen.has(v) || ArrayBuffer.isView(v)) continue;
+    if (++count > MAX_NODES) return null;
+    seen.add(v);
+    if (v instanceof Map) {
+      for (const x of v.values()) stack.push(x);
+      continue;
+    }
+    if (Array.isArray(v)) {
+      for (const x of v) stack.push(x);
+      continue;
+    }
+    if (typeof v.name === 'string' && Array.isArray(v.attrs) &&
+      ID_NAMES.has(localName(v))) {
+      for (const a of v.attrs) {
+        if (!Array.isArray(a) || String(a[0]).split(':').pop() !== 'id')
+          continue;
+        const got = idValue(String(a[1]));
+        if (!got) return null;
+        if (got.id !== null && got.id > max) max = got.id;
+      }
+    }
+    const rev = v.rev;
+    if (isObj(rev) && Number.isInteger(rev.id) && rev.id > max)
+      max = rev.id;
+    for (const k of Object.keys(v)) {
+      const x = v[k];
+      if (isObj(x) && k !== 'attrs') stack.push(x);
+    }
+  }
+  return {max};
+}
+
+/** {max, capped} of the revision tags in bytes b (memoised). */
+function bytesMax(b) {
+  let got = byBytes.get(b);
+  if (got) return got;
+  got = {max: -1, capped: false};
+  let s = '';
+  for (let k = 0; k < b.length; k += 8192)
+    s += String.fromCharCode(...b.subarray(k, k + 8192));
+  // (plain scans, no regular expression over the part's text; each
+  // look bounded by TAG_MAX, so a part costs time linear in its size)
+  let n = 0;
+  for (let k = s.indexOf('<'); k >= 0 && !got.capped;
+    k = s.indexOf('<', k + 1)) {
+    let j = k + 1;
+    const stop = Math.min(s.length, k + 1 + 64);
+    while (j < stop && /[A-Za-z0-9_:.-]/.test(s[j])) j++;
+    const name = s.slice(k + 1, j);
+    const l = name.slice(name.indexOf(':') + 1);
+    if (!ID_NAMES.has(l)) continue;
+    if (++n > MAX_TAGS || tagIds(s, j, got)) got.capped = true;
+  }
+  byBytes.set(b, got);
+  return got;
+}
+
+const isWs = (c) => c === ' ' || c === '\t' || c === '\n' ||
+  c === '\r';
+
+/** The id attributes of the tag whose name ends at k of s into
+ *  got.max; true when the tag cannot be read (see the header: the
+ *  value in either quote, spaces around the '=' allowed). */
+function tagIds(s, k, got) {
+  const stop = Math.min(s.length, k + TAG_MAX);
+  let j = k;
+  while (j < stop && s[j] !== '>' && s[j] !== '<') {
+    if (!(s[j] === ':' || isWs(s[j])) || !s.startsWith('id', j + 1)) {
+      j++;
+      continue;
+    }
+    let e = j + 3;
+    while (e < stop && isWs(s[e])) e++;
+    if (s[e] !== '=') {
+      j++;
+      continue;
+    }
+    e++;
+    while (e < stop && isWs(s[e])) e++;
+    const q = s[e];
+    if (q !== '"' && q !== '\'') return true;
+    const a = ++e;
+    while (e < stop && s[e] !== q && s[e] !== '<') e++;
+    if (e >= stop || s[e] !== q) return true;
+    const v = idValue(s.slice(a, e));
+    if (!v) return true;
+    if (v.id !== null && v.id > got.max) got.max = v.id;
+    j = e + 1;
+  }
+  return j >= stop && stop < s.length;
+}
+
+/** See the header. */
+export function nextId(doc) {
+  if (!okDoc(doc)) return null;
+  const m = fresh(idMemo, doc);
+  if (m) return m.value;
+  let value = null;
+  const got = modelMax(doc);
+  if (got) {
+    let max = got.max;
+    const parts = doc.parts instanceof Map ? doc.parts : new Map();
+    for (const [name, b] of parts) {
+      if (!(b instanceof Uint8Array) || !/\.xml$/i.test(name))
+        continue;
+      const x = bytesMax(b);
+      if (x.capped) {
+        max = MAX_ID;
+        break;
+      }
+      if (x.max > max) max = x.max;
+    }
+    value = max < MAX_ID ? max + 1 : null;
+  }
+  keep(idMemo, doc, value);
+  return value;
+}

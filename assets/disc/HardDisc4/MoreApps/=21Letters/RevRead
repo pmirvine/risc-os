@@ -1,0 +1,152 @@
+// RevRead - a tracked change (w:ins, w:del, w:moveFrom, w:moveTo
+// directly in a w:p) read as runs tagged with its revision, for
+// ./ReadPara (Batch F2).
+//
+//   unwrap(el, map, read, ctx) -> {rev, runs, inlines, text} | null
+//     el     the element (its local name a key of ./Kinds REV_KINDS)
+//     map    the scope around it
+//     read(kids, m, rev) -> {runs, inlines, text}  reads the
+//            element's children (in scope m) as the children of a
+//            w:p are read, every run tagged rev (./ReadPara)
+//     ctx    {ids, prev}: ids a Map of the revision ids read so far
+//            in the document to what was read with them (the id is
+//            added); prev the tag of the run just before el in the
+//            paragraph (or undefined)
+//   rev    {id, kind, author?, date?, attrs, extra, name?}: id the
+//          integer of w:id, kind 'ins' | 'del' | 'mvFrom' | 'mvTo',
+//          author and date as written (any string, a date that is
+//          not one too), absent when the element has none (shown as
+//          an unknown author later; never made up), attrs every
+//          attribute of the
+//          element as read ([[name, value]], unknown ones and
+//          namespace declarations too), extra [] (nodes the writer
+//          puts at the end of the element: every child read is kept
+//          in its place instead), name (a move's range name) is
+//          never set here: the move range marks stay raw inlines,
+//          and a name taken from where they lie would change with
+//          edits
+//   revIds(doc) -> the ids map (as ctx.ids) of the revisions in the
+//     body of doc (its paragraphs at every depth): what reading its
+//     file again would have seen
+//
+// null keeps the element a raw inline, whole, as read:
+//   - its w:id is not one plain whole number 0..2147483647 (./Kinds
+//     markId), or a revision read before has that id and not the
+//     same kind and attributes, or it has and is the element just
+//     before this one (the two would be written back as one). A
+//     revision split by an edit (text put in its middle) is written
+//     as two elements of one id and attributes: they read back as
+//     the one revision
+//   - w:id, w:author or w:date is repeated, or an attribute of
+//     another namespace is named id, author or date
+//   - a child is text, a revision (nested), or an element that can
+//     hold content but a run (a link, a field, a content control, a
+//     smart tag, a formula...)
+//   - a run holds anything but its w:rPr, text, tabs, breaks,
+//     hyphens, Word's last page break mark and a comment reference
+//     (so a field, a picture, a note mark or a symbol keep it raw);
+//     its text in w:delText in a deletion, in w:t in an insertion
+//     and in both places of a move, as Word writes them (Word will
+//     not open a w:moveFrom holding w:delText): a w:t in a w:del,
+//     or a w:delText in any other, keeps it raw as read
+//   - it holds nothing (no run, no mark)
+//   - a childless element between its runs is not one of ./Kinds
+//     REV_MARKS (an unknown empty element, an empty link, a custom
+//     XML range mark): it stays raw, never tagged (so ./OpsRevs
+//     taggable, which allows only those, agrees)
+// The childless marks of REV_MARKS between runs (bookmarks, comment
+// ranges, proofing marks, permission and move ranges) are read in
+// their place, tagged as the runs.
+// Pure: no desktop services.
+import {scope, wName, isEl, blank, W} from './Ns';
+import {REV_KINDS, REV_MARKS, markId, sameRev} from './Kinds';
+import {forEachBlock} from './Walk';
+
+const RUN_KIDS = new Set(['rPr', 'tab', 'br', 'cr', 'softHyphen',
+  'noBreakHyphen', 'lastRenderedPageBreak', 'commentReference']);
+const NAMED = new Set(['id', 'author', 'date']);
+
+/** The id, author and date of el, or null (see the header). */
+function named(el, m) {
+  const got = {};
+  for (const [n, v] of el.attrs) {
+    const i = n.indexOf(':');
+    const l = n.slice(i + 1);
+    if (!NAMED.has(l)) continue;
+    if (i < 0 || m.get(n.slice(0, i)) !== W) return null;
+    if (got[l] !== undefined) return null;
+    got[l] = v;
+  }
+  const id = markId(el);
+  return id === null ? null : {id, author: got.author, date: got.date};
+}
+
+/** Whether run r (scope m) holds only what a tag can carry, its
+ *  text in element tl ('t' or 'delText'). */
+function plainRun(r, m, tl) {
+  const mm = r.attrs.length ? scope(m, r) : m;
+  for (const c of r.children) {
+    if (!isEl(c)) continue;
+    const l = wName(c, mm);
+    if (l === tl) continue;
+    if (l === null || !RUN_KIDS.has(l)) return false;
+  }
+  return true;
+}
+
+/** Whether the children of el (scope m) can be tagged, their text
+ *  in element tl. */
+function plainKids(el, m, tl) {
+  let any = false;
+  for (const c of el.children) {
+    if (typeof c === 'string') {
+      if (!blank(c)) return false;
+      continue;
+    }
+    if (!isEl(c)) continue;
+    const l = wName(c, m);
+    if (l === 'r') {
+      if (!plainRun(c, m, tl)) return false;
+    } else if (c.children.length || !REV_MARKS.has(l)) return false;
+    any = true;
+  }
+  return any;
+}
+
+/** What a revision is read with: its kind and attributes. */
+const sigOf = (kind, attrs) => kind + JSON.stringify(attrs);
+
+/** See the header. */
+export function revIds(doc) {
+  const ids = new Map();
+  forEachBlock(doc, (b) => {
+    if (b.type !== 'p' || !Array.isArray(b.runs)) return;
+    for (const r of b.runs) {
+      if (r.rev && !ids.has(r.rev.id))
+        ids.set(r.rev.id, sigOf(r.rev.kind, r.rev.attrs));
+    }
+  });
+  return ids;
+}
+
+/** See the header. */
+export function unwrap(el, map, read, ctx) {
+  const m = el.attrs.length ? scope(map, el) : map;
+  const l = wName(el, map);
+  if (!Object.hasOwn(REV_KINDS, l)) return null;
+  const kind = REV_KINDS[l];
+  const n = named(el, m);
+  if (!n || !plainKids(el, m, kind === 'del' ? 'delText' : 't'))
+    return null;
+  const attrs = el.attrs.map(([k, v]) => [k, v]);
+  const sig = sigOf(kind, attrs);
+  if (ctx.ids.has(n.id) && (ctx.ids.get(n.id) !== sig ||
+    sameRev(ctx.prev, {id: n.id, kind}))) return null;
+  const rev = {id: n.id, kind, attrs, extra: []};
+  if (n.author !== undefined) rev.author = n.author;
+  if (n.date !== undefined) rev.date = n.date;
+  const got = read(el.children, m, rev);
+  if (!got.text) return null;
+  ctx.ids.set(n.id, sig);
+  return {rev, runs: got.runs, inlines: got.inlines, text: got.text};
+}

@@ -1,0 +1,90 @@
+// RevPaint - the tracked changes drawn in the text in All Markup
+// (Batch F2, dw.markup 'all', ./RevView): each change in its
+// author's colour (./AuthorColour INK: the same colour as the
+// author's comments) with its own line, and a change bar left of
+// every line that holds one. Display only: the layout made the room
+// (./LineTokens: in All Markup no tagged run is hidden); the lines,
+// pages and caches are not touched, and nothing here is measured.
+//
+//   marks(L, it, k) -> [{x0, x1, y, t, kind, colour, at?, h?}]  what
+//       to draw for line k of paragraph item it of layout L (galley
+//       coordinates, as ./ItemPaint draws the line): NONE (frozen,
+//       shared) unless L.markup is 'all' and the line has an item
+//       of a tagged run (its tag on it: item.rev, ./LineTokens,
+//       ./LineLayout). kind:
+//         'under'    an insertion ('ins'): underlined
+//         'strike'   a deletion ('del'): struck through
+//         'under2'   moved-to text ('mvTo'): a double underline
+//         'strike2'  moved-away text ('mvFrom'): a double strike
+//                    line (moves are told apart from insertions and
+//                    deletions by the doubled line, as in Word's
+//                    double underline and double strikethrough)
+//       one per such item (its index at, from
+//       x0 to x1, the line at y, t px thick; the item's text is drawn
+//       in colour too); and one 'bar' (the change bar, x0..x1 wide,
+//       from the line's top y, h high, in BAR) when there is any:
+//       BAR_GAP px left of the layout's text column (L.root.x)
+//   paintMarks(g, list)  draws the lines and bars of marks (the text
+//       colour is ./ItemPaint's: the items' marks come in their
+//       order, before the bar)
+//   BAR, BAR_GAP, BAR_W, NONE
+//
+// The author of a tag with none (or not a string) is 'Unknown author'
+// (./RevMarks' name for it), so every such change has one colour.
+// Cost: a window in Final or Original pays one test a line; in All
+// Markup a look at each item of the lines drawn. Pure: no desktop
+// services.
+import {inkOf} from './AuthorColour';
+import {lineTop} from './PlaceDraft';
+
+export const NONE = Object.freeze([]);
+export const BAR = '#404040', BAR_GAP = 9, BAR_W = 2;
+const UNKNOWN = 'Unknown author';
+const KIND = {ins: 'under', del: 'strike', mvTo: 'under2',
+  mvFrom: 'strike2'};
+const isObj = (v) => v !== null && typeof v === 'object';
+const kindOf = (rev) => (isObj(rev) && Object.hasOwn(KIND, rev.kind)
+  ? KIND[rev.kind] : null);
+
+/** See the header. */
+export function marks(L, it, k) {
+  if (!L || L.markup !== 'all' || !isObj(it)) return NONE;
+  const ln = Array.isArray(it.lines) ? it.lines[k] : null;
+  if (!isObj(ln) || !Array.isArray(ln.items)) return NONE;
+  const top = lineTop(it, k), X = Number(it.x) || 0;
+  let out = null;
+  for (let i = 0; i < ln.items.length; i++) {
+    const x = ln.items[i];
+    const kind = isObj(x) && x.w > 0 ? kindOf(x.rev) : null;
+    if (!kind) continue;
+    const f = isObj(x.f) ? x.f : {}, px = f.px > 0 ? f.px : 13;
+    const t = Math.max(1, Math.round(px / 14));
+    const base = top + ln.base + (x.dy || 0);
+    const y = kind[0] === 'u' ? base + 2 : base - px * 0.3;
+    const au = typeof x.rev.author === 'string' ? x.rev.author
+      : UNKNOWN;
+    (out || (out = [])).push({x0: X + x.x, x1: X + x.x + x.w, y, t,
+      kind, colour: inkOf(au), at: i});
+  }
+  if (!out) return NONE;
+  const x0 = Math.round((L.root ? L.root.x : X) - BAR_GAP);
+  out.push({x0, x1: x0 + BAR_W, y: Math.round(top), t: BAR_W,
+    kind: 'bar', colour: BAR, h: Math.round(ln.h)});
+  return out;
+}
+
+/** See the header. */
+export function paintMarks(g, list) {
+  for (const m of list) {
+    g.fillStyle = m.colour;
+    const w = m.x1 - m.x0;
+    if (m.kind === 'bar') {
+      g.fillRect(m.x0, m.y, w, m.h);
+      continue;
+    }
+    g.fillRect(m.x0, m.y, w, m.t);
+    if (m.kind === 'under2' || m.kind === 'strike2') {
+      g.fillRect(m.x0, m.y + 2 * m.t, w, m.t);
+    }
+  }
+}

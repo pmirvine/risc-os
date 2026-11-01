@@ -11,7 +11,10 @@
 //   move(sel, L, cmd, extend, pageH) -> moved by a key (./SelMove)
 //   selectWord(L, pos)  the word at pos (not the spaces after it,
 //                       when pos is at the end of a word); an inline
-//                       (a link...) alone; a kept block whole
+//                       (a link...) alone, text L's markup view
+//                       hides (L.markup, ./RevView; ./Kinds
+//                       maskHidden) all of one stretch alone; a kept
+//                       block whole
 //   selectPara(L, pos)  the paragraph at pos (or the kept block)
 //   selectAll(L)        the whole document
 //   text(sel, L)        the selection as plain text: paragraphs
@@ -19,7 +22,10 @@
 //                       too, in flow order), a kept block as an
 //                       empty line, a tab as \t, a line break as
 //                       \n, an inline wrapper (a link...) as its text
-//                       and other inline items as nothing
+//                       and other inline items as nothing, the
+//                       text L's markup view hides (./Kinds; in
+//                       Final deleted and moved-away text) as
+//                       nothing
 //   clamp(sel, doc, oldL?) the selection made valid for doc: an
 //                       offset past its paragraph's end is its end;
 //                       a position whose paragraph is gone goes to
@@ -49,6 +55,7 @@ import {blockId, itemEnd, clampOff, compare, isWordText}
   from './DocPos';
 import {make, move} from './SelMove';
 import {inlineText} from './InlineText';
+import {shownRanges, maskHidden, hiddenSpanAt} from './Kinds';
 import {scan} from './Walk';
 import {findBlock} from './EditPos';
 import {contOf, cellPos, lastPos, shown} from './TblPos';
@@ -81,7 +88,8 @@ export function selectWord(L, pos) {
   if (!loc) return null;
   const it = loc.item, id = it.id;
   if (it.kind !== 'p') return select({id, off: 0}, {id, off: 1});
-  const text = it.block.text;
+  // (deleted text as U+FFFC: one thing, as the raw w:del was)
+  const m = L.markup, text = maskHidden(it.block, m);
   if (!text) return caret({id, off: 0});
   let w = wordBounds(text, loc.off);
   if (!isWordText(text.slice(w.from, w.to)) && loc.off > 0) {
@@ -92,6 +100,8 @@ export function selectWord(L, pos) {
   const o = loc.off;
   const k = text[o] === '\uFFFC' && o >= w.from && o < w.to ? o
     : text[o - 1] === '\uFFFC' && o - 1 >= w.from ? o - 1 : -1;
+  const hid = k >= 0 ? hiddenSpanAt(it.block, k, m) : null;
+  if (hid) return select({id, off: hid[0]}, {id, off: hid[1]});
   if (k >= 0) return select({id, off: k}, {id, off: k + 1});
   return select({id, off: w.from}, {id, off: w.to});
 }
@@ -110,8 +120,12 @@ export function selectAll(L) {
   return a ? select(a, L.docEnd()) : null;
 }
 
-/** The text of [a, b) of a paragraph, inline items as text. */
-function paraText(para, a, b) {
+/** The text of [a, b) of a paragraph, inline items as text, the
+ *  text markup view m hides left out (./Kinds shownRanges). */
+function paraText(para, a, b, m) {
+  const rs = shownRanges(para, a, b, m);
+  if (rs.length !== 1 || rs[0][0] !== a || rs[0][1] !== b)
+    return rs.map(([x, y]) => paraText(para, x, y, m)).join('');
   const s = para.text.slice(a, b);
   if (!s.includes('\uFFFC')) return s;
   return s.replace(/\uFFFC/g, (m, i) => {
@@ -134,7 +148,7 @@ export function text(sel, L) {
     }
     const a = i === f.index ? f.off : 0;
     const b = i === t.index ? t.off : itemEnd(it);
-    out.push(paraText(it.block, a, b));
+    out.push(paraText(it.block, a, b, L.markup));
   }
   return out.join('\n');
 }

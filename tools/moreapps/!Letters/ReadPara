@@ -34,13 +34,23 @@
 // plain whole number 0..2147483647); any other id, or children,
 // keep the raw inline. node is written back unchanged.
 //
+// With the `revs` option (a Map of the revision ids read so far,
+// shared by the document's paragraphs: body paragraphs and their
+// tables, as `comments`) a w:ins, w:del, w:moveFrom or w:moveTo
+// directly in w:p is read by ./RevRead (Batch F2): its children are
+// read here as w:p's are (w:delText as w:t in a deletion), every
+// run tagged run.rev; one it refuses is a raw inline as below.
+// Comment marks inside a revision are modelled as outside it (and
+// tagged), so that every comment mark of the body is one.
+//
 // Every other child of w:p (w:hyperlink, w:fldSimple, w:ins, w:del,
 // w:sdt, w:smartTag, bookmarks, w:proofErr, m:oMath, unknown...) is
 // one U+FFFC with {kind:'raw', level:'p', node, text}: text (for
-// display only) is the plain text of the w:t elements inside, maybe
-// ''. A w:r that cannot be split up safely (unknown attributes, text
-// directly in it, a misplaced or repeated w:rPr) is such a level 'p'
-// inline too, whole. Run rsid attributes are not kept.
+// display only) is the plain text of the w:t elements inside (not
+// those of a w:moveFrom: ./Ns plainText), maybe ''. A w:r that
+// cannot be split up safely (unknown attributes, text directly in
+// it, a misplaced or repeated w:rPr) is such a level 'p' inline
+// too, whole. Run rsid attributes are not kept.
 //
 // The attributes of w:p (rsids, w14:paraId...) go to extraP as
 // [[name, value]] pairs. A w:pPr carrying attributes makes the whole
@@ -50,18 +60,20 @@ import {newPara, OBJ} from './Model';
 import {scope, wName, wAttrs, wAttr, isEl, blank, plainText}
   from './Ns';
 import {readRPr, readPPr} from './ReadProps';
-import {markId} from './Kinds';
+import {markId, REV_KINDS} from './Kinds';
+import {unwrap} from './RevRead';
 
 const RSIDS = ['rsidR', 'rsidRPr', 'rsidDel'];
 const plain = () => ({rPr: {extra: []}});
 
 /** Collects text, runs and inlines for one paragraph. */
 class Builder {
-  constructor() {
+  constructor(rev) {
     this.parts = [];
     this.len = 0;
     this.runs = [];
     this.inlines = {};
+    this.rev = rev;
   }
 
   text(s, fmt) {
@@ -69,6 +81,7 @@ class Builder {
     const run = {start: this.len, end: this.len + s.length,
       rPr: fmt.rPr};
     if (fmt.rStyle !== undefined) run.rStyle = fmt.rStyle;
+    if (this.rev) run.rev = this.rev;
     this.runs.push(run);
     this.parts.push(s);
     this.len += s.length;
@@ -84,6 +97,19 @@ class Builder {
     const text = typeof node === 'string' ? node
       : plainText(node, map);
     this.inline({kind: 'raw', level: 'p', node, text}, plain());
+  }
+
+  /** Content read elsewhere ({runs, inlines, text}), appended. */
+  append(c) {
+    const d = this.len;
+    for (const r of c.runs) {
+      this.runs.push({...r, start: r.start + d, end: r.end + d});
+    }
+    for (const k of Object.keys(c.inlines)) {
+      this.inlines[Number(k) + d] = c.inlines[k];
+    }
+    this.parts.push(c.text);
+    this.len += c.text.length;
   }
 }
 
@@ -218,7 +244,8 @@ function readRun(r, map, b, notes, comments) {
       continue;
     }
     const bare = !c.attrs.length && !c.children.length;
-    if (l === 't') readT(c, m, b, fmt);
+    if (l === 't' || (l === 'delText' && b.rev &&
+      b.rev.kind === 'del')) readT(c, m, b, fmt);
     else if (l === 'tab' && bare) b.text('\t', fmt);
     else if (l === 'br' && bare) b.text('\n', fmt);
     else if (l === 'br') {
@@ -230,9 +257,40 @@ function readRun(r, map, b, notes, comments) {
   }
 }
 
+/** The children of a revision (scope m) read into new content, every
+ *  run tagged rev (./RevRead). */
+function revKids(kids, m, rev, flags) {
+  const b = new Builder(rev);
+  for (const c of kids) {
+    if (isEl(c)) readKid(c, wName(c, m), m, b, flags);
+  }
+  return {runs: b.runs, inlines: b.inlines, text: b.parts.join('')};
+}
+
+/** Child c of a w:p (local name l, scope m) other than its w:pPr,
+ *  or of a revision in it, read into b. */
+function readKid(c, l, m, b, flags) {
+  if (l === 'r') {
+    readRun(c, m, b, !!flags.notes && !b.rev, !!flags.comments);
+    return;
+  }
+  if (flags.revs && !b.rev && Object.hasOwn(REV_KINDS, l)) {
+    const got = unwrap(c, m, (kids, mm, rev) => revKids(kids, mm, rev,
+      flags), {ids: flags.revs,
+      prev: b.runs.length ? b.runs[b.runs.length - 1].rev : undefined});
+    if (got) b.append(got);
+    else b.pRaw(c, m);
+    return;
+  }
+  const cm = flags.comments && Object.hasOwn(RANGE, l)
+    ? cmtMark(c, RANGE[l], 'p') : null;
+  if (cm) b.inline(cm, plain());
+  else b.pRaw(c, m);
+}
+
 /**
  * Read a w:p (flags.notes: model note marks, flags.comments: comment
- * marks: see the header).
+ * marks, flags.revs: revisions: see the header).
  * Returns {para, sectPr} (sectPr: the w:pPr/w:sectPr
  * node or null), or null when the paragraph must stay raw.
  */
@@ -251,14 +309,7 @@ export function readPara(node, map, flags = {}) {
     if (l === 'pPr' && first) {
       if (c.attrs.length) return null;
       pp = readPPr(c, m, true);
-    } else if (l === 'r') {
-      readRun(c, m, b, !!flags.notes, !!flags.comments);
-    } else {
-      const cm = flags.comments && Object.hasOwn(RANGE, l)
-        ? cmtMark(c, RANGE[l], 'p') : null;
-      if (cm) b.inline(cm, plain());
-      else b.pRaw(c, m);
-    }
+    } else readKid(c, l, m, b, flags);
     first = false;
   }
   const opts = {runs: b.runs, inlines: b.inlines, pPr: pp.pPr,

@@ -31,6 +31,7 @@ import {picDocx, pngBytes, jpegBytes, gifBytes} from './pic-fixtures.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write, nameOf} from './roundtrip-lib.mjs';
 import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {rng} from './word-docs.mjs';
@@ -229,10 +230,16 @@ export async function picsAll(d, seed, {every = false, steps = STEPS} = {}) {
     if (!sel || rd() < 0.5) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, every, src);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

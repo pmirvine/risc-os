@@ -1,12 +1,17 @@
-// BookmarkKeep - a deleted range keeps bookmarks and comment ranges
-// whole: the rule ./EditRange deleteRange follows (so Backspace or
-// Delete over a selection, typing over it, a cut, a paste over
-// it...). The pairing rule for every range mark there is: a
-// w:bookmarkStart / End and a w:commentRangeStart / End (raw, or a
-// modelled cmtStart / cmtEnd inline: ./ReadPara, Batch F1), each
-// paired by kind and w:id within its own kind (ns 'b' bookmarks, 'c'
-// comments: a bookmark and a comment with one id are not partners).
-// "Bookmark mark" below means either.
+// BookmarkKeep - a deleted range keeps bookmarks, comment ranges,
+// permission ranges and a move's ranges whole: the rule ./EditRange
+// deleteRange follows (so Backspace or Delete over a selection,
+// typing over it, a cut, a paste over it...), and ./RevCmd's Accept
+// and Reject. The pairing rule for every range mark there is: a
+// w:bookmarkStart / End, a w:commentRangeStart / End (raw, or a
+// modelled cmtStart / cmtEnd inline: ./ReadPara, Batch F1), a
+// w:permStart / End, a w:moveFromRangeStart / End and a
+// w:moveToRangeStart / End (raw), each paired by kind and w:id
+// within its own kind (ns 'b' bookmarks, 'c' comments, 'p'
+// permissions, 'f' and 't' the two sides of a move, as ./MovePairs:
+// a bookmark and a comment with one id are not partners). Word
+// reports a range with one mark and not the other as unreadable
+// content. "Bookmark mark" below means any of them.
 //
 //   keptMarks(doc, o) -> [inline]  o from EditPos.orderedPos: the
 //       bookmark marks (w:bookmarkStart / w:bookmarkEnd level-'p'
@@ -36,10 +41,19 @@
 //       range's marks; level-'p' inlines: a raw one, a modelled
 //       comment range mark)
 //   tableMarks(t, out) -> out  every bookmark mark of typed table t
-//       at every depth (its cells' paragraphs' and its loose ones,
-//       nested tables' too: a loose node as asInline makes it, so it
-//       can be put back in a paragraph) pushed as marksIn's: a table
-//       a deletion takes whole (C7 fix A2)
+//       at every depth (its cells' paragraphs', its loose ones and
+//       its cells' kept blocks that are a mark themselves, nested
+//       tables' too: a node as asInline makes it, so it can be put
+//       back in a paragraph) pushed as marksIn's: a table a deletion
+//       takes whole (C7 fix A2)
+//   blocksMarks(bl, out) -> out  the same for every block of the
+//       list bl at every depth (a cell's blocks, ./TblEditRows)
+//   looseMarks(t, out) -> out  typed table t's own marks between its
+//       rows and cells (./Walk loose; not its cells'), pushed so
+//   blockMark(b, out) -> out  kept block b (not a paragraph or a
+//       typed table) pushed as marksIn's when it is a mark itself:
+//       a range mark Word writes between paragraphs, in the body or a
+//       cell (./RangeTbl, ./TblEditRows: a block a command takes)
 //   markOf(node) -> {kind: 'start' | 'end', id, ns} | null  a mark
 //       node's (a table's lead or tail holds the nodes themselves)
 //   asInline(node) -> the level-'p' inline a mark node becomes in a
@@ -56,25 +70,50 @@
 //       instead of by what the range covers; a mark the deletion
 //       moved, as ./TblEdit deleteRows moves a removed row's to the
 //       next row, is not put back twice)
+//   keeper(d) -> keep(p, a, b, fn) -> [inline]  stillPaired for many
+//       deletions in one step (./RevCmd: Accept All): keep is called
+//       for each, fn removing [a, b) of paragraph p (d.doc's, read
+//       just before), and gives the marks to put back, as
+//       marksIn(p, a, b) then fn then stillPaired would after every
+//       earlier deletion and its marks put back (the caller puts
+//       them back before the next). The document's marks are walked
+//       once, on the first deletion that holds any; each one after
+//       costs what it holds
 //
 // So a bookmark that only starts (or ends) in a deleted range moves
 // its start (end) to where the range was, as Word does: a pair is
 // never broken by a deletion. A bookmark wholly in the range goes
 // with it; a mark inside a typed table the range covers counts as in
 // the range (its partner outside: it goes to where the range was;
-// C7 fix); marks inside a kept item (an Opaque table: at its edge,
-// ./BookmarkFind) go with that item; an end with no start anywhere
-// (or a start with no end) is not kept. Pure: no desktop services.
+// C7 fix); a kept block that is a mark itself (one Word writes
+// between paragraphs, as round a move of whole paragraphs) is a mark
+// in the range like any other (its partner outside: it goes to where
+// the range was, as an inline); marks inside a kept item (an Opaque
+// table: at its edge, ./BookmarkFind) go with that item; an end
+// with no start anywhere (or a start with no end) is not kept. A
+// move's range marks follow the same rule (Batch F2): deleting a
+// move's new place with the start of its range puts the start back
+// where the text was (the range then empty: the old place, its
+// partner gone, a plain deletion, ./RevKeep), one with both marks in
+// the deletion goes with it, and a pair left with nothing between
+// them (a move resolved: ./RevCmd) is kept as it is, valid XML.
+// Without such marks nothing is looked at that was not before. Pure:
+// no desktop services.
 import {OBJ} from './Model';
 import {localName, markId} from './Kinds';
 import {findBlock, neighbour, topOnly} from './EditPos';
 import {cmpPath, samePath} from './Path';
-import {rangeMarks as marks} from './BookmarkMarks';
+import {rangeMarks as marks, inlineMarks} from './BookmarkMarks';
 import {forEachIn, loose} from './Walk';
 
 const KIND = {bookmarkStart: 'start', bookmarkEnd: 'end',
-  commentRangeStart: 'start', commentRangeEnd: 'end'};
-const NS = {commentRangeStart: 'c', commentRangeEnd: 'c'};
+  commentRangeStart: 'start', commentRangeEnd: 'end',
+  permStart: 'start', permEnd: 'end', moveFromRangeStart: 'start',
+  moveFromRangeEnd: 'end', moveToRangeStart: 'start',
+  moveToRangeEnd: 'end'};
+const NS = {commentRangeStart: 'c', commentRangeEnd: 'c',
+  permStart: 'p', permEnd: 'p', moveFromRangeStart: 'f',
+  moveFromRangeEnd: 'f', moveToRangeStart: 't', moveToRangeEnd: 't'};
 const CMT = {commentRangeStart: 'cmtStart', commentRangeEnd: 'cmtEnd'};
 
 /** See the header. */
@@ -89,18 +128,21 @@ function idOf(n) {
   return null;
 }
 
-/** The direct marks in the range's top-level paragraphs and in the
- *  typed tables it covers: [{kind, id, x}] (a range with an end in a
- *  cell is ./RangeTbl's: refused). */
+/** The direct marks in the range's top-level paragraphs, in the
+ *  typed tables it covers and the kept blocks it covers that are a
+ *  mark themselves (one between paragraphs): [{kind, id, x}] (a
+ *  range with an end in a cell is ./RangeTbl's: refused). */
 function inRange(doc, o) {
   if (!topOnly(o)) throw new RangeError('a range in a table');
   const out = [], {from, to, f, t} = o;
   for (let n = f; n && n.rank <= t.rank; n = neighbour(doc, n, 1)) {
     const b = n.b;
-    if (b.type === 'tbl' && Array.isArray(b.rows) &&
-      (b !== f.b || from.off === 0) && (b !== t.b || to.off === 1)) {
+    const all = (b !== f.b || from.off === 0) &&
+      (b !== t.b || to.off === 1);
+    if (b.type === 'tbl' && Array.isArray(b.rows) && all) {
       tableMarks(b, out);
     }
+    if (all) blockMark(b, out);
     if (b.type !== 'p') continue;
     marksIn(b, b === f.b ? from.off : 0, b === t.b ? to.off
       : b.text.length, out);
@@ -109,17 +151,35 @@ function inRange(doc, o) {
 }
 
 /** See the header. */
-export function tableMarks(t, out) {
-  forEachIn([t], [], (b) => {
+export function blockMark(b, out) {
+  const m = b && b.type !== 'p' && b.type !== 'tbl' ? markOf(b.node)
+    : null;
+  if (m) out.push({...m, x: asInline(b.node)});
+  return out;
+}
+
+/** See the header. */
+export function looseMarks(t, out) {
+  for (const {node} of loose(t)) {
+    const m = markOf(node);
+    if (m) out.push({...m, x: asInline(node)});
+  }
+  return out;
+}
+
+/** See the header. */
+export function blocksMarks(bl, out) {
+  forEachIn(bl, [], (b) => {
     if (b.type === 'p') marksIn(b, 0, b.text.length, out);
-    if (b.type !== 'tbl' || !Array.isArray(b.rows)) return;
-    for (const {node} of loose(b)) {
-      const m = markOf(node);
-      if (m) out.push({...m, x: asInline(node)});
-    }
+    else if (b.type === 'tbl' && Array.isArray(b.rows)) {
+      looseMarks(b, out);
+    } else blockMark(b, out);
   });
   return out;
 }
+
+/** See the header. */
+export const tableMarks = (t, out) => blocksMarks([t], out);
 
 /** See the header. */
 export function markOf(n) {
@@ -172,6 +232,33 @@ export function stillPaired(doc, got) {
   const all = count(marks(doc));
   const gone = got.filter((m) => !all.has(keyOf(m)));
   return partnered(gone, (k) => all.has(k));
+}
+
+/** See the header. */
+export function keeper(d) {
+  let all = null;
+  const add = (ms, n) => {
+    for (const m of ms) {
+      const k = keyOf(m);
+      all.set(k, (all.get(k) || 0) + n);
+    }
+  };
+  const has = (k) => (all.get(k) || 0) > 0;
+  return (p, a, b, fn) => {
+    const k = p.text.indexOf(OBJ, a);
+    if (k < 0 || k >= b) {
+      fn();
+      return [];
+    }
+    if (!all) all = count(marks(d.doc));
+    const got = marksIn(p, a, b, []), took = inlineMarks(p, a, b);
+    fn();
+    add(took, -1);
+    const back = partnered(got.filter((m) => !has(keyOf(m))), has);
+    const put = {text: OBJ.repeat(back.length), inlines: {...back}};
+    add(inlineMarks(put, 0, back.length), 1);
+    return back;
+  };
 }
 
 /** Block path `at` before (<0), at (0) or after (>0) location b. */

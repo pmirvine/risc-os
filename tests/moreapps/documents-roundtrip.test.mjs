@@ -27,6 +27,8 @@ import assert from 'node:assert/strict';
 import {registerHooks} from 'node:module';
 import {readFileSync} from 'node:fs';
 import {readDocx, DocxError} from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
+import {nextId} from '../../tools/moreapps/!Letters/RevMarks';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {run} from '../../tools/moreapps/!Letters/EditApply';
@@ -119,10 +121,12 @@ const PIECES = ['a', 'word ', '\u00e9', '\u{1F600}', '\t', 'x\ny',
 const blocks = (d) => d.doc.sections.flatMap((s) => s.blocks)
   .filter((b) => b.type === 'p');
 
-/** n seeded edits (typing, Enter, Backspace) at paragraph carets. */
+/** n seeded edits (typing, Enter, Backspace) at paragraph carets.
+ *  One refused while tracking changes (./RevTrack) does nothing; not
+ *  every typing may be, unless no revision id is free. */
 function edit(d, seed, n) {
   const rd = rng(seed);
-  let now = 0;
+  let now = 0, typed = 0, typedOk = 0;
   const t = new Typing(d, {now: () => (now += 2000)});
   for (let k = 0; k < n; k++) {
     const ps = blocks(d);
@@ -131,10 +135,22 @@ function edit(d, seed, n) {
     const sel = S.caret({id: b.id, off: Math.floor(rd() *
       (b.text.length + 1))});
     const x = rd();
-    if (x < 0.6) t.type(sel, PIECES[Math.floor(rd() * PIECES.length)]);
-    else if (x < 0.8) run('enter', d, t, sel);
-    else run('backspace', d, t, sel);
+    const depth = d.undoDepth;
+    try {
+      const pick = () => PIECES[Math.floor(rd() * PIECES.length)];
+      if (x < 0.6) {
+        typed++;
+        t.type(sel, pick());
+        typedOk++;
+      } else if (x < 0.8) run('enter', d, t, sel);
+      else run('backspace', d, t, sel);
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e;   // (tracking: not done)
+      assert.equal(d.undoDepth, depth, 'refused: no step');
+    }
   }
+  assert.ok(!typed || typedOk || nextId(d.doc) === null,
+    'every typing refused');
 }
 
 const {xsd, note: xsdNote} = schema();

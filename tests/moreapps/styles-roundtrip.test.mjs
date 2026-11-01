@@ -48,6 +48,7 @@ import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
 import {lintPackage} from './lint-package.mjs';
 import {sameTree, sameBytes} from './docx-compare.mjs';
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {rng, tm, loadStyles} from './word-docs.mjs';
@@ -212,6 +213,7 @@ export function stylesAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.6) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, k);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
@@ -219,6 +221,11 @@ export function stylesAll(d, seed, {every = false} = {}) {
         assert.equal(d.undoDepth, depth, kind + ': no undo step');
       }
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

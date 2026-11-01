@@ -22,6 +22,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import * as FS from '../../tools/moreapps/!Letters/FormatSet';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import * as FA from '../../tools/moreapps/!Letters/FormatApply';
 import * as F from '../../tools/moreapps/!Letters/Format';
 import {patch as dialogPatch, NAMES, ALIGNS, SPECIALS, LINES}
@@ -172,10 +173,16 @@ function spacingAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.5) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, every);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

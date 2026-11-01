@@ -7,19 +7,38 @@
 //   MAX                   1000
 //   needleOf(needle, o)   the needle as compared (folded unless
 //                         o.matchCase)
-//   view(p) -> {text, map, simple, low}   the paragraph as shown
+//   view(p, mode?) -> {text, map, simple, low}   the paragraph as
+//                         shown in markup view mode (./RevView;
+//                         default 'final')
 //   shownAt(v, off)       the first shown index at or after off
 //   inPara(p, n, o, lo, hi, at) -> the first match of needle n
 //                         (o.backwards: the last) in shown [lo, hi)
+//                         (o.view: the markup view, default
+//                         'final')
 //   matches(p, n, o, at)  every match of p, first to last, none
 //                         overlapping
+//   keptKind(p, from, to) -> 'link' | 'rev' | 'other'  why a match
+//                         (inInline) of p is never replaced: an item
+//                         in it that is a link (w:hyperlink), else
+//                         one that is a revision kept as read
+//                         (w:ins, w:del, w:moveFrom, w:moveTo:
+//                         ./RevRead raw): 'rev', else any other
+//                         item (a field, a picture...): 'other';
+//                         with no item, tracked text the view hides
+//                         or Final hides: 'rev'
 //
 // A match is {at, from, to, inInline}: from and to are offsets in
 // p.text (at: given, p's path). An inline item (U+FFFC: a link...) is
 // searched as the text it shows (a tab as a tab, a line break as a
 // new line, a link as its text, a picture as nothing), so a match
 // may take in its U+FFFC: inInline, and from and to then cover the
-// whole item.
+// whole item. The text the markup view hides (o.view, ./Kinds
+// hiddenSpans: in Final deleted and moved-away text) is not shown:
+// never found, and a match across it is inInline too, as one across
+// the raw w:del it was read from. In another view a match that
+// takes in any text Final hides (deleted text shown in All Markup or
+// Original) is inInline as well: found and selected, never
+// replaced.
 // Case (o.matchCase false): each character is compared in lower
 // case (fold); a character whose lower case is longer (U+0130,
 // capital I with a dot, is 'i' and U+0307) counts as the first
@@ -40,14 +59,34 @@
 import {wordBounds} from 'wimplib/Segment';
 import {nextG, prevG} from './DocPos';
 import {inlineText} from './InlineText';
+import {hiddenSpans, shownRanges, localName} from './Kinds';
 
 export const MAX = 1000;
 export const OBJ = '\uFFFC';
+const REVS = new Set(['ins', 'del', 'moveFrom', 'moveTo']);
+
+/** See the header. */
+export function keptKind(p, from, to) {
+  const t = p && typeof p.text === 'string' ? p.text : '';
+  const ins = p && p.inlines && typeof p.inlines === 'object'
+    ? p.inlines : {};
+  let rev = false, obj = false;
+  for (let k = t.indexOf(OBJ, Math.max(0, from)); k >= 0 && k < to;
+    k = t.indexOf(OBJ, k + 1)) {
+    const x = ins[k];
+    const n = x && typeof x === 'object' ? localName(x.node) : '';
+    if (n === 'hyperlink') return 'link';
+    if (REVS.has(n)) rev = true;
+    else obj = true;
+  }
+  return rev || !obj ? 'rev' : 'other';
+}
 const ASCII = /^[\u0000-\u007f]*$/;
 const SIMPLE = /^[\u0000-\u02ff\uFFFC]*$/;
 const LONG = 4096, WIN = 256;
 const lower = new Map();
-const views = new WeakMap();
+const views = {final: new WeakMap(), all: new WeakMap(),
+  original: new WeakMap()};
 
 /** One character (code point) in lower case, as long as it is. */
 function low1(c) {
@@ -89,15 +128,19 @@ export const needleOf = (needle, o) => (o.matchCase
 
 /** A paragraph as shown: {text, map, simple, low}; map[k] is the
  *  offset in p.text of shown character k (null: the same). */
-export function view(p) {
-  let v = views.get(p);
+export function view(p, mode) {
+  const by = Object.hasOwn(views, mode) ? views[mode] : views.final;
+  let v = by.get(p);
   if (v) return v;
   const t = p.text;
   v = {text: t, map: null, simple: SIMPLE.test(t), low: null};
-  if (t.includes(OBJ)) {
+  const hid = hiddenSpans(p, mode);
+  if (t.includes(OBJ) || hid.length) {
     let s = '';
     const map = [];
-    for (let k = 0; k < t.length; k++) {
+    for (let k = 0, h = 0; k < t.length; k++) {
+      while (h < hid.length && hid[h][1] <= k) h++;
+      if (h < hid.length && hid[h][0] <= k) continue;
       let x = t[k];
       if (x === OBJ) {
         const n = p.inlines && p.inlines[k];
@@ -110,7 +153,7 @@ export function view(p) {
     v.text = s;
     v.map = map;
   }
-  views.set(p, v);
+  by.set(p, v);
   return v;
 }
 
@@ -160,13 +203,16 @@ function matchAt(p, v, a, b, o, at) {
   if (!v.simple && (!isBound(p.text, from) || !isBound(p.text, to)))
     return null;
   if (o.whole && !wholeAt(v.text, a, b)) return null;
+  const m = o.view, one = (x) => shownRanges(p, from, to, x)
+    .length !== 1;
   return {at, from, to, inInline: p.text.slice(from, to)
-    .includes(OBJ)};
+    .includes(OBJ) || one(m) || (m !== undefined && m !== 'final' &&
+    one())};
 }
 
 /** The first (last, backwards) match of p in shown [lo, hi). */
 export function inPara(p, n, o, lo, hi, at) {
-  const v = view(p), hay = o.matchCase ? v.text : lowOf(v);
+  const v = view(p, o.view), hay = o.matchCase ? v.text : lowOf(v);
   if (!o.backwards) {
     for (let k = hay.indexOf(n, lo); k >= 0 && k + n.length <= hi;
       k = hay.indexOf(n, k + 1)) {
@@ -189,7 +235,7 @@ export function inPara(p, n, o, lo, hi, at) {
  *  gives one match, however often its text holds the needle: as
  *  Find next walks them). */
 export function* matches(p, n, o, at) {
-  const v = view(p), hay = o.matchCase ? v.text : lowOf(v);
+  const v = view(p, o.view), hay = o.matchCase ? v.text : lowOf(v);
   for (let k = hay.indexOf(n); k >= 0;) {
     const m = matchAt(p, v, k, k + n.length, o, at);
     if (m) yield m;

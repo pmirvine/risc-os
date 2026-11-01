@@ -7,6 +7,8 @@
 //       rectangle its cells, a 'mixed' range the rows it touches)
 //       or, with none, of the whole document; scope ('selection' |
 //       'document'). L (a ./DocLayout) gives lines (null without it)
+//       and the markup view (L.markup, ./RevView: the text it hides
+//       is not counted; without L 'final')
 //   countView(view, opts?) -> count of the view's selection and
 //       layout; opts as count's
 //   opts {notes: true} also counts the text of the footnotes and
@@ -29,7 +31,9 @@
 // the XML of inline items (a link, an insertion, a field, a content
 // control...) and of kept blocks (an Opaque table...; a typed
 // table's loose marks, which hold none): w:t, tabs and breaks, never
-// a field's codes, deleted or moved-away text, ruby text, formulas,
+// a field's codes, deleted or moved-away text (raw, or a run tagged
+// so: ./Kinds shownRanges; with L, the text its view hides instead
+// of the tagged runs), ruby text, formulas,
 // drawings or properties; of an mc:AlternateContent only the Choice
 // (else the Fallback). The XML walks take at most 1,000,000 nodes in
 // all (past that `partial` is true and the rest is left out). With
@@ -51,7 +55,7 @@
 // numbers: ./WordTally. Pure: no desktop services; linear.
 import {orderedPos} from './EditPos';
 import {covered} from './SelShape';
-import {localName} from './Kinds';
+import {localName, shownRanges} from './Kinds';
 import {hyphenText} from './InlineText';
 import {forEachIn, loose} from './Walk';
 import {Tally} from './WordTally';
@@ -60,8 +64,18 @@ import {noteList} from './NotePick';
 
 export const NODE_LIMIT = 1e6;
 
-/** The text of [a, e) of paragraph p into t (budget: see walk). */
+/** The text of [a, e) of paragraph p into t (budget: see walk; its
+ *  view the markup view): its shown parts, the text the view hides
+ *  left out (./Kinds shownRanges). */
 function para(t, p, a, e, budget) {
+  for (const [x, y] of shownRanges(p, a, e, budget.view)) {
+    part(t, p, x, y, budget);
+  }
+  t.end();
+}
+
+/** The text of [a, e) of p, none of it deleted, into t. */
+function part(t, p, a, e, budget) {
   const s = p.text;
   let from = a;
   for (let i = s.indexOf('\uFFFC', a); i >= 0 && i < e;
@@ -81,7 +95,6 @@ function para(t, p, a, e, budget) {
     }
   }
   if (from < e) t.text(s.slice(from, e));
-  t.end();
 }
 
 const SKIP = new Set(['del', 'moveFrom', 'delText', 'instrText',
@@ -216,7 +229,8 @@ export function count(doc, sel, L, opts) {
   const range = o && (o.from.id !== o.to.id || o.from.off !==
     o.to.off) ? o : null;
   const t = new Tally();
-  const budget = {left: NODE_LIMIT, partial: false};
+  const budget = {left: NODE_LIMIT, partial: false,
+    view: L ? L.markup : undefined};
   let lines = L ? 0 : null;
   const notes = [], seen = new Set();
   const withNotes = !!(opts && opts.notes) && hasNotes(doc);

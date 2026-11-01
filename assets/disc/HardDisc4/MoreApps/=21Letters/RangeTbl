@@ -29,9 +29,12 @@
 // stays, else at the start of to's; else in the block after the
 // range (a table cut from its start: its first paragraph), else at
 // the end of the one before (a table cut to its end: its last).
-// Bookmarks: the marks in the paragraphs deleted or cleared (rows of
-// a table an end is in included; ./SelShape paraRanges) whose
-// partner is still in the document afterwards go back at the caret
+// Bookmarks (and every range mark ./BookmarkKeep pairs): the marks in
+// the paragraphs deleted or cleared, and the kept blocks among them
+// that are a mark themselves (a range mark Word writes between
+// paragraphs; rows of a table an end is in included; ./SelShape
+// covered) whose partner is still in the document afterwards go
+// back at the caret
 // (./BookmarkKeep stillPaired, putMarks: a pair is never broken;
 // cells cleared: starts at the start of the first cell, ends at the
 // end of the last, putAround: never reversed, C6 fix B3);
@@ -50,14 +53,15 @@
 // Pure: no desktop services.
 import {endOf, posOf, neighbour, atIndex, findBlock}
   from './EditPos';
-import {at as walkAt} from './Walk';
+import {at as walkAt, forEachIn} from './Walk';
 import {samePath, sib} from './Path';
-import {shapeOf, paraRanges} from './SelShape';
+import {shapeOf, covered} from './SelShape';
 import {gridOf} from './TblGrid';
 import {endsCell} from './TblCheck';
 import {clearCells, deleteRows} from './TblEdit';
 import {onTable, firstPos, lastPos, cellPos, rowPos} from './TblCmd';
-import {marksIn, stillPaired, putMarks, putAround, tableMarks}
+import {marksIn, stillPaired, putMarks, putAround, tableMarks,
+  blockMark, looseMarks}
   from './BookmarkKeep';
 import {rangeMarks as marks} from './BookmarkMarks';
 import {reversedIds, endsAfter} from './TblPairs';
@@ -68,18 +72,48 @@ const isTbl = (b) => !!b && b.type === 'tbl' && Array.isArray(b.rows);
 const inside = (at, w) => at.length > w.length &&
   samePath(at.slice(0, w.length), w);
 
+/** The marks of the blocks range o covers (./SelShape covered: its
+ *  paragraphs' in their offsets, and its kept blocks that are a mark
+ *  themselves, a range mark between paragraphs), and the own marks
+ *  (between rows and cells) of the tables nested in the cells it
+ *  takes whole (a 'cells' shape's, a 'mixed' one's rows), but those
+ *  inside the tables at paths `whole`, pushed on got. */
+function rangeMarks(d, o, whole, got) {
+  const sel = {anchor: o.from, head: o.to};
+  for (const c of covered(d.doc, sel)) {
+    if (whole.some((w) => inside(c.at, w))) continue;
+    if (c.b.type === 'p') marksIn(c.b, c.from, c.to, got);
+    else blockMark(c.b, got);
+  }
+  const sh = shapeOf(d.doc, sel);
+  const cells = (tp, list) => {
+    if (whole.some((w) => samePath(w, tp) || inside(tp, w))) return;
+    const t = walkAt(d.doc, tp);
+    for (const {r, k} of list) {
+      forEachIn(t.rows[r].cells[k].blocks, [], (b) => {
+        if (isTbl(b)) looseMarks(b, got);
+      });
+    }
+  };
+  if (sh.kind === 'cells') cells(sh.table, sh.cells);
+  for (const x of sh.kind === 'mixed' ? sh.tables : []) {
+    const t = walkAt(d.doc, x.table), list = [];
+    for (let r = x.r0; r <= x.r1; r++) {
+      t.rows[r].cells.forEach((c, k) => list.push({r, k}));
+    }
+    cells(x.table, list);
+  }
+  return got;
+}
+
 /**
  * fn() (the deletion: the caret) with the bookmark rule of the header:
- * the marks of o's paragraphs (but in the tables at paths `whole`)
- * and of the tables at `whole` (taken whole: their loose marks too)
- * read first, the ones still paired put back at the caret.
+ * the marks of o's blocks (but in the tables at paths `whole`) and of
+ * the tables at `whole` (taken whole: their loose marks too) read
+ * first, the ones still paired put back at the caret.
  */
 function keeping(d, o, whole, fn) {
-  const got = [];
-  for (const r of paraRanges(d.doc, {anchor: o.from, head: o.to})) {
-    if (whole.some((w) => inside(r.at, w))) continue;
-    marksIn(walkAt(d.doc, r.at), r.from, r.to, got);
-  }
+  const got = rangeMarks(d, o, whole, []);
   for (const w of whole) tableMarks(walkAt(d.doc, w), got);
   const was = got.length ? reversedIds(marks(d.doc)) : null;
   const pos = fn();
@@ -103,9 +137,7 @@ function ordered(d, pos, was) {
  *  kept marks (read first): starts there, ends at the end of the
  *  last cell (./BookmarkKeep putAround: no pair reversed). */
 function clear(d, o, sh) {
-  const got = [];
-  for (const r of paraRanges(d.doc, {anchor: o.from, head: o.to}))
-    marksIn(walkAt(d.doc, r.at), r.from, r.to, got);
+  const got = rangeMarks(d, o, [], []);
   const c = sh.cells[0], z = sh.cells[sh.cells.length - 1];
   onTable(d, sh.table, (t) => clearCells(t, sh.cells));
   const t = walkAt(d.doc, sh.table);

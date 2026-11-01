@@ -302,6 +302,36 @@ describe('insertLink', () => {
   });
 });
 
+describe('selInfo and insertLink over tracked changes', () => {
+  const D0 = '2024-01-02T03:04:00Z';
+  const tracked = async () => {
+    const d = new Document(await readDocx(await buildDocx({
+      'word/document.xml': documentXml(p(r('ab') + '<w:del ' +
+        `w:id="1" w:author="Bo" w:date="${D0}"><w:r><w:delText>XY` +
+        '</w:delText></w:r></w:del>' + r('cd')))})));
+    d.clearHistory();
+    return d;
+  };
+  it('the text is what the view shows; the deletion stays in the ' +
+    'link made', async () => {
+    const d = await tracked();
+    const all = SEL(d, 0, 0, 0, 6);
+    assert.deepEqual(selInfo(d.doc, all, 'final'),
+      {text: 'abcd', plain: true});
+    assert.deepEqual(selInfo(d.doc, all), {text: 'abcd', plain: true});
+    assert.deepEqual(selInfo(d.doc, all, 'all'),
+      {text: 'abXYcd', plain: true});
+    assert.deepEqual(selInfo(d.doc, all, 'original'),
+      {text: 'abXYcd', plain: true});
+    // OK with the text as shown: the selection linked as it is
+    step(d, (t) => insertLink(d, t, all, {address: 'www.x.org',
+      text: 'abcd'}));
+    const kids2 = kids(link(d)).map((c) => c.name);
+    assert.ok(kids2.includes('w:del'), 'the deletion kept: ' + kids2);
+    valid(d);
+  });
+});
+
 describe('linkAt, editLink, removeLink', () => {
   /** fmtDoc with 'two' (bold) linked to https://a.org/, tip T. */
   function linked() {

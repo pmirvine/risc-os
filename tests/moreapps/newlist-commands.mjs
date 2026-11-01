@@ -11,6 +11,7 @@
 //               autoformat (each also 'changed' / 'refused')
 import assert from 'node:assert/strict';
 import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {setList} from '../../tools/moreapps/!Letters/FormatSet';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
@@ -162,6 +163,7 @@ export function newListAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.5) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = sel && rd() < 0.6 ? makeCommand(rd, d, t, sel, every)
         : other(rd, d, t, sel);
@@ -170,6 +172,11 @@ export function newListAll(d, seed, {every = false} = {}) {
         labels(d.doc);
       }
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

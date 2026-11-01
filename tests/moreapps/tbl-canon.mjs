@@ -10,8 +10,9 @@
 //   .para, null, map) (the normalisations every body paragraph has:
 //   run rsid attributes dropped, runs of equal format merged, w:t
 //   joined, empty pPr / rPr not written, xml:space as the writer
-//   puts it, pPr / rPr children in schema order); a w:p ReadPara
-//   keeps raw stays as it is;
+//   puts it, pPr / rPr children in schema order; a tracked change
+//   read as tagged runs, as in the body: its runs so too); a w:p
+//   ReadPara keeps raw stays as it is;
 // - w:tblPr, w:trPr, w:tcPr: children in schema order (WriteProps
 //   ordered, Order.sortChildren); an EMPTY w:trPr / w:tcPr is left
 //   out (the reader reads none and an empty one alike);
@@ -60,7 +61,9 @@ function child(c, m) {
   const l = wName(c, m);
   if (l === 'tbl') return canonTbl(c, m);
   if (l === 'p') {
-    const got = readPara(c, m);
+    // (revisions read as the body's are, so their runs have the
+    // same normalisation: a moved run's w:rsidDel dropped)
+    const got = readPara(c, m, {revs: new Map()});
     return got ? copy(paraNode(got.para, null, m)) : copy(c);
   }
   if (l !== null && PROPS.has(l)) {

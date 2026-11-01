@@ -4,11 +4,14 @@
 //   summary(doc) -> '7 paragraphs, 2 tables, 5 preserved items
 //                    (1 table, 1 link, 1 drawing, ...), fonts:
 //                    Caladea, Carlito' (no tables part when none)
-//   facts(doc)   -> {paragraphs, tables, preserved, kinds: [[kind,
-//                    n]], fonts: [family]}: paragraphs and (typed)
-//                    tables at every depth (./Walk scan, R12)
+//   facts(doc, mode?) -> {paragraphs, tables, preserved, kinds:
+//                    [[kind, n]], fonts: [family]}: paragraphs and
+//                    (typed) tables at every depth (./Walk scan,
+//                    R12); fonts those of the text markup view mode
+//                    shows (./RevView; default 'final')
 //   kindOf(node) -> 'table', 'content control', 'drawing'...
-//   infoWindow(task, leaf, doc) -> a Window for an Info submenu (its
+//   infoWindow(task, leaf, doc, mode?) -> a Window for an Info
+//                  submenu, facts(doc, mode): the window's view (its
 //                  icons named 'file', 'paragraphs', 'preserved',
 //                  'fonts': ./DocSave renames 'file')
 //
@@ -21,14 +24,19 @@
 // ranges, a field's codes...) and bare text (a tab inside a w:t) are
 // not counted, as they are not drawn; a comment's reference (raw, or
 // a modelled cmtRef: ./ReadPara, Batch F1), though not drawn either,
-// counts as 'comment'. Fonts
+// counts as 'comment'. A revision read into the model (runs of one
+// revision tag: Batch F2) counts as the raw element it was read
+// from did: an 'insertion', a 'deletion', a moveFrom or moveTo
+// (text the view does not draw, deleted text in Final, does not
+// list its fonts). Fonts
 // are the families the text is shown in (./FontMap), from the
 // resolved run formatting, in the body and in every story of
 // doc.stories (headers and footers: ./Walk scanStories, D11, D35),
 // so !RunImage loads them before the window's first paint; the
 // counts stay the body's.
 import {runFamily} from './Fmt';
-import {UNSEEN, localName, isCommentMark} from './Kinds';
+import {UNSEEN, localName, isCommentMark, sameRev,
+  hiddenRev} from './Kinds';
 import {scan, scanStories} from './Walk';
 
 const KINDS = new Map([
@@ -43,6 +51,9 @@ const KINDS = new Map([
   ['smartTag', 'smart tag'], ['sectPr', 'section break'],
 ]);
 const ORDER = [...new Set(KINDS.values())];
+// the element each revision tag was read from (./RevRead)
+const REV_NODES = {ins: {name: 'w:ins'}, del: {name: 'w:del'},
+  mvFrom: {name: 'w:moveFrom'}, mvTo: {name: 'w:moveTo'}};
 
 /** What an element is, in words ('table', 'drawing'...). */
 export function kindOf(node) {
@@ -58,7 +69,7 @@ function counts(node) {
 }
 
 /** See the header. */
-export function facts(doc) {
+export function facts(doc, mode) {
   const kinds = new Map();
   const fonts = new Set();
   const cache = new Map();
@@ -78,8 +89,12 @@ export function facts(doc) {
         add(x.node);
       }
     }
+    let prev;
     for (const r of b.runs) {
-      fonts.add(runFamily(doc.styles, b, r, cache));
+      if (!hiddenRev(r.rev, mode))
+        fonts.add(runFamily(doc.styles, b, r, cache));
+      if (r.rev && !sameRev(r.rev, prev)) add(REV_NODES[r.rev.kind]);
+      prev = r.rev;
     }
   });
   scanStories(doc, (b) => {
@@ -119,8 +134,8 @@ export function summary(doc, f = facts(doc)) {
 }
 
 /** The Info box of a document: a window with its facts. */
-export function infoWindow(task, leaf, doc) {
-  const f = facts(doc);
+export function infoWindow(task, leaf, doc, mode) {
+  const f = facts(doc, mode);
   const rows = [
     ['File', leaf],
     ['Paragraphs', String(f.paragraphs) + (f.tables

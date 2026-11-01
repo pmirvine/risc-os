@@ -1,0 +1,399 @@
+// ChangesPatch - the Changes pane's rows, its author filter, what
+// its buttons may do and what a row selects (./ChangesBox, Batch
+// F2). Pure: no desktop services; the document is only read.
+//
+//   rows(doc, filter) -> Row[]  (frozen) one row per tracked change
+//       of doc (./RevMarks list), in document order (the body, then
+//       the headers and footers, then the notes): a revision across
+//       paragraphs (one kind and id, ending at its paragraph's end
+//       and going on at the start of the next: ./RevCmd's rule) is
+//       ONE row, and so is a move (the halves ./RevMarks pairs:
+//       the closure of `move`), at the place of its first half.
+//       filter: an author's name (an entry's author: 'Unknown
+//       author' for one with none) for that author's rows only;
+//       anything else (null): every row. Linear in the entries;
+//       cached per ./RevMarks list (one per DocVersion), and each
+//       author's rows once asked
+//     Row {key (unique in the list), id (w:id; null for a raw
+//       element with none), kind 'ins' | 'del' | 'move', label
+//       ('Inserted', 'Deleted', 'Moved'), author, date (dateOf),
+//       text (the first words: blanks collapsed, at most CHARS code
+//       points, '...' when cut; a move: those of its new place),
+//       old (a move: the first words of its old place; else ''),
+//       editable (every part of it can be accepted or rejected:
+//       tagged and in the body), note (why not, in words; null when
+//       editable), story (false in the body), rev {kind, id} (its
+//       first part, for ./RevCmd commandWhy), a, z ({id, off}: what
+//       it selects in the body, a move its new place; null in a
+//       header, footer or note; a move's place runs from its first
+//       part to its last), c ({id, off}: a caret inside its first
+//       part), from (a move: {a, z, c} of its old place; else null),
+//       half (the kind of the part a, z select: a move's 'mvTo', or
+//       'mvFrom' for one with no new place), raw (a revision
+//       element kept as read, not a tagged stretch)}
+//   authors(doc) -> string[]  the authors of the rows, sorted
+//   counts(rows) -> {ins, del, move, total}
+//   summary(rows) -> '3 changes: 1 inserted, 1 deleted, 1 moved'
+//       ('' for none)
+//   emptyText(filter) -> what the pane says when there is no row
+//   dateOf(entry) -> the row's date: ./CommentPatch shortDate of
+//       its w:date, as written ('dd/MM/yyyy HH:mm': Word writes the
+//       local clock time with a Z, and so does ./RevTrack; comments
+//       are shown the same way), or, when the element carries a
+//       w16du:dateUtc, that UTC time in local time; '' when neither
+//       is a date. Whether Word reads Letters' dates so is a
+//       question for real Word
+//   rangeOf(row, view) -> Selection | null  what choosing the row
+//       selects: its text in the body (a move: its new place, its
+//       old place in view 'original', where the new is hidden);
+//       null outside the body. A deletion selected in Final is
+//       hidden there: the selection holds it and shows as a caret
+//       at its place (./RevView shownSel leaves it whole), so
+//       Accept and Reject still take it
+//   actOn(row, view) -> Selection | null  what the pane's Accept and
+//       Reject act on: rangeOf, but for a move whose part rangeOf
+//       selects is shown in view, a caret inside its first part
+//       (./RevCmd takes the pair from a caret on a half), so text
+//       between the parts of a half is never taken with it
+//   hint(row, view) -> string | null  the row's line under its text:
+//       its note, else, when the view hides its text, that it is
+//       hidden in this view
+//   buttons(d, row) -> {accept, reject, why: {accept, reject}}
+//       which of the pane's Accept and Reject work on row (null:
+//       none chosen): each exactly when ./RevCmd commandWhy says
+//       so, the reason in why otherwise. d the view's Document (a
+//       ./StoryFacade in the header and footer or notes mode: all
+//       refused)
+//   keyAt(rows, sel) -> key | null  the row whose range (either
+//       place of a move) starts at sel's anchor (after Next and
+//       Previous: the row of the change selected)
+//   CHARS 60
+import {select, caret} from './Selection';
+import {list} from './RevMarks';
+import {samePath, sib} from './Path';
+import {at as walkAt} from './Walk';
+import {hiddenRev} from './Kinds';
+import {OBJ} from './Model';
+import {commandWhy} from './RevCmd';
+import {shortDate} from './CommentPatch';
+
+export const CHARS = 60;
+const LABEL = {ins: 'Inserted', del: 'Deleted', move: 'Moved'};
+const KIND = {ins: 'ins', del: 'del', mvFrom: 'move', mvTo: 'move'};
+const OTHER = {mvFrom: 'mvTo', mvTo: 'mvFrom'};
+const NOTE = {
+  kept: 'Kept as it is (in a link, a field or a nested change).',
+  hdr: 'In a header or footer: kept as it is.',
+  note: 'In a footnote or endnote: kept as it is.',
+};
+const NONE = Object.freeze([]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const memo = new WeakMap();            // list -> {all, by, authors}
+
+/** See the header. */
+export function emptyText(filter) {
+  return typeof filter === 'string' ? 'There are no changes by ' +
+    filter.slice(0, 40) + '.'
+    : 'There are no tracked changes in this document.';
+}
+
+/** The value of attribute local name l of tag or element x, or
+ *  undefined (attrs [[name, value]...]). */
+function attrOf(x, l) {
+  const as = isObj(x) && Array.isArray(x.attrs) ? x.attrs : NONE;
+  for (const a of as) {
+    if (Array.isArray(a) && typeof a[0] === 'string' &&
+      a[0].split(':').pop() === l && typeof a[1] === 'string') {
+      return a[1];
+    }
+  }
+  return undefined;
+}
+
+const two = (n, w = 2) => String(n).padStart(w, '0');
+
+/** See the header. */
+export function dateOf(e) {
+  if (!isObj(e)) return '';
+  const u = attrOf(e.rev || e.node, 'dateUtc');
+  if (u !== undefined && shortDate(u)) {
+    const t = new Date(Date.UTC(Number(u.slice(0, 4)),
+      Number(u.slice(5, 7)) - 1, Number(u.slice(8, 10)),
+      Number(u.slice(11, 13)), Number(u.slice(14, 16))));
+    if (Number.isFinite(t.getTime())) {
+      return shortDate(two(t.getFullYear(), 4) + '-' +
+        two(t.getMonth() + 1) + '-' + two(t.getDate()) + 'T' +
+        two(t.getHours()) + ':' + two(t.getMinutes()));
+    }
+  }
+  return shortDate(e.date);
+}
+
+/** The first words of s (see the header). */
+function words(s) {
+  const look = s.slice(0, 4 * CHARS);
+  const t = look.split(OBJ).join('').split(/\s/).filter(Boolean)
+    .join(' ');
+  const cps = Array.from(t);
+  const cut = cps.length > CHARS || look.length < s.length;
+  return cut ? cps.slice(0, CHARS).join('') + '...' : t;
+}
+
+/** The story key of an entry ('' in the body). */
+function storyOf(w) {
+  const s = w.story;
+  if (s === undefined || s === null) return '';
+  if (typeof s === 'string') return 's' + s;
+  return isObj(s) && isObj(s.note) ? 'n' + s.note.kind + ':' +
+    s.note.id : '?';
+}
+
+/** The paragraph at path `at` of the body, or null. */
+function paraAt(doc, at) {
+  const p = walkAt(doc, at);
+  return p && p.type === 'p' && typeof p.text === 'string' ? p : null;
+}
+
+/** Whether entry e goes on entry q (./RevCmd's rule). */
+function goesOn(doc, q, e) {
+  if (!q.rev || !e.rev || q.kind !== e.kind || q.id !== e.id ||
+    e.where.from !== 0 || storyOf(q.where) || storyOf(e.where)) {
+    return false;
+  }
+  const b = q.where.block;
+  if (!Array.isArray(b) || !Array.isArray(e.where.block) ||
+    !samePath(sib(b, 1), e.where.block)) return false;
+  const p = paraAt(doc, b);
+  return !!p && q.where.to === p.text.length;
+}
+
+/** The move groups: Map entry -> group key (union of `move`). */
+function moveGroups(es) {
+  const up = new Map();
+  const find = (k) => {
+    let r = k;
+    while (up.has(r) && up.get(r) !== r) r = up.get(r);
+    let x = k;
+    while (up.has(x) && up.get(x) !== r) {
+      const n = up.get(x);
+      up.set(x, r);
+      x = n;
+    }
+    return r;
+  };
+  const key = (e, kind, id) => storyOf(e.where) + '|' + kind + ':' +
+    id;
+  for (const e of es) {
+    if (!OTHER[e.kind]) continue;
+    const k = key(e, e.kind, e.id);
+    if (!up.has(k)) up.set(k, k);
+    if (e.move === undefined) continue;
+    const o = key(e, OTHER[e.kind], e.move);
+    if (!up.has(o)) up.set(o, o);
+    const a = find(k), b = find(o);
+    if (a !== b) up.set(a, b);
+  }
+  const out = new Map();
+  for (const e of es) {
+    if (OTHER[e.kind]) out.set(e, find(key(e, e.kind, e.id)));
+  }
+  return out;
+}
+
+/** A part being made: its first and last entries and text. */
+const part = (e) => ({first: e, last: e, text: String(e.text || '')});
+
+/** Extend part q with entry e (text kept short). */
+function grow(q, e) {
+  q.last = e;
+  if (q.text.length < 4 * CHARS) q.text += ' ' + String(e.text || '');
+}
+
+/** {a, z} of a part in the body, or null. */
+function ends(doc, q) {
+  if (!q || storyOf(q.first.where)) return null;
+  const pa = paraAt(doc, q.first.where.block);
+  const pz = paraAt(doc, q.last.where.block);
+  if (!pa || !pz) return null;
+  const w = q.first.where;
+  return {a: {id: pa.id, off: w.from},
+    z: {id: pz.id, off: q.last.where.to},
+    c: {id: pa.id, off: w.to - w.from > 1 ? w.from + 1 : w.to}};
+}
+
+/** The row of a made group g. */
+function rowOf(doc, g, n) {
+  const e = g.first, w = e.where, s = storyOf(w);
+  const move = g.kind === 'move';
+  const main = move ? g.parts.mvTo || g.parts.mvFrom : g.parts.one;
+  const old = move ? g.parts.mvFrom : null;
+  const at = ends(doc, main);
+  const editable = g.editable && !s;
+  return Object.freeze({key: 'c' + n, id: e.id, kind: g.kind,
+    label: LABEL[g.kind], author: typeof e.author === 'string'
+      ? e.author : 'Unknown author', date: dateOf(e),
+    text: words(main ? main.text : ''),
+    old: old && g.parts.mvTo ? words(old.text) : '',
+    editable, note: editable ? null : s ? (s[0] === 'n' ? NOTE.note
+      : NOTE.hdr) : NOTE.kept,
+    story: !!s, rev: Object.freeze({kind: e.kind, id: e.id}),
+    a: at ? at.a : null, z: at ? at.z : null, c: at ? at.c : null,
+    from: move && old && g.parts.mvTo ? ends(doc, old) : null,
+    half: main ? main.first.kind : e.kind, raw: !e.rev});
+}
+
+/** Every row of doc, worked out once. */
+function work(doc, es) {
+  const groups = moveGroups(es), made = new Map(), order = [];
+  let lastE = null, lastG = null;
+  for (const e of es) {
+    if (!isObj(e) || !isObj(e.where) || !KIND[e.kind]) continue;
+    let g = null;
+    if (groups.has(e)) {
+      const k = groups.get(e);
+      g = made.get(k);
+      if (!g) {
+        g = {kind: 'move', first: e, parts: {}, editable: true};
+        made.set(k, g);
+        order.push(g);
+      }
+      const q = g.parts[e.kind];
+      // (every part of the half: its range runs from the first to
+      // the last, its text holds them all)
+      if (!q) g.parts[e.kind] = part(e);
+      else grow(q, e);
+    } else if (lastG && lastG.kind !== 'move' &&
+      goesOn(doc, lastE, e)) {
+      g = lastG;
+      grow(g.parts.one, e);
+    } else {
+      g = {kind: KIND[e.kind], first: e, parts: {one: part(e)},
+        editable: true};
+      order.push(g);
+    }
+    if (!e.editable) g.editable = false;
+    lastE = e;
+    lastG = g;
+  }
+  const all = Object.freeze(order.map((g, n) => rowOf(doc, g, n)));
+  const names = [...new Set(all.map((r) => r.author))].sort((x, y) =>
+    (x < y ? -1 : x > y ? 1 : 0));
+  return {all, by: new Map(), authors: Object.freeze(names)};
+}
+
+/** The memo of doc's rows. */
+function memoOf(doc) {
+  const es = isObj(doc) ? list(doc) : NONE;
+  if (!es.length) return null;
+  let m = memo.get(es);
+  if (!m) {
+    m = work(doc, es);
+    memo.set(es, m);
+  }
+  return m;
+}
+
+/** See the header. */
+export function rows(doc, filter) {
+  const m = memoOf(doc);
+  if (!m) return NONE;
+  if (typeof filter !== 'string') return m.all;
+  let r = m.by.get(filter);
+  if (!r) {
+    r = Object.freeze(m.all.filter((x) => x.author === filter));
+    m.by.set(filter, r);
+  }
+  return r;
+}
+
+/** See the header. */
+export function authors(doc) {
+  const m = memoOf(doc);
+  return m ? m.authors : NONE;
+}
+
+/** See the header. */
+export function counts(rs) {
+  const out = {ins: 0, del: 0, move: 0, total: 0};
+  for (const r of Array.isArray(rs) ? rs : NONE) {
+    if (!isObj(r) || !Object.hasOwn(LABEL, r.kind)) continue;
+    out[r.kind]++;
+    out.total++;
+  }
+  return out;
+}
+
+/** See the header. */
+export function summary(rs) {
+  const c = counts(rs);
+  if (!c.total) return '';
+  return c.total + (c.total === 1 ? ' change: ' : ' changes: ') +
+    c.ins + ' inserted, ' + c.del + ' deleted, ' + c.move + ' moved';
+}
+
+/** See the header. */
+export function rangeOf(row, view) {
+  if (!isObj(row) || row.story) return null;
+  const o = view === 'original' && row.from ? row.from : row;
+  return o.a && o.z ? select(o.a, o.z) : null;
+}
+
+/** The kind of the part of row that rangeOf selects in view. */
+const halfOf = (row, view) => (view === 'original' && row.from
+  ? 'mvFrom' : row.half);
+
+/** Whether the part of row rangeOf selects is hidden in view. */
+function hidden(row, view) {
+  const k = halfOf(row, view);
+  return row.raw ? k === 'del' || k === 'mvFrom'
+    : hiddenRev({kind: k}, view);
+}
+
+/** See the header. */
+export function actOn(row, view) {
+  if (!isObj(row) || row.story) return null;
+  if (row.kind !== 'move' || hidden(row, view)) {
+    return rangeOf(row, view);
+  }
+  const o = view === 'original' && row.from ? row.from : row;
+  return o.c ? caret(o.c) : null;
+}
+
+const VIEWS = {all: 'All Markup', final: 'Final',
+  original: 'Original'};
+
+/** See the header. */
+export function hint(row, view) {
+  if (!isObj(row)) return null;
+  if (row.note) return row.note;
+  if (typeof row.half !== 'string') return null;
+  if (hidden(row, view)) {
+    return 'Hidden in ' + (VIEWS[view] || 'Final') + ': Tools > ' +
+      'Show Markup > All Markup shows it.';
+  }
+  return null;
+}
+
+/** See the header. */
+export function buttons(d, row) {
+  const out = {why: {}};
+  for (const k of ['accept', 'reject']) {
+    const why = !isObj(row) ? 'Choose a change first.'
+      : commandWhy(d, row.rev, k);
+    out[k] = why === null;
+    out.why[k] = why;
+  }
+  return out;
+}
+
+/** See the header. */
+export function keyAt(rs, sel) {
+  if (!Array.isArray(rs) || !isObj(sel) || !isObj(sel.anchor) ||
+    !isObj(sel.head)) return null;
+  const q = sel.anchor;
+  const hit = (p) => !!p && q.id === p.id && q.off === p.off;
+  for (const r of rs) {
+    if (hit(r.a) || (r.from && hit(r.from.a))) return r.key;
+  }
+  return null;
+}

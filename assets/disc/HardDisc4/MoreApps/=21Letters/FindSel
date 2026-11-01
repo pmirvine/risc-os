@@ -11,14 +11,23 @@
 //   replaceStep(dw, n, o, repl)  replace the selection if a match,
 //                         then find the next; the message
 //   all(dw, n, o, repl)   replace all; the message
+// A match not replaced (./FindText inInline) says why (keptKind):
+// link text, text in a tracked change (a revision kept as read, or
+// tracked text the view hides or Final hides), or a field or other
+// object; Replace all counts each kind.
+// Track Changes on (./Find, ./RevTrack): a replacement refused
+// (./RevCmd Refused) beeps, its reason the message; Replace all
+// says how many matches were not replaced so.
 import {wimp} from 'riscos';
 import * as S from './Selection';
 import {orderedPos} from './EditPos';
 import {at as walkAt} from './Walk';
 import {samePath} from './Path';
 import {search, replaceOne, replaceAll} from './Find';
+import {keptKind} from './FindText';
 import {dropPending} from './EditFormat';
 import {show} from './FindView';
+import {Refused} from './RevCmd';
 
 const states = new WeakMap();          // app -> {active, box, pane}
 export const st = (app) => {
@@ -65,18 +74,49 @@ export function current(dw, n, o) {
     m.from === p.from.off && m.to === p.to.off ? m : null;
 }
 
+const KEPT = {
+  link: 'Link text is kept.',
+  rev: 'Text in a tracked change is kept: accept or reject it first.',
+  other: 'Text in a field, a picture or another object is kept.',
+};
+
+/** Why match m (inInline) is not replaced, in words (./FindText
+ *  keptKind). */
+function keptWhy(doc, m) {
+  return KEPT[keptKind(walkAt(doc, m.at), m.from, m.to)];
+}
+
+/** Replace All's words for the matches kept: '1 in links, 2 in
+ *  tracked changes not replaced' ('' for none). */
+function keptAll(r) {
+  const k = r.kept || {link: r.skipped || 0, rev: 0, other: 0};
+  const ps = [];
+  if (k.link) ps.push(`${k.link} in links`);
+  if (k.rev) ps.push(`${k.rev} in tracked changes`);
+  if (k.other) ps.push(`${k.other} in fields or objects`);
+  return ps.length ? '; ' + ps.join(', ') + ' not replaced' : '';
+}
+
 /** Replace the selection if a match, then find the next. */
 export function replaceStep(dw, n, o, repl) {
   const m = current(dw, n, o);
   if (!m) return step(dw, n, o, false);
   if (m.inInline) {
+    const why = keptWhy(dw.view.d.doc, m);
     const s = step(dw, n, o, false, {at: m.at, off: m.to});
-    return 'Link text is kept. ' + s;
+    return why + ' ' + s;
   }
   const v = dw.view;
   v.ensure();
   dropPending(v);
-  const r = v.typing.command(() => replaceOne(v.d, m, repl));
+  let r;
+  try {
+    r = v.typing.command(() => replaceOne(v.d, m, repl));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    wimp.beep();
+    return e.message;
+  }
   if (!r) return 'Not replaced';
   const id = walkAt(v.d.doc, r.at).id;
   v.setSelection(S.caret({id, off: r.to}));
@@ -90,8 +130,15 @@ export function all(dw, n, o, repl) {
   const v = dw.view;
   v.ensure();
   dropPending(v);
-  const r = v.typing.command(() => replaceAll(v.d, n, repl, o));
-  if (!r.count && !r.skipped) {
+  let r;
+  try {
+    r = v.typing.command(() => replaceAll(v.d, n, repl, o));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    wimp.beep();
+    return e.message;
+  }
+  if (!r.count && !r.skipped && !r.refused) {
     wimp.beep();
     return 'Not found';
   }
@@ -101,7 +148,8 @@ export function all(dw, n, o, repl) {
     if (v.reveal && !v.hdr) v.reveal(to);   // (Outline: P13 fix I1)
     v.edited(to);
   }
-  const k = r.skipped;
-  return `${r.count} replaced` + (k ? `; ${k} in links not ` +
-    'replaced' : '');
+  const k = r.skipped, t = r.refused;
+  return `${r.count} replaced` + (k ? keptAll(r) : '') +
+    (t ? `; ${t} not replaced: another ` +
+    'author\'s insertion or an object, while tracking' : '');
 }

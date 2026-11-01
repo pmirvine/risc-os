@@ -49,7 +49,10 @@
 // them, keeping every unseen inline in what they delete; with only
 // such inlines between the caret and the paragraph's edge, they join
 // the paragraphs (the inlines kept). A selection deleted takes its
-// inlines with it (bookmarks whole: ./BookmarkKeep).
+// inlines with it (bookmarks whole: ./BookmarkKeep). The text the
+// window's markup view hides (d.markup, ./RevView: deleted text in
+// Final, inserted text in Original) is unseen for the keys the same
+// way.
 // Ops go to the location's path (loc.at, ./EditPos): in a cell's
 // paragraph the keys work inside the cell, and at the cell's edge
 // (Backspace at its first paragraph's start, Delete at its last's
@@ -70,6 +73,17 @@
 // rows when it spans every grid column, the table when it is the
 // whole table, else clears it (./RangeTbl backCells); a 'mixed'
 // range goes with the rows it covers (./RangeTbl deleteIn).
+// Track Changes on (./RevTrack session: the body only): the keys
+// and deleteSelection delete as tracked (the author's own insertion
+// removed for real, other text tagged deleted, the caret past it:
+// before it for Backspace, after it for Delete); text already
+// deleted is stepped over in every view, never deleted again. A
+// paragraph join, or anything else at a paragraph's edge that would
+// change the document (removing an empty paragraph by a table,
+// deleting a selected table), and a selection across paragraphs or
+// cells, are refused: ./RevCmd Refused thrown, nothing changed (the
+// window beeps and says why). At an edge the caret still moves and
+// a kept block is still selected.
 // Pure: no desktop services.
 import {prevWord, nextWord} from 'wimplib/Segment';
 import {caret, select, collapsed} from './Selection';
@@ -77,7 +91,8 @@ import {prevG, nextG} from './DocPos';
 import {checkPos, orderedPos, neighbour, posOf, topOnly}
   from './EditPos';
 import {deleteRange, mergeAt} from './EditRange';
-import {unseenAt, onlyUnseen} from './Kinds';
+import {unseenAt, onlyUnseen, maskHidden, hiddenAt} from './Kinds';
+import {session, record, dry, MSG} from './RevTrack';
 import {shapeOf} from './SelShape';
 import {backCells} from './RangeTbl';
 import {firstPos, lastPos} from './TblCmd';
@@ -110,12 +125,15 @@ export function deleteSelection(d, sel) {
   const g = o && !collapsed(sel) && guard(d.doc, sel, o);
   if (!g) return sel;
   if (g !== sel) o = orderedPos(d.doc, g);
+  const s = session(d);
+  if (s) return record(d, () => run(d, sel, () => s.cutRange(o)));
   return run(d, sel, () => deleteRange(d, o));
 }
 
 /** Backspace over a selection: a 'cells' shape as the header says,
  *  anything else as Delete. */
 function backSelection(d, sel) {
+  if (session(d)) return deleteSelection(d, sel);
   const o = orderedPos(d.doc, sel);
   const sh = o && !collapsed(sel) && !topOnly(o) && shapeOf(d.doc, sel);
   if (!sh || sh.kind !== 'cells') return deleteSelection(d, sel);
@@ -133,7 +151,7 @@ function cutText(d, sel, loc, a, b, to) {
   return run(d, sel, () => {
     let z = b;
     for (let k = b - 1; k >= a - 1; k--) {
-      if (k >= a && !unseenAt(p, k)) continue;
+      if (k >= a && !unseenAt(p, k, d.markup)) continue;
       if (z > k + 1) {
         d.apply({op: 'replaceText', block: loc.at, at: k + 1,
           del: z - k - 1, ins: ''});
@@ -160,8 +178,8 @@ function atEdge(d, sel, loc, dir) {
     // cell after a table: a cell ends with a paragraph)
     const tail = dir > 0 && loc.cell && endsCell(loc.b) &&
       !neighbour(d.doc, n, 1);
-    if (!onlyUnseen(n.b) || tail || (endsCell(loc.b) &&
-      tableBy(d.doc, n, dir))) {
+    if (!onlyUnseen(n.b, d.markup) || tail ||
+      (endsCell(loc.b) && tableBy(d.doc, n, dir))) {
       return caret(posOf(n, dir < 0 ? n.b.text.length : 0));
     }
     return removeEmpty(d, sel, n, sel.head);
@@ -180,7 +198,8 @@ function byTable(d, sel, loc, n, dir) {
   if (!to) return boxSel(n);
   const nx = back && neighbour(d.doc, loc, 1);
   const last = back && (!nx || nx.s !== loc.s);
-  if (!onlyUnseen(loc.b) || last || tableBy(d.doc, loc, -dir)) {
+  if (!onlyUnseen(loc.b, d.markup) || last ||
+    tableBy(d.doc, loc, -dir)) {
     return back ? caret(to) : sel;
   }
   return removeEmpty(d, sel, loc, to);
@@ -210,21 +229,31 @@ function del(d, sel, dir, step) {
   }
   const loc = checkPos(d.doc, sel.head);
   if (!loc) return sel;
-  const off = sel.head.off;
+  const off = sel.head.off, s = session(d);
+  // (tracked: what would change the document at an edge is refused)
+  const edge = () => (s ? dry(d, () => atEdge(d, sel, loc, dir),
+    MSG.join) : atEdge(d, sel, loc, dir));
   if (loc.b.type !== 'p') {
     // a kept block: from inside its edge, select it
     if (off === (dir < 0 ? 1 : 0)) return boxSel(loc);
-    return atEdge(d, sel, loc, dir);
+    return edge();
   }
   const p = loc.b, text = p.text;
   let k = off;
-  if (dir < 0) while (k > 0 && unseenAt(p, k - 1)) k--;
-  else while (k < text.length && unseenAt(p, k)) k++;
-  if (dir < 0 ? k === 0 : k === text.length)
-    return atEdge(d, sel, loc, dir);
-  const to = step(text, k);
-  const f = resultIn(d.doc, p, Math.min(k, to), Math.max(k, to));
+  const m = d.markup;
+  // (deleted text: hidden in Final, ./Kinds hiddenAt)
+  const skip = (j) => unseenAt(p, j, m) || (!!s && hiddenAt(p, j));
+  if (dir < 0) while (k > 0 && skip(k - 1)) k--;
+  else while (k < text.length && skip(k)) k++;
+  if (dir < 0 ? k === 0 : k === text.length) return edge();
+  const to = step(s ? maskHidden(p, m) : text, k);
+  const a = Math.min(k, to), b = Math.max(k, to);
+  const f = resultIn(d.doc, p, a, b);
   if (f) return select({id: p.id, off: f.from}, {id: p.id, off: f.to});
+  if (s) {
+    return record(d, () => run(d, sel, () => ({id: p.id,
+      off: s.cut(loc.at, a, b, dir)})));
+  }
   return dir < 0 ? cutText(d, sel, loc, to, k, to)
     : cutText(d, sel, loc, k, to, off);
 }

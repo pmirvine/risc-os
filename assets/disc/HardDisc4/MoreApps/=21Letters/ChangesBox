@@ -1,0 +1,682 @@
+// ChangesBox - the Changes pane (Tools > Show Changes Pane; Batch
+// F2) and the window's tracked-change commands (Tools > Track
+// Changes, Accept, Reject, Accept All, Reject All, Previous and Next
+// Change, and their keys: ./DocKeys). The pane lists the document's
+// tracked changes, with buttons that accept, reject and step through
+// them: a side window like the Comments pane (./CommentBox: a list
+// drawn on a canvas in the work area).
+//
+//   changesBox(dw) -> the pane's api; one per document, kept in
+//       dw.boxes ('changes') so ./CloseDoc deletes it with the
+//       document; asked again, the same pane filled again and
+//       brought to the front
+//   changesShown(dw) -> bool, toggleChanges(dw)  Tools > Show Changes
+//       Pane (ticked while the pane is open)
+//   trackingOn(dw) -> bool  Track Changes is on (./RevTrack on: the
+//       document's setting, so the tick follows undo too)
+//   toggleTracking(dw) -> bool  Tools > Track Changes, Ctrl+Shift+E:
+//       ./RevTrack setTracking, one undo step
+//   why(dw, cmd) -> string | null  why cmd would refuse or find
+//       nothing to do, in words (the menu shades it, its help says
+//       why); null when it would act. cmd: 'track', 'accept',
+//       'reject' (the selection or caret: ./RevCmd whyNot), 'all'
+//       (Accept All and Reject All: no change that can be), 'next',
+//       'prev' (./RevCmd next / prev from the selection in the
+//       window's view: none). Every one but 'track' is refused in
+//       the header and footer mode and the notes mode, and 'track'
+//       too (MSGS.hdr); 'track' also in a document with no settings
+//       part (./RevTrack MSG.settings)
+//   accept(dw, yes) -> bool  Tools > Accept (yes true) or Reject:
+//       ./RevCmd accept / reject on the selection, one undo step,
+//       the caret where it was resolved
+//   resolveAll(dw, yes, author?, o?) -> {resolved, skipped} | null
+//       Accept All / Reject All (./RevCmd acceptAll, rejectAll; with
+//       author, resolveAuthor: the pane's buttons), one undo step,
+//       the window's selection clamped to what is left; then a
+//       notice (notice(): 'N changes accepted (M kept: ...)')
+//       through the window's message, unless o.quiet (the pane
+//       says it at its foot)
+//   step(dw, dir) -> bool  Next Change (dir 1) or Previous Change
+//       (-1): the next (previous) change in the window's view
+//       selected and scrolled to (./RevCmd next / prev: no wrap); a
+//       beep at the end
+//   notice(n, m, yes) -> the text said after an All command
+//   fit(g, s, w) -> s cut on code points to fit w px on canvas g,
+//       with '...'; lines2(text) -> [line, line] the pane's foot
+//       (at most LINE code points each, the second ending '...' when
+//       there is more)
+// A refusal (./RevCmd Refused, thrown anyway: the document changed
+// meanwhile) beeps and says why (dw.view.refused); nothing changes.
+//
+// The pane (api.win, win.api for the tests): isOpen, gone, open(),
+// close(), refresh(), rows (./ChangesPatch rows shown), selected
+// (the chosen row's key), filter (null: all authors, else a name),
+// setFilter(name | null), select(key) -> bool (as a click on its
+// row), press(name) (a button by its text), where(key) -> its row's
+// rectangle (null when not shown), message (the line at the foot),
+// summary (the line over the list), title.
+// Each row: the kind (Inserted, Deleted, Moved) and the author, the
+// date (local, short) and the first words (a move: old -> new); a
+// change that cannot be accepted or rejected (in a header, footer or
+// note, or kept as read) grey, with why under it; one the view hides
+// says so there. The chosen row white on blue, a mark of the
+// author's colour (./AuthorColour INK) at its left. Show: All
+// authors or one author, from a menu. Over the list the counts of
+// each kind; with none, the list says so. The title says when Track
+// Changes is on.
+// A click on a row chooses it and selects the change in the text
+// (./ChangesPatch rangeOf: in Final a deletion is hidden, selected
+// whole where it is, shown as a caret there, and the line at the
+// foot says it is hidden in this view; the view is never switched;
+// in the header and footer or notes mode, or for a change outside
+// the body, only chosen). Up and Down move the choice; the wheel
+// scrolls; Return selects the chosen change again.
+// Buttons: Accept and Reject act on the chosen change (its range; a
+// move by a caret in its shown half, so the pair: ./ChangesPatch
+// actOn); Previous and Next step from the window's
+// selection and choose the row they reach; Accept all by this
+// author and Reject all by this author (shaded with All authors).
+// Each command is one undo step. A shaded button (exactly when its
+// command would refuse: ./ChangesPatch buttons, ./RevCmd; Previous
+// and Next only in the modes, and beep at the end) beeps when
+// clicked and says why at the foot.
+// The pane follows every change of the document (typing, undo,
+// redo, the commands, the Track Changes switch; at most once a
+// frame) and of the view (the markup view, the header and footer
+// mode): a chosen row that has gone is chosen no more. Escape and
+// the close icon hide it and give the caret back to the document;
+// nothing is changed. Cost: only the rows in sight are drawn, so
+// painting does not grow with the number of changes; a move of the
+// caret or a new selection works nothing out again (the buttons are
+// shaded again only when the rows, the chosen row, the filter or the
+// mode changed); an edit lists the rows again (./ChangesPatch rows,
+// linear in the changes, at most once a frame) and shades the
+// buttons again (./RevCmd commandWhy, linear too).
+import {wimp, Menu, reportError} from 'riscos';
+import {box} from './Boxes';
+import {rows as rowsOf, authors, summary, emptyText, rangeOf, actOn,
+  hint, buttons, keyAt} from './ChangesPatch';
+import {accept as acceptAt, reject as rejectAt, acceptAll, rejectAll,
+  resolveAuthor, next, prev, whyNot, Refused} from './RevCmd';
+import {on, setTracking, MSG} from './RevTrack';
+import {inkOf} from './AuthorColour';
+import {dropPending} from './EditFormat';
+import * as S from './Selection';
+
+const ROWS = 6, RH = 56, PAD = 12, SB = 14, LISTW = 460, LY = 72;
+const BW = 109, BH = 36, GAP = 8, LINE = 60, BW2 = 226;
+const B1 = LY + ROWS * RH + 10, B2 = B1 + BH + 8, MY = B2 + BH + 6;
+const W = 2 * PAD + LISTW + 4 + SB, H = MY + 2 * 26 + PAD;
+const apis = new WeakMap();            // window -> api
+export const MSGS = Object.freeze({
+  hdr: 'Leave the header or footer, or the note, first (Escape): ' +
+    'tracked changes are dealt with in the body text.',
+  none: 'There are no tracked changes in this document.',
+  kept: 'Every tracked change here is kept as it is (in a header, ' +
+    'footer or note, a link or a field).',
+  next: 'There is no tracked change after the selection.',
+  prev: 'There is no tracked change before the selection.',
+  pick: 'Choose a change first.',
+  author: 'Choose an author under Show first.',
+});
+const ACCEPT_BY = 'Accept all by this author';
+const REJECT_BY = 'Reject all by this author';
+
+// ------------------------------------------------- the commands
+
+/** See the header. */
+export const trackingOn = (dw) => on(dw.d);
+
+const saying = (dw, m) => reportError(m, {appName: 'Letters',
+  category: 'info'});
+
+/** See the header. */
+export function why(dw, cmd) {
+  const v = dw.view;
+  if (v.hdr) return MSGS.hdr;
+  if (cmd === 'track') {
+    const doc = dw.d.doc;
+    return on(dw.d) || (doc.rawSettings && doc.meta &&
+      doc.meta.settingsPart) ? null : MSG.settings;
+  }
+  if (cmd === 'accept' || cmd === 'reject') {
+    if (!v.sel) return 'There is no caret in the text.';
+    try {
+      return whyNot(v.d, v.sel);
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e;
+      return e.message;
+    }
+  }
+  if (cmd === 'all') {
+    const rs = rowsOf(v.d.doc, null);
+    return !rs.length ? MSGS.none : rs.some((r) => r.editable) ? null
+      : MSGS.kept;
+  }
+  if (cmd === 'next' || cmd === 'prev') {
+    const f = cmd === 'next' ? next : prev;
+    return f(v.d, v.sel, {view: dw.markup}) ? null : MSGS[cmd];
+  }
+  return null;
+}
+
+/** A refusal: a beep and why. */
+function refuse(dw, msg) {
+  dw.view.refused(msg);
+  return false;
+}
+
+/** See the header. */
+export function toggleTracking(dw) {
+  const v = dw.view;
+  if (v.hdr) return refuse(dw, MSGS.hdr);
+  try {
+    setTracking(dw.d, v.typing, !on(dw.d));
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return refuse(dw, e.message);
+  }
+  return true;
+}
+
+/** See the header. */
+export function accept(dw, yes) {
+  const v = dw.view;
+  const w = why(dw, yes ? 'accept' : 'reject');
+  if (w) return refuse(dw, w);
+  v.ensure();
+  dropPending(v);
+  let r;
+  try {
+    r = (yes ? acceptAt : rejectAt)(v.d, v.typing, v.sel);
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    return refuse(dw, e.message);
+  }
+  v.edited(r.sel || v.sel);
+  return true;
+}
+
+/** See the header. */
+export function notice(n, m, yes) {
+  return n + (n === 1 ? ' change ' : ' changes ') + (yes ? 'accepted'
+    : 'rejected') + (m ? ` (${m} kept: in headers, footers or ` +
+    'notes, or in links or fields)' : '') + '.';
+}
+
+/** See the header. */
+export function resolveAll(dw, yes, author, o = {}) {
+  const v = dw.view;
+  if (v.hdr) {
+    refuse(dw, MSGS.hdr);
+    return null;
+  }
+  v.ensure();
+  dropPending(v);
+  let r;
+  try {
+    r = typeof author === 'string'
+      ? resolveAuthor(v.d, v.typing, author, yes)
+      : (yes ? acceptAll : rejectAll)(v.d, v.typing);
+  } catch (e) {
+    if (!(e instanceof Refused)) throw e;
+    refuse(dw, e.message);
+    return null;
+  }
+  if (v.sel) v.edited(S.clamp(v.sel, v.d.doc, v._L));
+  if (!o.quiet) saying(dw, notice(r.resolved, r.skipped, yes));
+  return r;
+}
+
+/** See the header. */
+export function step(dw, dir) {
+  const v = dw.view;
+  if (v.hdr) return refuse(dw, MSGS.hdr);
+  const sel = (dir > 0 ? next : prev)(v.d, v.sel, {view: dw.markup});
+  if (!sel) {
+    wimp.beep();
+    return false;
+  }
+  v.setSelection(sel);
+  const w = dw.boxes.get('changes');
+  if (w && w.isOpen) apis.get(w).follow();
+  return true;
+}
+
+// ----------------------------------------------------- the pane
+
+const btn = (text, x, y, w, help) => ({x, y, w, h: BH, text,
+  name: `button:${text}`, border: true, filled: true, hcentre: true,
+  button: 'click', validation: 'R5,3', help});
+const col = (k) => PAD + k * (BW + GAP);
+const icons = () => [
+  {x: PAD, y: 10, w: 44, h: 28, text: 'Show', name: 'label'},
+  {x: PAD + 48, y: 10, w: 260, h: 28, text: 'All authors',
+    name: 'show', border: true, filled: true, bg: 0, button: 'click',
+    validation: 'R2', help: 'Click to show the changes of all ' +
+      'authors or of one.'},
+  {x: PAD + 312, y: 10, w: 28, h: 28, sprite: 'gright',
+    name: 'arrow', button: 'click',
+    help: 'Show the changes of all authors or of one.'},
+  {x: PAD, y: 42, w: W - 2 * PAD, h: 26, text: '', name: 'sum'},
+  btn('Accept', col(0), B1, BW, 'Accept the chosen change: an ' +
+    'insertion stays, a deletion goes, a move is made.'),
+  btn('Reject', col(1), B1, BW, 'Reject the chosen change: an ' +
+    'insertion goes, a deletion stays, a move is undone.'),
+  btn('Previous', col(2), B1, BW, 'Select the tracked change before ' +
+    'the selection in the text.'),
+  btn('Next', col(3), B1, BW, 'Select the tracked change after the ' +
+    'selection in the text.'),
+  btn(ACCEPT_BY, PAD, B2, BW2, 'Accept every change of the author ' +
+    'chosen under Show.'),
+  btn(REJECT_BY, PAD + BW2 + GAP, B2, BW2, 'Reject every change of ' +
+    'the author chosen under Show.'),
+  {x: PAD, y: MY, w: W - 2 * PAD, h: 26, text: '', name: 'msg'},
+  {x: PAD, y: MY + 26, w: W - 2 * PAD, h: 26, text: '',
+    name: 'msg2'},
+];
+
+/** s cut to fit w px on g (with '...'). */
+export function fit(g, s, w) {
+  if (g.measureText(s).width <= w) return s;
+  const cps = Array.from(s.slice(0, 400));
+  const cut = (m) => cps.slice(0, m).join('') + '...';
+  let lo = 0, hi = Math.min(cps.length, 200);
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (g.measureText(cut(m)).width <= w) lo = m;
+    else hi = m - 1;
+  }
+  return cut(lo);
+}
+
+/** text in two lines of at most LINE characters (code points), the
+ *  second ending '...' when there is more. */
+export function lines2(text) {
+  const cps = Array.from(String(text));
+  if (cps.length <= LINE) return [cps.join(''), ''];
+  let at = cps.lastIndexOf(' ', LINE);
+  if (at <= 0) at = LINE;
+  const a = cps.slice(0, at).join('');
+  let b = cps.slice(at).join('').trim();
+  const bs = Array.from(b);
+  if (bs.length > LINE) b = bs.slice(0, LINE - 3).join('') + '...';
+  return [a, b];
+}
+
+/** The list on the canvas g (work coordinates): ROWS rows. */
+function paint(g, s, rs, view) {
+  g.fillStyle = '#ffffff';
+  g.fillRect(PAD, LY, LISTW, ROWS * RH);
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  if (!rs.length) {
+    g.font = 'italic 13px sans-serif';
+    g.fillStyle = '#777777';
+    g.fillText(emptyText(s.filter), PAD + 12, LY + RH / 2);
+  }
+  for (let k = 0; k < ROWS; k++) {
+    const e = rs[s.top + k];
+    if (!e) break;
+    const y = LY + k * RH, on = e.key === s.sel;
+    const x = PAD + 10, w = LISTW - 18;
+    if (on) {
+      g.fillStyle = '#2a4f9a';
+      g.fillRect(PAD, y, LISTW, RH);
+    }
+    g.fillStyle = inkOf(e.author);
+    g.fillRect(x - 6, y + 6, 3, RH - 12);
+    const grey = !e.editable;
+    const ink = on ? (grey ? '#d8d8d8' : '#ffffff')
+      : grey ? '#999999' : '#000000';
+    g.font = '12px sans-serif';
+    const dw = e.date ? g.measureText(e.date).width + 8 : 0;
+    g.fillStyle = on ? '#dddddd' : '#666666';
+    g.textAlign = 'right';
+    if (e.date) g.fillText(e.date, PAD + LISTW - 8, y + 12);
+    g.textAlign = 'left';
+    g.font = 'bold 13px sans-serif';
+    g.fillStyle = ink;
+    g.fillText(fit(g, e.label + ' - ' + (e.author || 'Unknown ' +
+      'author'), w - dw), x, y + 12);
+    g.font = '13px sans-serif';
+    const t = e.old ? e.old + ' -> ' + e.text : e.text;
+    g.fillText(fit(g, t || '(no text)', w), x, y + 29);
+    const h = hint(e, view);
+    if (h) {
+      g.font = 'italic 11px sans-serif';
+      g.fillStyle = on ? '#dddddd' : '#777777';
+      g.fillText(fit(g, h, w), x, y + 45);
+    }
+  }
+  g.strokeStyle = '#888888';
+  g.lineWidth = 1;
+  g.strokeRect(PAD + 0.5, LY + 0.5, LISTW, ROWS * RH);
+  if (rs.length <= ROWS) return;
+  const sx = PAD + LISTW + 4, h = ROWS * RH;
+  g.fillStyle = '#bbbbbb';
+  g.fillRect(sx, LY, SB, h);
+  const th = Math.max(16, h * ROWS / rs.length);
+  g.fillStyle = '#555555';
+  g.fillRect(sx, LY + (h - th) * s.top / (rs.length - ROWS), SB, th);
+}
+
+/** Where the pane first opens (as the Comments pane). */
+function place(w) {
+  const GAPX = 8, y = Math.max(8, Math.round(w.y));
+  if (w.x + w.w + GAPX + W <= wimp.width - 8)
+    return {x: Math.round(w.x + w.w + GAPX), y};
+  if (w.x - GAPX - W >= 8) return {x: Math.round(w.x - GAPX - W), y};
+  return {x: 8, y};
+}
+
+/** See the header. */
+export function changesBox(dw) {
+  const win = box(dw, 'changes', () => make(dw).win);
+  const api = apis.get(win);
+  api.open();
+  return api;
+}
+
+/** See the header. */
+export function changesShown(dw) {
+  const w = dw.boxes.get('changes');
+  return !!w && w.isOpen;
+}
+
+/** See the header. */
+export function toggleChanges(dw) {
+  const w = dw.boxes.get('changes');
+  if (w && w.isOpen) apis.get(w).close();
+  else changesBox(dw);
+}
+
+// (the list state: sel a row's key, top the first row shown)
+const maxTop = (n) => Math.max(0, n - ROWS);
+const clampTop = (s, n) => {
+  s.top = Math.max(0, Math.min(maxTop(n), s.top));
+};
+const indexOf = (s, rs) => (s.sel === null ? -1
+  : rs.findIndex((e) => e.key === s.sel));
+/** Row i scrolled into sight. */
+function show(s, i, n) {
+  if (i < s.top) s.top = i;
+  else if (i >= s.top + ROWS) s.top = i - ROWS + 1;
+  clampTop(s, n);
+}
+
+/** A new pane and its api. */
+function make(dw) {
+  const task = dw.app.task, v = dw.view;
+  const s = {filter: null, sel: null, top: 0};
+  const b = {gone: false, placed: false, raf: 0};
+  let rs = [];
+  const off = new Set();
+  const win = task.createWindow({title: 'Changes', w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'click',
+    help: 'The tracked changes of the document. Click one to go to ' +
+      'it; Accept or Reject it with the buttons.'});
+  const I = (n) => win.iconByName(n);
+  const doc = () => dw.d.doc;
+  const cur = () => (s.sel === null ? null
+    : rs.find((e) => e.key === s.sel) || null);
+  win.useCanvas((g) => paint(g, s, rs, dw.markup), {hiDPI: true});
+  const say = (text = '') => {
+    const [a, c] = lines2(text);
+    I('msg').setText(a);
+    I('msg2').setText(c);
+  };
+  const no = (msg) => {
+    wimp.beep();
+    say(msg);
+    return false;
+  };
+  let whys = {};
+  // (the buttons worked out again only when what they depend on
+  // changed: the rows (a new list after an edit), the chosen row,
+  // the filter, the mode; not on every move of the caret)
+  let shadeKey = null;
+  const shade = () => {
+    const key = [v.d, rs, s.sel, s.filter, !!v.hdr];
+    if (shadeKey && key.every((x, k) => x === shadeKey[k])) return;
+    shadeKey = key;
+    const bs = buttons(v.d, cur());
+    const by = s.filter === null ? MSGS.author : v.hdr ? MSGS.hdr
+      : rs.some((e) => e.editable) ? null : MSGS.kept;
+    // (Previous and Next live outside the modes: worked out on a
+    // press, so a frame costs nothing more with many changes)
+    const st = v.hdr ? MSGS.hdr : null;
+    whys = {Accept: bs.why.accept, Reject: bs.why.reject,
+      Previous: st, Next: st, [ACCEPT_BY]: by, [REJECT_BY]: by};
+    for (const [n, w] of Object.entries(whys)) {
+      if (w === null) off.delete(n);
+      else off.add(n);
+      I(`button:${n}`).setState({shaded: w !== null});
+    }
+  };
+  const title = () => 'Changes' + (on(dw.d) ? ' (tracking on)' : '');
+  const refresh = () => {
+    // (an author whose last change has gone: still chosen, empty)
+    rs = rowsOf(doc(), s.filter);
+    if (s.sel !== null && indexOf(s, rs) < 0) s.sel = null;
+    clampTop(s, rs.length);
+    I('show').setText(s.filter === null ? 'All authors'
+      : s.filter.slice(0, 40));
+    I('sum').setText(summary(rs));
+    const t = title();
+    if (win.title !== t) win.setTitle(t);
+    shade();
+    win.invalidate();
+  };
+  const later = () => {
+    if (b.raf || b.gone || !win.isOpen) return;
+    b.raf = requestAnimationFrame(() => {
+      b.raf = 0;
+      if (!b.gone && win.isOpen) refresh();
+    });
+  };
+  const offChange = dw.d.on('change', later);
+  // (the header and footer or notes mode, or the markup view,
+  // changed: the buttons shaded again, the hints drawn again)
+  let seen = [!!v.hdr, dw.markup];
+  const onSel = () => {
+    const now = [!!v.hdr, dw.markup];
+    const moved = now[0] !== seen[0] || now[1] !== seen[1];
+    seen = now;
+    if (b.gone || !win.isOpen) return;
+    if (moved) refresh();
+    else shade();
+  };
+  v.formatListeners.push(onSel);
+  const choose = (key, go = true) => {
+    const i = key === null ? -1 : rs.findIndex((e) => e.key === key);
+    s.sel = i < 0 ? null : key;
+    if (i >= 0) show(s, i, rs.length);
+    const e = cur();
+    say('');
+    if (go && e) {
+      const sel = rangeOf(e, dw.markup);
+      if (v.hdr) say('Leave the header or footer, or the note, to go ' +
+        'to the change in the text.');
+      else if (!sel) say(e.note || 'This change is not in the body.');
+      else {
+        v.setSelection(sel);
+        say(hint(e, dw.markup) || '');
+      }
+    }
+    shade();
+    win.invalidate();
+  };
+  const hide = () => {
+    if (!win.isOpen) return;
+    say('');
+    win.close();
+    if (!dw.closed) v.focus();
+  };
+  /** After Next or Previous: the row of the change selected. */
+  const follow = () => {
+    refresh();
+    const k = keyAt(rs, v.sel);
+    if (k !== null) choose(k, false);
+    say(k === null ? '' : hint(cur(), dw.markup) || '');
+  };
+  const resolve = (yes) => {
+    const e = cur();
+    if (!e) return no(MSGS.pick);
+    if (v.hdr) return no(MSGS.hdr);
+    const sel = actOn(e, dw.markup);
+    if (!sel) return no(e.note || MSGS.pick);
+    v.ensure();
+    dropPending(v);
+    let r;
+    try {
+      r = (yes ? acceptAt : rejectAt)(v.d, v.typing, sel);
+    } catch (x) {
+      if (!(x instanceof Refused)) throw x;
+      return no(x.message);
+    }
+    v.edited(r.sel || v.sel);
+    s.sel = null;
+    refresh();
+    say(r.resolved ? '' : 'Nothing was changed.');
+    return true;
+  };
+  const byAuthor = (yes) => {
+    if (s.filter === null) return no(MSGS.author);
+    const r = resolveAll(dw, yes, s.filter, {quiet: true});
+    if (!r) return false;
+    s.sel = null;
+    refresh();
+    say(notice(r.resolved, r.skipped, yes));
+    return true;
+  };
+  const call = (name) => {
+    if (name === 'Accept') return resolve(true);
+    if (name === 'Reject') return resolve(false);
+    if (name === 'Previous' || name === 'Next') {
+      const d = name === 'Next' ? 1 : -1;
+      // (step beeps at the end: said here, no second beep)
+      if (step(dw, d)) return true;
+      say(MSGS[d > 0 ? 'next' : 'prev']);
+      return false;
+    }
+    if (name === ACCEPT_BY) return byAuthor(true);
+    if (name === REJECT_BY) return byAuthor(false);
+    return false;
+  };
+  const press = (name) => (off.has(name) ? no(whys[name] || '')
+    : call(name));
+  const pick = (name) => {
+    const f = typeof name === 'string' ? name : null;
+    if (f !== null && !authors(doc()).includes(f)) return false;
+    s.filter = f;
+    s.top = 0;
+    refresh();
+    const i = indexOf(s, rs);
+    if (i >= 0) show(s, i, rs.length);
+    win.invalidate();
+    return true;
+  };
+  const filterMenu = () => {
+    const a = I('show').bbox, p = win.workToScreen(a.x0, a.y1);
+    const items = [null, ...authors(doc())].map((x) => ({
+      text: x === null ? 'All authors' : x.slice(0, 40),
+      ticked: () => s.filter === x, action: () => pick(x)}));
+    wimp.menus.open(new Menu('Show', items), p.x, p.y, {task});
+  };
+  const listY = (ev) => ev.y - LY;
+  const rowAt = (y) => {
+    if (y < 0 || y >= ROWS * RH) return null;
+    return rs[s.top + Math.floor(y / RH)] || null;
+  };
+  const scroll = (n) => {
+    s.top += n;
+    clampTop(s, rs.length);
+    win.invalidate();
+  };
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    const n = ev.icon ? ev.icon.name : '';
+    if (n.startsWith('button:')) press(n.slice(7));
+    else if (n === 'show' || n === 'arrow') filterMenu();
+    else if (!ev.icon) {
+      wimp.setCaret(win);
+      const y = listY(ev);
+      if (y < 0 || y >= ROWS * RH) return true;
+      if (ev.x >= PAD + LISTW) {
+        scroll(y < (ROWS * RH) / 2 ? -ROWS + 1 : ROWS - 1);
+      } else if (ev.x >= PAD) {
+        const e = rowAt(y);
+        if (e) choose(e.key);
+      }
+    }
+    return true;
+  });
+  win.on('wheel', (ev) => {
+    scroll(Math.sign(ev.dy));
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  const move = (n) => {
+    if (!rs.length) return;
+    const at = indexOf(s, rs);
+    const to = at < 0 ? (n > 0 ? 0 : rs.length - 1)
+      : Math.max(0, Math.min(rs.length - 1, at + n));
+    choose(rs[to].key);
+  };
+  win.on('key', (ev) => {
+    const k = ev.key;
+    if (ev.code === 27) hide();
+    else if (ev.code === 13) {
+      if (s.sel !== null) choose(s.sel);
+    } else if (k === 'ArrowDown' || ev.code === 0x18E) move(1);
+    else if (k === 'ArrowUp' || ev.code === 0x18F) move(-1);
+    else return undefined;
+    return true;
+  });
+  win.on('deleted', () => {
+    b.gone = true;
+    offChange();
+    const k = v.formatListeners.indexOf(onSel);
+    if (k >= 0) v.formatListeners.splice(k, 1);
+    if (b.raf) cancelAnimationFrame(b.raf);
+  });
+  const api = {
+    win, follow, refresh, press,
+    get isOpen() { return win.isOpen; },
+    get gone() { return b.gone; },
+    get rows() { return rs.slice(); },
+    get selected() { return s.sel; },
+    get filter() { return s.filter; },
+    get summary() { return I('sum').text; },
+    get title() { return win.title; },
+    get message() {
+      return (I('msg').text + ' ' + I('msg2').text).trim();
+    },
+    setFilter: pick,
+    select(key) {
+      const ok = rs.some((e) => e.key === key);
+      if (ok) choose(key);
+      return ok;
+    },
+    where(key) {
+      const i = rs.findIndex((e) => e.key === key) - s.top;
+      if (i < 0 || i >= ROWS) return null;
+      return {x: PAD, y: LY + i * RH, w: LISTW, h: RH};
+    },
+    open() {
+      if (b.gone) return;
+      refresh();
+      const p = b.placed ? {} : place(dw.win);
+      b.placed = true;
+      win.open({...p, behind: 'top'});
+      wimp.setCaret(win);
+    },
+    close: hide,
+  };
+  apis.set(win, api);
+  win.api = api;                     // (for the tests)
+  return api;
+}

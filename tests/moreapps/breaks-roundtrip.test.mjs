@@ -31,6 +31,7 @@ import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS} from './roundtrip-lib.mjs';
 import {rng} from './word-docs.mjs';
 import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import * as FA from '../../tools/moreapps/!Letters/FormatApply';
 import * as S from '../../tools/moreapps/!Letters/Selection';
@@ -154,10 +155,16 @@ export function breaksAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.6) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, every);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

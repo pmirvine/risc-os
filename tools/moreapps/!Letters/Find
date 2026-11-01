@@ -1,12 +1,14 @@
 // Find - finding text in a document and replacing it (the Find box:
 // ./EditFind).
 //
-//   search(doc, from, needle, {matchCase, whole, backwards, wrap})
-//     -> {at, from, to, inInline, wrapped} | null
+//   search(doc, from, needle, {matchCase, whole, backwards, wrap,
+//     view}) -> {at, from, to, inInline, wrapped} | null
 //   count(doc, needle, opts) -> the number of matches
 //   replaceOne(d, match, repl) -> {at, from, to} (the text put in) |
 //                         null (an inline in it, or gone)
-//   replaceAll(d, needle, repl, opts) -> {count, skipped, last}
+//   replaceAll(d, needle, repl, opts) -> {count, skipped, refused,
+//                         last, kept}  kept: {link, rev, other}, the
+//                         skipped matches by ./FindText keptKind
 //                         last: {at, from, to} of the last text put
 //                         in (null when none)
 //   fold, prepare, MAX    from ./FindText
@@ -23,8 +25,10 @@
 // (end) of the document: the match says wrapped. A match is in one
 // paragraph (never across two); kept blocks (Opaque tables) are
 // passed over. at says where it is, from and to its offsets in the
-// text; what matches (case, whole words, inline items, grapheme
-// clusters) is ./FindText's. A match with an inline item in it
+// text; view the window's markup view (./RevView, dw.markup: the
+// text it hides is not searched; default 'final'); what matches
+// (case, whole words, inline items, grapheme clusters, the view) is
+// ./FindText's. A match with an inline item in it
 // (inInline: link text) can be selected but is never replaced
 // (replaceAll counts it in skipped). The needle is literal (no
 // wildcards); an empty one finds nothing. count and replaceAll
@@ -37,14 +41,23 @@
 // replaceOne and replaceAll are each one undo step (d.atomic);
 // replaceAll changes each paragraph once (one spliceText), in one
 // pass over the paragraphs found first: text put in is never
-// searched again. Pure: no desktop services.
+// searched again. Track Changes on (./RevTrack session: the body
+// only): each match is a tracked deletion (the author's own
+// insertion removed for real) and the replacement a tracked
+// insertion after it (./RevTrack swap); a match that cannot be
+// deleted so (another author's insertion, an object) is not
+// replaced: replaceOne throws ./RevCmd Refused, replaceAll counts
+// it in `refused` ({count, skipped, refused, last}; 0 untracked).
+// Pure: no desktop services.
 import {cut, join} from './OpsUtil';
 import {isPath, cmpPath, samePath, topOf} from './Path';
 import {at as walkAt, forEachIn, forEachBlock} from './Walk';
 import {fmtAt} from './OpsText';
 import {clean} from './Edit';
-import {view, shownAt, inPara, matches, needleOf, OBJ}
+import {view, shownAt, inPara, matches, needleOf, OBJ, keptKind}
   from './FindText';
+import {session, record} from './RevTrack';
+import {Refused} from './RevCmd';
 
 export {fold, prepare, MAX} from './FindText';
 
@@ -76,7 +89,7 @@ function scan(doc, f, n, o) {
         j += d) {
         const {p, at} = ps[j];
         if (f && !ahead(f, at, d)) continue;
-        const v = view(p), len = v.text.length;
+        const v = view(p, o.view), len = v.text.length;
         const lim = f && samePath(at, f.at) ? shownAt(v, f.off) : null;
         const m = d > 0 ? inPara(p, n, o, lim ?? 0, len, at)
           : inPara(p, n, o, 0, lim ?? len, at);
@@ -151,10 +164,43 @@ export function replaceOne(d, m, repl) {
     m.to > b.text.length || b.text.slice(m.from, m.to).includes(OBJ))
     return null;
   const text = clean(repl);
+  const c = piece(b, m.from, m.to - m.from, text), s = session(d);
+  if (s) {
+    const why = s.why(b, m.from, m.to);
+    if (why) throw new Refused(why);
+    let r = null;
+    record(d, () => d.atomic(() => {
+      r = s.swap(m.at, m.from, m.to, c);
+    }));
+    return {at: m.at, ...r};
+  }
   d.atomic(() => d.apply({op: 'spliceText', block: m.at,
-    at: m.from, del: m.to - m.from,
-    content: piece(b, m.from, m.to - m.from, text)}));
+    at: m.from, del: m.to - m.from, content: c}));
   return {at: m.at, from: m.from, to: m.from + text.length};
+}
+
+/** Match m of p counted in kept by why it stays. */
+const keep = (kept, p, m) => { kept[keptKind(p, m.from, m.to)]++; };
+
+/** replaceAll tracked (see the header). */
+function trackedAll(d, s, n, text, o) {
+  let c = 0, skipped = 0, refused = 0, last = null;
+  const kept = {link: 0, rev: 0, other: 0};
+  record(d, () => d.atomic(() => {
+    for (const {p, at: path} of allParas(d.doc)) {
+      let shift = 0;
+      for (const m of [...matches(p, n, o, path)]) {
+        if (m.inInline) { skipped++; keep(kept, p, m); continue; }
+        if (s.why(p, m.from, m.to)) { refused++; continue; }
+        const r = s.swap(path, m.from + shift, m.to + shift,
+          piece(p, m.from, m.to - m.from, text));
+        shift = r.to - m.to;
+        last = {at: path, ...r};
+        c++;
+      }
+    }
+  }));
+  return {count: c, skipped, refused, last, kept};
 }
 
 /** See the header. */
@@ -162,13 +208,16 @@ export function replaceAll(d, needle, repl, opts = {}) {
   const o = {...opts, backwards: false}, n = needleOf(needle, o);
   const text = clean(repl);
   let c = 0, skipped = 0, last = null;
-  if (!n) return {count: c, skipped, last};
+  const kept = {link: 0, rev: 0, other: 0};
+  if (!n) return {count: c, skipped, refused: 0, last, kept};
+  const s = session(d);
+  if (s) return trackedAll(d, s, n, text, o);
   d.atomic(() => {
     for (const {p, at: path} of allParas(d.doc)) {
       const parts = [];
       let at = -1, pos = 0;
       for (const m of matches(p, n, o, path)) {
-        if (m.inInline) { skipped++; continue; }
+        if (m.inInline) { skipped++; keep(kept, p, m); continue; }
         if (at < 0) at = pos = m.from;
         parts.push(cut(p, pos, m.from),
           piece(p, m.from, m.to - m.from, text));
@@ -182,5 +231,5 @@ export function replaceAll(d, needle, repl, opts = {}) {
       last = {at: path, from: end - text.length, to: end};
     }
   });
-  return {count: c, skipped, last};
+  return {count: c, skipped, refused: 0, last, kept};
 }

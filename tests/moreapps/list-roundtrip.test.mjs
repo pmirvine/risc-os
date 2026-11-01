@@ -29,6 +29,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {run} from '../../tools/moreapps/!Letters/EditApply';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {setList} from '../../tools/moreapps/!Letters/FormatSet';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
@@ -119,6 +120,7 @@ function listAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.6) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, every, (seed >>> 1) & 1);
       if (every) {
@@ -126,6 +128,11 @@ function listAll(d, seed, {every = false} = {}) {
         labels(d.doc);
       }
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

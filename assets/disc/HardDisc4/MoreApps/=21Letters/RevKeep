@@ -1,0 +1,162 @@
+// RevKeep - tracked changes kept whole across a step (Batch F2): for
+// ./Document, which applies what this gives in the same undo step
+// (as ./CommentKeep does for comments), so one undo brings all back.
+//
+//   dropped(doc, invs) -> op | null  after the ops of one step (one
+//       group, or one op outside a group) whose inverses are invs,
+//       applied to doc: setRev ops (./OpsRevs; one, or a compound)
+//       that
+//       - untag a stretch of a revision the step took text of
+//         (./RevMarks list: an editable entry of that id) when the
+//         stretch now holds no character, only marks (bookmarks,
+//         comment marks, ranges: ./Kinds unseen), which the edits
+//         keep (./BookmarkKeep): a revision whose text was removed
+//         leaves nothing behind (no w:ins around a lone bookmark)
+//       - make a move half whose partner is gone a plain revision:
+//         a moveFrom stretch a deletion, a moveTo an insertion (the
+//         same id, author, date and attributes). Gone: the half had
+//         a move (./RevMarks pairing) before the step and has none
+//         after it; looked at only when the step took text of a
+//         move half or a move range mark and some move half in the
+//         body has no move now. "Before" is the body as it was: a
+//         copy of doc's section and block arrays (shared blocks)
+//         with invs undone on it, last first (the live Doc is not
+//         touched). A half with no partner in the file stays a
+//         move; part of a half taken leaves both halves a move
+//       null when there is nothing to do. What a step took is read
+//       from its inverses: what they would put back (spliceText's
+//       content, a restoreBlock's snapshot, insertBlock(s)' blocks,
+//       a setRev's old tags, a compound's ops), in the body only
+//       (story null): revisions elsewhere are not changed in F2
+//   stats  {befores}: "before" bodies made (a cost check)
+//
+// Cost: nothing for a step that took no tagged text and no move
+// range mark (typing, most edits); otherwise the size of what was
+// taken plus ./RevMarks list (memoised per paragraph), and the
+// "before" body (linear in the blocks) only for a move that lost
+// its pairing. Pure: no desktop services.
+import {applyOwn} from './Ops';
+import {list} from './RevMarks';
+import {moveRange} from './MovePairs';
+import {forEachIn, loose, at as blockAt} from './Walk';
+import {OBJ} from './Model';
+import {unseen} from './Kinds';
+
+export const stats = {befores: 0};
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const PLAIN = {mvFrom: 'del', mvTo: 'ins'};
+const isMove = (kind) => Object.hasOwn(PLAIN, kind);
+
+/** What the runs and inlines of content c hold, into got. */
+function content(c, got) {
+  if (!isObj(c)) return;
+  for (const r of Array.isArray(c.runs) ? c.runs : []) {
+    if (isObj(r) && isObj(r.rev)) see(r.rev, got);
+  }
+  const xs = isObj(c.inlines) ? c.inlines : {};
+  for (const k of Object.keys(xs)) {
+    const x = xs[k];
+    if (isObj(x) && x.kind === 'raw' && moveRange(x.node))
+      got.moves = true;
+  }
+}
+
+/** A tag rev was taken. */
+function see(rev, got) {
+  if (!Number.isInteger(rev.id)) return;
+  got.ids.add(rev.id);
+  if (isMove(rev.kind)) got.moves = true;
+}
+
+/** What the blocks hold (tables in them too), into got. */
+function inBlocks(bs, got) {
+  if (!Array.isArray(bs)) return;
+  forEachIn(bs, [0], (b) => {
+    if (isObj(b) && b.type === 'p') content(b, got);
+    else if (isObj(b) && b.type === 'tbl' &&
+      loose(b).some((m) => moveRange(m.node))) got.moves = true;
+    return true;
+  });
+}
+
+/** What inverse op `op` would put back, into got. */
+function putBack(op, got) {
+  if (!isObj(op)) return;
+  if (op.op === 'compound') {
+    if (Array.isArray(op.ops)) for (const o of op.ops) putBack(o, got);
+    return;
+  }
+  if (op.story !== undefined && op.story !== null) return;
+  if (op.op === 'spliceText') content(op.content, got);
+  else if (op.op === 'restoreBlock') inBlocks([op.snapshot], got);
+  else if (op.op === 'insertBlock') inBlocks([op.block], got);
+  else if (op.op === 'insertBlocks') inBlocks(op.blocks, got);
+  else if (op.op === 'setRev') {
+    const xs = Array.isArray(op.revs) ? op.revs : [op];
+    for (const x of xs) if (isObj(x) && isObj(x.rev)) see(x.rev, got);
+  }
+}
+
+/** Whether [from, to) of p holds no character (only marks). */
+function onlyMarks(p, from, to) {
+  for (let k = from; k < to; k++) {
+    if (p.text[k] !== OBJ || !unseen(p.inlines[k])) return false;
+  }
+  return true;
+}
+
+/** The body as it was before the step (see the header), or null. */
+function before(doc, invs) {
+  stats.befores++;
+  let old;
+  try {
+    old = {...doc, sections: doc.sections.map((s) =>
+      ({...s, blocks: s.blocks.slice()}))};
+    for (let k = invs.length - 1; k >= 0; k--) applyOwn(old, invs[k]);
+  } catch (e) {
+    return null;
+  }
+  return old;
+}
+
+/** The key of a revision half. */
+const keyOf = (e) => e.kind + ':' + e.id;
+
+/** See the header. */
+export function dropped(doc, invs) {
+  if (!isObj(doc) || !Array.isArray(doc.sections) ||
+    !Array.isArray(invs)) return null;
+  const got = {ids: new Set(), moves: false};
+  for (const op of invs) putBack(op, got);
+  if (!got.ids.size && !got.moves) return null;
+  const now = list(doc).filter((e) => e.editable);
+  const ops = [];
+  const done = new Set();
+  for (const e of now) {
+    if (!got.ids.has(e.id)) continue;
+    const p = blockAt(doc, e.where.block);
+    if (!p || !onlyMarks(p, e.where.from, e.where.to)) continue;
+    done.add(e);
+    ops.push({op: 'setRev', at: e.where.block, from: e.where.from,
+      to: e.where.to, rev: null});
+  }
+  const lone = got.moves ? now.filter((e) => isMove(e.kind) &&
+    e.move === undefined && !done.has(e)) : [];
+  if (lone.length) {
+    const old = before(doc, invs);
+    const paired = new Set();
+    for (const e of old ? list(old) : []) {
+      if (e.editable && e.move !== undefined) paired.add(keyOf(e));
+    }
+    for (const e of lone) {
+      if (!paired.has(keyOf(e))) continue;
+      const rev = {...e.rev, kind: PLAIN[e.kind]};
+      delete rev.name;
+      ops.push({op: 'setRev', at: e.where.block, from: e.where.from,
+        to: e.where.to, rev});
+    }
+  }
+  if (!ops.length) return null;
+  return ops.length === 1 ? ops[0] : {op: 'compound', ops};
+}

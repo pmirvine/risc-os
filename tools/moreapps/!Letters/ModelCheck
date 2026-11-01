@@ -3,7 +3,13 @@
 //
 // A Para's runs are sorted, non-empty, contiguous and cover exactly
 // [0, text.length); adjacent runs never have equal formatting (rPr,
-// including its extra nodes, and rStyle). Each U+FFFC in text has an
+// including its extra nodes, rStyle, and the revision tag: two runs
+// of different revisions never merge). A run's rev, when there is
+// one (./RevRead), is {id, kind, author?, date?, attrs, extra,
+// name?}: id an integer 0..2147483647, kind 'ins' | 'del' | 'mvFrom'
+// | 'mvTo', author and date strings when present, attrs [[name,
+// value]], extra an
+// array of nodes, name (a move's) a string. Each U+FFFC in text has an
 // entry in inlines (key: its index as a decimal string) and every
 // entry points at a U+FFFC. Offsets are UTF-16 code units and never
 // fall inside a surrogate pair. An inline is one the writer can
@@ -23,7 +29,7 @@
 // checkProps, so it imports nothing from here).
 import {checkTable, checkCellPara} from './TblCheck';
 import {deepEqual} from './DeepEqual';
-import {COMMENT_MARKS, isCommentMark, localName, markId}
+import {COMMENT_MARKS, isCommentMark, localName, markId, sameRev}
   from './Kinds';
 
 export {deepEqual, sameStories} from './DeepEqual';
@@ -38,9 +44,24 @@ export function fail(msg) {
 const isObj = (v) => v !== null && typeof v === 'object' &&
   !Array.isArray(v);
 
-/** True when two runs have the same formatting (rPr and rStyle). */
+/** True when two runs have the same formatting (rPr and rStyle)
+ *  and the same revision tag (./Kinds sameRev). */
 export function sameFmt(a, b) {
-  return a.rStyle === b.rStyle && deepEqual(a.rPr, b.rPr);
+  return a.rStyle === b.rStyle && sameRev(a.rev, b.rev) &&
+    deepEqual(a.rPr, b.rPr);
+}
+
+const REVS = new Set(['ins', 'del', 'mvFrom', 'mvTo']);
+
+/** Throw unless rev is a revision tag (see the header). */
+function checkRev(rev) {
+  if (!isObj(rev) || !Number.isInteger(rev.id) || rev.id < 0 ||
+    rev.id > 2147483647 || !REVS.has(rev.kind) ||
+    (rev.author !== undefined && typeof rev.author !== 'string') ||
+    (rev.date !== undefined && typeof rev.date !== 'string') ||
+    !Array.isArray(rev.attrs) || !Array.isArray(rev.extra) ||
+    (rev.name !== undefined && typeof rev.name !== 'string'))
+    fail('bad revision tag');
 }
 
 const isHi = (c) => c >= 0xd800 && c <= 0xdbff;
@@ -111,6 +132,7 @@ export function checkContent(c, norm = false) {
     checkProps(r.rPr, 'rPr');
     if (r.rStyle !== undefined && typeof r.rStyle !== 'string')
       fail('rStyle must be a string');
+    if (r.rev !== undefined) checkRev(r.rev);
     if (midPair(c.text, r.end)) fail('a run splits a pair');
     if (norm && k && sameFmt(c.runs[k - 1], r))
       fail('runs not normalised');

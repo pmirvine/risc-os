@@ -27,7 +27,7 @@ import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {P, C, SEL, mk, blocks, S, O, raw} from './edit-docs.mjs';
 import {listDocx, item, heading, lvl, STYLES_LIST}
   from './list-fixtures.mjs';
-import {buildDocx, documentXml, numberingXml, p, r}
+import {buildDocx, documentXml, numberingXml, settingsXml, p, r}
   from './build-docx.mjs';
 import {entryText} from './docx-compare.mjs';
 
@@ -278,6 +278,47 @@ describe('AutoList.afterSpace: lists made as you type', () => {
     s3 = run('tab', f, w, C(f, 0, 0), {autoList: true});
     assert.deepEqual(shown(f), ['a.']);
     assert.deepEqual(texts(f), ['x']);
+  });
+});
+
+describe('AutoList: tracked changes', () => {
+  const D0 = '2024-01-02T03:04:00Z';
+  const doc = async (body, track) => {
+    const d = await fromFile(await buildDocx({
+      'word/document.xml': documentXml(body),
+      'word/settings.xml': settingsXml(track ? '<w:trackRevisions/>'
+        : '')}));
+    d.reviewer = () => ({name: 'Ann', now: new Date(2025, 0, 2)});
+    return d;
+  };
+  it('while tracking is on, a marker and a space are left as typed',
+    async () => {
+      const d = await doc(p(r('Hello')), true);
+      const t = new Typing(d);
+      typeIn(d, t, C(d, 0, 0), '1. ');
+      assert.deepEqual(texts(d), ['1. Hello']);
+      assert.deepEqual(shown(d), [null]);
+      assert.equal(d.undoDepth, 1, 'the typing only');
+      // a space after a "1." already there: the same
+      const e = await doc(p(r('1.Hello')), true);
+      typeIn(e, new Typing(e), C(e, 0, 2), ' ');
+      assert.deepEqual(texts(e), ['1. Hello']);
+      assert.deepEqual(shown(e), [null]);
+    });
+
+  it('a deleted "1." All Markup shows is not a marker', async () => {
+    const d = await doc(p('<w:del w:id="1" w:author="Bo" ' +
+      `w:date="${D0}"><w:r><w:delText>1.</w:delText></w:r></w:del>` +
+      r('Hello')), false);
+    d.markup = 'all';
+    typeIn(d, new Typing(d), C(d, 0, 2), ' ');
+    assert.equal(texts(d)[0].replace(/^1\./, ''), ' Hello');
+    assert.ok(texts(d)[0].startsWith('1.'), 'the deletion kept');
+    assert.deepEqual(shown(d), [null]);
+    // tracking off and no revision: as before
+    const e = await doc(p(r('Hello')), false);
+    typeIn(e, new Typing(e), C(e, 0, 0), '1. ');
+    assert.deepEqual(shown(e), ['1.']);
   });
 });
 

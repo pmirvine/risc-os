@@ -1,0 +1,137 @@
+// OpsRevs - setRev: the revision tag (run.rev, ./RevRead) of a range
+// of one paragraph (Batch F2), each op returning its inverse (./Ops
+// apply: undo, redo, atomic as every op).
+//
+//   setRev {at, from, to, rev, story?} -> setRev {at, from, to, revs,
+//       story?}  the runs of the paragraph at path `at` in [from, to)
+//       (from < to, ./ModelCheck checkPos; split at both ends) tagged
+//       rev (a revision tag, ./ModelCheck checkRev), or untagged
+//       when rev is null. The inverse holds the old tags run by run:
+//       revs [{from, to, rev}] (rev null for an untagged run), in
+//       order and covering [from, to), and setRev takes that form
+//       too (each piece set in turn), so undoing gives back the very
+//       tag objects, and the runs as they were (runs are normalised:
+//       joined again where they were one)
+//   taggable(p, from, to) -> whether [from, to) of paragraph p holds
+//       only what ./RevRead reads back inside a revision: text, tabs
+//       and breaks, comment marks, the childless marks between runs
+//       named in MARKS (bookmarks, permission and move ranges,
+//       proofing marks: not an empty link or an unknown element)
+//       and the run marks a tag
+//       can carry (soft and no-break hyphens, Word's last page break
+//       mark, a carriage return). A field, a picture, a link, a note
+//       mark, a symbol or a revision kept raw is not: setRev with a
+//       tag is refused there, so a tag is never written that would
+//       read back raw
+//   MARKS   the local names of those childless marks (./Kinds
+//           REV_MARKS, READ ONLY)
+//
+// The `revs` form (an inverse: tags that were there before) is never
+// refused for what the range holds: undo always restores.
+// Refused (RangeError, nothing changed): `at` not a paragraph, a bad
+// range, a bad tag, a `rev` tag over what is not taggable, revs not
+// covering [from, to) in order. In the body or in story `story`
+// (./OpsPath). Pure: no desktop services.
+import {fail, normRuns, checkBlock, checkPos} from './ModelCheck';
+import {paraAt, own, inStory} from './OpsUtil';
+import {localName, isCommentMark, REV_MARKS} from './Kinds';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const RUN_MARKS = new Set(['tab', 'br', 'cr', 'softHyphen',
+  'noBreakHyphen', 'lastRenderedPageBreak', 'commentReference']);
+export const MARKS = REV_MARKS;
+
+/** Whether inline x can be inside a revision (see the header). */
+function canTag(x) {
+  if (!isObj(x)) return false;
+  if (x.kind === 'tab' || x.kind === 'br' || isCommentMark(x))
+    return true;
+  if (x.kind !== 'raw' || !isObj(x.node)) return false;
+  const n = x.node;
+  if (x.level === 'r') return RUN_MARKS.has(localName(n));
+  if (typeof n.name !== 'string') return false;
+  const kids = Array.isArray(n.children) ? n.children : [];
+  return !kids.some((c) => isObj(c) || (typeof c === 'string' &&
+    c.trim())) && MARKS.has(localName(n));
+}
+
+/** See the header. */
+export function taggable(p, from, to) {
+  const xs = isObj(p) && isObj(p.inlines) ? p.inlines : {};
+  for (const k of Object.keys(xs)) {
+    const n = Number(k);
+    if (n >= from && n < to && !canTag(xs[k])) return false;
+  }
+  return true;
+}
+
+/** The pieces of op: [{from, to, rev}] checked against p. */
+function piecesOf(op, p) {
+  checkPos(p.text, op.from, 'from');
+  checkPos(p.text, op.to, 'to');
+  if (!(op.from < op.to)) fail('setRev needs a range');
+  if (op.revs === undefined) {
+    if (op.rev === undefined) fail('setRev needs rev or revs');
+    return [{from: op.from, to: op.to, rev: op.rev}];
+  }
+  if (!Array.isArray(op.revs) || !op.revs.length)
+    fail('bad revs');
+  let at = op.from;
+  for (const x of op.revs) {
+    if (!isObj(x) || x.from !== at || !(x.to > x.from) ||
+      x.rev === undefined) fail('revs must cover the range');
+    checkPos(p.text, x.to, 'to');
+    at = x.to;
+  }
+  if (at !== op.to) fail('revs must cover the range');
+  return op.revs;
+}
+
+/** The runs of p with [a, b) tagged rev (null: untagged). */
+function retag(runs, a, b, rev) {
+  const out = [];
+  for (const r of runs) {
+    const x = Math.max(r.start, a), y = Math.min(r.end, b);
+    if (y <= x) {
+      out.push(r);
+      continue;
+    }
+    if (x > r.start) out.push({...r, end: x});
+    const q = {...r, start: x, end: y};
+    if (rev) q.rev = rev;
+    else delete q.rev;
+    out.push(q);
+    if (y < r.end) out.push({...r, start: y});
+  }
+  return out;
+}
+
+/** The old tags of [a, b) of p, run by run (see the header). */
+function oldTags(p, a, b) {
+  const out = [];
+  for (const r of p.runs) {
+    const x = Math.max(r.start, a), y = Math.min(r.end, b);
+    if (y <= x) continue;
+    out.push({from: x, to: y, rev: r.rev || null});
+  }
+  return out;
+}
+
+/** See the header. */
+export function setRev(doc, op) {
+  const {i, at, depth, p} = paraAt(doc, op.at, op.story);
+  const pieces = piecesOf(op, p);
+  let runs = p.runs;
+  for (const x of pieces) {
+    if (x.rev !== null && !isObj(x.rev)) fail('bad revision tag');
+    if (x.rev && op.revs === undefined && !taggable(p, x.from, x.to))
+      fail('a revision cannot hold that content');
+    runs = retag(runs, x.from, x.to, x.rev);
+  }
+  const q = {...p, runs: normRuns(runs)};
+  checkBlock(q, depth);
+  const inv = {op: 'setRev', at, from: op.from, to: op.to,
+    revs: oldTags(p, op.from, op.to)};
+  own(doc, at, op.story)[i] = q;
+  return inStory(inv, op.story);
+}

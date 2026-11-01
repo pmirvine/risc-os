@@ -100,6 +100,13 @@
 // with them at the step's end (./CommentKeep), so a cut and a paste
 // is a move: the comment comes back under a new id.
 //
+// Track Changes on (./RevTrack session: the body only): the
+// selection is deleted as tracked (refused across paragraphs) and
+// the pasted paragraphs' text is one tracked insertion (its
+// paragraph breaks untracked); a table, a kept block, a cells
+// shape, or content a tag cannot hold (a field, a picture, a note
+// mark: ./OpsRevs taggable) is refused (./RevCmd Refused, nothing
+// changed). cutSelection deletes as tracked (./EditDel).
 // pastePlain: the text typed (\n splits paragraphs, controls go:
 // ./Edit), one undo step of its own. Ops go to the caret's path
 // (./EditPos loc.at), in a cell as at top level.
@@ -126,6 +133,8 @@ import {relist, styled} from './ClipCarry';
 import {carry, styleUp} from './ClipNotes';
 import {carry as carryComments, styleUp as commentStyles}
   from './ClipComments';
+import {session, record, MSG} from './RevTrack';
+import {Refused} from './RevCmd';
 
 export {deleteSelection};
 
@@ -209,6 +218,14 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
   if (!g) return sel;                  // (./FieldEdit: a field)
   if (g !== sel) o = orderedPos(d.doc, sel = g);
   const over = collapsed(sel) ? null : overShape(d.doc, sel, list);
+  const s = session(d);
+  if (s && over) throw new Refused(MSG.paste);
+  const go = () => paste(d, sel, o, list, over, opts, fit, s);
+  return s ? record(d, go) : go();
+}
+
+/** pasteBlocks' step (see there): the caret after it, or sel. */
+function paste(d, sel, o, list, over, opts, fit, s) {
   let out = null;
   d.atomic(() => {
     // (a style made by name: the blocks mapped to it)
@@ -218,7 +235,8 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
     }
     let pos = null, loc = null;
     if (!over) {
-      pos = collapsed(sel) ? o.from : deleteRange(d, o);
+      pos = collapsed(sel) ? o.from
+        : s ? s.cutRange(o) : deleteRange(d, o);
       loc = findBlock(d.doc, pos.id);
       if (loc.b.type !== 'p') {
         pos = paraBy(d, loc, pos.off);
@@ -241,6 +259,7 @@ export function pasteBlocks(d, sel, blocks, opts = {}) {
       for (const op of c.ops) d.apply(op);
       list = c.blocks;
     }
+    if (s) list = s.tagBlocks(list);
     out = over ? overwrite(d, over, list[0])
       : insert(d, loc, pos.off, list);
   });

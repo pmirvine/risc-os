@@ -140,6 +140,8 @@ export const ALLOW = [
     'edges, floatNear, P12b fix I2)'},
   {file: 'PositionMap', count: 3, until: KEEP, why: GALLEY},
   {file: 'SectDeco', count: 2, until: KEEP, why: GALLEY},
+  {file: 'RevPaint', count: 1, until: KEEP, why: FRAG + ' (the ' +
+    'second line of a doubled one, under ./ItemPaint, Batch F2)'},
   {file: 'SelTable', count: 1, until: KEEP, why: POINT},
   {file: 'HdrView', count: 3, until: KEEP, why: 'the header and ' +
     'footer mode\'s placement (PlaceShift: PlaceDraft\'s answers ' +

@@ -44,12 +44,15 @@
 // edge; the other commands from the head). Spaces hidden after a
 // line break are each one step: the caret does not move on the
 // screen over them. Unseen inlines (bookmarks, proofing marks,
-// field codes: ./Kinds unseenAt) cost no step: left and right go
-// over them together with the character next to them (in
-// 'a[bookmark]b', right from 0 gives 1, then 3; at a paragraph's
-// edge, with its paragraph mark), so every press moves the caret on
-// the screen. A field result shown computed (./FieldShow, D18: its
-// layout item has `field` {b, e}) is one atomic range: no caret
+// field codes: ./Kinds unseenAt; and the text L's markup view
+// hides, L.markup, ./RevView: deleted text in Final) cost no
+// step: left and right go over them together with the character
+// next to them (in 'a[bookmark]b', right from 0 gives 1, then 3;
+// at a paragraph's edge, with its paragraph mark), so every press
+// moves the caret on the screen; the word keys see hidden text as
+// one item and never stop inside it. A field result shown computed
+// (./FieldShow, D18: its layout item has `field` {b, e}) is one
+// atomic range: no caret
 // inside it; a move that would end inside it (or at its end, going
 // forward) goes past it, to after its end fldChar (e + 1), going
 // back to before its begin (b; its result's start when the begin is
@@ -62,7 +65,7 @@ import {vertical} from './SelTable';
 import {toPage} from './SelPage';
 import {nextWord, prevWord} from 'wimplib/Segment';
 import {itemEnd, nextG, prevG, compare} from './DocPos';
-import {unseenAt} from './Kinds';
+import {unseenAt, maskHidden, hiddenSpanAt} from './Kinds';
 
 export {make};
 
@@ -85,16 +88,25 @@ function para(L, it, p, d) {
 }
 
 /** p.off past the unseen inlines after it (dir 1) or before it. */
-function skip(it, off, dir) {
+function skip(L, it, off, dir) {
   if (it.kind !== 'p') return off;
-  const b = it.block, n = b.text.length;
-  if (dir > 0) while (off < n && unseenAt(b, off)) off++;
-  else while (off > 0 && unseenAt(b, off - 1)) off--;
+  const b = it.block, n = b.text.length, m = L.markup;
+  if (dir > 0) while (off < n && unseenAt(b, off, m)) off++;
+  else while (off > 0 && unseenAt(b, off - 1, m)) off--;
   return off;
 }
 
+/** The word step fn from off in paragraph item it, over its text
+ *  as L's view shows it (hidden text one U+FFFC stretch: ./Kinds
+ *  maskHidden), never ending inside hidden text (dir: past it). */
+function word(L, it, fn, off, dir) {
+  const b = it.block, m = L.markup;
+  const k = fn(maskHidden(b, m), off), sp = hiddenSpanAt(b, k, m);
+  return sp && k > sp[0] ? (dir > 0 ? sp[1] : sp[0]) : k;
+}
+
 function right(L, it, p) {
-  const off = skip(it, p.off, 1);
+  const off = skip(L, it, p.off, 1);
   if (off < itemEnd(it) && it.kind !== 'tbl') {
     return at(it, it.kind !== 'p' ? 1 : nextG(it.block.text, off));
   }
@@ -102,7 +114,7 @@ function right(L, it, p) {
 }
 
 function left(L, it, p) {
-  const off = skip(it, p.off, -1);
+  const off = skip(L, it, p.off, -1);
   if (off > 0 && it.kind !== 'tbl') {
     return at(it, it.kind !== 'p' ? 0 : prevG(it.block.text, off));
   }
@@ -116,9 +128,9 @@ const CMDS = {
   end: (L, it, p, aff) => (it.kind !== 'p' ? at(it, 1)
     : withAff(it, PM.lineEnd(it, p.off, aff))),
   wordRight: (L, it, p) => (it.kind === 'p' && p.off < itemEnd(it)
-    ? at(it, nextWord(it.block.text, p.off)) : right(L, it, p)),
+    ? at(it, word(L, it, nextWord, p.off, 1)) : right(L, it, p)),
   wordLeft: (L, it, p) => (it.kind === 'p' && p.off > 0
-    ? at(it, prevWord(it.block.text, p.off)) : left(L, it, p)),
+    ? at(it, word(L, it, prevWord, p.off, -1)) : left(L, it, p)),
   paraStart: (L, it, p) => (p.off > 0 ? start(it)
     : para(L, it, p, -1)),
   paraEnd: (L, it, p) => (p.off < itemEnd(it) ? end(it)

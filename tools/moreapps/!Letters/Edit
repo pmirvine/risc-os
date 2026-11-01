@@ -39,7 +39,12 @@
 // Overwrite (Insert): with a caret, the text replaces as many
 // grapheme clusters after it as it has, in this paragraph, stopping
 // at its end, at an inline (U+FFFC), a tab or a line break: beyond
-// them it is inserted.
+// them it is inserted. Text the window's view hides (d.markup,
+// ./Kinds hiddenAt: deleted text in Final, inserted text in
+// Original; with Track Changes on deleted text in every view, as
+// Backspace) is never replaced: hidden text right after the caret
+// is stepped over (the text goes after it, replacing what is shown
+// there) and the replacing stops before any more.
 //
 // A caret on a kept block's edge (a table): typing and Enter first
 // put an empty paragraph there (before it at off 0, after it at 1).
@@ -47,6 +52,13 @@
 // gives a plain <w:br/> (the writer writes it back as one). Typed
 // tabs and line breaks are thus the same model before and after a
 // save (older documents' tab and br inlines still work).
+// Track Changes on (./RevTrack session: the body only): the
+// selection replaced is deleted as a tracked deletion (refused
+// across paragraphs), the text put in is a tracked insertion (going
+// on the author's own insertion next to it), overwrite deletes what
+// it replaces as tracked and puts the text after it; Enter and the
+// \n of typed text split the paragraph untracked. A refusal throws
+// ./RevCmd Refused (nothing changed): the window beeps and says why.
 // Positions are paths: ops go to loc.at (./EditPos), so typing and
 // Enter work in a cell's paragraph as at top level (Enter splits it
 // within its cell). Over a selection of cells (./SelShape 'cells')
@@ -66,6 +78,8 @@ import {applyTo} from './Pending';
 import {deleteRange, paraBy} from './EditRange';
 import {splitAt} from './EditPara';
 import {guard} from './FieldEdit';
+import {session, record} from './RevTrack';
+import {hiddenAt} from './Kinds';
 
 const CTRL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\ufffc]/g;
 const STOP = /[\t\n\ufffc]/;
@@ -79,11 +93,12 @@ export function clean(text) {
 
 /**
  * In one group (opts: d.group's), from sel's place: the selection
- * deleted, a paragraph made by a kept block; then fn(loc, off) with
- * the paragraph (EditPos) and offset, and the format of the first
- * selected character (null for a caret, or when it is a paragraph
- * mark), returning the caret position. With `enter`, at a kept
- * block's off 0 the caret stays there.
+ * deleted, a paragraph made by a kept block; then fn(loc, off, fmt,
+ * s) with the paragraph (EditPos) and offset, the format of the
+ * first selected character (null for a caret, or when it is a
+ * paragraph mark) and the tracking session (./RevTrack, or null),
+ * returning the caret position. With `enter`, at a kept block's off
+ * 0 the caret stays there.
  */
 function edit(d, sel, fn, opts, enter = false) {
   let o = orderedPos(d.doc, sel);
@@ -91,10 +106,18 @@ function edit(d, sel, fn, opts, enter = false) {
   const g = guard(d.doc, sel, o);
   if (!g) return null;
   if (g !== sel) o = orderedPos(d.doc, sel = g);
+  const s = session(d);
+  if (s) return record(d, () => change(d, sel, o, fn, opts, enter, s));
+  return change(d, sel, o, fn, opts, enter, null);
+}
+
+/** edit's group (see there). */
+function change(d, sel, o, fn, opts, enter, s) {
   const fmt = collapsed(sel) ? null : firstFmt(o);
   let out = null;
   d.atomic(() => {
-    let pos = collapsed(sel) ? o.from : deleteRange(d, o);
+    let pos = collapsed(sel) ? o.from
+      : s ? s.cutRange(o) : deleteRange(d, o);
     let loc = findBlock(d.doc, pos.id);
     if (loc.b.type !== 'p') {
       const p = paraBy(d, loc, pos.off);
@@ -102,7 +125,7 @@ function edit(d, sel, fn, opts, enter = false) {
       pos = p;
       loc = findBlock(d.doc, pos.id);
     }
-    out = fn(loc, pos.off, fmt);
+    out = fn(loc, pos.off, fmt, s);
   }, opts);
   return out ? caret(out) : sel;
 }
@@ -135,12 +158,20 @@ function splitLines(d, loc, off, ins) {
     off: off + ins.length - last - 1};
 }
 
-/** Code units to replace in overwrite: n graphemes from off. */
-function overSpan(text, off, n) {
-  let e = off;
-  while (n-- > 0 && e < text.length && !STOP.test(text[e]))
-    e = nextG(text, e);
-  return e - off;
+/**
+ * Overwrite's place in p from off: {at, del}, del code units from at
+ * to replace (n graphemes). Text hid(k) says the view hides is never
+ * replaced: what leads is stepped over (at after it) and the span
+ * stops before any more (see the header).
+ */
+function overSpan(p, off, n, hid) {
+  const text = p.text;
+  let at = off;
+  while (at < text.length && hid(at)) at++;
+  let e = at;
+  while (n-- > 0 && e < text.length && !STOP.test(text[e]) &&
+    !hid(e)) e = nextG(text, e);
+  return e > at ? {at, del: e - at} : {at: off, del: 0};
 }
 
 /** {rPr, rStyle} of the first selected character, or null. */
@@ -155,11 +186,17 @@ function firstFmt(o) {
 /**
  * Put ins in at loc/off, replacing del units, formatted as fmt (or
  * null: ./OpsText's rule); its \n split the paragraph (with
- * `lines`: they stay, line breaks); see the header.
+ * `lines`: they stay, line breaks); s the tracking session or null
+ * (see the header).
  */
-function put(d, loc, off, ins, fmt, del = 0, lines = false) {
+function put(d, loc, off, ins, fmt, del = 0, lines = false, s = null) {
+  if (s && del) {
+    off = s.cut(loc.at, off, off + del, 1);
+    del = 0;
+  }
   d.apply({op: 'replaceText', block: loc.at, at: off, del,
     ins, ...fmt});
+  if (s) s.tagIns(loc.at, off, off + ins.length);
   if (lines || !ins.includes('\n')) {
     return {id: loc.b.id, off: off + ins.length};
   }
@@ -176,10 +213,14 @@ export function typeText(d, sel, text, opts) {
   const n = over ? graphemes(t).length - 1 : 0;
   const keyed = opts.key !== undefined && opts.key !== null &&
     collapsed(sel) && !/[\n\t]/.test(t);
-  return edit(d, sel, (loc, off, fmt) => {
-    const del = over ? overSpan(loc.b.text, off, n) : 0;
-    return put(d, loc, off, t, withFmt(opts, fmt, loc.b, off, del),
-      del);
+  return edit(d, sel, (loc, off0, fmt, s) => {
+    const p = loc.b, m = d.markup;
+    // (Backspace's rule: ./EditDel)
+    const hid = (k) => hiddenAt(p, k, m) || (!!s && hiddenAt(p, k));
+    const {at: off, del} = over ? overSpan(p, off0, n, hid)
+      : {at: off0, del: 0};
+    return put(d, loc, off, t, withFmt(opts, fmt, p, off, del),
+      del, false, s);
   }, keyed ? {coalesce: opts.key} : undefined) || sel;
 }
 
@@ -207,8 +248,8 @@ export function splitPara(d, sel) {
 
 /** See the header. */
 export function lineBreak(d, sel) {
-  return edit(d, sel, (loc, off, fmt) => put(d, loc, off, '\n', fmt,
-    0, true));
+  return edit(d, sel, (loc, off, fmt, s) => put(d, loc, off, '\n',
+    fmt, 0, true, s));
 }
 
 /** See the header. */

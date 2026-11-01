@@ -32,6 +32,7 @@ import {buildDocx, documentXml, stylesXml, p, r} from './build-docx.mjs';
 import {roundTrip, schema, hash, corpusFiles, corpusRun, ALL,
   SKIP_CORPUS, write} from './roundtrip-lib.mjs';
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {rng} from './word-docs.mjs';
 import {run} from '../../tools/moreapps/!Letters/EditApply';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
@@ -221,10 +222,16 @@ export function bordersAll(d, seed, {every = false} = {}) {
     if (!sel || rd() < 0.6) sel = randSel(rd, d);
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [kind, sel] = command(rd, d, t, sel, every);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

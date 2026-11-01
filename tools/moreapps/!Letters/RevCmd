@@ -1,0 +1,565 @@
+// RevCmd - tracked changes accepted and rejected, and the next or
+// previous one found (Batch F2). Each command is one undo step
+// (typing.command, d.atomic) and none when nothing changes.
+//
+//   accept(d, typing, sel) / reject(d, typing, sel) -> {resolved,
+//       skipped, sel}  the revisions sel holds resolved:
+//       - a caret: the revision there (./RevMarks list, in the
+//         body), among those the window's markup view shows
+//         (d.markup, ./RevView; hidden text is passed over, as it
+//         is for next): the one ENDING at the caret when one does
+//         (where two meet, the one before it: the text just typed),
+//         else the one holding it (from <= off < to). The whole
+//         revision: one across paragraphs (as next's) is resolved
+//         in every paragraph it is in, and counted once
+//       - a selection: every revision with text inside it; one
+//         straddling an edge is split, and only the part inside is
+//         resolved (the rest keeps its very tag object). A move is
+//         never split: see below
+//       resolved the number of revisions (kind and id) changed,
+//       skipped those in it that are not editable (below) and were
+//       left; sel a caret at the start of the first part resolved
+//       (sel itself when nothing was)
+//   acceptAll(d, typing) / rejectAll(d, typing) -> {resolved,
+//       skipped}  every editable revision of the document; skipped
+//       counts the others (headers, footers, notes, kept raw)
+//   resolveAuthor(d, typing, author, accept) -> {resolved, skipped}
+//       as acceptAll (accept true) or rejectAll (false), for the
+//       revisions of author only: an entry's author, 'Unknown
+//       author' for one with none (./RevMarks). So an author really
+//       named 'Unknown author' is one with the revisions that have
+//       no author (as the list shows them)
+//   next(d, from, opts?) / prev(d, from, opts?) -> sel | null  the
+//       whole next (previous) revision selected: the first one
+//       starting at or after the end of selection `from` (the last
+//       one ending at or before its start), never one `from`
+//       selects exactly; a revision across paragraphs (one kind and
+//       id, ending at its paragraph's end and going on at the start
+//       of the next sibling) is one. Revisions the view opts.view
+//       hides (./RevView: 'final' by default, deletions; 'original',
+//       insertions; 'all', none) are passed over, and so are raw
+//       deletions (hidden in every view) and revisions in headers,
+//       footers and notes. No wrap: null past the last (before the
+//       first), the window says so. from null (or not in the
+//       document): from the document's start (next) or end (prev).
+//       null in a story's facade
+//   whyNot(d, sel) -> string | null  why accept / reject would refuse
+//       sel or find nothing to do there, in words; null when they
+//       would resolve something
+//   commandWhy(d, rev, cmd) -> string | null  why cmd ('accept' or
+//       'reject') refuses revision rev ({kind, id}, a pane's row):
+//       not in the document, not editable; null when it does not
+//   Refused  the error of a refusal (a RangeError); its message is
+//       the reason, in words
+//
+// What resolving does: accepting an insertion (or moved-to text)
+// drops its tag, the text stays; rejecting it removes the text.
+// Accepting a deletion (or moved-away text) removes the text;
+// rejecting it drops the tag. A move resolves as a PAIR from either
+// half, whole: accept removes the old place's text and drops the new
+// place's tag, reject removes the new place's text and drops the old
+// place's tag. A caret on a half resolves the pair (there is no edge
+// to split); so does a selection holding a whole half (all of its
+// stretches) and no part of another. A selection holding only PART
+// of a half leaves that move as it is (counted in skipped; refused
+// when nothing else is in it): no text outside the selection but the
+// other half of a move it holds is ever changed. The halves are
+// those ./RevMarks pairs (the closure of `move`: every half of one
+// move name); a half with no partner resolves alone.
+//
+// Text is removed as ./EditRange deleteRange removes a range in one
+// paragraph: ./RangeOps cutOut, with the bookmark and comment range
+// marks whose partner stays put back where the text was
+// (./BookmarkKeep keeper: the document's marks walked once per
+// command, untagged), and the notes, comments and revisions
+// the step took are mended by ./Document's keep rules (NoteKeep,
+// CommentKeep, RevKeep) in the same step. A revision never spans a
+// paragraph mark in the model, so no paragraph is joined or removed:
+// one emptied stays, empty. The parts are done last first, so every
+// offset found before holds.
+//
+// Editable: a tagged stretch in the body (./RevMarks editable). A
+// raw revision (in a link, a field, nested...) and every revision of
+// a header, footer or note is kept as it is in F2; so is a move with
+// such a half. Refused (Refused thrown, nothing changed): d a story's
+// facade (a header, footer or note); sel not a selection of the
+// document; the caret's revision (or every one the selection holds)
+// not editable; an author that is not a string. Nothing to resolve
+// (a caret by no revision) is no refusal: zero counts, no step.
+// A selection takes revisions whatever the window's markup view: one
+// in Final over hidden deleted text takes it in.
+// d is a ./Document (or a facade), sel a ./Selection. Cost: linear
+// in the revisions and their paragraphs. Pure: no desktop services.
+import {list} from './RevMarks';
+import {caret, select, collapsed} from './Selection';
+import {orderedPos} from './EditPos';
+import {samePath, sib} from './Path';
+import {at as walkAt} from './Walk';
+import {cutOut} from './RangeOps';
+import {keeper, putMarks} from './BookmarkKeep';
+import {hiddenRev, hiddenSpans} from './Kinds';
+import {modeOf} from './RevView';
+
+/** A refusal (see the header). */
+export class Refused extends RangeError {}
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const OTHER = {mvFrom: 'mvTo', mvTo: 'mvFrom'};
+const isMove = (kind) => Object.hasOwn(OTHER, kind);
+const KEEPS = {ins: true, mvTo: true, del: false, mvFrom: false};
+
+/** Whether resolving kind (accept or not) keeps its text. */
+const keeps = (kind, accept) => KEEPS[kind] === accept;
+
+const WHY = {
+  sel: 'There is no caret in the text.',
+  none: 'There is no tracked change here.',
+  kept: 'This change is in content kept as it is (a link, a field ' +
+    'or a nested change): it cannot be accepted or rejected.',
+  story: 'This change is in a header, footer or note: it is kept ' +
+    'as it is.',
+  gone: 'That change is no longer in the document.',
+  author: 'There is no such author.',
+  part: 'The selection holds only part of a moved text: select ' +
+    'all of it, or put the caret in it.',
+};
+
+/** The reason d is a story's facade, or null. */
+function storyWhy(d) {
+  if (isObj(d.note)) {
+    return 'Changes in a note cannot be accepted or rejected.';
+  }
+  if (isObj(d.real) || typeof d.refuses === 'function') {
+    return 'Changes in a header or footer cannot be accepted or ' +
+      'rejected.';
+  }
+  return null;
+}
+
+// ------------------------------------------------------ positions
+
+/** a against b: position keys (paths with the offset last). */
+function cmpKey(a, b) {
+  const n = Math.min(a.length, b.length);
+  for (let k = 0; k < n; k++) {
+    if (a[k] !== b[k]) return a[k] < b[k] ? -1 : 1;
+  }
+  return a.length - b.length;
+}
+
+/** The key of offset off of the block at path `at`. */
+const keyOf = (at, off) => [...at, off];
+
+/** The key of a selection end (a table's edges before and after
+ *  its cells). */
+const endKey = (loc, off) => (loc.b.type === 'tbl'
+  ? [...loc.at, off === 0 ? -Infinity : Infinity] : keyOf(loc.at, off));
+
+/** {a, z} keys of sel (in order), or null when it is not one. */
+function span(doc, sel) {
+  if (!isObj(sel) || !isObj(sel.anchor) || !isObj(sel.head)) {
+    return null;
+  }
+  let o = null;
+  try {
+    o = orderedPos(doc, sel);
+  } catch (e) {
+    return null;
+  }
+  if (!o || !Array.isArray(o.f.at) || !Array.isArray(o.t.at)) {
+    return null;
+  }
+  return {a: endKey(o.f, o.from.off), z: endKey(o.t, o.to.off), o};
+}
+
+// ---------------------------------------------------------- moves
+
+/** The body's entries, and each entry's move group: Map entry ->
+ *  {entries, editable} (moves only; the closure of `move`). */
+function bodyOf(doc) {
+  const es = list(doc).filter((e) => e.where.story === undefined);
+  const key = (kind, id) => kind + ':' + id;
+  const links = new Map();
+  const link = (a, b) => {
+    if (!links.has(a)) links.set(a, []);
+    links.get(a).push(b);
+  };
+  const byKey = new Map();
+  for (const e of es) {
+    if (!isMove(e.kind)) continue;
+    const k = key(e.kind, e.id);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(e);
+    if (e.move !== undefined) {
+      const o = key(OTHER[e.kind], e.move);
+      link(k, o);
+      link(o, k);
+    }
+  }
+  const groups = new Map();
+  for (const k0 of byKey.keys()) {
+    if (groups.has(byKey.get(k0)[0])) continue;
+    const g = {entries: [], editable: true};
+    const seen = new Set([k0]), todo = [k0];
+    while (todo.length) {
+      const k = todo.pop();
+      for (const e of byKey.get(k) || []) {
+        g.entries.push(e);
+        if (!e.editable) g.editable = false;
+        groups.set(e, g);
+      }
+      for (const o of links.get(k) || []) {
+        if (!seen.has(o)) {
+          seen.add(o);
+          todo.push(o);
+        }
+      }
+    }
+  }
+  return {es, groups};
+}
+
+// ---------------------------------------------------------- plans
+
+/** A plan: {parts: [{e, from, to}], keys, skipped: Set}. */
+class Plan {
+  constructor(groups) {
+    this.groups = groups;
+    this.parts = [];
+    this.keys = new Set();
+    this.skipped = new Set();
+    this.seen = new Set();
+    this.kept = false;
+    this.cut = false;
+  }
+
+  /** Entry e (its part [from, to)) taken in: a move whole, with its
+   *  group; one not editable skipped. */
+  take(e, from = e.where.from, to = e.where.to) {
+    const g = this.groups.get(e);
+    if (g ? !g.editable : !e.editable) {
+      this.kept = true;
+      for (const x of g ? g.entries : [e]) this.skipped.add(skipKey(x));
+      return;
+    }
+    if (!g) {
+      if (to > from) this.part(e, from, to);
+      return;
+    }
+    for (const x of g.entries) {
+      if (!this.seen.has(x)) this.part(x, x.where.from, x.where.to);
+    }
+  }
+
+  part(e, from, to) {
+    this.seen.add(e);
+    this.parts.push({e, from, to});
+    this.keys.add(e.kind + ':' + e.id);
+  }
+}
+
+/** The key a skipped entry is counted by. */
+const skipKey = (e) => JSON.stringify([e.where.story ?? null, e.kind,
+  e.id ?? e.where]);
+
+/** The entry at the caret o (./EditPos orderedPos; see the
+ *  header), or null. */
+function atCaret(es, o, mode) {
+  const at = o.f.at, off = o.from.off;
+  // (a caret on an edge of hidden text is on its other edge too:
+  // both are one place on the screen)
+  const offs = [off];
+  for (const [x, y] of hiddenSpans(o.f.b, mode)) {
+    if (x === off) offs.push(y);
+    else if (y === off) offs.push(x);
+  }
+  let holds = null;
+  for (const e of es) {
+    const w = e.where;
+    if (!samePath(w.block, at) || hidden(e, mode)) continue;
+    if (offs.some((k) => w.from < k && w.to === k)) return e;
+    if (!holds && offs.some((k) => w.from <= k && k < w.to)) holds = e;
+  }
+  return holds;
+}
+
+/** The plan of sel in d (see the header); throws Refused. */
+function planOf(d, sel) {
+  const s = storyWhy(d);
+  if (s) throw new Refused(s);
+  const doc = d.doc;
+  const sp = span(doc, sel);
+  if (!sp) throw new Refused(WHY.sel);
+  const {es, groups} = bodyOf(doc);
+  const plan = new Plan(groups);
+  if (collapsed(sel)) {
+    const e = sp.o.f.b.type === 'p'
+      ? atCaret(es, sp.o, modeOf(d.markup)) : null;
+    if (e) for (const x of chain(doc, es, e)) plan.take(x);
+    return plan;
+  }
+  const {a, z} = sp;
+  const moves = [];
+  for (const e of es) {
+    const w = e.where;
+    if (w.to <= w.from) continue;
+    if (cmpKey(keyOf(w.block, w.to), a) <= 0) continue;
+    if (cmpKey(keyOf(w.block, w.from), z) >= 0) continue;
+    const from = a.length === w.block.length + 1 &&
+      samePath(a.slice(0, -1), w.block) ? Math.max(w.from, a.at(-1))
+      : w.from;
+    const to = z.length === w.block.length + 1 &&
+      samePath(z.slice(0, -1), w.block) ? Math.min(w.to, z.at(-1))
+      : w.to;
+    if (!groups.has(e)) plan.take(e, from, to);
+    else moves.push({e, whole: from === w.from && to === w.to});
+  }
+  movesIn(plan, moves);
+  return plan;
+}
+
+/** The moves a selection holds (entries met, whole or not) into
+ *  plan: a move with a whole half and no part of one resolved,
+ *  any other skipped (see the header). */
+function movesIn(plan, met) {
+  const byGroup = new Map();
+  for (const m of met) {
+    const g = plan.groups.get(m.e);
+    if (!byGroup.has(g)) byGroup.set(g, new Map());
+    const halves = byGroup.get(g), k = m.e.kind + ':' + m.e.id;
+    halves.set(k, (halves.get(k) || 0) + (m.whole ? 1 : 0));
+  }
+  for (const [g, halves] of byGroup) {
+    const size = new Map();
+    for (const x of g.entries) {
+      const k = x.kind + ':' + x.id;
+      size.set(k, (size.get(k) || 0) + 1);
+    }
+    let whole = false, part = false;
+    for (const [k, n] of halves) {
+      if (n === size.get(k)) whole = true;
+      else part = true;
+    }
+    if (whole && !part) plan.take(g.entries[0]);
+    else if (!g.editable) plan.take(g.entries[0]);
+    else {
+      plan.cut = true;
+      for (const x of g.entries) plan.skipped.add(skipKey(x));
+    }
+  }
+}
+
+/** Entry e and the entries of its revision before and after it in
+ *  other paragraphs (next's rule, goesOn), in order. */
+function chain(doc, es, e) {
+  const k = es.indexOf(e);
+  let a = k, z = k;
+  while (a > 0 && goesOn(doc, es[a - 1], es[a])) a--;
+  while (z + 1 < es.length && goesOn(doc, es[z], es[z + 1])) z++;
+  return es.slice(a, z + 1);
+}
+
+/** The plan of every body revision `want` takes, the others in
+ *  skipped. */
+function planAll(d, want) {
+  const s = storyWhy(d);
+  if (s) throw new Refused(s);
+  const doc = d.doc;
+  const plan = new Plan(bodyOf(doc).groups);
+  for (const e of list(doc)) {
+    if (e.where.story !== undefined) {
+      if (want(e)) plan.skipped.add(skipKey(e));
+      continue;
+    }
+    const g = plan.groups.get(e);
+    if (g ? g.entries.some(want) : want(e)) plan.take(e);
+  }
+  return plan;
+}
+
+// ------------------------------------------------------- resolving
+
+/** Remove [a, b) of the paragraph at path `at` (see the header);
+ *  keep: the step's ./BookmarkKeep keeper. */
+function remove(d, keep, at, a, b) {
+  const p = walkAt(d.doc, at);
+  const back = keep(p, a, b, () => cutOut(d, at, a, b));
+  if (back.length) putMarks(d, {id: p.id, off: a}, back);
+}
+
+/** Run fn as the command: one step (see the header). */
+function run(d, typing, fn) {
+  const go = () => d.atomic(fn);
+  if (typing) typing.command(go);
+  else go();
+}
+
+/** Resolve plan's parts (accept or reject) in one step; the counts
+ *  and the caret at the first part. */
+function resolve(d, typing, plan, accept) {
+  const out = {resolved: plan.keys.size, skipped: plan.skipped.size};
+  if (!plan.parts.length) return out;
+  const parts = plan.parts.slice().sort((x, y) =>
+    cmpKey(keyOf(y.e.where.block, y.from),
+      keyOf(x.e.where.block, x.from)));
+  run(d, typing, () => {
+    const keep = keeper(d);
+    for (const {e, from, to} of parts) {
+      const at = e.where.block;
+      if (keeps(e.kind, accept)) {
+        d.apply({op: 'setRev', at, from, to, rev: null});
+      } else remove(d, keep, at, from, to);
+    }
+  });
+  const first = parts[parts.length - 1];
+  const p = walkAt(d.doc, first.e.where.block);
+  out.sel = p ? caret({id: p.id, off: first.from}) : null;
+  return out;
+}
+
+/** The reason plan resolves nothing of what it holds. */
+const whyKept = (plan) => (plan.kept || !plan.cut ? WHY.kept
+  : WHY.part);
+
+/** accept or reject (see the header). */
+function one(d, typing, sel, accept) {
+  const plan = planOf(d, sel);
+  if (!plan.parts.length && plan.skipped.size) {
+    throw new Refused(whyKept(plan));
+  }
+  const out = resolve(d, typing, plan, accept);
+  if (!out.sel) out.sel = sel;
+  return out;
+}
+
+/** See the header. */
+export const accept = (d, typing, sel) => one(d, typing, sel, true);
+
+/** See the header. */
+export const reject = (d, typing, sel) => one(d, typing, sel, false);
+
+/** Counts only (no caret) of resolve. */
+function counts(d, typing, plan, accept) {
+  const {resolved, skipped} = resolve(d, typing, plan, accept);
+  return {resolved, skipped};
+}
+
+/** See the header. */
+export const acceptAll = (d, typing) => counts(d, typing,
+  planAll(d, () => true), true);
+
+/** See the header. */
+export const rejectAll = (d, typing) => counts(d, typing,
+  planAll(d, () => true), false);
+
+/** See the header. */
+export function resolveAuthor(d, typing, author, accept) {
+  if (typeof author !== 'string') throw new Refused(WHY.author);
+  return counts(d, typing, planAll(d, (e) => e.author === author),
+    accept === true);
+}
+
+/** See the header. */
+export function whyNot(d, sel) {
+  let plan;
+  try {
+    plan = planOf(d, sel);
+  } catch (e) {
+    if (e instanceof Refused) return e.message;
+    throw e;
+  }
+  if (plan.parts.length) return null;
+  return plan.skipped.size ? whyKept(plan) : WHY.none;
+}
+
+const CMDS = new Set(['accept', 'reject']);
+
+/** See the header. */
+export function commandWhy(d, rev, cmd) {
+  if (!CMDS.has(cmd)) throw new RangeError('bad command');
+  const s = storyWhy(d);
+  if (s) return s;
+  if (!isObj(rev)) return WHY.gone;
+  const doc = d.doc;
+  const all = list(doc).filter((e) => e.kind === rev.kind &&
+    e.id === rev.id);
+  if (!all.length) return WHY.gone;
+  const body = all.filter((e) => e.where.story === undefined);
+  if (!body.length) return WHY.story;
+  const {groups} = bodyOf(doc);
+  const ok = (e) => {
+    const g = groups.get(e);
+    return g ? g.editable : e.editable;
+  };
+  return body.some(ok) ? null : WHY.kept;
+}
+
+// ------------------------------------------------------ navigating
+
+/** The revisions next and prev step over: [{first, last}] (entries)
+ *  in document order, in view mode. */
+function steps(doc, mode) {
+  const out = [];
+  for (const e of list(doc)) {
+    const w = e.where;
+    if (w.story !== undefined || w.to <= w.from) continue;
+    if (hidden(e, mode)) continue;
+    const q = out[out.length - 1];
+    if (q && goesOn(doc, q.last, e)) q.last = e;
+    else out.push({first: e, last: e});
+  }
+  return out;
+}
+
+/** Whether the text of entry e is hidden in view mode (a raw
+ *  deletion in every view). */
+const hidden = (e, mode) => (e.rev ? hiddenRev(e.rev, mode)
+  : e.kind === 'del' || e.kind === 'mvFrom');
+
+/** Whether entry e goes on revision entry q (see the header). */
+function goesOn(doc, q, e) {
+  if (!q.rev || !e.rev || q.kind !== e.kind || q.id !== e.id ||
+    e.where.from !== 0) return false;
+  const b = q.where.block;
+  if (!samePath(sib(b, 1), e.where.block)) return false;
+  const p = walkAt(doc, b);
+  return !!p && p.type === 'p' && q.where.to === p.text.length;
+}
+
+/** The selection of revision r. */
+function selOf(doc, r) {
+  const a = walkAt(doc, r.first.where.block);
+  const z = walkAt(doc, r.last.where.block);
+  return select({id: a.id, off: r.first.where.from},
+    {id: z.id, off: r.last.where.to});
+}
+
+/** next (dir 1) or prev (-1) (see the header). */
+function step(d, from, opts, dir) {
+  if (storyWhy(d) || !isObj(d.doc)) return null;
+  const doc = d.doc;
+  const mode = modeOf(isObj(opts) ? opts.view : undefined);
+  const sp = span(doc, from);
+  const a = sp ? sp.a : [dir > 0 ? -Infinity : Infinity];
+  const z = sp ? sp.z : a;
+  const rs = steps(doc, mode);
+  const startOf = (r) => keyOf(r.first.where.block, r.first.where.from);
+  const endOf = (r) => keyOf(r.last.where.block, r.last.where.to);
+  const same = (r) => cmpKey(startOf(r), a) === 0 &&
+    cmpKey(endOf(r), z) === 0;
+  if (dir > 0) {
+    const r = rs.find((x) => cmpKey(startOf(x), z) >= 0 && !same(x));
+    return r ? selOf(doc, r) : null;
+  }
+  for (let k = rs.length - 1; k >= 0; k--) {
+    const r = rs[k];
+    if (cmpKey(endOf(r), a) <= 0 && !same(r)) return selOf(doc, r);
+  }
+  return null;
+}
+
+/** See the header. */
+export const next = (d, from, opts) => step(d, from, opts, 1);
+
+/** See the header. */
+export const prev = (d, from, opts) => step(d, from, opts, -1);

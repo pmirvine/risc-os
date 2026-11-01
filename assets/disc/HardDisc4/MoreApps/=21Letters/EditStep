@@ -10,7 +10,8 @@
 //                         (compounds opened) that is not a
 //                         setDocPart, setSection, setStory or a
 //                         notes op (./OpsNotes: a note added or
-//                         removed with its mark, the mark decides)
+//                         removed with its mark, the mark decides);
+//                         a setRev only when nothing else is
 //   stepTo(doc, ops, oldL) -> {story, gone, doc, sel} | null  where
 //                         the step leaves the window (P7.5, D14:
 //                         Word's undo goes to the story it changes):
@@ -61,6 +62,8 @@
 //                             where TB10's Backspace (Delete) put
 //                             the caret, never its edge (C3 fix wave)
 //   mergeBlock, setProps      the start of that paragraph
+//   setRev                    the end of its range (./OpsRevs);
+//                             only when no other op decides
 //   splitSection, mergeSection  the start of the paragraph at the
 //                             split (the one that ends the first
 //                             section; for a merge found in oldL)
@@ -98,14 +101,22 @@ function storyBlocks(doc, story) {
 
 /**
  * The last leaf op of ops (compounds opened, in order applied) that
- * is not a setDocPart, a setSection or a setStory, or null.
+ * is not a setDocPart, a setSection or a setStory, or null. A setRev
+ * decides only when no other op does (./RevKeep's, at the end of a
+ * step, never moves the caret away from the edit).
  */
 export function lastLeaf(ops) {
+  return leaf(ops, false) || leaf(ops, true);
+}
+
+/** The last leaf of ops as lastLeaf; a setRev only when revs. */
+function leaf(ops, revs) {
   for (let k = ops.length - 1; k >= 0; k--) {
     const op = ops[k];
-    if (!op || SKIP.has(op.op)) continue;
+    if (!op || SKIP.has(op.op) || (!revs && op.op === 'setRev'))
+      continue;
     if (op.op !== 'compound') return op;
-    const r = Array.isArray(op.ops) ? lastLeaf(op.ops) : null;
+    const r = Array.isArray(op.ops) ? leaf(op.ops, revs) : null;
     if (r) return r;
   }
   return null;
@@ -198,6 +209,11 @@ export function stepEnd(doc, ops, oldL) {
     }
     case 'mergeBlock': case 'setProps':
       return start(blockAt(doc, op.block));
+    case 'setRev': {
+      const b = blockAt(doc, op.at);
+      if (!b || b.type !== 'p') return start(b);
+      return {id: b.id, off: Math.min(op.to, b.text.length)};
+    }
     case 'splitSection':
       return start(blockAt(doc, op.at));
     case 'mergeSection': {

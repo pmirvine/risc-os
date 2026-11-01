@@ -104,6 +104,12 @@ function randomOp(rd, doc) {
   return {op: 'restoreBlock', block: tp, snapshot: {...t, rows}};
 }
 
+// (tableEdits and cellEdits apply raw model ops, replaceText and
+// removeBlock among them, not the commands: they may take one mark
+// of a bookmark pair, which the commands never do, so roundtrip-lib's
+// range-mark check is off for them; the commands below keep it)
+const RAW_PAIRS = false;
+
 /** OPS random ops (each one undo step); refusals are counted. */
 function tableEdits(d, seed) {
   const rd = rng(seed);
@@ -318,7 +324,8 @@ describe('tables round trip: generated documents', () => {
       const bytes = await make();
       for (let k = 0; k < 4; k++) {
         const res = await roundTrip(bytes, name, hash(name) + k,
-          tableEdits, {xsd: k === 0 ? xsd : null, read: READ});
+          tableEdits, {xsd: k === 0 ? xsd : null, read: READ,
+            pairs: RAW_PAIRS});
         assert.ok(!res.refused, 'read');
         const done = Object.entries(res.counts)
           .filter(([op]) => op !== 'refused')
@@ -346,7 +353,7 @@ describe('tables round trip: generated documents', () => {
   it('1000 cell edits on a 50x5 table: undo all', async () => {
     const bytes = await tblDocx(p(r('top')) + bigTable(50, 5) + p());
     const res = await roundTrip(bytes, '50x5', 7, cellEdits,
-      {xsd: null, read: READ});
+      {xsd: null, read: READ, pairs: RAW_PAIRS});
     assert.equal(res.counts.edits, 1000);
   });
   it('schema check available', {skip: xsdNote || false}, () => {});
@@ -376,7 +383,7 @@ describe('tables round trip: the corpus', {
   it(`${OPS} ops at nested paths in ${ALL ? 'every' : 'one in ten'} ` +
     'corpus file with a table round-trip; undo restores', () =>
     corpusRun(files, tableEdits, xsd, xsdNote, 'tables corpus',
-      {read: READ}));
+      {read: READ, pairs: RAW_PAIRS}));
 });
 
 describe('tables round trip: the corpus, table commands', {

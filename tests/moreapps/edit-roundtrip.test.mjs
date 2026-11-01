@@ -28,7 +28,9 @@
 // files present locally (the real-Word hand-off files in
 // corpus/handoff included).
 import {describe, it} from 'node:test';
+import assert from 'node:assert/strict';
 import {checkBlock} from '../../tools/moreapps/!Letters/ModelCheck';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {blockId} from '../../tools/moreapps/!Letters/DocPos';
 import * as S from '../../tools/moreapps/!Letters/Selection';
 import * as E from '../../tools/moreapps/!Letters/Edit';
@@ -120,10 +122,17 @@ function editAll(d, seed, {every = false} = {}) {
     if (Date.now() - t0 > EDIT_MS) break;
     if (!sel || rd() < 0.5) sel = randSel(rd, d);
     let name = '?';
+    const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       [name, sel] = edit(rd, d, sel);
       if (every) for (const b of allBlocks(d)) checkBlock(b);
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${name}): ${e.message}`;
       throw e;
     }

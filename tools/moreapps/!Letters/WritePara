@@ -13,20 +13,25 @@
 // A noteRef with custom text is followed by its w:t (its
 // customNode as read, else a new one). A comment mark (Batch F1) is
 // its node: a range mark (level 'p') between runs, a reference
-// (level 'r') in its run, as read. An inline with no node
-// (made by editing) is written as what its
-// kind says: <w:br w:type=brType/> or <w:tab/>.
+// (level 'r') in its run, as read. Runs tagged with a revision
+// (run.rev, Batch F2) are written inside its w:ins, w:del,
+// w:moveFrom or w:moveTo (./RevWrite: one element for each longest
+// stretch of one revision), deleted text in w:delText (a move's in
+// w:t, as Word writes it: ./RevWrite textName). An inline
+// with no node (made by editing) is written as what its kind says:
+// <w:br w:type=brType/> or <w:tab/>.
 import {el} from 'wimplib/Xml';
 import {W} from './Wml';
 import {wName, isEl} from './Ns';
 import {rPrNode, pPrNode, badModel} from './WriteProps';
+import {wrap, textName} from './RevWrite';
 
 const SPECIAL = /[\t\n\ufffc]/g;
 const EDGE = /^[ \t\n\r]|[ \t\n\r]$/;
 
-/** A w:t holding `s`. */
-function tNode(s) {
-  return {name: 'w:t', attrs: EDGE.test(s) ?
+/** A w:t (name: w:delText in deleted text) holding `s`. */
+function tNode(s, name = 'w:t') {
+  return {name, attrs: EDGE.test(s) ?
     [['xml:space', 'preserve']] : [], children: [s]};
 }
 
@@ -38,43 +43,52 @@ function inlineNode(x, at) {
   throw badModel('inline at ' + at + ' has no node');
 }
 
-/** Write the runs of `p` into `kids` (the children of the w:p). */
-function writeRuns(p, kids, map) {
-  for (const run of p.runs) {
-    const rPr = rPrNode(run.rPr, run.rStyle, map);
-    let cur = [];
-    const endRun = () => {
-      if (!cur.length) return;
-      kids.push({name: 'w:r', attrs: [],
-        children: rPr ? [rPr].concat(cur) : cur});
-      cur = [];
-    };
-    const text = p.text.slice(run.start, run.end);
-    let from = 0;
-    SPECIAL.lastIndex = 0;
-    for (let m = SPECIAL.exec(text); m; m = SPECIAL.exec(text)) {
-      const i = m.index;
-      if (i > from) cur.push(tNode(text.slice(from, i)));
-      from = i + 1;
-      const c = text[i];
-      if (c === '\t') cur.push(W('tab'));
-      else if (c === '\n') cur.push(W('br'));
-      else {
-        const at = run.start + i;
-        const x = p.inlines[at];
-        if (x.level === 'p') {
-          endRun();
-          kids.push(inlineNode(x, at));
-        } else {
-          cur.push(inlineNode(x, at));
-          if (x.kind === 'noteRef' && x.custom !== undefined)
-            cur.push(x.customNode || tNode(x.custom));
-        }
+/** The nodes of one run of `p`: its w:r elements and the level 'p'
+ *  inlines in it. */
+function runNodes(p, run, map) {
+  const out = [];
+  const rPr = rPrNode(run.rPr, run.rStyle, map);
+  const tn = textName(run);
+  let cur = [];
+  const endRun = () => {
+    if (!cur.length) return;
+    out.push({name: 'w:r', attrs: [],
+      children: rPr ? [rPr].concat(cur) : cur});
+    cur = [];
+  };
+  const text = p.text.slice(run.start, run.end);
+  let from = 0;
+  SPECIAL.lastIndex = 0;
+  for (let m = SPECIAL.exec(text); m; m = SPECIAL.exec(text)) {
+    const i = m.index;
+    if (i > from) cur.push(tNode(text.slice(from, i), tn));
+    from = i + 1;
+    const c = text[i];
+    if (c === '\t') cur.push(W('tab'));
+    else if (c === '\n') cur.push(W('br'));
+    else {
+      const at = run.start + i;
+      const x = p.inlines[at];
+      if (x.level === 'p') {
+        endRun();
+        out.push(inlineNode(x, at));
+      } else {
+        cur.push(inlineNode(x, at));
+        if (x.kind === 'noteRef' && x.custom !== undefined)
+          cur.push(x.customNode || tNode(x.custom));
       }
     }
-    if (from < text.length) cur.push(tNode(text.slice(from)));
-    endRun();
   }
+  if (from < text.length) cur.push(tNode(text.slice(from), tn));
+  endRun();
+  return out;
+}
+
+/** Write the runs of `p` into `kids` (the children of the w:p),
+ *  tagged ones inside their revision (./RevWrite). */
+function writeRuns(p, kids, map) {
+  for (const n of wrap(p.runs, (run) => runNodes(p, run, map)))
+    kids.push(n);
 }
 
 /** The w:p for paragraph `p`; see the header. */

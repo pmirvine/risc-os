@@ -41,6 +41,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {readDocx, DocxError}
   from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
@@ -747,6 +748,7 @@ export async function commentsAll(d, seed, {every = false} = {}) {
     if (Date.now() - t0 > BURST_MS) break;
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       kind = command(rd, d, t, k);
       if (kind.endsWith(' refused')) {
@@ -757,6 +759,11 @@ export async function commentsAll(d, seed, {every = false} = {}) {
         sameCensus(d.doc, c0, kind);
       }
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }

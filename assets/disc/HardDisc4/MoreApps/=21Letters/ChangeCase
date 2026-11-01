@@ -32,15 +32,20 @@
 // the fi ligature...); a capital sigma at the end of a word becomes
 // the final sigma; each character is changed on its own otherwise
 // (no locale, no normalisation, a surrogate pair is one character).
-// U+FFFC (links, fields, breaks...) and everything with no case is
-// left; so is every run, inline and formatting: a changed paragraph
-// is one spliceText over the first to the last changed character with
-// the old runs and inlines for that stretch. One command is one undo
+// U+FFFC (links, fields, breaks...), the text the window's markup
+// view hides (d.markup, ./RevView: in Final deleted and moved-away
+// text; ./Kinds maskHidden: seen as U+FFFC, as the raw w:del it was
+// read from) and everything with no case is left; so is every
+// run, inline and formatting: a changed paragraph is one spliceText
+// over the first to the last changed character with the old runs and
+// inlines for that stretch. One command is one undo
 // step (none when nothing changes); the selection is kept. A mode
 // that is none of MODES throws RangeError first. pending is returned
 // (as the other commands of ./FormatSet do) EMPTY for a selection.
 // Whether Word's Capitalize Each Word makes the rest small is not
 // known to be the same (docs/apps/Letters.md, to check in real Word).
+// Track Changes on: the case is changed untracked (./RevTrack plain:
+// the window's one-time notice says so).
 // Pure: no desktop services.
 import {fail} from './ModelCheck';
 import {wordBounds} from 'wimplib/Segment';
@@ -49,6 +54,8 @@ import {touched, runOps} from './FormatOps';
 import {cut} from './OpsUtil';
 import {EMPTY} from './Pending';
 import {collapsed} from './Selection';
+import {maskHidden} from './Kinds';
+import {plain} from './RevTrack';
 
 export const MODES = Object.freeze(['sentence', 'lower', 'upper',
   'title', 'toggle', 'cycle']);
@@ -174,6 +181,18 @@ function wordAt(t, off) {
     [w.from, w.to] : null;
 }
 
+/** s (t[a, ...) converted) with the deleted text of the paragraph
+ *  (U+FFFC in t, ./Kinds maskHidden) as it is in text. */
+function unmask(s, text, t, a) {
+  if (t === text) return s;
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const k = a + i;
+    out += t[k] === '\ufffc' ? text[k] : s[i];
+  }
+  return out;
+}
+
 /** See the header. */
 export function changeCase(d, typing, sel, mode, pending) {
   if (!MODES.includes(mode)) fail('bad case mode ' + String(mode));
@@ -183,18 +202,19 @@ export function changeCase(d, typing, sel, mode, pending) {
   const parts = [];
   for (const en of list) {
     let [a, e] = [en.a, en.e];
+    const t = maskHidden(en.p, d.markup);
     if (a === e) {
-      const w = wordAt(en.p.text, a);
+      const w = wordAt(t, a);
       if (!w) continue;
       [a, e] = w;
     }
-    if (e > a) parts.push({en, a, e});
+    if (e > a) parts.push({en, a, e, t});
   }
   const opsFor = (m) => {
     const ops = [];
-    for (const {en, a, e} of parts) {
-      const old = en.p.text.slice(a, e);
-      const now = convert(en.p.text, a, e, m);
+    for (const {en, a, e, t} of parts) {
+      const old = t.slice(a, e);
+      const now = unmask(convert(t, a, e, m), en.p.text, t, a);
       if (now === old) continue;
       let lo = 0, hi = old.length;
       while (old[lo] === now[lo]) lo++;
@@ -213,13 +233,13 @@ export function changeCase(d, typing, sel, mode, pending) {
   else {
     // the next mode of the cycle; one that changes nothing (a word
     // that cannot be capitalised: 3rd, the fi ligature) is skipped
-    let m = NEXT[caseState(parts.map((x) => x.en.p.text.slice(x.a,
-      x.e)))];
+    let m = NEXT[caseState(parts.map((x) => x.t.slice(x.a, x.e)))];
     for (let k = 0; k < 3; k++, m = NEXT[m]) {
       ops = opsFor(m);
       if (ops.length) break;
     }
   }
-  runOps(d, typing, ops);
+  // (untracked while tracking changes: ./RevTrack notice)
+  plain(d, () => runOps(d, typing, ops));
   return keep;
 }

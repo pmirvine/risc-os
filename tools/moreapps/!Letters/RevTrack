@@ -1,0 +1,501 @@
+// RevTrack - the user's edits recorded as tracked changes while
+// Track Changes is on (Batch F2): typing is an insertion, deleting
+// a deletion, by the current author.
+//
+//   on(d) -> boolean  whether edits of d are recorded: the document's
+//       settings part has w:trackRevisions on (./SettingsRead), and
+//       d is the body's Document. A header's, footer's or note's
+//       facade (d.real, ./StoryFacade) is never recorded: edits
+//       there are plain, as text boxes are (never edited as stories)
+//   setTracking(d, typing, on) -> boolean  w:trackRevisions set on
+//       or off (./SettingsEdit withOnOff: the rest of settings.xml
+//       the same objects, so an untouched part is written as read):
+//       one undo step through typing.command (typing may be null);
+//       false when it is that already. Refused (MSG.settings) for a
+//       document with no settings part; on not a boolean: RangeError
+//   author(opts, now?) -> {author, date}  the name opts.name
+//       (./CommentOpts read: Tools > User name and initials),
+//       trimmed, else FALLBACK; date now (opts.now, else the
+//       clock) as Word writes w:date: the LOCAL clock time with a
+//       Z, 'YYYY-MM-DDTHH:MM:SSZ' (as ./CommentCmd localDate for
+//       comments; the pane shows it as written). Whether Word reads
+//       a Letters date so is still to be checked in real Word
+//   session(d) -> Session | null  null when not on(d); else the
+//       recorder of one command: d.reviewer (a function giving
+//       CommentOpts' {name, now?}, set by the window; none:
+//       FALLBACK) taken once
+//   record(d, fn) -> fn()  fn's steps are recorded ones (noticeFor
+//       says nothing of them)
+//   noticeFor(d, ev) -> MSG.notice | null  for a 'change' event of
+//       d: the first step (per Document, not saved) while on(d)
+//       that applied a formatting or structure op the recorder did
+//       not make (see Notice below); null after that
+//   plain(d, fn) -> fn()  fn's steps change the body's text
+//       untracked (Change case, a field's result updated): noticeFor
+//       counts any body op of them as an untracked change
+//   dry(d, fn, why) -> fn()  fn run, but refused (Refused why,
+//       nothing changed) when it changed the document: a key that
+//       only moves the caret or selects still does so
+//   MSG       the messages; FALLBACK 'Author'
+//
+// Session (s), inside the command's d.atomic:
+//   s.cut(at, a, b, dir) -> off  [a, b) of the paragraph at path
+//       `at` deleted: the author's own insertion (an 'ins' tag of
+//       the same author) removed for real (its unseen marks kept);
+//       text already deleted (del, mvFrom) left as it is (stepped
+//       over, never deleted again); untagged text tagged 'del'
+//       (marks inside it with it: comment ranges, comment
+//       references and bookmarks stay, tagged; marks between two
+//       stretches of it too, so they are one element, while marks
+//       alone at an edge of [a, b) stay untagged). The caret's
+//       offset after it: a for dir < 0, else past what is left of
+//       the range
+//   s.cutRange(o) -> {id, off}  an ./EditPos orderedPos range in one
+//       paragraph deleted so (dir 1); across paragraphs or blocks:
+//       Refused (MSG.multi)
+//   s.why(p, a, b) -> message | null  what s.cut would refuse
+//   s.tagIns(at, a, b)  [a, b), just put in, tagged 'ins'
+//   s.tagBlocks(list) -> list  pasted blocks (./ClipPaste), each
+//       paragraph's runs tagged with one new insertion; a table or
+//       kept block, or content a tag cannot hold: Refused
+//       (MSG.paste)
+//   s.swap(at, a, b, content) -> {from, to}  Replace: [a, b) cut,
+//       then content (./Ops spliceText's) put in after what is left
+//       and tagged; from, to: the text put in
+//
+// The callers: ./Edit (typing, overwrite, Enter, line break, tab),
+// ./EditDel (the keys, deleteSelection, so Cut), ./ClipPaste,
+// ./Find (Replace, Replace All), ./InsertApply putIn and
+// ./EditRange deleteRange (any command putting something in over
+// a selection). A new tag carries w:id, w:author and w:date as
+// attributes, as ./RevWrite writes them, so it reads back the same.
+//
+// Rules (rulings of this work, Word's where it can be done):
+// - An insertion goes on the author's own insertion next to it (the
+//   one before, else the one after): the same tag (id, date kept),
+//   so a burst of typing is one revision. Typed strictly inside
+//   another revision ('ins' or 'del', not a move) it splits it in
+//   three: the new text is the author's own insertion and the part
+//   after it gets a fresh id (the same author, date and
+//   attributes), so a split leaves no two parts of one id in the
+//   paragraph. One tag can still be in several paragraphs (Enter,
+//   a typed new line, a pasted paragraph break: the text on both
+//   sides keeps the tag), written as one element of that id in
+//   each; inside a move half the halves keep one id (as without
+//   tracking). Whether Word takes one id in several paragraphs is
+//   still to be checked in real Word.
+// - A deletion goes on the author's own deletion next to it the
+//   same way (Backspace after Backspace is one revision).
+// - Deleting another author's insertion, or moved text (mvTo), is
+//   refused (MSG.other, MSG.move): a deletion cannot be nested in
+//   an insertion here. So is deleting a field, a picture, a note
+//   mark or any other object a tag cannot hold (MSG.object, ./OpsRevs
+//   taggable): it is never deleted for real instead.
+// - Paragraph marks are not tracked: joining paragraphs (Backspace
+//   at a start, Delete at an end) and a deletion across paragraphs
+//   are refused (MSG.join, MSG.multi); Enter and pasted paragraph
+//   breaks split paragraphs untracked, their text tagged.
+// - Ids: ./RevMarks nextId once a command, then one more for each
+//   new revision; never one given before in this session (the
+//   largest given is kept per Doc, so an undo does not bring it
+//   back). nextId null (no id can be known free): Refused
+//   (MSG.ids), nothing changed: never recorded untracked instead.
+//   An edit that only goes on an existing revision needs no id.
+// - Each recorded command is one undo step (the caller's d.atomic);
+//   undo takes its tags away with it.
+//
+// Notice: formatting, lists, styles, tables, pictures and other
+// objects are changed untracked. The ops that are such a change:
+// setProps, the section ops, setDocPart (but settings: the switch
+// itself), the block ops (restoreBlock, insertBlock(s),
+// removeBlock(s), splitBlock, mergeBlock) and a replaceText or
+// spliceText putting in an inline a tag cannot hold (a picture
+// changed or put in, a field, a note mark); not text, revision
+// tags, comments or notes, and nothing in a header, footer or note
+// (op.story). Accept and reject (./RevCmd) apply only text and
+// tag ops, so they give no notice. A step made inside plain()
+// (./ChangeCase, ./FieldUpdate updating results) counts any body
+// op, text too.
+// Pure: no desktop services.
+import {settingsOf} from './SettingsRead';
+import {withOnOff} from './SettingsEdit';
+import {nextId} from './RevMarks';
+import {Refused} from './RevCmd';
+import {taggable} from './OpsRevs';
+import {at as walkAt} from './Walk';
+import {unseenAt, sameRev} from './Kinds';
+import {versionOf} from './DocVersion';
+
+export const FALLBACK = 'Author';
+export const MSG = Object.freeze({
+  ids: 'This change was not made: revision numbers cannot be ' +
+    'chosen safely in this document.',
+  join: 'Paragraphs cannot be joined while changes are tracked.',
+  multi: 'While changes are tracked, only text within one ' +
+    'paragraph can be deleted.',
+  other: 'Text another author inserted cannot be deleted while ' +
+    'changes are tracked: accept or reject it first.',
+  move: 'Moved text cannot be deleted while changes are tracked: ' +
+    'accept or reject the move first.',
+  object: 'Fields, pictures and other objects cannot be deleted ' +
+    'while changes are tracked.',
+  paste: 'Tables, fields, pictures, links and notes cannot be ' +
+    'pasted while changes are tracked: only text.',
+  settings: 'Track Changes cannot be saved in this document: it ' +
+    'has no settings part.',
+  notice: 'Track Changes: formatting changes are not tracked.',
+});
+
+const FLAG = 'trackRevisions';
+const MAX_ID = 2147483647;
+const isObj = (v) => v !== null && typeof v === 'object';
+const recDepth = new WeakMap();        // Document -> depth
+const plainDepth = new WeakMap();      // Document -> depth
+const noticed = new WeakSet();         // Documents told
+const given = new WeakMap();           // Doc -> largest id given
+
+/** See the header. */
+export function on(d) {
+  return isObj(d) && !d.real && isObj(d.doc) &&
+    settingsOf(d.doc).trackRevisions === true;
+}
+
+/** See the header. */
+export function setTracking(d, typing, v) {
+  if (typeof v !== 'boolean') throw new RangeError('on must be a ' +
+    'boolean');
+  const D = isObj(d) && d.real ? d.real : d, doc = D.doc;
+  if (settingsOf(doc).trackRevisions === v) return false;
+  if (!isObj(doc.rawSettings) || !(isObj(doc.meta) &&
+    doc.meta.settingsPart)) throw new Refused(MSG.settings);
+  const root = withOnOff(doc.rawSettings, FLAG, v);
+  if (root === doc.rawSettings) return false;
+  const go = () => D.atomic(() => D.apply({op: 'setDocPart',
+    key: 'settings', value: root}));
+  if (typing) typing.command(go);
+  else {
+    D.breakCoalesce();
+    go();
+  }
+  return true;
+}
+
+const z = (n, w = 2) => String(n).padStart(w, '0');
+
+/** date as Word's w:date: the local clock time, to the second, with
+ *  a Z (see the header). */
+function local(t) {
+  return z(t.getFullYear(), 4) + '-' + z(t.getMonth() + 1) +
+    '-' + z(t.getDate()) + 'T' + z(t.getHours()) + ':' +
+    z(t.getMinutes()) + ':' + z(t.getSeconds()) + 'Z';
+}
+
+const okDate = (t) => t instanceof Date && Number.isFinite(t.getTime());
+
+/** See the header. */
+export function author(opts, now) {
+  const n = isObj(opts) && typeof opts.name === 'string'
+    ? opts.name.trim() : '';
+  const t = okDate(now) ? now : isObj(opts) && okDate(opts.now)
+    ? opts.now : new Date();
+  return {author: n || FALLBACK, date: local(t)};
+}
+
+/** d.reviewer's options, or {} (see the header). */
+function reviewerOf(d) {
+  try {
+    const r = typeof d.reviewer === 'function' ? d.reviewer()
+      : d.reviewer;
+    return isObj(r) ? r : {};
+  } catch (e) {
+    return {};
+  }
+}
+
+/** fn run with d counted in map (a depth). */
+function within(map, d, fn) {
+  map.set(d, (map.get(d) || 0) + 1);
+  try {
+    return fn();
+  } finally {
+    const n = map.get(d) - 1;
+    if (n) map.set(d, n);
+    else map.delete(d);
+  }
+}
+
+/** See the header. */
+export const record = (d, fn) => within(recDepth, d, fn);
+
+/** See the header (a facade's steps are its real Document's). */
+export const plain = (d, fn) => within(plainDepth,
+  isObj(d) && d.real ? d.real : d, fn);
+
+/** See the header. */
+export function dry(d, fn, why) {
+  const v0 = versionOf(d.doc);
+  return d.atomic(() => {
+    const out = fn();
+    if (versionOf(d.doc) !== v0) throw new Refused(why);
+    return out;
+  });
+}
+
+const BLOCK_OPS = new Set(['setProps', 'setSection', 'splitSection',
+  'mergeSection', 'restoreBlock', 'insertBlock', 'insertBlocks',
+  'removeBlock', 'removeBlocks', 'splitBlock', 'mergeBlock']);
+
+/** Whether inlines xs (offset -> inline) hold one a tag cannot. */
+const objects = (xs) => isObj(xs) && Object.keys(xs).length > 0 &&
+  !taggable({inlines: xs}, 0, Infinity);
+
+/** Whether op is an untracked formatting or structure change. */
+function untracked(op) {
+  if (!isObj(op)) return false;
+  if (op.op === 'compound')
+    return Array.isArray(op.ops) && op.ops.some(untracked);
+  if (op.story !== undefined && op.story !== null) return false;
+  if (BLOCK_OPS.has(op.op)) return true;
+  if (op.op === 'setDocPart') return op.key !== 'settings';
+  if (op.op === 'replaceText') return objects(op.inlines);
+  if (op.op === 'spliceText')
+    return isObj(op.content) && objects(op.content.inlines);
+  return false;
+}
+
+/** Whether op changes the body (not a story, the settings, comments
+ *  or notes). */
+function body(op) {
+  if (!isObj(op)) return false;
+  if (op.op === 'compound')
+    return Array.isArray(op.ops) && op.ops.some(body);
+  return (op.story === undefined || op.story === null) &&
+    !QUIET.has(op.op) && !(op.op === 'setDocPart' &&
+    op.key === 'settings');
+}
+const QUIET = new Set(['addComment', 'addComments', 'removeComments',
+  'setComment', 'setCommentsPart', 'addNote', 'addNotes', 'removeNote',
+  'removeNotes', 'setNote', 'setNoteRels', 'setNoteOpts',
+  'setNotesPart', 'setStory']);
+
+/** See the header. */
+export function noticeFor(d, ev) {
+  if (!isObj(ev) || ev.kind !== 'apply' || recDepth.has(d) ||
+    noticed.has(d) || !on(d) || !Array.isArray(ev.ops) ||
+    !ev.ops.some(plainDepth.has(d) ? body : untracked)) return null;
+  noticed.add(d);
+  return MSG.notice;
+}
+
+/** See the header. */
+export const session = (d) => (on(d) ? new Session(d) : null);
+
+const gone = (rev) => isObj(rev) && (rev.kind === 'del' ||
+  rev.kind === 'mvFrom');
+
+/** [{from, to, rev}] of the runs of p over [a, b). */
+function pieces(p, a, b) {
+  const out = [];
+  for (const r of p.runs) {
+    const x = Math.max(r.start, a), y = Math.min(r.end, b);
+    if (y > x) out.push({from: x, to: y, rev: r.rev});
+  }
+  return out;
+}
+
+/** Whether [a, b) of p is only unseen marks (no text). */
+function onlyMarks(p, a, b) {
+  for (let k = a; k < b; k++) if (!unseenAt(p, k, 'all')) return false;
+  return true;
+}
+
+/** A copy of tag rev under id (its id attribute too, as written). */
+function renumber(rev, id) {
+  const attrs = (rev.attrs || []).map(([n, v]) => (String(n)
+    .slice(String(n).indexOf(':') + 1) === 'id' ? [n, String(id)]
+    : [n, v]));
+  return {...rev, id, attrs};
+}
+
+class Session {
+  constructor(d) {
+    this.d = d;
+    const a = author(reviewerOf(d));
+    this.author = a.author;
+    this.date = a.date;
+    this.base = null;
+  }
+
+  /** A new revision id (see the header); Refused when none. */
+  id() {
+    const doc = this.d.doc;
+    if (this.base === null) {
+      const n = nextId(doc);
+      if (n === null) throw new Refused(MSG.ids);
+      this.base = n;
+    }
+    const last = given.get(doc);
+    const id = Math.max(this.base, last === undefined ? 0 : last + 1);
+    if (id > MAX_ID) throw new Refused(MSG.ids);
+    given.set(doc, id);
+    return id;
+  }
+
+  /** A new tag of kind by this author: its attrs as ./RevWrite
+   *  writes them, so it reads back the same. */
+  tag(kind) {
+    const id = this.id();
+    return {id, kind, author: this.author, date: this.date,
+      attrs: [['w:id', String(id)], ['w:author', this.author],
+        ['w:date', this.date]], extra: []};
+  }
+
+  own(rev, kind) {
+    return isObj(rev) && rev.kind === kind &&
+      rev.author === this.author;
+  }
+
+  /** The plan of cutting [a, b) of p: [{from, to, rev, act}]. */
+  plan(p, a, b) {
+    const out = [];
+    // (pieces of marks alone since the last piece tagged: tagged
+    // with it when more text to tag follows)
+    let held = [];
+    for (const q of pieces(p, a, b)) {
+      const r = q.rev;
+      if (gone(r)) {
+        held = [];
+        continue;
+      }
+      if (this.own(r, 'ins')) {
+        held = [];
+        out.push({...q, act: 'cut'});
+        continue;
+      }
+      if (isObj(r)) {
+        throw new Refused(r.kind === 'mvTo' ? MSG.move : MSG.other);
+      }
+      if (!taggable(p, q.from, q.to)) throw new Refused(MSG.object);
+      const last = out[out.length - 1];
+      if (onlyMarks(p, q.from, q.to)) {
+        if (last && last.act === 'tag') held.push(q);
+        continue;
+      }
+      for (const h of held) out.push({...h, act: 'tag'});
+      held = [];
+      out.push({...q, act: 'tag'});
+    }
+    return out;
+  }
+
+  /** See the header. */
+  why(p, a, b) {
+    try {
+      this.plan(p, a, b);
+      return null;
+    } catch (e) {
+      if (e instanceof Refused) return e.message;
+      throw e;
+    }
+  }
+
+  /** The author's deletion tag in or next to [a, b) of p, or null. */
+  reuse(p, a, b) {
+    for (const r of p.runs) {
+      if (r.end >= a && r.start <= b && this.own(r.rev, 'del'))
+        return r.rev;
+    }
+    return null;
+  }
+
+  /** Delete [a, b) of the paragraph at path but its unseen marks;
+   *  the number of code units removed. */
+  remove(at, a, b) {
+    const p = walkAt(this.d.doc, at);
+    let n = 0, z = b;
+    for (let k = b - 1; k >= a - 1; k--) {
+      if (k >= a && !unseenAt(p, k, 'all')) continue;
+      if (z > k + 1) {
+        this.d.apply({op: 'replaceText', block: at, at: k + 1,
+          del: z - k - 1, ins: ''});
+        n += z - k - 1;
+      }
+      z = k;
+    }
+    return n;
+  }
+
+  /** See the header. */
+  cut(at, a, b, dir) {
+    const p = walkAt(this.d.doc, at);
+    const acts = this.plan(p, a, b);
+    let rev = null, n = 0;
+    for (let i = acts.length - 1; i >= 0; i--) {
+      const q = acts[i];
+      if (q.act === 'cut') {
+        n += this.remove(at, q.from, q.to);
+        continue;
+      }
+      if (!rev) rev = this.reuse(p, a, b) || this.tag('del');
+      this.d.apply({op: 'setRev', at, from: q.from, to: q.to, rev});
+    }
+    return dir < 0 ? a : b - n;
+  }
+
+  /** See the header. */
+  cutRange(o) {
+    if (o.f.b !== o.t.b || o.f.b.type !== 'p')
+      throw new Refused(MSG.multi);
+    return {id: o.f.b.id, off: this.cut(o.f.at, o.from.off, o.to.off,
+      1)};
+  }
+
+  /** See the header. */
+  tagIns(at, a, b) {
+    if (!(b > a)) return;
+    const d = this.d, p = walkAt(d.doc, at);
+    let before = null, after = null;
+    for (const r of p.runs) {
+      if (r.end === a && r.start < a) before = r;
+      if (r.start === b && r.end > b) after = r;
+    }
+    const br = before && before.rev, ar = after && after.rev;
+    const T = this.own(br, 'ins') ? br : this.own(ar, 'ins') ? ar
+      : null;
+    const rev = T || this.tag('ins');
+    if (!T && br && ar && sameRev(br, ar) &&
+      (br.kind === 'ins' || br.kind === 'del')) {
+      // inside another revision: the part after gets a fresh id
+      let e = b;
+      for (const r of p.runs) {
+        if (r.start === e && sameRev(r.rev, br)) e = r.end;
+      }
+      d.apply({op: 'setRev', at, from: b, to: e, rev: renumber(br,
+        this.id())});
+    }
+    d.apply({op: 'setRev', at, from: a, to: b, rev});
+  }
+
+  /** See the header. */
+  tagBlocks(list) {
+    let rev = null;
+    return list.map((b) => {
+      if (!isObj(b) || b.type !== 'p' || !taggable(b, 0, b.text.length))
+        throw new Refused(MSG.paste);
+      if (!b.runs.length) return b;
+      if (!rev) rev = this.tag('ins');
+      return {...b, runs: b.runs.map((r) => ({...r, rev}))};
+    });
+  }
+
+  /** See the header. */
+  swap(at, a, b, content) {
+    const off = this.cut(at, a, b, 1), n = content.text.length;
+    if (n) {
+      this.d.apply({op: 'spliceText', block: at, at: off, del: 0,
+        content});
+      this.tagIns(at, off, off + n);
+    }
+    return {from: off, to: off + n};
+  }
+}

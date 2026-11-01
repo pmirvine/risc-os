@@ -2,9 +2,9 @@
 // lines, each with the model offsets (UTF-16 indices into Para.text)
 // it stands for.
 //
-//   tokens(para, styles, cache, map?, fieldText?, floats?) -> [{t,
-//                    text, f, kind, from, to, shown, pic?, field?,
-//                    anchor?}]
+//   tokens(para, styles, cache, map?, fieldText?, floats?, markup?)
+//                    -> [{t, text, f, kind, from, to, shown, pic?,
+//                    field?, anchor?, rev?}]
 //   t     'w' a word or a piece of one (no break inside), 's' spaces,
 //         'tab', 'nl' (a line break), 'pb' (a page or column break:
 //         ./BreakMarks, with its label), 'z' (an unseen inline: drawn
@@ -27,6 +27,11 @@
 //         ./NoteNumbers): its number, or custom text, one token in
 //         the run's format; without fieldText a mark draws as its
 //         custom text, else '#'
+//   markup  the markup view (./RevView: 'final', the default, 'all'
+//         or 'original'): which tagged runs are hidden. In All
+//         Markup each token of a tagged run has its tag (rev): the
+//         layout keeps it on the item (never joined to one of
+//         another tag, ./LineLayout), for ./RevPaint
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
 // in blue, underlined; other wrappers with text (an insertion, a
@@ -37,14 +42,19 @@
 // a tab in that text is a 'tab' token (it goes to the next stop, as
 // in Word), a newline is drawn as it is. The unseen kinds
 // of ./Kinds (proofing marks, bookmarks, field codes) and deletions
-// are 'z'; a non-breaking hyphen is '-', a soft hyphen nothing; a
-// picture ./PicRead understands is one 'w' token of kind 'pic', text
-// '' (./PicLine picToken); anything else is a small grey [...] box.
+// are 'z'; so is a run of text the markup view hides (Batch F2,
+// ./Kinds hiddenRev: in Final a 'del' or 'mvFrom' tag, in Original
+// an 'ins' or 'mvTo' one, in All Markup none): one 'z' for all of
+// it, in the plain format, as the raw w:del it was read from was
+// drawn (the only place the view changes the layout); a
+// non-breaking hyphen is '-', a soft hyphen nothing; a picture
+// ./PicRead understands is one 'w' token of kind 'pic', text ''
+// (./PicLine picToken); anything else is a small grey [...] box.
 // A run boundary inside a surrogate pair is moved past the pair.
 // Pure: no desktop services.
 import {OBJ} from './Model';
 import {runFmt} from './Fmt';
-import {unseen, localName} from './Kinds';
+import {unseen, localName, hiddenRev} from './Kinds';
 import {isPageBreak, pbToken} from './BreakMarks';
 import {picToken} from './PicLine';
 import {isCustom} from './NoteNumbers';
@@ -169,7 +179,7 @@ function atomic(toks, vs) {
 
 /** See the header. */
 export function tokens(para, styles, cache, map, fieldText,
-  floats) {
+  floats, markup) {
   const out = [];
   const text = para.text, n = text.length;
   const runs = para.runs.length ? para.runs
@@ -197,7 +207,16 @@ export function tokens(para, styles, cache, map, fieldText,
     const s = Math.max(at, fix(run.start));
     const e = Math.max(s, fix(run.end));
     piece(at, s, PLAIN);
-    piece(s, e, run);
+    if (hiddenRev(run.rev, markup)) {
+      if (e > s) out.push({t: 'z', text: '', kind: 'text', from: s,
+        to: e, shown: true, f: runFmt(styles, para, PLAIN, cache)});
+    } else {
+      const k = out.length;
+      piece(s, e, run);
+      if (markup === 'all' && run.rev) {
+        for (let j = k; j < out.length; j++) out[j].rev = run.rev;
+      }
+    }
     at = e;
   }
   piece(at, n, PLAIN);

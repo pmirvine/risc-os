@@ -36,6 +36,7 @@
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
 import {slice} from '../../tools/moreapps/!Letters/ClipSlice';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {toHtml} from '../../tools/moreapps/!Letters/ClipHtml';
 import {ClipStore} from '../../tools/moreapps/!Letters/ClipStore';
 import {pick} from '../../tools/moreapps/!Letters/ClipPick';
@@ -250,10 +251,16 @@ function clipAll(src) {
       const cells = !!sel && !S.collapsed(sel) &&
         shapeOf(d.doc, sel).kind === 'cells';
       let kind = '?';
+      const sid = d.stateId;
       try {
         [kind, sel] = command(rd, d, sel, st);
         if (every) for (const b of allBlocks(d)) checkBlock(b);
       } catch (e) {
+        if (e instanceof Refused) {   // (tracking: nothing done)
+          assert.equal(d.undoDepth, depth, 'refused: no step');
+          assert.equal(d.stateId, sid, 'refused: unchanged');
+          continue;
+        }
         e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
         throw e;
       }

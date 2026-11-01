@@ -23,7 +23,12 @@
 // endnoteReference, permStart/End, the moveFrom/moveTo range marks
 // and the customXml*Range marks, at any depth): each becomes its
 // display text (a w:ins its inserted text, a w:del nothing), or
-// nothing. A modelled comment mark (cmtStart, cmtEnd, cmtRef:
+// nothing. Text read from a revision (a run tagged run.rev: Batch
+// F2) goes the same way, in the same document and across: inserted
+// text (or a move's new place) as plain text, deleted text (or a
+// move's old place) not at all, but for its comment marks, which go
+// as the other marks do. A modelled comment mark (cmtStart,
+// cmtEnd, cmtRef:
 // ./ReadPara, Batch F1) is kept, in the same document and across,
 // only with opts.cmtMarks (./ClipPaste: ./ClipComments carry then
 // gives it a new comment of its own or drops it), else it goes as
@@ -99,17 +104,46 @@ import {picKept} from './ClipPics';
 import {sameTable, crossTable} from './ClipCleanTbl';
 import {apart} from './TblFloat';
 import {docMap} from './PicRead';
-import {isCommentMark} from './Kinds';
+import {isCommentMark, hiddenRev} from './Kinds';
 
 const OBJ = '\ufffc';
 const isObj = (v) => v !== null && typeof v === 'object' &&
   !Array.isArray(v);
 
-/** {text, runs, inlines} of b, checked. */
+/** {text, runs, inlines} of b, checked; revisions settled as the
+ *  raw ones were (see the header). */
 function contentOf(b) {
   const c = {text: b.text, runs: b.runs, inlines: b.inlines};
   checkContent(c);
-  return c;
+  return c.runs.some((r) => r.rev) ? unrev(c) : c;
+}
+
+/** c with its deleted text left out (but for the comment marks in
+ *  it, which keep their comments) and no run tagged. */
+function unrev(c) {
+  let text = '';
+  const runs = [], inlines = {};
+  for (const r of c.runs) {
+    if (hiddenRev(r.rev)) {
+      for (let k = r.start; k < r.end; k++) {
+        if (!isCommentMark(c.inlines[k])) continue;
+        inlines[text.length] = c.inlines[k];
+        runs.push({start: text.length, end: text.length + 1,
+          rPr: {extra: []}});
+        text += OBJ;
+      }
+      continue;
+    }
+    const d = text.length - r.start;
+    for (let k = r.start; k < r.end; k++) {
+      if (c.inlines[k]) inlines[k + d] = c.inlines[k];
+    }
+    const q = {...r, start: r.start + d, end: r.end + d};
+    delete q.rev;
+    runs.push(q);
+    text += c.text.slice(r.start, r.end);
+  }
+  return {text, runs: normRuns(runs), inlines};
 }
 
 /** A target style id for source style id, or undefined. */

@@ -4,11 +4,19 @@
 // the two agree.
 //
 //   UNSEEN  Set of element local names: proofing marks, bookmarks,
-//           comment ranges and references, permission ranges,
+//           comment ranges and references, permission ranges, the
+//           marks of a move's ranges (w:moveFromRangeStart / End,
+//           w:moveToRangeStart / End: never a character for the
+//           keys, so one is never deleted alone, ./BookmarkKeep),
 //           Word's last page break mark, a field's codes (its
 //           result is ordinary text) and deleted text
 //   BLANK   the other inlines drawn as nothing (counted by ./Info):
 //           deletions (tracked changes) and a soft hyphen
+//   REV_MARKS the local names of the childless marks a revision can
+//           hold between its runs (bookmarks, permission and move
+//           ranges, comment ranges, proofing marks: ./RevRead reads
+//           a revision holding any other childless element raw, and
+//           ./OpsRevs tags no other); READ ONLY
 //   localName(node) -> 'proofErr' for a w:proofErr element, else ''
 //   unseen(x)       -> whether the inline x is drawn as nothing (its
 //                      element in UNSEEN or BLANK): ./LineTokens
@@ -35,19 +43,67 @@
 //                      attribute named id (any prefix) when that is a
 //                      whole number 0..2147483647 written plainly (no
 //                      sign, no leading zero), else null
+//   REV_KINDS       {ins, del, moveFrom, moveTo} -> the kind of the
+//                   revision tag (run.rev, ./RevRead) read from that
+//                   element: 'ins', 'del', 'mvFrom', 'mvTo'
+//   sameRev(a, b)   -> whether two revision tags (or undefined) are
+//                      one revision: both none, or the same id and
+//                      kind (every run merge asks: ./ModelCheck)
+//   MODES           ['final', 'all', 'original']: the markup views
+//                   (./RevView); isMode(m) whether m is one
+//   hiddenRev(rev, mode?) -> whether text of that tag is drawn as
+//                      nothing in markup view mode (default and any
+//                      other value 'final'): in 'final' a deletion
+//                      or the old place of a move ('del', 'mvFrom'),
+//                      in 'original' an insertion or the new place
+//                      of a move ('ins', 'mvTo'), in 'all' none
+//   hiddenSpans(p, mode?) -> [[from, to]...] the offsets of p in runs
+//                      whose tag is hidden, joined, in order (kept
+//                      per runs array and mode: models are never
+//                      changed)
+//   hiddenAt(p, k, mode?) -> whether offset k of p is such text
+//   hiddenSpanAt(p, k, mode?) -> the span of hiddenSpans holding k,
+//                      or null
+//   shownRanges(p, a, b, mode?) -> [[from, to]...] the parts of
+//                      [a, b) that are not
+//   maskHidden(p, mode?) -> p.text with every code unit of such text
+//                      a U+FFFC (the same length: offsets stay), so
+//                      word bounds and case see it as the raw element
+//                      it was read from; p.text itself when none
+// unseenAt(p, k, mode?) and onlyUnseen(p, mode?) take the mode too
+// (the keys of a window step over what its view hides). Every mode
+// argument left out is 'final': what the document says once its
+// changes are accepted (the writer, field results, headings, the
+// paste of a copy ask that).
 //
 // A modelled comment mark is drawn and keyed exactly as the raw
 // element it was read from (by its element's name): range marks and
 // the reference are all unseen (Batch F1: Word draws no box for a
 // reference; ./Info still counts a reference as a 'comment').
+//
+// Deleted and moved-away text (a run tagged 'del' or 'mvFrom'; in
+// the Original view inserted and moved-to text instead) is
+// unseen as a whole, as the raw w:del or w:moveFrom it was read from:
+// ./LineTokens draws it as one zero-width item, every offset in it
+// is unseenAt (so the keys step over it), and the text taken out of
+// a paragraph (Find, the word count, the clipboard, field results,
+// headings) leaves it out, as it left out the raw element. A w:del
+// or w:moveFrom kept raw (one ./RevRead does not model, and every
+// one outside the body) is still BLANK.
 
 export const UNSEEN = new Set(['proofErr', 'bookmarkStart',
   'bookmarkEnd', 'commentRangeStart', 'commentRangeEnd',
   'commentReference', 'permStart',
-  'permEnd', 'lastRenderedPageBreak', 'instrText', 'delText',
-  'fldChar']);
+  'permEnd', 'moveFromRangeStart', 'moveFromRangeEnd',
+  'moveToRangeStart', 'moveToRangeEnd', 'lastRenderedPageBreak',
+  'instrText', 'delText', 'fldChar']);
 
 export const BLANK = new Set(['del', 'moveFrom', 'softHyphen']);
+
+export const REV_MARKS = new Set(['bookmarkStart', 'bookmarkEnd',
+  'proofErr', 'permStart', 'permEnd', 'commentRangeStart',
+  'commentRangeEnd', 'moveFromRangeStart', 'moveFromRangeEnd',
+  'moveToRangeStart', 'moveToRangeEnd']);
 
 /** The local name of an element node ('' for anything else). */
 export function localName(node) {
@@ -92,13 +148,105 @@ export function unseen(x) {
 }
 
 /** See the header. */
-export const unseenAt = (p, k) => p.text.charCodeAt(k) === 0xfffc &&
-  unseen(p.inlines[k]) && localName(p.inlines[k].node) !== 'softHyphen';
+export const unseenAt = (p, k, mode) => (p.text.charCodeAt(k) ===
+  0xfffc && unseen(p.inlines[k]) &&
+  localName(p.inlines[k].node) !== 'softHyphen') ||
+  hiddenAt(p, k, mode);
+
+export const REV_KINDS = Object.freeze({ins: 'ins', del: 'del',
+  moveFrom: 'mvFrom', moveTo: 'mvTo'});
 
 /** See the header. */
-export function onlyUnseen(p) {
+export const sameRev = (a, b) => (!a || !b ? !a && !b
+  : a.id === b.id && a.kind === b.kind);
+
+export const MODES = Object.freeze(['final', 'all', 'original']);
+
+/** See the header. */
+export const isMode = (m) => typeof m === 'string' &&
+  MODES.includes(m);
+
+/** See the header. */
+export function hiddenRev(rev, mode) {
+  if (!rev || typeof rev !== 'object' || mode === 'all') return false;
+  const k = rev.kind;
+  return mode === 'original' ? k === 'ins' || k === 'mvTo'
+    : k === 'del' || k === 'mvFrom';
+}
+
+const spans = new WeakMap();           // runs -> {final, original}
+const NONE = Object.freeze([]);
+
+/** See the header. */
+export function hiddenSpans(p, mode) {
+  if (!p || typeof p !== 'object' || !Array.isArray(p.runs) ||
+    mode === 'all') return NONE;
+  const m = mode === 'original' ? 'original' : 'final';
+  let box = spans.get(p.runs);
+  if (box && box[m]) return box[m];
+  let out = [];
+  for (const r of p.runs) {
+    if (!r || !hiddenRev(r.rev, m)) continue;
+    const q = out[out.length - 1];
+    if (q && q[1] === r.start) q[1] = r.end;
+    else out.push([r.start, r.end]);
+  }
+  if (!out.length) out = NONE;
+  if (!box) spans.set(p.runs, box = {final: null, original: null});
+  box[m] = out;
+  return out;
+}
+
+/** See the header. */
+export function hiddenAt(p, k, mode) {
+  const sp = hiddenSpans(p, mode);
+  let lo = 0, hi = sp.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sp[mid][1] <= k) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < sp.length && sp[lo][0] <= k;
+}
+
+/** See the header. */
+export function maskHidden(p, mode) {
+  const sp = hiddenSpans(p, mode);
+  if (!sp.length) return p.text;
+  let out = '', at = 0;
+  for (const [x, y] of sp) {
+    out += p.text.slice(at, x) + '\ufffc'.repeat(y - x);
+    at = y;
+  }
+  return out + p.text.slice(at);
+}
+
+/** The hidden span [from, to] holding offset k of p, or null. */
+export function hiddenSpanAt(p, k, mode) {
+  for (const sp of hiddenSpans(p, mode)) {
+    if (sp[0] <= k && k < sp[1]) return sp;
+  }
+  return null;
+}
+
+/** See the header. */
+export function shownRanges(p, a, b, mode) {
+  const out = [];
+  let at = a;
+  for (const [x, y] of hiddenSpans(p, mode)) {
+    if (y <= at) continue;
+    if (x >= b) break;
+    if (x > at) out.push([at, x]);
+    at = Math.max(at, y);
+  }
+  if (at < b) out.push([at, b]);
+  return out;
+}
+
+/** See the header. */
+export function onlyUnseen(p, mode) {
   for (let k = 0; k < p.text.length; k++) {
-    if (!unseenAt(p, k)) return false;
+    if (!unseenAt(p, k, mode)) return false;
   }
   return true;
 }

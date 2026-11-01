@@ -393,7 +393,8 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
       'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
       'saveBox', 'sendToBack', 'fieldCodes', 'styleList', 'footnote',
-      'endnote', 'comment', 'nextNote', 'prevNote'].sort());
+      'endnote', 'comment', 'nextNote', 'prevNote', 'trackChanges',
+      'nextChange', 'prevChange'].sort());
   });
   it('Alt rows: Ctrl+Alt+F and D, Alt+Down and Up, by the key\'s ' +
     'place when the browser gives it (Batch E2)', () => {

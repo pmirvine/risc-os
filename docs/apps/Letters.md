@@ -457,7 +457,7 @@ The application
 | `FindSel` | (desktop, C0.2) what Find does to the selection, `EditFind`'s second half: `st(app)` (the task's find state), `select(dw, m)`, `step(dw, n, o, back, at)`, `current(dw, n, o)`, `replaceStep(dw, n, o, repl)`, `all(dw, n, o, repl)`.. P13 fix I1: `all` calls `v.reveal(caret)` (Outline: the heading over the last replacement opened) before `v.edited` |
 | `Find`, `FindText`, `EditFind`, `FindView` | Find and Replace (deliverable 6b). `Find` (pure): `search(doc, from {at, off}, needle, {matchCase, whole, backwards, wrap})` -> `{at, from, to, inInline, wrapped}` or null (C3.5: matches carry the paragraph's path; `from` at a table's path is its start edge at off 0, before its cells, and its end edge at off 1; anything else the document's start): the paragraphs in flow order through cells (row by row, cell by cell, nested tables entered; the top-level blocks walked by index from `topOf(from.at)`, no `findBlock`), kept blocks skipped, sections crossed; forwards the first match with `from >= off` in the first block, backwards the last with `to <= off`; `wrap` scans again from the document's start (end) and marks `wrapped`; `count(doc, needle, opts)` (non-overlapping); `replaceOne(d, m, repl)` -> `{at, from, to}` or null (an inline in the range, a stale or bad match): one `spliceText` in `d.atomic`, the text formatted by `OpsText.fmtAt(p, from, del)` (the first replaced character's run); `replaceAll(d, needle, repl, opts)` -> `{count, skipped, last}` (`last` `{at, from, to}` of the last text put in, or null): one `d.atomic`, one pass over the paragraphs in flow order (found first: cells' too), at most one `spliceText` per paragraph covering its first to last replaced match (unchanged stretches between kept as `OpsUtil.cut` pieces, inlines and runs reused), so the inverse restores each paragraph exactly with its id and `extraP`; text put in is never searched again (a replacement holding the needle cannot loop); 50,000 paragraphs x 2 matches in about 0.6 s. Replacement text: `Edit.clean` (controls other than `\n`/`\t`, U+FFFC and lone surrogates dealt with as typing does), so **a `\n` in it becomes a line break**: the model's line break is a `\n` in the paragraph's text (what Shift-Enter types and the writer writes as `<w:br/>`), a `\t` a tab; the box's fields are single-line, so this matters only to the API. `FindText` (pure): `view(p)` (cached per paragraph object in a `WeakMap`: models are immutable) is the paragraph as shown: each U+FFFC expanded to its inline's display text (tab `\t`, br `\n`, raw `text`, else nothing) with `map[k]` = model offset of shown character k; a match `[a, b)` of the shown text maps to model `[map[a], map[b-1]+1)`, `inInline` when that holds a U+FFFC (selected whole; never replaced, counted in `skipped`). After a match the next one starts at or after its model end (`matches`: `max(b, shownAt(to))`), so a link whose text holds the needle twice is ONE match for `count`, `replaceAll` and Find next alike (the search after it starts at its end). Case folding `fold(t)`: per code point, `toLowerCase()` when the same length, else the first code point of it when that is (U+0130 -> `i`), else unchanged: lengths never change (an all-ASCII string uses one `toLowerCase`); per character, so final sigma folds to the middle form, and `ss` does not match `ß` (no case expansion, no Unicode normalisation). Both ends must be grapheme boundaries of the model text (`DocPos.nextG/prevG`; skipped for paragraphs all below U+0300), so `e` does not match inside `e` + U+0301 nor a thumbs-up inside one with a skin tone. Whole words: `Segment.wordBounds` on the shown text, checked only at an end whose character is a letter, mark or digit (`\p{L}\p{M}\p{N}`: a run start at `a`, a run end at `b`); an end that is a space or punctuation needs nothing (Segment merges punctuation with spaces, so `foo.` / `foo,` could otherwise never match); texts over 4096 units segmented in a window of 256 either side. ICU treats `foo.bar` as one word. `prepare(needle)` -> `{needle, cut}`: at most `MAX` (1000) units, never half a surrogate pair. `EditFind` (desktop): the task's one `Ui/FindBox`; the active document is the `DocWindow` whose window last gained the caret (`attachFind`: `gaincaret`; cleared on `deleted`), state in a `WeakMap` app -> `{active}`. `openFind(dw, replace)` prefills Find with the selection when it is in one paragraph, at most 100 characters and has no line break (`orderedPos` checked before `view.text()`, so a huge selection costs nothing); `findStep(dw, back)` (Ctrl-G / Ctrl-Shift-G; empty Find: opens the box; with the box shut, a search that wraps or finds nothing opens it with `open({focus: false})` to show the message, the caret left in the document). Replace all puts the caret after `last`. Find next searches from the selection's end (previous: its start) with `wrap: true`, selects the match with `view.setSelection` (scrolls the head into view) and `FindView.show`: the document's window to the front, the box in front of it and moved below (or above) the selection's lines when it covers them; while the box is open it is lent to the active document's view as a pane (`FindView.lend`: `view.addPane(box.win)`, moved on `gaincaret` of another document, taken back on close or when the document is deleted), so the selection keeps the focused colour while the box has the caret; messages `Reached the end: continuing from the top` / `Reached the start: continuing from the end` / `Not found` (with a beep); Replace: if the selection is exactly a match (`search` from its start equals it) it is replaced through `typing.command` after `dropPending`, the caret put after it and the next found (`1 replaced`, `; no more found`, or the wrap message); a link match is skipped with `Link text is kept.` before the next search's message; otherwise Replace only finds; Replace all: `N replaced` (`; K in links not replaced`), `Not found` with a beep when nothing matched; an empty Find: `Type the text to find.`; over 1000 characters: `Only the first 1000 characters are looked for.` before the message; no live document: `No document to search: click in one first.`. `onClose` gives the active document `view.focus()`; `onKey` maps Ctrl-G / Ctrl-Shift-G (Cmd on a Mac) in the box to find next / previous. `findHook(app)` -> `task.word.find`: `{box, active, open(replace), run(action, {find, replace, matchCase, whole}) -> message}` (`find` is searched as given, even past the field's 1000) |
 | `FormatApply`, `EditFormat`, `EditRun`, `EditHook`, `FormatMenu` | formatting in the window. `FormatApply` (pure): `apply(id, d, typing, sel, arg, pending) -> {sel, pending}` or `undefined` for a non-format id; ids `bold italic underline strike superscript subscript` (toggle), `alignLeft alignCenter alignRight alignJustify`, `align` (arg jc), `clearFormat`, `fontBigger fontSmaller` (`sizeBy` +-1), `indentMore indentLess` (`indentBy` +-720), `indentDrag` (arg `{marker, at, textW, free}`: `FormatPara.dragIndents`; a bad arg is a RangeError), `tabs` (arg `{add}`/`{remove}`/`{move}`/`{set}`/`{edits}`: `FormatTabs.setTabs`), `tabsBox` (arg `{tabs?, defaultTab?}`: `TabsCommand.tabsBox`, the Tabs dialog's OK), `listIn listOut listOff` (`setList` `{by: 1}`, `{by: -1}`, `{off: true}`), `size` (arg points -> `sz` half-points), `font` (arg family -> `rFonts`), `color` (arg `colourValue`: Wimp colour 0-15, `'auto'` or `'RRGGBB'`), `highlight` (Word name or `'none'`), `style` (style id), `lineSpacing` (arg a factor of `LINE_FACTORS` [1, 1.15, 1.5, 2, 2.5, 3] -> `line` 240/276/360/480/600/720 auto, or `{line, lineRule?}` checked by `FormatCheck`; other keys refused), `lineSingle lineDouble line15` (Ctrl-1, Ctrl-2, Ctrl-5), `spaceBefore spaceAfter` (arg twips, or null: the style's), `spaceBefore12` (Ctrl-0: `FormatPara.spaceBefore12`, 240 when every paragraph has none, else 0), `paraBox` (arg a `ParaPatch` patch -> `setPara`), `bullets` / `numbering` (arg a gallery entry id of that kind or none: `ListMake.toggleList`), `listRestart` (arg start, default 1), `listContinue`; `isFormat`; `PALETTE` (the desktop's Wimp palette as RRGGBB, pinned to `src/core/palette.js`: FFFFFF DDDDDD BBBBBB 999999 777777 555555 333333 000000 004499 EEEE00 00CC00 DD0000 EEEEBB 558800 FFBB00 00BBFF); `SIZES`; `WORD_FONTS` and `fontList` (re-exported from WimpLib `FontList`); `HIGHLIGHTS`; `paraStyles(styles)` (not `semiHidden`, by name). `EditFormat` (view glue, no `riscos`): `initFormat`, `touch(v)` (`selRev++`; `formatListeners` called once at the next animation frame), `dropPending`, `formatQuery(v)` (`Format.query` cached per `selRev`), `formatRun(v, id, arg)` (true if applied; RangeError -> false, nothing changed; the pending format it returns is kept; relayout through `v.edited`), `docFonts(v)` (`Info.facts(doc).fonts`, worked out once after each document change, not on every menu or popup), `stopFormat`. The view bumps `selRev` on every selection, document, layout and pending change; `setSelection`, undo/redo and every non-format command drop the pending format; `input` passes `{rPr: forTyping(pending), rStyle: styleFor(pending)}` to `Typing.type` and then drops it; `EditView.format` gives the browser focus back to the Wimp's text field when a menu click took it. `EditRun`: `runView(v, id)` (a command's null result: `v.refused()`), `stepView(v, kind)`. `EditHook.hook(v)`: the test hook (`labels()`: each block's list label text as laid out, or null; `tables()`: every table item at every depth, outermost first, `{id, depth, rows, painted}`, painted the rows its last paint drew, C2.5). `FormatMenu.formatMenu(view, {paragraph, tabs, borders, picture, listValue, autoList}?)` (Batch D P3.4: the Ruler item moved to View, `ViewMenu`) (desktop; `autoList` an item put last: `AutoFormatOpt.autoListItem`): Bold Italic Underline Strikethrough Superscript Subscript (ticked from `view.query()`, evaluated when the menu is drawn), Font > (WimpLib `Ui/FontMenu`: `docFonts`, Word, Desktop fonts >), Size > (`SIZES`, Bigger, Smaller), Colour > (16 `colour: n` items, Automatic, More colours... > a `Ui/ColourPopup` submenu), Highlight >, Align >, Indent >, List > (`ListMenu.listMenu`, see its row; shaded only with no selection), Style >, Paragraph... (`paragraph()`: `ParaBox`), Tabs... (`tabs()`: `TabsBox`, A4.3), Clear formatting; keys from `Keymap.labelFor`; all shaded with no selection. A command on 5000 selected paragraphs, laid out again: 50-70 ms A5.3 added to `EditRun`: `nbsp` is typed text (`view.input`) with the pending format; A5.4 added the ids `changeCase` and `caseCycle` (`ChangeCase`) and `FormatMenu`'s `Change case >` |
-| `Kinds` | `UNSEEN` (the inline elements drawn as nothing and not counted: `proofErr`, `bookmarkStart/End`, `commentRangeStart/End`, `permStart/End`, `lastRenderedPageBreak`, `instrText`, `delText`, `fldChar`), `BLANK` (also drawn as nothing, but counted: `del`, `moveFrom`, `softHyphen`), `localName(node)`, `unseen(x)`, `unseenAt(p, k)` (the caret keys step over these with the next character and Backspace/Delete never delete them: A6.2; not a soft hyphen: a character for the keys), `onlyUnseen(p)` |
+| `Kinds` | `UNSEEN` (the inline elements drawn as nothing and not counted: `proofErr`, `bookmarkStart/End`, `commentRangeStart/End`, `permStart/End`, `moveFromRangeStart/End`, `moveToRangeStart/End` (Batch F2: before, a `[...]` box the keys could delete alone), `lastRenderedPageBreak`, `instrText`, `delText`, `fldChar`), `BLANK` (also drawn as nothing, but counted: `del`, `moveFrom`, `softHyphen`), `localName(node)`, `unseen(x)`, `unseenAt(p, k)` (the caret keys step over these with the next character and Backspace/Delete never delete them: A6.2; not a soft hyphen: a character for the keys), `onlyUnseen(p)` |
 | `Info` | `facts(doc) -> {paragraphs, tables, preserved, kinds, fonts}` (C1.6, R12: through `Walk.scan`, paragraphs at every depth and `tables` the typed tables at every depth; an Opaque table stays a preserved item, kept blocks in cells count as preserved items too); `fonts` also covers every story in `doc.stories` (Batch D P1.4, D35/D11: header and footer fonts load before the first page shows; since P6.3 walked with `Walk.scanStories`, paragraphs at every depth; the counts stay the body's; `!RunImage` waits for them before it makes the window, `word-fonts-load.mjs`), `summary(doc)` (`'9 paragraphs, 2 tables, 1 preserved item (1 link), fonts: ...'`, the tables part left out when there are none), `kindOf(node)` (unchanged: Opaque blocks only), `infoWindow` (the Paragraphs field `9 (2 tables)` when there are tables) |
 | `FontMap`, `FontLoad` | `substitute(name) -> {family, css}`, `fontFiles()`, `fontFile(family, bold, italic)`, `bundledFamilies()`, `fontsToLoad(families)`; `loadFonts(vfs, dir, doc, families, FontFaceCtor)` (Batch D: each face it reads is registered with `FontMetrics` once loaded; its job keeps the parsed metrics, not the bytes, and every call registers them again, so a fresh run of `!Letters` has them without a read) |
 | `FontMetrics` | Batch D P1.1, pure (D35, PG36): the bundled fonts' own line metrics. `parseMetrics(bytes) -> {upm, winAsc, winDesc, hheaAsc, hheaDesc, lineGap} \| null` (the `head`, `hhea` and `OS/2` tables; caps: at most `MAX_TABLES` 64 tables, every record and field inside the buffer, upm 16..16384, usWinAscent + usWinDescent > 0; never throws), `register(family, bold, italic, bytes)`, `put(family, bold, italic, metrics)`, `ratiosOf(family, bold, italic) -> {nat, desc}` (`nat = (winAsc + winDesc + lineGap) / upm`, the positive hhea lineGap being Word's external leading, `desc = winDesc / upm`; `WORD_NAT` (Caladea 1.17, Cambria's) overrides nat for a stand-in whose own heights differ, desc scaled with it; a face not registered: the family's regular face, then `NAT_M` {1.25, 0.27}, re-exported by `ParaSpace`). `Fmt.runFmt`'s format carries `fm`, its font's ratios, resolved once per format; `LineLayout` passes the tallest run's to `ParaSpace.lineBox(pf, px, up, down, m)`. See "Line heights from the fonts" |
@@ -704,7 +704,8 @@ Moved here from the header of `LineLayout` (Batch D, P0.2), verbatim:
 
 ```
   layoutPara(para, styles, width, metrics, cache, label?, defPx?,
-             map?, fieldText?, floats?, shape?) -> {h, lines}
+             map?, fieldText?, floats?, shape?, markup?) -> {h,
+             lines}
   metrics: has width(text, css) -> px (WimpLib/TextMetrics)
   cache:   a Map for the run formats (./Fmt)
   label:   the paragraph's list label (./ListNumbers), or none
@@ -733,6 +734,11 @@ Moved here from the header of `LineLayout` (Batch D, P0.2), verbatim:
            before: ./LineFit beforeOf); the first line is not moved
            below its part's frame bottom (spanAt first). Without
            one: the lines of before, unchanged
+  markup:  (Batch F2) the markup view, ./RevView: 'final' (the
+           default), 'all' or 'original': the tagged runs it hides
+           are one zero-width item each (./LineTokens); in 'all'
+           an item of a tagged run has its tag (rev) and is never
+           joined to one of another tag (./RevPaint draws it)
   line:  {from, to, x, y, h, base, items, wrapped, endsWithBreak,
          label?, clip?, bars?}
          x: where the line's text starts (after indent, a list
@@ -741,7 +747,7 @@ Moved here from the header of `LineLayout` (Batch D, P0.2), verbatim:
          {x, w, text, f, bullet} (./LineLabel): drawn there, but
          no item and in no offsets
   item:  {x, w, text, f, kind, from, to, shown, hl, sh, dy, js?,
-         label?, leader?, pic?, field?, anchor?}
+         label?, leader?, pic?, field?, anchor?, rev?}
          kind 'text' | 'link' | 'box' | 'pic' | 'tab' | 'break' |
          'pagebreak' (label: its ./BreakMarks label) | 'anchor'
          (w 0, text '': not drawn in the line)
@@ -1210,7 +1216,8 @@ into `BookmarkFind`: one lookup for the Bookmark box, the Hyperlink box and Ctrl
 ## Word count (Batch A, A6.4): the rules
 
 * **What is counted**: see `WordCount` above. The text of a link and the result of a field are in, a field's codes
-  (`w:instrText`, `w:fldChar`) and tracked deletions (`w:del`, `w:delText`, `w:moveFrom`) out; footnotes, headers,
+  (`w:instrText`, `w:fldChar`) and raw tracked deletions (`w:del`, `w:delText`, `w:moveFrom`) out, and of tagged
+  runs the text the window's markup view hides (Final: deletions; Original: insertions; All Markup counts both); footnotes, headers,
   text boxes and drawings are not walked (a table's drawing is skipped too). Tables are walked for their `w:t`
   text, one paragraph per `w:p`; whether a table paragraph counts as a "paragraph" follows the same rule as any other
   (it has a character).
@@ -2591,7 +2598,7 @@ Each is described where it arose (the section named); this is the list to read f
   Print layout only, owner ruling R5: "Floating tables placed" and the P12b fix wave below; Draft, Web layout,
   Outline and a floating table in a cell, a header or a footer keep it in the flow with the dashed outline) moving
   a floating table by dragging (its edges drag; `tblpPr` never changes), tracked changes to a table (the table stays
-  Opaque; !Letters has no Track changes switch), editing or making a table style, AutoFit commands, sorting, formulas,
+  Opaque; a table's rows and columns are never recorded as tracked changes), editing or making a table style, AutoFit commands, sorting, formulas,
   `textDirection` and `bidiVisual` (kept, drawn left to right), content controls round rows or cells (Opaque, reason
   `wrapped`).
 * **Opaque on purpose:** the reasons of R3; tracked changes INSIDE cell paragraphs type, as in the body (owner to
@@ -3851,7 +3858,7 @@ companions are written back from the model, and unchanged comments byte for byte
 | `CommentPatch` | pure: the pane's `rows(doc, filter)` (threads in body order of their first mark, replies flattened at depth 1, linear: never `parentOf` per comment), `FILTERS` (All, Unresolved), `shortDate`, `patch(values, row)`, `buttons(d, row)` (in step with `commandWhy`), `liveId`, `rangeOf`, `holdSel` |
 | `CommentBox` | desktop-bound: `commentBox(dw)` (the Comments pane in `dw.boxes` 'comments', a canvas list like `StylesWin` with a core `TextArea`), `insertComment`, `commentsShown`, `toggleComments`, `deleteInSelection`; the Edit Comment choice (`dw.boxes` 'cmtlossy'); the draft kept when hidden; a stale Post refills and keeps the text |
 | `AuthorBox` | desktop-bound (WimpLib `Ui/Dialog`): `authorBox(dw, {ask, then, pane}?)`, the User name and initials box (key `author:<docKey>`, `dw.boxes` 'author') |
-| `ToolsMenu` | `toolsMenu(dw)`: Show Comments (ticked while open), Delete comments in selection (shaded with a caret and in a story), User name and initials...; the window menu's Tools item sits between Table and Zoom |
+| `ToolsMenu` | `toolsMenu(dw)`: Show Comments (ticked while open), Delete comments in selection (shaded with a caret and in a story), Track Changes (Ctrl+Shift+E, ticked by `RevTrack.on`), Show Markup > (All Markup / Final / Original, `dw.setMarkup`), Show Changes Pane (ticked while open), Accept, Reject, Accept All, Reject All, Previous Change (Alt+Shift+Up), Next Change (Alt+Shift+Down), User name and initials...; the change items shaded by `ChangesBox.why` (every one in the header and footer and notes modes), the reason as their help; the window menu's Tools item sits between Table and Zoom |
 | `ClipComments` | pure, as `ClipNotes`: `commentsOf(doc, blocks)` (a comment is carried when its marks are all there, once each; its mark-less replies come too), `styleUp`, `carry(d, list, opts)` (a new comment per carried one, fresh id from `nextCommentId`, fresh `paraId` and `durableId`, parents remapped only within the paste, one `addComments` op); the slice's `comments` key, passed on by `ClipStore` and `ClipPick`; `ClipClean` keeps marks only with `opts.cmtMarks` |
 
 * **The model.** `doc.comments` is `{map: Map<id, Comment>, root, prolog, order, raw, rels, relsPart, read}`; a `Comment` is
@@ -3866,6 +3873,8 @@ companions are written back from the model, and unchanged comments byte for byte
   comment goes with its last body mark and comes back with undo.
 * **One pairing rule.** `BookmarkKeep` pairs every range mark: `bookmarkStart/End` and `commentRangeStart/End` (raw or
   modelled), by kind and `w:id` within its own kind. A deletion that covers one mark of a pair keeps it and puts it back.
+  Since Batch F2 also `permStart/End` and the move ranges (`moveFromRangeStart/End` ns `'f'`, `moveToRangeStart/End`
+  ns `'t'`, as `MovePairs`): see *Range marks kept paired* under Track changes.
 * **The window.** `dw.comment` is the selected comment's id (or null), `dw.setComment(id)` sets it (display only: not the
   caret, not an undo step); `CommentPaint` draws the selected one stronger. `AppWin` and `CloseDoc` need nothing else:
   the boxes are registered in `dw.boxes`.
@@ -3886,6 +3895,154 @@ companions are written back from the model, and unchanged comments byte for byte
   `commentpatch`, `commentclip`, `comment-roundtrip-corpus` (all `*.test.mjs` under `tests/moreapps/`; the last
   with `WORD_EDIT_CORPUS=1` over the corpus, with seeded 40-command bursts and a 10,000-comment ratio check) and the
   browser script `word-comments.mjs`.
+
+## Track changes (Batch F2): what changed
+
+Tracked changes in body paragraphs (and their tables) are modelled: their text is ordinary runs tagged with the
+revision. A window shows them in one of three markup views (`RevView`): Final (the default: deleted text drawn as
+nothing, inserted text as text in its own formatting, as before), All Markup (both, in the author's colour,
+`RevPaint`) and Original (inserted text hidden). Tools > Show Markup chooses the view (`dw.setMarkup`); the user guide is `$.Docs.Letters`, part 27.
+
+| Module | What it is |
+|---|---|
+| `RevRead` | pure: `unwrap(el, map, read, ctx) -> {rev, runs, inlines, text} \| null`: a `w:ins`, `w:del`, `w:moveFrom` or `w:moveTo` directly in a `w:p` read as runs tagged `rev`; null keeps it a raw inline (bad or duplicate id, a repeated id, author or date, a nested revision, a link, field, picture, note mark or symbol inside, `w:t` in a deletion or `w:delText` in an insertion or in either place of a move, nothing inside). Text is in `w:delText` in a deletion and in `w:t` everywhere else, the old place of a move (`w:moveFrom`) too, as Word writes it: Word will not open a `w:moveFrom` holding `w:delText` (the tc-2 hand-off; the corpus's two Word files with moves have `w:t` there), so such a one stays raw, as read. A missing author or date is left out of the tag (never made up; a date that is not one is kept as read). `revIds(doc)`: the id map of the body's revisions |
+| `RevWrite` | pure: `wrap(runs, emit)`, `revNode(rev, kids)`, `textName(run)`: each longest stretch of runs of one revision written inside its element, attributes as read with the tag's id, author and date (only those the tag has: none is added to one read without); text in `w:delText` for a `del` tag only, `w:t` for `ins`, `mvFrom` and `mvTo` (so a move half made a deletion by `RevKeep`, a tracked deletion, Accept or Reject write the element of the kind the text has now) |
+| `OpsRevs` | pure op `setRev {at, from, to, rev \| null, story?}`: tag or untag a range of one paragraph; its inverse is `setRev {at, from, to, revs: [{from, to, rev}]}`, the old tags run by run (the very tag objects, the runs joined again as they were). Refused over content a revision cannot hold (`taggable(p, from, to)`: a field, picture, link, note mark, symbol or raw revision), so a tag is never written that would read back raw |
+| `RevMarks` | pure: `list(doc)`: every revision in document order (body, then headers and footers, then notes) as `{id, kind, author ('Unknown author' when none), date, where: {block, from, to, story?}, text, editable, move?, rev? \| node?}`, memoised per `DocVersion` (and per paragraph); only tagged body stretches are `editable`. `at(doc, {block, off, story?})`: the entry there. `nextId(doc)`: one past every revision-family `w:id` (tags, raw elements, `rPrChange`... in kept XML, stories, notes, comments, parts kept as bytes); null when one cannot be known free |
+| `RevKeep` | pure: `dropped(doc, invs) -> op \| null`, the hook `Document` calls after `CommentKeep`: a stretch of a revision the step took text of that now holds only marks is untagged; a move half that had a partner before the step and has none after becomes a plain `del` / `ins` (same id, author, date) |
+| `RevView` | pure: the markup views `MODES` (`'final'` the default, `'all'`, `'original'`), `isMode`, `modeOf`, `hides(kind, mode)`, `visible(run, mode)`; `setMarkup(dw, mode)` (what `dw.setMarkup` does: `dw.d.markup` set, a new layout; false for a bad or unchanged mode); `shownSel(L, sel)`: an end strictly inside hidden text moved to its nearer edge (`EditView` after every layout and selection set) |
+| `RevPaint` | display only: `marks(L, it, k)` the underline (insertion), strike line (deletion), double underline (moved to), double strike line (moved away) of each item of a tagged run on line `k`, in the author's ink, and a change bar `BAR_GAP` px left of the text column; `NONE` unless `L.markup` is `'all'`. `paintMarks(g, list)`; `ItemPaint` draws the items' text in the mark's colour |
+| `RevCmd` | pure: `accept(d, typing, sel)` / `reject(d, typing, sel) -> {resolved, skipped, sel}` (a caret: among the revisions the view `d.markup` shows, the one ending there, else the one holding it, whole across paragraphs; a selection: those inside it, one straddling an edge split and only the part inside resolved), `acceptAll` / `rejectAll(d, typing)`, `resolveAuthor(d, typing, author, accept) -> {resolved, skipped}` (skipped: revisions in headers, footers, notes or kept raw), `next` / `prev(d, from, {view}) -> sel \| null` (the whole next or previous revision, passing over those the view hides; no wrap), `whyNot(d, sel)`, `commandWhy(d, {kind, id}, 'accept' \| 'reject')`; refusals throw `Refused` (a `RangeError`, the reason as its message). One undo step each, none when nothing changes |
+| `RevTrack` | pure: recording (Track Changes on). `on(d)` (`w:trackRevisions` in settings.xml, `SettingsRead`; a header's, footer's or note's facade, `d.real`, never), `setTracking(d, typing, on)` (one undo step: `setDocPart settings` with `SettingsEdit.withOnOff`, the rest of the part the same objects; `Refused` without a settings part), `author(opts, now?) -> {author, date}` (the name trimmed, else `'Author'`; the local clock time with a Z, `YYYY-MM-DDTHH:MM:SSZ`, as Word and the comment writer write `w:date`), `session(d)` (null when off: one command's recorder, the author from `d.reviewer`), `record(d, fn)`, `noticeFor(d, ev)`, `dry(d, fn, why)`, `MSG`. A session's `cut`, `cutRange`, `tagIns`, `tagBlocks`, `swap` and `why` are what the commands call |
+| `ChangesPatch` | pure: `rows(doc, filter) -> Row[]` (one per revision in document order: a revision across paragraphs one row, a move's halves one 'Moved' row with its old and new place; filter an author's name, else all; linear, cached per `RevMarks` list and per author), `authors`, `counts`, `summary`, `emptyText`, `dateOf` (as written; `w16du:dateUtc` in local time), `rangeOf(row, view)` (a move's new place, first part to last, its old in Original; a Final deletion selected whole where hidden), `actOn(row, view)` (what Accept / Reject take: a move by a caret in its shown half), `hint(row, view)`, `buttons(d, row)` (`RevCmd.commandWhy`), `keyAt(rows, sel)` |
+| `ChangesBox` | desktop-bound: `changesBox(dw)` (the Changes pane in `dw.boxes` 'changes', a canvas list drawing only the rows in sight; author filter, counts, Accept, Reject, Previous, Next, Accept / Reject all by this author; follows document and view changes once a frame; a caret move recomputes nothing, an edit is linear in the changes), `changesShown`, `toggleChanges`, and the window's commands: `trackingOn`, `toggleTracking`, `why(dw, cmd)`, `accept(dw, yes)`, `resolveAll(dw, yes, author?)` (the selection clamped, then the notice `notice(n, m, yes)`), `step(dw, dir)`; every `RevCmd` call is checked first and its `Refused` caught |
+| `AuthorColour` | pure: `colourOf(author)` (FNV-1a), `PALETTE` (the comments' tints), `INK` (the same six hues dark enough for text), `inkOf(author)`: one colour per author in comments and changes (`CommentPaint` re-exports `colourOf`, `PALETTE`) |
+
+* **The tag.** `run.rev = {id, kind: 'ins' | 'del' | 'mvFrom' | 'mvTo', author?, date?, attrs, extra, name?}` (`attrs`
+  every attribute of the element as read; `extra` nodes put at its end, [] as read; `name` a move's range name, not
+  set by the reader: a name taken from where the range marks lie would change with edits).
+  `Kinds.sameRev(a, b)` (same id and kind) is part of `ModelCheck.sameFmt`, so runs of different revisions never
+  merge; `checkContent` checks the tag. Cuts, joins and `setProps` keep it; typed text never gets it (`OpsText.fmtAt`).
+* **Reading.** `ReadPara` with the `revs` option (a Map of ids shared by the document: `ReadBody`, `TblRead`;
+  `readDocx(bytes, {revisionMarks: false})` switches it off for tests). Headers, footers, notes, text boxes, comments
+  and revisions inside links, fields and content controls stay raw; comment marks inside a revision are modelled
+  (and tagged). An id read twice with the same kind and attributes is one revision split in two (an edit put text in
+  its middle), unless the two are next to each other. Remove link (`LinkOps`, `LinkParts.inside(node, map, revs)`)
+  reads the link's revisions as tagged runs in the body (against the document's ids, `RevRead.revIds`), as reading
+  the file again would; in a header, footer or note (a `StoryFacade`, `d.real`) they stay raw.
+* **Deleted text unseen** (`Kinds.hiddenRev`, `hiddenSpans`, `hiddenAt`, `shownRanges`): `LineTokens` draws a hidden
+  run as one zero-width `z` in the plain format (the page-start pin stays 328 of 1387); `unseenAt` is true in it (the
+  keys step over it); Find, the word count, the selection's and the clipboard's text (plain and HTML), headings,
+  bookmark text and TOC entries leave it out; a double-click (`Selection.selectWord`) and Change case
+  (`ChangeCase`) see it as U+FFFC (`Kinds.maskHidden`): a word never takes it in, a click on it selects that stretch
+  alone, its case never changes; `ClipClean` pastes inserted text as plain text and leaves deleted text
+  out (but its comment marks), as it did the raw elements; `Info` counts each revision as the raw element did. A raw `w:del` / `w:moveFrom`
+  is still `BLANK`, and its text is none: a raw inline's `text` (`Ns.plainText`) leaves out what a `w:moveFrom` holds
+  (Word writes it in `w:t`), as a `w:del`'s `w:delText` was never text.
+* **The text elements in their place.** `text-context.mjs` (`misplaced`, `partsMisplaced`) is the guard: no part
+  under `word/` gains a `w:delText` without a `w:del` around it in its paragraph, or a `w:t` with one, in
+  `roundtrip-lib` `roundTrip` (every burst and command round trip), the `rev-roundtrip-corpus` no-edit pipeline and
+  hostile files, and `handoff-changes.mjs` (the generator stops on one). No real Word file in the corpus breaks it.
+  Tests: `movetext.test.mjs`.
+* **Range marks kept paired.** Word reports a range mark without its partner as unreadable content (the tc-2
+  hand-off file: deleting a move's new place with Track Changes off took its `moveToRangeStart` and left the
+  `moveToRangeEnd`). `BookmarkKeep` (`KIND`, `NS`) and `BookmarkMarks.rangeMarks` (`RANGES`, `NS`) pair the four
+  move range marks (ns `'f'` and `'t'`) and `permStart/End` (ns `'p'`) by kind and `w:id`. The commands that remove
+  content through `BookmarkKeep` put back a half whose partner stays: a range deleted or typed / pasted over at top
+  level (`EditRange.deleteRange`, so Cut) or with an end in a cell (`RangeTbl.keeping`, `clear`, `backCells`), a table
+  pasted over cells (`ClipPasteTbl.overwrite`), Delete Rows / Columns (`TblEditRows.cellMarks`, `TblEditCols`), a
+  table deleted (`TblRemove`), a field result replaced (`FieldBlocks`), Accept / Reject (`RevCmd`, `keeper`); both
+  halves in the range go with it; an empty pair (a resolved move: after Accept the old place's range is empty and
+  the new place's wraps the text, after Reject the other way round; or the range left where a new place was deleted)
+  is kept. A kept block that is a mark itself (a range mark Word writes between paragraphs, in the body or a cell) is
+  a mark like a paragraph's (`BookmarkKeep.blockMark`: `inRange`, `blocksMarks`/`tableMarks`, `RangeTbl.rangeMarks`
+  via `SelShape.covered`), and so are the own marks (between rows and cells) of a table nested in a cell or row that
+  goes (`looseMarks`). Limit: marks inside a kept item taken whole (an Opaque table, a content control) go with it;
+  raw model ops (tests) bypass all this (`roundTrip({pairs: false})`, only `tables-roundtrip`'s raw-op runs). The move range
+  marks are `Kinds.UNSEEN`: drawn as nothing, stepped over by the keys, never deleted alone (Backspace / Delete), and
+  inside one's own insertion kept by a tracked deletion (`RevTrack.remove`). Documents without these marks: unchanged.
+  Tests: `movemarks.test.mjs`; `range-pairs.mjs` (`unpaired`, `partsUnpaired`) is the guard in `roundtrip-lib`
+  `roundTrip` (every burst and corpus round trip: no part under `word/` gains an unpaired mark) and in
+  `handoff-changes.mjs` (the generator stops on one).
+* **Move pairing.** The reader names no move: `RevMarks` pairs the halves by the move range marks around them
+  (`MovePairs.moveRange`; raw inlines, a table's own marks, kept XML), read in document order in each story: a
+  `moveFrom` half takes the name of the innermost open `moveFrom` range, a `moveTo` half that of the innermost
+  `moveTo` range; halves of one name are one move (`entry.move` the first partner's id). Elements are matched by
+  namespace (a drawing's `a:moveTo` is no move).
+* **Keep rule.** `Document` runs `NoteKeep`, `CommentKeep`, then `RevKeep` at the end of each step, one more op in
+  the same undo step. `RevKeep` reads what the step took from its inverses and, only for a move that lost its
+  pairing, works out the body before the step on a copy of the section and block arrays (the live Doc untouched).
+* **Accept and reject** (`RevCmd`). Accepting an insertion drops its tag; rejecting it removes the text. Accepting
+  a deletion removes the text; rejecting it drops the tag. A move resolves as a pair, whole, from either half
+  (accept: the old place's text removed, the new place's tag dropped; reject the other way): from a caret on a half,
+  or a selection holding a whole half; a selection holding only part of a half leaves the move as it is (skipped,
+  or refused when nothing else is in it). A half with no partner resolves alone. An author named 'Unknown author' is
+  one with the revisions that have none. Text is removed as `EditRange.deleteRange` removes a range in one paragraph (`RangeOps.cutOut`,
+  `BookmarkKeep.keeper` putting back the range marks whose partner stays: the document's marks walked once per
+  command, on the first part that holds any, then counted part by part, so Accept All is linear with a bookmark or
+  comment range in every revision; the same result as `stillPaired` after each part), and `NoteKeep`, `CommentKeep` and `RevKeep` mend
+  the rest in the same step. No paragraph is joined or removed (an emptied one stays). A caret passes over the text
+  the view hides; a selection takes in what it covers in any view (in Final, hidden deleted text too). Only tagged body revisions are resolved.
+* **Markup views.** The view is window state: `dw.markup` (kept on `dw.d.markup`, `'final'` at first),
+  `dw.setMarkup(mode)`. It reaches the layout as `L.markup` (`LayoutOpts`: opts', else prev's; `WinFit.newLayout`
+  passes `dw.markup`, `fit` makes a new layout when they differ; `ItemReuse.keepable` and `WebLayout` keep no lines
+  of another view). The one rule is `Kinds.hiddenRev(rev, mode)`; `hiddenSpans`, `hiddenAt`, `hiddenSpanAt`,
+  `shownRanges`, `maskHidden`, `unseenAt`, `onlyUnseen` take the mode (left out: `'final'`, what the writer, field
+  results, headings, TOC, bookmark text and paste ask). The view-following consumers: `LineTokens` (via
+  `LineLayout`/`ItemBreak`, `L.markup`), `SelMove` (also the word keys, over `maskHidden`), `Selection`
+  (`selectWord`, `text`), `EditDel` and `ChangeCase` (`d.markup`), `Find` (`opts.view`, from `EditFind`; in a view
+  other than Final a match taking in text Final hides is `inInline`: found, never replaced), `WordCount` (`L.markup`;
+  NUMWORDS has no L: Final), `Info.facts(doc, mode)` (the fonts; `!RunImage` loads the fonts of `'all'`),
+  `ClipSlice.slice(doc, sel, view)` (the plain text; the HTML and the internal paste stay Final). Raw revisions
+  (refused, outside the body) look the same in every view: a raw deletion hidden, a raw insertion shown.
+  `CommentPaint`, `Bookmarks` and `OpsText.fmtAt` stay Final.
+* **Recording** (`RevTrack`, the body only). With `w:trackRevisions` on, `Edit` (typing, overwrite, Enter,
+  line break, tab), `EditDel` (the keys, deleteSelection, Cut), `ClipPaste` (paste), `Find` (Replace, Replace
+  All), `InsertApply.putIn` and `EditRange.deleteRange` (every command that puts something in over a selection)
+  record: a deletion is the author's own insertion removed for real, text already deleted passed over, other
+  untagged text tagged `del` (marks between two stretches of it tagged with it, so one element; marks alone at an
+  edge of the range left untagged); another author's insertion, moved text (`mvTo`) and objects a tag cannot hold
+  (`OpsRevs.taggable`, whose childless marks are now the allowlist `Kinds.REV_MARKS`, which `RevRead` shares: a
+  revision holding another childless element stays raw; an inverse `setRev` is never refused) are refused; an insertion goes on the
+  author's own adjacent insertion (same tag), else a new one; put strictly inside another `ins` / `del` the part
+  after it gets a fresh id. Paragraph joins (`dry`: an edge key that would change the document), ranges across
+  paragraphs, and pasted tables, fields, pictures, links and notes are refused. Overwrite (`Edit` `overSpan`)
+  steps over the text the view hides after the caret (and, tracking, deleted text in every view: Backspace's rule)
+  and stops before more, so hidden text is never overwritten. `AutoList.afterSpace` does nothing while `RevTrack.on`
+  or when tracked text comes before the caret. Insert Hyperlink's text (`LinkFind.selInfo(doc, sel, mode)`) is the
+  selection as the view shows it; `insertLink` keeps the selection (hidden text in it) when the text given is that. Refusals throw `RevCmd.Refused`;
+  `EditRun`, `EditInput`, `EditClip`, `ClipRoute`, `FindSel`, `TblInsertBox`, `FieldUpdate` (fields, cross-references,
+  TOC) and `PicLoad` beep and say the message (`v.refused(why)`); a
+  paste refused so is never retried as plain text. Ids: `RevMarks.nextId` once a session, then one more; the largest
+  given is kept per Doc so an undo never brings an id back; null refuses (`MSG.ids`). `nextId` now also scans
+  `doc.styles` and `doc.numbering` and reads ids in single quotes or with spaces round the `=` in parts kept as bytes.
+  Formatting, lists, styles, tables, pictures and other objects stay untracked: `AppWin` gives `noticeFor`'s
+  message once per Document for a step (not `record`ed) holding `setProps`, a section or block op, a `setDocPart`
+  other than settings, or a text op putting in an object; Change case and field-result updates run inside
+  `RevTrack.plain`, so any body op of theirs counts. Enter is recorded (no notice). `d.reviewer` is set by `AppWin` (`CommentOpts.read`).
+* **Tests.** `revview.test.mjs` (the views: layout, Final as the raw rule, the keys, the consumers, painting,
+  10,000 revisions); `rev-roundtrip.test.mjs` (with `WORD_EDIT_CORPUS=1`: every revision of the corpus written back with its
+  attributes and text, each file read back the same); corpus facts in `rev-oracle.test.mjs`; ops, list, pairing,
+  ids and keep rules in `revkeep.test.mjs`; accept, reject and next / previous in `revcmd.test.mjs`; recording,
+  the switch and the notice in `revtrack.test.mjs`; the pane's rows in `changespatch.test.mjs`; the Tools items,
+  their shading and keys (no key bound twice) in `changesmenu.test.mjs`; the desktop in `word-changes.mjs`;
+  fidelity in `rev-roundtrip-corpus.test.mjs` (the no-edit pipeline in every view: every revision-family element of
+  the main part as read once the run normalisation every run gets is applied, story parts byte for byte,
+  settings.xml tree for tree; Accept All, Reject All and tracked typing saved, linted, undone to the opened bytes;
+  the oracle table pinned from the corpus; seeded 40-command bursts with ModelCheck at every step; hostile files).
+  The real-Word hand-off: `node tests/moreapps/handoff-changes.mjs` writes `tc-*.docx` and `tc-README.txt` into
+  `tests/moreapps/corpus/handoff/` (local, never committed).
+* **Keys.** Ctrl+Shift+E is Track Changes (Word's; Cmd+Shift+E on a Mac through `MacKeys`). Next / Previous Change
+  are Alt+Shift+Down / Up: Word has no key for them and its Alt+Down / Up are the notes' keys here; Alt+Shift with
+  an arrow types no character on any layout (no AltGr clash). Accept and Reject have no key. Rows of menu 'Window'
+  (`KeymapMore`), run by `DocKeys`.
+* **Find's message.** A match not replaced says why (`FindText.keptKind`: an item that is a link, else a revision
+  kept as read, else another object; no item: tracked text the view or Final hides): 'Link text is kept.', 'Text in a
+  tracked change is kept: ...' or 'Text in a field, a picture or another object is kept.'; Replace all counts each
+  (`Find.replaceAll`'s `kept {link, rev, other}`).
+* **Dates.** `RevTrack` writes `w:date` as the local clock time with a Z (as Word and the comment writer do); the
+  pane shows it as written (`CommentPatch.shortDate`, shared), or `w16du:dateUtc` in local time when the element has
+  it. Word's reading of Letters' dates is a hand-off question.
 
 ## The data model
 

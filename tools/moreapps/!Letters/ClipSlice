@@ -1,9 +1,11 @@
 // ClipSlice - a selection as clipboard blocks, for Copy and Cut.
 //
-//   slice(doc, sel) -> {blocks, ids, styleNames, styles, lists, pics,
-//     picScope, plain, notes?, comments?, commentsLost?} | null
-//   plainOf(blocks) -> the blocks as plain text
-//   paraPlain(block) -> one paragraph block as plain text
+//   slice(doc, sel, view?) -> {blocks, ids, styleNames, styles,
+//     lists, pics, picScope, plain, notes?, comments?,
+//     commentsLost?} | null  (view: the window's markup view,
+//     ./RevView, for plain; default 'final')
+//   plainOf(blocks, view?) -> the blocks as plain text
+//   paraPlain(block, view?) -> one paragraph block as plain text
 //
 // blocks (the clipboard's one block shape: ./ClipRead gives it too,
 // ./ClipClean and ./ClipPaste take it):
@@ -63,15 +65,17 @@
 //
 // plain: blocks joined by \n: a paragraph's text (a tab \t, a line
 // break \n, an inline wrapper (a link...) its text, other inline
-// items nothing, as ./Selection.text), a typed table its rows, a
-// line each, cells joined by tabs (./ClipHtmlTable tablePlain,
-// Batch C6.3), a kept block an empty line.
+// items nothing, the text the view hides (in Final deleted and
+// moved-away text) nothing, as ./Selection.text), a typed table its
+// rows, a line each, cells joined by tabs (./ClipHtmlTable
+// tablePlain, Batch C6.3), a kept block an empty line.
 //
 // Nothing is copied: blocks share runs, rPr, pPr, inlines and nodes
 // with the document (model objects never change in place: ./Model).
 // Pure: no desktop services.
 import {cut} from './OpsUtil';
 import {inlineText} from './InlineText';
+import {hiddenSpans, shownRanges} from './Kinds';
 import {collapsed} from './Selection';
 import {orderedPos, neighbour, findBlock} from './EditPos';
 import {shapeOf} from './SelShape';
@@ -89,8 +93,22 @@ import {notesOf, blocksOf} from './ClipNotes';
 import {commentsOf, blocksOf as commentBlocks, lostIn}
   from './ClipComments';
 
+/** The inlines of [x, y), keyed from x. */
+function shifted(inlines, x, y) {
+  const out = {};
+  for (const k of Object.keys(inlines || {})) {
+    if (+k >= x && +k < y) out[+k - x] = inlines[k];
+  }
+  return out;
+}
+
 /** See the header. */
-export function paraPlain(b) {
+export function paraPlain(b, view) {
+  if (hiddenSpans(b, view).length) {
+    return shownRanges(b, 0, b.text.length, view).map(([x, y]) =>
+      paraPlain({text: b.text.slice(x, y), runs: [],
+        inlines: shifted(b.inlines, x, y)})).join('');
+  }
   const s = b.text;
   if (!s.includes('\ufffc')) return s;
   return s.replace(/\ufffc/g, (m, i) => {
@@ -99,8 +117,9 @@ export function paraPlain(b) {
 }
 
 /** See the header. */
-export const plainOf = (blocks) => blocks.map((b) => (b.type === 'p'
-  ? paraPlain(b) : b.type === 'tbl' ? tablePlain(b, nodeText)
+export const plainOf = (blocks, view) => blocks.map((b) => (b.type ===
+  'p' ? paraPlain(b, view) : b.type === 'tbl'
+    ? tablePlain(b, nodeText, view)
     : '')).join('\n');
 
 /** The block for [a, e) of paragraph p. */
@@ -176,7 +195,7 @@ function range(doc, o, sh, blocks, ids) {
 }
 
 /** See the header. */
-export function slice(doc, sel) {
+export function slice(doc, sel, view) {
   if (!sel || collapsed(sel)) return null;
   const o = orderedPos(doc, sel);
   if (!o) return null;
@@ -195,7 +214,7 @@ export function slice(doc, sel) {
   const out = {blocks, ids, styleNames: namesOf(doc, all),
     styles: sourceStyles(doc, tableStyleIds(all)),
     lists: numsOf(doc, all), pics: picsOf(doc, blocks),
-    picScope: docMap(doc), plain: plainOf(blocks)};
+    picScope: docMap(doc), plain: plainOf(blocks, view)};
   if (notes.length) out.notes = notes;
   if (cmts.length) out.comments = cmts;
   const lost = lostIn(doc, blocks);

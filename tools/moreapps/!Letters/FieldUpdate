@@ -51,7 +51,11 @@
 //   shows what was stored, even when nothing changed.
 // Imports no desktop services.
 // updateCtx is used inside this module only (not exported).
+// Track Changes on: a field's result is updated untracked (./RevTrack
+// plain: the one-time notice); an insertion refused by tracking
+// (./RevCmd Refused) beeps and says why, nothing changed.
 import {updateCmd, insertFieldCmd, editCodeCmd} from './FieldCmd';
+import {Refused} from './RevCmd';
 import {run as passes, summaryText} from './FieldPasses';
 import {tocFields} from './TocUpdate';
 import {pageOn} from './FieldShow';
@@ -59,6 +63,7 @@ import {settle} from './ViewPass';
 import {Pages} from './Pages';
 import {printGalley} from './PageHF';
 import {dropPending} from './EditFormat';
+import {plain} from './RevTrack';
 
 /** See the header. */
 function updateCtx(dw) {
@@ -107,7 +112,15 @@ function run(dw, fn) {
   v.ensure();
   dropPending(v);
   const ctx = updateCtx(dw);
-  const out = v.typing.command(() => fn(v.d, v.sel, ctx));
+  let out;
+  try {
+    out = v.typing.command(() => fn(v.d, v.sel, ctx));
+  } catch (e) {
+    // (Track Changes refused it: ./RevTrack; nothing changed)
+    if (!(e instanceof Refused)) throw e;
+    v.refused(e.message);
+    return false;
+  }
   if (out === null) {
     v.refused();
     return false;
@@ -130,14 +143,15 @@ function stamp(dw, now) {
 }
 
 /** See the header. */
-export const updateField = (dw) => run(dw, updateCmd);
+export const updateField = (dw) => run(dw, (d, sel, ctx) =>
+  plain(d, () => updateCmd(d, sel, ctx)));
 
 /** See the header. */
 export function updateAll(dw) {
   dw.fieldUpdate = null;
   if (dw.view.hdr) return false;
   return run(dw, (d, sel, ctx) => {
-    const r = passes(d, ctx, sel);
+    const r = plain(d, () => passes(d, ctx, sel));
     const noPages = !paged(dw) && tocFields(d.doc).length > 0;
     dw.fieldUpdate = {passes: r.passes, changed: r.changed,
       updated: r.updated, messages: r.messages,

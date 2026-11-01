@@ -36,6 +36,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {readDocx, DocxError}
   from '../../tools/moreapps/!Letters/DocxRead';
+import {Refused} from '../../tools/moreapps/!Letters/RevCmd';
 import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
@@ -473,7 +474,11 @@ export async function noteStory(d, seed) {
     const at = S.select({id: del.b.id, off: del.off},
       {id: del.b.id, off: del.off + 1});
     const had = d.undoDepth;
-    deleteSelection(d, at);
+    try {
+      deleteSelection(d, at);
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e;   // (tracking: a mark kept)
+    }
     did('delete a mark', d.undoDepth > had);
   }
   // a custom mark on the first footnote mark left
@@ -516,9 +521,13 @@ export async function noteStory(d, seed) {
       {id: pm.b.id, off: pm.off + 1}));
     const end = last();
     const had = d.undoDepth;
-    if (s && end) {
-      pasteBlocks(d, S.caret({id: end.id, off: end.text.length}),
-        s.blocks, optsOf(s, true));
+    try {
+      if (s && end) {
+        pasteBlocks(d, S.caret({id: end.id, off: end.text.length}),
+          s.blocks, optsOf(s, true));
+      }
+    } catch (e) {
+      if (!(e instanceof Refused)) throw e;   // (tracking: no mark)
     }
     did('paste a marked slice', d.undoDepth > had);
   }
@@ -633,7 +642,13 @@ function command(rd, d, t, k) {
     const s = cut ? cutSelection(d, sel).slice : slice(d.doc, sel);
     if (!s) return 'none';
     const to = randSel(rd, d.doc);
-    if (to) pasteBlocks(d, to, s.blocks, optsOf(s, true));
+    try {
+      if (to) pasteBlocks(d, to, s.blocks, optsOf(s, true));
+    } catch (e) {
+      // (tracking refused the paste, after the cut: a step of its own)
+      if (!(e instanceof Refused)) throw e;
+      return cut ? 'cut, paste tracked out' : 'paste refused';
+    }
     return d.undoDepth > had ? (cut ? 'cut/paste' : 'copy/paste')
       : 'paste refused';
   }
@@ -657,6 +672,7 @@ export async function notesAll(d, seed, {every = false} = {}) {
     if (Date.now() - t0 > BURST_MS) break;
     let kind = '?';
     const depth = d.undoDepth;
+    const sid = d.stateId;
     try {
       kind = command(rd, d, t, k);
       if (kind.endsWith(' refused')) {
@@ -674,6 +690,11 @@ export async function notesAll(d, seed, {every = false} = {}) {
         }
       }
     } catch (e) {
+      if (e instanceof Refused) {   // (tracking: nothing done)
+        assert.equal(d.undoDepth, depth, 'refused: no step');
+        assert.equal(d.stateId, sid, 'refused: unchanged');
+        continue;
+      }
       e.message = `seed ${seed} step ${k} (${kind}): ${e.message}`;
       throw e;
     }
