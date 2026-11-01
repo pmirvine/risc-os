@@ -4889,6 +4889,120 @@ document" above), so a regression of 5 to 10 ms would pass the suite (final-2 M1
   docProps parts as Word does). Round 2 adds a bisect set (`2-bisect/2a`...`2k`: one feature per file, Word-like
   packages, plus controls with one part typed `application/xml` each) to confirm the cause in Word.
 
+### Checking files in real Word (`tools/word-open-check.mjs`)
+
+Real Word is the only authority on whether a file is valid: it refuses things no schema check catches (a
+`w:moveFrom` holding `w:delText`, an unpaired range mark, a part typed `application/xml`). On a Mac with Microsoft
+Word 16 installed, the checker opens files in it by AppleScript, read-only, and closes them again:
+
+    node tools/word-open-check.mjs tests/moreapps/corpus/handoff          # a dir: every .docx under it, sorted
+    node tools/word-open-check.mjs --report r.jsonl --resume a.docx dir/  # results kept per file; resumable
+    node tools/word-open-check.mjs --corpus            # the corpus: originals and our re-saves (below)
+
+One line per file (`OK`, `REFUSED`, `TIMEOUT`, `COLLATERAL`, `HUNG`, `SKIPPED`), a tally, and a line saying Word
+has the same documents open as at the start; exit 0 when every file is `OK` or `SKIPPED`, 2 when the run stopped.
+Options: `--limit N`, `--shuffle-seed N`, `--timeout S` (40), `--only-fail`, `--diagnose` (a `REFUSED` file is
+also tried in Word's repair mode; any window that makes is closed), `--no-probe`, `--retry-hung`, `--kill-hung`.
+Word not running is launched (`tell application`), its first answer and first open given 180 s (after a force
+quit it may offer to reopen or recover documents: answer it).
+
+* **`OK`**: Word opened it. **`REFUSED`**: Word would not (it says nothing: no document appears). That is Word's
+  verdict, ground truth: fix the writer, not the check. **`TIMEOUT`**: Word did not open it (an error, an
+  AppleEvent timeout, or the 40 s watchdog) but still answers a trivial request (`count of documents`, 15 s): a
+  dialog is probably up in Word, most likely for this file; `--resume` checks it again. **Once a dialog is up,
+  every later open times out until someone dismisses it**, so after a `TIMEOUT` the next file is not opened
+  until Word is pinged and the probe opened with a 10 s wait: if that fails the run stops at once ("a dialog for
+  <file> is probably waiting in Word; dismiss it, then rerun with --resume"), naming the file that timed out
+  first. A ping that comes back with an error (Word answering, its object model not: a modal dialog) stops it
+  too. **`COLLATERAL`**: a `TIMEOUT` straight after another with no open in between (only without the probe):
+  blamed on the first, listed apart, checked again on resume. Three `TIMEOUT`s in a row stop the run (the
+  fallback).
+  **`HUNG`**: the open timed out and Word answers nothing at all ("not responding"): a Word-side problem with
+  this file, not necessarily ours (open-xml-sdk's `mcdoc.docx`, `mcinleaf.docx`). Settled (`--resume` keeps it;
+  `--retry-hung` checks it again). The run stops at once (exit 2): force quit Word, then run again with
+  `--resume`. With `--kill-hung`, and only if Word had no documents open when the run started, the tool kills
+  Word itself (SIGTERM, then SIGKILL: nothing asks), launches it again, opens the probe and goes on; Word is never
+  killed otherwise. **`SKIPPED`**: not opened, because Word prompts on opening it (by design; settled, listed in
+  the summary, never fails a run; each run's start lists these): not a zip (an encrypted or legacy OLE
+  container: Word asks for a password or converts), `w:writeProtection` in the settings part (Word asks whether to
+  open read-only), `w:mailMerge` there (Word asks about the data source), a part over 20 MB unzipped (a hostile
+  size: Word works on it for minutes, not answering). `w:documentProtection`, even with a
+  password hash, is opened: Word asks only when you unprotect.
+* **Clean-up.** Each run starts and ends by closing any `check.docx` in Word (a document that does not answer is
+  passed over). One that will not close (its dialog is still up) stops the run before anything is opened: opening
+  `check.docx` again would only bring that window forward, and every file would read as `REFUSED`.
+* **The one-time grant.** Word is sandboxed. Every file is copied in place over one fixed file,
+  `$HOME/word-open-check/check.docx` (`WORD_CHECK_DIR` moves it): never delete it, the grant is tied to it. The
+  first open ever may ask for file access: choose that `check.docx` and Grant Access (the first open waits 120 s;
+  `.opened-once` beside it records that one has opened). Each run first opens a minimal known-good probe, so a
+  missing grant stops the run instead of reading as `REFUSED`.
+* Only documents named `check.docx` are closed; Word is never quit and the owner's documents are left alone.
+* **`--corpus`**: every file under `tests/moreapps/corpus/` but `handoff/` (check that as a dir) and `word-check/`,
+  files over 20 MB `SKIPPED`: the original, then `readDocx` + `writeDocx` (no edit, as `roundtrip-lib.mjs`'s
+  `write`) and the re-save. `REGRESSION`: Word opens the original but not our re-save, or the writer threw;
+  `RESAVE-HUNG`: Word opens the original, our re-save hangs it (a regression too: exit 1); `INPUT-REFUSED` /
+  `INPUT-HUNG`: Word refuses / hangs on the original itself; `READER-REFUSED` / `READER-ERROR`: our reader would
+  not read it; `SKIPPED`: over 20 MB, or prompts (above); `UNSETTLED` (a `TIMEOUT`; the first of a stall marked
+  as probably the prompt) and `COLLATERAL` are listed apart. Reports in `tests/moreapps/corpus/word-check/`
+  (`corpus-report.jsonl`, `corpus-summary.txt`); every run resumes from the report (a stopped run included:
+  settled files are kept, `TIMEOUT`s and `COLLATERAL`s checked again), `--rerun-resaves` re-checks only the re-saves (after a
+  writer change).
+* **`WORD_EMIT`**: `tests/moreapps/word-emit.mjs` `emit(name, bytes, {broken})` writes a test's document to
+  `tests/moreapps/word-check-out/emitted/` (git-ignored; or `WORD_EMIT=<dir>`); a no-op without `WORD_EMIT`, never
+  throws. **Never inside `tests/moreapps/corpus/`**: the corpus walkers would read the emitted files and the round
+  trips emit their outputs again (a feedback loop: 11,000 files and every corpus pin changed); a name that says it
+  came from the emit root is not emitted either. A sample, not everything: once per content; per stem (the name
+  without trailing digits / hex: one corpus file's round trips; for `buildDocx` the test file and line building
+  it) at most `WORD_EMIT_STEM_MAX` (6): the first, then only variants of a size not yet kept (~10 % buckets), and
+  once full a variant over 10 % larger than the largest replaces the latest kept one; at most `WORD_EMIT_MAX`
+  (1500) in all. The caps hold for the whole run (every test process reads the shared `index.jsonl`), so with the
+  default cap the test files the runner reaches last emit little: raise `WORD_EMIT_MAX` for a full sweep.
+  `index.jsonl` records each file's producing test (`file:line`), its `name` (`what`), `broken` and its reason.
+  `roundTrip` emits each round trip's saved result (`{from}` its input), `buildDocx` its fixture. A document built
+  broken on purpose says so: `buildDocx(parts, {broken: 'why'})`, or `markBroken(bytes, 'why')` on what a helper
+  returned; a round trip of it inherits the mark. Then `WORD_EMIT=1 node --test tests/moreapps/` and
+  `node tools/word-open-check.mjs --emitted`: every non-OK file is shown with its producing test, `REFUSED` split
+  into `EXPECTED` (broken on purpose), `INPUT-REFUSED` (a round trip of a corpus file whose original Word refuses,
+  from the corpus and hand-off reports) and `UNEXPECTED` (a finding: exit 1); a broken one that opens is a `NOTE`;
+  report `tests/moreapps/word-check-out/emitted-report.jsonl` (resumed), summary `emitted-summary.txt` beside it.
+  Note that an `UNEXPECTED` `buildDocx` fixture is a test input, not our writer's output: many unit fixtures are
+  not complete documents; a round trip's output (named by its `what`) is the writer's. `build-docx.mjs` types
+  every part Word knows by name (notes, comments and their companions `commentsExtended`, `commentsIds`,
+  `commentsExtensible`, `people`, headers, footers, the theme) and gives media parts (emf, wmf, jpeg, gif, bmp,
+  tiff, svg, bin) their Default: Word refuses such a part typed `application/xml` or untyped. Fixtures that are
+  minimal on purpose say so with `broken: 'minimal: ...'`, hostile ones `broken: 'hostile: ...'`. Bisected in
+  Word 16 for Mac (each refused, one feature at a time): a note or comment mark with no note / comment (or no
+  notes part), one footnote marked twice, separator note ids in the settings with no notes part, a
+  `w:headerReference` or `w:hyperlink` r:id with no relationship, a `w:drawing` with no graphic or an empty
+  `pic:pic`, more than 64 tab stops in a paragraph; a table with no `tblPr` / `tblGrid` and an empty styles
+  part open.
+  **Rule: a test helper that writes a .docx calls `emit()`, and a deliberately broken one passes `broken`.**
+* Tests: `word-open-check.test.mjs` (a fake osascript runner; Word is never touched), and with `WORD_REAL=1` one
+  real-Word test: a minimal document `OK`, a `w:moveFrom` holding `w:delText` `REFUSED`.
+
+### Refused hand-off files (bisected in real Word)
+
+A checker sweep of `corpus/handoff` found two files meant to open that Word 16 for Mac refused. Both were bisected
+with the checker, one part or element changed per variant; neither was the writer's doing:
+
+* **`st-6-themefont`: an incomplete theme.** `handoff-styles.mjs` made its theme part by hand, with only six
+  colours and no `a:fmtScheme`. Word refuses a theme without all twelve colours (`accent3`..`folHlink`) and refuses
+  one without `a:fmtScheme`: each alone, on the fixture and on a real Word theme with that piece cut out. xmllint
+  (`dml-main.xsd`, through `schemaChecker`) reports exactly those two, and nothing for every variant Word opened, so
+  for themes the schema says what Word says. The fixture now has the twelve colours and a minimal `a:fmtScheme`
+  (three of each style list); the generator stops on a theme with any schema message.
+* **`nl-4-existing-part`: an input Word refuses.** It extends `open-xml-sdk/.../bullet/bullet-simple1.docx`, which
+  Word refuses itself (`INPUT-REFUSED` in the corpus report). Word refuses any numbering part with two or more
+  `w:numPicBullet` (VML picture bullets), whatever they hold: two identical copies of a bullet that opens alone are
+  refused, a lone one opens with any id, and the image, the shape type and `o:lock` make no difference. All eight
+  corpus files with picture bullets agree (seven with 2-5 refused, `landScape.docx` with one opens). (Older Word for
+  Windows wrote these files; whether it opens them is not known.) The writer keeps them as read; dropping them would
+  lose the bullets and still not make the original open. nl-4 now extends `bullet-symbol.docx`, which Word opens
+  both as the original and as our re-save; the generator refuses a source with two or more picture bullets.
+
+Guards: `handoff-xsd.test.mjs` checks every hand-off file (every batch) for a theme part with a schema message (the
+Strict root aside) and for a numbering part with two or more `w:numPicBullet`.
+
 ### Verified in real Word
 
 The owner opened round 2's bisect controls in real Microsoft Word:

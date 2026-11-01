@@ -143,7 +143,8 @@ describe('DocxWrite: package', () => {
         '<Default Extension="jpeg" ContentType="image/jpeg"/></Types>';
       const doc = await fromXml(p(r('x')), {'[Content_Types].xml': ct,
         'word/media/image1.png': png, 'word/media/image2.jpeg': jpg,
-        'word/embeddings/oleObject1.bin': bin, 'word/odd': bin});
+        'word/embeddings/oleObject1.bin': bin, 'word/odd': bin},
+      {broken: 'hostile: a part with no extension and no content type'});
       const bytes = await write(doc);
       const z = await entries(bytes);
       assert.deepEqual(z.get('word/media/image1.png'), png);

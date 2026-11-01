@@ -6,6 +6,7 @@ import {pictureOf, docMap, PIC_SCOPE, EMU_PX, MAX_EXT}
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {parseXml} from '../../tools/moreapps/!WimpLib/Xml';
 import {drawingXml, picDocx, URIS} from './pic-fixtures.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const node = (xml) => parseXml(xml).root;
 const pic = (opts, map) => pictureOf(node(drawingXml(opts)), map);
@@ -175,10 +176,10 @@ describe('PicRead', () => {
   });
 
   it('strict percent srcRect', async () => {
-    const doc = await readDocx(await picDocx({strict: true, pics: [
+    const doc = await readDocx(markBroken(await picDocx({strict: true, pics: [
       {srcRect: {l: '12.5%', t: '-5%', r: '0.001%'}},
       {srcRect: {l: '60%', r: '50%'}}, {srcRect: {l: '12.5'}},
-      {srcRect: {l: '1e2%'}}]}));
+      {srcRect: {l: '1e2%'}}]}), 'hostile: crop values that are not valid'));
     const m = docMap(doc);
     const [a, b, c, d] = doc.sections[0].blocks.map((x) =>
       pictureOf(x.inlines[0].node, m));

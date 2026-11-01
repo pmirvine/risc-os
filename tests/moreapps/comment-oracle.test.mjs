@@ -38,7 +38,8 @@ describe('comment facts', () => {
         p(cs(1) + ce(1)) + p(r('x') + ce(7))),
       'word/comments.xml': cm(0, 1, 2),
       'word/commentsExtended.xml': ext([0, 0, 0], [1, 0, 1],
-        [2, 0, 0])});
+        [2, 0, 0])},
+    {broken: 'hostile: a range end and a reference for a comment that is not there'});
     const f = await factsOf(a);
     assert.equal(f.comments, 3);
     assert.equal(f.multiPara, 1);
@@ -63,7 +64,8 @@ describe('comment facts', () => {
       'word/commentsExtended.xml': ext([0, 0, 0], [1, 0, 0]
         ).replace('P1" w15:done="0"', 'P1" w15:paraIdParent="P0"' +
         ' w15:done="true"'),
-      'word/people.xml': '<w15:people xmlns:w15="' + MSW + '"/>'});
+      'word/people.xml': '<w15:people xmlns:w15="' + MSW + '"/>'},
+    {broken: 'minimal: a table with no tblPr / tblGrid, an sdt with no sdtPr (not bisected)'});
     const f = await factsOf(b);
     assert.equal(f.inTable, 1);
     assert.equal(f.opaque, 1);

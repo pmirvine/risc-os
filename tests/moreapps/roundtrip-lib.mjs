@@ -68,6 +68,7 @@ import {partsUnpaired} from './range-pairs.mjs';
 import {partsMisplaced} from './text-context.mjs';
 import {assertSameDoc, expectedBack, withNewParts, sameBytes, sameTree}
   from './docx-compare.mjs';
+import {emit} from './word-emit.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 export const write = (doc) => writeDocx(doc, {date: DATE});
@@ -359,6 +360,8 @@ export async function roundTrip(bytes, what, seed, change,
   const st = await change(d, seed, {every});
   // the changed model round-trips
   const out1 = await write(d.doc);
+  // (the saved result, for the real-Word checker: word-emit.mjs)
+  emit(what, out1, {from: bytes});
   const back = await readDocx(out1, read);
   const want = withNewParts(expectedBack(d.doc), back);
   // (a changed story is checked through its blocks, compared in full

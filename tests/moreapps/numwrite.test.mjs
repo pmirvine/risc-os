@@ -25,6 +25,7 @@ import {strictDocx} from './docx-fixtures.mjs';
 import {listDocx, NUMBERING, lvl} from './list-fixtures.mjs';
 import {entryText} from './docx-compare.mjs';
 import {schemaChecker} from './roundtrip-lib.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 const write = (doc) => writeDocx(doc, {date: DATE});
@@ -441,8 +442,9 @@ describe('NumWrite: labels and the round trip', () => {
 
   it('Word\'s part extended: old children written as they were',
     async () => {
-      const d = await readDocx(await listDocx([p(r('x'))],
-        {numbering: WORD}));
+      const d = await readDocx(markBroken(await listDocx([p(r('x'))],
+        {numbering: WORD}), 'minimal: a numPicBullet with an empty w:pict, ' +
+        'an abstractNum only in mc:Choice (not bisected)'));
       const oldKids = d.numbering.raw.children.slice();
       makeList(d, 'A.');
       const xml = await entryText(await write(d), 'word/numbering.xml');

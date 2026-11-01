@@ -9,6 +9,7 @@ import {usedDocPrIds, freshDocPrId}
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {p} from './build-docx.mjs';
 import {drawingXml, picDocx} from './pic-fixtures.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const MC = 'http://schemas.openxmlformats.org/markup-compatibility/2006';
 const run = (o) => '<w:r>' + drawingXml({decl: false, ...o}) + '</w:r>';
@@ -18,7 +19,12 @@ const HDR = (ids) => enc('<?xml version="1.0"?><w:hdr xmlns:w="x" ' +
   `name="P"/><docPr\tid="${n + 1}"/></w:p>`).join('') + '</w:hdr>');
 
 async function load(body = '') {
-  return readDocx(await picDocx({pics: [{id: 3}], body}));
+  const bytes = await picDocx({pics: [{id: 3}], body});
+  // (a body picture's r:embed has no relationship: Word refuses the file)
+  if (/r:embed/.test(body)) {
+    markBroken(bytes, 'minimal: a picture whose r:embed has no relationship');
+  }
+  return readDocx(bytes);
 }
 
 const withParts = (doc, add) => {

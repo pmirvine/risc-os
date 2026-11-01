@@ -179,7 +179,7 @@ describe('convertNote: this note', () => {
   it('refused: no mark by the caret, a broken mark, a header',
     async () => {
       const {d, t} = await setup(noteDoc(p(r('ab') + mark(7) +
-        mark(1)), {1: noteP('one')}));
+        mark(1)), {1: noteP('one')}, {broken: 'hostile: a note mark with no note'}));
       const depth = d.undoDepth;
       let out = convertNote(d, t, S.caret(at(para(d), 1)), 'this');
       assert.equal(out.changed, 0);

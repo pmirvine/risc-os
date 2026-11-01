@@ -463,7 +463,7 @@ describe('a loaded document with huge values', () => {
         '"/></w:tblGrid><w:tr><w:tc><w:tcPr><w:gridSpan w:val="' + v +
         '"/></w:tcPr><w:p/></w:tc></w:tr></w:tbl><w:p/>';
       const bytes = await buildDocx({'word/document.xml':
-        documentXml(body)});
+        documentXml(body)}, {broken: 'hostile: huge attribute values'});
       const t = performance.now();
       const doc = await readDocx(bytes);
       const took = performance.now() - t;

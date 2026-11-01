@@ -12,6 +12,7 @@ import {buildDocx, documentXml, stylesXml, p, r, REL, CT_NS}
   from './build-docx.mjs';
 import {FIXTURES} from './docx-fixtures.mjs';
 import {lintPackage} from './lint-package.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 const write = (doc) => writeDocx(doc, {date: DATE});
@@ -72,7 +73,8 @@ const key = (x) => x.rule + ' ' + x.part + ' ' + x.detail;
 describe('DocxWrite: content types of known parts', () => {
   it('a footnotes part and core properties typed application/xml ' +
     'get their own types', async () => {
-    const {typeOf, out} = await writtenTypes(await notesDocx(types()));
+    const {typeOf, out} = await writtenTypes(markBroken(await notesDocx(types()),
+      'hostile: parts typed application/xml'));
     assert.equal(typeOf('word/footnotes.xml'), WML + 'footnotes+xml');
     assert.equal(typeOf('docProps/core.xml'),
       OX + 'package.core-properties+xml');
@@ -104,7 +106,8 @@ describe('DocxWrite: content types of known parts', () => {
       const ct = types('<Override PartName="/word/footnotes.xml" ' +
         'ContentType="application/xml"/><Override PartName="/docProps/' +
         'core.xml" ContentType="text/xml"/>');
-      const {typeOf, overrides} = await writtenTypes(await notesDocx(ct));
+      const {typeOf, overrides} = await writtenTypes(markBroken(await notesDocx(ct),
+        'hostile: parts typed application/xml and text/xml'));
       assert.equal(typeOf('word/footnotes.xml'), WML + 'footnotes+xml');
       assert.equal(typeOf('docProps/core.xml'),
         OX + 'package.core-properties+xml');
@@ -118,7 +121,8 @@ describe('DocxWrite: content types of known parts', () => {
     async () => {
       const ct = types('<Override PartName="/word/footnotes.xml" ' +
         'ContentType="application/x-own+xml"/>');
-      const {typeOf, out} = await writtenTypes(await notesDocx(ct));
+      const {typeOf, out} = await writtenTypes(markBroken(await notesDocx(ct),
+        'hostile: footnotes typed application/x-own+xml'));
       assert.equal(typeOf('word/footnotes.xml'), 'application/x-own+xml');
       assert.deepEqual(errors(out).map((x) => x.rule), ['ct-wrong']);
     });
@@ -185,7 +189,7 @@ describe('lintPackage', () => {
           `<Relationship Id="a" Type="${REL('styles')}" Target="styles.xml"/>` +
           `<Relationship Id="a" Type="${REL('hyperlink')}" Target="x" ` +
           'TargetMode="External"/></Relationships>',
-      }));
+      }, {broken: 'hostile: orphan Override, duplicate rel ids, unresolved r:id'}));
       assert.deepEqual(errors(zip).map((x) => x.rule).sort(),
         ['ct-orphan', 'rel-id-dup', 'rid-unresolved']);
     });

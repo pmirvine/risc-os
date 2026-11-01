@@ -79,7 +79,9 @@ describe('note marks write back as before', () => {
     for (const [k, body] of Object.entries(SYN)) {
       const bytes = await buildDocx({'word/document.xml':
         documentXml(body), 'word/header1.xml': HDR},
-      {docRels: [['rIdH1', REL('header'), 'header1.xml']]});
+      {docRels: [['rIdH1', REL('header'), 'header1.xml']],
+        broken: /<w:(foot|end)noteReference/.test(body) &&
+          'minimal: note marks with no notes part'});
       const res = await compare(bytes, k);
       assert.deepEqual(res.fails, []);
       assert.equal(res.hdr, 1);

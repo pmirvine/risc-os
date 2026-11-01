@@ -296,7 +296,7 @@ const MORE = [
     p(bs(1, 'Mark') + r('Marked text') + be(1)) +
     p('<w:hyperlink r:id="rId77"><w:r><w:t>no rel</w:t></w:r>' +
       '</w:hyperlink>' + r(' tail')),
-  {}, {docRels: HREL})],
+  {}, {docRels: HREL, broken: 'hostile: a hyperlink r:id with no relationship'})],
   ['a document with its own Hyperlink style', doc(
     p(r('A ') + link('rId9', 'link') + r(' B')) + p(r('Heading'),
       '<w:pStyle w:val="Heading1"/>') + p(r('Plain text here')),

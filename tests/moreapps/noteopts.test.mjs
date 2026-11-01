@@ -21,7 +21,10 @@ async function load(settings, sect = '') {
   const parts = {'word/document.xml': documentXml(p(r('x')) + sect)};
   if (settings !== null) parts['word/settings.xml'] =
     settingsXml(settings);
-  return readDocx(await buildDocx(parts, {docRels: settings === null
+  // (separator note ids with no notes part: Word refuses the file)
+  const broken = /<w:(foot|end)note w:id/.test(settings || '') &&
+    'minimal: separator note ids in the settings, no notes part';
+  return readDocx(await buildDocx(parts, {broken, docRels: settings === null
     ? [] : [['rIdS', 'http://schemas.openxmlformats.org/' +
       'officeDocument/2006/relationships/settings', 'settings.xml']]}));
 }

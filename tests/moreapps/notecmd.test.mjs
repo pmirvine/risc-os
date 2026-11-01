@@ -206,7 +206,8 @@ describe('insertNote refused (whyNot says why; nothing changed)',
       mark(1))), 'word/footnotes.xml': '<w:footnotes xmlns:w="' +
       W_NS + '"><w:footnote w:id="1"><broken'};
     const doc = readDocx(await buildDocx(parts, {docRels:
-      [['rIdN1', REL('footnotes'), 'footnotes.xml']]}));
+      [['rIdN1', REL('footnotes'), 'footnotes.xml']],
+      broken: 'hostile: a notes part that cannot be read'}));
     const {d, t} = await setup(doc);
     assert.equal(noteState(d.doc, 'footnotes'), 'unknown');
     refused(d, t, S.caret(at(para(d), 0)), F, /could not be read/);

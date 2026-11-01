@@ -346,7 +346,8 @@ describe('the marks that are not pasted', () => {
       mark(1))), 'word/footnotes.xml': '<w:footnotes xmlns:w="' +
       W_NS + '"><w:footnote w:id="1"><broken'};
     const d = new Document(await readDocx(await buildDocx(parts,
-      {docRels: [['rIdN1', REL('footnotes'), 'footnotes.xml']]})));
+      {docRels: [['rIdN1', REL('footnotes'), 'footnotes.xml']],
+        broken: 'hostile: a notes part that cannot be read'})));
     assert.equal(noteState(d.doc, 'footnotes'), 'unknown');
     const report = {};
     pasteBlocks(d, S.caret(at(para(d), 1)), s.blocks,

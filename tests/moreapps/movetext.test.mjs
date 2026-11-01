@@ -43,6 +43,7 @@ import {misplaced, newlyMisplaced, partsMisplaced}
   from './text-context.mjs';
 import {revEls} from './rev-canon.mjs';
 import {CORPUS, SKIP_CORPUS} from './roundtrip-lib.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 const NOW = new Date(2025, 0, 2, 3, 4, 5);
@@ -131,7 +132,8 @@ describe('move text: read', () => {
       ['del/t', el('del', 4, run('old'))],
     ]) {
       const body = para(run('a ') + inner + run(' b'));
-      const bytes = await bytesOf(body);
+      const bytes = markBroken(await bytesOf(body), 'hostile: ' + what +
+        ' (Word refuses delText outside a w:del, t inside one)');
       const doc = await readDocx(bytes);
       const p = blocks(doc)[0];
       assert.ok(p.runs.every((r) => !r.rev), what + ': not tagged');
@@ -274,8 +276,8 @@ describe('move text: the text-context guard', () => {
         ['delText outside w:del: 1 (was 0)']);
       assert.deepEqual(newlyMisplaced(part(para(el('del', 1,
         run('x')))), part('')), ['t inside w:del: 1 (was 0)']);
-      const z = await readZip(await bytesOf(para(mvFrom(1, 'x',
-        'w:delText'))));
+      const z = await readZip(markBroken(await bytesOf(para(mvFrom(1, 'x',
+        'w:delText'))), 'hostile: w:delText in a w:moveFrom'));
       assert.deepEqual(partsMisplaced(z), ['word/document.xml: ' +
         'delText outside w:del: 1 (was 0)']);
       assert.deepEqual(partsMisplaced(z, z), []);

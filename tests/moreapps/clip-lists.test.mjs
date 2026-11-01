@@ -19,6 +19,7 @@ import {sourceDocx, open, copyPaste, labelTexts, state}
   from './clip-lists-docs.mjs';
 import {write, schema} from './roundtrip-lib.mjs';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
+import {markBroken} from './word-emit.mjs';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const xml = (s) => parseXml(s).root;
@@ -97,8 +98,8 @@ describe('ClipNums: very wide definitions (review 1)', () => {
   it('300,000 lvlOverride children: left out, Copy never throws',
     async () => {
       const wide = '<w:lvlOverride w:ilvl="9"/>'.repeat(300000);
-      const src = await open(await srcOf(numberingXml(abs(0, lvl(0)) +
-        num(1, 0) + num(2, 0, wide)), [2, 1]));
+      const src = await open(markBroken(await srcOf(numberingXml(abs(0, lvl(0)) +
+        num(1, 0) + num(2, 0, wide)), [2, 1]), 'hostile: 300,000 lvlOverride children'));
       const {slice} = await import(
         '../../tools/moreapps/!Letters/ClipSlice');
       const s = slice(src.doc, SEL(src, 0, 0, 2, 0));
@@ -250,7 +251,8 @@ describe('L6 hostile pastes', () => {
       'w:ilvl="12"/></w:num>')
       .replace('<w:numbering ', '<w:numbering xmlns:w15="http://' +
         'schemas.microsoft.com/office/word/2012/wordml" ');
-    const src = await open(await srcOf(N, [1, 1]));
+    const src = await open(markBroken(await srcOf(N, [1, 1]),
+      'hostile: lvlOverride repeated and for level 12'));
     const dst = mk(['']);
     copyPaste(src, SEL(src, 0, 0, 2, 0), dst, C(dst, 0, 0));
     assert.deepEqual(labelTexts(dst), ['4)', '5)', null]);

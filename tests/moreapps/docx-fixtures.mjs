@@ -63,7 +63,7 @@ export const strictDocx = () => buildDocx({
     '</w:style>', {ns: STRICT_W_NS}),
   'word/settings.xml': settingsXml('<w:zoom w:percent="90"/>',
     {ns: STRICT_W_NS}),
-}, {strict: true});
+}, {strict: true, broken: 'minimal: an empty pic:pic in a drawing (Word refuses it)'});
 
 export const FIXTURES = [
   ['minimal', doc(p(r('Hello')))],
@@ -102,11 +102,13 @@ export const FIXTURES = [
     '<w:br w:type="column"/><w:br w:clear="all"/></w:r>'))],
   ['run-level raw', doc(p('<w:r><w:rPr><w:b/></w:rPr><w:t>a</w:t>' +
     '<w:drawing><wp:inline xmlns:wp="x"/></w:drawing><w:t>b</w:t>' +
-    '<w:fldChar w:fldCharType="begin"/><w:sym w:char="F04A"/></w:r>'))],
+    '<w:fldChar w:fldCharType="begin"/><w:sym w:char="F04A"/></w:r>'), {},
+  {broken: 'hostile: a drawing in a foreign namespace, a field never ended'})],
   ['hyperlink', doc(p(r('See ') +
     '<w:hyperlink r:id="rId9"><w:r><w:t>the </w:t></w:r>' +
     '<w:r><w:rPr><w:b/></w:rPr><w:t>link</w:t></w:r></w:hyperlink>' +
-    r('.')))],
+    r('.')), {}, {docRels: [['rId9', REL('hyperlink'), 'https://example.com/',
+    'External']]})],
   ['fldSimple bookmarks', doc(p('<w:bookmarkStart w:id="0" ' +
     'w:name="bm"/><w:fldSimple w:instr=" PAGE "><w:r><w:t>1</w:t>' +
     '</w:r></w:fldSimple><w:bookmarkEnd w:id="0"/>'))],
@@ -125,7 +127,8 @@ export const FIXTURES = [
     '<w:rFonts w:asciiTheme="minorHAnsi" w:ascii="Arial"/>' +
     '<w:b/><w:b/><w:color w:val="auto" w:themeColor="accent1"/>' +
     '<w:sz w:val="1.5"/><w:i w:val="maybe"/><w:lang w:val="en-GB"/>' +
-    '<w14:glow xmlns:w14="z"/>')))],
+    '<w14:glow xmlns:w14="z"/>')), {},
+  {broken: 'hostile: property values that are not valid'})],
   ['paragraph properties', doc(p(r('x'),
     '<w:pStyle w:val="Heading1"/>' +
     '<w:keepNext/><w:keepLines w:val="1"/><w:pageBreakBefore/>' +
@@ -154,7 +157,8 @@ export const FIXTURES = [
       '<w:type w:val="continuous"/>' +
       '<w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/>' +
       '<w:cols w:num="2" w:space="708"/><w:titlePg/>' +
-      '<w:docGrid w:linePitch="360"/>', ' w:rsidR="00A1"'))],
+      '<w:docGrid w:linePitch="360"/>', ' w:rsidR="00A1"'), {},
+  {broken: 'minimal: a header reference with no header part'})],
   ['no final sectPr', doc(p(r('a'), sect('')) + p(r('b')))],
   ['opaque blocks', doc(p(r('a')) +
     '<w:tbl><w:tr><w:tc>' + p(r('cell')) + '</w:tc></w:tr></w:tbl>' +
@@ -190,14 +194,17 @@ export const FIXTURES = [
     '<x:b/></x:rPr><x:t>other</x:t><x:tab/></x:r></x:p>',
     {prefix: 'x'})})],
   ['w is not WML in a paragraph', doc('<w:p xmlns:w="urn:other">' +
-    '<w:r><w:t>z</w:t></w:r></w:p>')],
+    '<w:r><w:t>z</w:t></w:r></w:p>', {},
+  {broken: 'hostile: a body paragraph in a foreign namespace'})],
   ['levels', doc(p(r('a') +
     '<w:hyperlink r:id="x"><w:r><w:t>h</w:t></w:r></w:hyperlink>' +
     '<w:r><w:drawing/><w:br w:type="page"/><w:instrText>I' +
     '</w:instrText><w:t>￼</w:t></w:r><w:r w:odd="1"><w:t>w' +
-    '</w:t></w:r><w:fldSimple w:instr="X"/>stray'))],
+    '</w:t></w:r><w:fldSimple w:instr="X"/>stray'), {},
+  {broken: 'hostile: stray text in a paragraph, an unresolved r:id, empty drawing'})],
   ['__proto__ part', () => buildDocx({['__proto__']:
-    documentXml(p(r('x')))}, {main: '__proto__'})],
+    documentXml(p(r('x')))}, {main: '__proto__',
+    broken: 'hostile: a part named __proto__'})],
   ['determinism', doc(p(r('a') +
     '<w:hyperlink><w:r><w:t>h</w:t></w:r></w:hyperlink>') +
     '<w:tbl/>' + p(r('b', '<w:b/>')))],

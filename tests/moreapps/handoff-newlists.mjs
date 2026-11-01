@@ -292,11 +292,23 @@ function typeParas(s, texts) {
 // ------------------------------------------------------------ 4: existing part
 
 {
+  // (not bullet-simple1.docx: real Word 16 for Mac refuses a numbering
+  // part with two or more w:numPicBullet, and that file has two; this
+  // one, and !Letters' re-save of it, open in Word)
   const WANT = 'open-xml-sdk/v2FxTestFiles/wordprocessing/bullet/' +
-    'bullet-simple1.docx';
+    'bullet-symbol.docx';
   const hasNumbering = async (f) => {
+    const bytes = fs.readFileSync(f);
+    const z = await readZip(bytes);
+    const num = [...z].find(([k]) => /^word\/numbering\d*\.xml$/
+      .test(k));
+    if (num && new TextDecoder().decode(num[1])
+      .split('<w:numPicBullet ').length > 2) {
+      throw new Error(f + ': two or more w:numPicBullet: Word ' +
+        'refuses it (pick another source)');
+    }
     try {
-      const d = await readDocx(fs.readFileSync(f));
+      const d = await readDocx(bytes);
       return d.meta.numberingPart && d.numbering && d.numbering.nums.size
         ? d : null;
     } catch (e) {

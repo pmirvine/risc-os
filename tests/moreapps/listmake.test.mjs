@@ -787,7 +787,8 @@ const HOSTILE_DOC = (numbering, rels) => buildDocx({
   'word/document.xml': documentXml(item('a', 1) + p(r('b')) +
     item('c', 2, 1) + item('d', 2) + p(r('e'))),
   'word/styles.xml': STYLES_LIST, 'word/numbering.xml': numbering,
-  ...(rels ? {'word/_rels/document.xml.rels': rels} : {})});
+  ...(rels ? {'word/_rels/document.xml.rels': rels} : {})},
+{broken: 'hostile: a numbering part that is not right (see the case name)'});
 const COMMANDS = [
   ['bullets on all', (d) => toggleList(d, T(d), all(d),
     {kind: 'bullet'})],

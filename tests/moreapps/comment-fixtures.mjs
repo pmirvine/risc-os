@@ -72,7 +72,7 @@ export function commentBytes(body, comments = {}, opts = {}) {
   const c = commentParts(comments);
   return buildDocx({'word/document.xml': documentXml(body), ...c.parts,
     ...(opts.parts || {})}, {docRels: [...c.docRels,
-    ...(opts.docRels || [])]});
+    ...(opts.docRels || [])], broken: opts.broken});
 }
 
 /** See the header. */

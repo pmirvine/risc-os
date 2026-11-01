@@ -73,6 +73,7 @@ import {roundTrip, schema, hash, corpusFiles, corpusRun, nameOf, ALL,
 import {sameTree} from './docx-compare.mjs';
 import {commentFiles, factsOf, sumFacts} from './comment-oracle.mjs';
 import {rng, tm, loadStyles} from './word-docs.mjs';
+import {markBroken} from './word-emit.mjs';
 
 before(loadStyles);
 export const STEPS = 40;
@@ -1035,7 +1036,7 @@ describe('comments round trip: hostile files never throw or hang',
   () => {
     for (const [name, make] of HOSTILE) {
       it(name, async () => {
-        const res = await abuse(await make(), name);
+        const res = await abuse(markBroken(await make(), 'hostile: ' + name), name);
         console.log('# hostile ' + name + ': ' + JSON.stringify(
           res.done));
       });

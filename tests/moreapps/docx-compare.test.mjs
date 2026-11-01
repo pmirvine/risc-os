@@ -15,7 +15,8 @@ import {join} from 'node:path';
 
 const big = (n) => buildDocx({'word/document.xml': documentXml(
   Array.from({length: n}, (_, i) => p(r('paragraph ' + i, '<w:b/>') +
-    '<w:r><w:drawing><x/></w:drawing></w:r>')).join(''))});
+    '<w:r><w:drawing><x/></w:drawing></w:r>')).join(''))},
+  {broken: 'minimal: a placeholder w:drawing (<x/>) Word refuses'});
 
 describe('assertSameDoc', () => {
   it('passes equal documents', async () => {

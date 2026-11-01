@@ -68,6 +68,7 @@ import {noteDoc, noteP, mark} from './note-fixtures.mjs';
 import {addBookmark} from '../../tools/moreapps/!Letters/Bookmarks';
 import {nextNoteId, newNote}
   from '../../tools/moreapps/!Letters/OpsNotes';
+import {markBroken} from './word-emit.mjs';
 
 const H = 'word/header1.xml', F = 'word/footer1.xml';
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
@@ -209,12 +210,12 @@ describe('every command, through the facade, changes only the story',
       }));
 
     it('a picture\'s docPr id is past the body\'s', async () => {
-      const doc = await readDocx(await withHeaders(
+      const doc = await readDocx(markBroken(await withHeaders(
         p(r('x')) + p('<w:r><w:drawing><wp:inline ' +
           'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/' +
           'wordprocessingDrawing"><wp:extent cx="1" cy="1"/>' +
           '<wp:docPr id="70" name="P"/></wp:inline></w:drawing></w:r>'),
-        {default: p(r('Head'))}));
+        {default: p(r('Head'))}), 'minimal: a drawing with no graphic (Word refuses it)'));
       const d = new Document(doc), f = facadeOf(d, H, 0);
       assert.ok(usedDocPrIds(f.doc).ids.has(70), 'the body seen');
     });
@@ -532,7 +533,8 @@ describe('a note through the facade (Batch E2)', () => {
   before(async () => {
     nd = freeze(await noteDoc(p(r('body one') + mark(1)) +
       p(r('body two') + mark(2)) + PIC,
-    {1: noteP('first note'), 2: noteP('second') + p(r('more'))}));
+    {1: noteP('first note'), 2: noteP('second') + p(r('more'))},
+    {broken: 'minimal: a drawing with no graphic (Word refuses it)'}));
     nbytes = await write(nd);
   });
   const K1 = {note: {kind: 'footnote', id: 1}};
@@ -850,7 +852,7 @@ describe('ids chosen in a story or a note are the document\'s ' +
     async () => {
       const big = String(MAX_NOTE_ID + 5);
       const doc = await noteDoc(p(r('a') + mark(1) + r('b') +
-        mark(big)), {1: noteP('one')});
+        mark(big)), {1: noteP('one')}, {broken: 'hostile: a note mark with an absurd id'});
       const x = Object.values(doc.sections[0].blocks[0].inlines)
         .filter((y) => y.kind === 'noteRef');
       assert.equal(x.length, 2, 'both read as marks');

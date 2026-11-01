@@ -64,7 +64,8 @@ describe('revision facts', () => {
         ).replace('w:document', 'w:hdr').replace('/w:document', '/w:hdr'),
       'word/footnotes.xml': documentXml(p(del(10, r('n')))
         ).replace('w:document', 'w:footnotes').replace(
-          '/w:document', '/w:footnotes')});
+          '/w:document', '/w:footnotes')},
+    {broken: 'minimal: an empty w:drawing, a w:hdr / w:footnotes with no notes (not bisected)'});
     const f = await factsOf(b);
     assert.equal(f.ins, 6);
     assert.equal(f.del, 2);

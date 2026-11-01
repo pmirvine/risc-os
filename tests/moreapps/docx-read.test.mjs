@@ -193,25 +193,28 @@ describe('DocxRead: errors', () => {
   });
 
   it('no main document part -> no-document', async () => {
-    const z = await buildDocx({'word/other.xml': '<a/>'});
+    const z = await buildDocx({'word/other.xml': '<a/>'},
+      {broken: 'hostile: no main document part'});
     await rejects(readDocx(z), 'no-document');
   });
 
   it('no officeDocument relationship -> no-document', async () => {
     const z = await buildDocx({'word/document.xml': documentXml(p())},
-      {pkgRels: [['rId1', REL('styles'), 'word/document.xml']]});
+      {pkgRels: [['rId1', REL('styles'), 'word/document.xml']],
+        broken: 'hostile: no officeDocument relationship'});
     await rejects(readDocx(z), 'no-document');
   });
 
   it('malformed document.xml -> bad-xml with the part', async () => {
-    const z = await buildDocx({'word/document.xml': '<w:document><w:body>'});
+    const z = await buildDocx({'word/document.xml': '<w:document><w:body>'},
+      {broken: 'hostile: malformed document.xml'});
     const e = await rejects(readDocx(z), 'bad-xml', 'word/document.xml');
     assert.equal(e.cause.name, 'XmlError');
   });
 
   it('malformed styles.xml -> bad-xml for word/styles.xml', async () => {
-    await rejects(read(p(r('x')), {'word/styles.xml': '<w:styles>'}),
-      'bad-xml', 'word/styles.xml');
+    await rejects(read(p(r('x')), {'word/styles.xml': '<w:styles>'},
+      {broken: 'hostile: malformed styles.xml'}), 'bad-xml', 'word/styles.xml');
   });
 
   it('5 million empty paragraphs are refused before parsing',
@@ -581,7 +584,8 @@ describe('DocxRead: sections and blocks', () => {
   });
 
   it('a main part that is not w:document -> no-document', async () => {
-    const z = await buildDocx({'word/document.xml': '<html/>'});
+    const z = await buildDocx({'word/document.xml': '<html/>'},
+      {broken: 'hostile: a main part that is not w:document'});
     await rejects(readDocx(z), 'no-document', 'word/document.xml');
   });
 
@@ -716,7 +720,8 @@ describe('DocxRead: namespaces', () => {
         {ns: STRICT_W_NS});
       const doc = await readDocx(await buildDocx({
         'word/document.xml': docXml, 'word/styles.xml': stXml,
-        'word/settings.xml': setXml}, {strict: true}));
+        'word/settings.xml': setXml}, {strict: true,
+        broken: 'minimal: an empty pic:pic in a drawing (Word refuses it)'}));
       allValid(doc);
       assert.equal(doc.meta.conformance, 'strict');
       const [q] = paras(doc);
@@ -835,7 +840,8 @@ describe('DocxRead: inline levels and part names', () => {
   it('prolog is a Map: a part named __proto__ is harmless', async () => {
     // a computed key: a literal '__proto__': would set the prototype
     const doc = await readDocx(await buildDocx({['__proto__']:
-      documentXml(p(r('x')))}, {main: '__proto__'}));
+      documentXml(p(r('x')))}, {main: '__proto__',
+      broken: 'hostile: a part named __proto__'}));
     assert.equal(doc.meta.mainPart, '__proto__');
     assert.ok(doc.meta.prolog instanceof Map);
     assert.equal(doc.meta.prolog.get('__proto__').decl,

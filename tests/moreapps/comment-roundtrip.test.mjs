@@ -26,6 +26,7 @@ import {freeze} from './story-fixtures.mjs';
 import {lintPackage} from './lint-package.mjs';
 import {commentFiles} from './comment-oracle.mjs';
 import {ALL, SKIP_CORPUS, CORPUS} from './roundtrip-lib.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const DECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n';
 const enc = (s) => new TextEncoder().encode(s);
@@ -229,7 +230,8 @@ describe('a part the reader cannot model stays bytes', () => {
     ['over caps', CM, {maxParagraphs: 3}]]) {
     it('keeps the parts in doc.parts and the marks opaque: ' + what,
       async () => {
-        const bytes = await docx({comments: xml});
+        const bytes = markBroken(await docx({comments: xml}),
+          'hostile: a comments part that is not one: ' + what);
         const doc = await readDocx(bytes, opts);
         assert.equal(doc.comments.map.size, 0);
         assert.equal(doc.meta.commentParts.comments, undefined);
@@ -247,7 +249,8 @@ describe('a part the reader cannot model stays bytes', () => {
     'are read', async () => {
     const bad = '<w15:commentsEx xmlns:w15="' + W15 + '">';
     const wrong = DECL + `<w15:people xmlns:w15="${W15}"/>`;
-    const bytes = await docx({extended: bad, ids: wrong});
+    const bytes = markBroken(await docx({extended: bad, ids: wrong}),
+      'hostile: comment companion parts that cannot be read');
     const doc = await readDocx(bytes);
     assert.equal(doc.comments.map.size, 3);
     assert.equal(doc.comments.raw.extended, null);
@@ -296,7 +299,8 @@ describe('writing comments', () => {
       'x:flag="y" xmlns:x="urn:x"', pid('0000000A', r('keep')) +
       '<w:sdt><w:sdtContent/></w:sdt>') +
       cm('w:id="1" w:author="B"', pid('0000000B', r('other'))));
-    const doc = await readDocx(await docx({comments: odd}));
+    const doc = await readDocx(markBroken(await docx({comments: odd}),
+      'hostile: comments with odd attributes and children'));
     const c = doc.comments.map.get(0);
     assert.equal(c.blocks[1].type, 'opaque');
     const out = await save(withComment(doc, 0, (x) => ({...x,
@@ -483,8 +487,8 @@ describe('odd ids and parents', () => {
       pid('00000001', r('first'))) + cm('w:id="1" w:author="B"',
       pid('00000002', r('second'))) + cm('w:id="2" w:author="C"',
       pid('00000003', r('c'))));
-    const bytes = await docx({comments: x, extended: null, ids: null,
-      extensible: null, people: null});
+    const bytes = markBroken(await docx({comments: x, extended: null, ids: null,
+      extensible: null, people: null}), 'hostile: duplicate comment ids');
     const doc = await readDocx(bytes);
     assert.equal(text(doc.comments.map.get(1)), 'first');
     assert.deepEqual(doc.comments.order, [1, 2]);
@@ -602,8 +606,8 @@ describe('odd ids and parents', () => {
       cEx('constructor', '__proto__', 0) + '<w15:other/>');
     const ppl = DECL + `<w15:people xmlns:w15="${W15}">` +
       person('__proto__') + '</w15:people>';
-    const bytes = await docx({comments: x, extended: ext, people: ppl,
-      ids: null, extensible: null});
+    const bytes = markBroken(await docx({comments: x, extended: ext, people: ppl,
+      ids: null, extensible: null}), 'hostile: __proto__ and constructor ids');
     const doc = await readDocx(bytes);
     assert.deepEqual([...doc.comments.map.keys()], [5]);
     const c = doc.comments.map.get(5);
@@ -637,9 +641,10 @@ describe('Strict documents', () => {
       pid('0000000A', r('s'))), 'comments', STRICT_W_NS)
       .replace(R_NS, STRICT_R_NS);
     const ext = extXml(cEx('0000000A', null, 1));
-    const bytes = await docx({comments: x, extended: ext, ids: null,
+    const bytes = markBroken(await docx({comments: x, extended: ext, ids: null,
       extensible: null, people: null}, {strict: true,
-      ns: {ns: STRICT_W_NS, rNs: STRICT_R_NS}});
+      ns: {ns: STRICT_W_NS, rNs: STRICT_R_NS}}),
+    'minimal: marks for comments 1 and 2, which are not there');
     const doc = await readDocx(bytes);
     assert.equal(doc.meta.conformance, 'strict');
     const c = doc.comments.map.get(0);

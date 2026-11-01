@@ -759,7 +759,8 @@ describe('setResolved', () => {
   it('a commentsExtended that could not be read: refused', async () => {
     const {d, t} = await setup(commentDoc(p(range(0, r('a'))),
       {0: 'zero'}, {parts: {'word/commentsExtended.xml': '<bad'},
-      docRels: [['rX', EXT_REL, 'commentsExtended.xml']]}));
+      docRels: [['rX', EXT_REL, 'commentsExtended.xml']],
+      broken: 'hostile: a commentsExtended that cannot be read'}));
     assert.equal(partState(d.doc, 'extended'), 'unknown');
     refused(d, () => setResolved(d, t, 0, true));
     refused(d, () => replyTo(d, t, 0, {text: 'x', ...ANN}));

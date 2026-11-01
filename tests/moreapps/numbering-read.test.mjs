@@ -19,7 +19,7 @@ const blocks = (doc) => doc.sections.flatMap((s) => s.blocks);
 const paras = (doc) => blocks(doc).filter((b) => b.type === 'p');
 
 /** A docx with this numbering.xml inside (and styles, body). */
-const make = (inner, {styles, body = p(r('x')), strict} = {}) => {
+const make = (inner, {styles, body = p(r('x')), strict, broken} = {}) => {
   const ns = strict ? {ns: STRICT_W_NS} : {};
   const parts = {
     'word/document.xml': documentXml(body,
@@ -27,7 +27,7 @@ const make = (inner, {styles, body = p(r('x')), strict} = {}) => {
     'word/numbering.xml': numberingXml(inner, ns),
   };
   if (styles) parts['word/styles.xml'] = stylesXml(styles, ns);
-  return buildDocx(parts, strict ? {strict: true} : {});
+  return buildDocx(parts, {...(strict ? {strict: true} : {}), broken});
 };
 const readWith = async (inner, opts) => readDocx(await make(inner, opts));
 const nums = async (inner, opts) => (await readWith(inner, opts))
@@ -77,7 +77,8 @@ describe('ReadNumbering: level fields', () => {
         '<w:start w:val="1.5"/><w:pPr><w:ind w:left="abc" ' +
         'w:hanging="360" w:leftChars="2"/></w:pPr><w:rPr>' +
         '<w:sz w:val="big"/><w:b w:val="nope"/><w:caps/></w:rPr>' +
-        '<w:pStyle/><w:x/>')) + num(1, 0));
+        '<w:pStyle/><w:x/>')) + num(1, 0),
+    {broken: 'hostile: numbering values that are not valid'});
     assert.deepEqual(n.get(1).levels[0], {ilvl: 0,
       pPr: {ind: {hanging: 360}}});
     assert.equal(n.get(1).multiLevelType, undefined);

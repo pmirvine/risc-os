@@ -447,7 +447,7 @@ describe('linkAt, editLink, removeLink', () => {
     const xml = p(r('a') + '<w:hyperlink r:id="rId77"><w:r><w:t>gone' +
       '</w:t></w:r></w:hyperlink>');
     const doc = await readDocx(await buildDocx({'word/document.xml':
-      documentXml(xml)}));
+      documentXml(xml)}, {broken: 'hostile: a hyperlink r:id with no relationship'}));
     const d = new Document(doc);
     const x = link(d);
     assert.deepEqual(linkInfo(d.doc, x), {text: 'gone', address: '',

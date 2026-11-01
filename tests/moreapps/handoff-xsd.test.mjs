@@ -76,3 +76,49 @@ describe('hand-off files: no schema message', () => {
     assert.deepEqual(bad, []);
   });
 });
+
+// Every hand-off file (not only the batches above), against two rules
+// learnt from real Word 16 for Mac (word-open-check.mjs, bisected:
+// docs/apps/Letters.md, "Refused hand-off files"). A theme part with
+// a schema message is refused: st-6's hand-made theme, which lacked
+// accent3..folHlink and a:fmtScheme, failed each way alone; the
+// schema says the same as Word here. A numbering part with two or
+// more w:numPicBullet is refused, whatever they hold (nl-4 from
+// bullet-simple1.docx: every such corpus file is refused, the one
+// with a single picture bullet opens).
+const every = existsSync(DIR)
+  ? readdirSync(DIR).filter((f) => f.endsWith('.docx')) : [];
+const THEME = /^word\/theme\/theme\d*\.xml$/;
+const STRICT = /No matching global declaration available for the validation root/;
+
+describe('hand-off files: what real Word refuses', () => {
+  it('no schema message in a theme part', {skip: xsd && every.length
+    ? false : note || 'no files'}, async () => {
+    const bad = [];
+    for (const f of every) {
+      const z = await readZip(readFileSync(join(DIR, f)));
+      for (const [k, v] of z) {
+        if (!THEME.test(k)) continue;
+        for (const e of xsd.errors(v)) {
+          if (!STRICT.test(e)) bad.push(`${f} ${k}: ${e.slice(0, 200)}`);
+        }
+      }
+    }
+    assert.deepEqual(bad, []);
+  });
+
+  it('at most one w:numPicBullet in a numbering part',
+    {skip: every.length ? false : 'no files'}, async () => {
+      const bad = [];
+      for (const f of every) {
+        const z = await readZip(readFileSync(join(DIR, f)));
+        for (const [k, v] of z) {
+          if (!/^word\/numbering\d*\.xml$/.test(k)) continue;
+          const n = new TextDecoder().decode(v)
+            .split('<w:numPicBullet ').length - 1;
+          if (n > 1) bad.push(`${f} ${k}: ${n} w:numPicBullet`);
+        }
+      }
+      assert.deepEqual(bad, []);
+    });
+});

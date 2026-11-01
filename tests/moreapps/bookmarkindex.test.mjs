@@ -11,6 +11,7 @@ import {buildDocx, documentXml, p, r}
   from './build-docx.mjs';
 import {withHeaders} from './story-fixtures.mjs';
 import {noteDoc, noteP, mark} from './note-fixtures.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const S = (id, name) => `<w:bookmarkStart w:id="${id}" ` +
   `w:name="${name}"/>`;
@@ -20,8 +21,8 @@ const TC = (inner) => '<w:tc><w:tcPr><w:tcW w:w="100" ' +
 const TBL = (...cells) => '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol ' +
   `w:w="100"/></w:tblGrid><w:tr>${cells.map(TC).join('')}</w:tr>` +
   '</w:tbl>';
-const read = async (body) => readDocx(await buildDocx({
-  'word/document.xml': documentXml(body)}));
+const read = async (body, broken) => readDocx(await buildDocx({
+  'word/document.xml': documentXml(body)}, {broken}));
 const names = (ix) => ix.list.map((e) => e.name);
 
 describe('byName', () => {
@@ -31,9 +32,10 @@ describe('byName', () => {
       TBL(p(S(2, 'inCell') + r('two') + E(2)),
         TBL(p(S(3, 'nested') + r('three') + E(3))) + p('')) +
       p(r('x') + mark(1)) + p('');
-    const bytes = await withHeaders(body,
+    const bytes = markBroken(await withHeaders(body,
       {default: {hdr: p(S(4, 'inHdr') + r('head') + E(4)),
-        ftr: p(S(5, 'inFtr') + r('foot') + E(5))}});
+        ftr: p(S(5, 'inFtr') + r('foot') + E(5))}}),
+    'minimal: a note mark with no notes part');
     const hd = await readDocx(bytes);
     let ix = of(hd);
     assert.deepEqual(names(ix), ['inBody', 'inCell', 'nested',
@@ -107,7 +109,8 @@ describe('text between the marks', () => {
         '<w:r><w:fldChar w:fldCharType="end"/></w:r>' + E(2)) +
       p(S(3, 'tbl') + r('t')) + TBL(p(r('cell'))) + p(E(3)) +
       p(S(4, 'note') + r('n') + mark(9) + E(4)) +
-      p(S(5, 'plain') + r('ok') + S(6, 'other') + E(6) + E(5)));
+      p(S(5, 'plain') + r('ok') + S(6, 'other') + E(6) + E(5)),
+    'minimal: a note mark with no notes part, an empty w:pict');
     const ix = of(d);
     for (const n of ['pic', 'fld', 'tbl', 'note'])
       assert.equal(ix.byName.get(n).hasNonText, true, n);

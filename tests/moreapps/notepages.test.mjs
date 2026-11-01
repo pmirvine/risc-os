@@ -426,7 +426,8 @@ describe('Footnotes on the pages of a real document', () => {
     const plainDoc = await readDocx(await buildDocx({
       'word/document.xml': documentXml(bodyOf(130))}));
     const seps = await noteDoc(bodyOf(130), {});
-    const marked = await noteDoc(bodyOf(130, {5: 9}), {});
+    const marked = await noteDoc(bodyOf(130, {5: 9}), {},
+      {broken: 'hostile: a note mark with no note'});
     for (const doc of [plainDoc, seps, marked]) {
       const L = doL(doc), G = printGalley(L);
       assert.equal(G.notes, undefined);
@@ -519,7 +520,7 @@ describe('Footnotes on the pages of a real document', () => {
   it('a note marked twice is placed once, on its first mark\'s page',
     async () => {
       const doc = await noteDoc(bodyOf(130, {2: 1, 90: 1}),
-        {1: noteP('once')});
+        {1: noteP('once')}, {broken: 'hostile: one note marked twice (Word refuses it)'});
       const P = paged(doL(doc));
       const at = P.list.flatMap((pg, i) => pg.notes ? [i] : []);
       assert.deepEqual(at, [0]);
@@ -527,7 +528,7 @@ describe('Footnotes on the pages of a real document', () => {
 
   it('a missing/unknown note does not break pagination', async () => {
     const doc = await noteDoc(bodyOf(130, {2: 7, 9: 1}),
-      {1: noteP('there')});
+      {1: noteP('there')}, {broken: 'hostile: a note mark with no note'});
     const P = paged(doL(doc));
     assert.deepEqual(P.at(0).notes.pieces.map((x) => x.id), [1]);
     // a notes part that is no notes (kept as bytes): no foot at all

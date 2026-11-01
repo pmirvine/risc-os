@@ -18,3 +18,10 @@ feature or change must be covered there, as part of the same piece of work (not 
   `docs/CHANGES_NEEDED.md` for changes to shared code.
 
 Before reporting a feature as done, check its guide exists and is current.
+
+## Testing documents in real Word
+
+Real Microsoft Word is the authority on whether a .docx is valid: check written files with
+`node tools/word-open-check.mjs <file-or-dir>` (macOS; `REFUSED` is Word's verdict, fix the writer). A test helper
+that writes a .docx calls `emit()` from `tests/moreapps/word-emit.mjs` (`{broken}` when broken on purpose;
+`WORD_EMIT=1` then `--emitted`). See `docs/apps/Letters.md`, "Checking files in real Word".

@@ -118,12 +118,13 @@ describe('reading the marks', () => {
     for (const odd of ['007', '-1', 'x', '', '2147483648', '1.5']) {
       const doc = await commentDoc(p(`<w:commentRangeStart w:id=` +
         `"${odd}"/>` + r('a') + `<w:r><w:commentReference w:id=` +
-        `"${odd}"/></w:r>`), {1: 'one'});
+        `"${odd}"/></w:r>`), {1: 'one'}, {broken: 'hostile: an odd comment id'});
       assert.deepEqual(kindsOf(para(doc)), ['raw', 'raw'], odd);
     }
     const two = await commentDoc(p('<w:commentRangeStart w:id="1" ' +
       'xmlns:x="urn:x" x:id="2"/>' + '<w:commentRangeEnd w:id="1">' +
-      '<w:t>a</w:t></w:commentRangeEnd>'), {1: 'one'});
+      '<w:t>a</w:t></w:commentRangeEnd>'), {1: 'one'},
+    {broken: 'hostile: a mark with two ids and children'});
     assert.deepEqual(kindsOf(para(two)), ['raw', 'raw']);
     const off = await commentDoc(ONE, {1: 'one'}, {read: RAW});
     assert.deepEqual(kindsOf(para(off)), ['raw', 'raw', 'raw']);
@@ -246,7 +247,8 @@ describe('CommentMarks marks', () => {
   it('each comment\'s first start, end and reference: path and ' +
     'offset; tables too; a point comment', async () => {
     const doc = await commentDoc(p(r('a') + cs(1) + r('b')) +
-      tbl([p(r('c') + ce(1) + cr(1)), p(cr(2))]) + p(cs(1)), {});
+      tbl([p(r('c') + ce(1) + cr(1)), p(cr(2))]) + p(cs(1)), {},
+      {broken: 'minimal: comment marks with no comments'});
     const m = marks(doc);
     assert.deepEqual(m.get(1), {start: {path: [0, 0], off: 1},
       end: {path: [0, 1, 0, 0, 0], off: 1},

@@ -36,6 +36,7 @@ const CACHE = fileURLToPath(new URL('../../tools/moreapps/.cache/',
 import {blocks, SEL, C} from './edit-docs.mjs';
 import {lintPackage} from './lint-package.mjs';
 import {write, schema} from './roundtrip-lib.mjs';
+import {markBroken} from './word-emit.mjs';
 
 const {xsd} = schema();
 const dec = new TextDecoder();
@@ -236,8 +237,8 @@ describe('ClipPics', () => {
         '<mc:Choice Requires="wps">' + dr + '</mc:Choice>' +
         '<mc:Fallback>' + dr + '</mc:Fallback></mc:AlternateContent>' +
         '</w:r>';
-      const d = await open(await picDocx({body: '<w:p>' + alt +
-        '</w:p>' + p(r('end'))}));
+      const d = await open(markBroken(await picDocx({body: '<w:p>' + alt +
+        '</w:p>' + p(r('end'))}), 'minimal: drawings with no graphic (Word refuses them)'));
       const blk = blocks(d)[1];
       const x = blk.inlines[0];
       const out = freshDocPrs(d.doc, [blk]);
@@ -251,9 +252,9 @@ describe('ClipPics', () => {
     'not carried: nothing, as today', async () => {
     const vml = '<w:p><w:r><w:pict><v:rect xmlns:v="urn:schemas-' +
       'microsoft-com:vml"/></w:pict></w:r></w:p>';
-    const src = await open(await picDocx({pics: [
+    const src = await open(markBroken(await picDocx({pics: [
       {embed: null, link: 'rId40'}, {bytes: null}, {ext: 'xyz'}],
-    body: vml}));
+    body: vml}), 'hostile: a missing picture part, an unknown extension'));
     assert.equal(pics(src).length, 2, 'the linked one is not one');
     const dst = await open(await picDocx({pics: [], body: p(r('x'))}));
     const {parts, rels} = dst.doc;
@@ -431,7 +432,8 @@ describe('ClipPics: review B7 fixes', () => {
     async () => {
       for (const rect of [{l: 'abc'}, {l: 60000, r: 60000},
         {l: 200000}]) {
-        const src = await open(await picDocx({pics: [{srcRect: rect}]}));
+        const src = await open(markBroken(await picDocx({pics: [{srcRect: rect}]}),
+          'hostile: a crop that is not valid'));
         const dst = await open(await picDocx({strict: true, pics: [],
       body: p(r('x'))}));
         copyPaste(src, all(src), dst, end(dst));

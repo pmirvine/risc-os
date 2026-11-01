@@ -140,16 +140,17 @@ describe('TabStops.resolveTabs', () => {
 
 describe('TabStops.resolveTabs: stops kept raw', () => {
   const W14 = 'http://schemas.microsoft.com/office/word/2010/wordml';
-  const fileWith = async (tabsXml, n = 1) => readDocx(await buildDocx({
+  const fileWith = async (tabsXml, n = 1, broken) => readDocx(await buildDocx({
     'word/document.xml': documentXml(Array.from({length: n}, () =>
       p(r('a\tb'), tabsXml)).join('')),
-    'word/styles.xml': stylesXml('')}));
+    'word/styles.xml': stylesXml('')}, {broken}));
   it('10,000 stops in a file: kept raw, 64 used, < 1 ms per ' +
     'paragraph', async () => {
     const stops = Array.from({length: 10000}, (_, k) =>
       `<w:tab w:val="${k % 3 ? 'left' : 'right'}" w:pos="${k * 7}"` +
       `${k % 5 ? '' : ' w:leader="dot"'}/>`).join('');
-    const doc = await fileWith(`<w:tabs>${stops}</w:tabs>`);
+    const doc = await fileWith(`<w:tabs>${stops}</w:tabs>`, 1,
+      'hostile: 10,000 tab stops (Word refuses over 64)');
     const p0 = doc.sections[0].blocks[0];
     assert.equal(p0.pPr.tabs, undefined, 'raw: over MAX_STOPS');
     assert.equal(p0.pPr.extra.length, 1);

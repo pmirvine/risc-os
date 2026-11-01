@@ -96,7 +96,7 @@ describe('EndnoteLayout: what goes where', () => {
     'document\'s end; orphans and missing notes left out', async () => {
     const doc = await noteDoc(bodyOf(8, {1: 3, 4: 1, 6: 3, 7: 9}), {},
       {endnotes: {1: enoteP('one'), 3: enoteP('three'),
-        5: enoteP('orphan')}});
+        5: enoteP('orphan')}, broken: 'hostile: a note mark with no note'});
     const plan = planOf(doc);
     assert.deepEqual([...plan.keys()], [0]);
     assert.deepEqual(plan.get(0), {fn: [], en: [3, 1]});
@@ -263,7 +263,8 @@ describe('EndnoteLayout: what goes where', () => {
   it('a note without a mark is not shown but kept; a mark with a ' +
     'missing note shows [?] and has no endnote', async () => {
     const doc = await noteDoc(bodyOf(4, {1: 1, 2: 7}), {},
-      {endnotes: {1: enoteP('one'), 5: enoteP('orphan')}});
+      {endnotes: {1: enoteP('one'), 5: enoteP('orphan')},
+        broken: 'hostile: a note mark with no note'});
     const L = doL(doc), G = printGalley(L);
     assert.deepEqual(order(G), ['sep:endnote', 'endnote:1']);
     assert.ok(doc.notes.endnotes.has(5));
@@ -271,7 +272,7 @@ describe('EndnoteLayout: what goes where', () => {
     assert.equal(L.fieldText(q, off).text, '[?]');
     // only missing ones: no run at all, the galley the body's
     const bad = await noteDoc(bodyOf(4, {1: 7}), {},
-      {endnotes: {5: enoteP('orphan')}});
+      {endnotes: {5: enoteP('orphan')}, broken: 'hostile: a note mark with no note'});
     const B = doL(bad), GB = printGalley(B);
     assert.equal(GB.items, B.items);
   });
@@ -390,7 +391,8 @@ describe('Endnotes: no endnotes, reuse, cost, bounds', () => {
     async () => {
       const docs = [await noteDoc(bodyOf(130, {}, {3: 1}),
         {1: noteP('f')}), await noteDoc(bodyOf(130), {}, {endnotes: {}}),
-      await noteDoc(bodyOf(130, {2: 7}), {}, {endnotes: {}})];
+      await noteDoc(bodyOf(130, {2: 7}), {}, {endnotes: {},
+        broken: 'hostile: a note mark with no note'})];
       for (const doc of docs) {
         const L = doL(doc);
         assert.deepEqual(endHooks(L), {});

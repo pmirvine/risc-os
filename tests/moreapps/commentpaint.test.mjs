@@ -27,6 +27,7 @@ import {p, r} from './build-docx.mjs';
 import {withHeaders} from './story-fixtures.mjs';
 import {commentDoc, commentParts, cs, ce, cr, range}
   from './comment-fixtures.mjs';
+import {markBroken} from './word-emit.mjs';
 
 before(loadStyles);
 
@@ -164,10 +165,10 @@ describe('CommentPaint rects: the range lit', () => {
   it('marks naming no comment, a lone start and opaque marks (a ' +
     'header) draw nothing', async () => {
     const c = commentParts({1: 'one', 3: 'three'});
-    const doc = await readDocx(await withHeaders(
+    const doc = await readDocx(markBroken(await withHeaders(
       p(r('a') + range(2, r('b'))) + p(r('c') + cs(1) + r('d')),
       {default: p(range(3, r('h')))}, {parts: c.parts,
-        docRels: c.docRels}));
+        docRels: c.docRels}), 'hostile: a lone comment start'));
     const L = laid(doc);
     assert.equal(rects(doc, {L}).length, 0);
   });

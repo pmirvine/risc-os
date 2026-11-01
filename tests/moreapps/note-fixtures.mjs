@@ -77,5 +77,5 @@ export async function noteDoc(body, notes = {}, opts = {}) {
     parts['word/settings.xml'] = settingsXml(opts.settings);
   }
   if (opts.styles) parts['word/styles.xml'] = opts.styles;
-  return readDocx(await buildDocx(parts, {docRels}));
+  return readDocx(await buildDocx(parts, {docRels, broken: opts.broken}));
 }

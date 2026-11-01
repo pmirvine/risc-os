@@ -34,7 +34,10 @@ async function load(body, extra = {}) {
   const docRels = [];
   if (parts['word/footnotes.xml']) docRels.push(['rIdN1',
     REL('footnotes'), 'footnotes.xml']);
-  const bytes = await buildDocx(parts, {docRels});
+  // (a note mark with no notes part: Word refuses the file)
+  const broken = !parts['word/footnotes.xml'] && /<w:footnoteReference/.test(body) &&
+    'minimal: a note mark with no notes part';
+  const bytes = await buildDocx(parts, {docRels, broken});
   return {bytes, doc: await readDocx(bytes)};
 }
 const body0 = (doc) => doc.sections[0].blocks;

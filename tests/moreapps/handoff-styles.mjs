@@ -188,6 +188,12 @@ async function save(name, doc, about) {
     const m = xsd.errors(z.get(doc.meta.stylesPart)).size;
     schema = `xmllint/wml.xsd: ${n} messages in the document, ${m} in ` +
       'the styles';
+    // (a theme with any message is refused by real Word: none at all)
+    for (const [k, v] of z) {
+      const e = /^word\/theme\/theme\d*\.xml$/.test(k)
+        ? [...xsd.errors(v)] : [];
+      if (e.length) throw new Error(`${name} ${k}: ${e.join('; ')}`);
+    }
   }
   made.push(`${name} (${bytes.length} bytes, ${put(name, bytes)}; ` +
     `lint clean; ${schema})`);
@@ -415,6 +421,10 @@ const doc = (body, styles, more = {}, opts) => read({
 // ------------------------------------------------------------ 6: theme
 
 {
+  const FILL = '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill>';
+  const FMT = {fillStyleLst: FILL, bgFillStyleLst: FILL,
+    lnStyleLst: '<a:ln w="6350">' + FILL + '</a:ln>',
+    effectStyleLst: '<a:effectStyle><a:effectLst/></a:effectStyle>'};
   const THEME = '<?xml version="1.0" encoding="UTF-8" standalone=' +
     '"yes"?>\r\n<a:theme xmlns:a="http://schemas.openxmlformats.org/' +
     'drawingml/2006/main" name="Office Theme"><a:themeElements>' +
@@ -423,10 +433,19 @@ const doc = (body, styles, more = {}, opts) => read({
     'lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2>' +
     '<a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr ' +
     'val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/>' +
-    '</a:accent2></a:clrScheme><a:fontScheme name="Office"><a:majorFont>' +
+    '</a:accent2>' + [['accent3', 'A5A5A5'], ['accent4', 'FFC000'],
+    ['accent5', '5B9BD5'], ['accent6', '70AD47'], ['hlink', '0563C1'],
+    ['folHlink', '954F72']].map(([n, v]) =>
+    `<a:${n}><a:srgbClr val="${v}"/></a:${n}>`).join('') +
+    '</a:clrScheme><a:fontScheme name="Office"><a:majorFont>' +
     '<a:latin typeface="Cambria"/><a:ea typeface=""/><a:cs typeface=""/>' +
     '</a:majorFont><a:minorFont><a:latin typeface="Georgia"/><a:ea ' +
     'typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme>' +
+    // (Word refuses a theme without all twelve colours or without a
+    // a:fmtScheme, each alone: the minimal one, three of each list)
+    '<a:fmtScheme name="Office">' + ['fillStyleLst', 'lnStyleLst',
+      'effectStyleLst', 'bgFillStyleLst'].map((l) => `<a:${l}>` +
+      FMT[l].repeat(3) + `</a:${l}>`).join('') + '</a:fmtScheme>' +
     '</a:themeElements></a:theme>';
   const styles = DEFAULTS + NORMAL + DPF +
     STY('Display', 'Display', {custom: true, based: 'Normal',

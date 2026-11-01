@@ -91,6 +91,7 @@ import {revFiles, factsOf, sumFacts} from './rev-oracle.mjs';
 import {canonRev, revEls} from './rev-canon.mjs';
 import {partsMisplaced} from './text-context.mjs';
 import {rng, tm, loadStyles} from './word-docs.mjs';
+import {markBroken} from './word-emit.mjs';
 
 before(loadStyles);
 export const STEPS = 40;
@@ -1195,7 +1196,7 @@ describe('tracked changes round trip: hostile files never throw or ' +
   'hang, and round-trip untouched', () => {
   for (const [name, make, opts] of HOSTILE) {
     it(name, async () => {
-      const res = await abuse(await make(), name, opts);
+      const res = await abuse(markBroken(await make(), 'hostile: ' + name), name, opts);
       console.log('# hostile ' + name + ': ' + JSON.stringify(
         res.done));
     });

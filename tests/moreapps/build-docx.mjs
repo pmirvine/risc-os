@@ -6,6 +6,7 @@
 // [Content_Types].xml, _rels/.rels and word/_rels/document.xml.rels
 // are generated unless given in `parts` (or turned off with opts).
 import {writeZip} from '../../tools/moreapps/!WimpLib/Zip';
+import {emit, fixtureName} from './word-emit.mjs';
 
 export const W_NS =
   'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
@@ -84,19 +85,46 @@ const typeByName = (n, dir) => {
   if (n === 'docProps/app.xml') {
     return OX + 'officedocument.extended-properties+xml';
   }
-  const m = n.startsWith(dir) && /^(footnotes|endnotes|comments|header|footer|fontTable|webSettings)\d*\.xml$/
-    .exec(n.slice(dir.length));
-  return m ? OX + 'officedocument.wordprocessingml.' + m[1] + '+xml' : null;
+  const m = n.startsWith(dir) && new RegExp('^(footnotes|endnotes|comments|header|' +
+    'footer|fontTable|webSettings|commentsExtended|commentsIds|commentsExtensible|' +
+    'people)\\d*\\.xml$').exec(n.slice(dir.length));
+  if (m) return OX + 'officedocument.wordprocessingml.' + m[1] + '+xml';
+  if (n.startsWith(dir) && /^theme\/theme\d*\.xml$/.test(n.slice(dir.length))) {
+    return OX + 'officedocument.theme+xml';
+  }
+  return null;
+};
+
+// the Default Word gives a media part of these kinds (png is always
+// there), for each kind the parts hold that opts.extDefaults does not
+const MEDIA = {emf: 'image/x-emf', wmf: 'image/x-wmf', jpeg: 'image/jpeg',
+  jpg: 'image/jpeg', gif: 'image/gif', bmp: 'image/bmp', tif: 'image/tiff',
+  tiff: 'image/tiff', svg: 'image/svg+xml',
+  bin: 'application/vnd.openxmlformats-officedocument.oleObject'};
+const mediaDefaults = (names, given = []) => {
+  const have = new Set(['png', ...given.map(([e]) => e.toLowerCase())]);
+  const out = [];
+  for (const n of names) {
+    const ext = (/\.([A-Za-z0-9]+)$/.exec(n) || [])[1];
+    const e = ext && ext.toLowerCase();
+    if (e && Object.hasOwn(MEDIA, e) && !have.has(e)) {
+      have.add(e);
+      out.push([e, MEDIA[e]]);
+    }
+  }
+  return out;
 };
 
 /**
  * Build a .docx.
  * @param {Object<string, string|Uint8Array>} parts
  * extDefaults: [[extension, type]...] more Default content types.
+ * broken: the reason, when the package is built broken on purpose (for
+ * the real-Word checker: Word refusing it is EXPECTED; word-emit.mjs).
  * @param {{main?: string, strict?: boolean, docRels?: Array,
  *   extDefaults?: Array,
  *   pkgRels?: Array|false, contentTypes?: string|false,
- *   docRelsXml?: false}} [opts]
+ *   docRelsXml?: false, broken?: string}} [opts]
  * @returns {Promise<Uint8Array>}
  */
 export async function buildDocx(parts, opts = {}) {
@@ -124,8 +152,8 @@ export async function buildDocx(parts, opts = {}) {
       '"application/vnd.openxmlformats-package.relationships+xml"/>' +
       '<Default Extension="xml" ContentType="application/xml"/>' +
       '<Default Extension="png" ContentType="image/png"/>' +
-      (opts.extDefaults || []).map(([e, t]) =>
-        `<Default Extension="${e}" ContentType="${t}"/>`).join('') +
+      [...(opts.extDefaults || []), ...mediaDefaults(names, opts.extDefaults)]
+        .map(([e, t]) => `<Default Extension="${e}" ContentType="${t}"/>`).join('') +
       ov.join('') + '</Types>')]);
   }
   if (opts.pkgRels !== false && !parts['_rels/.rels']) {
@@ -146,5 +174,12 @@ export async function buildDocx(parts, opts = {}) {
     for (const x of opts.docRels || []) list.push(x);
     out.push([relsName, enc.encode(relsXml(list))]);
   }
-  return writeZip(out, {date: new Date(2020, 0, 1)});
+  const zip = await writeZip(out, {date: new Date(2020, 0, 1)});
+  // (for the real-Word checker: word-emit.mjs; a no-op without WORD_EMIT;
+  // opts.broken: built broken on purpose, the reason)
+  if (process.env.WORD_EMIT) {
+    const name = fixtureName();
+    emit(name, zip, {broken: opts.broken || false, stem: name});
+  }
+  return zip;
 }
