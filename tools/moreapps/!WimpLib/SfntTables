@@ -1,0 +1,140 @@
+// SfntTables - the table directory of a TrueType or OpenType font
+// file, read and written. See ./PdfFont, which uses it through
+// ./SfntParse and ./SfntSubset.
+//
+//   viewOf(bytes) -> DataView | null   bytes: an ArrayBuffer or a
+//       typed array (null for anything else, or a detached buffer)
+//   u8(view) -> Uint8Array over the same bytes
+//   kindOf(view) -> 'ttf' | 'otf' | null   from the sfnt version
+//   directory(view) -> Map tag -> {off, len}; throws
+//       Error('PdfFont: ...') when a record lies outside the file
+//   opt(t, tag, min) -> the table when it holds min bytes, or null
+//   need(t, tag, min) -> the same, but throws when it does not
+//   assemble(Map tag -> bytes) -> a TrueType file: tables 4-byte
+//       aligned in tag order, checksums and head.checkSumAdjustment
+//       fixed
+//
+// Pure: no desktop services.
+
+const MAX_TABLES = 64;
+const SFNT_TTF = 0x00010000, SFNT_TRUE = 0x74727565;
+const SFNT_OTTO = 0x4f54544f;
+
+/** A DataView over bytes, or null. */
+export function viewOf(bytes) {
+  try {
+    if (bytes instanceof ArrayBuffer) return new DataView(bytes);
+    if (ArrayBuffer.isView(bytes)) {
+      return new DataView(bytes.buffer, bytes.byteOffset,
+        bytes.byteLength);
+    }
+  } catch (e) { /* a detached buffer */ }
+  return null;
+}
+
+/** Uint8Array over the same bytes as a DataView. */
+export const u8 = (v) =>
+  new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+
+/** 'ttf', 'otf' or null from the sfnt version. */
+export function kindOf(v) {
+  if (v.byteLength < 12) return null;
+  const s = v.getUint32(0);
+  if (s === SFNT_TTF || s === SFNT_TRUE) return 'ttf';
+  return s === SFNT_OTTO ? 'otf' : null;
+}
+
+const tagAt = (v, o) => String.fromCharCode(v.getUint8(o),
+  v.getUint8(o + 1), v.getUint8(o + 2), v.getUint8(o + 3));
+
+/** Map tag -> {off, len}; throws when a record lies outside. */
+export function directory(v) {
+  if (v.byteLength < 12) throw new Error('PdfFont: not a font file');
+  const n = v.getUint16(4);
+  if (n === 0) throw new Error('PdfFont: the font has no tables');
+  if (n > MAX_TABLES) {
+    throw new Error('PdfFont: too many tables (' + n + ')');
+  }
+  if (12 + 16 * n > v.byteLength) {
+    throw new Error('PdfFont: the table directory runs past the end');
+  }
+  const t = new Map();
+  for (let i = 0; i < n; i++) {
+    const r = 12 + 16 * i;
+    const tag = tagAt(v, r);
+    const off = v.getUint32(r + 8), len = v.getUint32(r + 12);
+    if (off > v.byteLength || len > v.byteLength - off) {
+      throw new Error('PdfFont: table ' + tag.trim() +
+        ' lies outside the file');
+    }
+    if (!t.has(tag)) t.set(tag, {off, len});
+  }
+  return t;
+}
+
+/** The table, which must hold min bytes, or null. */
+export function opt(t, tag, min) {
+  const e = t.get(tag);
+  return e && e.len >= min ? e : null;
+}
+
+/** The table, which must hold min bytes; throws otherwise. */
+export function need(t, tag, min) {
+  const e = opt(t, tag, min);
+  if (!e) {
+    throw new Error('PdfFont: no usable ' + tag.trim() + ' table');
+  }
+  return e;
+}
+
+/** The 32-bit checksum of a table (zero-padded to 4). */
+function checksum(b, off, len) {
+  let s = 0;
+  const whole = len & ~3;
+  for (let i = 0; i < whole; i += 4) {
+    s = (s + ((b[off + i] << 24) | (b[off + i + 1] << 16) |
+      (b[off + i + 2] << 8) | b[off + i + 3])) >>> 0;
+  }
+  if (whole < len) {
+    let w = 0;
+    for (let k = 0; k < 4; k++) {
+      w = (w << 8) | (whole + k < len ? b[off + whole + k] : 0);
+    }
+    s = (s + (w >>> 0)) >>> 0;
+  }
+  return s;
+}
+
+/** An sfnt file of Map tag -> bytes, head's adjustment fixed. */
+export function assemble(tables) {
+  const tags = [...tables.keys()].sort();
+  const n = tags.length;
+  let size = 12 + 16 * n;
+  for (const tag of tags) size += (tables.get(tag).length + 3) & ~3;
+  const out = new Uint8Array(size);
+  const v = new DataView(out.buffer);
+  let pow = 1, log = 0;
+  while (pow * 2 <= n) { pow *= 2; log++; }
+  v.setUint32(0, SFNT_TTF);
+  v.setUint16(4, n);
+  v.setUint16(6, pow * 16);
+  v.setUint16(8, log);
+  v.setUint16(10, n * 16 - pow * 16);
+  let off = 12 + 16 * n, headAt = -1;
+  tags.forEach((tag, i) => {
+    const data = tables.get(tag);
+    const r = 12 + 16 * i;
+    for (let k = 0; k < 4; k++) out[r + k] = tag.charCodeAt(k);
+    out.set(data, off);
+    v.setUint32(r + 4, checksum(out, off, data.length));
+    v.setUint32(r + 8, off);
+    v.setUint32(r + 12, data.length);
+    if (tag === 'head') headAt = off;
+    off += (data.length + 3) & ~3;
+  });
+  if (headAt >= 0) {
+    const total = checksum(out, 0, out.length);
+    v.setUint32(headAt + 8, (0xb1b0afba - total) >>> 0);
+  }
+  return out;
+}

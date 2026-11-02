@@ -613,6 +613,14 @@ Don't hand-edit `assets/disc`: `tools/disc.mjs` rebuilds it from `vendor/`. Anyt
 idempotent `tools/disc-<topic>.mjs` script (model: `tools/disc-patch.mjs`) that writes its files and patches only its
 own entries in `assets/disc/manifest.json` (read, patch and write the manifest in one go), registered in
 `tools/build.mjs` after `basicwimp-demo.mjs`. Existing ones: `disc-classics`, `disc-patch`, `disc-basicdemos`,
+WimpLib's PDF modules (Batch G1, for !Letters' Export as PDF... (window menu); docs/apps/Letters.md, "PDF export"), all
+pure (no `riscos`): `wimplib/PdfWrite` (`PdfWriter`: objects, streams, xref and trailer; `num`, `name`, `str`, `hex`,
+from `PdfText`), `wimplib/PdfFont` (`FontSet(writer, loader)`: TrueType subset and OpenType whole as Type 0 fonts, glyphs
+by code point, `missing`; re-exports `parseSfnt`, `subsetTtf`, `toUnicodeCmap`) with its parts `PdfFontEmbed`,
+`PdfToUnicode`, `SfntTables`, `SfntCmap`, `SfntParse` and `SfntSubset` (font files read, subset and written),
+`wimplib/PdfImage` (`imageObjects`, `jpegInfo`: RGBA with an SMask, or a JPEG unchanged) and `wimplib/PdfColour`
+(`parseColour`, `rgbOf`). No shared core code changed, so nothing is added to docs/CHANGES_NEEDED.md.
+
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
 ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).
 `disc-gamelib` builds the game library `$.!Boot.Resources.!GameLib` (from `tools/games/!GameLib`, icon from

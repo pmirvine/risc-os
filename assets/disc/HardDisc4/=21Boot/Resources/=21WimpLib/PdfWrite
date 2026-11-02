@@ -1,0 +1,220 @@
+// PdfWrite - builds a PDF 1.7 file: PDF text helpers and PdfWriter.
+// The helpers are ./PdfText's, re-exported here.
+//
+//   num(n)        a number as PDF text (3 decimals at most)
+//   name(s)       a /Name with #xx escapes
+//   str(s)        a (literal string): PDFDocEncoding when it fits,
+//                 else UTF-16BE with a byte order mark
+//   hex(bytes)    a <hex string>
+//
+//   const w = new PdfWriter({title, author, producer, now});
+//   const font = w.add('<< /Type /Font ... >>');
+//   w.page({w: 595, h: 842, content, fonts: new Map([['F1', font]])});
+//   const bytes = await w.finish();
+//
+// Objects are numbered from 1 (1 catalog, 2 page tree, 3 info; yours
+// start at 4). Streams are deflated (zlib, FlateDecode) in finish();
+// without CompressionStream they are stored. The output depends only
+// on what was added and on now(): /ID is a hash of the content and
+// title, not random.
+import {num, name, str, hex} from './PdfText';
+export {num, name, str, hex} from './PdfText';
+
+/** Zlib-deflates bytes, or null when that is not possible. */
+async function deflate(data) {
+  if (typeof globalThis.CompressionStream !== 'function') return null;
+  const stream = new Blob([data]).stream()
+    .pipeThrough(new globalThis.CompressionStream('deflate'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/** Text of byte-valued characters as bytes. */
+function latin1(s) {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
+  return out;
+}
+
+/** A growing byte buffer. */
+class Buf {
+  constructor() { this.b = new Uint8Array(4096); this.n = 0; }
+  put(bytes) {
+    if (this.n + bytes.length > this.b.length) {
+      const grown = new Uint8Array(
+        Math.max(this.b.length * 2, this.n + bytes.length));
+      grown.set(this.b.subarray(0, this.n));
+      this.b = grown;
+    }
+    this.b.set(bytes, this.n);
+    this.n += bytes.length;
+  }
+  text(s) { this.put(latin1(s)); }
+  bytes() { return this.b.slice(0, this.n); }
+}
+
+/** 128-bit FNV-1a style hash (four 32-bit lanes) as 16 bytes. */
+function hash16(chunks) {
+  const h = [0x811c9dc5, 0x01000193, 0x9e3779b9, 0x85ebca6b];
+  for (const chunk of chunks) {
+    for (let i = 0; i < chunk.length; i++) {
+      for (let k = 0; k < 4; k++) {
+        h[k] = Math.imul(h[k] ^ chunk[i], 0x01000193 + 2 * k);
+        h[k] ^= h[k] >>> 15;
+      }
+    }
+  }
+  const out = new Uint8Array(16);
+  const dv = new DataView(out.buffer);
+  for (let k = 0; k < 4; k++) dv.setUint32(k * 4, h[k] >>> 0);
+  return out;
+}
+
+const p2 = (n) => String(n).padStart(2, '0');
+
+/** A PDF date string (UTC). */
+function pdfDate(d) {
+  return 'D:' + d.getUTCFullYear() + p2(d.getUTCMonth() + 1) +
+    p2(d.getUTCDate()) + p2(d.getUTCHours()) + p2(d.getUTCMinutes()) +
+    p2(d.getUTCSeconds()) + 'Z';
+}
+
+/** `<< /K v ... >>` from entries already rendered as PDF text. */
+function dictText(dict) {
+  let out = '<<';
+  for (const [k, v] of Object.entries(dict)) {
+    out += ' ' + (k[0] === '/' ? k : '/' + k) + ' ' + v;
+  }
+  return out + ' >>';
+}
+
+/** `<< /Name id 0 R ... >>` for a Map of resource name to id. */
+function refMap(map) {
+  let out = '<<';
+  for (const [k, id] of map) out += ' ' + name(k) + ' ' + id + ' 0 R';
+  return out + ' >>';
+}
+
+export class PdfWriter {
+  /**
+   * @param {{title?: string, author?: string, producer?: string,
+   *   now?: () => Date}} [opts]
+   */
+  constructor({title, author, producer, now} = {}) {
+    this.title = title;
+    this.author = author;
+    this.producer = producer;
+    this.now = now || (() => new Date());
+    this.objs = [null, null, null, null]; // 1 catalog, 2 pages, 3 info
+    this.pages = [];
+  }
+
+  /** A new object id to be filled in later with put(). */
+  reserve() {
+    this.objs.push(null);
+    return this.objs.length - 1;
+  }
+
+  /** Sets the body (PDF text) of a reserved object. */
+  put(id, body) {
+    this.objs[id] = {body: String(body)};
+  }
+
+  /** Adds an object; returns its id. */
+  add(body) {
+    const id = this.reserve();
+    this.put(id, body);
+    return id;
+  }
+
+  /**
+   * Adds a stream. dict entries are PDF text; /Length and /Filter are
+   * added. With flate (default) it is deflated in finish().
+   */
+  stream(dict, bytes, {flate = true} = {}) {
+    const id = this.reserve();
+    this.objs[id] = {dict: {...dict}, bytes, flate};
+    return id;
+  }
+
+  /** Adds a page; w and h in points. Returns the page id. */
+  page({w, h, content, fonts, xobjects, gstates, annots}) {
+    const data = typeof content === 'string'
+      ? latin1(content) : content;
+    const cid = this.stream({}, data);
+    let res = '<<';
+    if (fonts && fonts.size) res += ' /Font ' + refMap(fonts);
+    if (xobjects && xobjects.size) {
+      res += ' /XObject ' + refMap(xobjects);
+    }
+    if (gstates && gstates.size) {
+      res += ' /ExtGState ' + refMap(gstates);
+    }
+    res += ' /ProcSet [/PDF /Text /ImageB /ImageC] >>';
+    let body = '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' +
+      num(w) + ' ' + num(h) + '] /Resources ' + res +
+      ' /Contents ' + cid + ' 0 R';
+    if (annots && annots.length) {
+      body += ' /Annots [' + annots.map((a) => a + ' 0 R').join(' ') +
+        ']';
+    }
+    const id = this.add(body + ' >>');
+    this.pages.push(id);
+    return id;
+  }
+
+  /** @returns {Promise<Uint8Array>} the finished file */
+  async finish() {
+    const created = this.now();
+    this.put(1, '<< /Type /Catalog /Pages 2 0 R >>');
+    this.put(2, '<< /Type /Pages /Count ' + this.pages.length +
+      ' /Kids [' + this.pages.map((p) => p + ' 0 R').join(' ') +
+      '] >>');
+    let info = '<<';
+    if (this.title != null) info += ' /Title ' + str(this.title);
+    if (this.author != null) info += ' /Author ' + str(this.author);
+    if (this.producer != null) {
+      info += ' /Producer ' + str(this.producer);
+    }
+    info += ' /CreationDate ' + str(pdfDate(created)) + ' >>';
+    this.put(3, info);
+
+    const buf = new Buf();
+    buf.text('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n');
+    const offsets = [0];
+    const nl = latin1('\nendstream\nendobj\n');
+    for (let id = 1; id < this.objs.length; id++) {
+      const o = this.objs[id];
+      offsets[id] = buf.n;
+      if (!o) {
+        buf.text(id + ' 0 obj\nnull\nendobj\n');
+      } else if (o.body !== undefined) {
+        buf.text(id + ' 0 obj\n' + o.body + '\nendobj\n');
+      } else {
+        let data = o.bytes;
+        const dict = o.dict;
+        if (o.flate) {
+          const z = await deflate(data);
+          if (z) { data = z; dict.Filter = '/FlateDecode'; }
+        }
+        dict.Length = String(data.length);
+        buf.text(id + ' 0 obj\n' + dictText(dict) + '\nstream\n');
+        buf.put(data);
+        buf.put(nl);
+      }
+    }
+    const size = this.objs.length;
+    const xref = buf.n;
+    let x = 'xref\n0 ' + size + '\n0000000000 65535 f \n';
+    for (let id = 1; id < size; id++) {
+      x += String(offsets[id]).padStart(10, '0') + ' 00000 n \n';
+    }
+    buf.text(x);
+    const idBytes = hash16([buf.b.subarray(0, buf.n),
+      latin1(String(this.title == null ? '' : this.title))]);
+    const idHex = hex(idBytes);
+    buf.text('trailer\n<< /Size ' + size + ' /Root 1 0 R /Info 3 0 R' +
+      ' /ID [' + idHex + ' ' + idHex + '] >>\nstartxref\n' + xref +
+      '\n%%EOF\n');
+    return buf.bytes();
+  }
+}

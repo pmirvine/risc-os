@@ -21,6 +21,14 @@
 // All Markup (Batch F2, ./RevPaint marks): the text of a tracked
 // change in its author's colour, its underline or strike line over
 // it and the change bar left of its line, after the line's text.
+// Links (Batch G1): a context with a link method (./PdfSink's; a
+// canvas has none, and is not asked) is told of each hyperlink on a
+// line after its text, g.link(target, x0, y0, x1, y1): target
+// ./LinkFind linkTarget's ({url} or {anchor}; a link with no
+// address is not told), the box from the left of the link's first
+// item on the line to the right of its last, the line's full
+// height, in the coordinates the text is drawn in (one box per link
+// per line).
 // Draws on the context it is given; imports no desktop services.
 import {paintRule} from './MarkPaint';
 import {paintPic} from './PicPaint';
@@ -28,6 +36,7 @@ import {lineTop} from './PlaceDraft';
 import {boxAt} from './DocHit';
 import {shadeOf, SHADE} from './FieldShade';
 import {marks as revMarks, paintMarks, NONE} from './RevPaint';
+import {isLink, linkTarget} from './LinkFind';
 
 export function paintPara(L, g, it, rect, l0 = 0,
   l1 = it.lines.length, rules = true) {
@@ -46,6 +55,9 @@ export function paintPara(L, g, it, rect, l0 = 0,
     if (fs.length) fieldShade(g, ln, top, it.x, fs);
     const ms = revMarks(L, it, k);
     paintLine(L, g, ln, top, it.x, rules, ms);
+    if (typeof g.link === 'function') {
+      linkBoxes(L, g, ln, top, it.x, it.block || it.para);
+    }
     if (ms.length) paintMarks(g, ms);
     if (ln.clip) g.restore();
   }
@@ -94,6 +106,27 @@ function paintLine(L, g, ln, top, X, rules, ms = NONE) {
     const t = Math.max(1, Math.round(f.px / 14));
     if (f.under) g.fillRect(left, base + 2, x.w, t);
     if (f.strike) g.fillRect(left, base - f.px * 0.3, x.w, t);
+  }
+}
+
+/** g.link for each link line ln (at top, column at X) of paragraph
+ *  p shows (the header). */
+function linkBoxes(L, g, ln, top, X, p) {
+  const xs = p && p.inlines, boxes = new Map();
+  if (!xs) return;
+  for (const x of ln.items) {
+    if (x.kind !== 'link' || !(x.w >= 0)) continue;
+    const off = x.from < x.to ? x.from : x.from - 1;
+    const b = boxes.get(off);
+    if (b) {
+      b[0] = Math.min(b[0], x.x);
+      b[1] = Math.max(b[1], x.x + x.w);
+    } else boxes.set(off, [x.x, x.x + x.w]);
+  }
+  for (const [off, [a, z]] of boxes) {
+    const node = xs[off];
+    const t = isLink(node) ? linkTarget(L.doc, node) : null;
+    if (t) g.link(t, X + a, top, X + z, top + ln.h);
   }
 }
 

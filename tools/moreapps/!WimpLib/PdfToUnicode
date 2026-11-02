@@ -1,0 +1,60 @@
+// PdfToUnicode - the ToUnicode CMap of a PDF font, which lets a
+// reader copy and search its text. See ./PdfFont, which re-exports
+// it.
+//
+//   toUnicodeCmap(map) -> text  a ToUnicode CMap for Map cid -> code
+//       point: bfrange for runs, bfchar for the rest, 100 a block,
+//       UTF-16BE (surrogate pairs above U+FFFF)
+//
+// A range keeps the CID's high byte and the code's, and covers BMP
+// code points only. Pure: no desktop services.
+
+const HEX = '0123456789ABCDEF';
+const hex4 = (n) => HEX[(n >> 12) & 15] + HEX[(n >> 8) & 15] +
+  HEX[(n >> 4) & 15] + HEX[n & 15];
+
+/** A code point as UTF-16BE hex. */
+function utf16(cp) {
+  if (cp < 0x10000) return hex4(cp);
+  const c = cp - 0x10000;
+  return hex4(0xd800 + (c >> 10)) + hex4(0xdc00 + (c & 0x3ff));
+}
+
+/** Lines of `n begin<kind> ... end<kind>` blocks of 100. */
+function blocks(kind, entries) {
+  let out = '';
+  for (let i = 0; i < entries.length; i += 100) {
+    const part = entries.slice(i, i + 100);
+    out += part.length + ' begin' + kind + '\n' + part.join('\n') +
+      '\nend' + kind + '\n';
+  }
+  return out;
+}
+
+/** See the header. */
+export function toUnicodeCmap(map) {
+  const cidsSorted = [...map.keys()].sort((a, b) => a - b);
+  const chars = [], ranges = [];
+  for (let i = 0; i < cidsSorted.length;) {
+    const c0 = cidsSorted[i], u0 = map.get(c0);
+    let k = i + 1;
+    // a range keeps the CID's high byte and the code's (BMP only)
+    while (u0 < 0xd800 && k < cidsSorted.length &&
+      cidsSorted[k] === c0 + (k - i) &&
+      map.get(cidsSorted[k]) === u0 + (k - i) &&
+      (cidsSorted[k] >> 8) === (c0 >> 8) &&
+      (map.get(cidsSorted[k]) >> 8) === (u0 >> 8)) k++;
+    if (k - i > 1) {
+      ranges.push('<' + hex4(c0) + '> <' + hex4(cidsSorted[k - 1]) +
+        '> <' + utf16(u0) + '>');
+    } else chars.push('<' + hex4(c0) + '> <' + utf16(u0) + '>');
+    i = k;
+  }
+  return '/CIDInit /ProcSet findresource begin\n12 dict begin\n' +
+    'begincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS)' +
+    ' /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n' +
+    '/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\n' +
+    'endcodespacerange\n' + blocks('bfchar', chars) +
+    blocks('bfrange', ranges) + 'endcmap\n' +
+    'CMapName currentdict /CMap defineresource pop\nend\nend\n';
+}

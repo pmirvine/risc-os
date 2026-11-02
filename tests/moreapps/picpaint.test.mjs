@@ -7,12 +7,18 @@ import assert from 'node:assert/strict';
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {docMap, pictureOf, EMU_PX}
   from '../../tools/moreapps/!Letters/PicRead';
-import {paintPic, LABEL} from '../../tools/moreapps/!Letters/PicPaint';
+import {paintPic, LABEL, framed}
+  from '../../tools/moreapps/!Letters/PicPaint';
 import {paint} from '../../tools/moreapps/!Letters/DocPaint';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {TextMetrics} from '../../tools/moreapps/!WimpLib/TextMetrics';
 import {picDocx, pngBytes, gifBytes} from './pic-fixtures.mjs';
 import {shifted} from './place-fixture.mjs';
+import {Pages} from '../../tools/moreapps/!Letters/Pages';
+import {PlacePrint} from '../../tools/moreapps/!Letters/PlacePrint';
+import {printGalley} from '../../tools/moreapps/!Letters/PageHF';
+import {paintPage, paintPages}
+  from '../../tools/moreapps/!Letters/PagePaint';
 
 /** A fake 2D context: every call and property set, in order. */
 function fakeG() {
@@ -280,5 +286,81 @@ describe('PicPaint', () => {
     const base = L.items[0].y + ln.y + ln.base;
     assert.deepEqual(g.calls[i].slice(6), [L.left + it.x, base - 100,
       200, 100]);
+  });
+});
+
+// Batch G1 (PDF export): the dashed outline of a floating picture
+// shown in its paragraph is left out under framed(false) (paintPage's
+// {marks: false}, the PDF's), and drawn as before otherwise (marks
+// not given or true, and the screen's paintPages)
+describe('PicPaint: the dashed outline and marks', () => {
+  const READY = {state: 'ready', bitmap: {width: 4, height: 2}};
+  const dashes = (calls) => calls.filter((c) => c[0] === 'setLineDash')
+    .map((c) => c[1]);
+
+  it('paintPic: none under framed(false), as before otherwise',
+    async () => {
+      const {doc, item} = await picItem({pics: [{kind: 'anchor'}]});
+      for (const answer of [READY, {state: 'pending'}]) {
+        const calls = () => {
+          const g = fakeG();
+          paintPic({doc, pics: fakePics(answer)}, g, item, 10, 200);
+          return g.calls;
+        };
+        const before = calls();
+        assert.deepEqual(dashes(before), [[4, 3], []]);
+        assert.deepEqual(framed(true, calls), before);
+        const off = framed(false, calls);
+        assert.deepEqual(dashes(off), []);
+        // the outline's calls are all that is left out
+        const i = before.findIndex((c) => c[0] === 'set strokeStyle' &&
+          c[1] === '#606060');
+        assert.deepEqual(off, before.slice(0, i));
+        assert.deepEqual(calls(), before);       // (put back)
+      }
+    });
+
+  it('framed puts the setting back when fn throws', async () => {
+    const {doc, item} = await picItem({pics: [{kind: 'anchor'}]});
+    assert.throws(() => framed(false, () => {
+      throw new Error('x');
+    }), /x/);
+    const g = fakeG();
+    paintPic({doc, pics: fakePics(READY)}, g, item, 10, 200);
+    assert.deepEqual(dashes(g.calls), [[4, 3], []]);
+  });
+
+  it('paintPage: none with marks false; drawn without marks and with ' +
+    'marks on; the screen\'s paintPages unchanged', async () => {
+    // (floats off: the floating picture is shown in its paragraph)
+    const doc = await readDocx(await picDocx({pics: [{kind:
+      'anchor'}]}));
+    const L = new DocLayout(doc, new TextMetrics((t) => 8 * t.length),
+      null, {floats: false, pics: fakePics(READY)});
+    L.layout(900);
+    const P = new Pages(printGalley(L));
+    L.place = PlacePrint(L, P);
+    L.layout(900);
+    P.finish();
+    const run = (opts) => {
+      const g = fakeG();
+      paintPage(P, 0, g, {place: L.place, ...opts});
+      return g.calls;
+    };
+    assert.equal(named({calls: run({})}, 'drawImage').length, 1);
+    assert.deepEqual(dashes(run({marks: false})), []);
+    assert.deepEqual(dashes(run({})), [[4, 3], []]);
+    assert.deepEqual(dashes(run({marks: true})), [[4, 3], []]);
+    const without = run({marks: false}), all = run({});
+    const i = all.findIndex((c) => c[0] === 'set strokeStyle' &&
+      c[1] === '#606060');
+    assert.deepEqual(without, [...all.slice(0, i),
+      ...all.slice(i + 5)]);
+    const rect = {x0: 0, y0: 0, x1: 4000, y1: 4000};
+    for (const marks of [undefined, false, true]) {
+      const g = fakeG();
+      paintPages(L, g, rect, {marks});
+      assert.deepEqual(dashes(g.calls), [[4, 3], []], String(marks));
+    }
   });
 });

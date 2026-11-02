@@ -92,6 +92,12 @@ fs.writeFileSync(path.join(OUT, 'Licences'),
   'software under the SIL Open Font License 1.1 (full texts below). They\n' +
   'have the same character widths as Calibri, Cambria, Arial, Times New\n' +
   'Roman and Courier New so documents break lines as they do in Word.\n' +
-  'Fetched by tools/moreapps-fonts.mjs.\n\n' + notices.join('\n'));
+  'Fetched by tools/moreapps-fonts.mjs.\n' +
+  'The PDFs that Export as PDF... (window menu) writes hold subsets of\n' +
+  'these fonts, which the OFL allows. The RISC OS fonts Homerton,\n' +
+  'Trinity and Corpus are not covered by this file: the PDFs hold them\n' +
+  'whole, under\n' +
+  'their own terms, which this repository does not record.\n' +
+  '\n' + notices.join('\n'));
 fs.rmSync(path.join(CACHE, 'x'), {recursive: true, force: true});
 console.log(`${count} fonts, ${total} bytes (${(total / 1048576).toFixed(2)} MB) in tools/moreapps/!Letters/Fonts (TTF)`);

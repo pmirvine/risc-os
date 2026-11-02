@@ -1,0 +1,195 @@
+// PdfFiles - which font file draws a canvas `font` string, for the
+// PDF export (FontSet's loader).
+//
+//   parseFont(css) -> {family, families, px, bold, italic}
+//       css is what the painters set as ctx.font: [italic|oblique]
+//       [bold|weight] <n>px <family list>, e.g.
+//       italic bold 16px "Liberation Sans", sans-serif. family is
+//       the first name (quotes removed), families all of them.
+//       Any weight of 600 or more is bold. Sizes in px, or pt at
+//       4/3 px; px is 0 for no size, a zero, negative or hex one,
+//       and the family list is still read.
+//       Never throws; read by hand, no regular expressions
+//   keyOf(css) -> {family, bold, italic, px}
+//       family is the face the screen draws: the first name of the
+//       list that is a bundled family (through FontMap.substitute)
+//       or Homerton, Trinity or Corpus; the generics serif and
+//       monospace give Liberation Serif / Mono; Liberation Sans
+//       when none is
+//   fileLoader({readBytes, fetchBytes, dir, base}) -> loader(key)
+//       loader(key) -> Promise<{bytes, kind} | null>, once per face
+//       (a second call gets the first one's answer, also one made
+//       while the first is still reading; a null answer is not kept:
+//       the next call tries the file again). Bundled
+//       families: readBytes(dir + '.' + FontMap.fontFile(..)); the
+//       RISC OS ones: fetchBytes(base + '/<Family>-<Style>.otf'),
+//       base defaulting to 'assets/fonts', Style Medium, Bold,
+//       MediumItalic or BoldItalic. null for a file that cannot be
+//       read or is not a TrueType / OpenType font
+
+import {substitute, fontFile, bundledFamilies} from './FontMap';
+import {parseSfnt} from 'wimplib/PdfFont';
+
+const RISCOS = new Set(['Homerton', 'Trinity', 'Corpus']);
+const GENERIC = new Map([
+  ['serif', 'Liberation Serif'], ['monospace', 'Liberation Mono'],
+  ['sans-serif', 'Liberation Sans'],
+]);
+
+const isSpace = (c) => c === ' ' || c === '\t' || c === '\n' ||
+  c === '\r' || c === '\f';
+
+/** Split on spaces at the top level; a quoted piece stays whole. */
+function words(s) {
+  const out = [];
+  let cur = '';
+  let q = '';
+  for (const c of s) {
+    if (q) { cur += c; if (c === q) q = ''; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (isSpace(c)) { if (cur) out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** A family list: comma separated, names maybe quoted. */
+function names(s) {
+  const out = [];
+  let cur = '';
+  let q = '';
+  const flush = () => {
+    const n = cur.trim();
+    if (n) out.push(n);
+    cur = '';
+  };
+  for (const c of s) {
+    if (q) { if (c === q) q = ''; else cur += c; continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (c === ',') { flush(); continue; }
+    cur += c;
+  }
+  flush();
+  return out;
+}
+
+/** A plain decimal: digits with at most one point, no sign. */
+function plain(s) {
+  let dots = 0;
+  let digits = 0;
+  for (const c of s) {
+    if (c === '.') dots++;
+    else if (c >= '0' && c <= '9') digits++;
+    else return false;
+  }
+  return digits > 0 && dots <= 1;
+}
+
+/**
+ * A size word: 'px' or 'pt' after a plain number, maybe followed by
+ * /line-height. -> {px, ok}, or null when it is not size-shaped
+ * (ok false: shaped like one but 0, negative, hex...: no size).
+ */
+function sizeOf(tok) {
+  const t = tok.toLowerCase();
+  const slash = t.indexOf('/');
+  const s = slash < 0 ? t : t.slice(0, slash);
+  const unit = s.slice(-2);
+  if (unit !== 'px' && unit !== 'pt') return null;
+  const num = s.slice(0, -2);
+  if (!plain(num)) return {px: 0, ok: false};
+  const n = Number(num);
+  if (!(n > 0) || !Number.isFinite(n)) return {px: 0, ok: false};
+  return {px: unit === 'pt' ? n * 4 / 3 : n, ok: true};
+}
+
+const STYLE_WORDS = new Set(['italic', 'oblique', 'normal', 'bold',
+  'bolder', 'lighter', 'small-caps']);
+
+function weightWord(l) {
+  return plain(l) && Number(l) >= 1 && Number(l) <= 1000;
+}
+
+export function parseFont(css) {
+  const out = {family: '', families: [], px: 0, bold: false,
+    italic: false};
+  if (typeof css !== 'string') return out;
+  const ws = words(css);
+  let i = 0;
+  for (; i < ws.length; i++) {
+    const l = ws[i].toLowerCase();
+    if (l === 'italic' || l === 'oblique') out.italic = true;
+    else if (l === 'bold' || l === 'bolder') out.bold = true;
+    else if (weightWord(l)) { if (Number(l) >= 600) out.bold = true; }
+    else if (!STYLE_WORDS.has(l)) break;
+  }
+  // i is the size word, or the first family word when none
+  const sz = i < ws.length ? sizeOf(ws[i]) : null;
+  if (sz) {
+    out.px = sz.px;
+    i++;
+  }
+  out.families = names(ws.slice(i).join(' '));
+  out.family = out.families[0] || '';
+  return out;
+}
+
+function faceFor(name) {
+  const l = name.toLowerCase();
+  if (GENERIC.has(l)) return GENERIC.get(l);
+  const fam = substitute(name).family;
+  if (bundledFamilies().includes(fam) || RISCOS.has(fam)) return fam;
+  return null;
+}
+
+export function keyOf(css) {
+  const p = parseFont(css);
+  let family = 'Liberation Sans';
+  for (const n of p.families) {
+    const f = faceFor(n);
+    if (f) { family = f; break; }
+  }
+  return {family, bold: p.bold, italic: p.italic, px: p.px};
+}
+
+function riscosUrl(base, key) {
+  const style = key.bold ? (key.italic ? 'BoldItalic' : 'Bold')
+    : (key.italic ? 'MediumItalic' : 'Medium');
+  return `${base}/${key.family}-${style}.otf`;
+}
+
+export function fileLoader({readBytes, fetchBytes, dir, base}) {
+  const root = base || 'assets/fonts';
+  const cache = new Map();
+  async function load(key) {
+    const bold = !!key.bold;
+    const italic = !!key.italic;
+    let family = key.family;
+    let bytes;
+    if (RISCOS.has(family)) {
+      bytes = await fetchBytes(riscosUrl(root, {family, bold, italic}));
+    } else {
+      if (!bundledFamilies().includes(family)) {
+        family = faceFor(String(family)) || 'Liberation Sans';
+      }
+      const leaf = fontFile(family, bold, italic);
+      if (!leaf) return null;
+      bytes = await readBytes(`${dir}.${leaf}`);
+    }
+    if (!bytes) return null;
+    const font = parseSfnt(bytes);
+    return font ? {bytes, kind: font.kind} : null;
+  }
+  return (key) => {
+    const k = `${key.family}|${key.bold ? 1 : 0}|${key.italic ? 1 : 0}`;
+    let p = cache.get(k);
+    if (!p) {
+      p = load(key).catch(() => null);
+      cache.set(k, p);
+      // a face that could not be read is asked for again next time
+      p.then((r) => { if (!r && cache.get(k) === p) cache.delete(k); });
+    }
+    return p;
+  };
+}

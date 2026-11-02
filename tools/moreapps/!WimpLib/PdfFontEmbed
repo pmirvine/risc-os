@@ -1,0 +1,121 @@
+// PdfFontEmbed - writes one face of a ./PdfFont FontSet as PDF
+// objects through ./PdfWrite's PdfWriter. Used by ./PdfFont.
+//
+//   embedFace(writer, f)  writes the face f's Type0 font into its
+//       reserved object f.id, with its descendant CID font, font
+//       descriptor, font file and ToUnicode CMap. f: {label, id,
+//       font (./SfntParse's, or null), bytes, order (ttf: old gids
+//       by new gid), used (otf: the gids drawn), toUni (Map cid ->
+//       code point)}. Throws ./SfntSubset's Error for a TrueType
+//       file that parsed but cannot be subset
+//
+// ttf: CID = new gid of the subset (Identity-H, /CIDToGIDMap
+// /Identity), a CIDFontType2 whose FontFile2 is the subset, named
+// with a six-letter subset tag. otf: the whole file as FontFile3
+// /Subtype /OpenType under a CIDFontType0; CID = the font's own gid.
+// No font: a font of one empty glyph, half an em wide. /W comes
+// from the advances (1000 units an em). Pure: no desktop services.
+import {num, name} from './PdfText';
+import {viewOf, u8} from './SfntTables';
+import {subsetTtf, notdefTtf} from './SfntSubset';
+import {toUnicodeCmap} from './PdfToUnicode';
+
+const SYSINFO = '<< /Registry (Adobe) /Ordering (Identity)' +
+  ' /Supplement 0 >>';
+
+/** ASCII text as bytes. */
+const ascii = (s) => new TextEncoder().encode(s);
+
+/** Six capital letters from a hash of the text (the subset tag). */
+function subsetTag(s) {
+  let h = 0x811c9dc5, g = 0x01000193;
+  for (let i = 0; i < s.length; i++) {
+    h = Math.imul(h ^ s.charCodeAt(i), 0x01000193);
+    g = Math.imul(g ^ s.charCodeAt(i), 0x5bd1e995) ^ (g >>> 13);
+  }
+  let x = (h >>> 0) * 4096 + ((g >>> 0) & 4095), out = '';
+  for (let i = 0; i < 6; i++) {
+    out += String.fromCharCode(65 + (x % 26));
+    x = Math.floor(x / 26);
+  }
+  return out;
+}
+
+/** `[c [w ...] ...]` for Map cid -> width, consecutive CIDs grouped. */
+function widthArray(w) {
+  const cs = [...w.keys()].sort((a, b) => a - b);
+  let out = '[';
+  for (let i = 0; i < cs.length;) {
+    let k = i + 1;
+    while (k < cs.length && cs[k] === cs[k - 1] + 1) k++;
+    out += (i ? ' ' : '') + cs[i] + ' [' +
+      cs.slice(i, k).map((c) => num(w.get(c))).join(' ') + ']';
+    i = k;
+  }
+  return out + ']';
+}
+
+/** The descendant font of a face with no font file: one glyph. */
+function emptyFont(w, f) {
+  const safe = [...f.label].filter((ch) => ch > ' ' && ch < '\x7f')
+    .join('') || 'Font';
+  const base = subsetTag(f.label) + '+' + safe;
+  const file = notdefTtf();
+  const fd = w.add('<< /Type /FontDescriptor /FontName ' +
+    name(base) + ' /Flags 4 /FontBBox [0 -200 500 800]' +
+    ' /ItalicAngle 0 /Ascent 800 /Descent -200 /CapHeight 700' +
+    ' /StemV 80 /FontFile2 ' + w.stream({Length1: String(
+      file.length)}, file) + ' 0 R >>');
+  const cidFont = w.add('<< /Type /Font /Subtype /CIDFontType2' +
+    ' /BaseFont ' + name(base) + ' /CIDSystemInfo ' + SYSINFO +
+    ' /FontDescriptor ' + fd + ' 0 R /W [0 [500]]' +
+    ' /CIDToGIDMap /Identity >>');
+  return {base, cidFont};
+}
+
+/** The descendant font of a face with its font file. */
+function fileFont(w, f) {
+  const font = f.font;
+  const k = 1000 / font.unitsPerEm;
+  const widths = new Map();
+  let base, file, sub = '', type;
+  if (font.kind === 'ttf') {
+    const s = subsetTtf(f.bytes, new Set(f.order));
+    f.order.forEach((g, i) => widths.set(i, font.advance(g) * k));
+    base = subsetTag(font.name + ':' + f.order.join(',')) + '+' +
+      font.name;
+    file = '/FontFile2 ' + w.stream({Length1: String(
+      s.bytes.length)}, s.bytes) + ' 0 R';
+    sub = ' /CIDToGIDMap /Identity';
+    type = '/CIDFontType2';
+  } else {
+    for (const g of f.used) widths.set(g, font.advance(g) * k);
+    base = font.name;
+    const bytes = f.bytes instanceof Uint8Array ? f.bytes
+      : u8(viewOf(f.bytes));
+    file = '/FontFile3 ' + w.stream({Subtype: '/OpenType'},
+      bytes) + ' 0 R';
+    type = '/CIDFontType0';
+  }
+  const fd = w.add('<< /Type /FontDescriptor /FontName ' +
+    name(base) + ' /Flags ' + font.flags + ' /FontBBox [' +
+    font.bbox.map((x) => num(x * k)).join(' ') + '] /ItalicAngle ' +
+    num(font.italicAngle) + ' /Ascent ' + num(font.ascent * k) +
+    ' /Descent ' + num(font.descent * k) + ' /CapHeight ' +
+    num(font.capHeight * k) + ' /StemV ' +
+    (font.weight >= 600 ? 140 : 80) + ' ' + file + ' >>');
+  const cidFont = w.add('<< /Type /Font /Subtype ' + type +
+    ' /BaseFont ' + name(base) + ' /CIDSystemInfo ' + SYSINFO +
+    ' /FontDescriptor ' + fd + ' 0 R /W ' + widthArray(widths) +
+    sub + ' >>');
+  return {base, cidFont};
+}
+
+/** See the header. */
+export function embedFace(w, f) {
+  const tu = w.stream({}, ascii(toUnicodeCmap(f.toUni)));
+  const {base, cidFont} = f.font ? fileFont(w, f) : emptyFont(w, f);
+  w.put(f.id, '<< /Type /Font /Subtype /Type0 /BaseFont ' +
+    name(base) + ' /Encoding /Identity-H /DescendantFonts [' +
+    cidFont + ' 0 R] /ToUnicode ' + tu + ' 0 R >>');
+}

@@ -1,0 +1,285 @@
+// PdfBox - the window menu's Export as PDF... (Batch G1): the box
+// that writes the document's Print layout pages as a PDF file
+// (./PdfExport), changing nothing in the window (its document,
+// undo, '*' stay).
+//
+//   pdfBox(dw) -> the box's api (WimpLib Ui/Dialog), one per
+//       document (key 'pdf:<docKey>', dw.boxes 'pdf': ./CloseDoc
+//       deletes it with the document); asked again while open, the
+//       same box to the front. Pages: All, or From / To (number
+//       fields, shaded with All; typing in one picks From). A line
+//       naming the markup the pages show (markupLine of dw.markup,
+//       the window's Show Markup view: the PDF shows that), and a
+//       note that the blank pages an odd or even page section break
+//       leaves are counted in the numbers.
+//       OK: the range read (rangeOf; refused: a beep, why in the
+//       box, nothing more), then the save box (dw.boxes 'pdfsave',
+//       a core saveAs: name pdfName, file type &ADF, Replace /
+//       Cancel for a file that is there: ./Replace guardOK; the file
+//       of another open window, and the window's own document file,
+//       refused: refusal, from ./DocSave canWrite). Its
+//       save runs the export, the progress in the box ('Preparing
+//       pages...', 'Page n of N' while page n is made,
+//       'Writing...'), OK and the fields shaded; Cancel, the close
+//       icon or the window closing stops it (an AbortSignal):
+//       nothing written, nothing said, both boxes closed. Done: the
+//       file written (a failure said as Save a copy says it:
+//       DocSave notSaved, the boxes kept), the boxes closed, and the
+//       export's notes (characters the fonts lack, pictures left
+//       out) said in one information notice. Another error (no
+//       pages to export) is said by the save box's error box, the
+//       boxes kept. An input method's composing text is not put in
+//       first (the export never edits the document).
+//   rangeOf(values, count) -> {from, to} | {bad}  exportPdf's from
+//       and to from the box's values: All every page (1 to
+//       Infinity); From / To clamped to 1..count (count null when
+//       not known: To then unclamped, the export ends at its last
+//       page), an empty field the end of its side; text that is not
+//       a number, or From after To, {bad: why}
+//   markupLine(mode) -> 'Markup: final text', 'Markup: all markup
+//       shown' or 'Markup: original text' (./RevView's modes)
+//   pdfName(dw, dir, exists) -> the save box's name: the document's
+//       path (an untitled one: ./SaveState suggestName's) with its
+//       '/docx' (any case) put as '/pdf', or '/pdf' added
+//
+// The fonts: ./PdfFiles fileLoader, one per program run: the bundled
+// TrueType files from the application's Fonts directory (vfs, as
+// ./FontLoad reads them), the RISC OS ones fetched from
+// assets/fonts. The export's slices yield to requestAnimationFrame
+// or 100 ms, whichever comes first (a hidden page has no frames).
+import {wimp, vfs, saveAs, reportError} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {suggestName, defaultDir, leafOf} from './SaveState';
+import {canWrite, notSaved} from './DocSave';
+import {guardOK} from './Replace';
+import {exportPdf} from './PdfExport';
+import {fileLoader} from './PdfFiles';
+
+const PDF = 0xADF;
+const MAX = 99999;
+const WAIT_MS = 100;
+const there = (p) => { try { return vfs.exists(p); } catch (e) {
+  return false; } };
+const num = (name, label, help) => ({kind: 'number', name, label,
+  min: 0, max: MAX, decimals: 0, w: 80, help});
+const rows = () => [
+  {kind: 'label', text: 'Pages'},
+  {kind: 'radio', name: 'all', group: 'pages', value: 'all',
+    text: 'All', help: 'Export every page.'},
+  [{kind: 'radio', name: 'range', group: 'pages', value: 'range',
+    text: 'From', help: 'Export only the pages From to To.'},
+  num('from', undefined, 'The first page to export (empty: the ' +
+    'first).'),
+  num('to', 'To', 'The last page to export (empty: the last).')],
+  {kind: 'label', name: 'markup', text: '', w: 460},
+  {kind: 'label', text: 'Blank pages left by odd and even page',
+    w: 460},
+  {kind: 'label', text: 'section breaks are counted in the numbers.',
+    w: 460},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+const HELP = 'Export as PDF: this document\'s pages as a PDF file, ' +
+  'as Print layout shows them.';
+const MARKUP = {final: 'final text', all: 'all markup shown',
+  original: 'original text'};
+const RUNNING = 'The PDF is being made: wait for it, or click ' +
+  'Cancel in the Export as PDF box.';
+const state = new WeakMap();           // api -> {range, ctrl}
+const live = new WeakMap();            // dw -> {api, st}: its box now
+const loaders = new WeakMap();         // app -> font loader
+const say = (m) => reportError(m, {appName: 'Letters',
+  category: 'info'});
+
+/** See the header. */
+export function markupLine(mode) {
+  return 'Markup: ' + (MARKUP[mode] || MARKUP.final);
+}
+
+/** See the header. */
+export function rangeOf(values, count) {
+  if (values.pages !== 'range') return {from: 1, to: Infinity};
+  const {from, to} = values;
+  if (from === null) return {bad: 'From is not a page number.'};
+  if (to === null) return {bad: 'To is not a page number.'};
+  const top = count > 0 ? count : Infinity;
+  const a = Math.min(Math.max(1, from === undefined ? 1 : from), top);
+  const b = to === undefined ? top : Math.min(Math.max(1, to), top);
+  if (a > b) return {bad: 'From is after To: no pages to export.'};
+  return {from: a, to: b};
+}
+
+/** See the header. */
+export function pdfName(dw, dir, exists) {
+  const p = suggestName(dw, dir, exists);
+  const i = Math.max(p.lastIndexOf('.'), p.lastIndexOf(':')) + 1;
+  const leaf = p.slice(i);
+  const stem = leaf.toLowerCase().endsWith('/docx')
+    ? leaf.slice(0, -5) : leaf;
+  return p.slice(0, i) + (stem || 'Untitled') + '/pdf';
+}
+
+/** The window's page count when Print layout has them all, else
+ *  null. */
+function countOf(dw) {
+  const P = dw.viewName === 'print' ? dw.pages : null;
+  return P && P.done ? P.count : null;
+}
+
+/** The program's font loader (made once). */
+function loaderOf(app) {
+  let l = loaders.get(app);
+  if (!l) {
+    l = fileLoader({dir: `${app.dir}.Fonts`,
+      readBytes: (p) => vfs.readFile(p),
+      fetchBytes: async (url) => {
+        const r = await fetch(url);
+        return r.ok ? new Uint8Array(await r.arrayBuffer()) : null;
+      }});
+    loaders.set(app, l);
+  }
+  return l;
+}
+
+/** A frame, or WAIT_MS, whichever comes first. */
+function raf(cb) {
+  let done = false;
+  const go = () => { if (!done) { done = true; cb(); } };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(go);
+  }
+  setTimeout(go, WAIT_MS);
+}
+
+/** See the header. */
+export function pdfBox(dw) {
+  const api = dialog({task: dw.app.task, key: `pdf:${dw.docKey}`,
+    title: 'Export as PDF', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK', minW: 500});
+  box(dw, 'pdf', () => api.win);
+  if (api.isOpen) return api;
+  if (!state.has(api)) wire(api, dw);
+  api.set('pages', 'all');
+  api.set('from', undefined);
+  api.set('to', undefined);
+  api.set('markup', markupLine(dw.markup));
+  api.set('msg', '');
+  shading(api);
+  api.open();
+  return api;
+}
+
+/** Shade what is not in use. */
+function shading(api) {
+  const st = state.get(api), busy = !!(st && st.ctrl);
+  const off = busy || api.get('pages') !== 'range';
+  api.shade('from', off);
+  api.shade('to', off);
+  api.shade('all', busy);
+  api.shade('range', busy);
+  api.shade('OK', busy);
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  const st = {range: null, ctrl: null};
+  state.set(api, st);
+  live.set(dw, {api, st});
+  api.on('change', ({name}) => {
+    if ((name === 'from' || name === 'to') &&
+      api.get('pages') !== 'range') api.set('pages', 'range');
+    shading(api);
+  });
+  api.on('close', () => {
+    if (st.ctrl) st.ctrl.abort();
+    const b = dw.boxes.get('pdfsave');
+    if (b && b.isOpen) b.close();
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'OK') return undefined;
+    const r = rangeOf(values, countOf(dw));
+    if (r.bad) {
+      wimp.beep();
+      api.set('msg', r.bad);
+      api.focus(/^To/.test(r.bad) ? 'to' : 'from');
+      return false;
+    }
+    st.range = r;
+    api.set('msg', '');
+    const b = saveBox(dw);
+    b.setFilename(pdfName(dw, defaultDir(dw.app.recent), there));
+    b.openCentred();
+    return false;
+  });
+}
+
+/** Why a PDF may not be written to path, or null: the file of
+ *  another open window (DocSave canWrite), or this window's own
+ *  document (the .docx on disc must not become a PDF). */
+export function refusal(dw, path) {
+  const other = dw.app.docs.get(dw.app.keyOf(path));
+  if (other === dw) {
+    return `'${leafOf(path)}' is this document's own file: export ` +
+      'the PDF under another name.';
+  }
+  return canWrite(dw, path);
+}
+
+/** The save box OK opens: its save runs the export. Made once and
+ *  kept while the Export as PDF box comes and goes, so its save
+ *  looks up the box there is now (live), never the one it was made
+ *  for. */
+function saveBox(dw) {
+  return box(dw, 'pdfsave', () => {
+    const b = saveAs({task: dw.app.task, title: 'Export as PDF',
+      filename: pdfName(dw, defaultDir(dw.app.recent), there),
+      filetype: PDF, getData: () => new Uint8Array(0),
+      save: async (path) => {
+        const why = refusal(dw, path);
+        if (why) throw new Error(why);
+        const now = live.get(dw);
+        if (!now || now.api.gone || dw.closed) return;
+        const {api, st} = now;
+        if (st.ctrl) throw new Error(RUNNING);
+        const out = await run(dw, api, st);
+        if (!out) return;              // (stopped: nothing said)
+        if (refusal(dw, path)) throw new Error(refusal(dw, path));
+        try {
+          vfs.writeFile(path, out.bytes, {filetype: PDF});
+        } catch (e) {
+          throw notSaved(leafOf(path), e);
+        }
+        api.delete();
+        if (out.notes.length) say(out.notes.join('\n'));
+      }});
+    guardOK(b, dw.app.task, (p) => !!refusal(dw, p));
+    return b;
+  });
+}
+
+/** The export with its progress in the box: its result, or null
+ *  when it was stopped (the box gone, or the window closed). */
+async function run(dw, api, st) {
+  const ctrl = new AbortController();
+  st.ctrl = ctrl;
+  shading(api);
+  const show = (t) => { if (!api.gone) api.set('msg', t); };
+  try {
+    const out = await exportPdf(dw, {...st.range,
+      loader: loaderOf(dw.app), signal: ctrl.signal, raf,
+      onProgress: (k, n, phase) => {
+        if (phase === 'preparing') show('Preparing pages...');
+        else if (phase === 'writing') show('Writing...');
+        else if (k < n) show(`Page ${k + 1} of ${n}`);
+      }});
+    return ctrl.signal.aborted || dw.closed || api.gone ? null : out;
+  } catch (e) {
+    if (ctrl.signal.aborted || dw.closed || api.gone ||
+      (e && e.name === 'AbortError')) return null;
+    throw e;
+  } finally {
+    st.ctrl = null;
+    show('');
+    if (!api.gone) shading(api);
+  }
+}

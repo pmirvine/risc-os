@@ -1,0 +1,183 @@
+// SfntSubset - writes TrueType files: a subset of a font's glyphs,
+// and a font of one empty glyph. See ./PdfFont, which re-exports
+// subsetTtf.
+//
+//   subsetTtf(bytes, gids) -> {bytes, newGid}  a TrueType file of the
+//       glyphs in the Set gids (ids the font lacks are skipped). New
+//       ids: 0 for gid 0, then gids in the Set's order, then the
+//       components composite glyphs name (closed over, in the order
+//       found); newGid maps old -> new. glyf, loca (short or long
+//       as the size allows), hmtx (every glyph a full metric), hhea,
+//       maxp and head are rewritten; cvt, fpgm and prep are kept
+//       (PDF 1.7, 9.9: the glyphs' instructions call them); cmap and
+//       the rest dropped. Tables 4-byte aligned, checksums and
+//       head.checkSumAdjustment fixed. Throws Error('PdfFont: ...')
+//       for a file it cannot subset (a table outside the file, a
+//       glyph outside glyf, a composite running past its end)
+//   notdefTtf() -> bytes  a TrueType file with one empty glyph
+//       (.notdef, half an em wide, 1000 units an em)
+//
+// The tables are read and assembled by ./SfntTables. Pure: no
+// desktop services.
+import {viewOf, u8, kindOf, directory, need, assemble}
+  from './SfntTables';
+
+const KEEP = ['cvt ', 'fpgm', 'prep'];
+
+/**
+ * Calls fn(offset of its glyph index) for each component of the
+ * composite glyph at [start, end) of the view; nothing for a simple
+ * glyph.
+ */
+function eachComponent(v, start, end, fn) {
+  if (end - start < 10 || v.getInt16(start) >= 0) return;
+  let p = start + 10, flags;
+  do {
+    if (p + 4 > end) {
+      throw new Error('PdfFont: composite glyph runs past its end');
+    }
+    flags = v.getUint16(p);
+    fn(p + 2);
+    p += 4 + (flags & 1 ? 4 : 2);
+    if (flags & 8) p += 2;
+    else if (flags & 0x40) p += 4;
+    else if (flags & 0x80) p += 8;
+    if (p > end) {
+      throw new Error('PdfFont: composite glyph runs past its end');
+    }
+  } while (flags & 0x20);
+}
+
+/** See the header. */
+export function subsetTtf(bytes, gids) {
+  const v = viewOf(bytes);
+  if (!v) throw new Error('PdfFont: not a font file');
+  if (kindOf(v) !== 'ttf') {
+    throw new Error('PdfFont: not a TrueType font');
+  }
+  const t = directory(v);
+  const b = u8(v);
+  const head = need(t, 'head', 54), hhea = need(t, 'hhea', 36);
+  const maxp = need(t, 'maxp', 6);
+  const numGlyphs = v.getUint16(maxp.off + 4);
+  const nhm = v.getUint16(hhea.off + 34);
+  if (!numGlyphs || !nhm || nhm > numGlyphs) {
+    throw new Error('PdfFont: bad glyph counts');
+  }
+  const hmtx = need(t, 'hmtx', 4 * nhm);
+  const long = v.getInt16(head.off + 50) === 1;
+  const loca = need(t, 'loca', (numGlyphs + 1) * (long ? 4 : 2));
+  const glyf = need(t, 'glyf', 0);
+  const locaAt = (i) => long ? v.getUint32(loca.off + 4 * i)
+    : 2 * v.getUint16(loca.off + 2 * i);
+  const range = (g) => {
+    const s = locaAt(g), e = locaAt(g + 1);
+    if (s > e || e > glyf.len) {
+      throw new Error('PdfFont: glyph ' + g + ' lies outside glyf');
+    }
+    return [glyf.off + s, glyf.off + e];
+  };
+
+  const order = [0];
+  const newGid = new Map([[0, 0]]);
+  const add = (g) => {
+    if (Number.isInteger(g) && g >= 0 && g < numGlyphs &&
+      !newGid.has(g)) {
+      newGid.set(g, order.length);
+      order.push(g);
+    }
+  };
+  if (gids) for (const g of gids) add(g);
+  for (let i = 0; i < order.length; i++) {
+    const [s, e] = range(order[i]);
+    eachComponent(v, s, e, (at) => add(v.getUint16(at)));
+  }
+
+  const n = order.length;
+  const parts = order.map((g) => {
+    const [s, e] = range(g);
+    const out = new Uint8Array((e - s + 3) & ~3);
+    out.set(b.subarray(s, e));
+    const ov = new DataView(out.buffer);
+    eachComponent(ov, 0, e - s, (at) => {
+      const old = ov.getUint16(at);
+      ov.setUint16(at, newGid.has(old) ? newGid.get(old) : 0);
+    });
+    return out;
+  });
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const shortLoca = total <= 0x1fffe;
+  const newLoca = new Uint8Array((n + 1) * (shortLoca ? 2 : 4));
+  const lv = new DataView(newLoca.buffer);
+  const newGlyf = new Uint8Array(total);
+  let at = 0;
+  for (let i = 0; i <= n; i++) {
+    if (shortLoca) lv.setUint16(2 * i, at / 2);
+    else lv.setUint32(4 * i, at);
+    if (i < n) {
+      newGlyf.set(parts[i], at);
+      at += parts[i].length;
+    }
+  }
+  const newHmtx = new Uint8Array(4 * n);
+  const hv = new DataView(newHmtx.buffer);
+  order.forEach((g, i) => {
+    const m = hmtx.off + 4 * Math.min(g, nhm - 1);
+    hv.setUint16(4 * i, v.getUint16(m));
+    let lsb = 0;
+    if (g < nhm) lsb = v.getInt16(m + 2);
+    else {
+      const l = hmtx.off + 4 * nhm + 2 * (g - nhm);
+      if (l + 2 <= hmtx.off + hmtx.len) lsb = v.getInt16(l);
+    }
+    hv.setInt16(4 * i + 2, lsb);
+  });
+  const copy = (e, len) => b.slice(e.off, e.off + len);
+  const newHead = copy(head, 54);
+  const nh = new DataView(newHead.buffer);
+  nh.setUint32(8, 0);
+  nh.setInt16(50, shortLoca ? 0 : 1);
+  const newHhea = copy(hhea, 36);
+  new DataView(newHhea.buffer).setUint16(34, n);
+  const newMaxp = copy(maxp, maxp.len >= 32 ? 32 : 6);
+  new DataView(newMaxp.buffer).setUint16(4, n);
+  const out = new Map([['head', newHead], ['hhea', newHhea],
+    ['maxp', newMaxp], ['hmtx', newHmtx], ['loca', newLoca],
+    ['glyf', newGlyf]]);
+  for (const tag of KEEP) {
+    const e = t.get(tag);
+    if (e && e.len) out.set(tag, copy(e, e.len));
+  }
+  return {bytes: assemble(out), newGid};
+}
+
+/**
+ * A TrueType file with one empty glyph (.notdef, half an em wide,
+ * 1000 units an em): the font written for a face whose file could
+ * not be read, so the PDF still embeds every font it names.
+ */
+export function notdefTtf() {
+  const head = new Uint8Array(54), hv = new DataView(head.buffer);
+  hv.setUint32(0, 0x00010000);           // version
+  hv.setUint32(12, 0x5f0f3cf5);          // magicNumber
+  hv.setUint16(18, 1000);                // unitsPerEm
+  hv.setUint16(46, 8);                   // lowestRecPPEM
+  hv.setInt16(48, 2);                    // fontDirectionHint
+  const hhea = new Uint8Array(36), ev = new DataView(hhea.buffer);
+  ev.setUint32(0, 0x00010000);
+  ev.setInt16(4, 800);
+  ev.setInt16(6, -200);
+  ev.setUint16(10, 500);                 // advanceWidthMax
+  ev.setInt16(18, 1);                    // caretSlopeRise
+  ev.setUint16(34, 1);                   // numberOfHMetrics
+  const maxp = new Uint8Array(32), mv = new DataView(maxp.buffer);
+  mv.setUint32(0, 0x00010000);
+  mv.setUint16(4, 1);                    // numGlyphs
+  mv.setUint16(14, 2);                   // maxZones
+  const hmtx = new Uint8Array(4);
+  new DataView(hmtx.buffer).setUint16(0, 500);
+  return assemble(new Map([['head', head], ['hhea', hhea],
+    ['maxp', maxp], ['hmtx', hmtx], ['loca', new Uint8Array(4)],
+    ['glyf', new Uint8Array(4)]]));
+}

@@ -1,0 +1,228 @@
+// PdfFont - the fonts of a PDF: reads TrueType and OpenType (CFF)
+// font files, subsets TrueType, and writes the Type0 font objects
+// through ./PdfWrite's PdfWriter.
+//
+//   parseSfnt(bytes) -> font | null    see ./SfntParse
+//   subsetTtf(bytes, gids) -> {bytes, newGid}   see ./SfntSubset
+//   toUnicodeCmap(map) -> text         see ./PdfToUnicode
+//
+//   const fonts = new FontSet(writer, loader);
+//   await fonts.load(key)        -> true when the font file was read
+//   const f = fonts.use(key, text)
+//   f.name                       'F1', 'F2'... (page resource names)
+//   f.encode(text)               -> '<hex>' of 2-byte CIDs, for Tj
+//   f.widthOf(text, size)        -> width in size's unit
+//   f.ascent, f.descent          per unit of size
+//   f.ready                      false until the font was loaded
+//   fonts.missing                Map label -> Set of code points
+//                                drawn as gid 0 (the font has none)
+//   fonts.pending                keys used before they were loaded
+//   await fonts.loadPending()    -> how many of them it loaded
+//   const ids = await fonts.embed()   Map name -> font object id;
+//       rejects with subsetTtf's Error for a TrueType file that
+//       parsed but cannot be subset (a damaged glyf or loca)
+//
+// key {family, bold, italic} names the face; label is the family
+// with ' Bold' / ' Italic' after it. loader(key) -> Promise<{bytes,
+// kind} | null>, called once per face. use() and encode() register
+// the code points of their text (after embed() a code point not yet
+// registered throws: the subset is written); a face used before it
+// was loaded is asked for (pending) and its handle is not ready:
+// widths are guessed (half an em a character) and every character
+// is gid 0, unregistered, so the caller draws that text again once
+// loadPending() has loaded it. A character a loaded font lacks is
+// CID 0 too: the font's .notdef glyph, an empty box in most fonts.
+// A face whose file cannot be read or
+// parsed is ready with no font: everything in it is missing, widths
+// are half an em, and it is written with a font of one empty glyph
+// (nothing shows; a reader asks for no font it lacks). Each face's
+// object id is reserved when it is first used, so pages can name it
+// before embed(), which is called once, after all text is drawn.
+//
+// ttf: CID = new gid of the subset (Identity-H, /CIDToGIDMap
+// /Identity), a CIDFontType2 whose FontFile2 is the subset, named
+// with a six-letter subset tag. otf: the whole file as FontFile3
+// /Subtype /OpenType under a CIDFontType0; CID = the font's own gid,
+// since for a CFF whose Top DICT has no ROS (not CID-keyed: every
+// RISC OS font here) PDF 1.7 9.7.4.2 uses the CID as the glyph
+// index. A CID-keyed CFF would need its charset to map gids to CIDs,
+// so FontSet treats one as unreadable. Both get /W from the advances
+// (1000 units an em) and a ToUnicode CMap mapping each CID to the
+// first code point drawn with it. Kerning is not applied. Pure: no
+// desktop services.
+import {parseSfnt} from './SfntParse';
+import {hex} from './PdfText';
+import {embedFace} from './PdfFontEmbed';
+export {parseSfnt} from './SfntParse';
+export {subsetTtf} from './SfntSubset';
+export {toUnicodeCmap} from './PdfToUnicode';
+
+/** The face's label: family, then ' Bold' / ' Italic'. */
+function labelOf(key) {
+  return String(key && key.family) + (key && key.bold ? ' Bold' : '') +
+    (key && key.italic ? ' Italic' : '');
+}
+
+export class FontSet {
+  /**
+   * @param {object} writer a PdfWriter
+   * @param {(key: object) => Promise<{bytes, kind} | null>} loader
+   */
+  constructor(writer, loader) {
+    this.writer = writer;
+    this.loader = loader;
+    this.faces = new Map();           // label -> face
+    this.missing = new Map();         // label -> Set of code points
+    this.embedded = false;
+  }
+
+  /** The face for a key, made (and its object id reserved) once. */
+  face(key) {
+    const label = labelOf(key);
+    let f = this.faces.get(label);
+    if (!f) {
+      f = {label, key: {family: key && key.family,
+        bold: !!(key && key.bold), italic: !!(key && key.italic)},
+      name: 'F' + (this.faces.size + 1), id: this.writer.reserve(),
+      state: 'new', loading: null, font: null, bytes: null,
+      gidOf: new Map(), cidOf: new Map(), order: [0],
+      newGid: new Map([[0, 0]]), toUni: new Map(), used: new Set([0]),
+      handle: null};
+      this.faces.set(label, f);
+    }
+    return f;
+  }
+
+  /** Loads a face's file; true when it is usable. */
+  async load(key) {
+    const f = this.face(key);
+    if (f.state === 'new') {
+      f.state = 'loading';
+      f.loading = (async () => {
+        let got = null;
+        try {
+          got = await this.loader(f.key);
+        } catch (e) {
+          got = null;
+        }
+        const font = got && got.bytes ? parseSfnt(got.bytes) : null;
+        if (font && !font.cidKeyed) {
+          f.font = font;
+          f.bytes = got.bytes;
+        }
+        f.state = 'ready';
+      })();
+    }
+    if (f.state === 'loading') await f.loading;
+    return !!f.font;
+  }
+
+  /** Keys used before their faces were loaded. */
+  get pending() {
+    const out = [];
+    for (const f of this.faces.values()) {
+      if (f.state !== 'ready') out.push(f.key);
+    }
+    return out;
+  }
+
+  /** Loads the pending faces; how many were loaded. */
+  async loadPending() {
+    const keys = this.pending;
+    for (const k of keys) await this.load(k);
+    return keys.length;
+  }
+
+  /** The CID for a code point, registering it. */
+  cid(f, cp) {
+    let c = f.cidOf.get(cp);
+    if (c !== undefined) return c;
+    if (this.embedded) {
+      throw new Error('PdfFont: encode() after embed()');
+    }
+    const g = f.font ? f.font.glyphFor(cp) : 0;
+    if (!g) {
+      c = 0;
+      let set = this.missing.get(f.label);
+      if (!set) this.missing.set(f.label, set = new Set());
+      set.add(cp);
+    } else if (f.font.kind === 'otf') {
+      c = g;
+      f.used.add(g);
+    } else {
+      if (!f.newGid.has(g)) {
+        f.newGid.set(g, f.order.length);
+        f.order.push(g);
+      }
+      c = f.newGid.get(g);
+    }
+    if (c && !f.toUni.has(c)) f.toUni.set(c, cp);
+    f.cidOf.set(cp, c);
+    return c;
+  }
+
+  /** Width of text in the face, in size's unit. */
+  width(f, text, size) {
+    if (!f.font) return [...String(text)].length * size / 2;
+    let w = 0;
+    for (const ch of String(text)) {
+      const cp = ch.codePointAt(0);
+      let g = f.gidOf.get(cp);
+      if (g === undefined) {
+        g = f.font.glyphFor(cp);
+        f.gidOf.set(cp, g);
+      }
+      w += f.font.advance(g);
+    }
+    return w * size / f.font.unitsPerEm;
+  }
+
+  /** See the header. */
+  use(key, text) {
+    if (this.embedded) {
+      throw new Error('PdfFont: use() after embed()');
+    }
+    const f = this.face(key);
+    if (f.state === 'new') this.load(f.key);
+    const ready = f.state === 'ready';
+    if (ready) {
+      for (const ch of String(text)) this.cid(f, ch.codePointAt(0));
+    }
+    if (!f.handle || f.handle.ready !== ready) {
+      const font = f.font;
+      f.handle = {name: f.name, ready,
+        ascent: font ? font.ascent / font.unitsPerEm : 0.8,
+        descent: font ? font.descent / font.unitsPerEm : -0.2,
+        widthOf: (t, size) => this.width(f, t, size),
+        encode: (t) => {
+          const out = [];
+          for (const ch of String(t)) {
+            const c = ready ? this.cid(f, ch.codePointAt(0)) : 0;
+            out.push(c >> 8, c & 255);
+          }
+          return hex(out);
+        }};
+    }
+    return f.handle;
+  }
+
+  /** See the header. */
+  async embed() {
+    if (this.embedded) {
+      throw new Error('PdfFont: embed() called twice');
+    }
+    await this.loadPending();
+    this.embedded = true;
+    const ids = new Map();
+    for (const f of this.faces.values()) {
+      this.embedFace(f);
+      ids.set(f.name, f.id);
+    }
+    return ids;
+  }
+
+  /** Writes one face's objects (./PdfFontEmbed). */
+  embedFace(f) {
+    embedFace(this.writer, f);
+  }
+}

@@ -15,6 +15,8 @@ import {paintPara} from '../../tools/moreapps/!Letters/ItemPaint';
 import {draftDocs, VIEW_W} from './draft-fixture.mjs';
 import {shifted} from './place-fixture.mjs';
 import {tm} from './word-docs.mjs';
+import {buildDocx, documentXml, p, r, REL, R_NS}
+  from './build-docx.mjs';
 
 const docs = {};
 before(async () => {
@@ -137,5 +139,114 @@ describe('ItemPaint paintPara: lines l0..l1 - 1', () => {
     assert.deepEqual(drawn(0, 2), [...words(0), ...words(1)]);
     assert.deepEqual(drawn(2, 2), []);
     assert.deepEqual(drawn(), it.lines.flatMap((l, k) => words(k)));
+  });
+});
+
+// The PDF's link hook (Batch G1): paintLine calls g.link(target, x0,
+// y0, x1, y1) once per link per line, only when g has a link method;
+// a canvas has none, so what it is asked is unchanged.
+
+/** A canvas-like context (a plain object, as a canvas is): every
+ *  call and property set recorded; link only when withLink. */
+function plainG(withLink) {
+  const calls = [], links = [];
+  const g = {calls, links, font: '', fillStyle: '', strokeStyle: '',
+    lineWidth: 1, measureText: (t) => ({width: 6 * t.length})};
+  for (const k of ['save', 'restore', 'translate', 'scale',
+    'beginPath', 'rect', 'clip', 'fill', 'stroke', 'moveTo',
+    'lineTo', 'fillRect', 'strokeRect', 'fillText', 'setLineDash',
+    'drawImage']) {
+    g[k] = (...a) => calls.push([k, ...a]);
+  }
+  if (withLink) g.link = (...a) => links.push(a);
+  return new Proxy(g, {set(t, k, v) {
+    calls.push(['set ' + String(k), v]);
+    t[k] = v;
+    return true;
+  }});
+}
+
+/** A document of before, a link to target, after (one paragraph). */
+async function linkDoc(text, {url, anchor, before = 'Go to ',
+  after = ' now.'} = {}) {
+  const attr = anchor !== undefined ? `w:anchor="${anchor}"`
+    : 'r:id="rIdL1"';
+  const xml = p(r(before) + `<w:hyperlink ${attr}>` +
+    `<w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr>` +
+    `<w:t xml:space="preserve">${text}</w:t></w:r></w:hyperlink>` +
+    r(after));
+  return readDocx(await buildDocx({'word/document.xml':
+    documentXml(xml, {rNs: R_NS})}, {docRels: url === undefined ? []
+    : [['rIdL1', REL('hyperlink'), url, 'External']]}));
+}
+
+describe('ItemPaint: the link hook (G1)', () => {
+  it('a canvas is asked exactly what it was before', async () => {
+    const doc = await linkDoc('the example site',
+      {url: 'https://example.com/'});
+    const L = new DocLayout(doc, tm());
+    L.layout(VIEW_W);
+    const rect = {x0: 0, y0: 0, x1: 2000, y1: L.height};
+    const a = plainG(false), b = plainG(true);
+    paint(L, a, rect);
+    paint(L, b, rect);
+    assert.ok(a.calls.length > 0);
+    assert.deepEqual(b.calls, a.calls);
+    assert.equal(b.links.length, 1);
+  });
+
+  it('one call per line box: the link\'s items, the line\'s height',
+    async () => {
+      const words = Array.from({length: 40}, (_, i) => 'word' + i)
+        .join(' ');
+      const doc = await linkDoc(words, {url: 'https://example.com/a'});
+      const L = new DocLayout(doc, tm());
+      L.layout(300);
+      const it = L.items.find((n) => n.lines && n.lines.length > 2);
+      const g = plainG(true);
+      paintPara(L, g, it, {x0: 0, y0: 0, x1: 2000, y1: L.height});
+      assert.equal(g.links.length, it.lines.length);
+      it.lines.forEach((ln, k) => {
+        const [tg, x0, y0, x1, y1] = g.links[k];
+        assert.deepEqual(tg, {url: 'https://example.com/a'});
+        const xs = ln.items.filter((x) => x.kind === 'link');
+        assert.equal(x0, it.x + Math.min(...xs.map((x) => x.x)));
+        assert.equal(x1, it.x + Math.max(...xs.map((x) => x.x + x.w)));
+        assert.ok(Math.abs(y1 - y0 - ln.h) < 1e-9 && y0 >= 0,
+          String([y0, y1]));
+        for (const v of [x0, y0, x1, y1]) {
+          assert.equal(typeof v, 'number');
+        }
+      });
+      // in order down the page
+      for (let k = 1; k < g.links.length; k++) {
+        assert.ok(g.links[k][2] >= g.links[k - 1][4]);
+      }
+    });
+
+  it('a bookmark link gives {anchor}; no address, no call',
+    async () => {
+      let doc = await linkDoc('there', {anchor: 'Sec_2'});
+      let L = new DocLayout(doc, tm());
+      L.layout(VIEW_W);
+      let g = plainG(true);
+      paint(L, g, {x0: 0, y0: 0, x1: 2000, y1: L.height});
+      assert.deepEqual(g.links.map((a) => a[0]), [{anchor: 'Sec_2'}]);
+      doc = await linkDoc('nowhere', {});        // r:id names no rel
+      L = new DocLayout(doc, tm());
+      L.layout(VIEW_W);
+      g = plainG(true);
+      paint(L, g, {x0: 0, y0: 0, x1: 2000, y1: L.height});
+      assert.deepEqual(g.links, []);
+    });
+
+  it('a hook that is not a function is never called', async () => {
+    const doc = await linkDoc('x', {url: 'https://example.com/'});
+    const L = new DocLayout(doc, tm());
+    L.layout(VIEW_W);
+    const g = plainG(false);
+    g.link = {};
+    assert.doesNotThrow(() => paint(L, g, {x0: 0, y0: 0, x1: 2000,
+      y1: L.height}));
   });
 });

@@ -28,8 +28,9 @@ operations and undo, a reader and a writer for `.docx` that keep everything they
 Copy, cut and paste are in (deliverable 6b, `EditClip`), and Find / Replace (`Find`, `EditFind`, `Ui/FindBox`). Batch A added the everyday Insert and paragraph features
 (spacing, new lists, page and section breaks, tab stops, borders and shading, symbols, change case, hyperlinks,
 bookmarks, a format painter and a word count). Not there yet: layout and pagination (breaks are only marks), margins,
-making styles and list definitions of your own, printing and RTF/PDF export.
-Spell check (English (UK)) is in; see "Spell check (Batch F3)" below.
+making styles and list definitions of your own, printing and RTF export.
+Spell check (English (UK)) is in; see "Spell check (Batch F3)" below, and PDF export (the window menu's Export as PDF...)
+under "PDF export (Batch G1)".
 
 **Fidelity:** content round-trip (text, formatting, every other part) is checked on 600+ real documents (below).
 Page layout and pagination are not implemented and, when they are, will only approximate Word. Real Microsoft Word
@@ -4465,6 +4466,120 @@ the disc (`node tools/disc-wimplib.mjs`, `node tools/disc-moreapps.mjs`), start 
   (`OpsPath.paraAt`, `Walk.at`), not by index arithmetic of its own.
 * Timing tests warm up first and take the minimum of several runs, so a busy machine does not fail them.
 * The window menu is Latin-1: a suggestion outside Latin-1 is left out of the menu (the Spelling window shows it).
+
+## PDF export (Batch G1)
+
+The window menu's Export as PDF... (under Save a copy; the save refuses the window's own file: PdfBox refusal) writes the Print layout pages of a document as a PDF 1.7 file. User guide:
+`$.Docs.Letters`, part 29 (`tools/docs/Letters`). It is the first half of Print: printing will take this PDF.
+
+### Architecture
+
+The export lays the document out **on its own**, apart from the window (a fresh `DocLayout` of `dw.doc` with the
+window's text metrics, floats on, the window's markup view, field results rather than codes and no field shading,
+settled as Print layout settles by `ViewPass.settle` and placed by `PlacePrint`), so it works from every view and
+touches nothing of the window: the document, the undo stack, the window's layout and its `*` stay as they were.
+
+The contract with the painters is `PagePaint.paintPage(P, i, g, {place, rect?, marks})` (Batch D, D36): it draws page
+`i` of the pages `P` into any 2D-context-like object `g`. The screen passes a canvas; the export passes a **recording
+sink** (`PdfSink`), which implements the canvas calls the painters use (`SUPPORTED`, checked by `pdfcensus.test.mjs`
+against what the painters actually call) and writes them as a page content stream. With `marks: false` no editing mark
+is drawn. `PicPaint.framed(false, fn)` turns off the dashed outline of floating pictures while `fn` runs (the sink's
+page is painted inside it); outside it the outlines stay on. No comment, spelling or field-shading layer is painted
+because `paintPage` does not draw them.
+
+**Links.** `ItemPaint` tells a context that has a `link` method about each hyperlink on a line after its text:
+`g.link(target, x0, y0, x1, y1)` with the target `{url}` or `{anchor}` (`LinkFind.linkTarget`). A canvas has no such
+method and is not asked, so the screen is unchanged (`EXTRAS` in `PdfSink`). `PdfExport` turns the boxes into `/Link`
+annotations: a web, mail or ftp address (`uriOf`, through `LinkUrl.cleanUrl`) as a `/URI` action, a bookmark as a
+`/Dest` to its page (`PageOfBookmark.pageOf`).
+
+**Fitting.** The screen places each run at the width the browser measured (kerning and ligatures in); a PDF draws the
+font's own advances, without pair kerning. `PdfSink` is given a `measure(css, text)` (by default the window's own text metrics, else an
+OffscreenCanvas) and, when it differs from the natural width by more than 0.05 px (and the ratio is within 0.5 to 2),
+writes the run with a `Tc` (character spacing) so it ends where the layout put its end: lines never move, underlines and
+tab leaders fall where the screen's do. The difference is spread evenly over the run, so run widths match the
+screen but the placing of individual glyph pairs (kerning) is not reproduced. `measureText` of the sink answers with the measured width.
+
+**Text and fonts.** `PdfFiles` chooses the font file for a canvas font string (`keyOf`: the first bundled family, or
+Homerton, Trinity or Corpus, else Liberation Sans, the screen's substitute) and loads it once per run (`fileLoader`: the
+bundled TrueType from the application's `Fonts` directory, the RISC OS OpenType from `assets/fonts`). `wimplib/PdfFont`
+`FontSet` subsets TrueType (the bundled families) and embeds the OpenType (CFF) RISC OS fonts whole, as Type 0 fonts with
+a ToUnicode CMap, so text selects, copies and searches. A character a face lacks is drawn as nothing and counted
+(`missing`); `PdfExport` returns notes naming them, and `PdfBox` says them in one information notice after the file is
+written. Pictures: a JPEG goes in unchanged (`DCTDecode`) when `PdfImage.jpegInfo` takes it; PNG, GIF and the other JPEGs
+are rasterised (`createImageBitmap`, `OffscreenCanvas`) and written Flate with an `/SMask` for transparency. EMF, WMF, SVG
+and the rest are what `PicPaint` draws for them: the labelled grey box, as on the screen.
+
+**Memory.** Every page's content stream is held until the file is finished (the fonts, which are subset by what all the
+pages used, are embedded at the end), and the file is built in one `Uint8Array`: a long document with many pictures
+takes memory in proportion. Painting is done in slices of `SLICE_MS` (30 ms) that yield to `requestAnimationFrame` (or
+100 ms), so the desktop stays alive while the pages are written. The layout before that (`paginate`: `DocLayout` and
+`ViewPass.settle`) is one synchronous pass, so the desktop and Cancel wait through *Preparing pages...*; an `AbortSignal`
+is looked at before and after it, between pages and slices.
+
+### Modules
+
+In `tools/moreapps/!WimpLib` (the library, imported as `wimplib/<Name>`; no desktop services, at most 250 lines each,
+checked by `disc-wimplib --check`):
+
+| Module | Role |
+|---|---|
+| `PdfWrite` | `PdfWriter` (objects, streams, the xref table and trailer, streams deflated with `CompressionStream`, stored without it) and the text helpers re-exported from `PdfText`. |
+| `PdfText` | `num`, `name`, `str` (PDFDocEncoding or UTF-16BE) and `hex`: numbers, names and strings as PDF text. |
+| `PdfFont` | `FontSet(writer, loader)`: faces by name, glyph ids by code point, widths, `loadPending`, `missing`; writes the font objects at the end. Re-exports `parseSfnt`, `subsetTtf` and `toUnicodeCmap`. |
+| `PdfFontEmbed` | `embedFace`: one face's Type 0 font, CID font, descriptor, font file and ToUnicode. |
+| `PdfToUnicode` | `toUnicodeCmap(map)`: the CMap that lets a reader copy and search the text. |
+| `SfntTables` | The table directory of a TrueType/OpenType file, read and written (`viewOf`, `directory`, checksums). |
+| `SfntCmap` | The best Unicode `cmap` subtable (formats 12 and 4, symbol fonts) and the PostScript name. |
+| `SfntParse` | `parseSfnt(bytes)`: metrics, advances, `glyphFor(cp)` for TrueType (`glyf`) and CFF fonts. |
+| `SfntSubset` | `subsetTtf(bytes, gids)`: a TrueType file of the glyphs used (composites closed over), and a font of one empty glyph. |
+| `PdfImage` | `imageObjects` (RGBA with an SMask, or a JPEG unchanged) and `jpegInfo`. |
+| `PdfColour` | `parseColour`/`rgbOf`: the CSS colours the painters set, as the PDF takes them. |
+
+In `tools/moreapps/!Letters`:
+
+| Module | Role |
+|---|---|
+| `PdfFiles` | `parseFont`, `keyOf` and `fileLoader`: which font file draws a canvas font string. |
+| `PdfSink` | The recording context: canvas calls to a content stream (graphics state stack, clip, alpha as ExtGState, `drawImage`, `fillText` with its Fitting, `link`). |
+| `PdfExport` | `exportPdf(dw, opts) -> {bytes, pages, missing, notes}`: the layout, the paint loop, links, the Info dictionary (title and creator from the core properties; producer `!Letters`), fonts and the file. |
+| `PdfBox` | The Export as PDF box (Pages All / From / To, the markup line, progress, Cancel) and the save box (file type &ADF) that runs the export; `rangeOf`, `markupLine`, `pdfName`. |
+
+The window menu item is in `WinMenu`; `CloseDoc` deletes the box with its document. `!Letters` modules import the library
+as `wimplib/...`, never by a relative path (`import-gate.test.mjs` checks every import: a relative import into
+`!WimpLib` works from the source tree and fails on the disc).
+
+### Tests
+
+```sh
+node --test tests/moreapps/pdfwrite.test.mjs tests/moreapps/pdffont.test.mjs tests/moreapps/pdfimage.test.mjs tests/moreapps/pdfcolour.test.mjs   # the library: objects and xref, fonts (parse, subset, CMap), images, colours
+node --test tests/moreapps/pdfsink.test.mjs tests/moreapps/pdfcensus.test.mjs tests/moreapps/pdffiles.test.mjs   # the sink (state, clip, text, fitting, links), the census of what the painters call, font choice
+node --test tests/moreapps/pdfexport.test.mjs tests/moreapps/pdfbox.test.mjs                                    # exportPdf (range, abort, links, notes) and the box
+node --test tests/moreapps/pdfcheck.test.mjs tests/moreapps/import-gate.test.mjs                                  # the poppler checker and the import gate
+node --test tests/moreapps/pdfcorpus.test.mjs   # the whole local corpus (about 80 s): needs poppler (pdfinfo, pdftotext; `brew install poppler`) and Chromium
+node tests/moreapps/word-pdf.mjs                # browser: the item, the box, a range, the refusal, Cancel, the saved file, the window unchanged
+node tools/pdf-check.mjs <file-or-dir>          # poppler reads the files: pages and the first text of each; exit 1 on any complaint
+node tests/moreapps/handoff-pdf.mjs             # ten corpus documents as PDFs to open in Preview or Acrobat (local, never committed)
+```
+
+`pdfcorpus.test.mjs` exports every corpus document, checks the page count against Print layout and the text of every page
+against what the painters drew (read back through the file's own ToUnicode, and by poppler's `pdftotext -raw` on a
+sample), and measures the drift between each run's place in the PDF and on the screen in Chromium. The corpus is
+optional (`tools/moreapps-corpus.mjs`) and the poppler tools are skipped when not installed.
+
+### Fonts and licences
+
+The bundled Carlito, Caladea and Liberation fonts are SIL OFL 1.1, which allows embedding (the licence texts travel in
+`!Letters/Fonts/Licences`, which now also says so). **Homerton, Trinity and Corpus are RISC OS fonts that ship with this
+desktop, and the repository holds no licence text for them.** The export embeds them whole (the owner decided so);
+embedding follows each font's own terms, which this repository does not record. Do not read the export as a statement
+that those terms permit it.
+
+### Not done
+
+No tagged (accessible) PDF, PDF/A, outline of bookmarks, encryption, form fields or object compression; no characters
+from a face that lacks them (no fallback font: CJK, emoji and symbols are drawn as the face's .notdef glyph, an empty box; a face whose file could not be loaded is noted as such, and its text does not show; PdfFiles does not cache a failed load, so a later export tries again); no font other than the bundled and the
+three RISC OS ones (the screen's substitute is used); Print is not built (it will use this PDF).
 
 ## Limits and security
 

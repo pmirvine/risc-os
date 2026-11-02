@@ -337,7 +337,7 @@ try {
     return out;
   });
   const row = (n) => mn.rows.find((x) => x.text === n);
-  ok('the window menu has Insert after Edit (then View, Format)', same(mn.top.slice(5, 10), ['Edit', 'Insert', 'View', 'Outline', 'Format']), mn.top);
+  ok('the window menu has Insert after Edit (then View, Format)', same(mn.top.slice(6, 11), ['Edit', 'Insert', 'View', 'Outline', 'Format']), mn.top);
   ok('Insert: Page break, Column break (P10.3), Section break >, Table..., Tab, Picture..., Symbol..., Special character, Hyperlink..., Bookmark...,'
     + ' Comment... (F1), Footnote, Endnote, Footnote and Endnote... (E2), Table of Contents..., Caption..., Table of Figures..., Cross-reference... (E3),'
     + ' then (P9.2) Page number, Number of pages, Date, Time, Field... (no keys, live)',

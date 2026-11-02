@@ -1,0 +1,124 @@
+// SfntCmap - a font file's character map and PostScript name. See
+// ./PdfFont, which uses it through ./SfntParse.
+//
+//   cmapOf(view, t) -> (cp) -> gid, or null  the best Unicode
+//       subtable of the cmap table: format 12 (full Unicode), else
+//       format 4 (Unicode BMP), else format 4 of a symbol font
+//       (3, 0), whose characters below U+0100 are also looked for at
+//       U+F000 up. A code point the subtable lacks gives 0
+//   psName(view, t) -> the PostScript name (nameID 6, Windows or
+//       Mac), PDF-name safe (printable ASCII, no delimiters, at most
+//       63 characters), or ''
+//
+// t is the table directory of ./SfntTables. Reads stay inside the
+// table; a damaged subtable is skipped. Pure: no desktop services.
+import {opt} from './SfntTables';
+
+/** glyphFor for a format 4 subtable at o, bounded by end. */
+function format4(v, o, end) {
+  const segX2 = v.getUint16(o + 6);
+  const seg = segX2 >> 1;
+  const ends = o + 14, starts = ends + segX2 + 2;
+  const deltas = starts + segX2, ros = deltas + segX2;
+  if (!seg || ros + segX2 > end) return null;
+  return (cp) => {
+    if (cp > 0xffff) return 0;
+    let lo = 0, hi = seg - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (v.getUint16(ends + 2 * mid) < cp) lo = mid + 1;
+      else hi = mid;
+    }
+    if (v.getUint16(ends + 2 * lo) < cp) return 0;
+    const start = v.getUint16(starts + 2 * lo);
+    if (cp < start) return 0;
+    const delta = v.getUint16(deltas + 2 * lo);
+    const roAt = ros + 2 * lo;
+    const ro = v.getUint16(roAt);
+    if (!ro) return (cp + delta) & 0xffff;
+    const at = roAt + ro + 2 * (cp - start);
+    if (at + 2 > end) return 0;
+    const g = v.getUint16(at);
+    return g ? (g + delta) & 0xffff : 0;
+  };
+}
+
+/** glyphFor for a format 12 subtable at o, bounded by end. */
+function format12(v, o, end) {
+  if (o + 16 > end) return null;
+  const n = Math.min(v.getUint32(o + 12),
+    Math.floor((end - o - 16) / 12));
+  const g0 = o + 16;
+  if (!n) return null;
+  return (cp) => {
+    let lo = 0, hi = n - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (v.getUint32(g0 + 12 * mid) <= cp) lo = mid;
+      else hi = mid - 1;
+    }
+    const r = g0 + 12 * lo;
+    const start = v.getUint32(r);
+    if (cp < start || cp > v.getUint32(r + 4)) return 0;
+    return v.getUint32(r + 8) + (cp - start);
+  };
+}
+
+/** The best Unicode subtable's lookup, or null. */
+export function cmapOf(v, t) {
+  const c = opt(t, 'cmap', 4);
+  if (!c) return null;
+  const end = c.off + c.len;
+  const n = Math.min(v.getUint16(c.off + 2), (c.len - 4) >> 3);
+  let best = null, score = 0;
+  for (let i = 0; i < n; i++) {
+    const r = c.off + 4 + 8 * i;
+    const p = v.getUint16(r), e = v.getUint16(r + 2);
+    const o = c.off + v.getUint32(r + 4);
+    if (o + 8 > end) continue;
+    const fmt = v.getUint16(o);
+    const uni = p === 0 || (p === 3 && (e === 1 || e === 10));
+    let s = 0;
+    if (fmt === 12 && uni) s = 4;
+    else if (fmt === 4 && uni) s = 3;
+    else if (fmt === 4 && p === 3 && e === 0) s = 1;
+    if (s <= score) continue;
+    const look = fmt === 12 ? format12(v, o, end) : format4(v, o, end);
+    if (!look) continue;
+    best = s === 1
+      ? (cp) => look(cp) || (cp < 0x100 ? look(0xf000 | cp) : 0)
+      : look;
+    score = s;
+  }
+  return best;
+}
+
+/** The PostScript name (nameID 6), PDF-name safe, or ''. */
+export function psName(v, t) {
+  const nm = opt(t, 'name', 6);
+  if (!nm) return '';
+  const end = nm.off + nm.len;
+  const count = Math.min(v.getUint16(nm.off + 2),
+    Math.floor((nm.len - 6) / 12));
+  const strings = nm.off + v.getUint16(nm.off + 4);
+  let found = '', rank = 0;
+  for (let i = 0; i < count; i++) {
+    const r = nm.off + 6 + 12 * i;
+    const p = v.getUint16(r);
+    if (v.getUint16(r + 6) !== 6 || (p !== 1 && p !== 3)) continue;
+    const len = v.getUint16(r + 8), o = strings + v.getUint16(r + 10);
+    if (o + len > end) continue;
+    const wide = p === 3 ? 2 : 1;
+    if (wide <= rank) continue;
+    let s = '';
+    for (let k = 0; k + wide <= len && s.length < 63; k += wide) {
+      const ch = wide === 2 ? v.getUint16(o + k) : v.getUint8(o + k);
+      if (ch > 0x20 && ch < 0x7f &&
+        '[](){}<>/%#'.indexOf(String.fromCharCode(ch)) < 0) {
+        s += String.fromCharCode(ch);
+      }
+    }
+    if (s) { found = s; rank = wide; }
+  }
+  return found;
+}

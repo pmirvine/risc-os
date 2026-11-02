@@ -1,0 +1,81 @@
+// PdfText - PDF text for numbers, names and strings. See
+// ./PdfWrite, which re-exports it.
+//
+//   num(n)        a number as PDF text (3 decimals at most)
+//   name(s)       a /Name with #xx escapes
+//   str(s)        a (literal string): PDFDocEncoding when it fits,
+//                 else UTF-16BE with a byte order mark
+//   hex(bytes)    a <hex string>
+//
+// Pure: no desktop services.
+
+/** A number as PDF text: finite, <= 3 decimals, never an exponent. */
+export function num(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '0';
+  if (Math.abs(n) >= 1e15) {
+    return BigInt(Math.round(n)).toString();
+  }
+  let s = n.toFixed(3);
+  if (s.indexOf('.') >= 0) {
+    let end = s.length;
+    while (s.charCodeAt(end - 1) === 48) end--;
+    if (s.charCodeAt(end - 1) === 46) end--;
+    s = s.slice(0, end);
+  }
+  return s === '-0' ? '0' : s;
+}
+
+const HEX = '0123456789ABCDEF';
+
+/** A name object: regular printable characters kept, rest as #xx. */
+export function name(s) {
+  let out = '/';
+  for (const b of new TextEncoder().encode(String(s))) {
+    const keep = b > 0x20 && b < 0x7f && '#()<>[]{}/%'.indexOf(
+      String.fromCharCode(b)) < 0;
+    out += keep ? String.fromCharCode(b)
+      : '#' + HEX[b >> 4] + HEX[b & 15];
+  }
+  return out;
+}
+
+/** True when PDFDocEncoding shares this code point's Latin-1 byte. */
+function docSafe(c) {
+  return (c >= 0x20 && c <= 0x7e) || (c >= 0xa1 && c <= 0xff);
+}
+
+/** One byte of a literal string, escaped where needed. */
+function esc(b) {
+  if (b === 0x28 || b === 0x29 || b === 0x5c) {
+    return '\\' + String.fromCharCode(b);
+  }
+  if (b < 0x20) return '\\' + b.toString(8).padStart(3, '0');
+  return String.fromCharCode(b);
+}
+
+/** A literal string; the result is text of byte-valued characters. */
+export function str(s) {
+  s = String(s);
+  let doc = true;
+  for (let i = 0; i < s.length; i++) {
+    if (!docSafe(s.charCodeAt(i))) { doc = false; break; }
+  }
+  let out = '(';
+  if (doc) {
+    for (let i = 0; i < s.length; i++) out += esc(s.charCodeAt(i));
+  } else {
+    out += esc(0xfe) + esc(0xff);
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      out += esc(c >> 8) + esc(c & 255);
+    }
+  }
+  return out + ')';
+}
+
+/** A hexadecimal string. */
+export function hex(bytes) {
+  let out = '<';
+  for (const b of bytes) out += HEX[b >> 4] + HEX[b & 15];
+  return out + '>';
+}

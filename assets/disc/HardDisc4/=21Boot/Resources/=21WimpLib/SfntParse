@@ -1,0 +1,150 @@
+// SfntParse - reads a TrueType or OpenType (CFF) font file's
+// metrics and character map. See ./PdfFont, which re-exports it.
+//
+//   parseSfnt(bytes) -> font | null  for a TrueType ('ttf': glyf and
+//       loca) or OpenType CFF ('otf': a 'CFF ' table) file. font:
+//       {kind, unitsPerEm, numGlyphs, glyphFor(cp) -> gid (0 when
+//       the font has none), advance(gid) -> font units, ascent,
+//       descent (negative), capHeight, bbox: [x0, y0, x1, y1],
+//       italicAngle, flags (the FontDescriptor's), name (the
+//       PostScript name, PDF-name safe), cidKeyed (a CID-keyed CFF)}.
+//       bytes: an ArrayBuffer or a typed array. null for anything
+//       else and for damaged files: it never throws, and glyphFor /
+//       advance give 0 for what they cannot read
+//
+// cidKeyed is true when the CFF's Top DICT has the ROS operator.
+// Tables are found by ./SfntTables, the cmap and name by ./SfntCmap.
+// Pure: no desktop services.
+import {viewOf, kindOf, directory, opt, need} from './SfntTables';
+import {cmapOf, psName} from './SfntCmap';
+
+const MIN_UPM = 16, MAX_UPM = 16384;
+
+/** True when the CFF table's Top DICT has the ROS operator. */
+function cffCidKeyed(v, t) {
+  const c = opt(t, 'CFF ', 4);
+  if (!c) return false;
+  const end = c.off + c.len;
+  const index = (o) => {            // -> [items start..end] or null
+    if (o + 2 > end) return null;
+    const count = v.getUint16(o);
+    if (!count) return {next: o + 2, first: null};
+    const size = v.getUint8(o + 2);
+    if (size < 1 || size > 4 || o + 3 + (count + 1) * size > end) {
+      return null;
+    }
+    const at = (i) => {
+      let x = 0;
+      for (let k = 0; k < size; k++) {
+        x = x * 256 + v.getUint8(o + 3 + i * size + k);
+      }
+      return x;
+    };
+    const base = o + 2 + (count + 1) * size;
+    return {next: base + at(count),
+      first: [base + at(0), base + at(1)]};
+  };
+  const names = index(c.off + v.getUint8(c.off + 2));
+  const top = names && index(names.next);
+  if (!top || !top.first) return false;
+  const [s, e] = top.first;
+  if (e > end || s > e) return false;
+  for (let p = s; p < e;) {
+    const b = v.getUint8(p);
+    if (b === 12) {
+      if (p + 1 < e && v.getUint8(p + 1) === 30) return true;
+      p += 2;
+    } else if (b === 28) p += 3;
+    else if (b === 29) p += 5;
+    else if (b === 30) {
+      p++;
+      while (p < e) {
+        const q = v.getUint8(p++);
+        if ((q & 15) === 15 || (q >> 4) === 15) break;
+      }
+    } else if (b <= 246) p++;
+    else p += b === 255 ? 5 : 2;
+  }
+  return false;
+}
+
+/** See the header. */
+export function parseSfnt(bytes) {
+  try {
+    return parse(bytes);
+  } catch (e) {
+    return null;
+  }
+}
+
+function parse(bytes) {
+  const v = viewOf(bytes);
+  if (!v) return null;
+  const kind = kindOf(v);
+  if (!kind) return null;
+  const t = directory(v);
+  const head = need(t, 'head', 54), hhea = need(t, 'hhea', 36);
+  const maxp = need(t, 'maxp', 6);
+  if (kind === 'ttf') {
+    need(t, 'glyf', 0);
+    need(t, 'loca', 4);
+  } else need(t, 'CFF ', 4);
+  const upm = v.getUint16(head.off + 18);
+  if (upm < MIN_UPM || upm > MAX_UPM) return null;
+  const numGlyphs = v.getUint16(maxp.off + 4);
+  const nhm = v.getUint16(hhea.off + 34);
+  if (!numGlyphs || !nhm || nhm > numGlyphs) return null;
+  const hmtx = need(t, 'hmtx', 4 * nhm);
+  // a font with no Unicode cmap (a subset) has no glyph for any cp
+  const look = cmapOf(v, t) || (() => 0);
+
+  const glyphFor = (cp) => {
+    if (!Number.isInteger(cp) || cp < 0 || cp > 0x10ffff) return 0;
+    try {
+      const g = look(cp);
+      return g > 0 && g < numGlyphs ? g : 0;
+    } catch (e) {
+      return 0;
+    }
+  };
+  const advance = (gid) => {
+    if (!Number.isInteger(gid) || gid < 0 || gid >= numGlyphs) {
+      return 0;
+    }
+    return v.getUint16(hmtx.off + 4 * Math.min(gid, nhm - 1));
+  };
+
+  const bbox = [36, 38, 40, 42].map((k) => v.getInt16(head.off + k));
+  const macStyle = v.getUint16(head.off + 44);
+  let ascent = v.getInt16(hhea.off + 4);
+  let descent = v.getInt16(hhea.off + 6);
+  if (descent > 0) descent = -descent;
+  let capHeight = 0, weight = 400, serif = false, italic = false;
+  const os2 = opt(t, 'OS/2', 72);
+  if (os2) {
+    weight = v.getUint16(os2.off + 4);
+    const cls = v.getInt16(os2.off + 30) >> 8;
+    serif = cls >= 1 && cls <= 7;
+    italic = (v.getUint16(os2.off + 62) & 1) !== 0;
+    if (v.getUint16(os2.off) >= 2 && os2.len >= 90) {
+      capHeight = v.getInt16(os2.off + 88);
+    }
+  }
+  if (capHeight <= 0) capHeight = Math.round(ascent * 0.7);
+  let italicAngle = 0, fixed = false;
+  const post = opt(t, 'post', 16);
+  if (post) {
+    italicAngle = v.getInt32(post.off + 4) / 65536;
+    fixed = v.getUint32(post.off + 12) !== 0;
+  }
+  if (italicAngle || (macStyle & 2)) italic = true;
+  // Symbolic (4): the glyphs are named by CID, not a Latin encoding
+  let flags = 4;
+  if (fixed) flags |= 1;
+  if (serif) flags |= 2;
+  if (italic) flags |= 64;
+  return {kind, unitsPerEm: upm, numGlyphs, glyphFor, advance,
+    ascent, descent, capHeight, bbox, italicAngle, flags,
+    weight, name: psName(v, t) || 'Font',
+    cidKeyed: kind === 'otf' && cffCidKeyed(v, t)};
+}

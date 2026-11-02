@@ -1,0 +1,604 @@
+// PdfSink - a recording 2D context for the PDF export: ./PagePaint
+// paintPage draws a page into it as into a canvas, and it writes that
+// page's PDF content stream.
+//
+//   const s = new PdfSink({fonts, keyOf, images, unknown, measure});
+//       fonts a wimplib/PdfFont FontSet; keyOf ./PdfFiles keyOf
+//       (a canvas font string -> {family, bold, italic, px});
+//       images: an ImageSink {objectFor(image) -> Promise<{id}|null>}
+//       (PdfExport's; it caches, so one image is one XObject on
+//       every page); unknown 'throw' or 'ignore': what sinkProxy
+//       does for a name it lacks; measure(css, text) -> px, the
+//       screen's width of text in the canvas font css (its canvas
+//       measureText, kerning on: see Fitting below), or none
+//   s.begin(w, h)    a new page of w x h px: every state reset, the
+//                    content starts with 0.75 0 0 -0.75 0 h*0.75 cm,
+//                    so the painters' px (96 dpi, y down) are points
+//   ...              every name in SUPPORTED, as a canvas does it
+//   s.drawImage(img, dx, dy[, dw, dh]) and (img, sx, sy, sw, sh, dx,
+//                    dy, dw, dh): img any object with width and
+//                    height (pixels; PicPaint's bitmap); written as
+//                    q [clip] [gs] cm /Im# Do Q, the clip (the
+//                    source rectangle's part of the dest) only
+//                    when the source is less than the image. A
+//                    bitmap is asked of images.objectFor once per
+//                    page; the same one drawn again shares its
+//                    name. Until settled, and when objectFor gives
+//                    null or fails (s.failed: the messages), it
+//                    draws nothing.
+//   s.link(target, x0, y0, x1, y1)  (an extra, in EXTRAS: a canvas
+//                    has no such method; ./ItemPaint tells it of each
+//                    link a line shows) the box (x0, y0)..(x1, y1)
+//                    through the transform, cut to the clip and the
+//                    page, kept for end() with target's url (a
+//                    string) or else its anchor (a string); a box
+//                    of no area, or no such target, is not kept.
+//                    Draws nothing
+//   s.end() -> {content, fonts, xobjects, gstates, ready, links}
+//       content the stream's text (any open q closed); fonts the Set
+//       of FontSet names drawn; xobjects a Map name -> object id
+//       (reset by begin); gstates Map
+//       name -> ExtGState dict text; ready false when text was drawn
+//       in a face not loaded yet (s.fonts.pending: await
+//       s.fonts.loadPending(), then paint the page again); links
+//       [{rect: [x0, y0, x1, y1] in PDF points (y up, x0 < x1, y0 <
+//       y1), url} | {rect, anchor}] in the order told (reset by
+//       begin)
+//   await s.settle() the page's pictures: call before end()
+//   s.unparsed       a Set of the styles it could not read (drawn
+//                    black)
+//   sinkProxy(s)     s behind a Proxy: a name s lacks throws with its
+//                    name ('throw') or reads as undefined ('ignore')
+//
+// Coordinates are taken through the context's own transform in JS
+// (translate, scale) and written in page px: so a path may span a
+// transform change as on a canvas, and getTransform() gives that
+// transform {a, b, c, d, e, f} (the identity at the page's start:
+// PicPaint then asks for pictures at their own size). Line widths
+// and dashes are scaled by the transform's area scale. save / restore
+// are q / Q with the state (colours, line, dash, alpha, font, text
+// align and baseline, transform, clip) kept on a stack; an
+// unbalanced restore is ignored. Colours are read by
+// wimplib/PdfColour; alpha (rgba, globalAlpha) is an ExtGState
+// with /ca (fill) and /CA (stroke); what has no alpha left is not
+// drawn. A painting call writes only the state that changed. Every
+// number goes through wimplib/PdfWrite num, clamped to +-1e6.
+// fillText: BT /F# px Tf a b c d x y Tm <hex> Tj ET, with glyphs at
+// the font's own advances, x moved for textAlign and y for
+// textBaseline by the face's ascent and descent. No kerning,
+// direction, letter spacing or shadows.
+//
+// Fitting (9b-2): the screen places each run at the width the
+// browser measured, kerning and ligatures in; the PDF draws the
+// font's advances. With measure given, measureText's width is the
+// measured one (so underlines and tabs fall where the screen's do)
+// and fillText fits the run to it: of n glyphs (code points, one
+// the face lacks counted too), natural their advances, W the
+// measure, when n >= 2 and 0.5 <= W / natural <= 2 and
+// |W - natural| > 0.05 px it writes
+// BT ... Tm c Tc <hex> Tj 0 Tc ET, c = (W - natural) / (n - 1) in
+// text space (the run's own px: Tm takes it through the transform
+// and maxWidth's squeeze), and aligns and squeezes by W. A measure
+// not a finite number in that range (or one that throws) is not
+// used: the natural width is. Tc is put back to 0 in the same BT,
+// so later text and q / Q are as before. Without measure nothing
+// changes. Pure: no desktop services.
+import {num} from 'wimplib/PdfWrite';
+import {parseColour, rgbOf} from 'wimplib/PdfColour';
+
+/** What paintPage may ask of a context (tests/moreapps/pdfcensus). */
+export const SUPPORTED = new Set(('save restore translate scale ' +
+  'beginPath closePath rect moveTo lineTo clip fill stroke fillRect ' +
+  'strokeRect setLineDash fillText drawImage measureText ' +
+  'font fillStyle strokeStyle lineWidth textAlign textBaseline ' +
+  'globalAlpha lineCap lineJoin lineDashOffset getTransform')
+  .split(' '));
+
+/** What it asks only of a context that has it (a canvas has none
+ *  of them, so the screen is asked nothing new): the census allows
+ *  them too. */
+export const EXTRAS = new Set(['link']);
+
+const LIMIT = 1e6;
+const N = (x) => num(Number.isFinite(x)
+  ? Math.min(Math.max(x, -LIMIT), LIMIT)
+  : x > 0 ? LIMIT : x < 0 ? -LIMIT : 0);
+const fin = (...a) => a.every((x) => Number.isFinite(x));
+const CAPS = {butt: 0, round: 1, square: 2};
+const JOINS = {miter: 0, round: 1, bevel: 2};
+const ALIGNS = new Set(['start', 'end', 'left', 'right', 'center']);
+const BASES = new Set(['alphabetic', 'top', 'hanging', 'middle',
+  'ideographic', 'bottom']);
+const BLACK = {r: 0, g: 0, b: 0, a: 1};
+const FONT = '10px sans-serif';
+
+/** A fresh canvas state. */
+const start = (key) => ({fillCss: '#000000', fill: BLACK,
+  strokeCss: '#000000', stroke: BLACK, lineWidth: 1,
+  lineCap: 'butt', lineJoin: 'miter', dash: [], dashOffset: 0,
+  alpha: 1, font: FONT, key, textAlign: 'start',
+  textBaseline: 'alphabetic', m: [1, 0, 0, 1, 0, 0], clip: null});
+
+/** The PDF side's state as last written (a fresh page's defaults). */
+const written = () => ({rg: '0 0 0', RG: '0 0 0', w: '1', J: 0,
+  j: 0, d: '[] 0', gs: '1 1'});
+
+export class PdfSink {
+  constructor({fonts, keyOf, images = null, unknown = 'throw',
+    measure = null}) {
+    this.fonts = fonts;
+    this.measure = typeof measure === 'function' ? measure : null;
+    this.keyOf = keyOf;
+    this.images = images;
+    this.unknown = unknown;
+    this.unparsed = new Set();
+    this.failed = new Set();
+    this.keys = new Map([[FONT, keyOf(FONT)]]);
+    this.gsNames = new Map();        // 'ca CA' -> name, every page
+    this.begin(0, 0);
+  }
+
+  /** See the header. */
+  begin(w, h) {
+    this.st = start(this.keys.get(FONT));
+    this.pdf = written();
+    this.stack = [];
+    this.path = [];
+    this.box = null;
+    this.cur = false;
+    this.out = ['0.75 0 0 -0.75 0 ' + N(h * 0.75) + ' cm'];
+    this.size = [w, h];
+    this.links = [];
+    this.used = new Set();
+    this.gstates = new Map();
+    this.xobjects = new Map();
+    this.imNames = new Map();        // image -> /Im# name, this page
+    this.imWait = new Map();         // image -> promise of its id
+    this.pending = [];
+    this.ready = true;
+  }
+
+  /** See the header. */
+  end() {
+    while (this.stack.length) this.restore();
+    const content = this.out.filter((l) => l !== '').join('\n');
+    return {content, fonts: this.used,
+      xobjects: this.xobjects, gstates: this.gstates,
+      ready: this.ready, links: this.links};
+  }
+
+  /** See the header. */
+  async settle() {
+    while (this.pending.length) {
+      await Promise.all(this.pending.splice(0));
+    }
+  }
+
+  // ---- state ----
+
+  save() {
+    const s = this.st;
+    this.stack.push({st: {...s, dash: s.dash.slice(), m: s.m.slice()},
+      pdf: {...this.pdf}});
+    this.out.push('q');
+  }
+
+  restore() {
+    const top = this.stack.pop();
+    if (!top) return;
+    this.st = top.st;
+    this.pdf = top.pdf;
+    this.out.push('Q');
+  }
+
+  get fillStyle() { return this.st.fillCss; }
+  set fillStyle(v) {
+    this.st.fillCss = v;
+    this.st.fill = this.colour(v);
+  }
+  get strokeStyle() { return this.st.strokeCss; }
+  set strokeStyle(v) {
+    this.st.strokeCss = v;
+    this.st.stroke = this.colour(v);
+  }
+
+  /** A style as a colour: black (and noted) when unreadable. */
+  colour(v) {
+    const c = parseColour(v);
+    if (c) return c;
+    this.unparsed.add(String(v));
+    return BLACK;
+  }
+
+  get lineWidth() { return this.st.lineWidth; }
+  set lineWidth(v) { if (v > 0 && fin(v)) this.st.lineWidth = v; }
+  get lineCap() { return this.st.lineCap; }
+  set lineCap(v) { if (v in CAPS) this.st.lineCap = v; }
+  get lineJoin() { return this.st.lineJoin; }
+  set lineJoin(v) { if (v in JOINS) this.st.lineJoin = v; }
+  get lineDashOffset() { return this.st.dashOffset; }
+  set lineDashOffset(v) { if (fin(v)) this.st.dashOffset = v; }
+  get globalAlpha() { return this.st.alpha; }
+  set globalAlpha(v) {
+    if (fin(v) && v >= 0 && v <= 1) this.st.alpha = v;
+  }
+  get textAlign() { return this.st.textAlign; }
+  set textAlign(v) { if (ALIGNS.has(v)) this.st.textAlign = v; }
+  get textBaseline() { return this.st.textBaseline; }
+  set textBaseline(v) { if (BASES.has(v)) this.st.textBaseline = v; }
+
+  setLineDash(a) {
+    if (!Array.isArray(a) || !a.every((x) => fin(x) && x >= 0)) {
+      return;
+    }
+    this.st.dash = a.length % 2 ? a.concat(a) : a.slice();
+  }
+
+  get font() { return this.st.font; }
+  set font(v) {
+    const css = String(v);
+    let k = this.keys.get(css);
+    if (k === undefined) {
+      k = this.keyOf(css);
+      if (!(k && k.px > 0 && fin(k.px))) k = null;
+      if (this.keys.size < 1000) this.keys.set(css, k);
+    }
+    if (!k) return;
+    this.st.font = css;
+    this.st.key = k;
+  }
+
+  translate(x, y) {
+    if (!fin(x, y)) return;
+    const m = this.st.m;
+    m[4] += m[0] * x + m[2] * y;
+    m[5] += m[1] * x + m[3] * y;
+  }
+
+  scale(x, y) {
+    if (!fin(x, y)) return;
+    const m = this.st.m;
+    m[0] *= x; m[1] *= x; m[2] *= y; m[3] *= y;
+  }
+
+  getTransform() {
+    const [a, b, c, d, e, f] = this.st.m;
+    return {a, b, c, d, e, f};
+  }
+
+  /** (x, y) in page px, as 'X Y'. */
+  pt(x, y) {
+    const m = this.st.m;
+    const X = m[0] * x + m[2] * y + m[4];
+    const Y = m[1] * x + m[3] * y + m[5];
+    this.grow(X, Y);
+    return N(X) + ' ' + N(Y);
+  }
+
+  /** Widens the current path's box (page px) by a point. */
+  grow(X, Y) {
+    const b = this.box || (this.box = [X, Y, X, Y]);
+    b[0] = Math.min(b[0], X); b[1] = Math.min(b[1], Y);
+    b[2] = Math.max(b[2], X); b[3] = Math.max(b[3], Y);
+  }
+
+  /** How much the transform scales lengths (its area's root). */
+  get k() {
+    const m = this.st.m;
+    const k = Math.sqrt(Math.abs(m[0] * m[3] - m[1] * m[2]));
+    return Number.isFinite(k) ? k : 0;
+  }
+
+  /** Writes what painting with fill (or stroke) needs; false when
+   *  nothing would show. */
+  sync(stroke) {
+    const s = this.st, p = this.pdf, o = this.out;
+    const ca = s.fill.a * s.alpha, CA = s.stroke.a * s.alpha;
+    if (!((stroke ? CA : ca) > 0)) return false;
+    if (stroke) {
+      const RG = rgbOf(s.stroke), w = N(s.lineWidth * this.k);
+      const d = '[' + s.dash.map((x) => N(x * this.k)).join(' ') +
+        '] ' + N(s.dashOffset * this.k);
+      if (RG !== p.RG) o.push((p.RG = RG) + ' RG');
+      if (w !== p.w) o.push((p.w = w) + ' w');
+      if (CAPS[s.lineCap] !== p.J) {
+        o.push((p.J = CAPS[s.lineCap]) + ' J');
+      }
+      if (JOINS[s.lineJoin] !== p.j) {
+        o.push((p.j = JOINS[s.lineJoin]) + ' j');
+      }
+      if (d !== p.d) o.push((p.d = d) + ' d');
+    } else {
+      const rg = rgbOf(s.fill);
+      if (rg !== p.rg) o.push((p.rg = rg) + ' rg');
+    }
+    const gs = N(ca) + ' ' + N(CA);
+    if (gs !== p.gs) {
+      o.push('/' + this.gsFor(ca, CA) + ' gs');
+      p.gs = gs;
+    }
+    return true;
+  }
+
+  /** The page's ExtGState name for fill and stroke alpha. */
+  gsFor(ca, CA) {
+    const gs = N(ca) + ' ' + N(CA);
+    let n = this.gsNames.get(gs);
+    if (!n) this.gsNames.set(gs, n = 'GS' + (this.gsNames.size + 1));
+    this.gstates.set(n, '<< /Type /ExtGState /ca ' + N(ca) +
+      ' /CA ' + N(CA) + ' >>');
+    return n;
+  }
+
+  // ---- paths ----
+
+  beginPath() {
+    this.path = [];
+    this.box = null;
+    this.cur = false;
+  }
+
+  moveTo(x, y) {
+    if (!fin(x, y)) return;
+    this.path.push(this.pt(x, y) + ' m');
+    this.cur = true;
+  }
+
+  lineTo(x, y) {
+    if (!fin(x, y)) return;
+    this.path.push(this.pt(x, y) + (this.cur ? ' l' : ' m'));
+    this.cur = true;
+  }
+
+  closePath() {
+    if (this.path.length) this.path.push('h');
+  }
+
+  /** A rectangle in page px: re when the transform keeps it one. */
+  rectOps(x, y, w, h) {
+    const m = this.st.m;
+    if (m[1] === 0 && m[2] === 0) {
+      const at = this.pt(x, y);
+      this.pt(x + w, y + h);           // the far corner, for the box
+      return at + ' ' + N(w * m[0]) + ' ' + N(h * m[3]) + ' re';
+    }
+    return this.pt(x, y) + ' m ' + this.pt(x + w, y) + ' l ' +
+      this.pt(x + w, y + h) + ' l ' + this.pt(x, y + h) + ' l h';
+  }
+
+  rect(x, y, w, h) {
+    if (!fin(x, y, w, h)) return;
+    this.path.push(this.rectOps(x, y, w, h));
+    this.cur = true;
+  }
+
+  /** The path then op, the path kept (a canvas keeps it). */
+  paint(op) {
+    for (const p of this.path) this.out.push(p);
+    this.out.push(op);
+  }
+
+  fill(rule) {
+    if (!this.path.length || !this.sync(false)) return;
+    this.paint(rule === 'evenodd' ? 'f*' : 'f');
+  }
+
+  stroke() {
+    if (!this.path.length || !this.sync(true)) return;
+    this.paint('S');
+  }
+
+  clip(rule) {
+    if (!this.path.length) this.out.push('0 0 0 0 re');
+    this.paint(rule === 'evenodd' ? 'W* n' : 'W n');
+    const b = this.box || [0, 0, 0, 0], c = this.st.clip;
+    this.st.clip = c ? [Math.max(b[0], c[0]), Math.max(b[1], c[1]),
+      Math.min(b[2], c[2]), Math.min(b[3], c[3])] : b.slice();
+  }
+
+  /** See the header. */
+  link(target, x0, y0, x1, y1) {
+    if (!target || typeof target !== 'object' || !fin(x0, y0, x1, y1))
+      return;
+    const url = typeof target.url === 'string' ? target.url : null;
+    const anchor = typeof target.anchor === 'string' ? target.anchor
+      : null;
+    if (url === null && anchor === null) return;
+    const m = this.st.m, xs = [], ys = [];
+    for (const [x, y] of [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]) {
+      xs.push(m[0] * x + m[2] * y + m[4]);
+      ys.push(m[1] * x + m[3] * y + m[5]);
+    }
+    const c = this.st.clip || [0, 0, this.size[0], this.size[1]];
+    const a = Math.max(Math.min(...xs), c[0], 0);
+    const b = Math.max(Math.min(...ys), c[1], 0);
+    const e = Math.min(Math.max(...xs), c[2], this.size[0]);
+    const f = Math.min(Math.max(...ys), c[3], this.size[1]);
+    if (!(e > a && f > b)) return;
+    const h = this.size[1], k = 0.75;
+    const rect = [a * k, (h - f) * k, e * k, (h - b) * k];
+    this.links.push(url !== null ? {rect, url} : {rect, anchor});
+  }
+
+  /** One rectangle, outside the current path. */
+  oneRect(x, y, w, h, op) {
+    const box = this.box;
+    this.out.push(this.rectOps(x, y, w, h), op);
+    this.box = box;
+  }
+
+  fillRect(x, y, w, h) {
+    if (!fin(x, y, w, h) || !w || !h || !this.sync(false)) return;
+    this.oneRect(x, y, w, h, 'f');
+  }
+
+  strokeRect(x, y, w, h) {
+    if (!fin(x, y, w, h) || (!w && !h) || !this.sync(true)) return;
+    this.oneRect(x, y, w, h, 'S');
+  }
+
+  // ---- text ----
+
+  /** The current face's handle (registering text's code points). */
+  face(text) {
+    const k = this.st.key;
+    return this.fonts.use({family: k.family, bold: k.bold,
+      italic: k.italic}, text);
+  }
+
+  /** The screen's width of t (the measure), or natural when there
+   *  is none or it is not to be believed (see Fitting). */
+  widthOn(t, natural) {
+    if (!this.measure || !(natural > 0)) return natural;
+    let w;
+    try {
+      w = this.measure(this.st.font, t);
+    } catch {
+      return natural;
+    }
+    return typeof w === 'number' && w >= 0.5 * natural &&
+      w <= 2 * natural ? w : natural;
+  }
+
+  measureText(text) {
+    const t = String(text), px = this.st.key.px, h = this.face('');
+    const width = this.widthOn(t, h.widthOf(t, px));
+    return {width, actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: width,
+      actualBoundingBoxAscent: h.ascent * px,
+      actualBoundingBoxDescent: -h.descent * px,
+      fontBoundingBoxAscent: h.ascent * px,
+      fontBoundingBoxDescent: -h.descent * px};
+  }
+
+  fillText(text, x, y, maxWidth) {
+    let t = '', n = 0;
+    for (const c of String(text)) {
+      t += c === '\t' || c === '\n' || c === '\r' || c === '\f' ||
+        c === '\v' ? ' ' : c;
+      n++;
+    }
+    if (!t || !fin(x, y)) return;
+    if (maxWidth !== undefined && !(maxWidth > 0)) return;
+    if (!this.sync(false)) return;
+    const s = this.st, px = s.key.px, h = this.face(t);
+    const natural = h.widthOf(t, px);
+    let w = natural, tc = '';
+    if (n >= 2) {
+      const W = this.widthOn(t, natural);
+      if (Math.abs(W - natural) > 0.05) tc = N((W - natural) / (n - 1));
+      if (tc === '0') tc = '';
+      if (tc) w = natural + Number(tc) * (n - 1);
+    }
+    const sq = maxWidth !== undefined && w > maxWidth
+      ? maxWidth / w : 1;
+    const shown = w * sq;
+    const a = s.textAlign;
+    if (a === 'center') x -= shown / 2;
+    else if (a === 'right' || a === 'end') x -= shown;
+    const b = s.textBaseline, asc = h.ascent * px, dsc = h.descent * px;
+    if (b === 'top' || b === 'hanging') y += asc;
+    else if (b === 'middle') y += (asc + dsc) / 2;
+    else if (b === 'bottom' || b === 'ideographic') y += dsc;
+    const m = s.m, box = this.box;
+    const tm = [m[0] * sq, m[1] * sq, -m[2], -m[3]].map(N).join(' ');
+    this.out.push('BT /' + h.name + ' ' + N(px) + ' Tf ' + tm + ' ' +
+      this.pt(x, y) + ' Tm ' + (tc && tc + ' Tc ') + h.encode(t) +
+      (tc ? ' Tj 0 Tc ET' : ' Tj ET'));
+    this.box = box;
+    this.used.add(h.name);
+    if (!h.ready) this.ready = false;
+  }
+
+  // ---- pictures ----
+
+  /** See the header. */
+  drawImage(img, ...a) {
+    if (!img || !this.images || ![2, 4, 8].includes(a.length)) return;
+    const W = img.width, H = img.height;
+    if (!(W > 0 && H > 0 && fin(W, H, ...a))) return;
+    let sx = 0, sy = 0, sw = W, sh = H, dx, dy, dw = W, dh = H;
+    if (a.length === 2) [dx, dy] = a;
+    else if (a.length === 4) [dx, dy, dw, dh] = a;
+    else [sx, sy, sw, sh, dx, dy, dw, dh] = a;
+    if (!(sw > 0 && sh > 0) || !dw || !dh) return;
+    // The part of the source inside the image, as a canvas draws it.
+    const x0 = Math.max(sx, 0), y0 = Math.max(sy, 0);
+    const x1 = Math.min(sx + sw, W), y1 = Math.min(sy + sh, H);
+    if (!(x1 > x0 && y1 > y0)) return;
+    const s = this.st, ca = s.alpha;
+    if (!(ca > 0)) return;
+    // The whole image in user px (y down), then the unit square's
+    // map (y up) through the current transform.
+    const kx = dw / sw, ky = dh / sh;
+    const left = dx - sx * kx, top = dy - sy * ky;
+    const U = [W * kx, 0, 0, -H * ky, left, top + H * ky];
+    const m = s.m, cm = [
+      U[0] * m[0] + U[1] * m[2], U[0] * m[1] + U[1] * m[3],
+      U[2] * m[0] + U[3] * m[2], U[2] * m[1] + U[3] * m[3],
+      U[4] * m[0] + U[5] * m[2] + m[4],
+      U[4] * m[1] + U[5] * m[3] + m[5]];
+    if (!fin(...cm)) return;
+    const lines = ['q'];
+    if (x0 > 0 || y0 > 0 || x1 < W || y1 < H) {
+      const box = this.box;
+      lines.push(this.rectOps(dx + (x0 - sx) * kx, dy + (y0 - sy) * ky,
+        (x1 - x0) * kx, (y1 - y0) * ky), 'W n');
+      this.box = box;
+    }
+    const gs = N(ca) + ' ' + N(ca);
+    if (gs !== this.pdf.gs) {
+      lines.push('/' + this.gsFor(ca, ca) + ' gs');
+    }
+    lines.push(cm.map(N).join(' ') + ' cm');
+    // The slot is empty until the picture resolves (null: it stays).
+    const out = this.out, xo = this.xobjects, at = out.length;
+    out.push('');
+    let name = this.imNames.get(img);
+    if (!name) {
+      this.imNames.set(img, name = 'Im' + (this.imNames.size + 1));
+      let p;
+      try { p = Promise.resolve(this.images.objectFor(img)); }
+      catch (e) { p = Promise.reject(e); }
+      this.imWait.set(img, p.then((o) => {
+        if (o && Number.isInteger(o.id)) xo.set(name, o.id);
+        return o && Number.isInteger(o.id) ? o.id : null;
+      }, (e) => {
+        this.failed.add(String(e && e.message || e));
+        return null;
+      }));
+      this.pending.push(this.imWait.get(img));
+    }
+    lines.push('/' + name + ' Do', 'Q');
+    this.pending.push(this.imWait.get(img).then((id) => {
+      if (id !== null) out[at] = lines.join('\n');
+    }));
+  }
+}
+
+const API = new Set(['begin', 'end', 'settle', 'fonts', 'unparsed',
+  'failed', 'images', 'unknown']);
+
+/** See the header. */
+export function sinkProxy(sink) {
+  const known = (k) => typeof k === 'symbol' || SUPPORTED.has(k) ||
+    EXTRAS.has(k) || API.has(k) || k in sink;
+  const miss = (k) => {
+    if (sink.unknown === 'throw') {
+      throw new Error('PdfSink: unsupported ' + String(k));
+    }
+  };
+  return new Proxy(sink, {
+    get(t, k) {
+      if (k === 'then') return undefined;
+      if (!known(k)) return miss(k);
+      const v = t[k];
+      return typeof v === 'function' ? v.bind(t) : v;
+    },
+    set(t, k, v) {
+      if (known(k)) t[k] = v;
+      else miss(k);
+      return true;
+    },
+  });
+}

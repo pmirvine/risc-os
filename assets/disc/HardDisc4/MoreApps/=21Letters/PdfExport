@@ -1,0 +1,392 @@
+// PdfExport - a window's document written as a PDF of its Print
+// layout pages (Batch G1): laid out on its own, apart from the
+// window, and painted page by page into a ./PdfSink.
+//
+//   exportPdf(dw, opts) -> Promise<{bytes, pages, missing, notes}>
+//       dw a document's window (./AppWin: dw.doc, dw.L for its text
+//       metrics, dw.markup, dw.fields); only read. opts:
+//         from, to    the pages (1-based, both included; default
+//                     every one): from below 1 is 1, to past the
+//                     last the last; none left (from after to, or
+//                     not a number) is Error('No pages to export')
+//         loader      wimplib/PdfFont FontSet's loader (./PdfFiles
+//                     fileLoader): needed
+//         signal      an AbortSignal: when aborted, looked at before
+//                     and after the layout, between pages and slices
+//                     and before the file is written, it rejects
+//                     with a DOMException 'AbortError' (no result)
+//         onProgress(done, total, phase)  (0, 0, 'preparing') before
+//                     the layout; (0, n, 'pages') after it, then
+//                     (k, n, 'pages') once each page is painted, n
+//                     the pages exported; (n, n, 'writing') before
+//                     the fonts are embedded and the file written
+//         raf         what a slice yields to (requestAnimationFrame;
+//                     setTimeout 0 without one)
+//         clock       -> ms, the slices' clock (performance.now)
+//         now         -> Date, the file's /CreationDate (new Date)
+//         rasterise(bitmap) -> Promise<{width, height, rgba}>  a
+//                     picture's pixels (straight RGBA): for PNG, GIF
+//                     and the JPEGs PDF cannot take as they are
+//                     (createImageBitmap and an OffscreenCanvas)
+//         measure(css, text) -> px  the screen's width of a run, which
+//                     ./PdfSink fits each run to (its Fitting): by
+//                     default measureOf(dw); null for none (the
+//                     fonts' own advances)
+//       bytes the file; pages how many; missing FontSet's (label ->
+//       Set of the code points no glyph showed); notes lines for
+//       the user: per font, how many characters it lacks (drawn as
+//       the font's empty box, its .notdef glyph) or, for a font
+//       file that could not be loaded, that its text will not show,
+//       and each picture left out with why
+//   sizeOf(page) -> {px: [w, h], pt: [w, h]}  the page's size, each
+//       side kept to 3..14400 points (the PDF limits)
+//   picsOf() -> pics  the layout's pictures (L.pics, ./PicPaint):
+//       get(bytes, mime, info) -> {state: 'ready', bitmap: {width,
+//       height, bytes, mime, info}}, width x height the picture's
+//       pixels (info.w, info.h): the same bitmap for the same bytes
+//       object, so a picture is one XObject on every page
+//   uriOf(url) -> string | null  a link's address as the PDF's /URI
+//       has it: ./LinkUrl cleanUrl's (http, https, mailto or ftp, a
+//       space and what a URL may not hold percent-encoded; else, as
+//       for javascript:, file:, data: or a relative address, a
+//       control character or broken UTF-16, null), ASCII only
+//   measureOf(dw) -> measure(css, text) | null  the window's own
+//       text metrics (dw.L.metrics width: what the layout measured
+//       with, kerning on, and its cache), else a 2D context of an
+//       OffscreenCanvas (a cache of 20000 widths); null with neither
+//   SLICE_MS  30: the painting a slice does before it yields
+//
+// The layout: a fresh ./DocLayout of dw.doc with the window's text
+// metrics, floats on (Print layout), the window's markup view and
+// fields (their shading off, results not codes, as Word prints),
+// settled as Print layout settles (./ViewPass settle: one blocking
+// pass, its pages all worked out), then placed (./PlacePrint). The
+// window's own layout, pages, undo and saved state are not touched,
+// so it works in every view. Each page: sink.begin at its size (px,
+// twips / 15), ./PagePaint paintPage with marks off, its pictures
+// settled; when a face it drew in was not loaded yet the faces are
+// loaded and the page painted again. Each run of text is fitted to
+// the width the screen measured it at (measure: kerning and
+// ligatures in, so a run ends where the layout put its end; see
+// ./PdfSink, Fitting). Pages are written (points,
+// twips / 20) as they are painted; the fonts are embedded once, at
+// the end. ExtGState objects are shared by every page; a picture is
+// one XObject (JPEG unchanged as DCTDecode when wimplib/PdfImage
+// takes it; else rasterised, an SMask for its alpha). Links: each
+// box ./ItemPaint tells the sink of (one per link per line, in the
+// body, headers, footers and notes) is a /Link annotation, no
+// border, on its page (/P): a web address (uriOf; others left out)
+// as /A << /S /URI >>; a bookmark (w:anchor) as /Dest [page /Fit],
+// its page ./PageOfBookmark pageOf's, left out when the bookmark is
+// missing, on no one page (a header's) or on a page not exported.
+// The Info dictionary: the core properties' title and creator when
+// set (./FieldDates coreOf), producer '!Letters'. Uses
+// requestAnimationFrame, createImageBitmap and OffscreenCanvas
+// unless given others; no other desktop services.
+import {DocLayout} from './DocLayout';
+import {settle} from './ViewPass';
+import {PlacePrint} from './PlacePrint';
+import {paintPage} from './PagePaint';
+import {PdfSink} from './PdfSink';
+import {keyOf} from './PdfFiles';
+import {coreOf} from './FieldDates';
+import {pageOf} from './PageOfBookmark';
+import {cleanUrl} from './LinkUrl';
+import {PdfWriter, num, str} from 'wimplib/PdfWrite';
+import {FontSet} from 'wimplib/PdfFont';
+import {imageObjects, jpegInfo} from 'wimplib/PdfImage';
+
+export const SLICE_MS = 30;
+const LAYOUT_W = 800;                  // (any width: pages the same)
+const TRIES = 3;                       // (paints of a page, at most)
+const WIDTHS = 20000;                  // (the canvas measure's cache)
+
+/** See the header. */
+export function measureOf(dw) {
+  const m = dw && dw.L && dw.L.metrics;
+  if (m && typeof m.width === 'function') {
+    return (css, text) => m.width(text, css);
+  }
+  if (typeof OffscreenCanvas !== 'function') return null;
+  let g = null;
+  const seen = new Map();
+  return (css, text) => {
+    const k = css + '\0' + text;
+    let w = seen.get(k);
+    if (w === undefined) {
+      g ||= new OffscreenCanvas(1, 1).getContext('2d');
+      g.font = css;
+      w = g.measureText(text).width;
+      if (seen.size >= WIDTHS) seen.clear();
+      seen.set(k, w);
+    }
+    return w;
+  };
+}
+
+/** See the header. */
+export function picsOf() {
+  const made = new WeakMap();
+  return {get(bytes, mime, info) {
+    let bitmap = made.get(bytes);
+    if (!bitmap) {
+      bitmap = {width: info.w, height: info.h, bytes, mime, info};
+      made.set(bytes, bitmap);
+    }
+    return {state: 'ready', bitmap};
+  }};
+}
+
+const ASCII = /^[\x21-\x7e]+$/;
+
+/** See the header. */
+export function uriOf(url) {
+  if (typeof url !== 'string') return null;
+  const c = cleanUrl(url);
+  return typeof c.url === 'string' && ASCII.test(c.url) ? c.url : null;
+}
+
+/** The link annotations of a page's links (PdfSink end's): ids for
+ *  its /Annots; put(pid) writes the web ones once the page's id is
+ *  known; dests [{id, head, i, pid}], the bookmark ones, written
+ *  once every page is (i the target's page index: at(name), -1 for
+ *  none, left out). */
+function annotsOf(writer, links, at) {
+  const ids = [], now = [], dests = [];
+  const box = (r) => '<< /Type /Annot /Subtype /Link /Rect [' +
+    r.map(num).join(' ') + '] /Border [0 0 0]';
+  for (const l of links) {
+    if (l.url !== undefined) {
+      const u = uriOf(l.url);
+      if (u === null) continue;
+      const id = writer.reserve();
+      ids.push(id);
+      now.push([id, box(l.rect), ' /A << /S /URI /URI ' + str(u) +
+        ' >>']);
+    } else {
+      const i = at(l.anchor);
+      if (i < 0) continue;
+      const id = writer.reserve();
+      ids.push(id);
+      dests.push({id, head: box(l.rect), i});
+    }
+  }
+  return {ids, dests, put(pid) {
+    for (const [id, head, tail] of now) {
+      writer.put(id, head + ' /P ' + pid + ' 0 R' + tail + ' >>');
+    }
+    for (const d of dests) d.pid = pid;
+  }};
+}
+
+/** The pixels of a picture, by the browser's own decoder. */
+async function rasterOf(bm) {
+  const im = await createImageBitmap(new Blob([bm.bytes],
+    {type: bm.mime || ''}));
+  try {
+    const c = new OffscreenCanvas(im.width, im.height);
+    const g = c.getContext('2d');
+    g.drawImage(im, 0, 0);
+    const d = g.getImageData(0, 0, im.width, im.height);
+    return {width: im.width, height: im.height, rgba: d.data};
+  } finally {
+    if (typeof im.close === 'function') im.close();
+  }
+}
+
+/** A typed array's bytes as a Uint8Array (the same memory). */
+const u8 = (a) => (a instanceof Uint8Array ? a
+  : new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
+
+/** The sink's ImageSink: one XObject per bitmap, every page. */
+function imageSink(writer, rasterise) {
+  const made = new Map();
+  return {objectFor(bm) {
+    let p = made.get(bm);
+    if (!p) {
+      p = (async () => {
+        if (bm.mime === 'image/jpeg' && jpegInfo(bm.bytes)) {
+          return imageObjects(writer, {jpeg: bm.bytes});
+        }
+        const r = await rasterise(bm);
+        return imageObjects(writer, {width: r.width,
+          height: r.height, rgba: u8(r.rgba)});
+      })();
+      made.set(bm, p);
+    }
+    return p;
+  }};
+}
+
+/** The rejection of an aborted export. */
+function aborted() {
+  const text = 'The PDF export was stopped';
+  if (typeof DOMException === 'function') {
+    return new DOMException(text, 'AbortError');
+  }
+  const e = new Error(text);
+  e.name = 'AbortError';
+  return e;
+}
+
+/** The window's fields as printed: no shading, results shown. */
+function fieldsOf(dw) {
+  const f = dw.fields;
+  if (!f || typeof f !== 'object') return undefined;
+  const out = {...f, shade: {mode: 'never'}};
+  delete out.codes;
+  return out;
+}
+
+/** dw.doc's Print layout pages, laid out apart: {L, P}. */
+function paginate(dw, pics) {
+  const doc = dw.doc || dw.d.doc, old = dw.L;
+  const base = new DocLayout(doc, old.metrics, null, {floats: true,
+    pics, markup: dw.markup, fields: fieldsOf(dw)});
+  const w = old.width > 0 && Number.isFinite(old.width) ? old.width
+    : LAYOUT_W;
+  base.layout(w);
+  const {L, P} = settle(doc, {L: base});
+  L.place = PlacePrint(L, P);
+  L.layout(L.width);
+  return {doc, L, P};
+}
+
+/** The least and most a PDF page side may be (Acrobat's limits). */
+const MIN_PT = 3, MAX_PT = 14400;
+
+/** A page's size: px for the sink, points for the PDF (each side
+ *  3..14400 pt; the px are the same size, so that the content and
+ *  the MediaBox agree). */
+export function sizeOf(pg) {
+  const s = pg.size;
+  const tw = s && s.w > 0 && s.h > 0 ? s : {w: pg.w * 15, h: pg.h * 15};
+  const pt = [tw.w / 20, tw.h / 20].map((v) => Math.min(MAX_PT,
+    Math.max(MIN_PT, Number.isFinite(v) ? v : MIN_PT)));
+  return {px: pt.map((v) => v * 4 / 3), pt};
+}
+
+/** A core property, or undefined when it is empty. */
+const prop = (s) => (typeof s === 'string' && s.trim() ? s
+  : undefined);
+
+const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+
+/** See the header. */
+export async function exportPdf(dw, opts = {}) {
+  const {from = 1, to = Infinity, signal, onProgress, loader,
+    rasterise = rasterOf} = opts;
+  if (typeof loader !== 'function') {
+    throw new TypeError('exportPdf: a font loader is needed');
+  }
+  const raf = opts.raf || (typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame : (cb) => setTimeout(cb, 0));
+  const clock = opts.clock || (() => (typeof performance === 'object'
+    ? performance.now() : Date.now()));
+  const check = () => {
+    if (signal && signal.aborted) throw aborted();
+  };
+  const progress = (k, n, phase) => {
+    if (onProgress) onProgress(k, n, phase);
+  };
+
+  check();
+  progress(0, 0, 'preparing');
+  // one frame, so that the message is painted before the layout
+  // below blocks the desktop
+  await new Promise((res) => raf(() => res()));
+  check();
+  const pics = picsOf();
+  const {doc, L, P} = paginate(dw, pics);
+  check();
+  const a = Math.max(1, Math.ceil(Number(from)));
+  const b = Math.min(P.count, Math.floor(Number(to)));
+  if (!(a <= b)) throw new Error('No pages to export');
+  const total = b - a + 1;
+
+  const core = coreOf(doc);
+  const writer = new PdfWriter({title: prop(core.title),
+    author: prop(core.creator), producer: '!Letters', now: opts.now});
+  const fonts = new FontSet(writer, loader);
+  const measure = 'measure' in opts ? opts.measure : measureOf(dw);
+  const sink = new PdfSink({fonts, keyOf, measure,
+    images: imageSink(writer, rasterise)});
+  const gsIds = new Map();             // name -> id, every page
+  const fontIds = (names) => {
+    const m = new Map();
+    for (const f of fonts.faces.values()) {
+      if (names.has(f.name)) m.set(f.name, f.id);
+    }
+    return m;
+  };
+  const gstates = (map) => {
+    const m = new Map();
+    for (const [name, dict] of map) {
+      if (!gsIds.has(name)) gsIds.set(name, writer.add(dict));
+      m.set(name, gsIds.get(name));
+    }
+    return m;
+  };
+
+  const marks = new Map();             // bookmark -> page index, -1
+  const at = (name) => {
+    if (!marks.has(name)) {
+      const pg = pageOf({doc, pages: P}, name);
+      marks.set(name, pg && pg.i >= a - 1 && pg.i < b ? pg.i : -1);
+    }
+    return marks.get(name);
+  };
+  const pageIds = new Map(), dests = [];
+
+  progress(0, total, 'pages');
+  let start = clock();
+  for (let i = a - 1; i < b; i++) {
+    check();
+    const pg = P.at(i), {px, pt} = sizeOf(pg);
+    let out = null;
+    for (let k = 0; k < TRIES; k++) {
+      sink.begin(px[0], px[1]);
+      paintPage(P, i, sink, {place: L.place, marks: false});
+      await sink.settle();
+      out = sink.end();
+      if (out.ready) break;
+      await fonts.loadPending();
+    }
+    const an = annotsOf(writer, out.links, at);
+    const pid = writer.page({w: pt[0], h: pt[1], content: out.content,
+      fonts: fontIds(out.fonts), xobjects: out.xobjects,
+      gstates: gstates(out.gstates), annots: an.ids});
+    an.put(pid);
+    pageIds.set(i, pid);
+    dests.push(...an.dests);
+    progress(i - a + 2, total, 'pages');
+    if (i + 1 < b && clock() - start >= SLICE_MS) {
+      await new Promise((res) => raf(() => res()));
+      start = clock();
+    }
+  }
+  for (const d of dests) {
+    writer.put(d.id, d.head + ' /P ' + d.pid + ' 0 R /Dest [' +
+      pageIds.get(d.i) + ' 0 R /Fit] >>');
+  }
+  check();
+  progress(total, total, 'writing');
+  await fonts.embed();
+  check();
+  const bytes = await writer.finish();
+  check();
+
+  const notes = [];
+  for (const [label, set] of fonts.missing) {
+    const f = fonts.faces.get(label);
+    notes.push(f && !f.font
+      ? 'The font ' + label + ' could not be loaded: its ' +
+        plural(set.size, 'character') + ' will not show'
+      : label + ': ' + plural(set.size, 'character') +
+        ' not in the font (shown as an empty box)');
+  }
+  for (const why of sink.failed) {
+    notes.push('A picture was left out: ' + why);
+  }
+  return {bytes, pages: total, missing: fonts.missing, notes};
+}
