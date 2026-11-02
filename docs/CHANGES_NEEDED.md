@@ -4,6 +4,14 @@ Each entry records a change one agent made (or needs) in another agent's area. E
 the integration QA pass resolved or documented all of them (see the end of this file for the QA changes).
 
 
+## choices.write writes ASCII JSON — WORD PROCESSOR agent (!Letters spell check)
+**Status:** Resolved: documented in CORE_API.md (the `choices` line).
+
+`src/core/choices.js` `write` now writes `asciiJSON(value, 2)` (new in `src/core/charset.js`): JSON.stringify, then
+every UTF-16 code unit past 0x7E as a `\uXXXX` escape. Before, the text went through `encodeLatin1`, so a character
+outside RISC OS Latin-1 (Łukasz, Dvořák, an emoji) was saved as '?'. JSON.parse reads both forms, so files written
+before still read as they did; only the bytes on disc differ for non-ASCII strings.
+
 ## wimp.processKey(code, char?) — added by ACCESSORIES agent (Chars)
 **Status:** Resolved: documented in CORE_API.md §3.2.
 

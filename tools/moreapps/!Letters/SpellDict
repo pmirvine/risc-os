@@ -1,0 +1,389 @@
+// SpellDict - a Hunspell dictionary reader for spell checking.
+//
+//   parseDict({dic, aff}) -> Dict
+//   checkDict(Dict) -> null, or why the files look damaged: the .dic
+//                         must start with its count of entries and
+//                         hold at least DIC_SHARE of them, the .aff
+//                         must have SET or another directive read
+//                         here (a cut-short or garbage file would
+//                         else mark every word)
+//
+//   Dict.has(word)        is the word spelt correctly?
+//   Dict.root(word)       its stems (debugging), [] if unknown
+//   Dict.stemFlags(stem)  the flag characters of a .dic entry, or
+//                         null when there is no such entry
+//   Dict.tryChars         the .aff TRY line (for suggestions)
+//   Dict.rep              the REP pairs [from, to] (suggestions)
+//   Dict.ignore           the IGNORE characters ('' if none)
+//   Dict.wordChars        the WORDCHARS characters
+//   Dict.noSuggest        the NOSUGGEST flag ('' if none)
+//   Dict.declared         the .dic's first line, its count of entries
+//                         (-1 when that line is not a number)
+//   Dict.entries          the entries the .dic was read with
+//   Dict.directives       the .aff lines read as directives
+//
+// The en_GB .aff (LibreOffice, LGPL) uses exactly these directives,
+// and these are the ones read; every other line is ignored:
+//   SET UTF-8 (the strings arrive decoded, so nothing to do)
+//   TRY, REP, WORDCHARS, NOSUGGEST   kept for the suggester
+//   ICONV      input conversion (curly quote, ligatures), applied
+//              to every lookup
+//   OCONV      output conversion: ignored (we only look words up)
+//   BREAK      break strings: a word is right if each piece is
+//   PFX, SFX   affix rules: flag, strip, add, condition; the Y/N
+//              cross-product switch. Continuation flags on a
+//              suffix (two-level suffixes) work too
+//   COMPOUNDRULE, COMPOUNDMIN, ONLYINCOMPOUND   digit runs such as
+//              10th and 2024 are compounds of flagged pieces
+// The .dic holds only single-character flags and an optional
+// tab-separated description. Not used by en_GB, so not supported:
+// CIRCUMFIX (a test scans the .aff to keep it so), FLAG long/num/
+// UTF-8, MAP, and PHONE (sound-alike suggestions: ignored). Read
+// anyway since each costs a line: KEEPCASE, FORBIDDENWORD,
+// NEEDAFFIX (a bare stem is refused), IGNORE.
+//
+// The .dic stays a Map from stem to flag string. Affixes are
+// expanded lazily: has() strips each candidate prefix and suffix
+// from the word, tests the rule's condition and looks the stem up
+// for the rule's flag, so nothing is expanded up front.
+
+const NONE = [];
+export const DIC_SHARE = 0.9;
+
+// A Hunspell condition ('[^abc]l', '.', 'ke') as one test per
+// character: {any}, or {set, neg}, or {ch}. Matched by hand (not a
+// RegExp) at the start of a stem for prefixes, the end for suffixes.
+const condCache = new Map();
+function condOf(c) {
+  let r = condCache.get(c);
+  if (r !== undefined) return r;
+  r = [];
+  for (let i = 0; i < c.length; i++) {
+    const ch = c[i], j = ch === '[' ? c.indexOf(']', i) : -1;
+    if (j > i) {
+      const neg = c[i + 1] === '^';
+      r.push({set: c.slice(i + (neg ? 2 : 1), j), neg});
+      i = j;
+    } else r.push(ch === '.' ? {any: true} : {ch});
+  }
+  condCache.set(c, r);
+  return r;
+}
+
+function fits(cond, s, atEnd) {
+  const n = cond.length;
+  if (s.length < n) return false;
+  const o = atEnd ? s.length - n : 0;
+  for (let i = 0; i < n; i++) {
+    const t = cond[i], c = s[o + i];
+    if (t.any) continue;
+    if (t.set !== undefined ? (t.set.indexOf(c) >= 0) === t.neg
+      : c !== t.ch) return false;
+  }
+  return true;
+}
+
+// Whitespace-separated fields of a line.
+function fields(line) {
+  const out = [];
+  let from = -1;
+  for (let i = 0; i <= line.length; i++) {
+    const sp = i === line.length || line.charCodeAt(i) <= 32;
+    if (sp && from >= 0) { out.push(line.slice(from, i)); from = -1; }
+    else if (!sp && from < 0) from = i;
+  }
+  return out;
+}
+
+const isDigits = (s) => {
+  if (!s) return false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 48 || c > 57) return false;
+  }
+  return true;
+};
+
+// Hunspell accepts plain numbers: 2024, 3.14, 1,000, 12-34.
+function isNumber(w) {
+  let run = 0;
+  for (let i = 0; i < w.length; i++) {
+    const c = w.charCodeAt(i);
+    if (c >= 48 && c <= 57) run++;
+    else if ((c === 46 || c === 44 || c === 45) && run) run = 0;
+    else return false;
+  }
+  return run > 0;
+}
+
+function lines(s) {
+  return s.charCodeAt(0) === 0xFEFF ? s.slice(1).split(/\r?\n/)
+    : s.split(/\r?\n/);
+}
+
+const KNOWN = new Set(['SET', 'PFX', 'SFX', 'TRY', 'WORDCHARS',
+  'IGNORE', 'NOSUGGEST', 'ONLYINCOMPOUND', 'KEEPCASE', 'FORBIDDENWORD',
+  'NEEDAFFIX', 'COMPOUNDMIN', 'ICONV', 'OCONV', 'REP', 'BREAK',
+  'COMPOUNDRULE']);
+
+function parseAff(aff) {
+  const a = {
+    iconv: [], rep: [], breaks: [], crules: [], tryChars: '',
+    wordChars: '', ignore: '', noSuggest: '', onlyInCompound: '',
+    keepCase: '', forbidden: '', needAffix: '', compoundMin: 3,
+    pfx: new Map(), sfx: new Map(), maxP: 0, maxS: 0, known: 0,
+  };
+  const heads = {PFX: new Map(), SFX: new Map()};
+  for (const raw of lines(aff)) {
+    const line = raw.trim();
+    if (!line || line[0] === '#') continue;
+    const t = fields(line), k = t[0];
+    if (KNOWN.has(k)) a.known++;
+    if (k === 'PFX' || k === 'SFX') {
+      if (!heads[k].has(t[1])) {
+        heads[k].set(t[1], t[2] === 'Y');
+        continue;
+      }
+      let add = t[3] === '0' ? '' : t[3], cont = '';
+      const sl = add.indexOf('/');
+      if (sl >= 0) { cont = add.slice(sl + 1); add = add.slice(0, sl); }
+      const strip = t[2] === '0' ? '' : t[2];
+      const cond = condOf(t[4] || '.');
+      const pre = k === 'PFX';
+      const r = {flag: t[1], strip, add, cont,
+        cross: heads[k].get(t[1]),
+        cond, pre};
+      const m = pre ? a.pfx : a.sfx;
+      if (!m.has(add)) m.set(add, []);
+      m.get(add).push(r);
+      if (pre) a.maxP = Math.max(a.maxP, add.length);
+      else a.maxS = Math.max(a.maxS, add.length);
+    } else if (k === 'TRY') a.tryChars = t[1] || '';
+    else if (k === 'WORDCHARS') a.wordChars = t[1] || '';
+    else if (k === 'IGNORE') a.ignore = t[1] || '';
+    else if (k === 'NOSUGGEST') a.noSuggest = t[1] || '';
+    else if (k === 'ONLYINCOMPOUND') a.onlyInCompound = t[1] || '';
+    else if (k === 'KEEPCASE') a.keepCase = t[1] || '';
+    else if (k === 'FORBIDDENWORD') a.forbidden = t[1] || '';
+    else if (k === 'NEEDAFFIX') a.needAffix = t[1] || '';
+    else if (k === 'COMPOUNDMIN') a.compoundMin = +t[1] || 1;
+    else if (k === 'ICONV' && t.length >= 3) a.iconv.push([t[1], t[2]]);
+    else if (k === 'REP' && t.length >= 3)
+      a.rep.push([t[1].replace(/_/g, ' '), t[2].replace(/_/g, ' ')]);
+    else if (k === 'BREAK' && t.length >= 2 && !isDigits(t[1]))
+      a.breaks.push(t[1]);
+    else if (k === 'COMPOUNDRULE' && t.length >= 2
+        && !isDigits(t[1])) {
+      const toks = [];
+      for (const ch of t[1]) {
+        if ((ch === '*' || ch === '?') && toks.length)
+          toks[toks.length - 1].q = ch;
+        else toks.push({f: ch, q: ''});
+      }
+      a.crules.push(toks);
+    }
+  }
+  if (!a.breaks.length) a.breaks.push('-');
+  return a;
+}
+
+// Longest word tried against the compound rules.
+const MAX_COMPOUND = 100;
+const init = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+export function parseDict({dic, aff}) {
+  const A = parseAff(aff);
+  const stems = new Map();
+  let maxStem = 0, declared = -1, entries = 0;
+  const ls = lines(dic);
+  for (let i = 0; i < ls.length; i++) {
+    let l = ls[i];
+    if (i === 0 && isDigits(l.trim())) {
+      declared = Number(l.trim());
+      continue;
+    }
+    l = l.trim();
+    const cut = fields(l)[0];
+    if (cut !== undefined) l = cut;
+    if (!l) continue;
+    const sl = l.indexOf('/');
+    const w = sl < 0 ? l : l.slice(0, sl);
+    const fl = sl < 0 ? '' : l.slice(sl + 1);
+    if (!w) continue;
+    const old = stems.get(w);
+    entries++;
+    stems.set(w, old === undefined ? fl : old + fl);
+    if (w.length > maxStem) maxStem = w.length;
+  }
+
+  const has1 = (fl, f) => f !== '' && fl.indexOf(f) >= 0;
+  // A stem usable on its own right now: not only-in-compound,
+  // not forbidden. `affixed` says an affix has been applied.
+  function stemOk(s, flag, affixed) {
+    const fl = stems.get(s);
+    if (fl === undefined) return false;
+    if (flag && fl.indexOf(flag) < 0) return false;
+    if (has1(fl, A.forbidden) || has1(fl, A.onlyInCompound))
+      return false;
+    return affixed || !has1(fl, A.needAffix);
+  }
+
+  // Calls fn(stem, rule) for each suffix rule that fits word.
+  function sfxCands(w, fn) {
+    for (let n = Math.min(A.maxS, w.length); n >= 0; n--) {
+      const rs = A.sfx.get(n ? w.slice(w.length - n) : '');
+      if (!rs) continue;
+      const base = w.slice(0, w.length - n);
+      for (const r of rs) {
+        const s = base + r.strip;
+        if (s && fits(r.cond, s, true) && fn(s, r)) return true;
+      }
+    }
+    return false;
+  }
+  function pfxCands(w, fn) {
+    for (let n = Math.min(A.maxP, w.length); n >= 0; n--) {
+      const rs = A.pfx.get(n ? w.slice(0, n) : '');
+      if (!rs) continue;
+      const rest = w.slice(n);
+      for (const r of rs) {
+        const s = r.strip + rest;
+        if (s && fits(r.cond, s, false) && fn(s, r)) return true;
+      }
+    }
+    return false;
+  }
+
+  // Calls out(stem) for each stem w derives from (true to stop).
+  function derive(w, out) {
+    if (stemOk(w, '', false) && out(w)) return true;
+    const sfx = (x) => sfxCands(x, (s, r) => {
+      if (stemOk(s, r.flag, true) && out(s)) return true;
+      // Two-level: s is itself stem + an inner suffix.
+      return sfxCands(s, (s1, r1) =>
+        r1.cont.indexOf(r.flag) >= 0 && stemOk(s1, r1.flag, true)
+        && out(s1));
+    });
+    if (sfx(w)) return true;
+    return pfxCands(w, (s, p) => {
+      if (stemOk(s, p.flag, true) && out(s)) return true;
+      return p.cross && sfxCands(s, (s2, r) =>
+        r.cross && fits(p.cond, s2, false) && stemOk(s2, r.flag, true)
+        && has1(stems.get(s2), p.flag) && out(s2));
+    });
+  }
+
+  function compound(w) {
+    // Pieces are stems, so a long word (untrusted text) cannot be
+    // one and no piece is longer than the longest stem.
+    if (!A.crules.length || !w || w.length > MAX_COMPOUND) return false;
+    const part = (f, a, b) => {
+      if (b - a < A.compoundMin) return false;
+      const fl = stems.get(w.slice(a, b));
+      return fl !== undefined && fl.indexOf(f) >= 0
+        && !has1(fl, A.forbidden);
+    };
+    const m = (rule, ti, pos) => {
+      if (ti === rule.length) return pos === w.length;
+      const t = rule[ti], end = Math.min(w.length, pos + maxStem);
+      if (pos >= w.length) return t.q !== '' && m(rule, ti + 1, pos);
+      if (t.q !== '' && m(rule, ti + 1, pos)) return true;
+      for (let e = pos + 1; e <= end; e++) {
+        if (!part(t.f, pos, e)) continue;
+        if (m(rule, t.q === '*' ? ti : ti + 1, e)) return true;
+      }
+      return false;
+    };
+    for (const r of A.crules) if (m(r, 0, 0)) return true;
+    return false;
+  }
+
+  function variants(w) {
+    const lo = w.toLowerCase(), up = w.toUpperCase();
+    if (w === lo) return [w];
+    if (w === up) return w.length > 1 ? [w, init(lo), lo] : [w, lo];
+    if (w === init(lo)) return [w, lo];
+    return [w];
+  }
+
+  function convert(word) {
+    let w = word;
+    for (const [from, to] of A.iconv)
+      if (w.indexOf(from) >= 0) w = w.split(from).join(to);
+    if (A.ignore)
+      for (const c of A.ignore) if (w.indexOf(c) >= 0)
+        w = w.split(c).join('');
+    return w;
+  }
+
+  // Stems for w (already converted), trying the case variants;
+  // all=false stops at the first.
+  function find(w, all) {
+    const vs = variants(w), got = [];
+    for (const v of vs) {
+      const fl = stems.get(v);
+      if (fl !== undefined && has1(fl, A.forbidden)) return NONE;
+    }
+    for (const v of vs) {
+      derive(v, (s) => {
+        // KEEPCASE stems only match the word as written.
+        if (v !== w && has1(stems.get(s), A.keepCase)) return false;
+        got.push(s);
+        return !all;
+      });
+      if (got.length && !all) return got;
+    }
+    if (!got.length && compound(w)) got.push(w);
+    return got;
+  }
+
+  function ok(w, depth) {
+    if (isNumber(w)) return true;
+    if (find(w, false).length) return true;
+    if (depth > 2) return false;
+    for (const b of A.breaks) {
+      if (w.indexOf(b) < 0) continue;
+      const ps = w.split(b);
+      if (ps.every((p) => p && ok(p, depth + 1))) return true;
+    }
+    return false;
+  }
+
+  return {
+    has(word) {
+      if (typeof word !== 'string' || !word) return false;
+      const w = convert(word);
+      return w ? ok(w, 0) : false;
+    },
+    root(word) {
+      if (typeof word !== 'string' || !word) return [];
+      const w = convert(word);
+      return w ? [...new Set(find(w, true))] : [];
+    },
+    stemFlags(stem) {
+      const f = stems.get(stem);
+      return f === undefined ? null : f;
+    },
+    tryChars: A.tryChars,
+    rep: A.rep,
+    ignore: A.ignore,
+    wordChars: A.wordChars,
+    noSuggest: A.noSuggest,
+    stems,
+    declared,
+    entries,
+    directives: A.known,
+  };
+}
+
+/** See the header. */
+export function checkDict(d) {
+  if (!d || !(d.declared > 0)) {
+    return 'the word list does not begin with its count';
+  }
+  if (!(d.entries >= 1) || d.entries < d.declared * DIC_SHARE) {
+    return `the word list has ${d.entries} of its ${d.declared} words`;
+  }
+  if (!(d.directives > 0)) return 'the affix file has no rules';
+  return null;
+}

@@ -17,7 +17,11 @@
 //       removed (in order's order), order: the old order, raw?}
 //       many comments at once (ids distinct, each there), in time
 //       linear in the comments: those of the marks a step took
-//       (./CommentKeep). Their marks are not touched
+//       (./CommentKeep). Their marks are not touched. An odd
+//       w:comment of a removed id (a second comment with an id
+//       taken, corpus Comment040) goes with it: left in the part it
+//       would read back as that comment; the inverse carries the raw
+//       array it had
 //   addComments {comments, order, raw?} -> removeComments {ids,
 //       raw?}  comments (as addComment takes them, ids distinct and
 //       not there) put in; order is the old order with their ids put
@@ -122,16 +126,43 @@ function mapOver(order, old, add) {
   return m;
 }
 
-/** raw0 given back: op.raw must hold its nodes, places in range. */
+/** Whether nodes a (a raw array's) are in b's, in order. */
+function within(a, b) {
+  let j = 0;
+  for (const x of a) {
+    while (j < b.length && b[j].node !== x.node) j++;
+    if (j++ >= b.length) return false;
+  }
+  return true;
+}
+
+/** raw0 given back: op.raw must hold its nodes (more, or fewer, when
+ *  a removed comment took its duplicates: dupsOf), places in range. */
 function rawBack(given, raw0, size) {
-  if (!Array.isArray(given) || given.length !== raw0.length)
-    fail('bad raw');
+  if (!Array.isArray(given) || !(within(raw0, given) ||
+    within(given, raw0))) fail('bad raw');
   given.forEach((x, k) => {
-    if (!isObj(x) || x.node !== raw0[k].node ||
-      !Number.isInteger(x.at) || x.at < 0 || x.at > size ||
-      (k && x.at < given[k - 1].at)) fail('bad raw');
+    if (!isObj(x) || !isObj(x.node) || !Number.isInteger(x.at) ||
+      x.at < 0 || x.at > size || (k && x.at < given[k - 1].at))
+      fail('bad raw');
   });
   return given;
+}
+
+const localOf = (n) => (typeof n === 'string'
+  ? n.slice(n.indexOf(':') + 1) : '');
+
+/** Whether raw entry x is a w:comment whose id is in gone: a second
+ *  comment of that id, read as odd because the id was taken
+ *  (./CommentRead). Left behind, it would be read as the comment
+ *  once the first is gone. */
+function dupOf(x, gone) {
+  const n = x.node;
+  if (!isObj(n) || localOf(n.name) !== 'comment' ||
+    !Array.isArray(n.attrs)) return false;
+  const a = n.attrs.find((e) => Array.isArray(e) &&
+    /(^|:)id$/.test(e[0]));
+  return !!a && /^[0-9]{1,10}$/.test(a[1]) && gone.has(+a[1]);
 }
 
 /** See the header. */
@@ -241,9 +272,9 @@ export function removeComments(doc, op) {
   const raw0 = rawOf(c);
   let raw = raw0;
   if (op.raw !== undefined) raw = rawBack(op.raw, raw0, next.length);
-  else if (raw0.some((x) => before[x.at] !== x.at)) {
-    raw = raw0.map((x) => (before[x.at] === x.at ? x
-      : {...x, at: before[x.at]}));
+  else if (raw0.some((x) => before[x.at] !== x.at || dupOf(x, gone))) {
+    raw = raw0.filter((x) => !dupOf(x, gone)).map((x) =>
+      (before[x.at] === x.at ? x : {...x, at: before[x.at]}));
   }
   put(doc, mapOver(next, map), next, raw);
   const inv = {op: 'addComments',

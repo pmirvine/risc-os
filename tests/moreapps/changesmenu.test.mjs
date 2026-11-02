@@ -98,7 +98,8 @@ describe('Tools menu: tracked changes', () => {
       'Delete comments in selection', 'Track Changes', 'Show Markup',
       'Show Changes Pane', 'Accept', 'Reject', 'Accept All',
       'Reject All', 'Previous Change', 'Next Change',
-      'User name and initials...']);
+      'User name and initials...', 'Spelling...',
+      'Check spelling as you type']);
     assert.equal(item(m, 'Track Changes').key,
       keymap.labelFor('trackChanges'));
     assert.equal(keymap.labelFor('trackChanges'), 'Ctrl+Shift+E');

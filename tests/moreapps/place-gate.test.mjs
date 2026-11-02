@@ -150,6 +150,8 @@ export const ALLOW = [
     'page\'s rect from ./PageSheet and its header box: the shift)'},
   {file: 'HdrPaint', count: 2, until: KEEP, why: ANSWERED + ' (a ' +
     'page\'s rect from ./PageSheet: its body dimmed, its lines)'},
+  {file: 'SpellMenu', count: 1, until: KEEP, why: ANSWERED +
+    ' (the point against L.selectionRects\' boxes of the word)'},
   {file: 'StoryLayout', count: 1, until: KEEP, why: GALLEY + ': a ' +
     'header or footer story\'s own height (P7.1)'},
   {file: 'SelVert', count: 4, until: KEEP, why: 'the line\'s galley ' +

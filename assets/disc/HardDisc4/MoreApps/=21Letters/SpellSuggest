@@ -1,0 +1,184 @@
+// SpellSuggest: spelling suggestions from a Dict (SpellDict).
+//   suggest(dict, word, max = 5) -> string[]
+// Candidates at edit distance 1 (delete, transpose, replace, insert
+// from the .aff TRY letters) and the .aff REP substitutions are
+// looked up with dict.has; distance 2 is tried only when too few
+// were found and the word is short. Work is bounded by a count of
+// lookups, so pasted nonsense cannot hold the editor up.
+// Ranked by distance, keyboard-neighbour replacements, then the
+// common prefix with the word. The case of the word is carried over.
+// suggest() is synchronous: never run it per keystroke, only for a
+// word the user asked about.
+
+const MAX_LEN = 20;        // longest word given distance 2
+const BUDGET1 = 6000;      // dictionary lookups, distance 1
+const MORE2 = 2200;        // further lookups allowed for distance 2
+const ROWS = ['qwertyuiop', 'asdfghjkl', 'zxcvbnm'];
+
+const NEAR = (() => {
+  const m = new Map();
+  ROWS.forEach((r, y) => {
+    for (let x = 0; x < r.length; x++) {
+      const s = new Set();
+      for (const [dy, dx] of [[0, -1], [0, 1], [-1, 0], [-1, 1],
+        [1, -1], [1, 0]]) {
+        const row = ROWS[y + dy];
+        if (row && row[x + dx]) s.add(row[x + dx]);
+      }
+      m.set(r[x], s);
+    }
+  });
+  return m;
+})();
+
+const isUp = (c) => c !== c.toLowerCase() && c === c.toUpperCase();
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// The letters to insert or substitute: TRY, lower case only,
+// capped at 40, with a plain alphabet when the file gives none.
+function letters(dict) {
+  const t = (dict.tryChars || 'abcdefghijklmnopqrstuvwxyz\'');
+  const out = [];
+  for (const c of t) {
+    if (c === c.toLowerCase() && !out.includes(c)) out.push(c);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
+
+export function suggest(dict, word, max = 5) {
+  if (!word || word.length > 60 || dict.has(word)) return [];
+  let letter = false;
+  for (let i = 0; i < word.length; i++) {
+    const k = word.charCodeAt(i);
+    if (k <= 32 || (k >= 127 && k < 161) || k === 0x1680 ||
+      (k >= 0x2000 && k <= 0x200f) || (k >= 0x2028 && k <= 0x202f) ||
+      k === 0x205f || k === 0x3000 || k === 0xfeff ||
+      (k >= 0xd800 && k < 0xe000)) return [];
+    const ch = word.charAt(i);
+    if (ch.toLowerCase() !== ch.toUpperCase()) letter = true;
+  }
+  if (!letter) return [];
+  const w = word.toLowerCase();
+  const n = w.length;
+  const allCaps = n > 1 && word === word.toUpperCase() &&
+    word !== w;
+  const first = isUp(word.charAt(0));
+  // A '.' is only tried in a word that has one (ie. -> i.e.).
+  const dots = w.includes('.');
+  const abc = letters(dict).filter((c) => c !== '.' || dots);
+  const found = new Map();   // lower-case candidate -> {out, score}
+  const seen = new Set([w]);
+  let calls = 0;
+  let limit = BUDGET1;
+  let tries = 0;             // candidates made, looked up or not
+  let tlimit = 40000;
+
+  const prefix = (c) => {
+    let i = 0;
+    while (i < n && i < c.length && c[i] === w[i]) i++;
+    return i;
+  };
+  const shape = (c, ok) => {
+    if (allCaps) return c.toUpperCase();
+    return first || ok === 2 ? cap(c) : c;
+  };
+  // Edits must not make a word BREAK would split: a '-' only if the
+  // word had an inside one, as many, and each piece is a word of two
+  // letters or more. Nor a dot in a word without one (REP's i.e.
+  // edited again). Rejected before any lookup.
+  const count = (t, ch) => t.split(ch).length - 1;
+  const inside = (ch) => {
+    const i = w.indexOf(ch);
+    return i > 0 && i < n - 1 && w[i - 1] !== ch && w[i + 1] !== ch;
+  };
+  const plain = (c) => {
+    if (!dots && c.includes('.')) return false;
+    if (!c.includes('-')) return true;
+    if (!inside('-') || count(c, '-') > count(w, '-')) return false;
+    return c.split('-').every((q) => q.length > 1 && dict.has(q));
+  };
+  // Look a candidate up; ok 1 = as is, 2 = capitalised (names).
+  const probe = (c, cost, rep) => {
+    if (++tries > tlimit || seen.has(c) || calls >= limit) return;
+    seen.add(c);
+    if (!rep && !plain(c)) return;
+    calls++;
+    let ok = 0;
+    if (dict.has(c)) ok = 1;
+    else if (first && dict.has(cap(c))) ok = 2;
+    if (!ok) return;
+    found.set(c, {out: shape(c, first ? ok : 1),
+      score: cost * 10 - prefix(c) * 0.5 - (c.length === n ? 0.2 : 0)});
+  };
+
+  const edits = (s, base, deep) => {
+    const m = s.length;
+    for (let i = 0; i < m; i++) {            // delete
+      probe(s.slice(0, i) + s.slice(i + 1), base + 1);
+    }
+    for (let i = 0; i + 1 < m; i++) {        // transpose
+      if (s[i] !== s[i + 1]) {
+        probe(s.slice(0, i) + s[i + 1] + s[i] + s.slice(i + 2),
+          base + 0.9);
+      }
+    }
+    if (m > MAX_LEN) return;   // long words: delete and swap only
+    for (let i = 0; i < m; i++) {            // replace
+      const nb = NEAR.get(s[i]);
+      for (const c of abc) {
+        if (c === s[i]) continue;
+        probe(s.slice(0, i) + c + s.slice(i + 1),
+          base + (nb && nb.has(c) ? 0.8 : 1));
+      }
+    }
+    for (let i = 0; i <= m; i++) {           // insert
+      for (const c of abc) {
+        // wh, th, ch, sh, gh, ph: a dropped h is a common slip
+        const h = c === 'h' && i > 0 && 'wtcsgp'.includes(s[i - 1]);
+        probe(s.slice(0, i) + c + s.slice(i), base + (h ? 0.7 : 1));
+      }
+    }
+  };
+
+  // REP: each pair at each place, in both directions of use.
+  for (const [from, to] of dict.rep || []) {
+    if (!from) continue;
+    let at = w.indexOf(from);
+    while (at >= 0) {
+      probe(w.slice(0, at) + to + w.slice(at + from.length), 0.9,
+        true);
+      at = w.indexOf(from, at + 1);
+    }
+  }
+  // A stray dot at either end is not part of the word: its edits
+  // go first, so that they get the lookups before the dotted ones.
+  let core = w;
+  while (core.length > 1 && core[0] === '.') core = core.slice(1);
+  while (core.length > 1 && core[core.length - 1] === '.') {
+    core = core.slice(0, -1);
+  }
+  if (core !== w && n <= MAX_LEN * 3) {
+    probe(core, 0.5);
+    edits(core, 0.5);
+  }
+  if (n <= MAX_LEN * 3) edits(w, 0);
+  const cheap = () => found.size;
+  if (cheap() < max && n <= MAX_LEN && calls < BUDGET1) {
+    limit = calls + MORE2;
+    tlimit = tries + 12000;
+    // Distance 2: edit the distance 1 strings that are not words
+    // but are close; bounded by the lookup budget.
+    const level = [...seen].filter((c) => c !== w);
+    for (const c of level) {
+      if (tries > tlimit || calls >= limit || cheap() >= max) break;
+      edits(c, 1);
+    }
+  }
+  return [...found.entries()]
+    .sort((a, b) => a[1].score - b[1].score ||
+      (a[0] < b[0] ? -1 : 1))
+    .map((e) => e[1].out)
+    .filter((o, i, a) => o !== word && a.indexOf(o) === i)
+    .slice(0, max);
+}

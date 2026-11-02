@@ -4,6 +4,7 @@
 //   const prefs = await choices.read('Contacts', { sort: 'name' })   // the defaults if there are none yet
 //   choices.write('Contacts', prefs)
 import { vfs } from './vfs.js';
+import { asciiJSON } from './charset.js';
 import { sysvars } from './sysvars.js';
 
 export const choices = {
@@ -14,10 +15,11 @@ export const choices = {
     } catch { /* bad file: the defaults */ }
     return { ...defaults };
   },
-  /** Save the choices for name (a JSON Text file). */
+  /** Save the choices for name (a JSON Text file, pure ASCII: a character outside ASCII is a \uXXXX escape, so
+   *  a name such as Łukasz or a curly apostrophe is read back as it was, not as '?' or a RISC OS Latin-1 glyph). */
   write(name, value) {
     const dir = sysvars.get('Choices$Write') ?? 'ADFS::HardDisc4.$.!Boot.Choices';
     vfs.mkdir(dir, { parents: true });
-    return vfs.writeFile(`${dir}.${name}`, JSON.stringify(value, null, 2) + '\n', { filetype: 0xFFF });
+    return vfs.writeFile(`${dir}.${name}`, asciiJSON(value, 2) + '\n', { filetype: 0xFFF });
   },
 };

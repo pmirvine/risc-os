@@ -298,6 +298,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     ['g', {ctrl: true}, 'findNext'],
     ['G', {ctrl: true, shift: true}, 'findPrev'],
     ['g', {ctrl: true, shift: true}, 'findPrev'],
+    ['F7', {}, 'spell'],
     ['F8', {}, 'undo'],
     ['F9', {}, 'redo'],
     ['F10', {ctrl: true}, 'sendToBack'],
@@ -321,7 +322,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
   });
   it('unmapped function keys, Shift and Alt forms are null', () => {
     for (const [key, mods] of [['F1', {}], ['F5', {}], ['F6', {}],
-      ['F7', {}], ['F10', {}], ['F11', {}], ['F12', {}],
+      ['F10', {}], ['F11', {}], ['F12', {}],
       ['F2', {shift: true}], ['F3', {ctrl: true, shift: true}],
       ['F3', {ctrl: true}], ['F2', {ctrl: true, shift: true}],
       ['F5', {ctrl: true}], ['F8', {shift: true}],
@@ -351,6 +352,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(P(6), 'find');
     assert.equal(P(7), 'findNext');
     assert.equal(P(8), 'backspace');
+    assert.equal(P(0x187), 'spell');
     assert.equal(P(0x188), 'undo');
     assert.equal(P(0x189), 'redo');
     assert.equal(P(0x1EA), 'sendToBack');
@@ -359,7 +361,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
     assert.equal(P(0x182, {ctrl: true}), 'close');
     assert.equal(keymap.lookup({code: 0x182}), 'new');
     assert.equal(keymap.lookup({code: 0x1A2}), 'close');
-    for (const c of [0x181, 0x185, 0x186, 0x187, 0x192, 0x1A5,
+    for (const c of [0x181, 0x185, 0x186, 0x192, 0x1A5,
       0x1B2, 0x1CA, 0x1CB, 0x1CC, 0x1DC, 0x1EC, 0x1FC, 0x180,
       0x18A + 0x30]) assert.equal(P(c), null, c.toString(16));
     assert.equal(P(0x193), 'caseCycle');
@@ -394,7 +396,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
       'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
       'saveBox', 'sendToBack', 'fieldCodes', 'styleList', 'footnote',
       'endnote', 'comment', 'nextNote', 'prevNote', 'trackChanges',
-      'nextChange', 'prevChange'].sort());
+      'nextChange', 'prevChange', 'spell'].sort());
   });
   it('Alt rows: Ctrl+Alt+F and D, Alt+Down and Up, by the key\'s ' +
     'place when the browser gives it (Batch E2)', () => {

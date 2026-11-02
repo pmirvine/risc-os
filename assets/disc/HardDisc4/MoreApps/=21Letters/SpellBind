@@ -1,0 +1,101 @@
+// SpellBind - a document window's spell check and the setting that
+// turns it on and off (Batch F3).
+//
+//   attachSpell(dw)   once the window has its view (and, when the
+//                     choices are being read, once they are: a saved
+//                     off reads no dictionary): dw.spell is the
+//                     window's ./SpellState (made the first time the
+//                     setting is on, never while it is off: no
+//                     dictionary is read then) and dw.view.spell
+//                     that state while the setting is on, else null
+//   ensureSpell(dw, fresh?) -> dw.spell, made (with the repaint hook
+//                     every state has) when the window has none, or
+//                     at once with fresh: the one way a state is made
+//                     (./SpellBox makes one for the dialogue when the
+//                     setting is off: a later switch on reuses it)
+//   syncSpell(dw)     -> whether the window checks: puts the window
+//                     in step with ./SpellOpts spellOn (start when it
+//                     turned on, stop when it turned off: no
+//                     animation frame is asked for while it is off),
+//                     and repaints when that changed. Done at attach,
+//                     when the choices are read (they may say off)
+//                     and by setSpell
+//   setSpell(app, on) -> Promise  Check spelling as you type: the
+//                     choice is kept (./SpellOpts setSpellOn) and
+//                     every window of the app follows
+//   spellChanged(app) the personal list changed (Add to Dictionary):
+//                     every window checks again (./SpellState
+//                     refresh)
+//   stopSpell(dw)     the window is closing: the state stops
+//
+// The state's changes (a slice has checked something) repaint the
+// window. Needs the desktop (riscos): the dictionary is read from
+// the application's directory (app.dir).
+import {SpellState} from './SpellState';
+import {spellOn, setSpellOn} from './SpellOpts';
+
+const running = new WeakSet();         // states started
+
+/** See the header. */
+export function ensureSpell(dw, fresh = false) {
+  if (!dw.spell || fresh) {
+    const s = dw.spell = new SpellState(dw);
+    s.onChange(() => {
+      if (!dw.closed && dw.win.isOpen) dw.win.invalidate();
+    });
+  }
+  return dw.spell;
+}
+
+/** See the header. */
+export function syncSpell(dw) {
+  if (dw.closed || !dw.view) return false;
+  const on = spellOn(dw.app);
+  if (on) ensureSpell(dw);
+  const s = dw.spell;
+  const was = !!dw.view.spell;
+  if (s && on !== running.has(s)) {
+    if (on) {
+      running.add(s);
+      s.start();
+    } else {
+      running.delete(s);
+      s.stop();
+    }
+  }
+  dw.view.spell = on ? s : null;
+  if (was !== on && dw.win.isOpen) dw.win.invalidate();
+  return on;
+}
+
+/** See the header. */
+export function attachSpell(dw) {
+  dw.spell = null;
+  const ready = dw.app.choicesReady;   // (the saved setting first:
+  if (ready && ready.then) {           // off must read no dictionary)
+    ready.then(() => syncSpell(dw), () => syncSpell(dw));
+  } else syncSpell(dw);
+}
+
+/** See the header. */
+export function setSpell(app, on) {
+  return setSpellOn(app, on).then(() => {
+    for (const dw of [...app.docs.values()]) syncSpell(dw);
+  });
+}
+
+/** See the header. */
+export function spellChanged(app) {
+  for (const dw of [...app.docs.values()]) {
+    if (dw.spell && running.has(dw.spell)) dw.spell.refresh();
+  }
+}
+
+/** See the header. */
+export function stopSpell(dw) {
+  if (dw.spell) {
+    running.delete(dw.spell);
+    dw.spell.stop();
+  }
+  if (dw.view) dw.view.spell = null;
+}

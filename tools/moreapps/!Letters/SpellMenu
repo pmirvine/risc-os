@@ -1,0 +1,88 @@
+// SpellMenu - the spelling items at the top of the window's menu
+// (Batch F3), over a flagged word.
+//
+//   spellItems(dw, ev) -> [MenuItem]  empty unless the Menu button
+//       was pressed on a flagged word of a paragraph shown (ev: the
+//       Wimp's, x and y in the work area like a click's); then up to
+//       five suggestions (./SpellSuggest; each one puts that in the
+//       word's place: ./SpellFix fixWord, ONE undo step), a shaded
+//       (no suggestions) when there are none, Ignore All, and Add to
+//       Dictionary, a separator after it. Empty too when Check
+//       spelling as you type is off, the dictionary is not read, or
+//       the word is the one being typed (it is not underlined)
+//
+// The word is found without touching the caret or the selection (the
+// Menu button never moves them: ./EditMouse): the point must be
+// inside one of the boxes of the flagged range, not just near it.
+// The suggestions are worked out here, once, when the menu is built
+// (the menu is made once for one press), never while typing. The
+// window's menu is Latin-1: a suggestion with a character outside it
+// is left out; a curly apostrophe is shown straight (the label only:
+// the word put in is the suggestion as it is). In the body and in
+// tables only: the header, footer and note modes underline their
+// words too (./HdrPaint, ./NoteEdit), but this menu offers nothing
+// there (v.hdr set): those words are put right with the Spelling
+// dialogue (./SpellBox).
+import {toLayout} from './Zoom';
+import {suggest} from './SpellSuggest';
+import {fixWord, ignoreAll, addToDictionary} from './SpellFix';
+
+const MAX = 5;
+const OK = /^[\u0020-\u007E\u00A0-\u00FF]*$/;
+
+/** The menu's label for suggestion s, or null when it has a
+ *  character the Latin-1 menu cannot show (a curly apostrophe is
+ *  shown straight: the label only). */
+function label(s) {
+  const t = s.replace(/[\u2018\u2019]/g, "'");
+  return OK.test(t) ? t : null;
+}
+
+/** The flagged range under the point of ev, with its paragraph:
+ *  {para, r} or null. */
+function wordAt(dw, ev) {
+  const v = dw.view, s = dw.spell;
+  if (!v || !s || v.hdr || !v.spell || !s.dictReady || !v.L ||
+    !Number.isFinite(ev.x) || !Number.isFinite(ev.y)) return null;
+  const h = v.hitAt(ev.x, ev.y);
+  const it = h && h.pos && v.L.byId.get(h.pos.id);
+  if (!it || !it.block || it.block.type !== 'p') return null;
+  const r = s.flagsAt(it.block, h.pos.off);
+  if (!r) return null;
+  const p = toLayout(ev.x, ev.y, v.zoom, v.L.top);
+  const rects = v.L.selectionRects({anchor: {id: it.id, off: r.from},
+    head: {id: it.id, off: r.to}});
+  const inside = rects.some((b) => p.x >= b.x && p.x < b.x + b.w &&
+    p.y >= b.y && p.y < b.y + b.h);
+  return inside ? {para: it.block, r} : null;
+}
+
+/** See the header. */
+export function spellItems(dw, ev) {
+  if (!ev) return [];
+  let w;
+  try { w = wordAt(dw, ev); } catch (e) { return []; }
+  if (!w) return [];
+  const {para, r} = w;
+  const hit = {from: r.from, to: r.to, word: r.word, para};
+  let list = [];
+  try {
+    list = suggest(dw.spell.dict, r.word, MAX + 3);
+  } catch (e) { /* (a failure: no suggestions) */ }
+  const items = [];
+  for (const s of list) {
+    const text = label(s);
+    if (text === null || items.length >= MAX) continue;
+    items.push({text, action: () => { fixWord(dw, hit, s); },
+      help: 'Put this in the place of the word.'});
+  }
+  if (!items.length) items.push({text: '(no suggestions)',
+    shaded: true});
+  items.push(
+    {text: 'Ignore All', action: () => { ignoreAll(dw, r.word); },
+      help: 'Do not mark this word again in this document.'},
+    {text: 'Add to Dictionary', dotted: true,
+      action: () => { addToDictionary(dw, r.word); },
+      help: 'Keep this word in your own list: it is never marked.'});
+  return items;
+}

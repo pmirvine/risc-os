@@ -495,7 +495,9 @@ For applications, programs also get: `reportError`, `discardChanges`, `dragSave(
 getData, sprite})` (drag a file icon out of a window: written into a directory display, or DataSave to an
 application), `loadTemplates(path)` / `parseTemplateFile(bytes)` (`loadTemplates` and `createWindowFromTemplate`
 accept a RISC OS pathname, e.g. `<App$Dir>.Templates`), `textWidth(text, css)`, `choices.read(name, defaults)` /
-`choices.write(name, obj)` (JSON in `Choices:<name>` / `<Choices$Write>.<name>`), `formatTime(fmt, date)`,
+`choices.write(name, obj)` (JSON in `Choices:<name>` / `<Choices$Write>.<name>`; written as pure ASCII, every
+character past 0x7E a `\uXXXX` escape - `asciiJSON(value, space)` in `src/core/charset.js` - so any string reads back
+whole), `formatTime(fmt, date)`,
 `DAYS`, `MONTHS`, `ordinal` (`src/core/timefmt.js`, Territory-style), `sprites`, and `TextArea`
 (`src/core/textarea.js`: several lines of editable text in a window - `new TextArea(w, {x, y, w, h, text, font,
 readOnly, grow, border})`, `.text`, `'change'`, `.focus()`; a selection: `.selection` `{start, end}`,

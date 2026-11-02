@@ -1,0 +1,594 @@
+// SpellBox - the Spelling dialogue (Tools > Spelling..., F7; Batch
+// F3): the next word the spell check flags, shown in its sentence
+// with suggestions, to put right one word at a time.
+//
+//   spellStep(dw, from?, o?) -> {hit, context, wrapped, noticed,
+//       resume} | {busy, from} | null  the next flagged word in
+//       document order (the body with its tables, then headers and
+//       footers, notes and comments: ./SpellState paras). from:
+//       {i, off} (the index of the paragraph in paras() and an
+//       offset in it; the first range ending after off is the
+//       word), else the start of the selection (the caret; the
+//       header and footer mode and the notes mode: the top). It goes
+//       on to the end, then once round from the top as far as where
+//       it began, with the notice 'Reached the end; continuing from
+//       the start' (a reportError information notice); null with
+//       'Spelling check complete' when the walk is back at its
+//       origin. hit: {from, to, word, para, i, body} (body: in the
+//       body text, where the word is selected), context: {before,
+//       word, after, text} (a short excerpt, text with the word in
+//       brackets), resume: the walk as it stood when this word was
+//       looked for, {i, off, origin, wrapped, told}: give it back
+//       with off moved on to go on; the one origin goes with it, so
+//       the walk ends where it began and the wrap notice comes
+//       once. noticed: this call said the notice. o.skip(i, range):
+//       ranges not to stop at. o.budget: stop after that many ms
+//       and give {busy, from} to go on from (a document of 100,000
+//       paragraphs is never checked in one go); o.quiet: no
+//       notices. The dictionary not read yet: null and a notice
+//   spellRun(dw, o?) -> the controller of one dialogue (the window
+//       is its shell, spellBox): hit, context, sugg (suggestions,
+//       ./SpellSuggest), message, busy; begin() (a new session: the
+//       caret is its origin, nothing skipped), ignore() (this
+//       occurrence: kept for the session as paragraph index and
+//       offset, moved with edits to that paragraph, so it does not
+//       come back when the walk goes round), ignoreAll(),
+//       change(text?) (the text, else the first suggestion),
+//       changeAll(text?) (one undo step; the walk goes on from
+//       where this word was looked for, offsets moved by the
+//       replacements before it as ./SpellFix fixAll says they were
+//       made: Track Changes keeps the old text, an own insertion
+//       goes, a range refused stays; the words put in, and only
+//       those, are not shown again), add() -> Promise, stop(),
+//       dispose(); onUpdate: the shell's repaint. o.raf, o.caf:
+//       animation frames (the tests). Every command is ./SpellFix's;
+//       the word is selected while shown (body only)
+//   spellBox(dw) -> the dialogue's api, opened or brought forward
+//       and started again at the caret; one per document (dw.boxes
+//       'spell'), deleted with it
+//
+// The check does not need Check spelling as you type: with the
+// setting off the window makes its state (no underlines, no
+// slices; ./SpellBind ensureSpell, so a later switch on repaints)
+// and checks the paragraphs it steps over; with it on the flags are
+// the ones already there. The word is selected for the body (and
+// tables); in a header, footer, note or comment it is shown and
+// fixed in the dialogue only (those stories are not selectable from
+// here), and the dialogue says so. Close leaves the selection on
+// the last word. The dialogue follows no other change: Change finds
+// the word again and says so when it has gone; paragraphs added or
+// removed while it is open are not allowed for.
+import {wimp, reportError} from 'riscos';
+import {box} from './Boxes';
+import {ensureSpell} from './SpellBind';
+import {suggest} from './SpellSuggest';
+import {fixWord, fixAll, ignoreAll, addToDictionary} from './SpellFix';
+import {scan, at as walkAt} from './Walk';
+import {orderedPos} from './EditPos';
+import * as S from './Selection';
+
+const CTX = 32, BUDGET = 12, NSUGG = 8;
+export const MSGS = Object.freeze({
+  wrap: 'Reached the end; continuing from the start',
+  done: 'Spelling check complete',
+  wait: 'The spelling dictionary is not ready yet; try again in a ' +
+    'moment.',
+  off: 'Reading the spelling dictionary...',
+  other: 'In a header, footer, note or comment: not selected here.',
+  hdr: 'Leave the header or footer, or the note, to see the word ' +
+    'selected.',
+  gone: 'That word has changed; looking again.',
+  none: 'Type the word to put in, or choose a suggestion.',
+});
+const say = (m) => reportError(m, {appName: 'Letters',
+  category: 'info'});
+const docOf = (dw) => dw.real || dw.d;
+
+/** The window's spell state, made (not started) when it has none:
+ *  with the setting off the dialogue checks on demand. One that was
+ *  stopped before its dictionary arrived never will be ready: a new
+ *  one takes its place. */
+function stateOf(dw) {
+  const s = dw.spell;
+  return ensureSpell(dw, !!s && s.stopped && !s.dictReady);
+}
+
+/** Where the selection starts: {i, off} in paras, else the top. */
+function caretCursor(dw, paras) {
+  const v = dw.view, doc = docOf(dw).doc;
+  if (!v || v.hdr || !v.sel) return {i: 0, off: 0};
+  try {
+    const p = orderedPos(doc, v.sel);
+    const para = p && walkAt(doc, p.f.at);
+    const i = para ? paras.indexOf(para) : -1;
+    return i < 0 ? {i: 0, off: 0} : {i, off: p.from.off};
+  } catch (e) {
+    return {i: 0, off: 0};
+  }
+}
+
+/** The excerpt around [from, to) of text. */
+function excerpt(text, from, to) {
+  const clean = (s) => s.replace(/[\uFFFC\u0000-\u001F]/g, ' ');
+  let before = clean(text.slice(Math.max(0, from - CTX), from));
+  let after = clean(text.slice(to, to + CTX));
+  if (from > CTX) before = '...' + before;
+  if (text.length > to + CTX) after += '...';
+  const word = clean(text.slice(from, to));
+  return {before, word, after, text: `${before}[${word}]${after}`};
+}
+
+/** The number of body paragraphs (they come first in paras). */
+function bodyCount(doc) {
+  let n = 0;
+  scan(doc, (b) => { if (b.type === 'p') n++; });
+  return n;
+}
+
+/** See the header. */
+export function spellStep(dw, from, o = {}) {
+  const sp = stateOf(dw), tell = o.quiet ? () => {} : say;
+  if (!sp.dictReady) {
+    tell(MSGS.wait);
+    return null;
+  }
+  const paras = sp.paras(), n = paras.length;
+  const cur = from && from.origin ? {...from}
+    : {...(from || caretCursor(dw, paras))};
+  if (!cur.origin) {
+    cur.i = Math.max(0, Math.min(n, cur.i | 0));
+    cur.off = Math.max(0, cur.off | 0);
+    cur.origin = {i: cur.i, off: cur.off};
+    cur.wrapped = false;
+    cur.told = false;
+  }
+  const t0 = performance.now(), top = cur.origin.i === 0 &&
+    cur.origin.off === 0, skip = o.skip;
+  while (true) {
+    if (cur.i >= n) {
+      if (cur.wrapped || top) break;
+      cur.i = 0;
+      cur.off = 0;
+      cur.wrapped = true;
+      continue;
+    }
+    if (cur.wrapped && cur.i > cur.origin.i) break;
+    const p = paras[cur.i];
+    sp.flagsAt(p, 0);                  // (checks it if not yet)
+    const rs = sp.flagsOf(p), off = cur.off;
+    // (round again, the origin's paragraph only as far as the
+    // origin: what lies after it was seen on the way)
+    const end = cur.wrapped && cur.i === cur.origin.i
+      ? cur.origin.off : Infinity;
+    const r = rs && rs.find((x) => x.to > off && x.to > x.from &&
+      x.to <= end && !(skip && skip(cur.i, x)));
+    if (r) {
+      const doc = docOf(dw).doc;
+      const hit = {from: r.from, to: r.to, word: r.word, para: p,
+        i: cur.i, body: cur.i < bodyCount(doc)};
+      const first = cur.wrapped && !cur.told;
+      if (first) tell(MSGS.wrap);
+      return {hit, wrapped: cur.wrapped, noticed: first,
+        context: excerpt(p.text, r.from, r.to),
+        resume: {i: cur.i, off, origin: cur.origin,
+          wrapped: cur.wrapped, told: cur.told || cur.wrapped}};
+    }
+    cur.i++;
+    cur.off = 0;
+    if (o.budget && performance.now() - t0 >= o.budget) {
+      return {busy: true, from: cur};
+    }
+  }
+  tell(MSGS.done);
+  return null;
+}
+
+/** The offset off after the edits {from, oldLen, newLen} of one
+ *  paragraph: those wholly before it move it. */
+const moved = (off, edits) => edits.reduce((o, e) =>
+  (e.from + e.oldLen <= off ? o + e.newLen - e.oldLen : o), off);
+
+/** See the header. */
+export function spellRun(dw, o = {}) {
+  const raf = o.raf || ((f) => requestAnimationFrame(f));
+  const caf = o.caf || ((id) => cancelAnimationFrame(id));
+  const c = {hit: null, context: null, sugg: [], message: '',
+    busy: false, onUpdate: null};
+  let rafId = 0, offReady = null, gone = false;
+  let resume = null;                   // (the walk at this word)
+  let skipped = new Map();             // paragraph index -> froms
+  const upd = () => { if (c.onUpdate && !gone) c.onUpdate(); };
+  const cancel = () => {
+    if (rafId) caf(rafId);
+    rafId = 0;
+    if (offReady) offReady();
+    offReady = null;
+    c.busy = false;
+  };
+  const skip = (i, r) => !!skipped.has(i) && skipped.get(i).has(r.from);
+  /** Edits in paragraph i: skipped words and the walk's origin
+   *  move with them (a replaced word is no longer skipped). */
+  const edited = (i, edits) => {
+    const set = skipped.get(i);
+    if (set) {
+      const out = new Set();
+      for (const f of set) {
+        if (!edits.some((e) => e.from <= f && f < e.from + e.oldLen)) {
+          out.add(moved(f, edits));
+        }
+      }
+      skipped.set(i, out);
+    }
+    if (resume && resume.origin.i === i) {
+      resume.origin = {i, off: moved(resume.origin.off, edits)};
+    }
+  };
+  /** Select the word (body paragraphs); the words of the shell. */
+  const pick = (hit) => {
+    const v = dw.view;
+    if (!hit.body) return MSGS.other;
+    if (!v || v.hdr) return MSGS.hdr;
+    v.setSelection(S.select({id: hit.para.id, off: hit.from},
+      {id: hit.para.id, off: hit.to}));
+    return '';
+  };
+  const found = (r, note) => {
+    c.hit = r.hit;
+    c.context = r.context;
+    resume = r.resume;
+    c.sugg = [];
+    try {
+      const sp = stateOf(dw);
+      c.sugg = suggest(sp.dict, r.hit.word, NSUGG).slice(0, NSUGG);
+    } catch (e) { /* (no suggestions) */ }
+    c.message = [note, r.noticed ? MSGS.wrap : '', pick(r.hit)]
+      .filter(Boolean).join(' ');
+  };
+  const go = (from, note) => {
+    cancel();
+    c.hit = c.context = null;
+    c.sugg = [];
+    const sp = stateOf(dw);
+    if (!sp.dictReady) {
+      c.message = MSGS.off;
+      c.busy = true;
+      // (ready; or stopped, so never: stateOf makes a new one)
+      offReady = sp.onChange(() => {
+        if (!sp.dictReady && !sp.stopped) return;
+        cancel();
+        go(from, note);
+      });
+      upd();
+      return;
+    }
+    const r = spellStep(dw, from, {budget: BUDGET, skip});
+    if (r && r.busy) {
+      c.busy = true;
+      c.message = 'Checking...';
+      rafId = raf(() => { rafId = 0; go(r.from, note); });
+    } else if (r) found(r, note);
+    else {
+      c.message = MSGS.done;
+      resume = null;
+    }
+    upd();
+  };
+  const here = () => {
+    const h = c.hit;
+    if (!h) c.message = MSGS.done;
+    return h;
+  };
+  const text = (t) => {
+    const s = typeof t === 'string' ? t.trim() : c.sugg[0];
+    return typeof s === 'string' && s ? s : null;
+  };
+  /** The walk on from just after the word. */
+  const after = (h) => ({...resume, off: h.to});
+  Object.assign(c, {
+    begin() {
+      skipped = new Map();
+      resume = null;
+      go(undefined);
+    },
+    ignore() {
+      const h = here();
+      if (!h) return;
+      if (!skipped.has(h.i)) skipped.set(h.i, new Set());
+      skipped.get(h.i).add(h.from);
+      go(after(h));
+    },
+    ignoreAll() {
+      const h = here();
+      if (!h) return;
+      ignoreAll(dw, h.word);
+      go(after(h));
+    },
+    change(t) {
+      const h = here(), s = h && text(t);
+      if (h && !s) {
+        c.message = MSGS.none;
+        upd();
+        return false;
+      }
+      if (!h) return false;
+      const r = fixWord(dw, h, s);
+      if (!r) {
+        go({...resume}, MSGS.gone);
+        return false;
+      }
+      edited(h.i, [{from: h.from, oldLen: h.to - h.from,
+        newLen: h.to - h.from + r.delta}]);
+      go({...resume, off: r.to});
+      return true;
+    },
+    changeAll(t) {
+      const h = here(), s = h && text(t);
+      if (h && !s) {
+        c.message = MSGS.none;
+        upd();
+        return 0;
+      }
+      if (!h) return 0;
+      // (what fixAll really did: it gives each range replaced and how
+      // much longer the paragraph became, which moves the walk's
+      // places; Track Changes keeps the old text, an own insertion
+      // goes, a range refused is not in the list)
+      const sp = stateOf(dw), out = [], plan = new Map();
+      const idx = new Map(sp.paras().map((q, i) => [q, i]));
+      const n = fixAll(dw, h.word, s, out);
+      for (const x of out) {
+        const i = idx.get(x.para);
+        if (i === undefined) continue;
+        if (!plan.has(i)) plan.set(i, []);
+        plan.get(i).push({from: x.from, oldLen: x.to - x.from,
+          newLen: x.to - x.from + x.delta});
+      }
+      if (n) {
+        for (const [i, es] of plan) edited(i, es);
+        // (the text put in is not shown again, still misspelt or
+        // not: it is the user's; the same word elsewhere is)
+        const now = sp.paras();
+        for (const x of out) {
+          const i = idx.get(x.para);
+          if (i === undefined) continue;
+          sp.flagsAt(now[i], 0);
+          for (const y of sp.flagsOf(now[i]) || []) {
+            if (y.from < x.ins.from || y.to > x.ins.to) continue;
+            if (!skipped.has(i)) skipped.set(i, new Set());
+            skipped.get(i).add(y.from);
+          }
+        }
+      }
+      const base = {...resume};
+      if (n && plan.has(base.i)) {
+        base.off = moved(base.off, plan.get(base.i));
+      }
+      go(base, n ? `${n} changed.` : MSGS.gone);
+      return n;
+    },
+    add() {
+      const h = here();
+      if (!h) return Promise.resolve();
+      const base = {...resume};
+      return addToDictionary(dw, h.word).then(() => {
+        if (!gone) go(base);
+      });
+    },
+    stop: cancel,
+    dispose() {
+      gone = true;
+      cancel();
+      c.onUpdate = null;
+    },
+  });
+  return c;
+}
+
+// ----------------------------------------------------- the window
+
+const W = 480, PAD = 12, CY = 36, CH = 30, LX = PAD, LY = 140;
+const ROWS = 8, RH = 22, LW = 300, BX = 324, BW = 144, BH = 28;
+const BUTTONS = ['Ignore', 'Ignore All', 'Change', 'Change All', 'Add',
+  'Close'];
+const MY = LY + ROWS * RH + 8, H = MY + 26 + PAD;
+const HELP = {
+  Ignore: 'Leave this word as it is and go on to the next.',
+  'Ignore All': 'Do not mark this word again in this document.',
+  Change: 'Put the word in the Change to box in the place of this ' +
+    'one.',
+  'Change All': 'Put the word in the Change to box in the place of ' +
+    'every one of these in the document (one undo step).',
+  Add: 'Keep this word in your own list: it is never marked.',
+  Close: 'Close the box. The last word stays selected.',
+};
+
+const icons = () => [
+  {x: PAD, y: 8, w: W - 2 * PAD, h: 24, text: 'Not in dictionary',
+    name: 'label'},
+  {x: PAD, y: 76, w: 90, h: 32, text: 'Change to', name: 'tolabel',
+    vcentre: true},
+  {x: PAD + 94, y: 76, w: W - 2 * PAD - 94, h: 32, text: '',
+    name: 'to', border: true, filled: true, bg: 0,
+    button: 'writable', validation: 'R7', maxLen: 200, vcentre: true,
+    help: 'The word to put in. Click a suggestion to put it here, or ' +
+      'type your own.'},
+  {x: PAD, y: 114, w: LW, h: 22, text: 'Suggestions',
+    name: 'sugglabel'},
+  ...BUTTONS.map((t, k) => ({x: BX, y: 114 + k * (BH + 6), w: BW,
+    h: BH, text: t, name: `button:${t}`, border: true, filled: true,
+    hcentre: true, vcentre: true, button: 'click',
+    validation: t === 'Change' ? 'R6,3' : 'R5,3', help: HELP[t]})),
+  {x: PAD, y: MY, w: W - 2 * PAD, h: 26, text: '', name: 'msg'},
+];
+
+/** The context line and the suggestion list on canvas g. */
+function paint(g, c, selRow) {
+  g.fillStyle = '#ffffff';
+  g.fillRect(PAD, CY, W - 2 * PAD, CH);
+  g.strokeStyle = '#888888';
+  g.lineWidth = 1;
+  g.strokeRect(PAD + 0.5, CY + 0.5, W - 2 * PAD, CH);
+  g.textBaseline = 'middle';
+  g.textAlign = 'left';
+  const x = PAD + 8, y = CY + CH / 2, avail = W - 2 * PAD - 16;
+  if (c.context) {
+    let {before, word, after} = c.context;
+    const wid = (s, b) => {
+      g.font = (b ? 'bold ' : '') + '13px sans-serif';
+      return g.measureText(s).width;
+    };
+    for (let k = 0; k < 64 && wid(before, 0) + wid(word, 1) +
+      wid(after, 0) > avail; k++) {
+      if (before.length > after.length) before = before.slice(1);
+      else after = after.slice(0, -1);
+    }
+    let at = x;
+    for (const [s, b, ink] of [[before, 0, '#000000'],
+      [word, 1, '#cc0000'], [after, 0, '#000000']]) {
+      g.font = (b ? 'bold ' : '') + '13px sans-serif';
+      g.fillStyle = ink;
+      g.fillText(s, at, y);
+      at += g.measureText(s).width;
+    }
+  }
+  g.fillStyle = '#ffffff';
+  g.fillRect(LX, LY, LW, ROWS * RH);
+  g.font = '13px sans-serif';
+  for (let k = 0; k < c.sugg.length && k < ROWS; k++) {
+    const on = k === selRow;
+    if (on) {
+      g.fillStyle = '#2a4f9a';
+      g.fillRect(LX, LY + k * RH, LW, RH);
+    }
+    g.fillStyle = on ? '#ffffff' : '#000000';
+    g.fillText(c.sugg[k], LX + 8, LY + k * RH + RH / 2);
+  }
+  if (c.hit && !c.sugg.length) {
+    g.font = 'italic 13px sans-serif';
+    g.fillStyle = '#777777';
+    g.fillText('(no suggestions)', LX + 8, LY + RH / 2);
+  }
+  g.strokeStyle = '#888888';
+  g.strokeRect(LX + 0.5, LY + 0.5, LW, ROWS * RH);
+}
+
+/** Where the dialogue first opens: beside the document window. */
+function place(w) {
+  const GAPX = 8, y = Math.max(8, Math.round(w.y));
+  if (w.x + w.w + GAPX + W <= wimp.width - 8)
+    return {x: Math.round(w.x + w.w + GAPX), y};
+  if (w.x - GAPX - W >= 8) return {x: Math.round(w.x - GAPX - W), y};
+  return {x: 8, y};
+}
+
+/** See the header. */
+export function spellBox(dw) {
+  const win = box(dw, 'spell', () => make(dw));
+  const api = win.api;
+  api.open();
+  return api;
+}
+
+/** A new dialogue (its window; win.api the api). */
+function make(dw) {
+  const task = dw.app.task;
+  const c = spellRun(dw);
+  const b = {gone: false, placed: false, row: -1};
+  const win = task.createWindow({title: 'Spelling', w: W, h: H,
+    extent: {w: W, h: H}, colours: {workBg: 1}, icons: icons(),
+    flags: {title: true, moveable: true, close: true},
+    workButton: 'click',
+    help: 'The next word the spell check does not know. Choose a ' +
+      'suggestion or type the word, then click Change.'});
+  const I = (n) => win.iconByName(n);
+  win.useCanvas((g) => paint(g, c, b.row), {hiDPI: true});
+  const show = () => {
+    if (b.gone) return;
+    const has = !!c.hit;
+    for (const t of BUTTONS) {
+      if (t !== 'Close') I(`button:${t}`).setState({shaded: !has});
+    }
+    I('msg').setText(c.message.slice(0, 120));
+    I('label').setText(has ? 'Not in dictionary' : c.busy
+      ? 'Checking...' : 'No more words to check');
+    if (b.hit !== c.hit) {
+      b.hit = c.hit;
+      b.row = c.sugg.length ? 0 : -1;
+      I('to').setText(c.sugg[0] || '');
+    }
+    win.invalidate();
+  };
+  c.onUpdate = show;
+  const hide = () => {
+    if (!win.isOpen) return;
+    c.stop();
+    win.close();
+    if (!dw.closed && dw.view) dw.view.focus();
+  };
+  const press = (name) => {
+    const typed = I('to').text;
+    if (name !== 'Close' && !c.hit) {
+      wimp.beep();
+      return false;
+    }
+    if (name === 'Close') hide();
+    else if (name === 'Ignore') c.ignore();
+    else if (name === 'Ignore All') c.ignoreAll();
+    else if (name === 'Change') c.change(typed);
+    else if (name === 'Change All') c.changeAll(typed);
+    else if (name === 'Add') c.add();
+    else return false;
+    return true;
+  };
+  win.on('click', (ev) => {
+    if (ev.button === 'menu') return true;
+    const n = ev.icon ? ev.icon.name : '';
+    if (n.startsWith('button:')) {
+      press(n.slice(7));
+    } else if (!ev.icon) {
+      const k = Math.floor((ev.y - LY) / RH);
+      if (ev.x >= LX && ev.x < LX + LW && k >= 0 && k < c.sugg.length) {
+        b.row = k;
+        I('to').setText(c.sugg[k]);
+        win.invalidate();
+      }
+    }
+    return true;
+  });
+  win.on('close', (ev) => { ev.preventDefault(); hide(); });
+  win.on('key', (ev) => {
+    if (ev.code === 22 && ev.ctrl && !ev.alt && ev.icon &&
+      ev.icon.writable) {
+      ev.allowDefault = true;
+      return true;
+    }
+    if (ev.code === 13) press('Change');
+    else if (ev.code === 27) hide();
+    else return undefined;
+    return true;
+  });
+  win.on('deleted', () => {
+    b.gone = true;
+    c.dispose();
+  });
+  win.api = {
+    win, press, ctl: c,
+    get isOpen() { return win.isOpen; },
+    get gone() { return b.gone; },
+    get message() { return I('msg').text; },
+    get field() { return I('to').text; },
+    set field(t) { I('to').setText(String(t)); },
+    get hit() { return c.hit; },
+    open() {
+      if (b.gone) return;
+      const p = b.placed ? {} : place(dw.win);
+      b.placed = true;
+      win.open({...p, behind: 'top'});
+      b.hit = undefined;
+      c.begin();
+      wimp.setCaret(win, I('to'), I('to').text.length);
+    },
+    close: hide,
+  };
+  return win;
+}

@@ -1,0 +1,90 @@
+// SpellOpts: the spell check's settings, kept in ./WordChoices.
+//   spellOn(app) -> boolean   Check spelling as you type; true unless
+//                             the choice 'spell' is false (missing or
+//                             corrupt: true)
+//   setSpellOn(app, on)       -> Promise (setChoice)
+//   personalWords(app) -> string[]   the personal word list, the
+//                             choice 'userWords' (missing or corrupt:
+//                             []; entries that are not words, and all
+//                             past MAX_WORDS, are left out); the same
+//                             array while the words are the same (a
+//                             write of another choice, which reads
+//                             the file again, changes nothing)
+//   addPersonal(app, word) -> Promise   appends word (trimmed, as
+//                             it is looked up: ./SpellWords plainWord,
+//                             no format characters, U+2019 as '; a
+//                             word with a space, an empty one, one
+//                             over MAX_LEN, one the list has already
+//                             as ./SpellWords wordKey: nothing is
+//                             written); never rejects
+// Shared by all documents and kept between runs; the words a
+// document ignores are not here (./SpellState ignoreAll).
+import {loadChoices, choiceOf, setChoice} from './WordChoices';
+import {plainWord, wordKey} from './SpellWords';
+
+export const MAX_WORDS = 5000, MAX_LEN = 64;
+const EMPTY = Object.freeze([]);
+const clean = new WeakMap();           // stored array -> its words
+const last = new WeakMap();            // app -> the list it gave last
+
+/** Whether lists a and b hold the same words in the same order. */
+function same(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** word trimmed, or '' when it cannot be a list entry. */
+function entry(word) {
+  if (typeof word !== 'string') return '';
+  const w = word.trim();
+  if (!w || w.length > MAX_LEN) return '';
+  for (let i = 0; i < w.length; i++) {
+    if (w[i].trim() === '') return '';
+  }
+  return w;
+}
+
+/** See the header. */
+export function spellOn(app) {
+  return choiceOf(app, 'spell') !== false;
+}
+
+/** See the header. */
+export function setSpellOn(app, on) {
+  return setChoice(app, 'spell', !!on);
+}
+
+/** See the header. */
+export function personalWords(app) {
+  const raw = choiceOf(app, 'userWords');
+  if (!Array.isArray(raw)) return EMPTY;
+  let got = clean.get(raw);
+  if (!got) {
+    got = [];
+    for (let i = 0; i < raw.length && got.length < MAX_WORDS; i++) {
+      const w = entry(raw[i]);
+      if (w) got.push(w);
+    }
+    got = got.length ? Object.freeze(got) : EMPTY;
+    // (a choices write reads the file again: a new array of the same
+    // words is no change, so ./SpellState checks nothing again)
+    const was = last.get(app);
+    if (was && same(was, got)) got = was;
+    clean.set(raw, got);
+  }
+  last.set(app, got);
+  return got;
+}
+
+/** See the header. */
+export function addPersonal(app, word) {
+  const w = entry(typeof word === 'string' ? plainWord(word) : word);
+  if (!w) return Promise.resolve();
+  return loadChoices(app).then(() => {   // (the list as stored)
+    const have = personalWords(app), lo = wordKey(w);
+    if (have.length >= MAX_WORDS ||
+      have.some((x) => wordKey(x) === lo)) return undefined;
+    return setChoice(app, 'userWords', [...have, w]);
+  });
+}

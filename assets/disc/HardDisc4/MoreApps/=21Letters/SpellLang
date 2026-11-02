@@ -1,0 +1,61 @@
+// SpellLang: which runs the spell checker looks at.
+//   langOf(doc, para, run)    -> BCP-47 string of w:lang w:val
+//   noProofOf(doc, para, run) -> boolean (Do not check spelling)
+//   checkable(doc, para, run) -> boolean
+// w:lang and w:noProof are not typed run fields: they stay raw nodes
+// in rPr.extra. The nearest layer that has one wins, as in Word:
+// the run, its character style chain, the paragraph style chain,
+// docDefaults (./Styles runLayers; cycle-safe). Only w:val of w:lang
+// is read (not w:eastAsia or w:bidi), and a w:lang without a w:val
+// (or with an empty one) is passed over for the next layer down, as
+// Word merges attribute by attribute. Table styles and numbering
+// level rPr are not consulted (known limit). langOf gives 'en-GB' when
+// nothing sets a language. Only en-GB and bare en are checked
+// (case-insensitive); en-US, en-AU, fr and so on are not, as the
+// dictionary is UK English. <w:noProof/> is on; w:val 0, false or
+// off turns it off.
+import {runLayers} from './Styles';
+
+function attr(node, a) {
+  const p = (node.attrs || []).find((x) => x[0] === a);
+  return p ? p[1] : undefined;
+}
+
+const FALSE = ['0', 'false', 'off'];
+
+/** The nearest w:`name` node in the layers of run, or undefined;
+ *  with `need`, one that has a non-empty attribute of that name. */
+function nodeOf(doc, para, run, name, need) {
+  const ls = runLayers(doc && doc.styles, para || {}, run || {});
+  for (let i = ls.length - 1; i >= 0; i--) {
+    const ex = ls[i] && ls[i].extra;
+    if (!Array.isArray(ex)) continue;
+    for (let j = ex.length - 1; j >= 0; j--)
+      if (ex[j] && ex[j].name === name &&
+        (!need || attr(ex[j], need))) return ex[j];
+  }
+  return undefined;
+}
+
+
+/** The language of `run`: w:val of the nearest w:lang. */
+export function langOf(doc, para, run) {
+  const n = nodeOf(doc, para, run, 'w:lang', 'w:val');
+  const v = n && attr(n, 'w:val');
+  return v ? v : 'en-GB';
+}
+
+/** True when `run` is set to Do not check spelling. */
+export function noProofOf(doc, para, run) {
+  const n = nodeOf(doc, para, run, 'w:noProof');
+  if (!n) return false;
+  const v = attr(n, 'w:val');
+  return v === undefined || !FALSE.includes(String(v).toLowerCase());
+}
+
+/** True when `run` is to be spell checked. */
+export function checkable(doc, para, run) {
+  if (noProofOf(doc, para, run)) return false;
+  const l = langOf(doc, para, run).toLowerCase();
+  return l === 'en-gb' || l === 'en';
+}

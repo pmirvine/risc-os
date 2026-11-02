@@ -5,7 +5,11 @@
 //       blocks the table held), in flow order; t is not changed.
 //       sep as ./TblConvert sepChar: 'para' (Paragraph marks),
 //       'tab', 'comma' or Other (one code point); RangeError for
-//       another. The rule (TB16 asks Word's), chosen here so that
+//       another. comments: true when the document's comments part
+//       is modelled: a comment range mark between cells or rows
+//       becomes the modelled mark inline (as ./ReadPara reads it),
+//       not a raw one, so that the file reads back as the model.
+//       The rule (TB16 asks Word's), chosen here so that
 //       the text, and so every bookmark pair, stays in file order
 //       (final fix wave, final-1 M2):
 //     * a ROW is its cells' text joined by the separator (./OpsUtil
@@ -45,6 +49,7 @@ import {join, cut} from './OpsUtil';
 import {gridOf} from './TblGrid';
 import {marksIn} from './BookmarkKeep';
 import {sepChar} from './TblConvert';
+import {markId} from './Kinds';
 
 const isP = (b) => !!b && b.type === 'p';
 const isTbl = (b) => !!b && b.type === 'tbl';
@@ -53,8 +58,18 @@ const PLAIN = () => [{start: 0, end: 1, rPr: {extra: []}}];
 /** A piece of one inline (a mark): one U+FFFC. */
 const inlinePiece = (x) => ({text: OBJ, runs: PLAIN(),
   inlines: {0: x}});
-const nodePiece = (node) => inlinePiece({kind: 'raw', level: 'p', node,
-  text: ''});
+const MARK = {commentRangeStart: 'cmtStart', commentRangeEnd: 'cmtEnd'};
+
+/** The piece for a mark node: a raw inline, or (cm: the comments
+ *  part is modelled) the comment mark ./ReadPara would read. */
+function nodePiece(node, cm) {
+  const l = typeof node.name === 'string'
+    ? node.name.slice(node.name.indexOf(':') + 1) : '';
+  const id = cm && MARK[l] && !(node.children || []).length
+    ? markId(node) : null;
+  return inlinePiece(id === null ? {kind: 'raw', level: 'p', node,
+    text: ''} : {kind: MARK[l], level: 'p', id, node});
+}
 const whole = (p) => cut(p, 0, p.text.length);
 
 /** A paragraph like p holding the joined pieces. */
@@ -121,17 +136,19 @@ function emit(b, st) {
 /** Row r of t in paragraph mode, appended to out. */
 function rowParas(t, g, r, st, out) {
   const row = t.rows[r], lo = out.length;
-  for (const n of row.lead || []) st.pending.push(nodePiece(n));
+  for (const n of row.lead || []) st.pending.push(nodePiece(n, st.cm));
   const put = (b) => {
-    if (isTbl(b)) out.push(...convert(b, null));
+    if (isTbl(b)) out.push(...convert(b, null, st.cm));
     else out.push(isP(b) ? emit(b, st) : b);
   };
   row.cells.forEach((cell, k) => {
-    for (const n of cell.lead || []) st.pending.push(nodePiece(n));
+    for (const n of cell.lead || []) {
+      st.pending.push(nodePiece(n, st.cm));
+    }
     if (g.rows[r].cells[k].cont) hidden(cell, st.pending, put);
     else cell.blocks.forEach(put);
   });
-  behind(out, lo, (row.tail || []).map(nodePiece), st);
+  behind(out, lo, (row.tail || []).map((n) => nodePiece(n, st.cm)), st);
 }
 
 /** Row r of t for separator ch, appended to out (the header: file
@@ -159,12 +176,12 @@ function rowSep(t, g, r, ch, st, out) {
     } else if (s.cur.length) out.push(joined(null, s.cur.splice(0)));
     out.push(...bs);
   };
-  const put = (b) => blocks(isTbl(b) ? convert(b, ch)
+  const put = (b) => blocks(isTbl(b) ? convert(b, ch, st.cm)
     : [isP(b) ? {...b, id: nextId()} : b]);
-  for (const n of row.lead || []) s.cur.push(nodePiece(n));
+  for (const n of row.lead || []) s.cur.push(nodePiece(n, st.cm));
   let shown = 0;
   row.cells.forEach((cell, k) => {
-    for (const n of cell.lead || []) s.cur.push(nodePiece(n));
+    for (const n of cell.lead || []) s.cur.push(nodePiece(n, st.cm));
     if (g.rows[r].cells[k].cont) return hidden(cell, s.cur, put);
     if (shown++) {
       s.cur.push(sepPiece(ch, s.cur));
@@ -176,19 +193,19 @@ function rowSep(t, g, r, ch, st, out) {
       para(b);
     });
   });
-  for (const n of row.tail || []) s.cur.push(nodePiece(n));
+  for (const n of row.tail || []) s.cur.push(nodePiece(n, st.cm));
   if (s.text) flush();
   else st.pending.push(...s.cur);
 }
 
 /** The blocks of t for separator ch (null: paragraph marks). */
-function convert(t, ch) {
-  const g = gridOf(t), out = [], st = {pending: []};
+function convert(t, ch, cm) {
+  const g = gridOf(t), out = [], st = {pending: [], cm};
   for (let r = 0; r < t.rows.length; r++) {
     if (ch === null) rowParas(t, g, r, st, out);
     else rowSep(t, g, r, ch, st, out);
   }
-  behind(out, 0, (t.tail || []).map(nodePiece), st);
+  behind(out, 0, (t.tail || []).map((n) => nodePiece(n, cm)), st);
   if (st.pending.length) behind(out, 0, st.pending.splice(0), st);
   if (!out.some(isP)) {
     out.push(joined(null, st.pending.splice(0).concat([{text: '',
@@ -198,6 +215,6 @@ function convert(t, ch) {
 }
 
 /** See the header. */
-export function tableToText(t, {sep} = {}) {
-  return convert(t, sepChar(sep));
+export function tableToText(t, {sep, comments} = {}) {
+  return convert(t, sepChar(sep), comments === true);
 }

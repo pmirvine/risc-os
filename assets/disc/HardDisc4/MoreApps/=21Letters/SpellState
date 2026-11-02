@@ -1,0 +1,502 @@
+// SpellState: the spell check of one document window.
+//   new SpellState(dw, opts?)   dw: the DocWindow (dw.d or dw.real:
+//       the Document, dw.app: the choices). opts, for tests: dict
+//       (an object with has(word): no dictionary is read), check
+//       (default ./SpellCheck checkPara), raf (default
+//       requestAnimationFrame; with caf, cancelAnimationFrame), now
+//       (default performance.now), personal (a function giving the
+//       personal word list; default ./SpellOpts), readBytes and
+//       dictDir (where the dictionary is read from), notify (told
+//       once if the dictionary cannot be read, or looks damaged:
+//       ./SpellDict checkDict; default reportError)
+//   dictReady        the dictionary is loaded: until then, and for
+//                    good if it could not be read, nothing is checked
+//                    and flagsOf gives null (editing is never held up)
+//   dict             the dictionary (null until dictReady)
+//   stopped          stop() was called and start() not since: a
+//                    dictionary read that ends then is not used
+//                    (onChange is told, so whoever waits for it can
+//                    make a new state)
+//   flagsOf(para)    -> [{from, to, word}] | null: the flagged ranges
+//                    of that Para (offsets into para.text), null until
+//                    it is checked. Cached per Para object (a WeakMap:
+//                    paragraphs are copy-on-write, so an edited
+//                    paragraph is a new object and is checked afresh,
+//                    an unchanged one never is)
+//   flagsAt(para-or-path, off)  -> the flagged range holding off
+//                    (from <= off <= to), or null; checks the
+//                    paragraph if it is not yet. A path is of the
+//                    body (./Path)
+//   ensure(paras)    checks those that are not (the visible ones)
+//                    now, stopping after VISIBLE_MS (8) ms: the
+//                    rest are left for the next call or the slices.
+//                    A paragraph longer than LONG (20,000) characters
+//                    is never checked here: it goes to the slices,
+//                    before the rest, so typing in it is not held up
+//                    (its underlines come when the slices are done
+//                    with it; till then flagsOf gives null).
+//                    -> whether all were checked
+//   start()          once started, the slices: an animation frame
+//                    checks the paragraphs of the whole document not
+//                    yet checked (body, tables, headers and footers,
+//                    notes, comments: ./Walk) for SLICE_MS (6) ms,
+//                    and goes on until all are; a change of the
+//                    document starts it again. A paragraph longer
+//                    than LONG is checked CHUNK (5,000) characters at
+//                    a time (./SpellCheck paraSteps: never cutting a
+//                    word), over as many slices as it takes. onChange
+//                    is told when a slice has checked a paragraph
+//                    that ensure left unchecked (one painted without
+//                    its lines): one off the screen is drawn right
+//                    when it comes into view, so no repaint is asked
+//   stop()           no more slices, no more listening; the state can
+//                    still be read. start() after it begins again (a
+//                    dictionary read that ends while stopped is not
+//                    used; start() reads it again)
+//   setCaret(para, off, quiet?)  where the caret is (the view tells
+//                    us at every paint). The word being typed, the
+//                    caret
+//                    right after it with no space or punctuation
+//                    following, when the last change was typing one
+//                    character in that paragraph, at that word (the
+//                    range holding where it went in), is not flagged
+//                    until the caret leaves it (onChange is told,
+//                    unless quiet: the view tells just before it
+//                    paints, which shows the change, so no repaint
+//                    is asked for)
+//   ignoreAll(word)  the word is no longer flagged in this window's
+//                    document, in any case (kept as ./SpellWords
+//                    wordKey, as it is looked up); never saved
+//   refresh()        the settings behind the flags have changed (the
+//                    personal list, ./SpellOpts): check again
+//   onChange(fn)     -> off: fn() when painting is out of date
+//   paras()          every Para of the document in the order checked
+// What changes the flags besides the paragraph: the markup view
+// (d.markup), the ignore list, the personal list and the styles
+// (the language of a run may come from one); each starts the
+// checking again. Any error from the checker is kept to that
+// paragraph (no flags). Pure but for the dictionary read and the
+// notice (riscos).
+import {vfs, reportError} from 'riscos';
+import {checkPara, paraSteps, allParas} from './SpellCheck';
+import {parseDict, checkDict} from './SpellDict';
+import {loadDict, DICT_DIR} from './SpellLoad';
+import {personalWords} from './SpellOpts';
+import {wordKey} from './SpellWords';
+import {at as blockAt} from './Walk';
+import {paraAt} from './OpsPath';
+
+export {allParas};
+export const VISIBLE_MS = 8, SLICE_MS = 6;
+export const LONG = 20000, CHUNK = 5000;
+const MSG = 'The spelling dictionary could not be read, so spelling ' +
+  'is not checked.';
+const parsed = new WeakMap();          // loadDict's promise -> Dict
+const NONE = Object.freeze([]);
+const PUNCT = '.,;:!?)]}>"\'\u2019\u201D-\u2013\u2014\u2026/';
+let told = false;                      // (one notice a session)
+
+/** The ops of a change, compounds opened (bounded). */
+function flat(ops, out = [], depth = 0) {
+  for (const o of Array.isArray(ops) ? ops : NONE) {
+    if (o && o.op === 'compound' && depth < 4) {
+      flat(o.ops, out, depth + 1);
+    } else out.push(o);
+    if (out.length > 64) break;
+  }
+  return out;
+}
+
+export class SpellState {
+  constructor(dw, opts = {}) {
+    this.dw = dw;
+    this._o = opts;
+    this._check = opts.check || checkPara;
+    this._now = opts.now || (() => performance.now());
+    this._raf = opts.raf || ((f) => requestAnimationFrame(f));
+    this._caf = opts.caf || ((id) => {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(id);
+      }
+    });
+    this.dictReady = false;
+    this._dict = null;
+    this._cache = new WeakMap();       // Para -> {gen, ranges}
+    this._gen = 1;
+    this._ignore = new Set();
+    this._memo = new Map();
+    this._fns = new Set();
+    this._queue = null;
+    this._qi = 0;
+    this._tok = 0;
+    this._pending = false;
+    this._rafId = 0;
+    this._started = false;
+    this._closed = false;
+    this._loading = false;
+    this._typed = null;
+    this._typedAt = -1;
+    this._caret = null;
+    this._mode = null;
+    this._pref = null;
+    this._personal = new Set();
+    this._styles = null;
+    this._job = null;                  // (a long paragraph part read)
+    this._want = [];                   // (long ones on show: first)
+    this._asked = new WeakSet();       // (painted, left unchecked)
+    const d = this._doc();
+    this._off = this._listen();
+    this._sync();
+    if (opts.dict) this._ready(opts.dict);
+    else this._load();
+  }
+
+  _doc() { return this.dw.real || this.dw.d; }
+
+  _listen() {
+    const d = this._doc();
+    return d && d.on ? d.on('change', (ev) => this._changed(ev)) : null;
+  }
+
+  /** Loads the bundled dictionary; a failure leaves dictReady false
+   *  and tells the user once. */
+  _load() {
+    const o = this._o, app = this.dw.app || {};
+    const read = o.readBytes || ((p) => vfs.readFile(p));
+    const dir = o.dictDir || (app.dir ? app.dir + '.' + DICT_DIR
+      : DICT_DIR);
+    let job;
+    this._loading = true;
+    try {
+      job = loadDict(read, dir);
+    } catch (e) {
+      job = Promise.reject(e);
+    }
+    job.then((raw) => {
+      let d = parsed.get(job);
+      if (d === undefined) {           // (damaged files: null, kept)
+        d = parseDict(raw);
+        if (checkDict(d)) d = null;
+        parsed.set(job, d);
+      }
+      if (!d) throw new Error('the spelling dictionary is damaged');
+      this._loading = false;
+      if (!this._closed) this._ready(d);
+      else this._tell();               // (unused: a waiting dialogue
+    }).catch((e) => {                  // makes a new state, ./SpellBox)
+      this._loading = false;
+      console.warn('Letters: spelling dictionary not read', e);
+      if (told) return;
+      told = true;
+      try {
+        (o.notify || reportError)(MSG,
+          {appName: 'Letters', category: 'info'});
+      } catch (e2) { /* (no desktop: tests) */ }
+    });
+  }
+
+  /** See the header. */
+  get dict() { return this._dict; }
+
+  /** Stopped (stop() and not start()ed again). */
+  get stopped() { return this._closed; }
+
+  _ready(dict) {
+    this._dict = dict;
+    this.dictReady = true;
+    this._gen++;
+    this._queue = null;
+    this._tell();
+    this._schedule();
+  }
+
+  /** Bumps the generation when what the flags depend on changed. */
+  _sync() {
+    const d = this._doc();
+    const mode = d && d.markup ? d.markup : 'final';
+    const pref = this._o.personal ? this._o.personal()
+      : personalWords(this.dw.app || {});
+    const styles = d && d.doc ? d.doc.styles : null;
+    if (mode === this._mode && pref === this._pref &&
+      styles === this._styles) return;
+    if (pref !== this._pref) {
+      this._personal = new Set(
+        (pref || NONE).map(wordKey));
+    }
+    this._mode = mode;
+    this._pref = pref;
+    this._styles = styles;
+    this._gen++;
+    this._queue = null;
+    this._schedule();                  // (d.markup sends no change)
+  }
+
+  _changed(ev) {
+    this._queue = null;
+    this._typed = this._typing(ev);
+    this._schedule();
+  }
+
+  /** The Para one typed character went into, else null. */
+  _typing(ev) {
+    if (!ev || ev.kind !== 'apply') return null;
+    const ops = flat(ev.ops);
+    let one = null;
+    for (const o of ops) {
+      if (!o) return null;
+      if (o.op === 'replaceText') {
+        if (one || typeof o.ins !== 'string' || !o.ins ||
+          o.ins.length > 2) return null;
+        one = o;
+      } else if (o.op !== 'setRev') return null;
+    }
+    if (!one) return null;
+    try {
+      const q = paraAt(this._doc().doc, one.block, one.story).p;
+      this._typedAt = one.at + one.ins.length;
+      return q;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  _ctx() {
+    return {markup: this._mode, ignore: this._ignore,
+      personal: this._personal, memo: this._memo};
+  }
+
+  _fresh(p) {
+    const e = this._cache.get(p);
+    return !!e && e.gen === this._gen;
+  }
+
+  _run(p) {
+    let ranges;
+    try {
+      ranges = this._check(this._dict, this._doc().doc, p, this._ctx());
+    } catch (e) {
+      ranges = [];                     // (never breaks editing)
+    }
+    this._cache.set(p, {gen: this._gen, ranges});
+  }
+
+  /** Reads more of the long paragraph p for the slice that began
+   *  at t0: true when it is done (its flags cached). */
+  _step(p, t0) {
+    let j = this._job;
+    if (!j || j.p !== p || j.gen !== this._gen) {
+      j = this._job = {p, gen: this._gen, steps: null};
+      try {
+        j.steps = paraSteps(this._dict, this._doc().doc, p,
+          this._ctx());
+      } catch (e) {
+        j.steps = null;                // (never breaks editing)
+      }
+    }
+    let done = !j.steps;
+    try {
+      while (!done && this._now() - t0 < SLICE_MS) {
+        done = j.steps.step(CHUNK);
+      }
+    } catch (e) {
+      j.steps = null;
+      done = true;
+    }
+    if (!done) return false;
+    this._cache.set(p, {gen: this._gen,
+      ranges: j.steps ? j.steps.ranges : []});
+    this._job = null;
+    return true;
+  }
+
+  _tell() {
+    for (const fn of [...this._fns]) {
+      try { fn(); } catch (e) { console.warn('Letters: spell', e); }
+    }
+  }
+
+  /** See the header. */
+  onChange(fn) {
+    this._fns.add(fn);
+    return () => this._fns.delete(fn);
+  }
+
+  /** See the header. */
+  paras() {
+    return allParas(this._doc().doc);
+  }
+
+  _schedule() {
+    if (!this._started || this._pending || !this.dictReady ||
+      this._closed) return;
+    this._pending = true;
+    const tok = ++this._tok;
+    this._rafId = this._raf(() => {
+      if (tok !== this._tok) return;
+      this._pending = false;
+      this._slice();
+    });
+  }
+
+  _slice() {
+    if (this._closed || !this._started) return;
+    this._sync();
+    if (!this._queue) {
+      this._queue = this.paras();
+      this._qi = 0;
+    }
+    const q = this._queue, t0 = this._now();
+    let shown = false, more = false;
+    const did = (p) => {
+      if (!this._asked.has(p)) return;
+      this._asked.delete(p);
+      shown = true;
+    };
+    this._want = this._want.filter((p) => !this._fresh(p));
+    for (const p of this._want) {      // (on show: before the rest)
+      if (this._step(p, t0)) did(p);
+      else { more = true; break; }
+    }
+    while (!more && this._qi < q.length) {
+      const p = q[this._qi];
+      if (!this._fresh(p)) {
+        if (p.text.length > LONG) {
+          if (!this._step(p, t0)) break;
+        } else this._run(p);
+        did(p);
+      }
+      this._qi++;
+      if (this._now() - t0 >= SLICE_MS) break;
+    }
+    if (shown) this._tell();
+    if (more || this._qi < q.length ||
+      this._want.some((p) => !this._fresh(p))) this._schedule();
+  }
+
+  /** See the header. */
+  start() {
+    if (this._closed) {                // (stopped: listen again)
+      this._closed = false;
+      this._off = this._listen();
+      this._queue = null;
+      this._typed = null;
+      if (!this.dictReady && !this._loading && !this._o.dict) {
+        this._load();
+      }
+    }
+    this._started = true;
+    this._schedule();
+  }
+
+  /** See the header. */
+  stop() {
+    this._closed = true;
+    this._started = false;
+    this._tok++;
+    if (this._pending) this._caf(this._rafId);
+    this._pending = false;
+    if (this._off) this._off();
+    this._off = null;
+  }
+
+  /** See the header. */
+  ensure(paras) {
+    this._sync();
+    if (!this.dictReady) return false;
+    const t0 = this._now();
+    let all = true, late = false;
+    const want = [];
+    for (const p of paras) {
+      if (!p || this._fresh(p)) continue;
+      if (typeof p.text === 'string' && p.text.length > LONG) {
+        want.push(p);                  // (the slices: see the header)
+      } else if (!late && this._now() - t0 < VISIBLE_MS) {
+        this._run(p);
+        continue;
+      } else late = true;
+      this._asked.add(p);              // (the slices tell when done)
+      all = false;
+    }
+    this._want = want;
+    if (!all) this._schedule();
+    return all;
+  }
+
+  /** The range of ranges the caret is at the end of while typing. */
+  _hushed(c, ranges) {
+    if (!c || !c.para || c.para !== this._typed || !ranges) {
+      return null;                     // (no paragraph: a table)
+    }
+    const text = c.para.text;
+    for (const r of ranges) {
+      if (r.to !== c.off || r.from > this._typedAt ||
+        this._typedAt > r.to) continue;
+      const n = text[r.to];
+      if (n === undefined || (n.trim() !== '' && !PUNCT.includes(n))) {
+        return r;
+      }
+    }
+    return null;
+  }
+
+  /** See the header. */
+  flagsOf(para) {
+    this._sync();
+    if (!this.dictReady) return null;
+    const e = this._cache.get(para);
+    if (!e || e.gen !== this._gen) return null;
+    const h = this._hushed(this._caret, e.ranges);
+    if (!h || this._caret.para !== para) return e.ranges;
+    if (!e.shown || e.shown.h !== h) {   // (one array while hushed)
+      e.shown = {h, out: e.ranges.filter((r) => r !== h)};
+    }
+    return e.shown.out;
+  }
+
+  /** See the header. */
+  flagsAt(target, off) {
+    const para = Array.isArray(target)
+      ? blockAt(this._doc().doc, target) : target;
+    if (!para || para.type !== 'p') return null;
+    this._sync();
+    if (this.dictReady && !this._fresh(para)) this._run(para);
+    const ranges = this.flagsOf(para);
+    if (!ranges) return null;
+    for (const r of ranges) {
+      if (r.from <= off && off <= r.to) return r;
+    }
+    return null;
+  }
+
+  _hushOf(c) {
+    const e = c && this._cache.get(c.para);
+    return e && e.gen === this._gen ? this._hushed(c, e.ranges) : null;
+  }
+
+  /** See the header. */
+  setCaret(para, off, quiet) {
+    const was = this._caret;
+    const before = this._hushOf(was);
+    this._caret = {para, off};
+    const after = this._hushOf(this._caret);
+    if (before !== after && !quiet) this._tell();
+  }
+
+  /** See the header. */
+  ignoreAll(word) {
+    if (typeof word !== 'string' || !word) return;
+    this._ignore.add(wordKey(word));
+    this._gen++;
+    this._queue = null;
+    this._tell();
+    this._schedule();
+  }
+
+  /** See the header. */
+  refresh() {
+    this._pref = null;                 // (read the list again)
+    this._sync();
+    this._tell();
+    this._schedule();
+  }
+}

@@ -8,7 +8,7 @@
 // A key held down (auto-repeat) does New, Close, Save and Save as
 // once. F4 opens the Find box (as Ctrl-F: word-find.mjs). Keys the
 // window does not use go on to the desktop (F1, Shift-F4, F5, F6,
-// F7, F10, F11, Shift-F2, Ctrl-F5, Alt-F2; F12 and its forms are the
+// F10, F11, Shift-F2, Ctrl-F5, Alt-F2; F12 and its forms are the
 // desktop's hot keys). The menus
 // show the keys; on a Mac Cmd-S saves and Cmd-N makes a new
 // document. 30 cycles leak nothing. Needs the disc built by
@@ -262,14 +262,14 @@ try {
     const st0 = await ev(() => ({ n: window.__docs().length, text: window.__by('Plain').text, boxes: window.__saveBoxes().length,
       rulerOn: window.__by('Plain').rulerOn, zoom: window.__by('Plain').zoom }));
     await ev(() => { window.__seen = []; window.__off = os.wimp.on('key', (e) => { window.__seen.push(e.code); }); });
-    const keys = [['F1', 0x181], ['Shift+F4', 0x194], ['F5', 0x185], ['F6', 0x186], ['F7', 0x187], ['F10', 0x1CA], ['F11', 0x1CB],
+    const keys = [['F1', 0x181], ['Shift+F4', 0x194], ['F5', 0x185], ['F6', 0x186], ['F10', 0x1CA], ['F11', 0x1CB],
       ['Shift+F2', 0x192], ['Control+F5', 0x1A5], ['Alt+F2', 0x182], ['Control+Shift+F2', 0x1B2]];
     for (const [k] of keys) await press(k);
     await ev((n) => window.__until(() => window.__seen.length >= n, 2000), keys.length);
     const seen = await ev(() => { window.__off(); return [...window.__seen]; });
     const st1 = await ev(() => ({ n: window.__docs().length, text: window.__by('Plain').text, boxes: window.__saveBoxes().length,
       rulerOn: window.__by('Plain').rulerOn, zoom: window.__by('Plain').zoom, prompts: window.__prompts().length }));
-    ok('F1, Shift-F4, F5, F6, F7, F10, F11, Shift-F2, Ctrl-F5, Alt-F2, Ctrl-Shift-F2 go on to the desktop and do nothing here',
+    ok('F1, Shift-F4, F5, F6, F10, F11, Shift-F2, Ctrl-F5, Alt-F2, Ctrl-Shift-F2 go on to the desktop and do nothing here',
       keys.every(([, c]) => seen.includes(c)) && same(st0, { ...st1, prompts: undefined }) && st1.prompts === 0, { seen, st0, st1 });
     const h = await ev(() => {
       const w = window.__by('Plain').win;

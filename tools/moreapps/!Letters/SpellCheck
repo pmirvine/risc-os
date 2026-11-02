@@ -1,0 +1,216 @@
+// SpellCheck: the spell check of one paragraph (pure).
+//   checkPara(dict, doc, para, ctx) -> [{from, to, word}]
+//   paraSteps(dict, doc, para, ctx) -> {step(n) -> done, ranges}
+//     the same check a piece at a time, for a very long paragraph:
+//     each step reads at least n more characters of the text (up to
+//     the next space, so no word is cut) and adds what it flags to
+//     ranges; done: the whole paragraph is read, and ranges is then
+//     what checkPara gives
+//   allParas(doc) -> [Para]   every paragraph worth checking, in order:
+//     the body (tables too), headers and footers, notes, comments
+//     ctx {markup, ignore, personal, memo?}
+// The flagged ranges are UTF-16 offsets into para.text, in order.
+// What is not looked at: runs that are not checkable (./SpellLang:
+// Do not check spelling, or another language), a field's codes and
+// result (./FieldScan paraFields; a field crossing paragraphs is
+// not seen here, a known limit), and deleted text. Deleted text is
+// what the markup view hides (./Kinds hiddenSpans): in 'final' and
+// 'all' the deletions and the old place of a move, in 'original' the
+// insertions; the checker leaves it out of the text it reads, so
+// hel[deleted x]lo is the word hello, and a range over it covers the
+// hidden characters too. In 'all' (which shows deletions, struck
+// through) they are still left out; inserted text is checked.
+// A run, field or picture (U+FFFC) that is not checked ends the word
+// beside it, as a picture does. A word that is split across two runs
+// (wo<b>rd</b>) is one range.
+// Each word is looked up as written, less the format characters it
+// holds and with U+2019 as an apostrophe (./SpellDict also applies
+// its own conversions and the case rules). A word of digits and
+// underscores only is not checked. ignore and personal are sets of
+// words, matched as ./SpellWords wordKey (case, format characters
+// and the curly apostrophe aside); ctx.memo, when given, is
+// a Map word -> boolean kept by the caller across paragraphs (the
+// dictionary look-ups; the caller bounds it: MEMO_MAX).
+// Linear in the paragraph, and in the number of its runs.
+import {words, breakAt, plainWord as plain, wordKey}
+  from './SpellWords';
+import {checkable} from './SpellLang';
+import {hiddenSpans} from './Kinds';
+import {paraFields} from './FieldScan';
+import {scan, scanStories, forEachIn} from './Walk';
+
+export const MEMO_MAX = 50000;
+
+const FFFC = '\uFFFC';
+const lowered = new WeakMap();         // Set -> {size, set}
+
+/** The words of `set` as ./SpellWords wordKey (kept while its size
+ *  is). */
+function lower(set) {
+  if (!(set instanceof Set) || !set.size) return null;
+  let m = lowered.get(set);
+  if (!m || m.size !== set.size) {
+    m = {size: set.size, set: new Set()};
+    for (const w of set) {
+      if (typeof w === 'string') m.set.add(wordKey(w));
+    }
+    lowered.set(set, m);
+  }
+  return m.set;
+}
+
+/** Whether `run` is checked, remembered per formatting. */
+function checker(doc, para) {
+  const by = new Map();
+  return (run) => {
+    const k = run.rPr || by;
+    let m = by.get(k);
+    if (!m) by.set(k, m = new Map());
+    const s = run.rStyle || '';
+    let ok = m.get(s);
+    if (ok === undefined) m.set(s, ok = checkable(doc, para, run));
+    return ok;
+  };
+}
+
+/** Ranges of the text that must not be read: [from, to] pairs. */
+function skipped(doc, para) {
+  const out = [];
+  const ok = checker(doc, para);
+  for (const run of para.runs || []) {
+    if (run.end > run.start && !ok(run)) out.push([run.start, run.end]);
+  }
+  const fs = paraFields(para);
+  if (fs) {
+    for (const f of fs) {
+      if (f.begin && f.end && f.begin.off < f.end.off) {
+        out.push([f.begin.off, f.end.off + 1]);
+      }
+    }
+  }
+  return out;
+}
+
+/** text with the ranges of `sk` made U+FFFC (the length stays). */
+function blank(text, sk) {
+  if (!sk.length) return text;
+  const list = sk.slice().sort((a, b) => a[0] - b[0]);
+  let out = '', at = 0;
+  for (const [x, y] of list) {
+    const from = Math.max(x, at), to = Math.min(y, text.length);
+    if (to <= from) continue;
+    out += text.slice(at, from) + FFFC.repeat(to - from);
+    at = to;
+  }
+  return out + text.slice(at);
+}
+
+/** The text without the `hid` spans, and where each kept piece
+ *  began: [{o: offset in text, c: offset in the result, n}]. */
+function squeeze(text, hid) {
+  const parts = [];
+  let s = '', at = 0;
+  const keep = (a, b) => {
+    if (b <= a) return;
+    parts.push({o: a, c: s.length, n: b - a});
+    s += text.slice(a, b);
+  };
+  for (const [x, y] of hid) {
+    keep(at, x);
+    at = y;
+  }
+  keep(at, text.length);
+  return {s, parts};
+}
+
+/** Offset k of the squeezed text as an offset into the text;
+ *  end: k ends a word (the place after its last character). */
+function back(parts, k, end) {
+  let lo = 0, hi = parts.length - 1;
+  const j = end ? k - 1 : k;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (parts[mid].c <= j) lo = mid;
+    else hi = mid - 1;
+  }
+  const q = parts[lo];
+  return q.o + (j - q.c) + (end ? 1 : 0);
+}
+
+/** Whether w is only digits and underscores (nothing to look up). */
+function numeric(w) {
+  for (let i = 0; i < w.length; i++) {
+    const c = w.charCodeAt(i);
+    if (c !== 95 && (c < 48 || c > 57)) return false;
+  }
+  return true;
+}
+
+/** See the header. */
+export function paraSteps(dict, doc, para, ctx) {
+  const out = [];
+  if (!para || typeof para.text !== 'string' || !para.text) {
+    return {ranges: out, step: () => true};
+  }
+  const c = ctx || {};
+  const mode = c.markup === 'original' ? 'original' : 'final';
+  const hid = hiddenSpans(para, mode);
+  const sk = skipped(doc, para);
+  const t0 = blank(para.text, sk);
+  const view = hid.length ? squeeze(t0, hid)
+    : {s: t0, parts: null};
+  const s = view.s, parts = view.parts;
+  const ign = lower(c.ignore), per = lower(c.personal), memo = c.memo;
+  const look = (w, base) => {
+    const t = plain(w.word);
+    if (!t || numeric(t)) return;
+    const lo = t.toLowerCase();
+    if (ign && ign.has(lo)) return;
+    if (per && per.has(lo)) return;
+    let good = memo ? memo.get(t) : undefined;
+    if (good === undefined) {
+      good = !!dict.has(t);
+      if (memo) {
+        if (memo.size >= MEMO_MAX) memo.clear();
+        memo.set(t, good);
+      }
+    }
+    if (good) return;
+    const a = w.from + base, b = w.to + base;
+    out.push(parts ? {from: back(parts, a, false),
+      to: back(parts, b, true), word: w.word}
+      : {from: a, to: b, word: w.word});
+  };
+  let at = 0;
+  return {ranges: out, step(n) {
+    if (at >= s.length) return true;
+    const end = n >= s.length - at ? s.length : breakAt(s, at + n);
+    const piece = at === 0 && end === s.length ? s : s.slice(at, end);
+    for (const w of words(piece)) look(w, at);
+    at = end;
+    return at >= s.length;
+  }};
+}
+
+/** See the header. */
+export function checkPara(dict, doc, para, ctx) {
+  const job = paraSteps(dict, doc, para, ctx);
+  job.step(Infinity);
+  return job.ranges;
+}
+
+/** Every Para of doc: the body (tables too), the headers and
+ *  footers, the notes, then the comments. */
+export function allParas(doc) {
+  const out = [];
+  const add = (b) => { if (b && b.type === 'p') out.push(b); };
+  scan(doc, add);
+  scanStories(doc, add);
+  const c = doc && doc.comments && doc.comments.map;
+  if (c instanceof Map) {
+    for (const x of c.values()) {
+      if (x && Array.isArray(x.blocks)) forEachIn(x.blocks, [0], add);
+    }
+  }
+  return out;
+}

@@ -3,7 +3,8 @@
 // modules they share, WimpLib (imported as 'wimplib/<Name>': src/core/jsrun.js), are a library in
 // !Boot.Resources, put there by tools/disc-wimplib.mjs; this removes the library's old home, MoreApps.WimpLib.
 // The source is tools/moreapps/!Letters (no extension = JSScript &F81, !Run / !Boot = Obey, !Help = Text); its
-// Fonts directory holds font files (Data &FFD) and their Licences (Text); the icons are drawn by
+// Fonts directory holds font files (Data &FFD) and their Licences (Text), and its Dict directory the spelling
+// dictionary (all Data &FFD, the UTF-8 files read as they are); the icons are drawn by
 // tools/moreapps/icon.mjs. The sources must be Latin-1 text with no tabs or CRs, and lines of at most 72
 // characters (they are read in !Edit); the fonts are exempt, and the Licences may have tabs and long lines.
 //
@@ -44,6 +45,7 @@ const tree = (dir, rel, top) => fs.readdirSync(dir, { withFileTypes: true }).fil
   .sort(byName).map((e) => {
     const full = path.join(dir, e.name), r = `${rel}/${e.name}`;
     if (e.isDirectory()) return { name: e.name, dir: true, children: tree(full, r, false) };
+    if (/\/Dict\/[^/]+$/.test(r)) return { name: e.name, type: 'ffd', data: fs.readFileSync(full) };
     if (/\/Fonts\/[^/]+$/.test(r)) {
       if (e.name === 'Licences') return { name: e.name, type: 'fff', data: text(full, r, { strict: false }) };
       return { name: e.name, type: 'ffd', data: fs.readFileSync(full) };

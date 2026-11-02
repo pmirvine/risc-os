@@ -1,0 +1,131 @@
+// SpellPaint - the misspelt words underlined in the text (Batch F3):
+// a red wavy line under each flagged range, drawn over the text and
+// under the selection. Display only: nothing is saved, nothing is
+// printed (./PagePaint paintPage does not draw it), the layout is not
+// touched. Boxes are the layout's own (L.selectionRects), so a word
+// that wraps is underlined on both its lines, in table cells and in
+// every view alike.
+//
+//   paintSpell(L, g, rect, state)  draws the underlines of the
+//       paragraphs the band rect {y0, y1} shows (those only: the
+//       others are not looked at, nor checked), from ./SpellState
+//       state (ensure, then flagsOf of each paragraph). Nothing at
+//       all (no save) when state is null (Check spelling as you type
+//       is off), the dictionary is not read, or nothing is flagged
+//   zigzag(g, x, y, w)  one segment: a line of w px from x with the
+//       wave's peaks STEP px apart and AMP px high, y the baseline
+//   STEP, AMP, COLOUR  2, 1, '#e00000'
+//   stats  {built}: paragraphs whose boxes were worked out (a cost
+//       check)
+//
+// Where: the wave runs along each line box's bottom, 1.5 px up
+// (r.y + r.h - 2 and a half pixel, so the 1 px line is sharp), from
+// whole-pixel x; boxes outside rect's x0..x1 are skipped. The
+// paragraphs are those of L.flow between the items at the band's
+// ends (as ./CommentPaint
+// finds its band; a table's cells included); the boxes of a flagged
+// paragraph are worked out once per layout, placement and flagged
+// ranges (the state hands back the same array until the flags
+// change), not at every paint. Pure: no desktop services.
+export const STEP = 2, AMP = 1, COLOUR = '#e00000';
+export const stats = {built: 0};
+
+const memo = new WeakMap();            // L.items -> {place, state, map}
+
+/** The flow indices [i0, i1] the band y0..y1 shows, or null. */
+function bandOf(L, y0, y1) {
+  if (!(Number.isFinite(y0) && Number.isFinite(y1))) {
+    return [0, L.flow.length - 1];
+  }
+  if (L.place && L.place.band) {
+    const b = L.place.band(y0, y1);
+    if (!b) return null;
+    ({y0, y1} = b);
+  }
+  const a = L.itemAtY(y0), e = L.itemAtY(y1);
+  if (!a || !e) return null;
+  return [a.index, e.kind === 'tbl' ? e.endIndex : e.index];
+}
+
+/** The paragraph items of L.flow in the band. */
+function itemsIn(L, y0, y1) {
+  const out = [], band = bandOf(L, y0, y1);
+  if (!band) return out;
+  const n = Math.min(band[1], L.flow.length - 1);
+  for (let i = Math.max(band[0], 0); i <= n; i++) {
+    const it = L.flow[i];
+    if (it.kind === 'p' && it.block && it.block.type === 'p') {
+      out.push(it);
+    }
+  }
+  return out;
+}
+
+/** The boxes of flagged ranges of item it (the whole paragraph). */
+function boxes(L, it, ranges) {
+  const out = [];
+  for (const r of ranges) {
+    const rs = L.selectionRects({anchor: {id: it.id, off: r.from},
+      head: {id: it.id, off: r.to}});
+    for (const b of rs) out.push(b);
+  }
+  return out;
+}
+
+/** The memo of layout L for state and its placement. */
+function memoOf(L, state) {
+  const key = L.items || L;
+  let m = memo.get(key);
+  if (!m || m.place !== L.place || m.state !== state) {
+    m = {place: L.place, state, map: new Map()};
+    memo.set(key, m);
+  }
+  return m;
+}
+
+/** See the header. */
+export function zigzag(g, x, y, w) {
+  g.moveTo(x, y);
+  let up = false;
+  for (let d = STEP; d < w + STEP; d += STEP) {
+    up = !up;
+    g.lineTo(x + Math.min(d, w), up ? y - AMP : y);
+  }
+}
+
+/** See the header. */
+export function paintSpell(L, g, rect, state) {
+  if (!L || !state || !L.flow) return;
+  const its = itemsIn(L, rect.y0, rect.y1);
+  if (!its.length) return;
+  state.ensure(its.map((it) => it.block));
+  const m = memoOf(L, state);
+  let any = false;
+  for (const it of its) {
+    const ranges = state.flagsOf(it.block);
+    if (!ranges || !ranges.length) continue;
+    let e = m.map.get(it.id);
+    if (!e || e.ranges !== ranges) {
+      stats.built++;
+      m.map.set(it.id, e = {ranges, rects: boxes(L, it, ranges)});
+    }
+    for (const r of e.rects) {
+      const foot = r.h + r.y;       // (the box's, from L.place)
+      if (foot < rect.y0 || r.y > rect.y1) continue;
+      if (r.x > rect.x1 || r.x + r.w < rect.x0) continue;
+      if (!any) {
+        any = true;
+        g.save();
+        g.strokeStyle = COLOUR;
+        g.lineWidth = 1;
+        g.setLineDash([]);
+        g.beginPath();
+      }
+      zigzag(g, Math.round(r.x), foot - 1.5, Math.round(r.w));
+    }
+  }
+  if (any) {
+    g.stroke();
+    g.restore();
+  }
+}

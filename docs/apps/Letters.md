@@ -28,8 +28,8 @@ operations and undo, a reader and a writer for `.docx` that keep everything they
 Copy, cut and paste are in (deliverable 6b, `EditClip`), and Find / Replace (`Find`, `EditFind`, `Ui/FindBox`). Batch A added the everyday Insert and paragraph features
 (spacing, new lists, page and section breaks, tab stops, borders and shading, symbols, change case, hyperlinks,
 bookmarks, a format painter and a word count). Not there yet: layout and pagination (breaks are only marks), margins,
-making styles and list definitions of your own, printing, RTF/PDF export
-and spell check.
+making styles and list definitions of your own, printing and RTF/PDF export.
+Spell check (English (UK)) is in; see "Spell check (Batch F3)" below.
 
 **Fidelity:** content round-trip (text, formatting, every other part) is checked on 600+ real documents (below).
 Page layout and pagination are not implemented and, when they are, will only approximate Word. Real Microsoft Word
@@ -4375,6 +4375,96 @@ payloads this means: for `'undo'` and `'redo'` events, `ops` is `[the op applied
 history and is READ-ONLY** (a listener that mutates it corrupts redo); it may be a `spliceText` or `compound`, not
 only the public kinds. For `'apply'`, `ops` are the ops as given. Nothing enforces this (nothing is frozen).
 The same holds for style tables of a live Doc.
+
+## Spell check (Batch F3)
+
+English (UK) spell check as you type and a Spelling dialogue (F7). User guide: `$.Docs.Letters`, part 28
+(`tools/docs/Letters`).
+
+### Modules (all in `tools/moreapps/!Letters`)
+
+| Module | Role |
+|---|---|
+| `SpellLoad` | `loadDict(readBytes, dir)`: reads `Dict.en_GB_dic` and `Dict.en_GB_aff`, decodes UTF-8 and strips a BOM. The promise is kept on `globalThis[Symbol.for('letters.spell.dict')]`, so every run of the app shares one read; a failed read is not kept (the next call retries). |
+| `SpellDict` | `parseDict({dic, aff}) -> Dict`: a Hunspell reader (`has`, `root`, `tryChars`, `rep`, ...). Reads TRY, REP, WORDCHARS, NOSUGGEST, ICONV, BREAK, PFX/SFX (with continuation flags) and COMPOUNDRULE/COMPOUNDMIN/ONLYINCOMPOUND (digit runs such as 10th); every other directive is ignored. Not supported because en_GB does not use them: CIRCUMFIX, FLAG long/num/UTF-8 (a test scans the .aff so it stays so). |
+| `SpellSuggest` | `suggest(dict, word, max = 5)`: edit distance 1 (and 2 for short words when too few), TRY letters and REP pairs, bounded by a lookup count. Synchronous: only for a word the user asked about, never per keystroke. |
+| `SpellWords` | `words(text)`: the checkable words of a paragraph (Intl.Segmenter). Skips digits, non-Latin letters, all-capital words of 2-6 letters, dotted words, web and e-mail addresses; a hyphen splits. No unaudited regular expressions (see Constraints). |
+| `SpellLang` | `langOf`, `noProofOf`, `checkable(doc, para, run)`. See below. |
+| `SpellCheck` | `checkPara(dict, doc, para, ctx) -> [{from, to, word}]` and `allParas(doc)` (body with tables, headers and footers, notes, comments). Leaves out runs that are not checkable, field codes and results, and text the markup view hides (deleted text). |
+| `SpellState` | One per document window: the dictionary, the cache, the background slices (6 ms per animation frame; 8 ms for the visible paragraphs; a paragraph over 20,000 characters only in slices, in pieces), the word being typed, `ignoreAll`, `refresh`. |
+| `SpellOpts` | The settings in `WordChoices`: `spellOn` (choice `spell`, true unless false) and the personal list (choice `userWords`, bounded). |
+| `SpellBind` | Window wiring: `attachSpell`, `ensureSpell`, `syncSpell`, `setSpell(app, on)` (saved, every window follows), `spellChanged`, `stopSpell`. No state and no dictionary read while the setting is off. |
+| `SpellPaint` | `paintSpell(L, g, rect, state)`: the red wavy line along each line box of a flagged range, only for the paragraphs the band shows. Display only: `PagePaint` (printing) does not draw it. |
+| `SpellFix` | `fixWord`, `fixAll` (one undo step; reports what it really did so the dialogue keeps its place), `ignoreAll`, `addToDictionary`. Track Changes in the body goes through `RevTrack`; other stories are plain edits. |
+| `SpellMenu` | `spellItems(dw, ev)`: the suggestions, Ignore All and Add to Dictionary at the top of the Menu-button menu over a flagged word (body and tables only). |
+| `SpellBox` | The Spelling dialogue and `spellStep`, the walk behind F7 (below). `KeymapMore` binds F7; `ToolsMenu` has Spelling... and Check spelling as you type. |
+
+### Data flow
+
+`attachSpell` (when the window has its view) makes a `SpellState` if Check spelling as you type is on. The state
+reads the dictionary once (`vfs.readFile`, when it is made: its constructor calls `_load()`; every window shares
+the one read, `SpellLoad`), then checks the document in slices once `start()`ed.
+`flagsOf(para)` is cached in a `WeakMap` keyed by the `Para` object: paragraphs are copy-on-write, so an edited
+paragraph is a new object and is checked afresh and an unchanged one never is. Anything else that changes the flags
+(the markup view, the ignore list, the personal list, styles) bumps a generation counter and starts the checking
+again. `paintSpell` calls `ensure` for the visible paragraphs (up to 8 ms) and draws what `flagsOf` gives. A
+paragraph longer than `LONG` (20,000 characters) is never checked inside `ensure` (typing in it would pay a whole
+re-check at every key: 100,000 characters about 30 ms, 1 MB about 300 ms): it goes to the slices, those on show
+before the rest, and is read `CHUNK` (5,000) characters at a time by `SpellCheck` `paraSteps`, each piece ending at a
+space so no word is cut (the same ranges as `checkPara`, fuzz-tested); until it is done its `flagsOf` is null. The
+caret hook (`setCaret`) keeps the word being typed unflagged until the caret leaves it. Nothing is written to the
+document: no part, no `w:proofErr`.
+
+### Dictionary data
+
+`Dict/en_GB_dic` (about 1.2 MB), `Dict/en_GB_aff`, `Dict/Licences` (credits) and `Dict/LGPL` (the LGPL v3 text as published by gnu.org, unedited) in the application directory (file type `ffd`,
+read as bytes, no conversion). They are the Hunspell en_GB files of the LibreOffice dictionaries project
+(https://github.com/LibreOffice/dictionaries), LGPL; the credits are in `Dict/Licences`. Credited
+in the README ("Credits"). A failed read tells the user once ("The spelling dictionary could not be
+read, so spelling is not checked.") and editing goes on. Damaged files take the same path (`SpellDict` `checkDict`:
+the .dic must begin with its count and hold at least 90% of that many entries, the .aff must have `SET` or another
+directive the reader knows), so a cut-short word list does not mark every word.
+
+### Language rules (`SpellLang`)
+
+`w:lang` and `w:noProof` are not typed run fields (they stay raw in `rPr.extra`). The nearest layer that has one
+wins: run, character style chain, paragraph style chain, `docDefaults`. Only `w:val` of `w:lang` counts (not
+`eastAsia` or `bidi`); a `w:lang` with no or an empty `w:val` is passed over. Table styles and numbering-level
+`rPr` are not consulted (known limit). Nothing set means `en-GB`. Only `en-GB` and bare `en` (case-insensitive) are
+checked. `w:noProof` is on unless `w:val` is 0, false or off. Both are kept as raw nodes, so saving keeps them.
+
+### F7 and `spellStep`
+
+`spellStep(dw, from?, o?)` finds the next flagged word in the order of `paras()`, from the caret (header, footer and
+note modes: the top), once round to the origin, with the "Reached the end; continuing from the start" and "Spelling
+check complete" notices once each. It returns `{hit, context, wrapped, noticed, resume}` or `{busy, from}` when
+`o.budget` ran out (a 100,000-paragraph document is never checked in one go). `spellRun` is the controller (ignore,
+ignoreAll, change, changeAll, add) and `spellBox(dw)` the window, one per document. With Check spelling as you type
+off it makes its own state without starting the slices. Only body hits are selected and scrolled to.
+
+### Adding another language
+
+Add the Hunspell pair for that language under `Dict` (with its licence text in `Dict/Licences`), load it by
+`loadDict` with its own key, and replace the single `en-GB` rule in `SpellLang.checkable` by a map from language tag
+to dictionary (the state would then hold one `Dict` per tag and `checkPara` pick by the run's tag). Check that the
+`.aff` uses only the directives `SpellDict` reads; `SpellWords` skips non-Latin scripts, so a language in another
+script also needs that changed.
+
+### Tests
+
+`tests/moreapps/spell*.test.mjs` (`spelldict`, `spellload`, `spellsuggest`, `spellwords`, `spelllang`,
+`spellcheck`, `spellcorpus`, `spellstate`, `spellopts`, `spellpaint`, `spellfix`, `spellmenu`, `spellbox`):
+`node --test tests/moreapps/spell*.test.mjs`. `tests/moreapps/word-spell-paint.mjs` runs in the real desktop: build
+the disc (`node tools/disc-wimplib.mjs`, `node tools/disc-moreapps.mjs`), start `node serve.mjs`, then run it.
+
+### Constraints learned
+
+* No unaudited regular expressions: `regex-hostile.test.mjs` requires each one in `!Letters` to be linear by shape
+  or listed in its AUDIT table; the word scanner uses plain loops.
+* `paths-gate` and `place-gate` (the edit-location gates) apply: a spell fix reaches paragraphs by path
+  (`OpsPath.paraAt`, `Walk.at`), not by index arithmetic of its own.
+* Timing tests warm up first and take the minimum of several runs, so a busy machine does not fail them.
+* The window menu is Latin-1: a suggestion outside Latin-1 is left out of the menu (the Spelling window shows it).
 
 ## Limits and security
 

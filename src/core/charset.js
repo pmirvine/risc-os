@@ -29,6 +29,21 @@ export function encodeLatin1(str) {
   return new Uint8Array(out);
 }
 
+/** JSON text with every character above 0x7E written as a \uXXXX escape (a UTF-16 code unit), so the text is pure
+ *  ASCII and survives encodeLatin1 whole: JSON.parse gives back the very same strings. Linear, no regular expression. */
+export function asciiJSON(value, space) {
+  const s = JSON.stringify(value, null, space);
+  if (s === undefined) return s;
+  let out = '', at = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 0x7E) continue;
+    out += s.slice(at, i) + '\\u' + c.toString(16).padStart(4, '0');
+    at = i + 1;
+  }
+  return at ? out + s.slice(at) : s;
+}
+
 /** Read a control-terminated string (any byte < 32 ends it) from bytes. */
 export function ctrlString(bytes, off, max = Infinity) {
   let e = off;

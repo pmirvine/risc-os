@@ -1,0 +1,361 @@
+// SpellFix - putting a flagged word right (Batch F3): replace one,
+// replace every one, ignore, add to the dictionary.
+//
+//   fixWord(dw, hit, repl) -> {at, from, to, delta} | null  replaces
+//       the flagged range of hit with repl (plain text, ./Edit
+//       clean). from, to: the text put in; delta: how many
+//       characters longer the paragraph became (Track Changes keeps
+//       the old text).
+//       hit: {from, to, word} and where it is: path (a block path,
+//       ./Path), in the body or in the story named by hit.story (a
+//       header or footer's part name, a note's {note: {kind, id}} or
+//       a comment's {comment: id}), or para (the Para itself, found
+//       in any story). It takes the format of the first character
+//       it replaces; one undo step (through the view's
+//       Typing.command, when the window has one). Track Changes on
+//       (./RevTrack session; the body only): a tracked deletion and
+//       insertion of the author's; a Refused from it is told with
+//       reportError (an information notice) and nothing changes.
+//       A stale hit (the paragraph changed, the range is no longer
+//       flagged, it holds a picture) changes nothing: null
+//   fixAll(dw, word, repl, out?) -> number  every range flagged as
+//       exactly that word, in every story, replaced in ONE undo
+//       step: the count (those a tracked deletion cannot take are
+//       left, and said: a Refused anywhere changes nothing, tells,
+//       gives 0). out, an array, is emptied and filled with what was
+//       really done, one entry for each range replaced: {para (the
+//       Para as it was), from, to (the range in it), delta (how many
+//       characters longer the paragraph became: Track Changes keeps
+//       the old text, an own insertion cut goes), ins: {from, to}
+//       (the text put in, in the paragraph as it is now)}, in
+//       document order. Untracked, a paragraph's ranges go in as ONE
+//       splice (linear in the paragraph, one undo record); tracked
+//       (the body under Track Changes), each range is a cut and an
+//       insertion of its own (./RevTrack swap), so there the work
+//       grows with the ranges times the paragraph's length: some
+//       thousands in one paragraph take a moment
+//   ignoreAll(dw, word)  not flagged again in this window's document
+//       (the other windows are not checked again: the list is this
+//       window's)
+//   addToDictionary(dw, word) -> Promise  kept in the personal list
+//       (./SpellOpts addPersonal) and every window checks again
+//
+// dw is the DocWindow: dw.real or dw.d the Document (as ./SpellState
+// reads it), dw.spell the state, dw.view.typing, dw.app.
+// Under Track Changes only the body is recorded; a fix in a header,
+// footer, note or comment is a plain edit, as typing there is.
+// The replacement is never re-cased: it goes in as given. Offsets are
+// UTF-16 into the paragraph's text; a range may span runs and hold
+// format characters, and is replaced exactly. Needs the desktop for
+// the notice (riscos).
+import {reportError} from 'riscos';
+import {piece} from './Find';
+import {clean} from './Edit';
+import {cut, join} from './OpsUtil';
+import {session, record} from './RevTrack';
+import {Refused} from './RevCmd';
+import {facadeOf} from './StoryFacade';
+import {at as walkAt, forEachBlock, forEachIn, mapBlocks}
+  from './Walk';
+import {isPath} from './Path';
+import {spellChanged} from './SpellBind';
+import {addPersonal} from './SpellOpts';
+
+const OBJ = '\uFFFC';
+const FORMAT = new Set(['\u00AD', '\u200B', '\u200C', '\u200D',
+  '\u2060', '\uFEFF']);
+const MAX = 100000;                    // paragraphs looked at (bound)
+const isObj = (x) => x !== null && typeof x === 'object';
+
+/** Every paragraph of doc with where it is: [{p, at, key}], key
+ *  null (body), a part name, a note's key or {comment: id}. */
+function entries(doc) {
+  const out = [];
+  const add = (key) => (b, at) => {
+    if (b.type === 'p' && out.length < MAX) out.push({p: b, at, key});
+  };
+  forEachBlock(doc, add(null));
+  if (doc.stories instanceof Map) {
+    for (const [part, st] of doc.stories) {
+      if (isObj(st) && Array.isArray(st.blocks)) {
+        forEachIn(st.blocks, [0], add(part));
+      }
+    }
+  }
+  const n = isObj(doc.notes) ? doc.notes : {};
+  for (const [slot, kind] of [['footnotes', 'footnote'],
+    ['endnotes', 'endnote']]) {
+    if (!(n[slot] instanceof Map)) continue;
+    for (const [id, note] of n[slot]) {
+      if (isObj(note) && Array.isArray(note.blocks)) {
+        forEachIn(note.blocks, [0], add({note: {kind, id}}));
+      }
+    }
+  }
+  const c = doc.comments && doc.comments.map;
+  if (c instanceof Map) {
+    for (const [id, x] of c) {
+      if (isObj(x) && Array.isArray(x.blocks)) {
+        forEachIn(x.blocks, [0], add({comment: id}));
+      }
+    }
+  }
+  return out;
+}
+
+/** The blocks of the story named by key, or null. */
+function blocksOfKey(doc, key) {
+  if (key === null || key === undefined) return null;
+  let s = null;
+  if (typeof key === 'string') {
+    s = doc.stories instanceof Map ? doc.stories.get(key) : null;
+  } else if (isObj(key) && isObj(key.note)) {
+    const m = isObj(doc.notes)
+      ? doc.notes[key.note.kind + 's'] : null;
+    s = m instanceof Map ? m.get(key.note.id) : null;
+  } else if (isObj(key) && 'comment' in key) {
+    const m = doc.comments && doc.comments.map;
+    s = m instanceof Map ? m.get(key.comment) : null;
+  }
+  return isObj(s) && Array.isArray(s.blocks) ? s.blocks : null;
+}
+
+/** The paragraph a hit is in: {p, at, key} or null. */
+function locate(doc, hit) {
+  if (isObj(hit.para)) {
+    return entries(doc).find((e) => e.p === hit.para) || null;
+  }
+  if (!isPath(hit.path)) return null;
+  const key = hit.story === undefined ? null : hit.story;
+  let b;
+  if (key === null) b = walkAt(doc, hit.path);
+  else {
+    const blocks = blocksOfKey(doc, key);
+    b = blocks ? walkAt({sections: [{blocks}]}, hit.path) : null;
+  }
+  return b && b.type === 'p' ? {p: b, at: hit.path, key} : null;
+}
+
+/** t less its ignorable format characters. */
+const bare = (t) => [...t].filter((c) => !FORMAT.has(c)).join('');
+
+/** Whether range r of e's paragraph is still flagged as word. */
+function current(dw, e, r) {
+  const p = e.p;
+  if (!(r.from >= 0) || !(r.to > r.from) || r.to > p.text.length ||
+    p.text.slice(r.from, r.to).includes(OBJ)) return false;
+  const s = dw.spell;
+  if (s && s.dictReady) {
+    const f = s.flagsAt(p, r.from);
+    return !!f && f.from === r.from && f.to === r.to &&
+      f.word === r.word;
+  }
+  return bare(p.text.slice(r.from, r.to)) === bare(String(r.word));
+}
+
+/** The note for a refusal. */
+const tell = (msg) => reportError(msg,
+  {appName: 'Letters', category: 'info'});
+
+/** Replace [from, to) of the paragraph at e by text, in the story
+ *  of e. In the body, tracked when s (a session). Returns the offsets
+ *  of the text put in. */
+function put(d, e, from, to, text, s) {
+  return putContent(d, e, from, to, piece(e.p, from, to - from, text),
+    s);
+}
+
+/** put, with the content (./Ops spliceText's) made already. */
+function putContent(d, e, from, to, c, s) {
+  if (e.key === null) {
+    if (s) return s.swap(e.at, from, to, c);
+    d.apply({op: 'spliceText', block: e.at, at: from, del: to - from,
+      content: c});
+  } else if (isObj(e.key) && 'comment' in e.key) {
+    const id = e.key.comment, old = d.doc.comments.map.get(id);
+    const doc = {sections: [{blocks: old.blocks}]};
+    const cur = walkAt(doc, e.at);
+    const q = {...cur, ...join(cut(cur, 0, from), c,
+      cut(cur, to, cur.text.length))};
+    d.apply({op: 'setComment', id,
+      blocks: mapBlocks(old.blocks, (x) => (x === cur ? q : x))});
+  } else {
+    facadeOf(d, e.key).apply({op: 'spliceText', block: e.at,
+      at: from, del: to - from, content: c});
+  }
+  return {from, to: from + c.text.length};
+}
+
+/** The pieces joined, a bounded number at a time (no call with
+ *  tens of thousands of arguments). */
+function joinAll(parts) {
+  let list = parts;
+  while (list.length > 1) {
+    const next = [];
+    for (let k = 0; k < list.length; k += 512) {
+      next.push(join(...list.slice(k, k + 512)));
+    }
+    list = next;
+  }
+  return list.length ? list[0] : {text: '', runs: [], inlines: {}};
+}
+
+/** Every range rs (in order, apart) of the paragraph at e replaced by
+ *  text in ONE splice (untracked): what was done, in order, each as
+ *  fixAll's out says. */
+function putAll(d, e, rs, text) {
+  const p = e.p, parts = [], did = [];
+  let pos = rs[0].from, shift = 0;
+  for (const r of rs) {
+    parts.push(cut(p, pos, r.from),
+      piece(p, r.from, r.to - r.from, text));
+    const delta = text.length - (r.to - r.from), at = r.from + shift;
+    did.push({para: p, from: r.from, to: r.to, delta,
+      ins: {from: at, to: at + text.length}});
+    shift += delta;
+    pos = r.to;
+  }
+  putContent(d, e, rs[0].from, pos, joinAll(parts), null);
+  return did;
+}
+
+/** The length of the text of the paragraph at e now. */
+function lenOf(d, e) {
+  let q = null;
+  try {
+    const blocks = e.key === null ? null : blocksOfKey(d.doc, e.key);
+    q = e.key === null ? walkAt(d.doc, e.at)
+      : blocks && walkAt({sections: [{blocks}]}, e.at);
+  } catch (x) { /* (gone: below) */ }
+  return q && q.type === 'p' ? q.text.length : -1;
+}
+
+/** fn run as one command of the window's typing, if it has one. */
+function command(dw, fn) {
+  const t = dw.view && dw.view.typing;
+  return t && typeof t.command === 'function' ? t.command(fn) : fn();
+}
+
+const docOf = (dw) => dw.real || dw.d;
+
+/** See the header. */
+export function fixWord(dw, hit, repl) {
+  const d = docOf(dw);
+  if (!d || !isObj(hit) || typeof repl !== 'string') return null;
+  const e = locate(d.doc, hit);
+  if (!e || !current(dw, e, hit)) return null;
+  const text = clean(repl);
+  try {
+    return command(dw, () => {
+      const s = e.key === null ? session(d) : null;
+      let r = null;
+      const was = e.p.text.length;
+      if (s) {
+        const why = s.why(e.p, hit.from, hit.to);
+        if (why) throw new Refused(why);
+        record(d, () => d.atomic(() => {
+          r = put(d, e, hit.from, hit.to, text, s);
+        }));
+      } else {
+        d.atomic(() => {
+          r = put(d, e, hit.from, hit.to, text, null);
+        });
+      }
+      return {at: e.at, ...r, delta: lenOf(d, e) - was};
+    });
+  } catch (x) {
+    if (!(x instanceof Refused)) throw x;
+    tell(x.message);
+    return null;
+  }
+}
+
+/** See the header. */
+export function fixAll(dw, word, repl, out) {
+  const d = docOf(dw), sp = dw.spell;
+  if (Array.isArray(out)) out.length = 0;
+  if (!d || !sp || typeof word !== 'string' || !word ||
+    typeof repl !== 'string') return 0;
+  const text = clean(repl), todo = [];
+  for (const e of entries(d.doc)) {
+    sp.flagsAt(e.p, 0);                // (checks it if not yet)
+    const rs = sp.flagsOf(e.p);
+    if (!rs) continue;
+    const mine = rs.filter((r) => r.word === word && r.to > r.from &&
+      r.to <= e.p.text.length &&
+      !e.p.text.slice(r.from, r.to).includes(OBJ));
+    if (mine.length) todo.push({e, rs: mine});
+  }
+  if (!todo.length) return 0;
+  let n = 0, skipped = 0, why = null;
+  let done = [];                       // (what each replacing did)
+  try {
+    command(dw, () => {
+      const s = session(d);
+      const go = () => d.atomic(() => {
+        n = skipped = 0;               // (a rolled back run counts 0)
+        done = [];
+        for (const {e, rs} of todo) {
+          const t = e.key === null ? s : null;
+          if (!t) {                    // (one splice a paragraph)
+            for (const x of putAll(d, e, rs, text)) done.push(x);
+            n += rs.length;
+            continue;
+          }
+          // (tracked: a cut and an insertion each, last first so the
+          // offsets hold; the text put in moves by the deltas of the
+          // ones to its left, done after it: summed below)
+          const mine = [];
+          let was = e.p.text.length;
+          for (let k = rs.length - 1; k >= 0; k--) {
+            const r = rs[k];
+            const w = t.why(e.p, r.from, r.to);
+            if (w) { why = why || w; skipped++; continue; }
+            const res = put(d, e, r.from, r.to, text, t);
+            const now = lenOf(d, e);
+            mine.push({para: e.p, from: r.from, to: r.to,
+              delta: now - was, ins: res});
+            was = now;
+            n++;
+          }
+          let by = 0;
+          for (let k = mine.length - 1; k >= 0; k--) {
+            const x = mine[k];
+            x.ins = {from: x.ins.from + by, to: x.ins.to + by};
+            by += x.delta;
+            done.push(x);
+          }
+        }
+      });
+      if (s) record(d, go); else go();
+    });
+  } catch (x) {
+    if (!(x instanceof Refused)) throw x;
+    tell(x.message);                   // (rolled back: nothing changed)
+    return 0;
+  }
+  if (Array.isArray(out)) for (const x of done) out.push(x);
+  if (!n && why) tell(why);
+  else if (skipped) {
+    tell(`Changed ${n}; ${skipped} left in text revised by someone ` +
+      'else.');
+  }
+  return n;
+}
+
+/** See the header. */
+export function ignoreAll(dw, word) {
+  if (typeof word !== 'string' || !word) return;
+  if (dw.spell) dw.spell.ignoreAll(word);   // (this window's only)
+}
+
+/** See the header. */
+export function addToDictionary(dw, word) {
+  if (typeof word !== 'string' || !word || !dw.app) {
+    return Promise.resolve();
+  }
+  return addPersonal(dw.app, word).then(() => {
+    if (dw.app.docs) spellChanged(dw.app);
+    if (dw.spell) dw.spell.refresh();
+  });
+}

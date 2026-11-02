@@ -1,0 +1,185 @@
+// SpellWords: the words of a paragraph that are worth checking.
+//   words(text) -> [{from, to, word}]   (UTF-16 offsets into text)
+// Built on Intl.Segmenter word segments. An apostrophe inside a word
+// (don't, don\u2019t, O'Neil) keeps it whole; the quotes round 'quoted'
+// stay outside. A hyphen splits: well-known gives well and known,
+// each checked on its own. The inline item placeholder U+FFFC always
+// ends a word and is never inside a result.
+// Skipped, as not words for a dictionary: anything with a digit or a
+// letter outside the Latin script (so CJK and emoji), all-capital
+// words of 2 to 6 letters (acronyms), a word with a dot inside (e.g),
+// and a web address (scheme://..., or www....) or e-mail address;
+// words next to one, as in foo,http://x or see:www.x.com, are kept.
+// A web address runs to a closing bracket, quote or space, so a word
+// glued on after a comma or semicolon (http://x.com,thanks) is part of
+// it, as Word would make it a hyperlink. A 's after an address is not
+// a word. A Latin word next to CJK or other scripts (Hello<CJK>) is
+// still returned; the other script is dropped. Greek and
+// Cyrillic words are not checked (the dictionary is Latin).
+// Format characters (soft hyphen, U+200B-U+200D, U+2060, U+FEFF) are
+// ignored inside a word: the result covers them, so word is the
+// exact slice and the checker must strip them before the lookup.
+// Linear in the text; there are no regular expressions over runs of
+// the input but the one anchored test of a single segment.
+//   plainWord(w) -> w as it is looked up: the format characters out,
+//                   U+2019 as an apostrophe
+//   breakAt(text, at) -> the first offset from at (or text.length)
+//                   that is a space or U+FFFC: no word goes over it,
+//                   so words(text) is words of the two sides (offsets
+//                   of the right one moved by where it starts)
+//   wordKey(w)   -> plainWord(w) in lower case: the one form a word
+//                   is kept in and matched by in an ignore list or the
+//                   personal list (./SpellCheck, ./SpellState,
+//                   ./SpellOpts), so a word from a Word file (a
+//                   curly apostrophe, a soft hyphen) is the same word
+//                   on both sides
+
+const ITEM = '\uFFFC';
+const MAX_ACRONYM = 6;
+const SEG = new Intl.Segmenter('en', {granularity: 'word'});
+const LATIN = /^[\p{Script=Latin}\p{M}'\u2019]+$/u;
+const SPACE = /^\s$/u;
+
+const IGNORE = /[\u00AD\u200B-\u200D\u2060\uFEFF]/g;
+const LN = /^[\p{L}\p{N}]$/u;
+const MAIL = /^[\p{L}\p{N}._%+-]$/u;
+const URL_END = ')]>"}\u201D';
+
+// Mark [from, to) ranges of c that are web or e-mail addresses.
+function addresses(c) {
+  const n = c.length;
+  const marks = [];
+  let last = 0;                  // end of the last range marked
+  const take = (from, to) => {
+    marks.push([from, to]);
+    last = to;
+  };
+  const toEnd = (e) => {
+    while (e < n && !URL_END.includes(c[e])) e++;
+    return e;
+  };
+  for (let i = 0; i < n; i++) {
+    if (i < last) { i = last - 1; continue; }
+    const ch = c[i];
+    if (ch === ':' && c.startsWith('://', i)) {
+      let s = i;
+      while (s > last && /^[A-Za-z0-9+.-]$/.test(c[s - 1])) s--;
+      take(s, toEnd(i + 3));
+    } else if ((ch === 'w' || ch === 'W') &&
+        c.slice(i, i + 4).toLowerCase() === 'www.' &&
+        (i === 0 || !LN.test(c[i - 1]))) {
+      take(i, toEnd(i + 4));
+    } else if (ch === '@') {
+      let s = i;
+      let e = i + 1;
+      while (s > last && (MAIL.test(c[s - 1]) || apos(c, s - 1, last)))
+        s--;
+      while (e < n && MAIL.test(c[e])) e++;
+      if (s < i && e > i + 1) take(s, e);
+    }
+  }
+  return marks;
+}
+
+// An apostrophe inside the name (foo'bar@x.com), not a leading quote.
+function apos(c, k, last) {
+  return (c[k] === "'" || c[k] === '\u2019') && k > last &&
+    MAIL.test(c[k - 1]);
+}
+
+function acronym(w) {
+  if (w.length < 2 || w.length > MAX_ACRONYM) return false;
+  return w === w.toUpperCase() && w !== w.toLowerCase();
+}
+
+function gap(ch) {
+  return ch !== '\uFEFF' && SPACE.test(ch);
+}
+
+function pieceWords(text, base, out) {
+  let from = -1;                 // the open word, or -1
+  let to = 0;
+  const close = () => {
+    if (from < 0) return;
+    const w = text.slice(from, to);
+    const bare = w.replace(IGNORE, '');
+    if (LATIN.test(bare) && !acronym(bare))
+      out.push({from: base + from, to: base + to, word: w});
+    from = -1;
+  };
+  let join = false;              // only format characters since to
+  for (const s of SEG.segment(text)) {
+    const end = s.index + s.segment.length;
+    if (s.isWordLike) {
+      if (from >= 0 && !join) close();
+      if (from < 0) from = s.index;
+      to = end;
+      join = false;
+    } else if (from >= 0 && s.segment.replace(IGNORE, '') === '') {
+      join = true;               // a format character between parts
+    } else {
+      close();
+      join = false;
+    }
+  }
+  close();
+}
+
+function chunkWords(c, base, out) {
+  let at = 0;
+  let skip = 0;                  // a 's after an address is no word
+  for (const [start, stop] of addresses(c)) {
+    const from = at + skip;
+    if (start > from)
+      pieceWords(c.slice(from, start), base + from, out);
+    at = stop;
+    skip = 0;
+    if (c[at] === "'" || c[at] === '\u2019') {
+      skip = 1;
+      while (at + skip < c.length && LN.test(c[at + skip])) skip++;
+    }
+  }
+  at += skip;
+  if (at < c.length) pieceWords(c.slice(at), base + at, out);
+}
+
+/** See the header. */
+export function breakAt(text, at) {
+  const n = text.length;
+  let j = Math.max(0, at);
+  while (j < n && text[j] !== ITEM && !gap(text[j])) j++;
+  return Math.min(j, n);
+}
+
+export function words(text) {
+  const out = [];
+  const n = text.length;
+  let i = 0;
+  while (i < n) {
+    // a chunk: the text up to the next space or placeholder
+    let j = i;
+    while (j < n && text[j] !== ITEM && !gap(text[j])) j++;
+    if (j > i) {
+      const c = text.slice(i, j);
+      chunkWords(c, i, out);
+    }
+    i = j + 1;
+  }
+  return out;
+}
+
+const FMT = '\u00AD\u200B\u200C\u200D\u2060\uFEFF';
+
+/** See the header. */
+export function plainWord(w) {
+  let out = '';
+  for (let i = 0; i < w.length; i++) {
+    const c = w[i];
+    if (FMT.includes(c)) continue;
+    out += c === '\u2019' ? "'" : c;
+  }
+  return out;
+}
+
+/** See the header. */
+export const wordKey = (w) => plainWord(String(w)).toLowerCase();
