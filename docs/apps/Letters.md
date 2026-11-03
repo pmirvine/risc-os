@@ -28,9 +28,9 @@ operations and undo, a reader and a writer for `.docx` that keep everything they
 Copy, cut and paste are in (deliverable 6b, `EditClip`), and Find / Replace (`Find`, `EditFind`, `Ui/FindBox`). Batch A added the everyday Insert and paragraph features
 (spacing, new lists, page and section breaks, tab stops, borders and shading, symbols, change case, hyperlinks,
 bookmarks, a format painter and a word count). Not there yet: layout and pagination (breaks are only marks), margins,
-making styles and list definitions of your own, printing and RTF export.
+making styles and list definitions of your own, and printing.
 Spell check (English (UK)) is in; see "Spell check (Batch F3)" below, and PDF export (the window menu's Export as PDF...)
-under "PDF export (Batch G1)".
+under "PDF export (Batch G1)". RTF (open and save, Save as asking Word or RTF) is in; see "Rich Text Format (Batch G2)" below.
 
 **Fidelity:** content round-trip (text, formatting, every other part) is checked on 600+ real documents (below).
 Page layout and pagination are not implemented and, when they are, will only approximate Word. Real Microsoft Word
@@ -4581,6 +4581,171 @@ No tagged (accessible) PDF, PDF/A, outline of bookmarks, encryption, form fields
 from a face that lacks them (no fallback font: CJK, emoji and symbols are drawn as the face's .notdef glyph, an empty box; a face whose file could not be loaded is noted as such, and its text does not show; PdfFiles does not cache a failed load, so a later export tries again); no font other than the bundled and the
 three RISC OS ones (the screen's substitute is used); Print is not built (it will use this PDF).
 
+## Rich Text Format (Batch G2)
+
+!Letters reads and writes RTF (file type &C32) as well as `.docx`. User guide: `$.Docs.Letters`, part 30. The model is
+the one `.docx` uses: a read RTF is a `Doc` from `NewDoc` that `DocxWrite` writes and `DocxRead` reads back equal (the
+reader's tests assert that), and `RtfWrite` writes any `Doc`. Everything is pure but `SaveAsBox`, `LostBox` and the glue
+in `Open`, `DocSave`, `CopySave`, `CloseDoc`, `AppWin`, `WinMenu`, `DocKeys` and `IconBar`.
+
+### Module map
+
+| Concern | Modules |
+| --- | --- |
+| Lexing (WimpLib, pure) | `wimplib/RtfLex` (`lex`, `isRtf`: bytes to tokens, never throws; `maxDepth` 256, `maxTokens` 2,000,000 by default, a word name cut at 32 letters, notes for each cap), `wimplib/RtfCodepage` (`decoderFor`, `known`, `fcharsetToCpg`, `encodeAscii`: code pages 1250 to 1258, 437, 850 and Mac Roman 10000; other pages give `?` per non-ASCII character, counted), data in `wimplib/RtfCodeTables` |
+| Reader driver | `RtfRead` (`readRtf(bytes, {maxParagraphs, date, paper}) -> {doc, notes}`: the group stack, the handler registry, `finish`), `RtfState` (the formatting state saved at `{` and restored at `}`), `RtfText` (text decoding, `\uN` and `\ucN`, code-page loss counts), `RtfBody` (the body `Flow`: paragraphs, rows, sections, run format cache) |
+| Reader parts | `RtfTables` (font, colour and `\info` tables), `RtfStyles` (style sheet), `RtfProps` (character words), `RtfPara` (paragraph words, borders, tabs), `RtfLists` (list table and overrides), `RtfSect` (page setup, sections, headers and footers), `RtfFields` (fields, links, bookmarks), `RtfTable` and `RtfGrid` (table rows, cell edges, merges, nesting), `RtfPict` (pictures), `RtfRevs` (tracked changes), `RtfNotes` (footnotes and endnotes), `RtfComments` (comments) |
+| Writer driver | `RtfWrite` (`writeRtf(doc) -> {bytes, lost}`; 7-bit ASCII, deterministic, never throws), `RtfWriteStyles` (font, colour tables, style sheet, `\info`), `RtfWriteProps` (run and paragraph words, built from the reader's tables so they cannot drift), `RtfLost` (the names of what is lost) |
+| Writer parts | `RtfWriteLists`, `RtfWriteTable`, `RtfWritePict`, `RtfWriteFields`, `RtfWriteSect`, `RtfWriteNotes`, `RtfWriteReview` (comments and tracked changes) |
+| Desktop | `SaveAsBox` (the Save as format box), `LostBox` (the "can't be stored in RTF" box and the RTF output cache), `Open` (`openDoc`, `fileTypeOf`, `formatOfType`, `FILETYPES`, `notesNotice`), `DocSave`, `CopySave`, `CloseDoc` (Revert) |
+
+### Reader: registering a part
+
+`RtfRead`'s `PARTS` lists handler modules; each exports `PART {words?, dests?, charProps?, paraProps?, sectProps?,
+finish?}` and a later module's entry of the same name wins. To read more of RTF, write a module and add it to `PARTS`.
+
+* `words`: Map control-word name to `(ctx, token)`; `dests`: Map name to an opener `(ctx, token) -> destination`, called
+  when the word starts a group.
+* `charProps(ctx, state, base, out)` and `paraProps(...)`: add Model fields to `out` from the `RtfState` (the
+  `RtfBody`/`RtfProps` keys); `sectProps(ctx, sectState, props, section)` fills each section's props (a copy of
+  `newDoc`'s) at the end; `finish(ctx)` runs once the text is read, before the sections and styles are made.
+* A destination is an object: `text(ctx, s)` (required) and optionally `words`, `dests`, `ownWords`, `skip`, `group`,
+  `end`, `bytes` (undecoded bytes: picture data), `bin` (`\binN` data) and the `Flow` methods `par`, `row`, `sect`,
+  `obj`. A word in no table: a `\*` one skips its group (with a note unless in `QUIET`), any other is ignored.
+* `ctx` (see the header of `RtfRead`): `doc`, `state`, `dest`, `body`, `paras`, `max`, `stop`, `fonts`, `colours`,
+  `deff`, `ansicpg`, `info`, `styleDefs`, `note(s)` (a note, once), `lost` (code-page loss counts), `fmtCache` (clear it
+  when data a `charProps`/`paraProps` reads changes), `reg` (the merged tables), and the per-module state made on first
+  use (`page`, `relsAt`, `lists`, `bookmarks`, `bdrSet`, `tbl`, `cellEnd`, `pics`, `shpOk`, `revs`, `notesRd`, `cmts`).
+  `ctx.relsAt` is set inside a header, footer, note or comment: no note, comment or tracked change is read there.
+* `readRtf` never throws: a failure part way gives the document read so far and a note. Notes are short user messages
+  ("unknown code page 932: 2 characters replaced", "the file ends inside a group: it may be cut short"), each once;
+  `Open.notesNotice` joins them into the one notice (`'name' was opened, but: ...`, cut to `MAX_NOTICE`).
+
+### Writer: the PARTS registry
+
+`RtfWrite`'s `PARTS` (`CORE` first, then the writer parts; a later one wins a name) each export `PART` with:
+
+* `blocks`: Map block type to `(w, block, end) -> rtf` (`'p'` gets `end`: `\par`, `\sect` or null for the document's
+  last); `inlines`: Map key to `(w, inline, run, para, index) -> rtf`, the key the inline's kind or `'raw:' + node name`
+  (`'raw:w:drawing'`), written inside the run's group;
+* `hooks` (one each, a later one wins): `numbering`, `revision`, `stories`, `flush`, `styleNumbering`, `mark`;
+* `paraWords` `[(w, para, pPr) -> words]` after the formatting, `sect` `[(w, section, index) -> rtf]` after `\sectd`,
+  `header` `[(w) -> rtf]` after the style sheet (run once the body is written, so they know what it used).
+
+The writer `w` offers `doc`, `styles`, `theme`, `num`, `font(name)`, `colour('RRGGBB')`, `lose(what, n)`, `text(s)`,
+`para`, `blocks`, `hook`, `reg`, `place` (whose relationships the inlines name), `depth`, `fields`, `hush`, `nested`,
+`map`, `scopeOf` and `content`. A block or inline no module takes is counted by `RtfLost` (an unknown block
+`LOST.unknown`, a modelled inline `LOST.other`, a raw one by `rawLost`); a block that throws is left out and counted
+`LOST.damaged`; should the whole fail, the text alone is written. The same `Doc` always gives the same bytes (no clock).
+
+### Formats and the save paths
+
+* `Open.openDoc(vfs, path) -> {doc, format, notes}` looks at the bytes, not the name (`isRtf`: an optional BOM and white
+  space, then `{\rtf`): RTF goes to `readRtf`, anything else to `readDocx`. `FILETYPES` is `{docx: &A7E, rtf: &C32}`;
+  `fileTypeOf(format)` and `formatOfType(type)` (null for another type). Errors: `RtfError` with `code` `too-big` (over
+  `MAX_RTF_BYTES`, 16 MB, refused before parsing) or `not-rtf` (the reader failed outright: `describe` gives the error
+  box text; `describe(err, leaf, type)` with the file's type, `typeAt(vfs, path)`, says "it is not an RTF file" for a
+  `&C32` file that is not a zip either, the format it was opened as). The paragraph cap (200,000) applies as for
+  `.docx`.
+* `dw.format` (`AppWin`) is `'docx'` or `'rtf'`: a window's format, set when it opens from a file, and by a written
+  Save as. Save and Save a copy (`CopySave`: the file type with the format; the name offered is the window's own path,
+  so it ends `/rtf` only when the file's name does) follow it. Revert (`CloseDoc`) reads the file again with `openDoc`,
+  by its content: the new window has the format read (RTF if the file is still RTF), and the notes are said again. A
+  new document is `'docx'`. Save a copy never asks about what RTF cannot store (the window keeps everything) and tells
+  the window nothing (`LostBox.saved` is not called).
+* `DocSave.bytesOf(dw, format = dw.format)` dispatches: `'rtf'` to a copy of `LostBox.rtfOf(dw).bytes` (never the
+  cached array itself, which the next save reuses), else `writeDocx`.
+  `dw.saveBytes(format)` is the same. `LostBox.rtfOf` caches `{id, doc, out}` per window on the document's `stateId` and
+  `dw.doc`: the Save as question, the lost list and the bytes are one `writeRtf`, and any edit, undo or redo writes
+  again. `LostBox.RTF.write` is the writer used (tests replace it to count calls).
+* `SaveAsBox` (one box per window, key `saveas:<docKey>`): radios `docx` and `rtf` set to the window's format each time
+  it opens; Continue calls `go(dw, format)`: for `rtf`, `LostBox.lostOf(dw)` and, when anything is lost, `askLost`
+  (Cancel ends there, nothing written); then `DocSave.openSaveBox(dw, format, at)`, whose written save sets `dw.format`.
+  The window menu's Save as is the box as a submenu (`saveAsMenu`); F3 is `openSaveAs` by the caret (`DocKeys`). The
+  box outlives each Save as; its handlers look the window up when they run.
+* `LostBox`: `lostText(lost)` is the pinned wording `N items can't be stored in RTF: pictures (3), text boxes (1).`
+  (`1 item`; kinds in the order met; at most `MAX_TEXT` characters, the rest "and K other kinds"); `askLost(dw, lost)`
+  is the box (title `Save as RTF`, key `rtflost:<docKey>`, "Continue saves the RTF file without them; Cancel saves
+  nothing."); `toTell(dw)` is what a plain Save of an RTF window must say first: null unless some kind's count is
+  higher than the window was told of, so the notice comes once and again only when an edit adds something RTF cannot
+  store. The window is told only when an RTF file is written (`DocSave.write1` calls `saved(dw, lost)` with the lost
+  of the bytes written); Continue alone is an answer (`unasked(dw)`: the lost beyond what was told or answered), so a
+  Continue followed by an Escape in the Save box tells nothing. The Save box's OK and Return (`DocSave.guardLost`, a
+  first handler before `Replace.guardOK`), and its save for a drag to a directory, ask `askLost` again when `unasked`
+  is not null (an item put in while a new document's Save box was open): Cancel writes nothing and leaves the box open.
+  `Quit` brings an open `rtflost` box to the front with the Save box.
+
+### Limits and untrusted input
+
+* Caps: the file 16 MB (`MAX_RTF_BYTES`); 2,000,000 tokens and group depth 256 (`RtfLex`); one picture 16 MB
+  (`MAX_PICTURE`), 64 MB of pictures in all (`MAX_TOTAL`), 1000 pictures (`MAX_PICTURES`); table rows at most
+  `TblCheck.MAX_COLS` (63) cells, tables `MAX_DEPTH` (8) deep, cell edges within `RtfGrid.MAX_EDGE`; 10,000 comments
+  and notes, 100,000 tracked changes, 1000 revision authors, 256 headers and footers, 2000 styles, 4096 fonts and
+  colours, 1000 lists; a field code at most `RtfFields.MAX_CODE` (32 KB). Past a cap the rest is left out, with a note;
+  the capped shapes were measured to read within a 512 MB heap (`rtfhostile`).
+* Fields: only the names in `RtfFields.SAFE` (`PAGE`, `NUMPAGES`, `DATE`, `TOC`, `REF`, `SEQ`, `HYPERLINK`, `IF`...) are
+  kept as fields, and only when `codeText` takes the code; anything else, and every field that fetches from outside
+  (`DDE`, `INCLUDETEXT`, `INCLUDEPICTURE`, `LINK`, mail merge...), keeps only its result as text. A field in a field's
+  code is read as its result text. The writer uses the reader's `SAFE`, `nameOf`, `linkTarget`, `MAX_CODE`, so it never
+  writes a field the reader would refuse.
+* Links: the address is validated by the `.docx` link rules (`LinkParts`, `LinkUrl`: http, https, mailto, ftp; an
+  anchor by `checkAnchor`); one that fails keeps its text and gives a note.
+* Nothing in a file is run or fetched; a picture is only decoded for drawing; shapes and objects (`\shp`, `\object`)
+  are skipped with a note; `\*` destinations the reader does not know are skipped; keys of the reader state come only
+  from the handler tables, never from the file.
+* Notes: `ctx.note` keeps a `Set` of the notes said and at most `RtfRead.MAX_NOTES` (50), the last then `MORE`;
+  unknown `\*` destinations are named in `MAX_NAMED` (5) notes, every other name in the one `OTHER_DESTS` note, so a
+  file of 80,000 distinct unknown destinations reads in well under a second. `RtfLex` says each of its repeating notes
+  (a word cut at 32 letters, a damaged `\'` escape, an unmatched `}`) once. Comment reply chains find their tops once
+  each (`RtfComments parents`), not by walking each chain again; `rtfhostile` pins these shapes (distinct names:
+  bookmarks, styles, fonts, colours, lists, authors) under a second each.
+
+### What RTF cannot store (`RtfLost`)
+
+`RtfLost.LOST` holds the pinned names (tests pin them; change them there only): `items of an unknown kind`, `tables`,
+`pictures`, `drawings`, `text boxes`, `embedded objects`, `equations`, `links`, `fields of other kinds`, `bookmarks`,
+`content controls`, `symbols`, `list numbers`, `footnotes and endnotes`, `comments`, `tracked changes`, `headers and
+footers`, `damaged items`, `picture cropping`, `picture positions`, `table style formatting`, `diagonal cell borders`,
+`uneven columns`, `line numbers`, `list level settings`, `nested fields`, `other items`. `new Lost()` counts
+(`add`, `list()` in first-met order); `rawLost(node)` names a raw inline's loss (a drawing holding a text box is a text
+box; null for the second mark of a pair, counted once at its first) and `heldLost(node)` what a wrapper kept whole (a
+smart tag) holds, within a budget of nodes. Several are counted only in unusual cases (`tables`, `list numbers`,
+`headers and footers` are the core's defaults, overridden by the writer parts); the usual ones are pictures (GIF, TIFF,
+SVG), text boxes, drawings, objects, equations, content controls, cropping, positions, table styles, line numbers,
+uneven columns and diagonal borders.
+
+### Tests and tools
+
+```sh
+node --test tests/moreapps/rtflex.test.mjs tests/moreapps/rtfcodepage.test.mjs        # the lexer and code pages
+node --test tests/moreapps/rtfread.test.mjs tests/moreapps/rtfread-para.test.mjs tests/moreapps/rtfread-table.test.mjs tests/moreapps/rtfread-review.test.mjs   # the reader
+node --test tests/moreapps/rtfwrite.test.mjs tests/moreapps/rtfwrite-struct.test.mjs tests/moreapps/rtfwrite-review.test.mjs   # the writer and the lost list
+node --test tests/moreapps/rtfformat.test.mjs tests/moreapps/saveasbox.test.mjs        # Open, the save paths, SaveAsBox and LostBox
+node --test tests/moreapps/rtfcensus.test.mjs tests/moreapps/rtfhostile.test.mjs       # strict census of control words; hostile input and caps
+node --test tests/moreapps/rtfcorpus.test.mjs   # the local .docx corpus through writeRtf and readRtf (skips without it)
+node tests/moreapps/word-rtf.mjs                # desktop: double-click, Save, Revert, Save as, the lost box, both formats reopened
+node tools/rtf-check.mjs <file-or-dir>          # macOS textutil reads the files (cheap, independent)
+```
+
+Fixtures are in `tests/moreapps/rtf-fixtures/` (textutil output and spec-derived files: see its README); the helpers
+(`modelCore`, `tableCore`, `notesCore`, `storiesCore`, `reviewCore`) are in `tests/moreapps/rtf-helpers.mjs`. The census
+is derived from the modules, so a control word the reader and writer neither handle nor ignore on purpose fails it.
+`tools/word-open-check.mjs` sends `.rtf` files (and bytes starting `{\rtf`) through its own fixed file `check.rtf` with
+its own one-time access grant (see "Checking files in real Word").
+
+### Known limits and parked items
+
+* A field in a field's code is written inside `\fldinst` as the RTF specification has it, but a code region that is not
+  whole in its paragraph keeps the result only (counted `nested fields`); the reader reads such a field as its result
+  text, so the code read back holds the value.
+* The `\atnparent` form of a comment's reply is written as the specification has it and is not verified in Word.
+* Reply chains come back flattened (every reply to the first); moves become an insertion plus a deletion; a comment's
+  resolved flag is not stored; seconds are dropped from dates (RTF's DTTM has minutes); tracked changes, comments and
+  notes are read in the body only (headers, footers, notes and comments keep insertions as text and drop deletions).
+* East Asian code pages (932, 936, 949, 950...) and the Symbol charset give `?`; text the file gives as `\uN` is exact.
+* Nothing here has been verified in real Word; the RTF writer's output is checked by the reader (round trips), by
+  textutil, and by `word-open-check` when Word is available.
+
 ## Limits and security
 
 * **Zip:** unpacked total <= 256 MB, ratio <= 1000, declared sizes checked before inflating; zip64, encryption,
@@ -5141,7 +5306,13 @@ quit it may offer to reopen or recover documents: answer it).
   first open ever may ask for file access: choose that `check.docx` and Grant Access (the first open waits 120 s;
   `.opened-once` beside it records that one has opened). Each run first opens a minimal known-good probe, so a
   missing grant stops the run instead of reading as `REFUSED`.
-* Only documents named `check.docx` are closed; Word is never quit and the owner's documents are left alone.
+* **RTF.** A file (or a file in a dir) ending `.rtf`, or any bytes starting `{\rtf`, goes the same way through a
+  second fixed file, `check.rtf` beside `check.docx`, with its own one-time grant (`.opened-once-rtf`): Word
+  opens RTF only under an `.rtf` name (RTF copied over `check.docx` is refused silently, even a minimal
+  known-good one, so that route says nothing about the file). The first RTF open asks for access to
+  `check.rtf`: Grant Access. `tools/rtf-check.mjs <file-or-dir>` is the cheaper check (macOS `textutil`).
+* Only documents named `check.docx` or `check.rtf` are closed; Word is never quit and the owner's documents are left
+  alone.
 * **`--corpus`**: every file under `tests/moreapps/corpus/` but `handoff/` (check that as a dir) and `word-check/`,
   files over 20 MB `SKIPPED`: the original, then `readDocx` + `writeDocx` (no edit, as `roundtrip-lib.mjs`'s
   `write`) and the re-save. `REGRESSION`: Word opens the original but not our re-save, or the writer threw;

@@ -204,7 +204,7 @@ as text, a web page or a Draw calendar page; pages print through !Printers. Pass
 page with AES (through the browser's Web Crypto) until the password is given. It is written in JavaScript on the
 disc, like Lander II. Guide: `$.Docs.Journal`; developers: `docs/apps/Journal.md`.
 
-**A word processor for Microsoft Word files (early steps):** `$.MoreApps.!Letters` opens a `.docx` (double-click one, on
+**A word processor for Microsoft Word and RTF files (early steps):** `$.MoreApps.!Letters` opens a `.docx` (double-click one, on
 the hard disc or a HostFS drive; or drop it on its icon bar icon) in a window with its text, headings, bold, italic,
 underlining, colours, sizes, indents and alignment, in a column as wide as the text on its page, shown as pages one below the other as they will print (Print layout; Draft
 shows one long page), each a sheet of its paper (a new document shows a whole empty page, as in Word; Info says what the file holds).
@@ -344,19 +344,31 @@ tagged (accessible) PDF, PDF/A, bookmark outline or encryption; the document, un
 changed. Printing, still to come, will use this PDF (`$.Docs.Letters`, part 29; developers: `docs/apps/Letters.md`). To
 try it: open a document, MENU > *Export as PDF...*, OK, OK, then open the file in a PDF reader on the host (HostFS).
 
+**Rich Text (RTF):** `$.MoreApps.!Letters` opens RTF files (file type &C32: double-click, drop on the icon bar icon or a window,
+Recent) and a document opened from RTF stays RTF: Save and Save a copy follow the window's format, Revert reads the file
+again (by what is in it), and *Save as* (F3)
+first asks Word document (.docx) or Rich Text (.rtf). Saving as RTF a document that holds what RTF cannot store (text boxes,
+drawings, equations, GIF pictures, picture cropping and positions...) first lists it ("N items can't be stored in RTF: ...",
+Continue / Cancel); a plain Save of an RTF window says so once. RTF carries formatting, styles, lists, tables (merged and nested),
+PNG and JPEG pictures (EMF and WMF kept, shown as a grey box), fields, links, bookmarks, notes, headers and footers, sections,
+comments and tracked changes. Nothing in a file runs; fields that fetch from outside keep only their text; text in code pages
+without a table (Japanese, Chinese, Korean) shows as ?; files over 16 MB are refused; a damaged file opens as far as it can be
+read, with a notice. The RTF written is still to be checked in real Word (`$.Docs.Letters`, part 30; developers:
+`docs/apps/Letters.md`).
+
 **Word count:** the Edit menu's last item, *Word count...* (no key), shows the words, characters (with and without spaces),
 paragraphs and lines of the selection, or of the whole document when nothing is selected; table text (and the lines in table cells), link text and field
 results are counted, field codes and the text the markup view hides are not (deleted text in Final, inserted text in
 Original; All Markup counts both); a no-break space or hyphen joins words and each East Asian
 character is a word (`$.Docs.Letters`, part 3).
-**Documents:** *Save* writes back to the file, *Save as* (a Save box filled in with a full pathname, so OK works; or drag
-its icon) renames the window, *Save a copy* leaves it as it was; closing a window with unsaved changes asks Save / Discard
+**Documents:** *Save* writes back to the file, *Save as* (F3; a small box asks Word document or Rich Text first, then a Save box
+filled in with a full pathname, so OK works; or drag its icon) renames the window and sets its format, *Save a copy* leaves it as it was; closing a window with unsaved changes asks Save / Discard
 / Cancel, and *Revert* reloads the file; Quit, the Task Manager, shutdown and Exit ask once (Discard / Cancel) when
 documents have unsaved changes. A click on !Letters' icon bar icon (or *New*) makes a new, empty *Untitled* document
 (*Untitled 2*... saved as `Untitled2`); the icon bar menu's *Recent* lists the last 8 files opened or saved (kept in
 `Choices:Letters`). OK onto a file that is already there asks Replace / Cancel (Return and Escape are Cancel); a new
-document's Save box offers a name no file has. Documents are file type &A7E (`Report/docx` on the desktop is `Report.docx` on a HostFS drive; a plain
-name gets `,a7e`). To try: click !Letters' icon, type, choose *Save* from the window's menu and click OK; type again and
+document's Save box offers a name no file has. Word documents are file type &A7E (`Report/docx` on the desktop is `Report.docx` on a HostFS drive; a plain
+name gets `,a7e`); RTF files are &C32 (`Report/rtf`, `Report.rtf`, `,c32`). To try: click !Letters' icon, type, choose *Save* from the window's menu and click OK; type again and
 close the window to see the prompt. No automatic saving or backup file. The RISC OS keys work as in !Edit: F2 (or Ctrl-N) a new
 document, F3 the Save as box, Ctrl-S Save, Ctrl-F2 Close, F8 / F9 undo and redo. Ctrl-C, Ctrl-X and Ctrl-V (Cmd on a Mac, and the Edit menu) copy, cut
 and paste: exactly between !Letters documents, as text and HTML formatting with other programs (in another document links

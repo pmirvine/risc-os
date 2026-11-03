@@ -1,0 +1,175 @@
+// RtfGrid - the rows of an RTF table (./RtfTable) as a Model table
+// (./Model newTable, newRow, newCell).
+//
+//   build(ctx, rows) -> Table   rows [{cells: [blocks], def}]: each
+//       cell's blocks (ending with a paragraph) and the row
+//       definition in force when the row ended ({row: {left, gap,
+//       rh, hdr, keep, jc, bdr}, cells: [{x, merge, vmerge, valign,
+//       bdr, shd}]}: ./RtfTable)
+//   MAX_EDGE   the largest edge (+-, twips) a definition keeps
+//
+// The grid is every row's edges (\trleft and the \cellx) together,
+// sorted; a cell spans the grid columns between its edges
+// (gridSpan), a row starting or ending inside the grid gets
+// gridBefore / gridAfter. \clmrg cells join the cell before
+// (one cell spanning them; their text, when any, after its own);
+// \clvmgf / \clvmrg are vMerge restart / continue (a continue with
+// no merge above is a restart: ./TblNorm unstray). tcW is the
+// cell's columns (dxa); tcBorders and shd from ./RtfPara borderOf
+// and shadingOf; vAlign top, center, bottom. trPr: trHeight
+// (\trrh: atLeast, negative exact, 0 none), tblHeader (\trhdr),
+// cantSplit (\trkeep). tblPr: tblW auto; jc; tblInd \trleft +
+// \trgaph (RTF's left edge is the cell's, Word's the text's) when
+// not 0; tblCellMar left and right \trgaph when given and not 108
+// (Word's default); tblBorders: top from the first row, bottom from
+// the last, the other sides from the first row giving them.
+// Caps: grid edges past MAX_COLS + 1 (./TblCheck) are snapped to a
+// coarser step (2, 4, 8... twips) until they fit; a row that would
+// then be wider than the grid has one column a cell; grid columns and
+// tcW at most MAX_TW. A cell with no definition is DEFAULT_W wide, or
+// as wide as the cell before.
+// Pure: no desktop services.
+import {newTable, newRow, newCell} from './Model';
+import {prWith, unstray} from './TblNorm';
+import {MAX_COLS, MAX_TW} from './TblCheck';
+import {borderOf, shadingOf} from './RtfPara';
+
+export const MAX_EDGE = 4 * MAX_TW;
+const DEFAULT_W = 1440, WORD_GAP = 108;
+const TBL_SIDES = ['top', 'left', 'bottom', 'right', 'insideH',
+  'insideV'];
+const CELL_SIDES = ['top', 'left', 'bottom', 'right'];
+
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+/** Whether cell blocks hold nothing: one empty paragraph. */
+const blank = (bs) => bs.length === 1 && bs[0].type === 'p' &&
+  !bs[0].text;
+
+/** A row's cells joined by \clmrg: [{blocks, d (definition), x}]. */
+function joined(row) {
+  const ds = row.def.cells, out = [];
+  let x = row.def.row.left || 0, w = DEFAULT_W;
+  row.cells.forEach((blocks, k) => {
+    const d = ds[k] || {};
+    const nx = d.x === undefined ? x + w : Math.max(d.x, x);
+    if (d.x !== undefined && d.x > x) w = d.x - x;
+    x = nx;
+    const o = out[out.length - 1];
+    if (d.merge === 'rest' && o) {
+      o.x = x;
+      if (!blank(blocks)) o.blocks = o.blocks.concat(blocks);
+      return;
+    }
+    out.push({blocks, d, x});
+  });
+  return out;
+}
+
+/** The sorted, distinct grid edges of the rows, at most MAX_COLS + 1
+ *  (snapped to a coarser step when more), and the snap. */
+function edgesOf(rows) {
+  const raw = [];
+  for (const r of rows) {
+    raw.push(r.left);
+    for (const c of r.cells) raw.push(c.x);
+  }
+  let q = 1, snap = (e) => e, edges;
+  for (;;) {
+    edges = [...new Set(raw.map(snap))].sort((a, b) => a - b);
+    if (edges.length <= MAX_COLS + 1) break;
+    q *= 2;
+    const s = q;
+    snap = (e) => Math.round(e / s) * s;
+  }
+  if (edges.length < 2) edges.push(edges[0] + DEFAULT_W);
+  return {edges, snap};
+}
+
+/** A row's place in the grid: {before, spans, after}. */
+function spansOf(r, at, snap, cols) {
+  let c = at.get(snap(r.left));
+  const before = c, spans = [];
+  for (const cell of r.cells) {
+    const c1 = Math.max(c + 1, at.get(snap(cell.x)));
+    spans.push(c1 - c);
+    c = c1;
+  }
+  if (c <= cols) return {before, spans, after: cols - c};
+  // (a cell of no width at the last edge): one column each
+  return {before: 0, spans: r.cells.map(() => 1),
+    after: Math.max(0, cols - r.cells.length)};
+}
+
+function sides(ctx, bdr, names) {
+  const out = {};
+  for (const s of names) {
+    const b = borderOf(ctx, bdr && bdr[s]);
+    if (b) out[s] = b;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function tcPr(ctx, d, w, span) {
+  return prWith({extra: []}, {tcW: {w, type: 'dxa'},
+    gridSpan: span > 1 ? span : undefined, vMerge: d.vmerge,
+    vAlign: d.valign, tcBorders: sides(ctx, d.bdr, CELL_SIDES),
+    shd: shadingOf(ctx, d.shd)});
+}
+
+function trPr(def, place) {
+  const r = def.row, rh = r.rh || 0;
+  return prWith({extra: []}, {
+    trHeight: rh ? {val: Math.min(Math.abs(rh), MAX_TW),
+      hRule: rh < 0 ? 'exact' : 'atLeast'} : undefined,
+    cantSplit: r.keep ? true : undefined,
+    tblHeader: r.hdr ? true : undefined,
+    gridBefore: place.before || undefined,
+    gridAfter: place.after || undefined});
+}
+
+function tblPr(ctx, rows) {
+  const r0 = rows[0].def.row;
+  const ind = clamp((r0.left || 0) + (r0.gap || 0), -MAX_TW, MAX_TW);
+  const gap = r0.gap;
+  const bdr = {};
+  for (const s of TBL_SIDES) {
+    const from = s === 'top' ? [rows[0]] : s === 'bottom'
+      ? [rows[rows.length - 1]] : rows;
+    const r = from.find((x) => x.def.row.bdr && x.def.row.bdr[s]);
+    if (r) bdr[s] = r.def.row.bdr[s];
+  }
+  const mar = {w: gap, type: 'dxa'};
+  return prWith({extra: []}, {tblW: {w: 0, type: 'auto'},
+    jc: r0.jc, tblInd: ind ? {w: ind, type: 'dxa'} : undefined,
+    tblCellMar: gap !== undefined && gap !== WORD_GAP
+      ? {left: mar, right: {...mar}} : undefined,
+    tblBorders: sides(ctx, bdr, TBL_SIDES)});
+}
+
+/** See the header. */
+export function build(ctx, rows) {
+  const rs = rows.map((r) => ({left: clamp(r.def.row.left || 0,
+    -MAX_EDGE, MAX_EDGE), cells: joined(r), def: r.def}));
+  const {edges, snap} = edgesOf(rs);
+  const at = new Map(edges.map((e, i) => [e, i]));
+  const cols = edges.length - 1;
+  const grid = [];
+  for (let i = 0; i < cols; i++) {
+    grid.push(Math.min(edges[i + 1] - edges[i], MAX_TW));
+  }
+  const width = (c0, n) => grid.slice(c0, c0 + n)
+    .reduce((a, b) => a + b, 0);
+  const out = rs.map((r) => {
+    const p = spansOf(r, at, snap, cols);
+    let c = p.before;
+    const cells = r.cells.map((cell, k) => {
+      const n = p.spans[k];
+      const pr = tcPr(ctx, cell.d, Math.min(width(c, n), MAX_TW), n);
+      c += n;
+      return newCell(cell.blocks, pr);
+    });
+    return newRow(cells, trPr(r.def, p));
+  });
+  return unstray(newTable({grid, rows: out, tblPr: tblPr(ctx, rows)}));
+}

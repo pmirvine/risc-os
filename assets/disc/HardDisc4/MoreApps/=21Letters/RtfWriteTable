@@ -1,0 +1,207 @@
+// RtfWriteTable - tables for the RTF writer (./RtfWrite): the
+// inverse of the reader's ./RtfTable and ./RtfGrid, with ./RtfPara's
+// BORDER_STYLES (through ./RtfWriteProps borderWord).
+//
+//   PART   blocks: tbl; paraWords: \intbl (\itapN in a nested
+//       table) for a paragraph in a cell
+//
+// Each row: its definition (\trowd \trgaphN \trleftN, \trqc \trqr,
+// \trrhN (atLeast; exact negative), \trhdr, \trkeep, the table's
+// borders \trbrdrt \trbrdrl \trbrdrb \trbrdrr \trbrdrh \trbrdrv,
+// then each cell's: \clvmgf \clvmrg, \clvertalt \clvertalc
+// \clvertalb, \clbrdrt \clbrdrl \clbrdrb \clbrdrr (nil sides too),
+// \clcfpatN \clcbpatN \clshdngN, \cellxN its right edge), its cells'
+// paragraphs (\intbl, the last of a cell ending \cell), \row. A
+// table in a cell (level 2 and deeper) is written as RTF 1.9 has it:
+// paragraphs \intbl\itapN ending \nestcell, then \pard\intbl\itapN
+// {\*\nesttableprops <definition>\nestrow}; the reader takes a
+// row's definition at its end, so there it comes after the cells.
+// No {\nonesttables\par} (for readers that do not nest: Cocoa's
+// textutil reads it as a paragraph that ends the table). Every cell
+// paragraph says its level, \itap1 too (Cocoa keeps the level over
+// \pard). The edges: \trleft is tblInd less the gap
+// (\trgaph: tblCellMar left, else Word's 108: RTF's edge is the
+// cell's, Word's indent the text's), then the grid columns, a row
+// starting after its gridBefore ones. A cell spanning n columns
+// (gridSpan) is n cells: \clmgf, then \clmrg ones, empty, as the
+// reader joins them (its definition repeated on each, as other
+// readers draw them). The borders: the table's own over its table
+// style's (./TblStyle viewOf); the style's other formatting (shading
+// of rows and columns, its conditional parts) is not written
+// (LOST.tableStyles, once a table). Diagonal cell borders: not
+// written (LOST.diagonals). Not written, with nothing to show for
+// it: a row with no cells (left out), the table's width and
+// layout, cell widths (from the grid), cell margins other than
+// left and right.
+// Pure: no desktop services.
+import {viewOf, tableStyleId} from './TblStyle';
+import {borderWord, twips} from './RtfWriteProps';
+import {LOST} from './RtfLost';
+
+const WORD_GAP = 108, DEFAULT_W = 1440;
+const TBL_SIDES = [['top', 'trbrdrt'], ['left', 'trbrdrl'],
+  ['bottom', 'trbrdrb'], ['right', 'trbrdrr'], ['insideH', 'trbrdrh'],
+  ['insideV', 'trbrdrv']];
+const CELL_SIDES = [['top', 'clbrdrt'], ['left', 'clbrdrl'],
+  ['bottom', 'clbrdrb'], ['right', 'clbrdrr']];
+const ALIAS = new Map([['start', 'left'], ['end', 'right']]);
+const VALIGN = new Map([['top', 'clvertalt'], ['center', 'clvertalc'],
+  ['bottom', 'clvertalb']]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const arr = (v) => (Array.isArray(v) ? v : []);
+
+/** Border sides by name, Strict start / end as left / right. */
+function sidesOf(b) {
+  const out = {};
+  if (!isObj(b)) return out;
+  for (const [k, v] of Object.entries(b)) out[ALIAS.get(k) || k] = v;
+  return out;
+}
+
+const width = (m) => (isObj(m) && (m.type === 'dxa' ||
+  m.type === undefined) ? twips(m.w) : undefined);
+
+/** What every row of table t shares: {gap, left, borders, grid}. */
+function tableOf(w, t) {
+  const pr = isObj(t.tblPr) ? t.tblPr : {};
+  let style = null;
+  try {
+    const id = tableStyleId(w.styles, t);
+    style = id === null ? null : viewOf(w.styles, id);
+  } catch {
+    style = null;
+  }
+  if (style && ((style.cond && style.cond.size) ||
+    (isObj(style.tcPr) && style.tcPr.shd))) w.lose(LOST.tableStyles);
+  const borders = {...sidesOf(style && style.tblPr &&
+    style.tblPr.tblBorders), ...sidesOf(pr.tblBorders)};
+  const mar = isObj(pr.tblCellMar) ? pr.tblCellMar : {};
+  const gap = width(mar.left) ?? width(mar.start) ?? WORD_GAP;
+  const ind = width(pr.tblInd) || 0;
+  const grid = arr(t.grid).map((g) => twips(g, 0) ?? DEFAULT_W);
+  return {gap: Math.max(0, gap), left: ind - Math.max(0, gap),
+    borders, grid, jc: pr.jc};
+}
+
+function borderSides(w, b, list) {
+  let s = '';
+  for (const [side, word] of list) {
+    const x = b[side];
+    if (isObj(x) && typeof x.val === 'string') {
+      s += '\\' + word + borderWord(w, x);
+    }
+  }
+  return s;
+}
+
+const PCT = (val) => {
+  if (val === 'solid') return 10000;
+  if (typeof val === 'string' && val.startsWith('pct')) {
+    const n = Number(val.slice(3));
+    if (Number.isInteger(n) && n > 0 && n <= 100) return n * 100;
+  }
+  return 0;
+};
+const HEX = '0123456789abcdefABCDEF';
+const hex = (v) => (typeof v === 'string' && v.length === 6 &&
+  [...v].every((c) => HEX.includes(c)) ? v.toUpperCase() : undefined);
+
+function shading(w, d) {
+  if (!isObj(d)) return '';
+  let s = '';
+  const c = hex(d.color), f = hex(d.fill), pct = PCT(d.val);
+  if (c && pct) s += '\\clcfpat' + w.colour(c);
+  if (f) s += '\\clcbpat' + w.colour(f);
+  if (pct) s += '\\clshdng' + pct;
+  return s;
+}
+
+/** A cell's definition words, before its \cellx. */
+function cellWords(w, tc) {
+  let s = '';
+  if (tc.vMerge === 'restart') s += '\\clvmgf';
+  else if (tc.vMerge === 'continue') s += '\\clvmrg';
+  if (VALIGN.has(tc.vAlign)) s += '\\' + VALIGN.get(tc.vAlign);
+  const b = sidesOf(tc.tcBorders);
+  s += borderSides(w, b, CELL_SIDES);
+  if (b.tl2br || b.tr2bl) w.lose(LOST.diagonals);
+  return s + shading(w, tc.shd);
+}
+
+/** A row: [definition, its cells [{blocks, span}]]. */
+function rowOf(w, T, row) {
+  const tr = isObj(row.trPr) ? row.trPr : {};
+  let s = '\\trowd\\trgaph' + T.gap;
+  let x = T.left, col = 0;
+  const before = twips(tr.gridBefore, 0, T.grid.length) || 0;
+  for (; col < before; col++) x += T.grid[col];
+  s += '\\trleft' + x;
+  if (T.jc === 'center') s += '\\trqc';
+  else if (T.jc === 'right' || T.jc === 'end') s += '\\trqr';
+  const h = isObj(tr.trHeight) ? twips(tr.trHeight.val, 1) : undefined;
+  if (h && tr.trHeight.hRule !== 'auto') {
+    s += '\\trrh' + (tr.trHeight.hRule === 'exact' ? -h : h);
+  }
+  if (tr.tblHeader === true) s += '\\trhdr';
+  if (tr.cantSplit === true) s += '\\trkeep';
+  s += borderSides(w, T.borders, TBL_SIDES) + '\n';
+  const cells = [];
+  for (const c of arr(row.cells)) {
+    const tc = isObj(c && c.tcPr) ? c.tcPr : {};
+    const span = twips(tc.gridSpan, 1, 64) || 1;
+    const words = cellWords(w, tc);
+    for (let k = 0; k < span; k++) {
+      x += col < T.grid.length ? T.grid[col] : DEFAULT_W;
+      col++;
+      s += (span > 1 ? (k ? '\\clmrg' : '\\clmgf') : '') + words +
+        '\\cellx' + x + '\n';
+    }
+    cells.push({blocks: arr(c && c.blocks), span});
+  }
+  return [s, cells];
+}
+
+/** The paragraphs of a cell at level d, the last ending `end`. */
+function cellRtf(w, blocks, end, d) {
+  return w.nested(null, () => {
+    w.depth = d;
+    const last = blocks[blocks.length - 1];
+    let s = w.blocks(blocks, end);
+    if (!last || last.type !== 'p') {
+      s += '\\pard\\plain' + inCell(w) + end + '\n';
+    }
+    return s;
+  });
+}
+
+function inCell(w) {
+  return w.depth ? '\\intbl\\itap' + w.depth : '';
+}
+
+function table(w, t) {
+  const d = w.depth + 1;
+  const T = tableOf(w, t);
+  const end = d > 1 ? '\\nestcell' : '\\cell';
+  let s = '';
+  for (const row of arr(t.rows)) {
+    if (!isObj(row)) continue;
+    const [def, cells] = rowOf(w, T, row);
+    // (a row with no cells: none, never \trowd ... \row alone)
+    if (!cells.length) continue;
+    if (d === 1) s += def;
+    for (const c of cells) {
+      s += cellRtf(w, c.blocks, end, d);
+      for (let k = 1; k < c.span; k++) {
+        s += '\\pard\\plain\\intbl\\itap' + d + end + '\n';
+      }
+    }
+    s += d === 1 ? '\\row\n' : '\\pard\\plain\\intbl\\itap' + d +
+      '{\\*\\nesttableprops' + def + '\\nestrow}\n';
+  }
+  return s;
+}
+
+export const PART = {
+  blocks: new Map([['tbl', table]]),
+  paraWords: [inCell],
+};

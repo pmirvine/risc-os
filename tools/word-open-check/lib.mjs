@@ -14,6 +14,11 @@
 // is not answering (a dialog is up), which says nothing about the file.
 // Only documents named check.docx are ever closed; Word is never quit.
 //
+// RTF (bytes starting {\rtf) goes through its own fixed file,
+// <dir>/check.rtf, the same way: Word opens RTF only under an .rtf
+// name (RTF in check.docx is refused silently, even a minimal
+// known-good one), and check.rtf needs its own one-time grant.
+//
 // The process runner is injectable ({runner}) so all of this is tested
 // without Word (tests/moreapps/word-open-check.test.mjs).
 import fs from 'node:fs';
@@ -24,6 +29,8 @@ import {spawn, execFileSync} from 'node:child_process';
 
 export const CHECK_NAME = 'check.docx';
 export const MARKER = '.opened-once';
+export const RTF_NAME = 'check.rtf';
+export const RTF_MARKER = '.opened-once-rtf';
 export const WORD_APP = '/Applications/Microsoft Word.app';
 export const ABORT_AFTER = 3;
 
@@ -66,8 +73,9 @@ export function overwriteInPlace(file, bytes) {
 
 // ------------------------------------------------------- AppleScript
 
-// argv: posix path, seconds, mode ("plain" | "repair"). Closes any
-// check.docx left open first, then opens, then closes every check.docx
+// argv: posix path, seconds, mode ("plain" | "repair"), and the name
+// of the fixed file (check.docx when not given). Closes any document
+// of that name left open first, then opens, then closes every one
 // (by index, highest first). Never touches another document.
 // "repair" (--diagnose only): also closes every document whose name was
 // not open before the call (repair opens a broken package untitled).
@@ -75,12 +83,14 @@ export const OPEN_SCRIPT = `on run argv
   set c_path to item 1 of argv
   set c_secs to (item 2 of argv) as integer
   set c_mode to item 3 of argv
+  set c_name to "check.docx"
+  if (count of argv) > 3 then set c_name to item 4 of argv
   set c_leftover to 0
   set c_openErr to 0
   tell application "Microsoft Word"
     repeat with i from (count of documents) to 1 by -1
       try
-        if (name of document i) is "check.docx" then
+        if (name of document i) is c_name then
           close document i saving no
           set c_leftover to c_leftover + 1
         end if
@@ -107,7 +117,7 @@ export const OPEN_SCRIPT = `on run argv
     repeat with i from c_n1 to 1 by -1
       try
         set c_nm to name of document i
-        if c_nm is "check.docx" then
+        if c_nm is c_name then
           set c_found to c_found + 1
           close document i saving no
         else if c_mode is "repair" and c_names0 does not contain c_nm then
@@ -123,9 +133,9 @@ export const OPEN_SCRIPT = `on run argv
 end run
 `;
 
-// Closes every document named check.docx (a run's first and last
-// step). A document that does not answer is passed over (counted as
-// stuck when it is a check.docx that would not close).
+// Closes every document named check.docx or check.rtf (a run's first
+// and last step). A document that does not answer is passed over
+// (counted as stuck when it is one of those that would not close).
 export const CLOSE_SCRIPT = `on run argv
   set c_closed to 0
   set c_stuck to 0
@@ -136,7 +146,7 @@ export const CLOSE_SCRIPT = `on run argv
         try
           set c_nm to name of document i
         end try
-        if c_nm is "check.docx" then
+        if c_nm is "check.docx" or c_nm is "check.rtf" then
           try
             close document i saving no
             set c_closed to c_closed + 1
@@ -282,10 +292,14 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
   firstTimeout = 120, stallTimeout = 10, stallProbe = true, diagnose = false,
   slowFirst = false, log = () => {}, now = () => Date.now()} = {}) {
   const file = path.join(dir, CHECK_NAME);
-  const marker = path.join(dir, MARKER);
-  let timeouts = 0, warned = false, slow = slowFirst, stall = null;
-  const run = async (mode, secs) => classify(await runner(OPEN_SCRIPT,
-    [file, secs, mode], (secs + 15) * 1000));
+  // (RTF: its own fixed file and grant, see the header)
+  const kinds = {docx: {file, marker: path.join(dir, MARKER), name: CHECK_NAME,
+    warned: false}, rtf: {file: path.join(dir, RTF_NAME),
+    marker: path.join(dir, RTF_MARKER), name: RTF_NAME, warned: false}};
+  let timeouts = 0, slow = slowFirst, stall = null;
+  const run = async (mode, secs, k = kinds.docx) => classify(await runner(
+    OPEN_SCRIPT, k === kinds.docx ? [k.file, secs, mode] :
+      [k.file, secs, mode, k.name], (secs + 15) * 1000));
   const abort = (msg, last, extra = {}) => Object.assign(new AbortRun(msg), {last,
     first: stall && stall.first}, extra);
   return {
@@ -308,18 +322,19 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
           stall = null;
         }
       }
-      const fresh = !fs.existsSync(marker);
-      if (fresh && !warned) {
-        warned = true;
-        log('NOTE: ' + grantHint(file) + ' (waiting up to ' + firstTimeout + ' s).');
+      const k = isRtfBytes(bytes) ? kinds.rtf : kinds.docx;
+      const fresh = !fs.existsSync(k.marker);
+      if (fresh && !k.warned) {
+        k.warned = true;
+        log('NOTE: ' + grantHint(k.file) + ' (waiting up to ' + firstTimeout + ' s).');
       }
       const secs = fresh || slow ? firstTimeout : timeout;
       slow = false;
-      overwriteInPlace(file, bytes);
+      overwriteInPlace(k.file, bytes);
       const t0 = now();
-      const r = await run('plain', secs);
+      const r = await run('plain', secs, k);
       const out = {verdict: r.verdict, seconds: (now() - t0) / 1000, detail: r.detail};
-      if (r.counts && r.counts.leftover) out.detail = 'closed a check.docx left open';
+      if (r.counts && r.counts.leftover) out.detail = 'closed a ' + k.name + ' left open';
       if (r.verdict !== 'TIMEOUT') {
         timeouts = 0;
         stall = null;
@@ -342,7 +357,7 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
         } else {
           stall = {first: label};
           out.detail = why + 'Word did not open it but still answers: a dialog is ' +
-            'probably up (the first of a stall: probably the prompt). ' + grantHint(file);
+            'probably up (the first of a stall: probably the prompt). ' + grantHint(k.file);
         }
         if (ps === 'modal') throw abort(stallMessage(stall.first), out);
         if (++timeouts >= ABORT_AFTER) {
@@ -350,13 +365,15 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
         }
         return out;
       }
-      if (r.verdict === 'OK' && fresh) fs.writeFileSync(marker, new Date().toISOString() + '\n');
+      if (r.verdict === 'OK' && fresh) {
+        fs.writeFileSync(k.marker, new Date().toISOString() + '\n');
+      }
       if (r.verdict === 'REFUSED' && fresh) {
         out.detail = 'no file has opened yet: if Word showed an access dialog ' +
           'that was cancelled, this is not the file’s fault';
       }
       if (r.verdict === 'REFUSED' && diagnose) {
-        const d = await run('repair', timeout);
+        const d = await run('repair', timeout, k);
         out.repairOpens = d.verdict === 'TIMEOUT' ? null :
           (d.counts.found + d.counts.made) > 0;
       }
@@ -371,7 +388,7 @@ export async function listDocs(runner = osascript, secs = 20) {
 }
 
 /**
- * Close any check.docx left open: -> {closed, stuck} (stuck: would not
+ * Close any check.docx (or check.rtf) left open: -> {closed, stuck} (stuck: would not
  * close), or null if Word did not answer.
  */
 export async function closeLeftovers(runner = osascript) {
@@ -444,6 +461,10 @@ export const SKIPPED_BY_DESIGN = [
   'a part over 20 MB unzipped (a hostile size): Word works on it for minutes',
 ];
 
+/** RTF (`{\rtf` at the start): opened through check.rtf. */
+export const isRtfBytes = (bytes) => bytes.length >= 5 &&
+  Buffer.from(bytes.subarray(0, 5)).toString('latin1') === '{\\rtf';
+
 /**
  * Why Word would prompt on opening these bytes, so the file is SKIPPED
  * unopened: NOT_ZIP, HUGE, WRITE_PROTECTION or MAIL_MERGE; null to open it.
@@ -451,6 +472,7 @@ export const SKIPPED_BY_DESIGN = [
  * unprotecting: opened.)
  */
 export async function skipReason(bytes) {
+  if (isRtfBytes(bytes)) return null;
   if (!(bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 3 &&
     bytes[3] === 4)) return NOT_ZIP;
   const {readZip} = await import('../moreapps/!WimpLib/Zip');
@@ -470,7 +492,7 @@ export async function skipReason(bytes) {
   return null;
 }
 
-/** Every .docx under the paths (a file as given), sorted, no repeats. */
+/** Every .docx (and .rtf) under the paths (a file as given), sorted, no repeats. */
 export function walk(paths, {exclude = () => false} = {}) {
   const out = new Set();
   const visit = (p) => {
@@ -478,7 +500,7 @@ export function walk(paths, {exclude = () => false} = {}) {
     if (st.isDirectory()) {
       if (exclude(p)) return;
       for (const n of fs.readdirSync(p).sort()) visit(path.join(p, n));
-    } else if (st.isFile() && /\.docx$/i.test(p) && !path.basename(p).startsWith('~$')) {
+    } else if (st.isFile() && /\.(docx|rtf)$/i.test(p) && !path.basename(p).startsWith('~$')) {
       if (!exclude(p)) out.add(p);
     }
   };

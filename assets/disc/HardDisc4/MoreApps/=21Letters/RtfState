@@ -1,0 +1,99 @@
+// RtfState - the formatting state of the RTF reader (./RtfRead): the
+// character, paragraph and section properties in force, and the
+// \uc skip count, saved at each { and restored at its }.
+//
+//   new RtfState({char, para, sect}) the defaults (\plain, \pard
+//       and \sectd go back to them); every value object is frozen
+//   s.push() / s.pop()       at { and }; pop at depth 0 does nothing
+//   s.char, s.para, s.sect   the current (frozen) objects: a set
+//       makes a new one, so an object read earlier never changes and
+//       can be a cache key (./RtfBody does that)
+//   s.uc                     characters to skip after a \uN
+//   s.setChar(key, v) / setPara / setSect / setUc(n)
+//   s.plain() / s.pard() / s.sectd()   the resets
+//   s.setDefault('char'|'para'|'sect', key, v)  change a default
+//       (\deff, \defchp...), and the current value with it
+//   s.lift('char'|'para'|'sect', key, v)  set key now AND in the
+//       state the next pop restores: a group's result for the group
+//       around it (an old-style {\*\pn ...} numbering its paragraph)
+//   s.depth                  groups open
+//
+// The keys are the reader's own (./RtfBody and ./RtfProps list the
+// character and paragraph ones: b, sz, font, color...; s, jc...);
+// a key undefined means "as the default". Keys only ever come from
+// the handler tables, never from the file.
+// Pure: no desktop services.
+
+const freeze = (o) => Object.freeze({...o});
+
+export class RtfState {
+  constructor(defaults = {}) {
+    this.def = {char: freeze(defaults.char || {}),
+      para: freeze(defaults.para || {}),
+      sect: freeze(defaults.sect || {})};
+    this.cur = {char: this.def.char, para: this.def.para,
+      sect: this.def.sect, uc: 1};
+    this.stack = [];
+  }
+
+  get char() { return this.cur.char; }
+  get para() { return this.cur.para; }
+  get sect() { return this.cur.sect; }
+  get uc() { return this.cur.uc; }
+  get depth() { return this.stack.length; }
+
+  push() { this.stack.push(this.cur); }
+
+  pop() {
+    if (this.stack.length) this.cur = this.stack.pop();
+  }
+
+  /** this.cur with object `kind` given key k set to v. */
+  set(kind, k, v) {
+    if (this.cur[kind][k] === v) return;
+    const o = {...this.cur[kind]};
+    if (v === undefined) delete o[k]; else o[k] = v;
+    this.cur = {...this.cur, [kind]: Object.freeze(o)};
+  }
+
+  setChar(k, v) { this.set('char', k, v); }
+  setPara(k, v) { this.set('para', k, v); }
+  setSect(k, v) { this.set('sect', k, v); }
+
+  lift(kind, k, v) {
+    this.set(kind, k, v);
+    const n = this.stack.length;
+    if (!n || this.stack[n - 1][kind][k] === v) return;
+    const top = this.stack[n - 1];
+    const o = {...top[kind]};
+    if (v === undefined) delete o[k]; else o[k] = v;
+    this.stack[n - 1] = {...top, [kind]: Object.freeze(o)};
+  }
+
+  setUc(n) {
+    if (Number.isInteger(n) && n >= 0 && n !== this.cur.uc) {
+      this.cur = {...this.cur, uc: Math.min(n, 64)};
+    }
+  }
+
+  plain() { this.cur = {...this.cur, char: this.def.char}; }
+  pard() { this.cur = {...this.cur, para: this.def.para}; }
+  sectd() { this.cur = {...this.cur, sect: this.def.sect}; }
+
+  setDefault(kind, k, v) {
+    const o = {...this.def[kind]};
+    if (v === undefined) delete o[k]; else o[k] = v;
+    this.def = {...this.def, [kind]: Object.freeze(o)};
+    this.set(kind, k, v);
+  }
+}
+
+/** The handlers of the reset words (./RtfRead PARTS; \ucN is the
+ *  driver's own). */
+export const PART = {
+  words: new Map([
+    ['plain', (ctx) => ctx.state.plain()],
+    ['pard', (ctx) => ctx.state.pard()],
+    ['sectd', (ctx) => ctx.state.sectd()],
+  ]),
+};

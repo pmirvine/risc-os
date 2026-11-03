@@ -1,0 +1,152 @@
+// RtfLost - what the RTF writer (./RtfWrite) could not put in the
+// file: the words for it, in one place, and the count of each.
+//
+//   LOST          {key: what}: the short plain-English names shown
+//       to the user before a Save as RTF ("3 pictures, 1 text box
+//       can't be stored in RTF"); one per kind of thing, plural
+//   new Lost()    a counter: add(what, n = 1), list() -> [{what,
+//       count}] in the order each was first counted
+//   rawLost(node) -> the LOST name for a raw inline's node that no
+//       writer module takes (a drawing holding a text box is a text
+//       box, a w:hyperlink a link...); LOST.other when unknown; null
+//       for the second mark of a pair counted at its first (a
+//       bookmark's end, a field's code, separator and end: one item
+//       each)
+//   heldLost(node) -> [what...]  what a wrapper kept whole (a smart
+//       tag, a run that could not be split) holds that RTF loses:
+//       the rawLost name of each element in it that is one of the
+//       kinds above (a drawing, an object, an equation, a link...),
+//       its own insides not looked into again; at most BUDGET nodes
+//       looked at
+//
+// The names are the ones the Save as box shows: change them here
+// only (tests pin them).
+// Pure: no desktop services.
+
+export const LOST = Object.freeze({
+  unknown: 'items of an unknown kind',
+  tables: 'tables',
+  pictures: 'pictures',
+  drawings: 'drawings',
+  textBoxes: 'text boxes',
+  objects: 'embedded objects',
+  equations: 'equations',
+  links: 'links',
+  fields: 'fields of other kinds',
+  bookmarks: 'bookmarks',
+  controls: 'content controls',
+  symbols: 'symbols',
+  lists: 'list numbers',
+  notes: 'footnotes and endnotes',
+  comments: 'comments',
+  revisions: 'tracked changes',
+  stories: 'headers and footers',
+  damaged: 'damaged items',
+  crops: 'picture cropping',
+  positions: 'picture positions',
+  tableStyles: 'table style formatting',
+  diagonals: 'diagonal cell borders',
+  columns: 'uneven columns',
+  lineNumbers: 'line numbers',
+  listLevels: 'list level settings',
+  nested: 'nested fields',
+  other: 'other items',
+});
+
+export class Lost {
+  constructor() {
+    this.counts = new Map();
+  }
+
+  add(what, n = 1) {
+    if (!(n > 0)) return;
+    this.counts.set(what, (this.counts.get(what) || 0) + n);
+  }
+
+  list() {
+    return [...this.counts].map(([what, count]) => ({what, count}));
+  }
+}
+
+// a raw node by its local name
+const BY_NAME = new Map([
+  ['hyperlink', LOST.links], ['fldSimple', LOST.fields],
+  ['instrText', null], ['bookmarkStart', LOST.bookmarks],
+  ['bookmarkEnd', null], ['footnoteReference', LOST.notes],
+  ['endnoteReference', LOST.notes],
+  ['commentReference', LOST.comments], ['commentRangeStart', null],
+  ['commentRangeEnd', null], ['annotationRef', null],
+  ['sdt', LOST.controls], ['sym', LOST.symbols],
+  ['object', LOST.objects], ['oMath', LOST.equations],
+  ['oMathPara', LOST.equations], ['ins', LOST.revisions],
+  ['del', LOST.revisions], ['moveFrom', LOST.revisions],
+  ['moveTo', LOST.revisions],
+]);
+
+const local = (n) => {
+  const s = n && typeof n.name === 'string' ? n.name : '';
+  const i = s.indexOf(':');
+  return i < 0 ? s : s.slice(i + 1);
+};
+
+/** Whether a node holds a text box (at most `budget` nodes looked
+ *  at: a deep hostile tree is not walked to the end). */
+function hasBox(node) {
+  const todo = [node];
+  let budget = 10000;
+  while (todo.length && budget-- > 0) {
+    const n = todo.pop();
+    if (!n || typeof n !== 'object') continue;
+    const l = local(n);
+    if (l === 'txbx' || l === 'txbxContent' || l === 'textbox')
+      return true;
+    const kids = Array.isArray(n.children) ? n.children : [];
+    for (let i = 0; i < kids.length && i < budget; i++) {
+      todo.push(kids[i]);
+    }
+  }
+  return false;
+}
+
+// the kinds heldLost counts (the local names rawLost names)
+const HELD = new Set(['drawing', 'pict', 'AlternateContent', 'fldChar',
+  ...[...BY_NAME].filter(([, v]) => v).map(([k]) => k)]);
+const BUDGET = 10000;
+
+/** See the header. */
+export function heldLost(node) {
+  const out = [], todo = [];
+  const push = (n) => {
+    const k = Array.isArray(n.children) ? n.children : [];
+    // (in reverse: the first child is looked at first)
+    for (let i = k.length - 1; i >= 0 && todo.length < BUDGET; i--) {
+      todo.push(k[i]);
+    }
+  };
+  if (node && typeof node === 'object') push(node);
+  let budget = BUDGET;
+  while (todo.length && budget-- > 0) {
+    const n = todo.pop();
+    if (!n || typeof n !== 'object') continue;
+    if (HELD.has(local(n))) {
+      const what = rawLost(n);
+      if (what) out.push(what);
+    } else push(n);
+  }
+  return out;
+}
+
+/** See the header. */
+export function rawLost(node) {
+  const l = local(node);
+  if (l === 'drawing' || l === 'pict' || l === 'AlternateContent') {
+    if (hasBox(node)) return LOST.textBoxes;
+    return l === 'drawing' ? LOST.pictures : LOST.drawings;
+  }
+  if (l === 'fldChar') {
+    const a = (Array.isArray(node.attrs) ? node.attrs : []).find((x) =>
+      Array.isArray(x) && x[0] === 'w:fldCharType');
+    return a && a[1] === 'begin' ? LOST.fields : null;
+  }
+  return BY_NAME.has(l) ? BY_NAME.get(l) : LOST.other;
+}

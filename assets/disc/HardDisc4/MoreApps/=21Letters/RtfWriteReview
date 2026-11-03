@@ -1,0 +1,287 @@
+// RtfWriteReview - comments and tracked changes for the RTF writer
+// (./RtfWrite): the inverse of the reader's ./RtfComments and
+// ./RtfRevs.
+//
+//   PART   inlines: cmtStart, cmtEnd, cmtRef, raw:w:annotationRef;
+//          hooks: revision, mark; header: the author table
+//   dttmOf(s) -> number | undefined  a model date ('2024-05-06T07:08
+//       ...', the local time Word writes, or '2024-05-06') as RTF's
+//       DTTM (minute | hour << 6 | day << 11 | month << 16 | (year -
+//       1900) << 20 | weekday << 29), a signed 32-bit number as Word
+//       writes it; seconds and what follows the minute are not kept.
+//       undefined for anything else, a day the month has not, or a
+//       year outside 1900..2100 (what the reader takes)
+//
+// Tracked changes (run.rev, the body's and any story's): the run's
+// group gets \revised (an insertion, a move's new place) or \deleted
+// (a deletion, a move's old place: deleted text is written as
+// tracked deleted text, never as live text), then \revauthN /
+// \revauthdelN (N the author's entry in {\*\revtbl {Unknown;}
+// {name;}...}, entry 0 Word's Unknown) and \revdttmD / \revdttmdelD
+// when the tag has an author / a date. A paragraph mark's revision
+// (pPr.extra w:rPr holding w:ins / w:del, as ./ReadPara keeps it)
+// is the same words in a group with the \par: {\deleted...\par}; a
+// mark ending a section, a cell or the document has no \par of its
+// own and is counted (LOST.revisions). A tag of another kind is
+// counted and its text left out (it might be a deletion).
+// Author names and initials: ./RtfRevs cleanName, escaped as text;
+// in the author table a ';' (which ends an entry) is a ','.
+//
+// Comments (doc.comments, the marks in the body): the range marks
+// {\*\atrfstart N} {\*\atrfend N}, then at the comment's mark (in its
+// run's group: the mark's format) {\*\atnid initials}{\*\atnauthor
+// name}\chatn {\*\annotation {\*\atnref N}{\*\atndate D}{\*\atnparent
+// P}, the comment's paragraphs (each ending \par; its links and
+// pictures from the comments part's relationships)}. N: 0, 1... in
+// the order the comments are first met (fresh: the model's ids are
+// not kept); P the parent's N (./CommentRead parentsOf: cycles
+// broken) when the parent is written too. The comment's own mark
+// (w:annotationRef) is \chatn. RTF has no resolved (done) state:
+// it is not written and not counted. Left out: marks of a comment
+// the Doc lacks, a second mark of one comment, range marks of a
+// comment with no mark in the body, marks in a header, footer, note
+// or comment (the reader reads none there); counted (LOST.comments,
+// once each, at the end): a comment with no mark in the body; a mark
+// kept raw (w:commentReference) whose comment the Doc lacks (the
+// comments part could not be read) once a mark.
+// Pure: no desktop services.
+import {cleanName} from './RtfRevs';
+import {parentsOf} from './CommentRead';
+import {scan} from './Walk';
+import {LOST} from './RtfLost';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const NONE = Object.freeze({});
+const GONE = Object.freeze({skip: true});
+const KIND = new Map([['ins', 'ins'], ['mvTo', 'ins'],
+  ['moveTo', 'ins'], ['del', 'del'], ['mvFrom', 'del'],
+  ['moveFrom', 'del']]);
+const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const leap = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+const local = (n) => {
+  const s = isObj(n) && typeof n.name === 'string' ? n.name : '';
+  return s.slice(s.indexOf(':') + 1);
+};
+const attr = (n, k) => {
+  const a = Array.isArray(n.attrs) ? n.attrs.find((x) =>
+    Array.isArray(x) && x[0] === k) : undefined;
+  return a ? a[1] : undefined;
+};
+
+/** The whole number of s[a..b) (digits only), else NaN. */
+function digits(s, a, b) {
+  let n = 0;
+  for (let i = a; i < b; i++) {
+    const c = s.charCodeAt(i) - 48;
+    if (!(c >= 0 && c <= 9)) return NaN;
+    n = n * 10 + c;
+  }
+  return n;
+}
+
+/** See the header. */
+export function dttmOf(s) {
+  if (typeof s !== 'string' || s.length < 10 || s[4] !== '-' ||
+    s[7] !== '-') return undefined;
+  const y = digits(s, 0, 4), mo = digits(s, 5, 7), d = digits(s, 8, 10);
+  let h = 0, mi = 0;
+  if (s.length > 10) {
+    if (s[10] !== 'T' || s.length < 16 || s[13] !== ':')
+      return undefined;
+    h = digits(s, 11, 13);
+    mi = digits(s, 14, 16);
+  }
+  if (!(y >= 1900 && y <= 2100 && mo >= 1 && mo <= 12 && h <= 23 &&
+    mi <= 59)) return undefined;
+  const last = mo === 2 && leap(y) ? 29 : DAYS[mo - 1];
+  if (!(d >= 1 && d <= last)) return undefined;
+  const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+  return (mi | (h << 6) | (d << 11) | (mo << 16) | ((y - 1900) << 20) |
+    (wd << 29)) | 0;
+}
+
+// ------------------------------------------------------- the state
+
+function stateOf(w) {
+  if (w.review) return w.review;
+  const s = {names: ['Unknown'], authors: new Map([['Unknown', 0]]),
+    used: false, tags: new Map(), written: new Set(), refs: new Set(),
+    parents: new Map(), map: null, stretch: null};
+  const c = isObj(w.doc.comments) ? w.doc.comments.map : null;
+  if (c instanceof Map) {
+    s.map = c;
+    try {
+      s.parents = parentsOf(w.doc);
+      scan(w.doc, (b) => {
+        if (!isObj(b) || b.type !== 'p' || !isObj(b.inlines)) return;
+        for (const x of Object.values(b.inlines)) {
+          if (isObj(x) && x.kind === 'cmtRef' && commentOf(s, x.id))
+            s.refs.add(x.id);
+        }
+      });
+    } catch {
+      // (what was found stands)
+    }
+  }
+  w.review = s;
+  return s;
+}
+
+function commentOf(s, id) {
+  const c = s.map ? s.map.get(id) : undefined;
+  return isObj(c) && Array.isArray(c.blocks) ? c : null;
+}
+
+/** The comment's number in the file (fresh, in the order met). */
+function tagOf(s, id) {
+  let n = s.tags.get(id);
+  if (n === undefined) {
+    n = s.tags.size;
+    s.tags.set(id, n);
+  }
+  return n;
+}
+
+const nameOf = (v) => (typeof v === 'string' ? cleanName(v)
+  : undefined);
+
+/** The author table entry of a name. */
+function authorOf(s, name) {
+  const key = name.split(';').join(',');
+  let n = s.authors.get(key);
+  if (n === undefined) {
+    n = s.names.length;
+    s.names.push(key);
+    s.authors.set(key, n);
+  }
+  s.used = true;
+  return n;
+}
+
+/** The words of a revision of kind 'ins' | 'del'. */
+function revWords(w, kind, author, date) {
+  const s = stateOf(w);
+  const name = nameOf(author), d = dttmOf(date);
+  const del = kind === 'del';
+  let out = del ? '\\deleted' : '\\revised';
+  if (name !== undefined) {
+    out += (del ? '\\revauthdel' : '\\revauth') + authorOf(s, name);
+  }
+  if (d !== undefined) out += (del ? '\\revdttmdel' : '\\revdttm') + d;
+  return out;
+}
+
+// ----------------------------------------------- tracked changes
+
+function revision(w, p, run) {
+  const rev = run.rev;
+  const s = stateOf(w);
+  if (!isObj(rev)) {
+    s.stretch = null;
+    return NONE;
+  }
+  const kind = KIND.get(rev.kind);
+  if (kind) {
+    s.stretch = null;
+    return {words: revWords(w, kind, rev.author, rev.date)};
+  }
+  // (one count a stretch of a tag of another kind)
+  if (s.stretch !== rev) w.lose(LOST.revisions);
+  s.stretch = rev;
+  return GONE;
+}
+
+/** The paragraph mark's revision words (see the header). */
+function mark(w, p, end) {
+  const extra = isObj(p.pPr) && Array.isArray(p.pPr.extra)
+    ? p.pPr.extra : [];
+  for (const n of extra) {
+    if (local(n) !== 'rPr' || !Array.isArray(n.children)) continue;
+    for (const c of n.children) {
+      const kind = KIND.get(local(c));
+      if (!kind) continue;
+      if (end !== '\\par') {
+        w.lose(LOST.revisions);
+        return '';
+      }
+      return revWords(w, kind, attr(c, 'w:author'), attr(c, 'w:date'));
+    }
+  }
+  return '';
+}
+
+/** {\*\revtbl}, when an author was named. */
+function revtbl(w) {
+  const s = stateOf(w);
+  if (!s.used) return '';
+  return '{\\*\\revtbl ' + s.names.map((n) => '{' + w.text(n) + ';}')
+    .join('') + '}\n';
+}
+
+// ------------------------------------------------------- comments
+
+/** Whether x's comment is written (its range marks too). */
+const live = (w, s, x) => w.place.kind === 'body' && s.refs.has(x.id);
+
+const range = (word) => (w, x) => {
+  const s = stateOf(w);
+  return live(w, s, x) ? '{\\*\\' + word + ' ' + tagOf(s, x.id) + '}'
+    : '';
+};
+
+function cmtRef(w, x) {
+  const s = stateOf(w);
+  // (one in a story: the comment is counted at the end, unwritten)
+  const c = w.place.kind === 'body' ? commentOf(s, x.id) : null;
+  if (!c || s.written.has(x.id)) return '';
+  s.written.add(x.id);
+  let out = '{\\*\\atnid ' + w.text(nameOf(c.initials) || '') +
+    '}{\\*\\atnauthor ' + w.text(nameOf(c.author) || '') + '}' +
+    '\\chatn {\\*\\annotation {\\*\\atnref ' + tagOf(s, x.id) + '}';
+  const d = dttmOf(c.date);
+  if (d !== undefined) out += '{\\*\\atndate ' + d + '}';
+  const up = s.parents.get(x.id);
+  if (up !== undefined && s.refs.has(up)) {
+    out += '{\\*\\atnparent ' + tagOf(s, up) + '}';
+  }
+  return out + '\n' + w.nested(placeOf(w, c), () =>
+    w.blocks(c.blocks, '\\par')) + '}';
+}
+
+/** Where a comment's inlines are written. */
+function placeOf(w, c) {
+  const cs = w.doc.comments;
+  const rels = Array.isArray(c.rels) ? c.rels : Array.isArray(cs.rels)
+    ? cs.rels : [];
+  const parts = isObj(w.doc.meta) && isObj(w.doc.meta.commentParts)
+    ? w.doc.meta.commentParts : {};
+  return {rels, part: typeof parts.comments === 'string'
+    ? parts.comments : 'word/comments.xml', kind: 'comment',
+  map: isObj(cs.root) ? w.scopeOf(cs.root) : undefined};
+}
+
+/** A mark kept raw (where the reader models none: a header...):
+ *  its comment, when the Doc has it, is counted at the end. */
+function rawRef(w, x) {
+  const s = stateOf(w), id = Number(attr(x.node, 'w:id'));
+  if (!commentOf(s, id)) w.lose(LOST.comments);
+  return '';
+}
+
+/** The comments never written (no mark in the body). */
+function unwritten(w) {
+  const s = stateOf(w);
+  let n = 0;
+  if (s.map) for (const id of s.map.keys()) if (!s.written.has(id)) n++;
+  w.lose(LOST.comments, n);
+  return '';
+}
+
+export const PART = {
+  inlines: new Map([['cmtStart', range('atrfstart')],
+    ['cmtEnd', range('atrfend')], ['cmtRef', cmtRef],
+    ['raw:w:annotationRef', (w) => (w.place.kind === 'comment'
+      ? '\\chatn ' : '')], ['raw:w:commentReference', rawRef]]),
+  hooks: new Map([['revision', revision], ['mark', mark]]),
+  header: [revtbl, unwritten],
+};

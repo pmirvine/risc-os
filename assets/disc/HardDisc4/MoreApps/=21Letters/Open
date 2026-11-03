@@ -1,22 +1,130 @@
-// Open - reads a .docx file from the disc into a Doc (./Model), and
-// says in plain words why a file could not be read.
+// Open - reads a .docx or RTF file from the disc into a Doc
+// (./Model), and says in plain words why a file could not be read.
 //
-//   await openDocx(vfs, path) -> Doc     throws (see describe)
-//   describe(err, leaf) -> the message for the error box
+//   await openDoc(vfs, path) -> {doc, format, notes}   throws (see
+//                  describe). format 'rtf' when the bytes start
+//                  with {\rtf (after an optional BOM and white
+//                  space: wimplib/RtfLex isRtf), read by ./RtfRead;
+//                  else 'docx', read by ./DocxRead. notes: the RTF
+//                  reader's messages (what it skipped or found
+//                  damaged; [] for a .docx), said once in a notice
+//                  (notesNotice) when the window opens
+//   await openDocx(vfs, path) -> Doc     a .docx only (as before)
+//   describe(err, leaf, type?) -> the message for the error box;
+//                  type the file's type (typeAt): a file of RTF's
+//                  type that is neither RTF nor a zip at all is 'not
+//                  an RTF file' (what it was opened as), not 'not a
+//                  Word .docx file'
+//   typeAt(vfs, path) -> the file type at path, or undefined
+//   notesNotice(leaf, notes) -> the notice's text, or null for none:
+//                  at most MAX_NOTICE characters (the first notes,
+//                  each cut short, then '(and N more)')
+//   FILETYPES {docx: &A7E, rtf: &C32}: a window's format -> the
+//                  file type it is saved with (Save, Save as, Save a
+//                  copy); fileTypeOf(format) the same, &A7E for any
+//                  other; formatOfType(type) back: null for a type
+//                  !Letters does not open by double-click
+//   RtfError       what openDoc throws for an RTF it will not read:
+//                  err.code 'too-big' (more than MAX_RTF_BYTES) or
+//                  'not-rtf' (the reader failed: it read nothing,
+//                  its note 'the file could not be read')
 //
 // A document of more than MAX_PARAGRAPHS paragraphs is refused as too
 // big (DocxError 'unsupported'), before it is parsed: the window lays
 // out every paragraph, so a larger one would hang the desktop; the
-// message says so (err.kind 'paragraphs': in cells too).
+// message says so (err.kind 'paragraphs': in cells too). An RTF file
+// of more than MAX_RTF_BYTES is refused before it is parsed (a
+// .docx is held to its zip's limits: wimplib/ZipRead); a longer RTF
+// is read up to MAX_PARAGRAPHS and says so in a note.
 import {readDocx} from './DocxRead';
+import {readRtf} from './RtfRead';
+import {isRtf} from 'wimplib/RtfLex';
 
 /** Most paragraphs in a document !Letters opens. */
 export const MAX_PARAGRAPHS = 200000;
+
+/** Most bytes in an RTF file !Letters opens (16 MB: the reader
+ *  holds every token of the file at once, ./RtfRead). */
+export const MAX_RTF_BYTES = 16 * 1024 * 1024;
+
+/** Most characters in the notice of an RTF file's notes. */
+export const MAX_NOTICE = 600;
+
+const NOTE_MAX = 120;                  // (one note in the notice)
+const FAILED = 'the file could not be read';   // (./RtfRead's)
+
+/** See the header. */
+export const FILETYPES = Object.freeze({docx: 0xA7E, rtf: 0xC32});
+
+/** See the header. */
+export function fileTypeOf(format) {
+  return format === 'rtf' ? FILETYPES.rtf : FILETYPES.docx;
+}
+
+/** See the header. */
+export function formatOfType(type) {
+  if (type === FILETYPES.docx) return 'docx';
+  if (type === FILETYPES.rtf) return 'rtf';
+  return null;
+}
+
+/** See the header. */
+export class RtfError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = 'RtfError';
+    this.code = code;
+  }
+}
 
 /** Read the file at `path` (a disc pathname) as a .docx. */
 export async function openDocx(vfs, path) {
   const bytes = await vfs.readFile(path);
   return readDocx(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+}
+
+/** See the header. */
+export async function openDoc(vfs, path) {
+  const bytes = await vfs.readFile(path);
+  if (!(bytes instanceof Uint8Array) || !isRtf(bytes)) {
+    const doc = await readDocx(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+    return {doc, format: 'docx', notes: []};
+  }
+  if (bytes.length > MAX_RTF_BYTES) throw new RtfError('too-big');
+  let got;
+  try {
+    got = readRtf(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+  } catch (e) {
+    throw new RtfError('not-rtf', e && e.message);
+  }
+  const notes = got && Array.isArray(got.notes)
+    ? got.notes.map(String) : [];
+  // (the reader's last resort: nothing read, an empty document)
+  if (!got || !got.doc || notes.some((n) => n.startsWith(FAILED))) {
+    throw new RtfError('not-rtf');
+  }
+  return {doc: got.doc, format: 'rtf', notes};
+}
+
+/** See the header. */
+export function notesNotice(leaf, notes) {
+  if (!Array.isArray(notes) || !notes.length) return null;
+  const head = `'${leaf}' was opened, but: `;
+  const cut = (s) => (s.length <= NOTE_MAX ? s
+    : s.slice(0, NOTE_MAX - 3) + '...');
+  let body = '', k = 0;
+  for (; k < notes.length; k++) {
+    const add = (k ? '; ' : '') + cut(String(notes[k]));
+    // (room kept for ' (and N more).')
+    if (head.length + body.length + add.length + 20 > MAX_NOTICE) {
+      break;
+    }
+    body += add;
+  }
+  const more = notes.length - k;
+  const m = head + body + (more ? ` (and ${more} more)` : '') + '.';
+  return m.length <= MAX_NOTICE ? m : m.slice(0, MAX_NOTICE - 3) +
+    '...';
 }
 
 const REASONS = {
@@ -36,9 +144,36 @@ function grouped(n) {
   return s + out;
 }
 
+/** The error box text for an RtfError (null: not one). */
+function rtfWhy(err, leaf) {
+  if (!err || err.name !== 'RtfError') return null;
+  if (err.code === 'too-big') {
+    return `'${leaf}' could not be opened: it is an RTF file of ` +
+      `more than ${MAX_RTF_BYTES / (1024 * 1024)} MB, the most ` +
+      '!Letters opens.';
+  }
+  return `'${leaf}' could not be opened: it is not an RTF file.`;
+}
+
+/** See the header. */
+export function typeAt(vfs, path) {
+  try {
+    const st = vfs.stat(path);
+    return st ? st.filetype : undefined;
+  } catch (e) {
+    return undefined;
+  }
+}
+
 /** The error box text for a file `leaf` that could not be opened. */
-export function describe(err, leaf) {
+export function describe(err, leaf, type) {
+  const rtf = rtfWhy(err, leaf);
+  if (rtf) return rtf;
   const why = err && err.name === 'DocxError' && REASONS[err.code];
+  if (why && err.code === 'not-docx' && err.kind !== 'ole2' &&
+    type === FILETYPES.rtf) {
+    return rtfWhy(new RtfError('not-rtf'), leaf);
+  }
   if (why && err.kind === 'paragraphs') {
     return `'${leaf}' could not be opened: it has more than ` +
       `${grouped(MAX_PARAGRAPHS)} paragraphs, the most !Letters opens.`;

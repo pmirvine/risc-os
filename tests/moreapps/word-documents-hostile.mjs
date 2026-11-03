@@ -66,7 +66,8 @@ try {
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
-    window.__box = (d, text) => window.__item(d, text).submenu();
+    // (Save as: the Save box its Save as box's Continue opens, G2)
+    window.__box = (d, text) => (text === 'Save as' ? d.saveBox() : window.__item(d, text).submenu());
     window.__menu = () => { const i = [...window.__word().iconbarIcons][0]; return typeof i.menu === 'function' ? i.menu({}) : i.menu; };
     window.__quitPrompts = () => [...os.wimp.windows].filter((q) => q.isOpen && q.iconByName?.('button:Discard') && !q.iconByName('button:Save'));
     window.__closePrompts = () => [...os.wimp.windows].filter((q) => q.isOpen && q.iconByName?.('button:Save') && q.iconByName('button:Discard'));

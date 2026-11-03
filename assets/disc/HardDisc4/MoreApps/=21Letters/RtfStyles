@@ -1,0 +1,167 @@
+// RtfStyles - the style sheet of an RTF file, for ./RtfRead.
+//
+//   PART   handlers: {\stylesheet ...} (each entry a group: \sN a
+//       paragraph style, \*\csN a character style, \*\tsN a table
+//       style (skipped), none: style 0, Normal; \sbasedonN \snextN;
+//       the properties as in the text; the name up to ';', an
+//       alias after a comma dropped), \sN and \csN in the text,
+//       {\*\defchp} / {\*\defpap} (the defaults \plain and \pard go
+//       back to)
+//   docDefaults(ctx, styles) -> the style table with RTF's defaults
+//       (\deff's font, \defchp's size or 12 pt, \defpap) as its
+//       docDefaults
+//
+// When the style sheet ends it becomes the Doc's style table
+// (ctx.doc.styles; copied, never changed in place): an entry whose
+// name is a style's already (Normal, heading 1...; style 0 is the
+// default paragraph style) replaces that style's properties under
+// its id; any other gets a new id (./StyleId idFor) and custom.
+// Properties are the differences from the Based on style (./RtfProps
+// rPrOf, pPrOf); ctx.styleDefs (number -> {id, type, char, para},
+// the entry's state) is what ./RtfProps baseOf measures runs and
+// paragraphs against. At most MAX_STYLES entries are read.
+// Pure: no desktop services.
+import {idFor} from './StyleId';
+import {rPrOf, pPrOf, DEFAULT_SZ, fontName} from './RtfProps';
+
+const MAX_STYLES = 2000;
+
+const num = (t) => Number.isInteger(t.param) && t.param >= 0 &&
+  t.param < 1e6 ? t.param : undefined;
+
+/** One entry's destination: fills `def`, adds it at its end. */
+function entry(defs) {
+  const def = {num: 0, type: 'paragraph', name: ''};
+  const set = (k, v) => (ctx, t) => {
+    def[k] = v === undefined ? num(t) : v;
+    if (v === undefined) return;
+    if (num(t) !== undefined) def.num = num(t);
+  };
+  return {
+    words: new Map([['s', set('type', 'paragraph')],
+      ['cs', set('type', 'character')], ['ts', set('type', 'table')],
+      ['ds', set('type', 'section')],
+      ['sbasedon', set('basedOn')], ['snext', set('next')]]),
+    text(ctx, s) {
+      for (const c of s) {
+        if (c === ';') def.done = true;
+        else if (!def.done && def.name.length < 256) def.name += c;
+      }
+    },
+    end(ctx) {
+      if (defs.length >= MAX_STYLES) return;
+      def.char = ctx.state.char;
+      def.para = ctx.state.para;
+      defs.push(def);
+    },
+  };
+}
+
+/** A clean style name: no alias, trimmed; 'Style N' when none. */
+function nameOf(def) {
+  const comma = def.name.indexOf(',');
+  const n = (comma < 0 ? def.name : def.name.slice(0, comma)).trim();
+  return n || 'Style ' + def.num;
+}
+
+/** The style sheet's entries as the Doc's style table. */
+function build(ctx, defs) {
+  const t = ctx.doc.styles;
+  const styles = new Map(t.styles);
+  const byName = new Map();
+  for (const s of styles.values()) {
+    if (typeof s.name === 'string') byName.set(s.name.toLowerCase(), s);
+  }
+  const used = defs.filter((d) => (d.type === 'paragraph' ||
+    d.type === 'character') && !ctx.styleDefs.has(d.num));
+  const seen = new Set();
+  const ids = new Map();
+  for (const d of used) {
+    if (ids.has(d.num)) continue;
+    let name = nameOf(d);
+    let old = byName.get(name.toLowerCase());
+    if (d.type === 'paragraph' && d.num === 0 && t.defaults.paragraph) {
+      old = styles.get(t.defaults.paragraph);
+    }
+    if (old && (old.type !== d.type || seen.has(old.id))) {
+      old = undefined;
+      if (byName.has(name.toLowerCase())) name += ' ' + d.num;
+    }
+    const id = old ? old.id : idFor({styles}, name);
+    seen.add(id);
+    ids.set(d.num, {id, old, name, def: d});
+    if (!old) styles.set(id, {id, type: d.type, name});
+  }
+  const st = ctx.state.def;
+  for (const {id, old, name, def} of ids.values()) {
+    const b = def.basedOn === undefined || def.basedOn === def.num
+      ? undefined : ids.get(def.basedOn);
+    const based = b && b.def.type === def.type ? b : undefined;
+    const s = {...(old || {custom: true}), id, type: def.type,
+      name: old ? old.name : name, extra: old ? old.extra : [],
+      raw: null,
+      rPr: rPrOf(ctx, def.char, based ? based.def.char : st.char),
+      pPr: def.type === 'paragraph' ? pPrOf(ctx, def.para,
+        based ? based.def.para : st.para) : {extra: []}};
+    delete s.basedOn;
+    delete s.next;
+    if (based) s.basedOn = based.id;
+    const n = def.next === undefined ? undefined : ids.get(def.next);
+    if (n && def.type === 'paragraph' &&
+      n.def.type === 'paragraph') s.next = n.id;
+    styles.set(id, s);
+    ctx.styleDefs.set(def.num, {id, type: def.type, char: def.char,
+      para: def.para});
+  }
+  ctx.doc.styles = {...t, styles};
+  ctx.fmtCache = null;
+}
+
+function stylesheet() {
+  const defs = [];
+  return {text() {},
+    // an entry starts from the defaults ({\*\defchp} {\*\defpap}),
+    // as \plain \pard give them: not from the state around
+    group: (ctx) => {
+      ctx.state.plain();
+      ctx.state.pard();
+      return entry(defs);
+    },
+    end(ctx) {
+      build(ctx, defs);
+    }};
+}
+
+/** {\*\defchp} / {\*\defpap}: their state as the defaults. */
+const defaults = (kind) => () => ({text() {},
+  end(ctx) {
+    const o = ctx.state[kind];
+    for (const k of Object.keys(o)) ctx.state.setDefault(kind, k, o[k]);
+  }});
+
+export function docDefaults(ctx, styles) {
+  const def = ctx.state.def;
+  const sz = def.char.sz || DEFAULT_SZ;
+  const rPr = {sz, szCs: sz, extra: []};
+  const f = fontName(ctx, def.char.font);
+  if (f !== undefined) {
+    rPr.rFonts = {ascii: f, hAnsi: f, eastAsia: f, cs: f};
+  } else if (styles.docDefaults.rPr.rFonts) {
+    rPr.rFonts = styles.docDefaults.rPr.rFonts;
+  }
+  const pPr = pPrOf(ctx, def.para, {});
+  return {...styles, docDefaults: {rPr, pPr}, docDefaultsRaw: null};
+}
+
+const setNum = (kind, key) => (ctx, t) => {
+  const n = num(t);
+  if (kind === 'para') ctx.state.setPara(key, n);
+  else ctx.state.setChar(key, n);
+};
+
+export const PART = {
+  words: new Map([['s', setNum('para', 's')],
+    ['cs', setNum('char', 'cs')]]),
+  dests: new Map([['stylesheet', stylesheet],
+    ['defchp', defaults('char')], ['defpap', defaults('para')]]),
+};

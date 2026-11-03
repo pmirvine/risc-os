@@ -1,0 +1,278 @@
+// RtfPara - paragraph formatting for the RTF reader (./RtfRead):
+// indents, spacing, keep and widow words, tab stops, borders and
+// shading, as the Model's pPr fields (./ReadProps PPR).
+//
+//   PART   handlers: \li \ri \fi (\lin \rin as \li \ri) \sb \sa \sl
+//       \slmult \keep \keepn \pagebb \widctlpar \nowidctlpar
+//       \outlinelevel \contextualspace \noline; tab stops \txN (a
+//       left stop, or the kind and leader given before it: \tqr \tqc
+//       \tqdec, \tldot \tlhyph \tlul \tlth \tlmdot) and \tbN (bar);
+//       borders \brdrt \brdrb \brdrl \brdrr \brdrbtw \brdrbar \box
+//       (the sides the border words after them set) and the border
+//       words (BORDER_STYLES, \brdrwN \brspN \brdrcfN \brdrsh);
+//       shading \shadingN (hundredths of a per cent) \cfpatN \cbpatN;
+//       and paraProps (pPr fields where the paragraph differs from
+//       its base, ./RtfProps pPrOf; a list paragraph's indent from
+//       its base with its level's over it, ./RtfLists levelOf)
+//   BORDER_STYLES  RTF border word -> WordprocessingML w:val
+//   borderOf(ctx, b) / shadingOf(ctx, s)  a border state ({style,
+//       w, sp, cf, sh}) or shading state ({pct, cf, cb}) as the
+//       Model's side {val, sz?, space?, color?, shadow?} or shd {val,
+//       color, fill}; undefined when it gives none
+//
+// Border words set the border chosen last: ctx.bdrSet (ctx, key, v)
+// (a paragraph side here; table rows and cells (\trbrdr*, \clbrdr*)
+// in ./RtfTable; character, diagonal and page borders (\chbrdr,
+// \cldglu, \pgbrdr*) choose nothing, so their words never reach a
+// paragraph). Units: twips,
+// except a side's sz (eighth points: \brdrw is twips, sz = w * 8 /
+// 20, 2..96) and space (points).
+// Paragraph keys (./RtfState): li ri fi sb sa sl slmult keep keepn
+// pagebb widctl outline ctxsp noline tabs (frozen [{val, pos,
+// leader?}]) tabNext ({val?, leader?} for the next \tx) bdr (frozen
+// {side: border}) shd. A field missing from the paragraph but set
+// by its style comes out turned off (false, 0, a 'clear' tab stop,
+// a 'nil' side, a clear shd).
+// Caps: MAX_STOPS stops (./ReadPropsMore), positions within MAX_POS.
+// Pure: no desktop services.
+import {colourHex} from './RtfProps';
+import {levelOf} from './RtfLists';
+import {MAX_STOPS, MAX_POS} from './ReadPropsMore';
+
+export const BORDER_STYLES = new Map([['brdrs', 'single'],
+  ['brdrth', 'thick'], ['brdrdb', 'double'], ['brdrdot', 'dotted'],
+  ['brdrdash', 'dashed'], ['brdrhair', 'single'],
+  ['brdrdashsm', 'dashSmallGap'], ['brdrdashd', 'dotDash'],
+  ['brdrdashdd', 'dotDotDash'], ['brdrtriple', 'triple'],
+  ['brdrtnthsg', 'thinThickSmallGap'],
+  ['brdrthtnsg', 'thickThinSmallGap'],
+  ['brdrtnthtnsg', 'thinThickThinSmallGap'],
+  ['brdrtnthmg', 'thinThickMediumGap'],
+  ['brdrthtnmg', 'thickThinMediumGap'],
+  ['brdrtnthtnmg', 'thinThickThinMediumGap'],
+  ['brdrtnthlg', 'thinThickLargeGap'],
+  ['brdrthtnlg', 'thickThinLargeGap'],
+  ['brdrtnthtnlg', 'thinThickThinLargeGap'], ['brdrwavy', 'wave'],
+  ['brdrwavydb', 'doubleWave'], ['brdrdashdotstr', 'dashDotStroked'],
+  ['brdremboss', 'threeDEmboss'], ['brdrengrave', 'threeDEngrave'],
+  ['brdroutset', 'outset'], ['brdrinset', 'inset'],
+  ['brdrnone', 'nil'], ['brdrnil', 'nil']]);
+
+const SIDES = ['top', 'left', 'bottom', 'right', 'between', 'bar'];
+// (exported for ./RtfWriteProps, the writer: one table each way)
+export const SIDE_WORDS = [['brdrt', ['top']], ['brdrb', ['bottom']],
+  ['brdrl', ['left']], ['brdrr', ['right']], ['brdrbtw', ['between']],
+  ['brdrbar', ['bar']], ['box', ['top', 'left', 'bottom', 'right']]];
+const OTHER_TARGETS = ['cldglu', 'cldgll', 'chbrdr', 'pgbrdrt',
+  'pgbrdrb', 'pgbrdrl', 'pgbrdrr'];
+export const LEADERS = [['tldot', 'dot'], ['tlhyph', 'hyphen'],
+  ['tlul', 'underscore'], ['tlth', 'heavy'], ['tlmdot', 'middleDot']];
+export const PCT = [5, 10, 12, 15, 20, 25, 30, 35, 37, 40, 45, 50,
+  55, 60, 62, 65, 70, 75, 80, 85, 87, 90, 95];
+const MAX_TW = 31680;
+
+const isInt = (t) => Number.isInteger(t.param);
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+/** A number word: key set to the parameter when ok(n). */
+const num = (key, ok = (n) => Math.abs(n) <= MAX_TW) => (ctx, t) => {
+  if (isInt(t) && ok(t.param)) ctx.state.setPara(key, t.param);
+};
+/** An on/off word: \keep, \keep0. */
+const flag = (key) => (ctx, t) =>
+  ctx.state.setPara(key, t.param === undefined || t.param !== 0);
+const set = (key, v) => (ctx) => ctx.state.setPara(key, v);
+
+/** \tqr \tldot...: the kind or leader of the next stop. */
+const tabNext = (k, v) => (ctx) => ctx.state.setPara('tabNext',
+  Object.freeze({...ctx.state.para.tabNext, [k]: v}));
+
+function addStop(ctx, pos, val) {
+  const p = ctx.state.para;
+  const next = p.tabNext || {};
+  ctx.state.setPara('tabNext', undefined);
+  if (Math.abs(pos) > MAX_POS) return;
+  const stops = (p.tabs || []).filter((s) => s.pos !== pos);
+  if (stops.length >= MAX_STOPS) return;
+  const s = {val: val || next.val || 'left', pos};
+  if (next.leader) s.leader = next.leader;
+  stops.push(Object.freeze(s));
+  stops.sort((a, b) => a.pos - b.pos);
+  ctx.state.setPara('tabs', Object.freeze(stops));
+}
+
+const stop = (val) => (ctx, t) => {
+  if (isInt(t)) addStop(ctx, t.param, val);
+};
+
+/** \brdrt...: the paragraph's sides the border words set. */
+const sides = (list) => (ctx) => {
+  ctx.bdrSet = (c, k, v) => {
+    const all = {...c.state.para.bdr};
+    for (const s of list) all[s] = Object.freeze({...all[s], [k]: v});
+    c.state.setPara('bdr', Object.freeze(all));
+  };
+};
+const nowhere = (ctx) => {
+  ctx.bdrSet = null;
+};
+const bdr = (k, read) => (ctx, t) => {
+  const v = read(t);
+  if (ctx.bdrSet && v !== undefined) ctx.bdrSet(ctx, k, v);
+};
+const twips = (t) => isInt(t) && t.param >= 0 && t.param <= MAX_TW
+  ? t.param : undefined;
+const index = (t) => isInt(t) && t.param >= 0 && t.param < 1e6
+  ? t.param : undefined;
+
+const shd = (k, read) => (ctx, t) => {
+  const v = read(t);
+  if (v === undefined) return;
+  ctx.state.setPara('shd', Object.freeze({...ctx.state.para.shd,
+    [k]: v}));
+};
+
+export function borderOf(ctx, b) {
+  if (!b || !b.style) return undefined;
+  const out = {val: b.style};
+  if (b.w !== undefined) out.sz = clamp(Math.round(b.w * 8 / 20), 2,
+    96);
+  if (b.sp !== undefined) out.space = clamp(Math.round(b.sp / 20), 0,
+    31);
+  const c = colourHex(ctx, b.cf);
+  if (c) out.color = c;
+  if (b.sh) out.shadow = true;
+  return out;
+}
+
+export function shadingOf(ctx, s) {
+  if (!s) return undefined;
+  const fill = colourHex(ctx, s.cb), color = colourHex(ctx, s.cf);
+  const pct = s.pct || 0;
+  if (!fill && !pct) return undefined;
+  let val = 'clear';
+  // solid is all pattern colour: with none given (auto, black) the
+  // \cbpat fill is what is meant, so it stays clear and shows it
+  if (pct >= 10000) val = color || !fill ? 'solid' : 'clear';
+  else if (pct > 0) {
+    const p = pct / 100;
+    const near = PCT.reduce((a, x) => Math.abs(x - p) <
+      Math.abs(a - p) ? x : a);
+    val = 'pct' + near;
+  }
+  return {val, color: color || 'auto', fill: fill || 'auto'};
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** [line, lineRule] of a paragraph state (240 auto: single). */
+function lineOf(p) {
+  const sl = p.sl || 0;
+  if (!sl) return [240, 'auto'];
+  if (p.slmult) return [Math.abs(sl), 'auto'];
+  return sl > 0 ? [sl, 'atLeast'] : [-sl, 'exact'];
+}
+
+function spacing(p, base, out) {
+  const o = {};
+  if ((p.sb || 0) !== (base.sb || 0)) o.before = p.sb || 0;
+  if ((p.sa || 0) !== (base.sa || 0)) o.after = p.sa || 0;
+  const l = lineOf(p);
+  if (!same(l, lineOf(base))) [o.line, o.lineRule] = l;
+  if (Object.keys(o).length) out.spacing = o;
+}
+
+/** lv: the paragraph's list level ({li?, fi?}), whose indent comes
+ *  between its style's and its own (./Styles resolvePara): a \li
+ *  or \fi equal to the level's is the level's, not its own. */
+function ind(p, base, out, lv) {
+  const o = {};
+  const li = lv && lv.li !== undefined ? lv.li : base.li || 0;
+  const fi0 = lv && lv.fi !== undefined ? lv.fi : base.fi || 0;
+  if ((p.li || 0) !== li) o.left = p.li || 0;
+  if ((p.ri || 0) !== (base.ri || 0)) o.right = p.ri || 0;
+  const fi = p.fi || 0;
+  if (fi !== fi0) {
+    if (fi < 0) o.hanging = -fi; else o.firstLine = fi;
+  }
+  if (Object.keys(o).length) out.ind = o;
+}
+
+/** On/off words and their state keys; state keys and pPr fields;
+ *  tab stop kinds (shared with ./RtfWriteProps). */
+export const FLAG_WORDS = [['keep', 'keep'], ['keepn', 'keepn'],
+  ['pagebb', 'pagebb'], ['contextualspace', 'ctxsp'],
+  ['noline', 'noline']];
+export const TAB_KINDS = [['tqr', 'right'], ['tqc', 'center'],
+  ['tqdec', 'decimal']];
+export const BOOLS = [['keepn', 'keepNext'], ['keep', 'keepLines'],
+  ['pagebb', 'pageBreakBefore'], ['widctl', 'widowControl'],
+  ['ctxsp', 'contextualSpacing'], ['noline', 'suppressLineNumbers']];
+
+function tabs(p, base, out) {
+  const mine = p.tabs || [], theirs = base.tabs || [];
+  if (same(mine, theirs)) return;
+  const at = new Set(mine.map((s) => s.pos));
+  const clear = theirs.filter((s) => !at.has(s.pos))
+    .map((s) => ({val: 'clear', pos: s.pos}));
+  out.tabs = [...mine.map((s) => ({...s})), ...clear]
+    .sort((a, b) => a.pos - b.pos);
+}
+
+function borders(ctx, p, base, out) {
+  const o = {};
+  for (const s of SIDES) {
+    const a = borderOf(ctx, p.bdr && p.bdr[s]);
+    const b = borderOf(ctx, base.bdr && base.bdr[s]);
+    if (!same(a, b)) o[s] = a || {val: 'nil'};
+  }
+  if (Object.keys(o).length) out.pBdr = o;
+}
+
+function paraProps(ctx, p, base, out, text) {
+  spacing(p, base, out);
+  ind(p, base, out, text ? levelOf(ctx, p) : undefined);
+  for (const [k, f] of BOOLS) if (!p[k] !== !base[k]) out[f] = !!p[k];
+  // \nowidctlpar where nothing set it: off, said (the Model's
+  // nothing is on, RTF's off)
+  if (p.widctl === false && base.widctl === undefined) {
+    out.widowControl = false;
+  }
+  const ol = p.outline === undefined ? 9 : p.outline;
+  if (ol !== (base.outline === undefined ? 9 : base.outline)) {
+    out.outlineLvl = ol;
+  }
+  tabs(p, base, out);
+  borders(ctx, p, base, out);
+  const a = shadingOf(ctx, p.shd), b = shadingOf(ctx, base.shd);
+  if (!same(a, b)) {
+    out.shd = a || {val: 'clear', color: 'auto', fill: 'auto'};
+  }
+}
+
+export const PART = {
+  words: new Map([
+    ['li', num('li')], ['lin', num('li')], ['ri', num('ri')],
+    ['rin', num('ri')], ['fi', num('fi')],
+    ['sb', num('sb', (n) => n >= 0 && n <= MAX_TW)],
+    ['sa', num('sa', (n) => n >= 0 && n <= MAX_TW)],
+    ['sl', num('sl')], ['slmult', flag('slmult')],
+    ...FLAG_WORDS.map(([w, k]) => [w, flag(k)]),
+    ['widctlpar', set('widctl', true)],
+    ['nowidctlpar', set('widctl', false)],
+    ['outlinelevel', num('outline', (n) => n >= 0 && n <= 9)],
+    ['tx', stop()], ['tb', stop('bar')],
+    ...TAB_KINDS.map(([w, v]) => [w, tabNext('val', v)]),
+    ...LEADERS.map(([w, v]) => [w, tabNext('leader', v)]),
+    ...SIDE_WORDS.map(([w, list]) => [w, sides(list)]),
+    ...OTHER_TARGETS.map((w) => [w, nowhere]),
+    ...[...BORDER_STYLES.keys()].map((w) => [w, bdr('style', () =>
+      BORDER_STYLES.get(w))]),
+    ['brdrw', bdr('w', twips)], ['brsp', bdr('sp', twips)],
+    ['brdrcf', bdr('cf', index)], ['brdrsh', bdr('sh', () => true)],
+    ['shading', shd('pct', (t) => isInt(t) && t.param >= 0 &&
+      t.param <= 10000 ? t.param : undefined)],
+    ['cfpat', shd('cf', index)], ['cbpat', shd('cb', index)],
+  ]),
+  paraProps: [paraProps],
+};

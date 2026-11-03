@@ -1,0 +1,336 @@
+// RtfComments - comments (RTF annotations) for the RTF reader
+// (./RtfRead), as the Doc's comments (./CommentRead) with their
+// marks in the text.
+//
+//   PART   handlers: {\*\atrfstart tag} and {\*\atrfend tag} (where
+//       the commented text starts and ends), {\*\atnid initials}
+//       {\*\atnauthor name} and \chatn (the comment's mark) before
+//       {\*\annotation ...} (the comment: {\*\atnref tag}
+//       {\*\atndate date} {\*\atnparent tag} and its paragraphs,
+//       read as the body's; \chatn in them the comment's own mark);
+//       finish (the comments part, the comments)
+//
+// The marks are the modelled inlines ./ReadPara reads: cmtStart
+// and cmtEnd (level 'p', w:commentRangeStart / End) at the tags,
+// cmtRef (level 'r', w:commentReference, in the format the text had
+// at the \chatn) where the annotation is; each with its w:id. Ids
+// are 0, 1... in the order the tags (or a point comment's
+// annotation) first come, one a tag. A range may cross runs,
+// paragraphs and tables. Tolerated: an \atrfend with no start, a
+// tag started twice or ended twice (the later one ignored), a start
+// with no end (the range ends at the comment's mark), marks with no
+// annotation (taken out at the end), an annotation whose tag names
+// no range (a comment on a point), a second annotation for a tag (a
+// point comment). The comment's text starts with its
+// w:annotationRef mark (Word's), put there when the file has none.
+// author and initials: ./RtfRevs cleanName; date: \atndate (a
+// whole number, ./RtfRevs dttm; a bad one gives null). A reply
+// (\atnparent naming the tag of an annotation read) has the thread's
+// first comment as its parent (./CommentRead's model: a parent's
+// own parent is followed, at most MAX_COMMENTS steps; a cycle or a
+// missing parent leaves it top level), and the commentsExtended part
+// is made for the threads. RTF has no resolved state: done false.
+// The comment's text is its own: a revision in force around the
+// annotation does not apply in it (./RtfRevs untracked). An \atnid,
+// \atnauthor or \chatn counts for the annotation that follows in
+// the same paragraph only.
+// Every comment gets a w14:paraId (./CommentParts freshParaId, by a
+// fixed sequence: the same file reads the same).
+// The parts are made at the end as a command makes them
+// (./CommentParts ensure), then the comments go in (./OpsComments
+// addComments through ./RtfNotes builder). Links and pictures in
+// comments are related from the comments part (ctx.relsAt).
+// Not read (skipped, with a note): annotations and marks in a
+// header, footer, note or comment, annotations past MAX_COMMENTS.
+// Pure: no desktop services.
+import {newPara} from './Model';
+import {W} from './Wml';
+import {Flow, fmtOf} from './RtfBody';
+import {SKIP, collect} from './RtfText';
+import {cleanName, dttm, untracked} from './RtfRevs';
+import {builder, markFirst} from './RtfNotes';
+import {ensure, freshParaId, takenIds} from './CommentParts';
+import {newComment} from './OpsComments';
+import {relsNameFor} from './Rels';
+import {without} from './ClipNotes';
+
+export const MAX_COMMENTS = 10000;
+const MAX_TAG = 64;
+
+const cmts = (ctx) => ctx.cmts || (ctx.cmts = {tags: new Map(),
+  next: 0, list: [], pend: {}, rels: [], marks: false});
+
+const mark = (kind, id) => ({kind, level: 'p', id,
+  node: W(kind === 'cmtStart' ? 'commentRangeStart'
+    : 'commentRangeEnd', {'w:id': String(id)})});
+const refMark = (id) => ({kind: 'cmtRef', level: 'r', id,
+  node: W('commentReference', {'w:id': String(id)})});
+const annRef = () => ({kind: 'raw', level: 'r',
+  node: W('annotationRef')});
+
+const STORY = 'comments in headers, footers, notes and comments ' +
+  'are not read: skipped';
+const MANY = 'more than ' + MAX_COMMENTS + ' comments: the rest ' +
+  'are skipped';
+
+/** A new record (an id), or null past the cap. */
+function fresh(ctx) {
+  const c = cmts(ctx);
+  if (c.next >= MAX_COMMENTS) {
+    ctx.note(MANY);
+    return null;
+  }
+  return {id: c.next++, start: false, end: false, done: false};
+}
+
+/** The record of tag, made on first use (null past the cap). */
+function recOf(ctx, tag) {
+  const c = cmts(ctx);
+  let r = c.tags.get(tag);
+  if (!r) {
+    r = fresh(ctx);
+    if (r) c.tags.set(tag, r);
+  }
+  return r;
+}
+
+const tagOf = (s) => s.trim().slice(0, MAX_TAG);
+
+/** {\*\atrfstart} / {\*\atrfend}. */
+const range = (isStart) => (ctx) => {
+  const outer = ctx.dest;
+  if (ctx.relsAt) {
+    ctx.note(STORY);
+    return SKIP;
+  }
+  return collect((c, s) => {
+    const tag = tagOf(s);
+    if (!tag || !outer.obj) return;
+    const known = cmts(c).tags.get(tag);
+    if (!isStart && !known) return;
+    const r = known || recOf(c, tag);
+    if (!r || r.done || (isStart ? r.start : !r.start || r.end))
+      return;
+    r[isStart ? 'start' : 'end'] = true;
+    cmts(c).marks = true;
+    outer.obj(c, mark(isStart ? 'cmtStart' : 'cmtEnd', r.id));
+  })(ctx);
+};
+
+/** {\*\atnid} {\*\atnauthor} {\*\atnref}...: into object o. */
+/** The pending \atnid, \atnauthor, \atnref and \chatn: only those
+ *  of this paragraph and destination (older ones are dropped). */
+function pendOf(ctx) {
+  const c = cmts(ctx);
+  if (c.pend.at !== ctx.paras || c.pend.dest !== ctx.dest)
+    c.pend = {at: ctx.paras, dest: ctx.dest};
+  return c.pend;
+}
+
+const field = (key, o) => (ctx) => {
+  const to = o || pendOf(ctx);
+  return collect((c, s) => {
+    to[key] = s;
+  })(ctx);
+};
+
+/** The whole number of s (an optional '-', digits), or undefined. */
+function number(s) {
+  const t = s.trim();
+  let i = t[0] === '-' ? 1 : 0;
+  if (i >= t.length || t.length > 11) return undefined;
+  for (let k = i; k < t.length; k++) {
+    if (t[k] < '0' || t[k] > '9') return undefined;
+  }
+  return Number(t);
+}
+
+class CommentFlow extends Flow {
+  constructor(ctx, outer, fmt, pend) {
+    super();
+    untracked(ctx);
+    this.outer = outer;
+    this.fmt = fmt;
+    this.info = pend;
+    this.self = false;
+    this.outerRels = ctx.relsAt;
+    ctx.relsAt = this;
+    this.c = cmts(ctx);
+    this.words = new Map([['chatn', (c) => {
+      this.self = true;
+      this.obj(c, annRef());
+    }]]);
+    this.dests = new Map(['atnid', 'atnauthor', 'atnref', 'atndate',
+      'atnparent'].map((k) => [k, field(k, pend)]));
+  }
+
+  get rels() {
+    return this.c.rels;
+  }
+
+  set rels(v) {
+    this.c.rels = v;
+  }
+
+  sect() {}
+
+  end(ctx) {
+    ctx.relsAt = this.outerRels;
+    this.finish(ctx);
+    const p = this.info, c = this.c;
+    const tag = p.atnref !== undefined ? tagOf(p.atnref) : '';
+    let r = tag ? recOf(ctx, tag) : fresh(ctx);
+    if (r && r.done) r = fresh(ctx);
+    if (!r) return;
+    r.done = true;
+    if (r.start && !r.end) {
+      r.end = true;
+      this.outer.obj(ctx, mark('cmtEnd', r.id));
+    }
+    this.outer.obj(ctx, refMark(r.id), this.fmt);
+    let blocks = this.sections.flatMap((s) => s.blocks);
+    if (!this.self) blocks = markFirst(blocks, annRef());
+    else if (!blocks.length) blocks.push(newPara(''));
+    const date = p.atndate !== undefined ? dttm(number(p.atndate))
+      : undefined;
+    c.list.push({id: r.id, blocks, tag,
+      author: cleanName(p.atnauthor || ''),
+      initials: cleanName(p.atnid || ''), date: date || null,
+      parentTag: p.atnparent !== undefined ? tagOf(p.atnparent)
+        : undefined});
+  }
+}
+
+function annotation(ctx) {
+  const c = cmts(ctx);
+  const pend = pendOf(ctx), m = pend.mark;
+  c.pend = {};
+  if (ctx.relsAt) {
+    ctx.note(STORY);
+    return SKIP;
+  }
+  if (!ctx.dest.obj) return SKIP;
+  const fmt = m && m.dest === ctx.dest && m.paras === ctx.paras
+    ? m.fmt : fmtOf(ctx);
+  return new CommentFlow(ctx, ctx.dest, fmt, pend);
+}
+
+/** \chatn outside a comment: the format of the mark to come. */
+function chatn(ctx) {
+  pendOf(ctx).mark = {dest: ctx.dest, fmt: fmtOf(ctx),
+    paras: ctx.paras};
+}
+
+// ------------------------------------------------------------ end
+
+/** blocks with the marks of ids in gone taken out (new objects). */
+function strip(blocks, gone) {
+  return blocks.map((b) => {
+    if (b.type === 'tbl') {
+      return {...b, rows: b.rows.map((row) => ({...row,
+        cells: row.cells.map((cell) => ({...cell,
+          blocks: strip(cell.blocks, gone)}))}))};
+    }
+    if (b.type !== 'p') return b;
+    const drop = [];
+    for (const [k, x] of Object.entries(b.inlines)) {
+      if ((x.kind === 'cmtStart' || x.kind === 'cmtEnd') &&
+        gone.has(x.id)) drop.push(Number(k));
+    }
+    return drop.length ? without(b, drop) : b;
+  });
+}
+
+/** The parent id of each reply: the thread's first comment. */
+function parents(list) {
+  const byTag = new Map();
+  for (const x of list) {
+    if (x.tag && !byTag.has(x.tag)) byTag.set(x.tag, x);
+  }
+  const up = (x) => {
+    const p = x.parentTag !== undefined ? byTag.get(x.parentTag)
+      : undefined;
+    return p && p !== x ? p : null;
+  };
+  // (the top of each chain worked out once: a chain of n replies
+  // costs n steps, not n * n; null for a chain in a loop)
+  const tops = new Map();
+  const topOf = (x) => {
+    const path = new Set();
+    let p = x, t;
+    for (;;) {
+      if (tops.has(p)) { t = tops.get(p); break; }
+      if (path.has(p)) { t = null; break; }
+      const q = up(p);
+      if (!q) { t = p; break; }
+      path.add(p);
+      p = q;
+    }
+    for (const y of path) tops.set(y, t);
+    return t;
+  };
+  const out = new Map();
+  for (const x of list) {
+    const top = up(x) ? topOf(x) : null;
+    if (top) out.set(x.id, top.id);
+  }
+  return out;
+}
+
+/** blocks with paraId on the last paragraph, as read back. */
+function withParaId(blocks, paraId) {
+  const out = blocks.slice(), p = out[out.length - 1];
+  out[out.length - 1] = {...p, extraP: [...p.extraP,
+    ['w14:paraId', paraId]]};
+  return out;
+}
+
+/** A fixed sequence for the paragraph ids (see the header). */
+function sequence() {
+  let s = 0x2468ace1;
+  return () => {
+    s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+function finish(ctx) {
+  const c = ctx.cmts;
+  if (!c) return;
+  const gone = new Set();
+  for (const r of c.tags.values()) {
+    if ((r.start || r.end) && !r.done) gone.add(r.id);
+  }
+  if (gone.size) {
+    for (const s of ctx.body.sections) s.blocks = strip(s.blocks, gone);
+  }
+  if (!c.list.length) return;
+  const d = builder(ctx);
+  const ps = parents(c.list);
+  ensure(d, ps.size ? ['comments', 'extended'] : ['comments']);
+  const doc = ctx.doc;
+  if (c.rels.length) {
+    doc.comments = {...doc.comments, rels: c.rels,
+      relsPart: relsNameFor(doc.meta.commentParts.comments)};
+  }
+  const taken = takenIds(doc), rand = sequence();
+  const comments = c.list.map((x) => {
+    const paraId = freshParaId(doc, {rand, taken});
+    taken.add(paraId);
+    return newComment(doc, x.id, withParaId(x.blocks, paraId),
+      {author: x.author, initials: x.initials, date: x.date, paraId,
+        parent: ps.get(x.id) ?? null});
+  });
+  d.apply({op: 'addComments', comments,
+    order: comments.map((x) => x.id)});
+}
+
+export const PART = {
+  words: new Map([['chatn', chatn]]),
+  dests: new Map([
+    ['atrfstart', range(true)], ['atrfend', range(false)],
+    ['atnid', field('atnid')], ['atnauthor', field('atnauthor')],
+    ['atnref', field('atnref')], ['annotation', annotation],
+  ]),
+  finish: [finish],
+};

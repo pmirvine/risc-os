@@ -619,7 +619,9 @@ from `PdfText`), `wimplib/PdfFont` (`FontSet(writer, loader)`: TrueType subset a
 by code point, `missing`; re-exports `parseSfnt`, `subsetTtf`, `toUnicodeCmap`) with its parts `PdfFontEmbed`,
 `PdfToUnicode`, `SfntTables`, `SfntCmap`, `SfntParse` and `SfntSubset` (font files read, subset and written),
 `wimplib/PdfImage` (`imageObjects`, `jpegInfo`: RGBA with an SMask, or a JPEG unchanged) and `wimplib/PdfColour`
-(`parseColour`, `rgbOf`). No shared core code changed, so nothing is added to docs/CHANGES_NEEDED.md.
+(`parseColour`, `rgbOf`). WimpLib's RTF modules (Batch G2, pure): `wimplib/RtfLex` (`lex(bytes, {maxDepth = 256, maxTokens = 2e6})`, `isRtf`: bytes to
+tokens, never throws; groups deeper than `maxDepth` or more than `maxTokens` (2,000,000) tokens stop the scan with a note;
+each note is said once, however often it happens) and `wimplib/RtfCodepage` (`decoderFor`, `known`, `fcharsetToCpg`, `encodeAscii`; code pages 1250 to 1258, 437, 850 and 10000, anything else decoded as 1252 when `known` says no) with its data `RtfCodeTables`. No shared core code changed, so nothing is added to docs/CHANGES_NEEDED.md.
 
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
 ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).

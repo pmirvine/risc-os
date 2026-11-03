@@ -1,0 +1,228 @@
+// RtfRevs - tracked changes for the RTF reader (./RtfRead): the
+// author table and the insertions and deletions, as the run tags
+// (run.rev) ./RevRead reads from a .docx.
+//
+//   PART   handlers: {\*\revtbl {name;}...} (the authors: entry 0 is
+//       usually Unknown), \revised and \deleted (character state:
+//       \revised0 / \deleted0 turn them off, \plain too), \revauthN
+//       \revdttmN (the insertion's author entry and date),
+//       \revauthdelN \revdttmdelN (the deletion's). Formatting
+//       revisions (\crauthN \crdateN, {\*\oldcprops}, \prauth...)
+//       are not read: the text has its new formatting, untracked
+//   revKey(ctx, ch) -> key | undefined  the revision of character
+//       state ch: a frozen {kind: 'ins' | 'del', author?, date?},
+//       the same object for the same three values (./RtfBody puts
+//       it in the run format: fmtOf); deleted wins over inserted
+//   tagRuns(ctx, runs, keys) -> runs  runs (a paragraph's, keys[i]
+//       the key of runs[i] or undefined) with their tags: a run
+//       whose key is the run before's shares its tag, any other
+//       gets a new one (ids 1, 2...), so each stretch is one w:ins
+//       or w:del. A tag: {id, kind, author?, date?, attrs: w:id,
+//       w:author, w:date as ./RevWrite writes them, extra: []}
+//   markRev(ctx, ch, pPr) -> pPr  the paragraph mark's revision
+//       (the state at \par): pPr with w:rPr holding a w:ins or w:del
+//       in its extra, as ./ReadPara keeps it (best effort)
+//   untracked(ctx)  the group in force has no revision state (a
+//       note's or comment's text: its own, not the text around it)
+//   cleanName(s) -> string  an author or initials as kept: control
+//       characters gone (./RtfText), a lone surrogate U+FFFD, tabs
+//       and line ends spaces, runs of spaces one, trimmed, at most
+//       MAX_NAME code points
+//   dttm(n) -> string | undefined  an RTF date (\revdttm, \atndate:
+//       minute | hour << 6 | day << 11 | month << 16 | (year -
+//       1900) << 20 | weekday << 29) as Word writes w:date
+//       ('2024-05-06T07:08:00Z', the local time with a Z); undefined
+//       when it is not a whole number 0..2^32-1 (a negative one as
+//       its 32 bits) or not a real date (minute 0..59, hour 0..23,
+//       month 1..12, the day in the month, the year to MAX_YEAR)
+//
+// RTF is untrusted: at most MAX_AUTHORS authors (the rest read as
+// none, with a note) of at most MAX_NAME code points; an author
+// entry the table lacks gives no author, a bad date none (never
+// made up). At most MAX_REVS tags: past it every insertion shares
+// one tag, every deletion one, with no author or date (a note), so
+// deleted text is never shown as live text.
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+
+export const MAX_AUTHORS = 1000, MAX_NAME = 255, MAX_REVS = 100000;
+const MAX_YEAR = 2100;
+
+const isHi = (c) => c >= 0xd800 && c <= 0xdbff;
+const isLo = (c) => c >= 0xdc00 && c <= 0xdfff;
+const WS = ' \t\n\r';
+const REPL = String.fromCharCode(0xfffd);
+
+/** See the header. */
+export function cleanName(s) {
+  let out = '', n = 0, sp = false;
+  for (let i = 0; i < s.length && n < MAX_NAME; i++) {
+    const c = s.charCodeAt(i);
+    if (WS.includes(s[i])) {
+      sp = out.length > 0;
+      continue;
+    }
+    if (sp) {
+      out += ' ';
+      n++;
+      sp = false;
+      if (n >= MAX_NAME) break;
+    }
+    if (isHi(c) && isLo(s.charCodeAt(i + 1))) {
+      out += s.slice(i, i + 2);
+      i++;
+    } else out += isHi(c) || isLo(c) ? REPL : s[i];
+    n++;
+  }
+  return out;
+}
+
+const z = (n, w = 2) => String(n).padStart(w, '0');
+const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const leap = (y) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+
+/** See the header. */
+export function dttm(n) {
+  if (!Number.isInteger(n) || n < -0x80000000 || n > 0xffffffff)
+    return undefined;
+  const v = n >>> 0;
+  const min = v & 63, hour = (v >>> 6) & 31, day = (v >>> 11) & 31;
+  const month = (v >>> 16) & 15, year = ((v >>> 20) & 511) + 1900;
+  if (min > 59 || hour > 23 || month < 1 || month > 12 ||
+    year > MAX_YEAR) return undefined;
+  const last = month === 2 && leap(year) ? 29 : DAYS[month - 1];
+  if (day < 1 || day > last) return undefined;
+  return z(year, 4) + '-' + z(month) + '-' + z(day) + 'T' + z(hour) +
+    ':' + z(min) + ':00Z';
+}
+
+const revs = (ctx) => ctx.revs || (ctx.revs = {authors: null,
+  keys: new Map(), next: 1, over: null});
+
+/** {\*\revtbl}: one entry a group, or ';' ending each at the top. */
+function revtbl(ctx) {
+  const names = [];
+  let cur = '';
+  const push = () => {
+    if (names.length < MAX_AUTHORS) names.push(cleanName(cur));
+    else ctx.note('more than ' + MAX_AUTHORS + ' authors of ' +
+      'changes: the rest are read as unknown');
+    cur = '';
+  };
+  const text = (c, s) => {
+    for (const ch of s) {
+      if (ch === ';') push();
+      else if (cur.length < 4 * MAX_NAME) cur += ch;
+    }
+  };
+  const top = {ownWords: true, text,
+    group: () => ({ownWords: true, text,
+      end() {
+        if (cur) push();
+      }}),
+    end(c) {
+      if (cur) push();
+      revs(c).authors = names;
+      // (the run formats name the authors: ./RtfBody fmtOf)
+      c.fmtCache = null;
+    }};
+  return top;
+}
+
+const authorOf = (ctx, n) => {
+  const a = revs(ctx).authors;
+  return a && Number.isInteger(n) && n >= 0 && n < a.length
+    ? a[n] : undefined;
+};
+
+/** See the header. */
+export function revKey(ctx, ch) {
+  const del = ch.del === true;
+  if (!del && ch.ins !== true) return undefined;
+  const kind = del ? 'del' : 'ins';
+  const author = authorOf(ctx, del ? ch.delAuth : ch.insAuth);
+  const date = dttm(del ? ch.delDttm : ch.insDttm);
+  const r = revs(ctx);
+  const k = JSON.stringify([kind, author ?? null, date ?? null]);
+  let key = r.keys.get(k);
+  if (!key) {
+    const o = {kind};
+    if (author !== undefined) o.author = author;
+    if (date !== undefined) o.date = date;
+    key = Object.freeze(o);
+    r.keys.set(k, key);
+  }
+  return key;
+}
+
+/** A new tag of key (see the header's cap). */
+function tag(ctx, key) {
+  const r = revs(ctx);
+  if (r.next > MAX_REVS) {
+    ctx.note('more than ' + MAX_REVS + ' tracked changes: the rest ' +
+      'are kept without their authors and dates');
+    r.over = r.over || {};
+    if (!r.over[key.kind]) r.over[key.kind] = make(r, {kind: key.kind});
+    return r.over[key.kind];
+  }
+  return make(r, key);
+}
+
+function make(r, key) {
+  const id = r.next++;
+  const attrs = [['w:id', String(id)]];
+  if (key.author !== undefined) attrs.push(['w:author', key.author]);
+  if (key.date !== undefined) attrs.push(['w:date', key.date]);
+  const t = {id, kind: key.kind, attrs, extra: []};
+  if (key.author !== undefined) t.author = key.author;
+  if (key.date !== undefined) t.date = key.date;
+  return t;
+}
+
+/** See the header. */
+export function tagRuns(ctx, runs, keys) {
+  let prev, prevTag;
+  return runs.map((run, i) => {
+    const key = keys[i];
+    if (!key) {
+      prev = undefined;
+      return run;
+    }
+    if (key !== prev) prevTag = tag(ctx, key);
+    prev = key;
+    return {...run, rev: prevTag};
+  });
+}
+
+/** See the header. */
+export function markRev(ctx, ch, pPr) {
+  const key = revKey(ctx, ch);
+  if (!key) return pPr;
+  const t = tag(ctx, key);
+  const node = el('w:rPr', [], el(t.kind === 'del' ? 'w:del'
+    : 'w:ins', t.attrs));
+  return {...pPr, extra: [...pPr.extra, node]};
+}
+
+const KEYS = ['ins', 'del', 'insAuth', 'insDttm', 'delAuth',
+  'delDttm'];
+
+/** See the header. */
+export function untracked(ctx) {
+  for (const k of KEYS) ctx.state.setChar(k, undefined);
+}
+
+const flag = (key) => (ctx, t) => ctx.state.setChar(key,
+  t.param === undefined || t.param !== 0 ? true : undefined);
+const num = (key) => (ctx, t) => {
+  if (Number.isInteger(t.param)) ctx.state.setChar(key, t.param);
+};
+
+export const PART = {
+  words: new Map([
+    ['revised', flag('ins')], ['deleted', flag('del')],
+    ['revauth', num('insAuth')], ['revdttm', num('insDttm')],
+    ['revauthdel', num('delAuth')], ['revdttmdel', num('delDttm')],
+  ]),
+  dests: new Map([['revtbl', revtbl]]),
+};

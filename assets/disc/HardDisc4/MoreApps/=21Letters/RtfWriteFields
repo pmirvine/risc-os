@@ -1,0 +1,326 @@
+// RtfWriteFields - fields, links and bookmarks for the RTF writer
+// (./RtfWrite): the inverse of the reader's ./RtfFields, with ITS
+// rules (SAFE, nameOf, linkTarget, MAX_CODE), so a field the reader
+// would not keep is never written as one.
+//
+//   PART   inlines: w:fldChar (begin, separate, end), w:instrText,
+//       w:fldSimple, w:hyperlink, w:bookmarkStart, w:bookmarkEnd;
+//       the flush hook (open fields closed)
+//
+// A complex field (begin, its w:instrText code, separate, the
+// result as ordinary text and inlines, end) is written
+// {\field{\*\fldinst {code}}{\fldrslt {result runs}}}: the result
+// may run over several runs and paragraphs (a TOC), so at begin the
+// run's group is closed, the field opened and the run's group
+// opened again ({w.words ...}); end closes them the same way. The
+// code is the w:instrText of the field's own level between begin
+// and its separate (or end) in the same paragraph, read ahead at
+// begin; a field whose code is not there, not one ./FieldMake
+// codeText takes, or not of a SAFE kind (a HYPERLINK: to an
+// address ./LinkParts takes) keeps only its result, as text, and
+// counts in lost (LOST.fields, once each). w:fldLock gives
+// \fldlock, w:dirty \flddirty. A field still open when its
+// story's, cell's or section's last paragraph ends (or before a
+// table) is closed there (flush): the braces always balance.
+// A field in a field's code ({ IF { PAGE } = 1 "one" "more" }) is
+// written inside \fldinst as the RTF spec has it: {\*\fldinst {
+// IF {\field{\*\fldinst { PAGE }}{\fldrslt {1}}} = 1 ...}}; a field
+// there is checked by the same rule (one that fails is its result as
+// code text), the outer by its code with each inner field's result
+// in its place; the code region's own runs are then not written
+// (w.hush, ./RtfWrite) until the outer field's separate. A code
+// region with a field that is not whole in the paragraph keeps the
+// outer's result only, its code region left out, counted
+// (LOST.nested). (./RtfFields reads a field in a code as its
+// result text: the code read back holds the value.)
+// w:fldSimple: {\field{\*\fldinst code}{\fldrslt runs}} by the same
+// rule, its result the runs it holds.
+// A w:hyperlink is a HYPERLINK field: "address" from its
+// relationship (in the rels of w.place: the body's, a header's, the
+// notes'; External, and an address ./LinkParts target takes), \l
+// "name" its w:anchor (./LinkUrl checkAnchor), \o "tip" its
+// w:tooltip (at most TIP_MAX); its runs (./LinkParts inside) the
+// result. No target that passes: its text only, counted
+// (LOST.links). In a field code a quoted string has \" and \\.
+// Bookmarks: {\*\bkmkstart name} / {\*\bkmkend name} (the end
+// found by its w:id); a name checkAnchor refuses, or a second start
+// of a name, is left out (counted once: LOST.bookmarks).
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {codeText} from './FieldMake';
+import {parse} from './FieldParse';
+import {SAFE, nameOf, linkTarget, MAX_CODE} from './RtfFields';
+import {target, inside, TIP_MAX} from './LinkParts';
+import {checkAnchor} from './LinkUrl';
+import {LOST} from './RtfLost';
+
+const ON = ['1', 'true', 'on'];
+
+const attr = (n, k) => {
+  const a = Array.isArray(n.attrs) ? n.attrs.find((x) =>
+    Array.isArray(x) && x[0] === k) : undefined;
+  return a ? String(a[1]) : undefined;
+};
+
+/** The text of a node's string children. */
+function textOf(n) {
+  let s = '';
+  for (const c of Array.isArray(n.children) ? n.children : []) {
+    if (typeof c === 'string') s += c;
+  }
+  return s;
+}
+
+/** The code to write for raw code, or null: its result as text. */
+export function keptCode(raw) {
+  if (typeof raw !== 'string' || raw.length > MAX_CODE) return null;
+  const code = codeText(raw);
+  if (!code) return null;
+  const p = parse(raw), name = nameOf(raw);
+  if (!name || name !== p.name || !SAFE.has(name)) return null;
+  if (name === 'HYPERLINK' && !linkTarget(p)) return null;
+  return code;
+}
+
+const isRaw = (x, name) => x && x.kind === 'raw' && x.node &&
+  x.node.name === name;
+
+/** The code of the field begun at index i of p: its own level's
+ *  instrText up to its separate or end, or null when p ends first. */
+function codeAfter(p, i) {
+  let code = '', depth = 0;
+  for (let k = p.text.indexOf(OBJ, i + 1); k >= 0;
+    k = p.text.indexOf(OBJ, k + 1)) {
+    const x = p.inlines[String(k)];
+    if (isRaw(x, 'w:fldChar')) {
+      const t = attr(x.node, 'w:fldCharType');
+      if (t === 'begin') depth++;
+      else if (t === 'end' && depth) depth--;
+      else if (t === 'end' || (t === 'separate' && !depth)) {
+        return code;
+      }
+    } else if (isRaw(x, 'w:instrText') && !depth) {
+      code += textOf(x.node);
+      if (code.length > MAX_CODE) return null;
+    }
+  }
+  return null;
+}
+
+/** The field begun at index i of p, read to its end: {code (the
+ *  own level's code, an inner field's result in its place), rtf (the
+ *  code as RTF, inner fields as fields), result (its result's text),
+ *  nested, sep (index of its separate, or -1), end} or null when p
+ *  ends first. */
+function fieldAt(w, p, i, depth = 0) {
+  if (depth > 20) return null;
+  const f = {code: '', rtf: '', result: '', nested: false, sep: -1,
+    end: -1};
+  for (let j = i + 1; j < p.text.length; j++) {
+    const c = p.text[j];
+    if (c !== OBJ) {
+      if (f.sep >= 0) f.result += c;
+      else {
+        f.code += c;
+        f.rtf += w.text(c);
+      }
+      continue;
+    }
+    const x = p.inlines[String(j)];
+    if (isRaw(x, 'w:instrText') && f.sep < 0) {
+      const t = textOf(x.node);
+      f.code += t;
+      f.rtf += w.text(t);
+    } else if (isRaw(x, 'w:fldChar')) {
+      const t = attr(x.node, 'w:fldCharType');
+      if (t === 'begin') {
+        const g = fieldAt(w, p, j, depth + 1);
+        if (!g) return null;
+        if (f.sep >= 0) f.result += g.result;
+        else {
+          f.nested = true;
+          f.code += g.result;
+          const kept = keptCode(g.code);
+          const code = kept && !g.nested ? w.text(kept) : g.rtf;
+          f.rtf += kept ? '{\\field{\\*\\fldinst {' + code +
+            '}}{\\fldrslt {' + w.text(g.result) + '}}}'
+            : w.text(g.result);
+        }
+        j = g.end;
+      } else if (t === 'separate' && f.sep < 0) f.sep = j;
+      else if (t === 'end') {
+        f.end = j;
+        return f.code.length > MAX_CODE ? null : f;
+      }
+    }
+  }
+  return null;
+}
+
+/** Whether the code of the field begun at i holds a field begin
+ *  (before its separate or end, in p). */
+function codeHasField(p, i) {
+  for (let k = p.text.indexOf(OBJ, i + 1); k >= 0;
+    k = p.text.indexOf(OBJ, k + 1)) {
+    const x = p.inlines[String(k)];
+    if (!isRaw(x, 'w:fldChar')) continue;
+    const t = attr(x.node, 'w:fldCharType');
+    if (t === 'begin') return true;
+    if (t === 'separate' || t === 'end') return false;
+  }
+  return false;
+}
+
+const flags = (n) => (ON.includes(attr(n, 'w:fldLock')) ? '\\fldlock'
+  : '') + (ON.includes(attr(n, 'w:dirty')) ? '\\flddirty' : '');
+
+/** A w:fldChar while w.hush is set (in a code region): -> whether
+ *  the hushed region ended here. */
+function hushed(w, t) {
+  if (t === 'begin') w.hush.depth++;
+  else if (w.hush.depth) {
+    if (t === 'end') w.hush.depth--;
+  } else if (t === 'separate' || t === 'end') {
+    w.hush = null;
+    return true;
+  }
+  return false;
+}
+
+function fldChar(w, x, run, p, i) {
+  const t = attr(x.node, 'w:fldCharType');
+  if (w.hush && !(hushed(w, t) && t === 'end')) return '';
+  if (t === 'begin') {
+    let code, rtf;
+    if (codeHasField(p, i)) {
+      const f = fieldAt(w, p, i);
+      // (the code region is not written: its fields are in \fldinst)
+      w.hush = {depth: 0};
+      code = f && keptCode(f.code);
+      if (!code) {
+        w.fields.push({kept: false});
+        w.lose(f ? LOST.fields : LOST.nested);
+        return '';
+      }
+      rtf = ' ' + f.rtf;
+    } else {
+      code = keptCode(codeAfter(p, i));
+      if (!code) {
+        w.fields.push({kept: false});
+        w.lose(LOST.fields);
+        return '';
+      }
+      rtf = ' ' + w.text(code);
+    }
+    w.fields.push({kept: true});
+    // (the field's own group has the words too: the reader formats
+    // the field's marks as the text around them)
+    return '}{\\field' + flags(x.node) + w.words + '{\\*\\fldinst {' +
+      w.words + rtf + '}}{\\fldrslt {' + w.words + ' ';
+  }
+  if (t !== 'end' || w.fields.length <= w.fieldBase) return '';
+  return w.fields.pop().kept ? '}}}{' + w.words + ' ' : '';
+}
+
+function flush(w) {
+  let s = '';
+  while (w.fields.length > w.fieldBase) {
+    if (w.fields.pop().kept) s += '}}';
+  }
+  return s;
+}
+
+/** The runs inside a link or simple field node, else its text. */
+function result(w, x, p) {
+  let inner = null;
+  try {
+    inner = inside(x.node, w.map());
+  } catch {
+    inner = null;
+  }
+  if (inner && inner.text) return w.content(inner, p);
+  return typeof x.text === 'string' ? w.text(x.text) : '';
+}
+
+function simple(w, x, run, p) {
+  const c = result(w, x, p);
+  const code = keptCode(attr(x.node, 'w:instr'));
+  if (!code) {
+    w.lose(LOST.fields);
+    return c;
+  }
+  return '{\\field' + flags(x.node) + '{\\*\\fldinst ' + w.text(code) +
+    '}{\\fldrslt ' + c + '}}';
+}
+
+const quote = (s) => '"' + s.split('\\').join('\\\\').split('"')
+  .join('\\"') + '"';
+
+/** {url?, anchor?, tip?} of a w:hyperlink node, or null. */
+function linkOf(w, n) {
+  const out = {};
+  const rid = attr(n, 'r:id');
+  if (rid !== undefined) {
+    const rel = w.place.rels.find((r) => r && r.id === rid);
+    if (!rel || rel.mode !== 'External' ||
+      typeof rel.target !== 'string') return null;
+    const t = target({address: rel.target});
+    if (!t || t.error) return null;
+    if (t.url) out.url = t.url;
+    else out.anchor = t.anchor;
+  }
+  const a = attr(n, 'w:anchor');
+  if (a !== undefined) {
+    if (checkAnchor(a)) return null;
+    out.anchor = a;
+  }
+  const tip = attr(n, 'w:tooltip');
+  if (tip && tip.length <= TIP_MAX) out.tip = tip;
+  return out.url || out.anchor ? out : null;
+}
+
+function link(w, x, run, p) {
+  const c = result(w, x, p);
+  const t = linkOf(w, x.node);
+  if (!t) {
+    w.lose(LOST.links);
+    return c;
+  }
+  let code = 'HYPERLINK';
+  if (t.url) code += ' ' + quote(t.url);
+  if (t.anchor) code += ' \\l ' + quote(t.anchor);
+  if (t.tip) code += ' \\o ' + quote(t.tip);
+  return '{\\field{\\*\\fldinst {' + w.text(code) + '}}{\\fldrslt ' +
+    c + '}}';
+}
+
+const marks = (w) => w.marks || (w.marks = {ids: new Map(),
+  names: new Set()});
+
+function markStart(w, x) {
+  const name = attr(x.node, 'w:name'), id = attr(x.node, 'w:id');
+  const m = marks(w);
+  if (name === undefined || checkAnchor(name) || m.names.has(name)) {
+    w.lose(LOST.bookmarks);
+    return '';
+  }
+  m.names.add(name);
+  if (id !== undefined) m.ids.set(id, name);
+  return '{\\*\\bkmkstart ' + w.text(name) + '}';
+}
+
+function markEnd(w, x) {
+  const m = marks(w), id = attr(x.node, 'w:id');
+  const name = m.ids.get(id);
+  if (name === undefined) return '';
+  m.ids.delete(id);
+  return '{\\*\\bkmkend ' + w.text(name) + '}';
+}
+
+export const PART = {
+  inlines: new Map([['raw:w:fldChar', fldChar],
+    ['raw:w:instrText', () => ''], ['raw:w:fldSimple', simple],
+    ['raw:w:hyperlink', link], ['raw:w:bookmarkStart', markStart],
+    ['raw:w:bookmarkEnd', markEnd]]),
+  hooks: new Map([['flush', flush]]),
+};

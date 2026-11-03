@@ -122,9 +122,18 @@ try {
   }
 
   // ------------------------------------------------ F3: the Save as box near the caret
+  // (G2: F3 opens the box that asks .docx or RTF; Return there is Continue: the Save box)
   {
     await ev(() => window.__focus('Plain'));
     await press('F3');
+    const f0 = await ev(() => {
+      const d = window.__by('Plain'), a = d.saveAsBox();
+      return { open: a.isOpen, menu: os.wimp.menus.isOpen, format: a.get('format'), caret: os.wimp.caret?.window === a.win,
+        save: d.dw.boxes.get('saveas')?.isOpen ?? false };
+    });
+    ok('F3 opens the Save as box (.docx or RTF, the window\'s .docx chosen) as a menu, the caret in it', f0.open && f0.menu
+      && f0.format === 'docx' && f0.caret && !f0.save, f0);
+    await press('Enter');
     const s = await ev(() => {
       const d = window.__by('Plain'), b = d.dw.boxes.get('saveas');
       const c = d.dw.view.caretRect(), cs = c && d.win.workToScreen(c.x, c.y);
@@ -162,6 +171,7 @@ try {
     });
     await page.keyboard.type('u');
     await press('F3');
+    await press('Enter');
     const s5 = await ev((leaf) => {
       const d = window.__by(leaf), b = d.dw.boxes.get('saveas');
       return { open: b?.isOpen, n: window.__saveBoxes().length, name: b?.filename(), saving: d.saving,

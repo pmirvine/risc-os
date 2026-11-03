@@ -40,7 +40,8 @@ try {
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
-    window.__box = (d, text) => window.__item(d, text).submenu();
+    // (Save as: the Save box its Save as box's Continue opens, G2)
+    window.__box = (d, text) => (text === 'Save as' ? d.saveBox() : window.__item(d, text).submenu());
   }, [Array.from(plain), Array.from(other)]);
 
   // Word started with no file: just its icon

@@ -12,8 +12,9 @@ import {
   classify, makeChecker, overwriteInPlace, AbortRun, walk, shuffle, readReport,
   appendReport, settled, listDocs, sameDocs, parseList, OPEN_SCRIPT, LIST_SCRIPT,
   CLOSE_SCRIPT, closeLeftovers, PING_SCRIPT, pingWord, isSettled, skipReason, hungAction,
-  hungMessage, mayKill, killWord, stallMessage, emittedKind, HUGE, NOT_ZIP, WRITE_PROTECTION, MAIL_MERGE,
-  CHECK_NAME, MARKER, WORD_APP, sha256,
+  hungMessage, mayKill, killWord, stallMessage, emittedKind, isRtfBytes, HUGE, NOT_ZIP,
+  WRITE_PROTECTION, MAIL_MERGE,
+  CHECK_NAME, MARKER, RTF_NAME, RTF_MARKER, WORD_APP, sha256,
 } from '../../tools/word-open-check/lib.mjs';
 import {emit, resetEmit, safeName, stemOf, readIndex, DEFAULT_DIR, markBroken}
   from './word-emit.mjs';
@@ -49,11 +50,13 @@ function fakeWord({docs = [], opens = () => true, hang = () => false,
         stderr: ''};
     }
     if (script === CLOSE_SCRIPT) {
-      const n = docs.filter((d) => d === CHECK_NAME).length;
-      docs.splice(0, docs.length, ...docs.filter((d) => d !== CHECK_NAME));
+      const ours = (d) => d === CHECK_NAME || d === RTF_NAME;
+      const n = docs.filter(ours).length;
+      docs.splice(0, docs.length, ...docs.filter((d) => !ours(d)));
       return {code: 0, killed: false, stdout: 'CLOSED ' + n + ' STUCK 0\n', stderr: ''};
     }
     const bytes = fs.readFileSync(args[0]);
+    const name = args[3] || CHECK_NAME;
     if (state.dialog) return {code: 0, killed: false, stdout: 'TIMEDOUT\n', stderr: ''};
     if (prompts(bytes)) {
       state.dialog = true;
@@ -65,14 +68,14 @@ function fakeWord({docs = [], opens = () => true, hang = () => false,
       'doesn’t understand the “count” message.'};
     let leftover = 0;
     for (let i = docs.length - 1; i >= 0; i--) {
-      if (docs[i] === CHECK_NAME) { docs.splice(i, 1); leftover++; }
+      if (docs[i] === name) { docs.splice(i, 1); leftover++; }
     }
     const n0 = docs.length;
-    if (opens(bytes)) docs.push(CHECK_NAME);
+    if (opens(bytes)) docs.push(name);
     const n1 = docs.length;
     let found = 0;
     for (let i = docs.length - 1; i >= 0; i--) {
-      if (docs[i] === CHECK_NAME) { docs.splice(i, 1); found++; }
+      if (docs[i] === name) { docs.splice(i, 1); found++; }
     }
     return ok({leftover, n0, n1, found, made: 0, n2: docs.length, err: 0});
   };
@@ -98,10 +101,12 @@ describe('word-open-check: verdicts from osascript', () => {
     assert.equal(classify({code: null, killed: true, stdout: ''}).verdict, 'TIMEOUT');
     assert.equal(classify({code: 0, stdout: 'what?'}).verdict, 'TIMEOUT');
   });
-  it('the scripts close only check.docx and never quit Word', () => {
+  it('the scripts close only check.docx / check.rtf and never quit Word', () => {
     const all = OPEN_SCRIPT + LIST_SCRIPT + CLOSE_SCRIPT;
     assert.doesNotMatch(all, /\bquit\b|System Events/);
-    assert.match(OPEN_SCRIPT, /if c_nm is "check.docx" then/);
+    assert.match(OPEN_SCRIPT, /set c_name to "check.docx"\n/);
+    assert.match(OPEN_SCRIPT, /if c_nm is c_name then/);
+    assert.match(CLOSE_SCRIPT, /if c_nm is "check.docx" or c_nm is "check.rtf" then/);
     assert.doesNotMatch(all, /close active document|close res/);
     // every close is of "document i" (an index just checked by name)
     assert.deepEqual([...new Set(all.match(/close \S+ \S+/g))], ['close document i']);
@@ -143,6 +148,25 @@ describe('word-open-check: the checker over a fake Word', () => {
     assert.equal((await c.check(BAD)).verdict, 'REFUSED');
     assert.deepEqual(w.docs, ['Mine.docx']);
     assert.deepEqual(await listDocs(w.runner), ['Mine.docx']);
+  });
+  it('RTF goes through check.rtf, with its own grant wait and marker', async () => {
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, MARKER), 'x');
+    const notes = [];
+    const w = fakeWord({docs: ['Mine.docx']});
+    const c = makeChecker({runner: w.runner, dir, timeout: 40, firstTimeout: 120,
+      log: (s) => notes.push(s)});
+    const RTF = Buffer.from('{\\rtf1 x}');
+    assert.equal((await c.check(GOOD)).verdict, 'OK');
+    assert.equal((await c.check(RTF)).verdict, 'OK');
+    assert.equal((await c.check(RTF)).verdict, 'OK');
+    assert.deepEqual(w.calls.map((k) => [path.basename(k.args[0]), k.args[1], k.args[3]]),
+      [[CHECK_NAME, 40, undefined], [RTF_NAME, 120, RTF_NAME], [RTF_NAME, 40, RTF_NAME]]);
+    assert.ok(fs.existsSync(path.join(dir, RTF_MARKER)));
+    assert.deepEqual(fs.readFileSync(path.join(dir, RTF_NAME)), RTF);
+    assert.equal(notes.length, 1);
+    assert.match(notes[0], /check\.rtf and Grant Access/);
+    assert.deepEqual(w.docs, ['Mine.docx']);
   });
   it('a check.docx left open is closed first, and said so', async () => {
     const dir = tmp();
@@ -356,17 +380,24 @@ describe('word-open-check: files that prompt are skipped unopened', () => {
         'w:hash="AAAA" w:salt="BBBB"/>')), null);
       assert.equal(await skipReason(Buffer.from('PK\x03\x04 broken', 'latin1')), null);
     });
+  it('opened: RTF (checked through check.rtf)', async () => {
+    assert.equal(await skipReason(Buffer.from('{\\rtf1\\ansi x}', 'latin1')), null);
+    assert.equal(isRtfBytes(Buffer.from('{\\rtf1')), true);
+    assert.equal(isRtfBytes(Buffer.from('{\\rt')), false);
+    assert.equal(await skipReason(Buffer.from('{\\rt')), NOT_ZIP);
+  });
 });
 
 describe('word-open-check: files and reports', () => {
-  it('walks directories recursively, sorted, .docx only, no Word lock files', () => {
+  it('walks directories recursively, sorted, .docx and .rtf only, no Word lock files',
+    () => {
     const dir = tmp();
     fs.mkdirSync(path.join(dir, 'b/c'), {recursive: true});
     for (const f of ['z.docx', 'a.docx', 'b/c/m.docx', 'b/x.txt', 'b/~$lock.docx',
-      'b/B.DOCX']) fs.writeFileSync(path.join(dir, f), 'x');
+      'b/B.DOCX', 'b/r.rtf']) fs.writeFileSync(path.join(dir, f), 'x');
     const got = walk([dir]).map((f) => path.relative(dir, f));
-    assert.deepEqual(got, ['a.docx', 'b/B.DOCX', 'b/c/m.docx', 'z.docx']);
-    assert.deepEqual(walk([dir, path.join(dir, 'a.docx')]).length, 4);
+    assert.deepEqual(got, ['a.docx', 'b/B.DOCX', 'b/c/m.docx', 'b/r.rtf', 'z.docx']);
+    assert.deepEqual(walk([dir, path.join(dir, 'a.docx')]).length, 5);
     assert.deepEqual(walk([dir], {exclude: (q) => q.endsWith('/b')})
       .map((f) => path.basename(f)), ['a.docx', 'z.docx']);
   });

@@ -1,0 +1,261 @@
+// RtfWriteLists - lists for the RTF writer (./RtfWrite): the
+// inverse of the reader's ./RtfLists, with ./NumFormat NUM_FMTS (the
+// \levelnfc numbers).
+//
+//   PART   header: {\*\listtable ...} and {\*\listoverridetable
+//       ...} of doc.numbering.nums (the lists the paragraphs and
+//       styles use: none when nothing does); the numbering hook (a
+//       paragraph's \lsN \ilvlN and its label for readers that do
+//       not number: {\listtext ...}); styleNumbering (a paragraph
+//       style's \lsN \ilvlN); levelInd (a numbered paragraph's
+//       level indent: its \li \fi are the ones it shows, its
+//       level's over its style's, its own over both, as Word writes
+//       them; the reader takes a \li or \fi equal to the level's as
+//       the level's, ./RtfPara)
+//
+// One \list (\listidK, K = 1, 2...: \listsimple for a singleLevel
+// definition, \listhybrid for a hybridMultilevel one) for each
+// abstractNumId used, its levels those of the first w:num on it:
+// levels 0 up to the last one defined, a level the definition lacks
+// the nearest defined one below it (as ./ListNumbers counts); nine
+// levels unless singleLevel (Word's rule), the ones past the last
+// defined copies of it. A ';' in level text is \'3b. A
+// level: \levelnfcN \levelnfcnN (NUM_FMTS' place; none 255; a
+// format not there 0), \leveljcN \leveljcnN (0 left, 1 center, 2
+// right), \levelfollowN (0 tab, 1 space, 2 nothing), \levelstartatN
+// (0 when none: ./ListLevel startOf), \levellegal1 (isLgl),
+// \levelnorestart1 (lvlRestart 0; a restart after another level
+// than the one above: LOST.listLevels), {\leveltext\'LL...;} (LL the
+// length; %1..%9 as \'00..\'08; at most MAX_TEXT UTF-16 units: the
+// length is one byte the reader reads as a character, so below
+// 0x80) with {\levelnumbers;} (the placeholders' places), \fN of
+// its font, \fiN \liN of its indent. One \listoverride a w:num
+// (\lsN, N its numId: the reader's numId again), its startOverrides
+// as nine {\lfolevel} (\listoverridestartat\levelstartatN where one
+// is given); an override that replaces a level is not written
+// (LOST.listLevels). A paragraph's numbering is the one in force
+// (./Styles resolvePara numPr); its \ilvl the level ./ListNumbers
+// labels counts, else numPr's; numId 0 (turned off) is \ls0 when
+// the style has a list. The label text is ./ListNumbers' with its
+// suffix (\tab, a space, nothing), in the level's font.
+// Pure: no desktop services.
+import {NUM_FMTS} from './NumFormat';
+import {labels} from './ListNumbers';
+import {paraNumPr} from './Styles';
+import {charWords} from './RtfWriteProps';
+import {LOST} from './RtfLost';
+
+export const MAX_TEXT = 127;
+const JC = new Map([['left', 0], ['start', 0], ['center', 1],
+  ['right', 2], ['end', 2]]);
+const FOLLOW = new Map([['tab', 0], ['space', 1], ['nothing', 2]]);
+const SUFFIX = new Map([['tab', '\\tab '], ['space', ' '],
+  ['nothing', '']]);
+const isObj = (v) => v !== null && typeof v === 'object';
+const okId = (n) => Number.isInteger(n) && n > 0 && n <= 32767;
+
+/** The writer's list data: {nums, listOf (abstractNumId -> K),
+ *  written (numIds), labels}, made on first use. */
+function lists(w) {
+  if (w.lists) return w.lists;
+  const L = {nums: new Map(), lists: new Map(), written: new Set(),
+    labels: null};
+  const n = w.doc.numbering;
+  if (isObj(n) && n.nums instanceof Map) {
+    for (const [id, num] of n.nums) {
+      if (!okId(id) || !isObj(num) || !Array.isArray(num.levels) ||
+        !num.levels.some(isObj)) continue;
+      L.nums.set(id, num);
+    }
+  }
+  w.lists = L;
+  return L;
+}
+
+/** numId's list number K (the \listid), its \list made on first
+ *  use; undefined for a num not written. */
+function use(w, numId) {
+  const L = lists(w), num = L.nums.get(numId);
+  if (!num) return undefined;
+  L.written.add(numId);
+  const a = num.abstractNumId;
+  if (!L.lists.has(a)) L.lists.set(a, {k: L.lists.size + 1, num});
+  return L.lists.get(a).k;
+}
+
+const fmtNumber = (f) => (f === 'none' ? 255
+  : Math.max(0, NUM_FMTS.indexOf(f)));
+
+/** {\leveltext...;}{\levelnumbers...;} of an lvlText. */
+function levelText(w, t) {
+  const s = typeof t === 'string' ? t : '';
+  let body = '', units = 0, nums = '';
+  for (let i = 0; i < s.length;) {
+    const d = s.charCodeAt(i + 1) - 49;
+    const place = s[i] === '%' && d >= 0 && d <= 8;
+    const pair = !place && (s.charCodeAt(i) & 0xfc00) === 0xd800 &&
+      i + 1 < s.length;
+    const n = pair ? 2 : 1;
+    if (units + n > MAX_TEXT) break;
+    if (place) {
+      body += "\\'0" + d;
+      nums += "\\'" + (units + 1).toString(16).padStart(2, '0');
+      i += 2;
+    } else {
+      // (a ';' as hex: a reader may end the text at one)
+      const c = s.slice(i, i + n);
+      body += c === ';' ? "\\'3b" : w.text(c);
+      i += n;
+    }
+    units += n;
+  }
+  return "{\\leveltext\\'" + units.toString(16).padStart(2, '0') +
+    body + ';}{\\levelnumbers' + nums + ';}';
+}
+
+function levelRtf(w, lv, k) {
+  const nfc = fmtNumber(lv.numFmt), jc = JC.get(lv.lvlJc) || 0;
+  let s = '{\\listlevel\\levelnfc' + nfc + '\\levelnfcn' + nfc +
+    '\\leveljc' + jc + '\\leveljcn' + jc + '\\levelfollow' +
+    (FOLLOW.get(lv.suff) || 0) + '\\levelstartat' +
+    (Number.isInteger(lv.start) && lv.start >= 0 &&
+      lv.start <= 32767 ? lv.start : 0);
+  if (lv.isLgl === true) s += '\\levellegal1';
+  if (lv.lvlRestart === 0) s += '\\levelnorestart1';
+  else if (Number.isInteger(lv.lvlRestart) && lv.lvlRestart !== k) {
+    w.lose(LOST.listLevels);
+  }
+  s += levelText(w, lv.lvlText);
+  const f = isObj(lv.rPr) && isObj(lv.rPr.rFonts) ? [lv.rPr.rFonts
+    .ascii, lv.rPr.rFonts.hAnsi].find((x) => typeof x === 'string' &&
+    x) : undefined;
+  if (f) s += '\\f' + w.font(f);
+  const ind = isObj(lv.pPr) && isObj(lv.pPr.ind) ? lv.pPr.ind : {};
+  const int = (v) => Number.isInteger(v) && Math.abs(v) <= 31680;
+  // (a 0 given is written: it sets the level's indent, which the
+  // paragraph's comes over)
+  if (int(ind.hanging)) s += '\\fi' + (ind.hanging ? -ind.hanging : 0);
+  else if (int(ind.firstLine)) s += '\\fi' + ind.firstLine;
+  if (int(ind.left)) s += '\\li' + ind.left;
+  return s + '}';
+}
+
+const TYPE = new Map([['singleLevel', '\\listsimple'],
+  ['hybridMultilevel', '\\listhybrid']]);
+
+function listRtf(w, k, num) {
+  const lv = [];
+  let last = -1;
+  num.levels.forEach((x, i) => {
+    if (isObj(x) && i < 9) last = i;
+  });
+  let prev = null;
+  // (Word wants nine levels in a list that is not \listsimple: the
+  // ones past the last are copies of it, as ./ListNumbers counts)
+  const n = num.multiLevelType === 'singleLevel' ? last : 8;
+  for (let i = 0; i <= n; i++) {
+    const x = isObj(num.levels[i]) ? num.levels[i] : prev;
+    prev = x;
+    lv.push(levelRtf(w, x || {numFmt: 'decimal', lvlText: '%' + (i +
+      1) + '.'}, i));
+  }
+  return '{\\list\\listtemplateid' + k +
+    (TYPE.get(num.multiLevelType) || '') + lv.join('') +
+    '{\\listname ;}\\listid' + k + '}';
+}
+
+function overrideRtf(w, numId, num, k) {
+  let lfo = '', any = false;
+  const ov = num.overrides instanceof Map ? num.overrides : new Map();
+  for (const [, o] of ov) {
+    if (isObj(o) && o.level) w.lose(LOST.listLevels);
+  }
+  for (let i = 0; i < 9; i++) {
+    const o = ov.get(i);
+    const s = isObj(o) && Number.isInteger(o.start) && o.start >= 0 &&
+      o.start <= 32767 ? o.start : undefined;
+    if (s !== undefined) any = true;
+    lfo += '{\\lfolevel' + (s === undefined ? ''
+      : '\\listoverridestartat\\levelstartat' + s) + '}';
+  }
+  return '{\\listoverride\\listid' + k + '\\listoverridecount' +
+    (any ? 9 + lfo : 0) + '\\ls' + numId + '}';
+}
+
+function header(w) {
+  const L = w.lists;
+  if (!L || !L.written.size) return '';
+  const table = [...L.lists.values()].map(({k, num}) =>
+    listRtf(w, k, num)).join('\n');
+  const ids = [...L.written].sort((a, b) => a - b);
+  const over = ids.map((id) => {
+    const num = L.nums.get(id);
+    return overrideRtf(w, id, num, L.lists.get(num.abstractNumId).k);
+  }).join('\n');
+  return '{\\*\\listtable\n' + table + '}\n{\\*\\listoverridetable\n' +
+    over + '}\n';
+}
+
+/** \lsN\ilvlK of a numPr, or '' (and whether it is a list). */
+function words(w, np, ilvl) {
+  if (!isObj(np)) return ['', false];
+  if (np.numId === 0) return ['\\ls0', false];
+  const k = use(w, np.numId);
+  if (k === undefined) return ['', false];
+  const lv = Number.isInteger(ilvl) ? ilvl : Number.isInteger(np.ilvl)
+    && np.ilvl >= 0 && np.ilvl <= 8 ? np.ilvl : 0;
+  return ['\\ls' + np.numId + '\\ilvl' + lv, true];
+}
+
+function styleHasList(w, p) {
+  if (p.pStyle === undefined) return false;
+  const probe = {type: 'p', text: '', runs: [], inlines: {},
+    pPr: {extra: []}, pStyle: p.pStyle};
+  const np = paraNumPr(w.styles, probe);
+  return isObj(np) && np.numId !== 0;
+}
+
+function numbering(w, p) {
+  const np = paraNumPr(w.styles, p);
+  if (!isObj(np)) {
+    // (numId 0: the style's list turned off)
+    const own = isObj(p.pPr) ? p.pPr.numPr : null;
+    const off = isObj(own) && own.numId === 0;
+    return off && styleHasList(w, p) ? '\\ls0' : '';
+  }
+  const L = lists(w);
+  if (!L.labels) L.labels = labels({...w.doc, styles: w.styles});
+  const label = w.place.kind === 'body' ? L.labels.get(p.id)
+    : undefined;
+  const [s, on] = words(w, np, label && label.level);
+  // (a numId with no list numbers nothing, in Word too)
+  if (!on) return np.numId === 0 && styleHasList(w, p) ? s : '';
+  if (!label || !label.text) return s;
+  const r = {...(label.rPr || {}), extra: []};
+  return s + '{\\listtext' + charWords(w, r) + ' ' +
+    w.text(label.text) + (SUFFIX.get(label.suff) || '') + '}';
+}
+
+/** The indent of p's list level (./ListNumbers labels: the one
+ *  shown), when p is numbered in the body and its list written. */
+function levelInd(w, p) {
+  if (w.place.kind !== 'body') return undefined;
+  const np = paraNumPr(w.styles, p);
+  if (!isObj(np) || np.numId === 0) return undefined;
+  const L = lists(w);
+  if (!L.labels) L.labels = labels({...w.doc, styles: w.styles});
+  const label = L.labels.get(p.id);
+  if (!label || !label.indent) return undefined;
+  return words(w, np, label.level)[1] ? label.indent : undefined;
+}
+
+function styleNumbering(w, pPr) {
+  const [s, on] = words(w, pPr && pPr.numPr);
+  return on ? s : '';
+}
+
+export const PART = {
+  hooks: new Map([['numbering', numbering],
+    ['styleNumbering', styleNumbering], ['levelInd', levelInd]]),
+  header: [header],
+};

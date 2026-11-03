@@ -42,7 +42,8 @@ try {
     window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
-    window.__box = (d, text) => d.win.menu({}).items.find((i) => i.text === text).submenu();
+    // (Save as: the Save box its Save as box's Continue opens, G2)
+    window.__box = (d, text) => (text === 'Save as' ? d.saveBox() : d.win.menu({}).items.find((i) => i.text === text).submenu());
     window.__replace = () => [...os.wimp.windows].find((w) => w.isOpen && w.iconByName?.('button:Replace'));
     window.__ok = (box) => box.emit('click', { icon: box.icons[0], button: 'select' });
     window.__race = (p) => Promise.race([p, window.__sleep(3000).then(() => 'hung')]);

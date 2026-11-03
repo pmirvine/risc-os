@@ -1,0 +1,137 @@
+// RtfProps - the RTF reader's character and paragraph state
+// (./RtfState) as the Model's rPr and pPr (./ReadProps).
+//
+//   rPrOf(ctx, ch, base) -> rPr   the fields where `ch` differs from
+//       `base` (both states: RTF values are absolute, the Model's are
+//       on top of the style): a run's base is its paragraph style's
+//       state with its character style's over it (baseOf), a
+//       style's its Based on style's, else the defaults
+//   pPrOf(ctx, para, base, text?) -> pPr  the same for paragraphs
+//       (text: a paragraph of the text, not a style's entry)
+//   baseOf(ctx, st) -> {char, para}  the style state under st's
+//   fontName(ctx, f) / colourHex(ctx, n)  table look-ups (undefined
+//       when the entry is missing or "auto")
+//
+// Character keys (set by ./RtfBody): b i strike (booleans: rPr
+// fields), caps smallCaps vanish dstrike (booleans: w:caps...
+// elements in extra, with w:val 0 when turned off), u (a w:u value
+// or false), sz (half-points; undefined is 24, RTF's 12 pt), font
+// (a font number; undefined is \deff), color, hl, shade (colour
+// numbers: color, highlight (the 16 Word names; another colour is
+// shading) and shd: \chcbpat; \cb is ignored, as Word does),
+// vertAlign, position (half-points: w:position), cs (the
+// character style number: the run's rStyle, ./RtfBody).
+// Paragraph keys: s (style number: pStyle, ./RtfBody), jc. Fonts
+// keep the name the file gives them: ./RtfTables fontName.
+// More fields: a handler module's PART.charProps / paraProps
+// (functions (ctx, state, base, out) adding to out; ./RtfRead).
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+
+export const DEFAULT_SZ = 24;
+
+/** Shared with ./RtfWriteProps: Word's highlight colours (RRGGBB ->
+ *  name); the character keys that are elements in extra. */
+export const HIGHLIGHT = new Map([['FFFF00', 'yellow'],
+  ['00FF00', 'green'],
+  ['00FFFF', 'cyan'], ['FF00FF', 'magenta'], ['0000FF', 'blue'],
+  ['FF0000', 'red'], ['000080', 'darkBlue'], ['008080', 'darkCyan'],
+  ['008000', 'darkGreen'], ['800080', 'darkMagenta'],
+  ['800000', 'darkRed'], ['808000', 'darkYellow'],
+  ['808080', 'darkGray'], ['C0C0C0', 'lightGray'],
+  ['000000', 'black'], ['FFFFFF', 'white']]);
+
+const BOOLS = ['b', 'i', 'strike'];
+export const EXTRAS = [['caps', 'w:caps'], ['smallCaps', 'w:smallCaps'],
+  ['vanish', 'w:vanish'], ['dstrike', 'w:dstrike']];
+
+export function fontName(ctx, f) {
+  const font = ctx.fonts.get(f === undefined ? ctx.deff : f);
+  return font && font.name ? font.name : undefined;
+}
+
+export function colourHex(ctx, n) {
+  if (!Number.isInteger(n)) return undefined;
+  const c = ctx.colours[n];
+  return c ? c : undefined;
+}
+
+const hl = (ctx, n) => {
+  const h = colourHex(ctx, n);
+  return h === undefined ? undefined : HIGHLIGHT.get(h) || h;
+};
+
+/** The highlight and shading of a state: [name | undefined,
+ *  fill | undefined]; a highlight that is no Word name is a fill. */
+function marks(ctx, ch) {
+  const h = hl(ctx, ch.hl);
+  const name = h !== undefined && HIGHLIGHT.has(colourHex(ctx, ch.hl))
+    ? h : undefined;
+  const fill = colourHex(ctx, ch.shade) ||
+    (h !== undefined && name === undefined ? h : undefined);
+  return [name, fill];
+}
+
+export function rPrOf(ctx, ch, base) {
+  const out = {extra: []};
+  for (const k of BOOLS) if (!ch[k] !== !base[k]) out[k] = !!ch[k];
+  for (const [k, n] of EXTRAS) {
+    if (!ch[k] === !base[k]) continue;
+    out.extra.push(ch[k] ? el(n) : el(n, [['w:val', '0']]));
+  }
+  if ((ch.u || false) !== (base.u || false)) out.u = ch.u || 'none';
+  const sz = ch.sz || DEFAULT_SZ;
+  if (sz !== (base.sz || DEFAULT_SZ)) out.sz = sz;
+  const f = fontName(ctx, ch.font);
+  if (f !== undefined && f !== fontName(ctx, base.font)) {
+    out.rFonts = {ascii: f, hAnsi: f};
+  }
+  const c = colourHex(ctx, ch.color);
+  if (c !== colourHex(ctx, base.color)) out.color = c || 'auto';
+  const [hn, fill] = marks(ctx, ch), [bhn, bfill] = marks(ctx, base);
+  if (hn !== bhn) out.highlight = hn || 'none';
+  if (fill !== bfill) {
+    out.shd = {val: 'clear', color: 'auto', fill: fill || 'auto'};
+  }
+  const va = ch.vertAlign || 'baseline';
+  if (va !== (base.vertAlign || 'baseline')) out.vertAlign = va;
+  if ((ch.position || 0) !== (base.position || 0)) {
+    out.extra.push(el('w:position', [['w:val', ch.position || 0]]));
+  }
+  for (const fn of ctx.reg.charProps) fn(ctx, ch, base, out);
+  return out;
+}
+
+export function pPrOf(ctx, para, base, text = false) {
+  const out = {extra: []};
+  const jc = para.jc || 'left';
+  if (jc !== (base.jc || 'left')) out.jc = jc;
+  for (const fn of ctx.reg.paraProps) fn(ctx, para, base, out, text);
+  return out;
+}
+
+/** A style definition (./RtfStyles) of number n and type, or null. */
+export function styleDef(ctx, n, type) {
+  const d = n === undefined ? undefined : ctx.styleDefs.get(n);
+  return d && d.type === type ? d : null;
+}
+
+export function baseOf(ctx, st) {
+  const ps = styleDef(ctx, st.para.s === undefined ? 0 : st.para.s,
+    'paragraph');
+  const char = ps ? ps.char : ctx.state.def.char;
+  const para = ps ? ps.para : ctx.state.def.para;
+  const cs = styleDef(ctx, st.char.cs, 'character');
+  if (!cs) return {char, para};
+  // (a character style adds what it sets: its entry's state differs
+  // from the defaults the entry started from, ./RtfStyles. A style
+  // that sets a value equal to the default, \fs22 over a 22 default,
+  // cannot be told from one that does not: the paragraph style's
+  // value is the base then, and such a run reads back with that
+  // value as direct formatting; the look is the same)
+  const plain = ctx.state.def.char, out = {...char};
+  for (const k of Object.keys(cs.char)) {
+    if (cs.char[k] !== plain[k]) out[k] = cs.char[k];
+  }
+  return {char: out, para};
+}

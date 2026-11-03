@@ -1,0 +1,102 @@
+// RtfWriteSect - section layout, headers and footers for the RTF
+// writer (./RtfWrite): the inverse of the reader's ./RtfSect, with
+// its TYPES, PGN and VALIGN.
+//
+//   PART   sect: after \sectd and the page words, \colsN \colsxN
+//       \linebetcol (props.cols), \titlepg, \pgnrestart \pgnstartsN
+//       and \pgndec... (pgNumType), \vertalt... (vAlign), then the
+//       section's own headers and footers: {\header ...} (default;
+//       \headerr when odd and even pages differ), {\headerl ...}
+//       (even), {\headerf ...} (first), and the \footer forms; the
+//       stories hook (nothing counted: the stories are written);
+//       header: \facingp when the settings have evenAndOddHeaders
+//
+// A section's references (./SectRefs refsOf) name the stories
+// (storyOfRef); one with none of its own shows the one before's, in
+// RTF as in Word, so only its own are written. A story's blocks are
+// written as the body's, each paragraph ending \par as Word writes
+// them (./RtfWrite nested: its links and pictures
+// from the story's own rels). Not in RTF as the reader takes it:
+// columns of their own widths (LOST.columns: written as equal ones)
+// and line numbers (LOST.lineNumbers).
+// Pure: no desktop services.
+import {PGN, VALIGN} from './RtfSect';
+import {refsOf, storyOfRef} from './SectRefs';
+import {onOffOf} from './SettingsRead';
+import {docMap} from './PicRead';
+import {twips} from './RtfWriteProps';
+import {LOST} from './RtfLost';
+
+const PGN_WORD = new Map(PGN.map(([w, v]) => [v, w]));
+const VALIGN_WORD = new Map(VALIGN.map(([w, v]) => [v, w]));
+const KINDS = [['hdr', 'header'], ['ftr', 'footer']];
+const TYPES = [['default', ''], ['even', 'l'], ['first', 'f']];
+
+function facing(doc) {
+  try {
+    return onOffOf(doc, 'evenAndOddHeaders') === true;
+  } catch {
+    return false;
+  }
+}
+
+function layout(w, p) {
+  let s = '';
+  const c = p.cols && typeof p.cols === 'object' ? p.cols : {};
+  const num = twips(c.num, 1, 45);
+  if (num > 1) s += '\\cols' + num;
+  const sp = twips(c.space, 0);
+  if (sp !== undefined) s += '\\colsx' + sp;
+  if (c.sep === true) s += '\\linebetcol';
+  if (c.equalWidth === false && Array.isArray(c.col) && c.col.length)
+    w.lose(LOST.columns);
+  if (p.titlePg === true) s += '\\titlepg';
+  const pg = p.pgNumType && typeof p.pgNumType === 'object'
+    ? p.pgNumType : {};
+  const start = twips(pg.start, 0, 32767);
+  if (start !== undefined) s += '\\pgnrestart\\pgnstarts' + start;
+  if (PGN_WORD.has(pg.fmt)) s += '\\' + PGN_WORD.get(pg.fmt);
+  if (VALIGN_WORD.has(p.vAlign)) s += '\\' + VALIGN_WORD.get(p.vAlign);
+  if (p.lnNumType) w.lose(LOST.lineNumbers);
+  return s;
+}
+
+function stories(w, section) {
+  const doc = w.doc;
+  if (!(doc.stories instanceof Map)) return '';
+  let refs;
+  try {
+    refs = refsOf(section, docMap(doc));
+  } catch {
+    return '';
+  }
+  const odd = facing(doc);
+  let s = '';
+  for (const [kind, word] of KINDS) {
+    for (const [type, tail] of TYPES) {
+      const rid = refs[kind][type];
+      const part = rid ? storyOfRef(doc, rid) : null;
+      const st = part ? doc.stories.get(part) : null;
+      if (!st || !Array.isArray(st.blocks)) continue;
+      const place = {rels: Array.isArray(st.rels) ? st.rels : [],
+        part, kind: 'story', map: w.scopeOf(st.root)};
+      s += '{\\' + word + (tail || (odd ? 'r' : '')) + '\n' +
+        w.nested(place, () => w.blocks(st.blocks, '\\par')) + '}\n';
+    }
+  }
+  return s;
+}
+
+function sect(w, section) {
+  const p = section && section.props && typeof section.props ===
+    'object' ? section.props : {};
+  const s = layout(w, p);
+  const h = stories(w, section);
+  return s + (h ? '\n' + h : '');
+}
+
+export const PART = {
+  sect: [sect],
+  hooks: new Map([['stories', () => {}]]),
+  header: [(w) => (facing(w.doc) ? '\\facingp\n' : '')],
+};

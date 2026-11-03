@@ -1,0 +1,112 @@
+// RtfWritePict - pictures for the RTF writer (./RtfWrite): the
+// inverse of the reader's ./RtfPict, with its BLIPS, kindOf and
+// TW_EMU.
+//
+//   PART   inlines: w:drawing
+//
+// A w:drawing ./PicRead pictureOf understands (inline or floating)
+// is written {\pict\picscalex100\picscaley100\picwN\pichN
+// \picwgoalN\pichgoalN <format> <hex>}: the goals its extent in
+// twips (EMU / TW_EMU, at least 1), \picw \pich the image's pixels
+// (a metafile's size in 0.01 mm); the bytes those of the part its
+// r:embed names (a relationship of w.place: the body's, a
+// header's, the notes'), as lowercase hex, HEX_LINE bytes a line.
+// The format from the bytes (kindOf, not the name): PNG \pngblip,
+// JPEG \jpegblip, EMF \emfblip, WMF \wmetafile8 (RTF's has no
+// placeable header: it is taken off, and the reader makes one of
+// the picture's size again). Anything else (GIF, TIFF, SVG, bytes
+// missing, more than MAX_PICTURE; past MAX_PICTURES pictures or
+// MAX_TOTAL bytes in all, as the reader stops) is left out:
+// LOST.pictures. The goals are at most 31680 (22 inches). A
+// floating picture is written in line (LOST.positions), a cropped
+// one whole (LOST.crops). Its alt text goes in {\*\picprop} as
+// Word writes it (wzDescription). A w:drawing that is no picture
+// (a chart, a shape, a text box) counts as ./RtfLost rawLost says.
+// Pure: no desktop services.
+import {BLIPS, kindOf, TW_EMU, MAX_PICTURE, MAX_TOTAL, MAX_PICTURES}
+  from './RtfPict';
+import {pictureOf} from './PicRead';
+import {imageInfo} from './PicMedia';
+import {resolvePart, findPart} from './Rels';
+import {LOST, rawLost} from './RtfLost';
+
+export const HEX_LINE = 64;
+const WORD = new Map([...BLIPS].map(([w, f]) => [f, w]));
+WORD.set('wmf', 'wmetafile8');
+const HEX = [];
+for (let i = 0; i < 256; i++) HEX.push(i.toString(16).padStart(2, '0'));
+const EMU_HMM = 360;
+
+/** The bytes of the part relationship `id` of w.place names. */
+function bytesOf(w, id) {
+  const rel = w.place.rels.find((r) => r && r.id === id);
+  if (!rel || rel.mode === 'External' || typeof rel.target !== 'string')
+    return null;
+  const parts = w.doc.parts;
+  if (!(parts instanceof Map)) return null;
+  const name = findPart(parts, resolvePart(w.place.part, rel.target));
+  const b = name === null ? null : parts.get(name);
+  return b instanceof Uint8Array ? b : null;
+}
+
+/** The bytes as hex lines. */
+export function hexLines(b) {
+  const lines = [];
+  for (let i = 0; i < b.length; i += HEX_LINE) {
+    let s = '';
+    const end = Math.min(b.length, i + HEX_LINE);
+    for (let k = i; k < end; k++) s += HEX[b[k]];
+    lines.push(s);
+  }
+  return lines.join('\n');
+}
+
+// (Word's largest picture: 22 inches)
+const goal = (emu) => Math.max(1, Math.min(31680,
+  Math.round(emu / TW_EMU)));
+
+function drawing(w, x) {
+  const pic = pictureOf(x.node, w.map());
+  if (!pic) {
+    w.lose(rawLost(x.node));
+    return '';
+  }
+  let b = bytesOf(w, pic.embed);
+  const kind = b && b.length <= MAX_PICTURE ? kindOf(b) : null;
+  const fmt = kind === 'apm' ? 'wmf' : kind;
+  if (!WORD.has(fmt)) {
+    w.lose(LOST.pictures);
+    return '';
+  }
+  const st = w.pics || (w.pics = {count: 0, total: 0});
+  if (st.count >= MAX_PICTURES || st.total + b.length > MAX_TOTAL) {
+    w.lose(LOST.pictures);
+    return '';
+  }
+  st.count++;
+  st.total += b.length;
+  if (kind === 'apm') b = b.subarray(22);
+  let pw, ph;
+  if (fmt === 'png' || fmt === 'jpeg') {
+    const info = imageInfo(b);
+    if (!info) {
+      w.lose(LOST.pictures);
+      return '';
+    }
+    [pw, ph] = [info.w, info.h];
+  } else {
+    [pw, ph] = [Math.round(pic.cx / EMU_HMM),
+      Math.round(pic.cy / EMU_HMM)];
+  }
+  if (pic.floating) w.lose(LOST.positions);
+  if (pic.srcRect) w.lose(LOST.crops);
+  const alt = pic.alt ? '{\\*\\picprop{\\sp{\\sn wzDescription}' +
+    '{\\sv ' + w.text(pic.alt) + '}}}' : '';
+  return '{\\pict' + alt + '\\picscalex100\\picscaley100\\picw' + pw +
+    '\\pich' + ph + '\\picwgoal' + goal(pic.cx) + '\\pichgoal' +
+    goal(pic.cy) + '\\' + WORD.get(fmt) + '\n' + hexLines(b) + '}';
+}
+
+export const PART = {
+  inlines: new Map([['raw:w:drawing', drawing]]),
+};

@@ -1,0 +1,203 @@
+// RtfTables - the header tables of an RTF file, for ./RtfRead: the
+// font table (\fonttbl: ctx.fonts, number -> {name, charset?, cpg?}),
+// the colour table (\colortbl: ctx.colours, 'RRGGBB' or null for
+// "auto"), the document information (\info: ctx.info, written as
+// docProps/core.xml by corePart) and the header words \ansi \mac \pc
+// \pca \ansicpgN (ctx.ansicpg) and \deffN (ctx.deff). The style
+// sheet is ./RtfStyles.
+//
+//   PART               handlers (./RtfRead)
+//   fontName(raw) -> the family a font entry names: PostScript
+//       names (textutil writes ArialMT, TimesNewRomanPSMT,
+//       Times-Bold) become the family (Arial, Times New Roman,
+//       Times): cut at a dash only after an MT / PSMT tail or before
+//       style words (STYLES); other names are kept (Tele-Antiqua)
+//   corePart(ctx, date) -> bytes of docProps/core.xml: title,
+//       subject, author, keywords, comments, last modified by,
+//       created and modified (\creatim, \revtim; else `date`)
+// A font entry is {\fN\froman\fcharsetC\cpgP Name;} or the same
+// without the braces, several in a row; {\*\panose} and the like
+// are skipped, {\*\falt} ignored. Hostile tables: at most MAX_FONTS
+// fonts and MAX_COLOURS colours are kept.
+// Pure: no desktop services.
+import {el, serialize} from 'wimplib/Xml';
+import {STD_DECL} from './WriteParts';
+import {collect, skipping} from './RtfText';
+
+const MAX_FONTS = 4096, MAX_COLOURS = 4096;
+
+const isUpper = (c) => c >= 'A' && c <= 'Z';
+const isLower = (c) => c >= 'a' && c <= 'z';
+
+/** 'TimesNewRoman' -> 'Times New Roman'. */
+function spaced(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (i && isUpper(s[i]) && isLower(s[i - 1])) out += ' ';
+    out += s[i];
+  }
+  return out;
+}
+
+// the style words of a PostScript name after its dash (Times-Bold,
+// Helvetica-LightOblique): a family's own dash (Tele-Antiqua) stays
+const STYLES = ['BoldItalic', 'BoldOblique', 'Bold', 'Italic',
+  'Oblique', 'Roman', 'Regular', 'Light', 'Medium', 'Semibold',
+  'SemiBold', 'Demibold', 'DemiBold', 'Black', 'Heavy', 'Book',
+  'Thin', 'Condensed', 'Narrow', 'Extended', 'Plain', 'Normal'];
+
+/** Whether s is one or more style words run together. */
+function styleWords(s) {
+  let i = 0;
+  while (i < s.length) {
+    const w = STYLES.find((x) => s.startsWith(x, i));
+    if (!w) return false;
+    i += w.length;
+  }
+  return s.length > 0;
+}
+
+export function fontName(raw) {
+  let s = raw.trim();
+  if (!s || s.includes(' ')) return s;
+  let ps = false;
+  for (const tail of ['PSMT', 'MT']) {
+    if (s.length > tail.length && s.endsWith(tail)) {
+      s = s.slice(0, -tail.length);
+      ps = true;
+      break;
+    }
+  }
+  const dash = s.indexOf('-');
+  if (dash > 0 && (ps || styleWords(s.slice(dash + 1)))) {
+    s = s.slice(0, dash);
+    ps = true;
+  }
+  if (ps && s.length > 2 && s.endsWith('PS')) s = s.slice(0, -2);
+  return ps ? spaced(s) : s;
+}
+
+/** The font table's destination. */
+function fonttbl() {
+  let font = null, name = '';
+  const done = (ctx) => {
+    if (font && !ctx.fonts.has(font.num) &&
+      ctx.fonts.size < MAX_FONTS) {
+      font.name = fontName(name);
+      ctx.fonts.set(font.num, font);
+    }
+    font = null;
+    name = '';
+  };
+  const set = (k) => (ctx, t) => {
+    if (font && Number.isInteger(t.param)) font[k] = t.param;
+  };
+  const dest = {ownWords: true,
+    words: new Map([
+      ['f', (ctx, t) => {
+        done(ctx);
+        if (Number.isInteger(t.param)) font = {num: t.param};
+      }],
+      ['fcharset', set('charset')], ['cpg', set('cpg')],
+    ]),
+    dests: new Map([['falt', skipping()]]),
+    text(ctx, s) {
+      for (const c of s) {
+        if (c === ';') done(ctx);
+        else if (font && name.length < 256) name += c;
+      }
+    },
+    end: done,
+  };
+  return dest;
+}
+
+const hex2 = (n) => (n < 16 ? '0' : '') + n.toString(16).toUpperCase();
+
+/** The colour table's destination. */
+function colortbl() {
+  let rgb = null;
+  const set = (i) => (ctx, t) => {
+    if (!Number.isInteger(t.param)) return;
+    rgb = rgb || [0, 0, 0];
+    rgb[i] = Math.max(0, Math.min(255, t.param));
+  };
+  return {ownWords: true,
+    words: new Map([['red', set(0)], ['green', set(1)],
+      ['blue', set(2)]]),
+    text(ctx, s) {
+      for (const c of s) {
+        if (c !== ';' || ctx.colours.length >= MAX_COLOURS) continue;
+        ctx.colours.push(rgb ? rgb.map(hex2).join('') : null);
+        rgb = null;
+      }
+    }};
+}
+
+const FIELDS = ['title', 'subject', 'author', 'keywords', 'doccomm',
+  'operator'];
+const TIME = ['yr', 'mo', 'dy', 'hr', 'min', 'sec'];
+
+/** \creatim / \revtim: the date in ctx.info[key]. */
+const time = (key) => () => {
+  const v = {};
+  return {ownWords: true,
+    words: new Map(TIME.map((k) => [k, (ctx, t) => {
+      if (Number.isInteger(t.param)) v[k] = t.param;
+    }])),
+    text() {},
+    end(ctx) {
+      const d = new Date(Date.UTC(v.yr, (v.mo || 1) - 1, v.dy || 1,
+        v.hr || 0, v.min || 0, v.sec || 0));
+      if (v.yr >= 1601 && v.yr <= 9999 && !Number.isNaN(d.getTime()))
+        ctx.info[key] = d;
+    }};
+};
+
+const info = () => ({ownWords: true, text() {},
+  dests: new Map([
+    ...FIELDS.map((k) => [k, collect((ctx, s) => {
+      ctx.info[k] = s.trim();
+    })]),
+    ['creatim', time('created')], ['revtim', time('modified')],
+  ])});
+
+export function corePart(ctx, date) {
+  const i = ctx.info;
+  const iso = (d) => d.toISOString().slice(0, 19) + 'Z';
+  const when = (n, d) => el('dcterms:' + n,
+    {'xsi:type': 'dcterms:W3CDTF'}, iso(d || date));
+  const opt = (name, v) => v ? el(name, null, v) : null;
+  const PKG = 'http://schemas.openxmlformats.org/package/2006/';
+  const root = el('cp:coreProperties', [
+    ['xmlns:cp', PKG + 'metadata/core-properties'],
+    ['xmlns:dc', 'http://purl.org/dc/elements/1.1/'],
+    ['xmlns:dcterms', 'http://purl.org/dc/terms/'],
+    ['xmlns:dcmitype', 'http://purl.org/dc/dcmitype/'],
+    ['xmlns:xsi', 'http://www.w3.org/2001/XMLSchema-instance']],
+  el('dc:title', null, i.title || null), opt('dc:subject', i.subject),
+  opt('dc:creator', i.author), opt('cp:keywords', i.keywords),
+  opt('dc:description', i.doccomm),
+  el('cp:lastModifiedBy', null, i.operator || 'Letters'),
+  when('created', i.created), when('modified', i.modified));
+  return new TextEncoder().encode(serialize(root, {decl: STD_DECL}));
+}
+
+const page = (n) => (ctx) => {
+  ctx.ansicpg = n;
+};
+
+export const PART = {
+  words: new Map([
+    ['ansi', page(1252)], ['mac', page(10000)], ['pc', page(437)],
+    ['pca', page(850)],
+    ['ansicpg', (ctx, t) => {
+      if (Number.isInteger(t.param)) ctx.ansicpg = t.param;
+    }],
+    ['deff', (ctx, t) => {
+      if (Number.isInteger(t.param)) ctx.deff = t.param;
+    }],
+  ]),
+  dests: new Map([['fonttbl', fonttbl], ['colortbl', colortbl],
+    ['info', info]]),
+};

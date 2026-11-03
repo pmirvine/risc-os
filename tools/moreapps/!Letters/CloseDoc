@@ -28,8 +28,12 @@
 //                  zoom, ruler, the caret's focus) and the old one is
 //                  closed without asking: a fresh Document, Typing,
 //                  layout, toolbar and ruler, with no undo history.
-//                  A file that has gone or is not a .docx is reported
-//                  (./Open describe) and the old document is kept.
+//                  A file that has gone or is not a .docx or RTF is
+//                  reported (./Open describe) and the old document
+//                  is kept. The file is read as it is opened (./Open
+//                  openDoc): the new window has the format read
+//                  (an RTF window stays RTF) and the RTF reader's
+//                  notes are said again, once, in a notice.
 //   destroy(dw)    close the window without asking (dw.close(), the
 //                  tests, Quit): its boxes, toolbars, ruler, view and
 //                  window deleted (pages no longer worked out:
@@ -44,7 +48,7 @@
 // for it before it asks).
 import {wimp, vfs, query, reportError} from 'riscos';
 import {saveQuery} from 'wimplib/Ui/SaveQuery';
-import {openDocx, describe} from './Open';
+import {openDoc, describe, notesNotice, typeAt} from './Open';
 import {idle} from './DocSave';
 import {destroyPanes} from './WinPanes';
 import {detachPainter} from './PaintBind';
@@ -63,6 +67,8 @@ export function shortName(leaf) {
 }
 
 const say = (m) => reportError(m, {appName: 'Letters'});
+const tell = (m) => reportError(m, {appName: 'Letters',
+  category: 'info'});
 
 /** See the header. */
 export function destroy(dw) {
@@ -172,7 +178,7 @@ async function askRevert(dw) {
 export async function revert(dw) {
   if (dw.closed || !dw.path || busy.has(dw)) return false;
   busy.add(dw);
-  let doc, id;
+  let got, id;
   try {
     await idle(dw);
     if (dw.closed || !dw.path) return false;
@@ -182,9 +188,9 @@ export async function revert(dw) {
     }
     id = dw.d.stateId;
     try {
-      doc = await openDocx(vfs, dw.path);
+      got = await openDoc(vfs, dw.path);
     } catch (e) {
-      say(describe(e, dw.leaf));
+      say(describe(e, dw.leaf, typeAt(vfs, dw.path)));
       return false;
     }
   } finally {
@@ -192,14 +198,16 @@ export async function revert(dw) {
   }
   // (typed in while the file was read: those changes are kept)
   if (dw.closed || dw.d.stateId !== id) return false;
-  replace(dw, doc);
+  const nw = replace(dw, got.doc, got.format);
+  const m = notesNotice(nw.leaf, got.notes);
+  if (m) tell(m);
   return true;
 }
 
-/** A new window for doc where dw is; dw closed. */
-function replace(dw, doc) {
+/** A new window for doc (read as format) where dw is; dw closed. */
+function replace(dw, doc, format) {
   const app = dw.app, old = dw.win;
-  const nw = new dw.constructor(app, dw.path, doc);
+  const nw = new dw.constructor(app, dw.path, doc, format);
   nw.setRuler(dw.rulerOn);
   nw.setZoom(dw.zoom);
   const focus = dw.view.hasFocus, was = old.isOpen;
@@ -210,4 +218,5 @@ function replace(dw, doc) {
   if (app.fonts) {
     app.fonts(doc).then(() => { if (!nw.closed) nw.relayout(); });
   }
+  return nw;
 }

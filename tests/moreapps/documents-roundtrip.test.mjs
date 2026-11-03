@@ -66,7 +66,9 @@ globalThis.__docStub = {
   saveAs(opts) {
     const on = {};
     return {opts, isOpen: false, name: opts.filename,
+      filetype: opts.filetype,
       setFilename(n) { this.name = n; },
+      setFiletype(t) { this.filetype = t; },
       openCentred() { this.isOpen = true; },
       on(e, fn) { (on[e] ||= []).push(fn); },
       async ok(path) {
@@ -82,7 +84,9 @@ const STUB = 'data:text/javascript,' + encodeURIComponent(
   'const s = globalThis.__docStub;' +
   'export const wimp = s.wimp, vfs = s.vfs;' +
   'export const saveAs = (o) => s.saveAs(o);' +
-  'export const reportError = (m, o) => s.reportError(m, o);');
+  'export const reportError = (m, o) => s.reportError(m, o);' +
+  // (./LostBox's dialogue box, imported by DocSave since G2 task 11)
+  'export class Menu {}; export const textWidth = () => 0;');
 registerHooks({
   resolve(spec, ctx, next) {
     if (spec === 'riscos') return {url: STUB, shortCircuit: true};

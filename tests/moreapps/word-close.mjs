@@ -59,7 +59,8 @@ try {
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (path) => Array.from(await os.vfs.readFile(path));
     window.__item = (d, text) => d.win.menu({}).items.find((i) => i.text === text);
-    window.__box = (d, text) => window.__item(d, text).submenu();
+    // (Save as: the Save box its Save as box's Continue opens, G2)
+    window.__box = (d, text) => (text === 'Save as' ? d.saveBox() : window.__item(d, text).submenu());
     window.__prompts = () => [...os.wimp.windows].filter((q) => q.iconByName?.('button:Save') && q.iconByName('button:Discard'));
     window.__open = async () => {
       const t = window.__word();
@@ -589,12 +590,15 @@ try {
     M.open(m, at.x, at.y, { task: t });
     M._openSub(M.levels[0], m.items.findIndex((i) => i.text === 'Save as'), 'arrow');
     await window.__frames(2);
-    M.close();                            // (dismissed: a click elsewhere)
-    const res = { result: await Promise.race([p1, window.__sleep(2000).then(() => 'timeout')]), dirty: d.view.dirty };
+    M.close();                            // (a click elsewhere: the menu goes; G2: the Save box is not in it)
+    const kept = d.saveBox().isOpen;
+    d.saveBox().emit('key', { code: 27 });  // (dismissed: Escape)
+    const res = { kept, result: await Promise.race([p1, window.__sleep(2000).then(() => 'timeout')]), dirty: d.view.dirty };
     d.dw.close();
     return res;
   });
   ok('the pending save is false when the box is dismissed without saving', b2.result === false && b2.dirty, b2);
+  ok('the menu\'s Save as (the box asking .docx or RTF) dismissed leaves the Save box open', b2.kept, b2);
 
   // ------------------------------------------------ the boxes follow a rename
   const d1 = await ev(async () => {

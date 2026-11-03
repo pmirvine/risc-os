@@ -1,0 +1,307 @@
+// RtfRead - reads an RTF file into a Doc (./Model).
+//
+//   readRtf(bytes, {maxParagraphs?, date?, paper?}) -> {doc, notes}
+//       bytes a Uint8Array (never changed). doc is always a valid
+//       Doc: ./NewDoc's newDoc({date, paper}) with the file's
+//       sections, blocks, styles and core properties; it writes as
+//       .docx (./DocxWrite) and reads back equal. notes are short
+//       messages for the user about what was skipped or damaged
+//       ('unknown code page 932: 2 characters replaced', 'the file
+//       ends inside a group: it may be cut short'), each once. Never
+//       throws: a failure part way gives the document read so far
+//       and a note. maxParagraphs (default ./ReadBody's) stops the
+//       reading with a note.
+//
+// The driver: wimplib/RtfLex makes the tokens; a stack of groups
+// keeps the formatting state (./RtfState, saved at { and restored
+// at }) and the destination text goes to. The work is done by
+// handler modules, each exporting PART {words?, dests?, charProps?,
+// paraProps?, sectProps?, finish?} listed in PARTS below (a later
+// module's entry with the same name wins; charProps / paraProps are
+// functions (ctx, state, base, out) adding Model fields to out
+// (./RtfProps); sectProps (ctx, sect state, props, section) fill
+// each section's props, a copy of newDoc's, at the end (section:
+// the body Flow's {sect, blocks, refs?}); finish (ctx) functions run
+// once the text is read, before the sections and styles are made).
+// The modules: ./RtfState, ./RtfTables, ./RtfStyles, ./RtfBody,
+// ./RtfPara (paragraph formatting), ./RtfLists (lists), ./RtfSect
+// (page setup, sections, headers and footers), ./RtfFields (fields,
+// links, bookmarks), ./RtfTable and ./RtfGrid (tables), ./RtfPict
+// (pictures), ./RtfRevs (tracked changes), ./RtfNotes (footnotes
+// and endnotes), ./RtfComments (comments). To read more of RTF,
+// write a module and add it to PARTS.
+//
+// The context `ctx` the handlers get:
+//   ctx.doc      the Doc being built (from newDoc; styles replaced
+//                copy-on-write; sections and blocks set at the end)
+//   ctx.state    the RtfState; ctx.dest the destination in force
+//   ctx.body     the body's ./RtfBody Flow; ctx.paras, ctx.max,
+//                ctx.stop (set it to end the reading)
+//   ctx.fonts, ctx.colours, ctx.deff, ctx.ansicpg, ctx.info
+//                (./RtfTables), ctx.styleDefs (./RtfStyles)
+//   ctx.note(s)  add a note (once; at most MAX_NOTES: see there);
+//                ctx.lost (./RtfText)
+//   ctx.fmtCache the run format cache (./RtfBody): clear it when
+//                data a charProps / paraProps reads changes
+//   ctx.reg      the merged handler tables
+//   ctx.page, ctx.relsAt (./RtfSect), ctx.lists (./RtfLists),
+//   ctx.bookmarks (./RtfFields), ctx.bdrSet (./RtfPara), ctx.tbl
+//   ctx.cellEnd (./RtfTable), ctx.pics ctx.shpOk (./RtfPict),
+//   ctx.revs (./RtfRevs), ctx.notesRd (./RtfNotes), ctx.cmts
+//   (./RtfComments): made by their modules on first use. ctx.relsAt
+//                is set inside a header, footer, note or comment
+//                (the holder of its rels): no note, comment or
+//                tracked change is read there
+//
+// A destination is an object: text(ctx, s) (required; decoded text);
+// optional words (Map: name -> (ctx, token), tried first, even for
+// a \* word), dests (Map: name -> opener, tried before the global
+// ones), ownWords (true: no global word applies inside it), skip
+// (true: everything inside is ignored), group(ctx) (a group opens
+// directly inside: may return the destination for that group),
+// end(ctx) (the group it was opened in closes, its state still in
+// force), bytes(ctx, bytes) (takes the text bytes as they are in
+// the file, undecoded, instead of text: picture data, ./RtfPict),
+// bin(ctx, bytes) (\binN data; else it is dropped), and the flow
+// methods par, row, sect, obj (./RtfBody Flow).
+// An opener is (ctx, token) -> destination; it is called when its
+// word appears in a group, and the rest of that group is its.
+// A word in no table: a \* one skips its group (with a note unless
+// it is in QUIET: MAX_NAMED of them by name), any other is ignored.
+// \uN, \ucN and \binN are the driver's own (see ./RtfText).
+// Pure: no desktop services.
+import {lex, isRtf} from 'wimplib/RtfLex';
+import {newDoc} from './NewDoc';
+import {newPara} from './Model';
+import {maxParagraphs} from './ReadBody';
+import {rootScope} from './Ns';
+import {stylesTree} from './WriteStyles';
+import {readStyles} from './ReadStyles';
+import {RtfState, PART as STATE} from './RtfState';
+import {PART as TABLES, corePart} from './RtfTables';
+import {PART as STYLES, docDefaults} from './RtfStyles';
+import {PART as BODY, Flow} from './RtfBody';
+import {PART as PARA} from './RtfPara';
+import {PART as LISTS} from './RtfLists';
+import {PART as SECT} from './RtfSect';
+import {PART as FIELDS} from './RtfFields';
+import {PART as TABLE} from './RtfTable';
+import {PART as PICT, pairToken} from './RtfPict';
+import {PART as REVS} from './RtfRevs';
+import {PART as NOTES} from './RtfNotes';
+import {PART as COMMENTS} from './RtfComments';
+import {textBytes, hexByte, unicode, SKIP} from './RtfText';
+
+/** The handler modules, in order (a later one wins a name). */
+const PARTS = [STATE, TABLES, STYLES, BODY, PARA, LISTS, SECT, FIELDS,
+  TABLE, PICT, REVS, NOTES, COMMENTS];
+
+/** \* destinations skipped without a note: data that is not text,
+ *  or that this reader has no use for. */
+export const QUIET = new Set(['expandedcolortbl', 'generator',
+  'rsidtbl', 'themedata', 'colorschememapping', 'latentstyles',
+  'datastore',
+  'xmlnstbl', 'panose', 'mmathPr', 'pgdsctbl', 'wgrffmtfilter',
+  'ftnsep', 'ftnsepc', 'aftnsep', 'aftnsepc', 'docvar', 'userprops',
+  'passwordhash', 'listpicture', 'pnseclvl', 'fldtype',
+  'xmlopen', 'xmlclose', 'levelmarker',
+  'fchars', 'lchars', 'operator', 'company', 'hlinkbase',
+  'bliptag', 'atntime', 'atnicn',
+  'blipuid', 'mhtmltag', 'background', 'pgptbl', 'protusertbl',
+  'ud', 'upr', 'oldcprops', 'oldpprops', 'oldsprops', 'oldtprops']);
+
+function registry() {
+  const reg = {words: new Map(), dests: new Map(), charProps: [],
+    paraProps: [], sectProps: [], finish: []};
+  for (const p of PARTS) {
+    for (const [k, v] of p.words || []) reg.words.set(k, v);
+    for (const [k, v] of p.dests || []) reg.dests.set(k, v);
+    reg.charProps.push(...(p.charProps || []));
+    reg.paraProps.push(...(p.paraProps || []));
+    reg.sectProps.push(...(p.sectProps || []));
+    reg.finish.push(...(p.finish || []));
+  }
+  return reg;
+}
+const REG = registry();
+
+/** Most notes a reading gives: the last of them is MORE when there
+ *  were more (each note is said once: a Set, never a search). */
+export const MAX_NOTES = 50;
+export const MORE = 'other things were skipped or damaged too';
+/** Unknown \* destinations named in a note of their own (the
+ *  rest, any number of names: the one note OTHER_DESTS). */
+export const MAX_NAMED = 5;
+export const OTHER_DESTS = 'other unknown destinations skipped';
+
+function context(opts) {
+  const notes = [], seen = new Set();
+  const doc = newDoc({date: opts.date, paper: opts.paper});
+  const body = new Flow();
+  return {doc, notes, body, dest: body, frames: [], reg: REG,
+    state: new RtfState({}), docSect: doc.sections[0].props,
+    fonts: new Map(), colours: [], deff: 0, ansicpg: 1252, info: {},
+    styleDefs: new Map(), lost: new Map(), skip: 0, lead: false,
+    paras: 0, max: maxParagraphs(opts), stop: false, fmtCache: null,
+    note(s) {
+      if (seen.has(s) || notes.length >= MAX_NOTES) return;
+      seen.add(s);
+      notes.push(notes.length < MAX_NOTES - 1 ? s : MORE);
+    }};
+}
+
+/** Open the destination `d` for the rest of the current group. */
+function openDest(ctx, d) {
+  const outer = ctx.frames[ctx.frames.length - 1];
+  if (ctx.dest !== outer && ctx.dest.end) ctx.dest.end(ctx);
+  ctx.dest = d || SKIP;
+}
+
+/** The note of an unknown \* destination (see MAX_NAMED). */
+function unknownDest(ctx, name) {
+  const named = ctx.named || (ctx.named = new Set());
+  if (named.has(name)) return;
+  if (named.size >= MAX_NAMED) return ctx.note(OTHER_DESTS);
+  named.add(name);
+  ctx.note('unknown destination \\' + name + ' skipped');
+}
+
+function word(ctx, t) {
+  const d = ctx.dest, name = t.name;
+  if (d.skip) return;
+  if (name === 'u') return unicode(ctx, t.param);
+  if (name === 'uc') return ctx.state.setUc(t.param);
+  const own = d.words && d.words.get(name);
+  if (own) return own(ctx, t);
+  const opener = (d.dests && d.dests.get(name)) ||
+    ctx.reg.dests.get(name);
+  if (opener) return openDest(ctx, opener(ctx, t));
+  if (t.star) {
+    if (!QUIET.has(name)) unknownDest(ctx, name);
+    return openDest(ctx, SKIP);
+  }
+  if (d.ownWords) return;
+  const w = ctx.reg.words.get(name);
+  if (w) w(ctx, t);
+}
+
+function open(ctx) {
+  ctx.state.push();
+  ctx.frames.push(ctx.dest);
+  const sub = ctx.dest.group ? ctx.dest.group(ctx) : undefined;
+  if (sub) ctx.dest = sub;
+}
+
+function close(ctx) {
+  const outer = ctx.frames.pop();
+  if (ctx.dest !== outer && ctx.dest.end) ctx.dest.end(ctx);
+  ctx.state.pop();
+  ctx.dest = outer;
+}
+
+/** Feed the tokens; stops after the document's group closes. */
+function run(ctx, tokens) {
+  let started = false;
+  for (const t of tokens) {
+    if (ctx.stop) return;
+    // (a \nonshppict counts as the fallback only right after its
+    // \shppict: ./RtfPict)
+    if (ctx.shpOk) pairToken(ctx, t);
+    if (t.t === '{' || t.t === '}') {
+      ctx.skip = 0;
+      ctx.lead = false;
+      if (t.t === '{') {
+        open(ctx);
+        started = true;
+      } else if (ctx.frames.length) {
+        // the document's last paragraph takes the state in force
+        if (ctx.frames.length === 1) ctx.body.finish(ctx);
+        close(ctx);
+        if (!ctx.frames.length) return;
+      }
+      continue;
+    }
+    if (!started) continue;
+    if (t.t === 'text') {
+      if (ctx.dest.skip) continue;
+      if (ctx.dest.bytes) ctx.dest.bytes(ctx, t.bytes);
+      else textBytes(ctx, t.bytes);
+      continue;
+    }
+    if (t.t === 'hex') {
+      if (!ctx.dest.skip) hexByte(ctx, t.byte);
+      continue;
+    }
+    ctx.lead = false;
+    // a word (even a \uN: a \uc1 file with no fallback character)
+    // arriving while a skip is pending is swallowed: the spec's rule
+    if (ctx.skip > 0) {
+      ctx.skip--;
+      continue;
+    }
+    if (t.t === 'word') word(ctx, t);
+    else if (t.t === 'bin' && ctx.dest.bin) ctx.dest.bin(ctx, t.bytes);
+  }
+}
+
+/** Close the open groups (so their destinations end). */
+function unwind(ctx) {
+  ctx.body.finish(ctx);
+  while (ctx.frames.length) close(ctx);
+}
+
+/** The Doc from what was read. */
+function finish(ctx, date) {
+  ctx.body.finish(ctx);
+  const doc = ctx.doc;
+  for (const fn of ctx.reg.finish) fn(ctx);
+  doc.sections = ctx.body.sections.map((s) => {
+    const props = structuredClone(ctx.docSect);
+    for (const fn of ctx.reg.sectProps) fn(ctx, s.sect, props, s);
+    return {props, raw: null,
+      blocks: s.blocks.length ? s.blocks : [newPara('')]};
+  });
+  // as written and read back: the shape readDocx gives (raw nodes)
+  const st = stylesTree(docDefaults(ctx, doc.styles));
+  doc.styles = readStyles(st, rootScope(st));
+  doc.parts = new Map(doc.parts);
+  doc.parts.set('docProps/core.xml', corePart(ctx, date));
+  for (const [p, n] of ctx.lost) {
+    ctx.note('unknown code page ' + p + ': ' + n + ' character' +
+      (n === 1 ? '' : 's') + ' replaced');
+  }
+  return doc;
+}
+
+const LEX_UNCLOSED = ' unclosed group(s) closed at the end';
+
+export function readRtf(bytes, opts = {}) {
+  const date = opts.date || new Date();
+  const o = {...opts, date};
+  let ctx;
+  try {
+    ctx = context(o);
+    if (!(bytes instanceof Uint8Array) || !isRtf(bytes)) {
+      ctx.note('this is not an RTF file');
+      return {doc: finish(ctx, date), notes: ctx.notes};
+    }
+    const {tokens, notes} = lex(bytes);
+    for (const n of notes) {
+      ctx.note(n.endsWith(LEX_UNCLOSED) ? 'the file ends inside a ' +
+        'group: it may be cut short' : n);
+    }
+    try {
+      run(ctx, tokens);
+      unwind(ctx);
+    } catch (e) {
+      ctx.note('part of the file could not be read: ' +
+        (e && e.message ? e.message : String(e)));
+    }
+    return {doc: finish(ctx, date), notes: ctx.notes};
+  } catch (e) {
+    const notes = ctx ? ctx.notes : [];
+    notes.push('the file could not be read: ' +
+      (e && e.message ? e.message : String(e)));
+    return {doc: newDoc({date, paper: o.paper}), notes};
+  }
+}

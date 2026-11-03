@@ -1,0 +1,301 @@
+// RtfWriteProps - the Model's run and paragraph properties as RTF
+// words, for the writer (./RtfWrite): the inverse of the reader's
+// ./RtfBody, ./RtfProps and ./RtfPara, built from THEIR tables (UL,
+// CHAR_FLAGS, JC, HIGHLIGHT, EXTRAS, FLAG_WORDS, BOOLS, TAB_KINDS,
+// LEADERS, SIDE_WORDS, BORDER_STYLES) so the two cannot drift.
+//
+//   charWords(w, r, {all?}) -> string  the words of an rPr r
+//       (w: the writer, for w.font(name) and w.colour(hex) table
+//       numbers, w.theme). Normally r is RESOLVED (./Styles
+//       resolveRun) and the words are absolute, after \plain: only
+//       what is on, \fsN always (the docDefaults' size, else
+//       Word's 20, when r has no valid size), \fN unless it is
+//       font 0 (the name: ./Fmt fontName,
+//       a theme font too). all: a character style's own properties
+//       (./RtfWriteStyles): every field r gives, off ones too (\b0,
+//       \ulnone, \cf0...), no size or font unless r gives them
+//   paraWords(w, p, tabs, {widow?}) -> string  the words of a
+//       RESOLVED pPr p (./Styles resolvePara) after \pard, absolute;
+//       tabs the stops in force (tabsOf). widow: Word's rule, widow
+//       control on unless p turns it off (\widctlpar); without it,
+//       only what p says (the document's defaults, {\*\defpap})
+//   tabsOf(styles, para) -> [{val, pos, leader?}]  the stops in force:
+//       each layer's stops set or 'clear' those below
+//   borderWord(w, side) -> the words of one border side ({val, sz,
+//       space, color, shadow}) after its side word: the style
+//       (\brdrnone for nil), \brdrw \brsp \brdrcf \brdrsh
+//   twips(v, lo, hi) -> v when a whole number in range, else
+//       undefined (so no NaN or undefined is ever written)
+//
+// Order of the words: character: \b \i \strike \striked1 \caps
+// \scaps \v, underline, \f, \fs, \cf, \highlight, \chcbpat, \super /
+// \sub, \up / \dn. Paragraph: \q*, \li \ri \fi, \sb \sa \sl \slmult,
+// \widctlpar / \nowidctlpar, \keep \keepn \pagebb \contextualspace
+// \noline, \outlinelevel, tab stops, borders (top left bottom right
+// between bar), shading. A value the reader would not take back
+// (out of its range, not a number) is left out.
+// Pure: no desktop services.
+import {UL, CHAR_FLAGS, JC} from './RtfBody';
+import {HIGHLIGHT, EXTRAS} from './RtfProps';
+import {FLAG_WORDS, BOOLS, TAB_KINDS, LEADERS, SIDE_WORDS,
+  BORDER_STYLES} from './RtfPara';
+import {paraLayers} from './Styles';
+import {fontName} from './Fmt';
+
+const MAX_TW = 31680;
+
+const invert = (pairs) => {
+  const m = new Map();
+  for (const [a, b] of pairs) if (!m.has(b)) m.set(b, a);
+  return m;
+};
+const UL_WORD = invert(UL);
+const HL_HEX = invert(HIGHLIGHT);
+const JC_WORD = invert(JC);
+const EXTRA_OF = new Map(EXTRAS);
+const FIELD_OF = new Map(BOOLS);
+const TAB_WORD = invert(TAB_KINDS);
+const LEADER_WORD = invert(LEADERS);
+const SIDE_WORD = invert(SIDE_WORDS.filter(([, s]) => s.length === 1)
+  .map(([word, [side]]) => [word, side]));
+const STYLE_WORD = invert(BORDER_STYLES);
+const SIDES = ['top', 'left', 'bottom', 'right', 'between', 'bar'];
+const JC_ALIAS = new Map([['start', 'left'], ['end', 'right'],
+  ['distribute', 'both']]);
+const OFF = ['0', 'false', 'off'];
+
+export function twips(v, lo = -MAX_TW, hi = MAX_TW) {
+  return Number.isInteger(v) && v >= lo && v <= hi ? v : undefined;
+}
+
+const HEX = '0123456789abcdefABCDEF';
+const hex = (v) => typeof v === 'string' && v.length === 6 &&
+  [...v].every((c) => HEX.includes(c)) ? v.toUpperCase() : undefined;
+
+const isNode2 = (t) => t !== null && typeof t === 'object';
+const isNode = (n) => n !== null && typeof n === 'object' &&
+  typeof n.name === 'string';
+const valAttr = (n) => {
+  const a = Array.isArray(n.attrs) ? n.attrs.find((x) =>
+    Array.isArray(x) && x[0] === 'w:val') : undefined;
+  return a ? String(a[1]) : undefined;
+};
+
+/** The last w:name element in extra: true on, false off, else
+ *  undefined. */
+function flagIn(extra, name) {
+  let v;
+  for (const n of Array.isArray(extra) ? extra : []) {
+    if (!isNode(n) || n.name !== name) continue;
+    const a = valAttr(n);
+    v = a === undefined || !OFF.includes(a);
+  }
+  return v;
+}
+
+/** The w:position value (half-points) in extra, or undefined. */
+function position(extra) {
+  let v;
+  for (const n of Array.isArray(extra) ? extra : []) {
+    if (!isNode(n) || n.name !== 'w:position') continue;
+    const a = valAttr(n);
+    const k = a === undefined ? NaN : Number(a);
+    v = Number.isInteger(k) && Math.abs(k) <= 3168 ? k : undefined;
+  }
+  return v;
+}
+
+/** On / off of a character flag key in r (a field or an extra). */
+const flagOf = (r, key) => (EXTRA_OF.has(key)
+  ? flagIn(r.extra, EXTRA_OF.get(key))
+  : (typeof r[key] === 'boolean' ? r[key] : undefined));
+
+/** The shading fill of an rPr: a solid pattern shows its colour. */
+function shadeOf(s) {
+  if (!s || typeof s !== 'object') return undefined;
+  if (s.val === 'solid' && hex(s.color)) return hex(s.color);
+  return hex(s.fill);
+}
+
+/** The colour of an rPr: its field, else the w:val of a w:color kept
+ *  raw (a theme colour: Word writes the colour it shows there). */
+function colourOf(r) {
+  if (r.color !== undefined) return hex(r.color);
+  let v;
+  for (const n of Array.isArray(r.extra) ? r.extra : []) {
+    if (isNode(n) && n.name === 'w:color') v = hex(valAttr(n));
+  }
+  return v;
+}
+
+/** The document's default size (docDefaults), else Word's 20. */
+function defaultSz(w) {
+  const dd = w.styles && w.styles.docDefaults;
+  const sz = dd && dd.rPr ? twips(dd.rPr.sz, 2, 3276) : undefined;
+  return sz === undefined ? 20 : sz;
+}
+
+export function charWords(w, r, opts = {}) {
+  const all = !!opts.all;
+  let s = '';
+  for (const [word, key] of CHAR_FLAGS) {
+    const v = flagOf(r, key);
+    if (v) s += '\\' + word + (word === 'striked' ? '1' : '');
+    else if (v === false && all) s += '\\' + word + '0';
+  }
+  if (typeof r.u === 'string') {
+    if (r.u !== 'none') s += '\\' + (UL_WORD.get(r.u) || 'ul');
+    else if (all) s += '\\ulnone';
+  }
+  const name = all ? fontOf(r) : fontName(r, w.theme);
+  if (name) {
+    const f = w.font(name);
+    if (f || all) s += '\\f' + f;
+  }
+  const sz = twips(r.sz, 2, 3276);
+  if (sz !== undefined) s += '\\fs' + sz;
+  else if (!all) s += '\\fs' + defaultSz(w);
+  const c = colourOf(r);
+  if (c) s += '\\cf' + w.colour(c);
+  else if (all && r.color === 'auto') s += '\\cf0';
+  const hl = HL_HEX.get(r.highlight);
+  if (hl) s += '\\highlight' + w.colour(hl);
+  else if (all && r.highlight === 'none') s += '\\highlight0';
+  const fill = shadeOf(r.shd);
+  if (fill) s += '\\chcbpat' + w.colour(fill);
+  if (r.vertAlign === 'superscript') s += '\\super';
+  else if (r.vertAlign === 'subscript') s += '\\sub';
+  else if (all && r.vertAlign === 'baseline') s += '\\nosupersub';
+  const pos = position(r.extra);
+  if (pos > 0) s += '\\up' + pos;
+  else if (pos < 0) s += '\\dn' + -pos;
+  return s;
+}
+
+/** A font name the rPr itself gives, or undefined. */
+function fontOf(r) {
+  const f = r.rFonts;
+  if (!f || typeof f !== 'object') return undefined;
+  return [f.ascii, f.hAnsi].find((n) => typeof n === 'string' && n);
+}
+
+export function tabsOf(styles, para) {
+  const at = new Map();
+  for (const l of paraLayers(styles, para)) {
+    const list = l && Array.isArray(l.tabs) ? l.tabs : [];
+    for (const t of list) {
+      const pos = isNode2(t) ? twips(t.pos) : undefined;
+      if (pos === undefined) continue;
+      if (t.val === 'clear') at.delete(pos);
+      else at.set(pos, t);
+    }
+  }
+  return [...at].sort((a, b) => a[0] - b[0]).map(([pos, t]) => {
+    const o = {val: t.val, pos};
+    if (t.leader) o.leader = t.leader;
+    return o;
+  });
+}
+
+function tabWords(tabs) {
+  let s = '';
+  for (const t of tabs) {
+    const val = JC_ALIAS.get(t.val) || t.val;
+    const lead = LEADER_WORD.get(t.leader);
+    if (val === 'bar') {
+      s += '\\tb' + t.pos;
+      continue;
+    }
+    if (TAB_WORD.has(val)) s += '\\' + TAB_WORD.get(val);
+    if (lead) s += '\\' + lead;
+    s += '\\tx' + t.pos;
+  }
+  return s;
+}
+
+function borderWords(w, pBdr) {
+  let s = '';
+  if (!pBdr || typeof pBdr !== 'object') return s;
+  for (const side of SIDES) {
+    const b = pBdr[side];
+    if (!b || typeof b !== 'object' || typeof b.val !== 'string' ||
+      b.val === 'nil' || b.val === 'none') continue;
+    s += '\\' + SIDE_WORD.get(side) + borderWord(w, b);
+  }
+  return s;
+}
+
+export function borderWord(w, b) {
+  if (b.val === 'nil' || b.val === 'none') return '\\brdrnone';
+  let s = '\\' + (STYLE_WORD.get(b.val) || 'brdrs');
+  const sz = twips(b.sz, 0, 96);
+  if (sz) s += '\\brdrw' + Math.round(sz * 20 / 8);
+  const sp = twips(b.space, 0, 31);
+  if (sp) s += '\\brsp' + sp * 20;
+  if (hex(b.color)) s += '\\brdrcf' + w.colour(hex(b.color));
+  if (b.shadow === true) s += '\\brdrsh';
+  return s;
+}
+
+function shadingWords(w, d) {
+  if (!d || typeof d !== 'object') return '';
+  const color = hex(d.color), fill = hex(d.fill);
+  const val = typeof d.val === 'string' ? d.val : 'clear';
+  let pct = 0;
+  if (val === 'solid') pct = 10000;
+  else if (val.startsWith('pct')) {
+    const n = Number(val.slice(3));
+    if (Number.isInteger(n) && n > 0 && n <= 100) pct = n * 100;
+  }
+  let s = '';
+  if (pct) {
+    s += '\\shading' + pct;
+    if (color) s += '\\cfpat' + w.colour(color);
+  }
+  if (fill) s += '\\cbpat' + w.colour(fill);
+  return s;
+}
+
+function indWords(ind) {
+  if (!ind || typeof ind !== 'object') return '';
+  let s = '';
+  const li = twips(ind.left), ri = twips(ind.right);
+  if (li) s += '\\li' + li;
+  if (ri) s += '\\ri' + ri;
+  const h = twips(ind.hanging, 0), f = twips(ind.firstLine, 0);
+  if (h) s += '\\fi-' + h;
+  else if (f) s += '\\fi' + f;
+  return s;
+}
+
+function spacingWords(sp) {
+  if (!sp || typeof sp !== 'object') return '';
+  let s = '';
+  const sb = twips(sp.before, 0), sa = twips(sp.after, 0);
+  if (sb) s += '\\sb' + sb;
+  if (sa) s += '\\sa' + sa;
+  const line = twips(sp.line, 1);
+  const rule = sp.lineRule || 'auto';
+  if (line === undefined || (line === 240 && rule === 'auto'))
+    return s;
+  if (rule === 'exact') s += '\\sl-' + line + '\\slmult0';
+  else if (rule === 'atLeast') s += '\\sl' + line + '\\slmult0';
+  else s += '\\sl' + line + '\\slmult1';
+  return s;
+}
+
+export function paraWords(w, p, tabs, opts = {}) {
+  let s = '';
+  const jc = JC_ALIAS.get(p.jc) || p.jc;
+  if (jc !== 'left' && JC_WORD.has(jc)) s += '\\' + JC_WORD.get(jc);
+  s += indWords(p.ind) + spacingWords(p.spacing);
+  if (p.widowControl === false) s += '\\nowidctlpar';
+  else if (p.widowControl === true || opts.widow) s += '\\widctlpar';
+  for (const [word, key] of FLAG_WORDS) {
+    if (p[FIELD_OF.get(key)] === true) s += '\\' + word;
+  }
+  const ol = twips(p.outlineLvl, 0, 8);
+  if (ol !== undefined) s += '\\outlinelevel' + ol;
+  return s + tabWords(tabs) + borderWords(w, p.pBdr) +
+    shadingWords(w, p.shd);
+}

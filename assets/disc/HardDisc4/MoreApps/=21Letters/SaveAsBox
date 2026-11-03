@@ -1,0 +1,111 @@
+// SaveAsBox - Save as (Batch G2): the window menu's Save as and its
+// key (F3) open this box first. It asks the format to save in, Word
+// document (.docx) or Rich Text (.rtf), the window's own (dw.format)
+// chosen each time it opens; Continue opens the Save box for the
+// format chosen (./DocSave openSaveBox: its name and file type),
+// Cancel, Escape or a click elsewhere change nothing.
+//
+//   saveAsBox(dw) -> the box's api (WimpLib Ui/Dialog), one per
+//       document (key 'saveas:<docKey>', dw.boxes 'saveasfmt':
+//       ./CloseDoc deletes it with the document), made once and
+//       kept; its format set to the window's unless it is open
+//       (asked again while open: left as it is)
+//   saveAsMenu(dw) -> its window, for the window menu's Save as
+//       submenu (./WinMenu)
+//   openSaveAs(dw, x, y)  opened as a menu at x, y (F3: ./DocKeys,
+//       by the caret); it or the Save box open already: left as it
+//       is
+//
+// Continue with Rich Text chosen, for a document holding what RTF
+// cannot store (./LostBox lostOf, worked out then, over the
+// document as it is): ./LostBox askLost first, its Cancel ending
+// there (nothing written, nothing changed). This is asked at every
+// Save as RTF that would lose something, an RTF window's too (the
+// user may have put a picture in since it was opened). The Save box
+// written sets the window's format (./DocSave writeTo): later Saves
+// follow it. A .docx keeps everything: no question.
+//
+// A failure on the way (the RTF writer, the box) is said in an
+// error box. The handlers look up what they need when they run (the
+// window, its format, the document), never what it was when the box
+// was made: the box outlives each Save as (the lesson of Batch G1's
+// cached box).
+import {wimp, reportError} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {openSaveBox} from './DocSave';
+import {lostOf, askLost} from './LostBox';
+
+const HELP = 'Save as: choose the kind of file, then Continue to ' +
+  'name it.';
+const rows = () => [
+  {kind: 'label', text: 'Save this document as'},
+  {kind: 'radio', name: 'docx', group: 'format', value: 'docx',
+    text: 'Word document (.docx)',
+    help: 'A Word .docx file: everything in the document is kept.'},
+  {kind: 'radio', name: 'rtf', group: 'format', value: 'rtf',
+    text: 'Rich Text (.rtf)',
+    help: 'An RTF file, which most word processors read; some ' +
+      'things (pictures, text boxes...) cannot be stored in it.'},
+];
+const wired = new WeakSet();           // apis with their handlers
+
+/** See the header. */
+export function saveAsBox(dw) {
+  const api = dialog({task: dw.app.task, key: `saveas:${dw.docKey}`,
+    title: 'Save as', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Continue'], enter: 'Continue'});
+  box(dw, 'saveasfmt', () => api.win);
+  if (!wired.has(api)) wire(api, dw);
+  if (!api.isOpen) api.set('format', dw.format === 'rtf' ? 'rtf'
+    : 'docx');
+  return api;
+}
+
+/** See the header. */
+export function saveAsMenu(dw) {
+  return saveAsBox(dw).win;
+}
+
+/** See the header. */
+export function openSaveAs(dw, x, y) {
+  const api = saveAsBox(dw), b = dw.boxes.get('saveas');
+  if (api.isOpen || (b && b.isOpen)) return;
+  wimp.menus.open(api.win, Math.round(x), Math.round(y),
+    {task: dw.app.task});
+}
+
+/** The box closed: as a menu, the menu with it. */
+function shut(api) {
+  if (api.win._menuDbox && wimp.menus.isOpen) wimp.menus.close();
+  else api.close();
+}
+
+/** The handlers of a new box (one window's, for its life). */
+function wire(api, dw) {
+  wired.add(api);
+  // (no writable field: the caret in the box, so that Return and
+  // Escape reach it)
+  api.win.on('menuopen', () => { wimp.setCaret(api.win); });
+  api.on('button', ({name, values}) => {
+    const at = {x: api.win.x, y: api.win.y};
+    shut(api);
+    if (name === 'Continue') {
+      go(dw, values.format === 'rtf' ? 'rtf' : 'docx', at)
+        .catch((e) => reportError(e && e.message ? e.message
+          : String(e), {appName: 'Letters'}));
+    }
+    return false;                      // (kept for the next time)
+  });
+}
+
+/** Continue: the question (RTF losing something), the Save box. */
+async function go(dw, format, at) {
+  if (dw.closed) return;
+  if (format === 'rtf') {
+    const lost = lostOf(dw);
+    if (lost.length && !(await askLost(dw, lost))) return;
+    if (dw.closed) return;
+  }
+  openSaveBox(dw, format, at);
+}

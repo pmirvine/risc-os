@@ -425,12 +425,23 @@ export function withNewParts(want, got) {
   // of a document that had none: its relationship is in the model,
   // its Override is the writer's)
   // (and the comment parts made by a command, ./CommentParts)
-  const allowed = [g.stylesPart, g.numberingPart, relsName,
-    ...Object.values(g.noteParts || {}),
+  // (with their .rels when made with links or pictures: the RTF
+  // reader, ./withNewReview)
+  const made = [...Object.values(g.noteParts || {}),
     ...Object.values(g.commentParts || {})].filter(Boolean);
+  const allowed = [g.stylesPart, g.numberingPart, relsName, ...made,
+    ...made.map((n) => n.slice(0, n.lastIndexOf('/') + 1) + '_rels/' +
+      n.slice(n.lastIndexOf('/') + 1) + '.rels')].filter(Boolean);
   // (a part the model holds that the file had not: a picture's media
   // put in by a command, Batch B)
   const held = (n) => want.parts instanceof Map && want.parts.has(n);
+  // (and a header or footer made in memory with them, and its .rels:
+  // ./withNewStories takes the rest of those)
+  const relsOf = (n) => n.slice(0, n.lastIndexOf('/') + 1) + '_rels/' +
+    n.slice(n.lastIndexOf('/') + 1) + '.rels';
+  for (const [n, st] of want.stories || new Map()) {
+    if (st && st.bytes === null) allowed.push(n, relsOf(n));
+  }
   if (!extra.every((n) => allowed.includes(n) || held(n))) return want;
   const inOrder = (a, b) => {
     let at = 0;
@@ -474,6 +485,66 @@ export function withNewParts(want, got) {
 }
 
 /**
+ * `want` for a document holding header or footer stories made in
+ * memory (bytes null: a command's blankStory, or the RTF reader):
+ * read back, each has the bytes the writer wrote (story.bytes, its
+ * orig blocks and prolog; the part and its .rels in parts) and the
+ * package lists name it (zipOrder, content type Overrides, prolog,
+ * storyParts). Those are taken from `got` for those parts only, when
+ * `want`'s lists are in `got`'s in order and every name `got` adds is
+ * such a part or its .rels; the blocks, root, kind and relationships
+ * of each story are still compared.
+ */
+export function withNewStories(want, got) {
+  const made = [...(want.stories || new Map())].filter(([, s]) =>
+    s && s.bytes === null).map(([n]) => n);
+  if (!made.length || !(got.stories instanceof Map)) return want;
+  const relsOf = (n) => n.slice(0, n.lastIndexOf('/') + 1) + '_rels/' +
+    n.slice(n.lastIndexOf('/') + 1) + '.rels';
+  const names = new Set(made.flatMap((n) => [n, relsOf(n)]));
+  const out = structuredClone(want);
+  for (const n of made) {
+    const g = got.stories.get(n), s = out.stories.get(n);
+    if (!g) continue;
+    s.bytes = structuredClone(g.bytes);
+    s.prolog = structuredClone(g.prolog);
+    // (read back, orig holds the very block objects of blocks)
+    s.orig = g.orig.length === s.blocks.length ? s.blocks
+      : structuredClone(g.orig);
+    for (const p of [n, relsOf(n)]) {
+      if (got.parts.has(p)) out.parts.set(p, got.parts.get(p));
+    }
+  }
+  // (the parts in the order they were written: the stories' parts
+  // where the writer put them, before media a reader added)
+  const keys = [...out.parts.keys()];
+  if (keys.length === got.parts.size && keys.every((k) =>
+    got.parts.has(k))) {
+    out.parts = new Map([...got.parts.keys()].map((k) =>
+      [k, out.parts.get(k)]));
+  }
+  const w = out.meta, g = got.meta;
+  const sub = (a, b, key = (x) => x) => {
+    const extra = b.filter((x) => !a.some((y) =>
+      isDeepStrictEqual(y, x)));
+    return a.every((x) => b.some((y) => isDeepStrictEqual(y, x))) &&
+      extra.every((x) => names.has(key(x)));
+  };
+  if (sub(w.zipOrder, g.zipOrder)) w.zipOrder = [...g.zipOrder];
+  const ov = g.contentTypes.overrides;
+  if (sub(w.contentTypes.overrides, ov, (x) => x[0].slice(1))) {
+    w.contentTypes.overrides = structuredClone(ov);
+  }
+  for (const n of made) {
+    if (g.prolog.has(n)) w.prolog.set(n, structuredClone(g.prolog.get(n)));
+  }
+  if (sub(w.storyParts || [], g.storyParts || [])) {
+    w.storyParts = [...g.storyParts];
+  }
+  return out;
+}
+
+/**
  * A style added by a command (List Paragraph, ./ListMake) has no
  * original XML in the model (raw null); read back, it has the node
  * the writer wrote. `want` with that node taken from `got` for those
@@ -487,6 +558,78 @@ function withWrittenStyles(want, got) {
   for (const [id, st] of out.styles.styles) {
     const back = got.styles && got.styles.styles.get(id);
     if (!st.raw && back && back.raw) st.raw = structuredClone(back.raw);
+  }
+  return out;
+}
+
+/**
+ * `want` for a document whose notes or comments parts were made in
+ * memory (the RTF reader, ./RtfNotes and ./RtfComments: no part was
+ * read, notes.read[kind] / comments.read null): read back, each has
+ * what the writer wrote (the part's bytes in parts; root, prolog,
+ * raw and the read snapshot; every note's and comment's node, orig
+ * and relsPart as read; the companions' bytes). Those are taken
+ * from `got`, when it has the same notes and comments (same ids in
+ * the same order); their blocks, ids, types, authors, initials,
+ * dates, paraIds, parents, done and rels are still compared.
+ */
+export function withNewReview(want, got) {
+  const out = structuredClone(want);
+  const take = (n) => {
+    if (n && got.parts.has(n)) out.parts.set(n, got.parts.get(n));
+  };
+  const relsOf = (n) => n.slice(0, n.lastIndexOf('/') + 1) + '_rels/' +
+    n.slice(n.lastIndexOf('/') + 1) + '.rels';
+  const wn = out.notes, gn = got.notes;
+  for (const k of ['footnotes', 'endnotes']) {
+    const part = out.meta.noteParts && out.meta.noteParts[k];
+    if (!part || wn.read[k] || !gn || !gn.read[k]) continue;
+    if (!isDeepStrictEqual(wn.order[k], gn.order[k])) continue;
+    for (const key of ['root', 'prolog', 'raw', 'read']) {
+      wn[key][k] = structuredClone(gn[key][k]);
+    }
+    // (the snapshot holds the very notes read)
+    const rn = gn.read[k].notes;
+    if (rn instanceof Map) {
+      wn.read[k].notes = new Map([...rn.keys()].map((id) =>
+        [id, wn[k].get(id)]));
+    }
+    for (const [id, n] of wn[k]) {
+      const g = gn[k].get(id);
+      n.node = structuredClone(g.node);
+      n.relsPart = g.relsPart;
+      n.orig = g.orig.length === n.blocks.length ? n.blocks
+        : structuredClone(g.orig);
+    }
+    take(part);
+    take(relsOf(part));
+  }
+  const wc = out.comments, gc = got.comments;
+  const parts = out.meta.commentParts || {};
+  if (parts.comments && !wc.read && gc && gc.read &&
+    isDeepStrictEqual(wc.order, gc.order)) {
+    for (const key of ['root', 'prolog', 'raw', 'read', 'relsPart']) {
+      wc[key] = structuredClone(gc[key]);
+    }
+    // (the snapshot holds the very comments read)
+    wc.read.map = new Map([...gc.read.map.keys()].map((id) =>
+      [id, wc.map.get(id)]));
+    for (const [id, c] of wc.map) {
+      const g = gc.map.get(id);
+      c.node = structuredClone(g.node);
+      c.relsPart = g.relsPart;
+      c.orig = g.orig.length === c.blocks.length ? c.blocks
+        : structuredClone(g.orig);
+    }
+    for (const n of Object.values(parts)) take(n);
+    take(relsOf(parts.comments));
+  }
+  // (the parts in the order they were written)
+  const keys = [...out.parts.keys()];
+  if (keys.length === got.parts.size && keys.every((k) =>
+    got.parts.has(k))) {
+    out.parts = new Map([...got.parts.keys()].map((k) =>
+      [k, out.parts.get(k)]));
   }
   return out;
 }

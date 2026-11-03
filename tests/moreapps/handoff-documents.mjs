@@ -71,7 +71,8 @@ try {
     window.__word = () => os.wimp.tasks.find((t) => t.alive && t.name === 'Letters');
     window.__by = (leaf) => window.__word().word.docs.find((d) => d.leaf === leaf);
     window.__bytes = async (p) => Array.from(await os.vfs.readFile(p));
-    window.__box = (d) => d.win.menu({}).items.find((i) => i.text === 'Save as').submenu();
+    // (Save as: the Save box its Save as box's Continue opens, G2)
+    window.__box = (d) => d.saveBox();
     // Save on an untitled document: the Save box, its OK
     window.__saveNew = async (d, to) => {
       const p = d.save();

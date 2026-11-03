@@ -17,15 +17,35 @@
 //                  nothing was written (Discard, below). The saves
 //                  of a window run one after another, in the order
 //                  asked: a slow one never overwrites a later one
-//   bytesOf(dw) -> Promise<Uint8Array>   the bytes (dw.saveBytes)
+//   writeTo(dw, path, format)  the same in format ('docx' | 'rtf';
+//                  default the window's, dw.format, when it runs):
+//                  written, the window's format is format from then
+//                  on (later Saves follow it), and its Save boxes'
+//                  file type with it
+//   bytesOf(dw, format = dw.format) -> Promise<Uint8Array>   the
+//                  bytes (dw.saveBytes(format)) in that format: 'rtf'
+//                  by ./RtfWrite (./LostBox rtfOf: kept while the
+//                  document is unchanged; a new copy of it each
+//                  time), else a .docx by ./DocxWrite
 //   idle(dw) -> Promise    settles when the window's saves (those
 //                  asked so far) have ended; saving(dw): any running
 //   canWrite(dw, path) -> null, or why not: path is the file of
 //                  another open document (saving over it is refused)
-//   saveBox(dw)  the Save as box (made once, kept in dw.boxes:
-//                  ./Boxes); OK onto another file that is there asks
-//                  Replace / Cancel (./Replace). Save a copy is
-//                  ./CopySave
+//   saveBox(dw)  the Save box of Save as (made once, kept in
+//                  dw.boxes: ./Boxes); OK onto another file that is
+//                  there asks Replace / Cancel (./Replace). It saves
+//                  in the format it was last opened for (boxFormat),
+//                  looked up when it saves. Save a copy is ./CopySave
+//   openSaveBox(dw, format, at)  the Save box for format (./SaveAsBox
+//                  Continue): its name (SaveState suggestName with
+//                  format; a name typed in the box open is kept, its
+//                  extension switched if the format changes) and file
+//                  type; an untitled document's
+//                  opens centred, as Save opens it (a save() waiting
+//                  on it then settles from it), any other's as a menu
+//                  at at ({x, y}: where the Save as box was), else
+//                  centred
+//   boxFormat(dw) -> the format the Save box saves in now
 //   commitComposition(view)  the composing text typed in
 //   notSaved(name, e) -> Error  "'name' could not be saved: why"
 // A file saved goes to app.noteRecent (./RecentFiles); app.recent
@@ -39,7 +59,17 @@
 // await, so the bytes are that state. Only when vfs.writeFile has
 // succeeded is that state marked saved (Document.markSavedAt):
 // typing during the write keeps the '*', undo back to it is clean.
-// Always file type &A7E; a leaf with no '/docx' is kept as typed.
+// The file type is the format's (./Open fileTypeOf: &A7E for a
+// .docx, &C32 for RTF); a leaf with no '/docx' or '/rtf' is kept as
+// typed. A window opened from RTF saves as RTF, any other as a
+// .docx, until a Save as in the other format is written. Save of an
+// RTF window that would lose something (./LostBox toTell) asks
+// first, once per window (./LostBox askLost: Cancel saves nothing,
+// false); Save as says it in ./SaveAsBox. The window is told once
+// an RTF file is written (./LostBox saved), not at Continue. OK in
+// the Save box saving RTF that would lose more than the window was
+// told of or answered (./LostBox unasked: put in with the box open)
+// asks again first (guardLost; a drag to a directory: in its save).
 // A save that renames the window changes its title, dw.path,
 // dw.leaf, its app.docs key (app.rekey), the Save as box's name and
 // the Save a copy box's and the Info box. Save a copy changes
@@ -56,12 +86,15 @@ import {wimp, vfs, saveAs, reportError} from 'riscos';
 import {suggestName, defaultDir, leafOf} from './SaveState';
 import {box} from './Boxes';
 import {writeDocx} from './DocxWrite';
+import {fileTypeOf} from './Open';
 import {guardOK, samePath} from './Replace';
+import {askLost, toTell, rtfOf, lostOf, saved, unasked}
+  from './LostBox';
 
-const DOCX = 0xA7E;
 const waiting = new WeakMap();         // dw -> {p, res, off} (save())
 const queue = new WeakMap();           // dw -> the last save's end
 const gone = new WeakSet();            // Save boxes deleted
+const chosen = new WeakMap();          // dw -> its Save box's format
 const there = (p) => vfs.exists(p);
 
 /** See the header. */
@@ -92,8 +125,11 @@ export function commitComposition(v) {
 }
 
 /** See the header. */
-export async function bytesOf(dw) {
+export async function bytesOf(dw, format = dw.format) {
   try {
+    // (a copy: what is saved or given away never shares the array
+    // kept for the next save)
+    if (format === 'rtf') return rtfOf(dw).bytes.slice();
     return await writeDocx(dw.doc);
   } catch (e) {
     throw notSaved(dw.leaf, e);
@@ -108,9 +144,10 @@ export function saving(dw) { return queue.has(dw); }
 
 /** See the header: after the window's saves before it (path null:
  *  dw.path, when it runs). */
-export function writeTo(dw, path) {
+export function writeTo(dw, path, format) {
   const asked = dw.d.stateId;
-  const prev = queue.get(dw), run = () => write1(dw, path, asked);
+  const prev = queue.get(dw);
+  const run = () => write1(dw, path, asked, format);
   const p = prev ? prev.then(run) : run();
   const end = p.then(() => {}, () => {});
   queue.set(dw, end);
@@ -119,9 +156,10 @@ export function writeTo(dw, path) {
 }
 
 /** One save (writeTo); null: not written (the header). */
-async function write1(dw, to, asked) {
+async function write1(dw, to, asked, format) {
   if (dw.closed && dw.d.stateId !== asked) return null;
   const path = to == null ? dw.path : to;
+  const fmt = format || dw.format || 'docx';
   let why = canWrite(dw, path);
   if (why) throw new Error(why);
   const d = dw.d;
@@ -130,21 +168,34 @@ async function write1(dw, to, asked) {
     d.breakCoalesce();
   }
   const id = d.stateId;
-  const bytes = await dw.saveBytes();  // (its error names the file)
+  const bytes = await dw.saveBytes(fmt);  // (its error names it)
+  const lost = fmt === 'rtf' ? lostOf(dw) : null;  // (those bytes')
   why = canWrite(dw, path);            // (opened meanwhile)
   if (why) throw new Error(why);
   let full;
   try {
-    full = vfs.writeFile(path, bytes, {filetype: DOCX});
+    full = vfs.writeFile(path, bytes, {filetype: fileTypeOf(fmt)});
   } catch (e) {
     throw notSaved(leafOf(path), e);
   }
   if (dw.app.noteRecent) dw.app.noteRecent(full);
   if (dw.closed) return full;          // (closed while it was written)
   d.markSavedAt(id);
+  if (lost) saved(dw, lost);
+  if ((dw.format || 'docx') !== fmt) retype(dw, fmt);
   rename(dw, full);
   dw.retitle();
   return full;
+}
+
+/** dw now saves as format: its Save boxes' file type with it. */
+function retype(dw, format) {
+  dw.format = format;
+  chosen.delete(dw);
+  for (const k of ['saveas', 'copy']) {
+    const b = dw.boxes.get(k);
+    if (b) b.setFiletype(fileTypeOf(format));
+  }
 }
 
 /** dw is now the document at path (canonical). */
@@ -208,37 +259,134 @@ function closed(dw, b) {
 
 /** See the header. */
 export function save(dw) {
-  if (dw.path) return saveAsTo(dw, null);
+  if (dw.path) {
+    const lost = toTell(dw);
+    if (!lost) return saveAsTo(dw, null);
+    return askLost(dw, lost).then((ok) => (ok && !dw.closed
+      ? saveAsTo(dw, null) : false));
+  }
   const b = saveBox(dw);
+  const w = pending(dw);
+  if (!b.isOpen) {
+    setFormat(dw, b, dw.format);
+    b.openCentred();
+  }
+  return w.p;
+}
+
+/** The save() waiting for the Save box (made now if none). */
+function pending(dw) {
   let w = waiting.get(dw);
   if (!w) {
     w = {off: null};
     w.p = new Promise((res) => { w.res = res; });
     waiting.set(dw, w);
   }
-  if (!b.isOpen) {
-    b.setFilename(suggestName(dw, defaultDir(dw.app.recent), there));
-    b.openCentred();
+  return w;
+}
+
+/** The Save box b of dw saves as format, with its name (one typed
+ *  in it while open kept: its extension switched to format's). */
+function setFormat(dw, b, format) {
+  const f = format === 'rtf' ? 'rtf' : 'docx', was = boxFormat(dw);
+  chosen.set(dw, f);
+  if (b.filetype !== fileTypeOf(f)) b.setFiletype(fileTypeOf(f));
+  const dir = defaultDir(dw.app.recent);
+  if (!b.isOpen) b.setFilename(suggestName(dw, dir, there, f));
+  else if (was !== f) {
+    b.setFilename(suggestName({path: b.filename()}, dir, there, f));
   }
-  return w.p;
+}
+
+/** See the header. */
+export function boxFormat(dw) {
+  return chosen.get(dw) || dw.format || 'docx';
+}
+
+/** See the header. */
+export function openSaveBox(dw, format, at) {
+  if (dw.closed) return;
+  const b = saveBox(dw);
+  if (dw.isUntitled) {
+    const w = pending(dw);
+    setFormat(dw, b, format);
+    if (!b.isOpen) b.openCentred();
+    return w.p;
+  }
+  setFormat(dw, b, format);
+  if (b.isOpen) {
+    if (b.bringToFront) b.bringToFront();
+    return undefined;
+  }
+  if (!at) {
+    b.openCentred();
+    return undefined;
+  }
+  wimp.menus.open(b, Math.round(at.x), Math.round(at.y),
+    {task: dw.app.task});
+  const n = b.icons[1];
+  if (n) wimp.setCaret(b, n, n.text.length);
+  return undefined;
 }
 
 /** See the header. */
 export function saveBox(dw) {
   return box(dw, 'saveas', () => {
     const b = saveAs({task: dw.app.task, title: 'Save as',
-      filename: suggestName(dw, defaultDir(dw.app.recent), there),
-      filetype: DOCX, getData: () => dw.saveBytes(),
+      filename: suggestName(dw, defaultDir(dw.app.recent), there,
+        dw.format),
+      filetype: fileTypeOf(dw.format),
+      getData: () => dw.saveBytes(boxFormat(dw)),
       save: async (path) => {
         // (null: nothing written, Discard: no save to settle)
-        if (await writeTo(dw, path) != null) settle(dw, true);
+        const f = boxFormat(dw);
+        // (OK asked already, guardLost; a drag to a directory: here)
+        if (f === 'rtf' && !(await answer(dw))) return;
+        if (await writeTo(dw, path, f) != null) settle(dw, true);
       },
       // (the box shows the path as typed: the canonical one again)
       onSaved: () => { if (dw.path) b.setFilename(dw.path); }});
     guardOK(b, dw.app.task, (p) => (!!dw.path && samePath(p, dw.path))
       || !!canWrite(dw, p));
+    guardLost(dw, b);
     b.on('closed', () => closed(dw, b));
     b.on('deleted', () => { gone.add(b); settle(dw, false); });
     return b;
   });
+}
+
+/** Saving dw as RTF now: true, or after askLost when it would lose
+ *  more than the window was told of (./LostBox unasked). */
+async function answer(dw) {
+  const lost = unasked(dw);
+  return !lost || ((await askLost(dw, lost)) && !dw.closed);
+}
+
+/**
+ * OK (or Return) in dw's Save box b saving RTF that would lose more
+ * than the window was told of (an edit since Continue, the box
+ * open): ./LostBox askLost first. Continue: OK again (then the
+ * Replace question, ./Replace, if the file is there); Cancel:
+ * nothing written, the box open, the caret back in its name. Only
+ * when the name is a full path (OK saves nothing otherwise).
+ */
+function guardLost(dw, b) {
+  const check = () => {
+    const to = String(b.filename());
+    if (dw.closed || boxFormat(dw) !== 'rtf' ||
+      !(to.includes('.') || to.includes(':'))) return undefined;
+    const lost = unasked(dw);
+    if (!lost) return undefined;
+    askLost(dw, lost).then((yes) => {
+      if (!b.isOpen || dw.closed) return;
+      const name = b.icons[1];
+      if (yes) b.emit('click', {icon: b.icons[0], button: 'select'});
+      else if (name) wimp.setCaret(b, name, name.text.length);
+    });
+    return true;
+  };
+  b.on('click', (ev) => (ev.icon === b.icons[0] &&
+    ev.button !== 'menu' ? check() : undefined), {first: true});
+  b.on('key', (ev) => (ev.code === 13 ? check() : undefined),
+    {first: true});
 }

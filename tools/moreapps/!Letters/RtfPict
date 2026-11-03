@@ -1,0 +1,328 @@
+// RtfPict - pictures for the RTF reader (./RtfRead): a {\pict ...}
+// group as a media part, an image relationship and an inline
+// picture (the w:drawing ./PicRead reads, made by ./InsertPicture
+// pictureXml), as a picture put in by a command is.
+//
+//   PART   handlers: {\pict ...} with \pngblip \jpegblip \emfblip
+//       \wmetafileN (any other format: skipped, with a note), \picwN
+//       \pichN \picwgoalN \pichgoalN \picscalexN \picscaleyN, the
+//       data as hex digits or \binN bytes ({\*\picprop ...} and
+//       other words in it are ignored); {\*\shppict ...} and
+//       {\nonshppict ...}, Word's picture and its fallback for older
+//       readers: the first usable one is read (the fallback only
+//       when the \shppict picture was not, and only the
+//       {\nonshppict} right after it: anything else first, a
+//       paragraph, text, a word, and a later one is read)
+//   pairToken(ctx, t)  ./RtfRead calls it for each token while
+//       ctx.shpOk is set: anything but a {, white space or the
+//       \nonshppict word clears it
+//   kindOf(bytes) -> 'png' 'jpeg' 'gif' 'emf' 'wmf' (bare) 'apm'
+//       (a WMF with its placeable header) or null; BLIPS (word ->
+//       format) and TW_EMU (635 EMU a twip): shared with the writer
+//       (./RtfWritePict)
+//
+// The data: hex digits (white space between them allowed) or \bin
+// bytes; anything else in the hex, an odd number of digits, no data
+// or more than MAX_PICTURE bytes, and the picture is skipped with a
+// note (never stored in part, never sized from a number the file
+// gives: only the bytes that are there count). Checked against its
+// type by its first bytes: a PNG or JPEG must be one ./PicMedia
+// imageInfo reads within its decode caps (decodable); data that is a
+// PNG, JPEG or GIF under another format's word is read as what it is
+// (a note); an EMF must have its header and signature, a WMF its
+// header (RTF's WMF has no placeable header: one is made, its box
+// the picture's size in twips, 1440 a inch). EMF and WMF are stored
+// as they are (./PicMedia gives them no mime: drawn as a box).
+// Size (EMU): \picwgoal x \picscalex / 100 twips (635 EMU each), the
+// height likewise; when either goal is missing or not above 0, \picw
+// / \pich pixels at 96 dpi (./PicRead EMU_PX) scaled the same way;
+// else the picture's own size (./PicMedia naturalEmu), an inch for a
+// metafile; a size outside 1..MAX_EXT is not used.
+// Stored as <main dir>media/imageN.<png|jpeg|gif|emf|wmf> (./PicNames:
+// the first free N); the relationship (./DocParts addRel, kind image)
+// in doc.rels, or a header's or footer's own rels (ctx.relsAt:
+// ./RtfSect); wp:docPr ids 1, 2... (a new Doc has none). At most
+// MAX_PICTURES pictures and MAX_TOTAL bytes in all: the rest are
+// skipped with a note.
+// Pure: no desktop services.
+import {addRel} from './DocParts';
+import {usedNumbers, mediaName} from './PicNames';
+import {imageInfo, decodable, naturalEmu} from './PicMedia';
+import {docMap, EMU_PX, MAX_EXT} from './PicRead';
+import {pictureXml, prefixes} from './InsertPicture';
+import {SKIP, skipping} from './RtfText';
+
+export const MAX_PICTURE = 16 * 1024 * 1024;
+export const MAX_TOTAL = 64 * 1024 * 1024;
+export const MAX_PICTURES = 1000;
+export const TW_EMU = 635;
+
+export const BLIPS = new Map([['pngblip', 'png'], ['jpegblip', 'jpeg'],
+  ['emfblip', 'emf'], ['wmetafile', 'wmf']]);
+const OTHER = ['dibitmap', 'wbitmap', 'macpict', 'pmmetafile'];
+
+const DAMAGED = 'a damaged picture is skipped';
+const FORMAT = 'a picture in a format !Letters does not keep is ' +
+  'skipped';
+
+function hexVal(c) {
+  if (c >= 48 && c <= 57) return c - 48;
+  if (c >= 97 && c <= 102) return c - 87;
+  if (c >= 65 && c <= 70) return c - 55;
+  return -1;
+}
+
+/** The picture being read: the dest's own state. */
+const pic = (ctx) => ctx.dest.pic;
+
+function add(p, bytes) {
+  if (p.big) return;
+  if (p.size + bytes.length > MAX_PICTURE) {
+    p.big = true;
+    p.chunks = [];
+    return;
+  }
+  p.size += bytes.length;
+  p.chunks.push(bytes);
+}
+
+/** Hex digits of the data (text bytes as they are in the file). */
+function hex(p, b) {
+  if (p.bad || p.big) return;
+  const out = new Uint8Array((b.length >> 1) + 1);
+  let n = 0;
+  for (let i = 0; i < b.length; i++) {
+    const c = b[i];
+    if (c === 32 || c === 9) continue;
+    const v = hexVal(c);
+    if (v < 0) {
+      p.bad = true;
+      return;
+    }
+    if (p.half < 0) p.half = v;
+    else {
+      out[n++] = p.half << 4 | v;
+      p.half = -1;
+    }
+  }
+  if (n) add(p, out.subarray(0, n));
+}
+
+const ascii4 = (b, i, s) => b.length >= i + 4 &&
+  [0, 1, 2, 3].every((k) => b[i + k] === s.charCodeAt(k));
+const le16 = (b, i) => b[i] | b[i + 1] << 8;
+
+/** What the bytes are: 'png' 'jpeg' 'gif' (image), 'emf', 'wmf' (a
+ *  bare metafile), 'apm' (with its placeable header) or null. */
+export function kindOf(b) {
+  if (b.length >= 8 && b[0] === 137 && ascii4(b, 1, 'PNG\r')) {
+    return 'png';
+  }
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 &&
+    b[2] === 0xff) return 'jpeg';
+  if (ascii4(b, 0, 'GIF8')) return 'gif';
+  if (b.length >= 88 && le16(b, 0) === 1 && le16(b, 2) === 0 &&
+    ascii4(b, 40, ' EMF')) return 'emf';
+  if (b.length >= 22 && b[0] === 0xd7 && b[1] === 0xcd &&
+    b[2] === 0xc6 && b[3] === 0x9a) return 'apm';
+  const t = le16(b, 0), v = le16(b, 4);
+  if (b.length >= 18 && (t === 1 || t === 2) && le16(b, 2) === 9 &&
+    (v === 0x100 || v === 0x300)) return 'wmf';
+  return null;
+}
+
+/** A WMF with a placeable header for a box of w x h twips. */
+function placeable(wmf, w, h) {
+  const out = new Uint8Array(22 + wmf.length);
+  const head = [0xcdd7, 0x9ac6, 0, 0, 0, w, h, 1440, 0, 0];
+  let sum = 0;
+  head.forEach((v, k) => {
+    out[k * 2] = v & 255;
+    out[k * 2 + 1] = v >> 8 & 255;
+    sum ^= v;
+  });
+  out[20] = sum & 255;
+  out[21] = sum >> 8 & 255;
+  out.set(wmf, 22);
+  return out;
+}
+
+const okExt = (e) => e && e.cx >= 1 && e.cx <= MAX_EXT &&
+  e.cy >= 1 && e.cy <= MAX_EXT;
+
+/** The extent {cx, cy} in EMU (see the header). */
+function extentOf(p, info) {
+  const sc = (n) => (n > 0 && n <= 100000 ? n : 100) / 100;
+  const sx = sc(p.scalex), sy = sc(p.scaley);
+  const by = (w, h, unit) => ({cx: Math.round(w * sx * unit),
+    cy: Math.round(h * sy * unit)});
+  if (p.wgoal > 0 && p.hgoal > 0) {
+    const e = by(p.wgoal, p.hgoal, TW_EMU);
+    if (okExt(e)) return e;
+  }
+  if (p.w > 0 && p.h > 0) {
+    const e = by(p.w, p.h, EMU_PX);
+    if (okExt(e)) return e;
+  }
+  const e = info ? naturalEmu(info) : null;
+  return okExt(e) ? e : {cx: 914400, cy: 914400};
+}
+
+function concat(chunks, size) {
+  const out = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.length;
+  }
+  return out;
+}
+
+/** {bytes, ext, info} of the picture read, or a note's text. */
+function checked(ctx, p) {
+  if (!p.fmt || p.fmt === 'other') return FORMAT;
+  if (p.big) return 'a picture larger than ' +
+    (MAX_PICTURE >> 20) + ' MB is skipped';
+  if (p.bad || p.half >= 0 || !p.size) return DAMAGED;
+  const bytes = concat(p.chunks, p.size);
+  const kind = kindOf(bytes);
+  if (kind === 'png' || kind === 'jpeg' || kind === 'gif') {
+    const info = imageInfo(bytes);
+    if (!info || decodable(info, bytes)) return DAMAGED;
+    if (info.ext !== p.fmt) {
+      ctx.note('a picture whose data is not of the kind the file ' +
+        'says is read as the kind it is');
+    }
+    return {bytes, ext: info.ext, info};
+  }
+  if (p.fmt === 'emf' && kind === 'emf') return {bytes, ext: 'emf'};
+  if (p.fmt === 'wmf' && (kind === 'wmf' || kind === 'apm')) {
+    return {bytes, ext: 'wmf', bare: kind === 'wmf'};
+  }
+  return DAMAGED;
+}
+
+const store = (ctx) => ctx.pics || (ctx.pics = {used: null, id: 0,
+  total: 0, count: 0, own: false});
+
+/** Put the picture read into the flow `outer`: true when it was. */
+function put(ctx, p, outer) {
+  const got = checked(ctx, p);
+  if (typeof got === 'string') {
+    ctx.note(got);
+    return false;
+  }
+  const st = store(ctx), d = ctx.doc;
+  const {cx, cy} = extentOf(p, got.info);
+  let bytes = got.bytes;
+  if (got.bare) {
+    const tw = (e) => Math.max(1, Math.min(32767, Math.round(e /
+      TW_EMU)));
+    bytes = placeable(bytes, tw(cx), tw(cy));
+  }
+  if (st.count >= MAX_PICTURES || st.total + bytes.length > MAX_TOTAL) {
+    ctx.note('more than ' + MAX_PICTURES + ' pictures or ' +
+      (MAX_TOTAL >> 20) + ' MB of them: the rest are skipped');
+    return false;
+  }
+  const main = d.meta.mainPart;
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  if (!st.used) st.used = usedNumbers(d, dir);
+  let name;
+  try {
+    name = mediaName(d, dir, got.ext, st.used);
+  } catch (e) {
+    ctx.note('no name is free for a picture: it is skipped');
+    return false;
+  }
+  if (!st.own) {
+    d.parts = new Map(d.parts);
+    st.own = true;
+  }
+  d.parts.set(name, bytes);
+  st.count++;
+  st.total += bytes.length;
+  const holder = ctx.relsAt || d;
+  const target = name.slice(dir.length);
+  const {rels, id: rid} = addRel(holder.rels || [], {kind: 'image',
+    target});
+  holder.rels = rels;
+  const node = pictureXml({cx, cy, id: ++st.id, rid,
+    file: target.slice('media/'.length)}, prefixes(docMap(d)));
+  outer.obj(ctx, {kind: 'raw', level: 'r', node});
+  return true;
+}
+
+const num = (key) => (ctx, t) => {
+  if (Number.isInteger(t.param)) pic(ctx)[key] = t.param;
+};
+const fmt = (f) => (ctx) => {
+  const p = pic(ctx);
+  if (!p.fmt) p.fmt = f;
+};
+
+const WORDS = new Map([
+  ['picw', num('w')], ['pich', num('h')],
+  ['picwgoal', num('wgoal')], ['pichgoal', num('hgoal')],
+  ['picscalex', num('scalex')], ['picscaley', num('scaley')],
+  ...[...BLIPS].map(([w, f]) => [w, fmt(f)]),
+  ...OTHER.map((w) => [w, fmt('other')]),
+]);
+const DESTS = new Map([['picprop', skipping()]]);
+
+/** {\pict ...}: outer is the destination it is in. */
+function pict(ctx) {
+  const outer = ctx.dest;
+  const p = {fmt: null, chunks: [], size: 0, half: -1, bad: false,
+    big: false};
+  return {pic: p, ownWords: true, words: WORDS, dests: DESTS,
+    text() {},
+    bytes: (c, b) => hex(p, b),
+    bin: (c, b) => {
+      if (!p.bad) add(p, b);
+    },
+    end(c) {
+      if (!outer.obj) return;
+      // (the second of two pictures in one \shppict: not read)
+      if (outer.shp && outer.shp.ok) return;
+      const ok = put(c, p, outer);
+      if (outer.shp && ok) outer.shp.ok = true;
+    }};
+}
+
+/** A group passing pictures to the destination it is in. */
+function through(ctx, shp) {
+  const outer = ctx.dest;
+  return {text() {}, shp,
+    obj: (c, x) => outer.obj && outer.obj(c, x),
+    end(c) {
+      if (shp) c.shpOk = shp.ok;
+    }};
+}
+
+const isBlank = (b) => {
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] !== 32 && b[i] !== 9) return false;
+  }
+  return true;
+};
+
+export function pairToken(ctx, t) {
+  if (t.t === '{') return;
+  if (t.t === 'text' && isBlank(t.bytes)) return;
+  if (t.t === 'word' && t.name === 'nonshppict') return;
+  ctx.shpOk = false;
+}
+
+export const PART = {
+  dests: new Map([['pict', pict],
+    ['shppict', (ctx) => {
+      ctx.shpOk = false;
+      return through(ctx, {ok: false});
+    }],
+    ['nonshppict', (ctx) => {
+      const done = ctx.shpOk;
+      ctx.shpOk = false;
+      return done ? SKIP : through(ctx, null);
+    }]]),
+};

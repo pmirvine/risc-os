@@ -1,0 +1,262 @@
+// RtfTable - tables for the RTF reader (./RtfRead): which paragraphs
+// are in which cell, row and table; ./RtfGrid makes the Model's
+// Table blocks of them.
+//
+//   PART   handlers: \intbl and \itapN (the paragraph's table
+//       level: paragraph state, \pard clears them); \cell and
+//       \nestcell (a paragraph ends, and the cell with it); \row and
+//       \nestrow (the row ends); the row definition: \trowd (a new
+//       one for the level in force: \itap 2 or more, else 1) \trleftN
+//       \trgaphN \trrhN \trhdr \trkeep \trql \trqc \trqr \trbrdrt
+//       \trbrdrl \trbrdrb \trbrdrr \trbrdrh \trbrdrv; the cells' (one
+//       per \cellxN, the cell's right edge): \clmgf \clmrg \clvmgf
+//       \clvmrg \clvertalt \clvertalc \clvertalb \clbrdrt \clbrdrl
+//       \clbrdrb \clbrdrr (with ./RtfPara's border words, through
+//       ctx.bdrSet) \clcbpatN \clcfpatN \clshdngN; Word's
+//       {\*\nesttableprops ...} (its words apply; its \nestrow ends
+//       the row) and {\nonesttables ...} (skipped)
+//   place(ctx, flow, block)  a paragraph a ./RtfBody Flow made: to
+//       the cell of its level (ctx.cellEnd, set by \cell / \nestcell,
+//       else the paragraph state's level), or to the flow's blocks
+//   rowEnd(ctx, flow, level)  \row / \nestrow (Flow.row)
+//   closeAll(ctx, flow)  the flow's open tables end (a section
+//       break, the end of the flow): a flow whose blocks end with a
+//       table gets an empty paragraph after it, as Word has
+//
+// Each Flow keeps its own levels (flow.tl: one {rows, cells, blocks}
+// per open level). The row definitions are the reader's (ctx.tbl:
+// one per level, not saved by groups, as in Word, which writes them
+// before a row's cells, after them in a {\trowd ... \row} group, or
+// both): a row takes the definition in force when it ends (shared
+// with later rows until a word changes it: then copied). A
+// paragraph of a lower level ends the deeper tables; a table goes
+// into the cell open one level up, or into the flow. Every cell
+// ends with a paragraph (an empty one after a nested table).
+// Caps: MAX_COLS (./TblCheck) cells a row (more join the last, with
+// a note) and \cellx a definition; levels past MAX_DEPTH are read
+// as MAX_DEPTH (a note); edges within +-MAX_EDGE (./RtfGrid). Every
+// cell holds a paragraph, so rows and cells are capped by the
+// reader's paragraph cap (ctx.max).
+// Pure: no desktop services.
+import {newPara} from './Model';
+import {MAX_COLS, MAX_DEPTH, MAX_TW} from './TblCheck';
+import {skipping} from './RtfText';
+import {build, MAX_EDGE} from './RtfGrid';
+
+const isInt = (t) => Number.isInteger(t.param);
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
+
+/** The table level of paragraph state p (0: not in a table). */
+function depthOf(p) {
+  const d = p.itap !== undefined ? p.itap : p.intbl ? 1 : 0;
+  return Math.min(d, MAX_DEPTH);
+}
+
+/** The level a \trowd or \nestrow is for. */
+const levelNow = (ctx) => Math.max(1, depthOf(ctx.state.para));
+
+const defs = (ctx) => ctx.tbl || (ctx.tbl = {defs: [], cur: null});
+
+const newDef = (level) => ({row: {}, cells: [], cell: {}, level,
+  used: false});
+
+/** The definition the row and cell words go to: one a row ended
+ *  with (used) is copied first, so that row keeps its own. */
+function cur(ctx) {
+  const t = defs(ctx);
+  if (!t.cur) {
+    const lv = levelNow(ctx);
+    t.cur = newDef(lv);
+    t.defs[lv] = t.cur;
+  } else if (t.cur.used) {
+    const c = {...structuredClone(t.cur), used: false};
+    if (t.defs[c.level] === t.cur) t.defs[c.level] = c;
+    t.cur = c;
+  }
+  return t.cur;
+}
+
+function trowd(ctx) {
+  const t = defs(ctx), lv = levelNow(ctx);
+  t.cur = newDef(lv);
+  t.defs[lv] = t.cur;
+  ctx.bdrSet = null;
+}
+
+const rowNum = (key, lo, hi) => (ctx, t) => {
+  if (isInt(t) && t.param >= lo && t.param <= hi) {
+    cur(ctx).row[key] = t.param;
+  }
+};
+const rowVal = (key, v) => (ctx, t) => {
+  cur(ctx).row[key] = t.param === 0 ? undefined : v;
+};
+const cellVal = (key, v) => (ctx) => {
+  cur(ctx).cell[key] = v;
+};
+const cellShd = (key, ok) => (ctx, t) => {
+  if (!isInt(t) || !ok(t.param)) return;
+  const c = cur(ctx).cell;
+  c.shd = {...c.shd, [key]: t.param};
+};
+const index = (n) => n >= 0 && n < 1e6;
+
+/** A border side word: the border words after it set `side` of
+ *  the object `of(ctx)` gives (its bdr). */
+const side = (of, s) => (ctx) => {
+  const o = of(ctx);
+  ctx.bdrSet = (c, k, v) => {
+    o.bdr = {...o.bdr, [s]: {...(o.bdr && o.bdr[s]), [k]: v}};
+  };
+};
+const rowOf = (ctx) => cur(ctx).row;
+const cellOf = (ctx) => cur(ctx).cell;
+
+function cellx(ctx, t) {
+  if (!isInt(t)) return;
+  const d = cur(ctx);
+  ctx.bdrSet = null;
+  if (d.cells.length >= MAX_COLS) {
+    ctx.note('a table row with more than ' + MAX_COLS + ' cells: ' +
+      'the rest are joined to the last');
+  } else {
+    d.cells.push({...d.cell, x: clamp(t.param, -MAX_EDGE, MAX_EDGE)});
+  }
+  d.cell = {};
+}
+
+function itap(ctx, t) {
+  if (!isInt(t) || t.param < 0) return;
+  if (t.param > MAX_DEPTH) {
+    ctx.note('tables nested more than ' + MAX_DEPTH + ' deep: the ' +
+      'deeper ones are read at that depth');
+  }
+  ctx.state.setPara('itap', Math.min(t.param, MAX_DEPTH));
+}
+
+/** \cell / \nestcell: the paragraph ends, its cell with it. */
+const cellWord = (nest) => (ctx) => {
+  if (!ctx.dest.par) return;
+  ctx.cellEnd = nest ? Math.max(2, depthOf(ctx.state.para)) : 1;
+  try {
+    ctx.dest.par(ctx);
+  } finally {
+    ctx.cellEnd = 0;
+  }
+};
+
+const rowWord = (nest) => (ctx) => {
+  if (ctx.dest.row) ctx.dest.row(ctx, nest ? Math.max(2, levelNow(ctx))
+    : 1);
+};
+
+/** {\*\nesttableprops ...}: its words apply, its \nestrow ends the
+ *  row of the flow it is in. */
+function nestProps(ctx) {
+  const outer = ctx.dest;
+  return {text() {}, row: (c, d) => outer.row && outer.row(c, d)};
+}
+
+/** The open levels of a flow. */
+const levels = (flow) => flow.tl || (flow.tl = []);
+
+const blocksAt = (flow, d) => (d === 0 ? flow.blocks
+  : levels(flow)[d - 1].blocks);
+
+function endCell(ctx, L) {
+  const bs = L.blocks;
+  L.blocks = [];
+  const last = bs[bs.length - 1];
+  if (!last || last.type !== 'p') bs.push(newPara(''));
+  if (L.cells.length < MAX_COLS) {
+    L.cells.push(bs);
+    return;
+  }
+  ctx.note('a table row with more than ' + MAX_COLS + ' cells: the ' +
+    'rest are joined to the last');
+  L.cells[L.cells.length - 1].push(...bs);
+}
+
+function endRow(ctx, L, d) {
+  const def = defs(ctx).defs[d] || newDef(d);
+  // (shared, not copied: cur copies it before any change)
+  def.used = true;
+  ctx.bdrSet = null;
+  L.rows.push({cells: L.cells, def});
+  L.cells = [];
+}
+
+/** End the open levels deeper than d. */
+function closeTo(ctx, flow, d) {
+  const lv = levels(flow);
+  while (lv.length > d) {
+    const n = lv.length, L = lv[n - 1];
+    if (L.blocks.length) endCell(ctx, L);
+    if (L.cells.length) endRow(ctx, L, n);
+    lv.pop();
+    if (L.rows.length) blocksAt(flow, n - 1).push(build(ctx, L.rows));
+  }
+}
+
+export function place(ctx, flow, block) {
+  const end = ctx.cellEnd || 0;
+  const d = end || depthOf(ctx.state.para);
+  const lv = levels(flow);
+  closeTo(ctx, flow, d);
+  while (lv.length < d) lv.push({rows: [], cells: [], blocks: []});
+  blocksAt(flow, d).push(block);
+  if (end) endCell(ctx, lv[d - 1]);
+}
+
+export function rowEnd(ctx, flow, d) {
+  const lv = levels(flow);
+  if (lv.length < d) return;
+  closeTo(ctx, flow, d);
+  const L = lv[d - 1];
+  if (L.blocks.length) endCell(ctx, L);
+  if (L.cells.length) endRow(ctx, L, d);
+}
+
+export function closeAll(ctx, flow) {
+  if (!flow.tl || !flow.tl.length) return;
+  closeTo(ctx, flow, 0);
+  const bs = flow.blocks, last = bs[bs.length - 1];
+  if (last && last.type === 'tbl') bs.push(newPara(''));
+}
+
+const ROW_SIDES = [['trbrdrt', 'top'], ['trbrdrl', 'left'],
+  ['trbrdrb', 'bottom'], ['trbrdrr', 'right'], ['trbrdrh', 'insideH'],
+  ['trbrdrv', 'insideV']];
+const CELL_WORDS = [['clbrdrt', 'top'], ['clbrdrl', 'left'],
+  ['clbrdrb', 'bottom'], ['clbrdrr', 'right']];
+
+export const PART = {
+  words: new Map([
+    ['intbl', (ctx) => ctx.state.setPara('intbl', true)],
+    ['itap', itap],
+    ['cell', cellWord(false)], ['nestcell', cellWord(true)],
+    ['row', rowWord(false)], ['nestrow', rowWord(true)],
+    ['trowd', trowd],
+    ['trleft', rowNum('left', -MAX_EDGE, MAX_EDGE)],
+    ['trgaph', rowNum('gap', 0, MAX_TW)],
+    ['trrh', rowNum('rh', -MAX_TW, MAX_TW)],
+    ['trhdr', rowVal('hdr', true)], ['trkeep', rowVal('keep', true)],
+    ['trql', rowVal('jc', undefined)], ['trqc', rowVal('jc', 'center')],
+    ['trqr', rowVal('jc', 'right')],
+    ...ROW_SIDES.map(([w, s]) => [w, side(rowOf, s)]),
+    ['clmgf', cellVal('merge', 'first')],
+    ['clmrg', cellVal('merge', 'rest')],
+    ['clvmgf', cellVal('vmerge', 'restart')],
+    ['clvmrg', cellVal('vmerge', 'continue')],
+    ['clvertalt', cellVal('valign', 'top')],
+    ['clvertalc', cellVal('valign', 'center')],
+    ['clvertalb', cellVal('valign', 'bottom')],
+    ...CELL_WORDS.map(([w, s]) => [w, side(cellOf, s)]),
+    ['clcbpat', cellShd('cb', index)],
+    ['clcfpat', cellShd('cf', index)],
+    ['clshdng', cellShd('pct', (n) => n >= 0 && n <= 10000)],
+    ['cellx', cellx],
+  ]),
+  dests: new Map([['nesttableprops', nestProps],
+    ['nonesttables', skipping()]]),
+};

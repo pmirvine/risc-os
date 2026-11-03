@@ -11,7 +11,8 @@
 // (word-toolbar.mjs) and its ruler (word-ruler.mjs); zoom (word-zoom.mjs); formatting against hostile input
 // (word-format-hostile.mjs); list numbers and bullets drawn and edited (word-lists.mjs), also against hostile input
 // (word-lists-hostile.mjs); the list buttons, keys and Format > List (word-lists-ui.mjs); untitled documents and Save / Save as
-// (word-save.mjs); the Save / Discard / Cancel prompt on close, and
+// (word-save.mjs); RTF files opened, saved and reverted
+// (word-rtf.mjs); the Save / Discard / Cancel prompt on close, and
 // Revert (word-close.mjs); New, Recent files, Quit and PreQuit
 // (word-quit.mjs); documents against hostile use: saves onto open,
 // locked and read-only files, 1000 Saves, input methods, shutdowns,
@@ -106,7 +107,8 @@ suite('moreapps', [
   { name: '!Letters: lists against hostile input (100,000 list paragraphs, Tab spam, absurd numbering, select all + Backspace, 500 random actions)', args: ['tests/moreapps/word-lists-hostile.mjs'] },
   { name: '!Letters: the list buttons, Ctrl-Shift-L and Format > List (toolbar row 2 Bullets / Numbering and their galleries, pressed state, Tab / Enter / Backspace in lists, Restart / Continue / Set numbering value box, a saved list reopened, both toolbar rows at the A4 width, 30 cycles leak nothing)', args: ['tests/moreapps/word-lists-ui.mjs'] },
   { name: '!Letters: untitled documents, Save, Save as and Save a copy (Save box OK and drag, typing during a save, locked / read-only / bad names, another open document, input methods)', args: ['tests/moreapps/word-save.mjs'] },
-  { name: '!Letters: the window menu's Export as PDF... (the box, From after To refused, a range written as a &ADF PDF from the save box, the window unchanged, Cancel while the pages are made writes nothing, the box deleted with its document)', args: ['tests/moreapps/word-pdf.mjs'] },
+  { name: '!Letters: the window menu\'s Export as PDF... (the box, From after To refused, a range written as a &ADF PDF from the save box, the window unchanged, Cancel while the pages are made writes nothing, the box deleted with its document)', args: ['tests/moreapps/word-pdf.mjs'] },
+  { name: '!Letters: RTF files (&C32 claimed by the boot files, a double-click opens one as RTF, Save writes RTF back with type &C32, Revert reads RTF again, DataOpen to the running Letters, a damaged file\'s notes said once, a &C32 file that is not RTF reported, a .docx still a .docx; Save as: .docx or RTF, then the Save box; what RTF cannot store asked first; an edited RTF saved stays RTF, Save as .docx, both reopened)', args: ['tests/moreapps/word-rtf.mjs'] },
   { name: '!Letters: closing asks Save / Discard / Cancel (keys, the Save box for an untitled document, one prompt); Revert; saves of a window in turn; leaks', args: ['tests/moreapps/word-close.mjs'] },
   { name: '!Letters: New from the icon bar (one per double-click), Recent files (Choices:Letters, missing / hostile entries), Quit and PreQuit ask once (Task Manager, shutdown, a close prompt open); 50 dirty windows; leaks', args: ['tests/moreapps/word-quit.mjs'] },
   { name: '!Letters: documents against hostile use (Save as onto open / locked / read-only / bad names, 1000 Saves, Save while typing and composing, 50 dirty windows at shutdown, shutdown twice, prompts that cannot open, 10,000 hostile Recent entries, Revert of a deleted file, Quit with the Save box open, 500 random actions)', args: ['tests/moreapps/word-documents-hostile.mjs'] },

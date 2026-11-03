@@ -1,0 +1,212 @@
+// RtfSect - page setup, sections, headers and footers for the RTF
+// reader (./RtfRead), as each section's props (./ReadSect) and the
+// Doc's stories (./StoryRead).
+//
+//   PART   handlers: the document's page (\paperwN \paperhN \marglN
+//       \margrN \margtN \margbN \gutterN \landscape \facingp: in
+//       ctx.page, under every section's own); a section's (\sectd
+//       resets them: ./RtfState): \pgwsxn \pghsxn \marglsxn
+//       \margrsxn \margtsxn \margbsxn \guttersxn \lndscpsxn
+//       \headery \footery \titlepg \colsN \colsxN \linebetcol \sbknone
+//       \sbkcol \sbkpage \sbkeven \sbkodd \pgnrestart \pgnstartsN
+//       \pgndec \pgnucrm \pgnlcrm \pgnucltr \pgnlcltr \vertalt
+//       \vertalc \vertalj \vertalb; {\header ...} {\footer ...} and
+//       their l (left: even), r (right: default) and f (first)
+//       forms; sectProps (each section's props); finish (\facingp:
+//       settings evenAndOddHeaders)
+//   StoryFlow   the destination of a header or footer group: an
+//       ./RtfBody Flow (no sections) whose paragraphs become a story
+//       at the group's end
+//
+// RTF's defaults when the file gives none: US Letter (12240 x 15840
+// twips), margins 1800 left and right, 1440 top and bottom, header
+// and footer 720, gutter 0, column gap 720. \landscape / \lndscpsxn
+// give orient landscape, the width the larger. Values out of range
+// are ignored (sizes 1..MAX_TW, margins 0..MAX_TW, top and bottom
+// -MAX_TW..MAX_TW, 1..MAX_COLS columns).
+// A header or footer group makes a story (part ./StoryWrite
+// freeName, root w:hdr / w:ftr declaring w and r, its blocks the
+// group's paragraphs, or one empty one), a header or footer
+// relationship in doc.rels and a reference in the section open then
+// (the body Flow's last section's refs; ./SectRefs withRef at the
+// end): a later group of the same kind and type in that section
+// replaces it. Links in a story get their relationships in the
+// story's own rels (ctx.relsAt: ./RtfFields). A section with none
+// of its own shows the one before's, as in Word. At most MAX_STORIES
+// stories.
+// Pure: no desktop services.
+import {newPara} from './Model';
+import {NS} from './Wml';
+import {Flow} from './RtfBody';
+import {freeName} from './StoryWrite';
+import {addRel} from './DocParts';
+import {relsNameFor} from './Rels';
+import {withRef} from './SectRefs';
+import {docScope} from './WriteBody';
+import {withOnOff} from './SettingsEdit';
+import {MAX_COLS} from './ReadSect';
+
+const MAX_TW = 31680, MAX_STORIES = 256;
+const LETTER = [12240, 15840];
+
+const isInt = (t) => Number.isInteger(t.param);
+const size = (n) => n >= 1 && n <= MAX_TW;
+const margin = (n) => n >= 0 && n <= MAX_TW;
+const signed = (n) => Math.abs(n) <= MAX_TW;
+
+const page = (ctx) => ctx.page || (ctx.page = {});
+
+/** A document word: ctx.page[key] = its number when ok. */
+const doc = (key, ok) => (ctx, t) => {
+  if (isInt(t) && ok(t.param)) page(ctx)[key] = t.param;
+};
+const docFlag = (key) => (ctx) => {
+  page(ctx)[key] = true;
+};
+/** A section word: the section state's key. */
+const sect = (key, ok) => (ctx, t) => {
+  if (isInt(t) && ok(t.param)) ctx.state.setSect(key, t.param);
+};
+const sectVal = (key, v) => (ctx) => ctx.state.setSect(key, v);
+
+// (TYPES, PGN, VALIGN: shared with the writer)
+export const TYPES = [['sbknone', 'continuous'],
+  ['sbkcol', 'nextColumn'],
+  ['sbkpage', 'nextPage'], ['sbkeven', 'evenPage'],
+  ['sbkodd', 'oddPage']];
+export const PGN = [['pgndec', 'decimal'], ['pgnucrm', 'upperRoman'],
+  ['pgnlcrm', 'lowerRoman'], ['pgnucltr', 'upperLetter'],
+  ['pgnlcltr', 'lowerLetter']];
+export const VALIGN = [['vertalt', 'top'], ['vertalc', 'center'],
+  ['vertalj', 'both'], ['vertalb', 'bottom']];
+const STORIES = [['header', 'hdr', 'default'],
+  ['headerl', 'hdr', 'even'], ['headerr', 'hdr', 'default'],
+  ['headerf', 'hdr', 'first'],
+  ['footer', 'ftr', 'default'], ['footerl', 'ftr', 'even'],
+  ['footerr', 'ftr', 'default'], ['footerf', 'ftr', 'first']];
+
+export class StoryFlow extends Flow {
+  constructor(ctx, kind, type) {
+    super();
+    this.kind = kind;
+    this.type = type;
+    this.rels = [];
+    this.outerRels = ctx.relsAt;
+    ctx.relsAt = this;
+  }
+
+  sect() {}
+
+  end(ctx) {
+    ctx.relsAt = this.outerRels;
+    this.finish(ctx);
+    const d = ctx.doc;
+    const sec = ctx.body.sections[ctx.body.sections.length - 1];
+    const refs = sec.refs || (sec.refs = []);
+    const old = refs.findIndex((r) => r.kind === this.kind &&
+      r.type === this.type);
+    if (old >= 0) {
+      const r = refs.splice(old, 1)[0];
+      d.stories = new Map(d.stories);
+      d.stories.delete(r.part);
+      d.rels = d.rels.filter((x) => x.id !== r.id);
+    }
+    if (d.stories.size >= MAX_STORIES) {
+      ctx.note('more than ' + MAX_STORIES + ' headers and footers: ' +
+        'the rest are skipped');
+      return;
+    }
+    const part = freeName(d, this.kind);
+    const blocks = this.sections.flatMap((s) => s.blocks);
+    const own = this.rels.length > 0;
+    const story = {part, kind: this.kind, root: {name: 'w:' + this.kind,
+      attrs: [['xmlns:w', NS.w], ['xmlns:r', NS.r]]}, prolog: null,
+    blocks: blocks.length ? blocks : [newPara('')],
+    rels: own ? this.rels : null, relsPart: own ? relsNameFor(part)
+      : null, orig: [], bytes: null};
+    d.stories = new Map(d.stories).set(part, story);
+    const main = d.meta.mainPart;
+    const dir = main.slice(0, main.lastIndexOf('/') + 1);
+    const {rels, id} = addRel(d.rels, {kind: this.kind === 'hdr'
+      ? 'header' : 'footer', target: part.slice(dir.length)});
+    d.rels = rels;
+    refs.push({kind: this.kind, type: this.type, id, part});
+  }
+}
+
+const pick = (...v) => v.find((x) => x !== undefined);
+
+function sectProps(ctx, st, props, s) {
+  const p = ctx.page || {}, x = st || {};
+  let w = pick(x.pgw, p.paperw, LETTER[0]);
+  let h = pick(x.pgh, p.paperh, LETTER[1]);
+  const pgSz = {w, h};
+  if (x.landscape || p.landscape) {
+    if (w < h) [pgSz.w, pgSz.h] = [h, w];
+    pgSz.orient = 'landscape';
+  }
+  props.pgSz = pgSz;
+  props.pgMar = {top: pick(x.margt, p.margt, 1440),
+    right: pick(x.margr, p.margr, 1800),
+    bottom: pick(x.margb, p.margb, 1440),
+    left: pick(x.margl, p.margl, 1800),
+    header: pick(x.headery, 720), footer: pick(x.footery, 720),
+    gutter: pick(x.gutter, p.gutter, 0)};
+  const cols = {space: pick(x.colsx, 720)};
+  if (x.cols > 1) cols.num = x.cols;
+  if (x.linebetcol) cols.sep = true;
+  props.cols = cols;
+  if (x.titlepg) props.titlePg = true;
+  if (x.type) props.type = x.type;
+  const pg = {};
+  if (x.pgnrestart && x.pgnstarts !== undefined) pg.start = x.pgnstarts;
+  if (x.pgnfmt) pg.fmt = x.pgnfmt;
+  if (Object.keys(pg).length) props.pgNumType = pg;
+  if (x.valign) props.vAlign = x.valign;
+  const map = docScope(ctx.doc).map;
+  let out = props;
+  for (const r of (s && s.refs) || []) {
+    out = withRef(out, r.kind, r.type, r.id, map);
+  }
+  props.extra = out.extra;
+}
+
+function finish(ctx) {
+  const d = ctx.doc;
+  if (ctx.page && ctx.page.facing && d.rawSettings) {
+    d.rawSettings = withOnOff(d.rawSettings, 'evenAndOddHeaders', true);
+  }
+}
+
+export const PART = {
+  words: new Map([
+    ['paperw', doc('paperw', size)], ['paperh', doc('paperh', size)],
+    ['margl', doc('margl', margin)], ['margr', doc('margr', margin)],
+    ['margt', doc('margt', signed)], ['margb', doc('margb', signed)],
+    ['gutter', doc('gutter', margin)],
+    ['landscape', docFlag('landscape')], ['facingp', docFlag('facing')],
+    ['pgwsxn', sect('pgw', size)], ['pghsxn', sect('pgh', size)],
+    ['marglsxn', sect('margl', margin)],
+    ['margrsxn', sect('margr', margin)],
+    ['margtsxn', sect('margt', signed)],
+    ['margbsxn', sect('margb', signed)],
+    ['guttersxn', sect('gutter', margin)],
+    ['lndscpsxn', sectVal('landscape', true)],
+    ['headery', sect('headery', margin)],
+    ['footery', sect('footery', margin)],
+    ['titlepg', sectVal('titlepg', true)],
+    ['cols', sect('cols', (n) => n >= 1 && n <= MAX_COLS)],
+    ['colsx', sect('colsx', margin)],
+    ['linebetcol', sectVal('linebetcol', true)],
+    ...TYPES.map(([w, v]) => [w, sectVal('type', v)]),
+    ['pgnrestart', sectVal('pgnrestart', true)],
+    ['pgncont', sectVal('pgnrestart', undefined)],
+    ['pgnstarts', sect('pgnstarts', (n) => n >= 0 && n <= 32767)],
+    ...PGN.map(([w, v]) => [w, sectVal('pgnfmt', v)]),
+    ...VALIGN.map(([w, v]) => [w, sectVal('valign', v)]),
+  ]),
+  dests: new Map(STORIES.map(([w, kind, type]) =>
+    [w, (ctx) => new StoryFlow(ctx, kind, type)])),
+  sectProps: [sectProps],
+  finish: [finish],
+};

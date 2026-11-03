@@ -1,0 +1,214 @@
+// RtfWriteStyles - the header tables of an RTF file, for the writer
+// (./RtfWrite): fonts, colours, the style sheet and \info. The
+// inverse of the reader's ./RtfTables and ./RtfStyles.
+//
+//   new FontTable(first)   font numbers by name, `first` font 0 (the
+//       document's default: \deff0); add(name) -> number;
+//       rtf() -> '{\fonttbl{\f0\fswiss\fcharset0\fprq2 Calibri;}...}'
+//       (the family from ./FontMap: \froman \fswiss \fmodern
+//       (\fprq1, fixed pitch) \ftech (Symbol, Wingdings...) or \fnil
+//       for a font it does not know; charset 0: the text is all
+//       \uN, so no code page matters). At most MAX_FONTS: past them
+//       font 0
+//   new ColourTable()      add('RRGGBB') -> number (1 on: entry 0 is
+//       "auto"); rtf() -> '{\colortbl;\red255\green0\blue0;}'.
+//       At most MAX_COLOURS: past them 0 (auto)
+//   styleNumbers(styles) -> {num: Map<id, n>, list: [Style]}  the
+//       paragraph and character styles, numbered: the default
+//       paragraph style 0, the others 1, 2... in table order (at
+//       most MAX_STYLES); table and list styles are not written
+//   stylesheet(w) -> '{\stylesheet{...Normal;}{\s1...}{\*\cs2...}}'
+//       a paragraph style: its RESOLVED formatting (docDefaults and
+//       its Based on chain: absolute, as RTF says and the reader
+//       measures), its list (the writer's styleNumbering hook),
+//       \sbasedonN \snextN; a character style
+//       \*\csN \additive with its own chain's properties (off ones
+//       too: ./RtfWriteProps charWords all), \sbasedonN
+//   info(w) -> '{\info{\title ...}...{\creatim\yr...}}\n' or ''  the
+//       core properties (./FieldDates coreOf: title, subject,
+//       author, keywords, last saved by as \operator; created and
+//       modified as UTC \yr \mo \dy \hr \min \sec, years
+//       1601..9999, as the reader takes them); control characters
+//       dropped
+//   cleanName(s) -> a name as table text: no ';' or control
+//       characters, at most 255 UTF-16 units, \uN escaped
+// w: the writer (./RtfWrite): styles, num (styleNumbers), font(),
+// colour().
+// Pure: no desktop services.
+import {encodeAscii} from 'wimplib/RtfCodepage';
+import {coreOf} from './FieldDates';
+import {substitute} from './FontMap';
+import {resolveRun, resolvePara, MAX_CHAIN} from './Styles';
+import {mergeInto} from './StylesMerge';
+import {charWords, paraWords, tabsOf} from './RtfWriteProps';
+
+export const MAX_FONTS = 4096, MAX_COLOURS = 4096, MAX_STYLES = 2000;
+
+const TECH = new Set(['symbol', 'wingdings', 'wingdings 2',
+  'wingdings 3', 'webdings', 'marlett', 'ms outlook']);
+
+export function cleanName(s) {
+  let out = '';
+  for (const c of String(s)) {
+    if (c === ';' || c.charCodeAt(0) < 0x20) continue;
+    if (out.length + c.length > 255) break;
+    out += c;
+  }
+  return encodeAscii(out.trim()).rtf;
+}
+
+/** [family word, pitch] of a font name. */
+function familyOf(name) {
+  const key = name.toLowerCase();
+  if (TECH.has(key)) return ['ftech', 2];
+  const s = substitute(name);
+  if (s.family.toLowerCase() === key) return ['fnil', 2];
+  if (s.css.endsWith('monospace')) return ['fmodern', 1];
+  if (s.css.endsWith('sans-serif')) return ['fswiss', 2];
+  if (s.css.endsWith('serif')) return ['froman', 2];
+  return ['fnil', 2];
+}
+
+export class FontTable {
+  constructor(first) {
+    this.names = [];
+    this.at = new Map();
+    this.add(first);
+  }
+
+  add(name) {
+    const n = typeof name === 'string' && name ? name : 'Calibri';
+    const i = this.at.get(n);
+    if (i !== undefined) return i;
+    if (this.names.length >= MAX_FONTS) return 0;
+    this.at.set(n, this.names.length);
+    this.names.push(n);
+    return this.names.length - 1;
+  }
+
+  rtf() {
+    return '{\\fonttbl' + this.names.map((n, i) => {
+      const [fam, pitch] = familyOf(n);
+      return '{\\f' + i + '\\' + fam + '\\fcharset0\\fprq' + pitch +
+        ' ' + (cleanName(n) || 'Calibri') + ';}';
+    }).join('') + '}';
+  }
+}
+
+export class ColourTable {
+  constructor() {
+    this.list = [];
+    this.at = new Map();
+  }
+
+  add(hex) {
+    const i = this.at.get(hex);
+    if (i !== undefined) return i;
+    if (this.list.length >= MAX_COLOURS) return 0;
+    this.list.push(hex);
+    this.at.set(hex, this.list.length);
+    return this.list.length;
+  }
+
+  rtf() {
+    const n = (h, i) => parseInt(h.slice(i, i + 2), 16);
+    return '{\\colortbl;' + this.list.map((h) => '\\red' + n(h, 0) +
+      '\\green' + n(h, 2) + '\\blue' + n(h, 4) + ';').join('') + '}';
+  }
+}
+
+const TYPES = ['paragraph', 'character'];
+
+export function styleNumbers(styles) {
+  const num = new Map(), list = [];
+  const def = styles.defaults && styles.defaults.paragraph;
+  const first = def ? styles.styles.get(def) : undefined;
+  if (first && first.type === 'paragraph') {
+    num.set(first.id, 0);
+    list.push(first);
+  }
+  for (const s of styles.styles.values()) {
+    if (list.length >= MAX_STYLES) break;
+    if (!s || !TYPES.includes(s.type) || num.has(s.id)) continue;
+    num.set(s.id, list.length + (first ? 0 : 1));
+    list.push(s);
+  }
+  return {num, list};
+}
+
+/** The rPr of a character style's own Based on chain, merged. */
+function charChain(styles, s) {
+  const chain = [];
+  const seen = new Set();
+  for (let c = s; c && c.type === 'character' && !seen.has(c.id) &&
+    chain.length < MAX_CHAIN; c = styles.styles.get(c.basedOn)) {
+    seen.add(c.id);
+    chain.unshift(c.rPr);
+  }
+  const out = {extra: []};
+  for (const r of chain) mergeInto(out, r);
+  return out;
+}
+
+/** \sbasedonN / \snextN when they name a style of the same type
+ *  (Based on itself: none). */
+function link(w, word, id, type, self) {
+  const s = id === undefined ? undefined : w.styles.styles.get(id);
+  return s && s.type === type && w.num.num.has(id) &&
+    !(word === 'sbasedon' && id === self)
+    ? '\\' + word + w.num.num.get(id) : '';
+}
+
+function entry(w, s) {
+  const n = w.num.num.get(s.id);
+  const name = cleanName(s.name || s.id) || 'Style ' + n;
+  if (s.type === 'character') {
+    return '{\\*\\cs' + n + ' \\additive' +
+      charWords(w, charChain(w.styles, s), {all: true}) +
+      link(w, 'sbasedon', s.basedOn, 'character', s.id) + ' ' + name +
+      ';}';
+  }
+  const probe = {type: 'p', text: '', runs: [], inlines: {},
+    pPr: {extra: []}, pStyle: s.id};
+  const p = resolvePara(w.styles, probe);
+  const r = resolveRun(w.styles, probe, {rPr: {extra: []}});
+  const sn = w.hook && w.hook('styleNumbering');
+  return '{' + (n ? '\\s' + n : '') +
+    paraWords(w, p, tabsOf(w.styles, probe), {widow: true}) +
+    (sn ? sn(w, p) : '') + charWords(w, r) +
+    link(w, 'sbasedon', s.basedOn, 'paragraph', s.id) +
+    link(w, 'snext', s.next, 'paragraph') + ' ' + name + ';}';
+}
+
+export function stylesheet(w) {
+  return '{\\stylesheet' + w.num.list.map((s) => entry(w, s))
+    .join('') + '}';
+}
+
+const INFO = [['title', 'title'], ['subject', 'subject'],
+  ['creator', 'author'], ['keywords', 'keywords'],
+  ['lastModifiedBy', 'operator']];
+
+/** A date as \yr \mo \dy \hr \min \sec (UTC, as the reader reads). */
+function time(word, d) {
+  if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+  const y = d.getUTCFullYear();
+  if (y < 1601 || y > 9999) return '';
+  return '{\\' + word + '\\yr' + y + '\\mo' + (d.getUTCMonth() + 1) +
+    '\\dy' + d.getUTCDate() + '\\hr' + d.getUTCHours() + '\\min' +
+    d.getUTCMinutes() + '\\sec' + d.getUTCSeconds() + '}';
+}
+
+export function info(w) {
+  const c = coreOf(w.doc);
+  let s = '';
+  for (const [k, word] of INFO) {
+    let t = '';
+    for (const ch of typeof c[k] === 'string' ? c[k] : '') {
+      if (ch.charCodeAt(0) >= 0x20) t += ch;
+    }
+    if (t.trim()) s += '{\\' + word + ' ' + encodeAscii(t).rtf + '}';
+  }
+  s += time('creatim', c.created) + time('revtim', c.modified);
+  return s ? '{\\info' + s + '}\n' : '';
+}

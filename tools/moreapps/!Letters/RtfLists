@@ -1,0 +1,363 @@
+// RtfLists - lists for the RTF reader (./RtfRead): the list table,
+// the list override table, \ls and \ilvl in the text, and old-style
+// {\*\pn ...} numbering (best effort), as the Doc's numbering part
+// (a w:numbering tree read by ./ReadNumbering) and paragraphs'
+// pPr.numPr {numId, ilvl}.
+//
+//   PART   handlers: {\*\listtable {\list ... {\listlevel ...}
+//       \listidN}} (\listsimple: singleLevel, \listhybrid:
+//       hybridMultilevel, else multilevel; a level's \levelnfc(n)
+//       number format, \leveljc(n), \levelfollow (tab, space,
+//       nothing), \levelstartat, \levellegal (isLgl),
+//       \levelnorestart (lvlRestart 0), {\leveltext} (its first
+//       character the length, \'00..\'08 the level placeholders
+//       %1..%9), and the level's \fi \li \f: its indent and font);
+//       {\*\listoverridetable {\listoverride \listidN \lsN
+//       {\lfolevel \levelstartatN}}} (each \ls a w:num of that
+//       number on its list, an \lfolevel a start-at override of the
+//       level of its place, or of its \ilvl); \lsN \ilvlN; {\*\pn
+//       ...}; paraProps (numPr); finish (the part, and numPr in the
+//       styles that name a list: the style sheet comes before the
+//       list table, so styles get theirs at the end)
+//   levelOf(ctx, p) -> the list level ({li?, fi?} its indent) of
+//       paragraph state p's \ls and \ilvl, or undefined (./RtfPara)
+//   symbolText(ctx, f, s)  s with each character U+0020..U+00FF
+//       made U+F000 + code when font f is a Symbol font (\fcharset2),
+//       as Word keeps Symbol bullets ('\'b7' -> U+F0B7)
+//
+// \levelnfc numbers are Word's: 0..27 are ./NumFormat NUM_FMTS in
+// order (0 decimal, 1 upperRoman ... 22 decimalZero, 23 bullet),
+// 255 none; any other is decimal. A paragraph whose \ls names no
+// override read is in no list; a \list with no \listlevel is
+// skipped. An old-style \pn (no \ls in force)
+// becomes a one-level list of its own, one per distinct definition
+// (\pnlvlblt a bullet of {\pntxtb}, \pnlvlbody / \pnlvlN a number:
+// {\pntxtb} %1 {\pntxta}, \pndec \pnucrm \pnlcrm \pnucltr \pnlcltr,
+// \pnstart, \pnf); \pnlvlcont numbers nothing.
+// Caps: MAX_LISTS lists, overrides and \pn lists each, 9 levels a
+// list, MAX_TEXT characters of level text; ids within MAX_ID.
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+import {rootScope} from './Ns';
+import {NS} from './Wml';
+import {NUM_FMTS} from './NumFormat';
+import {readNumbering} from './ReadNumbering';
+import {ensurePart} from './NumWrite';
+import {fontName} from './RtfProps';
+import {SKIP} from './RtfText';
+
+const MAX_LISTS = 1000, MAX_TEXT = 256, MAX_ID = 32767;
+const BULLET = String.fromCharCode(0x2022);
+
+const isInt = (t) => Number.isInteger(t.param);
+const A = (name, attrs, ...kids) => el('w:' + name, attrs, ...kids);
+const val = (name, v) => A(name, [['w:val', String(v)]]);
+
+/** The reader's list data, made on first use. */
+const lists = (ctx) => ctx.lists || (ctx.lists = {defs: new Map(),
+  ls: new Map(), pn: new Map(), pnDefs: []});
+
+export function symbolText(ctx, f, s) {
+  const font = ctx.fonts.get(f === undefined ? ctx.deff : f);
+  if (!font || font.charset !== 2) return s;
+  let out = '';
+  for (const c of s) {
+    const n = c.charCodeAt(0);
+    out += n >= 0x20 && n <= 0xff ? String.fromCharCode(0xf000 + n) : c;
+  }
+  return out;
+}
+
+const fmtOf = (n) => (n === 255 ? 'none' : Number.isInteger(n) &&
+  n >= 0 && n <= 27 ? NUM_FMTS[n] : 'decimal');
+
+/** A text gatherer; \'hh below 0x20 kept as that code (ctl). */
+function textDest(done) {
+  let s = '';
+  const add = (t) => {
+    if (s.length < MAX_TEXT) s += t;
+  };
+  return {text: (ctx, t) => add(t),
+    ctl: (ctx, b) => add(String.fromCharCode(b)),
+    end: (ctx) => done(ctx, s)};
+}
+
+/** The w:lvlText of a {\leveltext}: length first, then the text. */
+function levelText(ctx, raw, font) {
+  const len = raw.charCodeAt(0);
+  let body = raw.slice(1);
+  if (len <= body.length) body = body.slice(0, len);
+  else if (body.includes(';')) {
+    body = body.slice(0, body.lastIndexOf(';'));
+  }
+  let out = '';
+  for (const c of body) {
+    const n = c.charCodeAt(0);
+    if (n < 9) out += '%' + (n + 1);
+    else if (n >= 0x20) out += symbolText(ctx, font, c);
+  }
+  return out;
+}
+
+const startOf = (n) => (Number.isInteger(n) && n >= 0 &&
+  n <= MAX_ID ? n : 1);
+
+/** {\listlevel ...}: a level of def. */
+function listlevel(def) {
+  const lv = {};
+  const set = (k) => (ctx, t) => {
+    if (isInt(t)) lv[k] = t.param;
+  };
+  return {text() {},
+    words: new Map(['levelnfc', 'levelnfcn', 'leveljc', 'leveljcn',
+      'levelfollow', 'levelstartat', 'levellegal', 'levelnorestart']
+      .map((w) => [w, set(w)])),
+    dests: new Map([
+      ['leveltext', () => textDest((ctx, s) => {
+        lv.raw = s;
+      })],
+      ['levelnumbers', () => SKIP]]),
+    end(ctx) {
+      if (def.levels.length >= 9) return;
+      const p = ctx.state.para, f = ctx.state.char.font;
+      const jc = lv.leveljcn ?? lv.leveljc;
+      const o = {start: startOf(lv.levelstartat),
+        fmt: fmtOf(lv.levelnfcn ?? lv.levelnfc),
+        text: lv.raw === undefined ? '' : levelText(ctx, lv.raw, f),
+        jc: jc === 1 ? 'center' : jc === 2 ? 'right' : 'left',
+        suff: lv.levelfollow === 1 ? 'space' : lv.levelfollow === 2
+          ? 'nothing' : undefined, li: p.li, fi: p.fi,
+        legal: lv.levellegal === 1, keep: lv.levelnorestart === 1,
+        font: f === undefined ? undefined : fontName(ctx, f)};
+      def.levels.push(o);
+    }};
+}
+
+const list = () => {
+  const def = {levels: [], type: 'multilevel'};
+  const type = (v) => () => {
+    def.type = v;
+  };
+  return {text() {},
+    words: new Map([
+      ['listid', (ctx, t) => {
+        if (isInt(t)) def.id = t.param;
+      }],
+      ['listsimple', type('singleLevel')],
+      ['listhybrid', type('hybridMultilevel')]]),
+    dests: new Map([['listlevel', () => listlevel(def)],
+      ['listname', () => SKIP]]),
+    end(ctx) {
+      const L = lists(ctx);
+      if (def.id === undefined || !def.levels.length ||
+        L.defs.has(def.id) ||
+        L.defs.size >= MAX_LISTS) return;
+      def.abs = L.defs.size;
+      L.defs.set(def.id, def);
+    }};
+};
+
+const listtable = () => ({text() {},
+  dests: new Map([['list', list]])});
+
+/** {\lfolevel ...}: a start-at override, level k. */
+function lfolevel(o) {
+  const lv = {ilvl: o.count++};
+  const start = (ctx, t) => {
+    if (isInt(t)) lv.start = t.param;
+  };
+  const words = new Map([['levelstartat', start],
+    ['ilvl', (ctx, t) => {
+      if (isInt(t)) lv.ilvl = t.param;
+    }]]);
+  return {text() {}, words,
+    dests: new Map([['listlevel', () => ({text() {},
+      words: new Map([['levelstartat', start]])})]]),
+    end() {
+      if (lv.start !== undefined && lv.ilvl >= 0 && lv.ilvl <= 8) {
+        o.starts.set(lv.ilvl, startOf(lv.start));
+      }
+    }};
+}
+
+const listoverride = () => {
+  const o = {starts: new Map(), count: 0};
+  const set = (k) => (ctx, t) => {
+    if (isInt(t)) o[k] = t.param;
+  };
+  return {text() {},
+    words: new Map([['listid', set('listid')], ['ls', set('ls')]]),
+    dests: new Map([['lfolevel', () => lfolevel(o)]]),
+    end(ctx) {
+      const L = lists(ctx);
+      if (!(o.ls >= 1 && o.ls <= MAX_ID) || L.ls.has(o.ls) ||
+        !L.defs.has(o.listid) || L.ls.size >= MAX_LISTS) return;
+      L.ls.set(o.ls, o);
+    }};
+};
+
+const listoverridetable = () => ({text() {},
+  dests: new Map([['listoverride', listoverride]])});
+
+const PN_FMT = [['pndec', 'decimal'], ['pnucrm', 'upperRoman'],
+  ['pnlcrm', 'lowerRoman'], ['pnucltr', 'upperLetter'],
+  ['pnlcltr', 'lowerLetter']];
+
+/** {\*\pn ...}: the paragraph's old-style number (./RtfState lift). */
+const pn = () => {
+  const d = {fmt: 'decimal', start: 1, txtb: '', txta: ''};
+  const set = (k, v) => () => {
+    d[k] = v;
+  };
+  const num = (k) => (ctx, t) => {
+    if (isInt(t)) d[k] = t.param;
+  };
+  const txt = (k) => () => textDest((ctx, s) => {
+    d[k] = s;
+  });
+  return {text() {},
+    words: new Map([['pnlvlblt', set('kind', 'blt')],
+      ['pnlvlbody', set('kind', 'body')],
+      ['pnlvlcont', set('kind', 'cont')],
+      ['pnlvl', set('kind', 'body')],
+      ...PN_FMT.map(([w, f]) => [w, set('fmt', f)]),
+      ['pnstart', num('start')], ['pnf', num('font')]]),
+    dests: new Map([['pntxtb', txt('txtb')], ['pntxta', txt('txta')]]),
+    end(ctx) {
+      if (!d.kind || d.kind === 'cont') return;
+      const clean = (s) => symbolText(ctx, d.font, [...s].filter((c) =>
+        c.charCodeAt(0) >= 0x20).join(''));
+      const blt = d.kind === 'blt';
+      const lv = {start: startOf(d.start), fmt: blt ? 'bullet' : d.fmt,
+        text: blt ? clean(d.txtb) || BULLET
+          : clean(d.txtb) + '%1' + clean(d.txta), jc: 'left',
+        font: d.font === undefined ? undefined : fontName(ctx, d.font)};
+      const L = lists(ctx), key = JSON.stringify(lv);
+      let id = L.pn.get(key);
+      if (id === undefined) {
+        if (L.pn.size >= MAX_LISTS) return;
+        id = Math.max(0, ...L.ls.keys(), ...L.pn.values()) + 1;
+        L.pn.set(key, id);
+        L.pnDefs.push({id, lv});
+      }
+      ctx.state.lift('para', 'pn', id);
+    }};
+};
+
+/** The numPr {numId, ilvl} of a paragraph state, or undefined. */
+function numOf(ctx, p) {
+  const L = ctx.lists;
+  if (!L) return undefined;
+  if (p.ls !== undefined && L.ls.has(p.ls)) {
+    return {numId: p.ls, ilvl: p.ilvl || 0};
+  }
+  if (p.ls === undefined && p.pn !== undefined) {
+    return {numId: p.pn, ilvl: 0};
+  }
+  return undefined;
+}
+
+/** The list level ({li?, fi?}: its \li \fi) of a paragraph
+ *  state's \ls \ilvl, or undefined (no list read for it). */
+export function levelOf(ctx, p) {
+  const L = ctx.lists, o = L && p.ls !== undefined && L.ls.get(p.ls);
+  const def = o && L.defs.get(o.listid);
+  return def ? def.levels[p.ilvl || 0] : undefined;
+}
+
+function paraProps(ctx, p, base, out) {
+  const a = numOf(ctx, p), b = numOf(ctx, base);
+  if (a ? !b || a.numId !== b.numId || a.ilvl !== b.ilvl : b) {
+    out.numPr = a || {numId: 0, ilvl: 0};
+  }
+}
+
+/** A level's w:lvl node. */
+function lvlNode(k, lv) {
+  const kids = [val('start', lv.start), val('numFmt', lv.fmt)];
+  if (lv.keep) kids.push(val('lvlRestart', 0));
+  if (lv.legal) kids.push(A('isLgl'));
+  if (lv.suff) kids.push(val('suff', lv.suff));
+  kids.push(val('lvlText', lv.text), val('lvlJc', lv.jc));
+  const ind = [];
+  if (lv.li !== undefined) ind.push(['w:left', String(lv.li)]);
+  if (lv.fi < 0) ind.push(['w:hanging', String(-lv.fi)]);
+  else if (lv.fi !== undefined) {
+    ind.push(['w:firstLine', String(lv.fi)]);   // (0 too: it is set)
+  }
+  if (ind.length) kids.push(A('pPr', null, A('ind', ind)));
+  if (lv.font) {
+    kids.push(A('rPr', null, A('rFonts', [['w:ascii', lv.font],
+      ['w:hAnsi', lv.font], ['w:hint', 'default']])));
+  }
+  return A('lvl', [['w:ilvl', String(k)]], ...kids);
+}
+
+const hex8 = (n) => (n >>> 0).toString(16).toUpperCase()
+  .padStart(8, '0');
+
+function absNode(id, nsid, type, levels) {
+  return A('abstractNum', [['w:abstractNumId', String(id)]],
+    val('nsid', hex8(nsid)), val('multiLevelType', type),
+    ...levels.map((lv, k) => lvlNode(k, lv)));
+}
+
+function numNode(id, abs, starts = new Map()) {
+  return A('num', [['w:numId', String(id)]], val('abstractNumId', abs),
+    ...[...starts].sort((a, b) => a[0] - b[0]).map(([k, s]) =>
+      A('lvlOverride', [['w:ilvl', String(k)]],
+        val('startOverride', s))));
+}
+
+/** The styles that name a list get its numPr. */
+function styleLists(ctx) {
+  const t = ctx.doc.styles;
+  let styles = null;
+  for (const d of ctx.styleDefs.values()) {
+    const n = d.type === 'paragraph' ? numOf(ctx, d.para) : undefined;
+    const s = n && t.styles.get(d.id);
+    if (!s || s.pPr.numPr) continue;
+    styles = styles || new Map(t.styles);
+    styles.set(d.id, {...s, pPr: {...s.pPr, numPr: n}});
+  }
+  if (styles) ctx.doc.styles = {...t, styles};
+}
+
+function finish(ctx) {
+  const L = ctx.lists;
+  if (!L || (!L.defs.size && !L.pnDefs.length)) return;
+  const abs = [...L.defs.values()].map((d) =>
+    absNode(d.abs, d.id, d.type, d.levels));
+  const nums = [...L.ls.values()].sort((a, b) => a.ls - b.ls).map((o) =>
+    numNode(o.ls, L.defs.get(o.listid).abs, o.starts));
+  let next = L.defs.size;
+  for (const {id, lv} of L.pnDefs) {
+    abs.push(absNode(next, 0x52540000 + id, 'singleLevel', [lv]));
+    nums.push(numNode(id, next++));
+  }
+  const doc = ctx.doc;
+  const root = A('numbering', [['xmlns:w', NS.w]], ...abs, ...nums);
+  doc.numbering = readNumbering(root, rootScope(root));
+  const {rels, numberingPart} = ensurePart(doc);
+  doc.rels = rels;
+  doc.meta = {...doc.meta, numberingPart};
+  styleLists(ctx);
+}
+
+const para = (key, ok) => (ctx, t) => {
+  if (isInt(t) && ok(t.param)) ctx.state.setPara(key, t.param);
+};
+
+export const PART = {
+  words: new Map([
+    ['ls', para('ls', (n) => n >= 0 && n <= MAX_ID)],
+    ['ilvl', (ctx, t) => {
+      if (isInt(t) && t.param >= 0) {
+        ctx.state.setPara('ilvl', Math.min(8, t.param));
+      }
+    }]]),
+  dests: new Map([['listtable', listtable],
+    ['listoverridetable', listoverridetable], ['pn', pn]]),
+  paraProps: [paraProps],
+  finish: [finish],
+};

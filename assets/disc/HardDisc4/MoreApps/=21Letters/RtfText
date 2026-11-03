@@ -1,0 +1,180 @@
+// RtfText - text for the RTF reader (./RtfRead): the bytes of text
+// and \'hh tokens decoded by the code page of the font in force, \uN
+// with the \ucN skip, and the small destinations every handler
+// module uses.
+//
+//   textBytes(ctx, bytes) / hexByte(ctx, byte) / unicode(ctx, n)
+//       decode and hand the text to ctx.dest.text(ctx, s); the
+//       characters after a \uN are skipped first (ctx.skip, set from
+//       the state's uc; ./RtfRead counts words and data against it
+//       and clears it at { and })
+//       A destination with a ctl(ctx, code) method gets a \'hh
+//       below 0x20 there instead of the text (\leveltext's length
+//       and level placeholders: ./RtfLists)
+//   SKIP           a destination that ignores everything in it
+//   skipping(note) -> opener: skips the group, with `note` (once)
+//   collect(done)  -> opener: a destination gathering its text; at
+//       its end done(ctx, text) is called (\title, a font name...)
+//
+// The code page of the font in force: its \cpgN, else its
+// \fcharsetN (./RtfCodepage fcharsetToCpg; 2 is Symbol: a byte b
+// becomes U+F000 + b, as Word reads a Symbol font), else \ansicpgN.
+// A code page RtfCodepage does not have (932 Shift-JIS, 936, 949,
+// 950, 874...) gives '?' for each character outside ASCII (a lead
+// byte and its trail byte together are one character in the double
+// byte pages), counted in ctx.lost (code page -> count) for the
+// note. Control characters other than tab are dropped; U+2028 is a
+// line break ('\n'); U+FFFC (the Model's object mark), U+FFFE and
+// U+FFFF are U+FFFD.
+// Pure: no desktop services.
+import {decoderFor, known, fcharsetToCpg} from 'wimplib/RtfCodepage';
+
+// charsets RtfCodepage has no table for: their code pages
+const OTHER = new Map([[128, 932], [129, 949], [130, 1361],
+  [134, 936], [136, 950], [222, 874]]);
+const DOUBLE = new Set([932, 936, 949, 950, 1361]);
+
+/** The code page of font number f, or 'symbol'. */
+function pageOf(ctx, f) {
+  const font = ctx.fonts.get(f === undefined ? ctx.deff : f);
+  if (font) {
+    if (font.cpg !== undefined) return font.cpg;
+    const cs = font.charset;
+    if (cs === 2) return 'symbol';
+    if (cs !== undefined && cs !== 1) {
+      const p = fcharsetToCpg(cs);
+      if (p !== null) return p;
+      if (OTHER.has(cs)) return OTHER.get(cs);
+    }
+  }
+  return ctx.ansicpg;
+}
+
+const DECODERS = new Map();
+const decoder = (p) => {
+  if (!DECODERS.has(p)) DECODERS.set(p, decoderFor(p));
+  return DECODERS.get(p);
+};
+
+/** One UTF-16 unit as text: control characters dropped. */
+export function clean(u) {
+  if (u === 9) return '\t';
+  if (u < 0x20 || u === 0x7f) return '';
+  if (u === 0x2028) return '\n';
+  // U+FFFC is the Model's object mark; U+FFFE and U+FFFF are not
+  // characters (XML refuses them: writeDocx would throw)
+  if (u === 0xfffc || u === 0xfffe || u === 0xffff) return '\ufffd';
+  return String.fromCharCode(u);
+}
+
+function lose(ctx, p) {
+  ctx.lost.set(p, (ctx.lost.get(p) || 0) + 1);
+  return '?';
+}
+
+/** One byte of text in the font in force. */
+function byteText(ctx, b) {
+  const p = pageOf(ctx, ctx.state.char.font);
+  if (p === 'symbol') return b < 0x20 ? clean(b) :
+    String.fromCharCode(0xf000 + b);
+  if (known(p)) return clean(decoder(p)(b).charCodeAt(0));
+  if (ctx.lead) {                      // the trail of a lead byte
+    ctx.lead = false;
+    return '';
+  }
+  if (b < 0x80) return clean(b);
+  if (DOUBLE.has(p) && b >= 0x81 && b <= 0xfe &&
+    !(p === 932 && b >= 0xa0 && b <= 0xdf)) ctx.lead = true;
+  return lose(ctx, p);
+}
+
+const emit = (ctx, s) => {
+  if (s) ctx.dest.text(ctx, s);
+};
+
+const CODES = new Map();
+/** A known page's 256 bytes as UTF-16 units (./RtfCodepage, then
+ *  clean): -1 for a byte that gives no text. */
+function codesOf(p) {
+  let t = CODES.get(p);
+  if (!t) {
+    const d = decoder(p);
+    t = new Int32Array(256);
+    for (let b = 0; b < 256; b++) {
+      const c = clean(d(b).charCodeAt(0));
+      t[b] = c ? c.charCodeAt(0) : -1;
+    }
+    CODES.set(p, t);
+  }
+  return t;
+}
+
+const CHUNK = 8192;
+// (reused: reading is synchronous)
+const BUF = new Uint16Array(CHUNK);
+
+export function textBytes(ctx, bytes) {
+  let i = 0;
+  if (ctx.skip > 0) {
+    i = Math.min(ctx.skip, bytes.length);
+    ctx.skip -= i;
+  }
+  // (the font, and so the page, is the same for the whole run; a
+  // known page is decoded by table, in chunks: a big run must not
+  // cost a string per byte)
+  const p = pageOf(ctx, ctx.state.char.font);
+  if (p === 'symbol' || !known(p)) {
+    let s = '';
+    for (; i < bytes.length; i++) s += byteText(ctx, bytes[i]);
+    return emit(ctx, s);
+  }
+  const codes = codesOf(p), buf = BUF, parts = [];
+  let k = 0;
+  for (; i < bytes.length; i++) {
+    const c = codes[bytes[i]];
+    if (c < 0) continue;
+    buf[k++] = c;
+    if (k === CHUNK) {
+      parts.push(String.fromCharCode.apply(null, buf));
+      k = 0;
+    }
+  }
+  if (k) {
+    parts.push(String.fromCharCode.apply(null, buf.subarray(0, k)));
+  }
+  emit(ctx, parts.join(''));
+}
+
+export function hexByte(ctx, b) {
+  if (ctx.skip > 0) {
+    ctx.skip--;
+    return;
+  }
+  if (b < 0x20 && ctx.dest.ctl) return ctx.dest.ctl(ctx, b);
+  emit(ctx, byteText(ctx, b));
+}
+
+export function unicode(ctx, n) {
+  if (!Number.isInteger(n)) return;
+  ctx.lead = false;
+  emit(ctx, clean(n & 0xffff));
+  ctx.skip = ctx.state.uc;
+}
+
+export const SKIP = Object.freeze({skip: true, text() {}});
+
+export const skipping = (note) => (ctx) => {
+  if (note) ctx.note(note);
+  return SKIP;
+};
+
+export const collect = (done) => () => {
+  let s = '';
+  return {ownWords: true,
+    text(ctx, t) {
+      if (s.length < 65536) s += t;
+    },
+    end(ctx) {
+      done(ctx, s);
+    }};
+};

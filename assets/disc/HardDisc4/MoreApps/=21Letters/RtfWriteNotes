@@ -1,0 +1,71 @@
+// RtfWriteNotes - footnotes and endnotes for the RTF writer
+// (./RtfWrite): the inverse of the reader's ./RtfNotes.
+//
+//   PART   inlines: noteRef; header: \fetN, when a note is written
+//          (RTF 1.9.1: 0 footnotes only, 1 endnotes only, 2 both;
+//          the reader's ./RtfNotes takes an unmarked note in a \fet1
+//          file as an endnote, and every endnote here has \ftnalt)
+//
+// A body mark (noteRef, id N) is written in its run's group, so it
+// keeps the run's format (superscript, the note reference style):
+// \chftn{\footnote <the note's paragraphs>}, an endnote's with
+// \ftnalt first ({\footnote\ftnalt ...}), the note's text written
+// as the body's, each paragraph ending \par (./RtfWrite nested:
+// its links and pictures from the notes part's relationships,
+// ./OpsNotes partRels). In the note the note's own number mark
+// (noteRef self) is \chftn. A mark whose note is missing, or a
+// mark in a header, footer or note (Word has none there; the
+// reader skips them), is left out: LOST.notes. A
+// custom mark's text is written as text, the mark as a number.
+// Note settings (positions, number formats) are not written.
+// Pure: no desktop services.
+import {partRels} from './OpsNotes';
+import {LOST} from './RtfLost';
+
+const KINDS = new Map([['footnote', 'footnotes'],
+  ['endnote', 'endnotes']]);
+
+function noteOf(doc, kind, id) {
+  const n = doc.notes;
+  const map = n && typeof n === 'object' ? n[KINDS.get(kind)] : null;
+  if (!(map instanceof Map)) return null;
+  const x = map.get(id) || map.get(Number(id));
+  return x && Array.isArray(x.blocks) ? x : null;
+}
+
+function noteRef(w, x) {
+  if (x.self) return w.place.kind === 'note' ? '\\chftn ' : '';
+  const note = KINDS.has(x.note) && w.place.kind === 'body'
+    ? noteOf(w.doc, x.note, x.id) : null;
+  if (!note) {
+    w.lose(LOST.notes);
+    return '';
+  }
+  let rels = null;
+  try {
+    rels = partRels(w.doc, x.note);
+  } catch {
+    rels = null;
+  }
+  (w.noteKinds || (w.noteKinds = new Set())).add(x.note);
+  const n = w.doc.notes, root = n.root && n.root[KINDS.get(x.note)];
+  const place = {rels: Array.isArray(rels) ? rels : [],
+    part: w.place.part, kind: 'note',
+    map: root ? w.scopeOf(root) : undefined};
+  return '\\chftn{\\footnote' + (x.note === 'endnote' ? '\\ftnalt'
+    : '') + '\n' + w.nested(place, () => w.blocks(note.blocks,
+    '\\par')) + '}';
+}
+
+/** \fetN of the notes written (none: nothing). */
+function fet(w) {
+  const k = w.noteKinds;
+  if (!k) return '';
+  const n = !k.has('endnote') ? 0 : k.has('footnote') ? 2 : 1;
+  return '\\fet' + n + '\n';
+}
+
+export const PART = {
+  inlines: new Map([['noteRef', noteRef]]),
+  header: [fet],
+};

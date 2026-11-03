@@ -1,0 +1,228 @@
+// RtfNotes - footnotes and endnotes for the RTF reader (./RtfRead),
+// as the Doc's notes (./NoteRead) with their marks in the text.
+//
+//   PART   handlers: {\footnote ...} (a note: its paragraphs, read
+//       as the body's) and \ftnalt in it (an endnote); \chftn (the
+//       note's number: before the group in the text, in the note's
+//       own text its number mark); the document's note settings
+//       \fetN (1: every note an endnote), \ftnbj \ftntj \endnotes
+//       \enddoc (where footnotes go), \aendnotes \aenddoc (where
+//       endnotes go), \ftnstartN \aftnstartN, \ftnrstcont
+//       \ftnrestart \ftnrstpg \aftnrstcont \aftnrestart and the
+//       number formats \ftnnar \ftnnalc \ftnnauc \ftnnrlc \ftnnruc
+//       \ftnnchi (and \aftnn... for endnotes); finish (the notes
+//       parts, the notes, the settings)
+//
+// A note's mark is a noteRef inline (level 'r', node
+// w:footnoteReference / w:endnoteReference with its w:id) where the
+// group is, in the format the text had at the \chftn just before it
+// (Word writes {\super \chftn}{\footnote ...}), else the format
+// there. The note's ids are 1, 2... a kind, in the file's order;
+// its text a ./RtfBody Flow; its \chftn the self mark (id null,
+// self, node w:footnoteRef / w:endnoteRef); a note with none gets
+// one at its start, as Word shows the number there. Links and
+// pictures in notes are related from the notes part (ctx.relsAt:
+// one rels a kind, ./OpsNotes setNoteRels). The parts are made at
+// the end as a command makes them (./NoteParts ensure: Word's
+// separator notes, the relationship, the settings' separator
+// references), then the notes go in (./OpsNotes addNotes, applied
+// to the Doc being built through ./Ops apply); the settings
+// through ./OpsNotes setNoteOpts.
+// Not read (skipped, with a note): a note in a header, footer,
+// note or comment (Word has none there), a deleted note (its mark
+// cannot be tagged: ./RtfRevs), notes past MAX_NOTES a kind; a
+// group where no mark can go (a field's code) is ignored. A note's
+// text is its own: a revision around it does not apply in it.
+// Section-level note settings (\sftn...) are not read.
+// Pure: no desktop services.
+import {newPara, OBJ} from './Model';
+import {W} from './Wml';
+import {Flow, fmtOf} from './RtfBody';
+import {SKIP} from './RtfText';
+import {apply} from './Ops';
+import {ensure} from './NoteParts';
+import {newNote, partRels} from './OpsNotes';
+import {MAX_START} from './NoteOpts';
+import {untracked} from './RtfRevs';
+
+export const MAX_NOTES = 10000;
+const KINDS = ['footnote', 'endnote'];
+
+const notes = (ctx) => ctx.notesRd || (ctx.notesRd = {
+  footnote: [], endnote: [], fet: 0, mark: null,
+  opts: {footnote: {}, endnote: {}},
+  rels: {footnote: {rels: []}, endnote: {rels: []}}});
+
+/** The Doc being built, as a ./Document for the commands' parts. */
+export function builder(ctx) {
+  return {get doc() {
+    return ctx.doc;
+  }, atomic(fn) {
+    return fn();
+  }, apply(op) {
+    return apply(ctx.doc, op);
+  }};
+}
+
+const selfMark = (kind) => ({kind: 'noteRef', note: kind, id: null,
+  self: true, level: 'r', node: W(kind + 'Ref')});
+
+/** blocks (a new array) with inline x at the start of the first. */
+export function markFirst(blocks, x) {
+  const out = blocks.length ? blocks.slice() : [newPara('')];
+  if (out[0].type === 'p') out[0] = prepend(out[0], x);
+  else out.unshift(prepend(newPara(''), x));
+  return out;
+}
+
+/** p with inline x put first. */
+function prepend(p, x) {
+  const inlines = {0: x};
+  for (const [k, v] of Object.entries(p.inlines)) {
+    inlines[String(Number(k) + 1)] = v;
+  }
+  const runs = [{start: 0, end: 1, rPr: {extra: []}},
+    ...p.runs.map((r) => ({...r, start: r.start + 1, end: r.end + 1}))];
+  const o = {id: p.id, runs, inlines, pPr: p.pPr, extraP: p.extraP};
+  if (p.pStyle !== undefined) o.pStyle = p.pStyle;
+  return newPara(OBJ + p.text, o);
+}
+
+class NoteFlow extends Flow {
+  constructor(ctx, outer, fmt) {
+    super();
+    untracked(ctx);
+    const n = notes(ctx);
+    this.n = n;
+    this.kind = n.fet === 1 ? 'endnote' : 'footnote';
+    this.outer = outer;
+    this.fmt = fmt;
+    this.self = false;
+    this.outerRels = ctx.relsAt;
+    ctx.relsAt = this;
+    this.words = new Map([['ftnalt', () => {
+      if (!this.self && !this.para.len && !this.blocks.length)
+        this.kind = 'endnote';
+    }], ['chftn', (c) => {
+      this.self = true;
+      this.obj(c, selfMark(this.kind));
+    }]]);
+  }
+
+  // (the rels the notes part has: one for every note of a kind)
+  get rels() {
+    return this.n.rels[this.kind].rels;
+  }
+
+  set rels(v) {
+    this.n.rels[this.kind].rels = v;
+  }
+
+  sect() {}
+
+  end(ctx) {
+    ctx.relsAt = this.outerRels;
+    this.finish(ctx);
+    const list = this.n[this.kind];
+    if (list.length >= MAX_NOTES) {
+      ctx.note('more than ' + MAX_NOTES + ' ' + this.kind + 's: the ' +
+        'rest are skipped');
+      return;
+    }
+    let blocks = this.sections.flatMap((s) => s.blocks);
+    if (!this.self) blocks = markFirst(blocks, selfMark(this.kind));
+    else if (!blocks.length) blocks.push(newPara(''));
+    const id = list.length + 1;
+    list.push({id, blocks});
+    if (this.outer.obj) {
+      this.outer.obj(ctx, {kind: 'noteRef', note: this.kind, id,
+        level: 'r', node: W(this.kind + 'Reference',
+          {'w:id': String(id)})}, this.fmt);
+    }
+  }
+}
+
+function footnote(ctx) {
+  const n = notes(ctx);
+  const m = n.mark;
+  n.mark = null;
+  if (!ctx.dest.obj) return SKIP;
+  if (ctx.relsAt) {
+    ctx.note('notes in headers, footers, notes and comments are ' +
+      'not read: skipped');
+    return SKIP;
+  }
+  const fmt = m && m.dest === ctx.dest && m.paras === ctx.paras
+    ? m.fmt : fmtOf(ctx);
+  if (fmt.rev && fmt.rev.kind === 'del') {
+    ctx.note('deleted footnotes and endnotes are left out');
+    return SKIP;
+  }
+  return new NoteFlow(ctx, ctx.dest, fmt);
+}
+
+/** \chftn outside a note: the format of the mark to come. */
+function chftn(ctx) {
+  notes(ctx).mark = {dest: ctx.dest, fmt: fmtOf(ctx),
+    paras: ctx.paras};
+}
+
+const opt = (kind, key, v) => (ctx) => {
+  notes(ctx).opts[kind][key] = v;
+};
+const start = (kind) => (ctx, t) => {
+  if (Number.isInteger(t.param) && t.param >= 1 &&
+    t.param <= MAX_START) notes(ctx).opts[kind].numStart = t.param;
+};
+const FMTS = [['ar', 'decimal'], ['alc', 'lowerLetter'],
+  ['auc', 'upperLetter'], ['rlc', 'lowerRoman'],
+  ['ruc', 'upperRoman'], ['chi', 'chicago']];
+
+function finish(ctx) {
+  const n = ctx.notesRd;
+  if (!n) return;
+  const d = builder(ctx);
+  for (const kind of KINDS) {
+    const list = n[kind];
+    if (list.length) {
+      ensure(d, kind);
+      const slot = kind + 's';
+      d.apply({op: 'addNotes', kind, notes: list.map((x) =>
+        newNote(ctx.doc, kind, x.id, x.blocks)),
+      order: [...ctx.doc.notes.order[slot], ...list.map((x) => x.id)]});
+      const rels = n.rels[kind].rels;
+      if (rels.length && partRels(ctx.doc, kind) !== rels)
+        d.apply({op: 'setNoteRels', kind, rels});
+    }
+    const o = n.opts[kind];
+    if (Object.keys(o).length && ctx.doc.rawSettings &&
+      ctx.doc.meta.settingsPart) {
+      d.apply({op: 'setNoteOpts', level: 'doc', kind, value: o});
+    }
+  }
+}
+
+export const PART = {
+  words: new Map([
+    ['chftn', chftn],
+    ['fet', (ctx, t) => {
+      if (Number.isInteger(t.param)) notes(ctx).fet = t.param;
+    }],
+    ['ftnbj', opt('footnote', 'pos', 'pageBottom')],
+    ['ftntj', opt('footnote', 'pos', 'beneathText')],
+    ['endnotes', opt('footnote', 'pos', 'sectEnd')],
+    ['enddoc', opt('footnote', 'pos', 'docEnd')],
+    ['aendnotes', opt('endnote', 'pos', 'sectEnd')],
+    ['aenddoc', opt('endnote', 'pos', 'docEnd')],
+    ['ftnstart', start('footnote')], ['aftnstart', start('endnote')],
+    ['ftnrstcont', opt('footnote', 'numRestart', 'continuous')],
+    ['ftnrestart', opt('footnote', 'numRestart', 'eachSect')],
+    ['ftnrstpg', opt('footnote', 'numRestart', 'eachPage')],
+    ['aftnrstcont', opt('endnote', 'numRestart', 'continuous')],
+    ['aftnrestart', opt('endnote', 'numRestart', 'eachSect')],
+    ...FMTS.map(([w, v]) => ['ftnn' + w, opt('footnote', 'numFmt', v)]),
+    ...FMTS.map(([w, v]) => ['aftnn' + w, opt('endnote', 'numFmt', v)]),
+  ]),
+  dests: new Map([['footnote', footnote]]),
+  finish: [finish],
+};

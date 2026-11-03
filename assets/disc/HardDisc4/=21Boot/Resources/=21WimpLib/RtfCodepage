@@ -1,0 +1,70 @@
+// RtfCodepage - the code pages of RTF files, and text written as RTF
+// escapes. Used by ./RtfRead and ./RtfWrite; pure: no desktop
+// services.
+//
+//   decoderFor(cpg) -> (byte) => string  one UTF-16 unit for a byte of
+//       code page cpg: 1250-1258, 437, 850 and 10000 (Mac Roman).
+//       Anything else decodes as 1252 (ask known() first to say so)
+//   known(cpg) -> boolean  whether decoderFor has that page itself
+//   fcharsetToCpg(n) -> number or null  the code page of a font's
+//       \fcharsetN, or null when the page is not one of those above
+//       (Symbol, Shift-JIS, the default charset...)
+//   encodeAscii(text) -> {rtf, count}  text as RTF 7-bit: ASCII
+//       passes (\ { } escaped), every other UTF-16 unit becomes
+//       \uN? (N signed; a surrogate pair is two escapes), control
+//       characters below 0x20 other than tab and newline are dropped.
+//       count is the number of \uN? escapes
+import {TABLES} from './RtfCodeTables';
+
+const CACHE = new Map();
+
+/** The 256-unit string of code page cpg (a known one). */
+function tableOf(cpg) {
+  let t = CACHE.get(cpg);
+  if (t) return t;
+  let s = '';
+  for (let b = 0; b < 128; b++) s += String.fromCharCode(b);
+  const hex = TABLES[cpg];
+  for (let i = 0; i < hex.length; i += 4) {
+    s += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+  }
+  CACHE.set(cpg, s);
+  return s;
+}
+
+export function known(cpg) {
+  return typeof cpg === 'number' &&
+    Object.prototype.hasOwnProperty.call(TABLES, cpg);
+}
+
+export function decoderFor(cpg) {
+  const t = tableOf(known(cpg) ? cpg : 1252);
+  return (byte) => t.charAt(byte & 0xff);
+}
+
+const FCHARSET = new Map([[0, 1252], [77, 10000], [161, 1253],
+  [162, 1254], [163, 1258], [177, 1255], [178, 1256], [186, 1257],
+  [204, 1251], [238, 1250], [254, 437], [255, 850]]);
+
+export function fcharsetToCpg(n) {
+  return FCHARSET.has(n) ? FCHARSET.get(n) : null;
+}
+
+export function encodeAscii(text) {
+  let rtf = '', count = 0;
+  const s = String(text);
+  for (let i = 0; i < s.length; i++) {
+    const u = s.charCodeAt(i);
+    if (u === 0x5c || u === 0x7b || u === 0x7d) {
+      rtf += '\\' + s.charAt(i);
+    } else if (u < 0x20) {
+      if (u === 9 || u === 10) rtf += s.charAt(i);
+    } else if (u < 0x80) {
+      rtf += s.charAt(i);
+    } else {
+      rtf += '\\u' + (u > 0x7fff ? u - 0x10000 : u) + '?';
+      count++;
+    }
+  }
+  return {rtf, count};
+}

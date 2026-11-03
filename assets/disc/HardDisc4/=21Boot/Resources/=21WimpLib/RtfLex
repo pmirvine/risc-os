@@ -1,0 +1,195 @@
+// RtfLex - RTF bytes as tokens. See ./RtfRead, which reads them;
+// pure: no desktop services, no regular expressions.
+//
+//   lex(bytes, {maxDepth = 256, maxTokens = 2e6}) -> {tokens, notes}
+//       bytes a Uint8Array. A token is one of
+//         {t:'{'}  {t:'}'}
+//         {t:'word', name, param?, star?}  a control word or symbol
+//             (name '~' for \~, and so on). param is the number after
+//             it, if any; \uN's is wrapped to signed 16 bits (so
+//             \u65533 gives -3). star is set when \* came before it.
+//             \uc0, \uc2... are words like the rest: skipping the
+//             characters after a \u is the reader's job
+//         {t:'text', bytes}  a run of literal bytes; \\ \{ \} are
+//             resolved into it, CR and LF are dropped
+//         {t:'hex', byte}  \'hh
+//         {t:'bin', bytes}  the data of \binN (no word token for it)
+//       A backslash before CR or LF is the word 'par'. The single
+//       space after a control word belongs to it. notes are strings:
+//       groups deeper than maxDepth or more than maxTokens tokens
+//       stop the scan; unbalanced braces are tolerated (extra closes
+//       ignored, missing ones added at the end; those closes are
+//       not counted in maxTokens). A word's name is cut at 32
+//       letters, with a note. Each note is said once, however
+//       often it happens. Never throws.
+//   isRtf(bytes) -> boolean  optional BOM and white space, then {\rtf
+const BS = 0x5c, OPEN = 0x7b, CLOSE = 0x7d, SPACE = 0x20;
+
+const isAlpha = (c) => (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
+const isDigit = (c) => c >= 48 && c <= 57;
+const isEol = (c) => c === 10 || c === 13;
+
+function hexVal(c) {
+  if (isDigit(c)) return c - 48;
+  if (c >= 97 && c <= 102) return c - 87;
+  if (c >= 65 && c <= 70) return c - 55;
+  return -1;
+}
+
+export function isRtf(bytes) {
+  let i = 0;
+  const n = bytes.length;
+  if (n >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb &&
+      bytes[2] === 0xbf) i = 3;
+  while (i < n && (bytes[i] === SPACE || bytes[i] === 9 ||
+      isEol(bytes[i]))) i++;
+  const sig = [OPEN, BS, 0x72, 0x74, 0x66];
+  if (i + sig.length > n) return false;
+  return sig.every((c, k) => bytes[i + k] === c);
+}
+
+export function lex(bytes, opts) {
+  const o = opts || {};
+  const maxDepth = o.maxDepth === undefined ? 256 : o.maxDepth;
+  const maxTokens = o.maxTokens === undefined ? 2e6 : o.maxTokens;
+  const tokens = [], notes = [];
+  // (a note said once however often it happens: never one a byte)
+  const said = new Set();
+  const once = (m) => {
+    if (!said.has(m)) { said.add(m); notes.push(m); }
+  };
+  const n = bytes.length;
+  let i = 0, depth = 0, star = false, stop = false;
+  // (the text run so far: bytes, not an array of numbers, which for
+  // a big file costs ten times the memory)
+  let run = new Uint8Array(256), len = 0;
+  const add = (b) => {
+    if (len === run.length) {
+      const g = new Uint8Array(len * 2);
+      g.set(run);
+      run = g;
+    }
+    run[len++] = b;
+  };
+
+  let capped = false;
+  const full = () => {
+    if (tokens.length < maxTokens) return false;
+    if (!capped) notes.push('more than ' + maxTokens + ' tokens: ' +
+      'rest ignored');
+    capped = true;
+    return true;
+  };
+  const flush = () => {
+    if (len && !full()) {
+      tokens.push({t: 'text', bytes: run.slice(0, len)});
+    }
+    len = 0;
+  };
+  const push = (tok) => {
+    flush();
+    if (tok.t !== 'word') star = false;
+    if (full()) { stop = true; return; }
+    tokens.push(tok);
+  };
+  /** A control word or symbol at i (just after the backslash). */
+  const word = () => {
+    const c = bytes[i];
+    if (!isAlpha(c)) {                       // a control symbol
+      i++;
+      if (isEol(c)) {
+        if (c === 13 && bytes[i] === 10) i++;
+        push({t: 'word', name: 'par'});
+      } else {
+        push({t: 'word', name: String.fromCharCode(c)});
+      }
+      return;
+    }
+    let j = i;
+    while (j < n && isAlpha(bytes[j])) j++;
+    let name = '';
+    for (let q = i; q < j; q++) {
+      if (q - i < 32) name += String.fromCharCode(bytes[q]);
+      else if (q - i === 32) once('a control word is cut at 32');
+    }
+    let neg = false, k = j;
+    if (bytes[k] === 0x2d && isDigit(bytes[k + 1])) { neg = true; k++; }
+    const d0 = k;
+    let val = 0;
+    while (k < n && isDigit(bytes[k])) {
+      val = Math.min(val * 10 + bytes[k] - 48, 1e15);
+      k++;
+    }
+    const tok = {t: 'word', name};
+    if (k > d0) tok.param = neg ? -val : val;
+    if (bytes[k] === SPACE) k++;
+    i = k;
+    if (name === 'bin' && tok.param >= 0) {
+      const end = Math.min(n, i + tok.param);
+      if (end - i < tok.param) notes.push('\\bin data is cut short');
+      push({t: 'bin', bytes: bytes.slice(i, end)});
+      i = end;
+      return;
+    }
+    if (name === 'u' && tok.param !== undefined) {
+      tok.param = ((tok.param & 0xffff) ^ 0x8000) - 0x8000;
+    }
+    if (star) { tok.star = true; star = false; }
+    push(tok);
+  };
+
+  while (i < n && !stop) {
+    const c = bytes[i];
+    if (c === OPEN) {
+      i++;
+      if (depth >= maxDepth) {
+        notes.push('groups nested deeper than ' + maxDepth +
+          ': the rest is ignored');
+        break;
+      }
+      depth++;
+      push({t: '{'});
+    } else if (c === CLOSE) {
+      i++;
+      if (depth === 0) {
+        once('a } with no { before it is ignored');
+      } else {
+        depth--;
+        push({t: '}'});
+      }
+    } else if (c === BS) {
+      i++;
+      if (i >= n) break;
+      const d = bytes[i];
+      if (d === BS || d === OPEN || d === CLOSE) {
+        add(d);
+        i++;
+      } else if (d === 0x27) {               // \'hh
+        const h = hexVal(bytes[i + 1]), l = hexVal(bytes[i + 2]);
+        if (h < 0 || l < 0) {
+          once("a damaged \\' escape is ignored");
+          i++;
+        } else {
+          i += 3;
+          push({t: 'hex', byte: h * 16 + l});
+        }
+      } else if (d === 0x2a) {               // \*
+        i++;
+        star = true;
+      } else {
+        word();
+      }
+    } else if (isEol(c)) {
+      i++;
+    } else {
+      add(c);
+      i++;
+    }
+  }
+  flush();
+  if (depth > 0) {
+    notes.push(depth + ' unclosed group(s) closed at the end');
+    for (; depth > 0; depth--) tokens.push({t: '}'});
+  }
+  return {tokens, notes};
+}

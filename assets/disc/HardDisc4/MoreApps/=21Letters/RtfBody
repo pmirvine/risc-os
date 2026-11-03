@@ -1,0 +1,330 @@
+// RtfBody - the text of an RTF file, for ./RtfRead: paragraphs and
+// their runs, and the words that format characters.
+//
+//   new Flow()      a destination that makes blocks: the body
+//       (ctx.body) is one; a later handler (notes, headers, cells)
+//       makes its own and takes flow.blocks at its end. It takes
+//       text(ctx, s), obj(ctx, inline, fmt?) (one U+FFFC with that
+//       Model inline, formatted as the text, or as fmt: a note's or
+//       comment's mark takes the format at its \chftn / \chatn; a
+//       level 'p' one in a plain run, as readDocx gives it),
+//       par(ctx) (the paragraph ends:
+//       pPr and pStyle from the paragraph state then), row(ctx,
+//       level) (a table row ends), sect(ctx) (the body only: a
+//       section ends) and finish(ctx)
+//       (the last paragraph, kept when it has anything in it; once:
+//       later calls do nothing).
+//       flow.sections: [{sect, blocks, refs?}], the last one open
+//       (refs: its header and footer references, ./RtfSect).
+//   new Para()      one paragraph being gathered: add(s, fmt),
+//       obj(ctx, inline), inlines, len; content() -> {text, runs,
+//       inlines} (a link's content: ./RtfFields), build(ctx) -> the
+//       Para (pPr and pStyle from the paragraph state in force)
+//   fmtOf(ctx) -> {rPr, rStyle?, rev?, gone?}  the format of text
+//       arriving now; rev its ./RtfRevs revKey (in the body only),
+//       gone: deleted text in a header, footer, note or comment
+//       (left out: the Model keeps tracked changes there raw)
+//   PART            handlers (./RtfRead): \par \line \tab \page
+//       \column \sect, the special characters (\emdash, \~, \- ...),
+//       the character words (\b \i \ul... \fs \cf \f \highlight
+//       \super \sub \caps \scaps \v \striked \up \dn), \ql \qc \qr
+//       \qj, and the groups not read, skipped with a note
+//       (objects, drawn shapes; a later module may register its
+//       own handler for these names, which wins).
+//
+// Tracked changes (./RtfRevs): a paragraph's runs get their tags
+// when it is built (tagRuns), and its mark's revision (markRev);
+// an inline ./OpsRevs taggable refuses (a picture, a link, a field
+// code, a note mark) is untagged in an insertion and left out of a
+// deletion (a note), so that deleted text is never live.
+//
+// A paragraph a Flow ends goes to ./RtfTable place (the cell of its
+// table level, or the flow's blocks); flow.row(ctx, level) is \row
+// (./RtfTable rowEnd); a section break and the flow's end close its
+// tables first (./RtfTable closeAll).
+//
+// A run's rPr is its state measured against its styles (./RtfProps
+// rPrOf, baseOf), worked out when the text arrives and cached in
+// ctx.fmtCache by the state objects: a charProps / paraProps
+// handler whose result depends on other ctx data must set
+// ctx.fmtCache = null when that data changes (./RtfStyles does).
+// A paragraph counts against ctx.max (ctx.paras): past it reading
+// stops with a note. Unpaired surrogates become U+FFFD; a run edge
+// inside a pair moves after it.
+// Pure: no desktop services.
+import {newPara, OBJ} from './Model';
+import {el} from 'wimplib/Xml';
+import {rPrOf, pPrOf, baseOf, styleDef} from './RtfProps';
+import {skipping, SKIP} from './RtfText';
+import {place, rowEnd, closeAll} from './RtfTable';
+import {revKey, tagRuns, markRev} from './RtfRevs';
+import {taggable} from './OpsRevs';
+
+const PLAIN = Object.freeze({rPr: Object.freeze({extra: []})});
+const isHi = (c) => c >= 0xd800 && c <= 0xdbff;
+const isLo = (c) => c >= 0xdc00 && c <= 0xdfff;
+
+/** The run format {rPr, rStyle?} of the text arriving now. */
+export function fmtOf(ctx) {
+  const st = ctx.state;
+  const c = ctx.fmtCache;
+  if (c && c.char === st.char && c.para === st.para &&
+    c.at === ctx.relsAt) return c.fmt;
+  const base = baseOf(ctx, st);
+  const fmt = {rPr: rPrOf(ctx, st.char, base.char)};
+  const cs = styleDef(ctx, st.char.cs, 'character');
+  if (cs) fmt.rStyle = cs.id;
+  const rev = revKey(ctx, st.char);
+  // (tracked changes are the body's: ./RtfRevs)
+  if (rev && !ctx.relsAt) fmt.rev = rev;
+  else if (rev) {
+    ctx.note(STORY_REVS);
+    if (rev.kind === 'del') fmt.gone = true;
+  }
+  ctx.fmtCache = {char: st.char, para: st.para, at: ctx.relsAt, fmt};
+  return fmt;
+}
+
+/** text with every unpaired surrogate replaced. */
+function wellFormed(text) {
+  // (most text has no surrogate at all: kept as it is, not copied a
+  // character at a time)
+  let i = 0;
+  while (i < text.length && !isHi(text.charCodeAt(i)) &&
+    !isLo(text.charCodeAt(i))) i++;
+  if (i === text.length) return text;
+  let out = text.slice(0, i);
+  for (; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (isHi(c) && isLo(text.charCodeAt(i + 1))) {
+      out += text.slice(i, i + 2);
+      i++;
+    } else out += isHi(c) || isLo(c) ? '\ufffd' : text[i];
+  }
+  return out;
+}
+
+export class Para {
+  constructor() {
+    this.segs = [];
+    this.inlines = {};
+    this.len = 0;
+  }
+
+  /** An inline: a level 'p' one in a plain run, as read back;
+   *  fmt (default: the format now) see the header. */
+  obj(ctx, inline, fmt = fmtOf(ctx)) {
+    if (fmt.gone) return;
+    let f = inline.level === 'p' ? PLAIN : fmt;
+    if (fmt.rev) {
+      if (!taggable({inlines: {0: inline}}, 0, 1)) {
+        if (fmt.rev.kind === 'del') {
+          ctx.note(DROPPED);
+          return;
+        }
+        if (f === fmt) f = {rPr: fmt.rPr, rStyle: fmt.rStyle};
+      } else if (f === PLAIN) f = {rPr: PLAIN.rPr, rev: fmt.rev};
+    }
+    this.inlines[String(this.len)] = inline;
+    this.add(OBJ, f);
+  }
+
+  add(s, fmt) {
+    if (fmt.gone) return;
+    const last = this.segs[this.segs.length - 1];
+    if (last && last.fmt === fmt) last.s.push(s);
+    else this.segs.push({s: [s], fmt});
+    this.len += s.length;
+  }
+
+  content() {
+    const text = wellFormed(this.segs.map((g) => g.s.join(''))
+      .join(''));
+    const runs = [], keys = [];
+    let at = 0, from = 0;
+    for (const g of this.segs) {
+      at += g.s.reduce((n, s) => n + s.length, 0);
+      let end = at;
+      if (isHi(text.charCodeAt(end - 1)) && isLo(text.charCodeAt(end)))
+        end++;
+      if (end > from) {
+        const r = {start: from, end, rPr: g.fmt.rPr};
+        if (g.fmt.rStyle !== undefined) r.rStyle = g.fmt.rStyle;
+        runs.push(r);
+        keys.push(g.fmt.rev);
+        from = end;
+      }
+    }
+    return {text, runs, inlines: this.inlines, keys};
+  }
+
+  build(ctx) {
+    const st = ctx.state;
+    const {text, runs, inlines, keys} = this.content();
+    const base = baseOf(ctx, st);
+    const opts = {runs: tagRuns(ctx, runs, keys), inlines,
+      pPr: pPrOf(ctx, st.para, base.para, true)};
+    if (!ctx.relsAt) opts.pPr = markRev(ctx, st.char, opts.pPr);
+    const ps = styleDef(ctx, st.para.s, 'paragraph');
+    if (ps && ps.id !== ctx.doc.styles.defaults.paragraph) {
+      opts.pStyle = ps.id;
+    }
+    return newPara(text, opts);
+  }
+}
+
+export class Flow {
+  constructor() {
+    this.sections = [{sect: null, blocks: []}];
+    this.para = new Para();
+  }
+
+  get blocks() {
+    return this.sections[this.sections.length - 1].blocks;
+  }
+
+  text(ctx, s) {
+    this.para.add(s, fmtOf(ctx));
+  }
+
+  obj(ctx, inline, fmt) {
+    this.para.obj(ctx, inline, fmt);
+  }
+
+  par(ctx) {
+    if (ctx.paras >= ctx.max) {
+      ctx.note('more than ' + ctx.max + ' paragraphs: the rest is ' +
+        'not read');
+      ctx.stop = true;
+      return;
+    }
+    ctx.paras++;
+    const p = this.para.build(ctx);
+    this.para = new Para();
+    place(ctx, this, p);
+  }
+
+  row(ctx, level) {
+    rowEnd(ctx, this, level);
+  }
+
+  sect(ctx) {
+    if (this.para.len) this.par(ctx);
+    closeAll(ctx, this);
+    this.sections[this.sections.length - 1].sect = ctx.state.sect;
+    this.sections.push({sect: null, blocks: []});
+  }
+
+  finish(ctx) {
+    if (this.done) return;
+    this.done = true;
+    if (this.para.len && !ctx.stop) this.par(ctx);
+    closeAll(ctx, this);
+    this.sections[this.sections.length - 1].sect = ctx.state.sect;
+  }
+}
+
+/** A word that hands text or an inline to the destination. */
+const put = (s) => (ctx) => {
+  if (ctx.dest.text) ctx.dest.text(ctx, s);
+};
+const obj = (make) => (ctx) => {
+  if (ctx.dest.obj) ctx.dest.obj(ctx, make());
+};
+const call = (m) => (ctx) => {
+  if (ctx.dest[m]) ctx.dest[m](ctx);
+};
+const raw = (name) => obj(() => ({kind: 'raw', level: 'r',
+  node: el(name)}));
+const br = (type) => obj(() => ({kind: 'br', level: 'r',
+  brType: type}));
+
+/** \b, \b1 on; \b0 off. */
+const flag = (key) => (ctx, t) =>
+  ctx.state.setChar(key, t.param === undefined || t.param !== 0);
+const charVal = (key, v) => (ctx) => ctx.state.setChar(key, v);
+const charNum = (key, ok) => (ctx, t) => {
+  if (Number.isInteger(t.param) && ok(t.param)) {
+    ctx.state.setChar(key, t.param);
+  }
+};
+const index = (n) => n >= 0 && n < 1e6;
+const ul = (v) => (ctx, t) => ctx.state.setChar('u',
+  t.param === 0 ? false : v);
+const jc = (v) => (ctx) => ctx.state.setPara('jc', v);
+
+/** Shared with ./RtfWriteProps: underline words and w:u values;
+ *  on/off character words and their state keys; alignment. */
+export const UL = [['ul', 'single'], ['uld', 'dotted'],
+  ['uldb', 'double'],
+  ['ulw', 'words'], ['uldash', 'dash'], ['uldashd', 'dotDash'],
+  ['uldashdd', 'dotDotDash'], ['ulth', 'thick'], ['ulwave', 'wave'],
+  ['ulhwave', 'wavyHeavy'], ['ululdbwave', 'wavyDouble'],
+  ['ulthd', 'dottedHeavy'], ['ulthdash', 'dashedHeavy'],
+  ['ulldash', 'dashLong'], ['ulthldash', 'dashLongHeavy']];
+
+export const CHAR_FLAGS = [['b', 'b'], ['i', 'i'],
+  ['strike', 'strike'], ['striked', 'dstrike'], ['caps', 'caps'],
+  ['scaps', 'smallCaps'], ['v', 'vanish']];
+export const JC = [['ql', 'left'], ['qc', 'center'], ['qr', 'right'],
+  ['qj', 'both']];
+
+const SPECIAL = [['emdash', '\u2014'], ['endash', '\u2013'],
+  ['emspace', '\u2003'], ['enspace', '\u2002'],
+  ['qmspace', '\u2005'], ['bullet', '\u2022'],
+  ['lquote', '\u2018'], ['rquote', '\u2019'],
+  ['ldblquote', '\u201c'], ['rdblquote', '\u201d'],
+  ['~', '\u00a0'], ['zwj', '\u200d'], ['zwnj', '\u200c'],
+  ['ltrmark', '\u200e'], ['rtlmark', '\u200f'], ['tab', '\t'],
+  ['line', '\n'], ['lbr', '\n']];
+
+/** Cocoa's {{\NeXTGraphic name ...}\xAC}: no picture data, and the
+ *  byte after it (its attachment mark) is skipped with it: the rest
+ *  of the group around it, unless that is the document's own. */
+function nextGraphic(ctx) {
+  ctx.note('an attached picture (with no data in the file) is ' +
+    'skipped');
+  const n = ctx.frames.length;
+  if (n >= 3 && ctx.frames[n - 1] === ctx.frames[n - 2]) {
+    ctx.frames[n - 1] = SKIP;
+  }
+  return SKIP;
+}
+
+const STORY_REVS = 'tracked changes in headers, footers, notes ' +
+  'and comments are not kept: insertions are kept as text, ' +
+  'deletions are left out';
+const DROPPED = 'deleted pictures, links, note marks and field ' +
+  'codes are left out';
+
+const OBJECTS = 'objects and drawn shapes are not read: skipped';
+
+export const PART = {
+  words: new Map([
+    ...SPECIAL.map(([w, s]) => [w, put(s)]),
+    ['par', call('par')], ['sect', call('sect')],
+    ['page', br('page')], ['column', br('column')],
+    ['-', raw('w:softHyphen')], ['_', raw('w:noBreakHyphen')],
+    ...CHAR_FLAGS.map(([w, k]) => [w, flag(k)]),
+    ...UL.map(([w, v]) => [w, ul(v)]), ['ulnone', ul(false)],
+    ['fs', charNum('sz', (n) => n >= 2 && n <= 3276)],
+    ['f', charNum('font', index)], ['cf', charNum('color', index)],
+    ['highlight', charNum('hl', index)],
+    ['chcbpat', charNum('shade', index)],
+    ['super', charVal('vertAlign', 'superscript')],
+    ['sub', charVal('vertAlign', 'subscript')],
+    ['nosupersub', charVal('vertAlign', undefined)],
+    ['up', charNum('position', (n) => n <= 3168)],
+    ['dn', (ctx, t) => {
+      if (Number.isInteger(t.param) && t.param <= 3168)
+        ctx.state.setChar('position', -t.param);
+    }],
+    ...JC.map(([w, v]) => [w, jc(v)]),
+  ]),
+  dests: new Map([
+    ...['object', 'shp'].map((n) => [n, skipping(OBJECTS)]),
+    ['NeXTGraphic', nextGraphic],
+    ...['pntext', 'listtext', 'tc', 'xe', 'txe', 'fldinst']
+      .map((n) => [n, skipping()]),
+  ]),
+};

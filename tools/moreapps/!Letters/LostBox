@@ -1,0 +1,187 @@
+// LostBox - what a document would lose saved as RTF (./RtfWrite's
+// lost: ./RtfLost's words), said before it is written (Batch G2):
+// one information box, Continue or Cancel.
+//
+//   rtfOf(dw) -> {bytes, lost}  writeRtf(dw.doc), kept for the
+//       window while the document stays in that state (the same
+//       dw.doc and Document stateId: any edit, undo or redo changes
+//       it), so that a Save after its question, or a Save with no
+//       edit since the last, does not write the RTF again (./DocSave
+//       bytesOf takes its bytes). RTF.write is the writer used
+//       (tests count its calls)
+//   lostOf(dw) -> [{what, count}]  rtfOf(dw).lost: what RTF leaves
+//       out of the document as it is now ([] when the writer fails:
+//       the save itself then says why)
+//   lostText(lost) -> "N items can't be stored in RTF: pictures
+//       (3), text boxes (1)." (1 item ...), the kinds in the order
+//       the writer met them, at most MAX_TEXT characters: the kinds
+//       that do not fit are "and K other kinds"
+//   askLost(dw, lost) -> Promise<boolean>  the box (title Save as
+//       RTF, key 'rtflost:<docKey>', kept in dw.boxes 'rtflost' so
+//       ./CloseDoc deletes it with the document): lostText, then
+//       "Continue saves the RTF file without them; Cancel saves
+//       nothing." true for Continue (lost is then answered: see
+//       unasked); false for Cancel, Escape, the close icon or the
+//       window closing. Asked again while it is open: the same
+//       promise, the box to the front
+//   saved(dw, lost)  an RTF file of dw was written losing lost
+//       (./DocSave writeTo): the window has been told of it (see
+//       toTell); what was answered is then settled
+//   toTell(dw) -> lost, or null: what a plain Save of an RTF window
+//       should say first (./DocSave save): null for a window not RTF,
+//       nothing lost, or nothing more than the window was told of
+//       (an RTF file written after Continue: no kind's count is
+//       higher now). So it is said once, and again only when an
+//       edit adds something RTF cannot store; Continue and then no
+//       file written (the Save box closed) tells nothing
+//   unasked(dw) -> lost, or null: what saving dw as RTF now would
+//       lose beyond what it was told of or answered Continue to
+//       since (./DocSave's Save box asks at OK: the user may have
+//       put a picture in with the box open)
+//
+// ./SaveAsBox asks at every Save as RTF that would lose something
+// (the user may have put in a picture since): the question is part
+// of choosing RTF there.
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {writeRtf} from './RtfWrite';
+
+export const MAX_TEXT = 300;
+const LINE = 50;                       // (characters a line holds)
+const TAIL = 'Continue saves the RTF file without them; Cancel ' +
+  'saves nothing.';
+const HELP = 'What this document holds that an RTF file cannot: ' +
+  'Continue to save it as RTF without them, or Cancel.';
+const told = new WeakMap();            // dw -> Map what -> count
+const answered = new WeakMap();        // dw -> Map (Continue, unsaved)
+const cache = new WeakMap();           // dw -> {id, doc, out}
+
+/** The RTF writer rtfOf uses (replaced by tests to count). */
+export const RTF = {write: writeRtf};
+
+/** See the header. */
+export function rtfOf(dw) {
+  const id = dw.d ? dw.d.stateId : undefined, c = cache.get(dw);
+  if (c && id !== undefined && c.id === id && c.doc === dw.doc) {
+    return c.out;
+  }
+  const out = RTF.write(dw.doc);
+  cache.set(dw, {id, doc: dw.doc, out});
+  return out;
+}
+const asking = new WeakMap();          // dw -> {api, p}
+
+/** See the header. */
+export function lostOf(dw) {
+  try {
+    return rtfOf(dw).lost;
+  } catch (e) {
+    return [];
+  }
+}
+
+const countOf = (x) => (Number.isFinite(x && x.count) && x.count > 0
+  ? Math.floor(x.count) : 1);
+
+/** See the header. */
+export function lostText(lost) {
+  const list = Array.isArray(lost) ? lost : [];
+  let n = 0;
+  for (const x of list) n += countOf(x);
+  const head = `${n} ${n === 1 ? 'item' : 'items'} can't be ` +
+    'stored in RTF: ';
+  if (!list.length) return head + 'other items.';
+  let body = '', k = 0;
+  for (const x of list) {
+    const part = `${String(x && x.what).slice(0, 60)} (${countOf(x)})`;
+    const left = list.length - k - 1;
+    const more = left ? `, and ${left} other kinds` : '';
+    const next = (body ? body + ', ' : '') + part;
+    if (k && head.length + next.length + more.length + 1 > MAX_TEXT) {
+      break;
+    }
+    body = next;
+    k++;
+  }
+  const rest = list.length - k;
+  return head + body + (rest ? `, and ${rest} other kinds` : '') + '.';
+}
+
+/** text in lines of at most LINE characters, broken at spaces. */
+function wrap(text) {
+  const out = [];
+  let line = '';
+  for (const w of text.split(' ')) {
+    if (line && line.length + 1 + w.length > LINE) {
+      out.push(line);
+      line = w;
+    } else {
+      line = line ? line + ' ' + w : w;
+    }
+  }
+  if (line) out.push(line);
+  return out;
+}
+
+/** See the header. */
+export function askLost(dw, lost) {
+  const now = asking.get(dw);
+  if (now && !now.api.gone) {
+    if (now.api.win.bringToFront) now.api.win.bringToFront();
+    return now.p;
+  }
+  const rows = [...wrap(lostText(lost)), ' ', ...wrap(TAIL)]
+    .map((text) => ({kind: 'label', text}));
+  const api = dialog({task: dw.app.task, key: `rtflost:${dw.docKey}`,
+    title: 'Save as RTF', rows, help: HELP,
+    buttons: ['Cancel', 'Continue'], enter: 'Continue'});
+  box(dw, 'rtflost', () => api.win);
+  let end;
+  const p = new Promise((res) => { end = res; });
+  let done = false;
+  const finish = (v) => {
+    if (done) return;
+    done = true;
+    if (asking.get(dw) && asking.get(dw).api === api) {
+      asking.delete(dw);
+    }
+    if (v) answered.set(dw, counts(lost));
+    end(v && !dw.closed);
+  };
+  api.on('button', ({name}) => { finish(name === 'Continue'); });
+  api.on('close', () => finish(false));
+  asking.set(dw, {api, p});
+  api.open();
+  return p;
+}
+
+const counts = (lost) => new Map(lost.map((x) => [x.what, x.count]));
+
+/** lost, unless no kind's count is above the most in the maps. */
+function beyond(lost, ...maps) {
+  const most = (what) => Math.max(0, ...maps.map((m) =>
+    (m && m.get(what)) || 0));
+  return lost.length && lost.some((x) => x.count > most(x.what))
+    ? lost : null;
+}
+
+/** See the header. */
+export function saved(dw, lost) {
+  const t = new Map(told.get(dw));
+  for (const [what, n] of counts(lost)) {
+    t.set(what, Math.max(n, t.get(what) || 0));
+  }
+  told.set(dw, t);
+  answered.delete(dw);
+}
+
+/** See the header. */
+export function toTell(dw) {
+  if (dw.format !== 'rtf') return null;
+  return beyond(lostOf(dw), told.get(dw));
+}
+
+/** See the header. */
+export function unasked(dw) {
+  return beyond(lostOf(dw), told.get(dw), answered.get(dw));
+}

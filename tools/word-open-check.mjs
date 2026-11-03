@@ -1,12 +1,13 @@
 #!/usr/bin/env node
-// Does real Microsoft Word open these .docx files? (macOS, Word 16 for
+// Does real Microsoft Word open these .docx (or .rtf) files? (macOS, Word 16 for
 // Mac, driven by AppleScript; the core is tools/word-open-check/lib.mjs.)
 // Word is the only authority on whether a file is valid: REFUSED is its
 // verdict, ground truth. See docs/apps/Letters.md, "Checking files in
 // real Word".
 //
 //   node tools/word-open-check.mjs [options] <file-or-dir>...
-//     a directory means every .docx under it (sorted)
+//     a directory means every .docx and .rtf under it (sorted); RTF
+//     goes through check.rtf beside check.docx (its own one-time grant)
 //     --report <file.jsonl>  results appended after every file
 //     --resume               skip files already settled in the report
 //     --limit N  --shuffle-seed N  --timeout S (40)  --only-fail
@@ -41,7 +42,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   WORD_APP, AbortRun, makeChecker, listDocs, sameDocs, walk, shuffle, sha256,
-  appendReport, readReport, settled, isSettled, probeDocx, checkDir, CHECK_NAME,
+  appendReport, readReport, settled, isSettled, probeDocx, checkDir, CHECK_NAME, RTF_NAME,
   closeLeftovers, wordPids, killWord, hungAction, hungMessage, skipReason, SKIPPED_BY_DESIGN,
   emittedKind,
 } from './word-open-check/lib.mjs';
@@ -146,7 +147,7 @@ async function start(o) {
     console.error('Word did not answer a list of its documents: is a dialog up in Word?');
     process.exit(2);
   }
-  ctx.before = docs.filter((n) => n !== CHECK_NAME);
+  ctx.before = docs.filter((n) => n !== CHECK_NAME && n !== RTF_NAME);
   console.log('Word has ' + ctx.before.length + ' document(s) open; only ' + CHECK_NAME +
     ' will be opened and closed.');
   ctx.checker = makeChecker({timeout: o.timeout, diagnose: o.diagnose, slowFirst: !running,

@@ -1,0 +1,546 @@
+// RtfWrite - writes a Doc (./Model) as an RTF file.
+//
+//   writeRtf(doc) -> {bytes, lost}
+//       bytes a Uint8Array of 7-bit ASCII: every other character is
+//       \uN? (./RtfCodepage encodeAscii), never \'hh. The same Doc
+//       always gives the same bytes (no clock: \info's dates are the
+//       document's own). lost: [{what, count}] (./RtfLost names) for
+//       what RTF could not hold, in the order first met. Never
+//       throws and never changes the Doc: a block that fails is
+//       left out and counted (LOST.damaged); should the whole
+//       fail, the text alone is written.
+//
+// The file: {\rtf1\ansi\ansicpg1252\deff0, the font table (fonts in
+// use; font 0 the default), the colour table, {\*\defchp} (the
+// default size: \plain's; every run gives its own \fs too), the
+// style sheet, the parts' header tables, \info (all three
+// ./RtfWriteStyles; \info from ./FieldDates coreOf), the page
+// of the first section (\paperw \paperh \margl \margr \margt
+// \margb), then each section: \sectd and its words, its blocks,
+// \sect between sections. A paragraph is \pard\plain, \sN, its
+// RESOLVED formatting (./Styles resolvePara: absolute, as RTF
+// means it; the reader measures it against the style again) and
+// one group per run {\csN <resolved run words> text}
+// (./RtfWriteProps); it ends \par, but the document's last one only
+// when it is empty (a final \par makes no paragraph), and a
+// section's last with \sect instead; an empty one gives its
+// style's character words before its \par (the mark's format).
+// No {\*\defpap}: \pard then
+// gives RTF's own defaults, so the words are absolute for every
+// reader (the docDefaults' paragraph spacing reads back into the
+// styles).
+//
+// Handler modules (as the reader's PARTS): each exports PART with
+//   blocks   Map type -> (w, block, end) -> rtf  ('p' gets end:
+//            '\par', '\sect' or null for the document's last)
+//   inlines  Map key -> (w, inline, run, para, index) -> rtf (key:
+//            the kind, or 'raw:' + the node's name: 'raw:w:drawing';
+//            written inside the run's group, w.words its words)
+//   hooks    Map name -> function, one each (a later module's wins):
+//            numbering (w, para, pPr) -> words (default: the list
+//            number counted lost), revision (w, para, run) ->
+//            {skip?, words?} (default: deleted text left out, never
+//            written as live text; both counted), stories (w) (the
+//            headers and footers: default counted), flush (w) ->
+//            rtf (what closes the groups a paragraph's inlines
+//            left open: before a section's, cell's or story's last
+//            paragraph ends, and before a block that is not one),
+//            styleNumbering (w, pPr) -> words (in a paragraph
+//            style's entry), mark (w, para, end) -> words (the
+//            paragraph mark's own: written {words\par}; default
+//            none), levelInd (w, para) -> the list level's indent
+//            ({left?, hanging? | firstLine?}) the paragraph shows,
+//            between its style's and its own (default none)
+//   paraWords [(w, para, pPr) -> words]  after the formatting
+//   sect      [(w, section, index) -> rtf]  after \sectd
+//   header    [(w) -> rtf]  after the style sheet; run once the body
+//            is written (so they know what it used)
+// listed in PARTS below. The writer w: w.doc, w.styles, w.theme,
+// w.num (./RtfWriteStyles styleNumbers), w.font(name),
+// w.colour('RRGGBB') (table numbers), w.lose(what, n), w.text(s)
+// (text as RTF: \tab \line \uN?), w.para(p, end), w.blocks(list,
+// end), w.hook(name), w.reg, w.place ({rels, part, kind: 'body' |
+// 'story' | 'note'}: whose relationships the inlines name),
+// w.depth (the table level being written, 0 none), w.fields (open
+// field groups; w.fieldBase the first of the story being written),
+// w.hush (set by ./RtfWriteFields over a field's code that holds a
+// field: the paragraph's text and inlines there are not written,
+// only w:fldChar still reaches its handler; cleared at a paragraph),
+// w.nested(place, fn) (fn() with place (null: the same), a new
+// field base and table level 0, then what fn left open closed;
+// everything put back), w.map() (the namespace scope of the inlines
+// being written: w.place.map, else the document's: ./PicRead
+// docMap), w.scopeOf(root) (a story's or notes part's scope: its
+// root's declarations), w.content(inner, para) (the runs of a
+// Para inside an inline, a link's: styled as in para). An inline
+// no module takes: a level 'p' one keeps its text (a link's, a
+// content control's), a tracked deletion's never; it is counted by
+// ./RtfLost rawLost unless it is markup with nothing to lose
+// (proofing marks...; a wrapper kept whole, a smart tag, counts what
+// it holds: heldLost); a modelled inline of a kind no module takes
+// is counted LOST.other. A run that
+// writes nothing (all its inlines lost) gives no group.
+// Pure: no desktop services.
+import {encodeAscii} from 'wimplib/RtfCodepage';
+import {OBJ} from './Model';
+import {newStyleTable, resolveRun, resolvePara} from './Styles';
+import {fontName} from './Fmt';
+import {TYPES} from './RtfSect';
+import {docMap} from './PicRead';
+import {rootScope, strictScope, isStrict} from './Ns';
+import {LOST, Lost, rawLost, heldLost} from './RtfLost';
+import {charWords, paraWords, tabsOf, twips} from './RtfWriteProps';
+import {FontTable, ColourTable, styleNumbers, stylesheet, info}
+  from './RtfWriteStyles';
+import {PART as LISTS} from './RtfWriteLists';
+import {PART as TABLES} from './RtfWriteTable';
+import {PART as PICTS} from './RtfWritePict';
+import {PART as FIELDS} from './RtfWriteFields';
+import {PART as SECTS} from './RtfWriteSect';
+import {PART as NOTES} from './RtfWriteNotes';
+import {PART as REVIEW} from './RtfWriteReview';
+
+const HEAD = '{\\rtf1\\ansi\\ansicpg1252\\deff0\n';
+const TYPE_WORD = new Map(TYPES.map(([w, v]) => [v, w]));
+const BR = {page: '\\page ', column: '\\column '};
+// raw inlines with nothing RTF loses (markup, proofing marks)
+const SILENT = new Set(['proofErr', 'lastRenderedPageBreak',
+  'permStart', 'permEnd', 'r', 'smartTag', 'customXml', 'dir',
+  'bdo']);
+// modelled inlines whose loss is counted elsewhere (or is nothing)
+const MARKS = new Map([['noteRef', LOST.notes],
+  ['cmtRef', LOST.comments], ['cmtStart', null], ['cmtEnd', null]]);
+const DELETED = new Set(['del', 'moveFrom']);
+const NONE = Object.freeze({});
+const GONE = Object.freeze({skip: true});
+
+const local = (n) => {
+  const s = n && typeof n.name === 'string' ? n.name : '';
+  return s.slice(s.indexOf(':') + 1);
+};
+const attr = (n, k) => {
+  const a = Array.isArray(n.attrs) ? n.attrs.find((x) =>
+    Array.isArray(x) && x[0] === k) : undefined;
+  return a ? String(a[1]) : undefined;
+};
+
+function rawText(w, x) {
+  let s = '';
+  for (const c of Array.isArray(x.node.children) ? x.node.children
+    : []) if (typeof c === 'string') s += c;
+  return w.text(s);
+}
+
+const brRaw = (w, x) => BR[attr(x.node, 'w:type')] || '\\line ';
+
+const CORE = {
+  blocks: new Map([['p', (w, p, end) => w.para(p, end)],
+    ['tbl', table], ['opaque', (w) => {
+      w.lose(LOST.unknown);
+      return '';
+    }]]),
+  inlines: new Map([
+    ['br', (w, x) => BR[x.brType] || '\\line '],
+    ['tab', () => '\\tab '], ['raw:w:tab', () => '\\tab '],
+    ['raw:w:ptab', () => '\\tab '], ['raw:w:cr', () => '\\line '],
+    ['raw:w:br', brRaw], ['raw:w:t', rawText],
+    ['raw:w:softHyphen', () => '\\-'],
+    ['raw:w:noBreakHyphen', () => '\\_'],
+  ]),
+  hooks: new Map([['numbering', numbering], ['revision', revision],
+    ['stories', (w) => {
+      const s = w.doc.stories;
+      if (s instanceof Map) w.lose(LOST.stories, s.size);
+    }], ['flush', () => ''], ['mark', () => ''],
+    ['levelInd', () => undefined]]),
+  sect: [sectWords],
+};
+
+/** The handler modules, in order (a later one wins a name). */
+const PARTS = [CORE, LISTS, TABLES, PICTS, FIELDS, SECTS,
+  NOTES, REVIEW];
+
+function registry() {
+  const reg = {blocks: new Map(), inlines: new Map(), hooks: new Map(),
+    paraWords: [], sect: [], header: []};
+  for (const p of PARTS) {
+    for (const k of ['blocks', 'inlines', 'hooks']) {
+      for (const [n, f] of p[k] || []) reg[k].set(n, f);
+    }
+    for (const k of ['paraWords', 'sect', 'header']) {
+      reg[k].push(...(p[k] || []));
+    }
+  }
+  return reg;
+}
+const REG = registry();
+
+function numbering(w, p, pPr) {
+  const n = pPr.numPr;
+  if (n && Number.isInteger(n.numId) && n.numId > 0) w.lose(LOST.lists);
+  return '';
+}
+
+function revision(w, p, run) {
+  const rev = run.rev;
+  if (!rev || typeof rev !== 'object') {
+    w.revKey = null;
+    return NONE;
+  }
+  const key = rev.kind + ' ' + rev.id;
+  if (key !== w.revKey) w.lose(LOST.revisions);
+  w.revKey = key;
+  return rev.kind === 'del' || rev.kind === 'mvFrom' ||
+    rev.kind === 'moveFrom' ? GONE : NONE;
+}
+
+/** A table no module writes: its text, paragraph by paragraph. */
+function table(w, t) {
+  w.lose(LOST.tables);
+  let s = '';
+  for (const row of Array.isArray(t.rows) ? t.rows : []) {
+    for (const c of row && Array.isArray(row.cells) ? row.cells : []) {
+      s += w.blocks(c && Array.isArray(c.blocks) ? c.blocks : [],
+        '\\par');
+    }
+  }
+  return s;
+}
+
+const SIZE = (v) => twips(v, 1);
+const MARGIN = (v) => twips(v, 0);
+
+/** The page words of section props: [[word, value]...]; the gutter
+ *  only when not 0 at the document's level, always in a section's
+ *  (else it would take the document's). */
+function page(props, words) {
+  const sz = props.pgSz || {}, m = props.pgMar || {};
+  const out = [[words[0], SIZE(sz.w)], [words[1], SIZE(sz.h)],
+    [words[2], MARGIN(m.left)], [words[3], MARGIN(m.right)],
+    [words[4], twips(m.top)], [words[5], twips(m.bottom)]];
+  const g = MARGIN(m.gutter);
+  if (g || (g === 0 && words === SXN)) out.push([words[6], g]);
+  return out.filter(([, v]) => v !== undefined);
+}
+const DOC = ['paperw', 'paperh', 'margl', 'margr', 'margt', 'margb',
+  'gutter'];
+const SXN = ['pgwsxn', 'pghsxn', 'marglsxn', 'margrsxn', 'margtsxn',
+  'margbsxn', 'guttersxn'];
+const join = (list) => list.map(([k, v]) => '\\' + k + v).join('');
+const props = (s) => (s && s.props) || {};
+
+function sectWords(w, section, i) {
+  const p = props(section);
+  let s = '\\sectd';
+  if (TYPE_WORD.has(p.type)) s += '\\' + TYPE_WORD.get(p.type);
+  if (p.pgSz && p.pgSz.orient === 'landscape') s += '\\lndscpsxn';
+  const mine = join(page(p, SXN));
+  if (i > 0 && join(page(props(w.doc.sections[0]), SXN)) !== mine)
+    s += mine;
+  const m = p.pgMar || {};
+  if (MARGIN(m.header) !== undefined) s += '\\headery' + m.header;
+  if (MARGIN(m.footer) !== undefined) s += '\\footery' + m.footer;
+  return s;
+}
+
+const isObj = (v) => v !== null && typeof v === 'object';
+/** A cache key part: a style id (any string) kept apart. */
+const key = (id) => (typeof id === 'string' ? id.length + ':' + id
+  : '-') + '|';
+
+/** The style table to resolve against (never the doc's changed). */
+function stylesOf(doc) {
+  const t = doc.styles;
+  if (!isObj(t) || !(t.styles instanceof Map)) return newStyleTable();
+  const dd = isObj(t.docDefaults) ? t.docDefaults : {};
+  const prop = (o) => (isObj(o) ? o : {extra: []});
+  return {...t, defaults: isObj(t.defaults) ? t.defaults
+    : {paragraph: null, character: null, table: null},
+  docDefaults: {rPr: prop(dd.rPr), pPr: prop(dd.pPr)}};
+}
+
+class Writer {
+  constructor(doc) {
+    this.doc = doc;
+    this.styles = stylesOf(doc);
+    this.theme = this.styles.theme;
+    this.reg = REG;
+    this.lostList = new Lost();
+    this.fonts = new FontTable(fontName(this.styles.docDefaults.rPr,
+      this.theme));
+    this.colours = new ColourTable();
+    this.num = styleNumbers(this.styles);
+    this.revKey = null;
+    this.cache = new Map();
+    const m = isObj(doc.meta) ? doc.meta : {};
+    this.place = {rels: Array.isArray(doc.rels) ? doc.rels : [],
+      part: typeof m.mainPart === 'string' ? m.mainPart
+        : 'word/document.xml', kind: 'body'};
+    this.depth = 0;
+    this.words = '';
+    this.fields = [];
+    this.fieldBase = 0;
+    this.hush = null;
+  }
+
+  map() {
+    return this.place.map || docMap(this.doc);
+  }
+
+  scopeOf(root) {
+    try {
+      const m = rootScope({name: root.name, attrs: root.attrs});
+      return isStrict(docMap(this.doc)) ? strictScope(m) : m;
+    } catch {
+      return docMap(this.doc);
+    }
+  }
+
+  nested(place, fn) {
+    const keep = [this.place, this.fieldBase, this.depth, this.words,
+      this.revKey];
+    if (place) this.place = place;
+    this.fieldBase = this.fields.length;
+    this.depth = 0;
+    try {
+      return fn() + this.hook('flush')(this);
+    } finally {
+      // (fn's own fields are closed: the ones open before stay)
+      this.fields.length = Math.min(this.fields.length,
+        this.fieldBase);
+      [this.place, this.fieldBase, this.depth, this.words,
+        this.revKey] = keep;
+    }
+  }
+
+  content(inner, p) {
+    const keep = [this.words, this.revKey, this.fieldBase];
+    this.fieldBase = this.fields.length;
+    try {
+      const q = {...inner, pStyle: p.pStyle};
+      return this.runs(q)[0] + this.hook('flush')(this);
+    } finally {
+      this.fields.length = Math.min(this.fields.length,
+        this.fieldBase);
+      [this.words, this.revKey, this.fieldBase] = keep;
+    }
+  }
+
+  /** fn() once per key (the words of a format: resolving is the
+   *  writer's cost, and a document repeats a few formats). */
+  memo(key, fn) {
+    let v = this.cache.get(key);
+    if (v === undefined) {
+      v = fn();
+      if (this.cache.size < 100000) this.cache.set(key, v);
+    }
+    return v;
+  }
+
+  font(name) { return this.fonts.add(name); }
+  colour(hex) { return this.colours.add(hex); }
+  lose(what, n = 1) { this.lostList.add(what, n); }
+  hook(name) { return this.reg.hooks.get(name); }
+
+  text(s) {
+    let out = '', from = 0;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c !== 9 && c !== 10 && c !== 0xfffc) continue;
+      out += encodeAscii(s.slice(from, i)).rtf + (c === 9 ? '\\tab '
+        : c === 10 ? '\\line ' : '\\u-3?');
+      from = i + 1;
+    }
+    return out + encodeAscii(s.slice(from)).rtf;
+  }
+
+  inline(p, i, run) {
+    const x = p.inlines[String(i)];
+    if (!isObj(x)) return '';
+    const raw = x.kind === 'raw' && isObj(x.node);
+    if (this.hush && !(raw && x.node.name === 'w:fldChar')) return '';
+    const fn = this.reg.inlines.get(raw ? 'raw:' + x.node.name
+      : x.kind);
+    if (fn) return fn(this, x, run, p, i);
+    if (!raw) {
+      const what = MARKS.has(x.kind) ? MARKS.get(x.kind) : LOST.other;
+      if (what) this.lose(what);
+      return '';
+    }
+    const l = local(x.node);
+    if (SILENT.has(l)) {
+      // (a wrapper's text is kept: what else it holds is counted)
+      for (const what of heldLost(x.node)) this.lose(what);
+    } else {
+      const what = rawLost(x.node);
+      if (what) this.lose(what);
+    }
+    return x.level === 'p' && typeof x.text === 'string' &&
+      !DELETED.has(l) ? this.text(x.text) : '';
+  }
+
+  runWords(p, run) {
+    const cs = run.rStyle === undefined ? undefined
+      : this.styles.styles.get(run.rStyle);
+    const n = cs && cs.type === 'character' ? this.num.num.get(cs.id)
+      : undefined;
+    return (n === undefined ? '' : '\\cs' + n) +
+      charWords(this, resolveRun(this.styles, p, run));
+  }
+
+  paraWords(p, lvl) {
+    const pPr = resolvePara(this.styles, p, lvl);
+    let s = '';
+    const n = this.num.num.get(p.pStyle);
+    const st = this.styles.styles.get(p.pStyle);
+    if (n && st && st.type === 'paragraph') s += '\\s' + n;
+    return [s + paraWords(this, pPr, tabsOf(this.styles, p),
+      {widow: true}), pPr];
+  }
+
+  /** The runs of p as groups: [rtf, whether anything is in it]. */
+  runs(p) {
+    let out = '', has = false;
+    this.revKey = null;
+    for (const run of p.runs) {
+      const rv = this.hook('revision')(this, p, run) || NONE;
+      if (rv.skip) continue;
+      const words = this.memo('r' + key(p.pStyle) + key(run.rStyle) +
+        JSON.stringify(run.rPr), () => this.runWords(p, run)) +
+        (rv.words || '');
+      this.words = words;
+      let body = '', from = run.start;
+      const end = Math.min(run.end, p.text.length);
+      for (let i = p.text.indexOf(OBJ, from); i >= 0 && i < end;
+        i = p.text.indexOf(OBJ, i + 1)) {
+        body += (this.hush ? '' : this.text(p.text.slice(from, i))) +
+          this.inline(p, i, run);
+        from = i + 1;
+      }
+      if (!this.hush) body += this.text(p.text.slice(from, end));
+      if (!body) continue;
+      has = true;
+      out += '{' + words + ' ' + body + '}';
+    }
+    return [out, has];
+  }
+
+  para(p, end) {
+    this.hush = null;
+    // (a list paragraph's indent is its level's over its style's:
+    // the indent it shows, ./Styles resolvePara)
+    const lvl = this.hook('levelInd')(this, p);
+    const [words, pPr] = this.memo('p' + key(p.pStyle) +
+      JSON.stringify(p.pPr) + (lvl ? JSON.stringify(lvl) : ''),
+    () => this.paraWords(p, lvl));
+    let s = '\\pard\\plain' + words;
+    for (const fn of this.reg.paraWords) s += fn(this, p, pPr);
+    s += this.hook('numbering')(this, p, pPr);
+    const [runs, has] = this.runs(p);
+    let tail = end === null ? '' : end;
+    const cell = end === '\\cell' || end === '\\nestcell';
+    if (!has && end !== '\\par' && !cell) tail = '\\par' + tail;
+    // the mark's tracked change: in a group with its \par
+    const mark = this.hook('mark')(this, p, end);
+    if (mark) tail = '{' + mark + tail + '}';
+    // (the groups its inlines left open end with the story's text)
+    if (end !== '\\par') tail = this.hook('flush')(this) + tail;
+    // an empty one: its mark takes the style's character format
+    // (Word sizes the empty line by it)
+    if (!has) {
+      s += this.memo('m' + key(p.pStyle), () => charWords(this,
+        resolveRun(this.styles, p, {rPr: {extra: []}})));
+    }
+    return s + runs + tail + '\n';
+  }
+
+  blocks(list, end) {
+    let s = '';
+    list.forEach((b, i) => {
+      const last = i === list.length - 1;
+      let keep = [this.fields.slice(), this.depth, this.words];
+      try {
+        const fn = isObj(b) && this.reg.blocks.get(b.type);
+        if (!fn) {
+          this.lose(LOST.unknown);
+        } else if (b.type === 'p') {
+          s += fn(this, b, last ? end : '\\par');
+          return;
+        } else {
+          s += this.hook('flush')(this);
+          keep = [this.fields.slice(), this.depth, this.words];
+          s += fn(this, b, end);
+        }
+      } catch {
+        // (what the block opened or closed is as before it)
+        this.lose(LOST.damaged);
+        [this.fields, this.depth, this.words] = keep;
+        if (last && end !== '\\par') s += this.hook('flush')(this);
+      }
+      if (last && end === '\\sect') s += '\\sect\n';
+    });
+    if (!list.length && end === '\\sect') s += '\\sect\n';
+    return s;
+  }
+}
+
+const BYTES = (s) => {
+  const b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    b[i] = c < 0x80 ? c : 0x3f;
+  }
+  return b;
+};
+
+function defaults(w) {
+  const dd = w.styles.docDefaults;
+  const sz = twips(dd.rPr.sz, 2, 3276);
+  return '{\\*\\defchp\\fs' + (sz === undefined ? 20 : sz) + '}\n';
+}
+
+function write(doc) {
+  const w = new Writer(doc);
+  w.hook('stories')(w);
+  const secs = Array.isArray(doc.sections) ? doc.sections : [];
+  let body = '';
+  secs.forEach((sec, i) => {
+    let s = '';
+    for (const fn of w.reg.sect) s += fn(w, sec, i);
+    body += s + '\n' + w.blocks(sec && Array.isArray(sec.blocks)
+      ? sec.blocks : [], i === secs.length - 1 ? null : '\\sect');
+  });
+  const head = defaults(w) + stylesheet(w) + '\n' +
+    w.reg.header.map((fn) => fn(w)).join('') + info(w);
+  const docPage = join(page(props(secs[0]), DOC));
+  return {bytes: BYTES(HEAD + w.fonts.rtf() + '\n' +
+    w.colours.rtf() + '\n' + head + (docPage ? docPage + '\n' : '') +
+    body + '}'), lost: w.lostList.list()};
+}
+
+/** The text alone: when the document cannot be written in full. */
+function plain(doc) {
+  let s = '';
+  try {
+    for (const sec of doc.sections) {
+      for (const b of sec.blocks) {
+        if (b && b.type === 'p' && typeof b.text === 'string') {
+          s += '\\pard ' + encodeAscii(b.text.split(OBJ).join(''))
+            .rtf + '\\par\n';
+        }
+      }
+    }
+  } catch {
+    // (what was gathered is written)
+  }
+  return {bytes: BYTES(HEAD + s + '}'),
+    lost: [{what: LOST.damaged, count: 1}]};
+}
+
+export function writeRtf(doc) {
+  try {
+    return write(doc);
+  } catch {
+    return plain(doc);
+  }
+}
