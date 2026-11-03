@@ -1,0 +1,76 @@
+// PrintOut - the pages handed to !Printers (Print batch): one sheet
+// of the paper's size for each page, the page's picture placed on it,
+// as the html and css of an os.printers.print job.
+//
+//   printHtml(printers, {title, pages, paper}) -> Promise<boolean>
+//       printers.print({title, html, css}) called at once (it opens
+//       the output window there: call it from the click), html a
+//       promise of the markup once pages settles. pages a promise of
+//       ./PrintPages renderPages' result ({pages: [{url, x, y, w,
+//       h}]}); paper the sheet in mm ({w, h}, PrintPages paperOf).
+//       pages null (stopped) or rejected: html rejected with
+//       {cancelled: true}, so !Printers closes its window and says
+//       nothing (whoever made the pages says why). print()'s answer:
+//       true when the job was sent
+//   markupOf(title, pages) -> the html: a div.lsheet per page, its
+//       img at the page's box (mm, from the sheet's top left), alt
+//       '<title>, page n' (escaped); a src as it is (a data URL
+//       has no & or "; one with either is escaped)
+//   cssOf(paper) -> the css: @page the paper's size, margin 0 (after
+//       !Printers' own page css, so it wins); .lsheet the sheet
+//       (position relative, the size to 0.1 mm as !Printers' page
+//       size, overflow hidden, a page break after); its img placed
+//       absolutely, smoothed (image-rendering auto)
+//
+// Own class names, not !Printers' img.pic (pixelated, a margin, at
+// most the page's width). Uses no desktop services itself.
+const ENT = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'};
+const CANCELLED = 'The printing was stopped';
+
+/** s with & < > " as entities. */
+function esc(s) {
+  let out = '';
+  for (const c of String(s)) out += ENT[c] || c;
+  return out;
+}
+
+/** A src: as it is unless it holds & or " (copying each character
+ *  of hundreds of data URLs would hold up the desktop). */
+function srcOf(url) {
+  const s = String(url);
+  return s.includes('"') || s.includes('&') ? esc(s) : s;
+}
+
+/** v mm, to 0.01 mm (0 when it is not a number). */
+const mm = (v) => (Number.isFinite(v) ? +v.toFixed(2) : 0) + 'mm';
+
+/** See the header. */
+export function cssOf(paper) {
+  const w = paper.w.toFixed(1) + 'mm', h = paper.h.toFixed(1) + 'mm';
+  return `@page{size:${w} ${h};margin:0}` +
+    `.lsheet{position:relative;width:${w};height:${h};` +
+    'overflow:hidden;break-after:page}' +
+    '.lsheet img{position:absolute;display:block;margin:0;' +
+    'max-width:none;image-rendering:auto}';
+}
+
+/** See the header. */
+export function markupOf(title, pages) {
+  const t = esc(title);
+  return pages.map((p, i) => '<div class="lsheet"><img style="' +
+    `left:${mm(p.x)};top:${mm(p.y)};width:${mm(p.w)};` +
+    `height:${mm(p.h)}" alt="${t}, page ${i + 1}" ` +
+    `src="${srcOf(p.url)}"></div>`).join('');
+}
+
+/** See the header. */
+export function printHtml(printers, {title, pages, paper}) {
+  const stop = () => Object.assign(new Error(CANCELLED),
+    {cancelled: true});
+  const html = Promise.resolve(pages).then((r) => {
+    if (!r) throw stop();
+    return markupOf(title, r.pages);
+  }, () => { throw stop(); });
+  html.catch(() => {});                // (print() may not read it)
+  return printers.print({title, html, css: cssOf(paper)});
+}

@@ -19,7 +19,7 @@ import { loadTemplates } from '../../core/templates.js';
 import { loadMessages } from '../../core/messages.js';
 import { os } from '../../core/os.js';
 import { unsquash } from './unsquash.js';
-import { openOutput, renderFile, pageCss, textToHtml } from './print.js';
+import { openOutput, renderFile, pageCss, textToHtml, fileHtml } from './print.js';
 
 const STORE = 'riscos371.printers';
 const DEF_DIR = 'ADFS::HardDisc4.$.Printing.Printers';
@@ -526,7 +526,7 @@ export default async function start(task, ctx) {
         if (p.cnct.type === 5) {        // To file
           const path = p.cnct.file || 'ADFS::HardDisc4.$.PrintOut';
           const isText = doc.text != null;
-          const data = isText ? doc.text : `<html><head><title>${doc.title}</title><style>${css}</style></head><body>${doc.html}</body></html>`;
+          const data = isText ? doc.text : fileHtml(doc.title, css, doc.html);
           let prev = '';
           if (p.cnct.append && vfs.exists(path)) prev = await vfs.readText(path);
           vfs.writeFile(path, prev + data, { filetype: isText ? 0xFFF : 0xFAF });
@@ -538,7 +538,8 @@ export default async function start(task, ctx) {
         await new Promise((r) => setTimeout(r, 600));
         job.resolve?.(true);
       } catch (e) {
-        if (!e.cancelled) task.reportError(msg('OKPa', e.message ?? String(e)));
+        if (e?.cancelled) job.out?.close();   // abandoned by its app (html rejected {cancelled: true}): no output window left
+        if (!e?.cancelled) task.reportError(msg('OKPa', e?.message ?? String(e)));
         job.resolve?.(false);
       }
       queue.splice(queue.indexOf(job), 1);

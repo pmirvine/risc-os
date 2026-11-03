@@ -23,6 +23,11 @@ img.pic { image-rendering: pixelated; display: block; margin: 0 0 6mm 0; max-wid
 @media screen { body { padding: 12mm; } }`;
 }
 
+/** The page written by a "To file" connection: the title escaped (a document name may hold < or &). */
+export function fileHtml(title, css, html) {
+  return `<html><head><title>${esc(title)}</title><style>${css}</style></head><body>${html}</body></html>`;
+}
+
 /**
  * Open the output window synchronously (so it counts as a user gesture) and return a writer:
  *   out.write({title, html, css}) - fills the page and prints it.

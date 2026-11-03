@@ -1,0 +1,102 @@
+// RangeBox - what the boxes that make a document's pages share
+// (Export as PDF, ./PdfBox, and Print): the range read from their
+// fields, the markup line, the page count, the frames their runs
+// yield to and the progress shown in the box while one runs.
+//
+//   rangeOf(values, count, verb) -> {from, to} | {bad}  ./PagesRun
+//       eachPage's from and to from the box's values: All every page
+//       (1 to Infinity); From / To clamped to 1..count (count null
+//       when not known: To then unclamped, the run ends at its last
+//       page), an empty field the end of its side; text that is not
+//       a number, or From after To, {bad: why}, its words 'no pages
+//       to ' + verb ('export' by default, or 'print')
+//   markupLine(mode) -> 'Markup: final text', 'Markup: all markup
+//       shown' or 'Markup: original text' (./RevView's modes)
+//   countOf(dw) -> the window's page count when Print layout has
+//       them all, else null
+//   raf(cb)  cb at the next frame or after 100 ms, whichever comes
+//       first (a hidden page has no frames), once
+//   progressLine(done, total, phase) -> the box's message for an
+//       onProgress call: 'Preparing pages...', 'Page n of N' while
+//       page n is made, 'Writing...'; null for none (the last page
+//       done)
+//   runIn(dw, api, st, shade, job) -> Promise<result | null>  job({
+//       signal, raf, onProgress}) run with its progress in the box's
+//       'msg' field: st.ctrl its AbortController while it runs (the
+//       box shaded by shade(api) on the way in and out, the message
+//       cleared after; not when st.ctrl was cleared or replaced
+//       meanwhile: the box's own, or a later run's); null when
+//       it was stopped (aborted, an AbortError, the box gone or the
+//       window closed), else its result; another error is thrown
+//       on to the caller (the message cleared and the box shaded on
+//       the way out all the same)
+const MARKUP = {final: 'final text', all: 'all markup shown',
+  original: 'original text'};
+const WAIT_MS = 100;
+
+/** See the header. */
+export function markupLine(mode) {
+  return 'Markup: ' + (MARKUP[mode] || MARKUP.final);
+}
+
+/** See the header. */
+export function rangeOf(values, count, verb = 'export') {
+  if (values.pages !== 'range') return {from: 1, to: Infinity};
+  const {from, to} = values;
+  if (from === null) return {bad: 'From is not a page number.'};
+  if (to === null) return {bad: 'To is not a page number.'};
+  const top = count > 0 ? count : Infinity;
+  const a = Math.min(Math.max(1, from === undefined ? 1 : from), top);
+  const b = to === undefined ? top : Math.min(Math.max(1, to), top);
+  if (a > b) return {bad: `From is after To: no pages to ${verb}.`};
+  return {from: a, to: b};
+}
+
+/** See the header. */
+export function countOf(dw) {
+  const P = dw.viewName === 'print' ? dw.pages : null;
+  return P && P.done ? P.count : null;
+}
+
+/** See the header. */
+export function raf(cb) {
+  let done = false;
+  const go = () => { if (!done) { done = true; cb(); } };
+  if (typeof requestAnimationFrame === 'function') {
+    requestAnimationFrame(go);
+  }
+  setTimeout(go, WAIT_MS);
+}
+
+/** See the header. */
+export function progressLine(k, n, phase) {
+  if (phase === 'preparing') return 'Preparing pages...';
+  if (phase === 'writing') return 'Writing...';
+  return k < n ? `Page ${k + 1} of ${n}` : null;
+}
+
+/** See the header. */
+export async function runIn(dw, api, st, shade, job) {
+  const ctrl = new AbortController();
+  st.ctrl = ctrl;
+  shade(api);
+  const show = (t) => { if (!api.gone) api.set('msg', t); };
+  try {
+    const out = await job({signal: ctrl.signal, raf,
+      onProgress: (k, n, phase) => {
+        const t = progressLine(k, n, phase);
+        if (t !== null) show(t);
+      }});
+    return ctrl.signal.aborted || dw.closed || api.gone ? null : out;
+  } catch (e) {
+    if (ctrl.signal.aborted || dw.closed || api.gone ||
+      (e && e.name === 'AbortError')) return null;
+    throw e;
+  } finally {
+    if (st.ctrl === ctrl) {           // (not a later run's)
+      st.ctrl = null;
+      show('');
+      if (!api.gone) shade(api);
+    }
+  }
+}

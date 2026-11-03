@@ -1,0 +1,286 @@
+// PrintPages - a window's Print layout pages as pictures for the
+// printer (Print batch): each page painted onto a canvas of its own
+// at the printer's resolution, turned into a JPEG data URL, and its
+// place on the paper worked out.
+//
+//   fitPlacement({pageW, pageH, paperW, paperH, fit}) -> {x, y, w, h}
+//       where a page goes on the paper, in mm from the paper's top
+//       left: fit on, scaled (up or down) to the most that fits,
+//       proportions kept; fit off, its own size (it may be larger
+//       than the paper: its edges are then cut off); centred either
+//       way. A size that is not a number above 0 is the paper's
+//       (the page's) or A4's (the paper's); each side at most
+//       MAX_MM. Never throws
+//   paperOf({width, height, landscape}) -> {w, h}  the sheet in mm
+//       as it is printed: os.printers.current's paper (its sizes
+//       always portrait) turned when landscape, each side to 0.1 mm
+//       (as Printers' page size has it: a box a hair larger would
+//       spill onto another sheet); A4 when it is not a size
+//   dpiFor(count) -> 200 for up to 100 pages, 150 up to 250, else
+//       100: the data URLs smaller for a long job, not capped (past
+//       250 pages they grow with the pages, 100 MB or more for 1000,
+//       then copied into the markup and the output window)
+//   canvasSize([w, h], dpi) -> {w, h, dpi}  a canvas for w x h CSS
+//       px (96 to the inch) at dpi, lowered as needed to keep each
+//       side to MAX_SIDE px and the area to MAX_AREA (a big page is
+//       drawn coarser, never left out); each side at least 1
+//   renderPages(dw, opts) -> Promise<{pages: [{url, x, y, w, h}],
+//       count} | null>  the pages of dw (./AppWin's window; only
+//       read) by ./PagesRun eachPage (verb 'print'), each as a JPEG
+//       (QUALITY) data URL with its fitPlacement box on the paper;
+//       null when stopped by the signal; no pages in the range,
+//       Error(NO_PAGES). opts:
+//         from, to, signal, onProgress, clock, sliceMs  as eachPage's
+//         raf         what a slice yields to while the page is seen
+//                     (eachPage's default without one)
+//         post(cb)    what it yields to while document is hidden
+//                     (frames stop then and timers are slowed to a
+//                     second or more): a MessageChannel message of
+//                     the run's own (its ports closed when the run
+//                     ends), setTimeout 0 without MessageChannel
+//         document    whose hidden is looked at before each yield
+//                     (the page's own document by default)
+//         paper       os.printers.current's paper and landscape
+//                     ({width, height, landscape}, paperOf)
+//         fit         fit each page to the paper (fitPlacement)
+//         dpi         the resolution on the paper (by default
+//                     dpiFor the pages printed)
+//         canvasFactory(w, h) -> a canvas (a <canvas>, else an
+//                     OffscreenCanvas)
+//         decode      the pictures' decoder (./PicCache's default)
+//         fonts       a FontFaceSet (document.fonts): while it is
+//                     'loading' a page waits for it and is painted
+//                     again
+//       A wait for pictures or faces ends at once when the signal
+//       is aborted (a decode or a load that never ends cannot hold
+//       up Cancel).
+//   MAX_SIDE 4096, MAX_AREA 16000000, MAX_MM 5080, QUALITY 0.9
+//   NO_PAGES  'No pages to print.'
+//
+// A page: a canvas the size of its box on the paper at dpi (a page
+// shrunk to fit is drawn with fewer pixels), filled white (./PagePaint
+// draws no sheet; a JPEG has no transparency), scaled from the page's
+// px and painted by ./PagePaint paintPage with marks off. Pictures
+// come from a ./PicCache of the run's own, decoded at the size they
+// are printed; one not decoded yet is drawn as a box, so the page is
+// painted again once its decodes end (TRIES paints at most), and the
+// cache cleared (its bitmaps closed) when the run ends. The canvas
+// is dropped (its sides 0) as soon as its data URL is made, so one
+// page's pixels are held at a time. Uses document or OffscreenCanvas,
+// createImageBitmap and MessageChannel unless given others.
+import {eachPage, aborted} from './PagesRun';
+import {paintPage} from './PagePaint';
+import {createPicCache} from './PicCache';
+
+export const MAX_SIDE = 4096, MAX_AREA = 16000000, MAX_MM = 5080;
+export const QUALITY = 0.9;
+export const NO_PAGES = 'No pages to print.';
+const A4 = {w: 210, h: 297};
+const CSS_DPI = 96, MM_IN = 25.4, PT_IN = 72;
+const TRIES = 3;                       // (paints of a page, at most)
+const STOPPED = 'The printing was stopped';
+const TYPE = 'image/jpeg';
+
+/** v when it is a size (a number above 0, at most MAX_MM), else d. */
+const sane = (v, d) => (typeof v === 'number' && v > 0 &&
+  Number.isFinite(v) ? Math.min(v, MAX_MM) : d);
+
+/** See the header. */
+export function fitPlacement({pageW, pageH, paperW, paperH,
+  fit} = {}) {
+  const pw = sane(paperW, A4.w), ph = sane(paperH, A4.h);
+  const w = sane(pageW, pw), h = sane(pageH, ph);
+  const k = fit ? Math.min(pw / w, ph / h) : 1;
+  const bw = w * k, bh = h * k;
+  return {x: (pw - bw) / 2, y: (ph - bh) / 2, w: bw, h: bh};
+}
+
+/** See the header. */
+export function paperOf(paper) {
+  const o = paper || {};
+  const tenth = (v) => Math.round(v * 10) / 10;
+  const w = tenth(sane(o.width, A4.w)), h = tenth(sane(o.height,
+    A4.h));
+  return o.landscape ? {w: h, h: w} : {w, h};
+}
+
+/** See the header. */
+export function dpiFor(count) {
+  return count <= 100 ? 200 : count <= 250 ? 150 : 100;
+}
+
+/** See the header. */
+export function canvasSize([w, h], dpi) {
+  const pw = w > 0 && Number.isFinite(w) ? w : 1;
+  const ph = h > 0 && Number.isFinite(h) ? h : 1;
+  const want = dpi > 0 && Number.isFinite(dpi) ? dpi : dpiFor(1);
+  const d = Math.min(want, MAX_SIDE * CSS_DPI / Math.max(pw, ph),
+    Math.sqrt(MAX_AREA / (pw * ph)) * CSS_DPI);
+  const side = (v) => Math.min(MAX_SIDE, Math.max(1,
+    Math.floor(v * d / CSS_DPI)));
+  return {w: side(pw), h: side(ph), dpi: d};
+}
+
+/** A canvas: a <canvas> on a page, else an OffscreenCanvas. */
+function newCanvas(w, h) {
+  if (typeof document === 'object' && document &&
+    typeof document.createElement === 'function') {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    return c;
+  }
+  if (typeof OffscreenCanvas === 'function') {
+    return new OffscreenCanvas(w, h);
+  }
+  throw new Error('There is no canvas to print with');
+}
+
+/** The canvas as a JPEG data URL. */
+async function urlOf(c) {
+  if (typeof c.toDataURL === 'function') {
+    return c.toDataURL(TYPE, QUALITY);
+  }
+  const blob = await c.convertToBlob({type: TYPE, quality: QUALITY});
+  const b = new Uint8Array(await blob.arrayBuffer());
+  let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) {
+    s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  }
+  return 'data:' + TYPE + ';base64,' + btoa(s);
+}
+
+/** The run's pictures (./PicPaint's L.pics): its own cache; waits
+ *  the promises of those not decoded yet, since it was emptied. */
+function picsOf(decode) {
+  const cache = createPicCache(decode ? {decode} : {});
+  const run = {cache, waits: [], pics: {get(bytes, mime, info, want) {
+    let done;
+    const p = new Promise((res) => { done = res; });
+    const r = cache.get(bytes, mime, info, done, want);
+    if (r.state === 'pending' || r.state === 'deferred') {
+      run.waits.push(p);
+    }
+    return r;
+  }}};
+  return run;
+}
+
+/** {when: a promise settled once signal is aborted, off()}. */
+function stopOf(signal) {
+  let off = () => {};
+  const when = new Promise((res) => {
+    if (!signal || typeof signal.addEventListener !== 'function') {
+      return;
+    }
+    if (signal.aborted) return res();
+    signal.addEventListener('abort', res, {once: true});
+    off = () => signal.removeEventListener('abort', res);
+  });
+  return {when, off: () => off()};
+}
+
+/** A yield that is not slowed in a hidden page: {post(cb),
+ *  close()}, the channel made at the first post. */
+function poster() {
+  let ch = null;
+  const q = [];
+  const post = (cb) => {
+    if (typeof MessageChannel !== 'function') {
+      setTimeout(cb, 0);
+      return;
+    }
+    if (!ch) {
+      ch = new MessageChannel();
+      ch.port1.onmessage = () => {
+        const f = q.shift();
+        if (f) f();
+      };
+    }
+    q.push(cb);
+    ch.port2.postMessage(0);
+  };
+  const close = () => {
+    if (ch) {
+      ch.port1.close();
+      ch.port2.close();
+    }
+    ch = null;
+  };
+  return {post, close};
+}
+
+/** The slices' yield: raf while doc is seen, else post. */
+function yieldOf(raf, post, doc) {
+  const seen = raf || (typeof requestAnimationFrame === 'function'
+    ? requestAnimationFrame : (cb) => setTimeout(cb, 0));
+  return (cb) => (doc && doc.hidden ? post : seen)(cb);
+}
+
+/** See the header. */
+export async function renderPages(dw, opts = {}) {
+  const {signal, fit} = opts;
+  const own = opts.post ? null : poster();
+  const doc = 'document' in opts ? opts.document
+    : typeof document === 'object' ? document : null;
+  const raf = yieldOf(opts.raf, opts.post || own.post, doc);
+  const canvasFactory = opts.canvasFactory || newCanvas;
+  const fonts = 'fonts' in opts ? opts.fonts
+    : typeof document === 'object' && document && document.fonts ||
+      null;
+  const sheet = paperOf(opts.paper);
+  const run = picsOf(opts.decode);
+  const stop = stopOf(signal);
+  let dpi = opts.dpi;
+  const out = [];
+
+  const page = async (P, i, place, {px, pt}) => {
+    const mm = pt.map((v) => v * MM_IN / PT_IN);
+    const box = fitPlacement({pageW: mm[0], pageH: mm[1],
+      paperW: sheet.w, paperH: sheet.h, fit});
+    const k = box.w / mm[0];
+    const c = canvasSize([px[0] * k, px[1] * k], dpi);
+    const cv = canvasFactory(c.w, c.h);
+    try {
+      const g = cv.getContext('2d');
+      for (let t = 0; t < TRIES; t++) {
+        run.waits = [];
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.fillStyle = '#ffffff';
+        g.fillRect(0, 0, c.w, c.h);
+        g.scale(c.w / px[0], c.h / px[1]);
+        paintPage(P, i, g, {place, marks: false});
+        const late = fonts && fonts.status === 'loading'
+          ? [fonts.ready] : [];
+        const waits = [...run.waits, ...late];
+        if (!waits.length || t + 1 === TRIES) break;
+        await Promise.race([Promise.all(waits), stop.when]);
+        if (signal && signal.aborted) throw aborted(STOPPED);
+      }
+      out.push({url: await urlOf(cv), ...box});
+    } finally {
+      cv.width = 0;
+      cv.height = 0;
+    }
+  };
+
+  try {
+    await eachPage(dw, {from: opts.from, to: opts.to, signal,
+      onProgress: opts.onProgress, raf, clock: opts.clock,
+      sliceMs: opts.sliceMs, pics: run.pics, verb: 'print',
+      stopped: STOPPED, none: NO_PAGES,
+      onPages: ({total}) => { if (!(dpi > 0)) dpi = dpiFor(total); }},
+    page);
+  } catch (e) {
+    if ((signal && signal.aborted) || (e && e.name === 'AbortError')) {
+      return null;
+    }
+    throw e;
+  } finally {
+    run.cache.clear();
+    stop.off();
+    if (own) own.close();
+  }
+  if (signal && signal.aborted) return null;
+  return {pages: out, count: out.length};
+}

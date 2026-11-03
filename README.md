@@ -341,8 +341,19 @@ the title and author come from the document's properties. Editing marks, comment
 field results are shown. A font !Letters has no copy of uses the stand-in the screen shows; characters a font lacks (CJK,
 emoji, symbols) show as an empty box and one message names them; EMF, WMF and SVG pictures are the same grey box as on screen; no
 tagged (accessible) PDF, PDF/A, bookmark outline or encryption; the document, undo and the modified mark are not
-changed. Printing, still to come, will use this PDF (`$.Docs.Letters`, part 29; developers: `docs/apps/Letters.md`). To
+changed (`$.Docs.Letters`, part 29; developers: `docs/apps/Letters.md`). To
 try it: open a document, MENU > *Export as PDF...*, OK, OK, then open the file in a PDF reader on the host (HostFS).
+
+**Print:** the window menu's *Print...* (after *Export as PDF...*) or Ctrl+P (Cmd+P on a Mac) sends the pages of the document, as Print layout shows them
+(from any view; Web layout and Outline print as Print layout), to the current !Printers printer; start !Printers first (double-click its icon in Apps), or
+an error box says there is no printer driver. The box takes the pages (All, or From and To), *Fit to paper* (on: each page scaled to the paper and
+centred, its shape kept; off: true size, centred, anything past the paper's edge cut), names the printer, its paper and orientation, and the markup the
+pages show (the window's Show Markup view). The pages are made as JPEG page images (200 dots to the inch up to 100 pages, 150 up to 250, 100 above; less for
+a very large page) with *Preparing pages...* and *Page n of N* in the box, and handed to !Printers: its output window opens, the web browser's print
+dialog does the rest (copies, double-sided printing) and a *To file* connection writes a file instead. Cancel, the close icon or closing the window stops it
+with nothing sent. There is no printing of the selected text only; the document, undo and the modified mark are not changed. Tried in Chromium only (not in
+Firefox or Safari, and on no real printer). `$.Docs.Letters`, part 31; developers: `docs/apps/Letters.md`. To try it: start !Printers, open a document,
+Ctrl+P, Print.
 
 **Rich Text (RTF):** `$.MoreApps.!Letters` opens RTF files (file type &C32: double-click, drop on the icon bar icon or a window,
 Recent) and a document opened from RTF stays RTF: Save and Save a copy follow the window's format, Revert reads the file

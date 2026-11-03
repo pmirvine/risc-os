@@ -393,7 +393,7 @@ describe('Keymap: RISC OS function keys and Ctrl-S, Ctrl-N', () => {
   });
   it('WINDOW lists the window commands', () => {
     assert.deepEqual([...WINDOW].sort(), ['bookmark', 'close', 'find',
-      'findNext', 'findPrev', 'hyperlink', 'new', 'replace', 'save',
+      'findNext', 'findPrev', 'hyperlink', 'new', 'print', 'replace', 'save',
       'saveBox', 'sendToBack', 'fieldCodes', 'styleList', 'footnote',
       'endnote', 'comment', 'nextNote', 'prevNote', 'trackChanges',
       'nextChange', 'prevChange', 'spell'].sort());

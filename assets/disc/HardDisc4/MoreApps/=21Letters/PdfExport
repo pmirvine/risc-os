@@ -39,7 +39,9 @@
 //       file that could not be loaded, that its text will not show,
 //       and each picture left out with why
 //   sizeOf(page) -> {px: [w, h], pt: [w, h]}  the page's size, each
-//       side kept to 3..14400 points (the PDF limits)
+//       side kept to 3..14400 points (the PDF limits); ./PagesRun's
+//   paginate(dw, pics) -> {doc, L, P}  the pages laid out apart
+//       (./PagesRun's)
 //   picsOf() -> pics  the layout's pictures (L.pics, ./PicPaint):
 //       get(bytes, mime, info) -> {state: 'ready', bitmap: {width,
 //       height, bytes, mime, info}}, width x height the picture's
@@ -56,13 +58,14 @@
 //       OffscreenCanvas (a cache of 20000 widths); null with neither
 //   SLICE_MS  30: the painting a slice does before it yields
 //
-// The layout: a fresh ./DocLayout of dw.doc with the window's text
-// metrics, floats on (Print layout), the window's markup view and
-// fields (their shading off, results not codes, as Word prints),
-// settled as Print layout settles (./ViewPass settle: one blocking
-// pass, its pages all worked out), then placed (./PlacePrint). The
-// window's own layout, pages, undo and saved state are not touched,
-// so it works in every view. Each page: sink.begin at its size (px,
+// The layout and the page loop are ./PagesRun eachPage's: a fresh
+// ./DocLayout of dw.doc with the window's text metrics, floats on
+// (Print layout), the window's markup view and fields (their shading
+// off, results not codes, as Word prints), settled as Print layout
+// settles (./ViewPass settle: one blocking pass, its pages all
+// worked out), then placed (./PlacePrint). The window's own layout,
+// pages, undo and saved state are not touched, so it works in every
+// view. Each page: sink.begin at its size (px,
 // twips / 15), ./PagePaint paintPage with marks off, its pictures
 // settled; when a face it drew in was not loaded yet the faces are
 // loaded and the page painted again. Each run of text is fitted to
@@ -83,9 +86,7 @@
 // set (./FieldDates coreOf), producer '!Letters'. Uses
 // requestAnimationFrame, createImageBitmap and OffscreenCanvas
 // unless given others; no other desktop services.
-import {DocLayout} from './DocLayout';
-import {settle} from './ViewPass';
-import {PlacePrint} from './PlacePrint';
+import {eachPage, aborted} from './PagesRun';
 import {paintPage} from './PagePaint';
 import {PdfSink} from './PdfSink';
 import {keyOf} from './PdfFiles';
@@ -96,8 +97,8 @@ import {PdfWriter, num, str} from 'wimplib/PdfWrite';
 import {FontSet} from 'wimplib/PdfFont';
 import {imageObjects, jpegInfo} from 'wimplib/PdfImage';
 
-export const SLICE_MS = 30;
-const LAYOUT_W = 800;                  // (any width: pages the same)
+export {paginate, sizeOf, SLICE_MS} from './PagesRun';
+const STOPPED = 'The PDF export was stopped';
 const TRIES = 3;                       // (paints of a page, at most)
 const WIDTHS = 20000;                  // (the canvas measure's cache)
 
@@ -218,92 +219,18 @@ function imageSink(writer, rasterise) {
   }};
 }
 
-/** The rejection of an aborted export. */
-function aborted() {
-  const text = 'The PDF export was stopped';
-  if (typeof DOMException === 'function') {
-    return new DOMException(text, 'AbortError');
-  }
-  const e = new Error(text);
-  e.name = 'AbortError';
-  return e;
-}
-
-/** The window's fields as printed: no shading, results shown. */
-function fieldsOf(dw) {
-  const f = dw.fields;
-  if (!f || typeof f !== 'object') return undefined;
-  const out = {...f, shade: {mode: 'never'}};
-  delete out.codes;
-  return out;
-}
-
-/** dw.doc's Print layout pages, laid out apart: {L, P}. */
-function paginate(dw, pics) {
-  const doc = dw.doc || dw.d.doc, old = dw.L;
-  const base = new DocLayout(doc, old.metrics, null, {floats: true,
-    pics, markup: dw.markup, fields: fieldsOf(dw)});
-  const w = old.width > 0 && Number.isFinite(old.width) ? old.width
-    : LAYOUT_W;
-  base.layout(w);
-  const {L, P} = settle(doc, {L: base});
-  L.place = PlacePrint(L, P);
-  L.layout(L.width);
-  return {doc, L, P};
-}
-
-/** The least and most a PDF page side may be (Acrobat's limits). */
-const MIN_PT = 3, MAX_PT = 14400;
-
-/** A page's size: px for the sink, points for the PDF (each side
- *  3..14400 pt; the px are the same size, so that the content and
- *  the MediaBox agree). */
-export function sizeOf(pg) {
-  const s = pg.size;
-  const tw = s && s.w > 0 && s.h > 0 ? s : {w: pg.w * 15, h: pg.h * 15};
-  const pt = [tw.w / 20, tw.h / 20].map((v) => Math.min(MAX_PT,
-    Math.max(MIN_PT, Number.isFinite(v) ? v : MIN_PT)));
-  return {px: pt.map((v) => v * 4 / 3), pt};
-}
-
 /** A core property, or undefined when it is empty. */
 const prop = (s) => (typeof s === 'string' && s.trim() ? s
   : undefined);
 
 const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
 
-/** See the header. */
-export async function exportPdf(dw, opts = {}) {
-  const {from = 1, to = Infinity, signal, onProgress, loader,
-    rasterise = rasterOf} = opts;
-  if (typeof loader !== 'function') {
-    throw new TypeError('exportPdf: a font loader is needed');
-  }
-  const raf = opts.raf || (typeof requestAnimationFrame === 'function'
-    ? requestAnimationFrame : (cb) => setTimeout(cb, 0));
-  const clock = opts.clock || (() => (typeof performance === 'object'
-    ? performance.now() : Date.now()));
-  const check = () => {
-    if (signal && signal.aborted) throw aborted();
-  };
-  const progress = (k, n, phase) => {
-    if (onProgress) onProgress(k, n, phase);
-  };
-
-  check();
-  progress(0, 0, 'preparing');
-  // one frame, so that the message is painted before the layout
-  // below blocks the desktop
-  await new Promise((res) => raf(() => res()));
-  check();
-  const pics = picsOf();
-  const {doc, L, P} = paginate(dw, pics);
-  check();
-  const a = Math.max(1, Math.ceil(Number(from)));
-  const b = Math.min(P.count, Math.floor(Number(to)));
-  if (!(a <= b)) throw new Error('No pages to export');
-  const total = b - a + 1;
-
+/** The file's writer, fonts and sink for the pages a to b of P
+ *  (1-based), and page(P, i, place, size), which paints page i and
+ *  writes it; links() writes the bookmark links once every page is
+ *  written. */
+function jobOf(dw, opts, {doc, P, from: a, to: b}) {
+  const {loader, rasterise = rasterOf} = opts;
   const core = coreOf(doc);
   const writer = new PdfWriter({title: prop(core.title),
     author: prop(core.creator), producer: '!Letters', now: opts.now});
@@ -338,15 +265,11 @@ export async function exportPdf(dw, opts = {}) {
   };
   const pageIds = new Map(), dests = [];
 
-  progress(0, total, 'pages');
-  let start = clock();
-  for (let i = a - 1; i < b; i++) {
-    check();
-    const pg = P.at(i), {px, pt} = sizeOf(pg);
+  const page = async (P, i, place, {px, pt}) => {
     let out = null;
     for (let k = 0; k < TRIES; k++) {
       sink.begin(px[0], px[1]);
-      paintPage(P, i, sink, {place: L.place, marks: false});
+      paintPage(P, i, sink, {place, marks: false});
       await sink.settle();
       out = sink.end();
       if (out.ready) break;
@@ -359,16 +282,37 @@ export async function exportPdf(dw, opts = {}) {
     an.put(pid);
     pageIds.set(i, pid);
     dests.push(...an.dests);
-    progress(i - a + 2, total, 'pages');
-    if (i + 1 < b && clock() - start >= SLICE_MS) {
-      await new Promise((res) => raf(() => res()));
-      start = clock();
+  };
+  const links = () => {
+    for (const d of dests) {
+      writer.put(d.id, d.head + ' /P ' + d.pid + ' 0 R /Dest [' +
+        pageIds.get(d.i) + ' 0 R /Fit] >>');
     }
+  };
+  return {writer, fonts, sink, page, links};
+}
+
+/** See the header. */
+export async function exportPdf(dw, opts = {}) {
+  const {signal, onProgress} = opts;
+  if (typeof opts.loader !== 'function') {
+    throw new TypeError('exportPdf: a font loader is needed');
   }
-  for (const d of dests) {
-    writer.put(d.id, d.head + ' /P ' + d.pid + ' 0 R /Dest [' +
-      pageIds.get(d.i) + ' 0 R /Fit] >>');
-  }
+  const check = () => {
+    if (signal && signal.aborted) throw aborted(STOPPED);
+  };
+  const progress = (k, n, phase) => {
+    if (onProgress) onProgress(k, n, phase);
+  };
+
+  let job = null;
+  const {pages: total} = await eachPage(dw, {from: opts.from,
+    to: opts.to, signal, onProgress, raf: opts.raf, clock: opts.clock,
+    pics: picsOf(), stopped: STOPPED,
+    onPages: (o) => { job = jobOf(dw, opts, o); }},
+  (P, i, place, size) => job.page(P, i, place, size));
+  const {writer, fonts, sink} = job;
+  job.links();
   check();
   progress(total, total, 'writing');
   await fonts.embed();

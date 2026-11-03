@@ -36,7 +36,7 @@ describe('MacKeys', () => {
   });
   it('never Cmd-R, Cmd-L, Cmd-C, Cmd-X, Cmd-V, nor other keys', () => {
     for (const k of ['r', 'l', 'c', 'x', 'v', 'm', 'q', 'w', 't',
-      'h', 'p', 'o', '=', '+', '-', '.', ',', ' ', '1', 'ArrowLeft',
+      'h', 'o', '=', '+', '-', '.', ',', ' ', '1', 'ArrowLeft',
       'Backspace', 'Enter']) {
       const ev = cmd(k);
       assert.equal(macKey(ev, true), ev, k);

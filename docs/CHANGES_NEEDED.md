@@ -638,3 +638,18 @@ in `_copyCut`: not done (no shared-code change in the !Letters work).
   package (`package.json` maps `gamelib/*` to the sources) so the tests import the modules as the disc programs do.
 * Pre-existing, unchanged: `import` text inside comments is resolved, so the library's sources have none (checked by
   `disc-gamelib.mjs`).
+
+## Printers: a job whose html promise is rejected {cancelled: true} closes its output window — noted by the !Letters Print work (!Letters)
+**Status:** done (backwards compatible); documented in docs/apps/Printers.md.
+
+* `src/apps/Printers/main.js` `pump()`: in the catch around a queued job, `if (e?.cancelled) job.out?.close();`.
+  Before, an app that gave `print()` an `html` Promise and then abandoned it (the user cancelled while the pages were
+  being made) had to reject it with `{cancelled: true}` to avoid "Printing aborted", but the output window opened in
+  the click stayed open showing "Printing...". Now it is closed; no error box; `print()` resolves `false` as before.
+  Used by !Letters' Print (`PrintOut` rejects with `cancelled` for Cancel, the window closing, and its own errors,
+  which `PrintBox` says itself). Tested in `tests/integration/flows.mjs` (group `print`).
+* Same catch: null-safe (`e?.cancelled`, `e?.message`): a job rejected with no reason (`null`) used to throw inside
+  the catch, leaving the job in the queue and every later job for that printer waiting; now it says "Printing
+  aborted: null" and the queue moves on.
+* `src/apps/Printers/print.js` `fileHtml(title, css, html)` (new, used by the "To file" connection): the title is
+  escaped in the file's `<title>` (a document name with `<` or `&` could put markup in the saved file).

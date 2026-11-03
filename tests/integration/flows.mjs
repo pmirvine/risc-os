@@ -212,6 +212,42 @@ if (on('print')) {
   const img = pp ? await pp.evaluate(() => { const i = document.querySelector('img'); return i ? { w: i.style.width, ok: i.src.startsWith('data:image/png') } : null; }).catch(() => null) : null;
   check('Paint print sprite: output page has the sprite at true size', img?.ok && /in$/.test(img.w), img);
   eb = await errorBox(page); check('Paint print: no error box', !eb, eb ?? '');
+
+  // an app abandons its job: html rejected {cancelled: true} -> the output window closed, nothing said
+  await pp?.close().catch(() => {});
+  const popup3 = page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null);
+  await page.evaluate(() => {
+    let no;
+    const html = new Promise((res, rej) => { no = rej; });
+    window.__cancelled = os.printers.print({ title: 'Abandoned', html });
+    setTimeout(() => no(Object.assign(new Error('stopped'), { cancelled: true })), 300);
+  });
+  pp = await popup3;
+  check('cancelled job: the output window opened at once', !!pp);
+  const sent = await page.evaluate(() => window.__cancelled);
+  await sleep(page, 300);
+  check('cancelled job: print() answers false', sent === false, sent);
+  check('cancelled job: the output window closed', !pp || pp.isClosed());
+  eb = await errorBox(page); check('cancelled job: no error box', !eb, eb ?? '');
+
+  // a job rejected with no reason (null): said, and the queue is not jammed
+  const nullRes = await page.evaluate(() => os.printers.print({ title: 'Null', html: Promise.reject(null) }));
+  check('null rejection: print() answers false', nullRes === false, nullRes);
+  eb = await errorBox(page); check('null rejection: "Printing aborted" said', /aborted/i.test(eb ?? ''), eb ?? '');
+  await closeErrors(page);
+  for (const p of page.context().pages().slice(1)) await p.close().catch(() => {});
+  const popup4 = page.context().waitForEvent('page', { timeout: 8000 }).catch(() => null);
+  const next = page.evaluate(() => Promise.race([os.printers.print({ title: 'After', text: 'next job' }),
+    new Promise((r) => setTimeout(() => r('jammed'), 5000))]));
+  await popup4;
+  const nextRes = await next;
+  check('null rejection: the next job still prints', nextRes === true, nextRes);
+  for (const p of page.context().pages().slice(1)) await p.close().catch(() => {});
+
+  // "To file": the title is escaped in the file's <title>
+  const fileTitle = await page.evaluate(async () => (await import('/src/apps/Printers/print.js'))
+    .fileHtml('<b>A & B</b>', '', 'x'));
+  check('To file: the title escaped', fileTitle.includes('<title>&lt;b&gt;A &amp; B&lt;/b&gt;</title>'), fileTitle);
   check('print: no page errors', !errors.length, errors);
   await browser.close();
 }

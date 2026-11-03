@@ -21,7 +21,7 @@ configuration windows), Messages and sprites (`!printers`, class sprites `dp`/`l
   BASIC as its listing; Sprite files at true size (180 OS units/inch); JPEG/GIF/PNG; HTML. Unknown types get the
   "Query from Printer Manager" box (Plain = print as text). Drawfiles are rendered at true size by Draw's `printDrawfile` (registered by Draw's boot hook; `print.js` also
   imports it directly as a fallback).
-  Connection "File" writes the text/HTML to the file name instead (Append supported).
+  Connection "File" writes the text/HTML to the file name instead (Append supported; the HTML page's title escaped: `fileHtml`).
 
 ## API for other applications (`os.printers`, null while !Printers isn't running)
 
@@ -34,4 +34,13 @@ await os.printers.printFile(path)                        // same as dropping the
 os.printers.registerRenderer(0xAFF, async (bytes, path) => ({ canvas }))   // or {html} / html string
 ```
 Call `print()` from a click/menu handler: the output window is opened synchronously so pop-up blockers allow it.
+`html` may be a Promise (made after the window opened: Paint, !Letters' Print). To abandon such a job (the user
+cancelled while it was being made), reject the promise with `{cancelled: true}` (e.g.
+`Object.assign(new Error('stopped'), {cancelled: true})`): the output window is closed, no error box is shown, the
+job leaves the queue and `print()` resolves `false`. Any other rejection says "Printing aborted: <message>" and
+leaves the window showing "Printing..." (so an app that reports its own error should reject with `cancelled`, as
+!Letters does; a rejection with no reason says "Printing aborted: null"). The promise must always settle: the printer prints one job at a time and later jobs wait for it.
+Apps that print through `os.printers` include !Letters (File > Print...: `docs/apps/Letters.md`, "Print"), which hands over page images as `html`.
+`css` is put after the page CSS (`@page` size from the printer's paper, margin 12mm, `img.pic` pixelated), so an
+app's rules of the same specificity win (e.g. `@page{margin:0}`).
 Apps loaded before Printers starts can put `[type, fn]` pairs in `os.printerRenderers` (array) to be picked up.

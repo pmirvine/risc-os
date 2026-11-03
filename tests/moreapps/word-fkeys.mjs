@@ -319,7 +319,7 @@ try {
       return { top, ed };
     });
     ok('the window menu shows Ctrl+S, F3, F2 and Ctrl+F2', same(m.top, [['Save', 'Ctrl+S'], ['Save as', 'F3'], ['Revert', ''],
-      ['Save a copy', ''], ['Export as PDF...', ''], ['Info', ''], ['Edit', ''], ['Insert', ''], ['View', ''], ['Outline', ''], ['Format', ''], ['Table', ''], ['Tools', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
+      ['Save a copy', ''], ['Export as PDF...', ''], ['Print...', 'Ctrl+P'], ['Info', ''], ['Edit', ''], ['Insert', ''], ['View', ''], ['Outline', ''], ['Format', ''], ['Table', ''], ['Tools', ''], ['Zoom', ''], ['New', 'F2'], ['Close', 'Ctrl+F2']]), m.top);
     ok('the Edit menu shows Ctrl+Z, Ctrl+Y and Ctrl+F for Find... (F4 named in its help)', m.ed[0][1] === 'Ctrl+Z'
       && m.ed[1][1] === 'Ctrl+Y' && same(m.ed.find((x) => x[0] === 'Find...'), ['Find...', 'Ctrl+F']), m.ed);
     const tb = await ev(() => { const d = window.__by('Plain'); return { toolbar: !!d.toolbar, ruler: d.rulerOn, zoom: d.zoom }; });
@@ -371,7 +371,7 @@ await browser.close();
       return { title, n0, n1, top };
     });
     ok('Mac: Cmd-S saves, Cmd-N makes a new document', r.title === 'Plain' && r.n1 === r.n0 + 1, r);
-    ok('Mac: the window menu shows Cmd+S, F3, F2, Ctrl+F2', same(r.top, [['Save', 'Cmd+S'], ['Save as', 'F3'], ['New', 'F2'], ['Close', 'Ctrl+F2']]), r.top);
+    ok('Mac: the window menu shows Cmd+S, F3, Cmd+P, F2, Ctrl+F2', same(r.top, [['Save', 'Cmd+S'], ['Save as', 'F3'], ['Print...', 'Cmd+P'], ['New', 'F2'], ['Close', 'Ctrl+F2']]), r.top);
   } catch (e) {
     out.push('FAIL exception (Mac) ' + (e.stack ?? e));
   }

@@ -171,7 +171,7 @@ try {
       ['Formatting marks', false, false], ['Ruler', true, false], ['Header and footer', false, false],
       ['Header and footer options', false, true], ['Field codes', false, false], ['Field shading', false, false]]), m1);
   const wm = await ev(() => window.__doc('Three').win.menu({}).items.map((i) => i.text));
-  ok('the window menu has View after Insert', same(wm.slice(6, 11), ['Edit', 'Insert', 'View', 'Outline', 'Format']), wm);
+  ok('the window menu has View after Insert', same(wm.slice(7, 12), ['Edit', 'Insert', 'View', 'Outline', 'Format']), wm);
   const fm = await ev(() => window.__doc('Three').win.menu({}).items.find((i) => i.text === 'Format').submenu().items.map((i) => i.text));
   ok('Format has no Ruler any more', !fm.includes('Ruler') && fm.includes('Format painter'), fm);
 

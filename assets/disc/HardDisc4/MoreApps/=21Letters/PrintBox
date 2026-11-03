@@ -1,0 +1,206 @@
+// PrintBox - the window menu's Print... (Print batch): the box that
+// sends the document's Print layout pages to the printer chosen in
+// !Printers (os.printers), changing nothing in the window (its
+// document, undo, '*' stay).
+//
+//   printBox(dw) -> the box's api (WimpLib Ui/Dialog), one per
+//       document (key 'print:<docKey>', dw.boxes 'print': ./CloseDoc
+//       deletes it with the document); asked again while open, the
+//       same box to the front. No printer driver (os.printers null,
+//       or its current null: !Printers not running, or no printer
+//       chosen): NO_PRINTER said in an error box, no box, null.
+//       Pages: All, or From / To (as ./PdfBox's: number fields,
+//       shaded with All; typing in one picks From); Fit to paper (on
+//       when the box opens: each page scaled to the paper, else at
+//       its own size; centred either way); a line naming the printer
+//       and its paper ('Printer: <name>, <paper> portrait' or
+//       'landscape', read when the box opens and at Print); the
+//       markup line (./RangeBox markupLine of dw.markup).
+//       Print: the range read (rangeOf, verb 'print'; refused: a
+//       beep, why in the box, nothing more); no printer now:
+//       NO_PRINTER said, the box kept; else ./PrintOut printHtml
+//       called inside the click (!Printers opens its output window
+//       there, so the browser allows it) with the pages still being
+//       made (./PrintPages renderPages, a promise), the progress in
+//       the box ('Preparing pages...', 'Page n of N'), the fields
+//       and Print shaded; Print again meanwhile: RUNNING in the box.
+//       The pages made: the box closed (the printing, its queue and
+//       the browser's print dialogue are !Printers'). Cancel, the
+//       close icon or the window closing stops it (an AbortSignal):
+//       the job's html rejected {cancelled: true} (!Printers closes
+//       its window, says nothing), nothing said. Another error (no
+//       pages to print, print() throwing) is said in an error box,
+//       the box kept (the job rejected the same way, so said once).
+//       print() answering false while the pages are made (!Printers
+//       refused the job and said why): stopped, the box kept. A run
+//       stopped leaves the box usable at once (Print not refused).
+//   NO_PRINTER, RUNNING  the messages
+//
+// State is per box (a WeakMap of the api), looked up when a button
+// is pressed; os.printers and its current printer are read then too
+// (!Printers may have quit or changed printer since). The slices
+// yield to ./RangeBox raf while the desktop's page is seen (and to
+// renderPages' own message while it is hidden, as it often is behind
+// the output window); runIn shows the progress.
+import {wimp, os, reportError} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {rangeOf, markupLine, countOf, runIn} from './RangeBox';
+import {renderPages, paperOf} from './PrintPages';
+import {printHtml} from './PrintOut';
+
+export const NO_PRINTER = 'There is no printer driver: start ' +
+  '!Printers (double-click its icon in Apps), then Print again.';
+export const RUNNING = 'The pages are being made for the printer: ' +
+  'wait for them, or click Cancel.';
+const MAX = 99999;
+const SIZE = ' paper size';
+const num = (name, label, help) => ({kind: 'number', name, label,
+  min: 0, max: MAX, decimals: 0, w: 80, help});
+const rows = () => [
+  {kind: 'label', text: 'Pages'},
+  {kind: 'radio', name: 'all', group: 'pages', value: 'all',
+    text: 'All', help: 'Print every page.'},
+  [{kind: 'radio', name: 'range', group: 'pages', value: 'range',
+    text: 'From', help: 'Print only the pages From to To.'},
+  num('from', undefined, 'The first page to print (empty: the ' +
+    'first).'),
+  num('to', 'To', 'The last page to print (empty: the last).')],
+  {kind: 'option', name: 'fit', text: 'Fit to paper',
+    help: 'Scale each page to fit the printer\'s paper. Off: each ' +
+      'page at its own size, centred on the paper.'},
+  {kind: 'label', name: 'printer', text: '', w: 460},
+  {kind: 'label', name: 'markup', text: '', w: 460},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+const HELP = 'Print: this document\'s pages, as Print layout shows ' +
+  'them, on the printer chosen in !Printers.';
+const state = new WeakMap();           // api -> {ctrl}
+const fail = (m) => reportError(m, {appName: 'Letters'});
+
+/** The printer now: os.printers' current one, or null. */
+function printerNow() {
+  const p = os.printers;
+  return (p && p.current) || null;
+}
+
+/** The box's line for printer cur. */
+function printerLine(cur) {
+  const n = String((cur.paper && cur.paper.name) || '');
+  const paper = n.toLowerCase().endsWith(SIZE)
+    ? n.slice(0, -SIZE.length) : n;
+  return `Printer: ${cur.name}, ${paper} ` +
+    (cur.landscape ? 'landscape' : 'portrait');
+}
+
+/** See the header. */
+export function printBox(dw) {
+  const cur = printerNow();
+  if (!cur) {
+    fail(NO_PRINTER);
+    return null;
+  }
+  const api = dialog({task: dw.app.task, key: `print:${dw.docKey}`,
+    title: 'Print', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Print'], enter: 'Print', minW: 500});
+  box(dw, 'print', () => api.win);
+  if (!state.has(api)) wire(api, dw);
+  if (!state.get(api).ctrl) api.set('printer', printerLine(cur));
+  if (api.isOpen) return api;
+  api.set('pages', 'all');
+  api.set('from', undefined);
+  api.set('to', undefined);
+  api.set('fit', true);
+  api.set('markup', markupLine(dw.markup));
+  api.set('msg', '');
+  shading(api);
+  api.open();
+  return api;
+}
+
+/** Shade what is not in use. */
+function shading(api) {
+  const st = state.get(api), busy = !!(st && st.ctrl);
+  const off = busy || api.get('pages') !== 'range';
+  api.shade('from', off);
+  api.shade('to', off);
+  for (const n of ['all', 'range', 'fit', 'Print']) api.shade(n, busy);
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  state.set(api, {ctrl: null});
+  api.on('change', ({name}) => {
+    if ((name === 'from' || name === 'to') &&
+      api.get('pages') !== 'range') api.set('pages', 'range');
+    shading(api);
+  });
+  api.on('close', () => {
+    stop(api);
+  });
+  api.on('button', ({name, values}) => {
+    if (name !== 'Print') return undefined;
+    start(dw, api, values);
+    return false;
+  });
+}
+
+/** Print pressed: the checks, then the job, handed to !Printers at
+ *  once (this runs inside the click). */
+function start(dw, api, values) {
+  const st = state.get(api);
+  if (st.ctrl) {
+    api.set('msg', RUNNING);
+    return;
+  }
+  const r = rangeOf(values, countOf(dw), 'print');
+  if (r.bad) {
+    wimp.beep();
+    api.set('msg', r.bad);
+    api.focus(r.bad.startsWith('To') ? 'to' : 'from');
+    return;
+  }
+  const cur = printerNow();
+  if (!cur) {
+    fail(NO_PRINTER);
+    return;
+  }
+  api.set('printer', printerLine(cur));
+  api.set('msg', '');
+  const paper = {...cur.paper, landscape: cur.landscape};
+  const pages = runIn(dw, api, st, shading, (o) => renderPages(dw,
+    {...r, paper, fit: values.fit !== false, ...o}));
+  const ctrl = st.ctrl;
+  let sent;
+  try {
+    sent = printHtml(os.printers, {title: dw.leaf, pages,
+      paper: paperOf(paper)});
+  } catch (e) {
+    stop(api);
+    fail(e && e.message || String(e));
+    return;
+  }
+  let refused = false;
+  Promise.resolve(sent).then((ok) => {
+    if (ok !== false || st.ctrl !== ctrl) return;
+    refused = true;                    // (!Printers has said why)
+    stop(api);
+  }, () => {});
+  pages.then((out) => {
+    if (out && !refused && !api.gone) api.delete();
+  }, (e) => {
+    if (!api.gone && !dw.closed) fail(e && e.message || String(e));
+  });
+}
+
+/** The box's run stopped now: aborted, the box usable at once. */
+function stop(api) {
+  const st = state.get(api);
+  if (!st.ctrl) return;
+  st.ctrl.abort();
+  st.ctrl = null;
+  if (!api.gone) {
+    api.set('msg', '');
+    shading(api);
+  }
+}

@@ -31,13 +31,10 @@
 //       boxes kept. An input method's composing text is not put in
 //       first (the export never edits the document).
 //   rangeOf(values, count) -> {from, to} | {bad}  exportPdf's from
-//       and to from the box's values: All every page (1 to
-//       Infinity); From / To clamped to 1..count (count null when
-//       not known: To then unclamped, the export ends at its last
-//       page), an empty field the end of its side; text that is not
-//       a number, or From after To, {bad: why}
+//       and to from the box's values (./RangeBox's, its words 'no
+//       pages to export')
 //   markupLine(mode) -> 'Markup: final text', 'Markup: all markup
-//       shown' or 'Markup: original text' (./RevView's modes)
+//       shown' or 'Markup: original text' (./RangeBox's)
 //   pdfName(dw, dir, exists) -> the save box's name: the document's
 //       path (an untitled one: ./SaveState suggestName's) with its
 //       '/docx' or '/rtf' (any case) put as '/pdf', or '/pdf'
@@ -47,7 +44,8 @@
 // TrueType files from the application's Fonts directory (vfs, as
 // ./FontLoad reads them), the RISC OS ones fetched from
 // assets/fonts. The export's slices yield to requestAnimationFrame
-// or 100 ms, whichever comes first (a hidden page has no frames).
+// or 100 ms, whichever comes first (a hidden page has no frames):
+// ./RangeBox raf, and runIn shows the progress.
 import {wimp, vfs, saveAs, reportError} from 'riscos';
 import {dialog} from 'wimplib/Ui/Dialog';
 import {box} from './Boxes';
@@ -56,10 +54,12 @@ import {canWrite, notSaved} from './DocSave';
 import {guardOK} from './Replace';
 import {exportPdf} from './PdfExport';
 import {fileLoader} from './PdfFiles';
+import {rangeOf, markupLine, countOf, runIn} from './RangeBox';
+
+export {rangeOf, markupLine};
 
 const PDF = 0xADF;
 const MAX = 99999;
-const WAIT_MS = 100;
 const there = (p) => { try { return vfs.exists(p); } catch (e) {
   return false; } };
 const num = (name, label, help) => ({kind: 'number', name, label,
@@ -82,8 +82,6 @@ const rows = () => [
 ];
 const HELP = 'Export as PDF: this document\'s pages as a PDF file, ' +
   'as Print layout shows them.';
-const MARKUP = {final: 'final text', all: 'all markup shown',
-  original: 'original text'};
 const RUNNING = 'The PDF is being made: wait for it, or click ' +
   'Cancel in the Export as PDF box.';
 const state = new WeakMap();           // api -> {range, ctrl}
@@ -91,24 +89,6 @@ const live = new WeakMap();            // dw -> {api, st}: its box now
 const loaders = new WeakMap();         // app -> font loader
 const say = (m) => reportError(m, {appName: 'Letters',
   category: 'info'});
-
-/** See the header. */
-export function markupLine(mode) {
-  return 'Markup: ' + (MARKUP[mode] || MARKUP.final);
-}
-
-/** See the header. */
-export function rangeOf(values, count) {
-  if (values.pages !== 'range') return {from: 1, to: Infinity};
-  const {from, to} = values;
-  if (from === null) return {bad: 'From is not a page number.'};
-  if (to === null) return {bad: 'To is not a page number.'};
-  const top = count > 0 ? count : Infinity;
-  const a = Math.min(Math.max(1, from === undefined ? 1 : from), top);
-  const b = to === undefined ? top : Math.min(Math.max(1, to), top);
-  if (a > b) return {bad: 'From is after To: no pages to export.'};
-  return {from: a, to: b};
-}
 
 /** See the header. */
 export function pdfName(dw, dir, exists) {
@@ -119,13 +99,6 @@ export function pdfName(dw, dir, exists) {
   const stem = low.endsWith('/docx') ? leaf.slice(0, -5)
     : low.endsWith('/rtf') ? leaf.slice(0, -4) : leaf;
   return p.slice(0, i) + (stem || 'Untitled') + '/pdf';
-}
-
-/** The window's page count when Print layout has them all, else
- *  null. */
-function countOf(dw) {
-  const P = dw.viewName === 'print' ? dw.pages : null;
-  return P && P.done ? P.count : null;
 }
 
 /** The program's font loader (made once). */
@@ -141,16 +114,6 @@ function loaderOf(app) {
     loaders.set(app, l);
   }
   return l;
-}
-
-/** A frame, or WAIT_MS, whichever comes first. */
-function raf(cb) {
-  let done = false;
-  const go = () => { if (!done) { done = true; cb(); } };
-  if (typeof requestAnimationFrame === 'function') {
-    requestAnimationFrame(go);
-  }
-  setTimeout(go, WAIT_MS);
 }
 
 /** See the header. */
@@ -261,27 +224,7 @@ function saveBox(dw) {
 
 /** The export with its progress in the box: its result, or null
  *  when it was stopped (the box gone, or the window closed). */
-async function run(dw, api, st) {
-  const ctrl = new AbortController();
-  st.ctrl = ctrl;
-  shading(api);
-  const show = (t) => { if (!api.gone) api.set('msg', t); };
-  try {
-    const out = await exportPdf(dw, {...st.range,
-      loader: loaderOf(dw.app), signal: ctrl.signal, raf,
-      onProgress: (k, n, phase) => {
-        if (phase === 'preparing') show('Preparing pages...');
-        else if (phase === 'writing') show('Writing...');
-        else if (k < n) show(`Page ${k + 1} of ${n}`);
-      }});
-    return ctrl.signal.aborted || dw.closed || api.gone ? null : out;
-  } catch (e) {
-    if (ctrl.signal.aborted || dw.closed || api.gone ||
-      (e && e.name === 'AbortError')) return null;
-    throw e;
-  } finally {
-    st.ctrl = null;
-    show('');
-    if (!api.gone) shading(api);
-  }
+function run(dw, api, st) {
+  return runIn(dw, api, st, shading, (o) => exportPdf(dw,
+    {...st.range, loader: loaderOf(dw.app), ...o}));
 }

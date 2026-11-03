@@ -28,7 +28,7 @@ operations and undo, a reader and a writer for `.docx` that keep everything they
 Copy, cut and paste are in (deliverable 6b, `EditClip`), and Find / Replace (`Find`, `EditFind`, `Ui/FindBox`). Batch A added the everyday Insert and paragraph features
 (spacing, new lists, page and section breaks, tab stops, borders and shading, symbols, change case, hyperlinks,
 bookmarks, a format painter and a word count). Not there yet: layout and pagination (breaks are only marks), margins,
-making styles and list definitions of your own, and printing.
+making styles and list definitions of your own. (Printing came later: see "Print".)
 Spell check (English (UK)) is in; see "Spell check (Batch F3)" below, and PDF export (the window menu's Export as PDF...)
 under "PDF export (Batch G1)". RTF (open and save, Save as asking Word or RTF) is in; see "Rich Text Format (Batch G2)" below.
 
@@ -2693,7 +2693,7 @@ and the decision it builds, `Dn`). This section is the map.
   20-30 s of slices (the caret's page within 40 ms). Details: "The 50,000-paragraph document" and each section's
   Cost line.
 * **User guide:** `$.Docs.Letters` parts 2 (the four views, Outline's keys and menu), 11, 12 and 13, and 20 (what is
-  coming: tracked changes, printing; footnotes and endnotes came in Batch E2, part 24, and tables of contents, captions and cross-references in Batch E3, part 25).
+  coming: tracked changes; printing is part 31; footnotes and endnotes came in Batch E2, part 24, and tables of contents, captions and cross-references in Batch E3, part 25).
 
 ## Pages (Batch D): the rules
 
@@ -4542,8 +4542,13 @@ In `tools/moreapps/!Letters`:
 |---|---|
 | `PdfFiles` | `parseFont`, `keyOf` and `fileLoader`: which font file draws a canvas font string. |
 | `PdfSink` | The recording context: canvas calls to a content stream (graphics state stack, clip, alpha as ExtGState, `drawImage`, `fillText` with its Fitting, `link`). |
-| `PdfExport` | `exportPdf(dw, opts) -> {bytes, pages, missing, notes}`: the layout, the paint loop, links, the Info dictionary (title and creator from the core properties; producer `!Letters`), fonts and the file. |
-| `PdfBox` | The Export as PDF box (Pages All / From / To, the markup line, progress, Cancel) and the save box (file type &ADF) that runs the export; `rangeOf`, `markupLine`, `pdfName`. |
+| `PagesRun` | Shared with Print: `eachPage(dw, {from, to, verb, pics, signal, onProgress, onPages, raf, clock, sliceMs}, paint)`: the window's Print layout pages laid out apart (`paginate`), visited in order in slices, abortable (`AbortError`), progress `(0,0,'preparing')`, `(0,n,'pages')`, `(k,n,'pages')`; `sizeOf`, `aborted`, `SLICE_MS`. |
+| `PdfExport` | `exportPdf(dw, opts) -> {bytes, pages, missing, notes}`: on `eachPage`, each page painted into the sink and written; links, the Info dictionary (title and creator from the core properties; producer `!Letters`), fonts and the file. Re-exports `paginate`, `sizeOf`, `SLICE_MS`. |
+| `RangeBox` | Shared by the boxes that make pages: `rangeOf(values, count, verb = 'export')`, `markupLine`, `countOf`, `raf` (a frame or 100 ms), `progressLine`, `runIn` (a run with its progress in the box, its AbortController, stopped is null). |
+| `PrintPages` | Print's pages: `renderPages(dw, {from, to, paper: {width, height, landscape}, fit, dpi, signal, onProgress, raf, canvasFactory, decode, fonts}) -> {pages: [{url, x, y, w, h}], count} \| null` (each page on a white canvas of its printed size, JPEG q0.9 data URL, the canvas dropped after; its own PicCache, the page painted again once pictures decode or faces load; null when stopped, at once even while a picture decodes or a face loads: those waits are raced against the signal); `fitPlacement` (mm on the paper, fit or 100% centred), `paperOf` (the printer's paper, landscape turned, 0.1 mm), `dpiFor` (200 / 150 above 100 pages / 100 above 250), `canvasSize` (sides <= 4096 px, area <= 16 Mpx: a big page drawn coarser). |
+| `PrintOut` | The hand-over to !Printers: `printHtml(printers, {title, pages, paper}) -> Promise<boolean>` calls `printers.print({title, html, css})` at once (the output window opens in the click) with `html` a promise of `markupOf(title, pages)` (a `div.lsheet` per page, the paper's size to 0.1 mm, the JPEG absolutely placed at its box, `image-rendering: auto`, own classes, not `img.pic`); `cssOf(paper)` adds `@page{size;margin:0}` (after Printers' page CSS, so it wins). Pages stopped or failed: `html` rejected `{cancelled: true}` (Printers closes its window, says nothing). |
+| `PrintBox` | The Print box (key `print:<docKey>`, `dw.boxes` 'print'): no printer (`os.printers` or its `current` null) -> `NO_PRINTER` error box and no box (`printBox` returns null); Pages All / From / To, Fit to paper (on), the printer line (`Printer: <name>, <paper> portrait|landscape`, ' paper size' dropped), the markup line; Print: `rangeOf(.., 'print')`, the printer read again, `renderPages` under `runIn` handed to `printHtml` inside the click; done: the box closed; Cancel / close / window closing: aborted; an error (or `print()` throwing) said once, the box kept; `print()` answering false while rendering (Printers said why): stopped, box kept; a stopped run frees the box at once; `RUNNING` for a second Print. `RangeBox.runIn` clears `st.ctrl` only if it is still its own. |
+| `PdfBox` | The Export as PDF box (Pages All / From / To, the markup line, progress, Cancel) and the save box (file type &ADF) that runs the export; `pdfName`, `refusal`; re-exports `rangeOf`, `markupLine`. |
 
 The window menu item is in `WinMenu`; `CloseDoc` deletes the box with its document. `!Letters` modules import the library
 as `wimplib/...`, never by a relative path (`import-gate.test.mjs` checks every import: a relative import into
@@ -4555,6 +4560,10 @@ as `wimplib/...`, never by a relative path (`import-gate.test.mjs` checks every 
 node --test tests/moreapps/pdfwrite.test.mjs tests/moreapps/pdffont.test.mjs tests/moreapps/pdfimage.test.mjs tests/moreapps/pdfcolour.test.mjs   # the library: objects and xref, fonts (parse, subset, CMap), images, colours
 node --test tests/moreapps/pdfsink.test.mjs tests/moreapps/pdfcensus.test.mjs tests/moreapps/pdffiles.test.mjs   # the sink (state, clip, text, fitting, links), the census of what the painters call, font choice
 node --test tests/moreapps/pdfexport.test.mjs tests/moreapps/pdfbox.test.mjs                                    # exportPdf (range, abort, links, notes) and the box
+node --test tests/moreapps/pagesrun.test.mjs     # eachPage (order, range, abort, progress, window untouched), RangeBox, and exportPdf's output unchanged (pdf-golden digests)
+node --test tests/moreapps/printpages.test.mjs   # Print's pages: fit table, paper, dpi tiers and canvas bounds, renderPages (order, white fill, release, abort, huge page, pictures and faces painted again)
+node --test tests/moreapps/printcorpus.test.mjs  # Print over the corpus (one file in 10; skipped without tests/moreapps/corpus): the pages printed are the pages exported for 5 ranges, each page's fillText strings and places those PdfSink wrote (one painter), the largest's time; hostile sizes (1 x 1 pt, 14400 x 14400 pt, 200 pages): canvases bounded and released, one alive, heap, progress, Cancel at once (also during a decode or a face load that never ends); fitPlacement over random sizes
+node --test tests/moreapps/printbox.test.mjs     # PrintOut's markup and css; the Print box: no printer, range, fit, the call inside the click, Cancel / close ({cancelled: true}), errors, again, two windows
 node --test tests/moreapps/pdfcheck.test.mjs tests/moreapps/import-gate.test.mjs                                  # the poppler checker and the import gate
 node --test tests/moreapps/pdfcorpus.test.mjs   # the whole local corpus (about 80 s): needs poppler (pdfinfo, pdftotext; `brew install poppler`) and Chromium
 node tests/moreapps/word-pdf.mjs                # browser: the item, the box, a range, the refusal, Cancel, the saved file, the window unchanged
@@ -4579,7 +4588,76 @@ that those terms permit it.
 
 No tagged (accessible) PDF, PDF/A, outline of bookmarks, encryption, form fields or object compression; no characters
 from a face that lacks them (no fallback font: CJK, emoji and symbols are drawn as the face's .notdef glyph, an empty box; a face whose file could not be loaded is noted as such, and its text does not show; PdfFiles does not cache a failed load, so a later export tries again); no font other than the bundled and the
-three RISC OS ones (the screen's substitute is used); Print is not built (it will use this PDF).
+three RISC OS ones (the screen's substitute is used); Print (below) does not use this PDF.
+
+## Print (Batch: word-print)
+
+User guide: `$.Docs.Letters`, part 31. The window menu's Print... and Ctrl+P (Cmd+P on a Mac; `KeymapMore`, `DocKeys`,
+`MacKeys`, `WinMenu`; `print` is in `EditKeys` ONCE so a held key acts once) open the Print box, which renders the Print layout
+pages to page images and hands them to !Printers (`os.printers`, null while it is not running).
+
+### Modules
+
+`PagesRun` (`eachPage`, the pages laid out apart, shared with the PDF export) and `RangeBox` (`rangeOf`, `markupLine`,
+`countOf`, `raf`, `runIn`, shared by both boxes) were split out of `PdfExport` and `PdfBox` on this batch, with the PDF
+export's output unchanged (`pdf-golden.mjs`); `rangeOf` and `eachPage` gained a verb ('export' by default) and `eachPage` a
+`none` text for its no-pages error, and `runIn` now clears `st.ctrl` and the message only while the run is still its own
+(not a later run's). `PrintPages` makes the images, `PrintOut` builds the hand-over and `PrintBox` is the box (the rows of
+the module table above).
+
+### The hand-over to !Printers
+
+* `PrintBox` calls `printHtml(os.printers, {title, pages, paper})` synchronously inside the Print click, with `pages` the
+  promise of `renderPages` (`runIn` calls its job before its first await). `os.printers.print({title, html, css})` therefore opens
+  the output window inside the user gesture, so pop-up blockers allow it; `html` is a promise of the markup.
+* Stopped or failed (Cancel, the close icon, the window closing, an error, `renderPages` resolving null): `html` rejects
+  `{cancelled: true}`; !Printers closes its window and says nothing, and `print()` resolves false. A real error is said once by
+  `PrintBox`. A render that finishes after Cancel is never printed.
+* CSS order: !Printers puts `css` after its page CSS (`@page` from the paper, 12 mm margin, `img.pic` pixelated), so
+  `@page{size:Wmm Hmm;margin:0}` and the `.lsheet` rules win. The markup uses own class names (`div.lsheet` per page with an
+  absolutely placed `img`), not `images: []`, which would force the pixelation and the margin. mm sizes use `toFixed(1)`.
+* `print()` answering false while the pages are made (!Printers refused the job and said why) stops the run and keeps the box.
+
+### Images, resolution and memory
+
+* One canvas per page, white-filled before `paintPage(P, i, g, {place, marks: false})`, JPEG quality 0.9 as a data URL, then the
+  canvas is set to 0 x 0 (released even if the conversion throws). Pictures go through a `PicCache` of the run; after a paint that
+  waited for a decode, or while `document.fonts.status` is 'loading', the page is painted again, at most 3 paints (as `PdfExport`).
+  Cancel is raced against those waits, so it acts at once.
+* The slices yield to `RangeBox.raf` (a frame, or 100 ms) while the desktop's page is seen, and to a `MessageChannel` message
+  of the run's own (`setTimeout 0` without one) while `document.hidden`: the output window opens at the click and often hides
+  or covers the desktop, which stops frames and throttles timers to 1 s or more, so a long job would otherwise take minutes.
+  `raf` itself is unchanged, so the PDF export behaves as before. Tests inject `document` and `post`.
+* No pages in the range (From past the last page where the count is not known: Draft, Web layout, Outline): `renderPages`
+  rejects `NO_PAGES` ('No pages to print.', through `eachPage`'s `none`); the PDF export's 'No pages to export' is unchanged.
+* Dots per inch by the pages printed: 200 up to 100, 150 up to 250, 100 above (`dpiFor`). `canvasSize` brings any page to a longest
+  side <= 4096 px and area <= 16 Mpx (a bigger page is drawn coarser, never skipped).
+* Fit arithmetic (`fitPlacement`, mm from the paper's top left): fit on, scale = min(paperW / pageW, paperH / pageH) (up or down),
+  centred; fit off, scale 1, centred (x or y negative when the page is larger: the sheet div has `overflow: hidden`). The canvas is
+  sized to the page's box on the paper at the dpi (a page shrunk by fit gets fewer pixels). `paperOf` is the one place the orientation
+  is decided (the printer's paper is portrait; landscape swaps), to 0.1 mm like !Printers' page CSS so no spill pages.
+
+### Tests
+
+`printpages.test.mjs` (fit table, paper, dpi tiers, canvas bounds, renderPages with a fake canvas, abort, pictures and faces),
+`printbox.test.mjs` (markup and css, the box: no printer, range, fit, the call inside the click, Cancel, errors, the menu item and
+keys), `printcorpus.test.mjs` (the corpus: the same pages and the same text runs as the PDF export; hostile sizes and memory),
+`word-printout.mjs` (desktop script in Chromium), and the older desktop scripts `word-fkeys`, `word-close`, which list the menu.
+`node tests/integration/flows.mjs print` covers !Printers' side (cancelled jobs, `fileHtml`).
+
+### Known limits
+
+* !Printers defines A4 in whole points, so A4 is measured as 209.9 x 297.0 mm and the sheets are that size.
+* Page images, not text; no selection-only printing; Web and Outline views print as Print layout; a landscape page on portrait
+  paper is fitted, not turned.
+* The first print's fonts were checked in Chromium only (Playwright): the window's own layout starts each face's load before the
+  document appears and the paint checks `document.fonts.status`; after 3 repaints a face that is still loading prints in the
+  fallback. Firefox and Safari, and real printers, were not tried.
+* A `fonts.ready` that never resolves without a Cancel waits for ever (the repaint count bounds paints, not time).
+* Memory is the data URL strings, all held until the job is sent. The dpi tiers reduce it but do not cap it: past 250 pages
+  (100 dpi) it grows with the page count, roughly 100 MB or more for 1000 pages, and the strings are then copied into the
+  markup and again into the output window (and, with a To file connection, written whole into the VFS). `markupOf` passes a
+  data URL through as it is (no `&` or `"` in base64), so building the markup is one join, not a copy per character.
 
 ## Rich Text Format (Batch G2)
 
