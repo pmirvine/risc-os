@@ -1,0 +1,107 @@
+// CfbDir - the directory of an OLE compound file (used by ./Cfb).
+//
+// The directory is an array of 128-byte entries; entry 0 is the
+// root storage. Each storage's children form a tree through their
+// left, right and child links. The tree is walked with a stack (no
+// recursion) and each entry may be met once only: a link back to an
+// entry already met is a loop, and gives CfbError('bad-chain'), as
+// does a link past the end of the directory.
+//
+// A stream is named by its path from the root, storages joined by
+// '/': 'WordDocument', 'ObjectPool/_1234/\x01Ole'. Names are kept
+// as they are, control characters included ('\x01CompObj',
+// '\x05SummaryInformation'); an unpaired UTF-16 surrogate becomes
+// U+FFFD. An entry with no name, or with a '/' in its name, is left
+// out with everything under it. Unused entries (type 0) met through
+// a link are passed over, their own links not followed.
+import { CfbError } from './CfbError';
+
+export const STORAGE = 1, STREAM = 2, ROOT = 5;
+const NONE = 0xFFFFFFFF;
+
+const u32 = (b, at) =>
+  (b[at] | b[at + 1] << 8 | b[at + 2] << 16 | b[at + 3] << 24) >>> 0;
+
+/** The UTF-16LE name of the entry at `at`: up to its declared
+ *  length (at most 31 characters) or the first NUL. */
+function nameAt(b, at) {
+  const len = Math.min(b[at + 64] | b[at + 65] << 8, 64) >> 1;
+  const units = [];
+  for (let i = 0; i < len; i++) {
+    const u = b[at + 2 * i] | b[at + 2 * i + 1] << 8;
+    if (u === 0) break;
+    units.push(u);
+  }
+  const hi = (u) => u >= 0xD800 && u <= 0xDBFF;
+  const lo = (u) => u >= 0xDC00 && u <= 0xDFFF;
+  for (let i = 0; i < units.length; i++) {
+    if (hi(units[i]) && lo(units[i + 1])) i++;
+    else if (hi(units[i]) || lo(units[i])) units[i] = 0xFFFD;
+  }
+  return String.fromCharCode(...units);
+}
+
+/** The entry `sid` of the directory bytes `b`. size is the low 32
+ *  bits of the size; hi the high 32 (only version 4 uses them). */
+export function entryAt(b, sid) {
+  const at = sid * 128;
+  return {
+    sid, name: nameAt(b, at), type: b[at + 66],
+    left: u32(b, at + 68), right: u32(b, at + 72),
+    child: u32(b, at + 76), start: u32(b, at + 116),
+    size: u32(b, at + 120), hi: u32(b, at + 124),
+  };
+}
+
+/** The key a name is looked up by: CFB compares names without
+ *  regard to case. */
+export const keyOf = (path) => path.toUpperCase();
+
+/**
+ * @param {Uint8Array} b the directory's sectors, in chain order
+ * @param {number} maxStreams most streams to list
+ * @returns {{root: object, streams: object[]}} the root entry and
+ *   the streams (each with its path), in directory order; of two
+ *   streams with the same path (in any case) the first is kept
+ */
+export function readDirectory(b, maxStreams) {
+  const count = Math.floor(b.length / 128);
+  if (count === 0) throw new CfbError('bad-header', 'no directory');
+  const root = entryAt(b, 0);
+  if (root.type !== ROOT)
+    throw new CfbError('bad-header', 'no root entry');
+  const seen = new Uint8Array(count);
+  seen[0] = 1;
+  const found = [];
+  const stack = [root.child, ''];
+  while (stack.length) {
+    const pre = stack.pop(), sid = stack.pop();
+    if (sid === NONE) continue;
+    if (sid >= count)
+      throw new CfbError('bad-chain', 'a link past the directory');
+    if (seen[sid]) throw new CfbError('bad-chain', 'directory loop');
+    seen[sid] = 1;
+    const e = entryAt(b, sid);
+    if (e.type !== STREAM && e.type !== STORAGE) continue;
+    stack.push(e.left, pre, e.right, pre);
+    if (!e.name || e.name.includes('/')) continue;
+    e.path = pre + e.name;
+    if (e.type === STORAGE) {
+      stack.push(e.child, e.path + '/');
+      continue;
+    }
+    found.push(e);
+    if (found.length > maxStreams)
+      throw new CfbError('too-big', 'more than ' + maxStreams +
+        ' streams');
+  }
+  found.sort((x, y) => x.sid - y.sid);
+  const keys = new Set(), streams = [];
+  for (const e of found) {
+    const k = keyOf(e.path);
+    if (keys.has(k)) continue;
+    keys.add(k);
+    streams.push(e);
+  }
+  return { root, streams };
+}

@@ -1,0 +1,149 @@
+// ImpRevs - tracked changes for ./ImpBuild, as ./RtfBody keeps them
+// (./RtfRevs: the run tags ./RevRead reads from a .docx).
+//
+//   rev(b, {kind, author?, date?}) -> key | null  (b.rev) a frozen
+//       {kind: 'ins' | 'del', author?, date?}, the same object for
+//       the same three values; given as fmt.rev to b.text / b.obj,
+//       and as endPara's {rev} (the paragraph mark's). kind anything
+//       else: null, with a note. author ./ImpSafe name ('' is none;
+//       past ./RtfRevs MAX_AUTHORS distinct ones none, a note);
+//       date dateOf
+//   dateOf(d) -> string | undefined  a date as Word writes w:date
+//       ('2024-05-06T07:08:09Z', the time as given with a Z, as
+//       ./RtfRevs dttm): a number is an RTF / Word DTTM (dttm), a
+//       Date its UTC time, a string 'YYYY-MM-DDTHH:MM[:SS[.f]]'
+//       with any zone; anything else, or not a real date: undefined
+//   fmtIn(b, flow, f) -> f  the run format f (./ImpPara fmtOf) as
+//       it goes into flow: a revision not made by b.rev is left out
+//       (a note); in a story (a header, footer, note or comment) an
+//       insertion is plain text, a deletion left out (GONE), with a
+//       note: the Model keeps tracked changes there raw
+//   tagged(b, runs, keys) -> runs  the runs with their tags
+//       (./RtfRevs tagRuns: each stretch one w:ins or w:del)
+//   markRev(b, key, pPr) -> pPr  pPr with w:rPr holding a w:ins or
+//       w:del in its extra (./RtfRevs markRev's form); a w:rPr the
+//       extra has already takes it first (its own marks replaced)
+//
+// An inline ./OpsRevs taggable refuses (a picture, a link, a field
+// code, a note mark) is untagged in an insertion and left out of a
+// deletion (./ImpFlow, with a note), so deleted text is never live.
+// Caps (./RtfRevs): MAX_REVS tags (past it one a kind, with no
+// author or date), and as many keys (past it the kind's alone).
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+import {dttm, tagRuns, MAX_REVS, MAX_AUTHORS} from './RtfRevs';
+import {name} from './ImpSafe';
+import {variant} from './ImpPara';
+
+export const STORY_REVS = 'tracked changes in headers, footers, ' +
+  'notes and comments are not kept: insertions are kept as text, ' +
+  'deletions are left out';
+export const DROPPED = 'deleted pictures, links, note marks and ' +
+  'field codes are left out';
+const FOREIGN = 'a tracked change not made by the builder is read ' +
+  'as plain text';
+
+const MARK_NAMES = ['w:ins', 'w:del', 'w:moveFrom', 'w:moveTo'];
+
+const state = (b) => b.revKeys || (b.revKeys = {map: new Map(),
+  set: new WeakSet(), authors: new Set()});
+
+const DATE = /^(\d{4})-(\d\d)-(\d\d)T(\d\d):(\d\d)(?::(\d\d))?/;
+const TAIL = /^(?:\.\d{1,12})?(?:Z|[+-]\d\d:?\d\d)?$/;
+const DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const z = (n, w = 2) => String(n).padStart(w, '0');
+
+/** See the header. */
+export function dateOf(d) {
+  if (typeof d === 'number') return dttm(d);
+  if (d instanceof Date) {
+    const t = d.getTime();
+    return Number.isFinite(t) ? dateOf(d.toISOString()) : undefined;
+  }
+  if (typeof d !== 'string' || d.length > 40) return undefined;
+  const m = DATE.exec(d);
+  if (!m || !TAIL.test(d.slice(m[0].length))) return undefined;
+  const [y, mo, day, h, mi, s = 0] = m.slice(1, 7).map((x) =>
+    Number(x || 0));
+  const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+  const last = mo === 2 && leap ? 29 : DAYS[mo - 1];
+  if (y < 1601 || y > 9999 || mo < 1 || mo > 12 || day < 1 ||
+    day > last || h > 23 || mi > 59 || s > 59) return undefined;
+  return z(y, 4) + '-' + z(mo) + '-' + z(day) + 'T' + z(h) + ':' +
+    z(mi) + ':' + z(s) + 'Z';
+}
+
+/** See the header. */
+export function rev(b, o) {
+  const kind = o && o.kind;
+  if (kind !== 'ins' && kind !== 'del') {
+    b.note('a tracked change of a kind !Letters does not keep is ' +
+      'read as plain text');
+    return null;
+  }
+  const st = state(b);
+  let author = name(o.author) || undefined;
+  if (author !== undefined && !st.authors.has(author)) {
+    if (st.authors.size < MAX_AUTHORS) st.authors.add(author);
+    else {
+      b.note('more than ' + MAX_AUTHORS + ' authors of changes: the ' +
+        'rest are read as unknown');
+      author = undefined;
+    }
+  }
+  let date = dateOf(o.date);
+  if (st.map.size >= MAX_REVS) {
+    b.note('more than ' + MAX_REVS + ' tracked changes: the rest ' +
+      'are kept without their authors and dates');
+    author = date = undefined;
+  }
+  const k = JSON.stringify([kind, author ?? null, date ?? null]);
+  let key = st.map.get(k);
+  if (!key) {
+    const x = {kind};
+    if (author !== undefined) x.author = author;
+    if (date !== undefined) x.date = date;
+    key = Object.freeze(x);
+    st.map.set(k, key);
+    st.set.add(key);
+  }
+  return key;
+}
+
+/** Whether key is one of b's. */
+export const isKey = (b, key) => !!b.revKeys && b.revKeys.set.has(key);
+
+/** See the header. */
+export function fmtIn(b, flow, f) {
+  if (!f.rev) return f;
+  if (!isKey(b, f.rev)) {
+    b.note(FOREIGN);
+    return variant(f, 'plain');
+  }
+  if (flow === b.body) return f;
+  b.note(STORY_REVS);
+  return f.rev.kind === 'del' ? variant(f, 'gone')
+    : variant(f, 'plain');
+}
+
+/** See the header. */
+export function tagged(b, runs, keys) {
+  return keys.some((k) => k) ? tagRuns(b, runs, keys) : runs;
+}
+
+/** See the header. */
+export function markRev(b, key, pPr) {
+  const [{rev: t}] = tagRuns(b, [{}], [key]);
+  const mark = el(t.kind === 'del' ? 'w:del' : 'w:ins', t.attrs);
+  const at = pPr.extra.findIndex((n) => n && n.name === 'w:rPr');
+  const extra = pPr.extra.slice();
+  if (at < 0) extra.push(el('w:rPr', [], mark));
+  else {
+    // (CT_ParaRPr: the revision marks come first; one of them)
+    const old = extra[at];
+    const kids = (Array.isArray(old.children) ? old.children : [])
+      .filter((c) => !c || !MARK_NAMES.includes(c.name));
+    extra[at] = {...old, children: [mark, ...kids]};
+  }
+  return {...pPr, extra};
+}

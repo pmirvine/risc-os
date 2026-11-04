@@ -1,0 +1,145 @@
+// ImpPict - pictures for ./ImpBuild, as ./RtfPict makes them: a
+// media part, an image relationship and an inline picture (the
+// w:drawing ./PicRead reads, made by ./InsertPicture pictureXml).
+//
+//   picture(flow, bytes, {cx?, cy?, name?, alt?}) -> inline | null
+//       (b.picture: in b.flow) bytes a Uint8Array; the inline (level
+//       'r' raw) is for the caller to put in that flow (b.obj); null,
+//       with a note, when the picture is not kept
+//
+// The type is the bytes' (./RtfPict kindOf), never a name or a
+// number the file gives: a PNG, JPEG or GIF must be one ./PicMedia
+// imageInfo reads within its decode caps (decodable); an EMF must
+// have its header and signature; a WMF its header (one without a
+// placeable header gets one, its box the picture's size in twips).
+// Any other type: a note, null. EMF and WMF are stored as they are
+// (drawn as a box). Size cx, cy in EMU (1..MAX_EXT), else the
+// picture's own (./PicMedia naturalEmu), else an inch. name and alt
+// (./ImpSafe name) are the wp:docPr name and descr. Stored as
+// <main dir>media/imageN.<ext> (./PicNames: the first free N); the
+// relationship in the flow's (./ImpStory newRel); wp:docPr ids 1,
+// 2... Caps ./RtfPict MAX_PICTURE bytes each, MAX_PICTURES and
+// MAX_TOTAL bytes in all: the rest are skipped with a note.
+// Pure: no desktop services.
+import {usedNumbers, mediaName} from './PicNames';
+import {imageInfo, decodable, naturalEmu} from './PicMedia';
+import {docMap, MAX_EXT} from './PicRead';
+import {pictureXml, prefixes} from './InsertPicture';
+import {kindOf, MAX_PICTURE, MAX_TOTAL, MAX_PICTURES, TW_EMU}
+  from './RtfPict';
+import {name as clean} from './ImpSafe';
+import {newRel} from './ImpStory';
+
+const DAMAGED = 'a damaged picture is skipped';
+const FORMAT = 'a picture in a format !Letters does not keep is ' +
+  'skipped';
+
+/** A WMF with a placeable header for a box of w x h twips (as
+ *  ./RtfPict makes one). */
+function placeable(wmf, w, h) {
+  const out = new Uint8Array(22 + wmf.length);
+  const head = [0xcdd7, 0x9ac6, 0, 0, 0, w, h, 1440, 0, 0];
+  let sum = 0;
+  head.forEach((v, k) => {
+    out[k * 2] = v & 255;
+    out[k * 2 + 1] = v >> 8 & 255;
+    sum ^= v;
+  });
+  out[20] = sum & 255;
+  out[21] = sum >> 8 & 255;
+  out.set(wmf, 22);
+  return out;
+}
+
+const okExt = (e) => e && Number.isInteger(e.cx) &&
+  Number.isInteger(e.cy) && e.cx >= 1 && e.cx <= MAX_EXT &&
+  e.cy >= 1 && e.cy <= MAX_EXT;
+
+/** {bytes, ext, info?, bare?} of the picture, or a note's text. */
+function checked(bytes) {
+  if (!(bytes instanceof Uint8Array) || !bytes.length) return DAMAGED;
+  if (bytes.length > MAX_PICTURE) {
+    return 'a picture larger than ' + (MAX_PICTURE >> 20) + ' MB ' +
+      'is skipped';
+  }
+  const kind = kindOf(bytes);
+  if (kind === 'png' || kind === 'jpeg' || kind === 'gif') {
+    const info = imageInfo(bytes);
+    if (!info || decodable(info, bytes)) return DAMAGED;
+    return {bytes, ext: info.ext, info};
+  }
+  if (kind === 'emf') return {bytes, ext: 'emf'};
+  if (kind === 'wmf' || kind === 'apm') {
+    return {bytes, ext: 'wmf', bare: kind === 'wmf'};
+  }
+  return FORMAT;
+}
+
+const store = (b) => b.pics || (b.pics = {used: null, id: 0,
+  total: 0, count: 0, own: false});
+
+/** docPr of drawing node with name and descr set (copied). */
+function named(node, name, alt) {
+  const [inline] = node.children;
+  const kids = inline.children.map((n) => {
+    if (!/:docPr$/.test(n.name)) return n;
+    let attrs = n.attrs;
+    if (name) {
+      attrs = attrs.map(([k, v]) => [k, k === 'name' ? name : v]);
+    }
+    if (alt) attrs = [...attrs, ['descr', alt]];
+    return {...n, attrs};
+  });
+  return {...node, children: [{...inline, children: kids}]};
+}
+
+/** See the header. */
+export function picture(flow, bytes, o = {}) {
+  const b = flow.b, d = b.doc;
+  if (b.stopped) return null;
+  const got = checked(bytes);
+  if (typeof got === 'string') {
+    b.note(got);
+    return null;
+  }
+  const opts = o && typeof o === 'object' ? o : {};
+  let ext = {cx: opts.cx, cy: opts.cy};
+  if (!okExt(ext)) ext = got.info ? naturalEmu(got.info) : null;
+  const {cx, cy} = okExt(ext) ? ext : {cx: 914400, cy: 914400};
+  let data = got.bytes;
+  if (got.bare) {
+    const tw = (e) => Math.max(1, Math.min(32767, Math.round(e /
+      TW_EMU)));
+    data = placeable(data, tw(cx), tw(cy));
+  }
+  const st = store(b);
+  if (st.count >= MAX_PICTURES || st.total + data.length > MAX_TOTAL) {
+    b.note('more than ' + MAX_PICTURES + ' pictures or ' +
+      (MAX_TOTAL >> 20) + ' MB of them: the rest are skipped');
+    return null;
+  }
+  const main = d.meta.mainPart;
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  if (!st.used) st.used = usedNumbers(d, dir);
+  let name;
+  try {
+    name = mediaName(d, dir, got.ext, st.used);
+  } catch (e) {
+    b.note('no name is free for a picture: it is skipped');
+    return null;
+  }
+  if (!st.own) {
+    d.parts = new Map(d.parts);
+    st.own = true;
+  }
+  d.parts.set(name, data);
+  st.count++;
+  st.total += data.length;
+  const target = name.slice(dir.length);
+  const rid = newRel(b, flow, 'image', target);
+  const node = pictureXml({cx, cy, id: ++st.id, rid,
+    file: target.slice('media/'.length)}, prefixes(docMap(d)));
+  const str = (s) => clean(s);
+  return {kind: 'raw', level: 'r', node: named(node, str(opts.name),
+    str(opts.alt))};
+}

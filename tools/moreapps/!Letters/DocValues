@@ -1,0 +1,99 @@
+// DocValues - the small value types of .doc properties ([MS-DOC]
+// 2.9.119 Ico, 2.9.43 COLORREF, 2.9.248 Shd, 2.9.249 Shd80, 2.9.16
+// Brc, 2.9.17 Brc80, 2.9.150 LSPD, ToggleOperand) as ./OdtProps
+// state values. Used by ./DocChp and ./DocPap; pure.
+//
+//   ICO  the 16 colours of an Ico (1..16) as RRGGBB; 0 is auto
+//   icoHex(n) -> 'auto' | RRGGBB | undefined (out of range)
+//   cvHex(bytes, at) -> 'auto' | RRGGBB   a COLORREF (fAuto 0xFF:
+//       auto)
+//   shdFill(bytes, at) / shd80Fill(v) -> 'none' | RRGGBB  the
+//       colour a shading shows (clear: its back colour, solid: its
+//       fore colour (auto: black), other patterns: the back colour)
+//   brc(bytes, at) / brc80(bytes, at) -> {side, space} | undefined
+//       side ./OdtProps pBdr side {val, sz?, color?} (val 'none'
+//       for none or nil), space points (0..31)
+//   toggle(v, style) -> boolean | undefined  0 off, 1 on, 0x80 the
+//       style's value, 0x81 its opposite; any other: undefined
+//   clamp(v, lo, hi)
+import {u8, u16, u32} from './DocSprm';
+
+export const ICO = Object.freeze([undefined, '000000', '0000FF',
+  '00FFFF', '00FF00', 'FF00FF', 'FF0000', 'FFFF00', 'FFFFFF',
+  '000080', '008080', '008000', '800080', '800000', '808000',
+  '808080', 'C0C0C0']);
+
+export const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/** See the header. */
+export const icoHex = (n) => (n === 0 ? 'auto' : n > 0 && n <= 16
+  ? ICO[n] : undefined);
+
+const hex2 = (n) => n.toString(16).toUpperCase().padStart(2, '0');
+
+/** See the header. */
+export function cvHex(b, at = 0) {
+  if (u8(b, at + 3) === 0xFF) return 'auto';
+  return hex2(u8(b, at)) + hex2(u8(b, at + 1)) + hex2(u8(b, at + 2));
+}
+
+/** A shading's fill from its fore, back and pattern. */
+function fill(fore, back, ipat) {
+  if (ipat === 0xFFFF) return 'none';
+  if (ipat === 1) return fore === 'auto' ? '000000' : fore;
+  return back === 'auto' ? 'none' : back;
+}
+
+/** See the header. */
+export const shdFill = (b, at = 0) => fill(cvHex(b, at),
+  cvHex(b, at + 4), u16(b, at + 8));
+
+/** See the header. */
+export function shd80Fill(v) {
+  const c = (n) => icoHex(n) || 'auto';
+  return fill(c(v & 31), c((v >> 5) & 31), (v >> 10) & 63);
+}
+
+const TYPES = new Map([[1, 'single'], [2, 'thick'], [3, 'double'],
+  [5, 'single'], [6, 'dotted'], [7, 'dashed'], [8, 'dotDash'],
+  [9, 'dotDotDash'], [10, 'triple'], [11, 'thinThickSmallGap'],
+  [12, 'thickThinSmallGap'], [13, 'thinThickThinSmallGap'],
+  [14, 'thinThickMediumGap'], [15, 'thickThinMediumGap'],
+  [16, 'thinThickThinMediumGap'], [17, 'thinThickLargeGap'],
+  [18, 'thickThinLargeGap'], [19, 'thinThickThinLargeGap'],
+  [20, 'wave'], [21, 'doubleWave'], [22, 'dashSmallGap'],
+  [23, 'dashDotStroked'], [24, 'threeDEmboss'],
+  [25, 'threeDEngrave'], [26, 'outset'], [27, 'inset']]);
+
+/** A side from its width (eighths of a point), type, colour and
+ *  space. */
+function side(width, type, color, space) {
+  if (type === 0 || type === 0xFF || !TYPES.has(type)) {
+    return {side: {val: 'none'}, space: 0};
+  }
+  return {side: {val: TYPES.get(type), sz: clamp(width || 2, 2, 96),
+    color}, space: clamp(space, 0, 31)};
+}
+
+/** See the header. */
+export function brc(b, at = 0) {
+  if (!b || b.length < at + 8) return undefined;
+  return side(u8(b, at + 4), u8(b, at + 5), cvHex(b, at),
+    u16(b, at + 6) & 31);
+}
+
+/** See the header. */
+export function brc80(b, at = 0) {
+  if (!b || b.length < at + 4) return undefined;
+  if (u32(b, at) === 0xFFFFFFFF) return {side: {val: 'none'}, space: 0};
+  return side(u8(b, at), u8(b, at + 1), icoHex(u8(b, at + 2)) ||
+    'auto', u8(b, at + 3) & 31);
+}
+
+/** See the header. */
+export function toggle(v, style) {
+  if (v === 0 || v === 1) return v === 1;
+  if (v === 0x80) return !!style;
+  if (v === 0x81) return !style;
+  return undefined;
+}

@@ -1,0 +1,87 @@
+// DocRevs - the tracked changes of a .doc ([MS-DOC] sprmCFRMarkIns,
+// sprmCFRMarkDel, sprmCIbstRMark / sprmCDttmRMark, sprmCIbstRMarkDel
+// / sprmCDttmRMarkDel, SttbfRMark) through the builder (./ImpBuild
+// rev: fmt.rev, endPara's rev). A handler module of ./DocRead (PART
+// {fmt, para, start}) after ./DocChpx and ./DocPapx, whose fmt and
+// para it wraps.
+//
+//   fmt   ./DocChpx charAt's, with rev: an inserted run (rIns) or a
+//         deleted one (rDel; deleted wins when both), its author
+//         SttbfRMark[ibst] and date its DTTM (./ImpRevs dateOf: not
+//         a real date, none). A deletion's author and date are those
+//         of sprmCIbstRMarkDel / sprmCDttmRMarkDel when it has a
+//         DTTM there, else the insertion ones (Word writes both
+//         ways). The same fmt object for the same run and change, so
+//         runs gather
+//   para  ./DocPapx's, with the paragraph mark's own change (an
+//         inserted or deleted paragraph mark) as rev
+//   start SttbfRMark read once (at most 65,535 names, no more than
+//         its bytes hold); an ibst it does not have: no author (one
+//         note)
+//
+// In headers, footers, notes and comments the builder keeps
+// insertions as text and leaves deletions out (./ImpRevs). Formatting
+// changes (sprmCPropRMark, sprmPPropRMark) are not tracked changes
+// here: the new formatting is kept.
+import {charAt} from './DocChpx';
+import {PART as PAPX} from './DocPapx';
+import {slice} from './DocFib';
+import {sttbOf} from './DocPlc';
+
+const NO_AUTHOR = 'a tracked change\'s author that is not in the ' +
+  'file is left out';
+const MAX_CACHE = 10000;
+
+function start(ctx) {
+  const b = slice(ctx.table, ctx.fib, 'SttbfRMark', ctx.note);
+  ctx.revD = {names: b ? sttbOf(b).names : [], keys: new Map(),
+    fmts: new WeakMap(), n: 0};
+}
+
+/** The builder's key of state eff's change, or null. */
+function keyOf(ctx, eff) {
+  if (!eff || !(eff.rIns || eff.rDel)) return null;
+  const R = ctx.revD;
+  const del = !!eff.rDel, own = del && eff.dttmDel;
+  const ibst = own ? eff.ibstDel : eff.ibst;
+  const dttm = own ? eff.dttmDel : eff.dttm;
+  const k = (del ? 'd' : 'i') + ibst + ':' + dttm;
+  let key = R.keys.get(k);
+  if (key === undefined) {
+    const author = R.names[ibst];
+    if (author === undefined && ibst) ctx.note(NO_AUTHOR);
+    if (R.keys.size >= MAX_CACHE) R.keys.clear();
+    key = ctx.b.rev({kind: del ? 'del' : 'ins', author,
+      date: dttm || undefined});
+    R.keys.set(k, key);
+  }
+  return key;
+}
+
+/** fmt with rev key (one object a fmt and key). */
+function withRev(ctx, fmt, key) {
+  const R = ctx.revD, base = fmt || R;
+  let byKey = R.fmts.get(base);
+  if (!byKey) R.fmts.set(base, byKey = new Map());
+  let f = byKey.get(key);
+  if (!f) byKey.set(key, f = {...(fmt || {}), rev: key});
+  return f;
+}
+
+function fmt(ctx, cp) {
+  const f = charAt(ctx, cp);
+  const key = ctx.revD ? keyOf(ctx, f.eff) : null;
+  return key ? {fmt: withRev(ctx, f.fmt, key), until: f.until} : f;
+}
+
+function para(ctx, from, to) {
+  const out = PAPX.para(ctx, from, to);
+  if (ctx.revD && to > from) {
+    const key = keyOf(ctx, charAt(ctx, to - 1).eff);
+    if (key) out.rev = key;
+  }
+  return out;
+}
+
+/** See the header. */
+export const PART = {fmt, para, start: [start]};

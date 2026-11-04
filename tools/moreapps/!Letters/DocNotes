@@ -1,0 +1,105 @@
+// DocNotes - the footnotes and endnotes of a .doc ([MS-DOC] 2.3.2
+// Footnotes, 2.3.3 Endnotes; PlcffndRef / PlcffndTxt, PlcfendRef /
+// PlcfendTxt) through the builder (./ImpBuild footnote, endnote,
+// noteSelf). A handler module of ./DocRead (PART {chars, start}).
+//
+//   0x02  in the main text, at a CP PlcffndRef (or PlcfendRef)
+//         lists: note i's text (PlcffndTxt CPs i..i+1, after the
+//         main text: the footnote document; the endnotes' after the
+//         comments') is read into a builder story with the main
+//         text's machinery (./DocHdr readRange: formatting, tables,
+//         fields, pictures), and its mark put there, in the
+//         character's format. In a note's own text: its number mark
+//         (noteSelf). Elsewhere (a header, a comment, a 0x02 no list
+//         names): left out (the last with a note)
+//   readStory(ctx, from, to, kind) -> blocks  CPs from..to read
+//         into an ended builder story; ctx.inStory is kind meanwhile
+//         ('footnote', 'endnote', 'comment')
+//
+// Each note is read once (a second mark at its CP is left out). A
+// note whose CPs go backwards or lie outside its document, or that
+// the text list does not have, is left out (one note). Past
+// ./RtfNotes MAX_NOTES notes of a kind, and past twice the notes'
+// characters (ccpFtn, ccpEdn) read in all, the rest are left out
+// without being read (one note each). Bounded: the lists are read
+// from the bytes there are, a note found by binary search.
+import {slice} from './DocFib';
+import {plcOf, cpsOf, findCp} from './DocPlc';
+import {readRange} from './DocHdr';
+import {MAX_NOTES} from './RtfNotes';
+
+const OUTSIDE = 'a note whose text lies outside the notes is left out';
+const UNLISTED = 'a note mark the file does not list is left out';
+const MUCH = 'more note text than the file holds: the rest of the ' +
+  'notes are left out';
+
+/** See the header. */
+export function readStory(ctx, from, to, kind) {
+  const was = ctx.inStory;
+  ctx.inStory = kind;
+  try {
+    return readRange(ctx, from, to).end();
+  } finally {
+    ctx.inStory = was;
+  }
+}
+
+/** One kind's lists: {kind, ref, txt, base, len, used, made}. */
+function listsOf(ctx, kind, refName, txtName, base, len) {
+  const ref = len ? plcOf(slice(ctx.table, ctx.fib, refName,
+    ctx.note), 2) : null;
+  if (!ref || !ref.n) return null;
+  const txt = cpsOf(slice(ctx.table, ctx.fib, txtName, ctx.note));
+  return {kind, ref, txt, base, len: Math.min(len, ctx.end - base),
+    used: new Uint8Array(ref.n), made: 0, left: 2 * len + 64};
+}
+
+function start(ctx) {
+  const f = ctx.fib;
+  const edn = f.ccpText + f.ccpFtn + f.ccpHdd + f.ccpAtn;
+  ctx.notesD = [listsOf(ctx, 'footnote', 'PlcffndRef', 'PlcffndTxt',
+    f.ccpText, f.ccpFtn), listsOf(ctx, 'endnote', 'PlcfendRef',
+    'PlcfendTxt', edn, f.ccpEdn)].filter(Boolean);
+}
+
+/** Note i of S, its mark at cp. */
+function place(ctx, S, i, cp) {
+  if (S.used[i]) return;
+  S.used[i] = 1;
+  if (S.made >= MAX_NOTES) {
+    return ctx.note('more than ' + MAX_NOTES + ' ' + S.kind +
+      's: the rest are skipped');
+  }
+  const from = i + 1 < S.txt.n ? S.txt.cp(i) : -1;
+  const to = i + 1 < S.txt.n ? S.txt.cp(i + 1) : -1;
+  if (!(from >= 0 && to > from && to <= S.len)) {
+    return ctx.note(OUTSIDE);
+  }
+  S.left -= to - from;
+  if (S.left < 0) return ctx.note(MUCH);
+  const blocks = readStory(ctx, S.base + from, S.base + to, S.kind);
+  if (ctx.b.stopped) return;
+  const x = ctx.b[S.kind](blocks);
+  if (!x) return;
+  S.made++;
+  ctx.obj(x, cp);
+}
+
+/** 0x02. */
+function mark(ctx, cp) {
+  if (ctx.storyEnd !== undefined) {
+    const k = ctx.inStory;
+    if (k === 'footnote' || k === 'endnote') {
+      ctx.obj(ctx.b.noteSelf(k), cp);
+    }
+    return;
+  }
+  for (const S of ctx.notesD || []) {
+    const i = findCp(S.ref, cp);
+    if (i >= 0) return place(ctx, S, i, cp);
+  }
+  ctx.note(UNLISTED);
+}
+
+/** See the header. */
+export const PART = {chars: new Map([[0x02, mark]]), start: [start]};

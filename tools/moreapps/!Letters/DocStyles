@@ -1,0 +1,216 @@
+// DocStyles - the styles of a .doc (./DocStsh's records) resolved
+// along their Based on chains, and made Doc styles through the
+// builder (./ImpBuild addStyle, docDefaults), as ./OdtStyleDoc does
+// for OpenDocument.
+//
+//   new DocStyles(ctx) -> st  (ctx ./DocRead's: b, table, fib, note)
+//     reads the style sheet and the font table (./DocFonts), sets
+//     the Doc's docDefaults (Word's 10 pt in the default font, no
+//     spacing, widow control on: always given, so the Doc's own
+//     Calibri 11 pt never shows) and makes a Doc style of each
+//     paragraph and character style, in istd order: its rPr / pPr
+//     measured against its Based on style's (./DocChp rPrOut,
+//     ./DocPap pPrOut), basedOn / next the file's (left out where
+//     the chain loops or is cut), Normal (istd 0) the Doc's Normal,
+//     sti 65 its Default Paragraph Font. Built-in styles (BUILT_IN
+//     by sti) take the Model's names (heading 1, header...), so a
+//     .doc in another language still has the Doc's built-ins; the
+//     others keep the file's name (./ImpSafe cleans it). Table and
+//     list styles are not made (./DocTable, ./DocLists)
+//   st.fonts       ./DocFonts names; st.dchar, st.dpara the defaults
+//   st.para(istd) -> {state {char, para}, docId, istd}  a paragraph
+//       style's resolved state (an istd that is no paragraph style:
+//       Normal's, else the defaults)
+//   st.charChain(istd) -> [Prl list] | null  a character style's
+//       chpx from the root of its chain; st.charId(istd) its Doc id
+//       (undefined for the default one); st.charLayer(istd) what it
+//       sets (./DocChp layerOf), which its Doc rPr holds in full
+//       (./DocChp styleRPr: a size equal to Word's default too)
+// Toggles (bold, italic, caps...): Word keeps a style's as 0x81 /
+// 0x80 (opposite of / same as the style under it), so in a .doc a
+// character style's bold over a bold paragraph style is NOT bold, and
+// a paragraph style's chain is absolute (each over its Based on's
+// resolved state). The Model resolves styles by override (./Styles),
+// and Word resolves a .docx's character style toggles by XOR: the
+// run's toggles a character style sets are always written as direct
+// formatting (./DocChp runRPr), so the .docx looks as Word shows the
+// .doc in Word and in !Letters alike.
+//   st.env  {fonts, note} for ./DocChp applyChp
+// A chain longer than MAX_CHAIN, or one that loops, is cut there (a
+// note); every style is resolved once (memo), so a deep chain costs
+// its length.
+import {readStsh, NONE} from './DocStsh';
+import {readFonts} from './DocFonts';
+import {DCHAR, applyChp, rPrOut, layerOf, styleRPr}
+  from './DocChp';
+import {DPARA, applyPap, pPrOut} from './DocPap';
+import {TIMES} from './OdtProps';
+
+export const MAX_CHAIN = 64;
+const LOOP = 'a style that is based on itself: the loop is cut';
+const LONG = 'a chain of styles more than ' + MAX_CHAIN +
+  ' long is cut';
+
+/** Word's built-in styles by sti ([MS-DOC] 2.9.269): the Model's
+ *  names. */
+export const BUILT_IN = new Map([[0, 'Normal'],
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [n, 'heading ' + n]),
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [9 + n, 'index ' + n]),
+  ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [18 + n, 'toc ' + n]),
+  [28, 'Normal Indent'], [29, 'footnote text'],
+  [30, 'annotation text'], [31, 'header'], [32, 'footer'],
+  [33, 'index heading'], [34, 'caption'], [38, 'footnote reference'],
+  [39, 'annotation reference'], [40, 'line number'],
+  [41, 'page number'], [42, 'endnote reference'],
+  [43, 'endnote text'], [62, 'Title'], [65, 'Default Paragraph Font'],
+  [66, 'Body Text'], [74, 'Subtitle'], [85, 'Hyperlink'],
+  [86, 'FollowedHyperlink'], [87, 'Strong'], [88, 'Emphasis']]);
+const TYPE = {1: 'paragraph', 2: 'character'};
+const DEFAULT_CHAR = 65;
+
+export class DocStyles {
+  constructor(ctx) {
+    const note = ctx.note;
+    this.ctx = ctx;
+    const {stds, ftc} = readStsh(ctx.table, ctx.fib, note);
+    this.stds = stds;
+    this.fonts = readFonts(ctx.table, ctx.fib, note);
+    this.env = {fonts: this.fonts, note};
+    const font = this.fonts[ftc.ascii] || TIMES;
+    this.dchar = Object.freeze({...DCHAR, font});
+    this.dpara = DPARA;
+    this.memo = new Map();
+    this.layers = new Map();
+    this.cut = new Set();
+    this.ids = new Map();
+    this.register(font);
+  }
+
+  /** The std of istd if it is of kind stk. */
+  std(istd, stk) {
+    const s = this.stds.get(istd);
+    return s && s.stk === stk ? s : undefined;
+  }
+
+  /** The memo of a std over its parent's (from) memo. */
+  fold(s, from) {
+    if (s.stk === 2) return [...(from || []), s.chpx];
+    const st = from || {char: this.dchar, para: this.dpara};
+    const heading = s.istd >= 1 && s.istd <= 9;
+    const char = applyChp(st.char, s.chpx, st.char,
+      {...this.env, plain: st.char});
+    let para = applyPap(st.para, s.papx, st.para, {heading});
+    if (heading) para = {...para, outline: s.istd - 1};
+    return {char, para};
+  }
+
+  /** The memo of istd (a std of kind stk): its line walked up to a
+   *  known one, then folded down. */
+  resolve(istd, stk) {
+    const line = [], seen = new Set();
+    let d = istd, from;
+    for (;;) {
+      const s = this.std(d, stk);
+      if (!s) break;
+      if (this.memo.has(s)) {
+        from = this.memo.get(s);
+        break;
+      }
+      if (seen.has(d) || line.length >= MAX_CHAIN) {
+        this.ctx.note(seen.has(d) ? LOOP : LONG);
+        this.cut.add(line[line.length - 1]);
+        break;
+      }
+      seen.add(d);
+      line.push(s);
+      d = s.base;
+    }
+    for (const s of line.reverse()) {
+      from = this.fold(s, from);
+      this.memo.set(s, from);
+    }
+    return from;
+  }
+
+  /** The parent std of s (none where its chain is cut). */
+  parent(s) {
+    return this.cut.has(s) ? undefined : this.std(s.base, s.stk);
+  }
+
+  register(font) {
+    const b = this.ctx.b;
+    b.docDefaults({
+      rPr: {sz: 20, szCs: 20, rFonts: {ascii: font, hAnsi: font,
+        eastAsia: font, cs: font}},
+      pPr: {spacing: {before: 0, after: 0, line: 240,
+        lineRule: 'auto'}, widowControl: true}});
+    for (const s of this.stds.values()) this.resolve(s.istd, s.stk);
+    for (const s of this.stds.values()) {
+      const type = TYPE[s.stk];
+      if (!type) continue;
+      const p = this.parent(s);
+      const id = b.addStyle({id: 's' + s.istd, type,
+        name: BUILT_IN.get(s.sti) || s.name,
+        basedOn: p ? 's' + p.istd : undefined,
+        next: s.stk === 1 && s.next !== NONE && this.std(s.next, 1)
+          ? 's' + s.next : undefined,
+        default: (s.stk === 1 && s.istd === 0) ||
+          (s.stk === 2 && s.sti === DEFAULT_CHAR) || undefined,
+        ...this.props(s, p)});
+      if (id !== null && id !== undefined) this.ids.set(s.istd, id);
+    }
+  }
+
+  /** The rPr / pPr of s over its parent p. */
+  props(s, p) {
+    if (s.stk === 2) {
+      return {rPr: styleRPr(this.charLayer(s.istd), this.dchar)};
+    }
+    const e = this.memo.get(s);
+    const base = p ? this.memo.get(p)
+      : {char: this.dchar, para: this.dpara};
+    return {rPr: rPrOut(e.char, base.char),
+      pPr: pPrOut(e.para, base.para)};
+  }
+
+  /** A character style chain's chpx lists over char state c. */
+  chained(c, chain) {
+    let out = c;
+    for (const prls of chain) {
+      out = applyChp(out, prls, out, {...this.env, plain: c});
+    }
+    return out;
+  }
+
+  para(istd) {
+    let s = this.std(istd, 1);
+    if (!s) s = this.std(0, 1);
+    if (!s) {
+      return {state: {char: this.dchar, para: this.dpara},
+        docId: undefined, istd: -1};
+    }
+    return {state: this.memo.get(s), docId: this.ids.get(s.istd),
+      istd: s.istd};
+  }
+
+  charChain(istd) {
+    const s = this.std(istd, 2);
+    return s ? this.memo.get(s) : null;
+  }
+
+  charLayer(istd) {
+    const s = this.std(istd, 2);
+    if (!s) return null;
+    if (!this.layers.has(s)) {
+      const chain = this.memo.get(s) || [];
+      this.layers.set(s, layerOf((c) => this.chained(c, chain)));
+    }
+    return this.layers.get(s);
+  }
+
+  charId(istd) {
+    const s = this.std(istd, 2);
+    return s && s.sti !== DEFAULT_CHAR ? this.ids.get(istd)
+      : undefined;
+  }
+}

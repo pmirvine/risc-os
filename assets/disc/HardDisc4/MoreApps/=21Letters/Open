@@ -1,29 +1,62 @@
 // Open - reads a .docx or RTF file from the disc into a Doc
-// (./Model), and says in plain words why a file could not be read.
+// (./Model), or a file of another kind (ODT, .doc) through an
+// importer, and says in plain words why a file could not be read.
 //
-//   await openDoc(vfs, path) -> {doc, format, notes}   throws (see
-//                  describe). format 'rtf' when the bytes start
-//                  with {\rtf (after an optional BOM and white
+//   await openDoc(vfs, path) -> {doc, format, notes, imported?}
+//                  throws (see describe). format 'rtf' when the bytes
+//                  start with {\rtf (after an optional BOM and white
 //                  space: wimplib/RtfLex isRtf), read by ./RtfRead;
-//                  else 'docx', read by ./DocxRead. notes: the RTF
+//                  else the first of IMPORTERS whose sniff says yes
+//                  reads it: format 'docx' (what it is saved as),
+//                  imported its importer's format ('odt' | 'doc');
+//                  else 'docx', read by ./DocxRead. notes: the
 //                  reader's messages (what it skipped or found
 //                  damaged; [] for a .docx), said once in a notice
-//                  (notesNotice) when the window opens
+//                  (notesNotice; openNotice for an import) when the
+//                  window opens
+//   IMPORTERS      the importers, tried in order: {format, label,
+//                  sniff(bytes) -> bool, read(bytes, {maxParagraphs})
+//                  -> {doc, notes}} (a reader adds its own; label
+//                  names the kind in the notice: 'ODT', '.doc'):
+//                  ./OdtRead's IMPORTER (ODT, .ott) first, then
+//                  ./DocRead's (Word 97-2003 .doc, .dot). A
+//                  file of more than MAX_IMPORT_BYTES is refused
+//                  before it is read; a reader's failure that is not
+//                  an ImportError is one: 'bad'
+//   ImportError    what openDoc throws for an import it will not
+//                  read: err.code 'too-big' | 'bad' (damaged: for a
+//                  'doc' said as 'the file is damaged', else as 'not
+//                  an OpenDocument text file') | 'old' (Word 6/95) |
+//                  'encrypted' | 'not-word' (an OLE file that is not
+//                  a Word document); err.format the importer's
+//   openNotice(leaf, got) -> the notice for what openDoc gave: for
+//                  an import "'leaf' was opened from an ODT file; it
+//                  will be saved as a .docx." (or ".doc file") and
+//                  the notes after it; else notesNotice
 //   await openDocx(vfs, path) -> Doc     a .docx only (as before)
 //   describe(err, leaf, type?) -> the message for the error box;
 //                  type the file's type (typeAt): a file of RTF's
 //                  type that is neither RTF nor a zip at all is 'not
 //                  an RTF file' (what it was opened as), not 'not a
-//                  Word .docx file'
+//                  Word .docx file'; a file of &AE6 or &A81 that is
+//                  not a zip or not a .docx in one is 'not a Word
+//                  document' or 'not an OpenDocument text file' (its
+//                  type's words); an OLE file no importer took
+//                  (DocxError kind 'ole2': an .xls...) is 'not a
+//                  Word document'
 //   typeAt(vfs, path) -> the file type at path, or undefined
-//   notesNotice(leaf, notes) -> the notice's text, or null for none:
+//   notesNotice(leaf, notes, head?) -> the notice's text, or null for
+//                  none (head: its start, else "'leaf' was opened,
+//                  but: "):
 //                  at most MAX_NOTICE characters (the first notes,
 //                  each cut short, then '(and N more)')
 //   FILETYPES {docx: &A7E, rtf: &C32}: a window's format -> the
 //                  file type it is saved with (Save, Save as, Save a
 //                  copy); fileTypeOf(format) the same, &A7E for any
 //                  other; formatOfType(type) back: null for a type
-//                  !Letters does not open by double-click
+//                  !Letters does not open by double-click; 'odt' for
+//                  &A81 and 'doc' for &AE6 (IMPORT_TYPES: opened,
+//                  never saved as)
 //   RtfError       what openDoc throws for an RTF it will not read:
 //                  err.code 'too-big' (more than MAX_RTF_BYTES) or
 //                  'not-rtf' (the reader failed: it read nothing,
@@ -39,6 +72,8 @@
 import {readDocx} from './DocxRead';
 import {readRtf} from './RtfRead';
 import {isRtf} from 'wimplib/RtfLex';
+import {IMPORTER as ODT} from './OdtRead';
+import {IMPORTER as DOC} from './DocRead';
 
 /** Most paragraphs in a document !Letters opens. */
 export const MAX_PARAGRAPHS = 200000;
@@ -53,8 +88,17 @@ export const MAX_NOTICE = 600;
 const NOTE_MAX = 120;                  // (one note in the notice)
 const FAILED = 'the file could not be read';   // (./RtfRead's)
 
+/** Most bytes in a file an importer reads (16 MB). */
+export const MAX_IMPORT_BYTES = 16 * 1024 * 1024;
+
 /** See the header. */
 export const FILETYPES = Object.freeze({docx: 0xA7E, rtf: 0xC32});
+
+/** See the header: the types of the files importers read. */
+export const IMPORT_TYPES = Object.freeze({odt: 0xA81, doc: 0xAE6});
+
+/** See the header. */
+export const IMPORTERS = [ODT, DOC];
 
 /** See the header. */
 export function fileTypeOf(format) {
@@ -65,6 +109,8 @@ export function fileTypeOf(format) {
 export function formatOfType(type) {
   if (type === FILETYPES.docx) return 'docx';
   if (type === FILETYPES.rtf) return 'rtf';
+  if (type === IMPORT_TYPES.odt) return 'odt';
+  if (type === IMPORT_TYPES.doc) return 'doc';
   return null;
 }
 
@@ -77,6 +123,16 @@ export class RtfError extends Error {
   }
 }
 
+/** See the header. */
+export class ImportError extends Error {
+  constructor(code, format, message) {
+    super(message || code);
+    this.name = 'ImportError';
+    this.code = code;
+    this.format = format;
+  }
+}
+
 /** Read the file at `path` (a disc pathname) as a .docx. */
 export async function openDocx(vfs, path) {
   const bytes = await vfs.readFile(path);
@@ -86,6 +142,9 @@ export async function openDocx(vfs, path) {
 /** See the header. */
 export async function openDoc(vfs, path) {
   const bytes = await vfs.readFile(path);
+  const imp = bytes instanceof Uint8Array && !isRtf(bytes)
+    ? importerOf(bytes) : null;
+  if (imp) return imported(imp, bytes);
   if (!(bytes instanceof Uint8Array) || !isRtf(bytes)) {
     const doc = await readDocx(bytes, {maxParagraphs: MAX_PARAGRAPHS});
     return {doc, format: 'docx', notes: []};
@@ -106,10 +165,61 @@ export async function openDoc(vfs, path) {
   return {doc: got.doc, format: 'rtf', notes};
 }
 
+/** The first importer that says it reads bytes, or null. */
+function importerOf(bytes) {
+  for (const imp of IMPORTERS) {
+    let yes = false;
+    try { yes = !!imp.sniff(bytes); } catch (e) { yes = false; }
+    if (yes) return imp;
+  }
+  return null;
+}
+
+/** openDoc's result for bytes read by the importer imp. */
+async function imported(imp, bytes) {
+  if (bytes.length > MAX_IMPORT_BYTES) {
+    throw new ImportError('too-big', imp.format);
+  }
+  let got;
+  try {
+    got = await imp.read(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+  } catch (e) {
+    if (e && e.name === 'ImportError') {
+      if (!e.format) e.format = imp.format;
+      throw e;
+    }
+    throw new ImportError('bad', imp.format, e && e.message);
+  }
+  if (!got || !got.doc || !Array.isArray(got.doc.sections)) {
+    throw new ImportError('bad', imp.format);
+  }
+  const notes = Array.isArray(got.notes) ? got.notes.map(String) : [];
+  return {doc: got.doc, format: 'docx', imported: imp.format, notes};
+}
+
+/** The label of an importer's format ('ODT'), for the notice. */
+function labelOf(format) {
+  const imp = IMPORTERS.find((i) => i.format === format);
+  if (imp && imp.label) return String(imp.label);
+  return format === 'doc' ? '.doc' : String(format).toUpperCase();
+}
+
 /** See the header. */
-export function notesNotice(leaf, notes) {
+export function openNotice(leaf, got) {
+  const notes = got && got.notes;
+  if (!got || !got.imported) return notesNotice(leaf, notes);
+  const label = labelOf(got.imported);
+  const head = `'${leaf}' was opened from ` +
+    `${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label} file; it ` +
+    'will be saved as a .docx.';
+  return notesNotice(leaf, notes, head + ' Also: ') || head;
+}
+
+/** See the header (head: the start of the notice, else "'leaf' was
+ *  opened, but: "). */
+export function notesNotice(leaf, notes, head) {
   if (!Array.isArray(notes) || !notes.length) return null;
-  const head = `'${leaf}' was opened, but: `;
+  head = head || `'${leaf}' was opened, but: `;
   const cut = (s) => (s.length <= NOTE_MAX ? s
     : s.slice(0, NOTE_MAX - 3) + '...');
   let body = '', k = 0;
@@ -155,6 +265,25 @@ function rtfWhy(err, leaf) {
   return `'${leaf}' could not be opened: it is not an RTF file.`;
 }
 
+const IMPORT_WHY = {
+  'too-big': `it is too big (more than ${MAX_IMPORT_BYTES /
+    (1024 * 1024)} MB)`,
+  'old': 'it is a Word 6/95 file, which !Letters cannot read',
+  'encrypted': 'it is password-protected',
+  'not-word': 'it is not a Word document',
+};
+const NOT_ODT = 'it is not an OpenDocument text file';
+
+/** The error box text for an ImportError (null: not one). */
+function importWhy(err, leaf) {
+  if (!err || err.name !== 'ImportError') return null;
+  if (err.code === 'bad' && err.format === 'doc') {
+    return `'${leaf}' could not be opened: the file is damaged.`;
+  }
+  const why = IMPORT_WHY[err.code] || NOT_ODT;
+  return `'${leaf}' could not be opened: ${why}.`;
+}
+
 /** See the header. */
 export function typeAt(vfs, path) {
   try {
@@ -167,12 +296,20 @@ export function typeAt(vfs, path) {
 
 /** The error box text for a file `leaf` that could not be opened. */
 export function describe(err, leaf, type) {
-  const rtf = rtfWhy(err, leaf);
+  const rtf = rtfWhy(err, leaf) || importWhy(err, leaf);
   if (rtf) return rtf;
   const why = err && err.name === 'DocxError' && REASONS[err.code];
   if (why && err.code === 'not-docx' && err.kind !== 'ole2' &&
     type === FILETYPES.rtf) {
     return rtfWhy(new RtfError('not-rtf'), leaf);
+  }
+  // (a file of an importer's type that no importer took: said as
+  // not what its type says, not as not a .docx)
+  if (why && /^(not-docx|no-document)$/.test(err.code) &&
+    (type === IMPORT_TYPES.doc || type === IMPORT_TYPES.odt)) {
+    const what = type === IMPORT_TYPES.doc ? IMPORT_WHY['not-word']
+      : NOT_ODT;
+    return `'${leaf}' could not be opened: ${what}.`;
   }
   if (why && err.kind === 'paragraphs') {
     return `'${leaf}' could not be opened: it has more than ` +
@@ -180,8 +317,9 @@ export function describe(err, leaf, type) {
   }
   if (why) {
     if (err.kind === 'ole2') {
-      return `'${leaf}' is an older Word (.doc) or ` +
-        'password-protected file; !Letters opens .docx files only.';
+      // (an OLE file ./DocRead's sniff passed over: not Word's)
+      return `'${leaf}' could not be opened: ` +
+        `${IMPORT_WHY['not-word']}.`;
     }
     const part = err.part && err.code === 'bad-xml'
       ? ` (${err.part})` : '';

@@ -1,0 +1,151 @@
+// DocSep - a .doc section's properties ([MS-DOC] 2.8.26 PlcfSed's
+// Sed, 2.9.253 SEPX, 2.6.4 the section sprms) as the props of a
+// Model section (./ReadSect's shape). Used by ./DocSect; pure.
+//
+//   sepProps(word, fc, note) -> props  the SEPX at fc of the
+//       WordDocument stream (cb, then a grpprl of cb bytes; fc
+//       0xFFFFFFFF: none, the defaults); one past the stream: the
+//       defaults, a note
+//     pgSz {w, h, orient?}  sprmSXaPage / SYaPage (default 12240 x
+//         15840, [MS-DOC]'s); sprmSBOrientation 2 is landscape, the
+//         width the larger (swapped when the file has it narrower)
+//     pgMar {top, right, bottom, left, header, footer, gutter}
+//         sprmSDyaTop / SDxaRight / SDyaBottom / SDxaLeft / SDyaHdrTop
+//         / SDyaHdrBottom / SDzaGutter (defaults 1440 1800 1440 1800
+//         720 720 0, as ./RtfSect's: [MS-DOC] leaves them to the
+//         application)
+//     cols {space, num?, sep?, equalWidth?, col?}  sprmSCcolumns + 1
+//         columns (at most ./ReadSect MAX_COLS), sprmSDxaColumns
+//         (720), sprmSLBetween; with sprmSFEvenlySpaced 0 and a
+//         sprmSDxaColWidth for every column, their widths and
+//         sprmSDxaColSpacing gaps
+//     type  sprmSBkc 0 continuous, 1 nextColumn, 3 evenPage,
+//         4 oddPage (2, the next page, is the default: none)
+//     titlePg  sprmSFTitlePage
+//     pgNumType {fmt?, start?}  sprmSNfcPgn (./NumFormat NUM_FMTS;
+//         decimal: none); with sprmSFPgnRestart, sprmSPgnStart (else
+//         sprmSPgnStart97; default 0)
+//     vAlign  sprmSVjc 1 center, 2 both, 3 bottom
+// Line numbers (sprmSNLnnMod) and page borders (sprmSBrc...) are
+// not read (a note each, when set).
+// Values out of range are not used (the default, one note): page
+// sides 144..31680, margins 0..31680 (top and bottom -31680..31680),
+// a column gap 0..31680. Margins that leave the text less than 144
+// twips are cut to fit (a note).
+import {readSprms, u8, u16, i16, u32} from './DocSprm';
+import {MAX_COLS} from './ReadSect';
+import {NUM_FMTS} from './NumFormat';
+
+const MIN = 144, MAX = 31680;
+const BEYOND = 'a section\'s page settings lie outside the file: ' +
+  'the defaults are used';
+const RANGE = 'a page setting out of range is not used';
+const FIT = 'page margins larger than the page are cut to fit';
+const LOST = [[[0x5015], 'line numbers are not read'],
+  [[0x702B, 0x702C, 0x702D, 0x702E, 0xD234, 0xD235, 0xD236, 0xD237],
+    'page borders are not read']];
+const TYPES = ['continuous', 'nextColumn', undefined, 'evenPage',
+  'oddPage'];
+const VALIGN = [undefined, 'center', 'both', 'bottom'];
+
+const S = {
+  0x3009: ['bkc', u8], 0x300A: ['title', u8], 0x500B: ['ccol', u16],
+  0x900C: ['space', u16], 0x3005: ['even', u8], 0x3019: ['line', u8],
+  0x300E: ['nfc', u8], 0x3011: ['restart', u8],
+  0x501C: ['start97', u16], 0x7044: ['start', u32],
+  0x301A: ['vjc', u8], 0x301D: ['orient', u8],
+  0xB01F: ['w', u16], 0xB020: ['h', u16], 0xB021: ['left', u16],
+  0xB022: ['right', u16], 0x9023: ['top', i16],
+  0x9024: ['bottom', i16], 0xB025: ['gutter', u16],
+  0xB017: ['header', u16], 0xB018: ['footer', u16]};
+const DEFAULT = {w: 12240, h: 15840, top: 1440, bottom: 1440,
+  left: 1800, right: 1800, header: 720, footer: 720, gutter: 0,
+  space: 720, ccol: 0, even: 1, bkc: 2};
+
+/** The SEP of a grpprl: the sprms' values over the defaults. */
+function sepOf(prls) {
+  const s = {...DEFAULT, widths: [], gaps: []};
+  for (const {op, operand} of prls) {
+    if (op === 0xF203 || op === 0xF204) {
+      const i = u8(operand, 0);
+      if (i < MAX_COLS) {
+        s[op === 0xF203 ? 'widths' : 'gaps'][i] = u16(operand, 1);
+      }
+      continue;
+    }
+    const d = S[op];
+    if (d) s[d[0]] = d[1](operand, 0);
+  }
+  return s;
+}
+
+/** [lead, trail] cut so that at least MIN is left of size. */
+function fit(note, lead, trail, size) {
+  if (Math.max(0, lead) + Math.max(0, trail) <= size - MIN) {
+    return [lead, trail];
+  }
+  note(FIT);
+  const lim = Math.floor((size - MIN) / 2);
+  return [Math.min(lead, lim), Math.min(trail, lim)];
+}
+
+function columns(s) {
+  const cols = {space: s.space <= MAX ? s.space : DEFAULT.space};
+  const num = Math.min(MAX_COLS, s.ccol + 1);
+  if (num > 1) cols.num = num;
+  if (num > 1 && s.line) cols.sep = true;
+  if (num > 1 && !s.even) {
+    const w = s.widths.slice(0, num);
+    if (w.length === num && w.every((x) => x > 0 && x <= MAX)) {
+      cols.equalWidth = false;
+      cols.col = w.map((x, i) => (i < num - 1 ? {w: x,
+        space: Math.min(MAX, s.gaps[i] || 0)} : {w: x}));
+    }
+  }
+  return cols;
+}
+
+/** See the header. */
+export function sepProps(word, fc, note) {
+  let prls = [];
+  if (fc !== 0xFFFFFFFF) {
+    const cb = fc + 2 <= word.length ? i16(word, fc) : -1;
+    if (cb < 0 || fc + 2 + cb > word.length) note(BEYOND);
+    else prls = readSprms(word, fc + 2, fc + 2 + cb, note);
+  }
+  const s = sepOf(prls);
+  for (const [ops, msg] of LOST) {
+    if (prls.some((x) => ops.includes(x.op) &&
+      x.operand.some((v) => v))) note(msg);
+  }
+  const ok = (k, lo) => {
+    if (s[k] >= lo && s[k] <= MAX) return;
+    note(RANGE);
+    s[k] = DEFAULT[k];
+  };
+  ['w', 'h'].forEach((k) => ok(k, MIN));
+  ['left', 'right', 'header', 'footer', 'gutter'].forEach((k) =>
+    ok(k, 0));
+  ['top', 'bottom'].forEach((k) => ok(k, -MAX));
+  const {w, h} = s;
+  const pgSz = {w, h};
+  if (s.orient === 2) {
+    if (w < h) [pgSz.w, pgSz.h] = [h, w];
+    pgSz.orient = 'landscape';
+  }
+  const [left, right] = fit(note, s.left, s.right, pgSz.w);
+  const [top, bottom] = fit(note, s.top, s.bottom, pgSz.h);
+  const props = {pgSz, pgMar: {top, right, bottom, left,
+    header: s.header, footer: s.footer, gutter: s.gutter},
+  cols: columns(s)};
+  if (TYPES[s.bkc]) props.type = TYPES[s.bkc];
+  if (s.title) props.titlePg = true;
+  const pg = {};
+  if (s.nfc && NUM_FMTS[s.nfc]) pg.fmt = NUM_FMTS[s.nfc];
+  if (s.restart) {
+    pg.start = Math.min(2147483646, s.start ?? s.start97 ?? 0);
+  }
+  if (Object.keys(pg).length) props.pgNumType = pg;
+  if (VALIGN[s.vjc]) props.vAlign = VALIGN[s.vjc];
+  return props;
+}

@@ -13,6 +13,12 @@
 //   poi           Apache-2.0    test-data/document/*.docx
 //   open-xml-sdk  MIT           test/**/*.docx
 //   libreoffice   MPL-2.0       up to 3 files per sw/qa/extras/*/data
+//   poi-doc       Apache-2.0    test-data/document/*.doc (Word 97-2003;
+//                               folder poi-doc/)
+//   libreoffice-odt  MPL-2.0    up to 3 .odt per sw/qa/extras/*/data
+//                               (folder libreoffice-odt/)
+// The .doc and .odt files are inputs for the import readers; the .docx
+// round-trip tests only read .docx files and skip them.
 // Files over 5 MB are left out (and the total is capped at 60 MB).
 // SOURCES.txt in the corpus folder records URL, commit, licence, and
 // the SHA-256 of every file. Running it again skips files that are
@@ -24,7 +30,7 @@
 // is skipped with a warning and the script still exits 0 ("0 sources
 // fetched"). Run the test with
 //   NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps/corpus.test.mjs
-// (about 25 s and up to ~1.9 GB of memory; the corpus is about 24 MB in
+// (about 25 s and up to ~1.9 GB of memory; the .docx corpus is about 24 MB in
 // 630 files and the download about 15 s).
 //   Usage: node tools/moreapps-corpus.mjs
 import fs from 'node:fs';
@@ -47,6 +53,10 @@ const SOURCES = [
     commit: 'ae62bb5116b9aee19ebd5834e3a82066132c9f7f',
     licence: 'Apache-2.0', licFile: 'legal/LICENSE', licRe: /Apache License\s+Version 2\.0/,
     pick: (p) => /^test-data\/document\/[^/]+\.docx$/i.test(p), strip: 'test-data/document/'},
+  {id: 'poi-doc', repo: 'apache/poi',
+    commit: 'ae62bb5116b9aee19ebd5834e3a82066132c9f7f',
+    licence: 'Apache-2.0', licFile: 'legal/LICENSE', licRe: /Apache License\s+Version 2\.0/,
+    pick: (p) => /^test-data\/document\/[^/]+\.doc$/i.test(p), strip: 'test-data/document/'},
   {id: 'open-xml-sdk', repo: 'dotnet/Open-XML-SDK',
     commit: '431ab05cf160248cc3885a4a766026d4f8243792',
     licence: 'MIT', licFile: 'LICENSE', licRe: /MIT License|Permission is hereby granted, free of charge/,
@@ -55,7 +65,12 @@ const SOURCES = [
   {id: 'libreoffice', repo: 'LibreOffice/core',
     commit: '5c7c6a2eaa2fb4f83a68895b246fc787f76b5193',
     licence: 'MPL-2.0', licFile: 'COPYING.MPL', licRe: /Mozilla Public License Version 2\.0/,
-    dirs: 'sw/qa/extras', strip: 'sw/qa/extras/',
+    dirs: 'sw/qa/extras', strip: 'sw/qa/extras/', ext: 'docx',
+    note: 'mixed repository: GPLv3 COPYING; test files assumed MPL-2.0, not verified per file'},
+  {id: 'libreoffice-odt', repo: 'LibreOffice/core',
+    commit: '5c7c6a2eaa2fb4f83a68895b246fc787f76b5193',
+    licence: 'MPL-2.0', licFile: 'COPYING.MPL', licRe: /Mozilla Public License Version 2\.0/,
+    dirs: 'sw/qa/extras', strip: 'sw/qa/extras/', ext: 'odt',
     note: 'mixed repository: GPLv3 COPYING; test files assumed MPL-2.0, not verified per file'},
 ];
 
@@ -110,7 +125,8 @@ function list(s) {
     const sub = tree(d.sha).tree.find((e) => e.path === 'data' && e.type === 'tree');
     if (!sub) continue;
     const docx = tree(sub.sha).tree
-      .filter((e) => e.type === 'blob' && /\.docx$/i.test(e.path) && e.size <= 1 << 20)
+      .filter((e) => e.type === 'blob' && e.path.toLowerCase().endsWith('.' + s.ext) &&
+        e.size <= 1 << 20)
       .sort((a, b) => (a.path < b.path ? -1 : 1)).slice(0, PER_DIR);
     for (const e of docx) out.push({...e, path: `${s.dirs}/${d.path}/data/${e.path}`});
   }
@@ -173,15 +189,17 @@ for (const s of ghOk ? SOURCES : []) {
 if (!results.length) {
   console.warn('WARNING: 0 sources fetched' + (ghOk ? ' (see above)' : ''));
 } else {
-  const txt = ['Sample .docx files for tests/moreapps/corpus.test.mjs, fetched by',
+  const txt = ['Sample .docx, .doc and .odt files (corpus.test.mjs reads the .docx), fetched by',
     'tools/moreapps-corpus.mjs. Not committed. Each file is the unmodified',
     'file at the pinned commit (checked against its git blob hash).',
     'Licences are repository-level; individual files may contain third-party',
     'content (for example scraped or conformance-sample documents). Local',
     'testing only: the corpus is never committed or redistributed.',
-    'python-docx (MIT), Apache POI (Apache-2.0) and Open XML SDK (MIT) have',
+    'python-docx (MIT), Apache POI (Apache-2.0, folders poi and poi-doc) and',
+    'Open XML SDK (MIT) have',
     'the licences found in their LICENSE files, checked when fetched. The',
-    'LibreOffice repository is mixed (COPYING is GPLv3; the test documents',
+    'LibreOffice repository (folders libreoffice and libreoffice-odt) is',
+    'mixed (COPYING is GPLv3; the test documents',
     'are taken as MPL-2.0 per COPYING.MPL, which is not verified per file).',
     ''];
   for (const {s, done, bytes} of results) {

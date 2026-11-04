@@ -1,0 +1,148 @@
+// ImpStory - headers and footers for ./ImpBuild, and the
+// relationships of every flow (links and pictures in the body or a
+// story).
+//
+//   header(b, type, story), footer(b, type, story)  (b.header,
+//       b.footer) type 'default' | 'first' | 'even': the story (an
+//       ./ImpFlow Flow, ended here when it is open, or the blocks its
+//       end gave) becomes a header or footer part (./StoryWrite
+//       freeName, root w:hdr / w:ftr declaring w and r), with its
+//       relationship in doc.rels; it is referred to by the next
+//       section to end (b.sectionEnd, or the last at finish). A later
+//       one of the same kind and type before that replaces it. An
+//       'even' one turns on the settings' evenAndOddHeaders; a
+//       'first' one shows only when the section has titlePg (the
+//       caller's). At most MAX_STORIES; a section with none of its
+//       own shows the one before's, as in Word
+//   storyOf(b, story) -> {blocks, rels} | null  a story's blocks and
+//       the relationships made in it (null, with a note, when it is
+//       not a story)
+//   withRefs(b, props) -> props  the section's props with the
+//       references waiting (./SectRefs withRef)
+//   relsOf(b, flow) -> the array flow's relationships go in: the
+//       body's is doc.rels (copied once), a story's its own
+//   newRel(b, flow, kind, target, external?) -> id  a relationship
+//       (./DocParts addRel's shape) in relsOf(b, flow): its id unique
+//       over every part the builder makes, so that a story's go into
+//       the part it becomes (a header's own, the notes', the
+//       comments') as they are
+// Pure: no desktop services.
+import {newPara} from './Model';
+import {NS} from './Wml';
+import {relType} from './WriteParts';
+import {freeName} from './StoryWrite';
+import {relsNameFor} from './Rels';
+import {withRef} from './SectRefs';
+import {docScope} from './WriteBody';
+import {withOnOff} from './SettingsEdit';
+
+export const MAX_STORIES = 256;
+const TYPES = ['default', 'first', 'even'];
+const NOT_STORY = 'a header, footer, note or comment that is not a ' +
+  'story is left out';
+
+const isFlow = (s) => s && typeof s.end === 'function' &&
+  Array.isArray(s.blocks);
+const ended = new WeakMap();
+
+/** Flow f ended with blocks bs (./ImpFlow end). */
+export const endedAs = (f, bs) => ended.set(bs, f);
+
+/** See the header. */
+export function storyOf(b, story) {
+  if (isFlow(story) && story.b === b && story !== b.body) {
+    return {blocks: story.end(), rels: story.rels};
+  }
+  const f = Array.isArray(story) ? ended.get(story) : undefined;
+  if (!f || f.b !== b) {
+    b.note(NOT_STORY);
+    return null;
+  }
+  return {blocks: story, rels: f.rels};
+}
+
+/** See the header. */
+export function relsOf(b, flow) {
+  if (flow !== b.body) return flow.rels;
+  if (!b.ownRels) {
+    b.doc.rels = b.doc.rels.slice();
+    b.ownRels = true;
+  }
+  return b.doc.rels;
+}
+
+/** See the header. */
+export function newRel(b, flow, kind, target, external = false) {
+  if (!b.relIds) {
+    b.relIds = new Set(b.doc.rels.map((r) => r.id));
+    b.relNext = 1;
+  }
+  while (b.relIds.has('rId' + b.relNext)) b.relNext++;
+  const id = 'rId' + b.relNext++;
+  b.relIds.add(id);
+  const type = relType(kind, b.doc.meta.conformance === 'strict');
+  const attrs = [['Id', id], ['Type', type], ['Target', target]];
+  const rel = {id, type, target, attrs};
+  if (external) {
+    rel.mode = 'External';
+    attrs.push(['TargetMode', 'External']);
+  }
+  relsOf(b, flow).push(rel);
+  return id;
+}
+
+const waiting = (b) => b.hdrRefs || (b.hdrRefs = []);
+
+function attach(b, kind, type, story) {
+  if (!TYPES.includes(type)) {
+    b.note('a header or footer of a kind !Letters does not know is ' +
+      'left out');
+    return;
+  }
+  const s = storyOf(b, story);
+  if (!s) return;
+  const d = b.doc, refs = waiting(b);
+  const old = refs.findIndex((r) => r.kind === kind && r.type === type);
+  if (old >= 0) {
+    const r = refs.splice(old, 1)[0];
+    d.stories = new Map(d.stories);
+    d.stories.delete(r.part);
+    d.rels = d.rels.filter((x) => x.id !== r.id);
+  }
+  if (d.stories.size >= MAX_STORIES) {
+    b.note('more than ' + MAX_STORIES + ' headers and footers: the ' +
+      'rest are skipped');
+    return;
+  }
+  const part = freeName(d, kind);
+  const own = s.rels.length > 0;
+  d.stories = new Map(d.stories).set(part, {part, kind,
+    root: {name: 'w:' + kind, attrs: [['xmlns:w', NS.w],
+      ['xmlns:r', NS.r]]}, prolog: null,
+    blocks: s.blocks.length ? s.blocks : [newPara('')],
+    rels: own ? s.rels.slice() : null,
+    relsPart: own ? relsNameFor(part) : null, orig: [], bytes: null});
+  const main = d.meta.mainPart;
+  const dir = main.slice(0, main.lastIndexOf('/') + 1);
+  const id = newRel(b, b.body, kind === 'hdr' ? 'header' : 'footer',
+    part.slice(dir.length));
+  refs.push({kind, type, id, part});
+  if (type === 'even' && d.rawSettings && !b.evenOdd) {
+    b.evenOdd = true;
+    d.rawSettings = withOnOff(d.rawSettings, 'evenAndOddHeaders', true);
+  }
+}
+
+export const header = (b, type, story) => attach(b, 'hdr', type, story);
+export const footer = (b, type, story) => attach(b, 'ftr', type, story);
+
+/** See the header. */
+export function withRefs(b, props) {
+  const refs = waiting(b);
+  if (!refs.length) return props;
+  const map = docScope(b.doc).map;
+  let out = props;
+  for (const r of refs) out = withRef(out, r.kind, r.type, r.id, map);
+  b.hdrRefs = [];
+  return {...props, extra: out.extra};
+}

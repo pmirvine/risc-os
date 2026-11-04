@@ -1,0 +1,163 @@
+// DocComments - the comments of a .doc ([MS-DOC] 2.3.4 Comments;
+// PlcfandRef of ATRDPre10, PlcfandTxt, GrpXstAtnOwners, AtrdExtra
+// of ATRDPost10, the range bookmarks SttbfAtnBkmk / PlcfAtnBkf /
+// PlcfAtnBkl) through the builder (./ImpBuild comment). A handler
+// module of ./DocRead (PART {chars, start}).
+//
+//   0x05  in the main text, at a CP PlcfandRef lists: comment i's
+//         mark (its text read first if its range has not: PlcfandTxt
+//         CPs i..i+1 after the headers' document, through ./DocNotes
+//         readStory). Its author is GrpXstAtnOwners[ibst], its
+//         initials the ATRDPre10's, its date the ATRDPost10's DTTM
+//         (none in files before Word 2002), a reply's parent the
+//         comment diatrdParent names (made before it). Elsewhere (a
+//         comment's own text: Word's annotation mark, put back by the
+//         builder) or not listed: left out (the last with a note)
+//   start: the ranges: a comment whose lTagBkmk names an ATNBE has
+//         the range PlcfAtnBkf's CP .. PlcfAtnBkl's (BKF ibkl): its
+//         start and end are ./DocMarks marks in the main text (an
+//         empty one, as Word writes for a point: none). A
+//         range that does not fit (backwards, after the mark, past
+//         the main text) or whose bookmark is missing: the comment
+//         is a point at its mark (one note)
+//
+// Each comment is read once. One whose text lies outside the
+// comments' document, past ./RtfComments MAX_COMMENTS, or past twice
+// ccpAtn characters read in all, is left out without being read (one
+// note each). An ibst with no author: no author (one note); a DTTM
+// that is not a real date: no date (./ImpRevs dateOf). Pairs past the
+// FIB's are none (AtrdExtra is pair 112, FibRgFcLcb2002's).
+import {slice} from './DocFib';
+import {plcOf, cpsOf, findCp, sttbOf, xstsOf, textAt, pairBytes, u16,
+  i16, i32} from './DocPlc';
+import {readStory} from './DocNotes';
+import {addMark} from './DocMarks';
+import {MAX_COMMENTS} from './RtfComments';
+
+/** fibRgFcLcb2002's fcAtrdExtra: pair 112 ([MS-DOC] 2.5.8). */
+export const ATRD_EXTRA = 112;
+const ATRD = 30, POST = 18;
+const OUTSIDE = 'a comment whose text lies outside the comments is ' +
+  'left out';
+const UNLISTED = 'a comment mark the file does not list is left out';
+const MUCH = 'more comment text than the file holds: the rest of ' +
+  'the comments are left out';
+const RANGE = 'a comment\'s range that does not fit is left out: ' +
+  'the comment is kept at its mark';
+const AUTHOR = 'a comment\'s author that is not in the file is left ' +
+  'out';
+
+/** The ranges' marks of S's comments (see the header). */
+function ranges(ctx, S) {
+  const t = ctx.table, f = ctx.fib, note = ctx.note;
+  const sb = slice(t, f, 'SttbfAtnBkmk', note);
+  const kb = slice(t, f, 'PlcfAtnBkf', note);
+  const bkf = plcOf(kb, 4);
+  const bkl = cpsOf(slice(t, f, 'PlcfAtnBkl', note));
+  const st = sb && bkf ? sttbOf(sb, {max: bkf.n}) : null;
+  const tags = new Map();
+  if (st) {
+    st.names.forEach((_, k) => {
+      if (st.extra[k] !== null) tags.set(i32(sb, st.extra[k] + 2), k);
+    });
+  }
+  const n = Math.min(S.ref.n, MAX_COMMENTS);
+  for (let i = 0; i < n; i++) {
+    const tag = i32(S.bytes, S.ref.at(i) + 26);
+    if (tag === -1) continue;
+    const k = tags.get(tag);
+    const s = k === undefined ? -1 : bkf.cp(k);
+    const e = k === undefined ? -1 : (() => {
+      const j = u16(kb, bkf.at(k));
+      return j < bkl.n ? bkl.cp(j) : -1;
+    })();
+    if (!(s >= 0 && e >= s && s <= S.ref.cp(i) && e <= f.ccpText)) {
+      ctx.note(RANGE);
+      continue;
+    }
+    if (e === s) continue;      // (an empty range: a point, as Word's)
+    addMark(ctx, s, 1, (c, m) => {
+      const x = m.main ? make(c, S, i) : null;
+      if (x) c.b.obj(x.start);
+    });
+    addMark(ctx, e, 0, (c, m) => {
+      const x = S.made.get(i);
+      if (m.main && x && !S.refd[i]) c.b.obj(x.end);
+    });
+  }
+}
+
+function start(ctx) {
+  const f = ctx.fib, t = ctx.table, note = ctx.note;
+  const bytes = f.ccpAtn ? slice(t, f, 'PlcfandRef', note) : null;
+  const ref = plcOf(bytes, ATRD);
+  if (!ref || !ref.n) return;
+  const base = f.ccpText + f.ccpFtn + f.ccpHdd;
+  const S = ctx.cmtD = {ref, bytes, base,
+    len: Math.min(f.ccpAtn, ctx.end - base),
+    txt: cpsOf(slice(t, f, 'PlcfandTxt', note)),
+    owners: xstsOf(slice(t, f, 'GrpXstAtnOwners', note), 65536),
+    extra: pairBytes(t, f.pairAt(ATRD_EXTRA), note, 'AtrdExtra'),
+    refd: new Uint8Array(ref.n), made: new Map(), count: 0,
+    left: 2 * f.ccpAtn + 64};
+  ranges(ctx, S);
+}
+
+/** The ATRD of comment i: {author, initials, date, parent}. */
+function atrd(ctx, S, i) {
+  const at = S.ref.at(i), b = S.bytes;
+  const initials = textAt(b, at + 2, Math.min(u16(b, at), 9));
+  const ibst = i16(b, at + 20);
+  const author = S.owners[ibst];
+  if (author === undefined) ctx.note(AUTHOR);
+  const x = S.extra, o = POST * i;
+  if (!x || o + POST > x.length) return {author, initials};
+  const depth = i32(x, o + 6), up = i32(x, o + 10);
+  const parent = depth > 0 && up < 0 ? S.made.get(i + up) : undefined;
+  return {author, initials, date: i32(x, o),
+    parent: parent || undefined};
+}
+
+/** Comment i made (once): the builder's {start, end, ref} or null. */
+function make(ctx, S, i) {
+  if (S.made.has(i)) return S.made.get(i);
+  S.made.set(i, null);
+  if (S.count >= MAX_COMMENTS) {
+    ctx.note('more than ' + MAX_COMMENTS + ' comments: the rest are ' +
+      'skipped');
+    return null;
+  }
+  const ok = i + 1 < S.txt.n;
+  const from = ok ? S.txt.cp(i) : -1, to = ok ? S.txt.cp(i + 1) : -1;
+  if (!(from >= 0 && to > from && to <= S.len)) {
+    ctx.note(OUTSIDE);
+    return null;
+  }
+  S.left -= to - from;
+  if (S.left < 0) {
+    ctx.note(MUCH);
+    return null;
+  }
+  const a = atrd(ctx, S, i);
+  const story = readStory(ctx, S.base + from, S.base + to, 'comment');
+  if (ctx.b.stopped) return null;
+  const c = ctx.b.comment({...a, story});
+  if (c) S.count++;
+  S.made.set(i, c);
+  return c;
+}
+
+/** 0x05. */
+function mark(ctx, cp) {
+  const S = ctx.cmtD;
+  if (ctx.storyEnd !== undefined) return;
+  const i = S ? findCp(S.ref, cp) : -1;
+  if (i < 0) return ctx.note(UNLISTED);
+  if (S.refd[i]) return;
+  const c = make(ctx, S, i);
+  S.refd[i] = 1;
+  if (c) ctx.obj(c.ref, cp);
+}
+
+/** See the header. */
+export const PART = {chars: new Map([[0x05, mark]]), start: [start]};

@@ -1,0 +1,250 @@
+// ImpTable - the open tables of an ./ImpBuild flow: which blocks
+// are in which cell, row and table, and the Model Table (./Model
+// newTable, newRow, newCell) each makes when it ends.
+//
+//   new TableStack(flow)   flow: the ./ImpFlow Flow (its b: note,
+//       count)
+//   ts.depth               open tables (0: none)
+//   ts.start({tblPr, grid?})  a table opens: in the cell open in the
+//       table around it (one is opened when none is), or at the
+//       flow's level when none is open
+//   ts.rowStart(trPr), ts.cellStart(tcPr)  a row / cell opens (the
+//       open one of that kind ends first)
+//   ts.cellEnd(), ts.rowEnd()  the open cell / row ends (nothing
+//       when none is open)
+//   ts.end() -> Table | null  the innermost table ends: the Table
+//       when it is the outermost (the flow places it), null when it
+//       went into the cell around it, or had no rows
+//   ts.put(block)  a block for the innermost table's open cell (a
+//       row and a cell are opened when none is, with a note)
+//   ts.closeAll() -> Table | null  every open table ends (a section
+//       break, the flow's end): the outermost's Table, or null
+//
+// The shapes (./TblCheck): a row with no cell and a table with no
+// row are left out; every cell ends with a paragraph (an empty one
+// after a nested table, or in a cell given nothing: counted against
+// the builder's cap, ./ImpBuild); at most MAX_COLS cells a row (more
+// join the last, with a note); tables opened deeper than MAX_DEPTH
+// are read at that depth (their rows and cells are the cell's they
+// are in, with a note). Grid sums:
+// gridSpan 1..MAX_COLS, gridBefore / gridAfter 0..MAX_COLS (else
+// left out); a row wider than MAX_COLS columns loses its gridBefore
+// and gridAfter, then has one column a cell; the grid is as many
+// columns as the widest row (a column missing from the grid given is
+// as wide as the cell's tcW in dxa over its span, else the column
+// before, else DEFAULT_W), at most MAX_COLS, each 0..MAX_TW. A
+// vMerge continue with no merged cell above it becomes a restart
+// (./TblNorm unstray). Property objects are the caller's Model
+// values (./TblCheck fields), given an extra when they have none;
+// one that is not an object is none (./ImpPara props, a note), and a
+// table the Model refuses for them is read without them (a note).
+// Pure: no desktop services.
+import {newPara, newTable, newRow, newCell} from './Model';
+import {MAX_COLS, MAX_DEPTH, MAX_TW} from './TblCheck';
+import {unstray} from './TblNorm';
+import {props} from './ImpPara';
+
+export const DEFAULT_W = 1440;
+
+const TOO_DEEP = 'tables nested more than ' + MAX_DEPTH + ' deep: ' +
+  'the deeper ones are read at that depth';
+const TOO_WIDE = 'a table row with more than ' + MAX_COLS +
+  ' cells: the rest are joined to the last';
+const BAD = 'a table whose formatting cannot be kept is read ' +
+  'without it';
+const LOOSE = 'table content outside a cell is put in a cell of ' +
+  'its own';
+
+const isCount = (n, lo) => Number.isInteger(n) && n >= lo &&
+  n <= MAX_COLS;
+
+
+/** The columns of tcPr p a cell spans (1 when none or bad). */
+const spanOf = (p) => (isCount(p.gridSpan, 1) ? p.gridSpan : 1);
+
+export class TableStack {
+  constructor(flow) {
+    this.flow = flow;
+    this.pr = (o) => props(flow.b, o);
+    this.levels = [];
+    this.over = 0;
+  }
+
+  get depth() {
+    return this.levels.length;
+  }
+
+  start(given) {
+    const t = given && typeof given === 'object' ? given : {};
+    if (this.levels.length >= MAX_DEPTH) {
+      this.flow.b.note(TOO_DEEP);
+      this.over++;
+      this.open();
+      return;
+    }
+    if (this.levels.length) this.open();
+    this.levels.push({tblPr: this.pr(t.tblPr), rows: [], row: null,
+      cell: null, grid: Array.isArray(t.grid) ? t.grid : []});
+  }
+
+  rowStart(trPr) {
+    if (this.over || !this.levels.length) return;
+    this.endRow(this.top());
+    this.top().row = {trPr: this.pr(trPr), cells: []};
+  }
+
+  cellStart(tcPr) {
+    if (this.over || !this.levels.length) return;
+    const L = this.top();
+    this.endCell(L);
+    if (!L.row) L.row = {trPr: this.pr(), cells: []};
+    L.cell = {tcPr: this.pr(tcPr), blocks: []};
+  }
+
+  cellEnd() {
+    if (!this.over && this.levels.length) this.endCell(this.top());
+  }
+
+  rowEnd() {
+    if (!this.over && this.levels.length) this.endRow(this.top());
+  }
+
+  end() {
+    if (this.over) {
+      this.over--;
+      return null;
+    }
+    const L = this.levels.pop();
+    if (!L) return null;
+    this.endRow(L);
+    const t = L.rows.length ? this.built(L) : null;
+    if (t && this.levels.length) {
+      this.put(t);
+      return null;
+    }
+    return t;
+  }
+
+  put(block) {
+    this.open(LOOSE);
+    this.top().cell.blocks.push(block);
+  }
+
+  closeAll() {
+    this.over = 0;
+    let t = null;
+    while (this.levels.length) t = this.end();
+    return t;
+  }
+
+  /** Level L's table; properties the Model refuses: none (a note). */
+  built(L) {
+    try {
+      return build(L);
+    } catch (e) {
+      this.flow.b.note(BAD);
+      const rows = L.rows.map((r) => ({trPr: this.pr(), cells: r.cells
+        .map((c) => ({tcPr: this.pr(), blocks: c.blocks}))}));
+      return build({grid: L.grid, rows, tblPr: this.pr()});
+    }
+  }
+
+  top() {
+    return this.levels[this.levels.length - 1];
+  }
+
+  /** Make sure the innermost table has an open cell (a note when
+   *  one is made: `why`). */
+  open(why) {
+    const L = this.top();
+    if (!L || L.cell) return;
+    if (why) this.flow.b.note(why);
+    if (!L.row) L.row = {trPr: this.pr(), cells: []};
+    L.cell = {tcPr: this.pr(), blocks: []};
+  }
+
+  endCell(L) {
+    const c = L.cell;
+    if (!c) return;
+    L.cell = null;
+    const bs = c.blocks, last = bs[bs.length - 1];
+    if (!last || last.type !== 'p') {
+      this.flow.b.count();
+      bs.push(newPara(''));
+    }
+    const cells = L.row.cells;
+    if (cells.length < MAX_COLS) {
+      cells.push({tcPr: c.tcPr, blocks: bs});
+      return;
+    }
+    this.flow.b.note(TOO_WIDE);
+    cells[cells.length - 1].blocks.push(...bs);
+  }
+
+  endRow(L) {
+    this.endCell(L);
+    const r = L.row;
+    L.row = null;
+    if (r && r.cells.length) L.rows.push(r);
+  }
+}
+
+/** A row's tcPr spans and trPr fitted to MAX_COLS: its width. */
+function fit(r) {
+  const t = r.trPr;
+  for (const k of ['gridBefore', 'gridAfter']) {
+    if (t[k] !== undefined && !isCount(t[k], 0)) delete t[k];
+  }
+  for (const c of r.cells) {
+    if (c.tcPr.gridSpan !== undefined && !isCount(c.tcPr.gridSpan, 1))
+      delete c.tcPr.gridSpan;
+    if (c.tcPr.vMerge !== 'restart' && c.tcPr.vMerge !== 'continue')
+      delete c.tcPr.vMerge;
+  }
+  const width = () => (t.gridBefore || 0) + (t.gridAfter || 0) +
+    r.cells.reduce((n, c) => n + spanOf(c.tcPr), 0);
+  if (width() > MAX_COLS) {
+    delete t.gridBefore;
+    delete t.gridAfter;
+  }
+  if (width() > MAX_COLS) {
+    for (const c of r.cells) delete c.tcPr.gridSpan;
+  }
+  return width();
+}
+
+/** The width of grid column k from the cells covering it. */
+function colOf(rows, k) {
+  for (const r of rows) {
+    let at = r.trPr.gridBefore || 0;
+    for (const c of r.cells) {
+      const n = spanOf(c.tcPr), w = c.tcPr.tcW;
+      if (k >= at && k < at + n && w && w.type === 'dxa' &&
+        Number.isFinite(w.w) && w.w > 0) return w.w / n;
+      at += n;
+    }
+  }
+  return undefined;
+}
+
+/** The grid: see the header. */
+function gridOf(given, rows) {
+  const cols = rows.reduce((n, r) => Math.max(n, fit(r)),
+    Math.max(1, given.length));
+  const g = [];
+  for (let k = 0; k < Math.min(cols, MAX_COLS); k++) {
+    let w = given[k];
+    if (!Number.isFinite(w)) w = colOf(rows, k);
+    if (!Number.isFinite(w)) w = k ? g[k - 1] : DEFAULT_W;
+    g.push(Math.max(0, Math.min(MAX_TW, Math.round(w))));
+  }
+  return g;
+}
+
+/** Level L's Model table. */
+function build(L) {
+  const grid = gridOf(L.grid, L.rows);
+  const rows = L.rows.map((r) => newRow(r.cells.map((c) =>
+    newCell(c.blocks, c.tcPr)), r.trPr));
+  return unstray(newTable({grid, rows, tblPr: L.tblPr}));
+}

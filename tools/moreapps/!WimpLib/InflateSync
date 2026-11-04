@@ -1,0 +1,250 @@
+// InflateSync - DEFLATE (RFC 1951), bare or in a zlib wrapper (RFC
+// 1950), inflated synchronously in pure JavaScript, within a cap on
+// the bytes made (the .doc import's metafiles; ./Zip uses the
+// browser's DecompressionStream).
+//
+//   inflateSync(bytes, {max, wrapper?, size?}) -> {data, zlib, adler}
+//     bytes  a Uint8Array (never changed)
+//     max    the most bytes to make (a whole number, required): more
+//            and it throws InflateError 'too-big', before allocating
+//     wrapper  'auto' (the default: a valid zlib header, CM 8, a
+//            window of at most 32 KB, (CMF * 256 + FLG) % 31 == 0 and
+//            no preset dictionary, is read as one, anything else as
+//            bare DEFLATE), 'zlib' (a header that is not valid is
+//            damage) or 'raw'
+//     size   the size expected: allocated at min(size, max), grown
+//            by doubling up to max
+//     data   the bytes made (a Uint8Array of their length)
+//     zlib   whether a zlib header was read
+//     adler  true / false: whether the Adler-32 after the data
+//            matches it; null: no wrapper, or the checksum is not
+//            there (cut short)
+//   InflateError  named 'InflateError', with code 'damaged' (a code
+//            or table that is not valid, a distance before the start,
+//            a block type 3, a stored block whose NLEN is not ~LEN,
+//            the data ends before the last block) or 'too-big'
+//
+// Iterative; every length, table and distance is checked before use
+// (a block with no distance codes, literals only, is read, as zlib
+// does); reads only inside `bytes`; codes as zlib's puff.c. Pure.
+
+export class InflateError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = 'InflateError';
+    this.code = code;
+  }
+}
+
+const damaged = (why) => new InflateError('damaged', why);
+const LBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27,
+  31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258];
+const LEXT = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3,
+  3, 4, 4, 4, 4, 5, 5, 5, 5, 0];
+const DBASE = [1, 2, 3, 4, 5, 7, 9, 13, 17, 25, 33, 49, 65, 97, 129,
+  193, 257, 385, 513, 769, 1025, 1537, 2049, 3073, 4097, 6145, 8193,
+  12289, 16385, 24577];
+const DEXT = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7,
+  8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13];
+const ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2,
+  14, 1, 15];
+
+/** A canonical code from lengths[0..n): {count, symbol, left}
+ *  (left > 0: incomplete; an over-subscribed one is damage). */
+function table(lengths, n) {
+  const count = new Uint16Array(16), symbol = new Uint16Array(n);
+  for (let s = 0; s < n; s++) count[lengths[s]]++;
+  let left = 1;
+  for (let len = 1; len < 16; len++) {
+    left = (left << 1) - count[len];
+    if (left < 0) throw damaged('an over-subscribed code');
+  }
+  const offs = new Uint16Array(16);
+  for (let len = 1; len < 15; len++) {
+    offs[len + 1] = offs[len] + count[len];
+  }
+  for (let s = 0; s < n; s++) {
+    if (lengths[s]) symbol[offs[lengths[s]]++] = s;
+  }
+  return {count, symbol, left};
+}
+
+let FIXED = null;
+function fixed() {
+  if (FIXED) return FIXED;
+  const l = new Uint8Array(288);
+  l.fill(8, 0, 144).fill(9, 144, 256).fill(7, 256, 280)
+    .fill(8, 280, 288);
+  const d = new Uint8Array(30).fill(5);
+  FIXED = [table(l, 288), table(d, 30)];
+  return FIXED;
+}
+
+class State {
+  constructor(bytes, at, max, size) {
+    this.in = bytes;
+    this.pos = at;
+    this.buf = this.cnt = this.n = 0;
+    this.max = max;
+    this.out = new Uint8Array(Math.max(0, Math.min(max,
+      size > 0 ? size : 65536)));
+  }
+
+  bits(need) {
+    let v = this.buf;
+    while (this.cnt < need) {
+      if (this.pos >= this.in.length) throw damaged('cut short');
+      v |= this.in[this.pos++] << this.cnt;
+      this.cnt += 8;
+    }
+    this.buf = v >>> need;
+    this.cnt -= need;
+    return v & ((1 << need) - 1);
+  }
+
+  room(k) {
+    const want = this.n + k;
+    if (want <= this.out.length) return;
+    if (want > this.max) {
+      throw new InflateError('too-big', 'more than ' + this.max +
+        ' bytes');
+    }
+    const grown = new Uint8Array(Math.min(this.max,
+      Math.max(want, this.out.length * 2, 1024)));
+    grown.set(this.out.subarray(0, this.n));
+    this.out = grown;
+  }
+
+  decode(h) {
+    let code = 0, first = 0, index = 0;
+    for (let len = 1; len < 16; len++) {
+      code |= this.bits(1);
+      const c = h.count[len];
+      if (code - c < first) return h.symbol[index + (code - first)];
+      index += c;
+      first = (first + c) << 1;
+      code <<= 1;
+    }
+    throw damaged('a code that is not in its table');
+  }
+}
+
+function stored(s) {
+  s.buf = s.cnt = 0;
+  if (s.pos + 4 > s.in.length) throw damaged('cut short');
+  const d = s.in, p = s.pos;
+  const len = d[p] | (d[p + 1] << 8), nlen = d[p + 2] | (d[p + 3] << 8);
+  if (len !== (~nlen & 0xFFFF)) throw damaged('a stored block length');
+  s.pos += 4;
+  if (s.pos + len > d.length) throw damaged('cut short');
+  s.room(len);
+  s.out.set(d.subarray(s.pos, s.pos + len), s.n);
+  s.n += len;
+  s.pos += len;
+}
+
+function codes(s, lencode, distcode) {
+  for (;;) {
+    let sym = s.decode(lencode);
+    if (sym < 256) {
+      s.room(1);
+      s.out[s.n++] = sym;
+      continue;
+    }
+    if (sym === 256) return;
+    sym -= 257;
+    if (sym >= 29) throw damaged('a length code past the table');
+    const len = LBASE[sym] + s.bits(LEXT[sym]);
+    const ds = s.decode(distcode);
+    if (ds >= 30) throw damaged('a distance code past the table');
+    const dist = DBASE[ds] + s.bits(DEXT[ds]);
+    if (dist > s.n) throw damaged('a distance before the start');
+    s.room(len);
+    const o = s.out;
+    for (let k = 0; k < len; k++, s.n++) o[s.n] = o[s.n - dist];
+  }
+}
+
+function dynamic(s) {
+  const nlen = s.bits(5) + 257, ndist = s.bits(5) + 1;
+  const ncode = s.bits(4) + 4;
+  if (nlen > 286 || ndist > 30) throw damaged('too many codes');
+  const lengths = new Uint8Array(320);
+  for (let i = 0; i < ncode; i++) lengths[ORDER[i]] = s.bits(3);
+  const lc = table(lengths, 19);
+  if (lc.left !== 0) throw damaged('an incomplete code length code');
+  lengths.fill(0);
+  for (let i = 0; i < nlen + ndist;) {
+    let sym = s.decode(lc);
+    if (sym < 16) {
+      lengths[i++] = sym;
+      continue;
+    }
+    let len = 0, rep;
+    if (sym === 16) {
+      if (i === 0) throw damaged('a repeat with nothing before it');
+      len = lengths[i - 1];
+      rep = 3 + s.bits(2);
+    } else if (sym === 17) rep = 3 + s.bits(3);
+    else rep = 11 + s.bits(7);
+    if (i + rep > nlen + ndist) throw damaged('too many lengths');
+    for (; rep; rep--) lengths[i++] = len;
+  }
+  if (!lengths[256]) throw damaged('no end-of-block code');
+  const lit = table(lengths, nlen);
+  const one = (h, n) => h.left > 0 && n - h.count[0] > 1;
+  if (one(lit, nlen)) throw damaged('an incomplete literal code');
+  const dl = lengths.slice(nlen, nlen + ndist);
+  const dist = table(dl, ndist);
+  if (one(dist, ndist)) throw damaged('an incomplete distance code');
+  codes(s, lit, dist);
+}
+
+/** Whether d[at..] starts with a valid zlib header. */
+const zlibHead = (d, at) => d.length >= at + 2 && (d[at] & 15) === 8 &&
+  (d[at] >> 4) <= 7 && ((d[at] << 8) | d[at + 1]) % 31 === 0 &&
+  !(d[at + 1] & 0x20);
+
+function adler32(d, n) {
+  let a = 1, b = 0;
+  for (let i = 0; i < n;) {
+    const end = Math.min(n, i + 3800);
+    for (; i < end; i++) {
+      a += d[i];
+      b += a;
+    }
+    a %= 65521;
+    b %= 65521;
+  }
+  return ((b << 16) | a) >>> 0;
+}
+
+/** See the header. */
+export function inflateSync(bytes, opts = {}) {
+  const max = opts.max;
+  if (!(bytes instanceof Uint8Array)) throw damaged('not bytes');
+  if (!(Number.isInteger(max) && max >= 0)) {
+    throw new RangeError('inflateSync: max must be a whole number');
+  }
+  const w = opts.wrapper || 'auto';
+  const zlib = w === 'zlib' || (w === 'auto' && zlibHead(bytes, 0));
+  if (zlib && !zlibHead(bytes, 0)) throw damaged('not a zlib header');
+  const s = new State(bytes, zlib ? 2 : 0, max, opts.size);
+  for (let last = 0; !last;) {
+    last = s.bits(1);
+    const type = s.bits(2);
+    if (type === 0) stored(s);
+    else if (type === 1) codes(s, ...fixed());
+    else if (type === 2) dynamic(s);
+    else throw damaged('a block of type 3');
+  }
+  const data = s.out.length === s.n ? s.out : s.out.slice(0, s.n);
+  let adler = null;
+  if (zlib && s.pos + 4 <= bytes.length) {
+    const p = s.pos, d = bytes;
+    const want = ((d[p] << 24) | (d[p + 1] << 16) | (d[p + 2] << 8) |
+      d[p + 3]) >>> 0;
+    adler = want === adler32(data, data.length);
+  }
+  return {data, zlib, adler};
+}

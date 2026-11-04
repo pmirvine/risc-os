@@ -1,0 +1,150 @@
+// DocSprm - the property modifiers of a Word 97-2003 .doc
+// ([MS-DOC] 2.2.5.1 Sprm, 2.2.5.2 Prl, 2.6 the sprm tables): a
+// grpprl (a run of Prls: a 2-byte sprm, then its operand) read
+// into a list. Used by ./DocFkp, ./DocStyles, ./DocChp, ./DocPap;
+// pure.
+//
+//   readSprms(bytes, from, to, note?) -> [{op, size, operand}]
+//       the Prls of bytes from..to: op the sprm (16 bits), size the
+//       operand's length in the file (its count bytes included),
+//       operand a view of its value (a variable one without its
+//       count). The size is the sprm's spra's (SIZES: 0, 1 -> 1, 2
+//       -> 2, 3 -> 4, 4, 5 -> 2, 7 -> 3), for spra 6 its first
+//       byte; sprmTDefTable's a 2-byte cb (cb - 1 bytes follow) and
+//       sprmPChgTabs' cb 255 the size its counts give. A Prl that
+//       would run past `to` ends the list (with note(BAD), once per
+//       call); a trailing byte of 0 is padding. Every Prl takes at
+//       least 2 bytes, so the list ends
+//   sprmOf(op) -> {ispmd, fSpec, sgc, spra}   the sprm's fields
+//   OPS  {name: op} of the sprms the readers act on (or keep for
+//       later modules: sections, tables), named as [MS-DOC] does
+//       without 'sprm': OPS.CFBold 0x0835
+//   NAMES  Map op -> name (OPS the other way)
+//   u8, i16, u16, i32, u32 (operand, at?) -> number   operand
+//       values (0 when the operand is too short)
+export const SIZES = Object.freeze([1, 1, 2, 4, 2, 2, -1, 3]);
+export const BAD = 'formatting in the file is damaged: some of it ' +
+  'is not read';
+
+export const OPS = Object.freeze({
+  // characters (sgc 2)
+  CFRMarkDel: 0x0800, CFRMarkIns: 0x0801, CFFldVanish: 0x0802,
+  CPicLocation: 0x6A03, CIbstRMark: 0x4804, CDttmRMark: 0x6805,
+  CFData: 0x0806, CSymbol: 0x6A09, CFOle2: 0x080A,
+  CHighlight: 0x2A0C, CIstd: 0x4A30, CPlain: 0x2A33,
+  CFBold: 0x0835, CFItalic: 0x0836, CFStrike: 0x0837,
+  CFOutline: 0x0838, CFShadow: 0x0839, CFSmallCaps: 0x083A,
+  CFCaps: 0x083B, CFVanish: 0x083C, CKul: 0x2A3E,
+  CDxaSpace: 0x8840, CIco: 0x2A42, CHps: 0x4A43, CHpsPos: 0x4845,
+  CIss: 0x2A48, CHpsKern: 0x484B, CRgFtc0: 0x4A4F,
+  CCharScale: 0x4852, CFDStrike: 0x2A53, CFImprint: 0x0854,
+  CFSpec: 0x0855, CFObj: 0x0856, CFEmboss: 0x0858,
+  CIbstRMarkDel: 0x4863, CDttmRMarkDel: 0x6864, CShd80: 0x4866,
+  CCv: 0x6870, CShd: 0xCA71, CCvUl: 0x6877,
+  // paragraphs (sgc 1)
+  PIstd: 0x4600, PJc80: 0x2403, PFKeep: 0x2405,
+  PFKeepFollow: 0x2406, PFPageBreakBefore: 0x2407, PIlvl: 0x260A,
+  PIlfo: 0x460B, PFNoLineNumb: 0x240C, PChgTabsPapx: 0xC60D,
+  PDxaRight80: 0x840E, PDxaLeft80: 0x840F, PNest80: 0x4610,
+  PDxaLeft180: 0x8411, PDyaLine: 0x6412, PDyaBefore: 0xA413,
+  PDyaAfter: 0xA414, PChgTabs: 0xC615, PFInTable: 0x2416,
+  PFTtp: 0x2417, PDxaAbs: 0x8418, PDyaAbs: 0x8419,
+  PDxaWidth: 0x841A, PPc: 0x261B, PWr: 0x2423,
+  PBrcTop80: 0x6424, PBrcLeft80: 0x6425, PBrcBottom80: 0x6426,
+  PBrcRight80: 0x6427, PBrcBetween80: 0x6428, PBrcBar80: 0x6629,
+  PDcs: 0x442C, PShd80: 0x442D, PFWidowControl: 0x2431,
+  POutLvl: 0x2640, PItap: 0x6649, PDtap: 0x664A,
+  PFInnerTableCell: 0x244B, PFInnerTtp: 0x244C, PShd: 0xC64D,
+  PBrcTop: 0xC64E, PBrcLeft: 0xC64F, PBrcBottom: 0xC650,
+  PBrcRight: 0xC651, PBrcBetween: 0xC652, PBrcBar: 0xC653,
+  PDxaRight: 0x845D, PDxaLeft: 0x845E, PNest: 0x465F,
+  PDxaLeft1: 0x8460, PJc: 0x2461, PFContextualSpacing: 0x246D,
+  PAnld80: 0xC63E, PNLvlAnm80: 0x25FF, PHugePapx: 0x6646,
+  // sections (sgc 4)
+  SBkc: 0x3009, SFTitlePage: 0x300A, SCcolumns: 0x500B,
+  SDxaColumns: 0x900C, SNfcPgn: 0x300E, SFPgnRestart: 0x3011,
+  SDyaHdrTop: 0xB017, SDyaHdrBottom: 0xB018, SLBetween: 0x3019,
+  SVjc: 0x301A, SPgnStart97: 0x501C, SBOrientation: 0x301D,
+  SXaPage: 0xB01F, SYaPage: 0xB020, SDxaLeft: 0xB021,
+  SDxaRight: 0xB022, SDyaTop: 0x9023, SDyaBottom: 0x9024,
+  SDzaGutter: 0xB025, SDxaColWidth: 0xF203, SDxaColSpacing: 0xF204,
+  SFEvenlySpaced: 0x3005, SPgnStart: 0x7044,
+  // tables (sgc 5)
+  TJc90: 0x5400, TDxaLeft: 0x9601, TDxaGapHalf: 0x9602,
+  TTableHeader: 0x3404, TTableBorders80: 0xD605,
+  TDyaRowHeight: 0x9407, TDefTable: 0xD608, TDefTableShd80: 0xD609,
+  TDefTableShd: 0xD612, TTableBorders: 0xD613, TTableWidth: 0xF614,
+  TSetBrc80: 0xD620, TMerge: 0x5624, TSplit: 0x5625,
+  TVertMerge: 0xD62B, TVertAlign: 0xD62C, TSetShd: 0xD62D,
+  TSetBrc: 0xD62F, TCellPadding: 0xD632, TCellWidth: 0xD635,
+  TIstd: 0x563A, TFCantSplit: 0x3466, TJc: 0x548A,
+  TSetShdTable: 0xD660, TFCantSplit90: 0x3403,
+  TDefTableShd3rd: 0xD60C, TDefTableShd2nd: 0xD616,
+  TDefTableShdRaw: 0xD670, TDefTableShdRaw2nd: 0xD671,
+  TDefTableShdRaw3rd: 0xD672, TWidthIndent: 0xF661,
+  TInsert: 0x7621, TDelete: 0x5622, TDxaCol: 0x7623,
+  TTextFlow: 0x7629, TFBiDi: 0x560B, TFBiDi90: 0x5664,
+  TPc: 0x360D, TDxaAbs: 0x940E, TDyaAbs: 0x940F});
+
+export const NAMES = new Map(Object.entries(OPS).map(([k, v]) =>
+  [v, k]));
+
+/** See the header. */
+export const sprmOf = (op) => ({ispmd: op & 0x1FF,
+  fSpec: (op >> 9) & 1, sgc: (op >> 10) & 7, spra: op >> 13});
+
+// (little-endian, from the bytes themselves: no DataView a call)
+const has = (b, at, n) => b && at >= 0 && at + n <= b.length;
+export const u8 = (b, at = 0) => (has(b, at, 1) ? b[at] : 0);
+export const u16 = (b, at = 0) => (has(b, at, 2)
+  ? b[at] | (b[at + 1] << 8) : 0);
+export const i16 = (b, at = 0) => (u16(b, at) << 16) >> 16;
+export const i32 = (b, at = 0) => (has(b, at, 4)
+  ? b[at] | (b[at + 1] << 8) | (b[at + 2] << 16) | (b[at + 3] << 24)
+  : 0);
+export const u32 = (b, at = 0) => i32(b, at) >>> 0;
+
+/** The operand at `at` of sprm op: [count bytes, value bytes], or
+ *  null when its length cannot be read before `to`. */
+function lengthOf(bytes, op, at, to) {
+  const spra = op >> 13;
+  if (spra !== 6) return [0, SIZES[spra]];
+  if (op === OPS.TDefTable) {
+    if (at + 2 > to) return null;
+    return [2, Math.max(0, u16(bytes, at) - 1)];
+  }
+  if (at + 1 > to) return null;
+  const cb = bytes[at];
+  if (op === OPS.PChgTabs && cb === 255) {
+    // (the counts give it: PChgTabsDelClose 1 + 4 per tab,
+    // PChgTabsAdd 1 + 3 per tab)
+    if (at + 2 > to) return null;
+    const del = bytes[at + 1];
+    const addAt = at + 2 + 4 * del;
+    if (addAt + 1 > to) return null;
+    return [1, 1 + 4 * del + 1 + 3 * bytes[addAt]];
+  }
+  return [1, cb];
+}
+
+/** See the header. */
+export function readSprms(bytes, from, to, note) {
+  const out = [];
+  if (!(bytes instanceof Uint8Array)) return out;
+  let at = Math.max(0, from | 0);
+  const end = Math.min(bytes.length, Math.max(0, to | 0));
+  while (at + 2 <= end) {
+    const op = bytes[at] | (bytes[at + 1] << 8);
+    const len = lengthOf(bytes, op, at + 2, end);
+    if (!len || at + 2 + len[0] + len[1] > end) {
+      if (note) note(BAD);
+      return out;
+    }
+    const v = at + 2 + len[0];
+    out.push({op, size: len[0] + len[1],
+      operand: bytes.subarray(v, v + len[1])});
+    at = v + len[1];
+  }
+  if (at < end && bytes[at] !== 0 && note) note(BAD);
+  return out;
+}

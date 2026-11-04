@@ -1,0 +1,236 @@
+// DocRead - reads a Word 97-2003 document (.doc, .dot: [MS-DOC])
+// into a Doc (./Model), through the neutral builder ./ImpBuild, as
+// ./OdtRead does for OpenDocument.
+//
+//   readDoc(bytes, {maxParagraphs?, codepage?, date?, paper?})
+//       -> {doc, notes}   bytes a Uint8Array (never changed). doc
+//       writes as .docx (./DocxWrite) and reads back equal; notes
+//       say, once each, what was skipped or damaged. maxParagraphs
+//       (default ./ReadBody's) stops the reading with a note (the
+//       builder's). codepage: that of 8-bit text (default 1252).
+//       Throws only an ImportError-named error (./DocFib DocError:
+//       err.code, err.format 'doc'): 'not-word' (an OLE file with
+//       no WordDocument stream or table stream, or not Word's),
+//       'old' (Word 6/95), 'encrypted' (a password: the .doc's
+//       fEncrypted, or an encrypted .docx's EncryptedPackage),
+//       'too-big' (a stream over wimplib/Cfb's limits), 'bad'
+//       (damaged: the container, the FIB, no piece table)
+//   sniffDoc(bytes) -> bool  an OLE file (wimplib/Cfb isCfb) that
+//       has a WordDocument stream starting with Word's wIdent
+//       (0xA5EC, or 0xA5DC: Word 6, refused as 'old'), or an
+//       EncryptedPackage stream, or that cannot be opened (refused
+//       as 'bad'); a Uint8Array only. Other OLE files (.xls...) are
+//       not: ./Open's .docx reader says they are not Word's
+//   IMPORTER  {format 'doc', label '.doc', sniff, read}: ./Open's
+//   openContext(bytes, opts?) -> ctx  the context below with the
+//       start hooks run and no text read (tests; ./DocChpx charRuns,
+//       ./DocPapx paraAt)
+//
+// The driver: the container is opened (./DocFile, wimplib/Cfb),
+// the FIB read (./DocFib), the piece table (./DocPieces), then the
+// main story (CPs 0..ccpText) is read character by character.
+// The work is done by handler modules, each exporting PART
+// {chars?, fmt?, para?, start?, finish?} listed in ./DocHandlers' PARTS
+// (a later one wins):
+//   chars   a Map of UTF-16 unit -> handler (ctx, cp, unit) for a
+//           special character (./DocBody's: paragraph, cell and
+//           row marks, breaks; ./DocFields', ./DocNotes',
+//           ./DocComments', ./DocPict's; null: left out). A unit
+//           below 0x20 that no handler has is left out
+//   fmt     (ctx, cp) -> {fmt, until}  the ./ImpBuild fmt of the
+//           text at CP cp and the CP where it changes (default:
+//           plain to the end): character formatting
+//   para    (ctx, from, to) -> {pPr, pStyle}  the paragraph of CPs
+//           from..to (its mark included): paragraph formatting
+//   start, finish  [(ctx)] run before / after the story is read
+// The context `ctx` the handlers get:
+//   ctx.b, ctx.note(s), ctx.stop (set it to end the reading)
+//   ctx.cfb, ctx.word, ctx.table (the streams), ctx.fib, ctx.pieces
+//   ctx.codepage
+//   ctx.put(text, cp)   text at CP cp, in its fmt (while
+//                       ctx.hidden is not 0 given to ctx.hiddenText
+//                       (ctx, text) instead; a paragraph's text
+//                       past MAX_PARA_CHARS is left out, a note)
+//   ctx.obj(inline, cp) one Model inline at cp (the same)
+//   ctx.endPara(cp)     the paragraph ends with its mark at cp
+//   ctx.paraStart       the CP its paragraph started at
+//   ctx.readRange(from, to)  CPs from..to read as the main story is
+//                       (./DocHdr's headers, into a builder story)
+//   ctx.fields, ctx.hidden  ./DocFields': while hidden (a field's
+//                       code) only the IN_CODE characters' handlers
+//                       run; the others are left out
+//   ctx.marks           the story's ./DocMarks cursor: marks run
+//                       before the character at their CP; those
+//                       at the story's end before its last mark
+// The text is decoded a chunk at a time (./DocPieces chunks): the
+// reading stops at the paragraph cap without decoding the rest, and
+// never decodes more units than the Word stream has bytes.
+// Pure: no desktop services.
+import {ImpBuild} from './ImpBuild';
+import {maxParagraphs} from './ReadBody';
+import {DocError} from './DocFib';
+import {sniffDoc, openDoc} from './DocFile';
+import {readPieces, chunks, extent} from './DocPieces';
+import {cursor, fire, putSplit, storyEnd} from './DocMarks';
+import {REG} from './DocHandlers';
+
+const SHORT = 'the text is shorter than the file says';
+
+/** Most characters in one paragraph. */
+export const MAX_PARA_CHARS = 1000000;
+const LONG = 'a paragraph of more than 1,000,000 characters: the ' +
+  'rest of it is left out';
+/** The characters whose handlers run inside a field's code. */
+export const IN_CODE = new Set([0x0D, 0x07, 0x13, 0x14, 0x15]);
+const OVER = 'more text than the file holds: the rest is not read';
+const CCPS = ['ccpText', 'ccpFtn', 'ccpHdd', 'ccpAtn', 'ccpEdn',
+  'ccpTxbx', 'ccpHdrTxbx'];
+const PLAIN = {fmt: undefined, until: Infinity};
+
+
+export {sniffDoc};
+
+/** ctx.put: text at cp in the fmt of each part of it. */
+function put(ctx, text, cp) {
+  if (!text) return;
+  if (ctx.hidden) return ctx.hiddenText && ctx.hiddenText(ctx, text);
+  const m = ctx.marks;
+  if (m && m.next < cp + text.length) {
+    return putSplit(ctx, m, text, cp, putRun);
+  }
+  putRun(ctx, text, cp);
+}
+
+/** Text with no mark inside it. */
+function putRun(ctx, text, cp) {
+  if (ctx.paraLen + text.length > MAX_PARA_CHARS) {
+    ctx.note(LONG);
+    text = text.slice(0, Math.max(0, MAX_PARA_CHARS - ctx.paraLen));
+    if (!text) return;
+  }
+  ctx.paraLen += text.length;
+  let i = 0;
+  while (i < text.length && !ctx.b.stopped) {
+    const f = ctx.reg.fmt ? ctx.reg.fmt(ctx, cp + i) || PLAIN : PLAIN;
+    const n = f.until > cp + i ? Math.min(text.length - i,
+      f.until - cp - i) : text.length - i;
+    ctx.b.text(text.slice(i, i + n), f.fmt);
+    i += n;
+  }
+}
+
+function context(b, cfb, word, table, fib, opts) {
+  const ctx = {b, cfb, word, table, fib, reg: REG, stop: false,
+    codepage: opts.codepage || 1252, pieces: [], paraStart: 0,
+    fields: [], hidden: 0, paraLen: 0, note: (s) => b.note(s)};
+  ctx.put = (text, cp) => put(ctx, text, cp);
+  ctx.readRange = (from, to) => story(ctx, from, to);
+  ctx.obj = (inline, cp) => {
+    if (ctx.hidden || ctx.paraLen >= MAX_PARA_CHARS) return;
+    ctx.paraLen++;
+    const f = ctx.reg.fmt ? ctx.reg.fmt(ctx, cp) || PLAIN : PLAIN;
+    b.obj(inline, f.fmt);
+  };
+  ctx.endPara = (cp) => {
+    const p = ctx.reg.para ? ctx.reg.para(ctx, ctx.paraStart, cp + 1)
+      : null;
+    b.endPara(p || {});
+    ctx.paraStart = cp + 1;
+    ctx.paraLen = 0;
+  };
+  return ctx;
+}
+
+/** Read CPs from..to: text, and the special characters' handlers. */
+function story(ctx, from, to) {
+  const keep = ctx.marks;
+  ctx.marks = cursor(ctx, from, to);
+  try {
+    chars(ctx, from, to, ctx.marks);
+  } finally {
+    ctx.marks = keep;
+  }
+}
+
+/** story's characters; m its marks (./DocMarks). */
+function chars(ctx, from, to, m) {
+  const {low, high} = ctx.reg;
+  let budget = ctx.word.length;
+  for (const {cp, text} of chunks(ctx.pieces, ctx.word, from, to,
+    {codepage: ctx.codepage})) {
+    if (ctx.stop || ctx.b.stopped) return;
+    budget -= text.length;
+    if (budget < 0) return ctx.note(OVER);
+    let start = 0;
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c >= 32 && (ctx.hidden || !high.has(c))) continue;
+      if (ctx.stop || ctx.b.stopped) return;
+      ctx.put(text.slice(start, i), cp + start);
+      if (m.next <= cp + i) fire(ctx, m, cp + i);
+      if (cp + i === to - 1 && (c === 13 || c === 7)) storyEnd(ctx, m);
+      const h = c < 32 ? low[c] : high.get(c);
+      if (h && (!ctx.hidden || IN_CODE.has(c))) h(ctx, cp + i, c);
+      start = i + 1;
+    }
+    ctx.put(text.slice(start), cp + start);
+  }
+  if (!ctx.stop) storyEnd(ctx, m);
+  if (ctx.b.flow.para && ctx.b.flow.para.len && !ctx.b.stopped) {
+    ctx.endPara(to - 1);
+  }
+}
+
+/** See the header. */
+export function readDoc(bytes, opts = {}) {
+  try {
+    return read(bytes, opts);
+  } catch (e) {
+    if (e && e.name === 'ImportError') throw e;
+    throw new DocError('bad', e && e.message ? e.message : String(e));
+  }
+}
+
+/** The reading context of bytes: the streams, the FIB, the
+ *  pieces, before the start hooks. */
+function prepare(bytes, opts) {
+  const {cfb, word, table, fib} = openDoc(bytes);
+  const b = new ImpBuild({max: maxParagraphs(opts), date: opts.date,
+    paper: opts.paper});
+  const ctx = context(b, cfb, word, table, fib, opts);
+  for (const w of fib.warnings) ctx.note(w);
+  ctx.pieces = readPieces(table, fib, {wordLength: word.length,
+    note: ctx.note, codepage: ctx.codepage});
+  const end = extent(ctx.pieces);
+  const others = fib.ccpFtn + fib.ccpHdd + fib.ccpAtn + fib.ccpEdn +
+    fib.ccpTxbx + fib.ccpHdrTxbx;
+  if (end < fib.ccpText + others) ctx.note(SHORT);
+  for (const k of CCPS) fib[k] = Math.min(fib[k], end);
+  ctx.end = end;
+  return ctx;
+}
+
+/** See the header. */
+export function openContext(bytes, opts = {}) {
+  const ctx = prepare(bytes, opts);
+  for (const fn of ctx.reg.start) fn(ctx);
+  return ctx;
+}
+
+function read(bytes, opts) {
+  const ctx = prepare(bytes, opts);
+  try {
+    for (const fn of ctx.reg.start) fn(ctx);
+    story(ctx, 0, Math.min(ctx.fib.ccpText, ctx.end));
+    for (const fn of ctx.reg.finish) fn(ctx);
+  } catch (e) {
+    if (e && e.name === 'ImportError') throw e;
+    ctx.note('part of the file could not be read: ' +
+      (e && e.message ? e.message : String(e)));
+  }
+  return ctx.b.finish();
+}
+
+/** See the header. */
+export const IMPORTER = Object.freeze({format: 'doc', label: '.doc',
+  sniff: sniffDoc, read: readDoc});

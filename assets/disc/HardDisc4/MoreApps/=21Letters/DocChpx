@@ -1,0 +1,116 @@
+// DocChpx - the character formatting of a .doc's text: the CHPX run
+// (./DocFkp, the PlcfBteChpx bin table) at each character's stream
+// offset, over its paragraph's style and its character style
+// (sprmCIstd), and its piece's Prm (./DocPrm), measured as
+// ./RtfProps rPrOf does: rPr holds only what differs from the
+// styles. A handler module of ./DocRead (PART {fmt, chars}).
+//
+//   charAt(ctx, cp, para?) -> {fmt, until, eff}  the ./ImpBuild fmt
+//       {rPr, rStyle?} of CP cp, the CP where its run (or its
+//       piece) ends, and its complete ./DocChp state; para the
+//       ./DocPapx paraInfo it lies in (default: the paragraph being
+//       read). The same fmt object for the same run, style and
+//       paragraph style, so runs gather
+//   charRuns(ctx, cp0, cp1) -> [{cpStart, cpEnd, rPr, rStyle}]  the
+//       runs of CPs cp0..cp1, each in the paragraph its mark says
+//       (a run ends at its paragraph's mark)
+//   PART  fmt (charAt), chars: '(' '<' '>' with sprmCFSpec are
+//       special characters ([MS-DOC] sprmCFSpec: a symbol, a
+//       structured document tag's ends): left out (a symbol with a
+//       note); without it they are text
+import {OPS} from './DocSprm';
+import {applyChp, istdOf, runRPr} from './DocChp';
+import {prmPrls, charge} from './DocPrm';
+import {pieceFrom} from './DocPieces';
+import {propsOf, fcOf, currentPara, paraInfo, markAfter, prlsOf}
+  from './DocPapx';
+
+const MAX_FMTS = 10000;
+const SYMBOL = 'symbol characters are left out';
+let runIds = 0;
+const RUN_ID = new WeakMap();
+
+/** A run's grpprl's id, for the fmt cache. */
+function idOf(run) {
+  if (!run || !run.grpprl) return 0;
+  let id = RUN_ID.get(run);
+  if (!id) RUN_ID.set(run, id = ++runIds);
+  return id;
+}
+
+/** The fmt and state of a run's Prls in paragraph para. */
+function compute(ctx, para, run, piece) {
+  const {styles} = propsOf(ctx);
+  const own = prlsOf(ctx, run);
+  const pm = piece ? prmPrls(ctx, piece, 2) : [];
+  const prls = !charge(ctx, own.length + pm.length) ? []
+    : pm.length ? own.concat(pm) : own;
+  const istd = istdOf(prls);
+  const plain = para.base.char;
+  const chain = istd === undefined ? null : styles.charChain(istd);
+  const base = chain ? styles.chained(plain, chain) : plain;
+  const eff = applyChp(base, prls.filter((s) => s.op !== OPS.CIstd),
+    base, {...styles.env, plain});
+  const fmt = {rPr: runRPr(eff, plain,
+    chain ? styles.charLayer(istd) : null)};
+  const rStyle = chain ? styles.charId(istd) : undefined;
+  if (rStyle !== undefined) fmt.rStyle = rStyle;
+  return {fmt, eff};
+}
+
+/** See the header. */
+export function charAt(ctx, cp, para = currentPara(ctx)) {
+  const P = propsOf(ctx);
+  const loc = fcOf(ctx, cp);
+  let run = null, until = Infinity, prm = 0;
+  if (loc) {
+    const r = P.chp(loc.fc);
+    run = r.run;
+    prm = loc.piece.prm;
+    const lim = Math.min(r.fcLim, loc.fcEnd);
+    until = loc.piece.cpStart + Math.ceil((lim - loc.piece.fc) /
+      loc.w);
+  } else {
+    const next = ctx.pieces[pieceFrom(ctx.pieces, cp)];
+    if (next) until = next.cpStart;
+  }
+  const key = para.istd + ':' + idOf(run) + ':' + prm;
+  let f = P.fmts.get(key);
+  if (!f) {
+    if (P.fmts.size >= MAX_FMTS) P.fmts.clear();
+    f = compute(ctx, para, run, loc && loc.piece);
+    P.fmts.set(key, f);
+  }
+  return {fmt: f.fmt, until: Math.max(cp + 1, until), eff: f.eff};
+}
+
+/** See the header. */
+export function charRuns(ctx, cp0, cp1) {
+  const out = [];
+  let cp = cp0;
+  while (cp < cp1) {
+    const mark = markAfter(ctx, cp);
+    const para = paraInfo(ctx, mark);
+    const f = charAt(ctx, cp, para);
+    const cpEnd = Math.min(f.until, mark + 1, cp1);
+    const r = {cpStart: cp, cpEnd, rPr: f.fmt.rPr};
+    if (f.fmt.rStyle !== undefined) r.rStyle = f.fmt.rStyle;
+    out.push(r);
+    cp = cpEnd;
+  }
+  return out;
+}
+
+/** A character that is special with sprmCFSpec. */
+function special(ctx, cp, c) {
+  if (!charAt(ctx, cp).eff.spec) return ctx.put(String.fromCharCode(c),
+    cp);
+  if (c === 0x28) ctx.note(SYMBOL);
+}
+
+/** See the header. */
+export const PART = {
+  fmt: (ctx, cp) => charAt(ctx, cp),
+  chars: new Map([[0x28, special], [0x3C, special],
+    [0x3E, special]]),
+};

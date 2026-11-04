@@ -1,0 +1,243 @@
+// OdtStyles - the styles of an OpenDocument text (OpenDocument 1.3
+// part 3, 16: <style:default-style>, <style:style> in office:styles
+// (named, the user's) and office:automatic-styles (the direct
+// formatting of content.xml, or of styles.xml's headers and
+// footers)), and the Doc styles made from them.
+//
+//   new OdtStyles(ctx, stylesRoot?, contentRoot) -> ctx.styles
+//   st.fonts      style:font-face name -> its family (svg:font-family)
+//   st.get(family, name) -> def | undefined   an automatic style of
+//       ctx.where's part ('content', the default, or 'styles')
+//       first, else a named one. def {name, family, parent, auto,
+//       display, next, char, para}: char / para its own ./OdtAttrs
+//       layers (para.outline from style:default-outline-level)
+//   st.chain(def) -> {char, para}  the layers of def over its
+//       parents' (no defaults). A parent missing is the end; a
+//       loop of parents is cut (a note), and so is a chain longer
+//       than MAX_CHAIN
+//   st.full(def?) -> {char, para}  complete (./OdtProps CHAR /
+//       PARA under the paragraph default style, then chain);
+//       a fresh object each time (its char / para shared: do not
+//       change them in place)
+//   st.named(def) -> the first named style of def's chain
+//   st.normal() -> the def of the default paragraph style
+//       (Standard), or undefined
+//   st.docId(def) -> the Doc style id made for def, or undefined
+//   st.order      the named styles in file order
+//   st.other      table and list styles as nodes (./OdtStyleIndex)
+//   def.listStyle  its style:list-style-name ('' none)
+//   st.register(), st.headingStyle(level, def)  ./OdtStyleDoc's
+// At most MAX_DEFS styles are read (a note for the rest).
+// Pure: no desktop services.
+import {charLayer} from './OdtAttrs';
+import {paraLayer} from './OdtParaAttrs';
+import {CHAR, PARA, over} from './OdtProps';
+import {register, headingStyle} from './OdtStyleDoc';
+import {kids, first, attr} from './OdtXml';
+import {num} from './OdtUnits';
+import {OtherStyles} from './OdtStyleIndex';
+
+export const MAX_DEFS = 10000, MAX_CHAIN = 64;
+const FAMILIES = ['paragraph', 'text'];
+const LOOP = 'a style that is based on itself: the loop is cut';
+const LONG = 'a chain of styles more than ' + MAX_CHAIN +
+  ' long is cut';
+
+const isHex = (c) => (c >= 48 && c <= 57) || ((c | 32) >= 97 &&
+  (c | 32) <= 102 && c >= 65);
+
+/** 'Heading_20_1' -> 'Heading 1' (the _hex_ escapes of names). */
+export function displayOf(name) {
+  let out = '';
+  for (let i = 0; i < name.length; i++) {
+    if (name[i] === '_') {
+      let j = i + 1;
+      while (j < name.length && j - i <= 4 &&
+        isHex(name.charCodeAt(j))) j++;
+      if (j > i + 1 && name[j] === '_') {
+        const cp = parseInt(name.slice(i + 1, j), 16);
+        if (cp >= 32 && (cp < 0xd800 || cp > 0xdfff)) {
+          out += String.fromCodePoint(cp);
+          i = j;
+          continue;
+        }
+      }
+    }
+    out += name[i];
+  }
+  return out;
+}
+
+/** Stack layer b over layer a (sizes as percentages kept until a
+ *  size is known: ./OdtProps over resolves them). */
+function stack(a, b) {
+  const out = {...a};
+  for (const [k, v] of Object.entries(b)) {
+    if (k === 'sz' && v && typeof v === 'object' && a.sz) {
+      out.sz = typeof a.sz === 'object'
+        ? {pct: a.sz.pct * v.pct / 100}
+        : over({sz: a.sz}, {sz: v}).sz;
+    } else if (k === 'pBdr' || k === 'pad') out[k] = {...a[k], ...v};
+    else out[k] = v;
+  }
+  return out;
+}
+
+const unquote = (s) => {
+  const t = String(s).split(',')[0].trim();
+  return (t[0] === '"' || t[0] === "'") && t.endsWith(t[0]) &&
+    t.length > 1 ? t.slice(1, -1) : t;
+};
+
+export class OdtStyles {
+  constructor(ctx, stylesRoot, contentRoot) {
+    this.ctx = ctx;
+    ctx.styles = this;      // (./OdtAttrs reads the fonts from it)
+    this.fonts = new Map();
+    this.defaults = new Map();
+    this.named0 = new Map();
+    this.auto = {content: new Map(), styles: new Map()};
+    this.order = [];
+    this.memo = new Map();
+    this.count = 0;
+    this.headings = new Map();
+    this.other = new OtherStyles(ctx, stylesRoot, contentRoot);
+    for (const r of [stylesRoot, contentRoot]) if (r) this.fontsOf(r);
+    const os = stylesRoot && first(stylesRoot, 'office:styles');
+    if (os) {
+      for (const d of kids(os, 'style:default-style')) {
+        const fam = attr(d, 'style:family');
+        if (!this.defaults.has(fam)) {
+          this.defaults.set(fam, this.def(d));
+        }
+      }
+      for (const s of kids(os, 'style:style')) this.add(s, null);
+    }
+    for (const [r, w] of [[stylesRoot, 'styles'],
+      [contentRoot, 'content']]) {
+      const a = r && first(r, 'office:automatic-styles');
+      if (a) for (const s of kids(a, 'style:style')) this.add(s, w);
+    }
+  }
+
+  fontsOf(root) {
+    const d = first(root, 'office:font-face-decls');
+    for (const f of d ? kids(d, 'style:font-face') : []) {
+      const n = attr(f, 'style:name');
+      const fam = attr(f, 'svg:font-family');
+      if (n && !this.fonts.has(n) && this.fonts.size < MAX_DEFS) {
+        this.fonts.set(n, fam ? unquote(fam) || n : n);
+      }
+    }
+  }
+
+  /** The layers of a style node. */
+  def(node) {
+    const tp = first(node, 'style:text-properties');
+    const pp = first(node, 'style:paragraph-properties');
+    return {char: tp ? charLayer(this.ctx, tp) : {},
+      para: pp ? paraLayer(this.ctx, pp) : {}};
+  }
+
+  add(node, where) {
+    const name = attr(node, 'style:name');
+    const family = attr(node, 'style:family');
+    if (!FAMILIES.includes(family) || typeof name !== 'string' ||
+      !name || name.length > 256) return;
+    const map = where ? this.auto[where] : this.named0;
+    const key = family + '\n' + name;
+    if (map.has(key)) return;
+    if (++this.count > MAX_DEFS) {
+      this.ctx.note('more than ' + MAX_DEFS + ' styles: the rest ' +
+        'are not read');
+      return;
+    }
+    const d = {name, family, auto: !!where,
+      parent: attr(node, 'style:parent-style-name'),
+      next: attr(node, 'style:next-style-name'),
+      display: attr(node, 'style:display-name') || displayOf(name),
+      listStyle: attr(node, 'style:list-style-name'),
+      master: attr(node, 'style:master-page-name'),
+      ...this.def(node)};
+    const lvl = num(attr(node, 'style:default-outline-level'));
+    if (lvl !== undefined && lvl >= 1 && family === 'paragraph') {
+      d.para.outline = Math.min(9, Math.round(lvl)) - 1;
+    }
+    map.set(key, d);
+    if (!where) this.order.push(d);
+  }
+
+  get(family, name) {
+    if (typeof name !== 'string' || !name) return undefined;
+    const key = family + '\n' + name;
+    return this.auto[this.ctx.where || 'content'].get(key) ||
+      this.named0.get(key);
+  }
+
+  /** def and its parents, def first. */
+  line(def) {
+    const out = [], seen = new Set();
+    for (let d = def; d;) {
+      if (seen.has(d)) {
+        this.ctx.note(LOOP);
+        break;
+      }
+      if (out.length >= MAX_CHAIN) {
+        this.ctx.note(LONG);
+        break;
+      }
+      seen.add(d);
+      out.push(d);
+      d = d.parent ? this.named0.get(d.family + '\n' + d.parent)
+        : undefined;
+    }
+    return out;
+  }
+
+  chain(def) {
+    if (!def) return {char: {}, para: {}};
+    let c = this.memo.get(def);
+    if (!c) {
+      c = {char: {}, para: {}};
+      for (const d of this.line(def).reverse()) {
+        c = {char: stack(c.char, d.char), para: stack(c.para, d.para)};
+      }
+      this.memo.set(def, c);
+    }
+    return c;
+  }
+
+  full(def) {
+    const key = 'full';
+    let base = this.memo.get(key);
+    if (!base) {
+      const d = this.defaults.get('paragraph') || {char: {}, para: {}};
+      base = {char: over(CHAR, d.char), para: over(PARA, d.para)};
+      this.memo.set(key, base);
+    }
+    if (!def) return {...base};
+    const c = this.chain(def);
+    return {char: over(base.char, c.char),
+      para: over(base.para, c.para)};
+  }
+
+  named(def) {
+    return def ? this.line(def).find((d) => !d.auto) : undefined;
+  }
+
+  normal() {
+    return this.named0.get('paragraph\nStandard');
+  }
+
+  docId(def) {
+    return def ? def.docId : undefined;
+  }
+
+  register() {
+    register(this);
+  }
+
+  headingStyle(level, def) {
+    return headingStyle(this, level, def);
+  }
+}

@@ -1,0 +1,172 @@
+// DocFldKind - what kind of field a .doc field's code is, for
+// ./DocFields, and the text shown for the kinds with no result.
+//
+//   kindOf(code) -> {name, kind}  name ./RtfFields nameOf's (null:
+//       none it reads); kind 'safe' (./RtfFields SAFE: kept as a
+//       field through the builder, HYPERLINK a link), 'external'
+//       (would bring in a file, a picture or data: INCLUDETEXT,
+//       INCLUDEPICTURE, LINK, DDE...: never fetched, the result is
+//       text), 'form' (FORMTEXT, FORMCHECKBOX, FORMDROPDOWN), 'eq'
+//       (EQ), 'button' (MACROBUTTON, GOTOBUTTON), 'silent' (shows
+//       nothing when it has no result: index entries, ADDIN, SET...),
+//       'quiet' (EMBED, SHAPE: the result is the object's picture,
+//       kept as it is, with no note) or 'other'
+//   kindFor(ctx, code) -> {name, kind}  kindOf, counting the fields
+//       kept (made through the builder) in a document: past
+//       MAX_FIELDS a 'safe' one is 'quiet' (its result kept as
+//       text), with one note
+//   shownText(code, kind) -> string  the text shown for a field of
+//       that kind with no result: the base of an EQ \o ruby (the
+//       phonetic guide left out), an EQ's code otherwise; a button's
+//       display text; nothing for 'silent', 'quiet' and 'form'; the
+//       code
+//       itself (trimmed) for 'other' and 'external'
+//
+// Pure: no desktop services.
+import {SAFE, nameOf} from './RtfFields';
+
+const EXTERNAL = new Set(['INCLUDETEXT', 'INCLUDEPICTURE', 'INCLUDE',
+  'LINK', 'DDE', 'DDEAUTO', 'DATABASE', 'IMPORT', 'HTMLCONTROL']);
+const FORM = new Set(['FORMTEXT', 'FORMCHECKBOX', 'FORMDROPDOWN']);
+const BUTTON = new Set(['MACROBUTTON', 'GOTOBUTTON']);
+const SILENT = new Set(['TC', 'XE', 'TA', 'RD', 'ADDIN', 'PRIVATE',
+  'SET', 'ASK', 'SKIPIF', 'NEXT', 'NEXTIF', 'MERGEREC', 'MERGESEQ',
+  'BIDIOUTLINE', 'AUTOTEXTLIST']);
+const QUIET = new Set(['EMBED', 'SHAPE']);
+const MAX_ARGS = 64;
+/** The most fields a document keeps as fields. */
+export const MAX_FIELDS = 50000;
+const MANY = 'more than ' + MAX_FIELDS + ' fields: the rest are kept ' +
+  'as their results';
+
+/** See the header. */
+export function kindOf(code) {
+  const name = nameOf(code);
+  const kind = !name ? 'other' : SAFE.has(name) ? 'safe'
+    : EXTERNAL.has(name) ? 'external' : FORM.has(name) ? 'form'
+      : name === 'EQ' ? 'eq' : BUTTON.has(name) ? 'button'
+        : SILENT.has(name) ? 'silent' : QUIET.has(name) ? 'quiet'
+          : 'other';
+  return {name, kind};
+}
+
+/** See the header. */
+export function kindFor(ctx, code) {
+  const k = kindOf(code);
+  if (k.kind !== 'safe') return k;
+  ctx.fldMade = (ctx.fldMade || 0) + 1;
+  if (ctx.fldMade <= MAX_FIELDS) return k;
+  ctx.note(MANY);
+  return {name: k.name, kind: 'quiet'};
+}
+
+/** The arguments of the group opening at s[at] ('('), split at
+ *  its top-level commas (a backslash escapes the next character),
+ *  and the index after its ')'; null when it never closes. */
+function argsAt(s, at) {
+  const args = [];
+  let depth = 0, cur = '';
+  for (let i = at; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && i + 1 < s.length && depth > 0) {
+      cur += c + s[++i];
+      continue;
+    }
+    if (c === '(') {
+      if (depth++ === 0) continue;
+    } else if (c === ')') {
+      if (--depth === 0) {
+        args.push(cur);
+        return {args, end: i + 1};
+      }
+    } else if (c === ',' && depth === 1) {
+      if (args.length >= MAX_ARGS) return null;
+      args.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += c;
+  }
+  return null;
+}
+
+/** Plain text of an EQ argument: switches left out, escapes kept,
+ *  groups' contents run together. */
+function plainOf(s) {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') {
+      const d = s[i + 1] || '';
+      if (/[A-Za-z]/.test(d)) {
+        i++;
+        while (/[A-Za-z]/.test(s[i + 1] || '')) i++;
+        while (/[ \d-]/.test(s[i + 1] || '') && s[i + 1] !== '(') i++;
+      } else {
+        out += d;
+        i++;
+      }
+    } else if (c !== '(' && c !== ')') out += c;
+  }
+  return out.trim();
+}
+
+const WS = ' \t\r\n';
+const skipWs = (s, i) => {
+  while (i < s.length && WS.includes(s[i])) i++;
+  return i;
+};
+const skipWord = (s, i) => {
+  while (i < s.length && !WS.includes(s[i])) i++;
+  return i;
+};
+
+/** Whether s has switch sw ('\o') at i (any case): its end, or -1. */
+function switchAt(s, i, sw) {
+  return s[i] === '\\' && s.slice(i + 1, i + 1 + sw.length)
+    .toLowerCase() === sw ? i + 1 + sw.length : -1;
+}
+
+/** The index of the '(' of the first \o or \o\aX group, or -1. */
+function groupAt(code) {
+  for (let i = code.indexOf('\\'); i >= 0;
+    i = code.indexOf('\\', i + 1)) {
+    let j = switchAt(code, i, 'o');
+    if (j < 0) continue;
+    const a = switchAt(code, j, 'a');
+    if (a >= 0 && 'dlrc'.includes((code[a] || '').toLowerCase())) {
+      j = a + 1;
+    }
+    j = skipWs(code, j);
+    if (code[j] === '(') return j;
+  }
+  return -1;
+}
+
+/** The base text of an EQ's ruby (\o... with \s\up), or null. */
+function rubyBase(code) {
+  const at = groupAt(code);
+  const g = at < 0 ? null : argsAt(code, at);
+  if (!g || g.args.length < 2) return null;
+  const a0 = g.args[0], k = switchAt(a0, skipWs(a0, 0), 's');
+  if (k < 0 || switchAt(a0, skipWs(a0, k), 'up') < 0) return null;
+  return plainOf(g.args[g.args.length - 1]);
+}
+
+/** See the header. */
+export function shownText(code, kind) {
+  if (kind === 'silent' || kind === 'quiet' || kind === 'form') {
+    return '';
+  }
+  const t = code.trim();
+  if (kind === 'eq') {
+    const base = rubyBase(code);
+    return base !== null ? base : t;
+  }
+  if (kind === 'button') {
+    // (the name, the macro or place, then the text shown)
+    const i = skipWs(t, skipWord(t, skipWs(t, skipWord(t, 0))));
+    return t.slice(i).trim();
+  }
+  return t;
+}

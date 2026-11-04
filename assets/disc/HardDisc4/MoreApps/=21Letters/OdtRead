@@ -1,0 +1,224 @@
+// OdtRead - reads an OpenDocument text (.odt, .ott: OpenDocument
+// 1.3) into a Doc (./Model), through the neutral builder
+// ./ImpBuild, as ./RtfRead does for RTF.
+//
+//   await readOdt(bytes, {maxParagraphs?, maxElements?, maxXmlBytes?,
+//       maxTotal?, maxRatio?, date?, paper?}) -> {doc, notes}
+//       bytes a Uint8Array (never changed). doc writes as .docx
+//       (./DocxWrite) and reads back equal; notes say, once each,
+//       what was skipped or damaged. maxParagraphs (default
+//       ./ReadBody's) stops the reading with a note (the builder's).
+//       Throws an ImportError-named error (see ./Open: err.code
+//       'bad' | 'encrypted', err.format 'odt') when there is no
+//       document to read: not an ODT (sniffOdt), a zip
+//       wimplib/ZipRead refuses (its limits maxTotal, maxRatio), no
+//       or a damaged content.xml (./OdtXml: a DTD, an entity, over
+//       maxXmlBytes, nested too deep, not well-formed, over the
+//       element budget), or one the manifest says is encrypted
+//       (./OdtPackage encrypted).
+//       maxElements (default ./OdtXml MAX_ELEMENTS) is ONE budget for
+//       all the parts read (the manifest, content.xml, settings.xml,
+//       styles.xml, in that order: ./OdtXml budgetOf), as content and
+//       styles are held at once.
+//       styles.xml refused the same way is a note: the text is read
+//       without its styles. A failure part way through the body
+//       gives what was read so far and a note
+//   sniffOdt(bytes) -> bool, MIMETYPES  ./OdtPackage's
+//   IMPORTER  {format 'odt', label 'ODT', sniff, read}: ./Open's
+//
+// The driver: the parts are parsed (./OdtXml), the styles read and
+// made Doc styles (./OdtStyles), then office:body/office:text is
+// walked. The work is done by handler modules, each exporting PART
+// {elements?, text?, finish?} listed in PARTS below: elements a Map
+// of element name (./OdtXml's fixed prefixes: 'text:p') -> handler
+// (ctx, node); text (ctx, string) for the text between elements
+// (the last PART's that has one); finish [(ctx)] run once the body
+// is read, before the builder finishes. A later one's handler wins.
+// A handler reads its node's content with ctx.walk(node) (or not:
+// it is skipped). An element no handler has is skipped, its content
+// too: one note per kind (MAX_NAMED of them by name, then
+// OTHER_ELEMENTS), none for QUIET ones.
+// The context `ctx` the handlers get:
+//   ctx.b        the ./ImpBuild (b.text, b.endPara...)
+//   ctx.styles   the ./OdtStyles (get, full, chain, named, docId)
+//   ctx.note(s)  a note (once each, capped)
+//   ctx.stop     set it to end the reading
+//   ctx.walk(node), ctx.files (zip entries), ctx.parts {content,
+//                styles}: the parsed roots (or null)
+//   ctx.where    'content' (the body) or 'styles' (headers and
+//                footers: styles.xml): which automatic styles
+//   ctx.limits   {maxBytes, budget} for parsing more parts
+//   ctx.tabsRel  false when tab stops are from the page margin
+//                (./OdtPackage tabsRelative), else true
+//   ctx.para, ctx.spans, ctx.space, ctx.breakNext  ./OdtBody's
+//   ctx.lst, ctx.sect, ctx.depth, ctx.rev  the handlers' state
+// Pure: no desktop services.
+import {readZip} from 'wimplib/Zip';
+import {ImpBuild} from './ImpBuild';
+import {maxParagraphs} from './ReadBody';
+import {parsePart, first, budgetOf, MAX_ELEMENTS} from './OdtXml';
+import {sniffOdt, MIMETYPES, encrypted, tabsRelative}
+  from './OdtPackage';
+import {OdtStyles} from './OdtStyles';
+import {PART as BODY} from './OdtBody';
+import {PART as LISTS} from './OdtLists';
+import {PART as TABLE} from './OdtTable';
+import {PART as PICT} from './OdtPict';
+import {PART as BOXES} from './OdtBoxes';
+import {PART as SECT} from './OdtSect';
+import {PART as NOTES} from './OdtNotes';
+import {PART as SECTION} from './OdtSection';
+import {PART as FIELDS} from './OdtFields';
+import {PART as REVS} from './OdtRevs';
+import {PART as COMMENTS} from './OdtComments';
+
+/** The handler modules, in order (a later one wins a name). */
+const PARTS = [BODY, LISTS, TABLE, PICT, BOXES, NOTES, SECT, SECTION,
+  FIELDS, REVS, COMMENTS];
+
+export {sniffOdt, MIMETYPES};
+
+/** Elements skipped without a note: declarations and data that is
+ *  not text. */
+export const QUIET = new Set(['text:sequence-decls',
+  'text:variable-decls', 'text:user-field-decls',
+  'text:dde-connection-decls', 'office:forms',
+  'text:alphabetical-index-auto-mark-file',
+  'table:calculation-settings',
+  'table:content-validations', 'table:label-ranges',
+  'office:event-listeners']);
+
+export const MAX_NAMED = 5;
+export const OTHER_ELEMENTS = 'other unknown elements skipped';
+/** Most unpacked bytes in the zip altogether. */
+export const MAX_TOTAL = 128 * 1024 * 1024;
+
+function registry() {
+  const reg = {elements: new Map(), text: null, finish: []};
+  for (const p of PARTS) {
+    for (const [k, v] of p.elements || []) reg.elements.set(k, v);
+    if (p.text) reg.text = p.text;
+    reg.finish.push(...(p.finish || []));
+  }
+  return reg;
+}
+const REG = registry();
+
+class OdtImportError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = 'ImportError';
+    this.code = code;
+    this.format = 'odt';
+  }
+}
+const refuse = (code, why) => new OdtImportError(code, why);
+
+/** Read the children of node with the handlers. */
+function walk(ctx, node) {
+  for (const c of node.children) {
+    if (ctx.stop) return;
+    if (typeof c === 'string') {
+      if (ctx.reg.text) ctx.reg.text(ctx, c);
+      continue;
+    }
+    const h = ctx.reg.elements.get(c.name);
+    if (h) h(ctx, c);
+    else if (!QUIET.has(c.name)) unknown(ctx, c.name);
+  }
+}
+
+/** The note of an element no handler reads (see MAX_NAMED). */
+function unknown(ctx, name) {
+  const named = ctx.named;
+  if (named.has(name)) return;
+  if (named.size >= MAX_NAMED) return ctx.note(OTHER_ELEMENTS);
+  named.add(name);
+  ctx.note('unknown element ' + name.slice(0, 60) + ' skipped');
+}
+
+function context(b, files, opts) {
+  const ctx = {b, files, reg: REG, stop: false, where: 'content',
+    named: new Set(), para: null, spans: [], space: true,
+    parts: {content: null, styles: null},
+    limits: {maxBytes: opts.maxXmlBytes,
+      budget: budgetOf(opts.maxElements ?? MAX_ELEMENTS)},
+    note: (s) => b.note(s)};
+  ctx.walk = (node) => walk(ctx, node);
+  return ctx;
+}
+
+/** The zip's entries, or a refusal. */
+async function unzip(bytes, opts) {
+  try {
+    return await readZip(bytes, {maxTotal: opts.maxTotal ?? MAX_TOTAL,
+      maxRatio: opts.maxRatio});
+  } catch (e) {
+    throw refuse(e && e.code === 'encrypted' ? 'encrypted' : 'bad',
+      'zip: ' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/** Refused when the manifest says an entry is encrypted. */
+function manifest(ctx) {
+  const m = ctx.files.get('META-INF/manifest.xml');
+  const enc = m ? encrypted(m, ctx.limits) : false;
+  if (enc) throw refuse('encrypted', 'the document is encrypted');
+  if (enc === null) ctx.note('the manifest is damaged: it is not read');
+}
+
+/** See the header. */
+export async function readOdt(bytes, opts = {}) {
+  if (!sniffOdt(bytes)) {
+    throw refuse('bad', 'it is not an OpenDocument text file');
+  }
+  const files = await unzip(bytes, opts);
+  const mt = files.get('mimetype');
+  if (!mt || !MIMETYPES.includes(new TextDecoder().decode(mt))) {
+    throw refuse('bad', 'its mimetype is not a text document');
+  }
+  const b = new ImpBuild({max: maxParagraphs(opts), date: opts.date,
+    paper: opts.paper});
+  const ctx = context(b, files, opts);
+  manifest(ctx);
+  const content = files.get('content.xml');
+  if (!content) throw refuse('bad', 'it has no content.xml');
+  let root;
+  try {
+    root = parsePart(content, 'content.xml', ctx.limits);
+  } catch (e) {
+    throw refuse('bad', e && e.message ? e.message : String(e));
+  }
+  if (root.name !== 'office:document-content') {
+    throw refuse('bad', 'content.xml is not a document');
+  }
+  ctx.parts.content = root;
+  ctx.tabsRel = tabsRelative(files.get('settings.xml'), ctx.limits);
+  const st = files.get('styles.xml');
+  if (st) {
+    try {
+      ctx.parts.styles = parsePart(st, 'styles.xml', ctx.limits);
+    } catch (e) {
+      ctx.note((e && e.message ? e.message : 'styles.xml') +
+        ': its styles are not read');
+    }
+  }
+  try {
+    ctx.styles = new OdtStyles(ctx, ctx.parts.styles, root);
+    ctx.styles.register();
+    const body = first(root, 'office:body');
+    const text = body && first(body, 'office:text');
+    if (!text) ctx.note('the document has no text');
+    else walk(ctx, text);
+    for (const fn of ctx.reg.finish) fn(ctx);
+  } catch (e) {
+    if (e && e.name === 'ImportError') throw e;
+    ctx.note('part of the file could not be read: ' +
+      (e && e.message ? e.message : String(e)));
+  }
+  return b.finish();
+}
+
+/** See the header. */
+export const IMPORTER = Object.freeze({format: 'odt', label: 'ODT',
+  sniff: sniffOdt, read: readOdt});

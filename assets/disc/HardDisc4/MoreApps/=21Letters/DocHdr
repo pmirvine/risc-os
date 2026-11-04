@@ -1,0 +1,143 @@
+// DocHdr - the headers and footers of a .doc ([MS-DOC] 2.3.3
+// Headers, 2.8.22 PlcfHdd) through the builder (./ImpBuild header,
+// footer, story). Used by ./DocSect; pure.
+//
+//   headers(ctx, k, titlePg)  the headers and footers of section k
+//       (0-based) made, for the builder's next sectionEnd; titlePg
+//       the section's
+//   readRange(ctx, from, to) -> Flow  CPs from..to read into a new
+//       builder story with the main text's machinery (./DocRead's
+//       ctx.readRange: characters, formatting, tables, fields,
+//       pictures), the body's reading state kept aside meanwhile
+//
+// The header document is the CPs after the footnotes' (ccpText +
+// ccpFtn, ccpHdd of them). PlcfHdd's CPs (from its start) open its
+// stories, the last two closing them: 6 separators (not read), then
+// 6 a section: even header, odd header (default), even footer, odd
+// footer, first-page header, first-page footer. A story's last
+// character is a guard paragraph mark, not read. An empty story (no
+// CPs) is the previous section's: nothing is made (the builder's
+// section shows the one before's). A story holding no text (only the
+// guard, or one empty paragraph) is made only when a section before had
+// one of its kind (it hides that one); else it is the same as none.
+// Even ones are made only when the DOP has fFacingPages
+// (ctx.sect.facing); first-page ones only in a section with titlePg:
+// one of a section without it is kept for the next section that has
+// titlePg and an empty one (Word shows it there: LibreOffice writes a
+// copy of the default ones there). Stories whose CPs go backwards or
+// lie outside the header document are left out (one note); a PlcfHdd
+// with fewer stories than the sections need: the missing ones are empty
+// (one note). At most twice ccpHdd characters are read into headers and
+// footers in all, a blank story counting one (stories may share
+// CPs): past it, one note.
+import {slice} from './DocFib';
+import {enter, finish as tablesEnd, unitAt} from './DocTable';
+import {propsOf} from './DocPapx';
+import {closeCodes} from './DocFields';
+
+const KINDS = [['header', 'even'], ['header', 'default'],
+  ['footer', 'even'], ['footer', 'default'], ['header', 'first'],
+  ['footer', 'first']];
+const BAD = 'a header or footer the file places outside its header ' +
+  'text is left out';
+const MUCH = 'more header and footer text than the file holds: ' +
+  'the rest is not read';
+const SHORT = 'the file lists fewer headers and footers than its ' +
+  'sections have: the rest are left out';
+
+/** ctx.hdd {base, end, cps, seen}: PlcfHdd's CPs (read once). */
+function hddOf(ctx) {
+  if (ctx.hdd) return ctx.hdd;
+  const f = ctx.fib, base = f.ccpText + f.ccpFtn;
+  const H = ctx.hdd = {base, end: Math.min(ctx.end, base + f.ccpHdd),
+    cps: [], seen: new Set(), later: new Map(),
+    left: 2 * f.ccpHdd + 64};
+  const plc = f.ccpHdd ? slice(ctx.table, f, 'PlcfHdd', ctx.note)
+    : null;
+  if (!plc) return H;
+  const n = Math.min(Math.floor(plc.length / 4),
+    6 + 6 * ((ctx.sect && ctx.sect.seds.length) || 0) + 2);
+  const dv = new DataView(plc.buffer, plc.byteOffset, plc.length);
+  for (let i = 0; i < n; i++) H.cps.push(dv.getInt32(4 * i, true));
+  return H;
+}
+
+/** CPs [from, to) of story i without its guard; null: empty; a
+ *  note and null when it is not a story of the header text. */
+function storyAt(ctx, H, i) {
+  if (i + 2 >= H.cps.length) {
+    if (H.cps.length) ctx.note(SHORT);
+    return null;
+  }
+  const s = H.cps[i], e = H.cps[i + 1];
+  if (s === e) return null;
+  if (!(s >= 0 && e > s && H.base + e <= H.end)) {
+    ctx.note(BAD);
+    return null;
+  }
+  return [H.base + s, H.base + e - 1];
+}
+
+/** Whether CPs from..to hold no text (nothing, or one mark). */
+function blank(ctx, from, to) {
+  return to <= from || (to - from === 1 && unitAt(ctx, from) === 0x0D);
+}
+
+/** See the header. */
+export function readRange(ctx, from, to) {
+  const P = propsOf(ctx);
+  const keep = {paraStart: ctx.paraStart, paraLen: ctx.paraLen,
+    fields: ctx.fields, hidden: ctx.hidden, tbl: ctx.tbl,
+    storyEnd: ctx.storyEnd};
+  const cur = P.cur, scan = P.scan, T = ctx.tbl;
+  Object.assign(ctx, {paraStart: from, paraLen: 0, fields: [],
+    hidden: 0, storyEnd: to, tbl: {levels: [], next: null,
+      cells: T ? T.cells : 0, defs: T ? T.defs : 0}});
+  P.cur = {start: -1};
+  P.scan = {from: -1, at: -1};
+  const s = ctx.b.story();
+  try {
+    enter(ctx, from);
+    ctx.readRange(from, to);
+    tablesEnd(ctx);
+    closeCodes(ctx);
+  } finally {
+    if (T) {
+      T.cells = ctx.tbl.cells;
+      T.defs = ctx.tbl.defs;
+    }
+    Object.assign(ctx, keep);
+    P.cur = cur;
+    P.scan = scan;
+  }
+  return s;
+}
+
+/** See the header. */
+export function headers(ctx, k, titlePg) {
+  const H = hddOf(ctx), b = ctx.b;
+  if (!H.cps.length || b.stopped) return;
+  for (let j = 0; j < 6 && !b.stopped && !ctx.stop; j++) {
+    const [kind, type] = KINDS[j];
+    if (type === 'even' && !ctx.sect.facing) continue;
+    const key = kind + ' ' + type;
+    let r = storyAt(ctx, H, 6 + 6 * k + j);
+    if (type === 'first' && !titlePg) {
+      if (r) H.later.set(key, r);
+      continue;
+    }
+    if (type === 'first') {
+      r = r || H.later.get(key);
+      H.later.delete(key);
+    }
+    if (!r) continue;
+    H.left -= Math.max(1, r[1] - r[0]);
+    if (H.left < 0) return ctx.note(MUCH);
+    if (blank(ctx, r[0], r[1])) {
+      if (H.seen.has(key)) b[kind](type, b.story());
+      continue;
+    }
+    H.seen.add(key);
+    b[kind](type, readRange(ctx, r[0], r[1]));
+  }
+}

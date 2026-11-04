@@ -1,0 +1,133 @@
+// OdtXml - one XML part of an OpenDocument package (content.xml,
+// styles.xml, meta.xml, META-INF/manifest.xml) as a tree whose
+// names use fixed prefixes: OpenDocument 1.3 part 3 names elements
+// and attributes by namespace, whatever prefix a file writes.
+//
+//   parsePart(bytes, part, {maxBytes?, maxElements?, budget?})
+//       -> root, a node {name, attrs: [[name, value]], children:
+//       [node | string]} (wimplib/Xml's tree, its names changed in
+//       place: one tree is ever held; empty arrays shared, frozen); a
+//       name is 'text:p' (the prefix NS gives the namespace), or
+//       '{uri}local' for a namespace NS does not know ('{?p}local'
+//       for an unbound prefix p); an attribute without a prefix is
+//       its local name; xmlns attributes, comments and processing
+//       instructions are left out. Text is UTF-8, or UTF-16 after a
+//       byte order mark.
+//       The weight of a part is its elements + its attributes / 4
+//       (./OdtCount: an attribute holds about a quarter of what an
+//       element does once read). It is at most maxElements, or what
+//       is left of budget (budgetOf: one for all the parts of a
+//       file, each part's weight taken from it once it is read).
+//       Throws OdtXmlError {code, part}: 'too-big' (more than
+//       maxBytes bytes), 'elements' (over the weight, counted
+//       before anything is decoded), 'namespaces' (more than
+//       MAX_NS_ELEMENT declared on one element, MAX_NS_PART in the
+//       part), 'dtd' (a DOCTYPE: never read, so no entity is
+//       ever defined or expanded), 'entity' (a reference to one),
+//       'depth' (nested past wimplib/Xml MAX_DEPTH), 'bad' (not
+//       well-formed, or not valid UTF-8 / UTF-16)
+//   budgetOf(total = MAX_ELEMENTS) -> {total, left}
+//   kids(node, name?) -> the element children (of that name)
+//   first(node, name) -> the first child element of that name
+//   attr(node, name) -> the attribute's value, or undefined
+//   textOf(node) -> the text directly inside node
+//   MAX_XML_BYTES (./PartXml's), MAX_ELEMENTS  the defaults: a
+//       weight of 1,200,000 for a whole file (a file this heavy
+//       holds about 1 GB while it is read: the parsed parts and the
+//       Doc made of them; 200,000 paragraphs of three styled spans
+//       each weigh 1,000,000)
+// The names are fixed by ./OdtNames (NS, MAX_NS_ELEMENT and
+// MAX_NS_PART are its).
+// Pure: no desktop services.
+import {parseXml, XmlError} from 'wimplib/Xml';
+import {MAX_XML_BYTES} from './PartXml';
+import {weightOf} from './OdtCount';
+import {named, NS, MAX_NS_ELEMENT, MAX_NS_PART} from './OdtNames';
+
+export {MAX_XML_BYTES, NS, MAX_NS_ELEMENT, MAX_NS_PART};
+/** See the header. */
+export const MAX_ELEMENTS = 1200000;
+
+export class OdtXmlError extends Error {
+  constructor(code, part, message) {
+    super(part + ': ' + (message || code));
+    this.name = 'OdtXmlError';
+    this.code = code;
+    this.part = part;
+  }
+}
+
+function encodingOf(b) {
+  if (b[0] === 0xff && b[1] === 0xfe) return 'utf-16le';
+  if (b[0] === 0xfe && b[1] === 0xff) return 'utf-16be';
+  return 'utf-8';
+}
+
+const isNode = (c) => typeof c === 'object' && c !== null;
+
+/** See the header. */
+export const kids = (node, name) => node.children.filter((c) =>
+  isNode(c) && (name === undefined || c.name === name));
+
+/** See the header. */
+export const first = (node, name) => node.children.find((c) =>
+  isNode(c) && c.name === name);
+
+/** See the header. */
+export function attr(node, name) {
+  for (const [k, v] of node.attrs) if (k === name) return v;
+  return undefined;
+}
+
+/** See the header. */
+export const textOf = (node) => node.children
+  .filter((c) => typeof c === 'string').join('');
+
+/** The most weight parsePart may read with these limits. */
+const allowed = (limits) => limits.budget ? limits.budget.left
+  : limits.maxElements ?? MAX_ELEMENTS;
+
+/** See the header. */
+export function parsePart(bytes, part, limits = {}) {
+  const maxBytes = limits.maxBytes ?? MAX_XML_BYTES;
+  const max = allowed(limits), budget = limits.budget;
+  if (!(bytes instanceof Uint8Array)) {
+    throw new OdtXmlError('bad', part, 'no bytes');
+  }
+  if (bytes.length > maxBytes) {
+    throw new OdtXmlError('too-big', part,
+      'more than ' + maxBytes + ' bytes');
+  }
+  const enc = encodingOf(bytes);
+  const all = budget ? budget.total : max;
+  const w = weightOf(bytes, enc, all);
+  if (w > max) {
+    throw new OdtXmlError('elements', part, 'more than ' + all +
+      ' elements' + (w > all ? '' : ' with the parts read before it'));
+  }
+  let text;
+  try {
+    text = new TextDecoder(enc, {fatal: true}).decode(bytes);
+  } catch (e) {
+    throw new OdtXmlError('bad', part, 'bad text encoding');
+  }
+  let x;
+  try {
+    x = parseXml(text);
+  } catch (e) {
+    if (!(e instanceof XmlError)) throw e;
+    const code = ['dtd', 'entity', 'depth'].includes(e.code)
+      ? e.code : 'bad';
+    throw new OdtXmlError(code, part, e.message);
+  }
+  text = null;
+  const weight = named(x.root, (code, why) => {
+    throw new OdtXmlError(code, part, why);
+  });
+  if (budget) budget.left = Math.max(0, budget.left - weight);
+  return x.root;
+}
+
+/** A budget for all the parts of one file (limits.budget). */
+export const budgetOf = (total = MAX_ELEMENTS) =>
+  ({total, left: total});

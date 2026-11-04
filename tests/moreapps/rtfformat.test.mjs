@@ -160,7 +160,7 @@ describe('hostile files: the usual error box', () => {
     assert.equal(O.describe(err, 'F'), NOT);
     const ole = Object.assign(new Error('x'), {name: 'DocxError',
       code: 'not-docx', kind: 'ole2'});
-    assert.ok(O.describe(ole, 'F', 0xC32).includes('older Word'));
+    assert.ok(O.describe(ole, 'F', 0xC32).includes('not a Word document'));
     // the type, as the callers look it up
     assert.equal(O.typeAt({stat: () => ({filetype: 0xC32})}, 'p'), 0xC32);
     assert.equal(O.typeAt({stat: () => null}, 'p'), undefined);
@@ -185,8 +185,7 @@ describe('hostile files: the usual error box', () => {
       'F'), "'F' could not be opened: part of it is damaged " +
       '(not well-formed XML) (w/d.xml).');
     assert.equal(O.describe(new E('not-docx', 'ole2'), 'F'),
-      "'F' is an older Word (.doc) or password-protected file; " +
-      '!Letters opens .docx files only.');
+      "'F' could not be opened: it is not a Word document.");
     assert.equal(O.describe(new E('unsupported', 'paragraphs'), 'F'),
       "'F' could not be opened: it has more than 200,000 " +
       'paragraphs, the most !Letters opens.');

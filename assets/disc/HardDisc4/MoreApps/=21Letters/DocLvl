@@ -1,0 +1,114 @@
+// DocLvl - one level of a .doc list ([MS-DOC] 2.9.150 LVL, 2.9.151
+// LVLF) read from the table stream, and made the level ./ImpBuild
+// list() takes. Used by ./DocLists; pure.
+//
+//   readLvl(bytes, at) -> {lvl, next} | null  the LVL at `at`:
+//       lvl {start, nfc, jc, follow, papx, chpx, xst}, next the
+//       offset after it; null when its LVLF (28 bytes) does not fit.
+//       A grpprl or an xst running past the end is cut there (next
+//       is then the end, lvl.cut true)
+//   levelOf(lvl, k, env) -> level  for ilvl k: {fmt, text, start,
+//       jc, suff, indent?, rPr?}. env {fonts, note} (./DocStyles
+//       env)
+// nfc is Word's number format (MSONFC): 0..27 the ./NumFormat
+// NUM_FMTS in order (0 decimal, 1 upperRoman, 2 lowerRoman,
+// 3 upperLetter, 4 lowerLetter, 5 ordinal ... 22 decimalZero, 23
+// bullet), 255 none, any other decimal (as ./RtfLists). The text is
+// the xst: a unit below 9 is the placeholder of that level's number
+// (%1..%9); one for a level after k is left out (a note: Word's file
+// is invalid then); other units below 0x20 are left out; in a symbol
+// font (Symbol, Wingdings, Webdings, Dingbats) a unit 0x20..0xFF is
+// the private-use U+F020..U+F0FF Word keeps for it (./RtfLists
+// symbolText), which ./BulletGlyph shows. The indent is the level's
+// grpprlPapx left / first-line indent (a negative first line is a
+// hanging indent); rPr its grpprlChpx bold, italic, size, colour and
+// font where they differ from Word's defaults.
+import {readSprms, u8, u16, i32} from './DocSprm';
+import {applyPap, DPARA} from './DocPap';
+import {applyChp, DCHAR} from './DocChp';
+import {NUM_FMTS} from './NumFormat';
+
+export const LVLF = 28, MAX_TEXT = 255;
+const BEYOND = 'a list level numbers a level after its own: that ' +
+  'number is left out';
+const JC = ['left', 'center', 'right'];
+const SUFF = ['tab', 'space', 'nothing'];
+const SYMBOLIC = /^(symbol|wingdings|webdings|dingbats)/i;
+
+const fmtOf = (n) => (n === 255 ? 'none' : n >= 0 && n <= 27
+  ? NUM_FMTS[n] : 'decimal');
+
+/** See the header. */
+export function readLvl(b, at) {
+  if (!b || at < 0 || at + LVLF > b.length) return null;
+  const cbChpx = u8(b, at + 24), cbPapx = u8(b, at + 25);
+  let p = at + LVLF;
+  let cut = false;
+  const take = (n) => {
+    const end = Math.min(b.length, p + n);
+    if (end < p + n) cut = true;
+    const v = b.subarray(p, end);
+    p = end;
+    return v;
+  };
+  const papx = take(cbPapx), chpx = take(cbChpx);
+  let xst = '';
+  if (p + 2 <= b.length) {
+    const cch = u16(b, p);
+    p += 2;
+    const have = Math.min(cch, Math.floor((b.length - p) / 2));
+    if (have < cch) cut = true;
+    const n = Math.min(have, MAX_TEXT);
+    const units = new Array(n);
+    for (let i = 0; i < n; i++) units[i] = u16(b, p + 2 * i);
+    xst = String.fromCharCode(...units);
+    p += 2 * have;
+  } else {
+    cut = true;
+    p = b.length;
+  }
+  const lvl = {start: i32(b, at), nfc: u8(b, at + 4),
+    jc: u8(b, at + 5) & 3, follow: u8(b, at + 15), papx, chpx, xst,
+    cut};
+  return {lvl, next: p};
+}
+
+const prls = (g) => readSprms(g, 0, g.length);
+
+/** See the header. */
+export function levelOf(lvl, k, env = {}) {
+  const note = env.note || (() => {});
+  const chp = applyChp(DCHAR, prls(lvl.chpx), DCHAR, env);
+  const pap = applyPap(DPARA, prls(lvl.papx), DPARA, {});
+  const fmt = fmtOf(lvl.nfc);
+  const sym = SYMBOLIC.test(chp.font || '');
+  let text = '';
+  for (const c of lvl.xst) {
+    const n = c.charCodeAt(0);
+    if (n < 9) {
+      if (fmt === 'bullet') continue;
+      if (n <= k) text += '%' + (n + 1);
+      else note(BEYOND);
+    } else if (n >= 0x20) {
+      text += sym && n <= 0xFF ? String.fromCharCode(0xF000 + n) : c;
+    }
+  }
+  const out = {fmt, text, start: lvl.start >= 0 && lvl.start <= 32767
+    ? lvl.start : 1, jc: JC[lvl.jc] || 'left',
+  suff: SUFF[lvl.follow] || 'tab'};
+  if (pap.left !== 0 || pap.firstLine !== 0) {
+    out.indent = pap.firstLine < 0
+      ? {left: pap.left, hanging: -pap.firstLine}
+      : {left: pap.left, firstLine: pap.firstLine};
+  }
+  const rPr = {};
+  if (chp.b) rPr.b = true;
+  if (chp.i) rPr.i = true;
+  if (chp.sz !== DCHAR.sz) rPr.sz = chp.sz;
+  if (chp.color && chp.color !== 'auto') rPr.color = chp.color;
+  if (chp.font && chp.font !== DCHAR.font) {
+    rPr.rFonts = {ascii: chp.font, hAnsi: chp.font};
+  }
+  if (Object.keys(rPr).length) out.rPr = rPr;
+  return out;
+}

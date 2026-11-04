@@ -1,0 +1,176 @@
+// DocFib - the File Information Block of a Word 97-2003 .doc
+// ([MS-DOC] 2.5: Fib, FibBase, FibRgW97, FibRgLw97, the
+// FibRgFcLcb97..2007 blob, FibRgCswNew), read from the start of
+// the WordDocument stream. Used by ./DocRead; pure.
+//
+//   parseFib(word) -> fib  word the WordDocument stream (Uint8Array)
+//     fib.wIdent, fib.nFib (the real one: FibRgCswNew's nFibNew
+//         when cswNew > 0, else FibBase's), fib.nFibBase, fib.lid
+//     fib.flags {dot, glossary, complex, hasPic, quickSaves,
+//         encrypted, whichTbl (0 | 1), readOnly, extChar, farEast,
+//         obfuscated}
+//     fib.ccpText, ccpFtn, ccpHdd, ccpAtn, ccpEdn, ccpTxbx,
+//         ccpHdrTxbx (characters in each story; a negative count
+//         is 0, a warning), fib.cbMac
+//     fib.fc[name] = {fc, lcb}  every pair of FibRgFcLcb97 by its
+//         [MS-DOC] name without fc/lcb (FC_NAMES: 'Clx', 'Stshf',
+//         'PlcfBteChpx'...; ALIASES too: 'PlcFld' is 'PlcfFldMom').
+//         A name the file has no pair for (a short blob, cut FIB)
+//         is {fc: 0, lcb: 0}; the values are as written (checked
+//         where used: slice)
+//     fib.pairs  how many pairs the file has; fib.pairAt(i)
+//     fib.warnings  [string]: what was odd (for notes)
+//     Throws DocError: 'not-word' (too short, wIdent not 0xA5EC /
+//     0xA5DC), 'old' (Word 6/95: wIdent 0xA5DC or nFib < 0xC1),
+//     'encrypted' (fEncrypted, so fObfuscated too), 'bad' (the FIB
+//     runs past the stream before its fc/lcb blob)
+//   slice(table, fib, name, note?) -> Uint8Array | null  the bytes
+//     of pair name in the table stream (a view, not a copy): null
+//     for lcb 0, or (with note(msg)) when it lies outside the table
+//   tableName(fib) -> '0Table' | '1Table'
+//   DocError(code, message)  named 'ImportError' (./Open's codes),
+//     format 'doc'
+//   WIDENT, WIDENT6, NFIB97, FC_NAMES, ALIASES
+
+export const WIDENT = 0xA5EC, WIDENT6 = 0xA5DC, NFIB97 = 0xC1;
+
+/** See the header (a local class: ./Open imports ./DocRead). */
+export class DocError extends Error {
+  constructor(code, message) {
+    super(message || code);
+    this.name = 'ImportError';
+    this.code = code;
+    this.format = 'doc';
+  }
+}
+
+/** FibRgFcLcb97's pairs in order ([MS-DOC] 2.5.6), index = pair. */
+export const FC_NAMES = Object.freeze(('StshfOrig Stshf PlcffndRef ' +
+  'PlcffndTxt PlcfandRef PlcfandTxt PlcfSed PlcPad PlcfPhe ' +
+  'SttbfGlsy PlcfGlsy PlcfHdd PlcfBteChpx PlcfBtePapx PlcfSea ' +
+  'SttbfFfn PlcfFldMom PlcfFldHdr PlcfFldFtn PlcfFldAtn ' +
+  'PlcfFldMcr SttbfBkmk PlcfBkf PlcfBkl Cmds Unused1 SttbfMcr ' +
+  'PrDrvr PrEnvPort PrEnvLand Wss Dop SttbfAssoc Clx PlcfPgdFtn ' +
+  'AutosaveSource GrpXstAtnOwners SttbfAtnBkmk Unused2 Unused3 ' +
+  'PlcSpaMom PlcSpaHdr PlcfAtnBkf PlcfAtnBkl Pms FormFldSttbs ' +
+  'PlcfendRef PlcfendTxt PlcfFldEdn Unused4 DggInfo SttbfRMark ' +
+  'SttbfCaption SttbfAutoCaption PlcfWkb PlcfSpl PlcftxbxTxt ' +
+  'PlcfFldTxbx PlcfHdrtxbxTxt PlcffldHdrTxbx StwUser SttbTtmbd ' +
+  'CookieData PgdMotherOldOld BkdMotherOldOld PgdFtnOldOld ' +
+  'BkdFtnOldOld PgdEdnOldOld BkdEdnOldOld SttbfIntlFld RouteSlip ' +
+  'SttbSavedBy SttbFnm PlfLst PlfLfo PlcfTxbxBkd PlcfTxbxHdrBkd ' +
+  'DocUndoWord9 RgbUse Usp Uskf PlcupcRgbUse PlcupcUsp ' +
+  'SttbGlsyStyle Plgosl Plcocx PlcfBteLvc FtModified PlcfLvcPre10 ' +
+  'PlcfAsumy PlcfGram SttbListNames SttbfUssr').split(' '));
+
+/** Other names for some pairs (the main story's, spellings). */
+export const ALIASES = Object.freeze({StshF: 'Stshf',
+  PlcFld: 'PlcfFldMom', PlcfFld: 'PlcfFldMom', PlcfSpa: 'PlcSpaMom',
+  PlcSpa: 'PlcSpaMom', PlcfLst: 'PlfLst', Plcfhdd: 'PlcfHdd',
+  PlcfLfo: 'PlfLfo'});
+
+const NONE = Object.freeze({fc: 0, lcb: 0});
+const FLAGS = [['dot', 0], ['glossary', 1], ['complex', 2],
+  ['hasPic', 3], ['encrypted', 8], ['readOnly', 10],
+  ['extChar', 12], ['farEast', 14], ['obfuscated', 15]];
+const CCP = [['ccpText', 3], ['ccpFtn', 4], ['ccpHdd', 5],
+  ['ccpAtn', 7], ['ccpEdn', 8], ['ccpTxbx', 9], ['ccpHdrTxbx', 10]];
+const RG_LW = 22, RG_W = 14;        // (FibRgLw97, FibRgW97 counts)
+
+/** The fc/lcb pairs of the blob at `at` (n of them, what fits). */
+function pairsOf(word, dv, at, n) {
+  const have = Math.max(0, Math.min(n,
+    Math.floor((word.length - at) / 8)));
+  const fc = {};
+  const pairAt = (i) => {
+    if (!(i >= 0 && i < have)) return NONE;
+    const o = at + i * 8;
+    return {fc: dv.getUint32(o, true), lcb: dv.getUint32(o + 4, true)};
+  };
+  FC_NAMES.forEach((name, i) => { fc[name] = pairAt(i); });
+  for (const [a, name] of Object.entries(ALIASES)) fc[a] = fc[name];
+  // (a name no file has is still {0, 0})
+  const table = new Proxy(fc, {get: (t, k) =>
+    (typeof k === 'string' && !(k in t) ? NONE : t[k])});
+  return {fc: table, have, pairAt};
+}
+
+/** See the header. */
+export function parseFib(word) {
+  if (!(word instanceof Uint8Array) || word.length < 34) {
+    throw new DocError('not-word', 'the Word stream is too short');
+  }
+  const dv = new DataView(word.buffer, word.byteOffset, word.length);
+  const u16 = (o) => dv.getUint16(o, true);
+  const wIdent = u16(0), nFibBase = u16(2), bits = u16(10);
+  if (wIdent !== WIDENT && wIdent !== WIDENT6) {
+    throw new DocError('not-word', 'not a Word 97-2003 document');
+  }
+  if (wIdent === WIDENT6 || nFibBase < NFIB97) {
+    throw new DocError('old', 'a Word 6/95 document');
+  }
+  if (bits & 0x100) throw new DocError('encrypted', 'encrypted');
+  const warnings = [];
+  const flags = {whichTbl: (bits >> 9) & 1,
+    quickSaves: (bits >> 4) & 15};
+  for (const [k, b] of FLAGS) flags[k] = !!(bits & (1 << b));
+  // csw FibRgW97 cslw FibRgLw97 cbRgFcLcb blob cswNew FibRgCswNew
+  const need = (o, what) => {
+    if (o > word.length) {
+      throw new DocError('bad', 'the FIB is cut short (' + what + ')');
+    }
+  };
+  let at = 32;
+  need(at + 2, 'csw');
+  const csw = u16(at);
+  at += 2 + csw * 2;
+  need(at + 2, 'cslw');
+  const cslw = u16(at);
+  const lw = at + 2;
+  at = lw + cslw * 4;
+  need(at + 2, 'cbRgFcLcb');
+  if (csw !== RG_W || cslw !== RG_LW) {
+    warnings.push('the file information block has odd counts');
+  }
+  const lwAt = (i) => (i < cslw && lw + i * 4 + 4 <= word.length
+    ? dv.getInt32(lw + i * 4, true) : 0);
+  const fib = {wIdent, nFibBase, nFib: nFibBase, lid: u16(6), flags,
+    warnings, cbMac: Math.max(0, lwAt(0))};
+  for (const [k, i] of CCP) {
+    const v = lwAt(i);
+    if (v < 0) warnings.push('a story length is negative: taken as 0');
+    fib[k] = Math.max(0, v);
+  }
+  const cb = u16(at);
+  const blob = at + 2;
+  const {fc, have, pairAt} = pairsOf(word, dv, blob, cb);
+  if (have < cb) warnings.push('the file information block is cut');
+  fib.fc = fc;
+  fib.pairs = have;
+  fib.pairAt = pairAt;
+  at = blob + cb * 8;
+  if (at + 2 <= word.length) {
+    const cswNew = u16(at);
+    if (cswNew > 0 && at + 4 <= word.length) fib.nFib = u16(at + 2);
+    fib.cswNew = cswNew;
+  }
+  return fib;
+}
+
+/** See the header. */
+export function tableName(fib) {
+  return fib.flags.whichTbl ? '1Table' : '0Table';
+}
+
+/** See the header. */
+export function slice(table, fib, name, note) {
+  const p = fib.fc[name] || NONE;
+  if (!p.lcb) return null;
+  if (!table || p.fc > table.length || p.lcb > table.length - p.fc) {
+    if (note) {
+      note(`the file's ${name} lies outside its table: not read`);
+    }
+    return null;
+  }
+  return table.subarray(p.fc, p.fc + p.lcb);
+}

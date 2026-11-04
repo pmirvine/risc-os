@@ -653,3 +653,20 @@ in `_copyCut`: not done (no shared-code change in the !Letters work).
   aborted: null" and the queue moves on.
 * `src/apps/Printers/print.js` `fileHtml(title, css, html)` (new, used by the "To file" connection): the title is
   escaped in the file's `<title>` (a document name with `<` or `&` could put markup in the saved file).
+
+## !Letters Model: character-style toggles override instead of XOR; a paragraph's tab list replaces its style's — noted by the !Letters ODT/.doc import work (!Letters)
+**Status:** open (Model-level limits in `tools/moreapps/!Letters`, shared by every reader; worked round in the .doc
+reader, not changed).
+
+* **Toggle properties.** Word resolves a character style's toggle properties (bold, italic, caps, small caps,
+  strike, double strike, outline, shadow, emboss, imprint, hidden) over the paragraph style's by XOR: Strong (bold)
+  in a bold Heading 1 is not bold (checked against .doc files saved by real Word: `docword.test.mjs`). The Model
+  (`Styles.resolveRun`) lets the character style override, so it is bold. The `.doc` reader therefore writes every
+  toggle a run's character style sets as direct formatting on the run (`DocChp.runRPr`), which looks the same in Word
+  and in !Letters; the cost is that such runs show direct formatting. A `.docx` with Strong in a bold heading is
+  still shown bold by !Letters, where Word, by the toggle rule (ECMA-376 17.7.3), shows it plain. A Model-level XOR
+  in `resolveRun` (and in the code that measures runs against their styles) would remove both.
+* **Tab stops.** `Styles.resolvePara` takes the top layer's tab list whole (a paragraph's own `w:tabs`, even one
+  `w:tab w:val="clear"`, drops all of its style's tab stops), where Word merges them position by position (a clear
+  removes only the stop at its position). `docword.test.mjs` resolves the `.docx` side per position to compare;
+  the readers are not affected, the layout of documents that mix style and paragraph tabs is.

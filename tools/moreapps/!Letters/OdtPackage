@@ -1,0 +1,168 @@
+// OdtPackage - the package of an OpenDocument text (OpenDocument 1.3
+// part 2: 3.3 the mimetype file, 3.2 the manifest; part 3, 3.10
+// settings.xml) for ./OdtRead: is it one, is it encrypted, and the
+// one setting the reader needs.
+//
+//   sniffOdt(bytes) -> bool  a Uint8Array that is a zip holding a
+//       `mimetype` entry of MIMETYPES' text or template type: the
+//       first entry stored (as the standard has it: only its local
+//       header is read), or else, as some programs write them,
+//       anywhere and stored or deflated when the zip's central
+//       directory also has META-INF/manifest.xml and content.xml (a
+//       stored one's text is checked here; a deflated one's is
+//       checked by ./OdtRead once it is unpacked). Nothing else is
+//       read; never throws
+//   MIMETYPES  the two types
+//   encrypted(bytes, limits) -> true | false | null  whether the
+//       manifest (bytes) marks an entry encrypted (a
+//       manifest:encryption-data): parsed (./OdtXml), a plain
+//       DOCTYPE with no internal subset blanked first (old
+//       OpenOffice manifests have one; it is never followed); if it
+//       still does not parse, the bytes are searched for the
+//       element's name. null: damaged, and no such name in it
+//   tabsRelative(bytes?, limits) -> bool  settings.xml's
+//       TabsRelativeToIndent (config:config-item): false only when
+//       it says false (tab stops are then from the page margin, not
+//       the paragraph's indent); true when absent or unreadable
+// The manifest and settings are read for those facts only: nothing
+// in them is ever followed or fetched.
+// Pure: no desktop services.
+import {parsePart, kids, first, attr, textOf} from './OdtXml';
+
+export const MIMETYPES = ['application/vnd.oasis.opendocument.text',
+  'application/vnd.oasis.opendocument.text-template'];
+
+const LOCAL = 0x04034b50, CENTRAL = 0x02014b50, END = 0x06054b50;
+const MIMETYPE = 'mimetype';
+const NEEDED = ['META-INF/manifest.xml', 'content.xml'];
+
+const ascii = (bytes, at, n) => {
+  let s = '';
+  for (let i = at; i < at + n; i++) s += String.fromCharCode(bytes[i]);
+  return s;
+};
+
+/** The stored data at local header `at`, or null. */
+function storedAt(bytes, dv, at, size) {
+  if (at + 30 > bytes.length || dv.getUint32(at, true) !== LOCAL) {
+    return null;
+  }
+  const from = at + 30 + dv.getUint16(at + 26, true) +
+    dv.getUint16(at + 28, true);
+  return from + size <= bytes.length ? ascii(bytes, from, size) : null;
+}
+
+/** The first entry: a stored `mimetype` of a text type. */
+function strict(bytes, dv) {
+  const flags = dv.getUint16(6, true), method = dv.getUint16(8, true);
+  const csize = dv.getUint32(18, true), size = dv.getUint32(22, true);
+  if (method !== 0 || (flags & 9) || dv.getUint16(26, true) !== 8 ||
+    csize !== size || size > 100) return false;
+  if (ascii(bytes, 30, 8) !== MIMETYPE) return false;
+  return MIMETYPES.includes(storedAt(bytes, dv, 0, size));
+}
+
+/** The central directory's end record's offset, or -1. */
+function endOf(dv) {
+  const last = dv.byteLength - 22;
+  for (let i = last; i >= Math.max(0, last - 65535); i--) {
+    if (dv.getUint32(i, true) === END) return i;
+  }
+  return -1;
+}
+
+/** See the header: the central directory's names. */
+function relaxed(bytes, dv) {
+  const e = endOf(dv);
+  if (e < 0) return false;
+  let at = dv.getUint32(e + 16, true);
+  const count = dv.getUint16(e + 10, true), seen = new Set();
+  let mt = null;
+  for (let k = 0; k < count; k++) {
+    if (at + 46 > bytes.length || dv.getUint32(at, true) !== CENTRAL) {
+      return false;
+    }
+    const nlen = dv.getUint16(at + 28, true);
+    if (at + 46 + nlen > bytes.length) return false;
+    const name = ascii(bytes, at + 46, nlen);
+    if (name === MIMETYPE) {
+      mt = {method: dv.getUint16(at + 10, true),
+        csize: dv.getUint32(at + 20, true),
+        size: dv.getUint32(at + 24, true),
+        local: dv.getUint32(at + 42, true)};
+    } else if (NEEDED.includes(name)) seen.add(name);
+    at += 46 + nlen + dv.getUint16(at + 30, true) +
+      dv.getUint16(at + 32, true);
+  }
+  if (!mt || seen.size !== NEEDED.length || mt.size > 100) return false;
+  if (mt.method === 8) return true;
+  return mt.method === 0 && mt.csize === mt.size &&
+    MIMETYPES.includes(storedAt(bytes, dv, mt.local, mt.size));
+}
+
+/** See the header. */
+export function sniffOdt(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 38) return false;
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  if (dv.getUint32(0, true) !== LOCAL) return false;
+  try {
+    return strict(bytes, dv) || relaxed(bytes, dv);
+  } catch (e) {
+    return false;
+  }
+}
+
+/** bytes with a plain <!DOCTYPE ...> (no '[') blanked, or null. */
+function blanked(bytes) {
+  const s = new TextDecoder('latin1').decode(bytes);
+  const at = s.indexOf('<!DOCTYPE');
+  if (at < 0) return null;
+  const end = s.indexOf('>', at);
+  if (end < 0 || s.slice(at, end).includes('[')) return null;
+  const out = bytes.slice();
+  out.fill(32, at, end + 1);
+  return out;
+}
+
+/** See the header. */
+export function encrypted(bytes, limits) {
+  let root;
+  for (const b of [bytes, blanked(bytes)]) {
+    if (!b) continue;
+    try {
+      root = parsePart(b, 'META-INF/manifest.xml', limits);
+      break;
+    } catch (e) {
+      root = undefined;
+    }
+  }
+  if (!root) {
+    const s = new TextDecoder('latin1').decode(bytes);
+    return s.includes('encryption-data') ? true : null;
+  }
+  return kids(root, 'manifest:file-entry').some((f) =>
+    first(f, 'manifest:encryption-data'));
+}
+
+/** See the header. */
+export function tabsRelative(bytes, limits) {
+  if (!bytes) return true;
+  let root;
+  try {
+    root = parsePart(bytes, 'settings.xml', limits);
+  } catch (e) {
+    return true;
+  }
+  const stack = [root];
+  while (stack.length) {
+    const n = stack.pop();
+    if (n.name === 'config:config-item' &&
+      attr(n, 'config:name') === 'TabsRelativeToIndent') {
+      return textOf(n).trim() !== 'false';
+    }
+    for (const c of n.children) {
+      if (typeof c !== 'string') stack.push(c);
+    }
+  }
+  return true;
+}

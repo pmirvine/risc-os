@@ -1,0 +1,87 @@
+// DocPrcData - the Prls of a .doc PAPX / CHPX run, with
+// sprmPHugePapx ([MS-DOC] 2.6.2: a paragraph whose grpprl does not
+// fit its FKP page, such as a table row mark with many cells, keeps
+// it as a PrcData in the Data stream: cbGrpprl, then the grpprl)
+// read in its place. Used by ./DocPapx and ./DocChpx; pure.
+//
+//   prlsOf(ctx, run) -> [{op, size, operand}]  shared (not to be
+//       changed): a grpprl that is one sprmPHugePapx gives its
+//       PrcData's list itself; one mixing it with other Prls is
+//       joined only within ./DocPrm's formatting budget (the
+//       caller charges the joined list: it is not charged here)
+//   dataOf(ctx) -> Uint8Array | null  the Data stream (once)
+//   DECODED  {huge: PrcData bytes read, props: paragraph states
+//       made (./DocPapx paraProps)}: counts of the work (tests)
+// Each PrcData is read once (a cache of MAX_CACHE offsets), and in
+// all at most HUGE_TIMES the Data stream's length of them: past it
+// a sprmPHugePapx gives nothing (a note), as does one pointing
+// outside the stream (a note).
+import {readSprms, OPS, u16, u32} from './DocSprm';
+import {charge, affords} from './DocPrm';
+
+const HUGE = 'a paragraph\'s formatting kept in the Data stream is ' +
+  'damaged: it is not read';
+const HUGE_MANY = 'more paragraph formatting in the Data stream ' +
+  'than it holds: the rest is not read';
+/** PrcData bytes read at most, per byte of the Data stream. */
+const HUGE_TIMES = 4;
+const MAX_CACHE = 8192;
+
+/** The Data stream, or null (cached in ctx.data). */
+export function dataOf(ctx) {
+  if (ctx.data === undefined) {
+    try {
+      ctx.data = ctx.cfb.has('Data') ? ctx.cfb.get('Data') : null;
+    } catch (e) {
+      ctx.data = null;
+    }
+  }
+  return ctx.data;
+}
+
+/** Decoded counts (tests): huge, the PrcData bytes read; props,
+ *  the paragraph states made. */
+export const DECODED = {huge: 0, props: 0};
+
+/** The Prls of the PrcData at `at` (cached), or null. */
+function huge(ctx, at) {
+  const d = dataOf(ctx);
+  const c = ctx.hugeCache || (ctx.hugeCache = new Map());
+  if (ctx.hugeLeft === undefined) {
+    ctx.hugeLeft = HUGE_TIMES * (d ? d.length : 0);
+  }
+  if (c.has(at)) return c.get(at);
+  const cb = d && at + 2 <= d.length ? u16(d, at) : -1;
+  let l = null;
+  if (cb < 0 || at + 2 + cb > d.length) ctx.note(HUGE);
+  else if (ctx.hugeLeft < cb) ctx.note(HUGE_MANY);
+  else {
+    ctx.hugeLeft -= cb;
+    DECODED.huge += cb;
+    l = readSprms(d, at + 2, at + 2 + cb, ctx.note);
+  }
+  if (c.size >= MAX_CACHE) c.clear();
+  c.set(at, l);
+  return l;
+}
+
+/** The Prls of a run's grpprl; a sprmPHugePapx is the grpprl of
+ *  the PrcData at its offset in the Data stream (each read once;
+ *  in all at most HUGE_TIMES the Data stream's length). */
+export function prlsOf(ctx, run) {
+  if (!run || !run.grpprl) return [];
+  const l = readSprms(run.grpprl, 0, run.grpprl.length, ctx.note);
+  if (!l.some((s) => s.op === OPS.PHugePapx)) return l;
+  if (l.length === 1) return huge(ctx, u32(l[0].operand)) || [];
+  let out = [];
+  for (const s of l) {
+    if (s.op !== OPS.PHugePapx) out.push(s);
+    else {
+      const h = huge(ctx, u32(s.operand)) || [];
+      if (affords(ctx, out.length + h.length)) out = out.concat(h);
+      else charge(ctx, h.length);
+    }
+  }
+  return out;
+}
+

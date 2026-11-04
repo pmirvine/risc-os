@@ -79,7 +79,9 @@ describe('OLE2 files (older .doc, password-protected .docx)', () => {
 
   it('the error box names the file and the reason', async () => {
     const err = await readDocx(ole()).catch((e) => e);
-    assert.equal(describe_(err, 'Old'), "'Old' is an older Word (.doc) " +
-      'or password-protected file; !Letters opens .docx files only.');
+    // (an OLE file reaches the .docx reader only when ./DocRead's
+    // sniff passed it over: not a Word document)
+    assert.equal(describe_(err, 'Old'), "'Old' could not be opened: " +
+      'it is not a Word document.');
   });
 });

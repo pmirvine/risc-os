@@ -43,6 +43,29 @@ function sortExtra(o, parent) {
 }
 
 /**
+ * fn(block) for every block of doc at every depth: the body's
+ * (./Walk forEachBlock), then the stories' (Batch D, D9) in their
+ * Map's order (orig shares the blocks' objects: structuredClone keeps
+ * that, so it follows), the notes' (Batch E2) footnotes then
+ * endnotes, and the comments' (Batch F1) in their Map's order.
+ */
+function everyBlock(d, each) {
+  forEachBlock(d, each);
+  for (const s of (d.stories || new Map()).values()) {
+    forEachIn(s.blocks, [0], each);
+  }
+  for (const k of ['footnotes', 'endnotes']) {
+    for (const n of ((d.notes || {})[k] || new Map()).values()) {
+      forEachIn(n.blocks, [0], each);
+    }
+  }
+  const cm = d.comments && d.comments.map;
+  for (const c of (cm instanceof Map ? cm : new Map()).values()) {
+    forEachIn(c.blocks, [0], each);
+  }
+}
+
+/**
  * A copy of `doc` in canonical form: paragraph and table ids 0, 1,
  * 2... in flow order at every depth (./Walk), then on through the
  * stories', notes' and comments' blocks; the extra nodes of
@@ -73,24 +96,7 @@ export function canon(doc) {
     sortExtra(b.pPr, 'pPr');
     for (const r of b.runs) sortExtra(r.rPr, 'rPr');
   };
-  forEachBlock(d, each);
-  // stories (Batch D, D9) after the body, in their Map's order; orig
-  // shares the blocks' objects (structuredClone keeps that), so it
-  // follows
-  for (const s of (d.stories || new Map()).values()) {
-    forEachIn(s.blocks, [0], each);
-  }
-  // notes (Batch E2) after the stories, footnotes then endnotes
-  for (const k of ['footnotes', 'endnotes']) {
-    for (const n of ((d.notes || {})[k] || new Map()).values()) {
-      forEachIn(n.blocks, [0], each);
-    }
-  }
-  // comments (Batch F1) after the notes, in their Map's order
-  const cm = d.comments && d.comments.map;
-  for (const c of (cm instanceof Map ? cm : new Map()).values()) {
-    forEachIn(c.blocks, [0], each);
-  }
+  everyBlock(d, each);
   const z = d.meta.zipOrder;
   if (z) {
     const i = z.indexOf('[Content_Types].xml');
@@ -346,8 +352,9 @@ export function expectedBack(doc) {
   });
   // a br made by editing (no node: a page break) reads back with the
   // <w:br w:type="..."/> the writer wrote for it
-  // (at every depth: in table cells too)
-  forEachBlock(d, (b) => {
+  // (at every depth: in table cells too, and in the stories, notes
+  // and comments: a header's page break reads back the same)
+  everyBlock(d, (b) => {
     if (b.type !== 'p') return;
     for (const x of Object.values(b.inlines)) {
       if (x.kind === 'br' && (x.node === undefined || x.node === null)) {

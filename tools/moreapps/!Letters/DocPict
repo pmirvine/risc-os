@@ -1,0 +1,193 @@
+// DocPict - the pictures of a .doc ([MS-DOC] sprmCPicLocation: a
+// U+0001 with sprmCFSpec, its sprmCPicLocation the offset of a
+// PICFAndOfficeArtData in the Data stream, ./DocArt) for ./DocRead,
+// through the builder's b.picture (./ImpPict). A handler module
+// (PART {chars}); DocText's placeholder is replaced.
+//
+//   0x01  with sprmCFSpec and not sprmCFData (binary data, a form
+//         field's): ONE inline picture at its CP, in its run's
+//         formatting; without sprmCFSpec: left out
+//   0x08  a drawn object (a floating shape, PlcfSpa and the drawing
+//         layer, not read): left out, ONE note
+//
+// The picture's bytes are ./DocBlip's: PNG, JPEG, EMF and WMF
+// (compressed ones inflated), drawn as a box when a metafile, as for
+// .docx; the rest skipped with a note for each kind.
+// Size: dxaGoal x mx / 1000 twips (dyaGoal, my), 635 EMU a twip, the
+// crops left out ([MS-DOC] PICMID: Word sets mx to keep the cropped
+// size, as a real-Word fixture shows); a scale of 0 is 1000; both
+// scaled down together to 22 inches at most; a size not above 0: the
+// picture's own (a note). The crops ([MS-ODRAW] cropFrom... fractions,
+// else the PICF's twips over the goal) become the picture's a:srcRect
+// (1/1000 %, l + r and t + b under 100%; else uncropped). wzName /
+// wzDescription are its name and alt text.
+// Caps: ./RtfPict MAX_PICTURES pictures placed and MAX_TOTAL bytes
+// kept, checked before any copy or inflating: past either, one note
+// and no more are read; at most MAX_TOTAL bytes copied or inflated
+// in all, and the records walked at most WALK_TIMES the Data
+// stream's length (one note past either).
+// Each Data offset is read once (a cache): an anchor to a picture
+// already kept in the same story (body, header...) places it again
+// (the same media part, a new wp:docPr id). Pure.
+import {MAX_PICTURES, MAX_TOTAL, TW_EMU} from './RtfPict';
+import {charAt} from './DocChpx';
+import {dataOf} from './DocPrcData';
+import {pictureAt} from './DocArt';
+import {blipBytes} from './DocBlip';
+
+const MAX_EMU = 22 * 914400, WALK_TIMES = 4, MAX_CACHE = 8192;
+const N = {
+  float: 'floating pictures and drawings are not read',
+  beyond: 'a picture whose data lies outside the file is skipped',
+  damaged: 'a damaged picture is skipped',
+  size: 'a picture with no usable size is shown at its own size',
+  walk: 'more picture data than the file holds: the rest of the ' +
+    'pictures are skipped',
+  many: 'more than ' + MAX_PICTURES + ' pictures or ' +
+    (MAX_TOTAL >> 20) + ' MB of them: the rest are skipped',
+};
+
+/** (tests) the work done: records read, bytes copied or inflated. */
+export const WORK = {records: 0, copies: 0};
+
+const state = (ctx) => ctx.pict || (ctx.pict = {made: 0, full: false,
+  got: new Map(), left: -1, bytes: MAX_TOTAL, placed: new WeakMap()});
+
+/** Whether n more bytes may be read or made (charged when so). */
+function charge(P, n) {
+  if (P.left < n) return false;
+  P.left -= n;
+  return true;
+}
+
+/** Whether n more bytes fit the builder's total (else: full). */
+function fits(ctx, P, n) {
+  const st = ctx.b.pics;
+  if (!st || (st.count < MAX_PICTURES && st.total + n <= MAX_TOTAL)) {
+    return true;
+  }
+  P.full = true;
+  ctx.note(N.many);
+  return false;
+}
+
+/** {cx, cy} in EMU, or {} (a note). */
+function sizeOf(ctx, picf) {
+  const side = (goal, m) => goal * (m > 0 ? m : 1000) / 1000 * TW_EMU;
+  const cx = side(picf.dxaGoal, picf.mx);
+  const cy = side(picf.dyaGoal, picf.my);
+  if (!(cx >= 1) || !(cy >= 1)) {
+    ctx.note(N.size);
+    return {};
+  }
+  const f = Math.min(1, MAX_EMU / Math.max(cx, cy));
+  return {cx: Math.max(1, Math.round(cx * f)),
+    cy: Math.max(1, Math.round(cy * f))};
+}
+
+/** The crops as fractions [l, t, r, b] (zeros when not usable). */
+function cropOf(r) {
+  const p = r.picf;
+  let c = r.opt.crop;
+  if (!c) {
+    const g = [p.dxaGoal, p.dyaGoal, p.dxaGoal, p.dyaGoal];
+    c = p.crop.map((v, k) => (g[k] > 0 ? v / g[k] : 0));
+  }
+  const ok = c.every((v) => v > -1 && v < 1) && c[0] + c[2] < 1 &&
+    c[1] + c[3] < 1;
+  return ok ? c : [0, 0, 0, 0];
+}
+
+/** Node n with fn applied to the element named *:<leaf> (copied
+ *  along the way). */
+function edit(n, leaf, fn) {
+  if (!n || !n.children) return n;
+  if (n.name.endsWith(':' + leaf)) return fn(n);
+  return {...n, children: n.children.map((c) => edit(c, leaf, fn))};
+}
+
+/** The inline with an a:srcRect of crop c in its pic:blipFill. */
+const cropped = (node, c) => edit(node, 'blipFill', (n) => {
+  const pre = n.children[0].name.split(':')[0];
+  const rect = {name: pre + ':srcRect', attrs: ['l', 't', 'r', 'b']
+    .map((k, i) => [k, String(Math.round(c[i] * 100000))])
+    .filter(([, v]) => v !== '0'), children: []};
+  return {...n, children: [n.children[0], rect,
+    ...n.children.slice(1)]};
+});
+
+/** The picture at Data offset `at`: {bytes, opts} kept, or null (a
+ *  note given). Read once. */
+function pictureOf(ctx, P, data, at) {
+  if (P.got.has(at)) return P.got.get(at);
+  let out = null;
+  if (P.left < 0) P.left = WALK_TIMES * data.length;
+  if (!charge(P, 68)) ctx.note(N.walk);
+  else {
+    WORK.records++;
+    const r = pictureAt(data, at);
+    if (r.why) ctx.note(N[r.why]);
+    else if (!charge(P, Math.max(0, r.picf.end - at - 68))) {
+      ctx.note(N.walk);
+    } else {
+      const room = (n) => {
+        if (!fits(ctx, P, n)) return false;
+        if (P.bytes < n) return ctx.note(N.many), false;
+        P.bytes -= n;
+        return true;
+      };
+      const bytes = blipBytes(ctx, r, room);
+      if (bytes) {
+        WORK.copies++;
+        out = {bytes: bytes.buffer === data.buffer ? bytes.slice()
+          : bytes, crop: cropOf(r), opts: {...sizeOf(ctx, r.picf),
+          name: r.opt.name, alt: r.opt.alt}};
+      }
+    }
+  }
+  if (P.got.size >= MAX_CACHE) P.got.clear();
+  P.got.set(at, out);
+  return out;
+}
+
+/** A picture anchor (see the header). */
+function anchor(ctx, cp) {
+  const e = charAt(ctx, cp).eff;
+  if (!e.spec || e.data) return;
+  const P = state(ctx);
+  if (P.full || P.made >= MAX_PICTURES) {
+    P.full = true;
+    return ctx.note(N.many);
+  }
+  const data = dataOf(ctx);
+  const at = e.picLocation;
+  if (!data || !Number.isInteger(at)) return ctx.note(N.beyond);
+  const flow = ctx.b.flow;
+  const seen = P.placed.get(flow) || new Map();
+  P.placed.set(flow, seen);
+  let inline = seen.get(at);
+  if (inline) {
+    const id = String(++ctx.b.pics.id);
+    inline = {...inline, node: edit(inline.node, 'docPr', (n) =>
+      ({...n, attrs: n.attrs.map(([k, v]) => [k, k === 'id' ? id
+        : v])}))};
+  } else {
+    const p = pictureOf(ctx, P, data, at);
+    if (!p || !fits(ctx, P, p.bytes.length)) return;
+    inline = ctx.b.picture(p.bytes, p.opts);
+    if (!inline) return;
+    if (p.crop.some((v) => v)) {
+      inline = {...inline, node: cropped(inline.node, p.crop)};
+    }
+    if (seen.size < MAX_CACHE) seen.set(at, inline);
+  }
+  P.made++;
+  ctx.obj(inline, cp);
+}
+
+/** See the header. */
+export const PART = {chars: new Map([
+  [0x01, anchor],
+  [0x08, (ctx, cp) => {
+    if (charAt(ctx, cp).eff.spec) ctx.note(N.float);
+  }]])};

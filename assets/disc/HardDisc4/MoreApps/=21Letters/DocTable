@@ -1,0 +1,236 @@
+// DocTable - the tables of a .doc's text ([MS-DOC] 2.4.3
+// Overview of Tables) through the builder's tables (./ImpBuild
+// tableStart, rowStart, cellStart...). Used by ./DocBody; pure.
+//
+//   enter(ctx, from)  before the paragraph starting at CP `from`:
+//       the tables, rows and cells it is in are opened (and those it
+//       is not in closed), so its text goes into its cell
+//   mark(ctx, cp, then = true)  the paragraph whose mark is at cp
+//       ends: as a paragraph, the last of a cell (its cell ends) or
+//       a row mark (its row ends); then (with then) the next
+//       paragraph is entered
+//   unitAt(ctx, cp) -> the UTF-16 unit of the text at CP cp
+//   finish(ctx)  the tables still open end (a note when a row had
+//       no end)
+//   MAX_CELLS  cells in all; past them the reading stops (a note)
+//
+// A paragraph's table depth is its sprmPItap, else 1 with
+// sprmPFInTable (0: not in a table). At depth 1 a cell ends at a
+// cell mark (0x07) and a row at a 0x07 with sprmPFTtp (the TTP); at
+// depth 2 and more a cell ends at a paragraph mark with
+// sprmPFInnerTableCell, a row at one with sprmPFInnerTtp. A 0x07
+// outside a table is a paragraph end (a note). Depth past
+// ./TblCheck MAX_DEPTH: those paragraphs are read in the innermost
+// cell open (a cell of a table of their own when none is), as
+// paragraphs (a note). A row's cells are those of its row mark's
+// sprms (./DocTap), so a table is read ahead once, when it opens:
+// the rows at its depth up to the first paragraph at a smaller
+// depth; its grid and cells are ./DocGrid's. Rows that share their
+// Prls share their properties (decoded once); at most MAX_CELLS cell
+// definitions are decoded in the document (past them: the rows are
+// read without their properties, a note). Horizontally merged
+// cells are one cell: the merged ones' empty paragraphs are left
+// out (their text, if any, joins the first's).
+// A row mark with no cell before it makes no row (a note); a row
+// that never ends (no TTP) ends where its table does (a note).
+// Header rows count only from the first row on. Rows whose table
+// style, direction or position differ are different tables (2.4.3).
+import {MAX_DEPTH} from './TblCheck';
+import {markAfter, paraProps, fcOf, storyEnd} from './DocPapx';
+import {tapOf} from './DocTap';
+import {layout} from './DocGrid';
+
+export const MAX_CELLS = 1000000;
+const TOO_DEEP = 'tables nested more than ' + MAX_DEPTH + ' deep: ' +
+  'the deeper ones are read as paragraphs of the cell around them';
+const STRAY = 'a cell mark outside a table is read as a paragraph ' +
+  'end';
+const NO_CELLS = 'a table row with no cells is left out';
+const NO_END = 'a table row without its end mark ends where its ' +
+  'table does';
+const TOO_MANY = 'more than 1,000,000 table cells: the rest of the ' +
+  'document is not read';
+const AHEAD = 'more than 1,000,000 table cell definitions: the ' +
+  'rest of the rows are read without their widths and borders';
+const ROW0 = Object.freeze({trPr: {}, slots: []});
+
+const state = (ctx) => ctx.tbl || (ctx.tbl = {levels: [], cells: 0,
+  next: null, defs: 0});
+const TAPS = new WeakMap();
+/** (tests) the row properties decoded by the look-ahead. */
+export const AHEAD_WORK = {taps: 0};
+/** The look-ahead's budget of cell definitions (tests lower it). */
+export const LIMITS = {defs: MAX_CELLS};
+
+/** The UTF-16 unit at CP cp (0 in a gap). */
+export function unitAt(ctx, cp) {
+  const l = fcOf(ctx, cp), w = ctx.word;
+  if (!l) return 0;
+  return l.w === 2 ? w[l.fc] | (w[l.fc + 1] << 8) : w[l.fc];
+}
+
+/** What the paragraph whose mark is at `mark` is. */
+function look(ctx, mark) {
+  const pp = paraProps(ctx, mark), p = pp.para;
+  const c = unitAt(ctx, mark);
+  const d = p.itap > 0 ? p.itap : p.inTable ? 1 : 0;
+  let kind = 'para';
+  if (c === 0x07 && d === 0) kind = 'stray';
+  else if (d === 1) {
+    if (c === 0x07) kind = p.ttp ? 'row' : 'cell';
+  } else if (d > 1 && d <= MAX_DEPTH) {
+    if (p.innerTtp) kind = 'row';
+    else if (p.innerCell) kind = 'cell';
+    else if (c === 0x07) kind = p.ttp ? 'row' : 'cell';
+  }
+  return {mark, d, deep: d > MAX_DEPTH, kind, prls: pp.prls};
+}
+
+/** The properties of a row mark of Prls prls (one per Prl list:
+ *  rows sharing a PAPX share them), or null past the budgets. */
+function tapFor(ctx, T, prls) {
+  const got = TAPS.get(prls);
+  if (got) return got;
+  if (T.defs > LIMITS.defs) return null;
+  const t = tapOf(prls, ctx.note);
+  AHEAD_WORK.taps++;
+  T.defs += t.cells.length + 1;
+  TAPS.set(prls, t);
+  return t;
+}
+
+/** The table at depth k that starts at CP from opens. */
+function open(ctx, T, from, k) {
+  const taps = [], end = storyEnd(ctx);
+  let split = false, full = false;
+  for (let x = from; x < end;) {
+    const m = markAfter(ctx, x);
+    const y = look(ctx, m);
+    if (y.deep) y.d = MAX_DEPTH + 1;
+    if (y.d < k) break;
+    if (y.d === k && y.kind === 'row' && !full) {
+      const t = tapFor(ctx, T, y.prls);
+      if (!t) {
+        ctx.note(AHEAD);
+        full = true;
+      } else if (taps.length && t.key !== taps[0].key) {
+        split = true;
+        break;
+      } else taps.push(t);
+    }
+    x = m + 1;
+  }
+  const {grid, rows} = layout(taps);
+  ctx.b.tableStart({tblPr: taps.length ? {...taps[0].tblPr} : {},
+    grid});
+  T.levels.push({rows, r: 0, ci: 0, slots: [], rowOpen: false,
+    cellOpen: false, split});
+}
+
+/** The innermost open table ends. */
+function close(ctx, T) {
+  const L = T.levels[T.levels.length - 1];
+  if (L.cellOpen) ctx.b.cellEnd();
+  if (L.rowOpen) {
+    if (L.ci || L.cellOpen) ctx.note(NO_END);
+    ctx.b.rowEnd();
+  }
+  ctx.b.tableEnd();
+  T.levels.pop();
+}
+
+function startRow(ctx, L) {
+  const row = L.rows[L.r] || ROW0;
+  ctx.b.rowStart({...row.trPr});
+  L.rowOpen = true;
+  L.ci = 0;
+  L.slots = row.slots;
+}
+
+function startCell(ctx, T, L) {
+  if (++T.cells > MAX_CELLS) {
+    ctx.note(TOO_MANY);
+    ctx.stop = true;
+    return;
+  }
+  const s = L.slots[L.ci];
+  ctx.b.cellStart(s && s.tcPr ? {...s.tcPr} : {});
+  L.cellOpen = true;
+}
+
+/** See the header. */
+export function enter(ctx, from) {
+  const T = state(ctx);
+  if (from >= storyEnd(ctx) || ctx.stop || ctx.b.stopped) return;
+  const x = T.next = look(ctx, markAfter(ctx, from));
+  if (x.deep) {
+    ctx.note(TOO_DEEP);
+    x.d = Math.max(1, Math.min(T.levels.length, MAX_DEPTH));
+  }
+  while (T.levels.length > x.d) close(ctx, T);
+  for (let k = 1; k <= x.d && !ctx.stop; k++) {
+    let L = T.levels[k - 1];
+    if (L && L.split && !L.rowOpen && L.r >= L.rows.length) {
+      close(ctx, T);
+      L = undefined;
+    }
+    if (!L) {
+      open(ctx, T, from, k);
+      L = T.levels[k - 1];
+    }
+    if (!L.rowOpen) startRow(ctx, L);
+    if (!L.cellOpen && !(k === x.d && x.kind === 'row')) {
+      startCell(ctx, T, L);
+    }
+  }
+}
+
+const hasText = (ctx) => !!(ctx.b.flow.para && ctx.b.flow.para.len);
+
+/** The paragraph at cp ends with nothing in it: left out. */
+function skip(ctx, cp) {
+  ctx.paraStart = cp + 1;
+  ctx.paraLen = 0;
+}
+
+function cellMark(ctx, L, cp) {
+  const s = L.slots[L.ci], next = L.slots[L.ci + 1];
+  if (s && s.cont && !hasText(ctx)) skip(ctx, cp);
+  else ctx.endPara(cp);
+  L.ci++;
+  if (next && next.cont) return;
+  ctx.b.cellEnd();
+  L.cellOpen = false;
+}
+
+function rowMark(ctx, T, L, cp) {
+  if (hasText(ctx)) ctx.endPara(cp);
+  else skip(ctx, cp);
+  if (L.cellOpen) {
+    ctx.b.cellEnd();
+    L.cellOpen = false;
+  }
+  if (!L.ci) ctx.note(NO_CELLS);
+  ctx.b.rowEnd();
+  L.rowOpen = false;
+  L.r++;
+}
+
+/** See the header. */
+export function mark(ctx, cp, then = true) {
+  const T = state(ctx);
+  const x = T.next && T.next.mark === cp ? T.next : look(ctx, cp);
+  T.next = null;
+  const L = x.d && x.d === T.levels.length ? T.levels[x.d - 1] : null;
+  if (x.kind === 'stray') ctx.note(STRAY);
+  if (L && x.kind === 'cell' && L.cellOpen) cellMark(ctx, L, cp);
+  else if (L && x.kind === 'row' && L.rowOpen) rowMark(ctx, T, L, cp);
+  else ctx.endPara(cp);
+  if (then) enter(ctx, cp + 1);
+}
+
+/** See the header. */
+export function finish(ctx) {
+  const T = state(ctx);
+  while (T.levels.length) close(ctx, T);
+}

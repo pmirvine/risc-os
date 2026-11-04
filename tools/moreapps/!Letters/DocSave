@@ -30,7 +30,9 @@
 //   idle(dw) -> Promise    settles when the window's saves (those
 //                  asked so far) have ended; saving(dw): any running
 //   canWrite(dw, path) -> null, or why not: path is the file of
-//                  another open document (saving over it is refused)
+//                  another open document (saving over it is refused),
+//                  or the file an imported document was opened from
+//                  (dw.importedFrom: ./Open IMPORTERS)
 //   saveBox(dw)  the Save box of Save as (made once, kept in
 //                  dw.boxes: ./Boxes); OK onto another file that is
 //                  there asks Replace / Cancel (./Replace). It saves
@@ -70,6 +72,12 @@
 // the Save box saving RTF that would lose more than the window was
 // told of or answered (./LostBox unasked: put in with the box open)
 // asks again first (guardLost; a drag to a directory: in its save).
+// A window imported from another kind of file (dw.imported 'odt' |
+// 'doc', dw.importedFrom that file, dw.path null, dw.format 'docx')
+// is saved as untitled ones are: Save opens the Save box, offering a
+// .docx beside the original (SaveState importName); nothing writes
+// to the file it came from (canWrite). Once written it is a .docx
+// window like any other: dw.imported and dw.importedFrom null.
 // A save that renames the window changes its title, dw.path,
 // dw.leaf, its app.docs key (app.rekey), the Save as box's name and
 // the Save a copy box's and the Info box. Save a copy changes
@@ -99,6 +107,11 @@ const there = (p) => vfs.exists(p);
 
 /** See the header. */
 export function canWrite(dw, path) {
+  const from = dw.importedFrom;
+  if (from && dw.app.keyOf(path) === dw.app.keyOf(from)) {
+    return `'${leafOf(from)}' is the file this document was ` +
+      'opened from: save it under another name, as a .docx.';
+  }
   const other = dw.app.docs.get(dw.app.keyOf(path));
   if (!other || other === dw) return null;
   return `'${other.leaf}' is open in another window: close ` +
@@ -160,6 +173,10 @@ async function write1(dw, to, asked, format) {
   if (dw.closed && dw.d.stateId !== asked) return null;
   const path = to == null ? dw.path : to;
   const fmt = format || dw.format || 'docx';
+  if (path == null) {                  // (an import: never its file)
+    throw notSaved(dw.leaf, new Error('it has no file yet: use Save ' +
+      'as'));
+  }
   let why = canWrite(dw, path);
   if (why) throw new Error(why);
   const d = dw.d;
@@ -183,6 +200,8 @@ async function write1(dw, to, asked, format) {
   d.markSavedAt(id);
   if (lost) saved(dw, lost);
   if ((dw.format || 'docx') !== fmt) retype(dw, fmt);
+  dw.imported = null;                  // (now a file of its own)
+  dw.importedFrom = null;
   rename(dw, full);
   dw.retitle();
   return full;

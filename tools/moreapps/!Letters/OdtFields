@@ -1,0 +1,243 @@
+// OdtFields - links, bookmarks, fields and indexes of an OpenDocument
+// text (OpenDocument 1.3 part 3, 6.1.8 <text:a>, 6.2 bookmarks,
+// 7 variable and user fields, 8 document fields, 8.1 <text:ruby>,
+// 8.3 indexes) for ./OdtRead, through the builder (./ImpBuild
+// field, fieldStart, bookmark).
+//
+//   PART  {elements: text:a, the bookmarks and reference marks, the
+//       fields below, the indexes, text:ruby, text:meta...}
+//
+// text:a: a link (a HYPERLINK field: the builder never fetches
+//   anything) when xlink:href is an address http, https, mailto or
+//   ftp, or '#name' (a bookmark; a '|outline' style suffix is cut).
+//   Any other scheme (file:, javascript:, data:...) or no scheme: the
+//   text only, one note. An address the builder refuses (too long,
+//   a control character) keeps its text too (the builder's note).
+//   The link's character style (text:style-name) is its text's; its
+//   content is read as the paragraph's (spans, fields in it). In
+//   tracked deleted text (ctx.revDel) a link is its text only.
+// Bookmarks: text:bookmark (a point), -start, -end, and the
+//   reference marks the same; text:bookmark-ref, text:reference-ref
+//   are a REF field (PAGEREF for text:reference-format page), the
+//   stored text its result. White space in a name (and in a '#name'
+//   link) is '_', as Word's names have none.
+// Fields kept as fields, the stored text as the result: PAGE
+//   (text:page-number), NUMPAGES, DATE and TIME (as text when
+//   text:fixed is true), TITLE, SUBJECT, AUTHOR, FILENAME, NUMWORDS,
+//   NUMCHARS, SEQ <text:name> (text:sequence).
+// Every other field (user and variable fields, database, conditional
+//   and hidden text, notes' references, document information...) is
+//   its stored text. text:meta, text:meta-field and the base of
+//   text:ruby are read as text; ruby text is dropped (a note).
+//   So are a content control (loext:content-control) and a form
+//   field's content (field:fieldmark; its marks are not kept).
+// Indexes (tables of contents, alphabetical, illustration...):
+//   text:index-body's paragraphs as they stand, plain text with its
+//   links; one note. Never INCLUDETEXT, INCLUDEPICTURE, LINK, DDE:
+//   text:dde-connection is its stored text, text:script is not read
+//   (a note each).
+// All of them only inside a paragraph (ctx.para): elsewhere ignored.
+// At most MAX_FIELDS (./DocFldKind's) fields and links are kept as
+// fields; the rest are their text (one note), as in a .doc.
+// Pure: no desktop services.
+import {first, attr} from './OdtXml';
+import {collapse, fmtNow} from './OdtBody';
+import {whole} from './OdtUnits';
+import {MAX_FIELDS} from './DocFldKind';
+
+const SCHEMES = new Set(['http', 'https', 'mailto', 'ftp']);
+const MAX_PLAIN = 100000, MAX_NAME = 400;
+const SKIP = new Set(['office:annotation', 'office:annotation-end',
+  'text:note', 'draw:frame', 'text:ruby-text', 'text:script',
+  'text:tracked-changes', 'text:change', 'text:change-start',
+  'text:change-end']);
+const SUFFIXES = ['outline', 'table', 'region', 'frame', 'graphic',
+  'ole', 'text', 'drawing'];
+
+/** The text inside node (see the header), at most MAX_PLAIN. */
+function plain(node) {
+  let out = '';
+  const stack = [...node.children].reverse();
+  while (stack.length && out.length < MAX_PLAIN) {
+    const c = stack.pop();
+    if (typeof c === 'string') out += c;
+    else if (c.name === 'text:s') {
+      out += ' '.repeat(Math.min(whole(attr(c, 'text:c')) ?? 1, 100));
+    } else if (c.name === 'text:tab' || c.name === 'text:line-break') {
+      out += ' ';
+    } else if (!SKIP.has(c.name)) {
+      for (let i = c.children.length - 1; i >= 0; i--) {
+        stack.push(c.children[i]);
+      }
+    }
+  }
+  return out.slice(0, MAX_PLAIN);
+}
+
+const MANY = 'more than ' + MAX_FIELDS + ' fields: the rest are kept ' +
+  'as their results';
+
+/** Whether one more field may be kept (else a note). */
+function another(ctx) {
+  ctx.fldMade = (ctx.fldMade || 0) + 1;
+  if (ctx.fldMade <= MAX_FIELDS) return true;
+  ctx.note(MANY);
+  return false;
+}
+
+/** Put node's text (white space collapsed). */
+function result(ctx, node) {
+  if (!ctx.para) return;
+  const t = collapse(ctx, plain(node));
+  if (t) ctx.b.text(t, fmtNow(ctx));
+}
+
+/** A field with code (null: its text), result from node. */
+function field(ctx, node, code) {
+  if (!ctx.para) return;
+  if (!code || !another(ctx)) return result(ctx, node);
+  const t = collapse(ctx, plain(node));
+  ctx.b.field({code, result: t}, fmtNow(ctx));
+}
+
+/** A bookmark name with its white space as '_' (Word's names have
+ *  none; LibreOffice's copies are 'name Copy 1'). */
+const markName = (s) => typeof s === 'string' ? [...s].map((c) =>
+  c.trim() === '' ? '_' : c).join('') : s;
+
+const fixed = (code) => (ctx, node) => field(ctx, node,
+  attr(node, 'text:fixed') === 'true' ? null : code);
+const simple = (code) => (ctx, node) => field(ctx, node, code);
+const quoted = (s) => typeof s === 'string' && s.length > 0 &&
+  s.length <= MAX_NAME && !s.includes('"') && !s.includes('\\') &&
+  s.isWellFormed() ? '"' + s + '"' : null;
+
+/** SEQ name: a word of letters, digits and _ starting with a letter. */
+function sequence(ctx, node) {
+  const n = attr(node, 'text:name');
+  const ok = typeof n === 'string' && n.length > 0 && n.length <= 40 &&
+    [...n].every((c, i) => (c >= 'a' && c <= 'z') ||
+      (c >= 'A' && c <= 'Z') || (i > 0 && (c === '_' ||
+      (c >= '0' && c <= '9'))));
+  field(ctx, node, ok ? 'SEQ ' + n : null);
+}
+
+function ref(ctx, node) {
+  const q = quoted(markName(attr(node, 'text:ref-name')));
+  const page = attr(node, 'text:reference-format') === 'page';
+  field(ctx, node, q && (page ? 'PAGEREF ' : 'REF ') + q + ' \\h');
+}
+
+/** Bookmark marks: point, start, end. */
+const mark = (which) => (ctx, node) => {
+  if (!ctx.para) return;
+  const n = markName(attr(node, 'text:name'));
+  for (const w of which) ctx.b.bookmark(n, w);
+};
+
+/** The address of text:a: {code} | {anchor} | null. */
+function codeOf(ctx, href) {
+  const h = typeof href === 'string' ? href.trim() : '';
+  const esc = (s) => s.replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+  if (h.startsWith('#')) {
+    let a = h.slice(1);
+    const bar = a.lastIndexOf('|');
+    if (bar >= 0 && SUFFIXES.includes(a.slice(bar + 1))) {
+      a = a.slice(0, bar);
+    }
+    return a ? 'HYPERLINK \\l "' + esc(markName(a)) + '"' : null;
+  }
+  const colon = h.indexOf(':');
+  if (colon > 0 && SCHEMES.has(h.slice(0, colon).toLowerCase())) {
+    return 'HYPERLINK "' + esc(h) + '"';
+  }
+  ctx.note('links to files, scripts and other kinds of address are ' +
+    'not kept: their text is');
+  return null;
+}
+
+function anchor(ctx, node) {
+  if (!ctx.para) return ctx.walk(node);
+  // (in tracked deleted text a link is its text: deleted links are
+  // not kept, ./ImpRevs DROPPED)
+  const code = !ctx.revDel && codeOf(ctx, attr(node, 'xlink:href'));
+  const rec = code && another(ctx) &&
+    ctx.b.fieldStart({code}, fmtNow(ctx));
+  ctx.spans.push(node);
+  try {
+    ctx.walk(node);
+  } finally {
+    ctx.spans.pop();
+    if (rec) ctx.b.fieldEnd(rec);
+  }
+}
+
+function index(ctx, node) {
+  ctx.note('an index or table of contents is kept as plain text');
+  const body = first(node, 'text:index-body');
+  if (body) ctx.walk(body);
+}
+
+const walk = (ctx, node) => ctx.walk(node);
+const RESULTS = ['text:conditional-text', 'text:hidden-text',
+  'text:hidden-paragraph', 'text:user-field-get',
+  'text:user-field-input', 'text:variable-get', 'text:variable-set',
+  'text:variable-input', 'text:expression', 'text:database-display',
+  'text:database-next', 'text:database-select',
+  'text:database-row-number', 'text:database-name', 'text:note-ref',
+  'text:initial-creator', 'text:creator', 'text:description',
+  'text:keywords', 'text:editing-cycles', 'text:editing-duration',
+  'text:creation-date', 'text:creation-time', 'text:modification-date',
+  'text:modification-time', 'text:print-date', 'text:print-time',
+  'text:printed-by', 'text:chapter', 'text:page-continuation',
+  'text:text-input', 'text:drop-down', 'text:placeholder',
+  'text:user-defined', 'text:paragraph-count', 'text:table-count',
+  'text:image-count', 'text:object-count', 'text:template-name',
+  'text:bibliography-mark', 'text:measure', 'text:page-variable-get',
+  'text:page-variable-set', 'text:sender-firstname',
+  'text:sender-lastname', 'text:sender-company', 'text:sender-email',
+  'text:sender-title', 'text:sender-position', 'text:sender-city',
+  'text:sender-country', 'text:sender-phone-private',
+  'text:sender-phone-work', 'text:sender-fax', 'text:sender-street',
+  'text:sender-postal-code', 'text:sender-state-or-province',
+  'text:sender-initials', 'text:alphabetical-index-mark',
+  'text:toc-mark', 'text:user-index-mark', 'text:table-formula',
+  'loext:style-ref'];
+const INDEXES = ['text:table-of-content', 'text:alphabetical-index',
+  'text:illustration-index', 'text:table-index', 'text:object-index',
+  'text:user-index', 'text:bibliography'];
+
+export const PART = {elements: new Map([
+  ['text:a', anchor],
+  ['text:bookmark', mark(['start', 'end'])],
+  ['text:bookmark-start', mark(['start'])],
+  ['text:bookmark-end', mark(['end'])],
+  ['text:reference-mark', mark(['start', 'end'])],
+  ['text:reference-mark-start', mark(['start'])],
+  ['text:reference-mark-end', mark(['end'])],
+  ['text:bookmark-ref', ref], ['text:reference-ref', ref],
+  ['text:page-number', simple('PAGE')],
+  ['text:page-count', simple('NUMPAGES')],
+  ['text:date', fixed('DATE')], ['text:time', fixed('TIME')],
+  ['text:title', simple('TITLE')], ['text:subject', simple('SUBJECT')],
+  ['text:author-name', simple('AUTHOR')],
+  ['text:file-name', simple('FILENAME')],
+  ['text:word-count', simple('NUMWORDS')],
+  ['text:character-count', simple('NUMCHARS')],
+  ['text:sequence', sequence],
+  ['text:index-title', walk], ['text:meta', walk],
+  ['text:meta-field', walk], ['text:ruby', walk],
+  ['text:ruby-base', walk], ['loext:content-control', walk],
+  ['field:fieldmark', walk],
+  ['field:fieldmark-start', () => {}],
+  ['field:fieldmark-separator', () => {}],
+  ['field:fieldmark-end', () => {}], ['field:param', () => {}],
+  ['text:ruby-text', (ctx) => ctx.note('ruby text (the small ' +
+    'characters over the base text) is not kept')],
+  ['text:script', (ctx) => ctx.note('scripts are not read')],
+  ['text:dde-connection', (ctx, node) => {
+    ctx.note('DDE links are not followed: their text is kept');
+    result(ctx, node);
+  }],
+  ...RESULTS.map((n) => [n, result]),
+  ...INDEXES.map((n) => [n, index])])};

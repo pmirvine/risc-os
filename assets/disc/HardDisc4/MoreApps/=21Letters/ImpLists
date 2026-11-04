@@ -1,0 +1,160 @@
+// ImpLists - lists for ./ImpBuild, as ./RtfLists makes them: the
+// Doc's numbering part (a w:numbering tree read by ./ReadNumbering)
+// that paragraphs join with pPr.numPr {numId, ilvl}.
+//
+//   list(b, levels) -> numId | null  (b.list) a list of levels[i] =
+//       {fmt, text, start, indent: {left, hanging | firstLine}, rPr?,
+//       jc?, suff?} for ilvl i (1..9 of them): one w:abstractNum
+//       and a w:num naming it; numIds 1, 2... in the order made
+//   listOverride(b, numId, starts) -> numId | null  (b.listOverride)
+//       a w:num on numId's list with starts {ilvl: start} (each a
+//       w:lvlOverride w:startOverride): the list numbered again
+//       from there (Word's restart), a new numId
+//   finish(b)  the part (./NumWrite ensurePart: its relationship)
+//
+// A level's fmt is a ./NumFormat NUM_FMTS name ('bullet', 'decimal',
+// 'lowerLetter'...) or 'none', else decimal; text its lvlText (%1..%9
+// the level numbers: cleaned, at most MAX_TEXT characters; none: a
+// bullet for a bullet, else '%N.'); start 0..MAX_START (else 1);
+// indent in twips (left -MAX_TW..MAX_TW, hanging / firstLine
+// 0..MAX_TW); rPr only b, i, sz, color and rFonts (./NumLevel reads
+// those); jc left | center | right; suff tab | space | nothing.
+// Caps: MAX_LISTS lists, MAX_NUMS numIds; past them null, a note.
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+import {rootScope} from './Ns';
+import {NS} from './Wml';
+import {NUM_FMTS} from './NumFormat';
+import {readNumbering} from './ReadNumbering';
+import {ensurePart} from './NumWrite';
+import {name} from './ImpSafe';
+import {cleanText} from './ImpPara';
+
+const MAX_LISTS = 1000, MAX_NUMS = 10000, MAX_TEXT = 255;
+const MAX_START = 32767, MAX_TW = 31680;
+const BULLET = String.fromCharCode(0x2022);
+const JC = ['left', 'center', 'right'];
+const SUFF = ['tab', 'space', 'nothing'];
+
+const A = (name, attrs, ...kids) => el('w:' + name, attrs, ...kids);
+const val = (name, v) => A(name, [['w:val', String(v)]]);
+const isInt = (n, lo, hi) => Number.isInteger(n) && n >= lo &&
+  n <= hi;
+const hex8 = (n) => (n >>> 0).toString(16).toUpperCase()
+  .padStart(8, '0');
+
+const state = (b) => b.listsRd || (b.listsRd = {abs: [], nums: []});
+
+/** A level's w:rPr node (the fields ./NumLevel reads), or null. */
+function rPrNode(r) {
+  if (!r || typeof r !== 'object') return null;
+  const kids = [];
+  const f = r.rFonts && typeof r.rFonts === 'object' ? r.rFonts : {};
+  const fonts = ['ascii', 'hAnsi', 'eastAsia', 'cs'].filter((k) =>
+    typeof f[k] === 'string' && f[k] && f[k].length <= 64)
+    .map((k) => ['w:' + k, name(f[k])]).filter(([, v]) => v);
+  if (fonts.length) kids.push(A('rFonts', fonts));
+  if (r.b === true) kids.push(A('b'));
+  if (r.i === true) kids.push(A('i'));
+  if (typeof r.color === 'string' && /^[0-9A-Fa-f]{6}$/.test(r.color)) {
+    kids.push(val('color', r.color.toUpperCase()));
+  }
+  if (isInt(r.sz, 2, 3276)) kids.push(val('sz', r.sz));
+  return kids.length ? A('rPr', null, ...kids) : null;
+}
+
+/** Level lv's w:lvl node for ilvl k. */
+function lvlNode(k, lv) {
+  const o = lv && typeof lv === 'object' ? lv : {};
+  const fmt = o.fmt === 'none' || NUM_FMTS.includes(o.fmt) ? o.fmt
+    : 'decimal';
+  const text = typeof o.text !== 'string'
+    ? fmt === 'bullet' ? BULLET : '%' + (k + 1) + '.'
+    : cleanText(o.text).replace(/[\t\n]/g, ' ').slice(0, MAX_TEXT)
+      .toWellFormed();
+  const kids = [val('start', isInt(o.start, 0, MAX_START) ? o.start
+    : 1), val('numFmt', fmt)];
+  if (SUFF.includes(o.suff)) kids.push(val('suff', o.suff));
+  kids.push(val('lvlText', text), val('lvlJc', JC.includes(o.jc)
+    ? o.jc : 'left'));
+  const n = o.indent && typeof o.indent === 'object' ? o.indent : {};
+  const ind = [];
+  if (isInt(n.left, -MAX_TW, MAX_TW)) ind.push(['w:left', n.left]);
+  if (isInt(n.hanging, 0, MAX_TW)) ind.push(['w:hanging', n.hanging]);
+  else if (isInt(n.firstLine, 0, MAX_TW)) {
+    ind.push(['w:firstLine', n.firstLine]);
+  }
+  if (ind.length) {
+    kids.push(A('pPr', null, A('ind', ind.map(([a, v]) =>
+      [a, String(v)]))));
+  }
+  const r = rPrNode(o.rPr);
+  if (r) kids.push(r);
+  return A('lvl', [['w:ilvl', String(k)]], ...kids);
+}
+
+/** Whether one more w:num may be made (a note when not). */
+function room(b, st, abs) {
+  if (abs && st.abs.length >= MAX_LISTS) {
+    b.note('more than ' + MAX_LISTS + ' lists: the rest are read as ' +
+      'plain paragraphs');
+    return false;
+  }
+  if (st.nums.length < MAX_NUMS) return true;
+  b.note('more than ' + MAX_NUMS + ' list numberings (lists and ' +
+    'restarts): the rest are read as plain paragraphs');
+  return false;
+}
+
+/** See the header. */
+export function list(b, levels) {
+  const st = state(b);
+  if (!Array.isArray(levels) || !levels.length || levels.length > 9) {
+    b.note('a list with no levels, or more than 9, is read as ' +
+      'plain paragraphs');
+    return null;
+  }
+  if (!room(b, st, true)) return null;
+  const abs = st.abs.length;
+  st.abs.push(A('abstractNum', [['w:abstractNumId', String(abs)]],
+    val('nsid', hex8(0x49000000 + abs)), val('multiLevelType',
+      levels.length === 1 ? 'singleLevel' : 'hybridMultilevel'),
+    ...levels.map((lv, k) => lvlNode(k, lv))));
+  const numId = st.nums.length + 1;
+  st.nums.push({numId, abs, node: A('num', [['w:numId',
+    String(numId)]], val('abstractNumId', abs))});
+  return numId;
+}
+
+/** See the header. */
+export function listOverride(b, numId, starts) {
+  const st = state(b);
+  const of = Number.isInteger(numId) ? st.nums[numId - 1] : undefined;
+  if (!of || !room(b, st, false)) return null;
+  const over = [];
+  for (let k = 0; k < 9; k++) {
+    const s = starts && typeof starts === 'object' ? starts[k]
+      : undefined;
+    if (isInt(s, 0, MAX_START)) {
+      over.push(A('lvlOverride', [['w:ilvl', String(k)]],
+        val('startOverride', s)));
+    }
+  }
+  const id = st.nums.length + 1;
+  st.nums.push({numId: id, abs: of.abs, node: A('num', [['w:numId',
+    String(id)]], val('abstractNumId', of.abs), ...over)});
+  return id;
+}
+
+/** See the header. */
+export function finish(b) {
+  const st = b.listsRd;
+  if (!st || !st.nums.length) return;
+  const doc = b.doc;
+  const root = A('numbering', [['xmlns:w', NS.w]], ...st.abs,
+    ...st.nums.map((n) => n.node));
+  doc.numbering = readNumbering(root, rootScope(root));
+  const {rels, numberingPart} = ensurePart(doc);
+  doc.rels = rels;
+  doc.meta = {...doc.meta, numberingPart};
+}

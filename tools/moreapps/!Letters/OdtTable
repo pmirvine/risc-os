@@ -1,0 +1,200 @@
+// OdtTable - the tables of an OpenDocument text (OpenDocument 1.3
+// part 3, 9 <table:table>) for ./OdtRead, through the builder's
+// tables (./ImpBuild tableStart, rowStart, cellStart...).
+//
+//   PART  {elements: table:table}  (./OdtRead's registry)
+//
+// Columns: table:table-column (also inside table:table-column-
+// group, -header-columns, -columns) give the grid: style:column-
+// width, or style:rel-column-width ("2*") shared out over the table
+// width; table:number-columns-repeated counts at most MAX_REPEAT
+// columns in all (a note); only the first 63 (./TblCheck MAX_COLS)
+// are used and a row's cells past the 63rd are left out (a note).
+// With no columns the grid is the widest row's.
+// Rows: table:table-row, also inside table:table-header-rows (these
+// are tblHeader), -rows and -row-group; number-rows-repeated is read
+// that many times, at most MAX_REPEAT (a note). Cells:
+// table:table-cell, number-columns-spanned is gridSpan (at most the
+// columns left in the grid), number-rows-spanned vMerge restart and
+// the table:covered-table-cell below it (same column) vMerge
+// continue. The covered cells beside a spanning cell are consumed
+// with it; a covered cell no spanning cell covers is an empty cell.
+// The cell style (or the column's table:default-cell-style-name):
+// borders (fo:border, fo:border-top...), fo:background-color,
+// style:vertical-align; padding is not read. The table style:
+// style:width (or a % style:rel-width), table:align, fo:margin-left.
+// The row style: style:row-height (exact), style:min-row-height.
+// A cell holds what any body holds (lists start afresh in it).
+// Other table children (table:table-source, scenarios, forms...)
+// are not read: a note for each kind (none for a soft page break,
+// which only says where a page ended).
+// Pure: no desktop services.
+import {isolate} from './OdtLists';
+import {whole} from './OdtUnits';
+import {tableSection} from './OdtSect';
+import {attr} from './OdtXml';
+import {MAX_COLS} from './TblCheck';
+import {columnPr, widths, tablePr, cellPr, rowPr}
+  from './OdtCellProps';
+
+export const MAX_REPEAT = 1000;
+const COLUMN_BOXES = new Set(['table:table-column-group',
+  'table:table-header-columns', 'table:table-columns']);
+const ROW_BOXES = new Set(['table:table-header-rows',
+  'table:table-rows', 'table:table-row-group']);
+const QUIET = new Set(['table:title', 'table:desc',
+  'text:soft-page-break']);
+const MAX_KINDS = 5;
+
+/** A repeat / span count: a whole number from 1 up, else 1. */
+function count(v) {
+  const n = whole(v);
+  return n >= 1 ? n : 1;
+}
+
+const skip = (ctx, T, name) => {
+  if (QUIET.has(name)) return;
+  const shown = T.kinds.has(name);
+  if (!shown && T.kinds.size >= MAX_KINDS) {
+    return ctx.note('a table: other elements are not read');
+  }
+  T.kinds.add(name);
+  ctx.note('a table: ' + name.slice(0, 60) + ' is not read');
+};
+
+/** Columns -> T.cols [{w?, rel?, cell?}] (see the header). */
+function columns(ctx, T, node) {
+  for (const c of node.children) {
+    if (typeof c === 'string') continue;
+    if (COLUMN_BOXES.has(c.name)) columns(ctx, T, c);
+    else if (c.name === 'table:table-column') {
+      let n = count(attr(c, 'table:number-columns-repeated'));
+      if (n > MAX_REPEAT - T.cols.length) {
+        ctx.note('a table of more than ' + MAX_REPEAT + ' columns is ' +
+          'cut');
+        n = MAX_REPEAT - T.cols.length;
+      }
+      const col = columnPr(ctx, c);
+      for (let i = 0; i < n; i++) T.cols.push(col);
+    }
+  }
+}
+
+const halted = (ctx) => {
+  if (ctx.b.stopped) ctx.stop = true;
+  return ctx.stop;
+};
+
+/** One cell element at column `col`; returns the columns it took. */
+function cell(ctx, T, node, col, covered) {
+  const left = T.ncols ? T.ncols - col : MAX_COLS - col;
+  const hold = T.vs[col];
+  let span = Math.min(count(attr(node, 'table:number-columns-spanned')),
+    Math.max(1, left), MAX_COLS - col);
+  const pr = {extra: []};
+  let show = !covered;
+  if (covered && hold) {
+    span = hold.span;
+    if (--hold.left <= 0) delete T.vs[col];
+    show = false;
+    pr.vMerge = 'continue';
+  } else if (!covered) {
+    const rs = count(attr(node, 'table:number-rows-spanned'));
+    delete T.vs[col];
+    if (rs > 1) {
+      T.vs[col] = {left: rs - 1, span};
+      pr.vMerge = 'restart';
+    }
+  } else span = 1;
+  const own = cellPr(ctx, show ? attr(node, 'table:style-name')
+    : undefined, T.cols[col], T.grid, col, span);
+  if (span > 1) pr.gridSpan = span;
+  ctx.b.cellStart({...own, ...pr});
+  try {
+    if (show) isolate(ctx, () => ctx.walk(node));
+  } finally {
+    ctx.b.cellEnd();
+  }
+  T.hskip = span - 1;
+  return span;
+}
+
+function rowCells(ctx, T, node) {
+  let col = 0;
+  T.hskip = 0;
+  for (const c of node.children) {
+    if (typeof c === 'string' || halted(ctx)) continue;
+    const covered = c.name === 'table:covered-table-cell';
+    if (!covered && c.name !== 'table:table-cell') {
+      skip(ctx, T, c.name);
+      continue;
+    }
+    let n = count(attr(c, 'table:number-columns-repeated'));
+    if (n > MAX_REPEAT) n = MAX_REPEAT;
+    for (let i = 0; i < n && !halted(ctx); i++) {
+      if (covered && T.hskip > 0) {
+        T.hskip--;
+        continue;
+      }
+      if (col >= (T.ncols || MAX_COLS)) {
+        ctx.note('a table row with more cells than the table has ' +
+          'columns (at most ' + MAX_COLS + ') is cut');
+        return;
+      }
+      col += cell(ctx, T, c, col, covered);
+    }
+  }
+}
+
+function row(ctx, T, node, hdr) {
+  let n = count(attr(node, 'table:number-rows-repeated'));
+  if (n > MAX_REPEAT) {
+    ctx.note('more than ' + MAX_REPEAT + ' repeated table rows: the ' +
+      'rest are not read');
+    n = MAX_REPEAT;
+  }
+  const trPr = rowPr(ctx, node, hdr);
+  for (let i = 0; i < n && !halted(ctx); i++) {
+    ctx.b.rowStart(trPr);
+    try {
+      rowCells(ctx, T, node);
+    } finally {
+      ctx.b.rowEnd();
+    }
+  }
+}
+
+function rows(ctx, T, node, hdr) {
+  for (const c of node.children) {
+    if (typeof c === 'string' || halted(ctx)) continue;
+    if (c.name === 'table:table-row') row(ctx, T, c, hdr);
+    else if (ROW_BOXES.has(c.name)) {
+      rows(ctx, T, c, hdr || c.name === 'table:table-header-rows');
+    } else if (!c.name.startsWith('table:table-column')) {
+      skip(ctx, T, c.name);
+    }
+  }
+}
+
+function table(ctx, node) {
+  tableSection(ctx, node);
+  const T = {cols: [], vs: [], kinds: new Set(), hskip: 0};
+  columns(ctx, T, node);
+  const {tblPr, total} = tablePr(ctx, node);
+  T.grid = widths(T.cols, total);
+  T.ncols = Math.min(T.cols.length, MAX_COLS);
+  if (T.cols.length > MAX_COLS) {
+    ctx.note('a table of more than ' + MAX_COLS + ' columns is cut ' +
+      'at ' + MAX_COLS);
+  }
+  ctx.breakNext = 'auto';
+  ctx.b.tableStart({tblPr, grid: T.grid});
+  try {
+    rows(ctx, T, node, false);
+  } finally {
+    ctx.b.tableEnd();
+    ctx.breakNext = 'auto';
+  }
+}
+
+export const PART = {elements: new Map([['table:table', table]])};

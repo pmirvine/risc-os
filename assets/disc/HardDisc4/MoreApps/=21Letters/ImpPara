@@ -1,0 +1,154 @@
+// ImpPara - one paragraph being gathered for ./ImpFlow, and the run
+// formats it gathers by.
+//
+//   new Para()     text(s, f), obj(inline, f), add(s, f), len,
+//       inlines; content() -> {text, runs, inlines, keys} (text well
+//       formed, run edges after a pair, as ./RtfBody Para: copied,
+//       not shared, as that one works through the RTF reader's
+//       context); keys[i] the revision key of runs[i] (./ImpRevs) or
+//       undefined
+//   fmtOf(fmt) -> f  the caller's fmt {rPr, rStyle?, rev?} as a run
+//       format {rPr (with extra), rStyle?, rev?}: the same object for
+//       the same fmt, so that its runs gather into one; rPr and
+//       rStyle safe to write (./ImpSafe); an rPr that is not an
+//       object is none (bad: true, for a note)
+//   variant(f, kind) -> f  the format f with its revision left out
+//       ('plain') or a level 'p' inline's plain run keeping f's
+//       revision ('mark'); 'gone' text left out (GONE): the same
+//       object each time
+//   PLAIN, GONE   the plain format; the one whose text is left out
+//   cleanText(s)  s with the characters ./ImpBuild's header names
+//       replaced or dropped
+//   isObj(v)      v is a plain property object (not an array)
+//   props(b, o) -> a copy of property object o (pPr, rPr, tblPr...)
+//       with an extra, its strings safe to write (./ImpSafe scrub); o
+//       not an object: an empty one, a note (b.note)
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {midPair} from './ModelCheck';
+import {scrub, attrText} from './ImpSafe';
+
+export const PLAIN = Object.freeze({rPr: Object.freeze({extra: []})});
+export const GONE = Object.freeze({rPr: PLAIN.rPr, gone: true});
+const isHi = (c) => c >= 0xd800 && c <= 0xdbff;
+const isLo = (c) => c >= 0xdc00 && c <= 0xdfff;
+const BAD = /[\x00-\x08\x0b-\x1f\x7f\u2028\ufffc\ufffe\uffff]/;
+const BAD_G = /[\x00-\x08\x0b-\x1f\x7f\u2028\ufffc\ufffe\uffff]/g;
+const swap = (c) => (c === '\u2028' ? '\n' : c >= '\ufffc'
+  ? '\ufffd' : '');
+
+export const isObj = (v) => typeof v === 'object' && v !== null &&
+  !Array.isArray(v);
+
+export const BAD_PROPS = 'formatting that is not valid is left out';
+
+/** See the header. */
+export function props(b, o) {
+  if (o !== undefined && o !== null && !isObj(o)) b.note(BAD_PROPS);
+  const p = isObj(o) ? scrub(o) : {};
+  if (!Array.isArray(p.extra)) p.extra = [];
+  return p;
+}
+
+/** See the header. */
+export const cleanText = (s) => (BAD.test(s)
+  ? s.replace(BAD_G, swap) : s);
+
+/** text with every unpaired surrogate replaced. */
+function wellFormed(text) {
+  let i = 0;
+  while (i < text.length && !isHi(text.charCodeAt(i)) &&
+    !isLo(text.charCodeAt(i))) i++;
+  if (i === text.length) return text;
+  let out = text.slice(0, i);
+  for (; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (isHi(c) && isLo(text.charCodeAt(i + 1))) {
+      out += text.slice(i, i + 2);
+      i++;
+    } else out += isHi(c) || isLo(c) ? '\ufffd' : text[i];
+  }
+  return out;
+}
+
+const FMTS = new WeakMap();
+const VARIANTS = new WeakMap();
+
+/** See the header. */
+export function fmtOf(fmt) {
+  if (!isObj(fmt) || fmt === PLAIN) return PLAIN;
+  let f = FMTS.get(fmt);
+  if (f) return f;
+  const bad = fmt.rPr !== undefined && !isObj(fmt.rPr);
+  const rPr = bad || !fmt.rPr ? {} : scrub(fmt.rPr);
+  if (!Array.isArray(rPr.extra)) rPr.extra = [];
+  f = {rPr};
+  if (typeof fmt.rStyle === 'string') f.rStyle = attrText(fmt.rStyle);
+  if (isObj(fmt.rev)) f.rev = fmt.rev;
+  if (bad) f.bad = true;
+  FMTS.set(fmt, f);
+  return f;
+}
+
+/** See the header. */
+export function variant(f, kind) {
+  if (kind === 'gone') return GONE;
+  let v = VARIANTS.get(f);
+  if (!v) VARIANTS.set(f, v = {});
+  if (!v[kind]) {
+    v[kind] = kind === 'mark' ? {rPr: PLAIN.rPr, rev: f.rev}
+      : {rPr: f.rPr};
+    if (kind === 'plain' && f.rStyle !== undefined) {
+      v[kind].rStyle = f.rStyle;
+    }
+  }
+  return v[kind];
+}
+
+export class Para {
+  constructor() {
+    this.segs = [];
+    this.inlines = {};
+    this.len = 0;
+  }
+
+  /** An inline in f: a level 'p' one in a plain run (keeping f's
+   *  revision), as read back. */
+  obj(inline, f) {
+    if (f.gone) return;
+    this.inlines[String(this.len)] = inline;
+    this.add(OBJ, inline.level !== 'p' ? f : f.rev
+      ? variant(f, 'mark') : PLAIN);
+  }
+
+  text(s, f) {
+    if (s) this.add(cleanText(String(s)), f);
+  }
+
+  add(s, f) {
+    if (!s || f.gone) return;
+    const last = this.segs[this.segs.length - 1];
+    if (last && last.fmt === f) last.s.push(s);
+    else this.segs.push({s: [s], fmt: f});
+    this.len += s.length;
+  }
+
+  content() {
+    const text = wellFormed(this.segs.map((g) => g.s.join(''))
+      .join(''));
+    const runs = [], keys = [];
+    let at = 0, from = 0;
+    for (const g of this.segs) {
+      at += g.s.reduce((n, s) => n + s.length, 0);
+      const end = midPair(text, at) ? at + 1 : at;
+      if (end > from) {
+        const r = {start: from, end, rPr: g.fmt.rPr};
+        if (g.fmt.rStyle !== undefined) r.rStyle = g.fmt.rStyle;
+        runs.push(r);
+        keys.push(g.fmt.rev);
+        from = end;
+      }
+    }
+    return {text, runs, inlines: this.inlines, keys};
+  }
+}

@@ -1,0 +1,79 @@
+// OdtStyleDoc - the Doc styles made from an OpenDocument text's
+// (./OdtStyles st), through the builder (./ImpBuild addStyle).
+//
+//   register(st)  docDefaults from the default paragraph style
+//       (sizes, the font and the spacing always, so that the Doc's
+//       own Calibri 11 pt and spacing are never what shows); each
+//       named paragraph and text (character) style in file order a
+//       Doc style, its rPr / pPr measured against its parent's
+//       (./OdtProps rPrOf / pPrOf), basedOn the parent's (none in
+//       a loop of parents, so the Doc has no loop), next the
+//       style:next-style-name's; Standard is the Doc's Normal. A
+//       style whose display name is a built-in one's (Heading 1,
+//       Title) replaces it under its id (./ImpStyles)
+//   headingStyle(st, level, def) -> [pStyle, baseDef]  a text:h at
+//       outline level (0..9) whose named style is def: def's own
+//       when it is a style of the user's (not Standard, not the
+//       generic 'Heading'); else the Doc's 'heading N' (N = level +
+//       1, at most 9): the file's named 'Heading N' when it has one,
+//       else one made on first use over def, set only by its
+//       outline level. baseDef the style the paragraph is measured
+//       against. A heading style the Doc refused: Normal
+// Pure: no desktop services.
+import {CHAR, PARA, rPrOf, pPrOf} from './OdtProps';
+
+/** See the header. */
+export function register(st) {
+  const b = st.ctx.b, d = st.full(undefined);
+  const font = d.char.font;
+  b.docDefaults({
+    rPr: {...rPrOf(d.char, CHAR), sz: d.char.sz, szCs: d.char.sz,
+      rFonts: {ascii: font, hAnsi: font, eastAsia: font, cs: font}},
+    pPr: {...pPrOf(d.para, PARA, st.ctx.tabsRel !== false),
+      spacing: {before: d.para.before, after: d.para.after,
+        ...d.para.line}}});
+  for (const s of st.order) make(st, s);
+}
+
+/** The Doc style of named def s (a synthetic one: a heading). */
+function make(st, s, name = s.display,
+  id = s.family + ':' + s.name) {
+  const type = s.family === 'paragraph' ? 'paragraph' : 'character';
+  let parent = s.parent ? st.named0.get(s.family + '\n' +
+    s.parent) : undefined;
+  // (a loop of parents: none, so the Doc has no loop either)
+  if (parent && st.line(parent).includes(s)) parent = undefined;
+  const eff = st.full(s), base = st.full(parent);
+  s.docId = st.ctx.b.addStyle({id, name, type,
+    basedOn: parent ? s.family + ':' + parent.name : undefined,
+    next: s.next ? 'paragraph:' + s.next : undefined,
+    default: s === st.normal() || undefined,
+    rPr: rPrOf(eff.char, base.char),
+    pPr: type === 'paragraph' ? pPrOf(eff.para, base.para,
+      st.ctx.tabsRel !== false) : undefined}) ?? undefined;
+  return s.docId;
+}
+
+/** See the header. */
+export function headingStyle(st, level, def) {
+  const n = Math.min(level, 8) + 1;
+  const disp = def && def.display.toLowerCase();
+  if (def && def.docId !== undefined && def !== st.normal() &&
+    disp !== 'heading') return [def.docId, def];
+  let h = st.headings.get(n);
+  if (!h) {
+    h = st.order.find((s) => s.family === 'paragraph' &&
+      s.docId !== undefined &&
+      s.display.toLowerCase() === 'heading ' + n);
+    if (!h) {
+      h = {name: '\u0000heading ' + n, family: 'paragraph',
+        parent: def ? def.name : undefined, auto: false,
+        display: 'heading ' + n, char: {}, para: {outline: n - 1}};
+      make(st, h, 'heading ' + n, 'heading:' + n);
+    }
+    st.headings.set(n, h);
+  }
+  // (a heading style the Doc refused: the paragraph is Normal)
+  return h.docId === undefined ? [undefined, st.normal()]
+    : [h.docId, h];
+}

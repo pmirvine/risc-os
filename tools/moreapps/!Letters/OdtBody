@@ -1,0 +1,192 @@
+// OdtBody - the paragraphs of an OpenDocument text (OpenDocument
+// 1.3 part 3, 5.1 <text:p>, <text:h>, 6.1.7 <text:span>) for
+// ./OdtRead: their text, paragraph style and formatting
+// (./OdtProps) through the builder ctx.b (./ImpBuild).
+//
+//   PART  {elements: text:p, text:h, text:span; text}  (./OdtRead)
+//   ctx.para   the paragraph being read: ./OdtProps paraProps'
+//              result, null between paragraphs
+//   ctx.spans  the text:span nodes open in it, outermost first
+//   ctx.paraFmts, ctx.fmts  the formats worked out so far (by
+//              ctx.where and the style names: at most MAX_FMTS)
+//   ctx.space  true when the text so far ends in a space (or is
+//              none): white space is collapsed (6.1.2: a run of
+//              spaces, tabs and line ends is one space, and none at
+//              the start of a paragraph)
+// Also text:s (c spaces: 1 when c is not a count, at most MAX_SPACES,
+// a note), text:tab, text:line-break, text:soft-page-break (ignored),
+// and the breaks of a paragraph style: fo:break-before column is a
+// column break first in the paragraph; fo:break-after page / column
+// goes to the next paragraph (pageBreakBefore / a column break first).
+// The spaces of all text:s are at most TOTAL_SPACES in a document
+// and PARA_SPACES in a paragraph: past that each is one (a note).
+// ctx.after: blocks to read once the paragraph has ended (text box
+// text: ./OdtBoxes), read then with no list open.
+// ctx.rev (./OdtRevs: a tracked change's key) tags every run,
+// ctx.revMark the paragraph mark; ctx.paraEnd {pPr, pStyle} is the
+// open paragraph's mark. A paragraph in a list gets its numPr
+// (./OdtLists numFor). A style
+// with style:master-page-name starts a section (./OdtSect).
+// A paragraph inside a paragraph (not valid ODF) is read as part of
+// the outer one. Text outside a paragraph is white space between
+// the blocks: ignored. Once the builder stops (its paragraph cap)
+// ctx.stop ends the reading.
+// Pure: no desktop services.
+import {paraProps, charProps} from './OdtProps';
+import {attr} from './OdtXml';
+import {numFor, isolate} from './OdtLists';
+import {whole} from './OdtUnits';
+import {paraSection} from './OdtSect';
+
+const MAX_FMTS = 10000, MAX_SPACES = 10000;
+/** Spaces from all text:s of a document / of one paragraph. */
+export const TOTAL_SPACES = 1000000, PARA_SPACES = 100000;
+const COLUMN = {kind: 'br', level: 'r', brType: 'column'};
+
+/** A cache of at most MAX_FMTS entries (then: not kept). */
+const cached = (map, key, make) => {
+  let v = map.get(key);
+  if (v === undefined) {
+    v = make();
+    if (map.size < MAX_FMTS) map.set(key, v);
+  }
+  return v;
+};
+
+/** The pPr of the paragraph: its numPr, and a page break that the
+ *  paragraph before asked for. */
+function numbered(ctx, node, p) {
+  let pPr = p.pPr;
+  const def = ctx.styles.get('paragraph',
+    attr(node, 'text:style-name'));
+  const numPr = numFor(ctx, node, def);
+  if (numPr) pPr = {...pPr, numPr};
+  if (ctx.breakNext === 'page') pPr = {...pPr, pageBreakBefore: true};
+  return pPr;
+}
+
+/** The paragraph node starts: ctx.para, paraKey, spans, space are
+ *  set (cached by style); its props. */
+export function enter(ctx, node) {
+  const key = ctx.where + '\u0000' + node.name + '\u0000' +
+    (attr(node, 'text:style-name') || '') + '\u0000' +
+    (attr(node, 'text:outline-level') || '');
+  const paras = ctx.paraFmts || (ctx.paraFmts = new Map());
+  ctx.para = cached(paras, key, () => paraProps(ctx, node));
+  ctx.paraKey = key;
+  ctx.spans = [];
+  ctx.space = true;
+  ctx.spacePara = 0;
+  return ctx.para;
+}
+
+function para(ctx, node) {
+  if (ctx.para) return ctx.walk(node);
+  paraSection(ctx, node);
+  const p = enter(ctx, node);
+  const pPr = numbered(ctx, node, p);
+  const before = p.eff.para.breakBefore === 'column' ||
+    ctx.breakNext === 'column';
+  ctx.breakNext = p.eff.para.breakAfter;
+  ctx.paraEnd = {pPr, pStyle: p.pStyle};
+  const outer = ctx.after, after = ctx.after = [];
+  try {
+    if (before) ctx.b.obj({...COLUMN});
+    ctx.walk(node);
+  } finally {
+    ctx.para = null;
+    ctx.paraEnd = null;
+    ctx.after = outer;
+    ctx.b.endPara({pPr, pStyle: p.pStyle,
+      rev: ctx.revMark || undefined});
+    if (ctx.b.stopped) ctx.stop = true;
+  }
+  if (after.length && !ctx.stop) {
+    isolate(ctx, () => ctx.walk({children: after}));
+  }
+}
+
+function span(ctx, node) {
+  if (!ctx.para) return ctx.walk(node);
+  ctx.spans.push(node);
+  try {
+    ctx.walk(node);
+  } finally {
+    ctx.spans.pop();
+  }
+}
+
+const isSpace = (c) => c === 32 || c === 9 || c === 10 || c === 13;
+
+/** s with white space collapsed (see the header). */
+export function collapse(ctx, s) {
+  let out = '', from = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (!isSpace(s.charCodeAt(i))) {
+      ctx.space = false;
+      continue;
+    }
+    out += s.slice(from, i);
+    if (!ctx.space) out += ' ';
+    ctx.space = true;
+    from = i + 1;
+  }
+  return out + s.slice(from);
+}
+
+/** The format of a run under ctx.spans (cached). */
+export function fmtNow(ctx) {
+  const key = ctx.paraKey + '\u0001' + ctx.spans.map((n) =>
+    attr(n, 'text:style-name') || '').join('\u0000');
+  const fmts = ctx.fmts || (ctx.fmts = new Map());
+  const f = cached(fmts, key, () => charProps(ctx, ctx.spans));
+  return ctx.rev ? {...f, rev: ctx.rev} : f;
+}
+
+function text(ctx, s) {
+  if (!ctx.para) return;
+  const t = collapse(ctx, s);
+  if (t) ctx.b.text(t, fmtNow(ctx));
+}
+
+/** The count of a text:s: 1 when it is not a count; at most
+ *  MAX_SPACES, and within the document's and the paragraph's budget
+ *  (past it one space, a note). */
+function spaces(ctx, node) {
+  const v = attr(node, 'text:c');
+  let n = whole(v);
+  if (n === undefined) return 1;
+  if (n > MAX_SPACES) {
+    ctx.note('a run of more than ' + MAX_SPACES + ' spaces is cut ' +
+      'to ' + MAX_SPACES);
+    n = MAX_SPACES;
+  }
+  const room = Math.min(TOTAL_SPACES - (ctx.spaceTotal || 0),
+    PARA_SPACES - (ctx.spacePara || 0));
+  if (n > room) {
+    ctx.note('some runs of spaces were shortened');
+    n = n > 1 ? 1 : n;
+  }
+  ctx.spaceTotal = (ctx.spaceTotal || 0) + n;
+  ctx.spacePara = (ctx.spacePara || 0) + n;
+  return n;
+}
+
+/** Text that is not collapsed: s (a text:s, tab or line break). */
+const literal = (make) => (ctx, node) => {
+  if (!ctx.para) return;
+  const t = make(ctx, node);
+  if (!t) return;
+  ctx.space = false;
+  ctx.b.text(t, fmtNow(ctx));
+};
+
+export const PART = {
+  elements: new Map([['text:p', para], ['text:h', para],
+    ['text:span', span],
+    ['text:s', literal((ctx, n) => ' '.repeat(spaces(ctx, n)))],
+    ['text:tab', literal(() => '\t')],
+    ['text:line-break', literal(() => '\n')],
+    ['text:soft-page-break', () => {}]]),
+  text,
+};

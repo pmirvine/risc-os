@@ -1,0 +1,142 @@
+// ImpNotes - footnotes and endnotes for ./ImpBuild, as ./RtfNotes
+// makes them (the Doc's notes, ./NoteRead, with their marks).
+//
+//   note(b, kind, story) -> inline | null  (b.footnote(story),
+//       b.endnote(story)) the story (./ImpStory storyOf: a Flow or
+//       the blocks its end gave) becomes note 1, 2... of its kind;
+//       the inline is its mark (noteRef, level 'r', node
+//       w:footnoteReference / w:endnoteReference with its w:id), for
+//       the caller to put in the body (b.obj, in the mark's format)
+//   selfMark(kind) -> inline  (b.noteSelf) the note's own number
+//       mark (w:footnoteRef / w:endnoteRef), for the note's text; a
+//       note with none gets one at its start (./RtfNotes markFirst),
+//       as Word shows the number there
+//   placing(b, inline, flow) -> true | false  (./ImpFlow, through
+//       ./ImpComments) whether a note mark may go there: a mark only
+//       in the body, once; a self mark only in a story
+//   finish(b)  the notes parts (./NoteParts ensure, as a command
+//       makes them), the notes whose marks are in the text at the end
+//       (./OpsNotes addNotes), their relationships (setNoteRels)
+//   eachInline(blocks, fn)  fn for every inline, in tables too
+//
+// Not kept (a note): a note made while a story is building (Word has
+// none in a header, footer, note or comment), a note whose mark is
+// not in the body at the end (never put, in a deletion: ./ImpFlow, or
+// in a paragraph left out: refused, past the cap), notes past
+// ./RtfNotes MAX_NOTES a kind. Links and pictures in a note are
+// related from the notes part (one rels a kind). A note's text is its
+// own: tracked changes in it are not kept (./ImpRevs).
+// Pure: no desktop services.
+import {W} from './Wml';
+import {builder, markFirst, MAX_NOTES} from './RtfNotes';
+import {ensure} from './NoteParts';
+import {newNote, partRels} from './OpsNotes';
+import {storyOf} from './ImpStory';
+
+const KINDS = ['footnote', 'endnote'];
+const STORY = 'notes in headers, footers, notes and comments are ' +
+  'not read: skipped';
+const LOST = 'a note whose mark is not in the text is left out';
+
+const state = (b) => b.notesRd || (b.notesRd = {
+  footnote: [], endnote: [], marks: new WeakMap(),
+  rels: {footnote: [], endnote: []}});
+
+/** See the header. */
+export const selfMark = (kind) => ({kind: 'noteRef',
+  note: kind === 'endnote' ? 'endnote' : 'footnote', id: null,
+  self: true, level: 'r', node: W((kind === 'endnote' ? 'endnote'
+    : 'footnote') + 'Ref')});
+
+/** Whether blocks hold a self mark (top-level paragraphs). */
+const hasSelf = (blocks) => blocks.some((p) => p.type === 'p' &&
+  Object.values(p.inlines).some((x) => x && x.kind === 'noteRef' &&
+    x.self));
+
+/** See the header. */
+export function note(b, kind, story) {
+  if (b.stopped) return null;
+  if (b.flow !== b.body) {
+    b.note(STORY);
+    return null;
+  }
+  const n = state(b), list = n[kind];
+  if (list.length >= MAX_NOTES) {
+    b.note('more than ' + MAX_NOTES + ' ' + kind + 's: the rest are ' +
+      'skipped');
+    return null;
+  }
+  const s = storyOf(b, story);
+  if (!s) return null;
+  const blocks = hasSelf(s.blocks) ? s.blocks
+    : markFirst(s.blocks, selfMark(kind));
+  const id = list.length + 1;
+  const rec = {id, blocks, rels: s.rels, placed: false};
+  list.push(rec);
+  const x = {kind: 'noteRef', note: kind, id, level: 'r',
+    node: W(kind + 'Reference', {'w:id': String(id)})};
+  n.marks.set(x, rec);
+  return x;
+}
+
+/** See the header. */
+export function placing(b, x, flow) {
+  if (x.kind !== 'noteRef') return true;
+  if (x.self) {
+    if (flow !== b.body) return true;
+    b.note('a note number mark outside a note is left out');
+    return false;
+  }
+  const rec = b.notesRd ? b.notesRd.marks.get(x) : undefined;
+  if (flow !== b.body) {
+    b.note(STORY);
+    return false;
+  }
+  if (!rec || rec.placed) {
+    b.note('a note mark not made for one note is left out');
+    return false;
+  }
+  rec.placed = true;
+  return true;
+}
+
+/** Every inline of blocks, in tables too: fn(inline). */
+export function eachInline(blocks, fn) {
+  for (const x of blocks) {
+    if (x.type === 'p') for (const i of Object.values(x.inlines)) fn(i);
+    else if (x.type === 'tbl') {
+      for (const r of x.rows) for (const c of r.cells) {
+        eachInline(c.blocks, fn);
+      }
+    }
+  }
+}
+
+/** See the header. */
+export function finish(b) {
+  const n = b.notesRd;
+  if (!n) return;
+  // (the marks in the text now: a paragraph left out after its mark
+  // was put takes the mark with it)
+  const there = new Set();
+  for (const s of b.doc.sections) {
+    eachInline(s.blocks, (x) => {
+      if (x.kind === 'noteRef' && !x.self) there.add(x.note + x.id);
+    });
+  }
+  const d = builder(b);
+  for (const kind of KINDS) {
+    const list = n[kind].filter((x) => there.has(kind + x.id));
+    if (list.length < n[kind].length) b.note(LOST);
+    if (!list.length) continue;
+    ensure(d, kind);
+    const slot = kind + 's';
+    d.apply({op: 'addNotes', kind, notes: list.map((x) =>
+      newNote(b.doc, kind, x.id, x.blocks)),
+    order: [...b.doc.notes.order[slot], ...list.map((x) => x.id)]});
+    const rels = list.flatMap((x) => x.rels);
+    if (rels.length && partRels(b.doc, kind) !== rels) {
+      d.apply({op: 'setNoteRels', kind, rels});
+    }
+  }
+}

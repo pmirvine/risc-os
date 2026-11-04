@@ -1,0 +1,149 @@
+// OdtAttrs - the character formatting of an OpenDocument style
+// (OpenDocument 1.3 part 3, 17.10 <style:text-properties>: its fo:
+// and style: attributes) as a layer for ./OdtProps: the values that
+// element sets, nothing for what it leaves to the style under it.
+// ./OdtParaAttrs does the same for paragraph properties.
+//
+//   charLayer(ctx, node) -> {b?, i?, strike?, dstrike?, u?, uColor?,
+//       sz?, font?, color?, hl?, vertAlign?, caps?, smallCaps?,
+//       vanish?, spacing?, w?}  b i strike dstrike caps smallCaps
+//       vanish booleans; u a w:u value ('none' for none), uColor
+//       RRGGBB; sz half-points, or {pct} (a percentage of the size
+//       under it); font a family name (style:font-name through
+//       the font-face table ctx.styles.fonts, or fo:font-family);
+//       color 'auto' or RRGGBB; hl 'none' or RRGGBB
+//       (fo:background-color); vertAlign superscript | subscript
+//       | baseline; spacing the letter spacing in twips
+//       (fo:letter-spacing, 'normal' 0), w the width
+//       (style:text-scale) in per cent, 1..600
+//   ignored(ctx, node)  a note for each attribute in IGNORED set
+//   bool(v, yes, no) -> true (v is yes), false (v in no), undefined
+// A value that cannot be read is not set (never NaN). An attribute
+// whose look !Letters cannot keep (IGNORED) gives a note naming it.
+// Pure: no desktop services.
+import {halfPts, pct, hex, num, twips} from './OdtUnits';
+import {attr} from './OdtXml';
+
+const IGNORED = new Map([['fo:text-shadow', 'shadowed text'],
+  ['style:text-outline', 'outlined text'],
+  ['style:font-relief', 'embossed or engraved text'],
+  ['style:text-rotation-angle', 'rotated text'],
+  ['style:text-emphasize', 'emphasis marks'],
+  ['style:line-spacing', 'line spacing given as leading']]);
+
+/** See the header. */
+export const ignored = (ctx, node) => {
+  for (const [k, what] of IGNORED) {
+    const v = attr(node, k);
+    if (v !== undefined && v !== 'none' && v !== 'false' &&
+      v !== 'normal' && v !== '100%' && v !== '0pt') {
+      ctx.note('formatting !Letters does not keep is left out: ' +
+        what);
+    }
+  }
+};
+
+const LINE = new Map([['dotted', ['dotted', 'dottedHeavy']],
+  ['dash', ['dash', 'dashedHeavy']],
+  ['long-dash', ['dashLong', 'dashLongHeavy']],
+  ['dot-dash', ['dotDash', 'dashDotHeavy']],
+  ['dot-dot-dash', ['dotDotDash', 'dashDotDotHeavy']],
+  ['wave', ['wave', 'wavyHeavy']]]);
+
+/** The w:u value of the underline attributes, or undefined. */
+function underline(node) {
+  const type = attr(node, 'style:text-underline-type');
+  let st = attr(node, 'style:text-underline-style');
+  if (st === undefined && type !== undefined) {
+    st = type === 'none' ? 'none' : 'solid';
+  }
+  if (st === undefined) return undefined;
+  if (st === 'none' || type === 'none') return 'none';
+  const w = attr(node, 'style:text-underline-width');
+  const heavy = w === 'bold' || w === 'thick' || w === 'medium';
+  if (st === 'wave' && type === 'double') return 'wavyDouble';
+  const l = LINE.get(st);
+  if (l) return l[heavy ? 1 : 0];
+  if (type === 'double') return 'double';
+  if (heavy) return 'thick';
+  const mode = attr(node, 'style:text-underline-mode');
+  return mode === 'skip-white-space' ? 'words' : 'single';
+}
+
+const unquote = (s) => {
+  const t = s.split(',')[0].trim();
+  const q = t[0];
+  return (q === '"' || q === "'") && t.endsWith(q) && t.length > 1
+    ? t.slice(1, -1) : t;
+};
+
+/** See the header. */
+export const bool = (v, yes, no) => v === yes ? true
+  : no.includes(v) ? false : undefined;
+
+/** See the header. */
+export function charLayer(ctx, node) {
+  const o = {};
+  const set = (k, v) => { if (v !== undefined) o[k] = v; };
+  const wt = attr(node, 'fo:font-weight');
+  const w = num(wt);
+  set('b', wt === 'bold' ? true : wt === 'normal' ? false
+    : w === undefined ? undefined : w >= 600);
+  const it = attr(node, 'fo:font-style');
+  set('i', it === 'italic' || it === 'oblique' ? true
+    : it === 'normal' ? false : undefined);
+  set('u', underline(node));
+  const uc = attr(node, 'style:text-underline-color');
+  set('uColor', uc === 'font-color' ? null : hex(uc));
+  const ls = attr(node, 'style:text-line-through-style');
+  const lt = attr(node, 'style:text-line-through-type');
+  if (ls === 'none' || lt === 'none') {
+    o.strike = false;
+    o.dstrike = false;
+  } else if (ls !== undefined || lt !== undefined) {
+    o.dstrike = lt === 'double';
+    o.strike = !o.dstrike;
+  }
+  const fs = attr(node, 'fo:font-size');
+  const sz = halfPts(fs), p = pct(fs);
+  if (sz !== undefined && sz > 0) o.sz = Math.min(sz, 3276);
+  else if (p !== undefined && p > 0 && p <= 1000) o.sz = {pct: p};
+  const fn = attr(node, 'style:font-name');
+  const fam = attr(node, 'fo:font-family');
+  if (fn !== undefined) set('font', ctx.styles.fonts.get(fn) || fn);
+  else if (fam !== undefined && unquote(fam)) o.font = unquote(fam);
+  set('color', attr(node, 'style:use-window-font-color') === 'true'
+    ? 'auto' : hex(attr(node, 'fo:color')));
+  const bg = attr(node, 'fo:background-color');
+  set('hl', bg === 'transparent' ? 'none' : hex(bg));
+  set('vertAlign', position(attr(node, 'style:text-position')));
+  const tt = attr(node, 'fo:text-transform');
+  if (tt === 'lowercase' || tt === 'capitalize') {
+    ctx.note('formatting !Letters does not keep is left out: ' +
+      'lower case or capitalised text');
+  }
+  set('caps', tt === undefined ? undefined : tt === 'uppercase');
+  set('smallCaps', bool(attr(node, 'fo:font-variant'), 'small-caps',
+    ['normal']));
+  set('vanish', bool(attr(node, 'text:display'), 'none',
+    ['true', 'always']));
+  const sp = attr(node, 'fo:letter-spacing'), tw = twips(sp);
+  set('spacing', sp === 'normal' ? 0 : tw === undefined ? undefined
+    : Math.max(-31680, Math.min(31680, tw)));
+  const sc = pct(attr(node, 'style:text-scale'));
+  set('w', sc > 0 ? Math.max(1, Math.min(600, Math.round(sc)))
+    : undefined);
+  ignored(ctx, node);
+  return o;
+}
+
+/** style:text-position ('super 58%', '-33% 100%') -> vertAlign. */
+function position(v) {
+  if (typeof v !== 'string' || v.length > 40) return undefined;
+  const t = v.trim().split(' ')[0];
+  if (t === 'super') return 'superscript';
+  if (t === 'sub') return 'subscript';
+  const p = pct(t);
+  if (p === undefined) return undefined;
+  return p > 0 ? 'superscript' : p < 0 ? 'subscript' : 'baseline';
+}

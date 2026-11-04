@@ -1,0 +1,200 @@
+// DocLists - the lists of a .doc ([MS-DOC] Determining List
+// Formatting of a Paragraph; PlfLst, LSTF and the LVLs after it;
+// PlfLfo, LFO, LFOData, LFOLVL) made the Doc's numbering through
+// the builder (./ImpBuild list, listOverride), as ./RtfLists does
+// for RTF. Used by ./DocPapx paraInfo; pure.
+//
+//   listFor(ctx, ilfo, ilvl) -> {numPr: {numId, ilvl}, indent?} |
+//       null  the numbering of a paragraph whose sprmPIlfo is ilfo
+//       and sprmPIlvl ilvl (./DocPap's para state), indent its
+//       level's ({left, hanging | firstLine}), a layer between the
+//       paragraph's style and its own formatting (Word's order);
+//       null when ilfo is 0 or less (no list), or names an LFO or a
+//       list the file does not have (a note)
+//
+// The tables are read once (ctx.docLists). Each LSTF (9 levels, or
+// 1 for a simple list) becomes one b.list the first time a
+// paragraph uses it; each LFO one numbering of it: the LSTF's own
+// for the first LFO without overrides, a b.listOverride for the
+// others (an LFOLVL's fStartAt restarts that level at iStartAt), and
+// a b.list of its own when an LFOLVL replaces a level (fFormatting).
+// Two LSTFs with one lsid: the first is used (a note). ilvl past the
+// list's levels is its last level (a note). Damaged or cut tables
+// are read as far as they go (a note). Once the builder refuses a
+// list (more than it keeps), the lists not yet made are not built:
+// their paragraphs are plain.
+// Pure: no desktop services.
+import {slice} from './DocFib';
+import {u8, i16, i32, u32} from './DocSprm';
+import {readLvl, levelOf} from './DocLvl';
+
+const LSTF = 28, LFO = 16, MAX_OVER = 9;
+const DAMAGED = 'the list table is damaged: some lists are read ' +
+  'as plain paragraphs';
+const DUP = 'two lists with the same identity: the first is used';
+const NO_LFO = 'a paragraph names a list that is not in the file: ' +
+  'it is read as a plain paragraph';
+const LEVEL = 'a list level past the list\'s last is read as its ' +
+  'last';
+
+/** The LSTFs and their LVLs (they follow PlfLst in the table). */
+function readLsts(ctx, L) {
+  const lst = slice(ctx.table, ctx.fib, 'PlfLst', ctx.note);
+  if (!lst || lst.length < 2) return;
+  let n = Math.max(0, i16(lst, 0));
+  const fit = Math.floor((lst.length - 2) / LSTF);
+  if (n > fit) {
+    ctx.note(DAMAGED);
+    n = fit;
+  }
+  const t = ctx.table;
+  let at = ctx.fib.fc.PlfLst.fc + lst.length;
+  for (let i = 0; i < n; i++) {
+    const o = 2 + LSTF * i;
+    const lsid = i32(lst, o), count = u8(lst, o + 26) & 1 ? 1 : 9;
+    const levels = [];
+    for (let k = 0; k < count; k++) {
+      const r = readLvl(t, at);
+      if (!r) break;
+      levels.push(r.lvl);
+      at = r.next;
+      if (r.lvl.cut) break;
+    }
+    if (levels.length < count) ctx.note(DAMAGED);
+    if (!levels.length) break;
+    const list = {lsid, levels, made: null, plain: false, lv: null};
+    if (L.byId.has(lsid)) ctx.note(DUP);
+    else L.byId.set(lsid, list);
+    if (levels.length < count) break;
+  }
+}
+
+/** The LFOs and their overrides. */
+function readLfos(ctx, L) {
+  const lf = slice(ctx.table, ctx.fib, 'PlfLfo', ctx.note);
+  if (!lf || lf.length < 4) return;
+  let n = u32(lf, 0);
+  const fit = Math.floor((lf.length - 4) / LFO);
+  if (n > fit) {
+    ctx.note(DAMAGED);
+    n = fit;
+  }
+  let at = 4 + LFO * n, ok = true;
+  for (let i = 0; i < n; i++) {
+    const o = 4 + LFO * i;
+    const over = [];
+    const count = u8(lf, o + 12);
+    if (ok && at + 4 <= lf.length && count <= MAX_OVER) {
+      at += 4;
+      for (let j = 0; j < count && ok; j++) {
+        if (at + 8 > lf.length) {
+          ok = false;
+          break;
+        }
+        const flags = u32(lf, at + 4);
+        const ov = {ilvl: flags & 15, start: flags & 16
+          ? i32(lf, at) : undefined, lvl: null};
+        at += 8;
+        if (flags & 32) {
+          const r = readLvl(lf, at);
+          if (!r || r.lvl.cut) ok = false;
+          else {
+            ov.lvl = r.lvl;
+            at = r.next;
+          }
+        }
+        if (ok) over.push(ov);
+      }
+    } else if (count) ok = false;
+    L.lfos.push({lsid: i32(lf, o), over, numId: undefined});
+  }
+  if (!ok) ctx.note(DAMAGED);
+}
+
+function load(ctx) {
+  if (ctx.docLists) return ctx.docLists;
+  const L = ctx.docLists = {byId: new Map(), lfos: []};
+  readLsts(ctx, L);
+  readLfos(ctx, L);
+  return L;
+}
+
+const envOf = (ctx) => (ctx.docProps && ctx.docProps.styles
+  ? ctx.docProps.styles.env : {note: ctx.note});
+
+/** The builder levels of list `list` (made once). */
+function levels(ctx, list) {
+  if (!list.lv) {
+    const env = envOf(ctx);
+    list.lv = list.levels.map((l, k) => levelOf(l, k, env));
+  }
+  return list.lv;
+}
+
+/** The numId of LFO lfo of list `list`. Once the builder has
+ *  refused a list (its cap), lists not yet made are not built. */
+function numIdOf(ctx, lfo, list) {
+  if (lfo.numId !== undefined) return lfo.numId;
+  const L = ctx.docLists;
+  if (L.full && list.made === null) return (lfo.numId = null);
+  const b = ctx.b, lv = levels(ctx, list);
+  lfo.lv = lv;
+  if (list.made === null) {
+    list.made = b.list(lv);
+    if (list.made === null) {
+      L.full = true;
+      return (lfo.numId = null);
+    }
+  }
+  const env = envOf(ctx);
+  const starts = {};
+  let own = null;
+  for (const ov of lfo.over) {
+    if (ov.ilvl >= lv.length) continue;
+    if (ov.lvl) {
+      own = own || lv.slice();
+      own[ov.ilvl] = levelOf(ov.lvl, ov.ilvl, env);
+    } else if (ov.start !== undefined && ov.start >= 0 &&
+      ov.start <= 32767) starts[ov.ilvl] = ov.start;
+  }
+  if (own) {
+    for (const [k, s] of Object.entries(starts)) {
+      own[k] = {...own[k], start: s};
+    }
+    lfo.numId = b.list(own);
+    if (lfo.numId === null) L.full = true;
+    lfo.lv = own;
+  } else if (Object.keys(starts).length || list.plain) {
+    lfo.numId = b.listOverride(list.made, starts);
+  } else {
+    list.plain = true;
+    lfo.numId = list.made;
+  }
+  return lfo.numId;
+}
+
+/** See the header. */
+export function listFor(ctx, ilfo, ilvl) {
+  if (!(ilfo > 0)) return null;
+  const L = load(ctx);
+  const lfo = L.lfos[ilfo - 1];
+  const list = lfo && L.byId.get(lfo.lsid);
+  if (!list) {
+    ctx.note(NO_LFO);
+    return null;
+  }
+  const numId = numIdOf(ctx, lfo, list);
+  if (numId === null || numId === undefined) return null;
+  let k = Number.isInteger(ilvl) && ilvl >= 0 ? ilvl : 0;
+  if (k >= list.levels.length) {
+    ctx.note(LEVEL);
+    k = list.levels.length - 1;
+  }
+  const lv = (lfo.lv || levels(ctx, list))[k];
+  const out = {numPr: {numId, ilvl: k}};
+  if (lv && lv.indent) out.indent = lv.indent;
+  return out;
+}
+
+/** (tests) the lists read: {byId, lfos}. */
+export const listsOf = (ctx) => load(ctx);

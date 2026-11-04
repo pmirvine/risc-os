@@ -1,0 +1,77 @@
+// OdtCount - how much tree an XML part of an OpenDocument package
+// makes, counted over its bytes before anything is decoded or
+// parsed, for ./OdtXml's element budget.
+//
+//   weightOf(bytes, enc, limit) -> start tags + attributes / 4 (an
+//       upper bound: see below), counting no further than limit + 1
+//       enc 'utf-8' | 'utf-16le' | 'utf-16be'
+//   ATTR_WEIGHT  4: the attributes that cost as much as an element
+//
+// A start tag is '<' not followed by '/', '!' or '?' (as ./PartXml
+// startTags); an attribute is an '=' outside quotes inside a start
+// tag. Every '<' starts the count of a new tag (a real one's never
+// stands inside another's quotes), so markup in comments and CDATA
+// is counted too, never less than what parses.
+// Pure: no desktop services.
+
+/** See the header. */
+export const ATTR_WEIGHT = 4;
+
+const LT = 0x3c, GT = 0x3e, EQ = 0x3d, Q1 = 0x22, Q2 = 0x27;
+const start = (c) => c !== 0x2f && c !== 0x21 && c !== 0x3f &&
+  c !== undefined && c !== -1;
+
+/** UTF-8: from '<' to '<' by indexOf, the tags scanned by byte. */
+function utf8(b, limit) {
+  let els = 0, eqs = 0;
+  const max = limit * ATTR_WEIGHT;
+  for (let i = b.indexOf(LT); i >= 0;) {
+    if (!start(b[i + 1])) {
+      i = b.indexOf(LT, i + 1);
+      continue;
+    }
+    els++;
+    let q = 0, j = i + 1;
+    for (; j < b.length; j++) {
+      const c = b[j];
+      if (c === LT) break;
+      if (q) {
+        if (c === q) q = 0;
+      } else if (c === GT) break;
+      else if (c === EQ) eqs++;
+      else if (c === Q1 || c === Q2) q = c;
+    }
+    if (els * ATTR_WEIGHT + eqs > max) return limit + 1;
+    i = j < b.length && b[j] === LT ? j : b.indexOf(LT, j + 1);
+  }
+  return els + Math.ceil(eqs / ATTR_WEIGHT);
+}
+
+/** UTF-16: unit by unit. */
+function utf16(b, be, limit) {
+  const len = b.length >> 1, max = limit * ATTR_WEIGHT;
+  const unit = (k) => k >= len ? -1 : be ? (b[2 * k] << 8) |
+    b[2 * k + 1] : b[2 * k] | (b[2 * k + 1] << 8);
+  let els = 0, eqs = 0, tag = false, q = 0;
+  for (let k = 0; k < len; k++) {
+    const c = unit(k);
+    if (c === LT) {
+      tag = start(unit(k + 1));
+      q = 0;
+      if (tag) els++;
+    } else if (!tag) continue;
+    else if (q) {
+      if (c === q) q = 0;
+    } else if (c === GT) tag = false;
+    else if (c === EQ) eqs++;
+    else if (c === Q1 || c === Q2) q = c;
+    if (els * ATTR_WEIGHT + eqs > max) return limit + 1;
+  }
+  return els + Math.ceil(eqs / ATTR_WEIGHT);
+}
+
+/** See the header. */
+export function weightOf(b, enc, limit) {
+  if (enc === 'utf-8') return utf8(b, limit);
+  return utf16(b, enc === 'utf-16be', limit);
+}

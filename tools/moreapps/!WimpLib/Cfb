@@ -1,0 +1,201 @@
+// Cfb - reads the streams out of an OLE compound file ([MS-CFB]), the
+// container of older Word (.doc) files, Excel .xls and the like.
+//
+//   isCfb(bytes)  true when a Uint8Array starts with the signature
+//                 D0 CF 11 E0 A1 B1 1A E1 (nothing else is looked at)
+//   openCfb(bytes, opts) -> cfb, or throws a CfbError (./CfbError)
+//     opts.maxBytes   largest file read (default 128 MB)
+//     opts.maxStreams most streams in the directory (default 10000)
+//     opts.maxStream  largest stream (default 64 MB)
+//     opts.maxTotal   most bytes all the streams read add up to
+//                     (default 128 MB)
+//   cfb.names        the streams' paths, in directory order: 'Name'
+//                    at the root, 'Storage/Name' inside a storage
+//                    (see ./CfbDir)
+//   cfb.get(name)    a stream's bytes, or null when there is no such
+//                    stream; the name in any case. Read when first
+//                    asked for, then kept: the same array each time,
+//                    not to be changed. A stream that cannot be read
+//                    throws its CfbError here (kept too, so asked
+//                    again it throws at once); the other streams are
+//                    still readable. Chain walking is limited per
+//                    file: past 4 steps per sector, 'too-big'.
+//   cfb.has(name), cfb.size(name)  without reading the stream
+//   cfb.streams      a Map of every stream that can be read, path ->
+//                    bytes, made (by get) when first used
+//   cfb.sectorSize   512 or 4096
+//   cfb.stats.walked the sectors walked so far (for tests)
+//
+// openCfb itself reads the header, the DIFAT, the FAT and the
+// directory: a fault there throws. Every chain is walked with a
+// visited bitmap, so a loop is found at once ('bad-chain'); a sector
+// past the end of the file is 'truncated'.
+import { CfbError } from './CfbError';
+import { readDirectory, keyOf } from './CfbDir';
+import { readFat, walk, walked, gather, SPECIAL } from './CfbChain';
+export { CfbError };
+
+const SIG = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
+const MB = 1024 * 1024, CUTOFF = 4096, MINI = 64;
+
+/** @param {Uint8Array} bytes @returns {boolean} */
+export function isCfb(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 8) return false;
+  for (let i = 0; i < 8; i++) if (bytes[i] !== SIG[i]) return false;
+  return true;
+}
+
+/** Runs fn, giving any other throw as a CfbError. */
+function guard(fn) {
+  try {
+    return fn();
+  } catch (err) {
+    if (err instanceof CfbError) throw err;
+    throw new CfbError('bad-header', 'unreadable: ' + err);
+  }
+}
+
+/** @param {Uint8Array} bytes the whole file */
+export function openCfb(bytes, opts = {}) {
+  if (bytes instanceof ArrayBuffer) bytes = new Uint8Array(bytes);
+  if (!isCfb(bytes))
+    throw new CfbError('not-cfb', 'not an OLE compound file');
+  return guard(() => open(bytes, opts));
+}
+
+/** The header's numbers, checked. */
+function header(bytes, maxBytes) {
+  if (bytes.length > maxBytes)
+    throw new CfbError('too-big', 'file larger than ' + maxBytes);
+  if (bytes.length < 512) throw new CfbError('truncated', 'no header');
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.length);
+  const u16 = (at) => dv.getUint16(at, true);
+  const u32 = (at) => dv.getUint32(at, true);
+  const bad = (why) => { throw new CfbError('bad-header', why); };
+  if (u16(28) !== 0xFFFE) bad('byte order');
+  const major = u16(26), shift = u16(30);
+  if (!(major === 3 && shift === 9) && !(major === 4 && shift === 12))
+    bad('version ' + major + ', sector shift ' + shift);
+  if (u16(32) !== 6) bad('mini sector size');
+  if (u32(56) !== CUTOFF) bad('mini stream cutoff');
+  const ss = 1 << shift;
+  const h = {
+    dv, ss, nFat: u32(44), firstDir: u32(48),
+    firstMiniFat: u32(60), firstDifat: u32(68),
+    nSectors: Math.ceil(Math.max(0, bytes.length - ss) / ss),
+  };
+  if (h.nFat === 0 || h.nFat > maxBytes / ss) bad('FAT sector count');
+  if (h.firstDir >= SPECIAL) bad('no directory');
+  if (h.nFat > h.nSectors)
+    throw new CfbError('truncated', 'file shorter than its FAT');
+  return h;
+}
+
+function open(bytes, opts) {
+  const maxBytes = opts.maxBytes ?? 128 * MB;
+  const maxStream = opts.maxStream ?? 64 * MB;
+  const maxTotal = opts.maxTotal ?? 128 * MB;
+  const c = header(bytes, maxBytes);
+  c.bytes = bytes;
+  const { ss } = c;
+  const fat = readFat(c);
+  const big = (start, size) => gather(bytes,
+    walk(start, fat, Math.ceil(size / ss), c.nSectors, 'truncated'),
+    ss, size, (id) => (id + 1) * ss, 'truncated');
+  const dirIds = walk(c.firstDir, fat, Infinity, c.nSectors,
+    'truncated');
+  const dir = big(c.firstDir, dirIds.length * ss);
+  const { root, streams } = readDirectory(dir,
+    opts.maxStreams ?? 10000);
+  const byKey = new Map(streams.map((e) => [keyOf(e.path), e]));
+  const kept = new Map();
+  let total = 0, mini = null;
+  /** Reads `size` bytes with fn, within the limits. */
+  const take = (size, fn) => {
+    if (size > maxStream || total + size > maxTotal)
+      throw new CfbError('too-big', 'streams larger than the limits');
+    const out = fn();
+    total += size;
+    return out;
+  };
+
+  // The mini stream (the root's stream) and its miniFAT, when first
+  // needed; any error here, 'too-big' too, is kept and given to each
+  // small stream.
+  const miniStream = () => {
+    if (mini) {
+      if (mini instanceof CfbError) throw mini;
+      return mini;
+    }
+    try {
+      const ids = walk(c.firstMiniFat, fat, Infinity, c.nSectors,
+        'truncated');
+      const raw = big(c.firstMiniFat, ids.length * ss);
+      const table = new Uint32Array(raw.length >> 2);
+      const dv = new DataView(raw.buffer);
+      for (let i = 0; i < table.length; i++)
+        table[i] = dv.getUint32(4 * i, true);
+      mini = { table,
+        data: take(root.size, () => big(root.start, root.size)) };
+    } catch (err) {
+      mini = err instanceof CfbError ? err
+        : new CfbError('bad-chain', String(err));
+      throw mini;
+    }
+    return mini;
+  };
+
+  const read = (e) => {
+    if (e.hi && ss === 4096)
+      throw new CfbError('too-big', 'a stream of 4 GB or more');
+    if (e.size > maxStream) throw new CfbError('too-big', e.path);
+    if (e.size === 0) return new Uint8Array(0);
+    if (e.size < CUTOFF) {
+      const m = miniStream();
+      const held = Math.ceil(m.data.length / MINI);
+      const ids = walk(e.start, m.table, Math.ceil(e.size / MINI),
+        held, 'bad-chain');
+      return take(e.size, () => gather(m.data, ids, MINI, e.size,
+        (id) => id * MINI, 'bad-chain'));
+    }
+    return take(e.size, () => big(e.start, e.size));
+  };
+
+  const get = (name) => {
+    const e = byKey.get(keyOf(String(name)));
+    if (!e) return null;
+    let got = kept.get(e);
+    if (got === undefined) {
+      try {
+        got = guard(() => read(e));
+      } catch (err) {
+        got = err;
+      }
+      if (!(got instanceof CfbError && got.code === 'too-big'))
+        kept.set(e, got);
+    }
+    if (got instanceof CfbError) throw got;
+    return got;
+  };
+
+  let all = null;
+  return {
+    names: streams.map((e) => e.path),
+    sectorSize: ss,
+    get,
+    get stats() {
+      const m = mini && !(mini instanceof CfbError) ? mini.table : null;
+      return { walked: walked(fat) + (m ? walked(m) : 0) };
+    },
+    has: (name) => byKey.has(keyOf(String(name))),
+    size: (name) => byKey.get(keyOf(String(name)))?.size ?? null,
+    get streams() {
+      if (all) return all;
+      all = new Map();
+      for (const e of streams) {
+        try { all.set(e.path, get(e.path)); } catch { /* left out */ }
+      }
+      return all;
+    },
+  };
+}

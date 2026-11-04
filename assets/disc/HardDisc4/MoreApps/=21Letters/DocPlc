@@ -1,0 +1,137 @@
+// DocPlc - the table-stream structures of a .doc that hold lists
+// ([MS-DOC] 2.2.2 PLC, 2.2.4 STTB, 2.9.355 Xst), read with every
+// count bounded by the bytes there are, never by a count the file
+// gives. Used by ./DocNotes, ./DocComments, ./DocFields, ./DocBkmk
+// and ./DocRevs; pure.
+//
+//   plcOf(bytes, cb) -> {n, cp(i), at(i)} | null  a PLC of data
+//       elements of cb bytes: n elements (as many as fit), cp(i) its
+//       CP i (0..n; the last ends them), at(i) the offset of element
+//       i in bytes; null when not even one CP fits
+//   cpsOf(bytes) -> {n, cp(i)}  a PLC of CPs only: n CPs (0..n-1)
+//   findCp(plc, cp, n?) -> i | -1  the index i < n (default plc.n)
+//       whose CP is cp (binary search: the CPs rise)
+//   sttbOf(bytes, {max?, cbExtra?}) -> {count, names, extra}  an
+//       STTB: fExtend 0xFFFF (UTF-16 strings, 2-byte counts) or not
+//       (8-bit strings, 1-byte counts, Latin-1); cData 2 bytes; at
+//       most max (default 65535) strings, and no more than the bytes
+//       hold; count the cData given; extra[i] the offset of string
+//       i's cbExtra bytes (null when cut)
+//   xstsOf(bytes, max) -> [string]  Xsts one after another (2-byte
+//       count, UTF-16 units), as GrpXstAtnOwners
+//   textAt(bytes, at, cch) -> string  cch UTF-16 units at at (cut to
+//       the bytes)
+//   pairBytes(table, pair, note?, what?) -> Uint8Array | null  the
+//       table bytes of an {fc, lcb} pair (./DocFib pairAt), as
+//       ./DocFib slice
+//   u16(bytes, at), i16, i32  little-endian reads (0 past the end)
+
+const MAX_STRING = 65535;
+
+const view = (b) => new DataView(b.buffer, b.byteOffset, b.length);
+
+/** See the header. */
+export const u16 = (b, at) => (at >= 0 && at + 2 <= b.length
+  ? b[at] | (b[at + 1] << 8) : 0);
+/** See the header. */
+export const i16 = (b, at) => (u16(b, at) << 16) >> 16;
+/** See the header. */
+export const i32 = (b, at) => (at >= 0 && at + 4 <= b.length
+  ? view(b).getInt32(at, true) : 0);
+
+/** See the header. */
+export function plcOf(bytes, cb) {
+  if (!bytes || bytes.length < 4) return null;
+  const n = Math.max(0, Math.floor((bytes.length - 4) / (4 + cb)));
+  const base = 4 * (n + 1);
+  return {n, cp: (i) => i32(bytes, 4 * i),
+    at: (i) => base + cb * i};
+}
+
+/** See the header. */
+export function cpsOf(bytes) {
+  const n = bytes ? Math.floor(bytes.length / 4) : 0;
+  return {n, cp: (i) => i32(bytes, 4 * i)};
+}
+
+/** See the header. */
+export function findCp(plc, cp, n = plc ? plc.n : 0) {
+  let lo = 0, hi = n - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1, v = plc.cp(mid);
+    if (v === cp) return mid;
+    if (v < cp) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/** See the header. */
+export function textAt(bytes, at, cch) {
+  const n = Math.max(0, Math.min(cch, Math.floor((bytes.length - at) /
+    2)));
+  let s = '';
+  for (let i = 0; i < n; i += 4096) {
+    const units = [];
+    for (let j = i; j < Math.min(n, i + 4096); j++) {
+      units.push(u16(bytes, at + 2 * j));
+    }
+    s += String.fromCharCode(...units);
+  }
+  return s;
+}
+
+/** See the header. */
+export function sttbOf(bytes, {max = MAX_STRING, cbExtra} = {}) {
+  const out = {count: 0, names: [], extra: []};
+  if (!bytes || bytes.length < 4) return out;
+  const wide = u16(bytes, 0) === 0xFFFF;
+  let at = wide ? 2 : 0;
+  out.count = u16(bytes, at);
+  const extra = cbExtra ?? u16(bytes, at + 2);
+  at += 4;
+  const lim = Math.min(out.count, max);
+  for (let i = 0; i < lim && at < bytes.length; i++) {
+    let s;
+    if (wide) {
+      const cch = u16(bytes, at);
+      s = textAt(bytes, at + 2, cch);
+      at += 2 + 2 * cch;
+    } else {
+      const cch = bytes[at];
+      s = String.fromCharCode(...bytes.subarray(at + 1, at + 1 + cch));
+      at += 1 + cch;
+    }
+    if (at > bytes.length) break;
+    out.names.push(s);
+    out.extra.push(at + extra <= bytes.length ? at : null);
+    at += extra;
+  }
+  return out;
+}
+
+/** See the header. */
+export function xstsOf(bytes, max) {
+  const out = [];
+  let at = 0;
+  while (bytes && at + 2 <= bytes.length && out.length < max) {
+    const cch = u16(bytes, at);
+    if (at + 2 + 2 * cch > bytes.length) break;
+    out.push(textAt(bytes, at + 2, cch));
+    at += 2 + 2 * cch;
+  }
+  return out;
+}
+
+/** See the header. */
+export function pairBytes(table, pair, note, what = 'a list') {
+  if (!pair || !pair.lcb) return null;
+  if (!table || pair.fc > table.length ||
+    pair.lcb > table.length - pair.fc) {
+    if (note) {
+      note(`the file's ${what} lies outside its table: not read`);
+    }
+    return null;
+  }
+  return table.subarray(pair.fc, pair.fc + pair.lcb);
+}

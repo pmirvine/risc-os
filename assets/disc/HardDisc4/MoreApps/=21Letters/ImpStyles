@@ -1,0 +1,151 @@
+// ImpStyles - the style table for ./ImpBuild, as ./RtfStyles builds
+// it (doc.styles copied, never changed in place).
+//
+//   addStyle(b, {id, name, type, basedOn?, next?, rPr?, pPr?,
+//       default?}) -> the style's id in the Doc | null  (b.addStyle)
+//       id the reader's own (its names for basedOn and next); type
+//       'paragraph' | 'character' | 'table'; rPr / pPr Model
+//       property objects (./ImpFlow props: given an extra; pPr only
+//       for a paragraph style; a table style keeps only these). A
+//       style whose name is a style's already of its type (Normal,
+//       heading 1...; compared ignoring case), or with default true
+//       the default style of its type, replaces that style's
+//       properties under its id; any other gets a new id
+//       (./StyleId idFor) and custom. The id given again: the later
+//       one is left out (a note). Null, with a note: a bad type, an
+//       id that is not text, past MAX_STYLES
+//   styleId(b, id) -> the Doc's id of the reader's style id, or
+//       undefined (pStyle and rStyle are the Doc's ids)
+//   docDefaults(b, {rPr?, pPr?})  (b.docDefaults) the table's
+//       docDefaults: the given properties over the ones it has
+//   finish(b)  basedOn and next resolved: a style of the same type
+//       (next: a paragraph style's, to a paragraph style) the reader
+//       gave, not itself; else left out. The table is then as written
+//       and read back (./WriteStyles, ./ReadStyles); one that cannot
+//       be written: the Doc's own, with a note
+//
+// The name is ./ImpSafe name'd, at most MAX_NAME characters;
+// none: 'Style N'; one a new style shares with another gets ' N'.
+// Pure: no desktop services.
+import {idFor} from './StyleId';
+import {name as clean} from './ImpSafe';
+import {props} from './ImpPara';
+import {stylesTree} from './WriteStyles';
+import {readStyles} from './ReadStyles';
+import {rootScope} from './Ns';
+
+const MAX_STYLES = 2000, MAX_NAME = 100;
+const TYPES = ['paragraph', 'character', 'table'];
+
+const state = (b) => b.stylesRd || (b.stylesRd = {ids: new Map(),
+  defs: []});
+
+/** The table being built: copied once, then changed in place. */
+function table(b) {
+  const st = state(b);
+  if (!st.own) {
+    const t = st.orig = b.doc.styles;
+    b.doc.styles = {...t, styles: new Map(t.styles)};
+    st.own = true;
+  }
+  return b.doc.styles;
+}
+
+/** The style of name (ignoring case) and type, or undefined. */
+function named(t, name, type) {
+  const key = name.toLowerCase();
+  for (const s of t.styles.values()) {
+    if (s.type === type && typeof s.name === 'string' &&
+      s.name.toLowerCase() === key) return s;
+  }
+  return undefined;
+}
+
+/** See the header. */
+export function addStyle(b, o) {
+  const st = state(b);
+  if (!o || typeof o.id !== 'string' || !TYPES.includes(o.type)) {
+    b.note('a style of a kind !Letters does not keep is left out');
+    return null;
+  }
+  if (st.ids.has(o.id)) {
+    b.note('a style given twice: the later one is left out');
+    return null;
+  }
+  if (st.defs.length >= MAX_STYLES) {
+    b.note('more than ' + MAX_STYLES + ' styles: the rest are ' +
+      'left out');
+    return null;
+  }
+  const t = table(b);
+  let name = typeof o.name === 'string'
+    ? clean(o.name, MAX_NAME) : '';
+  if (!name) name = 'Style ' + (st.defs.length + 1);
+  const dflt = o.default === true && t.defaults[o.type]
+    ? t.styles.get(t.defaults[o.type]) : undefined;
+  let old = dflt || named(t, name, o.type);
+  if (old && st.defs.some((d) => d.id === old.id)) old = undefined;
+  if (!old && [...t.styles.values()].some((s) => typeof s.name ===
+    'string' && s.name.toLowerCase() === name.toLowerCase())) {
+    name += ' ' + (st.defs.length + 1);
+  }
+  const id = old ? old.id : idFor(t, name);
+  const s = {...(old || {custom: true}), id, type: o.type,
+    name: old ? old.name : name, extra: old ? old.extra : [],
+    raw: null, rPr: props(b, o.rPr),
+    pPr: o.type === 'paragraph' ? props(b, o.pPr) : {extra: []}};
+  delete s.basedOn;
+  delete s.next;
+  t.styles.set(id, s);
+  st.ids.set(o.id, id);
+  st.defs.push({id, type: o.type, basedOn: o.basedOn, next: o.next});
+  return id;
+}
+
+/** See the header. */
+export const styleId = (b, id) => (b.stylesRd
+  ? b.stylesRd.ids.get(id) : undefined);
+
+/** See the header. */
+export function docDefaults(b, o = {}) {
+  const t = table(b), d = t.docDefaults;
+  const lay = (old, k) => {
+    if (!o || o[k] === undefined) return old;
+    const p = props(b, o[k]);
+    return {...old, ...p, extra: p.extra.length ? p.extra
+      : old.extra};
+  };
+  const out = {...t, docDefaults: {rPr: lay(d.rPr, 'rPr'),
+    pPr: lay(d.pPr, 'pPr')}};
+  // (a new Doc has no w:docDefaults kept raw: one is built)
+  if (out.docDefaultsRaw) out.docDefaultsRaw = null;
+  b.doc.styles = out;
+}
+
+/** See the header. */
+export function finish(b) {
+  const st = b.stylesRd;
+  if (!st || !st.own) return;
+  const t = b.doc.styles;
+  const typeOf = (id) => (t.styles.get(id) || {}).type;
+  for (const d of st.defs) {
+    const s = t.styles.get(d.id);
+    const base = st.ids.get(d.basedOn), next = st.ids.get(d.next);
+    if (base && base !== d.id && typeOf(base) === d.type) {
+      s.basedOn = base;
+    }
+    if (next && d.type === 'paragraph' &&
+      typeOf(next) === 'paragraph') s.next = next;
+  }
+  // (as written and read back: the shape readDocx gives, as
+  // ./RtfRead has it)
+  try {
+    const tree = stylesTree(t);
+    b.doc.styles = {...readStyles(tree, rootScope(tree)),
+      theme: t.theme};
+    if (t.theme === undefined) delete b.doc.styles.theme;
+  } catch (e) {
+    b.note('styles that cannot be kept are left out');
+    b.doc.styles = st.orig;
+  }
+}

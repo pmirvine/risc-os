@@ -622,6 +622,24 @@ by code point, `missing`; re-exports `parseSfnt`, `subsetTtf`, `toUnicodeCmap`) 
 (`parseColour`, `rgbOf`). WimpLib's RTF modules (Batch G2, pure): `wimplib/RtfLex` (`lex(bytes, {maxDepth = 256, maxTokens = 2e6})`, `isRtf`: bytes to
 tokens, never throws; groups deeper than `maxDepth` or more than `maxTokens` (2,000,000) tokens stop the scan with a note;
 each note is said once, however often it happens) and `wimplib/RtfCodepage` (`decoderFor`, `known`, `fcharsetToCpg`, `encodeAscii`; code pages 1250 to 1258, 437, 850 and 10000, anything else decoded as 1252 when `known` says no) with its data `RtfCodeTables`. No shared core code changed, so nothing is added to docs/CHANGES_NEEDED.md.
+WimpLib's OLE compound file reader (for the .doc import, pure): `wimplib/Cfb` (`openCfb(bytes, {maxBytes = 128 MB,
+maxStreams = 10000, maxStream = 64 MB, maxTotal = 128 MB})` -> `{names, get(name), has, size, streams, sectorSize}`,
+`isCfb(bytes)`: the 8-byte signature only; `CfbError` with `code` 'not-cfb', 'bad-header', 'bad-chain', 'too-big' or
+'truncated'), with its parts `CfbChain` (DIFAT, FAT, chains walked with a visited mark, so a loop is 'bad-chain') and
+`CfbDir` (the directory tree walked with a stack and each entry met once). 512- and 4096-byte sectors (versions 3 and
+4), the miniFAT below the 4096-byte cutoff. Streams are named by path from the root (`'WordDocument'`,
+`'ObjectPool/_1/\x01Ole'`, control characters kept), looked up in any case; of two with the same name the first entry is
+kept. openCfb reads the header, FAT and directory, and throws for a fault there; a stream is read when first asked for
+(`get`, kept after), and one that cannot be read throws its CfbError from `get` alone; `streams` is a Map of every
+readable stream, made on first use. All the chain walks of one file, failed ones too, may take at most 4 steps per
+sector (then `too-big`); a failed stream's error is kept, so asking again costs nothing; `stats.walked` counts them.
+WimpLib's synchronous inflater (for the .doc import's compressed metafiles, pure): `wimplib/InflateSync`
+(`inflateSync(bytes, {max, wrapper = 'auto', size})` -> `{data, zlib, adler}`; `InflateError` with `code` 'damaged' or
+'too-big'). DEFLATE (RFC 1951) bare or in a zlib wrapper (RFC 1950; 'auto' takes a valid zlib header as one, 'zlib' or
+'raw' insist); never makes more than `max` bytes (checked before growing the output, which starts at `min(size, max)`);
+every code, table, length and distance checked (a dynamic block with no distance codes, literals only, is read, as zlib
+does); iterative; `adler` true / false when the Adler-32 is there, else null. `wimplib/Zip` still inflates through
+DecompressionStream (async).
 
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
 ($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).

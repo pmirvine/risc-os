@@ -1,0 +1,73 @@
+// DocBkmk - the bookmarks of a .doc ([MS-DOC] 2.3.5 Bookmarks;
+// SttbfBkmk names, PlcfBkf CPs and BKFs, PlcfBkl CPs) through the
+// builder (./ImpBuild bookmark), as ./DocMarks marks. A handler
+// module of ./DocRead (PART {start}).
+//
+// Bookmark k is named SttbfBkmk's string k, starts at PlcfBkf's CP k
+// and ends at PlcfBkl's CP BKF.ibkl. A column bookmark (BKF fCol:
+// cells of a table) is left out. One whose end comes before its
+// start, or whose ibkl is not in PlcfBkl, is left out (one note);
+// lists of different lengths: the bookmarks all three have (one
+// note). SttbfBkmk's cData (2 bytes) bounds them at 65,535.
+// A bookmark ends in the story it starts in: one whose end lies in
+// another story (or past the text) ends at the end of its own
+// story. Names are the builder's to check (a name it cannot keep, or
+// one used twice, is left out).
+import {slice} from './DocFib';
+import {plcOf, cpsOf, sttbOf, u16} from './DocPlc';
+import {addMark} from './DocMarks';
+
+const BAD = 'a bookmark whose end does not fit is left out';
+const SHORT = 'the bookmark lists of the file do not agree: only the ' +
+  'bookmarks all of them have are read';
+
+/** Start of bookmark name: it ends in this story, or at its end. */
+function opener(name) {
+  return (ctx, m) => {
+    const bk = {name, m, done: false};
+    if (!ctx.b.bookmark(name, 'start')) return;
+    (ctx.bkOpen || (ctx.bkOpen = new Map())).set(name, bk);
+    m.ends.push((c) => {
+      if (!bk.done) {
+        bk.done = true;
+        c.b.bookmark(name, 'end');
+      }
+    });
+  };
+}
+
+/** End of bookmark name, when it started in this story. */
+function closer(name) {
+  return (ctx, m) => {
+    const bk = ctx.bkOpen && ctx.bkOpen.get(name);
+    if (!bk || bk.m !== m || bk.done) return;
+    bk.done = true;
+    ctx.b.bookmark(name, 'end');
+  };
+}
+
+function start(ctx) {
+  const t = ctx.table, f = ctx.fib, note = ctx.note;
+  const kb = slice(t, f, 'PlcfBkf', note);
+  const bkf = plcOf(kb, 4);
+  if (!bkf || !bkf.n) return;
+  const bkl = cpsOf(slice(t, f, 'PlcfBkl', note));
+  const names = sttbOf(slice(t, f, 'SttbfBkmk', note), {max: bkf.n})
+    .names;
+  const n = Math.min(bkf.n, names.length);
+  if (n < bkf.n || bkl.n < bkf.n + 1) note(SHORT);
+  for (let k = 0; k < n; k++) {
+    const at = bkf.at(k), j = u16(kb, at);
+    if (u16(kb, at + 2) & 0x8000) continue;
+    const s = bkf.cp(k), e = j < bkl.n ? bkl.cp(j) : -1;
+    if (!(s >= 0 && e >= s)) {
+      note(BAD);
+      continue;
+    }
+    addMark(ctx, s, 1, opener(names[k]));
+    addMark(ctx, e, e === s ? 2 : 0, closer(names[k]));
+  }
+}
+
+/** See the header. */
+export const PART = {start: [start]};

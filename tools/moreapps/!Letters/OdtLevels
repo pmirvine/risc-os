@@ -1,0 +1,137 @@
+// OdtLevels - the levels of an OpenDocument list style (OpenDocument
+// 1.3 part 3, 14.10 <text:list-style> with <text:list-level-style-
+// bullet>, -number and -image; 8.2 <text:outline-style> with
+// <text:outline-level-style>) as the levels ./ImpLists list() takes.
+//
+//   levelsOf(ctx, node?) -> [9 levels]  node a text:list-style or
+//       text:outline-style (none, or one with no levels: bullets).
+//       A level {fmt, text, start, indent: {left, hanging | firstLine},
+//       suff?, rPr?}; a level the style does not give is a bullet
+//       indented 0.25 inch a level; text:level 1..9 (a 10th is left
+//       out)
+//   numbered(levels) -> whether any level is numbered
+// A bullet in a symbol font (Symbol, Wingdings, Webdings, Dingbats:
+// U+0020..U+00FF) is the private-use character Word has for it
+// (U+F020..U+F0FF, as ./RtfLists symbolText) in that font; one in
+// OpenSymbol (private use too) is a plain bullet; a picture bullet
+// is a plain bullet. num-format 1 a A i I are decimal, lowerLetter,
+// upperLetter, lowerRoman, upperRoman, '' none, any other decimal
+// (a note). The text is style:num-prefix, the level numbers (the
+// last text:display-levels of them, "%1.%2") and style:num-suffix.
+// The indent is the label-alignment mode's margin and text-indent
+// or the older mode's space-before and min-label-width.
+// Pure: no desktop services.
+import {twips, hex, num} from './OdtUnits';
+import {first, attr} from './OdtXml';
+
+const BULLET = '\u2022', MAX_AFFIX = 40;
+const FORMATS = new Map([['1', 'decimal'], ['a', 'lowerLetter'],
+  ['A', 'upperLetter'], ['i', 'lowerRoman'], ['I', 'upperRoman'],
+  ['', 'none']]);
+const SYMBOLIC = ['symbol', 'wingdings', 'webdings', 'dingbats'];
+const SUFF = new Map([['listtab', 'tab'], ['space', 'space'],
+  ['nothing', 'nothing']]);
+
+const plain = (k) => ({fmt: 'bullet', text: BULLET, start: 1,
+  indent: {left: 360 * (k + 1), hanging: 360}});
+
+/** attr a, or the same name in text: when written in style:. */
+const either = (node, name) => attr(node, 'style:' + name) ??
+  attr(node, 'text:' + name);
+
+function indent(props, lv) {
+  if (!props) return;
+  const la = first(props, 'style:list-level-label-alignment');
+  if (la) {
+    const left = twips(attr(la, 'fo:margin-left')) ?? 0;
+    const ti = twips(attr(la, 'fo:text-indent')) ?? 0;
+    lv.indent = ti < 0 ? {left, hanging: -ti}
+      : {left, firstLine: ti};
+    const s = SUFF.get(attr(la, 'text:label-followed-by'));
+    if (s) lv.suff = s;
+    return;
+  }
+  const sb = twips(attr(props, 'text:space-before')) ?? 0;
+  const w = twips(attr(props, 'text:min-label-width')) ?? 0;
+  if (w > 0 || sb > 0) {
+    lv.indent = w > 0 ? {left: sb + w, hanging: w} : {left: sb,
+      firstLine: 0};
+  }
+}
+
+/** The bullet character and its font for a level. */
+function bullet(ctx, el, lv, font) {
+  const ch = attr(el, 'text:bullet-char');
+  const c = ch ? String.fromCodePoint(ch.codePointAt(0)) : BULLET;
+  const f = font.toLowerCase(), n = c.codePointAt(0);
+  if (SYMBOLIC.some((s) => f.includes(s)) && n >= 0x20 && n <= 0xff) {
+    lv.text = String.fromCharCode(0xf000 + n);
+    lv.rPr = {...lv.rPr, rFonts: {ascii: font, hAnsi: font}};
+  } else if (n >= 0xe000 && n <= 0xf8ff && !SYMBOLIC.some((s) =>
+    f.includes(s))) {
+    ctx.note('bullets from the OpenSymbol font are read as plain ' +
+      'bullets');
+  } else lv.text = c;
+}
+
+function numbers(ctx, el, lv, level) {
+  const nf = either(el, 'num-format') ?? '1';
+  if (!FORMATS.has(nf)) {
+    ctx.note('a numbering style Word does not have is read as 1, ' +
+      '2, 3');
+  }
+  lv.fmt = FORMATS.get(nf) || 'decimal';
+  const v = num(attr(el, 'text:start-value'));
+  lv.start = v !== undefined && v >= 0 && v <= 32767 ? Math.round(v)
+    : 1;
+  const d = num(either(el, 'display-levels'));
+  const n = d !== undefined ? Math.min(level, Math.max(1,
+    Math.round(d))) : 1;
+  const affix = (a) => (either(el, a) || '').slice(0, MAX_AFFIX)
+    .replaceAll('%', '');
+  const parts = [];
+  for (let j = level - n + 1; j <= level; j++) parts.push('%' + j);
+  lv.text = lv.fmt === 'none' ? '' : affix('num-prefix') +
+    parts.join('.') + affix('num-suffix');
+}
+
+function level(ctx, el, k) {
+  const lv = plain(k);
+  indent(first(el, 'style:list-level-properties'), lv);
+  const tp = first(el, 'style:text-properties');
+  const fn = tp && (attr(tp, 'style:font-name') ||
+    attr(tp, 'fo:font-family')) || '';
+  const font = ctx.styles.fonts.get(fn) || fn;
+  const color = tp && hex(attr(tp, 'fo:color'));
+  if (color) lv.rPr = {color};
+  if (el.name === 'text:list-level-style-bullet') {
+    bullet(ctx, el, lv, font);
+  } else if (el.name === 'text:list-level-style-image') {
+    ctx.note('picture bullets are read as plain bullets');
+  } else numbers(ctx, el, lv, k + 1);
+  return lv;
+}
+
+const LEVELS = new Set(['text:list-level-style-bullet',
+  'text:list-level-style-number', 'text:list-level-style-image',
+  'text:outline-level-style']);
+
+/** See the header. */
+export function levelsOf(ctx, node) {
+  const out = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(plain);
+  const seen = new Set();
+  for (const el of node ? node.children : []) {
+    if (typeof el === 'string' || !LEVELS.has(el.name)) continue;
+    const n = num(attr(el, 'text:level'));
+    if (n === undefined || n < 1 || n > 9 || seen.has(Math.round(n))) {
+      continue;
+    }
+    seen.add(Math.round(n));
+    out[Math.round(n) - 1] = level(ctx, el, Math.round(n) - 1);
+  }
+  return out;
+}
+
+/** See the header. */
+export const numbered = (levels) => levels.some((l) =>
+  l.fmt !== 'bullet' && l.fmt !== 'none');

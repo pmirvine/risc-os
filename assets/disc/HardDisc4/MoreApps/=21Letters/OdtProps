@@ -1,0 +1,205 @@
+// OdtProps - OpenDocument formatting as the Model's rPr and pPr
+// (./ReadProps fields), measured against the style it sits on, as
+// ./RtfProps does for RTF: ODF values are what the text looks like
+// (a style's over its parent's over the default style), the
+// Model's are on top of the paragraph and character styles, so a
+// value equal to the one the style gives is left out.
+//
+//   CHAR, PARA     the values with nothing set (ODF's initial ones;
+//       the font TIMES)
+//   over(acc, layer) -> acc with ./OdtAttrs layer's values over it
+//       (a {pct} size is of acc's size; pBdr and pad side by side)
+//   rPrOf(eff, base) -> rPr   the fields where eff differs from
+//       base (both complete: over CHAR); pPrOf(eff, base, rel?) ->
+//       pPr the same for paragraphs (PARA); tab stops from the left
+//       indent when rel (the default), from the margin when not
+//       (ctx.tabsRel, ./OdtPackage tabsRelative). An indent,
+//       spacing, border or tab change gives the whole element;
+//       tab stops the base has and eff not are cleared. pPrOf
+//       leaves out breakAfter and a column breakBefore (./OdtBody's)
+//   paraProps(ctx, node) -> {pPr, pStyle?, eff, base}  for a text:p
+//       or text:h node: its text:style-name through ctx.styles
+//       (./OdtStyles); eff / base the complete {char, para} the
+//       paragraph has and its pStyle gives (kept in ctx.para for
+//       its runs). A heading's level (text:outline-level, 1..10) is
+//       its outlineLvl; its pStyle ./OdtStyles headingStyle's
+//   charProps(ctx, spans) -> {rPr, rStyle?}  a run in ctx.para under
+//       the text:span nodes spans (outermost first): rStyle the
+//       innermost named character style (the Doc's id)
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+import {HIGHLIGHT} from './RtfProps';
+import {attr} from './OdtXml';
+import {num} from './OdtUnits';
+
+export const TIMES = 'Times New Roman';
+export const CHAR = Object.freeze({b: false, i: false, strike: false,
+  dstrike: false, u: 'none', uColor: null, sz: 24, font: TIMES,
+  color: 'auto', hl: 'none', vertAlign: 'baseline', caps: false,
+  smallCaps: false, vanish: false, spacing: 0, w: 100});
+export const PARA = Object.freeze({jc: 'left', left: 0, right: 0,
+  firstLine: 0, before: 0, after: 0,
+  line: Object.freeze({line: 240, lineRule: 'auto'}),
+  keepNext: false, keepLines: false, breakBefore: 'auto',
+  breakAfter: 'auto', tabs: Object.freeze([]),
+  pBdr: Object.freeze({}), pad: Object.freeze({}), shd: 'none',
+  outline: undefined});
+
+const SIDE_KEYS = ['pBdr', 'pad'];
+
+/** See the header. */
+export function over(acc, layer) {
+  const out = {...acc};
+  for (const [k, v] of Object.entries(layer)) {
+    if (k === 'sz' && v && typeof v === 'object') {
+      const n = Math.round((acc.sz || CHAR.sz) * v.pct / 100);
+      out.sz = Math.min(3276, Math.max(2, n));
+    } else if (SIDE_KEYS.includes(k)) out[k] = {...acc[k], ...v};
+    else out[k] = v;
+  }
+  return out;
+}
+
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const EXTRAS = [['caps', 'w:caps'], ['smallCaps', 'w:smallCaps'],
+  ['vanish', 'w:vanish'], ['dstrike', 'w:dstrike']];
+
+/** hl -> [highlight name | undefined, fill | undefined]. */
+const marks = (hl) => hl === 'none' ? [undefined, undefined]
+  : HIGHLIGHT.has(hl) ? [HIGHLIGHT.get(hl), undefined]
+    : [undefined, hl];
+
+/** See the header. */
+export function rPrOf(eff, base) {
+  const out = {extra: []};
+  for (const k of ['b', 'i', 'strike']) {
+    if (eff[k] !== base[k]) out[k] = eff[k];
+  }
+  for (const [k, n] of EXTRAS) {
+    if (eff[k] === base[k]) continue;
+    out.extra.push(eff[k] ? el(n) : el(n, [['w:val', '0']]));
+  }
+  if (eff.u !== base.u || (eff.u !== 'none' &&
+    eff.uColor !== base.uColor)) {
+    if (eff.uColor && eff.u !== 'none') {
+      out.extra.push(el('w:u', [['w:val', eff.u],
+        ['w:color', eff.uColor]]));
+    } else out.u = eff.u;
+  }
+  if (eff.sz !== base.sz) out.sz = eff.sz;
+  if (eff.font !== base.font) {
+    out.rFonts = {ascii: eff.font, hAnsi: eff.font};
+  }
+  if (eff.color !== base.color) out.color = eff.color;
+  const [hn, fill] = marks(eff.hl), [bhn, bfill] = marks(base.hl);
+  if (hn !== bhn) out.highlight = hn || 'none';
+  if (fill !== bfill) {
+    out.shd = {val: 'clear', color: 'auto', fill: fill || 'auto'};
+  }
+  if (eff.vertAlign !== base.vertAlign) out.vertAlign = eff.vertAlign;
+  for (const k of ['spacing', 'w']) {
+    if (eff[k] !== base[k]) {
+      out.extra.push(el('w:' + k, [['w:val', String(eff[k])]]));
+    }
+  }
+  return out;
+}
+
+const SIDES = ['top', 'left', 'bottom', 'right'];
+
+/** The w:pBdr of p (sides base has and p not: none). */
+function pBdrOf(p, base) {
+  const out = {};
+  for (const s of SIDES) {
+    const b = p.pBdr[s];
+    if (b && b.val !== 'none') {
+      out[s] = {...b, space: p.pad[s] || 0};
+    } else if (b || base.pBdr[s]) out[s] = {val: 'none'};
+  }
+  return out;
+}
+
+/** The tab stops of p from the page margin (Model pos): ODF's are
+ *  from the left indent when rel. */
+const absTabs = (p, rel) => p.tabs.map((t) => ({...t,
+  pos: Math.max(-31680, Math.min(31680, t.pos + (rel ? p.left : 0)))}));
+
+/** See the header. */
+export function pPrOf(eff, base, rel = true) {
+  const out = {extra: []};
+  if (eff.jc !== base.jc) out.jc = eff.jc;
+  if (eff.left !== base.left || eff.right !== base.right ||
+    eff.firstLine !== base.firstLine) {
+    out.ind = {left: eff.left, right: eff.right};
+    if (eff.firstLine < 0) out.ind.hanging = -eff.firstLine;
+    else out.ind.firstLine = eff.firstLine;
+  }
+  if (eff.before !== base.before || eff.after !== base.after ||
+    !same(eff.line, base.line)) {
+    out.spacing = {before: eff.before, after: eff.after,
+      line: eff.line.line, lineRule: eff.line.lineRule};
+  }
+  for (const k of ['keepNext', 'keepLines']) {
+    if (eff[k] !== base[k]) out[k] = eff[k];
+  }
+  const pb = (p) => p.breakBefore === 'page';
+  if (pb(eff) !== pb(base)) out.pageBreakBefore = pb(eff);
+  const et = absTabs(eff, rel), bt = absTabs(base, rel);
+  if (!same(et, bt)) {
+    out.tabs = et.concat(bt.filter((t) => !et.some((e) =>
+      e.pos === t.pos)).map((t) => ({val: 'clear', pos: t.pos})));
+    out.tabs.sort((a, b) => a.pos - b.pos);
+  }
+  if (!same(pBdrOf(eff, base), pBdrOf(base, base))) {
+    out.pBdr = pBdrOf(eff, base);
+  }
+  if (eff.shd !== base.shd) {
+    out.shd = {val: 'clear', color: 'auto',
+      fill: eff.shd === 'none' ? 'auto' : eff.shd};
+  }
+  if (eff.outline !== base.outline) {
+    out.outlineLvl = eff.outline === undefined ? 9 : eff.outline;
+  }
+  return out;
+}
+
+/** text:outline-level -> 0..9, or undefined. */
+export function levelOf(node) {
+  const n = num(attr(node, 'text:outline-level'));
+  if (n === undefined) return 0;
+  return Math.min(9, Math.max(1, Math.round(n))) - 1;
+}
+
+/** See the header. */
+export function paraProps(ctx, node) {
+  const st = ctx.styles;
+  const def = st.get('paragraph', attr(node, 'text:style-name'));
+  const eff = st.full(def);
+  let pStyle, baseDef = st.named(def);
+  if (node.name === 'text:h') {
+    const lvl = levelOf(node);
+    eff.para = {...eff.para, outline: Math.min(lvl, 8)};
+    [pStyle, baseDef] = st.headingStyle(lvl, baseDef);
+  } else pStyle = st.docId(baseDef);
+  const base = st.full(baseDef || st.normal());
+  return {pPr: pPrOf(eff.para, base.para, ctx.tabsRel !== false),
+    pStyle, eff, base};
+}
+
+/** See the header. */
+export function charProps(ctx, spans) {
+  const st = ctx.styles, para = ctx.para;
+  let eff = para.eff.char, rDef;
+  for (const s of spans) {
+    const def = st.get('text', attr(s, 'text:style-name'));
+    if (!def) continue;
+    eff = over(eff, st.chain(def).char);
+    rDef = st.named(def) || rDef;
+  }
+  let base = para.base.char;
+  const rStyle = st.docId(rDef);
+  if (rStyle !== undefined) base = over(base, st.chain(rDef).char);
+  const out = {rPr: rPrOf(eff, base)};
+  if (rStyle !== undefined) out.rStyle = rStyle;
+  return out;
+}

@@ -12,7 +12,8 @@
 // (word-format-hostile.mjs); list numbers and bullets drawn and edited (word-lists.mjs), also against hostile input
 // (word-lists-hostile.mjs); the list buttons, keys and Format > List (word-lists-ui.mjs); untitled documents and Save / Save as
 // (word-save.mjs); RTF files opened, saved and reverted
-// (word-rtf.mjs); the Save / Discard / Cancel prompt on close, and
+// (word-rtf.mjs); ODT and .doc files imported, never saved over
+// (word-import.mjs); the Save / Discard / Cancel prompt on close, and
 // Revert (word-close.mjs); New, Recent files, Quit and PreQuit
 // (word-quit.mjs); documents against hostile use: saves onto open,
 // locked and read-only files, 1000 Saves, input methods, shutdowns,
@@ -109,6 +110,7 @@ suite('moreapps', [
   { name: '!Letters: untitled documents, Save, Save as and Save a copy (Save box OK and drag, typing during a save, locked / read-only / bad names, another open document, input methods)', args: ['tests/moreapps/word-save.mjs'] },
   { name: '!Letters: the window menu\'s Export as PDF... (the box, From after To refused, a range written as a &ADF PDF from the save box, the window unchanged, Cancel while the pages are made writes nothing, the box deleted with its document)', args: ['tests/moreapps/word-pdf.mjs'] },
   { name: '!Letters: the window menu\'s Print... and Ctrl+P through !Printers (no printer driver said and no box; the box defaults, From after To refused, 3 pages as 3 JPEG sheets of the paper\'s size with @page margin 0 and real pixels, a range, Fit on / off for a Letter page on A4, a landscape printer, a RISC OS face drawn, Cancel while the pages are made leaves no output window, a second Print works, the box deleted with its document)', args: ['tests/moreapps/word-printout.mjs'] },
+  { name: '!Letters: ODT (&A81) and Word 97-2003 .doc (&AE6) files (claimed by the boot files; a double-click starts Letters, a second goes to the running one; a rich ODT and .doc open as imported .docx windows titled with the leaf, modified, the one-time notice with the reader\'s notes; closing and Quit ask; Ctrl+S, the menu\'s Save, the close prompt\'s Save and Save a copy offer <leaf>/docx and refuse the original, Export as PDF refuses it; a new name writes a &A7E .docx that reopens as a plain .docx; Revert reads the original again; Save as RTF; two imports independent, the same file twice raises its window; Word 6/95, encrypted, damaged, non-Word OLE, spreadsheet, 1-byte, empty and random files refused in plain words; opened by content not type; Print and PDF; the originals byte for byte after every step)', args: ['tests/moreapps/word-import.mjs'] },
   { name: '!Letters: RTF files (&C32 claimed by the boot files, a double-click opens one as RTF, Save writes RTF back with type &C32, Revert reads RTF again, DataOpen to the running Letters, a damaged file\'s notes said once, a &C32 file that is not RTF reported, a .docx still a .docx; Save as: .docx or RTF, then the Save box; what RTF cannot store asked first; an edited RTF saved stays RTF, Save as .docx, both reopened)', args: ['tests/moreapps/word-rtf.mjs'] },
   { name: '!Letters: closing asks Save / Discard / Cancel (keys, the Save box for an untitled document, one prompt); Revert; saves of a window in turn; leaks', args: ['tests/moreapps/word-close.mjs'] },
   { name: '!Letters: New from the icon bar (one per double-click), Recent files (Choices:Letters, missing / hostile entries), Quit and PreQuit ask once (Task Manager, shutdown, a close prompt open); 50 dirty windows; leaks', args: ['tests/moreapps/word-quit.mjs'] },

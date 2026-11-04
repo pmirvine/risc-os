@@ -1,0 +1,88 @@
+// ImpSafe - the caller's strings and nodes made safe to write for
+// ./ImpBuild: the ODT and .doc readers hand over what the file has,
+// and a character XML cannot hold makes ./DocxWrite refuse the whole
+// document ('invalid character in an attribute value').
+//
+//   safe(s) -> string  s (not a string: '') with the characters
+//       ./ImpPara cleanText names replaced or dropped (C0 controls but
+//       tab and line end, U+FFFC..U+FFFF) and lone surrogates U+FFFD
+//   attrText(s) -> string  safe(s) with tabs and line ends spaces (an
+//       attribute value reads back with them as spaces)
+//   name(s, max) -> string  an author, initials, style, picture or
+//       font name: attrText, then ./RtfRevs cleanName (spaces one,
+//       trimmed, at most max code points; default its MAX_NAME)
+//   scrub(v) -> v  a property value (pPr, rPr, tblPr..., section
+//       props) copied with every string attrText'd, keys '__proto__'
+//       left out, at most MAX_DEPTH deep (deeper: left out); an
+//       extra array keeps only the nodes nodeOk passes
+//   nodeOk(node) -> bool  whether an XML node (./wimplib Xml shape,
+//       {name, attrs, children}) holds only names (XmlText isName)
+//       and characters XML can (at
+//       most MAX_NODES nodes looked at: more is not ok)
+// Pure: no desktop services.
+import {badCharAt, isName} from 'wimplib/XmlText';
+import {cleanName, MAX_NAME} from './RtfRevs';
+
+const MAX_DEPTH = 16, MAX_NODES = 100000;
+const BAD = /[\x00-\x08\x0b-\x1f\x7f\u2028\ufffc\ufffe\uffff]/;
+const BAD_G = /[\x00-\x08\x0b-\x1f\x7f\u2028\ufffc\ufffe\uffff]/g;
+const swap = (c) => (c === '\u2028' ? '\n' : c >= '\ufffc'
+  ? '\ufffd' : '');
+
+/** See the header. */
+export function safe(s) {
+  if (typeof s !== 'string') return '';
+  const t = BAD.test(s) ? s.replace(BAD_G, swap) : s;
+  return t.isWellFormed() ? t : t.toWellFormed();
+}
+
+/** See the header. */
+export const attrText = (s) => safe(s).replace(/[\t\n\r]/g, ' ');
+
+/** See the header. */
+export function name(s, max = MAX_NAME) {
+  const n = cleanName(attrText(s));
+  return [...n].length > max ? [...n].slice(0, max).join('').trim()
+    : n;
+}
+
+const str = (v) => typeof v === 'string' && badCharAt(v) < 0;
+
+/** See the header. */
+export function nodeOk(node) {
+  const todo = [node];
+  for (let n = 0; todo.length; n++) {
+    const x = todo.pop();
+    if (typeof x === 'string') {
+      if (!str(x)) return false;
+      continue;
+    }
+    if (x === null || typeof x !== 'object' || n >= MAX_NODES ||
+      typeof x.name !== 'string' || !isName(x.name)) return false;
+    for (const a of Array.isArray(x.attrs) ? x.attrs : []) {
+      if (!Array.isArray(a) || typeof a[0] !== 'string' ||
+        !isName(a[0]) || !str(String(a[1]))) return false;
+    }
+    for (const c of Array.isArray(x.children) ? x.children : []) {
+      todo.push(c);
+    }
+  }
+  return true;
+}
+
+/** See the header. */
+export function scrub(v, depth = 0) {
+  if (typeof v === 'string') return attrText(v);
+  if (v === null || typeof v !== 'object') return v;
+  if (depth >= MAX_DEPTH) return undefined;
+  if (Array.isArray(v)) return v.map((x) => scrub(x, depth + 1));
+  const o = {};
+  for (const k of Object.keys(v)) {
+    if (k === '__proto__') continue;
+    const x = v[k];
+    o[k] = k === 'extra' && Array.isArray(x)
+      ? x.filter((n) => n && typeof n === 'object' && nodeOk(n))
+      : scrub(x, depth + 1);
+  }
+  return o;
+}

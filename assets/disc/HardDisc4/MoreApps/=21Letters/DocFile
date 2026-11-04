@@ -1,0 +1,94 @@
+// DocFile - the container of a Word 97-2003 .doc (wimplib/Cfb): the
+// sniff, and the streams ./DocRead reads. Pure.
+//
+//   sniffDoc(bytes) -> bool  see ./DocRead
+//   openDoc(bytes) -> {cfb, word, table, fib}  the WordDocument and
+//       table streams and the FIB (./DocFib parseFib), or throws a
+//       DocError: 'not-word' (not an OLE file, no WordDocument or
+//       no table stream; parseFib's), 'encrypted' (an encrypted
+//       .docx's EncryptedPackage; parseFib's fEncrypted), 'old',
+//       'too-big' (a CfbError too-big of a file of more than
+//       MAX_BYTES) / 'bad' (any other CfbError of the container or
+//       a stream: a limit hit by a smaller file is damage)
+// The container opened by the sniff is kept (per bytes array) for
+// the read that follows it.
+import {isCfb, openCfb} from 'wimplib/Cfb';
+import {parseFib, tableName, DocError, WIDENT, WIDENT6}
+  from './DocFib';
+
+const OPENED = new WeakMap();
+
+/** The container of bytes (kept from the sniff), or throws. */
+function cfbOf(bytes) {
+  let c = OPENED.get(bytes);
+  if (!c) {
+    c = openCfb(bytes);
+    OPENED.set(bytes, c);
+  }
+  return c;
+}
+
+/** Above this a Cfb too-big is the file's size (./Open's). */
+export const MAX_BYTES = 16 * 1024 * 1024;
+
+/** A stream of the container, or null; CfbErrors as refusals. */
+function stream(cfb, name, size) {
+  try {
+    return cfb.get(name);
+  } catch (e) {
+    throw refusal(e, size);
+  }
+}
+
+/** A Cfb failure as an ImportError. */
+function refusal(e, size) {
+  if (e && e.name === 'ImportError') return e;
+  const why = e && e.message ? e.message : String(e);
+  const big = e && e.code === 'too-big' && size > MAX_BYTES;
+  return new DocError(big ? 'too-big' : 'bad', 'the container: ' + why);
+}
+
+/** See the header. */
+export function sniffDoc(bytes) {
+  if (!(bytes instanceof Uint8Array) || !isCfb(bytes)) return false;
+  let c;
+  try {
+    c = cfbOf(bytes);
+  } catch (e) {
+    return true;
+  }
+  if (c.has('EncryptedPackage')) return true;
+  if (!c.has('WordDocument')) return false;
+  let w;
+  try {
+    w = c.get('WordDocument');
+  } catch (e) {
+    return true;
+  }
+  const id = w && w.length >= 2 ? w[0] | (w[1] << 8) : 0;
+  return id === WIDENT || id === WIDENT6;
+}
+
+/** The streams and the FIB, or a refusal. */
+export function openDoc(bytes) {
+  if (!(bytes instanceof Uint8Array) || !isCfb(bytes)) {
+    throw new DocError('not-word', 'not an OLE file');
+  }
+  let cfb;
+  try {
+    cfb = cfbOf(bytes);
+  } catch (e) {
+    throw refusal(e, bytes.length);
+  }
+  if (cfb.has('EncryptedPackage')) {
+    throw new DocError('encrypted', 'an encrypted package');
+  }
+  const word = stream(cfb, 'WordDocument', bytes.length);
+  if (!word) throw new DocError('not-word', 'no WordDocument stream');
+  const fib = parseFib(word);
+  const table = stream(cfb, tableName(fib), bytes.length);
+  if (!table) {
+    throw new DocError('not-word', 'no ' + tableName(fib) + ' stream');
+  }
+  return {cfb, word, table, fib};
+}

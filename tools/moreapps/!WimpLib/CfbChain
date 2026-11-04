@@ -1,0 +1,101 @@
+// CfbChain - sectors, the FAT and chains of an OLE compound file
+// (used by ./Cfb). A file is a header then sectors of 512 or 4096
+// bytes; sector id is at (id + 1) * size. The FAT holds, for each
+// sector, the next sector of its chain, or END. The FAT's own
+// sectors are listed by the DIFAT: 109 slots in the header, then a
+// chain of DIFAT sectors each ending with the next one's id.
+import { CfbError } from './CfbError';
+
+export const END = 0xFFFFFFFE, SPECIAL = 0xFFFFFFFA;
+const visits = new WeakMap();
+
+/** Byte offset of sector `id`, which must have `n` bytes there. */
+function sectorAt(c, id, n) {
+  if (id >= SPECIAL) throw new CfbError('bad-chain', 'special sector');
+  const at = (id + 1) * c.ss;
+  if (at + n > c.bytes.length)
+    throw new CfbError('truncated', 'sector ' + id + ' past the end');
+  return at;
+}
+
+/** The FAT, from the header's 109 DIFAT slots and the DIFAT chain. */
+export function readFat(c) {
+  const { dv, ss, nFat } = c;
+  const ids = [];
+  for (let i = 0; i < Math.min(nFat, 109); i++)
+    ids.push(dv.getUint32(76 + 4 * i, true));
+  const per = ss / 4 - 1, seen = new Set();
+  for (let d = c.firstDifat; ids.length < nFat;) {
+    if (d >= SPECIAL)
+      throw new CfbError('bad-header', 'the DIFAT ends early');
+    if (seen.has(d)) throw new CfbError('bad-chain', 'DIFAT loop');
+    seen.add(d);
+    const at = sectorAt(c, d, ss);
+    for (let k = 0; k < per && ids.length < nFat; k++)
+      ids.push(dv.getUint32(at + 4 * k, true));
+    d = dv.getUint32(at + 4 * per, true);
+  }
+  const fat = new Uint32Array(nFat * ss / 4);
+  ids.forEach((id, i) => {
+    if (id >= SPECIAL)
+      throw new CfbError('bad-header', 'FAT sector ' + i + ' missing');
+    const at = sectorAt(c, id, ss);
+    for (let k = 0; k < ss / 4; k++)
+      fat[i * ss / 4 + k] = dv.getUint32(at + 4 * k, true);
+  });
+  return fat;
+}
+
+/**
+ * The sectors of a chain, at most `need` of them (Infinity: to its
+ * end). `table` is the FAT or the miniFAT; `held` how many sectors
+ * there are to point at (past them: `past`). A sector the table has
+ * no entry for is 'bad-chain': a cut file keeps its whole FAT.
+ */
+export function walk(start, table, need, held, past) {
+  // One visited array per table, reused: a mark is the walk's number.
+  // All the walks of a table, failed or not, may take 4 steps per
+  // sector (a file read once takes 2 at most): then 'too-big'.
+  let v = visits.get(table);
+  if (!v) visits.set(table, v = { seen: new Uint32Array(table.length),
+    walk: 0, walked: 0, left: 4 * held + 64 });
+  const seen = v.seen, mark = ++v.walk;
+  const ids = [];
+  for (let id = start; ids.length < need;) {
+    if (v.left-- <= 0)
+      throw new CfbError('too-big', 'too many sectors walked');
+    v.walked++;
+    if (id === END) {
+      if (need === Infinity) break;
+      throw new CfbError('bad-chain', 'chain shorter than its size');
+    }
+    if (id >= SPECIAL)
+      throw new CfbError('bad-chain', 'chain into a special sector');
+    if (id >= table.length)
+      throw new CfbError('bad-chain', 'sector ' + id + ' has no FAT');
+    if (id >= held) throw new CfbError(past, 'sector ' + id +
+      ' is past the end');
+    if (seen[id] === mark)
+      throw new CfbError('bad-chain', 'chain loop');
+    seen[id] = mark;
+    ids.push(id);
+    id = table[id];
+  }
+  return ids;
+}
+
+/** `size` bytes from the sectors `ids` of `unit` bytes each, sector
+ *  id at offset(id) in `src`; one past its end is a `short` error. */
+export function gather(src, ids, unit, size, offset, short) {
+  const out = new Uint8Array(size);
+  ids.forEach((id, i) => {
+    const n = Math.min(unit, size - i * unit), at = offset(id);
+    if (at + n > src.length)
+      throw new CfbError(short, 'sector ' + id + ' is past the end');
+    out.set(src.subarray(at, at + n), i * unit);
+  });
+  return out;
+}
+
+/** How many sectors the walks of `table` have stepped through. */
+export const walked = (table) => visits.get(table)?.walked ?? 0;

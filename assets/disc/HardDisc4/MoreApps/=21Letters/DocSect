@@ -1,0 +1,147 @@
+// DocSect - the sections of a .doc ([MS-DOC] 2.8.26 PlcfSed: n + 1
+// CPs, then n 12-byte Seds: fn, fcSepx, fnMpr, fcMpr) through the
+// builder's b.sectionEnd, with their page settings (./DocSep) and
+// headers and footers (./DocHdr). A handler module of ./DocRead
+// (PART {start}); ./DocBody calls breakAt and last.
+//
+//   start: ctx.sectionEnds (a Set of the CPs where sections end:
+//       the 0x0C just before one is a section break) and ctx.sect
+//       {seds: [{end, fc}], k (the sections ended), facing (the DOP's
+//       fFacingPages)}
+//   breakAt(ctx, cp)  the section break at cp: its paragraph ends
+//       (field codes still open close there), the tables still open
+//       end (a note), the section's headers and footers are made,
+//       then b.sectionEnd with its props; the next paragraph is
+//       entered (./DocTable enter)
+//   last(ctx)  at the end of the text: the last section ends (when
+//       anything is in it, or it is the only one)
+//
+// The CPs must rise from 0 (the last may be the end of all the stories,
+// as LibreOffice writes it; two the same: an empty section, as
+// LibreOffice writes one first, passed over): the Seds from the first
+// that does not are left out (a note), as are those past MAX_ENDS
+// (4 x MAX_SECTIONS). Each SEPX is decoded once, at most MAX_DECODES
+// of them and SEPX_TIMES the Word stream's bytes (past them: the
+// props read last, a note). A
+// break ends the section it is the end of (those before it that no
+// break ended join it). Past MAX_SECTIONS sections the rest are one
+// (their breaks are paragraph ends; the last Sed's props, a note). With
+// no PlcfSed the builder's page is used and no header is read.
+import {slice} from './DocFib';
+import {u8, i16} from './DocSprm';
+import {sepProps} from './DocSep';
+import {closeCodes} from './DocFields';
+import {mark, enter, finish as tablesEnd} from './DocTable';
+import {headers} from './DocHdr';
+
+export const MAX_SECTIONS = 500;
+const MAX_ENDS = 4 * MAX_SECTIONS, MAX_DECODES = 2 * MAX_SECTIONS;
+/** SEPX bytes decoded at most, per byte of the Word stream. */
+const SEPX_TIMES = 4;
+/** (tests) the SEPXs decoded. */
+export const SECT_WORK = {decodes: 0};
+const MUCH = 'more section settings than the file holds: the rest ' +
+  'are those read last';
+const BAD = 'the file\'s list of sections is damaged: some section ' +
+  'breaks are read as paragraph ends';
+const MANY = 'more than ' + MAX_SECTIONS + ' sections: the rest are ' +
+  'read as one';
+const IN_TABLE = 'a section break inside a table: the table ends ' +
+  'there';
+
+/** See the header (start). */
+function start(ctx) {
+  ctx.sectionEnds = new Set();
+  const S = ctx.sect = {seds: [], k: 0, made: 0, next: 0,
+    facing: false, props: new Map(), decodes: 0, last: null,
+    left: SEPX_TIMES * ctx.word.length};
+  const dop = slice(ctx.table, ctx.fib, 'Dop', ctx.note);
+  S.facing = !!(u8(dop, 0) & 1);
+  const plc = slice(ctx.table, ctx.fib, 'PlcfSed', ctx.note);
+  if (!plc || plc.length < 20) return;
+  const all = Math.floor((plc.length - 4) / 16);
+  const n = Math.min(MAX_ENDS, all);
+  const dv = new DataView(plc.buffer, plc.byteOffset, plc.length);
+  const cp = (i) => dv.getInt32(4 * i, true);
+  let prev = cp(0);
+  if (prev !== 0) return ctx.note(BAD);
+  for (let i = 1; i <= n; i++) {
+    const end = cp(i);
+    if (!(end >= prev && end <= ctx.end + 1)) {
+      ctx.note(BAD);
+      break;
+    }
+    ctx.sectionEnds.add(end);
+    S.seds.push({end, fc: dv.getUint32(4 * (all + 1) + 12 * (i - 1) +
+      2, true)});
+    prev = end;
+  }
+  if (S.seds.length > MAX_SECTIONS) ctx.note(MANY);
+}
+
+/** Section k's props: decoded once per SEPX (Seds share them),
+ *  within the budgets (past them: the last props read, a note). */
+function propsAt(ctx, k) {
+  const S = ctx.sect, fc = S.seds[k].fc, w = ctx.word;
+  const got = S.props.get(fc);
+  if (got) return got;
+  const cb = fc + 2 <= w.length ? Math.max(0, i16(w, fc)) + 2 : 0;
+  if (S.decodes >= MAX_DECODES || S.left < cb) {
+    ctx.note(MUCH);
+    return S.last || sepProps(w, 0xFFFFFFFF, ctx.note);
+  }
+  S.decodes++;
+  SECT_WORK.decodes++;
+  S.left -= cb;
+  const p = sepProps(w, fc, ctx.note);
+  if (S.props.size < MAX_DECODES) S.props.set(fc, p);
+  S.last = p;
+  return p;
+}
+
+/** Section k ends: tables, headers (those of the sections before it
+ *  that no break ended first: its own replace them, an empty one
+ *  shows theirs), b.sectionEnd. */
+function close(ctx, k) {
+  const S = ctx.sect;
+  if (ctx.tbl && ctx.tbl.levels.length) {
+    ctx.note(IN_TABLE);
+    tablesEnd(ctx);
+  }
+  for (; S.next < k; S.next++) {
+    headers(ctx, S.next, !!propsAt(ctx, S.next).titlePg);
+  }
+  const props = propsAt(ctx, k);
+  headers(ctx, k, !!props.titlePg);
+  S.next = k + 1;
+  ctx.b.sectionEnd(props);
+}
+
+/** See the header. */
+export function breakAt(ctx, cp) {
+  const S = ctx.sect, n = S.seds.length;
+  closeCodes(ctx);
+  mark(ctx, cp, false);
+  while (S.k < n - 1 && S.seds[S.k].end < cp + 1) S.k++;
+  if (S.made < MAX_SECTIONS - 1 && S.k < n - 1) {
+    close(ctx, S.k);
+    S.made++;
+  }
+  S.k++;
+  enter(ctx, cp + 1);
+}
+
+/** See the header. */
+export function last(ctx) {
+  const S = ctx.sect;
+  if (!S || !S.seds.length || S.k >= S.seds.length || ctx.b.stopped) {
+    return;
+  }
+  if (!S.made || ctx.b.body.blocks.length) {
+    close(ctx, S.seds.length - 1);
+  }
+  S.k = S.seds.length;
+}
+
+/** See the header. */
+export const PART = {start: [start]};

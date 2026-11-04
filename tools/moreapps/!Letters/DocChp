@@ -1,0 +1,243 @@
+// DocChp - the character properties of a .doc ([MS-DOC] 2.6.1)
+// as complete ./OdtProps CHAR states, and the Model rPr of one
+// state over another. Used by ./DocStyles and ./DocChpx; pure.
+//
+//   DCHAR  Word's defaults (10 pt, not bold...) in ./OdtProps CHAR
+//       fields, and: position (half-points), cshd (the shading:
+//       'none' | RRGGBB), outline shadow emboss imprint (booleans),
+//       spec (sprmCFSpec), data, ole2, obj, picLocation, rIns,
+//       rDel, ibst, dttm, ibstDel, dttmDel, sym {ftc, xchar}
+//       (pictures, objects, revisions, symbols: later modules')
+//   applyChp(state, sprms, style, env) -> state  the Prls
+//       (./DocSprm readSprms) over state; a toggle's 0x80 / 0x81 is
+//       relative to `style` (the state the text's style gives).
+//       env {fonts (./DocFonts names), note, plain (sprmCPlain's
+//       state: the paragraph style's)}. sprmCIstd is the caller's.
+//       A value out of range is left out (a note); never NaN
+//   istdOf(sprms) -> the sprmCIstd's istd | undefined
+//   rPrOut(eff, base) -> rPr  ./OdtProps rPrOf, and position,
+//       outline, shadow, emboss, imprint, character shading
+//   ALT  a state with every LAYER_KEYS value unlike DCHAR's
+//   layerOf(on) -> {key: value}  what a character style sets: on(c)
+//       its chain over state c; a key whose value does not depend on
+//       c (so a size of 10 pt, Word's default, is kept), or that
+//       differs from the default over DCHAR (a toggle 0x81: Strong's
+//       bold), with its value over DCHAR
+//   styleRPr(layer, dchar) -> rPr  the Doc rPr of such a layer: all
+//       of its keys, those equal to the default too
+//   runRPr(eff, plain, layer) -> rPr  a run's direct formatting in
+//       the Doc: eff over what the Doc resolves from its paragraph
+//       style's state `plain` with the character style's layer over
+//       it (the Model's override), and every TOGGLES key the layer
+//       has written as eff's (Word resolves a character style's
+//       toggle over a paragraph style's by XOR, the Model by
+//       override: the direct value is the same in both)
+import {el} from 'wimplib/Xml';
+import {CHAR, rPrOf} from './OdtProps';
+import {OPS, u8, u16, i16, i32, u32} from './DocSprm';
+import {icoHex, cvHex, shdFill, shd80Fill, toggle, clamp}
+  from './DocValues';
+
+export const DCHAR = Object.freeze({...CHAR, sz: 20, position: 0,
+  cshd: 'none', outline: false, shadow: false, emboss: false,
+  imprint: false, spec: false, data: false, ole2: false, obj: false,
+  picLocation: undefined, rIns: false, rDel: false, ibst: 0,
+  dttm: 0, ibstDel: 0, dttmDel: 0, sym: undefined});
+
+const SIZE = 'a font size out of range is left out';
+const COLOUR = 'a colour out of range is left out';
+
+const TOGGLES = new Map([[OPS.CFBold, 'b'], [OPS.CFItalic, 'i'],
+  [OPS.CFStrike, 'strike'], [OPS.CFDStrike, 'dstrike'],
+  [OPS.CFCaps, 'caps'], [OPS.CFSmallCaps, 'smallCaps'],
+  [OPS.CFVanish, 'vanish'], [OPS.CFOutline, 'outline'],
+  [OPS.CFShadow, 'shadow'], [OPS.CFEmboss, 'emboss'],
+  [OPS.CFImprint, 'imprint'], [OPS.CFSpec, 'spec'],
+  [OPS.CFRMarkIns, 'rIns'], [OPS.CFRMarkDel, 'rDel']]);
+const FLAGS = new Map([[OPS.CFData, 'data'], [OPS.CFOle2, 'ole2'],
+  [OPS.CFObj, 'obj']]);
+
+/** Kul -> w:u ([MS-DOC] 2.9.135). */
+const KUL = new Map([[0, 'none'], [1, 'single'], [2, 'words'],
+  [3, 'double'], [4, 'dotted'], [6, 'thick'], [7, 'dash'],
+  [9, 'dotDash'], [10, 'dotDotDash'], [11, 'wave'],
+  [20, 'dottedHeavy'], [23, 'dashedHeavy'], [25, 'dashDotHeavy'],
+  [26, 'dashDotDotHeavy'], [27, 'wavyHeavy'], [39, 'dashLong'],
+  [43, 'wavyDouble'], [55, 'dashLongHeavy']]);
+const ISS = ['baseline', 'superscript', 'subscript'];
+
+/** Keep what sprmCIstd and sprmCPlain leave as they were. */
+const KEEP = ['spec', 'data', 'ole2', 'obj', 'picLocation', 'rIns',
+  'rDel', 'ibst', 'dttm', 'ibstDel', 'dttmDel', 'sym'];
+
+/** See the header. */
+export function istdOf(sprms) {
+  let istd;
+  for (const s of sprms) if (s.op === OPS.CIstd) istd = u16(s.operand);
+  return istd;
+}
+
+/** One Prl over o (changed in place). */
+function one(o, s, style, env) {
+  const v = s.operand, op = s.op;
+  const t = TOGGLES.get(op);
+  if (t !== undefined) {
+    const x = toggle(u8(v), style[t]);
+    if (x !== undefined) o[t] = x;
+    return;
+  }
+  if (FLAGS.has(op)) {
+    o[FLAGS.get(op)] = u8(v) !== 0;
+    return;
+  }
+  switch (op) {
+  case OPS.CKul:
+    if (KUL.has(u8(v))) o.u = KUL.get(u8(v));
+    return;
+  case OPS.CCvUl: {
+    const c = cvHex(v);
+    o.uColor = c === 'auto' ? null : c;
+    return;
+  }
+  case OPS.CHps: {
+    const n = u16(v);
+    if (n >= 2 && n <= 3276) o.sz = n;
+    else env.note(SIZE);
+    return;
+  }
+  case OPS.CHpsPos:
+    o.position = clamp(i16(v), -3168, 3168);
+    return;
+  case OPS.CIss:
+    if (u8(v) < 3) o.vertAlign = ISS[u8(v)];
+    return;
+  case OPS.CIco: {
+    const c = icoHex(u8(v));
+    if (c === undefined) env.note(COLOUR);
+    else o.color = c;
+    return;
+  }
+  case OPS.CCv:
+    o.color = cvHex(v);
+    return;
+  case OPS.CHighlight: {
+    const c = icoHex(u8(v));
+    if (c === undefined) env.note(COLOUR);
+    else o.hl = c === 'auto' ? 'none' : c;
+    return;
+  }
+  case OPS.CShd80:
+    o.cshd = shd80Fill(u16(v));
+    return;
+  case OPS.CShd:
+    if (v.length >= 10) o.cshd = shdFill(v);
+    return;
+  case OPS.CRgFtc0: {
+    const f = env.fonts && env.fonts[i16(v)];
+    if (typeof f === 'string' && f) o.font = f;
+    return;
+  }
+  case OPS.CDxaSpace:
+    o.spacing = clamp(i16(v), -31680, 31680);
+    return;
+  case OPS.CCharScale:
+    if (u16(v) >= 1 && u16(v) <= 600) o.w = u16(v);
+    return;
+  case OPS.CPicLocation:
+    o.picLocation = i32(v);
+    return;
+  case OPS.CIbstRMark: o.ibst = i16(v); return;
+  case OPS.CIbstRMarkDel: o.ibstDel = i16(v); return;
+  case OPS.CDttmRMark: o.dttm = u32(v); return;
+  case OPS.CDttmRMarkDel: o.dttmDel = u32(v); return;
+  case OPS.CSymbol:
+    if (v.length >= 4) o.sym = {ftc: i16(v), xchar: u16(v, 2)};
+    return;
+  case OPS.CPlain:
+    if (env.plain) {
+      const keep = {};
+      for (const k of KEEP) keep[k] = o[k];
+      Object.assign(o, env.plain, keep);
+    }
+    return;
+  default:
+  }
+}
+
+/** See the header. */
+export function applyChp(state, sprms, style, env = {}) {
+  if (!sprms || !sprms.length) return state;
+  const o = {...state};
+  const e = {note: () => {}, ...env};
+  for (const s of sprms) one(o, s, style || state, e);
+  return o;
+}
+
+const MORE = ['outline', 'shadow', 'emboss', 'imprint'];
+
+/** See the header. */
+export function rPrOut(eff, base) {
+  const out = rPrOf(eff, base);
+  if (eff.position !== base.position) {
+    out.extra.push(el('w:position', [['w:val',
+      String(eff.position)]]));
+  }
+  for (const k of MORE) {
+    if (!eff[k] === !base[k]) continue;
+    out.extra.push(eff[k] ? el('w:' + k)
+      : el('w:' + k, [['w:val', '0']]));
+  }
+  if (eff.cshd !== base.cshd) {
+    out.shd = {val: 'clear', color: 'auto',
+      fill: eff.cshd === 'none' ? 'auto' : eff.cshd};
+  }
+  return out;
+}
+
+/** The keys a character style can set. */
+export const LAYER_KEYS = Object.freeze(['b', 'i', 'strike', 'dstrike',
+  'u', 'uColor', 'sz', 'font', 'color', 'hl', 'vertAlign', 'caps',
+  'smallCaps', 'vanish', 'spacing', 'w', 'position', 'cshd', ...MORE]);
+/** OOXML's toggle properties (17.7.3) the Model writes. */
+export const TOGGLES_OOXML = Object.freeze(['b', 'i', 'strike',
+  'dstrike', 'caps', 'smallCaps', 'vanish', ...MORE]);
+
+export const ALT = Object.freeze({...DCHAR, b: true, i: true,
+  strike: true, dstrike: true, u: 'single', uColor: '010101', sz: 21,
+  font: '\u0001', color: '010101', hl: 'FFFF00',
+  vertAlign: 'superscript', caps: true, smallCaps: true, vanish: true,
+  spacing: 1, w: 99, position: 1, cshd: '010101', outline: true,
+  shadow: true, emboss: true, imprint: true});
+
+/** See the header. */
+export function layerOf(on) {
+  const a = on(DCHAR), z = on(ALT), out = {};
+  for (const k of LAYER_KEYS) {
+    if (a[k] === z[k] || a[k] !== DCHAR[k]) out[k] = a[k];
+  }
+  return out;
+}
+
+/** A base that differs from eff at each of keys. */
+function unlike(base, eff, keys) {
+  const out = {...base};
+  for (const k of keys) {
+    if (out[k] !== eff[k]) continue;
+    out[k] = eff[k] === ALT[k] ? DCHAR[k] : ALT[k];
+  }
+  return out;
+}
+
+/** See the header. */
+export function styleRPr(layer, dchar) {
+  const eff = {...dchar, ...layer};
+  return rPrOut(eff, unlike(dchar, eff, Object.keys(layer)));
+}
+
+/** See the header. */
+export function runRPr(eff, plain, layer) {
+  if (!layer) return rPrOut(eff, plain);
+  const base = {...plain, ...layer};
+  return rPrOut(eff, unlike(base, eff,
+    TOGGLES_OOXML.filter((k) => k in layer)));
+}

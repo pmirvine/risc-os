@@ -137,8 +137,12 @@ lowercase `wimplib/` and has no `Name/js` fallback. Tests under `tests/` are out
 | `ZipError` | error class | `err.code`: `truncated bad-crc zip64 encrypted too-big bad-method not-zip` |
 | `ZipNames` | which entry names are safe (plain relative path; no `..`, drive letter, control character) | `checkName(name)` |
 | `Crc32` | CRC-32 | `crc32(bytes, seed = 0) -> number` |
+| `Cfb` | OLE compound file reader ([MS-CFB], the .doc container; pure): 512/4096-byte sectors, DIFAT, FAT, miniFAT; header, FAT and directory read at once, each stream on first `get` (kept); streams named by path (`'Storage/Name'`), any case; first of duplicate names kept | `openCfb(bytes, {maxBytes = 128 MB, maxStreams = 10000, maxStream = 64 MB, maxTotal = 128 MB}) -> {names, get(name) -> Uint8Array \| null, has, size, streams (Map of the readable ones), sectorSize}`; `isCfb(bytes)` (signature only) |
+| `CfbChain` | sectors and chains (used by `Cfb`): every chain walked with a visited mark (loop: `bad-chain`), a sector past the file `truncated`, one the FAT does not cover `bad-chain`; all the walks of one table, failed or not, at most 4 steps per sector (then `too-big`) | `readFat`, `walk`, `walked`, `gather` |
+| `CfbDir` | the directory (used by `Cfb`): the red-black tree followed with a stack, each entry met once (a loop or a link past the directory: `bad-chain`); names UTF-16LE (lone surrogates U+FFFD), at most 31 characters | `readDirectory(bytes, maxStreams)`, `entryAt`, `keyOf` |
+| `CfbError` | error class | `err.code`: `not-cfb bad-header bad-chain too-big truncated`; a fault in a stream is thrown by its `get`, the rest of the file still readable |
 | `Xml` | re-exports | everything below |
-| `XmlParse` | parser: one pass, no regexes, no recursion, **no DTD** (`XmlError` `dtd`), no custom entities, depth <= 256; the white space before a self-closed element's `/>` kept in the node's non-enumerable `sp` (Batch D P12b fix wave: a raw element of an edited part written back as read, e.g. LibreOffice's `<w:tblpPr ... />`; a tree compares, stringifies and spreads as one without it) | `parseXml(text) -> {decl, before, root, after}` (`before`/`after`: `{comment}` / `{pi}` outside the root), `MAX_DEPTH` |
+| `XmlParse` | parser: one pass, no regexes, no recursion, **no DTD** (`XmlError` `dtd`), no custom entities, depth <= 256; the white space before a self-closed element's `/>` kept in the node's non-enumerable `sp` (Batch D P12b fix wave: a raw element of an edited part written back as read, e.g. LibreOffice's `<w:tblpPr ... />`; a tree compares, stringifies and spreads as one without it); a finished element's `attrs` and `children` are copied to their length (a growing array keeps spare room: about half of a large tree) | `parseXml(text) -> {decl, before, root, after}` (`before`/`after`: `{comment}` / `{pi}` outside the root), `MAX_DEPTH` |
 | `XmlWrite` | serializer and builders (a childless node self-closed with its `sp`, XML space only, before the `/>`) | `serialize(node, {decl, before, after}) -> string`, `el(name, attrs, ...children)`, `text(node)`, `find(node, name)`, `findAll(node, name)`, `attr(node, name)` |
 | `XmlText` | character helpers | `XmlError` (`code` `malformed dtd depth entity`, `line`), `esc`, `escAttr`, plus helpers for the parser |
 | `Segment` | grapheme and word boundaries in UTF-16 text (`Intl.Segmenter`, injectable); per-text cache of 64 entries, none for texts over 4096 units | `graphemes(text) -> frozen sorted boundaries 0..length`, `nextBoundary/prevBoundary(text, off)`, `wordBounds(text, off) -> {from, to}` (at a boundary the word on the right wins), `nextWord`, `prevWord` |
@@ -401,7 +405,7 @@ The application
 | `IconBar` | (desktop) `addIcon(app)`: Select -> `app.newDoc()`; Adjust nothing. The Wimp reports every press on an icon bar icon (button type 3) as a `click` (`kind: 'click'`), never `double`: a double-click is two Select clicks, so a click within 500 ms of the one that made a document is ignored (one gesture, one document; `kind === 'double'` is ignored too). Menu: New, Recent > (`RecentFiles`), Info >, Quit (`Quit.quit`) |
 | `TestHook` | `testHook(app)` -> `task.word`: `docs`, `open`, `new({paper})`, `newUntitled(paper)`, `keys`, `ask`, `prompt` (`leaf` null for the quit prompt), `recent` (a copy), `recentReady`, `mayQuit()`, `quit()`, `dialog(spec)` (WimpLib `Ui/Dialog` for the task), `pics` (`PicCache.CACHE.stats()`: `{count, bytes, pending, decodes}`); each of `docs` also has `splitBox()` (C4.3: opens `TblSplitBox`, the tests' route until C4.4's Table menu), `toggleHdr()` (View > Header and footer) and `enterHdr(i, kind)` (P9.3: `HdrMode.enter`, the mode on page i's `'hdr'` or `'ftr'`, as a double-click there) |
 | `Boxes` | `box(dw, name, make)`: a window's dialogue boxes made once, kept in `dw.boxes` |
-| `Open` | `openDocx(vfs, path)` (refuses more than `MAX_PARAGRAPHS` = 200,000 paragraphs), `describe(err, leaf)` (the plain-words error text) |
+| `Open` | `openDocx(vfs, path)` (refuses more than `MAX_PARAGRAPHS` = 200,000 paragraphs), `describe(err, leaf, type)` (the plain-words error text); `openDoc` (RTF, the `IMPORTERS`, `.docx`), `ImportError`, `openNotice`: see "ODT and Word 97-2003 import" |
 | `ToolbarBind`, `ToolbarButtons`, `EditScroll` | the toolbar. `ToolbarButtons` (pure): `BAR_H` (34, the height of a row), `ROWS` (2), `BUTTONS2` (row 2, under row 1: `lineSpacing`, an action button with sprite `wb_spacing` whose click opens `ParaMenu.spacingMenu` as a popup, not in `ACTIONS`; then `bullets` and `numbers`, toggles with sprites `wb_bullets` / `wb_numbers` (gap 6 before the first), each followed by a popup (`bulletsMenu`, `numbersMenu`) opening `ListMenu.bulletMenu` / `numberMenu` under the toggle; then `painter`, a toggle (gap 6, sprite `wb_painter`) that `ToolbarBind` hands to `PaintBind.bindPainter`; not in `ACTIONS`), `LIST_TOGGLES` (`[name, query key, value, FormatApply id]`: `bullets` -> `listKind 'bullet'`, `numbers` -> `listKind 'number'` run `view.format('bullets' | 'numbering')`; kept out of `TOGGLES` and `ACTIONS` because the button names are not the ids), `BUTTONS` (row 1: style field + popup, font field (`R7`) + popup, size field (`R7;A0-9.`) + popup, `fontBigger`/`fontSmaller` (`up`/`down`), B I U S super sub toggles, colour (`wb_colour`, swatch) and highlight, the `align` radio group, indent less/more, clear), `ACTIONS` (names run as `view.format(name)`), `TOGGLES`, `ALIGNS`. `ToolbarBind.bindToolbar(view, {task, parent, height, menu, buttons = BUTTONS, dy = 0}) -> {tb, refresh, destroy}` (desktop): binds one row (its button list, its pane `dy` px down: WimpLib `Ui/Toolbar`'s `dy` option, passed to `attachPane`); one listener per row in `view.formatListeners` sets the row's controls (only those it has) from `view.query()` (mixed: let out / empty; a field being edited is not overwritten); buttons call `view.format`; popups (`FormatMenu.styleMenu/fontsMenu/sizeMenu/highlightMenu`, `Ui/ColourPopup`) open at `tb.popupAt`; Return in the size field -> `NumberField.halfPoints` -> `view.format('size', pt)` (not a number: beep), in the font field -> `FontList.findFont` (else as typed) -> `view.format('font', name)`; Return or Escape gives the caret back (`view.focus()`); `view.addPane(pane)` (its `remove()` called by `destroy`) so `view.lit` keeps the selection blue while a field has the caret (and the pane's `losecaret` redraws the window); `destroy` removes the listener and closes a popup of its own that is still open. `EditScroll` (pure): `visible(v)` (`y0 = scrollY + v.inset`), `scrollToCaret(v)` (24 px inside the visible part: never under the toolbar), `pageStep(v)` (visible height less 32; `EditKeys` scrolls exactly that and moves the caret as far, scrolling again only when the line it lands on is not all in view), `dragStep(v, sx, sy)` (auto-scroll while a drag is above the visible part or outside the window). Sprites `wb_bold wb_italic wb_underline wb_strike wb_super wb_sub wb_left wb_centre wb_right wb_justify wb_indmore wb_indless wb_colour wb_highlight wb_clear wb_style wb_spacing wb_bullets wb_numbers` (20 x 20) are drawn by `tools/moreapps/icon.mjs` `barSprites()` into `!Letters.!Sprites`; a pressed button is the R5 slab pushed in with highlight colour 2, so there are no pressed variants. Refresh after a caret move on 5000 paragraphs: well under 1 ms |
 | `Zoom`, `ZoomBind` | the zoom: a view transform; the layout stays at 100%. `Zoom` (pure): `ZOOMS` [50, 75, 100, 125, 150, 200], `MIN`/`MAX` 10/500, `clampZoom(pct)` (whole percent; junk 100), `step(pct, dir)`, `wheelStep(pct, dy)`, `toScreen/toLayout(x, y, z, top)` (screen x = x * z, screen y = top + (y - top) * z: `top` = `L.top`, the toolbar and ruler, not scaled), `layoutRect`, `caretOf`, `extentOf`, `zoomScroll(oldScroll, viewSize, oldZ, newZ, top = 0)` (keeps the centre of what is visible below `top`). `EditView` keeps `zoom` (a factor) and uses it everywhere: `paint` (`g.translate(0, top); g.scale(z, z); g.translate(0, -top)` over `layoutRect(rect)`: the backing store stays at `devicePixelRatio * wimp.scale`, text drawn at the canvas scale, no double scaling), `caretRect()` (zoomed, so scrolling to the caret, the Wimp's caret and the IME proxy follow), `hitAt(x, y)` (clicks and drags in `EditMouse`); Page Up/Down move the caret `pageStep / zoom` layout px; `EditScroll` works in screen px. `ZoomBind.bindZoom(dw) -> {pct, set(pct), destroy}` (desktop: `set` clamps, keeps the centre, refits, scrolls, re-places the caret and the ruler; Ctrl+wheel (`os.input.keysDown`) claims the event, the plain wheel still scrolls); `zoomMenu(dw)`. No zoom keys (Ctrl+= / Ctrl+Shift+= are subscript/superscript, Ctrl+0 is Word's paragraph spacing); per window, not saved. Ruling: the toolbar zoom popup of the plan is NOT built (the toolbar has no room; zoom lives in the window menu's Zoom submenu and on Ctrl+wheel), and no `wb_zoom` sprite is drawn. Across, `ZoomBind.set` keeps the place on the PAGE at the window's centre (`Zoom.zoomScrollX` with the page's left edge before and after `fit()`, which lays out for width / zoom and so moves the page); Ctrl+wheel goes through `Zoom.wheelAcc` (dy added up to `NOTCH` 100 = a step, at most one per `GAP` 100 ms, reset after `IDLE` 300 ms or a turn) |
 | `AppWin` | `DocWindow` (C7.1: `metrics()` measures on a scratch canvas context until the window's own exists: a table's layout measures its cells' text while the document is being made): window (workButton `clickdragdouble`, hiDPI canvas, both scroll bars; first width `min(page + 48, screen - 40)`; first height `max(560, min(screen height - y - 92, ceil(inset + pageH + 16)))`: a whole page under the bars where the screen has room above the icon bar (92: its 68 px and the scroll bar), never less than the old 560), `fit()` on a width change, `relayout()` (fonts arrived: a new `DocLayout` and `TextMetrics`, selection kept by `Selection.clamp(sel, doc, oldL)`), `rebuild()` (after an edit: `new DocLayout(doc, old.metrics, old)` keeps the lines of unchanged paragraph objects, then `fit()`), `d` (the `Document`, one per window) and `typing` (its `Typing`), `path` (null: untitled, `isUntitled`) and `leaf` (`SaveState.untitledName` of the open untitled documents' names), `save()`, `saveAs(path)` (`DocSave`), title `leaf *` while `d.dirty` (Save a copy does not mark it saved), `requestClose()` (the close icon's `close` event, prevented) and `revert()` (`CloseDoc`), `close()` forced, `closed`, menu (Save / Save as / Revert / Save a copy / Info / Edit / Format / Zoom / New / Close), zoom (`zb`: `ZoomBind`; `zoom` percent, `setZoom(pct)`; `fit()` lays out for `viewW()` = window width / `view.zoom` and sets the extent `Zoom.extentOf` of the layout's), the panes (`WinPanes`; `AppWin` keeps one-line delegates): the toolbar rows (`bar`, `bar2`: `ToolbarBind`, `BAR_H` high each) and the ruler under them (`rb`: `RulerBind`, `RULER_H`, `rulerOn`, `setRuler(on)`: per window, not saved); the inset is `inset()` = `ROWS * BAR_H + (rulerOn ? RULER_H : 0)`, the one value given to the layout (`newLayout`: `{top: inset()}`, also used by `rebuild` and `relayout`) and to `view.inset`; `setRuler` shows or hides the pane, lays out again (lines kept), scrolls to the caret and gives the focus back; Menu on a toolbar row or the ruler opens the window's menu, the wheel over them scrolls the document (`Ui/PaneWheel`) (`WinMenu`, with the cached Save and Info boxes) |
@@ -4824,6 +4828,227 @@ its own one-time access grant (see "Checking files in real Word").
 * Nothing here has been verified in real Word; the RTF writer's output is checked by the reader (round trips), by
   textutil, and by `word-open-check` when Word is available.
 
+## ODT and Word 97-2003 import (batch word-import)
+
+!Letters opens OpenDocument text (`.odt`, `.ott`; file type &A81) and Word 97-2003 documents (`.doc`, `.dot`; &AE6)
+as **imports**: the file is read into a `Doc` that saves as `.docx`, in a window that is never saved over the original.
+User guide: `$.Docs.Letters`, part 32. Neither format is written. Everything is pure but the glue in `Open`, `AppWin`,
+`SaveState`, `DocSave`, `CopySave`, `CloseDoc`, `WinMenu`, `!RunImage` and `TestHook`.
+
+### The Open plumbing (`Open`)
+
+* `openDoc(vfs, path)`: RTF first (`isRtf`, never offered to an importer), then the first of `IMPORTERS` whose
+  `sniff(bytes)` is true (a sniff that throws counts as false), else `readDocx`. `IMPORTERS` is an exported, mutable
+  array of `{format, label, sniff, read(bytes, {maxParagraphs})}`: `OdtRead`'s `IMPORTER` (`'odt'`, label `ODT`), then
+  `DocRead`'s (`'doc'`, label `.doc`). An import returns `{doc, format: 'docx', imported: 'odt' | 'doc', notes}`.
+* Before `read`, a file over `MAX_IMPORT_BYTES` (16 MB) is `ImportError('too-big')`. A reader's error that is not an
+  `ImportError` becomes `ImportError('bad', format, message)`; a result without `doc.sections` is `bad` too. The
+  paragraph cap is passed in (`MAX_PARAGRAPHS`, 200,000): the builder stops there with a note instead of refusing.
+* `ImportError(code, format, message)` (`name 'ImportError'`), worded by `describe`:
+  `old` "it is a Word 6/95 file, which !Letters cannot read", `encrypted` "it is password-protected", `not-word` "it
+  is not a Word document", `too-big` "it is too big (more than 16 MB)", `bad` "the file is damaged" for `'doc'` and
+  "it is not an OpenDocument text file" for any other format; each as `'<leaf>' could not be opened: <why>.`.
+  `describe(err, leaf, type)` also words a file of &AE6 / &A81 that no importer took (the `.docx` reader's `not-docx`
+  or `no-document`) in its type's words, and an OLE file `DocRead`'s sniff passed over (`DocxError` kind `ole2`: an
+  `.xls`) as "not a Word document".
+* `openNotice(leaf, got)`: for an import, exactly `'<leaf>' was opened from an ODT file; it will be saved as a .docx.`
+  (the article from the importer's label: "a .doc file"), then ` Also: n1; n2 (and N more).` within `MAX_NOTICE`
+  (600); for anything else `notesNotice` as before. The head is said for every import, clean or not.
+* `IMPORT_TYPES {odt: &A81, doc: &AE6}`; `formatOfType` gives `'odt'` / `'doc'` for them (opening only: `FILETYPES`
+  and `fileTypeOf` are unchanged, a window never saves as either). `!Boot` and `!Run` set `File$Type_A81 ODT`,
+  `File$Type_AE6 MSWord` and their `Alias$@RunType_` lines; the second-Letters `DataOpen` hand-off passes the file's
+  own type when `formatOfType` knows it.
+
+### Imported windows
+
+* `SaveState.fileOf(path, imported) -> {path, imported, importedFrom}`; `DocWindow(app, path, doc, format, imported)`
+  uses it: an import has `dw.path` null, `dw.imported` `'odt' | 'doc'`, `dw.importedFrom` the original's path,
+  `dw.format` `'docx'`, the original's leaf as its title, `openedAt` the `stateId` at open and `markSavedAt(-1)`, so
+  it is dirty from the start (`Report/odt *`; close and Quit ask; undo never makes it clean). `isUntitled` is true,
+  which routes every save to the Save box. The docs map is keyed by the original's path (opening it again raises the
+  window).
+* `SaveState.importName(from, dir, exists, ext = '/docx')`, used through `suggested` / `suggestName` by the Save box
+  (Save, Save as, the close prompt's Save), Save a copy and Export as PDF: `<dir of original>.<stem><ext>`, the stem
+  the leaf without `/odt /ott /doc /dot /docx` (any case), else `<stem>2`, `<stem>3`... Save as RTF passes `/rtf`.
+* `DocSave.canWrite` refuses the original (`'<leaf>' is the file this document was opened from: save it under another
+  name, as a .docx.`), so OK or a drag onto it in Save as or Save a copy is refused with no Replace question; `write1`
+  throws for a null path. After a written save `imported` and `importedFrom` are cleared before `rename` (the docs key
+  moves to the new path): the window is an ordinary `.docx` (or RTF) one.
+* `CloseDoc.revert` reads `dw.path || dw.importedFrom`; it asks only when `stateId !== openedAt` for an import; the
+  new window keeps `got.imported`; the notice is given again as on opening (`openNotice`: the import head, then the
+  notes; for a `.docx` or RTF window the notes only, as before). `WinMenu`'s
+  Revert is shaded only when `isUntitled && !importedFrom`. `PdfBox.refusal` refuses the original as "this
+  document's own file". Recent records the original, so reopening from Recent imports again.
+
+### The builder (`ImpBuild` and its modules)
+
+Both readers drive one neutral builder, `ImpBuild`, which makes a `Doc` from Model-level values the way `RtfRead`
+does for RTF, so that it writes as `.docx` and reads back equal (`impbuild`, `impstructure` assert that). Its header
+lists the API; each module's header has its rules:
+
+| Module | Role |
+| --- | --- |
+| `ImpBuild` | `text`, `obj`, `endPara`, tables, `sectionEnd`, `story()`, `note`, `finish`; the paragraph cap (every paragraph, empty fillers too, counts), `MAX_NOTES` 50 notes then `MORE_NOTES` |
+| `ImpFlow` | one flow of blocks: the body's or a story's (header, footer, note, comment) |
+| `ImpPara` | the paragraph being gathered and its run formats |
+| `ImpTable` | the open tables of a flow; shapes repaired (never refused); a section break in a table ends it |
+| `ImpStyles` | `addStyle -> id` (use the id it returns: `styleId` maps the reader's), `docDefaults`; 2000 styles |
+| `ImpLists` | `list(levels) -> numId`, `listOverride`; 1000 lists, 10,000 nums |
+| `ImpStory` | headers and footers (`MAX_STORIES` 256) and every flow's relationships |
+| `ImpNotes`, `ImpComments` | footnotes and endnotes, comments (with replies) and their marks |
+| `ImpPict` | `picture(bytes, {cx, cy, name, alt})`: the type from the bytes (`RtfPict.kindOf`); PNG, JPEG, GIF decodable within `PicMedia`'s caps; EMF and WMF stored as they are (a placeable header added to a bare WMF) and drawn as the labelled box; `RtfPict` caps 16 MB each, 1000 / 64 MB in all |
+| `ImpRevs` | `rev({kind, author, date}) -> key` for runs and paragraph marks (body only); `RtfRevs` caps 1000 authors, 100,000 changes |
+| `ImpFields` | `field`, `fieldStart`/`fieldEnd`, `link` (http, https, mailto, ftp, `#bookmark`; never fetched), `bookmark`; 64 open fields, 100,000 marks |
+| `ImpSafe` | the caller's strings and nodes made safe for `DocxWrite` (characters XML cannot hold, names; 16 deep, 100,000 nodes) |
+
+### The ODT reader (`OdtRead` and its parts)
+
+`OdtRead.readOdt(bytes, opts) -> {doc, notes}`: `OdtPackage` sniffs (a stored `mimetype` entry first with the text or
+template type; a later or deflated one is accepted only when `META-INF/manifest.xml` and `content.xml` are there and
+the text matches, checked after unzipping), finds encryption in the manifest (`encrypted`) and reads
+`settings.xml`'s `TabsRelativeToIndent`; `wimplib/Zip` unzips (`MAX_TOTAL` 128 MB unpacked, its ratio cap);
+`OdtXml` parses each part as a tree with fixed prefixes (`text:p`, whatever the file's prefixes, fixed by `OdtNames`
+with one Map of the namespaces in scope, pushed and popped around each declaring element, so the work is linear; at
+most `MAX_NS_ELEMENT` 256 declarations an element and `MAX_NS_PART` 100,000 a part; no DTD, no entities,
+`PartXml`'s `MAX_XML_BYTES`). One element budget, `OdtXml.MAX_ELEMENTS` 1,200,000, is shared by every part of the
+file (`budgetOf`, in `ctx.limits.budget`: the manifest, `content.xml`, `settings.xml`, `styles.xml`, as `content.xml`
+and `styles.xml` are held at once); a part's weight is its elements plus a quarter of its attributes, counted over
+the bytes before anything is decoded (`OdtCount.weightOf`, an upper bound) and taken from the budget once it is read.
+`content.xml` over what is left is refused; `styles.xml` over it is a note (the text without its styles). Empty
+arrays in the tree are one frozen `EMPTY`, and `wimplib/XmlParse` copies a finished element's arrays to their length;
+`OdtStyles` (with `OdtStyleIndex`, `OdtStyleDoc`, `OdtAttrs`,
+`OdtParaAttrs`, `OdtProps`, `OdtUnits`, `OdtLevels`) makes the Doc's styles, measuring automatic styles against the
+style they sit on; then `office:body/office:text` is walked by the handler modules in `PARTS`:
+
+`OdtBody` (paragraphs, headings, spans, spaces, breaks), `OdtLists`, `OdtTable` (with `OdtCellProps`; repeated
+rows and columns at most `MAX_REPEAT` 1000), `OdtPict` (frames as one inline picture; `hrefName` keeps paths inside
+the zip), `OdtBoxes` (the text of text boxes and shapes as paragraphs after their anchor; each box its own scope for
+ranges), `OdtNotes`, `OdtSect` (master pages to sections, `OdtPage` page layouts, headers and footers from
+`styles.xml`), `OdtSection` (`text:section` read in place), `OdtFields` (links, bookmarks, the fields kept as fields,
+indexes as plain text), `OdtRevs` (insertions and deletions; `OdtFind.marksOf` pairs starts and ends by position, in
+scope) and `OdtComments`. Each exports `PART {elements?, text?, finish?}`; a later one's handler wins. An element no
+handler takes is skipped with its content, one note per kind (`MAX_NAMED` 5 by name, then `OTHER_ELEMENTS`), none for
+`QUIET` ones. To read more: write a module exporting `PART` and add it to `PARTS` (`ctx`: see `OdtRead`'s header).
+
+### The .doc reader (`DocRead` and its parts)
+
+`DocRead.readDoc(bytes, opts) -> {doc, notes}` ([MS-DOC]; it throws only `DocError`, an `ImportError`): `DocFile`
+opens the container (`wimplib/Cfb`) and sniffs (a `WordDocument` stream with Word's wIdent 0xA5EC, or 0xA5DC for
+Word 6 refused as `old`; an `EncryptedPackage` stream, an encrypted `.docx`, refused as `encrypted`; an OLE file that
+cannot be opened refused as `bad`; other OLE files are left to the `.docx` reader, which says `ole2`); `DocFib` reads
+the FIB (`fib.fc[name] = {fc, lcb}` for every pair the parts need; `fEncrypted` is `encrypted`); `DocPieces` the
+piece table (`MAX_PIECES` 1,000,000; decoded text capped at the Word stream's length in all, chunked: the reading
+stops at the paragraph cap without decoding the rest); `DocChars` decodes (8-bit text as code page 1252). The main
+story is then read character by character through the handler modules of `DocHandlers.PARTS` (`TEXT, PAPX, CHPX,
+SECT, PICT, FIELDS, NOTES, COMMENTS, BKMK, REVS, BODY`; each `PART {chars?, fmt?, para?, start?, finish?}`, a later
+one wins):
+
+| Concern | Modules |
+| --- | --- |
+| Records and values | `DocPlc` (PLC, STTB, Xst bounded by their bytes), `DocSprm` (Prls and the sprm tables), `DocValues` (Ico, COLORREF, Shd, Brc, LSPD, toggles), `DocFkp` (bin tables and FKP pages), `DocPrcData` (sprmPHugePapx), `DocPrm` (Prm0/Prm1 piece formatting; `FORMAT_WORK` 20,000,000 Prls a document) |
+| Styles and fonts | `DocStsh` (the STSH; at most 4095 STDs), `DocStyles` (Based on chains, `MAX_CHAIN` 64), `DocFonts` (`MAX_FONTS` 4096), `DocChp` / `DocPap` (complete CHAR / PARA states, `OdtProps` shapes) |
+| Text formatting | `DocChpx` (character runs), `DocPapx` (paragraphs), `DocBody` (marks, breaks, tabs, hyphens), `DocText` (one note for what is not read: text boxes) |
+| Lists | `DocLists`, `DocLvl` (once the builder refuses a list at its cap, the lists not yet made are not built) |
+| Tables | `DocTable`, `DocTap` (row sprms), `DocGrid` (the grid and cells); `MAX_CELLS` 1,000,000, depth 8 |
+| Sections | `DocSect` (`MAX_SECTIONS` 500, decode budget and cache), `DocSep` (section sprms), `DocHdr` (PlcfHdd) |
+| Pictures | `DocPict` (sprmCPicLocation), `DocArt` (PICF and OfficeArt records, `MAX_RECORDS` 100,000), `DocBlip` (the BLIP as `ImpPict` keeps it; compressed metafiles through `wimplib/InflateSync`, ratio at most `MAX_RATIO` 1032) |
+| Fields, notes, review | `DocFields` (`MAX_DEPTH` 1000 open), `DocFldKind` (safe / external / form / eq / button / silent / quiet / other; `MAX_FIELDS` 50,000 kept as fields), `DocNotes`, `DocComments`, `DocBkmk`, `DocMarks` (marks between characters), `DocRevs` |
+
+`ctx` (see `DocRead`'s header) gives `put(text, cp)`, `obj`, `endPara`, `readRange` (headers and notes into builder
+stories), `hidden` (a field's code), `marks`. To read more of [MS-DOC], write a module exporting `PART` and add it to
+`DocHandlers.PARTS`.
+
+### Caps and budgets
+
+| What | Cap | Where |
+| --- | --- | --- |
+| file | 16 MB, refused before reading | `Open.MAX_IMPORT_BYTES` |
+| paragraphs | 200,000 (then a note, the rest not read) | `Open.MAX_PARAGRAPHS` through `ImpBuild` |
+| ODT unpacked / element budget | 128 MB / 1,200,000 for the whole file (elements + attributes / 4, all parts) | `OdtRead.MAX_TOTAL`, `OdtXml.MAX_ELEMENTS` |
+| ODT namespaces | 256 declared on one element, 100,000 in a part (refused past them) | `OdtNames.MAX_NS_ELEMENT`, `MAX_NS_PART` |
+| OLE container | 128 MB, 10,000 streams, 64 MB a stream; 4 chain steps a sector | `wimplib/Cfb` |
+| characters | the Word stream's length in all; 1,000,000 a paragraph | `DocPieces`, `DocRead.MAX_PARA_CHARS` |
+| formatting work | 20,000,000 Prls a document (then text without its own formatting) | `DocPrm.FORMAT_WORK` |
+| sections; headers and footers | 500; 256 | `DocSect`/`OdtSect` `MAX_SECTIONS`; `ImpStory.MAX_STORIES` |
+| notes; comments | 10,000 a kind; 10,000 | `RtfNotes.MAX_NOTES`, `RtfComments.MAX_COMMENTS` |
+| pictures | 16 MB each, 1000 or 64 MB in all; inflate ratio 1032 | `RtfPict`, `DocBlip.MAX_RATIO` |
+| fields | 50,000 kept as fields (.doc, and fields and links in an ODT), 1000 nested | `DocFldKind.MAX_FIELDS` (`OdtFields`), `DocFields.MAX_DEPTH` |
+| styles; lists | 2000 (4,095 STDs read); 1000 lists | `ImpStyles`, `DocStsh`, `ImpLists` |
+| tracked changes | 1000 authors, 100,000 changes | `RtfRevs` via `ImpRevs` |
+| table cells | 1,000,000; tables 8 deep | `DocTable.MAX_CELLS` |
+
+Each cap gives one note. Measured (docprobe's combined worst case, a 15.8 MB `.doc` hitting most caps at once):
+3.1 s, about 1.07 GB peak for the reading process; 200,000 table rows use about 670 MB through the Model (no row cap:
+bounded by the paragraph cap). Each docprobe reads in a child process and bounds how far the peak RSS rises during the
+reading and the heap still kept afterwards, at half as much again as was measured (at least 50 MB more): the peak
+itself depends on when the collector runs (300,000 tracked one-character runs peak at 570-660 MB with 105 MB kept).
+
+ODT, measured as `openDoc` reads (one process each): the heaviest file under the element budget, 78,000 paragraphs of
+bookmarks, a comment over a range, a note, a span and spaces (a weight of 1,170,000), reads in about 3 s with a peak
+of 1.02-1.12 GB; 200,000 paragraphs of three styled spans (a weight of 1,000,000) open whole in about 3.3 s, 0.85-0.97
+GB; tables, lists, frames, fields, links, bookmarks, tabs and attribute-heavy shapes at the budget stay under 0.85 GB.
+`odthostile.test.mjs` bounds the first two at 10 s and 1.2 GB. The largest corpus ODT weighs 191,475 (137,332
+elements: a sixth of the budget). Namespace scopes and open tracked insertions (`OdtRevs`: a Map from id to its open
+entry, ended ones dropped from the top of the stack) cost the same each, whatever is around them
+(`odtquad.test.mjs`).
+
+### Tests and tools
+
+```sh
+node --test tests/moreapps/importopen.test.mjs   # Open: IMPORTERS, ImportError and describe, the notice, imported windows (FakeWin)
+node --test tests/moreapps/impbuild.test.mjs tests/moreapps/impstructure.test.mjs   # the builder: Docs that write and read back equal
+node --test tests/moreapps/cfb.test.mjs tests/moreapps/inflatesync.test.mjs   # WimpLib's OLE reader and inflater
+node --test tests/moreapps/odtread.test.mjs tests/moreapps/odtbody.test.mjs tests/moreapps/odtparts.test.mjs tests/moreapps/odtreview.test.mjs
+node --test tests/moreapps/odthostile.test.mjs   # hostile ODTs, a seeded fuzz (ODT_FUZZ_SEED), the element budget
+node --test tests/moreapps/odtquad.test.mjs      # namespace scopes, tracked insertions, comments and bookmarks: linear
+node --test tests/moreapps/odtcorpus.test.mjs tests/moreapps/odtcross.test.mjs   # the corpus ODTs: read, round trip, LibreOffice twins (skip without the corpus)
+node --test tests/moreapps/docread.test.mjs tests/moreapps/docprops.test.mjs tests/moreapps/doctables.test.mjs tests/moreapps/docparts.test.mjs tests/moreapps/docreview.test.mjs
+node --test tests/moreapps/dochostile.test.mjs tests/moreapps/docprobe.test.mjs   # hostile .docs, a seeded fuzz (DOC_FUZZ_SEED), the bound of every structure
+node --test tests/moreapps/doccorpus.test.mjs tests/moreapps/doccross.test.mjs   # corpus .docs, twins (skip without the corpus)
+node --test tests/moreapps/docword.test.mjs     # .doc files saved by real Word (skips without the fixtures)
+node tests/moreapps/word-import.mjs             # desktop: double-click, notice, Save box, refusals, Revert, Save as RTF, PDF
+node tests/integration/flows.mjs import         # real double-clicks in a Filer window
+```
+
+Fixtures are built from the specifications, not from real files: `odt-helpers.mjs` (`makeOdt`, `storedZip`),
+`doc-helpers.mjs` (`makeCfb`, `makeDoc`, `formattedDoc`, sprm and FKP builders), `doc-review-helpers.mjs`
+(`richDoc`: every part at once), `doc-worst.mjs` (the combined worst case), `doc-corpus.mjs` (`mutateDoc` for the
+fuzz) and `docx-compare.mjs` (Docs compared, every story walked).
+
+**Corpus.** `node tools/moreapps-corpus.mjs` also fetches `poi-doc/` (Apache POI's `.doc` test files) and
+`libreoffice-odt/` (up to 3 `.odt` per LibreOffice test folder), pinned and hashed like the `.docx` sources.
+`node tools/moreapps-convert.mjs [--only odt|doc] [--limit N] [folder...]` converts the `.docx` corpus to `.odt` and
+`.doc` with headless LibreOffice (a private profile; `SOFFICE=` names the binary) into `corpus/converted/`: the twins
+the cross-checks compare with `readDocx` of their source. By hand:
+
+    soffice -env:UserInstallation=file:///<tmp>/lo-profile --headless --norestore \
+      --convert-to "odt:writer8" --outdir OUT a.docx      # .odt
+    soffice ... --convert-to "doc:MS Word 97" --outdir OUT a.docx   # .doc
+    soffice ... --convert-to "txt:Text" --outdir OUT x.doc          # text of a .doc or .odt: an independent oracle
+
+**Real Word.** `node tools/doc-word-fixtures.mjs [name...]` (macOS, Word) writes each source of
+`tests/moreapps/docword-fixtures.mjs` over the `check.docx` that `word-open-check` has its grant for, has Word save it
+as Word 97-2003 inside its container and copies `fix-<name>.doc` / `.docx` to
+`tests/moreapps/word-check-out/doc-from-word/` (git-ignored); it refuses to run while Word has any document open.
+`docword.test.mjs` compares `readDoc` of those with `readDocx` of their source. Imported documents written as `.docx`
+are checked in Word like any other: the import tests call `emit()`, so `WORD_EMIT=1 node --test tests/moreapps/`
+then `node tools/word-open-check.mjs --emitted` (see "Checking files in real Word"). Every import sample checked so
+far opened (`OK`, none `REFUSED`): 118 from the ODT tests and corpus, and from each `.doc` task its own sample (in the
+last, 35 corpus round trips, the rich document and fuzzed copies).
+
+### Known limits and parked items
+
+* User-facing lists: guide part 32 ("What an ODT file loses", "What a .doc file loses").
+* A character style's toggle properties (bold, italic...) override the paragraph style's in the Model rather than
+  XOR with them, as Word does; the `.doc` reader therefore writes such toggles as direct formatting on the run (they
+  look the same). See `docs/CHANGES_NEEDED.md`.
+* `Styles.resolvePara` takes the top layer's tab list whole where Word merges tab stops by position, so a style's
+  tabs under a paragraph's own are not merged (`docs/CHANGES_NEEDED.md`).
+* No ODT icon sprite for &A81 in `!Sprites`; no WMF/EMF converter (metafiles are drawn as the labelled box).
+* Parked: `.doc` text boxes, floating shapes and pictures, form field state (FFData), formatting-change revisions,
+  table styles, `fLegal` numbering; ODT page styles' `style:next-style-name`, unequal columns, custom note marks;
+  bookmark name collisions after white space becomes `_`.
+
 ## Limits and security
 
 * **Zip:** unpacked total <= 256 MB, ratio <= 1000, declared sizes checked before inflating; zip64, encryption,
@@ -4844,8 +5069,10 @@ its own one-time access grant (see "Checking files in real Word").
   application directories like running them. A `.docx` is never executed; `?cmd`/`?run` work only on localhost.
 * **Nothing is ever fetched:** external relationships are data only. A document never runs code (fields are kept,
   not evaluated; macros are not read).
-* Older `.doc` and password-protected files are OLE2 containers: `DocxError` with `kind: 'ole2'`; `Open.describe`
-  says so in words. Other files give `not-docx`, `no-document`, `bad-xml` (naming the part) or `unsupported`.
+* OLE2 containers go to `DocRead`'s sniff first (Word 97-2003 `.doc`, Word 6/95 refused as `old`, an encrypted
+  `.docx`'s `EncryptedPackage` refused as `encrypted`); one it passes over (an `.xls`) reaches `readDocx`: `DocxError`
+  with `kind: 'ole2'`, which `Open.describe` words "it is not a Word document". Other files give `not-docx`,
+  `no-document`, `bad-xml` (naming the part) or `unsupported`. Imports: see "ODT and Word 97-2003 import".
 * `__proto__`/`constructor` as a font name, style id, property or part name are inert (Maps and `Object.hasOwn`).
 
 ## Fonts
@@ -6383,7 +6610,8 @@ Desktop
   per paragraph (not per document); "Save as" and "Save a copy" ask Replace / Cancel before OK replaces an existing file,
   but a drag of the Save box icon replaces a file of the same name without asking, as any desktop Save box does
   (a locked file is refused).
-* No `.doc` handler (the icon for &AE6 exists, nothing runs it).
+* `.doc` and `.odt` are opened as imports (saved as `.docx`), never written; their limits are in "ODT and Word 97-2003
+  import".
 
 Other
 

@@ -1,0 +1,70 @@
+// OdtBoxes - the text of the text boxes and drawing shapes of an
+// OpenDocument text (OpenDocument 1.3 part 3, 10.4.5 <draw:text-box>,
+// 10.2 and 10.3 the shapes, 10.3.15 <draw:g>) for ./OdtRead. The
+// Model has no text boxes: their text is read as ordinary paragraphs.
+//
+//   PART  {elements: draw:frame, draw:text-box, draw:g, the shapes}
+//       (after ./OdtPict, whose pictures and notes the rest keep);
+//       SCOPES for ./OdtRevs and ./OdtComments
+//
+// A draw:frame holding a draw:text-box: the box's content (text:p,
+// text:h, lists, tables...) is read as blocks of their own: after
+// the paragraph the frame is in (./OdtBody reads ctx.after once the
+// paragraph has ended), or where the frame stands when it is between
+// paragraphs. A shape (draw:custom-shape, draw:rect...) with text
+// (its text:p, text:h, text:list) the same; a shape with none is
+// ./OdtPict's (a note). A drawing group's shapes are read in turn.
+// One note says the text was moved. Lists start afresh in it (as in
+// a table cell). In a tracked deletion (ctx.revDel) a box's text is
+// left out, a note. Every other frame is ./OdtPict's.
+// Pure: no desktop services.
+import {isolate} from './OdtLists';
+import {frame as pictureFrame, SHAPES, SHAPE_NOTE} from './OdtPict';
+
+/** The elements whose text is read after its paragraph: a range
+ *  mark's partner must be in the same one (./OdtFind scopes). */
+export const SCOPES = new Set(['draw:text-box', ...SHAPES]);
+
+const SHAPE_TEXT = new Set(['text:p', 'text:h', 'text:list']);
+const MOVED = 'the text of text boxes and drawing shapes is read as ' +
+  'paragraphs after the one they are in';
+
+const isEl = (c) => typeof c !== 'string';
+
+/** Read the blocks (see the header). */
+function blocks(ctx, list) {
+  if (!list.length) return;
+  if (ctx.revDel) {
+    return ctx.note('text boxes and shapes in deleted text are left ' +
+      'out');
+  }
+  ctx.note(MOVED);
+  if (ctx.para) {
+    (ctx.after || (ctx.after = [])).push(...list);
+    return;
+  }
+  isolate(ctx, () => ctx.walk({children: list}));
+}
+
+const textBox = (ctx, node) => blocks(ctx, node.children.filter(isEl));
+
+function frame(ctx, node) {
+  const box = node.children.find((c) => isEl(c) &&
+    c.name === 'draw:text-box');
+  if (!box) return pictureFrame(ctx, node);
+  textBox(ctx, box);
+}
+
+function shape(ctx, node) {
+  const text = node.children.filter((c) => isEl(c) &&
+    SHAPE_TEXT.has(c.name));
+  if (!text.length) return ctx.note(SHAPE_NOTE);
+  blocks(ctx, text);
+}
+
+export const PART = {elements: new Map([['draw:frame', frame],
+  ['draw:text-box', textBox],
+  ['draw:g', (ctx, node) => ctx.walk({children: node.children
+    .filter((c) => isEl(c) && (c.name.startsWith('draw:') ||
+      c.name === 'dr3d:scene'))})],
+  ...SHAPES.map((k) => [k, shape])])};

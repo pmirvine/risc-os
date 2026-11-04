@@ -1,0 +1,227 @@
+// ImpBuild - the neutral builder the importers (ODT, Word 97-2003
+// .doc) drive: it makes a Doc (./Model) from Model-level values,
+// as ./RtfRead does for RTF, so that the Doc writes as .docx
+// (./DocxWrite) and reads back equal (./DocxRead).
+//
+//   new ImpBuild({max?, date?, paper?}) -> b   max the paragraph cap
+//       (a finite number; else ./ReadBody's maxParagraphs); date and
+//       paper for ./NewDoc newDoc
+//   b.note(msg)       a note for the user, once each; at most
+//       MAX_NOTES, the last of them MORE_NOTES when there were more
+//   b.text(s, fmt)    text in the paragraph being gathered; fmt
+//       {rPr, rStyle?, rev?} in Model terms (./RtfProps rPrOf's
+//       fields: b i strike u sz rFonts color highlight shd vertAlign
+//       extra; rev a b.rev key)
+//   b.obj(inline, fmt?)  one U+FFFC with that Model inline, in fmt
+//       (default plain); a level 'p' one is always in a plain run;
+//       not an object: left out, a note
+//   b.endPara({pPr?, pStyle?, rev?}) -> the Para (null once stopped,
+//       or when ./Model refuses it: its content is left out, a note,
+//       not counted); rev the paragraph mark's (the body's only)
+//   b.tableStart({tblPr, grid?}), b.rowStart(trPr),
+//       b.cellStart(tcPr), b.cellEnd(), b.rowEnd(), b.tableEnd()
+//       tables (./ImpTable: shapes repaired, never refused)
+//   b.sectionEnd(props)  the section ends: props as Section.props
+//       (pgSz pgMar cols titlePg extra), over b.pageProps; inside an
+//       open table it ends the table (a note)
+//   b.stopped         true once the paragraph cap is hit: every
+//       later building call does nothing
+//   b.finish() -> {doc, notes}  (once; later calls give the same)
+//
+// The structure (each module's header has its rules):
+//   b.addStyle(o) -> id, b.styleId(id), b.docDefaults(o)  ./ImpStyles
+//   b.list(levels) -> numId, b.listOverride(numId, starts) ./ImpLists
+//   b.header(type, story), b.footer(type, story)          ./ImpStory
+//   b.footnote(story), b.endnote(story) -> inline, b.noteSelf(kind)
+//                                                         ./ImpNotes
+//   b.comment({author, initials, date, story, parent}) -> {id, start,
+//       end, ref}                                         ./ImpComments
+//   b.picture(bytes, {cx, cy, name, alt}) -> inline       ./ImpPict
+//   b.rev({kind, author, date}) -> key                    ./ImpRevs
+//   b.field(o, fmt), b.fieldStart(o, fmt) -> rec, b.fieldEnd(rec?),
+//       b.link(target, content, fmt), b.bookmark(name, which)
+//                                                         ./ImpFields
+// A story is b.story()'s Flow, or the blocks its end gave. The calls
+// that build go to b.flow (pictures and links are related from its
+// part); a story has the same ones (s.text, s.field, s.picture...).
+//
+// Text: unpaired surrogates become U+FFFD (a run edge inside a pair
+// moves after it); control characters other than tab and '\n' (a
+// line break) are dropped; U+2028 is '\n'; U+FFFC (the object
+// mark), U+FFFE and U+FFFF are U+FFFD. Runs are normalised by
+// ./Model newPara. A pStyle that is the default paragraph style is
+// left out (as ./RtfBody). Pending text is ended as a paragraph by
+// a table, cell, row, section or the end. Every paragraph made
+// counts against max: past it building stops with a note. So do
+// the empty ones a cell or section given nothing gets (so that
+// rows, cells and sections are capped by it too), and none is
+// refused: the last may pass the cap by one an open cell.
+// A property object that is not an object (pPr: 'x') is none, with
+// a note (./ImpPara props).
+//
+// Extension points, all on b:
+//   b.doc        the Doc being built (from newDoc): a module may
+//                replace doc.styles, numbering, parts, rels, stories,
+//                notes, comments (copy on write); doc.sections is
+//                set by finish
+//   b.flow       the Flow building now (b.body, the body's, unless
+//                a story is open: see story); b.text etc. go to it
+//   b.story() -> Flow  a sub-builder for a header, footer, note or
+//                comment: the same building calls, its own blocks,
+//                tables and relationships, the builder's cap and
+//                notes; b.flow is it until s.end() -> its blocks
+//                (tables closed, at least one paragraph, ending with
+//                one); stories nest (b.flow is the one before again).
+//                Ended out of order, the stories inside it are left
+//                out; one still open at finish is left out (notes)
+//   b.pageProps  the props a section gets under its own (newDoc's
+//                page); the last, open section gets them as they are
+//   b.onFinish(fn)  fn(b, doc) runs in finish once the sections are
+//                set and the modules have finished, in the order given
+//   flow.para    the ./ImpPara Para being gathered (text, obj,
+//                len, content()); flow.tables its ./ImpTable
+//                TableStack
+// Pure: no desktop services.
+import {newPara, clone} from './Model';
+import {isObj} from './ImpPara';
+import {scrub} from './ImpSafe';
+import {newDoc} from './NewDoc';
+import {maxParagraphs} from './ReadBody';
+import {Flow} from './ImpFlow';
+import * as Styles from './ImpStyles';
+import * as Lists from './ImpLists';
+import * as Story from './ImpStory';
+import * as Notes from './ImpNotes';
+import * as Comments from './ImpComments';
+import {rev} from './ImpRevs';
+
+export const MAX_NOTES = 50;
+export const MORE_NOTES = '(more not listed)';
+
+const CALLS = ['text', 'obj', 'endPara', 'tableStart', 'rowStart',
+  'cellStart', 'cellEnd', 'rowEnd', 'tableEnd', 'field', 'fieldStart',
+  'fieldEnd', 'link', 'bookmark', 'picture'];
+const OPEN = 'a header, footer, note or comment not ended is left out';
+const IN_TABLE = 'a section break inside a table: the table ends there';
+
+export class ImpBuild {
+  constructor(opts = {}) {
+    this.doc = newDoc({date: opts.date, paper: opts.paper});
+    this.max = Number.isFinite(opts.max) ? opts.max
+      : maxParagraphs({});
+    this.paras = 0;
+    this.stopped = false;
+    this.notes = [];
+    this.seen = new Set();
+    this.pageProps = clone(this.doc.sections[0].props);
+    this.sections = [];
+    this.body = new Flow(this);
+    this.flows = [this.body];
+    this.finishers = [];
+  }
+
+  get flow() {
+    return this.flows[this.flows.length - 1];
+  }
+
+  note(s) {
+    if (this.seen.has(s) || this.notes.length >= MAX_NOTES) return;
+    this.seen.add(s);
+    this.notes.push(this.notes.length < MAX_NOTES - 1 ? s
+      : MORE_NOTES);
+  }
+
+  /** Whether one more paragraph may be made (counted when so). */
+  count() {
+    if (this.paras >= this.max) {
+      this.note('more than ' + this.max + ' paragraphs: the rest is ' +
+        'not read');
+      this.stopped = true;
+      return false;
+    }
+    this.paras++;
+    return true;
+  }
+
+  story() {
+    const f = new Flow(this);
+    this.flows.push(f);
+    return f;
+  }
+
+  onFinish(fn) {
+    this.finishers.push(fn);
+  }
+
+  /** The section props: props over pageProps, with the headers and
+   *  footers waiting (./ImpStory withRefs). */
+  propsOf(props) {
+    const p = clone(this.pageProps);
+    const given = isObj(props) ? scrub(props) : {};
+    for (const [k, v] of Object.entries(given)) {
+      if (v !== undefined) p[k] = v;
+    }
+    if (!Array.isArray(p.extra)) p.extra = [];
+    return Story.withRefs(this, p);
+  }
+
+  sectionEnd(props) {
+    if (this.stopped) return;
+    if (this.body.tables.depth) this.note(IN_TABLE);
+    this.body.close();
+    if (!this.body.blocks.length) {
+      if (!this.count()) return;
+      this.body.blocks.push(newPara());
+    }
+    this.sections.push({props: this.propsOf(props), raw: null,
+      blocks: this.body.blocks});
+    this.body.blocks = [];
+  }
+
+  /** Whether inline x may go into flow: [inlines to put first] or
+   *  null (./ImpNotes, ./ImpComments placing). */
+  placing(x, flow) {
+    return Notes.placing(this, x, flow)
+      ? Comments.placing(this, x, flow) : null;
+  }
+
+  finish() {
+    if (this.done) return this.done;
+    if (this.flows.length > 1) {
+      this.note(OPEN);
+      this.flows.length = 1;
+    }
+    this.body.close();
+    const ss = this.sections.slice();
+    if (this.body.blocks.length || !ss.length) {
+      ss.push({props: this.propsOf(), raw: null,
+        blocks: this.body.blocks});
+    }
+    for (const s of ss) if (!s.blocks.length) s.blocks.push(newPara());
+    const doc = this.doc;
+    doc.sections = ss;
+    for (const m of [Notes, Comments, Styles, Lists]) m.finish(this);
+    for (const fn of this.finishers) fn(this, doc);
+    this.done = {doc, notes: this.notes};
+    return this.done;
+  }
+}
+
+for (const m of CALLS) {
+  ImpBuild.prototype[m] = function(...a) {
+    return this.flow[m](...a);
+  };
+}
+
+const OWN = {addStyle: Styles.addStyle, styleId: Styles.styleId,
+  docDefaults: Styles.docDefaults, list: Lists.list,
+  listOverride: Lists.listOverride, header: Story.header,
+  footer: Story.footer, comment: Comments.comment, rev,
+  footnote: (b, s) => Notes.note(b, 'footnote', s),
+  endnote: (b, s) => Notes.note(b, 'endnote', s),
+  noteSelf: (b, kind) => Notes.selfMark(kind)};
+for (const [m, fn] of Object.entries(OWN)) {
+  ImpBuild.prototype[m] = function(...a) {
+    return fn(this, ...a);
+  };
+}

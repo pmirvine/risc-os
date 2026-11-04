@@ -1,0 +1,189 @@
+// DocPap - the paragraph properties of a .doc ([MS-DOC] 2.6.2) as
+// complete ./OdtProps PARA states, and the Model pPr of one state
+// over another. Used by ./DocStyles and ./DocPapx; pure.
+//
+//   DPARA  Word's defaults in ./OdtProps PARA fields (tab stops
+//       from the page margin, as Word has them), and: widow (on),
+//       noLineNum, contextual, between, bar (borders ./OdtProps
+//       does not write), ilvl, ilfo (lists), inTable, ttp, itap,
+//       innerCell, innerTtp (tables), frame, dropCap, anld (Word
+//       6 numbering: sprmPAnld80 / sprmPNLvlAnm80) (seen)
+//   applyPap(state, sprms, style, env) -> state  the Prls over
+//       state (style unused but for symmetry with ./DocChp).
+//       env {note, heading (true for istd 1..9: sprmPOutLvl is
+//       ignored)}. Lengths are clamped to +-MAX_TWIPS (spacing
+//       0..MAX_TWIPS), tab stops to MAX_TABS; never NaN
+//   pPrOut(eff, base) -> pPr  ./OdtProps pPrOf (tabs as they are),
+//       and widowControl, suppressLineNumbers, contextualSpacing
+import {PARA, pPrOf} from './OdtProps';
+import {OPS, u8, u16, i16, i32} from './DocSprm';
+import {shdFill, shd80Fill, brc, brc80, clamp} from './DocValues';
+
+export const MAX_TWIPS = 31680, MAX_TABS = 64;
+
+export const DPARA = Object.freeze({...PARA, widow: true,
+  noLineNum: false, contextual: false, between: undefined,
+  bar: undefined, ilvl: 0, ilfo: 0, inTable: false, ttp: false,
+  itap: 0, innerCell: false, innerTtp: false, frame: false,
+  dropCap: false, anld: false});
+
+const JC = ['left', 'center', 'right', 'both', 'distribute', 'both',
+  'both', 'both', 'both', 'both'];
+const JC80 = ['left', 'center', 'right', 'both', 'both', 'both'];
+const TAB = ['left', 'center', 'right', 'decimal', 'bar', 'left',
+  'left', 'left'];
+const LEADER = [undefined, 'dot', 'hyphen', 'underscore', 'heavy',
+  'middleDot', undefined, undefined];
+const BOOLS = new Map([[OPS.PFKeep, 'keepLines'],
+  [OPS.PFKeepFollow, 'keepNext'], [OPS.PFNoLineNumb, 'noLineNum'],
+  [OPS.PFWidowControl, 'widow'], [OPS.PFContextualSpacing,
+    'contextual'], [OPS.PFInTable, 'inTable'], [OPS.PFTtp, 'ttp'],
+  [OPS.PFInnerTableCell, 'innerCell'],
+  [OPS.PFInnerTtp, 'innerTtp']]);
+const BRC = new Map([[OPS.PBrcTop, 'top'], [OPS.PBrcLeft, 'left'],
+  [OPS.PBrcBottom, 'bottom'], [OPS.PBrcRight, 'right'],
+  [OPS.PBrcBetween, 'between'], [OPS.PBrcBar, 'bar']]);
+const BRC80 = new Map([[OPS.PBrcTop80, 'top'],
+  [OPS.PBrcLeft80, 'left'], [OPS.PBrcBottom80, 'bottom'],
+  [OPS.PBrcRight80, 'right'], [OPS.PBrcBetween80, 'between'],
+  [OPS.PBrcBar80, 'bar']]);
+const FRAME = new Set([OPS.PDxaAbs, OPS.PDyaAbs, OPS.PDxaWidth,
+  OPS.PPc, OPS.PWr]);
+
+const twips = (v) => clamp(v, -MAX_TWIPS, MAX_TWIPS);
+
+/** sprmPChgTabs(Papx): the tab stops of o changed. */
+function tabs(o, v, close) {
+  const nDel = u8(v, 0);
+  const del = [];
+  for (let i = 0; i < nDel; i++) {
+    del.push([i16(v, 1 + 2 * i),
+      close ? Math.abs(i16(v, 1 + 2 * nDel + 2 * i)) : 0]);
+  }
+  const addAt = 1 + nDel * (close ? 4 : 2);
+  const nAdd = u8(v, addAt);
+  if (addAt + 1 + 3 * nAdd > v.length) return;
+  let ts = o.tabs.filter((t) => !del.some(([p, c]) =>
+    Math.abs(t.pos - p) <= c));
+  for (let i = 0; i < nAdd; i++) {
+    const pos = twips(i16(v, addAt + 1 + 2 * i));
+    const tbd = u8(v, addAt + 1 + 2 * nAdd + i);
+    const t = {val: TAB[tbd & 7], pos};
+    const l = LEADER[(tbd >> 3) & 7];
+    if (l) t.leader = l;
+    ts = ts.filter((x) => x.pos !== pos);
+    ts.push(t);
+  }
+  ts.sort((a, b) => a.pos - b.pos);
+  o.tabs = ts.slice(0, MAX_TABS);
+}
+
+/** A border side into o. */
+function border(o, key, b) {
+  if (!b) return;
+  if (key === 'between' || key === 'bar') {
+    o[key] = b.side.val === 'none' ? undefined : b.side;
+    return;
+  }
+  o.pBdr = {...o.pBdr, [key]: b.side};
+  o.pad = {...o.pad, [key]: b.space};
+}
+
+/** LSPD -> {line, lineRule}, or undefined. */
+function lineOf(v) {
+  const dya = i16(v, 0), mult = i16(v, 2);
+  if (mult === 1) {
+    return dya > 0 ? {line: Math.min(dya, MAX_TWIPS),
+      lineRule: 'auto'} : undefined;
+  }
+  return {line: Math.min(Math.abs(dya), MAX_TWIPS),
+    lineRule: dya < 0 ? 'exact' : 'atLeast'};
+}
+
+function one(o, s, env) {
+  const v = s.operand, op = s.op;
+  if (BOOLS.has(op)) {
+    o[BOOLS.get(op)] = u8(v) !== 0;
+    return;
+  }
+  if (BRC.has(op)) return border(o, BRC.get(op), brc(v));
+  if (BRC80.has(op)) return border(o, BRC80.get(op), brc80(v));
+  if (FRAME.has(op)) {
+    o.frame = true;
+    return;
+  }
+  switch (op) {
+  case OPS.PJc:
+    if (u8(v) < JC.length) o.jc = JC[u8(v)];
+    return;
+  case OPS.PJc80:
+    if (u8(v) < JC80.length) o.jc = JC80[u8(v)];
+    return;
+  case OPS.PDxaLeft: case OPS.PDxaLeft80:
+    o.left = twips(i16(v));
+    return;
+  case OPS.PDxaRight: case OPS.PDxaRight80:
+    o.right = twips(i16(v));
+    return;
+  case OPS.PDxaLeft1: case OPS.PDxaLeft180:
+    o.firstLine = twips(i16(v));
+    return;
+  case OPS.PNest: case OPS.PNest80:
+    o.left = twips(o.left + i16(v));
+    return;
+  case OPS.PDyaBefore:
+    o.before = clamp(u16(v), 0, MAX_TWIPS);
+    return;
+  case OPS.PDyaAfter:
+    o.after = clamp(u16(v), 0, MAX_TWIPS);
+    return;
+  case OPS.PDyaLine: {
+    const l = lineOf(v);
+    if (l) o.line = l;
+    return;
+  }
+  case OPS.PFPageBreakBefore:
+    o.breakBefore = u8(v) ? 'page' : 'auto';
+    return;
+  case OPS.PChgTabsPapx: case OPS.PChgTabs:
+    tabs(o, v, op === OPS.PChgTabs);
+    return;
+  case OPS.PShd80:
+    o.shd = shd80Fill(u16(v));
+    return;
+  case OPS.PShd:
+    if (v.length >= 10) o.shd = shdFill(v);
+    return;
+  case OPS.POutLvl:
+    if (!env.heading) o.outline = u8(v) < 9 ? u8(v) : undefined;
+    return;
+  case OPS.PIlvl: o.ilvl = u8(v); return;
+  case OPS.PIlfo: o.ilfo = i16(v); return;
+  case OPS.PItap: o.itap = clamp(i32(v), 0, 64); return;
+  case OPS.PDtap: o.itap = clamp(o.itap + i32(v), 0, 64); return;
+  case OPS.PDcs: o.dropCap = u16(v) !== 0; return;
+  case OPS.PAnld80: case OPS.PNLvlAnm80: o.anld = true; return;
+  default:
+  }
+}
+
+/** See the header. */
+export function applyPap(state, sprms, style, env = {}) {
+  if (!sprms || !sprms.length) return state;
+  const o = {...state};
+  for (const s of sprms) one(o, s, env);
+  return o;
+}
+
+const MORE = [['widow', 'widowControl'],
+  ['noLineNum', 'suppressLineNumbers'],
+  ['contextual', 'contextualSpacing']];
+
+/** See the header. */
+export function pPrOut(eff, base) {
+  const out = pPrOf(eff, base, false);
+  for (const [k, f] of MORE) {
+    if (!eff[k] !== !base[k]) out[f] = !!eff[k];
+  }
+  return out;
+}

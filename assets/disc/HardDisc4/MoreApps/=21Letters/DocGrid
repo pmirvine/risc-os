@@ -1,0 +1,88 @@
+// DocGrid - the grid of a .doc table and the cells of its rows from
+// the rows' properties (./DocTap tapOf), for ./DocTable; pure.
+//
+//   layout(taps) -> {grid, rows}  grid the column widths (twips; []
+//       when the builder is to make it), rows[i] {trPr, slots}: a
+//       slot per cell mark of row i, {cont: false, tcPr} for one that
+//       starts a cell, {cont: true} for one merged into the cell
+//       before (TC80 horzMerge 1 after a 2 or 3)
+// The grid is every row's cell edges (rgdxaCenter) together: each
+// cell spans the columns between its edges (gridSpan), a row that
+// starts or ends inside it has gridBefore / gridAfter. When the
+// edges are not usable (a cell of no width, more than MAX_COLS
+// columns, a row with no sprmTDefTable) each cell is as wide as its
+// edges say (tcW) with the gridSpan its merge gives, and the builder
+// makes the grid (./ImpTable). tcPr: tcBorders (the sides that draw
+// a line), shd, vAlign (not top), vMerge (restart / continue),
+// textDirection, tcW. A header row (tblHeader) counts only in the
+// rows from the first on. Rows of one tap share one {trPr, slots}
+// (never to be changed: ./DocTable copies what it gives).
+import {MAX_COLS, MAX_TW} from './TblCheck';
+
+const regular = (t) => t.cells.length > 0 &&
+  t.centers.length === t.cells.length + 1 &&
+  t.centers.every((x, i) => !i || x > t.centers[i - 1]);
+
+/** A cell definition's tcPr. */
+function tcPrOf(c) {
+  const o = {};
+  if (Object.keys(c.bdr).length) o.tcBorders = {...c.bdr};
+  if (c.shd && c.shd !== 'none') {
+    o.shd = {val: 'clear', color: 'auto', fill: c.shd};
+  }
+  if (c.vAlign && c.vAlign !== 'top') o.vAlign = c.vAlign;
+  if (c.vert === 3) o.vMerge = 'restart';
+  else if (c.vert === 1) o.vMerge = 'continue';
+  if (c.flow) o.textDirection = c.flow;
+  return o;
+}
+
+/** A row's slots (one per cell mark) and trPr. */
+function slotsOf(t, idx, nPos, header) {
+  const slots = [], trPr = {...t.trPr}, n = t.cells.length;
+  const edge = t.centers;
+  if (!header) delete trPr.tblHeader;
+  for (let i = 0; i < n;) {
+    let j = i + 1;
+    if (t.cells[i].horz === 2) {
+      while (j < n && t.cells[j].horz === 1) j++;
+    }
+    const tcPr = tcPrOf(t.cells[i]);
+    if (idx) {
+      const span = idx.get(edge[j]) - idx.get(edge[i]);
+      if (span > 1) tcPr.gridSpan = span;
+    } else if (j - i > 1) tcPr.gridSpan = Math.min(j - i, MAX_COLS);
+    const w = edge[j] - edge[i];
+    if (w > 0) tcPr.tcW = {w: Math.min(w, MAX_TW), type: 'dxa'};
+    slots.push({cont: false, tcPr});
+    for (let k = i + 1; k < j; k++) slots.push({cont: true});
+    i = j;
+  }
+  if (idx && n) {
+    const before = idx.get(edge[0]);
+    const after = nPos - 1 - idx.get(edge[n]);
+    if (before > 0) trPr.gridBefore = before;
+    if (after > 0) trPr.gridAfter = after;
+  }
+  return {trPr, slots};
+}
+
+/** See the header. */
+export function layout(taps) {
+  const pos = new Set(), uniq = new Set(taps);
+  for (const t of uniq) for (const x of t.centers) pos.add(x);
+  const u = [...pos].sort((a, b) => a - b);
+  const ok = taps.length > 0 && u.length >= 2 &&
+    u.length - 1 <= MAX_COLS && [...uniq].every(regular);
+  const idx = ok ? new Map(u.map((x, i) => [x, i])) : null;
+  const made = [new Map(), new Map()];
+  let header = true;
+  const rows = taps.map((t) => {
+    header = header && !!t.trPr.tblHeader;
+    const m = made[header ? 1 : 0];
+    if (!m.has(t)) m.set(t, slotsOf(t, idx, u.length, header));
+    return m.get(t);
+  });
+  return {grid: ok ? u.slice(1).map((x, i) => Math.min(MAX_TW,
+    x - u[i])) : [], rows};
+}

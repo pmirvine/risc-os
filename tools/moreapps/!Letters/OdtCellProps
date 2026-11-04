@@ -1,0 +1,128 @@
+// OdtCellProps - the formatting of the parts of an OpenDocument
+// table (OpenDocument 1.3 part 3, 9; 17.15-17.18 table, column, row
+// and cell properties) as the Model's, for ./OdtTable.
+//
+//   columnPr(ctx, node) -> {w?, rel?, cell?}  a table:table-column:
+//       style:column-width (twips), style:rel-column-width ("2*"),
+//       its table:default-cell-style-name
+//   widths(cols, total?) -> [twips | undefined] for the first
+//       MAX_COLS columns: widths given, the rest by their relative
+//       widths over what is left of total (the table's, else 6.5
+//       inches)
+//   tablePr(ctx, node) -> {tblPr, total?}  style:width (or a %
+//       style:rel-width), table:align, fo:margin-left
+//   cellPr(ctx, name, colDef, grid, col, span) -> tcPr  borders
+//       (fo:border, fo:border-top...), fo:background-color,
+//       style:vertical-align, tcW from the grid; padding is not read
+//   rowPr(ctx, node, hdr) -> trPr  tblHeader, style:row-height
+//       (exact), style:min-row-height (atLeast)
+// A style's own values are over its parents' (style:parent-style-
+// name, at most 8 deep).
+// Pure: no desktop services.
+import {twips, hex, pct} from './OdtUnits';
+import {border} from './OdtParaAttrs';
+import {kids, attr} from './OdtXml';
+import {MAX_COLS, MAX_TW} from './TblCheck';
+
+const DEFAULT_W = 9360, SIDES = ['top', 'left', 'bottom', 'right'];
+
+/** The attributes of the properties element `box` of style `name`
+ *  (family `family`), the parents' under the style's own. */
+export function merged(ctx, family, box, name) {
+  const out = new Map(), chain = [];
+  for (let n = name; n && chain.length < 8;) {
+    const s = ctx.styles.other.get(family, n);
+    if (!s) break;
+    chain.push(s);
+    n = attr(s, 'style:parent-style-name');
+  }
+  for (const s of chain.reverse()) {
+    for (const c of kids(s, box)) {
+      for (const [k, v] of c.attrs) out.set(k, v);
+    }
+  }
+  return out;
+}
+
+/** See the header. */
+export function columnPr(ctx, node) {
+  const p = merged(ctx, 'table-column', 'style:table-column-' +
+    'properties', attr(node, 'table:style-name'));
+  const rel = parseFloat(p.get('style:rel-column-width'));
+  return {w: twips(p.get('style:column-width')),
+    rel: rel > 0 ? rel : undefined,
+    cell: attr(node, 'table:default-cell-style-name')};
+}
+
+/** The grid widths (twips, or undefined) of cols. */
+export function widths(cols, total) {
+  const abs = cols.reduce((s, c) => s + (c.w || 0), 0);
+  const rels = cols.filter((c) => c.w === undefined && c.rel);
+  const sum = rels.reduce((s, c) => s + c.rel, 0);
+  const left = Math.max(720 * rels.length, (total || DEFAULT_W) - abs);
+  return cols.slice(0, MAX_COLS).map((c) => c.w !== undefined
+    ? Math.min(c.w, MAX_TW)
+    : c.rel ? Math.min(MAX_TW, Math.round(left * c.rel / sum))
+      : undefined);
+}
+
+export function tablePr(ctx, node) {
+  const p = merged(ctx, 'table', 'style:table-properties',
+    attr(node, 'table:style-name'));
+  const w = twips(p.get('style:width'));
+  const rel = pct(p.get('style:rel-width'));
+  const out = {extra: []};
+  if (w) out.tblW = {w: Math.min(w, MAX_TW), type: 'dxa'};
+  else if (rel > 0 && rel <= 100) {
+    out.tblW = {w: Math.round(rel * 50), type: 'pct'};
+  }
+  const al = p.get('table:align');
+  if (al === 'center' || al === 'right') out.jc = al;
+  const ml = twips(p.get('fo:margin-left'));
+  if (ml && al !== 'center' && al !== 'right') {
+    out.tblInd = {w: Math.max(-MAX_TW, Math.min(MAX_TW, ml)),
+      type: 'dxa'};
+  }
+  return {tblPr: out, total: w};
+}
+
+/** The tcPr of a cell of style `name` over columns [col, col+span). */
+export function cellPr(ctx, name, colDef, grid, col, span) {
+  const p = merged(ctx, 'table-cell', 'style:table-cell-properties',
+    name || (colDef || {}).cell);
+  const out = {extra: []};
+  const all = border(p.get('fo:border'));
+  const bd = {};
+  for (const s of SIDES) {
+    const b = border(p.get('fo:border-' + s)) || all;
+    if (b) bd[s] = b;
+  }
+  if (Object.keys(bd).length) out.tcBorders = bd;
+  const fill = hex(p.get('fo:background-color'));
+  if (fill) out.shd = {val: 'clear', color: 'auto', fill};
+  const va = p.get('style:vertical-align');
+  if (va === 'middle') out.vAlign = 'center';
+  else if (va === 'top' || va === 'bottom') out.vAlign = va;
+  const cols = grid.slice(col, col + span);
+  if (cols.length === span && cols.every((x) => x !== undefined)) {
+    out.tcW = {w: Math.min(MAX_TW, cols.reduce((a, x) => a + x, 0)),
+      type: 'dxa'};
+  }
+  return out;
+}
+
+/** The trPr of a row element (a header row when hdr). */
+export function rowPr(ctx, node, hdr) {
+  const p = merged(ctx, 'table-row', 'style:table-row-properties',
+    attr(node, 'table:style-name'));
+  const exact = twips(p.get('style:row-height'));
+  const least = twips(p.get('style:min-row-height'));
+  const trPr = {extra: []};
+  if (hdr) trPr.tblHeader = true;
+  const h = exact || least;
+  if (h > 0) {
+    trPr.trHeight = {val: Math.min(h, MAX_TW),
+      hRule: exact ? 'exact' : 'atLeast'};
+  }
+  return trPr;
+}

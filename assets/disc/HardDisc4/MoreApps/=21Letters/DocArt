@@ -1,0 +1,148 @@
+// DocArt - the picture record of a .doc's inline picture in the
+// Data stream ([MS-DOC] 2.9.192 PICFAndOfficeArtData, 2.9.190
+// PICF, 2.9.193 PICMID; [MS-ODRAW] 2.2.1 OfficeArtRecordHeader,
+// 2.2.32 OfficeArtFBSE, 2.2.23-2.2.31 the BLIPs, 2.2.9 OfficeArtFOPT,
+// 2.3.21 Blip and 2.3.4 cropping properties). Used by ./DocPict;
+// pure.
+//
+//   pictureAt(data, at) -> {picf, blip, opt} | {why}  the record at
+//       offset `at` of the Data stream `data`:
+//     picf {lcb, mm, dxaGoal, dyaGoal, mx, my, crop: [l, t, r, b]}
+//         (the PICMID's crops, in twips) and `end`, the record's end
+//     blip {kind: 'png' 'jpeg' 'dib' 'tiff' 'emf' 'wmf' 'pict',
+//         bytes (a view), and for a metafile packed (compressed:
+//         compression byte not 0xFE; compression that byte), filter
+//         (the byte after it: 0xFE as [MS-ODRAW] says) and size
+//         (cbSize, its size uncompressed)} or null (none in the
+//         record; delayed: an FBSE whose BLIP is not inside it)
+//     opt {crop?: [l, t, r, b] fractions, name?, alt?}  the shape's
+//         properties (cropFromLeft..., wzName, wzDescription)
+//     why  'beyond' (the record does not fit the stream) or
+//         'damaged' (lcb or cbHeader not a PICF's)
+//
+// The OfficeArt records after the PICF (to its lcb) are walked flat:
+// a container's records are the ones after its header, so nesting
+// costs nothing and every step moves on at least 8 bytes. At most
+// MAX_RECORDS records a picture. A record running past the end is
+// cut there. The BLIP is the one the shape's pib names (1-based in
+// the record's FBSEs and BLIPs), else the first. A bitmap BLIP is
+// its 1 or 2 UIDs and a tag byte before the data (the instance's low
+// bit says 2); a metafile one its UIDs and a 34-byte header (cbSize
+// at 0, cbSave at 28: the bytes that follow, at most the record's,
+// compression at 32: 0xFE stored as it is, else deflated; filter
+// at 33).
+// The PICF's crops (36..42) are Word 97's legacy fields ([MS-DOC]
+// says to ignore them); they are read only when the shape gives no
+// crop.
+
+export const MAX_RECORDS = 100000;
+const PICF = 68, MM_SHAPE = 0x64, MM_SHAPEFILE = 0x66;
+const BLIPS = new Map([[0xF01A, 'emf'], [0xF01B, 'wmf'],
+  [0xF01C, 'pict'], [0xF01D, 'jpeg'], [0xF01E, 'png'],
+  [0xF01F, 'dib'], [0xF029, 'tiff'], [0xF02A, 'jpeg']]);
+const META = new Set(['emf', 'wmf', 'pict']);
+const FBSE = 0xF007, FOPT = [0xF00B, 0xF122];
+const CROPS = [0x102, 0x100, 0x103, 0x101];   // (l t r b)
+const PIB = 0x104, NAME = 0x380, ALT = 0x381;
+
+const u16 = (d, o) => d[o] | (d[o + 1] << 8);
+const i16 = (d, o) => (u16(d, o) << 16) >> 16;
+const i32 = (d, o) => d[o] | (d[o + 1] << 8) | (d[o + 2] << 16) |
+  (d[o + 3] << 24);
+const u32 = (d, o) => i32(d, o) >>> 0;
+
+/** The BLIP record at body (its header h), or null. */
+function blipOf(d, h, body) {
+  const kind = BLIPS.get(h.type);
+  if (!kind) return null;
+  const uids = 16 * (1 + (h.inst & 1));
+  const meta = META.has(kind), head = meta ? uids + 34 : uids + 1;
+  if (h.len < head) return null;
+  if (!meta) {
+    return {kind, bytes: d.subarray(body + head, body + h.len)};
+  }
+  const m = body + uids;
+  const save = Math.min(u32(d, m + 28), h.len - head);
+  return {kind, packed: d[m + 32] !== 0xFE, compression: d[m + 32],
+    size: u32(d, m), filter: d[m + 33],
+    bytes: d.subarray(body + head, body + head + save)};
+}
+
+/** A UTF-16 string of complex data (ends at a 0 unit). */
+function utf16(d, from, n) {
+  let s = '';
+  for (let i = from; i + 1 < from + n && s.length < 4096; i += 2) {
+    const c = u16(d, i);
+    if (!c) break;
+    s += String.fromCharCode(c);
+  }
+  return s || undefined;
+}
+
+/** The properties of an FOPT record (crops, pib, name, alt). */
+function optOf(d, h, body, opt) {
+  const n = Math.min(h.inst, Math.floor(h.len / 6));
+  let extra = body + 6 * n;
+  const end = body + h.len;
+  for (let k = 0; k < n; k++) {
+    const at = body + 6 * k, id = u16(d, at), pid = id & 0x3FFF;
+    const op = i32(d, at + 2);
+    if (id & 0x8000) {
+      const len = op >>> 0;
+      if (len > end - extra) break;
+      if (pid === NAME || pid === ALT) {
+        opt[pid === NAME ? 'name' : 'alt'] = utf16(d, extra, len);
+      }
+      extra += len;
+      continue;
+    }
+    const c = CROPS.indexOf(pid);
+    if (c >= 0) (opt.crop ||= [0, 0, 0, 0])[c] = op / 65536;
+    if (pid === PIB) opt.pib = op >>> 0;
+  }
+}
+
+/** See the header. */
+export function pictureAt(data, at) {
+  if (!(at >= 0) || at + PICF > data.length) return {why: 'beyond'};
+  const lcb = i32(data, at), cb = u16(data, at + 4);
+  if (cb !== PICF || lcb < PICF) return {why: 'damaged'};
+  const end = Math.min(data.length, at + lcb);
+  const mm = u16(data, at + 6);
+  const picf = {lcb, mm, end, dxaGoal: i16(data, at + 28),
+    dyaGoal: i16(data, at + 30), mx: u16(data, at + 32),
+    my: u16(data, at + 34), crop: [36, 38, 40, 42].map((o) =>
+      i16(data, at + o))};
+  let from = at + PICF;
+  if (mm === MM_SHAPEFILE) from += 1 + (from < end ? data[from] : 0);
+  const opt = {}, blips = [];
+  let delayed = false;
+  if (mm !== MM_SHAPE && mm !== MM_SHAPEFILE) {
+    return {picf, opt, blip: null, raw: data.subarray(from, end)};
+  }
+  let x = from;
+  for (let n = 0; x + 8 <= end && n < MAX_RECORDS; n++) {
+    const v = u16(data, x);
+    const h = {ver: v & 15, inst: v >> 4, type: u16(data, x + 2),
+      len: Math.min(u32(data, x + 4), end - x - 8)};
+    const body = x + 8;
+    if (FOPT.includes(h.type)) optOf(data, h, body, opt);
+    else if (h.type === FBSE && h.len >= 36) {
+      const name = data[body + 33];
+      const b = body + 36 + name;
+      if (b + 8 <= body + h.len) {
+        const v2 = u16(data, b);
+        blips.push(blipOf(data, {inst: v2 >> 4, type: u16(data, b + 2),
+          len: Math.min(u32(data, b + 4), body + h.len - b - 8)},
+        b + 8));
+      } else {
+        blips.push(null);
+        delayed = true;
+      }
+    } else if (BLIPS.has(h.type)) blips.push(blipOf(data, h, body));
+    x = h.ver === 15 ? body : body + h.len;
+  }
+  const pick = opt.pib >= 1 && opt.pib <= blips.length
+    ? blips[opt.pib - 1] : blips.find((b) => b);
+  return {picf, opt, blip: pick || null, delayed: !pick && delayed};
+}

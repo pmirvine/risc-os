@@ -1,0 +1,208 @@
+// DocPapx - the paragraph formatting of a .doc's text: each
+// paragraph's PAPX (./DocFkp, the PlcfBtePapx bin table) at the
+// stream offset of its paragraph mark, over its style (./DocStyles).
+// A handler module of ./DocRead (PART {para, start}).
+//
+//   propsOf(ctx) -> P  the formatting state of the reading, made on
+//       first use (DocRead's start: the styles become Doc styles
+//       before any text): P.styles (./DocStyles), P.chp / P.pap
+//       (./DocFkp finder of the CHPX / PAPX runs), P.fmts (./DocChpx'
+//       cache)
+//   fcOf(ctx, cp) -> {fc, w, i, piece, fcEnd} | null  the stream
+//       offset of CP cp (w bytes a character), the piece's index i
+//       and the offset where the piece's bytes end; null in a gap
+//   markAfter(ctx, cp) -> the CP of the first paragraph mark (0x0D,
+//       a cell mark 0x07, a section's last 0x0C) at or after cp in
+//       the story being read (to storyEnd), or the story's last CP.
+//       Scans the pieces' bytes once: a later call inside the
+//       stretch already scanned is answered from it
+//   paraInfo(ctx, mark) -> {istd, pStyle, base, para, pPr}  the
+//       paragraph whose mark is at CP mark: istd its style's (the
+//       PAPX's; none: 0; its Prls, then the mark's piece's Prm's,
+//       ./DocPrm), pStyle the Doc's id (none for Normal), base the
+//       style's resolved {char, para} (./DocStyles para), para its
+//       complete state, pPr the Model's (./DocPap pPrOut over the
+//       style's; in a list (./DocLists listFor) its numPr, measured
+//       over the style with the list level's indent)
+//   storyEnd(ctx) -> the CP after the story being read: ctx.storyEnd
+//       (a header's: ./DocHdr), else the main text's ccpText
+//   prlsOf(ctx, run)  ./DocPrcData's: a PAPX / CHPX run's Prls
+//   paraProps(ctx, mark) -> {ps, base, prls, env, para}  the same
+//       without the list and the Model's pPr (./DocTable's look
+//       ahead): ps the style, prls the paragraph's Prls. Made once
+//       per PAPX run and piece (a cache of MAX_CACHE): shared, never
+//       to be changed
+//   DECODED  ./DocPrcData's {huge, props} counts (tests)
+//   currentPara(ctx)  paraInfo of the paragraph being read
+//       (ctx.paraStart's), once per paragraph
+//   paraAt(ctx, cp) -> {pPr, pStyle}  the paragraph holding cp
+//   PART  see ./DocRead
+// What the Model does not keep is a note: framed paragraphs (read as
+// ordinary ones), drop capitals, borders between paragraphs.
+import {readSprms} from './DocSprm';
+import {prlsOf, DECODED} from './DocPrcData';
+import {readBte, finder} from './DocFkp';
+import {DocStyles} from './DocStyles';
+import {applyPap, pPrOut} from './DocPap';
+import {pieceAt, pieceFrom} from './DocPieces';
+import {prmPrls, charge} from './DocPrm';
+import {listFor} from './DocLists';
+
+const NOTES = [['frame', 'framed paragraphs are read as ordinary ' +
+  'paragraphs'], ['dropCap', 'drop capitals are read as ordinary ' +
+  'text'], ['between', 'borders between paragraphs are left out']];
+/** sprmPIlfo's "Word 6 numbering" value ([MS-DOC] sprmPIlfo). */
+const WORD6 = 0x07FF;
+/** Entries the paragraph state cache keeps. */
+const MAX_CACHE = 8192;
+const ANLD = 'Word 6 numbering (with no list of Word 97\'s) is ' +
+  'left out';
+
+/** See the header. */
+export function propsOf(ctx) {
+  if (ctx.docProps) return ctx.docProps;
+  const note = ctx.note;
+  const P = ctx.docProps = {
+    styles: new DocStyles(ctx),
+    chp: finder(ctx.word, readBte(ctx.table, ctx.fib, 'PlcfBteChpx',
+      note), 'chp', note),
+    pap: finder(ctx.word, readBte(ctx.table, ctx.fib, 'PlcfBtePapx',
+      note), 'pap', note),
+    scan: {from: -1, at: -1}, cur: {start: -1}, fmts: new Map(),
+    last: 0, props: new Map(), nProps: 0};
+  return P;
+}
+
+/** See the header. */
+export function fcOf(ctx, cp) {
+  const P = propsOf(ctx), ps = ctx.pieces;
+  let i = P.last;
+  if (!(i < ps.length && ps[i].cpStart <= cp && cp < ps[i].cpEnd)) {
+    i = pieceAt(ps, cp);
+    if (i < 0) return null;
+    P.last = i;
+  }
+  const p = ps[i], w = p.unicode ? 2 : 1;
+  return {fc: p.fc + (cp - p.cpStart) * w, w, i, piece: p,
+    fcEnd: p.fc + (p.cpEnd - p.cpStart) * w};
+}
+
+/** Whether the unit at cp (of piece p) ends a paragraph. */
+function isMark(ctx, p, cp) {
+  const w = ctx.word;
+  const at = p.fc + (cp - p.cpStart) * (p.unicode ? 2 : 1);
+  const c = p.unicode ? w[at] | (w[at + 1] << 8) : w[at];
+  return c === 0x0D || c === 0x07 || (c === 0x0C &&
+    ctx.storyEnd === undefined && !!ctx.sectionEnds &&
+    ctx.sectionEnds.has(cp + 1));
+}
+
+/** See the header. */
+export function markAfter(ctx, cp) {
+  const P = propsOf(ctx), sc = P.scan;
+  const end = Math.max(0, storyEnd(ctx) - 1);
+  if (sc.from >= 0 && sc.from <= cp && cp <= sc.at) return sc.at;
+  const ps = ctx.pieces;
+  let i = pieceFrom(ps, cp);
+  let at = end;
+  for (; i < ps.length; i++) {
+    const p = ps[i];
+    if (p.cpStart > end) break;
+    const lim = Math.min(p.cpEnd, end + 1);
+    let x = Math.max(cp, p.cpStart);
+    for (; x < lim && !isMark(ctx, p, x); x++);
+    if (x < lim) {
+      at = x;
+      break;
+    }
+  }
+  P.scan = {from: cp, at: Math.max(cp, at)};
+  return P.scan.at;
+}
+
+export {prlsOf, DECODED};
+
+/** See the header. */
+export const storyEnd = (ctx) => (ctx.storyEnd === undefined
+  ? ctx.fib.ccpText : ctx.storyEnd);
+
+/** See the header. */
+export function paraProps(ctx, mark) {
+  const P = propsOf(ctx);
+  const loc = fcOf(ctx, mark);
+  const run = loc ? P.pap(loc.fc).run : null;
+  const key = loc ? loc.i : -1;
+  let byPiece = P.props.get(run);
+  const got = byPiece && byPiece.get(key);
+  if (got) return got;
+  if (P.nProps >= MAX_CACHE) {
+    P.props.clear();
+    P.nProps = 0;
+    byPiece = undefined;
+  }
+  if (!byPiece) P.props.set(run, byPiece = new Map());
+  const ps = P.styles.para(run ? run.istd : 0);
+  const base = ps.state;
+  const heading = ps.istd >= 1 && ps.istd <= 9;
+  const own = prlsOf(ctx, run);
+  const pm = loc ? prmPrls(ctx, loc.piece, 1) : [];
+  const prls = !charge(ctx, 2 * (own.length + pm.length)) ? []
+    : own.concat(pm);
+  const env = {heading};
+  const out = {ps, base, prls, env,
+    para: applyPap(base.para, prls, base.para, env)};
+  DECODED.props++;
+  P.nProps++;
+  byPiece.set(key, out);
+  return out;
+}
+
+/** See the header. */
+export function paraInfo(ctx, mark) {
+  const {ps, base, prls, env, para: p0} = paraProps(ctx, mark);
+  let para = p0, under = base.para;
+  const list = p0.ilfo === WORD6 ? null
+    : listFor(ctx, p0.ilfo, p0.ilvl);
+  if (list && list.indent) {
+    const n = list.indent;
+    under = {...under, left: n.left,
+      firstLine: n.hanging !== undefined ? -n.hanging : n.firstLine};
+    para = applyPap(under, prls, under, env);
+  }
+  if (p0.anld && !(p0.ilfo > 0 && p0.ilfo !== WORD6)) ctx.note(ANLD);
+  for (const [k, msg] of NOTES) if (para[k]) ctx.note(msg);
+  const pPr = pPrOut(para, under);
+  if (list) pPr.numPr = list.numPr;
+  return {istd: ps.istd, pStyle: ps.istd ? ps.docId : undefined,
+    base, para, pPr};
+}
+
+/** See the header. */
+export function currentPara(ctx) {
+  const P = propsOf(ctx);
+  if (P.cur.start !== ctx.paraStart) {
+    const mark = markAfter(ctx, ctx.paraStart);
+    P.cur = {start: ctx.paraStart, mark,
+      info: paraInfo(ctx, mark)};
+  }
+  return P.cur.info;
+}
+
+/** See the header. */
+export function paraAt(ctx, cp) {
+  const info = paraInfo(ctx, markAfter(ctx, cp));
+  return {pPr: info.pPr, pStyle: info.pStyle};
+}
+
+/** DocRead's para: the paragraph of CPs from..to. */
+function para(ctx, from, to) {
+  const P = propsOf(ctx);
+  const info = P.cur.start === from && P.cur.mark === to - 1
+    ? P.cur.info : paraInfo(ctx, to - 1);
+  const out = {pPr: info.pPr};
+  if (info.pStyle !== undefined) out.pStyle = info.pStyle;
+  return out;
+}
+
+/** See the header. */
+export const PART = {para, start: [propsOf]};

@@ -1,0 +1,217 @@
+// OdtRevs - the tracked changes of an OpenDocument text (OpenDocument
+// 1.3 part 3, 5.5 <text:tracked-changes>, <text:changed-region>,
+// <text:change-start>, <text:change-end>, <text:change>) for
+// ./OdtRead, through the builder (./ImpBuild rev).
+//
+//   PART  {elements: text:tracked-changes, text:change-start,
+//       text:change-end, text:change}
+//
+// The table (text:tracked-changes, read where it stands: first in
+// the text) gives each text:changed-region's text:id its kind (an
+// insertion, a deletion or a format change), office:change-info's
+// dc:creator and dc:date (b.rev: ./ImpRevs caps authors and tags).
+//   insertion: the text between change-start and change-end (the
+//     same text:change-id) is tagged inserted (ctx.rev, ./OdtBody
+//     fmtNow); the paragraph marks inside the range are inserted
+//     too (ctx.revMark). The innermost open range wins. A range
+//     with no end after its start, in the same text box or shape
+//     (./OdtBoxes SCOPES: read after their paragraph), is not
+//     opened (a note).
+//   deletion: its text lives in the region (text:p, text:h, lists
+//     flattened to paragraphs, no tables: a note); at the first
+//     text:change (or text:change-start) naming it, the paragraphs
+//     are put there tagged deleted: the first one in the paragraph
+//     under way, each further one after a deleted paragraph mark
+//     (the paragraph before it ends), the last one running on into
+//     the rest of the original paragraph. Between paragraphs they
+//     are whole deleted paragraphs. A region is used once. The
+//     live text after it collapses its white space as if the
+//     deletion were not there; ctx.revDel is true while it is read.
+//   format change: nothing is tracked, nothing said.
+// In headers, footers, notes and comments (the Model keeps tracked
+// changes only in the body) a deletion is left out, a note. A mark
+// whose id is not in the table, a region with no id or one used
+// twice, a change-end with no start: ignored, one note each kind.
+// At most MAX_REGIONS regions and MAX_DELETED deleted paragraphs.
+// Pure: no desktop services.
+import {first, kids, attr, textOf} from './OdtXml';
+import {marksOf} from './OdtFind';
+import {SCOPES} from './OdtBoxes';
+import {enter} from './OdtBody';
+import {STORY_REVS} from './ImpRevs';
+
+export const MAX_REGIONS = 200000, MAX_DELETED = 100000;
+const KINDS = {'text:insertion': 'ins', 'text:deletion': 'del'};
+const PARAS = new Set(['text:p', 'text:h']);
+const DESCEND = new Set(['text:list', 'text:list-item',
+  'text:list-header', 'text:section', 'text:numbered-paragraph']);
+
+// (open: the insertions open, innermost last, and ones ended under
+// them until they come to the top; byId: id -> its live entry)
+const state = (ctx) => ctx.revs || (ctx.revs = {map: new Map(),
+  open: [], byId: new Map(), done: new Set(), deleted: 0, ends: null});
+const say = (ctx, s) => ctx.note(s);
+
+/** The table of changes. */
+function table(ctx, node) {
+  const R = state(ctx);
+  for (const r of kids(node, 'text:changed-region')) {
+    const id = attr(r, 'text:id') ?? attr(r, 'xml:id');
+    if (typeof id !== 'string' || !id || R.map.has(id)) {
+      say(ctx, 'a tracked change with no id, or one id used twice, ' +
+        'is ignored');
+      continue;
+    }
+    if (R.map.size >= MAX_REGIONS) {
+      say(ctx, 'more than ' + MAX_REGIONS + ' tracked changes: the ' +
+        'rest are ignored');
+      break;
+    }
+    const body = kids(r).find((k) => k.name in KINDS ||
+      k.name === 'text:format-change');
+    const info = body && first(body, 'office:change-info');
+    const text = (n) => {
+      const x = info && first(info, n);
+      return x ? textOf(x).trim() : '';
+    };
+    R.map.set(id, {kind: body && KINDS[body.name], node: body,
+      author: text('dc:creator'), date: text('dc:date')});
+  }
+}
+
+/** The region of the mark naming id, or undefined (a note). */
+function region(ctx, id) {
+  const rec = state(ctx).map.get(id);
+  if (!rec) say(ctx, 'a tracked change that is not in the list of ' +
+    'changes is ignored');
+  return rec;
+}
+
+const keyOf = (ctx, rec) => {
+  if (rec.key === undefined) {
+    rec.key = ctx.b.rev({kind: rec.kind, author: rec.author,
+      date: rec.date}) || null;
+  }
+  return rec.key;
+};
+
+/** The paragraphs of a deletion's content, in order. */
+function flatten(ctx, node) {
+  const out = [], stack = [...node.children].reverse();
+  while (stack.length) {
+    const c = stack.pop();
+    if (typeof c === 'string') continue;
+    if (PARAS.has(c.name)) out.push(c);
+    else if (c.name === 'table:table') {
+      say(ctx, 'tables in deleted text are left out');
+    } else if (DESCEND.has(c.name)) {
+      for (let i = c.children.length - 1; i >= 0; i--) {
+        stack.push(c.children[i]);
+      }
+    }
+  }
+  return out;
+}
+
+/** Put a deletion's paragraphs here (see the header). */
+function deleteAt(ctx, rec) {
+  const R = state(ctx);
+  if (R.done.has(rec)) return;
+  R.done.add(rec);
+  if (ctx.depth || ctx.where !== 'content') return say(ctx, STORY_REVS);
+  const key = keyOf(ctx, rec);
+  if (!key) return;
+  let paras = flatten(ctx, rec.node);
+  if (R.deleted + paras.length > MAX_DELETED) {
+    say(ctx, 'more than ' + MAX_DELETED + ' deleted paragraphs: the ' +
+      'rest are left out');
+    paras = paras.slice(0, Math.max(0, MAX_DELETED - R.deleted));
+  }
+  R.deleted += paras.length;
+  const keep = [ctx.rev, ctx.revMark, ctx.para, ctx.paraKey,
+    ctx.spans, ctx.paraEnd, ctx.space, ctx.spacePara, ctx.revDel];
+  try {
+    ctx.rev = key;
+    ctx.revDel = true;
+    if (!ctx.para) {
+      ctx.revMark = key;
+      return ctx.walk({children: paras});
+    }
+    let end = ctx.paraEnd;
+    paras.forEach((p, i) => {
+      if (i > 0 && !ctx.stop) {
+        ctx.b.endPara({...end, rev: key});
+        const q = enter(ctx, p);
+        end = {pPr: q.pPr, pStyle: q.pStyle};
+      }
+      ctx.walk(p);
+    });
+  } finally {
+    [ctx.rev, ctx.revMark, ctx.para, ctx.paraKey, ctx.spans,
+      ctx.paraEnd, ctx.space, ctx.spacePara, ctx.revDel] = keep;
+    if (ctx.b.stopped) ctx.stop = true;
+  }
+}
+
+/** The innermost insertion open sets the tag (ended ones dropped
+ *  from the top: each is dropped once). */
+const top = (ctx) => {
+  const open = state(ctx).open;
+  while (open.length && open.at(-1).ended) open.pop();
+  const t = open.at(-1);
+  ctx.rev = ctx.revMark = t ? t.key : undefined;
+};
+
+/** Whether a change-end naming id comes after node (looked once). */
+function ended(ctx, node, id) {
+  const R = state(ctx);
+  if (!R.ends) {
+    R.ends = marksOf([ctx.parts.content, ctx.parts.styles],
+      ['text:change-start'], [['text:change-end', 'text:change-id']],
+      undefined, SCOPES);
+  }
+  return R.ends.later(node, id);
+}
+
+function start(ctx, node) {
+  const id = attr(node, 'text:change-id');
+  const rec = region(ctx, id);
+  if (!rec) return;
+  if (rec.kind === 'del') return deleteAt(ctx, rec);
+  if (rec.kind !== 'ins') return;
+  const R = state(ctx);
+  if (R.byId.has(id)) return;
+  if (!ended(ctx, node, id)) {
+    return say(ctx, 'a tracked insertion that never ends is read as ' +
+      'plain text');
+  }
+  const key = keyOf(ctx, rec);
+  if (!key) return;
+  const o = {key, ended: false};
+  R.open.push(o);
+  R.byId.set(id, o);
+  top(ctx);
+}
+
+function end(ctx, node) {
+  const id = attr(node, 'text:change-id');
+  const rec = region(ctx, id);
+  if (!rec || rec.kind !== 'ins') return;
+  const R = state(ctx), o = R.byId.get(id);
+  if (!o) {
+    return say(ctx, 'the end of a tracked change with no start is ' +
+      'ignored');
+  }
+  o.ended = true;
+  R.byId.delete(id);
+  top(ctx);
+}
+
+function point(ctx, node) {
+  const rec = region(ctx, attr(node, 'text:change-id'));
+  if (rec && rec.kind === 'del') deleteAt(ctx, rec);
+}
+
+export const PART = {elements: new Map([
+  ['text:tracked-changes', table], ['text:change-start', start],
+  ['text:change-end', end], ['text:change', point]])};

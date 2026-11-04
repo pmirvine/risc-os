@@ -1,0 +1,239 @@
+// ImpFields - fields, links and bookmarks for ./ImpBuild, as
+// ./RtfFields makes them (the Model a .docx reads as). Each takes
+// the flow it builds in (b.field etc.: b.flow; s.field: story s).
+//
+//   field(flow, {code, result?, dirty?, lock?}, fmt?)  a whole field:
+//       fieldStart, result as text in fmt, fieldEnd
+//   fieldStart(flow, {code, dirty?, lock?}, fmt?) -> rec  a field
+//       whose result follows (text, inlines, paragraphs: a TOC's run
+//       over several); rec.mode 'complex' (begin, ONE instrText of
+//       the code: ./FieldMake, separate, given now; end at
+//       fieldEnd), 'link' (HYPERLINK: the result is gathered as a
+//       w:hyperlink, see link) or 'text' (the result is plain text)
+//   fieldEnd(flow, rec?)  the field rec (default the innermost)
+//       ends, and any opened inside it
+//   link(flow, target, content, fmt?) -> true | false  a w:hyperlink
+//       showing content (text in fmt; default the address) to
+//       target: an address ('#name' a bookmark) or {url?, anchor?,
+//       tip? (./ImpSafe attrText'd)}; refused by ./LinkParts
+//       target (a url or name with a control character among them):
+//       content as text, a note, false. A url is an External
+//       relationship (./ImpStory newRel) of the flow: only data,
+//       nothing is ever fetched
+//   bookmark(flow, name, 'start' | 'end') -> true | false
+//   flushLink(flow), endAll(flow)  for ./ImpFlow: a link's content
+//       gathered so far given (a paragraph end in a link ends it and
+//       starts another to the same place); every open field ended
+//
+// Untrusted input, as ./RtfFields: only the names in its SAFE stay
+// fields (none reads files, programs or data sources: no
+// INCLUDETEXT, LINK, DDE, DATABASE...); any other, a name it does not
+// read (nameOf, ./FieldParse) or a code ./FieldMake codeText
+// refuses keeps only its result, as text, with a note. Fields nest
+// at most MAX_OPEN deep (deeper: text). A table call and the flow's
+// end end the fields open in it. Bookmarks: level 'p' raw inlines
+// w:bookmarkStart w:id w:name / w:bookmarkEnd w:id, ids 0, 1... in
+// the order of the starts; the name trimmed, ./LinkUrl checkAnchor
+// (else skipped, with a note); a name started twice or an end with
+// no start skipped; at most MAX_MARKS.
+// Pure: no desktop services.
+import {el} from 'wimplib/Xml';
+import {codeText, fieldInlines} from './FieldMake';
+import {parse} from './FieldParse';
+import {target as targetOf, withTip, runNodes, linkX, TIP_MAX}
+  from './LinkParts';
+import {checkAnchor} from './LinkUrl';
+import {prefixFor} from './Ns';
+import {NS} from './Wml';
+import {docScope} from './WriteBody';
+import {SAFE, nameOf, linkTarget, MAX_CODE} from './RtfFields';
+import {Para, PLAIN, isObj} from './ImpPara';
+import {newRel} from './ImpStory';
+import {attrText} from './ImpSafe';
+
+export const MAX_OPEN = 64;
+const MAX_MARKS = 100000;
+const KINDS = 'fields of a kind !Letters does not keep: their ' +
+  'results are kept as text';
+const REFUSED = 'a link to an address that is not allowed: its ' +
+  'text is kept';
+
+/** The w:hyperlink inline for content c ({text, runs, inlines}). */
+function linkInline(flow, t, c) {
+  const b = flow.b, map = docScope(b.doc).map;
+  let attrs = [['w:history', '1']];
+  if (t.url) {
+    const {p, decl} = prefixFor(map, NS.r, 'r');
+    const id = newRel(b, flow, 'hyperlink', t.url, true);
+    attrs = [...decl, [p + ':id', id], ...attrs];
+  }
+  if (t.anchor) attrs.push(['w:anchor', t.anchor]);
+  if (t.tip) attrs = withTip(attrs, t.tip);
+  return linkX(el('w:hyperlink', attrs, ...runNodes(c, null, map)),
+    map);
+}
+
+/** See the header. */
+export function flushLink(flow) {
+  const piece = flow.piece;
+  const rec = flow.fields.findLast((r) => r.mode === 'link');
+  if (!piece || !rec) return;
+  flow.piece = new Para();
+  if (piece.len) {
+    const c = piece.content();
+    flow.put(linkInline(flow, rec.target, c), rec.fmt);
+  }
+}
+
+/** What field o is: the record, its mode decided (see the header). */
+function decide(flow, o, fmt) {
+  const b = flow.b, rec = {mode: 'text', fmt};
+  const raw = isObj(o) && typeof o.code === 'string' ? o.code : '';
+  const code = raw.length <= MAX_CODE && raw.isWellFormed()
+    ? codeText(raw) : null;
+  if (!code) {
+    if (raw.trim()) {
+      b.note('a field whose code cannot be kept: its result is kept ' +
+        'as text');
+    }
+    return rec;
+  }
+  if (flow.fields.length >= MAX_OPEN) {
+    b.note('fields nested more than ' + MAX_OPEN + ' deep: the ' +
+      'deeper ones are kept as text');
+    return rec;
+  }
+  const p = parse(raw), name = nameOf(raw);
+  if (!name || name !== p.name || !SAFE.has(name)) {
+    b.note(KINDS);
+    return rec;
+  }
+  if (name === 'HYPERLINK') {
+    rec.target = flow.piece ? null : linkTarget(p);
+    if (rec.target) rec.mode = 'link';
+    else if (!flow.piece) b.note(REFUSED);
+    return rec;
+  }
+  rec.mode = 'complex';
+  const ins = fieldInlines(code).inlines;
+  const attrs = ins[0].node.attrs.slice();
+  if (o.lock) attrs.push(['w:fldLock', '1']);
+  if (o.dirty) attrs.push(['w:dirty', '1']);
+  rec.begin = [{...ins[0], node: {...ins[0].node, attrs}}, ins[1],
+    ins[2]];
+  rec.end = ins[3];
+  return rec;
+}
+
+/** See the header. */
+export function fieldStart(flow, o, fmt = PLAIN) {
+  if (flow.b.stopped) return null;
+  const rec = decide(flow, o, fmt);
+  for (const x of rec.begin || []) flow.obj(x, fmt);
+  flow.fields.push(rec);
+  if (rec.mode === 'link') flow.piece = new Para();
+  return rec;
+}
+
+/** End the innermost open field. */
+function endOne(flow) {
+  const rec = flow.fields.at(-1);
+  if (rec.mode === 'link') {
+    flushLink(flow);
+    flow.piece = null;
+  }
+  flow.fields.pop();
+  if (rec.end) flow.obj(rec.end, rec.fmt);
+}
+
+/** See the header. */
+export function fieldEnd(flow, rec) {
+  const i = rec === undefined ? flow.fields.length - 1
+    : flow.fields.lastIndexOf(rec);
+  if (i < 0 || flow.b.stopped) return;
+  while (flow.fields.length > i) endOne(flow);
+}
+
+/** See the header. */
+export function endAll(flow) {
+  while (flow.fields.length) endOne(flow);
+}
+
+/** See the header. */
+export function field(flow, o, fmt = PLAIN) {
+  const rec = fieldStart(flow, o, fmt);
+  if (!rec) return;
+  if (isObj(o) && typeof o.result === 'string') {
+    flow.text(o.result, fmt);
+  }
+  fieldEnd(flow, rec);
+}
+
+/** The target given: {url?, anchor?, tip?} or null (refused). */
+function given(t) {
+  if (typeof t === 'string') {
+    const x = targetOf({address: t});
+    return x && !x.error ? x : null;
+  }
+  if (!isObj(t)) return null;
+  const out = {};
+  for (const [k, o] of [['url', {address: t.url}],
+    ['anchor', {anchor: t.anchor}]]) {
+    if (t[k] === undefined) continue;
+    const x = targetOf(o);
+    if (!x || x.error || (k === 'url' && !x.url)) return null;
+    out[k] = x[k];
+  }
+  const tip = attrText(t.tip);
+  if (tip && tip.length <= TIP_MAX) out.tip = tip;
+  return out.url || out.anchor ? out : null;
+}
+
+/** See the header. */
+export function link(flow, target, content, fmt = PLAIN) {
+  if (flow.b.stopped) return false;
+  const t = flow.piece ? null : given(target);
+  const shown = typeof content === 'string' && content ? content
+    : t ? t.url || t.anchor : '';
+  if (!t) {
+    if (!flow.piece) flow.b.note(REFUSED);
+    flow.text(shown, fmt);
+    return false;
+  }
+  const rec = {mode: 'link', target: t, fmt};
+  flow.fields.push(rec);
+  flow.piece = new Para();
+  flow.text(shown, fmt);
+  fieldEnd(flow, rec);
+  return true;
+}
+
+const marks = (b) => b.marks || (b.marks = {next: 0, open: new Map(),
+  seen: new Set()});
+
+/** See the header. */
+export function bookmark(flow, name, which) {
+  const b = flow.b;
+  const n = typeof name === 'string' ? name.trim() : '';
+  if (!n || b.stopped) return false;
+  if (checkAnchor(n)) {
+    b.note('a bookmark whose name cannot be kept is skipped');
+    return false;
+  }
+  const m = marks(b);
+  if (which === 'start') {
+    if (m.seen.has(n) || m.next >= MAX_MARKS) return false;
+    const id = String(m.next++);
+    m.seen.add(n);
+    m.open.set(n, id);
+    flow.obj({kind: 'raw', level: 'p', text: '', node:
+      el('w:bookmarkStart', [['w:id', id], ['w:name', n]])});
+    return true;
+  }
+  if (which !== 'end' || !m.open.has(n)) return false;
+  const id = m.open.get(n);
+  m.open.delete(n);
+  flow.obj({kind: 'raw', level: 'p', text: '', node:
+    el('w:bookmarkEnd', [['w:id', id]])});
+  return true;
+}

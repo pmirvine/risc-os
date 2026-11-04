@@ -1,0 +1,225 @@
+// ImpFlow - one flow of blocks for ./ImpBuild: the body's, or a
+// story's (a header, footer, note or comment: ImpBuild story).
+//
+//   new Flow(b)    b the ImpBuild (its note, count, stopped, doc)
+//   flow.text(s, fmt), flow.obj(inline, fmt?), flow.endPara(o)
+//       -> Para | null, flow.tableStart(t), rowStart(trPr),
+//       cellStart(tcPr), cellEnd(), rowEnd(), tableEnd(): as
+//       ImpBuild's (see there), for this flow; and field, fieldStart,
+//       fieldEnd, link, bookmark (./ImpFields), picture (./ImpPict)
+//       for this flow
+//   flow.blocks    the blocks made so far (tables once closed)
+//   flow.para      the ./ImpPara Para being gathered
+//   flow.tables    its ./ImpTable TableStack
+//   flow.rels      the relationships made in a story (./ImpStory)
+//   flow.flush()   pending text ends as a paragraph
+//   flow.close()   open fields ended, pending text ended, tables
+//       closed; a paragraph after a table that ends the blocks
+//   flow.end() -> blocks  a story's end: close, b.flow is the one
+//       before again; at least one paragraph. Ended twice: the same
+//       blocks. Ended while a story inside it is open: that one is
+//       left out, with a note
+//   flow.put(inline, fmt, into?)  an inline through the rules below
+//
+// Formats: ./ImpPara fmtOf; revisions ./ImpRevs fmtIn. An inline
+// ./OpsRevs taggable refuses is untagged in an insertion and left
+// out of a deletion (a note). Note and comment marks go through
+// b.placing (./ImpNotes, ./ImpComments), never inside a link (it
+// ends there and goes on after). An inline that is not an object, or
+// whose node holds a character XML cannot (./ImpSafe nodeOk), or a
+// property object that is not one (pPr, rPr in a fmt) is ignored
+// with a note; property strings and pStyle are made safe
+// (./ImpSafe). A paragraph ./Model newPara refuses is left out with
+// a note, and does not count against the cap.
+// Pure: no desktop services.
+import {newPara} from './Model';
+import {taggable} from './OpsRevs';
+import {TableStack} from './ImpTable';
+import {Para, PLAIN, fmtOf, variant, isObj, props, BAD_PROPS}
+  from './ImpPara';
+import {fmtIn, tagged, markRev, isKey, DROPPED} from './ImpRevs';
+import {endedAs} from './ImpStory';
+import {nodeOk, attrText} from './ImpSafe';
+import * as Fields from './ImpFields';
+import {picture} from './ImpPict';
+
+export {Para, cleanText} from './ImpPara';
+
+const MARKS = ['noteRef', 'cmtStart', 'cmtEnd', 'cmtRef'];
+const BAD_OBJ = 'an object that is not valid is left out';
+const BAD_PARA = 'a paragraph that cannot be kept is left out';
+const INNER = 'a story ended while one inside it was open: that ' +
+  'one is left out';
+
+export class Flow {
+  constructor(b) {
+    this.b = b;
+    this.blocks = [];
+    this.para = new Para();
+    this.tables = new TableStack(this);
+    this.rels = [];
+    this.fields = [];
+    this.piece = null;
+  }
+
+  /** The format of text arriving now, for where it goes. */
+  fmt(fmt) {
+    const f = fmtOf(fmt);
+    if (f.bad) this.b.note(BAD_PROPS);
+    const g = fmtIn(this.b, this, f);
+    // (a link's content: no revisions inside it)
+    if (!this.piece || !g.rev) return g;
+    if (g.rev.kind === 'del') this.b.note(DROPPED);
+    return variant(g, g.rev.kind === 'del' ? 'gone' : 'plain');
+  }
+
+  text(s, fmt) {
+    if (!this.b.stopped) (this.piece || this.para).text(s,
+      this.fmt(fmt));
+  }
+
+  obj(inline, fmt) {
+    if (this.b.stopped) return;
+    if (!isObj(inline) || (inline.node !== undefined &&
+      !nodeOk(inline.node))) {
+      this.b.note(BAD_OBJ);
+      return;
+    }
+    if (this.piece && MARKS.includes(inline.kind)) {
+      // (a note or comment mark is not put inside a link: the link
+      // ends before it and goes on after it)
+      Fields.flushLink(this);
+      this.put(inline, fmt, this.para);
+      return;
+    }
+    if (this.piece && isObj(inline.node) &&
+      inline.node.name === 'w:hyperlink') {
+      // (a link in a link, which Word refuses: its text only)
+      if (typeof inline.text === 'string') this.text(inline.text, fmt);
+      return;
+    }
+    this.put(inline, fmt, this.piece || this.para);
+  }
+
+  put(inline, fmt, into = this.para) {
+    let f = this.fmt(fmt || PLAIN);
+    if (f.gone) return;
+    if (f.rev && !taggable({inlines: {0: inline}}, 0, 1)) {
+      if (f.rev.kind === 'del') {
+        this.b.note(DROPPED);
+        return;
+      }
+      f = variant(f, 'plain');
+    }
+    const pre = this.b.placing ? this.b.placing(inline, this) : [];
+    if (!pre) return;
+    for (const x of pre) into.obj(x, f);
+    into.obj(inline, f);
+  }
+
+  endPara(o = {}) {
+    if (this.b.stopped) return null;
+    if (this.piece) Fields.flushLink(this);
+    const {text, runs, inlines, keys} = this.para.content();
+    this.para = new Para();
+    if (!isObj(o)) o = {};
+    let pPr = props(this.b, o.pPr);
+    let p;
+    try {
+      if (this === this.b.body && isKey(this.b, o.rev)) {
+        pPr = markRev(this.b, o.rev, pPr);
+      }
+      const opts = {runs: tagged(this.b, runs, keys), inlines, pPr};
+      const st = this.b.doc.styles;
+      const ps = typeof o.pStyle === 'string' ? attrText(o.pStyle)
+        : undefined;
+      if (ps && !(st && st.defaults.paragraph === ps)) opts.pStyle = ps;
+      p = newPara(text, opts);
+    } catch (e) {
+      this.b.note(BAD_PARA);
+      return null;
+    }
+    if (!this.b.count()) return null;
+    this.place(p);
+    return p;
+  }
+
+  /** End pending text as a paragraph. */
+  flush() {
+    if (this.para.len || (this.piece && this.piece.len)) this.endPara();
+  }
+
+  place(block) {
+    if (this.tables.depth) this.tables.put(block);
+    else this.blocks.push(block);
+  }
+
+  tableStart(t) {
+    this.table('start', t);
+  }
+
+  rowStart(trPr) {
+    this.table('rowStart', trPr);
+  }
+
+  cellStart(tcPr) {
+    this.table('cellStart', tcPr);
+  }
+
+  cellEnd() {
+    this.table('cellEnd');
+  }
+
+  rowEnd() {
+    this.table('rowEnd');
+  }
+
+  tableEnd() {
+    this.table('end');
+  }
+
+  table(m, arg) {
+    if (this.b.stopped) return;
+    Fields.endAll(this);
+    this.flush();
+    const t = this.tables[m](arg);
+    if (t) this.blocks.push(t);
+  }
+
+  /** Open fields ended, pending text ended, tables closed: a
+   *  paragraph after a table that ends the blocks, as Word has. */
+  close() {
+    if (!this.b.stopped) {
+      Fields.endAll(this);
+      this.flush();
+    }
+    const t = this.tables.closeAll();
+    if (t) this.blocks.push(t);
+    const last = this.blocks[this.blocks.length - 1];
+    if (last && last.type === 'tbl') this.blocks.push(newPara(''));
+  }
+
+  /** A story's end (./ImpBuild story): its blocks. */
+  end() {
+    if (this.done) return this.done;
+    const fs = this.b.flows, i = fs.lastIndexOf(this);
+    if (i === 0) return [];
+    if (i > 0 && i < fs.length - 1) {
+      this.b.note(INNER);
+      fs.splice(i + 1);
+    }
+    this.close();
+    if (i > 0) fs.splice(i, 1);
+    this.done = this.blocks.length ? this.blocks : [newPara('')];
+    endedAs(this, this.done);
+    return this.done;
+  }
+}
+
+const OWN = {...Fields, picture};
+for (const m of ['field', 'fieldStart', 'fieldEnd', 'link',
+  'bookmark', 'picture']) {
+  Flow.prototype[m] = function(...a) {
+    return OWN[m](this, ...a);
+  };
+}

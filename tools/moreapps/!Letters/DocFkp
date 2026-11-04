@@ -1,0 +1,152 @@
+// DocFkp - where a .doc keeps the formatting of its text ([MS-DOC]
+// 2.8.6 PlcBteChpx, 2.8.7 PlcBtePapx: bin tables of FKP pages;
+// 2.9.44 ChpxFkp, 2.9.183 PapxFkp: 512-byte pages of the Word
+// stream), looked up by the stream offset (fc) of a character.
+// Used by ./DocChpx and ./DocPapx; pure.
+//
+//   readBte(table, fib, name, note?) -> {fcs, pns}  the bin table
+//       'PlcfBteChpx' or 'PlcfBtePapx': n + 1 fcs, n page numbers
+//       (a PnFkp's low 22 bits); n from the lcb (one that is not
+//       4 + 8n bytes: the whole entries, a note); the fcs must
+//       not go backwards (the rest is left out, a note)
+//   readFkp(word, pn, kind) -> [{fcFirst, fcLim, grpprl, istd?}]
+//       the runs of page pn ('chp' | 'pap'): grpprl a view of its
+//       Prls (null: none, the default); a 'pap' run's istd (its
+//       GrpPrlAndIstd's). crun / cpara is cut to what the page can
+//       hold, a run whose fcs go backwards or a Chpx / PapxInFkp
+//       inside the page's head (rgfc, rgb) or past its end is left
+//       out; null when the page lies
+//       outside the stream. Pure: the caller keeps them
+//   finder(word, bte, kind, note?) -> at(fc) -> {run, fcLim}  the
+//       run holding fc (null: none: default formatting) and the fc
+//       where it (or the gap) ends; pages are read once each
+export const PAGE = 512;
+const BAD_BTE = 'a formatting table in the file is damaged: ' +
+  'part of the formatting is not read';
+const BAD_FKP = 'a page of formatting in the file is damaged: ' +
+  'part of it is not read';
+
+import {slice} from './DocFib';
+
+const dv = (b) => new DataView(b.buffer, b.byteOffset, b.length);
+
+/** See the header. */
+export function readBte(table, fib, name, note = () => {}) {
+  const plc = slice(table, fib, name, note);
+  const out = {fcs: [], pns: []};
+  if (!plc || plc.length < 12) return out;
+  if ((plc.length - 4) % 8) note(BAD_BTE);
+  const n = Math.floor((plc.length - 4) / 8);
+  const d = dv(plc);
+  let last = -1;
+  for (let i = 0; i <= n; i++) {
+    const fc = d.getUint32(4 * i, true);
+    if (fc < last) {
+      note(BAD_BTE);
+      break;
+    }
+    out.fcs.push(fc);
+    if (i < n) out.pns.push(d.getUint32(4 * (n + 1) + 4 * i, true) &
+      0x3FFFFF);
+    last = fc;
+  }
+  out.pns.length = Math.max(0, out.fcs.length - 1);
+  return out;
+}
+
+/** The GrpPrlAndIstd of the PapxInFkp at b: [istd, grpprl] | null. */
+function papxAt(page, b) {
+  if (!b) return [0, null];
+  const cb = page[b];
+  const start = cb ? b + 1 : b + 2;
+  const len = cb ? 2 * cb - 1 : 2 * page[b + 1];
+  if (len < 2 || start + len > PAGE - 1) return null;
+  return [page[start] | (page[start + 1] << 8),
+    page.subarray(start + 2, start + len)];
+}
+
+/** See the header. */
+export function readFkp(word, pn, kind, note = () => {}) {
+  const at = pn * PAGE;
+  if (!(at >= 0 && at + PAGE <= word.length)) {
+    note(BAD_FKP);
+    return null;
+  }
+  const page = word.subarray(at, at + PAGE);
+  const d = dv(page);
+  const per = kind === 'pap' ? 13 : 1;
+  let n = page[PAGE - 1];
+  const room = Math.floor((PAGE - 1 - 4) / (4 + per));
+  if (n > room) {
+    note(BAD_FKP);
+    n = room;
+  }
+  const out = [];
+  const offs = 4 * (n + 1);
+  for (let i = 0; i < n; i++) {
+    const fcFirst = d.getUint32(4 * i, true);
+    const fcLim = d.getUint32(4 * i + 4, true);
+    const b = page[offs + per * i] * 2;
+    // (a Chpx / PapxInFkp inside the rgfc / rgb area is damage)
+    const inHead = b && b < offs + per * n;
+    if (inHead || fcLim <= fcFirst || (out.length &&
+      fcFirst < out[out.length - 1].fcLim)) {
+      note(BAD_FKP);
+      continue;
+    }
+    if (kind === 'pap') {
+      const p = papxAt(page, b);
+      if (!p) {
+        note(BAD_FKP);
+        continue;
+      }
+      out.push({fcFirst, fcLim, istd: p[0], grpprl: p[1]});
+      continue;
+    }
+    if (b && b + 1 + page[b] > PAGE - 1) {
+      note(BAD_FKP);
+      continue;
+    }
+    out.push({fcFirst, fcLim,
+      grpprl: b ? page.subarray(b + 1, b + 1 + page[b]) : null});
+  }
+  return out;
+}
+
+/** The index of the last x in sorted xs with get(x) <= v, or -1. */
+function below(xs, v, get = (x) => x) {
+  let lo = 0, hi = xs.length - 1, r = -1;
+  while (lo <= hi) {
+    const m = (lo + hi) >> 1;
+    if (get(xs[m]) <= v) {
+      r = m;
+      lo = m + 1;
+    } else hi = m - 1;
+  }
+  return r;
+}
+
+/** See the header. */
+export function finder(word, bte, kind, note) {
+  const pages = new Map();
+  const {fcs, pns} = bte;
+  return (fc) => {
+    const i = below(fcs, fc);
+    if (i < 0 || i >= pns.length) {
+      return {run: null, fcLim: i < 0 && fcs.length ? fcs[0]
+        : Infinity};
+    }
+    let runs = pages.get(pns[i]);
+    if (runs === undefined) {
+      runs = readFkp(word, pns[i], kind, note) || [];
+      pages.set(pns[i], runs);
+    }
+    const j = below(runs, fc, (r) => r.fcFirst);
+    if (j >= 0 && fc < runs[j].fcLim) {
+      return {run: runs[j], fcLim: runs[j].fcLim};
+    }
+    const next = runs[j + 1];
+    return {run: null, fcLim: Math.min(fcs[i + 1],
+      next ? next.fcFirst : Infinity)};
+  };
+}

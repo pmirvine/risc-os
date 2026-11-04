@@ -303,7 +303,7 @@ try {
     return res;
   });
   ok('a corrupt file is reported by name', r5.msgs.length === 1 && /Broken/.test(r5.msgs[0]) && /not a Word \.docx file/.test(r5.msgs[0]), r5.msgs);
-  // an OLE2 file (older .doc, or an encrypted .docx): the specific reason
+  // a damaged OLE2 file (no readable .doc in it): the specific reason
   const r5b = await page.evaluate(async () => {
     window.__msgs.length = 0;
     const ole = new Uint8Array(512);
@@ -313,7 +313,7 @@ try {
     for (let i = 0; i < 40 && !window.__msgs.length; i++) await window.__sleep(50);
     return [...window.__msgs];
   });
-  ok('an older .doc or password-protected file says so', r5b.length === 1 && /OldDoc/.test(r5b[0]) && /older Word \(\.doc\) or password-protected file/.test(r5b[0]), r5b);
+  ok('a damaged OLE file says it is damaged', r5b.length === 1 && /OldDoc/.test(r5b[0]) && /the file is damaged/.test(r5b[0]), r5b);
   ok('Word still responds', r5.alive && r5.docs === 2 && r5.still === 2, r5);
 
   // a copy that cannot be made: the error names the file

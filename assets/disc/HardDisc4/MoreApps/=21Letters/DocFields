@@ -1,0 +1,250 @@
+// DocFields - the fields of a .doc ([MS-DOC] 2.8.25 PlcFld, 2.9.85
+// Fld: 0x13 begin, 0x14 separator, 0x15 end) through the builder
+// (./ImpBuild fieldStart, fieldEnd, field). A handler module of
+// ./DocRead (PART {chars, start}).
+//
+//   0x13  a field begins: its code follows (ctx.hidden: the text is
+//         gathered as the code, ctx.hiddenText, not shown)
+//   0x14  the code ends, the result follows: a field of a kind kept
+//         (./DocFldKind 'safe': PAGE, NUMPAGES, DATE, REF, TOC,
+//         SEQ, IF...; HYPERLINK a link) starts in the builder
+//         (fieldStart, the code's text one instrText; the lock flag
+//         of its end in PlcFld; a result marked dirty is kept as
+//         it is); EMBED and SHAPE keep their result (the object's
+//         picture) with no note; any other kind keeps its
+//         result as text, with a note (one a kind, then one for the
+//         rest): nothing is ever fetched (INCLUDETEXT, LINK...), form
+//         fields are their text
+//   0x15  the field ends (fieldEnd). One with no separator has no
+//         result: a kept kind is a field with none (b.field: an
+//         index entry, a PAGE with no result); an EQ shows the base
+//         of its ruby, a MACROBUTTON its text, index entries and the
+//         like nothing, any other its code as text (a note)
+//   closeCodes(ctx)  at a paragraph's end: the fields whose code is
+//         still open there are closed (left out, a note), and those
+//         whose end the story's PlcFld says is missing end there
+//         (a note)
+//
+// A field inside another's code gives its result to that code (as
+// Word reads it: IF { REF x } = ...), and is not made itself. Marks
+// out of place (a separator or end with no field) are left out (one
+// note). A bookmark or comment range starting or ending in a code is
+// placed where the code closes (./DocMarks release). Nesting is
+// iterative; past MAX_DEPTH open fields the deeper marks are left
+// out, their text read as part of the innermost open code (a note).
+// A code is at most ./RtfFields MAX_CODE + 1 characters (longer:
+// refused by the builder, its result kept). PlcFld (the story's:
+// PlcfFldMom, Ftn, Hdr, Atn, Edn, Txbx, HdrTxbx, CPs from the
+// story's start) is read once a story kind, only as far as its CPs
+// rise; a field the text has and PlcFld does not is read as the
+// text says.
+// ctx.fields  the open fields [{code (null in the result), cp,
+//             captured, rec, noEnd}], with .codes (the indexes of
+//             those in their code) and .ends (the noEnd ones);
+//             ctx.hidden = codes.length
+import {MAX_CODE} from './RtfFields';
+import {kindFor, shownText} from './DocFldKind';
+import {slice} from './DocFib';
+import {plcOf, findCp} from './DocPlc';
+import {release} from './DocMarks';
+
+export const MAX_DEPTH = 1000;
+const STORIES = [['ccpText', 'PlcfFldMom'], ['ccpFtn', 'PlcfFldFtn'],
+  ['ccpHdd', 'PlcfFldHdr'], ['ccpAtn', 'PlcfFldAtn'],
+  ['ccpEdn', 'PlcfFldEdn'], ['ccpTxbx', 'PlcfFldTxbx'],
+  ['ccpHdrTxbx', 'PlcffldHdrTxbx']];
+const OPEN_CODE = 'a field code without its end is closed at the ' +
+  'end of its paragraph';
+const NO_END = 'a field without its end is closed at the end of ' +
+  'its paragraph';
+const DEEP = 'fields nested more than ' + MAX_DEPTH + ' deep: the ' +
+  'deeper fields are read as part of the innermost open code';
+const STRAY = 'field marks out of place are left out';
+const KINDS = {external: 'fields that would bring in files, ' +
+  'pictures or data (INCLUDETEXT, INCLUDEPICTURE, LINK, DDE...) ' +
+  'are kept as their results: nothing is fetched',
+form: 'form fields are kept as their text (check boxes and drop-down ' +
+  'lists are left out)',
+eq: 'equations (EQ fields) are kept as their text (ruby guides are ' +
+  'left out)',
+button: 'MACROBUTTON and GOTOBUTTON fields are kept as their text'};
+const MAX_NAMED = 8;
+const OTHERS = 'fields of other kinds are kept as their text';
+
+/** The story's PlcFld matched: {base, n, plc, bytes, endOf}. */
+function fldsAt(ctx, cp) {
+  const f = ctx.fib;
+  let base = 0, name = null;
+  for (const [k, n] of STORIES) {
+    if (cp < base + f[k]) {
+      name = n;
+      break;
+    }
+    base += f[k];
+  }
+  const all = ctx.fldPlcs || (ctx.fldPlcs = new Map());
+  if (!name || all.has(name)) return all.get(name) || null;
+  const bytes = slice(ctx.table, f, name, ctx.note);
+  const plc = bytes && plcOf(bytes, 2);
+  let out = null;
+  if (plc && plc.n) {
+    const endOf = new Int32Array(plc.n).fill(-1);
+    const stack = [], seps = [];
+    let n = plc.n;
+    for (let i = 0; i < plc.n; i++) {
+      if (i && plc.cp(i) < plc.cp(i - 1)) {
+        n = i;
+        break;
+      }
+      const ch = bytes[plc.at(i)] & 0x1F;
+      if (ch === 0x13) {
+        stack.push(i);
+        seps.push(-1);
+      } else if (ch === 0x14 && stack.length) seps[seps.length - 1] = i;
+      else if (ch === 0x15 && stack.length) {
+        const s = seps.pop();
+        endOf[stack.pop()] = i;
+        if (s >= 0) endOf[s] = i;
+      }
+    }
+    out = {base, n, plc, bytes, endOf};
+  }
+  all.set(name, out);
+  return out;
+}
+
+/** {noEnd, lock} of the separator at cp, as PlcFld says. */
+function flagsAt(ctx, cp) {
+  const F = fldsAt(ctx, cp);
+  const i = F ? findCp(F.plc, cp - F.base, F.n) : -1;
+  if (i < 0 || (F.bytes[F.plc.at(i)] & 0x1F) !== 0x14) return {};
+  const e = F.endOf[i];
+  if (e < 0) return {noEnd: true};
+  const g = F.bytes[F.plc.at(e) + 1];
+  return {lock: !!(g & 0x10)};
+}
+
+const fmtAt = (ctx, cp) => (ctx.reg.fmt ? (ctx.reg.fmt(ctx, cp) ||
+  {}).fmt : undefined);
+
+/** The stacks of ctx.fields. */
+function stacks(ctx) {
+  const F = ctx.fields;
+  if (!F.codes) Object.assign(F, {codes: [], ends: [], over: 0});
+  return F;
+}
+
+/** A note for a kind kept as text. */
+function kindNote(ctx, name, kind) {
+  if (KINDS[kind]) return ctx.note(KINDS[kind]);
+  const seen = ctx.fldNames || (ctx.fldNames = new Set());
+  if (name && (seen.has(name) || seen.size < MAX_NAMED)) {
+    seen.add(name);
+    return ctx.note(`fields of kind ${name} are kept as their text`);
+  }
+  ctx.note(OTHERS);
+}
+
+/** ctx.hiddenText: text in a code goes to the innermost code. */
+function gather(ctx, text) {
+  const F = stacks(ctx);
+  if (!F.codes.length) return;
+  const fr = F[F.codes[F.codes.length - 1]];
+  if (fr.code.length <= MAX_CODE) {
+    fr.code += text.slice(0, MAX_CODE + 1 - fr.code.length);
+  }
+}
+
+function begin(ctx, cp) {
+  const F = stacks(ctx);
+  if (F.length >= MAX_DEPTH) {
+    F.over++;
+    return ctx.note(DEEP);
+  }
+  F.codes.push(F.length);
+  F.push({code: '', cp, captured: F.codes.length > 1, rec: null,
+    noEnd: false});
+  ctx.hidden = F.codes.length;
+}
+
+function separate(ctx, cp) {
+  const F = stacks(ctx);
+  if (F.over) return;
+  const fr = F[F.length - 1];
+  if (!fr || fr.code === null) return ctx.note(STRAY);
+  const code = fr.code;
+  fr.code = null;
+  F.codes.pop();
+  ctx.hidden = F.codes.length;
+  if (fr.captured) return;
+  const {name, kind} = kindFor(ctx, code);
+  const fl = flagsAt(ctx, cp);
+  if (fl.noEnd) {
+    fr.noEnd = true;
+    F.ends.push(F.length - 1);
+  }
+  if (kind === 'quiet') return;
+  if (kind !== 'safe') return kindNote(ctx, name, kind);
+  fr.rec = ctx.b.fieldStart({code, lock: fl.lock}, fmtAt(ctx, fr.cp));
+}
+
+function end(ctx) {
+  const F = stacks(ctx);
+  if (F.over) {
+    F.over--;
+    return;
+  }
+  const fr = F.pop();
+  if (!fr) return ctx.note(STRAY);
+  if (F.ends.at(-1) === F.length) F.ends.pop();
+  if (fr.code === null) {
+    if (fr.rec) ctx.b.fieldEnd(fr.rec);
+    return;
+  }
+  F.codes.pop();
+  ctx.hidden = F.codes.length;
+  if (fr.captured) return;
+  const {name, kind} = kindFor(ctx, fr.code);
+  const fmt = fmtAt(ctx, fr.cp);
+  if (kind === 'safe') return ctx.b.field({code: fr.code}, fmt);
+  if (kind !== 'silent' && kind !== 'quiet') kindNote(ctx, name, kind);
+  const s = shownText(fr.code, kind);
+  if (s) ctx.b.text(s, fmt);
+}
+
+/** See the header. */
+export function closeCodes(ctx) {
+  const F = ctx.fields;
+  if (!F.codes || (!F.codes.length && !F.ends.length)) return;
+  const k = Math.min(F.codes.length ? F.codes[0] : Infinity,
+    F.ends.length ? F.ends[0] : Infinity);
+  while (F.length > k) {
+    const fr = F.pop();
+    if (fr.code !== null) {
+      if (!fr.captured) ctx.note(OPEN_CODE);
+    } else if (fr.rec) {
+      ctx.b.fieldEnd(fr.rec);
+      if (fr.noEnd) ctx.note(NO_END);
+    } else if (fr.noEnd) ctx.note(NO_END);
+  }
+  F.codes = F.codes.filter((i) => i < k);
+  F.ends = F.ends.filter((i) => i < k);
+  F.over = 0;
+  ctx.hidden = F.codes.length;
+  release(ctx);
+}
+
+/** See the header. */
+export const PART = {
+  // (marks met in a code are placed once it closes: ./DocMarks)
+  chars: new Map([[0x13, begin], [0x14, (c, cp) => {
+    separate(c, cp);
+    release(c);
+  }], [0x15, (c) => {
+    end(c);
+    release(c);
+  }]]),
+  start: [(ctx) => {
+    ctx.hiddenText = gather;
+  }],
+};

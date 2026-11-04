@@ -1,0 +1,95 @@
+// DocBlip - the bytes of a .doc picture record's BLIP (./DocArt) in
+// a form the builder's b.picture (./ImpPict) keeps. Used by
+// ./DocPict; pure.
+//
+//   blipBytes(ctx, r, room) -> Uint8Array | null  r a pictureAt
+//       result; room(n) -> bool: whether n more bytes fit the
+//       caller's caps (charged when they do). null: a note says why
+//
+// PNG and JPEG are their bytes; EMF and WMF stored (compression byte
+// 0xFE) are too; a compressed one (0: DEFLATE, with or without its
+// zlib wrapper) is inflated (wimplib/InflateSync) to exactly its
+// cbSize bytes. cbSize 0, more than ./RtfPict MAX_PICTURE or more
+// than MAX_RATIO times the compressed bytes, any other compression,
+// an inflate error or a length other than cbSize: a damaged picture
+// (a note). An Adler-32 that does not match, or a filter byte that
+// is not 0xFE ([MS-ODRAW] 2.2.31: the only value): kept, a note. The
+// bytes must be the kind the record says (./RtfPict kindOf: a WMF
+// with or without its placeable header). PICT, TIFF, DIB: skipped
+// with a note for each kind (nothing reads them here). A record
+// with no BLIP: one note (a delayed FBSE, its BLIP elsewhere: its
+// own); an old record (mm not 0x64 / 0x66) whose data is a WMF is
+// one.
+import {kindOf, MAX_PICTURE} from './RtfPict';
+import {inflateSync} from 'wimplib/InflateSync';
+
+export const MAX_RATIO = 1032;
+const N = {
+  damaged: 'a damaged picture is skipped',
+  drawing: 'inline drawings and lines are not read',
+  delayed: 'a picture kept outside its record is not read',
+  big: 'a picture larger than ' + (MAX_PICTURE >> 20) + ' MB is ' +
+    'skipped',
+  adler: 'a picture\'s checksum does not match: it is kept as it is',
+  filter: 'a picture\'s header is not as Word writes it: it is ' +
+    'kept as it is',
+};
+const KINDS = {pict: 'PICT', tiff: 'TIFF', dib: 'DIB (BMP)'};
+const kindNote = (k) => 'a picture in ' + KINDS[k] + ' format is ' +
+  'skipped: it cannot be converted';
+
+/** The inflated bytes of a compressed metafile, or null. */
+function unpack(ctx, b, room) {
+  const {size, bytes} = b;
+  if (b.compression !== 0 || !(size > 0) ||
+    size > MAX_RATIO * bytes.length + 64) {
+    ctx.note(N.damaged);
+    return null;
+  }
+  if (size > MAX_PICTURE) {
+    ctx.note(N.big);
+    return null;
+  }
+  if (!room(size)) return null;
+  let got;
+  try {
+    got = inflateSync(bytes, {max: size, size});
+  } catch (e) {
+    if (e && e.name !== 'InflateError') throw e;
+    ctx.note(N.damaged);
+    return null;
+  }
+  if (got.data.length !== size) {
+    ctx.note(N.damaged);
+    return null;
+  }
+  if (got.adler === false) ctx.note(N.adler);
+  return got.data;
+}
+
+/** See the header. */
+export function blipBytes(ctx, r, room) {
+  const b = r.blip;
+  if (!b) {
+    if (r.raw && kindOf(r.raw) === 'wmf') {
+      return room(r.raw.length) ? r.raw : null;
+    }
+    ctx.note(r.raw ? N.damaged : r.delayed ? N.delayed : N.drawing);
+    return null;
+  }
+  if (KINDS[b.kind]) {
+    ctx.note(kindNote(b.kind));
+    return null;
+  }
+  let bytes = b.bytes;
+  if (b.filter !== undefined && b.filter !== 0xFE) ctx.note(N.filter);
+  if (b.packed) bytes = unpack(ctx, b, room);
+  else if (!room(bytes.length)) return null;
+  if (!bytes) return null;
+  const want = b.kind === 'wmf' ? ['wmf', 'apm'] : [b.kind];
+  if (!want.includes(kindOf(bytes))) {
+    ctx.note(N.damaged);
+    return null;
+  }
+  return bytes;
+}

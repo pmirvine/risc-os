@@ -1,0 +1,198 @@
+// OdtSect - the pages of an OpenDocument text (OpenDocument 1.3
+// part 3, 16.9 <style:master-page>) for ./OdtRead: sections, page
+// setup (./OdtPage), headers and footers, through the builder
+// (./ImpBuild sectionEnd, header, footer, story).
+//
+//   PART  {elements: style:region-left / -center / -right (read as
+//       paragraphs of the header, one after the other); finish}
+//   paraSection(ctx, node), tableSection(ctx, node)  called by
+//       ./OdtBody and ./OdtTable before a paragraph or table: the
+//       master page its style names (style:master-page-name, on the
+//       style or the style it is based on) is the page from there on
+//   touch(ctx)  something not a paragraph or table is being put in
+//       the body: the first section starts
+//   inStory(ctx, where, node) -> Flow  reads node's children into a
+//       new builder story (a header, footer or note; ./OdtNotes);
+//       ctx.depth counts the stories open
+//
+// The first master page in use (the first one a paragraph or table
+// names, or else the first in the file) is section 1's. A paragraph
+// or table that names another one ends the section (with the props
+// of the page it was on) and starts a new one: at most MAX_SECTIONS
+// of them (a note for the rest). A master page's style:header,
+// style:footer are the default header and footer; -left the even
+// ones; -first the first page's (the section gets titlePg); one with
+// style:display false is not made; an empty one is not made. Their
+// text is read with the body's walker into stories, the automatic
+// styles of styles.xml (ctx.where 'styles'). A master page's
+// style:next-style-name (the page that follows it) is not followed:
+// a loop of them cannot matter. A master page naming no layout, or
+// a name no master page has, reads with the default page.
+// Pure: no desktop services.
+import {first, kids, attr} from './OdtXml';
+import {pageProps} from './OdtPage';
+import {isolate} from './OdtLists';
+
+export const MAX_SECTIONS = 500, MAX_PAGES = 1000;
+const KINDS = [['style:header', 'header', 'default'],
+  ['style:header-left', 'header', 'even'],
+  ['style:header-first', 'header', 'first'],
+  ['style:footer', 'footer', 'default'],
+  ['style:footer-left', 'footer', 'even'],
+  ['style:footer-first', 'footer', 'first']];
+
+/** ctx.pages: {masters: name -> node, layouts: name -> node, first,
+ *  props: name -> props}. */
+function pages(ctx) {
+  if (ctx.pages) return ctx.pages;
+  const P = ctx.pages = {masters: new Map(), layouts: new Map(),
+    first: null, props: new Map()};
+  const root = ctx.parts.styles;
+  if (!root) return P;
+  const ms = first(root, 'office:master-styles');
+  for (const m of ms ? kids(ms, 'style:master-page') : []) {
+    const n = attr(m, 'style:name');
+    if (typeof n !== 'string' || P.masters.has(n) ||
+      P.masters.size >= MAX_PAGES) continue;
+    P.masters.set(n, m);
+    if (P.first === null) P.first = n;
+  }
+  for (const r of [root, ctx.parts.content]) {
+    const a = first(r, 'office:automatic-styles');
+    for (const l of a ? kids(a, 'style:page-layout') : []) {
+      const n = attr(l, 'style:name');
+      if (typeof n === 'string' && !P.layouts.has(n) &&
+        P.layouts.size < MAX_PAGES) P.layouts.set(n, l);
+    }
+  }
+  return P;
+}
+
+/** The kinds a master page has: [[element, kind, type]...]. */
+function parts(m) {
+  return KINDS.filter(([el]) => {
+    const e = first(m, el);
+    return e && attr(e, 'style:display') !== 'false' &&
+      e.children.some((c) => typeof c !== 'string');
+  });
+}
+
+/** The props of master page name (cached). */
+function propsOf(ctx, name) {
+  const P = pages(ctx), m = P.masters.get(name);
+  if (!m) return {};
+  if (!P.props.has(name)) {
+    const has = parts(m).map((k) => k[1] + k[2]);
+    const layout = P.layouts.get(attr(m, 'style:page-layout-name'));
+    const props = pageProps(ctx, layout, {
+      header: has.some((k) => k.startsWith('header')),
+      footer: has.some((k) => k.startsWith('footer'))});
+    if (has.includes('headerfirst') || has.includes('footerfirst')) {
+      props.titlePg = true;
+    }
+    P.props.set(name, props);
+  }
+  return P.props.get(name);
+}
+
+/** See the header. */
+export function inStory(ctx, where, node) {
+  const s = ctx.b.story();
+  const keep = [ctx.para, ctx.spans, ctx.space, ctx.breakNext,
+    ctx.where, ctx.spacePara];
+  ctx.para = null;
+  ctx.spans = [];
+  ctx.space = true;
+  ctx.breakNext = undefined;
+  ctx.where = where;
+  ctx.depth = (ctx.depth || 0) + 1;
+  try {
+    isolate(ctx, () => ctx.walk(node));
+  } finally {
+    ctx.depth--;
+    [ctx.para, ctx.spans, ctx.space, ctx.breakNext, ctx.where,
+      ctx.spacePara] = keep;
+  }
+  return s;
+}
+
+/** The headers and footers of master page name. */
+function stories(ctx, name) {
+  const m = pages(ctx).masters.get(name);
+  if (!m) return;
+  for (const [el, kind, type] of parts(m)) {
+    const s = inStory(ctx, 'styles', first(m, el));
+    ctx.b[kind](type, s);
+  }
+}
+
+/** The state: ctx.sect {started, cur, count}. */
+function start(ctx, name) {
+  const P = pages(ctx);
+  const S = ctx.sect = {cur: P.masters.has(name) ? name : P.first,
+    count: 1, full: false};
+  stories(ctx, S.cur);
+}
+
+function enter(ctx, name) {
+  if (ctx.depth) return;
+  const S = ctx.sect;
+  if (!S) return start(ctx, name);
+  if (name && ctx.b.body.tables.depth) {
+    return ctx.note('a page style change inside a table was ignored');
+  }
+  if (!name || name === S.cur || !pages(ctx).masters.has(name)) return;
+  if (S.count >= MAX_SECTIONS) {
+    if (!S.full) {
+      ctx.note('more than ' + MAX_SECTIONS + ' page layout changes: ' +
+        'the rest are not made');
+    }
+    S.full = true;
+    return;
+  }
+  ctx.b.sectionEnd(propsOf(ctx, S.cur));
+  S.cur = name;
+  S.count++;
+  stories(ctx, name);
+}
+
+/** The master page style def (or its parents) names. */
+function masterOf(ctx, def) {
+  for (let i = 0; def && i < 16; i++) {
+    if (def.master) return def.master;
+    def = ctx.styles.get('paragraph', def.parent);
+  }
+  return undefined;
+}
+
+/** See the header. */
+export function paraSection(ctx, node) {
+  enter(ctx, masterOf(ctx, ctx.styles.get('paragraph',
+    attr(node, 'text:style-name'))));
+}
+
+/** See the header. */
+export function tableSection(ctx, node) {
+  const st = ctx.styles.other.get('table', attr(node,
+    'table:style-name'));
+  enter(ctx, st && attr(st, 'style:master-page-name'));
+}
+
+/** See the header. */
+export function touch(ctx) {
+  enter(ctx, undefined);
+}
+
+/** The last section's page: the builder's page props. */
+function finish(ctx) {
+  touch(ctx);
+  if (ctx.sect) {
+    ctx.b.pageProps = {...ctx.b.pageProps,
+      ...propsOf(ctx, ctx.sect.cur)};
+  }
+}
+
+const region = (ctx, node) => ctx.walk(node);
+export const PART = {finish: [finish], elements: new Map([
+  ['style:region-left', region], ['style:region-center', region],
+  ['style:region-right', region]])};

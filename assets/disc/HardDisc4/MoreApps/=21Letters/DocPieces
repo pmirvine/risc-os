@@ -1,0 +1,127 @@
+// DocPieces - the piece table of a Word 97-2003 .doc ([MS-DOC]
+// 2.9.38 Clx, 2.9.178 Pcdt, 2.8.35 PlcPcd, 2.9.177 Pcd, 2.9.73
+// FcCompressed) and the text it points at. Used by ./DocRead; pure.
+//
+//   readPieces(table, fib, {wordLength, note?}) -> [piece]
+//       table the table stream, fib ./DocFib's, wordLength the
+//       WordDocument stream's length. A piece {cpStart, cpEnd, fc,
+//       unicode, cp, prm}: characters cpStart..cpEnd (end
+//       exclusive) of the document are at byte fc of the Word
+//       stream (for an 8-bit piece fc is FcCompressed.fc / 2), two
+//       bytes each (UTF-16LE) when unicode, else one byte of code
+//       page cp (1252 unless {codepage}); prm the Pcd's Prm, as is.
+//       Prc entries before the Pcdt are skipped (their lengths
+//       checked). Checked: CPs only go forwards (a piece whose end
+//       is before its start ends the table, a note), at most
+//       MAX_PIECES pieces (more: a note), each piece's bytes inside
+//       the Word stream (a piece that runs past it is cut, one
+//       past it left out: a note; a gap in the CPs is left, so a
+//       CP is always where the file says), and all the pieces
+//       together at most as many characters as the Word stream has
+//       bytes (pieces may share bytes, as Word's fast saves do, but
+//       no more than that: the rest is cut, a note), so the text is
+//       never longer than the stream.
+//       Empty pieces are left out. Throws ./DocFib's
+//       DocError('bad') when there is no piece table (no Clx, an
+//       unknown clxt, a Prc past the end)
+//   extent(pieces) -> the CP after the last piece (0 for none)
+//   chunks, segments, textOf, pieceAt, pieceFrom, COMPRESSED,
+//       CHUNK_UNITS  ./DocChars' (the text of the pieces), exported
+//       here too
+//   MAX_PIECES
+import {DocError, slice} from './DocFib';
+export {chunks, segments, textOf, pieceAt, pieceFrom, COMPRESSED,
+  CHUNK_UNITS} from './DocChars';
+
+export const MAX_PIECES = 1000000;
+
+/** The PlcPcd bytes of the Clx (Prc entries skipped). */
+function plcPcd(clx, note) {
+  const dv = new DataView(clx.buffer, clx.byteOffset, clx.length);
+  let at = 0;
+  while (at < clx.length) {
+    const clxt = clx[at];
+    if (clxt === 1) {
+      if (at + 3 > clx.length) break;
+      const cb = dv.getInt16(at + 1, true);
+      if (cb < 0) break;
+      at += 3 + cb;
+      continue;
+    }
+    if (clxt !== 2 || at + 5 > clx.length) break;
+    const lcb = dv.getUint32(at + 1, true);
+    const room = clx.length - at - 5;
+    if (lcb > room) note('the piece table is cut short');
+    return clx.subarray(at + 5, at + 5 + Math.min(lcb, room));
+  }
+  throw new DocError('bad', 'the piece table is damaged');
+}
+
+/** See the header. */
+export function readPieces(table, fib, opts = {}) {
+  const note = opts.note || (() => {});
+  const wordLength = opts.wordLength || 0;
+  const cpg = opts.codepage || 1252;
+  const clx = slice(table, fib, 'Clx', note);
+  if (!clx) throw new DocError('bad', 'the document has no text');
+  const plc = plcPcd(clx, note);
+  if (plc.length < 4) throw new DocError('bad', 'no piece table');
+  const all = Math.floor((plc.length - 4) / 12);
+  let n = all;
+  if (n > MAX_PIECES) {
+    note(`more than ${MAX_PIECES} pieces of text: the rest is not ` +
+      'read');
+    n = MAX_PIECES;
+  }
+  const dv = new DataView(plc.buffer, plc.byteOffset, plc.length);
+  const out = [];
+  const pcd0 = 4 * (all + 1);
+  let cut = false, over = false, total = 0;
+  for (let i = 0; i < n; i++) {
+    const cpStart = dv.getInt32(4 * i, true);
+    const cpEnd = dv.getInt32(4 * i + 4, true);
+    if (cpStart < 0 || cpEnd < cpStart ||
+      (out.length && cpStart < out[out.length - 1].cpEnd)) {
+      note('the piece table is out of order: the text after it is ' +
+        'not read');
+      break;
+    }
+    if (cpEnd === cpStart) continue;
+    const raw = dv.getUint32(pcd0 + 8 * i + 2, true);
+    const prm = dv.getUint16(pcd0 + 8 * i + 6, true);
+    const unicode = !(raw & 0x40000000);
+    const fc = unicode ? raw & 0x3FFFFFFF : (raw & 0x3FFFFFFF) / 2;
+    const w = unicode ? 2 : 1;
+    const room = Math.floor(Math.max(0, wordLength - fc) / w);
+    let len = Math.min(cpEnd - cpStart, room);
+    if (len < cpEnd - cpStart) cut = true;
+    if (len > wordLength - total) {
+      len = wordLength - total;
+      over = true;
+    }
+    if (len <= 0 || fc !== Math.floor(fc)) {
+      if (fc !== Math.floor(fc)) cut = true;
+      continue;
+    }
+    out.push({cpStart, cpEnd: cpStart + len, fc, unicode,
+      cp: unicode ? null : cpg, prm});
+    total += len;
+    if (total >= wordLength) {
+      over = over || i + 1 < n;     // (pieces left: the cap, a note)
+      break;
+    }
+  }
+  if (cut) {
+    note('part of the text lies beyond the end of the file: it is ' +
+      'left out');
+  }
+  if (over) {
+    note('more text than the file holds: the rest is left out');
+  }
+  return out;
+}
+
+/** See the header. */
+export function extent(pieces) {
+  return pieces.length ? pieces[pieces.length - 1].cpEnd : 0;
+}

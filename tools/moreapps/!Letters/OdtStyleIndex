@@ -1,0 +1,69 @@
+// OdtStyleIndex - the styles of an OpenDocument text that are not
+// text or paragraph styles (OpenDocument 1.3 part 3, 16): the table
+// styles (<style:style> of family table, table-column, table-row,
+// table-cell: ./OdtTable) and the list styles (<text:list-style>,
+// <text:outline-style>: ./OdtLists), kept as their XML nodes.
+//
+//   new OtherStyles(ctx, stylesRoot?, contentRoot)  st.other of
+//       ./OdtStyles
+//   o.get(family, name) -> node | undefined  the style:style of
+//       that family: ctx.where's automatic one first, else the
+//       named one
+//   o.list(name) -> node | undefined  the text:list-style likewise
+//   o.outline     the text:outline-style node, or undefined
+// At most MAX_DEFS nodes of each kind are kept.
+// Pure: no desktop services.
+import {first, attr} from './OdtXml';
+
+const MAX_DEFS = 10000;
+const FAMILIES = ['table', 'table-column', 'table-row', 'table-cell'];
+
+export class OtherStyles {
+  constructor(ctx, stylesRoot, contentRoot) {
+    this.ctx = ctx;
+    this.maps = {named: new Map(), content: new Map(),
+      styles: new Map()};
+    this.outline = undefined;
+    const os = stylesRoot && first(stylesRoot, 'office:styles');
+    if (os) {
+      this.read(os, this.maps.named);
+      this.outline = first(os, 'text:outline-style');
+    }
+    for (const [r, w] of [[stylesRoot, 'styles'],
+      [contentRoot, 'content']]) {
+      const a = r && first(r, 'office:automatic-styles');
+      if (a) this.read(a, this.maps[w]);
+    }
+  }
+
+  read(parent, map) {
+    for (const s of parent.children) {
+      if (typeof s === 'string' || map.size >= MAX_DEFS) continue;
+      const n = attr(s, 'style:name');
+      if (typeof n !== 'string') continue;
+      if (s.name === 'style:style' &&
+        FAMILIES.includes(attr(s, 'style:family'))) {
+        const k = attr(s, 'style:family') + '\n' + n;
+        if (!map.has(k)) map.set(k, s);
+      } else if (s.name === 'text:list-style' &&
+        !map.has('list\n' + n)) {
+        map.set('list\n' + n, s);
+      }
+    }
+  }
+
+  find(key) {
+    return this.maps[this.ctx.where || 'content'].get(key) ||
+      this.maps.named.get(key);
+  }
+
+  get(family, name) {
+    return typeof name === 'string' && name
+      ? this.find(family + '\n' + name) : undefined;
+  }
+
+  list(name) {
+    return typeof name === 'string' && name
+      ? this.find('list\n' + name) : undefined;
+  }
+}

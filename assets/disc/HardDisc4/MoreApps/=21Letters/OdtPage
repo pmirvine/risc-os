@@ -1,0 +1,92 @@
+// OdtPage - the page layout of an OpenDocument text (OpenDocument
+// 1.3 part 3, 16.5 <style:page-layout>) as the props of a section
+// (./Model Section props), for ./OdtSect.
+//
+//   pageProps(ctx, layout, {header?, footer?}) -> props
+//       layout the style:page-layout node (or undefined: {}).
+//       pgSz from fo:page-width / fo:page-height (landscape when the
+//       page is wider than high); pgMar from fo:margin and
+//       fo:margin-top... (0 when not given), header and footer being
+//       the margin on that side and, when the master page has one,
+//       the top / bottom also holding its style:header-style /
+//       style:footer-style fo:min-height and fo:margin-bottom (-top);
+//       cols from style:columns (fo:column-count at most 45,
+//       fo:column-gap, style:column-sep; unequal widths are not
+//       read); pgNumType from style:first-page-number (a number)
+//       and style:num-format (1 i I a A).
+//       A page size that is not a length between half an inch and
+//       22 inches (a length of 0, garbage, negative, huge) gives {}
+//       (the default page) and a note; margins that leave the text
+//       less than half an inch are cut to fit (a note)
+// Pure: no desktop services.
+import {first, attr} from './OdtXml';
+import {twips, whole} from './OdtUnits';
+import {MAX_COLS} from './ReadSect';
+
+const MIN = 720, MAX = 31680;
+const FORMATS = new Map([['1', 'decimal'], ['i', 'lowerRoman'],
+  ['I', 'upperRoman'], ['a', 'lowerLetter'], ['A', 'upperLetter']]);
+
+const sane = (v) => v !== undefined && v >= MIN && v <= MAX;
+
+/** [lead, trail] kept so that at least MIN is left of size. */
+function fit(ctx, lead, trail, size) {
+  const room = size - MIN, lim = Math.floor(room / 2);
+  if (lead + trail <= room) return [lead, trail];
+  ctx.note('page margins larger than the page are cut to fit');
+  return [Math.min(lead, lim), Math.min(trail, lim)];
+}
+
+function extra(layout, name) {
+  const st = first(layout, 'style:' + name + '-style');
+  const hf = st && first(st, 'style:header-footer-properties');
+  if (!hf) return 0;
+  const h = twips(attr(hf, 'fo:min-height')) || 0;
+  const gap = twips(attr(hf, name === 'header' ? 'fo:margin-bottom'
+    : 'fo:margin-top')) || 0;
+  return Math.max(0, h) + Math.max(0, gap);
+}
+
+function columns(pp) {
+  const c = first(pp, 'style:columns');
+  if (!c) return undefined;
+  const n = whole(attr(c, 'fo:column-count'));
+  const gap = twips(attr(c, 'fo:column-gap'));
+  const cols = {space: gap >= 0 && gap <= MAX ? gap : 720};
+  if (n >= 2 && n <= MAX_COLS) cols.num = n;
+  if (cols.num && first(c, 'style:column-sep')) cols.sep = true;
+  return cols;
+}
+
+/** See the header. */
+export function pageProps(ctx, layout, has = {}) {
+  const pp = layout && first(layout, 'style:page-layout-properties');
+  if (!pp) return {};
+  const w = twips(attr(pp, 'fo:page-width'));
+  const h = twips(attr(pp, 'fo:page-height'));
+  if (!sane(w) || !sane(h)) {
+    ctx.note('a page size that is not valid: the default page is used');
+    return {};
+  }
+  const all = twips(attr(pp, 'fo:margin'));
+  const m = (s) => {
+    const v = twips(attr(pp, 'fo:margin-' + s));
+    return Math.max(0, v === undefined ? all || 0 : v);
+  };
+  const [left, right] = fit(ctx, m('left'), m('right'), w);
+  const [mt, mb] = fit(ctx, m('top'), m('bottom'), h);
+  const [top, bottom] = fit(ctx, mt + (has.header ? extra(layout,
+    'header') : 0), mb + (has.footer ? extra(layout, 'footer') : 0), h);
+  const props = {pgSz: w > h ? {w, h, orient: 'landscape'} : {w, h},
+    pgMar: {top, right, bottom, left, header: Math.min(mt, top),
+      footer: Math.min(mb, bottom), gutter: 0}};
+  const cols = columns(pp);
+  if (cols) props.cols = cols;
+  const start = whole(attr(pp, 'style:first-page-number'));
+  const fmt = FORMATS.get(attr(pp, 'style:num-format'));
+  if (start <= 2147483647 || fmt) {
+    props.pgNumType = {...(start <= 2147483647 ? {start} : {}),
+      ...(fmt ? {fmt} : {})};
+  }
+  return props;
+}

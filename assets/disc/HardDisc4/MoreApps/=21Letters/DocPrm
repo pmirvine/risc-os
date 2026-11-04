@@ -1,0 +1,79 @@
+// DocPrm - the formatting a .doc's piece table adds to the text of
+// a piece ([MS-DOC] 2.9.209 Prm: Prm1's igrpprl, an index into the
+// Clx's Prc array, 2.9.38 Clx / 2.9.208 Prc / PrcData), as Word's
+// fast saves write it. Used by ./DocChpx and ./DocPapx; pure.
+//
+//   prmPrls(ctx, piece, sgc) -> [Prl]  the Prls of the piece's Prm
+//       whose sprm.sgc is sgc (1 paragraph, 2 character): a Prm1's
+//       grpprl (an index past the Prc array: none); a Prm0 (one
+//       sprm by a table index) is not read (a note). The Prc array
+//       is read once (ctx.prcs), each grpprl once (the list kept,
+//       shared: not to be changed)
+//   charge(ctx, n) -> bool  n Prls applied to a character or
+//       paragraph state (./DocChpx, ./DocPapx): whether the
+//       document's formatting budget (FORMAT_WORK.max Prls in all)
+//       allows them; once it does not, one note, and the rest of
+//       the text is read without its direct formatting (a hostile
+//       file can make every character's formatting thousands of
+//       Prls long: the Prc grpprls, ./DocPrcData's PrcData)
+//   affords(ctx, n) -> bool  whether charge(ctx, n) would allow n
+//       Prls, spending nothing (./DocPrcData: the caller charges)
+//   FORMAT_WORK  {max} (tests may lower it)
+import {slice} from './DocFib';
+import {readSprms} from './DocSprm';
+
+const PRM0 = 'some formatting of fast-saved text is not read';
+const MAX_PRCS = 100000;
+export const FORMAT_WORK = {max: 20000000};
+const SPENT = 'more formatting than !Letters reads in one ' +
+  'document: the rest of the text is read without its own ' +
+  'formatting';
+
+/** See the header. */
+export function charge(ctx, n) {
+  const left = ctx.fmtWork ?? FORMAT_WORK.max;
+  if (left < n) {
+    ctx.fmtWork = -1;
+    if (left >= 0) ctx.note(SPENT);
+    return false;
+  }
+  ctx.fmtWork = left - n;
+  return true;
+}
+
+/** See the header. */
+export const affords = (ctx, n) => (ctx.fmtWork ?? FORMAT_WORK.max) >=
+  n;
+
+/** The Prc grpprls of the Clx, in order. */
+function prcs(ctx) {
+  if (ctx.prcs) return ctx.prcs;
+  const out = ctx.prcs = [];
+  const clx = slice(ctx.table, ctx.fib, 'Clx');
+  if (!clx) return out;
+  let at = 0;
+  while (at + 3 <= clx.length && clx[at] === 1 &&
+    out.length < MAX_PRCS) {
+    const cb = (clx[at + 1] | (clx[at + 2] << 8)) << 16 >> 16;
+    if (cb < 0 || at + 3 + cb > clx.length) break;
+    out.push({bytes: clx.subarray(at + 3, at + 3 + cb), prls: null});
+    at += 3 + cb;
+  }
+  return out;
+}
+
+/** See the header. */
+export function prmPrls(ctx, piece, sgc) {
+  const prm = piece ? piece.prm : 0;
+  if (!prm) return [];
+  if (!(prm & 1)) {
+    if ((prm >> 1) & 0x7F) ctx.note(PRM0);
+    return [];
+  }
+  const p = prcs(ctx)[prm >> 1];
+  if (!p) return [];
+  if (!p.prls) p.prls = readSprms(p.bytes, 0, p.bytes.length, ctx.note);
+  const k = 'sgc' + sgc;
+  return p[k] || (p[k] = p.prls.filter((s) => ((s.op >> 10) & 7) ===
+    sgc));
+}

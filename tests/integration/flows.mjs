@@ -1,6 +1,6 @@
 // Cross-application integration checks with real mouse / keyboard where a user would use them.
 //   node tests/integration/flows.mjs [group ...]     (server on 8371; prints PASS / FAIL lines)
-// Groups: dnd print help chars tw configure pinboard tasks shutdown  (default: all)
+// Groups: dnd print import help chars tw configure pinboard tasks shutdown reset basic  (default: all)
 import path from 'path';
 import { launch, BASE_URL, SHOTS } from '../core/pw.mjs';
 import { filerItem, iconbarPos, menuItem, hoverArrow, clickItem } from '../edit/ui.mjs';
@@ -490,6 +490,65 @@ if (on('reset')) {
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
   check('Reset resets', JSON.stringify(await state()) === '{"file":true,"cmos":false}', await state());
   check('reset: no page errors', !s.errors.length, s.errors);
+  await s.browser.close();
+}
+
+// ------------------------------------------------------------------------------------------ ODT / .doc import (!Letters)
+if (on('import')) {
+  const { makeOdt } = await import('../moreapps/odt-helpers.mjs');
+  const { makeDoc } = await import('../moreapps/doc-helpers.mjs');
+  const odt = Array.from(makeOdt({ content: '<text:h text:outline-level="1">Flow heading</text:h><text:p>From an ODT.</text:p>' }));
+  const doc = Array.from(makeDoc({ text: 'From a doc.\r' }));
+  const s = await fresh();
+  const { page } = s;
+  const D = 'RAM::RamDisc0.$';
+  await page.evaluate(([odt, doc, D]) => {
+    os.vfs.writeFile(D + '.Flow/odt', new Uint8Array(odt), { filetype: 0xA81 });
+    os.vfs.writeFile(D + '.Flow/doc', new Uint8Array(doc), { filetype: 0xAE6 });
+    os.vfs.writeFile(D + '.Junk/doc', new Uint8Array(64).fill(0x5A), { filetype: 0xAE6 });
+    window.__odt = odt;
+  }, [odt, doc, D]);
+  const types = await page.evaluate(async () => { const T = await import('/src/core/filetypes.js'); return [T.typeName(0xA81), T.typeName(0xAE6)]; });
+  check('import: the Filer names &A81 ODT and &AE6 MSWord', JSON.stringify(types) === '["ODT","MSWord"]', types);
+  const title = (t) => page.evaluate((t) => [...wimp.windows].some((w) => w.isOpen && w.title === t), t);
+  const waitFor = async (fn) => { for (let i = 0; i < 60 && !(await fn()); i++) await sleep(page, 100); return fn(); };
+  // a real double-click on each in the Filer
+  let p = await filerItem(page, D, 'Flow/odt', { x: 700, y: 60, w: 500, h: 300 });
+  await page.mouse.dblclick(p.x, p.y);
+  let eb = await waitFor(() => errorBox(page));
+  check('import: a double-click on an ODT starts !Letters; the notice says it will be saved as a .docx',
+    /'Flow\/odt' was opened from an ODT file; it will be saved as a \.docx\./.test(eb ?? ''), eb ?? '');
+  await closeErrors(page);
+  check('import: its window, titled with the leaf and modified', await waitFor(() => title('Flow/odt *')));
+  p = await filerItem(page, D, 'Flow/doc', { x: 700, y: 60, w: 500, h: 300 });
+  await page.mouse.dblclick(p.x, p.y);
+  eb = await waitFor(() => errorBox(page));
+  check('import: a .doc goes to the running !Letters', /from a \.doc file/.test(eb ?? '')
+    && await page.evaluate(() => os.wimp.tasks.filter((t) => t.alive && t.name === 'Letters').length) === 1, eb ?? '');
+  await closeErrors(page);
+  check('import: the .doc\'s window', await waitFor(() => title('Flow/doc *')));
+  p = await filerItem(page, D, 'Junk/doc', { x: 700, y: 60, w: 500, h: 300 });
+  await page.mouse.dblclick(p.x, p.y);
+  eb = await waitFor(() => errorBox(page));
+  check('import: a &AE6 file that is not Word: said so, no window', /'Junk\/doc' could not be opened: it is not a Word document\./.test(eb ?? '')
+    && !(await title('Junk/doc')) && !(await title('Junk/doc *')), eb ?? '');
+  await closeErrors(page);
+  // Ctrl+S in the ODT's window: the Save box offers Flow/docx; Return writes it, the original untouched
+  const c = await winCentre(page, "(w) => w.title === 'Flow/odt *'");
+  await page.mouse.click(c.x, c.y);
+  await page.keyboard.press('Control+s');
+  const saveName = () => page.evaluate(() => [...wimp.windows].reverse().find((w) => w.isOpen && w.title === 'Save as')?.icons[1]?.text ?? null);
+  const name = await waitFor(saveName);
+  check('import: Ctrl+S opens the Save box with Flow/docx, not the original', name === 'RAM::RamDisc0.$.Flow/docx', name);
+  await page.keyboard.press('Enter');
+  check('import: Return writes Flow/docx (&A7E); the window becomes it', await waitFor(() => title('Flow/docx')));
+  const after = await page.evaluate(async (D) => {
+    const b = Array.from(await os.vfs.readFile(D + '.Flow/odt'));
+    return { docx: os.vfs.stat(D + '.Flow/docx')?.filetype, odt: os.vfs.stat(D + '.Flow/odt')?.filetype,
+      same: b.length === window.__odt.length && b.every((x, i) => x === window.__odt[i]) };
+  }, D);
+  check('import: the .docx has type &A7E; the ODT is unchanged, byte for byte', after.docx === 0xA7E && after.odt === 0xA81 && after.same, after);
+  check('import: no page errors', !s.errors.length, s.errors);
   await s.browser.close();
 }
 

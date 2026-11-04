@@ -1,0 +1,109 @@
+// DocMarks - things that happen between the characters of a .doc's
+// text, at CPs the table stream gives (bookmarks' starts and ends,
+// comments' ranges: ./DocBkmk, ./DocComments), for ./DocRead.
+//
+//   addMark(ctx, cp, rank, fn)  fn(ctx, m) runs when the reading
+//       reaches CP cp (before the character there); marks at one CP
+//       run by rank (0 an end, 1 a start, 2 the end of an empty
+//       range), then in the order added. Only before the first story
+//       is read (start hooks)
+//   cursor(ctx, from, to) -> m  the marks of CPs from..to of a story
+//       being read (./DocRead story): m.next the CP of the next one
+//       (Infinity: none left); m.main whether it is the main text;
+//       m.ends [fn(ctx, m)] run at the story's end (see storyEnd)
+//   fire(ctx, m, cp)  the marks up to CP cp run; while ctx.hidden
+//       (inside a field's code, which the builder has not placed
+//       yet) they are held, in order, until release
+//   release(ctx)  the marks held run, once no code is open (./DocFields
+//       when a code closes)
+//   putSplit(ctx, m, text, cp, put)  text at CP cp put by put(ctx,
+//       s, cp) in parts, the marks between them run
+//   storyEnd(ctx, m)  the marks up to the story's end run (and any
+//       still held), then m.ends (a range still open there ends: its
+//       own rule)
+//
+// The marks are sorted once, on the first cursor; a story's marks are
+// found by binary search, so each story costs its own marks only.
+// A mark's fn runs at most once per story read.
+
+const ORDER = (a, b) => a.cp - b.cp || a.rank - b.rank || a.n - b.n;
+
+/** See the header. */
+export function addMark(ctx, cp, rank, fn) {
+  const M = ctx.markList || (ctx.markList = {all: [], sorted: false});
+  M.all.push({cp, rank, n: M.all.length, fn});
+  M.sorted = false;
+}
+
+/** See the header. */
+export function cursor(ctx, from, to) {
+  const M = ctx.markList;
+  const m = {i: 0, to, next: Infinity, ends: [],
+    main: ctx.storyEnd === undefined, all: M ? M.all : []};
+  if (!M || !M.all.length) return m;
+  if (!M.sorted) {
+    M.all.sort(ORDER);
+    M.sorted = true;
+  }
+  let lo = 0, hi = M.all.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (M.all[mid].cp < from) lo = mid + 1;
+    else hi = mid;
+  }
+  m.i = lo;
+  step(m);
+  return m;
+}
+
+/** m.next for m.i. */
+function step(m) {
+  const x = m.all[m.i];
+  m.next = x && x.cp <= m.to ? x.cp : Infinity;
+}
+
+/** See the header. */
+export function fire(ctx, m, cp) {
+  while (m.next <= cp) {
+    const x = m.all[m.i++];
+    step(m);
+    if (ctx.stop || ctx.b.stopped) continue;
+    if (ctx.hidden) (ctx.held || (ctx.held = [])).push([x, m]);
+    else x.fn(ctx, m);
+  }
+}
+
+/** The held marks run. */
+function runHeld(ctx) {
+  const h = ctx.held;
+  ctx.held = null;
+  for (const [x, m] of h) if (!ctx.stop && !ctx.b.stopped) x.fn(ctx, m);
+}
+
+/** See the header. */
+export function release(ctx) {
+  if (ctx.held && !ctx.hidden) runHeld(ctx);
+}
+
+/** See the header. */
+export function putSplit(ctx, m, text, cp, put) {
+  let i = 0;
+  while (i < text.length) {
+    if (m.next <= cp + i) {
+      fire(ctx, m, cp + i);
+      continue;
+    }
+    const n = Math.min(text.length, m.next - cp) - i;
+    put(ctx, text.slice(i, i + n), cp + i);
+    i += n;
+  }
+}
+
+/** See the header. */
+export function storyEnd(ctx, m) {
+  fire(ctx, m, m.to);
+  if (ctx.held) runHeld(ctx);
+  const ends = m.ends;
+  m.ends = [];
+  for (const fn of ends) if (!ctx.b.stopped) fn(ctx, m);
+}

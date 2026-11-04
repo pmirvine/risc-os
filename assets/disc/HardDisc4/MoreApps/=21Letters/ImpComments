@@ -1,0 +1,204 @@
+// ImpComments - comments for ./ImpBuild, as ./RtfComments makes them
+// (the Doc's comments, ./CommentRead, with their marks).
+//
+//   comment(b, {author?, initials?, date?, story, parent?}) ->
+//       {id, start, end, ref} | null  (b.comment) the story
+//       (./ImpStory storyOf) becomes comment id (0, 1...); start and
+//       end (cmtStart / cmtEnd, level 'p') and ref (cmtRef, level
+//       'r', w:commentReference) are its marks, for the caller to
+//       put in the body (b.obj): the range, then the mark. parent a
+//       comment (or its id) made before: this one is a reply, its
+//       parent the thread's first comment (./CommentRead's model).
+//       author and initials ./ImpSafe name, date ./ImpRevs
+//       dateOf (none: null)
+//   placing(b, inline, flow) -> [inlines first] | null  (./ImpFlow)
+//       whether a comment mark may go there: only in the body; start
+//       once, before the mark; end once, after the start; the mark
+//       once, an open range ended right before it (the end given
+//       first)
+//   finish(b)  the comments parts (./CommentParts ensure: and the
+//       commentsExtended part for replies), the comments whose marks
+//       were put in the text (./OpsComments addComments), their
+//       relationships (one rels for the part)
+//
+// Not kept (a note): a comment made while a story is building, one
+// whose mark is not in the body at the end (never put, or in a
+// paragraph left out: refused, past the cap; its range marks are
+// taken out, as is a range with one end left), past ./RtfComments
+// MAX_COMMENTS. The comment's text starts
+// with its w:annotationRef mark (Word's), put there when it has none.
+// Every comment gets a w14:paraId (./CommentParts freshParaId, by a
+// fixed sequence: the same calls give the same ids). No resolved
+// state: done false.
+// Pure: no desktop services.
+import {W} from './Wml';
+import {builder, markFirst} from './RtfNotes';
+import {MAX_COMMENTS} from './RtfComments';
+import {ensure, freshParaId, takenIds} from './CommentParts';
+import {newComment} from './OpsComments';
+import {relsNameFor} from './Rels';
+import {without} from './ClipNotes';
+import {storyOf} from './ImpStory';
+import {eachInline} from './ImpNotes';
+import {dateOf} from './ImpRevs';
+import {isObj} from './ImpPara';
+import {name} from './ImpSafe';
+
+const STORY = 'comments in headers, footers, notes and comments ' +
+  'are not read: skipped';
+const KINDS = ['cmtStart', 'cmtEnd', 'cmtRef'];
+
+const state = (b) => b.cmts || (b.cmts = {list: [], byId: new Map(),
+  marks: new WeakMap()});
+
+const mark = (kind, id) => ({kind, level: 'p', id,
+  node: W(kind === 'cmtStart' ? 'commentRangeStart'
+    : 'commentRangeEnd', {'w:id': String(id)})});
+const annRef = () => ({kind: 'raw', level: 'r',
+  node: W('annotationRef')});
+const hasAnn = (blocks) => blocks.some((p) => p.type === 'p' &&
+  Object.values(p.inlines).some((x) => x && x.node &&
+    x.node.name === 'w:annotationRef'));
+const str = (s) => name(s);
+
+/** See the header. */
+export function comment(b, o) {
+  if (b.stopped || !isObj(o)) return null;
+  if (b.flow !== b.body) {
+    b.note(STORY);
+    return null;
+  }
+  const c = state(b);
+  if (c.list.length >= MAX_COMMENTS) {
+    b.note('more than ' + MAX_COMMENTS + ' comments: the rest are ' +
+      'skipped');
+    return null;
+  }
+  const s = storyOf(b, o.story);
+  if (!s) return null;
+  const id = c.list.length;
+  const p = c.byId.get(isObj(o.parent) ? o.parent.id : o.parent);
+  const rec = {id, blocks: hasAnn(s.blocks) ? s.blocks
+    : markFirst(s.blocks, annRef()), rels: s.rels,
+  author: str(o.author), initials: str(o.initials),
+  date: dateOf(o.date) ?? null, parent: p ? p.parent ?? p.id : null,
+  start: false, end: false, ref: false};
+  c.list.push(rec);
+  c.byId.set(id, rec);
+  const out = {id, start: mark('cmtStart', id), end: mark('cmtEnd', id),
+    ref: {kind: 'cmtRef', level: 'r', id,
+      node: W('commentReference', {'w:id': String(id)})}};
+  for (const k of ['start', 'end', 'ref']) c.marks.set(out[k], rec);
+  rec.endMark = out.end;
+  return out;
+}
+
+/** See the header. */
+export function placing(b, x, flow) {
+  if (!KINDS.includes(x.kind)) return [];
+  const rec = b.cmts ? b.cmts.marks.get(x) : undefined;
+  if (flow !== b.body) {
+    b.note(STORY);
+    return null;
+  }
+  const bad = !rec || rec.ref || (x.kind === 'cmtStart' ? rec.start
+    : x.kind === 'cmtEnd' ? !rec.start || rec.end : false);
+  if (bad) {
+    b.note('a comment mark out of place is left out');
+    return null;
+  }
+  if (x.kind === 'cmtStart') rec.start = true;
+  else if (x.kind === 'cmtEnd') rec.end = true;
+  else {
+    rec.ref = true;
+    if (rec.start && !rec.end) {
+      rec.end = true;
+      return [rec.endMark];
+    }
+  }
+  return [];
+}
+
+/** blocks with the marks of ids in gone taken out (new objects). */
+function strip(blocks, gone) {
+  return blocks.map((b) => {
+    if (b.type === 'tbl') {
+      return {...b, rows: b.rows.map((row) => ({...row,
+        cells: row.cells.map((cell) => ({...cell,
+          blocks: strip(cell.blocks, gone)}))}))};
+    }
+    if (b.type !== 'p') return b;
+    const drop = [];
+    for (const [k, x] of Object.entries(b.inlines)) {
+      if ((x.kind === 'cmtStart' || x.kind === 'cmtEnd') &&
+        gone.has(x.id)) drop.push(Number(k));
+    }
+    return drop.length ? without(b, drop) : b;
+  });
+}
+
+/** blocks with paraId on the last paragraph, as read back. */
+function withParaId(blocks, paraId) {
+  const out = blocks.slice(), p = out[out.length - 1];
+  out[out.length - 1] = {...p, extraP: [...p.extraP,
+    ['w14:paraId', paraId]]};
+  return out;
+}
+
+/** A fixed sequence for the paragraph ids (as ./RtfComments). */
+function sequence() {
+  let s = 0x2468ace1;
+  return () => {
+    s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+    return s / 0x100000000;
+  };
+}
+
+/** See the header. */
+export function finish(b) {
+  const c = b.cmts;
+  if (!c) return;
+  const doc = b.doc;
+  // (the marks in the text now: a paragraph left out after a mark was
+  // put takes the mark with it)
+  const there = new Map(c.list.map((x) => [x.id, {}]));
+  for (const s of doc.sections) {
+    eachInline(s.blocks, (x) => {
+      const m = KINDS.includes(x.kind) ? there.get(x.id) : undefined;
+      if (m) m[x.kind] = true;
+    });
+  }
+  const kept = c.list.filter((x) => there.get(x.id).cmtRef);
+  const gone = new Set(c.list.filter((x) => {
+    const m = there.get(x.id);
+    return (m.cmtStart || m.cmtEnd) &&
+      !(m.cmtRef && m.cmtStart && m.cmtEnd);
+  }).map((x) => x.id));
+  if (kept.length < c.list.length) {
+    b.note('a comment whose mark is not in the text is left out');
+  }
+  if (gone.size) {
+    for (const s of doc.sections) s.blocks = strip(s.blocks, gone);
+  }
+  if (!kept.length) return;
+  const ids = new Set(kept.map((x) => x.id));
+  const parent = (x) => (ids.has(x.parent) ? x.parent : null);
+  const d = builder(b);
+  ensure(d, kept.some((x) => parent(x) !== null)
+    ? ['comments', 'extended'] : ['comments']);
+  const rels = kept.flatMap((x) => x.rels);
+  if (rels.length) {
+    b.doc.comments = {...b.doc.comments, rels,
+      relsPart: relsNameFor(b.doc.meta.commentParts.comments)};
+  }
+  const taken = takenIds(b.doc), rand = sequence();
+  const comments = kept.map((x) => {
+    const paraId = freshParaId(b.doc, {rand, taken});
+    taken.add(paraId);
+    return newComment(b.doc, x.id, withParaId(x.blocks, paraId),
+      {author: x.author, initials: x.initials, date: x.date, paraId,
+        parent: parent(x)});
+  });
+  d.apply({op: 'addComments', comments,
+    order: comments.map((x) => x.id)});
+}

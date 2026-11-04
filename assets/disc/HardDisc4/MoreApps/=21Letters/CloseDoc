@@ -28,12 +28,18 @@
 //                  zoom, ruler, the caret's focus) and the old one is
 //                  closed without asking: a fresh Document, Typing,
 //                  layout, toolbar and ruler, with no undo history.
-//                  A file that has gone or is not a .docx or RTF is
+//                  A file that has gone or is not one Letters reads
+//                  (.docx, RTF; for an import, its ODT or .doc) is
 //                  reported (./Open describe) and the old document
 //                  is kept. The file is read as it is opened (./Open
 //                  openDoc): the new window has the format read
 //                  (an RTF window stays RTF) and the RTF reader's
-//                  notes are said again, once, in a notice.
+//                  notes are said again, once, in a notice. An
+//                  imported window (./AppWin dw.importedFrom) reads
+//                  the file it came from again, through the same
+//                  importer: still imported, saved only by Save as;
+//                  it asks first only when it was changed since it
+//                  was opened (dw.openedAt).
 //   destroy(dw)    close the window without asking (dw.close(), the
 //                  tests, Quit): its boxes, toolbars, ruler, view and
 //                  window deleted (pages no longer worked out:
@@ -48,7 +54,7 @@
 // for it before it asks).
 import {wimp, vfs, query, reportError} from 'riscos';
 import {saveQuery} from 'wimplib/Ui/SaveQuery';
-import {openDoc, describe, notesNotice, typeAt} from './Open';
+import {openDoc, describe, openNotice, typeAt} from './Open';
 import {idle} from './DocSave';
 import {destroyPanes} from './WinPanes';
 import {detachPainter} from './PaintBind';
@@ -176,21 +182,23 @@ async function askRevert(dw) {
 
 /** See the header. */
 export async function revert(dw) {
-  if (dw.closed || !dw.path || busy.has(dw)) return false;
+  if (dw.closed || !fileOfDw(dw) || busy.has(dw)) return false;
   busy.add(dw);
-  let got, id;
+  let got, id, from;
   try {
     await idle(dw);
-    if (dw.closed || !dw.path) return false;
-    if (dw.d.dirty) {
+    from = fileOfDw(dw);
+    if (dw.closed || !from) return false;
+    if (changed(dw)) {
       const r = await askRevert(dw);
       if (r !== 'Discard' || dw.closed) return false;
     }
     id = dw.d.stateId;
+    from = fileOfDw(dw);
     try {
-      got = await openDoc(vfs, dw.path);
+      got = await openDoc(vfs, from);
     } catch (e) {
-      say(describe(e, dw.leaf, typeAt(vfs, dw.path)));
+      say(describe(e, dw.leaf, typeAt(vfs, from)));
       return false;
     }
   } finally {
@@ -198,22 +206,34 @@ export async function revert(dw) {
   }
   // (typed in while the file was read: those changes are kept)
   if (dw.closed || dw.d.stateId !== id) return false;
-  const nw = replace(dw, got.doc, got.format);
-  const m = notesNotice(nw.leaf, got.notes);
+  const nw = replace(dw, from, got);
+  const m = openNotice(nw.leaf, got);
   if (m) tell(m);
   return true;
 }
 
-/** A new window for doc (read as format) where dw is; dw closed. */
-function replace(dw, doc, format) {
-  const app = dw.app, old = dw.win;
-  const nw = new dw.constructor(app, dw.path, doc, format);
+/** The file Revert reads: dw's, or the one it was imported from. */
+function fileOfDw(dw) { return dw.path || dw.importedFrom || null; }
+
+/** Changes Revert throws away: an imported document's since it was
+ *  opened (it is never clean: ./AppWin), any other's unsaved ones. */
+function changed(dw) {
+  if (dw.importedFrom && !dw.path) return dw.d.stateId !== dw.openedAt;
+  return dw.d.dirty;
+}
+
+/** A new window for got (openDoc's, read from path) where dw is; dw
+ *  closed. */
+function replace(dw, path, got) {
+  const app = dw.app, old = dw.win, doc = got.doc;
+  const nw = new dw.constructor(app, path, doc, got.format,
+    got.imported);
   nw.setRuler(dw.rulerOn);
   nw.setZoom(dw.zoom);
   const focus = dw.view.hasFocus, was = old.isOpen;
   if (was) nw.win.open({...old.getState(), behind: old});
   destroy(dw);
-  app.docs.set(app.keyOf(nw.path), nw);
+  app.docs.set(app.keyOf(path), nw);
   if (focus || !was) nw.show();
   if (app.fonts) {
     app.fonts(doc).then(() => { if (!nw.closed) nw.relayout(); });
