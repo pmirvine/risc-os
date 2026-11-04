@@ -27,6 +27,8 @@ import {parsePart, MAX_ELEMENTS, attr, budgetOf}
 import {displayOf} from '../../tools/moreapps/!Letters/OdtStyles';
 import {makeOdt, storedZip, TEXT, TEMPLATE} from './odt-helpers.mjs';
 
+const UNITS = ' units of XML (elements plus a quarter of the ' +
+  'attributes)';
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
 const read = (o, opts = {}) => readOdt(makeOdt(o), {date: DATE,
   ...opts});
@@ -386,11 +388,11 @@ describe('ODT: limits', () => {
     const got = await read({styles: many,
       content: '<text:p>Body</text:p>'}, {maxElements: 50});
     assert.deepEqual(texts(got.doc), ['Body']);
-    assert.ok(got.notes.includes('styles.xml: more than 50 elements: ' +
-      'its styles are not read'), got.notes.join('; '));
+    assert.ok(got.notes.includes('styles.xml: more than 50' + UNITS +
+      ': its styles are not read'), got.notes.join('; '));
     await assert.rejects(read({content: '<text:p/>'.repeat(60)},
-      {maxElements: 50}), (e) => e.code === 'bad' &&
-      e.message === 'content.xml: more than 50 elements');
+      {maxElements: 50}), (e) => e.code === 'toocomplex' &&
+      e.message === 'content.xml: more than 50' + UNITS);
     const deep = '<text:span>'.repeat(300) + '</text:span>'.repeat(300);
     await assert.rejects(read({content: `<text:p>${deep}</text:p>`}),
       (e) => e.code === 'bad' && /nested/.test(e.message));
@@ -406,7 +408,7 @@ describe('ODT: limits', () => {
     const over = enc('<a>'.repeat(MAX_ELEMENTS + 1));
     assert.throws(() => parsePart(over, 'content.xml'), (e) =>
       e.code === 'elements' && e.message ===
-        'content.xml: more than 1200000 elements');
+        'content.xml: more than 1200000' + UNITS);
     // (at the cap it is parsed: refused for its nesting instead)
     const at = enc('<a>'.repeat(MAX_ELEMENTS));
     assert.throws(() => parsePart(at, 'content.xml'),
@@ -417,10 +419,16 @@ describe('ODT: limits', () => {
       e.code === 'elements');
     assert.throws(() => parsePart(attrs, 'content.xml',
       {budget: budgetOf()}), (e) => e.code === 'elements' &&
-      e.message === 'content.xml: more than 1200000 elements');
+      e.message === 'content.xml: more than 1200000' + UNITS);
     await assert.rejects(read({content: '<text:span/>'.repeat(
-      MAX_ELEMENTS)}), (e) => e.code === 'bad' &&
-      e.message === 'content.xml: more than 1200000 elements');
+      MAX_ELEMENTS)}), (e) => e.code === 'toocomplex' &&
+      e.message === 'content.xml: more than 1200000' + UNITS);
+  });
+
+  it('a damaged content.xml is bad, not toocomplex', async () => {
+    await assert.rejects(read({content: '<text:p>unclosed'}),
+      (e) => e.code === 'bad' && /^content\.xml: /.test(e.message) &&
+      !/units of XML/.test(e.message));
   });
 
   it('one element budget is shared by all the parts of a file',
@@ -433,8 +441,8 @@ describe('ODT: limits', () => {
       assert.deepEqual(budget, {total: 100, left: 30});
       assert.throws(() => parsePart(enc('<r>' + '<a/>'.repeat(30) +
         '</r>'), 'two.xml', {budget}), (e) => e.code === 'elements' &&
-        e.message === 'two.xml: more than 100 elements with the parts ' +
-          'read before it');
+        e.message === 'two.xml: more than 100' + UNITS +
+          ' with the parts read before it');
       assert.equal(budget.left, 30);
       parsePart(enc('<r>' + '<a/>'.repeat(29) + '</r>'), 'two.xml',
         {budget});
@@ -446,14 +454,35 @@ describe('ODT: limits', () => {
         content: '<text:p>Body</text:p>'.repeat(150)},
       {maxElements: 400});
       assert.equal(texts(got.doc).length, 150);
-      assert.ok(got.notes.includes('styles.xml: more than 400 elements ' +
-        'with the parts read before it: its styles are not read'),
+      assert.ok(got.notes.includes('styles.xml: more than 400' + UNITS +
+        ' with the parts read before it: its styles are not read'),
       got.notes.join('; '));
       const alone = await read({styles: many.repeat(200),
         content: '<text:p>Body</text:p>'}, {maxElements: 400});
       assert.ok(!alone.notes.some((n) => /elements/.test(n)),
         alone.notes.join('; '));
     });
+
+  it('a realistic file shares one budget: styles.xml is refused after ' +
+    'a large content.xml', async () => {
+    // (maxElements 12000 and about 7000 units each: content.xml fits
+    // and is read, styles.xml does not fit in what it left)
+    const many = '<style:style style:name="S" style:family="text"/>';
+    const got = await read({styles: many.repeat(6900),
+      content: '<text:p>Body</text:p>'.repeat(6900)},
+    {maxElements: 12000});
+    assert.equal(texts(got.doc).length, 6900);
+    const refusal = got.notes.find((n) => /styles\.xml/.test(n) &&
+      /elements/.test(n));
+    assert.ok(refusal && refusal.startsWith('styles.xml: ') &&
+      refusal.includes(' with the parts read before it'),
+    got.notes.join('; '));
+    // (the same styles.xml alone, within its own 12000)
+    const alone = await read({styles: many.repeat(6900),
+      content: '<text:p>Body</text:p>'}, {maxElements: 12000});
+    assert.ok(!alone.notes.some((n) => /elements/.test(n)),
+      alone.notes.join('; '));
+  });
 
   it('names are fixed in the parsed tree itself', () => {
     const x = parsePart(new TextEncoder().encode('<o:r xmlns:o="urn:' +

@@ -28,6 +28,7 @@ import {emit} from './word-emit.mjs';
 const MAX_MS = 2000;
 const MAX_RSS = 400 * 1048576;
 const DATE = new Date(2024, 4, 6, 7, 8, 10);
+// (toocomplex is the ODT reader's alone, never a .doc's)
 const CODES = ['bad', 'not-word', 'old', 'encrypted', 'too-big'];
 const peak = () => process.resourceUsage().maxRSS * 1024;
 
@@ -289,6 +290,7 @@ describe('.doc hostile files (task 16)', () => {
       counts[k] = (counts[k] || 0) + 1;
     }
     assert.ok(counts.ok, JSON.stringify(counts));
+    assert.equal(counts.toocomplex, undefined, JSON.stringify(counts));
   });
 
   it('a seeded fuzz of 300 mutated copies of the rich document',
@@ -314,6 +316,7 @@ describe('.doc hostile files (task 16)', () => {
       console.log('# doc fuzz (seed ' + seed + '): ' +
         JSON.stringify(counts) +
         `, slowest ${Math.round(worst)} ms`);
+      assert.equal(counts.toocomplex, undefined, JSON.stringify(counts));
       assert.ok(counts.ok > 150 && counts.bad > 10,
         seed + ': ' + JSON.stringify(counts));
     });

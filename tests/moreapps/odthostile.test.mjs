@@ -14,7 +14,7 @@ import {readOdt} from '../../tools/moreapps/!Letters/OdtRead';
 import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
 import {checkBlock} from '../../tools/moreapps/!Letters/Model';
 import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
-import {MAX_PARAGRAPHS} from '../../tools/moreapps/!Letters/Open';
+import {MAX_PARAGRAPHS, describe as why} from '../../tools/moreapps/!Letters/Open';
 import {pngBytes} from './pic-fixtures.mjs';
 import {makeOdt, storedZip, NS, TEXT} from './odt-helpers.mjs';
 import {shape} from './odt-shapes.mjs';
@@ -499,16 +499,28 @@ describe('ODT: one element budget for the whole file', () => {
         const e = await readOdt(odt).then(() => null, (x) => x);
         const ms = performance.now() - t0;
         assert.equal(e && e.name, 'ImportError', kind);
-        assert.equal(e.message, 'content.xml: more than 1200000 ' +
-          'elements', kind);
+        assert.equal(e.code, 'toocomplex', kind);
+        assert.equal(e.message, 'content.xml: more than 1200000 units ' +
+          'of XML (elements plus a quarter of the attributes)', kind);
+        assert.equal(why(e, 'Big'), "'Big' could not be opened: it is " +
+          'too large or complex for !Letters to open.', kind);
         assert.ok(ms < 8000, kind + ': ' + ms + ' ms');
       }
     });
 
-  it('the heaviest files under it read within 10 s and 1.2 GB', () => {
+  it('the heaviest files under it read within 10 s and bounded memory',
+    () => {
     // (a child process each, as openDoc reads them: mixed just under
     // the budget, and 200,000 paragraphs of three styled spans, which
-    // must open whole)
+    // must open whole. grow is how far the peak RSS rose above the RSS
+    // just before the read, kept the heap still in use after it, once
+    // collected. The peak depends on when the collector runs, so the
+    // bounds are on grow, about one and a half times what was
+    // measured (6 runs each: mixed grew 804-816 MB, peak 979-993 MB,
+    // 177 MB kept; legit grew 520-647 MB, peak 832-959 MB, 274 MB
+    // kept), and on kept, which does not vary)
+    const BOUND = {mixed: {grow: 1250, kept: 270},
+      legit: {grow: 970, kept: 410}};
     const script = `
       const {shape} = await import(${JSON.stringify(ROOT +
         'tests/moreapps/odt-shapes.mjs')});
@@ -516,6 +528,8 @@ describe('ODT: one element budget for the whole file', () => {
         'tools/moreapps/!Letters/Open')});
       const [kind, n, k] = process.argv.slice(1);
       const b = shape(kind, +n, +k);
+      globalThis.gc();
+      const base = process.memoryUsage().rss;
       const t0 = Date.now();
       const r = await openDoc({readFile: async () => b}, 'x');
       const ms = Date.now() - t0;
@@ -523,21 +537,29 @@ describe('ODT: one element budget for the whole file', () => {
       try {
         rss = Math.round(process.resourceUsage().maxRSS / 1024);
       } catch {}
+      const grow = rss > 0 ? rss - Math.round(base / 1048576) : -1;
+      globalThis.gc();
+      const kept = Math.round(process.memoryUsage().heapUsed / 1048576);
       const ps = r.doc.sections.flatMap((s) => s.blocks).length;
-      console.log(JSON.stringify({ms, rss, ps, mb: b.length / 1048576,
-        notes: r.notes}));`;
+      console.log(JSON.stringify({ms, rss, grow, kept, ps,
+        mb: b.length / 1048576, notes: r.notes}));`;
     for (const [kind, n, k] of [['mixed', 78000, 0],
       ['legit', 200000, 3]]) {
-      const out = execFileSync(process.execPath, ['--input-type=module',
-        '-e', script, kind, String(n), String(k)], {encoding: 'utf8',
-        timeout: 120000, stdio: ['ignore', 'pipe', 'ignore'],
+      const out = execFileSync(process.execPath, ['--expose-gc',
+        '--input-type=module', '-e', script, kind, String(n), String(k)],
+        {encoding: 'utf8', timeout: 120000, stdio: ['ignore', 'pipe', 'ignore'],
         env: {...process.env, NODE_TEST_CONTEXT: ''}});
       const r = JSON.parse(out.trim().split('\n').at(-1));
       console.log(`odthostile: ${kind} (${r.mb.toFixed(1)} MB) read in ` +
-        `${r.ms} ms, peak RSS ` + (r.rss > 0 ? r.rss + ' MB' :
-        'not reported'));
+        `${r.ms} ms, peak RSS ` + (r.rss > 0 ? r.rss + ' MB, grew ' +
+        r.grow + ' MB' : 'not reported') + `, kept ${r.kept} MB`);
       assert.ok(r.ms < 10000, kind + ': ' + r.ms + ' ms');
-      if (r.rss > 0) assert.ok(r.rss < 1200, kind + ': ' + r.rss + ' MB');
+      if (r.rss > 0) {
+        assert.ok(r.grow < BOUND[kind].grow, kind + ' grew ' + r.grow +
+          ' MB');
+      }
+      assert.ok(r.kept < BOUND[kind].kept, kind + ' kept ' + r.kept +
+        ' MB');
       assert.ok(!r.notes.some((x) => /elements/.test(x)), r.notes);
       if (kind === 'legit') {
         assert.equal(r.ps, 200000);

@@ -53,7 +53,7 @@ describe('ToolbarButtons', () => {
       assert.ok(rows.join('').replace(/\./g, '').length > 10, n);
     }
     const file = iconFiles()['!Sprites'];
-    assert.equal(file.readUInt32LE(0), 6 + list.length);
+    assert.equal(file.readUInt32LE(0), 8 + list.length);
     for (const [n] of list) assert.ok(file.includes(Buffer.from(n)), n);
   });
 

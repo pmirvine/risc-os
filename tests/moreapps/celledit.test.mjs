@@ -17,7 +17,9 @@
 // D20: EditPos ranks kept per row (./EditRank) equal the layout's
 // flow places; a whole keystroke in a cell (the edit with its
 // findBlock, the layout, Selection.clamp) of one of five 1000 x 5
-// tables within +5 ms of one in the same document without tables.
+// tables (rows 1, 500, 1000) makes no more measurer calls than one
+// in the same document without tables (+5; the work, not the time),
+// and takes at most twice as long (+5 ms).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import * as X from '../../tools/moreapps/!Letters/EditDel';
@@ -480,8 +482,9 @@ describe('D20: ranks per row; a whole keystroke in a cell', () => {
     X.deleteForward(d, sel(d, 'f', 0, 'g', 1));
     check();
   });
-  it('five 1000 x 5 tables: a keystroke in cell (500, 2) within +5 ' +
-    'ms of the document without them', () => {
+  it('five 1000 x 5 tables: a keystroke in a cell of row 1, 500 or ' +
+    '1000 re-lays the same few paragraphs as one in a plain document',
+  () => {
     const big = () => modelTable(Array.from({length: 1000}, (_, i) =>
       Array.from({length: 5}, (_, j) => `r${i}c${j}`)));
     const blocks = (tables) => {
@@ -492,35 +495,60 @@ describe('D20: ranks per row; a whole keystroke in a cell', () => {
       }
       return out;
     };
-    const m = tm();
-    /** Median of 20 (after 3) whole keystrokes at the paragraph id. */
+    /** A measurer that counts its calls (the work a layout does). */
+    const counting = () => {
+      const m = tm();
+      m.calls = 0;
+      for (const f of ['width', 'widthTo', 'prefixWidths', 'offsetAt']) {
+        const g = m[f].bind(m);
+        m[f] = (...a) => { m.calls++; return g(...a); };
+      }
+      return m;
+    };
+    /** Median ms of 20 (after 3) whole keystrokes at the paragraph id,
+     *  and the measurer calls of the last one. */
     const keys = (dd, id) => {
+      const m = counting();
       let L = new DocLayout(dd.doc, m);
       L.layout(800);
       let s = S.caret({id, off: 0});
       const ms = [];
+      let calls = 0;
       for (let i = 0; i < 23; i++) {
         const t0 = performance.now();
         s = E.typeText(dd, s, i % 2 ? ' ' : 'k', {key: 'typing'});
         const old = L;
+        m.calls = 0;
         L = new DocLayout(dd.doc, m, old);
         L.layout(800);
+        calls = m.calls;
         s = S.clamp(s, dd.doc, old);
         if (i >= 3) ms.push(performance.now() - t0);
       }
-      return ms.sort((a, b) => a - b)[10];
+      return {ms: ms.sort((a, b) => a - b)[10], calls};
     };
     const free = new Document(mkDoc(blocks(false)));
     const dd = new Document(mkDoc(blocks(true)));
     const f = keys(free, free.doc.sections[0].blocks[0].id);
     const p = keys(dd, dd.doc.sections[0].blocks[0].id);
-    const c = keys(dd, dd.doc.sections[0].blocks[200].rows[500]
-      .cells[2].blocks[0].id);
-    console.log(`# whole keystroke: without tables ${f.toFixed(2)} ` +
-      `ms; five 1000x5: plain ${p.toFixed(2)} ms, cell ${c.toFixed(2)}` +
-      ' ms');
-    assert.ok(c <= f + 5, `cell ${c} vs ${f}`);
-    assert.ok(c <= p + 5, `cell ${c} vs plain ${p}`);
+    const cells = [1, 500, 1000].map((r) => keys(dd, dd.doc.sections[0]
+      .blocks[200].rows[r - 1].cells[2].blocks[0].id));
+    console.log(`# whole keystroke: without tables ${f.ms.toFixed(2)} ` +
+      `ms (${f.calls} measurer calls); five 1000x5: plain ` +
+      `${p.ms.toFixed(2)} ms, cells ` + cells.map((c) =>
+        `${c.ms.toFixed(2)} ms (${c.calls})`).join(', '));
+    // the work done, not the time: a cell's keystroke re-lays the
+    // paragraphs it touches, wherever the row is
+    for (const c of cells) {
+      assert.ok(c.calls <= f.calls + 5, `${c.calls} vs ${f.calls}`);
+      assert.ok(c.calls <= p.calls + 5, `${c.calls} vs ${p.calls}`);
+    }
+    // time only as a ratio with generous slack (medians of 20), and
+    // against the paragraph in the same document (not the free one:
+    // that is an absolute bound in disguise)
+    for (const c of cells) {
+      assert.ok(c.ms <= 2 * p.ms + 5, `cell ${c.ms} vs plain ${p.ms}`);
+    }
   });
 });
 

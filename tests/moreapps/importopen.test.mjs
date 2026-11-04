@@ -143,6 +143,7 @@ const O = await import(L + 'Open');
 const DS = await import(L + 'DocSave');
 const CD = await import(L + 'CloseDoc');
 const SS = await import(L + 'SaveState');
+const PB = await import(L + 'PdfBox');
 const {copyBox} = await import(L + 'CopySave');
 const {windowMenu} = await import(L + 'WinMenu');
 const {docCommand} = await import(L + 'DocKeys');
@@ -504,6 +505,14 @@ describe('saving an imported window', () => {
     assert.equal(as('docx', DIR + '.Report/rtf'), DIR + '.Report/docx');
     assert.equal(as(undefined, DIR + '.Report/docx'),
       DIR + '.Report2/docx');
+    // Export as PDF: numbered only when the .pdf itself is there
+    const pdf = (dw, ...l) => PB.pdfName(dw, SS.HOME, has(...l));
+    const imp = {path: null, importedFrom: ORIG};
+    assert.equal(pdf(imp, DIR + '.Report/docx'), DIR + '.Report/pdf');
+    assert.equal(pdf(imp, DIR + '.Report/pdf'), DIR + '.Report2/pdf');
+    assert.equal(pdf({path: null, leaf: 'Untitled'},
+      SS.HOME + '.Untitled'),
+      SS.HOME + '.Untitled/pdf');
   });
 });
 
@@ -573,6 +582,24 @@ describe('ImportError and the notice', () => {
     assert.equal(d(new E('too-big', 'doc')), "'Report' could not be " +
       'opened: it is too big (more than 16 MB).');
     assert.equal(new E('old', 'doc').name, 'ImportError');
+  });
+
+  it('describe: one message for each of the six codes', () => {
+    const E = O.ImportError;
+    const lead = "'Report' could not be opened: ";
+    const TABLE = [
+      ['old', 'doc', 'it is a Word 6/95 file, which !Letters cannot ' +
+        'read.'],
+      ['encrypted', 'doc', 'it is password-protected.'],
+      ['not-word', 'doc', 'it is not a Word document.'],
+      ['bad', 'odt', 'it is not an OpenDocument text file.'],
+      ['too-big', 'odt', 'it is too big (more than 16 MB).'],
+      ['toocomplex', 'odt', 'it is too large or complex for !Letters ' +
+        'to open.']];
+    for (const [code, format, text] of TABLE) {
+      assert.equal(O.describe(new E(code, format), 'Report'),
+        lead + text, code);
+    }
   });
 
   it('a file of an import type no reader took is said in its ' +

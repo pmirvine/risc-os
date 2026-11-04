@@ -80,13 +80,18 @@ const FILES = {
   'One/doc': [new Uint8Array([7]), DOC],
   'Empty/odt': [new Uint8Array(0), ODT],
   'Junk/doc': [new Uint8Array(300).map((_, i) => (i * 7919 + 13) & 255), DOC],
+  'DropA/odt': [makeOdt({ content: P('Dropped A.') }), ODT],
+  'DropB/odt': [makeOdt({ content: P('Dropped B.') }), ODT],
+  'DropC/doc': [makeDoc({ text: 'Dropped C.\r' }), DOC],
+  'DropE/odt': [makeOdt({ content: P('Dropped E.') }), ODT],
+  'DropD/doc': [makeDoc({ text: 'Dropped D.\r' }), DOC],
   'Junk/odt': [new Uint8Array(300).map((_, i) => (i * 7919 + 13) & 255), ODT],
   // opened by what they are
   'Disguise/odt': [await buildDocx({ 'word/document.xml': documentXml(p(r('A docx called odt.'))) }), ODT],
   'Rtf/doc': [enc('{\\rtf1\\ansi{\\fonttbl{\\f0 Times;}}\\f0 RTF called doc.\\par}'), DOC],
   'Odt/docx': [makeOdt({ content: P('An ODT called docx.') }), DOCX],
 };
-const ORIGINALS = ['Rich/odt', 'Noted/odt', 'Second/odt', 'Rich/doc', 'Plain/doc', 'Gif/odt'];
+const ORIGINALS = ['Rich/odt', 'Noted/odt', 'Second/odt', 'Rich/doc', 'Plain/doc', 'Gif/odt', 'DropA/odt', 'DropB/odt', 'DropC/doc', 'DropD/doc', 'DropE/odt'];
 const D = 'RAM::RamDisc0.$.';
 const head = (leaf, label) => `'${leaf}' was opened from ${label} file; it will be saved as a .docx.`;
 // a written .docx read back: its paragraphs' text (table cells' too), as one string
@@ -590,6 +595,67 @@ try {
   ok('Export as PDF of an import writes a PDF (&ADF) beside it, the window still imported', x1.name === 'RAM::RamDisc0.$.Noted/pdf'
     && x1.type === 0xADF && x1.head === '%PDF-' && x1.imported === 'odt' && x1.title === 'Noted/odt *', x1);
   await same('Print and PDF');
+
+  // ------------------------------------------------ 5. dropped on the icon bar icon, dropped on a document window
+  const drops = await ev(async ([D, ODT, DOC]) => {
+    os.vfs.writeFile(D + 'Words', new TextEncoder().encode('plain text, not Word'), { filetype: 0xFFF });
+    const it = () => os.wimp.iconbar.items.find((i) => i.task?.name === 'Letters');
+    const file = (leaf, filetype) => ({ path: D + leaf, filetype, type: 'file' });
+    const res = {};
+    const step = async (key, leaf, how) => {
+      window.__msgs.length = 0;
+      const n = window.__word().word.docs.filter((d) => !d.closed).length;
+      how([file(leaf, leaf.endsWith('odt') ? ODT : DOC)]);
+      await window.__wait(() => window.__by(leaf) || window.__msgs.length);
+      await window.__frames(3);
+      const d = window.__by(leaf);
+      res[key] = { open: !!d, title: d?.win.title, imported: d?.imported ?? null, from: d?.importedFrom ?? null, path: d?.path ?? null,
+        text: d?.text, n, after: window.__word().word.docs.filter((q) => !q.closed).length, msgs: window.__msgs.map((m) => m[0]),
+        tasks: window.__tasks() };
+    };
+    const onBar = (files) => it().onDataLoad({ files });
+    const keep = () => window.__word().word.docs.find((q) => !q.closed);
+    const onWin = (files) => keep().win.emit('dataload', { files, x: 50, y: -50, icon: -1, window: keep().win });
+    await step('barOdt', 'DropA/odt', onBar);
+    await step('barOdt2', 'DropB/odt', onBar);
+    await step('barDoc', 'DropC/doc', onBar);
+    await step('winDoc', 'DropD/doc', onWin);
+    await step('winOdt', 'DropE/odt', onWin);
+    // refused: a missing file, and a text file (not Word), each on its
+    // own, on the icon and on a window: one message each, no window
+    for (const [key, how] of [['bar', onBar], ['win', onWin]]) {
+      for (const [what, leaf, type] of [['Missing', 'Nothing/odt', ODT], ['Text', 'Words', 0xFFF]]) {
+        window.__msgs.length = 0;
+        const n = window.__word().word.docs.filter((q) => !q.closed).length;
+        let threw = null;
+        try {
+          how([file(leaf, type)]);
+          await window.__sleep(300);
+          await window.__frames(3);
+        } catch (e) { threw = String(e); }
+        res['bad' + what + key] = { threw, msgs: window.__msgs.map((m) => m[0]), none: !window.__by(leaf),
+          same: window.__word().word.docs.filter((q) => !q.closed).length === n, alive: window.__tasks() === 1, leaf };
+      }
+    }
+    return res;
+  }, [D, ODT, DOC]);
+  const dropOk = (d, leaf, text, more) => d.open && d.title === leaf + ' *' && d.imported === (leaf.endsWith('odt') ? 'odt' : 'doc')
+    && d.from === D + leaf && d.path === null && d.text.includes(text) && d.after === d.n + 1 && d.tasks === 1 && more;
+  ok('an ODT dropped on the icon bar icon opens as an import', dropOk(drops.barOdt, 'DropA/odt', 'Dropped A.', true), drops.barOdt);
+  ok('... a second ODT dropped there opens a second window', dropOk(drops.barOdt2, 'DropB/odt', 'Dropped B.', true), drops.barOdt2);
+  ok('a .doc dropped on the icon bar icon opens as an import', dropOk(drops.barDoc, 'DropC/doc', 'Dropped C.', true), drops.barDoc);
+  ok('a .doc dropped on a document window opens as an import in a window of its own', dropOk(drops.winDoc, 'DropD/doc', 'Dropped D.', true), drops.winDoc);
+  ok('an ODT dropped on a document window opens as an import, a second window', dropOk(drops.winOdt, 'DropE/odt', 'Dropped E.', drops.winOdt.after === drops.winDoc.after + 1), drops.winOdt);
+  const badOk = (d, why) => !d.threw && d.msgs.length === 1 && d.msgs[0].includes("'" + d.leaf + "' could not be opened")
+    && why.test(d.msgs[0]) && d.none && d.same && d.alive;
+  for (const where of ['bar', 'win']) {
+    const on = where === 'bar' ? 'the icon bar icon' : 'a document window';
+    ok(`a missing file dropped on ${on}: exactly one message, 'could not be opened' and why, no window`,
+      badOk(drops['badMissing' + where], /could not be opened: .+/), drops['badMissing' + where]);
+    ok(`a text file dropped on ${on}: exactly one message, 'could not be opened' and why, no window`,
+      badOk(drops['badText' + where], /could not be opened: .+/), drops['badText' + where]);
+  }
+  await same('Drops');
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }

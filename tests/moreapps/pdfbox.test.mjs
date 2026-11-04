@@ -314,6 +314,36 @@ describe('the box', () => {
     assert.equal(pdfName({path: null, leaf: 'Untitled 2'},
       'ADFS::HardDisc4.$', there), 'ADFS::HardDisc4.$.Untitled2/pdf');
   });
+  it('the .pdf name of an imported or untitled document: ' +
+    'numbered only when that .pdf is there', () => {
+    const D = 'ADFS::HardDisc4.$';
+    const imp = (leaf, ...have) => pdfName({path: null,
+      importedFrom: `${D}.${leaf}/odt`}, 'X', (p) => have.includes(p));
+    const unt = (...have) => pdfName({path: null, leaf: 'Untitled'},
+      D, (p) => have.includes(p));
+    assert.equal(imp('Report', `${D}.Report/docx`), `${D}.Report/pdf`);
+    assert.equal(imp('Report', `${D}.Report/pdf`), `${D}.Report2/pdf`);
+    assert.equal(imp('Report', `${D}.Report/pdf`, `${D}.Report2/pdf`),
+      `${D}.Report3/pdf`);
+    assert.equal(unt(`${D}.Untitled`), `${D}.Untitled/pdf`);
+    assert.equal(unt(`${D}.Untitled/pdf`), `${D}.Untitled2/pdf`);
+    assert.equal(imp('Q3', `${D}.Q3/pdf`), `${D}.Q4/pdf`,
+      'a digit leaf as the docx name does');
+    const bad = () => { throw new Error('unreadable'); };
+    assert.equal(pdfName({path: null, importedFrom: `${D}.Report/odt`},
+      'X', bad), `${D}.Report/pdf`);
+    assert.equal(pdfName({path: null, leaf: 'Untitled'}, D, bad),
+      `${D}.Untitled/pdf`);
+  });
+  it('Save a copy still numbers the .docx name', async () => {
+    const SS = await import(L + 'SaveState');
+    const D = 'ADFS::HardDisc4.$';
+    const dw = {path: null, importedFrom: `${D}.Report/odt`};
+    assert.equal(SS.suggestName(dw, 'X',
+      (p) => p === `${D}.Report/docx`, 'docx'), `${D}.Report2/docx`);
+    assert.equal(SS.suggestName(dw, 'X',
+      (p) => p === `${D}.Report/docx`), `${D}.Report2/docx`);
+  });
 });
 
 describe('Export as PDF: OK, the save box, the file', () => {

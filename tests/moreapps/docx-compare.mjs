@@ -352,13 +352,36 @@ export function expectedBack(doc) {
   // a section that ends with a kept block (a table: Delete at its end
   // removed the empty paragraph that carried the section's break) is
   // written with an empty paragraph to carry its sectPr
-  // (WriteBody.bodyNode), which reads back as a block of its own
+  // (WriteBody.bodyNode), which reads back as a block of its own; so
+  // is one that ends with a paragraph in a TOC wrapper (b.sdt: a
+  // section break made inside the wrapper), the empty paragraph after
+  // the wrapper (./TocSdt "Known limits")
   d.sections.forEach((s, k) => {
     const last = s.blocks[s.blocks.length - 1];
-    if (k < d.sections.length - 1 && (!last || last.type !== 'p')) {
+    if (k < d.sections.length - 1 && (!last || last.type !== 'p' ||
+      last.sdt)) {
       s.blocks.push(newPara(''));
     }
   });
+  // a TOC wrapper is written once per section (./TocSdt wrapBlocks:
+  // a run split by a section break is two w:sdt), and the reader
+  // numbers the wrappers of the body 1, 2... (sdt.seq): each section's
+  // run of a marker is a wrapper of its own, numbered in body order.
+  // The rule is general (it applies to every document compared) and
+  // cannot hide a defect: a merged or an unsplit wrapper still
+  // differs (other markers, other counts, other numbers after it)
+  let seq = 0;
+  for (const s of d.sections) {
+    let was = null, now = null;
+    for (const b of s.blocks) {
+      if ((b.type !== 'p' && b.type !== 'tbl') || !b.sdt) continue;
+      if (!was || !deepEqual(was, b.sdt)) {
+        was = b.sdt;
+        now = {...b.sdt, seq: ++seq};
+      }
+      b.sdt = now;
+    }
+  }
   // a br made by editing (no node: a page break) reads back with the
   // <w:br w:type="..."/> the writer wrote for it
   // (at every depth: in table cells too, and in the stories, notes

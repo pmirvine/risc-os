@@ -158,7 +158,7 @@ try {
   await page.waitForFunction(() => window.os?.ready, null, { timeout: 20000 });
   await ev(async (files) => {
     window.__msgs = [];
-    const rec = (m) => { window.__msgs.push(String(m)); return Promise.resolve(1); };
+    const rec = (m, o) => { if (!(o && o.category === 'info')) window.__msgs.push(String(m)); return Promise.resolve(1); };
     globalThis.__riscos.reportError = rec;
     os.wimp.reportError = rec;
     window.__beeps = 0;

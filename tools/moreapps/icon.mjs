@@ -1,7 +1,9 @@
 // The !Letters sprites, used by tools/disc-moreapps.mjs: the application's icon (a blue document page with a white
 // L on it), '!letters' 34 x 34 and 'sm!letters' 18 x 18, and the icons of Word documents: .docx (file type &A7E,
 // 'file_a7e' / 'small_a7e': a white page with a blue W in its corner) and the older .doc (&AE6, 'file_ae6' /
-// 'small_ae6': the same page with a dark blue W). The system sprite pools have none of these. They are drawn
+// 'small_ae6': the same page with a dark blue W), and the OpenDocument
+// text files (&A81, 'file_a81' / 'small_a81': the same page with a badge
+// holding an O). The system sprite pools have none of these. They are drawn
 // with simple shapes onto character maps (tools/lib/spritewrite.mjs: one letter per Wimp colour).
 // libIconFiles(): the icon of !WimpLib, the library in !Boot.Resources (tools/disc-wimplib.mjs): books on a
 // shelf, '!wimplib' 34 x 34 and 'sm!wimplib' 18 x 18.
@@ -73,22 +75,31 @@ function appSmall() {
   return c.rows();
 }
 
-// a document page with lines of text and a W badge in its bottom left corner
-function docIcon(badge) {
+// an O (a ring) from (x0, y0) to (x1, y1), strokes w wide
+function letterO(c, x0, y0, x1, y1, col, w) {
+  c.rect(x0, y0, x1, y0 + w - 1, col);
+  c.rect(x0, y1 - w + 1, x1, y1, col);
+  c.rect(x0, y0, x0 + w - 1, y1, col);
+  c.rect(x1 - w + 1, y0, x1, y1, col);
+}
+
+// a document page with lines of text and a badge (a letter on a colour)
+// in its bottom left corner
+function docIcon(badge, letter = letterW) {
   const c = canvas(34);
   page(c, 6, 1, 27, 32, 6, 'W');
   for (const [y, len] of [[10, 13], [13, 15], [16, 10]]) c.line(10, y, 9 + len, y, 'l');
   c.rect(3, 19, 18, 31, badge, 'K');
-  letterW(c, 5, 22, 15, 28, 'W', 2);
+  letter(c, 5, 22, 15, 28, 'W', 2);
   return c.rows();
 }
 
-function docSmall(badge) {
+function docSmall(badge, letter = letterW) {
   const c = canvas(18);
   page(c, 3, 0, 15, 17, 3, 'W');
   for (const [y, len] of [[5, 7], [7, 9], [9, 6]]) c.line(5, y, 4 + len, y, 'l');
   c.rect(0, 10, 10, 17, badge, 'K');
-  letterW(c, 1, 12, 9, 15, 'W', 1);
+  letter(c, 1, 12, 9, 15, 'W', 1);
   return c.rows();
 }
 
@@ -236,6 +247,8 @@ export function iconFiles() {
       sprite('!letters', appIcon()), sprite('sm!letters', appSmall()),
       sprite('file_a7e', docIcon('L')), sprite('small_a7e', docSmall('L')),
       sprite('file_ae6', docIcon('B')), sprite('small_ae6', docSmall('B')),
+      // OpenDocument text (&A81): a green badge with an O
+      sprite('file_a81', docIcon('G', letterO)), sprite('small_a81', docSmall('G', letterO)),
       ...barSprites().map(([n, rows]) => sprite(n, rows)),
     ]),
   };

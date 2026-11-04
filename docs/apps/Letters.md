@@ -1136,7 +1136,7 @@ Modules: `SectBreak`, `SectDeco`, `SectMark` (rows above); `OpsSect` (`setSectio
 * **Files**: the fidelity rule holds: writing after Delete of a just-inserted break (and Delete again to join the
   paragraphs) gives the original bytes, and undo writes both sectPrs again byte for byte (`sectbreak.test.mjs`). A
   section whose props no longer read as its raw node is written from its props with the raw node's name and
-  attributes (`WriteProps.sectPrNode`; `docx-compare.mjs expectedBack` models that, for those sections only).
+  attributes (`WriteProps.sectPrNode`; `docx-compare.mjs expectedBack` models that, for those sections only; it also expects the `TocSdt` writer's documented limits: a section break inside a TOC wrapper reads back with one extra empty carrier paragraph, and the `seq` fields renumbered per control copy).
 
 ## Insert menu and page break before (Batch A, A3.3): the rules
 
@@ -4862,7 +4862,9 @@ User guide: `$.Docs.Letters`, part 32. Neither format is written. Everything is 
   paragraph cap is passed in (`MAX_PARAGRAPHS`, 200,000): the builder stops there with a note instead of refusing.
 * `ImportError(code, format, message)` (`name 'ImportError'`), worded by `describe`:
   `old` "it is a Word 6/95 file, which !Letters cannot read", `encrypted` "it is password-protected", `not-word` "it
-  is not a Word document", `too-big` "it is too big (more than 16 MB)", `bad` "the file is damaged" for `'doc'` and
+  is not a Word document", `too-big` "it is too big (more than 16 MB)", `toocomplex` "it is too large or complex for !Letters to open" (an ODT whose `content.xml` is over the element
+  budget: `OdtXml` throws `OdtXmlError('elements')` on `content.xml`, `OdtRead` maps that to the refusal code `toocomplex` and `Open` keeps the code; a budget overrun
+  in `styles.xml`, `settings.xml` or the manifest stays a note, not a refusal), `bad` "the file is damaged" for `'doc'` and
   "it is not an OpenDocument text file" for any other format; each as `'<leaf>' could not be opened: <why>.`.
   `describe(err, leaf, type)` also words a file of &AE6 / &A81 that no importer took (the `.docx` reader's `not-docx`
   or `no-document`) in its type's words, and an OLE file `DocRead`'s sniff passed over (`DocxError` kind `ole2`: an
@@ -4871,7 +4873,8 @@ User guide: `$.Docs.Letters`, part 32. Neither format is written. Everything is 
   (the article from the importer's label: "a .doc file"), then ` Also: n1; n2 (and N more).` within `MAX_NOTICE`
   (600); for anything else `notesNotice` as before. The head is said for every import, clean or not.
 * `IMPORT_TYPES {odt: &A81, doc: &AE6}`; `formatOfType` gives `'odt'` / `'doc'` for them (opening only: `FILETYPES`
-  and `fileTypeOf` are unchanged, a window never saves as either). `!Boot` and `!Run` set `File$Type_A81 ODT`,
+  and `fileTypeOf` are unchanged, a window never saves as either). `!Sprites` has `file_a81` (34 x 34) and `small_a81` (18 x 18), a white page with a green O (`tools/moreapps/icon.mjs`
+  `iconFiles`; `letters-icons.test.mjs` pins them and every other sprite by digest). `!Boot` and `!Run` set `File$Type_A81 ODT`,
   `File$Type_AE6 MSWord` and their `Alias$@RunType_` lines; the second-Letters `DataOpen` hand-off passes the file's
   own type when `formatOfType` knows it.
 
@@ -4884,7 +4887,9 @@ User guide: `$.Docs.Letters`, part 32. Neither format is written. Everything is 
   which routes every save to the Save box. The docs map is keyed by the original's path (opening it again raises the
   window).
 * `SaveState.importName(from, dir, exists, ext = '/docx')`, used through `suggested` / `suggestName` by the Save box
-  (Save, Save as, the close prompt's Save), Save a copy and Export as PDF: `<dir of original>.<stem><ext>`, the stem
+  (Save, Save as, the close prompt's Save), Save a copy and Export as PDF (`suggestName(dw, dir, exists, 'pdf')`, which for a PDF also tests the name with `/pdf`
+  added, so an imported or untitled document gets `Report/pdf`, and `Report2/pdf` only when that exists; Save a copy and
+  Save as are unchanged): `<dir of original>.<stem><ext>`, the stem
   the leaf without `/odt /ott /doc /dot /docx` (any case), else `<stem>2`, `<stem>3`... Save as RTF passes `/rtf`.
 * `DocSave.canWrite` refuses the original (`'<leaf>' is the file this document was opened from: save it under another
   name, as a .docx.`), so OK or a drag onto it in Save as or Save a copy is refused with no Replace question; `write1`
@@ -5015,14 +5020,15 @@ node --test tests/moreapps/importopen.test.mjs   # Open: IMPORTERS, ImportError 
 node --test tests/moreapps/impbuild.test.mjs tests/moreapps/impstructure.test.mjs   # the builder: Docs that write and read back equal
 node --test tests/moreapps/cfb.test.mjs tests/moreapps/inflatesync.test.mjs   # WimpLib's OLE reader and inflater
 node --test tests/moreapps/odtread.test.mjs tests/moreapps/odtbody.test.mjs tests/moreapps/odtparts.test.mjs tests/moreapps/odtreview.test.mjs
-node --test tests/moreapps/odthostile.test.mjs   # hostile ODTs, a seeded fuzz (ODT_FUZZ_SEED), the element budget
+node --test tests/moreapps/odthostile.test.mjs   # hostile ODTs, a seeded fuzz (ODT_FUZZ_SEED), the element budget (a content.xml over it: `toocomplex`; the memory test measures growth after a gc, not a peak)
 node --test tests/moreapps/odtquad.test.mjs      # namespace scopes, tracked insertions, comments and bookmarks: linear
 node --test tests/moreapps/odtcorpus.test.mjs tests/moreapps/odtcross.test.mjs   # the corpus ODTs: read, round trip, LibreOffice twins (skip without the corpus)
 node --test tests/moreapps/docread.test.mjs tests/moreapps/docprops.test.mjs tests/moreapps/doctables.test.mjs tests/moreapps/docparts.test.mjs tests/moreapps/docreview.test.mjs
 node --test tests/moreapps/dochostile.test.mjs tests/moreapps/docprobe.test.mjs   # hostile .docs, a seeded fuzz (DOC_FUZZ_SEED), the bound of every structure
 node --test tests/moreapps/doccorpus.test.mjs tests/moreapps/doccross.test.mjs   # corpus .docs, twins (skip without the corpus)
 node --test tests/moreapps/docword.test.mjs     # .doc files saved by real Word (skips without the fixtures)
-node tests/moreapps/word-import.mjs             # desktop: double-click, notice, Save box, refusals, Revert, Save as RTF, PDF
+node tests/moreapps/word-import.mjs             # desktop: double-click, notice, Save box, refusals, Revert, Save as RTF, PDF (Export as PDF suggests Report/pdf), a drop on the icon bar icon and on a window, a missing and a non-Word file each dropped on its own on both; 68 PASS
+node --test tests/moreapps/letters-icons.test.mjs   # the sprites: file_a81 / small_a81 there, every other sprite pinned by digest
 node tests/integration/flows.mjs import         # real double-clicks in a Filer window
 ```
 
@@ -5060,7 +5066,7 @@ last, 35 corpus round trips, the rich document and fuzzed copies).
   look the same). See `docs/CHANGES_NEEDED.md`.
 * `Styles.resolvePara` takes the top layer's tab list whole where Word merges tab stops by position, so a style's
   tabs under a paragraph's own are not merged (`docs/CHANGES_NEEDED.md`).
-* No ODT icon sprite for &A81 in `!Sprites`; no WMF/EMF converter (metafiles are drawn as the labelled box).
+* No WMF/EMF converter (metafiles are drawn as the labelled box).
 * Parked: `.doc` text boxes, floating shapes and pictures, form field state (FFData), formatting-change revisions,
   table styles, `fLegal` numbering; ODT page styles' `style:next-style-name`, unequal columns, custom note marks;
   bookmark name collisions after white space becomes `_`.
@@ -5208,7 +5214,7 @@ Node >= 22.7 (extensionless imports; the suite was run on Node 26).
 ```sh
 node --test tests/moreapps                    # unit tests (no browser)
 NODE_OPTIONS=--max-old-space-size=1024 node --test tests/moreapps   # the same under a 1 GB heap
-WORD_PERF=1 WORD_SECTIONS_PERF=1 node --test --test-concurrency=1 tests/moreapps/outline-minor.test.mjs tests/moreapps/pages-perf.test.mjs tests/moreapps/relayout-perf.test.mjs tests/moreapps/wrap-settle.test.mjs tests/moreapps/fields-incr.test.mjs tests/moreapps/hdrpick-chain.test.mjs   # final fix B (review 3 M32): also asserts the absolute ceilings (Demote all of 100,000 blocks <= 200 ms, the 1,667-page pagination < 150 ms, a 50,000-paragraph relayout < 25 ms, 2,000 floats settled < 1 s; with WORD_PERF also fields-incr's 3,000 / 30,000 field paragraphs <= 2 / 15 ms; with WORD_SECTIONS_PERF hdrpick-chain's 500 / 10,000 sections <= 1.5 / 50 ms a keystroke, the 1,000 undos <= 1 s, 100,000 sections <= 500 ms and slices < 250 ms) on a quiet machine; by default they are printed, and the tests hold what load does not change: counts (fields scanned, references looked at), paired ratios (Demote all of N against N / 4 < 10x, the pagination at most half of Draft's open, the relayout against a tenth of the size), counted passes, and best-of attempts (the line at the top, the keystroke on page 18 of the charts file). word-borders.mjs times its keystroke in Draft, the least of 5 medians of 5 after 3 warm-ups. WORD_SECTIONS_PERF and WORD_COLS_PERF are the same kind of gate
+WORD_PERF=1 WORD_SECTIONS_PERF=1 node --test --test-concurrency=1 tests/moreapps/outline-minor.test.mjs tests/moreapps/pages-perf.test.mjs tests/moreapps/relayout-perf.test.mjs tests/moreapps/wrap-settle.test.mjs tests/moreapps/fields-incr.test.mjs tests/moreapps/hdrpick-chain.test.mjs   # final fix B (review 3 M32): also asserts the absolute ceilings (Demote all of 100,000 blocks <= 200 ms, the 1,667-page pagination < 150 ms, a 50,000-paragraph relayout < 25 ms, 2,000 floats settled < 1 s; with WORD_PERF also fields-incr's 3,000 / 30,000 field paragraphs <= 2 / 15 ms; with WORD_SECTIONS_PERF hdrpick-chain's 500 / 10,000 sections <= 1.5 / 50 ms a keystroke, the 1,000 undos <= 1 s, 100,000 sections <= 500 ms and slices < 250 ms) on a quiet machine; by default they are printed, and the tests hold what load does not change: counts (fields scanned, references looked at), paired ratios (Demote all of N against N / 4 < 10x, the pagination at most half of Draft's open, the relayout against a tenth of the size), counted passes, a count guard (the line at the top: `ensure(2)` has made 3 pages at most and is not done; its 5 ms / 300 ms bounds are WORD_PERF), and best-of attempts (the keystroke on page 18 of the charts file). word-borders.mjs times its keystroke in Draft, the least of 5 medians of 5 after 3 warm-ups. WORD_SECTIONS_PERF, WORD_COLS_PERF and WORD_GRID_PERF (`tblgrid.test.mjs`: the grid of a 10,000-row table, each run on a freshly built table, under 50 ms; `celledit.test.mjs` and `fields-leak.test.mjs` hold counts and a heap growth measured after a gc instead of times) are the same kind of gate
 node --test tests/moreapps/index.mjs          # browser suite: disc --check, the wimplib import, cold boot, !Letters
 node tools/disc-moreapps.mjs --check          # sources: Latin-1, 72 columns
 node tools/disc-wimplib.mjs --check           # the library's sources: the same, <= 250 lines, no 'riscos'

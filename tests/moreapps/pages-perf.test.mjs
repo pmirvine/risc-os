@@ -12,7 +12,8 @@
 //     left are none (it converged);
 //   * a line added at the top (no convergence): the first pages
 //     (what shows) < 5 ms, the rest in 2 ms slices, finished
-//     < 300 ms, the same pages as a fresh pagination;
+//     < 300 ms (both with WORD_PERF=1), the same pages as a fresh
+//     pagination;
 //   * painting a screen (EditPaint paintView, 1000 px at page 800,
 //     before and after a keystroke) builds the frames of 2 pages at
 //     most.
@@ -28,8 +29,13 @@
 // the open and the line at the top are the best of three attempts
 // too (final fix B, review 3 M32: a real cost is in every attempt,
 // load from tests running beside this one is not), and the open is
-// paired with Draft's (at most half of it); its 150 ms ceiling is
-// asserted with WORD_PERF=1 only (a quiet machine).
+// paired with Draft's (at most half of it). Asserted by default: the
+// counts (converged, the slices left, the page count, the same pages
+// as a fresh pagination; for the line at the top, that ensure(2)
+// worked out 3 pages at most and was not done), and the keystroke
+// under max(10 ms, 1.5 x Draft's). Only with WORD_PERF=1 (a quiet
+// machine): the open's 150 ms ceiling, the keystroke's +5 ms, and the
+// line at the top's 5 ms / 300 ms.
 import {describe, it, before, after} from 'node:test';
 import assert from 'node:assert/strict';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
@@ -156,8 +162,8 @@ function budgets(label, make, hf) {
       }
     });
 
-    it('a keystroke on page ~800 (convergent) is within +5 ms of ' +
-      'Draft\'s; nothing left to work out', () => {
+    it('a keystroke on page ~800 (convergent) converges, within ' +
+      'max(10 ms, 1.5 x Draft\'s)', () => {
       const i = N >> 1, id = d.doc.sections[0].blocks[i].id;
       let L = L0, P = P0, page = -1, left = 0;
       /** One measurement: RUNS keystrokes in Draft and RUNS in Print
@@ -198,7 +204,8 @@ function budgets(label, make, hf) {
       // load from tests running beside this one (the parallel unit
       // run) is in some pairs, or in one attempt, not in all three
       let got = null;
-      for (let t = 0; t < 5 && !(got && got.e < 5); t++) {
+      for (let t = 0; t < 5 && !(got && got.b < Math.max(10, 1.5 * got.a));
+        t++) {
         const x = attempt();
         console.log(`# keystroke on page ${page}: Draft ` +
           `${x.a.toFixed(2)} ms, Print layout ${x.b.toFixed(2)} ms, ` +
@@ -208,13 +215,18 @@ function budgets(label, make, hf) {
         assert.ok(left <= 1, 'converged: one slice finishes it');
         assert.ok(P.done && P.count === P0.count, `${P.count}`);
       }
-      assert.ok(got.e < 5, `Print layout ${got.e.toFixed(2)} ms ` +
-        `over Draft's (${got.b.toFixed(2)} against ` +
-        `${got.a.toFixed(2)} ms)`);
+      // the work is asserted above (converged, one slice, the same
+      // page count); the time is a ratio with slack, not +5 ms
+      assert.ok(got.b < Math.max(10, 1.5 * got.a), `Print layout ` +
+        `${got.b.toFixed(2)} ms against Draft's ${got.a.toFixed(2)} ms`);
+      if (process.env.WORD_PERF) {
+        assert.ok(got.e < 5, `${got.e.toFixed(2)} ms over Draft's`);
+      }
     });
 
-    it('a line added at the top: the first pages < 5 ms, the rest in ' +
-      '2 ms slices, finished < 300 ms, as a fresh pagination', () => {
+    it('a line added at the top: ensure(2) makes 3 pages at most, the ' +
+      'rest in 2 ms slices, as a fresh pagination (< 5 ms / < 300 ms ' +
+      'with WORD_PERF=1)', () => {
       const e = make();
       const La = new DocLayout(e.doc, m);
       La.layout(W);
@@ -231,6 +243,8 @@ function budgets(label, make, hf) {
           const t0 = performance.now();
           P.ensure(2);
           const t1 = performance.now();
+          assert.ok(!P.done && P.count <= 3, `ensure(2) made ` +
+            `${P.count} pages, done ${P.done}`);
           let n = 0;
           while (!P.step(2)) assert.ok(++n < 10000, 'the slices end');
           if (run >= WARM) {
@@ -249,8 +263,10 @@ function budgets(label, make, hf) {
           `(attempt ${t + 1})`);
         if (!got || x.tot < got.tot) got = x;
       }
-      assert.ok(got.ens < 5, `${got.ens} ms`);
-      assert.ok(got.tot < 300, `${got.tot} ms`);
+      if (process.env.WORD_PERF) {
+        assert.ok(got.ens < 5, `${got.ens} ms`);
+        assert.ok(got.tot < 300, `${got.tot} ms`);
+      }
       const F = new Pages(galleyOf(L)).finish();
       assert.equal(P.count, F.count);
       assert.ok(P.list.every((pg, j) => pg.start.k === F.list[j].start.k
