@@ -16,7 +16,8 @@
 //                     and before the file is written, it rejects
 //                     with a DOMException 'AbortError' (no result)
 //         onProgress(done, total, phase)  (0, 0, 'preparing') before
-//                     the layout; (0, n, 'pages') after it, then
+//                     the layout ((k, 0, 'preparing') at its frames:
+//                     ./PagesRun's); (0, n, 'pages') after it, then
 //                     (k, n, 'pages') once each page is painted, n
 //                     the pages exported; (n, n, 'writing') before
 //                     the fonts are embedded and the file written
@@ -62,10 +63,10 @@
 // ./DocLayout of dw.doc with the window's text metrics, floats on
 // (Print layout), the window's markup view and fields (their shading
 // off, results not codes, as Word prints), settled as Print layout
-// settles (./ViewPass settle: one blocking pass, its pages all
-// worked out), then placed (./PlacePrint). The window's own layout,
-// pages, undo and saved state are not touched, so it works in every
-// view. Each page: sink.begin at its size (px,
+// settles (./ViewPass settleSteps, a frame between its layouts
+// once a slice is spent), then placed (./PlacePrint). The window's
+// own layout, pages, undo and saved state are not touched, so it
+// works in every view. Each page: sink.begin at its size (px,
 // twips / 15), ./PagePaint paintPage with marks off, its pictures
 // settled; when a face it drew in was not loaded yet the faces are
 // loaded and the page painted again. Each run of text is fitted to
@@ -79,9 +80,11 @@
 // box ./ItemPaint tells the sink of (one per link per line, in the
 // body, headers, footers and notes) is a /Link annotation, no
 // border, on its page (/P): a web address (uriOf; others left out)
-// as /A << /S /URI >>; a bookmark (w:anchor) as /Dest [page /Fit],
-// its page ./PageOfBookmark pageOf's, left out when the bookmark is
-// missing, on no one page (a header's) or on a page not exported.
+// as /A << /S /URI >>; a bookmark (w:anchor) as /Dest [page /XYZ 0
+// top null], its page ./PageOfBookmark pageOf's, top its line's
+// (./BookmarkSpot destOf; /Fit where the line is not known: a cell,
+// a note), left out when the bookmark is missing, on no one page (a
+// header's) or on a page not exported.
 // The Info dictionary: the core properties' title and creator when
 // set (./FieldDates coreOf), producer '!Letters'. Uses
 // requestAnimationFrame, createImageBitmap and OffscreenCanvas
@@ -92,6 +95,7 @@ import {PdfSink} from './PdfSink';
 import {keyOf} from './PdfFiles';
 import {coreOf} from './FieldDates';
 import {pageOf} from './PageOfBookmark';
+import {destOf} from './BookmarkSpot';
 import {cleanUrl} from './LinkUrl';
 import {PdfWriter, num, str} from 'wimplib/PdfWrite';
 import {FontSet} from 'wimplib/PdfFont';
@@ -149,9 +153,9 @@ export function uriOf(url) {
 
 /** The link annotations of a page's links (PdfSink end's): ids for
  *  its /Annots; put(pid) writes the web ones once the page's id is
- *  known; dests [{id, head, i, pid}], the bookmark ones, written
- *  once every page is (i the target's page index: at(name), -1 for
- *  none, left out). */
+ *  known; dests [{id, head, i, name, pid}], the bookmark ones,
+ *  written once every page is (i the target's page index: at(name),
+ *  -1 for none, left out; name the bookmark's). */
 function annotsOf(writer, links, at) {
   const ids = [], now = [], dests = [];
   const box = (r) => '<< /Type /Annot /Subtype /Link /Rect [' +
@@ -169,7 +173,7 @@ function annotsOf(writer, links, at) {
       if (i < 0) continue;
       const id = writer.reserve();
       ids.push(id);
-      dests.push({id, head: box(l.rect), i});
+      dests.push({id, head: box(l.rect), i, name: l.anchor});
     }
   }
   return {ids, dests, put(pid) {
@@ -229,7 +233,7 @@ const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
  *  (1-based), and page(P, i, place, size), which paints page i and
  *  writes it; links() writes the bookmark links once every page is
  *  written. */
-function jobOf(dw, opts, {doc, P, from: a, to: b}) {
+function jobOf(dw, opts, {doc, L, P, from: a, to: b}) {
   const {loader, rasterise = rasterOf} = opts;
   const core = coreOf(doc);
   const writer = new PdfWriter({title: prop(core.title),
@@ -263,7 +267,7 @@ function jobOf(dw, opts, {doc, P, from: a, to: b}) {
     }
     return marks.get(name);
   };
-  const pageIds = new Map(), dests = [];
+  const pageIds = new Map(), dests = [], hPts = new Map();
 
   const page = async (P, i, place, {px, pt}) => {
     let out = null;
@@ -281,12 +285,15 @@ function jobOf(dw, opts, {doc, P, from: a, to: b}) {
       gstates: gstates(out.gstates), annots: an.ids});
     an.put(pid);
     pageIds.set(i, pid);
+    hPts.set(i, pt[1]);
     dests.push(...an.dests);
   };
   const links = () => {
+    const ctx = {doc, pages: P, place: L && L.place};
     for (const d of dests) {
       writer.put(d.id, d.head + ' /P ' + d.pid + ' 0 R /Dest [' +
-        pageIds.get(d.i) + ' 0 R /Fit] >>');
+        pageIds.get(d.i) + ' 0 R ' + destOf(ctx, d.name, d.i,
+        hPts.get(d.i)) + '] >>');
     }
   };
   return {writer, fonts, sink, page, links};

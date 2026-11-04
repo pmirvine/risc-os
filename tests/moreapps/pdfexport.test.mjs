@@ -279,16 +279,21 @@ describe('PdfExport: progress, slices and cancel', () => {
     async () => {
       const {loader} = bundled();
       const ac = new AbortController();
-      let t = 0, frames = 0;
+      let t = 0, frames = 0, paging = false;
       const done = [];
       const raf = (cb) => {
         frames++;
         if (frames > 1) ac.abort();   // (the first: Preparing pages)
         setImmediate(cb);
       };
+      // (the clock runs once the pages are painted: preparing in
+      // steps has its own test below)
       await assert.rejects(exportPdf(windowOf(pagesDoc(TEXTS)), {loader,
-        raf, clock: () => (t += 100), signal: ac.signal,
-        onProgress: (d, n, phase) => done.push(phase + d)}),
+        raf, clock: () => (paging ? (t += 100) : t), signal: ac.signal,
+        onProgress: (d, n, phase) => {
+          paging = phase === 'pages';
+          done.push(phase + d);
+        }}),
       (e) => e.name === 'AbortError');
       assert.equal(frames, 2);
       assert.deepEqual(done, ['preparing0', 'pages0', 'pages1']);
@@ -556,7 +561,8 @@ function annotsOf(pdf) {
       const rect = /\/Rect \[([^\]]*)\]/.exec(dict)[1].split(' ')
         .map(Number);
       const u = /\/URI (\((?:[^()\\]|\\.)*\))/.exec(dict);
-      const d = /\/Dest \[(\d+) 0 R \/Fit\]/.exec(dict);
+      const d = /\/Dest \[(\d+) 0 R (?:\/Fit|\/XYZ 0 \S+ null)\]/
+        .exec(dict);
       return {dict, rect, uri: u ? u[1] : null,
         dest: d ? kids.indexOf(Number(d[1])) : null,
         page: Number((/\/P (\d+) 0 R/.exec(dict) || [])[1])};
@@ -695,6 +701,7 @@ describe('PdfExport: links (G1)', () => {
     for (const a of an.flat()) {
       assert.equal(a.uri, null);
       assert.doesNotMatch(a.dict, /\/A /);
+      assert.match(a.dict, /\/XYZ 0 \S+ null\]/, 'to the line');
     }
     if (HAVE_PDFTOHTML) {
       // poppler's reading of the links: to page 3, and to page 1
@@ -827,5 +834,56 @@ describe('PdfExport: runs fitted to the screen\'s widths (9b-2)',
         globalThis.OffscreenCanvas = was;
         if (was === undefined) delete globalThis.OffscreenCanvas;
       }
+    });
+});
+
+// Preparing in steps: the layout and its passes with a frame between
+// them once a slice has had SLICE_MS (unequal columns make several
+// passes), Cancel answered there, the file the same.
+describe('exportPdf: preparing in steps', () => {
+  before(loadStyles);
+  const colsDoc = (n) => {
+    const d = mk(Array.from({length: n}, (_, i) => `${i} words ` +
+      'and more words to fill a line and then some'));
+    const s = d.doc.sections[0];
+    s.props = {...s.props, cols: {num: 2, space: 720,
+      equalWidth: false, col: [{w: 2640, space: 720}, {w: 6000}]}};
+    return d;
+  };
+  const slow = () => {
+    let t = 0;
+    return () => (t += SLICE_MS);
+  };
+
+  it('stepwise preparing gives the same bytes as without a yield',
+    async () => {
+      for (const n of [60, 200]) {
+        const run = (clock, raf) => exportPdf(windowOf(colsDoc(n)),
+          {loader: bundled().loader, now: NOW, clock, raf});
+        let frames = 0;
+        const fast = await run(() => 0, tick);
+        const steps = await run(slow(), (cb) => {
+          frames++;
+          setImmediate(cb);
+        });
+        assert.ok(frames > 3, 'frames: ' + frames);
+        assert.equal(steps.pages, fast.pages);
+        assert.deepEqual(steps.bytes, fast.bytes, n + ' paragraphs');
+      }
+    });
+
+  it('cancel during preparing: AbortError, no bytes, no font read',
+    async () => {
+      const ctrl = new AbortController();
+      const {loader, reads} = bundled();
+      let frames = 0;
+      await assert.rejects(exportPdf(windowOf(colsDoc(60)), {loader,
+        now: NOW, clock: slow(), signal: ctrl.signal,
+        raf: (cb) => {
+          if (++frames === 3) ctrl.abort();
+          setImmediate(cb);
+        }}), {name: 'AbortError'});
+      assert.equal(frames, 3, 'stopped at the next step');
+      assert.deepEqual(reads, []);
     });
 });

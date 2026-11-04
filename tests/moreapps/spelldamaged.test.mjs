@@ -73,4 +73,47 @@ describe('a damaged dictionary', () => {
     ok.stop();
     delete globalThis[KEY];
   });
+
+  it('tells listeners and sets failed, the notice still once',
+    async () => {
+      const d = new Document(await readDocx(await buildDocx(
+        {'word/document.xml': documentXml(p(r('x')))})));
+      const notes = [];
+      delete globalThis[KEY];
+      const st = new SpellState({d, app: {}}, {
+        notify: (m) => notes.push(m), now: () => 0, raf: () => 0,
+        caf() {}, readBytes: async () => { throw new Error('no'); }});
+      let told = 0;
+      st.onChange(() => told++);
+      assert.equal(st.failed, false);
+      await wait();
+      assert.equal(st.failed, true);
+      assert.equal(st.dictReady, false);
+      assert.equal(told, 1);
+      assert.equal(notes.length, 0, 'told earlier this session');
+      st.stop();
+      delete globalThis[KEY];
+    });
+
+  it('a later successful load clears failed', async () => {
+    const d = new Document(await readDocx(await buildDocx(
+      {'word/document.xml': documentXml(p(r('x')))})));
+    delete globalThis[KEY];
+    let bad = true;
+    const st = new SpellState({d, app: {}}, {
+      notify() {}, now: () => 0, raf: () => 0, caf() {},
+      readBytes: async (n) => {
+        if (bad) throw new Error('no');
+        return real(n.endsWith('dic') ? 'en_GB_dic' : 'en_GB_aff');
+      }});
+    await wait();
+    assert.equal(st.failed, true);
+    bad = false;
+    st._load();
+    await wait();
+    assert.equal(st.dictReady, true);
+    assert.equal(st.failed, false);
+    st.stop();
+    delete globalThis[KEY];
+  });
 });

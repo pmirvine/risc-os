@@ -55,7 +55,12 @@
 //       relationship and nothing read. value null takes away a part
 //       made so (never one read from the file), once no
 //       relationship of its kind is left; the comments part only
-//       when it holds no comment and no companion is named
+//       when it holds no comment and no companion is named but
+//       those taken in from the file (an Ext with bytes, such as a
+//       people part the file had): they go with it (undo of the
+//       make), carried in the inverse as value.adopt {kind: {part,
+//       ext}}; making with value.adopt puts each back (its kind's
+//       relationship must be there)
 //
 // The odd nodes (raw.comments, ./CommentRead) keep their places: an
 // entry before the comment at index k moves with that comment; the
@@ -402,16 +407,22 @@ function commentsPart(doc, op) {
   if (v === null) {
     if (typeof names.comments !== 'string') fail('no comments part');
     if (c.read) fail('the comments part was read from the file');
-    if (c.map.size || Object.keys(names).length > 1)
-      fail('the comments part is in use');
+    // companions taken in from the file (bytes kept) go with it
+    const raw0 = isObj(c.raw) ? c.raw : {};
+    const adopt = {};
+    for (const k of Object.keys(names)) {
+      if (k !== 'comments' && isObj(raw0[k]) && raw0[k].bytes)
+        adopt[k] = {part: names[k], ext: raw0[k]};
+    }
+    if (c.map.size || Object.keys(names).some((k) => k !== 'comments'
+      && !adopt[k])) fail('the comments part is in use');
     if (hasRel(doc, 'comments'))
       fail('the comments relationship is still there');
     doc.comments = emptyComments();
-    const rest = {...names};
-    delete rest.comments;
-    doc.meta = {...meta, commentParts: rest};
+    doc.meta = {...meta, commentParts: {}};
     return {op: 'setCommentsPart', kind: 'comments', value: {
-      part: names.comments, root: c.root, prolog: c.prolog}};
+      part: names.comments, root: c.root, prolog: c.prolog,
+      ...(Object.keys(adopt).length ? {adopt} : {})}};
   }
   if (typeof names.comments === 'string' || hasRel(doc, 'comments'))
     fail('the document has a comments part');
@@ -419,12 +430,21 @@ function commentsPart(doc, op) {
   freeName(doc, v.part);
   checkRoot(v.root, 'comments');
   if (!none(v.prolog) && !isObj(v.prolog)) fail('bad comments prolog');
-  const raw = {comments: []};
+  const raw = {comments: []}, parts = {comments: v.part};
   for (const k of EXT_KINDS) raw[k] = null;
+  const adopt = isObj(v.adopt) ? v.adopt : {};
+  for (const k of Object.keys(adopt)) {
+    const a = adopt[k];
+    if (!EXT_KINDS.includes(k) || !isObj(a) || !isObj(a.ext) ||
+      a.ext.kind !== k || a.ext.part !== a.part ||
+      !hasRel(doc, k)) fail('bad ' + k + ' part');
+    raw[k] = a.ext;
+    parts[k] = a.part;
+  }
   doc.comments = {...emptyComments(), root: v.root,
     prolog: v.prolog ?? null, raw, rels: null, relsPart: null,
     read: null};
-  doc.meta = {...meta, commentParts: {comments: v.part}};
+  doc.meta = {...meta, commentParts: parts};
   return {op: 'setCommentsPart', kind: 'comments', value: null};
 }
 

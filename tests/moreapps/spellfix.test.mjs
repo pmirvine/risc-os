@@ -7,6 +7,8 @@ import {Document} from '../../tools/moreapps/!Letters/Document';
 import {buildDocx, documentXml, settingsXml, p, r,
   REL, W_NS, R_NS} from './build-docx.mjs';
 import {withHeaders} from './story-fixtures.mjs';
+import {writeDocx} from '../../tools/moreapps/!Letters/DocxWrite';
+import {emit} from './word-emit.mjs';
 import {commentParts, range} from './comment-fixtures.mjs';
 import {SEPS, noteP, enoteP, mark, emark} from './note-fixtures.mjs';
 
@@ -33,6 +35,8 @@ const {setSpell, stopSpell} = await import(L + 'SpellBind');
 const {addPersonal, personalWords} = await import(L + 'SpellOpts');
 const {loadChoices} = await import(L + 'WordChoices');
 const RT = await import(L + 'RevTrack');
+const {piece} = await import(L + 'Find');
+const SM = await import(L + 'RevSwapMany');
 
 const K = new Set(('the quick brown fox jumps over lazy dog hello ' +
   'world word is a test this and not valid it was here there new old ' +
@@ -425,6 +429,92 @@ describe('SpellFix', () => {
       assert.deepEqual(RM.list(d.doc), []);
       d.redo();
       assert.equal(RM.list(d.doc).length, 6);
+      dw.spell.stop();
+    });
+  it('tracked fixAll: 2,000 in one paragraph in one pass, one undo ' +
+    'step', async () => {
+    const ws = [];
+    for (let k = 0; k < 2000; k++) ws.push('teh');
+    const d = await mkDoc(p(r(ws.join(' a ')) + del(5, 'XX') +
+      r(' teh')), {'word/settings.xml': settingsXml(TRACK)});
+    const dw = mk(d), was = body(d)[0];
+    let puts = 0;
+    const ap = d.apply.bind(d);
+    d.apply = (op, o) => {
+      puts++;
+      return ap(op, o);
+    };
+    const t0 = performance.now(), out = [];
+    assert.equal(fixAll(dw, 'teh', 'the', out), 2001);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 1500, 'took ' + Math.round(ms) + ' ms');
+    assert.ok(puts <= 3, 'paragraph changes: ' + puts);
+    assert.equal(d.undoDepth, 1);
+    const t = body(d)[0].text;
+    for (const x of out) {
+      assert.equal(t.slice(x.ins.from, x.ins.to), 'the');
+    }
+    const l = RM.list(d.doc);
+    assert.equal(l.filter((e) => e.kind === 'ins').length, 2001);
+    assert.equal(new Set(l.map((e) => e.id)).size, l.length);
+    emit('spellfix-tracked-change-all', await writeDocx(d.doc));
+    d.undo();
+    assert.deepEqual(body(d)[0], was);
+    d.redo();
+    assert.equal(body(d)[0].text, t);
+    dw.spell.stop();
+  });
+  it('tracked fixAll: 4,000 paragraphs with another\'s insertion ' +
+    'each in one go: the body looked through once', async () => {
+    let x = '';
+    for (let k = 0; k < 4000; k++) {
+      x += p(r('teh a ') + ins(k + 1, 'bob') + r(' teh end'));
+    }
+    const d = await mkDoc(x, {'word/settings.xml': settingsXml(TRACK)});
+    const dw = mk(d), was = SM.stats.lists;
+    const t0 = performance.now();
+    assert.equal(fixAll(dw, 'teh', 'the'), 8000);
+    const ms = performance.now() - t0;
+    assert.ok(ms < 3000, 'took ' + Math.round(ms) + ' ms');
+    assert.ok(SM.stats.lists - was <= 1, 'body walks: ' +
+      (SM.stats.lists - was));
+    assert.equal(d.undoDepth, 1);
+    assert.equal(body(d)[3999].runs.filter((q) => q.rev).length, 5);
+    dw.spell.stop();
+  });
+  it('tracked fixAll: the document swap would make, range by range',
+    async () => {
+      // (Ann's own insertion edited, a deletion between)
+      const x = p(r('teh ') + ins(7, 'teh') + r(' teh ') + del(8, 'a') +
+        r(' teh')) + TBL(p(r('teh teh', '<w:b/>')) + p()) +
+        p(r('teh'));
+      const bytes = {'word/settings.xml': settingsXml(TRACK)};
+      const a = await mkDoc(x, bytes), b = await mkDoc(x, bytes);
+      const when = new Date(2025, 0, 2, 3, 4, 5);
+      a.reviewer = b.reviewer = () => ({name: 'Ann', now: when});
+      const dw = mk(b), out = [];
+      fixAll(dw, 'teh', 'the', out);
+      assert.equal(out.length, 7);
+      // (one by one, last first, by hand: the old way)
+      const s = RT.session(a), hits = new Map();
+      for (const q of out) {
+        if (!hits.has(q.para)) hits.set(q.para, []);
+        hits.get(q.para).push(q);
+      }
+      const at = [[0, 0], [0, 1, 0, 0, 0], [0, 2]];
+      RT.record(a, () => a.atomic(() => {
+        [...hits.values()].forEach((qs, i) => {
+          for (const q of [...qs].reverse()) {
+            s.swap(at[i], q.from, q.to, piece(q.para, q.from,
+              q.to - q.from, 'the'));
+          }
+        });
+      }));
+      const strip = (d) => JSON.stringify(d.doc.sections, (k, v) =>
+        (v && (v.type === 'p' || v.type === 'tbl') ? {...v, id: 0}
+          : v)) + JSON.stringify(RM.list(d.doc));
+      assert.equal(strip(b), strip(a));
+      emit('spellfix-tracked-change-all-mixed', await writeDocx(b.doc));
       dw.spell.stop();
     });
   it('tracked: text already deleted inside the range', async () => {

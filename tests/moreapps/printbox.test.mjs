@@ -144,6 +144,7 @@ globalThis.OffscreenCanvas = class {
     this.width = w;
     this.height = h;
     s.canvases.push(this);
+    if (s.url) this.toDataURL = () => s.url;   // (a JPEG this long)
   }
   getContext() {
     let m = [1, 0, 0, 1, 0, 0];
@@ -168,7 +169,8 @@ globalThis.OffscreenCanvas = class {
 };
 
 const L = '../../tools/moreapps/!Letters/';
-const {printBox, NO_PRINTER, RUNNING} = await import(L + 'PrintBox');
+const {printBox, NO_PRINTER, RUNNING, TOO_MANY} =
+  await import(L + 'PrintBox');
 const {printHtml, markupOf, cssOf} = await import(L + 'PrintOut');
 const {windowMenu} = await import(L + 'WinMenu');
 const {docCommand} = await import(L + 'DocKeys');
@@ -240,6 +242,7 @@ const reset = (o) => {
   s.beeps = 0;
   s.onMsg = null;
   s.canvases = [];
+  s.url = null;
   s.os.printers = o === null ? null : printers(o);
   return s.os.printers;
 };
@@ -598,6 +601,78 @@ describe('the Print box: !Printers refusing (review fixes)', () => {
     await settled(P.calls[1]);
     assert.equal(sheets(P.calls[1].html), 3);
     assert.ok(again.gone);
+  });
+});
+
+describe('the Print box: preparing, the page budget', () => {
+  /** n paragraphs in unequal columns (several passes to settle). */
+  const colsDoc = (n) => {
+    const d = mk(Array.from({length: n}, (_, i) => `${i} words ` +
+      'and more words to fill a line and then some'));
+    const sec = d.doc.sections[0];
+    sec.props = {...sec.props, cols: {num: 2, space: 720,
+      equalWidth: false, col: [{w: 2640, space: 720}, {w: 6000}]}};
+    return d;
+  };
+
+  it('Cancel while the pages are prepared: rejected {cancelled: ' +
+    'true} (no output left), no page made, nothing said',
+  async () => {
+    const P = reset();
+    const dw = windowOf(colsDoc(60));
+    const api = printBox(dw);
+    const was = performance.now;
+    let t = 0, preparing = 0;
+    performance.now = () => (t += 40);  // (each layout a full slice)
+    try {
+      s.onMsg = (m, a) => {
+        if (m === 'Preparing pages...' && ++preparing === 2) {
+          a.press('Cancel');
+        }
+      };
+      api.press('Print');
+      assert.equal(P.calls.length, 1);
+      await settled(P.calls[0]);
+    } finally {
+      performance.now = was;
+      if (performance.now !== was) delete performance.now;
+    }
+    assert.equal(preparing, 2, 'the progress shown while preparing');
+    assert.equal(P.calls[0].rejected.cancelled, true);
+    assert.equal(P.calls[0].html, undefined, 'no markup handed over');
+    assert.equal(s.canvases.length, 0, 'no page made');
+    assert.ok(api.gone);
+    assert.deepEqual(s.notes, []);
+  });
+
+  it('too many pages for the budget: refused in the box, nothing ' +
+    'handed over, the box usable', async () => {
+    assert.equal(TOO_MANY,
+      'Too many pages to print at once: print a range.');
+    const P = reset();
+    s.url = 'data:image/jpeg;base64,' + 'A'.repeat(40000000);
+    const dw = windowOf(pagesDoc(['1', '2', '3', '4', '5', '6']));
+    const api = printBox(dw);
+    api.press('Print');
+    await settled(P.calls[0]);
+    await new Promise((res) => setTimeout(res, 0));
+    assert.equal(P.calls[0].rejected.cancelled, true);
+    assert.equal(P.calls[0].html, undefined);
+    assert.equal(s.canvases.length, 4, 'stopped past the budget');
+    assert.ok(api.isOpen && !api.gone, 'the box kept');
+    assert.equal(api.get('msg'), TOO_MANY);
+    assert.equal(s.beeps, 1);
+    assert.equal(api.shaded('Print'), false, 'usable');
+    assert.deepEqual(s.notes, [], 'no error box');
+    s.url = null;
+    api.change('pages', 'range');
+    api.change('from', 1);
+    api.change('to', 2);
+    api.press('Print');
+    assert.equal(P.calls.length, 2);
+    await settled(P.calls[1]);
+    assert.equal(sheets(P.calls[1].html), 2);
+    assert.ok(api.gone);
   });
 });
 

@@ -659,6 +659,28 @@ describe('SpellState: big documents', () => {
       s.stop();
     }
   });
+  it('alternating paints of two long paragraphs finish both ' +
+    'without restarting', async () => {
+    const mkLong = (t) => p(r(t.repeat(4000)));
+    const d = await mkDoc(mkLong('the quick teh brown fox ') +
+      mkLong('hello wrld is not here '));
+    const [A, B] = body(d);
+    const f = frames();
+    let clock = 0;
+    const st = new SpellState({d, app: {}}, {dict, raf: f.raf,
+      caf: f.caf, now: () => clock++});
+    st.start();
+    let k = 0;
+    while ((!st.flagsOf(A) || !st.flagsOf(B)) && k < 300) {
+      st.ensure([k++ % 2 ? B : A]);
+      f.run(1);
+    }
+    assert.ok(k < 300, 'both finished: ' + k);
+    assert.equal(st.flagsOf(A).length, 4000);
+    assert.equal(st.flagsOf(B).length, 4000);
+    assert.ok(st._jobs.size <= 4);
+    st.stop();
+  });
   it('a long paragraph on show goes before the rest; the word being ' +
     'typed in it is still not flagged', async () => {
     const long = 'the quick teh brown fox '.repeat(2000);

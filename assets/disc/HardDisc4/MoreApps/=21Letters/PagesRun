@@ -17,24 +17,31 @@
 //         none        its text (by default 'No pages to ' + verb)
 //         pics        the layout's pictures (L.pics, ./PicPaint get)
 //         signal      an AbortSignal: when aborted, looked at before
-//                     and after the layout and before each page, it
-//                     rejects with aborted(stopped), no page painted
-//                     after (stopped: 'The pages were stopped')
+//                     and after the layout, after each frame while it
+//                     is made and before each page, it rejects with
+//                     aborted(stopped), no page painted after
+//                     (stopped: 'The pages were stopped')
 //         onProgress(done, total, phase)  (0, 0, 'preparing') before
-//                     the layout; (0, n, 'pages') after it, then
-//                     (k, n, 'pages') once each page is painted, n
-//                     the pages visited
+//                     the layout, (k, 0, 'preparing') before each
+//                     frame it yields to (k layouts made); (0, n,
+//                     'pages') after it, then (k, n, 'pages') once
+//                     each page is painted, n the pages visited
 //         onPages({doc, L, P, from, to, total})  once the range is
 //                     known, before (0, n, 'pages'): the document,
 //                     the layout, its pages and the range (1-based)
 //         raf         what a slice yields to (requestAnimationFrame;
 //                     setTimeout 0 without one); one frame is also
 //                     awaited before the layout, so that a message
-//                     shown for 'preparing' is painted first
+//                     shown for 'preparing' is painted first, and
+//                     one after a layout once the slice has had
+//                     sliceMs (the first, then ./ViewPass
+//                     settleSteps' own: the desktop and Cancel are
+//                     answered between them)
 //         clock       -> ms, the slices' clock (performance.now)
 //         sliceMs     the painting a slice does before it yields
 //                     (SLICE_MS)
-//   paginate(dw, pics) -> {doc, L, P}  the layout eachPage visits
+//   paginate(dw, pics) -> {doc, L, P}  the layout eachPage visits,
+//       made at once (the same layouts as eachPage's, in one go)
 //   sizeOf(page) -> {px: [w, h], pt: [w, h]}  the page's size, each
 //       side kept to 3..14400 points (the PDF limits)
 //   aborted(text) -> a DOMException 'AbortError' (an Error named so
@@ -44,13 +51,13 @@
 // The layout: a fresh ./DocLayout of dw.doc with the window's text
 // metrics, floats on (Print layout), the window's markup view and
 // fields (their shading off, results not codes, as Word prints),
-// settled as Print layout settles (./ViewPass settle: one blocking
-// pass, its pages all worked out), then placed (./PlacePrint). The
+// settled as Print layout settles (./ViewPass settleSteps, its pages
+// all worked out), then placed (./PlacePrint). The
 // window's own layout, pages, undo and saved state are not touched,
 // so it works in every view. Uses requestAnimationFrame unless given
 // another; no desktop services.
 import {DocLayout} from './DocLayout';
-import {settle} from './ViewPass';
+import {settleSteps} from './ViewPass';
 import {PlacePrint} from './PlacePrint';
 
 export const SLICE_MS = 30;
@@ -76,18 +83,28 @@ function fieldsOf(dw) {
   return out;
 }
 
-/** See the header. */
-export function paginate(dw, pics) {
+/** paginate's layouts, a step each: yields after each, returns
+ *  {doc, L, P}. */
+function* pagesOf(dw, pics) {
   const doc = dw.doc || dw.d.doc, old = dw.L;
   const base = new DocLayout(doc, old.metrics, null, {floats: true,
     pics, markup: dw.markup, fields: fieldsOf(dw)});
   const w = old.width > 0 && Number.isFinite(old.width) ? old.width
     : LAYOUT_W;
   base.layout(w);
-  const {L, P} = settle(doc, {L: base});
+  yield;
+  const {L, P} = yield* settleSteps(doc, {L: base});
   L.place = PlacePrint(L, P);
   L.layout(L.width);
   return {doc, L, P};
+}
+
+/** See the header. */
+export function paginate(dw, pics) {
+  const it = pagesOf(dw, pics);
+  let r;
+  do r = it.next(); while (!r.done);
+  return r.value;
 }
 
 /** The least and most a PDF page side may be (Acrobat's limits). */
@@ -123,11 +140,21 @@ export async function eachPage(dw, opts, paint) {
 
   check();
   progress(0, 0, 'preparing');
-  // one frame, so that the message is painted before the layout
-  // below blocks the desktop
+  // one frame, so that the message is painted before the first
+  // layout (then one between layouts once a slice is spent)
   await frame();
   check();
-  const {doc, L, P} = paginate(dw, pics);
+  const it = pagesOf(dw, pics);
+  let r, k = 0, start = clock();
+  while (!(r = it.next()).done) {
+    k++;
+    if (clock() - start < sliceMs) continue;
+    progress(k, 0, 'preparing');
+    await frame();
+    check();
+    start = clock();
+  }
+  const {doc, L, P} = r.value;
   check();
   const a = Math.max(1, Math.ceil(Number(from)));
   const b = Math.min(P.count, Math.floor(Number(to)));
@@ -136,7 +163,7 @@ export async function eachPage(dw, opts, paint) {
   if (onPages) onPages({doc, L, P, from: a, to: b, total});
 
   progress(0, total, 'pages');
-  let start = clock();
+  start = clock();
   for (let i = a - 1; i < b; i++) {
     check();
     await paint(P, i, L.place, sizeOf(P.at(i)));

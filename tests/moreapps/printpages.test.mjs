@@ -6,6 +6,7 @@
 // printbox) paint real ones.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
+import * as PrintPages from '../../tools/moreapps/!Letters/PrintPages';
 import {fitPlacement, paperOf, dpiFor, canvasSize, renderPages,
   MAX_SIDE, MAX_AREA, QUALITY}
   from '../../tools/moreapps/!Letters/PrintPages';
@@ -181,8 +182,8 @@ describe('PrintPages paperOf, dpiFor, canvasSize', () => {
   });
 
   it('the resolution by the pages printed', () => {
-    assert.deepEqual([1, 100, 101, 250, 251, 5000].map(dpiFor),
-      [200, 200, 150, 150, 100, 100]);
+    assert.deepEqual([1, 100, 101, 250, 251, 500, 501, 5000]
+      .map(dpiFor), [200, 200, 150, 150, 100, 100, 72, 72]);
   });
 
   it('a canvas at dpi, its sides and area bounded', () => {
@@ -363,6 +364,63 @@ describe('PrintPages renderPages', () => {
       assert.equal(scales.length, 2);
     });
 });
+
+describe('PrintPages renderPages: the page budget, preparing',
+  () => {
+    before(loadStyles);
+    const PAGES = ['a', 'b', 'c', 'd', 'e', 'f'];
+
+    it('past 150,000,000 characters of data URLs: stopped, null, ' +
+      'refused {tooMany: true}', async () => {
+      assert.equal(PrintPages.BUDGET, 150000000);
+      const big = 'data:image/jpeg;base64,' + 'A'.repeat(40000000);
+      const f = factory((rec) => {
+        rec.canvas.toDataURL = () => big;
+      });
+      const why = [];
+      const res = await renderPages(windowOf(pagesDoc(PAGES)),
+        {paper: A4, raf: tick, canvasFactory: f.make,
+          onRefused: (w) => why.push(w)});
+      assert.equal(res, null);
+      assert.deepEqual(why, [{tooMany: true}]);
+      assert.equal(f.made.length, 4, 'no page after the one past it');
+      assert.ok(f.made.every((m) => m.canvas.width === 0));
+    });
+
+    it('within the budget: every page, nothing refused', async () => {
+      const url = 'data:image/jpeg;base64,' + 'A'.repeat(20000000);
+      const f = factory((rec) => { rec.canvas.toDataURL = () => url; });
+      const why = [];
+      const res = await renderPages(windowOf(pagesDoc(PAGES)),
+        {paper: A4, raf: tick, canvasFactory: f.make,
+          onRefused: (w) => why.push(w)});
+      assert.equal(res.count, PAGES.length);
+      assert.deepEqual(why, []);
+    });
+
+    it('cancel while the pages are prepared: null, no canvas',
+      async () => {
+        const d = mk(Array.from({length: 60}, (_, i) => `${i} words ` +
+          'and more words to fill a line and then some'));
+        const sec = d.doc.sections[0];
+        sec.props = {...sec.props, cols: {num: 2, space: 720,
+          equalWidth: false, col: [{w: 2640, space: 720},
+            {w: 6000}]}};
+        const ctrl = new AbortController();
+        let t = 0, frames = 0;
+        const f = factory();
+        const res = await renderPages(windowOf(d), {paper: A4,
+          signal: ctrl.signal, canvasFactory: f.make,
+          clock: () => (t += 30), document: {hidden: false},
+          raf: (cb) => {
+            if (++frames === 3) ctrl.abort();
+            setImmediate(cb);
+          }});
+        assert.equal(res, null);
+        assert.equal(frames, 3);
+        assert.equal(f.made.length, 0);
+      });
+  });
 
 describe('PrintPages renderPages: the slices\' yield (final fixes)',
   () => {

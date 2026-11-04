@@ -3,10 +3,11 @@
 // deflated its streams (for pagesrun.test.mjs: exportPdf's output is
 // the same before and after its page loop moved to PagesRun).
 //
-//   goldenCases() -> Promise<[{name, run() -> Promise<bytes>}]>  the
-//       documents (loadStyles done first): three pages, a range of
-//       them, a PNG and a JPEG picture in a header, web and bookmark
-//       links, real font advances (runs fitted, a Tc)
+//   goldenCases() -> Promise<[{name, run(opts?) -> Promise<bytes>}]>
+//       the documents (loadStyles done first): three pages, a range
+//       of them, a PNG and a JPEG picture in a header, web and
+//       bookmark links, real font advances (runs fitted, a Tc); opts
+//       more of exportPdf's (a clock, a raf)
 //   digestOf(bytes) -> hex  sha256 over the objects in id order: the
 //       id, the dictionary without its /Length value and the stream
 //       inflated (pdf-read objectsOf); the xref offsets and lengths
@@ -64,16 +65,16 @@ export async function goldenCases() {
     body: BODY(30), default: {hdr: p(r('Header text')),
       ftr: p(r('Footer text'))}}))).doc;
   return [
-    {name: 'three pages', run: () => pdfOf(three(), tm())},
-    {name: 'pages 2 to 3', run: () => pdfOf(three(), tm(),
-      {from: 2, to: 3})},
-    {name: 'PNG header picture', run: async () =>
-      pdfOf(await hf(pngBytes(4, 2)), tm())},
-    {name: 'JPEG header picture', run: async () =>
-      pdfOf(await hf(jpegGray(8, 8)), tm())},
-    {name: 'links', run: async () => pdfOf(await links(), tm())},
-    {name: 'real advances', run: async () =>
-      pdfOf(await words(), metrics())},
+    {name: 'three pages', run: (o) => pdfOf(three(), tm(), o)},
+    {name: 'pages 2 to 3', run: (o) => pdfOf(three(), tm(),
+      {from: 2, to: 3, ...o})},
+    {name: 'PNG header picture', run: async (o) =>
+      pdfOf(await hf(pngBytes(4, 2)), tm(), o)},
+    {name: 'JPEG header picture', run: async (o) =>
+      pdfOf(await hf(jpegGray(8, 8)), tm(), o)},
+    {name: 'links', run: async (o) => pdfOf(await links(), tm(), o)},
+    {name: 'real advances', run: async (o) =>
+      pdfOf(await words(), metrics(), o)},
   ];
 }
 

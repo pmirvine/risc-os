@@ -333,10 +333,10 @@ them, to a PDF file (file type &ADF) from any view. The box takes the pages (All
 end, a To past the end is the last page, a From past it is found only after the save box and *Preparing pages...*, when an error box says *No pages to export* (nothing is written), From after To is refused), names the markup the pages show (the window's
 Show Markup view: final text, all markup shown or original text) and notes that the blank pages odd and even section
 breaks leave are counted. OK opens the save box (it asks before replacing a file); the box shows *Preparing pages...*,
-*Page n of N* and *Writing...*, and Cancel, the close icon, Escape or closing the window stops it with nothing written (Cancel acts only after *Preparing pages...*, which works out every page as slowly as opening the document; the desktop keeps working while the pages are written). The
+*Page n of N* and *Writing...*, and Cancel, the close icon, Escape or closing the window stops it with nothing written (the desktop keeps working throughout, including during *Preparing pages...*, and Cancel acts at once, though one very long layout pass holds it until it ends). The
 text is real text (selectable, searchable) in fonts embedded in the file (Carlito, Caladea and Liberation as subsets,
 Homerton, Trinity and Corpus whole), each run of it spaced to the width the screen gives it, so lines break where they do
-in the window; PNG, JPEG and GIF pictures are embedded; web and mail links open and a link to a bookmark goes to its page;
+in the window; PNG, JPEG and GIF pictures are embedded; web and mail links open and a link to a bookmark goes to its line (to its page for a table, a footnote or an endnote, a header or footer, or a line that cannot be found);
 the title and author come from the document's properties. Editing marks, comments and field shading are not drawn and
 field results are shown. A font !Letters has no copy of uses the stand-in the screen shows; characters a font lacks (CJK,
 emoji, symbols) show as an empty box and one message names them; EMF, WMF and SVG pictures are the same grey box as on screen; no
@@ -348,10 +348,10 @@ try it: open a document, MENU > *Export as PDF...*, OK, OK, then open the file i
 (from any view; Web layout and Outline print as Print layout), to the current !Printers printer; start !Printers first (double-click its icon in Apps), or
 an error box says there is no printer driver. The box takes the pages (All, or From and To), *Fit to paper* (on: each page scaled to the paper and
 centred, its shape kept; off: true size, centred, anything past the paper's edge cut), names the printer, its paper and orientation, and the markup the
-pages show (the window's Show Markup view). The pages are made as JPEG page images (200 dots to the inch up to 100 pages, 150 up to 250, 100 above; less for
+pages show (the window's Show Markup view). The pages are made as JPEG page images (200 dots to the inch up to 100 pages, 150 up to 250, 100 up to 500, 72 above; less for
 a very large page) with *Preparing pages...* and *Page n of N* in the box, and handed to !Printers: its output window opens, the web browser's print
 dialog does the rest (copies, double-sided printing) and a *To file* connection writes a file instead. Cancel, the close icon or closing the window stops it
-with nothing sent. There is no printing of the selected text only; the document, undo and the modified mark are not changed. Tried in Chromium only (not in
+with nothing sent, even during *Preparing pages...*; a job over about 150 MB is refused ("Too many pages to print at once: print a range."; use the page range). There is no printing of the selected text only; the document, undo and the modified mark are not changed. Tried in Chromium only (not in
 Firefox or Safari, and on no real printer). `$.Docs.Letters`, part 31; developers: `docs/apps/Letters.md`. To try it: start !Printers, open a document,
 Ctrl+P, Print.
 

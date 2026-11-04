@@ -265,6 +265,25 @@ describe('spellStep', () => {
     dw.spell.stop();
   });
 
+  it('shows the failure of the dictionary and is not busy',
+    async () => {
+      const d = await mkDoc(p(r('zork')));
+      const dw = mk(d, {state: false});
+      dw.spell = new SpellState(dw, {
+        readBytes: () => Promise.reject(new Error('no')),
+        notify() {}, raf: () => 0, caf: () => {}});
+      const c = SB.spellRun(dw);
+      c.begin();
+      assert.equal(c.busy, true);
+      await new Promise((res) => setTimeout(res, 20));
+      assert.equal(dw.spell.failed, true);
+      assert.equal(c.busy, false);
+      assert.equal(c.message, SB.MSGS.failed);
+      assert.equal(c.message, 'The dictionary could not be read.');
+      c.dispose();
+      dw.spell.stop();
+    });
+
   it('works with the setting off: no underlines, no slices',
     async () => {
       const d = await mkDoc(p(r('zork')) + p(r('hello')) +

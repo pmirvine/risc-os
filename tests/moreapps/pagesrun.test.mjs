@@ -18,6 +18,7 @@ import {printGalley} from '../../tools/moreapps/!Letters/PageHF';
 import {loadStyles, tm} from './word-docs.mjs';
 import {mk} from './edit-docs.mjs';
 import {goldenCases, digestOf} from './pdf-golden.mjs';
+import * as ViewPass from '../../tools/moreapps/!Letters/ViewPass';
 
 const tick = (cb) => setImmediate(cb);
 const TEXTS = ['Alpha first page', 'Bravo second page',
@@ -219,6 +220,100 @@ describe('PagesRun eachPage', () => {
   });
 });
 
+// Preparing in steps (the layout and ViewPass's passes with a frame
+// between them once a slice has had sliceMs), so that a long
+// document's 'Preparing pages' neither holds up the desktop nor
+// Cancel: unequal columns make several passes.
+const LEFT = {num: 2, space: 720, equalWidth: false,
+  col: [{w: 2640, space: 720}, {w: 6000}]};
+
+/** n paragraphs in unequal columns (5 passes for 60). */
+function colsDoc(n) {
+  const d = mk(Array.from({length: n}, (_, i) => `${i} words and ` +
+    'more words to fill a line and then some'));
+  const s = d.doc.sections[0];
+  s.props = {...s.props, cols: LEFT};
+  return d;
+}
+
+/** The pages as a fingerprint: each page's start, end and columns. */
+const starts = (P) => JSON.stringify(P.list.map((pg) => [pg.start,
+  pg.end, pg.cols]));
+
+/** A clock a slice of sliceMs passes on at each reading. */
+const slow = () => {
+  let t = 0;
+  return () => (t += SLICE_MS);
+};
+
+describe('PagesRun: preparing in steps', () => {
+  before(loadStyles);
+
+  it('ViewPass settleSteps: a step per layout, settle\'s result',
+    () => {
+      const d = colsDoc(60);
+      const base = () => {
+        const B = new DocLayout(d.doc, tm(), null, {floats: true});
+        B.layout(800);
+        return {L: B};
+      };
+      const want = ViewPass.settle(d.doc, base());
+      assert.ok(want.n >= 3, 'passes: ' + want.n);
+      const it = ViewPass.settleSteps(d.doc, base());
+      let steps = 0, r;
+      while (!(r = it.next()).done) steps++;
+      assert.equal(steps, want.n + 1, 'the first layout and each pass');
+      assert.equal(r.value.n, want.n);
+      assert.equal(starts(r.value.P), starts(want.P));
+    });
+
+  it('preparing yields between settle passes, progress shown',
+    async () => {
+      const dw = windowOf(colsDoc(60));
+      let frames = 0, atPages = -1;
+      const prog = [];
+      await eachPage(dw, {clock: slow(),
+        raf: (cb) => { frames++; setImmediate(cb); },
+        onProgress: (...a) => prog.push(a),
+        onPages: () => { atPages = frames; }}, () => {});
+      // the frame before the layout, then one after each layout
+      assert.ok(atPages > 3, 'frames while preparing: ' + atPages);
+      const prep = prog.filter((a) => a[2] === 'preparing');
+      assert.ok(prep.length > 2, 'preparing calls: ' + prep.length);
+      assert.deepEqual(prep[0], [0, 0, 'preparing']);
+      assert.ok(prep.every((a) => a[1] === 0));
+    });
+
+  it('cancel during preparing: AbortError, no page, no onPages',
+    async () => {
+      const dw = windowOf(colsDoc(60));
+      const ctrl = new AbortController();
+      let frames = 0, painted = 0, pages = 0;
+      await assert.rejects(eachPage(dw, {clock: slow(),
+        signal: ctrl.signal, onPages: () => pages++,
+        raf: (cb) => {
+          if (++frames === 3) ctrl.abort();   // (mid-settle)
+          setImmediate(cb);
+        }}, () => painted++),
+      {name: 'AbortError', message: 'The pages were stopped'});
+      assert.equal(frames, 3, 'no frame after the abort');
+      assert.deepEqual([painted, pages], [0, 0]);
+    });
+
+  it('stepwise preparing: the same page starts as paginate',
+    async () => {
+      for (const d of [pagesDoc(TEXTS), colsDoc(60), colsDoc(200)]) {
+        const dw = windowOf(d);
+        let got = null;
+        await eachPage(dw, {clock: slow(), raf: tick,
+          onPages: ({P}) => { got = P; }}, () => {});
+        const want = paginate(dw).P;
+        assert.equal(got.count, want.count);
+        assert.equal(starts(got), starts(want));
+      }
+    });
+});
+
 describe('RangeBox', () => {
   it('rangeOf: Export as PDF\'s words by default, the verb given',
     () => {
@@ -268,7 +363,8 @@ describe('RangeBox', () => {
 
 // The digests of pdf-golden's documents as the PDF export wrote them
 // before its page loop moved here (c65e0428): objects and inflated
-// streams, so the same with any zlib.
+// streams, so the same with any zlib. 'links' since its bookmark
+// link goes to the line (/XYZ, ./BookmarkSpot), its only change.
 const GOLDEN = {
   'three pages':
     '76dee4bf2d209102a0c1914e60bc8cc1e8772a853760f8357936161d265218e7',
@@ -279,7 +375,7 @@ const GOLDEN = {
   'JPEG header picture':
     'e4070b407c44ee1a6f969243e0a39a5264f16e208264047f32e5da452263b00f',
   'links':
-    '5f95afa8619a41b180f386b0442005cbd2a07e042d7e863aa4f866587ae2b545',
+    '8a0c27713fae81bd2d7bc67b43120f96047ac399ed7de3a4de0b2b8f2d695629',
   'real advances':
     'c6719c50cd8b3d72e41548dffb30c4104c9f6b9d81f4dfe7c0ea6a2e48dc32d4',
 };
@@ -292,4 +388,12 @@ describe('exportPdf unchanged by PagesRun', () => {
       assert.equal(digestOf(await c.run()), GOLDEN[c.name], c.name);
     }
   });
+
+  it('the same, prepared in steps (a frame after each layout)',
+    async () => {
+      for (const c of await goldenCases()) {
+        assert.equal(digestOf(await c.run({clock: slow()})),
+          GOLDEN[c.name], c.name);
+      }
+    });
 });

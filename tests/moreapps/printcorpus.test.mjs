@@ -43,6 +43,8 @@ import {p, r} from './build-docx.mjs';
 import {wordHf, picRun} from './hf-fixtures.mjs';
 import {pngBytes} from './pic-fixtures.mjs';
 import {Document} from '../../tools/moreapps/!Letters/Document';
+import {eachPage, paginate, SLICE_MS}
+  from '../../tools/moreapps/!Letters/PagesRun';
 
 const tick = (cb) => setImmediate(cb);
 const A4 = {width: 209.90277777777777, height: 297.0388888888889,
@@ -285,6 +287,32 @@ describe('PrintPages over the corpus', {
     for (const l of bad.slice(0, 10)) console.log('#   ' + l);
     assert.deepEqual(bad, []);
     assert.ok(docs.length > 10, 'a sample');
+  });
+
+  it('prepared in steps (a frame after each layout): the same pages ' +
+    'as paginate at once', async () => {
+    let n = 0, frames = 0;
+    for (const file of files) {
+      let doc;
+      try {
+        doc = await readDocx(fs.readFileSync(file));
+      } catch (e) {
+        if (e instanceof DocxError) continue;
+        throw e;
+      }
+      const dw = windowOf(doc);
+      let t = 0, got = null;
+      await eachPage(dw, {clock: () => (t += SLICE_MS),
+        raf: (cb) => { frames++; setImmediate(cb); },
+        onPages: ({P}) => { got = P; }}, () => {});
+      const want = paginate(dw).P;
+      const fp = (P) => JSON.stringify(P.list.map((pg) => [pg.start,
+        pg.end, pg.cols]));
+      assert.equal(fp(got), fp(want), nameOf(file));
+      n++;
+    }
+    console.log(`# prepared in steps: ${n} files, ${frames} frames`);
+    assert.ok(n > 10, 'a sample');
   });
 
   it('the largest of the sample: under 20 s (least of 3 after a ' +

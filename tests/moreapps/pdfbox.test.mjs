@@ -418,6 +418,79 @@ describe('Export as PDF: OK, the save box, the file', () => {
     assert.equal(s.files.size, 0);
     assert.deepEqual(s.notes, []);
   });
+  it('dropping the save icon on an application window exports ' +
+    'the PDF', async () => {
+    reset();
+    const dw = windowOf(pagesDoc(['one', 'two']));
+    const api = opened(dw);
+    const b = ok(api, dw);
+    const bytes = await b.opts.getData();
+    assert.equal(latin1(bytes.subarray(0, 5)), '%PDF-');
+    assert.equal(countOf(bytes), 2);
+    assert.ok(api.gone, 'the Export as PDF box gone');
+    assert.equal(s.files.size, 0, 'the receiver writes, not the box');
+  });
+  it('the same drop twice and a refused drop leave the box usable',
+    async () => {
+      reset();
+      const dw = windowOf(pagesDoc(['one']));
+      const api = opened(dw);
+      const b = ok(api, dw);
+      // (a receiver that refuses: the bytes simply dropped)
+      const first = await b.opts.getData();
+      assert.equal(latin1(first.subarray(0, 5)), '%PDF-');
+      const api2 = opened(dw);
+      const b2 = ok(api2, dw);
+      const second = await b2.opts.getData();
+      assert.equal(latin1(second.subarray(0, 5)), '%PDF-');
+      const api3 = opened(dw);
+      const b3 = ok(api3, dw);
+      await b3.press(PATH);
+      assert.ok(s.files.get(PATH), 'a file save still works');
+      assert.deepEqual(s.notes, []);
+    });
+  it('a drop whose export fails says why and returns no bytes',
+    async () => {
+      reset();
+      const dw = windowOf(pagesDoc(['one']));
+      dw.viewName = 'draft';     // (page count not known: no clamp)
+      const b = ok(opened(dw), dw, 5, 6);
+      assert.ok(b, 'the range is taken');
+      const rej = [];
+      const onRej = (e) => rej.push(e);
+      process.on('unhandledRejection', onRej);
+      const bytes = await b.opts.getData();
+      await new Promise((r) => setTimeout(r, 5));
+      process.off('unhandledRejection', onRej);
+      assert.equal(bytes.length, 0);
+      assert.deepEqual(rej, []);
+      assert.deepEqual(s.notes.map((n) => n.m),
+        ['No pages to export']);
+      assert.equal(s.notes[0].o.appName, 'Letters');
+    });
+  it('a second drop while one runs says so and returns no bytes',
+    async () => {
+      reset();
+      const dw = windowOf(pagesDoc(['one', 'two', 'three']));
+      const b = ok(opened(dw), dw);
+      const first = b.opts.getData();
+      const bytes = await b.opts.getData();
+      assert.equal(bytes.length, 0);
+      assert.equal(s.notes.length, 1);
+      assert.match(s.notes[0].m, /is being made/);
+      const got = await first;
+      assert.equal(latin1(got.subarray(0, 5)), '%PDF-');
+    });
+  it('a closed document refuses with no bytes and no throw',
+    async () => {
+      reset();
+      const dw = windowOf(pagesDoc(['one']));
+      const b = ok(opened(dw), dw);
+      dw.closed = true;
+      const bytes = await b.opts.getData();
+      assert.equal(bytes.length, 0);
+      assert.deepEqual(s.notes, []);
+    });
   it('a write that fails is said as Save a copy says it', async () => {
     reset();
     const dw = windowOf(pagesDoc(['one']));

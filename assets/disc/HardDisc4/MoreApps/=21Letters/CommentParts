@@ -66,9 +66,9 @@
 // Word to show the thread and the resolved state.
 // Pure: no desktop services.
 import {nameFree} from './OpsNotes';
-import {relKind} from './Rels';
+import {relKind, resolvePart, findPart} from './Rels';
 import {addRel, freshRelId} from './DocParts';
-import {EXT_KINDS, EXT_NS, EXT_RELS} from './CommentExt';
+import {EXT_KINDS, EXT_NS, EXT_RELS, readExt} from './CommentExt';
 import {marks} from './CommentMarks';
 import {opaqueIds} from './CommentKeep';
 import {markId} from './Kinds';
@@ -143,6 +143,25 @@ export function skeleton(doc, kind) {
         ['mc:Ignorable', pre]]}}};
 }
 
+/** The companions a file has without a comments part (people.xml
+ *  usually): {kind: {part, ext}}, read from their bytes, to be taken
+ *  in with the comments part so a new author reaches them. */
+function adoptable(doc) {
+  const out = {};
+  if (!(doc.parts instanceof Map)) return out;
+  const main = (isObj(doc.meta) && doc.meta.mainPart) ||
+    'word/document.xml';
+  for (const r of Array.isArray(doc.rels) ? doc.rels : []) {
+    const k = relKindOf(r);
+    if (!k || k === 'comments' || out[k]) continue;
+    const name = findPart(doc.parts, resolvePart(main, r.target));
+    if (!name) continue;
+    const ext = readExt(k, name, doc.parts.get(name));
+    if (ext) out[k] = {part: name, ext};
+  }
+  return out;
+}
+
 /** See the header. */
 export function ensure(d, kinds) {
   if (!Array.isArray(kinds) || !kinds.every((k) => KINDS.includes(k)))
@@ -150,7 +169,10 @@ export function ensure(d, kinds) {
   const want = KINDS.filter((k) => kinds.includes(k) ||
     (k === 'comments' && kinds.length));
   const todo = [];
+  const adopt = partState(d.doc, 'comments') === 'missing'
+    ? adoptable(d.doc) : {};
   for (const k of want) {
+    if (adopt[k]) continue;
     const s = partState(d.doc, k);
     if (s === 'unknown') {
       throw new Refused('the ' + FILE[k] + ' part could not be ' +
@@ -162,6 +184,8 @@ export function ensure(d, kinds) {
   d.atomic(() => {
     for (const k of todo) {
       const value = skeleton(d.doc, k);
+      if (k === 'comments' && Object.keys(adopt).length)
+        value.adopt = adopt;
       d.apply({op: 'setCommentsPart', kind: k, value});
       const now = d.doc;
       const target = value.part.slice(dirOf(now).length);

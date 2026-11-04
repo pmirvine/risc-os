@@ -14,6 +14,7 @@ import {fail, wellFormed, checkPos, checkInlines, checkContent,
 import {props, nextId, reserveIds} from './Model';
 import {paraAt, own, cut, join, inStory} from './OpsUtil';
 import {sib} from './Path';
+import {markWithout, markFrom} from './MarkRev';
 import {unseenAt, hiddenAt} from './Kinds';
 
 /** An unseen level-'p' inline at offset k of p, or deleted text
@@ -117,10 +118,13 @@ export function spliceText(doc, op) {
 /**
  * {op:'splitBlock', block, at}: split the paragraph at `at`. The
  * first part keeps the id, pPr, pStyle and extraP; the second gets a
- * new id, the same pPr (shared: never changed in place) and pStyle,
+ * new id, the same pPr (shared: never changed in place, but without
+ * a paragraph-mark revision) and pStyle,
  * but extraP = []: extraP holds raw paragraph-level XML tied to that
  * one paragraph (such as w14:paraId, which must stay unique), so it
- * is never duplicated.
+ * is never duplicated. A paragraph in a contents table's content
+ * control (sdt: ./TocSdt) gives the second its marker too: Return
+ * keeps both halves inside.
  */
 export function splitBlock(doc, op) {
   const {i, at, p} = paraAt(doc, op.block, op.story);
@@ -129,9 +133,10 @@ export function splitBlock(doc, op) {
   const a = {...p, ...join(cut(p, 0, op.at))};
   reserveIds(doc);
   const b = {type: 'p', id: nextId(), ...join(cut(p, op.at, len)),
-    pPr: p.pPr};
+    pPr: markWithout(p.pPr)};
   if (p.pStyle !== undefined) b.pStyle = p.pStyle;
   b.extraP = [];
+  if (p.sdt) b.sdt = p.sdt;            // (the same wrapper: ./TocSdt)
   own(doc, at, op.story).splice(i, 1, a, b);
   return inStory({op: 'compound', ops: [
     {op: 'removeBlock', at: sib(at, 1)},
@@ -143,14 +148,19 @@ export function splitBlock(doc, op) {
  * {op:'mergeBlock', block}: append the next block of the same
  * container (section or cell: never across cells), which must be a
  * paragraph, to this one. The result keeps this paragraph's id, pPr,
- * pStyle and extraP.
+ * pStyle and extraP; only a mark revision of the next paragraph is
+ * carried over, when this one has none. It keeps this one's sdt
+ * marker (./TocSdt) or none: the next one's text joins its wrapper,
+ * or leaves the one it was in.
  */
 export function mergeBlock(doc, op) {
   const {i, at, blocks, p} = paraAt(doc, op.block, op.story);
   const n = blocks[i + 1];
   if (!n || n.type !== 'p') fail('next block is not a paragraph');
+  // (q keeps p.sdt, never n's: the wrappers stay well-formed)
   const q = {...p, ...join(cut(p, 0, p.text.length),
     cut(n, 0, n.text.length))};
+  if (n.pPr) q.pPr = markFrom(p.pPr, n.pPr);
   checkPara(q);
   own(doc, at, op.story).splice(i, 2, q);
   return inStory({op: 'compound', ops: [

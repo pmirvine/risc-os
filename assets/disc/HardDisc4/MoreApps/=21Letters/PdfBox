@@ -28,8 +28,14 @@
 //       export's notes (characters the fonts lack, pictures left
 //       out) said in one information notice. Another error (no
 //       pages to export) is said by the save box's error box, the
-//       boxes kept. An input method's composing text is not put in
-//       first (the export never edits the document).
+//       boxes kept. The save icon dragged onto an application
+//       window: the receiver asks getData, which runs the same
+//       export and hands over the bytes (the boxes go, the notes
+//       said); stopped, or a closed window, it gives no bytes; any
+//       other error (no pages to export, an export already
+//       running) is said in an error box, with no bytes. An input
+//       method's composing text is not put in first (the export
+//       never edits the document).
 //   rangeOf(values, count) -> {from, to} | {bad}  exportPdf's from
 //       and to from the box's values (./RangeBox's, its words 'no
 //       pages to export')
@@ -198,15 +204,24 @@ function saveBox(dw) {
   return box(dw, 'pdfsave', () => {
     const b = saveAs({task: dw.app.task, title: 'Export as PDF',
       filename: pdfName(dw, defaultDir(dw.app.recent), there),
-      filetype: PDF, getData: () => new Uint8Array(0),
+      filetype: PDF,
+      // (a drop on an application window: the receiver asks here)
+      getData: async () => {
+        try {
+          const out = await exported(dw);
+          if (!out) return new Uint8Array(0);
+          done(live.get(dw), out);
+          return out.bytes;
+        } catch (e) {                  // (the desktop drops a throw)
+          if (e && e.name === 'AbortError') throw e;
+          reportError(e.message, {appName: 'Letters'});
+          return new Uint8Array(0);
+        }
+      },
       save: async (path) => {
         const why = refusal(dw, path);
         if (why) throw new Error(why);
-        const now = live.get(dw);
-        if (!now || now.api.gone || dw.closed) return;
-        const {api, st} = now;
-        if (st.ctrl) throw new Error(RUNNING);
-        const out = await run(dw, api, st);
+        const out = await exported(dw);
         if (!out) return;              // (stopped: nothing said)
         if (refusal(dw, path)) throw new Error(refusal(dw, path));
         try {
@@ -214,12 +229,28 @@ function saveBox(dw) {
         } catch (e) {
           throw notSaved(leafOf(path), e);
         }
-        api.delete();
-        if (out.notes.length) say(out.notes.join('\n'));
+        done(live.get(dw), out);
       }});
     guardOK(b, dw.app.task, (p) => !!refusal(dw, p));
     return b;
   });
+}
+
+/** The export for a save: null when there is no box to run in (the
+ *  window closed or the box gone) or it was stopped. A second
+ *  export while one runs is refused. */
+async function exported(dw) {
+  const now = live.get(dw);
+  if (!now || now.api.gone || dw.closed) return null;
+  if (now.st.ctrl) throw new Error(RUNNING);
+  return run(dw, now.api, now.st);
+}
+
+/** The export written or handed over: the box goes, notes told. */
+function done(now, out) {
+  if (!now) return;
+  now.api.delete();
+  if (out.notes.length) say(out.notes.join('\n'));
 }
 
 /** The export with its progress in the box: its result, or null

@@ -1,0 +1,229 @@
+// RevSwapMany - many tracked replacements in one paragraph made in
+// one pass (./RevTrack Session.swapMany: Change All, ./SpellFix
+// fixAll).
+//
+//   swapMany(s, at, list) -> [{ins: {from, to}, delta}]  every
+//       {from, to, content} of list (ascending, apart; content as
+//       ./Ops spliceText's) replaced in the paragraph at path `at`
+//       of s.d (in the body) by session s, exactly as s.swap(at,
+//       from, to, content) once each, from the last to the first,
+//       would: the same text, runs, tags and ids (one by one, in
+//       that order), so the same document. The result is in that
+//       order too, last first: ins the text put in (as swap gives
+//       it then), delta how much longer the paragraph became.
+//       Refused (./RevCmd) as swap would be. Inside the caller's
+//       d.atomic: one undo step, which gives the paragraph back as
+//       it was.
+//
+// How: each swap is made by s's own code (an object inheriting from
+// s), but on a scratch paragraph holding only what it can read or
+// change: from the start of the range before it (the one character
+// before a range is read) to the end of the text put in by the swap
+// after it, plus all the rest for the last. The swaps after it in
+// the paragraph go no further to the left than their range; the
+// ones before it never past the start of that text put in (an
+// insertion of the author's own, which every lengthening of
+// another's revision stops at, and the tags they look for next to
+// their text lie before it). What lies beyond is finished and kept
+// aside; the paragraph is put in at the end: so the work grows with
+// the text, not with ranges times text. Kept exact so:
+// - The first new id (./RevMarks nextId, taken once a session) is
+//   chosen from the document as it would be then: a copy of the
+//   body with the paragraph as it stands (s.id(from)).
+// - The paragraph goes in as three spliceTexts, so undo and redo
+//   leave the caret (./EditStep: by the last op not a setRev) where
+//   one by one does: first an insertion (of the finished text after the
+//   first range) at the end of what the first text op one by one
+//   would have changed, so undo ends there; then the old text after it
+//   goes; last the first range's part, so redo ends after the first
+//   text put in.
+// - What a step takes, ./Document's ./RevKeep reads from its
+//   inverses: these take every revision from the first range on,
+//   one by one only those the swaps touch. So one by one is used
+//   when that could matter (risky): a move half or move range mark
+//   from the first range on, or a revision there of which some
+//   stretch in the body holds only marks (RevKeep would untag it:
+//   those ids found once a session, bareIds).
+// - An empty replacement leaves no insertion to stop at: so is
+//   swapped one by one too.
+// Pure: no desktop services.
+import {apply} from './Ops';
+import {join} from './OpsUtil';
+import {at as walkAt} from './Walk';
+import {list as revList} from './RevMarks';
+import {moveRange} from './MovePairs';
+import {unseen} from './Kinds';
+import {OBJ} from './Model';
+
+const SP = [0, 0];                     // (the scratch paragraph's path)
+
+/** Pieces joined, a bounded number at a time. */
+function joinAll(parts) {
+  let xs = parts;
+  while (xs.length > 1) {
+    const next = [];
+    for (let k = 0; k < xs.length; k += 512) {
+      next.push(join(...xs.slice(k, k + 512)));
+    }
+    xs = next;
+  }
+  return xs.length ? xs[0] : {text: '', runs: [], inlines: {}};
+}
+
+/** A cut(p, a, b) (./OpsUtil) of fixed p, found by halving: the
+ *  cost is what it holds, not all of p. */
+function cutter(p) {
+  const runs = p.runs;
+  const keys = Object.keys(p.inlines).map(Number).sort((x, y) => x - y);
+  const first = (xs, f, v) => {        // (the first index f(x) >= v)
+    let lo = 0, hi = xs.length;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (f(xs[m]) < v) lo = m + 1;
+      else hi = m;
+    }
+    return lo;
+  };
+  return (a, b) => {
+    const out = [], inlines = {};
+    for (let k = first(runs, (r) => r.end, a + 1); k < runs.length &&
+      runs[k].start < b; k++) {
+      const r = runs[k];
+      const x = Math.max(r.start, a), y = Math.min(r.end, b);
+      if (y <= x) continue;
+      out.push(x === r.start && y === r.end && !a ? r
+        : {...r, start: x - a, end: y - a});
+    }
+    for (let k = first(keys, (n) => n, a); k < keys.length &&
+      keys[k] < b; k++) inlines[keys[k] - a] = p.inlines[keys[k]];
+    return {text: p.text.slice(a, b), runs: out, inlines};
+  };
+}
+
+export const stats = {lists: 0};      // (body walks: a cost check)
+
+const isMove = (rev) => rev.kind === 'mvFrom' || rev.kind === 'mvTo';
+
+/** Whether [a, b) of p holds only marks (as ./RevKeep reads it). */
+function marksOnly(p, a, b) {
+  for (let k = a; k < b; k++) {
+    if (p.text[k] !== OBJ || !unseen(p.inlines[k])) return false;
+  }
+  return true;
+}
+
+const bare = new WeakMap();            // session -> Set of ids
+
+/** The ids of revisions with a stretch in the body holding only
+ *  marks: looked for once a session (its first need), as RevKeep
+ *  would find them. Exact for the whole step: a revision no swap
+ *  touches is not changed by it, one a swap touches (so one that
+ *  comes to hold only marks) both ways take; one that stops
+ *  holding only marks only sends a paragraph one by one. */
+function bareIds(s, doc) {
+  let ids = bare.get(s);
+  if (!ids) {
+    stats.lists++;
+    ids = new Set();
+    for (const e of revList(doc)) {
+      if (e.editable && marksOnly(walkAt(doc, e.where.block),
+        e.where.from, e.where.to)) ids.add(e.id);
+    }
+    bare.set(s, ids);
+  }
+  return ids;
+}
+
+/** Whether taking all of p from a0 on could differ for ./RevKeep
+ *  from what the swaps take (see the header); s the session. */
+function risky(s, doc, p, a0) {
+  const ids = new Set();
+  for (const r of p.runs) {
+    if (r.end <= a0 || !r.rev) continue;
+    if (isMove(r.rev)) return true;
+    ids.add(r.rev.id);
+  }
+  for (const k of Object.keys(p.inlines)) {
+    const x = p.inlines[k];
+    if (Number(k) >= a0 && x && x.kind === 'raw' && moveRange(x.node))
+      return true;
+  }
+  if (!ids.size) return false;
+  const b = bareIds(s, doc);
+  for (const id of ids) if (b.has(id)) return true;
+  return false;
+}
+
+/** See the header. */
+export function swapMany(s, at, list) {
+  const d = s.d;
+  if (!list.length) return [];
+  const p0 = walkAt(d.doc, at), a0 = list[0].from;
+  if (list.some((r) => !r.content.text.length) ||
+    risky(s, d.doc, p0, a0)) {
+    return [...list].reverse().map((r) => {
+      const was = walkAt(d.doc, at).text.length;
+      const ins = s.swap(at, r.from, r.to, r.content);
+      return {ins, delta: walkAt(d.doc, at).text.length - was};
+    });
+  }
+  const cut = cutter(p0), len = p0.text.length;
+  const sd = {sections: [{blocks: [p0]}]};
+  const sh = Object.create(s);
+  const tail = [];                     // (finished, right to left)
+  const did = [];
+  let left = 0;                        // (where the scratch starts)
+  let pend = null;                     // (done, still in reach)
+  // (where undo leaves the caret one by one: ./EditStep lastLeaf,
+  // the step's first op that is not a setRev, undone)
+  let first = null;
+  /** The body as it would be now: a copy, the paragraph as it is. */
+  const view = () => {
+    const q = joinAll([cut(0, left), walkAt(sd, SP),
+      ...[...tail].reverse()]);
+    const doc = d.doc, copy = {...doc, sections: doc.sections.map((x) =>
+      ({...x, blocks: x.blocks.slice()}))};
+    apply(copy, {op: 'spliceText', block: at, at: a0, del: len - a0,
+      content: sliceOf(q, a0, q.text.length)});
+    return copy;
+  };
+  sh.d = {doc: sd, apply: (op) => {
+    const inv = apply(sd, op);
+    if (first === null && inv.op === 'spliceText') {
+      first = inv.at + inv.content.text.length + left;
+    }
+    return inv;
+  }};
+  // (the session's first id is chosen from the body as one by one
+  // would have it then: only that first time is the copy made)
+  sh.id = () => s.id(s.base === null ? view() : null);
+  for (let k = list.length - 1; k >= 0; k--) {
+    const r = list[k];
+    left = k ? list[k - 1].from : 0;
+    const c = k === list.length - 1 ? cut(left, len)
+      : join(cut(left, list[k + 1].from), pend);
+    sd.sections[0].blocks[0] = {...p0, ...c};
+    const was = c.text.length;
+    const res = sh.swap(SP, r.from - left, r.to - left, r.content);
+    const q = walkAt(sd, SP);
+    did.push({ins: {from: res.from + left, to: res.to + left},
+      delta: q.text.length - was});
+    tail.push(sliceOf(q, res.to, q.text.length));
+    pend = sliceOf(q, r.from - left, res.to);
+  }
+  // (three splices: see the header; pend is [a0, the end of the
+  // first text put in), tail what follows it)
+  const rest = joinAll([...tail].reverse()), n = rest.text.length;
+  d.apply({op: 'spliceText', block: at, at: first, del: 0,
+    content: rest});
+  d.apply({op: 'spliceText', block: at, at: first + n, del: len - first,
+    content: {text: '', runs: [], inlines: {}}});
+  d.apply({op: 'spliceText', block: at, at: a0, del: first - a0,
+    content: pend});
+  return did;
+}
+
+/** cut (./OpsUtil) of a paragraph made here (small, or once). */
+function sliceOf(q, a, b) {
+  return cutter(q)(a, b);
+}

@@ -1,0 +1,74 @@
+// BookmarkSpot - where on its page a bookmark is: the line holding
+// its start, for a PDF link that goes to that line (./PdfExport).
+//
+//   spotOf(ctx, name) -> {page, top} | null
+//       ctx = {doc, pages, place}: pages a ./Pages (all worked out
+//       or not), place its Print layout placement (./PlacePrint of
+//       those pages: lineAt, sheet). page: the index of the page
+//       ./PageOfBookmark pageOf gives (never another); top: the top
+//       of the line holding the bookmark's start (./PageFind
+//       placeOf, its caret's line), in layout px from the page's
+//       top edge (the page's own origin, as ./PagePaint paints it).
+//       null where that line is not known: no such bookmark, one in
+//       a header or footer, a note (a footnote's foot, a run of
+//       notes after the text) or a table cell (its row may be cut
+//       over pages), a place of other pages, the line's page not
+//       pageOf's, a top off the page, bad input or any exception
+//   destOf(ctx, name, i, hPt) -> string  the destination's tail for
+//       page i, hPt points high, as /Dest [page ... ] has it:
+//       '/XYZ 0 top null' (top the line's top in points from the
+//       page's bottom, hPt - top px * 0.75: ./PdfSink's 0.75 and
+//       its flip; no change of zoom), else '/Fit' (spotOf null, its
+//       page not i, hPt not a positive number)
+//
+// Pure: no desktop services; nothing is changed (the pages work
+// out pages as far as needed).
+import {of as bookmarks} from './BookmarkIndex';
+import {pageOf} from './PageOfBookmark';
+import {placeOf} from './PageFind';
+import {isTable} from './PageRows';
+import {num} from 'wimplib/PdfWrite';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const fin = (v) => typeof v === 'number' && Number.isFinite(v);
+const PT = 0.75;                       // (points per layout px)
+
+/** spotOf's work; may throw on a broken input. */
+function spot(ctx, name) {
+  if (!isObj(ctx) || typeof name !== 'string') return null;
+  const {doc, pages: P, place: Pl} = ctx;
+  if (!isObj(doc) || !isObj(P) || !isObj(Pl) || Pl.pages !== P ||
+    typeof Pl.lineAt !== 'function' || !isObj(Pl.sheet)) return null;
+  const at = pageOf({doc, pages: P}, name);
+  if (!at) return null;
+  const e = bookmarks(doc).find(name);
+  if (!e || e.story !== null || e.inNote) return null;
+  const c = placeOf(P.G, e.start);
+  if (!c || c.cell !== undefined) return null;
+  const it = P.G.items[c.k];
+  if (!isObj(it) || isTable(it) || it.en) return null;
+  const got = Pl.lineAt(it, c.line);    // (the Place's answer)
+  if (!isObj(got) || got.page !== at.i || !fin(got.y)) return null;
+  const top = got.y - Pl.sheet.rect(at.page).y;
+  if (!fin(top) || top < 0 || top >= at.page.h) return null;
+  return {page: at.i, top};
+}
+
+/** See the header. */
+export function spotOf(ctx, name) {
+  try {
+    return spot(ctx, name);
+  } catch {
+    return null;
+  }
+}
+
+/** See the header. */
+export function destOf(ctx, name, i, hPt) {
+  if (!fin(hPt) || hPt <= 0) return '/Fit';
+  const s = spotOf(ctx, name);
+  if (!s || s.page !== i) return '/Fit';
+  const top = hPt - s.top * PT;
+  return top > 0 && top <= hPt ? '/XYZ 0 ' + num(top) + ' null'
+    : '/Fit';
+}

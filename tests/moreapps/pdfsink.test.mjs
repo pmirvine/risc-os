@@ -905,9 +905,30 @@ describe('PdfSink: pictures', () => {
     s.drawImage(img(2, 2, {boom: 1}), 0, 0, 10, 10);
     await s.settle();
     const out = s.end();
-    assert.deepEqual(body(out), []);
+    assert.equal(body(out).join('\n'), [
+      'q', '0.627 0.627 0.627 RG', '1 w [] 0 d',
+      '0.5 0.5 9 9 re', 'S', 'Q'].join('\n'));  // (boom: the box)
     assert.equal(out.xobjects.size, 0);
     assert.deepEqual([...s.failed], ['bang']);
+  });
+
+  it('a picture that fails to decode draws a grey outlined box ' +
+    'and the note remains', async () => {
+    const images = {objectFor: () => Promise.reject(new Error('bad'))};
+    const s = await sinkOf({images});
+    s.save();
+    s.translate(20, 30);
+    s.drawImage(img(3, 3), 0, 0, 40, 20);
+    s.restore();
+    await s.settle();
+    const out = s.end();
+    const c = out.content;
+    assert.match(c, /0\.627 0\.627 0\.627 RG/);
+    assert.match(c, /\n20.5 30.5 39 19 re\nS\nQ/);
+    assert.ok(/ re\nS\nQ/.test(c), 'a stroked rectangle');
+    assert.ok(!/ Do/.test(c), 'no picture drawn');
+    assert.ok(!/ Tj/.test(c), 'no label');
+    assert.equal(s.failed.size, 1);
   });
 
   it('bad arguments draw nothing and never reach NaN', async () => {
