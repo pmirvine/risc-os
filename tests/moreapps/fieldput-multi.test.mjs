@@ -315,13 +315,27 @@ describe('planBlocks: containers', () => {
       [HEAD + 'Old 1', 'Old 2', '{end}']);
   });
 
-  it('a TOC in a content control (w:sdt) is not a field', async () => {
-    const doc = await docWithFields('<w:sdt><w:sdtPr><w:docPartObj>' +
-      '<w:docPartGallery w:val="Table of Contents"/></w:docPartObj>' +
-      '</w:sdtPr><w:sdtContent>' + tocXml(2) +
-      '</w:sdtContent></w:sdt>' + p(r('After')));
-    assert.equal(blocks(doc)[0].type, 'opaque');
-    assert.equal(scan(doc).length, 0);
+  it('a TOC in Word\'s content control (w:sdt) is a field: ' +
+    'replaced, the entries written inside the control', async () => {
+    const pr = '<w:sdtPr><w:docPartObj><w:docPartGallery ' +
+      'w:val="Table of Contents"/></w:docPartObj></w:sdtPr>';
+    const doc = await docWithFields('<w:sdt>' + pr + '<w:sdtContent>' +
+      tocXml(2) + '</w:sdtContent></w:sdt>' + p(r('After')));
+    assert.ok(blocks(doc)[0].sdt);
+    assert.equal(scan(doc).length, 1);
+    const d = new Document(doc);
+    updateWithBlocks(d, tocField(d.doc), entries(3));
+    assert.deepEqual(texts(d.doc), [HEAD + 'Entry 1', 'Entry 2',
+      'Entry 3', '{end}', 'After']);
+    const x = new TextDecoder().decode((await readZip(
+      await writeDocx(d.doc)))
+      .get('word/document.xml'));
+    assert.equal((x.match(/<w:sdt>/g) || []).length, 1);
+    const inner = x.slice(x.indexOf(pr + '<w:sdtContent>'),
+      x.indexOf('</w:sdtContent>'));
+    for (const t of ['Entry 1', 'Entry 2', 'Entry 3', 'end'])
+      assert.ok(inner.includes(t), t);
+    assert.ok(!inner.includes('After'));
   });
 
   it('inside an open atomic: one step with the rest', async () => {

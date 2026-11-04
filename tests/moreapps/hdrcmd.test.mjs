@@ -241,6 +241,30 @@ describe('Link to previous', () => {
       assert.equal(back.stories.get(p2).blocks.at(-1).text, 'end');
     });
 
+  it('off: a fresh content control id passes a wrapped contents ' +
+    'table\'s in the body', async () => {
+    // the body's TOC content control is read as marked paragraphs
+    // (./TocSdt): its w:id is in b.sdt.pre, not in any raw XML
+    const toc = '<w:sdt><w:sdtPr><w:id w:val="1"/><w:docPartObj>' +
+      '<w:docPartGallery w:val="Table of Contents"/>' +
+      '<w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtContent>' +
+      p(r('Contents')) + '</w:sdtContent></w:sdt>';
+    const doc = freeze(await readDocx(await wordHf({pic: RED,
+      body: toc + brk('<w:headerReference w:type="default" ' +
+        'r:id="rIdH1"/>') + BODY(3), default: {hdr: RICH}})));
+    assert.ok(doc.sections[0].blocks[0].sdt, 'the wrapper is read');
+    const linked = fresh(doc);
+    linkCmd(linked, 1, 'hdr', 'default', true);
+    const {zip} = await oneStep(freeze(linked.doc),
+      (d) => linkCmd(d, 1, 'hdr', 'default', false));
+    const xml = [...zip].filter(([n]) => /\.xml$/.test(n))
+      .map(([, v]) => dec(v)).join('\n');
+    const ids = [...xml.matchAll(/<w:id w:val="(-?\d+)"/g)]
+      .map((m) => m[1]);
+    assert.equal(ids.length, 3);
+    assert.equal(new Set(ids).size, 3, 'content control ids: ' + ids);
+  });
+
   it('off, nothing to inherit: a new empty story, Header style',
     async () => {
       const {d} = await oneStep(solo,

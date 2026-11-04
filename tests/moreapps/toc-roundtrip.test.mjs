@@ -291,12 +291,24 @@ const inCell = () => docx(
     tc(p(r('beside')))])]) +
   H(1, 'First') + H(2, 'Second') + p(r('end')));
 
+/** A table of contents in a content control, as Word's References >
+ *  Table of Contents puts it in (sdtPr, sdtEndPr, a heading). */
+const inSdt = () => docx(
+  p(r('Title')) + '<w:sdt><w:sdtPr><w:id w:val="-90210"/>' +
+  '<w:docPartObj><w:docPartGallery w:val="Table of Contents"/>' +
+  '<w:docPartUnique/></w:docPartObj></w:sdtPr><w:sdtEndPr><w:rPr>' +
+  '<w:b/></w:rPr></w:sdtEndPr><w:sdtContent>' + p(r('Contents')) +
+  p(fld(' TOC \\o "1-3" \\h \\z \\u ', 'old entry')) +
+  '</w:sdtContent></w:sdt>' + H(1, 'First') + H(2, 'Second') +
+  p(r('x') + BR) + H(1, 'Third') + p(r('end')));
+
 /** Every generated document: [name, () => Promise<bytes>]. */
 export const DOCS = [
   ['a stale table, captions and every reference', everything],
   ['headings, no fields', headingsOnly],
   ['a table of figures, chapter numbers', figures],
   ['a table of contents in a table cell', inCell],
+  ['a table of contents in a content control', inSdt],
 ];
 
 // ------------------------------------------------------------ pipeline
@@ -384,6 +396,26 @@ describe('fields round trip: Update all fields (generated)', () => {
       assert.equal(res.steps, 0, 'and makes no step');
     });
   }
+
+  it('a table in a content control: entries made again, one ' +
+    'wrapper with its sdtPr', async () => {
+    const d = new Document(await readDocx(await inSdt()));
+    assert.equal(tocFields(d.doc).length, 1);
+    assert.ok(updateAll(d, new Typing(d)).changed);
+    const [toc] = tocFields(d.doc);
+    assert.deepEqual(entriesOf(d.doc, toc).map((e) => e.level + '|' +
+      e.text), ['1|First', '2|Second', '1|Third']);
+    const xml = dec.decode((await readZip(await write(d.doc)))
+      .get('word/document.xml'));
+    assert.equal((xml.match(/<w:sdt>/g) || []).length, 1);
+    assert.ok(xml.includes('<w:sdtPr><w:id w:val="-90210"/>' +
+      '<w:docPartObj><w:docPartGallery w:val="Table of Contents"/>' +
+      '<w:docPartUnique/></w:docPartObj></w:sdtPr>'));
+    const inner = xml.slice(xml.indexOf('<w:sdtContent>'),
+      xml.indexOf('</w:sdtContent>'));
+    for (const t of ['Contents', 'First', 'Second', 'Third'])
+      assert.ok(inner.includes(t), t + ' inside');
+  });
 
   it('the stale document comes out as Word would make it',
     async () => {
@@ -492,13 +524,14 @@ describe('fields round trip: the corpus', {
 
 // (WORD_EDIT_CORPUS=1, 2026-10-30, the hand-off files of E3 left out:
 // field-oracle oracleFiles) per kind: fields, evaluated, matched;
-// PAGEREF and the TOC page numbers are floors
+// PAGEREF and the TOC page numbers are floors; TOC evaluated 10 -> 15
+// on 2026-11-04 (the 5 in content controls read: ./TocSdt)
 const MEASURED = {
   SEQ: {fields: 29, evaluated: 23, matched: 23},
   REF: {fields: 13, evaluated: 12, matched: 12},
   NOTEREF: {fields: 0, evaluated: 0, matched: 0},
   STYLEREF: {fields: 26, evaluated: 3, matched: 3},
-  TOC: {fields: 16, evaluated: 10, matched: 6},
+  TOC: {fields: 16, evaluated: 15, matched: 6},
 };
 const FLOORS = {PAGEREF: 4, 'TOC pages': 23};
 
@@ -682,11 +715,12 @@ describe('fields: the consolidated oracle (Word\'s stored results)',
         }
       });
 
-    it('the pages-corpus pin is unchanged (328 of 1387)', () => {
+    it('the pages-corpus pin is unchanged (327 of 1387)', () => {
       const pin = JSON.parse(readFileSync(new URL(
         './corpus-expected.json', import.meta.url), 'utf8')).pageStarts;
-      // (325 -> 328 in Batch F1: a comment reference draws nothing)
-      assert.equal(pin.matched, 328);
+      // (325 -> 328 in Batch F1: a comment reference draws nothing;
+      // 328 -> 327: a TOC in a content control laid out, ./TocSdt)
+      assert.equal(pin.matched, 327);
       assert.equal(pin.ourCount, 1387);
     });
   });

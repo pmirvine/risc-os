@@ -611,12 +611,12 @@ describe('comments: the consolidated oracle (the XML against what ' +
 });
 
 describe('comments: the pages-corpus pin', () => {
-  it('is unchanged (328 of 1387)', () => {
+  it('is unchanged (327 of 1387)', () => {
     const pin = JSON.parse(readFileSync(new URL(
       './corpus-expected.json', import.meta.url), 'utf8')).pageStarts;
     // (325 -> 328 in Batch F1 Task 3: a comment reference draws
-    // nothing)
-    assert.equal(pin.matched, 328);
+    // nothing; 328 -> 327: a TOC in a content control laid out)
+    assert.equal(pin.matched, 327);
     assert.equal(pin.ourCount, 1387);
   });
 });

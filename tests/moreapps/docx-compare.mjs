@@ -17,6 +17,7 @@ import {sectPrNode, hasProps} from '../../tools/moreapps/!Letters/WriteProps';
 import {docScope} from '../../tools/moreapps/!Letters/WriteBody';
 import {readSect} from '../../tools/moreapps/!Letters/ReadSect';
 import {deepEqual, newPara} from '../../tools/moreapps/!Letters/Model';
+import {markersOf} from '../../tools/moreapps/!Letters/TocSdt';
 import {forEachBlock, forEachIn} from '../../tools/moreapps/!Letters/Walk';
 
 // the Default types ./WriteParts gives an extension it adds (its
@@ -72,12 +73,20 @@ function everyBlock(d, each) {
  * pPr/rPr/section props, and of the tblPr/trPr/tcPr of typed tables,
  * in the order of the documented contract (files from Word already
  * are); [Content_Types].xml first in zipOrder (the writer puts it
- * first).
+ * first); every body block in a TOC content control's run marked
+ * with it (./TocSdt markersOf: so it is read back).
  */
 export function canon(doc) {
   const d = structuredClone(doc);
   let k = 0;
   for (const s of d.sections) {
+    // a block in a TOC wrapper's run is written in it (./TocSdt):
+    // read back, it carries the marker
+    markersOf(s.blocks).forEach((w, i) => {
+      const b = s.blocks[i];
+      if (w) b.sdt = w;
+      else if (b.type === 'p' || b.type === 'tbl') delete b.sdt;
+    });
     sortExtra(s.props, 'sectPr');
     if (s.raw) s.raw = {...s.raw, children: sortChildren('sectPr',
       s.raw.children)};

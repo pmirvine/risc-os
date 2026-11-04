@@ -7,19 +7,22 @@
 // FLOOR, as the PAGEREF oracle).
 //
 // Measured 2026-10-30 (WORD_EDIT_CORPUS=1): 16 TOC instructions in
-// document.xml of the corpus files. 5 are inside a content control
-// (w:sdt, Word's gallery: kept whole by the reader, never updated: the
-// known limit of Batch E3) and are counted UNREACHABLE; 11 found, 1
-// skipped (switches not understood: '\t "_CustomImageCaption" \c'
-// with no level and no identifier), 10 compared, 6 equal and 4
-// differ, each for a reason listed in KNOWN, all stale stored
-// entries: three copies of one file whose headings were edited after
-// Word last updated the table, and complex2005, whose stored entries
-// carry numbers ('1\tIntroduction') from a heading numbering the file
-// no longer has (its styles and numbering give the headings no numPr:
-// Word would also make the entries again without '1 '). Page
-// numbers, in the 6 equal tables: 83 compared, 23 equal (PAGE_FLOOR;
-// our pages break elsewhere: stand-in fonts).
+// document.xml of the corpus files, 5 of them inside a content
+// control (w:sdt, Word's gallery), which the reader then kept whole
+// (UNREACHABLE); since 2026-11-04 (./TocSdt) it reads them as their
+// paragraphs, so all 16 are found: 1 skipped (switches not
+// understood: '\t "_CustomImageCaption" \c' with no level and no
+// identifier), 15 compared, 6 equal and 9 differ, each for a reason
+// listed in KNOWN, all stale stored entries: three copies of one
+// file whose headings were edited after Word last updated the
+// table; complex2005, whose stored entries carry numbers
+// ('1\tIntroduction') from a heading numbering the file no longer
+// has (its styles and numbering give the headings no numPr: Word
+// would also make the entries again without '1 '); and the five in
+// content controls, whose files had headings added after the table
+// was last updated (4 entries stored, 10 headings). Page numbers, in
+// the 6 equal tables: 83 compared, 23 equal (PAGE_FLOOR; our pages
+// break elsewhere: stand-in fonts).
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
@@ -44,9 +47,11 @@ import {loadStyles, tm} from './word-docs.mjs';
 import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
 
-// (WORD_EDIT_CORPUS=1, 2026-10-30)
-const MEASURED = {instructions: 16, unreachable: 5, found: 11,
-  skipped: 1, compared: 10, equal: 6};
+// (WORD_EDIT_CORPUS=1, 2026-10-30; the content controls 2026-11-04)
+const MEASURED = {instructions: 16, unreachable: 0, found: 16,
+  skipped: 1, compared: 15, equal: 6};
+const TF = 'open-xml-sdk/test/DocumentFormat.OpenXml.Tests.Assets/' +
+  'assets/TestFiles/';
 // the TOCs that differ, by file, and why
 const KNOWN = new Map([
   ['open-xml-sdk/v2FxTestFiles/ForTestCase/comment.docx', 'stale'],
@@ -54,6 +59,11 @@ const KNOWN = new Map([
   ['open-xml-sdk/v2FxTestFiles/ForTestCase/footnote.docx', 'stale'],
   ['open-xml-sdk/v2FxTestFiles/bvt/complex2005_12rtm.docx',
     'stale (headings carry no numbering)'],
+  // in a content control; headings added after the last update
+  ...['handoff/3-roundtrip-real.docx',
+    'handoff/6-roundtrip-strict.docx', TF + 'Complex01.docx',
+    TF + 'Document.docx', TF + 'Strict01.docx']
+    .map((f) => [f, 'stale (headings added)']),
 ]);
 // the page numbers equal of the first measured run (a floor)
 const PAGE_FLOOR = 23;

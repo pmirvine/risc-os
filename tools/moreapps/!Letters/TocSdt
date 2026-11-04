@@ -1,0 +1,151 @@
+// TocSdt - a Table of Contents inside a content control: the body
+// w:sdt Word's References > Table of Contents puts in. Pure.
+//
+//   tocSdt(node, map) -> {name, attrs, pre, post, content} | null
+//       node (a body child; map the scope around it) as a TOC
+//       wrapper: a w:sdt whose w:sdtPr has a w:docPartObj whose
+//       w:docPartGallery is 'Table of Contents' (any case), with
+//       one w:sdtContent (no attributes, the sdt's own prefix)
+//       holding one w:p or w:tbl at least and nothing else (but
+//       white space), none of the paragraphs with a w:sectPr in its
+//       w:pPr, and no namespace declared on the sdt. pre: the sdt's
+//       children before the sdtContent (w:sdtPr, w:sdtEndPr: Word's
+//       order), post: those after, as read; content: the w:p and
+//       w:tbl. null for anything else (./ReadBody keeps it Opaque).
+//   wrapBlocks(blocks, nodeOf) -> [node]  a section's blocks as body
+//       children (nodeOf(b, i) the node of block i), each run from
+//       the first to the last block carrying one marker b.sdt
+//       ({name, attrs, pre, post, seq}: ./ReadBody gives every block
+//       of a wrapper the same object, which is preferred, not relied
+//       on; seq numbers the wrappers of the body) put back in its
+//       w:sdt: name, attrs, pre, a
+//       w:sdtContent of the run's nodes, post. Blocks
+//       in the run without a marker (a paragraph put in by a TOC
+//       update) are inside it; a block with another marker ends it.
+//       A copy of the marker (equal, seq included, not the same
+//       object: a block copied by an op) counts as the same one;
+//       two wrappers with equal XML differ by seq.
+//     Known limits: an Opaque block between marked blocks is written
+//       inside the w:sdtContent, so the control is Opaque on the next
+//       read (tocSdt takes w:p and w:tbl only); a run split across
+//       sections is a wrapper per section, each with the same sdtPr
+//       (its w:id repeated); a wrapper ending a section gains one
+//       empty paragraph after it to carry the sectPr (./WriteBody).
+//   markersOf(blocks) -> [marker | null]  the wrapper each block is
+//       written in (the marker of its run, which a block put in
+//       between gets too: read back, it carries it), or null
+import {wName, wAttr, isEl, blank} from './Ns';
+
+const GALLERY = 'table of contents';
+
+const declares = (node) => node.attrs.some(([n]) => n === 'xmlns' ||
+  n.startsWith('xmlns:'));
+const prefixOf = (name) => name.slice(0, name.indexOf(':') + 1);
+const kid = (node, map, local) => node.children.find((c) =>
+  wName(c, map) === local);
+
+/** Whether sdtPr names the Table of Contents gallery. */
+function isTocPr(pr, map) {
+  const obj = pr && kid(pr, map, 'docPartObj');
+  const g = obj && kid(obj, map, 'docPartGallery');
+  const v = g && wAttr(g, map, 'val');
+  return typeof v === 'string' && v.toLowerCase() === GALLERY;
+}
+
+/** Whether paragraph p has a w:sectPr in its w:pPr. */
+function breaks(p, map) {
+  const pPr = kid(p, map, 'pPr');
+  return !!pPr && !!kid(pPr, map, 'sectPr');
+}
+
+/** See the header. */
+export function tocSdt(node, map) {
+  if (wName(node, map) !== 'sdt' || declares(node)) return null;
+  const els = node.children.filter(isEl);
+  const at = els.findIndex((c) => wName(c, map) === 'sdtContent');
+  if (at < 0 || els.slice(at + 1).some((c) =>
+    wName(c, map) === 'sdtContent')) return null;
+  const sc = els[at];
+  if (sc.attrs.length || sc.name !== prefixOf(node.name) +
+    'sdtContent') return null;
+  if (!isTocPr(els.find((c) => wName(c, map) === 'sdtPr'), map))
+    return null;
+  const content = [];
+  for (const c of sc.children) {
+    if (typeof c === 'string' && blank(c)) continue;
+    const l = isEl(c) ? wName(c, map) : null;
+    if ((l !== 'p' && l !== 'tbl') || (l === 'p' && breaks(c, map)))
+      return null;
+    content.push(c);
+  }
+  if (!content.length) return null;
+  const i = node.children.indexOf(sc);
+  return {name: node.name, attrs: node.attrs,
+    pre: node.children.slice(0, i), post: node.children.slice(i + 1),
+    content};
+}
+
+/** A marker's identity for the writer: the first marker seen equal
+ *  to it (so a copy joins its original). */
+function keyOf(W, seen, keys) {
+  if (keys.has(W)) return keys.get(W);
+  const s = JSON.stringify([W.seq, W.name, W.attrs, W.pre, W.post]);
+  if (!seen.has(s)) seen.set(s, W);
+  const k = seen.get(s);
+  keys.set(W, k);
+  return k;
+}
+
+const markerOf = (b) => b && (b.type === 'p' || b.type === 'tbl') &&
+  b.sdt ? b.sdt : null;
+
+/** See the header. */
+export function markersOf(blocks) {
+  const seen = new Map(), keys = new Map();
+  const ks = blocks.map((b) => {
+    const W = markerOf(b);
+    return W ? keyOf(W, seen, keys) : null;
+  });
+  const out = new Array(blocks.length).fill(null);
+  let i = 0;
+  while (i < blocks.length) {
+    const k = ks[i];
+    if (!k) {
+      i++;
+      continue;
+    }
+    // the run: to the last block with k before another marker
+    let last = i;
+    for (let j = i + 1; j < blocks.length && (!ks[j] || ks[j] === k);
+      j++) if (ks[j] === k) last = j;
+    for (let j = i; j <= last; j++) out[j] = k;
+    i = last + 1;
+  }
+  return out;
+}
+
+/** See the header. */
+export function wrapBlocks(blocks, nodeOf) {
+  const ms = markersOf(blocks);
+  const out = [];
+  for (let i = 0; i < blocks.length;) {
+    const k = ms[i];
+    if (!k) {
+      out.push(nodeOf(blocks[i], i));
+      i++;
+      continue;
+    }
+    const inner = [];
+    for (; i < blocks.length && ms[i] === k; i++)
+      inner.push(nodeOf(blocks[i], i));
+    out.push(wrapNode(k, inner));
+  }
+  return out;
+}
+
+/** The w:sdt of marker W around nodes. */
+function wrapNode(W, nodes) {
+  return {name: W.name, attrs: W.attrs.map(([n, v]) => [n, v]),
+    children: [...W.pre, {name: prefixOf(W.name) + 'sdtContent',
+      attrs: [], children: nodes}, ...W.post]};
+}

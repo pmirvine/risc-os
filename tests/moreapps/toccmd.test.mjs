@@ -33,6 +33,8 @@ import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
 import {fld, begin, instr, sep, end} from './field-fixtures.mjs';
 import {lintAfter} from './lint-after.mjs';
+import {emit} from './word-emit.mjs';
+import {readZip} from '../../tools/moreapps/!WimpLib/Zip';
 import {withHeaders} from './story-fixtures.mjs';
 import {noteDoc, noteP, mark} from './note-fixtures.mjs';
 
@@ -575,17 +577,59 @@ describe('updateToc', () => {
     await lintAfter(d.doc, 'deleted heading');
   });
 
-  it('a TOC inside a content control is kept as stored (known ' +
-    'limit)', async () => {
-    const sdt = '<w:sdt><w:sdtPr><w:docPartObj><w:docPartGallery ' +
-      'w:val="Table of Contents"/><w:docPartUnique/></w:docPartObj>' +
-      '</w:sdtPr><w:sdtContent>' + p(fld(' TOC \\o "1-3" \\h \\z \\u ',
-      'Old')) + '</w:sdtContent></w:sdt>';
-    const doc = await read(sdt + H(1, 'One'));
-    const {d, t} = open(doc), s0 = snap(d.doc);
-    assert.equal(tocFields(d.doc).length, 0);
+  it('two TOC controls with equal sdtPr: Update all fields keeps ' +
+    'them two, the paragraph between outside', async () => {
+    const pr = '<w:sdtPr><w:docPartObj><w:docPartGallery ' +
+      'w:val="Table of Contents"/></w:docPartObj></w:sdtPr>';
+    const ctl = (n) => '<w:sdt>' + pr + '<w:sdtContent>' +
+      p(fld(' TOC \\o "1-3" \\h \\z \\u ', 'Old ' + n)) +
+      '</w:sdtContent></w:sdt>';
+    const doc = await read(ctl(1) + p(r('Between')) + ctl(2) +
+      H(1, 'One'));
+    const {d, t} = open(doc);
+    assert.equal(tocFields(d.doc).length, 2);
     t.command(() => run(d, ctxOf(d.doc), null));
-    assert.ok(same(d.doc, s0));
+    assert.deepEqual(brief(d.doc, tocOf(d.doc)), [[1, 'One']]);
+    const {bytes} = await lintAfter(d.doc, 'two sdt tocs');
+    emit('toccmd-two-sdt', bytes);
+    const xml = new TextDecoder().decode((await readZip(bytes))
+      .get('word/document.xml'));
+    assert.equal((xml.match(/<w:sdt>/g) || []).length, 2);
+    const i = xml.indexOf('Between');
+    assert.ok(xml.lastIndexOf('</w:sdt>', i) > 0 &&
+      xml.indexOf('<w:sdt>', i) > i, 'Between outside');
+  });
+
+  it('a TOC inside a content control is updated, and written back ' +
+    'in one wrapper with its sdtPr', async () => {
+    const pr = '<w:sdtPr><w:id w:val="77"/><w:docPartObj>' +
+      '<w:docPartGallery w:val="Table of Contents"/>' +
+      '<w:docPartUnique/></w:docPartObj></w:sdtPr>';
+    const sdt = '<w:sdt>' + pr + '<w:sdtEndPr/><w:sdtContent>' +
+      p(r('Contents')) + p(fld(' TOC \\o "1-3" \\h \\z \\u ',
+        'Old')) + '</w:sdtContent></w:sdt>';
+    const doc = await read(sdt + H(1, 'One') + H(2, 'Two'));
+    const {d, t} = open(doc);
+    assert.equal(tocFields(d.doc).length, 1);
+    assert.deepEqual(brief(d.doc, tocOf(d.doc)), [[0, 'Old']]);
+    const before = await lintAfter(d.doc, 'sdt toc before');
+    emit('toccmd-sdt-before', before.bytes);
+    t.command(() => run(d, ctxOf(d.doc), null));
+    assert.deepEqual(brief(d.doc, tocOf(d.doc)), [[1, 'One'],
+      [2, 'Two']]);
+    const {bytes} = await lintAfter(d.doc, 'sdt toc after');
+    emit('toccmd-sdt-after', bytes);
+    const xml = new TextDecoder().decode((await readZip(bytes))
+      .get('word/document.xml'));
+    assert.equal((xml.match(/<w:sdt>/g) || []).length, 1);
+    assert.ok(xml.includes(pr + '<w:sdtEndPr/><w:sdtContent>'));
+    const inner = xml.slice(xml.indexOf('<w:sdtContent>'),
+      xml.indexOf('</w:sdtContent>'));
+    assert.ok(inner.includes('Contents') && inner.includes('One') &&
+      inner.includes('fldCharType="end"'), 'the entries inside');
+    const back = await readDocx(bytes);
+    assert.deepEqual(brief(back, tocFields(back)[0]), [[1, 'One'],
+      [2, 'Two']]);
   });
 });
 

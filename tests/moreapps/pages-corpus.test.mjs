@@ -16,7 +16,10 @@
 // row, and a position in a cell is on its row's line, P4.1), each
 // matched by one of ours within one line. The totals must EQUAL the
 // pin in corpus-expected.json (Batch F1: matched 325 -> 328, a
-// comment reference draws nothing, as in Word, reviewed) (pageStarts:
+// comment reference draws nothing, as in Word, reviewed; 328 -> 327
+// on 2026-11-04: a table of contents in a content control is laid
+// out as its paragraphs, no longer as one 40 px kept box, which in
+// one file had put a page start on Word's by chance) (pageStarts:
 // {matched, total, files};
 // R10; P10 fix M2: and ourCount, how many starts of ours were
 // scored, as the score never counts against extra starts of ours;

@@ -12,6 +12,16 @@
 // (a w:tbl that does not type, w:sdt, w:customXml, bookmarks,
 // mc:AlternateContent, a w:sectPr that is not last, unknown...),
 // in place. Text and comments directly in w:body are dropped.
+// A Table of Contents inside a content control (./TocSdt tocSdt)
+// is read as the paragraphs and tables it holds, each one with
+// b.sdt the marker {name, attrs, pre, post, seq}: read, they share
+// one object, but an op's copy (Ops.copy deep-clones) is only equal,
+// so equality with seq is what counts (seq 1, 2... the wrapper's
+// number in the body: two wrappers with equal XML stay two);
+// ./WriteBody puts the w:sdt back around them; all or
+// nothing: when one of them does not read (a raw paragraph, a
+// table kept Opaque) or they would pass the paragraph limit, the
+// w:sdt stays Opaque, its paragraphs not counted.
 // opts.tableNote(reason), if given, hears every table kept Opaque
 // (plan R3); opts.noteMarks / opts.commentMarks /
 // opts.revisionMarks false keep note marks / comment marks /
@@ -22,6 +32,8 @@ import {wName, isEl, scope} from './Ns';
 import {readPara} from './ReadPara';
 import {readSect} from './ReadSect';
 import {readTable, countPara} from './TblRead';
+import {tocSdt} from './TocSdt';
+import {DocxError} from './DocxError';
 
 /** Most paragraphs accepted in a body (opts.maxParagraphs). */
 export const MAX_PARAGRAPHS = 1000000;
@@ -32,6 +44,55 @@ export const maxParagraphs = (opts) =>
 
 const section = (props, blocks, raw) => ({props, blocks, raw});
 
+/** Revision ids seen as ids (ctx.revs) and then added: what is set
+ *  goes to added only (./RevRead uses has, get and set), so a wrapper
+ *  costs the ids it reads, not all the body's. */
+function overlay(ids) {
+  const added = new Map();
+  return {added,
+    has: (k) => added.has(k) || ids.has(k),
+    get: (k) => (added.has(k) ? added.get(k) : ids.get(k)),
+    set(k, v) {
+      added.set(k, v);
+      return this;
+    }};
+}
+
+/** The blocks of TOC wrapper w (./TocSdt) each marked, or null when
+ *  one does not read or the paragraph limit is passed; ctx moves on
+ *  (count, revision ids, table notes) only when they all read. */
+function readWrapped(w, m, ctx) {
+  const notes = [];
+  const c = {...ctx, count: {paras: ctx.count.paras},
+    revs: ctx.revs && overlay(ctx.revs),
+    note: ctx.note && ((why) => notes.push(why))};
+  const W = {name: w.name, attrs: w.attrs, pre: w.pre, post: w.post};
+  const out = [];
+  try {
+    for (const n of w.content) {
+      let b;
+      if (wName(n, m) === 'tbl') b = readTable(n, m, c).table;
+      else {
+        countPara(c);
+        const got = readPara(n, m, {notes: c.notes,
+          comments: c.comments, revs: c.revs});
+        b = got && got.para;
+      }
+      if (!b) return null;
+      out.push(b);
+    }
+  } catch (e) {
+    if (e instanceof DocxError && e.kind === 'paragraphs') return null;
+    throw e;
+  }
+  ctx.count.paras = c.count.paras;
+  if (ctx.revs) for (const [k, v] of c.revs.added) ctx.revs.set(k, v);
+  for (const why of notes) ctx.note(why);
+  W.seq = ++ctx.sdts.n;
+  for (const b of out) b.sdt = W;
+  return out;
+}
+
 /**
  * @returns {{sections: object[], bodySectPr: boolean}} bodySectPr:
  *   whether the body ended with its own w:sectPr
@@ -40,7 +101,8 @@ export function readBody(body, map, opts = {}, part = '') {
   const ctx = {count: {paras: 0}, max: maxParagraphs(opts), part,
     note: opts.tableNote, notes: opts.noteMarks !== false,
     comments: opts.commentMarks !== false,
-    revs: opts.revisionMarks !== false ? new Map() : null};
+    revs: opts.revisionMarks !== false ? new Map() : null,
+    sdts: {n: 0}};
   const m = body.attrs.length ? scope(map, body) : map;
   const kids = body.children.filter(isEl);
   const last = kids.length - 1;
@@ -50,6 +112,12 @@ export function readBody(body, map, opts = {}, part = '') {
   kids.forEach((c, k) => {
     if (final && k === last) return;
     const l = wName(c, m);
+    const w = l === 'sdt' ? tocSdt(c, m) : null;
+    const got0 = w && readWrapped(w, m, ctx);
+    if (got0) {
+      for (const b of got0) blocks.push(b);
+      return;
+    }
     if (l === 'tbl') {
       const t = readTable(c, m, ctx);
       blocks.push(t.table || {type: 'opaque', node: c});

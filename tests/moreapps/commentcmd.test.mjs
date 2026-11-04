@@ -328,6 +328,67 @@ describe('addComment', () => {
       assert.deepEqual(z1.get(n), z0.get(n), n);
   });
 
+  const PPL_ANN = DECL + `<w15:people xmlns:w15="${W15}"><w15:person ` +
+    'w15:author="Ann"><w15:presenceInfo w15:providerId="None" ' +
+    'w15:userId="Ann"/></w15:person></w15:people>';
+  const peopleOnly = () => buildDocx({'word/document.xml':
+    documentXml(p(r('Hello world'))), 'word/people.xml': PPL_ANN},
+  {docRels: [['rP1', MSR + '2011/relationships/people',
+    'people.xml']]});
+
+  it('adding a comment to a file with people.xml and no comments ' +
+    'part writes the author to people.xml', async () => {
+    const {d, t} = await setup(readDocx(await peopleOnly()));
+    assert.equal(partState(d.doc, 'comments'), 'missing');
+    const b = para(d);
+    const out = addComment(d, t, S.select(at(b, 6), at(b, 11)),
+      {text: 'hi', ...BOB});
+    assert.equal(out.id, 0);
+    const {xml, errors} = await saved(d);
+    assert.deepEqual(errors, []);
+    assert.ok(xml('word/comments.xml'), 'the comments part');
+    const ppl = xml('word/people.xml');
+    assert.ok(ppl.includes('w15:author="Ann"'), ppl);
+    assert.ok(ppl.includes('w15:author="Bob"'), ppl);
+    assert.equal(ppl.split('<w15:person ').length, 3, ppl);
+    assert.equal(xml('word/_rels/document.xml.rels')
+      .split('relationships/people"').length, 2, 'one people rel');
+  });
+
+  it('undo of that comment leaves the document bytes unchanged',
+  async () => {
+    const {d, t} = await setup(readDocx(await peopleOnly()));
+    const before = (await saved(d)).z;
+    const parts0 = new Map(d.doc.parts), meta0 = d.doc.meta;
+    const b = para(d);
+    addComment(d, t, S.select(at(b, 6), at(b, 11)),
+      {text: 'hi', ...BOB});
+    assert.ok(d.undo());
+    const after = (await saved(d)).z;
+    assert.deepEqual([...after.keys()].sort(), [...before.keys()].sort());
+    for (const n of before.keys())
+      assert.deepEqual(after.get(n), before.get(n), n);
+    assert.deepEqual([...d.doc.parts.keys()], [...parts0.keys()]);
+    assert.deepEqual(d.doc.meta.commentParts, meta0.commentParts);
+    // redo then undo again: still the same
+    assert.ok(d.redo());
+    assert.ok((await saved(d)).xml('word/people.xml')
+      .includes('w15:author="Bob"'));
+    assert.ok(d.undo());
+    const again = (await saved(d)).z;
+    for (const n of before.keys())
+      assert.deepEqual(again.get(n), before.get(n), n);
+  });
+
+  it('a file with no people.xml still gets none made for a first ' +
+    'comment', async () => {
+    const {d, t, sel} = await world();
+    addComment(d, t, sel, {text: 'Check', ...ANN});
+    const {xml} = await saved(d);
+    assert.equal(xml('word/people.xml'), null);
+    assert.ok(xml('word/comments.xml'));
+  });
+
   it('a Strict document: the Strict relationship type', async () => {
     const doc = readDocx(await buildDocx({'word/document.xml':
       documentXml(p(r('ab')), {ns: STRICT_W_NS, rNs: STRICT_R_NS})},

@@ -783,3 +783,59 @@ describe('RevTrack: ids and hostile input', () => {
         `${small.toFixed(1)} ms, ${big.toFixed(1)} ms`);
     });
 });
+
+describe('Paragraph-mark revisions on split and join', () => {
+  const mk = (...c) => `<w:pPr><w:rPr>${c.join('')}</w:rPr></w:pPr>`;
+  const mpara = (pPr, t) => `<w:p>${pPr}${run(t)}</w:p>`;
+  const markOf = (p) => p.pPr.extra.find((x) => x.name === 'w:rPr');
+  const names = (p) => (markOf(p) ? markOf(p).children
+    .map((c) => c.name) : []);
+  const REVS = ['w:ins', 'w:del', 'w:moveFrom', 'w:moveTo'];
+
+  it('splitBlock does not copy a paragraph-mark ins to the new half',
+    async () => {
+      const d = await docOn(mpara(mk(`<w:ins ${att(7, 'Bo')}/>`),
+        'abcd'), {settings: ''});
+      applyOp(d.doc, {op: 'splitBlock', block: [0, 0], at: 2});
+      assert.ok(names(P(d, 0)).includes('w:ins'));
+      assert.ok(!names(P(d, 1)).some((n) => REVS.includes(n)));
+      assert.notEqual(P(d, 0).pPr, P(d, 1).pPr);
+    });
+
+  it('splitBlock keeps other mark rPr children', async () => {
+    const d = await docOn(mpara(mk(`<w:ins ${att(7, 'Bo')}/>`, '<w:b/>',
+      `<w:rPrChange ${att(8, 'Bo')}><w:rPr/></w:rPrChange>`), 'abcd'),
+    {settings: ''});
+    applyOp(d.doc, {op: 'splitBlock', block: [0, 0], at: 2});
+    assert.deepEqual(names(P(d, 1)), ['w:b', 'w:rPrChange']);
+    assert.deepEqual(names(P(d, 0)),
+      ['w:ins', 'w:b', 'w:rPrChange']);
+  });
+
+  it('splitBlock undo restores the paragraph exactly', async () => {
+    const d = await docOn(mpara(mk(`<w:ins ${att(7, 'Bo')}/>`), 'abcd'),
+      {settings: ''});
+    const before = structuredClone(d.doc.sections);
+    const inv = applyOp(d.doc, {op: 'splitBlock', block: [0, 0],
+      at: 2});
+    applyOp(d.doc, inv);
+    assert.deepEqual(d.doc.sections, before);
+  });
+
+  it("mergeBlock keeps the second paragraph's mark revision", async () => {
+    const d = await docOn(mpara('', 'ab') +
+      mpara(mk(`<w:del ${att(9, 'Bo')}/>`), 'cd'), {settings: ''});
+    const before = structuredClone(d.doc.sections);
+    const inv = applyOp(d.doc, {op: 'mergeBlock', block: [0, 0]});
+    assert.deepEqual(names(P(d, 0)), ['w:del']);
+    applyOp(d.doc, inv);
+    assert.deepEqual(d.doc.sections, before);
+  });
+
+  it("mergeBlock keeps the first's when both have one", async () => {
+    const d = await docOn(mpara(mk(`<w:ins ${att(7, 'Bo')}/>`), 'ab') +
+      mpara(mk(`<w:del ${att(9, 'Bo')}/>`), 'cd'), {settings: ''});
+    applyOp(d.doc, {op: 'mergeBlock', block: [0, 0]});
+    assert.deepEqual(names(P(d, 0)), ['w:ins']);
+  });
+});
