@@ -688,3 +688,15 @@ reader, not changed).
   `colorRef`; `NewDoc` writes theme font attributes (`minorHAnsi`...) in `docDefaults`, not literal Calibri, and
   `ImpStyles` drops them when an importer sets its own font; `RtfStyles` carries a raw theme `rFonts` over.
 
+## Word template file type &A83 (MSWordT, .dotx) — noted by the !Letters templates work (!Letters)
+**Status:** Resolved: documented in docs/apps/Letters.md, "Word templates", and CORE_API.md (HostFS type names).
+
+* `src/core/hostfs/mimemap.js`: `dotx: 0xa83`, so a HostFS file ending `.dotx` gets file type &A83 (`MSWordT`).
+* `tools/misc.mjs` and `assets/filetypes.json`: the name `MSWordT` for &A83 (`filetypes.json` is generated from
+  `misc.mjs`; the one `a83` line is in its sorted place). `tools/moreapps/icon.mjs` adds the `file_a83` / `small_a83`
+  sprites. No other shared code changed: the work is in `tools/moreapps/!Letters` (new `Template`, `TemplateDir`,
+  `TemplateSave`, `TemplateMenu`; `Open`, `DocxRead` (an `opts.onPackage(meta)` callback, before the body is read),
+  `DocSave`, `SaveAsBox`, `SaveState`, `WinMenu`, `!RunImage`) and in `tools/word-open-check` (a template is opened in
+  Word as `check.dotx`).
+* The Templates folder is `Choices:LettersTemplates`, made on first use through the ordinary `vfs.mkdir`; it is not
+  under `Choices:Letters`, which is a file.

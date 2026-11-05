@@ -31,6 +31,16 @@
 //                  a Word document) | 'toocomplex' (an ODT over the
 //                  element budget: never from a .doc); err.format
 //                  the importer's
+//   Templates      a .docx package whose main part is a template's
+//                  (isTemplate, ./Template) opens like an import:
+//                  imported 'template', the Doc made a plain
+//                  document (toDocument), untitled, Save as asked.
+//                  A file of TEMPLATE_TYPE, or opened with
+//                  {template: true}, is one whatever its content
+//                  (a .docx given the type): the same copy.
+//                  A macro-enabled package (.docm/.dotm) throws
+//                  ImportError 'macros' as soon as the package is
+//                  open, before the body is read (readDocx onPackage)
 //   openNotice(leaf, got) -> the notice for what openDoc gave: for
 //                  an import "'leaf' was opened from an ODT file; it
 //                  will be saved as a .docx." (or ".doc file") and
@@ -58,7 +68,8 @@
 //                  other; formatOfType(type) back: null for a type
 //                  !Letters does not open by double-click; 'odt' for
 //                  &A81 and 'doc' for &AE6 (IMPORT_TYPES: opened,
-//                  never saved as)
+//                  never saved as); 'template' for TEMPLATE_TYPE
+//                  (&A83, a Word template, opened untitled)
 //   RtfError       what openDoc throws for an RTF it will not read:
 //                  err.code 'too-big' (more than MAX_RTF_BYTES) or
 //                  'not-rtf' (the reader failed: it read nothing,
@@ -76,6 +87,7 @@ import {readRtf} from './RtfRead';
 import {isRtf} from 'wimplib/RtfLex';
 import {IMPORTER as ODT} from './OdtRead';
 import {IMPORTER as DOC} from './DocRead';
+import {isTemplate, isMacro, toDocument} from './Template';
 
 /** Most paragraphs in a document !Letters opens. */
 export const MAX_PARAGRAPHS = 200000;
@@ -99,6 +111,9 @@ export const FILETYPES = Object.freeze({docx: 0xA7E, rtf: 0xC32});
 /** See the header: the types of the files importers read. */
 export const IMPORT_TYPES = Object.freeze({odt: 0xA81, doc: 0xAE6});
 
+/** See the header: Word templates (.dotx, MSWordT). */
+export const TEMPLATE_TYPE = 0xA83;
+
 /** See the header. */
 export const IMPORTERS = [ODT, DOC];
 
@@ -113,6 +128,7 @@ export function formatOfType(type) {
   if (type === FILETYPES.rtf) return 'rtf';
   if (type === IMPORT_TYPES.odt) return 'odt';
   if (type === IMPORT_TYPES.doc) return 'doc';
+  if (type === TEMPLATE_TYPE) return 'template';
   return null;
 }
 
@@ -138,17 +154,36 @@ export class ImportError extends Error {
 /** Read the file at `path` (a disc pathname) as a .docx. */
 export async function openDocx(vfs, path) {
   const bytes = await vfs.readFile(path);
-  return readDocx(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+  return readDocx(bytes, docxOpts());
 }
 
-/** See the header. */
-export async function openDoc(vfs, path) {
+/** readDocx's options: the macro check runs on the package's
+ *  content types, before the body is read. */
+function docxOpts() {
+  return {maxParagraphs: MAX_PARAGRAPHS, onPackage(meta) {
+    if (isMacro(meta.contentTypes, meta.mainPart)) {
+      throw new ImportError('macros', 'docx');
+    }
+  }};
+}
+
+/** See the header. `opts.template`: open it as a template whatever
+ *  its type and content say (File > New from template); a file of
+ *  TEMPLATE_TYPE is one too. */
+export async function openDoc(vfs, path, opts = {}) {
+  const asTpl = !!opts.template || typeAt(vfs, path) === TEMPLATE_TYPE;
   const bytes = await vfs.readFile(path);
   const imp = bytes instanceof Uint8Array && !isRtf(bytes)
     ? importerOf(bytes) : null;
   if (imp) return imported(imp, bytes);
   if (!(bytes instanceof Uint8Array) || !isRtf(bytes)) {
-    const doc = await readDocx(bytes, {maxParagraphs: MAX_PARAGRAPHS});
+    const doc = await readDocx(bytes, docxOpts());
+    // (a template opens as an untitled copy: ./SaveState fileOf)
+    // (by content, or by the type the file was given)
+    if (asTpl || isTemplate(doc)) {
+      return {doc: toDocument(doc), format: 'docx',
+        imported: 'template', notes: []};
+    }
     return {doc, format: 'docx', notes: []};
   }
   if (bytes.length > MAX_RTF_BYTES) throw new RtfError('too-big');
@@ -210,6 +245,11 @@ function labelOf(format) {
 export function openNotice(leaf, got) {
   const notes = got && got.notes;
   if (!got || !got.imported) return notesNotice(leaf, notes);
+  if (got.imported === 'template') {
+    const head = `'${leaf}' is a template; this is a new document ` +
+      'made from it.';
+    return notesNotice(leaf, notes, head + ' Also: ') || head;
+  }
   const label = labelOf(got.imported);
   const head = `'${leaf}' was opened from ` +
     `${/^[aeiou]/i.test(label) ? 'an' : 'a'} ${label} file; it ` +
@@ -274,12 +314,18 @@ const IMPORT_WHY = {
   'encrypted': 'it is password-protected',
   'not-word': 'it is not a Word document',
   'toocomplex': 'it is too large or complex for !Letters to open',
+  'macros': 'it has macros; !Letters does not open macro-enabled ' +
+    'Word files',
 };
 const NOT_ODT = 'it is not an OpenDocument text file';
 
 /** The error box text for an ImportError (null: not one). */
 function importWhy(err, leaf) {
   if (!err || err.name !== 'ImportError') return null;
+  if (err.code === 'macros') {
+    return `'${leaf}' has macros; !Letters does not open ` +
+      'macro-enabled Word files.';
+  }
   if (err.code === 'bad' && err.format === 'doc') {
     return `'${leaf}' could not be opened: the file is damaged.`;
   }
@@ -313,6 +359,10 @@ export function describe(err, leaf, type) {
     const what = type === IMPORT_TYPES.doc ? IMPORT_WHY['not-word']
       : NOT_ODT;
     return `'${leaf}' could not be opened: ${what}.`;
+  }
+  if (why && /^(not-docx|no-document)$/.test(err.code) &&
+    type === TEMPLATE_TYPE) {
+    return `'${leaf}' could not be opened: it is not a Word template.`;
   }
   if (why && err.kind === 'paragraphs') {
     return `'${leaf}' could not be opened: it has more than ` +

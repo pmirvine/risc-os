@@ -655,6 +655,50 @@ try {
     ok(`a text file dropped on ${on}: exactly one message, 'could not be opened' and why, no window`,
       badOk(drops['badText' + where], /could not be opened: .+/), drops['badText' + where]);
   }
+  // ---------------------------------------------------- templates: Save as template, then File > New from template
+  {
+    const t = await ev(async ([label, text]) => {
+      if (!window.__by('Rich/odt')) {
+        await window.__word().word.open('RAM::RamDisc0.$.Rich/odt');
+        await window.__wait(() => window.__by('Rich/odt'));
+        await window.__frames(2);
+      }
+      const d = window.__by('Rich/odt');
+      const before = { path: d.path, format: d.format, dirty: d.view.dirty, imported: d.imported ?? null };
+      const a = d.saveAsBox(), w = a.win;
+      a.set('format', 'template');
+      w.emit('click', { icon: w.iconByName('button:Continue'), button: 'select' });
+      await window.__frames(3);
+      const b = d.dw.boxes.get("template");
+      const res = { box: !!b?.isOpen, name: b?.filename(), type: b?.filetype };
+      const file = res.name;
+      if (b) b.emit('click', { icon: b.icons[0], button: 'select' });
+      for (let i = 0; i < 200 && !os.vfs.exists(file); i++) await window.__sleep(25);
+      const st = os.vfs.stat(file);
+      res.saved = { type: st?.filetype, size: st?.size };
+      res.same = d.path === before.path && d.format === before.format && d.view.dirty === before.dirty && (d.imported ?? null) === before.imported && !d.closed;
+      const live = () => window.__word().word.docs.filter((q) => !q.closed);
+      const sub = d.win.menu({}).items.find((i) => i.text === 'New from template')?.submenu();
+      res.items = sub?.items.map((i) => i.text);
+      const n0 = live().length;
+      sub?.items.find((i) => i.text === label)?.action();
+      for (let i = 0; i < 200 && live().length === n0; i++) await window.__sleep(25);
+      await window.__frames(3);
+      const nd = live().find((q) => q.imported === 'template');
+      res.opened = nd && { path: nd.path, from: nd.importedFrom, format: nd.format, text: nd.text.join('\n'), count: live().length - n0 };
+      sub?.items.find((i) => i.text === label)?.action();
+      for (let i = 0; i < 200 && live().length < n0 + 2; i++) await window.__sleep(25);
+      res.second = live().length - n0;
+      res.kept = (await os.vfs.readFile(file)).length === st?.size;
+      return res;
+    }, ['Rich', 'Imported heading']);
+    ok('Save as > template > Continue offers a Save box in the Templates folder with the template type', t.box && /^Choices:LettersTemplates\./.test(t.name) && t.type === 0xA83, t);
+    ok('... OK writes a template file of that type; the window is unchanged', t.saved.type === 0xA83 && t.saved.size > 500 && t.same, t);
+    ok('File > New from template lists it, with Open Templates folder', Array.isArray(t.items) && t.items.includes('Rich') && t.items.includes('Open Templates folder'), t.items);
+    ok('picking it opens an untitled document with the text, saved as .docx, the template file kept', !!t.opened && t.opened.path === null && t.opened.format === 'docx'
+      && t.opened.text.includes('Imported heading') && t.opened.count === 1 && t.kept, t);
+    ok('picking it again opens a second window', t.second === 2, t);
+  }
   await same('Drops');
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));

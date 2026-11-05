@@ -71,6 +71,6 @@ describe('!Letters sprites', () => {
       assert.equal(s[n]?.digest, d, n);
     }
     assert.deepEqual(Object.keys(s).filter((n) => !(n in BEFORE)).sort(),
-      ['file_a81', 'small_a81']);
+      ['file_a81', 'file_a83', 'small_a81', 'small_a83']);
   });
 });

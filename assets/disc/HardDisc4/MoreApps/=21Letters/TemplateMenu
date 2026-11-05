@@ -1,0 +1,82 @@
+// TemplateMenu - File > New from template: the Word templates in the
+// user's Templates folder (./TemplateDir), each one a new untitled
+// document made from it.
+//
+//   templateMenu(dw) -> a Menu titled 'New from template' (made each
+//       time File is opened, so the folder is read afresh)
+//       one item per template (its leaf name without '/dotx'; long
+//       or odd names are shortened and cleaned for the menu), choosing
+//       it calls dw.app.openTemplate(path), which opens it as Open
+//       does for a double-click (an untitled copy, the template file
+//       never written over); a failure is reported by the usual open
+//       error box, and the menu is as usable as before
+//       the first 40 only; More... leads to the next 40 (and its own
+//       More...), so no menu is longer than 41 items
+//       more than 200: the last submenu ends with a shaded
+//       '(only the first 200 are shown)'
+//       '(no templates)' shaded, when there are none (or the folder
+//       is missing)
+//       Open Templates folder   (after a dotted line) makes the
+//       folder if need be and shows it in the Filer; shaded when the
+//       desktop gives no way to (os.cli)
+import {Menu, vfs, os, reportError} from 'riscos';
+import {list, ensureDir, templatesDir} from './TemplateDir';
+
+export const CHUNK = 40;
+export const MAX_SHOWN = 48;           // characters of a name shown
+
+/** A file's leaf as menu text. */
+export function labelOf(leaf) {
+  let t = String(leaf).replace(/\/dotx$/i, '')
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, '?').trim();
+  if (!t) t = '?';
+  return t.length > MAX_SHOWN ? t.slice(0, MAX_SHOWN - 3) + '...' : t;
+}
+
+/** See the header. */
+export function templateMenu(dw) {
+  const files = list(vfs);
+  const open = (path) => () => { dw.app.openTemplate(path); };
+  const chunk = (from) => {
+    const part = files.slice(from, from + CHUNK);
+    const items = part.map((f) => ({text: labelOf(f.leaf),
+      action: open(f.path),
+      help: 'Make a new document from this template.'}));
+    if (files.length > from + CHUNK) {
+      items.push({text: 'More...', help: 'More templates.',
+        submenu: () => new Menu('More', chunk(from + CHUNK))});
+    } else if (files.more) {
+      items.push({text: '(only the first 200 are shown)', shaded: true,
+        help: 'The folder holds more templates than the menu lists.'});
+    }
+    return items;
+  };
+  const items = files.length ? chunk(0) : [{text: '(no templates)',
+    shaded: true, help: 'There are no templates yet: Save as ' +
+      'template (File > Save as) makes one.'}];
+  items[items.length - 1].dotted = true;
+  items.push({text: 'Open Templates folder',
+    shaded: () => !(os && os.cli && os.cli.run),
+    action: () => openFolder(),
+    help: 'Show the folder the templates are kept in.'});
+  return new Menu('New from template', items);
+}
+
+const say = (m) => reportError(m, {appName: 'Letters'});
+
+/** Make the folder if need be and show it. */
+function openFolder() {
+  const made = ensureDir(vfs);
+  if (made.error) {
+    say(`The Templates folder could not be made: ${made.error}`);
+    return;
+  }
+  let dir = templatesDir();
+  try { dir = vfs.canonical(dir); } catch (e) { /* as it is */ }
+  try {
+    const r = os.cli.run(`Filer_OpenDir ${dir}`);
+    if (r && r.catch) r.catch((e) => say(e.message));
+  } catch (e) {
+    say(e && e.message ? e.message : String(e));
+  }
+}

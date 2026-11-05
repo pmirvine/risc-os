@@ -302,7 +302,8 @@ describe('the Save as box: the format', () => {
     assert.deepEqual(x.opts.buttons, ['Cancel', 'Continue']);
     const radios = x.opts.rows.flat().filter((c) => c.kind === 'radio');
     assert.deepEqual(radios.map((c) => [c.value, c.text]),
-      [['docx', 'Word document (.docx)'], ['rtf', 'Rich Text (.rtf)']]);
+      [['docx', 'Word document (.docx)'], ['rtf', 'Rich Text (.rtf)'],
+        ['template', 'Word template (.dotx)']]);
     M.close();
     assert.equal(fromMenu(b).get('format'), 'rtf');
   });

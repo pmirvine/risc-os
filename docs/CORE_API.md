@@ -365,7 +365,8 @@ or remembered: `{id, name, kind, state, readonly, startup, remembered}`), `setSt
 desktop starts), `mountRemembered(id)`, `forget(id)`, `serverFolders()`, `mountServerFolder(name)`,
 `supportsPicking()`, `onChange(fn)` → unsubscribe. Dismounting keeps a mount remembered, not mounted at start-up;
 `os.hostfs.hostfs.mounts[i].flush()` resolves when every change has reached the host. Name and type mapping:
-`src/core/hostfs/names.js` (README, "HostFS").
+`src/core/hostfs/names.js` (README, "HostFS"). Extension to file type: `src/core/hostfs/mimemap.js` (a `.dotx` file is &A83, `MSWordT`: names for
+the types are in `assets/filetypes.json`, built from `tools/misc.mjs`).
 
 ## 9. Commands (`cli`)
 ```js

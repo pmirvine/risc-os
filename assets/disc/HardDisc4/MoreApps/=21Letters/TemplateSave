@@ -1,0 +1,73 @@
+// TemplateSave - Save as template: the Save box ./SaveAsBox opens for
+// its third choice. It writes a COPY of the document as a Word
+// template (.dotx, ./Open TEMPLATE_TYPE) and changes nothing in the
+// window: name, path, format, '*' and the Doc stay (as ./CopySave).
+//
+//   templateBox(dw)       the box (made once, kept in dw.boxes:
+//                         ./Boxes); OK onto a file that is there asks
+//                         Replace / Cancel (./Replace); a file open in
+//                         another window is refused (DocSave canWrite)
+//   openTemplateBox(dw, at)   its name set from the document (the
+//                         Templates folder, ./TemplateDir; SaveState
+//                         suggestName 'template': 'Report/dotx'), and
+//                         opened centred for an untitled document, else
+//                         as a menu at at ({x, y}) when given. The
+//                         folder is made first; if that fails the
+//                         usual default folder is offered and the
+//                         reason is said once (an error box)
+import {wimp, vfs, saveAs, reportError} from 'riscos';
+import {suggestName, defaultDir} from './SaveState';
+import {box} from './Boxes';
+import {saveTemplate, templateBytes, canWrite} from './DocSave';
+import {guardOK} from './Replace';
+import {TEMPLATE_TYPE} from './Open';
+import {templatesDir, ensureDir} from './TemplateDir';
+
+const told = new WeakSet();            // apps told the folder failed
+const there = (p) => { try { return vfs.exists(p); } catch (e) {
+  return false; } };
+
+/** See the header. */
+export function templateBox(dw) {
+  return box(dw, 'template', () => {
+    const b = saveAs({task: dw.app.task, title: 'Save as template',
+      filename: nameFor(dw, defaultDir(dw.app.recent)),
+      filetype: TEMPLATE_TYPE, getData: () => templateBytes(dw),
+      save: async (path) => { await saveTemplate(dw, path); }});
+    guardOK(b, dw.app.task, (p) => !!canWrite(dw, p, true));
+    return b;
+  });
+}
+
+/** The name offered: the document's, in dir, with /dotx. */
+function nameFor(dw, dir) {
+  const full = String(dw.leaf || '');
+  const leaf = full.replace(/\/(odt|ott|doc|dot|docx|dotx|rtf)$/i, '');
+  // (a titled document's name has its type; an untitled one has none)
+  // (the name probed for a clash is the one offered: with /dotx)
+  return suggestName({path: null, importedFrom: null, leaf}, dir,
+    there, 'template') + '/dotx';
+}
+
+/** See the header. */
+export function openTemplateBox(dw, at) {
+  if (dw.closed) return;
+  const b = templateBox(dw);
+  if (b.isOpen) {
+    if (b.bringToFront) b.bringToFront();
+    return;
+  }
+  const made = ensureDir(vfs);
+  if (made.error && !told.has(dw.app)) {
+    told.add(dw.app);
+    reportError(`The Templates folder could not be made: ` +
+      `${made.error}. Choose another folder.`, {appName: 'Letters'});
+  }
+  const dir = made.ok ? templatesDir() : defaultDir(dw.app.recent);
+  b.setFilename(nameFor(dw, dir));
+  if (dw.isUntitled || !at) { b.openCentred(); return; }
+  wimp.menus.open(b, Math.round(at.x), Math.round(at.y),
+    {task: dw.app.task});
+  const n = b.icons[1];
+  if (n) wimp.setCaret(b, n, n.text.length);
+}

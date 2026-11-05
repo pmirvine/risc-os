@@ -6,8 +6,10 @@
 // real Word".
 //
 //   node tools/word-open-check.mjs [options] <file-or-dir>...
-//     a directory means every .docx and .rtf under it (sorted); RTF
-//     goes through check.rtf beside check.docx (its own one-time grant)
+//     a directory means every .docx, .dotx and .rtf under it (sorted); RTF
+//     goes through check.rtf beside check.docx (its own one-time grant);
+//     a Word template (a file named .dotx; the name decides,
+//     not the bytes) goes through check.dotx, likewise
 //     --report <file.jsonl>  results appended after every file
 //     --resume               skip files already settled in the report
 //     --limit N  --shuffle-seed N  --timeout S (40)  --only-fail
@@ -35,7 +37,7 @@
 //
 // Each file is copied over $HOME/word-open-check/check.docx in place
 // ($WORD_CHECK_DIR to move it): Word's one-time file-access grant is
-// tied to that file. Only check.docx is ever closed in Word.
+// tied to that file (check.rtf, check.dotx likewise). Only those three are ever closed.
 // Exit: 0 every file OK or SKIPPED (corpus: no REGRESSION), 1
 // otherwise, 2 the run stopped (HUNG, three TIMEOUTs) or a usage error.
 import fs from 'node:fs';
@@ -43,7 +45,7 @@ import path from 'node:path';
 import {
   WORD_APP, AbortRun, makeChecker, listDocs, sameDocs, walk, shuffle, sha256,
   appendReport, readReport, settled, isSettled, probeDocx, checkDir, CHECK_NAME, RTF_NAME,
-  closeLeftovers, wordPids, killWord, hungAction, hungMessage, skipReason, SKIPPED_BY_DESIGN,
+  closeLeftovers, CHECK_NAMES, wordPids, killWord, hungAction, hungMessage, skipReason, SKIPPED_BY_DESIGN,
   emittedKind,
 } from './word-open-check/lib.mjs';
 
@@ -131,24 +133,25 @@ async function start(o) {
   // a document that does not answer is passed over)
   const left = await closeLeftovers();
   if (left && left.closed) {
-    console.log('Closed ' + left.closed + ' ' + CHECK_NAME + ' left open by an earlier run.');
+    console.log('Closed ' + left.closed + ' of ' + CHECK_NAMES.join(' / ') +
+      ' left open by an earlier run.');
   }
   if (left && left.stuck) {
-    // (opening check.docx again would only bring that window forward: every
+    // (opening a check file again would only bring that window forward: every
     // file would read as REFUSED)
-    console.error('A ' + CHECK_NAME + ' is open in Word and will not close: a dialog for ' +
+    console.error('A ' + CHECK_NAMES.join(' / ') + ' is open in Word and will not close: a dialog for ' +
       'it is probably waiting in Word (such as "open read-only?"). Dismiss it, then run ' +
       'again (with --resume). Nothing was checked.');
     process.exit(2);
   }
-  if (!left) console.log('WARNING: Word did not answer the clean-up of ' + CHECK_NAME + '.');
+  if (!left) console.log('WARNING: Word did not answer the clean-up of ' + CHECK_NAMES.join(' / ') + '.');
   const docs = await listDocs();
   if (docs === null) {
     console.error('Word did not answer a list of its documents: is a dialog up in Word?');
     process.exit(2);
   }
-  ctx.before = docs.filter((n) => n !== CHECK_NAME && n !== RTF_NAME);
-  console.log('Word has ' + ctx.before.length + ' document(s) open; only ' + CHECK_NAME +
+  ctx.before = docs.filter((n) => !CHECK_NAMES.includes(n));
+  console.log('Word has ' + ctx.before.length + ' document(s) open; only ' + CHECK_NAMES.join(', ') +
     ' will be opened and closed.');
   ctx.checker = makeChecker({timeout: o.timeout, diagnose: o.diagnose, slowFirst: !running,
     firstTimeout: running ? 120 : LAUNCH_SECS, log: (s) => console.log(s)});
@@ -169,10 +172,10 @@ async function start(o) {
  * Word stops the run; with --kill-hung, when Word had no documents open
  * at the start, Word is killed, launched again and the probe reopened.
  */
-async function checkOne(ctx, bytes, label) {
+async function checkOne(ctx, bytes, label, opts) {
   let r;
   try {
-    r = await ctx.checker.check(bytes, label);
+    r = await ctx.checker.check(bytes, label, opts);
   } catch (e) {
     if (!(e instanceof AbortRun)) throw e;
     if (e.hung) ctx.hung = true;
@@ -207,7 +210,7 @@ async function finish(ctx) {
     return false;
   }
   const left = await closeLeftovers();
-  if (left && left.closed) console.log('Closed ' + left.closed + ' ' + CHECK_NAME +
+  if (left && left.closed) console.log('Closed ' + left.closed + ' of ' + CHECK_NAMES.join(' / ') +
     ' left open in Word.');
   const now = await listDocs();
   if (sameDocs(ctx.before, now)) {
@@ -237,7 +240,9 @@ async function plain(o, idx = null) {
   let stop = null, n = 0;
   for (const f of files) {
     const bytes = fs.readFileSync(f);
-    const sha = sha256(bytes);
+    const tpl = /\.dotx$/i.test(f);
+    // (the name decides the kind: the same bytes as .docx and .dotx differ)
+    const sha = sha256(bytes) + (tpl ? '.dotx' : '');
     let r, resumed = false;
     if (done.has(sha)) {
       r = done.get(sha);
@@ -245,7 +250,7 @@ async function plain(o, idx = null) {
     } else {
       const why = await skipReason(bytes);
       if (why) r = {verdict: 'SKIPPED', seconds: 0, detail: why};
-      else ({r, stop} = await checkOne(ctx, bytes, rel(f)));
+      else ({r, stop} = await checkOne(ctx, bytes, rel(f), {template: tpl}));
       if (!r) break; // the run stopped before this file was opened
       if (o.report) {
         appendReport(o.report, {path: rel(f), sha256: sha, verdict: r.verdict,

@@ -1,0 +1,144 @@
+// Template - Word templates as Docs (pure; no desktop services).
+//
+//   isTemplate(doc)      the main part's content type is a template's
+//   isMacro(ct, main)    the main part is macro-enabled (.docm/.dotm);
+//                        works on meta alone, before the body is read
+//   toDocument(doc)      a copy that writes as a .docx: main type
+//                        document.main+xml, no external attached
+//                        template (relationship or setting)
+//   asTemplate(doc)      a copy that writes as a .dotx
+//
+// Why: DocxWrite keeps the package's own [Content_Types].xml entries,
+// so a Doc read from a .dotx and saved as .docx would keep
+// template.main+xml on its main part, which Word refuses. Both copies
+// are copy-on-write: the input Doc is never changed, and everything
+// not rewritten (sections, styles, parts...) is shared with it.
+//
+// An attachedTemplate with an EXTERNAL target (a path or URL on the
+// author's machine) is dropped with its w:attachedTemplate setting and
+// its r:id: nothing is ever fetched, and Word would look for it. An
+// INTERNAL relationship of that type is kept (a part inside the
+// package is harmless data); only the setting element is removed.
+import {el, serialize} from 'wimplib/Xml';
+import {parseXml} from 'wimplib/Xml';
+import {rootScope, wName, isEl} from './Ns';
+import {parseRels, relKind, relsNameFor} from './Rels';
+import {xmlBytes, relsTree} from './WriteParts';
+
+const WML = 'application/vnd.openxmlformats-officedocument.' +
+  'wordprocessingml.';
+export const DOCUMENT_TYPE = WML + 'document.main+xml';
+export const TEMPLATE_TYPE = WML + 'template.main+xml';
+
+const same = (a, b) => String(a).toLowerCase() ===
+  String(b).toLowerCase();
+
+/** The content type of the main part: its Override, else the Default
+ *  of its extension, else ''. */
+function typeOf(ct, main) {
+  if (!ct || !main) return '';
+  const ov = (ct.overrides || []).find(([p]) =>
+    same(p, '/' + main));
+  if (ov) return ov[1];
+  const dot = main.lastIndexOf('.');
+  const ext = dot >= 0 ? main.slice(dot + 1) : '';
+  const df = (ct.defaults || []).find(([e]) => same(e, ext));
+  return df ? df[1] : '';
+}
+
+export function isTemplate(doc) {
+  const m = doc && doc.meta;
+  return !!m && same(typeOf(m.contentTypes, m.mainPart), TEMPLATE_TYPE);
+}
+
+export function isMacro(contentTypes, mainPart) {
+  return /macroEnabled/i.test(typeOf(contentTypes, mainPart));
+}
+
+/** meta with the main part's type `type`: an Override set or added. */
+function withType(meta, type) {
+  const ct = meta.contentTypes || {defaults: [], overrides: []};
+  const name = '/' + meta.mainPart;
+  const overrides = (ct.overrides || []).map(([p, t]) =>
+    same(p, name) ? [p, type] : [p, t]);
+  if (!overrides.some(([p]) => same(p, name)))
+    overrides.push([name, type]);
+  return {...meta, contentTypes: {...ct, overrides}};
+}
+
+const isAttached = (r) => {
+  const k = relKind(r.type || '');
+  return !!k && k.kind === 'attachedTemplate';
+};
+const isExternal = (r) => r.mode === 'External';
+
+/** The r:id (any prefix) of element c, or undefined. */
+const relId = (c) => {
+  for (const [n, v] of c.attrs || [])
+    if (n.includes(':') && n.slice(n.indexOf(':') + 1) === 'id')
+      return v;
+  return undefined;
+};
+
+/** settings with the attachedTemplate element removed; {root, id}. */
+function dropSetting(root) {
+  if (!root || !Array.isArray(root.children)) return {root};
+  const map = rootScope(root);
+  let id;
+  const children = root.children.filter((c) => {
+    if (!isEl(c) || wName(c, map) !== 'attachedTemplate') return true;
+    if (id === undefined) id = relId(c);
+    return false;
+  });
+  return children.length === root.children.length
+    ? {root} : {root: {...root, children}, id};
+}
+
+/** The relationships without the external attached templates (and,
+ *  when `id` is given, the external one it names: an id is only
+ *  unique within ONE part, so `id` is for the settings part's own
+ *  relationships and never for the main part's); same array when
+ *  nothing goes. */
+function keepRels(rels, id) {
+  const out = rels.filter((r) => !((isAttached(r) || r.id === id) &&
+    isExternal(r)));
+  return out.length === rels.length ? rels : out;
+}
+
+/** parts with the settings part's .rels cleaned: a new Map. */
+function cleanSettingsRels(doc, id) {
+  const sp = doc.meta && doc.meta.settingsPart;
+  const parts = doc.parts;
+  if (!sp || !(parts instanceof Map)) return parts;
+  const name = relsNameFor(sp);
+  const bytes = parts.get(name);
+  if (!bytes) return parts;
+  let list;
+  try {
+    list = parseRels(parseXml(new TextDecoder().decode(bytes)).root);
+  } catch {
+    return parts;
+  }
+  const kept = keepRels(list, id);
+  if (kept === list) return parts;
+  const out = new Map(parts);
+  if (kept.length) out.set(name, xmlBytes(relsTree(kept)));
+  else out.delete(name);
+  return out;
+}
+
+export function toDocument(doc) {
+  const meta = doc.meta && doc.meta.mainPart
+    ? withType(doc.meta, DOCUMENT_TYPE) : doc.meta;
+  const s = dropSetting(doc.rawSettings);
+  const out = {...doc, meta, rawSettings: s.root};
+  if (Array.isArray(doc.rels)) out.rels = keepRels(doc.rels);
+  if (doc.parts) out.parts = cleanSettingsRels(doc, s.id);
+  return out;
+}
+
+export function asTemplate(doc) {
+  const meta = doc.meta && doc.meta.mainPart
+    ? withType(doc.meta, TEMPLATE_TYPE) : doc.meta;
+  return {...doc, meta};
+}

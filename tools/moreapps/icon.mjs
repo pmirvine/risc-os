@@ -249,6 +249,8 @@ export function iconFiles() {
       sprite('file_ae6', docIcon('B')), sprite('small_ae6', docSmall('B')),
       // OpenDocument text (&A81): a green badge with an O
       sprite('file_a81', docIcon('G', letterO)), sprite('small_a81', docSmall('G', letterO)),
+      // Word template (&A83): an orange badge with a W
+      sprite('file_a83', docIcon('O')), sprite('small_a83', docSmall('O')),
       ...barSprites().map(([n, rows]) => sprite(n, rows)),
     ]),
   };

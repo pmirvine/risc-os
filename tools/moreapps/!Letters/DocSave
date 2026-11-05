@@ -29,10 +29,12 @@
 //                  time), else a .docx by ./DocxWrite
 //   idle(dw) -> Promise    settles when the window's saves (those
 //                  asked so far) have ended; saving(dw): any running
-//   canWrite(dw, path) -> null, or why not: path is the file of
-//                  another open document (saving over it is refused),
-//                  or the file an imported document was opened from
-//                  (dw.importedFrom: ./Open IMPORTERS)
+//   canWrite(dw, path, asTemplate) -> null, or why not: path is the
+//                  file of another open document (saving over it is
+//                  refused), or the file an imported document was
+//                  opened from (dw.importedFrom: ./Open IMPORTERS);
+//                  asTemplate: a template's own document may be
+//                  saved as a template over its source
 //   saveBox(dw)  the Save box of Save as (made once, kept in
 //                  dw.boxes: ./Boxes); OK onto another file that is
 //                  there asks Replace / Cancel (./Replace). It saves
@@ -47,6 +49,12 @@
 //                  on it then settles from it), any other's as a menu
 //                  at at ({x, y}: where the Save as box was), else
 //                  centred
+//   saveTemplate(dw, path) -> Promise<path>   a COPY of the document
+//                  as a Word template (.dotx, file type &A83) at path;
+//                  the window (name, path, format, '*', importedFrom)
+//                  and the Doc are untouched, a failed write too:
+//                  canWrite refuses, notSaved tells. ./TemplateSave
+//                  is its Save box (./SaveAsBox's third choice)
 //   boxFormat(dw) -> the format the Save box saves in now
 //   commitComposition(view)  the composing text typed in
 //   notSaved(name, e) -> Error  "'name' could not be saved: why"
@@ -94,7 +102,9 @@ import {wimp, vfs, saveAs, reportError} from 'riscos';
 import {suggestName, defaultDir, leafOf} from './SaveState';
 import {box} from './Boxes';
 import {writeDocx} from './DocxWrite';
-import {fileTypeOf} from './Open';
+import {asTemplate, isMacro} from './Template';
+import {ensureDir, templatesDir} from './TemplateDir';
+import {fileTypeOf, TEMPLATE_TYPE} from './Open';
 import {guardOK, samePath} from './Replace';
 import {askLost, toTell, rtfOf, lostOf, saved, unasked}
   from './LostBox';
@@ -106,11 +116,17 @@ const chosen = new WeakMap();          // dw -> its Save box's format
 const there = (p) => vfs.exists(p);
 
 /** See the header. */
-export function canWrite(dw, path) {
+export function canWrite(dw, path, asTemplate) {
   const from = dw.importedFrom;
-  if (from && dw.app.keyOf(path) === dw.app.keyOf(from)) {
+  // (Save as template over the template the document was made from
+  // is allowed: the guide's way of changing a template; Replace is
+  // asked first, ./TemplateSave)
+  if (asTemplate && dw.imported === 'template') {
+    // (the source is not a window's file: only other windows count)
+  } else if (from && dw.app.keyOf(path) === dw.app.keyOf(from)) {
     return `'${leafOf(from)}' is the file this document was ` +
-      'opened from: save it under another name, as a .docx.';
+      'opened from: save it under another name' +
+      (asTemplate ? '.' : ', as a .docx.');
   }
   const other = dw.app.docs.get(dw.app.keyOf(path));
   if (!other || other === dw) return null;
@@ -205,6 +221,38 @@ async function write1(dw, to, asked, format) {
   rename(dw, full);
   dw.retitle();
   return full;
+}
+
+/** The bytes of dw's document as a .dotx (a copy: the Doc is not
+ *  changed). A macro-enabled package is never written as one. */
+export async function templateBytes(dw) {
+  try {
+    const m = dw.doc.meta;
+    if (m && isMacro(m.contentTypes, m.mainPart)) {
+      throw new Error('a macro-enabled document is not saved as a ' +
+        'template');
+    }
+    return await writeDocx(asTemplate(dw.doc));
+  } catch (e) {
+    throw notSaved(dw.leaf, e);
+  }
+}
+
+/** See the header: a copy as a template; the window is unchanged. */
+export async function saveTemplate(dw, path) {
+  const why = canWrite(dw, path, true);
+  if (why) throw new Error(why);
+  if (!dw.closed) commitComposition(dw.view);
+  const bytes = await templateBytes(dw);
+  const again = canWrite(dw, path, true);
+  if (again) throw new Error(again);
+  try {
+    if (path.toLowerCase().startsWith(templatesDir().toLowerCase() +
+      '.')) ensureDir(vfs);        // (the folder, if it is gone)
+    return vfs.writeFile(path, bytes, {filetype: TEMPLATE_TYPE});
+  } catch (e) {
+    throw notSaved(leafOf(path), e);
+  }
 }
 
 /** dw now saves as format: its Save boxes' file type with it. */

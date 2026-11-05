@@ -53,7 +53,9 @@ describe('ToolbarButtons', () => {
       assert.ok(rows.join('').replace(/\./g, '').length > 10, n);
     }
     const file = iconFiles()['!Sprites'];
-    assert.equal(file.readUInt32LE(0), 8 + list.length);
+    // (the app's two icons, then a large and a small one for each of
+    // the file types &A7E, &AE6, &A81 and &A83: ten, then the buttons)
+    assert.equal(file.readUInt32LE(0), 10 + list.length);
     for (const [n] of list) assert.ok(file.includes(Buffer.from(n)), n);
   });
 

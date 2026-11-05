@@ -32,7 +32,7 @@ for (const [h, n] of Object.entries({
   f75: 'JSON', a66: 'WebP', a64: 'MP4', f79: 'CSS', f81: 'JSScript', f80: 'XML', f74: 'YAML', c32: 'RTF', '69c': 'BMP',
   aad: 'SVG', '132': 'ICO', a91: 'Zip', f89: 'GZip', c46: 'Tar', '16e': 'BZip2', ddc: 'Archive', df6: 'ISOImage',
   '1ad': 'AMPEG', '1a8': 'Vorbis', '1cf': 'FLAC', cb6: 'MOD', bf8: 'MPEG', a63: 'MKV', ae6: 'MSWord', a7e: 'MSWordX',
-  ba6: 'Excel', a7f: 'ExcelX', a80: 'PowerPtX', a81: 'ODT', a82: 'ODS', '102': 'Perl', ce5: 'TeX',
+  ba6: 'Excel', a7f: 'ExcelX', a80: 'PowerPtX', a81: 'ODT', a82: 'ODS', a83: 'MSWordT', '102': 'Perl', ce5: 'TeX',
 })) ft[h] ||= n;
 const sorted = Object.fromEntries(Object.entries(ft).sort(([a], [b]) => b.localeCompare(a)));
 fs.writeFileSync(path.join(ROOT, 'assets/filetypes.json'), JSON.stringify(sorted, null, 1));

@@ -98,7 +98,7 @@ export const safeName = (name) => (String(name || 'doc')
 
 /** A name's stem: trailing digits, hex and separators stripped. */
 export const stemOf = (name) => {
-  let s = safeName(name).replace(/\.docx$/i, '');
+  let s = safeName(name).replace(/\.(docx|dotx)$/i, '');
   for (let k = 0; k < 4; k++) {
     s = s.replace(/[-_.]*(?:[0-9a-f]{6,}|\d+)$/i, '').replace(/[-_.]+$/, '');
   }
@@ -148,11 +148,12 @@ const inside = (dir, root) => {
  * the reason: built broken on purpose), {stem} (the group it is sampled
  * in; default the name's stem), {from} (the bytes it was made from: a
  * round trip of a document built broken on purpose is marked broken too),
- * {env}. -> the file written, or null (off, a repeat, sampled out, over a
+ * {env}, {ext} ('.docx'; '.dotx' for a real template: the checker routes
+ * by the name). -> the file written, or null (off, a repeat, sampled out, over a
  * cap, or an error).
  */
 export function emit(name, bytes, {broken = false, stem: stem0, from = null,
-  env = process.env} = {}) {
+  env = process.env, ext = '.docx'} = {}) {
   try {
     const dir = emitRoot(env);
     if (!dir || !bytes || !bytes.length) return null;
@@ -185,7 +186,7 @@ export function emit(name, bytes, {broken = false, stem: stem0, from = null,
     if (!drop && st.count >= max) return null;
     st.seen.add(hex);
     fs.mkdirSync(dir, {recursive: true});
-    const file = path.join(dir, safeName(label) + '-' + hex + '.docx');
+    const file = path.join(dir, safeName(label) + '-' + hex + ext);
     fs.writeFileSync(file, bytes);
     const site = callerSite();
     const rec = {file: path.basename(file), name: label, test: site.test + ':' + site.line +

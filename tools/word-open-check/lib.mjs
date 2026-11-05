@@ -31,6 +31,10 @@ export const CHECK_NAME = 'check.docx';
 export const MARKER = '.opened-once';
 export const RTF_NAME = 'check.rtf';
 export const RTF_MARKER = '.opened-once-rtf';
+export const DOTX_NAME = 'check.dotx';
+/** The three files only ever opened and closed in Word. */
+export const CHECK_NAMES = [CHECK_NAME, RTF_NAME, DOTX_NAME];
+export const DOTX_MARKER = '.opened-once-dotx';
 export const WORD_APP = '/Applications/Microsoft Word.app';
 export const ABORT_AFTER = 3;
 
@@ -146,7 +150,7 @@ export const CLOSE_SCRIPT = `on run argv
         try
           set c_nm to name of document i
         end try
-        if c_nm is "check.docx" or c_nm is "check.rtf" then
+        if c_nm is "check.docx" or c_nm is "check.rtf" or c_nm is "check.dotx" then
           try
             close document i saving no
             set c_closed to c_closed + 1
@@ -295,7 +299,10 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
   // (RTF: its own fixed file and grant, see the header)
   const kinds = {docx: {file, marker: path.join(dir, MARKER), name: CHECK_NAME,
     warned: false}, rtf: {file: path.join(dir, RTF_NAME),
-    marker: path.join(dir, RTF_MARKER), name: RTF_NAME, warned: false}};
+    marker: path.join(dir, RTF_MARKER), name: RTF_NAME, warned: false},
+  // (a template: Word judges a .dotx only under a .dotx name)
+  dotx: {file: path.join(dir, DOTX_NAME), marker: path.join(dir, DOTX_MARKER),
+    name: DOTX_NAME, warned: false}};
   let timeouts = 0, slow = slowFirst, stall = null;
   const run = async (mode, secs, k = kinds.docx) => classify(await runner(
     OPEN_SCRIPT, k === kinds.docx ? [k.file, secs, mode] :
@@ -306,7 +313,7 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
     file,
     /** The next open waits firstTimeout (Word was relaunched). */
     slowNext() { slow = true; },
-    async check(bytes, label = 'this file') {
+    async check(bytes, label = 'this file', {template = false} = {}) {
       if (stall) {
         // a file timed out last time: is a dialog still up?
         const ps = await pingWord(runner);
@@ -322,7 +329,9 @@ export function makeChecker({runner = osascript, dir = checkDir(), timeout = 40,
           stall = null;
         }
       }
-      const k = isRtfBytes(bytes) ? kinds.rtf : kinds.docx;
+      // (a .dotx by its NAME: a .docx that says template is the bug)
+      const k = isRtfBytes(bytes) ? kinds.rtf :
+        template ? kinds.dotx : kinds.docx;
       const fresh = !fs.existsSync(k.marker);
       if (fresh && !k.warned) {
         k.warned = true;
@@ -500,7 +509,7 @@ export function walk(paths, {exclude = () => false} = {}) {
     if (st.isDirectory()) {
       if (exclude(p)) return;
       for (const n of fs.readdirSync(p).sort()) visit(path.join(p, n));
-    } else if (st.isFile() && /\.(docx|rtf)$/i.test(p) && !path.basename(p).startsWith('~$')) {
+    } else if (st.isFile() && /\.(docx|dotx|rtf)$/i.test(p) && !path.basename(p).startsWith('~$')) {
       if (!exclude(p)) out.add(p);
     }
   };

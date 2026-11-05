@@ -14,7 +14,8 @@ import {
   CLOSE_SCRIPT, closeLeftovers, PING_SCRIPT, pingWord, isSettled, skipReason, hungAction,
   hungMessage, mayKill, killWord, stallMessage, emittedKind, isRtfBytes, HUGE, NOT_ZIP,
   WRITE_PROTECTION, MAIL_MERGE,
-  CHECK_NAME, MARKER, RTF_NAME, RTF_MARKER, WORD_APP, sha256,
+  CHECK_NAME, MARKER, RTF_NAME, RTF_MARKER, DOTX_NAME, DOTX_MARKER, CHECK_NAMES,
+  WORD_APP, sha256,
 } from '../../tools/word-open-check/lib.mjs';
 import {emit, resetEmit, safeName, stemOf, readIndex, DEFAULT_DIR, markBroken}
   from './word-emit.mjs';
@@ -50,7 +51,7 @@ function fakeWord({docs = [], opens = () => true, hang = () => false,
         stderr: ''};
     }
     if (script === CLOSE_SCRIPT) {
-      const ours = (d) => d === CHECK_NAME || d === RTF_NAME;
+      const ours = (d) => d === CHECK_NAME || d === RTF_NAME || d === DOTX_NAME;
       const n = docs.filter(ours).length;
       docs.splice(0, docs.length, ...docs.filter((d) => !ours(d)));
       return {code: 0, killed: false, stdout: 'CLOSED ' + n + ' STUCK 0\n', stderr: ''};
@@ -106,7 +107,7 @@ describe('word-open-check: verdicts from osascript', () => {
     assert.doesNotMatch(all, /\bquit\b|System Events/);
     assert.match(OPEN_SCRIPT, /set c_name to "check.docx"\n/);
     assert.match(OPEN_SCRIPT, /if c_nm is c_name then/);
-    assert.match(CLOSE_SCRIPT, /if c_nm is "check.docx" or c_nm is "check.rtf" then/);
+    assert.match(CLOSE_SCRIPT, /if c_nm is "check.docx" or c_nm is "check.rtf" or c_nm is "check.dotx" then/);
     assert.doesNotMatch(all, /close active document|close res/);
     // every close is of "document i" (an index just checked by name)
     assert.deepEqual([...new Set(all.match(/close \S+ \S+/g))], ['close document i']);
@@ -167,6 +168,30 @@ describe('word-open-check: the checker over a fake Word', () => {
     assert.equal(notes.length, 1);
     assert.match(notes[0], /check\.rtf and Grant Access/);
     assert.deepEqual(w.docs, ['Mine.docx']);
+  });
+  it('a template (told by its name: {template}) goes through check.dotx', async () => {
+    const {writeZip} = await import('../../tools/moreapps/!WimpLib/Zip');
+    const mk = async (ct) => Buffer.from(await writeZip(new Map([['[Content_Types].xml',
+      Buffer.from('<Types><Override PartName="/word/document.xml" ContentType="' + ct +
+        '"/></Types>')]])));
+    const T = await mk('application/vnd.openxmlformats-officedocument.wordprocessingml.template.main+xml');
+    const D = await mk('application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml');
+    assert.deepEqual(CHECK_NAMES, [CHECK_NAME, RTF_NAME, DOTX_NAME]);
+    const dir = tmp();
+    fs.writeFileSync(path.join(dir, MARKER), 'x');
+    const notes = [];
+    const w = fakeWord({docs: ['Mine.docx']});
+    const c = makeChecker({runner: w.runner, dir, timeout: 40, firstTimeout: 120,
+      log: (s) => notes.push(s)});
+    assert.equal((await c.check(T, 'a.dotx', {template: true})).verdict, 'OK');
+    assert.equal((await c.check(T, 'a.dotx', {template: true})).verdict, 'OK');
+    // (the same bytes as a .docx: the bug this branch fixes, not a template)
+    assert.equal((await c.check(T, 'a.docx')).verdict, 'OK');
+    assert.deepEqual(w.calls.map((k) => [path.basename(k.args[0]), k.args[1], k.args[3]]),
+      [[DOTX_NAME, 120, DOTX_NAME], [DOTX_NAME, 40, DOTX_NAME], [CHECK_NAME, 40, undefined]]);
+    assert.ok(fs.existsSync(path.join(dir, DOTX_MARKER)));
+    assert.deepEqual(fs.readFileSync(path.join(dir, DOTX_NAME)), T);
+    assert.match(notes[0], /check\.dotx and Grant Access/);
   });
   it('a check.docx left open is closed first, and said so', async () => {
     const dir = tmp();

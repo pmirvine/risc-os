@@ -65,8 +65,8 @@ try {
     && n1.path === null && n1.untitled && !n1.dirty && n1.open && n1.lines.length === 1 && n1.lines[0] === '', n1);
   ok('its app.docs key is a synthetic untitled:N one', n1.keys.length === 1 && /^untitled:\d+$/.test(n1.keys[0]), n1.keys);
   ok('its Info box names it, and says nothing stale', /Untitled/.test(n1.info) && !/read-only/.test(n1.info), n1.info);
-  ok('window menu: Save, Save as, Revert, Save a copy, Export as PDF..., Print..., Info, Edit, Insert, View, Outline, Format, Design, Table, Tools, Zoom, New, Close',
-    JSON.stringify(n1.items) === '["Save","Save as","Revert","Save a copy","Export as PDF...","Print...","Info","Edit","Insert","View","Outline","Format","Design","Table","Tools","Zoom","New","Close"]', n1.items);
+  ok('window menu: Save, Save as, Revert, Save a copy, Export as PDF..., Print..., Info, Edit, Insert, View, Outline, Format, Design, Table, Tools, Zoom, New, New from template, Close',
+    JSON.stringify(n1.items) === '["Save","Save as","Revert","Save a copy","Export as PDF...","Print...","Info","Edit","Insert","View","Outline","Format","Design","Table","Tools","Zoom","New","New from template","Close"]', n1.items);
 
   const n2 = await ev(async () => {
     const t = window.__word();
@@ -305,6 +305,41 @@ try {
   ok('Save a copy writes a copy and leaves the window as it was', c1.filename === 'RAM::RamDisc0.$.Renamed' && c1.sameBox
     && c1.type === 0xA7E && c1.title === 'Renamed *' && c1.path === 'RAM::RamDisc0.$.Renamed' && c1.dirty
     && !c1.keys.includes('ram::ramdisc0.$.copy') && c1.saveAsName === 'RAM::RamDisc0.$.Renamed' && !c1.msgs.length, c1);
+
+  // ------------------------------------------------ Save as template: a third choice, a copy
+  const t1 = await ev(async () => {
+    const d = window.__by('Renamed');
+    d.view.type('t');
+    window.__msgs.length = 0;
+    const a = d.saveAsBox(), w = a.win;
+    const res = { radios: w.icons.filter((i) => /Word template/.test(i.text || '')).length, def: a.get('format') };
+    a.set('format', 'template');
+    w.emit('click', { icon: w.iconByName('button:Continue'), button: 'select' });
+    await window.__sleep(100);
+    const b = d.dw.boxes.get('template');
+    res.open = !!b?.isOpen;
+    res.name = b?.filename();
+    res.type = b?.filetype;
+    res.plainBox = d.dw.boxes.get('saveas')?.isOpen;
+    b.setFilename('RAM::RamDisc0.$.Tpl/dotx');
+    b.emit('click', { icon: b.icons[0], button: 'select' });
+    for (let i = 0; i < 40 && !os.vfs.exists('RAM::RamDisc0.$.Tpl/dotx'); i++) await window.__sleep(25);
+    await window.__sleep(100);
+    res.fileType = os.vfs.stat('RAM::RamDisc0.$.Tpl/dotx')?.filetype;
+    const bytes = await os.vfs.readFile('RAM::RamDisc0.$.Tpl/dotx');
+    res.zip = bytes[0] === 0x50 && bytes[1] === 0x4b;
+    res.title = d.win.title;
+    res.path = d.path;
+    res.dirty = d.view.dirty;
+    res.format = d.format;
+    res.msgs = [...window.__msgs];
+    return res;
+  });
+  ok('Save as template: a third radio, the window format stays the default; Continue gives a template Save box in the Templates folder (&A83)',
+    t1.def === 'docx' && t1.open && /^Choices:LettersTemplates\.Renamed/.test(t1.name) && t1.type === 0xA83 && !t1.plainBox, t1);
+  ok('... OK writes a copy (&A83, a zip) and the window keeps its name, path, format and star',
+    t1.fileType === 0xA83 && t1.zip && t1.title === 'Renamed *' && t1.path === 'RAM::RamDisc0.$.Renamed' && t1.dirty
+    && t1.format === 'docx' && !t1.msgs.length, t1);
 
   // ------------------------------------------------ drag the Save box's icon to a directory display
   const g0 = await ev(async () => {
