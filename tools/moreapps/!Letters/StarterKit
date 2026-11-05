@@ -1,0 +1,213 @@
+// StarterKit - small, declarative builders for the starter
+// templates (File > New from template > Letters, Careers...).
+//
+// What was chosen: the smallest thing that reads back as a normal
+// Doc. The builders make WordprocessingML nodes (wimplib/Xml el,
+// through ./Wml W) and ./StarterBuild starterDoc puts them in the
+// body, header and footer parts of a ./NewDoc document and reads
+// them with the reader's own functions (readBody, readStory,
+// readStyles, readNumbering), so the Doc has exactly the shape
+// readDocx gives and writing and reading it back gives an equal Doc.
+// Styles are the built-in ones by id (Title, Subtitle, Heading1...,
+// ListParagraph, Header, Footer, TableGrid): starterDoc finds every
+// pStyle / rStyle / tblStyle the nodes use and ensures it exists.
+// Colours are theme references (themeColor, with themeShade /
+// themeTint), never RGB literals.
+//
+//   run(text, {b, i, u, sz, caps, themeColor, themeShade, themeTint,
+//     color}) -> w:r      sz in half-points; u true or a w:u value
+//   tab(o) / br(o)        a tab / line break run (o: run options)
+//   field(instr, result, o) -> [w:r]  a complex field with a result
+//   para(content, {style, align, spacing: {before, after, line,
+//     lineRule}, ind: {left, right, hanging, firstLine}, tabs: [{pos,
+//     val, leader}], border: {top|bottom: {sz, space, themeColor,
+//     themeShade, themeTint}}, shade: {themeFill, themeFillTint},
+//     keepNext, pageBreakBefore, numId}) -> w:p
+//     content: a string, or an array of strings, runs and arrays
+//   table({cols: [twips], rows: [[cell]] (a row may be {cells,
+//     height} for a minimum height in twips), borders: 'none'|'grid'|
+//     'rules', header, indent}) -> w:tbl   cell: a string, or {content:
+//     [para], span, shade: {themeFill, themeFillTint}, align,
+//     borders: {top|bottom|left|right: {sz, themeColor}}, vAlign}
+//   sectionBreak({cols: {num, space}, type}) -> w:p that ENDS a
+//     section. cols are the columns of the section it ends; type is
+//     how THAT section starts ('continuous': on the same page as the
+//     one before; none: a new page). How the section after it starts
+//     is the next break's type, or starterDoc finalType for the last.
+//     Page size and margins are filled in by starterDoc (spec pgMar).
+//   header(content, o) / footer(content, o) -> w:p, style Header /
+//     Footer; footerPageXofY() -> "Page 1 of 3" centred
+//   list(items, kind, {restart: k}) -> [w:p]  kind 'bullet' |
+//     'number'; numbered lists with the same restart k (default 0)
+//     continue one count, so a second list uses restart: 1, a third 2
+//   starterDoc({body, header, footer, styles, pgMar, finalType,
+//     title}) -> Doc
+import {W} from './Wml';
+import {BULLET_ID, NUMBER_ID} from './StarterNum';
+
+export {starterDoc} from './StarterBuild';
+
+const val = (name, v) => v === undefined ? null : W(name, {'w:val': v});
+const flag = (name, on) => on ? W(name) : null;
+
+/** A theme colour reference as attributes of `prefix`. */
+const themeAttrs = (o, p = 'w:') => o.themeColor ? [
+  [p + 'themeColor', o.themeColor],
+  o.themeShade ? [p + 'themeShade', o.themeShade] : null,
+  o.themeTint ? [p + 'themeTint', o.themeTint] : null,
+].filter(Boolean) : [];
+
+/** w:rPr of run options (CT_RPr order), or null. */
+function rPr(o = {}) {
+  const kids = [flag('b', o.b), flag('i', o.i), flag('caps', o.caps),
+    o.themeColor || o.color ? W('color', o.themeColor
+      ? [['w:val', 'auto'], ...themeAttrs(o)]
+      : {'w:val': o.color}) : null,
+    o.sz ? val('sz', o.sz) : null, o.sz ? val('szCs', o.sz) : null,
+    o.u ? val('u', o.u === true ? 'single' : o.u) : null,
+  ].filter(Boolean);
+  return kids.length ? W('rPr', null, kids) : null;
+}
+
+/** See the header. */
+export const run = (text, o) => W('r', null, rPr(o),
+  W('t', {'xml:space': 'preserve'}, text));
+export const tab = (o) => W('r', null, rPr(o), W('tab'));
+export const br = (o) => W('r', null, rPr(o), W('br'));
+
+/** See the header. */
+export function field(instr, result, o) {
+  const ch = (t) => W('r', null, rPr(o),
+    W('fldChar', {'w:fldCharType': t}));
+  return [ch('begin'), W('r', null, rPr(o), W('instrText',
+    {'xml:space': 'preserve'}, ' ' + instr + ' ')), ch('separate'),
+  run(result, o), ch('end')];
+}
+
+/** A border side element. */
+const side = (name, b) => W(name, [['w:val', b.val || 'single'],
+  ['w:sz', b.sz], ['w:space', b.space ?? 0],
+  b.themeColor ? ['w:color', 'auto'] : ['w:color', b.color || 'auto'],
+  ...themeAttrs(b)]);
+
+/** A shading element from {themeFill, themeFillTint}. */
+const shd = (s) => s ? W('shd', [['w:val', 'clear'],
+  ['w:color', 'auto'], ['w:themeFill', s.themeFill],
+  s.themeFillTint ? ['w:themeFillTint', s.themeFillTint] : null,
+  s.themeFillShade ? ['w:themeFillShade', s.themeFillShade] : null,
+].filter(Boolean)) : null;
+
+/** w:pPr of the options (CT_PPr order), or null. */
+function pPr(o) {
+  const b = o.border, sp = o.spacing, ind = o.ind;
+  const kids = [val('pStyle', o.style), flag('keepNext', o.keepNext),
+    flag('pageBreakBefore', o.pageBreakBefore),
+    o.numId ? W('numPr', null, val('ilvl', 0), val('numId', o.numId))
+      : null,
+    b ? W('pBdr', null, b.top ? side('top', b.top) : null,
+      b.bottom ? side('bottom', b.bottom) : null) : null,
+    shd(o.shade),
+    o.tabs ? W('tabs', null, o.tabs.map((t) => W('tab', [
+      ['w:val', t.val], t.leader ? ['w:leader', t.leader] : null,
+      ['w:pos', t.pos]].filter(Boolean)))) : null,
+    sp ? W('spacing', Object.entries({before: sp.before,
+      after: sp.after, line: sp.line, lineRule: sp.lineRule})
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => ['w:' + k, v])) : null,
+    ind ? W('ind', Object.entries({left: ind.left, right: ind.right,
+      hanging: ind.hanging, firstLine: ind.firstLine})
+      .filter(([, v]) => v !== undefined)
+      .map(([k, v]) => ['w:' + k, v])) : null,
+    val('jc', o.align)].filter(Boolean);
+  return kids.length ? W('pPr', null, kids) : null;
+}
+
+/** Strings become runs; arrays are flattened. */
+const runsOf = (c) => Array.isArray(c) ? c.flatMap(runsOf)
+  : typeof c === 'string' ? (c ? [run(c)] : []) : [c];
+
+/** See the header. */
+export const para = (content = [], o = {}) =>
+  W('p', null, pPr(o), runsOf(content));
+
+/** See the header. */
+export const header = (content, o) => para(content,
+  {style: 'Header', ...o});
+export const footer = (content, o) => para(content,
+  {style: 'Footer', ...o});
+
+/** See the header. */
+export const footerPageXofY = () => footer(['Page ',
+  field('PAGE', '1'), ' of ', field('NUMPAGES', '1')],
+{align: 'center'});
+
+/** See the header. */
+export function list(items, kind = 'bullet',
+  {restart = 0, ...o} = {}) {
+  const numId = kind === 'number' ? NUMBER_ID + restart : BULLET_ID;
+  return items.map((it) => para(it, {style: 'ListParagraph', numId,
+    ...o}));
+}
+
+const SIDES = ['top', 'left', 'bottom', 'right'];
+const HAIR = {sz: 4, themeColor: 'text1', themeTint: 'A6'};
+
+/** w:tblBorders for 'grid' / 'rules' / 'none'. */
+function tblBorders(kind) {
+  const none = {val: 'nil', sz: 0};
+  const names = ['top', 'left', 'bottom', 'right', 'insideH',
+    'insideV'];
+  return W('tblBorders', null, names.map((n) => side(n,
+    kind === 'grid' || (kind === 'rules' && /^(top|bottom|insideH)$/
+      .test(n)) ? HAIR : none)));
+}
+
+/** One w:tc. */
+function cell(spec, width) {
+  const c = typeof spec === 'string' ? {content: [spec]} : spec;
+  const body = c.content.length ? c.content : [''];
+  const content = body.map((p) => typeof p === 'string'
+    ? para(p, {spacing: {after: 0}, align: c.align}) : p);
+  const bd = c.borders;
+  return W('tc', null, W('tcPr', null, W('tcW', {'w:w': width,
+    'w:type': 'dxa'}), c.span > 1 ? val('gridSpan', c.span) : null,
+  bd ? W('tcBorders', null, SIDES.filter((s) => bd[s])
+    .map((s) => side(s, bd[s]))) : null, shd(c.shade),
+  c.vAlign ? val('vAlign', c.vAlign) : null), content);
+}
+
+/** See the header. */
+export function table({cols, rows, borders = 'none', header: hdr,
+  indent = 0}) {
+  const total = cols.reduce((a, b) => a + b, 0);
+  const trs = rows.map((row, k) => {
+    const r = Array.isArray(row) ? row : row.cells;
+    const height = Array.isArray(row) ? 0 : row.height;
+    let at = 0;
+    const tcs = r.map((spec) => {
+      const n = (typeof spec === 'object' && spec.span) || 1;
+      const w = cols.slice(at, at + n).reduce((a, b) => a + b, 0);
+      at += n;
+      return cell(spec, w);
+    });
+    return W('tr', null, hdr && k === 0 || height ? W('trPr', null,
+      height ? W('trHeight', {'w:val': height, 'w:hRule': 'atLeast'})
+        : null, hdr && k === 0 ? W('tblHeader') : null) : null, tcs);
+  });
+  return W('tbl', null, W('tblPr', null, val('tblStyle', 'TableGrid'),
+    W('tblW', {'w:w': total, 'w:type': 'dxa'}),
+    indent ? W('tblInd', {'w:w': indent, 'w:type': 'dxa'}) : null,
+    tblBorders(borders), W('tblLayout', {'w:type': 'fixed'}),
+    W('tblLook', {'w:val': '04A0', 'w:firstRow': 1, 'w:lastRow': 0,
+      'w:firstColumn': 1, 'w:lastColumn': 0, 'w:noHBand': 0,
+      'w:noVBand': 1})),
+  W('tblGrid', null, cols.map((c) => W('gridCol', {'w:w': c}))), trs);
+}
+
+/** See the header. */
+export function sectionBreak({cols, type} = {}) {
+  return W('p', null, W('pPr', null, W('sectPr', null,
+    type ? val('type', type) : null,
+    W('cols', cols ? {'w:num': cols.num, 'w:space': cols.space}
+      : {'w:space': 708}))));
+}

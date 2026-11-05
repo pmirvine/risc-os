@@ -261,6 +261,26 @@ describe('a template whatever its content says', () => {
       assert.equal((await openDoc(vfsOf({f: await plainDocx()}),
         'f')).imported, undefined);
     });
+  it('RTF content in a template-typed file is an untitled copy, ' +
+    'never a titled RTF', async () => {
+    const rtf = new TextEncoder().encode(
+      '{\\rtf1\\ansi hello\\par}');
+    const typed = await openDoc(vfsOf({f: rtf}, {f: TEMPLATE_TYPE}),
+      'f');
+    const picked = await openDoc(vfsOf({f: rtf}), 'f',
+      {template: true});
+    for (const got of [typed, picked]) {
+      assert.equal(got.imported, 'template');
+      assert.equal(got.format, 'docx');
+      assert.equal(mainOf(got.doc), DOC);
+      assert.deepEqual(fileOf('f', got.imported),
+        {path: null, imported: 'template', importedFrom: 'f'});
+    }
+    // (an ordinary RTF file is unchanged)
+    const plain = await openDoc(vfsOf({f: rtf}), 'f');
+    assert.equal(plain.format, 'rtf');
+    assert.equal(plain.imported, undefined);
+  });
   it('a template-typed file that is not a package is still refused',
     async () => {
       await assert.rejects(openDoc(vfsOf({f: new Uint8Array([1, 2, 3, 4])},

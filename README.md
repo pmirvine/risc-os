@@ -392,12 +392,12 @@ the rest is not read. Nothing in a file runs and nothing is fetched (`$.Docs.Let
 name, kind and \*) in the Templates folder, `Choices:LettersTemplates` (made on first use; file type &A83 `MSWordT`, `.dotx` on
 HostFS, with its own icon). The window menu's *New from template* (after New) lists that folder (sorted; 40 to a submenu with
 *More...*; *(no templates)*; *(only the first 200 are shown)*) and opens one as a new untitled document; *Open Templates folder*
-shows it in the Filer. Opening a template any other way (double-click, drop, Recent; any file of type &A83, or any Word file whose content says it is a template) does
+shows it in the Filer. After your templates the menu offers 16 built-in **starter templates** in four submenus: *Letters* (Business letter, Personal letter, Cover letter, Memo, Fax cover sheet), *Careers* (CV (simple), CV (two column)), *Reports* (Report, Essay, Project proposal) and *Business* (Invoice, Meeting agenda, Meeting minutes, Press release, Newsletter, Flyer). A starter opens as a new untitled A4 document (not added to Recent; Save as offers a CamelCase name such as `FaxCoverSheet`), built as a normal document with the Office theme and built-in styles, so Design > Fonts and Colours restyle it; every place to fill in is in [square brackets] (Find for `[` steps through them); the Report's contents is a field (Edit > Update all fields); British spelling; Save as > Word template makes one your own. Not yet: other languages and US Letter, pictures, logos and text boxes in the starters, calendars, certificates and labels, previews of templates, hiding or adding starters. Opening a template any other way (double-click, drop, Recent; any file of type &A83, or any Word file whose content says it is a template) does
 the same, a new document each time, with the notice "'Report/dotx' is a template; this is a new document made from it."; Save asks for a name and
 saves a `.docx` (to change a template, Save as > Word template with the same name, then Replace). A template's external attached template is dropped and never
 fetched; macro-enabled files (`.dotm`, `.docm`) are refused ("has macros; !Letters does not open macro-enabled Word files"),
-before the document text is read. Not yet: editing a template in place, updating documents from a changed template, macros, starter
-templates (`$.Docs.Letters`, part 33). To try it: type something, F3, choose *Word template (.dotx)*, Continue, OK; then the
+before the document text is read. Not yet: editing a template in place, updating documents from a changed template, macros
+(`$.Docs.Letters`, part 33). To try it: type something, F3, choose *Word template (.dotx)*, Continue, OK; then the
 window menu's *New from template*.
 
 **Word count:** the Edit menu's last item, *Word count...* (no key), shows the words, characters (with and without spaces),

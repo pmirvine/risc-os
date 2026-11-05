@@ -46,7 +46,9 @@
 //     E3 (corpus/handoff/en3-*: made and updated by !Letters, so
 //     their stored results are ours, not Word's) and of Batch F1
 //     (corpus/handoff/cm-*: made by !Letters, some from corpus
-//     files, which would then be counted twice)
+//     files, which would then be counted twice) and of the starter
+//     templates (corpus/handoff/st5-*: made by !Letters, their
+//     contents tables say "update", not Word's stored results)
 //   resultsOf(doc, story?) -> [{instr, stored}]  every field of the
 //     body (story: that header's or footer's part) with its stored
 //     result as fieldOracle reads it (null: none)
@@ -65,7 +67,7 @@ export const CAPS = {fields: 2000, bytes: 30e6};
 
 /** See the header. */
 export const oracleFiles = () => corpusFiles().filter((f) =>
-  !/(^|[\\/])handoff[\\/](en3|cm)-/.test(f));
+  !/(^|[\\/])handoff[\\/](en3|cm|st5)-/.test(f));
 
 /** Compare two results: white space collapsed, ends trimmed. */
 export const same = (a, b) => norm(a) === norm(b);

@@ -416,6 +416,28 @@ describe('Save as: the third choice', () => {
     assert.equal(a.isUntitled, true);
   });
 
+  it('a starter-made document is offered its CamelCase title; ' +
+    'a taken name is numbered', async () => {
+    const a = windowOf(plainDoc(), null);
+    a.suggestedTitle = 'Fax cover sheet';
+    const d = SAB.saveAsBox(a);
+    d.set('format', 'template');
+    d.press('Continue');
+    await tick();
+    const b = a.boxes.get('template');
+    assert.equal(b.filename(), TPLDIR + '.FaxCoverSheet/dotx');
+    s.files.set(TPLDIR + '.FaxCoverSheet/dotx', new Uint8Array(1));
+    b.close();
+    const d2 = SAB.saveAsBox(a);
+    d2.set('format', 'template');
+    d2.press('Continue');
+    await tick();
+    assert.equal(a.boxes.get('template').filename(),
+      TPLDIR + '.FaxCoverSheet2/dotx');
+    s.files.delete(TPLDIR + '.FaxCoverSheet/dotx');
+    assert.equal(a.isUntitled, true);
+  });
+
   it('an imported document: unchanged, importedFrom kept', async () => {
     const a = windowOf(plainDoc(), null);
     a.importedFrom = DIR + '.Old/odt';

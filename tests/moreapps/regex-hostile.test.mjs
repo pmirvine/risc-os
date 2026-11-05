@@ -92,6 +92,8 @@ const AUDIT = {
   '!Letters/TabStops': [
     ['/^(-?[0-9]+(?:\\.[0-9]+)?)(mm|cm|in|pt|pc|pi)?$/',
       'anchored; a literal . between the digit runs']],
+  '!Letters/SaveState': [['/[^A-Za-z0-9\\u00c0-\\u00ff]+/',
+    'split: one run, no suffix: a match consumes it']],
   '!Letters/TblGeo': [['/[\\s\\uFFFC]+/', 'split: a match consumes it']],
   '!Letters/TocUpdate': [
     ['/\\s+/g', 'one run, no suffix: a match consumes it'],

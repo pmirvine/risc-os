@@ -52,6 +52,7 @@ describe('TemplateMenu', () => {
       const m = templateMenu(mk());
       assert.equal(m.title, 'New from template');
       assert.deepEqual(texts(m), ['(no templates)',
+        'Letters', 'Careers', 'Reports', 'Business',
         'Open Templates folder']);
       assert.equal(val(m.items[0].shaded), true);
       assert.equal(m.items[0].dotted, true);
@@ -60,6 +61,7 @@ describe('TemplateMenu', () => {
   it('a folder that cannot be read is the same as empty', () => {
     s.listFails = true;
     assert.deepEqual(texts(templateMenu(mk())), ['(no templates)',
+      'Letters', 'Careers', 'Reports', 'Business',
       'Open Templates folder']);
   });
 
@@ -70,10 +72,12 @@ describe('TemplateMenu', () => {
         {name: 'Sub', type: 'dir', path: TD + '.Sub'}];
       const m = templateMenu(mk());
       assert.deepEqual(texts(m), ['Letter', 'Memo', 'Report',
+        'Letters', 'Careers', 'Reports', 'Business',
         'Open Templates folder']);
       assert.equal(m.items[0].help,
         'Make a new document from this template.');
-      assert.equal(m.items[2].dotted, true);
+      assert.equal(m.items[2].dotted, true);   // (then the groups)
+      assert.equal(m.items[6].dotted, true);
     });
 
   it('picking opens that path through the app', () => {
@@ -88,7 +92,7 @@ describe('TemplateMenu', () => {
     s.files = Array.from({length: 100}, (_, i) =>
       file(`T${String(i).padStart(3, '0')}/dotx`));
     const m = templateMenu(mk());
-    assert.equal(m.items.length, 42);       // 40, More, folder
+    assert.equal(m.items.length, 46);       // 40, More, 4, folder
     assert.equal(m.items[40].text, 'More...');
     const m2 = m.items[40].submenu();
     assert.equal(m2.items.length, 41);
@@ -105,12 +109,12 @@ describe('TemplateMenu', () => {
       file(`T${String(i).padStart(3, '0')}/dotx`));
     s.files = mkFiles(40);
     const m = templateMenu(mk());
-    assert.equal(m.items.length, 41);       // 40, folder
+    assert.equal(m.items.length, 45);       // 40, 4 groups, folder
     assert.equal(m.items.some((i) => i.text === 'More...'), false);
     assert.equal(m.items[39].text, 'T039');
     s.files = mkFiles(41);
     const m41 = templateMenu(mk());
-    assert.equal(m41.items.length, 42);     // 40, More, folder
+    assert.equal(m41.items.length, 46);     // 40, More, 4, folder
     assert.equal(m41.items[40].text, 'More...');
     const more = m41.items[40].submenu();
     assert.deepEqual(texts(more), ['T040']);
@@ -149,7 +153,7 @@ describe('TemplateMenu', () => {
     assert.equal(labelOf(''), '?');
     s.files = [file(long), file('a\x01b/dotx')];
     const m = templateMenu(mk());
-    assert.equal(m.items.length, 3);
+    assert.equal(m.items.length, 7);      // 2, 4 groups, folder
   });
 
   it('is rebuilt on each opening', () => {

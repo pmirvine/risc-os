@@ -5127,7 +5127,15 @@ never the save target and is never edited in place.
 | `Template` | pure. `isTemplate(doc)` (the main part's content type, Override first, else the Default of its extension), `isMacro(contentTypes, mainPart)` (works on `meta` alone, so it can run before the body is read), `toDocument(doc)` (a copy whose main type is `document.main+xml`, with an external `attachedTemplate` relationship and its `w:attachedTemplate` setting removed; an internal one keeps its relationship and loses only the setting; the settings `.rels` part is dropped if nothing is left), `asTemplate(doc)` (a copy typed `template.main+xml`); `DOCUMENT_TYPE`, `TEMPLATE_TYPE`. Both copies are copy-on-write: the input is never changed. Why they exist: `DocxWrite` keeps the package's own content types, so a Doc read from a `.dotx` and saved as `.docx` would keep the template type, which Word refuses (reproduced by `template-bug.test.mjs`) |
 | `TemplateDir` | the Templates folder. `templatesDir()` is `Choices:LettersTemplates` (not `Choices:Letters.Templates`: `Choices:Letters` is the choices FILE, `WordChoices`, and a folder cannot be made under a file, so that name could never work once any choice was kept); `ensureDir(vfs) -> {ok}` or `{error}` (made on first use, never throws); `list(vfs) -> [{leaf, path}]` the files of type &A83 in it, sorted by leaf (case ignored), the first 200, with a non-enumerable `more` (how many were left out) |
 | `TemplateSave` | the Save box for Save as > Word template: `templateBox(dw)` (a `saveAs` box titled "Save as template", type &A83, cached in `dw.boxes`, OK guarded by `Replace.guardOK` and `canWrite`), `openTemplateBox(dw, at)` (makes the folder first; if that fails the usual default folder is offered and the reason said once; centred for an untitled document, else as a menu at `at`). Writes a COPY with `DocSave.saveTemplate`: name, path, format and `*` of the window are untouched. The name offered is `Report/dotx` (a titled document's stem lost of `/odt /ott /doc /dot /docx /dotx /rtf`; an untitled one keeps its bare name) |
-| `TemplateMenu` | `templateMenu(dw) -> Menu 'New from template'`: one item per template (`/dotx` dropped, control characters shown as `?`, cut at 48 characters), 40 to a menu with `More...` leading to the next 40, a shaded `(only the first 200 are shown)` at the end of the last when `list().more` is set, a shaded `(no templates)` when there are none, then (dotted) `Open Templates folder` (`ensureDir`, then `os.cli.run('Filer_OpenDir ...')`; shaded when there is no `os.cli`). Choosing an item calls `app.openTemplate(path)` |
+| `TemplateMenu` | `templateMenu(dw) -> Menu 'New from template'`: one item per template (`/dotx` dropped, control characters shown as `?`, cut at 48 characters), 40 to a menu with `More...` leading to the next 40, a shaded `(only the first 200 are shown)` at the end of the last when `list().more` is set, a shaded `(no templates)` when there are none, then (dotted) `Open Templates folder` (`ensureDir`, then `os.cli.run('Filer_OpenDir ...')`; shaded when there is no `os.cli`). Choosing an item calls `app.openTemplate(path)`. Between the user's templates and Open Templates folder (each after a dotted separator) come the four starter group submenus, in `STARTERS` order, each item with its `help` and calling `dw.app.openStarter(id)` (guarded: a throw or rejected promise is swallowed); nothing is built when the menu is opened |
+| `StarterKit` | the declarative builders for the starter templates: `run`, `tab`, `br`, `field`, `para`, `list`, `table` (rows may be `{cells, height}`), `sectionBreak`, `header`, `footer`/`footerPageXofY`, and `starterDoc` (re-exported from `StarterBuild`). Nodes are WordprocessingML (`Wml W`); colours are theme references only; a literal tab inside `w:t` is refused (use `tab()`) |
+| `StarterBuild` | `starterDoc({title, body, header, footer, pgMar, titlePg, finalType, stylePPr})`: starts from `newDoc()` (A4, Office theme), fills body, header, footer and numbering with the reader's own functions (`readBody`, `readStory`, `readStyles`, `readNumbering`), so the Doc has the shape `readDocx` gives and round-trips equal; ensures every style the nodes use (`StyleCmd.ensureBuiltin`, unknown id throws); `titlePg` writes `w:titlePg` in the final section; `stylePPr` merges paragraph properties into a style (the essay's Normal spacing); a final table gets an empty Normal paragraph after it (Word needs one; RTF round trip), or with `tailGap: 'tiny'` a one-point one (the two-column CV, to stay on one page; text typed there is clipped) |
+| `StarterNum` | the two starter numberings: bullet = numId 1, number = numId 2, `starterNumbering(n)` adds `n` restart `w:num`s (`startOverride 1`, numId 2+k) |
+| `StarterList` | `STARTERS` (`{id, group, title, help, build}`), `GROUPS` (Letters, Careers, Reports, Business), `starterOf(id)`, `openResult(id)` (`{doc, format: 'docx', imported: 'template', notes: []}`, the shape `openDoc` gives a template), `openChecked(id, say)` (that plus `title`; null after `say(...)` for an unknown id or a build that throws). Nothing is built until a starter is chosen |
+| `StartersLetters`, `StartersLetters2` | `businessLetter`; `personalLetter`, `coverLetter`, `memo`, `faxCover` |
+| `StartersCareers` | `cvSimple`, `cvTwoColumn` (borderless one-row table, shaded left column) |
+| `StartersReports` | `report` (cover without header/footer via `titlePg`, TOC field `TOC \o "1-3" \h \z \u` with a placeholder result that Edit > Update all fields rebuilds), `essay` (double spacing in the Normal style), `proposal` |
+| `StartersBusiness`, `StartersBusiness2` | `invoice`, `agenda`, `minutes`; `pressRelease`, `newsletter` (a two-column middle section), `flyer` |
 
 * `Open`: `TEMPLATE_TYPE` (&A83) and `formatOfType(&A83) === 'template'`, so a double-click, drop or Recent routes like an
   import. `openDoc(vfs, path, {template})` treats a file as a template when `opts.template` is set (`app.openTemplate`), when its file type is &A83 (`typeAt`), or when `isTemplate(doc)` is true (the content type compared without regard to case); a result so recognised becomes `{doc: toDocument(doc), format:
@@ -5146,7 +5154,20 @@ never the save target and is never edited in place.
   `asTemplate(dw.doc)` written (`writeDocx`; a macro-enabled package is never written as one); `saveTemplate(dw, path)` writes it with `{filetype: 0xA83}` after the
   `canWrite` check and notes the file in Recent, and changes nothing else in the window.
 * `!RunImage`: `load` keys any window that opens as a template by a fresh untitled key (so a second double-click, drop or menu pick opens a second window rather than raising the first), and `app.openTemplate(path)` passes `{template: true}` and is not added to Recent. `WinMenu` has `New from
-  template` after New.
+  template` after New (its help says "one of your templates or a starter").
+* Starters (batch word-starters; user guide `$.Docs.Letters`, part 33, "Starter templates"): `app.openStarter(id)` in
+  `!RunImage` calls `openChecked(id, say)` and, if it built, `place(null, 'untitled:N', doc, 'docx', 'template', title)`;
+  never `noteRecent`; a failure in `place` is said and returns null. `place`'s sixth argument becomes
+  `dw.suggestedTitle` (AppWin), and `SaveState.suggested` offers `camel(title)`: `camel(title)` raises each word's first
+  letter and drops everything that is not a letter or digit (`Fax cover sheet` -> `FaxCoverSheet`, `CV (simple)` ->
+  `CVSimple`), numbered when taken, in the default folder; the window starts clean (no `*`). The 16 starters and their
+  ids: Letters `business-letter`, `personal-letter`, `cover-letter`, `memo`, `fax-cover`; Careers `cv-simple`,
+  `cv-two-column`; Reports `report`, `essay`, `proposal`; Business `invoice`, `agenda`, `minutes`, `press-release`,
+  `newsletter`, `flyer`. Placeholders are `[bracketed]`; British spelling; A4. Tests: `starters.test.mjs` (kit and every
+  group, page ranges asserted in layout and PDF export), `starters-all.test.mjs` (all 16 through `openChecked`: edit, undo,
+  write and read back, theme restyle, hygiene), `starteropen.test.mjs`, `templatemenu.test.mjs`; `starter-pages.mjs` is
+  the one table of page ranges (`PAGES`, `rangeText`) shared by the tests and `handoff-starters.mjs` (the hand-off files
+  for real Word: `node tests/moreapps/handoff-starters.mjs`; `WORD_EMIT=1` checks all 16 as `.docx` and `.dotx`).
 * File type &A83: `tools/misc.mjs` (`a83: 'MSWordT'`), `assets/filetypes.json` (one sorted line), `src/core/hostfs/mimemap.js`
   (`dotx: 0xa83`), `!Boot` / `!Run` (`File$Type_A83 MSWordT` and its `Alias$@RunType_` line), sprites `file_a83` (34 x 34)
   and `small_a83` (18 x 18) in `!Sprites` (`tools/moreapps/icon.mjs` `iconFiles`): the document icon with an orange
@@ -5154,7 +5175,7 @@ never the save target and is never edited in place.
   `'odt'`, and they can be saved as a template by Save as.
 * Limits kept: nothing is fetched for an external attached template (it is dropped); macros are refused, never run;
   the folder lists 200 at most. Known gaps: no editing a template in place, no updating documents from a changed
-  template, no starter templates, no template preview in the icon.
+  template, no starters in other languages or for US Letter, no pictures or text boxes in the starters, no template preview in the icon.
 
 ### Testing the templates
 

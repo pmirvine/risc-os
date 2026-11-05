@@ -383,6 +383,36 @@ try {
     g0.open && g1.result === true && g1.type === 0xA7E && g1.title === g1.path?.split('.').pop() && g1.dirty === false
     && /^RAM::RamDisc0\.\$\.Sub\.Untitled\d*$/.test(g1.path ?? '') && g1.box === g1.path && !g1.msgs.length, { g0, g1 });
 
+  // ------------------------------------------------ a starter from the real menu
+  const st = await ev(async () => {
+    const t = window.__word(), live = () => t.word.docs.filter((x) => !x.closed);
+    const d = window.__by('Renamed');
+    const rec0 = JSON.stringify(t.word.recent), n0 = live().length;
+    const grp = window.__item(d, 'New from template').submenu().items.find((i) => i.text === 'Reports');
+    const item = grp.submenu().items.find((i) => i.text === 'Report');
+    window.__msgs.length = 0;
+    item.action();
+    for (let i = 0; i < 200 && live().length === n0; i++) await window.__sleep(25);
+    await window.__frames(3);
+    const nd = live().find((x) => x !== d && x.path === null && /Table of contents|\[/.test(x.text.join('\n')));
+    const res = { count: live().length - n0, path: nd ? nd.path : 'none', text: nd?.text.slice(0, 3), dirty: nd?.view.dirty };
+    if (!nd) return res;
+    nd.view.type('QQ');
+    await window.__frames(2);
+    const typed = nd.view.lines().join('\n').includes('QQ');
+    nd.dw.view.undo();
+    await window.__frames(2);
+    res.typedThenUndone = typed && !nd.view.lines().join('\n').includes('QQ');
+    res.typed = typed;
+    res.box = window.__box(nd, 'Save as').filename();
+    res.recentSame = JSON.stringify(t.word.recent) === rec0;
+    res.msgs = [...window.__msgs];
+    return res;
+  });
+  ok('File > New from template > Reports > Report opens an untitled window with the starter text', st.count === 1 && st.path === null && st.text?.length > 0, st);
+  ok('... typing and undo work on it, nothing is added to Recent', st.typedThenUndone && st.recentSame && !st.msgs.length, st);
+  ok('... its Save as box offers the starter title as the name', /\.Report$/.test(st.box ?? ''), st);
+
   // ------------------------------------------------ the menu's boxes are made once
   const m1 = await ev(async () => {
     const t = window.__word(), M = os.wimp.menus;
