@@ -633,6 +633,7 @@ kept. openCfb reads the header, FAT and directory, and throws for a fault there;
 (`get`, kept after), and one that cannot be read throws its CfbError from `get` alone; `streams` is a Map of every
 readable stream, made on first use. All the chain walks of one file, failed ones too, may take at most 4 steps per
 sector (then `too-big`); a failed stream's error is kept, so asking again costs nothing; `stats.walked` counts them.
+WimpLib's colour popup (`wimplib/Ui/ColourPopup`, desktop; layout in the pure `wimplib/Ui/ColourLayout`: `layout(withTheme)`, `cellAt`) has two options for theme editing in !Letters: `theme: {grid}` adds a labelled "Theme Colours" block of 10 x 6 swatches (`grid` rows of `{rgb, ref, name}`) above the Standard Colours, and `currentRef` outlines the cell with that reference instead of a standard swatch; a theme swatch calls `onPick(rgb, ref)`, every other pick `onPick(value)`. Without `theme` the popup is as it was (236 pixels wide; with it 236 x 332 plus the title bar, which fits a 480-pixel-high screen). docs/apps/Letters.md, "Theme editing".
 WimpLib's synchronous inflater (for the .doc import's compressed metafiles, pure): `wimplib/InflateSync`
 (`inflateSync(bytes, {max, wrapper = 'auto', size})` -> `{data, zlib, adler}`; `InflateError` with `code` 'damaged' or
 'too-big'). DEFLATE (RFC 1951) bare or in a zlib wrapper (RFC 1950; 'auto' takes a valid zlib header as one, 'zlib' or

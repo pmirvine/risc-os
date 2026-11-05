@@ -1,0 +1,119 @@
+// ThemeColorBox - the custom theme colours box (Design > Customize
+// colours..., Format > Theme > Customize colours...): the twelve
+// colours of the document's theme and a name for the scheme. Built by
+// WimpLib Ui/Dialog.
+//
+//   themeColorBox(dw) -> the box's api, one per document (key
+//       'themecolors:<docKey>', dw.boxes 'themecolors': ./CloseDoc
+//       deletes it with the document); asked again while open, the
+//       same box to the front.
+//
+// Each slot (Dark 1 ... Followed hyperlink) is a swatch (click: the
+// colour popup, WimpLib Ui/ColourPopup, Automatic shaded) and a hex
+// field (RRGGBB, # allowed); a pick puts its hex in the field, and a
+// valid hex typed there colours the swatch. Scheme name starts as
+// Custom. It opens filled from ./ThemeDoc colorsOf. OK (or Return):
+// ./ThemeBoxPatch colorsApply, one undo step (none when nothing
+// changed), the box gone, the caret back in the document. A hex that
+// is not six hex digits, or a name with a control character or
+// < > & ", beeps, says so at the foot of the box and keeps it; so
+// does a theme Letters will not change (the reason). If the theme
+// changed while the box was open (an undo), OK fills the box again
+// and keeps it. Cancel, Escape and the close icon change nothing.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {box} from './Boxes';
+import {SLOTS, NAME_MAX, fillColors, colorsApply}
+  from './ThemeBoxPatch';
+
+const HELP = 'Theme colours: the twelve colours of the whole ' +
+  'document, and a name for the scheme.';
+const STALE = 'The theme changed: look, then click OK.';
+const TITLES = ['Dark 1', 'Light 1', 'Dark 2', 'Light 2', 'Accent 1',
+  'Accent 2', 'Accent 3', 'Accent 4', 'Accent 5', 'Accent 6',
+  'Hyperlink', 'Followed link'];
+const HEX = /^#?[0-9A-Fa-f]{6}$/;
+const cell = (k, i) => [
+  {kind: 'colour', name: 'c_' + k, label: TITLES[i], allowAuto: false,
+    help: 'Click to choose this colour from the swatches.'},
+  {kind: 'text', name: 'h_' + k, maxLen: 7, w: 72,
+    help: 'This colour as six hex digits, RRGGBB.'}];
+const rows = () => [
+  ...[0, 1, 2, 3, 4, 5].map((i) => [...cell(SLOTS[i], i),
+    ...cell(SLOTS[i + 6], i + 6)]),
+  {kind: 'text', name: 'name', label: 'Scheme name', maxLen: NAME_MAX,
+    w: 200, help: 'A name for this set of colours.'},
+  {kind: 'label', name: 'msg', text: '', w: 460},
+];
+
+const state = new WeakMap();           // api -> the values filled
+const wired = new WeakSet();
+
+/** See the header. */
+export function themeColorBox(dw) {
+  const api = dialog({task: dw.app.task,
+    key: `themecolors:${dw.docKey}`, title: 'Theme colours',
+    rows: rows(), help: HELP, buttons: ['Cancel', 'OK'], enter: 'OK'});
+  box(dw, 'themecolors', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, dw);
+  refill(api, dw);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the document's theme now. */
+function refill(api, dw) {
+  const was = fillColors(dw.d);
+  for (const k of SLOTS) {
+    api.set('c_' + k, was.slots[k]);
+    api.set('h_' + k, was.slots[k]);
+  }
+  api.set('name', was.name);
+  api.set('msg', '');
+  state.set(api, was);
+}
+
+/** The hex fields' values, and the name, as the box shows them. */
+function valuesOf(api) {
+  const v = {name: api.get('name')};
+  for (const k of SLOTS) v[k] = api.get('h_' + k);
+  return v;
+}
+
+/** Refuse: beep, say why, the caret to the field. */
+function refuse(api, text, field) {
+  wimp.beep();
+  api.set('msg', text);
+  if (field) api.focus(field);
+  return false;
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  api.on('change', ({name, value}) => {
+    const k = name.slice(2);
+    if (name.startsWith('c_') && typeof value === 'string') {
+      api.set('h_' + k, value);
+    } else if (name.startsWith('h_') && HEX.test(String(value))) {
+      api.set('c_' + k, String(value).replace('#', '').toUpperCase());
+    }
+  });
+  api.on('button', ({name}) => {
+    if (name !== 'OK') { dw.view.focus(); return undefined; }
+    const was = state.get(api), now = fillColors(dw.d);
+    if (JSON.stringify(now) !== JSON.stringify(was)) {
+      refill(api, dw);
+      return refuse(api, STALE);
+    }
+    const r = colorsApply(dw.d, valuesOf(api), was);
+    if (r.error) {
+      const f = r.bad[0];
+      return refuse(api, r.error, f === 'name' ? f : 'h_' + f);
+    }
+    if (r.refused) return refuse(api, r.refused);
+    dw.view.focus();
+    return undefined;
+  });
+}

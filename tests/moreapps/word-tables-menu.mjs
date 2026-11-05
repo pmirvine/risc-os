@@ -1,5 +1,5 @@
 // !Letters' Insert > Table and the Table menu in the real desktop (Batch C4.4, D27, D30; real menu clicks, real keys,
-// pixels). The window menu has Table after Format; its items (Insert table..., Insert >, Delete >, Select >, Merge
+// pixels). The window menu has Table after Format and Design; its items (Insert table..., Insert >, Delete >, Select >, Merge
 // cells, Split cells..., Split table, Distribute rows evenly, Distribute columns evenly, Tab) with Ctrl+Shift+Enter and
 // Ctrl+Tab shown, every one but Insert table... shaded with the caret outside a table, Merge cells also with the caret in
 // one cell and live with cells selected; Insert has Table... and Tab (shaded outside a cell). Insert > Table... (and
@@ -181,9 +181,9 @@ try {
   const sub0 = await ev(() => os.wimp.menus.levels[1].menu.items.find((i) => i.text === 'Insert').submenu().items
     .map((i) => [String(i.text), !!(typeof i.shaded === 'function' ? i.shaded() : i.shaded)]));
   await closeMenu();
-  ok('the window menu has Table after Format; its items in order, Insert table... live, all the others shaded outside a '
+  ok('the window menu has Table after Format and Design; its items in order, Insert table... live, all the others shaded outside a '
     + 'table; Split table shows Ctrl+Shift+Enter, Tab Ctrl+Tab',
-  same(top.slice(8, 15), ['Insert', 'View', 'Outline', 'Format', 'Table', 'Tools', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
+  same(top.slice(8, 16), ['Insert', 'View', 'Outline', 'Format', 'Design', 'Table', 'Tools', 'Zoom']) && same(tm0.map((x) => x[0]), SHOWN)
     && same(tm0.map((x) => x[1]), SHOWN.map((t) => t !== 'Insert table...'))
     && tm0.find((x) => x[0] === 'Split table')[2] === 'Ctrl+Shift+Enter' && tm0.find((x) => x[0] === 'Tab')[2] === 'Ctrl+Tab'
     && same(sub0.map((x) => x[0]), ['Rows above', 'Rows below', 'Columns to the left', 'Columns to the right'])

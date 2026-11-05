@@ -112,6 +112,9 @@ function effOf(styles, para, ch) {
   if ('family' in ch.ov) {
     r.rFonts = {...inh.rFonts, ascii: ch.ov.family,
       hAnsi: ch.ov.family};
+    // (a named font replaces the theme font a style or the document
+    // defaults give for these slots)
+    r.extra = (r.extra || []).filter((n) => n.name !== 'w:rFonts');
   }
   const look = refLook(para, r);
   return {bold: look.bold, italic: r.i === true,

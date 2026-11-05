@@ -41,6 +41,7 @@ import {FLAG_WORDS, BOOLS, TAB_KINDS, LEADERS, SIDE_WORDS,
   BORDER_STYLES} from './RtfPara';
 import {paraLayers} from './Styles';
 import {fontName} from './Fmt';
+import {colorOf} from './ThemeRead';
 
 const MAX_TW = 31680;
 
@@ -117,13 +118,25 @@ function shadeOf(s) {
   return hex(s.fill);
 }
 
-/** The colour of an rPr: its field, else the w:val of a w:color kept
- *  raw (a theme colour: Word writes the colour it shows there). */
-function colourOf(r) {
+/** Whether two 'RRGGBB' differ by at most 2 in each channel. */
+const near = (x, y) => [0, 2, 4].every((i) => Math.abs(parseInt(
+  x.slice(i, i + 2), 16) - parseInt(y.slice(i, i + 2), 16)) <= 2);
+
+/** The colour of an rPr: its field, else a w:color kept raw. A theme
+ *  colour is resolved in `theme` (the document's: it may have been
+ *  edited since); its w:val (what Word showed) when that is the same
+ *  colour but for Word's own rounding, or names no theme colour. */
+function colourOf(r, theme) {
   if (r.color !== undefined) return hex(r.color);
   let v;
   for (const n of Array.isArray(r.extra) ? r.extra : []) {
-    if (isNode(n) && n.name === 'w:color') v = hex(valAttr(n));
+    if (!isNode(n) || n.name !== 'w:color') continue;
+    const a = Object.fromEntries((n.attrs || []).filter(Array.isArray)
+      .map(([k, x]) => [String(k).split(':').pop(), x]));
+    const val = hex(valAttr(n));
+    const res = typeof a.themeColor === 'string'
+      ? hex(colorOf(theme, {...a, color: a.val})) : undefined;
+    v = !res || (val && near(val, res)) ? val : res;
   }
   return v;
 }
@@ -155,7 +168,7 @@ export function charWords(w, r, opts = {}) {
   const sz = twips(r.sz, 2, 3276);
   if (sz !== undefined) s += '\\fs' + sz;
   else if (!all) s += '\\fs' + defaultSz(w);
-  const c = colourOf(r);
+  const c = colourOf(r, w.theme);
   if (c) s += '\\cf' + w.colour(c);
   else if (all && r.color === 'auto') s += '\\cf0';
   const hl = HL_HEX.get(r.highlight);

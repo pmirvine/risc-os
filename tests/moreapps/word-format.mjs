@@ -387,7 +387,7 @@ try {
   const top = await levelItems(0);
   await pick(0, 'Format', { hover: true });
   const fm = await levelItems(1);
-  ok('the window menu: Save, Save as, Revert, Save a copy, Export as PDF..., Print..., Info, Edit, Insert, View, Outline, Format, Table, Tools, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Export as PDF...', 'Print...', 'Info', 'Edit', 'Insert', 'View', 'Outline', 'Format', 'Table', 'Tools', 'Zoom', 'New', 'Close']), top);
+  ok('the window menu: Save, Save as, Revert, Save a copy, Export as PDF..., Print..., Info, Edit, Insert, View, Outline, Format, Table, Tools, Zoom, New, Close', same(top?.map((x) => x[0]), ['Save', 'Save as', 'Revert', 'Save a copy', 'Export as PDF...', 'Print...', 'Info', 'Edit', 'Insert', 'View', 'Outline', 'Format', 'Design', 'Table', 'Tools', 'Zoom', 'New', 'Close']), top);
   const tick = (list, t) => list?.find((x) => x[0] === t)?.[1];
   ok('the Format menu opens; Bold is ticked in a bold selection, Italic not', fm && tick(fm, 'Bold') === true && tick(fm, 'Italic') === false
     && ['Bold', 'Italic', 'Underline', 'Strikethrough', 'Superscript', 'Subscript', 'Font', 'Size', 'Colour', 'Highlight', 'Align', 'Indent',
@@ -484,6 +484,67 @@ try {
   ok('... 7030a0 + Return there colours the selection; the menus close; the caret is the document\'s', mc2.runs[0][1].color === '7030A0'
     && !(await ev(() => os.wimp.menus.isOpen)) && mcs.caret && mcs.focused, { mc2, mcs });
 
+  // the theme block of More colours...: a theme swatch writes a theme colour (accent 1, darker 25%: column 4, row 4)
+  {
+    const themed = () => ev(() => {
+      const b = window.__doc('Keys').doc.sections[0].blocks[5];
+      const n = b.runs[0].rPr.extra?.find((x) => String(x.name).endsWith('color'));
+      const a = {};
+      for (const [k, v] of n?.attrs || []) a[k.split(':').pop()] = v;
+      return { color: b.runs[0].rPr.color ?? null, a };
+    });
+    await ev(() => window.__sel(5, 0, 5, 5));
+    await menuAt(5);
+    await pick(0, 'Format', { hover: true });
+    await pick(1, 'Colour', { hover: true });
+    await pick(2, 'More colours', { hover: true });
+    const geo = await ev(() => { const w = os.wimp.menus.levels[3]?.win; return w ? { h: w.h, sh: os.wimp.height } : null; });
+    const at = await ev(() => { const w = os.wimp.menus.levels[3].win, s = w.workToScreen(8 + 4 * 22 + 11, 24 + 4 * 22 + 11), rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale; return { x: rc.left + s.x * k, y: rc.top + s.y * k }; });
+    const d0 = (await ks()).depth;
+    await page.mouse.click(at.x, at.y);
+    await settle();
+    const t1 = await themed(), mk = await ks();
+    ok('More colours has a Theme Colours block and fits the screen', geo && geo.h > 300 && geo.h + 22 <= geo.sh, geo);
+    ok('... clicking a theme swatch writes the theme colour (accent1, shade BF); the menus close', t1.a.themeColor === 'accent1' && t1.a.themeShade === 'BF'
+      && !(await ev(() => os.wimp.menus.isOpen)) && mk.depth === d0 + 1, { t1, mk });
+    await press('Control+z');
+    await settle();
+    const t2 = await themed();
+    ok('... undo takes the theme colour away', t2.a.themeColor === undefined, t2);
+  }
+
+  // ---------------------------------------------------- Design menu and Format > Theme
+  {
+    const acc = () => ev(() => window.__doc('Keys').d.doc.styles.theme?.colors.get('accent1') ?? 'none');
+    const a0 = await acc(), d0 = (await ks()).depth;
+    await ev(() => window.__sel(4, 0, 4, 4));
+    await menuAt(4);
+    await pick(0, 'Design', { hover: true });
+    const dt = await levelItems(1);
+    await pick(1, 'Colours', { hover: true });
+    const dc = await levelItems(2);
+    await closeMenus();
+    await menuAt(4);
+    await pick(0, 'Format', { hover: true });
+    await pick(1, 'Theme', { hover: true });
+    const ft = await levelItems(2);
+    await closeMenus();
+    ok('Design lists Fonts, Colours, Customize fonts..., Customize colours..., Reset to Office theme; Format > Theme the same',
+      same(dt?.map((x) => x[0]), ['Fonts', 'Colours', 'Customize fonts...', 'Customize colours...', 'Reset to Office theme'])
+      && same(ft?.map((x) => x[0]), dt?.map((x) => x[0])), { dt, ft });
+    ok('... Colours has 23 schemes, one ticked', dc?.length === 23 && dc.filter((x) => x[1]).length === 1, dc);
+    await menuAt(4);
+    await pick(0, 'Design', { hover: true });
+    await pick(1, 'Colours', { hover: true });
+    await pick(2, 'Paper');
+    await settle();
+    const a1 = await acc();
+    ok('Design > Colours > Paper changes the accent 1 theme colour (one undo step)', a1 === 'A5B592' && a1 !== a0 && (await ks()).depth === d0 + 1, { a0, a1 });
+    await press('Control+z');
+    await settle();
+    ok('... undo restores it', (await acc()) === a0, await acc());
+  }
+
   // ---------------------------------------------------- a saved copy reads back the same
   {
     const bytes = await ev(async () => Array.from(await window.__doc('Keys').saveBytes()));
@@ -526,6 +587,102 @@ try {
     ok('5000 paragraphs selected: each format command < 1 s, one undo step each', big.n === 5000 && Object.values(big.times).every((t) => t < 1000)
       && big.depth === 4, big);
     ok('... undo of the clear < 1 s restores the size; centred everywhere', big.undo < 1000 && big.bigger === 24 && big.centred, big);
+  }
+
+  // ---------------------------------------------------- the custom theme boxes
+  {
+    const open = (item) => ev(async (item) => {
+      const dw = window.__doc('Keys').dw;
+      const sub = dw.win.menu({}).items.find((i) => i.text === 'Design').submenu();
+      sub.items.find((i) => i.text === item).action();
+      await window.__frames(3);
+    }, item);
+    /** Screen position of the middle of icon name in a box. */
+    const where = (key, name) => ev(([key, n]) => {
+      const w = window.__doc('Keys').dw.boxes.get(key);
+      const bb = w.iconByName(n).bbox;
+      const sc = w.workToScreen((bb.x0 + bb.x1) / 2, (bb.y0 + bb.y1) / 2);
+      const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
+      return { x: rc.left + sc.x * k, y: rc.top + sc.y * k };
+    }, [key, name]);
+    const press = async (key, name) => {
+      const c = await where(key, 'button:' + name);
+      await page.mouse.click(c.x, c.y);
+      await settle();
+    };
+    /** Put text in a writable field (as the Dialog's set does; the typing of keys is the Dialog's own test). */
+    const set = (key, name, text) => ev(([key, n, t]) => { window.__doc('Keys').dw.boxes.get(key).iconByName(n).setText(t); }, [key, name, text]);
+    const text = (key, name) => ev(([key, n]) => window.__doc('Keys').dw.boxes.get(key)?.iconByName(n)?.text, [key, name]);
+    const th = () => ev(() => {
+      const d = window.__doc('Keys').dw.d, t = d.doc.styles.theme;
+      return { major: t.major, minor: t.minor, accent1: t.colors.get('accent1') };
+    });
+    const msg = async (key) => ({ open: await ev((key) => !!window.__doc('Keys').dw.boxes.get(key)?.isOpen, key), msg: await text(key, 'msg') });
+    await open('Reset to Office theme');       // (the file has no theme part: this adds one)
+    const t0 = await th();
+    // text coloured accent1 follows the theme
+    await ev(() => {
+      window.__sel(5, 0, 5, 6); window.__doc('Keys').view.format('color', '7030A0');
+      window.__sel(4, 0, 4, 10); window.__doc('Keys').view.format('themeColor', { themeColor: 'accent1' });
+    });
+    /** The resolved colour of the themed run (paragraph 4) and of the literal one (paragraph 5). */
+    const cols = () => ev(() => {
+      const v = window.__doc('Keys').view, out = {};
+      window.__sel(4, 0, 4, 10); out.themed = v.query().color;
+      window.__sel(5, 0, 5, 6); out.literal = v.query().color;
+      return out;
+    });
+    const c0 = await cols();
+    ok('the themed run resolves to accent1; the literal run to its own RGB', c0.themed === t0.accent1 && c0.literal === '7030A0', { c0, t0 });
+    const k1 = (await ks()).depth;
+    // Cancel changes nothing
+    await open('Customize colours...');
+    ok('Design > Customize colours... opens the box, filled with the accent1 now', (await msg('themecolors')).open
+      && (await text('themecolors', 'h_accent1')) === t0.accent1 && (await text('themecolors', 'name')) === 'Custom', t0);
+    await set('themecolors', 'h_accent1', '123456');
+    await press('themecolors', 'Cancel');
+    ok('Cancel in the colours box changes nothing (no undo step)', same(await th(), t0) && (await ks()).depth === k1, await th());
+    // an invalid hex keeps the box open with a message
+    await open('Customize colours...');
+    await set('themecolors', 'h_accent1', '12345');
+    await press('themecolors', 'OK');
+    const bad = await msg('themecolors');
+    ok('an invalid hex keeps the colours box open with a message, changing nothing', bad.open && /hex/i.test(bad.msg)
+      && (await th()).accent1 === t0.accent1 && (await ks()).depth === k1, bad);
+    // OK with unchanged values: no undo step, box closes
+    await set('themecolors', 'h_accent1', t0.accent1);
+    await press('themecolors', 'OK');
+    ok('OK with nothing changed closes the box and records no undo step', !(await msg('themecolors')).open
+      && (await ks()).depth === k1 && same(await th(), t0), await th());
+    // a change: accent1 -> 123456, one undo step, the themed text follows, undo restores
+    await open('Customize colours...');
+    await set('themecolors', 'h_accent1', '#123456');
+    await press('themecolors', 'OK');
+    const t1 = await th();
+    ok('OK applies accent1 123456 as one undo step', t1.accent1 === '123456'
+      && (await ks()).depth === k1 + 1, { t1, k1, k: (await ks()).depth });
+    const c1 = await cols();
+    ok('after OK the themed run resolves to the new accent1; the literal run is unchanged', c1.themed === '123456' && c1.literal === '7030A0', c1);
+    await ev(() => { const d = window.__doc('Keys').dw.d; d.undo(); });
+    const c2 = await cols();
+    ok('undo puts accent1 back, and the runs resolve as before', (await th()).accent1 === t0.accent1 && c2.themed === t0.accent1 && c2.literal === '7030A0', { c2, t0 });
+    // fonts box: invalid, Cancel, then OK
+    await open('Customize fonts...');
+    await set('themefonts', 'major', '');
+    await press('themefonts', 'OK');
+    const fb = await msg('themefonts');
+    ok('an empty font name keeps the fonts box open with a message; nothing changes', fb.open && fb.msg.length > 0
+      && (await th()).major === t0.major, fb);
+    await set('themefonts', 'major', 'Garamond');
+    await press('themefonts', 'Cancel');
+    ok('Cancel in the fonts box changes nothing', (await th()).major === t0.major && !(await msg('themefonts')).open, await th());
+    await open('Customize fonts...');
+    const kf = (await ks()).depth;
+    await set('themefonts', 'major', 'Garamond');
+    await press('themefonts', 'OK');
+    ok('OK sets the heading font (one undo step)', (await th()).major === 'Garamond' && (await ks()).depth === kf + 1, await th());
+    await ev(() => { window.__doc('Keys').dw.d.undo(); });
+    ok('... undo restores it', same(await th(), t0) || (await th()).major === t0.major, await th());
   }
 
   // ---------------------------------------------------- no leaks over open/close

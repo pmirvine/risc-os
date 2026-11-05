@@ -1,0 +1,79 @@
+// StyleFonts - the fonts of a run's layers, replaced slot by slot.
+// A font is four slots (ascii, hAnsi, eastAsia, cs), each named by a
+// typed rFonts field (ascii...) or by a raw w:rFonts attribute that
+// is either literal (w:ascii...) or a theme one (w:asciiTheme,
+// w:cstheme...). A later layer replaces only the slots it names, in
+// either form; the other slots of the layer below stay. Pure.
+//
+//   clearFonts(out, rPr)  remove from the merged rPr `out` the slots
+//       that rPr names (before rPr is merged over it)
+//   mergeRun(dst, src)    mergeInto for rPr layers (dst, then src over
+//       it): clearFonts, mergeInto, joinFonts. Every merge of run
+//       layers uses it, so a typed font over a theme one wins
+//   joinFonts(out)        the raw w:rFonts elements of `out` as one
+//       (later attributes win), after rPr was merged
+import {mergeInto} from './StylesMerge';
+
+const SLOT = {ascii: 'ascii', asciiTheme: 'ascii', hAnsi: 'hAnsi',
+  hAnsiTheme: 'hAnsi', eastAsia: 'eastAsia',
+  eastAsiaTheme: 'eastAsia', cs: 'cs', cstheme: 'cs'};
+const local = (k) => String(k).split(':').pop();
+const isRaw = (n) => !!n && typeof n === 'object' &&
+  (n.name === 'w:rFonts' || n.name === 'rFonts');
+
+/** The slots rPr names, typed or raw. */
+function slotsOf(rPr) {
+  const s = new Set();
+  const f = rPr && rPr.rFonts;
+  if (f && typeof f === 'object') {
+    for (const k of Object.keys(f)) if (SLOT[k] && f[k]) s.add(SLOT[k]);
+  }
+  for (const n of (rPr && Array.isArray(rPr.extra) ? rPr.extra : [])) {
+    if (!isRaw(n)) continue;
+    for (const [k] of n.attrs || []) if (SLOT[local(k)]) {
+      s.add(SLOT[local(k)]);
+    }
+  }
+  return s;
+}
+
+/** See the header. */
+export function clearFonts(out, rPr) {
+  const s = slotsOf(rPr);
+  if (!s.size) return;
+  if (out.rFonts && typeof out.rFonts === 'object') {
+    for (const k of Object.keys(out.rFonts)) {
+      if (s.has(SLOT[k])) delete out.rFonts[k];
+    }
+    if (!Object.keys(out.rFonts).length) delete out.rFonts;
+  }
+  if (!Array.isArray(out.extra)) return;
+  out.extra = out.extra.flatMap((n) => {
+    if (!isRaw(n)) return [n];
+    const attrs = (n.attrs || []).filter(([k]) =>
+      !s.has(SLOT[local(k)]));
+    return attrs.length ? [{...n, attrs}] : [];
+  });
+}
+
+/** See the header. */
+export function joinFonts(out) {
+  if (!Array.isArray(out.extra) ||
+      out.extra.filter(isRaw).length < 2) return;
+  const at = out.extra.findIndex(isRaw);
+  const attrs = new Map();
+  for (const n of out.extra.filter(isRaw)) {
+    for (const [k, v] of n.attrs || []) attrs.set(local(k), [k, v]);
+  }
+  const first = out.extra[at];
+  out.extra = out.extra.filter((n, i) => i === at || !isRaw(n));
+  out.extra[at] = {...first, attrs: [...attrs.values()]};
+}
+
+/** See the header. */
+export function mergeRun(dst, src) {
+  clearFonts(dst, src);
+  mergeInto(dst, src);
+  joinFonts(dst);
+  return dst;
+}

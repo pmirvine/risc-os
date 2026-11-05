@@ -11,6 +11,11 @@ import {THEME_XML, themeBytes}
 import {buildDocx, documentXml, stylesXml, p, r}
   from './build-docx.mjs';
 import {emit} from './word-emit.mjs';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {newPara} from '../../tools/moreapps/!Letters/Model';
+import {resolveRun} from '../../tools/moreapps/!Letters/Styles';
+import {fontName} from '../../tools/moreapps/!Letters/Fmt';
+import * as TD from '../../tools/moreapps/!Letters/ThemeDoc';
 
 const DATE = new Date('2026-01-02T03:04:05Z');
 const PART = 'word/theme/theme1.xml';
@@ -57,10 +62,35 @@ describe('NewDoc theme', () => {
   it('the body font still resolves to Calibri 11 pt', () => {
     const d = newDoc({date: DATE});
     const dd = d.styles.docDefaults.rPr;
-    assert.equal(dd.rFonts.ascii, 'Calibri');
+    // (the theme's body font, as Word's own new documents: a font
+    // pair changes the body text)
+    assert.equal(dd.rFonts, undefined);
+    const raw = dd.extra.find((n) => n.name === 'w:rFonts');
+    assert.deepEqual(Object.fromEntries(raw.attrs), {
+      'w:asciiTheme': 'minorHAnsi', 'w:eastAsiaTheme': 'minorEastAsia',
+      'w:hAnsiTheme': 'minorHAnsi', 'w:cstheme': 'minorBidi'});
     assert.equal(dd.sz, 22);
     assert.equal(fontOf(d.styles.theme, {asciiTheme: 'minorHAnsi'}),
       'Calibri');
+  });
+
+  it('a font pair changes the body and heading; undo restores', () => {
+    const d = new Document(newDoc({date: DATE}));
+    d.clearHistory();
+    d.doc.sections[0].blocks = [newPara('Head', {pStyle: 'Heading1'}),
+      newPara('Body')];
+    const font = (k) => {
+      const b = d.doc.sections[0].blocks[k];
+      return fontName(resolveRun(d.doc.styles, b, b.runs[0]),
+        d.doc.styles.theme);
+    };
+    const was = [font(0), font(1)];
+    assert.equal(was[1], 'Calibri');
+    assert.deepEqual(TD.setFonts(d, {major: 'Garamond',
+      minor: 'Georgia'}), {ok: true});
+    assert.deepEqual([font(0), font(1)], ['Garamond', 'Georgia']);
+    d.undo();
+    assert.deepEqual([font(0), font(1)], was);
   });
 
   it('a document opened without a theme has none', async () => {

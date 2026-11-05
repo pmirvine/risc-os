@@ -1,0 +1,169 @@
+// ThemeDoc - the document's theme fonts and colours, read and
+// changed as ONE undo step each. d is the real ./Document. Pure: no
+// desktop services.
+//
+//   fontsOf(d) -> {name, major, minor}  name: the ./ThemePresets pair
+//       with these fonts, else 'Custom'
+//   colorsOf(d) -> {name, slots}  slots: {dk1..folHlink: 'RRGGBB'};
+//       name: the preset with the same slots, else 'Custom'
+//   setFonts(d, {major, minor}) -> {ok: true} | {refused}
+//   setColors(d, {name, slots, sys?}) -> {ok: true} | {refused}
+//   Asking for the theme the document already has records nothing
+//   (no step, not modified): {ok: true, unchanged: true}.
+//   reset(d) -> {ok: true} | {refused}  the standard Office theme
+//       (./ThemeDefault)
+//   A theme relationship to another part than theme1.xml (read as no
+//   theme) is refused: an edit would add an orphan theme1.xml.
+//   A document without a theme part gets the standard one, with its
+//   relationship (next free rIdN), in the same step; undo removes
+//   both. A refusal changes nothing and records no step.
+import {parseXml} from 'wimplib/Xml';
+import {parse} from './ThemeRead';
+import * as W from './ThemeWrite';
+import {themeBytes} from './ThemeDefault';
+import {COLOR_SCHEMES, FONT_PAIRS} from './ThemePresets';
+import {THEME_PART} from './OpsTheme';
+import {relType} from './WriteParts';
+
+const CUSTOM = 'Custom';
+const SLOTS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+  'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+
+const part = (d) => {
+  const p = d.doc.parts;
+  return p instanceof Map && p.get(THEME_PART) instanceof Uint8Array
+    ? p.get(THEME_PART) : null;
+};
+const themeOf = (d) => parse(part(d));
+
+/** See the header. */
+export function fontsOf(d) {
+  const t = themeOf(d);
+  const p = FONT_PAIRS.find((f) => f.major === t.major &&
+    f.minor === t.minor);
+  return {name: p ? p.name : CUSTOM, major: t.major, minor: t.minor};
+}
+
+/** See the header. */
+export function colorsOf(d) {
+  const t = themeOf(d);
+  const slots = {};
+  for (const k of SLOTS) slots[k] = t.colors.get(k);
+  const p = COLOR_SCHEMES.find((s) => SLOTS.every((k) =>
+    s.slots[k] === slots[k]));
+  return {name: p ? p.name : CUSTOM, slots};
+}
+
+/** A relationship target as the theme1.xml part's (relative to
+ *  word/, or absolute, in any letter case of the folder). */
+const isTheme1 = (t) => /^\/?(word\/)?theme\/theme1\.xml$/i.test(
+  String(t));
+
+/** True when rels names a theme relationship. */
+const hasRel = (rels) => rels.some((r) => r.type === relType('theme') ||
+  isTheme1(r.target));
+
+function addRel(d) {
+  const rels = Array.isArray(d.doc.rels) ? d.doc.rels : [];
+  if (hasRel(rels)) return;
+  const ids = new Set(rels.map((r) => r.id));
+  let n = 1;
+  while (ids.has('rId' + n)) n++;
+  const id = 'rId' + n, type = relType('theme');
+  const target = 'theme/theme1.xml';
+  d.apply({op: 'setDocPart', key: 'rels', value: [...rels,
+    {id, type, target,
+      attrs: [['Id', id], ['Type', type], ['Target', target]]}]});
+}
+
+/** A theme relationship to some other part than theme1.xml. */
+const otherTheme = (d) => !part(d) && (Array.isArray(d.doc.rels) ?
+  d.doc.rels : []).some((r) => r.type === relType('theme') &&
+  !isTheme1(r.target));
+
+/** Set the part to bytes (and its relationship) in one atomic. */
+function put(d, bytes) {
+  d.atomic(() => {
+    if (!part(d)) addRel(d);
+    d.apply({op: 'setTheme', value: bytes});
+  });
+  return {ok: true};
+}
+
+const NOT1 = {refused: 'This document\'s theme is kept in a part ' +
+  'other than theme1.xml, which Letters cannot change.'};
+
+/** The colour scheme's name and its a:sysClr slots in theme bytes. */
+function schemeOf(bytes) {
+  try {
+    const out = {name: null, sys: []};
+    const walk = (n, depth) => {
+      if (!n || !n.name || depth > 6 || out.name !== null) return;
+      if (local(n.name) === 'clrScheme') {
+        const a = n.attrs.find(([k]) => local(k) === 'name');
+        out.name = a ? a[1] : '';
+        for (const c of n.children) {
+          const sys = c && c.name && c.children.some((k) => k &&
+            k.name && local(k.name) === 'sysClr');
+          if (sys && ['dk1', 'lt1'].includes(local(c.name))) {
+            out.sys.push(local(c.name));
+          }
+        }
+        return;
+      }
+      for (const c of n.children) walk(c, depth + 1);
+    };
+    walk(parseXml(new TextDecoder().decode(bytes)).root, 0);
+    return out;
+  } catch (e) {
+    return null;
+  }
+}
+const local = (n) => String(n).split(':').pop();
+
+/** Whether two theme parts have the same fonts, colours, scheme
+ *  name and sysClr slots (what an edit would not change). */
+function sameTheme(a, b) {
+  const x = parse(a), y = parse(b);
+  return x.major === y.major && x.minor === y.minor &&
+    SLOTS.every((k) => x.colors.get(k) === y.colors.get(k)) &&
+    JSON.stringify(schemeOf(a)) === JSON.stringify(schemeOf(b));
+}
+
+const UNCHANGED = {ok: true, unchanged: true};
+
+/** Run fn on the part; a result that is the theme already there
+ *  records nothing (no step, the document not marked modified). */
+const edit = (d, fn, same = sameTheme) => {
+  if (otherTheme(d)) return NOT1;
+  const was = part(d);
+  const r = fn(was || themeBytes());
+  if (!(r instanceof Uint8Array)) return r;
+  return was && same(was, r) ? UNCHANGED : put(d, r);
+};
+
+/** The fonts alone (what setFonts changes). */
+const sameFonts = (a, b) => {
+  const x = parse(a), y = parse(b);
+  return x.major === y.major && x.minor === y.minor;
+};
+
+/** See the header. */
+export const setFonts = (d, f) => edit(d, (b) => W.setFonts(b, f),
+  sameFonts);
+
+/** See the header. A scheme the document already shows (same colours,
+ *  and its name, or the preset name colorsOf gives it) is no change. */
+export function setColors(d, c) {
+  const now = part(d) && schemeOf(part(d));
+  const named = (now && c && (c.name === now.name ||
+    c.name === colorsOf(d).name));
+  return edit(d, (b) => W.setColors(b, c), (was, next) => {
+    const x = parse(was), y = parse(next);
+    return !!named && SLOTS.every((k) => x.colors.get(k) ===
+      y.colors.get(k));
+  });
+}
+
+/** See the header. */
+export const reset = (d) => edit(d, () => themeBytes());

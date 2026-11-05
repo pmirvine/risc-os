@@ -10,48 +10,58 @@
 //              be a submenu (a menu item's submenu: () => ...)
 //     current  'RRGGBB' or 'auto': its swatch is outlined and the
 //              field shows it
-//     onPick(value)  value 'RRGGBB' or 'auto' (Automatic): called
-//              after the menu has closed
+//     theme    {grid} (ThemeSwatches.grid(theme): 6 rows x 10 of
+//              {rgb, ref, name}): a Theme Colours block above the
+//              standard swatches (the window is taller: ./ColourLayout)
+//     currentRef  the {themeColor, themeTint?, themeShade?} of a
+//              themed colour: outlines that theme cell (and no
+//              standard swatch)
+//     onPick(value, ref?)  value 'RRGGBB' or 'auto' (Automatic): called
+//              after the menu has closed; ref is the theme cell's
+//              reference when one was clicked (value is its RRGGBB)
 // Clicking a swatch or Automatic picks it; Return in the field picks
 // what it holds (a beep when that is not a colour); Escape closes it.
 // The Window is deleted when it closes.
 import {wimp} from 'riscos';
-import {SWATCHES, COLS, ROWS, swatchAt, parseHex, cssOf}
+import {SWATCHES, COLS, swatchAt, parseHex, cssOf}
   from '../ColourList';
+import {layout, cellAt, CELL, BTN_H} from './ColourLayout';
 
-const CELL = 22, PAD = 8;
-const GRID_W = COLS * CELL, GRID_H = ROWS * CELL;
+const PAD = 8;
+const sameRef = (a, b) => !!a && !!b && a.themeColor === b.themeColor &&
+  a.themeTint === b.themeTint && a.themeShade === b.themeShade;
 
 /** See the header. */
 export function colourPopup(opts) {
   const {task, at, current = null, allowAuto = true, onPick,
-    title = 'Colour'} = opts;
-  const y = PAD + GRID_H + 8, W = GRID_W + 2 * PAD;
+    title = 'Colour', theme = null, currentRef = null} = opts;
+  const lay = layout(!!theme), y = lay.btnY, W = lay.W;
   const hex = /^[0-9A-F]{6}$/i.test(String(current)) ?
     String(current).toUpperCase() : '';
   const icons = [
-    {x: PAD, y, w: 88, h: 28, text: 'Automatic', name: 'auto',
+    {x: PAD, y, w: 88, h: BTN_H, text: 'Automatic', name: 'auto',
       border: true, filled: true, hcentre: true, button: 'click',
       validation: 'R5,3', shaded: !allowAuto,
       help: 'Click to use the automatic colour (black, or what ' +
         'the style says).'},
-    {x: W - PAD - 84, y, w: 84, h: 28, text: hex, name: 'hex',
+    {x: W - PAD - 84, y, w: 84, h: BTN_H, text: hex, name: 'hex',
       border: true, filled: true, bg: 0, hcentre: false,
       button: 'writable', maxLen: 7, validation: 'R7;A0-9a-fA-F#',
       help: 'Type a colour as six hex digits, RRGGBB (red, green, ' +
         'blue), and press Return.'},
   ];
-  const win = task.createWindow({title, w: W, h: y + 28 + PAD,
-    extent: {w: W, h: y + 28 + PAD}, flags: {title: true},
+  const win = task.createWindow({title, w: W, h: lay.H,
+    extent: {w: W, h: lay.H}, flags: {title: true},
     colours: {workBg: 1}, icons, workButton: 'click',
     help: 'Click a colour to use it.'});
-  win.useCanvas((g) => paint(g, current), {hiDPI: true});
+  win.useCanvas((g) => paint(g, current, lay, theme, currentRef),
+    {hiDPI: true});
   let done = false;
-  const pick = (value) => {
+  const pick = (value, ref) => {
     if (done) return;
     done = true;
     wimp.menus.close();
-    onPick && onPick(value);
+    if (onPick) { if (ref) onPick(value, ref); else onPick(value); }
   };
   win.on('click', (ev) => {
     if (ev.button === 'menu') return true;
@@ -59,9 +69,14 @@ export function colourPopup(opts) {
       if (ev.icon.name === 'auto' && !ev.icon.shaded) pick('auto');
       return true;
     }
-    const c = swatchAt(Math.floor((ev.x - PAD) / CELL),
-      Math.floor((ev.y - PAD) / CELL));
-    if (c) pick(c);
+    const hit = cellAt(lay, ev.x, ev.y);
+    if (hit && hit.kind === 'theme') {
+      const t = theme.grid[hit.row]?.[hit.col];
+      if (t) pick(t.rgb, t.ref);
+    } else if (hit) {
+      const c = swatchAt(hit.col, hit.row);
+      if (c) pick(c);
+    }
     return true;
   });
   win.on('key', (ev) => {
@@ -80,19 +95,32 @@ export function colourPopup(opts) {
   return win;
 }
 
-/** The swatches, the current one outlined. */
-function paint(g, current) {
-  SWATCHES.forEach((c, i) => {
-    const x = PAD + (i % COLS) * CELL, y = PAD + Math.floor(i / COLS) *
-      CELL;
-    g.fillStyle = '#555555';
-    g.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
-    g.fillStyle = cssOf(c);
-    g.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
-    if (c === current) {
-      g.strokeStyle = '#000000';
-      g.lineWidth = 2;
-      g.strokeRect(x, y, CELL, CELL);
-    }
-  });
+/** The cell at x, y outlined when it is the current one. */
+function cell(g, x, y, rgb, marked) {
+  g.fillStyle = '#555555';
+  g.fillRect(x + 1, y + 1, CELL - 2, CELL - 2);
+  g.fillStyle = cssOf(rgb);
+  g.fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+  if (marked) {
+    g.strokeStyle = '#000000';
+    g.lineWidth = 2;
+    g.strokeRect(x, y, CELL, CELL);
+  }
+}
+
+/** The theme block (when there is one) and the swatches. */
+function paint(g, current, lay, theme, currentRef) {
+  if (theme) {
+    g.fillStyle = '#000000';
+    g.font = '12px sans-serif';
+    g.textBaseline = 'top';
+    g.fillText('Theme Colours', PAD, lay.themeLabelY + 2);
+    g.fillText('Standard Colours', PAD, lay.stdLabelY + 2);
+    theme.grid.forEach((row, r) => row.forEach((t, c) =>
+      cell(g, lay.theme.x + c * CELL, lay.theme.y + r * CELL, t.rgb,
+        sameRef(t.ref, currentRef))));
+  }
+  SWATCHES.forEach((c, i) => cell(g, lay.std.x + (i % COLS) * CELL,
+    lay.std.y + Math.floor(i / COLS) * CELL, c,
+    !currentRef && c === current));
 }

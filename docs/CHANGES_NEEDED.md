@@ -674,3 +674,17 @@ reader, not changed).
   `w:tab w:val="clear"`, drops all of its style's tab stops), where Word merges them position by position (a clear
   removes only the stop at its position). `docword.test.mjs` resolves the `.docx` side per position to compare;
   the readers are not affected, the layout of documents that mix style and paragraph tabs is.
+
+## WimpLib colour popup: theme block; shared !Letters Model code touched by theme editing — noted by the !Letters theme work (!Letters)
+**Status:** Resolved: documented in CORE_API.md (WimpLib colour popup) and docs/apps/Letters.md, "Theme editing".
+
+* `tools/moreapps/!WimpLib/Ui/ColourPopup` takes two new options, `theme: {grid}` and `currentRef`, and uses the new
+  pure module `Ui/ColourLayout` for its layout. Additive: without `theme` the popup is unchanged.
+* Shared !Letters Model code changed, so every reader and writer sees it: `Styles.runLayer` merges fonts slot by slot
+  (new `StyleFonts`) and lets a layer's colour replace a lower layer's in either form, so a Word-made heading follows
+  the theme's heading font, and Heading 1 to 6 and Title are Calibri Light in the RTF font table (two rtfwrite
+  expectations changed); `Fmt.fontName` and `ThemeRead.fontOf` take the ascii slot first, with a theme attribute
+  winning within a slot (the old header comments said it overrode ascii and hAnsi); `FormatEff` / `Format.query` give
+  `colorRef`; `NewDoc` writes theme font attributes (`minorHAnsi`...) in `docDefaults`, not literal Calibri, and
+  `ImpStyles` drops them when an importer sets its own font; `RtfStyles` carries a raw theme `rFonts` over.
+

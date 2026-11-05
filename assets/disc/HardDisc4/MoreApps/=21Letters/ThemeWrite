@@ -1,0 +1,137 @@
+// ThemeWrite - edit the document's theme part (word/theme/theme1.xml):
+// set its fonts or its colour scheme. Everything else in the part
+// (the format scheme, other scripts' fonts, unknown elements) is kept
+// as it was. Pure; never throws, a bad request is refused.
+//
+//   setFonts(bytes, {major, minor}) -> Uint8Array | {refused}
+//     the Latin typeface of majorFont and minorFont (panose dropped)
+//   setColors(bytes, {name, slots, sys?}) -> Uint8Array | {refused}
+//     the 12 slots of the one a:clrScheme, and its name; slots named
+//     in sys (dk1, lt1) are written as a:sysClr, the rest a:srgbClr
+//   `bytes` is the theme part; empty or null input is refused.
+import {parseXml, serialize, el} from 'wimplib/Xml';
+import {STD_DECL} from './WriteParts';
+
+// What a refusal says: a sentence the user can act on
+const WHY = {
+  none: 'The document has no theme to change.',
+  big: 'The theme part is too large to edit.',
+  xml: 'The theme part is not valid XML, so it cannot be edited.',
+  notTheme: 'The theme part is not a theme, so it cannot be edited.',
+  elements: 'The theme part has no usable theme elements, so it ' +
+    'cannot be edited.',
+  font: 'A font name must be 1 to 64 characters, without < > & or ' +
+    'quotes.',
+  fontScheme: 'The theme part has no single font scheme, so its ' +
+    'fonts cannot be changed.',
+  latin: (which) => 'The theme part has no ' + which + ' with a ' +
+    'Latin font to change.',
+  name: 'A colour scheme name must be 1 to 64 characters, without ' +
+    '< > & or quotes.',
+  colour: (k) => 'The colour ' + k + ' must be six hex digits, ' +
+    'RRGGBB.',
+  colourScheme: 'The theme part has no single colour scheme, so its ' +
+    'colours cannot be changed.',
+  incomplete: 'The theme part\'s colour scheme lacks some colours, ' +
+    'so it cannot be changed.',
+  failed: 'The theme could not be changed.',
+};
+const MAX = 1 << 20;
+const SLOTS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+  'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+const SYS = {dk1: ['windowText'], lt1: ['window']};
+const HEX6 = /^[0-9A-Fa-f]{6}$/;
+const FONT = /^[^\x00-\x1f<>&"]{1,64}$/;
+const local = (n) => String(n).split(':').pop();
+const kids = (node, name) => node.children.filter((c) =>
+  typeof c === 'object' && c.name !== undefined &&
+  local(c.name) === name);
+
+/** Parse and find the pieces; {refused} or {doc, els, pre}. */
+function open(bytes) {
+  if (!bytes || !bytes.length) return {refused: WHY.none};
+  if (bytes.length > MAX) return {refused: WHY.big};
+  let doc;
+  try {
+    doc = parseXml(new TextDecoder('utf-8').decode(bytes));
+  } catch (e) {
+    return {refused: WHY.xml};
+  }
+  const root = doc.root;
+  if (!root || local(root.name) !== 'theme') {
+    return {refused: WHY.notTheme};
+  }
+  const pre = root.name.includes(':') ? root.name.split(':')[0] + ':'
+    : '';
+  const els = kids(root, 'themeElements');
+  if (els.length !== 1) return {refused: WHY.elements};
+  return {doc, els: els[0], pre};
+}
+
+const finish = (doc) => new TextEncoder().encode(serialize(doc.root,
+  {decl: STD_DECL, before: doc.before, after: doc.after}));
+
+/** See the header. */
+export function setFonts(bytes, fonts) {
+  try {
+    const o = open(bytes);
+    if (o.refused) return o;
+    const f = fonts || {};
+    if (typeof f.major !== 'string' || !FONT.test(f.major) ||
+        typeof f.minor !== 'string' || !FONT.test(f.minor)) {
+      return {refused: WHY.font};
+    }
+    const fs = kids(o.els, 'fontScheme');
+    if (fs.length !== 1) return {refused: WHY.fontScheme};
+    const targets = [];
+    for (const [which, face] of [['majorFont', f.major],
+      ['minorFont', f.minor]]) {
+      const w = kids(fs[0], which)[0];
+      const l = w && kids(w, 'latin')[0];
+      if (!l) return {refused: WHY.latin(which)};
+      targets.push([l, face]);
+    }
+    for (const [l, face] of targets) {
+      l.attrs = l.attrs.filter(([k]) => local(k) !== 'panose');
+      const a = l.attrs.find(([k]) => local(k) === 'typeface');
+      if (a) a[1] = face; else l.attrs.push(['typeface', face]);
+    }
+    return finish(o.doc);
+  } catch (e) {
+    return {refused: WHY.failed};
+  }
+}
+
+/** See the header. */
+export function setColors(bytes, scheme) {
+  try {
+    const o = open(bytes);
+    if (o.refused) return o;
+    const s = scheme || {};
+    const slots = s.slots || {};
+    const sys = Array.isArray(s.sys) ? s.sys : [];
+    if (typeof s.name !== 'string' || !FONT.test(s.name)) {
+      return {refused: WHY.name};
+    }
+    for (const k of SLOTS) {
+      if (typeof slots[k] !== 'string' || !HEX6.test(slots[k])) {
+        return {refused: WHY.colour(k)};
+      }
+    }
+    const cs = kids(o.els, 'clrScheme');
+    if (cs.length !== 1) return {refused: WHY.colourScheme};
+    const holders = SLOTS.map((k) => kids(cs[0], k)[0]);
+    if (holders.some((h) => !h)) return {refused: WHY.incomplete};
+    const na = cs[0].attrs.find(([k]) => local(k) === 'name');
+    if (na) na[1] = s.name; else cs[0].attrs.push(['name', s.name]);
+    SLOTS.forEach((k, i) => {
+      const hex = slots[k].toUpperCase();
+      holders[i].children = [SYS[k] && sys.includes(k)
+        ? el(o.pre + 'sysClr', [['val', SYS[k][0]], ['lastClr', hex]])
+        : el(o.pre + 'srgbClr', [['val', hex]])];
+    });
+    return finish(o.doc);
+  } catch (e) {
+    return {refused: WHY.failed};
+  }
+}

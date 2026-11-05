@@ -1,0 +1,81 @@
+// ThemeRun - a theme colour on text: the format op themeColor
+// (./FormatApply, the colour picker's theme block). A run keeps it
+// the way ./DocxRead keeps one from Word: no rPr.color, a raw w:color
+// in rPr.extra with w:val (the RGB it showed, for readers that ignore
+// themes), w:themeColor and w:themeTint / w:themeShade. ./Fmt,
+// ./FormatEff and ./RtfWriteProps resolve it through the document's
+// theme; setting or deleting color drops it (./PropNames).
+//
+// In a char patch (./FormatCheck charPatch, ./FormatSet, ./Pending,
+// setProps rPr) the colour is the object
+//   {val: 'RRGGBB', themeColor, themeTint?: 'XX', themeShade?: 'XX'}
+// and settle() turns it into the raw node where rPr is stored
+// (./OpsProps, ./Pending applyTo), so no Model rPr.color is ever an
+// object.
+//
+//   THEME_COLORS        the w:themeColor names (ST_ThemeColor, no
+//                       'none')
+//   isThemed(v)         v is such an object (not checked)
+//   checkThemed(v) -> a checked copy (RangeError): themeColor one of
+//                       THEME_COLORS, tint/shade two hex digits (made
+//                       upper case; not both), val 'RRGGBB'
+//   themeValue(theme, a) -> the patch value for a {themeColor,
+//                       themeTint?, themeShade?}: val resolved in
+//                       theme (./ThemeRead colorOf)
+//   settle(rPr) -> rPr, or a copy with its object color moved into
+//                       extra as the raw w:color (any old one gone)
+// Pure: no desktop services.
+import {fail} from './ModelCheck';
+import {colorOf} from './ThemeRead';
+import {withoutRaw} from './PropNames';
+
+export const THEME_COLORS = Object.freeze(['dark1', 'light1', 'dark2',
+  'light2', 'accent1', 'accent2', 'accent3', 'accent4', 'accent5',
+  'accent6', 'hyperlink', 'followedHyperlink', 'background1', 'text1',
+  'background2', 'text2']);
+
+const KEYS = ['val', 'themeColor', 'themeTint', 'themeShade'];
+const HEX2 = /^[0-9a-f]{2}$/i;
+
+/** See the header. */
+export const isThemed = (v) => v !== null && typeof v === 'object' &&
+  !Array.isArray(v);
+
+/** See the header. */
+export function checkThemed(v) {
+  if (!isThemed(v) || Object.keys(v).some((k) => !KEYS.includes(k)))
+    fail('bad theme colour');
+  if (!THEME_COLORS.includes(v.themeColor))
+    fail('bad theme colour ' + String(v.themeColor));
+  if (typeof v.val !== 'string' || !/^[0-9a-f]{6}$/i.test(v.val))
+    fail('bad theme colour value');
+  const out = {val: v.val.toUpperCase(), themeColor: v.themeColor};
+  for (const k of ['themeTint', 'themeShade']) {
+    if (v[k] === undefined) continue;
+    if (typeof v[k] !== 'string' || !HEX2.test(v[k])) fail('bad ' + k);
+    out[k] = v[k].toUpperCase();
+  }
+  if (out.themeTint && out.themeShade) fail('tint and shade');
+  return out;
+}
+
+/** See the header. */
+export function themeValue(theme, a) {
+  if (!isThemed(a) || Object.keys(a).some((k) => k === 'val' ||
+      !KEYS.includes(k))) fail('bad theme colour');
+  const {themeColor, themeTint, themeShade} = a;
+  const v = checkThemed({val: '000000', themeColor, themeTint,
+    themeShade});
+  return {...v, val: colorOf(theme, v)};
+}
+
+/** See the header. */
+export function settle(rPr) {
+  if (!rPr || !isThemed(rPr.color)) return rPr;
+  const {color: c, ...rest} = rPr;
+  const attrs = KEYS.filter((k) => c[k] !== undefined)
+    .map((k) => ['w:' + k, c[k]]);
+  const node = {name: 'w:color', attrs, children: []};
+  return {...rest, extra: [...withoutRaw(rest.extra || [], ['color']),
+    node]};
+}

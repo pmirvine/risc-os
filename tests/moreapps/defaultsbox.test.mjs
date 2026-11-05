@@ -272,7 +272,14 @@ describe('the Document defaults box', () => {
     ar.action();
     assert.equal(api.get('font'), 'Arial');
     api.press('Set');
-    assert.equal(dw.d.doc.styles.docDefaults.rPr.rFonts.ascii, 'Arial');
+    // (a new document's default font is the theme's, kept as a raw
+    // w:rFonts: a literal font replaces the ascii, hAnsi and cs theme
+    // attributes, the east Asian one stays)
+    const raw = dw.d.doc.styles.docDefaults.rPr.extra.find((n) =>
+      n.name === 'w:rFonts');
+    assert.deepEqual(Object.fromEntries(raw.attrs), {'w:ascii': 'Arial',
+      'w:eastAsiaTheme': 'minorEastAsia', 'w:hAnsi': 'Arial',
+      'w:cs': 'Arial'});
   });
   it('Line spacing: At follows the kind, shaded for Single', () => {
     const dw = fresh();

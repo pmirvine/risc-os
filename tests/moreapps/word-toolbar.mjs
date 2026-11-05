@@ -272,7 +272,8 @@ try {
     && cp.icons.includes('auto') && cp.icons.includes('hex'), cp);
   const red = await ev(() => {
     const w = os.wimp.menus.levels[0].win, i = 9;                // FF0000: row 1, column 1
-    return window.__client(w, 8 + (i % 8) * 22 + 11, 8 + Math.floor(i / 8) * 22 + 11);
+    // the standard swatches start at y 178, under the Theme Colours block (Ui/ColourLayout)
+    return window.__client(w, 8 + (i % 8) * 22 + 11, 178 + Math.floor(i / 8) * 22 + 11);
   });
   await page.mouse.click(red.x, red.y);
   await wait(80);
@@ -287,7 +288,7 @@ try {
   });
   ok('... the bar under the A is red', sw[0] > 200 && sw[1] < 40 && sw[2] < 40, sw);
   await clickIcon('color');
-  const auto = await ev(() => window.__client(os.wimp.menus.levels[0].win, 8 + 44, 8 + 110 + 8 + 14));
+  const auto = await ev(() => window.__client(os.wimp.menus.levels[0].win, 8 + 44, 296 + 14));   // the buttons row: y 296 (Ui/ColourLayout)
   await page.mouse.click(auto.x, auto.y);
   await settle();
   ok('Automatic: the colour is auto', (await q()).color === 'auto' && !(await menusOpen()), await q());

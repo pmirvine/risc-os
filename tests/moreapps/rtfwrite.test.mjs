@@ -116,8 +116,10 @@ describe('RtfWrite: the document', () => {
   it('an empty paragraph keeps its style\'s character format on ' +
     'its mark', () => {
     const d = docOf([newPara('x'), newPara('', {pStyle: 'Heading1'})]);
-    // Heading 1's Word 2013+ look: 16 pt in the accent colour
-    assert.ok(W(d).s.includes('\\outlinelevel0\\fs32\\cf1\\par\n}'),
+    // Heading 1's Word 2013+ look: the theme heading font, 16 pt in
+    // the accent colour
+    assert.ok(W(d).s.includes(
+      '\\outlinelevel0\\f1\\fs32\\cf1\\par\n}'),
       W(d).s);
     sameBack(d);
   });
@@ -209,7 +211,9 @@ describe('RtfWrite: character formatting', () => {
     const {s} = W(d);
     assert.ok(s.includes('{\\fonttbl{\\f0\\fswiss\\fcharset0\\fprq2 ' +
       'Calibri;}{\\f1\\froman\\fcharset0\\fprq2 Times New Roman;}' +
-      '{\\f2\\fnil\\fcharset0\\fprq2 My Font\\{x\\};}}'), s);
+      '{\\f2\\fnil\\fcharset0\\fprq2 My Font\\{x\\};}' +
+      // (the heading styles' theme font, Calibri Light)
+      '{\\f3\\fswiss\\fcharset0\\fprq2 Calibri Light;}}'), s);
   });
 
   it('a style\'s formatting turned off in a run', () => {

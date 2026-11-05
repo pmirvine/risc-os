@@ -44,6 +44,7 @@ import {OBJ} from '../../tools/moreapps/!Letters/Model';
 import {resolveRun, paraLayers, resolvePara} from
   '../../tools/moreapps/!Letters/Styles';
 import {fontName} from '../../tools/moreapps/!Letters/Fmt';
+import {colorOf} from '../../tools/moreapps/!Letters/ThemeRead';
 import {coreOf} from '../../tools/moreapps/!Letters/FieldDates';
 import {labels} from '../../tools/moreapps/!Letters/ListNumbers';
 import {refsOf, storyOfRef} from
@@ -89,7 +90,17 @@ export function runCore(r, theme) {
     for (const n of r.extra || []) {
       const a = n && n.name === 'w:color' &&
         (n.attrs || []).find((x) => x[0] === 'w:val');
-      if (a) color = hex(a[1]);
+      if (!a) continue;
+      color = hex(a[1]);
+      // (a theme colour follows the document's theme, unless the
+      // w:val is the same colour but for Word's rounding)
+      const at = Object.fromEntries((n.attrs || []).map(([k, v]) =>
+        [k.split(':').pop(), v]));
+      const res = theme && typeof at.themeColor === 'string'
+        ? hex(colorOf(theme, {...at, color: at.val})) : undefined;
+      if (res && !(color && [0, 2, 4].every((i) => Math.abs(
+        parseInt(color.slice(i, i + 2), 16) -
+        parseInt(res.slice(i, i + 2), 16)) <= 2))) color = res;
     }
   }
   if (color) o.color = color;

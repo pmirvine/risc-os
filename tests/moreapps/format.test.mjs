@@ -19,7 +19,8 @@ describe('Format.query', () => {
     const d = mk(['hello']);
     assert.deepEqual(F.query(d.doc, SEL(d, 0, 0, 0, 5)), {
       bold: false, italic: false, underline: false, strike: false,
-      size: 11, family: 'Calibri', color: 'auto', highlight: 'none',
+      size: 11, family: 'Calibri', color: 'auto', colorRef: null,
+      highlight: 'none',
       vert: 'baseline', align: 'left', indentLeft: 0, indentFirst: 0,
       indentRight: 0, spaceBefore: 0, spaceAfter: 160,
       lineSpacing: {line: 259, rule: 'auto'}, style: 'Normal',

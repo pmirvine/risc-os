@@ -1,0 +1,127 @@
+// ThemeBoxPatch - the values of the custom theme boxes (./ThemeFontBox,
+// ./ThemeColorBox) from the document's theme, and what they make of
+// the user's values: checked, and applied through ./ThemeDoc as one
+// undo step. Pure: no desktop services. d is the real ./Document.
+//
+//   fillFonts(d) -> {major, minor}   the Heading and Body fonts now
+//   fontsApply(d, values, was) -> {error, bad} | {refused} |
+//       {changed: boolean}
+//       values {major, minor}: names (trimmed; 1 to 64 characters,
+//       no control character and none of < > & ") ; error: text for
+//       the box, bad the field names; nothing is applied then, nor
+//       when both equal was (changed false, no undo step)
+//   fillColors(d) -> {slots, name, now}   slots 'RRGGBB' by slot
+//       (dk1..folHlink); name 'Custom' (the field's start); now the
+//       scheme name in force
+//   colorsApply(d, values, was) -> as fontsApply
+//       values {dk1..folHlink: 'RRGGBB' or '#RRGGBB' (any case), name}.
+//       The name is trimmed and cut at 40 characters (empty: Custom).
+//       The slots of a preset (./ThemePresets) with the name left as
+//       it was filled ('Custom') are written under the preset's name
+//       (and its sysClr slots; else dk1 / lt1 stay sysClr if they were
+//       and are not changed); a name the user changed is kept.
+//       No change when the slots and the name are what they were
+//       (the name field left as filled, or the name in force).
+import {parseXml} from 'wimplib/Xml';
+import * as TD from './ThemeDoc';
+import {COLOR_SCHEMES} from './ThemePresets';
+import {THEME_PART} from './OpsTheme';
+
+export const SLOTS = ['dk1', 'lt1', 'dk2', 'lt2', 'accent1', 'accent2',
+  'accent3', 'accent4', 'accent5', 'accent6', 'hlink', 'folHlink'];
+export const NAME_MAX = 40;
+const CUSTOM = 'Custom';
+const FONT = /^[^\x00-\x1f<>&"]{1,64}$/;
+const NAME = /^[^\x00-\x1f<>&"]+$/;
+const HEX = /^#?([0-9A-Fa-f]{6})$/;
+const str = (x) => (typeof x === 'string' ? x.trim() : '');
+
+/** See the header. */
+export function fillFonts(d) {
+  const f = TD.fontsOf(d);
+  return {major: f.major, minor: f.minor};
+}
+
+/** See the header. */
+export function fontsApply(d, values, was) {
+  const major = str(values.major), minor = str(values.minor);
+  const bad = [];
+  if (!FONT.test(major)) bad.push('major');
+  if (!FONT.test(minor)) bad.push('minor');
+  if (bad.length) {
+    return {bad, error: bad.length > 1 ? 'Check both font names.'
+      : `Check the ${bad[0] === 'major' ? 'Heading' : 'Body'} font ` +
+        'name.'};
+  }
+  if (major === was.major && minor === was.minor) {
+    return {changed: false};
+  }
+  const r = TD.setFonts(d, {major, minor});
+  return r.refused ? {refused: r.refused}
+    : {changed: !r.unchanged};
+}
+
+/** See the header. */
+export function fillColors(d) {
+  const c = TD.colorsOf(d);
+  return {slots: {...c.slots}, name: CUSTOM, now: c.name};
+}
+
+/** The 12 hex values, upper case, or the names that are not. */
+function hexes(values) {
+  const slots = {}, bad = [];
+  for (const k of SLOTS) {
+    const m = HEX.exec(str(values[k]));
+    if (m) slots[k] = m[1].toUpperCase(); else bad.push(k);
+  }
+  return {slots, bad};
+}
+
+/** The dk1 / lt1 slots the theme part now writes as a:sysClr. */
+function sysNow(d) {
+  const b = d.doc.parts instanceof Map && d.doc.parts.get(THEME_PART);
+  if (!(b instanceof Uint8Array) || b.length > (1 << 20)) return [];
+  let root;
+  try {
+    root = parseXml(new TextDecoder().decode(b)).root;
+  } catch (e) {
+    return [];
+  }
+  const local = (n) => String(n.name).split(':').pop();
+  const kids = (n) => (n.children || []).filter((c) => c && c.name);
+  const scheme = [];
+  const walk = (n, depth) => {
+    if (depth > 6) return;
+    if (local(n) === 'clrScheme') scheme.push(n);
+    else for (const c of kids(n)) walk(c, depth + 1);
+  };
+  walk(root, 0);
+  if (scheme.length !== 1) return [];
+  return kids(scheme[0]).filter((c) => ['dk1', 'lt1'].includes(
+    local(c)) && kids(c).some((k) => local(k) === 'sysClr'))
+    .map(local);
+}
+
+/** See the header. */
+export function colorsApply(d, values, was) {
+  const {slots, bad} = hexes(values);
+  const typed = str(values.name).slice(0, NAME_MAX).trim() || CUSTOM;
+  if (!NAME.test(typed)) bad.push('name');
+  if (bad.length) {
+    const hx = bad.filter((k) => k !== 'name').length;
+    return {bad, error: hx ? 'Colours are six hex digits, RRGGBB.'
+      : 'Check the scheme name.'};
+  }
+  const same = SLOTS.every((k) => slots[k] === was.slots[k]);
+  if (same && (typed === CUSTOM || typed === was.now)) {
+    return {changed: false};
+  }
+  const preset = COLOR_SCHEMES.find((s) => SLOTS.every((k) =>
+    s.slots[k] === slots[k]));
+  const name = typed === CUSTOM && preset ? preset.name : typed;
+  const sys = preset ? preset.sys : sysNow(d).filter((k) =>
+    slots[k] === was.slots[k]);
+  const r = TD.setColors(d, {name, slots, sys});
+  return r.refused ? {refused: r.refused}
+    : {changed: !r.unchanged};
+}

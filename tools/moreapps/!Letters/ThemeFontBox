@@ -1,0 +1,110 @@
+// ThemeFontBox - the custom theme fonts box (Design > Customize
+// fonts..., Format > Theme > Customize fonts...): the Heading font and
+// the Body font of the document's theme (a:majorFont, a:minorFont).
+// Built by WimpLib Ui/Dialog.
+//
+//   themeFontBox(dw) -> the box's api, one per document (key
+//       'themefonts:<docKey>', dw.boxes 'themefonts': ./CloseDoc
+//       deletes it with the document); asked again while open, the
+//       same box to the front.
+//
+// Each font is a name field (Choose... beside it opens the font menu
+// as Format > Font has it, WimpLib Ui/FontMenu; a pick puts the name
+// in). It opens filled from ./ThemeDoc fontsOf. OK (or Return):
+// ./ThemeBoxPatch fontsApply, one undo step (none when the names are
+// as they were), the box gone, the caret back in the document. A
+// name that is not one (empty, over 64 characters, a control
+// character or < > & ") beeps, says so at the foot of the box and
+// keeps it; so does a theme Letters will not change (the reason).
+// If the theme changed while the box was open (an undo), OK fills the
+// box again and keeps it. Cancel, Escape and the close icon change
+// nothing.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {fontMenu} from 'wimplib/Ui/FontMenu';
+import {box} from './Boxes';
+import {fillFonts, fontsApply} from './ThemeBoxPatch';
+import {docFonts} from './EditFormat';
+
+const HELP = 'Theme fonts: the fonts of the headings and of the ' +
+  'body text of the whole document.';
+const STALE = 'The theme changed: look, then click OK.';
+const lab = (label, c) => ({label, ...c});
+const rows = () => [
+  [lab('Heading font', {kind: 'text', name: 'major', maxLen: 64,
+    w: 200, help: 'The font of the headings: type a name, or click ' +
+      'Choose....'}),
+  {kind: 'button', name: 'fontsMajor', text: 'Choose...',
+    help: 'A menu of fonts to choose from.'}],
+  [lab('Body font', {kind: 'text', name: 'minor', maxLen: 64, w: 200,
+    help: 'The font of the body text: type a name, or click ' +
+      'Choose....'}),
+  {kind: 'button', name: 'fontsMinor', text: 'Choose...',
+    help: 'A menu of fonts to choose from.'}],
+  {kind: 'label', name: 'msg', text: '', w: 400},
+];
+
+const state = new WeakMap();           // api -> the values filled
+const wired = new WeakSet();
+
+/** See the header. */
+export function themeFontBox(dw) {
+  const api = dialog({task: dw.app.task, key: `themefonts:${dw.docKey}`,
+    title: 'Theme fonts', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'OK'], enter: 'OK'});
+  box(dw, 'themefonts', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, dw);
+  refill(api, dw);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the document's theme now. */
+function refill(api, dw) {
+  const was = fillFonts(dw.d);
+  api.set('major', was.major);
+  api.set('minor', was.minor);
+  api.set('msg', '');
+  state.set(api, was);
+}
+
+/** Choose...: the font menu at the button; a pick fills the field. */
+function choose(api, dw, field, button) {
+  const at = api.win.iconByName(button).bbox;
+  const p = api.win.workToScreen(at.x1, at.y1);
+  const m = fontMenu({current: api.get(field) || null,
+    docFonts: docFonts(dw.view),
+    onPick: (n) => { if (!api.gone) api.set(field, n); }});
+  wimp.menus.open(m, p.x, p.y, {task: dw.app.task});
+  return false;
+}
+
+/** Refuse: beep, say why, the caret to the field. */
+function refuse(api, text, field) {
+  wimp.beep();
+  api.set('msg', text);
+  if (field) api.focus(field);
+  return false;
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  api.on('button', ({name, values}) => {
+    if (name === 'fontsMajor') return choose(api, dw, 'major', name);
+    if (name === 'fontsMinor') return choose(api, dw, 'minor', name);
+    if (name !== 'OK') { dw.view.focus(); return undefined; }
+    const was = state.get(api);
+    const now = fillFonts(dw.d);
+    if (now.major !== was.major || now.minor !== was.minor) {
+      refill(api, dw);
+      return refuse(api, STALE);
+    }
+    const r = fontsApply(dw.d, values, was);
+    if (r.error) return refuse(api, r.error, r.bad[0]);
+    if (r.refused) return refuse(api, r.refused);
+    dw.view.focus();
+    return undefined;
+  });
+}

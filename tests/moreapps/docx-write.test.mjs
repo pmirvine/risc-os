@@ -75,8 +75,12 @@ describe('DocxWrite: newDoc', () => {
       assert.equal(paras(doc)[0].text, '');
       assert.equal(doc.meta.conformance, 'transitional');
       const t = doc.styles;
-      assert.deepEqual(t.docDefaults.rPr.rFonts, {ascii: 'Calibri',
-        hAnsi: 'Calibri', eastAsia: 'Calibri', cs: 'Calibri'});
+      // (the theme's body font, as Word's own new documents)
+      assert.equal(t.docDefaults.rPr.rFonts, undefined);
+      assert.deepEqual(t.docDefaults.rPr.extra.map((n) => [n.name,
+        Object.fromEntries(n.attrs)]), [['w:rFonts', {
+        'w:asciiTheme': 'minorHAnsi', 'w:eastAsiaTheme': 'minorEastAsia',
+        'w:hAnsiTheme': 'minorHAnsi', 'w:cstheme': 'minorBidi'}]]);
       assert.equal(t.docDefaults.rPr.sz, 22);
       assert.deepEqual(t.docDefaults.pPr.spacing, {after: 160, line: 259,
         lineRule: 'auto'});
