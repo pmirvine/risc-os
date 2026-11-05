@@ -91,7 +91,8 @@ describe('DocxWrite: newDoc', () => {
       assert.deepEqual([...x.keys()].sort(), ['[Content_Types].xml',
         '_rels/.rels', 'docProps/app.xml', 'docProps/core.xml',
         'word/_rels/document.xml.rels', 'word/document.xml',
-        'word/settings.xml', 'word/styles.xml']);
+        'word/settings.xml', 'word/styles.xml',
+        'word/theme/theme1.xml']);
       const core = await entryText(bytes, 'docProps/core.xml');
       assert.match(core, new RegExp('<dcterms:created xsi:type="' +
         'dcterms:W3CDTF">' + DATE.toISOString().slice(0, 19)));

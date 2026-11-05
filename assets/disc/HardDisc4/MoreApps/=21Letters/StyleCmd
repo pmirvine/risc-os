@@ -23,10 +23,12 @@
 //       the rPr change goes to both halves, pPr to the paragraph
 //       half only.
 //   renameStyle(table, id, name) -> modifyStyle with {name}. A
-//       built-in is never renamed (Word knows it by its name).
+//       built-in is never renamed (Word knows it by its name). A
+//       custom linked pair is renamed together (./StylePair).
 //   deleteStyle(table, id) -> table | null (not a built-in):
 //       children are re-based on the parent, next / link / default
-//       references to the style are cleared.
+//       references to the style are cleared. A linked mate goes too
+//       (./StylePair deletePlan).
 //   resetBuiltin(table, id) -> table | null: the built-in style
 //       `id` as ./StylesBuiltin defines it.
 //   ensureBuiltin(table, id, {strict}?) -> table | null: the table
@@ -36,11 +38,16 @@
 //       has the id or a style of that name already, or `id` is not
 //       a built-in. Latent styles: Word writes a built-in into a
 //       document on first use
+//   modifyDefaults(table, {rPr, pPr}) -> table | {refused}: the
+//       document's defaults (w:docDefaults), from ./StyleDefaults
 // Hostile files (basedOn cycles, missing targets) never loop or
 // throw: the walks keep a seen-set.
 import {idFor, nameOk} from './StyleId';
+import {deletePlan, renamePlan} from './StylePair';
 import {builtinStyle, isBuiltinStyle} from './StylesBuiltin';
 import {RPR_FIELDS, PPR_FIELDS, withoutRaw} from './PropNames';
+
+export {modifyDefaults} from './StyleDefaults';
 
 const TYPES = ['paragraph', 'character'];
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
@@ -175,10 +182,12 @@ export function modifyStyle(table, id, patch) {
   const styles = new Map(table.styles);
   styles.set(id, s);
   const mate = s.link != null ? table.styles.get(s.link) : null;
-  if (mate && mate.link === id && has(patch, 'rPr')) {
+  const rn = has(patch, 'name') && renamePlan(table, id, patch.name);
+  if (mate && mate.link === id && (has(patch, 'rPr') || rn)) {
     const m = structuredClone(mate);
-    m.rPr = replaceRaw(mergeProps(m.rPr, patch.rPr), patch.rPr,
-      RPR_FIELDS);
+    if (has(patch, 'rPr')) m.rPr = replaceRaw(mergeProps(m.rPr,
+      patch.rPr), patch.rPr, RPR_FIELDS);
+    if (rn) m.name = rn.mateName;
     m.raw = null;
     styles.set(m.id, m);
   }
@@ -196,6 +205,14 @@ export function deleteStyle(table, id) {
   if (!old || isBuiltinStyle(old)) return null;
   // the default style of its type is never deleted
   if (table.defaults[old.type] === id) return null;
+  const [, mate] = deletePlan(table, id).ids;
+  if (mate) return deleteStyle(deleteOne(table, id), mate);
+  return deleteOne(table, id);
+}
+
+/** deleteStyle for one style, already known to be deletable. */
+function deleteOne(table, id) {
+  const old = table.styles.get(id);
   const styles = new Map(table.styles);
   styles.delete(id);
   for (const [k, c] of table.styles) {
@@ -244,13 +261,19 @@ export function ensureBuiltin(table, id, opts = {}) {
     names.add(nameKey(s));
     for (const k of ['basedOn', 'next', 'link']) {
       const t = s[k];
-      if (typeof t !== 'string' || styles.has(t)) continue;
+      if (typeof t !== 'string') continue;
+      // a link only to a style that links back (one-way: none)
+      const back = (x) => k !== 'link' || x.link === s.id;
+      if (styles.has(t)) {
+        if (!back(styles.get(t))) delete s[k];
+        continue;
+      }
       const o = builtinStyle(t, opts);
       if (!o) continue;
       // the same name under another id: refer to that style
       const same = [...styles.values()].find((x) =>
         nameKey(x) === nameKey(o) && x.type === o.type);
-      if (same) s[k] = same.id;
+      if (same) { if (back(same)) s[k] = same.id; else delete s[k]; }
       else if (names.has(nameKey(o))) delete s[k];
       else add(o);
     }

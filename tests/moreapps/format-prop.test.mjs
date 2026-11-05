@@ -61,6 +61,13 @@ function setStyles(d, noSize) {
     basedOn: 'Normal', pPr: {jc: 'center', extra: []}});
   addStyle(st, {id: 'Strong', type: 'character', name: 'Strong',
     rPr: {b: true, extra: []}});
+  // the reference models the earlier bold headings: Heading 1 and 2
+  // as they were before the Word 2013+ look (StylesBuiltinMore)
+  for (const [id, sz] of [['Heading1', 32], ['Heading2', 26]]) {
+    const h = st.styles.get(id);
+    h.rPr = {b: true, sz, szCs: sz, extra: []};
+    h.raw = null;
+  }
   if (noSize) {
     delete st.docDefaults.rPr.sz;
     delete st.docDefaults.rPr.szCs;

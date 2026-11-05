@@ -532,6 +532,10 @@ Batch D's Print layout meets the same with Ctrl-Page Down and Ctrl-Page Up (the 
 Firefox keep them for their next and previous tab. !Letters gives them Edit > Next page and Edit > Previous page, and
 its guide and `!Help` say a browser may keep the keys.
 
+The !Letters styles work adds one more: Ctrl-Shift-N (Word's key for the Normal style) is taken by Chrome and Firefox
+for a new private window (Cmd-Shift-N on a Mac), so the page may never see it. !Letters keeps the key binding and gives
+the action a menu route: Format > Style > Normal (and Normal in the toolbar's style menu); its guide and `!Help` say so.
+
 ## The core has no detachPane — noted by the !Letters formatting work (!Letters)
 **Status:** Open: shared code, not changed by the !Letters work.
 

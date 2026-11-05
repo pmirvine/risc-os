@@ -1,0 +1,160 @@
+// DefaultsBox - the Document defaults box (Format > Document
+// defaults...): the document's default font, size, space after and
+// line spacing (w:docDefaults), what every style starts from: a
+// style (Normal) that sets none of its own shows them. Built by
+// WimpLib Ui/Dialog.
+//
+//   defaultsBox(dw) -> the box's api, one per document (key
+//       'defaults:<docKey>', dw.boxes 'defaults': ./CloseDoc deletes
+//       it with the document); asked again while open, the same box
+//       to the front. null (a beep) when the document has no style
+//       table.
+//
+// The box: Font (a name; Choose... opens the font menu, WimpLib
+// Ui/FontMenu as Format > Font has it, and a pick puts the name in),
+// Size (points), After (points), Line spacing / At (./ParaBox's
+// choices and At). It opens filled with what the defaults resolve
+// to (./DefaultsPatch fillDefaults: a theme font as its family).
+// Set (or Return): ./DefaultsPatch defaultsPatch of the values
+// against those shown, made by modifyDefaults into one ./StyleDoc
+// run: one undo step (none when nothing changed), the box gone, the
+// caret back to the document; the document is laid out again with
+// the new table. A field that is not a value (an empty font, Size
+// not 1 to 400 points, After not 0 to 1584 points, an At the screen
+// cannot draw) beeps, says why at the foot of the box and keeps it
+// with the caret in the field; so does a document whose defaults
+// Letters keeps as they are (modifyDefaults refused: the reason).
+// If the styles changed while the box was open (an undo, the Styles
+// window), Set beeps, fills the box again and keeps it. Cancel,
+// Escape and the close icon change nothing. The state is looked up
+// when a button is pressed, so each document's box is its own.
+import {wimp} from 'riscos';
+import {dialog} from 'wimplib/Ui/Dialog';
+import {fontMenu} from 'wimplib/Ui/FontMenu';
+import {box} from './Boxes';
+import {run} from './StyleDoc';
+import {modifyDefaults} from './StyleDefaults';
+import {fillDefaults, defaultsPatch} from './DefaultsPatch';
+import {LINES} from './ParaPatch';
+import {kindOf} from './ParaBox';
+import {docFonts} from './EditFormat';
+
+const VALUES = ['font', 'size', 'after', 'spacing', 'at'];
+const HELP = 'Document defaults: the font, size and spacing every ' +
+  'style of this document starts from.';
+const STALE = 'The styles changed: look, then click Set.';
+const lab = (label, c) => ({label, ...c});
+const rows = () => [
+  {kind: 'label', text: 'Font'},
+  [lab('Font', {kind: 'text', name: 'font', maxLen: 64, w: 180,
+    help: 'The default font: type a name, or click Choose....'}),
+  {kind: 'button', name: 'fonts', text: 'Choose...',
+    help: 'A menu of fonts to choose from.'}],
+  [lab('Size', {kind: 'number', name: 'size', min: 1, max: 400,
+    step: 0.5, decimals: 1, unit: 'pt',
+    help: 'The default size of the text: 1 to 400 points.'})],
+  {kind: 'label', text: 'Paragraph'},
+  [lab('After', {kind: 'length', name: 'after', unit: 'pt', min: 0,
+    max: 31680, help: 'The space after each paragraph: 0 to 1584 ' +
+      'points.'})],
+  [lab('Line spacing', {kind: 'popup', name: 'spacing',
+    choices: LINES, help: 'The space between the lines.'}),
+  lab('At', {kind: 'number', name: 'at', min: 0, max: 100000}),
+  {kind: 'label', name: 'atunit', text: 'lines'}],
+  {kind: 'label', name: 'msg', text: '', w: 400},
+];
+
+const state = new WeakMap();           // api -> {table, was, at}
+const wired = new WeakSet();
+
+/** See the header. */
+export function defaultsBox(dw) {
+  const v = dw.view;
+  if (!v.d.doc.styles) { wimp.beep(); return null; }
+  const api = dialog({task: dw.app.task, key: `defaults:${dw.docKey}`,
+    title: 'Document defaults', rows: rows(), help: HELP,
+    buttons: ['Cancel', 'Set'], enter: 'Set'});
+  box(dw, 'defaults', () => api.win);
+  if (api.isOpen) return api;
+  if (!wired.has(api)) wire(api, dw);
+  refill(api, dw);
+  api.open();
+  return api;
+}
+
+/** Fill the box from the document's defaults now. */
+function refill(api, dw) {
+  const table = dw.view.d.doc.styles, was = fillDefaults(table);
+  for (const k of VALUES) api.set(k, was[k]);
+  state.set(api, {table, was, mode: kindOf(was.spacing)});
+  api.set('msg', '');
+  atFor(api, was.spacing);
+}
+
+/** At shaded for Single, 1.5 lines and Double; its unit said. */
+function atFor(api, spacing) {
+  api.shade('at', !kindOf(spacing));
+  api.set('atunit', kindOf(spacing));
+}
+
+/** Line spacing changed: At takes that kind's usual value (as the
+ *  Paragraph box, ./ParaBox paraChange). */
+function spacingChange(api, st, value) {
+  const now = kindOf(value);
+  if (now !== st.mode) {
+    api.set('at', now === 'lines' ? 3 : now === 'pt' ? 12
+      : undefined);
+  }
+  st.mode = now;
+  atFor(api, value);
+}
+
+/** The handlers of a new box. */
+function wire(api, dw) {
+  wired.add(api);
+  api.on('change', (ev) => {
+    const st = state.get(api);
+    if (st && ev.name === 'spacing') spacingChange(api, st, ev.value);
+  });
+  api.on('button', ({name, values}) => {
+    if (name === 'fonts') return fonts(api, dw);
+    if (name !== 'Set') { dw.view.focus(); return undefined; }
+    return set(api, dw, values);
+  });
+}
+
+/** Refuse: beep, say why, the caret to the field. */
+function refuse(api, text, field) {
+  wimp.beep();
+  api.set('msg', text);
+  if (field) api.focus(field);
+  return false;
+}
+
+/** Choose...: the font menu at the button; a pick fills Font. */
+function fonts(api, dw) {
+  const at = api.win.iconByName('fonts').bbox;
+  const p = api.win.workToScreen(at.x1, at.y1);
+  const m = fontMenu({current: api.get('font') || null,
+    docFonts: docFonts(dw.view),
+    onPick: (n) => { if (!api.gone) api.set('font', n); }});
+  wimp.menus.open(m, p.x, p.y, {task: dw.app.task});
+  return false;
+}
+
+/** Set: see the header. */
+function set(api, dw, values) {
+  const v = dw.view, st = state.get(api);
+  if (v.d.doc.styles !== st.table) {
+    refill(api, dw);
+    return refuse(api, STALE);
+  }
+  const r = defaultsPatch(values, st.was);
+  if (r.error) return refuse(api, r.error, r.bad[0]);
+  const out = modifyDefaults(st.table, r.patch,
+    {strict: v.d.doc.meta?.conformance === 'strict'});
+  if (out.refused) return refuse(api, out.refused);
+  if (out !== st.table) run(v.d, v.typing, () => ({table: out}));
+  v.focus();
+  return undefined;
+}

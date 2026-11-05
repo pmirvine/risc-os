@@ -89,10 +89,11 @@ describe('Format.query', () => {
     assert.equal(r.bold, true);
     assert.equal(r.align, 'center');
   });
-  it('a heading is bold from its style', () => {
+  it('a heading takes its style\'s look', () => {
+    // (Word 2013+'s Heading 1: 16 pt, not bold, accent colour)
     const d = mk([['Title', {pStyle: 'Heading1'}]]);
     const q = F.query(d.doc, SEL(d, 0, 0, 0, 5));
-    assert.equal(q.bold, true);
+    assert.equal(q.bold, false);
     assert.equal(q.size, 16);
     assert.equal(q.style, 'Heading1');
     assert.equal(q.spaceBefore, 240);
@@ -111,7 +112,8 @@ describe('Format.query', () => {
     const q = F.query(d.doc, C(d, 0, 0));
     assert.equal(q.bold, false);
     assert.equal(q.size, 11);
-    assert.equal(F.query(d.doc, C(d, 1, 0)).bold, true);
+    // Heading 2's Word 2013+ look: 13 pt, not bold
+    assert.equal(F.query(d.doc, C(d, 1, 0)).bold, false);
     assert.equal(F.query(d.doc, C(d, 1, 0)).size, 13);
   });
   it('a selection with no characters: as a caret at its start', () => {

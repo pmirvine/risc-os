@@ -70,16 +70,30 @@ describe('ThemeRead', () => {
     // 170.4 -> AA, 196*.6+102 = 219.6 -> DC
     assert.equal(colorOf(t, {themeColor: 'accent1', themeTint: '99'}),
       '8FAADC');
-    // shade 0xBF, s = 191/255: 68*s = 50.9 -> 33, 114*s = 85.4 ->
-    // 55, 196*s = 146.8 -> 93
+    // shade 0xBF, s = 191/255, in HSL: l *= s (Word's 2F5496)
     assert.equal(colorOf(t, {themeColor: 'accent1', themeShade: 'BF'}),
-      '335593');
+      '2F5496');
     assert.equal(colorOf(t, {color: '123456', themeColor: 'accent1'}),
       '4472C4');
     assert.equal(colorOf(t, {themeColor: 'background1'}), 'FFFFFF');
     assert.equal(colorOf(t, {themeColor: 'text2'}), '44546A');
     assert.equal(colorOf(t, {themeColor: 'accent2', themeTint: 153}),
       colorOf(t, {themeColor: 'accent2', themeTint: '99'}));
+  });
+
+  it('colorOf: tint and shade work in HSL', () => {
+    const t = parse(null);
+    const c = (o) => colorOf(t, o);
+    assert.equal(c({themeColor: 'text2', themeTint: '99'}), '8497B0');
+    assert.equal(c({themeColor: 'accent1', themeShade: '7F'}),
+      '203864');
+    assert.equal(c({themeColor: 'accent1'}), '4472C4');
+    assert.equal(c({themeColor: 'accent1', themeTint: '99'}),
+      '8FAADC');
+    assert.equal(c({themeColor: 'accent1', themeTint: '66'}),
+      'B4C7E7');
+    assert.equal(c({themeColor: 'text1', themeTint: 'BF'}), '404040');
+    assert.equal(c({themeColor: 'text1', themeTint: 'A5'}), '5A5A5A');
   });
 
   it('colorOf ignores an unknown themeColor name', () => {

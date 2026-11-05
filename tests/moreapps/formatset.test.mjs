@@ -46,6 +46,8 @@ describe('FormatSet.toggle', () => {
   it('a heading: un-bolding writes b:false, re-bolding removes it',
     () => {
       const d = mk([['Head', {pStyle: 'Heading1'}]]);
+      // a bold Heading 1 (Word 2013+'s is not bold)
+      d.doc.styles.styles.get('Heading1').rPr.b = true;
       const sel = SEL(d, 0, 0, 0, 4);
       run(d, (t) => FS.toggle(d, t, sel, 'bold'));
       assert.deepEqual(P(d, 0).runs[0].rPr, {b: false, extra: []});
@@ -554,6 +556,8 @@ describe('FormatSet: Task 7 minors', () => {
   it('a size change drops a b the rest gives anyway', () => {
     const d = mk([['ab', {pStyle: 'Heading1', runs: [{start: 0, end: 2,
       rPr: {b: true, sz: 40, szCs: 40, extra: []}}]}]]);
+    // a bold Heading 1 (Word 2013+'s is not bold)
+    d.doc.styles.styles.get('Heading1').rPr.b = true;
     run(d, (t) => FS.sizeBy(d, t, SEL(d, 0, 0, 0, 2), 1));
     // Heading 1 is bold by its style: the run's own b:true goes
     assert.deepEqual(P(d, 0).runs[0].rPr, {sz: 44, szCs: 44,

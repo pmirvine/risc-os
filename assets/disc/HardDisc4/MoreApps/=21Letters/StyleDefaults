@@ -1,0 +1,218 @@
+// StyleDefaults - the document's defaults (w:docDefaults: the font,
+// size, space after and line spacing every style starts from), as
+// Format > Document defaults... (./DefaultsBox) changes them. Pure:
+// no desktop services; a ./Styles StyleTable is never changed.
+//
+//   modifyDefaults(table, {rPr?, pPr?}, {strict}?) -> table
+//       | {refused}
+//       rPr {font?, sz?}  font: a family name, written as w:rFonts
+//           ascii, hAnsi and cs; the theme fonts of those scripts
+//           (asciiTheme, hAnsiTheme, cstheme) go, as they would win;
+//           eastAsia, eastAsiaTheme and hint stay. sz: half-points,
+//           w:sz and w:szCs
+//       pPr {after?, line?, lineRule?}  w:spacing's (twips; line in
+//           240ths of a line for 'auto'); after set removes
+//           afterLines and afterAutospacing (they would win)
+//       A new table (docDefaults new, the styles shared) holding the
+//       change; when the table has the original w:docDefaults
+//       (docDefaultsRaw: ./WriteStyles writes it as it is) that node
+//       is PATCHED, a copy: what else it holds (w:lang, w:kern,
+//       w14:*, the w:rFonts and w:spacing attributes not changed)
+//       stays as it was, and the model is read again from it. The
+//       table itself when nothing changes. {refused: reason} when the
+//       part to change is one Letters keeps as it is: attributes on
+//       w:docDefaults, w:rPrDefault / w:pPrDefault or w:rPr / w:pPr,
+//       two of one of them, or two w:rFonts, w:sz, w:szCs or
+//       w:spacing; or a styles part that binds WordprocessingML only
+//       as the default namespace (no prefix for new names). strict:
+//       a Strict document's table
+// The box's values (what the defaults resolve to, the patch they
+// make) are ./DefaultsPatch's.
+import {el} from 'wimplib/Xml';
+import {W, rootScope, strictScope, wName, isEl} from './Ns';
+import {readRPr, readPPr} from './ReadProps';
+import {rPrNode, pPrNode} from './WriteProps';
+import {ORDER} from './Order';
+import {deepEqual} from './DeepEqual';
+
+const FONT = 'The default font and size of this document cannot ' +
+  'be changed: its styles part holds them in a form Letters keeps ' +
+  'as it is.';
+const PARA = 'The default paragraph spacing of this document ' +
+  'cannot be changed: its styles part holds it in a form Letters ' +
+  'keeps as it is.';
+const NS = 'The defaults of this document cannot be changed: its ' +
+  'styles part names WordprocessingML without a prefix.';
+const SCRIPTS = {ascii: 'asciiTheme', hAnsi: 'hAnsiTheme',
+  cs: 'cstheme'};
+const has = (o, k) => o && Object.prototype.hasOwnProperty.call(o, k);
+
+/** The scope new nodes are made and read in: the styles part's
+ *  for its original w:docDefaults, else w bound (as ./WriteStyles
+ *  binds it when it builds the part). */
+function scopeOf(table, raw, strict) {
+  const m = raw ? rootScope({name: table.rootName || 'w:styles',
+    attrs: table.rootAttrs || []})
+    : rootScope({name: 'w:styles', attrs: [['xmlns:w', W]]});
+  return strict ? strictScope(m) : m;
+}
+
+/** The prefix (with ':') bound to WML in m, for new names; null
+ *  when only the default namespace is (no prefix to use). */
+function prefixOf(m) {
+  for (const [k, v] of m) if (v === W && k) return k + ':';
+  return null;
+}
+
+/** The children of n named l: {at, node} of the one, null for none,
+ *  false for two or more. */
+function one(n, m, l) {
+  let out = null;
+  n.children.forEach((c, at) => {
+    if (wName(c, m) !== l) return;
+    out = out === null ? {at, node: c} : false;
+  });
+  return out;
+}
+
+/** n with child l (local) as make(old | null) gives it (null:
+ *  removed), in the order of names; false when n has two. */
+function withKid(n, m, l, names, make) {
+  const o = one(n, m, l);
+  if (o === false) return false;
+  const now = make(o ? o.node : null);
+  const kids = n.children.slice();
+  if (o) {
+    if (now) kids[o.at] = now; else kids.splice(o.at, 1);
+  } else if (now) {
+    const want = names.indexOf(l);
+    const at = kids.findIndex((c) => {
+      if (!isEl(c)) return false;
+      const k = wName(c, m);
+      const i = k === null ? names.length - 1.5 : names.indexOf(k);
+      return i > want;
+    });
+    if (at < 0) kids.push(now); else kids.splice(at, 0, now);
+  }
+  return {...n, children: kids};
+}
+
+/** Node n with WML attributes set (null: removed): a set one in
+ *  place, else where `swap` (local -> local) named one, else last. */
+function withAttrs(n, m, set, swap = {}) {
+  const pre = prefixOf(m), done = new Set(), out = [];
+  const local = (k) => {
+    const i = k.indexOf(':');
+    return i > 0 && m.get(k.slice(0, i)) === W ? k.slice(i + 1)
+      : null;
+  };
+  for (const [k, v] of n.attrs) {
+    const l = local(k);
+    const to = l !== null && has(swap, l) ? swap[l] : l;
+    if (to === null || !has(set, to)) { out.push([k, v]); continue; }
+    if (done.has(to) || set[to] === null) { done.add(to); continue; }
+    done.add(to);
+    out.push([pre + to, String(set[to])]);
+  }
+  for (const [l, v] of Object.entries(set)) {
+    if (!done.has(l) && v !== null) out.push([pre + l, String(v)]);
+  }
+  return {...n, attrs: out};
+}
+
+/** A new empty WML element l. */
+const make = (m, l, attrs) => el(prefixOf(m) + l, attrs || null);
+
+/** The rPr node with the font and size patch. */
+function rPrWith(node, m, rp) {
+  let n = node;
+  const step = (l, f) => { if (n) n = withKid(n, m, l, ORDER.rPr, f); };
+  if (has(rp, 'font')) {
+    const set = {ascii: rp.font, hAnsi: rp.font, cs: rp.font};
+    const gone = Object.fromEntries(Object.values(SCRIPTS)
+      .map((t) => [t, null]));
+    const swap = Object.fromEntries(Object.entries(SCRIPTS)
+      .map(([k, th]) => [th, k]));
+    step('rFonts', (o) => withAttrs(o || make(m, 'rFonts'), m,
+      {...gone, ...set}, swap));
+  }
+  if (has(rp, 'sz')) {
+    for (const l of ['sz', 'szCs']) {
+      step(l, () => make(m, l, [[prefixOf(m) + 'val', rp.sz]]));
+    }
+  }
+  return n;
+}
+
+/** The pPr node with the spacing patch. */
+function pPrWith(node, m, pp) {
+  const set = {};
+  for (const k of ['after', 'line', 'lineRule']) {
+    if (has(pp, k)) set[k] = pp[k];
+  }
+  if (!Object.keys(set).length) return node;
+  if (has(set, 'after')) {
+    set.afterLines = null;
+    set.afterAutospacing = null;
+  }
+  return withKid(node, m, 'spacing', ORDER.pPr, (o) =>
+    withAttrs(o || make(m, 'spacing'), m, set));
+}
+
+/** The part (rPr / pPr) of the original node d patched by fn:
+ *  {node: the new docDefaults, part}, or null (refused). */
+function patchRaw(d, m, kind, fn) {
+  const def = kind + 'Default';
+  const h = one(d, m, def);
+  if (d.attrs.length || h === false || (h && h.node.attrs.length))
+    return null;
+  const holder = h ? h.node : make(m, def);
+  const x = one(holder, m, kind);
+  if (x === false || (x && x.node.attrs.length)) return null;
+  const part = fn(x ? x.node : make(m, kind));
+  if (!part) return null;
+  const nh = withKid(holder, m, kind, [kind], () => part);
+  const node = withKid(d, m, def, ['rPrDefault', 'pPrDefault'],
+    () => nh);
+  return {node, part};
+}
+
+/** See the header. */
+export function modifyDefaults(table, patch = {}, opts = {}) {
+  let raw = table.docDefaultsRaw || null;
+  const m = scopeOf(table, raw, opts.strict);
+  const rp = patch.rPr || {}, pp = patch.pPr || {};
+  const dd = table.docDefaults || {rPr: {extra: []},
+    pPr: {extra: []}};
+  const jobs = [];
+  if (Object.keys(rp).length) {
+    jobs.push(['rPr', (n) => rPrWith(n, m, rp), FONT]);
+  }
+  if (['after', 'line', 'lineRule'].some((k) => has(pp, k))) {
+    jobs.push(['pPr', (n) => pPrWith(n, m, pp), PARA]);
+  }
+  if (jobs.length && !prefixOf(m)) return {refused: NS};
+  const model = {...dd};
+  for (const [kind, fn, why] of jobs) {
+    let part;
+    if (raw) {
+      const r = patchRaw(raw, m, kind, fn);
+      if (!r) return {refused: why};
+      raw = r.node;
+      part = r.part;
+    } else {
+      const was = kind === 'rPr' ? rPrNode(dd.rPr, undefined, m)
+        : pPrNode(dd.pPr, undefined, null, m);
+      part = fn(was || make(m, kind));
+      if (!part) return {refused: why};
+    }
+    model[kind] = kind === 'rPr' ? readRPr(part, m, false).rPr
+      : readPPr(part, m, false).pPr;
+  }
+  if (deepEqual(model.rPr, dd.rPr) && deepEqual(model.pPr, dd.pPr))
+    return table;
+  const out = {...table, docDefaults: model,
+    defaults: {...table.defaults}};
+  if (table.docDefaultsRaw) out.docDefaultsRaw = raw;
+  return out;
+}

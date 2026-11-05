@@ -128,7 +128,9 @@ describe('StyleList latent built-ins', () => {
     const e = SL.gallery(d.doc).find((x) => x.id === 'Heading1');
     assert.equal(e.latent, true);
     assert.equal(e.name, 'Heading 1');
-    assert.equal(e.preview.bold, true);
+    // Word 2013+'s look: 16 pt, not bold (StylesBuiltinMore)
+    assert.equal(e.preview.bold, false);
+    assert.equal(e.preview.sizePt, 16);
     assert.equal(d.doc.styles.styles.has('Heading1'), false);
     assert.ok(SL.all(d.doc).some((x) => x.id === 'Heading1' &&
       x.latent));

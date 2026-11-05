@@ -13,9 +13,9 @@
 //     overrides ascii and hAnsi; null when it names no font.
 //   colorOf(theme, {color?, themeColor?, themeTint?, themeShade?})
 //     -> 'RRGGBB'
-//     Word's rule: themeColor overrides the literal color; then
-//     tint t = themeTint / 255 lightens each channel (c * t + 255 *
-//     (1 - t)) and shade s = themeShade / 255 darkens it (c * s).
+//     Word's rule: themeColor overrides the literal color; then, in
+//     HSL, tint t = themeTint / 255 lightens (l * t + (1 - t)) and
+//     shade s = themeShade / 255 darkens (l * s).
 //     An unknown themeColor falls back to the literal color, else
 //     black. themeTint and themeShade: two hex digits or a number.
 import {parseXml} from 'wimplib/Xml';
@@ -130,12 +130,35 @@ export function colorOf(theme, c) {
     ? t.colors.get(name) : null;
   if (base === null) return lit || '000000';
   const tint = level(c.themeTint), shade = level(c.themeShade);
-  let out = '';
-  for (let i = 0; i < 6; i += 2) {
-    let v = parseInt(base.slice(i, i + 2), 16);
-    if (tint !== null) v = v * tint + 255 * (1 - tint);
-    if (shade !== null) v = v * shade;
-    out += hex2(v);
-  }
-  return out;
+  if (tint === null && shade === null) return base;
+  let [h, s, l] = toHsl(base);
+  if (tint !== null) l = l * tint + (1 - tint);
+  if (shade !== null) l *= shade;
+  return fromHsl(h, s, l);
+}
+
+/** 'RRGGBB' -> [h, s, l], each 0..1. */
+function toHsl(hex) {
+  const [r, g, b] = [0, 2, 4].map((i) =>
+    parseInt(hex.slice(i, i + 2), 16) / 255);
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+  const l = (mx + mn) / 2, d = mx - mn;
+  if (d === 0) return [0, 0, l];
+  const s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0)
+    : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+
+/** [h, s, l] -> 'RRGGBB'. */
+function fromHsl(h, s, l) {
+  if (s === 0) return hex2(l * 255).repeat(3);
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+  const f = (t) => {
+    const u = ((t % 1) + 1) % 1;
+    return u < 1 / 6 ? p + (q - p) * 6 * u : u < 1 / 2 ? q
+      : u < 2 / 3 ? p + (q - p) * (2 / 3 - u) * 6 : p;
+  };
+  return [h + 1 / 3, h, h - 1 / 3].map((t) => hex2(f(t) * 255))
+    .join('');
 }

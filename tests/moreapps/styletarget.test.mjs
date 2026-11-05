@@ -65,7 +65,9 @@ describe('StyleTarget.viewOf', () => {
     assert.equal(v.p.pStyle, 'Heading1');
     const q = query(v.doc, v.sel);
     assert.equal(q.style, 'Heading1');
-    assert.equal(q.bold, true);
+    // Word 2013+'s Heading 1: 16 pt, not bold
+    assert.equal(q.bold, false);
+    assert.equal(q.size, 16);
     assert.equal(q.keepNext, true);
   });
   it('null for a style the table (and the built-ins) lack', () => {

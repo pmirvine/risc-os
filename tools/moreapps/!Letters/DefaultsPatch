@@ -1,0 +1,65 @@
+// DefaultsPatch - the Document defaults box's values (./DefaultsBox)
+// from a style table, and the patch they make for ./StyleDefaults
+// modifyDefaults (as ./StylePatch is to ./StyleCmd). Pure: no
+// desktop services; the table is never changed.
+//
+//   fillDefaults(table) -> {font, size, after, spacing, at}  the box's
+//       values: what the defaults RESOLVE to (the theme font read;
+//       size in points; after, spacing and at as ./ParaPatch fill)
+//   defaultsPatch(values, was) -> {patch} | {error, bad}  patch: what
+//       modifyDefaults takes, of the values that differ from was
+//       ({} for none); error: text for the box when a value is not
+//       one (an empty font; Size not 1 to 400 points; After not 0 to
+//       1584 points; At as ./ParaPatch), bad the field names
+import {resolver, charOf, paraOf} from './FormatEff';
+import {fill as paraFill, patch as paraDiff, lineSpacingOf}
+  from './ParaPatch';
+
+const LABEL = {font: 'Font', size: 'Size', after: 'After', at: 'At'};
+const MAX_AFTER = 31680;               // 1584 pt, as Word takes
+
+/** See the header. */
+export function fillDefaults(table) {
+  const t = {...table, styles: new Map(), defaults: {}};
+  const res = resolver({styles: t});
+  const p = {pPr: {extra: []}, runs: []};
+  const c = charOf(res.run(p, {extra: []}), p, res);
+  const q = paraOf(res.para(p), p, res);
+  const pv = paraFill(q);
+  return {font: c.family, size: c.size, after: pv.after,
+    spacing: pv.spacing, at: pv.at};
+}
+
+/** See the header. */
+export function defaultsPatch(values, was) {
+  const v = {...was, ...Object.fromEntries(Object.entries(values)
+    .filter(([, x]) => x !== undefined))};
+  const bad = [];
+  const font = typeof v.font === 'string' ? v.font.trim() : '';
+  if (!font) bad.push('font');
+  const size = v.size;
+  if (typeof size !== 'number' || !(size >= 1 && size <= 400))
+    bad.push('size');
+  const after = v.after;
+  if (typeof after !== 'number' || !(after >= 0 &&
+    after <= MAX_AFTER)) bad.push('after');
+  const q = {spaceAfter: was.after,
+    lineSpacing: lineSpacingOf(was.spacing, was.at)};
+  const pd = paraDiff({after: v.after, spacing: v.spacing, at: v.at},
+    q);
+  if (pd.bad.includes('at')) bad.push('at');
+  if (bad.length) {
+    return {error: 'Check the ' + bad.map((k) => LABEL[k]).join(', ') +
+      ' value' + (bad.length > 1 ? 's' : '') + '.', bad};
+  }
+  const out = {};
+  const rPr = {};
+  if (font !== was.font) rPr.font = font;
+  if (Math.abs(size - was.size) >= 0.001) {
+    rPr.sz = Math.round(size * 2);
+  }
+  if (Object.keys(rPr).length) out.rPr = rPr;
+  const sp = pd.patch.spacing;
+  if (sp) out.pPr = {...sp};
+  return {patch: out};
+}

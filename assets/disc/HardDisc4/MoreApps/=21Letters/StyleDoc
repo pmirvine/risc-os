@@ -6,6 +6,8 @@
 //   usedBy(doc, id) -> {paragraphs, runs}  how many paragraphs have
 //       pStyle id and how many runs have rStyle id, in the body,
 //       its tables' cells, and every story (headers, footers)
+//   usedByPair(doc, id) -> {paragraphs, runs}  usedBy for id plus
+//       the linked mate deleted with it (./StylePair deletePlan)
 //   usedAll(doc) -> Map<id, number>  paragraphs plus runs using each
 //       style id, from ONE walk of the document (for lists)
 //   run(d, typing, change) -> result | null  change(doc.styles) is a
@@ -15,12 +17,13 @@
 //       given: more setDocPart ops run first in the same atomic (the
 //       numbering part of a list a style starts: ./StyleTarget)
 //   remove(d, typing, id) -> boolean  ./StyleCmd deleteStyle, and
-//       every pStyle / rStyle equal to id removed (the default style
-//       then applies; one setProps per paragraph, and per run range
-//       for rStyle) in every story, in the same atomic. false (no
-//       step) when deleteStyle refuses
+//       every pStyle / rStyle equal to id (or to its deleted mate)
+//       removed (the default style then applies; one setProps per
+//       paragraph, and per run range for rStyle) in every story, in
+//       the same atomic. false (no step) when deleteStyle refuses
 import {blocks, walkBlocks} from './Walk';
 import {deleteStyle} from './StyleCmd';
+import {deletePlan} from './StylePair';
 
 /** Every paragraph of the document as {p, at, story}: the body's,
  *  then each story's (paths [0, i, ...], op.story the part). */
@@ -37,12 +40,12 @@ function* paras(doc) {
   }
 }
 
-/** Ranges [start, end) of the runs of p with rStyle id (adjacent
+/** Ranges [start, end) of the runs of p with rStyle in ids (adjacent
  *  ones joined). */
-function runRanges(p, id) {
+function runRanges(p, ids) {
   const out = [];
   for (const r of p.runs || []) {
-    if (r.rStyle !== id) continue;
+    if (!ids.has(r.rStyle)) continue;
     const last = out[out.length - 1];
     if (last && last.end === r.start) last.end = r.end;
     else out.push({start: r.start, end: r.end});
@@ -58,6 +61,17 @@ export function usedBy(doc, id) {
     for (const r of p.runs || []) if (r.rStyle === id) runs++;
   }
   return {paragraphs, runs};
+}
+
+/** See the header. */
+export function usedByPair(doc, id) {
+  const t = doc.styles, out = {paragraphs: 0, runs: 0};
+  for (const i of t ? deletePlan(t, id).ids : [id]) {
+    const u = usedBy(doc, i);
+    out.paragraphs += u.paragraphs;
+    out.runs += u.runs;
+  }
+  return out;
 }
 
 /** See the header. */
@@ -90,12 +104,13 @@ export function run(d, typing, change) {
 export function remove(d, typing, id) {
   const table = deleteStyle(d.doc.styles, id);
   if (!table) return false;
+  const gone = new Set(deletePlan(d.doc.styles, id).ids);
   const todo = [];
   for (const {p, at, story} of paras(d.doc)) {
     const base = story === undefined ? {op: 'setProps', block: at}
       : {op: 'setProps', block: at, story};
-    if (p.pStyle === id) todo.push({...base, pStyle: null});
-    for (const range of runRanges(p, id))
+    if (gone.has(p.pStyle)) todo.push({...base, pStyle: null});
+    for (const range of runRanges(p, gone))
       todo.push({...base, rStyle: null, range});
   }
   const go = () => d.atomic(() => {

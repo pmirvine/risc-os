@@ -1,0 +1,104 @@
+// StyleUpdate - Update <style> to match selection: Format menu and
+// the toolbar's style menu (./StyleMenu updateItem). d is the real
+// ./Document, typing its ./Typing (or null); one undo step (none
+// when nothing changes), as ./FormatSet's commands. ./StyleApply
+// re-exports both.
+//
+//   updateToMatch(d, typing, sel, pending) -> {sel, pending, refused?}
+//       the caret paragraph's direct paragraph properties (not
+//       numPr) and the direct character properties of the run of
+//       its first text character (Word's rule: pictures, note marks
+//       and other U+FFFC items, and fields, code and result, are
+//       stepped over; none: the paragraph properties alone) are
+//       written into its paragraph style (./StyleCmd modifyStyle
+//       through ./StyleDoc run) and removed from the paragraph, and
+//       from each run that has the same value: one step. Nothing
+//       when there is no direct formatting. A style that holds the
+//       values already is left as it is (the table is the same
+//       object) and the direct ones are still removed. With no
+//       paragraph style to change: nothing done, `refused` the
+//       reason updateTarget gives
+//   updateTarget(doc, sel) -> {en: {at, p}, id, style} | {reason}
+//       the paragraph of the selection's head (its ./Path path) and
+//       its paragraph style; a reason (a string, for tests) when the
+//       head is in no paragraph of the body (a header's, a note's)
+//       or the style is not a paragraph style of the table (the
+//       menus shade the item then)
+// Pure: no desktop services.
+import {fail, deepEqual} from './ModelCheck';
+import {EMPTY} from './Pending';
+import {OBJ} from './Model';
+import {fieldAt} from './FieldScan';
+import {checkPos} from './EditPos';
+import {mergeProps} from './OpsProps';
+import {modifyStyle} from './StyleCmd';
+import {run as styleRun} from './StyleDoc';
+
+const without = (o, ...skip) => Object.fromEntries(
+  Object.entries(o || {}).filter(([k]) => k !== 'extra' &&
+    !skip.includes(k)));
+const nulls = (o) => Object.fromEntries((Array.isArray(o) ? o
+  : Object.keys(o)).map((k) => [k, null]));
+
+/** Whether style s has the values of pPr and rPr already. */
+const holds = (s, pPr, rPr) =>
+  deepEqual(mergeProps(s.pPr, pPr), s.pPr) &&
+  deepEqual(mergeProps(s.rPr, rPr), s.rPr);
+
+/** The run of p's first text character (see the header), or null. */
+function firstText(doc, p) {
+  for (let i = 0; i < p.text.length; i++) {
+    if (p.text[i] === OBJ) continue;
+    const f = fieldAt(doc, {id: p.id, off: i});
+    if (!f) return p.runs.find((r) => r.start <= i && i < r.end);
+    if (f.end.id !== p.id) return null;
+    i = f.end.off;
+  }
+  return null;
+}
+
+/** See the header. */
+export function updateTarget(doc, sel) {
+  // the head's paragraph alone (no walk of a long selection: the
+  // menus ask on every redraw)
+  const loc = sel && checkPos(doc, sel.head);
+  if (!loc || loc.b.type !== 'p')
+    return {reason: 'not in a paragraph of the body'};
+  const en = {at: loc.at, p: loc.b};
+  const st = doc.styles;
+  const id = en.p.pStyle ?? st?.defaults.paragraph;
+  const style = id && st ? st.styles.get(id) : null;
+  if (!style || style.type !== 'paragraph')
+    return {reason: 'no paragraph style ' + (id ?? ''), id};
+  return {en, id, style};
+}
+
+/** See the header. */
+export function updateToMatch(d, typing, sel, pending) {
+  const out = {sel, pending: pending || EMPTY};
+  const {en, id, style: s, reason} = updateTarget(d.doc, sel);
+  if (id && !d.doc.styles) fail('no such style: ' + id);
+  if (reason) return {...out, refused: reason};
+  const p = en.p, first = firstText(d.doc, p);
+  const pPr = without(p.pPr, 'numPr'), rPr = without(first?.rPr);
+  if (!Object.keys(pPr).length && !Object.keys(rPr).length) return out;
+  const ops = Object.keys(pPr).length ? [{op: 'setProps',
+    block: en.at, pPr: nulls(pPr)}] : [];
+  for (const r of p.runs) {
+    const ks = Object.keys(rPr).filter((k) =>
+      deepEqual(r.rPr[k], rPr[k]));
+    if (ks.length) ops.push({op: 'setProps', block: en.at,
+      range: {start: r.start, end: r.end}, rPr: nulls(ks)});
+  }
+  const go = () => d.atomic(() => {
+    const t = modifyStyle(d.doc.styles, id, {pPr, rPr});
+    // null: the style holds the values already (the table stays),
+    // or modifyStyle failed (nothing is moved, nothing cleared)
+    if (t) styleRun(d, null, () => ({table: t}));
+    else if (!holds(s, pPr, rPr)) return;
+    for (const op of ops) d.apply(op);
+  });
+  if (typing) typing.command(go);
+  else go();
+  return out;
+}

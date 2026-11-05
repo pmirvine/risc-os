@@ -80,6 +80,15 @@ describe('StyleMenu', () => {
     more(m).action();
     assert.equal(n, 1);
   });
+  it('a new document: 20 styles, Update and More styles...', () => {
+    // was 9 + 2: the quick styles (StylesBuiltinMore) add 11 items
+    const m = styleMenu(fake());
+    assert.equal(m.items.length, 22);
+    assert.deepEqual(texts(m).slice(0, 4), ['Normal', 'No Spacing',
+      'Heading 1', 'Heading 2']);
+    assert.equal(m.items[19].text, 'List Paragraph');
+    assert.equal(m.items[19].dotted, true);
+  });
   it('shows Word\'s name for a stored built-in name', () => {
     const v = fake();
     const names = texts(styleMenu(v));

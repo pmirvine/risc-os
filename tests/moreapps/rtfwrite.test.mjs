@@ -116,7 +116,8 @@ describe('RtfWrite: the document', () => {
   it('an empty paragraph keeps its style\'s character format on ' +
     'its mark', () => {
     const d = docOf([newPara('x'), newPara('', {pStyle: 'Heading1'})]);
-    assert.ok(W(d).s.includes('\\outlinelevel0\\b\\fs32\\par\n}'),
+    // Heading 1's Word 2013+ look: 16 pt in the accent colour
+    assert.ok(W(d).s.includes('\\outlinelevel0\\fs32\\cf1\\par\n}'),
       W(d).s);
     sameBack(d);
   });

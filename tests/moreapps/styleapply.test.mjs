@@ -8,10 +8,29 @@ import {createStyle, modifyStyle}
   from '../../tools/moreapps/!Letters/StyleCmd';
 import {Typing} from '../../tools/moreapps/!Letters/Typing';
 import {newPara} from '../../tools/moreapps/!Letters/Model';
-import {mk, P, C, SEL, undoable, bold, plain} from './edit-docs.mjs';
+import {Document} from '../../tools/moreapps/!Letters/Document';
+import {mk, P, C, SEL, undoable, bold, plain, O, raw}
+  from './edit-docs.mjs';
+import {docWithFields, fld} from './field-fixtures.mjs';
+import {r} from './build-docx.mjs';
 
 const T = (d) => new Typing(d);
 const run = (d, fn) => undoable(d, () => fn(T(d)));
+/** fn(typing) is one undo step: undo gives back the body and the
+ *  style table exactly, redo the state after it. */
+function stepped(d, fn) {
+  const state = () => structuredClone({s: d.doc.sections,
+    t: d.doc.styles});
+  const before = state(), n = d.undoDepth;
+  const out = run(d, fn);
+  assert.equal(d.undoDepth, n + 1, 'one undo step');
+  const after = state();
+  d.undo();
+  assert.deepEqual(state(), before);
+  d.redo();
+  assert.deepEqual(state(), after);
+  return out;
+}
 
 /** A document with a linked pair Quote / Quote Char. */
 function linked(blocks) {
@@ -153,7 +172,7 @@ describe('StyleApply.updateToMatch', () => {
     assert.equal(sty(d, 'Normal').rPr.b, true);
     assert.deepEqual(P(d, 0).runs[0].rPr, plain);
   });
-  it('disagreeing runs change nothing', () => {
+  it('a plain first character and nothing direct: nothing', () => {
     const d = mk([['abcd', {pStyle: 'Heading2', runs: [
       {start: 0, end: 2, rPr: plain},
       {start: 2, end: 4, rPr: bold}]}]]);
@@ -198,6 +217,97 @@ describe('StyleApply.updateToMatch', () => {
     const d = mk(['abcd']);
     SA.updateToMatch(d, T(d), C(d, 0, 0));
     assert.equal(d.undoDepth, 0);
+  });
+  it('disagreeing runs: the first character\'s formatting is taken',
+    () => {
+      const d = mk([['abcd', {pStyle: 'Heading2', runs: [
+        {start: 0, end: 2, rPr: bold},
+        {start: 2, end: 4, rPr: plain}]}]]);
+      const out = stepped(d, (t) => SA.updateToMatch(d, t,
+        C(d, 0, 3)));
+      assert.equal(out.refused, undefined);
+      assert.equal(sty(d, 'Heading2').rPr.b, true);
+      assert.deepEqual(P(d, 0).runs.map((r) => r.rPr), [plain]);
+    });
+  it('a run with other values keeps them; equal ones go', () => {
+    const d = mk([['abcdef', {runs: [
+      {start: 0, end: 2, rPr: {b: true, i: true, extra: []}},
+      {start: 2, end: 4, rPr: {b: false, extra: []}},
+      {start: 4, end: 6, rPr: {i: true, extra: []}}]}]]);
+    stepped(d, (t) => SA.updateToMatch(d, t, C(d, 0, 0)));
+    assert.equal(sty(d, 'Normal').rPr.b, true);
+    assert.equal(sty(d, 'Normal').rPr.i, true);
+    assert.deepEqual(P(d, 0).runs.map((r) => [r.start, r.end, r.rPr]),
+      [[0, 2, plain], [2, 4, {b: false, extra: []}], [4, 6, plain]]);
+  });
+  it('a picture first: the next text character\'s run', () => {
+    const d = mk([newPara(O + 'abc', {inlines: {0: raw('drawing', 'r')},
+      runs: [{start: 0, end: 1, rPr: {i: true, extra: []}},
+        {start: 1, end: 4, rPr: bold}]})]);
+    stepped(d, (t) => SA.updateToMatch(d, t, C(d, 0, 2)));
+    assert.equal(sty(d, 'Normal').rPr.b, true);
+    assert.equal(sty(d, 'Normal').rPr.i, undefined);
+    assert.deepEqual(P(d, 0).runs[0].rPr, {i: true, extra: []});
+  });
+  it('a field first (its code and result): the text after it',
+    async () => {
+      const doc = await docWithFields('<w:p>' +
+        fld('PAGE', '7', {rPr: '<w:i/>'}) + r('abc', '<w:b/>') +
+        '</w:p>');
+      doc.styles = mk([]).doc.styles;
+      const d = new Document(doc);
+      d.clearHistory();
+      const p = P(d, 0);
+      assert.ok(p.text.endsWith('7' + O + 'abc'), p.text);
+      stepped(d, (t) => SA.updateToMatch(d, t, C(d, 0, 0)));
+      assert.equal(sty(d, 'Normal').rPr.b, true);
+      assert.equal(sty(d, 'Normal').rPr.i, undefined);
+    });
+  it('an empty paragraph: only its paragraph formatting', () => {
+    const d = mk([['', {pPr: {jc: 'center', extra: []}}]]);
+    const rBefore = structuredClone(sty(d, 'Normal').rPr);
+    stepped(d, (t) => SA.updateToMatch(d, t, C(d, 0, 0)));
+    assert.equal(sty(d, 'Normal').pPr.jc, 'center');
+    assert.deepEqual(sty(d, 'Normal').rPr, rBefore);
+    assert.equal(P(d, 0).pPr.jc, undefined);
+  });
+  it('only pictures: only the paragraph formatting', () => {
+    const d = mk([newPara(O, {inlines: {0: raw('drawing', 'r')},
+      pPr: {jc: 'right', extra: []}, runs: [{start: 0, end: 1,
+        rPr: bold}]})]);
+    stepped(d, (t) => SA.updateToMatch(d, t, C(d, 0, 0)));
+    assert.equal(sty(d, 'Normal').pPr.jc, 'right');
+    assert.equal(sty(d, 'Normal').rPr.b, undefined);
+    assert.deepEqual(P(d, 0).runs[0].rPr, bold);
+  });
+  it('no paragraph style to change: refused with a reason, no step',
+    () => {
+      const d = mk([['abcd', {pStyle: 'Nope', runs: [{start: 0, end: 4,
+        rPr: bold}]}]]);
+      const out = SA.updateToMatch(d, T(d), C(d, 0, 0));
+      assert.equal(typeof out.refused, 'string');
+      assert.equal(d.undoDepth, 0);
+      assert.equal(typeof SA.updateTarget(d.doc, C(d, 0, 0)).reason,
+        'string');
+      const e = mk(['ab']);
+      e.doc.styles = createStyle(e.doc.styles, {type: 'character',
+        name: 'Loud'}).table;
+      const loud = [...e.doc.styles.styles.values()]
+        .find((s) => s.name === 'Loud').id;
+      e.doc.sections[0].blocks = [newPara('ab', {pStyle: loud})];
+      assert.ok(SA.updateToMatch(e, T(e), C(e, 0, 0)).refused);
+    });
+  it('updateTarget: the caret paragraph\'s style, or a reason', () => {
+    const d = mk([['abcd', {pStyle: 'Heading2'}], 'ef']);
+    const t = SA.updateTarget(d.doc, C(d, 0, 1));
+    assert.equal(t.reason, undefined);
+    assert.equal(t.style.id, 'Heading2');
+    assert.equal(SA.updateTarget(d.doc, C(d, 1, 0)).style.id,
+      'Normal');
+    assert.ok(SA.updateTarget(d.doc, null).reason);
+    assert.ok(SA.updateTarget(d.doc, {}).reason);
+    const n = mk(['ab'], {styles: false});
+    assert.ok(SA.updateTarget(n.doc, C(n, 0, 0)).reason);
   });
   it('FormatApply ids styleUpdate and styleClear', () => {
     const d = mk([['abcd', {runs: [{start: 0, end: 4, rPr: bold}]}]]);

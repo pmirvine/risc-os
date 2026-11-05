@@ -39,11 +39,12 @@ describe('StylePatch.fill', () => {
     assert.equal(v.basedOn, 'Normal');
     assert.equal(v.next, 'Normal');
     assert.equal(v.qFormat, true);
+    // Word 2013+'s look (StylesBuiltinMore): not bold, none after
     assert.equal(v.size, 16);
-    assert.equal(v.bold, true);
+    assert.equal(v.bold, false);
     assert.equal(v.italic, false);
     assert.equal(v.before, 240);
-    assert.equal(v.after, 60);
+    assert.equal(v.after, 0);
     assert.equal(v.align, 'left');
     assert.equal(v.spacing, 'single');
   });
@@ -68,9 +69,9 @@ describe('StylePatch.fill', () => {
       rPr: rp({i: true})}));
     const v = fill(t, 'Sub');
     assert.equal(v.size, 16);
-    assert.equal(v.bold, true);
+    assert.equal(v.bold, false);
     assert.equal(v.italic, true);
-    assert.equal(v.after, 60);
+    assert.equal(v.after, 0);
   });
   it('a latent built-in is filled as if in the table', () => {
     const t = table();
@@ -97,7 +98,8 @@ describe('StylePatch.patch', () => {
     assert.deepEqual(Object.keys(r.patch.rPr).sort(), ['sz', 'szCs']);
     const out = modifyStyle(t, 'Heading1', r.patch);
     assert.equal(out.styles.get('Heading1').rPr.sz, 40);
-    assert.equal(out.styles.get('Heading1').rPr.b, true);
+    // the rest stays (the theme font and colour)
+    assert.equal(out.styles.get('Heading1').rPr.extra.length, 2);
     assert.equal(t.styles.get('Heading1').rPr.sz, 32);
   });
   it('a value changed back to the base\'s is removed', () => {
@@ -120,10 +122,10 @@ describe('StylePatch.patch', () => {
     const t = table();
     addStyle(t, st('Sub', {basedOn: 'Heading1'}));
     const v = fill(t, 'Sub');
-    assert.deepEqual(patch(t, 'Sub', {...v, after: 60, bold: true}),
+    assert.deepEqual(patch(t, 'Sub', {...v, after: 0, bold: false}),
       {patch: {}});
-    const r = patch(t, 'Sub', {...v, bold: false});
-    assert.equal(r.patch.rPr.b, false);
+    const r = patch(t, 'Sub', {...v, bold: true});
+    assert.equal(r.patch.rPr.b, true);
   });
   it('inches convert to twips exactly', () => {
     const t = table();
@@ -145,7 +147,7 @@ describe('StylePatch.patch', () => {
       align: 'center', before: 120, spacing: 'double'});
     assert.equal(r.patch.pPr.jc, 'center');
     assert.deepEqual(r.patch.pPr.spacing,
-      {before: 120, after: 60, line: 480, lineRule: 'auto'});
+      {before: 120, after: 0, line: 480, lineRule: 'auto'});
   });
   it('colour: shown as RGB, written only when edited', () => {
     const t = table();

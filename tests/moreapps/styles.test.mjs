@@ -258,9 +258,11 @@ describe('ensureBuiltins', () => {
     const h = t.styles.get('Heading1');
     assert.equal(h.basedOn, 'Normal');
     assert.equal(h.next, 'Normal');
-    assert.equal(h.rPr.b, true);
+    // Word 2013+'s look (StylesBuiltinMore): not bold; Heading 6
+    // takes the body size
+    assert.equal(h.rPr.b, undefined);
     assert.equal(h.rPr.sz, 32);
-    assert.equal(t.styles.get('Heading6').rPr.sz, 22);
+    assert.equal(t.styles.get('Heading6').rPr.sz, undefined);
     assert.equal(t.styles.get('Title').rPr.sz, 56);
     assert.equal(t.styles.get('ListParagraph').pPr.ind.left, 720);
     assert.equal(t.styles.get('DefaultParagraphFont').type, 'character');

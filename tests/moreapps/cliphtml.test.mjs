@@ -65,7 +65,8 @@ describe('ClipHtml.toHtml', () => {
     const h = html(d);
     assert.deepEqual(tagsOf(h).filter((x) => /^(h\d|p)$/.test(x)),
       ['h1', 'h1', 'h2', 'h2', 'p', 'p']);
-    assert.match(h, /<h1[^>]*><b><span style="font-family:&#39;/);
+    // Heading 1's Word 2013+ look: 16 pt, not bold
+    assert.match(h, /<h1[^>]*><span style="[^"]*font-size:16pt/);
   });
   it('character formatting as tags and a span', () => {
     const d = mk([one('x', {b: true, i: true, u: 'double', strike: true,

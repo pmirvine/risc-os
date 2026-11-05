@@ -36,6 +36,18 @@ describe('StyleList', () => {
     assert.ok(names.indexOf('Zed') < names.indexOf('Heading1'));
   });
 
+  it('a new table\'s gallery: Word\'s 20 quick styles, Normal first',
+    () => {
+      // was 9 (Normal, Title, List Paragraph, Heading 1-6, Normal
+      // last); the quick styles (StylesBuiltinMore) add 11 latent
+      // ones and the default paragraph style sorts first, as Word's
+      const g = gallery(build());
+      assert.equal(g.length, 20);
+      assert.equal(g[0].id, 'Normal');
+      assert.equal(g.filter((e) => e.latent).length, 11);
+      assert.equal(g[g.length - 1].id, 'ListParagraph');
+    });
+
   it('semiHidden only when in use; table styles never', () => {
     const doc = build([sty('Hid', {semiHidden: true}),
       sty('Tbl', {type: 'table'}), sty('Plain')]);
