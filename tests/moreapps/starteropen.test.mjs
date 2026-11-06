@@ -122,6 +122,7 @@ describe('names and failures', () => {
     }
     assert.equal(camel('CV (simple)'), 'CVSimple');
     assert.equal(camel('Press release'), 'PressRelease');
+    assert.equal(camel('Q\u00d7A \u00f7 notes'), 'QANotes');
     assert.equal(camel('Business letter'), 'BusinessLetter');
   });
 

@@ -27,7 +27,9 @@ import {PAGES} from './starter-pages.mjs';
 // whole words (case-insensitive) that must not appear: US spellings
 // and product names; extend as needed
 const BANNED = ['color', 'colors', 'organization', 'organizations',
-  'center', 'centered', 'zip code', 'favorite', 'microsoft'];
+  'center', 'centered', 'zip code', 'favorite', 'microsoft',
+  'honor', 'neighbor', 'analyze', 'catalog', 'gray', 'defense',
+  'realize', 'organize', 'recognize', 'summarize'];
 const BAD = new RegExp('\\b(' + BANNED.join('|') + ')\\b', 'i');
 
 /** Every block of the body and the stories, tables descended. */
@@ -599,6 +601,8 @@ describe('Reports group: report, essay, proposal', () => {
     assert.equal(h[0].pPr.jc, 'right');
     const refAt = ps.findIndex((p) => p.text === 'References');
     assert.ok(refAt > 0);
+    const rs = resolvePara(d.styles, ps[refAt]).spacing;
+    assert.equal(rs.line, 240, 'References heading is single spaced');
     const main = ps.slice(1, refAt);
     const bodyP = main.filter((p) => p.text.length > 60);
     assert.equal(bodyP.length, 4);
@@ -686,6 +690,14 @@ describe('Reports group: report, essay, proposal', () => {
     assert.equal(n(pdf.pages[0].text), 1, 'only the Title');
     assert.match(pdf.pages[1].text, /Page\s*2\s*of/);
     assert.equal(n(pdf.pages[1].text), 1, 'the header');
+  });
+  it('stylePPr merges spacing key by key', () => {
+    const d = starterDoc({stylePPr: {Normal: {spacing: {line: 480}}},
+      body: [para('x')]});
+    const sp = resolvePara(d.styles, d.sections[0].blocks[0]).spacing;
+    assert.equal(sp.line, 480);
+    assert.ok(Object.keys(sp).length > 1, 'other spacing kept: ' +
+      JSON.stringify(sp));
   });
   it('the kit merges stylePPr into a style and round-trips', async () => {
     const d = starterDoc({stylePPr: {Normal: {spacing: {line: 480,
@@ -779,7 +791,7 @@ describe('Business group: invoice, agenda, minutes, press release, ' +
       const p = ps.find((x) => x.text.startsWith(w));
       assert.match(p.text, /^[^\t]+\t\[\u00a30\.00\]$/, w);
       assert.deepEqual(p.pPr.tabs.map((x) => [x.pos, x.val]),
-        [[9026, 'right']], w + ' right tab at the text width');
+        [[8918, 'right']], w + ' right tab at the last column text edge');
     }
     const due = ps.find((p) => p.text.startsWith('Total due'));
     assert.ok(due.runs.every((r) => r.rPr.b === true));
