@@ -3,15 +3,22 @@
 // is never written (it stays in doc.parts byte for byte).
 //
 //   parse(xmlText | bytes | null) -> Theme
-//     Theme {major, minor: font names, colors: Map<name, 'RRGGBB'>}
-//     with the Office defaults (Calibri Light, Calibri, the Office
-//     colour scheme) for anything missing; empty, non-XML or hostile
-//     input gives the defaults and never throws.
-//   fontOf(theme, rFonts) -> string | null
+//     Theme {major, minor: font names, majorEa, minorEa, majorCs,
+//     minorCs: the a:ea and a:cs typefaces ('' for none),
+//     colors: Map<name, 'RRGGBB'>}
+//     with the Office defaults (Calibri Light, Calibri, no East Asian
+//     or complex-script font, the Office colour scheme) for anything
+//     missing; empty, non-XML or hostile input gives the defaults and
+//     never throws.
+//   fontOf(theme, rFonts, slot?) -> string | null
 //     the font name of an rFonts ({ascii?, hAnsi?, asciiTheme?,
 //     hAnsiTheme?}): the ascii slot first, then hAnsi; within a slot
 //     a theme attribute (majorHAnsi, minorAscii...) wins over the
-//     typed name; null when it names no font.
+//     typed name; null when it names no font. slot 'eastAsia' or
+//     'cs' reads that slot alone (eastAsia / eastAsiaTheme, cs /
+//     cstheme): the reference names the theme face (majorEastAsia
+//     the major a:ea, minorBidi the minor a:cs, minorHAnsi the minor
+//     Latin); an empty theme face is null. The screen uses the Latin.
 //   colorOf(theme, {color?, themeColor?, themeTint?, themeShade?})
 //     -> 'RRGGBB'
 //     Word's rule: themeColor overrides the literal color; then, in
@@ -43,16 +50,20 @@ const attrOf = (node, name) => {
 };
 
 function defaults() {
-  return {major: 'Calibri Light', minor: 'Calibri',
+  return {major: 'Calibri Light', minor: 'Calibri', majorEa: '',
+    minorEa: '', majorCs: '', minorCs: '',
     colors: new Map(DEFAULT_COLORS)};
 }
 
-function latin(scheme, which, out) {
+// a:latin -> major / minor, a:ea -> majorEa..., a:cs -> majorCs...
+function faces(scheme, which, out) {
   const f = kids(scheme, which)[0];
-  const l = f && kids(f, 'latin')[0];
-  const t = l && attrOf(l, 'typeface');
-  if (typeof t === 'string' && FONT.test(t)) {
-    out[which === 'majorFont' ? 'major' : 'minor'] = t;
+  const w = which === 'majorFont' ? 'major' : 'minor';
+  for (const [tag, key] of [['latin', w], ['ea', w + 'Ea'],
+    ['cs', w + 'Cs']]) {
+    const l = f && kids(f, tag)[0];
+    const t = l && attrOf(l, 'typeface');
+    if (typeof t === 'string' && FONT.test(t)) out[key] = t;
   }
 }
 
@@ -61,8 +72,8 @@ function readTheme(root, out) {
   if (!els) return;
   const fonts = kids(els, 'fontScheme')[0];
   if (fonts) {
-    latin(fonts, 'majorFont', out);
-    latin(fonts, 'minorFont', out);
+    faces(fonts, 'majorFont', out);
+    faces(fonts, 'minorFont', out);
   }
   const clr = kids(els, 'clrScheme')[0];
   if (!clr) return;
@@ -97,9 +108,12 @@ export function parse(xml) {
 const THEME_FONT = /^(major|minor)(HAnsi|Ascii|EastAsia|Bidi)$/;
 
 /** See the header. */
-export function fontOf(theme, rFonts) {
+export function fontOf(theme, rFonts, slot) {
   if (!rFonts || typeof rFonts !== 'object') return null;
   const t = theme || defaults();
+  if (slot === 'eastAsia' || slot === 'cs') {
+    return otherOf(t, rFonts, slot);
+  }
   // (the ascii slot first, then hAnsi; in a slot the theme font wins)
   for (const k of ['ascii', 'hAnsi']) {
     const m = typeof rFonts[k + 'Theme'] === 'string'
@@ -108,6 +122,21 @@ export function fontOf(theme, rFonts) {
     if (typeof rFonts[k] === 'string' && rFonts[k]) return rFonts[k];
   }
   return null;
+}
+
+const SCRIPT = {HAnsi: '', Ascii: '', EastAsia: 'Ea', Bidi: 'Cs'};
+const THEME_ATTR = {eastAsia: 'eastAsiaTheme', cs: 'cstheme'};
+
+/** fontOf's eastAsia and cs slots (see the header). */
+function otherOf(t, rFonts, slot) {
+  const ref = rFonts[THEME_ATTR[slot]];
+  const m = typeof ref === 'string' ? THEME_FONT.exec(ref) : null;
+  if (m) {
+    const v = t[m[1] + SCRIPT[m[2]]];
+    return typeof v === 'string' && v ? v : null;
+  }
+  const v = rFonts[slot];
+  return typeof v === 'string' && v ? v : null;
 }
 
 const level = (v) => {

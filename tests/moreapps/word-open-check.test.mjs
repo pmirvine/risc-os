@@ -15,7 +15,7 @@ import {
   hungMessage, mayKill, killWord, stallMessage, emittedKind, isRtfBytes, HUGE, NOT_ZIP,
   WRITE_PROTECTION, MAIL_MERGE,
   CHECK_NAME, MARKER, RTF_NAME, RTF_MARKER, DOTX_NAME, DOTX_MARKER, CHECK_NAMES,
-  WORD_APP, sha256,
+  WORD_APP, sha256, isTemplateName, reportKey, corpusKinds,
 } from '../../tools/word-open-check/lib.mjs';
 import {emit, resetEmit, safeName, stemOf, readIndex, DEFAULT_DIR, markBroken}
   from './word-emit.mjs';
@@ -462,6 +462,48 @@ describe('word-open-check: files and reports', () => {
   });
   it('sha256 of the bytes', () => {
     assert.equal(sha256(Buffer.from('')).slice(0, 8), 'e3b0c442');
+  });
+  it('a template by its name, not its bytes', () => {
+    assert.equal(isTemplateName('a/b/Letter.dotx'), true);
+    assert.equal(isTemplateName('LETTER.DOTX'), true);
+    assert.equal(isTemplateName('a.docx'), false);
+    assert.equal(isTemplateName('a.dotx (our re-save)'), false);
+    assert.equal(isTemplateName('a.dotx.docx'), false);
+    assert.equal(isTemplateName(''), false);
+    assert.equal(isTemplateName(undefined), false);
+  });
+  it('the report key: the same bytes as .docx and .dotx differ', () => {
+    const b = Buffer.from('same bytes');
+    assert.equal(reportKey(b, 'x.docx'), sha256(b));
+    assert.equal(reportKey(b, 'x.rtf'), sha256(b));
+    assert.equal(reportKey(b, 'x.dotx'), sha256(b) + '.dotx');
+    assert.notEqual(reportKey(b, 'x.docx'), reportKey(b, 'x.dotx'));
+  });
+  it('our re-save of a template is still a template (so check.dotx)',
+    async () => {
+      const L = '../../tools/moreapps/!Letters/';
+      const {newDoc} = await import(L + 'NewDoc');
+      const {asTemplate} = await import(L + 'Template');
+      const {readDocx: rd} = await import(L + 'DocxRead');
+      const {writeDocx} = await import(L + 'DocxWrite');
+      const {readZip} = await import('../../tools/moreapps/!WimpLib/Zip');
+      const tpl = await writeDocx(asTemplate(newDoc()));
+      const re = await writeDocx(await rd(tpl));
+      const ct = new TextDecoder().decode(
+        (await readZip(re)).get('[Content_Types].xml'));
+      assert.match(ct, /wordprocessingml\.template\.main\+xml/);
+      assert.doesNotMatch(ct, /wordprocessingml\.document\.main\+xml/);
+    });
+  it('corpusKinds: the key, and how the original and our re-save open', () => {
+    const b = Buffer.from('same bytes');
+    assert.deepEqual(corpusKinds(b, 'a/x.dotx'),
+      {key: sha256(b) + '.dotx', original: true, resave: true});
+    assert.deepEqual(corpusKinds(b, 'X.DOTX'),
+      {key: sha256(b) + '.dotx', original: true, resave: true});
+    for (const n of ['x.docx', 'X.DOCX', 'x.rtf', 'x.dotx.docx', 'dotx']) {
+      assert.deepEqual(corpusKinds(b, n),
+        {key: sha256(b), original: false, resave: false}, n);
+    }
   });
 });
 

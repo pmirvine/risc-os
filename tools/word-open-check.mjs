@@ -28,7 +28,9 @@
 //     every file under tests/moreapps/corpus (handoff/ and word-check/
 //     left out): the original, then our reader + writer's re-save of it;
 //     reports in tests/moreapps/corpus/word-check/, always resumed from
-//     there. Exit 1 on a REGRESSION (or RESAVE-HUNG).
+//     there (a .dotx by its name through check.dotx, as above, and our
+//     re-save of it too: it keeps the template content type). Exit 1 on
+//     a REGRESSION (or RESAVE-HUNG).
 // Verdicts: OK, REFUSED (Word's verdict), TIMEOUT (Word answers but did
 // not open it: a dialog; the run stops if it is still up before the next
 // file), COLLATERAL (a TIMEOUT blamed on the one before), HUNG (Word
@@ -44,6 +46,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   WORD_APP, AbortRun, makeChecker, listDocs, sameDocs, walk, shuffle, sha256,
+  isTemplateName, reportKey, corpusKinds,
   appendReport, readReport, settled, isSettled, probeDocx, checkDir, CHECK_NAME, RTF_NAME,
   closeLeftovers, CHECK_NAMES, wordPids, killWord, hungAction, hungMessage, skipReason, SKIPPED_BY_DESIGN,
   emittedKind,
@@ -240,9 +243,9 @@ async function plain(o, idx = null) {
   let stop = null, n = 0;
   for (const f of files) {
     const bytes = fs.readFileSync(f);
-    const tpl = /\.dotx$/i.test(f);
+    const tpl = isTemplateName(f);
     // (the name decides the kind: the same bytes as .docx and .dotx differ)
-    const sha = sha256(bytes) + (tpl ? '.dotx' : '');
+    const sha = reportKey(bytes, f);
     let r, resumed = false;
     if (done.has(sha)) {
       r = done.get(sha);
@@ -384,8 +387,10 @@ async function corpus(o) {
   const ctx = await start(o);
   let stop = null;
   // -> the verdict record, or null when the run stopped before opening
-  const check = async (bytes, label) => {
-    const res = await checkOne(ctx, bytes, label);
+  // (template: by the file's name, as in plain mode, for the original and
+  // for our re-save, which keeps the template content type: corpusKinds)
+  const check = async (bytes, label, template = false) => {
+    const res = await checkOne(ctx, bytes, label, {template});
     if (res.stop) stop = res.stop;
     return res.r;
   };
@@ -400,7 +405,8 @@ async function corpus(o) {
       continue;
     }
     const bytes = fs.readFileSync(f);
-    const sha = sha256(bytes);
+    const kinds = corpusKinds(bytes, f);
+    const sha = kinds.key;
     const prev = last.get(sha);
     // (resumable: a settled original, and a settled re-save of one that
     // opened, are kept; TIMEOUTs, and HUNG with --retry-hung, are redone)
@@ -419,7 +425,7 @@ async function corpus(o) {
         rec.original = 'SKIPPED';
         rec.reason = why;
       } else {
-        const r = await check(bytes, name);
+        const r = await check(bytes, name, kinds.original);
         if (!r) break; // stopped before this file was opened: nothing to record
         rec.original = r.verdict;
         if (r.verdict !== 'OK' && r.detail) rec.detail = r.detail;
@@ -429,7 +435,7 @@ async function corpus(o) {
         const out = await resave(bytes);
         if (out.bytes) {
           rec.resavedSha = sha256(out.bytes);
-          const r = await check(out.bytes, name + ' (our re-save)');
+          const r = await check(out.bytes, name + ' (our re-save)', kinds.resave);
           rec.resaved = r ? r.verdict : 'n/a';
           if (r && r.verdict !== 'OK' && r.detail) rec.resaveDetail = r.detail;
         } else {

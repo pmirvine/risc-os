@@ -161,6 +161,29 @@ describe('StylePatch.patch', () => {
     assert.equal(out.rPr.color, 'FF0000');
     assert.deepEqual(out.rPr.extra, []);       // the themed one goes
   });
+  it('Automatic over a theme-coloured base: written as auto', () => {
+    const t = table();
+    addStyle(t, st('Sub', {basedOn: 'Heading1'}));
+    const v = fill(t, 'Sub');
+    assert.equal(v.colour, '2F5496');
+    const r = patch(t, 'Sub', {...v, colour: 'auto'});
+    assert.equal(r.patch.rPr.color, 'auto');
+    const out = modifyStyle(t, 'Sub', r.patch).styles.get('Sub');
+    assert.equal(out.rPr.color, 'auto');
+    const t2 = modifyStyle(t, 'Sub', r.patch);
+    assert.equal(fill(t2, 'Sub').colour, 'auto');
+    // (Heading 1 itself: its themed colour replaced by auto)
+    // (Heading 1 itself, based on Normal: the themed colour goes, so
+    // it is Normal's automatic black)
+    const h = patch(t, 'Heading1', {...fill(t, 'Heading1'),
+      colour: 'auto'});
+    assert.equal(h.patch.rPr.color, null);
+    const t3 = modifyStyle(t, 'Heading1', h.patch);
+    const ho = t3.styles.get('Heading1');
+    assert.equal(ho.rPr.color, undefined);
+    assert.ok(!ho.rPr.extra.some((n) => n.name === 'w:color'));
+    assert.equal(fill(t3, 'Heading1').colour, 'auto');
+  });
   it('font: written as ascii and hAnsi; the base\'s removes it', () => {
     const t = table();
     addStyle(t, st('Sub', {basedOn: 'Heading1'}));

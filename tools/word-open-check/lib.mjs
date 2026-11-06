@@ -44,6 +44,21 @@ export const checkDir = (env = process.env) =>
 export const sha256 = (bytes) =>
   crypto.createHash('sha256').update(bytes).digest('hex');
 
+/** A Word template is told by its NAME (.dotx), never by its bytes. */
+export const isTemplateName = (name) => /\.dotx$/i.test(String(name ?? ''));
+
+/** The report key of a file: the same bytes as .docx and .dotx differ. */
+export const reportKey = (bytes, name) =>
+  sha256(bytes) + (isTemplateName(name) ? '.dotx' : '');
+
+/** --corpus: a file's report key, and whether its original and our
+ *  re-save go through check.dotx (DocxWrite keeps the package's own
+ *  [Content_Types].xml, so the re-save of a template is one too). */
+export const corpusKinds = (bytes, name) => {
+  const tpl = isTemplateName(name);
+  return {key: reportKey(bytes, name), original: tpl, resave: tpl};
+};
+
 export const grantHint = (file) => 'If Word asks for file access, choose ' +
   file.replace(os.homedir(), '~') + ' and Grant Access';
 

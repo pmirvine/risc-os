@@ -12,7 +12,7 @@ feature or change must be covered there, as part of the same piece of work (not 
 * **`tools/docs/Contents`** lists every guide with a line saying what it covers; add new guides to it.
 * Guides are plain text read in !Edit: Latin-1 only, no tabs, lines at most 72 characters, written for users (what
   to click, what happens), in the style of the existing guides. Put them on the disc with `node tools/disc-docs.mjs`
-  and commit both `tools/docs/` and `assets/disc/`.
+  and commit both `tools/docs/` and `assets/disc/`; `node tools/disc-docs.mjs --check` says whether the disc is current.
 * Alongside the guide, keep the rest in step: the application's own `!Help`, the README (features, how to run it,
   the pointer to `$.Docs`), `docs/apps/<App>.md` for developers, and `docs/CORE_API.md` /
   `docs/CHANGES_NEEDED.md` for changes to shared code.

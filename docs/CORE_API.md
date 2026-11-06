@@ -644,7 +644,7 @@ does); iterative; `adler` true / false when the Adler-32 is there, else null. `w
 DecompressionStream (async).
 
 `disc-lander`, `disc-lander2` (Lander II's JavaScript sources, from `tools/lander2/`), `disc-type1`, `disc-docs`
-($.Docs, from `tools/docs/`), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).
+($.Docs, from `tools/docs/`; `--check` compares without writing), `disc-jstutor` (the JavaScript tutorial book and its examples, from `tools/jstutor/`).
 `disc-gamelib` builds the game library `$.!Boot.Resources.!GameLib` (from `tools/games/!GameLib`, icon from
 `tools/games/icon.mjs`; the same way as `disc-wimplib`, checking Latin-1, 72 columns, 250 lines, no `riscos` and no
 `import ... from` text in comments; `GAMES_SRC` / `GAMES_DISC` for tests/games/disc.test.mjs).
