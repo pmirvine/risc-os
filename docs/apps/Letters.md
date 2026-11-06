@@ -45,13 +45,15 @@ tools/moreapps/
   !WimpLib/       the library: shared, pure modules (import 'wimplib/<Name>')
                   and its !Boot, !Run, !Help
   !Letters/          the application
-    Fonts/        20 TrueType files (no extension) + Licences
+    Fonts/        22 TrueType files (no extension) + Licences
   icon.mjs        the sprites of both (iconFiles, libIconFiles)
   package.json    the package 'wimplib', so Node resolves 'wimplib/<Name>'
   .cache/         git-ignored: font archives, the wml.xsd schema files
 tools/disc-wimplib.mjs    builds $.!Boot.Resources.!WimpLib, --check
 tools/disc-moreapps.mjs   builds $.MoreApps.!Letters, boot lines, --check
 tools/moreapps-fonts.mjs  fetches the fonts (pinned, SHA-256 checked)
+tools/moreapps-light-font.mjs  builds the Letters Light faces (Calibri Light stand-in); run after the above
+tools/moreapps-light-font.py   its glyph work (fontTools)
 tools/moreapps-corpus.mjs fetches the sample corpus (optional)
 tools/moreapps-xsdorder.mjs  prints the schema's child orders (Order's tables)
 tests/moreapps/   everything below under Testing
@@ -3734,7 +3736,7 @@ The new modules are in the module table (`ThemePresets`, `ThemeWrite`, `OpsTheme
 
 * `Styles.runLayer` merges layers through `StyleFonts` (fonts, slot by slot) and lets a colour in a layer, plain or raw `w:color`, remove the lower layer's in either form. Before, extras concatenated and `Fmt.rawOf` / `FormatEff.themedColor` took the FIRST raw node, so a Word-made heading kept the default font after a font-pair change and a themed run inside Heading 1 reported the heading's colour. Heading 1 to 6 and Title now resolve to the heading font (Calibri Light) in RTF and PDF too: two `rtfwrite` expectations changed (the font table gains Calibri Light; the heading's paragraph mark has `\f1`).
 * `Fmt.fontName` / `ThemeRead.fontOf`: the rule is the ascii slot first, then hAnsi; within a slot the theme attribute wins. (The header comments used to say a theme attribute "overrides ascii and hAnsi".)
-* Calibri Light on screen: `FontMap` maps `calibri light` to Carlito (no Light face is bundled), so headings are drawn in Calibri's regular face while the Font field and the saved file say Calibri Light.
+* Calibri Light on screen: `FontMap` maps `calibri light` to the bundled `Letters Light` (a thin face with Calibri Light's widths and Carlito's line metrics; see Fonts), so headings are drawn thin as in Word while the Font field and the saved file say Calibri Light. Bold Calibri Light has no Light bold: it resolves to Carlito Bold, as in Word. (Superseded: before this, Carlito Regular was used.)
 * `FormatApply` op `themeColor`; `FormatCheck` charPatch `color` accepts a checked theme object; `FormatSet.explicit` always writes an object colour; `FormatOps.changes` compares the settled form; `OpsProps.restyle` and `Pending.applyTo` settle; `Format.query` gives `colorRef` (see `ThemeRun`); `FormatMenu.colourMenu` and `ToolbarBind` pass `theme` (`FormatMenu.themeBlock`, from `(v.real \| v.d).doc.styles.theme`) and `currentRef`; `FormatMenu.colourPick` turns a theme pick into the `themeColor` op.
 * `Ui/ColourPopup` (WimpLib) gains the `theme` and `currentRef` options and `Ui/ColourLayout` (pure: `layout(withTheme)`, `cellAt`); without `theme` the popup is as before. See the table row.
 * `Ops`: `setTheme` is registered (see `OpsTheme`). `ThemeDoc` refuses a document whose theme relationship points elsewhere.
@@ -4639,7 +4641,7 @@ optional (`tools/moreapps-corpus.mjs`) and the poppler tools are skipped when no
 
 ### Fonts and licences
 
-The bundled Carlito, Caladea and Liberation fonts are SIL OFL 1.1, which allows embedding (the licence texts travel in
+The bundled Carlito, Caladea, Liberation and Letters Light (from Lato Light) fonts are SIL OFL 1.1, which allows embedding (the licence texts travel in
 `!Letters/Fonts/Licences`, which now also says so). **Homerton, Trinity and Corpus are RISC OS fonts that ship with this
 desktop, and the repository holds no licence text for them.** The export embeds them whole (the owner decided so);
 embedding follows each font's own terms, which this repository does not record. Do not read the export as a statement
@@ -5216,14 +5218,37 @@ drive Save as template, New from template and the second pick. Files for real Wo
 
 ## Fonts
 
-`!Letters/Fonts/` holds 20 unmodified TrueType files named without an extension (`Carlito-Regular`, ...) and `Licences`
+`!Letters/Fonts/` holds 22 TrueType files named without an extension (`Carlito-Regular`, ...; 20 unmodified, plus `LettersLight-Regular` and `LettersLight-Italic`) and `Licences`
 (Latin-1 text, exempt from the tab/72-column checks; it has two verbatim tabs). Carlito = Calibri, Caladea = Cambria,
 Liberation Sans/Serif/Mono = Arial/Times New Roman/Courier New, all **SIL Open Font License 1.1** (Caladea checked from
 its own LICENSE file: it is OFL, not Apache). They are metric-compatible: same advance widths, so lines break where
 they do in Word. `tools/moreapps-fonts.mjs` re-fetches them from pinned commits and checks SHA-256 and licence text
 (`node tools/moreapps-fonts.mjs`); the output is the same bytes every time. The OFL requires the licence to travel
 with the fonts and forbids selling them alone or using the Reserved Font Names for modified versions, which is why
-they are not converted. The fonts are committed in both `tools/moreapps/!Letters/Fonts` and the generated
+they are not converted.
+
+**Letters Light** is the stand-in for Calibri Light (the Office theme's heading font). Word's Calibri Light cannot be
+shipped and no free font has its widths, so `tools/moreapps-light-font.mjs` (run after `tools/moreapps-fonts.mjs`, which
+rewrites `Licences` without the Lato entry) builds two faces from Lato Light and Light Italic (google/fonts, pinned
+commit, SHA-256 checked, cached in the git-ignored `tools/moreapps/.cache`), with `tools/moreapps-light-font.py`
+(fontTools 4.60.1 in a throwaway venv) doing the glyph work. Each glyph of the set gets Calibri Light's advance, read from
+Word's own `calibril.ttf` / `calibrili.ttf` (widths only, never outlines; so a maintainer needs Word installed, and the
+widths are kept in `tests/moreapps/lightfont-widths.json` so the tests do not). The set is the one-line `SET` in the .py: ASCII, Latin-1, Latin
+Extended-A (U+0100-017F), the rest of Windows-1252 (Œ œ Š š Ÿ Ž ž ƒ ˆ ˜ ‚ „ † ‡ • … ‰ ‹ › € ™, dashes, quotes) and U+2212, 340
+characters; one missing from Lato or Calibri Light is left out and listed in the JSON's `missing` (none are), and
+`lightfont.test.mjs` checks the JSON's keys plus `missing` are exactly `SET`. Other characters keep Lato's widths. Most glyphs are scaled horizontally; a
+few punctuation glyphs are centred (stretch over 1.3) or shrunk evenly (non-letters under 0.8) instead; other composites
+built on a changed letter (Latin Extended-B, Vietnamese...) are scaled with their base, so an accented letter is never
+wider than its base (their advances are not Calibri's); kerning, ligatures and hinting are removed; the vertical metrics
+are Carlito Regular's, so lines are as tall as Calibri's. Lato is an OFL Reserved Font Name, so this is a **Modified
+Version under a new name**, "Letters Light"; the Lato entry and a Modified Version note are appended to `Licences`.
+The output is committed and is the same bytes every run. There is no Light bold: `FontMap` sends bold Calibri Light to
+Carlito Bold (`LIGHT_BOLD`), and `FontLoad` therefore keys its jobs by `family|leaf` (the file), not by family and
+style: Letters Light's bold slot is a separate job (`Letters Light|Carlito-Bold`) that reads Carlito-Bold again and
+registers it under the family 'Letters Light'. Tests: `lightfont.test.mjs` (names, the declared set, widths, metrics, weight 300, no
+kerning, size) and `lightlayout.test.mjs` (headings measured through the real layout and PDF paths, the PG37 wrap; the check that PG37 is the paragraph in `pg-36-metrics.docx` is skipped, visibly, without the local hand-off corpus).
+
+The fonts are committed in both `tools/moreapps/!Letters/Fonts` and the generated
 `assets/disc` copy: the two copies are the same git objects, so the packed repository grows by about **3.7 MiB**; a
 checkout's working tree by about 14 MB. `FontMap.substitute` never throws; its `css` is for CSS only (an unknown font
 is `"Name", "Liberation Sans", sans-serif`: the computer's own font if it has it, else Liberation Sans).
@@ -5379,7 +5404,7 @@ node tests/moreapps/word-find.mjs             # browser: Find and Replace (Ctrl-
 node tests/moreapps/word-dialog.mjs           # browser: WimpLib Ui/Dialog through task.word.dialog(spec): every control kind, Tab / arrows, popup and colour picks, Return / Escape / close icon, mixed values, keys, 30-cycle leaks (in index.mjs)
 node tests/moreapps/word-spacing.mjs          # browser: Ctrl-1/2/5/0 by real keys (one undo step each), the canvas line pitch at 1.0 vs 2.0, Format > Line spacing ticks and shading, the row 2 toolbar button's popup, Mac Ctrl-1 (Cmd-1 not ours), a table-only document, 50,000 paragraphs select all + Ctrl-2 and undo under 5 s (in index.mjs)
 node --test tests/moreapps/sectfields.test.mjs tests/moreapps/settingsread.test.mjs   # typed sectPr fields (pgNumType, lnNumType, vAlign, cols with w:col, pgSz/pgMar units written back as read; 22 sectPrs round trip raw and typed; cols units (P10 fix I3); hostile values raw; WORD_EDIT_CORPUS=1: every corpus sectPr from its typed fields); SettingsRead flags, views, cache per root; SettingsEdit.withOnOff in CT_Settings order
-node --test tests/moreapps/fontmetrics.test.mjs # FontMetrics (D35): the 20 bundled files parsed, nat per family (the files' values), hostile bytes null, ratiosOf fallbacks; Fmt's fm and LineLayout's tallest run (unit); mixed fonts: max ascent + max descent over the runs (P1 fix M2)
+node --test tests/moreapps/fontmetrics.test.mjs # FontMetrics (D35): the 22 bundled files parsed, nat per family (the files' values), hostile bytes null, ratiosOf fallbacks; Fmt's fm and LineLayout's tallest run (unit); mixed fonts: max ascent + max descent over the runs (P1 fix M2)
 node --test tests/moreapps/paraspace.test.mjs   # ParaSpace: lineBox (auto, exact, at least; clamps; clip; a font's own ratios), contextual spacing, rawSpacing, spacingDeco and its neighbour key, negative gaps (unit)
 node --test tests/moreapps/spacing-roundtrip.test.mjs   # random line spacing, space, flow and Paragraph-box patches on fixtures and corpus files, written and read back, undo restores (one corpus file in ten; WORD_EDIT_CORPUS=1: all)
 node tests/moreapps/word-autolist.mjs        # browser: AutoFormat lists with real keys (* and 1. then text, Enter Enter, 3. continues, 7. new, Tab, Ctrl-Z gives back the marker), never in overwrite mode, a real input method's commit, paste, Replace all, undo / redo; Format > AutoFormat lists off kept in Choices:Letters with Recent across a restart; Mac Cmd-Z (in index.mjs)
@@ -5530,6 +5555,7 @@ node tests/core/test-textinput.mjs            # core, browser: the text-input pr
 node --test tests/core/test-textinput-pure.mjs   # core: sanitizeText
 node tests/moreapps/handoff-typing.mjs       # writes the typed-*.docx real-Word hand-off files (local, corpus/handoff)
 node tools/moreapps-fonts.mjs                 # re-fetch the fonts (pinned, checked)
+node tools/moreapps-light-font.mjs            # then rebuild Letters Light (needs Word's Calibri Light files; run after the line above)
 node tests/moreapps/validate.mjs              # xmllint schema validation of what the writer writes
 node tests/moreapps/lint-package.mjs FILE.docx|DIR...   # package linter (exit 1 if any file has an error)
 VALIDATE_DIR=tests/moreapps/corpus VALIDATE_MAX=150 node tests/moreapps/validate.mjs   # original vs written errors
@@ -6490,7 +6516,7 @@ CLX19).
 | PG24 | `pg-24-borders.docx` | page borders (w:pgBorders) | not drawn |
 | PG35 | `pg-8-splitrow.docx` | Down from a split cell's last line on a page | the same cell's continuation on the next page (galley order) |
 | PG36 | `pg-36-metrics.docx` | line height: usWin vs hhea vs typo metrics for Carlito / Calibri and the other fonts | usWinAscent + usWinDescent + the hhea lineGap of the bundled font (Cambria's stand-in Caladea: 1.17 em, Cambria's) |
-| PG37 | `pg-36-metrics.docx` | Calibri Light lines drawn with Carlito Regular widths | Calibri Light is drawn with Carlito Regular's widths (no Light stand-in is bundled), so its lines may wrap a little earlier than Word's |
+| PG37 | `pg-36-metrics.docx` | Calibri Light lines drawn with Letters Light | Calibri Light is drawn with Letters Light, whose widths are Calibri Light's (`lightfont-widths.json`); Word's own answer for this paragraph is not in the corpus, so `lightlayout.test.mjs` checks the breaks against a greedy fill of those widths |
 | PG38 | `pg-38-bordergroup.docx` | a bordered paragraph group split across pages | the box closed on each page part (bottom side on the first page, top side on the next) |
 | PG39 | `pg-39-docgrid.docx` | docGrid type lines in a Latin document | the grid is ignored: lines take the font's height |
 | PG40 | `pg-40a-lastbreak-12.docx`, `pg-40b-lastbreak-15.docx`, `pg-40c-break-section.docx` | a page break as the last thing in the document (compatibility 12 and 15); a page break before a next-page section break | one empty page after a final page break (Word 2007 evidence, either mode); no empty page between the break and a next-page section |

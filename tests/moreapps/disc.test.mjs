@@ -157,6 +157,7 @@ describe('disc-moreapps on a disc root', () => {
     assert.equal(type('Model'), 'f81');
     assert.equal(type('Fonts'), 'dir');
     assert.equal(type('Fonts.Carlito-Regular'), 'ffd');
+    assert.equal(type('Fonts.LettersLight-Regular'), 'ffd');
     assert.equal(type('Fonts.Licences'), 'fff');
     // the library is not in MoreApps any more (tools/disc-wimplib.mjs)
     assert.deepEqual(more.children.map((c) => c.name), ['!Letters']);

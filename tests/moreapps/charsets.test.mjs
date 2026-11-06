@@ -31,9 +31,9 @@ const lacks = (set, ch) => set.filter((x) => x.font.charToGlyphIndex(ch) <= 0).m
 const missing = (ch) => fonts.filter((x) => x.font.charToGlyphIndex(ch) <= 0).map((x) => x.f);
 
 describe('CharSets', () => {
-  it('the 12 font files of Carlito, Liberation Sans and Liberation Serif are read (of 20 bundled)', () => {
+  it('the 12 font files of Carlito, Liberation Sans and Liberation Serif are read (of 22 bundled)', () => {
     assert.equal(fonts.length, 12);
-    assert.equal(files.length, 20);
+    assert.equal(files.length, 22);
     assert.equal(caladea.length, 4);
   });
   it('every character of every set is in all 12 asked font files', () => {

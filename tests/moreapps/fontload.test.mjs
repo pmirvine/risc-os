@@ -58,11 +58,46 @@ describe('FontLoad', () => {
     const again = await loadFonts(vfs, 'd', doc, ['Caladea'], FF);
     assert.deepEqual(again.failed, ['Caladea-Bold']);
   });
-  it('defaults to all five families', async () => {
-    const {FF, vfs, doc, added} = fakes();
-    await loadFonts(vfs, 'd', doc, undefined, FF);
-    assert.equal(added.length, 20);
+  it('defaults to all six families', async () => {
+    const {FF, vfs, doc, added, reads} = fakes();
+    const r = await loadFonts(vfs, 'd', doc, undefined, FF);
+    // 4 faces for each of five families, 4 for Letters Light
+    assert.equal(added.length, 24);
+    // ... read from the 22 files (Light's bold ones are Carlito's)
+    assert.equal(r.loaded.length, 22);
+    assert.equal(new Set(reads).size, 22);
   });
+  it('Letters Light bold loads Carlito Bold under its own name',
+    async () => {
+      const {FF, vfs, doc, added, reads} = fakes();
+      const r = await loadFonts(vfs, 'd', doc, ['Letters Light'], FF);
+      assert.deepEqual(r.loaded, ['Carlito-Bold', 'Carlito-BoldItalic',
+        'LettersLight-Italic', 'LettersLight-Regular']);
+      assert.ok(!reads.some((p) => p.includes('LettersLight-Bold')));
+      assert.ok(reads.includes('d.Carlito-Bold'));
+      const b = added.find((f) => f.desc.weight === 'bold' &&
+        f.desc.style === 'normal');
+      assert.equal(b.family, 'Letters Light');
+    });
+  it('Letters Light registers as its own family, with Carlito ratios',
+    async () => {
+      const dir = new URL('../../tools/moreapps/!Letters/Fonts/',
+        import.meta.url);
+      const {FF, doc} = fakes();
+      const vfs = {async readFile(p) {
+        return new Uint8Array(readFileSync(new URL(p.split('.').pop(),
+          dir)));
+      }};
+      await loadFonts(vfs, 'd', doc, ['Carlito', 'Letters Light'], FF);
+      // (the Light file's units per em differ, so equal to rounding)
+      for (const bold of [false, true]) {
+        const l = ratiosOf('Letters Light', bold, false);
+        const c = ratiosOf('Carlito', bold, false);
+        assert.ok(Math.abs(l.nat - c.nat) < 1e-3, `${bold} nat`);
+        assert.ok(Math.abs(l.desc - c.desc) < 1e-3, `${bold} desc`);
+      }
+      assert.notDeepEqual(ratiosOf('Letters Light', false, false), NAT_M);
+    });
   it('skips families that are not bundled without reporting them', async () => {
     const {FF, vfs, doc, added, reads} = fakes();
     const r = await loadFonts(vfs, 'd', doc, ['Homerton', 'Comic'], FF);

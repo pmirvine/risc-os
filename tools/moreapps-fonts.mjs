@@ -11,6 +11,9 @@
 // from the no-tab rule). Fonts are kept as the unmodified TTF files (a WOFF2 conversion would
 // need fontTools and brotli, and would be a Modified Version under the
 // OFL); the disc build can convert when they are installed.
+// The Letters Light faces (for Calibri Light) in the same folder are not
+// fetched here: tools/moreapps-light-font.mjs generates them from Lato
+// Light and adds their entry to Licences, so run it after this script.
 //   Usage: node tools/moreapps-fonts.mjs
 import fs from 'node:fs';
 import path from 'node:path';
@@ -87,12 +90,15 @@ for (const s of SOURCES) {
     `Licence: SIL Open Font License, Version 1.1 (file ${s.lic.split('/').pop()} in the archive)\n${'='.repeat(70)}\n\n${lic.trim()}\n`);
 }
 fs.writeFileSync(path.join(OUT, 'Licences'),
-  'Fonts bundled with !Letters. The font files here are unmodified TrueType\n' +
-  'files, named without the .ttf extension. All three families are free\n' +
-  'software under the SIL Open Font License 1.1 (full texts below). They\n' +
-  'have the same character widths as Calibri, Cambria, Arial, Times New\n' +
-  'Roman and Courier New so documents break lines as they do in Word.\n' +
-  'Fetched by tools/moreapps-fonts.mjs.\n' +
+  'Fonts bundled with !Letters. The font files here are TrueType files,\n' +
+  'named without the .ttf extension. All of them are free software under\n' +
+  'the SIL Open Font License 1.1 (full texts below). They have the same\n' +
+  'character widths as Calibri, Cambria, Arial, Times New Roman and\n' +
+  'Courier New so documents break lines as they do in Word.\n' +
+  'Carlito, Caladea and the Liberation fonts are unmodified, fetched by\n' +
+  'tools/moreapps-fonts.mjs. Letters Light (for Calibri Light) is a\n' +
+  'Modified Version of Lato Light made by tools/moreapps-light-font.mjs,\n' +
+  'described in the last entry below.\n' +
   'The PDFs that Export as PDF... (window menu) writes hold subsets of\n' +
   'these fonts, which the OFL allows. The RISC OS fonts Homerton,\n' +
   'Trinity and Corpus are not covered by this file: the PDFs hold them\n' +

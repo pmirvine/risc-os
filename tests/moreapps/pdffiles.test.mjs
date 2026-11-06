@@ -205,4 +205,19 @@ describe('fileLoader', () => {
     assert.equal(r.kind, 'ttf');
     assert.deepEqual(reads, ['F.LiberationSans-Regular']);
   });
+  it('Calibri Light: regular is Letters Light, bold is Carlito Bold',
+    async () => {
+      const {loader, reads} = mk();
+      const k = keyOf('bold 12px "Calibri Light", sans-serif');
+      assert.deepEqual(k, {family: 'Letters Light', bold: true,
+        italic: false, px: 12});
+      const b = await loader(k);
+      assert.equal(b.kind, 'ttf');
+      assert.deepEqual(b.bytes, new Uint8Array(
+        fs.readFileSync(path.join(FONTS, 'Carlito-Bold'))));
+      await loader(keyOf('12px "Calibri Light"'));
+      await loader(keyOf('italic bold 12px "Calibri Light"'));
+      assert.deepEqual(reads, ['F.Carlito-Bold', 'F.LettersLight-Regular',
+        'F.Carlito-BoldItalic']);
+    });
 });

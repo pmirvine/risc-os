@@ -1,14 +1,14 @@
 // FontMap: Word font names to bundled metric-compatible fonts.
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {substitute, fontFiles, fontFile}
+import {substitute, fontFiles, fontFile, bundledFamilies, fontsToLoad}
   from '../../tools/moreapps/!Letters/FontMap';
 
 describe('FontMap.substitute', () => {
   const fam = (n) => substitute(n).family;
   it('maps Word fonts to metric-compatible families', () => {
     assert.equal(fam('Calibri'), 'Carlito');
-    assert.equal(fam('Calibri Light'), 'Carlito');
+    assert.equal(fam('Calibri Light'), 'Letters Light');
     assert.equal(fam('Cambria'), 'Caladea');
     assert.equal(fam('Arial'), 'Liberation Sans');
     assert.equal(fam('Helvetica'), 'Liberation Sans');
@@ -16,6 +16,14 @@ describe('FontMap.substitute', () => {
     assert.equal(fam('Times'), 'Liberation Serif');
     assert.equal(fam('Courier New'), 'Liberation Mono');
     assert.equal(fam('Courier'), 'Liberation Mono');
+  });
+  it('maps Calibri Light to the bundled Letters Light', () => {
+    assert.equal(fam('  CALIBRI light '), 'Letters Light');
+    assert.deepEqual(substitute('calibri light'), {family: 'Letters Light',
+      css: '"Letters Light", sans-serif'});
+    assert.ok(bundledFamilies().includes('Letters Light'));
+    assert.ok(fontsToLoad(['Calibri Light']).includes('Letters Light'));
+    assert.ok(fontsToLoad(['Letters Light']).includes('Letters Light'));
   });
   it('ignores case and surrounding space', () => {
     assert.equal(fam('  cALIBRI '), 'Carlito');
@@ -104,13 +112,30 @@ describe('FontMap odd names', () => {
 });
 
 describe('FontMap.fontFiles', () => {
-  it('lists 20 unique names', () => {
+  it('lists 22 unique names', () => {
     const f = fontFiles();
-    assert.equal(f.length, 20);
-    assert.equal(new Set(f).size, 20);
+    assert.equal(f.length, 22);
+    assert.equal(new Set(f).size, 22);
     assert.ok(f.includes('Carlito-BoldItalic'));
     assert.ok(f.includes('LiberationMono-Regular'));
     assert.ok(f.includes('Caladea-Italic'));
+    assert.ok(f.includes('LettersLight-Regular'));
+    assert.ok(f.includes('LettersLight-Italic'));
+    assert.ok(!f.some((n) => n.startsWith('LettersLight-Bold')));
+  });
+  it('Letters Light: bold asks for the Carlito Bold faces', () => {
+    assert.equal(fontFile('Letters Light', false, false),
+      'LettersLight-Regular');
+    assert.equal(fontFile('Letters Light', false, true),
+      'LettersLight-Italic');
+    assert.equal(fontFile('Letters Light', true, false), 'Carlito-Bold');
+    assert.equal(fontFile('Letters Light', true, true),
+      'Carlito-BoldItalic');
+    for (const b of [false, true]) {
+      for (const i of [false, true]) {
+        assert.ok(fontFiles().includes(fontFile('Letters Light', b, i)));
+      }
+    }
   });
   it('fontFile picks the style or null', () => {
     assert.equal(fontFile('Carlito', false, false), 'Carlito-Regular');
