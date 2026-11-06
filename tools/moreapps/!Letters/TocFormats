@@ -1,0 +1,294 @@
+// TocFormats - the Formats choice of the Table of Contents box
+// (./TocBox): six designs of the table of contents styles, kept as
+// data, and the one pure function that puts one into a style table.
+// Pure: no desktop services.
+//
+//   FORMATS  [{id, text}] the choices: 'template' (From template:
+//       the styles left exactly as they are) and the designs,
+//       'classic', 'formal', 'modern', 'simple', 'distinctive' and
+//       'elegant'
+//   lookOf(id, n, theme?) -> {pPr, rPr} | null  the look design id
+//       gives TOC n (n 1..9), or the TOC Heading style (n 0), its
+//       colours' w:val from theme (./ThemeRead; none: the Office
+//       theme's); null for 'template' or an id not in FORMATS
+//   applyNotes(table, id, opts?) -> {table, notes}  apply's table,
+//       and a sentence for the user (busy) for each style that could
+//       not be made: the document lacks a style of that name but has
+//       another style under its id (TOC1, TOCHeading), so it is left
+//       out rather than taken over
+//   busy(table, id, shown) -> that sentence
+//   apply(table, id, opts?) -> table  the style table (./Styles)
+//       with design id put in: TOC 1..9 and TOC Heading, each added
+//       when the table lacks it (./StyleCmd ensureBuiltin; opts
+//       {strict}), then given the design's look. The table given is
+//       never changed; 'template' or an unknown id gives the same
+//       table back, and so does a design already there
+//
+// A design sets, and so owns, these of each style: in the rPr the
+// font (a theme font, as Word writes it, or a named one), b, i,
+// sz / szCs (b and i written off where the design has them off, so
+// a bold Heading 1 under TOC Heading does not show through) and the
+// colour (a theme colour, w:val its colour in the table's theme,
+// ./ThemeRead colorOf, else the Office theme's); in the pPr the
+// spacing before and after, the left indent and (the heading only)
+// the alignment. A property a design leaves out is taken off, so a
+// design put over another gives exactly the same styles as the
+// design alone. Everything else stays as it was: the styles' names,
+// Based on, Next, the line spacing (line, lineRule: a raw
+// w:spacing's too; its autospacing and before / after in lines go,
+// as they would override the design's), the right, first line and
+// hanging indents, the entries' tab stops
+// (the leader, alignment and numbers stay the box's other fields).
+// The styles are found by name ('toc n', 'TOC Heading', case
+// ignored), so a document that calls them by other ids has its own
+// restyled. Capitals and small capitals are not used: Letters does
+// not draw them, and the table should look the same here and in
+// Word.
+import {W} from './Wml';
+import {ensureBuiltin, modifyStyle} from './StyleCmd';
+import {withoutRaw} from './PropNames';
+import {deepEqual} from './Model';
+import {colorOf} from './ThemeRead';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+export const FORMATS = Object.freeze([
+  ['template', 'From template'], ['classic', 'Classic'],
+  ['formal', 'Formal'], ['modern', 'Modern'], ['simple', 'Simple'],
+  ['distinctive', 'Distinctive'], ['elegant', 'Elegant'],
+].map(([id, text]) => Object.freeze({id, text})));
+
+// --- the pieces of a look ---------------------------------------
+
+const THEME = {major: ['majorHAnsi', 'majorEastAsia', 'majorBidi'],
+  minor: ['minorHAnsi', 'minorEastAsia', 'minorBidi']};
+/** A theme font (major: headings, minor: body), as Word writes it. */
+const themeFont = (k) => W('rFonts', [['w:asciiTheme', THEME[k][0]],
+  ['w:eastAsiaTheme', THEME[k][1]], ['w:hAnsiTheme', THEME[k][0]],
+  ['w:cstheme', THEME[k][2]]]);
+// theme colours: [the Office theme's colour, slot, tint or shade]
+const COLOURS = {
+  text1: ['000000', 'text1'], text2: ['44546A', 'text2'],
+  grey: ['404040', 'text1', 'themeTint', 'BF'],
+  pale: ['5A5A5A', 'text1', 'themeTint', 'A5'],
+  accent1: ['4472C4', 'accent1'],
+  deep1: ['2F5496', 'accent1', 'themeShade', 'BF'],
+  accent2: ['ED7D31', 'accent2'],
+  deep2: ['C45911', 'accent2', 'themeShade', 'BF'],
+};
+/** The theme colour k, w:val the colour it is in theme (the Office
+ *  theme's with none), as Word caches it. */
+const colour = (k, theme) => {
+  const [office, slot, mod, v] = COLOURS[k];
+  const val = theme ? colorOf(theme, {color: office, themeColor: slot,
+    ...(mod ? {[mod]: v} : {})}) : office;
+  return W('color', [['w:val', val], ['w:themeColor', slot],
+    ...(mod ? [['w:' + mod, v]] : [])]);
+};
+const named = (f) => ({ascii: f, hAnsi: f, cs: f});
+
+/**
+ * A look: o {font ('major' | 'minor' | a font name), pt, b, i,
+ * colour (a COLOURS key), before, after (points), left (twips),
+ * jc}.
+ */
+function look(o, theme) {
+  const rPr = {extra: []}, pPr = {extra: []};
+  if (THEME[o.font]) rPr.extra.push(themeFont(o.font));
+  else if (typeof o.font === 'string') rPr.rFonts = named(o.font);
+  // off written as off (w:b w:val="0"), so a bold Heading 1 under
+  // TOC Heading, or a bold Normal, does not show through
+  rPr.b = !!o.b;
+  rPr.i = !!o.i;
+  if (o.pt) rPr.sz = rPr.szCs = Math.round(o.pt * 2);
+  if (o.colour) rPr.extra.push(colour(o.colour, theme));
+  pPr.spacing = {before: Math.round((o.before || 0) * 20),
+    after: Math.round((o.after || 0) * 20)};
+  if (o.left) pPr.ind = {left: o.left};
+  if (o.jc) pPr.jc = o.jc;
+  return {pPr, rPr};
+}
+
+// --- the designs ------------------------------------------------
+// Each: heading (the TOC Heading's look) and level(n) (TOC n's).
+
+const DESIGNS = {
+  // book-like: the body font, the first level bold and set apart
+  classic: {
+    heading: {font: 'major', pt: 18, b: true, colour: 'text1',
+      before: 12, after: 9},
+    level: (n) => (n === 1
+      ? {font: 'minor', pt: 12, b: true, before: 6, after: 3}
+      : {font: 'minor', pt: n === 2 ? 11 : 10, left: 360 * (n - 1),
+        after: 2}),
+  },
+  // Times New Roman throughout, a centred heading, italic below
+  formal: {
+    heading: {font: 'Times New Roman', pt: 16, b: true,
+      colour: 'text1', after: 12, jc: 'center'},
+    level: (n) => ({font: 'Times New Roman', pt: n === 1 ? 12 : 11,
+      b: n === 1, i: n > 2, before: n === 1 ? 9 : 0, after: 3,
+      left: 432 * (n - 1)}),
+  },
+  // the headings' font, large and blue at the top, grey below
+  modern: {
+    heading: {font: 'major', pt: 24, colour: 'accent1', after: 12},
+    level: (n) => ({font: 'major', pt: n === 1 ? 14 : n === 2 ? 11
+      : 10, colour: n === 1 ? 'accent1' : n === 2 ? 'grey' : 'pale',
+    before: n === 1 ? 8 : 0, after: 2, left: 220 * (n - 1)}),
+  },
+  // one size, nothing bold, close together
+  simple: {
+    heading: {font: 'minor', pt: 14, b: true, colour: 'text1',
+      after: 6},
+    level: (n) => ({font: 'minor', pt: 11, after: 2,
+      left: 240 * (n - 1)}),
+  },
+  // bold orange first level, bold second, italic below
+  distinctive: {
+    heading: {font: 'major', pt: 22, b: true, colour: 'accent2',
+      before: 6, after: 12},
+    level: (n) => (n === 1
+      ? {font: 'major', pt: 13, b: true, colour: 'deep2', before: 10,
+        after: 4}
+      : {font: 'minor', pt: 11, b: n === 2, i: n > 2, after: 2,
+        left: 360 * (n - 1)}),
+  },
+  // Cambria, italic, a quiet slate colour, a centred heading
+  elegant: {
+    heading: {font: 'Cambria', pt: 20, i: true, colour: 'text2',
+      before: 12, after: 12, jc: 'center'},
+    level: (n) => ({font: 'Cambria', pt: n === 1 ? 13 : n === 2 ? 11
+      : 10, i: n !== 2, colour: n === 1 ? 'text2' : undefined,
+    before: n === 1 ? 6 : 0, after: 2, left: 400 * (n - 1)}),
+  },
+};
+const own = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+
+/** See the header. */
+export function lookOf(id, n, theme) {
+  const d = typeof id === 'string' && own(DESIGNS, id) ? DESIGNS[id]
+    : null;
+  if (!d || !Number.isInteger(n) || n < 0 || n > 9) return null;
+  return look(n === 0 ? d.heading : d.level(n), theme || null);
+}
+
+// --- applying a design ------------------------------------------
+
+const R_TYPED = ['rFonts', 'b', 'i', 'sz', 'szCs', 'color'];
+const R_RAW = ['rFonts', 'color', 'bCs', 'iCs', 'caps', 'smallCaps'];
+
+/** The id of table's style called name (case ignored), or null. */
+function idByName(table, name) {
+  const want = name.toLowerCase();
+  for (const s of table.styles.values()) {
+    if (isObj(s) && s.type === 'paragraph' && typeof s.name ===
+      'string' && s.name.trim().toLowerCase() === want) return s.id;
+  }
+  return null;
+}
+
+const strip = (s) => ({...s, raw: null});
+
+/** The attributes of raw element w:name in extra, by local name
+ *  (later ones win), as {local: value}. */
+function rawAttrs(extra, name) {
+  const out = {};
+  for (const n of Array.isArray(extra) ? extra : []) {
+    if (!isObj(n) || (n.name !== 'w:' + name && n.name !== name))
+      continue;
+    for (const [k, v] of n.attrs || []) out[k.split(':').pop()] = v;
+  }
+  return out;
+}
+const int = (v) => (/^-?\d+$/.test(String(v)) ? +v : undefined);
+
+/** The spacing of old's pPr with the look's before and after: its
+ *  line spacing kept (a raw w:spacing's too, which the typed one
+ *  replaces), the autospacing and the before / after in lines
+ *  dropped, as they would override the design's. */
+function spacingOf(pPr, l) {
+  const raw = rawAttrs(pPr.extra, 'spacing');
+  const cur = {...(raw.line !== undefined ? {line: int(raw.line)} : {}),
+    ...(raw.lineRule ? {lineRule: raw.lineRule} : {}),
+    ...(isObj(pPr.spacing) ? pPr.spacing : {})};
+  const out = {};
+  if (Number.isInteger(cur.line)) out.line = cur.line;
+  if (typeof cur.lineRule === 'string') out.lineRule = cur.lineRule;
+  return {...out, ...l.pPr.spacing};
+}
+
+/** The indents of old's pPr with the look's left one: right,
+ *  first line and hanging kept; null when none is left. */
+function indOf(pPr, l) {
+  const raw = rawAttrs(pPr.extra, 'ind'), out = {};
+  for (const [k, from] of [['right', raw.right ?? raw.end],
+    ['firstLine', raw.firstLine], ['hanging', raw.hanging]]) {
+    if (int(from) !== undefined) out[k] = int(from);
+  }
+  for (const k of ['right', 'firstLine', 'hanging']) {
+    if (isObj(pPr.ind) && Number.isInteger(pPr.ind[k]))
+      out[k] = pPr.ind[k];
+  }
+  if (l.pPr.ind && l.pPr.ind.left) out.left = l.pPr.ind.left;
+  return Object.keys(out).length ? out : null;
+}
+
+/** table with style id given look l (see the header): the typed
+ *  properties by ./StyleCmd modifyStyle, then the raw theme ones;
+ *  table itself when the style already looks so. */
+function restyle(table, id, l, heading) {
+  const old = table.styles.get(id);
+  const r = {}, p = {};
+  for (const k of R_TYPED) r[k] = l.rPr[k] ?? null;
+  p.spacing = spacingOf(old.pPr || {extra: []}, l);
+  p.ind = indOf(old.pPr || {extra: []}, l);
+  if (heading) p.jc = l.pPr.jc ?? null;
+  const t = modifyStyle(table, id, {rPr: r, pPr: p}) || table;
+  const s = t.styles.get(id);
+  const extra = [...withoutRaw(s.rPr.extra || [], R_RAW),
+    ...structuredClone(l.rPr.extra)];
+  const now = {...s, rPr: {...s.rPr, extra}, raw: null};
+  if (deepEqual(strip(now), strip(old))) return table;
+  const styles = new Map(t.styles);
+  styles.set(id, now);
+  return {...t, styles, defaults: {...t.defaults}};
+}
+
+/** See the header. */
+export function apply(table, id, opts = {}) {
+  return applyNotes(table, id, opts).table;
+}
+
+/** See the header. */
+export function applyNotes(table, id, opts = {}) {
+  const notes = [];
+  if (!isObj(table) || !(table.styles instanceof Map) ||
+    !lookOf(id, 1)) return {table, notes};
+  let t = table;
+  for (let n = 0; n <= 9; n++) {
+    const name = n ? 'toc ' + n : 'TOC Heading';
+    const want = n ? 'TOC' + n : 'TOCHeading';
+    let sid = idByName(t, name);
+    if (sid === null) {
+      const got = ensureBuiltin(t, want,
+        {strict: !!(isObj(opts) && opts.strict)});
+      if (got) t = got;
+      sid = idByName(t, name);
+    }
+    if (sid === null) {
+      notes.push(busy(t, want, n ? 'TOC ' + n : name));
+      continue;
+    }
+    t = restyle(t, sid, lookOf(id, n, t.theme), n === 0);
+  }
+  return {table: t, notes};
+}
+
+/** The words for a style that could not be made: its id taken. */
+export function busy(table, id, shown) {
+  const o = table.styles.get(id);
+  return `The style ${shown} could not be made: the document has ` +
+    `another style, ${o && typeof o.name === 'string' ? o.name : id}` +
+    `, under its id ${id}.`;
+}

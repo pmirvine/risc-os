@@ -1,0 +1,181 @@
+// TocHeading - the heading of a table of contents (the Heading choice
+// of ./TocBox) and the two steps ./TocCmd adds to an insert or an
+// update for the Heading and Formats choices. Pure: no desktop
+// services.
+//
+//   HEADINGS  [{id, text}] the choices: 'none' (None), 'contents'
+//       (Contents), 'toc' (Table of Contents)
+//   headingText(id) -> string  the heading's text for a choice ('' for
+//       none or an id not in HEADINGS)
+//   choiceOf(text) -> id  the choice a heading's text is: 'none' for
+//       null, 'contents' or 'toc' when it is that text (white space
+//       trimmed, case ignored), else 'kept' (a heading typed by hand,
+//       or in another language: shown as it is, kept on Update)
+//   headingOf(doc, f) -> {id, text} | null  the heading of TOC f: the
+//       paragraph directly before the one that holds f's begin, in
+//       the same section or cell, in the style called TOC Heading
+//       (case ignored) and holding no field mark, when nothing
+//       visible comes before the begin in its paragraph. text: its
+//       text as shown (marks left out). ./TocCmd tocAt counts a
+//       position in it as in f, so the box edits f from there
+//   headingStep(fieldOf, text, notes?) -> a ./FieldPasses step (not
+//       paged)
+//       that gives the table fieldOf(d) returns the heading text: ''
+//       takes the heading away, other text puts one in (the style
+//       TOC Heading, added when the document lacks it:
+//       ./StyleCmd ensureBuiltin; when its id is another style's, no
+//       heading and a sentence in notes) or changes the one there to
+//       that text (only its shown text: bookmarks, comment anchors
+//       and other marks in it stay); nothing when it is so already
+//   formatStep(id, notes?) -> a step (not paged) that puts design id
+//       of ./TocFormats into the document's styles (one setDocPart
+//       op; nothing for From template or a design already there);
+//       the styles it could not make named in notes (applyNotes)
+//   removeHeadingOps(doc, f) -> [op]  the op that takes f's heading
+//       away (headingStep's None), [] with none. (./TocCmd removeToc
+//       finds the heading before its own ops and takes it by its id
+//       after them, as its paths change)
+import {OBJ, newPara} from './Model';
+import {findBlock} from './EditPos';
+import {at as blockAt} from './Walk';
+import {ensureBuiltin} from './StyleCmd';
+import {styleIdByName} from './TocBuild';
+import {applyNotes, busy} from './TocFormats';
+import {localName} from './Kinds';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+export const HEADINGS = Object.freeze([['none', 'None'],
+  ['contents', 'Contents'], ['toc', 'Table of Contents']]
+  .map(([id, text]) => Object.freeze({id, text})));
+const NAME = 'TOC Heading';
+
+/** See the header. */
+export function headingText(id) {
+  const h = id === 'none' ? null : HEADINGS.find((x) => x.id === id);
+  return h ? h.text : '';
+}
+
+/** See the header. */
+export function choiceOf(text) {
+  if (typeof text !== 'string') return 'none';
+  const t = text.trim().toLowerCase();
+  const h = HEADINGS.find((x) => x.id !== 'none' &&
+    x.text.toLowerCase() === t);
+  return h ? h.id : 'kept';
+}
+
+const shown = (b) => b.text.split(OBJ).join('');
+const strictOf = (doc) => isObj(doc.meta) &&
+  doc.meta.conformance === 'strict';
+
+/** The block before f's begin paragraph, with its path, or null. */
+function before(doc, f) {
+  const loc = isObj(f) && f.begin ? findBlock(doc, f.begin.id) : null;
+  if (!loc || loc.story || loc.b.type !== 'p') return null;
+  if (shown({text: loc.b.text.slice(0, f.begin.off)})) return null;
+  const n = loc.at.length - 1;
+  if (loc.at[n] < 1) return null;
+  const at = [...loc.at.slice(0, n), loc.at[n] - 1];
+  const b = blockAt(doc, at);
+  return b ? {at, b, loc} : null;
+}
+
+const FIELD = new Set(['fldChar', 'fldSimple', 'instrText']);
+/** Whether paragraph b holds a field mark (a field's begin, code,
+ *  separate or end, or a simple field). */
+const marked = (b) => Object.values(b.inlines || {}).some((x) =>
+  isObj(x) && isObj(x.node) && FIELD.has(localName(x.node)));
+
+/** See the header. */
+export function headingOf(doc, f) {
+  const x = isObj(doc) ? before(doc, f) : null;
+  const sid = x ? styleIdByName(doc, NAME, 'paragraph') : null;
+  if (!x || x.b.type !== 'p' || sid === null || x.b.pStyle !== sid ||
+    marked(x.b)) return null;
+  return {id: x.b.id, text: shown(x.b)};
+}
+
+/** The edits that make paragraph b's shown text want, its marks
+ *  (bookmarks, comment anchors...) kept where they are: each piece
+ *  of text between them deleted, the first one replaced by want
+ *  (with no text, want goes after the marks), last piece first. */
+function retext(at, b, want) {
+  const pieces = [];
+  for (const m of b.text.matchAll(/[^\ufffc]+/g))
+    pieces.push([m.index, m[0].length]);
+  if (!pieces.length) {
+    return [{op: 'replaceText', block: at, at: b.text.length, del: 0,
+      ins: want}];
+  }
+  return pieces.map(([k, n], i) => ({op: 'replaceText', block: at,
+    at: k, del: n, ins: i ? '' : want})).reverse();
+}
+
+/** The id of TOC Heading in d's document, added when it lacks it
+ *  (null when it cannot be, the reason put in notes). */
+function styleFor(d, notes) {
+  const sid = styleIdByName(d.doc, NAME, 'paragraph');
+  if (sid !== null) return sid;
+  const st = d.doc.styles;
+  if (!isObj(st) || !(st.styles instanceof Map)) return null;
+  const t = ensureBuiltin(st, 'TOCHeading', {strict: strictOf(d.doc)});
+  if (!t) {
+    notes.push(busy(st, 'TOCHeading', NAME) + ' No heading was put ' +
+      'in.');
+    return null;
+  }
+  d.apply({op: 'setDocPart', key: 'styles', value: t});
+  return styleIdByName(d.doc, NAME, 'paragraph');
+}
+
+const none = {found: 1, changed: false, messages: []};
+const done = {found: 1, changed: true, messages: []};
+
+/** See the header. */
+export function headingStep(fieldOf, text, notes = []) {
+  const want = typeof text === 'string' ? text.trim() : '';
+  return {name: 'heading', paged: false, run(d) {
+    const f = fieldOf(d);
+    const h = f ? headingOf(d.doc, f) : null;
+    if (h && !want) {
+      d.apply(removeHeadingOps(d.doc, f)[0]);
+      return done;
+    }
+    if (h) {
+      if (h.text === want) return none;
+      const loc = findBlock(d.doc, h.id);
+      for (const op of retext(loc.at, loc.b, want)) d.apply(op);
+      return done;
+    }
+    if (!want || !f) return none;
+    const loc = findBlock(d.doc, f.begin.id);
+    if (!loc || loc.story) return none;
+    const sid = styleFor(d, notes);
+    if (sid === null) return none;
+    d.apply({op: 'insertBlocks', at: findBlock(d.doc, f.begin.id).at,
+      blocks: [newPara(want, {pStyle: sid})]});
+    return done;
+  }};
+}
+
+/** See the header. */
+export function formatStep(id, notes = []) {
+  return {name: 'format', paged: false, run(d) {
+    const st = d.doc.styles;
+    const got = isObj(st) && st.styles instanceof Map
+      ? applyNotes(st, id, {strict: strictOf(d.doc)}) : null;
+    const t = got ? got.table : st;
+    if (got) notes.push(...got.notes);
+    if (t === st) return none;
+    d.apply({op: 'setDocPart', key: 'styles', value: t});
+    return done;
+  }};
+}
+
+/** See the header. */
+export function removeHeadingOps(doc, f) {
+  const h = headingOf(doc, f);
+  const loc = h ? findBlock(doc, h.id) : null;
+  return loc ? [{op: 'removeBlocks', at: loc.at, count: 1}] : [];
+}

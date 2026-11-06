@@ -70,11 +70,13 @@ describe('links !Letters makes look like links', () => {
     assert.deepEqual(styles(doc, b), [null]);
     const ts = linkToks(doc, p);
     assert.deepEqual(ts.map((t) => [t.text, blue(t), t.f.bold]),
-      [['here', true, false], ['bold', true, false],
+      [['here', true, false], ['bold', true, true],
         ['red', false, false]]);
     assert.equal(ts[2].f.under, true);
     assert.equal(ts[2].f.colour.toLowerCase(), '#ff0000');
-    assert.equal(new Set(ts.map((t) => t.f.css)).size, 1, 'one css');
+    // each run measured in its own format: the bold one bold
+    assert.ok(ts[1].f.css.includes('bold'));
+    assert.ok(!ts[0].f.css.includes('bold'));
     const bytes = await writeDocx(doc);
     emit('linkstyle-rtf', bytes);
     const back = await readDocx(bytes);
@@ -103,8 +105,8 @@ describe('links !Letters makes look like links', () => {
     assert.deepEqual(linkToks(doc, p).map(blue), [true, false]);
     emit('linkstyle-imp', await writeDocx(doc));
   });
-  it('Insert > Hyperlink over a bold run: blue and underlined (in the ' +
-    'link\'s one css, the known limit)',
+  it('Insert > Hyperlink over a bold run: blue and underlined, the ' +
+    'bold run still bold',
     () => {
       const d = mk([['one two', {runs: [{start: 0, end: 4,
         rPr: {extra: []}}, {start: 4, end: 7,
@@ -114,8 +116,8 @@ describe('links !Letters makes look like links', () => {
       assert.ok(out && out.sel);
       const ts = linkToks(d.doc, P(d, 0));
       assert.deepEqual(ts.map((t) => [t.text, blue(t), t.f.bold]),
-        [['one', true, false], ['two', true, false]]);
-      assert.equal(ts[0].f.css, ts[1].f.css);
+        [['one', true, false], ['two', true, true]]);
+      assert.notEqual(ts[0].f.css, ts[1].f.css);
     });
 });
 

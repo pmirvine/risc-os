@@ -25,7 +25,12 @@
 //       silently). error: text for the box (levels not a whole
 //       number from 1 to 9, a leader not in LEADERS, a style with no
 //       name, a quote or backslash in it, a level not 1 to 9, a
-//       style named twice)
+//       style named twice, a heading or format not offered).
+//       opts.heading (not for a table of figures): inserting, the
+//       chosen heading's text (none: left out); editing, only when
+//       the choice is not headingWas: the new text, '' for None
+//       (./TocHeading headingStep). opts.format: the design chosen,
+//       left out for From template (./TocFormats)
 //   styleChoices(doc, extra?) -> [{id, text}]  the styles the
 //       Options box offers: the document's paragraph styles by the
 //       names Word shows (./StyleName display), but Heading 1 to 9
@@ -51,12 +56,20 @@
 //   (false for \a: the captions without label and number), exact
 //   (the instruction says no more than these values: instrOf of
 //   them reads back the same), why (./TocUpdate tocWhy: why the
-//   table cannot be made again, or null)}
+//   table cannot be made again, or null), heading ('none',
+//   'contents', 'toc': ./TocHeading HEADINGS; 'kept': a heading of
+//   other text, as typed), headingWas (the heading fill found, for
+//   patch to see a change), headingText (its text, or null), format
+//   ('template', From template, or a ./TocFormats design: fill
+//   always gives 'template', it never guesses the design there)}
 import {tocAt, instrOf, insertWhy, AT_TABLE} from './TocCmd';
 import {parse} from './TocSwitches';
 import {tocWhy, entriesOf} from './TocUpdate';
 import {findBlock} from './EditPos';
 import {display} from './StyleName';
+import {headingOf, headingText, choiceOf, HEADINGS}
+  from './TocHeading';
+import {FORMATS} from './TocFormats';
 
 const isObj = (v) => v !== null && typeof v === 'object';
 
@@ -73,7 +86,9 @@ const FROM_TAB = {dot: 'dots', hyphen: 'dashes', underscore: 'line',
 export const DEFAULTS = Object.freeze({editing: false, levels: 3,
   pageNumbers: true, rightAlign: true, leader: 'dots',
   hyperlinks: true, outline: true, extraStyles: Object.freeze([]),
-  seqId: null, includeLabel: true, exact: true, why: null});
+  seqId: null, includeLabel: true, exact: true, why: null,
+  heading: 'none', headingWas: 'none', headingText: null,
+  format: 'template'});
 
 /** The values a parsed instruction sw asks for (no leader). */
 function valuesOf(sw) {
@@ -139,8 +154,11 @@ export function fill(doc, sel) {
   const f = isObj(doc) && isObj(sel) ? tocAt(doc, sel) : null;
   if (!f) return {...DEFAULTS, extraStyles: []};
   const sw = parse(f.instr), v = valuesOf(sw);
+  const h = headingOf(doc, f), heading = choiceOf(h ? h.text : null);
   return {editing: true, ...v, leader: leaderOf(doc, f),
-    exact: same(parse(instrOf(v)), sw), why: tocWhy(doc, f)};
+    exact: same(parse(instrOf(v)), sw), why: tocWhy(doc, f),
+    heading, headingWas: heading, headingText: h ? h.text : null,
+    format: 'template'};
 }
 
 const BAD_NAME = /["\\]|[\u0000-\u001f]/;
@@ -178,6 +196,8 @@ export function patch(values, field) {
     return {error: 'Tab leader: none, dots, dashes or a line.'};
   const xs = stylesOf(v.extraStyles ?? []);
   if (!Array.isArray(xs)) return xs;
+  const look = looksOf(v, isObj(field));
+  if (look.error) return look;
   const opts = {levels: v.levels, hyperlinks: v.hyperlinks !== false,
     pageNumbers: v.pageNumbers !== false,
     rightAlign: v.rightAlign !== false, leader: TO_CMD[v.leader],
@@ -185,6 +205,9 @@ export function patch(values, field) {
   if (typeof v.seqId === 'string' && v.seqId) {
     opts.seqId = v.seqId;
     opts.includeLabel = v.includeLabel !== false;
+  } else {
+    if (look.heading !== undefined) opts.heading = look.heading;
+    if (look.format !== undefined) opts.format = look.format;
   }
   opts.instr = instrOf(opts);
   if (!isObj(field) || typeof field.instr !== 'string')
@@ -197,6 +220,23 @@ export function patch(values, field) {
       'not show: change it in the Field box (Insert > Field...).'};
   }
   return {opts};
+}
+
+/** The heading and format values ask for (see the header), or
+ *  {error}. */
+function looksOf(v, editing) {
+  const heading = v.heading ?? 'none', format = v.format ?? 'template';
+  if (!FORMATS.some((x) => x.id === format))
+    return {error: 'Formats: From template or one of the designs.'};
+  const was = editing ? v.headingWas ?? 'none' : 'none';
+  if (!(HEADINGS.some((x) => x.id === heading) ||
+    (heading === 'kept' && was === 'kept')))
+    return {error: 'Heading: None, Contents or Table of Contents.'};
+  const out = {heading: undefined,
+    format: format === 'template' ? undefined : format};
+  if (editing ? heading !== was : heading !== 'none')
+    out.heading = headingText(heading);
+  return out;
 }
 
 const SKIP = /^(heading|toc) [1-9]$/i;

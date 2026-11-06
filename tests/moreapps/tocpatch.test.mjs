@@ -401,3 +401,82 @@ describe('updateRangeCmd: Update field over a range', () => {
       .endsWith('Figure 1'));
   });
 });
+
+describe('fill and patch: the Heading and Formats choices', () => {
+  const put = async (heading) => {
+    const doc = await read(BODY()), {d, t} = open(doc);
+    assert.ok(insertToc(d, t, caret({id: blocks(d)[0].id, off: 0}),
+      {heading}, ctxOf(d.doc)));
+    return {d, t};
+  };
+  it('fill: no table: no heading, From template', async () => {
+    const v = fill(await read(BODY()), null);
+    assert.equal(v.heading, 'none');
+    assert.equal(v.headingWas, 'none');
+    assert.equal(v.headingText, null);
+    assert.equal(v.format, 'template');
+    assert.equal(DEFAULTS.heading, 'none');
+    assert.equal(DEFAULTS.format, 'template');
+  });
+  it('fill: the heading there (Contents; a typed one kept); the ' +
+    'format always From template', async () => {
+    const {d, t} = await put('Contents');
+    const v = fill(d.doc, inToc(d.doc));
+    assert.equal(v.editing, true);
+    assert.equal(v.heading, 'contents');
+    assert.equal(v.headingWas, 'contents');
+    assert.equal(v.headingText, 'Contents');
+    assert.equal(v.format, 'template');
+    const h = blocks(d)[0];
+    const loc = findBlock(d.doc, h.id);
+    t.command(() => d.apply({op: 'replaceText', block: loc.at, at: 0,
+      del: h.text.length, ins: 'Inhalt'}));
+    const w = fill(d.doc, inToc(d.doc));
+    assert.equal(w.heading, 'kept');
+    assert.equal(w.headingText, 'Inhalt');
+    const none = await put('');
+    assert.equal(fill(none.d.doc, inToc(none.d.doc)).heading, 'none');
+  });
+  it('patch, inserting: the heading text and the design', () => {
+    const a = patch({...DEFAULTS, heading: 'contents',
+      format: 'modern'});
+    assert.equal(a.opts.heading, 'Contents');
+    assert.equal(a.opts.format, 'modern');
+    const b = patch({...DEFAULTS, heading: 'toc'});
+    assert.equal(b.opts.heading, 'Table of Contents');
+    assert.equal(b.opts.format, undefined, 'From template: nothing');
+    const c = patch({...DEFAULTS});
+    assert.equal(c.opts.heading, undefined);
+    assert.equal(c.opts.instr, 'TOC \\o "1-3" \\h \\z \\u');
+  });
+  it('patch, editing: the heading only when its choice changed',
+    async () => {
+      const {d} = await put('Contents');
+      const f = tocAt(d.doc, inToc(d.doc));
+      const v = fill(d.doc, inToc(d.doc));
+      const same = patch({...v}, f);
+      assert.equal(same.opts.instr, null);
+      assert.equal(same.opts.heading, undefined);
+      assert.equal(patch({...v, heading: 'none'}, f).opts.heading, '');
+      assert.equal(patch({...v, heading: 'toc'}, f).opts.heading,
+        'Table of Contents');
+      assert.equal(patch({...v, format: 'simple'}, f).opts.format,
+        'simple');
+      const kept = {...v, heading: 'kept', headingWas: 'kept',
+        headingText: 'Inhalt'};
+      assert.equal(patch(kept, f).opts.heading, undefined);
+    });
+  it('refused: a format or heading not offered; a table of figures ' +
+    'takes neither', () => {
+    assert.match(patch({...DEFAULTS, format: 'fancy'}).error,
+      /^Formats/);
+    assert.match(patch({...DEFAULTS, heading: 'big'}).error,
+      /^Heading/);
+    assert.match(patch({...DEFAULTS, heading: 'kept'}).error,
+      /^Heading/);
+    const fig = patch({...DEFAULTS, seqId: 'Figure',
+      heading: 'contents', format: 'modern'});
+    assert.equal(fig.opts.heading, undefined);
+    assert.equal(fig.opts.format, undefined);
+  });
+});

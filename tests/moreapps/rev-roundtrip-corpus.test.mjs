@@ -600,11 +600,13 @@ describe('tracked changes: the consolidated oracle (the XML against ' +
 });
 
 describe('tracked changes: the pages-corpus pin', () => {
-  it('is unchanged (327 of 1387)', () => {
+  it('is unchanged (323 of 1387)', () => {
     const pin = JSON.parse(readFileSync(new URL(
       './corpus-expected.json', import.meta.url), 'utf8')).pageStarts;
-    // (328 -> 327: a TOC in a content control laid out, ./TocSdt)
-    assert.equal(pin.matched, 327);
+    // (328 -> 327: a TOC in a content control laid out, ./TocSdt;
+    // 327 -> 323: links drawn in their runs' own size, reviewed,
+    // pages-corpus.test.mjs)
+    assert.equal(pin.matched, 323);
     assert.equal(pin.ourCount, 1387);
   });
 });

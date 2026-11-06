@@ -177,23 +177,37 @@ describe('formatting on the screen', () => {
     assert.deepEqual(it.map((x) => x.f.colour),
       ['#000000', '#C00000', '#000000']);
   });
-  // As Word draws a link: run by run, so only the runs styled
+  // As Word draws a link: run by run, each in its own format (font,
+  // size, bold, italic, as other text is), so only the runs styled
   // Hyperlink are blue and underlined (by that style), a run with no
-  // such style is plain. Font, size and bold stay the link's one
-  // format (widths unchanged: a known limit, ./LineTokens).
+  // such style is plain.
   it('links: each run in its own format, the Hyperlink style\'s ' +
     'blue and underline where the run has it', async () => {
     const d = await doc(p(r('see ') + '<w:hyperlink w:anchor="x">' +
       r('here', '<w:rStyle w:val="Hyperlink"/>') + r(' now') +
       r('big', '<w:rStyle w:val="Hyperlink"/><w:b/>') +
+      r('it', '<w:i/><w:sz w:val="32"/>') +
       '</w:hyperlink>'));
     const items = lay(d).lines[0].items.filter((x) => x.kind === 'link');
     assert.deepEqual(items.map((x) => [x.text, x.f.colour, x.f.under,
-      x.f.bold]), [['here', '#0563C1', true, false],
-      [' ', '#000000', false, false], ['now', '#000000', false, false],
-      ['big', '#0563C1', true, false]]);
-    assert.equal(new Set(items.map((x) => x.f.css)).size, 1);
+      x.f.bold, x.f.italic]), [['here', '#0563C1', true, false, false],
+      [' ', '#000000', false, false, false],
+      ['now', '#000000', false, false, false],
+      ['big', '#0563C1', true, true, false],
+      ['it', '#000000', false, false, true]]);
+    assert.ok(items[3].f.css.includes('bold'), 'bold measured bold');
+    assert.equal(items[4].f.px, 21.33, '16 pt');
   });
+  it('a line holding only a link is as tall as its run\'s size',
+    async () => {
+      const big = '<w:sz w:val="40"/>';
+      const a = await doc(p(r('word', big)));
+      const b = await doc(p('<w:hyperlink w:anchor="x">' +
+        r('word', big) + '</w:hyperlink>'));
+      assert.equal(lay(b).lines[0].h, lay(a).lines[0].h);
+      assert.equal(lay(b).lines[0].items[0].f.px,
+        lay(a).lines[0].items[0].f.px);
+    });
   it('a link with no styled run is drawn plain, as in Word',
     async () => {
       const d = await doc(p(r('see ') +

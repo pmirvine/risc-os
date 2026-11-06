@@ -17,14 +17,21 @@
 //       instruction), outline = true (\u), extraStyles
 //       [{style, level}] (\t), seqId (a table of figures of SEQ seqId
 //       captions: \c; levels, outline and extraStyles not used),
-//       includeLabel = true (a table of figures': false \a)}
+//       includeLabel = true (a table of figures': false \a),
+//       heading (insertToc and editToc: the heading's text; a text
+//       puts a TOC Heading paragraph before the table, or changes
+//       the one there, '' takes it away, undefined leaves it:
+//       ./TocHeading headingStep), format (a ./TocFormats design put
+//       into the styles in the same step; 'template' or undefined:
+//       the styles left as they are)}
 //   insertWhy(d, sel) -> string | null  why insertToc refuses, in
 //       words for the user: in a header, footer or note (d a
 //       ./StoryFacade, d.refuses('toc')); a selection that starts
 //       at a table (Select all over a document that begins with
-//       one: AT_TABLE); no caret in text; the caret inside a
-//       field's code or result (a table of contents' too; just
-//       before a field is fine)
+//       one: AT_TABLE); no caret in text; the caret in a table of
+//       contents' heading (IN_HEADING: ./TocHeading headingOf); the
+//       caret inside a field's code or result (a table of contents'
+//       too; just before a field is fine)
 //   insertToc(d, typing, sel, opts?, ctx?) -> {sel, field} | null
 //       the field put in at the start of sel (a range keeps its
 //       text, after the table): a caret inside a paragraph splits it
@@ -67,7 +74,10 @@
 //       changed): not a TOC, tocWhy's reasons, a code that cannot be
 //       changed
 //   removeToc(d, typing, field) -> {sel} | null  the whole field (its
-//       marks, code and every entry paragraph) taken out; the hidden
+//       marks, code and every entry paragraph) taken out, and its
+//       heading (./TocHeading headingOf: the TOC Heading paragraph
+//       directly before it) with it, as Word's Remove Table of
+//       Contents takes its whole content control; the hidden
 //       _Toc bookmarks stay (Word keeps them); the paragraph that
 //       held the end keeps its format and its text after the end (a
 //       heading there stays a heading). sel: a caret where the field
@@ -81,7 +91,13 @@
 //       first one wholly inside it; so Select all over a document
 //       that starts with its table, a drag from inside a table up
 //       into the text above it, or one over a whole table, edits
-//       that table and never adds a second one
+//       that table and never adds a second one. A position in a
+//       table's heading (./TocHeading headingOf) counts as in that
+//       table: a caret there edits it, never puts a table inside
+//       its heading
+//   insertToc and editToc also give notes: [string] the sentences
+//       of the heading and format steps (a style that could not be
+//       made, ./TocFormats busy), for the box to show
 // d is a ./Document (or a facade), sel a ./Selection. Pure: no
 // desktop services.
 import {newPara} from './Model';
@@ -95,6 +111,7 @@ import {planBlocks} from './FieldBlocks';
 import {run} from './FieldPasses';
 import {tocFields, tocWhy, rebuild, repage} from './TocUpdate';
 import {tailOf} from './TocCaret';
+import {headingStep, formatStep, headingOf} from './TocHeading';
 
 const isObj = (v) => v !== null && typeof v === 'object';
 
@@ -159,6 +176,10 @@ function fieldIn(doc, w) {
 export const AT_TABLE = 'The selection starts at a table: put the ' +
   'caret in a line of text or in a cell first.';
 
+/** insertWhy's words for a caret in a table's heading. */
+export const IN_HEADING = 'Not in a table of contents\' heading: ' +
+  'put the caret before it, or after the table.';
+
 /** See the header. */
 export function insertWhy(d, sel) {
   if (!isObj(d) || !isObj(d.doc)) return 'There is no document.';
@@ -172,6 +193,10 @@ export function insertWhy(d, sel) {
   if (loc && !loc.story && loc.b.type === 'tbl') return AT_TABLE;
   if (!loc || loc.story || loc.b.type !== 'p')
     return 'Put the caret in text first (not by a table or box).';
+  if (tocFields(d.doc).some((g) => {
+    const h = headingOf(d.doc, g);
+    return h && h.id === loc.b.id;
+  })) return IN_HEADING;
   const f = fieldIn(d.doc, {at: loc.at, off: o.from.off});
   if (f) {
     return /^\s*TOC\b/i.test(f.instr)
@@ -189,6 +214,23 @@ const leaderOf = (o) => (isObj(o) && Object.hasOwn(LEADERS,
 /** Run fn as one command (typing.command when there is one). */
 const command = (typing, fn) => (typing && typeof typing.command ===
   'function' ? typing.command(fn) : fn());
+
+/** notes once each, a sentence another one says more about (the
+ *  heading's, after the format's) left out. */
+const noteList = (xs) => [...new Set(xs)].filter((x) => !xs.some((y) =>
+  y !== x && y.startsWith(x)));
+
+/** The heading and format steps opts asks for (./TocHeading): a
+ *  heading (on insert only a text that is not empty), a design. */
+function looks(opts, fieldOf, inserting, notes) {
+  const out = [], h = isObj(opts) ? opts.heading : undefined;
+  if (typeof h === 'string' && (h.trim() || !inserting))
+    out.push(headingStep(fieldOf, h, notes));
+  if (isObj(opts) && typeof opts.format === 'string' &&
+    opts.format !== 'template')
+    out.push(formatStep(opts.format, notes));
+  return out;
+}
 
 /** The field of doc whose begin is at pos, as tocFields has it. */
 const tocBy = (doc, pos) => tocFields(doc).find((g) =>
@@ -236,10 +278,12 @@ export function insertToc(d, typing, sel, opts = {}, ctx) {
     if (!r.ok) throw new Refused(r.reason);
     return {found: 1, changed: r.changed, messages: [], sel: r.sel};
   }};
+  const notes = [];
+  const more = looks(opts, (dd) => tocFields(dd.doc)[k], true, notes);
   let res = null;
   try {
     res = command(typing, () => run(d, isObj(ctx) ? ctx : {}, null,
-      {steps: [put, build]}));
+      {steps: [put, ...more, build]}));
   } catch (e) {
     if (!(e instanceof Refused)) throw e;
     return null;                       // (rolled back: nothing changed)
@@ -249,7 +293,7 @@ export function insertToc(d, typing, sel, opts = {}, ctx) {
   if (!f) return null;
   const to = tail !== null && findBlock(d.doc, tail)
     ? {id: tail, off: 0} : {id: f.end.id, off: f.end.off + 1};
-  return {sel: caret(to), field: f};
+  return {sel: caret(to), field: f, notes: noteList(notes)};
 }
 
 /** See the header. */
@@ -319,10 +363,12 @@ export function editToc(d, typing, field, opts, ctx) {
     if (!r.ok) throw new Refused(r.reason);
     return {found: 1, changed: r.changed, messages: [], sel: r.sel};
   }};
+  const notes = [];
+  const more = looks(opts, (dd) => tocFields(dd.doc)[k], false, notes);
   let res = null;
   try {
     res = command(typing, () => run(d, isObj(ctx) ? ctx : {}, null,
-      {steps: [put, build]}));
+      {steps: [put, ...more, build]}));
   } catch (e) {
     if (!(e instanceof Refused)) throw e;
     return null;                       // (rolled back: nothing changed)
@@ -330,7 +376,7 @@ export function editToc(d, typing, field, opts, ctx) {
   const f = res && res.ok ? tocFields(d.doc)[k] : null;
   if (!f) return null;
   return {sel: caret({id: f.begin.id, off: f.begin.off}), field: f,
-    changed: res.changed};
+    changed: res.changed, notes: noteList(notes)};
 }
 
 /** See the header. */
@@ -348,6 +394,7 @@ export function removeToc(d, typing, field) {
     {last: 'take'});
   if (!plan) return null;
   const at = {id: f.begin.id, off: f.begin.off};
+  const head = headingOf(d.doc, f);
   let out = null;
   try {
     command(typing, () => d.atomic(() => {
@@ -363,6 +410,10 @@ export function removeToc(d, typing, field) {
       if (at.off > 0 && p.b.text.slice(at.off).replace(/\ufffc/g, '') &&
         p.b.text.slice(0, at.off).replace(/\ufffc/g, ''))
         d.apply({op: 'splitBlock', block: p.at, at: at.off});
+      // the table's heading goes with it (Word's Remove takes the
+      // whole content control, heading and all)
+      const hl = head ? findBlock(d.doc, head.id) : null;
+      if (hl) d.apply({op: 'removeBlocks', at: hl.at, count: 1});
       out = {sel: caret(at)};
     }));
   } catch (e) {
@@ -378,6 +429,9 @@ function tocHolding(doc, p) {
   if (!w) return null;
   for (const f of tocFields(doc)) {
     if (cmp(f.begin, w) <= 0 && cmp(w, f.end) <= 0) return f;
+    // its heading (the TOC Heading line above it) is part of it
+    const h = headingOf(doc, f);
+    if (h && h.id === p.id) return f;
   }
   return null;
 }

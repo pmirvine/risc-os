@@ -19,7 +19,21 @@
 // comment reference draws nothing, as in Word, reviewed; 328 -> 327
 // on 2026-11-04: a table of contents in a content control is laid
 // out as its paragraphs, no longer as one 40 px kept box, which in
-// one file had put a page start on Word's by chance) (pageStarts:
+// one file had put a page start on Word's by chance; 327 -> 323 on
+// 2026-11-06: each run of a link is measured in its own size, font
+// and bold, as Word measures it, no longer in the paragraph's. Two
+// files moved, all four lost starts in poi/bug59058.docx: there nine
+// reference paragraphs and a DOI line (13 pt text, the last line all
+// a 13 pt "View at Scopus" link or the like) had that line 20 px
+// tall (the 11 pt default) under 21.66 px lines, now all equal, as
+// Word draws them (and two 8.5 pt links lines are now 8.5 pt).
+// Our pages in that stretch were already 3 to 17 lines from Word's
+// (about 29 of our lines a page where Word holds 38): the old exact
+// match at line 1008 (and two table rows after it, the same page
+// laid out from there) was a chance landing of that drift; the sum
+// of distances to Word's 34 starts is 217 lines old, 225 new, five
+// starts closer and seven farther. May_12_04.docx moved too, 0 of 2
+// before and after) (pageStarts:
 // {matched, total, files};
 // R10; P10 fix M2: and ourCount, how many starts of ours were
 // scored, as the score never counts against extra starts of ours;

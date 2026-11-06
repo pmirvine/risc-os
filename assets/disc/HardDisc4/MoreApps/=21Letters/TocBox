@@ -41,19 +41,30 @@
 // Word's defaults): Show page numbers, Right align page numbers,
 // Tab leader (None, dots, dashes, a line; shaded without right
 // aligned page numbers, Right align without page numbers), Show
-// levels (1 to 9), Use hyperlinks, Use outline levels, Options...
+// levels (1 to 9), Use hyperlinks, Use outline levels, Heading
+// (None, Contents, Table of Contents: ./TocHeading, the paragraph
+// before the table in TOC Heading; editing, the heading there, and
+// its own text as a fourth choice when it is another), Formats (From
+// template, the default, or a design of ./TocFormats; editing, it
+// always starts at From template: the design there is not guessed;
+// Insert and Update put a design into the styles in their one
+// step), Options...
 // (the extra styles: a second box, key 'tocopts:<docKey>',
 // dw.boxes 'tocopts': a style of the document, its TOC level, Set
 // and Clear, the list; its OK keeps the list in this box until
 // Insert or Update, its Cancel drops the change; it closes with
 // this box and is refused when this box was filled again since it
 // opened). Buttons Cancel, Remove and Insert; with the caret in a
-// table of contents, Insert reads Update and edits that table (the
+// table of contents or in its heading (./TocCmd tocAt), Insert
+// reads Update and edits that table (the
 // code ./TocPatch patch makes, kept when the values ask for what it
 // asks: ./TocCmd editToc), Remove takes it out (./TocCmd removeToc;
 // shaded elsewhere). Insert puts a table in at the caret (./TocCmd
 // insertToc). Each one undo step (./FieldUpdate tocCommand: laid
-// out, the page numbers made). Refused with a beep, the reason in
+// out, the page numbers made). A style the heading or the design
+// could not make (./TocFormats busy: its id is another style's):
+// done, the box closed, and a message saying which. Refused with a
+// beep, the reason in
 // the box and the box kept: the header and footer mode or the notes
 // mode, a caret where a table cannot go (./TocCmd insertWhy: in a
 // field's result, by a table...), a table that cannot be made again
@@ -78,7 +89,7 @@
 // longer the entries: the numbers are updated, the box stays with
 // Update entire table chosen and says so. Refused as the box is
 // (the mode, stale, a table gone, tocWhy for the entire table).
-import {wimp} from 'riscos';
+import {wimp, reportError} from 'riscos';
 import {dialog} from 'wimplib/Ui/Dialog';
 import {box} from './Boxes';
 import {where} from './TabsBox';
@@ -93,10 +104,12 @@ import {labelChoices, savedLabels, KEY as LABELS_KEY}
   from './CaptionPatch';
 import {seqIdOf} from './CaptionCmd';
 import {choiceOf} from './WordChoices';
+import {HEADINGS} from './TocHeading';
+import {FORMATS} from './TocFormats';
 
 const LINE = 62;
 const FIELDS = ['pageNumbers', 'rightAlign', 'leader', 'levels',
-  'hyperlinks', 'outline'];
+  'hyperlinks', 'outline', 'heading', 'format'];
 const MSG = {
   hdr: 'Leave the header or footer, or the note, first (Escape): a ' +
     'table of contents goes in the body text.',
@@ -137,6 +150,12 @@ const rows = () => [
     help: 'Each entry is a link: clicking it goes to its heading.'},
   {kind: 'option', name: 'outline', text: 'Use outline levels',
     help: 'Paragraphs given an outline level make entries too.'},
+  {kind: 'popup', name: 'heading', label: 'Heading', w: 200,
+    choices: HEADINGS, help: 'A heading above the table, in the ' +
+      'style TOC Heading (never listed in the table itself).'},
+  {kind: 'popup', name: 'format', label: 'Formats', w: 200,
+    choices: FORMATS, help: 'From template: the TOC styles as they ' +
+      'are. A design restyles TOC 1 to 9 and TOC Heading.'},
   {kind: 'button', name: 'options', text: 'Options...',
     help: 'Other styles that make entries, each at a level.'},
   {kind: 'label', name: 'msg', text: '', w: 520},
@@ -191,6 +210,15 @@ function shadeFields(api) {
   api.shade('leader', !pages || api.get('rightAlign') === false);
 }
 
+/** The Heading choices: with a heading of other text (typed by
+ *  hand), that text too, chosen to keep it. */
+function headingChoices(base) {
+  if (base.heading !== 'kept') return HEADINGS;
+  const t = String(base.headingText);
+  return [...HEADINGS, {id: 'kept', text: '"' + (t.length > 24
+    ? t.slice(0, 23) + '...' : t) + '"'}];
+}
+
 /** Fill from the caret; keep: the fields the user changed kept. */
 function refill(api, v, keep) {
   const old = state.get(api);
@@ -204,6 +232,7 @@ function refill(api, v, keep) {
     if (old.extraChanged) cur.extraStyles = old.extra;
   }
   const f = base.editing ? tocAt(v.d.doc, v.sel) : null;
+  api.choices('heading', headingChoices(base));
   const st = {at: where(v), base, editing: base.editing,
     extra: cur.extraStyles.map((x) => ({...x})),
     extraChanged: !!(keep && old && old.extraChanged),
@@ -289,13 +318,21 @@ function wire(api, dw) {
     const r = patch(valuesOf(api, st), f || undefined);
     if (r.error) return no(r.error, /^Show levels/.test(r.error)
       ? 'levels' : undefined);
+    let notes = [];
     const done = tocCommand(dw, (d, sel, ctx) => {
       const x = f ? editToc(d, null, f, r.opts, ctx)
         : insertToc(d, null, sel, r.opts, ctx);
+      notes = x && Array.isArray(x.notes) ? x.notes : [];
       return x ? x.sel : null;
     });
     if (!done) { say(api, MSG.failed); return false; }
     v.focus();
+    // done, but a style could not be made: said, as Update all
+    // fields says what it kept
+    if (notes.length) {
+      reportError(notes.join(' '), {appName: 'Letters',
+        category: 'info'});
+    }
     return undefined;
   });
 }

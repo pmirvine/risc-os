@@ -58,7 +58,10 @@ const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:t
   + '</w:r></w:p></w:tc></w:tr></w:tbl>';
 const tblBytes = await buildDocx({ 'word/document.xml': documentXml(TBL + H(1, 'One') + p(r('Body text.'))),
   'word/styles.xml': STYLES });
-const files = { Toc: Array.from(bytes), TocTbl: Array.from(tblBytes) };
+// a document for the Heading and Formats choices
+const fmtBytes = await buildDocx({ 'word/document.xml': documentXml(p('') + H(1, 'One') + p(r('Body text.'))
+  + H(2, 'Two')), 'word/styles.xml': STYLES });
+const files = { Toc: Array.from(bytes), TocTbl: Array.from(tblBytes), TocFmt: Array.from(fmtBytes) };
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -113,7 +116,7 @@ try {
         const x = Object.values(bs[i].inlines).find((y) => y.node && /instrText$/.test(y.node.name));
         instr = x.node.children.join('').trim();
       }
-      const toc = bs.filter((b) => b.type === 'p' && /^TOC/i.test(b.pStyle || '')).map((b) => window.__plain(b)
+      const toc = bs.filter((b) => b.type === 'p' && /^TOC\d/i.test(b.pStyle || '')).map((b) => window.__plain(b)
         .replace(/\s+\d+$/, '').trim());
       return { instr, toc, depth: d.d.undoDepth, ps };
     };
@@ -135,7 +138,7 @@ try {
   }, [k, off]);
   /** The caret just after the TOC's separate (in its first entry). */
   const caretInToc = (k = 1) => ev(async (k) => {
-    const d = window.__doc(), v = d.dw.view, b = d.dw.doc.sections[0].blocks.filter((x) => /^TOC/i.test(x.pStyle || ''))[k - 1];
+    const d = window.__doc(), v = d.dw.view, b = d.dw.doc.sections[0].blocks.filter((x) => /^TOC\d/i.test(x.pStyle || ''))[k - 1];
     v.setSelection({ anchor: { id: b.id, off: b.text.length - 1 }, head: { id: b.id, off: b.text.length - 1 }, affinity: 'down' });
     v.focus();
     await window.__frames(2);
@@ -201,7 +204,7 @@ try {
 
   // the entries as drawn: Word's tab with its dot leader, the number at the right stop, plain (not link blue)
   const drawn = await ev(() => {
-    const d = window.__doc(), L = d.dw.view.L, b = d.dw.doc.sections[0].blocks.find((x) => /^TOC/i.test(x.pStyle || ''));
+    const d = window.__doc(), L = d.dw.view.L, b = d.dw.doc.sections[0].blocks.find((x) => /^TOC\d/i.test(x.pStyle || ''));
     const it = L.byId.get(b.id), ln = it.lines[0], tab = (b.pPr.tabs || []).find((t) => t.val === 'right');
     const shown = ln.items.filter((q) => q.text !== '' || q.leader);
     const last = shown[shown.length - 1];
@@ -216,7 +219,7 @@ try {
   // a Ctrl-click on the first entry's dot leader follows its link to the heading (as in Word)
   const lead = await ev(() => {
     const d = window.__doc(), v = d.dw.view, L = v.L, bs = d.dw.doc.sections[0].blocks;
-    const b = bs.find((x) => /^TOC/i.test(x.pStyle || ''));
+    const b = bs.find((x) => /^TOC\d/i.test(x.pStyle || ''));
     const k = Object.keys(b.inlines).map(Number).find((n) => /hyperlink$/.test(b.inlines[n].node?.name || ''));
     const a = L.caretRect({ id: b.id, off: k }), z = L.caretRect({ id: b.id, off: k + 1 });
     const s = d.win.workToScreen((a.x + z.x) / 2, a.y + a.h / 2), rc = os.wimp.screen.getBoundingClientRect(), sc = os.wimp.scale;
@@ -846,6 +849,77 @@ try {
   });
   const tCell = await menuItem('Insert', 'Table of Contents...');
   ok('a caret in the cell: Table of Contents... is live', tCell && !tCell.shaded, tCell);
+
+  // the Heading and Formats choices (TocHeading, TocFormats): a heading in TOC Heading before the table, a design in
+  // the TOC styles, all in the one undo step of Insert or Update
+  await ev(async () => {
+    const w = window.__word().word;
+    await w.open('RAM::RamDisc0.$.TocFmt');
+    const nd = w.docs.find((x) => x.leaf === 'TocFmt');
+    window.__doc = () => nd;
+    await window.__frames(4);
+  });
+  const look = () => ev(() => {
+    const d = window.__doc(), doc = d.dw.doc, st = doc.styles.styles, b0 = doc.sections[0].blocks[0];
+    const t1 = st.get('TOC1');
+    return { first: window.__plain(b0), firstStyle: b0.pStyle || null, depth: d.d.undoDepth,
+      toc1: t1 ? { sz: t1.rPr.sz ?? null, colour: (t1.rPr.extra || []).filter((x) => /color$/.test(x.name))
+        .map((x) => Object.fromEntries(x.attrs)['w:themeColor']).join() } : null,
+      instr: window.__toc().instr, heading: st.has('TOCHeading') };
+  });
+  await caretAt(0);
+  const g0 = await look();
+  await runMenu('Insert', 'Table of Contents...');
+  const gb = await TB.get();
+  const gIcons = await ev(() => { const b = window.__box('toc'); return ['heading', 'format']
+    .map((n) => !!b.win.iconByName(n)); });
+  ok('the box has Heading (None) and Formats (From template)', gb && gb.heading === 'none' && gb.format === 'template'
+    && gIcons.every(Boolean), { gb, gIcons });
+  await TB.set('heading', 'contents');
+  await TB.set('format', 'modern');
+  await TB.click('Insert');
+  const g1 = await look();
+  ok('Heading Contents + Formats Modern, Insert: "Contents" in TOC Heading first, TOC 1 in Modern (14 pt, accent 1), '
+    + 'one undo step', !(await TB.get()) && g1.first === 'Contents' && g1.firstStyle === 'TOCHeading'
+    && g1.toc1 && g1.toc1.sz === 28 && g1.toc1.colour === 'accent1' && g1.instr && g1.depth === g0.depth + 1, g1);
+  await press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  const g2 = await look();
+  ok('Ctrl+Z: one step takes the heading, the table and the styles back', g2.first === '' && g2.instr === null
+    && g2.toc1 === null && !g2.heading && g2.depth === g0.depth, g2);
+  await runMenu('Insert', 'Table of Contents...');
+  await TB.set('heading', 'contents');
+  await TB.set('format', 'modern');
+  await TB.click('Insert');
+  const g3 = await look();
+  if (process.env.TOCFMT_SHOT) await page.screenshot({ path: process.env.TOCFMT_SHOT });
+  await caretInToc(1);
+  await runMenu('Insert', 'Table of Contents...');
+  const gb2 = await TB.get();
+  ok('the caret in the table: the box shows its heading (Contents), Formats back at From template', gb2
+    && gb2.insertText === 'Update' && gb2.heading === 'contents' && gb2.format === 'template', gb2);
+  await TB.set('format', 'simple');
+  await TB.click('Insert');
+  const g4 = await look();
+  ok('Formats Simple, Update: TOC 1 in Simple (11 pt, no colour), the heading kept, one step', !(await TB.get())
+    && g4.toc1 && g4.toc1.sz === 22 && g4.toc1.colour === '' && g4.first === 'Contents' && g4.depth === g3.depth + 1, g4);
+  // the caret in the heading ('Cont|ents'): the box edits the table (never a second table inside the heading)
+  await caretAt(0, 4);
+  const hItem = await menuItem('Insert', 'Table of Contents...');
+  await runMenu('Insert', 'Table of Contents...');
+  const hb = await TB.get();
+  ok('the caret in the heading: Insert > Table of Contents... opens (edit), its heading Contents, Update', hItem
+    && !hItem.shaded && hb && /\(edit\)$/.test(hb.title) && hb.insertText === 'Update' && hb.heading === 'contents', hb);
+  await TB.click('Insert');
+  const hAfter = await look(), hCount = await tocCount();
+  ok('... Update from there: still one table, the heading whole', hCount === 1 && hAfter.first === 'Contents'
+    && hAfter.firstStyle === 'TOCHeading', { hAfter, hCount });
+  await caretInToc(1);
+  await runMenu('Insert', 'Table of Contents...');
+  await TB.set('heading', 'none');
+  await TB.click('Insert');
+  const g5 = await look();
+  ok('Heading None, Update: the heading taken away, one step', g5.first !== 'Contents' && g5.instr
+    && g5.depth === g4.depth + 1, g5);
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }
