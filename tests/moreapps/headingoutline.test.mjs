@@ -3,7 +3,8 @@
 // outlineLvl (style and paragraph).
 import {describe, it} from 'node:test';
 import assert from 'node:assert/strict';
-import {of, levelOf} from '../../tools/moreapps/!Letters/HeadingOutline';
+import {of, levelOf, paraText}
+  from '../../tools/moreapps/!Letters/HeadingOutline';
 import {readDocx} from '../../tools/moreapps/!Letters/DocxRead';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {buildDocx, documentXml, stylesXml, numberingXml, p, r}
@@ -92,6 +93,18 @@ describe('levels', () => {
           '<w:r><w:br/></w:r>' + r('c')));
       assert.deepEqual(brief(of(d)), [[1, 'a b c']]);
     });
+});
+
+describe('a link with a tab in a heading', () => {
+  // a link's shown text keeps its w:tab ('\t', ./ReadPara); the
+  // heading text (entries, STYLEREF results) has it as one space
+  it('the tab is one space in the entry and in paraText', async () => {
+    const link = '<w:hyperlink w:anchor="x">' + r('a') +
+      '<w:r><w:tab/></w:r>' + r('b') + '</w:hyperlink>';
+    const d = await read(H('Heading1', '', '', link));
+    assert.deepEqual(brief(of(d)), [[1, 'a b']]);
+    assert.equal(paraText(d.sections[0].blocks[0]), 'a b');
+  });
 });
 
 describe('labels and bookmarks', () => {

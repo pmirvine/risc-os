@@ -194,6 +194,40 @@ try {
     && t2.instr === 'TOC \\o "1-3" \\h \\z \\u' && JSON.stringify(t2.toc) === '["One","Two","Three"]'
     && t2.depth === t0.depth + 1, t2);
 
+  // the entries as drawn: Word's tab with its dot leader, the number at the right stop, plain (not link blue)
+  const drawn = await ev(() => {
+    const d = window.__doc(), L = d.dw.view.L, b = d.dw.doc.sections[0].blocks.find((x) => /^TOC/i.test(x.pStyle || ''));
+    const it = L.byId.get(b.id), ln = it.lines[0], tab = (b.pPr.tabs || []).find((t) => t.val === 'right');
+    const shown = ln.items.filter((q) => q.text !== '' || q.leader);
+    const last = shown[shown.length - 1];
+    return { items: shown.map((q) => [q.text, Math.round(q.x), Math.round(q.w), q.leader || '', q.kind, !!q.f.under]),
+      stop: tab && tab.pos / 15, right: last && last.x + last.w, leader: shown.some((q) => q.kind === 'tab' && q.leader === 'dot'),
+      plain: shown.filter((q) => q.kind === 'link').every((q) => !q.f.under) };
+  });
+  ok('the first entry is drawn "One ....... 1": a dot leader tab, the number ending at the right stop, not underlined',
+    drawn.leader && drawn.items[0][0] === 'One' && drawn.items[drawn.items.length - 1][0] === '1'
+    && Math.abs(drawn.right - drawn.stop) <= 2 && drawn.plain, drawn);
+
+  // a Ctrl-click on the first entry's dot leader follows its link to the heading (as in Word)
+  const lead = await ev(() => {
+    const d = window.__doc(), v = d.dw.view, L = v.L, bs = d.dw.doc.sections[0].blocks;
+    const b = bs.find((x) => /^TOC/i.test(x.pStyle || ''));
+    const k = Object.keys(b.inlines).map(Number).find((n) => /hyperlink$/.test(b.inlines[n].node?.name || ''));
+    const a = L.caretRect({ id: b.id, off: k }), z = L.caretRect({ id: b.id, off: k + 1 });
+    const s = d.win.workToScreen((a.x + z.x) / 2, a.y + a.h / 2), rc = os.wimp.screen.getBoundingClientRect(), sc = os.wimp.scale;
+    const h = bs.find((x) => /^Heading/.test(x.pStyle || '') && window.__plain(x) === 'One');
+    return { x: rc.left + s.x * sc, y: rc.top + s.y * sc, heading: h.id, span: z.x - a.x };
+  });
+  await caretAt(0);
+  await ev(() => window.__sleep(600));
+  await page.keyboard.down('Control');
+  await page.mouse.click(lead.x, lead.y);
+  await page.keyboard.up('Control');
+  await settle();
+  const leadSel = await ev(() => window.__doc().dw.view.sel);
+  ok('a Ctrl-click on the dot leader of the first entry goes to its heading', lead.span > 200
+    && leadSel.head.id === lead.heading, { lead, leadSel });
+
   // the box on the table: Update
   await caretInToc(1);
   const mi2 = await menuItem('Insert', 'Table of Contents...');
@@ -374,6 +408,37 @@ try {
   await press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
   const t11 = await toc();
   ok('Ctrl+Z puts it back', t11.instr !== null && t11.toc.length === 4, t11);
+
+  // Select all over a document that starts with its table: the box edits that table (Update), never a second one
+  const tocCount = () => ev(() => {
+    let n = 0;
+    for (const b of window.__doc().dw.doc.sections[0].blocks) for (const x of Object.values(b.inlines || {})) {
+      if (x.node && /instrText$/.test(x.node.name) && /^\s*TOC\b/.test(x.node.children.join(''))) n++;
+    }
+    return n;
+  });
+  await caretAt(0);
+  await press('Control+a');
+  const selAll = await ev(() => { const d = window.__doc(), s = d.dw.view.sel, bs = d.dw.doc.sections[0].blocks;
+    return { all: s.anchor.id === bs[0].id && s.anchor.off === 0 && s.head.id === bs[bs.length - 1].id, depth: d.d.undoDepth }; });
+  const selItem = await menuItem('Insert', 'Table of Contents...');
+  await runMenu('Insert', 'Table of Contents...');
+  const selBox = await TB.get();
+  ok('Ctrl+A, Insert > Table of Contents...: live; the box edits the table (title (edit), Update, Remove live)', selAll.all
+    && selItem && !selItem.shaded && selBox && selBox.title === 'Table of Contents (edit)' && selBox.insertText === 'Update'
+    && selBox.removeShaded === false, { selAll, selItem, selBox });
+  await TB.click('Insert');
+  const selToc = await toc(), selCount = await tocCount();
+  ok('and Update rebuilds it: still one table, its four entries, at most one step', !(await TB.get()) && selCount === 1
+    && selToc.toc.length === 4 && selToc.depth <= selAll.depth + 1, { selCount, selToc });
+  await caretAt(0);
+  await press('Control+a');
+  await runMenu('Insert', 'Table of Figures...');
+  const FB0 = B('tof'), selFig = await FB0.get();
+  ok('Ctrl+A, Insert > Table of Figures... over a table of contents: a new table of figures (Insert), the TOC untouched',
+    selFig && selFig.title === 'Table of Figures' && selFig.insertText === 'Insert', selFig);
+  await FB0.click('Cancel');
+  ok('Cancel: still one table of contents', (await tocCount()) === 1 && !(await FB0.get()), await tocCount());
 
   // Insert > Caption...
   const CB = B('caption'), LB = B('caplabel'), NB = B('capnum');

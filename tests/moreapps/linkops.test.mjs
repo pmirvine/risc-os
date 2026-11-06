@@ -13,7 +13,8 @@ import {cleanUrl, parseAddress, checkAnchor, MAX}
   from '../../tools/moreapps/!Letters/LinkUrl';
 import {bookmarkNames, findBookmark, linkNames}
   from '../../tools/moreapps/!Letters/BookmarkFind';
-import {linkUnder} from '../../tools/moreapps/!Letters/LinkFind';
+import {linkUnder, keepsText, FIELD}
+  from '../../tools/moreapps/!Letters/LinkFind';
 import {DocLayout} from '../../tools/moreapps/!Letters/DocLayout';
 import {tm} from './word-docs.mjs';
 import {hyperlinkStyle} from '../../tools/moreapps/!Letters/DocParts';
@@ -630,6 +631,67 @@ describe('review fixes', () => {
     assert.equal(linkUnder(L, c2.x + 4, y), null, 'on "y"');
     assert.equal(linkUnder(L, L.caretRect({id, off: 0}).x + 2, y), null);
     assert.equal(linkUnder(L, c1.x + 4, -50), null);
+  });
+});
+
+describe('linkUnder: a table of contents entry\'s leader', () => {
+  it('a click on the dot leader follows the entry\'s link (as in ' +
+    'Word); off the line, none', () => {
+    const lk = {kind: 'raw', level: 'p', text: 'Head\t3', node: {name:
+      'w:hyperlink', attrs: [['w:anchor', '_Toc1']], children: []}};
+    const d = mk([['x' + O, {inlines: {1: lk}, pPr: {extra: [],
+      tabs: [{val: 'right', pos: 9000, leader: 'dot'}]}}]]);
+    const L = new DocLayout(d.doc, tm());
+    L.layout(800);
+    const id = P(d, 0).id, it = L.byId.get(id), ln = it.lines[0];
+    const tab = ln.items.find((q) => q.kind === 'tab');
+    assert.ok(tab && tab.w > 100 && tab.leader === 'dot', 'a leader');
+    assert.equal(tab.link, true);
+    const c = L.caretRect({id, off: 0}), y = c.y + c.h / 2;
+    const hit = linkUnder(L, it.x + tab.x + tab.w / 2, y);
+    assert.ok(hit);
+    assert.equal(hit.off, 1);
+    assert.equal(linkUnder(L, it.x + 1, y), null, 'on "x"');
+  });
+});
+
+describe('keepsText: a link holding a tab keeps its words', () => {
+  const linkOf = async (inner) => {
+    const doc = await readDocx(await buildDocx({'word/document.xml':
+      documentXml(p(r('x') + '<w:hyperlink w:anchor="a">' + inner +
+      '</w:hyperlink>'))}));
+    const b = doc.sections[0].blocks[0];
+    return {doc, x: Object.values(b.inlines).find(isLink)};
+  };
+  const TAB = '<w:r><w:tab/></w:r>';
+  for (const [name, inner, text] of [
+    ['starts with a tab', TAB + r('Head'), '\tHead'],
+    ['ends with a tab', r('Head') + TAB, 'Head\t'],
+    ['a tab inside', r('Head') + TAB + r('3'), 'Head\t3']]) {
+    it(name + ': its text has the tab, kept by the box', async () => {
+      const {doc, x} = await linkOf(inner);
+      const info = linkInfo(doc, x);
+      assert.equal(info.text, text);
+      assert.equal(keepsText(info), true);
+    });
+  }
+  it('no tab, short: editable; longer than the field: kept', () => {
+    assert.equal(keepsText({text: 'Head'}), false);
+    assert.equal(keepsText({text: 'a'.repeat(FIELD + 1)}), true);
+    assert.equal(keepsText({text: 'a'.repeat(FIELD)}), false);
+  });
+  it('the box leaving the text out (keep): editLink changes only ' +
+    'the address, the tab and runs stay', async () => {
+    const {doc} = await linkOf(r('Head') + TAB + r('3'));
+    const d = new Document(doc), t = new Typing(d);
+    const id = d.doc.sections[0].blocks[0].id;
+    const sel = {anchor: {id, off: 1}, head: {id, off: 2},
+      affinity: 'down'};
+    const before = link(d).node.children;
+    const res = editLink(d, t, sel, {address: '#b'});
+    assert.ok(res && !res.error, res && res.error);
+    assert.equal(link(d).text, 'Head\t3');
+    assert.deepEqual(link(d).node.children, before);
   });
 });
 

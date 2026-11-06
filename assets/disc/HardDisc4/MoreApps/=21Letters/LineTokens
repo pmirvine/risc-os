@@ -34,13 +34,18 @@
 //         another tag, ./LineLayout), for ./RevPaint
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
-// in blue, underlined; other wrappers with text (an insertion, a
+// in blue, underlined (one to a _Toc bookmark in a TOC n or Table of
+// Figures paragraph, a table of contents entry, in the format there,
+// as Word draws it: same widths); other
+// wrappers with text (an insertion, a
 // simple field, a content control...) show it in the format there.
 // Their text breaks into words and spaces like any other (so it can
 // wrap): the first piece stands for [i, i+1), the later ones for the
 // empty [i+1, i+1), all shown (there is no offset inside the item);
 // a tab in that text is a 'tab' token (it goes to the next stop, as
-// in Word), a newline is drawn as it is. The unseen kinds
+// in Word; a link's carries link: true, kept on its layout item, so
+// a click on a TOC entry's leader follows the link), a newline is
+// drawn as it is. The unseen kinds
 // of ./Kinds (proofing marks, bookmarks, field codes) and deletions
 // are 'z'; so is a run of text the markup view hides (Batch F2,
 // ./Kinds hiddenRev: in Final a 'del' or 'mvFrom' tag, in Original
@@ -70,6 +75,30 @@ export const isSpace = (ch) => ch === ' ';
 
 const linkFmt = (f) => ({...f, colour: '#0000c0', under: true,
   css: f.css});
+
+const TOC_STYLE = /^(toc [1-9]|table of figures)$/i;
+
+/** Whether paragraph style id (or one it is based on) is TOC 1..9
+ *  or Table of Figures, by name. */
+function tocStyled(styles, id) {
+  const t = styles && styles.styles instanceof Map ? styles.styles
+    : null;
+  let s = t && id !== undefined ? t.get(id) : undefined;
+  for (let k = 0; s && k < 12; k++) {
+    if (typeof s.name === 'string' && TOC_STYLE.test(s.name.trim()))
+      return true;
+    s = s.basedOn === undefined ? undefined : t.get(s.basedOn);
+  }
+  return false;
+}
+
+/** A table of contents entry: a link to a hidden _Toc bookmark in a
+ *  TOC n or Table of Figures paragraph, which Word draws plain (its
+ *  Hyperlink style not shown); a _Toc link elsewhere (Word makes
+ *  them for links to headings) is drawn as a link. */
+const tocEntry = (x, ps) => Array.isArray(x.node.attrs) &&
+  x.node.attrs.some(([n, v]) => n.split(':').pop() === 'anchor' &&
+    /^_Toc/i.test(String(v))) && tocStyled(ps.styles, ps.para.pStyle);
 const boxFmt = (f) => {
   const px = Math.max(8, Math.round(f.px * 0.75));
   return {...f, px, colour: '#606060', under: false, strike: false,
@@ -107,15 +136,18 @@ function shownWords(text, i, f, kind, out) {
   let from = i;
   for (const m of text.matchAll(/ +|\t|[^ \t]+/g)) {
     const s = m[0], tab = s === '\t';
-    out.push({t: tab ? 'tab' : isSpace(s[0]) ? 's' : 'w',
+    const tk = {t: tab ? 'tab' : isSpace(s[0]) ? 's' : 'w',
       text: tab ? '' : s, f, kind: tab ? 'tab' : kind, from,
-      to: i + 1, shown: true});
+      to: i + 1, shown: true};
+    // a link's tab (a TOC entry's leader) is still the link
+    if (tab && kind === 'link') tk.link = true;
+    out.push(tk);
     from = i + 1;
   }
 }
 
 /** The tokens of the inline x at offset i, in format f. */
-function inline(x, i, f, out, map, floats) {
+function inline(x, i, f, out, map, floats, ps) {
   const one = (t, text, g, kind, shown = true) => out.push({t, text,
     f: g, kind, from: i, to: i + 1, shown});
   const l = localName(x.node), bare = bareT(x);
@@ -130,7 +162,8 @@ function inline(x, i, f, out, map, floats) {
   else if (unseen(x)) one('z', '', f, 'text');
   else if (l === 'noBreakHyphen') one('w', '-', f, 'text');
   else if (x.text && l === 'hyperlink') {
-    shownWords(x.text, i, linkFmt(f), 'link', out);
+    shownWords(x.text, i, tocEntry(x, ps) ? f : linkFmt(f), 'link',
+      out);
   } else if (x.text) shownWords(x.text, i, f, 'text', out);
   else {
     const pic = picToken(x, i, f, map, floats);
@@ -180,7 +213,7 @@ function atomic(toks, vs) {
 /** See the header. */
 export function tokens(para, styles, cache, map, fieldText,
   floats, markup) {
-  const out = [];
+  const out = [], ps = {para, styles};
   const text = para.text, n = text.length;
   const runs = para.runs.length ? para.runs
     : [{start: 0, end: n, rPr: {extra: []}}];
@@ -198,7 +231,9 @@ export function tokens(para, styles, cache, map, fieldText,
     for (let i = from; i <= to; i++) {
       if (i < to && text[i] !== OBJ) continue;
       if (i > k) words(text.slice(k, i), k, f, out);
-      if (i < to) inline(para.inlines[i] || {}, i, f, out, map, floats);
+      if (i < to) {
+        inline(para.inlines[i] || {}, i, f, out, map, floats, ps);
+      }
       k = i + 1;
     }
   };

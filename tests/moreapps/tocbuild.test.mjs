@@ -13,11 +13,12 @@ import {newDoc} from '../../tools/moreapps/!Letters/NewDoc';
 import {Document} from '../../tools/moreapps/!Letters/Document';
 import {checkBlock, OBJ} from '../../tools/moreapps/!Letters/Model';
 import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
+import {tokens} from '../../tools/moreapps/!Letters/LineTokens';
 import {scan} from '../../tools/moreapps/!Letters/FieldScan';
 import {planBlocks} from '../../tools/moreapps/!Letters/FieldBlocks';
 import {fieldInlines} from '../../tools/moreapps/!Letters/FieldMake';
 import {paraNode} from '../../tools/moreapps/!Letters/WritePara';
-import {rootScope} from '../../tools/moreapps/!Letters/Ns';
+import {rootScope, plainText} from '../../tools/moreapps/!Letters/Ns';
 import {NS} from '../../tools/moreapps/!Letters/Wml';
 import {newPara} from '../../tools/moreapps/!Letters/Model';
 import {builtinStyle, galleryIds, ensureBuiltins}
@@ -337,7 +338,9 @@ describe('blocks: the shape Word writes', () => {
       assert.equal(x.node.name, 'w:hyperlink');
       assert.deepEqual(x.node.attrs, [['w:anchor', '_Toc100000009'],
         ['w:history', '1']]);
-      assert.equal(x.text, 'T12');
+      // the shown text holds the tab run's tab (it is drawn: the
+      // leader and the number at the right stop)
+      assert.equal(x.text, 'T\t12');
       const kinds = x.node.children.map((c) => {
         const k = c.children.find((y) => y.name !== 'w:rPr');
         if (!k) return 'empty';
@@ -359,7 +362,8 @@ describe('blocks: the shape Word writes', () => {
       const b = out.blocks[0];
       assert.deepEqual(b.pPr.tabs.map((t) => [t.val, t.pos]),
         [['left', 440], ['right', 9000]]);
-      assert.equal(b.inlines[0].text, '2Two3');
+      // the tabs after the label and before the page are drawn
+      assert.equal(b.inlines[0].text, '2\tTwo\t3');
     });
   it('without \\h: plain runs, the tab, a PAGEREF field', async () => {
     const d = await read(H('Heading1', 'x'));
@@ -390,7 +394,8 @@ describe('blocks: the shape Word writes', () => {
       const d = await read(H('Heading1', 'x'));
       const out = blocks(d, [entry({}), entry({level: 2, text: 'Two',
         para: 2})], SW('TOC \\h \\n "2-3"'), {});
-      assert.equal(out.blocks[0].inlines[0].text, 'Head3');
+      // level 1 has its number and the tab before it; level 2 none
+      assert.equal(out.blocks[0].inlines[0].text, 'Head\t3');
       assert.equal(out.blocks[1].inlines[0].text, 'Two');
       assert.equal(out.blocks[1].pPr.tabs, undefined);
       assert.equal(out.blocks[1].inlines[0].node.children.length, 1);
@@ -409,7 +414,8 @@ describe('blocks: the shape Word writes', () => {
       {leader: 'none', tabPos: 5000});
     assert.deepEqual(out.blocks[0].pPr.tabs,
       [{val: 'right', pos: 5000}]);
-    assert.equal(out.blocks[0].inlines[0].text, 'Head');
+    // the page not known: the tab run is there, no number after it
+    assert.equal(out.blocks[0].inlines[0].text, 'Head\t');
     out = blocks(d, [entry({})], SW('TOC \\h'), {tabPos: -5});
     assert.ok(out.blocks[0].pPr.tabs[0].pos > 0);
   });
@@ -781,5 +787,135 @@ describe('hostile and linear', () => {
     assert.deepEqual(entries(null, SW('TOC'), {}), []);
     assert.equal(blocks(d, null, SW('TOC'), {}).blocks.length, 1);
     assert.equal(blocks(d, [{}], SW('TOC'), {}).blocks.length, 1);
+  });
+});
+
+// A \h entry is one inline (the whole w:hyperlink): what is drawn is
+// its display text, so that text must hold the tab before the page
+// number (and after a label), or the entry draws "Head3" with no
+// leader and the number against the text.
+describe('a linked entry\'s shown text keeps its tabs', () => {
+  const entry = (o) => ({level: 1, text: 'Head', label: '',
+    bookmark: null, para: 1, page: '3', ...o});
+  it('inserted: Head<tab>3, a tab token between the words',
+    async () => {
+      const d = await read(H('Heading1', 'x'));
+      const out = blocks(d, [entry({})], SW('TOC \\o "1-3" \\h'), {});
+      const b = out.blocks[0];
+      assert.equal(b.inlines[0].text, 'Head\t3');
+      const ts = tokens(b, d.styles, new Map());
+      assert.deepEqual(ts.map((x) => x.t), ['w', 'tab', 'w']);
+    });
+  it('a label: 2<tab>Two<tab>3; \\p: its separator, no tab',
+    async () => {
+      const d = await read(H('Heading1', 'x'));
+      let out = blocks(d, [entry({label: '2', text: 'Two'})],
+        SW('TOC \\h'), {});
+      assert.equal(out.blocks[0].inlines[0].text, '2\tTwo\t3');
+      out = blocks(d, [entry({})], SW('TOC \\h \\p ""'), {});
+      assert.equal(out.blocks[0].inlines[0].text, 'Head3');
+    });
+  it('read from a .docx: the link text holds the w:tab', async () => {
+    const link = '<w:hyperlink w:anchor="_Toc1">' + r('Head') +
+      '<w:r><w:tab/></w:r>' + fld('PAGEREF _Toc1 \\h', '3') +
+      '</w:hyperlink>';
+    const d = await read(p(link, '<w:pStyle w:val="TOC1"/>'));
+    const b = d.sections[0].blocks[0];
+    const x = Object.values(b.inlines).find((y) =>
+      y.node && y.node.name === 'w:hyperlink');
+    assert.equal(x.text, 'Head\t3');
+    const ts = tokens(b, d.styles, new Map()).filter((t) =>
+      t.kind === 'link' || t.kind === 'tab');
+    assert.deepEqual(ts.map((t) => t.t), ['w', 'tab', 'w']);
+  });
+  // Real Word (checked by a PDF Word made, 2026-11): a table of
+  // contents entry is drawn plain, though its text runs carry the
+  // Hyperlink style; a link elsewhere is blue and underlined.
+  it('an entry (a _Toc link in a toc 1 paragraph) is drawn plain; ' +
+    'a _Toc link in a Normal paragraph and other links are links',
+  async () => {
+    const lk = (a) => `<w:hyperlink w:anchor="${a}">` + r('Head') +
+      '<w:r><w:tab/></w:r>' + r('3') + '</w:hyperlink>';
+    const styles = stylesXml(sty('Normal', 'Normal') +
+      sty('X10', 'toc 1', '', 'Normal') + sty('MyToc', 'Mine', '',
+      'X10') + sty('Heading1', 'heading 1', OL(0), 'Normal'));
+    const d = await read(p(lk('_Toc12'), '<w:pStyle w:val="X10"/>') +
+      p(lk('_Toc12'), '<w:pStyle w:val="MyToc"/>') + p(lk('_Toc12')) +
+      p(lk('Elsewhere'), '<w:pStyle w:val="X10"/>'),
+    {'word/styles.xml': styles});
+    const linkToks = (b) => tokens(b, d.styles, new Map()).filter((t) =>
+      t.kind === 'link');
+    const [a, a2, b, c] = d.sections[0].blocks.map(linkToks);
+    assert.equal(a.length, 2);
+    for (const t of [...a, ...a2]) {
+      assert.ok(!t.f.under, 'not underlined');
+      assert.notEqual(t.f.colour, '#0000c0');
+    }
+    for (const t of [...b, ...c]) {
+      assert.equal(t.f.under, true);
+      assert.equal(t.f.colour, '#0000c0');
+    }
+    assert.equal(a[0].f.css, b[0].f.css);
+  });
+  it('a link\'s tab token carries link: true; so does its layout ' +
+    'item', async () => {
+    const lk = '<w:hyperlink w:anchor="_Toc1">' + r('Head') +
+      '<w:r><w:tab/></w:r>' + r('3') + '</w:hyperlink>';
+    const d = await read(p(lk) + p(r('a') + '<w:r><w:tab/></w:r>' +
+      r('b')));
+    const [x, y] = d.sections[0].blocks;
+    const tx = tokens(x, d.styles, new Map()).find((t) => t.t === 'tab');
+    const ty = tokens(y, d.styles, new Map()).find((t) => t.t === 'tab');
+    assert.equal(tx.link, true);
+    assert.equal(tx.kind, 'tab');
+    assert.equal(ty.link, undefined);
+  });
+  it('a real Word table (TOC2.docx): the entry ends <tab>1',
+    {skip: !HAVE}, async () => {
+      const d = await readDocx(new Uint8Array(readFileSync(new URL(
+        './corpus/open-xml-sdk/v2FxTestFiles/wordprocessing/Toc/' +
+        'TOC2.docx', import.meta.url))));
+      const links = [];
+      forEachBlock(d, (b) => {
+        if (b.type !== 'p' || !b.inlines) return true;
+        for (const x of Object.values(b.inlines)) {
+          if (x.node && /hyperlink$/.test(x.node.name)) links.push(x);
+        }
+        return true;
+      });
+      assert.ok(links.length > 2);
+      assert.match(links[0].text, /\t1$/);
+      for (const x of links) assert.match(x.text, /\t\d+$/);
+    });
+});
+
+describe('Ns plainText with tabs: only a run\'s own tabs', () => {
+  const W = `xmlns:w="${NS.w}"`;
+  const textOf = (xml) => {
+    const root = parseXml(xml).root;
+    return plainText(root, rootScope(root), true);
+  };
+  it('a run\'s w:tab and w:ptab are tabs', () => {
+    assert.equal(textOf(`<w:hyperlink ${W}><w:r><w:t>A</w:t><w:tab/>` +
+      '<w:ptab w:alignment="right"/><w:t>B</w:t></w:r></w:hyperlink>'),
+    'A\t\tB');
+  });
+  it('a tab stop of a text box paragraph is no tab', () => {
+    assert.equal(textOf(`<w:hyperlink ${W}><w:r><w:t>A</w:t></w:r>` +
+      '<w:r><w:pict><w:txbxContent><w:p><w:pPr><w:tabs>' +
+      '<w:tab w:val="left" w:pos="720"/></w:tabs></w:pPr><w:r>' +
+      '<w:t>box</w:t></w:r></w:p></w:txbxContent></w:pict></w:r>' +
+      '</w:hyperlink>'), 'Abox');
+  });
+  it('a deleted tab is no tab', () => {
+    assert.equal(textOf(`<w:hyperlink ${W}><w:r><w:t>A</w:t></w:r>` +
+      '<w:del w:id="1" w:author="x"><w:r><w:tab/><w:delText>gone' +
+      '</w:delText></w:r></w:del><w:r><w:t>B</w:t></w:r>' +
+      '</w:hyperlink>'), 'AB');
+  });
+  it('without tabs: as before', () => {
+    const root = parseXml(`<w:hyperlink ${W}><w:r><w:t>A</w:t>` +
+      '<w:tab/></w:r></w:hyperlink>').root;
+    assert.equal(plainText(root, rootScope(root)), 'A');
   });
 });

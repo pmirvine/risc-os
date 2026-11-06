@@ -6,7 +6,8 @@
 // DocLayout and Pages with the fake measurer.
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
-import {insertToc, insertWhy, updateToc, removeToc, instrOf, tocAt}
+import {insertToc, insertWhy, updateToc, removeToc, instrOf, tocAt,
+  editToc}
   from '../../tools/moreapps/!Letters/TocCmd';
 import {entriesOf, tocFields}
   from '../../tools/moreapps/!Letters/TocUpdate';
@@ -22,7 +23,9 @@ import {printGalley} from '../../tools/moreapps/!Letters/PageHF';
 import {of as bookmarks}
   from '../../tools/moreapps/!Letters/BookmarkIndex';
 import {deleteBookmark} from '../../tools/moreapps/!Letters/Bookmarks';
-import {caret, select} from '../../tools/moreapps/!Letters/Selection';
+import {caret, select, selectAll}
+  from '../../tools/moreapps/!Letters/Selection';
+import {fill} from '../../tools/moreapps/!Letters/TocPatch';
 import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
 import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {deepEqual, OBJ} from '../../tools/moreapps/!Letters/Model';
@@ -358,6 +361,82 @@ describe('insertToc', () => {
       off: 0})), null);
   });
 
+  // Select all over a document that starts with its table: the box
+  // must decide Insert or Update where Insert would put the table
+  // (the selection's start), not only at its end, or it inserts a
+  // second table in front of the first.
+  it('tocAt of a selection: the table at its end, else at its start',
+    async () => {
+      const doc = await read(H(1, 'One') + p(r('body')) + H(2, 'Two'));
+      const {d, t} = open(doc);
+      assert.ok(insertToc(d, t, caret({id: blocks(d)[0].id, off: 0}),
+        {}));
+      const f = tocOf(d.doc);
+      const L = new DocLayout(d.doc, tm(), null, {fields: {now: NOW}});
+      L.layout(800);
+      const all = selectAll(L);
+      assert.equal(all.anchor.id, f.begin.id);
+      assert.equal(tocAt(d.doc, all.head), null);
+      const g = tocAt(d.doc, all);
+      assert.ok(g);
+      assert.equal(g.begin.id, f.begin.id);
+      assert.equal(fill(d.doc, all).editing, true);
+      // backwards: the same table
+      const back = select(all.head, all.anchor);
+      assert.equal(tocAt(d.doc, back).begin.id, f.begin.id);
+      // a range of body text only: none
+      const b = paraOf(d.doc, 'body');
+      assert.equal(tocAt(d.doc, select({id: b.id, off: 0},
+        {id: b.id, off: 4})), null);
+    });
+  // The approved rule: the table at the selection's END (ordered),
+  // else the one at its START, whichever way it was dragged.
+  it('tocAt of a selection: ordered end, else ordered start, both ' +
+    'directions; a caret; within one table; over two tables',
+  async () => {
+    const doc = await read(p(r('above')) + p('') + H(1, 'One') +
+      p(r('body')) + H(2, 'Two'));
+    const {d, t} = open(doc);
+    assert.ok(insertToc(d, t, caret({id: blocks(d)[1].id, off: 0}),
+      {}));
+    const body = paraOf(d.doc, 'body');
+    assert.ok(insertToc(d, t, caret({id: body.id, off: 0}), {}));
+    const [f1, f2] = tocFields(d.doc);
+    assert.ok(f1 && f2);
+    const in1 = {id: f1.sep.id, off: f1.sep.off + 1};
+    const in2 = {id: f2.sep.id, off: f2.sep.off + 1};
+    const above = {id: paraOf(d.doc, 'above').id, off: 2};
+    const at = (sel) => {
+      const g = tocAt(d.doc, sel);
+      return g ? g.begin.id + ':' + g.begin.off : null;
+    };
+    const k1 = f1.begin.id + ':' + f1.begin.off;
+    const k2 = f2.begin.id + ':' + f2.begin.off;
+    // backward drag from inside the table up into the text above
+    assert.equal(at(select(in1, above)), k1);
+    assert.equal(at(select(above, in1)), k1);
+    assert.equal(at(caret(in1)), k1);
+    assert.equal(at(caret(above)), null);
+    assert.equal(at(select(in1, {id: f1.end.id, off: f1.end.off})),
+      k1);
+    // over two tables: the one at the end, either way
+    assert.equal(at(select(in1, in2)), k2);
+    assert.equal(at(select(in2, in1)), k2);
+  });
+  it('a table of figures at the start: Select all edits it',
+    async () => {
+      const doc = await read(p(r('Figure ') + fld('SEQ Figure', '1'),
+        '<w:pStyle w:val="Caption"/>') + p(r('body')));
+      const {d, t} = open(doc);
+      assert.ok(insertToc(d, t, caret({id: blocks(d)[0].id, off: 0}),
+        {seqId: 'Figure'}));
+      const L = new DocLayout(d.doc, tm(), null, {fields: {now: NOW}});
+      L.layout(800);
+      const v = fill(d.doc, selectAll(L));
+      assert.equal(v.editing, true);
+      assert.equal(v.seqId, 'Figure');
+    });
+
   it('a heading with a footnote mark: the entry has no mark; the ' +
     'note stays; removing the table keeps it', async () => {
     const doc = await noteDoc(p('') + H(1, '', r('Intro') + mark(2)),
@@ -453,6 +532,66 @@ describe('updateToc', () => {
         'headings changed: update the entire table');
       assert.equal(entriesOf(d.doc, tocOf(d.doc)).length, 3);
     });
+
+  it('pages: a linked entry\'s shown text keeps the tab before ' +
+    'its number', async () => {
+      const {d, t} = await withToc(BODY);
+      const x = findBlock(d.doc, paraOf(d.doc, 'x').id);
+      t.command(() => d.apply(pageBreakAt(x.at, 1)));
+      const res = updateToc(d, t, tocOf(d.doc), 'pages',
+        ctxOf(d.doc));
+      assert.ok(res);
+      const shown = [];
+      forEachBlock(d.doc, (b) => {
+        for (const y of Object.values(b.inlines || {})) {
+          if (y.node && y.node.name === 'w:hyperlink') shown.push(y.text);
+        }
+        return true;
+      });
+      const want = ['One', 'Two', 'Three'].map((s) => s + '\t' +
+        pageNum(d.doc, paraOf(d.doc, s).id));
+      assert.deepEqual(shown, want);
+      assert.notEqual(want[2], 'Three\t1');
+    });
+
+  it('linked entries written, updated, read back and rebuilt over ' +
+    'Select all: the shown text keeps its tabs (Word checks the files)',
+  async () => {
+    const {d, t} = await withToc(BODY);
+    const shownOf = (doc) => {
+      const out = [];
+      forEachBlock(doc, (b) => {
+        for (const y of Object.values(b.inlines || {})) {
+          if (y.node && y.node.name === 'w:hyperlink') out.push(y.text);
+        }
+        return true;
+      });
+      return out;
+    };
+    let {bytes} = await lintAfter(d.doc, 'toc links inserted');
+    emit('toccmd-links-insert', bytes);
+    const x = findBlock(d.doc, paraOf(d.doc, 'x').id);
+    t.command(() => d.apply(pageBreakAt(x.at, 1)));
+    assert.ok(updateToc(d, t, tocOf(d.doc), 'pages', ctxOf(d.doc)));
+    ({bytes} = await lintAfter(d.doc, 'toc links pages'));
+    emit('toccmd-links-pages', bytes);
+    const want = shownOf(d.doc);
+    assert.ok(want.every((s) => /\t\d+$/.test(s)), want.join('|'));
+    const back = await readDocx(bytes);
+    assert.deepEqual(shownOf(back), want);
+    ({bytes} = await lintAfter(back, 'toc links read back'));
+    emit('toccmd-links-roundtrip', bytes);
+    // Select all, then the box's Update (editToc): the one table
+    const o = open(back), L = pagesOf(o.d.doc).L;
+    const all = selectAll(L);
+    const f = tocAt(o.d.doc, all);
+    assert.ok(f);
+    assert.ok(editToc(o.d, o.t, f, {}, ctxOf(o.d.doc)));
+    assert.equal(tocFields(o.d.doc).length, 1);
+    assert.deepEqual(shownOf(o.d.doc), want);
+    ({bytes} = await lintAfter(o.d.doc, 'toc links select all'));
+    emit('toccmd-links-selectall', bytes);
+  });
 
   it('pages keeps what the user typed in an entry (no links), and ' +
     'its format', async () => {
@@ -743,9 +882,12 @@ describe('Update all fields: the TOC step', () => {
     async () => {
       const doc = await read(p(r('keep me')) + H(1, 'One'));
       const {d, t} = open(doc), id = blocks(d)[0].id;
+      const n = d.undoDepth;
       const res = insertToc(d, t, select({id, off: 0}, {id, off: 4}),
         {});
       assert.ok(res);
+      assert.equal(d.undoDepth, n + 1);
+      assert.equal(tocFields(d.doc).length, 1);
       const f = tocOf(d.doc);
       const B = findBlock(d.doc, f.end.id).b;
       assert.equal(B.text.slice(f.end.off + 1), 'keep me');

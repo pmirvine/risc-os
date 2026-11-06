@@ -325,6 +325,15 @@ describe('STYLEREF in the body', () => {
       'Second', 'SECOND']);
   });
 
+  it('a heading whose link holds a tab: the tab is one space',
+    async () => {
+      const link = '<w:hyperlink w:anchor="x">' + r('a') +
+        '<w:r><w:tab/></w:r>' + r('b') + '</w:hyperlink>';
+      const d = await read(p(link, '<w:pStyle w:val="Heading1"/>') +
+        ref(' STYLEREF 1 '));
+      assert.deepEqual(shown(d, 'STYLEREF'), ['a b']);
+    });
+
   it('a field before every match takes the nearest after; one in ' +
     'its own matching paragraph (a cycle), or with no match, is kept', async () => {
     const d = await read(
