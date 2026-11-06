@@ -20,7 +20,10 @@ const STYLES = stylesXml(
   '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>' +
   '<w:basedOn w:val="Normal"/><w:pPr><w:outlineLvl w:val="0"/></w:pPr>' +
   '<w:rPr><w:rFonts w:ascii="Cambria" w:hAnsi="Cambria"/><w:b/>' +
-  '<w:sz w:val="32"/></w:rPr></w:style>');
+  '<w:sz w:val="32"/></w:rPr></w:style>' +
+  '<w:style w:type="character" w:styleId="Hyperlink"><w:name ' +
+  'w:val="Hyperlink"/><w:rPr><w:color w:val="0563C1"/>' +
+  '<w:u w:val="single"/></w:rPr></w:style>');
 const TBL = '<w:tbl><w:tr><w:tc>' + p(r('x')) + '</w:tc></w:tr></w:tbl>';
 const doc = (body) => buildDocx({'word/document.xml': documentXml(body),
   'word/styles.xml': STYLES}).then(readDocx);
@@ -174,14 +177,32 @@ describe('formatting on the screen', () => {
     assert.deepEqual(it.map((x) => x.f.colour),
       ['#000000', '#C00000', '#000000']);
   });
-  it('links are blue and underlined', async () => {
-    const d = await doc(p(r('see ') +
-      '<w:hyperlink><w:r><w:t>here</w:t></w:r></w:hyperlink>'));
-    const link = lay(d).lines[0].items.find((x) => x.kind === 'link');
-    assert.equal(link.text, 'here');
-    assert.equal(link.f.colour, '#0000c0');
-    assert.equal(link.f.under, true);
+  // As Word draws a link: run by run, so only the runs styled
+  // Hyperlink are blue and underlined (by that style), a run with no
+  // such style is plain. Font, size and bold stay the link's one
+  // format (widths unchanged: a known limit, ./LineTokens).
+  it('links: each run in its own format, the Hyperlink style\'s ' +
+    'blue and underline where the run has it', async () => {
+    const d = await doc(p(r('see ') + '<w:hyperlink w:anchor="x">' +
+      r('here', '<w:rStyle w:val="Hyperlink"/>') + r(' now') +
+      r('big', '<w:rStyle w:val="Hyperlink"/><w:b/>') +
+      '</w:hyperlink>'));
+    const items = lay(d).lines[0].items.filter((x) => x.kind === 'link');
+    assert.deepEqual(items.map((x) => [x.text, x.f.colour, x.f.under,
+      x.f.bold]), [['here', '#0563C1', true, false],
+      [' ', '#000000', false, false], ['now', '#000000', false, false],
+      ['big', '#0563C1', true, false]]);
+    assert.equal(new Set(items.map((x) => x.f.css)).size, 1);
   });
+  it('a link with no styled run is drawn plain, as in Word',
+    async () => {
+      const d = await doc(p(r('see ') +
+        '<w:hyperlink><w:r><w:t>here</w:t></w:r></w:hyperlink>'));
+      const link = lay(d).lines[0].items.find((x) => x.kind === 'link');
+      assert.equal(link.text, 'here');
+      assert.equal(link.f.colour, '#000000');
+      assert.equal(link.f.under, false);
+    });
   const drawn = (d) => lay(d, 2000).lines.flatMap((l) => l.items)
     .map((x) => x.text).join('');
   it('proofing marks, bookmarks and field codes draw nothing',

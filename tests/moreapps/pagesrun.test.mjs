@@ -364,7 +364,10 @@ describe('RangeBox', () => {
 // The digests of pdf-golden's documents as the PDF export wrote them
 // before its page loop moved here (c65e0428): objects and inflated
 // streams, so the same with any zlib. 'links' since its bookmark
-// link goes to the line (/XYZ, ./BookmarkSpot), its only change.
+// link goes to the line (/XYZ, ./BookmarkSpot), its only change; and
+// again since a link is drawn by its runs (./LinkRuns): these links'
+// runs carry no Hyperlink style, so they are black, as Word draws
+// them (with the old link drawing the old digest still comes out).
 const GOLDEN = {
   'three pages':
     '76dee4bf2d209102a0c1914e60bc8cc1e8772a853760f8357936161d265218e7',
@@ -375,7 +378,7 @@ const GOLDEN = {
   'JPEG header picture':
     'e4070b407c44ee1a6f969243e0a39a5264f16e208264047f32e5da452263b00f',
   'links':
-    '8a0c27713fae81bd2d7bc67b43120f96047ac399ed7de3a4de0b2b8f2d695629',
+    '17b45475344071a95e58a2d5119f909bb85360ff3737dbbac8a38a5f30c0e1fa',
   'real advances':
     'c6719c50cd8b3d72e41548dffb30c4104c9f6b9d81f4dfe7c0ea6a2e48dc32d4',
 };

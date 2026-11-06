@@ -830,15 +830,22 @@ describe('a linked entry\'s shown text keeps its tabs', () => {
   });
   // Real Word (checked by a PDF Word made, 2026-11): a table of
   // contents entry is drawn plain, though its text runs carry the
-  // Hyperlink style; a link elsewhere is blue and underlined.
+  // Hyperlink style; a link elsewhere is blue and underlined where
+  // its runs carry that style (here all of them: since links are
+  // drawn run by run, ./LinkRuns, a run with no style is plain).
   it('an entry (a _Toc link in a toc 1 paragraph) is drawn plain; ' +
     'a _Toc link in a Normal paragraph and other links are links',
   async () => {
-    const lk = (a) => `<w:hyperlink w:anchor="${a}">` + r('Head') +
-      '<w:r><w:tab/></w:r>' + r('3') + '</w:hyperlink>';
+    const HS = '<w:rStyle w:val="Hyperlink"/>';
+    const lk = (a) => `<w:hyperlink w:anchor="${a}">` + r('Head', HS) +
+      `<w:r><w:rPr>${HS}</w:rPr><w:tab/></w:r>` + r('3', HS) +
+      '</w:hyperlink>';
     const styles = stylesXml(sty('Normal', 'Normal') +
       sty('X10', 'toc 1', '', 'Normal') + sty('MyToc', 'Mine', '',
-      'X10') + sty('Heading1', 'heading 1', OL(0), 'Normal'));
+      'X10') + sty('Heading1', 'heading 1', OL(0), 'Normal') +
+      '<w:style w:type="character" w:styleId="Hyperlink"><w:name ' +
+      'w:val="Hyperlink"/><w:rPr><w:color w:val="0563C1"/>' +
+      '<w:u w:val="single"/></w:rPr></w:style>');
     const d = await read(p(lk('_Toc12'), '<w:pStyle w:val="X10"/>') +
       p(lk('_Toc12'), '<w:pStyle w:val="MyToc"/>') + p(lk('_Toc12')) +
       p(lk('Elsewhere'), '<w:pStyle w:val="X10"/>'),
@@ -853,7 +860,7 @@ describe('a linked entry\'s shown text keeps its tabs', () => {
     }
     for (const t of [...b, ...c]) {
       assert.equal(t.f.under, true);
-      assert.equal(t.f.colour, '#0000c0');
+      assert.equal(t.f.colour, '#0563C1');
     }
     assert.equal(a[0].f.css, b[0].f.css);
   });

@@ -2,7 +2,8 @@
 // lines, each with the model offsets (UTF-16 indices into Para.text)
 // it stands for.
 //
-//   tokens(para, styles, cache, map?, fieldText?, floats?, markup?)
+//   tokens(para, styles, cache, map?, fieldText?, floats?, markup?,
+//          toc?)
 //                    -> [{t, text, f, kind, from, to, shown, pic?,
 //                    field?, anchor?, rev?}]
 //   t     'w' a word or a piece of one (no break inside), 's' spaces,
@@ -32,11 +33,21 @@
 //         Markup each token of a tagged run has its tag (rev): the
 //         layout keeps it on the item (never joined to one of
 //         another tag, ./LineLayout), for ./RevPaint
+//   toc   para lies inside a TOC field's result (./TocParas): true,
+//         or a function asked only at a _Toc link (so a keystroke
+//         in other text never looks for the fields)
 //
 // U+FFFC items stand for one offset each: a hyperlink shows its text
-// in blue, underlined (one to a _Toc bookmark in a TOC n or Table of
-// Figures paragraph, a table of contents entry, in the format there,
-// as Word draws it: same widths); other
+// run by run, each in its own run's colour, underline, strike,
+// highlight and shading as Word draws it (./LinkRuns: a run styled
+// Hyperlink is blue and underlined by that style, a run with no such
+// style plain), its font, size, bold and italic the format there for
+// the whole link, as before (so widths, and the pages, do not change);
+// a link whose runs cannot be read back to its text is drawn in link
+// blue, underlined, as before;
+// one to a _Toc bookmark in a paragraph inside a TOC field's result,
+// toc, or in a TOC n or Table of Figures one (a table of contents
+// entry) all in the format there, as Word draws it; other
 // wrappers with text (an insertion, a
 // simple field, a content control...) show it in the format there.
 // Their text breaks into words and spaces like any other (so it can
@@ -63,6 +74,7 @@ import {unseen, localName, hiddenRev} from './Kinds';
 import {isPageBreak, pbToken} from './BreakMarks';
 import {picToken} from './PicLine';
 import {isCustom} from './NoteNumbers';
+import {linkRuns} from './LinkRuns';
 
 export const PLAIN = {rPr: {extra: []}};
 
@@ -93,12 +105,15 @@ function tocStyled(styles, id) {
 }
 
 /** A table of contents entry: a link to a hidden _Toc bookmark in a
- *  TOC n or Table of Figures paragraph, which Word draws plain (its
- *  Hyperlink style not shown); a _Toc link elsewhere (Word makes
- *  them for links to headings) is drawn as a link. */
+ *  paragraph inside a TOC field's result (ps.toc) or in a TOC n or
+ *  Table of Figures one, which Word draws plain (its Hyperlink style
+ *  not shown); a _Toc link elsewhere (Word makes them for links to
+ *  headings) is drawn as a link. */
 const tocEntry = (x, ps) => Array.isArray(x.node.attrs) &&
   x.node.attrs.some(([n, v]) => n.split(':').pop() === 'anchor' &&
-    /^_Toc/i.test(String(v))) && tocStyled(ps.styles, ps.para.pStyle);
+    /^_Toc/i.test(String(v))) &&
+  (tocStyled(ps.styles, ps.para.pStyle) || (typeof ps.toc ===
+    'function' ? ps.toc() === true : ps.toc === true));
 const boxFmt = (f) => {
   const px = Math.max(8, Math.round(f.px * 0.75));
   return {...f, px, colour: '#606060', under: false, strike: false,
@@ -131,9 +146,10 @@ function words(text, off, f, out) {
   }
 }
 
-/** The words and spaces of an inline's text: see the header. */
-function shownWords(text, i, f, kind, out) {
-  let from = i;
+/** The words and spaces of an inline's text: see the header (later:
+ *  not its first piece, all from i + 1). */
+function shownWords(text, i, f, kind, out, later = false) {
+  let from = later ? i + 1 : i;
   for (const m of text.matchAll(/ +|\t|[^ \t]+/g)) {
     const s = m[0], tab = s === '\t';
     const tk = {t: tab ? 'tab' : isSpace(s[0]) ? 's' : 'w',
@@ -143,6 +159,27 @@ function shownWords(text, i, f, kind, out) {
     if (tab && kind === 'link') tk.link = true;
     out.push(tk);
     from = i + 1;
+  }
+}
+
+/** f with the look of g that does not change widths (see the
+ *  header). */
+const lookOf = (f, g) => ({...f, colour: g.colour, under: g.under,
+  strike: g.strike, highlight: g.highlight, shade: g.shade});
+
+/** A link's tokens, run by run in each run's look (see the
+ *  header). */
+function linkWords(x, i, f, out, map, ps) {
+  const segs = linkRuns(x, map);
+  if (!segs) {
+    shownWords(x.text, i, linkFmt(f), 'link', out);
+    return;
+  }
+  let later = false;
+  for (const g of segs) {
+    shownWords(g.text, i, lookOf(f, runFmt(ps.styles, ps.para, g.run,
+      ps.cache)), 'link', out, later);
+    later = true;
   }
 }
 
@@ -162,8 +199,8 @@ function inline(x, i, f, out, map, floats, ps) {
   else if (unseen(x)) one('z', '', f, 'text');
   else if (l === 'noBreakHyphen') one('w', '-', f, 'text');
   else if (x.text && l === 'hyperlink') {
-    shownWords(x.text, i, tocEntry(x, ps) ? f : linkFmt(f), 'link',
-      out);
+    if (tocEntry(x, ps)) shownWords(x.text, i, f, 'link', out);
+    else linkWords(x, i, f, out, map, ps);
   } else if (x.text) shownWords(x.text, i, f, 'text', out);
   else {
     const pic = picToken(x, i, f, map, floats);
@@ -212,8 +249,8 @@ function atomic(toks, vs) {
 
 /** See the header. */
 export function tokens(para, styles, cache, map, fieldText,
-  floats, markup) {
-  const out = [], ps = {para, styles};
+  floats, markup, toc) {
+  const out = [], ps = {para, styles, toc, cache};
   const text = para.text, n = text.length;
   const runs = para.runs.length ? para.runs
     : [{start: 0, end: n, rPr: {extra: []}}];

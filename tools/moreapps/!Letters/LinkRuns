@@ -1,0 +1,94 @@
+// LinkRuns - the runs of a hyperlink inline, so that ./LineTokens can
+// draw each in its own format as Word does: only the runs styled
+// Hyperlink (or given a colour and underline) look like a link.
+//
+//   linkRuns(x, map?) -> [{text, run}] | null  the pieces of x.text
+//       (a raw level 'p' inline whose node is a w:hyperlink:
+//       ./ReadPara) in order, each with the run ({rPr, rStyle?})
+//       its text is in: the link's children read as a paragraph
+//       (./LinkParts inside, in scope map, else the usual w
+//       prefix). A tab is its run's;
+//       a plain w:br, a field mark or other unseen element gives
+//       nothing (as x.text has nothing for it); a wrapper inside
+//       (w:ins, w:smartTag, w:sdt...) gives the pieces of its own
+//       runs, read the same way (at most DEEP wrappers deep), else
+//       its text in the plain run.
+//       null when the pieces do not make x.text exactly (a node
+//       read another way): the caller draws the link as before.
+//       Memoised per node (with its text), so a layout pass reads
+//       each link once
+// Pure: no desktop services.
+import {OBJ} from './Model';
+import {inside} from './LinkParts';
+import {localName} from './Kinds';
+import {PIC_SCOPE} from './PicRead';
+import {scope} from './Ns';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const memo = new WeakMap();            // node -> {text, segs}
+const PLAIN = {rPr: {extra: []}};
+
+/** The text inline y stands for in x.text. */
+function objText(y) {
+  if (!isObj(y) || y.kind !== 'raw') return '';
+  if (y.level === 'p') return typeof y.text === 'string' ? y.text : '';
+  const n = y.node, l = isObj(n) ? localName(n) : '';
+  if (l === 'ptab') return '\t';
+  if (l !== 't') return '';
+  return (n.children || []).filter((c) => typeof c === 'string')
+    .join('');
+}
+
+const DEEP = 8;                        // wrappers in wrappers
+
+/** The pieces of x's text, or null (see the header). */
+function build(x, map, depth = 0) {
+  let para = null;
+  try {
+    para = inside(x.node, map);
+  } catch {
+    return null;
+  }
+  if (!para) return null;
+  const segs = [], t = para.text;
+  for (const run of para.runs) {
+    let s = '';
+    const flush = (r) => {
+      if (s) segs.push({text: s, run: r});
+      s = '';
+    };
+    for (let k = run.start; k < run.end; k++) {
+      if (t[k] === '\n') continue;
+      if (t[k] !== OBJ) {
+        s += t[k];
+        continue;
+      }
+      const y = para.inlines[k];
+      const v = objText(y);
+      if (!v) continue;
+      if (y.level === 'p') {
+        flush(run);
+        // a wrapper's own runs (w:ins, w:smartTag, w:sdt...), else
+        // its text in the plain run
+        const inner = depth < DEEP && isObj(y.node)
+          ? build({node: y.node, text: v}, scope(map, x.node),
+            depth + 1) : null;
+        if (inner) segs.push(...inner);
+        else segs.push({text: v, run: PLAIN});
+      } else s += v;
+    }
+    flush(run);
+  }
+  return segs.map((g) => g.text).join('') === x.text ? segs : null;
+}
+
+/** See the header. */
+export function linkRuns(x, map) {
+  const n = isObj(x) ? x.node : null;
+  if (!isObj(n) || typeof x.text !== 'string') return null;
+  const got = memo.get(n);
+  if (got && got.text === x.text) return got.segs;
+  const segs = build(x, map || PIC_SCOPE);
+  memo.set(n, {text: x.text, segs});
+  return segs;
+}

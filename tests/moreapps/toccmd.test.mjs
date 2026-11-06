@@ -7,7 +7,7 @@
 import {describe, it, before} from 'node:test';
 import assert from 'node:assert/strict';
 import {insertToc, insertWhy, updateToc, removeToc, instrOf, tocAt,
-  editToc}
+  editToc, AT_TABLE}
   from '../../tools/moreapps/!Letters/TocCmd';
 import {entriesOf, tocFields}
   from '../../tools/moreapps/!Letters/TocUpdate';
@@ -25,7 +25,7 @@ import {of as bookmarks}
 import {deleteBookmark} from '../../tools/moreapps/!Letters/Bookmarks';
 import {caret, select, selectAll}
   from '../../tools/moreapps/!Letters/Selection';
-import {fill} from '../../tools/moreapps/!Letters/TocPatch';
+import {fill, itemShaded} from '../../tools/moreapps/!Letters/TocPatch';
 import {forEachBlock} from '../../tools/moreapps/!Letters/Walk';
 import {findBlock} from '../../tools/moreapps/!Letters/EditPos';
 import {deepEqual, OBJ} from '../../tools/moreapps/!Letters/Model';
@@ -423,6 +423,43 @@ describe('insertToc', () => {
     assert.equal(at(select(in1, in2)), k2);
     assert.equal(at(select(in2, in1)), k2);
   });
+  // A selection that holds a whole table, neither end inside it:
+  // the box edits that table (the first one wholly inside), as at a
+  // caret in it, and never puts in a second one.
+  it('tocAt of a selection holding a whole table: that table (the ' +
+    'first of two); fill edits it', async () => {
+    const doc = await read(p(r('above')) + p('') + H(1, 'One') +
+      p(r('body')) + H(2, 'Two') + p(r('below')));
+    const {d, t} = open(doc);
+    assert.ok(insertToc(d, t, caret({id: blocks(d)[1].id, off: 0}),
+      {}));
+    const above = {id: paraOf(d.doc, 'above').id, off: 1};
+    const body = {id: paraOf(d.doc, 'body').id, off: 2};
+    const f1 = tocOf(d.doc);
+    const key = (g) => (g ? g.begin.id + ':' + g.begin.off : null);
+    const k1 = key(f1);
+    assert.equal(tocAt(d.doc, caret(above)), null);
+    assert.equal(tocAt(d.doc, caret(body)), null);
+    assert.equal(key(tocAt(d.doc, select(above, body))), k1);
+    assert.equal(key(tocAt(d.doc, select(body, above))), k1);
+    const v = fill(d.doc, select(above, body));
+    assert.equal(v.editing, true);
+    // a second table, after 'body': the first wholly inside wins
+    assert.ok(insertToc(d, t, caret({id: paraOf(d.doc, 'below').id,
+      off: 0}), {}));
+    const [g1, g2] = tocFields(d.doc);
+    assert.ok(g1 && g2);
+    const above2 = {id: paraOf(d.doc, 'above').id, off: 0};
+    assert.equal(key(tocAt(d.doc, select(above2, {id:
+      paraOf(d.doc, 'body').id, off: 0}))), key(g1));
+    // the end at g2's end mark holds g2: the end's table, as before
+    assert.equal(key(tocAt(d.doc, select(above2, {id: g2.end.id,
+      off: g2.end.off}))), key(g2));
+    // a range holding only part of no table: none
+    const b2 = paraOf(d.doc, 'body');
+    assert.equal(tocAt(d.doc, select({id: b2.id, off: 0},
+      {id: b2.id, off: 3})), null);
+  });
   it('a table of figures at the start: Select all edits it',
     async () => {
       const doc = await read(p(r('Figure ') + fld('SEQ Figure', '1'),
@@ -452,6 +489,63 @@ describe('insertToc', () => {
     assert.ok(d.doc.notes.footnotes.has(2) ||
       d.doc.notes.footnotes.has('2'), 'still');
     await lintAfter(d.doc, 'note heading');
+  });
+});
+
+// A document that starts with a Word table: Select all starts at the
+// table. The menu item was shaded with no word why; it is live, and
+// the box's Insert says why the table cannot go there.
+describe('a selection starting at a table: live, the box says why', () => {
+  const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/>' +
+    '</w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>cell</w:t></w:r></w:p>' +
+    '</w:tc></w:tr></w:tbl>';
+  const allOf = (doc) => {
+    const L = new DocLayout(doc, tm(), null, {fields: {now: NOW}});
+    L.layout(800);
+    return selectAll(L);
+  };
+  it('Select all: insertWhy is AT_TABLE; the item is live; ' +
+    'insertToc refuses, nothing changed', async () => {
+    const {d, t} = open(await read(TBL + H(1, 'One') + p(r('body'))));
+    const all = allOf(d.doc);
+    assert.equal(all.anchor.id, blocks(d)[0].id);
+    assert.equal(insertWhy(d, all), AT_TABLE);
+    assert.match(AT_TABLE, /table/);
+    assert.equal(itemShaded(d, all), false);
+    assert.equal(itemShaded(d, all, true), false);
+    const n = d.undoDepth;
+    assert.equal(insertToc(d, t, all, {}), null);
+    assert.equal(d.undoDepth, n);
+    assert.equal(tocFields(d.doc).length, 0);
+  });
+  it('a caret in a cell: a table goes there (live, no reason)',
+    async () => {
+      const {d} = open(await read(TBL + p(r('body'))));
+      const cp = blocks(d)[0].rows[0].cells[0].blocks[0];
+      const c = caret({id: cp.id, off: 1});
+      assert.equal(insertWhy(d, c), null);
+      assert.equal(itemShaded(d, c), false);
+    });
+  it('still shaded: no selection, inside a field, a header; live in ' +
+    'a table of contents', async () => {
+    const {d, t} = open(await THREE());
+    assert.equal(itemShaded(d, null), true);
+    assert.ok(insertToc(d, t, caret({id: blocks(d)[0].id, off: 0}),
+      {}));
+    const f = tocOf(d.doc);
+    const inside = caret({id: f.sep.id, off: f.sep.off + 2});
+    assert.ok(insertWhy(d, inside));
+    assert.equal(itemShaded(d, inside), false);
+    // a table of contents is not a table of figures
+    assert.equal(itemShaded(d, inside, true), true);
+    const d2 = open(await read(p(fld(' DATE ', 'x')) + H(1, 'One'))).d;
+    const q = blocks(d2)[0];
+    assert.equal(itemShaded(d2, caret({id: q.id, off: 2})), true);
+    const hd = new Document(await readDocx(await withHeaders(
+      p(r('body')), {default: p(r('head'))})));
+    const fa = facadeOf(hd, 'word/header1.xml', 0);
+    const hp = fa.doc.sections[0].blocks[0];
+    assert.equal(itemShaded(fa, caret({id: hp.id, off: 0})), true);
   });
 });
 

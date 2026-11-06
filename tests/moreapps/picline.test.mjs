@@ -254,6 +254,19 @@ describe('no pictures, same lines', () => {
         }
       }
       for (const fm of fms) assert.deepEqual(fm, NAT_M);
+      // links are drawn run by run since (./LinkRuns, as Word draws
+      // them): the fixture's link run has no Hyperlink style, so it
+      // is plain now, where the fixture has link blue; the widths
+      // and places are compared as before
+      for (const ln of got.lines) {
+        for (const x of ln.items) {
+          if (x.kind !== 'link') continue;
+          assert.equal(x.f.colour, '#000000');
+          assert.equal(x.f.under, false);
+          x.f.colour = '#0000c0';
+          x.f.under = true;
+        }
+      }
       assert.deepEqual(got, want[i], 'paragraph ' + i);
     });
   });

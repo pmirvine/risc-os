@@ -53,7 +53,12 @@ const bytes = await buildDocx({
     + p(r('Said'), '<w:pStyle w:val="Quote"/>') + p(r('Figure ') + fld('SEQ Figure', '7'))),
   'word/styles.xml': STYLES,
 });
-const files = { Toc: Array.from(bytes) };
+// a document that starts with a Word table (not a table of contents)
+const TBL = '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>cell</w:t>'
+  + '</w:r></w:p></w:tc></w:tr></w:tbl>';
+const tblBytes = await buildDocx({ 'word/document.xml': documentXml(TBL + H(1, 'One') + p(r('Body text.'))),
+  'word/styles.xml': STYLES });
+const files = { Toc: Array.from(bytes), TocTbl: Array.from(tblBytes) };
 
 const out = [];
 const ok = (name, v, detail) => out.push(`${v ? 'PASS' : 'FAIL'} ${name}${v && !process.env.DETAIL ? '' : ' ' + JSON.stringify(detail).slice(0, 900)}`);
@@ -440,6 +445,38 @@ try {
   await FB0.click('Cancel');
   ok('Cancel: still one table of contents', (await tocCount()) === 1 && !(await FB0.get()), await tocCount());
 
+  // a selection from text before the table to the end: neither end in it, the whole table inside: edits it
+  const wd0 = (await toc()).depth;
+  await caretAt(0);
+  await press('Enter');
+  await press('ArrowUp');
+  // (the new paragraph keeps the entry's TOC 1 style, as in Word)
+  await page.keyboard.type('Intro');
+  await settle();
+  const wsel = await ev(async () => {
+    const d = window.__doc(), v = d.dw.view, bs = d.dw.doc.sections[0].blocks, z = bs[bs.length - 1];
+    v.setSelection({ anchor: { id: bs[0].id, off: 1 }, head: { id: z.id, off: z.text.length }, affinity: 'down' });
+    v.focus();
+    await window.__frames(2);
+    return { first: window.__plain(bs[0]), depth: d.d.undoDepth };
+  });
+  const wItem = await menuItem('Insert', 'Table of Contents...');
+  await runMenu('Insert', 'Table of Contents...');
+  const wBox = await TB.get();
+  ok('a selection holding the whole table (neither end in it): live; the box edits it (title (edit), Update)',
+    wsel.first === 'Intro' && wItem && !wItem.shaded && wBox && wBox.title === 'Table of Contents (edit)'
+    && wBox.insertText === 'Update', { wsel, wItem, wBox });
+  await TB.click('Insert');
+  const wToc = await toc(), wCount = await tocCount();
+  ok('and Update: still one table, its four entries, the text before it kept, at most one step', !(await TB.get())
+    && wCount === 1 && wToc.toc.filter((t) => t !== 'Intro').length === 4 && wToc.ps[0] === 'Intro' && wToc.depth <= wsel.depth + 1,
+  { wCount, wToc });
+  for (let g = 0; g < 10 && (await toc()).depth > wd0; g++) {
+    await press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+  }
+  ok('undone back: the text before the table gone', (await toc()).depth === wd0 && (await tocCount()) === 1,
+    await toc());
+
   // Insert > Caption...
   const CB = B('caption'), LB = B('caplabel'), NB = B('capnum');
   const caretOn = (text) => ev(async (text) => {
@@ -773,6 +810,42 @@ try {
   ok('... then OK (entire): done, the box gone, no beep', !ou3 && ou3t.toc.join() === 'Introduction' && ob2 === ob0
     && !om3.length, { ou3, ou3t, ob2, om3 });
   await runMenu('View', 'Print layout');
+
+  // a document that starts with a Word table: Select all starts at the table. The item is live (it was shaded with
+  // no word why), and the box's Insert says why, with a beep, the box kept and nothing changed
+  await ev(async () => {
+    const w = window.__word().word;
+    await w.open('RAM::RamDisc0.$.TocTbl');
+    const nd = w.docs.find((x) => x.leaf === 'TocTbl');
+    window.__doc = () => nd;
+    await window.__frames(4);
+  });
+  await caretAt(1);
+  await press('Control+a');
+  const tsel = await ev(() => { const d = window.__doc(), s = d.dw.view.sel, bs = d.dw.doc.sections[0].blocks;
+    return { start: s.anchor.id === bs[0].id, tbl: bs[0].type, depth: d.d.undoDepth }; });
+  const tItem = await menuItem('Insert', 'Table of Contents...');
+  const tFig = await menuItem('Insert', 'Table of Figures...');
+  ok('a document starting with a table, Select all: Table of Contents... and Table of Figures... are live',
+    tsel.start && tsel.tbl === 'tbl' && tItem && !tItem.shaded && tFig && !tFig.shaded, { tsel, tItem, tFig });
+  await runMenu('Insert', 'Table of Contents...');
+  const tb0 = await beeps();
+  await TB.click('Insert');
+  const tBox = await TB.get(), tb1 = await beeps();
+  const tAfter = await ev(() => ({ depth: window.__doc().d.undoDepth, n: window.__doc().dw.doc.sections[0].blocks.length }));
+  ok('... Insert there: a beep, the box kept, "The selection starts at a table...", nothing changed', tBox
+    && /selection starts at a table/.test(tBox.msg + ' ' + tBox.msg2) && tb1 === tb0 + 1 && tAfter.depth === tsel.depth,
+  { tBox, tb0, tb1, tAfter });
+  await TB.click('Cancel');
+  // a caret in the table's cell: a table of contents may go there (live)
+  await ev(async () => {
+    const d = window.__doc(), v = d.dw.view, cp = d.dw.doc.sections[0].blocks[0].rows[0].cells[0].blocks[0];
+    v.setSelection({ anchor: { id: cp.id, off: 1 }, head: { id: cp.id, off: 1 }, affinity: 'down' });
+    v.focus();
+    await window.__frames(2);
+  });
+  const tCell = await menuItem('Insert', 'Table of Contents...');
+  ok('a caret in the cell: Table of Contents... is live', tCell && !tCell.shaded, tCell);
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }
