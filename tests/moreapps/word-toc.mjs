@@ -637,6 +637,77 @@ try {
 
   const msgs = await ev(() => window.__msgs);
   ok('nothing reported', !msgs.length, msgs);
+
+  // a new document: the table first, headings typed on the line under it
+  await ev(async () => {
+    const w = window.__word().word, dw = await w.new();
+    const nd = w.docs.find((x) => x.dw === dw);
+    window.__doc = () => nd;
+    await window.__frames(4);
+  });
+  await runMenu('Insert', 'Table of Contents...');
+  await TB.click('Insert');
+  const e0 = await ev(() => {
+    const doc = window.__doc().dw.doc, bs = doc.sections[0].blocks;
+    return { ps: bs.map((b) => window.__plain(b)), sel: window.__doc().dw.view.sel.head,
+      ids: bs.map((b) => b.id) };
+  });
+  ok('a table in a new document: "No table..." and the end line, then an empty line with the caret',
+    e0.ps.length === 3 && e0.ps[0] === 'No table of contents entries found.' && e0.ps[1] === '' && e0.ps[2] === ''
+    && e0.sel.id === e0.ids[2] && e0.sel.off === 0, e0);
+  // Update field on an empty table: Update entire table chosen first
+  await caretAt(0, 5);
+  await runMenu('Edit', 'Update field');
+  const eu = await UB.get();
+  ok('Edit > Update field on a table with no entries: Update entire table chosen first', eu && eu.what === 'entire', eu);
+  await UB.click('Cancel');
+  // a real click on the end line, just under the table
+  const at1 = await ev(async () => {
+    const d = window.__doc(), v = d.dw.view, w = d.win, bs = d.dw.doc.sections[0].blocks, b = bs[1];
+    v.setSelection({ anchor: { id: b.id, off: 1 }, head: { id: b.id, off: 1 }, affinity: 'down' });
+    await window.__frames(2);
+    const cr = v.caretRect();
+    v.setSelection({ anchor: { id: bs[2].id, off: 0 }, head: { id: bs[2].id, off: 0 }, affinity: 'down' });
+    await window.__frames(2);
+    const s = w.workToScreen(cr.x + 30, cr.y + 4);
+    const rc = os.wimp.screen.getBoundingClientRect(), k = os.wimp.scale;
+    return { x: rc.left + s.x * k, y: rc.top + s.y * k, id: b.id };
+  });
+  await page.mouse.click(at1.x, at1.y);
+  await settle();
+  const e1 = await ev(() => window.__doc().dw.view.sel.head);
+  ok('a click on the line under an empty table puts the caret after its end mark', e1.id === at1.id && e1.off === 1,
+    { e1, at1 });
+  await page.keyboard.type('Introduction');
+  await ev(() => { window.__doc().dw.view.format('style', 'Heading1'); });
+  await settle();
+  await runMenu('Edit', 'Update all fields');
+  const e2 = await ev(() => {
+    const doc = window.__doc().dw.doc, bs = doc.sections[0].blocks;
+    return { ps: bs.map((b) => [b.pStyle || '', window.__plain(b)]), msgs: window.__msgs.splice(0) };
+  });
+  const e2t = await toc();
+  ok('a heading typed there survives Update all fields and is listed', e2t.toc.join() === 'Introduction'
+    && e2.ps.some(([s, t]) => s === 'Heading1' && t === 'Introduction'), { e2, e2t });
+
+  // Outline: Update field preselects the entire table; page numbers only says why it cannot, no beep
+  await runMenu('View', 'Outline');
+  await caretInToc(1);
+  const ob0 = await beeps();
+  await runMenu('Edit', 'Update field');
+  const ou1 = await UB.get();
+  ok('in Outline, Edit > Update field on a table: Update entire table chosen first', ou1 && ou1.what === 'entire', ou1);
+  await UB.set('what', 'pages');
+  await UB.click('OK');
+  const ou2 = await UB.get(), ob1 = await beeps();
+  ok('... page numbers only there: the box kept, "Page numbers need Print layout: choose Update entire table.", no beep',
+    ou2 && ou2.what === 'entire' && /Page numbers need Print layout: choose Update entire table\./.test(ou2.msg + ' ' + ou2.msg2)
+    && ob1 === ob0, { ou2, ob0, ob1 });
+  await UB.click('OK');
+  const ou3 = await UB.get(), ou3t = await toc(), ob2 = await beeps(), om3 = await ev(() => window.__msgs.splice(0));
+  ok('... then OK (entire): done, the box gone, no beep', !ou3 && ou3t.toc.join() === 'Introduction' && ob2 === ob0
+    && !om3.length, { ou3, ou3t, ob2, om3 });
+  await runMenu('View', 'Print layout');
 } catch (e) {
   out.push('FAIL exception ' + (e.stack ?? e));
 }

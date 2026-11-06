@@ -34,7 +34,13 @@
 //       ctx: pages, layout, relayout; the document laid out again
 //       and the numbers made again while they change, at most
 //       ./FieldPasses MAX_PASSES; no ctx: no page numbers until an
-//       update). sel: a caret after the field; field: the new TOC
+//       update). When nothing visible follows the caret in its
+//       paragraph and that paragraph ends the document (or a cell),
+//       comes before a table or kept block, or has a style other
+//       than Normal, an empty Normal paragraph is put after it
+//       (./TocCaret tailOf), so the table is followed by an ordinary
+//       line to type in. sel: a caret after the field (at the start
+//       of that paragraph when there is one); field: the new TOC
 //       (./FieldScan). null when insertWhy refuses or the result
 //       cannot be made (nothing changed)
 //   updateToc(d, typing, field, mode = 'entire', ctx?, sel?) ->
@@ -72,7 +78,7 @@
 // desktop services.
 import {newPara} from './Model';
 import {caret} from './Selection';
-import {orderedPos, findBlock} from './EditPos';
+import {orderedPos, findBlock, sibOf} from './EditPos';
 import {at as blockAt} from './Walk';
 import {cmpPath} from './Path';
 import {scan} from './FieldScan';
@@ -80,6 +86,7 @@ import {codeText, fieldInlines, codePlan} from './FieldMake';
 import {planBlocks} from './FieldBlocks';
 import {run} from './FieldPasses';
 import {tocFields, tocWhy, rebuild, repage} from './TocUpdate';
+import {tailOf} from './TocCaret';
 
 const isObj = (v) => v !== null && typeof v === 'object';
 
@@ -181,7 +188,7 @@ export function insertToc(d, typing, sel, opts = {}, ctx) {
   if (!text) return null;
   const from = orderedPos(d.doc, sel).from;
   const lead = leaderOf(opts);
-  let begin = null, k = -1;
+  let begin = null, k = -1, tail = null;
   const put = {name: 'insert', paged: false, run(dd) {
     let loc = findBlock(dd.doc, from.id), off = from.off;
     if (off > 0) {
@@ -190,6 +197,11 @@ export function insertToc(d, typing, sel, opts = {}, ctx) {
       const at = [...loc.at.slice(0, -1), loc.at[n] + 1];
       loc = {at, b: blockAt(dd.doc, at)};
       off = 0;
+    }
+    if (tailOf(dd.doc, loc.b, off)) {
+      const c = newPara('');
+      dd.apply({op: 'insertBlocks', at: sibOf(loc, 1), blocks: [c]});
+      tail = c.id;
     }
     const {ins, inlines} = fieldInlines(text);
     dd.apply({op: 'replaceText', block: loc.at, at: off, del: 0, ins,
@@ -222,7 +234,9 @@ export function insertToc(d, typing, sel, opts = {}, ctx) {
   if (!res || !res.ok || !begin) return null;
   const f = tocFields(d.doc)[k];
   if (!f) return null;
-  return {sel: caret({id: f.end.id, off: f.end.off + 1}), field: f};
+  const to = tail !== null && findBlock(d.doc, tail)
+    ? {id: tail, off: 0} : {id: f.end.id, off: f.end.off + 1};
+  return {sel: caret(to), field: f};
 }
 
 /** See the header. */

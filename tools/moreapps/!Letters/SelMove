@@ -57,7 +57,12 @@
 // forward) goes past it, to after its end fldChar (e + 1), going
 // back to before its begin (b; its result's start when the begin is
 // in another paragraph): one press steps over it. Unknown commands
-// give sel back unchanged.
+// give sel back unchanged. A move never ends just before a table of
+// contents' end mark (./TocCaret outOf: after it); a move back
+// (left, wordLeft, paraStart, up, pageUp, prevPage) that outOf would
+// send back to where it started, or past it, is worked out again
+// from that paragraph's start, so it goes on to the paragraph before
+// (Ctrl-Left, Ctrl-Up never stick after the mark).
 // Pure: no desktop services.
 import * as PM from './PositionMap';
 import {make, at, withAff, page, step} from './SelVert';
@@ -66,6 +71,7 @@ import {toPage} from './SelPage';
 import {nextWord, prevWord} from 'wimplib/Segment';
 import {itemEnd, nextG, prevG, compare} from './DocPos';
 import {unseenAt, maskHidden, hiddenSpanAt} from './Kinds';
+import {outOf} from './TocCaret';
 
 export {make};
 
@@ -152,6 +158,9 @@ const NOPAGES = new Map([['nextPage', 'pageDown'],
 export const pageCmd = (L, cmd) => (NOPAGES.has(cmd) &&
   !(L && L.place && L.place.pages) ? NOPAGES.get(cmd) : cmd);
 const KEEP = new Set(['up', 'down', 'pageUp', 'pageDown']);
+// (the moves back: ./TocCaret's correction must not undo them)
+const BACK = new Set(['left', 'wordLeft', 'paraStart', 'up', 'pageUp',
+  'prevPage']);
 const EDGE = new Set(['left', 'right', ...KEEP, 'nextPage',
   'prevPage']);
 
@@ -199,9 +208,20 @@ export function move(sel, L, cmd, extend = false, pageH) {
   const p = {id: it.id, off};
   const keep = KEEP.has(cmd);
   const gx = keep ? sel.goalX ?? L.caretRect(p, aff).x : null;
-  const r = fn(L, it, p, aff, gx, pageH);
+  let r = fn(L, it, p, aff, gx, pageH);
   if (!r || !r.pos) return sel;
-  const goal = keep ? gx : null, to = pastField(L, r.pos, p);
+  const goal = keep ? gx : null;
+  let q = pastField(L, r.pos, p), to = outOf(L.doc, q);
+  if (BACK.has(cmd) && to !== q && p.off > 0 &&
+    compare(L, to, p) >= 0) {
+    // (sent back after a TOC's end mark: on from the line's start)
+    const r2 = fn(L, it, {id: it.id, off: 0}, aff, gx, pageH);
+    if (r2 && r2.pos) {
+      r = r2;
+      q = pastField(L, r2.pos, p);
+      to = outOf(L.doc, q);
+    }
+  }
   return extend ? make(sel.anchor, to, r.affinity, goal)
     : make(to, to, r.affinity, goal);
 }

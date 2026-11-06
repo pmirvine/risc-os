@@ -1,0 +1,70 @@
+// TocCaret - the caret kept out of a table of contents' end. A table
+// is a TOC field whose end mark starts the paragraph after its
+// entries (a new, empty table: 'No table of contents entries found.'
+// then a paragraph holding only the end mark, which looks like an
+// empty line under the table). A caret before that mark is inside
+// the table's result, where Update deletes whatever is typed, but on
+// the screen it is the same place as after it.
+//
+//   outOf(doc, pos) -> pos  pos {id, off}, or just after a TOC's end
+//       mark (its off + 1) when nothing but unseen inlines (./Kinds
+//       unseenAt: field marks, bookmarks) lies from pos to that mark
+//       in pos's paragraph; pos itself (the same object) otherwise
+//   tailOf(doc, b, off) -> bool  whether insertToc, putting a table
+//       in paragraph b at off, leaves an ordinary empty paragraph
+//       after b for the text after the table: nothing visible after
+//       off, and b ends its container (the document, a cell) or
+//       comes before a table or kept block, or has a style other
+//       than Normal (a heading would be a line the next heading
+//       typed goes into)
+//
+// Used by ./DocHit (clicks), ./SelMove (the keys), ./FieldEdit guard
+// (typing and Return), ./EditDel (Backspace and Delete) and ./TocCmd
+// insertToc. Only TOC fields (./TocUpdate isToc's test): the end of
+// any other field is left as it is. Pure: no desktop services.
+import {marks} from './FieldMarks';
+import {scan} from './FieldScan';
+import {findBlock, neighbour} from './EditPos';
+import {unseenAt} from './Kinds';
+import {parse} from './FieldParse';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+const isToc = (f) => typeof f.instr === 'string' &&
+  parse(f.instr).name === 'TOC';
+
+/** The offset of the end mark at or after off in paragraph p, with
+ *  only unseen inlines before it, or -1. */
+function endAfter(p, off) {
+  const ms = marks(p);
+  if (!ms.length) return -1;
+  for (let k = off; k < p.text.length; k++) {
+    if (ms.some((m) => m.off === k && m.t === 'e')) return k;
+    if (!unseenAt(p, k)) return -1;
+  }
+  return -1;
+}
+
+/** See the header. */
+export function outOf(doc, pos) {
+  if (!isObj(doc) || !isObj(pos) || !Number.isInteger(pos.off))
+    return pos;
+  const loc = findBlock(doc, pos.id);
+  const p = loc && !loc.story ? loc.b : null;
+  if (!p || p.type !== 'p' || typeof p.text !== 'string') return pos;
+  const e = endAfter(p, pos.off);
+  if (e < 0) return pos;
+  const f = scan(doc).find((g) => !g.simple && g.end.id === p.id &&
+    g.end.off === e);
+  return f && isToc(f) ? {id: p.id, off: e + 1} : pos;
+}
+
+/** See the header. */
+export function tailOf(doc, b, off) {
+  for (let k = off; k < b.text.length; k++) {
+    if (!unseenAt(b, k)) return false;
+  }
+  if (b.pStyle && b.pStyle !== 'Normal') return true;
+  const loc = findBlock(doc, b.id);
+  const next = loc ? neighbour(doc, loc, 1) : null;
+  return !next || next.b.type !== 'p';
+}

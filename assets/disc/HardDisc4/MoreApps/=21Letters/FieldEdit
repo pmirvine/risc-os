@@ -18,6 +18,8 @@
 //   whole(doc, sel) -> sel  a range that takes some of a complex
 //       field's marks (begin, separate, end) and not the others
 //       extended to the whole field, begin to end, for every field
+//       (its code's w:instrText inlines in the begin's paragraph
+//       count as marks: a range of the hidden code alone is cut)
 //       (./FieldScan scan: computed or not, across paragraphs), as
 //       often as that takes more; same direction; sel itself when
 //       none is cut (Word's rule: a selection crossing a field's
@@ -26,7 +28,8 @@
 //       table into it takes whole rows (./SelShape 'mixed',
 //       ./RangeTbl), a 'cells' shape its cells (P9 fix I1)
 //   guard(doc, sel, o) -> sel | null  the selection an edit at sel
-//       (o: its orderedPos) goes to: a caret moved by typingAt, a
+//       (o: its orderedPos) goes to: a caret moved out of a table
+//       of contents' end (./TocCaret outOf), then by typingAt, a
 //       range made whole; null when refused (typingAt null, cuts,
 //       or a field whole cannot take whole: its marks in cells of
 //       one table, some in the cells shape and some not)
@@ -37,7 +40,9 @@ import {computedIn} from './FieldShow';
 import {findBlock, orderedPos} from './EditPos';
 import {cmpPath, sib, samePath} from './Path';
 import {scan} from './FieldScan';
+import {marks} from './FieldMarks';
 import {shapeOf} from './SelShape';
+import {outOf} from './TocCaret';
 
 const isObj = (v) => v !== null && typeof v === 'object';
 
@@ -105,6 +110,18 @@ const under = (at, c) => at.length > c.length &&
 const takes = (g, m) => (g.cells ? g.cells.some((c) => under(m.at, c))
   : cmp(g.lo, m) <= 0 && cmp(after(m), g.hi) <= 0);
 
+/** The places of field f's code inlines (w:instrText) in its begin's
+ *  paragraph, as marks: taken alone they cut the field too. */
+function codeOf(doc, f) {
+  const loc = findBlock(doc, f.begin.id);
+  if (!loc || !loc.b || loc.b.type !== 'p') return [];
+  const s = f.sep && f.sep.id === f.begin.id ? f.sep.off : Infinity;
+  const e = f.end.id === f.begin.id ? f.end.off : Infinity;
+  return marks(loc.b).filter((m) => m.t === 'i' &&
+    m.off > f.begin.off && m.off < Math.min(s, e))
+    .map((m) => ({at: f.begin.at, off: m.off, id: f.begin.id}));
+}
+
 /** whole's work: {sel, ok}; ok false when a field stays cut that no
  *  widening can take whole (marks across cells of one rectangle). */
 function widen(doc, sel) {
@@ -119,7 +136,8 @@ function widen(doc, sel) {
     for (const f of fs) {
       if (cmp(f.begin, g.hi) >= 0 || cmp(after(f.end), g.lo) <= 0)
         continue;
-      const ms = f.sep ? [f.begin, f.sep, f.end] : [f.begin, f.end];
+      const ms = [f.begin, ...codeOf(doc, f), ...(f.sep ? [f.sep] : []),
+        f.end];
       const n = ms.filter((m) => takes(g, m)).length;
       if (!n || n === ms.length) continue;
       cut = true;
@@ -155,7 +173,7 @@ export function guard(doc, sel, o) {
     const ow = w === sel ? o : orderedPos(doc, w);
     return !ow || cuts(doc, ow) ? null : w;
   }
-  const to = typingAt(doc, h);
+  const to = typingAt(doc, outOf(doc, h));
   if (!to) return null;
   return to === h ? sel : {...sel, anchor: to, head: to};
 }

@@ -1,7 +1,8 @@
 // !Letters' New, Recent and quitting in the real desktop: a click on
 // its icon bar icon makes one new 'Untitled' document with the caret
 // in it (a double-click makes one, not two; Adjust none); the icon bar
-// menu is New, Recent, Info, Quit; files opened and saved are listed
+// menu is New, New from template, Recent, Info, Quit (a starter from
+// it opens an untitled window); files opened and saved are listed
 // under Recent (kept in Choices:Letters across runs, missing files
 // hidden, corrupt or hostile choices ignored, a failing write
 // harmless) and choosing one opens it or brings it to the front.
@@ -113,7 +114,7 @@ try {
   ok('an Adjust click makes no document', i4.n === 3 && i4.ev.join() === 'click:click:adjust', i4);
   const i5 = await ev(async () => {
     const t = window.__word(), m = window.__menu();
-    const res = { items: m.items.map((i) => i.text), recentShaded: typeof m.items[1].shaded === 'function' ? m.items[1].shaded() : !!m.items[1].shaded };
+    const res = { items: m.items.map((i) => i.text), recentShaded: typeof m.items[2].shaded === 'function' ? m.items[2].shaded() : !!m.items[2].shaded };
     m.items.find((i) => i.text === 'New').action();
     for (let i = 0; i < 60 && t.word.docs.length < 4; i++) await window.__sleep(50);
     res.n = t.word.docs.length;
@@ -124,9 +125,31 @@ try {
     for (const d of t.word.docs) d.dw.close();
     return res;
   });
-  ok('the icon bar menu: New, Recent, Info, Quit (Recent shaded while empty)', i5.items.join() === 'New,Recent,Info,Quit' && i5.recentShaded, i5);
+  ok('the icon bar menu: New, New from template, Recent, Info, Quit (Recent shaded while empty)', i5.items.join() === 'New,New from template,Recent,Info,Quit' && i5.recentShaded, i5);
   ok('New in the icon bar menu makes a document; app.newDoc({paper}) too', i5.n === 4 && i5.letter === 1, i5);
-  ok('the window menu has New', i5.wm.join() === 'Save,Save as,Revert,Save a copy,Export as PDF...,Print...,Info,Edit,Insert,View,Outline,Format,Table,Tools,Zoom,New,Close', i5.wm);
+  // ------------------------------------------------ New from template on the icon bar
+  const i6 = await ev(async () => {
+    const t = window.__word(), live = () => t.word.docs.filter((x) => !x.closed);
+    const n0 = live().length;
+    const sub = window.__menu().items.find((i) => i.text === 'New from template').submenu();
+    const res = { items: sub.items.map((i) => i.text) };
+    const grp = sub.items.find((i) => i.text === 'Letters').submenu();
+    window.__msgs.length = 0;
+    grp.items.find((i) => i.text === 'Business letter').action();
+    for (let i = 0; i < 200 && live().length === n0; i++) await window.__sleep(25);
+    await window.__frames(3);
+    const nd = live()[live().length - 1];
+    res.count = live().length - n0;
+    res.path = nd ? nd.path : 'none';
+    res.text = nd?.view.lines().join('\n');
+    res.title = nd?.win.title;
+    res.msgs = [...window.__msgs];
+    for (const d of live()) d.dw.close();
+    return res;
+  });
+  ok('the icon bar menu\'s New from template is the File menu\'s (templates, the four groups, the folder)', i6.items.join() === '(no templates),Letters,Careers,Reports,Business,Open Templates folder', i6);
+  ok('... Letters > Business letter opens an untitled window with the starter text', i6.count === 1 && i6.path === null && /Dear \[Name\]/.test(i6.text ?? '') && !i6.msgs.length, i6);
+  ok('the window menu has New', i5.wm.join() === 'Save,Save as,Revert,Save a copy,Export as PDF...,Print...,Info,Edit,Insert,View,Outline,Format,Design,Table,Tools,Zoom,New,New from template,Close', i5.wm);
 
   // ------------------------------------------------ Recent
   const r1 = await ev(async () => {
@@ -217,7 +240,7 @@ try {
     return res;
   });
   ok('Recent survives quitting and starting Word again', r3.restarted?.join() === 'RAM::RamDisc0.$.Other,RAM::RamDisc0.$.Saved', r3);
-  ok('corrupt Choices:Letters: an empty list, no error', r3.corrupt?.length === 0 && r3.menu === 'New,Recent,Info,Quit', r3);
+  ok('corrupt Choices:Letters: an empty list, no error', r3.corrupt?.length === 0 && r3.menu === 'New,New from template,Recent,Info,Quit', r3);
   ok('hostile Choices:Letters (10,000 entries, __proto__, numbers): a safe list', r3.hostile?.join() === 'RAM::RamDisc0.$.Saved'
     && Object.prototype.x === undefined && r3.ms < 30000 && r3.notList?.length === 0, r3);
   ok('a Choices:Letters that cannot be written does not stop a save', r3.saved === true && !r3.dirty
